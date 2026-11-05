@@ -303,15 +303,11 @@ func TestStorageSession_CoreCommandsDirectPathNeverFallBack(t *testing.T) {
 // --protocol-info; the output is one JSON object.
 func TestProtocolInfoFlagReportsBackupReadProtocol(t *testing.T) {
 	var out bytes.Buffer
-	rootCmd.SetOut(&out)
-	rootCmd.SetErr(&out)
-	rootCmd.SetArgs([]string{"--protocol-info"})
-	t.Cleanup(func() {
-		rootCmd.SetArgs(nil)
-		rootCmd.SetOut(nil)
-		rootCmd.SetErr(nil)
-	})
-	if err := rootCmd.Execute(); err != nil {
+	root := newRootCmd()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"--protocol-info"})
+	if err := root.Execute(); err != nil {
 		t.Fatalf("--protocol-info failed: %v (output %q)", err, out.String())
 	}
 	var info struct {

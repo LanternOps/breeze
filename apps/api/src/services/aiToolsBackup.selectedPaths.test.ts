@@ -77,7 +77,13 @@ function seqSelect(results: Array<unknown[]>) {
     const rows = results[call++] ?? [];
     // The snapshot-files read is awaited without .limit(), so where() must be
     // thenable as well as chainable.
-    return { from: () => ({ where: () => Object.assign(Promise.resolve(rows), { limit: () => Promise.resolve(rows) }) }) };
+    const query: Record<string, unknown> = {
+      where: () => Object.assign(Promise.resolve(rows), { limit: () => Promise.resolve(rows) }),
+    };
+    // The snapshot-files read joins the snapshot and its attestation.
+    query.innerJoin = () => query;
+    query.leftJoin = () => query;
+    return { from: () => query };
   });
 }
 

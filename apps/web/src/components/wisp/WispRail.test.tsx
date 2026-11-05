@@ -84,6 +84,24 @@ describe('WispRail', () => {
     h.activityProps = null;
   });
 
+  describe('the brief line (#10402)', () => {
+    const schedule = { timeLocal: '08:00', timezone: 'America/Denver', browserTimezone: null };
+
+    it('shows the brief time and the resolved zone beside the grant controls', () => {
+      render(<WispRail {...mkProps({ briefSchedule: schedule })} />);
+      expect(screen.getByTestId('wisp-rail-brief-at')).toHaveTextContent('Your morning brief goes out at 08:00 (America/Denver).');
+    });
+
+    it('is absent with the brief off, without a schedule (thread page), or once the delegation ended', () => {
+      const { rerender } = render(<WispRail {...mkProps({ briefSchedule: { ...schedule, timeLocal: null } })} />);
+      expect(screen.queryByTestId('wisp-rail-brief-at')).toBeNull();
+      rerender(<WispRail {...mkProps()} />);
+      expect(screen.queryByTestId('wisp-rail-brief-at')).toBeNull();
+      rerender(<WispRail {...mkProps({ briefSchedule: schedule, wisp: mkWisp({ status: 'revoked' }) })} />);
+      expect(screen.queryByTestId('wisp-rail-brief-at')).toBeNull();
+    });
+  });
+
   it('renders sections in order with their ids and the footer links', () => {
     const props = mkProps({ current: { orgId: 'o1', orgName: 'Greenwood', startedAt: new Date().toISOString() } });
     const { container } = render(<WispRail {...props} />);

@@ -280,6 +280,11 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // apply site scope directly (RMM-QA-221), as do the earlier metrics fixes.
   'routes/huntress.ts:GET /status',
   'routes/updateRings.ts:GET /:id/compliance',
+  // Same posture (#11039): requireScope('partner', 'system') at partner.ts:154
+  // refuses organization scope, the only scope that carries allowedSiteIds
+  // (auth.ts:859), and the rollups read only orgs that scope may already see.
+  // partner.test.ts pins the 403 for a site-restricted organization-scope caller.
+  'routes/partner.ts:GET /dashboard',
   // Compliance list, identical posture to its sibling routes (/firewall,
   // /password-policy) which resolve rows through the same listStatusRows
   // helper — org-scoped and narrowed in SQL to the caller's allowed sites.
@@ -332,6 +337,7 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
   // Partner/system-only aggregates use user auth but cannot be reached by
   // organization site-restricted roles; see SITE_SCOPE_INPUT_EXEMPT above.
   'routes/huntress.ts:GET /status',
+  'routes/partner.ts:GET /dashboard',
   // Newly visible to the widened detector (#4019). bmr's public router has no
   // auth middleware at all, so it is recorded here as a deliberate exception;
   // reasons in SITE_SCOPE_INPUT_EXEMPT above. (orgSummary left this list when

@@ -24,6 +24,12 @@ describe('wispStateFromThread W06 fields (A32 spend, A29 pause reason)', () => {
     expect(wispStateFromThread(body({}))!.unattendedReads).toBe(false);
   });
 
+  it('#10390: reads the session-notes switch, false unless literally true', () => {
+    expect(wispStateFromThread(body({ summaryRefine: true }))!.summaryRefine).toBe(true);
+    expect(wispStateFromThread(body({ summaryRefine: 'true' }))!.summaryRefine).toBe(false);
+    expect(wispStateFromThread(body({}))!.summaryRefine).toBe(false);
+  });
+
   it('leaves pausedReason unknown when the payload omits it, and reads it when present', () => {
     expect('pausedReason' in wispStateFromThread(body({ status: 'paused' }))!).toBe(false);
     expect(wispStateFromThread(body({ status: 'paused', pausedReason: 'user_paused' }))!.pausedReason).toBe('user_paused');

@@ -21,7 +21,7 @@ import {
   type OemUpdateRunResult,
   type OemUpdateVerification,
 } from '@breeze/shared';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, runAfterDbContextCommit, withSystemDbAccessContext } from '../../db';
 import { deviceCommands, deviceHardware, deviceOemUpdateStatus, devices } from '../../db/schema';
 import { CommandTypes } from '../commandTypes';
 import { captureException } from '../sentry';
@@ -145,6 +145,44 @@ function outcomeFields(
   };
 }
 
+/**
+ * Did the tech choose "reboot when finished" on this run? Run Now only: the
+ * scheduler plans its own reboots (W06, W07). An unreadable payload is not consent.
+ */
+function techChoseRebootWhenFinished(payload: unknown): boolean {
+  const { trigger, rebootControlled } = (payload ?? {}) as { trigger?: unknown; rebootControlled?: unknown };
+  return trigger === 'on_demand' && rebootControlled === true;
+}
+
+/**
+ * Hands the reboot the run needs to the existing path, with the patch policy's
+ * delay, deferral and prompt text, so it warns the user like any other. Runs with
+ * no context held. A refusal leaves `reboot_pending_since` set, so the device reads
+ * as waiting for a reboot rather than done.
+ *
+ * The reboot handler loads lazily so the agents router, which mounts the
+ * verification route from this module, does not pull the command queue in at import.
+ */
+async function scheduleRebootWhenFinished(deviceId: string, orgId: string): Promise<void> {
+  try {
+    const { executeReboot, resolveRebootPlan } = await import('../patchRebootHandler');
+    const plan = await withSystemDbAccessContext(() => resolveRebootPlan(deviceId));
+    const queued = await executeReboot(deviceId, 'Vendor updates finished and need a restart', {
+      delayMinutes: plan.delayMinutes,
+      deferral: plan.deferral,
+      promptText: plan.promptText,
+      expectedOrgId: orgId,
+      source: 'oem_updates',
+      commitBeforeDelivery: true,
+    });
+    if (!queued.success) {
+      report(new Error(queued.error ?? 'schedule_reboot was refused'), 'oem-updates-reboot-dispatch-refused', deviceId);
+    }
+  } catch (error) {
+    report(error, 'oem-updates-reboot-dispatch-failed', deviceId);
+  }
+}
+
 /** Never throws: a bad result must not break the transport that delivered it. */
 export async function applyOemUpdateResult(input: {
   commandId: string;
@@ -160,6 +198,7 @@ export async function applyOemUpdateResult(input: {
           deviceId: deviceCommands.deviceId,
           type: deviceCommands.type,
           payload: deviceCommands.payload,
+          submittedOrgId: deviceCommands.submittedOrgId,
         })
         .from(deviceCommands)
         .where(eq(deviceCommands.id, commandId))
@@ -208,6 +247,22 @@ export async function applyOemUpdateResult(input: {
         .update(deviceOemUpdateStatus)
         .set(outcomeFields(parsed, status, command.payload, device.hardwareModel ?? null, now))
         .where(and(eq(deviceOemUpdateStatus.deviceId, deviceId), eq(deviceOemUpdateStatus.lastCommandId, commandId)));
+
+      if (parsed?.rebootRequired && techChoseRebootWhenFinished(command.payload)) {
+        // The tech agreed to restart a device in the org that asked. A device moved
+        // mid-run keeps its pending clock instead, for its new owner to act on, and
+        // that owner's history does not show the run, so the skip is logged here.
+        if (command.submittedOrgId === device.orgId) {
+          runAfterDbContextCommit('oemUpdates.rebootWhenFinished', () => scheduleRebootWhenFinished(deviceId, device.orgId));
+        } else {
+          console.warn('[oemUpdates/results] no reboot: the device moved org during the run, or the run has no org stamp', {
+            commandId,
+            deviceId,
+            submittedOrgId: command.submittedOrgId,
+            orgId: device.orgId,
+          });
+        }
+      }
 
       return parsed !== null && disarmsMonitor(parsed, status, command.payload);
     });

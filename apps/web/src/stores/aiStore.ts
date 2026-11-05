@@ -68,6 +68,8 @@ export type WispState = {
   budgetResetsAt?: string;
   /** #10973: the grant's unattended-reads switch is effective (the server's pinned AND live answer). */
   unattendedReads?: boolean;
+  /** #10390: a closed session's summary is also written by the model, charged to the daily budget. */
+  summaryRefine?: boolean;
 } | null;
 
 export type WispTalkFocusRequest = {
@@ -182,6 +184,8 @@ interface AiState {
   updateWisp: (patch: Partial<NonNullable<WispState>>) => void;
   /** Close the current session and leave Wisp mode. */
   exitWispMode: () => Promise<void>;
+  /** #10289: close the current session and open a Breeze AI chat with no grant, even while one is active. */
+  startPlainChat: () => Promise<void>;
   startDeviceTask: (deviceId: string, ctx: AiPageContext, initialMessage?: string) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
   loadSessions: () => Promise<void>;
@@ -1771,6 +1775,20 @@ export const useAiStore = create<AiState>()(
     // surfaced over the plain chat the user is returning to.
     if (get().sessionId) await get().closeSession();
     set({ wisp: null, ...CLEARED_SESSION, error: null, errorCode: null });
+  },
+
+  startPlainChat: async () => {
+    // A "Talk to Wisp" still in flight must not put the grant back afterwards,
+    // and a newer Talk (or a second pick) during the close wins over this one.
+    const sequence = ++wispTalkSequence;
+    get().resolveWispTalkFocus(false);
+    if (get().wisp) await get().exitWispMode();
+    else if (get().sessionId) await get().closeSession();
+    if (sequence !== wispTalkSequence) return;
+    // Unbind even after a failed close, or a rehydrating grant could still
+    // claim the old session. createSession sends no grant once `wisp` is null.
+    set({ wisp: null, ...CLEARED_SESSION, error: null, errorCode: null });
+    await get().createSession();
   },
     }),
     {

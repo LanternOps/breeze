@@ -26,6 +26,8 @@ import { showToast } from '../shared/Toast';
 import { useTranslation } from 'react-i18next';
 import { asList } from '@/lib/asList';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
+import SnapshotIndexNotice from './SnapshotIndexNotice';
+import { indexNoticeKind, parseSnapshotIndexView, useSnapshotIndexState } from './snapshotIndexState';
 import {
   isUnattestedRestoreStepUp,
   suppressUnattestedRestoreStepUpToast,
@@ -275,6 +277,18 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
   }, [deviceGroups, deviceKey, pickedSnapshotId]);
   const snapshotId = selectedSnapshot?.id ?? '';
 
+  // #11026: while the file list is being built nothing is cached that is worth
+  // keeping, so its arrival starts the listing again from the root.
+  const { view: indexView, reportView: reportIndexView, retry: retryIndex, retrying: retryingIndex } = useSnapshotIndexState({
+    snapshotId,
+    onReady: () => {
+      browseEpoch.current += 1;
+      setDirs({});
+      setBrowseDir(ROOT_DIR);
+      void loadDir(ROOT_DIR);
+    },
+  });
+
   useEffect(() => {
     if (!snapshotId) return;
     if (lastSnapshotId.current && lastSnapshotId.current !== snapshotId) {
@@ -302,6 +316,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
           nextCursor: typeof payload?.nextCursor === 'string' ? payload.nextCursor : null,
         },
       }));
+      if (dir === ROOT_DIR && !cursor) reportIndexView(parseSnapshotIndexView(payload));
     } catch (err) {
       if (epoch === browseEpoch.current) {
         setError(err instanceof Error ? err.message : 'Failed to load snapshot contents');
@@ -309,7 +324,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
     } finally {
       if (epoch === browseEpoch.current) setFilesLoading(false);
     }
-  }, [snapshotId]);
+  }, [snapshotId, reportIndexView]);
 
   useEffect(() => {
     browseEpoch.current += 1;
@@ -680,7 +695,11 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                   </div>
                   {currentItems.length === 0 ? (
                     <div className="rounded-md border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
-                      {filesLoading ? 'Loading snapshot contents...' : 'No files available for this snapshot.'}
+                      {filesLoading
+                        ? 'Loading snapshot contents...'
+                        : indexNoticeKind(indexView)
+                          ? <SnapshotIndexNotice view={indexView} retrying={retryingIndex} onRetry={() => void retryIndex()} />
+                          : 'No files available for this snapshot.'}
                     </div>
                   ) : (
                     currentItems.map((item) => (

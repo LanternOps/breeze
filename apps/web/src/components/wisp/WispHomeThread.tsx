@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode, type Dispatch, ty
 import { useTranslation } from 'react-i18next';
 import { Plus } from 'lucide-react';
 import { isPinnedLink } from '@/lib/wispLinksApi';
-import { WISP_THREAD_LINK_LIMIT, type WispThreadLink } from '@breeze/shared';
+import { WISP_THREAD_LINK_LIMIT, type WispBriefSchedule, type WispThreadLink } from '@breeze/shared';
 import { useAiStore, type WispState } from '@/stores/aiStore';
 import { fetchWithAuth } from '@/stores/auth';
 import AiChatMessages from '../ai/AiChatMessages';
@@ -103,6 +103,7 @@ export default function WispHomeThread({
   links,
   onLinksChange,
   refreshKey = 0,
+  briefSchedule = null,
 }: {
   wisp: Wisp;
   lastSessionId: string | null;
@@ -111,6 +112,8 @@ export default function WispHomeThread({
   links: WispThreadLink[] | null;
   onLinksChange: Dispatch<SetStateAction<WispThreadLink[]>>;
   refreshKey?: number;
+  /** The home's brief time and resolved zone, for the welcome; the thread page has none. */
+  briefSchedule?: WispBriefSchedule | null;
 }) {
   const { t } = useTranslation('ai');
   const active = wisp.status === 'active';
@@ -169,6 +172,7 @@ export default function WispHomeThread({
     [timeline.posts],
   );
   const hasBrief = timeline.posts.some((p) => p.kind === 'brief');
+  const hasFirstLook = timeline.posts.some((p) => p.kind === 'first_look');
   const historyNotice = timeline.failed ? (
     <div className="flex flex-wrap items-center gap-2 text-xs" data-testid="wisp-home-thread-history-failed" role="status">
       <span className="text-destructive">
@@ -283,7 +287,7 @@ export default function WispHomeThread({
             showTimeDividers
             leading={threadLeading}
             emptyState={timeline.settled
-              ? <WispWelcome scopeLabel={scopeLabel} onSuggest={sendMessage} intro={!leading && !hasBrief} />
+              ? <WispWelcome scopeLabel={scopeLabel} onSuggest={sendMessage} intro={!leading && !hasBrief} firstLook={hasFirstLook} briefSchedule={briefSchedule} />
               : <div data-testid="wisp-home-thread-history-loading" aria-busy="true" />}
           />
           <div className={COLUMN}>

@@ -66,6 +66,8 @@ export type WispGrant = {
   unattendedReads: boolean;
   /** #10973: the current revision pins the switch, whether or not it is on now. */
   unattendedReadsPinned: boolean;
+  /** #10390: a closed session's summary is also written by the model, charged to this grant's budget. */
+  summaryRefine: boolean;
 };
 
 export type WispGrantErrorCode =
@@ -143,6 +145,7 @@ function toGrant(row: WispGrantRow, unattendedReadsPinned = false): WispGrant {
     floorTickMinutes: row.floorTickMinutes,
     unattendedReads: row.unattendedReads === true && unattendedReadsPinned,
     unattendedReadsPinned,
+    summaryRefine: row.summaryRefine === true,
   };
 }
 
@@ -559,11 +562,14 @@ export async function revokeGrant(input: { auth: AuthContext; grantId: string })
  * #10973: `unattendedReads: false` is the grantor's own off switch and takes
  * effect on the next call. Turning it on widens authority, so it is refused here
  * and only `refreshGrant` can do it. A partner admin's brake is pause / revoke.
+ *
+ * #10390: `summaryRefine` is spend, not authority, so it follows budget: either
+ * direction, the grantor or a partner admin, no step-up.
  */
 export async function updateGrantSettings(input: {
   auth: AuthContext;
   grantId: string;
-  patch: { budgetCentsPerDay?: number; floorTickMinutes?: number; unattendedReads?: boolean };
+  patch: { budgetCentsPerDay?: number; floorTickMinutes?: number; unattendedReads?: boolean; summaryRefine?: boolean };
   bounds?: GrantSettingsBounds;
 }): Promise<WispGrant> {
   if (input.patch.unattendedReads === true) {
@@ -575,12 +581,12 @@ export async function updateGrantSettings(input: {
     budgetCentsPerDayMax: requested.budgetCentsPerDayMax,
     minFloorTickMinutes: Math.max(DEFAULT_SETTINGS_BOUNDS.minFloorTickMinutes, requested.minFloorTickMinutes),
   };
-  const { budgetCentsPerDay, floorTickMinutes, unattendedReads } = input.patch;
+  const { budgetCentsPerDay, floorTickMinutes, unattendedReads, summaryRefine } = input.patch;
   const outOfBounds = () => new WispGrantError(
     'settings_out_of_bounds',
     `Budget must be 0–${bounds.budgetCentsPerDayMax} cents/day and the floor tick ${bounds.minFloorTickMinutes}–${MAX_FLOOR_TICK_MINUTES} minutes.`,
   );
-  if (budgetCentsPerDay === undefined && floorTickMinutes === undefined && unattendedReads === undefined) throw outOfBounds();
+  if (budgetCentsPerDay === undefined && floorTickMinutes === undefined && unattendedReads === undefined && summaryRefine === undefined) throw outOfBounds();
   if (budgetCentsPerDay !== undefined
     && (!Number.isInteger(budgetCentsPerDay) || budgetCentsPerDay < 0 || budgetCentsPerDay > bounds.budgetCentsPerDayMax)) {
     throw outOfBounds();
@@ -598,10 +604,11 @@ export async function updateGrantSettings(input: {
   if (unattendedReads !== undefined && row.grantorUserId !== auth.user.id) {
     throw new WispGrantError('forbidden', 'Only the grantor can change unattended reads.');
   }
-  const set: { budgetCentsPerDay?: number; floorTickMinutes?: number; unattendedReads?: boolean } = {};
+  const set: { budgetCentsPerDay?: number; floorTickMinutes?: number; unattendedReads?: boolean; summaryRefine?: boolean } = {};
   if (budgetCentsPerDay !== undefined) set.budgetCentsPerDay = budgetCentsPerDay;
   if (floorTickMinutes !== undefined) set.floorTickMinutes = floorTickMinutes;
   if (unattendedReads !== undefined) set.unattendedReads = unattendedReads;
+  if (summaryRefine !== undefined) set.summaryRefine = summaryRefine;
   const [updated] = await db.update(wispGrants).set(set).where(eq(wispGrants.id, row.id)).returning();
   if (!updated) throw new WispGrantError('not_found', 'Wisp grant not found.');
   // Before the audit: a failed read here aborts the request transaction, and
@@ -616,11 +623,13 @@ export async function updateGrantSettings(input: {
         budgetCentsPerDay: row.budgetCentsPerDay,
         floorTickMinutes: row.floorTickMinutes,
         ...(unattendedReads !== undefined ? { unattendedReads: row.unattendedReads } : {}),
+        ...(summaryRefine !== undefined ? { summaryRefine: row.summaryRefine } : {}),
       },
       to: {
         budgetCentsPerDay: updated.budgetCentsPerDay,
         floorTickMinutes: updated.floorTickMinutes,
         ...(unattendedReads !== undefined ? { unattendedReads: updated.unattendedReads } : {}),
+        ...(summaryRefine !== undefined ? { summaryRefine: updated.summaryRefine } : {}),
       },
     },
   });

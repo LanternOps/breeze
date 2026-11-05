@@ -277,6 +277,41 @@ describe('WispHomeThread as the companion column (W01 #10211)', () => {
     expect(screen.getAllByTestId('wisp-suggestion')).toHaveLength(4);
   });
 
+  describe('the first look (#10402)', () => {
+    const firstLookPost = { source: 'post', id: 'p-fl', kind: 'first_look', title: 'First look done: 2 of 2 organizations', body: 'Open concerns: 1 high.', link: '/ai/wisp/thread/th-1', sections: null, concernId: null, orgId: null, read: null, createdAt: '2026-10-26T07:00:00.000Z' };
+    const schedule = { timeLocal: '08:00', timezone: 'America/Denver', browserTimezone: 'America/Denver' };
+
+    it('swaps the welcome to "I\'ve had a first look" once the post is in the thread, with the post above it', async () => {
+      fetchMock.mockImplementation(route({ timeline: () => json({ data: { items: [firstLookPost], nextCursor: null } }) }));
+      render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+      expect(await screen.findByText("I've had a first look at All organizations.")).toBeInTheDocument();
+      expect(screen.getByTestId('wisp-post')).toHaveAttribute('data-kind', 'first_look');
+      expect(screen.queryByText("I'm looking around All organizations.")).toBeNull();
+      expect(screen.getAllByTestId('wisp-suggestion')).toHaveLength(4);
+    });
+
+    it('a refresh that brings the post flips a welcome already on screen', async () => {
+      let posted = false;
+      fetchMock.mockImplementation(route({ timeline: () => json({ data: { items: posted ? [firstLookPost] : [], nextCursor: null } }) }));
+      const { rerender } = render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} refreshKey={0} />);
+      expect(await screen.findByText("I'm looking around All organizations.")).toBeInTheDocument();
+      posted = true;
+      rerender(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} refreshKey={1} />);
+      expect(await screen.findByText("I've had a first look at All organizations.")).toBeInTheDocument();
+    });
+
+    it('still "looking" while the thread has only other posts', async () => {
+      fetchMock.mockImplementation(route({ timeline: () => json({ data: { items: [{ ...firstLookPost, kind: 'nudge' }], nextCursor: null } }) }));
+      render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+      expect(await screen.findByText("I'm looking around All organizations.")).toBeInTheDocument();
+    });
+
+    it('passes the brief schedule to the welcome', async () => {
+      render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} briefSchedule={schedule} />);
+      expect(await screen.findByTestId('wisp-welcome-brief-at')).toHaveTextContent('08:00 (America/Denver)');
+    });
+  });
+
   it('the composer link button opens the entity picker and a pick is added to the links', async () => {
     const existing = { ...LINK, id: 'l-0', ref: { ...LINK.ref, id: 't-other' }, label: 'Old' };
     render(<WispHomeThread {...extra} links={[existing] as never[]} wisp={wisp} lastSessionId={null} />);

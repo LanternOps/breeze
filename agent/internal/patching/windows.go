@@ -3,6 +3,7 @@
 package patching
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 	"strings"
@@ -221,6 +222,120 @@ func (w *WindowsUpdateProvider) InstallWithHook(patchID string, before BeforeIns
 	}
 
 	return result, nil
+}
+
+// SearchDriverUpdates returns every pending, visible driver and firmware update.
+// A result it cannot read fails the whole search: a partial list would read as
+// "nothing for this machine", and a skip must never hide a degraded enumeration.
+func (w *WindowsUpdateProvider) SearchDriverUpdates(ctx context.Context) ([]DriverUpdate, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var out []DriverUpdate
+	err := w.withSession(func(session *ole.IDispatch) error {
+		searcherVar, err := oleutil.CallMethod(session, "CreateUpdateSearcher")
+		if err != nil {
+			return fmt.Errorf("create searcher failed: %w", err)
+		}
+		searcher := searcherVar.ToIDispatch()
+		if searcher == nil {
+			return fmt.Errorf("create searcher failed: nil searcher")
+		}
+		defer searcher.Release()
+
+		resultVar, err := w.callWithRetry("Search", func() (*ole.VARIANT, error) {
+			return oleutil.CallMethod(searcher, "Search", driverSearchCriteria)
+		})
+		if err != nil {
+			return fmt.Errorf("driver search failed: %w", err)
+		}
+		result := resultVar.ToIDispatch()
+		if result == nil {
+			return fmt.Errorf("driver search failed: nil result")
+		}
+		defer result.Release()
+
+		updatesVar, err := oleutil.GetProperty(result, "Updates")
+		if err != nil {
+			return fmt.Errorf("updates collection failed: %w", err)
+		}
+		updates := updatesVar.ToIDispatch()
+		if updates == nil {
+			return fmt.Errorf("updates collection missing")
+		}
+		defer updates.Release()
+
+		countVar, err := oleutil.GetProperty(updates, "Count")
+		if err != nil {
+			return fmt.Errorf("updates count failed: %w", err)
+		}
+		count := int(countVar.Val)
+		_ = countVar.Clear()
+
+		found := make([]DriverUpdate, 0, count)
+		for i := 0; i < count; i++ {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			u, err := w.readDriverUpdate(updates, i)
+			if err != nil {
+				return fmt.Errorf("driver search result %d of %d unreadable: %w", i+1, count, err)
+			}
+			found = append(found, u)
+		}
+		out = found
+		return nil
+	})
+	return out, err
+}
+
+func (w *WindowsUpdateProvider) readDriverUpdate(updates *ole.IDispatch, index int) (DriverUpdate, error) {
+	itemVar, err := getCollectionItem(updates, index)
+	if err != nil {
+		return DriverUpdate{}, err
+	}
+	update := itemVar.ToIDispatch()
+	if update == nil {
+		return DriverUpdate{}, fmt.Errorf("no update object")
+	}
+	defer update.Release()
+
+	identityVar, err := oleutil.GetProperty(update, "Identity")
+	if err != nil {
+		return DriverUpdate{}, err
+	}
+	identity := identityVar.ToIDispatch()
+	if identity == nil {
+		return DriverUpdate{}, fmt.Errorf("update identity missing")
+	}
+	defer identity.Release()
+	id, err := w.getStringProperty(identity, "UpdateID")
+	if err != nil {
+		return DriverUpdate{}, err
+	}
+	return driverUpdateFrom(id, func(property string) (string, error) {
+		return w.getStringProperty(update, property)
+	})
+}
+
+// InstallDriverUpdates installs the given updates one at a time through
+// InstallWithHook, so each gets the same skip, download and post-install checks
+// as a patch job, and each reports its own outcome. Once ctx ends the rest are
+// not started and report its error.
+func (w *WindowsUpdateProvider) InstallDriverUpdates(ctx context.Context, ids []string) []DriverInstallOutcome {
+	out := make([]DriverInstallOutcome, 0, len(ids))
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			out = append(out, DriverInstallOutcome{UpdateID: id, Err: err})
+			continue
+		}
+		// The hook runs at the true mutation boundary: after the skip check and the
+		// download, right before the installer is created.
+		started := false
+		res, err := w.InstallWithHook(id, func(string) { started = true })
+		out = append(out, DriverInstallOutcome{UpdateID: id, Result: res, Err: err, InstallStarted: started})
+	}
+	return out
 }
 
 // Uninstall removes a Windows Update by update ID.

@@ -702,6 +702,10 @@
         "securityLog": "Rechercher dans le journal des événements de sécurité",
         "deviceNote": "Enregistrer une note sur un appareil",
         "applies": "S’applique aux nouvelles conversations et aux nouvelles exécutions en arrière-plan."
+      },
+      "summaryRefine": {
+        "title": "Notes de session rédigées par le modèle",
+        "description": "À la fin d’une conversation, le modèle rédige ce qui a été conclu et ce qui reste en suspens. Chaque note représente un appel au modèle et compte dans le budget quotidien de Wisp. Si cette option est désactivée, Wisp conserve plutôt un simple résumé."
       }
     },
     "focus": {
@@ -747,7 +751,10 @@
       "unattendedReadsOn": "Lectures sans surveillance activées",
       "unattendedReadsOnFailed": "Impossible d’activer les lectures sans surveillance",
       "unattendedReadsOff": "Lectures sans surveillance désactivées",
-      "unattendedReadsOffFailed": "Impossible de désactiver les lectures sans surveillance"
+      "unattendedReadsOffFailed": "Impossible de désactiver les lectures sans surveillance",
+      "summaryRefineOn": "Notes de session activées",
+      "summaryRefineOff": "Notes de session désactivées",
+      "summaryRefineFailed": "Impossible de modifier les notes de session"
     },
     "spend": {
       "meter": "{{spent}} sur {{budget}} aujourd’hui",
@@ -892,11 +899,15 @@
       "summary": "Récapitulatif",
       "open": "Ouvrir",
       "unread": "Non lu",
-      "specialistResult": "Rapport du spécialiste"
+      "specialistResult": "Rapport du spécialiste",
+      "firstLook": "Premier tour"
     },
     "welcome": {
       "title": "Je fais le tour de {{scope}}.",
       "body": "Votre premier résumé arrive chaque matin, une fois que j’ai regardé. D’ici là, posez-moi vos questions.",
+      "firstLookTitle": "J’ai fait un premier tour de {{scope}}.",
+      "firstLookBody": "Ce que j’ai trouvé est dans le message ci-dessus. Posez-moi vos questions à ce sujet.",
+      "briefAt": "Votre résumé du matin est envoyé à {{time}} ({{timezone}}).",
       "suggestions": {
         "needsMe": {
           "label": "Qu’est-ce qui demande mon attention aujourd’hui ?",
@@ -940,6 +951,12 @@
       "buttonPlain": "Interroger l’IA à ce sujet",
       "draft": "À propos de {{label}}: ",
       "switchFocus": "Wisp se concentre sur {{from}}. Passer à {{to}} ?"
+    },
+    "plainChat": {
+      "new": "Nouvelle discussion simple",
+      "newDescription": "Breeze AI avec tous les outils auxquels vous avez accès. Pas Wisp.",
+      "wispDescription": "Wisp, selon votre autorisation",
+      "label": "Breeze AI · pas Wisp"
     }
   },
   "wispConcerns": {

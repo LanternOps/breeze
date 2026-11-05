@@ -160,6 +160,14 @@ export type McpExemptReason =
    */
   | 'human_only_force_reboot'
   /**
+   * "Run vendor updates" (#11065): runs the device maker's update tool, which can
+   * flash a BIOS or firmware and restart the machine. Interactive user session,
+   * devices:execute and MFA, with the reboot choice made by a person. v1 adds no
+   * AI tool by design (spec, Decision 9); an agent-reachable path would remove the
+   * human from a firmware flash.
+   */
+  | 'human_only_oem_updates'
+  /**
    * The chat / script-builder session transport itself (sessions, messages,
    * interrupt, approve-plan). This is the plumbing the AI features run over,
    * not a tool surface an AI agent calls (W05 gap triage).
@@ -308,7 +316,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'aiModels/residency.ts':{ exempt: 'human_only_ai_governance', note: 'Data-residency requirement for AI calls -- a compliance control the AI must not change.' },
   'aiModels/shared.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'aiModels/usage.ts': { exempt: 'human_only_ai_governance', note: 'AI spend and refusal reporting by model / feature / tech -- admin showback, not an agent workflow.' },
-  'aiOperatorTasks.ts': { tools: ['list_operator_tasks', 'get_operator_task'] }, // W10 (#6780): the task list + detail reads; create / workflows / drafts are W16 (#6786)
+  'aiOperatorTasks.ts': { tools: ['list_operator_tasks', 'get_operator_task', 'create_operator_task'] }, // W10 (#6780) reads; W16 PR A (#6786): create_operator_task for service_recovery only. Left human (Decision 4): the identity_offboarding / identity_onboarding admissions, the task drafts, the workflow Library read and the account-reservation release
   'alertTemplates/correlations.ts': { tools: ['get_alert_correlations'] }, // W07 (#6777): links (list) and analyze; the legacy /groups twin is superseded by alerts/correlations.ts groups
   'alertTemplates/rules.ts': { tools: ['manage_alert_rules'] },
   'alertTemplates/templates.ts': { tools: ['manage_alert_rules'] },
@@ -494,6 +502,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/networkIsolation.ts': { tools: ['execute_containment', 'release_containment'] },
   'agents/isolationVerify.ts': { exempt: 'agent_transport' },
   'devices/forceReboot.ts': { exempt: 'human_only_force_reboot', note: 'Force reboot now: closes running apps; step-up bound to one device.' },
+  'devices/oemUpdates.ts': { exempt: 'human_only_oem_updates', note: 'Run vendor updates (BIOS, firmware, drivers through the maker\'s tool) plus its status and history reads; no AI tool in v1 (#11065 Decision 9).' },
   'devices/moveOrg.ts': { exempt: 'human_only_tenant_restructure', note: 'Cross-tenant device move -- rewrites which tenant owns the device.' },
   'devices/network.ts': { tools: ['list_network_assets'] },
   'devices/options.ts': { exempt: 'internal_plumbing' },
@@ -634,7 +643,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'partnerSendingDomains.ts': { exempt: 'human_only_trust_material', note: "DNS verification is completed by a human at the registrar; test-send leaves the tenant. From #6803." },
   'partnerServicePrincipals.ts': { exempt: 'identity' },
   'partnerTrust.ts': { exempt: 'breeze_account', note: 'Trust review request to Breeze -- the partner-Breeze relationship itself.' },
-  'patchPlan.ts': { gap: '#6786' },
+  'patchPlan.ts': { tools: ['run_patch_plan'] }, // W16 PR A (#6786): "Run now" for the org's patch agent
   'patchPolicies.ts': { exempt: 'internal_plumbing', note: "Read-only kind='legacy' surface superseded by config-policy patch features; retire rather than build a tool. From #6804." },
   'patches/appOptions.ts': { exempt: 'internal_plumbing' },
   'patches/approvals.ts': { tools: ['manage_patches'] },

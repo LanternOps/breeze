@@ -746,7 +746,8 @@ func execVSS(cmdType string) backupipc.BackupCommandResult {
 // --- system state & BMR ---
 
 func execSystemStateCollect() backupipc.BackupCommandResult {
-	manifest, stagingDir, err := systemstate.CollectSystemState()
+	// No caller context on this IPC path; the collector's own deadlines bound it.
+	manifest, stagingDir, err := systemstate.CollectSystemState(context.Background())
 	if err != nil {
 		return fail(err.Error())
 	}
@@ -754,7 +755,7 @@ func execSystemStateCollect() backupipc.BackupCommandResult {
 }
 
 func execHardwareProfile() backupipc.BackupCommandResult {
-	profile, err := systemstate.CollectHardwareOnly()
+	profile, err := systemstate.CollectHardwareOnly(context.Background())
 	return marshalResult(profile, err)
 }
 

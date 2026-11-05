@@ -4,11 +4,27 @@ package securefs
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
 	"golang.org/x/sys/windows"
 )
+
+// absentError marks a not-found status as fs.ErrNotExist while keeping the
+// status itself. The walk opens through NtCreateFile, and windows.NTStatus has
+// no Is method, so without this a missing file satisfies errors.Is only on the
+// Unix walk, where the same miss is an ENOENT.
+type absentError struct{ error }
+
+func (e absentError) Unwrap() []error { return []error{e.error, fs.ErrNotExist} }
+
+func reportAbsence(err error) error {
+	if isNotFound(err) {
+		return absentError{err}
+	}
+	return err
+}
 
 func openFileRead(base, relative string) (*os.File, error) {
 	parent := base
@@ -17,7 +33,7 @@ func openFileRead(base, relative string) (*os.File, error) {
 	}
 	chain, err := openVerifiedDir(parent, false, nil, 0)
 	if err != nil {
-		return nil, err
+		return nil, reportAbsence(err)
 	}
 	defer chain.close()
 
@@ -25,7 +41,7 @@ func openFileRead(base, relative string) (*os.File, error) {
 	handle, err := openRelativeComponent(chain.leaf(), name, windows.GENERIC_READ,
 		shareFile, windows.FILE_OPEN, ntFileOptions, nil)
 	if err != nil {
-		return nil, err
+		return nil, reportAbsence(err)
 	}
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {

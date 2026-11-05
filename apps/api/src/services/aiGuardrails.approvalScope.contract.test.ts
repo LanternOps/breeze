@@ -21,6 +21,7 @@ import { isMfaGatedToolAction } from './aiToolMfaGate';
 import { AGENT_DENIED_READ_TOOLS, AGENT_HUMAN_ONLY_ACTIONS } from './aiToolExposure';
 import { getToolTier, getAllRegisteredToolNames, getToolDefinitions } from './aiTools';
 import { toolInputSchemas } from './aiToolSchemas';
+import { isNeverDelegableTool } from './wisp/grantAuthority';
 import { ExtensionContributionRegistry } from '../extensions/contributionRegistry';
 
 /** (tool, action) pairs from a scope table, flattened with their expected scope. */
@@ -1814,6 +1815,35 @@ describe('W18 PR B class rows (#6789)', () => {
     for (const tool of Object.keys(W18B_EXPECTED)) {
       expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(true);
       expect(AGENT_DENIED_READ_TOOLS.has(tool), tool).toBe(false);
+    }
+  });
+});
+
+// ── W16 PR A class rows (#6786) ────────────────────────────────────────────
+// Copied from the W16 plan's PR A class review table, NOT derived from the guardrail tables. Both launches are
+// supervised as a recorded exception to the class rule (Decision 1).
+const W16A_EXPECTED: Record<string, W02Class> = {
+  run_patch_plan: 'supervised',
+  create_operator_task: 'supervised',
+};
+
+describe('W16 PR A class rows (#6786)', () => {
+  it.each(Object.entries(W16A_EXPECTED))('%s (whole tool) is %s at tier 3 with no action enum', (tool, cls) => {
+    expect(toolActionEnum(tool) ?? []).toEqual([]);
+    expect(getToolTier(tool)).toBe(3);
+    expect(classOf(tool, {})).toBe(cls);
+    expect(resolveApprovalScope(tool, undefined, { orgId: 'o1' })).toBe(cls);
+  });
+
+  it('both are MFA-gated as a whole', () => {
+    for (const tool of Object.keys(W16A_EXPECTED)) expect(isMfaGatedToolAction(tool, undefined), tool).toBe(true);
+  });
+
+  it('every W16 tool stays in AGENT_HUMAN_ONLY_TOOLS, and isNeverDelegableTool is true for each (Decision 7)', () => {
+    for (const tool of Object.keys(W16A_EXPECTED)) {
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(true);
+      expect(AGENT_DENIED_READ_TOOLS.has(tool), tool).toBe(false);
+      expect(isNeverDelegableTool(tool), tool).toBe(true);
     }
   });
 });

@@ -209,6 +209,7 @@
       "copy": "Copiar",
       "delete": "Eliminar",
       "download": "Descargar",
+      "mkdir": "Nueva carpeta",
       "move": "Mover",
       "purge": "Purga",
       "restore": "Restaurar",
@@ -250,6 +251,7 @@
     "emptyDirectory": "Directorio vacío",
     "errors": {
       "copy": "No se pudo copiar",
+      "createFolder": "No se pudo crear la carpeta",
       "delete": "No se pudo eliminar",
       "download": "No se pudo descargar",
       "downloadTooLarge": "Demasiado grande para descargar ({{size}}). El explorador de archivos transfiere archivos de hasta {{max}}.",
@@ -264,6 +266,15 @@
     "home": "Inicio",
     "modified": "Modificado",
     "moveTo": "Convidar a",
+    "newFolder": {
+      "action": "Nueva carpeta",
+      "title": "Nueva carpeta",
+      "nameLabel": "Nombre de la carpeta",
+      "location": "Se creará en {{path}}",
+      "created": "Carpeta {{name}} creada",
+      "invalidName": "El nombre de la carpeta no puede contener separadores de ruta ni caracteres que el sistema de archivos de este dispositivo no permita.",
+      "nameExists": "Ya existe un archivo o una carpeta con este nombre aquí."
+    },
     "selectedCount": "Recuento seleccionado",
     "size": "Tamaño",
     "title": "Administrador de archivos",

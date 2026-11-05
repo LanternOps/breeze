@@ -57,8 +57,15 @@ const ALL_CLOSED: Record<OemCategory, GateState> = Object.freeze({
   application: 'closed',
 });
 
-/** The lanes whose agent code has shipped. W11, W13 and W16 add the others. */
-export const SHIPPED_OEM_LANES: readonly OemLane[] = Object.freeze(['dell']);
+/** The lanes whose agent code has shipped. W16 adds Lenovo. */
+export const SHIPPED_OEM_LANES: readonly OemLane[] = Object.freeze(['dell', 'surface', 'hp']);
+
+/**
+ * Lanes with no vendor tool. Surface updates come through Windows Update, so the
+ * agent installs no software and there is nothing to pin. Its entry can open a
+ * gate with `tool: null`, and may never name a tool.
+ */
+const TOOL_FREE_OEM_LANES: readonly OemLane[] = Object.freeze(['surface']);
 
 const MANIFEST: Readonly<Record<OemLane, LaneManifest>> = Object.freeze({
   dell: {
@@ -77,7 +84,22 @@ const MANIFEST: Readonly<Record<OemLane, LaneManifest>> = Object.freeze({
     },
   },
   surface: { lane: 'surface', laneGate: 'closed', categoryGates: ALL_CLOSED, codeBlocks: [], tool: null },
-  hp: { lane: 'hp', laneGate: 'closed', categoryGates: ALL_CLOSED, codeBlocks: [], tool: null },
+  hp: {
+    lane: 'hp',
+    laneGate: 'closed',
+    categoryGates: ALL_CLOSED,
+    codeBlocks: [],
+    // HP Image Assistant. Floor from CVE-2025-13492, pin from HP's page at research
+    // time. W14 re-checks them, decides the licence (H1), and records url and sha256.
+    tool: {
+      version: '5.3.7',
+      minSafeVersion: '5.3.3',
+      supportedRange: { min: '5.3.3', maxExclusive: '6.0.0' },
+      url: null,
+      sha256: null,
+      prerequisites: [],
+    },
+  },
   lenovo: { lane: 'lenovo', laneGate: 'closed', categoryGates: ALL_CLOSED, codeBlocks: [], tool: null },
 });
 
@@ -125,6 +147,9 @@ function urlIssue(label: string, url: string | null, allow: LaneToolAllowlist): 
 
 /** Empty when the entry is safe. An entry with every gate closed has nothing to prove. */
 export function validateLaneManifest(manifest: LaneManifest, allow: LaneToolAllowlist): string[] {
+  if (TOOL_FREE_OEM_LANES.includes(manifest.lane)) {
+    return manifest.tool ? [`${manifest.lane}: this lane installs no software, so it must not name a tool`] : [];
+  }
   const opensAnything = manifest.laneGate === 'open'
     || OEM_CATEGORIES.some((category) => manifest.categoryGates[category] === 'open');
   if (!opensAnything) return [];

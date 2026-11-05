@@ -1,0 +1,398 @@
+{
+  "name": "failed-shard",
+  "source": {
+    "run_id": 42016584554,
+    "pr": 11112
+  },
+  "changed": [
+    "apps/api/src/__tests__/integration/securityAgentsFramework.integration.test.ts",
+    "apps/api/src/db/schema/securityAgents.ts",
+    "apps/api/src/routes/edr/detections.test.ts",
+    "apps/api/src/routes/edr/detections.ts",
+    "apps/api/src/services/aiToolsConfigPolicy.test.ts",
+    "apps/api/src/services/aiToolsConfigPolicy.ts",
+    "apps/api/src/services/builtinDeploymentPackages.ts",
+    "apps/api/src/services/securityAgents/coverageRead.test.ts",
+    "apps/api/src/services/securityAgents/coverageRead.ts",
+    "apps/api/src/services/securityAgents/coverageReconciler.ts",
+    "apps/api/src/services/securityAgents/installerReadiness.test.ts",
+    "apps/api/src/services/securityAgents/installerReadiness.ts",
+    "apps/api/src/services/securityAgents/managedPolicyGenerator.framework.test.ts",
+    "apps/api/src/services/securityAgents/managedPolicyGenerator.ts",
+    "apps/api/src/services/securityAgents/managedPolicyOwnerCatalog.ts",
+    "apps/api/src/services/securityAgents/securityAgentVendors.test.ts",
+    "apps/api/src/services/securityAgents/securityAgentVendors.ts",
+    "apps/api/src/services/securityAgents/securityAgentsLinkWrite.test.ts",
+    "apps/api/src/services/securityAgents/vendorEndpointSources.test.ts",
+    "apps/api/src/services/securityAgents/vendorEndpointSources.ts",
+    "apps/docs/src/content/docs/features/ai-tools.mdx",
+    "apps/web/src/components/configurationPolicies/featureTabs/SecurityAgentsTab.test.tsx",
+    "apps/web/src/components/configurationPolicies/featureTabs/SecurityAgentsTab.tsx",
+    "apps/web/src/lib/securityAgentCoverage.test.ts",
+    "apps/web/src/lib/securityAgentCoverage.ts",
+    "apps/web/src/locales/de-DE/security.json",
+    "apps/web/src/locales/en/security.json",
+    "apps/web/src/locales/es-419/security.json",
+    "apps/web/src/locales/fr-CA/security.json",
+    "apps/web/src/locales/fr-FR/security.json",
+    "apps/web/src/locales/it-IT/security.json",
+    "apps/web/src/locales/pt-BR/security.json",
+    "apps/web/src/locales/tr-TR/security.json",
+    "packages/shared/src/validators/securityAgents.test.ts",
+    "packages/shared/src/validators/securityAgents.ts"
+  ],
+  "flags": {
+    "code": "true",
+    "docs": "true",
+    "agent": "false",
+    "app": "true",
+    "api": "true",
+    "web": "true",
+    "portal": "true",
+    "addins": "true",
+    "m365": "true",
+    "rust": "false",
+    "topology_browser": "false",
+    "agent_code": "true",
+    "integration": "true",
+    "path_readers": "true",
+    "reader_tests": "apps/api/src/config/redisEvictionPolicyDocs.test.ts apps/api/src/services/mcpGuidancePromptTools.test.ts apps/web/src/lib/__tests__/alertingDocs.test.ts"
+  },
+  "mobile": "false",
+  "jobs": [
+    {
+      "name": "Detect Code Changes",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test M365 Graph Actions Executor",
+      "conclusion": "success"
+    },
+    {
+      "name": "Lint",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test M365 Graph Read Executor",
+      "conclusion": "success"
+    },
+    {
+      "name": "Docs Check",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test M365 Communications Executor",
+      "conclusion": "success"
+    },
+    {
+      "name": "Type Check",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test API (shard 5/8)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test API (shard 8/8)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Check Migrations (non-superuser)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Shared",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test API (shard 6/8)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test API (shard 3/8)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test API (shard 1/8)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test API (shard 2/8)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test API (shard 7/8)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Security Audit",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Outlook Add-in",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test PowerPoint Add-in",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Viewer",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Portal",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Agent",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Excel Add-in",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test API (shard 4/8)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Lint Agent (Go)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Word Add-in",
+      "conclusion": "success"
+    },
+    {
+      "name": "Release Ledger",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Mobile",
+      "conclusion": "success"
+    },
+    {
+      "name": "Agent Windows manifest guard",
+      "conclusion": "success"
+    },
+    {
+      "name": "Path-read contracts",
+      "conclusion": "success"
+    },
+    {
+      "name": "Check Migrations",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Office Add-in Core",
+      "conclusion": "success"
+    },
+    {
+      "name": "Rust Check (Windows)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Web (shard 2/4)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Document UI",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Web (shard 4/4)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Web (shard 3/4)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Detect Mobile Native Changes",
+      "conclusion": "success"
+    },
+    {
+      "name": "Workspace Runtime Smoke",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Web (shard 1/4)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Test Agent (race)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build Smoke Image (api)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build Smoke Image (portal)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build Smoke Image (web)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 6/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 1/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 3/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 4/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 13/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 5/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 7/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 15/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 10/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 14/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 9/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 12/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 11/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 2/16)",
+      "conclusion": "failure"
+    },
+    {
+      "name": "Integration Tests (shard 16/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Integration Tests (shard 8/16)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Recovery media E2E (QEMU)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Rust Check (Tauri apps)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Topology Production Browser Gate (Chromium)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Build Mobile iOS (Simulator)",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Test Agent (Windows)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build Agent (darwin/arm64)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Windows Runtime Smoke",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build Agent (darwin/amd64)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build Agent (linux/amd64)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build Agent (windows/amd64)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build Web",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build M365 Graph Read Executor",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build M365 Graph Actions Executor",
+      "conclusion": "success"
+    },
+    {
+      "name": "Guided Setup Smoke (self-host installer)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build Portal",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build API",
+      "conclusion": "success"
+    },
+    {
+      "name": "Build M365 Communications Executor",
+      "conclusion": "success"
+    },
+    {
+      "name": "Smoke Test",
+      "conclusion": "success"
+    },
+    {
+      "name": "Portal Dev E2E (hydration, non-blocking)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Auth Browser Transition (Chromium)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Record CI Provenance",
+      "conclusion": "skipped"
+    },
+    {
+      "name": "Main Red Alert",
+      "conclusion": "skipped"
+    }
+  ],
+  "ci_success": "failure",
+  "base_ci": "ci-5b7423807c8c.yml",
+  "head_ci": "ci-5b7423807c8c.yml",
+  "expect": {
+    "verdict": "fail"
+  }
+}

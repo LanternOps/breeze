@@ -79,6 +79,7 @@ import { backupRecoveryReadToolSchemas } from './aiToolSchemasBackupRecoveryRead
 import { c2cConfigToolSchemas } from './aiToolSchemasC2CConfigs';
 import { orgAdminToolSchemas } from './aiToolSchemasOrgAdmin';
 import { orgAdminWriteToolSchemas } from './aiToolSchemasOrgAdminWrites';
+import { aiAgentLaunchToolSchemas } from './aiToolSchemasAiAgentLaunch';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -664,6 +665,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   ...orgAdminToolSchemas,
   // Full-control W18 PR B (#6789): portal settings and report recipients.
   ...orgAdminWriteToolSchemas,
+  // Full-control W16 PR A (#6786): the patch-plan and operator-task launches.
+  ...aiAgentLaunchToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),

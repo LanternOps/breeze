@@ -59,6 +59,7 @@ export const WISP_NON_FOCAL_TOOLS: ReadonlySet<string> = new Set([
   'configure_network_baseline',
   'configure_vault',
   'create_incident',
+  'create_operator_task', // W16 PR A (#6786): agent-human-only and never delegable, so a Wisp session never calls it
   'create_remote_session',
   'create_watch',
   'delete_tenant',
@@ -387,6 +388,7 @@ export const WISP_NON_FOCAL_TOOLS: ReadonlySet<string> = new Set([
   'revoke_diagnostic_access',
   'revoke_elevation',
   'run_flow',
+  'run_patch_plan', // W16 PR A (#6786): org-wide launch, not a working-set subject
   'run_script',
   'run_topology_diagnostic',
   's1_isolate_device',

@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -176,9 +177,16 @@ func TestOpenSnapshotJournal_CorruptLineStartsFresh(t *testing.T) {
 	journalPath := j1.path
 	j1.Abandon()
 
-	// Overwrite with a valid header followed by a malformed data line.
-	corrupt := `{"snapshotId":"snapshot-corrupt","createdAt":"2026-07-01T00:00:00Z","identity":"test-identity"}
-{this is not valid json`
+	// Overwrite with a current, resumable header followed by a malformed data
+	// line that is not the last one (a torn LAST line is not corruption, see
+	// TestJournalTornTail_*).
+	header, err := json.Marshal(journalHeader{SnapshotID: "snapshot-corrupt", CreatedAt: time.Now().UTC(),
+		Identity: "test-identity", FormatVersion: journalFormatVersion})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	corrupt := string(header) + "\n" + `{this is not valid json` + "\n" +
+		`{"sourcePath":"/data/a.txt","backupPath":"snapshots/x/files/a.gz","size":1,"modTime":"2026-01-01T00:00:00Z"}` + "\n"
 	if err := os.WriteFile(journalPath, []byte(corrupt), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}

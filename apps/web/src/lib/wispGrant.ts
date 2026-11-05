@@ -69,6 +69,16 @@ export async function mintWispGrantStepUp(input: {
   });
 }
 
+/** The IANA zone this browser reports (#10402, the morning brief's default); null when it names none. */
+export function detectBrowserTimezone(): string | null {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+  } catch (err) {
+    console.warn('[wispGrant] the browser reported no time zone', err);
+    return null;
+  }
+}
+
 const STATUSES: ReadonlySet<string> = new Set<WispGrantStatus>(['active', 'paused', 'revoked', 'expired']);
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 const int = (v: unknown, fallback: number): number => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
@@ -114,6 +124,8 @@ export function wispStateFromThread(body: unknown): NonNullable<WispState> | nul
     wideningAvailable: data?.wideningAvailable === true,
     // #10973: effective (live AND pinned) on the server; anything but literal true is off.
     unattendedReads: grant?.unattendedReads === true,
+    // #10390: off unless the server says literally true.
+    summaryRefine: grant?.summaryRefine === true,
   };
 }
 

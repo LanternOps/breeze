@@ -1,13 +1,15 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { eq, and, sql, gte, lte, inArray } from 'drizzle-orm';
+import { eq, and, sql, gte, lte, inArray, isNotNull, max } from 'drizzle-orm';
 import { db } from '../../db';
 import { requirePermission } from '../../middleware/auth';
 import {
   backupConfigs,
   backupJobs,
   backupSnapshots,
+  backupStorageSessions,
   devices,
+  IN_FLIGHT_BACKUP_JOB_STATUSES,
   RESTORABLE_BACKUP_JOB_STATUSES,
 } from '../../db/schema';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
@@ -18,7 +20,12 @@ import {
   latestBackupRunOrderBy,
   latestBackupRunWindowOrder,
 } from '../../services/backupJobOrdering';
-import { splitReparseSkipNotice } from '@breeze/shared';
+import {
+  classifyBackupFailure,
+  splitReparseSkipNotice,
+  stripInlineIndexDropNote,
+  type ActiveBackupJob,
+} from '@breeze/shared';
 import { getNextRun, resolveScopedOrgId } from './helpers';
 import { usageHistoryQuerySchema } from './schemas';
 import {
@@ -142,7 +149,7 @@ async function resolveAttentionItems(
         items.push({
           id: `backup-failing-${deviceId}`,
           title: `${deviceName}: latest backup completed with file errors`,
-          description: [latest.errorLog, `Completed ${lastFailureAt}`].filter(Boolean).join(' · '),
+          description: [stripInlineIndexDropNote(latest.errorLog).warning, `Completed ${lastFailureAt}`].filter(Boolean).join(' · '),
           severity: 'warning',
           lastFailureAt,
         });
@@ -162,7 +169,9 @@ async function resolveAttentionItems(
         if (job.status === 'partial') sawPartial = true;
         // #9543: the agent's skipped-reparse-point note is informational, so
         // it is never the reason a device needs attention.
-        if (!reason && job.errorLog) reason = splitReparseSkipNotice(job.errorLog).diagnostic;
+        // #11026: nor is a historic note that a file list did not fit in the
+        // result: the list was not lost.
+        if (!reason && job.errorLog) reason = splitReparseSkipNotice(stripInlineIndexDropNote(job.errorLog).warning).diagnostic;
       }
 
       const deviceName = latest.deviceName ?? latest.deviceHostname ?? deviceId.slice(0, 8);
@@ -485,6 +494,7 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
     totalSize: r.job.totalSize ?? null,
     errorCount: r.job.errorCount ?? null,
     errorLog: r.job.errorLog ?? null,
+    failureCategory: classifyBackupFailure({ status: r.job.status, errorLog: r.job.errorLog }),
   }));
 
   return c.json({
@@ -531,6 +541,73 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
     },
   });
 });
+
+type BackupJobRow = typeof backupJobs.$inferSelect;
+
+function isInFlight(status: string): status is ActiveBackupJob['status'] {
+  return (IN_FLIGHT_BACKUP_JOB_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * Running before pending (a pending job behind a running one is waiting its
+ * turn on the device), then startedAt ascending (never-started last), then
+ * createdAt ascending: the order the device works them in.
+ */
+function compareActiveJobs(a: BackupJobRow, b: BackupJobRow): number {
+  if (a.status !== b.status) return a.status === 'running' ? -1 : 1;
+  if (a.startedAt && b.startedAt) {
+    const started = a.startedAt.getTime() - b.startedAt.getTime();
+    if (started !== 0) return started;
+  } else if (a.startedAt || b.startedAt) {
+    return a.startedAt ? -1 : 1;
+  }
+  return a.createdAt.getTime() - b.createdAt.getTime();
+}
+
+/**
+ * In-flight backups for the device page (#11027): what is running or queued
+ * right now, with enough progress fields for the web to derive a phase, speed,
+ * ETA and stall state.
+ */
+async function loadActiveBackupJobs(jobs: BackupJobRow[]): Promise<ActiveBackupJob[]> {
+  const active = jobs.filter((j) => isInFlight(j.status)).sort(compareActiveJobs);
+  if (active.length === 0) return [];
+
+  // Runs inside the request's withDbAccessContext, so RLS scopes it to the
+  // caller's orgs; the job ids already came from this org's device.
+  const resumedRows = await db
+    .select({ jobId: backupStorageSessions.jobId, resumedAt: max(backupStorageSessions.resumedAt) })
+    .from(backupStorageSessions)
+    .where(
+      and(
+        inArray(backupStorageSessions.jobId, active.map((j) => j.id)),
+        eq(backupStorageSessions.scope, 'snapshot_write'),
+        isNotNull(backupStorageSessions.resumedAt),
+      ),
+    )
+    .groupBy(backupStorageSessions.jobId);
+
+  const resumedByJob = new Map<string, Date>();
+  for (const row of resumedRows) {
+    if (row.jobId && row.resumedAt) resumedByJob.set(row.jobId, new Date(row.resumedAt));
+  }
+
+  return active.map((j) => ({
+    id: j.id,
+    status: j.status as ActiveBackupJob['status'],
+    backupMode: j.backupMode ?? null,
+    backupType: j.backupType ?? null,
+    createdAt: j.createdAt.toISOString(),
+    startedAt: j.startedAt?.toISOString() ?? null,
+    totalSize: j.totalSize ?? null,
+    transferredSize: j.transferredSize ?? null,
+    fileCount: j.fileCount ?? null,
+    totalFiles: j.totalFiles ?? null,
+    lastProgressAt: j.lastProgressAt?.toISOString() ?? null,
+    lastKeepaliveAt: j.lastKeepaliveAt?.toISOString() ?? null,
+    resumedAt: resumedByJob.get(j.id)?.toISOString() ?? null,
+  }));
+}
 
 dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
@@ -593,6 +670,8 @@ dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ
   const lastFailure =
     jobs.find((j) => j.status === 'failed') ?? null;
 
+  const activeJobs = await loadActiveBackupJobs(jobs);
+
   return c.json({
     data: {
       deviceId,
@@ -619,11 +698,15 @@ dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ
             // tab showed a clean, green backup for a run that read every file
             // off the live volume. Already secret-redacted at write time.
             errorLog: lastJob.errorLog ?? null,
+            failureCategory: classifyBackupFailure({ status: lastJob.status, errorLog: lastJob.errorLog }),
           }
         : null,
       lastSuccessAt: lastSuccess?.completedAt?.toISOString() ?? null,
       lastFailureAt: lastFailure?.completedAt?.toISOString() ?? null,
       lastFailureError: lastFailure?.errorLog ?? null,
+      lastFailureCategory: lastFailure
+        ? classifyBackupFailure({ status: lastFailure.status, errorLog: lastFailure.errorLog })
+        : null,
       nextScheduledAt: (() => {
         // Prefer normalized settings; fall back to inline_settings on the feature link
         const schedule = (resolved?.settings?.schedule ?? resolved?.inlineSettings) as Record<string, unknown> | null;
@@ -634,6 +717,7 @@ dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ
         if (typeof frequency !== 'string' || typeof time !== 'string') return null;
         return getNextRun({ ...schedule, frequency, time } as any, resolved?.resolvedTimezone);
       })(),
+      activeJobs,
     },
   });
 });

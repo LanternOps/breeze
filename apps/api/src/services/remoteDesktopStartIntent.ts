@@ -54,6 +54,7 @@ import { remoteSessions } from '../db/schema';
 import type { ConsentUnavailableBehavior, SessionPromptMode } from '../routes/remote/helpers';
 import { viewerAnswerTimeoutMs } from '../routes/remote/consentTiming';
 import { markDesktopStartInFlight, readDesktopStartInFlight } from './desktopStartInFlight';
+import { originalRemoteSessionStart } from './remoteSessionStaleness';
 
 /** Statuses a start may be published from. A terminal row is never resurrected. */
 export const LIVE_START_STATUSES = ['pending', 'connecting', 'active'] as const;
@@ -329,12 +330,15 @@ export async function commitDesktopStreamStartIntent(
       desktopConsentUnavailableBehavior: input.consentUnavailableBehavior,
       desktopStartGeneration: sql`${remoteSessions.desktopStartGeneration} + 1`,
       status: 'connecting',
-      // The start attempt's clock. The stale-session cutoff for a connecting
-      // row (remoteSessionStaleness.ts) runs from it, so a start waiting on
-      // its consent prompt is not expired just because the session row was
-      // created earlier; the lease hard deadline is measured from it too, as
-      // it was when this path activated the row at commit time.
-      startedAt: new Date(),
+      // The first start attempt's clock. The stale-session cutoff for a
+      // connecting row (remoteSessionStaleness.ts) runs from it, so a session's
+      // first start waiting on its consent prompt is not expired just because
+      // the row was created earlier; the lease hard deadline is measured from
+      // it too, as it was when this path activated the row at commit time. A
+      // row that already has a start keeps it: a WebRTC re-offer leaves a live
+      // session `connecting`, and this path must not restart its max duration
+      // (#11113). That start then gets no such protection from the cutoff.
+      startedAt: originalRemoteSessionStart(),
     })
     .where(and(
       eq(remoteSessions.id, input.sessionId),

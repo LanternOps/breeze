@@ -97,7 +97,7 @@ export type IntegrityAttestationInput = {
 };
 
 /** Attestation statuses under which an index built from the attested manifest bytes may authorize reads. */
-const INDEX_BINDABLE_ATTESTATION_STATUSES = new Set(['pending', 'verified', 'producer_only']);
+export const INDEX_BINDABLE_ATTESTATION_STATUSES: ReadonlySet<string> = new Set(['pending', 'verified', 'producer_only']);
 
 export function controlObjectKey(snapshotId: string, role: IntegrityObjectRole): string {
   switch (role) {
@@ -268,6 +268,35 @@ export function boundIndexCondition(boundDigest: string | null): SQL {
       (${backupSnapshotAttestations.id} IS NULL AND ${backupSnapshots.integrityStatus} <> 'attestation_failed')
       OR (${backupSnapshotAttestations.status} IN ('pending', 'verified', 'producer_only')
           AND ${backupSnapshotAttestations.manifestSha256} = ${backupSnapshots.fileIndexManifestSha256})
+    )`,
+  )!;
+}
+
+/**
+ * Whether a snapshot's `backup_snapshot_files` rows may be shown to a person or
+ * resolve a selective restore (#11026), for a statement that reads
+ * backup_snapshots LEFT JOINed to backup_snapshot_attestations. Wider than
+ * boundIndexCondition, which authorizes object reads: inline rows reported by
+ * the agent and rows of an index being rebuilt may be listed. It is true exactly
+ * for the rows snapshotIndexView (backupSnapshotIndexView.ts) may call ready:
+ *
+ *  - never for a snapshot that failed its integrity check, whatever the status;
+ *  - never for a failed index whose failure was the attestation itself;
+ *  - never for rows whose recorded digest is not the attested one. A complete
+ *    index must carry that digest; inline rows carry none and are unaffected.
+ */
+export function readableIndexCondition(): SQL {
+  // Built from the same constants the JS rules read, so the two cannot drift.
+  const inList = (values: Iterable<string>) => sql.join([...values].map((v) => sql`${v}`), sql`, `);
+  const failureCode = sql`split_part(coalesce(${backupSnapshots.fileIndexError}, ''), ':', 1)`;
+  return and(
+    sql`${backupSnapshots.integrityStatus} <> 'attestation_failed'`,
+    sql`(${backupSnapshotAttestations.id} IS NULL OR ${backupSnapshotAttestations.status} IN (${inList(INDEX_BINDABLE_ATTESTATION_STATUSES)}))`,
+    sql`NOT (${backupSnapshots.fileIndexStatus} = 'failed' AND ${failureCode} IN (${inList(ATTESTATION_INDEX_FAILURES)}))`,
+    sql`(
+      ${backupSnapshotAttestations.id} IS NULL
+      OR ${backupSnapshots.fileIndexManifestSha256} = ${backupSnapshotAttestations.manifestSha256}
+      OR (${backupSnapshots.fileIndexManifestSha256} IS NULL AND ${backupSnapshots.fileIndexStatus} <> 'complete')
     )`,
   )!;
 }

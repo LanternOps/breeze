@@ -9,6 +9,7 @@ import {
   isLaneOpen,
   openCategoriesForLane,
   payloadToolFor,
+  SHIPPED_OEM_LANES,
   validateLaneManifest,
   type LaneManifest,
   type LaneToolAllowlist,
@@ -73,6 +74,52 @@ describe('tool manifest contract', () => {
   it('dell carries the floor and leaves url and sha256 null until the lab wave', () => {
     const { tool } = getLaneManifest('dell');
     expect(tool).toMatchObject({ version: '5.7.2', minSafeVersion: '5.7.1', url: null, sha256: null });
+  });
+
+  it('surface has shipped, with no tool and every gate closed', () => {
+    expect(SHIPPED_OEM_LANES).toContain('surface');
+    const surface = getLaneManifest('surface');
+    expect(surface.tool).toBeNull();
+    expect(surface.laneGate).toBe('closed');
+    expect(openCategoriesForLane('surface')).toEqual([]);
+    expect(payloadToolFor(surface)).toBeNull();
+  });
+
+  it('hp has shipped, with the HPIA floor, every gate closed and nothing pinned until the lab wave', () => {
+    expect(SHIPPED_OEM_LANES).toContain('hp');
+    const hp = getLaneManifest('hp');
+    expect(hp.laneGate).toBe('closed');
+    expect(openCategoriesForLane('hp')).toEqual([]);
+    expect(hp.tool).toMatchObject({
+      minSafeVersion: '5.3.3',
+      supportedRange: { min: '5.3.3', maxExclusive: '6.0.0' },
+      url: null,
+      sha256: null,
+      prerequisites: [],
+    });
+    expect(payloadToolFor(hp)).toBeNull();
+  });
+
+  it('only lanes with a built agent lane are shipped', () => {
+    expect([...SHIPPED_OEM_LANES].sort()).toEqual(['dell', 'hp', 'surface']);
+  });
+
+  it('surface can open a gate without a tool, because it installs none', () => {
+    const open = manifest({ lane: 'surface', tool: null });
+    expect(validateLaneManifest(open, { hosts: [] })).toEqual([]);
+  });
+
+  it('surface may never name a tool, gates open or closed', () => {
+    const tool = manifest().tool!;
+    expect(validateLaneManifest(manifest({ lane: 'surface', tool }), allow).join()).toMatch(/installs no software/);
+    const closed = manifest({ lane: 'surface', laneGate: 'closed', categoryGates: allClosed(), tool });
+    expect(validateLaneManifest(closed, allow).join()).toMatch(/installs no software/);
+  });
+
+  it('being tool-free is not a way round the tool rule for other lanes', () => {
+    for (const lane of ['dell', 'hp', 'lenovo'] as const) {
+      expect(validateLaneManifest(manifest({ lane, tool: null }), allow).join(), lane).toMatch(/requires a tool/);
+    }
   });
 
   it('a manifest with every gate closed needs no tool', () => {

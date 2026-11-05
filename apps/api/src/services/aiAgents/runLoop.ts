@@ -3918,6 +3918,25 @@ async function finishRun(
     }
   }
 
+  // #10402: this assessment may be the one that settles its grant's onboarding
+  // batch — after the final status is committed (the post counts it), and never
+  // allowed to change it. The grant reconciler re-sweeps a missed post; the
+  // dedupe key keeps that to exactly one. Lazy, like the specialist post above.
+  if (ctx.run.profile === 'assessment' && ctx.run.grantId) {
+    try {
+      const { postFirstLookIfDone } = await import('../wisp/firstLook');
+      const grantId = ctx.run.grantId;
+      await runOutsideDbContext(() => postFirstLookIfDone(grantId));
+    } catch (error) {
+      console.error('[aiAgentRunLoop] first-look post failed — the grant reconciler re-sweeps it', {
+        runId: ctx.run.id, error,
+      });
+      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+        op: 'wisp.firstLook.finishRun', runId: ctx.run.id,
+      });
+    }
+  }
+
   // Ledger cleanup happens in `executeAgentRun`'s `finally`, not here — this
   // function is skipped entirely on the `!moved` branch above (another
   // executor or `reapStalledAgentRuns` already owns this run), which is

@@ -702,6 +702,10 @@
         "securityLog": "Sicherheitsereignisprotokoll durchsuchen",
         "deviceNote": "Notiz zu einem Gerät speichern",
         "applies": "Gilt für neue Unterhaltungen und neue Hintergrundläufe."
+      },
+      "summaryRefine": {
+        "title": "Vom Modell verfasste Sitzungsnotizen",
+        "description": "Wenn eine Unterhaltung endet, schreibt das Modell auf, was geklärt wurde und was noch offen ist. Jede Notiz ist ein Modellaufruf und wird auf das Tagesbudget von Wisp angerechnet. Wenn deaktiviert, behält Wisp stattdessen eine einfache Zusammenfassung."
       }
     },
     "focus": {
@@ -747,7 +751,10 @@
       "unattendedReadsOn": "Unbeaufsichtigte Lesezugriffe aktiviert",
       "unattendedReadsOnFailed": "Unbeaufsichtigte Lesezugriffe konnten nicht aktiviert werden",
       "unattendedReadsOff": "Unbeaufsichtigte Lesezugriffe deaktiviert",
-      "unattendedReadsOffFailed": "Unbeaufsichtigte Lesezugriffe konnten nicht deaktiviert werden"
+      "unattendedReadsOffFailed": "Unbeaufsichtigte Lesezugriffe konnten nicht deaktiviert werden",
+      "summaryRefineOn": "Sitzungsnotizen aktiviert",
+      "summaryRefineOff": "Sitzungsnotizen deaktiviert",
+      "summaryRefineFailed": "Sitzungsnotizen konnten nicht geändert werden"
     },
     "spend": {
       "meter": "{{spent}} von {{budget}} heute",
@@ -892,11 +899,15 @@
       "summary": "Zusammenfassung",
       "open": "Öffnen",
       "unread": "Ungelesen",
-      "specialistResult": "Spezialistenbericht"
+      "specialistResult": "Spezialistenbericht",
+      "firstLook": "Erster Überblick"
     },
     "welcome": {
       "title": "Ich sehe mich in {{scope}} um.",
       "body": "Ihr erster Bericht kommt jeden Morgen, sobald ich mich umgesehen habe. Fragen Sie mich in der Zwischenzeit gern alles.",
+      "firstLookTitle": "Ich habe mir {{scope}} ein erstes Mal angesehen.",
+      "firstLookBody": "Was ich gefunden habe, steht im Beitrag oben. Fragen Sie mich gern alles dazu.",
+      "briefAt": "Ihr Morgenbericht kommt um {{time}} ({{timezone}}).",
       "suggestions": {
         "needsMe": {
           "label": "Was braucht mich heute?",
@@ -940,6 +951,12 @@
       "buttonPlain": "KI dazu fragen",
       "draft": "Zu {{label}}: ",
       "switchFocus": "Wisp konzentriert sich auf {{from}}. Zu {{to}} wechseln?"
+    },
+    "plainChat": {
+      "new": "Neuer einfacher Chat",
+      "newDescription": "Breeze AI mit allen Tools, auf die Sie Zugriff haben. Nicht Wisp.",
+      "wispDescription": "Wisp, mit Ihrer Berechtigung",
+      "label": "Breeze AI · nicht Wisp"
     }
   },
   "wispConcerns": {
