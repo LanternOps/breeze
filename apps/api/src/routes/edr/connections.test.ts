@@ -167,6 +167,13 @@ vi.mock('../../services/edrProviders/registry', () => ({
   }),
 }));
 
+const installer = vi.hoisted(() => ({ clear: vi.fn(), ensure: vi.fn(), isBuiltin: true }));
+vi.mock('../../services/edrProviders/installerMaterial', () => ({ clearTenantInstallerMaterial: installer.clear }));
+vi.mock('../../services/builtinDeploymentPackages', () => ({
+  isBuiltinProvider: () => installer.isBuiltin,
+  ensureBuiltinPackage: installer.ensure,
+}));
+
 const encryptMock = vi.fn((_spec: string, id: string, _creds: unknown) => `enc:${id}`);
 vi.mock('../../services/edrProviders/credentials', () => ({
   encryptEdrSecret: (spec: string, id: string, creds: unknown) => encryptMock(spec, id, creds),
@@ -191,6 +198,7 @@ vi.mock('../../services/redis', () => ({ getRedis: () => ({ fake: 'redis' }) }))
 
 import { writeRouteAudit } from '../../services/auditEvents';
 import { runOutsideDbContext } from '../../db';
+import { captureException } from '../../services/sentry';
 import { edrConnectionRoutes } from './connections';
 
 function connectionRow(over: Record<string, unknown> = {}) {
@@ -604,6 +612,76 @@ describe('EDR connection routes', () => {
         const body = await (await app.request('/edr/connections')).json();
         expect(body.data[0]).toMatchObject({ actionsEnabled: true });
       });
+    });
+  });
+
+  describe('installer material and package (#8170)', () => {
+    const patch = (body: unknown) => app.request(`/edr/connections/${CONNECTION_ID}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    let order: string[];
+
+    beforeEach(() => {
+      order = [];
+      installer.isBuiltin = true;
+      installer.clear.mockReset();
+      installer.ensure.mockReset();
+      installer.clear.mockImplementation(async () => { order.push(`clear:updates=${dbState.updated.length}`); return 2; });
+      installer.ensure.mockImplementation(async () => { order.push(`ensure:ctx=${ctxState.inDbContext}`); return { catalogId: 'cat-1' }; });
+      dbState.connections = [connectionRow({ vendorRootId: '1000' })];
+    });
+
+    it('new credentials clear every tenant in the same transaction, after the credential write', async () => {
+      expect((await patch({ credentials: CREDS })).status).toBe(200);
+      expect(installer.clear).toHaveBeenCalledWith(expect.anything(), { connectionId: CONNECTION_ID });
+      expect(order[0]).toBe('clear:updates=1');
+      const { db } = await import('../../db');
+      expect(installer.clear.mock.calls[0]![0]).not.toBe(db); // the transaction handle, not the pool
+    });
+
+    it('a new Access URL clears too', async () => {
+      expect((await patch({ baseUrl: ACCESS_URL })).status).toBe(200);
+      expect(installer.clear).toHaveBeenCalledWith(expect.anything(), { connectionId: CONNECTION_ID });
+    });
+
+    it('renaming clears nothing and provisions nothing', async () => {
+      expect((await patch({ name: 'Renamed' })).status).toBe(200);
+      expect(installer.clear).not.toHaveBeenCalled();
+      expect(installer.ensure).not.toHaveBeenCalled();
+    });
+
+    it('a failed re-test clears nothing: the stored credential is untouched, so the link is too', async () => {
+      adapterState.test = { ok: false, error: 'bad', reauth: true };
+      expect((await patch({ credentials: CREDS })).status).toBe(422);
+      expect(installer.clear).not.toHaveBeenCalled();
+      expect(installer.ensure).not.toHaveBeenCalled();
+    });
+
+    it('a re-test ensures the package outside any db context', async () => {
+      expect((await patch({ credentials: CREDS })).status).toBe(200);
+      expect(installer.ensure).toHaveBeenCalledWith({ provider: 'bitdefender', partnerId: PARTNER_ID });
+      expect(order).toContain('ensure:ctx=0');
+    });
+
+    it('creating a connection ensures the package outside any db context', async () => {
+      dbState.connections = [];
+      expect((await post(app, '/edr/connections', createBody)).status).toBe(201);
+      expect(installer.ensure).toHaveBeenCalledWith({ provider: 'bitdefender', partnerId: PARTNER_ID });
+      expect(order).toEqual(['ensure:ctx=0']);
+    });
+
+    it('a provider with no built-in package provisions nothing', async () => {
+      installer.isBuiltin = false;
+      dbState.connections = [];
+      expect((await post(app, '/edr/connections', createBody)).status).toBe(201);
+      expect(installer.ensure).not.toHaveBeenCalled();
+    });
+
+    it('a provisioning failure is reported and does not fail the connection', async () => {
+      dbState.connections = [];
+      installer.ensure.mockRejectedValue(new Error('catalog down'));
+      expect((await post(app, '/edr/connections', createBody)).status).toBe(201);
+      expect(vi.mocked(captureException)).toHaveBeenCalled();
     });
   });
 

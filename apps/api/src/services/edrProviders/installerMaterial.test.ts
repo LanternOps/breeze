@@ -2,10 +2,12 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 import {
   clearTenantInstallerMaterial,
   INSTALLER_EXPIRY_MARGIN_MS,
+  INSTALLER_FETCH_MAX_PER_RUN,
   INSTALLER_REFRESH_MAX_AGE_MS,
   installerRefreshDue,
   openInstallerMaterial,
   persistInstallerOutcomes,
+  pickInstallerFetches,
   sealInstallerMaterial,
   type InstallerMaterialEnvelope,
 } from './installerMaterial';
@@ -90,6 +92,26 @@ describe('installerRefreshDue', () => {
   it('refreshes daily and treats a day as the expiry margin', () => {
     expect(INSTALLER_REFRESH_MAX_AGE_MS).toBe(24 * HOUR);
     expect(INSTALLER_EXPIRY_MARGIN_MS).toBe(24 * HOUR);
+  });
+});
+
+describe('pickInstallerFetches', () => {
+  const due = Array.from({ length: INSTALLER_FETCH_MAX_PER_RUN + 10 }, (_, i) => i);
+
+  it('returns everything when under the cap', () => {
+    expect(pickInstallerFetches([1, 2, 3]).sort()).toEqual([1, 2, 3]);
+  });
+
+  it('caps a backlog, with no duplicates and nothing invented', () => {
+    const picked = pickInstallerFetches(due);
+    expect(picked).toHaveLength(INSTALLER_FETCH_MAX_PER_RUN);
+    expect(new Set(picked).size).toBe(INSTALLER_FETCH_MAX_PER_RUN);
+    expect(picked.every((n) => due.includes(n))).toBe(true);
+  });
+
+  it('reaches the tail of the list, so a stuck head cannot starve it', () => {
+    const tail = due.slice(INSTALLER_FETCH_MAX_PER_RUN);
+    expect(pickInstallerFetches(due, () => 0).some((n) => tail.includes(n))).toBe(true);
   });
 });
 

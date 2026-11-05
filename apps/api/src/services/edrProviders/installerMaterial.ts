@@ -14,6 +14,11 @@ import type { EdrInstallerFetchErrorCode } from './types';
 
 export const INSTALLER_REFRESH_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const INSTALLER_EXPIRY_MARGIN_MS = 24 * 60 * 60 * 1000;
+/**
+ * Fetches per inventory run. With GravityZone's 10/min budget this bounds what an
+ * MSP with hundreds of companies adds to one run to about three minutes.
+ */
+export const INSTALLER_FETCH_MAX_PER_RUN = 30;
 
 /** The sealed plaintext. `data` is adapter-owned; `buildInstaller` validates it. */
 export interface InstallerMaterialEnvelope {
@@ -76,6 +81,20 @@ export function installerRefreshDue(
   if (!row.hasMaterial || !row.fetchedAt || row.fetchError) return true;
   if (row.expiresAt && row.expiresAt.getTime() - now.getTime() <= INSTALLER_EXPIRY_MARGIN_MS) return true;
   return now.getTime() - row.fetchedAt.getTime() > INSTALLER_REFRESH_MAX_AGE_MS;
+}
+
+/**
+ * The tenants to fetch this run. A random subset rather than the first N: there
+ * is no per-tenant attempt time to order by, and a fixed order would let tenants
+ * that always fail starve the rest of the list.
+ */
+export function pickInstallerFetches<T>(due: readonly T[], random: () => number = Math.random): T[] {
+  const pool = [...due];
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j]!, pool[i]!];
+  }
+  return pool.slice(0, INSTALLER_FETCH_MAX_PER_RUN);
 }
 
 export type InstallerOutcome = { tenantId: string } & (
