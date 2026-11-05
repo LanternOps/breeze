@@ -21,8 +21,12 @@ const NOTE_LABEL = 'bounded: ';
 const OWN_TEXT_MARKER = ' || ';
 const NOTE_JOINER = '; ';
 
+// Bounded quantifiers: the warning is agent-supplied and can be megabytes, and
+// this runs on the API's main thread. The limit text is only
+// `<n> byte <label>` (deliveryLimit.describe), so an unbounded run here would
+// only give a hostile agent quadratic backtracking.
 const INDEX_DROP_NOTE =
-  /snapshot file index (?:omitted|not sent with the result) \((\d+) entries\): the result exceeded the [^;,]*(?:, so per-file restore browsing is unavailable for this snapshot|; the server reads it from the snapshot manifest)/;
+  /snapshot file index (?:omitted|not sent with the result) \((\d{1,15}) entries\): the result exceeded the [^;,]{0,128}(?:, so per-file restore browsing is unavailable for this snapshot|; the server reads it from the snapshot manifest)/;
 
 export interface StrippedInlineIndexDropNote {
   /** The warning with the note removed; null when nothing is left. */

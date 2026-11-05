@@ -34,6 +34,15 @@ describe('stripInlineIndexDropNote', () => {
     expect(stripInlineIndexDropNote(input)).toEqual({ warning: input, droppedEntries: null });
   });
 
+  it('stays linear on a hostile multi-megabyte warning that repeats the prefix', () => {
+    const prefix = 'snapshot file index omitted (1 entries): the result exceeded the ';
+    const hostile = prefix.repeat(Math.ceil((5 * 1024 * 1024) / prefix.length));
+    const startedAt = performance.now();
+    expect(stripInlineIndexDropNote(hostile)).toEqual({ warning: hostile, droppedEntries: null });
+    // Generous for a loaded host; the unbounded form takes minutes here.
+    expect(performance.now() - startedAt).toBeLessThan(2000);
+  });
+
   it('passes through null, undefined and empty as null', () => {
     expect(stripInlineIndexDropNote(null)).toEqual({ warning: null, droppedEntries: null });
     expect(stripInlineIndexDropNote(undefined)).toEqual({ warning: null, droppedEntries: null });
