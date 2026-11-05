@@ -24,6 +24,10 @@ const WISP_CONCERN_TOOLS: ReadonlySet<string> = new Set<string>(WISP_CONCERN_TOO
 export const WISP_LINK_TOOL_NAMES = ['link_entity', 'list_links'] as const;
 const WISP_LINK_TOOLS: ReadonlySet<string> = new Set<string>(WISP_LINK_TOOL_NAMES);
 
+/** Wisp check-in timer chat tools (services/wisp/checkInTools.ts, #10991 W03); dark unless wispEnabled(). */
+export const WISP_CHECK_IN_TOOL_NAMES = ['schedule_check_in', 'list_check_ins', 'cancel_check_in'] as const;
+const WISP_CHECK_IN_TOOLS: ReadonlySet<string> = new Set<string>(WISP_CHECK_IN_TOOL_NAMES);
+
 /** Wisp W07 specialist chat tool (services/aiToolsWisp.ts); dark unless wispEnabled(). The carrier is human-only and never listed. */
 export const WISP_SPECIALIST_TOOL_NAMES = ['launch_specialist'] as const;
 const WISP_SPECIALIST_TOOLS: ReadonlySet<string> = new Set<string>(WISP_SPECIALIST_TOOL_NAMES);
@@ -33,6 +37,6 @@ export function isToolEnvGatedOff(name: string): boolean {
   // W5 PR C (#5220): flow tools (`flow__<slug>`) are dynamic, never registered,
   // and dark with the rest of flows.
   if (FLOW_TOOLS.has(name) || isFlowToolName(name)) return !flowsEnabled();
-  if (WISP_MEMORY_TOOLS.has(name) || WISP_CONCERN_TOOLS.has(name) || WISP_SPECIALIST_TOOLS.has(name) || WISP_LINK_TOOLS.has(name)) return !wispEnabled();
+  if (WISP_MEMORY_TOOLS.has(name) || WISP_CONCERN_TOOLS.has(name) || WISP_SPECIALIST_TOOLS.has(name) || WISP_LINK_TOOLS.has(name) || WISP_CHECK_IN_TOOLS.has(name)) return !wispEnabled();
   return false;
 }

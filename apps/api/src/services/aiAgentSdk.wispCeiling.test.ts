@@ -202,6 +202,10 @@ vi.mock('./aiAgentSdkTools', () => ({
     resolve_concern: 2,
     link_entity: 2,
     create_watch: 2,
+    // Wisp check-in timers (#10991 W03).
+    schedule_check_in: 2,
+    list_check_ins: 1,
+    cancel_check_in: 2,
   },
   BREEZE_MCP_TOOL_NAMES: [],
 }));
@@ -1045,8 +1049,14 @@ describe('createSessionPreToolUse — Wisp bookkeeping tools skip the per_step c
   it.each([
     ['raise_concern', { orgId: ORG_ID, subject: { kind: 'org', id: ORG_ID }, summary: 'waiting on the vendor', severity: 'low' }],
     ['link_entity', { kind: 'ticket', id: CONCERN_ID }],
+    ['schedule_check_in', { delayMinutes: 10, instruction: 'Verify no msiexec processes remain on device WS-01.' }],
   ] as const)('%s (adds a row, never overwrites or hides anyone\'s state) runs with no card', async (toolName, input) => {
     await expectNoCard(toolName, input as Record<string, unknown>);
+    expect(mockIsLiveConcernRaisedByGrant).not.toHaveBeenCalled();
+  });
+
+  it('cancel_check_in (only ever this grant\'s own check-ins: the handler keys the cancel on the grant) runs with no card', async () => {
+    await expectNoCard('cancel_check_in', { checkInId: '00000000-0000-4000-8000-0000000000c2' });
     expect(mockIsLiveConcernRaisedByGrant).not.toHaveBeenCalled();
   });
 

@@ -515,6 +515,10 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   // Wisp W08 thread links (domain 'ai'), as W03/W05a chose.
   link_entity: 'tenancy',
   list_links: 'tenancy',
+  // Wisp check-in timers (domain 'ai', #10991 W03), as W03/W05a/W08 chose.
+  schedule_check_in: 'tenancy',
+  list_check_ins: 'tenancy',
+  cancel_check_in: 'tenancy',
   // Wisp W07 specialists (domain 'ai'), as W03/W05a chose. launch_specialist
   // is AGENT_HUMAN_ONLY_TOOLS and wisp_specialist_request is HUMAN_ONLY_TOOLS
   // (raised only by the coordinator); mapped for completeness.

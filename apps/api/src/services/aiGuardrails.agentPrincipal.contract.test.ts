@@ -306,6 +306,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_ai_agent_schedules', // W10 (#6780) Tier-1 read
   'list_ai_agents', // A-W06 Tier-1 read
   'list_business_calendars', // #8973 W4 Tier-1 read
+  'list_check_ins', // Wisp check-ins (#10991 W03): Tier 1 read of the grant's own thread; refuses without auth.wispGrant
   'list_concerns', // Wisp W05a: Tier 1 concern read; refuses without auth.wispGrant, ceiling-filtered by the service
   'list_configuration_policies',
   'list_contracts',

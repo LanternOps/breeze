@@ -301,6 +301,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'list_concerns', description: 'List the loose ends Wisp is tracking inside the delegation grant', category: 'AI Governance' },
       // Wisp thread links (W08 #9914): offered only when Wisp is on, and only under a delegation grant.
       { name: 'list_links', description: 'List the objects linked to the Wisp thread that you can still see', category: 'AI Governance' },
+      // Wisp check-in timers (#10991 W03): offered only when Wisp is on, and only under a delegation grant.
+      { name: 'list_check_ins', description: 'List the follow-up check-ins Wisp has scheduled on its thread', category: 'AI Governance' },
       // Other
       { name: 'query_custom_fields', description: 'Custom field definitions and values', category: 'Other' },
       { name: 'manage_tags (list)', description: 'List all device tags', category: 'Other' },
@@ -445,6 +447,9 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'create_watch', description: 'Ask Wisp to check something on a schedule', category: 'AI Governance' },
       // Wisp thread links (W08 #9914): links one object you can see to the thread.
       { name: 'link_entity', description: 'Link a ticket, device, quote or other object to the Wisp thread', category: 'AI Governance' },
+      // Wisp check-in timers (#10991 W03): a follow-up on the grant's own thread; notifies the grantor, runs nothing.
+      { name: 'schedule_check_in', description: 'Ask Wisp to check back on its thread in 1 minute to 7 days', category: 'AI Governance' },
+      { name: 'cancel_check_in', description: 'Cancel a check-in Wisp scheduled on its thread', category: 'AI Governance' },
       // Wisp specialists (W07a #9913): sweeps and sandbox analysis run on the call.
       { name: 'launch_specialist (sweep/analysis)', description: 'Ask Wisp to hand a sweep or sandbox analysis to a specialist agent', category: 'AI Governance' },
     ],
@@ -782,6 +787,9 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'resolve_concern', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
   // Wisp thread links (W08 #9914)
   { toolName: 'link_entity', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
+  // Wisp check-in timers (#10991 W03)
+  { toolName: 'schedule_check_in', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
+  { toolName: 'cancel_check_in', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
   // Wisp specialists (W07a #9913): sweeps/analysis run on the call; other kinds ask first.
   { toolName: 'launch_specialist', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
   // Other
@@ -1241,6 +1249,10 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   // Wisp thread links (W08 #9914)
   link_entity: 'ai_sessions.use',
   list_links: 'ai_sessions.use',
+  // Wisp check-in timers (#10991 W03)
+  schedule_check_in: 'ai_sessions.use',
+  list_check_ins: 'ai_sessions.use',
+  cancel_check_in: 'ai_sessions.use',
   // Wisp specialists (W07a #9913); wisp_specialist_request is the approval card.
   launch_specialist: 'ai_sessions.use',
   wisp_specialist_request: 'ai_sessions.use',

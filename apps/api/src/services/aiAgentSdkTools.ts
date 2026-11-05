@@ -42,7 +42,7 @@ import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, monitorKindSchema
 import { scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
-import { createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listConcernsShape, listLinksShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas, PARTNER_SETTINGS_INHERITANCE_BUCKETS, PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT } from './aiToolSchemas';
+import { cancelCheckInShape, createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listCheckInsShape, listConcernsShape, listLinksShape, raiseConcernShape, scheduleCheckInShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas, PARTNER_SETTINGS_INHERITANCE_BUCKETS, PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
 import { pax8ToolSchemas } from './aiToolSchemasPax8';
 import { TOOL_SDK_INPUT_SHAPES } from './aiToolSchemasBackup';
@@ -522,6 +522,13 @@ export const TOOL_TIERS = {
   // not a plain Tier-1 read (which would bypass agent allowlists).
   link_entity: 2,
   list_links: 1,
+  // Wisp check-in timers (services/wisp/checkInTools.ts, #10991 W03). Declared
+  // to chat only when wispEnabled() (wispCheckInToolDefinitions). schedule /
+  // cancel are Tier 2 like link_entity (audit row; no per_step card via
+  // WISP_SELF_STATE_TOOLS); list is a plain Tier-1 read.
+  schedule_check_in: 2,
+  list_check_ins: 1,
+  cancel_check_in: 2,
   // Wisp W07 (services/aiToolsWisp.ts). Declared to chat only when
   // wispEnabled() (wispSpecialistToolDefinitions); asks-first kinds escalate
   // to Tier 3 (TIER3_ACTIONS keyed on `kind`). wisp_specialist_request is
@@ -1623,6 +1630,28 @@ export function wispLinkToolDefinitions(
   return [
     tool('link_entity', registryDescription('link_entity'), linkEntityShape, handler('link_entity')),
     tool('list_links', registryDescription('list_links'), listLinksShape, handler('list_links')),
+  ];
+}
+
+/**
+ * Wisp check-in timer tools (#10991 W03) — the same `wispEnabled()` EXPOSURE
+ * gate as the W03/W05a/W08 factories. Registration in aiTools and TOOL_TIERS
+ * stays unconditional; Breeze's MCP server gates via `isToolEnvGatedOff`, and
+ * every handler refuses without `auth.wispGrant`.
+ */
+export function wispCheckInToolDefinitions(
+  getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
+  if (!wispEnabled()) return [];
+  // Literal `tool('<name>'` calls: aiAgentSdkTools.mcpCoverage.test.ts scans the source for them.
+  const handler = (toolName: string) => makeToolHandler(toolName, getAuth, getActiveSession, onPreToolUse, onPostToolUse);
+  return [
+    tool('schedule_check_in', registryDescription('schedule_check_in'), scheduleCheckInShape, handler('schedule_check_in')),
+    tool('list_check_ins', registryDescription('list_check_ins'), listCheckInsShape, handler('list_check_ins')),
+    tool('cancel_check_in', registryDescription('cancel_check_in'), cancelCheckInShape, handler('cancel_check_in')),
   ];
 }
 
@@ -5645,6 +5674,8 @@ export function buildBreezeSdkTools(
     ...wispConcernToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Wisp W08 link_entity / list_links — behind wispEnabled() (see the factory).
     ...wispLinkToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    // Wisp check-in timers — behind wispEnabled() (see the factory).
+    ...wispCheckInToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Wisp W07 launch_specialist — behind wispEnabled() (see the factory).
     ...wispSpecialistToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Google Workspace helpdesk tools (gated on GOOGLE_WORKSPACE_ENABLED + a

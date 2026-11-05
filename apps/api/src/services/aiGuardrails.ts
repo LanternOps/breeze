@@ -1922,6 +1922,12 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // read permission is checked per object by resolveEntityRef.
   link_entity: { resource: 'ai_sessions', action: 'use' },
   list_links: { resource: 'ai_sessions', action: 'use' },
+  // Wisp check-in timers (services/wisp/checkInTools.ts, #10991 W03): the
+  // chat-use permission. A subject's own read permission is checked per
+  // object by resolveEntityRef.
+  schedule_check_in: { resource: 'ai_sessions', action: 'use' },
+  list_check_ins: { resource: 'ai_sessions', action: 'use' },
+  cancel_check_in: { resource: 'ai_sessions', action: 'use' },
   // Wisp W07 specialists (services/aiToolsWisp.ts), w00 A1: the chat-use
   // permission. The kind's own permissions (SPECIALIST_KIND_POLICY) are
   // ceiling terms the coordinator checks against the grantor AND the acting

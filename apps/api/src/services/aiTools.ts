@@ -163,6 +163,7 @@ import { registerTicketRoutingTools } from './aiToolsTicketRouting';
 import { registerWispMemoryTools } from './wisp/memoryTools';
 import { registerWispConcernTools } from './wisp/concernTools';
 import { registerWispLinkTools } from './wisp/linkTools';
+import { registerWispCheckInTools } from './wisp/checkInTools';
 import { registerWispTools } from './aiToolsWisp';
 // M365 helpdesk tools are session-aware (handler signature includes a sessionId)
 // so they are NOT registered in the `aiTools` execution registry — they run via
@@ -523,6 +524,8 @@ registerWispMemoryTools(aiTools);
 registerWispConcernTools(aiTools);
 // Wisp W08 thread links: same posture — inert without auth.wispGrant.
 registerWispLinkTools(aiTools);
+// Wisp check-in timers (#10991 W03): same posture — inert without auth.wispGrant.
+registerWispCheckInTools(aiTools);
 // Wisp W07 specialists: launch_specialist (inert without auth.wispGrant) and
 // the human-only approval carrier wisp_specialist_request.
 registerWispTools(aiTools);

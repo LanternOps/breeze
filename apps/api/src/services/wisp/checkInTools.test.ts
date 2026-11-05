@@ -49,6 +49,15 @@ import {
 import { CeilingViolationError, GrantInactiveError, type GrantCeiling } from './grantAuthority';
 import { CheckInLimitReachedError, CheckInWindowError } from './checkIns';
 import { registerWispCheckInTools, WISP_CHECK_IN_TOOL_SCHEMAS } from './checkInTools';
+import { TOOL_TIERS, wispCheckInToolDefinitions } from '../aiAgentSdkTools';
+import { TIER2_READONLY_TOOLS, TOOL_PERMISSIONS } from '../aiGuardrails';
+import { TOOL_RATE_LIMITS } from '../aiToolRateLimits';
+import { isToolEnvGatedOff, WISP_CHECK_IN_TOOL_NAMES } from '../aiToolEnvGates';
+import { FLOW_EXCLUDED_CORE_TOOLS } from '../flows/catalog';
+import { aiTools } from '../aiToolNames';
+import { WISP_NON_FOCAL_TOOLS, WISP_TOOL_SUBJECTS } from './toolSubjects';
+import { WISP_SELF_STATE_TOOLS } from './selfStateTools';
+import '../aiTools';
 
 const GRANT = '00000000-0000-4000-8000-000000000a01';
 const REVISION = '00000000-0000-4000-8000-000000000a02';
@@ -156,6 +165,47 @@ describe('wisp check-in tools — registry', () => {
     expect(tools.get('cancel_check_in')!.tier).toBe(2);
     // The model is steered to the tool instead of asking the user to come back.
     expect(tools.get('schedule_check_in')!.definition.description).toMatch(/instead of asking the user to come back/);
+  });
+
+  it('is wired on every tool surface: registry, TOOL_TIERS, RBAC, rate limits, flows exclusion, Wisp classification, no-card set', () => {
+    const tiers = TOOL_TIERS as Record<string, number>;
+    for (const name of THREE) {
+      expect(aiTools.has(name), name).toBe(true);
+      expect(aiTools.get(name)!.tier).toBe(tools.get(name)!.tier);
+      expect(tiers[name], name).toBe(tools.get(name)!.tier);
+      expect(TOOL_PERMISSIONS[name], name).toEqual({ resource: 'ai_sessions', action: 'use' });
+      expect(TIER2_READONLY_TOOLS.has(name), name).toBe(false);
+      // A flow step never carries a Wisp grant: each refuses there, so none is flow-eligible.
+      expect(FLOW_EXCLUDED_CORE_TOOLS.has(name), name).toBe(true);
+      // #10834: a deliberate non-focal choice (the subject is the thread itself).
+      expect(WISP_NON_FOCAL_TOOLS.has(name), name).toBe(true);
+      expect(WISP_TOOL_SUBJECTS[name], name).toBeUndefined();
+    }
+    expect(TOOL_RATE_LIMITS.schedule_check_in).toEqual({ limit: 10, windowSeconds: 600 });
+    expect(TOOL_RATE_LIMITS.cancel_check_in).toEqual({ limit: 20, windowSeconds: 300 });
+    expect(WISP_SELF_STATE_TOOLS.get('schedule_check_in')).toBe('adds_row');
+    expect(WISP_SELF_STATE_TOOLS.get('cancel_check_in')).toBe('own_thread');
+    expect(WISP_SELF_STATE_TOOLS.has('list_check_ins')).toBe(false);
+  });
+
+  it('stays dark while wispEnabled() is off: no chat declaration, gated off the MCP server', () => {
+    const fakeAuth = (): AuthContext => { throw new Error('handlers must not run'); };
+    vi.stubEnv('IS_HOSTED', '');
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', '');
+    vi.stubEnv('BREEZE_WISP_ENABLED', '');
+    try {
+      expect(wispCheckInToolDefinitions(fakeAuth, undefined)).toEqual([]);
+      for (const name of WISP_CHECK_IN_TOOL_NAMES) expect(isToolEnvGatedOff(name)).toBe(true);
+    } finally { vi.unstubAllEnvs(); }
+
+    vi.stubEnv('IS_HOSTED', 'true');
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
+    vi.stubEnv('BREEZE_WISP_ENABLED', 'true');
+    try {
+      expect(wispCheckInToolDefinitions(fakeAuth, undefined).map((t) => t.name).sort()).toEqual(THREE);
+      for (const name of WISP_CHECK_IN_TOOL_NAMES) expect(isToolEnvGatedOff(name)).toBe(false);
+    } finally { vi.unstubAllEnvs(); }
+    expect([...WISP_CHECK_IN_TOOL_NAMES].sort()).toEqual(THREE);
   });
 
   it('the MCP shapes and toolInputSchemas are the shared validators (no re-typed copy, no z.undefined)', () => {
