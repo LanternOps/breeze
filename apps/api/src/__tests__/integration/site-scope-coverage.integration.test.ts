@@ -280,6 +280,11 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // apply site scope directly (RMM-QA-221), as do the earlier metrics fixes.
   'routes/huntress.ts:GET /status',
   'routes/updateRings.ts:GET /:id/compliance',
+  // Same posture (#11039): requireScope('partner', 'system') at partner.ts:154
+  // refuses organization scope, the only scope that carries allowedSiteIds
+  // (auth.ts:859), and the rollups read only orgs that scope may already see.
+  // partner.test.ts pins the 403 for a site-restricted organization-scope caller.
+  'routes/partner.ts:GET /dashboard',
   // Compliance list, identical posture to its sibling routes (/firewall,
   // /password-policy) which resolve rows through the same listStatusRows
   // helper — org-scoped and narrowed in SQL to the caller's allowed sites.
@@ -338,6 +343,7 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
   // W18 PR A rewrote the handler — #6789.)
   'routes/backup/bmr.ts:POST /bmr/recover/authenticate',
   'routes/updateRings.ts:GET /:id/compliance',
+  'routes/partner.ts:GET /dashboard',
   // Compliance list (see note in SITE_SCOPE_INPUT_EXEMPT). Reached via user
   // auth (requireScope) but exempt because the escrow enrichment is constrained
   // to the org- and site-scoped device set listStatusRows already resolved.

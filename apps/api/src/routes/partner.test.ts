@@ -56,15 +56,20 @@ const currentAuth: { value: Record<string, unknown> } = {
   },
 };
 
-vi.mock('../middleware/auth', () => ({
-  authMiddleware: vi.fn((c: any, next: any) => {
-    c.set('auth', currentAuth.value);
-    c.set('permissions', { permissions: currentPermissions.value });
-    return next();
-  }),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
-  requireScope: vi.fn(() => async (_c: any, next: any) => next())
-}));
+// requireScope stays REAL: GET /partner/dashboard's site-scope exemption rests on
+// its scope gate, so a no-op mock here would let that gate disappear unnoticed.
+vi.mock('../middleware/auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../middleware/auth')>();
+  return {
+    authMiddleware: vi.fn((c: any, next: any) => {
+      c.set('auth', currentAuth.value);
+      c.set('permissions', { permissions: currentPermissions.value });
+      return next();
+    }),
+    requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+    requireScope: actual.requireScope,
+  };
+});
 
 // Multi-currency wave 7 (#3779): the dashboard's per-currency MRR comes from
 // contractMrr (#9828). This file mocks `../db` wholesale, so mock the service
@@ -452,6 +457,27 @@ describe('GET /partner/me/entitlements', () => {
 
     beforeEach(() => {
       currentAuth.value = { ...currentAuth.value, accessibleOrgIds: ['org-123', 'org-456'] };
+    });
+
+    // The handler has no site narrowing because no site-restricted caller can
+    // reach it: allowedSiteIds is an organization-scope axis, and this route is
+    // partner/system only (SITE_SCOPE_INPUT_EXEMPT in site-scope-coverage). If
+    // organization scope is ever admitted, the rollups must narrow by site first.
+    it('refuses a site-restricted organization-scope caller before reading anything', async () => {
+      currentAuth.value = {
+        ...currentAuth.value,
+        scope: 'organization',
+        orgId: 'org-123',
+        accessibleOrgIds: ['org-123'],
+        allowedSiteIds: ['site-allowed'],
+        canAccessSite: (siteId: string | null | undefined) => siteId === 'site-allowed',
+      };
+
+      const res = await app.request('/partner/dashboard');
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(postureMock.listLatestPostureScoresByOrgs).not.toHaveBeenCalled();
     });
 
     it('does not read or expose alert counts without alerts:read', async () => {
