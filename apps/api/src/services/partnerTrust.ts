@@ -143,8 +143,7 @@ export const GATED_COMMAND_TYPES = [
   'network_ping',
   'network_tcp_check',
   'notify_user',
-  // Vendor updates (#11065): runs signed vendor tools that can flash firmware
-  // and reboot; the operator chooses the categories and blocked update ids.
+  // Vendor updates (#11065): operator-directed, can flash firmware and require a reboot.
   'oem_update_run',
   'pam_apply_v2',
   'pam_reconcile_v2',
