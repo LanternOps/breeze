@@ -69,10 +69,7 @@ func TestToolVersionIsReadFreshNotFromTheCache(t *testing.T) {
 // Dell dock firmware ignores -updateType, so any Dell run may flash: it holds
 // the guard and is never killed, even with only drivers requested.
 func TestLaneThatFlashesOutsideItsFilterHoldsTheGuardAndIsNotKilled(t *testing.T) {
-	withRunDeadline(t, 50*time.Millisecond)
-	f := newRunFixture(t)
-	f.deps.Clock = nil
-	f.req.NotAfter = time.Now().Add(time.Hour)
+	f, _ := newOverdueRunFixture(t)
 	f.req.Categories = []string{CategoryDriver}
 	f.lane.outsideFilter = true
 	ctx, cancel := context.WithCancel(context.Background())
@@ -80,12 +77,10 @@ func TestLaneThatFlashesOutsideItsFilterHoldsTheGuardAndIsNotKilled(t *testing.T
 	f.lane.apply = func(actx context.Context, tool ToolState, plan FilterPlan, ex Exec) (RunResult, error) {
 		_, held = f.guard.Active()
 		cancel() // the agent stops mid-run
-		select {
-		case <-actx.Done():
-			return RunResult{Lane: LaneDell}, actx.Err()
-		case <-time.After(200 * time.Millisecond):
-			return RunResult{Lane: LaneDell, Outcome: OutcomeSuccess}, nil
+		if err := actx.Err(); err != nil {
+			return RunResult{Lane: LaneDell}, err
 		}
+		return RunResult{Lane: LaneDell, Outcome: OutcomeSuccess}, nil
 	}
 	r := Run(ctx, f.req, f.lane, f.deps)
 	if !held {
