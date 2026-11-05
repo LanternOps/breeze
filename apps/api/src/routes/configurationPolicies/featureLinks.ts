@@ -38,6 +38,8 @@ import {
   checkOemUpdatesLinkWrite,
   OemUpdatesLinkWriteError,
 } from '../../services/oemUpdates/oemUpdatesLinkWrite';
+import { isCategoryOpen, SHIPPED_OEM_LANES } from '../../services/oemUpdates/toolManifest';
+import { OEM_CATEGORIES, OEM_LANES, type OemCategory, type OemUpdatesGateSnapshot } from '@breeze/shared';
 import {
   checkOemUpdatesArmAllowed,
   mayArmOemUpdates,
@@ -148,6 +150,28 @@ const requireConfigPolicyWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.res
 const ORG_SCOPED_ONLY_FEATURES: ReadonlySet<string> = ORG_SCOPED_ONLY_FEATURE_TYPES;
 
 // GET /:id/features — list feature links for a policy
+// GET /oem-updates/gates — which vendor update categories the Vendor updates
+// tab may offer (#11070). Code-manifest state only, no tenant data; a category
+// closed here cannot be stored true (oem_updates_category_gate_closed).
+// Registered before the /:id routes so the literal path is never read as an id.
+featureLinkRoutes.get(
+  '/oem-updates/gates',
+  requireScope('organization', 'partner', 'system'),
+  requireConfigPolicyRead,
+  (c) => {
+    const data: OemUpdatesGateSnapshot = {
+      lanes: OEM_LANES.map((lane) => ({
+        lane,
+        shipped: SHIPPED_OEM_LANES.includes(lane),
+        categories: Object.fromEntries(
+          OEM_CATEGORIES.map((category) => [category, isCategoryOpen(lane, category)]),
+        ) as Record<OemCategory, boolean>,
+      })),
+    };
+    return c.json({ data });
+  }
+);
+
 featureLinkRoutes.get(
   '/:id/features',
   requireScope('organization', 'partner', 'system'),

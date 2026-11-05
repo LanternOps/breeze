@@ -18,6 +18,7 @@ import {
   type OemUpdatesLinkWriteInput,
 } from './oemUpdatesLinkWrite';
 import { addFeatureLink, updateFeatureLink } from '../configurationPolicy';
+import { oemUpdatesInlineSettingsSchema } from '@breeze/shared';
 
 const POLICY_ID = '22222222-2222-2222-2222-222222222222';
 const SCHEDULE = { weekOfMonth: 'third', dayOfWeek: 'wed', windowStart: '01:00', windowHours: 4 };
@@ -118,7 +119,7 @@ describe('checkOemUpdatesLinkWrite', () => {
   });
 
   it('uses the real manifest by default, where every gate is closed today', () => {
-    expect(closedGateCategories(settings())).toEqual(['dell:driver']);
+    expect(closedGateCategories(oemUpdatesInlineSettingsSchema.parse(settings()))).toEqual(['dell:driver']);
     const result = checkOemUpdatesLinkWrite({ featurePolicyId: null, previous: null, next: settings(), armAuthorized: true });
     expect(result.ok ? 'ok' : result.refusal.body.code).toBe('oem_updates_category_gate_closed');
     // A vendor on with nothing selected stores fine with every gate closed.

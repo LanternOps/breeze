@@ -22,6 +22,7 @@ import {
   Trash2,
   Zap,
   type LucideIcon,
+  Cpu,
 } from "lucide-react";
 
 import type { ConfigFeatureType } from "@breeze/shared";
@@ -155,6 +156,12 @@ const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
     Icon: History,
   },
   security_agents: { label: "Security Agents", Icon: ShieldCheck },
+  oem_updates: {
+    get label() {
+      return i18n.t("policies:configurationPolicies.featureTabs.vendorUpdatesTab.title");
+    },
+    Icon: Cpu,
+  },
 };
 
 // Display order = FEATURE_META insertion order. Derived (not hand-listed) so the

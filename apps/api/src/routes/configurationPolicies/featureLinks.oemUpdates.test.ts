@@ -308,3 +308,33 @@ describe('oem_updates feature links (#11070)', () => {
     });
   });
 });
+
+describe('GET /oem-updates/gates (#11070)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    gates.open = new Set(['dell:driver', 'dell:application']);
+  });
+
+  it('reports, per lane, whether it has shipped and which categories are open, device-less', async () => {
+    const res = await buildApp().request('/oem-updates/gates');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.lanes.map((l: { lane: string }) => l.lane)).toEqual(['dell', 'surface', 'hp', 'lenovo']);
+    expect(body.data.lanes[0]).toEqual({
+      lane: 'dell',
+      shipped: true,
+      categories: { bios: false, firmware: false, driver: true, application: true },
+    });
+    expect(body.data.lanes[2]).toEqual({
+      lane: 'hp',
+      shipped: false,
+      categories: { bios: false, firmware: false, driver: false, application: false },
+    });
+  });
+
+  it('is not captured as a policy id by /:id/features', async () => {
+    const res = await buildApp().request('/oem-updates/gates');
+    expect(res.status).toBe(200);
+    expect(getConfigPolicyMock).not.toHaveBeenCalled();
+  });
+});

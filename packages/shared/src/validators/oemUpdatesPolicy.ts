@@ -66,6 +66,15 @@ export const oemUpdatesInlineSettingsSchema = z.strictObject({
 });
 
 export type OemUpdatesInlineSettings = z.infer<typeof oemUpdatesInlineSettingsSchema>;
+
+/**
+ * `GET /configuration-policies/oem-updates/gates`: per lane, whether its agent
+ * code has shipped and which categories may be stored true today. Device-less:
+ * the lab override never opens a gate for a stored policy.
+ */
+export type OemUpdatesGateSnapshot = {
+  lanes: Array<{ lane: OemLane; shipped: boolean; categories: Record<OemCategory, boolean> }>;
+};
 export type OemUpdatesVendorSettings = z.infer<typeof vendorSchema>;
 
 /**
