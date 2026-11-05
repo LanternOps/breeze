@@ -1,5 +1,49 @@
-import { describe, expect, it } from 'vitest';
-import { isValidRecipientEmail, mergeSeriesRecipients } from './recipients';
+import { describe, expect, it, vi } from 'vitest';
+
+const mocks = vi.hoisted(() => ({ resolve: vi.fn(), rows: [] as unknown[] }));
+vi.mock('../../db', () => ({ db: {} }));
+vi.mock('../contacts/responsibilities', () => ({
+  resolveOrganizationResponsibilitiesForOrgs: mocks.resolve,
+}));
+
+import { isValidRecipientEmail, mergeSeriesRecipients, resolveSeriesRuleContactIds } from './recipients';
+
+function fakeTx() {
+  const chain: Record<string, any> = {};
+  for (const m of ['from', 'where']) chain[m] = vi.fn(() => chain);
+  chain.then = (resolve: (v: unknown) => unknown) => Promise.resolve(mocks.rows).then(resolve);
+  return { select: vi.fn(() => chain) } as any;
+}
+
+describe('resolveSeriesRuleContactIds (the preview badge == will receive)', () => {
+  it('dedupes ids and drops contacts whose address the worker would drop', async () => {
+    mocks.resolve.mockResolvedValue([{ contactId: 'c1' }]);
+    mocks.rows = [
+      { orgId: 'o1', contactId: 'c1', email: 'a@acme.test' },
+      { orgId: 'o1', contactId: 'c1', email: 'a@acme.test' },
+      { orgId: 'o1', contactId: 'c2', email: 'not-an-email' },
+      { orgId: 'o1', contactId: 'c3', email: null },
+      { orgId: 'o1', contactId: 'c4', email: 'd@acme.test' },
+    ];
+    const ids = await resolveSeriesRuleContactIds({
+      orgId: 'o1',
+      rule: { primaryContact: true, roles: ['billing'] },
+      tx: fakeTx(),
+    });
+    expect(ids).toEqual(['c1', 'c4']);
+    expect(mocks.resolve).toHaveBeenCalledWith(expect.anything(), { orgIds: ['o1'], roles: ['billing'] });
+  });
+
+  it('is [] when the rule selects nothing', async () => {
+    mocks.resolve.mockResolvedValue([]);
+    mocks.rows = [];
+    expect(await resolveSeriesRuleContactIds({
+      orgId: 'o1',
+      rule: { primaryContact: false, roles: [] },
+      tx: fakeTx(),
+    })).toEqual([]);
+  });
+});
 
 describe('mergeSeriesRecipients (spec §3.5: (rule ∪ add) − remove; cc = internal CC)', () => {
   it('unions rule matches and adds, then subtracts removes by contact', () => {
