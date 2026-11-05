@@ -137,6 +137,21 @@ describe('perf.yml — self-hosted perf gate (#8146)', () => {
     }
   });
 
+  it('returns workspace ownership to the runner as the last step of each self-hosted job, on always()', () => {
+    // wt-stack bind-mounts the checkout into root containers; without this the next run's
+    // actions/checkout cannot clean the workspace and leaves a directory with no repository.
+    const selfHosted = Object.entries(all).filter(([, j]) => /self-hosted/.test(jobField(j, 'runs-on') ?? ''));
+    expect(selfHosted.map(([id]) => id).sort()).toEqual(['gate', 'storm']);
+    for (const [id, j] of selfHosted) {
+      const last = steps(j).at(-1)!;
+      expect(last, `${id} last step`).toMatch(/^name: Return workspace ownership to the runner$/m);
+      expect(last, `${id} last step`).toMatch(/^ {8}if: always\(\)$/m);
+      expect(last, `${id} last step`).toContain('chown -R');
+      expect(last, `${id} last step`).toMatch(/docker run --rm [\s\S]*alpine:\d+\.\d+@sha256:[0-9a-f]{64}/);
+      expect(last, `${id} last step`).not.toMatch(/sudo/);
+    }
+  });
+
   it('uploads load-tests/perf/out/** on always()', () => {
     const upload = Object.values(all).flatMap(steps).find((s) => /uses: actions\/upload-artifact@/.test(s));
     expect(upload, 'upload-artifact step').toBeDefined();
