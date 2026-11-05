@@ -1509,6 +1509,9 @@ test('docs: both agent docs describe CI Gate, and the rollback order is pinned',
   }
   // Rollback must work from a clean machine in an incident: no local file from G1.
   assert.doesNotMatch(rollback, /\/tmp\//);
+  // GitHub omits evaluate and disabled rulesets from this endpoint, so empty is the confirmation.
+  assert.match(rollback, /empty list/);
+  assert.match(merge, /only under Active/);
 });
 
 test('docs: every reason the gate can log is in the runbook table', () => {

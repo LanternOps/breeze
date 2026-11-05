@@ -1746,7 +1746,7 @@ for (const [name, mutate, message] of GATE_MUTATIONS) {
 
 test('the pinned-gate rule is keyed on ci-gate.yml and leaves other workflows alone', () => {
   const mutated = GATE_MUTATIONS[0][1](PINNED_GATE);
-  assert.notEqual(gateViolations(mutated), []);
+  assert.ok(gateViolations(mutated).length > 0);
   assert.deepEqual(gateViolations(mutated, 'other.yml'), []);
 });
 

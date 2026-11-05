@@ -13,7 +13,7 @@ Moved verbatim from `CLAUDE.md` (2026-10-07). Read before merging a PR or deploy
 
 `.github/workflows/ci-gate.yml`, job `CI Gate`. An org ruleset requires it and reads it from `main`, so a change cannot edit the gate that judges it. `CI Success` stays required and means what it did.
 
-**It does nothing until the org ruleset exists.** Both triggers are filtered to the never-matching branch `ci-gate-ruleset-only`, so the ordinary trigger never fires, and `gh run list --workflow ci-gate.yml` stays empty. The ruleset ignores those filters. To see the current state: `gh api repos/LanternOps/breeze/rules/branches/main --jq '[.[]|select(.type=="workflows")]'`. The rollout is Evaluate first (cannot block a merge), then Active; the owner does both. Evidence and steps are in `docs/superpowers/plans/ci/2026-11-05-ci-throughput-w02.md`.
+**It does nothing until the org ruleset exists.** Both triggers are filtered to the never-matching branch `ci-gate-ruleset-only`, so the ordinary trigger never fires, and `gh run list --workflow ci-gate.yml` stays empty. The ruleset ignores those filters. To see the current state: `gh api orgs/LanternOps/rulesets --jq '.[]|{id,name,enforcement}'` (needs `admin:org`). `gh api repos/LanternOps/breeze/rules/branches/main --jq '[.[]|select(.type=="workflows")]'` lists the rule only under Active, because GitHub leaves evaluate and disabled rulesets out of that endpoint. The rollout is Evaluate first (cannot block a merge), then Active; the owner does both. Evidence and steps are in `docs/superpowers/plans/ci/2026-11-05-ci-throughput-w02.md`.
 
 **What it does:**
 - `merge_group`: `ci-gate.mjs verify` waits for the entry's `ci.yml` run, classifies the entry diff with the **base** revision's classifier, and runs the **base** revision's `ci-success` script against job results from the Actions API. Exit 0 only on `verdict=pass`.
@@ -52,7 +52,7 @@ Moved verbatim from `CLAUDE.md` (2026-10-07). Read before merging a PR or deploy
 **Under Active, a broken gate blocks its own fix**, and a revert of itself. Enforcement goes off first, always, and only the owner can do it (`admin:org`).
 
 1. The owner sets the org ruleset to **Evaluate** or **Disabled**. In the UI: LanternOps → Settings → Repository → Rulesets → `Breeze pinned CI gate` → Enforcement status. By API: find the id with `gh api orgs/LanternOps/rulesets --jq '.[]|{id,name,enforcement}'`, then `gh api -X PUT orgs/LanternOps/rulesets/<id> -f enforcement=evaluate`.
-2. Confirm with `gh api orgs/LanternOps/rulesets/<id> --jq .enforcement` and `gh api repos/LanternOps/breeze/rules/branches/main --jq '[.[]|select(.type=="workflows")]'`.
+2. Confirm with `gh api repos/LanternOps/breeze/rules/branches/main --jq '[.[]|select(.type=="workflows")]'`. An empty list means the rule is no longer enforced, because that endpoint returns only active rules. `gh api orgs/LanternOps/rulesets/<id> --jq .enforcement` shows which state it is in.
 3. Only then touch the workflow or `ci-gate.mjs`.
 
 Do not remove or rename `ci-gate.yml` while the rule is Active.
