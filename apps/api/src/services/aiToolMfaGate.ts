@@ -74,6 +74,9 @@ export const MFA_GATED_TOOL_ACTIONS: Readonly<Record<string, '*' | readonly stri
   // remove that restores a series delivery is gated inside the shared operation (callerMaySetEmailRecipients).
   manage_org_portal_settings: Object.freeze(['update', 'set_sensitive_access']),
   manage_report_recipients: Object.freeze(['add', 'convert']),
+  // Full-control W16 PR A (#6786): POST /ai/patch-plan/runs and POST /ai/operator/tasks carry requireMfa().
+  run_patch_plan: '*',
+  create_operator_task: '*',
   manage_pam_rules: Object.freeze([
     'create_rule', 'update_rule', 'delete_rule', 'set_config',
     'create_signer_group', 'update_signer_group', 'delete_signer_group',
