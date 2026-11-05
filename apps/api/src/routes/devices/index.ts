@@ -7,6 +7,7 @@ import { softwareRoutes } from './software';
 import { commandsRoutes } from './commands';
 import { networkIsolationRoutes } from './networkIsolation';
 import { forceRebootRoutes } from './forceReboot';
+import { oemUpdatesRoutes } from './oemUpdates';
 import { hardwareRoutes } from './hardware';
 import { placementRoutes } from './placement';
 import { deviceCircuitsRoutes } from './circuits';
@@ -177,6 +178,8 @@ deviceRoutes.route('/', alertsRoutes);
 deviceRoutes.route('/', deviceMonitorsRoutes);
 deviceRoutes.route('/', anomaliesRoutes);
 deviceRoutes.route('/', patchesRoutes);
+// #11065 W04: POST /:id/oem-updates/run (Run vendor updates), GET status and history.
+deviceRoutes.route('/', oemUpdatesRoutes);
 deviceRoutes.route('/', scriptsRoutes);
 // #5022 W02: GET /:id/ai-origin, GET /:id/ai-activity. :id-prefixed, so
 // mounting order relative to coreRoutes is immaterial (only STATIC paths

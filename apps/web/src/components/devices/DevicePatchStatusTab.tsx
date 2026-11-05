@@ -24,6 +24,7 @@ import {
 import { fetchWithAuth } from '../../stores/auth';
 import type { OSType } from './DeviceList';
 import PatchInstallHistory from '../patches/PatchInstallHistory';
+import DeviceVendorUpdatesSection from './DeviceVendorUpdatesSection';
 import { widthPercentClass } from '@/lib/utils';
 import { isDateOnly, parseDateOnly } from '@/lib/dateOnly';
 import { formatDateTime as formatDateTimeCentral } from '@/lib/dateTimeFormat';
@@ -2065,6 +2066,9 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
           </div>
         </div>
       )}
+
+      {/* #11065: the maker's own update tool. Windows only in v1. */}
+      {osType === 'windows' && <DeviceVendorUpdatesSection deviceId={deviceId} />}
 
       <PatchInstallHistory deviceId={deviceId} />
 

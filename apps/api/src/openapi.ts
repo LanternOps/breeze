@@ -2639,6 +2639,112 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         },
       },
     },
+    '/devices/{id}/oem-updates/run': {
+      post: {
+        operationId: 'runDeviceVendorUpdates',
+        tags: ['Devices'],
+        summary: 'Run vendor updates on a device now',
+        description: "Runs the device maker's own update tool (Dell Command Update today), which can install drivers and applications and flash BIOS and firmware. Requires devices:execute, an interactive user session (API keys, MCP grants and AI agents are refused) and an MFA-assured session. Every category whose gate is open is requested. `reboot` has no default: `when_finished` queues a `schedule_reboot` with the device's patch policy delay and prompt text if the run reports it needs one; `leave_to_me` queues no reboot and skips BIOS and firmware, which need a reboot Breeze controls. Closed by default: the deployment flag and the per-vendor gates must be open.",
+        parameters: [{ $ref: '#/components/parameters/idParam' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['reboot'],
+                properties: {
+                  reboot: { type: 'string', enum: ['when_finished', 'leave_to_me'] },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '202': {
+            description: 'Run queued',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    commandId: { type: 'string', format: 'uuid' },
+                    categories: { type: 'array', items: { type: 'string', enum: ['bios', 'firmware', 'driver', 'application'] }, description: 'What the run will do' },
+                    skippedCategories: { type: 'array', items: { type: 'string', enum: ['bios', 'firmware', 'driver', 'application'] }, description: 'Open categories dropped because the reboot was left to the technician' },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Invalid body' },
+          '403': { description: '`Interactive user session required` for machine principals; `MFA_REQUIRED` for a non-assured session; missing devices:execute; site access denied; or a partner trust denial (`trust_denied`)' },
+          '404': { description: 'Device not found, or no longer in the organization the request was made under' },
+          '409': { description: 'Refused, nothing runs. `code` is one of `flag_off`, `lane_closed`, `kill_switch`, `agent_too_old` (the body carries minAgentVersion), `not_applicable`, `not_supported`, `ephemeral`, `parked`, `offline`, `run_in_flight`, `no_open_categories`, `decommissioned` or `cancelled_at_claim`' },
+        },
+      },
+    },
+    '/devices/{id}/oem-updates/status': {
+      get: {
+        operationId: 'getDeviceVendorUpdateStatus',
+        tags: ['Devices'],
+        summary: 'Vendor update state of a device',
+        description: 'The display state, the lane a run would use (null when none could reach this device, including when the feature is off), the last run, and whether each category is open. Requires devices:read.',
+        parameters: [{ $ref: '#/components/parameters/idParam' }],
+        responses: {
+          '200': {
+            description: 'Vendor update state',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    displayState: { type: 'string', enum: ['up_to_date', 'overdue', 'failing', 'not_supported', 'not_managed', 'waiting_for_reboot', 'reboot_overdue'] },
+                    lane: { type: 'string', enum: ['dell', 'surface', 'hp', 'lenovo'], nullable: true },
+                    status: { type: 'object', nullable: true, additionalProperties: true, description: 'The last run; null when none has been recorded' },
+                    gates: { type: 'object', additionalProperties: { type: 'string', enum: ['open', 'closed'] } },
+                  },
+                },
+              },
+            },
+          },
+          '403': { description: 'Missing devices:read or site access denied' },
+          '404': { description: 'Device not found' },
+        },
+      },
+    },
+    '/devices/{id}/oem-updates/history': {
+      get: {
+        operationId: 'listDeviceVendorUpdateRuns',
+        tags: ['Devices'],
+        summary: 'Vendor update runs on a device',
+        description: "Newest first. Only runs queued during the device's time in its current organization. A run whose result cannot be read shows `outcome: null`. Requires devices:read.",
+        parameters: [
+          { $ref: '#/components/parameters/idParam' },
+          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 10 } },
+          { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, default: 0 } },
+        ],
+        responses: {
+          '200': {
+            description: 'Runs and the total across all pages',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    runs: { type: 'array', items: { type: 'object', additionalProperties: true } },
+                    total: { type: 'integer' },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Invalid limit or offset' },
+          '403': { description: 'Missing devices:read or site access denied' },
+          '404': { description: 'Device not found' },
+        },
+      },
+    },
     '/devices/{id}/move-org': {
       post: {
         operationId: 'moveDeviceOrg',
