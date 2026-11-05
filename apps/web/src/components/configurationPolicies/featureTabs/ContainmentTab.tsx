@@ -119,8 +119,7 @@ export default function ContainmentTab({
     setRows(readRows((existingLink ?? parentLink)?.inlineSettings, nextKey));
     setTouched(new Set());
     setAttempted(false);
-    // nextKey only bumps a ref.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // nextKey only bumps a ref, so it is not a dependency.
   }, [existingLink, parentLink]);
 
   const inherited = !!parentLink && !existingLink;
