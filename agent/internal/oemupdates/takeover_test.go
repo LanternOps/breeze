@@ -423,8 +423,10 @@ func TestUnreadableReadBackKeepsOwnership(t *testing.T) {
 	l, dcu, store := takeoverLane(t), newFakeDCU(t), newMemStore()
 	dcu.failExport = map[int]bool{2: true}
 	got, err := l.Takeover(context.Background(), dcu, store)
-	if got != TakeoverPolicyLocked || err == nil {
-		t.Fatalf("Takeover = %q, %v; want unconfirmed reported as policy_locked", got, err)
+	// Reported as Breeze's, so the API sends a release later; policy_locked
+	// would tell it nothing needs handing back.
+	if got != TakeoverOK || err == nil || codeOf(err) != "settings_readback_failed" {
+		t.Fatalf("Takeover = %q, %v; want ok with settings_readback_failed", got, err)
 	}
 	rec, ok, _ := loadTakeoverRecord(store, LaneDell)
 	if !ok || rec.PendingBefore == "" {
@@ -435,6 +437,38 @@ func TestUnreadableReadBackKeepsOwnership(t *testing.T) {
 	}
 	if dcu.prop("ScheduleMode") != "Auto" || dcu.prop("UpdatesNotification") != "true" {
 		t.Fatal("restore after an unconfirmed takeover left Breeze's changes in place")
+	}
+}
+
+// The import ran but the settings did not take it (a policy lock arrived
+// after the takeover): not restored, the record kept for the next release.
+func TestRestoreThatDidNotTakeFailsAndKeepsRecord(t *testing.T) {
+	l, dcu, store := takeoverLane(t), newFakeDCU(t), newMemStore()
+	if got, _ := l.Takeover(context.Background(), dcu, store); got != TakeoverOK {
+		t.Fatalf("Takeover = %q", got)
+	}
+	dcu.locked = true
+	err := l.Restore(context.Background(), dcu, store)
+	if err == nil || errors.Is(err, ErrNothingToRestore) || codeOf(err) != "settings_restore_unconfirmed" {
+		t.Fatalf("Restore = %v, want settings_restore_unconfirmed", err)
+	}
+	if len(dcu.imported) != 1 {
+		t.Fatalf("imports = %d, want the attempt", len(dcu.imported))
+	}
+	if _, ok, _ := loadTakeoverRecord(store, LaneDell); !ok {
+		t.Fatal("an unconfirmed restore dropped the ownership record")
+	}
+	r := Release(context.Background(), ReleaseRequest{Lane: LaneDell}, l, releaseDeps(dcu, store))
+	if r.Outcome != ReleaseFailed || r.Acked() {
+		t.Fatalf("release = %+v, want failed so the API releases again", r)
+	}
+	// The lock lifts: the next release hands it back.
+	dcu.locked = false
+	if r := Release(context.Background(), ReleaseRequest{Lane: LaneDell}, l, releaseDeps(dcu, store)); r.Outcome != ReleaseRestored {
+		t.Fatalf("release after the lock lifted = %+v", r)
+	}
+	if dcu.prop("ScheduleMode") != "Auto" {
+		t.Fatal("schedule not handed back")
 	}
 }
 

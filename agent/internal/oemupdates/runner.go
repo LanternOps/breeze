@@ -117,6 +117,7 @@ func (r *run) takeOver(ctx context.Context, tk LaneTakeover) {
 	ex := VerifiedExec(r.deps.Exec, r.deps.Verifier, r.lane.Allow())
 	got, err := tk.Takeover(ctx, ex, r.deps.Store)
 	if !contains(takeovers, got) {
+		log.Warn("lane returned an unknown takeover value; reporting not_attempted", "lane", r.req.Lane, "takeover", got)
 		got = TakeoverNotAttempted
 	}
 	if err != nil {

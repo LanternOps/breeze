@@ -106,6 +106,8 @@ func (r *RebootManager) dropHeldLocked(now time.Time) heldRestart {
 func (h heldRestart) announce(r *RebootManager) {
 	if h.notifyFn != nil {
 		h.notifyFn(rebootHeldTitle, rebootHeldBody, "normal")
+	} else {
+		log.Warn("restart held, and there is no way to tell the user it moved")
 	}
 	r.tellCancelled(h.surface, h.campaign)
 }

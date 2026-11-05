@@ -224,13 +224,15 @@ describe('executeReboot deadlineAction (#11065)', () => {
     expect(payload.deadline).toBe(windowEndsAt.toISOString());
   });
 
-  it('hold keeps the policy deferral budget and caps it at the window close', async () => {
-    const deferral = { allowDeferral: true, maxDeferrals: 10, deferralMinutes: 1440 };
+  it('hold keeps the policy deferral budget and the deadline stays the window close', async () => {
+    // A budget far smaller than the window: computeRebootDeadline alone would put
+    // the deadline at now + 15 + 5 minutes. Hold must use the close itself.
+    const deferral = { allowDeferral: true, maxDeferrals: 1, deferralMinutes: 5 };
     await executeReboot('dev-1', 'Vendor updates', {
       delayMinutes: 15, deferral, promptText: {}, windowEndsAt, deadlineAction: 'hold',
     });
     const payload = payloadOf();
-    expect(payload).toMatchObject({ allowDeferral: true, maxDeferrals: 10, deferralMinutes: 1440 });
+    expect(payload).toMatchObject({ allowDeferral: true, maxDeferrals: 1, deferralMinutes: 5 });
     expect(payload.deadline).toBe(windowEndsAt.toISOString());
   });
 

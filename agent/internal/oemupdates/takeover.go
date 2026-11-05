@@ -442,22 +442,28 @@ func (l *dellLane) Takeover(ctx context.Context, ex Exec, st Store) (string, err
 		return TakeoverNotAttempted, runErr("takeover_record_unwritable", err)
 	}
 
-	_, cfgErr := ex.Run(ctx, ExecSpec{Path: tool, Args: dellConfigureArgs})
+	cfgRes, cfgErr := ex.Run(ctx, ExecSpec{Path: tool, Args: dellConfigureArgs})
 	if cfgErr != nil {
 		log.Warn("dcu-cli configure did not complete; reading the settings back", "error", cfgErr.Error())
+	} else if cfgRes.ExitCode != 0 {
+		log.Warn("dcu-cli configure exited non-zero; reading the settings back", "exitCode", cfgRes.ExitCode)
 	}
 	// Exit codes for /configure are not documented as a no-op signal; the
 	// read-back is the authority on what changed.
 	after, err := l.exportSettings(ctx, ex, tool, st)
 	if err != nil {
-		// Unconfirmed. PendingBefore stays, so the next export or the restore
-		// finds what changed.
-		return TakeoverPolicyLocked, runErr("settings_readback_failed", err)
+		// Unconfirmed, but the change may have landed. Breeze holds the record
+		// (PendingBefore stays), so it reports the takeover as its own: the API
+		// then sends a release when the policy goes, and the restore reconciles.
+		// Reporting policy_locked here would tell the API nothing needs handing
+		// back.
+		return TakeoverOK, runErr("settings_readback_failed", err)
 	}
 	recordChanges(&rec, before, after)
 	for p, o := range rec.Changed {
 		if !readsAs(after, p, o) {
 			// Someone else's now, and the change did not take it back.
+			log.Info("vendor setting no longer Breeze's; ownership dropped", "lane", LaneDell, "setting", p)
 			delete(rec.Changed, p)
 		}
 	}
@@ -508,6 +514,7 @@ func (l *dellLane) Restore(ctx context.Context, ex Exec, st Store) error {
 	var reverts []string
 	for p, o := range rec.Changed {
 		if !readsAs(current, p, o) {
+			log.Info("vendor setting changed since the takeover; left as it is", "lane", LaneDell, "setting", p)
 			continue // someone else's now
 		}
 		if _, present := current.props[p]; !present {
@@ -558,7 +565,9 @@ func (l *dellLane) Restore(ctx context.Context, ex Exec, st Store) error {
 			return runErr("settings_restore_unconfirmed", fmt.Errorf("setting %q did not take the restored value", p))
 		}
 	}
-	_ = emptyDir(dir)
+	if err := emptyDir(dir); err != nil {
+		log.Warn("could not clear the restored settings copy", "dir", dir, "error", err.Error())
+	}
 	if err := st.Remove(takeoverRecordName(LaneDell)); err != nil {
 		return runErr("takeover_record_unwritable", err)
 	}
