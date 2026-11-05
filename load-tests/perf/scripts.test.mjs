@@ -284,6 +284,21 @@ test('check-acceptance.sh report: 3 non-2xx fail at the default (zero) allowance
 test('check-acceptance.sh report: --allow-non2xx 20 passes 3 non-2xx and prints the allowance', () => {
   const r = accept(3, ['--allow-non2xx', '20']);
   assert.match(r.out, /^PASS {2}non-2xx outside crawl-config: 3 \(relaxed allowance: 20\)$/m);
+  assert.equal(r.code, 0, r.out);
+  assert.notEqual(accept(3).code, 0);
+});
+
+test('check-acceptance.sh report: the allowance boundary is inclusive and scoped to the non-2xx check', () => {
+  assert.equal(accept(20, ['--allow-non2xx', '20']).code, 0);
+  assert.notEqual(accept(1, ['--allow-non2xx', '0']).code, 0);
+  // A bad crawl-config answer still fails under an allowance.
+  const rep = JSON.parse(readFileSync(acceptanceReport(0), 'utf8'));
+  rep.routes[1].status = { 200: 1600, 500: 2 };
+  const file = path.join(mkdtempSync(path.join(tmpdir(), 'accept-')), 'agentsim.json');
+  writeFileSync(file, JSON.stringify(rep));
+  const r = spawnSync('bash', [ACCEPT, 'report', '--allow-non2xx', '20', file], { encoding: 'utf8', cwd: HERE });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stdout, /^FAIL {2}crawl-config answers only 200\/401\/404: 2 others$/m);
 });
 
 test('check-acceptance.sh report: a count over the allowance still fails', () => {
