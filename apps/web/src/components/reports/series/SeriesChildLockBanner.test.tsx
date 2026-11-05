@@ -6,10 +6,9 @@ vi.mock('../ReportOwnerScopeField', () => ({ useDefaultReportOwnerScope: () => (
 const claims = vi.hoisted(() => ({ value: { status: 'resolved', claims: { scope: 'partner', partnerId: 'p-1', orgId: null } } as unknown }));
 vi.mock('@/lib/authScope', () => ({ useJwtClaims: () => claims.value }));
 const api = vi.hoisted(() => ({
-  fetchSeriesDetail: vi.fn(),
   detachSeriesChild: vi.fn(() => Promise.resolve()),
   fetchOrgContacts: vi.fn(() => Promise.resolve([])),
-  fetchChildOverrides: vi.fn(() => Promise.resolve([])),
+  fetchChildRecipients: vi.fn(() => Promise.resolve({ overrides: [], ruleContactIds: null })),
   setChildRecipientOverride: vi.fn(),
 }));
 vi.mock('./seriesApi', () => api);
@@ -28,7 +27,6 @@ describe('SeriesChildView', () => {
     vi.clearAllMocks();
     gate.canChoose = true;
     claims.value = { status: 'resolved', claims: { scope: 'partner', partnerId: 'p-1', orgId: null } };
-    api.fetchSeriesDetail.mockResolvedValue({ series: { recipientRule: { primaryContact: true, roles: [] } }, targets: [], orgs: [] });
   });
 
   it('an MSP user sees the series name, Edit multi-org report and Detach, plus recipients', async () => {
@@ -40,11 +38,10 @@ describe('SeriesChildView', () => {
     expect(screen.getByTestId('series-child-detach')).toBeInTheDocument();
     expect(screen.getByTestId('series-child-summary')).toBeInTheDocument();
     expect(await screen.findByTestId('series-child-recipients')).toBeInTheDocument();
-    await waitFor(() => expect(api.fetchSeriesDetail).toHaveBeenCalledWith('s-1'));
   });
 
   // Review Focus 5.
-  it('an organization user sees Managed by your MSP and never asks for the series', async () => {
+  it('an organization user sees Managed by your MSP', async () => {
     gate.canChoose = false;
     claims.value = { status: 'resolved', claims: { scope: 'organization', partnerId: 'p-1', orgId: 'org-1' } };
     render(<SeriesChildView report={CHILD} onChanged={vi.fn()} />);
@@ -53,7 +50,6 @@ describe('SeriesChildView', () => {
     expect(screen.queryByTestId('series-child-edit-series')).toBeNull();
     expect(screen.queryByTestId('series-child-detach')).toBeNull();
     expect(await screen.findByTestId('series-child-recipients')).toBeInTheDocument();
-    expect(api.fetchSeriesDetail).not.toHaveBeenCalled();
   });
 
   it('Detach confirms, detaches, and reloads the page state', async () => {

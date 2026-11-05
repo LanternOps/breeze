@@ -2,29 +2,32 @@ import { useCallback, useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { handleActionError } from '@/lib/runAction';
-import { fetchChildOverrides, fetchOrgContacts, setChildRecipientOverride } from './seriesApi';
-import { matchesRecipientRule } from './seriesConfig';
-import type { OrgContact, RecipientChoice, SeriesRecipientRule } from './types';
+import { fetchChildRecipients, fetchOrgContacts, setChildRecipientOverride } from './seriesApi';
+import type { OrgContact, RecipientChoice } from './types';
 
 const CHOICES: RecipientChoice[] = ['default', 'add', 'remove'];
 
 /**
  * A series child's only editable surface (spec D5, §3.5): per-contact add /
- * remove overrides on top of the series rule. `rule` is null when the viewer
- * cannot read the series (org users) — then no "Included by rule" hint.
+ * remove overrides on top of the series rule. The "Included by rule" hint comes
+ * from the server's resolved match (`ruleContactIds`), so it agrees with who
+ * actually receives the report; null (org users, who cannot read the series)
+ * means no hint.
  */
-export function SeriesChildRecipients({ reportId, orgId, rule }: { reportId: string; orgId: string; rule: SeriesRecipientRule | null }) {
+export function SeriesChildRecipients({ reportId, orgId }: { reportId: string; orgId: string }) {
   const { t } = useTranslation('reports');
   const [contacts, setContacts] = useState<OrgContact[]>([]);
   const [choices, setChoices] = useState<Map<string, RecipientChoice>>(new Map());
+  const [ruleContactIds, setRuleContactIds] = useState<string[] | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'failed'>('loading');
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [loadedContacts, overrides] = await Promise.all([fetchOrgContacts(orgId), fetchChildOverrides(reportId)]);
+      const [loadedContacts, recipients] = await Promise.all([fetchOrgContacts(orgId), fetchChildRecipients(reportId)]);
       setContacts(loadedContacts);
-      setChoices(new Map(overrides.map((o) => [o.contactId, o.mode])));
+      setChoices(new Map(recipients.overrides.map((o) => [o.contactId, o.mode])));
+      setRuleContactIds(recipients.ruleContactIds);
       setState('ready');
     } catch (err) {
       console.error('[SeriesChildRecipients] load failed', err);
@@ -73,7 +76,7 @@ export function SeriesChildRecipients({ reportId, orgId, rule }: { reportId: str
               <span className="text-sm">
                 {contact.name || contact.email}
                 {contact.name && <span className="block text-xs text-muted-foreground">{contact.email}</span>}
-                {rule && matchesRecipientRule(contact, rule) && (
+                {ruleContactIds?.includes(contact.id) && (
                   <span data-testid={`series-child-by-rule-${contact.id}`} className="block text-xs text-primary">
                     {t('reports.series.child.recipients.byRule')}
                   </span>

@@ -5,6 +5,7 @@ import { db } from '../../db';
 import {
   contacts,
   reportScheduleRecipients,
+  reportSeries,
   reports,
 } from '../../db/schema';
 import {
@@ -14,7 +15,8 @@ import {
   requireScope,
 } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
-import { seriesManagedRefusal } from '../../services/reportSeries/types';
+import { resolveSeriesRuleContactIds } from '../../services/reportSeries/recipients';
+import { parseSeriesRecipientRule, seriesManagedRefusal } from '../../services/reportSeries/types';
 import { callerMaySetEmailRecipients, RECIPIENTS_NEED_EXPORT_AND_MFA } from './recipientGate';
 import { createContact } from '../../services/contacts/crud';
 import {
@@ -128,7 +130,7 @@ recipientsRoutes.get(
       'read_history',
     );
     if (!report) return c.json({ error: 'Report not found' }, 404);
-    if (!orgId) return c.json({ data: [] });
+    if (!orgId) return c.json({ data: [], ruleContactIds: null });
 
     const rows = await db.select({
       id: reportScheduleRecipients.id,
@@ -150,7 +152,23 @@ recipientsRoutes.get(
       ))
       .orderBy(asc(contacts.name), asc(contacts.email));
 
-    return c.json({ data: rows });
+    // Raw rule match for a series child, before overrides. null when the caller
+    // cannot read the series (an org token: RLS hides report_series from it).
+    let ruleContactIds: string[] | null = null;
+    if (report.seriesId && c.get('auth').scope !== 'organization') {
+      const [series] = await db.select({ recipientRule: reportSeries.recipientRule })
+        .from(reportSeries)
+        .where(eq(reportSeries.id, report.seriesId))
+        .limit(1);
+      if (series) {
+        ruleContactIds = await resolveSeriesRuleContactIds({
+          orgId,
+          rule: parseSeriesRecipientRule(series.recipientRule),
+        });
+      }
+    }
+
+    return c.json({ data: rows, ruleContactIds });
   },
 );
 

@@ -9,7 +9,6 @@ import {
   isReportRecipientEmail,
   isSeriesSchedule,
   isSeriesEligibleReportType,
-  matchesRecipientRule,
   sameTargets,
   seriesBuilderDefaults,
   stripSeriesConfig,
@@ -98,13 +97,6 @@ describe('recipient helpers', () => {
     expect(isReportRecipientEmail('ops@msp.example')).toBe(true);
     expect(isReportRecipientEmail(' ops@msp.example ')).toBe(true);
     expect(isReportRecipientEmail('ops@msp')).toBe(false);
-  });
-  it('matches the org-level primary contact and role overlap', () => {
-    const rule = { primaryContact: true, roles: ['billing'] };
-    expect(matchesRecipientRule({ isPrimary: true, siteId: null, roles: [] }, rule)).toBe(true);
-    expect(matchesRecipientRule({ isPrimary: true, siteId: 'site-1', roles: [] }, rule)).toBe(false);
-    expect(matchesRecipientRule({ isPrimary: false, siteId: null, roles: ['billing'] }, rule)).toBe(true);
-    expect(matchesRecipientRule({ isPrimary: false, siteId: null, roles: ['technical'] }, rule)).toBe(false);
   });
 });
 

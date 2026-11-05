@@ -93,6 +93,20 @@ async function loadRuleMatches(
     .where(and(inArray(contacts.orgId, [...orgIds]), isNotNull(contacts.email), condition));
 }
 
+/**
+ * Contact ids the rule alone resolves to in one org, before overrides — the
+ * same match (and the same address validity) the worker mails, so a preview
+ * "included by rule" badge means the contact will actually receive the report.
+ */
+export async function resolveSeriesRuleContactIds(args: {
+  orgId: string;
+  rule: SeriesRecipientRule;
+  tx?: SeriesTx;
+}): Promise<string[]> {
+  const matches = await loadRuleMatches([args.orgId], args.rule, args.tx ?? db);
+  return [...new Set(matches.filter((row) => isValidRecipientEmail(row.email)).map((row) => row.contactId))];
+}
+
 async function loadOverrides(
   reportIds: readonly string[],
   tx: SeriesTx,
