@@ -1423,7 +1423,7 @@ describe('runPreFlightChecks — Wisp thread re-seed (Review Focus 1)', () => {
 
     expect(result).toMatchObject({ ok: true, systemPrompt: 'rebuilt prompt\n## Wisp thread\nsummary' });
     expect(wisp.lookupWispGrant).toHaveBeenCalledWith('session-1');
-    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, expect.objectContaining({ user: expect.anything() }), CEILING, { type: 'device', id: 'd-1' });
+    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, expect.objectContaining({ user: expect.anything() }), CEILING, { type: 'device', id: 'd-1' }, makeResolvedModel('platform').logicalModel);
   });
 
   it('resolves and passes the ceiling before rebuilding record context, then reuses it for the seed', async () => {
@@ -1433,7 +1433,7 @@ describe('runPreFlightChecks — Wisp thread re-seed (Review Focus 1)', () => {
     expect(wisp.resolveGrantCeiling).toHaveBeenCalledWith(GRANT.grantId, GRANT.revisionId);
     expect(mockBuildSystemPrompt).toHaveBeenCalledWith(auth, page, undefined, CEILING);
     expect(wisp.resolveGrantCeiling.mock.invocationCallOrder[0]).toBeLessThan(mockBuildSystemPrompt.mock.invocationCallOrder[0]!);
-    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, auth, CEILING, page);
+    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, auth, CEILING, page, makeResolvedModel('platform').logicalModel);
   });
 
   it('refuses an inactive ceiling before building record context', async () => {

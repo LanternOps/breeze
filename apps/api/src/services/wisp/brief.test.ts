@@ -61,7 +61,7 @@ vi.mock('../../config/env', async (importOriginal) => ({
 }));
 
 import { GrantInactiveError } from './grantAuthority';
-import { briefDue, buildBrief, runMorningBriefs } from './brief';
+import { briefDue, briefScheduleFor, buildBrief, runMorningBriefs } from './brief';
 
 const GRANT = '00000000-0000-4000-8000-000000000a01';
 const GRANT_2 = '00000000-0000-4000-8000-000000000a02';
@@ -282,6 +282,26 @@ describe('buildBrief', () => {
 // ---------------------------------------------------------------------------
 // runMorningBriefs
 // ---------------------------------------------------------------------------
+
+describe('briefScheduleFor (#10391)', () => {
+  it('the preference time and zone win; no device read when the preference names a zone', async () => {
+    h.loadNudgeBookkeeping.mockResolvedValueOnce(new Map([[USER, { prefs: prefs({ briefTimeLocal: '07:15', briefTimezone: 'Europe/Berlin' }), lastDigestAt: null, lastBriefAt: null }]]));
+    await expect(briefScheduleFor(USER)).resolves.toEqual({ timeLocal: '07:15', timezone: 'Europe/Berlin' });
+    expect(h.selects.some((s) => s.table === 'mobile_devices')).toBe(false);
+  });
+
+  it('falls back to the oldest device zone (system context), else UTC, as the sweep does', async () => {
+    h.selectQueue.mobile_devices = [[{ userId: USER, timezone: 'America/Los_Angeles' }], []];
+    await expect(briefScheduleFor(USER)).resolves.toEqual({ timeLocal: resolveWispNudgePrefs(null).briefTimeLocal, timezone: 'America/Los_Angeles' });
+    expect(h.selects.find((s) => s.table === 'mobile_devices')?.system).toBe(true);
+    await expect(briefScheduleFor(USER)).resolves.toMatchObject({ timezone: 'UTC' });
+  });
+
+  it('briefs off (null time) reads as off, and an unknown zone as UTC', async () => {
+    h.loadNudgeBookkeeping.mockResolvedValueOnce(new Map([[USER, { prefs: prefs({ briefTimeLocal: null, briefTimezone: 'Not/AZone' }), lastDigestAt: null, lastBriefAt: null }]]));
+    await expect(briefScheduleFor(USER)).resolves.toEqual({ timeLocal: null, timezone: 'UTC' });
+  });
+});
 
 describe('runMorningBriefs', () => {
   const NOW = new Date('2026-10-24T12:30:00Z'); // 08:30 EDT
