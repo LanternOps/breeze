@@ -616,7 +616,7 @@ func TestResumeVerify_AnInterruptedPassKeepsWhatItVerified(t *testing.T) {
 	p := &failingDigester{fakeIssuer: backing, failAfter: 1, err: errors.New("session expired")}
 	// Everything after the failed read-back fails too: nothing gets published,
 	// and the journal is left behind as the resume state.
-	p.fakeIssuer.digestErr = errors.New("session expired")
+	p.digestErr = errors.New("session expired")
 	_, _ = brokeredManager(p, src, staging, testJobID).RunBackupContext(context.Background(), nil)
 
 	j := journalAfter(t, staging, identity)
