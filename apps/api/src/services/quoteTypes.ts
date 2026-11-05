@@ -32,6 +32,7 @@ export interface QuoteActor {
 
 export type QuoteServiceErrorCode =
   | 'PARTNER_UNRESOLVABLE'
+  | 'BILLING_DISABLED'
   | 'ORG_DENIED'
   | 'ORG_NOT_FOUND'
   | 'SITE_DENIED'
