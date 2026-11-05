@@ -1247,6 +1247,16 @@ describe('refuseArmedWidening (W16 Decision 3)', () => {
       expect(dbState.reads.map((r) => r.lock)).toEqual([null, 'update', null]);
     });
 
+    it("a disabled armed baseline does not mask the override's own disable", async () => {
+      // The merge reads false either way while the baseline is off, but the write
+      // lands the moment someone re-enables that baseline.
+      const current = overrideRow({ enabled: false });
+      dbState.scheduleRows = [[current], [current], [armed({ enabled: false })]];
+      await expect(updateSchedule(partnerAuth(), OVERRIDE_ID, { enabled: true }, guard))
+        .rejects.toMatchObject({ code: 'armed_widening_refused' });
+      expect(dbState.updates).toHaveLength(0);
+    });
+
     it('allows a widening under an unarmed baseline', async () => {
       dbState.scheduleRows = [[overrideRow({ enabled: false })], [overrideRow({ enabled: false })], [baselineRow({ actMode: false })]];
       dbState.updateReturning = overrideRow({ enabled: true });
@@ -1268,6 +1278,13 @@ describe('refuseArmedWidening (W16 Decision 3)', () => {
     ])('refuses deleting an override with %s under an armed baseline', async (_label, row) => {
       const current = overrideRow(row);
       dbState.scheduleRows = [[current], [current], [armed()]];
+      await expect(deleteSchedule(partnerAuth(), OVERRIDE_ID, guard)).rejects.toMatchObject({ code: 'armed_widening_refused' });
+      expect(dbState.deleteCount).toBe(0);
+    });
+
+    it("a disabled armed baseline does not mask a disabled override's delete", async () => {
+      const current = overrideRow({ enabled: false, sweepKinds: armed().sweepKinds });
+      dbState.scheduleRows = [[current], [current], [armed({ enabled: false })]];
       await expect(deleteSchedule(partnerAuth(), OVERRIDE_ID, guard)).rejects.toMatchObject({ code: 'armed_widening_refused' });
       expect(dbState.deleteCount).toBe(0);
     });

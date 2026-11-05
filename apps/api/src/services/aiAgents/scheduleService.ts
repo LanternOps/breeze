@@ -620,6 +620,16 @@ async function readGuardBaseline(auth: AuthContext, override: AiAgentScheduleRow
   return baseline;
 }
 
+/**
+ * What an override's write is compared against. A disabled baseline reads as
+ * disabled through the merge whatever its overrides say, which would hide the loss of
+ * an override's own disable, and that loss takes effect the moment someone re-enables
+ * the baseline.
+ */
+function baselineAsIfEnabled(baseline: AiAgentScheduleRow): AiAgentScheduleRow {
+  return { ...baseline, enabled: true };
+}
+
 function refuseArmedWidening(detail: string): never {
   throw new ScheduleValidationError(
     'armed_widening_refused',
@@ -642,9 +652,10 @@ async function assertUpdateOnlyNarrows(
     sweepKinds: input.sweepKinds ?? locked.sweepKinds,
     actMode: input.actMode === undefined ? locked.actMode : input.actMode,
   };
+  const inherited = baselineAsIfEnabled(baseline);
   const [before, after] = isBaseline
     ? [effectiveSchedule(locked, null), effectiveSchedule(merged, null)]
-    : [effectiveSchedule(baseline, locked), effectiveSchedule(baseline, merged)];
+    : [effectiveSchedule(inherited, locked), effectiveSchedule(inherited, merged)];
   if (scheduleWriteWidens(before, after)) refuseArmedWidening('enabled, kinds or act mode');
 
   if (isBaseline) {
@@ -661,7 +672,8 @@ async function assertDeleteOnlyNarrows(auth: AuthContext, locked: AiAgentSchedul
   if (locked.partnerId !== null) return;
   const baseline = await readGuardBaseline(auth, locked);
   if (baseline.actMode !== true) return;
-  if (scheduleWriteWidens(effectiveSchedule(baseline, locked), effectiveSchedule(baseline, null))) {
+  const inherited = baselineAsIfEnabled(baseline);
+  if (scheduleWriteWidens(effectiveSchedule(inherited, locked), effectiveSchedule(inherited, null))) {
     refuseArmedWidening('this override narrows it');
   }
 }
