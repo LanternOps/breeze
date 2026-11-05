@@ -257,6 +257,14 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // enqueues, so it keeps the ambient transaction (same call as
   // `quotes/bulk-send`).
   { method: 'POST', pattern: /^\/api\/v1\/devices\/bulk\/restore\/?$/ },
+  // Wake prepares each attempt + relay command in runBulkIsolated, then sends
+  // after that device commits (#7103/#7109). An ambient batch transaction
+  // would hide the rows from a fast relay result. Non-wake commands retain
+  // one explicit withAuthDbAccessContext around the whole branch.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/bulk\/commands\/?$/ },
+  // Same reasoning for a single wake. The other command types run in one
+  // explicit withAuthDbAccessContext, as they did under the request transaction.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/commands\/?$/ },
   // #9796 bulk site move — same connection-hold reason as bulk restore. `runBulkIsolated` moves
   // each device (row lock + guarded UPDATE + denormalized rewrite) in its own short RLS
   // transaction, up to BULK_SITE_MOVE_CAP. Under the ambient request transaction every row lock

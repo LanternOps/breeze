@@ -1,9 +1,10 @@
-import { and, desc, eq, isNotNull, ne, sql } from 'drizzle-orm';
-import { randomUUID } from 'node:crypto';
-import { db } from '../db';
+import { and, desc, eq, gte, inArray, isNotNull, lte, ne, sql } from 'drizzle-orm';
+import { db, withSystemDbAccessContext } from '../db';
+import { openOrJoinWakeAttempt, recordWakeRefusal, applyWakeRelayResult } from './wakeAttempts';
 import {
   auditLogs,
   deviceCommands,
+  deviceWakeAttempts,
   deviceIpHistory,
   deviceNetwork,
   devices,
@@ -14,9 +15,11 @@ import { cancelledCommandError } from './commandCancelMessage';
 import { isAgentConnected, sendCommandToAgent } from '../routes/agentWs';
 import { isParkedDevice, PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE } from './unassignedPool/deliveryEligibility';
 import { markRequestAuditWritten } from './auditRequestTracking';
+import { captureException } from './sentry';
 
 export type WakeFailureCode =
   | 'TARGET_NOT_FOUND'
+  | 'TARGET_ONLINE'
   | 'NO_MACS'
   | 'NO_SUBNET'
   | 'IPV6_ONLY'
@@ -54,6 +57,15 @@ export interface WakeFailure {
 
 export type WakeResult = WakeSuccess | WakeFailure;
 
+export interface WakePrepared extends WakeSuccess {
+  /**
+   * Sends the committed command to the relay. Call it after the caller's
+   * transaction commits, with no ambient DB context: a relay result that
+   * arrives before the commit finds no command row and is dropped.
+   */
+  deliver: () => Promise<WakeResult>;
+}
+
 type MaskSource = 'agent' | 'fallback_24';
 
 interface TargetSubnet {
@@ -72,6 +84,8 @@ interface RelayCandidate {
   lastSeen: Date;
 }
 
+// Two default 60-second agent heartbeats.
+const TARGET_ONLINE_FRESHNESS_MS = 120_000;
 const WOL_UDP_PORTS = [7, 9] as const;
 const FALLBACK_MASK_24 = '255.255.255.0';
 
@@ -121,8 +135,19 @@ export function isApipaIpv4(ip: string): boolean {
   return n >= 0xa9fe0000 && n <= 0xa9feffff;
 }
 
-async function resolveTargetMacs(targetDeviceId: string): Promise<string[]> {
-  // Prefer device_network (live inventory), fall back to device_ip_history (historical).
+/** Mirrors the agent's six-byte parseMAC formats, excluding non-unicast and zero addresses. */
+export function isWakeableMac(mac: string): boolean {
+  // Go strings.TrimSpace uses Unicode White_Space (unlike JavaScript trim's BOM handling).
+  const value = mac.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '');
+  if (!/^(?:[0-9a-f]{2}([:-])(?:[0-9a-f]{2}\1){4}[0-9a-f]{2}|[0-9a-f]{4}(?:\.[0-9a-f]{4}){2})$/i.test(value)) return false;
+  const hex = value.replace(/[:.-]/g, '');
+  return hex !== '000000000000' && (parseInt(hex.slice(0, 2), 16) & 1) === 0;
+}
+
+async function resolveTargetMacs(targetDeviceId: string, orgId: string): Promise<string[]> {
+  const now = Date.now();
+  const latestSighting = new Date(now + 5 * 60 * 1000);
+  // Live inventory takes precedence over recent historical interfaces.
   const fromNetwork = await db
     .select({ mac: deviceNetwork.macAddress, isPrimary: deviceNetwork.isPrimary, updatedAt: deviceNetwork.updatedAt })
     .from(deviceNetwork)
@@ -136,23 +161,59 @@ async function resolveTargetMacs(targetDeviceId: string): Promise<string[]> {
     return b.updatedAt.getTime() - a.updatedAt.getTime();
   });
   for (const row of sorted) {
-    if (row.mac && !seen.has(row.mac.toLowerCase())) {
+    if (row.mac && isWakeableMac(row.mac) && !seen.has(row.mac.toLowerCase())) {
       seen.add(row.mac.toLowerCase());
       macs.push(row.mac);
     }
   }
-  if (macs.length > 0) return macs;
 
+  const historyMac = sql<string>`lower(${deviceIpHistory.macAddress})`;
+  const newestHistory = sql<Date>`max(${deviceIpHistory.lastSeen})`.mapWith(deviceIpHistory.lastSeen);
   const fromHistory = await db
-    .select({ mac: deviceIpHistory.macAddress, lastSeen: deviceIpHistory.lastSeen })
+    .select({ mac: sql<string>`min(${deviceIpHistory.macAddress})`, lastSeen: newestHistory })
     .from(deviceIpHistory)
-    .where(and(eq(deviceIpHistory.deviceId, targetDeviceId), isNotNull(deviceIpHistory.macAddress)))
-    .orderBy(desc(deviceIpHistory.lastSeen))
-    .limit(20);
+    .where(and(
+      eq(deviceIpHistory.deviceId, targetDeviceId),
+      isNotNull(deviceIpHistory.macAddress),
+      gte(deviceIpHistory.lastSeen, new Date(now - 30 * 24 * 60 * 60 * 1000)),
+      lte(deviceIpHistory.lastSeen, latestSighting),
+    ))
+    .groupBy(historyMac)
+    .orderBy(desc(newestHistory))
+    .limit(32);
+
+  // Validate before candidate deduplication and the final eight-MAC cap. The
+  // query's limit runs first, so 32 newer invalid MACs could crowd out a valid
+  // one; it bounds the rival lookup below, and history is only the fallback.
+  const candidates = new Map<string, typeof fromHistory[number]>();
   for (const row of fromHistory) {
-    if (row.mac && !seen.has(row.mac.toLowerCase())) {
-      seen.add(row.mac.toLowerCase());
-      macs.push(row.mac);
+    if (!row.mac || !isWakeableMac(row.mac)) continue;
+    const key = row.mac.toLowerCase();
+    if (!seen.has(key) && !candidates.has(key)) candidates.set(key, row);
+  }
+  const newestRival = new Map<string, number>();
+  if (candidates.size > 0) {
+    const keys = [...candidates.keys()];
+    // One indexed union query for both sources, scoped by denormalized org_id.
+    const networkMac = sql<string>`lower(${deviceNetwork.macAddress})`;
+    const rivals = await db
+      .select({ mac: networkMac, lastSeen: sql<Date>`max(${deviceNetwork.updatedAt})`.mapWith(deviceNetwork.updatedAt) })
+      .from(deviceNetwork)
+      .where(and(eq(deviceNetwork.orgId, orgId), ne(deviceNetwork.deviceId, targetDeviceId), inArray(networkMac, keys), lte(deviceNetwork.updatedAt, latestSighting)))
+      .groupBy(networkMac)
+      .unionAll(db
+        .select({ mac: historyMac, lastSeen: sql<Date>`max(${deviceIpHistory.lastSeen})`.mapWith(deviceIpHistory.lastSeen) })
+        .from(deviceIpHistory)
+        .where(and(eq(deviceIpHistory.orgId, orgId), ne(deviceIpHistory.deviceId, targetDeviceId), inArray(historyMac, keys), lte(deviceIpHistory.lastSeen, latestSighting)))
+        .groupBy(historyMac));
+    for (const row of rivals) {
+      newestRival.set(row.mac, Math.max(newestRival.get(row.mac) ?? -Infinity, row.lastSeen.getTime()));
+    }
+  }
+  for (const [key, row] of candidates) {
+    if (macs.length >= 8) break;
+    if ((newestRival.get(key) ?? -Infinity) <= row.lastSeen.getTime()) {
+      macs.push(row.mac!);
     }
   }
   return macs;
@@ -302,33 +363,42 @@ export async function dispatchWake(
   targetDeviceId: string,
   userId: string,
   options: DispatchWakeOptions = {},
-): Promise<WakeResult> {
+): Promise<WakePrepared | WakeFailure> {
   const [target] = await db
-    .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, hostname: devices.hostname })
+    .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, hostname: devices.hostname, status: devices.status, lastSeenAt: devices.lastSeenAt })
     .from(devices)
     .where(eq(devices.id, targetDeviceId))
     .limit(1);
   if (!target) {
     return { ok: false, code: 'TARGET_NOT_FOUND', message: 'Target device not found.' };
   }
+  if (target.status === 'online' && target.lastSeenAt !== null
+    && target.lastSeenAt.getTime() >= Date.now() - TARGET_ONLINE_FRESHNESS_MS) {
+    return { ok: false, code: 'TARGET_ONLINE', message: 'Target device is already online.' };
+  }
   if (await isParkedDevice(db, target.id)) {
     return { ok: false, code: 'DEVICE_PENDING_ASSIGNMENT', message: PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE };
   }
 
-  const macs = await resolveTargetMacs(target.id);
+  const refuse = async (failure: WakeFailure): Promise<WakeFailure> => {
+    await recordWakeRefusal({ deviceId: target.id, orgId: target.orgId, requestedBy: userId, bulkId: options.bulkId, code: failure.code });
+    return failure;
+  };
+
+  const macs = await resolveTargetMacs(target.id, target.orgId);
   if (macs.length === 0) {
-    return { ok: false, code: 'NO_MACS', message: 'Target has no recorded MAC address. The agent must check in at least once before Wake-on-LAN is available.' };
+    return refuse({ ok: false, code: 'NO_MACS', message: 'Target has no recorded MAC address. The agent must check in at least once before Wake-on-LAN is available.' });
   }
 
   const { candidates, sawIpv6 } = await resolveTargetSubnetCandidates(target.id);
   if (candidates.length === 0) {
-    return {
+    return refuse({
       ok: false,
       code: sawIpv6 ? 'IPV6_ONLY' : 'NO_SUBNET',
       message: sawIpv6
         ? 'Target has only IPv6 history. Wake-on-LAN requires an IPv4 record with subnet mask.'
         : 'Target has no usable IPv4 record (APIPA-only addresses don\'t count) — agent must check in at least once on a real LAN.',
-    };
+    });
   }
 
   let relay: RelayCandidate | null = null;
@@ -347,7 +417,7 @@ export async function dispatchWake(
       .where(eq(devices.id, options.relayDeviceIdOverride))
       .limit(1);
     if (!override || override.siteId !== target.siteId || override.status !== 'online' || override.id === target.id || !isAgentConnected(override.agentId)) {
-      return { ok: false, code: 'RELAY_OVERRIDE_INVALID', message: 'Override relay must be a different online device at the target\'s site with a live agent connection.' };
+      return refuse({ ok: false, code: 'RELAY_OVERRIDE_INVALID', message: 'Override relay must be a different online device at the target\'s site with a live agent connection.' });
     }
     // Override: use the first candidate subnet (best-guess broadcast).
     // Operator opted into this path — they're picking the relay, not the
@@ -381,11 +451,11 @@ export async function dispatchWake(
   }
 
   if (!relay || !subnet) {
-    return {
+    return refuse({
       ok: false,
       code: 'NO_RELAY',
       message: `No online peer agent at the target's site has a recorded IPv4 on any of the ${candidates.length} candidate subnet(s) for this target.`,
-    };
+    });
   }
 
   // The row is addressed to the relay, so the relay is the device that
@@ -395,7 +465,11 @@ export async function dispatchWake(
     return { ok: false, code: 'DEVICE_PENDING_ASSIGNMENT', message: PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE };
   }
 
-  const wakeAttemptId = randomUUID();
+  const { attemptId: wakeAttemptId, joined } = await openOrJoinWakeAttempt({
+    deviceId: target.id, orgId: target.orgId, relayDeviceId: relay.deviceId,
+    relayHostname: relay.hostname, requestedBy: userId, bulkId: options.bulkId,
+    macs, broadcast: subnet.broadcast,
+  });
   const payload = {
     targetDeviceId: target.id,
     targetHostname: target.hostname,
@@ -419,8 +493,12 @@ export async function dispatchWake(
     })
     .returning({ id: deviceCommands.id });
 
-  if (!command) {
-    return { ok: false, code: 'WS_SEND_FAILED', message: 'Failed to record wake command.' };
+  // Throwing rolls the attempt back with the caller's transaction.
+  if (!command) throw new Error('Failed to record wake command');
+
+  if (!joined) {
+    await db.update(deviceWakeAttempts).set({ deviceCommandId: command.id })
+      .where(eq(deviceWakeAttempts.id, wakeAttemptId));
   }
 
   // Audit row points at the TARGET (the device the user is acting on) and
@@ -453,29 +531,7 @@ export async function dispatchWake(
   });
   markRequestAuditWritten();
 
-  const claimed = await claimPendingCommandForDelivery(command.id);
-  if (claimed.status === 'cancelled') {
-    return { ok: false, code: 'COMMAND_CANCELLED', message: cancelledCommandError(claimed.reason) };
-  }
-  if (claimed.status !== 'claimed') {
-    return { ok: false, code: 'WS_SEND_FAILED', message: 'Failed to claim wake command for dispatch.' };
-  }
-
-  // #8318 §6.4: to the relay's agent_id read IN the claim, not the one the
-  // relay selection read before it (a reattach or re-enroll may have
-  // committed since).
-  const sent = sendCommandToAgent(claimed.agentId, {
-    id: command.id,
-    type: CommandTypes.WAKE_ON_LAN,
-    payload,
-  });
-
-  if (!sent) {
-    await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
-    return { ok: false, code: 'WS_SEND_FAILED', message: 'Relay agent went offline before the command could be sent. Try again.' };
-  }
-
-  return {
+  const success: WakeSuccess = {
     ok: true,
     commandId: command.id,
     wakeAttemptId,
@@ -488,4 +544,43 @@ export async function dispatchWake(
     maskSource: subnet.maskSource,
     macs,
   };
+  const deliver = async (): Promise<WakeResult> => {
+    let claimed: Awaited<ReturnType<typeof claimPendingCommandForDelivery>>;
+    try {
+      claimed = await claimPendingCommandForDelivery(command.id);
+    } catch (error) {
+      // The claim did not complete, so the committed command is still pending
+      // and the relay can pick it up at its next check-in. The attempt stays
+      // open for the sweep to resolve.
+      console.error('[wakeOnLan] wake claim failed after commit', { commandId: command.id, wakeAttemptId, error });
+      captureException(error);
+      return { ok: false, code: 'WS_SEND_FAILED', message: 'The wake command is queued but could not be sent right away. The relay may still send it at its next check-in.' };
+    }
+    if (claimed.status === 'cancelled') {
+      if (!joined) await withSystemDbAccessContext(() => applyWakeRelayResult(wakeAttemptId, false));
+      return { ok: false, code: 'COMMAND_CANCELLED', message: cancelledCommandError(claimed.reason) };
+    }
+    if (claimed.status !== 'claimed') {
+      if (!joined) await withSystemDbAccessContext(() => applyWakeRelayResult(wakeAttemptId, false));
+      return { ok: false, code: 'WS_SEND_FAILED', message: 'Failed to claim wake command for dispatch.' };
+    }
+
+    // #8318 §6.4: to the relay's agent_id read IN the claim, not the one the
+    // relay selection read before it (a reattach or re-enroll may have
+    // committed since).
+    const sent = sendCommandToAgent(claimed.agentId, {
+      id: command.id,
+      type: CommandTypes.WAKE_ON_LAN,
+      payload,
+    });
+
+    if (!sent) {
+      if (!joined) await withSystemDbAccessContext(() => applyWakeRelayResult(wakeAttemptId, false));
+      await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
+      return { ok: false, code: 'WS_SEND_FAILED', message: 'Relay agent went offline before the command could be sent. Try again.' };
+    }
+
+    return success;
+  };
+  return { ...success, deliver };
 }

@@ -3,6 +3,7 @@ import { Registry } from 'prom-client';
 
 import {
   RETENTION_JOB_NAMES,
+  recordMetricRollupCompactionStalled,
   recordRetentionRun,
   recordRollupRun,
   registerRetentionPrometheusMetrics,
@@ -71,6 +72,17 @@ describe('retention/rollup job metrics', () => {
     expect(await samplesFor(registry, 'breeze_retention_rows_deleted_total')).toHaveLength(0);
     expect(await samplesFor(registry, 'breeze_retention_last_run_timestamp_seconds')).toHaveLength(0);
     expect(await samplesFor(registry, 'breeze_retention_backlog_incomplete')).toHaveLength(0);
+  });
+
+  it('publishes the stalled-month gauge only once the job has reported it (#10960)', async () => {
+    const name = 'breeze_metric_rollup_compaction_stalled_months';
+    expect(await samplesFor(registry, name)).toHaveLength(0);
+
+    recordMetricRollupCompactionStalled(2);
+    expect((await samplesFor(registry, name)).map((sample) => sample.value)).toEqual([2]);
+
+    recordMetricRollupCompactionStalled(0);
+    expect((await samplesFor(registry, name)).map((sample) => sample.value)).toEqual([0]);
   });
 
   it('increments the rows-deleted counter and stamps last-run for the given job', async () => {
