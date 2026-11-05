@@ -79,7 +79,7 @@ func TestLocalAdminNetScriptStopsIfTheGroupNameDoesNotResolve(t *testing.T) {
 	}
 }
 
-func TestLocalAdminSummaryCmdletPathUnchanged(t *testing.T) {
+func TestLocalAdminSummaryReadsStringSIDMembers(t *testing.T) {
 	fake := installFakeLocalAdminShell(t)
 	fake.cmdletOut = `[{"Name":"HOST\\Administrator","ObjectClass":"User","SID":"S-1-5-21-1-2-3-500","PrincipalSource":"Local"},` +
 		`{"Name":"CONTOSO\\Domain Admins","ObjectClass":"Group","SID":"S-1-5-21-9-8-7-512","PrincipalSource":"ActiveDirectory"}]`
@@ -149,7 +149,9 @@ func TestLocalAdminMembersScriptReadsEnabledQuietly(t *testing.T) {
 	// A member Get-LocalUser cannot find must not write an error record, which
 	// CombinedOutput would mix into the JSON. Without the else branch, PowerShell
 	// serializes the empty result as {} rather than null.
-	for _, want := range []string{"Get-LocalUser -SID $_.SID -ErrorAction SilentlyContinue", "else{$null}"} {
+	// The regex has to cover Guest as well as Administrator, because a state that
+	// was not read counts as enabled.
+	for _, want := range []string{"-match '-50[01]$'", "Get-LocalUser -SID $_.SID -ErrorAction SilentlyContinue", "else{$null}"} {
 		if !strings.Contains(localAdminMembersPS, want) {
 			t.Errorf("script is missing %q: %s", want, localAdminMembersPS)
 		}
@@ -262,7 +264,8 @@ func TestLocalAdminNetPathKeepsItsNameMatch(t *testing.T) {
 	// net prints local accounts bare, so a prefix means a domain account.
 	fake := installFakeLocalAdminShell(t)
 	fake.cmdletOut, fake.cmdletErr = orphanedSIDFailure, errors.New("exit status 1")
-	fake.netOut = "Members\r\n-------------------\r\nAdministrator\r\nCONTOSO\\Administrator\r\nGuest\r\nThe command completed successfully.\r\n"
+	fake.netOut = "Members\r\n-------------------\r\nAdministrator\r\nCONTOSO\\Administrator\r\nGuest\r\n" +
+		"S-1-5-21-1-2-3-500\r\nS-1-5-21-1-2-3-1001\r\nThe command completed successfully.\r\n"
 
 	summary, err := collectLocalAdminSummaryWindows()
 	if err != nil {
@@ -272,6 +275,9 @@ func TestLocalAdminNetPathKeepsItsNameMatch(t *testing.T) {
 		{"username": "Administrator", "isBuiltIn": true, "enabled": true, "defaultAccount": true},
 		{"username": `CONTOSO\Administrator`, "isBuiltIn": false, "enabled": true},
 		{"username": "Guest", "isBuiltIn": false, "enabled": true},
+		// A member printed as a SID is the one case net gives a RID to go by.
+		{"username": "S-1-5-21-1-2-3-500", "isBuiltIn": true, "enabled": true, "defaultAccount": true},
+		{"username": "S-1-5-21-1-2-3-1001", "isBuiltIn": false, "enabled": true},
 	}
 	if got := summary["accounts"]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("accounts = %#v\nwant %#v", got, want)
