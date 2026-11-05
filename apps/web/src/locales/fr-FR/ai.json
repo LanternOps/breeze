@@ -940,6 +940,12 @@
       "buttonPlain": "Interroger l’IA à ce sujet",
       "draft": "À propos de {{label}}: ",
       "switchFocus": "Wisp se concentre sur {{from}}. Passer à {{to}} ?"
+    },
+    "plainChat": {
+      "new": "Nouvelle discussion simple",
+      "newDescription": "Breeze AI avec tous les outils auxquels vous avez accès. Pas Wisp.",
+      "wispDescription": "Wisp, selon votre autorisation",
+      "label": "Breeze AI · pas Wisp"
     }
   },
   "wispConcerns": {

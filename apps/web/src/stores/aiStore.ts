@@ -182,6 +182,8 @@ interface AiState {
   updateWisp: (patch: Partial<NonNullable<WispState>>) => void;
   /** Close the current session and leave Wisp mode. */
   exitWispMode: () => Promise<void>;
+  /** #10289: close the current session and open a Breeze AI chat with no grant, even while one is active. */
+  startPlainChat: () => Promise<void>;
   startDeviceTask: (deviceId: string, ctx: AiPageContext, initialMessage?: string) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
   loadSessions: () => Promise<void>;
@@ -1771,6 +1773,18 @@ export const useAiStore = create<AiState>()(
     // surfaced over the plain chat the user is returning to.
     if (get().sessionId) await get().closeSession();
     set({ wisp: null, ...CLEARED_SESSION, error: null, errorCode: null });
+  },
+
+  startPlainChat: async () => {
+    // A "Talk to Wisp" still in flight must not put the grant back afterwards.
+    ++wispTalkSequence;
+    get().resolveWispTalkFocus(false);
+    if (get().wisp) await get().exitWispMode();
+    else if (get().sessionId) await get().closeSession();
+    // Unbind even after a failed close, or a rehydrating grant could still
+    // claim the old session. createSession sends no grant once `wisp` is null.
+    set({ wisp: null, ...CLEARED_SESSION, error: null, errorCode: null });
+    await get().createSession();
   },
     }),
     {

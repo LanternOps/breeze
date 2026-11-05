@@ -265,6 +265,29 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
     expect(useAiStore.getState().error).toBeNull();
   });
 
+  it('startPlainChat under Wisp closes the Wisp session and opens a plain Breeze AI chat (#10289)', async () => {
+    useAiStore.setState({ wisp: wisp({ scopeOrgId: 'org-s' }), sessionId: 'sess-w' });
+    await useAiStore.getState().startPlainChat();
+    expect(fetchMock).toHaveBeenCalledWith('/ai/sessions/sess-w', expect.objectContaining({ method: 'DELETE' }));
+    expect(useAiStore.getState().wisp).toBeNull();
+    expect(useAiStore.getState().sessionId).toBe('sess-new');
+    const body = createBodies()[0]!;
+    expect(body).not.toHaveProperty('wispGrantId');
+    // The grant's org must not carry over. The header org is not asserted here:
+    // the close's model-picker reload races createSession's first
+    // import('./orgStore'), and the loser gets the real store past vi.mock.
+    // 'createSession without wisp options' covers the header org.
+    expect(body.orgId).not.toBe('org-s');
+  });
+
+  it('startPlainChat from a plain chat closes it and opens another plain one (#10289)', async () => {
+    useAiStore.setState({ wisp: null, sessionId: 'sess-p' });
+    await useAiStore.getState().startPlainChat();
+    expect(fetchMock).toHaveBeenCalledWith('/ai/sessions/sess-p', expect.objectContaining({ method: 'DELETE' }));
+    expect(createBodies()[0]).not.toHaveProperty('wispGrantId');
+    expect(useAiStore.getState().sessionId).toBe('sess-new');
+  });
+
   it('switching to a history session on the same grant keeps Wisp mode', async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url === '/ai/sessions/sess-w2') return response({ session: { id: 'sess-w2', type: 'general', status: 'active', orgId: 'org-a', wispGrantId: 'grant-1' }, messages: [] });

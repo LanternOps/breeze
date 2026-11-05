@@ -275,6 +275,79 @@ describe('workspace tab under the active Wisp grant (#10142)', () => {
   });
 });
 
+describe('a plain Breeze AI chat while a grant is active (#10289)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.data.clear();
+    h.scope = 'partner';
+    h.currentOrgId = 'org-a';
+    h.fetchWispThread.mockReset();
+    h.fetchWispThread.mockResolvedValue(grant());
+    useWorkspaceStore.setState({ tabs: [], activeTabId: null, _readers: new Map(), wispGrantAvailable: false });
+  });
+
+  it('a tab opened as a plain chat never asks for the grant and creates its session without wispGrantId', async () => {
+    useWorkspaceStore.getState().createTab(undefined, undefined, { plain: true });
+    expect(activeTab().wisp).toEqual({ kind: 'plain' });
+    expect(activeTab().plainChosen).toBe(true);
+    await settle();
+    expect(h.fetchWispThread).not.toHaveBeenCalled();
+    fetchMock.mockResolvedValueOnce(json({ id: 'sess-1' })).mockResolvedValueOnce(stream());
+    await useWorkspaceStore.getState().sendMessage(activeTab().id, 'hello');
+    expect(h.fetchWispThread).not.toHaveBeenCalled();
+    expect(createBody()).toEqual({});
+    expect(activeTab().wisp).toEqual({ kind: 'plain' });
+  });
+
+  it('the default new tab is unchanged: it still runs under the grant', async () => {
+    useWorkspaceStore.getState().createTab();
+    await settle();
+    expect(activeTab().plainChosen).toBe(false);
+    expect(activeTab().wisp).toEqual({ kind: 'wisp', grantId: 'g-org', orgId: 'org-a' });
+    fetchMock.mockResolvedValueOnce(json({ id: 'sess-1' })).mockResolvedValueOnce(stream());
+    await useWorkspaceStore.getState().sendMessage(activeTab().id, 'hello');
+    expect(createBody()).toMatchObject({ wispGrantId: 'g-org' });
+  });
+
+  it('remembers a grant lookup for the "+ New" menu: an active grant offers both chats, none offers one', async () => {
+    useWorkspaceStore.getState().createTab();
+    await settle();
+    expect(useWorkspaceStore.getState().wispGrantAvailable).toBe(true);
+
+    h.fetchWispThread.mockReset();
+    h.fetchWispThread.mockRejectedValue(noGrant());
+    await useWorkspaceStore.getState().checkWispGrant();
+    expect(useWorkspaceStore.getState().wispGrantAvailable).toBe(false);
+
+    h.fetchWispThread.mockReset();
+    h.fetchWispThread.mockResolvedValue(grant());
+    await useWorkspaceStore.getState().checkWispGrant();
+    expect(useWorkspaceStore.getState().wispGrantAvailable).toBe(true);
+
+    // No usable answer keeps what was last known rather than hiding the option.
+    h.fetchWispThread.mockReset();
+    h.fetchWispThread.mockRejectedValue(noAnswer());
+    await useWorkspaceStore.getState().checkWispGrant();
+    expect(useWorkspaceStore.getState().wispGrantAvailable).toBe(true);
+  });
+
+  it('a sessionless plain tab is persisted as plain and restored without a grant lookup', async () => {
+    useWorkspaceStore.getState().createTab(undefined, undefined, { plain: true });
+    const persisted = JSON.parse(h.data.get('breeze-workspace') ?? '{}');
+    expect(persisted.state.tabs[0]).toMatchObject({ plainChosen: true });
+
+    const restored = { ...useWorkspaceStore.getState().tabs[0], id: 'tab-r', wisp: undefined, plainChosen: true };
+    useWorkspaceStore.setState({ tabs: [restored], activeTabId: 'tab-r' });
+    await useWorkspaceStore.getState().restoreWorkspace();
+    await settle();
+    expect(h.fetchWispThread).not.toHaveBeenCalled();
+    expect(activeTab().wisp).toEqual({ kind: 'plain' });
+    fetchMock.mockResolvedValueOnce(json({ id: 'sess-1' })).mockResolvedValueOnce(stream());
+    await useWorkspaceStore.getState().sendMessage('tab-r', 'hello');
+    expect(createBody()).not.toHaveProperty('wispGrantId');
+  });
+});
+
 /** A tab as the persist merge rebuilds it: no session, mode not known. */
 function restoredTab() {
   useWorkspaceStore.getState().createTab();

@@ -29,6 +29,8 @@ const store = vi.hoisted(() => ({
   switchTab: vi.fn(),
   renameTab: vi.fn(),
   restoreWorkspace: vi.fn(async () => undefined),
+  checkWispGrant: vi.fn(async () => undefined),
+  wispGrantAvailable: false,
   cleanupAllStreams: vi.fn(),
   // #9840 W3: the deep link (#session=) and the move controls.
   openSession: vi.fn(async () => 'opened'),
@@ -72,6 +74,7 @@ describe('WorkspacePage - ai_sessions:use gate (#6498)', () => {
 
     expect(store.restoreWorkspace).not.toHaveBeenCalled();
     expect(store.createTab).not.toHaveBeenCalled();
+    expect(store.checkWispGrant).not.toHaveBeenCalled();
   });
 
   it('never acts on a #session= deep link without the permission (#9840 W3)', () => {
@@ -100,6 +103,7 @@ describe('WorkspacePage - ai_sessions:use gate (#6498)', () => {
     expect(screen.getByTestId('workspace-empty-state')).toBeInTheDocument();
     expect(screen.queryByTestId('workspace-access-denied')).not.toBeInTheDocument();
     expect(store.restoreWorkspace).toHaveBeenCalled();
+    expect(store.checkWispGrant).toHaveBeenCalled();
   });
 
   it('renders the tab bar and chat panel for a wildcard admin', () => {
