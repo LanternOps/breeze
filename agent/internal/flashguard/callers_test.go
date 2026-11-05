@@ -77,7 +77,7 @@ var powerSites = map[site]admission{
 	{"internal/remote/tools/system_safemode_windows.go", "RebootToSafeMode", "buildShutdownCommand"}: {"internal/remote/tools/system_safemode_windows.go", "RebootToSafeMode"},
 
 	// Agent replacement and restart.
-	{"internal/heartbeat/heartbeat.go", "doUpgrade", "UpdateToWithOptions"}:                     {"internal/heartbeat/heartbeat.go", "doUpgrade"},
+	{"internal/heartbeat/heartbeat.go", "doUpgradeAttempt", "UpdateToWithOptions"}:              {"internal/heartbeat/heartbeat.go", "doUpgradeAttempt"},
 	{"internal/heartbeat/handlers_devupdate.go", "handleDevUpdateAgent", "UpdateFromURL"}:       {"internal/heartbeat/handlers_devupdate.go", "handleDevUpdateAgent"},
 	{"internal/heartbeat/handlers_rollback_backend.go", "Restart", "RestartAfterRollback"}:      {"internal/heartbeat/handlers_rollback_backend.go", "Swap"},
 	{"internal/heartbeat/identity_sync.go", packageLevel, "RestartSelf"}:                        {"internal/heartbeat/identity_sync.go", "restartForIdentity"},

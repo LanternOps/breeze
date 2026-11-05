@@ -8886,7 +8886,7 @@ func (h *Heartbeat) upgradeHeldBeforeAttempt(targetVersion string) bool {
 	// give. Admission is taken again around the swap: this one only saves the
 	// work, and a section can open during the prefetch.
 	if h.flashSectionBlocksUpgrade(targetVersion) {
-		return
+		return true
 	}
 	// Checked before sendUpdateStatus and before any download work: the server
 	// re-sends the same upgradeTo on every heartbeat, so without this the
