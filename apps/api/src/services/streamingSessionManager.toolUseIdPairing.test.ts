@@ -116,7 +116,7 @@ vi.mock('./clientIp', async (orig) => ({
   getTrustedClientIpOrUndefined: () => undefined,
 }));
 
-// Keeps the lazy real ./flows/flowTools graph (~5 s cold) out of the first test (#11011).
+// Not reached here (the custom mcpServerFactory skips flow resolution); mocked for the flowToolsMock contract (#11011).
 vi.mock('./flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
 
 import { StreamingSessionManager, type ActiveSession } from './streamingSessionManager';

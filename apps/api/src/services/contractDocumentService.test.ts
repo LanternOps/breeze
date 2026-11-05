@@ -494,9 +494,8 @@ describe('contractDocumentService.freezeSignedAgreement (quote source)', () => {
   });
 
   it('createExecutedDocuments produces byte-identical rows to a direct freezeSignedAgreement call', async () => {
-    // pdfkit stamps CreationDate from the wall clock and derives the trailer /ID
-    // from it (PDFSecurity.generateFileID(info)), so both renders must read one
-    // clock. Only Date is faked: pdfkit's stream still needs real timers.
+    // pdfkit stamps CreationDate from the wall clock and hashes it into the trailer
+    // /ID (PDFSecurity.generateFileID(info)), so both renders must read one clock.
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
       vi.setSystemTime(new Date('2030-01-01T00:00:00.000Z'));
