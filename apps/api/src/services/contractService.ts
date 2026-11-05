@@ -5,6 +5,7 @@ import {
   contracts, contractLines, contractBillingPeriods, contractBillingPeriodOutcomes,
   organizations, sites, deviceGroups, catalogItemPrices, catalogItemOrgPricing,
   invoices, invoiceLineDevices, contractHourPeriods, contractDocuments, serviceDeliverables,
+  quotes,
 } from '../db/schema';
 import { ContractServiceError, actorCan, type ContractActor, type ContractLineAudit } from './contractTypes';
 import type { ContractLineInput, HourBlockEstimate, InvoiceLineDeviceCountedAs, UpdateContractInput } from '@breeze/shared';
@@ -542,8 +543,13 @@ export async function getContract(
   const lines = visibleLinesOrDeny(actor, allLines);
   // After the site-axis deny above, so a reader denied this contract never
   // pays for (or learns anything from) its siblings.
+  // #10361: the page also names the contract's source quote, so a quote's
+  // pending draft says where it came from even with no executed agreement.
   const related = options.includeRelated
-    ? { relatedContracts: await listRelatedContracts(contract, actor) }
+    ? {
+        relatedContracts: await listRelatedContracts(contract, actor),
+        sourceQuote: (await withSourceQuotes([contract], actor))[0]!.sourceQuote,
+      }
     : {};
   // #6110 finding 3: a PARTIAL read must not look like a complete one. When any
   // line was hidden, say so, and withhold the billing-period history — every
@@ -602,12 +608,20 @@ export type ContractListRow = ContractRow & {
   linesFilteredBySiteScope?: boolean;
 };
 
+/** #10361: the quote whose accept created a contract, as the list names it.
+ *  `quoteNumber` is null for a quote accepted before it was ever numbered. */
+export interface ContractSourceQuote { id: string; quoteNumber: string | null }
+export type ContractListRowWithSource = ContractListRow & { sourceQuote: ContractSourceQuote | null };
+
 export async function listContracts(query: {
   orgId?: string; status?: string; limit?: number;
-}, actor: ContractActor): Promise<ContractListRow[]> {
+  /** #10361: only the contracts a given quote's accept created (quote detail). */
+  sourceQuoteId?: string;
+}, actor: ContractActor): Promise<ContractListRowWithSource[]> {
   const conds = [];
   if (query.orgId) { requireOrgAccess(actor, query.orgId); conds.push(eq(contracts.orgId, query.orgId)); }
   if (query.status) conds.push(eq(contracts.status, query.status as never));
+  if (query.sourceQuoteId) conds.push(eq(contracts.sourceQuoteId, query.sourceQuoteId));
   // Defense-in-depth: when the actor has a restricted org list, add an explicit app-level filter
   // so the query never depends solely on RLS (consistent with other billing list endpoints).
   // null accessibleOrgIds = system/admin context — no extra filter needed.
@@ -630,7 +644,44 @@ export async function listContracts(query: {
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(contracts.createdAt))
     .limit(Math.min(query.limit ?? 50, 100));
-  return withEstimatedPeriodValues(rows, actor);
+  return withSourceQuotes(await withEstimatedPeriodValues(rows, actor), actor);
+}
+
+/**
+ * #10361: name each row's source quote so the list can mark a quote's pending
+ * draft. One query for the page, and none at all when no row came from a
+ * quote. The composite (source_quote_id, org_id) FK already guarantees the
+ * quote is in the contract's own org; the org predicate repeats that axis
+ * explicitly (as the other billing reads do) rather than leaning on RLS alone.
+ * A quote this actor cannot read reads as "no source quote", never an error.
+ *
+ * SITE AXIS (app-layer only — RLS does not defend it): reaching a contract
+ * through one of its lines does not make its quote readable. A site-restricted
+ * actor is told about the quote only when the quote's own site is in their
+ * allowlist — byte-for-byte quoteTypes.assertSite, where a null quote site is
+ * DENIED to a restricted actor.
+ */
+async function withSourceQuotes<T extends ContractRow>(
+  rows: T[],
+  actor: Pick<ContractActor, 'allowedSiteIds'>,
+): Promise<Array<T & { sourceQuote: ContractSourceQuote | null }>> {
+  const quoteIds = [...new Set(rows.map((r) => r.sourceQuoteId).filter((id): id is string => !!id))];
+  const none = () => rows.map((r) => ({ ...r, sourceQuote: null }));
+  if (quoteIds.length === 0) return none();
+  if (actor.allowedSiteIds && actor.allowedSiteIds.length === 0) return none();
+  const orgIds = [...new Set(rows.map((r) => r.orgId))];
+  const found = await db.select({ id: quotes.id, orgId: quotes.orgId, quoteNumber: quotes.quoteNumber })
+    .from(quotes)
+    .where(and(
+      inArray(quotes.id, quoteIds),
+      inArray(quotes.orgId, orgIds),
+      actor.allowedSiteIds ? inArray(quotes.siteId, actor.allowedSiteIds) : undefined,
+    ));
+  const byKey = new Map(found.map((q) => [`${q.id}:${q.orgId}`, q]));
+  return rows.map((r) => {
+    const q = r.sourceQuoteId ? byKey.get(`${r.sourceQuoteId}:${r.orgId}`) : undefined;
+    return { ...r, sourceQuote: q ? { id: q.id, quoteNumber: q.quoteNumber ?? null } : null };
+  });
 }
 
 /**
@@ -710,6 +761,10 @@ interface OrgSnapshotEntry {
 export type DeviceCache = Map<string, OrgSnapshotEntry>; // key orgId
 export type SeatCache = Map<string, number>;              // key orgId
 type ContractLineRow = typeof contractLines.$inferSelect;
+
+/** Why a line has no resolvable quantity: its group or site was deleted, or
+ *  (#9664) it is a manual line with no quantity. */
+export type UnresolvedLineReason = 'group_deleted' | 'site_deleted' | 'manual_quantity_missing';
 
 /** A wave-2 group line whose group is gone: all-zero, no allowance, so the
  *  estimate never shows a number the invoice cannot carry (generation refuses
@@ -875,12 +930,16 @@ function assertSpecDeviceSetLine(line: {
  */
 export async function resolveLineQty(
   orgId: string, line: ContractLineRow, dc: DeviceCache, sc: SeatCache,
-): Promise<ResolvedQuantity & { live: boolean; unresolved?: 'group_deleted' | 'site_deleted' }> {
+): Promise<ResolvedQuantity & { live: boolean; unresolved?: UnresolvedLineReason }> {
   switch (line.lineType) {
     case 'flat':
       return { ...applyAllowance(1, line, 'included_units'), live: false };
     case 'manual':
-      return { ...applyAllowance(Number(line.manualQuantity ?? '0'), line, 'included_units'), live: false };
+      // #9664: NULL is a MISSING quantity, never 0. Billing it as 0 put a
+      // silent $0 line on the invoice; it is unresolved like a deleted
+      // site/group (generation refuses with MANUAL_QUANTITY_MISSING).
+      if (line.manualQuantity === null) return { ...UNRESOLVED_QTY, live: false, unresolved: 'manual_quantity_missing' };
+      return { ...applyAllowance(Number(line.manualQuantity), line, 'included_units'), live: false };
     case 'per_device':
     case 'per_device_role': {
       // #4693: site_id NULL with a stamped name means the site was DELETED.
@@ -1058,7 +1117,7 @@ export interface ContractEstimate {
     overageMode: 'bill' | 'flag' | null;
     /** multiplyToCurrency(overage, overageUnitPrice), or the currency's zero. NEVER folded into `value`. */
     overageValue: string;
-    unresolved?: 'group_deleted' | 'site_deleted';
+    unresolved?: UnresolvedLineReason;
   }>;
   /** Devices no device-counted line bills (#3205). null when the contract has
    *  no per_device / per_device_role / per_device_group line, so the UI can tell "n/a" from "0". */
@@ -1655,6 +1714,11 @@ export async function addContractLineToContract(contractId: string, input: Contr
     await requireWholeContractSiteAccess(actor, contractId, tx);
     assertEditable(c);
     assertSpecDeviceSetLine(input);
+    // #9664: never fabricate a quantity. The route validator requires one; a
+    // caller that skips it must get an error, not a manual line billing 0.
+    if (input.lineType === 'manual' && input.manualQuantity == null) {
+      throw new ContractServiceError('manual line requires manualQuantity', 400, 'MANUAL_QUANTITY_MISSING');
+    }
     // A restricted actor may only create a line inside its sites; a non-site-scopable
     // (org-level, siteId null) line is denied, as a null-site invoice/quote is.
     // Checked BEFORE pricing so the answer is the authorization one, not a 400.
@@ -1723,7 +1787,7 @@ export async function addContractLineToContract(contractId: string, input: Contr
       const [row] = await tx.insert(contractLines).values({
         contractId, orgId: c.orgId, lineType: input.lineType, description: input.description,
         catalogItemId: input.catalogItemId ?? null, unitPrice,
-        manualQuantity: input.lineType === 'manual' ? (input.manualQuantity ?? '0') : null,
+        manualQuantity: input.lineType === 'manual' ? input.manualQuantity! : null,
         siteId: site?.id ?? null,
         siteName: site?.name ?? null,
         // #3205: roles only on per_device_role (CHECK-enforced); the validator
@@ -2299,6 +2363,15 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
         409, 'SITE_DELETED', { contractLineId: l.id, siteName: l.siteName },
       );
     }
+    // #9664: a manual line with no quantity must never bill as 0 (a silent $0
+    // line). contract_lines_manual_quantity_chk forbids it for new writes; a
+    // row that predates the CHECK (NOT VALID) is refused here, before any write.
+    if (l.lineType === 'manual' && l.manualQuantity === null) {
+      throw new ContractServiceError(
+        `Contract line "${l.description}" is a manual line with no quantity`,
+        409, 'MANUAL_QUANTITY_MISSING', { contractLineId: l.id },
+      );
+    }
   }
 
   const hasDeviceLine = lines.some(isDeviceLine);
@@ -2344,7 +2417,8 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
         quantity = '1';
         break;
       case 'manual':
-        quantity = l.manualQuantity ?? '0';
+        // Non-null: refused above (#9664).
+        quantity = l.manualQuantity!;
         break;
       case 'per_device':
       case 'per_device_role':
@@ -2546,6 +2620,7 @@ export async function createContractWithLinesDetailed(
       notes: spec.notes ?? null,
       terms: spec.terms ?? null,
       createdBy: spec.createdBy ?? null,
+      sourceQuoteId: spec.sourceQuoteId ?? null,
     })
     .returning();
 
@@ -2583,7 +2658,8 @@ export async function createContractWithLinesDetailed(
         description: l.description,
         catalogItemId: l.catalogItemId ?? null,
         unitPrice: l.unitPrice,
-        manualQuantity: l.lineType === 'manual' ? (l.manualQuantity ?? '0') : null,
+        // Non-null on a manual line: contractLineInvariantIssues (create) above rejects it otherwise.
+        manualQuantity: l.lineType === 'manual' ? l.manualQuantity! : null,
         siteId: site?.id ?? null,
         // #4693: acceptance passes the string the customer SIGNED. Prefer it
         // over a fresh read; every other caller falls back to the live name.

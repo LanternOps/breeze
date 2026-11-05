@@ -40,12 +40,12 @@ function fillFactorCode(value = '123456') {
 }
 
 describe('MFASettings — recovery codes are regenerate-only (#4414)', () => {
-  it('offers no read-shaped affordance: the status card action says Regenerate', async () => {
+  it('offers no read-shaped affordance: the status card action says Generate new codes', async () => {
     render(<MFASettings {...baseProps} onGenerateRecoveryCodes={vi.fn()} />);
 
     expect(screen.queryByRole('button', { name: /^View codes$/i })).toBeNull();
     const action = await screen.findByTestId('mfa-recovery-regenerate-start');
-    expect(action.textContent).toMatch(/regenerate/i);
+    expect(action.textContent).toMatch(/generate new codes/i);
   });
 
   it('does not POST until the confirm dialog is accepted, and states the invalidation first', async () => {
@@ -63,7 +63,7 @@ describe('MFASettings — recovery codes are regenerate-only (#4414)', () => {
     expect(onGenerateRecoveryCodes).not.toHaveBeenCalled();
     // The user is told what they are about to destroy, before they destroy it.
     expect(
-      screen.getByText(/immediately invalidates every recovery code you have saved/i)
+      screen.getByText(/current recovery codes will stop working/i)
     ).toBeTruthy();
 
     fireEvent.click(confirm);
@@ -117,7 +117,7 @@ describe('MFASettings — recovery codes are regenerate-only (#4414)', () => {
   // regeneration just invalidated — the exact promise #4414 exists to make.
   it('replaces SMS-enrollment codes with the regenerated set', async () => {
     const onGenerateRecoveryCodes = vi.fn().mockResolvedValue(true);
-    render(
+    const { rerender } = render(
       <MFASettings
         enabled={false}
         smsAllowed
@@ -138,6 +138,9 @@ describe('MFASettings — recovery codes are regenerate-only (#4414)', () => {
     fireEvent.click(screen.getByRole('button', { name: /Enable SMS MFA/i }));
 
     expect(await screen.findByText('SMS-0001')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('mfa-recovery-done'));
+    rerender(<MFASettings enabled mfaMethod="sms" recoveryCodes={['REGENERATED-0001']} onGenerateRecoveryCodes={onGenerateRecoveryCodes} />);
+    await openRecoveryPanel();
 
     fillPassword();
     fillFactorCode();

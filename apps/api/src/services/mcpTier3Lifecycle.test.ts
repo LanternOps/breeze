@@ -85,6 +85,21 @@ describe('audit sinks', () => {
     expect(sys!.action).toBe('mcp.tool.execute_command');
   });
 
+  it('#6268: an mcp.tool.ioc_hunt row carries iocs as { count, kinds }, never the IOC values', async () => {
+    const md5 = 'f'.repeat(32);
+    writeMcpToolAuditEvent(systemAuditSink, {
+      principal, auth, correlation, orgId: ORG, toolName: 'ioc_hunt', tier: 3,
+      toolInput: { action: 'import_iocs', ruleSetId: 'set-1', iocs: [{ kind: 'md5', value: md5 }, { kind: 'ip', value: '203.0.113.9' }] },
+      durationMs: 5, status: 'success' as const, result: 'ok',
+    });
+    await new Promise((r) => setImmediate(r));
+    const row = mocks.createAuditLogAsync.mock.calls.at(-1)![0] as { action: string; details: Record<string, unknown> };
+    expect(row.action).toBe('mcp.tool.ioc_hunt');
+    expect(row.details.arguments).toMatchObject({ iocs: { count: 2, kinds: ['ip', 'md5'] } });
+    expect(JSON.stringify(row)).not.toContain(md5);
+    expect(JSON.stringify(row)).not.toContain('203.0.113.9');
+  });
+
   it('requestAuditSink(undefined) is null, so the audit is skipped exactly as before', () => {
     expect(requestAuditSink(undefined)).toBeNull();
   });

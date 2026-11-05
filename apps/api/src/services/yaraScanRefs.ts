@@ -12,7 +12,7 @@
  * own RLS context.
  */
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
-import type { YaraRuleSetError, YaraRuleSetRef, SecurityScanEngine } from '@breeze/shared';
+import type { YaraRuleSetError, YaraRuleSetPin, YaraRuleSetRef, SecurityScanEngine } from '@breeze/shared';
 import { db } from '../db';
 import { devices, organizations, yaraRuleSets } from '../db/schema';
 import { compareAgentVersions, parseComparableVersion } from './agentEditionCompat';
@@ -44,21 +44,29 @@ export interface ResolvedYaraRefs {
   errors: Array<{ id: string; code: YaraRefErrorCode }>;
 }
 
-export async function resolveYaraRuleSetRefs(input: {
-  deviceId: string;
-  ruleSetIds: readonly string[];
-}): Promise<ResolvedYaraRefs> {
-  if (input.ruleSetIds.length === 0) return { refs: [], errors: [] };
+type EligibleSetRow = {
+  id: string;
+  enabled: boolean;
+  publishedVersion: number;
+  publishedSha256: string | null;
+};
 
+/**
+ * The device's agent id plus the requested sets it is ALLOWED to run: its
+ * org's own sets, its partner's partner-wide sets and the built-in pack.
+ * `null` when the device does not exist.
+ */
+async function loadDeviceEligibleSets(
+  deviceId: string,
+  ruleSetIds: readonly string[],
+): Promise<{ agentId: string; byId: Map<string, EligibleSetRow> } | null> {
   const [device] = await db
     .select({ agentId: devices.agentId, orgId: devices.orgId, partnerId: organizations.partnerId })
     .from(devices)
     .innerJoin(organizations, eq(organizations.id, devices.orgId))
-    .where(eq(devices.id, input.deviceId))
+    .where(eq(devices.id, deviceId))
     .limit(1);
-  if (!device) {
-    return { refs: [], errors: input.ruleSetIds.map((id) => ({ id, code: 'not_found' as const })) };
-  }
+  if (!device) return null;
 
   const rows = await db
     .select({
@@ -70,7 +78,7 @@ export async function resolveYaraRuleSetRefs(input: {
     .from(yaraRuleSets)
     .where(
       and(
-        inArray(yaraRuleSets.id, [...input.ruleSetIds]),
+        inArray(yaraRuleSets.id, [...ruleSetIds]),
         or(
           eq(yaraRuleSets.orgId, device.orgId),
           and(isNull(yaraRuleSets.orgId), eq(yaraRuleSets.partnerId, device.partnerId)),
@@ -78,12 +86,27 @@ export async function resolveYaraRuleSetRefs(input: {
         ),
       ),
     );
-  const byId = new Map(rows.map((r) => [r.id, r]));
+  return { agentId: device.agentId, byId: new Map(rows.map((r) => [r.id, r])) };
+}
+
+const refUrl = (agentId: string, id: string, version: number) =>
+  `/api/v1/agents/${encodeURIComponent(agentId)}/yara/rule-sets/${id}/${version}`;
+
+export async function resolveYaraRuleSetRefs(input: {
+  deviceId: string;
+  ruleSetIds: readonly string[];
+}): Promise<ResolvedYaraRefs> {
+  if (input.ruleSetIds.length === 0) return { refs: [], errors: [] };
+
+  const loaded = await loadDeviceEligibleSets(input.deviceId, input.ruleSetIds);
+  if (!loaded) {
+    return { refs: [], errors: input.ruleSetIds.map((id) => ({ id, code: 'not_found' as const })) };
+  }
 
   const refs: YaraRuleSetRef[] = [];
   const errors: ResolvedYaraRefs['errors'] = [];
   for (const id of input.ruleSetIds) {
-    const row = byId.get(id);
+    const row = loaded.byId.get(id);
     if (!row) errors.push({ id, code: 'not_found' });
     else if (!row.enabled) errors.push({ id, code: 'disabled' });
     else if (row.publishedVersion < 1 || !row.publishedSha256) errors.push({ id, code: 'not_published' });
@@ -92,11 +115,53 @@ export async function resolveYaraRuleSetRefs(input: {
         id,
         version: row.publishedVersion,
         sha256: row.publishedSha256,
-        url: `/api/v1/agents/${encodeURIComponent(device.agentId)}/yara/rule-sets/${id}/${row.publishedVersion}`,
+        url: refUrl(loaded.agentId, id, row.publishedVersion),
       });
     }
   }
   return { refs, errors };
+}
+
+export type PinnedYaraRefErrorCode = YaraRefErrorCode | 'rule_set_changed' | 'agent_too_old';
+
+/**
+ * #6263 W05-3 — refs for a sweep scan: EXACTLY the versions pinned when the
+ * sweep was approved, or nothing. Every pin must still be eligible for the
+ * device (the same ownership rule as `resolveYaraRuleSetRefs`), enabled, and
+ * published at the pinned version with the pinned sha. Anything else fails the
+ * whole scan with per-set codes: a sweep never runs a partial set list, a
+ * different version than the one approved, or a legacy scan.
+ */
+export async function resolvePinnedYaraRefs(input: {
+  deviceId: string;
+  agentVersion: string | null | undefined;
+  pins: readonly YaraRuleSetPin[];
+}): Promise<{ ok: true; refs: YaraRuleSetRef[] } | { ok: false; errors: YaraRuleSetError[] }> {
+  if (!agentSupportsYaraScan(input.agentVersion)) {
+    return {
+      ok: false,
+      errors: [{
+        id: '*',
+        code: 'agent_too_old',
+        detail: `agent ${input.agentVersion || 'unknown'} is older than ${MIN_AGENT_VERSION_YARA_SCAN}`,
+      }],
+    };
+  }
+  if (input.pins.length === 0) return { ok: false, errors: [{ id: '*', code: 'not_found' }] };
+
+  const loaded = await loadDeviceEligibleSets(input.deviceId, input.pins.map((p) => p.id));
+  const refs: YaraRuleSetRef[] = [];
+  const errors: YaraRuleSetError[] = [];
+  for (const pin of input.pins) {
+    const row = loaded?.byId.get(pin.id);
+    const fail = (code: PinnedYaraRefErrorCode) => errors.push({ id: pin.id, version: pin.version, code });
+    if (!loaded || !row) fail('not_found');
+    else if (!row.enabled) fail('disabled');
+    else if (row.publishedVersion < 1 || !row.publishedSha256) fail('not_published');
+    else if (row.publishedVersion !== pin.version || row.publishedSha256 !== pin.sha256) fail('rule_set_changed');
+    else refs.push({ id: pin.id, version: pin.version, sha256: pin.sha256, url: refUrl(loaded.agentId, pin.id, pin.version) });
+  }
+  return errors.length > 0 ? { ok: false, errors } : { ok: true, refs };
 }
 
 export interface YaraScanPlan {

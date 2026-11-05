@@ -1,0 +1,6 @@
+{
+  "promptId": "restart:42",
+  "actionId": "restart_now",
+  "result": "rejected_stale",
+  "rev": 2
+}

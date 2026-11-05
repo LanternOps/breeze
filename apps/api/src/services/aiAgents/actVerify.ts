@@ -458,6 +458,7 @@ export async function recordActVerifyFailureAlert(args: RecordActVerifyFailureAl
   try {
     await inSystemDbContext(async () => {
       await db.insert(alerts).values({
+        ownerKind: 'device',
         ruleId: null,
         deviceId: run.deviceId,
         orgId: run.orgId,

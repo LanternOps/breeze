@@ -18,6 +18,7 @@ import StorageKeyRevocationCard from "./StorageKeyRevocationCard";
 import BackupDestinationSection, {
   emptyConfigForm,
   capabilitySummary,
+  destinationPrefixError,
   supportsProviderImmutability,
 } from "./BackupDestinationSection";
 import type {
@@ -995,6 +996,10 @@ export default function BackupTab({
           "policies:configurationPolicies.featureTabs.backupTab.s3BucketNameIsRequired",
         );
       }
+      // Rendered inline by BackupDestinationSection; recorded here so a save
+      // that slips past the disabled button still stops.
+      const prefixError = destinationPrefixError(configForm);
+      if (prefixError) errors.prefix = prefixError;
       if (
         !configForm.region.trim() &&
         !deriveS3RegionFromEndpoint(configForm.endpoint)
@@ -1235,6 +1240,12 @@ export default function BackupTab({
       ? defaultConfig
       : configs.find((c) => c.id === selectedConfigId);
   const isSaving = saving || configSaving;
+  // #7081: the destination form shows the key-prefix error inline; Save waits
+  // until it is fixed (the API would refuse the destination anyway).
+  const destinationPrefixInvalid =
+    !isPartnerWide &&
+    (mode === "create" || mode === "edit") &&
+    destinationPrefixError(configForm) !== null;
   const combinedError = configError || error;
   const retentionInfo = retentionPresets.find(
     (p) => p.value === settings.retentionPreset,
@@ -1300,6 +1311,7 @@ export default function BackupTab({
       icon={<HardDrive className="h-5 w-5" />}
       isConfigured={!!existingLink || isInherited}
       saving={isSaving}
+      saveDisabled={destinationPrefixInvalid}
       error={combinedError}
       onSave={handleSave}
       onRemove={existingLink && !linkedPolicyId ? handleRemove : undefined}

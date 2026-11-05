@@ -1,10 +1,13 @@
 import type { ReleaseDecision } from './scriptProposals/approvalMethod';
+import type { ActionIntentSource } from '../db/schema/actionIntents';
 import type { scripts } from '../db/schema';
 import type { RunScriptSnapshot } from './actionIntents/runScriptSnapshot';
 import type { TenantVariableScope } from './tenantVariableResolution';
 import type { TopologyRequestContext } from './topology/access';
 import type { VerifiedTopologyDiagnostic } from './topology/aiDiagnosticEffect';
+import type { ApprovalBinding } from './networkIsolation/service';
 import type { PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
+import type { FlowToolCallInput, FlowToolDescriptor } from './flows/flowTools';
 
 /**
  * One `run_script` release, resolved once and verified against the approval's
@@ -124,6 +127,14 @@ export type ToolExecutionContext = {
    */
   releaseDecision?: ReleaseDecision;
   /**
+   * The released intent's `source` (`chat` | `mcp_api` | `ai_agent`) — set by
+   * the SAME two release paths that set `actionIntentId`, from the intent row
+   * they hold, and by nothing else (#6268). `ioc_hunt sweep` stamps its sweep
+   * `origin` from it (`mcp_api` → `mcp`, otherwise `ai_chat`); the auth alone
+   * cannot say which surface filed the approval. Absent on every direct call.
+   */
+  intentSource?: ActionIntentSource;
+  /**
    * #4177 (W04): set ONLY by jobs/intentReleaseWorker.ts, and only when it
    * releases an agent-originated intent whose action creates a row OWNED by
    * a real user (`USER_OWNED_RELEASE_ACTIONS` — `manage_tickets:
@@ -155,7 +166,7 @@ export type ToolExecutionContext = {
    * imported, because this file must not depend on the artifact service
    * layer for an otherwise-unrelated execution-input bag.
    *
-   * Set by `executeTool` ONLY for `read_artifact` (a name check, not a
+   * Set by `executeTool` ONLY for `read_artifact` and `run_flow` (a name check, not a
    * blanket computation folded into every call's context) so every other
    * tool's `context` identity is unaffected — see the comment at the call
    * site in `aiTools.ts`. Absent for a call with no attributable org/run/
@@ -195,6 +206,17 @@ export type ToolExecutionContext = {
    */
   verifiedTopologyDiagnostic?: VerifiedTopologyDiagnostic;
   /**
+   * Network-isolation W13 (#10101, spec §3.8 "Approval binding"): the episode
+   * a four-eyes `release_containment` approval was pinned over —
+   * `(orgId, deviceId, isolationId, generation)` as of approval time. Set ONLY
+   * from the release path's effect-digest recompute on a MATCH (so it equals
+   * what the approver saw), never from model arguments, and travels with
+   * `actionIntentId`. The handler refuses without both and passes it to
+   * `releaseNetworkIsolation`, which re-checks it under the episode lock: an
+   * extend (a new generation) or an org move after approval refuses the release.
+   */
+  verifiedIsolationRelease?: Readonly<ApprovalBinding>;
+  /**
    * #7906: the strictly-parsed `event_logs_query` payload the chat gate
    * classified as Tier-2 read-only (System/Setup, no XPath). Set ONLY by
    * `createSessionPreToolUse` from `checkGuardrails`' own parse — never from
@@ -203,4 +225,28 @@ export type ToolExecutionContext = {
    * the call that was classified.
    */
   pinnedEventLogsQuery?: PinnedEventLogsQuery;
+  /**
+   * W5 PR C (#5220): the flow tool the chat gate resolved LIVE and gated at
+   * its invocation tier, with the validated call. Set ONLY by
+   * `createSessionPreToolUse`'s flow branch — never from model arguments —
+   * and carried to the `flow__<slug>` SDK handler (sdkFlowTools.ts) through
+   * `wrapExtraToolWithHooks`, so the handler starts the run on exactly the
+   * publication the gate checked (a re-enable in between is
+   * `flow_tool_changed`, never a run at a tier nobody gated).
+   */
+  flowToolGate?: FlowToolGate;
+  /**
+   * W5 PR C (#5220): set ONLY by `createSessionPreToolUse` when it LOWERED
+   * `run_flow` below its static Tier 3 to the target flow's invocation tier —
+   * the flow and the publication seq that tier was computed for. The run_flow
+   * handler starts the run on exactly that publication or refuses
+   * (`flow_tool_changed`).
+   */
+  runFlowGate?: { flowId: string; publicationSeq: number };
 };
+
+/** See `ToolExecutionContext.flowToolGate`. */
+export interface FlowToolGate {
+  descriptor: FlowToolDescriptor;
+  call: FlowToolCallInput;
+}

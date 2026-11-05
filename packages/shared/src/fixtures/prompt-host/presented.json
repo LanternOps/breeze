@@ -1,0 +1,6 @@
+{
+  "promptId": "restart:42",
+  "rev": 1,
+  "lease": { "rendererSession": "assist-user-4242", "epoch": 1 },
+  "visible": true
+}

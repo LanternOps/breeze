@@ -37,4 +37,16 @@ describe('refreshConditionalWriteProbe', () => {
     await expect(refreshConditionalWriteProbe('cfg', 'org')).resolves.toBe(true);
     expect(m.record).toHaveBeenCalledWith('supported', 'precondition_enforced');
   });
+
+  // #7081: the probe answers for where new snapshots are written. A stored
+  // prefix that does not normalize names no such place (mint refuses the
+  // destination), and a result recorded for it would outlive the fix: the
+  // record is keyed by storage identity, which excludes the prefix.
+  it('skips a destination whose stored prefix is invalid: no probe, nothing recorded', async () => {
+    m.resolve.mockResolvedValue({ ...S3, providerConfig: { ...S3.providerConfig, prefix: 'a//b' } });
+    await expect(refreshConditionalWriteProbe('cfg', 'org')).resolves.toBeNull();
+    expect(m.probe).not.toHaveBeenCalled();
+    expect(m.update).not.toHaveBeenCalled();
+    expect(m.record).not.toHaveBeenCalled();
+  });
 });

@@ -75,4 +75,16 @@ describe('SecurityScanManager history outcome', () => {
     const pill = await screen.findByTestId('scan-history-outcome');
     expect(pill.getAttribute('data-outcome')).toBe('failed');
   });
+
+  it('renders cancelled and expired scans (sweep outcomes) with their own labels', async () => {
+    mockScans([scan('s1', 'cancelled', 0), scan('s2', 'expired', 0)]);
+    render(<SecurityScanManager />);
+
+    const cancelled = await screen.findByTestId('scan-history-status-cancelled');
+    expect(cancelled.textContent).toBe('Cancelled');
+    const expired = screen.getByTestId('scan-history-status-expired');
+    expect(expired.textContent).toBe('Expired');
+    const kinds = screen.getAllByTestId('scan-history-outcome').map((el) => el.getAttribute('data-outcome'));
+    expect(kinds.sort()).toEqual(['cancelled', 'expired']);
+  });
 });

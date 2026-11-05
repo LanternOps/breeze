@@ -2,7 +2,8 @@ import { Hono } from 'hono';
 import { ERROR_CODES } from '@breeze/shared';
 import { basename } from 'node:path';
 import { zValidator } from '../../lib/validation';
-import { authMiddleware, requireScope } from '../../middleware/auth';
+import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
+import { PERMISSIONS } from '../../services/permissions';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { createAuditLog } from '../../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
@@ -19,6 +20,16 @@ import {
 import { deviceIdParamSchema, fileListQuerySchema, fileDownloadQuerySchema, fileCopyBodySchema, fileMoveBodySchema, fileDeleteBodySchema, fileTrashRestoreBodySchema, fileTrashPurgeBodySchema, fileUploadBodySchema } from './schemas';
 
 export const fileBrowserRoutes = new Hono();
+
+// Upload, copy and move write files with the agent's own privileges, so they
+// need the grant script execution needs (scripts:execute) on top of the
+// router-wide devices:execute (index.ts). Trash restore returns an item to the
+// path it was deleted from and stays at devices:execute. aiGuardrails.ts holds
+// file_operations write/rename to the same grant.
+const requireScriptsExecute = requirePermission(
+  PERMISSIONS.SCRIPTS_EXECUTE.resource,
+  PERMISSIONS.SCRIPTS_EXECUTE.action,
+);
 
 // GET /devices/:deviceId/files - List files for a path
 fileBrowserRoutes.get(
@@ -203,6 +214,7 @@ fileBrowserRoutes.post(
   '/devices/:deviceId/files/upload',
   authMiddleware,
   requireScope('system', 'partner', 'organization'),
+  requireScriptsExecute,
   zValidator('param', deviceIdParamSchema),
   zValidator('json', fileUploadBodySchema),
   async (c) => {
@@ -283,6 +295,7 @@ fileBrowserRoutes.post(
   '/devices/:deviceId/files/copy',
   authMiddleware,
   requireScope('system', 'partner', 'organization'),
+  requireScriptsExecute,
   zValidator('param', deviceIdParamSchema),
   zValidator('json', fileCopyBodySchema),
   async (c) => {
@@ -370,6 +383,7 @@ fileBrowserRoutes.post(
   '/devices/:deviceId/files/move',
   authMiddleware,
   requireScope('system', 'partner', 'organization'),
+  requireScriptsExecute,
   zValidator('param', deviceIdParamSchema),
   zValidator('json', fileMoveBodySchema),
   async (c) => {

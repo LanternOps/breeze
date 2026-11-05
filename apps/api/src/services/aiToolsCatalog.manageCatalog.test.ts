@@ -25,6 +25,7 @@ vi.mock('./catalogService', () => {
     setOrgPriceOverride: vi.fn().mockResolvedValue({ catalogItemId: 'cat-1', orgId: 'org-1', unitPrice: '99.00' }),
     removeOrgPriceOverride: vi.fn().mockResolvedValue({ ok: true }),
     setBundleComponents: vi.fn().mockResolvedValue({ item: { id: 'bundle-1' }, components: [] }),
+    readCatalogPreviousState: vi.fn().mockResolvedValue(null),
   };
 });
 
@@ -33,6 +34,7 @@ import * as catalogService from './catalogService';
 import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
 import { CatalogServiceError } from './catalogService';
+import { toolInputSchemas } from './aiToolSchemas';
 
 const auth: AuthContext = {
   principal: { kind: 'user_session' },
@@ -60,12 +62,12 @@ const actor = { userId: 'u-1', partnerId: 'p-1', accessibleOrgIds: ['org-1'] };
 function getTool(): AiTool {
   const map = new Map<string, AiTool>();
   registerCatalogTools(map);
-  const t = map.get('manage_catalog');
-  if (!t) throw new Error('manage_catalog not registered');
+  const t = map.get('manage_billing_catalog');
+  if (!t) throw new Error('manage_billing_catalog not registered');
   return t;
 }
 
-describe('manage_catalog', () => {
+describe('manage_billing_catalog', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('create_item calls createCatalogItem with item payload and actor built from auth', async () => {
@@ -95,14 +97,14 @@ describe('manage_catalog', () => {
     );
 
     expect(catalogService.updateCatalogItem).toHaveBeenCalledWith('cat-1', item, actor);
-    expect(JSON.parse(out)).toEqual({ id: 'cat-1', name: 'Updated service' });
+    expect(JSON.parse(out)).toEqual({ id: 'cat-1', name: 'Updated service', previous: null });
   });
 
   it('archive_item calls archiveCatalogItem with catalogId and actor', async () => {
     const out = await getTool().handler({ action: 'archive_item', catalogId: 'cat-1' }, auth);
 
     expect(catalogService.archiveCatalogItem).toHaveBeenCalledWith('cat-1', actor);
-    expect(JSON.parse(out)).toEqual({ id: 'cat-1', isActive: false });
+    expect(JSON.parse(out)).toEqual({ id: 'cat-1', isActive: false, previous: null });
   });
 
   it('set_price normalizes currency and calls setItemPrice with the validated price payload', async () => {
@@ -117,7 +119,7 @@ describe('manage_catalog', () => {
       { unitPrice: 10 },
       actor,
     );
-    expect(JSON.parse(out)).toEqual({ itemId: 'cat-1', currencyCode: 'EUR', unitPrice: '10.00' });
+    expect(JSON.parse(out)).toEqual({ itemId: 'cat-1', currencyCode: 'EUR', unitPrice: '10.00', previous: null });
   });
 
   it('set_price without currencyCode returns a structured VALIDATION_ERROR', async () => {
@@ -139,7 +141,7 @@ describe('manage_catalog', () => {
     );
 
     expect(catalogService.removeItemPrice).toHaveBeenCalledWith('cat-1', 'EUR', actor);
-    expect(JSON.parse(out)).toEqual({ ok: true });
+    expect(JSON.parse(out)).toEqual({ ok: true, previous: null });
   });
 
   it('set_org_price calls setOrgPriceOverride with item id, org id, override payload, and actor', async () => {
@@ -156,7 +158,7 @@ describe('manage_catalog', () => {
       override,
       actor,
     );
-    expect(JSON.parse(out)).toEqual({ catalogItemId: 'cat-1', orgId: 'org-1', unitPrice: '99.00' });
+    expect(JSON.parse(out)).toEqual({ catalogItemId: 'cat-1', orgId: 'org-1', unitPrice: '99.00', previous: null });
   });
 
   it('remove_org_price calls removeOrgPriceOverride with item id, org id, and actor', async () => {
@@ -166,7 +168,7 @@ describe('manage_catalog', () => {
     );
 
     expect(catalogService.removeOrgPriceOverride).toHaveBeenCalledWith('cat-1', 'org-1', actor);
-    expect(JSON.parse(out)).toEqual({ ok: true });
+    expect(JSON.parse(out)).toEqual({ ok: true, previous: null });
   });
 
   it('set_bundle_components passes components through to setBundleComponents with actor', async () => {
@@ -193,7 +195,7 @@ describe('manage_catalog', () => {
       actor,
       'USD',
     );
-    expect(JSON.parse(out)).toEqual({ item: { id: 'bundle-1' }, components: [] });
+    expect(JSON.parse(out)).toEqual({ item: { id: 'bundle-1' }, components: [], previous: null });
   });
 
   it('set_bundle_components with a revenueAllocation but no allocationCurrency is a VALIDATION_ERROR (#3775 review #7)', async () => {
@@ -282,3 +284,65 @@ describe('manage_catalog', () => {
     expect(catalogService.updateCatalogItem).not.toHaveBeenCalled();
   });
 });
+
+// W02 (#6756) W02-D5 / QA7: set_price and remove_price were unreachable from
+// chat (Zod rejected the enum value), and every price-affecting action must
+// return the value it replaced so a supervised approval is reversible within a
+// minute (the precondition for supervised rather than four-eyes).
+describe('manage_billing_catalog input surface + previous value (W02, #6756)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('Zod keeps set_price/remove_price and their currencyCode/price keys', () => {
+    const parsed = toolInputSchemas.manage_billing_catalog!.parse({
+      action: 'set_price', catalogId: '11111111-1111-4111-8111-111111111111', currencyCode: 'EUR', price: { unitPrice: 10 },
+    }) as Record<string, unknown>;
+    expect(parsed).toMatchObject({ action: 'set_price', currencyCode: 'EUR', price: { unitPrice: 10 } });
+    expect(toolInputSchemas.manage_billing_catalog!.parse({
+      action: 'remove_price', catalogId: '11111111-1111-4111-8111-111111111111', currencyCode: 'EUR',
+    })).toMatchObject({ action: 'remove_price', currencyCode: 'EUR' });
+  });
+
+  it('Zod keeps allocationCurrency for set_bundle_components', () => {
+    const parsed = toolInputSchemas.manage_billing_catalog!.parse({
+      action: 'set_bundle_components', catalogId: '11111111-1111-4111-8111-111111111111',
+      components: [{ componentItemId: '11111111-1111-1111-1111-111111111111', quantity: 1, revenueAllocation: 5 }],
+      allocationCurrency: 'USD',
+    }) as Record<string, unknown>;
+    expect(parsed.allocationCurrency).toBe('USD');
+  });
+
+  const cases: Array<[string, Record<string, unknown>, unknown[], keyof typeof catalogService]> = [
+    ['update_item', { catalogId: 'cat-1', item: { taxable: false } }, ['update_item', { catalogId: 'cat-1', fields: ['taxable'] }, actor], 'updateCatalogItem'],
+    ['archive_item', { catalogId: 'cat-1' }, ['archive_item', { catalogId: 'cat-1', fields: ['isActive'] }, actor], 'archiveCatalogItem'],
+    ['set_price', { catalogId: 'cat-1', currencyCode: 'eur', price: { unitPrice: 10 } }, ['set_price', { catalogId: 'cat-1', currencyCode: 'EUR' }, actor], 'setItemPrice'],
+    ['remove_price', { catalogId: 'cat-1', currencyCode: 'eur' }, ['remove_price', { catalogId: 'cat-1', currencyCode: 'EUR' }, actor], 'removeItemPrice'],
+    ['set_org_price', { catalogId: 'cat-1', orgId: 'org-1', override: { unitPrice: 9 } }, ['set_org_price', { catalogId: 'cat-1', orgId: 'org-1' }, actor], 'setOrgPriceOverride'],
+    ['remove_org_price', { catalogId: 'cat-1', orgId: 'org-1' }, ['remove_org_price', { catalogId: 'cat-1', orgId: 'org-1' }, actor], 'removeOrgPriceOverride'],
+    ['set_bundle_components', { catalogId: 'bundle-1', components: [] }, ['set_bundle_components', { catalogId: 'bundle-1' }, actor], 'setBundleComponents'],
+  ];
+
+  it.each(cases)('%s reads the previous value before writing and returns it', async (action, input, readArgs, writer) => {
+    const previous = { marker: `prev-${action}` };
+    vi.mocked(catalogService.readCatalogPreviousState).mockResolvedValueOnce(previous);
+    const out = JSON.parse(await getTool().handler({ action, ...input }, auth));
+    expect(catalogService.readCatalogPreviousState).toHaveBeenCalledWith(...readArgs);
+    const readOrder = vi.mocked(catalogService.readCatalogPreviousState).mock.invocationCallOrder[0]!;
+    const writeOrder = (vi.mocked(catalogService[writer] as (...a: unknown[]) => unknown)).mock.invocationCallOrder[0]!;
+    expect(readOrder).toBeLessThan(writeOrder);
+    expect(out.previous).toEqual(previous);
+  });
+
+  it('create_item reads nothing (nothing is replaced)', async () => {
+    await getTool().handler({ action: 'create_item', item: {
+      itemType: 'service', name: 'x', billingType: 'one_time', unitPrice: 1, unitOfMeasure: 'each', taxable: true, isBundle: false, attributes: {},
+    } }, auth);
+    expect(catalogService.readCatalogPreviousState).not.toHaveBeenCalled();
+  });
+
+  it('a validation failure reads nothing and writes nothing', async () => {
+    const out = JSON.parse(await getTool().handler({ action: 'set_org_price', catalogId: 'cat-1', orgId: 'org-1', override: { unitPrice: 'free' } }, auth));
+    expect(out.code).toBe('VALIDATION_ERROR');
+    expect(catalogService.readCatalogPreviousState).not.toHaveBeenCalled();
+  });
+});
+

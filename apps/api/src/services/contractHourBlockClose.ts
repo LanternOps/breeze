@@ -198,7 +198,10 @@ async function closeOne(
     // uncommitted draft (billing path) or one the sweep just created in this
     // transaction — nothing else can hold it, so the order cannot cycle.
     const { line: il } = await addContractLine(inv.id, {
-      description: `${line.description} — hours over block, ${p.periodStart} – ${p.periodEnd}`,
+      // #9664: the marker rides on the TITLE, so a multi-line block text keeps
+      // it there (it would otherwise trail the blurb).
+      description: line.description,
+      titleSuffix: ` — hours over block, ${p.periodStart} – ${p.periodEnd}`,
       quantity: math.overageHours.toFixed(2),
       unitPrice: line.overageUnitPrice!,
       taxable: line.taxable,

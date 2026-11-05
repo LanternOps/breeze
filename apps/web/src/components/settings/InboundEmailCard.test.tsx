@@ -176,69 +176,33 @@ describe('InboundEmailCard', () => {
     expect(lastInboundPatch().staffForwardRouting).toBe(true);
   });
 
-  it('offers exactly the server-side candidates, not the general user list', async () => {
+  it('no longer renders the default-assignee picker (it moved to the Routing tab)', async () => {
     routeFetch();
     render(<InboundEmailCard />);
     await screen.findByTestId('inbound-email-card');
-    const picker = screen.getByTestId('inbound-default-assignee') as HTMLSelectElement;
-    await waitFor(() => expect(Array.from(picker.options).map((o) => o.value)).toEqual(['', 'u-1']));
-    expect(picker.value).toBe('');
-    expect(fetchWithAuth).not.toHaveBeenCalledWith('/users', expect.anything());
-    expect(fetchWithAuth.mock.calls.some((c) => c[0] === '/users')).toBe(false);
+    expect(screen.queryByTestId('inbound-default-assignee')).not.toBeInTheDocument();
+    expect(fetchWithAuth.mock.calls.some((c) => c[0] === '/orgs/partners/me/default-assignee-candidates')).toBe(false);
   });
 
-  it('keeps working when the candidate list cannot be loaded', async () => {
-    fetchWithAuth.mockImplementation((url: string) => {
-      if (url === '/ticket-config') return Promise.resolve(jsonRes({ data: { inbound: { ...CFG, defaultAssigneeUserId: 'u-9' } } }));
-      if (url === '/orgs/partners/me/default-assignee-candidates') return Promise.resolve(jsonRes({ error: 'x' }, false, 403));
-      return Promise.resolve(jsonRes({ data: [] }));
-    });
+  it('a card save still PATCHes the existing defaultAssigneeUserId so it is not wiped', async () => {
+    routeFetch({ ...CFG, defaultAssigneeUserId: 'u-2', staffForwardRouting: true });
     render(<InboundEmailCard />);
     await screen.findByTestId('inbound-email-card');
-    const picker = screen.getByTestId('inbound-default-assignee') as HTMLSelectElement;
-    expect(Array.from(picker.options).map((o) => o.value)).toEqual(['', 'u-9']);
-    expect(picker.value).toBe('u-9');
-  });
-
-  it('picking a default assignee PATCHes defaultAssigneeUserId in the complete inbound object', async () => {
-    routeFetch({ ...CFG, staffForwardRouting: true });
-    render(<InboundEmailCard />);
-    await screen.findByTestId('inbound-email-card');
-    const picker = screen.getByTestId('inbound-default-assignee') as HTMLSelectElement;
-    await waitFor(() => expect(picker.options.length).toBe(2));
-    fireEvent.change(picker, { target: { value: 'u-1' } });
-    await waitFor(() =>
-      expect(fetchWithAuth).toHaveBeenCalledWith('/orgs/partners/me', expect.objectContaining({ method: 'PATCH' })),
-    );
-    const inbound = lastInboundPatch();
-    expect(inbound.defaultAssigneeUserId).toBe('u-1');
-    // Other settings ride along unchanged (the sub-object is replaced wholesale).
-    expect(inbound.staffForwardRouting).toBe(true);
-    expect(inbound.unknownSenderMode).toBe('quarantine');
-  });
-
-  it('preserves the default assignee when another inbound setting is saved, even one the list no longer offers', async () => {
-    routeFetch({ ...CFG, defaultAssigneeUserId: 'u-2' });
-    render(<InboundEmailCard />);
-    await screen.findByTestId('inbound-email-card');
-    const picker = screen.getByTestId('inbound-default-assignee') as HTMLSelectElement;
-    // The stored user is not an assignable choice any more, but stays selected.
-    await waitFor(() => expect(Array.from(picker.options).map((o) => o.value)).toEqual(['', 'u-2', 'u-1']));
-    expect(picker.value).toBe('u-2');
     fireEvent.click(screen.getByTestId('inbound-drop-unverified-toggle'));
     await waitFor(() =>
       expect(fetchWithAuth).toHaveBeenCalledWith('/orgs/partners/me', expect.objectContaining({ method: 'PATCH' })),
     );
-    expect(lastInboundPatch().defaultAssigneeUserId).toBe('u-2');
+    const inbound = lastInboundPatch();
+    expect(inbound.defaultAssigneeUserId).toBe('u-2');
+    expect(inbound.staffForwardRouting).toBe(true);
+    expect(inbound.dropUnverifiedSenders).toBe(true);
   });
 
-  it('clearing the default assignee PATCHes null', async () => {
-    routeFetch({ ...CFG, defaultAssigneeUserId: 'u-1' });
+  it('a card save with no stored default assignee PATCHes null', async () => {
+    routeFetch();
     render(<InboundEmailCard />);
     await screen.findByTestId('inbound-email-card');
-    const picker = screen.getByTestId('inbound-default-assignee') as HTMLSelectElement;
-    await waitFor(() => expect(picker.value).toBe('u-1'));
-    fireEvent.change(picker, { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('inbound-drop-unverified-toggle'));
     await waitFor(() =>
       expect(fetchWithAuth).toHaveBeenCalledWith('/orgs/partners/me', expect.objectContaining({ method: 'PATCH' })),
     );

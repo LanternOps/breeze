@@ -3,6 +3,7 @@
 package patching
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -574,6 +575,10 @@ func TestCancelIsRefusedWhileTheOSCommandIsBeingIssued(t *testing.T) {
 
 	if err := rm.Cancel(); err == nil {
 		t.Error("Cancel reported success while the shutdown command was still being issued; the machine reboots anyway")
+	} else if errors.Is(err, ErrNoRebootScheduled) {
+		// The handler reports that sentinel as a successful no-op (#10186), so
+		// returning it here would tell the console the restart is off.
+		t.Errorf("Cancel mid-invocation = %v, which reads as \"nothing to cancel\"", err)
 	}
 	if _, err := rm.Defer(); err == nil {
 		t.Error("Defer was granted while the shutdown command was being issued")

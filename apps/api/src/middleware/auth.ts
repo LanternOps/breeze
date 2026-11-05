@@ -21,6 +21,7 @@ import { captureException, withSentryRequestScope } from '../services/sentry';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { ipAllowlistGuard } from './ipAllowlistGuard';
 import { markPermissionGate } from './permissionGate';
+import { isAutomationPrincipal, isFlowPrincipal } from './principalKind';
 import { isSelfManagedDbContextRoute } from './selfManagedDbContextRoutes';
 import { isReportHistoryReadRoute } from './reportHistoryRoutes';
 import {
@@ -71,6 +72,12 @@ export type PrincipalKind =
   // An AI operator agent acting as itself (spec 2026-08-22 §3). Built only by
   // services/aiAgents/agentAuthContext.ts. NEVER satisfies any user-RBAC gate.
   | { kind: 'ai_agent'; agentId: string; runId: string }
+  // A published flow's run acting as itself (tool catalog W04, #5219, Open
+  // Decision 7). Built only by services/flows/flowAuthContext.ts. NEVER
+  // satisfies any user-RBAC gate. It has NO agent id: a site that needs one
+  // stays agent-only and refuses a flow (automationPrincipal.contract.test.ts)
+  // — never substitute `runId` for an agent id.
+  | { kind: 'flow'; flowId: string; runId: string }
   | { kind: 'system'; reason: string }
   | { kind: 'unknown' };
 
@@ -82,6 +89,8 @@ export type PrincipalKind =
  * present, including `oauth_grant` (which acts *for* a user but not *as* an
  * interactive session).
  */
+export { isAiAgentPrincipal, isAutomationPrincipal, isFlowPrincipal } from './principalKind';
+
 /** True for a partner service principal (`brz_sp_` key) caller. */
 export function isPartnerServicePrincipal(auth: Pick<AuthContext, 'principal'>): boolean {
   return auth.principal?.kind === 'api_key' && Boolean(auth.principal.partnerServicePrincipalId);
@@ -111,8 +120,9 @@ export function requireInteractiveSession(): MiddlewareHandler {
   };
 }
 
-export function isAiAgentPrincipal(auth: Pick<AuthContext, 'principal'>): boolean {
-  return auth.principal?.kind === 'ai_agent';
+/** The 403 message an HTTP gate returns to an automation principal. */
+function automationHttpDenial(auth: Pick<AuthContext, 'principal'>): string {
+  return isFlowPrincipal(auth) ? 'Flows cannot call HTTP routes' : 'AI agents cannot call HTTP routes';
 }
 
 export interface AuthContext {
@@ -601,12 +611,13 @@ export function dbAccessContextFromAuth(auth: AuthContext): DbAccessContext {
     // #2822 routed the AI-tool handlers through this builder, an unguarded
     // dereference here would turn a missing `user` into a TypeError inside
     // every tool call rather than a benign null user id.
-    // AI agents carry a synthetic user record for audit attribution only. It
-    // must never reach breeze.user_id or satisfy Shape-6 user-scoped RLS.
+    // AI agents and flows carry a synthetic user record for audit attribution
+    // only. It must never reach breeze.user_id or satisfy Shape-6 user-scoped
+    // RLS.
     // A partner service principal's `user` is its owner, borrowed for per-tool
     // RBAC only; the machine must never read or write the owner's private
     // (user-scoped) rows, so it gets no user id either.
-    userId: auth.principal?.kind === 'ai_agent' || isPartnerServicePrincipal(auth)
+    userId: isAutomationPrincipal(auth) || isPartnerServicePrincipal(auth)
       ? null
       : auth.user?.id ?? null,
     // #6771: re-entering the request's context re-enters its report-history
@@ -978,8 +989,8 @@ export function requireScope(...scopes: Array<'system' | 'partner' | 'organizati
       throw new HTTPException(401, { message: 'Not authenticated' });
     }
 
-    if (auth.principal?.kind === 'ai_agent') {
-      throw new HTTPException(403, { message: 'AI agents cannot call HTTP routes' });
+    if (isAutomationPrincipal(auth)) {
+      throw new HTTPException(403, { message: automationHttpDenial(auth) });
     }
 
     if (!scopes.includes(auth.scope)) {
@@ -993,8 +1004,8 @@ export function requireScope(...scopes: Array<'system' | 'partner' | 'organizati
 export function requirePartner(c: Context, next: Next) {
   const auth = c.get('auth');
 
-  if (auth?.principal?.kind === 'ai_agent') {
-    throw new HTTPException(403, { message: 'AI agents cannot call HTTP routes' });
+  if (auth && isAutomationPrincipal(auth)) {
+    throw new HTTPException(403, { message: automationHttpDenial(auth) });
   }
 
   if (!auth?.partnerId) {
@@ -1007,10 +1018,10 @@ export function requirePartner(c: Context, next: Next) {
 export function requireOrg(c: Context, next: Next) {
   const auth = c.get('auth');
 
-  // An agent context always carries orgId (the run's org), so the bare presence
-  // check below ADMITTED it. This gate is the one that failed open by accident.
-  if (auth?.principal?.kind === 'ai_agent') {
-    throw new HTTPException(403, { message: 'AI agents cannot call HTTP routes' });
+  // An agent (or flow) context always carries orgId (the run's org), so the
+  // bare presence check below ADMITTED it. This gate is the one that failed open by accident.
+  if (auth && isAutomationPrincipal(auth)) {
+    throw new HTTPException(403, { message: automationHttpDenial(auth) });
   }
 
   if (!auth?.orgId) {
@@ -1029,8 +1040,8 @@ export function requirePermission(resource: string, action: string) {
       throw new HTTPException(401, { message: 'Not authenticated' });
     }
 
-    if (auth.principal?.kind === 'ai_agent') {
-      throw new HTTPException(403, { message: 'AI agents cannot call HTTP routes' });
+    if (isAutomationPrincipal(auth)) {
+      throw new HTTPException(403, { message: automationHttpDenial(auth) });
     }
 
     // #5733 — pass the token scope. The system-scope token LOGIN mints carries
@@ -1091,8 +1102,8 @@ export function requireMfa() {
       throw new HTTPException(401, { message: 'Not authenticated' });
     }
 
-    if (auth.principal?.kind === 'ai_agent') {
-      throw new HTTPException(403, { message: 'AI agents cannot call HTTP routes' });
+    if (isAutomationPrincipal(auth)) {
+      throw new HTTPException(403, { message: automationHttpDenial(auth) });
     }
 
     if (!hasSatisfiedMfa(auth)) {
@@ -1132,8 +1143,8 @@ export function requireOrgAccess(orgIdParam: string = 'orgId') {
     // Denies today only because getUserPermissions misses on the synthetic
     // agent id — a fail-closed by coincidence, plus a needless DB round-trip.
     // Make it a written denial.
-    if (auth.principal?.kind === 'ai_agent') {
-      throw new HTTPException(403, { message: 'AI agents cannot call HTTP routes' });
+    if (isAutomationPrincipal(auth)) {
+      throw new HTTPException(403, { message: automationHttpDenial(auth) });
     }
 
     if (!orgId) {
@@ -1172,8 +1183,8 @@ export function requireSiteAccess(siteIdParam: string = 'siteId') {
     // Denies today only because getUserPermissions misses on the synthetic
     // agent id — a fail-closed by coincidence, plus a needless DB round-trip.
     // Make it a written denial.
-    if (auth.principal?.kind === 'ai_agent') {
-      throw new HTTPException(403, { message: 'AI agents cannot call HTTP routes' });
+    if (isAutomationPrincipal(auth)) {
+      throw new HTTPException(403, { message: automationHttpDenial(auth) });
     }
 
     if (!siteId) {

@@ -92,6 +92,41 @@ describe('NewTicketForm (portal) — intake form grid', () => {
     expect(payload).not.toHaveProperty('subject');
   });
 
+  it('legacy form: omits priority until the customer changes it, then sends it', async () => {
+    render(<NewTicketForm forms={[]} />);
+    const fill = () => {
+      fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Printer is broken' } });
+      fireEvent.change(screen.getByLabelText(/Tell us|Description|What/i, { selector: 'textarea' }), {
+        target: { value: 'The printer on the second floor will not print anything at all.' }
+      });
+    };
+    fill();
+    expect((screen.getByLabelText('Priority') as HTMLSelectElement).value).toBe('normal');
+    fireEvent.click(screen.getByRole('button', { name: /send|submit|create/i }));
+    await waitFor(() => expect(createTicket).toHaveBeenCalledTimes(1));
+    expect(createTicket.mock.calls[0][0]).not.toHaveProperty('priority');
+    expect(createTicket.mock.calls[0][0]).toMatchObject({ subject: 'Printer is broken' });
+
+    fireEvent.change(screen.getByLabelText('Priority'), { target: { value: 'urgent' } });
+    fireEvent.click(screen.getByRole('button', { name: /send|submit|create/i }));
+    await waitFor(() => expect(createTicket).toHaveBeenCalledTimes(2));
+    expect(createTicket.mock.calls[1][0]).toMatchObject({ priority: 'urgent' });
+  });
+
+  it('intake form without a defaultPriority omits priority until changed', async () => {
+    render(<NewTicketForm forms={[{ ...FORM, defaultPriority: null }]} />);
+    fireEvent.click(await screen.findByTestId('portal-ticket-form-card-form-1'));
+    fireEvent.change(screen.getByTestId('ticket-form-field-model'), { target: { value: 'HP' } });
+    fireEvent.click(screen.getByTestId('portal-ticket-form-submit'));
+    await waitFor(() => expect(createTicket).toHaveBeenCalledTimes(1));
+    expect(createTicket.mock.calls[0][0]).not.toHaveProperty('priority');
+
+    fireEvent.change(screen.getByTestId('portal-ticket-form-priority'), { target: { value: 'low' } });
+    fireEvent.click(screen.getByTestId('portal-ticket-form-submit'));
+    await waitFor(() => expect(createTicket).toHaveBeenCalledTimes(2));
+    expect(createTicket.mock.calls[1][0]).toMatchObject({ priority: 'low' });
+  });
+
   it('shows the legacy form with no grid when the page hands down no forms', async () => {
     render(<NewTicketForm forms={[]} />);
 

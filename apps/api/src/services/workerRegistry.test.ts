@@ -28,6 +28,8 @@ import {
 // to catch drift between the plan's documented contract and the actual
 // registry, so it must not import the list from the module under test.
 const EXPECTED_WORKER_NAMES = [
+  'psaTicketingWorker',
+  'psaTicketingReconciler',
   'topologyReconcileWorker',
   'topologyCollectionRetentionWorker',
   'topologyOutboxWorker',
@@ -48,7 +50,7 @@ const EXPECTED_WORKER_NAMES = [
   'auditBaselineJobs', 'cisJobs', 'automationWorker', 'securityPostureWorker', 'trustPageSnapshotWorker',
   'reliabilityWorker', 'userRiskWorker', 'abuseSignalsWorker', 'userRiskRetention',
   'backupVerificationJobs', 'eventLogRetention', 'hardwareHealthRetention', 'timeSyncRetention', 'logCorrelationWorker', 'agentLogRetention',
-  'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention', 'wispConcernRetention',
+  'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention', 'wispConcernRetention', 'wispNudgeDigest',
   'ipHistoryRetention', 'reliabilityRetention', 'processSampleRetention', 'deviceMetricsRetention',
   'm365SyncRetention',
   'serviceProcessCheckRetention', 'changeLogRetention',
@@ -58,16 +60,20 @@ const EXPECTED_WORKER_NAMES = [
   'restorePointAttemptRetention',
   // #9128 — daily prune of terminal webhook_deliveries rows.
   'webhookDeliveryRetention',
+  // #10019/#10020 — DNS events/aggregations retention + background integration delete.
+  'dnsSecurityRetention',
   'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
   'quoteSendWorker', 'enrollmentKeyCleanup',
   // Ticket migration windows (#8313) — the per-minute window sweep.
   'migrationWindowSweep',
+  // Ticket import framework (#8313 W4) — self-continuing import slices.
+  'ticketImportWorker',
   // Partner API tickets wave 3 — daily reaper for X-Idempotency-Key claims.
   'partnerApiIdempotencyRetention',
   'quickSupportReaper', 'wispGrantReconciler', 'softwareUploadSessionCleanup',
   'softwareRemediationRequestCleanup', 'auditRetention', 'pamEvidenceRetention', 'auditChainVerify', 'auditChainAnchor',
-  'tenantErasure', 'orgMerge', 'deviceBulkPurge', 'removedDevicePurge', 'parkedDeviceExpiry', 'parkedDevicePurge', 'desktopSessionFinalization', 'desktopSessionOrphanRecovery', 'playbookRetention',
+  'tenantErasure', 'orgMerge', 'deviceBulkPurge', 'removedDevicePurge', 'parkedDeviceExpiry', 'parkedDevicePurge', 'deviceReattachIntentSweep', 'desktopSessionFinalization', 'desktopSessionOrphanRecovery', 'playbookRetention',
   'discoveryWorker', 'networkBaselineWorker', 'snmpWorker', 'monitorWorker',
   // #5291 W04 — dispatches `script` monitors' diagnostic probes.
   'monitorScriptWorker',
@@ -87,13 +93,14 @@ const EXPECTED_WORKER_NAMES = [
   'securityScanWorker',
   'peripheralJobs',
   'deviceGroupJobs',
+  'partnerGroupEvaluationJobs',
   'browserSecurityWorker', 'c2cBackupWorker', 'backupSlaWorker', 'drExecutionWorker',
   'recoveryMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker',
   'incidentCorrelationWorker', 'incidentTimelineEnricher', 'incidentSlaMonitor', 'staleCommandReaper',
-  'softwareDeploymentScheduler', 'pamJobs', 'approvalExpiryReaper', 'workspaceReaper', 'offboardingDrainReaper',
+  'softwareDeploymentScheduler', 'pamJobs', 'networkIsolationSweeper', 'approvalExpiryReaper', 'workspaceReaper', 'offboardingDrainReaper',
   'intentOutboxPublisher', 'aiOperatorTaskOutboxPublisher', 'aiOperatorTaskWorker',
   'pamActuationWorker', 'intentExpiryReaper', 'intentReleaseWorker', 'stripeReconcileSweep', 'stripeSessionRevocationSweep',
-  'ticketAttachmentReaper', 'quoteExpiryReaper', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
+  'ticketAttachmentReaper', 'quoteExpiryReaper', 'agreementRequestExpiryReaper', 'agreementRequestAutoReminder', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
   'callerVerificationPublisher', 'callerVerificationReconciliation', 'ticketSlaWorker', 'businessCalendarRecomputeWorker', 'inboundEmailWorker', 'gmailMarkHandledWorker', 'ticketMailboxPollWorker', 'invoiceWorker', 'autopayWorker',
   'metricAnomalyIncidentPublisher', 'contractWorker', 'deliverableWorker', 'aiUnattendedExposureRetention',
   'aiInvocationRetention', 'llmEgressRetention',
@@ -119,6 +126,13 @@ const EXPECTED_WORKER_NAMES = [
   'reportRunDeliveryReconciler',
   // Tool Catalog W1 (#5215 / #5216), Task A6.
   'toolSourceDiscoveryWorker',
+  // Tool catalog W04 (#5219), Task A8 — flow run slices, the 60 s run
+  // reconciler and daily run-body retention.
+  'flowRunner',
+  'flowRunReconciler',
+  'flowRunRetention',
+  // Task A9 — the schedule-trigger tick.
+  'flowScheduleTick',
   // Partner sending domains W03 (#6183) — the one place that calls the
   // email-domain provider; registered only when EMAIL_DOMAINS_PROVIDER is set.
   'sendingDomainsWorker',

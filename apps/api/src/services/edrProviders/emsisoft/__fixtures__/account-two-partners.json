@@ -1,0 +1,19 @@
+{
+  "email": "msp-admin@example.test",
+  "partners": [
+    {
+      "guid": "00000000-0000-4000-8000-0000000000a1",
+      "id": "example-partner-one",
+      "roles": [
+        "Admin"
+      ]
+    },
+    {
+      "guid": "00000000-0000-4000-8000-0000000000a2",
+      "id": "example-partner-two",
+      "roles": [
+        "Admin"
+      ]
+    }
+  ]
+}

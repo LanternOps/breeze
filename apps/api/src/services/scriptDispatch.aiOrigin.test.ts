@@ -178,6 +178,44 @@ describe('dispatchScriptToDevice — aiOrigin conduit (#5022 W01)', () => {
     );
   });
 
+  // Tool catalog W04 (#5219), Decision 16: a flow run's library-script
+  // dispatch (pre-approved or released) is stamped kind 'flow' on both rows
+  // and audited as system automation naming the run — not as a user (the
+  // flow's attribution id is not a users row) and not as an AI decision.
+  it('a flow dispatch stamps kind flow and is audited as system automation with its run id', async () => {
+    const { createAuditLogAsync } = await import('./auditService');
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+      }),
+    } as never);
+
+    const result = await dispatchScriptToDevice({
+      device: device(),
+      source: savedSource(),
+      triggeredBy: 'flow-1',
+      createdBy: 'flow-1',
+      aiOrigin: { kind: 'flow', flowRunId: 'flow-run-1' },
+      principalActorId: null,
+    } as never);
+
+    expect(result.ok).toBe(true);
+    expect(executionInsertValues.mock.calls[0]![0]).toMatchObject({
+      aiInitiatorKind: 'flow',
+      aiSessionId: null,
+      aiAgentRunId: null,
+      triggeredBy: null,
+    });
+    expect(createAuditLogAsync).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(createAuditLogAsync).mock.calls[0]![0]).toMatchObject({
+      action: 'ai.script.executed',
+      actorType: 'system',
+      actorId: '00000000-0000-0000-0000-000000000000',
+      initiatedBy: 'automation',
+      details: expect.objectContaining({ aiInitiatorKind: 'flow', flowRunId: 'flow-run-1' }),
+    });
+  });
+
   it('a saved/proposal AI dispatch suppresses commandQueue audit and relies on its own ai.script.executed write', async () => {
     const { createAuditLogAsync } = await import('./auditService');
 

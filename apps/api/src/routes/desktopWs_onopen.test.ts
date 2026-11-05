@@ -12,6 +12,18 @@ const {
   finalizeDesktopSessionOnceMock: vi.fn(async () => 'finalized' as const),
 }));
 
+// Existing route cases exercise the non-isolated ICE plan.
+vi.mock('./remote/desktopRelayPolicy', async () => {
+  const { getIceServers } = await import('./remote/helpers');
+  return {
+    resolveDesktopIcePlan: async (_deviceId: string, scope: import('./remote/helpers').TurnCredentialScope) => ({
+      ok: true,
+      relayOnly: false,
+      iceServers: getIceServers(scope),
+    }),
+  };
+});
+
 vi.mock('../services/desktopSessionFinalization', () => ({
   persistDesktopFinalizationIntent: persistDesktopFinalizationIntentMock,
   finalizeDesktopSessionOnce: finalizeDesktopSessionOnceMock,

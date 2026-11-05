@@ -242,9 +242,13 @@ export function getPolicy(owner: Owner, signal?: AbortSignal): Promise<PolicyRes
   const [path, pin] = policyTarget(owner);
   return read<PolicyResponse>(path, pin, signal).then(policyShape);
 }
-export function putPolicy(owner: Owner, draft: PolicyDraft): Promise<PolicyResponse> {
+/**
+ * `silentSuccess` omits the success toast: the partner settings header Save
+ * runs several units and shows one aggregate toast instead.
+ */
+export function putPolicy(owner: Owner, draft: PolicyDraft, opts: { silentSuccess?: boolean } = {}): Promise<PolicyResponse> {
   const [path, pin] = policyTarget(owner);
-  return mutate(path, pin, 'PUT', draft, policyShape, 'toasts.policySaved');
+  return mutate(path, pin, 'PUT', draft, policyShape, opts.silentSuccess ? undefined : 'toasts.policySaved');
 }
 
 // --- Contacts (existing org-contacts list, used by the requester picker) -------

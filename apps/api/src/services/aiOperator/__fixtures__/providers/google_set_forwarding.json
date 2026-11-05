@@ -1,0 +1,26 @@
+{
+  "_source": "reference",
+  "_recordedFrom": "reference: Gmail API v1 users.settings.getAutoForwarding / updateAutoForwarding (AutoForwarding resource) and users.settings.forwardingAddresses.get / create (ForwardingAddress resource)",
+  "_notes": "writeRefusal is the forwarding_pending_verification path: the destination exists but Gmail has not verified it, so mail would not forward and the executor must not report success.",
+  "toolName": "google_set_forwarding",
+  "provider": "google",
+  "preSatisfied": {
+    "gmail.settings.getAutoForwarding": { "data": { "enabled": true, "emailAddress": "manager@customer.example", "disposition": "archive" } },
+    "gmail.settings.forwardingAddresses.get": { "data": { "forwardingEmail": "manager@customer.example", "verificationStatus": "accepted" } }
+  },
+  "preUnsatisfied": {
+    "gmail.settings.getAutoForwarding": { "data": { "enabled": false } }
+  },
+  "writeOk": {
+    "gmail.settings.forwardingAddresses.create": { "data": { "forwardingEmail": "manager@customer.example", "verificationStatus": "accepted" } },
+    "gmail.settings.updateAutoForwarding": { "data": { "enabled": true, "emailAddress": "manager@customer.example", "disposition": "archive" } }
+  },
+  "postSatisfied": {
+    "gmail.settings.getAutoForwarding": { "data": { "enabled": true, "emailAddress": "manager@customer.example", "disposition": "archive" } },
+    "gmail.settings.forwardingAddresses.get": { "data": { "forwardingEmail": "manager@customer.example", "verificationStatus": "accepted" } }
+  },
+  "writeRefusal": {
+    "gmail.settings.forwardingAddresses.create": { "data": { "forwardingEmail": "manager@customer.example", "verificationStatus": "pending" } },
+    "gmail.settings.updateAutoForwarding": { "data": { "enabled": true, "emailAddress": "manager@customer.example", "disposition": "archive" } }
+  }
+}

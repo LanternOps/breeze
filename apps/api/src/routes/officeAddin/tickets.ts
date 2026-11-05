@@ -707,6 +707,9 @@ officeAddinTicketRoutes.post(
             requesterContactId,
             // #7900: omitted -> the service default (incident), unstamped.
             ...(input.ticketType !== undefined ? { ticketType: input.ticketType } : {}),
+            // #8883 W5 (Gate B14): a follow-up continues a closed ticket, so
+            // routing is skipped (explicit provenance, never inferred).
+            ...(input.followUpOf ? { continuationOfTicketId: input.followUpOf.ticketId } : {}),
           },
           actor
         );

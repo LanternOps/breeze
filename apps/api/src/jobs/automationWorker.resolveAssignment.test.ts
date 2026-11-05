@@ -1,3 +1,4 @@
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Unit coverage for automationWorker's config-policy assignment device
@@ -30,6 +31,7 @@ vi.mock('../db/schema', () => ({
   deviceGroups: {
     id: 'deviceGroups.id',
     orgId: 'deviceGroups.orgId',
+    partnerId: 'deviceGroups.partnerId',
   },
   organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId' },
 }));
@@ -196,6 +198,13 @@ describe('automationWorker resolveDeviceIdsForAssignment — partner re-clamp (#
     expect(chain.innerJoin.mock.calls[0][0]).toBe(organizations);
     expect(chain.innerJoin.mock.calls[1][0]).toBe(deviceGroups);
     expect(chain.innerJoin.mock.calls[2][0]).toBe(devices);
+    const owner = collectSqlLeafStrings(chain.innerJoin.mock.calls[1][1]);
+    expect(owner).toContain(deviceGroups.partnerId);
+    const ownerSql = new PgDialect().sqlToQuery(chain.innerJoin.mock.calls[1][1]).sql;
+    expect(ownerSql).toContain('IS NULL AND');
+    expect(ownerSql).toContain('(SELECT');
+    expect(owner).toContain(organizations.partnerId);
+    expect(owner).toContain(deviceGroupMemberships.orgId);
     const whereArgs = collectSqlLeafStrings(chain.where.mock.calls[0][0]);
     expect(whereArgs).toContain('group-x');
     expect(whereArgs).toContain('partner-123');

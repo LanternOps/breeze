@@ -26,6 +26,11 @@ import {
 export const MCP_HEADER_MISMATCH = -32020;
 /** The modern `_meta` names a protocol version this server does not speak. */
 export const MCP_UNSUPPORTED_PROTOCOL_VERSION = -32022;
+/**
+ * B-W06 (#6160): the request needs a client capability it did not declare
+ * (SEP-2663: a `tasks/*` request without `io.modelcontextprotocol/tasks`).
+ */
+export const MCP_CAPABILITY_REQUIRED = -32021;
 
 const META_PROTOCOL_VERSION = 'io.modelcontextprotocol/protocolVersion';
 const META_CLIENT_CAPABILITIES = 'io.modelcontextprotocol/clientCapabilities';
@@ -127,25 +132,40 @@ function reject(
   return { era: 'reject', rejection: { status, error: data === undefined ? { code, message } : { code, message, data }, reason } };
 }
 
-/** Methods whose `Mcp-Name` header mirrors a body field (SEP-2243). */
-function nameTargetFor(body: JsonRpcEnvelope): { required: boolean; value: unknown } {
+/**
+ * Methods whose `Mcp-Name` header mirrors a body field (SEP-2243).
+ * B-W06 (#6160, D-B51): `tasks/get|update|cancel` mirror `params.taskId`, but
+ * only while Tasks are effective — otherwise they are not name-bearing and
+ * classify exactly as before (and dispatch to -32601). A non-string taskId is
+ * not name-bearing either: there is no header that can mirror it, and the
+ * handler answers it with the same not-found body as any unknown id.
+ */
+function nameTargetFor(body: JsonRpcEnvelope, tasksEffective: boolean): { required: boolean; value: unknown } {
   switch (body.method) {
     case 'tools/call':
     case 'prompts/get':
       return { required: true, value: body.params?.name };
     case 'resources/read':
       return { required: true, value: body.params?.uri };
+    case 'tasks/get':
+    case 'tasks/update':
+    case 'tasks/cancel': {
+      const taskId = body.params?.taskId;
+      return tasksEffective && typeof taskId === 'string'
+        ? { required: true, value: taskId }
+        : { required: false, value: undefined };
+    }
     default:
       return { required: false, value: undefined };
   }
 }
 
-function headersMatchBody(body: JsonRpcEnvelope, headers: McpRequestHeaders): boolean {
+function headersMatchBody(body: JsonRpcEnvelope, headers: McpRequestHeaders, tasksEffective: boolean): boolean {
   for (const raw of [headers.protocolVersion, headers.method, headers.name]) {
     if (raw !== undefined && !isValidHeaderChars(raw)) return false;
   }
   if (headers.method === undefined || headers.method !== body.method) return false;
-  const target = nameTargetFor(body);
+  const target = nameTargetFor(body, tasksEffective);
   if (target.required) {
     if (headers.name === undefined || typeof target.value !== 'string') return false;
     const decoded = decodeMcpHeaderValue(headers.name);
@@ -159,8 +179,11 @@ export function classifyMcpRequest(input: {
   headers: McpRequestHeaders;
   statelessEnabled: boolean;
   endpoint: 'streamable' | 'legacy_message';
+  /** B-W06 (#6160): mcpTasksEffective(), snapshotted by the caller (keeps this pure). Default false. */
+  tasksEffective?: boolean;
 }): McpEraDecision {
   const { body, headers, statelessEnabled, endpoint } = input;
+  const tasksEffective = input.tasksEffective === true;
   const meta = isPlainObject(body.params?._meta) ? body.params._meta : undefined;
   const metaV = meta?.[META_PROTOCOL_VERSION];
   const hdrV = headers.protocolVersion;
@@ -212,7 +235,7 @@ export function classifyMcpRequest(input: {
     return reject(400, -32602, 'Missing or invalid _meta client capabilities', 'missing_client_capabilities');
   }
   // Row 11.
-  if (!headersMatchBody(body, headers)) {
+  if (!headersMatchBody(body, headers, tasksEffective)) {
     return reject(400, MCP_HEADER_MISMATCH, 'Mcp-Method or Mcp-Name header does not match the request body', 'header_mismatch');
   }
   // Row 12.

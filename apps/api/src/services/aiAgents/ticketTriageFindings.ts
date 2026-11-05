@@ -331,7 +331,10 @@ export async function persistTicketTriage(
   // file's header).
   candidates.push({
     slot: 'note',
-    toolInput: { action: 'comment', ticketId: run.ticketId, content: noteContent(proposal) },
+    // isPublic:false is truthful — the handler forces every agent comment
+    // private (aiToolsTicketing.ts addAiTriageNote) — and explicit, so the
+    // public-comment escalation (isInputAwareTier3, W02 #6756) never applies.
+    toolInput: { action: 'comment', ticketId: run.ticketId, content: noteContent(proposal), isPublic: false },
   });
 
   // 2. fields

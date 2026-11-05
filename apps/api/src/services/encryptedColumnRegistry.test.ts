@@ -59,6 +59,34 @@ describe('encryptedColumnRegistry', () => {
     }
   });
 
+  it('device_network_isolations.break_glass_secret_enc is row-bound (#10089)', () => {
+    // A break-glass secret pasted onto another episode's row must not decrypt there: its HMAC codes would
+    // release a different device. Key rotation must also reach it, or a retired key strands the secret.
+    const spec = encryptedColumnRegistry.find(
+      (c) => c.table === 'device_network_isolations' && c.column === 'break_glass_secret_enc',
+    );
+    expect(spec, 'device_network_isolations.break_glass_secret_enc missing from encryptedColumnRegistry').toBeDefined();
+    expect(spec).toMatchObject({ kind: 'text', aadBinding: 'row' });
+    expect(spec?.idColumn).toBeUndefined();
+  });
+
+  it('flows.webhook_secret_encrypted is row-bound', () => {
+    // A flow's webhook signing secret pasted onto another flow's row must not decrypt.
+    const spec = encryptedColumnRegistry.find((c) => c.table === 'flows' && c.column === 'webhook_secret_encrypted');
+    expect(spec, 'flows.webhook_secret_encrypted missing from encryptedColumnRegistry').toBeDefined();
+    expect(spec).toMatchObject({ kind: 'text', aadBinding: 'row', aadTag: 'flows.webhook_secret_encrypted' });
+  });
+
+  it('registers the ticket import source credential with row-bound AAD (#8313 W4)', () => {
+    const spec = encryptedColumnRegistry.find(
+      (c) => c.table === 'ticket_import_sources' && c.column === 'credentials_encrypted',
+    );
+    expect(spec).toMatchObject({ kind: 'text', aadBinding: 'row' });
+    // Row-bound columns have a dedicated writer (sourceCredentials.ts); the
+    // generic write helper must refuse them.
+    expect(() => encryptColumnValueForWrite('ticket_import_sources', 'credentials_encrypted', '{}')).toThrow();
+  });
+
   it('transforms text columns from legacy ciphertext to the active v2 key id', () => {
     setEncryptionEnv({ APP_ENCRYPTION_KEY: 'legacy-key-material' });
     const legacyCiphertext = encryptSecret('legacy-secret');

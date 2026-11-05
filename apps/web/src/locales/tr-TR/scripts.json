@@ -807,7 +807,7 @@
   "scriptAiInput": {
     "placeholder": {
       "ready": "İhtiyacınız olan komut dosyasını açıklayın...",
-      "opening": "Yapay zeka asistanı açılıyor..."
+      "opening": "Breeze AI açılıyor..."
     },
     "actions": {
       "stopGenerating": "Oluşturmayı durdur",
@@ -826,12 +826,12 @@
       "reject": "Reddet"
     },
     "empty": {
-      "title": "Komut Dosyası Yapay Zekası Asistanı",
-      "description": "Neye ihtiyacınız olduğunu açıklayın, ben de sizin için senaryoyu yazayım."
+      "title": "Breeze AI",
+      "description": "Breeze AI'dan bu komut dosyasını yazmasını veya incelemesini isteyin."
     }
   },
   "scriptAiPanel": {
-    "title": "AI Komut Dosyası Yardımcısı",
+    "title": "Breeze AI",
     "actions": {
       "redoTitle": "AI değişikliğini yeniden uygulayın",
       "redo": "Yinele",
@@ -982,7 +982,8 @@
     },
     "confirm": {
       "title": "Yürütmeyi Onayla",
-      "description": "{{count}} cihaz(lar)ında {{runAs}} olarak “{{name}}” komutunu çalıştırın. Komut dosyaları sıraya alınır ve hemen yürütülmeye başlar."
+      "description": "{{count}} cihaz(lar)ında {{runAs}} olarak “{{name}}” komutunu çalıştırın. Komut dosyaları sıraya alınır ve hemen yürütülmeye başlar.",
+      "descriptionOffline": "“{{name}}” betiğini {{count}} cihazda {{runAs}} olarak çalıştırın. Betikler şimdi sıraya alınır: çevrimiçi cihazlar hemen başlar, {{offline}} çevrimdışı cihaz tekrar çevrimiçi olduğunda çalışır."
     },
     "selectedCount": "{{count}} cihaz seçildi",
     "executeBlocked": "Çalıştırma kullanılamıyor: seçili bir cihaz bu betiği burada çalıştıramıyor (gösterilenden farklı bir kuruluşa ait olabilir veya artık erişilebilir değil).",
@@ -1027,6 +1028,7 @@
       "submitting": "{{count}} gruba gönderiliyor...",
       "warningsTitle": "Sunucudan notlar",
       "confirmDescription": "“{{name}}” betiğini {{groups}} cihaz grubunda {{runAs}} olarak çalıştırın. Betikler sıraya alınır ve hemen çalışmaya başlar.",
+      "confirmDescriptionOffline": "“{{name}}” betiğini {{groups}} cihaz grubunda {{runAs}} olarak çalıştırın. Betikler şimdi sıraya alınır: çevrimiçi cihazlar hemen başlar, {{offline}} çevrimdışı cihaz tekrar çevrimiçi olduğunda çalışır.",
       "confirmMembers": "Şu anda bu gruplarda {{count}} benzersiz cihaz var; üyelik onayladığınızda yeniden okunur.",
       "confirmMembersUnknown": "Cihaz sayısı henüz bilinmiyor; üyelik onayladığınızda okunur.",
       "errors": {
@@ -1134,8 +1136,8 @@
       "exitCodeSeverity": "Çıkış Kodu Önem Derecesi"
     },
     "ai": {
-      "toggleTitle": "AI Komut Dosyası Yardımcısını Aç/Kapat (⌘⇧I)",
-      "button": "Yapay Zeka Asistanı"
+      "toggleTitle": "Breeze AI'ı Aç/Kapat (⌘⇧I)",
+      "button": "Breeze AI"
     },
     "parameters": {
       "emptyPrefix": "Henüz parametre yok. Parametreler, kullanıcıların çalışma zamanında değerler sağlamasına olanak tanır; komut dosyanızda bunlara şu şekilde başvurun:",

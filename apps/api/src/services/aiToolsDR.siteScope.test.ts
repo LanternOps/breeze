@@ -401,7 +401,9 @@ describe('manage_dr_plan — stored group membership is site-scoped', () => {
     );
 
     expect(JSON.parse(result).success).toBe(true);
-    expect(mockDb.select).toHaveBeenCalledTimes(1);
+    // One row read, plus the W03-D10 active-execution check — no partition
+    // or group-membership query for an unrestricted caller.
+    expect(mockDb.select).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -465,6 +467,8 @@ describe('manage_dr_plan — plan mutations are site-scoped', () => {
     );
 
     expect(JSON.parse(result).success).toBe(true);
-    expect(mockDb.select).toHaveBeenCalledTimes(1);
+    // One row read, plus the W03-D10 active-execution check — no partition
+    // or group-membership query for an unrestricted caller.
+    expect(mockDb.select).toHaveBeenCalledTimes(2);
   });
 });

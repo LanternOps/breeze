@@ -5,7 +5,10 @@
  * read on the MCP request path. The parsing is identical to config/env's
  * envFlag / positiveIntEnv (same accepted vocabulary, same fallbacks);
  * config/validate.ts validates the raw values at boot.
+ *
+ * B-W06 (#6160) adds the Tasks flag and knobs here for the same reasons.
  */
+import { mcpStatelessEnabled } from './mcpProtocol';
 
 function mcpEnvFlag(name: string, fallback = false): boolean {
   const raw = process.env[name];
@@ -66,4 +69,54 @@ export function mcpApprovalWaitsPerPrincipal(): number {
  */
 export function mcpAppBaseUrl(): string {
   return (process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321').replace(/\/+$/, '');
+}
+
+/**
+ * B-W06 (#6160, D-B55): the Tasks extension flag (default OFF). On its own it
+ * does nothing — see mcpTasksEffective().
+ */
+export function mcpTasksEnabled(): boolean {
+  return mcpEnvFlag('MCP_TASKS_ENABLED', false);
+}
+
+/**
+ * B-W06 (#6160, D-B55): Tasks exist only in the stateless `2026-07-28` era, so
+ * they are effective only when MCP_STATELESS_ENABLED is on too. Gates the
+ * `server/discover` advertisement, `tasks/*` dispatch and the SEP-2243
+ * `Mcp-Name` rule for `tasks/*`. Creating a task additionally needs
+ * mcpTier3IntentsEnabled(); existing tasks stay readable and cancellable when
+ * only intents are switched off. Read per call. config/validate.ts warns at
+ * boot when the flag is on without stateless (a silent no-op otherwise).
+ */
+export function mcpTasksEffective(): boolean {
+  return mcpTasksEnabled() && mcpStatelessEnabled();
+}
+
+/** Base poll interval (ms) for a task still waiting for approval (default 30000). Read per call. */
+export function mcpTaskPendingPollIntervalMs(): number {
+  return mcpPositiveIntEnv('MCP_TASK_PENDING_POLL_INTERVAL_MS', 30_000, 1_000, 600_000);
+}
+
+/** Base poll interval (ms) for an approved / executing task (default 5000). Read per call. */
+export function mcpTaskPollIntervalMs(): number {
+  return mcpPositiveIntEnv('MCP_TASK_POLL_INTERVAL_MS', 5_000, 1_000, 60_000);
+}
+
+/** Added to the approval window to form a task's ttlMs (default 1 h). Read per call. */
+export function mcpTaskTtlGraceMs(): number {
+  return mcpPositiveIntEnv('MCP_TASK_TTL_GRACE_MS', 3_600_000, 60_000, 86_400_000);
+}
+
+/**
+ * The per-credential MCP message budget (`mcp:msg:<principal>`, default 120 /
+ * min). The ONE reader: routes/mcpServer.ts's limiter and the Tasks poll-interval
+ * budget (D-B52) both call it, so they can never disagree. Parsed exactly as
+ * routes/mcpServer.ts's local envInt always parsed it (parseInt, fallback when
+ * absent/empty/non-numeric), so moving the call site changes nothing. Read per call.
+ */
+export function mcpMessageRateLimitPerMinute(): number {
+  const raw = process.env.MCP_MESSAGE_RATE_LIMIT_PER_MINUTE;
+  if (!raw) return 120;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : 120;
 }

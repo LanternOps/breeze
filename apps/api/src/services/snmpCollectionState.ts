@@ -13,6 +13,8 @@
  * agent version cannot read table values; update the agent".
  */
 
+import { SLOW_CADENCE_EVERY } from './snmpOidSpecs';
+
 export type CollectionOidState = 'collecting' | 'unsupported' | 'stale' | 'never_polled' | 'unknown';
 export type CollectionStatus = 'ok' | 'failing' | 'no_template' | 'no_agent' | 'asset_moved' | 'never_polled' | 'paused';
 
@@ -133,7 +135,11 @@ export function deriveCollection(input: CollectionInput): Collection {
     const rows = (byBase.get(entry.oid) ?? []).slice().sort((a, b) => (toMillis(b.timestamp) ?? 0) - (toMillis(a.timestamp) ?? 0));
     const newest = rows[0] ?? null;
     const newestMs = newest ? toMillis(newest.timestamp) : null;
-    const fresh = newestMs !== null && now - newestMs <= freshnessMs;
+    // A slow spec rides one dispatch in every SLOW_CADENCE_EVERY, so its own
+    // refresh is that many polls apart. Judged against the fast window, every
+    // printer's supply descriptions read stale for ~50 minutes of each hour.
+    const windowMs = entry.cadence === 'slow' ? freshnessMs * SLOW_CADENCE_EVERY : freshnessMs;
+    const fresh = newestMs !== null && now - newestMs <= windowMs;
 
     let state: CollectionOidState;
     if (!newest) {

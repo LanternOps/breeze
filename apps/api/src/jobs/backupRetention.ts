@@ -2384,9 +2384,11 @@ async function resolveErasureFencedReferences(
 /**
  * Rule 10: an org's unit runs under a root when the org has a row recorded
  * under it on this identity, or its destination writes new snapshots there
- * (the mint root). Every org writes the legacy root until destination
- * prefixes are applied, so a legacy-only identity runs exactly the units it
- * always has.
+ * (the mint root: `<prefix>` for an S3 destination with a valid prefix, the
+ * legacy root otherwise). An org with an unprefixed destination therefore
+ * always runs under the legacy root; an org whose destination has a prefix
+ * runs under the legacy root only while it still has rows recorded there, so
+ * a prefix-scoped credential never lists the bucket root on its account.
  */
 function orgRunsUnderRoot(
   identity: BackupGcStorageIdentity,

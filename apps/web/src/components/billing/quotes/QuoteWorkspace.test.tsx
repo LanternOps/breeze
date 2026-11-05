@@ -1,3 +1,5 @@
+const setPageContext = vi.hoisted(() => vi.fn());
+vi.mock('@/stores/aiStore', () => ({ useAiStore: (select: (s: unknown) => unknown) => select({ setPageContext }) }));
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -22,6 +24,12 @@ vi.mock('../../../stores/orgStore', () => ({
 }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../../shared/Toast', () => ({ showToast: vi.fn() }));
+// The real button self-gates on the Wisp flag + grant (its own suite covers that).
+vi.mock('@/components/wisp/WispTalkButton', () => ({
+  default: ({ kind, id, orgId, label }: { kind: string; id: string; orgId: string | null; label: string }) => (
+    <div data-testid="wisp-talk-button-mock" data-kind={kind} data-id={id} data-org={orgId ?? ''} data-label={label} />
+  ),
+}));
 
 const fetchMock = vi.mocked(fetchWithAuth);
 const json = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
@@ -56,6 +64,7 @@ describe('QuoteWorkspace tabs', () => {
   it('labels the third tab "Details" (not the bare, easy-to-misread "Detail")', async () => {
     render(<QuoteWorkspace id="q-1" />);
     await waitFor(() => expect(screen.getByTestId('quote-workspace')).toBeInTheDocument());
+    expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'quote', id: 'q-1', orgId: 'org-1', label: 'Q-2026-0001' }));
 
     expect(screen.getByTestId('quote-tab-detail')).toHaveTextContent('Details');
     // The Editor tab only renders for drafts (this quote is 'sent') — Preview
@@ -68,11 +77,30 @@ describe('QuoteWorkspace tabs', () => {
   // showed it) — the workspace header now always carries a status badge next
   // to the title/tabs, reusing the same StatusPill + STATUS_ROLES vocabulary
   // as QuotesPage/QuoteDetail/QuoteDocument.
+  it('uses the localized draft title for a quote without a number or title', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input === '/quotes/q-1') return json({ data: { ...sentQuote, quote: { ...sentQuote.quote, quoteNumber: null } } });
+      return json({ data: {} });
+    });
+    render(<QuoteWorkspace id="q-1" />);
+    await waitFor(() => expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'quote', id: 'q-1', orgId: 'org-1', label: 'Draft quote' })));
+    expect(screen.getByTestId('wisp-talk-button-mock')).toHaveAttribute('data-label', 'Draft quote');
+  });
+
   it('shows a status badge in the workspace header matching the quote status', async () => {
     render(<QuoteWorkspace id="q-1" />);
     await waitFor(() => expect(screen.getByTestId('quote-workspace')).toBeInTheDocument());
 
     expect(screen.getByTestId('quote-workspace-status')).toHaveTextContent('Sent');
+  });
+
+  it('mounts the Talk-to-Wisp button in the header with the loaded quote and its org (W08 Task 10)', async () => {
+    render(<QuoteWorkspace id="q-1" />);
+    const button = await screen.findByTestId('wisp-talk-button-mock');
+    expect(button.getAttribute('data-label')?.trim()).toBeTruthy();
+    expect(button).toHaveAttribute('data-kind', 'quote');
+    expect(button).toHaveAttribute('data-id', 'q-1');
+    expect(button).toHaveAttribute('data-org', 'org-1');
   });
 
   it('renders an "Accepted" status badge for a different quote status (proves the badge is status-driven, not hardcoded)', async () => {

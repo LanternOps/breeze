@@ -268,6 +268,17 @@ describe('backup provider device routes', () => {
   });
 
   describe('PUT /devices/:id/link', () => {
+    it.each(['m365', 'gws'])('rejects linking a %s workload to a device', async (accountType) => {
+      dbState.providerRow = { id: PROVIDER_ROW_ID, orgId: ORG_ID, accountType, breezeDeviceId: null };
+      const res = await app.request(`/backup/providers/devices/${PROVIDER_ROW_ID}/link`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ deviceId: DEVICE_ID }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'SaaS backup rows cannot be linked to a device' });
+      expect(dbState.updated).toHaveLength(0);
+    });
+
     it('links a device in the SAME org', async () => {
       const res = await app.request(`/backup/providers/devices/${PROVIDER_ROW_ID}/link`, {
         method: 'PUT', headers: { 'content-type': 'application/json' },

@@ -83,7 +83,7 @@ export async function resolveOrgIdForAsset(auth: AssetAuthContext, assetId: stri
  */
 export async function resolveAssetForMutation(
   auth: AssetAuthContext,
-  perms: UserPermissions | undefined,
+  perms: Pick<UserPermissions, 'allowedSiteIds'> | undefined,
   assetId: string,
 ) {
   if (perms?.allowedSiteIds?.length === 0) {

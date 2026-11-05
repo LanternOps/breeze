@@ -123,3 +123,42 @@ describe('operationService: runOperationWrite swallow contract (#5205 W04, basel
     });
   });
 });
+
+// R2a review: a secret-bearing result (m365_create_user / reset) is sealed on
+// `action_intents.result`, where the one-time reveal and the expiry reaper burn
+// it. The operation row is never burned, so it must never receive the sealed
+// (or a legacy plaintext) credential; every other key is kept.
+describe('recordOperationResult: sealed-secret keys never reach the operation row', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('strips the sealed and legacy credential keys and keeps every other key', async () => {
+    const { db } = await import('../../db');
+    const { TEMP_PASSWORD_ENC_KEY, TEMP_PASSWORD_LEGACY_KEY, TEMP_PASSWORD_SEAL_FAILED_KEY } = await import('../actionIntents/resultSecrets');
+    updateWhereMock.mockResolvedValueOnce(undefined);
+    const result = {
+      success: true, action: 'm365.user.create', userId: '00000000-0000-4000-8000-0000000a0001',
+      userPrincipalName: 'priya@customer.example', forceChangeNextSignIn: true, noop: false, verified: true,
+      [TEMP_PASSWORD_ENC_KEY]: 'enc:v3:sealed-test-value', [TEMP_PASSWORD_LEGACY_KEY]: 'legacy-test-value',
+    };
+    await recordOperationResult({ intentId: INTENT_ID, resultState: 'succeeded', result });
+
+    const update = vi.mocked(db.update);
+    expect(update).toHaveBeenCalledTimes(1);
+    const setFn = (update.mock.results[0]!.value as { set: ReturnType<typeof vi.fn> }).set;
+    const written = (setFn.mock.calls[0]![0] as { result: Record<string, unknown> }).result;
+    expect(written).toEqual({
+      success: true, action: 'm365.user.create', userId: '00000000-0000-4000-8000-0000000a0001',
+      userPrincipalName: 'priya@customer.example', forceChangeNextSignIn: true, noop: false, verified: true,
+    });
+    expect(JSON.stringify(written)).not.toContain('test-value');
+    // The caller's object is not mutated (the intent row keeps its sealed form).
+    expect(result[TEMP_PASSWORD_ENC_KEY]).toBe('enc:v3:sealed-test-value');
+    // A seal-failed marker carries no secret and is kept.
+    updateWhereMock.mockResolvedValueOnce(undefined);
+    await recordOperationResult({ intentId: INTENT_ID, resultState: 'succeeded', result: { success: true, [TEMP_PASSWORD_SEAL_FAILED_KEY]: true } });
+    const setFn2 = (update.mock.results[1]!.value as { set: ReturnType<typeof vi.fn> }).set;
+    expect((setFn2.mock.calls[0]![0] as { result: unknown }).result).toEqual({ success: true, [TEMP_PASSWORD_SEAL_FAILED_KEY]: true });
+  });
+});

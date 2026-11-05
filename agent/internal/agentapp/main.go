@@ -25,6 +25,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/eventlog"
 	"github.com/breeze-rmm/agent/internal/heartbeat"
+	"github.com/breeze-rmm/agent/internal/helper"
 	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
@@ -32,6 +33,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/pamactuator"
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
+	"github.com/breeze-rmm/agent/internal/promptidentity"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/safemode"
 	"github.com/breeze-rmm/agent/internal/secmem"
@@ -341,6 +343,7 @@ func init() {
 	rootCmd.AddCommand(bootstrapCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(newContainmentCommand(config.GetDataDir))
 	rootCmd.AddCommand(supportCmd)
 	rootCmd.AddCommand(uninstallNotifyCmd)
 	rootCmd.AddCommand(userHelperCmd)
@@ -815,6 +818,10 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	secureToken := secmem.NewSecureString(cfg.AuthToken)
 	cfg.AuthToken = "" // Clear plaintext from config struct
 
+	// W09 (#8148): loop-level Retry-After switch, before the log shipper and
+	// the heartbeat (the first users of httputil.Do / the shipper) start.
+	applyRetryAfterSettings(cfg)
+
 	// Shared auth-failure monitor — gates heartbeat and log shipper
 	// HTTP calls after 3 consecutive 401s so a deauthorized agent
 	// stops spamming the API (#401).
@@ -1037,6 +1044,8 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 		AgentID:   cfg.AgentID,
 		AuthToken: secureToken,
 		TLSConfig: tlsCfg,
+
+		FirstReconnectWindow: wsReconnectConfig(cfg),
 	}
 	wsClient := websocket.New(wsConfig, hb.HandleCommand)
 	hb.SetWebSocketClient(wsClient)
@@ -1688,6 +1697,34 @@ func (e *enrollFailure) Unwrap() error { return e.detail }
 // the save after the server has accepted the enrollment.
 var saveEnrollmentFn = config.SaveEnrollment
 
+// promptIdentityDataDir is where the MSP identity cache lives (a seam for
+// tests).
+var promptIdentityDataDir = config.GetDataDir
+
+// clearPromptIdentityAfterEnrol drops the cached MSP identity and logo
+// (#10190 W03, spec §3.6): a new enrolment may belong to another MSP. The
+// dropped scope is remembered, so the service's next heartbeat purges the
+// prompt list entries created under it. A failure is logged, not fatal: the
+// next heartbeat's identity block replaces the cache anyway.
+func clearPromptIdentityAfterEnrol() {
+	if err := promptidentity.Open(promptIdentityDataDir(), promptidentity.Options{}).Clear(); err != nil {
+		logging.L("enroll").Warn("could not clear the cached MSP identity after enrollment", "error", err.Error())
+	}
+}
+
+// helperBrandingBaseDir is where the per-session helper configs live (a seam
+// for tests).
+var helperBrandingBaseDir = config.ConfigDir
+
+// clearHelperBrandingBeforeEnrol drops the persisted Helper branding (OD3): a
+// new enrolment may belong to another partner or organization. Local only. A
+// failure is logged, not fatal: the next heartbeat's decision replaces it.
+func clearHelperBrandingBeforeEnrol() {
+	if err := helper.ClearBranding(helperBrandingBaseDir()); err != nil {
+		logging.L("enroll").Warn("could not clear persisted Helper branding before enrollment", "error", err.Error())
+	}
+}
+
 // enrollPreflightFailure reports a config directory the agent could not
 // create or secure BEFORE the enroll request, so nothing exists server-side.
 func enrollPreflightFailure(cfgFile string, err error) *enrollFailure {
@@ -1940,9 +1977,11 @@ func enrollWithConfig(cfg *config.Config, cfgFile, enrollmentKey, secret string)
 		}
 	}
 
+	clearHelperBrandingBeforeEnrol()
 	if err := saveEnrollmentFn(cfg, cfgFile); err != nil {
 		return enrollSaveFailure(cfg, cfgFile, err)
 	}
+	clearPromptIdentityAfterEnrol()
 
 	enrollLog.Info("enrollment successful",
 		"agentId", cfg.AgentID,
@@ -2326,6 +2365,9 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 	// disconnects in production are caused by permanent identity/auth problems
 	// (binary path mismatch, SID lookup failure on headless Windows, etc.),
 	// not transient socket hiccups. See issue #387.
+	// The helper is the same build as the agent: its prompt renderer
+	// version is the agent version (#10190 AuthRequest.rendererVersion).
+	userhelper.SetRendererVersion(version)
 	sup := &userhelper.Supervisor{
 		Name: name,
 		Policy: userhelper.ReconnectPolicy{

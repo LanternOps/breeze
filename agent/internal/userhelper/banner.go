@@ -13,6 +13,10 @@ import (
 var (
 	showBannerFn = showBannerOS
 	hideBannerFn = hideBannerOS
+	// showPillFn draws the same pill for the remote.session prompt
+	// (prompt_native_indicator.go): clickable only when End session is
+	// offered, onClick then running on each click. Hidden by hideBannerFn.
+	showPillFn = showPillOS
 )
 
 var (

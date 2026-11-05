@@ -94,6 +94,23 @@ describe('SessionHistoryPage', () => {
     sessionState.session = { ...sessionState.session, terminationPhase: 'confirmed' };
   });
 
+  it('session detail shows Ended by the user', () => {
+    sessionState.session = { ...sessionState.session, endReason: 'ended_by_user' };
+    render(<SessionHistoryPage />);
+    fireEvent.click(screen.getByText('Open details'));
+
+    expect(screen.getByText('Ended by the user')).toBeInTheDocument();
+    sessionState.session = { ...sessionState.session, endReason: null };
+  });
+
+  it('session detail omits Ended by the user when endReason is null', () => {
+    sessionState.session = { ...sessionState.session, endReason: null };
+    render(<SessionHistoryPage />);
+    fireEvent.click(screen.getByText('Open details'));
+
+    expect(screen.queryByText('Ended by the user')).toBeNull();
+  });
+
   it('does not show the teardown-pending label for a confirmed end', () => {
     sessionState.session = { ...sessionState.session, terminationPhase: 'confirmed' };
     render(<SessionHistoryPage />);

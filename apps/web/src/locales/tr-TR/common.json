@@ -1,7 +1,8 @@
 {
   "aiInitiator": {
-    "assistant": "Yapay zekâ asistanı",
+    "assistant": "Breeze AI",
     "agent": "Yapay zekâ ajanı",
+    "flow": "Akış",
     "originUnavailable": "Kaynak kullanılamıyor",
     "openSession": "Görüşmeyi aç",
     "openAgentRun": "Ajan çalıştırmasını aç",
@@ -27,7 +28,7 @@
     "patches": "Yamalar",
     "vulnerabilities": "Güvenlik Açıkları",
     "oneDrive": "OneDrive",
-    "aiForOffice": "Office için AI",
+    "aiForOffice": "Breeze AI for Office",
     "networkMonitor": "Ağ",
     "jobs": "İşler",
     "flows": "Akışlar",
@@ -48,6 +49,7 @@
     "timesheets": "Zaman Çizelgeleri",
     "productCatalog": "Ürün Kataloğu",
     "deviceGroups": "Cihaz Grupları",
+    "sites": "Siteler",
     "unassignedDevices": "Atanmamış Cihazlar",
     "configPolicies": "Yapılandırma Politikaları",
     "integrations": "Entegrasyonlar",
@@ -65,10 +67,6 @@
     "scriptAuthoring": "Betik yazımı",
     "toolSources": "Araç Kaynakları",
     "aiAgents": "Yapay Zeka Aracıları",
-    "aiAgentRuns": "Yapay Zeka Ajan Çalıştırmaları",
-    "aiImpact": "Yapay Zeka Etkisi",
-    "fixMemory": "Düzeltme belleği",
-    "fleetDesign": "Filo Tasarımı",
     "customFields": "Özel Alanlar",
     "variables": "Değişkenler",
     "savedFilters": "Kayıtlı Filtreler",
@@ -89,12 +87,11 @@
     "sectionExtensions": "Uzantılar",
     "llmProviderCatalog": "LLM Sağlayıcı Kataloğu",
     "aiKillSwitch": "Yapay Zeka Acil Durdurma Anahtarı",
+    "wisp": "Wisp",
     "sectionAi": "Yapay Zeka",
     "sectionFleetManagement": "Filo Yönetimi",
     "sectionBilling": "Faturalama",
     "sectionAdministration": "Yönetim",
-    "fleetOrchestration": "Filo Orkestrasyonu",
-    "aiAssistant": "Yapay Zeka Asistanı",
     "software": "Yazılım",
     "softwareInventory": "Yazılım Envanteri",
     "softwarePolicies": "Yazılım Politikaları",
@@ -118,7 +115,16 @@
     "ticketsChanges": "Değişiklikler",
     "endpointMessages": "Mesajlar",
     "securityDetectionRules": "Tespit Kuralları",
-    "planAndFeatures": "Plan ve özellikler"
+    "planAndFeatures": "Plan ve özellikler",
+    "breezeAi": "Breeze AI",
+    "workersHeading": "Çalışanlar",
+    "agents": "Ajanlar",
+    "runs": "Çalıştırmalar",
+    "aiTasks": "Yapay Zekâ Görevleri",
+    "findings": "Bulgular",
+    "impact": "Etki",
+    "aiKnowledgeSources": "Bilgi kaynakları",
+    "wispLockedServer": "Wisp, Breeze Cloud üzerinde çalışır. Bu sunucuda kullanılamaz."
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",
@@ -563,7 +569,9 @@
       "after": "peşinde",
       "between": "arasındadır",
       "withinLast": "sonuncu içinde",
-      "notWithinLast": "sonuncusu içinde değil"
+      "notWithinLast": "sonuncusu içinde değil",
+      "below": "daha düşük",
+      "atLeast": "en az"
     },
     "value": {
       "noValue": "Değere gerek yok",
@@ -585,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Çıkarıldı"
-      }
+      },
+      "softwareName": "Yazılım adı",
+      "softwareVersion": "Yazılım sürümü"
     }
   },
   "account": {
@@ -669,7 +679,7 @@
     },
     "apps": {
       "title": "Bağlı uygulamalar",
-      "description": "AI asistanları ve diğer MCP istemcileri (Claude.ai, ChatGPT, Cursor,…) sizin adınıza hareket etme yetkisine sahipsiniz. Erişimi istediğiniz zaman iptal edin; jetonlar 10 dakika içinde çalışmayı durdurur.",
+      "description": "Sizin adınıza hareket etme yetkisi verdiğiniz AI istemcileri (Claude.ai, ChatGPT, Cursor, …). Erişimi istediğiniz zaman iptal edin; jetonlar 10 dakika içinde çalışmayı durdurur.",
       "empty": "Bağlı uygulama yok",
       "emptyDescription": "Bir Claude.ai sohbetine, ChatGPT'ye, Cursor'a veya başka bir MCP istemcisine yetki verdiğinizde, daha sonra iptal edebilmeniz için burada görünecektir.",
       "authorized": "Yetkili",
@@ -679,7 +689,7 @@
       "revokeTitle": "{{app}} iptal edilsin mi?",
       "revokeDescription": "Bu müşteriye yönelik tüm hibeler ve yenileme jetonları silinecek. Jetonlar 10 dakika içinde çalışmayı durdurur. Bir sonraki kullanımınızda yeniden yetkilendirmeniz gerekecektir.",
       "onlyAppTitle": "Bu sizin tek yetkili uygulamanızdır.",
-      "onlyAppDescription": "İptal ettikten sonra, herhangi bir AI asistanının kiracınız üzerinde işlem yapabilmesi için yeniden yetkilendirme yapmanız gerekecektir.",
+      "onlyAppDescription": "İptal ettikten sonra, herhangi bir AI istemcisinin kiracınız üzerinde işlem yapabilmesi için yeniden yetkilendirme yapmanız gerekecektir.",
       "reasonPlaceholder": "Artık gerekmiyor, şüpheli etkinlik, …",
       "revokeAction": "Erişimi iptal et"
     }
@@ -736,8 +746,8 @@
     "header": {
       "menu": "Menü",
       "openMenu": "Gezinme menüsünü aç",
-      "ai": "Yapay Zeka Asistanı",
-      "aiTitle": "Yapay Zeka Asistanı (Cmd+Shift+A)",
+      "ai": "Breeze AI",
+      "aiTitle": "Breeze AI (⌘⇧A)",
       "help": "Yardım ve dokümanlar",
       "helpTitle": "Yardım ve Belgeler (Cmd+Shift+H)",
       "theme": "Tema",
@@ -806,7 +816,11 @@
         "alertRules": "Uyarı kuralları",
         "alertRulesDescription": "Yapılandırma Politikalarında uyarıları yönetin",
         "keyboardShortcuts": "Klavye kısayolları",
-        "keyboardShortcutsDescription": "Tüm tuşlar ve tuş dizileri tek kartta"
+        "keyboardShortcutsDescription": "Tüm tuşlar ve tuş dizileri tek kartta",
+        "askBreezeAi": "Breeze AI’a sor",
+        "askBreezeAiDescription": "Breeze AI yan panelini aç",
+        "wispHome": "Wisp’i aç",
+        "wispHomeDescription": "Wisp ana sayfanıza gidin"
       },
       "numberHint": "Açmak için {{mod}}1–9"
     },
@@ -874,7 +888,7 @@
       "help": "Yardım panelini aç",
       "showThis": "Bu kartı göster",
       "orgSwitcher": "Kuruluş seçiciyi aç",
-      "aiSidebar": "Yapay zekâ kenar çubuğunu aç veya kapat",
+      "aiSidebar": "Breeze AI’ı aç veya kapat",
       "close": "Bir iletişim kutusunu veya menüyü kapat",
       "typingNote": "Bir alana yazarken tek tuşlu kısayollar duraklatılır.",
       "create": "Oluştur",
@@ -1070,6 +1084,68 @@
       }
     },
     "psa": {
+      "PsaAlertTicketingCard": {
+        "title": "Uyarı ticket’ları",
+        "scopeNote": "Tüm iş ortağı için geçerlidir; kuruluş bazında geçersiz kılma yoktur.",
+        "pausedBanner": "Duraklatıldı: PSA kimlik bilgilerini reddetti. Devam etmek için “Bağlantıyı test et” işlemini çalıştırın.",
+        "yes": "Açık",
+        "no": "Kapalı",
+        "selectPlaceholder": "Seçin…",
+        "priorityDefault": "PSA varsayılanı",
+        "closedSuffix": "{{name}} (kapalı)",
+        "saved": "Uyarı ticket’ı ayarları kaydedildi",
+        "saving": "Kaydediliyor…",
+        "save": "Kaydet",
+        "conflict": "Bu ayarlar başka bir yerde değiştirildi. En son değerler yüklendi; gözden geçirip yeniden kaydedin.",
+        "errors": {
+          "save": "Uyarı ticket’ı ayarları kaydedilemedi"
+        },
+        "status": {
+          "active": "Bu bağlantı için uyarı ticket’ları etkin.",
+          "notExternal": "Uyarı ticket’larını kullanmak için bu bağlantıyı hizmet yönetimi PSA’sı (harici mod) olarak bağlayın.",
+          "disabled": "Uyarı ticket’ları kapalı.",
+          "paused": "PSA bağlantısı yeniden çalışana kadar uyarı ticket’ları duraklatıldı.",
+          "companyLinksUnverified": "Bu PSA örneği için şirket bağlantılarını onaylayın.",
+          "invalidConfig": "Kayıtlı uyarı ticket’ı ayarları geçerli değil. Gözden geçirip yeniden kaydedin.",
+          "unsupportedProvider": "Uyarı ticket’ları bu PSA sağlayıcısı için kullanılamıyor.",
+          "credentialsUnusable": "Bu bağlantının kimlik bilgileri eksik veya okunamıyor. Bağlantıyı düzenleyin ve bilgileri yeniden girin."
+        },
+        "fields": {
+          "enabled": "Uyarı ticket’larını etkinleştir",
+          "board": "Pano",
+          "openStatus": "Yeni ticket durumu",
+          "closedStatus": "Kapalı durumu",
+          "priorityHeading": "Uyarı önem derecesine göre PSA önceliği",
+          "minSeverity": "En düşük önem derecesi",
+          "minSeverityHelp": "Düşük, uyarı düzeyindeki monitörleri de kapsar",
+          "closeOnResolve": "Uyarı çözüldüğünde ticket’ı kapat",
+          "noteOnAcknowledge": "Uyarı onaylandığında not ekle",
+          "confirmCompanyLinks": "Kuruluşların şirket bağlantıları bu PSA örneğiyle eşleşiyor"
+        },
+        "severity": {
+          "critical": "Kritik",
+          "high": "Yüksek",
+          "medium": "Orta",
+          "low": "Düşük",
+          "info": "Bilgi"
+        },
+        "options": {
+          "error": "Seçenekler PSA’dan yüklenemedi",
+          "retry": "Tekrar dene",
+          "truncated": "PSA’dan yalnızca ilk sonuçlar gösteriliyor."
+        },
+        "readOnly": {
+          "enabled": "Uyarı ticket’ları"
+        },
+        "loadError": {
+          "message": "Uyarı ticket ayarları yüklenemedi",
+          "retry": "Yeniden dene"
+        },
+        "configInvalid": {
+          "warning": "Kaydedilmiş uyarı ticket ayarları okunamadı. Kaydetmek bunların yerine geçer.",
+          "confirm": "Okunamayan ayarları değiştir"
+        }
+      },
       "PsaCompanyImport": {
         "title": "İthalat şirketleri",
         "subtitle": "{{name}} şirketlerinden organizasyonlar oluşturun.",
@@ -1261,7 +1337,7 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "Aramanızla veya filtrelerinizle eşleşen bilet yok.",
-          "noTickets": "Bilet senkronizasyonu henüz kullanılamıyor, bu nedenle PSA biletleri içe aktarılmaz.",
+          "noTickets": "Henüz uyarı bileti yok. Başlamak için bağlı ConnectWise Manage bağlantısında uyarı biletlerini etkinleştirin.",
           "title": "PSA bileti yok"
         },
         "filters": {
@@ -1274,19 +1350,53 @@
           "updated": "Güncellendi"
         },
         "searchPlaceholder": "Bilet arayın",
-        "status": {
-          "closed": "Kapalı",
-          "inProgress": "Devam Ediyor",
-          "open": "Aç",
-          "resolved": "Çözüldü",
-          "waiting": "Bekleniyor"
-        },
         "ticketCount": "{{filtered}} / {{total}} bilet",
-        "title": "Senkronize Biletler",
+        "title": "Uyarı biletleri",
         "unlinked": "Bağlantı kaldırıldı"
+      },
+      "PsaAlertTicketingActivity": {
+        "title": "Bilet etkinliği",
+        "refresh": "Yenile",
+        "redrive": "Yeniden dene",
+        "loading": "Bilet etkinliği yükleniyor…",
+        "loadFailed": "Bilet etkinliği yüklenemedi. Yeniden denemek için yenileyin.",
+        "actionFailed": "Bilet etkinliği güncellenemedi.",
+        "actionSucceeded": "Bilet etkinliği güncellendi.",
+        "help": "Yeniden dene, başarısız oluşturma işlemlerini ve şirket bağlantısı olmayan uyarıları tekrar işler. İşlendi olarak işaretle, PSA biletini değiştirmeden işlemeyi durdurur.",
+        "empty": "İlgilenilmesi gereken bilet yok.",
+        "viewAlert": "Uyarıyı görüntüle",
+        "createAnyway": "Yine de oluştur",
+        "markHandled": "İşlendi olarak işaretle",
+        "duplicateWarning": "PSA sisteminde zaten bir bilet olabilir. Önce kontrol edin: bu tek seferlik yeniden deneme yinelenen bir bilet oluşturabilir.",
+        "confirmCreate": "Bir bilet daha oluştur",
+        "cancel": "İptal",
+        "previous": "Önceki",
+        "next": "Sonraki",
+        "page": "Sayfa {{page}} / {{total}}",
+        "states": {
+          "never_attempted": "Kuyrukta",
+          "create_in_flight": "Oluşturuluyor",
+          "created": "Oluşturuldu",
+          "create_outcome_unknown": "Oluşturma sonucu bilinmiyor",
+          "rejected": "Reddedildi",
+          "failed": "Başarısız",
+          "needs_attention": "İlgilenilmesi gerekiyor",
+          "handled": "İşlendi",
+          "skipped_no_company": "Şirket bağlantısı yok",
+          "skipped_ambiguous_company": "Belirsiz şirket bağlantısı",
+          "skipped_resolved_before_create": "Oluşturmadan önce çözüldü"
+        }
       }
     },
     "webhooks": {
+      "ownership": {
+        "label": "Sahiplik",
+        "allOrganizations": "Tüm kuruluşlar",
+        "thisOrganizationOnly": "Yalnızca bu kuruluş",
+        "all": "Tümü",
+        "organization": "Kuruluş",
+        "test": "Test gönderimi"
+      },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} teslimat denemeleri",
         "empty": "Henüz teslimat girişimi yok.",
@@ -1339,6 +1449,10 @@
             "description": "Bir cihaz bağlandığında tetiklenir.",
             "label": "Cihaz Çevrimiçi"
           },
+          "deviceReinstalled": {
+            "description": "Yeniden kurulan bir makine mevcut cihaz kaydına yeniden bağlandığında tetiklenir.",
+            "label": "Cihaz Yeniden Kuruldu"
+          },
           "scriptCompleted": {
             "description": "Bir komut dosyası tamamlandığında tetiklenir.",
             "label": "Komut Dosyası Tamamlandı"
@@ -1346,6 +1460,10 @@
           "ticketCreated": {
             "description": "Bir bilet oluşturulduğunda tetiklenir.",
             "label": "Bilet Oluşturuldu"
+          },
+          "ticketMerged": {
+            "description": "Bir bilet başka bir bilete birleştirildiğinde tetiklenir.",
+            "label": "Bilet Birleştirildi"
           },
           "ticketCommented": {
             "description": "Bir bilete yorum veya not eklendiğinde tetiklenir.",
@@ -1374,6 +1492,18 @@
           "integrationHealthResolved": {
             "description": "Bir bağlantının sağlık olayı çözüldüğünde tetiklenir.",
             "label": "Bağlantı sağlık olayı çözüldü"
+          },
+          "alertAcknowledged": {
+            "label": "Uyarı onaylandı",
+            "description": "Bir uyarı onaylandığında tetiklenir."
+          },
+          "alertSuppressed": {
+            "label": "Uyarı susturuldu",
+            "description": "Bir uyarı susturulduğunda tetiklenir."
+          },
+          "alertEscalated": {
+            "label": "Uyarı yükseltildi",
+            "description": "Hâlâ etkin olan bir uyarı için yükseltme ilkesinin bir adımı çalıştığında tetiklenir."
           }
         },
         "fields": {
@@ -1425,6 +1555,22 @@
           "secretRequired": "HMAC kimlik doğrulaması için gizli bilgi gereklidir",
           "tokenRequired": "Taşıyıcı kimlik doğrulaması için jeton gereklidir",
           "urlRequired": "URL'si gerekli"
+        },
+        "neverDelivered": {
+          "marker": "Hiç iletilmez",
+          "explanation": "Breeze bu olayı hiçbir zaman göndermez. Bu webhook kaydedildiğinde olay kaldırılır.",
+          "banner": "Breeze bu olayı hiçbir zaman göndermez; bu nedenle bu webhook hiç teslimat yapmamıştır. Kaydetmeden önce başka bir olay seçin."
+        },
+        "payloadVersion": {
+          "title": "Veri sürümü",
+          "v2": {
+            "label": "v2 (önerilen)",
+            "description": "Uyarı olayları ana makine adını, konumu, kuruluşu, durumu ve uyarıya bağlantıyı içerir."
+          },
+          "v1": {
+            "label": "v1 (özgün)",
+            "description": "Mevcut entegrasyonlar için korunan özgün uyarı verileri."
+          }
         }
       },
       "WebhookList": {
@@ -1506,7 +1652,8 @@
           "enabled": "Web kancası etkinleştirildi",
           "retryQueued": "Teslimat yeniden deneme kuyruğa alındı",
           "testQueued": "Test teslimatı kuyruğa alındı",
-          "updated": "Web kancası güncellendi"
+          "updated": "Web kancası güncellendi",
+          "deleted": "\"{{name}}\" web kancası silindi"
         },
         "title": "Web kancaları"
       }
@@ -1996,8 +2143,8 @@
         "errors": {
           "loadFailed": "Filo istatistikleri yüklenemedi"
         },
-        "title": "Filo Düzenlemesi",
-        "description": "Filonuz genelinde politikaları, dağıtımları, yamaları ve otomasyonları yönetin",
+        "title": "Bulgular",
+        "description": "Çalışanların cihazlar arasında bulduğu örüntüler: birçok işlem yerine tek bir işlem",
         "partialWarning": "Bazı veriler eksik olabilir. Yükleme başarısız oldu: {{endpoints}}",
         "cards": {
           "policies": "Politikalar",
@@ -2011,7 +2158,7 @@
           "reports": "Raporlar"
         },
         "aiFleetActions": "Yapay Zeka Filo Eylemleri",
-        "aiFleetActionsHint": "Yapay zeka asistanına sormak için tıklayın",
+        "aiFleetActionsHint": "Breeze AI'a sormak için tıklayın",
         "quickActions": {
           "checkCompliance": "Uyumluluğu kontrol edin",
           "activeDeployments": "Etkin dağıtımlar",
@@ -2398,8 +2545,8 @@
             "description": "Birden fazla müşteriyi mi yönetiyorsunuz? Burada kuruluşlar arasında geçiş yapın."
           },
           "aiHelp": {
-            "title": "Yapay zeka destekli yardım",
-            "description": "Filonuzla ilgili sorular sorun, sorunları giderin veya raporlar oluşturun. İstediğiniz zaman Cmd+Shift+A tuşlarına basın."
+            "title": "Breeze AI",
+            "description": "Filonuzla ilgili sorular sorun, sorunları giderin veya raporlar oluşturun. İstediğiniz zaman ⌘⇧A tuşlarına basın."
           }
         },
         "skipTour": "Turu atla",

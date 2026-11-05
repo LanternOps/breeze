@@ -1,7 +1,8 @@
 {
   "aiInitiator": {
-    "assistant": "KI-Assistent",
+    "assistant": "Breeze AI",
     "agent": "KI-Agent",
+    "flow": "Ablauf",
     "originUnavailable": "Ursprung nicht verfügbar",
     "openSession": "Unterhaltung öffnen",
     "openAgentRun": "Agentenlauf öffnen",
@@ -27,7 +28,7 @@
     "patches": "Patches",
     "vulnerabilities": "Schwachstellen",
     "oneDrive": "OneDrive",
-    "aiForOffice": "KI für Office",
+    "aiForOffice": "Breeze AI for Office",
     "networkMonitor": "Netzwerk",
     "jobs": "Aufträge",
     "flows": "Abläufe",
@@ -48,6 +49,7 @@
     "timesheets": "Zeiterfassungen",
     "productCatalog": "Produktkatalog",
     "deviceGroups": "Gerätegruppen",
+    "sites": "Standorte",
     "unassignedDevices": "Nicht zugewiesene Geräte",
     "configPolicies": "Konfigurationsrichtlinien",
     "integrations": "Integrationen",
@@ -65,10 +67,6 @@
     "scriptAuthoring": "Skripterstellung",
     "toolSources": "Tool-Quellen",
     "aiAgents": "KI-Agenten",
-    "aiAgentRuns": "KI-Agenten-Läufe",
-    "aiImpact": "KI-Wirkung",
-    "fixMemory": "Fix-Gedächtnis",
-    "fleetDesign": "Flottendesign",
     "customFields": "Benutzerdefinierte Felder",
     "savedFilters": "Gespeicherte Filter",
     "moreSettings": "Weitere Einstellungen",
@@ -89,12 +87,11 @@
     "variables": "Variablen",
     "llmProviderCatalog": "LLM-Anbieterkatalog",
     "aiKillSwitch": "KI-Notausschalter",
+    "wisp": "Wisp",
     "sectionAi": "KI",
     "sectionFleetManagement": "Flottenverwaltung",
     "sectionBilling": "Abrechnung",
     "sectionAdministration": "Administration",
-    "fleetOrchestration": "Flottenorchestrierung",
-    "aiAssistant": "KI-Assistent",
     "software": "Software",
     "softwareInventory": "Software-Inventar",
     "softwarePolicies": "Software-Richtlinien",
@@ -118,7 +115,16 @@
     "ticketsChanges": "Änderungen",
     "endpointMessages": "Nachrichten",
     "securityDetectionRules": "Erkennungsregeln",
-    "planAndFeatures": "Tarif & Funktionen"
+    "planAndFeatures": "Tarif & Funktionen",
+    "breezeAi": "Breeze AI",
+    "workersHeading": "Worker",
+    "agents": "Agenten",
+    "runs": "Läufe",
+    "aiTasks": "KI-Aufgaben",
+    "findings": "Erkenntnisse",
+    "impact": "Wirkung",
+    "aiKnowledgeSources": "Wissensquellen",
+    "wispLockedServer": "Wisp läuft in der Breeze Cloud. Auf diesem Server ist es nicht verfügbar."
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -563,7 +569,9 @@
       "after": "liegt nach",
       "between": "liegt zwischen",
       "withinLast": "innerhalb der letzten",
-      "notWithinLast": "nicht innerhalb der letzten"
+      "notWithinLast": "nicht innerhalb der letzten",
+      "below": "niedriger als",
+      "atLeast": "mindestens"
     },
     "value": {
       "noValue": "Kein Wert erforderlich",
@@ -585,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Entfernt"
-      }
+      },
+      "softwareName": "Softwarename",
+      "softwareVersion": "Softwareversion"
     }
   },
   "account": {
@@ -669,7 +679,7 @@
     },
     "apps": {
       "title": "Verbundene Apps",
-      "description": "KI-Assistenten und andere MCP-Clients (Claude.ai, ChatGPT, Cursor, …), die Sie autorisiert haben, in Ihrem Namen zu handeln. Der Zugriff kann jederzeit widerrufen werden; die Token funktionieren innerhalb von 10 Minuten nicht mehr.",
+      "description": "KI-Clients (Claude.ai, ChatGPT, Cursor, …), die Sie autorisiert haben, in Ihrem Namen zu handeln. Der Zugriff kann jederzeit widerrufen werden – Tokens funktionieren dann nach spätestens 10 Minuten nicht mehr.",
       "empty": "Keine verbundenen Apps",
       "emptyDescription": "Wenn Sie einen Claude.ai-Chat, ChatGPT, Cursor oder einen anderen MCP-Client autorisieren, wird dieser hier angezeigt und kann später widerrufen werden.",
       "authorized": "Autorisiert",
@@ -679,7 +689,7 @@
       "revokeTitle": "{{app}} widerrufen?",
       "revokeDescription": "Alle Berechtigungen und Refresh-Token für diesen Client werden gelöscht. Die Token funktionieren innerhalb von 10 Minuten nicht mehr. Bei der nächsten Verwendung ist eine erneute Autorisierung erforderlich.",
       "onlyAppTitle": "Dies ist Ihre einzige autorisierte App.",
-      "onlyAppDescription": "Nach dem Widerruf müssen Sie erneut autorisieren, bevor ein KI-Assistent in Ihrem Mandanten handeln kann.",
+      "onlyAppDescription": "Nach dem Widerrufen müssen Sie erneut autorisieren, bevor ein KI-Client in Ihrem Mandanten handeln kann.",
       "reasonPlaceholder": "Nicht mehr benötigt, verdächtige Aktivität, …",
       "revokeAction": "Zugriff widerrufen"
     }
@@ -736,8 +746,8 @@
     "header": {
       "menu": "Menü",
       "openMenu": "Navigationsmenü öffnen",
-      "ai": "KI-Assistent",
-      "aiTitle": "KI-Assistent (Cmd+Shift+A)",
+      "ai": "Breeze AI",
+      "aiTitle": "Breeze AI (⌘⇧A)",
       "help": "Hilfe und Dokumentation",
       "helpTitle": "Hilfe und Dokumentation (Cmd+Shift+H)",
       "theme": "Design",
@@ -806,7 +816,11 @@
         "alertRules": "Alarmregeln",
         "alertRulesDescription": "Alarmierung in Konfigurationsrichtlinien verwalten",
         "keyboardShortcuts": "Tastenkürzel",
-        "keyboardShortcutsDescription": "Alle Tasten und Tastenfolgen auf einer Karte"
+        "keyboardShortcutsDescription": "Alle Tasten und Tastenfolgen auf einer Karte",
+        "askBreezeAi": "Breeze AI fragen",
+        "askBreezeAiDescription": "Den Breeze AI-Seitenbereich öffnen",
+        "wispHome": "Wisp öffnen",
+        "wispHomeDescription": "Zu Ihrer Wisp-Startseite wechseln"
       },
       "numberHint": "{{mod}}1–9 zum Öffnen"
     },
@@ -874,7 +888,7 @@
       "help": "Hilfebereich öffnen",
       "showThis": "Diese Karte anzeigen",
       "orgSwitcher": "Organisationsauswahl öffnen",
-      "aiSidebar": "KI-Seitenleiste ein- oder ausblenden",
+      "aiSidebar": "Breeze AI ein- oder ausblenden",
       "close": "Dialog oder Menü schließen",
       "typingNote": "Einzeltasten-Kürzel pausieren, während Sie in ein Feld tippen.",
       "create": "Erstellen",
@@ -1070,6 +1084,68 @@
       }
     },
     "psa": {
+      "PsaAlertTicketingCard": {
+        "title": "Alarm-Tickets",
+        "scopeNote": "Partnerweit; keine Überschreibung pro Organisation.",
+        "pausedBanner": "Pausiert: Das PSA hat die Zugangsdaten abgelehnt. Führen Sie „Verbindung testen“ aus, um fortzufahren.",
+        "yes": "An",
+        "no": "Aus",
+        "selectPlaceholder": "Auswählen …",
+        "priorityDefault": "PSA-Standard",
+        "closedSuffix": "{{name}} (geschlossen)",
+        "saved": "Einstellungen für Alarm-Tickets gespeichert",
+        "saving": "Wird gespeichert …",
+        "save": "Speichern",
+        "conflict": "Diese Einstellungen wurden an anderer Stelle geändert. Die aktuellen Werte wurden geladen; prüfen Sie sie und speichern Sie erneut.",
+        "errors": {
+          "save": "Einstellungen für Alarm-Tickets konnten nicht gespeichert werden"
+        },
+        "status": {
+          "active": "Alarm-Tickets sind für diese Verbindung aktiviert.",
+          "notExternal": "Binden Sie diese Verbindung als Service-Management-PSA (externer Modus), um Alarm-Tickets zu verwenden.",
+          "disabled": "Alarm-Tickets sind deaktiviert.",
+          "paused": "Alarm-Tickets sind pausiert, bis die PSA-Verbindung wieder funktioniert.",
+          "companyLinksUnverified": "Bestätigen Sie die Firmenzuordnungen für diese PSA-Instanz.",
+          "invalidConfig": "Die gespeicherten Einstellungen für Alarm-Tickets sind ungültig. Prüfen Sie sie und speichern Sie erneut.",
+          "unsupportedProvider": "Alarm-Tickets sind für diesen PSA-Anbieter nicht verfügbar.",
+          "credentialsUnusable": "Die Zugangsdaten dieser Verbindung sind unvollständig oder nicht lesbar. Bearbeiten Sie die Verbindung und geben Sie sie erneut ein."
+        },
+        "fields": {
+          "enabled": "Alarm-Tickets aktivieren",
+          "board": "Service-Board",
+          "openStatus": "Status neuer Tickets",
+          "closedStatus": "Status „Geschlossen“",
+          "priorityHeading": "PSA-Priorität nach Alarm-Schweregrad",
+          "minSeverity": "Minimaler Schweregrad",
+          "minSeverityHelp": "„Niedrig“ umfasst Monitore auf Warnstufe",
+          "closeOnResolve": "Ticket schließen, wenn der Alarm behoben ist",
+          "noteOnAcknowledge": "Notiz hinzufügen, wenn der Alarm bestätigt wird",
+          "confirmCompanyLinks": "Die Firmenzuordnungen der Organisationen stimmen mit dieser PSA-Instanz überein"
+        },
+        "severity": {
+          "critical": "Kritisch",
+          "high": "Hoch",
+          "medium": "Mittel",
+          "low": "Niedrig",
+          "info": "Information"
+        },
+        "options": {
+          "error": "Optionen konnten nicht aus dem PSA geladen werden",
+          "retry": "Erneut versuchen",
+          "truncated": "Es werden nur die ersten Ergebnisse aus dem PSA angezeigt."
+        },
+        "readOnly": {
+          "enabled": "Alarm-Tickets"
+        },
+        "loadError": {
+          "message": "Einstellungen für Alarm-Tickets konnten nicht geladen werden",
+          "retry": "Erneut versuchen"
+        },
+        "configInvalid": {
+          "warning": "Die gespeicherten Einstellungen für Alarm-Tickets konnten nicht gelesen werden. Beim Speichern werden sie ersetzt.",
+          "confirm": "Die unlesbaren Einstellungen ersetzen"
+        }
+      },
       "PsaCompanyImport": {
         "title": "Firmen importieren",
         "subtitle": "Erstellen Sie Organisationen aus den Firmen in {{name}}.",
@@ -1261,7 +1337,7 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "Keine Tickets entsprechen Ihrer Suche oder den Filtern.",
-          "noTickets": "Die Ticket-Synchronisierung ist noch nicht verfügbar, daher werden keine PSA-Tickets importiert.",
+          "noTickets": "Noch keine Alarmtickets. Aktivieren Sie Alarmtickets für die zugeordnete ConnectWise-Manage-Verbindung.",
           "title": "Keine PSA-Tickets"
         },
         "filters": {
@@ -1274,19 +1350,53 @@
           "updated": "Aktualisiert"
         },
         "searchPlaceholder": "Tickets suchen",
-        "status": {
-          "closed": "Geschlossen",
-          "inProgress": "In Bearbeitung",
-          "open": "Offen",
-          "resolved": "Gelöst",
-          "waiting": "Wartend"
-        },
         "ticketCount": "{{filtered}} von {{total}} Tickets",
-        "title": "Synchronisierte Tickets",
+        "title": "Alarmtickets",
         "unlinked": "Nicht verknüpft"
+      },
+      "PsaAlertTicketingActivity": {
+        "title": "Ticketaktivität",
+        "refresh": "Aktualisieren",
+        "redrive": "Erneut anstoßen",
+        "loading": "Ticketaktivität wird geladen…",
+        "loadFailed": "Ticketaktivität konnte nicht geladen werden. Bitte aktualisieren.",
+        "actionFailed": "Ticketaktivität konnte nicht aktualisiert werden.",
+        "actionSucceeded": "Ticketaktivität aktualisiert.",
+        "help": "Erneutes Anstoßen wiederholt fehlgeschlagene Erstellungen und Alarme ohne Firmenverknüpfung. Als erledigt markieren beendet die Verarbeitung, ohne das PSA-Ticket zu ändern.",
+        "empty": "Keine Tickets erfordern Aufmerksamkeit.",
+        "viewAlert": "Alarm anzeigen",
+        "createAnyway": "Trotzdem erstellen",
+        "markHandled": "Als erledigt markieren",
+        "duplicateWarning": "Möglicherweise existiert bereits ein Ticket im PSA. Prüfen Sie dies zuerst: Dieser einmalige Wiederholungsversuch kann ein Duplikat erstellen.",
+        "confirmCreate": "Ein weiteres Ticket erstellen",
+        "cancel": "Abbrechen",
+        "previous": "Zurück",
+        "next": "Weiter",
+        "page": "Seite {{page}} von {{total}}",
+        "states": {
+          "never_attempted": "In Warteschlange",
+          "create_in_flight": "Wird erstellt",
+          "created": "Erstellt",
+          "create_outcome_unknown": "Erstellungsergebnis unbekannt",
+          "rejected": "Abgelehnt",
+          "failed": "Fehlgeschlagen",
+          "needs_attention": "Aufmerksamkeit erforderlich",
+          "handled": "Erledigt",
+          "skipped_no_company": "Keine Firmenverknüpfung",
+          "skipped_ambiguous_company": "Mehrdeutige Firmenverknüpfung",
+          "skipped_resolved_before_create": "Vor Erstellung behoben"
+        }
       }
     },
     "webhooks": {
+      "ownership": {
+        "label": "Zuständigkeit",
+        "allOrganizations": "Alle Organisationen",
+        "thisOrganizationOnly": "Nur diese Organisation",
+        "all": "Alle",
+        "organization": "Organisation",
+        "test": "Testzustellung"
+      },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} Zustellversuche",
         "empty": "Noch keine Zustellversuche.",
@@ -1339,6 +1449,10 @@
             "description": "Wird ausgelöst, wenn ein Gerät eine Verbindung herstellt.",
             "label": "Gerät online"
           },
+          "deviceReinstalled": {
+            "description": "Wird ausgelöst, wenn ein neu installierter Rechner wieder mit seinem bestehenden Gerätedatensatz verknüpft wird.",
+            "label": "Gerät neu installiert"
+          },
           "scriptCompleted": {
             "description": "Wird ausgelöst, wenn ein Skript abgeschlossen ist.",
             "label": "Skript abgeschlossen"
@@ -1346,6 +1460,10 @@
           "ticketCreated": {
             "description": "Wird ausgelöst, wenn ein Ticket erstellt wird.",
             "label": "Ticket erstellt"
+          },
+          "ticketMerged": {
+            "description": "Wird ausgelöst, wenn ein Ticket mit einem anderen Ticket zusammengeführt wird.",
+            "label": "Ticket zusammengeführt"
           },
           "ticketCommented": {
             "description": "Wird ausgelöst, wenn ein Kommentar oder eine Notiz zu einem Ticket hinzugefügt wird.",
@@ -1374,6 +1492,18 @@
           "integrationHealthResolved": {
             "description": "Wird ausgelöst, wenn ein Integritätsvorfall einer Verbindung behoben wird.",
             "label": "Integritätsvorfall bei Verbindung behoben"
+          },
+          "alertAcknowledged": {
+            "label": "Alarm bestätigt",
+            "description": "Wird ausgelöst, wenn ein Alarm bestätigt wird."
+          },
+          "alertSuppressed": {
+            "label": "Alarm unterdrückt",
+            "description": "Wird ausgelöst, wenn ein Alarm unterdrückt wird."
+          },
+          "alertEscalated": {
+            "label": "Alarm eskaliert",
+            "description": "Wird ausgelöst, wenn ein Schritt einer Eskalationsrichtlinie für einen noch aktiven Alarm ausgeführt wird."
           }
         },
         "fields": {
@@ -1425,6 +1555,22 @@
           "secretRequired": "Für die HMAC-Authentifizierung ist ein Geheimnis erforderlich",
           "tokenRequired": "Für die Bearer-Authentifizierung ist ein Token erforderlich",
           "urlRequired": "Die URL ist erforderlich"
+        },
+        "neverDelivered": {
+          "marker": "Nie zugestellt",
+          "explanation": "Breeze sendet dieses Ereignis nie. Es wird beim Speichern dieses Webhooks entfernt.",
+          "banner": "Breeze sendet dieses Ereignis nie. Dieser Webhook hat daher noch nie etwas zugestellt. Wählen Sie vor dem Speichern ein anderes Ereignis."
+        },
+        "payloadVersion": {
+          "title": "Version der Nutzdaten",
+          "v2": {
+            "label": "v2 (empfohlen)",
+            "description": "Alarmereignisse enthalten Hostname, Standort, Organisation, Status und einen Link zum Alarm."
+          },
+          "v1": {
+            "label": "v1 (Original)",
+            "description": "Die ursprünglichen Alarmdaten für bestehende Integrationen."
+          }
         }
       },
       "WebhookList": {
@@ -1506,7 +1652,8 @@
           "enabled": "Webhook aktiviert",
           "retryQueued": "Erneute Zustellung in die Warteschlange gestellt",
           "testQueued": "Testzustellung in die Warteschlange gestellt",
-          "updated": "Webhook aktualisiert"
+          "updated": "Webhook aktualisiert",
+          "deleted": "Webhook \"{{name}}\" gelöscht"
         },
         "title": "Webhooks"
       }
@@ -1996,8 +2143,8 @@
         "errors": {
           "loadFailed": "Die Flottenstatistiken konnten nicht geladen werden"
         },
-        "title": "Flottenorchestrierung",
-        "description": "Verwalten Sie Richtlinien, Bereitstellungen, Patches und Automatisierungen in Ihrer gesamten Flotte",
+        "title": "Erkenntnisse",
+        "description": "Geräteübergreifende Muster, die die Worker gefunden haben – eine Aktion statt vieler",
         "partialWarning": "Einige Daten sind möglicherweise unvollständig. Fehler beim Laden: {{endpoints}}",
         "cards": {
           "policies": "Richtlinien",
@@ -2011,7 +2158,7 @@
           "reports": "Berichte"
         },
         "aiFleetActions": "KI-Flottenaktionen",
-        "aiFleetActionsHint": "Klicken Sie hier, um den KI-Assistenten zu fragen",
+        "aiFleetActionsHint": "Klicken, um Breeze AI zu fragen",
         "quickActions": {
           "checkCompliance": "Überprüfen Sie die Einhaltung",
           "activeDeployments": "Aktive Bereitstellungen",
@@ -2398,8 +2545,8 @@
             "description": "Mehrere Kunden verwalten? Wechseln Sie hier zwischen Organisationen."
           },
           "aiHelp": {
-            "title": "KI-gestützte Hilfe",
-            "description": "Stellen Sie Fragen zu Ihrer Flotte, beheben Sie Probleme oder erstellen Sie Berichte. Drücken Sie jederzeit Befehl+Umschalt+A."
+            "title": "Breeze AI",
+            "description": "Fragen Sie in einfacher Sprache nach Ihrer Flotte, beheben Sie Probleme oder erstellen Sie Berichte. Drücken Sie überall ⌘⇧A."
           }
         },
         "skipTour": "Tour überspringen",

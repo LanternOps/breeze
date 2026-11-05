@@ -86,3 +86,27 @@ func TestScenarioMustFitTheRun(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDrainSocketsActionValidation(t *testing.T) {
+	cases := map[string]string{
+		"drain without withinMs": `{"name":"x","events":[{"name":"e","at":"2m","start":[{"internal":"drain-sockets"}]}]}`,
+		"negative withinMs":      `{"name":"x","events":[{"name":"e","at":"2m","start":[{"internal":"drain-sockets","withinMs":-1}]}]}`,
+		"withinMs on drop":       `{"name":"x","events":[{"name":"e","at":"2m","start":[{"internal":"drop-sockets","withinMs":1000}]}]}`,
+		"withinMs on exec":       `{"name":"x","events":[{"name":"e","at":"2m","start":[{"exec":["docker","ps"],"withinMs":1000}]}]}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "s.json")
+			writeFile(t, path, body)
+			if _, err := LoadScenario(path, os.LookupEnv); err == nil {
+				t.Fatal("want an error")
+			}
+		})
+	}
+	path := filepath.Join(t.TempDir(), "s.json")
+	writeFile(t, path, `{"name":"x","events":[{"name":"e","at":"2m","start":[{"internal":"drain-sockets","withinMs":0}]}]}`)
+	sc, err := LoadScenario(path, os.LookupEnv)
+	if err != nil || *sc.Events[0].Start[0].WithinMs != 0 {
+		t.Fatalf("withinMs 0 is valid: %v", err)
+	}
+}

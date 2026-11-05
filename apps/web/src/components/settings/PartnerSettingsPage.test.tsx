@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -11,7 +11,9 @@ import { getJwtClaims } from '../../lib/authScope';
 import { i18n, loadLocale } from '../../lib/i18n';
 
 vi.mock('../../stores/auth', () => ({
-  fetchWithAuth: vi.fn()
+  fetchWithAuth: vi.fn(),
+  // The header Save gates on partner-wide access (W2).
+  useAuthStore: (sel: (s: unknown) => unknown) => sel({ user: { canManagePartnerWide: true } }),
 }));
 
 vi.mock('../../stores/orgStore', () => ({
@@ -626,7 +628,7 @@ describe('PartnerSettingsPage Ticketing tab', () => {
     render(<PartnerSettingsPage />);
 
     expect(await screen.findByTestId('partner-settings-ticketing-link')).not.toBeNull();
-    // The inheritance banner is partner-config-only and must be hidden here.
+    // No per-tab "enforced" banner on any tab (#9790 W4).
     expect(screen.queryByText(/enforced across all organizations/i)).toBeNull();
   });
 });
@@ -668,7 +670,7 @@ describe('PartnerSettingsPage Email templates tab', () => {
     expect(screen.getByText(/quotes, invoices, invites/i)).not.toBeNull();
   });
 
-  it('mounts the email templates tab as self-saving with hash #email-templates', async () => {
+  it('mounts the email templates tab (list kind) with hash #email-templates', async () => {
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerResponse));
 
@@ -680,8 +682,8 @@ describe('PartnerSettingsPage Email templates tab', () => {
 
     expect(screen.getByTestId('stub-email-templates-tab')).not.toBeNull();
     expect(window.location.hash).toBe('#email-templates');
-    expect(screen.queryByRole('button', { name: /save settings/i })).toBeNull();
-    expect(screen.getByText('This section saves its own changes.')).not.toBeNull();
+    // W2: one header Save on every tab; nothing is dirty, so it is disabled.
+    expect((screen.getByRole('button', { name: /save settings/i }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('deep-links #email-templates straight to the Email templates tab on mount', async () => {
@@ -743,7 +745,7 @@ describe('PartnerSettingsPage Remote Access — dedicated tunnel origin', () => 
 
   it('hydrates an opted-in partner, marks the tab dirty on toggle, and saves the explicit choice', async () => {
     const toggle = await openRemoteAccess({ networkProxy: { dedicatedTunnelOrigin: true } });
-    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    expect(toggle).toBeChecked();
     const saveBtn = screen.getByRole('button', { name: /save settings/i }) as HTMLButtonElement;
     expect(saveBtn.disabled).toBe(true);
 
@@ -757,7 +759,7 @@ describe('PartnerSettingsPage Remote Access — dedicated tunnel origin', () => 
 
   it('leaves the choice unset for a partner who never chose, so a later default flip still reaches them', async () => {
     const toggle = await openRemoteAccess({});
-    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    expect(toggle).not.toBeChecked();
     const user = userEvent.setup();
     // An unrelated edit on another tab makes the page saveable.
     await user.click(screen.getByRole('link', { name: /^company$/i }));
@@ -809,15 +811,15 @@ describe('PartnerSettingsPage sidebar nav & save contract', () => {
     expect(screen.getByRole('link', { name: /^company \(unsaved changes\)$/i })).not.toBeNull();
   });
 
-  it('replaces the global Save button with a note on self-saving tabs', async () => {
+  it('keeps the header Save on list tabs: an edit on Company stays saveable from Email templates', async () => {
     render(<PartnerSettingsPage />);
 
-    await screen.findByText('Partner Settings');
     const user = userEvent.setup();
+    await user.type(await screen.findByLabelText(/company name/i), ' Inc.');
     await user.click(screen.getByRole('link', { name: /^email templates$/i }));
 
-    expect(screen.queryByRole('button', { name: /save settings/i })).toBeNull();
-    expect(screen.getByText('This section saves its own changes.')).not.toBeNull();
+    expect((screen.getByRole('button', { name: /save settings/i }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText('This section saves its own changes.')).toBeNull();
   });
 
   it('marks the active tab with aria-current and pushes the canonical kebab hash on click', async () => {
@@ -1017,6 +1019,62 @@ describe('PartnerSettingsPage AI Budgets tab', () => {
     // Enabled still round-trips, so this is an omitted key, not an omitted tab.
     expect(settings.aiBudgets.enabled).toBe(true);
     expect(settings.aiBudgets).not.toHaveProperty('alertThresholdPercents');
+  });
+
+  // #9666: "not set" must reach the API as an absent key. The partner PATCH
+  // replaces the stored aiBudgets block wholesale, so an omitted `enabled`
+  // unlocks every organization's own AI switch; `false` would turn AI off for
+  // all of them.
+  it('choosing "not set" for AI access drops enabled from the payload and keeps the caps', async () => {
+    render(<PartnerSettingsPage />);
+    await screen.findByText('Partner Settings');
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('link', { name: /^ai budgets$/i }));
+
+    const select = await screen.findByTestId('partner-ai-budget-enabled');
+    await user.selectOptions(select, '');
+
+    await user.click(screen.getByRole('button', { name: /save settings/i }));
+
+    const settings = patchedSettings();
+    expect(settings.aiBudgets).not.toHaveProperty('enabled');
+    expect(settings.aiBudgets.monthlyBudgetCents).toBe(5000);
+  });
+
+  it('Off reaches the payload only after the confirm, with the caps kept', async () => {
+    render(<PartnerSettingsPage />);
+    await screen.findByText('Partner Settings');
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('link', { name: /^ai budgets$/i }));
+
+    const select = await screen.findByTestId('partner-ai-budget-enabled');
+    await user.selectOptions(select, 'off');
+    await user.click(await screen.findByTestId('partner-ai-budget-off-confirm'));
+    expect(await screen.findByTestId('partner-ai-budget-off-warning')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /save settings/i }));
+
+    expect(patchedSettings().aiBudgets).toMatchObject({ enabled: false, monthlyBudgetCents: 5000 });
+  });
+
+  it('cancelling the Off confirm leaves the tab clean and sends nothing', async () => {
+    render(<PartnerSettingsPage />);
+    await screen.findByText('Partner Settings');
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('link', { name: /^ai budgets$/i }));
+
+    const select = await screen.findByTestId('partner-ai-budget-enabled');
+    await user.selectOptions(select, 'off');
+    const dialog = await screen.findByTestId('partner-ai-budget-off-confirm-dialog');
+    await user.click(within(dialog.closest('[role="dialog"]') as HTMLElement).getByRole('button', { name: /cancel/i }));
+
+    expect((select as HTMLSelectElement).value).toBe('on');
+    expect(screen.queryByTestId('partner-ai-budget-off-warning')).toBeNull();
+    expect(screen.getByRole('button', { name: /save settings/i })).toBeDisabled();
+    expect(fetchWithAuthMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH')).toBe(false);
   });
 
   it('blocks Save while the ladder text does not parse', async () => {

@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // DarwinCollector gathers macOS system state: preferences, launch daemons/agents,
@@ -134,7 +135,7 @@ func (c *DarwinCollector) collectNetwork(stagingDir string) ([]Artifact, error) 
 	}
 
 	outPath := filepath.Join(dir, "ports.txt")
-	cmd := exec.Command("networksetup", "-listallhardwareports")
+	cmd := procspawn.Command("networksetup", "-listallhardwareports")
 	data, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("networksetup: %w", err)
@@ -156,7 +157,7 @@ func (c *DarwinCollector) collectPackages(stagingDir string) ([]Artifact, error)
 	}
 
 	outPath := filepath.Join(dir, "installed.txt")
-	cmd := exec.Command("pkgutil", "--pkgs")
+	cmd := procspawn.Command("pkgutil", "--pkgs")
 	data, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("pkgutil: %w", err)
@@ -216,39 +217,39 @@ func (c *DarwinCollector) CollectHardwareProfile() (*HardwareProfile, error) {
 	hw := &HardwareProfile{}
 
 	// CPU model
-	if out, err := exec.Command("sysctl", "-n", "machdep.cpu.brand_string").Output(); err == nil {
+	if out, err := procspawn.Command("sysctl", "-n", "machdep.cpu.brand_string").Output(); err == nil {
 		hw.CPUModel = strings.TrimSpace(string(out))
 	}
 
 	// CPU cores
-	if out, err := exec.Command("sysctl", "-n", "hw.ncpu").Output(); err == nil {
+	if out, err := procspawn.Command("sysctl", "-n", "hw.ncpu").Output(); err == nil {
 		hw.CPUCores, _ = strconv.Atoi(strings.TrimSpace(string(out)))
 	}
 
 	// Memory
-	if out, err := exec.Command("sysctl", "-n", "hw.memsize").Output(); err == nil {
+	if out, err := procspawn.Command("sysctl", "-n", "hw.memsize").Output(); err == nil {
 		bytes, _ := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
 		hw.TotalMemoryMB = bytes / (1024 * 1024)
 	}
 
 	// Disks - diskutil list (plain text)
-	if out, err := exec.Command("diskutil", "list").Output(); err == nil {
+	if out, err := procspawn.Command("diskutil", "list").Output(); err == nil {
 		hw.Disks = parseDarwinDiskutil(string(out))
 	}
 
 	// NICs
-	if out, err := exec.Command("networksetup", "-listallhardwareports").Output(); err == nil {
+	if out, err := procspawn.Command("networksetup", "-listallhardwareports").Output(); err == nil {
 		hw.NetworkAdapters = parseDarwinNICs(string(out))
 	}
 
 	// UEFI - all Apple Silicon and most Intel Macs since ~2006 use UEFI.
-	if out, err := exec.Command("sysctl", "-n", "machdep.cpu.brand_string").Output(); err == nil {
+	if out, err := procspawn.Command("sysctl", "-n", "machdep.cpu.brand_string").Output(); err == nil {
 		hw.IsUEFI = true // All supported macOS machines are UEFI.
 		_ = out
 	}
 
 	// System model as motherboard equivalent.
-	if out, err := exec.Command("sysctl", "-n", "hw.model").Output(); err == nil {
+	if out, err := procspawn.Command("sysctl", "-n", "hw.model").Output(); err == nil {
 		hw.Motherboard = strings.TrimSpace(string(out))
 	}
 
@@ -302,7 +303,7 @@ func parseDarwinNICs(output string) []NICInfo {
 // ---------------------------------------------------------------------------
 
 func darwinVersion() string {
-	out, err := exec.Command("sw_vers", "-productVersion").Output()
+	out, err := procspawn.Command("sw_vers", "-productVersion").Output()
 	if err != nil {
 		return "darwin"
 	}

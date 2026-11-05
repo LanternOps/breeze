@@ -20,6 +20,7 @@ import { systemConnectionsAdminRoutes } from './systemConnections';
 import { systemConnectionHealthAdminRoutes } from './systemConnectionHealth';
 import { adminAutopayRolloutRoutes } from './autopayRollout';
 import { entitlementsAdminRoutes } from './entitlements';
+import { wispAdminRoutes } from './wisp';
 
 export const adminRoutes = new Hono();
 
@@ -84,3 +85,9 @@ adminRoutes.route('/monitor-conversion', adminMonitorConversionRoutes);
 // fact, so a partner can never self-grant — platform-admin only (gate above),
 // with requireMfa() on the mutating verbs inside the router.
 adminRoutes.route('/', entitlementsAdminRoutes);
+
+// Wisp W07 Task 9 (#10141): read-only cross-partner Wisp overview (grants per
+// partner, today's assessments / specialists / spend, paused reasons).
+// Platform-admin only via the gate above; GET only; 404 `wisp_disabled` while
+// BREEZE_WISP_ENABLED is off.
+adminRoutes.route('/wisp', wispAdminRoutes);

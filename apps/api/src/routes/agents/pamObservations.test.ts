@@ -62,6 +62,7 @@ function buildApp(options: {
   app.use('/agents/*', async (c, next) => {
     if (options.includeAgent !== false) {
       c.set('agent', {
+        installIncarnation: 1,
         deviceId: DEVICE_ID,
         orgId: '40000000-0000-4000-8000-000000000001',
         partnerId: '70000000-0000-4000-8000-000000000001',

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/systemrestore"
 )
@@ -21,5 +22,14 @@ func TestMain(m *testing.M) {
 			Message:   "test default: real System Restore is never called from tests",
 		}
 	}
+	// Every patch command schedules a follow-up inventory scan, 5 s later off
+	// macOS (#10250). Tests drive installs on bare Heartbeats, so a real scan
+	// firing mid-run would scan the CI host and hit nil transports. Tests that
+	// care about scheduling swap in their own recorder (captureRescans).
+	schedulePostInstallRescan = func(*Heartbeat, time.Duration) {}
+	// Localized copy (prompt host, PAM outcome notices #10696) falls back to
+	// the machine's UI language; tests never read the CI host's. Tests that
+	// care set their own (setOSUILocaleForTest).
+	osUILocale = func() string { return "en-US" }
 	os.Exit(m.Run())
 }

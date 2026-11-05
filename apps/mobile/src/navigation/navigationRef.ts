@@ -33,13 +33,27 @@ export interface TicketOpenOptions {
  * than a parallel variable, so a later plain tap cannot inherit an earlier
  * caller's focus request.
  */
-let pending: { ticketId: string; options: TicketOpenOptions } | null = null;
+let pending:
+  | { kind: 'ticket'; ticketId: string; options: TicketOpenOptions }
+  | { kind: 'wisp'; params: WispThreadParams }
+  | null = null;
+
+/**
+ * Wisp W06. What the Wisp thread screen opens on. `grantId` travels with the
+ * thread because the concern routes and the reply session both key on it.
+ */
+export interface WispThreadParams {
+  threadId: string;
+  grantId: string;
+  concernId?: string | null;
+  approvalIntentId?: string | null;
+}
 
 export function navigateToTicket(ticketId: string, options: TicketOpenOptions = {}): void {
   // react-navigation silently DROPS navigate() calls before the container is
   // ready, so a cold-start tap would open nothing at all. Buffer instead.
   if (!navigationRef.isReady()) {
-    pending = { ticketId, options };
+    pending = { kind: 'ticket', ticketId, options };
     return;
   }
   const params: TicketDetailParams = { ticketId };
@@ -59,14 +73,32 @@ export function navigateToTicket(ticketId: string, options: TicketOpenOptions = 
   });
 }
 
+/**
+ * Wisp W06. Open the Wisp thread inside the Home stack. Shares the ticket
+ * path's single pending slot: whichever tap came last is the one replayed.
+ */
+export function navigateToWispThread(params: WispThreadParams): void {
+  if (!navigationRef.isReady()) {
+    pending = { kind: 'wisp', params };
+    return;
+  }
+  navigationRef.navigate('HomeTab', {
+    screen: 'WispThread',
+    // Same reason as the ticket path: keep Home underneath so back lands there.
+    initial: false,
+    params,
+  });
+}
+
 /** Call from `NavigationContainer`'s `onReady`. Safe to call repeatedly. */
 export function flushPendingNavigation(): void {
   if (!pending) return;
-  const { ticketId, options } = pending;
+  const slot = pending;
   pending = null;
   // Re-buffers itself if the container somehow still is not ready, so an early
   // flush cannot swallow the tap.
-  navigateToTicket(ticketId, options);
+  if (slot.kind === 'wisp') navigateToWispThread(slot.params);
+  else navigateToTicket(slot.ticketId, slot.options);
 }
 
 export function __resetPendingForTests(): void {

@@ -46,6 +46,28 @@ describe('resolvePushRoute (#4336)', () => {
   });
 });
 
+describe('resolvePushRoute wisp_nudge (Wisp W06)', () => {
+  it('routes wisp_nudge data to the thread', () => {
+    expect(resolvePushRoute({ type: 'wisp_nudge', threadId: 't1', grantId: 'g1', concernId: 'c1' })).toEqual({
+      kind: 'wisp_thread',
+      threadId: 't1',
+      grantId: 'g1',
+      concernId: 'c1',
+      approvalIntentId: null,
+    });
+  });
+
+  it('carries the approval intent through', () => {
+    expect(
+      resolvePushRoute({ type: 'wisp_nudge', threadId: 't1', grantId: 'g1', concernId: null, approvalIntentId: 'i1' })
+    ).toEqual({ kind: 'wisp_thread', threadId: 't1', grantId: 'g1', concernId: null, approvalIntentId: 'i1' });
+  });
+
+  it('a wisp_nudge without a grant routes nowhere', () => {
+    expect(resolvePushRoute({ type: 'wisp_nudge', threadId: 't1' })).toBeNull();
+  });
+});
+
 describe('shouldReplayResponse (#4336)', () => {
   it('replays a never-seen identifier once', () => {
     expect(shouldReplayResponse('r-1', null)).toBe(true);

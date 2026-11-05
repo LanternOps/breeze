@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ActionMenu, type ActionMenuItem } from "../shared/ActionMenu";
 import { useTranslation } from "react-i18next";
 
 interface WorkspaceTabProps {
@@ -13,6 +14,8 @@ interface WorkspaceTabProps {
   onSelect: () => void;
   onClose: () => void;
   onRename: (title: string) => void;
+  /** #9427 W3: present only when the tab holds a session that can move to the side panel. */
+  onContinueInPanel?: () => void;
 }
 
 const tabShellClassName = (isActive: boolean) =>
@@ -32,6 +35,7 @@ export default function WorkspaceTab({
   onSelect,
   onClose,
   onRename,
+  onContinueInPanel,
 }: WorkspaceTabProps) {
   const { t } = useTranslation("ai");
   const [isEditing, setIsEditing] = useState(false);
@@ -96,61 +100,95 @@ export default function WorkspaceTab({
     );
   }
 
+  const menuItems: ActionMenuItem[] = [
+    { id: "rename", label: t("workspaceTab.renameLabel"), onSelect: startEditing, testId: "workspace-tab-rename" },
+    ...(onContinueInPanel
+      ? [{
+        id: "continue-in-panel",
+        label: t("aiConversationMove.continueInPanel"),
+        onSelect: onContinueInPanel,
+        testId: "workspace-tab-continue-in-panel",
+      }]
+      : []),
+  ];
+
+  // Gate B #8: the tab is a div role="tab" holding sibling buttons (select,
+  // menu, close), so no interactive element nests inside a <button>.
   return (
-    <button
-      onClick={onSelect}
+    <div
+      role="tab"
+      aria-selected={isActive}
       className={tabShellClassName(isActive)}
       data-testid="workspace-tab"
     >
-      {/* Streaming indicator */}
-      {isStreaming && (
-        <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-purple-400" />
-      )}
-
-      <span
-        className="truncate"
-        data-testid="workspace-tab-title"
-        title={t("workspaceTab.renameHint")}
-        onDoubleClick={(e) => {
-          e.stopPropagation();
-          startEditing();
-        }}
+      <button
+        type="button"
+        onClick={onSelect}
+        className="flex min-w-0 items-center gap-1.5"
+        data-testid="workspace-tab-select"
       >
-        {title}
-      </span>
+        {/* Streaming indicator */}
+        {isStreaming && (
+          <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-purple-400" />
+        )}
 
-      {/* Unread badge */}
-      {unreadCount > 0 && !isActive && (
-        <span className="flex h-4 min-w-[16px] shrink-0 items-center justify-center rounded-full bg-purple-600 px-1 text-[10px] font-bold text-white">
-          {unreadCount > 9 ? "9+" : unreadCount}
-        </span>
-      )}
-
-      {/* Approval pending dot */}
-      {hasApprovalPending && !isActive && (
         <span
-          className="h-2 w-2 shrink-0 rounded-full bg-amber-500"
-          title={t("workspaceTab.approvalPending")}
-        />
-      )}
+          className="truncate"
+          data-testid="workspace-tab-title"
+          title={t("workspaceTab.renameHint")}
+          onDoubleClick={(e) => {
+            e.stopPropagation();
+            startEditing();
+          }}
+        >
+          {title}
+        </span>
+
+        {/* Unread badge */}
+        {unreadCount > 0 && !isActive && (
+          <span className="flex h-4 min-w-[16px] shrink-0 items-center justify-center rounded-full bg-purple-600 px-1 text-[10px] font-bold text-white">
+            {unreadCount > 9 ? "9+" : unreadCount}
+          </span>
+        )}
+
+        {/* Approval pending dot */}
+        {hasApprovalPending && !isActive && (
+          <span
+            className="h-2 w-2 shrink-0 rounded-full bg-amber-500"
+            title={t("workspaceTab.approvalPending")}
+          />
+        )}
+      </button>
+
+      <ActionMenu
+        label={t("aiConversationMove.tabMenu")}
+        items={menuItems}
+        testId="workspace-tab-menu"
+        triggerTabIndex={isActive ? 0 : -1}
+        triggerClassName={cn(
+          "shrink-0 rounded p-0.5 transition-colors hover:bg-gray-200 dark:hover:bg-gray-600",
+          isActive
+            ? "text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200"
+            : "text-gray-400 opacity-0 focus-visible:opacity-100 group-hover:opacity-100 dark:text-gray-600",
+        )}
+      />
 
       {/* Close button */}
-      <span
-        role="button"
+      <button
+        type="button"
         tabIndex={-1}
-        onClick={(e) => {
-          e.stopPropagation();
-          onClose();
-        }}
+        onClick={onClose}
+        aria-label={t("common:actions.close")}
+        data-testid="workspace-tab-close"
         className={cn(
-          "ml-1 shrink-0 rounded p-0.5 transition-colors hover:bg-gray-200 dark:hover:bg-gray-600",
+          "shrink-0 rounded p-0.5 transition-colors hover:bg-gray-200 dark:hover:bg-gray-600",
           isActive
             ? "text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200"
             : "text-gray-400 opacity-0 group-hover:opacity-100 dark:text-gray-600",
         )}
       >
         <X className="h-3 w-3" />
-      </span>
-    </button>
+      </button>
+    </div>
   );
 }

@@ -558,7 +558,6 @@
     "largeFolderSelectionTitle": "Büyük seçim",
     "selectFolder": "{{name}} klasörünü seç",
     "confirmLargeFolderSelection": "Bu seçim yaklaşık {{formatted}} dosyayı kapsıyor ve geri yükleme biraz sürebilir. Devam edilsin mi?",
-    "unknownDevice": "Bilinmeyen cihaz",
     "kindVm": "VM olarak geri yükle",
     "kindInstantBoot": "Anında önyükleme",
     "kindSelective": "Seçmeli geri yükleme",
@@ -1111,10 +1110,14 @@
       "hyperv": "Hyper-V",
       "vmware": "VMware",
       "bare_metal": "Bare metal",
+      "m365_mail": "Microsoft 365 e-postası",
       "m365_sharepoint": "SharePoint",
       "m365_exchange": "Exchange",
       "m365_onedrive": "OneDrive",
       "m365_teams": "Teams",
+      "gws_mail": "Google Workspace e-postası",
+      "gws_drive": "Google Drive",
+      "gws_shared_drive": "Google ortak drive’ları",
       "other": "Diğer"
     },
     "noObservation": "Gözlem yok",
@@ -1133,7 +1136,12 @@
       "errorUnlink": "Sağlayıcı cihazının bağlantısı kaldırılamadı",
       "error": "Dış yedekleme durumu yüklenemedi",
       "alsoCheck": "Üçüncü taraf yedekleme bağlantılarını Entegrasyonlar bölümünde de kontrol edin."
-    }
+    },
+    "saasAccountsSubtitle": "Microsoft 365 / Google Workspace",
+    "saas": "SaaS",
+    "saasAccounts": "{{value}} SaaS hesabı",
+    "workloadBackup": "{{workload}} yedeklemesi",
+    "sourceProvider": "Yedekleme sağlayıcıları"
   },
   "restoreResultNotices": {
     "systemStateRequiresRebuildTitle": "Sistem durumu bir bare-metal yeniden oluşturma ile uygulanır",
@@ -1171,5 +1179,10 @@
     "checking": "Denetleniyor",
     "unverified": "Doğrulanmadı",
     "failed": "Bütünlük denetimi başarısız"
+  },
+  "reparseSkipNotice": {
+    "summary_one": "{{count}} yeniden ayrıştırma noktası atlandı: bağlantılar (junction) ve bağlama noktaları izlenmez ve geri yüklenmez. Bu beklenen bir durumdur, hata değildir.",
+    "summary_other": "{{count}} yeniden ayrıştırma noktası atlandı: bağlantılar (junction) ve bağlama noktaları izlenmez ve geri yüklenmez. Bu beklenen bir durumdur, hata değildir.",
+    "showDetails": "Atlanan yolları göster"
   }
 }

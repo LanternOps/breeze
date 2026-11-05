@@ -1,20 +1,27 @@
 import type { ReactElement } from 'react';
-import type { DocumentPageSize, QuoteCoverModel } from '@breeze/shared/documents';
+import type { DocumentBranding, QuoteCoverModel } from '@breeze/shared/documents';
 import type { DocumentHostComponents } from './hostComponents';
 import { DocumentCoverCrop } from './DocumentCoverCrop';
+import { DocumentBrandMark, hasBrandMark } from './DocumentBrandMark';
 
 /**
- * The proposal's cover, on screen: the page the PDF draws first. It carries the page's H1
- * (the header's number steps down to an h2), the cover image when one is set, and prepared
- * for / prepared by. With an image it IS the PDF page (OD-5): a page-aspect frame
- * (`branding.pageSize`), the artwork centre-cropped, and the title block in the white band
- * from 62% of the height. Without artwork there is nothing to crop, so the text flows as before.
+ * The proposal's cover, on screen: the page the PDF draws first. It carries the partner's
+ * logo or wordmark (top-left, as the PDF cover draws it), the page's H1 (the header's number
+ * steps down to an h2), the cover image when one is set, and prepared for / prepared by. With
+ * an image it IS the PDF page (OD-5): a page-aspect frame (`branding.pageSize`), the artwork
+ * centre-cropped, the brand mark on a white pill over it, and the title block in the white
+ * band from 62% of the height. Without artwork there is nothing to crop, so the text flows.
  * The negative margins bleed it to the paper edge, so they must match DocumentPaper's
  * padding (`px-4 py-7`, plus the article's `sm:px-[3.25rem]`).
  */
-export function DocumentCover({ cover, pageSize, components }: { cover: QuoteCoverModel; pageSize: DocumentPageSize; components: DocumentHostComponents }): ReactElement {
+export function DocumentCover({ cover, branding, components }: { cover: QuoteCoverModel; branding: DocumentBranding; components: DocumentHostComponents }): ReactElement {
   // The band is a fixed 38% of the page, so on a phone its type is smaller than the flowing layout's.
   const inBand = cover.image !== null;
+  const brand = (className: string) => hasBrandMark(branding) && (
+    <div data-testid="document-cover-brand" className={className}>
+      <DocumentBrandMark branding={branding} components={components} />
+    </div>
+  );
   const text = (
     <>
       <div className="space-y-2 sm:space-y-3">
@@ -45,14 +52,18 @@ export function DocumentCover({ cover, pageSize, components }: { cover: QuoteCov
   if (!cover.image) {
     return (
       <section data-testid="document-cover" className={bleed}>
-        <div className="space-y-6 px-4 py-8 sm:px-[4.25rem] sm:py-12">{text}</div>
+        <div className="space-y-6 px-4 py-8 sm:px-[4.25rem] sm:py-12">
+          {brand('')}
+          {text}
+        </div>
       </section>
     );
   }
   return (
     <section data-testid="document-cover" className={bleed}>
-      <DocumentCoverCrop pageSize={pageSize}>
+      <DocumentCoverCrop pageSize={branding.pageSize}>
         <components.Image asset={cover.image} alt="" className="doc-cover-image" />
+        {brand('doc-cover-brand left-2 top-3 px-2.5 py-2 sm:left-[3.625rem] sm:top-7')}
         <div data-testid="document-cover-band" className="doc-cover-band space-y-4 px-4 py-3 sm:space-y-6 sm:px-[4.25rem] sm:py-8">
           {text}
         </div>

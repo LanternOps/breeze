@@ -438,7 +438,8 @@ func TestRunOnceOmitsTopologyWithoutAdvertisement(t *testing.T) {
 	deps := CollectorDeps{APIBaseURL: func() string { return api.URL }, AgentID: "agent-1", HTTP: api.Client(), StateDir: t.TempDir()}
 	for _, cfg := range []CollectorConfig{
 		{CollectorID: "c1", ControllerURL: controller.URL, APIKey: "k"},
-		{CollectorID: "c1", ControllerURL: controller.URL, APIKey: "k", AcceptedUnifiTopologyVersions: []int{2}, TopologyProducerEpoch: "e", TopologySourceIdentity: "s"},
+		// An unimplemented version (3) is not an advertisement we can act on.
+		{CollectorID: "c1", ControllerURL: controller.URL, APIKey: "k", AcceptedUnifiTopologyVersions: []int{3}, TopologyProducerEpoch: "e", TopologySourceIdentity: "s"},
 		// Advertised, but without a server-issued epoch there is nothing to fence on.
 		{CollectorID: "c1", ControllerURL: controller.URL, APIKey: "k", AcceptedUnifiTopologyVersions: []int{1}},
 	} {
@@ -452,6 +453,9 @@ func TestRunOnceOmitsTopologyWithoutAdvertisement(t *testing.T) {
 	for i, b := range up.bodies {
 		if _, ok := b["topologyV1"]; ok {
 			t.Fatalf("upload %d carried topologyV1 without a v1 advertisement + epoch", i)
+		}
+		if _, ok := b["topologyV2"]; ok {
+			t.Fatalf("upload %d carried topologyV2 without a v2 advertisement + epoch", i)
 		}
 		// Legacy clients keep isWired; type is not a legacy field.
 		var clients []map[string]any

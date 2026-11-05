@@ -15,6 +15,7 @@ import { eq, sql } from 'drizzle-orm';
 import { db, runAfterDbContextExit, withSystemDbAccessContext } from '../db';
 import { backupConfigs } from '../db/schema';
 import { normalizeStorageIdentity } from '../jobs/backupRetention';
+import { keyRootForNewSnapshot } from './backupKeyLayout';
 import { resolveBackupProviderConfig } from './backupProviderConfig';
 import { recordConditionalWriteProbe } from './backupMetrics';
 import { probeConditionalWrites } from './backupStoragePresign';
@@ -74,6 +75,15 @@ const inFlight = new Set<string>();
 export async function refreshConditionalWriteProbe(configId: string, orgId: string): Promise<boolean | null> {
   const destination = await withSystemDbAccessContext(() => resolveBackupProviderConfig(configId, orgId));
   if (!destination || destination.provider !== 's3') return null;
+  // #7081: the probe answers for where new snapshots are written. A stored
+  // prefix that does not normalize names no such place (mint refuses the
+  // destination), and a result recorded for it would outlive the fix — the
+  // record is keyed by storage identity, which excludes the prefix. Skip it
+  // and keep whatever is recorded; the next due probe after a fix runs.
+  if (!keyRootForNewSnapshot(destination.provider, destination.providerConfig).ok) {
+    console.warn('[backupStorageCapabilityProbe] skipped the conditional-write probe: the destination key prefix is invalid', { configId });
+    return null;
+  }
   const identity = normalizeStorageIdentity(destination.provider, destination.providerConfig);
   const probe = await probeConditionalWrites(destination.providerConfig);
   const supported = probe.supported;

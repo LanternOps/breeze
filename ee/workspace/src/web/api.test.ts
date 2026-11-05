@@ -248,3 +248,14 @@ describe('createWorkspaceApi', () => {
     await expect(createWorkspaceApi().listSources(ORG_ID)).rejects.toMatchObject({ kind: 'aborted' });
   });
 });
+
+describe('WorkspaceApiError user-visible copy', () => {
+  it.each(['protocol', 'unauthorized', 'not-found', 'server', 'network'] as const)(
+    'labels the %s failure as Knowledge, never Workspace',
+    (kind) => {
+      const { message } = new WorkspaceApiError(kind);
+      expect(message).toContain('Knowledge');
+      expect(message).not.toMatch(/workspace/i);
+    },
+  );
+});

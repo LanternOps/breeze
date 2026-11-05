@@ -16,6 +16,8 @@ import { deviceCommands, devices } from '../db/schema';
 import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
 import { propagateCancelledDeviceCommands } from './commandCancelPropagation';
 import { queueDeviceUninstall } from './deviceUninstallDrain';
+import { requestDeviceGroupReevaluationAfterCommit } from '../jobs/deviceGroupJobs';
+import { assertNoUnresolvedIsolation } from './networkIsolation/lifecycle';
 
 export type DeviceDecommissionTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -24,7 +26,9 @@ export async function decommissionDeviceInTransaction(
   input: { deviceId: string; queueUninstall: boolean; actorUserId: string | null },
 ): Promise<{ updated: typeof devices.$inferSelect | undefined; uninstallQueued: boolean }> {
   const { deviceId } = input;
+  await assertNoUnresolvedIsolation(tx, { deviceId }, 'decommission');
   const [updated] = await tx
+    // own-device-row-allowlisted: decommission-device
     .update(devices)
     .set({
       status: 'decommissioned',
@@ -39,10 +43,10 @@ export async function decommissionDeviceInTransaction(
     .returning();
 
   // #5128 — cancel this device's ordinary queued work in the SAME
-  // transaction as the status write. `self_uninstall` is explicitly
-  // EXCLUDED: the uninstall drain's whole purpose is to survive
-  // decommission and deliver when the machine next checks in, and
-  // `queueDeviceUninstall` below may be about to write exactly such a row.
+  // transaction as the status write. `self_uninstall` and `release_containment`
+  // are EXCLUDED: teardown must survive decommission and deliver when the
+  // machine next checks in, including a resolved episode's unconfirmed release.
+  // `queueDeviceUninstall` below may be about to write an uninstall row.
   // Claim-time eligibility refuses to deliver ordinary work to a
   // decommissioned device anyway; this is what stops those rows sitting
   // `pending` until their deadline.
@@ -60,6 +64,7 @@ export async function decommissionDeviceInTransaction(
         eq(deviceCommands.deviceId, deviceId),
         eq(deviceCommands.status, 'pending'),
         ne(deviceCommands.type, 'self_uninstall'),
+        ne(deviceCommands.type, 'release_containment'),
       ),
     );
 
@@ -81,6 +86,7 @@ export async function decommissionDeviceInTransaction(
         eq(deviceCommands.deviceId, deviceId),
         eq(deviceCommands.status, 'pending'),
         ne(deviceCommands.type, 'self_uninstall'),
+        ne(deviceCommands.type, 'release_containment'),
       ),
     );
 
@@ -102,6 +108,21 @@ export async function decommissionDeviceInTransaction(
   if (input.queueUninstall) {
     const queueResult = await queueDeviceUninstall(tx, deviceId, input.actorUserId);
     uninstallQueued = queueResult.queued || queueResult.mergedIntoExisting;
+  }
+
+  // #9933 — dynamic groups leave out removed devices, but nothing re-evaluates
+  // a group just because one of its members changed status. Enqueue (after the
+  // OUTERMOST transaction commits, dropped on rollback) a re-evaluation of every
+  // dynamic group in the device's org so its non-pinned rows drop now, not the
+  // next time someone edits the group. Restore does the same in reverse
+  // (deviceLifecycle.ts restoreRemovedDevice).
+  if (updated) {
+    requestDeviceGroupReevaluationAfterCommit({
+      deviceId,
+      orgId: updated.orgId,
+      eventType: 'device.created',
+      reason: 'device_decommissioned',
+    });
   }
 
   return { updated, uninstallQueued };

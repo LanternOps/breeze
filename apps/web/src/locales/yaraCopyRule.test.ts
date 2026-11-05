@@ -20,6 +20,10 @@ const SCOPES: ReadonlyArray<{ ns: string; prefix: string }> = [
   { ns: 'security', prefix: 'detectionRules' },
   { ns: 'security', prefix: 'securityThreatDetail.rule' },
   { ns: 'security', prefix: 'securityEdrPage.iocScansLink' },
+  // IOC sweeps (#6263 W05 PR C)
+  { ns: 'security', prefix: 'sweeps' },
+  { ns: 'security', prefix: 'securitySecurityScanManager.scanStatus' },
+  { ns: 'security', prefix: 'securityScansPage.sweepsTab' },
   { ns: 'policies', prefix: 'configurationPolicies.featureTabs.securityTab.ruleSets' },
   { ns: 'pages', prefix: 'titles.securityDetectionRules' },
   { ns: 'common', prefix: 'nav.securityDetectionRules' },
@@ -83,6 +87,9 @@ describe('YARA UI copy rule (spec §11)', () => {
         'common:nav.securityDetectionRules',
         'policies:configurationPolicies.featureTabs.securityTab.ruleSets',
         'security:securityThreatDetail.rule',
+        'security:sweeps',
+        'security:securitySecurityScanManager.scanStatus',
+        'security:securityScansPage.sweepsTab',
       ]),
     );
   });

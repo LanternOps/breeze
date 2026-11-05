@@ -7,6 +7,9 @@ export const EMAIL_TEMPLATE_IDS = [
   'ticket_resolved',
   'ticket_merged',
   'quote_send',
+  // Standalone agreement request (#9075 W2b): the signing link emailed to the
+  // client's recipients. W3b's remind reuses it.
+  'agreement_request_send',
   'invoice_send',
   'invoice_autopay',
   'portal_invite',
@@ -59,7 +62,8 @@ export type EmailTemplateVarKey =
   | 'failure_text' | 'action_link' | 'action_label'
   | 'charge_total' | 'attempted_amount'
   | 'approval_ask' | 'approval_snapshot' | 'approval_expires' | 'approval_status'
-  | 'merged_into_number';
+  | 'merged_into_number'
+  | 'agreement_name';
 
 const COMMENT_NOTIFICATION_VARS = [
   'ticket_number',
@@ -88,6 +92,15 @@ const QUOTE_SEND_VARS = [
   'org_name',
   'partner_name',
   'total',
+  'expiry_date',
+  'accept_url',
+  'cta_button',
+] as const satisfies readonly EmailTemplateVarKey[];
+
+const AGREEMENT_REQUEST_SEND_VARS = [
+  'agreement_name',
+  'org_name',
+  'partner_name',
   'expiry_date',
   'accept_url',
   'cta_button',
@@ -135,6 +148,7 @@ const VARS_BY_ID: Record<EmailTemplateId, readonly EmailTemplateVarKey[]> = {
   ticket_resolved: [...COMMENT_NOTIFICATION_VARS, 'resolution_note'],
   ticket_merged: [...COMMENT_NOTIFICATION_VARS, 'merged_into_number'],
   quote_send: QUOTE_SEND_VARS,
+  agreement_request_send: AGREEMENT_REQUEST_SEND_VARS,
   invoice_send: INVOICE_SEND_VARS,
   invoice_autopay: ['org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date',
     'charge_date', 'payment_method', 'fee_amount', 'charge_total', 'invoice_link', 'client_name'],
@@ -163,6 +177,7 @@ const LABEL_BY_ID: Record<EmailTemplateId, string> = {
   ticket_resolved: 'Ticket resolved',
   ticket_merged: 'Ticket merged',
   quote_send: 'Quote / proposal',
+  agreement_request_send: 'Agreement request',
   invoice_send: 'Invoice',
   invoice_autopay: 'Invoice with automatic payment notice',
   portal_invite: 'Portal invite',
@@ -188,6 +203,7 @@ const HAS_CTA_BY_ID: Record<EmailTemplateId, boolean> = {
   ticket_resolved: true,
   ticket_merged: true,
   quote_send: true,
+  agreement_request_send: true,
   invoice_send: true,
   invoice_autopay: true,
   portal_invite: true,
@@ -281,6 +297,20 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
 <p>Use the button above to review the full proposal and accept it online.</p>
 <p>This proposal is valid until <strong>{{expiry_date}}</strong>.</p>
 <p>If you have any questions or would like to adjust anything, we're happy to help. We look forward to working with you.</p>`,
+  },
+  agreement_request_send: {
+    // org_name / expiry_date blank → apps/api emailTemplates/defaults.ts swaps
+    // these lines for "you" wording / drops the validity line.
+    subject: 'Please sign: {{agreement_name}} from {{partner_name}}',
+    heading: '{{agreement_name}}',
+    buttonLabel: 'Review & sign',
+    html:
+      `<p>Hello,</p>
+<p>{{partner_name}} has sent {{org_name}} an agreement to review and sign: <strong>{{agreement_name}}</strong>.</p>
+<p>{{cta_button}}</p>
+<p>Use the button above to read the full agreement and sign it online. No account is needed.</p>
+<p>This link is valid until <strong>{{expiry_date}}</strong>.</p>
+<p>If you have any questions, reply to this email.</p>`,
   },
   invoice_autopay: {
     subject: 'Invoice {{invoice_number}} from {{partner_name}}: automatic payment on {{charge_date}}',

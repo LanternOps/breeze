@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // fetchWithAuth is called directly to load the org-name lookup (same idiom as TemplatesPage).
 const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
-vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
+const showToast = vi.hoisted(() => vi.fn());
+vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 const docsApi = vi.hoisted(() => ({
@@ -15,6 +16,25 @@ vi.mock('../../lib/api/contractDocuments', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../../lib/api/contractDocuments')>();
   return { ...orig, ...docsApi };
 });
+
+const requestsApi = vi.hoisted(() => ({
+  listAgreementRequests: vi.fn(),
+  getAgreementRequestLink: vi.fn(),
+  voidAgreementRequest: vi.fn(),
+  deleteAgreementRequest: vi.fn(),
+}));
+vi.mock('../../lib/api/agreementRequests', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../../lib/api/agreementRequests')>();
+  return { ...orig, ...requestsApi };
+});
+
+const download = vi.hoisted(() => vi.fn());
+vi.mock('../billing/shared/usePdfDownload', () => ({
+  usePdfDownload: (opts: { path: string; filename: string; onResponse?: (res: Response) => { filename?: string } | void }) => ({
+    download: () => download(opts),
+    downloading: false,
+  }),
+}));
 
 const contractsApi = vi.hoisted(() => ({
   listContracts: vi.fn(),
@@ -36,6 +56,17 @@ vi.mock('./RecordSignedAgreementDialog', () => ({
     p.open ? (
       <div data-testid="agreements-record-dialog" data-org={p.lockedOrgId ?? ''} data-contract={p.lockedContractId ?? ''}>
         <button type="button" data-testid="stub-recorded" onClick={() => p.onRecorded('sa-1')} />
+      </div>
+    ) : null,
+}));
+
+// The send dialog has its own suite; here it exposes the props the page passes
+// and a way to fire onSent.
+vi.mock('./SendAgreementDialog', () => ({
+  default: (p: { open: boolean; lockedOrgId?: string; lockedContractId?: string; onSent: () => void }) =>
+    p.open ? (
+      <div data-testid="agreements-send-dialog" data-org={p.lockedOrgId ?? ''} data-contract={p.lockedContractId ?? ''}>
+        <button type="button" data-testid="stub-sent" onClick={() => p.onSent()} />
       </div>
     ) : null,
 }));
@@ -70,6 +101,14 @@ const UNATTACHED_DOC = {
   createdAt: '2026-06-15T00:00:00Z',
 };
 
+const REQUEST_ROW = {
+  id: 'ar-1', orgId: 'org-1', status: 'sent', templateId: 't-1', templateVersionId: 'v-1', contractId: null,
+  label: null, coverMessage: null, variableValues: {}, expiresAt: null, sentAt: '2026-11-01T00:00:00Z',
+  firstViewedAt: null, signedAt: null, declinedAt: null, voidedAt: null, expiredAt: null, declineReason: null,
+  voidReason: null, reminderCount: 0, createdAt: '2026-11-01T00:00:00Z', templateName: 'MSA',
+  templateVersionNumber: 2, signedAgreementId: null, recipients: ['a@acme.test'],
+};
+
 describe('SignedAgreementsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -79,6 +118,7 @@ describe('SignedAgreementsPage', () => {
     docsApi.listContractDocuments.mockResolvedValue(resp({ data: [UNATTACHED_DOC] }));
     contractsApi.listContracts.mockResolvedValue(resp({ data: [{ id: 'ct-1', name: 'Acme MSA', orgId: 'org-1' }] }));
     docsApi.linkContractDocument.mockResolvedValue(resp({ data: { ...UNATTACHED_DOC, contractId: 'ct-1' } }));
+    requestsApi.listAgreementRequests.mockResolvedValue(resp({ data: [REQUEST_ROW] }));
   });
 
   it('fetches the whole inventory by default and renders a row per document', async () => {
@@ -209,8 +249,9 @@ describe('SignedAgreementsPage', () => {
     expect(subtitle).toHaveTextContent('scanned copy');
     // Not the customer-acceptance wording.
     expect(subtitle).not.toHaveTextContent(/Accepted with quote/);
-    // A scan downloads as an image, so the button must not promise a PDF.
-    expect(within(rows[0]).getByTestId('contract-document-download-doc-1')).toHaveTextContent(/^Download$/);
+    // The certified copy is always a PDF, even for a scan; the original is its own button.
+    expect(within(rows[0]).getByTestId('contract-document-download-doc-1')).toHaveTextContent('Download PDF');
+    expect(within(rows[0]).getByTestId('contract-document-download-original-doc-1')).toHaveTextContent('Original');
   });
 
   it('keeps a PDF on-behalf row free of the scanned-copy suffix and names the quote', async () => {
@@ -244,15 +285,174 @@ describe('SignedAgreementsPage', () => {
     );
   });
 
+  describe('certified vs original downloads (#9075 W2c)', () => {
+    it('downloads the certified PDF by default and the original (MIME-correct name) from the secondary button', async () => {
+      docsApi.listContractDocuments.mockResolvedValue(resp({ data: [{ ...UNATTACHED_DOC, mime: 'image/png' }] }));
+      render(<SignedAgreementsPage />);
+      const rows = await screen.findAllByTestId('contract-document-row');
+      fireEvent.click(within(rows[0]).getByTestId('contract-document-download-doc-1'));
+      expect(download).toHaveBeenLastCalledWith({
+        path: '/contracts/contract-documents/doc-1/pdf?copy=certified',
+        filename: 'signed-agreement-doc-1.pdf',
+        errorMessage: expect.any(String),
+        onResponse: expect.any(Function),
+      });
+      fireEvent.click(within(rows[0]).getByTestId('contract-document-download-original-doc-1'));
+      expect(download).toHaveBeenLastCalledWith({
+        path: '/contracts/contract-documents/doc-1/pdf?copy=original',
+        filename: 'signed-agreement-doc-1-original.png',
+        errorMessage: expect.any(String),
+      });
+    });
+
+    async function certifiedOnResponse() {
+      docsApi.listContractDocuments.mockResolvedValue(resp({ data: [{ ...UNATTACHED_DOC, mime: 'image/png' }] }));
+      render(<SignedAgreementsPage />);
+      const rows = await screen.findAllByTestId('contract-document-row');
+      fireEvent.click(within(rows[0]).getByTestId('contract-document-download-doc-1'));
+      return download.mock.lastCall![0].onResponse as (res: Response) => { filename?: string } | void;
+    }
+
+    it('saves under the -original name and warns when the API fell back to the original copy', async () => {
+      const onResponse = await certifiedOnResponse();
+      showToast.mockClear();
+      const out = onResponse(new Response('x', { headers: { 'X-Agreement-Copy': 'original', 'Content-Type': 'image/png' } }));
+      expect(out).toEqual({ filename: 'signed-agreement-doc-1-original.png' });
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'warning',
+        message: expect.stringMatching(/certified copy couldn.t be produced/i),
+      }));
+    });
+
+    it('keeps the .pdf name and shows no warning for a normal certified response', async () => {
+      const onResponse = await certifiedOnResponse();
+      showToast.mockClear();
+      const out = onResponse(new Response('x', { headers: { 'Content-Type': 'application/pdf' } }));
+      expect(out).toBeUndefined();
+      expect(showToast).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('status chips (#9075 W2c)', () => {
+    it('defaults to Signed (aria-pressed) and does not load requests', async () => {
+      render(<SignedAgreementsPage />);
+      await screen.findAllByTestId('contract-document-row');
+      expect(screen.getByTestId('agreements-status-signed')).toHaveAttribute('aria-pressed', 'true');
+      expect(screen.getByTestId('agreements-status-pending')).toHaveAttribute('aria-pressed', 'false');
+      expect(requestsApi.listAgreementRequests).not.toHaveBeenCalled();
+    });
+
+    it('switches views, writes #status= and hides the unlinked chip off the signed view', async () => {
+      render(<SignedAgreementsPage />);
+      await screen.findAllByTestId('contract-document-row');
+      fireEvent.click(screen.getByTestId('agreements-status-pending'));
+      expect(await screen.findAllByTestId('agreement-request-row')).toHaveLength(1);
+      expect(window.location.hash).toBe('#status=pending');
+      expect(requestsApi.listAgreementRequests).toHaveBeenLastCalledWith({ status: 'pending', orgId: undefined, contractId: undefined });
+      expect(screen.queryByTestId('signed-agreements-unlinked-filter')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('agreements-status-closed'));
+      await waitFor(() => expect(window.location.hash).toBe('#status=closed'));
+      await waitFor(() =>
+        expect(requestsApi.listAgreementRequests).toHaveBeenLastCalledWith({ status: 'closed', orgId: undefined, contractId: undefined }));
+
+      fireEvent.click(screen.getByTestId('agreements-status-signed'));
+      await waitFor(() => expect(window.location.hash).toBe(''));
+      await screen.findAllByTestId('contract-document-row');
+    });
+
+    it('loads the request list from a #status=pending deep link', async () => {
+      window.location.hash = 'status=pending';
+      render(<SignedAgreementsPage />);
+      expect(await screen.findAllByTestId('agreement-request-row')).toHaveLength(1);
+      expect(screen.getByTestId('agreements-status-pending')).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    it('keeps #unlinked=1 deep links working on the signed view', async () => {
+      window.location.hash = 'unlinked=1';
+      render(<SignedAgreementsPage />);
+      await waitFor(() =>
+        expect(docsApi.listContractDocuments).toHaveBeenCalledWith(expect.objectContaining({ linked: 'unlinked' })));
+      expect(screen.getByTestId('agreements-status-signed')).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    it('embeds keep chip state local and never touch the hash', async () => {
+      window.location.hash = 'status=closed';
+      render(<SignedAgreementsPage lockedOrgId="org-1" />);
+      await screen.findAllByTestId('contract-document-row');
+      // A hash from the host page is ignored: the embed starts on Signed.
+      expect(screen.getByTestId('agreements-status-signed')).toHaveAttribute('aria-pressed', 'true');
+      fireEvent.click(screen.getByTestId('agreements-status-pending'));
+      await screen.findAllByTestId('agreement-request-row');
+      expect(window.location.hash).toBe('#status=closed');
+      expect(requestsApi.listAgreementRequests).toHaveBeenLastCalledWith({ status: 'pending', orgId: 'org-1', contractId: undefined });
+    });
+
+    it('pins requests to the contract in the contract embed', async () => {
+      render(<SignedAgreementsPage lockedContractId="ct-1" />);
+      await screen.findAllByTestId('contract-document-row');
+      fireEvent.click(screen.getByTestId('agreements-status-pending'));
+      await screen.findAllByTestId('agreement-request-row');
+      expect(requestsApi.listAgreementRequests).toHaveBeenLastCalledWith({ status: 'pending', orgId: undefined, contractId: 'ct-1' });
+    });
+  });
+
+  describe('Send for signature entry point (#9075 W2c)', () => {
+    it('needs both agreements:send and agreements:write', async () => {
+      perms.granted = new Set(['agreements:send']);
+      const { unmount } = render(<SignedAgreementsPage />);
+      await screen.findByTestId('agreements-record-open');
+      expect(screen.queryByTestId('agreements-send-open')).not.toBeInTheDocument();
+      unmount();
+      perms.granted = new Set(['agreements:write']);
+      render(<SignedAgreementsPage />);
+      await screen.findByTestId('signed-agreements-tab');
+      expect(screen.queryByTestId('agreements-send-open')).not.toBeInTheDocument();
+    });
+
+    it('opens the dialog; org and contract embeds pass their locks through', async () => {
+      perms.granted = new Set(['agreements:send', 'agreements:write']);
+      const { unmount } = render(<SignedAgreementsPage />);
+      fireEvent.click(await screen.findByTestId('agreements-send-open'));
+      expect(await screen.findByTestId('agreements-send-dialog')).toHaveAttribute('data-org', '');
+      unmount();
+      const second = render(<SignedAgreementsPage lockedOrgId="org-1" />);
+      fireEvent.click(await screen.findByTestId('agreements-send-open'));
+      expect(await screen.findByTestId('agreements-send-dialog')).toHaveAttribute('data-org', 'org-1');
+      second.unmount();
+      render(<SignedAgreementsPage lockedContractId="ct-1" />);
+      fireEvent.click(await screen.findByTestId('agreements-send-open'));
+      expect(await screen.findByTestId('agreements-send-dialog')).toHaveAttribute('data-contract', 'ct-1');
+    });
+
+    it('switches to the pending view and reloads after a send', async () => {
+      perms.granted = new Set(['agreements:send', 'agreements:write']);
+      render(<SignedAgreementsPage />);
+      fireEvent.click(await screen.findByTestId('agreements-send-open'));
+      fireEvent.click(await screen.findByTestId('stub-sent'));
+      expect(await screen.findAllByTestId('agreement-request-row')).toHaveLength(1);
+      expect(window.location.hash).toBe('#status=pending');
+      expect(screen.queryByTestId('agreements-send-dialog')).not.toBeInTheDocument();
+    });
+  });
+
   describe('Record signed agreement entry point (#8865 W1c)', () => {
-    it('renders the button only when the user holds agreements:write', async () => {
+    it('renders the button only when the user holds agreements:send', async () => {
+      render(<SignedAgreementsPage />);
+      await screen.findByTestId('signed-agreements-tab');
+      expect(screen.queryByTestId('agreements-record-open')).not.toBeInTheDocument();
+    });
+
+    // #9075 W2a (OD7 B): record-signed moved from agreements:write to agreements:send.
+    it('hides the button from a holder of agreements:write alone', async () => {
+      perms.granted = new Set(['agreements:read', 'agreements:write']);
       render(<SignedAgreementsPage />);
       await screen.findByTestId('signed-agreements-tab');
       expect(screen.queryByTestId('agreements-record-open')).not.toBeInTheDocument();
     });
 
     it('opens the dialog and reloads the list after a recording', async () => {
-      perms.granted = new Set(['agreements:write']);
+      perms.granted = new Set(['agreements:send']);
       render(<SignedAgreementsPage />);
       fireEvent.click(await screen.findByTestId('agreements-record-open'));
       expect(await screen.findByTestId('agreements-record-dialog')).toHaveAttribute('data-org', '');
@@ -263,14 +463,14 @@ describe('SignedAgreementsPage', () => {
     });
 
     it('is available in the org embed with the org locked', async () => {
-      perms.granted = new Set(['agreements:write']);
+      perms.granted = new Set(['agreements:send']);
       render(<SignedAgreementsPage lockedOrgId="org-1" />);
       fireEvent.click(await screen.findByTestId('agreements-record-open'));
       expect(await screen.findByTestId('agreements-record-dialog')).toHaveAttribute('data-org', 'org-1');
     });
 
     it('is available in the contract embed with org-less contract lock', async () => {
-      perms.granted = new Set(['agreements:write']);
+      perms.granted = new Set(['agreements:send']);
       render(<SignedAgreementsPage lockedContractId="ct-1" />);
       fireEvent.click(await screen.findByTestId('agreements-record-open'));
       expect(await screen.findByTestId('agreements-record-dialog')).toHaveAttribute('data-contract', 'ct-1');

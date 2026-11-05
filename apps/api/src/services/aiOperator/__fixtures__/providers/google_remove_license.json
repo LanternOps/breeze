@@ -1,0 +1,24 @@
+{
+  "_source": "reference",
+  "_recordedFrom": "reference: Admin SDK Directory API users.get; Enterprise License Manager API licenseAssignments.listForProduct / delete (LicenseAssignment resource)",
+  "toolName": "google_remove_license",
+  "provider": "google",
+  "preSatisfied": {
+    "directory.users.get": { "data": { "id": "101", "primaryEmail": "dana@customer.example", "suspended": false } },
+    "licensing.licenseAssignments.listForProduct": { "data": { "kind": "licensing#licenseAssignmentList", "items": [ { "productId": "Google-Apps", "skuId": "1010020020", "userId": "lee@customer.example" } ] } }
+  },
+  "preUnsatisfied": {
+    "directory.users.get": { "data": { "id": "101", "primaryEmail": "dana@customer.example", "suspended": false } },
+    "licensing.licenseAssignments.listForProduct": { "data": { "kind": "licensing#licenseAssignmentList", "items": [ { "productId": "Google-Apps", "skuId": "1010020020", "userId": "dana@customer.example" }, { "productId": "Google-Apps", "skuId": "1010020020", "userId": "lee@customer.example" } ] } }
+  },
+  "writeOk": {
+    "licensing.licenseAssignments.delete": { "data": "" }
+  },
+  "postSatisfied": {
+    "directory.users.get": { "data": { "id": "101", "primaryEmail": "dana@customer.example", "suspended": false } },
+    "licensing.licenseAssignments.listForProduct": { "data": { "kind": "licensing#licenseAssignmentList", "items": [ { "productId": "Google-Apps", "skuId": "1010020020", "userId": "lee@customer.example" } ] } }
+  },
+  "writeRefusal": {
+    "licensing.licenseAssignments.delete": { "error": { "code": 404, "message": "User does not have a license for specified sku and product" } }
+  }
+}

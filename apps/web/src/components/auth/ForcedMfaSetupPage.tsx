@@ -12,6 +12,7 @@ import {
   restoreAccessTokenFromCookie,
   type MfaEnrollmentCompletion,
   type MfaEnrollmentOptions,
+  type MfaPrimaryMethod,
   useAuthStore,
 } from '../../stores/auth';
 import { extractApiError } from '../../lib/apiError';
@@ -73,7 +74,7 @@ export default function ForcedMfaSetupPage() {
     return () => { current = false; };
   }, []);
 
-  const finishEnrollment = (result: MfaEnrollmentCompletion, generation: number) => {
+  const finishEnrollment = (result: MfaEnrollmentCompletion, generation: number, method: MfaPrimaryMethod) => {
     if (!mountedRef.current) return false;
     if (!result.success) {
       setError(result.error);
@@ -81,7 +82,7 @@ export default function ForcedMfaSetupPage() {
     }
     // The refresh/CSRF cookies were installed by the terminal API response;
     // adopt only its replacement access metadata before leaving the gate.
-    if (!commitMfaEnrollmentIfCurrent(generation, result.tokens)) return false;
+    if (!commitMfaEnrollmentIfCurrent(generation, method, result.tokens)) return false;
     setRecoveryCodes(result.recoveryCodes);
     setStep('done');
     setInfo(t('forcedMfa.done.saveCodes', { defaultValue: 'MFA is enabled. Save your recovery codes before continuing.' }));
@@ -115,12 +116,12 @@ export default function ForcedMfaSetupPage() {
     try {
       if (selectedMethod === 'sms') {
         const generation = useAuthStore.getState().sessionGeneration;
-        finishEnrollment(await apiEnableSmsMfa(currentPassword), generation);
+        finishEnrollment(await apiEnableSmsMfa(currentPassword), generation, 'sms');
         return;
       }
       if (selectedMethod === 'passkey') {
         const generation = useAuthStore.getState().sessionGeneration;
-        finishEnrollment(await apiEnrollPasskey(currentPassword), generation);
+        finishEnrollment(await apiEnrollPasskey(currentPassword), generation, 'passkey');
         return;
       }
       const response = await fetchWithAuth('/auth/mfa/setup', {
@@ -161,7 +162,7 @@ export default function ForcedMfaSetupPage() {
     setError(undefined);
     try {
       const generation = useAuthStore.getState().sessionGeneration;
-      finishEnrollment(await apiEnableTotpMfa(code, currentPassword), generation);
+      finishEnrollment(await apiEnableTotpMfa(code, currentPassword), generation, 'totp');
     } catch (err) {
       if (err instanceof AuthSessionExpiredError) return;
       // A rate-limited /auth/refresh is not a network error and not an expiry —

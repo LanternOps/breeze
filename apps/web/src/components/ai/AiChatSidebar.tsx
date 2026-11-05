@@ -4,13 +4,19 @@ import {
   MessageSquare,
   Plus,
   History,
-  Search,
   ArrowLeft,
-  Loader2,
   Flag,
   Building2,
+  ExternalLink,
+  Sparkles,
 } from "lucide-react";
-import { useAiStore } from "@/stores/aiStore";
+import { isActiveGrant, useAiStore, type WispState } from "@/stores/aiStore";
+import { useJwtClaims } from "@/lib/authScope";
+import { useWispEnabled } from "@/lib/wispVisibility";
+import { fetchWispThread, isNoActiveGrant } from "@/lib/wispGrant";
+import { useEntitlement } from "@/hooks/useEntitlement";
+import { useOnWindowReturn } from "@/hooks/useOnWindowReturn";
+import { moveToAssistant } from "@/stores/aiConversationHandoff";
 import { usePermissions } from "@/lib/permissions";
 import AiChatMessages from "./AiChatMessages";
 import AiChatInput from "./AiChatInput";
@@ -22,16 +28,51 @@ import { noSessionOrgId, useAiModelPickerStore } from "@/stores/aiModelPickerSto
 import { useOrgStore } from "@/stores/orgStore";
 import AiContextBadge from "./AiContextBadge";
 import AiCostIndicator from "./AiCostIndicator";
+import AiConversationList from "./AiConversationList";
+import { useAiConversationSource, type ConversationRow } from "./useAiConversationSource";
+import { useContinueInPanel } from "../workspace/useContinueInPanel";
+import { showToast } from "../shared/Toast";
 import BuyCreditsLink from "./BuyCreditsLink";
-import WispToggle from "./WispToggle";
 import WispThreadHeader from "./WispThreadHeader";
 import WispThreadAttachments from "./WispThreadAttachments";
-import { WispConcernsPanel } from "./WispConcernsPanel";
+import WispWelcome from "../wisp/WispWelcome";
+import { useWispScopeLabel } from "../wisp/useWispScopeLabel";
+import { wispSessionOrgId } from "@/lib/wispSession";
 import { useTranslation } from "react-i18next";
+import { RIGHT_DOCK_BACKDROP_CLASS, RIGHT_DOCK_PANEL_CLASS } from "../layout/rightDockPanel";
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+
+type GrantLookup =
+  | { kind: "idle" }
+  | { kind: "none" }
+  | { kind: "failed" }
+  | { kind: "active"; grant: NonNullable<WispState> };
+
+/**
+ * The caller's active Wisp grant the panel can speak under: the partner-wide
+ * grant first, then one scoped to the organization selected in the header
+ * (the order WispTalkButton uses). `isNoActiveGrant` (200 `{ data: null }`,
+ * #10200) is the ordinary "no grant here"; any other failure is reported as `failed` and the panel
+ * stays Breeze AI without offering "Meet Wisp" — nothing about it fails
+ * loudly (Review Focus 2).
+ */
+async function lookUpActiveGrant(orgId: string | null): Promise<GrantLookup> {
+  let failed = false;
+  for (const scope of orgId ? [null, orgId] : [null]) {
+    try {
+      const state = await fetchWispThread(scope);
+      if (isActiveGrant(state)) return { kind: "active", grant: state };
+    } catch (err) {
+      if (isNoActiveGrant(err)) continue;
+      console.warn("[AiChatSidebar] could not read the Wisp thread; staying Breeze AI", err);
+      failed = true;
+    }
+  }
+  return failed ? { kind: "failed" } : { kind: "none" };
+}
 
 export default function AiChatSidebar() {
   const { t } = useTranslation("ai");
@@ -56,9 +97,6 @@ export default function AiChatSidebar() {
     sessionId,
     hydratedSessionId,
     showHistory,
-    sessions,
-    searchResults,
-    isSearching,
     sendMessage,
     approveExecution,
     clearPendingApproval,
@@ -69,9 +107,7 @@ export default function AiChatSidebar() {
     closeSession,
     clearError,
     toggleHistory,
-    loadSessions,
     loadSession,
-    searchConversations,
     switchSession,
     interruptResponse,
     isInterrupting,
@@ -83,8 +119,17 @@ export default function AiChatSidebar() {
     boundM365ConnectionId,
     loadM365Connections,
     setSelectedM365Connection,
+    composerDraft,
+    composerFocusRequest,
+    setComposerDraft,
     wisp,
+    enterWispMode,
+    topologySiteId,
+    joinedMidResponse,
+    recheckPendingApproval,
   } = useAiStore();
+  // #9431: an approval card may have been decided in another window meanwhile.
+  useOnWindowReturn(() => recheckPendingApproval?.());
   const [wispAttachmentsOpen, setWispAttachmentsOpen] = useState(false);
   const wispScopeOrgName = useOrgStore((s) =>
     wisp?.scopeOrgId ? (s.organizations ?? []).find((o) => o.id === wisp.scopeOrgId)?.name ?? null : null,
@@ -95,7 +140,6 @@ export default function AiChatSidebar() {
   const { can } = usePermissions();
   const canUseAi = can("ai_sessions", "use");
 
-  const [searchQuery, setSearchQuery] = useState("");
   const restoredSessionIdRef = useRef<string | null>(null);
 
   // Keyboard shortcut: Cmd+Shift+A to toggle. With Shift held, `e.key` is "A"
@@ -147,31 +191,111 @@ export default function AiChatSidebar() {
     }
   }, [isOpen, sessionId, menuOrgId]);
 
-  // Load sessions when history panel opens
-  useEffect(() => {
-    if (showHistory) loadSessions();
-  }, [showHistory, loadSessions]);
-
   // Load M365 customer connections when the sidebar opens
   useEffect(() => {
     if (isOpen) loadM365Connections();
   }, [isOpen, loadM365Connections]);
 
+  // W05 (#10136, spec §7 + §11 decision 4): the grant decides the voice — no
+  // toggle. Asked only where a grant can exist: the server has Wisp on, the
+  // token is partner-scoped (grants are partner-staff only) and the plan
+  // carries `wisp`. Org tokens never ask the partner route at all.
+  const jwtClaims = useJwtClaims();
+  const partnerToken = jwtClaims.status === "resolved" && jwtClaims.claims.scope === "partner";
+  const wispServerOn = useWispEnabled({ enabled: partnerToken });
+  const wispEntitlement = useEntitlement("wisp");
+  const wispEligible = canUseAi && partnerToken && wispServerOn && wispEntitlement.state === "enabled";
+  const [grantLookup, setGrantLookup] = useState<GrantLookup>({ kind: "idle" });
+  // The selected org ("" = none) the panel last asked about; null = ask on the next open.
+  const grantLookupKeyRef = useRef<string | null>(null);
+
+  // #10195: the panel follows the grant live, not only as it stood when the
+  // panel opened. When the grant it speaks under goes away from the shared
+  // store — revoked on /wisp (the home's exitWispMode), a create the server
+  // refused as unusable, a plain chat picked from History — the answer from
+  // before is stale: forget it and ask again, so Meet Wisp (or another live
+  // grant) is what the panel shows. That grant itself is not re-entered on
+  // the strength of that one read (whatever dropped it knew better); the guard
+  // is spent by it, so a later open, org change or New conversation decides
+  // afresh.
+  // (A grant created on /wisp reaches the panel through the home binding the
+  // shared store to its thread, WispHomeThread.)
+  const wispGrantId = wisp?.grantId ?? null;
+  const shownGrantIdRef = useRef<string | null>(wispGrantId);
+  const endedGrantIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const previous = shownGrantIdRef.current;
+    shownGrantIdRef.current = wispGrantId;
+    if (previous === wispGrantId) return;
+    // Entering a grant (fresh, or switching to another thread) is not an end.
+    if (wispGrantId !== null) {
+      endedGrantIdRef.current = null;
+      return;
+    }
+    endedGrantIdRef.current = previous;
+    grantLookupKeyRef.current = null;
+    setGrantLookup({ kind: "idle" });
+  }, [wispGrantId]);
+
+  // Once per page and selected org, the first time the panel is open with
+  // every gate passed (a failed read is asked again on the next open). An
+  // active grant gives a panel with no conversation the Wisp voice at once.
+  // A conversation already open (a restored chat — its own Wisp state comes
+  // back through the store's rehydrate — or a device task being created) is
+  // never abandoned for it: the next new conversation starts on the grant.
+  useEffect(() => {
+    if (!isOpen || !wispEligible) return;
+    const key = selectedOrgId ?? "";
+    if (grantLookupKeyRef.current === key) return;
+    grantLookupKeyRef.current = key;
+    if (useAiStore.getState().wisp) return;
+    const justEnded = endedGrantIdRef.current;
+    endedGrantIdRef.current = null;
+    void lookUpActiveGrant(selectedOrgId).then((result) => {
+      // The org changed while this was in flight: the newer lookup owns the answer.
+      if (grantLookupKeyRef.current !== key) return;
+      if (result.kind === "failed") grantLookupKeyRef.current = null;
+      setGrantLookup(result);
+      if (result.kind !== "active") return;
+      if (result.grant.grantId === justEnded) return;
+      const now = useAiStore.getState();
+      if (now.wisp || now.sessionId || now.isLoading) return;
+      void now.enterWispMode(result.grant);
+    });
+  }, [isOpen, wispEligible, selectedOrgId, wispGrantId]);
+
+  // Wisp is on here but there is no active grant (none, paused, ended, or the
+  // plan lacks Wisp): point at the home, which explains and starts or resumes one.
+  const showMeetWisp =
+    !wisp &&
+    canUseAi &&
+    partnerToken &&
+    wispServerOn &&
+    (wispEntitlement.state === "locked" || (wispEntitlement.state === "enabled" && grantLookup.kind === "none"));
+
+  // #10195: under a Wisp header the whole panel is Wisp — replies, empty state, composer.
+  const wispScopeLabel = useWispScopeLabel(wisp ? wispSessionOrgId(wisp) : null);
+
   const boundConnection = boundM365ConnectionId
     ? m365Connections.find((conn) => conn.id === boundM365ConnectionId)
     : null;
 
-  // Debounced search
-  useEffect(() => {
-    if (!searchQuery || searchQuery.length < 2) return;
-    const timer = setTimeout(() => searchConversations(searchQuery), 300);
-    return () => clearTimeout(timer);
-  }, [searchQuery, searchConversations]);
-
   const handleNewConversation = useCallback(async () => {
     await closeSession();
+    // Leaving a plain conversation where Wisp can run: the new one takes the
+    // grant as it is NOW. Re-read, never the lookup from when the panel
+    // opened — a grant revoked, paused or expired since then must start a
+    // plain chat (and offer Meet Wisp), not a session the server refuses.
+    if (!wisp && wispEligible) {
+      const result = await lookUpActiveGrant(selectedOrgId);
+      setGrantLookup(result);
+      if (result.kind === "active") {
+        await enterWispMode(result.grant);
+        return;
+      }
+    }
     await createSession();
-  }, [closeSession, createSession]);
+  }, [closeSession, createSession, enterWispMode, wisp, wispEligible, selectedOrgId]);
 
   if (!canUseAi) return null;
 
@@ -184,9 +308,11 @@ export default function AiChatSidebar() {
         // mounted (transition:persist). `inert` + pointer-events-none make the
         // off-canvas shell truly non-interactive so it can't intercept clicks
         // meant for page content on wide layouts, and its (off-viewport) Close
-        // control drops out of the focus/hit-test order (#1419).
+        // control drops out of the focus/hit-test order (#1419). It docks below
+        // the app header so the bell, theme and account menu stay usable while
+        // it is open (#10107).
         inert={!isOpen}
-        className={`fixed right-0 top-0 z-40 flex h-full w-[400px] flex-col border-l bg-card transition-transform duration-300 ${
+        className={`${RIGHT_DOCK_PANEL_CLASS} ${
           isOpen ? "translate-x-0 shadow-2xl" : "translate-x-full pointer-events-none"
         }`}
       >
@@ -214,15 +340,26 @@ export default function AiChatSidebar() {
           </div>
 
           <div className="flex items-center gap-1">
-            {/* Wisp W04: renders nothing while the server has Wisp off or for an org-scoped token. */}
-            {!showHistory && !wisp && <WispToggle />}
             {!showHistory && (
               <button
                 onClick={toggleHistory}
                 className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 title={t("aiChatSidebar.conversationHistory")}
+                data-testid="ai-chat-history-toggle"
               >
                 <History className="h-4 w-4" />
+              </button>
+            )}
+            {/* #9427 W3: hidden for topology investigations (D4) and Wisp threads (the workspace has no Wisp controls). */}
+            {!showHistory && sessionId && topologySiteId === null && !wisp && (
+              <button
+                onClick={() => void moveToAssistant(sessionId, { draft: composerDraft })}
+                className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                title={t("aiConversationMove.openInAssistant")}
+                aria-label={t("aiConversationMove.openInAssistant")}
+                data-testid="ai-open-in-assistant"
+              >
+                <ExternalLink className="h-4 w-4" />
               </button>
             )}
             {!showHistory && sessionId && (
@@ -230,6 +367,7 @@ export default function AiChatSidebar() {
                 onClick={handleNewConversation}
                 className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 title={t("aiChatSidebar.newConversation")}
+                data-testid="ai-chat-new-conversation"
               >
                 <Plus className="h-4 w-4" />
               </button>
@@ -258,6 +396,7 @@ export default function AiChatSidebar() {
               onClick={close}
               className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               title={t("aiChatSidebar.closeShortcut")}
+              data-testid="ai-chat-close"
             >
               <X className="h-4 w-4" />
             </button>
@@ -265,73 +404,8 @@ export default function AiChatSidebar() {
         </div>
 
         {showHistory ? (
-          /* History panel */
-          <div className="flex flex-1 flex-col overflow-hidden">
-            {/* Search input */}
-            <div className="border-b px-3 py-2">
-              <div className="relative">
-                <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder={t("aiChatSidebar.searchPlaceholder")}
-                  className="w-full rounded-md border bg-muted py-1.5 pl-8 pr-3 text-xs text-foreground placeholder-muted-foreground outline-hidden focus:border-primary"
-                />
-              </div>
-            </div>
-
-            {/* Results */}
-            <div className="flex-1 overflow-y-auto">
-              {isSearching && (
-                <div className="flex items-center justify-center py-8">
-                  <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-                </div>
-              )}
-
-              {searchQuery.length >= 2 &&
-                !isSearching &&
-                searchResults.length === 0 && (
-                  <p className="px-4 py-6 text-center text-xs text-muted-foreground">
-                    {t("aiChatSidebar.noResults")}
-                  </p>
-                )}
-
-              {(searchQuery.length >= 2 ? searchResults : sessions).map(
-                (item) => (
-                  <button
-                    key={item.id}
-                    onClick={() => switchSession(item.id)}
-                    className={`w-full border-b px-4 py-3 text-left transition-colors hover:bg-muted ${
-                      item.id === sessionId
-                        ? "bg-muted border-l-2 border-l-primary"
-                        : ""
-                    }`}
-                  >
-                    <p className="text-xs font-medium text-foreground truncate">
-                      {item.title || t("aiChatSidebar.untitledConversation")}
-                    </p>
-                    {"matchedContent" in item && item.matchedContent && (
-                      <p className="mt-0.5 text-[10px] text-muted-foreground truncate">
-                        {item.matchedContent}
-                      </p>
-                    )}
-                    <p className="mt-0.5 text-[10px] text-muted-foreground/60">
-                      {new Date(item.createdAt).toLocaleDateString()}
-                    </p>
-                  </button>
-                ),
-              )}
-
-              {searchQuery.length < 2 &&
-                sessions.length === 0 &&
-                !isSearching && (
-                  <p className="px-4 py-6 text-center text-xs text-muted-foreground">
-                    {t("aiChatSidebar.noConversations")}
-                  </p>
-                )}
-            </div>
-          </div>
+          /* History panel — mounted only while open, so its query resets on close. */
+          <AiChatHistory currentSessionId={sessionId} onSwitch={switchSession} />
         ) : (
           /* Chat panel */
           <>
@@ -370,7 +444,8 @@ export default function AiChatSidebar() {
               </div>
             )}
 
-            {/* Wisp thread: scope, focus, grant controls; attachments behind a disclosure. */}
+            {/* Wisp thread: scope, focus, grant controls; attachments behind a disclosure.
+                The brief, what needs you and the links live on the Wisp home (W08 #9921). */}
             {wisp && (
               <>
                 <WispThreadHeader
@@ -378,8 +453,7 @@ export default function AiChatSidebar() {
                   orgName={wispScopeOrgName}
                   wideningAvailable={wisp.wideningAvailable}
                 />
-                <WispConcernsPanel key={wisp.grantId} grantId={wisp.grantId} threadId={wisp.threadId} />
-                <div className="border-b px-4 py-1.5">
+                <div className="flex items-center justify-between gap-2 border-b px-4 py-1.5">
                   <button
                     type="button"
                     data-testid="wisp-attachments-toggle"
@@ -389,12 +463,20 @@ export default function AiChatSidebar() {
                   >
                     {t("wisp.attachments.title")}
                   </button>
-                  {wispAttachmentsOpen && (
-                    <div className="pt-2">
-                      <WispThreadAttachments key={wisp.threadId} wisp={wisp} />
-                    </div>
-                  )}
+                  <a
+                    href="/wisp"
+                    data-testid="wisp-sidebar-open-home"
+                    className="flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                  >
+                    {t("wisp.sidebar.openHome")}
+                    <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                  </a>
                 </div>
+                {wispAttachmentsOpen && (
+                  <div className="border-b px-4 py-2">
+                    <WispThreadAttachments key={wisp.threadId} wisp={wisp} />
+                  </div>
+                )}
               </>
             )}
 
@@ -421,6 +503,13 @@ export default function AiChatSidebar() {
               </div>
             )}
 
+            {/* #9427: attached to a running turn whose replay was too large to send. */}
+            {joinedMidResponse && (
+              <div className="border-b px-4 py-1.5 text-xs text-muted-foreground" data-testid="ai-joined-mid-response">
+                {t("aiConversationMove.joinedMidResponse")}
+              </div>
+            )}
+
             {/* Messages area */}
             <AiChatMessages
               messages={messages}
@@ -437,6 +526,12 @@ export default function AiChatSidebar() {
               onPauseAi={pauseAi}
               onSendQuickAction={sendMessage}
               onIntentDecided={clearPendingApproval}
+              assistantLabel={wisp ? t("wisp.title") : undefined}
+              emptyState={
+                wisp ? (
+                  <WispWelcome scopeLabel={wispScopeLabel} onSuggest={sendMessage} briefNote={false} />
+                ) : undefined
+              }
             />
 
             {/* Continuation prompt, what ran, thinking, model menu (W05) */}
@@ -448,11 +543,28 @@ export default function AiChatSidebar() {
             {/* Input */}
             <AiChatInput
               onSend={sendMessage}
+              value={composerDraft}
+              focusRequest={composerFocusRequest}
+              onValueChange={setComposerDraft}
               onInterrupt={interruptResponse}
               disabled={isLoading}
               isStreaming={isStreaming}
               isInterrupting={isInterrupting}
+              placeholder={wisp ? t("wisp.composer.placeholder") : undefined}
             />
+
+            {showMeetWisp && (
+              <div className="border-t px-4 py-2">
+                <a
+                  href="/wisp"
+                  data-testid="wisp-sidebar-meet"
+                  className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                >
+                  <Sparkles className="h-3 w-3" aria-hidden="true" />
+                  {t("wisp.sidebar.meetWisp")}
+                </a>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -460,10 +572,69 @@ export default function AiChatSidebar() {
       {/* Backdrop overlay when open on small screens */}
       {isOpen && (
         <div
-          className="fixed inset-0 z-30 bg-black/30 lg:hidden"
+          data-testid="ai-chat-sidebar-backdrop"
+          className={RIGHT_DOCK_BACKDROP_CLASS}
           onClick={close}
         />
       )}
+    </>
+  );
+}
+
+/**
+ * #9840 W4 (spec §3.7): the side panel's History — the shared conversation
+ * list. A row a workspace tab holds moves here through W3's
+ * continueInSidePanel (adopt first, the tab closes only after 'ok', a busy
+ * panel asks first, never a DELETE); any other row is a switchSession, as
+ * before (closed search hits and topology investigations included).
+ */
+function AiChatHistory({
+  currentSessionId,
+  onSwitch,
+}: {
+  currentSessionId: string | null;
+  onSwitch: (sessionId: string) => Promise<void>;
+}) {
+  const { t } = useTranslation("ai");
+  const { items, query, setQuery, isLoading, isSearching, error } = useAiConversationSource({ surface: "panel" });
+  const { continueInPanel, replaceDialog } = useContinueInPanel();
+
+  const pick = useCallback(
+    (row: ConversationRow) => {
+      if (row.openIn !== "workspace") {
+        void onSwitch(row.id);
+        return;
+      }
+      // Lazy: keeps workspaceStore out of the side panel's bundle.
+      import("@/stores/workspaceStore")
+        .then(({ useWorkspaceStore }) => {
+          const tab = useWorkspaceStore.getState().tabs.find((t) => t.sessionId === row.id);
+          // The tab closed since the list rendered: nothing holds it elsewhere now.
+          if (tab) continueInPanel(tab.id);
+          else void onSwitch(row.id);
+        })
+        .catch((err) => {
+          console.error("[AI] Moving a conversation to the side panel failed:", err);
+          showToast({ type: "error", message: t("aiConversationMove.notAvailable") });
+        });
+    },
+    [continueInPanel, onSwitch, t],
+  );
+
+  return (
+    <>
+      <AiConversationList
+        rows={items}
+        currentSessionId={currentSessionId}
+        onPick={pick}
+        surface="panel"
+        query={query}
+        onQueryChange={setQuery}
+        isLoading={isLoading}
+        isSearching={isSearching}
+        error={error}
+      />
+      {replaceDialog}
     </>
   );
 }

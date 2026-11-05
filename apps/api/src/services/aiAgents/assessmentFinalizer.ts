@@ -11,8 +11,9 @@
  * raised concern):
  *   1. record_concern  → upsertConcern (≤ ASSESSMENT_MAX_RAISES_PER_RUN, else `raise_cap`)
  *   2. update_concern  → updateConcern / resolveConcern
- *   3. nudge           → deliverInApp to the grantor + recordNudge, unless the
- *                        recipient state says not to
+ *   3. nudge           → notifyUser to the grantor (W06: in-app via deliverInApp,
+ *                        push, quiet hours, prefs; it counts the nudge itself),
+ *                        unless the recipient state says not to
  *   4. propose_action  → createActionIntent (Tier 2/3 only, capped)
  *   5. request_specialist — left in the outcome untouched (W07)
  *   then the onboarding readiness concern (Task 15), the
@@ -46,17 +47,17 @@ import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessC
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { createActionIntent } from '../actionIntents/intentService';
 import { checkGuardrails } from '../aiGuardrails';
+import { AGENT_COORDINATOR_CARRIER_TOOLS, HUMAN_ONLY_TOOLS } from '../aiToolExposure';
 import { captureException } from '../sentry';
 import { assessableOrgIds } from '../wisp/assessableOrgs';
 import { rollupPartnerPicture } from '../wisp/assessment';
 import {
+  ConcernSubjectHeldError,
   getConcernForCeiling,
-  recordNudge,
   resolveConcern,
   updateConcern,
   upsertConcern,
 } from '../wisp/concerns';
-import { deliverInApp } from '../wisp/deliver';
 import {
   CeilingViolationError,
   GrantInactiveError,
@@ -64,6 +65,8 @@ import {
   resolveGrantCeiling,
   type GrantCeiling,
 } from '../wisp/grantAuthority';
+import { mobileDeepLink } from '../wisp/nudgeLinks';
+import { notifyUser } from '../wisp/notifyUser';
 import { renderReadinessSummary } from '../wisp/readiness';
 import { isAssessmentProfile } from './assessmentProfile';
 import type { AssessmentRunContext, LoopResult, RunContext } from './runLoopTypes';
@@ -184,7 +187,6 @@ async function applyUpdates(ap: Applier, updates: UpdateConcernInput[]): Promise
 }
 
 async function applyNudges(ap: Applier, nudges: NudgeInput[]): Promise<void> {
-  const { run } = ap.ctx;
   for (const nudge of nudges) {
     await ap.item('nudge', async () => {
       const c = await ownConcern(ap, nudge.concernId);
@@ -213,30 +215,28 @@ async function applyNudges(ap: Applier, nudges: NudgeInput[]): Promise<void> {
         ap.skipped.push('nudge_digest_only');
         return;
       }
-      const nudgeCount = r?.nudgeCount ?? 0;
       // A model-supplied card id is trusted only when it is the concern's own
       // card or one this run minted; otherwise the concern's card (or none).
       const approvalIntentId = nudge.approvalIntentId
         && (nudge.approvalIntentId === c.approvalIntentId || ap.result.intentIds.includes(nudge.approvalIntentId))
         ? nudge.approvalIntentId
         : c.approvalIntentId;
-      // W06 Task 4 replaces this one call with notifyUser(...) and keeps recordNudge.
-      await deliverInApp({
+      // W06 Task 4: one delivery primitive. notifyUser re-checks the backoff
+      // under its own read, writes the in-app row (dedupe key per backoff
+      // window), pushes, and counts the nudge (recordNudge) itself.
+      const res = await notifyUser({
         userId: ap.a.grantorUserId,
-        orgId: run.orgId,
+        category: 'wisp_nudge',
+        kind: 'concern',
         title: 'Wisp: ' + c.summary.slice(0, 80),
         body: nudge.nextStep,
-        link: `/ai/wisp/thread/${ap.a.threadId}#concern=${c.id}`,
-        priority: c.severity === 'high' ? 'high' : 'normal',
+        deepLink: mobileDeepLink(ap.a.threadId, c.id),
         concernId: c.id,
         approvalIntentId,
         threadId: ap.a.threadId,
         grantId: ap.grantId,
-        dedupeKey: `wisp-nudge-${c.id}-${ap.grantId}-${nudgeCount}`,
       });
-      // Recorded even on a dedupe hit (`created: false`): that notice was
-      // already delivered by an earlier attempt that died before counting it.
-      await recordNudge(c.id, ap.grantId, ap.now);
+      if (!res.inApp && res.pushed === 0 && res.suppressed === 'backoff') ap.skipped.push('nudge_backoff');
     });
   }
 }
@@ -265,7 +265,9 @@ async function applyProposals(ap: Applier, proposals: ProposeActionInput[]): Pro
         ap.skipped.push('propose_tier1_refused');
         return;
       }
-      if (tier >= 4) {
+      // Human-only tools are never proposable — in particular the Wisp
+      // approval carrier, which only the coordinator mints (W07).
+      if (tier >= 4 || HUMAN_ONLY_TOOLS.has(proposal.toolName) || AGENT_COORDINATOR_CARRIER_TOOLS.has(proposal.toolName)) {
         ap.skipped.push('propose_tool_blocked');
         return;
       }
@@ -310,26 +312,41 @@ async function applyProposals(ap: Applier, proposals: ProposeActionInput[]): Pro
   }
 }
 
-/** Task 15 — the onboarding run's "what I can / cannot watch here" concern, one per org (signature-keyed). */
-async function applyReadiness(ctx: RunContext, a: AssessmentRunContext, grantId: string): Promise<void> {
+/**
+ * Task 15 — the onboarding run's "what I can / cannot watch here" concern, one
+ * per org (signature-keyed). Its subject is `readiness`, never `org` (#10386):
+ * the org slot belongs to real org-level concerns.
+ */
+async function applyReadiness(ctx: RunContext, a: AssessmentRunContext, grantId: string, skipped: string[]): Promise<void> {
   const readiness = a.readiness;
   if (a.reason.kind !== 'onboarding' || !readiness || !readiness.checks.some((c) => !c.serviceable)) return;
   const { run } = ctx;
   const summary = renderReadinessSummary(readiness).slice(0, CONCERN_SUMMARY_MAX);
   const evidence = { readiness: { checks: readiness.checks, missingIntegrations: readiness.missingIntegrations } };
-  const { id, created } = await upsertConcern({
-    partnerId: ctx.orgPartnerId,
-    orgId: run.orgId,
-    subject: { kind: 'org', id: run.orgId },
-    severity: 'info',
-    signature: `readiness:${run.orgId}`,
-    summary,
-    evidence,
-    raisedByGrantId: grantId,
-    lastAssessedRunId: run.id,
-  });
+  let upserted: { id: string; created: boolean };
+  try {
+    upserted = await upsertConcern({
+      partnerId: ctx.orgPartnerId,
+      orgId: run.orgId,
+      subject: { kind: 'readiness', id: run.orgId },
+      severity: 'info',
+      signature: `readiness:${run.orgId}`,
+      summary,
+      evidence,
+      raisedByGrantId: grantId,
+      lastAssessedRunId: run.id,
+    });
+  } catch (error) {
+    // The other readiness note (no effective agent) still holds the slot:
+    // leave it; it is not this note to refresh.
+    if (error instanceof ConcernSubjectHeldError) {
+      skipped.push('readiness_slot_held');
+      return;
+    }
+    throw error;
+  }
   // A re-run (or a later onboarding) refreshes the live one instead of duplicating it.
-  if (!created) await updateConcern(id, { summary, evidence, lastAssessedRunId: run.id });
+  if (!upserted.created) await updateConcern(upserted.id, { summary, evidence, lastAssessedRunId: run.id });
 }
 
 /**
@@ -415,7 +432,7 @@ export async function finalizeAssessment(ctx: RunContext, result: LoopResult): P
       // (5) request_specialist: left in `outcome.assessment.specialistRequests` for W07.
     }
 
-    await item('readiness', () => applyReadiness(ctx, a, grantId));
+    await item('readiness', () => applyReadiness(ctx, a, grantId, skipped));
 
     for (const c of a.openConcerns) {
       if (c.orgId !== run.orgId || touched.has(c.id)) continue;

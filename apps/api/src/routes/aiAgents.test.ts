@@ -1,3 +1,8 @@
+vi.mock('../services/deviceGroupOwnership', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../services/deviceGroupOwnership')>(),
+  findPartnerOwnedGroupIds: vi.fn().mockResolvedValue([]),
+}));
+import { findPartnerOwnedGroupIds } from '../services/deviceGroupOwnership';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
@@ -216,6 +221,9 @@ const { ActPrerequisitesNotMetError, InvalidSupervisedActionKeysError, Supervise
     }
   },
 }));
+
+// W5 PR C (#5220): the save-time flow-tool warning reads flows; stubbed here.
+vi.mock('../services/flows/agentFlowTools', () => ({ unknownFlowToolNames: vi.fn(async () => []) }));
 
 vi.mock('../services/aiAgents/agentService', () => ({
   AgentInvariantError: class AgentInvariantError extends Error {},
@@ -562,6 +570,7 @@ function trigger(app: Hono, body: unknown = { deviceId: DEVICE_ID }, id = AGENT_
 }
 
 beforeEach(() => {
+  vi.mocked(findPartnerOwnedGroupIds).mockReset().mockResolvedValue([]);
   vi.clearAllMocks();
   hasPermMock.mockReturnValue(true);
   loadMeasuredImpactMock.mockResolvedValue({ schemaVersion: 1, window: 30 });
@@ -1121,6 +1130,13 @@ const runDetailResponseSchema = z.object({
     deviceId: z.string().nullable(),
     deviceHostname: z.string().nullable(),
     alertId: z.string().nullable(),
+    wisp: z.object({
+      grantId: z.string(),
+      grantorUserId: z.string(),
+      grantorName: z.string().nullable(),
+      depth: z.union([z.literal(0), z.literal(1)]),
+      requestedByRunId: z.string().nullable(),
+    }).strict().nullable(),
     triggerKind: z.string(),
     modeAtStart: z.string(),
     status: z.string(),
@@ -1506,6 +1522,54 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Run not found' });
+  });
+
+  it('GET /runs/:id returns wisp provenance for a grant-bearing run and null otherwise', async () => {
+    const GRANT_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const GRANTOR_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const PARENT_RUN = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const app = buildApp();
+    // Every select after the first (run) row — intents, workspace, artifacts — is empty.
+    selectMock.mockReturnValue(selectChain([]));
+
+    selectMock.mockReturnValueOnce(selectChain([runRow({
+      sessionId: null, intentIds: [],
+      grantId: GRANT_ID, grantorUserId: GRANTOR_ID, grantorName: 'Todd',
+      depth: 1, requestedByRunId: PARENT_RUN,
+    })]));
+    const withGrant = await app.request(`/ai-agents/runs/${RUN_ID}`);
+    expect(withGrant.status).toBe(200);
+    const withBody = await withGrant.json() as { data: { wisp: unknown } };
+    expect(withBody.data.wisp).toEqual({
+      grantId: GRANT_ID, grantorUserId: GRANTOR_ID, grantorName: 'Todd',
+      depth: 1, requestedByRunId: PARENT_RUN,
+    });
+
+    // Grant id set but the grant/user rows invisible (null join) -> grantorName
+    // null when only the user is invisible.
+    selectMock.mockReturnValueOnce(selectChain([runRow({
+      sessionId: null, intentIds: [],
+      grantId: GRANT_ID, grantorUserId: GRANTOR_ID, grantorName: null,
+      depth: 0, requestedByRunId: null,
+    })]));
+    const noName = await app.request(`/ai-agents/runs/${RUN_ID}`);
+    expect(((await noName.json()) as { data: { wisp: { grantorName: unknown; depth: unknown } } }).data.wisp)
+      .toMatchObject({ grantorName: null, depth: 0 });
+
+    selectMock.mockReturnValueOnce(selectChain([runRow({
+      sessionId: null, intentIds: [], grantId: null, grantorUserId: null, grantorName: null,
+      depth: 0, requestedByRunId: null,
+    })]));
+    const without = await app.request(`/ai-agents/runs/${RUN_ID}`);
+    expect(((await without.json()) as { data: { wisp: unknown } }).data.wisp).toBeNull();
+
+    // Grant row invisible under RLS (grantor id comes back null) -> null.
+    selectMock.mockReturnValueOnce(selectChain([runRow({
+      sessionId: null, intentIds: [], grantId: GRANT_ID, grantorUserId: null, grantorName: null,
+      depth: 0, requestedByRunId: null,
+    })]));
+    const invisible = await app.request(`/ai-agents/runs/${RUN_ID}`);
+    expect(((await invisible.json()) as { data: { wisp: unknown } }).data.wisp).toBeNull();
   });
 
   it('rejects a non-uuid run id without touching the database', async () => {
@@ -4986,6 +5050,32 @@ describe('POST /ai-agents (create)', () => {
     expect(vi.mocked(createAgent)).not.toHaveBeenCalled();
   });
 
+  // W5 PR C (#5220, Decision 9): an allowlisted `flow__<slug>` with no such
+  // enabled manual flow for the agent's owner is saved (the TOOL_REF regex
+  // admits it; the flow may be enabled later) but the response warns.
+  it('agent save with an unknown flow__ name warns, not errors', async () => {
+    const { createAgent } = await import('../services/aiAgents/agentService');
+    const { unknownFlowToolNames } = await import('../services/flows/agentFlowTools');
+    vi.mocked(createAgent).mockResolvedValueOnce(agentRow({ toolAllowlist: ['flow__nope', 'flow__report', 'query_devices'] }) as never);
+    vi.mocked(unknownFlowToolNames).mockResolvedValueOnce(['flow__nope']);
+
+    const res = await createAgentRequest(buildApp(), { kind: 'triage', name: 'Triage', toolAllowlist: ['flow__nope', 'flow__report', 'query_devices'] });
+
+    expect(res.status).toBe(201);
+    expect((await res.json()).warnings).toEqual([{ code: 'flow_tool_unknown', tools: ['flow__nope'] }]);
+    expect(vi.mocked(unknownFlowToolNames)).toHaveBeenCalledWith({ orgId: ORG_ID, partnerId: null }, ['flow__nope', 'flow__report', 'query_devices']);
+  });
+
+  it('a save whose flow tools all exist carries no warnings key', async () => {
+    const { createAgent } = await import('../services/aiAgents/agentService');
+    const { unknownFlowToolNames } = await import('../services/flows/agentFlowTools');
+    vi.mocked(createAgent).mockResolvedValueOnce(agentRow({ toolAllowlist: ['flow__report'] }) as never);
+    vi.mocked(unknownFlowToolNames).mockResolvedValueOnce([]);
+    const res = await createAgentRequest(buildApp(), { kind: 'triage', name: 'Triage', toolAllowlist: ['flow__report'] });
+    expect(res.status).toBe(201);
+    expect(await res.json()).not.toHaveProperty('warnings');
+  });
+
   it('answers a site-restricted create refusal with 403 and the standard message, not a 404', async () => {
     const { createAgent } = await import('../services/aiAgents/agentService');
     const { AgentSiteCeilingDeniedError } = await import('../services/aiAgents/access');
@@ -5346,5 +5436,22 @@ describe('GET /ai-agents/runs/:runId/artifacts (execution-plane W01, reconciliat
     expect(Array.isArray(detailBody.data)).toBe(false);
     expect(detailBody.data).not.toHaveProperty('downloadPath');
     expect(listArtifactsForAuthMock).toHaveBeenCalledTimes(1);   // detail did not hit the list
+  });
+});
+
+describe('partner-owned AI agent run scope', () => {
+  it.each(['POST', 'PATCH'])('%s refuses partner group triggers with 400 before persisting', async (method) => {
+    const { createAgent, updateAgent } = await import('../services/aiAgents/agentService');
+    vi.mocked(findPartnerOwnedGroupIds).mockResolvedValueOnce([AGENT_ID]);
+    const res = await buildApp().request(method === 'POST' ? '/ai-agents' : `/ai-agents/${AGENT_ID}`, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...(method === 'POST' ? { kind: 'triage', name: 'Triage' } : {}), triggers: { deviceGroupIds: [AGENT_ID] } }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', groupIds: [AGENT_ID] });
+    expect(createAgent).not.toHaveBeenCalled();
+    expect(updateAgent).not.toHaveBeenCalled();
+    expect(findPartnerOwnedGroupIds).toHaveBeenCalledWith([AGENT_ID]);
   });
 });

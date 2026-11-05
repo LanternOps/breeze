@@ -85,8 +85,16 @@ describe('ThreatRulePanel (W04-5)', () => {
     expect(screen.queryByTestId('threat-rule-set-missing')).toBeNull();
   });
 
-  it('claims no rule version (the agent does not report one)', () => {
-    render(<ThreatRulePanel rule={view()} />);
-    expect(screen.getByTestId('threat-rule-panel').textContent).not.toMatch(/version/i);
+  it('shows the rule set version only when the server resolved one', () => {
+    const { unmount } = render(<ThreatRulePanel rule={view({ ruleSetVersion: 4 })} />);
+    expect(screen.getByTestId('threat-rule-version').textContent).toBe('Version 4');
+    unmount();
+
+    for (const absent of [null, undefined]) {
+      const { unmount: again } = render(<ThreatRulePanel rule={view({ ruleSetVersion: absent })} />);
+      expect(screen.queryByTestId('threat-rule-version')).toBeNull();
+      expect(screen.getByTestId('threat-rule-panel').textContent).not.toMatch(/version/i);
+      again();
+    }
   });
 });

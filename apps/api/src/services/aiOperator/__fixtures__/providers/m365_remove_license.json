@@ -1,0 +1,21 @@
+{
+  "_source": "reference",
+  "_recordedFrom": "reference: Microsoft Graph v1.0 GET /users/{id}?$select=assignedLicenses and POST /users/{id}/assignLicense (removeLicenses)",
+  "toolName": "m365_remove_license",
+  "provider": "m365",
+  "preSatisfied": {
+    "read:m365.user.get": { "ok": true, "kind": "resource", "resource": { "id": "00000000-0000-4000-8000-0000000a0001", "userPrincipalName": "dana@customer.example", "assignedLicenses": [] } }
+  },
+  "preUnsatisfied": {
+    "read:m365.user.get": { "ok": true, "kind": "resource", "resource": { "id": "00000000-0000-4000-8000-0000000a0001", "userPrincipalName": "dana@customer.example", "assignedLicenses": [ { "skuId": "00000000-0000-4000-8000-0000000c0001", "disabledPlans": [] } ] } }
+  },
+  "writeOk": {
+    "write:m365.user.license.remove": { "ok": true, "result": { "success": true, "action": "m365.user.license.remove", "userId": "00000000-0000-4000-8000-0000000a0001", "removedSkuIds": [ "00000000-0000-4000-8000-0000000c0001" ], "noop": false } }
+  },
+  "postSatisfied": {
+    "read:m365.user.get": { "ok": true, "kind": "resource", "resource": { "id": "00000000-0000-4000-8000-0000000a0001", "userPrincipalName": "dana@customer.example", "assignedLicenses": [] } }
+  },
+  "writeRefusal": {
+    "write:m365.user.license.remove": { "ok": false, "code": "user_not_found", "message": "The Microsoft 365 user was not found." }
+  }
+}

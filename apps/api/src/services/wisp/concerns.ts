@@ -38,6 +38,7 @@ import {
   type GrantCeiling,
 } from './grantAuthority';
 import { rememberForGrant } from './memoryBroker';
+import { incWispConcern } from '../wispMetrics';
 
 export type { ConcernSubject, ConcernSeverity, ConcernStatus, Concern } from '@breeze/shared';
 
@@ -47,6 +48,20 @@ export class ConcernNotFoundError extends Error {
   constructor(public readonly concernId: string) {
     super(`Wisp concern ${concernId} not found`);
     this.name = 'ConcernNotFoundError';
+  }
+}
+
+/**
+ * A signature-keyed insert found its SUBJECT held by a different live concern
+ * (one without its signature). The two are not the same concern, so the
+ * holder's id is never handed back as if it were (#10386: the readiness note
+ * overwrote a model-raised HIGH org concern that way). The caller decides.
+ */
+export class ConcernSubjectHeldError extends Error {
+  readonly code = 'concern_subject_held' as const;
+  constructor(public readonly signature: string, public readonly heldByConcernId: string) {
+    super(`Wisp concern subject is held by live concern ${heldByConcernId}, which does not carry signature ${signature}`);
+    this.name = 'ConcernSubjectHeldError';
   }
 }
 
@@ -122,9 +137,14 @@ async function findLiveBySubject(partnerId: string, orgId: string | null, subjec
 }
 
 /**
- * Insert a concern unless a live one already holds the subject (or the
- * signature). The existing live row is returned with `created: false` and is
- * NOT touched — in particular a snooze survives a re-raise (Review Focus 5).
+ * Insert a concern unless a live one already holds it. The existing live row
+ * is returned with `created: false` and is NOT touched — in particular a
+ * snooze survives a re-raise (Review Focus 5).
+ *
+ * "Already holds it" is keyed by the insert's identity: the subject for an
+ * unsigned concern, the signature for a signed one. A signed insert whose
+ * subject is held by a live concern with another (or no) signature throws
+ * `ConcernSubjectHeldError` instead (#10386).
  */
 const LIVE_INDEXES = new Set(['wisp_concerns_live_subject_uq', 'wisp_concerns_live_signature_uq']);
 
@@ -164,17 +184,52 @@ export async function upsertConcern(input: UpsertConcernInput): Promise<{ id: st
         // unique violation is a real bug and must surface.
         if (!isPgUniqueViolation(err) || !LIVE_INDEXES.has(pgErrorConstraint(err) ?? '')) throw err;
       }
-      if (inserted[0]) return { id: inserted[0].id, created: true };
+      if (inserted[0]) {
+        incWispConcern('opened');
+        return { id: inserted[0].id, created: true };
+      }
 
-      const existing = (signature !== null ? await findLiveBySignature(input.partnerId, signature) : null)
-        ?? await findLiveBySubject(input.partnerId, input.orgId, input.subject);
-      if (existing) return { id: existing, created: false };
+      const existing = signature !== null
+        ? await findLiveBySignature(input.partnerId, signature)
+        : await findLiveBySubject(input.partnerId, input.orgId, input.subject);
+      if (existing) {
+        incWispConcern('updated');
+        return { id: existing, created: false };
+      }
+      if (signature !== null) {
+        // Not ours by signature: a subject-index violation means another
+        // concern holds the subject. Nothing live there either = it was
+        // resolved between the violation and this read; retry the insert.
+        const holder = await findLiveBySubject(input.partnerId, input.orgId, input.subject);
+        if (holder) throw new ConcernSubjectHeldError(signature, holder);
+      }
     }
     throw new Error('upsertConcern: the live concern vanished twice between conflict and read');
   });
 }
 
-/** Patch the given fields; evidence is replaced, not merged. No-op on an unknown id. */
+/**
+ * Resolve the live concern holding `signature` for the partner, if any (system
+ * automation closing its own readiness concern; no memory block is written).
+ * Idempotent: nothing live → `{ resolved: false }`.
+ */
+export async function resolveConcernBySignature(
+  partnerId: string,
+  signature: string,
+  outcome: string,
+): Promise<{ resolved: boolean }> {
+  const id = await inSystemContext(() => findLiveBySignature(partnerId, signature));
+  if (!id) return { resolved: false };
+  const { resolved } = await resolveConcern(id, {}, outcome);
+  return { resolved };
+}
+
+/**
+ * Patch the given fields of a LIVE concern; evidence is replaced, not merged.
+ * No-op on an unknown id and on a concern that was resolved or dismissed
+ * meanwhile (a run that read it open must not bump a closed one — the routes'
+ * `concern_not_live` rule, W06 carry-over).
+ */
 export async function updateConcern(
   id: string,
   patch: { summary?: string; severity?: ConcernSeverity; evidence?: Record<string, unknown>; lastAssessedRunId?: string | null; childConcernIds?: string[] },
@@ -186,7 +241,8 @@ export async function updateConcern(
   if (patch.lastAssessedRunId !== undefined) set.lastAssessedRunId = patch.lastAssessedRunId;
   if (patch.childConcernIds !== undefined) set.childConcernIds = patch.childConcernIds;
   await inSystemContext(async () => {
-    await db.update(wispConcerns).set(set).where(eq(wispConcerns.id, id));
+    await db.update(wispConcerns).set(set)
+      .where(and(eq(wispConcerns.id, id), inArray(wispConcerns.status, [...LIVE_CONCERN_STATUSES])));
   });
 }
 
@@ -221,6 +277,7 @@ export async function resolveConcern(
     return row ?? null;
   });
   if (!resolved) return { resolved: false, remembered: false };
+  incWispConcern('resolved');
   if (!by.grantId) return { resolved: true, remembered: false };
 
   const grantId = by.grantId;
@@ -301,13 +358,15 @@ export async function dismissConcern(id: string, by: { grantId: string; userId: 
   await inSystemContext(async () => {
     await lockConcern(id);
     await upsertRecipient(id, by.grantId, { dismissedAt: now, answeredAt: now });
-    await db.update(wispConcerns)
+    const closed = await db.update(wispConcerns)
       .set({ status: 'dismissed', updatedAt: sql`now()` })
       .where(and(
         eq(wispConcerns.id, id),
         inArray(wispConcerns.status, [...LIVE_CONCERN_STATUSES]),
         sql`NOT EXISTS (SELECT 1 FROM wisp_concern_recipients r WHERE r.concern_id = ${wispConcerns.id} AND r.dismissed_at IS NULL)`,
-      ));
+      ))
+      .returning({ id: wispConcerns.id });
+    if (closed.length > 0) incWispConcern('dismissed');
   });
 }
 
@@ -317,14 +376,16 @@ export async function snoozeConcern(id: string, by: { grantId: string; userId: s
   await inSystemContext(async () => {
     await lockConcern(id);
     await upsertRecipient(id, by.grantId, { snoozedUntil: until, answeredAt: now });
-    await db.update(wispConcerns)
+    const parked = await db.update(wispConcerns)
       .set({ status: 'snoozed', updatedAt: sql`now()` })
       .where(and(
         eq(wispConcerns.id, id),
         inArray(wispConcerns.status, [...LIVE_CONCERN_STATUSES]),
         sql`NOT EXISTS (SELECT 1 FROM wisp_concern_recipients r WHERE r.concern_id = ${wispConcerns.id}
           AND r.dismissed_at IS NULL AND (r.snoozed_until IS NULL OR r.snoozed_until <= now()))`,
-      ));
+      ))
+      .returning({ id: wispConcerns.id });
+    if (parked.length > 0) incWispConcern('snoozed');
   });
 }
 
@@ -500,4 +561,29 @@ export async function getConcernForCeiling(ceiling: GrantCeiling, id: string): P
   if (!visible) return null;
   const [concern] = await selectWithRecipient(ceiling, and(visible, eq(wispConcerns.id, id))!, 1);
   return concern ?? null;
+}
+
+/**
+ * #10392: true only when the concern is visible to this ceiling, still live,
+ * and was raised by THIS grant (a chat raise_concern or this grant's own
+ * assessment). The chat gate uses it to let a snooze of Wisp's own loose ends
+ * run without an approval card; a concern raised by a person, another grant,
+ * or nobody (grant deleted → NULL) keeps the card, because parking it changes
+ * state other people see. (Resolve always keeps its card: it writes shared
+ * concern_outcome memory — wisp/selfStateTools.ts.)
+ */
+export async function isLiveConcernRaisedByGrant(ceiling: GrantCeiling, id: string): Promise<boolean> {
+  const visible = visibilityWhere(ceiling);
+  if (!visible) return false;
+  const [row] = await inSystemContext(() => db
+    .select({ id: wispConcerns.id })
+    .from(wispConcerns)
+    .where(and(
+      visible,
+      eq(wispConcerns.id, id),
+      eq(wispConcerns.raisedByGrantId, ceiling.grantId),
+      inArray(wispConcerns.status, [...LIVE_CONCERN_STATUSES]),
+    ))
+    .limit(1));
+  return row !== undefined;
 }

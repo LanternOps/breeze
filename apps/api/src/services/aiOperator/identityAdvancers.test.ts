@@ -170,16 +170,17 @@ describe('the advancer table', () => {
 });
 
 describe('leasedWrite — the mirrored lease CAS', () => {
-  it('CASes on (id, org_id, revision, lease_epoch) and runs alsoInTransaction ONLY when it won', async () => {
+  it('CASes on (id, org_id, revision, lease_epoch, live state) and runs alsoInTransaction ONLY when it won', async () => {
     const also = vi.fn();
-    expect(await leasedWrite({ orgId: ORG, taskId: 'task-1', revision: 4, leaseEpoch: 9, patch: { phase: 'plan' }, alsoInTransaction: also })).toBe(true);
+    expect(await leasedWrite({ orgId: ORG, taskId: 'task-1', revision: 4, leaseEpoch: 9, observedState: 'running', patch: { phase: 'plan' }, alsoInTransaction: also })).toBe(true);
     const q = new PgDialect().sqlToQuery(h.updates[0]!.where as SQL);
-    expect(q.sql).toBe('("ai_operator_tasks"."id" = $1 and "ai_operator_tasks"."org_id" = $2 and "ai_operator_tasks"."revision" = $3 and "ai_operator_tasks"."lease_epoch" = $4)');
-    expect(q.params).toEqual(['task-1', ORG, 4, 9]);
+    // #9979: a live snapshot may not write over a stop that landed under the same epoch.
+    expect(q.sql).toBe('("ai_operator_tasks"."id" = $1 and "ai_operator_tasks"."org_id" = $2 and "ai_operator_tasks"."revision" = $3 and "ai_operator_tasks"."lease_epoch" = $4 and "ai_operator_tasks"."state" in ($5, $6, $7))');
+    expect(q.params).toEqual(['task-1', ORG, 4, 9, 'queued', 'running', 'waiting']);
     expect(also).toHaveBeenCalledTimes(1);
     h.casRows = [];
     const lost = vi.fn();
-    expect(await leasedWrite({ orgId: ORG, taskId: 'task-1', revision: 4, leaseEpoch: 9, patch: {}, alsoInTransaction: lost })).toBe(false);
+    expect(await leasedWrite({ orgId: ORG, taskId: 'task-1', revision: 4, leaseEpoch: 9, observedState: 'running', patch: {}, alsoInTransaction: lost })).toBe(false);
     expect(lost).not.toHaveBeenCalled();
   });
 });

@@ -27,88 +27,20 @@ function walk(dir: string, out: string[] = []): string[] {
 
 /** Gap entries as of this wave. This list only SHRINKS. Adding a route module with no tool means writing the tool or a real exemption. */
 const FROZEN_GAPS: ReadonlySet<string> = new Set([
-  'accessReviews.ts',
-  'accounting/index.ts',
-  'aiAgentSchedules.ts',
-  'aiOperatorTasks.ts',
-  'alerts/correlations.ts',
-  'alertTemplates/correlations.ts',
-  'auditBaselines.ts',
   'backup/bmrRecoveries.ts',
   'backup/health.ts',
   'backup/verification.ts',
   'backup/vss.ts',
-  'billingProfiles.ts',
   'c2c/configs.ts',
-  'contracts/documents.ts',
-  'contracts/generate.ts',
-  'contracts/periods.ts',
-  'contracts/reports.ts',
-  'contracts/templates.ts',
-  'devices/aiOrigin.ts',
-  'devices/anomalies.ts',
-  'devices/billing.ts',
-  'devices/events.ts',
-  'devices/function.ts',
-  'devices/health.ts',
-  'devices/homebrewBootstrap.ts',
-  'devices/links.ts',
-  'devices/manual.ts',
-  'devices/posture.ts',
-  'devices/processSamples.ts',
-  'devices/software.ts',
-  'devices/softwareActions.ts',
-  'devices/warranty.ts',
-  'devices/watchdogLogs.ts',
-  'discoveryAssetProbe.ts',
-  'fleetDesign.ts',
-  'invoices/evidence.ts',
-  'invoices/settings.ts',
-  'monitoringAssetMetrics.ts',
-  'networkKnownGuests.ts',
   'orgAccountReadiness.ts',
   'orgAuditRetentionSettings.ts',
-  'orgBillingProfile.ts',
   'orgPortalSettings.ts',
   'orgPortalUsers.ts',
   'orgSummary.ts',
-  'orgTicketSettings.ts',
-  'packageSearch.ts',
   'patchPlan.ts',
-  'pax8.ts',
-  'pax8Orders.ts',
-  'policyManagement/actions.ts',
-  'reliability.ts',
-  'remote/supportSessions.ts',
   'reports/recipients.ts',
   'roles.ts',
-  'security/compliance.ts',
-  'security/dashboard.ts',
-  'security/policies.ts',
-  'security/recommendations.ts',
-  'security/recoveryKeys.ts',
-  'security/status.ts',
-  'snmp.ts',
-  'software.ts',
-  'softwareInstallMethods.ts',
-  'softwareInventory.ts',
-  'systemTools/eventLogs.ts',
-  'tenantVariables.ts',
-  'ticketCategories.ts',
-  'ticketChecklistTemplates.ts',
-  'ticketConfig.ts',
-  'tickets/attachments.ts',
-  'tickets/bulk.ts',
   'tickets/export.ts',
-  'tickets/forms.ts',
-  'tickets/ticketResponseTemplates.ts',
-  'timeEntries/suggestions.ts',
-  'topology/manual.ts',
-  'topology/policies.ts',
-  'topology/settings.ts',
-  'topology/targets.ts',
-  'topology/templateApplications.ts',
-  'topology/templates.ts',
   'unifi/index.ts',
   'users.ts',
 ]);
@@ -125,6 +57,12 @@ describe('MCP_COVERAGE (route module → tool surface)', () => {
   it('every entry names an existing route module', () => {
     const set = new Set(modules);
     expect(Object.keys(MCP_COVERAGE).filter((k) => !set.has(k)), 'entries for files that do not exist / register no routes').toEqual([]);
+  });
+  it('pins devices/bulkSite.ts as human_only_bulk_destructive (#9796; an MFA-gated bulk write stays off the AI surface)', () => {
+    expect(MCP_COVERAGE['devices/bulkSite.ts']).toMatchObject({ exempt: 'human_only_bulk_destructive' });
+  });
+  it('pins partnerSettingsInheritance.ts to its read tool (#9763; the tool_in_later_wave exemption is burned down)', () => {
+    expect(MCP_COVERAGE['partnerSettingsInheritance.ts']).toEqual({ tools: ['get_partner_settings_inheritance'] });
   });
   it('every tool named exists in the registry, and tool entries are non-empty', () => {
     const bad: string[] = [];
@@ -154,4 +92,15 @@ describe('MCP_COVERAGE (route module → tool surface)', () => {
     expect((MCP_COVERAGE['discovery.ts'] as { tools: string[] }).tools).toEqual(expect.arrayContaining(['list_network_assets', 'get_network_asset', 'network_discovery']));
     expect(aiTools.size).toBeGreaterThan(150);
   });
+  it('the W04 flow tools cover the flows route module', () => {
+    expect((MCP_COVERAGE['flows.ts'] as { tools: string[] }).tools).toEqual(
+      expect.arrayContaining(['list_flows', 'get_flow', 'run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run']),
+    );
+  });
+});
+
+
+it('W15 burns down both Pax8 route gaps with the PR A surface', () => {
+  expect(MCP_COVERAGE['pax8.ts']).toEqual({ tools: ['get_pax8_status', 'manage_pax8_subscriptions'] });
+  expect(MCP_COVERAGE['pax8Orders.ts']).toEqual({ tools: ['manage_pax8_orders', 'search_pax8_products', 'manage_pax8_subscriptions'] });
 });

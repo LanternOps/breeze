@@ -25,6 +25,18 @@ describe('shortDate', () => {
   it('keeps a date-only string on its calendar day (no timezone shift)', () => {
     expect(shortDate('2026-08-15')).toBe(new Date(2026, 7, 15).toLocaleDateString());
   });
+  // #10291: an instant formats in the zone it is given, so an SSR render (UTC
+  // container) and a hydrated one (the customer's browser) print the same day.
+  // Runtime-zone independent: run under TZ=America/Los_Angeles and Europe/Berlin.
+  it('formats a timestamp as the calendar day in the given zone, not the runtime zone', () => {
+    const endOfNov9Denver = '2026-11-10T06:59:59.999Z';
+    expect(shortDate(endOfNov9Denver, 'America/Denver')).toBe(new Date(2026, 10, 9).toLocaleDateString());
+    expect(shortDate(endOfNov9Denver, 'Europe/Berlin')).toBe(new Date(2026, 10, 10).toLocaleDateString());
+  });
+  it('keeps a date-only string on its calendar day even when a zone is given', () => {
+    expect(shortDate('2026-08-15', 'America/Los_Angeles')).toBe(new Date(2026, 7, 15).toLocaleDateString());
+    expect(shortDate('2026-08-15', 'Pacific/Kiritimati')).toBe(new Date(2026, 7, 15).toLocaleDateString());
+  });
   it('renders a dash for nothing and passes garbage through rather than "Invalid Date"', () => {
     expect(shortDate(null)).toBe('—');
     expect(shortDate('not-a-date')).toBe('not-a-date');

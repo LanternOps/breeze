@@ -8,6 +8,7 @@
  *   POST /:id/snooze  { grantId, until }     → { success: true }
  *   POST /:id/dismiss { grantId }            → { success: true }
  *   POST /:id/resolve { grantId, outcome }   → { success: true }
+ *   POST /:id/feedback { grantId, useful, note? } → { data: { recipient } }   (W06, w00 A34)
  *
  * GATES are inherited from the hub's `use('*')` chain (auth → 404 while
  * !wispEnabled() → partner scope → ai_sessions:use → requireEntitlement
@@ -23,15 +24,24 @@
  * missing one, a non-uuid id — is the same existence-neutral 404.
  *
  * CEILING. Every route resolves the grant's live ceiling (409 grant_inactive
- * when paused / revoked / expired / unpinned) and reads concerns only through
+ * when revoked / expired / unpinned; also when paused, except for the two
+ * GET reads below) and reads concerns only through
  * `listConcernsForCeiling` / `getConcernForCeiling`. A mutation first reads
  * the concern under the ceiling: one outside it is indistinguishable from a
  * missing one (404) and the service is never called.
+ *
+ * PAUSED READS (#10104). `GET /` and `GET /:id` resolve with `allowPaused`: a
+ * paused grant's thread keeps showing its concerns, filtered by the stored
+ * revision intersected with the grantor's live term (the same ceiling an
+ * active grant gets, flagged `paused`). Who may read is unchanged (the
+ * `reader` check above runs first). Every mutation resolves WITHOUT it, so a
+ * paused grant still refuses snooze / dismiss / resolve / feedback with 409.
  */
 import { Hono, type Context } from 'hono';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import {
+  concernFeedbackBodySchema,
   concernGrantQuerySchema,
   dismissBodySchema,
   listConcernsQuerySchema,
@@ -51,6 +61,7 @@ import {
   getConcernForCeiling,
   listConcernsForCeiling,
   markAnswered,
+  recordFeedback,
   resolveConcern,
   snoozeConcern,
   type Concern,
@@ -62,6 +73,7 @@ import {
   resolveGrantCeiling,
   type GrantCeiling,
 } from '../services/wisp/grantAuthority';
+import { MemoryServiceError, recordHumanBlock } from '../services/wisp/memoryService';
 
 // ---------------------------------------------------------------------------
 // Shared with routes/wispWatches.ts: grant access, ceiling, error shapes
@@ -95,8 +107,17 @@ export type GrantCeilingOutcome =
  * Load `grantId` (system context, pinned to the caller's partner), check the
  * caller's access to it and resolve its live ceiling. Every refusal is a
  * ready response; unexpected errors propagate.
+ *
+ * `allowPaused` (READ-ONLY routes only): a paused grant resolves to a ceiling
+ * with `status: 'paused'` that assertWithinCeiling refuses, so it can filter
+ * reads but never authorise an action. It does not change who may read.
  */
-export async function grantCeilingFor(c: Context, grantId: string, access: GrantAccess): Promise<GrantCeilingOutcome> {
+export async function grantCeilingFor(
+  c: Context,
+  grantId: string,
+  access: GrantAccess,
+  opts: { allowPaused?: boolean } = {},
+): Promise<GrantCeilingOutcome> {
   const auth = authOf(c);
   const partnerId = auth.partnerId;
   // The hub's requireScope('partner') guarantees it; re-asserted as a belt.
@@ -120,7 +141,10 @@ export async function grantCeilingFor(c: Context, grantId: string, access: Grant
   }
   if (!grant.currentRevisionId) return { ok: false, response: grantInactive(c) };
   try {
-    return { ok: true, grant, ceiling: await resolveGrantCeiling(grant.id, grant.currentRevisionId) };
+    const ceiling = opts.allowPaused
+      ? await resolveGrantCeiling(grant.id, grant.currentRevisionId, { allowPaused: true })
+      : await resolveGrantCeiling(grant.id, grant.currentRevisionId);
+    return { ok: true, grant, ceiling };
   } catch (err) {
     return { ok: false, response: grantErrorResponse(c, err) };
   }
@@ -158,7 +182,7 @@ export const wispConcernsRoutes = new Hono();
 
 wispConcernsRoutes.get('/', zValidator('query', listConcernsQuerySchema), async (c) => {
   const { grantId, status, orgId } = c.req.valid('query');
-  const access = await grantCeilingFor(c, grantId, 'reader');
+  const access = await grantCeilingFor(c, grantId, 'reader', { allowPaused: true });
   if (!access.ok) return access.response;
   const concerns = await listConcernsForCeiling(access.ceiling, { status, orgId });
   return c.json({ concerns });
@@ -167,7 +191,7 @@ wispConcernsRoutes.get('/', zValidator('query', listConcernsQuerySchema), async 
 wispConcernsRoutes.get('/:id', zValidator('query', concernGrantQuerySchema), async (c) => {
   const id = pathId(c);
   if (!id) return c.json(WISP_NOT_FOUND, 404);
-  const access = await grantCeilingFor(c, c.req.valid('query').grantId, 'reader');
+  const access = await grantCeilingFor(c, c.req.valid('query').grantId, 'reader', { allowPaused: true });
   if (!access.ok) return access.response;
   const concern = await getConcernForCeiling(access.ceiling, id);
   if (!concern) return c.json(WISP_NOT_FOUND, 404);
@@ -240,4 +264,59 @@ wispConcernsRoutes.post('/:id/resolve', zValidator('json', resolveBodySchema), a
   const { grantId, outcome } = c.req.valid('json');
   return mutateConcern(c, grantId, 'resolved', (concern, userId) =>
     resolveConcern(concern.id, { userId }, outcome));
+});
+
+// W06 (w00 A34): one tap "useful / not useful" on a nudged concern. The
+// caller's OWN grant (it is their recipient row). Any status: feedback about a
+// nudge stays meaningful after the concern closed. The answer is remembered
+// as the person's own `preference` memory FIRST (request context, RLS) and
+// then written to the recipient row (system context) — so a retry after a
+// failed recipient write re-records (supersedes) the memory and completes,
+// while a retry after both succeeded is the idempotent same-value path.
+wispConcernsRoutes.post('/:id/feedback', zValidator('json', concernFeedbackBodySchema), async (c) => {
+  const id = pathId(c);
+  if (!id) return c.json(WISP_NOT_FOUND, 404);
+  const { grantId, useful } = c.req.valid('json');
+  const note = c.req.valid('json').note || null;
+  const access = await grantCeilingFor(c, grantId, 'owner');
+  if (!access.ok) return access.response;
+  const concern = await getConcernForCeiling(access.ceiling, id);
+  if (!concern) return c.json(WISP_NOT_FOUND, 404);
+
+  const answer = useful ? 'useful' : 'not_useful';
+  const previous = concern.recipient?.feedback ?? null;
+  if (previous === answer) return c.json({ data: { recipient: concern.recipient } });
+  if (previous !== null) {
+    return wispFail(c, 409, 'feedback_already_recorded', 'Feedback on this nudge was already recorded');
+  }
+
+  const auth = authOf(c);
+  try {
+    await recordHumanBlock(auth, {
+      owner: { kind: 'user' },
+      blockType: 'preference',
+      subjectKey: `nudge_feedback:${concern.subject.kind}:${concern.severity}`,
+      content: { useful, concernId: concern.id, summary: concern.summary, note },
+      confidence: 'high',
+      authoredByGrantId: access.grant.id,
+    });
+    await recordFeedback(concern.id, access.grant.id, { useful, note });
+  } catch (err) {
+    if (err instanceof ConcernNotFoundError) return c.json(WISP_NOT_FOUND, 404);
+    if (err instanceof MemoryServiceError && err.code === 'invalid_memory') {
+      return c.json({ error: err.message, code: 'invalid_feedback' }, 400);
+    }
+    throw err;
+  }
+
+  writeRouteAudit(c, {
+    orgId: concern.orgId,
+    partnerId: concern.partnerId,
+    action: 'wisp.concern.feedback',
+    resourceType: 'wisp_concern',
+    resourceId: concern.id,
+    details: { grantId: access.grant.id, useful, hasNote: note !== null },
+  });
+  const after = await getConcernForCeiling(access.ceiling, concern.id);
+  return c.json({ data: { recipient: after?.recipient ?? null } });
 });

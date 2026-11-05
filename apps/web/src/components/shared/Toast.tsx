@@ -12,6 +12,8 @@ interface ToastData {
   detail?: string;
   type: 'success' | 'error' | 'undo' | 'warning';
   onUndo?: () => void;
+  /** One labelled action button (any type); the toast closes after it runs. */
+  action?: { label: string; onClick: () => void };
   /** Milliseconds before auto-dismiss (default 5000). `0` keeps the toast until dismissed. */
   duration?: number;
   /** A value (e.g. a manual invite link) shown in a read-only field with a copy button. */
@@ -205,6 +207,16 @@ export default function ToastContainer() {
               >
                 <Undo2 className="h-3 w-3" />
                 {t('shared.toast.undo')}
+              </button>
+            )}
+            {toast.action && (
+              <button
+                type="button"
+                data-testid="toast-action"
+                onClick={() => { toast.action?.onClick(); dismiss(toast.id); }}
+                className="shrink-0 rounded px-2 py-1 text-xs font-medium text-primary hover:bg-muted transition-colors"
+              >
+                {toast.action.label}
               </button>
             )}
             <button

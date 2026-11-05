@@ -16,6 +16,7 @@ import { previewMerge } from '../../services/ticketMerge/preview';
 import { db } from '../../db';
 import { MergeRefusedError, TicketMergedError } from '../../services/ticketMerge/errors';
 import { addTicketComment, type TicketActor } from '../../services/ticketService';
+import { upsertTicketExternalRef } from '../../services/ticketExternalRefs';
 import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
 import { businessCalendarIntervals, businessCalendarRevisions, businessCalendars } from '../../db/schema';
@@ -235,9 +236,32 @@ describe('mergeTickets (#8972 W1, spec §3.3)', () => {
       INSERT INTO ticket_external_refs (ticket_id, org_id, partner_id, partner_service_principal_id, external_id)
       VALUES (${s.src}::uuid, ${s.org.id}::uuid, ${s.partner.id}::uuid, ${p2}::uuid, 'SRC-2') RETURNING id`);
     const res = await merge(s);
-    expect(await one(sql`SELECT ticket_id FROM ticket_external_refs WHERE id = ${moves.id}::uuid`)).toEqual({ ticket_id: s.dst });
-    expect(await one(sql`SELECT ticket_id FROM ticket_external_refs WHERE id = ${collide.id}::uuid`)).toEqual({ ticket_id: s.src });
+    // The moved ref records the ticket it came off (#10120); a ref that stays
+    // and one written directly on the survivor have no origin.
+    expect(await one(sql`SELECT ticket_id, origin_ticket_id FROM ticket_external_refs WHERE id = ${moves.id}::uuid`))
+      .toEqual({ ticket_id: s.dst, origin_ticket_id: s.src });
+    expect(await one(sql`SELECT ticket_id, origin_ticket_id FROM ticket_external_refs WHERE id = ${collide.id}::uuid`))
+      .toEqual({ ticket_id: s.src, origin_ticket_id: null });
+    expect(await one(sql`SELECT origin_ticket_id FROM ticket_external_refs WHERE external_id = 'DST-1' AND partner_service_principal_id = ${p1}::uuid`))
+      .toEqual({ origin_ticket_id: null });
     expect(res.retainedExternalRefIds).toEqual([collide.id]);
+
+    // Merged again (B→C): the ref keeps its earliest origin, as a comment does.
+    const c = await insertTicket(s.org.id, s.partner.id, { createdAt: new Date(Date.now() - 7_200_000) });
+    await merge(s, s.dst, c);
+    expect(await one(sql`SELECT ticket_id, origin_ticket_id FROM ticket_external_refs WHERE id = ${moves.id}::uuid`))
+      .toEqual({ ticket_id: c, origin_ticket_id: s.src });
+
+    // The Partner API's upsert keeps the origin for the same external id, and
+    // drops it for a new one, which is written directly.
+    const upsert = (externalId: string) => withDbAccessContext(s.ctx, () => upsertTicketExternalRef({
+      principalId: p2, partnerId: s.partner.id, ticketId: c, externalId,
+    }));
+    await upsert('SRC-2');
+    expect(await one(sql`SELECT origin_ticket_id FROM ticket_external_refs WHERE id = ${moves.id}::uuid`)).toEqual({ origin_ticket_id: s.src });
+    await upsert('NEW-2');
+    expect(await one(sql`SELECT external_id, origin_ticket_id FROM ticket_external_refs WHERE id = ${moves.id}::uuid`))
+      .toEqual({ external_id: 'NEW-2', origin_ticket_id: null });
   }, T);
 
   runDb('links: between-pair deleted, related re-canonicalised, collisions dropped and listed, duplicate_of follows the survivor', async () => {

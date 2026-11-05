@@ -40,6 +40,7 @@ function buildApp(role: 'agent' | 'watchdog' = 'agent', claimTypeAllowlist?: str
       partnerId: PARTNER,
       agentId: 'agent-primary',
       siteId: '50000000-0000-4000-8000-000000000001',
+      installIncarnation: 1,
       role,
     });
     await next();

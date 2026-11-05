@@ -3,8 +3,9 @@
     "separator": ", "
   },
   "aiInitiator": {
-    "assistant": "AI assistant",
+    "assistant": "Breeze AI",
     "agent": "AI agent",
+    "flow": "Flow",
     "originUnavailable": "Origin not available",
     "openSession": "Open conversation",
     "openAgentRun": "Open agent run",
@@ -27,7 +28,7 @@
     "patches": "Patches",
     "vulnerabilities": "Vulnerabilities",
     "oneDrive": "OneDrive",
-    "aiForOffice": "AI for Office",
+    "aiForOffice": "Breeze AI for Office",
     "networkMonitor": "Network",
     "jobs": "Jobs",
     "flows": "Flows",
@@ -48,6 +49,7 @@
     "timesheets": "Timesheets",
     "productCatalog": "Product Catalog",
     "deviceGroups": "Device Groups",
+    "sites": "Sites",
     "unassignedDevices": "Unassigned Devices",
     "configPolicies": "Config Policies",
     "integrations": "Integrations",
@@ -65,10 +67,6 @@
     "scriptAuthoring": "Script authoring",
     "toolSources": "Tool Sources",
     "aiAgents": "AI Agents",
-    "aiAgentRuns": "AI Agent Runs",
-    "aiImpact": "AI Impact",
-    "fixMemory": "Fix memory",
-    "fleetDesign": "Fleet Design",
     "customFields": "Custom Fields",
     "variables": "Variables",
     "savedFilters": "Saved Filters",
@@ -89,12 +87,11 @@
     "sectionExtensions": "Extensions",
     "llmProviderCatalog": "LLM Provider Catalog",
     "aiKillSwitch": "AI Kill Switch",
+    "wisp": "Wisp",
     "sectionAi": "AI",
     "sectionFleetManagement": "Fleet Management",
     "sectionBilling": "Billing",
     "sectionAdministration": "Administration",
-    "fleetOrchestration": "Fleet Orchestration",
-    "aiAssistant": "AI Assistant",
     "software": "Software",
     "softwareInventory": "Software Inventory",
     "softwarePolicies": "Software Policies",
@@ -118,7 +115,16 @@
     "ticketsChanges": "Changes",
     "endpointMessages": "Messages",
     "securityDetectionRules": "Detection Rules",
-    "planAndFeatures": "Plan & features"
+    "planAndFeatures": "Plan & features",
+    "breezeAi": "Breeze AI",
+    "workersHeading": "Workers",
+    "agents": "Agents",
+    "runs": "Runs",
+    "aiTasks": "AI Tasks",
+    "findings": "Findings",
+    "impact": "Impact",
+    "aiKnowledgeSources": "Knowledge sources",
+    "wispLockedServer": "Wisp runs on Breeze Cloud. It is not available on this server."
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -563,7 +569,9 @@
       "after": "is after",
       "between": "is between",
       "withinLast": "within last",
-      "notWithinLast": "not within last"
+      "notWithinLast": "not within last",
+      "below": "below",
+      "atLeast": "at least"
     },
     "value": {
       "noValue": "No value needed",
@@ -585,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Removed"
-      }
+      },
+      "softwareName": "Software name",
+      "softwareVersion": "Software version"
     }
   },
   "account": {
@@ -669,7 +679,7 @@
     },
     "apps": {
       "title": "Connected apps",
-      "description": "AI assistants and other MCP clients (Claude.ai, ChatGPT, Cursor, …) you've authorized to act on your behalf. Revoke access at any time — tokens stop working within 10 minutes.",
+      "description": "AI clients (Claude.ai, ChatGPT, Cursor, …) you've authorized to act on your behalf. Revoke access at any time — tokens stop working within 10 minutes.",
       "empty": "No connected apps",
       "emptyDescription": "When you authorize a Claude.ai chat, ChatGPT, Cursor, or any other MCP client, it will appear here so you can revoke it later.",
       "authorized": "Authorized",
@@ -679,7 +689,7 @@
       "revokeTitle": "Revoke {{app}}?",
       "revokeDescription": "All grants and refresh tokens for this client will be wiped. Tokens stop working within 10 minutes. You'll need to re-authorize the next time you use it.",
       "onlyAppTitle": "This is your only authorized app.",
-      "onlyAppDescription": "After revoking, you'll need to re-authorize before any AI assistant can act on your tenant.",
+      "onlyAppDescription": "After revoking, you'll need to re-authorize before any AI client can act on your tenant.",
       "reasonPlaceholder": "No longer needed, suspicious activity, …",
       "revokeAction": "Revoke access"
     }
@@ -736,8 +746,8 @@
     "header": {
       "menu": "Menu",
       "openMenu": "Open navigation menu",
-      "ai": "AI Assistant",
-      "aiTitle": "AI Assistant (Cmd+Shift+A)",
+      "ai": "Breeze AI",
+      "aiTitle": "Breeze AI (⌘⇧A)",
       "help": "Help and docs",
       "helpTitle": "Help & Docs (Cmd+Shift+H)",
       "theme": "Theme",
@@ -806,7 +816,11 @@
         "alertRules": "Alert rules",
         "alertRulesDescription": "Manage alerting in Configuration Policies",
         "keyboardShortcuts": "Keyboard shortcuts",
-        "keyboardShortcutsDescription": "Every key and chord, on one card"
+        "keyboardShortcutsDescription": "Every key and chord, on one card",
+        "askBreezeAi": "Ask Breeze AI",
+        "askBreezeAiDescription": "Open the Breeze AI side panel",
+        "wispHome": "Open Wisp",
+        "wispHomeDescription": "Go to your Wisp home"
       },
       "numberHint": "{{mod}}1–9 to open"
     },
@@ -874,7 +888,7 @@
       "help": "Open the help panel",
       "showThis": "Show this card",
       "orgSwitcher": "Open the organization switcher",
-      "aiSidebar": "Toggle the AI sidebar",
+      "aiSidebar": "Toggle Breeze AI",
       "close": "Close a dialog or menu",
       "typingNote": "Single-key shortcuts pause while you are typing in a field.",
       "create": "Create",
@@ -1070,6 +1084,68 @@
       }
     },
     "psa": {
+      "PsaAlertTicketingCard": {
+        "title": "Alert tickets",
+        "scopeNote": "Partner-wide; no per-organization override.",
+        "pausedBanner": "Paused: the PSA rejected the credentials. Run Test connection to resume.",
+        "yes": "On",
+        "no": "Off",
+        "selectPlaceholder": "Select…",
+        "priorityDefault": "PSA default",
+        "closedSuffix": "{{name}} (closed)",
+        "saved": "Alert ticket settings saved",
+        "saving": "Saving…",
+        "save": "Save",
+        "conflict": "These settings were changed elsewhere. The latest values have been loaded; review them and save again.",
+        "errors": {
+          "save": "Could not save alert ticket settings"
+        },
+        "status": {
+          "active": "Alert tickets are enabled for this connection.",
+          "notExternal": "Bind this connection as the service-management PSA (external mode) to use alert tickets.",
+          "disabled": "Alert tickets are turned off.",
+          "paused": "Alert tickets are paused until the PSA connection is working again.",
+          "companyLinksUnverified": "Confirm company links for this PSA instance.",
+          "invalidConfig": "The saved alert ticket settings are not valid. Review and save them again.",
+          "unsupportedProvider": "Alert tickets are not available for this PSA provider.",
+          "credentialsUnusable": "This connection's credentials are incomplete or unreadable. Edit the connection and re-enter them."
+        },
+        "fields": {
+          "enabled": "Enable alert tickets",
+          "board": "Board",
+          "openStatus": "New ticket status",
+          "closedStatus": "Closed status",
+          "priorityHeading": "PSA priority by alert severity",
+          "minSeverity": "Minimum severity",
+          "minSeverityHelp": "Low includes warning-level monitors",
+          "closeOnResolve": "Close the ticket when the alert resolves",
+          "noteOnAcknowledge": "Add a note when the alert is acknowledged",
+          "confirmCompanyLinks": "Organization company links match this PSA instance"
+        },
+        "severity": {
+          "critical": "Critical",
+          "high": "High",
+          "medium": "Medium",
+          "low": "Low",
+          "info": "Info"
+        },
+        "options": {
+          "error": "Could not load options from the PSA",
+          "retry": "Retry",
+          "truncated": "Only the first results from the PSA are shown."
+        },
+        "readOnly": {
+          "enabled": "Alert tickets"
+        },
+        "loadError": {
+          "message": "Could not load alert ticket settings",
+          "retry": "Retry"
+        },
+        "configInvalid": {
+          "warning": "The saved alert ticket settings could not be read. Saving replaces them.",
+          "confirm": "Replace the unreadable settings"
+        }
+      },
       "PsaCompanyImport": {
         "title": "Import companies",
         "subtitle": "Create organizations from the companies in {{name}}.",
@@ -1261,7 +1337,7 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "No tickets match your search or filters.",
-          "noTickets": "Ticket sync is not available yet, so PSA tickets are not imported.",
+          "noTickets": "No alert tickets yet. Enable alert ticketing on the bound ConnectWise Manage connection to get started.",
           "title": "No PSA tickets"
         },
         "filters": {
@@ -1274,19 +1350,53 @@
           "updated": "Updated"
         },
         "searchPlaceholder": "Search tickets",
-        "status": {
-          "closed": "Closed",
-          "inProgress": "In Progress",
-          "open": "Open",
-          "resolved": "Resolved",
-          "waiting": "Waiting"
-        },
         "ticketCount": "{{filtered}} of {{total}} tickets",
-        "title": "Synced Tickets",
+        "title": "Alert tickets",
         "unlinked": "Unlinked"
+      },
+      "PsaAlertTicketingActivity": {
+        "title": "Ticket activity",
+        "refresh": "Refresh",
+        "redrive": "Re-drive",
+        "loading": "Loading ticket activity…",
+        "loadFailed": "Could not load ticket activity. Refresh to try again.",
+        "actionFailed": "Could not update ticket activity.",
+        "actionSucceeded": "Ticket activity updated.",
+        "help": "Re-drive retries failed creates and alerts without company links. Mark handled stops work on the mapping without changing the PSA ticket.",
+        "empty": "No tickets need attention.",
+        "viewAlert": "View alert",
+        "createAnyway": "Create anyway",
+        "markHandled": "Mark handled",
+        "duplicateWarning": "A ticket may already exist in the PSA. Check there first: this one-time retry can create a duplicate.",
+        "confirmCreate": "Create one more ticket",
+        "cancel": "Cancel",
+        "previous": "Previous",
+        "next": "Next",
+        "page": "Page {{page}} of {{total}}",
+        "states": {
+          "never_attempted": "Queued",
+          "create_in_flight": "Creating",
+          "created": "Created",
+          "create_outcome_unknown": "Create outcome unknown",
+          "rejected": "Rejected",
+          "failed": "Failed",
+          "needs_attention": "Needs attention",
+          "handled": "Handled",
+          "skipped_no_company": "No company link",
+          "skipped_ambiguous_company": "Ambiguous company link",
+          "skipped_resolved_before_create": "Resolved before create"
+        }
       }
     },
     "webhooks": {
+      "ownership": {
+        "label": "Ownership",
+        "allOrganizations": "All organizations",
+        "thisOrganizationOnly": "This organization only",
+        "all": "All",
+        "organization": "Organization",
+        "test": "Test"
+      },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} delivery attempts",
         "empty": "No delivery attempts yet.",
@@ -1339,6 +1449,10 @@
             "description": "Triggered when a device connects.",
             "label": "Device Online"
           },
+          "deviceReinstalled": {
+            "description": "Triggered when a reinstalled machine is reattached to its existing device record.",
+            "label": "Device Reinstalled"
+          },
           "scriptCompleted": {
             "description": "Triggered when a script finishes.",
             "label": "Script Completed"
@@ -1346,6 +1460,10 @@
           "ticketCreated": {
             "description": "Triggered when a ticket is created.",
             "label": "Ticket Created"
+          },
+          "ticketMerged": {
+            "description": "Triggered when a ticket is merged into another ticket.",
+            "label": "Ticket Merged"
           },
           "ticketCommented": {
             "description": "Triggered when a comment or note is added to a ticket.",
@@ -1374,6 +1492,18 @@
           "integrationHealthResolved": {
             "description": "Triggered when a connection health incident is resolved.",
             "label": "Connection health incident resolved"
+          },
+          "alertAcknowledged": {
+            "label": "Alert Acknowledged",
+            "description": "Triggered when an alert is acknowledged."
+          },
+          "alertSuppressed": {
+            "label": "Alert Suppressed",
+            "description": "Triggered when an alert is suppressed."
+          },
+          "alertEscalated": {
+            "label": "Alert Escalated",
+            "description": "Triggered when an escalation policy step fires for an alert that is still active."
           }
         },
         "fields": {
@@ -1425,6 +1555,22 @@
           "secretRequired": "Secret is required for HMAC authentication",
           "tokenRequired": "Token is required for bearer authentication",
           "urlRequired": "URL is required"
+        },
+        "neverDelivered": {
+          "marker": "Never delivered",
+          "explanation": "Breeze never sends this event. It will be removed when you save this webhook.",
+          "banner": "Breeze never sends this event, so this webhook has never delivered. Choose another event before saving."
+        },
+        "payloadVersion": {
+          "title": "Payload version",
+          "v2": {
+            "label": "v2 (recommended)",
+            "description": "Alert events include hostname, site, organization, status, and a link to the alert."
+          },
+          "v1": {
+            "label": "v1 (original)",
+            "description": "The original alert payload, kept for existing integrations."
+          }
         }
       },
       "WebhookList": {
@@ -1506,7 +1652,8 @@
           "enabled": "Webhook enabled",
           "retryQueued": "Delivery retry queued",
           "testQueued": "Test delivery queued",
-          "updated": "Webhook updated"
+          "updated": "Webhook updated",
+          "deleted": "Webhook \"{{name}}\" deleted"
         },
         "title": "Webhooks"
       }
@@ -1996,8 +2143,8 @@
         "errors": {
           "loadFailed": "Failed to load fleet stats"
         },
-        "title": "Fleet Orchestration",
-        "description": "Manage policies, deployments, patches, and automations across your fleet",
+        "title": "Findings",
+        "description": "Cross-device patterns the workers found, worth one action instead of many",
         "partialWarning": "Some data may be incomplete. Failed to load: {{endpoints}}",
         "cards": {
           "policies": "Policies",
@@ -2011,7 +2158,7 @@
           "reports": "Reports"
         },
         "aiFleetActions": "AI Fleet Actions",
-        "aiFleetActionsHint": "Click to ask the AI assistant",
+        "aiFleetActionsHint": "Click to ask Breeze AI",
         "quickActions": {
           "checkCompliance": "Check compliance",
           "activeDeployments": "Active deployments",
@@ -2398,8 +2545,8 @@
             "description": "Managing multiple clients? Switch between organizations here."
           },
           "aiHelp": {
-            "title": "AI-powered help",
-            "description": "Ask questions about your fleet, troubleshoot issues, or generate reports. Press Cmd+Shift+A anytime."
+            "title": "Breeze AI",
+            "description": "Ask about your fleet in plain language, troubleshoot issues, or generate reports. Press ⌘⇧A anywhere."
           }
         },
         "skipTour": "Skip tour",
@@ -2550,7 +2697,7 @@
           "parameters": "Parameters"
         },
         "accept": "Accept",
-        "reject": "Reject",
+        "reject": "Deny",
         "execute": "Execute",
         "requestApprovalTitle": "Request PAM approval before execution",
         "requesting": "Requesting...",

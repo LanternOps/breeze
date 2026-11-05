@@ -12,7 +12,7 @@ const line = (siteName: string | null): ContractLine => ({
   overageUnitPrice: null, taxable: false, sortOrder: 0, createdAt: '2026-07-01T00:00:00Z',
 });
 
-const estimate = (unresolved: 'group_deleted' | 'site_deleted'): ContractEstimateLine => ({
+const estimate = (unresolved: NonNullable<ContractEstimateLine['unresolved']>): ContractEstimateLine => ({
   lineId: 'line-1', lineType: 'per_device', quantity: 0, value: '0.00', live: true,
   counted: 0, included: null, overage: 0, overageMode: null, overageValue: '0.00', unresolved,
 });
@@ -26,5 +26,11 @@ describe('AllowanceCell unresolved scopes (#4693)', () => {
   it('names the deleted site instead of rendering an org-wide quantity', () => {
     render(<AllowanceCell line={line('Dallas')} estimate={estimate('site_deleted')} />);
     expect(screen.getByTestId('allowance-site-deleted')).toHaveTextContent('site deleted: Dallas');
+  });
+
+  // #9664: a manual line with no quantity is unresolved, never "0".
+  it('says the quantity is missing instead of rendering 0 for a manual line', () => {
+    render(<AllowanceCell line={{ ...line(null), lineType: 'manual' }} estimate={estimate('manual_quantity_missing')} />);
+    expect(screen.getByTestId('allowance-manual-quantity-missing')).toHaveTextContent('quantity missing');
   });
 });

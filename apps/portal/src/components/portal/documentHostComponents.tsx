@@ -97,3 +97,24 @@ export function portalQuoteHostComponents(src: QuoteAssetSource): DocumentHostCo
     },
   };
 }
+
+/** Agreement host components: the signing page embeds an uploaded agreement from one token-scoped file route. */
+export function portalAgreementHostComponents(filePath: string, testIdPrefix = 'public-agreement'): DocumentHostComponents {
+  return {
+    Image: () => null,
+    AgreementFile: ({ title, downloadLabel }) => (
+      <div className="space-y-3">
+        <iframe src={filePath} title={title} className="h-[32rem] w-full rounded-lg border" />
+        <a
+          href={filePath}
+          target="_blank"
+          rel="noreferrer"
+          data-testid={`${testIdPrefix}-download`}
+          className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+        >
+          {downloadLabel}
+        </a>
+      </div>
+    ),
+  };
+}

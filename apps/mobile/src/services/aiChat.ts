@@ -32,6 +32,13 @@ interface CreateSessionPayload {
    * model (the web's create contract: `offeringId` + `options`, flat).
    */
   model?: ModelChoice;
+  /**
+   * Wisp (W06): a Wisp thread reply creates its session under the grant;
+   * `orgId` must be `grant.orgId ?? undefined` because the API refuses an
+   * org-scoped grant whose session org differs (`grant_scope_mismatch`).
+   */
+  wispGrantId?: string;
+  orgId?: string;
 }
 
 async function getToken(): Promise<string | null> {

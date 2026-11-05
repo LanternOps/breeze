@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   alertTransition,
   classifyOrgCoverage,
+  installViewFromComplianceRow,
   normalizeHostname,
   type DeviceCoverageInput,
   type VendorEndpointView,
@@ -202,5 +203,52 @@ describe('normalizeHostname', () => {
     expect(normalizeHostname('  PC-1 ')).toBe('pc-1');
     expect(normalizeHostname('   ')).toBeNull();
     expect(normalizeHostname(null)).toBeNull();
+  });
+});
+
+describe('installViewFromComplianceRow — the install axis a compliance row proves (#6960 W05)', () => {
+  const CAT = 'cat-vendor';
+  const OTHER = 'cat-other';
+  const v = (type: string, catalogId = CAT) => ({ type, rule: { name: 'r', catalogId }, severity: 'low', detectedAt: '2026-01-01T00:00:00Z' });
+
+  it('no compliance row → unknown', () => {
+    expect(installViewFromComplianceRow(undefined, [CAT])).toBe('unknown');
+  });
+
+  it('a row with none of the vendor\'s violations → installed', () => {
+    expect(installViewFromComplianceRow({ violations: [] }, [CAT])).toBe('installed');
+    expect(installViewFromComplianceRow({ violations: null }, [CAT])).toBe('installed');
+    expect(installViewFromComplianceRow({ violations: [v('missing', OTHER), v('unauthorized')] }, [CAT])).toBe('installed');
+  });
+
+  it('its own missing → missing', () => {
+    expect(installViewFromComplianceRow({ violations: [v('missing')] }, [CAT])).toBe('missing');
+  });
+
+  it('a lone service_unverified is NOT installed: a telemetry gap proves nothing either way → unknown', () => {
+    expect(installViewFromComplianceRow({ violations: [v('service_unverified')] }, [CAT])).toBe('unknown');
+  });
+
+  it('not_running → installed (the service exists, so the client is installed)', () => {
+    expect(installViewFromComplianceRow({ violations: [v('not_running')] }, [CAT])).toBe('installed');
+  });
+
+  it('missing beats a service_unverified on another of the vendor\'s rows', () => {
+    expect(installViewFromComplianceRow({ violations: [v('service_unverified', OTHER), v('missing')] }, [CAT, OTHER])).toBe('missing');
+  });
+
+  it('a service_unverified for ANOTHER vendor\'s rule does not make this vendor unknown', () => {
+    expect(installViewFromComplianceRow({ violations: [v('service_unverified', OTHER)] }, [CAT])).toBe('installed');
+  });
+
+  it('feeds the state machine: unknown is pending/awaiting_evaluation, never a gap and never awaiting a vendor report', () => {
+    const { decisions } = classifyOrgCoverage({
+      orgId: ORG,
+      reportsVendorOrg: true,
+      devices: [device({ install: installViewFromComplianceRow({ violations: [v('service_unverified')] }, [CAT]) })],
+      endpoints: [],
+      knownDeviceHostnames: new Set(),
+    });
+    expect(decisions.get('d1')).toMatchObject({ state: 'pending', reasonCode: 'awaiting_evaluation' });
   });
 });

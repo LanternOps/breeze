@@ -76,9 +76,20 @@ const EFFECT_IDEMPOTENCY: Readonly<Record<string, AiOperatorEffectIdempotencyCla
   google_set_vacation: 'idempotent_by_probe',
   google_set_forwarding: 'idempotent_by_probe',
   google_add_mail_delegate: 'idempotent_by_probe',
+  // identity_onboarding provisioning (R2a), mirroring the M365 counterparts.
+  google_assign_license: 'idempotent_by_probe',
+  google_add_to_group: 'idempotent',
+  google_move_ou: 'idempotent',
   ...Object.fromEntries(Object.entries(M365_HEADLESS_ACTIONS)
     .map(([tool, actionId]) => [tool, M365_WRITE_ACTION_IDEMPOTENCY[actionId]])),
 });
+
+/**
+ * Effects that create a principal. Only for these can a `satisfied` pre-probe
+ * mean someone else already holds the name (a collision), so only their
+ * hand-off says so; every other tool keeps the shipped wording.
+ */
+const CREATE_EFFECT_TOOLS: ReadonlySet<string> = new Set(['m365_create_user']);
 
 export function classifyEffectIdempotency(toolName: string): AiOperatorEffectIdempotencyClass {
   return EFFECT_IDEMPOTENCY[toolName] ?? 'non_idempotent';
@@ -144,10 +155,13 @@ export async function dispatchPlannedEffect(args: {
     return {
       kind: 'handoff',
       detail: `pre-probe for ${effect.toolName} was ${pre.state}: ${pre.detail}`,
-      handoffSummary:
-        `Breeze did not run ${effect.toolName} because it cannot be safely repeated and its current state `
-        + `could not be confirmed as not-yet-done (${pre.state}). Nothing was sent for this step. `
-        + 'Check the provider and complete it by hand if it is still needed.',
+      handoffSummary: pre.state === 'satisfied' && CREATE_EFFECT_TOOLS.has(effect.toolName)
+        ? `Breeze did not run ${effect.toolName} because it cannot be safely repeated and its end state `
+          + 'already exists: either an earlier attempt of this task did it, or something else already holds '
+          + 'that principal (a collision). Nothing was sent for this step. Confirm which it is before creating or changing anything by hand.'
+        : `Breeze did not run ${effect.toolName} because it cannot be safely repeated and its current state `
+          + `could not be confirmed as not-yet-done (${pre.state}). Nothing was sent for this step. `
+          + 'Check the provider and complete it by hand if it is still needed.',
     };
   }
   if (pre.state === 'satisfied') {
@@ -430,14 +444,16 @@ type BuiltPlan =
  * carries no `planningSnapshot`) gets `buildPlan(recipeInput, {})` — today's
  * path. A recipe that declares one gets the loaded, digest-verified facts, or
  * a typed failure: a failed load is NEVER rebuilt with `{}` (A.4). An I/O
- * error from the loader propagates so the wake retries.
+ * error from the loader propagates so the wake retries. The current step is
+ * passed so a recipe declaring `planningSnapshotStepFor` loads that step's
+ * snapshot (W07 B2); a recipe without the map ignores it.
  */
 async function buildRecipePlan(
   recipe: RecipeDefinition<never>,
   checkpoint: TaskCheckpoint,
-  task: Pick<AiOperatorTaskRow, 'id' | 'orgId'>,
+  task: Pick<AiOperatorTaskRow, 'id' | 'orgId' | 'currentStepKey'>,
 ): Promise<BuiltPlan> {
-  const loaded = await loadPlanningFacts(task, recipe, checkpoint);
+  const loaded = await loadPlanningFacts(task, recipe, checkpoint, task.currentStepKey);
   if (!loaded.ok) return { ok: false, kind: 'snapshot', detail: `planning snapshot ${loaded.reason}: ${loaded.detail}` };
   try {
     const effects = recipe.buildPlan(checkpoint.recipeInput as never, loaded.facts);
@@ -485,18 +501,76 @@ async function readPlanFailureContext(
 }
 
 /**
+ * W07 B2: does the current step plan a stage after the first? Only a recipe
+ * declaring `planningSnapshotStepFor` can answer yes; it does when the step's
+ * mapped snapshot is not `planningSnapshotStepKey` (an unmapped step
+ * included — see `planBuildFailure`). Pure: recipe data + the task's step.
+ */
+function plansAfterFirstStage(recipe: RecipeDefinition<never>, currentStepKey: string | null): boolean {
+  const snapshotFor = recipe.planningSnapshotStepFor;
+  if (snapshotFor === undefined) return false;
+  const mapped = currentStepKey !== null && Object.hasOwn(snapshotFor, currentStepKey)
+    ? snapshotFor[currentStepKey]
+    : undefined;
+  return mapped !== recipe.planningSnapshotStepKey;
+}
+
+/**
+ * W07 B2: is ANY operation of the task — any step, any revision — still
+ * unsettled (`pending`, or `unknown`: may still land)? The same tenant
+ * predicates as `readPlanFailureContext`'s operation read, without its step
+ * and revision narrowing, because a later stage's failure must not hide an
+ * earlier stage's in-flight write.
+ */
+async function readAnyUnsettledOperation(task: Pick<AiOperatorTaskRow, 'id' | 'orgId'>): Promise<boolean> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const unsettled = await db
+      .select({ id: aiOperatorOperations.id })
+      .from(aiOperatorOperations)
+      .where(and(
+        eq(aiOperatorOperations.orgId, task.orgId),
+        eq(aiOperatorOperations.taskId, task.id),
+        inArray(aiOperatorOperations.resultState, ['pending', 'unknown']),
+      ))
+      .limit(1);
+    return unsettled.length > 0;
+  }));
+}
+
+/**
  * Fail closed on a plan that cannot be rebuilt (A.4):
  * - no approval row at the revision → `fail`/`unresolved`: nothing was
  *   proposed or dispatched, so it is an integrity fault;
  * - an approval row → `hand_off`, `unknown_effect` if an operation is still
  *   unsettled, else `unresolved`: a person must look at a task that may have
  *   run part of its plan.
+ *
+ * POST-STAGE-1 (W07 Amendment B2, read BEFORE the query above): for a recipe
+ * declaring `planningSnapshotStepFor`, a step whose mapped snapshot is not
+ * `planningSnapshotStepKey` plans a LATER stage, and an earlier stage may
+ * already have changed the world (e.g. created an account) at an earlier
+ * revision with its own approval. "No approval at THIS revision" proves
+ * nothing there, so the failure always hands off: `unknown_effect` if ANY
+ * operation of the task (any step, any revision) is unsettled, else
+ * `unresolved`. Keyed on trusted context only — the recipe's data and the
+ * task's current step — never on the snapshot that just failed. A step the
+ * map does not name cannot be shown to be stage 1, so it takes the hand-off
+ * too. With the map absent this branch is never taken: today's code runs.
  */
 async function planBuildFailure(
-  task: Pick<AiOperatorTaskRow, 'id' | 'orgId' | 'revision'>,
+  task: Pick<AiOperatorTaskRow, 'id' | 'orgId' | 'revision' | 'currentStepKey'>,
   stepKey: string | null,
   built: Extract<BuiltPlan, { ok: false }>,
+  recipe: RecipeDefinition<never>,
 ): Promise<EffectStepDirective> {
+  if (plansAfterFirstStage(recipe, task.currentStepKey)) {
+    const unsettled = await readAnyUnsettledOperation(task);
+    return handOff(unsettled ? 'unknown_effect' : 'unresolved', built.detail,
+      `Breeze could not rebuild the plan for a later stage of this task (${built.detail}). An earlier stage may `
+      + 'already have made changes. Nothing further was dispatched. '
+      + `${unsettled ? 'An earlier step may still be running; check the provider before retrying. ' : ''}`
+      + 'Review what was already done and complete the rest by hand.');
+  }
   const ctx = await readPlanFailureContext(task, stepKey);
   if (!ctx.approvalExists) return { action: 'settle', event: 'fail', outcome: 'unresolved', detail: built.detail };
   return handOff(ctx.unsettledOperation ? 'unknown_effect' : 'unresolved', built.detail,
@@ -550,7 +624,7 @@ export async function planEffectStep(args: {
   const stepKey = task.currentStepKey ?? '';
 
   const built = await buildRecipePlan(recipe, checkpoint, task);
-  if (!built.ok) return planBuildFailure(task, stepKey, built);
+  if (!built.ok) return planBuildFailure(task, stepKey, built, recipe);
   const effects = built.effects;
 
   const finish = (detail: string): EffectStepDirective => {
@@ -775,7 +849,7 @@ export async function planProbeStep(args: {
   const { task, recipe, checkpoint, now } = args;
   const stepKey = task.currentStepKey ?? '';
   const built = await buildRecipePlan(recipe, checkpoint, task);
-  if (!built.ok) return planBuildFailure(task, null, built);
+  if (!built.ok) return planBuildFailure(task, null, built, recipe);
 
   const observed: Array<{ effect: PlannedEffect; state: EffectProbeResult['state'] }> = [];
   for (const effect of built.effects) {

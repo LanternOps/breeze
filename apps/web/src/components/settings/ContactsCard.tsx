@@ -8,6 +8,8 @@ import BulkContactImport from '../organizations/BulkContactImport';
 import { useHashState } from '@/lib/useHashState';
 import { useCallerVerificationEnabled } from '@/lib/useCallerVerificationEnabled';
 import { ContactVerificationDrawer } from '../callerVerification/ContactVerificationDrawer';
+import OffboardPersonLauncher from '../aiOperator/OffboardPersonLauncher';
+import OnboardPersonLauncher from '../aiOperator/OnboardPersonLauncher';
 import { CONTACT_ROLES, CONTACT_ROLE_LABEL_KEYS as ROLE_LABEL_KEYS, isKnownContactRole as isKnownRole, type ContactRole } from '@/lib/contactRoles';
 
 /**
@@ -115,13 +117,31 @@ function createBody(draft: Draft): Record<string, unknown> {
   return body;
 }
 
-type ContactsCardProps = { orgId: string };
+type ContactsCardProps = {
+  orgId: string;
+  /**
+   * Called after a write landed (create, edit, delete, CSV import), so a host
+   * that shows contact data from elsewhere — the org record header's primary
+   * contact — can refetch it (#9954). Never called for a refused write.
+   */
+  onContactsChanged?: () => void;
+};
 
 const VERIFICATION_HASH = /^contacts\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/verification$/i;
 const verificationContactFromHash = (raw: string): string | null => VERIFICATION_HASH.exec(raw)?.[1] ?? null;
 
-export default function ContactsCard({ orgId }: ContactsCardProps) {
+export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardProps) {
   const { t } = useTranslation('settings');
+  // The write already succeeded and was toasted; a host callback that throws
+  // synchronously must not reach the save/delete catch and report the write
+  // itself as failed. (An async host owns its own rejections.)
+  const notifyContactsChanged = () => {
+    try {
+      onContactsChanged?.();
+    } catch (err) {
+      console.error('[ContactsCard] onContactsChanged threw', err);
+    }
+  };
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [total, setTotal] = useState(0);
   const [sites, setSites] = useState<SiteOption[]>([]);
@@ -286,6 +306,7 @@ export default function ContactsCard({ orgId }: ContactsCardProps) {
       setFormOpen(false);
       setEditing(null);
       setDraft(EMPTY_DRAFT);
+      notifyContactsChanged();
       // Refetch rather than patch: promoting a primary DEMOTES the previous one
       // in the same scope server-side, and no client-side guess reproduces that
       // without re-implementing the scope rule.
@@ -312,6 +333,7 @@ export default function ContactsCard({ orgId }: ContactsCardProps) {
         successMessage: t('contactsCard.toasts.deleted'),
         onUnauthorized: unauthorized,
       });
+      notifyContactsChanged();
       await loadContacts();
     } catch (err) {
       // Same contract as `save`: called through `void remove(c)`, so a rethrow
@@ -349,6 +371,12 @@ export default function ContactsCard({ orgId }: ContactsCardProps) {
             <p className="mt-1 text-sm text-muted-foreground">{t('contactsCard.description')}</p>
           </div>
           <div className="flex items-center gap-2">
+            {/* Page-level, not per row: there is no row for a person who does not exist yet. Renders nothing unless the Operator flag is on and onboarding is not unavailable. */}
+            <OnboardPersonLauncher
+              orgId={orgId}
+              source="org"
+              className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
+            />
             <button
               type="button"
               data-testid="org-contacts-import-button"
@@ -421,7 +449,7 @@ export default function ContactsCard({ orgId }: ContactsCardProps) {
       {showImport && (
         <BulkContactImport
           orgId={orgId}
-          onImported={() => { void loadContacts(); }}
+          onImported={() => { notifyContactsChanged(); void loadContacts(); }}
           onUnauthorized={unauthorized}
           onClose={() => setShowImport(false)}
         />
@@ -657,6 +685,8 @@ export default function ContactsCard({ orgId }: ContactsCardProps) {
                           {t('callerVerificationTech:drawer.title')}
                         </button>
                       )}
+                      {/* An action, not a setting; renders nothing unless the Operator flag is on and the org can run offboarding. */}
+                      <OffboardPersonLauncher orgId={orgId} source="contact" contactId={c.id} label={c.name ?? c.email ?? c.id} testId={`offboard-launcher-contact-${c.id}`} />
                       <button
                         type="button"
                         data-testid={`org-contacts-edit-${c.id}`}

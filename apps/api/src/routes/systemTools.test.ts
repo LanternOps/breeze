@@ -147,6 +147,7 @@ vi.mock('../services/permissions', () => ({
   PERMISSIONS: {
     DEVICES_READ: { resource: 'devices', action: 'read' },
     DEVICES_EXECUTE: { resource: 'devices', action: 'execute' },
+    SCRIPTS_EXECUTE: { resource: 'scripts', action: 'execute' },
   }
 }));
 

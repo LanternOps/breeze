@@ -5,12 +5,12 @@ package updater
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/psscript"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
@@ -313,7 +313,7 @@ func RestartWithHelper(agent BinaryPair, userHelper *BinaryPair, backup *BinaryP
 		"backupTarget", backupTarget,
 	)
 
-	cmd := exec.Command("powershell.exe",
+	cmd := procspawn.Command("powershell.exe",
 		"-NoProfile", "-ExecutionPolicy", "Bypass",
 		"-File", scriptPath,
 	)
@@ -344,7 +344,7 @@ func startWindowsRollbackHelper(journalPath string, operation windowsRollbackOpe
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
+	cmd := procspawn.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
 	cmd.SysProcAttr = detachedHelperSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		_ = os.Remove(scriptPath)
@@ -386,7 +386,7 @@ func startDetachedServiceRestart(tempPattern string) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
+	cmd := procspawn.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
 	cmd.SysProcAttr = detachedHelperSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		_ = os.Remove(scriptPath)

@@ -461,7 +461,10 @@ export async function dispatchWake(
     return { ok: false, code: 'WS_SEND_FAILED', message: 'Failed to claim wake command for dispatch.' };
   }
 
-  const sent = sendCommandToAgent(relay.agentId, {
+  // #8318 §6.4: to the relay's agent_id read IN the claim, not the one the
+  // relay selection read before it (a reattach or re-enroll may have
+  // committed since).
+  const sent = sendCommandToAgent(claimed.agentId, {
     id: command.id,
     type: CommandTypes.WAKE_ON_LAN,
     payload,

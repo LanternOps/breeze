@@ -13,6 +13,55 @@ import { hypervOptionsSchema, isAbsoluteRebuildPath } from './bareMetalRebuildSc
 // Reusable validators (duplicated locally to avoid circular imports)
 const uuid = z.string().guid();
 
+// restore_as_vm's two engine arms. Named so the Agent SDK envelope below is
+// built from the same objects the validator uses, never hand-mirrored.
+const restoreAsVmHypervArm = z.object({
+  engine: z.literal('hyperv'),
+  snapshotId: uuid,
+  targetDeviceId: uuid,
+  // W03-D4 (#6757): the registry advertises only 'hyperv' and the handler
+  // refuses anything else (aiToolsBackupVm.ts), so Zod no longer accepts
+  // 'vmware' only for the handler to reject it.
+  hypervisor: z.enum(['hyperv']),
+  vmName: z.string().min(1).max(200),
+  // W03-D4: advertised by the registry and stored by the handler in the
+  // restore job's targetConfig, but missing here.
+  switchName: z.string().min(1).max(200).optional(),
+  vmSpecs: z.object({
+    memoryMb: z.number().int().min(512).optional(),
+    cpuCount: z.number().int().min(1).optional(),
+    diskSizeGb: z.number().int().min(1).optional(),
+  }).optional(),
+});
+
+const restoreAsVmRebuildArm = z.object({
+  engine: z.literal('rebuild'),
+  snapshotId: uuid,
+  rebuildHostDeviceId: uuid,
+  outputPath: z.string().min(1).max(1024).refine(
+    (p) => isAbsoluteRebuildPath(p) && p.toLowerCase().endsWith('.vhdx') && !p.includes('..'),
+    { message: 'absolute .vhdx path required (POSIX or a Windows drive letter, no UNC)' },
+  ),
+  imageSizeGb: z.number().int().min(1).optional(),
+  hyperv: hypervOptionsSchema,
+}).strict();
+
+/**
+ * W03-D4 (#6757). Agent SDK shapes for tools whose `toolInputSchemas` entry is
+ * not a plain `z.object` (so `inputShape()` cannot read `.shape`). The SDK's
+ * `tool()` wraps a ZodRawShape in `z.object` and STRIPS keys absent from it,
+ * so the shape must carry every key either arm accepts. Every key is optional
+ * here: `validateToolInput` runs the full pipe afterwards and enforces each
+ * arm's required fields and its strictness.
+ */
+export const TOOL_SDK_INPUT_SHAPES: Readonly<Record<string, z.ZodRawShape>> = {
+  restore_as_vm: {
+    ...restoreAsVmHypervArm.omit({ engine: true }).partial().shape,
+    ...restoreAsVmRebuildArm.omit({ engine: true }).partial().shape,
+    engine: z.enum(['hyperv', 'rebuild']).optional(),
+  },
+};
+
 const backupPath = z.string().max(4096).refine(
   (path) => !path.includes('\0'),
   { message: 'Path contains null bytes' }
@@ -60,31 +109,7 @@ export const backupToolSchemas: Record<string, z.ZodType> = {
       value && typeof value === 'object' && !Array.isArray(value) && !('engine' in value)
         ? { ...(value as Record<string, unknown>), engine: 'hyperv' }
         : value,
-    z.discriminatedUnion('engine', [
-      z.object({
-        engine: z.literal('hyperv'),
-        snapshotId: uuid,
-        targetDeviceId: uuid,
-        hypervisor: z.enum(['hyperv', 'vmware']),
-        vmName: z.string().min(1).max(200),
-        vmSpecs: z.object({
-          memoryMb: z.number().int().min(512).optional(),
-          cpuCount: z.number().int().min(1).optional(),
-          diskSizeGb: z.number().int().min(1).optional(),
-        }).optional(),
-      }),
-      z.object({
-        engine: z.literal('rebuild'),
-        snapshotId: uuid,
-        rebuildHostDeviceId: uuid,
-        outputPath: z.string().min(1).max(1024).refine(
-          (p) => isAbsoluteRebuildPath(p) && p.toLowerCase().endsWith('.vhdx') && !p.includes('..'),
-          { message: 'absolute .vhdx path required (POSIX or a Windows drive letter, no UNC)' },
-        ),
-        imageSizeGb: z.number().int().min(1).optional(),
-        hyperv: hypervOptionsSchema,
-      }).strict(),
-    ]),
+    z.discriminatedUnion('engine', [restoreAsVmHypervArm, restoreAsVmRebuildArm]),
   ),
 
   instant_boot_vm: z.object({

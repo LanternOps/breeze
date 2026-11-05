@@ -318,16 +318,35 @@ export function joinedAttestation(value: unknown): IntegrityAttestationInput | n
  * #8318 §5.4: the snapshot row was taken before its device's current install
  * incarnation began. Read in the snapshot's own statement. False for a device
  * that was never reattached (NULL `incarnation_started_at`).
+ *
+ * FAILS CLOSED under RLS (#8318 wave 1b, review note on #9385). The predicate
+ * runs in the caller's DB context, and `devices` is RLS-guarded: a caller that
+ * cannot see the device row would otherwise read `false` — the "snapshot is
+ * current" answer that grants the producer-only same-device free pass in
+ * decideRestoreGate. It is therefore phrased as "NOT (a visible device row
+ * says the snapshot is current)", so an invisible or missing device reads as
+ * "predates": the restore is not refused, it just needs a confirmed
+ * authorization like any other snapshot an earlier install produced. This was
+ * preferred over a SECURITY DEFINER resolver because it adds no function that
+ * reads `devices` past RLS, and a legitimate caller (an agent in its own org,
+ * a user with access to the device's org, the delivery path's system context)
+ * always sees the row.
+ *
+ * `deviceId` and `timestamp` default to the `backup_snapshots` columns; a
+ * caller may pass other expressions (the RLS test passes literals).
  */
-export function snapshotPredatesDeviceIncarnationSql(): SQL<boolean> {
+export function snapshotPredatesDeviceIncarnationSql(
+  deviceId: SQL | typeof backupSnapshots.deviceId = backupSnapshots.deviceId,
+  timestamp: SQL | typeof backupSnapshots.timestamp = backupSnapshots.timestamp,
+): SQL<boolean> {
   // backup_snapshots.timestamp is `timestamp` holding UTC wall-clock time;
   // compare it with the timestamptz as UTC wall-clock too, so the session
   // TimeZone never shifts the boundary.
-  return sql<boolean>`EXISTS (
+  return sql<boolean>`NOT EXISTS (
     SELECT 1 FROM devices incarnation_device
-     WHERE incarnation_device.id = ${backupSnapshots.deviceId}
-       AND incarnation_device.incarnation_started_at IS NOT NULL
-       AND ${backupSnapshots.timestamp} < (incarnation_device.incarnation_started_at AT TIME ZONE 'UTC'))`;
+     WHERE incarnation_device.id = ${deviceId}
+       AND (incarnation_device.incarnation_started_at IS NULL
+            OR ${timestamp} >= (incarnation_device.incarnation_started_at AT TIME ZONE 'UTC')))`;
 }
 
 /**

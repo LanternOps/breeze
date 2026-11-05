@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, renderHook, screen, fireEvent, waitFor } from '@testing-library/react';
 import '@/lib/i18n';
 const api = vi.hoisted(() => ({ getTrustPageTemplate: vi.fn(), updateTrustPageTemplate: vi.fn() }));
 vi.mock('@/lib/api/trustPageTemplate', () => api);
@@ -14,6 +14,14 @@ vi.mock('@/components/common/RichTextEditor', () => ({
   ),
 }));
 import TrustTemplateSettings from './TrustTemplateSettings';
+import { usePartnerSettingsDraftStore } from '@/components/settings/partnerSettings/partnerSettingsDraftStore';
+import { useTrustCenterUnit } from '@/components/settings/partnerSettings/units/trustCenterUnit';
+
+// W2: the form has no Save of its own; the partner settings header Save runs the trustCenter unit.
+const headerSave = async () => {
+  const { result } = renderHook(() => useTrustCenterUnit());
+  await act(async () => { await result.current.save(); });
+};
 
 const DEFAULTS = { introHtml: null, searchIndexable: false, showPercentages: false, showDeviceCount: false, showManagedBy: true, showHistory: false, hiddenControlIds: [], frameworkView: ['nist_csf_2'] };
 const EMPTY = { introHtml: null, searchIndexable: null, showPercentages: null, showDeviceCount: null, showManagedBy: null, showHistory: null, hiddenControlIds: null, frameworkView: null };
@@ -30,6 +38,7 @@ const sentBody = () => (api.updateTrustPageTemplate.mock.calls.at(-1) as unknown
 describe('TrustTemplateSettings (W02g)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    usePartnerSettingsDraftStore.getState().reset();
     api.getTrustPageTemplate.mockResolvedValue(loaded());
     api.updateTrustPageTemplate.mockResolvedValue(okSave(EMPTY, 1));
   });
@@ -55,12 +64,12 @@ describe('TrustTemplateSettings (W02g)', () => {
     render(<TrustTemplateSettings />);
     fireEvent.change(await screen.findByTestId('trust-template-showManagedBy'), { target: { value: 'off' } });
     api.updateTrustPageTemplate.mockResolvedValueOnce(okSave({ ...EMPTY, showManagedBy: false }, 1));
-    fireEvent.click(screen.getByTestId('trust-template-save'));
+    await headerSave();
     await waitFor(() => expect(api.updateTrustPageTemplate).toHaveBeenCalled());
     expect(sentBody()).toEqual({ ...EMPTY, showManagedBy: false, expectedRevision: 0 });
 
     fireEvent.change(screen.getByTestId('trust-template-showHistory'), { target: { value: 'on' } });
-    fireEvent.click(screen.getByTestId('trust-template-save'));
+    await headerSave();
     await waitFor(() => expect(api.updateTrustPageTemplate).toHaveBeenCalledTimes(2));
     expect(sentBody()).toMatchObject({ showManagedBy: false, showHistory: true, expectedRevision: 1 });
   });
@@ -71,7 +80,7 @@ describe('TrustTemplateSettings (W02g)', () => {
     const sel = await screen.findByTestId('trust-template-showManagedBy');
     expect(sel).toHaveValue('off');
     fireEvent.change(sel, { target: { value: 'inherit' } });
-    fireEvent.click(screen.getByTestId('trust-template-save'));
+    await headerSave();
     await waitFor(() => expect(api.updateTrustPageTemplate).toHaveBeenCalled());
     expect(sentBody()).toMatchObject({ showManagedBy: null, expectedRevision: 3 });
   });
@@ -83,7 +92,7 @@ describe('TrustTemplateSettings (W02g)', () => {
     fireEvent.click(screen.getByTestId('trust-template-frameworks-mode-custom'));
     expect(screen.queryByTestId('trust-template-framework-cis_v8')).toBeNull();
     fireEvent.click(screen.getByTestId('trust-template-framework-essential_eight'));
-    fireEvent.click(screen.getByTestId('trust-template-save'));
+    await headerSave();
     await waitFor(() => expect(api.updateTrustPageTemplate).toHaveBeenCalled());
     expect(sentBody()).toMatchObject({ hiddenControlIds: ['edr_coverage'], frameworkView: ['essential_eight'] });
   });
@@ -92,37 +101,40 @@ describe('TrustTemplateSettings (W02g)', () => {
     render(<TrustTemplateSettings />);
     const intro = await screen.findByTestId('trust-template-intro');
     fireEvent.change(intro, { target: { value: '<p></p>' } });
-    fireEvent.click(screen.getByTestId('trust-template-save'));
+    await headerSave();
     await waitFor(() => expect(api.updateTrustPageTemplate).toHaveBeenCalledTimes(1));
     expect(sentBody().introHtml).toBeNull();
     fireEvent.change(intro, { target: { value: '<p>We watch every device.</p>' } });
-    fireEvent.click(screen.getByTestId('trust-template-save'));
+    await headerSave();
     await waitFor(() => expect(api.updateTrustPageTemplate).toHaveBeenCalledTimes(2));
     expect(sentBody().introHtml).toBe('<p>We watch every device.</p>');
   });
 
-  it('a stale revision reloads the template', async () => {
+  it('a stale revision keeps the draft and offers the other admin\'s version (Gate B 11)', async () => {
     render(<TrustTemplateSettings />);
-    await screen.findByTestId('trust-template-save');
+    fireEvent.change(await screen.findByTestId('trust-template-showManagedBy'), { target: { value: 'off' } });
     api.updateTrustPageTemplate.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'stale', code: 'REVISION_MISMATCH' }), { status: 409 }));
+    await headerSave();
+    expect(await screen.findByTestId('partner-settings-trust-conflict')).toBeInTheDocument();
+    expect(screen.getByTestId('trust-template-showManagedBy')).toHaveValue('off');
+    expect(api.getTrustPageTemplate).toHaveBeenCalledTimes(1);
     api.getTrustPageTemplate.mockResolvedValueOnce(loaded({ template: { ...EMPTY, showHistory: true }, revision: 7 }));
-    fireEvent.click(screen.getByTestId('trust-template-save'));
-    await waitFor(() => expect(api.getTrustPageTemplate).toHaveBeenCalledTimes(2));
-    // The other admin's values replace the stale draft, and the next save carries their revision.
-    expect(await screen.findByTestId('trust-template-showHistory')).toHaveValue('on');
-    fireEvent.click(screen.getByTestId('trust-template-save'));
-    await waitFor(() => expect(sentBody()).toMatchObject({ showHistory: true, expectedRevision: 7 }));
+    fireEvent.click(screen.getByRole('button', { name: /reload theirs/i }));
+    await waitFor(() => expect(screen.getByTestId('trust-template-showHistory')).toHaveValue('on'));
+    // Their copy replaced the draft, so there is nothing left to save.
+    expect(renderHook(() => useTrustCenterUnit()).result.current.isDirty()).toBe(false);
+    expect(usePartnerSettingsDraftStore.getState().slices.trustCenter.revision).toBe(7);
   });
 
   it('a failed save is toasted: a network error with the fallback, a partner-wide 403 with the read-only reason', async () => {
     render(<TrustTemplateSettings />);
-    await screen.findByTestId('trust-template-save');
+    fireEvent.change(await screen.findByTestId('trust-template-showManagedBy'), { target: { value: 'off' } });
     api.updateTrustPageTemplate.mockRejectedValueOnce(new TypeError('network down'));
-    fireEvent.click(screen.getByTestId('trust-template-save'));
+    await headerSave();
     await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: "Couldn't save the Trust Center defaults" })));
     toast.mockClear();
     api.updateTrustPageTemplate.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'no', code: 'PARTNER_WIDE_REQUIRED' }), { status: 403 }));
-    fireEvent.click(screen.getByTestId('trust-template-save'));
+    await headerSave();
     await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: expect.stringContaining('Only partner admins') })));
     // A failed save keeps the form (and its revision) in place.
     expect(api.getTrustPageTemplate).toHaveBeenCalledTimes(1);
@@ -133,7 +145,7 @@ describe('TrustTemplateSettings (W02g)', () => {
     render(<TrustTemplateSettings />);
     expect(await screen.findByTestId('trust-template-readonly')).toBeInTheDocument();
     expect(screen.getByTestId('trust-template-showManagedBy')).toBeDisabled();
-    expect(screen.getByTestId('trust-template-save')).toBeDisabled();
+    expect(screen.queryByTestId('trust-template-save')).toBeNull();
   });
 
   it('a failed load shows an error with retry', async () => {
@@ -141,6 +153,6 @@ describe('TrustTemplateSettings (W02g)', () => {
     render(<TrustTemplateSettings />);
     fireEvent.click(await screen.findByTestId('trust-template-retry'));
     await waitFor(() => expect(api.getTrustPageTemplate).toHaveBeenCalledTimes(2));
-    expect(await screen.findByTestId('trust-template-save')).toBeInTheDocument();
+    expect(await screen.findByTestId('trust-template-settings')).toBeInTheDocument();
   });
 });

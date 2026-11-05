@@ -66,6 +66,7 @@ it('shows the ignored-declarations note only when entries were ignored', async (
   serve(presenceFixture({ siteId: SITE, ignoredDeclarations: 2 }));
   const { unmount } = render(<TopologyExplorer siteId={SITE} siteName="Lakeside" settings={topologySettingsFixture()} />);
   expect(await screen.findByTestId('topology-ignored-declarations')).toHaveTextContent('2 declared subnet entries were ignored (ranges, single addresses, IPv6 or unparsable text). Only exact IPv4 prefixes identify a site\'s networks.');
+  expect(screen.getByTestId('topology-site-notes-panel')).toContainElement(screen.getByTestId('topology-ignored-declarations'));
   unmount();
   serve(presenceFixture({ siteId: SITE, ignoredDeclarations: 0 }));
   render(<TopologyExplorer siteId={SITE} siteName="Lakeside" settings={topologySettingsFixture()} />);

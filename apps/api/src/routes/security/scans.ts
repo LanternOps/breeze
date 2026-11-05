@@ -1,4 +1,3 @@
-import { randomUUID } from 'crypto';
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, desc, eq } from 'drizzle-orm';
@@ -6,15 +5,16 @@ import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, securityScans } from '../../db/schema';
 import { hasSatisfiedMfa, requirePermission, requireScope } from '../../middleware/auth';
-import { CommandTypes, queueCommand } from '../../services/commandQueue';
 import { canAccessSite, getUserPermissions, type UserPermissions } from '../../services/permissions';
 import type { AuthContext } from '../../middleware/auth';
 import type { Context } from 'hono';
 import { deviceIdParamSchema, scanRequestSchema, listScansQuerySchema } from './schemas';
 import { getPagination, paginate, parseDateRange, matchDateRange } from './helpers';
-import { resolveSecurityScanSettingsForDevice } from '../../services/featureConfigResolver';
-import { buildSecurityScanPayload } from '../../jobs/securityScanJobs';
-import { planYaraScan } from '../../services/yaraScanRefs';
+import { z } from 'zod';
+import { cancelDeviceScan, startDeviceScan } from '../../services/securityScanStart';
+import { writeRouteAudit } from '../../services/auditEvents';
+
+const scanIdParamSchema = z.object({ scanId: z.string().uuid() });
 
 /**
  * Site-scope gate: partner-scope users restricted via `allowedSiteIds` must
@@ -57,80 +57,52 @@ scansRoutes.post(
     const { deviceId } = c.req.valid('param');
     const payload = c.req.valid('json');
 
-    const orgCondition = auth.orgCondition(devices.orgId);
-    const conditions = [eq(devices.id, deviceId)];
-    if (orgCondition) conditions.push(orgCondition);
-
-    const [device] = await db
-      .select({ id: devices.id, hostname: devices.hostname, orgId: devices.orgId, siteId: devices.siteId, agentVersion: devices.agentVersion })
-      .from(devices)
-      .where(and(...conditions))
-      .limit(1);
-
-    if (!device) {
-      return c.json({ error: 'Device not found' }, 404);
-    }
-    if (!(await canAccessDeviceSite(c, auth, device.siteId))) {
-      return c.json({ error: 'Access to this site denied' }, 403);
-    }
-
-    const scanId = randomUUID();
-
-    // #6263 W01: the effective security policy — resolved in the CALLER'S OWN
-    // RLS context, self-tenanted by the device's hierarchy. `null` means no
-    // policy governs this device, and the agent then uses its own defaults.
-    let settings = await resolveSecurityScanSettingsForDevice(device.id);
-
-    // A manual scan runs under the CALLER's authority (devices:execute is
-    // enforced above), not the policy's stored approval. Auto-quarantine moves
-    // files, so it additionally needs a satisfied MFA session — the same bar
-    // as enabling it on a policy. Without one the scan runs detect-only and the
-    // row records why.
-    let autoQuarantineSuppressedReason: string | null = null;
-    if (settings?.autoQuarantine && !hasSatisfiedMfa(auth)) {
-      settings = { ...settings, autoQuarantine: false };
-      autoQuarantineSuppressedReason = 'manual_no_mfa';
-    }
-
-    // #6263 W03: same rule-set refs + explicit outcome as a scheduled scan.
-    const yara = await planYaraScan({
-      deviceId: device.id,
-      agentVersion: device.agentVersion,
-      ruleSetIds: settings?.ruleSetIds ?? [],
-    });
-
-    await db.insert(securityScans).values({
-      id: scanId,
-      deviceId: device.id,
-      orgId: device.orgId,
+    // #6263 W05-11: shared with the AI `security_scan scan` action.
+    const result = await startDeviceScan(auth, {
+      deviceId,
       scanType: payload.scanType,
-      status: 'queued',
-      startedAt: new Date(),
-      initiatedBy: auth.user.id,
-      autoQuarantineSuppressedReason,
-      engine: yara.engine,
-      ruleSetErrors: yara.ruleSetErrors,
+      paths: payload.paths,
+      mfaSatisfied: hasSatisfiedMfa(auth),
     });
-
-    await queueCommand(
-      device.id,
-      CommandTypes.SECURITY_SCAN,
-      buildSecurityScanPayload(scanId, payload.scanType, settings, payload.paths, yara.ruleSets),
-      auth.user.id
-    );
-
-    return c.json({
-      data: {
-        id: scanId,
-        deviceId: device.id,
-        deviceName: device.hostname,
-        orgId: device.orgId,
-        scanType: payload.scanType,
-        status: 'queued',
-        startedAt: new Date().toISOString(),
-        threatsFound: 0
+    if (!result.ok) {
+      if (result.status === 409) {
+        return c.json({ error: result.error, code: 'SCAN_ALREADY_QUEUED', scanId: result.scanId }, 409);
       }
-    }, 202);
+      return c.json({ error: result.error }, result.status);
+    }
+
+    // #10057 gap 2: `queued` means waiting for a free scan slot (the dispatch
+    // caps); it goes `running` when the claim dispatches it, or `expired` at
+    // `queueExpiresAt`. POST /scans/:scanId/cancel withdraws it.
+    return c.json({ data: { ...result.scan, threatsFound: 0 } }, 202);
+  }
+);
+
+// #10057 gap 2 — cancel a scheduled or manual scan that the agent has not
+// started: still waiting for a slot, or dispatched but undelivered. Same
+// permission as starting one. The service owns its transaction (a
+// self-managed-context route) and applies the site gate itself.
+scansRoutes.post(
+  '/scans/:scanId/cancel',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission('devices', 'execute'),
+  zValidator('param', scanIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { scanId } = c.req.valid('param');
+    const result = await cancelDeviceScan(auth, scanId);
+    if (!result.ok) {
+      if (result.status === 409) return c.json({ error: result.error, code: result.code }, 409);
+      return c.json({ error: result.error }, result.status);
+    }
+    writeRouteAudit(c, {
+      orgId: result.orgId,
+      action: 'security.scan.cancel',
+      resourceType: 'security_scan',
+      resourceId: scanId,
+      details: { scanId },
+    });
+    return c.json({ data: result.scan });
   }
 );
 
@@ -196,7 +168,13 @@ scansRoutes.get(
       startedAt: scan.startedAt?.toISOString() ?? null,
       finishedAt: scan.completedAt?.toISOString() ?? null,
       threatsFound: scan.threatsFound ?? 0,
-      durationSeconds: scan.duration ?? null
+      durationSeconds: scan.duration ?? null,
+      // The sweep this scan belongs to, and the rule-set errors it reported
+      // (e.g. `rule_set_changed` when a pinned set was republished) (#10049).
+      sweepId: scan.sweepId ?? null,
+      ruleSetErrors: Array.isArray(scan.ruleSetErrors) ? scan.ruleSetErrors : null,
+      // #10057 gap 2: set on a Scan now; while `queued` it is waiting for a slot.
+      queueExpiresAt: scan.queueExpiresAt?.toISOString() ?? null
     }));
 
     return c.json(paginate(mapped, page, limit));

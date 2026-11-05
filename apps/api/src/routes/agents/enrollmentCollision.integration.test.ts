@@ -61,11 +61,15 @@ function enrollmentApp(): Hono {
   return app;
 }
 
-/** Fakes agentAuthMiddleware's `c.set('agent', ...)` — the route only reads `agent.deviceId`. */
-function uninstallIntentApp(deviceId: string): Hono {
+/**
+ * Fakes agentAuthMiddleware's `c.set('agent', ...)` — the route reads
+ * `agent.deviceId` and, since #8318 §6.4, binds its write to `agent.agentId`
+ * too, so the context must carry the row's real agent id.
+ */
+function uninstallIntentApp(deviceId: string, agentId: string): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
-    c.set('agent', { deviceId, agentId: 'itest-agent', orgId: 'unused', siteId: 'unused', role: 'agent' } as never);
+    c.set('agent', { deviceId, agentId, orgId: 'unused', siteId: 'unused', role: 'agent' } as never);
     await next();
   });
   app.route('/agents', uninstallIntentRoutes);
@@ -149,7 +153,7 @@ describe('enrollment idempotency — real Postgres (#2764)', () => {
 
     // 2. Signal uninstall intent (token-resolved write — device auth is faked,
     // matching patches.integration.test.ts's agentAuthMiddleware stand-in).
-    const uiApp = uninstallIntentApp(deviceId);
+    const uiApp = uninstallIntentApp(deviceId, enrollBodyJson.agentId as string);
     // `async` is load-bearing: Hono's app.request() is typed
     // `Response | Promise<Response>`, but withDbAccessContext's callback must
     // return a Promise — a bare arrow fails tsc with TS2322.

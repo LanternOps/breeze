@@ -85,6 +85,7 @@ const REVIEWED_PUBLIC_VARS: readonly string[] = [
   'AGENT_BACKUP_SERVER_URL',
   'AGENT_MTLS_BINDING_MODE',
   'AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED',
+  'AI_OPERATOR_RECIPE_IDENTITY_ONBOARDING_ENABLED',
   'AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED',
   'AI_OPERATOR_TASKS_ENABLED',
   'AI_WORKSPACE_BACKEND',
@@ -124,6 +125,7 @@ const REVIEWED_PUBLIC_VARS: readonly string[] = [
   'BREEZE_BINARIES_VERSION',
   'BREEZE_SERVER',
   'BREEZE_VERSION',
+  'BREEZE_WISP_CONNECTOR_ENABLED',
   'BREEZE_WISP_ENABLED',
   'BREEZE_WORKSPACE_ENABLED',
   'C2C_M365_CLIENT_ID',
@@ -146,6 +148,8 @@ const REVIEWED_PUBLIC_VARS: readonly string[] = [
   'GITHUB_REPO',
   'GOOGLE_WORKSPACE_ENABLED',
   'HP_WARRANTY_ENABLED',
+  'INTERNAL_API_HOSTS',
+  'INTERNAL_SERVICE_CIDRS',
   'IP_CLASSIFY_PROVIDER',
   'LENOVO_WARRANTY_ENABLED',
   'LLM_PROVIDER_CATALOG_ENABLED',
@@ -247,5 +251,18 @@ describe('reviewed secret:false vars', () => {
   it('the set of secret:false vars matches the reviewed list exactly', () => {
     const actual = allVars.filter((v) => v.secret === false).map((v) => v.name).sort();
     expect(actual).toEqual([...REVIEWED_PUBLIC_VARS].sort());
+  });
+});
+
+describe('flows entry follows the FLOWS_ENABLED default (on since #5221 R1)', () => {
+  const flows = CONNECTION_REGISTRY.find((entry) => entry.id === 'flows')!;
+  it.each([
+    [{}, 'enabled'],
+    [{ FLOWS_ENABLED: '' }, 'enabled'],
+    [{ FLOWS_ENABLED: 'true' }, 'enabled'],
+    [{ FLOWS_ENABLED: 'false' }, 'disabled'],
+    [{ FLOWS_ENABLED: '0' }, 'disabled'],
+  ] as const)('%j is %s', (env, expected) => {
+    expect(flows.status(env as Record<string, string>).status).toBe(expected);
   });
 });

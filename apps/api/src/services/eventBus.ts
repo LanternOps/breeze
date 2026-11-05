@@ -2,10 +2,11 @@ import Redis from 'ioredis';
 import { getRedisConnection } from './redis';
 import { randomUUID } from 'crypto';
 import { runOutsideDbContext } from '../db';
-import { captureException } from './sentry';
+import { captureException, captureMessage } from './sentry';
 import { partitionSubscribersForEvent } from './eventSubscriberRegistry';
 import { eventDispatchMode } from '../config/env';
 import { enqueueRouteEvent, recordShadowLocalInvocation } from './eventDispatchQueue';
+import { currentFlowExecutionFrame } from './flows/flowExecutionContext';
 
 // Event types for type safety
 export type EventType =
@@ -15,12 +16,25 @@ export type EventType =
   | 'device.offline'
   | 'device.updated'
   | 'device.main_agent_silent' // #800: watchdog OK, main agent silent
+  | 'device.reinstalled' // #8318: a reinstalled machine reattached to its existing record
+  // Network isolation: payload carries isolationId, generation, deviceId and incidentId;
+  // release events also carry releaseKind. No secrets or allowlist addresses.
+  | 'device.isolated'
+  | 'device.isolation_released'
+  | 'device.isolation_failed'
+  | 'device.isolation_self_released'
+  | 'device.isolation_expiring'
   // Alert events
   | 'alert.triggered'
+  // `acknowledgedByPrincipalId` (uuid) is present only when a Partner API
+  // service principal acknowledged; `acknowledgedBy` is then null.
   | 'alert.acknowledged'
   // C2 fix (P2-1 wave B, task 16d): every publisher SHOULD include
-  // `resolvedAt` (ISO string), `resolvedBy` (uuid | null — null means a
-  // system/auto resolve), and `triggeredAt` (ISO string) on the payload,
+  // `resolvedAt` (ISO string), `resolvedBy` (uuid | null), and `triggeredAt`
+  // (ISO string) on the payload. `resolvedByPrincipalId` (uuid) is present
+  // only when a Partner API service principal resolved; `resolvedBy` is then
+  // null and the resolve is human-equivalent, NOT a system resolve. Only a
+  // resolve without either actor is a system/auto resolve. Fields are
   // sourced from the row the publisher's own UPDATE just wrote/returned —
   // never from a second read. This lets a subscriber (see
   // `alertVerdictSubscriber.ts`'s contract comment) gate on the PUBLISHED
@@ -75,6 +89,13 @@ export type EventType =
   // #3525 W05 — an operator stopped the run. Distinct from `failed`: nothing
   // went wrong, so alerting keyed on automation.failed must not fire.
   | 'automation.cancelled'
+  // Tool catalog W04 (#5219), plan Task A8: a flow run finished (spec §6.5
+  // step 7). Payload `{ flowId, runId, chainDepth, status }` — ids only;
+  // `failed` also covers `expired` (status says which). Published by the
+  // runner (and by a refused dispatch claim) after the terminal write commits,
+  // with metadata.flowRunId / flowChainDepth so an event flow inherits depth.
+  | 'flow.run.completed'
+  | 'flow.run.failed'
   // Policy events
   | 'policy.evaluated'
   | 'policy.violation'
@@ -208,6 +229,8 @@ export type EventType =
   | 'elevation.activated'
   | 'elevation.expired'
   | 'elevation.revoked'
+  // #8971: the end user declined a pending request on the device.
+  | 'elevation.withdrawn'
   // AI operator agents (spec 2026-08-22 §7). Wave 1 publishes policy_changed;
   // the run.* members are reserved for the wave-3 runner.
   | 'ai.agent.policy_changed'
@@ -276,6 +299,14 @@ export interface BreezeEvent<T = Record<string, unknown>> {
     causationId?: string;
     userId?: string;
     timestamp: string;
+    /**
+     * Tool catalog W04 (#5219), Decision 14: the flow run whose step caused
+     * this event, and that run's chain depth (0..3). Stamped by `publish()`
+     * from the flowExecutionContext frame — a frame always wins over the
+     * caller's options, so a step cannot forge or clear its ancestry.
+     */
+    flowRunId?: string;
+    flowChainDepth?: number;
   };
 }
 
@@ -295,6 +326,13 @@ export interface PublishOptions {
    * known. `null`/`undefined` ⇒ org-level (no site attribution).
    */
   siteId?: string | null;
+  /**
+   * Flow ancestry for an event published OUTSIDE a flow step (the runner's own
+   * `flow.run.*` events). Ignored whenever a flowExecutionContext frame is
+   * active — the frame is authoritative (Decision 14).
+   */
+  flowRunId?: string;
+  flowChainDepth?: number;
 }
 
 export type EventHandler<T = Record<string, unknown>> = (event: BreezeEvent<T>) => Promise<void>;
@@ -302,6 +340,8 @@ export type EventHandler<T = Record<string, unknown>> = (event: BreezeEvent<T>) 
 // Stream key pattern: breeze:events:{orgId}
 const STREAM_PREFIX = 'breeze:events';
 const MAX_STREAM_LENGTH = 10000; // Trim streams to prevent unbounded growth
+/** #5221: how far ahead of now a publisher's `occurredAt` may be before it is reported. */
+const FUTURE_OCCURRED_AT_REPORT_MS = 60_000;
 
 /**
  * EventBus - Redis Streams + pub/sub based event system.
@@ -357,6 +397,13 @@ class EventBus {
     }
     const occurredAt = options.occurredAt === undefined ? new Date() : new Date(options.occurredAt);
     if (Number.isNaN(occurredAt.getTime())) throw new Error('Invalid occurredAt');
+    // #5221 Decision 6 residual (b): a publisher instant this far ahead can
+    // land after a converted automation's switch_at. Reported only; the event
+    // is published unchanged.
+    if (occurredAt.getTime() > Date.now() + FUTURE_OCCURRED_AT_REPORT_MS) {
+      console.warn(`[EventBus] ${type} ${eventId}: occurredAt ${occurredAt.toISOString()} is more than 60 s in the future`);
+      captureMessage('event published with a future occurredAt', { eventCode: 'event_occurred_at_future', level: 'warning' });
+    }
     const streamKey = `${STREAM_PREFIX}:${orgId}`;
 
     // Normalise an empty-string siteId to "no attribution" so the WS filter
@@ -376,7 +423,8 @@ class EventBus {
         correlationId: options.correlationId || eventId,
         causationId: options.causationId,
         userId: options.userId,
-        timestamp: occurredAt.toISOString()
+        timestamp: occurredAt.toISOString(),
+        ...flowAncestryMetadata(options),
       }
     };
 
@@ -603,6 +651,23 @@ export function getEventBus(): EventBus {
 }
 
 // Convenience function for publishing events
+/**
+ * Decision 14: the frame of the executing flow step wins over caller-supplied
+ * ancestry; outside a frame an explicit, well-formed pair is carried (the
+ * runner publishing `flow.run.*`). Keys are omitted when absent so a plain
+ * event's metadata shape is unchanged.
+ */
+function flowAncestryMetadata(options: PublishOptions): { flowRunId?: string; flowChainDepth?: number } {
+  const frame = currentFlowExecutionFrame();
+  if (frame) return { flowRunId: frame.runId, flowChainDepth: frame.chainDepth };
+  const out: { flowRunId?: string; flowChainDepth?: number } = {};
+  if (typeof options.flowRunId === 'string' && options.flowRunId.length > 0) out.flowRunId = options.flowRunId;
+  if (Number.isInteger(options.flowChainDepth) && options.flowChainDepth! >= 0 && options.flowChainDepth! <= 3) {
+    out.flowChainDepth = options.flowChainDepth;
+  }
+  return out;
+}
+
 export async function publishEvent<T = Record<string, unknown>>(
   type: EventType,
   orgId: string,
@@ -622,6 +687,13 @@ export const EVENT_TYPES = {
   DEVICE_UPDATED: 'device.updated' as const,
   // #800: server-detected asymmetry (watchdog OK, main agent silent past threshold)
   DEVICE_MAIN_AGENT_SILENT: 'device.main_agent_silent' as const,
+  // #8318: a reattach confirm handed an existing record to a new install
+  DEVICE_REINSTALLED: 'device.reinstalled' as const,
+  DEVICE_ISOLATED: 'device.isolated' as const,
+  DEVICE_ISOLATION_RELEASED: 'device.isolation_released' as const,
+  DEVICE_ISOLATION_FAILED: 'device.isolation_failed' as const,
+  DEVICE_ISOLATION_SELF_RELEASED: 'device.isolation_self_released' as const,
+  DEVICE_ISOLATION_EXPIRING: 'device.isolation_expiring' as const,
   // Alert
   ALERT_TRIGGERED: 'alert.triggered' as const,
   ALERT_ACKNOWLEDGED: 'alert.acknowledged' as const,
@@ -644,6 +716,9 @@ export const EVENT_TYPES = {
   AUTOMATION_COMPLETED: 'automation.completed' as const,
   AUTOMATION_FAILED: 'automation.failed' as const,
   AUTOMATION_CANCELLED: 'automation.cancelled' as const,
+  // Flow runs (#5219 W04)
+  FLOW_RUN_COMPLETED: 'flow.run.completed' as const,
+  FLOW_RUN_FAILED: 'flow.run.failed' as const,
   // Policy
   POLICY_EVALUATED: 'policy.evaluated' as const,
   POLICY_VIOLATION: 'policy.violation' as const,
@@ -740,6 +815,7 @@ export const EVENT_TYPES = {
   ELEVATION_ACTIVATED: 'elevation.activated' as const,
   ELEVATION_EXPIRED: 'elevation.expired' as const,
   ELEVATION_REVOKED: 'elevation.revoked' as const,
+  ELEVATION_WITHDRAWN: 'elevation.withdrawn' as const,
   // AI agents
   AI_AGENT_POLICY_CHANGED: 'ai.agent.policy_changed' as const,
   AI_AGENT_RUN_QUEUED: 'ai.agent.run.queued' as const,

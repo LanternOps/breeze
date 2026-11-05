@@ -158,7 +158,7 @@ export const onRequest = defineMiddleware(async (context, next) => {
   // must never land in referrer headers, shared caches, or search indexes.
   // strict-origin-when-cross-origin (the base policy) still sends the full
   // token url on same-origin navigation — no-referrer does not.
-  if (pathname.startsWith('/quote/') || pathname.startsWith('/invoice/') || pathname.startsWith('/autopay/')) {
+  if (pathname.startsWith('/quote/') || pathname.startsWith('/agreement/') || pathname.startsWith('/invoice/') || pathname.startsWith('/autopay/')) {
     headers.set('Referrer-Policy', 'no-referrer');
     headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
     headers.set('Cache-Control', 'no-store');

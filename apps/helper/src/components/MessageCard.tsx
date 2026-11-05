@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 import { MessageMarkdown } from '../lib/messageMarkdown';
+import { Card } from '../prompt/Card';
 
 /** What the Rust side hands the card window (`ipc/message.rs` `MessageView`). */
 export interface MessageView {
@@ -17,6 +18,11 @@ export interface MessageView {
 }
 
 const ACCENT = /^#[0-9a-f]{6}$/i;
+
+/** The sender slot: from `branding` only, never from the message text. */
+export function messageSender(view: MessageView): string {
+  return view.branding.companyName.trim() || view.branding.displayName.trim() || 'your IT provider';
+}
 
 /**
  * The card. The sender slot is built from `branding` only and the footer is a
@@ -48,19 +54,32 @@ export function MessageCard({
     }
   }, [onAcknowledge]);
 
-  const sender = view.branding.companyName.trim() || view.branding.displayName.trim() || 'your IT provider';
+  const sender = messageSender(view);
   const accent = view.branding.accent && ACCENT.test(view.branding.accent) ? view.branding.accent : null;
   const style = accent ? ({ '--message-accent': accent } as React.CSSProperties) : undefined;
 
+  // Drawn by the shared Card (#10190 W04): same structure as a prompt card,
+  // the message card's own classes, so it looks exactly as before. The
+  // accent rule stays the message card's (any valid #rrggbb; see the PR).
   return (
-    <div className={`helper-message-card is-${view.severity}`} style={style} role="alertdialog" aria-label={view.title}>
-      <div className="helper-message-sender" data-testid="message-sender">
-        From {sender}
-      </div>
-      <h1 className="helper-message-title">{view.title}</h1>
-      <div className="helper-message-body">
-        <MessageMarkdown body={view.body} plain={view.plain} />
-      </div>
+    <Card
+      variant="message"
+      className={`helper-message-card is-${view.severity}`}
+      style={style}
+      role="alertdialog"
+      label={view.title}
+      header={
+        <div className="helper-message-sender" data-testid="message-sender">
+          From {sender}
+        </div>
+      }
+      title={<h1 className="helper-message-title">{view.title}</h1>}
+      body={
+        <div className="helper-message-body">
+          <MessageMarkdown body={view.body} plain={view.plain} />
+        </div>
+      }
+    >
       {ackError && (
         <div className="helper-message-error" role="alert">
           {ackError}
@@ -78,7 +97,7 @@ export function MessageCard({
           </button>
         )}
       </div>
-    </div>
+    </Card>
   );
 }
 

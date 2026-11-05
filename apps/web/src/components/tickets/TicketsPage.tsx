@@ -129,7 +129,8 @@ function tabQuery(tab: Exclude<Tab, 'review' | 'archived'>): string {
 }
 
 // Hash layout (hash-based UI state per CLAUDE.md):
-// `#<selection>&sort=<sort>&type=<type>`.
+// `#<selection>&sort=<sort>&type=<type>&merged=1`.
+// `merged=1` is the "Show merged" list toggle (#8972); absent = off.
 // The bare segment is the selected ticket key (internal number or id); the
 // `sort=` segment carries the queue sort and `type=` the ticket-type filter
 // (#7900). All are optional, and the default sort ('triage') is omitted so
@@ -137,22 +138,25 @@ function tabQuery(tab: Exclude<Tab, 'review' | 'archived'>): string {
 // BEFORE the selection fallback, so it can never be read as a ticket key; an
 // unknown type value is dropped, not turned into a selection.
 // Pure: takes the raw hash (leading `#` already stripped by useHashState, #2421).
-function parseHash(hash: string): { selection: string | null; sort: TicketSort; type: TicketType | null } {
+function parseHash(hash: string): { selection: string | null; sort: TicketSort; type: TicketType | null; showMerged: boolean } {
   let selection: string | null = null;
   let sort: TicketSort = 'triage';
   let type: TicketType | null = null;
+  let showMerged = false;
   for (const part of hash.split('&')) {
     if (!part) continue;
     if (part.startsWith('sort=')) {
       const value = part.slice('sort='.length);
       if (isTicketSort(value)) sort = value;
+    } else if (part.startsWith('merged=')) {
+      showMerged = part.slice('merged='.length) === '1';
     } else if (!part.startsWith('type=')) {
       selection = part;
     }
   }
   // Same helper as the sidebar, over the whole hash, so a repeated `type=`
   // segment resolves identically in the list filter and the nav highlight.
-  return { selection, sort, type: ticketTypeFromHash(hash) };
+  return { selection, sort, type: ticketTypeFromHash(hash), showMerged };
 }
 
 // The whole queue hash as ONE piece of state (#8682 sweep). Selection, sort and
@@ -162,18 +166,19 @@ function parseHash(hash: string): { selection: string | null; sort: TicketSort; 
 // field's update committed (and ran effects) separately — so the auto-select
 // effect saw e.g. the new selection with
 // the OLD type and wrote that stale mix straight back over the new URL.
-type QueueHash = { selection: string | null; sort: TicketSort; type: TicketType | '' };
-const DEFAULT_QUEUE_HASH: QueueHash = { selection: null, sort: 'triage', type: '' };
+type QueueHash = { selection: string | null; sort: TicketSort; type: TicketType | ''; showMerged: boolean };
+const DEFAULT_QUEUE_HASH: QueueHash = { selection: null, sort: 'triage', type: '', showMerged: false };
 function parseQueueHash(hash: string): QueueHash {
-  const { selection, sort, type } = parseHash(hash);
-  return { selection, sort, type: type ?? '' };
+  const { selection, sort, type, showMerged } = parseHash(hash);
+  return { selection, sort, type: type ?? '', showMerged };
 }
 
-function hashFor(selection: string | null, sort: TicketSort, type: TicketType | null = null): string {
+function hashFor(selection: string | null, sort: TicketSort, type: TicketType | null = null, showMerged = false): string {
   const parts: string[] = [];
   if (selection) parts.push(selection);
   if (sort !== 'triage') parts.push(`sort=${sort}`);
   if (type) parts.push(`type=${type}`);
+  if (showMerged) parts.push('merged=1');
   return parts.length > 0 ? `#${parts.join('&')}` : '';
 }
 
@@ -197,7 +202,7 @@ export default function TicketsPage() {
   // QueueHash). Ticket-type filter (#7900): '' = All. Hash-backed so the
   // Service Desk nav entries (`/tickets#type=<type>`) and bookmarks deep-link in.
   const [queueHash, setQueueHash] = useHashState<QueueHash>(DEFAULT_QUEUE_HASH, parseQueueHash);
-  const { selection: selectedNumber, sort, type: typeFilter } = queueHash;
+  const { selection: selectedNumber, sort, type: typeFilter, showMerged } = queueHash;
   const [search, setSearch] = useState('');
   // Debounced twin of `search` — only this drives the list fetch, so typing
   // doesn't fire a 100-row query per keystroke (the input itself stays instant).
@@ -233,12 +238,13 @@ export default function TicketsPage() {
   const filtersActive = Boolean(priorityFilter || categoryFilter || assigneeFilter || typeFilter);
 
   // Single writer for the hash: state and URL always move together, so
-  // selection, sort and type never clobber each other. Declared before
-  // clearFilters, which rewrites it.
-  const writeHash = useCallback((selection: string | null, sortValue: TicketSort, typeValue: TicketType | '') => {
-    setQueueHash({ selection, sort: sortValue, type: typeValue });
-    replaceUrl(hashFor(selection, sortValue, typeValue || null) || window.location.pathname + window.location.search);
-  }, [setQueueHash]);
+  // selection, sort, type and the merged toggle never clobber each other.
+  // Declared before clearFilters, which rewrites it. `mergedValue` defaults to
+  // the current toggle so the existing three-field callers keep it.
+  const writeHash = useCallback((selection: string | null, sortValue: TicketSort, typeValue: TicketType | '', mergedValue: boolean = showMerged) => {
+    setQueueHash({ selection, sort: sortValue, type: typeValue, showMerged: mergedValue });
+    replaceUrl(hashFor(selection, sortValue, typeValue || null, mergedValue) || window.location.pathname + window.location.search);
+  }, [setQueueHash, showMerged]);
 
   const clearFilters = useCallback(() => {
     setPriorityFilter('');
@@ -291,9 +297,12 @@ export default function TicketsPage() {
     // 'triage' is the server default, so it's omitted — which also lets the
     // closed tab keep its tabQuery() sort=newest until the user picks a sort.
     if (sort !== 'triage') params.set('sort', sort);
+    // #8972: merged tombstones are hidden server-side unless asked for. Sent on
+    // every tab; it only changes results where closed tickets can appear.
+    if (showMerged) params.set('showMerged', 'true');
     params.set('limit', '100');
     return params.toString();
-  }, [tab, debouncedSearch, priorityFilter, categoryFilter, assigneeFilter, typeFilter, sort]);
+  }, [tab, debouncedSearch, priorityFilter, categoryFilter, assigneeFilter, typeFilter, sort, showMerged]);
   // The query the rows in `tickets` were fetched for (null until the first load).
   const [loadedQuery, setLoadedQuery] = useState<string | null>(null);
   const listIsCurrent = ticketQuery !== null && loadedQuery === ticketQuery;
@@ -522,6 +531,13 @@ export default function TicketsPage() {
     const key = t.internalNumber ?? t.id;
     writeHash(key, sort, typeFilter);
   }, [sort, typeFilter, writeHash]);
+
+  // #8972: after a merge the source is a closed tombstone; follow the survivor
+  // (by number when the dialog knew it, else by id — both resolve in `selected`).
+  const onWorkbenchMerged = useCallback((survivorId: string, survivorNumber: string | null) => {
+    writeHash(survivorNumber ?? survivorId, sort, typeFilter);
+    scheduleReconcile();
+  }, [sort, typeFilter, writeHash, scheduleReconcile]);
 
   const move = useCallback((delta: 1 | -1) => {
     if (tickets.length === 0) return;
@@ -807,6 +823,15 @@ export default function TicketsPage() {
             <option key={o.value} value={o.value}>{t(/* i18n-dynamic */ `ticketsPage.sort.${o.labelKey}`)}</option>
           ))}
         </select>
+        <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={showMerged}
+            onChange={(e) => writeHash(selectedNumber, sort, typeFilter, e.target.checked)}
+            data-testid="ticket-list-show-merged"
+          />
+          {t('ticketsPage.showMerged')}
+        </label>
       </div>
       )}
 
@@ -978,7 +1003,7 @@ export default function TicketsPage() {
                   </div>
                 )}
                 <div className="min-h-0 flex-1">
-                  <TicketWorkbench ticketId={selected.id} resolveRequestToken={resolveToken} refreshToken={paneRefresh} assignees={assignees} categories={categories} onTicketPatched={onWorkbenchPatched} onDeleted={onWorkbenchDeleted} onChanged={scheduleReconcile} />
+                  <TicketWorkbench ticketId={selected.id} resolveRequestToken={resolveToken} refreshToken={paneRefresh} assignees={assignees} categories={categories} onTicketPatched={onWorkbenchPatched} onDeleted={onWorkbenchDeleted} onMerged={onWorkbenchMerged} onChanged={scheduleReconcile} />
                 </div>
               </div>
             ) : (

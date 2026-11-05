@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/hosttool"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // This file is the package's only process runner and the only file allowed to
@@ -121,7 +122,7 @@ func execBounded(parent context.Context, timeout time.Duration, stdoutLimit int,
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, path, args...)
+	cmd := procspawn.CommandContext(ctx, path, args...)
 	out := &limitBuffer{limit: stdoutLimit}
 	errout := &limitBuffer{limit: maxCmdStderr}
 	cmd.Stdout, cmd.Stderr = out, errout

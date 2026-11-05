@@ -9,6 +9,9 @@
  * never blocks.
  */
 
+import type { IdentityOffboardingInput } from '../validators/aiOperatorIdentity';
+import type { IdentityOnboardingInput } from '../validators/aiOperatorOnboarding';
+
 export const AI_OPERATOR_RECIPE_READINESS_STATES = ['ready', 'setup_required', 'unavailable'] as const;
 export type AiOperatorRecipeReadinessState = (typeof AI_OPERATOR_RECIPE_READINESS_STATES)[number];
 
@@ -65,4 +68,88 @@ export interface AiOperatorWorkflowDto {
   degradedEffects: string[];
   agentId: string | null;
   agentKind: string | null;
+}
+
+/** One contact the draft resolved or offered — display fields only. */
+export interface AiOperatorDraftPersonDto {
+  id: string;
+  name: string | null;
+  email: string | null;
+}
+
+/** One human-work item the draft would generate (the ticket checklist preview). */
+export interface AiOperatorDraftManualWorkItemDto {
+  key: string;
+  label: string;
+  detail: string;
+  origin: 'always' | 'capability' | 'flag' | 'discovery';
+}
+
+/**
+ * `POST /api/v1/ai/operator/task-drafts` for `identity_offboarding` (shipped
+ * in W06 R1a, typed in R1b). The draft writes nothing and is NEVER a plan:
+ * `plannedEffectTools` is in toggle order, not dispatch order. The ordered
+ * plan is built at `discover`, from live provider reads, after a person
+ * confirms the identity, and is shown for approval then.
+ */
+export interface AiOperatorIdentityTaskDraftDto {
+  recipeKey: string;
+  recipeVersion: number;
+  input: IdentityOffboardingInput;
+  workflow: AiOperatorWorkflowDto;
+  person: {
+    /** Set only on a unique email or exact full-name match — the rule admission uses. */
+    resolved: AiOperatorDraftPersonDto | null;
+    /** Candidates for a human to pick from, never a resolution. Empty when `resolved` is set. */
+    candidates: AiOperatorDraftPersonDto[];
+  };
+  /** Effect tools the plan would use, minus the degraded ones. Toggle order. */
+  plannedEffectTools: string[];
+  /** Effect tools that will be done by hand for this org. */
+  degradedEffectTools: string[];
+  manualWork: AiOperatorDraftManualWorkItemDto[];
+}
+
+/**
+ * One effect of an onboarding draft's plan preview (W07 R2a). Display only:
+ * it names the account by the REQUESTED address, because no account exists
+ * yet, and carries the effect's own arguments minus the account identifier
+ * and the audit reason.
+ */
+export interface AiOperatorOnboardingDraftEffectDto {
+  ordinal: number;
+  toolName: string;
+  provider: 'm365' | 'google';
+  /** The requested UPN / primary email. The real effect addresses the immutable id resolved after creation. */
+  principalLabel: string;
+  arguments: Record<string, unknown>;
+}
+
+/**
+ * `POST /api/v1/ai/operator/task-drafts` for `identity_onboarding` (W07 R2a,
+ * Amendment G7). The draft writes nothing: no contact, no account, no row. It
+ * runs at most one Microsoft 365 sign-in-name lookup, one Google address
+ * lookup and one Microsoft 365 licence list, each of which becomes a flag on
+ * failure. The real plans are built at `discover` and at `resolve_accounts`,
+ * from live reads, and are shown for approval then.
+ *
+ * `createPlanPreview` is what stage 1 would create given these reads: empty
+ * when the sign-in name is taken or could not be checked.
+ *
+ * `provisionPlanPreview` is PROVISIONAL, as its name says. Its account
+ * identifiers do not exist until stage 1 runs, the draft does not read
+ * groups, so every requested group is shown and `discover` still omits a
+ * dynamic, role-assignable or model-after-privileged one, and a licence is
+ * shown only when the draft saw a free seat.
+ */
+export interface AiOperatorIdentityOnboardingTaskDraftDto {
+  recipeKey: string;
+  recipeVersion: number;
+  input: IdentityOnboardingInput;
+  workflow: AiOperatorWorkflowDto;
+  createPlanPreview: AiOperatorOnboardingDraftEffectDto[];
+  provisionPlanPreview: AiOperatorOnboardingDraftEffectDto[];
+  /** What the reads found or could not check: a collision, or a read that failed. Never an error. */
+  flags: Array<{ code: string; subject: string; detail: string }>;
+  manualWork: AiOperatorDraftManualWorkItemDto[];
 }

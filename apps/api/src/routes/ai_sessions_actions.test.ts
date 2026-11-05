@@ -131,6 +131,7 @@ vi.mock('../services/aiAgent', () => ({
   getSessionMessages: vi.fn(),
   handleApproval: vi.fn(),
   isIntentBackedExecution: vi.fn(),
+  getDecidedExecutionOutcome: vi.fn(),
   searchSessions: vi.fn(),
 }));
 
@@ -193,6 +194,7 @@ import {
   getSessionMessages,
   handleApproval,
   isIntentBackedExecution,
+  getDecidedExecutionOutcome,
   searchSessions,
 } from '../services/aiAgent';
 import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
@@ -432,7 +434,10 @@ describe('AI routes', () => {
       mockPreflightOk();
       const preflightImpl = vi.mocked(runPreFlightChecks).getMockImplementation()!;
       vi.mocked(runPreFlightChecks).mockImplementation(async (...args) => {
+        // #10415: called with no context held, handed a runner that opens one
+        // per DB phase (the Redis rate limit runs between phases).
         depths.preflight = dbCtx.depth;
+        await args[6]!(async () => { depths.preflightPhase = dbCtx.depth; });
         return preflightImpl(...args);
       });
     }
@@ -467,7 +472,7 @@ describe('AI routes', () => {
 
       expect(res.status).toBe(200);
       await res.text();
-      expect(depths).toEqual({ preflight: 1, settle: 0, reserve: 0, getOrCreate: 1, insert: 1 });
+      expect(depths).toEqual({ preflight: 0, preflightPhase: 1, settle: 0, reserve: 0, getOrCreate: 1, insert: 1 });
       expect(dbCtx.depth).toBe(0);
     });
 
@@ -502,6 +507,7 @@ describe('AI routes', () => {
         const preflightImpl = vi.mocked(runPreFlightChecks).getMockImplementation()!;
         vi.mocked(runPreFlightChecks).mockImplementation(async (...args) => {
           depths.preflight = dbCtx.depth;
+          await args[6]!(async () => { depths.preflightPhase = dbCtx.depth; });
           const result = await preflightImpl(...args) as any;
           return {
             ...result,
@@ -577,7 +583,7 @@ describe('AI routes', () => {
         expect(res.status).toBe(200);
         await res.text();
         expect(depths).toEqual({
-          preflight: 1, prepareCall: 0, prepare: 1, settle: 0, reserve: 0,
+          preflight: 0, preflightPhase: 1, prepareCall: 0, prepare: 1, settle: 0, reserve: 0,
           getOrCreate: 1, insert: 1, push: 1, stream: 0, streamEnd: 0,
         });
         expect(dbCtx.depth).toBe(0);
@@ -617,8 +623,8 @@ describe('AI routes', () => {
         expect(res.status).toBe(200);
         const body = await res.text();
         expect(body).toContain('topology_explanation');
-        expect(depths).toEqual({ preflight: 1, prepare: 1, insert: 1 });
-        // preflight, prepare and the insert each opened their own context.
+        expect(depths).toEqual({ preflight: 0, preflightPhase: 1, prepare: 1, insert: 1 });
+        // A preflight phase, prepare and the insert each opened their own context.
         expect(vi.mocked(withAuthDbAccessContext)).toHaveBeenCalledTimes(3);
         expect(values.mock.calls[0]![0]).toHaveLength(2);
         expect(topo.cachedEventsDepth).toEqual([0]);
@@ -771,6 +777,31 @@ describe('AI routes', () => {
       // Never the plain "success: true" shape the non-intent branch returns.
       expect(body.approved).toBeUndefined();
     });
+
+    // #9431: a stale card (decided in another window, in Approvals, on mobile,
+    // or timed out) gets a clear "already decided" answer — never a second
+    // decision and never the generic "not found".
+    it.each(['approved', 'not_approved'] as const)(
+      'returns 409 approval_already_decided with outcome %s for an execution of this session that is no longer pending',
+      async (outcome) => {
+        vi.mocked(getSession).mockResolvedValueOnce({ id: SESSION_ID, orgId: ORG_ID } as any);
+        vi.mocked(handleApproval).mockResolvedValueOnce(false);
+        vi.mocked(isIntentBackedExecution).mockResolvedValueOnce(false);
+        vi.mocked(getDecidedExecutionOutcome).mockResolvedValueOnce(outcome);
+
+        const res = await app.request(`/ai/sessions/${SESSION_ID}/approve/${EXEC_ID}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ approved: true }),
+        });
+
+        expect(res.status).toBe(409);
+        const body = await res.json();
+        expect(body).toMatchObject({ code: 'approval_already_decided', outcome });
+        expect(body.success).toBeUndefined();
+        expect(getDecidedExecutionOutcome).toHaveBeenCalledWith(EXEC_ID, SESSION_ID);
+      },
+    );
   });
 
 });

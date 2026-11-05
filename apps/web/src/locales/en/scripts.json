@@ -807,7 +807,7 @@
   "scriptAiInput": {
     "placeholder": {
       "ready": "Describe the script you need...",
-      "opening": "Opening AI assistant..."
+      "opening": "Opening Breeze AI..."
     },
     "actions": {
       "stopGenerating": "Stop generating",
@@ -823,15 +823,15 @@
     "approval": {
       "title": "Approval Required",
       "approve": "Approve",
-      "reject": "Reject"
+      "reject": "Deny"
     },
     "empty": {
-      "title": "Script AI Assistant",
-      "description": "Describe what you need and I'll write the script for you."
+      "title": "Breeze AI",
+      "description": "Ask Breeze AI to write or review this script."
     }
   },
   "scriptAiPanel": {
-    "title": "AI Script Assistant",
+    "title": "Breeze AI",
     "actions": {
       "redoTitle": "Re-apply AI change",
       "redo": "Redo",
@@ -985,7 +985,8 @@
     },
     "confirm": {
       "title": "Confirm Execution",
-      "description": "Run “{{name}}” on {{count}} device(s) as {{runAs}}. Scripts are queued and begin executing immediately."
+      "description": "Run “{{name}}” on {{count}} device(s) as {{runAs}}. Scripts are queued and begin executing immediately.",
+      "descriptionOffline": "Run “{{name}}” on {{count}} device(s) as {{runAs}}. Scripts are queued now: online devices start right away, and {{offline}} offline device(s) run when they come back online."
     },
     "selectedCount": "{{count}} device(s) selected",
     "executeBlocked": "Execute is unavailable: a selected device cannot run this script here (it may belong to a different organization than the one shown, or no longer be accessible).",
@@ -1027,6 +1028,7 @@
       "submitting": "Submitting to {{count}} group(s)...",
       "warningsTitle": "Notes from the server",
       "confirmDescription": "Run “{{name}}” on {{groups}} device group(s) as {{runAs}}. Scripts are queued and begin executing immediately.",
+      "confirmDescriptionOffline": "Run “{{name}}” on {{groups}} device group(s) as {{runAs}}. Scripts are queued now: online devices start right away, and {{offline}} offline device(s) run when they come back online.",
       "confirmMembers": "{{count}} unique device(s) are in these groups right now; membership is read again when you confirm.",
       "confirmMembersUnknown": "The number of devices is not known yet; membership is read when you confirm.",
       "errors": {
@@ -1134,8 +1136,8 @@
       "exitCodeSeverity": "Exit Code Severity"
     },
     "ai": {
-      "toggleTitle": "Toggle AI Script Assistant (⌘⇧I)",
-      "button": "AI Assistant"
+      "toggleTitle": "Toggle Breeze AI (⌘⇧I)",
+      "button": "Breeze AI"
     },
     "parameters": {
       "emptyPrefix": "No parameters yet. Parameters let users supply values at runtime — reference them in your script as",

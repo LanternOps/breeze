@@ -30,7 +30,10 @@ describe('loadFlowCatalog', () => {
     const cat = await loadFlowCatalog(OWNER);
     expect(cat.get('wait')).toEqual({ source: 'builtin', name: 'wait' });
     expect(cat.get('set')).toEqual({ source: 'builtin', name: 'set' });
-    expect(cat.has('notify')).toBe(false);
+    // W5 PR B (#5220): the gate is lifted — every shared built-in is a catalog entry.
+    for (const name of ['notify', 'http_request', 'ai'] as const) {
+      expect(cat.get(name)).toEqual({ source: 'builtin', name });
+    }
   });
 
   it('excludes agent human-only, session-only M365 and the flow tools themselves', async () => {
@@ -41,6 +44,15 @@ describe('loadFlowCatalog', () => {
     expect(cat.has(m365)).toBe(false);
     for (const name of FLOW_EXCLUDED_CORE_TOOLS) expect(cat.has(name)).toBe(false);
     expect(listFlowEligibleCoreTools()).not.toContain('manage_ai_agents');
+  });
+
+  it('run_flow is not flow-eligible (a flow must not start or cancel flows)', () => {
+    const eligible = listFlowEligibleCoreTools();
+    for (const name of ['run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run']) {
+      expect(FLOW_EXCLUDED_CORE_TOOLS.has(name), name).toBe(true);
+      expect(isRegisteredCoreTool(name), name).toBe(true);
+      expect(eligible, name).not.toContain(name);
+    }
   });
 
   it('excludes the Wisp memory tools: agent-reachable, but a flow step never carries a Wisp grant', async () => {

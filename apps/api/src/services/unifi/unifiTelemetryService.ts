@@ -1,6 +1,8 @@
 import { and, eq, sql } from 'drizzle-orm';
-import { unifiCollectors, unifiSiteMappings, unifiDeviceTelemetry, unifiClients, discoveredAssets } from '../../db/schema';
+import { organizations, partners, unifiCollectors, unifiSiteMappings, unifiDeviceTelemetry, unifiClients, discoveredAssets } from '../../db/schema';
 import type { DbExecutor } from './unifiConnectionService';
+import { resolveTopologyFlags } from '../topology/flags';
+import { topologyGloballyDisabled } from '../../config/env';
 import { upsertControllerSites } from './unifiControllerSiteService';
 import { normalizeMac, canonicalMac, canonicalAssetMac } from './unifiMac';
 
@@ -28,10 +30,6 @@ export interface TelemetryPayload {
   // collector's collector_device_id, so an agent cannot write another org's
   // collector by guessing a collectorId (RLS is bypassed on the system path).
   deviceId?: string;
-  // Server-derived, never client-supplied: true when the request carried a `topologyV2` companion
-  // (accepted or not). On such a request the v2 materializer is the sole writer of uptime/cpu/mem/
-  // num_clients, so this reconcile leaves them alone (a rejected v2 attempt keeps the previous value).
-  topologyV2Present?: boolean;
 }
 export interface ReconcileResult { devicesUpserted: number; devicesStaled: number; clientsUpserted: number; clientsStaled: number; }
 
@@ -162,6 +160,33 @@ export async function reconcileTelemetry(
   const rawOrEmpty = (v: unknown) => (v == null ? {} : v);
 
   // --- Devices ---
+  // Persisted v2 family ownership for this collector's rows (one query). Only the Wi-Fi materializer writes these
+  // observed-at columns, so a non-null value proves a prior accepted, successfully upserted v2 family row.
+  const ownership = new Map<string, { orgId: string; siteId: string; statistics: boolean; clients: boolean }>();
+  for (const row of await db.select({
+    unifiDeviceId: unifiDeviceTelemetry.unifiDeviceId, orgId: unifiDeviceTelemetry.orgId, siteId: unifiDeviceTelemetry.siteId,
+    statsAt: unifiDeviceTelemetry.wifiStatisticsObservedAt, clientsAt: unifiDeviceTelemetry.wifiClientsObservedAt,
+  }).from(unifiDeviceTelemetry).where(eq(unifiDeviceTelemetry.collectorId, collector.id))) {
+    if (row.statsAt || row.clientsAt) ownership.set(row.unifiDeviceId, { orgId: row.orgId, siteId: row.siteId, statistics: !!row.statsAt, clients: !!row.clientsAt });
+  }
+  // Ownership only holds while the scope still runs v2 (interfaceHealth on); once it is turned off or the agent
+  // falls back to v1, legacy semantics resume. Resolved lazily per org, and never when nothing is owned.
+  const healthByOrg = new Map<string, boolean>();
+  const interfaceHealthOn = async (orgId: string) => {
+    if (!healthByOrg.has(orgId)) {
+      // Read through the caller's executor (system scope, same transaction): `loadTopologyFlags` would escape to a
+      // second pooled connection from inside the worker transaction.
+      const [org] = await db.select({ partnerId: organizations.partnerId, settings: organizations.settings })
+        .from(organizations).where(eq(organizations.id, orgId)).limit(1);
+      const [partner] = org
+        ? await db.select({ settings: partners.settings }).from(partners).where(eq(partners.id, org.partnerId)).limit(1)
+        : [];
+      healthByOrg.set(orgId, !!org && !!partner && resolveTopologyFlags({
+        partnerSettings: partner.settings, orgSettings: org.settings, globallyDisabled: topologyGloballyDisabled(),
+      }).interfaceHealth);
+    }
+    return healthByOrg.get(orgId)!;
+  };
   const seenDeviceIds = new Set<string>();
   for (const d of payload.devices) {
     seenDeviceIds.add(d.unifiDeviceId);
@@ -177,14 +202,22 @@ export async function reconcileTelemetry(
       uptimeSeconds: d.uptimeSeconds ?? null, cpuPct: d.cpuPct ?? null, memPct: d.memPct ?? null,
       txBytes: d.txBytes ?? null, rxBytes: d.rxBytes ?? null, numClients: d.numClients ?? null,
     };
-    // v2 writer fence: the legacy body's `undefined -> NULL` would erase a v2 value right after the topology
-    // transaction committed. v1 / old-agent requests keep the existing behaviour for every field.
-    const { uptimeSeconds: _legacyUptime, cpuPct: _legacyCpu, memPct: _legacyMem, numClients: _legacyClients, ...legacyOnlyMetrics } = metrics;
-    const insertMetrics = payload.topologyV2Present ? { ...legacyOnlyMetrics, uptimeSeconds: null, cpuPct: null, memPct: null, numClients: null } : metrics;
-    const updateMetrics = payload.topologyV2Present ? legacyOnlyMetrics : metrics;
+    // Writer fence (Wi-Fi spec 8.3): per device AND per metric family, derived from persisted server-side ownership
+    // (the materializer's *_observed_at on a row of the same org/site, with interfaceHealth still on) - never from
+    // the request. A protected family is left out of the UPDATE so the legacy `undefined -> NULL` cannot erase it.
+    const owned = ownership.get(d.unifiDeviceId);
+    const sameScope = !!owned && owned.orgId === orgId && owned.siteId === siteId && (await interfaceHealthOn(orgId));
+    const statsOwned = sameScope && owned!.statistics;
+    const clientsOwned = sameScope && owned!.clients;
+    const { uptimeSeconds, cpuPct, memPct, numClients, ...byteMetrics } = metrics;
+    const updateMetrics = {
+      ...byteMetrics,
+      ...(statsOwned ? {} : { uptimeSeconds, cpuPct, memPct }),
+      ...(clientsOwned ? {} : { numClients }),
+    };
     await db.insert(unifiDeviceTelemetry).values({
       collectorId: collector.id, orgId, siteId, unifiDeviceId: d.unifiDeviceId, mac, name: d.name,
-      ...insertMetrics,
+      ...metrics,
       discoveredAssetId, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw), isStale: false, lastSeenAt: seenAt,
       lastSyncedAt: now, updatedAt: now,
     }).onConflictDoUpdate({

@@ -241,3 +241,34 @@ it('displays the translated billing notification type', async () => {
   await user.click(await screen.findByRole('button', {name: /notifications/i}));
   expect(await screen.findByText('Billing')).toBeInTheDocument();
 });
+
+describe('NotificationCenter Wisp nudges (W06 #9918)', () => {
+  const clickRow = async (raw: Record<string, unknown>) => {
+    fetchMock.mockResolvedValue(
+      json({
+        notifications: [
+          { id: 'w1', title: 'Wisp nudge', message: 'Backup failed twice', createdAt: '2026-10-24T00:00:00.000Z', read: true, ...raw }
+        ]
+      })
+    );
+    render(<NotificationCenter />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: /notifications/i }));
+    await user.click(await screen.findByText('Wisp nudge'));
+  };
+
+  it('routes an ai notification with wispThreadId metadata to the thread page (before runId)', async () => {
+    await clickRow({ type: 'ai', metadata: { wispThreadId: 't1', concernId: 'c1', runId: 'run-9' } });
+    await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/ai/wisp/thread/t1#concern=c1'));
+  });
+
+  it('routes a thread-level nudge (no concern) to the bare thread page', async () => {
+    await clickRow({ type: 'ai', metadata: { wispThreadId: 't1' } });
+    await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/ai/wisp/thread/t1'));
+  });
+
+  it('prefers a stored link over the metadata fallback', async () => {
+    await clickRow({ type: 'ai', link: '/ai/wisp/thread/t1', metadata: { wispThreadId: 'other' } });
+    await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/ai/wisp/thread/t1'));
+  });
+});

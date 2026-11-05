@@ -15,14 +15,20 @@ export function orgContext(orgId: string): DbAccessContext {
   return { scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null };
 }
 
-/** Returns the Postgres SQLSTATE a call fails with, or undefined on success. */
+/**
+ * Returns the Postgres SQLSTATE a call fails with, or undefined on success.
+ * An error that carries no SQLSTATE (a TypeError, a fixture bug) is rethrown,
+ * so it can never read as success.
+ */
 export async function sqlstate(fn: () => Promise<unknown>): Promise<string | undefined> {
   try {
     await fn();
     return undefined;
   } catch (err) {
-    const e = err as { code?: string; cause?: { code?: string } };
-    return e.cause?.code ?? e.code;
+    const e = err as { code?: unknown; cause?: { code?: unknown } };
+    const code = e.cause?.code ?? e.code;
+    if (typeof code !== 'string') throw err;
+    return code;
   }
 }
 

@@ -170,10 +170,10 @@ const diskCleanupExecute: ActOperation = {
  *
  * Re-admitting this op requires BOTH, together, before it returns:
  *   (a) `manage_processes` tiered and registered in the agent SDK tool set —
- *       today it sits in `KNOWN_MISSING_TOOL_TIERS`
- *       (aiAgentSdkTools.registryParity.contract.test.ts), a frozen list that
- *       may only ever SHRINK, never grow to paper over this gap, and
- *   (b) a real dispatch-time pid→name identity pin added to
+ *       DONE in full-control W04 (#6758): it is in `TOOL_TIERS` and declared
+ *       on the chat/agent server, with `kill` supervised (an agent's kill is
+ *       a proposal a human approves), and
+ *   (b) STILL OPEN (#4149): a real dispatch-time pid→name identity pin added to
  *       `actRevalidation.ts`'s `pinAsset` (an `executeCommand list_processes`
  *       read + name match immediately before the kill dispatches, mirroring
  *       `pinDiskCleanup`'s preview-plan re-read) — not a presence check on

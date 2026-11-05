@@ -68,6 +68,8 @@ const DELIBERATELY_UNPINNED: Record<string, string> = {
   // --- NEW-OBJECT: nothing exists at approval time -------------------------
   'manage_organizations:create_org':
     'Creates a brand-new organization. The tool takes no id argument at all — there is no pre-existing row to hash.',
+  collect_evidence:
+    'SUPERVISED-ONLY whole-tool input-aware surface (full-control W04, #6758): only a `screenshot` in `evidenceTypes` escalates, to tier 3 SUPERVISED, never four_eyes — listed because this enumeration folds every TIER3_INPUT_AWARE_TOOLS member in. It writes no row: it queues a read-only device command, and the addressed `incidents` row is the parent, whose `updated_at` churns with every timeline event. The device, incident and evidence types travel in the intent input the approver reviews.',
   create_remote_session:
     'NEW-OBJECT: inserts a `remote_sessions` row. The only pre-existing row it touches is `devices`, for an access check, and a device row is not the thing being acted on.',
   request_elevation:
@@ -75,9 +77,35 @@ const DELIBERATELY_UNPINNED: Record<string, string> = {
   'manage_patches:rollback':
     'NEW-OBJECT: writes a `patch_rollbacks` row. The addressed `patches` row is a GLOBAL vendor catalog entry re-synced on a schedule, so its `updated_at` churns independently of anything the approver saw — pinning it would fail closed on routine syncs.',
   'manage_tickets:comment':
-    'NEW-OBJECT: inserts a `ticket_comments` row, and only a customer-visible (`isPublic: true`) comment reaches four_eyes. The full comment body travels in the intent input the approver reviews. `ticketId` addresses the PARENT ticket, which is not the thing being created, and whose `updated_at` churns with every ticket event — pinning it would fail closed on routine activity.',
+    'NEW-OBJECT: inserts a `ticket_comments` row, and only a customer-visible (`isPublic: true`) comment escalates to tier 3 — SUPERVISED, not four_eyes; it is listed because this enumeration folds every input-aware pair in. The full comment body travels in the intent input the approver reviews. `ticketId` addresses the PARENT ticket, which is not the thing being created, and whose `updated_at` churns with every ticket event — pinning it would fail closed on routine activity.',
+  ...sharedReason(
+    ['manage_tickets:update_status', 'manage_tickets:update_fields'],
+    'SUPERVISED-ONLY input-aware arms (full-control W02, #6756): resolving / a custom statusName, and requester-key edits, escalate to tier 3 SUPERVISED, never four_eyes — they appear here only because this enumeration folds every TIER3_INPUT_AWARE_ACTIONS pair in conservatively. The requested change (status, resolutionNote, requester fields) travels in the intent input the approver reviews, and the only pinnable row is the ticket itself, whose `updated_at` churns with every comment and SLA touch — pinning it would fail closed on routine activity (same reason as manage_tickets:comment above and move_org\'s org+status pin).',
+  ),
+  'manage_backup_profiles:create':
+    'NEW-OBJECT, SUPERVISED-ONLY input-aware arm (full-control W03, #6757): only `ownerScope: \'partner\'` escalates, to tier 3 SUPERVISED, never four_eyes — listed because this enumeration folds every TIER3_INPUT_AWARE_ACTIONS pair in. It inserts a new `backup_profiles` row; there is no pre-existing row to pin, and the name, description, ownership and full selection set travel in the intent input the approver reviews.',
   'manage_policy_feature_link:add':
     'NEW-OBJECT: inserts a `config_policy_feature_links` row (RMM-QA-176 D9). `configPolicyId` addresses the PARENT policy, which is not the thing being created — there is no pre-existing link row whose content the approver signed off on. The sibling `update`, which DOES address an existing link, is pinned by an EFFECT_DIGEST_RESOLVERS entry rather than exempted here.',
+
+  // Full-control W14 (#6784, W14-D5).
+  'manage_contract_templates:create':
+    'NEW-OBJECT, SUPERVISED-ONLY input-aware arm (full-control W14, #6784, W14-D5): only `ownerScope: \'partner\'` escalates, to tier 3 SUPERVISED, never four_eyes — listed because this enumeration folds every TIER3_INPUT_AWARE_ACTIONS pair in. It inserts a new partner-wide `contract_templates` row with no versions; there is no pre-existing row to pin, and the name, description and ownership travel in the intent input the approver reviews.',
+  'manage_contract_templates:update':
+    'SUPERVISED-ONLY input-aware arm (full-control W14, #6784, W14-D5): only `ownerScope: \'partner\'` escalates, to tier 3 SUPERVISED, never four_eyes — listed because this enumeration folds every TIER3_INPUT_AWARE_ACTIONS pair in. The only effect is the template\'s name / description, both carried in the intent input; the result and audit row return the previous values. The template carries no published content of its own (versions are separate, immutable rows), and the handler refuses an owner assertion that does not match the row.',
+  'manage_ticket_checklist_templates:create':
+    'NEW-OBJECT, input-aware four_eyes arm (full-control W06, #6776): inserts a new `ticket_checklist_templates` row (and its items). `orgId` addresses the OWNER, not the thing being created, so there is no pre-existing row whose content the approver signed off on; the name, scope and full item list travel in the intent input the approver reviews.',
+  ...sharedReason(
+    ['manage_software_catalog:create', 'manage_custom_fields:create_definition'],
+    'NEW-OBJECT, SUPERVISED-ONLY input-aware arm (full-control W12, #6782, quorum QW1): only `ownerScope: \'partner\'` escalates, to tier 3 SUPERVISED, never four_eyes — listed because this enumeration folds every TIER3_INPUT_AWARE_ACTIONS pair in. It inserts a new partner-wide `software_catalog` / `custom_field_definitions` row; there is no pre-existing row to pin, and every field of the new row travels in the intent input the approver reviews.',
+  ),
+  ...sharedReason(
+    ['manage_compliance_policies', 'manage_compliance_policies:deactivate'],
+    'Input-aware four_eyes arm (full-control W11, #6781, W11-D4): deactivating a partner-wide compliance policy (`ownerScope` not \'organization\'). The only effect is `automation_policies.enabled = false`, whatever the policy says, so no drift in its content changes what the approvers signed off on; and the row has no edit path in the product while its `updated_at` is stamped by every evaluation run (policyEvaluationService), so a pin would fail closed on routine activity. The policy id and asserted owner travel in the intent input, and the handler refuses an owner assertion that does not match the row.',
+  ),
+  'manage_security_policies:create':
+    'NEW-OBJECT, input-aware four_eyes arm (full-control W11, #6781, W11-D13): a partner-wide create (`ownerScope: \'partner\'`) inserts a new `security_policies` row; there is no pre-existing row to pin, and the name and every setting travel in the intent input the approvers review.',
+  'manage_ticket_config:delete_domain':
+    'IMMUTABLE reference (full-control W06, #6776): `id` addresses a `ticket_inbound_domains` row that carries only the domain string the approver saw in the intent input plus verification bookkeeping; there is no editable content for the approver to have signed off on that could drift between approval and release, and a verification-state bump must not fail the delete closed.',
 
   // --- EXTERNAL: the drift happens in another system -----------------------
   ...sharedReason(
@@ -133,8 +161,9 @@ const DELIBERATELY_UNPINNED: Record<string, string> = {
  * Every four_eyes-classified surface, as `tool` or `tool:action`.
  *
  * Mirrors intentReleaseWorker.durable.contract.test.ts's superset construction
- * and its rationale: the input-aware surfaces (TIER3_INPUT_AWARE_*) resolve
- * four_eyes only on SOME inputs and are invisible to the static tables by
+ * and its rationale: the input-aware surfaces (TIER3_INPUT_AWARE_*) escalate
+ * only on SOME inputs (most to supervised; manage_organizations:update_org
+ * can reach four_eyes) and are invisible to the static tables by
  * construction, but they still need pinning coverage on the branch where they
  * DO resolve four_eyes — so they are folded in. Including a surface that
  * turns out never to be four_eyes only makes this check stricter, never wrong.
@@ -219,5 +248,14 @@ describe('effect-digest coverage: every four_eyes surface is pinned or explicitl
     expect(effectDigestResolverKey('diagnose_connectivity')).toBe('diagnose_connectivity');
     expect(requiresPinnedEffectDigest('diagnose_connectivity')).toBe(true);
     expect(requiresPinnedEffectDigest('run_script')).toBe(false);
+  });
+
+  // Tool Catalog W06 (#5221, Decision 5): the fleet built-in is a flow
+  // built-in, not a registered tool, so neither four_eyes enumeration nor the
+  // supervised tool table visits it. Its parked approval's whole authority is
+  // the pinned script + frozen device list, so the pin is mandatory.
+  it('pins run_script_on_targets (the fleet built-in) and requires the pin', () => {
+    expect(effectDigestResolverKey('run_script_on_targets')).toBe('run_script_on_targets');
+    expect(requiresPinnedEffectDigest('run_script_on_targets')).toBe(true);
   });
 });

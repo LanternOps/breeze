@@ -242,6 +242,18 @@ describe('POST /wisp/grants', () => {
     expect(await res.json()).toEqual({ code: 'entitlement_required', error: 'Wisp', featureKey: 'wisp' });
   });
 
+  // W08 (w00 A35): the partner enable switch is governance, not commercial.
+  it('maps partner_disabled to 403 PARTNER_DISABLED with the service message', async () => {
+    const msg = 'Wisp is turned off for your organization by a partner administrator.';
+    h.svc.createGrant.mockRejectedValue(new WispGrantError('partner_disabled', msg));
+    const res = await post(buildApp(), '/wisp/grants', { orgId: null, stepUpGrantId: STEP_UP });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: msg, code: 'PARTNER_DISABLED' });
+    h.svc.userResumeGrant.mockRejectedValue(new WispGrantError('partner_disabled', msg));
+    expect((await post(buildApp(), `/wisp/grants/${GRANT_ID}/resume`)).status).toBe(403);
+    expect(h.publishEvent).not.toHaveBeenCalled();
+  });
+
   it('maps entitlement_check_failed to 503 + Retry-After with the W01 body', async () => {
     h.svc.createGrant.mockRejectedValue(new WispGrantError('entitlement_check_failed', 'Entitlements unavailable.'));
     const res = await post(buildApp(), '/wisp/grants', { orgId: null, stepUpGrantId: STEP_UP });

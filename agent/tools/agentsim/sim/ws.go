@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 	"sync"
@@ -12,23 +13,33 @@ import (
 
 	gws "github.com/gorilla/websocket"
 
+	"github.com/breeze-rmm/agent/internal/httputil"
 	agentws "github.com/breeze-rmm/agent/internal/websocket"
 )
 
 // Mirrors of internal/websocket/client.go, where they are unexported. The
 // simulator keeps its own thin client so it can count connects and reconnects
 // per agent and hold thousands of sockets without the agent's per-client
-// logging and ordered-command pump.
+// logging and ordered-command pump. Reconnect PACING is not mirrored: each
+// session asks the agent's own agentws.ReconnectPacer (W09, #8148).
 const (
-	wsWriteWait      = 10 * time.Second // writeWait
-	wsPongWait       = 60 * time.Second // pongWait
-	wsHandshake      = 10 * time.Second // connect(): Dialer.HandshakeTimeout
-	wsInitialBackoff = 1 * time.Second  // initialBackoff
-	wsMaxBackoff     = 60 * time.Second // maxBackoff
-	wsBackoffFactor  = 2.0              // backoffFactor
-	wsJitterFrac     = 0.3              // jitterFactor
-	wsStableAfter    = 30 * time.Second // reconnectLoop: reset backoff after a connection this long
-	wsMaxMessage     = 16 << 20         // maxMessageSize
+	wsWriteWait  = 10 * time.Second // writeWait
+	wsPongWait   = 60 * time.Second // pongWait
+	wsHandshake  = 10 * time.Second // connect(): Dialer.HandshakeTimeout
+	wsMaxMessage = 16 << 20         // maxMessageSize
+)
+
+// drainHintGrace is how long past its window a drain hint stays live
+// (internal/websocket/drain.go drainHintGrace).
+const drainHintGrace = 30 * time.Second
+
+// closeGoingAway is the close code a draining server sends.
+const closeGoingAway = gws.CloseGoingAway
+
+// Test seams for the session's clock and sleep; production values only.
+var (
+	nowFn   = time.Now
+	sleepFn = sleepCtx
 )
 
 var errNoSocket = errors.New("agent socket not connected")
@@ -38,9 +49,82 @@ type wsSession struct {
 	mu        sync.Mutex // gorilla allows one concurrent writer
 	conn      *gws.Conn
 	connected atomic.Bool
+
+	// Reconnect pacing. The pacer is used only from Run's goroutine.
+	pacer    *agentws.ReconnectPacer
+	preW09   bool // the #9145 agent: no start jitter, drain hints ignored
+	ignoreRA bool // legacy-retry cohort: ignores Retry-After
+	simClose atomic.Int32
+
+	drainMu   sync.Mutex
+	drainSet  bool
+	drainWith time.Duration
+	drainEnds time.Time
 }
 
-func newWSSession(a *Agent) *wsSession { return &wsSession{agent: a} }
+// newPacerRand is the deterministic per-agent source behind the pacer, so a
+// run with the same agent indexes paces identically.
+func newPacerRand(index int) *rand.Rand {
+	return rand.New(rand.NewPCG(uint64(index)+1, 0xbace))
+}
+
+func newWSSession(a *Agent) *wsSession {
+	idx := a.id.Index
+	s := &wsSession{agent: a, preW09: isPreW09(a.cfg, idx), ignoreRA: isLegacy(a.cfg, idx)}
+	window := agentws.DefaultFirstReconnectWindow
+	if s.preW09 {
+		window = 0 // #9145: U(1 s, 5 s) after any server close
+	}
+	s.pacer = agentws.NewReconnectPacer(newPacerRand(idx).Float64, window)
+	return s
+}
+
+// setDrain stores a drain hint for the live socket. Pre-W09 agents skip the
+// frame; the first hint on a socket wins; it lapses within + 30 s later.
+func (s *wsSession) setDrain(within time.Duration) {
+	if s.preW09 {
+		return
+	}
+	within = min(max(within, 0), agentws.MaxDrainWithin)
+	s.drainMu.Lock()
+	defer s.drainMu.Unlock()
+	if s.drainSet {
+		return
+	}
+	s.drainSet, s.drainWith, s.drainEnds = true, within, nowFn().Add(within+drainHintGrace)
+}
+
+// takeDrain returns the live hint and clears it; -1 when there is none.
+func (s *wsSession) takeDrain() time.Duration {
+	s.drainMu.Lock()
+	defer s.drainMu.Unlock()
+	set, within, ends := s.drainSet, s.drainWith, s.drainEnds
+	s.drainSet = false
+	if !set || nowFn().After(ends) {
+		return -1
+	}
+	return within
+}
+
+// waitAfterDisconnect is the pause before redialling an established socket
+// that ended with closeCode (0 = no close frame).
+func (s *wsSession) waitAfterDisconnect(closeCode int, local bool, lasted time.Duration) time.Duration {
+	return s.pacer.AfterDisconnect(closeCode, local, lasted, s.takeDrain())
+}
+
+func (s *wsSession) startWait() time.Duration {
+	if s.preW09 {
+		return 0
+	}
+	return s.pacer.AtStart(agentws.DefaultStartDialWindow)
+}
+
+func (s *wsSession) sleep(ctx context.Context, d time.Duration) bool {
+	if sc := s.agent.cfg.wsPaceScale; sc > 0 {
+		d = time.Duration(float64(d) * sc)
+	}
+	return sleepFn(ctx, d)
+}
 
 func (s *wsSession) Connected() bool { return s.connected.Load() }
 
@@ -55,62 +139,73 @@ func (s *wsSession) url() string {
 	return base + "/api/v1/agent-ws/" + s.agent.identity().AgentID + "/ws"
 }
 
-// Run is client.go reconnectLoop.
+// Run is client.go reconnectLoop: every path back to dial waits for the
+// agent's ReconnectPacer.
 func (s *wsSession) Run(ctx context.Context) {
 	rec := s.agent.rec
-	backoff := wsInitialBackoff
+	if !s.sleep(ctx, s.startWait()) {
+		return
+	}
 	established := 0
 	for ctx.Err() == nil {
 		started := time.Now()
-		conn, err := s.dial(ctx)
+		conn, status, retryAfter, err := s.dial(ctx)
 		if err != nil {
 			rec.WSConnectFailed()
-			if !sleepCtx(ctx, s.agent.jitter(backoff, wsJitterFrac)) {
-				return
+			if s.ignoreRA {
+				retryAfter = 0
 			}
-			backoff = time.Duration(float64(backoff) * wsBackoffFactor)
-			if backoff > wsMaxBackoff {
-				backoff = wsMaxBackoff
+			if !s.sleep(ctx, s.pacer.AfterDialFailure(status, retryAfter)) {
+				return
 			}
 			continue
 		}
 		rec.WSConnected(established > 0, time.Since(started))
 		established++
-		connStart := time.Now()
-		s.serve(ctx, conn)
+		connStart := nowFn()
+		code := s.serve(ctx, conn)
 		rec.WSDisconnected()
-		if time.Since(connStart) > wsStableAfter {
-			backoff = wsInitialBackoff
+		// A socket the simulator drops itself (drop-sockets) models a
+		// client-side network drop: no close frame, so abnormal, not local.
+		if !s.sleep(ctx, s.waitAfterDisconnect(code, false, nowFn().Sub(connStart))) {
+			return
 		}
-		// An established socket that drops is redialled at once, with no delay
-		// (spec §1, failure-spiral step 3).
 	}
 }
 
-func (s *wsSession) dial(ctx context.Context) (*gws.Conn, error) {
+func (s *wsSession) dial(ctx context.Context) (*gws.Conn, int, time.Duration, error) {
 	d := gws.Dialer{HandshakeTimeout: wsHandshake, Proxy: http.ProxyFromEnvironment}
 	header := http.Header{"Authorization": {"Bearer " + s.agent.identity().AuthToken}}
 	start := time.Now()
 	conn, resp, err := d.DialContext(ctx, s.url(), header)
 	status := 0
+	var retryAfter time.Duration
 	if resp != nil {
 		status = resp.StatusCode
+		retryAfter = httputil.ParseRetryAfter(resp.Header, time.Now())
 		if resp.Body != nil {
 			_ = resp.Body.Close()
 		}
 	}
 	s.agent.rec.ObserveHTTP(RouteWSUpgrade, true, start, time.Since(start), status, err)
-	return conn, err
+	return conn, status, retryAfter, err
 }
 
-func (s *wsSession) serve(ctx context.Context, conn *gws.Conn) {
+// serve runs one socket until it ends and returns the close code the pacer
+// should see: the server's close frame, the code the simulator stood in for
+// (drain-sockets), or 0 when the socket dropped without a close frame.
+func (s *wsSession) serve(ctx context.Context, conn *gws.Conn) int {
+	s.simClose.Store(0)
+	s.drainMu.Lock()
+	s.drainSet = false // a hint belongs to one socket
+	s.drainMu.Unlock()
 	rec := s.agent.rec
 	s.mu.Lock()
 	s.conn = conn
 	s.mu.Unlock()
 	s.connected.Store(true)
 	rec.SocketUp()
-	s.agent.hub.add(conn)
+	s.agent.hub.add(conn, s)
 	stop := make(chan struct{})
 	defer func() {
 		s.agent.hub.remove(conn)
@@ -141,7 +236,14 @@ func (s *wsSession) serve(ctx context.Context, conn *gws.Conn) {
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
-			return
+			if c := int(s.simClose.Load()); c != 0 {
+				return c
+			}
+			var ce *gws.CloseError
+			if errors.As(err, &ce) {
+				return ce.Code
+			}
+			return 0
 		}
 		s.handle(data)
 	}

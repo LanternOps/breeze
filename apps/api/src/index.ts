@@ -48,6 +48,7 @@ import { emailWebhookRoutes } from './routes/tickets/emailWebhook';
 import { invoiceRoutes } from './routes/invoices';
 import { quoteRoutes } from './routes/quotes';
 import { quotesPublicRoutes } from './routes/quotesPublic';
+import { agreementsPublicRoutes } from './routes/agreementsPublic';
 import { routeReferrerPolicyWins } from './middleware/routeReferrerPolicy';
 import { invoicesPublicRoutes } from './routes/invoicesPublic';
 import { stripeConnectRoutes } from './routes/stripeConnect';
@@ -56,6 +57,7 @@ import { quickbooksWebhookRoutes } from './routes/webhooks/quickbooks';
 import { xeroWebhookRoutes } from './routes/webhooks/xero';
 import { resendWebhookRoutes } from './routes/webhooks/emailProvider';
 import { edrWebhookRoutes } from './routes/webhooks/edr';
+import { flowWebhookRoutes } from './routes/flowWebhooks';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { billingPaymentSettingsRoutes } from './routes/billingPaymentSettings';
@@ -71,8 +73,10 @@ import { billingProfilesRoutes } from './routes/billingProfiles';
 import { ticketCategoriesRoutes } from './routes/ticketCategories';
 import { ticketConfigRoutes } from './routes/ticketConfig';
 import { businessCalendarRoutes } from './routes/businessCalendars';
+import { ticketRoutingRuleRoutes } from './routes/tickets/routingRules';
 import { ticketResponseTemplateRoutes } from './routes/tickets/ticketResponseTemplates';
 import { ticketFormRoutes } from './routes/tickets/forms';
+import { serviceCatalogRoutes } from './routes/tickets/serviceCatalog';
 import { tenantVariableRoutes } from './routes/tenantVariables';
 import { orgRoutes } from './routes/orgs';
 import { orgMergeRoutes } from './routes/orgMerge';
@@ -87,6 +91,7 @@ import { trustPageRoutes } from './routes/trustPage';
 import { trustPagePublicRoutes } from './routes/trustPagePublic';
 import { trustPageAttestationRoutes } from './routes/trustPageAttestation';
 import { byTrustCrossOriginPath } from './middleware/trustCrossOrigin';
+import { bySameOriginFramePath, isSameOriginFramePath } from './middleware/sameOriginFrame';
 // Trust Center W2 (#8770) — W02a stub routers, filled by W02b/d/f/g.
 import { trustPageDeclarationRoutes } from './routes/trustPageDeclarations';
 import { trustPageContentRoutes } from './routes/trustPageContent';
@@ -115,6 +120,7 @@ import { apiKeyRoutes } from './routes/apiKeys';
 import { servicePrincipalRoutes } from './routes/servicePrincipals';
 import { partnerServicePrincipalRoutes } from './routes/partnerServicePrincipals';
 import { migrationWindowRoutes } from './routes/migrationWindows';
+import { ticketImportRoutes } from './routes/ticketImports';
 import { partnerApiRoutes } from './routes/partnerApi';
 import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './routes/enrollmentKeys';
 import { installerRoutes } from './routes/installer';
@@ -144,6 +150,7 @@ import { fleetFindingsRoutes } from './routes/fleetFindings';
 import { discoveryRoutes } from './routes/discovery';
 import { discoveryAssetProbeRoutes } from './routes/discoveryAssetProbe';
 import { discoveryAssetPlacementRoutes } from './routes/discoveryAssetPlacement';
+import { discoveryAssetCircuitsRoutes } from './routes/discoveryAssetCircuits';
 import { monitoringAssetMetricsRoutes } from './routes/monitoringAssetMetrics';
 import { topologyRoutes } from './routes/topology';
 import { circuitRoutes } from './routes/circuits';
@@ -163,6 +170,7 @@ import { monitorRoutes } from './routes/monitors';
 import { monitoringRoutes } from './routes/monitoring';
 import { auditBaselineRoutes } from './routes/auditBaselines';
 import { softwareRoutes } from './routes/software';
+import { softwareBuiltinPackagesRoutes } from './routes/softwareBuiltinPackages';
 import { softwarePoliciesRoutes } from './routes/softwarePolicies';
 import { vulnerabilityRoutes, vulnerabilitySyncRoutes } from './routes/vulnerabilities';
 import { systemRoutes } from './routes/system';
@@ -216,6 +224,7 @@ import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
 import { ensureSystemLibraryScripts } from './services/systemScriptLibrary';
 import { runLegacyAlertingRetirement, LEGACY_ALERTING_RETRY_DELAYS_MS } from './services/monitors/conversion/retirementSweep';
 import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
+import { refreshPinnedBuiltinPackages } from './services/builtinDeploymentPackages';
 import { sealUnsealedSettingsSecrets } from './services/settingsSecretBackfill';
 import { reportableCutoverError } from './services/aiModels/registryCutover';
 import { runEnvOpenAiBootstrapAtBoot } from './services/aiModels/envOpenAiBootstrap';
@@ -302,11 +311,9 @@ import {
 // role, so this file's own import closure no longer has to pull in the
 // entire worker-module graph. The handful of imports below are the
 // "phase 2 specials" that stay directly in index.ts (not registry entries):
-// the webhook-delivery singleton (`shutdownRuntime`'s preamble calls
-// `getWebhookWorker().stop()` before any other shutdown phase runs), and the
-// event-dispatch/relay consumers, which have their own role gating distinct
-// from the registry's placement filter.
-import { getWebhookWorker } from './workers/webhookDelivery';
+// the event-dispatch/relay consumers, which have their own role gating
+// distinct from the registry's placement filter. The registry closes the
+// webhook-delivery BullMQ worker during its shutdown phase.
 import {
   startRegisteredWorkers,
   startRedisIndependentWorkers,
@@ -315,6 +322,7 @@ import {
 import { registerAiAgentEnqueuer } from './jobs/aiAgentEnqueuer';
 import { backfillC2cConnectionSecrets } from './services/c2cSecrets';
 import { backfillDefaultPatchSchedules } from './jobs/patchScheduleBackfill';
+import { reconcileDecommissionedDynamicMemberships } from './jobs/decommissionedGroupMembershipReconcile';
 import { registerAllEventSubscribers } from './services/eventSubscribers';
 import { registerTopologyPhysicalAuthorities } from './services/topology/physicalAuthorities';
 import { initializeDeviceEventHandlers } from './events/deviceEvents';
@@ -532,18 +540,24 @@ const SECURE_HEADERS_OPTIONS = {
 // `Cross-Origin-Resource-Policy: cross-origin` (middleware/trustCrossOrigin.ts), so other origins can load them.
 // It must be chosen here, not in the handlers: secureHeaders writes its headers after next() and would
 // overwrite a handler's CORP.
+// #10192/#10290: the PDF routes the portal iframes (middleware/sameOriginFrame.ts) get
+// X-Frame-Options: SAMEORIGIN here and CSP `frame-ancestors 'self'` from securityMiddleware below — chosen by
+// path for the same reason. Every other route keeps DENY / 'none'.
 app.use(
   '*',
   exceptTunnelHttp(
     routeReferrerPolicyWins(
-      byTrustCrossOriginPath(
-        secureHeaders({ ...SECURE_HEADERS_OPTIONS }),
-        secureHeaders({ ...SECURE_HEADERS_OPTIONS, crossOriginResourcePolicy: 'cross-origin' }),
+      bySameOriginFramePath(
+        byTrustCrossOriginPath(
+          secureHeaders({ ...SECURE_HEADERS_OPTIONS }),
+          secureHeaders({ ...SECURE_HEADERS_OPTIONS, crossOriginResourcePolicy: 'cross-origin' }),
+        ),
+        secureHeaders({ ...SECURE_HEADERS_OPTIONS, xFrameOptions: 'SAMEORIGIN' }),
       )
     )
   )
 );
-app.use('*', securityMiddleware({ skipHeadersPathPrefix: TUNNEL_HTTP_PATH_PREFIX, skipHeadersWhen: isTunnelSurface }));
+app.use('*', securityMiddleware({ skipHeadersPathPrefix: TUNNEL_HTTP_PATH_PREFIX, skipHeadersWhen: isTunnelSurface, sameOriginFrameWhen: isSameOriginFramePath }));
 app.use(
   '*',
   createGlobalBodyLimitMiddleware({
@@ -807,6 +821,12 @@ api.route('/trust/attestation', trustPageAttestationRoutes);
 // Gated-document access flow (Trust Center W2, no auth): before /trust so its paths are never read as slugs.
 api.route('/trust/access', trustAccessPublicRoutes);
 api.route('/trust', trustPagePublicRoutes);
+// Public, token-gated agreement signing (#9075 W2b, no auth). Mounted with the
+// other public surfaces, before every root-mounted router and before the
+// auth-gated /contracts router, so no `.use('*')` auth middleware can run ahead
+// of it (mirrors /quotes/public). The signed request token is the only
+// authorisation; its own isolated 'agreementpublic' rate bucket.
+api.route('/agreements/public', agreementsPublicRoutes);
 api.route('/', externalServicesRoutes);
 api.route('/agents', agentRoutes);
 api.route('/devices', deviceRoutes);
@@ -875,8 +895,10 @@ api.route('/ticket-categories', ticketCategoriesRoutes);
 api.route('/billing-profiles', billingProfilesRoutes);
 api.route('/ticket-config', ticketConfigRoutes);
 api.route('/business-calendars', businessCalendarRoutes);
+api.route('/ticket-routing-rules', ticketRoutingRuleRoutes);
 api.route('/', ticketResponseTemplateRoutes);
 api.route('/', ticketFormRoutes);
+api.route('/', serviceCatalogRoutes);
 api.route('/', tenantVariableRoutes);
 // Self-contained autopay auth must run before the broad org/portal routers.
 api.route('/autopay/public', publicAutopayRoutes);
@@ -924,6 +946,8 @@ api.route('/service-principals', servicePrincipalRoutes);
 api.route('/partner-service-principals', partnerServicePrincipalRoutes);
 // Ticket migration windows (#8313): partner-wide admin grants of import mode.
 api.route('/migration-windows', migrationWindowRoutes);
+// Ticket import framework (#8313 W4): sources, mappings and import runs.
+api.route('/ticket-imports', ticketImportRoutes);
 api.route('/partner-api', partnerApiRoutes);
 api.route('/enrollment-keys', publicEnrollmentRoutes); // Public download (no auth) — must precede auth-protected routes
 api.route('/enrollment-keys', enrollmentKeyRoutes);
@@ -983,6 +1007,14 @@ api.route('/webhooks', resendWebhookRoutes);
 // isolated per-IP bucket. NOT under /edr (whose authMiddleware covers `*`) and
 // NOT in SELF_MANAGED_DB_CONTEXT_ROUTES: no ambient auth transaction exists here.
 api.route('/webhooks', edrWebhookRoutes);
+// Flow webhook ingress (Tool Catalog W05, #5220) — public, no session auth: the
+// Breeze HMAC signature / X-Breeze-Webhook-Token is verified in
+// services/flows/webhook/ingest.ts (uniform 401). partnerGuard skips the exact
+// /webhooks/flows/<uuid> path; the global body gate caps it at 262,144 B and it
+// has its own isolated per-IP bucket. Mounted at its own prefix, not under the
+// authenticated /flows router. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES: no ambient
+// auth transaction exists on an unauthenticated route.
+api.route('/webhooks/flows', flowWebhookRoutes);
 api.route('/policies', policyRoutes);
 api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);
@@ -1035,6 +1067,7 @@ api.route('/discovery', discoveryAssetProbeRoutes);
 // GET/PUT/DELETE /discovery/assets/:id/placement — physical placement, #8134.
 // Another sub-router at the same prefix; no path overlap, so order is immaterial.
 api.route('/discovery', discoveryAssetPlacementRoutes);
+api.route('/discovery', discoveryAssetCircuitsRoutes);
 api.route('/network/baselines', networkBaselineRoutes);
 api.route('/network/changes', networkChangeRoutes);
 api.route('/portal', portalRoutes);
@@ -1053,6 +1086,8 @@ api.route('/monitoring', monitoringRoutes);
 // lines). `/assets/:id` cannot shadow `/assets/:id/metrics`.
 api.route('/monitoring', monitoringAssetMetricsRoutes);
 api.route('/audit-baselines', auditBaselineRoutes);
+// #6958 D2: deeper mount first so `/software` never shadows it.
+api.route('/software/builtin-packages', softwareBuiltinPackagesRoutes);
 api.route('/software', softwareRoutes);
 api.route('/software-policies', softwarePoliciesRoutes);
 // Deeper mount first: isolates the platform-admin sync router from the main
@@ -1445,7 +1480,6 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   shutdownInProgress = true;
   console.log(`[shutdown] Received ${signal}, shutting down gracefully...`);
 
-  getWebhookWorker().stop();
   // The sampler is already unref'd, so this is tidiness rather than a
   // requirement — it just stops starvation warnings from being emitted about a
   // process that is deliberately winding down and no longer serving traffic.
@@ -1916,6 +1950,21 @@ async function bootstrap(): Promise<void> {
     console.error('[startup] Failed to backfill default patch schedules:', err);
   }
 
+  // #9933: devices removed before dynamic groups started excluding
+  // decommissioned devices kept their non-pinned dynamic rows. Enqueue the
+  // normal device.created re-evaluation for each; once the jobs run the query
+  // finds nothing, so this is a no-op on later boots. Not awaited: it only
+  // enqueues, and boot should not wait on Redis round-trips per device.
+  void reconcileDecommissionedDynamicMemberships()
+    .then((result) => {
+      if (result.scanned > 0) {
+        console.log(`[startup] Queued dynamic-group re-evaluation for ${result.enqueued} removed device(s) (${result.failed} failed)`);
+      }
+    })
+    .catch((err) => {
+      console.error('[startup] Failed to reconcile removed devices out of dynamic groups:', err);
+    });
+
   // Register local agent binaries in DB and optionally sync to S3 (BINARY_SOURCE=local only)
   //
   // #6098: deliberately NOT wrapped in runWithSystemDbAccess. syncBinaries()
@@ -2050,6 +2099,26 @@ async function bootstrap(): Promise<void> {
     })
     .catch((err) => {
       console.error('[startup] Failed to provision built-in monitors:', err);
+    });
+
+  // #6958: move every partner's provisioned DNS built-in rows forward to the
+  // code-pinned version. Forward-only (an older replica booting never reverts
+  // a newer pin), one row-locked transaction per catalog row, per-row failures
+  // counted rather than thrown. Detached after serve() like the task above.
+  void runStartupTaskWithRetry('pinned built-in package refresh', () => refreshPinnedBuiltinPackages(), {
+    hasFailures: (r) => r.failed > 0,
+    onFailure: ({ attempt, error, result }) =>
+      console.error(`[startup] pinned built-in package refresh attempt ${attempt + 1} failed:`, error ?? `${result?.failed} row(s) failed`),
+  })
+    .then((result) => {
+      // Counts are from the last attempt. Rows still failing after the retries
+      // are already in Sentry per key; surface the exhaustion as an error too.
+      const line = `[startup] pinned built-in package refresh: refreshed ${result.refreshed}, failed ${result.failed}`;
+      if (result.failed > 0) console.error(`${line} (retries exhausted)`);
+      else console.log(line);
+    })
+    .catch((err) => {
+      console.error('[startup] pinned built-in package refresh failed:', err);
     });
 
   // Notification-channel secrets in partner/org/site settings are sealed on

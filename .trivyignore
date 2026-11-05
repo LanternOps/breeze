@@ -68,19 +68,6 @@ GHSA-qrv3-253h-g69c
 CVE-2025-71329
 CVE-2025-71330
 
-# node-forge — CVE-2026-85393 is the Trivy-DB id for the same advisory the
-# npm audit gate already excepts as GHSA-86w9-cpqp-85rv (aliases
-# CVE-2026-33894, GHSA-ppp5-5v6c-4jwp: RSA PKCS#1 v1.5 signature forgery via
-# nested DigestAlgorithm). No fixed release (<=1.4.0 affected; 1.4.0 is the
-# latest). Reachable only from build tooling: breeze-mobile → expo →
-# @expo/cli / @expo/code-signing-certificates, and mkcert ←
-# office-addin-dev-certs. Not shipped in any production image or mobile bundle.
-# Ruling and re-check procedure live in scripts/security/npm-audit-exceptions.json.
-# Remove together with that exception: tracking #7703.
-#
-# Added 2026-10-02 (Trivy DB refresh).
-CVE-2026-85393
-
 # braces — CVE-2026-93687 is the Trivy-DB id for GHSA-vfj7-8cjw-p6xm, which the
 # npm audit gate already excepts (scripts/security/npm-audit-exceptions.json,
 # tracking #7862). No fixed release at the last re-review (see the JSON entry's
@@ -103,3 +90,35 @@ CVE-2026-93687
 # Remove when @expo/cli depends on zod >= 4.6.6 (re-check after expo-sdk bumps).
 CVE-2023-54404
 GHSA-mrhx-c7xc-m3w5
+
+# zip 4.6.1 (Rust) — CVE-2026-115905 / GHSA-m665-v7pm-7grj, "Zip Cloaking":
+# ZipStreamReader extracts by Local File Header name while ZipArchive trusts
+# the Central Directory, so a crafted archive can write a different path.
+# Reaches apps/viewer/src-tauri/Cargo.lock only through tauri-plugin-updater
+# 2.14.0, which requires zip ^4 (every 4.x is yanked; fix is 9.0.5), so it
+# cannot be bumped — same upstream block as #8910 / the Cargo Audit exception
+# in apps/viewer/src-tauri/.cargo/audit.toml.
+# Not reachable as described: the updater only uses zip::ZipArchive (never
+# ZipStreamReader), in extract_zip on Windows, and only on bytes that already
+# passed verify_signature against the viewer's pinned updater pubkey
+# (Update::install verifies first; download_and_install uses download's
+# verified bytes). The viewer's own code does not call zip.
+# Remove together with the #8910 audit.toml exception once a stable
+# tauri-plugin-updater depends on zip >= 9.0.5.
+#
+# Added 2026-10-29 (Trivy DB refresh).
+CVE-2026-115905
+GHSA-m665-v7pm-7grj
+
+# zip 4.6.1 (Rust) — CVE-2026-115909 / GHSA-q7v9-x93c-xqv3, unbounded
+# symlink-target handling during extraction can abort or exhaust memory
+# (DoS only; fix is 9.0.0). Same dependency path and upstream block as
+# CVE-2026-115905 above: only tauri-plugin-updater uses zip, and only on
+# update bytes that already passed verify_signature against the viewer's
+# pinned updater pubkey, so an attacker-crafted archive never reaches
+# extraction. Remove with the entry above once a stable tauri-plugin-updater
+# depends on zip >= 9.0.5.
+#
+# Added 2026-10-30 (Trivy DB refresh).
+CVE-2026-115909
+GHSA-q7v9-x93c-xqv3

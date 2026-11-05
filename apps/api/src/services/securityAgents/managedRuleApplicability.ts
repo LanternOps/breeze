@@ -13,23 +13,43 @@ import {
   type ReadinessReason,
   type ReadinessResult,
 } from './installerReadiness';
-import { vendorForIntegrationProvider, type VendorKey } from './securityAgentVendors';
+import { vendorForCatalogPackage, type VendorKey } from './securityAgentVendors';
+import { readDeployableUploadedBinaryCatalogIds, vendorRequiresUploadedBinary } from './managedPolicyOwnerCatalog';
 
 /**
  * Which rules of a GENERATED (security agents) software policy apply to which
  * devices, for one compliance pass (#6960).
  *
- * A rule's vendor is derived from its catalogId (the catalog row's
- * integration_provider). Its applicability on a device is the installer
- * readiness preflight: platform first (registry support, then the link's own
- * platform list), then the DEVICE's org (mapping, partner integration, keys).
+ * A rule's vendor is derived from its catalogId: the catalog row's
+ * integration_provider (EDR vendors) or builtin_package_key (tenant-variable
+ * vendors, whose rows each serve exactly one OS). Its applicability on a
+ * device is the installer readiness preflight: platform first (registry
+ * support, the row's own OS, then the link's own platform list), then the
+ * DEVICE's org (EDR mapping and keys, or the org's tenant variables).
+ *
+ * Every violation a managed rule can carry is filtered: `missing` (#6960 W02)
+ * and the `service_running` bridge's `not_running` / `service_unverified`
+ * (#6958 D5 obligation). The compliance pass runs this filter AFTER the bridge
+ * (#10126), so a service violation the bridge adds for an inventory-matched
+ * rule — one with no `missing` to drop — is filtered like any other. The pass
+ * also derives service watches only for rules `isRuleApplicable` accepts, so a
+ * not-ready device is never asked to monitor the vendor's service.
  *
  * Fail-closed: a rule whose catalog row is not a known vendor package, or a
  * device the pass did not describe, is not applicable. A managed policy only
  * ever installs through these checks.
  *
- * Loaded once per pass: two queries plus one batched readiness read per vendor,
- * whatever the device count. Runs in the compliance worker's system context.
+ * A rule whose package needs a partner-uploaded installer (SentinelOne's MSI)
+ * cannot be INSTALLED while that package has no deployable latest version
+ * (#9247): its `missing` violation, and the coverage row of a device without
+ * the agent, read `installer_missing` (after the device's platform and org
+ * checks). The generator keeps such a rule rather than dropping it, so this
+ * check is what stops the install and what makes the cause partner-visible. A
+ * device already running the agent is unaffected.
+ *
+ * Loaded once per pass: two queries (three when a rule needs an uploaded
+ * installer) plus one batched readiness read per vendor, whatever the device
+ * count. Runs in the compliance worker's system context.
  */
 
 export type NotApplicableEntry = { catalogId: string; vendor: VendorKey | null; reason: ReadinessReason };
@@ -42,15 +62,35 @@ export interface ManagedRuleApplicability {
    * device has a violation for it (#6960 W03: persisted as coverage state).
    * Rules whose catalog row is not a vendor package are omitted: there is no
    * vendor to key a status row on.
+   *
+   * `presence.missingCatalogIds`: the rule catalog ids this pass found the
+   * device MISSING (a `missing` violation). Only those can read
+   * `installer_missing` (#9247); a device already running the agent keeps
+   * reconciling. Absent presence is treated as missing for every rule.
    */
-  evaluateDevice(deviceId: string): DeviceVendorReadiness[];
+  evaluateDevice(deviceId: string, presence?: { missingCatalogIds: ReadonlySet<string> }): DeviceVendorReadiness[];
   /** Vendors this policy's rules resolve to, in rule order. */
   vendors(): VendorKey[];
+  /**
+   * Whether the rule pointing at `catalogId` applies to this device: the same
+   * readiness `filterViolations` keeps a service violation on (#10126: gates
+   * the device's derived service watches). `installer_missing` never applies
+   * here: it blocks an install, not watching an agent already present.
+   * Fail-closed, as everywhere here.
+   */
+  isRuleApplicable(deviceId: string, catalogId: string): boolean;
   filterViolations(
     deviceId: string,
     violations: SoftwarePolicyViolation[],
   ): { violations: SoftwarePolicyViolation[]; notApplicable: NotApplicableEntry[] };
 }
+
+/** Violation types that belong to a managed rule (and so to its vendor's readiness). */
+const MANAGED_RULE_VIOLATION_TYPES: ReadonlySet<SoftwarePolicyViolation['type']> = new Set([
+  'missing',
+  'not_running',
+  'service_unverified',
+]);
 
 export async function loadManagedRuleApplicability(
   policy: { id: string; managedByLinkId: string; rules: SoftwarePolicyRulesDefinition },
@@ -63,12 +103,23 @@ export async function loadManagedRuleApplicability(
   ));
 
   const vendorByCatalogId = new Map<string, VendorKey | null>();
+  // The single OS a built-in (tenant-variable) row installs on; absent for EDR
+  // integration rows, which serve every platform the vendor supports.
+  const platformByCatalogId = new Map<string, string>();
   if (catalogIds.length > 0) {
     const rows = await db
-      .select({ id: softwareCatalog.id, integrationProvider: softwareCatalog.integrationProvider })
+      .select({
+        id: softwareCatalog.id,
+        integrationProvider: softwareCatalog.integrationProvider,
+        builtinPackageKey: softwareCatalog.builtinPackageKey,
+      })
       .from(softwareCatalog)
       .where(inArray(softwareCatalog.id, catalogIds));
-    for (const row of rows) vendorByCatalogId.set(row.id, vendorForIntegrationProvider(row.integrationProvider));
+    for (const row of rows) {
+      const pkg = vendorForCatalogPackage(row);
+      vendorByCatalogId.set(row.id, pkg?.vendor ?? null);
+      if (pkg?.platform) platformByCatalogId.set(row.id, pkg.platform);
+    }
   }
 
   // The ONE authored link this policy hangs on: its per-vendor platform list.
@@ -92,6 +143,14 @@ export async function loadManagedRuleApplicability(
     parsed.success ? parsed.data.agents.map((agent) => [agent.vendor, agent.platforms] as const) : [],
   );
 
+  // #9247: a rule whose package needs a partner-uploaded installer applies only
+  // while that package's latest version is deployable (the same test the
+  // generator's write path refuses on). Partner-level, so it is read once here.
+  const needsBinary = Array.from(vendorByCatalogId, ([catalogId, vendor]) => ({ catalogId, vendor }))
+    .filter((entry): entry is { catalogId: string; vendor: VendorKey } => entry.vendor !== null && vendorRequiresUploadedBinary(entry.vendor));
+  const deployableBinary = await readDeployableUploadedBinaryCatalogIds(db, needsBinary);
+  const installerMissing = new Set(needsBinary.filter((entry) => !deployableBinary.has(entry.catalogId)).map((entry) => entry.catalogId));
+
   const deviceById = new Map(devices.map((device) => [device.deviceId, device] as const));
   const orgIds = Array.from(new Set(devices.map((device) => device.orgId)));
   const vendors = Array.from(new Set(Array.from(vendorByCatalogId.values()).filter((v): v is VendorKey => v !== null)));
@@ -100,42 +159,79 @@ export async function loadManagedRuleApplicability(
     orgReadinessByVendor.set(vendor, await loadOrgInstallerReadiness(vendor, orgIds));
   }
 
-  function readiness(deviceId: string, catalogId: string): { vendor: VendorKey | null; result: ReadinessResult } {
+  /**
+   * `forInstall`: the question is "can it be installed here" (a `missing`
+   * violation, or a coverage row of a device without the agent). Only then
+   * does a missing uploaded installer count; a device already running the
+   * agent is judged on platform and org alone.
+   */
+  function readiness(deviceId: string, catalogId: string, forInstall: boolean): { vendor: VendorKey | null; result: ReadinessResult } {
     const vendor = vendorByCatalogId.get(catalogId) ?? null;
     if (!vendor || linkUnreadable) return { vendor, result: { ok: false, reason: 'vendor_unavailable' } };
     const device = deviceById.get(deviceId);
     if (!device) return { vendor, result: { ok: false, reason: 'org_not_mapped' } };
     const platform = evaluatePlatformReadiness(vendor, device.osType, platformsByVendor.get(vendor));
     if (!platform.ok) return { vendor, result: platform };
-    return {
-      vendor,
-      result: orgReadinessByVendor.get(vendor)?.get(device.orgId) ?? { ok: false, reason: 'org_not_mapped' },
-    };
+    // A per-OS row (Control D Windows vs macOS) only ever targets its own OS.
+    const rowPlatform = platformByCatalogId.get(catalogId);
+    if (rowPlatform !== undefined && rowPlatform !== device.osType) {
+      return { vendor, result: { ok: false, reason: 'platform_unsupported' } };
+    }
+    const org = orgReadinessByVendor.get(vendor)?.get(device.orgId) ?? { ok: false as const, reason: 'org_not_mapped' as const };
+    // Last: the device's own platform and org blockers read first (a mapping
+    // is needed whatever the installer), and a ready org is still not
+    // installable while the partner's package has no deployable installer.
+    if (org.ok && forInstall && installerMissing.has(catalogId)) {
+      return { vendor, result: { ok: false, reason: 'installer_missing' } };
+    }
+    return { vendor, result: org };
   }
 
-  const vendorRules: Array<{ catalogId: string; vendor: VendorKey }> = [];
+  // Vendor → its rule catalog ids, in rule order (several for a per-OS vendor).
+  const vendorRules: Array<{ vendor: VendorKey; catalogIds: string[] }> = [];
   for (const catalogId of catalogIds) {
     const vendor = vendorByCatalogId.get(catalogId) ?? null;
-    if (vendor && !vendorRules.some((rule) => rule.vendor === vendor)) vendorRules.push({ catalogId, vendor });
+    if (!vendor) continue;
+    const entry = vendorRules.find((rule) => rule.vendor === vendor);
+    if (entry) entry.catalogIds.push(catalogId);
+    else vendorRules.push({ vendor, catalogIds: [catalogId] });
+  }
+
+  /** The vendor's rule for this device: the one for the device's OS, else its first. */
+  function deviceCatalogId(deviceId: string, ruleCatalogIds: string[]): string {
+    const osType = deviceById.get(deviceId)?.osType;
+    return ruleCatalogIds.find((id) => {
+      const rowPlatform = platformByCatalogId.get(id);
+      return rowPlatform === undefined || rowPlatform === osType;
+    }) ?? ruleCatalogIds[0]!;
   }
 
   return {
-    evaluateDevice(deviceId) {
-      return vendorRules.map(({ catalogId, vendor }) => ({ catalogId, vendor, result: readiness(deviceId, catalogId).result }));
+    evaluateDevice(deviceId, presence) {
+      return vendorRules.map(({ vendor, catalogIds: ruleCatalogIds }) => {
+        const catalogId = deviceCatalogId(deviceId, ruleCatalogIds);
+        const forInstall = !presence || presence.missingCatalogIds.has(catalogId);
+        return { catalogId, vendor, result: readiness(deviceId, catalogId, forInstall).result };
+      });
     },
     vendors() {
       return vendorRules.map((rule) => rule.vendor);
+    },
+    isRuleApplicable(deviceId, catalogId) {
+      // Service watches serve an agent that is (or will be) present; a missing
+      // uploaded installer does not stop one already running.
+      return readiness(deviceId, catalogId, false).result.ok;
     },
     filterViolations(deviceId, violations) {
       const kept: SoftwarePolicyViolation[] = [];
       const notApplicable: NotApplicableEntry[] = [];
       for (const violation of violations) {
-        const catalogId = violation.type === 'missing' ? violation.rule?.catalogId : undefined;
+        const catalogId = MANAGED_RULE_VIOLATION_TYPES.has(violation.type) ? violation.rule?.catalogId : undefined;
         if (!catalogId) {
           kept.push(violation);
           continue;
         }
-        const { vendor, result } = readiness(deviceId, catalogId);
+        const { vendor, result } = readiness(deviceId, catalogId, violation.type === 'missing');
         if (result.ok) kept.push(violation);
         else notApplicable.push({ catalogId, vendor, reason: result.reason });
       }

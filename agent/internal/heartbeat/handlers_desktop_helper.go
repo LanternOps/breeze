@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/launchdplist"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
@@ -293,6 +293,7 @@ func (h *Heartbeat) startDesktopViaHelper(sessionID, offer string, iceServers []
 		StartGeneration:         desktopStartGenerationForHelper(payload),
 		Offer:                   offer,
 		ICEServers:              iceRaw,
+		RelayOnly:               policy.RelayOnly,
 		DisplayIndex:            displayIndex,
 		GPUVendor:               gpuVendor,
 		ClipboardHostToViewer:   &clipHostToViewer,
@@ -799,7 +800,7 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 				domain := "gui/" + uid
 				label := domain + "/com.breeze.desktop-helper-user"
 				// kickstart -k kills any existing instance and restarts it.
-				if err := exec.Command("launchctl", "kickstart", "-k", label).Run(); err == nil {
+				if err := procspawn.Command("launchctl", "kickstart", "-k", label).Run(); err == nil {
 					log.Info("kickstarted desktop helper LaunchAgent", "uid", uid)
 					return nil // let the caller's poll loop wait for the connection
 				} else {
@@ -807,7 +808,7 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 						"uid", uid, "label", label, "error", err.Error())
 				}
 				// Fallback: try bootstrap in case the plist was never loaded.
-				if err := exec.Command("launchctl", "bootstrap", domain,
+				if err := procspawn.Command("launchctl", "bootstrap", domain,
 					"/Library/LaunchAgents/com.breeze.desktop-helper-user.plist").Run(); err != nil {
 					log.Warn("launchctl bootstrap also failed",
 						"uid", uid, "domain", domain, "error", err.Error())
@@ -820,13 +821,13 @@ func (h *Heartbeat) spawnHelperForDesktop(targetSession string) error {
 				return nil // let the caller's poll loop wait for the connection
 			}
 		}
-		if err := exec.Command("launchctl", "kickstart", "-k", "loginwindow/com.breeze.desktop-helper-loginwindow").Run(); err == nil {
+		if err := procspawn.Command("launchctl", "kickstart", "-k", "loginwindow/com.breeze.desktop-helper-loginwindow").Run(); err == nil {
 			log.Info("kickstarted login-window desktop helper LaunchAgent")
 			return nil
 		}
 		// Fallback: try bootstrap in case the plist was never loaded into the loginwindow domain.
 		const loginwindowPlist = "/Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist"
-		if err := exec.Command("launchctl", "bootstrap", "loginwindow", loginwindowPlist).Run(); err == nil {
+		if err := procspawn.Command("launchctl", "bootstrap", "loginwindow", loginwindowPlist).Run(); err == nil {
 			log.Info("bootstrapped login-window desktop helper LaunchAgent")
 			return nil
 		} else {
@@ -905,7 +906,7 @@ func findGUIUserUIDs() []string {
 	if runtime.GOOS != "darwin" {
 		return nil
 	}
-	out, err := exec.Command("ps", "-axo", "uid=,comm=").Output()
+	out, err := procspawn.Command("ps", "-axo", "uid=,comm=").Output()
 	if err != nil {
 		log.Warn("failed to list processes for GUI user detection", "error", err.Error())
 		return nil
@@ -916,29 +917,22 @@ func findGUIUserUIDs() []string {
 // kickstartDarwinDesktopHelpers re-kickstarts the macOS desktop helper
 // LaunchAgents for every logged-in GUI user session. This is called after a
 // self-update restart to force helpers to reconnect to the new IPC socket
-// immediately instead of waiting for their reconnect backoff.
+// immediately instead of waiting for their reconnect backoff. A user helper
+// that is not loaded at all (the pkg postinstall's bootstrap failed, #10868)
+// is bootstrapped rather than left down until the user logs in again.
 func kickstartDarwinDesktopHelpers() {
 	if runtime.GOOS != "darwin" {
 		return
 	}
 	ensureDarwinHelperPrereqs()
 
-	uids := findGUIUserUIDs()
-	for _, uid := range uids {
-		label := "gui/" + uid + "/com.breeze.desktop-helper-user"
-		if err := exec.Command("launchctl", "kickstart", "-k", label).Run(); err != nil {
-			log.Warn("post-update: launchctl kickstart failed",
-				"uid", uid, "label", label, "error", err.Error())
-		} else {
-			log.Info("post-update: kickstarted desktop helper", "uid", uid)
-		}
-	}
+	reviveDarwinUserHelpers(defaultLaunchAgentReviver, findGUIUserUIDs())
 
 	// Also kickstart the login-window helper.
-	if err := exec.Command("launchctl", "kickstart", "-k",
-		"loginwindow/com.breeze.desktop-helper-loginwindow").Run(); err != nil {
+	if code, out := runLaunchctl("kickstart", "-k",
+		"loginwindow/com.breeze.desktop-helper-loginwindow"); code != 0 {
 		log.Warn("post-update: launchctl kickstart login-window helper failed",
-			"error", err.Error())
+			"exitCode", code, "output", out)
 	} else {
 		log.Info("post-update: kickstarted login-window desktop helper")
 	}

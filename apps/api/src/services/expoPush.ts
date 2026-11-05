@@ -305,6 +305,52 @@ export function buildTicketPush(args: {
   };
 }
 
+export const WISP_NUDGE_PUSH_TTL_SECONDS = 14_400;
+
+/**
+ * Lock-screen-safe Wisp nudge push. Adds no text of its own: title/body are
+ * the caller's (already lock-screen-safe) copy, truncated by code point so a
+ * surrogate pair is never split. `approvalIntentId` is present in `data` only
+ * when set; `concernId` is always present (null for a digest nudge).
+ */
+export function buildWispNudgePush(args: {
+  threadId: string;
+  concernId: string | null;
+  grantId: string;
+  title: string;
+  body: string;
+  deepLink: string;
+  approvalIntentId?: string | null;
+  /** Non-concern nudges collapse per kind, so a brief and a digest never replace each other. */
+  kind?: 'concern' | 'digest' | 'brief';
+}): PushSpec {
+  const clip = (s: string, n: number) => Array.from(s).slice(0, n).join('');
+  const data: Record<string, unknown> = {
+    type: 'wisp_nudge',
+    threadId: args.threadId,
+    concernId: args.concernId,
+    grantId: args.grantId,
+    deepLink: args.deepLink,
+  };
+  if (args.approvalIntentId != null) data.approvalIntentId = args.approvalIntentId;
+  return {
+    title: clip(args.title, 60),
+    body: clip(args.body, 120),
+    data,
+    ttl: WISP_NUDGE_PUSH_TTL_SECONDS,
+    channelId: 'wisp',
+    // KEEP THESE SHORT (APNs 64-byte apns-collapse-id cap): uuid inputs give
+    // 41 bytes (`wisp:` + 36), 48 (`wisp:digest:` + 36), 47 (`wisp:brief:` + 36).
+    collapseId: args.concernId
+      ? `wisp:${args.concernId}`
+      : `wisp:${args.kind === 'brief' ? 'brief' : 'digest'}:${args.threadId}`,
+    threadId: `wisp:${args.threadId}`,
+    category: 'BREEZE_WISP_NUDGE',
+    sound: 'default',
+    priority: 'normal',
+  };
+}
+
 /**
  * Purges a single dead native-APNs token, mirroring handleTicketErrors' Expo
  * cleanup. Best-effort: a failed cleanup must never surface to the caller.

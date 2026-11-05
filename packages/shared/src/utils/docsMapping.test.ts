@@ -21,6 +21,41 @@ describe('getDocsForPath', () => {
       expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai-agents/`);
     });
 
+    it('/security/detection-rules maps to the Detection rules section (not generic security)', () => {
+      const result = getDocsForPath('/security/detection-rules');
+      expect(result.label).toBe('Detection Rules');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/security/#detection-rules`);
+    });
+
+    it('/settings/ai (the AI settings hub) maps to the AI docs, not generic settings', () => {
+      const result = getDocsForPath('/settings/ai');
+      expect(result.label).toBe('AI Settings');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai/`);
+    });
+
+    it('/settings/ai-script-authoring maps to the AI script authoring docs', () => {
+      const result = getDocsForPath('/settings/ai-script-authoring');
+      expect(result.label).toBe('AI Script Authoring');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai-script-authoring/`);
+    });
+
+    it('maps /ai/wisp/thread/:id to the Wisp feature page', () => {
+      expect(getDocsForPath('/ai/wisp/thread/abc').url).toContain('/features/wisp/');
+    });
+
+    it('maps /settings/wisp-memory and /admin/wisp to the Wisp feature page', () => {
+      expect(getDocsForPath('/settings/wisp-memory').url).toBe(`${DOCS_BASE_URL}/features/wisp/#memory`);
+      expect(getDocsForPath('/admin/wisp').url).toBe(`${DOCS_BASE_URL}/features/wisp/`);
+    });
+
+    it('maps the Wisp home to the Wisp docs and the Breeze AI chat page (and its redirect hops) to the Breeze AI docs (W05 #10136)', () => {
+      expect(getDocsForPath('/wisp')).toEqual({ url: `${DOCS_BASE_URL}/features/wisp/`, label: 'Wisp' });
+      const breezeAi = { url: `${DOCS_BASE_URL}/features/breeze-ai/`, label: 'Breeze AI' };
+      expect(getDocsForPath('/ai/chat')).toEqual(breezeAi);
+      expect(getDocsForPath('/wisp/chat')).toEqual(breezeAi);
+      expect(getDocsForPath('/workspace')).toEqual(breezeAi);
+    });
+
     it('/approvals maps to AI Agents docs', () => {
       const result = getDocsForPath('/approvals');
       expect(result.label).toBe('Approvals');
@@ -31,6 +66,12 @@ describe('getDocsForPath', () => {
       const result = getDocsForPath('/ai-agents/runs');
       expect(result.label).toBe('AI Agents');
       expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai-agents/`);
+    });
+
+    it('/ai/wisp/thread/:id maps to the Wisp docs with a Wisp label (W06 #9918, W07)', () => {
+      const result = getDocsForPath('/ai/wisp/thread/abc-123');
+      expect(result.label).toBe('Wisp');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/wisp/`);
     });
 
     it('/ai-agents/runs/:id maps to AI Agents docs', () => {

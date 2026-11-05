@@ -29,6 +29,7 @@
  *     ceiling `isBoundedTagValue` enforces.
  */
 export const SENTRY_EVENT_CODES = [
+  'pax8_order_execution_result',
   // --- middleware -------------------------------------------------------
   /** A request was refused by a body-size limit (global gate or route rule). */
   'body_limit_rejected',
@@ -345,6 +346,16 @@ export const SENTRY_EVENT_CODES = [
    * would otherwise raise no alert on its own.
    */
   'tenant_erasure_refused_legal_hold',
+  /** An unresolved isolation prevents erasing its recovery records. */
+  'tenant_erasure_refused_isolation',
+  /** Forced credential suspension leaves isolation recovery to expiry and the offline code. */
+  'network_isolation_forced_token_suspension',
+  /**
+   * #10919: an isolate or release command reached delivery that is not the row
+   * the isolation service issued (the episode's command_id / release_command_id).
+   * Cancelled at claim; nothing a running service produces, so each one is worth a look.
+   */
+  'network_isolation_command_unbound',
   /**
    * Helper screenshot files could not be removed after their rows were
    * deleted (org erasure, device purge, site delete) or by the orphan sweep
@@ -389,6 +400,8 @@ export const SENTRY_EVENT_CODES = [
   'mcp_header_mismatch_rate_high',
   /** A legacy MCP session's negotiated-extension side key could not be written; that session gets no MCP Apps for its lifetime (B-W05 #6159). */
   'mcp_session_ext_write_failed',
+  /** A Tasks-declaring tools/call filed an intent but the owned reload returned nothing; the client got pending_approval (B-W06 #6160). */
+  'mcp_task_reload_missing',
 
   // --- retention --------------------------------------------------------
   /**
@@ -462,6 +475,21 @@ export const SENTRY_EVENT_CODES = [
    *  line work dates were computed in UTC instead (assembly never blocks on
    *  it). Fix the partner's timezone setting; near-midnight lines may be a day off. */
   'invoice_work_date_invalid_timezone',
+
+  // --- legacy automation → flow conversion (#5221 W06) -------------------
+  /** `publishEvent` got a publisher-supplied `occurredAt` more than 60 s in the
+   *  future. Reported only (Decision 6 residual (b)): such an instant can land
+   *  after a conversion's `switch_at` and be attempted by both engines, where
+   *  the occurrence claim then dedupes it. A run of these is a publisher clock
+   *  or a bug in the publisher's timestamp. */
+  'event_occurred_at_future',
+  /** A converted automation's event had no usable `metadata.timestamp`; both
+   *  engines fall back to "legacy prefers it" (claims dedupe). */
+  'flow_conversion_event_instant_missing',
+  /** A converted automation's event id cannot be an occurrence key (not a
+   *  uuid): legacy admits it without a claim and a switched flow does not
+   *  attempt it, so exactly one engine runs it. */
+  'flow_conversion_event_key_unbuildable',
 ] as const;
 
 /**

@@ -31,6 +31,7 @@ import { ticketComments, ticketOutbox, tickets } from '../../db/schema';
 import { pgErrorCode } from '../../utils/pgErrors';
 import { createAuditLogAsync } from '../auditService';
 import { readOrgStampingDefaultsMany } from '../orgCurrencyCore';
+import { normalizeRequesterEmail } from '../ticketRequesterEmail';
 import { getSystemStatusId } from '../ticketConfigService';
 import { emitTicketEvent } from '../ticketEvents';
 import { lockOrgTicketLinks } from '../ticketLinkLock';
@@ -84,7 +85,8 @@ export interface MergeTicketsResult {
 export function requesterKey(t: Pick<MergeTicketRow, 'requesterContactId' | 'submittedBy' | 'submitterEmail'>): string | null {
   if (t.requesterContactId) return `contact:${t.requesterContactId}`;
   if (t.submittedBy) return `portal:${t.submittedBy}`;
-  if (t.submitterEmail) return `email:${t.submitterEmail.trim().toLowerCase()}`;
+  const email = normalizeRequesterEmail(t.submitterEmail);
+  if (email) return `email:${email}`;
   return null;
 }
 

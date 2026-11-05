@@ -113,6 +113,9 @@ describe('dnsState', () => {
     [null, { state: 'pending', reason: 'never_synced' }],
     ['error', { state: 'error', reason: 'sync_error' }],
     ['success', { state: 'linked' }],
+    // Stopped at the request budget (#10018): it reached the vendor and is
+    // catching up, so it is linked, not an error.
+    ['partial', { state: 'linked' }],
     ['ok', { state: 'linked' }],
   ])('%s → %o', (lastSyncStatus, expected) => {
     expect(dnsState({ lastSyncStatus })).toEqual(expected);

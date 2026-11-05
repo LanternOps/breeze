@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { CONCERN_SEVERITIES } from '@breeze/shared';
+import { ThumbsDown, ThumbsUp } from 'lucide-react';
+import { CONCERN_FEEDBACK_NOTE_MAX, CONCERN_SEVERITIES } from '@breeze/shared';
 import type { Concern, ConcernSeverity, ConcernStatus } from '@breeze/shared';
 import {
   dismissWispConcern,
+  feedbackWispConcern,
   listWispConcerns,
   resolveWispConcern,
   snoozeWispConcern,
@@ -11,11 +13,13 @@ import {
 import { ActionError } from '@/lib/runAction';
 import { showToast } from '@/components/shared/Toast';
 import { formatRelativeTime } from '@/lib/utils';
+import { concernIdFromHash } from '../wisp/wispThreadHash';
+import { needsYouOrder } from '../wisp/wispHome';
+import { safeActivityHref } from '../wisp/wispActivity';
 
 const LIVE: ConcernStatus[] = ['open', 'snoozed'];
 const ALL: ConcernStatus[] = ['open', 'snoozed', 'resolved', 'dismissed'];
 const OUTCOME_MAX = 1000;
-const HASH_PREFIX = '#concern=';
 
 // High first.
 const SEVERITY_ORDER: ConcernSeverity[] = [...CONCERN_SEVERITIES].reverse();
@@ -28,14 +32,7 @@ const SEVERITY_DOT: Record<ConcernSeverity, string> = {
 };
 
 function readHashId(): string | null {
-  const hash = typeof window === 'undefined' ? '' : window.location.hash;
-  if (!hash.startsWith(HASH_PREFIX)) return null;
-  try {
-    const id = decodeURIComponent(hash.slice(HASH_PREFIX.length));
-    return id || null;
-  } catch {
-    return null; // malformed percent-encoding in a pasted link: ignore it, don't crash the sidebar
-  }
+  return concernIdFromHash(typeof window === 'undefined' ? '' : window.location.hash);
 }
 
 function tomorrowNineLocal(): Date {
@@ -45,7 +42,25 @@ function tomorrowNineLocal(): Date {
   return d;
 }
 
-export function WispConcernsPanel({ grantId, threadId }: { grantId: string; threadId: string }) {
+export function WispConcernsPanel({
+  grantId,
+  threadId,
+  crossOrg = false,
+  title,
+  onLoaded,
+  refreshKey = 0,
+}: {
+  grantId: string;
+  threadId: string;
+  /** List the whole grant, ignoring the org switcher (the thread page); the sidebar keeps the ambient narrowing. */
+  crossOrg?: boolean;
+  /** Replaces the panel's own title (the Wisp home heads the section itself). */
+  title?: string;
+  /** Every committed load, so a host can keep its own counts in step (W08 home "needs you"). */
+  onLoaded?: (concerns: Concern[]) => void;
+  /** Bumped by the host to reload (the thread page, when the grant's status changes — #10104). */
+  refreshKey?: number;
+}) {
   const { t } = useTranslation('ai');
   const [concerns, setConcerns] = useState<Concern[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -55,29 +70,36 @@ export function WispConcernsPanel({ grantId, threadId }: { grantId: string; thre
   const [snoozeMenuId, setSnoozeMenuId] = useState<string | null>(null);
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   const [outcome, setOutcome] = useState('');
+  const [feedbackNoteId, setFeedbackNoteId] = useState<string | null>(null);
+  const [feedbackNote, setFeedbackNote] = useState('');
   const [busy, setBusy] = useState(false);
 
   // Only the newest load may commit (grant switch, filter flip, unmount).
   const loadToken = useRef(0);
+  // A ref so an inline callback from the host never re-triggers the load.
+  const onLoadedRef = useRef(onLoaded);
+  onLoadedRef.current = onLoaded;
   const load = useCallback(async () => {
     const token = ++loadToken.current;
     try {
-      const next = await listWispConcerns(grantId, showAll ? ALL : LIVE);
+      const statuses = showAll ? ALL : LIVE;
+      const next = crossOrg ? await listWispConcerns(grantId, statuses, { crossOrg: true }) : await listWispConcerns(grantId, statuses);
       if (token !== loadToken.current) return;
       setConcerns(next);
       setLoadFailed(false);
+      onLoadedRef.current?.(next);
     } catch (err) {
       console.error('[WispConcernsPanel] loading concerns failed', err);
       if (token === loadToken.current) setLoadFailed(true);
     } finally {
       if (token === loadToken.current) setLoaded(true);
     }
-  }, [grantId, showAll]);
+  }, [grantId, showAll, crossOrg]);
 
   useEffect(() => {
     void load();
     return () => { loadToken.current++; };
-  }, [load, threadId]);
+  }, [load, threadId, refreshKey]);
 
   useEffect(() => {
     // Adopt the deep link after mount (SSR-safe: the fragment never reaches the server; #2421).
@@ -86,6 +108,17 @@ export function WispConcernsPanel({ grantId, threadId }: { grantId: string; thre
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
+
+  // A nudge link can outlive its concern's live status (resolved or dismissed
+  // meanwhile): widen to every status once so the row shows its outcome,
+  // rather than the link selecting nothing (W06 review focus 3).
+  const widenedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!loaded || loadFailed || showAll || !selectedId || widenedFor.current === selectedId) return;
+    if (concerns.some((c) => c.id === selectedId)) return;
+    widenedFor.current = selectedId;
+    setShowAll(true);
+  }, [loaded, loadFailed, showAll, selectedId, concerns]);
 
   // The hash is read-only here: `#concern=<id>` deep-links IN (w00), but this
   // panel lives in the global sidebar, so writing the hash would clobber the
@@ -112,9 +145,94 @@ export function WispConcernsPanel({ grantId, threadId }: { grantId: string; thre
   const snooze = (id: string, until: Date) =>
     run(() => snoozeWispConcern(id, grantId, until), () => setSnoozeMenuId(null));
 
+  // W06 Task 16 (w00 A34): the server's recipient lands on the row at once;
+  // the refetch that follows confirms it.
+  const giveFeedback = (id: string, useful: boolean, note?: string) =>
+    run(async () => {
+      try {
+        const recipient = note === undefined
+          ? await feedbackWispConcern(id, grantId, useful)
+          : await feedbackWispConcern(id, grantId, useful, note);
+        if (recipient) setConcerns((list) => list.map((c) => (c.id === id ? { ...c, recipient } : c)));
+      } catch (err) {
+        // 409 = already answered (another tab, the phone): runAction toasted the
+        // server's message; finish normally so the editor closes and the refetch
+        // shows the recorded choice instead of buttons that can only 409 again.
+        if (err instanceof ActionError && err.status === 409) return;
+        throw err;
+      }
+    }, () => { setFeedbackNoteId(null); setFeedbackNote(''); });
+
+  const renderFeedback = (c: Concern) => {
+    const r = c.recipient;
+    if (!r) return null;
+    // A recorded answer outlives the nudge counter: recordFeedback resets
+    // nudgeCount to 0, so check feedback before the "was it nudged" gate.
+    if (r.feedback) {
+      return (
+        <p className="mt-1 pl-3.5 text-[11px] text-muted-foreground" data-testid={`wisp-concern-feedback-given-${c.id}`}>
+          {r.feedback === 'useful' ? t('wispConcerns.feedbackGivenUseful') : t('wispConcerns.feedbackGivenNotUseful')}
+        </p>
+      );
+    }
+    if (r.nudgeCount <= 0) return null;
+    const noting = feedbackNoteId === c.id;
+    return (
+      <div className="mt-1.5 space-y-1 pl-3.5">
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            data-testid={`wisp-concern-useful-${c.id}`}
+            disabled={busy}
+            onClick={() => void giveFeedback(c.id, true)}
+            className="flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] hover:bg-muted disabled:opacity-50"
+          >
+            <ThumbsUp className="h-3 w-3" aria-hidden="true" />
+            {t('wispConcerns.useful')}
+          </button>
+          <button
+            type="button"
+            data-testid={`wisp-concern-not-useful-${c.id}`}
+            aria-expanded={noting}
+            disabled={busy}
+            onClick={() => { setFeedbackNote(''); setFeedbackNoteId(noting ? null : c.id); }}
+            className="flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] hover:bg-muted disabled:opacity-50"
+          >
+            <ThumbsDown className="h-3 w-3" aria-hidden="true" />
+            {t('wispConcerns.notUseful')}
+          </button>
+        </div>
+        {noting && (
+          <div className="flex items-center gap-1">
+            <input
+              type="text"
+              data-testid={`wisp-concern-feedback-note-${c.id}`}
+              value={feedbackNote}
+              maxLength={CONCERN_FEEDBACK_NOTE_MAX}
+              placeholder={t('wispConcerns.feedbackNotePlaceholder')}
+              aria-label={t('wispConcerns.feedbackNotePlaceholder')}
+              onChange={(e) => setFeedbackNote(e.target.value)}
+              className="min-w-0 flex-1 rounded border bg-background px-2 py-0.5 text-xs"
+            />
+            <button
+              type="button"
+              data-testid={`wisp-concern-feedback-send-${c.id}`}
+              disabled={busy}
+              onClick={() => void giveFeedback(c.id, false, feedbackNote)}
+              className="rounded bg-primary px-2 py-0.5 text-[11px] text-primary-foreground disabled:opacity-50"
+            >
+              {t('wispConcerns.feedbackSend')}
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const grouped = useMemo(
     () => SEVERITY_ORDER
-      .map((severity) => ({ severity, items: concerns.filter((c) => c.severity === severity) }))
+      // Within a severity, approvals first: they block work (W08 needsYouOrder).
+      .map((severity) => ({ severity, items: needsYouOrder(concerns.filter((c) => c.severity === severity)) }))
       .filter((g) => g.items.length > 0),
     [concerns],
   );
@@ -158,6 +276,25 @@ export function WispConcernsPanel({ grantId, threadId }: { grantId: string; thre
         {expanded && c.outcome && (
           <p className="mt-1 pl-3.5 text-[11px]" data-testid={`wisp-concern-outcome-text-${c.id}`}>{c.outcome}</p>
         )}
+        {c.approvalIntentId && (
+          <a
+            href={`/approvals#intent-${encodeURIComponent(c.approvalIntentId)}`}
+            data-testid={`wisp-concern-approval-${c.id}`}
+            className="mt-1 ml-3.5 inline-block text-[11px] font-medium text-primary underline-offset-2 hover:underline"
+          >
+            {t('wispConcerns.reviewApproval')}
+          </a>
+        )}
+        {c.signature?.startsWith('wisp-readiness:') && typeof c.evidence.href === 'string' && safeActivityHref(c.evidence.href) && (
+          <a
+            href={safeActivityHref(c.evidence.href) as string}
+            data-testid={`wisp-concern-link-${c.id}`}
+            className="mt-1 ml-3.5 inline-block text-[11px] font-medium text-primary underline-offset-2 hover:underline"
+          >
+            {t('wispConcerns.openLink')}
+          </a>
+        )}
+        {renderFeedback(c)}
         {live && (
           <div className="mt-1.5 flex flex-wrap items-center gap-1 pl-3.5">
             <div className="relative">
@@ -238,7 +375,7 @@ export function WispConcernsPanel({ grantId, threadId }: { grantId: string; thre
   return (
     <div className="space-y-2 border-b px-4 py-2 text-xs" data-testid="wisp-concerns">
       <div className="flex items-center justify-between">
-        <span className="font-medium">{t('wispConcerns.title')}</span>
+        <span className="font-medium">{title ?? t('wispConcerns.title')}</span>
         <button
           type="button"
           data-testid="wisp-concerns-filter"

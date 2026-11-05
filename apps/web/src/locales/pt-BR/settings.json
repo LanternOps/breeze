@@ -69,7 +69,8 @@
           "executing": "Em execução",
           "completed": "Concluído",
           "failed": "Falhou",
-          "rejected": "Rejeitado"
+          "rejected": "Negado",
+          "stopped": "Interrompido"
         }
       },
       "intents": {
@@ -79,6 +80,10 @@
         "categoryLabel": "Categoria",
         "categoryUnresolved": "Sugerida — nome não disponível nesta visualização"
       }
+    },
+    "headerLinks": {
+      "fixMemoryReport": "Memória de correções",
+      "fleetDesignReport": "Design de frota"
     }
   },
   "aiDataPolicy": {
@@ -213,6 +218,7 @@
       "enrollment-keys_write": "Gerar chaves de registro de dispositivos. Exige validade e pelo menos um IP de origem ou CIDR.",
       "contracts_write": "Ler, criar e editar contratos e linhas de contrato, e remover linhas. Não pode ativar, pausar nem cancelar.",
       "tickets_write": "Criar, atualizar, atribuir, alterar o status e comentar tickets. Não pode excluir nem mover tickets.",
+      "alerts_write": "Reconhecer e resolver alertas em todas as organizações acessíveis ao principal. Não permite ler os detalhes dos alertas (alerts:read), suprimi-los, dispensá-los ou excluí-los.",
       "ai_read": "Conectar-se ao endpoint MCP e usar ferramentas somente leitura. Exigido por todos os outros escopos ai:*.",
       "ai_write": "Ferramentas MCP que alteram dados.",
       "ai_execute": "Ferramentas MCP que executam ações nos dispositivos.",
@@ -258,7 +264,17 @@
     }
   },
   "partnerAiBudgets": {
-    "enable": "Ativar aplicação de orçamento de IA",
+    "aiAccess": "IA para todas as organizações",
+    "aiAccessOptions": {
+      "notSet": "Não definido, cada organização decide",
+      "on": "Ativada para todas as organizações",
+      "off": "Desativada para todas as organizações"
+    },
+    "aiAccessHelp": "Este é o botão de IA dos seus clientes, não uma configuração de orçamento. Quando definido, ele substitui o botão de IA de cada organização. Os campos de orçamento abaixo valem de qualquer forma.",
+    "offWarning": "A IA está desativada para todas as organizações deste parceiro. Chat, helper, suplementos do Office, agentes de IA e enriquecimento são recusados até você mudar isso.",
+    "offConfirmTitle": "Desativar a IA para todas as organizações?",
+    "offConfirmMessage": "Todas as organizações deste parceiro perdem a IA: chat, helper, suplementos do Office, agentes de IA e enriquecimento são recusados, e as organizações não podem reativá-la por conta própria. Nada muda até você salvar.",
+    "offConfirmAction": "Desativar IA",
     "monthlyBudget": "Orçamento mensal (US$)",
     "dailyBudget": "Orçamento diário (US$)",
     "approvalMode": "Modo de aprovação",
@@ -274,8 +290,7 @@
       "actionPlan": "Plano de ação",
       "autoApprove": "Aprovar automaticamente",
       "hybridPlan": "Plano híbrido"
-    },
-    "overridesOrgTab": "Os campos definidos aqui substituem e bloqueiam o mesmo campo na aba de IA de cada organização."
+    }
   },
   "aiBudgetThresholds": {
     "invalid": "Insira até cinco números inteiros entre 1 e 99, separados por vírgulas."
@@ -285,7 +300,7 @@
     "subtitle": "Conecte provedores, escolha quais modelos estão disponíveis e defina o modelo padrão de cada recurso de IA.",
     "forbidden": "Você não tem permissão para gerenciar provedores e modelos de IA.",
     "loadFailed": "Não foi possível carregar os provedores e modelos de IA.",
-    "workspaceNote": "O enriquecimento de conteúdo do Workspace usa o provedor de IA configurado e aparece no seu uso de IA.",
+    "workspaceNote": "A indexação de conhecimento usa o provedor de IA configurado e aparece no seu uso de IA.",
     "connections": {
       "title": "Conexões",
       "subtitle": "Para onde suas solicitações de IA são enviadas e quem paga por elas.",
@@ -742,6 +757,8 @@
   },
   "partnerDefaults": {
     "notSet": "Não definido — as organizações configuram individualmente",
+    "notSetTtl": "Não definido — padrão da plataforma; as organizações podem definir o seu",
+    "notSetMaxTtl": "Não definido — o máximo da plataforma vale para todas as organizações",
     "updatePolicy": "Política de atualização do agente",
     "automatic": "Automática",
     "manual": "Manual (bloquear atualizações automáticas)",
@@ -757,9 +774,9 @@
     "enrollment": {
       "title": "Registro de dispositivos",
       "ttl": "Validade padrão do link",
-      "ttlHint": "Pré-seleciona por quanto tempo novos links de registro e instaladores continuam válidos. As organizações podem escolher um padrão diferente.",
+      "ttlHint": "Pré-seleciona por quanto tempo novos links de registro e instaladores continuam válidos.",
       "deviceCount": "Dispositivos padrão por link",
-      "deviceCountHint": "Quantas máquinas um link de registro pode registrar por padrão. As organizações podem escolher um padrão diferente.",
+      "deviceCountHint": "Quantas máquinas um link de registro pode registrar por padrão.",
       "maxTtl": "Validade máxima do link",
       "maxTtlHint": "É um teto para o tempo de vida das chaves, não apenas para o que um administrador pode solicitar: nada emitido sob este parceiro continua utilizável por mais tempo — links de registro, convites de implantação do MCP e as credenciais filhas emitidas quando um instalador é resgatado.",
       "maxTtlWarning": "As organizações não podem aumentá-lo. Um teto curto também encurta o tempo que uma máquina tem para concluir o registro depois de resgatar um link, não apenas o tempo para baixá-lo."
@@ -785,16 +802,19 @@
   "agentVersionPins": {
     "title": "Destinos de versão da atualização",
     "description": "Fixe o agente e o watchdog em uma versão registrada específica ou deixe em <strong>Última promovida</strong> para acompanhar a versão promovida globalmente. Agente e watchdog são independentes.",
-    "partnerDescription": " Uma fixação aqui é o padrão para todas as suas organizações; uma organização pode substituí-la.",
     "organizationDescription": " Uma fixação da organização substitui o padrão do parceiro.",
     "components": {
       "agent": "Destino do agente",
       "watchdog": "Destino do watchdog"
     },
     "inheritDefault": "Herdar padrão do parceiro ({{version}})",
+    "inheritDefaultLatest": "Herdar padrão do parceiro (última promovida)",
+    "latestOverride": "Sempre a última promovida, ignorar a fixação do parceiro",
+    "latestOverrideVersion": "Sempre a última promovida ({{version}}), ignorar a fixação do parceiro",
+    "latestOrganization": "Definido para esta organização: sempre a última promovida",
     "latestVersion": "Última promovida ({{version}})",
     "latest": "Última promovida",
-    "pinnedAll": "Fixada para todas as organizações",
+    "pinnedAll": "Padrão do parceiro — as organizações podem substituí-lo",
     "overridesDefault": "Substitui o padrão do parceiro ({{version}})",
     "pinnedOrganization": "Fixada para esta organização",
     "inherited": "Herdada do parceiro: {{version}}",
@@ -903,12 +923,12 @@
     "logoPreview": "Prévia do logotipo",
     "noLogo": "Sem logotipo",
     "uploadImage": "Enviar imagem",
-    "imageHelp": "PNG, JPEG ou WebP · máx. 400 KB após codificação · redimensionada para caber em 256×256",
+    "imageHelp": "PNG, JPEG ou WebP, até 400 KB após a codificação; imagens grandes são reduzidas para 800 px.",
     "invalidSavedLogo": "Os dados salvos do logotipo são inválidos. Remova-os ou envie uma nova imagem.",
     "pasteUrl": "Ou cole a URL de uma imagem",
     "customCss": "CSS personalizado",
     "customCssPlaceholder": "/* CSS personalizado aplicado a todas as organizações filhas */",
-    "customCssHelp": "Substituições de CSS aplicadas ao portal de todas as organizações filhas."
+    "customCssHelp": "Adicionado ao portal de cada cliente, antes do CSS personalizado da própria organização, que pode substituí-lo. @import e url() sem HTTPS não são permitidos."
   },
   "partnerSecurity": {
     "notSet": "Não definido — as organizações configuram individualmente",
@@ -929,7 +949,11 @@
     "allowlistPlaceholder": "Digite um IP ou intervalo CIDR por linha. Deixe em branco para cada organização decidir.",
     "allowlistHelp": "Deixe em branco para cada organização configurar individualmente. Use a notação CIDR para intervalos. Requer um proxy reverso configurado para a API ver os IPs reais dos clientes.",
     "ipListed": "Seu IP ({{ip}}) está na lista",
-    "addCurrentIp": "Adicionar meu IP atual ({{ip}})"
+    "addCurrentIp": "Adicionar meu IP atual ({{ip}})",
+    "errors": {
+      "range": "Insira um número inteiro de {{min}} a {{max}}.",
+      "atLeast": "Insira um número inteiro igual ou maior que {{min}}."
+    }
   },
   "partnerNotifications": {
     "notSet": "Não definido — as organizações configuram individualmente",
@@ -993,7 +1017,7 @@
     "networkProxy": {
       "title": "Proxy de rede",
       "label": "Servir o proxy de rede a partir de uma origem dedicada",
-      "help": "Aplica-se a todas as organizações; as organizações não podem substituí-lo. Só tem efeito onde sua região oferece uma origem dedicada e melhora a compatibilidade com as interfaces web dos dispositivos."
+      "help": "Só tem efeito onde sua região oferece uma origem dedicada e melhora a compatibilidade com as interfaces web dos dispositivos."
     }
   },
   "partnerSettingsPage": {
@@ -1096,7 +1120,7 @@
       },
       "aiApprovals": {
         "label": "Tempo limite de aprovação de IA",
-        "description": "Quanto tempo o chat de IA aguarda a aprovação de uma ação restrita"
+        "description": "Quanto tempo o Breeze AI aguarda a aprovação de uma ação restrita"
       },
       "callerVerification": {
         "label": "Verificação de chamador",
@@ -1109,6 +1133,7 @@
     },
     "saved": "Configurações do parceiro salvas",
     "saveFailed": "Falha ao salvar as configurações",
+    "fieldRejected": "Configurações não salvas. Corrija o campo destacado e salve novamente.",
     "permissionDenied": "Você não tem permissão para ver as configurações do parceiro",
     "fetchFailed": "Falha ao buscar as configurações do parceiro",
     "genericError": "Ocorreu um erro",
@@ -1120,9 +1145,7 @@
     "title": "Configurações do parceiro",
     "description": "Configure os padrões de {{name}}.",
     "yourMsp": "seu MSP",
-    "selfSaving": "Esta seção salva as próprias alterações.",
     "saveSettings": "Salvar configurações",
-    "enforcedDescription": "Os valores definidos aqui são aplicados a todas as organizações. Deixe os campos vazios para cada organização configurar individualmente.",
     "ticketingDescription": "Configure status de chamados, padrões de SLA por prioridade, categorias e exportações de faturamento. Eles se aplicam a todas as suas organizações.",
     "modules": {
       "title": "Módulos",
@@ -1149,6 +1172,127 @@
       "topologyAiDescription": "Permitir que a Breeze AI resuma o mapa e sinalize mudanças incomuns na topologia de um local.",
       "saved": "Módulos atualizados",
       "saveFailed": "Falha ao atualizar os módulos"
+    },
+    "status": {
+      "clean": "Todas as alterações salvas · {{time}}",
+      "cleanNoTime": "Todas as alterações salvas",
+      "dirty": "Alterações não salvas em <tabs></tabs>.",
+      "invalid_one": "Corrija {{count}} campo em {{tab}} para salvar.",
+      "invalid_other": "Corrija {{count}} campos em {{tab}} para salvar.",
+      "saving": "Salvando…",
+      "partial": "Não foi possível salvar <tabs></tabs>. As outras alterações foram salvas.",
+      "failed": "Não foi possível salvar <tabs></tabs>.",
+      "autosaved": "Salvo · {{time}}",
+      "autosaveFailed": "Não foi possível salvar — tente novamente",
+      "readOnly": "Salvar exige acesso total de parceiro"
+    },
+    "validation": {
+      "retentionDays": "Informe um número inteiro de dias entre 1 e 3650."
+    },
+    "unsavedConfirm": "Você tem alterações não salvas. Sair desta página e descartá-las?",
+    "knownGuests": {
+      "added": "Convidado conhecido adicionado",
+      "removed": "Convidado conhecido removido"
+    },
+    "inheritance": {
+      "badge": {
+        "locks": "Bloqueia organizações",
+        "locksConditional": "Bloqueia organizações quando ativado",
+        "overridable": "A organização pode alterar",
+        "overridableCap": "A organização pode alterar, até {{limit}}",
+        "partnerOnly": "Para todo o parceiro"
+      },
+      "badgeHelp": {
+        "locks": "Enquanto estiver definido, todas as organizações usam o seu valor. O valor próprio da organização é ignorado.",
+        "locksConditional": "Quando ativado, todas as organizações usam o seu valor em vez do próprio. Quando desativado, usam o próprio.",
+        "overridable": "O seu valor é o padrão. Uma organização que define o próprio valor usa esse no lugar.",
+        "overridableCap": "O seu valor é o padrão. Uma organização pode definir o próprio valor, até {{limit}}.",
+        "partnerOnly": "As organizações não têm uma configuração própria. O seu valor se aplica a todas."
+      },
+      "badgeHelpLabel": "Sobre “{{badge}}” ({{field}})",
+      "legend": {
+        "title": "Como as configurações se aplicam:",
+        "locks": "todas as organizações usam o seu valor",
+        "overridable": "o seu valor é o padrão; uma organização pode definir o próprio",
+        "partnerOnly": "aplica-se a todas as organizações; não há configuração por organização"
+      },
+      "value": {
+        "on": "Ativado",
+        "off": "Desativado",
+        "minutes_one": "{{count}} minuto",
+        "minutes_other": "{{count}} minutos",
+        "hours_one": "{{count}} hora",
+        "hours_other": "{{count}} horas",
+        "days_one": "{{count}} dia",
+        "days_other": "{{count}} dias"
+      },
+      "line": {
+        "appliesToAll_one": "Aplica-se a {{count}} organização",
+        "appliesToAll_other": "Aplica-se a todas as {{count}} organizações",
+        "hadOwnValue_one": "{{count}} tinha um valor próprio",
+        "hadOwnValue_other": "{{count}} tinham um valor próprio",
+        "notSet": "Não definido.",
+        "someSetOwn_one": "{{count}} de {{total}} organizações define o próprio",
+        "someSetOwn_other": "{{count}} de {{total}} organizações definem o próprio",
+        "restUsePlatformDefault": "as demais usam o padrão da plataforma ({{value}})",
+        "orgsUsePlatformDefault": "As organizações usam o padrão da plataforma ({{value}})",
+        "noneSetOwn": "Nenhuma organização tem um valor próprio",
+        "defaultFor_one": "Padrão para {{count}} organização",
+        "defaultFor_other": "Padrão para {{count}} organizações",
+        "override_one": "{{count}} altera",
+        "override_other": "{{count}} alteram",
+        "setOwn_one": "{{count}} define o próprio",
+        "setOwn_other": "{{count}} definem o próprio",
+        "clamped_one": "{{count}} é limitada ao seu teto",
+        "clamped_other": "{{count}} são limitadas ao seu teto",
+        "notInForce": "Sem efeito (destino desativado).",
+        "orgsUseOwnDestination": "As organizações usam o próprio destino",
+        "haveOne_one": "{{count}} tem um",
+        "haveOne_other": "{{count}} têm um",
+        "partnerOnlyDefault": "O padrão da plataforma ({{value}}) se aplica a todas as organizações",
+        "partnerOnlyBlank": "Não definido. O padrão da plataforma se aplica a todas as organizações",
+        "consumerAll": "{{consumer}}: aplica-se a todas as organizações",
+        "consumerOwn_one": "{{consumer}}: {{count}} organização usa um valor próprio",
+        "consumerOwn_other": "{{consumer}}: {{count}} organizações usam um valor próprio",
+        "noOrgs": "Ainda não há organizações",
+        "savedValue": "Valor salvo:",
+        "restricted": "O detalhamento por organização exige acesso completo de parceiro"
+      },
+      "drill": {
+        "bucket": {
+          "ownValue": "Organizações com valor próprio",
+          "overrides": "Organizações que alteram o seu padrão",
+          "shadowed": "Organizações cujo valor próprio não está em vigor",
+          "clamped": "Organizações limitadas ao seu teto"
+        },
+        "loading": "Carregando organizações…",
+        "error": "Não foi possível carregar as organizações.",
+        "empty": "Nenhuma organização nesta lista.",
+        "loadMore": "Carregar mais",
+        "set": "Definido",
+        "notSet": "Não definido",
+        "inEffect": "Em vigor",
+        "notInEffect": "Fora de vigor",
+        "ownValue": "Valor próprio:",
+        "channels": "Canais",
+        "readOnly": "Somente leitura. Altere o valor de uma organização nas configurações dela."
+      },
+      "summary": {
+        "title": "Em suas organizações",
+        "locks_one": "{{count}} configuração bloqueia organizações",
+        "locks_other": "{{count}} configurações bloqueiam organizações",
+        "overridable_one": "{{count}} pode ser alterada",
+        "overridable_other": "{{count}} podem ser alteradas",
+        "differ_one": "{{count}} tem organizações que diferem dos seus padrões",
+        "differ_other": "{{count}} têm organizações que diferem dos seus padrões",
+        "noneDiffer": "Todas as organizações usam os seus valores nesta guia.",
+        "hint": "Selecione uma configuração, ou um número sob um campo, para listar as organizações.",
+        "unavailable": "O detalhamento por organização não está disponível no momento.",
+        "back": "Voltar ao resumo"
+      },
+      "fields": {
+        "defaultProvider": "Provedor de acesso remoto padrão"
+      }
     }
   },
   "partnerSendingDomains": {
@@ -1476,7 +1620,8 @@
       "approval_snapshot": "Números da aprovação",
       "approval_expires": "Prazo da aprovação",
       "approval_status": "Status da aprovação",
-      "merged_into_number": "Número do chamado de destino"
+      "merged_into_number": "Número do chamado de destino",
+      "agreement_name": "Nome do acordo"
     },
     "billingPayments": "Faturamento e pagamentos",
     "supportPortal": "Suporte e portal",
@@ -1492,7 +1637,18 @@
       "ticket_approval_requested_approver": "Solicitação de aprovação de trabalho (aprovador)",
       "ticket_approval_requested_notify": "Solicitação de aprovação de trabalho (para conhecimento)",
       "ticket_approval_decided": "Decisão sobre a aprovação de trabalho",
-      "ticket_merged": "Chamado mesclado"
+      "ticket_merged": "Chamado mesclado",
+      "ticket_comment_notification": "Aviso de resposta pública",
+      "ticket_autoresponse": "Confirmação de recebimento do chamado",
+      "ticket_resolved": "Chamado resolvido",
+      "quote_send": "Orçamento / proposta",
+      "agreement_request_send": "Solicitação de acordo",
+      "invoice_send": "Fatura",
+      "portal_invite": "Convite para o portal",
+      "staff_invite": "Convite para a equipe",
+      "invoice_autopay": "Fatura com aviso de pagamento automático",
+      "payment_reminder": "Lembrete de pagamento",
+      "payment_overdue": "Lembrete de pagamento em atraso"
     }
   },
   "inboundEmail": {
@@ -1526,9 +1682,6 @@
     "dropUnverifiedDescription": "Quando desativado, mensagens não verificadas ficam em quarentena para revisão. Quando ativado, são descartadas silenciosamente. Isso se aplica a <all>todos</all> os remetentes não verificados — inclusive clientes mapeados cuja mensagem falhe na verificação.",
     "staffForwardRouting": "Registrar encaminhamentos da equipe no cliente do remetente original",
     "staffForwardRoutingDescription": "Quando um membro da sua equipe no nível de parceiro encaminha o e-mail de um cliente para o endereço de suporte, o novo ticket é registrado na organização vinculada ao domínio do remetente original, e não na sua. O membro da equipe precisa ter acesso a essa organização. Funciona apenas para encaminhamentos feitos no Gmail e recebidos por uma caixa do Gmail conectada; não para o endereço de entrada nativo, caixas do Microsoft 365 nem encaminhamentos do Outlook.",
-    "defaultAssignee": "Responsável padrão para novos tickets recebidos",
-    "defaultAssigneeDescription": "Todo ticket novo criado a partir de um e-mail recebido é atribuído a essa pessoa, a menos que outra regra já o tenha atribuído. Se ela não tiver acesso à organização do ticket, o ticket fica sem responsável.",
-    "defaultAssigneeUnavailable": "Usuário indisponível",
     "defaultAssigneeNotAssignable": "Esse usuário não pode ser o responsável padrão. Escolha um membro ativo da sua equipe com acesso a tickets.",
     "enableAutoresponse": "Enviar resposta automática confirmando novos chamados por e-mail",
     "editEmailTemplates": "O e-mail de confirmação é editado em Modelos de e-mail.",
@@ -1587,7 +1740,20 @@
     "scopeMailbox": "Restringir esta caixa de correio (Política de Acesso ao Aplicativo)",
     "reauthRequired": "É necessário novo consentimento do administrador antes que a consulta e as respostas do Microsoft 365 sejam retomadas.",
     "pollFailing": "As últimas {{failures}} verificações desta caixa de correio falharam com um erro temporário do Microsoft 365. O Breeze continua tentando; os novos e-mails serão recebidos quando o Microsoft 365 voltar a responder.",
+    "baselineRunning": "Lendo esta caixa de correio para definir um ponto de partida. Os e-mails que já estão nela não serão importados; somente os e-mails recebidos após a conexão se tornarão tickets.",
+    "baselineSkipped_one": "{{count}} mensagem que já está nesta caixa de correio não será importada. Somente os e-mails recebidos após a conexão se tornarão tickets.",
+    "baselineSkipped_other": "{{count}} mensagens que já estão nesta caixa de correio não serão importadas. Somente os e-mails recebidos após a conexão se tornarão tickets.",
     "retest": "Testar novamente",
+    "gatewayTitle": "Gateway de e-mail (opcional)",
+    "gatewayHint": "Se o e-mail chega a esta caixa por um gateway em linha como Avanan, Mimecast, Proofpoint ou Barracuda, a verificação da Microsoft reprova e-mails legítimos. Informe o domínio de selagem ARC do gateway, o valor d= do cabeçalho ARC-Seal de uma mensagem entregue por ele, e o Breeze usará o veredito dele. Deixe vazio se você não tiver um gateway.",
+    "gatewayWarning": "Adicione apenas um gateway pelo qual todo o e-mail de entrada deste locatário seja obrigado a passar: primeiro restrinja a entrega de entrada no Exchange ao gateway com um conector. Caso contrário, o Breeze não consegue distinguir o e-mail entregue pelo gateway do enviado diretamente ao Exchange.",
+    "gatewayLabel": "Domínios de selagem ARC confiáveis",
+    "gatewayPlaceholder": "gateway.exemplo.com",
+    "gatewaySave": "Salvar lista de gateways",
+    "gatewaySaved": "Lista de gateways de e-mail salva",
+    "gatewaySaveFailed": "Não foi possível salvar a lista de gateways de e-mail.",
+    "gatewayInvalid": "\"{{value}}\" não é um nome de domínio.",
+    "gatewayTooMany": "Informe no máximo {{max}} domínios.",
     "reconnect": "Reconectar",
     "disconnect": "Desconectar",
     "empty": "Nenhuma caixa de correio conectada.",
@@ -1711,55 +1877,38 @@
   },
   "orgBrandingEditor": {
     "title": "Identidade visual",
-    "description": "Personalize a experiência do portal para {{organization}}.",
+    "description": "Logotipo, cores e CSS personalizado para o portal do cliente e os documentos de {{organization}}.",
     "save": "Salvar identidade visual",
     "saved": "Configurações de identidade visual salvas.",
+    "saveError": "Falha ao salvar a identidade visual.",
     "managedByPartner": "Gerenciado pelo parceiro",
     "logo": {
       "title": "Logotipo",
       "previewAlt": "Prévia do logotipo da organização",
       "uploadNew": "Enviar um novo logotipo",
-      "recommendation": "SVG ou PNG, recomendado 512x512",
-      "selected": "Selecionado: {{name}}"
+      "selected": "Selecionado: {{name}}",
+      "help": "Exibido no portal do cliente desta organização e nos seus orçamentos, faturas e relatórios. Deixe vazio para usar o logotipo do parceiro.",
+      "inheritedSource": "Logotipo do parceiro",
+      "remove": "Remover",
+      "loadError": "Não foi possível carregar o logotipo salvo. O envio fica desativado até que ele seja carregado.",
+      "legacyNotice": "Este logotipo foi salvo anteriormente, mas nunca foi mostrado aos clientes. Salve para começar a usá-lo ou remova-o."
     },
     "colors": {
       "primary": "Cor primária",
-      "secondary": "Cor secundária"
-    },
-    "theme": {
-      "title": "Tema",
-      "description": "O modo Sistema respeita a preferência do sistema operacional do usuário quando disponível.",
-      "options": {
-        "light": "Claro",
-        "dark": "Escuro",
-        "system": "Sistema"
-      }
-    },
-    "subdomain": {
-      "title": "Subdomínio do portal",
-      "previewUrl": "URL de prévia disponível: {{url}}"
+      "secondary": "Cor secundária",
+      "primaryInheritedSource": "Cor da marca do parceiro",
+      "primaryHelp": "Cor de destaque nos orçamentos, faturas e outros documentos para clientes desta organização. Deixe em branco para usar a cor da marca do parceiro.",
+      "primaryInvalid": "Insira uma cor hexadecimal, como #2563eb.",
+      "primaryLoadError": "Não foi possível carregar a cor primária salva. A edição fica desativada até que ela seja carregada.",
+      "secondaryInheritedSource": "Cor secundária do parceiro",
+      "secondaryHelp": "Cor dos títulos nos PDFs de orçamento desta organização, quando escura o bastante para leitura, e cor de destaque nos PDFs de relatório. Deixe em branco para usar a cor secundária do parceiro.",
+      "secondaryLoadError": "Não foi possível carregar a cor secundária salva. A edição fica desativada até que ela seja carregada."
     },
     "customCss": {
       "title": "CSS personalizado (avançado)",
       "description": "Use estilos personalizados para ajustar espaçamento, tipografia ou layout.",
-      "saveError": "Falha ao salvar o CSS personalizado.",
       "loadError": "Não foi possível carregar o CSS personalizado salvo atualmente. A edição está desativada até que isso seja carregado.",
       "saveBlockedByLoadError": "O CSS personalizado não foi salvo: não foi possível verificar o valor atual. Recarregue a página e tente novamente."
-    },
-    "preview": {
-      "action": "Visualizar",
-      "title": "Prévia do portal",
-      "description": "Rascunho ao vivo baseado nas configurações atuais de identidade visual",
-      "close": "Fechar prévia",
-      "logoAlt": "Prévia do logotipo",
-      "portalName": "Portal de {{organization}}",
-      "welcome": "Bem-vindo de volta",
-      "body": "Esta prévia reflete o rascunho atual da identidade visual do portal, incluindo as cores e o logotipo escolhidos.",
-      "openTicket": "Abrir chamado de suporte",
-      "viewDevices": "Ver lista de dispositivos",
-      "urlLabel": "URL de prévia",
-      "cssPayload": "Conteúdo do CSS personalizado",
-      "noCustomCss": "/* Nenhum CSS personalizado */"
     }
   },
   "orgDefaultsEditor": {
@@ -1767,6 +1916,12 @@
     "description": "Ajuste as políticas padrão e o comportamento de cadastro para {{organization}}.",
     "save": "Salvar padrões",
     "managedByPartner": "Gerenciado pelo parceiro",
+    "inheritance": {
+      "inherited": "Padrão herdado",
+      "overridden": "Definido para esta organização",
+      "reset": "Redefinir para o padrão",
+      "resetLabel": "Redefinir {{setting}} para o padrão"
+    },
     "policies": {
       "title": "Políticas padrão",
       "fields": {
@@ -1954,6 +2109,49 @@
         "backups_no_data": "Backups está ativado, mas ainda não há dados de backup para mostrar.",
         "dashboard_security_no_data": "O painel está ativado, mas a pontuação de segurança ainda não tem dados, então esse bloco fica vazio para seu cliente.",
         "branding_unset": "A marca do portal nunca foi definida (logotipo, cores, mensagem de boas-vindas ou contato de suporte)."
+      },
+      "tiles": {
+        "awaitingYou": "Aguardando seu cliente",
+        "devicesProtected": "Proteção de endpoints",
+        "securityScore": "Pontuação de segurança",
+        "actionItems": "Itens de ação",
+        "patchesApplied": "Patches aplicados neste mês",
+        "backup": "Último backup verificado",
+        "service": "Serviço entregue (90 dias)",
+        "support": "Suporte"
+      },
+      "tileStatus": {
+        "noData": "Ainda não disponível",
+        "notConfigured": "Não configurado",
+        "stale": "Pode estar desatualizado"
+      },
+      "bands": {
+        "strong": "Forte",
+        "good": "Boa",
+        "fair": "Regular",
+        "at_risk": "Em risco"
+      },
+      "values": {
+        "protectedOfTotal": "{{protected}} de {{total}} protegidos",
+        "awaitingCounts": "Propostas: {{proposals}} · Faturas: {{invoices}}",
+        "serviceCounts": "No prazo: {{onTime}} · Atrasados: {{late}} · Perdidos: {{missed}}",
+        "nextDue": "Próximo vencimento: {{name}}, {{date}}",
+        "openRequests_one": "{{count}} solicitação aberta",
+        "openRequests_other": "{{count}} solicitações abertas",
+        "threatCounts": "Detectados: {{detected}} · Resolvidos: {{resolved}}",
+        "unknownAll": "Ainda desconhecido para todos os {{total}} dispositivos",
+        "unknownSome_one": "{{count}} ainda desconhecido",
+        "unknownSome_other": "{{count}} ainda desconhecidos"
+      },
+      "securityRows": {
+        "openVulnerabilities": "Vulnerabilidades abertas",
+        "knownExploited": "Exploradas conhecidas (KEV)",
+        "threatEvents": "Eventos de ameaça em endpoints"
+      },
+      "backupRows": {
+        "devices": "Dispositivos com backup",
+        "breaches": "Violações de RPO / RTO abertas",
+        "providers": "Backup de terceiros"
       }
     },
     "loading": "Carregando configurações do portal…",
@@ -2098,6 +2296,7 @@
       "email": "E-mail de suporte",
       "phone": "Telefone de suporte",
       "welcomeMessage": "Mensagem de boas-vindas",
+      "welcomeMessageHelp": "Exibido no topo da página inicial do cliente no portal e na página de login do portal quando a organização usa um domínio personalizado verificado. Texto simples; as quebras de linha são mantidas.",
       "footerText": "Texto do rodapé",
       "footerTextHelp": "Exibido no fim do portal do cliente e impresso nas cotações e faturas desta organização, no lugar do rodapé dos documentos do parceiro. Deixe em branco para imprimir o rodapé do parceiro.",
       "footerTextInheritedSource": "Rodapé dos documentos do parceiro"
@@ -2384,7 +2583,7 @@
   },
   "aiUsagePage": {
     "aIUsageBudget": "Uso de IA",
-    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Monitore o uso do assistente de IA e configure limites de orçamento",
+    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Monitore o uso do Breeze AI e configure limites de orçamento",
     "budgetConfiguration": "Configuração de orçamento",
     "aIEnabled": "IA habilitada",
     "enabled": "Habilitado",
@@ -2428,7 +2627,7 @@
     "failedToLoadData": "Falha ao carregar dados",
     "failedToSaveBudget": "Falha ao salvar o orçamento",
     "failedToSave": "Falha ao salvar",
-    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Cada ferramenta que requer aprovação é bloqueada até que o usuário aprove ou rejeite.",
+    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Cada ferramenta que requer aprovação é bloqueada até que o usuário aprove ou negue.",
     "aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh": "A IA propõe um plano de várias etapas. O usuário aprova o plano inteiro de uma só vez; depois, as etapas são executadas automaticamente.",
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "As ferramentas de nível 2 são executadas automaticamente com registro de auditoria. As ferramentas de nível 3 ainda exigem aprovação.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Como o Plano de Ação, além de capturas de tela ao vivo entre as etapas e um botão Parar persistente.",
@@ -2438,7 +2637,7 @@
     "creditsRemaining": "Créditos de IA Breeze restantes",
     "defaultValue": "Padrão ({{value}})",
     "viewPartnerWideBudgets": "Orçamentos de IA do parceiro",
-    "monitorAIAssistantUsage": "Monitorar o uso do assistente de IA",
+    "monitorAIAssistantUsage": "Monitorar o uso do Breeze AI",
     "effectiveBudget": "Orçamento vigente",
     "effectiveBudgetHelp": "Os limites em vigor para esta organização agora, e onde cada um foi definido.",
     "effectiveBudgetUnavailable": "Não foi possível carregar o orçamento efetivo. Recarregue a página para tentar novamente.",
@@ -2547,7 +2746,9 @@
       "patch": "Revisa as correções pendentes e propõe o que instalar.",
       "helpdesk": "Assume chamados e propõe respostas e próximos passos.",
       "designer": "Lê toda a frota e escreve um projeto de monitoramento justificado para um técnico aprovar.",
-      "research": "Integrado. Pesquisa um problema em um dispositivo quando um técnico pede e sugere correções seguras. Nunca executa nada."
+      "research": "Integrado. Pesquisa um problema em um dispositivo quando um técnico pede e sugere correções seguras. Nunca executa nada.",
+      "researchLink": "Abrir memória de correções",
+      "designerLink": "Abrir design de frota"
     },
     "emptyState": {
       "title": "Nenhum agente ainda",
@@ -2963,10 +3164,12 @@
           "held_by_deferral": "Retida pela janela de adiamento",
           "blocked_by_category": "Excluída pelas regras de categoria do anel",
           "blocked_by_app_rule": "Bloqueada por uma regra de aplicativo",
+          "blocked_by_feature_update_policy": "Excluído pela política de atualizações de recursos do Windows do anel",
           "awaiting_manual_approval": "Aguardando aprovação manual",
           "explicitly_declined": "Recusado explicitamente",
           "no_ring_resolved": "O dispositivo não tem um anel de atualização",
           "ring_reference_invalid": "O anel de atualização da política é inválido",
+          "unsupported_user_scope": "Instalação por usuário que o Breeze ainda não consegue aplicar",
           "device_not_in_org": "O dispositivo não pertence a esta organização"
         },
         "failureClasses": {
@@ -3032,6 +3235,8 @@
           "cost": "Custo",
           "duration": "Duração",
           "trigger": "Gatilho",
+          "requestedBy": "Solicitado por",
+          "wispFor": "Wisp para {{name}}",
           "queuedAt": "Na fila",
           "startedAt": "Iniciada",
           "finishedAt": "Concluída",
@@ -3117,7 +3322,7 @@
         },
         "anomalyLink": "Abrir anomalias do dispositivo",
         "budget": {
-          "title": "Orçamento de exposição",
+          "title": "Orçamento de ações",
           "caption": "Exposição registrada — últimas {{hours}}h",
           "devices": "{{count}} de {{allowance}} dispositivos",
           "decisionsToday": "{{count}} de {{max}} decisões de política hoje",
@@ -3345,7 +3550,7 @@
       "readOnlyNote": "A execução pré-autorizada está desligada nesta instalação; estes números são apenas informativos.",
       "byOrgTruncated": "Mostrando as {{limit}} primeiras organizações por nome. Escolha uma única organização no seletor de organizações para ver as demais.",
       "thresholdPerOrgNote": "Cada organização resolve o próprio limite de promoção, por isso as execuções verificadas aparecem aqui sem uma meta. Escolha uma única organização no seletor de organizações para ver a meta dela.",
-      "approvalsLink": "Acompanhar esta solicitação na caixa de aprovações",
+      "approvalsLink": "Acompanhar esta solicitação em Aprovações",
       "ceilingHint": "As chaves no nível do parceiro são um teto, não uma concessão. O agente de cada organização precisa receber a chave separadamente — pela graduação ou editando o agente daquela organização.",
       "grantOnlyHint": "As chaves pré-autorizadas de um agente de organização só são concedidas pelo painel de graduação por um segundo aprovador, e também são revogadas ali.",
       "promote": "Promover",
@@ -3484,6 +3689,7 @@
         }
       },
       "tools": {
+        "acknowledge_network_device": "Confirmar uma mudança na rede",
         "analyze_boot_performance": "Análise de desempenho de inicialização",
         "analyze_disk_usage": "Análise de uso de disco",
         "analyze_fleet_metrics": "Análise de métricas da frota",
@@ -3491,55 +3697,154 @@
         "analyze_screen": "Análise de tela",
         "apply_cis_remediation": "Correção CIS",
         "apply_configuration_policy": "Aplicar uma política de configuração",
+        "assign_security_training": "Atribuir treinamento de segurança",
+        "browse_device_event_log": "Navegar no log de eventos de um dispositivo",
+        "browse_snapshots": "Snapshots de backup",
         "cancel_script_execution": "Cancelar uma execução de script",
         "capture_agent_pprof": "Capturar diagnósticos do agente",
+        "collect_evidence": "Coletar evidências de incidente",
         "computer_control": "Controle remoto",
         "configuration_policy_compliance": "Conformidade da política de configuração",
+        "configure_backup_sla": "Configurar SLAs de backup",
+        "configure_network_baseline": "Configurar uma linha de base de rede",
+        "configure_vault": "Configurar cofres locais",
+        "create_incident": "Criar um incidente de segurança",
+        "create_remote_session": "Iniciar uma sessão remota",
+        "create_watch": "Criar um monitoramento do Wisp",
         "delete_tenant": "Excluir uma organização",
         "detect_log_correlations": "Detectar correlações de logs",
+        "diagnose_connectivity": "Executar uma verificação de conectividade",
         "disk_cleanup": "Limpeza de disco",
         "edr_endpoint_action": "EDR: isolar, liberar ou verificar um dispositivo",
         "execute_command": "Executar um comando do sistema",
+        "execute_containment": "Conter um dispositivo",
+        "execute_dr_plan": "Executar um plano de DR",
         "execute_playbook": "Executar um playbook",
+        "export_dataset": "Exportar um conjunto de dados",
         "file_operations": "Operações com arquivos",
+        "find_proven_fixes": "Encontrar correções comprovadas",
+        "generate_incident_report": "Relatório de incidente",
         "generate_report": "Relatórios",
         "get_active_users": "Usuários ativos",
+        "get_ai_agent_run": "Detalhes da execução do agente de IA",
+        "get_alert_correlations": "Correlações de alertas",
+        "get_backup_status": "Status do backup",
+        "get_browser_security": "Segurança do navegador",
         "get_catalog_item": "Consulta de um item do catálogo",
         "get_cis_compliance": "Relatório de conformidade CIS",
         "get_cis_device_report": "Relatório CIS do dispositivo",
+        "get_compliance_status": "Status de conformidade do dispositivo",
         "get_configuration_policy": "Detalhes da política de configuração",
         "get_contract": "Detalhes do contrato",
+        "get_device_ai_activity": "Atividade de IA em um dispositivo",
+        "get_device_billing": "Linhas de cobrança do dispositivo",
         "get_device_context": "Contexto do dispositivo",
         "get_device_details": "Detalhes do dispositivo",
+        "get_device_events": "Linha do tempo de atividade do dispositivo",
+        "get_device_hardware_health": "Saúde do hardware",
+        "get_device_health": "Saúde do dispositivo informada pelo agente",
+        "get_device_software": "Software instalado",
+        "get_device_time_status": "Status da sincronização de horário",
         "get_device_vulnerabilities": "Vulnerabilidades do dispositivo",
+        "get_diagnostic_run": "Execução de diagnóstico da topologia",
         "get_dns_security": "Atividade de segurança de DNS",
+        "get_dr_execution_status": "Status da execução de DR",
+        "get_dr_plan_details": "Detalhes do plano de DR",
+        "get_edr_status": "Status do EDR",
         "get_effective_configuration": "Configuração efetiva",
+        "get_elevation_history": "Histórico de solicitações de elevação",
+        "get_executive_summary": "Resumo executivo",
+        "get_fleet_design": "Relatório do Fleet Design",
+        "get_fleet_device_stats": "Contagem de dispositivos da frota",
         "get_fleet_findings": "Constatações da frota",
         "get_fleet_health": "Saúde da frota",
+        "get_flow": "Detalhes do fluxo",
+        "get_flow_run": "Detalhes da execução do fluxo",
+        "get_huntress_agents": "Agentes do Huntress",
         "get_huntress_incidents": "Incidentes do Huntress",
         "get_huntress_status": "Status do Huntress",
+        "get_hyperv_vm_details": "Detalhes da VM do Hyper-V",
+        "get_incident_timeline": "Linha do tempo do incidente",
+        "get_interface_history": "Histórico de interfaces de rede",
         "get_invite_funnel": "Funil de convites de implantação",
         "get_invoice": "Detalhes da fatura",
+        "get_ip_history": "Histórico de endereços IP",
+        "get_link_evidence": "Evidências do link de rede",
+        "get_link_health": "Saúde do link de rede",
         "get_log_trends": "Tendências de logs",
+        "get_management_posture": "Cobertura das ferramentas de gerenciamento",
+        "get_monitor": "Detalhes do monitor",
+        "get_monitor_activity": "Atividade de violações do monitor",
+        "get_mssql_backup_status": "Status do backup do MSSQL",
+        "get_network_asset": "Detalhes do ativo de rede",
+        "get_network_asset_reachability": "Alcançabilidade do ativo de rede",
+        "get_network_changes": "Mudanças na rede",
+        "get_partner_settings_inheritance": "Herança das configurações do parceiro",
+        "get_pax8_status": "Status do Pax8",
+        "get_peripheral_activity": "Atividade de USB e periféricos",
         "get_playbook_history": "Histórico de execução do playbook",
+        "get_process_samples": "Snapshot de processos",
         "get_quote": "Detalhes da cotação",
+        "get_recent_network_changes": "Mudanças recentes na topologia",
+        "get_running_timer": "Cronômetro em execução",
         "get_s1_status": "Status do SentinelOne",
         "get_s1_threats": "Ameaças do SentinelOne",
         "get_script_details": "Detalhes do script",
         "get_script_execution": "Detalhes da execução do script",
         "get_script_execution_history": "Histórico de execução do script",
+        "get_script_proposal": "Detalhes da proposta de script",
+        "get_security_compliance": "Visões de conformidade de segurança",
         "get_security_posture": "Postura de segurança",
         "get_service_monitoring_status": "Status do monitoramento de serviços",
+        "get_site": "Detalhes do site",
+        "get_sla_breaches": "Violações de SLA de backup",
+        "get_sla_compliance_report": "Relatório de conformidade de SLA de backup",
+        "get_snmp_metrics": "Métricas de SNMP",
+        "get_software_compliance": "Conformidade de software",
+        "get_ticket_approval_status": "Status de aprovação do ticket",
+        "get_timesheet": "Folha de horas",
+        "get_topology": "Topologia de rede",
+        "get_topology_impact": "Impacto de falhas na topologia",
+        "get_topology_monitoring_status": "Status do monitoramento da topologia",
+        "get_trust_page_status": "Status da página de confiança",
         "get_user_experience_metrics": "Métricas de experiência do usuário",
+        "get_vault_status": "Status do cofre",
+        "get_vm_restore_estimate": "Estimativa de restauração de VM",
         "get_vulnerability_report": "Relatório de vulnerabilidades",
+        "instant_boot_vm": "Iniciar um backup instantaneamente como VM",
+        "link_entity": "Vincular um item a uma conversa do Wisp",
+        "list_ai_agent_runs": "Execuções de agentes de IA",
+        "list_ai_agent_schedules": "Agendamentos de agentes de IA",
+        "list_ai_agents": "Lista de agentes de IA",
+        "list_business_calendars": "Calendários de horário comercial",
+        "list_concerns": "Preocupações do Wisp",
         "list_configuration_policies": "Lista de políticas de configuração",
         "list_contracts": "Lista de contratos",
+        "list_deliverable_templates": "Modelos de entregáveis",
+        "list_deliverables": "Entregáveis de serviço",
+        "list_device_restore_point_attempts": "Tentativas de ponto de restauração",
+        "list_edr_detections": "Detecções do EDR",
+        "list_fleet_designs": "Relatórios do Fleet Design",
+        "list_flow_runs": "Execuções de fluxos",
+        "list_flows": "Lista de fluxos",
+        "list_incidents": "Incidentes de segurança",
         "list_invoices": "Lista de faturas",
+        "list_links": "Vínculos das conversas do Wisp",
+        "list_monitors": "Lista de monitores",
+        "list_network_assets": "Ativos de rede",
+        "list_org_contacts": "Contatos da organização",
+        "list_org_documents": "Documentos da organização",
         "list_organizations": "Lista de organizações",
         "list_playbooks": "Lista de playbooks",
         "list_quotes": "Lista de cotações",
+        "list_remediation_suggestions": "Sugestões de correção",
+        "list_remote_sessions": "Sessões remotas",
         "list_script_templates": "Lista de modelos de script",
         "list_scripts": "Lista de scripts",
+        "list_sites": "Lista de sites",
+        "list_ticket_routing_rules": "Regras de roteamento de tickets",
+        "list_time_entries": "Lançamentos de horas",
+        "list_time_sync_issues": "Problemas de sincronização de horário",
         "lookup_distributor_product": "Consulta de um produto do distribuidor",
         "m365_query_groups": "Grupos do Microsoft 365",
         "m365_query_intune_devices": "Dispositivos do Microsoft Intune",
@@ -3547,54 +3852,166 @@
         "m365_query_signins": "Logins do Microsoft 365",
         "m365_query_sites": "Sites do Microsoft 365",
         "m365_query_users": "Usuários do Microsoft 365",
+        "manage_accounting_sync": "Gerenciar a sincronização contábil",
         "manage_alert_rules": "Gerenciar regras de alerta",
         "manage_alerts": "Gerenciar alertas",
+        "manage_audit_baselines": "Gerenciar linhas de base de auditoria",
         "manage_automations": "Gerenciar automações",
         "manage_backup_configs": "Gerenciar configurações de backup",
+        "manage_backup_profiles": "Gerenciar perfis de backup",
+        "manage_billing_catalog": "Gerenciar a tabela de preços de cobrança",
+        "manage_billing_profiles": "Gerenciar tabelas de tarifas de cobrança",
+        "manage_billing_settings": "Gerenciar configurações de cobrança",
+        "manage_browser_policy": "Gerenciar políticas de navegador",
+        "manage_compliance_policies": "Gerenciar políticas de conformidade",
         "manage_configuration_policy": "Gerenciar políticas de configuração",
+        "manage_contract_documents": "Gerenciar acordos assinados",
+        "manage_contract_templates": "Gerenciar modelos de acordo",
         "manage_contracts": "Gerenciar contratos",
+        "manage_deliverables": "Gerenciar entregáveis de serviço",
+        "manage_delivery": "Gerenciar a entrega de alertas",
         "manage_deployments": "Gerenciar implantações",
+        "manage_device_anomalies": "Gerenciar anomalias de dispositivos",
+        "manage_device_function": "Gerenciar a função de um dispositivo",
+        "manage_device_links": "Gerenciar registros de dispositivos vinculados",
+        "manage_device_software": "Gerenciar software instalado",
+        "manage_device_warranty": "Gerenciar a garantia do dispositivo",
         "manage_dns_policy": "Gerenciar a política de DNS",
+        "manage_dr_plan": "Gerenciar planos de DR",
+        "manage_fleet_findings": "Gerenciar constatações da frota",
         "manage_groups": "Gerenciar grupos de dispositivos",
+        "manage_hyperv_checkpoints": "Gerenciar checkpoints do Hyper-V",
+        "manage_hyperv_vm": "Gerenciar VMs do Hyper-V",
         "manage_invoices": "Gerenciar faturas",
+        "manage_key_dates": "Gerenciar datas importantes",
         "manage_maintenance_windows": "Gerenciar janelas de manutenção",
+        "manage_manual_assets": "Gerenciar ativos manuais",
+        "manage_monitor_definitions": "Gerenciar definições de monitores",
         "manage_monitors": "Gerenciar monitores de disponibilidade",
+        "manage_notification_channels": "Gerenciar canais de notificação",
+        "manage_org_documents": "Gerenciar documentos da organização",
         "manage_organizations": "Gerenciar organizações",
         "manage_patches": "Gerenciar patches",
+        "manage_pax8_orders": "Gerenciar pedidos do Pax8",
+        "manage_pax8_subscriptions": "Gerenciar assinaturas do Pax8",
         "manage_peripheral_policies": "Gerenciar políticas de periféricos",
+        "manage_peripheral_policy": "Editar políticas e exceções de periféricos",
         "manage_policy_feature_link": "Vincular uma política a um recurso",
+        "manage_processes": "Gerenciar processos",
+        "manage_quotes": "Gerenciar cotações",
+        "manage_recovery_keys": "Gerenciar chaves de recuperação",
+        "manage_saved_filters": "Gerenciar filtros salvos",
+        "manage_scheduled_tasks": "Gerenciar tarefas agendadas",
+        "manage_security_policies": "Gerenciar políticas de segurança",
+        "manage_security_recommendations": "Gerenciar recomendações de segurança",
         "manage_service_monitors": "Gerenciar monitores de serviços",
         "manage_services": "Gerenciar serviços",
+        "manage_snmp_templates": "Gerenciar modelos de SNMP",
+        "manage_software_catalog": "Gerenciar o catálogo de software",
+        "manage_software_deployments": "Gerenciar implantações de software",
+        "manage_software_inventory": "Gerenciar o inventário de software",
         "manage_software_policies": "Gerenciar políticas de software",
+        "manage_software_policy": "Gerenciar listas de permissão e bloqueio de software",
         "manage_startup_items": "Gerenciar itens de inicialização",
+        "manage_support_sessions": "Gerenciar sessões do Quick Support",
+        "manage_tags": "Gerenciar tags de dispositivos",
+        "manage_tenant_variables": "Gerenciar variáveis de script",
+        "manage_ticket_attachments": "Gerenciar anexos de tickets",
+        "manage_ticket_checklist": "Gerenciar checklists de tickets",
+        "manage_ticket_checklist_templates": "Gerenciar modelos de checklist para tickets",
+        "manage_ticket_config": "Gerenciar configurações de tickets",
+        "manage_ticket_forms": "Gerenciar formulários de tickets",
+        "manage_ticket_inbox": "Gerenciar a caixa de entrada de e-mails de tickets",
+        "manage_ticket_response_templates": "Gerenciar modelos de resposta de tickets",
+        "manage_ticket_routing_rules": "Gerenciar regras de roteamento de tickets",
+        "manage_tickets": "Gerenciar tickets",
+        "manage_time_suggestions": "Gerenciar sugestões de horas",
         "manage_update_rings": "Gerenciar anéis de atualização",
         "network_discovery": "Descoberta de rede",
         "preview_configuration_change": "Pré-visualizar uma alteração de configuração",
+        "probe_network_asset": "Fazer ping em um ativo de rede",
+        "propose_script": "Propor um script",
+        "query_agent_versions": "Versões do agente",
+        "query_analytics": "Análises",
         "query_audit_log": "Consultar o log de auditoria",
+        "query_backup_sla": "Configurações de SLA de backup",
+        "query_backups": "Consulta de backups",
+        "query_c2c_connections": "Conexões de nuvem para nuvem",
         "query_change_log": "Consultar o log de alterações",
+        "query_compliance_policies": "Políticas de conformidade",
+        "query_custom_fields": "Campos personalizados",
+        "query_device_workloads": "Contêineres e VMs em um dispositivo",
         "query_devices": "Consultar dispositivos",
+        "query_dr_plans": "Lista de planos de DR",
+        "query_hyperv_vms": "Lista de VMs do Hyper-V",
         "query_monitors": "Consultar monitores",
+        "query_mssql_instances": "Instâncias do MSSQL",
+        "query_psa_status": "Status da conexão com o PSA",
+        "query_vaults": "Cofres locais",
+        "query_webhooks": "Lista de webhooks",
+        "raise_concern": "Levantar uma preocupação no Wisp",
+        "read_artifact": "Ler um resultado armazenado",
+        "recall": "Memória do Wisp",
+        "registry_operations": "Registro do Windows",
+        "reliability_feedback": "Feedback da pontuação de confiabilidade",
+        "remediate_sensitive_data": "Corrigir dados sensíveis",
+        "remediate_software_violation": "Corrigir uma violação de software",
         "remediate_vulnerability": "Corrigir uma vulnerabilidade",
+        "remember": "Salvar uma memória do Wisp",
         "remove_configuration_policy_assignment": "Remover uma atribuição de política de configuração",
+        "request_elevation": "Solicitar elevação de PAM",
+        "reset_monitor_escalation": "Redefinir a escalação do monitor",
+        "resolve_concern": "Resolver uma preocupação do Wisp",
         "resolve_device_context": "Resolver um dispositivo",
+        "restore_as_vm": "Restaurar um snapshot como VM",
+        "restore_c2c_items": "Restaurar itens de nuvem para nuvem",
+        "restore_hyperv_vm": "Restaurar uma VM do Hyper-V",
+        "restore_mssql_database": "Restaurar um banco de dados MSSQL",
+        "restore_snapshot": "Restaurar um snapshot",
+        "revoke_elevation": "Revogar elevação de PAM",
         "run_script": "Executar um script",
         "s1_isolate_device": "SentinelOne: isolar dispositivo",
         "s1_threat_action": "Ações sobre ameaças do SentinelOne",
         "search_agent_logs": "Pesquisar nos logs do agente",
         "search_catalog": "Pesquisar no catálogo de produtos",
+        "search_documentation": "Pesquisar na documentação",
         "search_logs": "Pesquisar nos logs do dispositivo",
+        "search_packages": "Pesquisar pacotes de software",
+        "search_pax8_products": "Pesquisar produtos do Pax8",
+        "search_script_library": "Pesquisar na biblioteca de scripts",
         "security_scan": "Verificação de segurança",
         "set_agent_log_level": "Definir o nível de log do agente",
         "set_device_context": "Definir o contexto do dispositivo",
+        "snooze_concern": "Adiar uma preocupação do Wisp",
         "sync_edr_data": "Sincronizar dados de EDR",
         "sync_huntress_data": "Sincronizar dados do Huntress",
         "system_cleanup": "Limpeza do sistema",
-        "take_screenshot": "Tirar uma captura de tela"
+        "take_screenshot": "Tirar uma captura de tela",
+        "test_ticket_routing_rule": "Testar uma regra de roteamento de tickets",
+        "test_webhook": "Enviar um webhook de teste",
+        "trigger_agent_restart": "Reiniciar um agente",
+        "trigger_agent_upgrade": "Atualizar um agente",
+        "trigger_backup": "Executar um backup",
+        "trigger_c2c_sync": "Executar uma sincronização de nuvem para nuvem",
+        "trigger_hyperv_backup": "Fazer backup de uma VM do Hyper-V",
+        "trigger_mssql_backup": "Fazer backup de um banco de dados MSSQL",
+        "trigger_vault_sync": "Sincronizar um cofre local",
+        "validate_flow": "Validar um fluxo",
+        "verify_mssql_backup": "Verificar um backup do MSSQL",
+        "workspace_cancel": "Cancelar o sandbox de análise",
+        "workspace_collect": "Coletar arquivos do sandbox",
+        "workspace_run": "Executar um script no sandbox",
+        "workspace_stage": "Preparar arquivos no sandbox"
       },
       "actions": {
         "apply_cis_remediation": {
           "apply": "Aplicar a correção CIS",
           "rollback": "Reverter a correção CIS"
+        },
+        "browse_device_event_log": {
+          "get_event": "Detalhes do evento",
+          "list_logs": "Listar logs de eventos",
+          "query": "Consultar entradas do log de eventos"
         },
         "computer_control": {
           "double_click": "Clique duplo",
@@ -3611,9 +4028,22 @@
           "status": "Status de conformidade",
           "summary": "Resumo de conformidade"
         },
+        "configure_backup_sla": {
+          "create": "Criar um SLA de backup",
+          "update": "Atualizar um SLA de backup"
+        },
+        "configure_vault": {
+          "create": "Criar um cofre local",
+          "update": "Atualizar um cofre local"
+        },
         "disk_cleanup": {
           "execute": "Executar a limpeza de disco",
           "preview": "Pré-visualizar a limpeza de disco"
+        },
+        "edr_endpoint_action": {
+          "isolate": "Isolar um dispositivo",
+          "scan": "Executar uma verificação do EDR",
+          "unisolate": "Liberar um dispositivo do isolamento"
         },
         "execute_command": {
           "event_logs_list": "Listar logs de eventos",
@@ -3645,16 +4075,44 @@
           "list": "Listar relatórios",
           "update": "Atualizar um relatório"
         },
+        "get_alert_correlations": {
+          "analyze": "Analisar alertas para correlação",
+          "by_alert": "Correlações de um alerta",
+          "evaluation": "Qualidade da correlação",
+          "explain": "Explicar um grupo de correlação",
+          "get": "Detalhes do grupo de correlação",
+          "groups": "Listar grupos de correlação",
+          "links": "Vínculos de correlação"
+        },
         "get_dns_security": {
           "allowed": "Atividade de DNS permitida",
           "blocked": "Atividade de DNS bloqueada",
           "redirected": "Atividade de DNS redirecionada"
+        },
+        "get_fleet_health": {
+          "evaluation": "Avaliação de confiabilidade",
+          "history": "Histórico de confiabilidade",
+          "list": "Listar pontuações de confiabilidade dos dispositivos",
+          "offenders": "Maiores ofensores de confiabilidade",
+          "org_summary": "Resumo de confiabilidade da organização"
         },
         "get_service_monitoring_status": {
           "known_services": "Serviços conhecidos",
           "results": "Resultados do monitoramento",
           "status": "Status do monitoramento",
           "summary": "Resumo do monitoramento"
+        },
+        "get_snmp_metrics": {
+          "dashboard": "Painel de SNMP",
+          "history": "Histórico de métricas de SNMP"
+        },
+        "manage_accounting_sync": {
+          "customers": "Listar clientes contábeis",
+          "income_accounts": "Listar contas de receita",
+          "mappings": "Listar mapeamentos contábeis",
+          "owed_operations": "Listar operações de sincronização pendentes",
+          "remote_candidates": "Buscar registros do provedor para vincular",
+          "status": "Ver o status da sincronização contábil"
         },
         "manage_alert_rules": {
           "alert_summary": "Resumo de alertas",
@@ -3674,6 +4132,11 @@
           "resolve": "Resolver um alerta",
           "suppress": "Suprimir um alerta"
         },
+        "manage_audit_baselines": {
+          "compliance": "Conformidade da linha de base de auditoria",
+          "device_results": "Resultados de auditoria do dispositivo",
+          "list": "Listar linhas de base de auditoria"
+        },
         "manage_automations": {
           "create": "Criar uma automação",
           "delete": "Excluir uma automação",
@@ -3691,12 +4154,70 @@
           "list": "Listar configurações de backup",
           "update": "Atualizar uma configuração de backup"
         },
+        "manage_backup_profiles": {
+          "create": "Criar um perfil de backup",
+          "delete": "Excluir um perfil de backup",
+          "get": "Detalhes do perfil de backup",
+          "list": "Listar perfis de backup",
+          "update": "Atualizar um perfil de backup"
+        },
+        "manage_billing_catalog": {
+          "archive_item": "Arquivar um item da tabela de preços",
+          "create_item": "Criar um item da tabela de preços",
+          "remove_org_price": "Remover um preço da organização",
+          "remove_price": "Remover um preço",
+          "set_bundle_components": "Definir os componentes do pacote",
+          "set_org_price": "Definir um preço da organização",
+          "set_price": "Definir um preço",
+          "update_item": "Atualizar um item da tabela de preços"
+        },
+        "manage_billing_profiles": {
+          "archive": "Arquivar uma tabela de tarifas",
+          "clear_org_profile": "Limpar a tabela de tarifas de uma organização",
+          "clone": "Clonar uma tabela de tarifas",
+          "create": "Criar uma tabela de tarifas",
+          "create_work_type": "Criar um tipo de trabalho",
+          "get": "Detalhes da tabela de tarifas",
+          "get_org_profile": "Tabela de tarifas da organização",
+          "list": "Listar tabelas de tarifas",
+          "list_work_types": "Listar tipos de trabalho",
+          "set_org_profile": "Definir a tabela de tarifas de uma organização",
+          "set_rows": "Definir as linhas da tabela de tarifas",
+          "update": "Atualizar uma tabela de tarifas",
+          "update_work_type": "Atualizar um tipo de trabalho"
+        },
+        "manage_billing_settings": {
+          "currency_impact": "Pré-visualizar uma mudança de moeda",
+          "get_org": "Configurações de cobrança da organização",
+          "get_partner": "Configurações de cobrança do parceiro",
+          "reporting_totals": "Totais dos relatórios de cobrança",
+          "update_org": "Atualizar as configurações de cobrança da organização",
+          "update_partner": "Atualizar as configurações de cobrança do parceiro"
+        },
+        "manage_browser_policy": {
+          "apply": "Aplicar uma política de navegador",
+          "create": "Criar uma política de navegador",
+          "list": "Listar políticas de navegador",
+          "update": "Atualizar uma política de navegador"
+        },
+        "manage_compliance_policies": {
+          "deactivate": "Desativar uma política de conformidade"
+        },
         "manage_configuration_policy": {
           "activate": "Ativar uma política de configuração",
           "create": "Criar uma política de configuração",
           "deactivate": "Desativar uma política de configuração",
           "delete": "Excluir uma política de configuração",
           "update": "Atualizar uma política de configuração"
+        },
+        "manage_contract_documents": {
+          "list": "Listar acordos assinados"
+        },
+        "manage_contract_templates": {
+          "get": "Detalhes do modelo de acordo",
+          "get_version": "Versão do modelo de acordo",
+          "list": "Listar modelos de acordo",
+          "usage": "Uso do modelo de acordo"
         },
         "manage_contracts": {
           "activate": "Ativar um contrato",
@@ -3705,10 +4226,34 @@
           "create_draft": "Criar um rascunho de contrato",
           "delete_draft": "Excluir um rascunho de contrato",
           "pause": "Pausar um contrato",
+          "preview_invoice": "Pré-visualizar a próxima fatura do contrato",
           "remove_line": "Remover uma linha de contrato",
           "resume": "Retomar um contrato",
           "update": "Atualizar um contrato",
           "update_line": "Atualizar uma linha de contrato"
+        },
+        "manage_deliverables": {
+          "apply_template": "Aplicar um modelo de entregável",
+          "create": "Criar um entregável",
+          "deactivate": "Desativar um entregável",
+          "deliver": "Marcar um entregável como entregue",
+          "link_evidence": "Vincular evidências de entrega",
+          "reopen": "Reabrir um entregável",
+          "reschedule": "Reagendar um entregável",
+          "update": "Atualizar um entregável",
+          "waive": "Dispensar um entregável"
+        },
+        "manage_delivery": {
+          "create_escalation": "Criar uma regra de escalação",
+          "create_routing": "Criar uma rota de entrega",
+          "delete_escalation": "Excluir uma regra de escalação",
+          "delete_routing": "Excluir uma rota de entrega",
+          "list_escalation": "Listar regras de escalação",
+          "list_routing": "Listar rotas de entrega",
+          "resolve": "Resolver a entrega de alertas",
+          "set_default": "Definir a rota de entrega padrão",
+          "update_escalation": "Atualizar uma regra de escalação",
+          "update_routing": "Atualizar uma rota de entrega"
         },
         "manage_deployments": {
           "cancel": "Cancelar uma implantação",
@@ -3720,11 +4265,48 @@
           "resume": "Retomar uma implantação",
           "start": "Iniciar uma implantação"
         },
+        "manage_device_anomalies": {
+          "dismiss": "Ignorar uma anomalia",
+          "list": "Listar anomalias",
+          "promote": "Promover uma anomalia a alerta",
+          "resolve": "Resolver uma anomalia"
+        },
+        "manage_device_function": {
+          "get": "Função do dispositivo"
+        },
+        "manage_device_links": {
+          "create": "Vincular registros de dispositivos",
+          "dissolve": "Desfazer o vínculo de um dispositivo",
+          "for_device": "Vínculos de um dispositivo",
+          "get": "Detalhes do vínculo do dispositivo",
+          "list": "Listar vínculos de dispositivos",
+          "update": "Atualizar um vínculo de dispositivo"
+        },
+        "manage_device_software": {
+          "update": "Atualizar um aplicativo"
+        },
+        "manage_device_warranty": {
+          "expiring": "Listar garantias prestes a expirar",
+          "get": "Garantia do dispositivo",
+          "refresh": "Atualizar a garantia de um dispositivo"
+        },
         "manage_dns_policy": {
           "add_allow": "Permitir um domínio",
           "add_block": "Bloquear um domínio",
           "remove_allow": "Remover um domínio permitido",
           "remove_block": "Remover um domínio bloqueado"
+        },
+        "manage_dr_plan": {
+          "add_group": "Adicionar um grupo ao plano",
+          "create_plan": "Criar um plano de DR",
+          "delete_group": "Excluir um grupo do plano",
+          "update_group": "Atualizar um grupo do plano",
+          "update_plan": "Atualizar um plano de DR"
+        },
+        "manage_fleet_findings": {
+          "acknowledge": "Confirmar uma constatação da frota",
+          "dismiss": "Ignorar uma constatação da frota",
+          "reopen": "Reabrir uma constatação da frota"
         },
         "manage_groups": {
           "add_devices": "Adicionar dispositivos a um grupo",
@@ -3736,6 +4318,19 @@
           "preview": "Pré-visualizar a participação no grupo",
           "remove_devices": "Remover dispositivos de um grupo",
           "update": "Atualizar um grupo de dispositivos"
+        },
+        "manage_hyperv_checkpoints": {
+          "apply": "Aplicar um checkpoint",
+          "create": "Criar um checkpoint",
+          "delete": "Excluir um checkpoint"
+        },
+        "manage_hyperv_vm": {
+          "force_stop": "Forçar a parada de uma VM",
+          "pause": "Pausar uma VM",
+          "resume": "Retomar uma VM",
+          "save": "Salvar o estado de uma VM",
+          "start": "Iniciar uma VM",
+          "stop": "Parar uma VM"
         },
         "manage_invoices": {
           "add_bundle_line": "Adicionar uma linha de pacote",
@@ -3749,11 +4344,18 @@
           "delete_draft": "Excluir um rascunho de fatura",
           "issue": "Emitir uma fatura",
           "record_payment": "Registrar um pagamento",
+          "refresh_time_lines": "Atualizar as linhas de horas",
           "remove_line": "Remover uma linha de fatura",
           "update_header": "Atualizar os detalhes da fatura",
           "update_line": "Atualizar uma linha de fatura",
           "void": "Anular uma fatura",
           "void_payment": "Anular um pagamento"
+        },
+        "manage_key_dates": {
+          "create": "Criar uma data importante",
+          "delete": "Excluir uma data importante",
+          "list": "Listar datas importantes",
+          "update": "Atualizar uma data importante"
         },
         "manage_maintenance_windows": {
           "active_now": "Janelas de manutenção ativas",
@@ -3763,11 +4365,41 @@
           "list": "Listar janelas de manutenção",
           "update": "Atualizar uma janela de manutenção"
         },
+        "manage_manual_assets": {
+          "create": "Criar um ativo manual",
+          "delete": "Excluir um ativo manual",
+          "link": "Vincular um ativo manual",
+          "list": "Listar ativos manuais",
+          "unlink": "Desvincular um ativo manual",
+          "update": "Atualizar um ativo manual"
+        },
+        "manage_monitor_definitions": {
+          "attach": "Associar uma definição de monitor",
+          "create": "Criar uma definição de monitor",
+          "delete": "Excluir uma definição de monitor",
+          "describe": "Descrever as opções de definição de monitor",
+          "detach": "Desassociar uma definição de monitor",
+          "disable": "Desabilitar uma definição de monitor",
+          "enable": "Habilitar uma definição de monitor",
+          "update": "Atualizar uma definição de monitor"
+        },
         "manage_monitors": {
           "create": "Criar um monitor",
           "delete": "Excluir um monitor",
           "get": "Detalhes do monitor",
           "update": "Atualizar um monitor"
+        },
+        "manage_notification_channels": {
+          "create": "Criar um canal de notificação",
+          "delete": "Excluir um canal de notificação",
+          "list": "Listar canais de notificação",
+          "test": "Testar um canal de notificação",
+          "update": "Atualizar um canal de notificação"
+        },
+        "manage_org_documents": {
+          "set_portal_visibility": "Definir a visibilidade no portal",
+          "supersede": "Substituir um documento",
+          "update_metadata": "Atualizar os detalhes do documento"
         },
         "manage_organizations": {
           "add_contact": "Adicionar um contato da organização",
@@ -3781,6 +4413,7 @@
           "compliance": "Conformidade de patches",
           "decline": "Recusar um patch",
           "defer": "Adiar um patch",
+          "device_history": "Histórico de patches do dispositivo",
           "install": "Instalar um patch",
           "list": "Listar patches",
           "rollback": "Reverter um patch",
@@ -3793,11 +4426,68 @@
           "list": "Listar políticas de periféricos",
           "update": "Atualizar uma política de periféricos"
         },
+        "manage_peripheral_policy": {
+          "add_exception": "Adicionar uma exceção de periférico",
+          "create": "Criar uma política de periféricos",
+          "disable": "Desabilitar uma política de periféricos",
+          "remove_exception": "Remover uma exceção de periférico",
+          "update": "Atualizar uma política de periféricos"
+        },
         "manage_policy_feature_link": {
           "add": "Vincular uma política a um recurso",
+          "describe": "Descrever vínculos de recursos da política",
           "list": "Listar vínculos de políticas",
           "remove": "Remover um vínculo de política",
           "update": "Atualizar um vínculo de política"
+        },
+        "manage_processes": {
+          "kill": "Encerrar um processo",
+          "list": "Listar processos"
+        },
+        "manage_quotes": {
+          "add_block": "Adicionar um bloco à cotação",
+          "add_catalog_line": "Adicionar uma linha do catálogo",
+          "add_manual_line": "Adicionar uma linha manual",
+          "create_draft": "Criar um rascunho de cotação",
+          "create_pay_link": "Criar um link de pagamento",
+          "decline": "Recusar uma cotação",
+          "delete_block": "Excluir um bloco da cotação",
+          "delete_draft": "Excluir um rascunho de cotação",
+          "move_line": "Mover uma linha da cotação",
+          "remove_line": "Remover uma linha da cotação",
+          "reorder_blocks": "Reordenar os blocos da cotação",
+          "reorder_lines": "Reordenar as linhas da cotação",
+          "send": "Enviar uma cotação",
+          "update": "Atualizar uma cotação",
+          "update_block": "Atualizar um bloco da cotação",
+          "update_line": "Atualizar uma linha da cotação"
+        },
+        "manage_recovery_keys": {
+          "collect": "Coletar chaves de recuperação",
+          "list": "Listar chaves de recuperação",
+          "rotate": "Rotacionar uma chave de recuperação"
+        },
+        "manage_saved_filters": {
+          "create": "Criar um filtro salvo",
+          "delete": "Excluir um filtro salvo",
+          "get": "Detalhes do filtro salvo",
+          "list": "Listar filtros salvos"
+        },
+        "manage_scheduled_tasks": {
+          "disable": "Desabilitar uma tarefa agendada",
+          "enable": "Habilitar uma tarefa agendada",
+          "list": "Listar tarefas agendadas",
+          "run": "Executar uma tarefa agendada"
+        },
+        "manage_security_policies": {
+          "create": "Criar uma política de segurança",
+          "list": "Listar políticas de segurança",
+          "update": "Atualizar uma política de segurança"
+        },
+        "manage_security_recommendations": {
+          "complete": "Concluir uma recomendação",
+          "dismiss": "Ignorar uma recomendação",
+          "list": "Listar recomendações"
         },
         "manage_service_monitors": {
           "list": "Listar monitores de serviços"
@@ -3808,8 +4498,55 @@
           "start": "Iniciar um serviço",
           "stop": "Parar um serviço"
         },
+        "manage_snmp_templates": {
+          "browse_oids": "Navegar pelos OIDs de SNMP",
+          "create": "Criar um modelo de SNMP",
+          "delete": "Excluir um modelo de SNMP",
+          "get": "Detalhes do modelo de SNMP",
+          "list": "Listar modelos de SNMP",
+          "update": "Atualizar um modelo de SNMP",
+          "validate_oids": "Validar OIDs de SNMP"
+        },
+        "manage_software_catalog": {
+          "add_install_method": "Adicionar um método de instalação",
+          "add_version": "Adicionar uma versão",
+          "archive": "Arquivar um item do catálogo",
+          "create": "Criar um item do catálogo",
+          "delete_install_method": "Excluir um método de instalação",
+          "get": "Detalhes do item do catálogo",
+          "import_package": "Importar um pacote",
+          "list": "Listar itens do catálogo",
+          "promote_version": "Promover uma versão",
+          "update": "Atualizar um item do catálogo",
+          "update_install_method": "Atualizar um método de instalação",
+          "update_version": "Atualizar uma versão"
+        },
+        "manage_software_deployments": {
+          "cancel": "Cancelar uma implantação de software",
+          "create": "Criar uma implantação de software",
+          "get": "Detalhes da implantação de software",
+          "list": "Listar implantações de software",
+          "results": "Resultados da implantação de software",
+          "retry": "Tentar novamente uma implantação de software",
+          "summary": "Resumo da implantação de software"
+        },
+        "manage_software_inventory": {
+          "approve": "Aprovar um software",
+          "clear": "Limpar uma decisão sobre software",
+          "deny": "Bloquear um software",
+          "devices": "Dispositivos com o software",
+          "list": "Listar o inventário de software",
+          "names": "Pesquisar nomes de software"
+        },
         "manage_software_policies": {
           "create": "Criar uma política de software",
+          "get": "Detalhes da política de software",
+          "list": "Listar políticas de software",
+          "update": "Atualizar uma política de software"
+        },
+        "manage_software_policy": {
+          "create": "Criar uma política de software",
+          "delete": "Excluir uma política de software",
           "get": "Detalhes da política de software",
           "list": "Listar políticas de software",
           "update": "Atualizar uma política de software"
@@ -3818,11 +4555,160 @@
           "disable": "Desabilitar um item de inicialização",
           "enable": "Habilitar um item de inicialização"
         },
+        "manage_support_sessions": {
+          "end": "Encerrar uma sessão de suporte",
+          "get": "Detalhes da sessão de suporte",
+          "list": "Listar sessões de suporte"
+        },
+        "manage_tags": {
+          "list": "Listar tags de dispositivos"
+        },
+        "manage_tenant_variables": {
+          "list": "Listar variáveis de script"
+        },
+        "manage_ticket_attachments": {
+          "attach_from_artifact": "Anexar um resultado armazenado",
+          "delete": "Excluir um anexo",
+          "list": "Listar anexos",
+          "read_content": "Ler um anexo"
+        },
+        "manage_ticket_checklist": {
+          "add_item": "Adicionar um item ao checklist",
+          "apply_template": "Aplicar um modelo de checklist",
+          "delete_item": "Excluir um item do checklist",
+          "duplicate_template": "Duplicar um modelo de checklist",
+          "get_template": "Detalhes do modelo de checklist",
+          "list": "Listar itens do checklist",
+          "list_templates": "Listar modelos de checklist",
+          "reorder": "Reordenar itens do checklist",
+          "save_as_template": "Salvar como modelo de checklist",
+          "update_item": "Atualizar um item do checklist"
+        },
+        "manage_ticket_checklist_templates": {
+          "add_item": "Adicionar um item ao modelo",
+          "create": "Criar um modelo de checklist",
+          "delete": "Excluir um modelo de checklist",
+          "get": "Detalhes do modelo de checklist",
+          "list": "Listar modelos de checklist",
+          "remove_item": "Remover um item do modelo",
+          "reorder_items": "Reordenar itens do modelo",
+          "update": "Atualizar um modelo de checklist",
+          "update_item": "Atualizar um item do modelo"
+        },
+        "manage_ticket_config": {
+          "create_category": "Criar uma categoria de ticket",
+          "create_domain": "Criar um domínio de ticket",
+          "create_status": "Criar um status de ticket",
+          "delete_category": "Excluir uma categoria de ticket",
+          "delete_domain": "Excluir um domínio de ticket",
+          "get_config": "Configuração de tickets",
+          "get_org_settings": "Configurações de tickets da organização",
+          "list_categories": "Listar categorias de tickets",
+          "list_domains": "Listar domínios de tickets",
+          "reorder_categories": "Reordenar categorias de tickets",
+          "reorder_statuses": "Reordenar status de tickets",
+          "set_priorities": "Definir prioridades de tickets",
+          "update_category": "Atualizar uma categoria de ticket",
+          "update_domain": "Atualizar um domínio de ticket",
+          "update_org_settings": "Atualizar as configurações de tickets da organização",
+          "update_status": "Atualizar um status de ticket"
+        },
+        "manage_ticket_forms": {
+          "available": "Formulários de tickets disponíveis",
+          "create": "Criar um formulário de ticket",
+          "delete": "Excluir um formulário de ticket",
+          "list": "Listar formulários de tickets",
+          "update": "Atualizar um formulário de ticket"
+        },
+        "manage_ticket_inbox": {
+          "convert": "Converter um e-mail em ticket",
+          "dismiss": "Ignorar um e-mail",
+          "list": "Listar e-mails não alocados"
+        },
+        "manage_ticket_response_templates": {
+          "create": "Criar um modelo de resposta",
+          "delete": "Excluir um modelo de resposta",
+          "list": "Listar modelos de resposta",
+          "update": "Atualizar um modelo de resposta"
+        },
+        "manage_ticket_routing_rules": {
+          "create": "Criar uma regra de roteamento",
+          "delete": "Excluir uma regra de roteamento",
+          "reorder": "Reordenar regras de roteamento",
+          "update": "Atualizar uma regra de roteamento"
+        },
+        "manage_tickets": {
+          "assign": "Atribuir um ticket",
+          "bulk_update": "Atualizar tickets em massa",
+          "comment": "Comentar em um ticket",
+          "create": "Criar um ticket",
+          "create_from_alert": "Criar um ticket a partir de um alerta",
+          "delete_comment": "Excluir um comentário do ticket",
+          "draft": "Redigir um ticket",
+          "edit_comment": "Editar um comentário do ticket",
+          "get": "Detalhes do ticket",
+          "link_alert": "Vincular um alerta a um ticket",
+          "link_device": "Vincular um dispositivo a um ticket",
+          "link_ticket": "Vincular tickets relacionados",
+          "list": "Listar tickets",
+          "list_links": "Listar vínculos do ticket",
+          "list_work_types": "Listar tipos de trabalho",
+          "log_time_entry": "Lançar horas",
+          "merge": "Mesclar tickets",
+          "merge_preview": "Pré-visualizar a mesclagem de tickets",
+          "move_org": "Mover um ticket para outra organização",
+          "start_timer": "Iniciar o cronômetro de um ticket",
+          "stop_timer": "Parar o cronômetro de um ticket",
+          "unlink_alert": "Desvincular um alerta de um ticket",
+          "unlink_ticket": "Desvincular tickets relacionados",
+          "update_fields": "Atualizar os campos do ticket",
+          "update_status": "Atualizar o status do ticket",
+          "update_time_entry": "Atualizar um lançamento de horas"
+        },
+        "manage_time_suggestions": {
+          "confirm": "Confirmar uma sugestão de horas",
+          "dismiss": "Ignorar uma sugestão de horas",
+          "list": "Listar sugestões de horas",
+          "undo": "Restaurar uma sugestão ignorada"
+        },
         "manage_update_rings": {
           "create": "Criar um anel de atualização",
           "get": "Detalhes do anel de atualização",
           "list": "Listar anéis de atualização",
           "update": "Atualizar um anel de atualização"
+        },
+        "query_agent_versions": {
+          "check_upgrades": "Verificar atualizações dos dispositivos",
+          "list_versions": "Listar versões do agente"
+        },
+        "query_analytics": {
+          "capacity_predictions": "Previsões de capacidade",
+          "sla_compliance": "Conformidade de SLA",
+          "sla_definitions": "Definições de SLA"
+        },
+        "query_backups": {
+          "list_configs": "Listar configurações de backup",
+          "list_jobs": "Listar tarefas de backup",
+          "list_policies": "Listar políticas de backup"
+        },
+        "query_custom_fields": {
+          "get_device_values": "Valores dos campos personalizados de um dispositivo",
+          "list_definitions": "Listar definições de campos personalizados"
+        },
+        "registry_operations": {
+          "create_key": "Criar uma chave do registro",
+          "delete_key": "Excluir uma chave do registro",
+          "get_value": "Ler um valor do registro",
+          "read_key": "Ler uma chave do registro",
+          "set_value": "Definir um valor do registro"
+        },
+        "remediate_sensitive_data": {
+          "accept_risk": "Aceitar o risco",
+          "encrypt": "Criptografar um arquivo",
+          "false_positive": "Marcar como falso positivo",
+          "mark_remediated": "Marcar como corrigido",
+          "quarantine": "Colocar um arquivo em quarentena",
+          "secure_delete": "Excluir um arquivo com segurança"
         },
         "s1_threat_action": {
           "kill": "Encerrar o processo de uma ameaça",
@@ -3840,7 +4726,32 @@
         "system_cleanup": {
           "list": "Listar ações de limpeza do sistema",
           "run": "Executar limpeza do sistema",
-          "status": "Status da limpeza do sistema"
+          "status": "Status da limpeza do sistema",
+          "cancel": "Cancelar execução da limpeza do sistema"
+        },
+        "manage_pax8_orders": {
+          "list": "Listar pedidos do Pax8",
+          "get": "Obter pedido do Pax8",
+          "create_draft": "Criar rascunho de pedido do Pax8",
+          "add_line": "Adicionar linha ao pedido do Pax8",
+          "update_line": "Atualizar linha do pedido do Pax8",
+          "remove_line": "Remover linha do pedido do Pax8",
+          "preview": "Visualizar pedido do Pax8",
+          "preflight": "Executar verificação prévia do pedido do Pax8",
+          "reconcile": "Reconciliar pedido do Pax8"
+        },
+        "manage_pax8_subscriptions": {
+          "list": "Listar assinaturas do Pax8",
+          "drift": "Verificar divergências das assinaturas do Pax8",
+          "sync": "Sincronizar assinaturas do Pax8",
+          "link": "Vincular assinatura do Pax8",
+          "unlink": "Desvincular assinatura do Pax8"
+        },
+        "search_pax8_products": {
+          "search": "Pesquisar produtos do Pax8",
+          "provision_details": "Obter detalhes de provisionamento do Pax8",
+          "dependencies": "Obter dependências de produtos do Pax8",
+          "pricing": "Obter preços de produtos do Pax8"
         }
       },
       "alwaysOnCount_one": "{{count}} ferramenta somente leitura",
@@ -3944,10 +4855,10 @@
       "runsPerHourCount_other": "{{count}} execuções por hora",
       "minuteCount_one": "{{count}} minuto",
       "minuteCount_other": "{{count}} minutos",
-      "approvers_one": "{{roles}} é consultada, por caixa de entrada, chat e push no celular. A primeira decisão prevalece.",
-      "approvers_other": "{{roles}} são consultadas, por caixa de entrada, chat e push no celular. A primeira decisão prevalece.",
-      "approversCount_one": "{{count}} função é consultada, por caixa de entrada, chat e push no celular. A primeira decisão prevalece.",
-      "approversCount_other": "{{count}} funções são consultadas, por caixa de entrada, chat e push no celular. A primeira decisão prevalece.",
+      "approvers_one": "{{roles}} é consultada, por Aprovações, chat e push no celular. A primeira decisão prevalece.",
+      "approvers_other": "{{roles}} são consultadas, por Aprovações, chat e push no celular. A primeira decisão prevalece.",
+      "approversCount_one": "{{count}} função é consultada, por Aprovações, chat e push no celular. A primeira decisão prevalece.",
+      "approversCount_other": "{{count}} funções são consultadas, por Aprovações, chat e push no celular. A primeira decisão prevalece.",
       "scriptGateNote": "{{list}} só será executado sem supervisão depois que um script for autorizado para este agente; até lá, gera uma solicitação de aprovação.",
       "scriptsAuthorized_one": "{{count}} script está autorizado a executar sem supervisão.",
       "scriptsAuthorized_other": "{{count}} scripts estão autorizados a executar sem supervisão."
@@ -4144,7 +5055,9 @@
     "active": "Ativo",
     "revoked": "Revogado",
     "expired": "Expirado",
-    "statusFilterLabel": "Status da chave"
+    "statusFilterLabel": "Status da chave",
+    "expires": "Expira",
+    "neverExpires": "Nunca"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Carregando chaves de API...",
@@ -4185,7 +5098,8 @@
     "rotating": "Rotacionando...",
     "rotateKey": "Rotacionar chave",
     "revoking": "Revogando...",
-    "revokeKey": "Revogar chave"
+    "revokeKey": "Revogar chave",
+    "revokedToast": "Chave de API \"{{name}}\" revogada"
   },
   "approverDevicesSection": {
     "thisDeviceCanNowApproveRequests": "Este dispositivo agora pode aprovar solicitações",
@@ -4496,6 +5410,9 @@
     "revoke": "Revogar"
   },
   "mFASettings": {
+    "saveRecoveryCodesDescription": "Guarde estes códigos em um local seguro. Cada código pode ser usado uma vez. Eles não podem ser exibidos novamente.",
+    "saveRecoveryCodes": "Salve seus códigos de recuperação",
+    "done": "Concluído",
     "verifyYourPhoneNumber": "Verifique seu número de telefone",
     "enterYourPhoneNumberInE164FormatToReceiveAVerificationCo": "Digite seu número de telefone no formato E.164 para receber um código de verificação.",
     "phoneNumber": "Número de telefone",
@@ -4521,12 +5438,14 @@
     "sMSCodes": "Códigos SMS",
     "phoneVerifiedLast4": "(telefone verificado: ...{{last4}})",
     "recoveryCodes": "Códigos de recuperação",
-    "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Use esses códigos para acessar sua conta caso perca seu autenticador.",
+    "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Use um código de recuperação para acessar sua conta se não puder usar sua chave de acesso ou aplicativo autenticador.",
     "recoveryCodesAreShownOnceAndCannotBeDisplayedAgain": "Os códigos de recuperação são exibidos uma única vez e não podem ser exibidos novamente.",
-    "regenerateRecoveryCodes": "Regenerar códigos de recuperação",
-    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Os códigos existentes não podem ser exibidos novamente. Regenerar emite um novo conjunto e invalida o anterior imediatamente.",
-    "regenerateRecoveryCodesQuestion": "Regenerar os códigos de recuperação?",
-    "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "Regenerar invalida imediatamente todos os códigos de recuperação que você salvou, inclusive cópias impressas. Os novos códigos são exibidos uma única vez, logo após serem gerados.",
+    "recoveryGenerationTitle": "Gerar novos códigos de recuperação",
+    "generateNewCodesQuestion": "Gerar novos códigos?",
+    "saveGeneratedRecoveryCodes": "Guarde estes códigos em um local seguro. Cada código pode ser usado uma vez e eles não podem ser exibidos novamente.",
+    "generateNewCodesWarning": "Seus códigos de recuperação atuais deixarão de funcionar. Os novos códigos serão mostrados uma vez. Seus outros dispositivos serão desconectados, mas este permanecerá conectado.",
+    "regenerateRecoveryCodes": "Gerar novos códigos",
+    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Os códigos existentes não podem ser exibidos novamente. Gere novos códigos para substituí-los.",
     "thatCodeWasNotAcceptedYourQRCodeIsStillValidWaitForThe": "Esse código não foi aceito. Seu código QR continua válido: aguarde o próximo código do seu autenticador e tente novamente.",
     "confirmYourPassword": "Confirme sua senha",
     "reEnterYourAccountPasswordToStartSettingUpAnAuthenticato": "Digite novamente a senha da sua conta para começar a configurar um aplicativo autenticador.",
@@ -4543,11 +5462,9 @@
     "enterThe6DigitCodeGeneratedByYourAuthenticatorApp": "Insira o código de 6 dígitos gerado pelo seu aplicativo autenticador.",
     "disableMFA": "Desativar MFA",
     "reEnterYourAccountPasswordToConfirmThisChange": "Digite novamente a senha da sua conta para confirmar esta alteração.",
-    "saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou": "Salve esses códigos em um local seguro. Você pode usá-los para acessar sua conta se perder seu dispositivo autenticador.",
     "copyCodes": "Copiar códigos",
     "copiedCodes": "Copiado",
     "copyCodesFailed": "Não foi possível copiar para a área de transferência. Selecione os códigos acima e copie-os manualmente.",
-    "eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat": "Cada código só pode ser usado uma vez. A geração de novos códigos invalidará quaisquer códigos gerados anteriormente.",
     "back": "Voltar",
     "smsSentToPhone": "Códigos SMS enviados para o telefone terminando em {{last4}}.",
     "currentPasswordIsRequired": "A senha atual é obrigatória",
@@ -4560,7 +5477,7 @@
     "verifyPhone": "Verificar telefone",
     "enabling": "Habilitando...",
     "yourAccountIsProtectedWithAnAuthenticatorApp": "Sua conta está protegida por um aplicativo autenticador.",
-    "useAnAuthenticatorAppToGenerateVerificationCodesRecommen": "Use um aplicativo autenticador para gerar códigos de verificação. (Recomendado)",
+    "useAnAuthenticatorAppToGenerateVerificationCodesRecommen": "Use um aplicativo autenticador para gerar códigos de verificação.",
     "receiveVerificationCodesViaSMSAsABackup": "Receba códigos de verificação via SMS como backup.",
     "continue": "Continuar",
     "verifyAndEnable": "Verificar e ativar",
@@ -4569,7 +5486,6 @@
     "enterThe6DigitCodeFromYourAuthenticatorApp": "Insira o código de 6 dígitos do seu aplicativo autenticador.",
     "disabling": "Desativando...",
     "generating": "Gerando...",
-    "regenerateCodes": "Regenerar códigos",
     "verifyYourIdentity": "Verifique sua identidade",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Esta conta faz login por meio de um provedor de identidade e não tem senha. Verifique-se novamente com seu provedor para começar a configurar um aplicativo autenticador.",
     "verifyWithYourIdentityProvider": "Verificar com seu provedor de identidade",
@@ -4587,15 +5503,22 @@
     "couldNotImportThePax8Product": "Não foi possível importar o produto Pax8."
   },
   "profilePage": {
-    "nameMustBeAtLeast2Characters": "O nome deve ter pelo menos 2 caracteres",
+    "factorProofLabel": "Código de MFA atual ou código de recuperação",
+    "passkeyRecoveryCodeHint": "Digite um código de recuperação não utilizado.",
+    "recoveryCode": "Código de recuperação",
+    "useRecoveryCode": "Não consegue acessar sua chave de acesso? Use um código de recuperação",
+    "usePasskeyVerification": "Usar a verificação com chave de acesso",
+    "nameIsRequired": "O nome é obrigatório.",
+    "nameMustBeAtMost255Characters": "O nome não pode ter mais de 255 caracteres",
     "loadingProfile": "Carregando perfil...",
     "profileSettings": "Configurações de perfil",
     "manageYourAccountSettingsAndSecurityPreferences": "Gerencie as configurações da sua conta e preferências de segurança.",
     "profileInformation": "Informações do perfil",
     "updateYourPersonalDetails": "Atualize seus dados pessoais.",
     "avatar": "avatar",
-    "uploadNewPicture": "Carregar nova foto",
-    "pNGJPGOrWebPMax5MBDragAndDropOntoTheCircleOrClickUpload": "PNG, JPG ou WebP. Máximo de 5 MB. Arraste e solte no círculo ou clique em Fazer upload.",
+    "changePicture": "Alterar foto",
+    "undoAvatarChange": "Desfazer",
+    "pictureRemovalPending": "Remoção da foto pendente",
     "cancel": "Cancelar",
     "name": "Nome",
     "yourName": "Seu nome",
@@ -4618,8 +5541,7 @@
     "failedToFetchUserData": "Falha ao buscar dados do usuário",
     "failedToLoadProfileData": "Falha ao carregar dados do perfil",
     "profileUpdatedSuccessfully": "Perfil atualizado com sucesso",
-    "avatarUpdated": "Avatar atualizado.",
-    "avatarRemoved": "Avatar removido.",
+    "avatarSavedButNameUpdateFailed": "A alteração da foto foi salva, mas não foi possível atualizar seu nome: {{error}}",
     "passwordChangedSuccessfully": "Senha alterada com sucesso",
     "multiFactorAuthenticationEnabledSuccessfully": "Autenticação multifator ativada com sucesso",
     "multiFactorAuthenticationDisabled": "Autenticação multifator desativada",
@@ -4650,10 +5572,7 @@
     "fileIsEmpty": "O arquivo está vazio.",
     "failedToRenamePasskeyHttp": "Falha ao renomear a chave de acesso (HTTP {{status}})",
     "failedToDeletePasskeyHttp": "Falha ao excluir a chave de acesso (HTTP {{status}})",
-    "removing": "Removendo...",
     "remove": "Remover",
-    "uploading": "Fazendo upload...",
-    "upload": "Carregar",
     "saving": "Salvando...",
     "saveChanges": "Salvar alterações",
     "passkey": "Chave de acesso",
@@ -4684,7 +5603,7 @@
     "ssoReauthFailed": "Não foi possível verificar com seu provedor de identidade. Tente novamente.",
     "couldNotStartIdentityProviderVerification": "Não foi possível iniciar a verificação pelo provedor de identidade.",
     "deletePasskeyConfirmTitle": "Excluir esta chave de acesso?",
-    "deletePasskeyConfirmMessage": "Isso remove permanentemente a chave de acesso \"{{name}}\", que não poderá mais ser usada para entrar. Como é um método de múltiplos fatores, a exclusão também encerra suas outras sessões em todos os dispositivos. Não é possível desfazer.",
+    "deletePasskeyConfirmMessage": "Isso remove permanentemente a chave de acesso \"<strong>{{name}}</strong>\", que não poderá mais ser usada para entrar. Como é um método de múltiplos fatores, a exclusão também encerra suas outras sessões em todos os dispositivos. Não é possível desfazer.",
     "passkeyStepUpHeading": "Verifique seu fator de login existente",
     "passkeyStepUpIntro": "Esta conta já tem a autenticação multifator ativada. Confirme-a antes de adicionar outra chave de acesso.",
     "passkeyStepUpNoUsableFactor": "O fator atual da sua conta não pode ser confirmado aqui. Entre em contato com um administrador para adicionar uma chave de acesso.",
@@ -4839,6 +5758,11 @@
     "eGOktaProduction": "por exemplo, produção Okta",
     "providerPreset": "Predefinição de provedor",
     "selectAPresetToAutoFillRecommendedSettings": "Selecione uma predefinição para preencher automaticamente as configurações recomendadas",
+    "replacePresetFields": {
+      "title": "Substituir pelos padrões de {{preset}}?",
+      "message": "Aplicar a predefinição {{preset}} substitui os escopos e o mapeamento de atributos atuais, incluindo suas alterações, e limpa qualquer declaração que a predefinição não defina, como o atributo de grupos. Nada é salvo até você salvar o provedor.",
+      "confirm": "Substituir"
+    },
     "connectionSettings": "Configurações de conexão",
     "issuerURL": "URL do emissor",
     "httpsYourTenantOktaCom": "https://your-tenant.okta.com",
@@ -5263,7 +6187,8 @@
     "timeTracking": "Controle de tempo",
     "email": "E-mail",
     "templates": "Modelos",
-    "timeCapture": "Registro de tempo"
+    "timeCapture": "Registro de tempo",
+    "routing": "Roteamento"
   },
   "ticketFormsCard": {
     "heading": "Formulários de abertura",
@@ -5419,7 +6344,7 @@
   },
   "orgAiBudgetSettings": {
     "title": "Orçamento de IA",
-    "description": "Limites de gastos, limites de frequência e modo de aprovação do assistente de IA nesta organização. Os campos que seu parceiro definiu são mostrados aqui, mas só podem ser alterados na aba do parceiro.",
+    "description": "Limites de gastos, limites de frequência e modo de aprovação do Breeze AI nesta organização. Os campos que seu parceiro definiu são mostrados aqui, mas só podem ser alterados na aba do parceiro.",
     "selectOrganization": "Selecione uma organização para configurar seu orçamento de IA."
   },
   "orgSettingsPage": {
@@ -5459,7 +6384,7 @@
       "extensionsDescription": "Seções de extensões de terceiros",
       "portalBranding": "Portal e identidade visual",
       "branding": "Identidade visual",
-      "brandingDescription": "Tema e recursos visuais do portal",
+      "brandingDescription": "Logotipo, cores e CSS personalizado",
       "portal": "Portal do Cliente",
       "portalDescription": "Recursos e suporte",
       "securityAccess": "Segurança e acesso",
@@ -5479,7 +6404,7 @@
       "ticketing": "Chamados",
       "ticketingDescription": "SLA e substituições de faturamento",
       "ai": "IA",
-      "aiDescription": "Orçamento do assistente de IA, limites de frequência e modo de aprovação"
+      "aiDescription": "Orçamento do Breeze AI, limites de frequência e modo de aprovação"
     },
     "overview": {
       "title": "Visão geral da organização",
@@ -6006,8 +6931,10 @@
   "siteDetailPage": {
     "loading": "Carregando site...",
     "backToOrganizations": "Voltar para organizações",
+    "backToSites": "Voltar para sites",
     "breadcrumbs": {
       "settings": "Configurações",
+      "sites": "Sites",
       "organizations": "Organizações"
     },
     "errors": {
@@ -6093,6 +7020,24 @@
       "contactPhone": "+1 (555) 123-4567"
     },
     "primaryContact": "Contato principal"
+  },
+  "sites": {
+    "page": {
+      "title": "Sites",
+      "description": "Locais onde seus dispositivos ficam. Abra um site para ver os detalhes e os dispositivos.",
+      "organizationColumn": "Organização",
+      "pickOrg": "Organização",
+      "pickOrgPlaceholder": "Escolha uma organização",
+      "pickOrgRequired": "Escolha a organização à qual este site pertence.",
+      "fleetAddDescription": "Adicione um novo site e escolha a organização à qual ele pertence.",
+      "empty": "Nenhum site ainda. Adicione um site a uma organização para começar.",
+      "viewDevicesAt": "ver dispositivos em {{name}}"
+    },
+    "toasts": {
+      "created": "Site {{name}} criado",
+      "saved": "Site {{name}} salvo",
+      "deleted": "Site {{name}} excluído"
+    }
   },
   "siteList": {
     "title": "Sites",
@@ -6267,7 +7212,11 @@
       "label": "Rótulo",
       "notes": "Notas"
     },
-    "empty": "Nenhum convidado conhecido ainda."
+    "empty": "Nenhum convidado conhecido ainda.",
+    "removeConfirm": {
+      "title": "Remover convidado conhecido?",
+      "message": "Remover {{label}} ({{mac}})? Dispositivos com este endereço MAC deixarão de ser aprovados automaticamente nas suas organizações gerenciadas."
+    }
   },
   "userInviteForm": {
     "title": "Convidar usuário",
@@ -6288,7 +7237,8 @@
     },
     "placeholders": {
       "name": "Jane Smith",
-      "email": "name@company.com"
+      "email": "name@company.com",
+      "role": "Escolha uma função"
     },
     "orgAccess": {
       "title": "Acesso à organização",
@@ -6344,6 +7294,7 @@
     "title": "Usuários",
     "description": "Gerencie o acesso, as funções e as permissões do usuário.",
     "sessionTimeoutPointer": "O tempo limite de inatividade da sessão é configurado em Segurança",
+    "linkedUserMissing": "O usuário vinculado não está nesta lista. Ele pode ter sido removido ou não estar entre os usuários que você pode ver.",
     "never": "Nunca",
     "actions": {
       "tryAgain": "Tente novamente",
@@ -6388,7 +7339,8 @@
       "copyLink": "Copiar link",
       "mfaReset": "MFA redefinida para {{email}}",
       "roleUpdated": "Função atualizada",
-      "orgAccessUpdated": "Acesso às organizações atualizado"
+      "orgAccessUpdated": "Acesso às organizações atualizado",
+      "userRemoved": "Usuário {{name}} removido"
     },
     "resetMfa": {
       "title": "Redefinir MFA?",
@@ -6693,7 +7645,7 @@
   },
   "scriptAuthoringPage": {
     "title": "Criação de scripts",
-    "subtitle": "Permita que o assistente e seus agentes escrevam, revisem e — quando você permitir — executem scripts sem um cartão de aprovação.",
+    "subtitle": "Permita que o Breeze AI e seus agentes escrevam, revisem e — quando você permitir — executem scripts sem um cartão de aprovação.",
     "partnerCard": {
       "title": "Limite do parceiro",
       "description": "A configuração mais ampla que qualquer organização deste parceiro pode usar. Organizações individuais só podem restringi-la.",
@@ -6861,13 +7813,12 @@
     "timeoutLabel": "Tempo limite de aprovação interativa",
     "productDefault": "Padrão do produto ({{minutes}} minutos)",
     "range": "Escolha entre {{min}} e {{max}} minutos.",
-    "description": "Por quanto tempo uma conversa de IA em andamento aguarda que alguém aprove uma ação restrita (Nível 2/3) antes de desistir.",
-    "orgOverrideNote": "As organizações podem substituir esse valor em suas próprias configurações de IA; o valor da organização prevalece quando definido.",
+    "description": "Por quanto tempo uma conversa em andamento com o Breeze AI aguarda que alguém aprove uma ação restrita (Tier 2/3) antes de desistir.",
     "notForUnattendedNote": "Isso não é para trabalho noturno ou não supervisionado — o trabalho de longa duração passa pela fila de aprovações, que tem seu próprio vencimento."
   },
   "orgAiApprovalTimeout": {
     "title": "Tempo limite de aprovação de IA",
-    "description": "Por quanto tempo um chat de IA aguarda que alguém aprove uma ação restrita (Nível 2/3) antes de desistir. As organizações podem substituir o padrão do parceiro aqui; o valor da organização prevalece quando definido.",
+    "description": "Por quanto tempo o Breeze AI aguarda que alguém aprove uma ação restrita (Tier 2/3) antes de desistir. As organizações podem substituir o padrão do parceiro aqui; o valor da organização prevalece quando definido.",
     "fieldLabel": "Tempo limite de aprovação interativa",
     "inherit": "Herdar",
     "inheritLabel": "Herdar ({{minutes}} minutos, {{source}})",
@@ -7057,6 +8008,144 @@
     },
     "loadError": "Não foi possível carregar seu plano.",
     "retry": "Tentar novamente"
+  },
+  "ticketRouting": {
+    "title": "Roteamento de tickets",
+    "description": "As regras são executadas quando um ticket é criado e preenchem o responsável, a prioridade, a categoria, o status e as tags que o criador não escolheu. Primeiro valem as regras da organização, depois as do parceiro. A primeira correspondência vence.",
+    "createRule": "Nova regra",
+    "loadFailed": "Não foi possível carregar as regras de roteamento.",
+    "lookupsFailed": "Não foi possível carregar alguns técnicos, categorias ou status, então as listas podem estar incompletas. Recarregue a página para tentar novamente.",
+    "empty": "Ainda não há regras de roteamento.",
+    "groupOrg": "Regras de {{org}}",
+    "groupPartner": "Regras de todo o parceiro",
+    "thisOrganization": "Esta organização",
+    "allOrgs": "Todas as orgs",
+    "limitedOrgs": "Somente {{count}} orgs",
+    "catchAll": "Corresponde a todos os tickets",
+    "noActions": "Não define nada",
+    "enabledLabel": "Ativar a regra {{name}}",
+    "enabledOn": "Regra ativada",
+    "enabledOff": "Regra desativada",
+    "saveFailed": "Não foi possível salvar a regra. Tente novamente.",
+    "deleteFailed": "Não foi possível excluir a regra. Tente novamente.",
+    "saved": "Regra salva",
+    "created": "Regra criada",
+    "deleted": "Regra excluída",
+    "reorderFailed": "Não foi possível salvar a nova ordem. Tente novamente.",
+    "dragHandle": "Arraste para reordenar {{name}}, ou use as setas para cima e para baixo para movê-la.",
+    "readOnly": "Você pode ver esta regra, mas não alterá-la.",
+    "chips": {
+      "add": "Adicionar",
+      "remove": "Remover {{value}}"
+    },
+    "errors": {
+      "keywordShort": "As palavras-chave precisam ter pelo menos 2 caracteres.",
+      "keywordLong": "As palavras-chave podem ter no máximo 100 caracteres.",
+      "keywordsMax": "Você pode adicionar no máximo 20 palavras-chave.",
+      "domainInvalid": "Use um host como example.com ou *.example.com.",
+      "domainsMax": "Você pode adicionar no máximo 50 domínios.",
+      "tagEmpty": "Informe uma tag.",
+      "tagLong": "As tags podem ter no máximo 50 caracteres.",
+      "tagsMax": "Você pode adicionar no máximo 20 tags.",
+      "nameRequired": "Informe um nome para a regra.",
+      "orgRequired": "Escolha uma organização.",
+      "orgLinksRequired": "Escolha pelo menos uma organização ou aplique a regra a todas as organizações."
+    },
+    "sources": {
+      "portal": "Portal",
+      "email": "E-mail",
+      "alert": "Alerta",
+      "manual": "Manual",
+      "api": "API",
+      "ai": "IA"
+    },
+    "priorities": {
+      "low": "Baixa",
+      "normal": "Normal",
+      "high": "Alta",
+      "urgent": "Urgente"
+    },
+    "drawer": {
+      "titleCreate": "Nova regra de roteamento",
+      "titleEdit": "Editar regra de roteamento",
+      "close": "Fechar",
+      "owner": "Proprietário",
+      "ownerOrg": "Somente esta organização",
+      "ownerPartner": "Todas as organizações (todo o parceiro)",
+      "organization": "Organização",
+      "chooseOrg": "Escolha uma organização",
+      "appliesTo": "Aplica-se a",
+      "orgLinksAll": "Todas as organizações",
+      "orgLinksSelected": "Somente as organizações selecionadas",
+      "name": "Nome",
+      "conditions": "Quando um ticket corresponde",
+      "conditionsHelp": "Todas as condições preenchidas devem corresponder. Deixe uma condição vazia para ignorá-la.",
+      "matchSources": "A origem é uma de",
+      "matchPriorities": "A prioridade é uma de",
+      "matchCategory": "Categoria",
+      "any": "Qualquer",
+      "matchKeywords": "O assunto contém uma de",
+      "matchKeywordsHint": "De 2 a 100 caracteres cada, até 20.",
+      "matchDomains": "O domínio do e-mail do solicitante é um de",
+      "matchDomainsHint": "example.com ou *.example.com, até 50.",
+      "actions": "Então definir",
+      "actionsHelp": "Aplicado somente aos campos que o criador não escolheu. Defina pelo menos um.",
+      "setAssignee": "Responsável",
+      "setPriority": "Prioridade",
+      "setCategory": "Categoria",
+      "setStatus": "Status",
+      "addTags": "Adicionar tags",
+      "noChange": "Sem alteração",
+      "unavailableUser": "Usuário indisponível",
+      "unavailableStatus": "Status indisponível",
+      "enabled": "Ativada",
+      "save": "Salvar",
+      "saving": "Salvando...",
+      "delete": "Excluir",
+      "deleteTitle": "Excluir esta regra?",
+      "deleteMessage": "\"{{name}}\" deixará de ser aplicada a novos tickets. Esta ação não pode ser desfeita."
+    },
+    "test": {
+      "title": "Testar um ticket",
+      "description": "Simulação: veja qual regra corresponderia a um novo ticket e o que ela alteraria. Nada é criado.",
+      "org": "Organização",
+      "source": "Origem",
+      "subject": "Assunto",
+      "email": "E-mail do solicitante (opcional)",
+      "category": "Categoria (opcional)",
+      "priority": "Prioridade (opcional)",
+      "notChosen": "Não escolhida",
+      "run": "Executar teste",
+      "running": "Testando...",
+      "failed": "Não foi possível executar o teste. Tente novamente.",
+      "matched": "Regra correspondente: {{name}}",
+      "noMatch": "Nenhuma regra correspondeu",
+      "applied": "Seria aplicado",
+      "appliedNothing": "Nada mudaria",
+      "skipped": "Ignorado",
+      "actions": {
+        "set_assignee": "Responsável",
+        "set_category": "Categoria",
+        "set_status": "Status"
+      },
+      "reasons": {
+        "assignee_ineligible": "O responsável não pode acessar os tickets desta organização.",
+        "assignee_deleted": "O responsável não existe mais.",
+        "category_foreign": "A categoria pertence a outro parceiro.",
+        "status_foreign": "O status pertence a outro parceiro.",
+        "status_inactive": "O status está inativo.",
+        "status_core_not_allowed": "Uma regra não pode definir este status."
+      }
+    },
+    "fallback": {
+      "title": "Se nenhuma regra atribuir um ticket de e-mail",
+      "description": "Cada novo ticket criado a partir de e-mails recebidos é atribuído a esta pessoa quando nenhuma regra de roteamento o atribui. Se ela não puder acessar a organização do ticket, ele fica sem responsável.",
+      "label": "Responsável padrão",
+      "unavailable": "Usuário indisponível",
+      "saveFailed": "Não foi possível salvar o responsável de reserva. Tente novamente.",
+      "saved": "Responsável de reserva salvo",
+      "loadFailed": "Não foi possível carregar o responsável de reserva."
+    }
   },
   "wispMemory": {
     "title": "Memória do Wisp",

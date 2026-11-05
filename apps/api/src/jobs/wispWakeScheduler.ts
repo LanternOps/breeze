@@ -10,6 +10,13 @@
  *         lookup per distinct partner. W02's reconciler leaves this reason
  *         alone (W02 cannot import W01); no other paused_reason — above all
  *         `user_paused` (w00 A29) — is ever touched here.
+ *      1b. reconcilePartnerSwitches — w00 A35 (W08): a partner whose Wisp
+ *         switch is off has its active grants paused `partner_disabled`; one
+ *         switched back on has exactly those grants resumed. Runs AFTER (1)
+ *         so a grant (1) just resumed for a still-disabled partner is paused
+ *         again before the floor ticks. Every pause is onlyFromActive and
+ *         every resume a CAS on its own reason, so (1) and (1b) never move a
+ *         grant the other paused.
  *      2. stopWatchesForInactiveGrants (W05a; it sends the one orphan notice).
  *      3. floor ticks — every active grant whose last_floor_tick_at is NULL or
  *         older than floor_tick_minutes is claimed with a compare-and-set, and
@@ -45,6 +52,8 @@ import { enqueueAssessment } from '../services/wisp/assessment';
 import { assessableOrgIds } from '../services/wisp/assessableOrgs';
 import { chargeableUnderGrant, notifyBudgetExhaustedOnce } from '../services/wisp/budget';
 import { pauseGrant, resumeGrant } from '../services/wisp/grants';
+import { reconcilePartnerDisabled } from '../services/wisp/partnerSettings';
+import { setWispGrantsActive } from '../services/wispMetrics';
 import { correlateIncidents } from '../services/wisp/incidentCorrelator';
 import { pollStaleTickets, pollTicketClusters } from '../services/wisp/pollers';
 import { claimDueWatches, stopWatchesForInactiveGrants } from '../services/wisp/watches';
@@ -114,7 +123,7 @@ type ReconcileRow = { id: string; partner_id: string; status: string; paused_rea
  * `entitlement_lost`; a row of any other shape is skipped even if it appears.
  * A partner whose lookup fails is left untouched this tick.
  */
-export async function reconcileEntitlements(now: Date): Promise<{ paused: number; resumed: number }> {
+export async function reconcileEntitlements(now: Date): Promise<{ paused: number; resumed: number; active: number }> {
   const nowIso = now.toISOString();
   const grants = await sys(() => rows<ReconcileRow>(sql`
     SELECT id, partner_id, status, paused_reason
@@ -153,12 +162,43 @@ export async function reconcileEntitlements(now: Date): Promise<{ paused: number
       report(err, { op: 'reconcile_grant_update' });
     }
   }
-  return { paused, resumed };
+  // Active grants after this reconcile: the gauge's value, from rows already loaded.
+  const active = grants.filter((g) => g.status === 'active').length - paused;
+  return { paused, resumed, active: active + resumed };
 }
 
-// A35 reconcilePartnerDisabled goes here (wisp_partner_settings.enabled = false
-// ⇒ pauseGrant(id, 'partner_disabled'); true again ⇒ resume; skips user_paused)
-// once W08's partner settings column exists.
+/**
+ * w00 A35 partner enable switch. ONE query finds the partners whose grants
+ * disagree with their switch — disabled (enabled = false) with an active
+ * grant, or enabled (or no settings row: enabled by default) with a grant
+ * paused `partner_disabled` — then reconcilePartnerDisabled per partner. A
+ * partner that fails is logged, reported and retried on the next tick.
+ */
+export async function reconcilePartnerSwitches(now: Date): Promise<{ paused: number; resumed: number }> {
+  const nowIso = now.toISOString();
+  const partners = await sys(() => rows<{ partner_id: string }>(sql`
+    SELECT DISTINCT g.partner_id
+      FROM wisp_grants g
+      LEFT JOIN wisp_partner_nudge_settings s ON s.partner_id = g.partner_id
+     WHERE g.expires_at > ${nowIso}::timestamptz
+       AND ((COALESCE(s.enabled, true) = false AND g.status = 'active')
+         OR (COALESCE(s.enabled, true) = true AND g.status = 'paused' AND g.paused_reason = 'partner_disabled'))
+     ORDER BY g.partner_id`), 'wisp-wake-reconcile-partner-switch');
+
+  let paused = 0;
+  let resumed = 0;
+  for (const { partner_id: partnerId } of partners) {
+    try {
+      const r = await reconcilePartnerDisabled(partnerId, now);
+      paused += r.paused;
+      resumed += r.resumed;
+    } catch (err) {
+      console.error('[wisp-wake] reconcilePartnerDisabled: partner failed; retried next tick', { partnerId, error: errMessage(err) });
+      report(err, { op: 'reconcile_partner_disabled' });
+    }
+  }
+  return { paused, resumed };
+}
 
 type DueGrantRow = { id: string; partner_id: string; current_revision_id: string | null; last_floor_tick_text: string | null };
 
@@ -290,6 +330,7 @@ async function section(name: string, fn: () => Promise<void>): Promise<void> {
 }
 
 export async function processWakeTick(now: Date = new Date()): Promise<WakeTickResult> {
+  let activeGrants: number | null = null;
   const result: WakeTickResult = {
     grantsTicked: 0,
     watchesFired: 0,
@@ -306,6 +347,13 @@ export async function processWakeTick(now: Date = new Date()): Promise<WakeTickR
     const r = await reconcileEntitlements(now);
     result.grantsPaused = r.paused;
     result.grantsResumed = r.resumed;
+    activeGrants = r.active;
+  });
+  await section('reconcilePartnerDisabled', async () => {
+    const r = await reconcilePartnerSwitches(now);
+    result.grantsPaused += r.paused;
+    result.grantsResumed += r.resumed;
+    if (activeGrants !== null) activeGrants = activeGrants - r.paused + r.resumed;
   });
   await section('stopWatchesForInactiveGrants', async () => {
     result.watchesStopped = (await stopWatchesForInactiveGrants(now)).stopped;
@@ -325,7 +373,8 @@ export async function processWakeTick(now: Date = new Date()): Promise<WakeTickR
   await section('correlateIncidents', async () => {
     result.incidentsOpened = (await correlateIncidents(now)).partnerIncidentsOpened;
   });
-  // W07 Task 8 adds setWispGrantsActive(count) here.
+  // null when the reconcile section failed: leave the gauge at its last value.
+  if (activeGrants !== null) setWispGrantsActive(activeGrants);
   return result;
 }
 
@@ -334,9 +383,10 @@ export async function processWakeTick(now: Date = new Date()): Promise<WakeTickR
  * nothing (enqueueAssessment → skip 'grant_inactive'); every skip is logged
  * at info, never thrown.
  */
-export async function processAssessJob(data: WispAssessJobData): Promise<void> {
+export async function processAssessJob(data: WispAssessJobData, occurrenceKey?: string): Promise<void> {
   if (!wispEnabled()) return;
-  const result = await enqueueAssessment(data);
+  // The job occurrence makes the assessment's dedupe key retry-stable.
+  const result = await enqueueAssessment(occurrenceKey ? { ...data, occurrenceKey } : data);
   if ('skipped' in result) {
     console.info('[wisp-wake] assessment skipped', { grantId: data.grantId, orgId: data.orgId, reason: data.reason.kind, skipped: result.skipped });
   }
@@ -358,7 +408,7 @@ function createWispWakeWorker(): Worker<WakeJobData> {
         case TICK_JOB:
           return processWakeTick();
         case ASSESS_JOB:
-          return processAssessJob(job.data as WispAssessJobData);
+          return processAssessJob(job.data as WispAssessJobData, `${job.id ?? ''}@${job.timestamp}`);
         default:
           throw new Error(`[wisp-wake] unknown job name: ${job.name}`);
       }

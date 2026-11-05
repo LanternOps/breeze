@@ -5,7 +5,8 @@ package safemode
 import (
 	"fmt"
 	"os"
-	"os/exec"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // IsSafeMode returns true if Windows booted in any Safe Mode variant.
@@ -19,7 +20,7 @@ func IsSafeMode() bool {
 // Safe Mode with Networking. The flag persists until ClearSafeBootFlag
 // is called — every subsequent reboot will enter safe mode.
 func SetSafeBootNetwork() error {
-	out, err := exec.Command("bcdedit", "/set", "{current}", "safeboot", "network").CombinedOutput()
+	out, err := procspawn.Command("bcdedit", "/set", "{current}", "safeboot", "network").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("bcdedit set safeboot network failed: %w — output: %s", err, string(out))
 	}
@@ -29,7 +30,7 @@ func SetSafeBootNetwork() error {
 // ClearSafeBootFlag removes the safeboot entry from the BCD store so
 // the next reboot returns to normal mode.
 func ClearSafeBootFlag() error {
-	out, err := exec.Command("bcdedit", "/deletevalue", "{current}", "safeboot").CombinedOutput()
+	out, err := procspawn.Command("bcdedit", "/deletevalue", "{current}", "safeboot").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("bcdedit deletevalue safeboot failed: %w — output: %s", err, string(out))
 	}

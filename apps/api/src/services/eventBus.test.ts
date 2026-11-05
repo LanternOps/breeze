@@ -22,7 +22,7 @@ vi.mock('../db', () => {
   };
 });
 
-vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 
 // eventDispatchQueue (wave 3.5c, #4085) is mocked wholesale so publish()'s
 // wiring can be asserted (called / not called, with what args) without
@@ -77,6 +77,24 @@ describe('eventBus service', () => {
     expect(entries[0].id).toBe(eventId);
     expect(entries[1]).toEqual(entries[0]);
     expect(entries[0].metadata.timestamp).toBe(occurredAt);
+  });
+
+  it('future occurredAt is reported', async () => {
+    // #5221 Decision 6 residual (b): a publisher-supplied instant more than 60 s
+    // ahead can land after a conversion's switch_at. Reported, never refused or altered.
+    const { captureMessage } = await import('./sentry');
+    vi.mocked(captureMessage).mockClear();
+    const occurredAt = new Date(Date.now() + 61_000).toISOString();
+    await eventBusModule.publishEvent('device.offline', 'org-1', { deviceId: 'd1' }, 'test', { occurredAt });
+    expect(captureMessage).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(captureMessage).mock.calls[0]![1]).toMatchObject({ eventCode: 'event_occurred_at_future' });
+    const entry = JSON.parse(vi.mocked(mockRedis.xadd!).mock.calls.at(-1)!.at(-1) as string);
+    expect(entry.metadata.timestamp).toBe(occurredAt);
+
+    // Within the 60 s allowance (and the default "now") nothing is reported.
+    await eventBusModule.publishEvent('device.offline', 'org-1', { deviceId: 'd1' }, 'test', { occurredAt: new Date(Date.now() + 30_000).toISOString() });
+    await eventBusModule.publishEvent('device.offline', 'org-1', { deviceId: 'd1' }, 'test');
+    expect(captureMessage).toHaveBeenCalledTimes(1);
   });
 
   describe('publishUserEvent — addressed to one user', () => {
@@ -651,6 +669,51 @@ describe('eventBus service', () => {
       await bus.publish(EVENT_TYPES.DEVICE_ENROLLED, 'org-1', { deviceId: 'dev-2' }, 'unit-test');
 
       expect((getRedisConnection as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(callsBeforeClose);
+    });
+  });
+
+  // Tool catalog W04 (#5219), Decision 14: an event published while a flow
+  // step executes carries the run's ancestry, stamped from the ALS frame.
+  describe('flow ancestry stamping (flowExecutionContext)', () => {
+    const RUN_ID = '0b5b3f0e-6a55-4a59-9d8e-3c2b1a000001';
+
+    function lastXaddEvent(): { metadata: Record<string, unknown> } {
+      const calls = vi.mocked(mockRedis.xadd!).mock.calls;
+      return JSON.parse(calls.at(-1)!.at(-1) as string);
+    }
+
+    it('an event published inside withFlowExecutionContext carries flowRunId and flowChainDepth', async () => {
+      const { withFlowExecutionContext } = await import('./flows/flowExecutionContext');
+      await withFlowExecutionContext({ runId: RUN_ID, chainDepth: 2 }, () =>
+        eventBusModule.publishEvent('alert.resolved', 'org-1', { alertId: 'a1' }, 'test'));
+      const event = lastXaddEvent();
+      expect(event.metadata.flowRunId).toBe(RUN_ID);
+      expect(event.metadata.flowChainDepth).toBe(2);
+    });
+
+    it('a caller-supplied flowChainDepth 0 inside a frame of depth 2 is overwritten by the frame', async () => {
+      const { withFlowExecutionContext } = await import('./flows/flowExecutionContext');
+      await withFlowExecutionContext({ runId: RUN_ID, chainDepth: 2 }, () =>
+        eventBusModule.publishEvent('alert.resolved', 'org-1', {}, 'test', {
+          flowChainDepth: 0,
+          flowRunId: '0b5b3f0e-6a55-4a59-9d8e-3c2b1a0000ff',
+        }));
+      const event = lastXaddEvent();
+      expect(event.metadata.flowChainDepth).toBe(2);
+      expect(event.metadata.flowRunId).toBe(RUN_ID);
+    });
+
+    it('outside a frame nothing is added', async () => {
+      await eventBusModule.publishEvent('alert.resolved', 'org-1', {}, 'test');
+      const event = lastXaddEvent();
+      expect(Object.keys(event.metadata).sort()).toEqual(['correlationId', 'timestamp']);
+    });
+
+    it('outside a frame an explicit ancestry option (the runner publishing flow.run.*) is carried', async () => {
+      await eventBusModule.publishEvent('alert.resolved', 'org-1', {}, 'test', { flowRunId: RUN_ID, flowChainDepth: 1 });
+      const event = lastXaddEvent();
+      expect(event.metadata.flowRunId).toBe(RUN_ID);
+      expect(event.metadata.flowChainDepth).toBe(1);
     });
   });
 });

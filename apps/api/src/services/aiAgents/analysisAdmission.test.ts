@@ -12,7 +12,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const createAndEnqueueAgentRun = vi.hoisted(() => vi.fn());
-vi.mock('./runService', () => ({ createAndEnqueueAgentRun }));
+const GrantDepthExceededError = vi.hoisted(() => class GrantDepthExceededError extends Error {
+  readonly code = 'grant_depth_exceeded' as const;
+});
+vi.mock('./runService', () => ({ createAndEnqueueAgentRun, GrantDepthExceededError }));
 
 const resolveArtifact = vi.hoisted(() => vi.fn());
 vi.mock('../artifacts/artifactService', () => ({ resolveArtifact }));
@@ -117,9 +120,37 @@ describe('admitAnalysisRun', () => {
       'analysis_region_unavailable', 'compute_budget_exceeded', 'org_budget_exceeded',
       'max_concurrent_analysis_runs', 'analysis_rate', 'too_many_input_devices',
       'device_not_in_org', 'artifact_forbidden', 'enqueue_failed', 'model_unavailable',
+      'grant_refused',
     ]);
     for (const [skip, refusal] of Object.entries(SKIP_REASON_REFUSALS)) {
       expect(allowed.has(refusal), `${skip} -> ${refusal}`).toBe(true);
     }
+  });
+
+  // Wisp W07 — the coordinator's analysis launcher is the only grant-bearing caller.
+  it('maps the grant_* skips onto grant_refused', async () => {
+    expect(SKIP_REASON_REFUSALS.grant_inactive).toBe('grant_refused');
+    expect(SKIP_REASON_REFUSALS.grant_org_out_of_ceiling).toBe('grant_refused');
+    createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'grant_inactive' });
+    await expect(admitAnalysisRun(input())).resolves.toMatchObject({ created: false, refusal: 'grant_refused' });
+  });
+
+  it('catches GrantDepthExceededError as grant_refused (never a thrown 500 on the chat path)', async () => {
+    createAndEnqueueAgentRun.mockRejectedValue(new GrantDepthExceededError('depth'));
+    await expect(admitAnalysisRun(input({ grant: { grantId: 'g', grantRevisionId: 'r', requestedByRunId: 'parent' } })))
+      .resolves.toEqual({ created: false, refusal: 'grant_refused' });
+  });
+
+  it('other admission errors still propagate', async () => {
+    createAndEnqueueAgentRun.mockRejectedValue(new Error('db down'));
+    await expect(admitAnalysisRun(input())).rejects.toThrow('db down');
+  });
+
+  it('forwards grant to createAndEnqueueAgentRun, and omits it when absent', async () => {
+    const grant = { grantId: 'g', grantRevisionId: 'r', requestedByRunId: 'parent' };
+    await admitAnalysisRun(input({ grant }));
+    expect(createAndEnqueueAgentRun.mock.calls[0]![0]).toMatchObject({ grant });
+    await admitAnalysisRun(input());
+    expect(createAndEnqueueAgentRun.mock.calls[1]![0]).not.toHaveProperty('grant');
   });
 });

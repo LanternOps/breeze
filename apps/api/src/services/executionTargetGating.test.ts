@@ -1,5 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+const { whereMock } = vi.hoisted(() => ({ whereMock: vi.fn() }));
+vi.mock('../db', () => ({
+  db: { select: () => ({ from: () => ({ where: whereMock }) }) },
+}));
 import {
+  resolveExecutionSafeGroupIds,
   inlineFilterHasExecutionRefusedFields,
   partitionGroupsByExecutionFieldProvenance,
   warningsForRefusedExecutionGroups,
@@ -62,5 +68,28 @@ describe('warningsForRefusedExecutionGroups', () => {
 
   it('returns an empty array for no refused groups', () => {
     expect(warningsForRefusedExecutionGroups([])).toEqual([]);
+  });
+});
+
+describe('execution target visibility (#10521 W1)', () => {
+  it("returns an id with no visible row as refused with refusedFields ['unresolvable']", async () => {
+    whereMock.mockResolvedValueOnce([
+      { id: 'safe', filterFieldsUsed: ['osType'] },
+      { id: 'unsafe', filterFieldsUsed: ['hostname'] },
+    ]);
+    const result = await resolveExecutionSafeGroupIds(['missing', 'safe', 'missing', 'unsafe', 'safe']);
+    expect(result.allowedGroupIds).toEqual(['safe']);
+    expect(result.refusedGroups).toEqual([
+      { id: 'unsafe', refusedFields: ['hostname'] },
+      { id: 'missing', refusedFields: ['unresolvable'] },
+    ]);
+  });
+
+  it('words the unresolvable warning without naming agent-reported fields', () => {
+    const warnings = warningsForRefusedExecutionGroups([{ id: 'missing', refusedFields: ['unresolvable'] }]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('missing');
+    expect(warnings[0]).toContain('could not be resolved (it no longer exists or is not visible here)');
+    expect(warnings[0]).not.toContain('agent-reported');
   });
 });

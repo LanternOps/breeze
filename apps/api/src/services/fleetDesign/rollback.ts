@@ -314,7 +314,7 @@ async function rollbackFunction(ctx: RollbackCtx, row: FleetDesignLedgerRow): Pr
 
   if (refs.groupCreated && sameAsSnapshot) {
     // Guards (children / billing / quotes) throw DeviceGroupDeleteError → refused.
-    const result = await deleteDeviceGroup(groupId, ctx.orgId);
+    const result = await deleteDeviceGroup(groupId, { orgId: ctx.orgId });
     for (const deviceId of result.affectedDeviceIds) {
       await schedulePeripheralPolicyDevice(deviceId, 'manual_membership_changed').catch((error) => {
         console.error(`[fleetDesign] failed to schedule peripheral reconciliation for ${deviceId}:`, error);

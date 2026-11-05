@@ -142,6 +142,10 @@ const CLASSIFICATION: Record<string, Classification> = {
     kind: 'eligibility',
     reason: 'The dispatch read joins the device org type; a parked device fails the actuation before the raw insert',
   },
+  'services/pamRequestNotify.ts': {
+    kind: 'chokepoint',
+    reason: 'insertQueuedCommandInTransaction checks parked-device delivery on a savepoint of the deciding transaction; a refusal is swallowed so the deny/expiry still commits with no command (#8928)',
+  },
   'routes/devices/pamReconciliation.ts': {
     kind: 'chokepoint',
     reason: 'insertQueuedCommandInTransaction checks parked-device delivery on the held transaction and the route returns its typed 409 refusal',
@@ -241,7 +245,7 @@ const CLASSIFICATION: Record<string, Classification> = {
   'jobs/discoveryWorker.ts': { kind: 'socket_only', reason: SOCKET_ONLY_REASON },
   'jobs/monitorWorker.ts': { kind: 'socket_only', reason: SOCKET_ONLY_REASON },
   'jobs/snmpWorker.ts': { kind: 'socket_only', reason: SOCKET_ONLY_REASON },
-  'routes/discoveryAssetProbe.ts': { kind: 'socket_only', reason: SOCKET_ONLY_REASON },
+  'services/assetProbeRun.ts': { kind: 'socket_only', reason: SOCKET_ONLY_REASON },
   'routes/monitors.ts': { kind: 'socket_only', reason: SOCKET_ONLY_REASON },
   'routes/devices/sessions.ts': { kind: 'socket_only', reason: SOCKET_ONLY_REASON },
 

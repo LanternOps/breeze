@@ -228,18 +228,30 @@ export function parseUsageHistory(payload: unknown): UsageHistoryPoint[] {
   return parsed;
 }
 
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+/**
+ * The one byte formatter for every backup surface (#9931): binary units
+ * (1 KB = 1024 B) and three significant digits, so one snapshot reads the
+ * same on the health table, the snapshot browser, the device Restore Points
+ * list and the restore wizard. Do not add per-component copies.
+ *
+ * `missing` is what a null/undefined/non-finite/negative size renders as;
+ * each surface keeps its own empty-cell placeholder. Zero is "0 B".
+ */
+export function formatBytes(bytes: number | null | undefined, missing = '0 B'): string {
+  if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return missing;
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   let value = bytes;
   let unitIndex = 0;
 
-  while (value >= 1024 && unitIndex < units.length - 1) {
+  // Compare against 1023.5 so a value that would round up to "1024 <unit>"
+  // is shown as "1.00 <next unit>" instead.
+  while (value >= 1023.5 && unitIndex < units.length - 1) {
     value /= 1024;
     unitIndex += 1;
   }
 
-  const precision = value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  if (unitIndex === 0) return `${formatNumber(Math.round(value))} B`;
+  const precision = value >= 99.95 ? 0 : value >= 9.995 ? 1 : 2;
   return `${formatNumber(value, { minimumFractionDigits: precision, maximumFractionDigits: precision })} ${units[unitIndex]}`;
 }
 

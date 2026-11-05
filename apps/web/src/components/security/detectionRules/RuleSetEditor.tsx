@@ -14,6 +14,7 @@ import RuleSetRules from "./RuleSetRules";
 import RuleEditorDialog from "./RuleEditorDialog";
 import IocImportPanel from "./IocImportPanel";
 import RuleTestPanel from "./RuleTestPanel";
+import SweepDialog from "../sweeps/SweepDialog";
 import {
   describePublishOutcome,
   formatPublishOutcome,
@@ -38,6 +39,9 @@ import {
 } from "./ruleSetsApi";
 
 export type EditorTab = "rules" | "import" | "test";
+
+/** The page renders one editor at a time, so a fixed id is unique. */
+const SWEEP_DISABLED_REASON_ID = "rule-set-sweep-now-disabled-reason";
 
 /** Standard caller catch (CLAUDE.md): 401 → auth redirect; ActionError → already toasted. */
 function handleMutationError(err: unknown, fallback: string): void {
@@ -69,6 +73,7 @@ export default function RuleSetEditor({
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const [sweeping, setSweeping] = useState(false);
 
   // A failed RE-fetch (after a mutation) keeps the last known set on screen,
   // so it must say the view may be out of date instead of passing it off as
@@ -219,6 +224,14 @@ export default function RuleSetEditor({
         ? { message: staleBannerText(set) }
         : null;
 
+  // A sweep pins the published version: nothing to pin until the set is
+  // published, and a disabled set is refused by the sweep routes.
+  const sweepDisabledReason = !set.enabled
+    ? t("sweeps.sweepNowDisabled")
+    : set.publishedVersion <= 0
+      ? t("sweeps.sweepNowUnpublished")
+      : null;
+
   const tabs: EditorTab[] = readOnly ? ["rules", "test"] : ["rules", "import", "test"];
 
   return (
@@ -288,6 +301,28 @@ export default function RuleSetEditor({
                 {t("detectionRules.editor.readOnlyBuiltin")}
               </p>
             )}
+            <div className="pt-1">
+              <button
+                type="button"
+                data-testid="rule-set-sweep-now"
+                disabled={sweepDisabledReason !== null}
+                aria-describedby={sweepDisabledReason ? SWEEP_DISABLED_REASON_ID : undefined}
+                onClick={() => setSweeping(true)}
+                className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {t("sweeps.sweepNow")}
+              </button>
+              {/* Visible, not a hover-only title: keyboard and touch users never see a disabled button's tooltip. */}
+              {sweepDisabledReason && (
+                <p
+                  id={SWEEP_DISABLED_REASON_ID}
+                  data-testid="rule-set-sweep-now-disabled-reason"
+                  className="mt-1 text-xs text-muted-foreground"
+                >
+                  {sweepDisabledReason}
+                </p>
+              )}
+            </div>
           </div>
           {!readOnly && (
             <div className="flex flex-wrap items-center gap-2">
@@ -421,6 +456,10 @@ export default function RuleSetEditor({
       )}
 
       {tab === "test" && <RuleTestPanel setId={set.id} />}
+
+      {sweeping && (
+        <SweepDialog prefill={{ ruleSetIds: [set.id], ruleSetNames: [set.name] }} onClose={() => setSweeping(false)} />
+      )}
 
       {dialogRule !== undefined && (
         <RuleEditorDialog rule={dialogRule} onClose={() => setDialogRule(undefined)} onSubmit={submitRule} />

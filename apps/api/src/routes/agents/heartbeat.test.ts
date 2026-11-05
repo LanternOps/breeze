@@ -1,3 +1,5 @@
+vi.mock('../../services/networkIsolation/episodeStore', () => ({ findUnresolvedEpisode: vi.fn(async () => null) }));
+vi.mock('../../services/networkIsolation/reconcile', () => ({ buildContainmentHeartbeatBlock: vi.fn(async () => ({ networkIsolation: null })), reconcileContainmentReport: vi.fn(async (_tx, _device, _report, _now, context) => { context.row = null; }), noteIsolationReportDropped: vi.fn(), storedContainmentHeartbeatBlock: vi.fn((row) => ({ networkIsolation: row ? { isolationId: row.id, generation: row.generation, desired: row.desiredState, allow: row.allowSnapshot } : null })) }));
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { Hono } from 'hono';
 
@@ -194,6 +196,15 @@ vi.mock('@hono/zod-validator', () => ({
   },
 }));
 
+vi.mock('./featureUpdateConfig', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./featureUpdateConfig')>();
+  return {
+    ...actual,
+    // Default block, mirroring buildPatchSourceConfigUpdate's default OFF.
+    buildFeatureUpdateConfigUpdate: vi.fn(async () => ({ mode: 'block' as const })),
+  };
+});
+
 vi.mock('./helpers', () => ({
   maybeQueueThresholdFilesystemAnalysis: vi.fn(),
   buildPolicyProbeConfigUpdate: vi.fn(() => undefined),
@@ -278,6 +289,15 @@ vi.mock('../../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
 }));
 
+// #10190 W05 — restart-decision audit. Its dedupe and freshness rules live in
+// services/rebootUserActionAudit.test.ts; here only the wiring is pinned.
+const recordRebootUserActionMock = vi.hoisted(() => vi.fn(async () => 'written'));
+const noteRebootUserActionDroppedMock = vi.hoisted(() => vi.fn(() => false));
+vi.mock('../../services/rebootUserActionAudit', () => ({
+  recordRebootUserAction: recordRebootUserActionMock,
+  noteRebootUserActionDropped: noteRebootUserActionDroppedMock,
+}));
+
 vi.mock('../../services/deviceIpHistory', () => ({
   processDeviceIPHistoryUpdate: vi.fn(),
 }));
@@ -311,14 +331,19 @@ vi.mock('../../services/agentTokenPromotion', () => ({
   PREVIOUS_TOKEN_GRACE_MS: 5 * 60 * 1000,
 }));
 
-vi.mock('../../middleware/agentAuth', () => ({
-  isAgentTokenRotationDue: vi.fn(() => false),
-  // #3986 — the ONE definition of the drain claim allowlist. heartbeat.ts reads
-  // it as the fail-closed fallback for `agent.claimTypeAllowlist`, so the mock
-  // must carry the real value or the fallback would silently mean
-  // "unrestricted" in every test.
-  DRAIN_CLAIM_TYPE_ALLOWLIST: ['self_uninstall'] as const,
-}));
+vi.mock('../../middleware/agentAuth', async () => {
+  const { HTTPException } = await import('hono/http-exception');
+  return {
+    isAgentTokenRotationDue: vi.fn(() => false),
+    // #3986 — the ONE definition of the drain claim allowlist. heartbeat.ts reads
+    // it as the fail-closed fallback for `agent.claimTypeAllowlist`, so the mock
+    // must carry the real value or the fallback would silently mean
+    // "unrestricted" in every test.
+    DRAIN_CLAIM_TYPE_ALLOWLIST: ['self_uninstall'] as const,
+    // #8318 §6.4 — the stale-caller answer: the opaque token_mismatch 401.
+    staleAgentCredentialRejection: () => new HTTPException(401, { message: 'Invalid agent credentials' }),
+  };
+});
 
 // #7970 — the UniFi collector presence probe. A real (registered, so reset per
 // test) TTL cache; only the SQL probe is a mock.
@@ -411,6 +436,16 @@ vi.mock('../../services/manifestSigning', () => ({
   },
 }));
 
+// #8318 wave 1b — the directive builder is unit-tested in
+// services/deviceReattach/rebindDirective.test.ts; here only its wiring.
+const rebindDirectiveForBeatMock = vi.hoisted(() => vi.fn(async (_input: unknown): Promise<unknown> => undefined));
+vi.mock('../../services/deviceReattach/rebindDirective', () => ({
+  rebindDirectiveForBeat: (input: unknown) => {
+    callOrder.push('rebind:directive');
+    return rebindDirectiveForBeatMock(input);
+  },
+}));
+
 // #8317 — only the signer is replaced; the capability and needs-sync decisions
 // run for real (they are unit-tested in agentIdentityAssertion.test.ts).
 const signAgentIdentityAssertionMock = vi.hoisted(() => vi.fn());
@@ -444,8 +479,9 @@ vi.mock('../../jobs/deviceGroupJobs', () => ({
 vi.mock('../../services/reliabilityBaselines', () => ({ createReliabilityBaseline: vi.fn() }));
 vi.mock('../../jobs/reliabilityWorker', () => ({ enqueueDeviceReliabilityComputation: vi.fn() }));
 
-import { and, eq, notInArray } from 'drizzle-orm';
-import { heartbeatRoutes, normalizeRetainStateProtocolVersion, tccPermissionsMeaningfullyChanged } from './heartbeat';
+import { and, eq, notInArray, type SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { heartbeatRoutes, normalizePamUserNotifyProtocolVersion, normalizeRetainStateProtocolVersion, tccPermissionsMeaningfullyChanged } from './heartbeat';
 import { devices, bareMetalRecoveries } from '../../db/schema';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 import { createReliabilityBaseline } from '../../services/reliabilityBaselines';
@@ -457,11 +493,17 @@ beforeEach(() => { __resetHotPathCachesForTests(); });
 
 // Builds a thenable mock-chain so any `.from().where().limit()` access
 // resolves to the given value.
+// The beat's own-row read is `.limit(1).for('no key update')` (#8318 §6.4,
+// selectOwnDeviceRowForUpdate); every other read awaits `.limit()` directly.
+function lockableResolved(value: unknown) {
+  return Object.assign(Promise.resolve(value), { for: vi.fn(() => Promise.resolve(value)) });
+}
+
 function selectChainResolving(value: unknown) {
   return {
     from: vi.fn(() => ({
       where: vi.fn(() => ({
-        limit: vi.fn().mockResolvedValue(value),
+        limit: vi.fn(() => lockableResolved(value)),
         orderBy: vi.fn(() => ({
           limit: vi.fn().mockResolvedValue(value),
         })),
@@ -487,6 +529,7 @@ function buildApp(agentOverrides: Record<string, unknown> = {}): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
@@ -505,6 +548,7 @@ function buildWatchdogApp(): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
@@ -524,6 +568,7 @@ function buildDrainingApp(role: 'agent' | 'watchdog' = 'agent'): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
@@ -550,6 +595,7 @@ function buildDeviceDrainApp(): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
@@ -996,6 +1042,7 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
     it('loads the hierarchy for the authenticated device and hands it to every resolver', async () => {
       const { loadDeviceHierarchy } = await import('../../services/deviceHierarchy');
       const helpers = await import('./helpers');
+      const { buildFeatureUpdateConfigUpdate } = await import('./featureUpdateConfig');
       vi.mocked(loadDeviceHierarchy).mockResolvedValueOnce(hierarchy as never);
       arrangeBeat();
 
@@ -1006,7 +1053,7 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
         helpers.buildMonitoringConfigUpdate, helpers.buildPamConfigUpdate,
         helpers.buildPatchSourceConfigUpdate, helpers.buildWarrantyConfigUpdate,
         helpers.buildTimeSyncConfigUpdate, helpers.loadOnedriveHelperConfigPlan,
-        helpers.buildWorkloadInventoryConfigUpdate,
+        helpers.buildWorkloadInventoryConfigUpdate, buildFeatureUpdateConfigUpdate,
       ]) {
         expect(vi.mocked(builder)).toHaveBeenCalledWith('device-1', expect.objectContaining({ hierarchy }));
       }
@@ -1072,6 +1119,7 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
       it(`${c.label}: no policy builder runs, nothing is cached, Sentry is told why (#8142)`, async () => {
         const { loadDeviceHierarchy } = await import('../../services/deviceHierarchy');
         const helpers = await import('./helpers');
+        const { buildFeatureUpdateConfigUpdate } = await import('./featureUpdateConfig');
         const { captureException } = await import('../../services/sentry');
         const { orgPolicyProbeCache, orgHelperSettingsCache, orgPamFallbackCache } = await import('../../services/agentOrgSettingsCache');
         vi.mocked(loadDeviceHierarchy).mockResolvedValueOnce(c.hierarchy as never);
@@ -1091,6 +1139,7 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
           helpers.buildEventLogConfigUpdate, helpers.buildMonitoringConfigUpdate, helpers.buildPamConfigUpdate,
           helpers.buildPatchSourceConfigUpdate, helpers.buildWarrantyConfigUpdate, helpers.buildTimeSyncConfigUpdate,
           helpers.buildHelperConfigUpdate, helpers.buildPolicyProbeConfigUpdate, helpers.loadOnedriveHelperConfigPlan,
+          buildFeatureUpdateConfigUpdate,
         ]) {
           expect(vi.mocked(builder)).not.toHaveBeenCalled();
         }
@@ -1475,6 +1524,35 @@ describe('POST /agents/:id/heartbeat — signed identity sync (#8317)', () => {
     });
     expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
     expect(body).not.toHaveProperty('identityAssertion');
+  });
+
+  it('#8318 §6.2: a rebind-capable beat records the capability and carries the directive, built after the org transaction', async () => {
+    const directive = {
+      intentId: '00000000-0000-4000-8000-0000000000c1',
+      nonce: NONCE,
+      targetDeviceId: '00000000-0000-4000-8000-0000000000c2',
+      targetOrgId: ORG_A,
+      targetSiteId: SITE_A,
+      expiresAt: '2026-10-09T19:15:00Z',
+      keyId: 'deploy-2026-10-09-abcdef01',
+      signature: 'sig',
+    };
+    rebindDirectiveForBeatMock.mockResolvedValueOnce(directive);
+
+    const body = await beat({ securityCapabilities: { rebindProtocolVersion: 1 } });
+
+    expect(body.rebind).toEqual(directive);
+    expect(rebindDirectiveForBeatMock).toHaveBeenCalledWith({ deviceId: DEVICE_ID, agentId: 'agent-1', rebindProtocolVersion: 1 });
+    expect(callOrder.indexOf('dbContext:released')).toBeLessThan(callOrder.indexOf('rebind:directive'));
+    expect(deviceUpdateSets.some((set) => set.rebindProtocolVersion === 1)).toBe(true);
+  });
+
+  it('#8318 §6.2: a beat without the capability records 0 and carries no directive', async () => {
+    const body = await beat({});
+
+    expect(body).not.toHaveProperty('rebind');
+    expect(rebindDirectiveForBeatMock).toHaveBeenCalledWith({ deviceId: DEVICE_ID, agentId: 'agent-1', rebindProtocolVersion: 0 });
+    expect(deviceUpdateSets.some((set) => set.rebindProtocolVersion === 0)).toBe(true);
   });
 
   it('sends nothing when the reported identity already matches the row', async () => {
@@ -3961,6 +4039,34 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
     expect(update.pamLifetimeProtocolVersion).toBe(0);
   });
 
+  // #8928 — the user-outcome notice capability is same-heartbeat, non-sticky
+  // truth like every other protocol column. #10190 W07 adds version 2 (the
+  // agent also decodes decidedBy on pam_apply_v2); anything but 1 or 2 is 0.
+  it.each([
+    [1, 1], [0, 0], [2, 2], [3, 0], ['1', 0], ['2', 0], [undefined, 0], [1.5, 0], [null, 0],
+  ])('normalizePamUserNotifyProtocolVersion(%j) === %j', (input, expected) => {
+    expect(normalizePamUserNotifyProtocolVersion(input)).toBe(expected);
+  });
+
+  it.each([
+    { capabilities: { pamUserNotifyProtocolVersion: 1 }, expected: 1 },
+    { capabilities: undefined, expected: 0 },
+    { capabilities: {}, expected: 0 },
+    { capabilities: { pamUserNotifyProtocolVersion: 0 }, expected: 0 },
+    { capabilities: { pamUserNotifyProtocolVersion: 2 }, expected: 2 },
+    { capabilities: { pamUserNotifyProtocolVersion: 3 }, expected: 0 },
+  ])('rewrites the PAM user-notify capability every beat: %j', async ({ capabilities, expected }) => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+    const response = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, securityCapabilities: capabilities }),
+    });
+    expect(response.status).toBe(200);
+    const update = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(update.pamUserNotifyProtocolVersion).toBe(expected);
+  });
+
   // #5537 — desktopFenceProtocolVersion is recorded non-sticky on
   // every beat exactly like revocationLeaseProtocolVersion — omitted, zero,
   // unknown, fractional and string values all persist as 0 so an agent
@@ -4554,6 +4660,38 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     expect(configUpdate?.patch_source_settings).toBeUndefined();
   });
 
+  it('includes feature_update_settings in configUpdate with snake_case pin fields', async () => {
+    const { buildFeatureUpdateConfigUpdate } = await import('./featureUpdateConfig');
+    vi.mocked(buildFeatureUpdateConfigUpdate).mockResolvedValueOnce({ mode: 'pin', product: 'windows-11', targetVersion: '25H2' });
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.feature_update_settings).toEqual({ mode: 'pin', product: 'windows-11', target_version: '25H2' });
+  });
+
+  it('omits feature_update_settings when its resolver throws (the agent keeps its last policy)', async () => {
+    const { buildFeatureUpdateConfigUpdate } = await import('./featureUpdateConfig');
+    vi.mocked(buildFeatureUpdateConfigUpdate).mockRejectedValueOnce(new Error('boom'));
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.feature_update_settings).toBeUndefined();
+  });
+
   it('includes warranty_settings in configUpdate when HP CMSL collection is enabled (#5511 W02)', async () => {
     const { buildWarrantyConfigUpdate } = await import('./helpers');
     vi.mocked(buildWarrantyConfigUpdate).mockResolvedValueOnce({ hpCmslEnabled: true });
@@ -4686,6 +4824,7 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
       collect_categories: ['security', 'system'],
       minimum_level: 'warning',
       collection_interval_minutes: 15,
+      application_providers: [],
     };
     vi.mocked(buildEventLogConfigUpdate).mockResolvedValueOnce(settings);
 
@@ -4787,6 +4926,7 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
       hyperv_enabled: true,
       proxmox_enabled: true,
       interval_minutes: 60,
+      accepts_image_provenance: true as const,
     };
     vi.mocked(buildWorkloadInventoryConfigUpdate).mockResolvedValueOnce(payload);
     const res = await buildApp().request('/agents/device-1/heartbeat', {
@@ -5323,8 +5463,8 @@ describe('POST /agents/:id/heartbeat — shared post-commit policy context (#805
       .toHaveBeenCalledWith('device-1', 'org-1', expect.objectContaining({ policySet: set }));
     // No onedrive link in the set → no OneDrive DB phase at all.
     expect(helpers.loadOnedriveHelperConfigPlan).not.toHaveBeenCalled();
-    // hierarchy/set savepoint + the policy probe's and the UniFi collector
-    // probe's (#7970) cache-miss savepoints; the helper resolves in memory.
+    // Hierarchy/set + two policy probe savepoints. #4618's negative containment
+    // lookup adds no savepoint, and the absent episode needs no block build.
     expect(callOrder.filter((e) => e === 'savepoint')).toHaveLength(3);
   });
 
@@ -6396,7 +6536,7 @@ describe('POST /agents/:id/heartbeat — terminal-status guard (#2230)', () => {
     const firstSet = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
     expect(firstSet.status).toBe('online');
     expect((whereSpy.mock.calls as any[])[0]?.[0]).toEqual(
-      and(eq(devices.id, 'device-1'), notInArray(devices.status, ['decommissioned', 'quarantined'])),
+      and(and(eq(devices.id, 'device-1'), eq(devices.agentId, 'agent-1')), notInArray(devices.status, ['decommissioned', 'quarantined'])),
     );
 
     // Finding #10: a guard-rejected (0-row) write must NOT record a phantom
@@ -7345,7 +7485,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     });
 
     expect(resp.status).toBe(200);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'watchdog', undefined);
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'watchdog', undefined);
     const body = (await resp.json()) as { commands: Array<{ id: string }> };
     expect(body.commands.map((cmd) => cmd.id)).toEqual(['cmd-good']);
     expect(releaseClaimedCommandDeliveryMock).toHaveBeenCalledWith('cmd-bad', claimedAt);
@@ -7375,7 +7515,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         ...minimalHeartbeatBody,
-        securityCapabilities: { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2, pamReconciliationResetProtocolVersion: 1 },
+        securityCapabilities: { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2, pamReconciliationResetProtocolVersion: 1, pamUserNotifyProtocolVersion: 1 },
       }),
     });
 
@@ -7386,8 +7526,8 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     ]);
     expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
     expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
-      'device-1', 10, 'agent', undefined,
-      { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2, pamReconciliationResetProtocolVersion: 1 },
+      { deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', undefined,
+      { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2, pamReconciliationResetProtocolVersion: 1, pamUserNotifyProtocolVersion: 1 },
     );
   });
 
@@ -7422,11 +7562,11 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
 
     expect(resp.status).toBe(200);
     expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
-      'device-1',
+      { deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 },
       10,
       'agent',
       ['self_uninstall'],
-      { peripheralPolicyProtocolVersion: 0, rollbackProtocolVersion: 0, pamLifetimeProtocolVersion: 0, pamReconciliationResetProtocolVersion: 0 },
+      { peripheralPolicyProtocolVersion: 0, rollbackProtocolVersion: 0, pamLifetimeProtocolVersion: 0, pamReconciliationResetProtocolVersion: 0, pamUserNotifyProtocolVersion: 0 },
     );
   });
 
@@ -7570,7 +7710,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     });
 
     expect(resp.status).toBe(200);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'watchdog', [
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'watchdog', [
       'self_uninstall',
     ]);
   });
@@ -7917,14 +8057,15 @@ describe('POST /agents/:id/heartbeat — device-remove uninstall drain (#3986)',
     // ...and the response carries NOTHING the Go agent would act on. Asserted
     // as an exact key set, not key-by-key: a future field added to the normal
     // response must not be able to leak in unnoticed.
-    expect(Object.keys(body)).toEqual(['commands']);
+    expect(Object.keys(body)).toEqual(['commands', 'containment']);
+    expect(body.containment).toEqual({ networkIsolation: null });
   });
 
   it('claims with the derived self_uninstall allowlist and nothing wider', async () => {
     await drainBeat();
 
     expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledTimes(1);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'agent', [
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', [
       'self_uninstall',
     ]);
   });
@@ -7988,7 +8129,7 @@ describe('POST /agents/:id/heartbeat — device-remove uninstall drain (#3986)',
     const resp = await drainBeat();
 
     expect(resp.status).toBe(200);
-    expect(await resp.json()).toEqual({ commands: [] });
+    expect(await resp.json()).toEqual({ commands: [], containment: { networkIsolation: null } });
   });
 
   it('a TENANT drain still gets the full heartbeat (the minimal branch is device-scoped only)', async () => {
@@ -8166,6 +8307,7 @@ describe('POST /agents/:id/heartbeat implicit pending-rotation promotion (#2773)
     const app = new Hono();
     app.use('*', async (c, next) => {
       c.set('agent', {
+        installIncarnation: 1,
         deviceId: 'device-1',
         agentId: 'agent-1',
         orgId: 'org-1',
@@ -8235,7 +8377,7 @@ describe('POST /agents/:id/heartbeat implicit pending-rotation promotion (#2773)
     expect(resp.status).toBe(200);
     expect(promotePendingAgentCredentialsMock).toHaveBeenCalledTimes(1);
     expect(promotePendingAgentCredentialsMock.mock.calls[0]![0]).toMatchObject({
-      deviceId: 'device-1',
+      agent: expect.objectContaining({ deviceId: 'device-1' }),
       pendingTokenHash: 'presented-hash',
       expectedAgentTokenHash: 'current-hash',
     });
@@ -8417,6 +8559,95 @@ describe('POST /agents/:id/heartbeat — reboot status (#3207 W5)', () => {
     expect(updateArg.rebootMaxDeferrals).toBeNull();
   });
 
+  // #10190 W05 — the restart decision the person made on the device.
+  it('hands lastUserAction to the restart-decision audit with the snapshot counters', async () => {
+    arrange();
+    const lastUserAction = { action: 'postponed', atUnixMs: 1_788_349_000_000, renderer: 'assist' };
+    const resp = await beat({
+      rebootStatus: {
+        scheduledAt: SCHEDULED_AT,
+        deadline: DEADLINE,
+        source: 'patch_job',
+        deferralsUsed: 2,
+        maxDeferrals: 3,
+        lastUserAction,
+      },
+    });
+
+    expect(resp.status).toBe(200);
+    expect(recordRebootUserActionMock).toHaveBeenCalledTimes(1);
+    const [deviceId, orgId, action, context] = recordRebootUserActionMock.mock.calls[0]! as unknown as [
+      string, string, unknown, Record<string, unknown>,
+    ];
+    // The authenticated device and its org, never a body-supplied identity.
+    expect(deviceId).toBe('device-1');
+    expect(orgId).toBe('org-1');
+    expect(action).toEqual(lastUserAction);
+    expect(context).toMatchObject({ scheduledAt: SCHEDULED_AT, deferralsUsed: 2, maxDeferrals: 3, agentId: 'device-1' });
+    expect(context.c).toBeDefined();
+    expect(noteRebootUserActionDroppedMock).not.toHaveBeenCalled();
+  });
+
+  it("attributes the restart-decision audit to the device row's org", async () => {
+    // The row's org (the org transaction's), never the token's cached org:
+    // after an org move the audit must land in the device's current tenant.
+    arrange({ orgId: 'org-2' });
+    await beat({
+      rebootStatus: {
+        scheduledAt: SCHEDULED_AT,
+        lastUserAction: { action: 'postponed', atUnixMs: 1_788_349_000_000, renderer: 'assist' },
+      },
+    });
+    expect(recordRebootUserActionMock).toHaveBeenCalledTimes(1);
+    expect((recordRebootUserActionMock.mock.calls[0] as unknown[])[1]).toBe('org-2');
+  });
+
+  it('does not hold the heartbeat response on the restart-decision audit', async () => {
+    arrange();
+    recordRebootUserActionMock.mockReturnValueOnce(new Promise(() => {}));
+    const resp = await beat({
+      rebootStatus: {
+        scheduledAt: SCHEDULED_AT,
+        lastUserAction: { action: 'restart_now', atUnixMs: 1_788_349_000_000, renderer: 'assist' },
+      },
+    });
+    expect(resp.status).toBe(200);
+  });
+
+  it('checks for a dropped lastUserAction when a schedule arrives without one', async () => {
+    arrange();
+    await beat({ rebootStatus: { scheduledAt: SCHEDULED_AT, deferralsUsed: 1, maxDeferrals: 3 } });
+    expect(noteRebootUserActionDroppedMock).toHaveBeenCalledTimes(1);
+    const [deviceId, raw, parsed] = noteRebootUserActionDroppedMock.mock.calls[0] as unknown as [string, any, unknown];
+    expect(deviceId).toBe('device-1');
+    expect(raw.rebootStatus.scheduledAt).toBe(SCHEDULED_AT);
+    expect(parsed).toBeUndefined();
+  });
+
+  it('does not call the restart-decision audit when there is no lastUserAction', async () => {
+    arrange();
+    await beat({ rebootStatus: { scheduledAt: SCHEDULED_AT, deferralsUsed: 0, maxDeferrals: 3 } });
+    await beat({ rebootStatus: null });
+    await beat({ pendingReboot: true });
+    expect(recordRebootUserActionMock).not.toHaveBeenCalled();
+  });
+
+  it('a failing restart-decision audit does not fail the heartbeat', async () => {
+    const setSpy = arrange();
+    recordRebootUserActionMock.mockRejectedValueOnce(new Error('audit path exploded'));
+    const resp = await beat({
+      rebootStatus: {
+        scheduledAt: SCHEDULED_AT,
+        lastUserAction: { action: 'restart_now', atUnixMs: 1_788_349_000_000, renderer: 'native' },
+      },
+    });
+    expect(resp.status).toBe(200);
+    // The schedule itself still landed.
+    expect(updateArgOf(setSpy).rebootScheduledAt).toEqual(new Date(SCHEDULED_AT));
+    // The lastUserAction member is an audit input, never a device column.
+    expect(Object.hasOwn(updateArgOf(setSpy), 'lastUserAction')).toBe(false);
+  });
+
   // NOTE: the zod-level drops (malformed scheduledAt, out-of-range counters,
   // a source outside ^[a-z0-9_]{1,32}$) are NOT testable from here — this file
   // mocks '@hono/zod-validator' so the handler reads the raw body. They live in
@@ -8532,6 +8763,70 @@ describe('POST /agents/:id/heartbeat — recovery marker check-in', () => {
     expect(deviceSetCalls[0]!.recoveredAt).toBeInstanceOf(Date);
     expect(deviceSetCalls[0]!.recoveredFromSnapshotId).toBe('snap-1');
     expect(refreshReadinessMock).toHaveBeenCalledTimes(1);
+  });
+
+  // #8318 §6.4 (review of wave 1b-1): the beat's first read is bound to the
+  // authenticated id + agent_id and locked. A beat the old install sent just
+  // before a reattach confirm (or an in-place re-enroll) finds 0 rows there and
+  // stops BEFORE the check-in, the readiness refresh and any audit — those
+  // would otherwise commit onto the new install's row.
+  it('a stale beat stops at the bound read: 401, no check-in, no readiness refresh, no audit, no device write', async () => {
+    arrange([recoveryRow()]);
+    refreshReadinessMock.mockClear();
+    const boundRead = { where: undefined as unknown, lock: undefined as unknown };
+    selectMock.mockReset();
+    selectMock
+      .mockReturnValueOnce({
+        from: vi.fn(() => ({
+          where: vi.fn((condition: unknown) => {
+            boundRead.where = condition;
+            return {
+              limit: vi.fn(() => ({
+                for: vi.fn((strength: unknown) => {
+                  boundRead.lock = strength;
+                  return Promise.resolve([]);
+                }),
+              })),
+            };
+          }),
+        })),
+      })
+      // ownDeviceRowChangedHands: the row now carries another agent_id.
+      .mockReturnValueOnce(selectChainResolving([{ agentId: 'agent-after-reattach' }]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    const { writeAuditEvent } = await import('../../services/auditEvents');
+
+    const res = await beat({ ...minimalHeartbeatBody, deviceRole: 'server', recoveryMarker: { recoveryId: RECOVERY_ID, nonce: NONCE } });
+
+    expect(res.status).toBe(401);
+    expect(await res.text()).toBe('Invalid agent credentials');
+    // Bound to the authenticated device id AND agent_id (the predicate's exact
+    // SQL is pinned against the real schema in agentOwnDeviceRow.test.ts; this
+    // file mocks the schema), and locked.
+    const { params } = new PgDialect().sqlToQuery(boundRead.where as SQL);
+    expect(params).toEqual(expect.arrayContaining(['device-1', 'agent-1']));
+    expect(boundRead.lock).toBe('no key update');
+    expect(selectMock).toHaveBeenCalledTimes(2); // the bound read + the one re-read, nothing else
+    expect(recoverySetCalls).toHaveLength(0);
+    expect(deviceSetCalls).toHaveLength(0);
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(refreshReadinessMock).not.toHaveBeenCalled();
+    expect(vi.mocked(writeAuditEvent)).not.toHaveBeenCalled();
+    expect(vi.mocked(createReliabilityBaseline)).not.toHaveBeenCalled();
+  });
+
+  it('a vanished row (bound read and re-read both empty) keeps the 404', async () => {
+    arrange([recoveryRow()]);
+    selectMock.mockReset();
+    selectMock.mockReturnValue(selectChainResolving([]));
+
+    const res = await beatWithMarker();
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Device not found' });
+    expect(recoverySetCalls).toHaveLength(0);
+    expect(updateMock).not.toHaveBeenCalled();
   });
 
   it('ignores a marker whose nonce does not match (no ack, no update, audit failure)', async () => {
@@ -8741,7 +9036,14 @@ describe('tccPermissionsMeaningfullyChanged (#4340)', () => {
 // helper settings or policy, and no ingest.
 // ---------------------------------------------------------------------
 describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () => {
-  const PARKED_ALLOWED_KEYS = ['commands', 'renewCert', 'rotateToken', 'confirmTokenRotation'];
+  // #8318 §6.2: the main agent's parked beat also carries the trust keyset and
+  // delegations (so it can verify the signed `rebind` directive) and, while
+  // the device is the source of an open reattach intent, the directive.
+  const PARKED_ALLOWED_KEYS: Record<'agent' | 'watchdog', string[]> = {
+    agent: ['commands', 'containment', 'renewCert', 'rotateToken', 'confirmTokenRotation', 'manifestTrustKeys', 'manifestKeyDelegations', 'rebind'],
+    watchdog: ['commands', 'containment', 'renewCert', 'rotateToken', 'confirmTokenRotation'],
+  };
+  const TRUST_KEYS = ['manifestTrustKeys', 'manifestKeyDelegations'];
   const FORBIDDEN_KEYS = [
     'configUpdate',
     'upgradeTo',
@@ -8749,8 +9051,6 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     'watchdogUpgradeTo',
     'backup_server_url',
     'mergedConfigUpdate',
-    'manifestTrustKeys',
-    'manifestKeyDelegations',
     'manageRemoteManagement',
     'remoteAccess',
     'networkContextReceipt',
@@ -8815,6 +9115,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       c.set('agentTokenRotationRequired', flags.rotationRequired === true);
       c.set('agentPendingTokenPresented', flags.pendingPresented === true);
       c.set('agent', {
+        installIncarnation: 1,
         deviceId: 'device-1',
         agentId: 'agent-1',
         orgId: 'pool-org-1',
@@ -8875,9 +9176,9 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       expect(resp.status).toBe(200);
       const body = (await resp.json()) as Record<string, unknown>;
       for (const key of Object.keys(body)) {
-        expect(PARKED_ALLOWED_KEYS).toContain(key);
+        expect(PARKED_ALLOWED_KEYS[role]).toContain(key);
       }
-      for (const key of FORBIDDEN_KEYS) {
+      for (const key of role === 'watchdog' ? [...FORBIDDEN_KEYS, ...TRUST_KEYS] : FORBIDDEN_KEYS) {
         expect(body).not.toHaveProperty(key);
       }
     });
@@ -8886,7 +9187,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       await parkedBeat(role);
 
       expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledTimes(1);
-      expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, role, ['self_uninstall']);
+      expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 }, 10, role, ['self_uninstall']);
     });
 
     it(`${role}: runs no ingest, config, upgrade, policy or trust resolution`, async () => {
@@ -8904,8 +9205,11 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       expect(requestDeviceGroupReevaluationMock).not.toHaveBeenCalled();
       expect(loadTopologyFlagsMock).not.toHaveBeenCalled();
       expect(withResolvedTopologyFlagsMock).not.toHaveBeenCalled();
-      expect(getActiveTrustKeysetMock).not.toHaveBeenCalled();
-      expect(getActiveManifestKeyDelegationsMock).not.toHaveBeenCalled();
+      if (role === 'watchdog') {
+        expect(getActiveTrustKeysetMock).not.toHaveBeenCalled();
+        expect(getActiveManifestKeyDelegationsMock).not.toHaveBeenCalled();
+        expect(rebindDirectiveForBeatMock).not.toHaveBeenCalled();
+      }
 
       const helpers = await import('./helpers');
       expect(helpers.maybeQueueThresholdFilesystemAnalysis).not.toHaveBeenCalled();
@@ -8935,11 +9239,16 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     });
   }
 
+  const PARKED_TRUST = {
+    manifestTrustKeys: [{ keyId: 'k-1', publicKeyB64: 'AAA=', validFrom: '2026-01-01T00:00:00.000Z' }],
+    manifestKeyDelegations: [{ keyId: 'k-1' }],
+  };
+
   it('agent: still delivers certificate renewal and token rotation', async () => {
     const resp = await parkedBeat('agent');
 
     const body = (await resp.json()) as Record<string, unknown>;
-    expect(body).toEqual({ commands: [], renewCert: true, rotateToken: true });
+    expect(body).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, rotateToken: true, ...PARKED_TRUST });
   });
 
   it('agent: a superseded-token caller is not asked to rotate (request flags reach the shared helper)', async () => {
@@ -8949,7 +9258,38 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       body: JSON.stringify(richHeartbeatBody),
     });
 
-    expect(await resp.json()).toEqual({ commands: [], renewCert: true });
+    expect(await resp.json()).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, ...PARKED_TRUST });
+  });
+
+  it('agent (#8318 §6.2): records the declared rebind capability and returns the signed directive', async () => {
+    const directive = {
+      intentId: '00000000-0000-4000-8000-0000000000a1',
+      nonce: '0123456789abcdef0123456789abcdef',
+      targetDeviceId: '00000000-0000-4000-8000-000000000004',
+      targetOrgId: '00000000-0000-4000-8000-000000000001',
+      targetSiteId: '00000000-0000-4000-8000-000000000003',
+      expiresAt: '2026-10-09T19:15:00Z',
+      keyId: 'k-1',
+      signature: 'sig',
+    };
+    rebindDirectiveForBeatMock.mockResolvedValueOnce(directive);
+
+    const resp = await parkedBeat('agent', { ...richHeartbeatBody, securityCapabilities: { rebindProtocolVersion: 1 } });
+
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.rebind).toEqual(directive);
+    expect(body.manifestTrustKeys).toEqual(PARKED_TRUST.manifestTrustKeys);
+    expect(rebindDirectiveForBeatMock).toHaveBeenCalledWith({ deviceId: 'device-1', agentId: 'agent-1', rebindProtocolVersion: 1 });
+    const written = setSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(written.rebindProtocolVersion).toBe(1);
+  });
+
+  it('agent (#8318 §6.2): an unknown rebind version is recorded as 0 and asks for no directive', async () => {
+    await parkedBeat('agent', { ...richHeartbeatBody, securityCapabilities: { rebindProtocolVersion: 7 } });
+
+    expect(rebindDirectiveForBeatMock).toHaveBeenCalledWith({ deviceId: 'device-1', agentId: 'agent-1', rebindProtocolVersion: 0 });
+    const written = setSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(written.rebindProtocolVersion).toBe(0);
   });
 
   it('agent: a staged-token caller is told to confirm when the implicit promotion does not land', async () => {
@@ -8967,10 +9307,10 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       body: JSON.stringify(richHeartbeatBody),
     });
 
-    expect(await resp.json()).toEqual({ commands: [], renewCert: true, confirmTokenRotation: true });
+    expect(await resp.json()).toEqual({ containment: { networkIsolation: null }, commands: [], renewCert: true, confirmTokenRotation: true, ...PARKED_TRUST });
     // Promotion was attempted for exactly the staged hash the caller presented.
     expect(promotePendingAgentCredentialsMock).toHaveBeenCalledWith(expect.objectContaining({
-      deviceId: 'device-1',
+      agent: expect.objectContaining({ deviceId: 'device-1' }),
       pendingTokenHash: 'pending-hash',
       expectedAgentTokenHash: 'hash',
     }));
@@ -8987,17 +9327,18 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     expect(body.commands.map((cmd) => cmd.type)).toEqual(['self_uninstall']);
   });
 
-  it('agent: records liveness only — lastSeenAt, online status and agent version, guarded against terminal statuses', async () => {
+  it('agent: records liveness only — lastSeenAt, online status, agent version and the rebind capability, guarded against terminal statuses', async () => {
     await parkedBeat('agent');
 
     expect(setSpy).toHaveBeenCalledTimes(1);
     const written = setSpy.mock.calls[0]![0] as Record<string, unknown>;
-    expect(Object.keys(written).sort()).toEqual(['agentVersion', 'lastSeenAt', 'status']);
+    expect(Object.keys(written).sort()).toEqual(['agentVersion', 'lastSeenAt', 'rebindProtocolVersion', 'status']);
+    expect(written.rebindProtocolVersion).toBe(0);
     expect(written.status).toBe('online');
     expect(written.agentVersion).toBe('0.70.1');
     expect(written.lastSeenAt).toBeInstanceOf(Date);
     expect(whereSpy.mock.calls[0]![0]).toEqual(
-      and(eq(devices.id, 'device-1'), notInArray(devices.status, ['decommissioned', 'quarantined'])),
+      and(and(eq(devices.id, 'device-1'), eq(devices.agentId, 'agent-1')), notInArray(devices.status, ['decommissioned', 'quarantined'])),
     );
   });
 
@@ -9005,12 +9346,12 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     const resp = await parkedBeat('watchdog');
 
     const body = (await resp.json()) as Record<string, unknown>;
-    expect(body).toEqual({ commands: [] });
+    expect(body).toEqual({ commands: [], containment: { networkIsolation: null } });
     expect(setSpy).toHaveBeenCalledTimes(1);
     const written = setSpy.mock.calls[0]![0] as Record<string, unknown>;
     expect(Object.keys(written).sort()).toEqual(['watchdogLastSeen', 'watchdogStatus', 'watchdogVersion']);
     expect(whereSpy.mock.calls[0]![0]).toEqual(
-      and(eq(devices.id, 'device-1'), notInArray(devices.status, ['decommissioned', 'quarantined'])),
+      and(and(eq(devices.id, 'device-1'), eq(devices.agentId, 'agent-1')), notInArray(devices.status, ['decommissioned', 'quarantined'])),
     );
   });
 
@@ -9110,5 +9451,113 @@ describe('POST /agents/:id/heartbeat — UniFi collector presence hint (#7970)',
     const config = await beatConfig();
     expect(config).not.toHaveProperty('unifi_collectors_assigned');
     expect(captureException).toHaveBeenCalled();
+  });
+});
+
+
+describe('heartbeat agent update isolation version floor', () => {
+  const episode = { id: 'isolation-1', deviceId: 'device-1', state: 'verified', desiredState: 'isolated' };
+  const deviceRow = {
+    id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows', architecture: 'amd64',
+    agentVersion: '0.65.10', watchdogVersion: null, lastSeenAt: new Date(Date.now() - 20 * 60_000),
+    mainAgentSilentSince: null,
+  };
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({ set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })) });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    const helpers = await import('./helpers');
+    vi.mocked(helpers.compareAgentVersions).mockReturnValue(1);
+    vi.mocked(helpers.agentAcceptsServedEdition).mockReturnValue(true);
+    vi.mocked(helpers.getOrgAgentUpdateConfig).mockResolvedValue({ settings: { policy: 'auto', maintenanceWindow: null }, pins: { agent: null, watchdog: null } });
+    vi.mocked(helpers.resolvePinnedUpgradeTarget).mockResolvedValue('0.66.0');
+    const { findUnresolvedEpisode } = await import('../../services/networkIsolation/episodeStore');
+    vi.mocked(findUnresolvedEpisode).mockResolvedValue(episode as never);
+    const { reconcileContainmentReport } = await import('../../services/networkIsolation/reconcile');
+    vi.mocked(reconcileContainmentReport).mockImplementation(async (_tx, _device, _report, _at, context) => { context!.row = episode as never; });
+  });
+  afterEach(async () => {
+    const { findUnresolvedEpisode } = await import('../../services/networkIsolation/episodeStore');
+    vi.mocked(findUnresolvedEpisode).mockResolvedValue(null);
+    const { reconcileContainmentReport } = await import('../../services/networkIsolation/reconcile');
+    vi.mocked(reconcileContainmentReport).mockImplementation(async (_tx, _device, _report, _at, context) => { context!.row = null; });
+  });
+  async function post(role: 'agent' | 'watchdog') {
+    return (role === 'watchdog' ? buildWatchdogApp() : buildApp()).request('/agents/device-1/heartbeat', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, role, watchdogState: 'FAILOVER' }),
+    });
+  }
+  it.each(['agent', 'watchdog'] as const)('withholds an unsafe %s target while an episode is unresolved', async (role) => {
+    const response = await post(role);
+    expect(response.status).toBe(200);
+    expect((await response.json()).upgradeTo).toBeFalsy();
+    const { findUnresolvedEpisode } = await import('../../services/networkIsolation/episodeStore');
+    expect(findUnresolvedEpisode).toHaveBeenCalledTimes(role === 'watchdog' ? 1 : 0);
+  });
+  it.each(['agent', 'watchdog'] as const)('allows a supported %s target while an episode is unresolved', async (role) => {
+    const { resolvePinnedUpgradeTarget } = await import('./helpers');
+    vi.mocked(resolvePinnedUpgradeTarget).mockResolvedValue('999.0.0');
+    const response = await post(role);
+    expect(response.status).toBe(200);
+    expect((await response.json()).upgradeTo).toBe('999.0.0');
+    const { findUnresolvedEpisode } = await import('../../services/networkIsolation/episodeStore');
+    expect(findUnresolvedEpisode).not.toHaveBeenCalled();
+  });
+  it('allows an ordinary target once the episode has resolved', async () => {
+    const { reconcileContainmentReport } = await import('../../services/networkIsolation/reconcile');
+    vi.mocked(reconcileContainmentReport).mockImplementation(async (_tx, _device, _report, _at, context) => { context!.row = { ...episode, state: 'released' } as never; });
+    const response = await post('agent');
+    expect((await response.json()).upgradeTo).toBe('0.66.0');
+  });
+  it.each(['release_requested', 'released_locally', 'self_released'])('keeps the floor during %s', async (state) => {
+    const { reconcileContainmentReport } = await import('../../services/networkIsolation/reconcile');
+    vi.mocked(reconcileContainmentReport).mockImplementation(async (_tx, _device, _report, _at, context) => { context!.row = { ...episode, state } as never; });
+    const response = await post('agent');
+    expect((await response.json()).upgradeTo).toBeFalsy();
+  });
+  it('fails the heartbeat when reconciliation lookup fails outside a savepoint', async () => {
+    const { reconcileContainmentReport } = await import('../../services/networkIsolation/reconcile');
+    vi.mocked(reconcileContainmentReport).mockRejectedValueOnce(new Error('isolation lookup unavailable'));
+    const response = await post('agent');
+    expect(response.status).toBeGreaterThanOrEqual(500);
+  });
+  it('withholds an unsafe normal upgrade when reconciliation did not establish episode state', async () => {
+    const { reconcileContainmentReport, buildContainmentHeartbeatBlock } = await import('../../services/networkIsolation/reconcile');
+    vi.mocked(reconcileContainmentReport).mockResolvedValueOnce(undefined);
+    vi.mocked(buildContainmentHeartbeatBlock).mockResolvedValueOnce({ networkIsolation: null });
+    const response = await post('agent');
+    expect(response.status).toBe(200);
+    expect((await response.json()).upgradeTo).toBeFalsy();
+  });
+  it('does not launch an MSI edition migration while isolation is unresolved', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockReturnValueOnce(false);
+    const { maybeDispatchEditionMigration } = await import('../../services/agentEditionAutoMigrate');
+    const response = await post('agent');
+    expect(response.status).toBe(200);
+    expect(maybeDispatchEditionMigration).not.toHaveBeenCalled();
+  });
+  it('never queries episodes on a watchdog heartbeat with no upgrade candidate', async () => {
+    const { compareAgentVersions } = await import('./helpers');
+    vi.mocked(compareAgentVersions).mockReturnValue(0);
+    await post('watchdog');
+    const { findUnresolvedEpisode } = await import('../../services/networkIsolation/episodeStore');
+    expect(findUnresolvedEpisode).not.toHaveBeenCalled();
+  });
+  it('withholds watchdog recovery on an episode lookup failure', async () => {
+    const { findUnresolvedEpisode } = await import('../../services/networkIsolation/episodeStore');
+    const failure = new Error('episode lookup unavailable');
+    vi.mocked(findUnresolvedEpisode).mockRejectedValueOnce(failure);
+    const response = await post('watchdog');
+    expect(response.status).toBe(200);
+    expect((await response.json()).upgradeTo).toBeFalsy();
+    const { captureException } = await import('../../services/sentry');
+    expect(captureException).toHaveBeenCalledWith(failure, undefined, {
+      phase: 'isolation_watchdog_upgrade_lookup', deviceId: 'device-1', orgId: 'org-1',
+    });
   });
 });

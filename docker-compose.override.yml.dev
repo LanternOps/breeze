@@ -1,11 +1,27 @@
 # Local dev overrides — code-mounted API + Web with hot-reload
 # Uses dev Dockerfiles that mount source code for live editing.
 # Usage: docker compose up --build -d
+#
+# Every port THIS FILE publishes binds to 127.0.0.1 (#9382). Note what that
+# does not cover: caddy's 80/443 come from docker-compose.yml, the production
+# base file, and still publish on every interface when you bring caddy up --
+# changing those is a production decision, not a dev one. The documented
+# quickstart (`up -d postgres redis`) does not start caddy.
+#
+# Why these are bound: Postgres takes whatever password
+# is in .env and .env.example ships a placeholder the quickstart never asks
+# anyone to change, and a bare '5432:5432' publishes on every interface — on a
+# laptop on shared Wi-Fi that is the dev database, with its seeded data and
+# enrolled lab devices, reachable from the LAN. Docker publishes through its
+# own NAT rules, so a host ufw/firewalld rule does not cover it. Every client
+# here (psql, pnpm dev, the test runs) uses localhost. Set BREEZE_DEV_BIND_ADDR
+# (e.g. 0.0.0.0) to publish on another interface, and change the passwords
+# first if you do. Matches BREEZE_TEST_BIND_ADDR / BREEZE_WT_BIND_ADDR (#9368).
 
 services:
   postgres:
     ports:
-      - '5432:5432'
+      - '${BREEZE_DEV_BIND_ADDR:-127.0.0.1}:5432:5432'
     # Production managed Postgres kills a session idle in transaction for 1 min.
     # Matching it locally is what lets a test catch a connection held across a
     # slow wait before production does (#7918: run_script lost every script
@@ -14,7 +30,7 @@ services:
 
   redis:
     ports:
-      - '6379:6379'
+      - '${BREEZE_DEV_BIND_ADDR:-127.0.0.1}:6379:6379'
 
   # caddy needs no dev override: it uses the canonical docker/Caddyfile.prod
   # mounted by the base compose, and the portal (dev server included) is routed
@@ -30,7 +46,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.api.dev
     ports:
-      - '3001:3001'
+      - '${BREEZE_DEV_BIND_ADDR:-127.0.0.1}:3001:3001'
     # #6485 F-7: the base compose's 64 MB /tmp tmpfs (docker-compose.yml) is
     # sized for the production image, which never runs `dev-push`. A dev-push
     # of a Windows binary (~34 MB) plus the tsx build cache blew straight
@@ -112,7 +128,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.web.dev
     ports:
-      - '4321:4321'
+      - '${BREEZE_DEV_BIND_ADDR:-127.0.0.1}:4321:4321'
     volumes:
       # Mount source code for hot-reloading
       - ./apps/web/src:/app/apps/web/src:cached
@@ -153,7 +169,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.portal.dev
     ports:
-      - '4322:4322'
+      - '${BREEZE_DEV_BIND_ADDR:-127.0.0.1}:4322:4322'
     volumes:
       # Mount source code for hot-reloading
       - ./apps/portal/src:/app/apps/portal/src:cached

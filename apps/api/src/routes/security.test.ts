@@ -34,6 +34,9 @@ vi.mock('../services/commandQueue', () => ({
   queueCommand: vi.fn().mockResolvedValue({ id: 'cmd-123' })
 }));
 
+const { enqueueSecurityScan } = vi.hoisted(() => ({ enqueueSecurityScan: vi.fn(async () => 'job-1') }));
+vi.mock('../jobs/securityScanJobs', () => ({ enqueueSecurityScan }));
+
 vi.mock('../services/securityPosture', () => ({
   listLatestSecurityPosture: vi.fn(),
   getLatestSecurityPostureForDevice: vi.fn(),
@@ -52,6 +55,11 @@ vi.mock('../services/featureConfigResolver', () => ({
 vi.mock('../middleware/auth', () => ({
   // Step-up MFA gate on privileged routes; not under test here.
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  // POST /scan/:deviceId passes the session's MFA state to startDeviceScan
+  // (#6263 W05-11); the sweep routes also read the principal kind.
+  hasSatisfiedMfa: vi.fn(() => false),
+  isInteractiveUserSession: vi.fn(() => true),
+  withAuthDbAccessContext: vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => fn()),
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', {
       scope: 'organization',
@@ -298,6 +306,9 @@ describe('security routes', () => {
         }
       ]);
 
+      // #10057 gap 2: no Scan now already waiting on this device.
+      mockDeviceLookup([]);
+
       vi.mocked(db.insert).mockReturnValue({
         values: vi.fn().mockResolvedValue(undefined)
       } as any);
@@ -314,7 +325,10 @@ describe('security routes', () => {
       expect(body.data.status).toBe('queued');
       expect(body.data.scanType).toBe('quick');
       expect(body.data.id).toBeDefined();
-      expect(queueCommand).toHaveBeenCalledTimes(1);
+      expect(body.data.queueExpiresAt).toEqual(expect.any(String));
+      // #10057 gap 2: queued for the capped claim, never dispatched directly.
+      expect(queueCommand).not.toHaveBeenCalled();
+      expect(enqueueSecurityScan).toHaveBeenCalledWith(body.data.id);
     });
 
     it('should return 404 for unknown device', async () => {

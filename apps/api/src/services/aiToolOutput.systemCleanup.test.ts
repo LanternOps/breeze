@@ -28,7 +28,7 @@ describe('system_cleanup output compaction', () => {
     // registry-generated index (#6341): a tool with a domain and a searchHint
     // is listed automatically, so this pins that system_cleanup carries both.
     const index = renderToolIndexByDomain(['system_cleanup']);
-    expect(index).toContain('- **Devices**: system_cleanup (list/run/status)');
+    expect(index).toContain('- **Devices**: system_cleanup (list/run/status/cancel)');
   });
 
   it('truncates a long action list and says how many it dropped', () => {

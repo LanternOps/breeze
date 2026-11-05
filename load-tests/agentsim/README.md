@@ -250,6 +250,46 @@ status counts (steady window and whole run), WS connects/reconnects/failures,
 and command round trips. Full field list:
 `docs/superpowers/plans/platform-ci/2026-10-07-scaling-w0a-agent-simulator.md`.
 
+## Reconnect and drain (W09)
+
+Each simulated WebSocket session paces its redials with the agent's own
+`ReconnectPacer` (`agent/internal/websocket`), not a hand-kept mirror: a
+start-dial wait of U(0, 10 s), the dial-failure backoff with `Retry-After`, and
+after an established socket ends the first-reconnect window (30 s after a stable
+server close) or a drain hint. `drop-sockets` models a client-side network drop
+(no close frame, an abnormal close). `drain-sockets` (internal action,
+`withinMs` required) stands in for a draining API instance: it gives every live
+session a drain hint of `withinMs`, then closes each socket as a server going
+away (reported to the pacer as close code 1001; no close frame is sent). The drain sender is the API's (W5c); the simulator
+replaces it, so this measures the agent side only.
+
+```bash
+load-tests/agentsim/storm.sh drain-120 --agents 400 --ramp 20 --warmup 2m --duration 12m --start cold --pre-w09-fraction 0
+load-tests/agentsim/storm.sh drain-120 --agents 400 --ramp 20 --warmup 2m --duration 12m --start cold --pre-w09-fraction 0.5
+load-tests/agentsim/storm.sh api-kill  --agents 400 --ramp 20 --warmup 2m --duration 15m --start cold --pre-w09-fraction 0
+load-tests/agentsim/storm.sh api-kill  --agents 400 --ramp 20 --warmup 2m --duration 15m --start cold --pre-w09-fraction 0.5
+```
+
+`--pre-w09-fraction F` makes the first `round(F x agents)` agents behave like the
+#9145 agent: no start jitter, U(1 s, 5 s) after a server close, drain hints
+ignored, `Retry-After` honoured. The cohort is by agent index, like
+`--legacy-retry-fraction`, so the two can overlap (a legacy-retry agent ignores
+`Retry-After` on the socket upgrade too). The report records the cohort as
+`agents.preW09` and `config.preW09Fraction`.
+
+W09 acceptance reads, per event in the storm report's reconnect curve
+(`reconnectCurve` in `storm_report.go`): `reconnectSpanS` (first to 99th-percentile
+reconnect after the event end; within [108, 132] for `drain-120` with
+`--pre-w09-fraction 0`), `peakToMean` (peak per-bucket connects over the mean across
+that span; buckets are 1 s, so a uniform spread of a few hundred agents reads about
+1.5 to 2.5 from Poisson noise alone: compare it between the two fractions rather than
+against a fixed ceiling), `peakConnectsPerSecond`, and `t90S` (seconds from the event
+end until 90 % of the pre-event live sockets are back).
+
+Not modelled: agents older than #9145, which redial at once after any close.
+Their share of the fleet shrinks with every promote, and W08 admission control
+covers them.
+
 ## Tear down
 
 `pnpm wt-stack down` from the same worktree and branch. Token stores in

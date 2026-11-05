@@ -294,3 +294,54 @@ describe('run_script echoes the RESOLVED run context from dispatch, not the call
     expect(out.results[DEVICE_A]).toMatchObject({ runAs: 'user', targetSessionId: 3 });
   });
 });
+
+// Tool catalog W04 (#5219), A7 + Decision 16. A pre-approved flow step calls
+// run_script with the `verifiedRunScript` pin the step executor built from ONE
+// snapshot read. Two things are pinned here: the flow's attribution reaches the
+// AI dispatch door as kind 'flow' (never ai_agent, never a human), and what
+// executes is exactly what the pre-approval digest covers — the pinned row
+// (content + its saved runAs) plus the literal `parameters`; a step's literal
+// runAs / targetSessionId never reaches dispatch for an automation principal.
+describe('a pre-approved flow run_script (tool catalog W04)', () => {
+  function makeFlowAuth(): AuthContext {
+    return {
+      ...makeAuth(),
+      principal: { kind: 'flow', flowId: 'flow-1', runId: 'flow-run-1' },
+      user: { id: 'flow-1', email: 'flow+flow-1@breeze.internal', name: 'Nightly fix' },
+      aiOrigin: { kind: 'flow', flowRunId: 'flow-run-1' },
+    } as any;
+  }
+  const pinnedRow = { ...scriptRow, content: 'echo pinned', runAs: 'system', osTypes: ['windows'], parameters: [] };
+  const verifiedRunScript = {
+    snapshot: {
+      script: { id: SCRIPT_ID, orgId: ORG_A, language: 'powershell', content: 'echo pinned', timeoutSeconds: 60, runAs: 'system' },
+      parameterDefinitions: '[]',
+      deviceOrgIds: [ORG_A],
+      variableReferences: [],
+    },
+    scriptRow: pinnedRow,
+    scope: { orgIds: new Set([ORG_A]) },
+  } as any;
+
+  it('pre-approved run_script reaches aiDispatch with aiOrigin kind flow', async () => {
+    await runScriptTool().handler(
+      { scriptId: SCRIPT_ID, deviceIds: [DEVICE_A], parameters: { mode: 'quick' }, runAs: 'user', targetSessionId: 3 },
+      makeFlowAuth(),
+      { verifiedRunScript },
+    );
+
+    expect(dispatchScriptToDevice).toHaveBeenCalledTimes(1);
+    expect(dispatchScriptToDevice.mock.calls[0]![0]).toMatchObject({
+      aiOrigin: { kind: 'flow', flowRunId: 'flow-run-1' },
+      // Not an agent: no agent id is laundered into the audit actor.
+      principalActorId: null,
+      // The pinned row is what runs — no second read.
+      source: { kind: 'saved', script: pinnedRow },
+      variableScope: verifiedRunScript.scope,
+      parameters: { mode: 'quick' },
+      // The step's literal runAs / targetSessionId are NOT what executes.
+      runAs: undefined,
+      targetSessionId: undefined,
+    });
+  });
+});

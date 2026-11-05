@@ -6,6 +6,7 @@ import {
   commandAcceptsAgentResultCondition,
 } from './commandResultAcceptance';
 import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
+import type { CommandCallerIncarnation } from './commandIncarnation';
 
 /**
  * Operator-facing reason stored on a parked row. Fixed text on purpose: the
@@ -44,6 +45,12 @@ export async function markCommandResultProcessingFailed(input: {
   commandId: string;
   deviceId: string;
   targetRole: string;
+  /**
+   * #8318 §6.4: the incarnation the reporting caller authenticated under. The
+   * park is guarded by the same acceptance predicate as the ingest CAS, caller
+   * half included, so a stale install cannot park a row of the new one.
+   */
+  caller: CommandCallerIncarnation;
   /** What buildStoredCommandResult produced for this result. */
   storedResult: Record<string, unknown>;
   failedAt?: Date;
@@ -78,7 +85,7 @@ export async function markCommandResultProcessingFailed(input: {
         eq(deviceCommands.id, input.commandId),
         eq(deviceCommands.deviceId, input.deviceId),
         eq(deviceCommands.targetRole, input.targetRole),
-        commandAcceptsAgentResultCondition(),
+        commandAcceptsAgentResultCondition(input.caller),
       ),
     )
     .returning({ id: deviceCommands.id });

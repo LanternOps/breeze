@@ -59,6 +59,8 @@ export const listDevicesSchema = z.object({
    *  count it received on page 1. Default off because the count(*) is the
    *  most expensive part of the query at scale. */
   includeTotal: boolStr,
+  /** Opt in to the warranty projection/join for the list column. */
+  includeWarranty: boolStr,
 
   // Single-value filters (compat).
   orgId: z.string().guid().optional(),
@@ -73,6 +75,7 @@ export const listDevicesSchema = z.object({
 
   status: z.enum(['online', 'offline', 'maintenance', 'decommissioned', 'updating', 'pending']).optional(),
   includeDecommissioned: boolStr,
+  isolated: boolStr,
   osType: z.enum(['windows', 'macos', 'linux']).optional(),
   role: z.enum(DEVICE_ROLES).optional(),
   search: z.string().optional()
@@ -453,3 +456,27 @@ export const BULK_LIFECYCLE_MAX_DEVICES = 500;
 export const bulkDeviceIdsSchema = z.object({
   deviceIds: z.array(z.string().guid()).min(1).max(BULK_LIFECYCLE_MAX_DEVICES),
 });
+
+/**
+ * Per-request cap on POST /devices/bulk/site (#9796, plan Gate B item 2: 100, the 50-per-batch
+ * bulk-restore precedent doubled). Each device is a row lock + guarded UPDATE + denormalized
+ * rewrite in its own short transaction, so the request stays well inside a normal timeout.
+ * The web mirrors this constant (apps/web/src/components/devices/bulkActionGating.ts) and disables — never
+ * chunks — a larger selection.
+ */
+export const BULK_SITE_MOVE_CAP = 100;
+
+/** Lower-cased so a duplicate that differs only in case is caught, and `toSiteId === device.siteId` holds. */
+const lowerCaseGuid = z.string().guid().transform((value) => value.toLowerCase());
+
+/**
+ * `POST /devices/bulk/site` body. `expectedSiteId` is REQUIRED and non-null: `devices.site_id` is
+ * NOT NULL and the list row always knows its site, so every move carries the stale-view guard.
+ * Duplicate ids are rejected by the route (whole batch, Gate B item 3), not deduplicated here.
+ */
+export const bulkSiteMoveSchema = z.object({
+  siteId: lowerCaseGuid,
+  devices: z.array(z.object({ id: lowerCaseGuid, expectedSiteId: lowerCaseGuid }).strict())
+    .min(1)
+    .max(BULK_SITE_MOVE_CAP),
+}).strict();

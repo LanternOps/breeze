@@ -112,6 +112,9 @@ vi.mock('./wingetBootstrap', async () => ({
 vi.mock('./storageSessions', async () => ({
   agentStorageSessionRoutes: new (await import('hono')).Hono(),
 }));
+vi.mock('./rebind', async () => ({
+  rebindRoutes: new (await import('hono')).Hono(),
+}));
 import { agentRoutes } from './index';
 import { createGlobalBodyLimitMiddleware } from '../../middleware/bodyLimitGate';
 import { snapshot } from '../../services/timeSync/testFixtures';

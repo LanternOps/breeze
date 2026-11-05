@@ -1,9 +1,9 @@
-import { createHash, createHmac, randomUUID, timingSafeEqual } from 'crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { scriptParametersSchema } from '@breeze/shared';
-import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import {
   automations,
@@ -25,6 +25,7 @@ import {
 } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getTrustedClientIp } from '../services/clientIp';
+import { verifyBreezeHmacSignature, type BreezeHmacFailure } from '../services/webhookSignature';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { getRedis } from '../services/redis';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
@@ -64,6 +65,10 @@ import { captureException } from '../services/sentry';
 import { resolveAutomationWebhookOwnerContext } from '../services/automationWebhookContext';
 import { projectAutomationRunsToSites, scanProjectedAutomationRuns } from '../services/automationReadProjection';
 import { managedByMonitorResponse } from '../services/monitors/managedRowGuard';
+import { conversionSummariesFor, resetShadowIfChanged } from '../services/flows/conversion/ledger';
+import { OccurrenceClaimedError, claimOccurrence, currentConversionForAutomation } from '../services/flows/conversion/claims';
+import { legacyWebhookDeliveryIdHeader, webhookOccurrenceInstant, webhookOccurrenceKeys } from '../services/flows/conversion/webhookOccurrence';
+import { flowsEnabled } from '../config/env';
 
 export const automationRoutes = new Hono();
 export const automationWebhookRoutes = new Hono();
@@ -202,6 +207,14 @@ async function reserveAutomationWebhookReplayNonce(replayKey: string, now: numbe
   }
 }
 
+const AUTOMATION_SIGNATURE_FAILURES: Record<BreezeHmacFailure, { ok: false; error: string; status: 400 | 401 }> = {
+  missing_signature: { ok: false, error: 'Missing webhook signature', status: 401 },
+  missing_timestamp: { ok: false, error: 'Missing webhook timestamp', status: 401 },
+  invalid_timestamp: { ok: false, error: 'Invalid webhook timestamp', status: 400 },
+  stale_timestamp: { ok: false, error: 'Webhook signature timestamp is outside the replay window', status: 401 },
+  bad_signature: { ok: false, error: 'Invalid webhook signature', status: 401 },
+};
+
 async function verifyAutomationWebhookSignature(input: {
   automationId: string;
   secret: string;
@@ -209,38 +222,24 @@ async function verifyAutomationWebhookSignature(input: {
   signatureHeader?: string | null;
   timestampHeader?: string | null;
   eventIdHeader?: string | null;
-}): Promise<{ ok: true } | { ok: false; error: string; status: 400 | 401 | 409 | 503 }> {
-  const signature = input.signatureHeader?.trim();
-  if (!signature) return { ok: false, error: 'Missing webhook signature', status: 401 };
-
-  const timestamp = input.timestampHeader?.trim();
-  if (!timestamp) return { ok: false, error: 'Missing webhook timestamp', status: 401 };
-
-  const parsedTimestamp = Number(timestamp);
-  if (!Number.isFinite(parsedTimestamp) || parsedTimestamp <= 0) {
-    return { ok: false, error: 'Invalid webhook timestamp', status: 400 };
-  }
-
-  const timestampMs = parsedTimestamp > 1_000_000_000_000
-    ? parsedTimestamp
-    : parsedTimestamp * 1000;
+}): Promise<{ ok: true; signatureDigest: string } | { ok: false; error: string; status: 400 | 401 | 409 | 503 }> {
+  // The shared Breeze HMAC scheme (services/webhookSignature.ts, also used by
+  // flow webhooks — Tool Catalog W05 #5220). Messages and statuses unchanged.
   const now = Date.now();
-  if (Math.abs(now - timestampMs) > AUTOMATION_WEBHOOK_SIGNATURE_WINDOW_MS) {
-    return { ok: false, error: 'Webhook signature timestamp is outside the replay window', status: 401 };
-  }
-
-  const expected = `sha256=${createHmac('sha256', input.secret).update(`${timestamp}.${input.payload}`).digest('hex')}`;
-  const normalizedSignature = signature.startsWith('sha256=') ? signature : `sha256=${signature}`;
-  const expectedBuffer = Buffer.from(expected, 'utf8');
-  const providedBuffer = Buffer.from(normalizedSignature, 'utf8');
-  if (expectedBuffer.length !== providedBuffer.length || !timingSafeEqual(expectedBuffer, providedBuffer)) {
-    return { ok: false, error: 'Invalid webhook signature', status: 401 };
-  }
+  const verified = verifyBreezeHmacSignature({
+    secret: input.secret,
+    timestamp: input.timestampHeader,
+    signature: input.signatureHeader,
+    payload: input.payload,
+    now,
+    windowMs: AUTOMATION_WEBHOOK_SIGNATURE_WINDOW_MS,
+  });
+  if (!verified.ok) return AUTOMATION_SIGNATURE_FAILURES[verified.reason];
 
   // The replay key is always derived from the verified signature, never from a
   // caller-supplied header alone — an unsigned event-id is not trustworthy as
   // the sole dedup key, since a byte-identical resend can carry a fresh one.
-  const signatureNonceHash = createHash('sha256').update(normalizedSignature).digest('hex');
+  const signatureNonceHash = verified.signatureDigest;
   const signatureReplayKey = `${input.automationId}:${signatureNonceHash}`;
   const signatureReservation = await reserveAutomationWebhookReplayNonce(signatureReplayKey, now);
   if (!signatureReservation.ok) return signatureReservation;
@@ -253,7 +252,7 @@ async function verifyAutomationWebhookSignature(input: {
     if (!eventIdReservation.ok) return eventIdReservation;
   }
 
-  return { ok: true };
+  return { ok: true, signatureDigest: verified.signatureDigest };
 }
 
 function getPagination(query: { page?: string; limit?: string }) {
@@ -363,6 +362,31 @@ function canAccessAutomation(
   }
   if (auth.scope === 'system') return true;
   return auth.scope === 'partner' && !!auth.partnerId && automation.partnerId === auth.partnerId;
+}
+
+/**
+ * Tool Catalog W06 (#5221, Decision 9): a switched Job is frozen. Its flow is
+ * the one engine for it now; PUT/PATCH/DELETE/trigger/run answer
+ * `409 automation_converted { flowId }`. DELETE is refused too: an in-flight
+ * legacy run re-reads its source row on resume. Only a switch sets
+ * `converted_to_flow_id` and a revert clears it, so a shadow or reverted row
+ * is never frozen (editing a shadow row resets the shadow instead).
+ */
+function convertedAutomationResponse(
+  c: Context,
+  automation: { convertedToFlowId: string | null },
+): Response | null {
+  if (!automation.convertedToFlowId) return null;
+  return c.json({ error: 'automation_converted', flowId: automation.convertedToFlowId }, 409);
+}
+
+/** Rolls back a write whose row changed (switched or deleted) since the route read it. */
+class AutomationChangedSinceRead extends Error {}
+
+/** A write matched no row: the Job was switched (409, frozen) or deleted (404) since it was read. */
+async function convertedSinceReadResponse(c: Context, automationId: string, auth: AuthContext): Promise<Response> {
+  const current = await getAutomationWithOrgCheck(automationId, auth);
+  return (current && convertedAutomationResponse(c, current)) || c.json({ error: 'Automation not found' }, 404);
 }
 
 async function getAutomationWithOrgCheck(automationId: string, auth: AuthContext) {
@@ -813,7 +837,11 @@ automationRoutes.get(
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
-    const conditions: SQL<unknown>[] = [isNull(automations.retiredAt)];
+    // Retired rows stay out of the list (W05c1), except a Job switched to a
+    // flow (#5221): it is listed read-only with its conversion so the Jobs page
+    // can link to the flow and offer Revert. `converted_to_flow_id` is set only
+    // by a switch and cleared by a revert (its CHECK pins the retired reason).
+    const conditions: SQL<unknown>[] = [or(isNull(automations.retiredAt), isNotNull(automations.convertedToFlowId))!];
 
     if (auth.scope === 'organization') {
       if (!auth.orgId) {
@@ -905,10 +933,15 @@ automationRoutes.get(
         .offset(offset);
     }
 
+    // W06 (#5221, Decision 9): additive `conversion: { id, state, flowId } | null`.
+    const conversions = await conversionSummariesFor(rows.map((automation) => automation.id));
     return c.json({
-      data: rows.map((automation) => permissions?.allowedSiteIds === undefined
-        ? shapeAutomationForResponse(automation)
-        : shapeRestrictedAutomationForResponse(automation)),
+      data: rows.map((automation) => ({
+        ...(permissions?.allowedSiteIds === undefined
+          ? shapeAutomationForResponse(automation)
+          : shapeRestrictedAutomationForResponse(automation)),
+        conversion: conversions.get(automation.id) ?? null,
+      })),
       pagination: { page, limit, total },
     });
   },
@@ -1145,6 +1178,9 @@ automationRoutes.get(
       if (!siteCheck.ok) return c.json({ error: 'Automation not found' }, 404);
     }
 
+    // W06 (#5221, Decision 9): additive `conversion: { id, state, flowId } | null`.
+    const conversion = (await conversionSummariesFor([automationId])).get(automationId) ?? null;
+
     if (permissions?.allowedSiteIds !== undefined) {
       const scan = await scanProjectedAutomationRuns({
         automationId,
@@ -1159,6 +1195,7 @@ automationRoutes.get(
       };
       return c.json({
         ...shapeAutomationForResponse(automation),
+        conversion,
         runCount: scan.total,
         lastRunAt: scan.rows[0]?.startedAt ?? null,
         recentRuns: scan.rows.map((run) => ({
@@ -1189,6 +1226,7 @@ automationRoutes.get(
 
     return c.json({
       ...shapeAutomationForResponse(automation),
+      conversion,
       recentRuns: recentRuns.map((run) => ({
         ...run,
         status: toRunStatus(run.status),
@@ -1282,12 +1320,25 @@ automationRoutes.get(
 // These mutation routes remain for legacy compatibility.
 // ============================================
 
+/**
+ * W06 R1 (#5221, plan Decision 8): new standalone Jobs are not created once
+ * Flows are enabled on this installation — "New job" opens Flows instead. With
+ * FLOWS_ENABLED=false Jobs stay writable (Flows are unavailable there). Answers
+ * before body validation, so a client learns where to go whatever it sent.
+ * Managed rows (triage seeding, monitor compile) never come through this route.
+ */
+async function refuseCreateWhenFlowsEnabled(c: Context, next: Next) {
+  if (flowsEnabled()) return c.json({ error: 'automations_moved_to_flows', flowsUrl: '/flows' }, 410);
+  await next();
+}
+
 // DEPRECATED: Automations are now managed via Configuration Policies. These routes remain for legacy compatibility.
 automationRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
   requireAutomationWrite,
   requireMfa(),
+  refuseCreateWhenFlowsEnabled,
   zValidator('json', createAutomationSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -1461,6 +1512,8 @@ async function handleUpdateAutomation(c: Context) {
   if (!automation) {
     return c.json({ error: 'Automation not found' }, 404);
   }
+  const frozen = convertedAutomationResponse(c, automation);
+  if (frozen) return frozen;
 
   // #5289 — a row compiled from a monitor definition must be edited only by
   // the compiler; a side edit here would silently drift from the definition
@@ -1592,18 +1645,22 @@ async function handleUpdateAutomation(c: Context) {
         effectiveActions,
         effectiveNotificationTargets,
       );
+      // `converted_to_flow_id IS NULL` is re-evaluated after any lock wait: a switch
+      // that committed after the frozen check above leaves nothing to update (#10685).
       const [row] = await tx
         .update(automations)
         .set(updates)
-        .where(eq(automations.id, automationId))
+        .where(and(eq(automations.id, automationId), isNull(automations.convertedToFlowId)))
         .returning();
       if (!row) return null;
       await replaceAutomationResourceBindings(tx, automationId, axes, resolved);
+      // W06 (#5221, Decision 3): a source edit restarts a shadow conversion's counters.
+      await resetShadowIfChanged(tx, { automationId, previous: automation });
       return row;
     });
 
     if (!updated) {
-      return c.json({ error: 'Automation not found' }, 404);
+      return convertedSinceReadResponse(c, automationId, auth);
     }
 
     writeRouteAudit(c, {
@@ -1664,6 +1721,8 @@ automationRoutes.delete(
     if (!automation) {
       return c.json({ error: 'Automation not found' }, 404);
     }
+    const frozen = convertedAutomationResponse(c, automation);
+    if (frozen) return frozen;
 
     // #5289 — see the guard in handleUpdateAutomation. Unlike the agent-managed
     // case below, there is no soft-disable escape hatch for a monitor-managed
@@ -1703,13 +1762,26 @@ automationRoutes.delete(
       }, 409);
     }
 
-    await db
-      .delete(automationRuns)
-      .where(eq(automationRuns.automationId, automationId));
-
-    await db
-      .delete(automations)
-      .where(eq(automations.id, automationId));
+    // One transaction, and the row delete re-checks `converted_to_flow_id IS NULL` after
+    // any lock wait: a switch that committed after the frozen check above leaves the
+    // Job (and its run history) in place (#10685).
+    const deleted = await db.transaction(async (tx) => {
+      await tx
+        .delete(automationRuns)
+        .where(eq(automationRuns.automationId, automationId));
+      const rows = await tx
+        .delete(automations)
+        .where(and(eq(automations.id, automationId), isNull(automations.convertedToFlowId)))
+        .returning({ id: automations.id });
+      if (rows.length === 0) throw new AutomationChangedSinceRead();
+      return true;
+    }).catch((error: unknown) => {
+      if (error instanceof AutomationChangedSinceRead) return false;
+      throw error;
+    });
+    if (!deleted) {
+      return convertedSinceReadResponse(c, automationId, auth);
+    }
 
     writeRouteAudit(c, {
       orgId: automation.orgId,
@@ -1813,6 +1885,8 @@ async function admitManualAutomationRun(
   if (!automation) {
     return c.json({ error: 'Automation not found' }, 404);
   }
+  const frozen = convertedAutomationResponse(c, automation);
+  if (frozen) return frozen;
 
   // #5289 — see the guard in handleUpdateAutomation.
   if (automation.managedByMonitorId) {
@@ -1913,7 +1987,7 @@ automationWebhookRoutes.post('/:id', async (c) => {
   // two read-only lookups: this one (the automation row, before the secret
   // check) and the owner's tenant context (after it). Every write runs as the
   // automation's owner, never as system.
-  const automation = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+  const lookup = () => runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const [row] = await db
       .select()
       .from(automations)
@@ -1921,6 +1995,20 @@ automationWebhookRoutes.post('/:id', async (c) => {
       .limit(1);
     return row ?? null;
   }, 'automations.webhook.lookup'));
+  let automation = await lookup();
+
+  // #5221 B6 — a Job switched to a flow keeps its URL: the delivery goes to the
+  // flow's ingest (its verification, replay protection and claims), before any
+  // legacy verification or Redis write. Only a row the switch retired can be
+  // switched (`converted_to_flow_id`, cleared again by a revert), so every
+  // other row skips this (and the module) entirely. Null ⇒ legacy continues.
+  if (automation?.convertedToFlowId) {
+    const { forwardLegacyWebhook } = await import('../services/flows/conversion/legacyWebhookForward');
+    const forwarded = await forwardLegacyWebhook(c, automationId);
+    if (forwarded) return forwarded;
+    // A revert committed since the lookup: legacy takes the delivery, with the row as it is now.
+    automation = await lookup();
+  }
 
   if (!automation || !automation.enabled) {
     return c.json({ error: 'Automation not found' }, 404);
@@ -1945,7 +2033,7 @@ automationWebhookRoutes.post('/:id', async (c) => {
   const rawBody = await c.req.text();
   const signatureHeader = c.req.header('x-breeze-signature');
   const timestampHeader = c.req.header('x-breeze-timestamp');
-  const eventIdHeader = c.req.header('x-breeze-event-id') ?? c.req.header('x-breeze-nonce');
+  const eventIdHeader = legacyWebhookDeliveryIdHeader((name) => c.req.header(name));
   const headerSecret = c.req.header('x-automation-secret')
     ?? c.req.header('x-webhook-secret');
 
@@ -1956,6 +2044,7 @@ automationWebhookRoutes.post('/:id', async (c) => {
     return c.json({ error: 'Query-string webhook secrets are no longer accepted; use HMAC signing (x-breeze-signature + x-breeze-timestamp)' }, 401);
   }
 
+  let signatureDigest: string | null = null;
   if (signatureHeader || timestampHeader) {
     const signatureCheck = await verifyAutomationWebhookSignature({
       automationId,
@@ -1968,6 +2057,7 @@ automationWebhookRoutes.post('/:id', async (c) => {
     if (!signatureCheck.ok) {
       return c.json({ error: signatureCheck.error }, signatureCheck.status);
     }
+    signatureDigest = signatureCheck.signatureDigest;
   } else {
     if (!headerSecret) {
       return c.json({ error: 'Missing signed webhook verification' }, 401);
@@ -2031,6 +2121,8 @@ automationWebhookRoutes.post('/:id', async (c) => {
       .from(automations)
       .where(eq(automations.id, automationId))
       .limit(1);
+    // A switch committed since the lookup: the delivery is the flow's (forwarded below).
+    if (current?.convertedToFlowId) return 'switched' as const;
     if (
       !current
       || !current.enabled
@@ -2040,19 +2132,55 @@ automationWebhookRoutes.post('/:id', async (c) => {
     ) {
       return null;
     }
-    return createAutomationRunRecord({
-      automation: current,
-      triggeredBy: 'webhook',
-      details: {
-        sourceIp: getTrustedClientIp(c, 'unknown'),
-        userAgent: c.req.header('user-agent') ?? 'unknown',
-        payload,
-      },
-    });
+    // #5221 B2 (Decision 6) — a row with a conversion in any state claims the
+    // delivery (both aliases) in the run's own transaction. The row is enabled
+    // here, so its generation is shadow or reverted and legacy is the
+    // preferred engine (a switched row is disabled and never gets this far).
+    // A row with no conversion keeps today's path: no lock, no hook.
+    const conversion = await currentConversionForAutomation(db, current.id);
+    const claimKeys = conversion ? webhookOccurrenceKeys(signatureDigest, eventIdHeader) : [];
+    try {
+      return await createAutomationRunRecord({
+        automation: current,
+        triggeredBy: 'webhook',
+        details: {
+          sourceIp: getTrustedClientIp(c, 'unknown'),
+          userAgent: c.req.header('user-agent') ?? 'unknown',
+          payload,
+        },
+        ...(conversion && claimKeys.length > 0
+          ? {
+              onCreated: async (tx, run) => {
+                const claim = await claimOccurrence(tx, {
+                  automationId: current.id,
+                  owner: { orgId: current.orgId, partnerId: current.partnerId },
+                  keys: claimKeys,
+                  engine: 'legacy',
+                  conversionId: conversion.id,
+                  legacyRunId: run.id,
+                  occurrenceAt: webhookOccurrenceInstant(timestampHeader),
+                });
+                if (!claim.ok) throw new OccurrenceClaimedError(claim.existing);
+              },
+            }
+          : {}),
+      });
+    } catch (err) {
+      if (err instanceof OccurrenceClaimedError) return 'claimed' as const;
+      throw err;
+    }
   }));
 
+  if (admitted === 'switched') {
+    const { forwardLegacyWebhook } = await import('../services/flows/conversion/legacyWebhookForward');
+    return (await forwardLegacyWebhook(c, automationId)) ?? c.json({ error: 'Automation not found' }, 404);
+  }
   if (!admitted) {
     return c.json({ error: 'Automation not found' }, 404);
+  }
+  if (admitted === 'claimed') {
+    // The same answer a Redis replay hit gives: this delivery was already admitted.
+    return c.json({ error: 'Duplicate webhook delivery' }, 409);
   }
   const { run, targetDeviceIds } = admitted;
 

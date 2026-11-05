@@ -1,22 +1,35 @@
-import { parseTicketData } from '../services/notifications';
+import { parseTicketData, parseWispNudgeData } from '../services/notifications';
 
 /**
  * W10 (#4336). Where a push tap should land, decided without touching
  * navigation state — so the decision is unit-testable and the component that
  * performs it stays a thin listener.
  *
- * Only ticket pushes route here. Approval pushes are owned by `ApprovalGate`
- * (it focuses the approval and takes the screen over) and alert pushes have no
- * tap handler yet; both must resolve to `null` rather than being routed twice.
+ * Ticket pushes and Wisp nudges (W06) route here. Approval pushes are owned by
+ * `ApprovalGate` (it focuses the approval and takes the screen over) and alert
+ * pushes have no tap handler yet; both must resolve to `null` rather than being
+ * routed twice.
  */
-export type PushRoute = { kind: 'ticket'; ticketId: string } | null;
+export type PushRoute =
+  | { kind: 'ticket'; ticketId: string }
+  | {
+      kind: 'wisp_thread';
+      threadId: string;
+      grantId: string;
+      concernId: string | null;
+      approvalIntentId: string | null;
+    }
+  | null;
 
 /** AsyncStorage key holding the last notification response we already acted on. */
 export const LAST_HANDLED_RESPONSE_KEY = 'notif:lastHandledResponseId';
 
 export function resolvePushRoute(data: Record<string, unknown> | null | undefined): PushRoute {
   const ticket = parseTicketData(data);
-  return ticket ? { kind: 'ticket', ticketId: ticket.ticketId } : null;
+  if (ticket) return { kind: 'ticket', ticketId: ticket.ticketId };
+  const wisp = parseWispNudgeData(data);
+  if (wisp) return { kind: 'wisp_thread', ...wisp };
+  return null;
 }
 
 /**

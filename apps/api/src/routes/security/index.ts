@@ -12,6 +12,7 @@ import { recoveryKeysRoutes } from './recoveryKeys';
 import { yaraRoutes } from './yara';
 import { yaraIocImportRoutes } from './yaraIocImport';
 import { yaraTestRoutes } from './yaraTest';
+import { sweepsRoutes } from './sweeps';
 
 export const securityRoutes = new Hono();
 
@@ -29,4 +30,5 @@ securityRoutes.route('/', recommendationsRoutes);
 securityRoutes.route('/', yaraRoutes);
 securityRoutes.route('/', yaraIocImportRoutes);
 securityRoutes.route('/', yaraTestRoutes);
+securityRoutes.route('/', sweepsRoutes);
 

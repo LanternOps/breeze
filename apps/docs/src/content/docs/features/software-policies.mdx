@@ -225,10 +225,16 @@ This flag is only meaningful for allowlist policies. Blocklist policies implicit
 |------|-------------|
 | `unauthorized` | Software is installed that is not permitted by the policy (blocklist match or allowlist miss) |
 | `missing` | Required software defined in an allowlist is not installed on the device |
+| `not_running` | The required software's service is installed but not running (severity `high`) |
+| `service_unverified` | There is no fresh service telemetry for the device (severity `low`). This never triggers a reinstall. |
 
 <Aside>
   An `outdated` violation type is defined in the schema but not yet emitted by the compliance worker. This will be used in a future release for version-range enforcement.
 </Aside>
+
+### Service compliance
+
+Allowlist rules whose catalog version (the latest) carries a `service_running` detection clause also check that the software's service is running. Breeze derives a service watch for each device and delivers it with the device's next monitoring refresh; the derived watches appear on the device's monitoring tab. When the policy is armed for install, the agent restarts a stopped service, up to 3 attempts with a 5-minute cooldown. Service telemetry older than 60 minutes counts as unverified, and the first compliance pass after an install can read `service_unverified` for one cycle.
 
 ### Violation Record Fields
 
@@ -236,7 +242,7 @@ Each violation within a compliance status record contains:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `type` | enum | `unauthorized` or `missing` |
+| `type` | enum | `unauthorized`, `missing`, `not_running` or `service_unverified` |
 | `software.name` | string | Name of the violating software |
 | `software.version` | string | Installed version (if applicable) |
 | `software.vendor` | string | Software vendor (if known) |

@@ -1,3 +1,4 @@
+import { useRecordPageContext } from '@/hooks/useRecordPageContext';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
@@ -14,6 +15,7 @@ import InvoiceActions from './InvoiceActions';
 import { type InvoiceDetail as InvoiceDetailData, STATUS_ROLES } from './invoiceTypes';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
+import WispTalkButton from '@/components/wisp/WispTalkButton';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -52,6 +54,7 @@ export default function InvoiceWorkspace({ id }: Props) {
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [detail, setDetail] = useState<InvoiceDetailData | null>(null);
   usePageItemName(detail?.invoice.invoiceNumber);
+  useRecordPageContext(detail ? { kind: 'invoice', id: detail.invoice.id, orgId: detail.invoice.orgId, label: detail.invoice.invoiceNumber ?? t('invoiceWorkspace.draftTitle') } : null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [tab, setTab] = useState<Tab>('editor');
@@ -214,6 +217,7 @@ export default function InvoiceWorkspace({ id }: Props) {
           {isDraft && activeTab === 'editor' && (
             <MarginToggle show={showMargin} onToggle={toggleShowMargin} testId="invoice-editor-toggle-internal" size="md" />
           )}
+          <WispTalkButton kind="invoice" id={detail.invoice.id} orgId={detail.invoice.orgId} label={detail.invoice.invoiceNumber ?? t('invoiceWorkspace.draftTitle')} />
           <InvoiceActions
             detail={detail}
             onChanged={reload}

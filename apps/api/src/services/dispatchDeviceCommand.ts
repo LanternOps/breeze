@@ -309,7 +309,10 @@ async function deliverPreparedDeviceCommand(
   const prepared = fresh
     ? decryptCommandForDelivery({ id: command.id, type: input.type, deviceId: input.deviceId, payload: fresh })
     : null;
-  const sent = prepared ? sendCommandToAgent(device.agentId, toAgentCommandFrame(prepared)) : false;
+  // #8318 §6.4: push to the agent_id read IN the claim, not to the one read
+  // by prepareDeviceCommand before it — a reattach confirm between the two
+  // changes who owns the row.
+  const sent = prepared ? sendCommandToAgent(claimed.agentId, toAgentCommandFrame(prepared)) : false;
   if (sent) {
     return {
       ok: true,

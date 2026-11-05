@@ -61,12 +61,14 @@ interface Props {
   summary: ApprovalSummary | null;
   /** Called after any mutation so the host reloads the summary and the time list. */
   onChanged: () => void;
+  /** #10073: a merged tombstone — the budget PATCH and the request POST 409. */
+  readOnly?: boolean;
 }
 
-export default function TicketBudgetCard({ ticketId, summary, onChanged }: Props) {
+export default function TicketBudgetCard({ ticketId, summary, onChanged, readOnly = false }: Props) {
   const { t } = useTranslation('tickets');
   const { can } = usePermissions();
-  const canWrite = can('tickets', 'write');
+  const canWrite = can('tickets', 'write') && !readOnly;
 
   const initialHours = hoursText(summary?.budget.minutes ?? null);
   const initialAmount = summary?.budget.amount ?? '';

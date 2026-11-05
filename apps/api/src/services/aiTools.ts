@@ -64,6 +64,7 @@ import { registerSentinelOneTools } from './aiToolsSentinelOne';
 import { registerHuntressTools } from './aiToolsHuntress';
 import { registerEdrTools } from './aiToolsEdr';
 import { registerSecurityTools } from './aiToolsSecurity';
+import { registerIocHuntTools } from './aiToolsIocHunt';
 import { registerDnsTools } from './aiToolsDns';
 import { registerPeripheralTools } from './aiToolsPeripherals';
 import { registerBrowserTools } from './aiToolsBrowser';
@@ -92,6 +93,57 @@ import { registerAiAgentGovernanceTools } from './aiToolsAiAgentGovernance';
 import { registerAiOperatorTools } from './aiToolsAiOperator';
 import { registerUITools } from './aiToolsUI';
 import { registerTicketingTools } from './aiToolsTicketing';
+import { registerAlertCorrelationTools } from './aiToolsAlertCorrelations';
+import { registerAnomalyTools } from './aiToolsAnomalies';
+import { registerReliabilityTriageTools } from './aiToolsReliabilityTriage';
+import { registerTopologyGraphTools } from './aiToolsTopologyGraph';
+import { registerTopologyDiagnosticTools } from './aiToolsTopologyDiagnostics';
+import { registerTopologyManualTools } from './aiToolsTopologyManual';
+import { registerTopologyMonitoringTools } from './aiToolsTopologyMonitoring';
+import { registerTopologyTemplateTools } from './aiToolsTopologyTemplates';
+import { registerTopologyApplyTools } from './aiToolsTopologyApply';
+import { registerSnmpTemplateTools } from './aiToolsSnmpTemplates';
+import { registerSnmpMetricsTools } from './aiToolsSnmpMetrics';
+import { registerNetworkProbeTools } from './aiToolsNetworkProbe';
+import { registerKnownGuestTools } from './aiToolsKnownGuests';
+import { registerUnifiTools } from './aiToolsUnifi';
+import { registerAiActivityTools } from './aiToolsAiActivity';
+import { registerOperatorTaskReadTools } from './aiToolsOperatorTasksRead';
+import { registerFleetDesignReadTools } from './aiToolsFleetDesignsRead';
+import { registerSecurityComplianceTools } from './aiToolsSecurityCompliance';
+import { registerSecurityRecommendationTools } from './aiToolsSecurityRecommendations';
+import { registerAccessReviewTools } from './aiToolsAccessReviews';
+import { registerAuditBaselineTools } from './aiToolsAuditBaselines';
+import { registerSecurityPolicyTools } from './aiToolsSecurityPolicies';
+import { registerRecoveryKeyTools } from './aiToolsRecoveryKeys';
+import { registerPamRuleTools } from './aiToolsPamRules';
+import { registerSoftwareCatalogTools } from './aiToolsSoftwareCatalog';
+import { registerPackageSearchTools } from './aiToolsPackageSearch';
+import { registerSoftwareDeploymentTools } from './aiToolsSoftwareDeployments';
+import { registerDeviceSoftwareTools } from './aiToolsDeviceSoftware';
+import { registerSoftwareInventoryTools } from './aiToolsSoftwareInventory';
+import { registerFleetFindingTools } from './aiToolsFleetFindings';
+import { registerCustomFieldTools } from './aiToolsCustomFields';
+import { registerDeviceInventoryTools } from './aiToolsDeviceInventory';
+import { registerDeviceLinkTools } from './aiToolsDeviceLinks';
+import { registerManualAssetTools } from './aiToolsManualAssets';
+import { registerDeviceEventLogTools } from './aiToolsDeviceEventLog';
+import { registerTenantVariableTools } from './aiToolsTenantVariables';
+import { registerSupportSessionTools } from './aiToolsSupportSessions';
+import { registerPax8Tools } from './aiToolsPax8';
+import { registerPax8OrderTools } from './aiToolsPax8Orders';
+import { registerBillingProfileTools } from './aiToolsBillingProfiles';
+import { registerBillingSettingsTools } from './aiToolsBillingSettings';
+import { registerContractTemplateTools } from './aiToolsContractTemplates';
+import { registerDeviceBillingTools } from './aiToolsDeviceBilling';
+import { registerAccountingSyncTools } from './aiToolsAccountingSync';
+import { registerTicketConfigTools } from './aiToolsTicketConfig';
+import { registerTicketChecklistTemplateTools } from './aiToolsTicketChecklistTemplates';
+import { registerTicketInboxTools } from './aiToolsTicketInbox';
+import { registerTicketAttachmentTools } from './aiToolsTicketAttachments';
+import { registerTicketFormTools } from './aiToolsTicketForms';
+import { registerTicketResponseTemplateTools } from './aiToolsTicketResponseTemplates';
+import { registerTimeSuggestionTools } from './aiToolsTimeSuggestions';
 import { registerMessagingTools } from './aiToolsMessaging';
 import { registerCatalogTools } from './aiToolsCatalog';
 import { registerBillingTools } from './aiToolsBilling';
@@ -104,10 +156,14 @@ import { registerDiagnosticAccessTools } from './aiToolsDiagnosticAccess';
 import { registerExportTools } from './aiToolsExport';
 import { registerArtifactTools } from './aiToolsArtifacts';
 import { registerTrustPageTools } from './aiToolsTrustPage';
+import { registerPartnerSettingsInheritanceTools } from './aiToolsPartnerSettingsInheritance';
 import { registerFlowTools } from './aiToolsFlows';
 import { registerBusinessCalendarTools } from './aiToolsBusinessCalendars';
+import { registerTicketRoutingTools } from './aiToolsTicketRouting';
 import { registerWispMemoryTools } from './wisp/memoryTools';
 import { registerWispConcernTools } from './wisp/concernTools';
+import { registerWispLinkTools } from './wisp/linkTools';
+import { registerWispTools } from './aiToolsWisp';
 // M365 helpdesk tools are session-aware (handler signature includes a sessionId)
 // so they are NOT registered in the `aiTools` execution registry — they run via
 // makeSessionAwareHandler in the SDK server. Their tiers still must be visible to
@@ -349,6 +405,7 @@ registerSentinelOneTools(aiTools);
 registerHuntressTools(aiTools);
 registerEdrTools(aiTools);
 registerSecurityTools(aiTools);
+registerIocHuntTools(aiTools);
 registerDnsTools(aiTools);
 registerPeripheralTools(aiTools);
 registerBrowserTools(aiTools);
@@ -360,6 +417,69 @@ registerPlaybookTools(aiTools);
 registerAlertTools(aiTools);
 registerDeliveryTools(aiTools);
 registerTicketingTools(aiTools);
+// Full-control W06 (#6776): PSA configuration + ticket operations.
+registerTicketConfigTools(aiTools);
+registerTicketChecklistTemplateTools(aiTools);
+registerTicketInboxTools(aiTools);
+registerTicketAttachmentTools(aiTools);
+registerTicketFormTools(aiTools);
+registerTicketResponseTemplateTools(aiTools);
+registerTimeSuggestionTools(aiTools);
+// Full-control W07 (#6777): alert correlation + signal triage.
+registerAlertCorrelationTools(aiTools);
+registerAnomalyTools(aiTools);
+registerReliabilityTriageTools(aiTools);
+// Full-control W08 (#6778): network topology tools.
+registerTopologyGraphTools(aiTools);
+registerTopologyDiagnosticTools(aiTools);
+registerTopologyManualTools(aiTools);
+registerTopologyMonitoringTools(aiTools);
+registerTopologyTemplateTools(aiTools);
+registerTopologyApplyTools(aiTools);
+// Full-control W09 (#6779): SNMP templates + metrics, asset probe, known guests, UniFi.
+registerSnmpTemplateTools(aiTools);
+registerSnmpMetricsTools(aiTools);
+registerNetworkProbeTools(aiTools);
+registerKnownGuestTools(aiTools);
+registerUnifiTools(aiTools);
+// Full-control W10 (#6780): AI-agent read tools.
+registerAiActivityTools(aiTools);
+registerOperatorTaskReadTools(aiTools);
+registerFleetDesignReadTools(aiTools);
+// Full-control W11 (#6781): security policy tools.
+registerSecurityComplianceTools(aiTools);
+registerSecurityRecommendationTools(aiTools);
+registerAccessReviewTools(aiTools);
+registerAuditBaselineTools(aiTools);
+registerSecurityPolicyTools(aiTools);
+registerRecoveryKeyTools(aiTools);
+registerPamRuleTools(aiTools);
+// Full-control W12 (#6782): software, fleet-finding and custom-field tools.
+registerSoftwareCatalogTools(aiTools);
+registerPackageSearchTools(aiTools);
+registerSoftwareDeploymentTools(aiTools);
+registerDeviceSoftwareTools(aiTools);
+registerSoftwareInventoryTools(aiTools);
+registerFleetFindingTools(aiTools);
+registerCustomFieldTools(aiTools);
+// Full-control W13 (#6783, PR A): device inventory reads and per-device records.
+registerDeviceInventoryTools(aiTools);
+registerDeviceLinkTools(aiTools);
+registerManualAssetTools(aiTools);
+// Full-control W13 (#6783, PR B): live event-log browse, tenant variables, Quick Support sessions.
+registerDeviceEventLogTools(aiTools);
+registerTenantVariableTools(aiTools);
+registerSupportSessionTools(aiTools);
+// Full-control W14 (#6784, PR A): billing lifecycle — rate cards, billing settings, agreement templates, signed
+// agreements, device billing (the contract / invoice read selectors live in aiToolsContracts / aiToolsBilling).
+registerBillingProfileTools(aiTools);
+registerPax8Tools(aiTools);
+registerPax8OrderTools(aiTools);
+registerBillingSettingsTools(aiTools);
+registerContractTemplateTools(aiTools);
+registerDeviceBillingTools(aiTools);
+// Full-control W14 PR B (#6784): QuickBooks / Xero sync (generate_invoice lives on manage_contracts).
+registerAccountingSyncTools(aiTools);
 registerMessagingTools(aiTools);
 registerCatalogTools(aiTools);
 registerBillingTools(aiTools);
@@ -391,13 +511,21 @@ registerM365Tools(aiTools);
 registerExportTools(aiTools);
 registerArtifactTools(aiTools);
 registerTrustPageTools(aiTools);
+// #9763: partner settings inheritance read (twin of the two inheritance routes).
+registerPartnerSettingsInheritanceTools(aiTools);
 // Tool Catalog W03 (#5218): flow authoring tools, behind FLOWS_ENABLED.
 registerFlowTools(aiTools);
 registerBusinessCalendarTools(aiTools);
+registerTicketRoutingTools(aiTools);
 // Wisp W03 memory tools: inert until W04/W05 attach auth.wispGrant.
 registerWispMemoryTools(aiTools);
 // Wisp W05a concern/watch tools: same posture — inert without auth.wispGrant.
 registerWispConcernTools(aiTools);
+// Wisp W08 thread links: same posture — inert without auth.wispGrant.
+registerWispLinkTools(aiTools);
+// Wisp W07 specialists: launch_specialist (inert without auth.wispGrant) and
+// the human-only approval carrier wisp_specialist_request.
+registerWispTools(aiTools);
 
 // A-W05 (D12): the compactor's truncation guidance follows the tool's real
 // paging shape. Covers extension-contributed tools too — they live in the
@@ -691,10 +819,16 @@ export async function executeTool(
   // Wisp W04 (w00 A24): a chat session attached to a thread also reads that
   // thread's attachments — the key is added ONLY when the capture scope
   // carries one, so every other anchor keeps its exact shape.
-  const writeAnchor = toolName === 'read_artifact' ? captureContextFrom(auth, opts, toolName) : null;
+  const writeAnchor = toolName === 'read_artifact' || toolName === 'run_flow' ? captureContextFrom(auth, opts, toolName) : null;
   const wispThreadId = opts?.capture?.wispThreadId;
   const captureAnchor = writeAnchor && wispThreadId ? { ...writeAnchor, wispThreadId } : writeAnchor;
   let handlerContext = captureAnchor ? { ...opts?.context, captureAnchor } : opts?.context;
+  // `run_flow` trusts the anchor's session id, so a caller-supplied anchor is
+  // dropped when the server computed none (no chat session => run_flow refuses).
+  if (toolName === 'run_flow' && !captureAnchor && handlerContext?.captureAnchor) {
+    const { captureAnchor: _dropped, ...rest } = handlerContext;
+    handlerContext = rest;
+  }
 
   // Topology M4-D1 (#6000): every topology tool runs only against the site a
   // server-owned context pins — the active topology session, or a one-site

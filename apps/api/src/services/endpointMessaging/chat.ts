@@ -22,7 +22,12 @@ import { queueCommandForExecution, type QueueCommandForExecutionResult } from '.
 import { CommandTypes } from '../commandTypes';
 import { agentSupportsChat } from '../commandMinVersion';
 import { buildHelperConfigUpdate } from '../helperSettings';
-import { resolveMessageBranding, type MessageBranding } from './brandingSnapshot';
+import {
+  resolveMessageBranding,
+  type MessageBranding,
+  type MessageSenderIdentity,
+  type ResolvedMessageBranding,
+} from './brandingSnapshot';
 import { checkChatMessageLimit, checkChatOpenLimit, type LimitDecision } from './rateLimits';
 import {
   attachOpenCommand,
@@ -77,7 +82,11 @@ export interface ChatDeps {
   ) => Promise<QueueCommandForExecutionResult>;
   /** The device's resolved endpointMessaging settings (cache skipped: rollout flags must be live). */
   chatSettings: (deviceId: string, orgId: string) => Promise<{ enabled: boolean; allowUserReply: boolean }>;
-  branding: (orgId: string) => Promise<{ partnerId: string; branding: MessageBranding } | null>;
+  /**
+   * The sender identity (brandingSnapshot.ts). Null fails closed; a partner
+   * whose name sanitized away comes back as the generic sender.
+   */
+  branding: (orgId: string) => Promise<ResolvedMessageBranding | null>;
   openLimit: (actorId: string) => Promise<LimitDecision>;
   messageLimit: (conversationId: string) => Promise<LimitDecision>;
   now: () => Date;
@@ -151,7 +160,17 @@ function senderNameOf(user: Pick<AuthContext['user'], 'name' | 'email'>): string
 }
 
 export type OpenChatOutcome =
-  | { ok: true; status: 200 | 202; replay: boolean; conversation: ConversationView; messages: ChatMessageView[]; deviceOrgId: string; bodySha256: string }
+  | {
+    ok: true;
+    status: 200 | 202;
+    replay: boolean;
+    conversation: ConversationView;
+    messages: ChatMessageView[];
+    deviceOrgId: string;
+    bodySha256: string;
+    /** Whose name the opening message carried; set on a fresh open (a replay sends nothing). */
+    senderIdentity?: MessageSenderIdentity;
+  }
   | ChatFailure;
 
 export async function openEndpointChat(caller: ChatCaller, input: EndpointChatOpenInput): Promise<OpenChatOutcome> {
@@ -279,6 +298,7 @@ export async function openEndpointChat(caller: ChatCaller, input: EndpointChatOp
     messages: [messageView({ ...message, commandId: res.command.id }, auth.user.name ?? null)],
     deviceOrgId: device.orgId,
     bodySha256: bodySha256(input.body),
+    senderIdentity: brand.senderIdentity,
   };
 }
 

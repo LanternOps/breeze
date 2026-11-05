@@ -31,6 +31,7 @@ import {
   agentSupportsYaraScan,
   MIN_AGENT_VERSION_YARA_SCAN,
   planYaraScan,
+  resolvePinnedYaraRefs,
   resolveYaraRuleSetRefs,
 } from './yaraScanRefs';
 
@@ -133,5 +134,63 @@ describe('planYaraScan', () => {
     state.sets = [pub(A, 1, { enabled: false })];
     const plan = await planYaraScan({ deviceId: 'dev-1', agentVersion: '999.0.0', ruleSetIds: [A] });
     expect(plan).toEqual({ ruleSets: [], engine: 'legacy', ruleSetErrors: [{ id: A, code: 'disabled' }] });
+  });
+});
+
+describe('resolvePinnedYaraRefs (#6263 W05-3)', () => {
+  const pin = (id: string, version: number, sha256 = SHA) => ({ id, version, sha256 });
+
+  it('every pin current, enabled and eligible -> refs at the PINNED version, in pin order', async () => {
+    state.sets = [pub(B, 2), pub(A, 7)];
+    const result = await resolvePinnedYaraRefs({ deviceId: 'dev-1', agentVersion: '0.124.0', pins: [pin(A, 7), pin(B, 2)] });
+    expect(result).toEqual({
+      ok: true,
+      refs: [
+        { id: A, version: 7, sha256: SHA, url: `/api/v1/agents/agent-1/yara/rule-sets/${A}/7` },
+        { id: B, version: 2, sha256: SHA, url: `/api/v1/agents/agent-1/yara/rule-sets/${B}/2` },
+      ],
+    });
+  });
+
+  it('pin sha changed -> rule_set_changed for that set, no refs (never a partial-set scan)', async () => {
+    state.sets = [pub(A, 8, { publishedSha256: 'e'.repeat(64) }), pub(B, 2)];
+    const result = await resolvePinnedYaraRefs({ deviceId: 'dev-1', agentVersion: '0.124.0', pins: [pin(A, 7), pin(B, 2)] });
+    expect(result).toEqual({ ok: false, errors: [{ id: A, version: 7, code: 'rule_set_changed' }] });
+  });
+
+  it('a republish with identical bytes but a new version is still a change', async () => {
+    state.sets = [pub(A, 8)];
+    expect(await resolvePinnedYaraRefs({ deviceId: 'dev-1', agentVersion: '0.124.0', pins: [pin(A, 7)] })).toEqual({
+      ok: false, errors: [{ id: A, version: 7, code: 'rule_set_changed' }],
+    });
+  });
+
+  it('one pin disabled, deleted or unpublished -> failed with its own code', async () => {
+    state.sets = [pub(A, 7, { enabled: false }), pub(C, 0, { publishedSha256: null })];
+    const result = await resolvePinnedYaraRefs({
+      deviceId: 'dev-1', agentVersion: '0.124.0', pins: [pin(A, 7), pin(B, 2), pin(C, 1)],
+    });
+    expect(result).toEqual({
+      ok: false,
+      errors: [
+        { id: A, version: 7, code: 'disabled' },
+        { id: B, version: 2, code: 'not_found' },
+        { id: C, version: 1, code: 'not_published' },
+      ],
+    });
+  });
+
+  it('agent too old -> agent_too_old, no set query', async () => {
+    const result = await resolvePinnedYaraRefs({ deviceId: 'dev-1', agentVersion: '0.123.9', pins: [pin(A, 7)] });
+    expect(result).toMatchObject({ ok: false, errors: [{ id: '*', code: 'agent_too_old' }] });
+    expect(state.setQueries).toBe(0);
+  });
+
+  it('no pins or an unknown device fails closed', async () => {
+    expect(await resolvePinnedYaraRefs({ deviceId: 'dev-1', agentVersion: '0.124.0', pins: [] })).toMatchObject({ ok: false });
+    state.device = null;
+    expect(await resolvePinnedYaraRefs({ deviceId: 'dev-1', agentVersion: '0.124.0', pins: [pin(A, 7)] })).toEqual({
+      ok: false, errors: [{ id: A, version: 7, code: 'not_found' }],
+    });
   });
 });

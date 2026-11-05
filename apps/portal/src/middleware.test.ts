@@ -143,7 +143,7 @@ describe('portal middleware — disabled account guard', () => {
   });
 });
 
-it.each(['/autopay/example-token', '/autopay/example-token/stop', '/autopay/return'])(
+it.each(['/autopay/example-token', '/autopay/example-token/stop', '/autopay/return', '/agreement/example-token'])(
   '%s is private, anonymous, and read-only during GET', async pathname => {
     const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
     try {

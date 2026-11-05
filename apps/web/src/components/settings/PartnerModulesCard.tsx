@@ -5,6 +5,8 @@ import { fetchWithAuth } from '@/stores/auth';
 import { handleActionError, runAction } from '@/lib/runAction';
 import { useOrgStore, type ServiceManagementMode } from '@/stores/orgStore';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import AutosaveSwitch from './partnerSettings/AutosaveSwitch';
+import { usePartnerSettingsSaveApi } from './partnerSettings/partnerSettingsSaveContext';
 import '@/lib/i18n';
 
 /**
@@ -72,6 +74,8 @@ type Props = {
 export default function PartnerModulesCard({ serviceManagementMode, topologyFeatureFlags }: Props) {
   const { t } = useTranslation('settings');
   const setStoreMode = useOrgStore((state) => state.setServiceManagementMode);
+  // Autosave outcomes go to the page's header status line (spec §3.2).
+  const { reportAutosave } = usePartnerSettingsSaveApi();
 
   // The radio's value. Seeded from the prop — the page's own GET
   // /orgs/partners/me, i.e. the server's answer — and updated optimistically on
@@ -128,8 +132,10 @@ export default function PartnerModulesCard({ serviceManagementMode, topologyFeat
       // Only now does the sidebar change: the store is the single source the
       // nav gate reads, so it must not move until the server has agreed.
       setStoreMode(next);
+      reportAutosave('modules', { status: 'saved', savedAt: Date.now() });
     } catch (err) {
       setMode(previous);
+      reportAutosave('modules', { status: 'failed' });
       // `handleActionError`, NOT a rethrow: this runs under a fire-and-forget
       // `void select(...)` (from `choose` or the Off confirm), so a rethrow becomes an unhandled
       // rejection that no one catches — the radio would snap back with no toast
@@ -173,8 +179,10 @@ export default function PartnerModulesCard({ serviceManagementMode, topologyFeat
         errorFallback: t('partnerSettingsPage.modules.saveFailed'),
         successMessage: t('partnerSettingsPage.modules.saved'),
       });
+      reportAutosave('modules', { status: 'saved', savedAt: Date.now() });
     } catch (err) {
       setTopology(previous);
+      reportAutosave('modules', { status: 'failed' });
       handleActionError(err, t('partnerSettingsPage.modules.saveFailed'));
     } finally {
       setTopologySaving(false);
@@ -284,25 +292,13 @@ export default function PartnerModulesCard({ serviceManagementMode, topologyFeat
           <span id="partner-modules-topology-on-label" className="text-sm font-medium">
             {t('partnerSettingsPage.modules.topologyOnLabel')}
           </span>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={topologyOn}
-            aria-labelledby="partner-modules-topology-label partner-modules-topology-on-label"
+          <AutosaveSwitch
+            checked={topologyOn}
             disabled={topologySaving}
-            onClick={toggleTopology}
-            data-testid="partner-modules-topology"
-            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-50 ${
-              topologyOn ? 'bg-emerald-500/80' : 'bg-muted'
-            }`}
-          >
-            <span
-              aria-hidden="true"
-              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition ${
-                topologyOn ? 'translate-x-6' : 'translate-x-1'
-              }`}
-            />
-          </button>
+            onChange={toggleTopology}
+            labelledBy="partner-modules-topology-label partner-modules-topology-on-label"
+            testId="partner-modules-topology"
+          />
         </div>
 
         {topologyOn && (

@@ -103,6 +103,11 @@ export const PERMISSION_GRANTS = {
   // operations on a template, so there is nothing left for a third verb to gate.
   AGREEMENTS_READ: { resource: 'agreements', action: 'read' },
   AGREEMENTS_WRITE: { resource: 'agreements', action: 'write' },
+  // #9075 W2a (OD7 B): sending an agreement for signature, copying its link,
+  // voiding it, reminding, and recording a client's signature obtained
+  // elsewhere. A different blast radius from editing templates — the same
+  // split quotes make with quotes:send / quotes:accept.
+  AGREEMENTS_SEND: { resource: 'agreements', action: 'send' },
 
   // Quotes / Proposals (billing program — sub-project 4)
   QUOTES_READ: { resource: 'quotes', action: 'read' },

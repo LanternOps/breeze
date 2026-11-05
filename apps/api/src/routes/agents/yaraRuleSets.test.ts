@@ -4,9 +4,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const state = vi.hoisted(() => ({
-  device: { id: 'dev-1' } as Record<string, unknown> | null,
+  device: { id: 'dev-1', orgId: 'org-1' } as Record<string, unknown> | null,
   sets: {} as Record<string, Record<string, unknown>>,
   lastSetId: null as string | null,
+  // #6263 W05: running scans of this device and the refs each was dispatched with.
+  scans: [] as Array<{ deviceId: string; orgId: string; status: string; refs: Array<{ id: string; version: number }> }>,
+  scanQueries: [] as Array<{ sql: string; params: unknown[] }>,
 }));
 
 const { resolvePolicyMock, withSystemSpy } = vi.hoisted(() => ({
@@ -16,11 +19,23 @@ const { resolvePolicyMock, withSystemSpy } = vi.hoisted(() => ({
 
 vi.mock('../../db', async () => {
   const schema = await import('../../db/schema');
+  const { PgDialect } = await import('drizzle-orm/pg-core');
+  const dialect = new PgDialect();
   const select = () => ({
     from: (table: unknown) => ({
-      where: () => ({
+      where: (where: unknown) => ({
         limit: () => {
           if (table === schema.devices) return Promise.resolve(state.device ? [state.device] : []);
+          if (table === schema.securityScans) {
+            // Evaluate the dispatched-ref predicate against the fixture rows:
+            // params are [deviceId, orgId, status, setId, version].
+            const q = dialect.sqlToQuery(where as never);
+            state.scanQueries.push({ sql: q.sql, params: q.params });
+            const [deviceId, orgId, status, setId, version] = q.params as [string, string, string, string, number];
+            const hit = state.scans.find((sc) => sc.deviceId === deviceId && sc.orgId === orgId && sc.status === status
+              && sc.refs.some((r) => r.id === setId && r.version === Number(version)));
+            return Promise.resolve(hit ? [{ id: 'scan-1' }] : []);
+          }
           const row = state.lastSetId ? state.sets[state.lastSetId] : undefined;
           return Promise.resolve(row ? [row] : []);
         },
@@ -63,7 +78,9 @@ const get = (path: string, role: 'agent' | 'watchdog' = 'agent') => {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  state.device = { id: 'dev-1' };
+  state.device = { id: 'dev-1', orgId: 'org-1' };
+  state.scans = [];
+  state.scanQueries = [];
   state.sets = {
     [S]: { id: S, enabled: true, publishedVersion: 4, publishedBundle: GOLDEN, publishedSha256: GOLDEN_SHA },
     [P]: { id: P, enabled: true, publishedVersion: 1, publishedBundle: Buffer.from('{}'), publishedSha256: 'a'.repeat(64) },
@@ -142,5 +159,56 @@ describe('GET /agents/:id/yara/rule-sets/:ruleSetId/:version', () => {
     await get(`${P}/1`);
     await get(`${S}/3`);
     expect(withSystemSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('dispatched-ref authorization (#6263 W05-10)', () => {
+  const running = (refs: Array<{ id: string; version: number }>, over: Partial<(typeof state.scans)[number]> = {}) =>
+    state.scans.push({ deviceId: 'dev-1', orgId: 'org-1', status: 'running', refs, ...over });
+
+  it('set not in policy, running scan dispatched with {id, version} → 200', async () => {
+    running([{ id: P, version: 1 }]);
+    const res = await get(`${P}/1`);
+    expect(res.status).toBe(200);
+    expect(Buffer.from(await res.arrayBuffer()).toString()).toBe('{}');
+  });
+
+  it('same scan, sweep cancelled mid-load → still 200 (sweep state is never consulted)', async () => {
+    running([{ id: P, version: 1 }]);
+    expect((await get(`${P}/1`)).status).toBe(200);
+    const [q] = state.scanQueries;
+    expect(q!.sql).not.toContain('security_scan_sweeps');
+    expect(q!.sql).toContain('"security_scans"."status" = $3');
+    expect(q!.sql).toContain('"security_scans"."dispatched_rule_sets" @> jsonb_build_array(jsonb_build_object(\'id\', $4::text, \'version\', $5::int))');
+  });
+
+  it.each([
+    ['queued scan', { status: 'queued' }],
+    ['completed scan', { status: 'completed' }],
+    ["other device's scan", { deviceId: 'dev-2' }],
+    ['scan org ≠ device org', { orgId: 'org-2' }],
+  ])('%s → 404', async (_label, over) => {
+    running([{ id: P, version: 1 }], over);
+    expect((await get(`${P}/1`)).status).toBe(404);
+  });
+
+  it('set not policy-attached, dispatched version 3, request version 4 → 404', async () => {
+    state.sets[P] = { ...state.sets[P]!, publishedVersion: 4 };
+    running([{ id: P, version: 3 }]);
+    expect((await get(`${P}/4`)).status).toBe(404);
+    // ...and the version/409 check runs only for an authorized set: the
+    // dispatched v3 is authorized and gets the ordinary 409.
+    expect((await get(`${P}/3`)).status).toBe(409);
+  });
+
+  it('a policy-attached set never queries scans', async () => {
+    expect((await get(`${S}/4`)).status).toBe(200);
+    expect(state.scanQueries).toEqual([]);
+  });
+
+  it('with no policy at all, a dispatched set is still served', async () => {
+    resolvePolicyMock.mockResolvedValue(null);
+    running([{ id: S, version: 4 }]);
+    expect((await get(`${S}/4`)).status).toBe(200);
   });
 });

@@ -51,6 +51,13 @@ import {
 } from '@breeze/shared';
 
 export interface RunTraceRunInput {
+  /** W07 provenance (optional: callers without the grant join read as no provenance). */
+  grantId?: string | null;
+  /** `wisp_grants.grantor_user_id` via LEFT JOIN; null when the grant row is invisible under RLS. */
+  grantorUserId?: string | null;
+  grantorName?: string | null;
+  depth?: number | null;
+  requestedByRunId?: string | null;
   id: string;
   agentId: string;
   orgId: string;
@@ -566,6 +573,17 @@ export function buildRunTrace(
     deviceHostname: device?.hostname ?? null,
     alertId: run.alertId,
     anomalyIncidentId: run.anomalyIncidentId,
+    // No grant, or a grant row the caller's RLS context cannot see (grantor
+    // unknown): no provenance. A partner-scope viewer sees the partner's grants.
+    wisp: run.grantId && run.grantorUserId
+      ? {
+          grantId: run.grantId,
+          grantorUserId: run.grantorUserId,
+          grantorName: run.grantorName ?? null,
+          depth: run.depth === 1 ? 1 : 0,
+          requestedByRunId: run.requestedByRunId ?? null,
+        }
+      : null,
     triggerKind: run.triggerKind,
     modeAtStart: run.modeAtStart,
     status: run.status,

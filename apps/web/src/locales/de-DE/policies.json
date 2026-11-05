@@ -358,7 +358,11 @@
         "pathPrefix": "Pfadpräfix",
         "optional": "(optional)",
         "backupsBreeze": "backups/breeze/",
-        "keyPrefixForOrganizingObjectsInThe": "Schlüsselpräfix zum Organisieren von Objekten im Bucket.",
+        "keyPrefixHelp": "Schlüsselpräfix für dieses Ziel. Neue Snapshots werden unter <prefix>/snapshots/ gespeichert. Vorhandene Snapshots bleiben, wo sie sind. Nach einer Änderung ist die nächste Sicherung eine Vollsicherung.",
+        "keyPrefixInvalidTooLong": "Ungültiges Schlüsselpräfix: höchstens {{max}} Zeichen.",
+        "keyPrefixInvalidSegment": "Ungültiges Schlüsselpräfix: leere Segmente sowie „.“ und „..“ sind nicht erlaubt.",
+        "keyPrefixInvalidCharacters": "Ungültiges Schlüsselpräfix: pro Segment nur Buchstaben, Ziffern und ! _ . * ' ( ) -, getrennt durch /.",
+        "keyPrefixInvalidReserved": "Ungültiges Schlüsselpräfix: ein Segment „snapshots“ ist nicht erlaubt.",
         "customEndpoint": "Benutzerdefinierter Endpunkt",
         "optional2": "(optional)",
         "httpsS3UsWest002Backblazeb2Com": "https://s3.us-west-002.backblazeb2.com",
@@ -670,7 +674,18 @@
         "maxEventsPerCycle2": "maxEventsPerCycle",
         "minimumLevel": "MinimumLevel",
         "collectionIntervalMinutes2": "CollectionIntervalMinutes",
-        "rateLimitPerHour2": "rateLimitPerHour"
+        "rateLimitPerHour2": "rateLimitPerHour",
+        "applicationProvidersHeading": "Anwendungsanbieter (Warnung und Information)",
+        "applicationProvidersHelp": "Anwendungsereignisse der Stufen Fehler und Kritisch werden von allen Anbietern erfasst; Warnungen und Informationen nur von den integrierten Anbietern ({{providers}}) und den hier aufgeführten Anbietern. Verwenden Sie den exakten Anbieternamen aus der Spalte „Quelle“ der Ereignisanzeige oder aus Get-WinEvent -ListProvider.",
+        "applicationProvidersScope": "Für ein Gerät gilt nur die maßgebliche Ereignisprotokollrichtlinie. Anbieterlisten verschiedener Richtlinien werden nicht zusammengeführt.",
+        "providerNameLabel": "Name des Anwendungsereignisanbieters",
+        "addProvider": "Anbieter hinzufügen",
+        "removeProvider": "Entfernen",
+        "removeProviderNamed": "{{provider}} entfernen",
+        "providerNameInvalid": "Verwenden Sie 1–{{max}} Zeichen, beginnend mit einem Buchstaben oder einer Ziffer. Erlaubt sind Buchstaben, Ziffern, Leerzeichen, Punkte, Unterstriche, Dollarzeichen, runde Klammern und Bindestriche.",
+        "providerLimitReached": "Sie können bis zu {{max}} zusätzliche Anbieter auflisten. Entfernen Sie einen, um einen weiteren hinzuzufügen.",
+        "providerAlreadyListed": "Dieser Anbieter ist bereits aufgeführt.",
+        "providerLimit": "{{total}} von {{max}} zusätzlichen Anbietern"
       },
       "featureTabShell": {
         "override": "Überschreiben",
@@ -895,7 +910,17 @@
         "ringInvalidBody": "Patches für diese Richtlinie werden zurückgehalten, bis Sie einen Ring auswählen und speichern.",
         "ringDetailsNoHold": "Rollout-Reihenfolge {{order}} · keine Wartezeit vor der Genehmigung",
         "ringDetailsWithHold_one": "Rollout-Reihenfolge {{order}} · {{count}} Tag Wartezeit vor der Genehmigung",
-        "ringDetailsWithHold_other": "Rollout-Reihenfolge {{order}} · {{count}} Tage Wartezeit vor der Genehmigung"
+        "ringDetailsWithHold_other": "Rollout-Reihenfolge {{order}} · {{count}} Tage Wartezeit vor der Genehmigung",
+        "rebootPreviewHeading": "Vorschau",
+        "rebootPreviewDescription": "Das sieht die Person am Computer, wenn jetzt ein Neustart geplant wird. Die Uhrzeiten sind Beispiele.",
+        "rebootPreviewDefaultMarker": "Standard",
+        "rebootPreviewDefaultTitle": "Neustart zum Abschließen der Updateinstallation",
+        "rebootPreviewDefaultBody": "Ihr IT-Support-Team muss diesen Computer neu starten, um die Installation der Updates abzuschließen.",
+        "rebootPreviewConsequence": "Wenn Sie nichts tun, wird dieser Computer um {{time}} neu gestartet. Speichern Sie Ihre Arbeit vorher.",
+        "rebootPreviewRestartNow": "Jetzt neu starten",
+        "rebootPreviewPostponeUntil": "Verschieben bis {{time}}",
+        "rebootPreviewDeadline": "Durch Verschieben wird der Neustart nie später als {{time}} durchgeführt.",
+        "rebootPreviewOk": "OK"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Link-Peripherierichtlinie",
@@ -982,6 +1007,9 @@
         "showIndicatorHelp": "Banner auf dem Bildschirm anzeigen, während ein Techniker verbunden ist.",
         "notifyOnEnd": "Hinweis bei Sitzungsende",
         "notifyOnEndHelp": "Endbenutzer benachrichtigen, wenn die Sitzung endet.",
+        "allowUserEnd": "Benutzer darf die Sitzung beenden",
+        "allowUserEndHelp": "Die Person am Gerät kann die Sitzung nach einer Bestätigung über die Anzeige auf dem Bildschirm beenden. Der Techniker sieht „Vom Benutzer beendet“.",
+        "allowUserEndNeedsIndicator": "Aktivieren Sie die Anzeige für aktive Sitzungen, damit Benutzer eine Sitzung beenden können.",
         "identityLevel": "Techniker-Identität",
         "identityLevelHelp": "Wie viel von der Identität des Technikers der Endbenutzer sieht. Der MSP-Name wird immer angezeigt.",
         "identityNameEmail": "Name und E-Mail",
@@ -1167,16 +1195,22 @@
         "binaryMissing": "{{vendors}} kann erst aktiviert werden, wenn das integrierte Paket ein bereitstellbares Installationsprogramm hat: ein Windows-MSI als neueste Version, dessen Installationsargumente SITE_TOKEN={s1_site_token} enthalten. Korrigieren Sie das auf der Registerkarte „Versionen“ des Pakets und speichern Sie dann erneut.",
         "binaryMissingLink": "Registerkarte „Versionen“ öffnen",
         "platformMacosUnsupported": "macOS: nicht unterstützt.",
-        "sentinelOneMsiNote": "Fügen Sie zuerst das SentinelOne-MSI auf der Registerkarte „Versionen“ des integrierten SentinelOne-Pakets hinzu, mit Installationsargumenten, die SITE_TOKEN={s1_site_token} enthalten. Breeze stellt das Installationsprogramm nicht bereit, und SentinelOne kann erst danach aktiviert werden."
+        "sentinelOneMsiNote": "Fügen Sie zuerst das SentinelOne-MSI auf der Registerkarte „Versionen“ des integrierten SentinelOne-Pakets hinzu, mit Installationsargumenten, die SITE_TOKEN={s1_site_token} enthalten. Breeze stellt das Installationsprogramm nicht bereit, und SentinelOne kann erst danach aktiviert werden.",
+        "catalogMissingBuiltin": "{{vendors}} ist noch nicht im Softwarekatalog dieses Partners. Fügen Sie es unter Software → Katalog → Integrierte Pakete hinzu und speichern Sie dann erneut.",
+        "catalogMissingBuiltinLink": "Integrierte Pakete öffnen",
+        "dnsBuiltinNote": "Fügen Sie {{vendor}} zuerst unter Software → Katalog → Integrierte Pakete zum Softwarekatalog dieses Partners hinzu; vorher lässt es sich nicht aktivieren.",
+        "dnsVariableNote": "Jede Organisation benötigt die Mandantenvariable {{variable}}, angelegt als normale (nicht geheime) Variable. Organisationen ohne sie werden übersprungen und als nicht zutreffend angezeigt.",
+        "dnsVariableLink": "Variablen öffnen",
+        "dnsCoverageNote": "Breeze synchronisiert die {{vendor}}-Konsole nicht. Die Abdeckung zeigt daher nur, ob ein Gerät den Client erhalten kann (ausstehend oder nicht zutreffend). Installations- und Dienststatus (fehlt, läuft nicht) erscheinen in der Compliance der generierten Softwarerichtlinie."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Bei Garantiebenachrichtigungen handelt es sich um eine Opt-In-Funktion: Geräte, denen keine Garantierichtlinie zugewiesen ist, erhalten keine Warnung. Die unten aufgeführten Schwellenwerte gelten nur für den befristeten Versicherungsschutz – aktive AppleCare-Abonnements verlängern sich und laufen nicht ab, daher werden Ablaufwarnungen immer unterdrückt.",
         "enableWarrantyExpiryAlerts": "Aktivieren Sie Garantieablaufwarnungen",
         "generateAlertsWhenFixedTermDeviceWarranties": "Generieren Sie Benachrichtigungen, wenn befristete Gerätegarantien bald ablaufen.",
         "warningThresholdDays": "Warnschwelle (Tage)",
-        "generateAWarningAlertWhenWarrantyExpires": "Generieren Sie eine Warnmeldung, wenn die Garantie innerhalb dieser Anzahl von Tagen abläuft.",
-        "criticalThresholdDays": "Kritischer Schwellenwert (Tage)",
-        "generateACriticalAlertWhenWarrantyExpires": "Generieren Sie eine kritische Warnung, wenn die Garantie innerhalb dieser Anzahl von Tagen abläuft.",
+        "warnThresholdHelp": "Warnung mit Schweregrad „Infos“, wenn die Garantie innerhalb dieser Anzahl von Tagen abläuft.",
+        "urgentThresholdDays": "Dringlichkeitsschwelle (Tage)",
+        "urgentThresholdHelp": "Warnung mit Schweregrad „Niedrig“, wenn die Garantie innerhalb dieser Anzahl von Tagen abläuft. Eine abgelaufene Garantie löst eine Warnung mit Schweregrad „Mittel“ aus.",
         "enabled": "aktiviert",
         "warnDays": "warnDays",
         "criticalDays": "kritischeTage",
@@ -1196,6 +1230,20 @@
         "title": "Geräte in dieser Richtlinie melden doppelt",
         "body": "Diese Bedingungen existieren sowohl als angehängter Monitor als auch als Alt-Regel oder -Überwachung: {{names}}"
       }
+    },
+    "partnerGroupAssignment": {
+      "title": "Gerätegruppen (alle Org.)",
+      "description": "Wählen Sie eine partnerweite Gerätegruppe als Ziel. Eine Gruppenzuweisung gilt auf Gerätegruppenebene und hat daher Vorrang vor Zuweisungen anderer Richtlinien auf Organisations- und Standortebene.",
+      "selectGroup": "Gerätegruppe auswählen",
+      "assign": "Zuweisen",
+      "remove": "Entfernen",
+      "assigned": "Gerätegruppe zugewiesen",
+      "removed": "Gerätegruppenzuweisung entfernt",
+      "failedToLoad": "Gerätegruppen konnten nicht geladen werden",
+      "failedToAssign": "Gerätegruppe konnte nicht zugewiesen werden",
+      "failedToRemove": "Gerätegruppenzuweisung konnte nicht entfernt werden",
+      "empty": "Noch keine partnerweiten Gerätegruppen. Erstellen Sie eine unter Gerätegruppen → Alle Org.",
+      "loading": "Gerätegruppen werden geladen…"
     }
   },
   "software": {
@@ -1255,7 +1303,7 @@
       "uploadFile": "Datei hochladen",
       "source2": "Quelle",
       "downloadUrl": "downloadURL",
-      "noFileSelectedMsiExeDmgDeb": "Keine Datei ausgewählt (.msi, .exe, .dmg, .deb, .pkg)",
+      "noFileSelectedMsiExeDmgDeb": "Keine Datei ausgewählt (.msi, .exe, .dmg, .deb, .pkg, .zip)",
       "supportedOs": "Unterstützte Betriebssysteme",
       "pkgInstall": "pkg-install",
       "silentInstallArgs2": "SilentInstallArgs",
@@ -1311,7 +1359,19 @@
       "thisOrganizationOnly": "Nur diese Organisation",
       "partnerWideUrlOnly": "Partnerweite Pakete verwenden eine Download-URL — Datei-Upload ist für sie noch nicht verfügbar.",
       "selectedFileRemoved": "Die ausgewählte Datei wurde entfernt — partnerweite Pakete verwenden eine Download-URL.",
-      "scopeLockedAfterCreate": "Das Paket wurde bereits mit diesem Geltungsbereich erstellt — die Zuordnung kann danach nicht mehr geändert werden."
+      "scopeLockedAfterCreate": "Das Paket wurde bereits mit diesem Geltungsbereich erstellt — die Zuordnung kann danach nicht mehr geändert werden.",
+      "installScripts": "Installationsskripte",
+      "installScriptsHelp": "Für zip-Pakete erforderlich, sonst optional. Skripte laufen unter Windows als SYSTEM bzw. unter macOS und Linux als root, werden nach 10 Minuten abgebrochen, benötigen die Berechtigung devices.execute und genau ein Zielbetriebssystem.",
+      "availableTokens": "Verfügbare Platzhalter:",
+      "preInstallScript": "Skript vor der Installation",
+      "postInstallScript": "Skript nach der Installation",
+      "preInstallScriptPlaceholder": "Wird vor dem Installationsprogramm ausgeführt (PowerShell unter Windows, bash unter macOS und Linux)",
+      "postInstallScriptPlaceholder": "Wird nach dem Installationsprogramm bzw. nach dem Entpacken der zip-Datei ausgeführt",
+      "silentArgsNotUsedForType": "Argumente für die stille Installation werden bei pkg-, dmg-, deb- und zip-Installationsprogrammen nicht verwendet.",
+      "issueZipRequiresPostInstallScript": "zip-Pakete benötigen ein Skript nach der Installation: Der Agent entpackt das Archiv nur.",
+      "issueScriptsRequireSingleOs": "Installationsskripte benötigen genau ein Zielbetriebssystem.",
+      "issueScriptTooLarge": "Jedes Installationsskript darf höchstens 64 KiB groß sein.",
+      "issueArgsUnsupportedForFileType": "Argumente für die stille Installation werden für diesen Installationstyp nicht unterstützt."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Verwaltet integriert",
@@ -1397,7 +1457,15 @@
       "coverageRowsNote": "{{shown}} von {{total}} angezeigt",
       "violationCount": "{{count}} Verstoß",
       "violationCount_one": "{{count}} Verstoß",
-      "violationCount_other": "{{count}} Verstöße"
+      "violationCount_other": "{{count}} Verstöße",
+      "violationTypes": {
+        "unauthorized": "Nicht autorisiert",
+        "missing": "Fehlend",
+        "outdated": "Veraltet",
+        "not_running": "Läuft nicht",
+        "service_unverified": "Dienst nicht verifiziert",
+        "serviceTitle": "Dienst: {{name}}"
+      }
     },
     "deploymentList": {
       "running": "Wird ausgeführt",
@@ -1483,7 +1551,8 @@
       "devicesFinished": "{{finished}} von {{total}} Geräten abgeschlossen",
       "setupNeeded": "Einrichtung erforderlich",
       "managerUnavailableSummary_one": "Auf {{count}} Gerät fehlt der Paketmanager. Das ist eine einmalige Geräteeinrichtung – installieren Sie dort winget (Windows) oder Homebrew (macOS); bis dahin schlägt jede Paketmanager-Bereitstellung darauf fehl.",
-      "managerUnavailableSummary_other": "Auf {{count}} Geräten fehlt der Paketmanager. Das ist eine einmalige Geräteeinrichtung – installieren Sie dort winget (Windows) oder Homebrew (macOS); bis dahin schlägt jede Paketmanager-Bereitstellung darauf fehl."
+      "managerUnavailableSummary_other": "Auf {{count}} Geräten fehlt der Paketmanager. Das ist eine einmalige Geräteeinrichtung – installieren Sie dort winget (Windows) oder Homebrew (macOS); bis dahin schlägt jede Paketmanager-Bereitstellung darauf fehl.",
+      "deviceOutputTail": "Geräteausgabe (letzte Zeilen)"
     },
     "deploymentWizard": {
       "selectSoftware": "Wählen Sie Software",
@@ -1615,7 +1684,11 @@
       "msiProductCode": "msi_product_code",
       "fileVersion": "file_version",
       "serviceRunning": "Dienst läuft",
-      "readOnlyHint": "Über die API erstellt. Hier nicht bearbeitbar; beim Speichern bleibt sie unverändert."
+      "readOnlyHint": "Über die API erstellt. Hier nicht bearbeitbar; beim Speichern bleibt sie unverändert.",
+      "serviceName": "Dienstname",
+      "serviceNamePlaceholder": "z. B. ctrld",
+      "serviceNameHint": "Windows-Dienstname, macOS-launchd-Label oder Linux-systemd-Unit. Wird vor und nach der Installation geprüft.",
+      "serviceNameInvalid": "Geben Sie einen Dienstnamen ohne Steuerzeichen und ohne führendes „-“ ein (höchstens 256 Byte)."
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Geräte konnten nicht abgerufen werden",
@@ -1732,7 +1805,10 @@
       "catalogTab": "Katalog",
       "summaryCompleted7d": "Abgeschlossen (7 Tage)",
       "summaryFailed7d": "Fehlgeschlagen (7 Tage)",
-      "categoryFilterLabel": "Kategorie"
+      "categoryFilterLabel": "Kategorie",
+      "requiredVariables": "Erforderliche Variablen",
+      "uninstallCommand": "Deinstallationsbefehl",
+      "managedByBreezeHint": "Wird von Breeze verwaltet. Dieses Paket kann hier weder bearbeitet noch gelöscht werden, und es können keine neuen Versionen hinzugefügt werden."
     },
     "softwareInventory": {
       "allowed": "Erlaubt",
@@ -1764,7 +1840,11 @@
       "deviceCount": "Geräteanzahl",
       "allowed2": "erlaubt",
       "blocked2": "blockiert",
-      "summary": "Zeigt {{range}} von {{total}}"
+      "summary": "Zeigt {{range}} von {{total}}",
+      "policyWouldNotApply": "„{{policy}}“ würde für kein Gerät in dieser Organisation gelten, daher wurde nichts geändert. Jedes Gerät folgt genau einer Softwarerichtlinie, und auf allen Geräten gilt {{winners}}. Ändern oder entfernen Sie unter „Konfigurationsrichtlinien“ die Zuweisung von {{configPolicy}} und versuchen Sie es erneut.",
+      "policyWouldNotApplySameMode": "„{{policy}}“ würde für kein Gerät in dieser Organisation gelten, daher wurde nichts geändert. Jedes Gerät folgt genau einer Softwarerichtlinie, und auf allen Geräten gilt {{winners}}. Fügen Sie den Titel stattdessen unter „Softwarerichtlinien“ zu {{winner}} hinzu.",
+      "theWinningConfigPolicy": "die geltende Konfigurationsrichtlinie",
+      "nowOverridesPolicies": "„{{policy}}“ hat auf den Geräten dieser Organisation jetzt Vorrang vor {{names}}."
     },
     "softwareInventoryView": {
       "failedToFetchSoftwareInventory": "Das Abrufen des Softwareinventars ist fehlgeschlagen",
@@ -1861,7 +1941,7 @@
       "windows": "Windows",
       "macOS": "macOS",
       "linux": "Linux",
-      "noFileSelectedMsiExeDmgDeb": "Keine Datei ausgewählt (.msi, .exe, .dmg, .deb, .pkg)",
+      "noFileSelectedMsiExeDmgDeb": "Keine Datei ausgewählt (.msi, .exe, .dmg, .deb, .pkg, .zip)",
       "saving": "Speichern...",
       "uploadSave": "Hochladen und speichern",
       "saveVersion": "Version speichern",
@@ -1874,7 +1954,10 @@
       "uploadsRequireS3Storage": "Datei-Uploads erfordern einen auf dem Server konfigurierten S3-Objektspeicher.",
       "editingVersion": "Version bearbeiten",
       "failedToUpdateVersion": "Version konnte nicht aktualisiert werden",
-      "replaceFileAddNewVersion": "Um die Installationsdatei zu ersetzen, fügen Sie stattdessen eine neue Version hinzu."
+      "replaceFileAddNewVersion": "Um die Installationsdatei zu ersetzen, fügen Sie stattdessen eine neue Version hinzu.",
+      "inactiveStoredScripts": "Gespeicherte Installationsskripte sind nicht aktiv; erstellen Sie die Version neu, um sie zu aktivieren.",
+      "builtinVersionsReadOnly": "Wird von Breeze verwaltet. Versionen integrierter Pakete können hier nicht hinzugefügt oder geändert werden.",
+      "installScriptsReadOnlyOnEdit": "Installationsskripte einer bestehenden Version lassen sich nicht ändern und legen ihr Zielbetriebssystem fest. Um sie zu ändern, fügen Sie eine neue Version hinzu: Sie übernimmt diese Skripte."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Fügen Sie eine Bereitstellungszeitvariable ein",
@@ -1908,6 +1991,42 @@
       "queuedNone": "Nichts wurde in die Warteschlange gestellt: Die Geräte aus der Vorschau benötigen keine Abhilfe mehr oder sie steht bereits aus.",
       "queuedPartial": "Abhilfe für {{queued}} von {{requested}} Gerät(en) aus der Vorschau in die Warteschlange gestellt; die übrigen benötigen sie nicht mehr oder sie steht bereits aus.",
       "previewFailedWithReason": "Die Vorschau konnte nicht geladen werden: {{reason}}"
+    },
+    "builtinPackagesPanel": {
+      "title": "Integrierte Pakete",
+      "description": "DNS-Filter-Clients, die von Breeze fixiert und geprüft werden. Fügen Sie einen zu Ihrem Katalog hinzu, legen Sie seine Variable für jede Organisation fest und stellen Sie ihn dann wie jedes andere Paket bereit.",
+      "colPackage": "Paket",
+      "colPlatform": "Plattform",
+      "colPinnedVersion": "Fixierte Version",
+      "colRequiredVariables": "Erforderliche Variablen",
+      "colUninstallCommand": "Deinstallationsbefehl",
+      "colStatus": "Status",
+      "addToCatalog": "Zum Katalog hinzufügen",
+      "adding": "Wird hinzugefügt…",
+      "inCatalog": "Im Katalog",
+      "archived": "Archiviert",
+      "restoreToCatalog": "Wiederherstellen",
+      "addedToCatalog": "{{name}} wurde zum Katalog hinzugefügt",
+      "couldNotAddToCatalog": "{{name}} konnte nicht zum Katalog hinzugefügt werden",
+      "couldNotLoadBuiltinPackages": "Integrierte Pakete konnten nicht geladen werden",
+      "loadingBuiltinPackages": "Integrierte Pakete werden geladen…",
+      "setVariablesPerOrganization": "Pro Organisation unter Einstellungen → Variablen festlegen",
+      "copyUninstallCommand": "Deinstallationsbefehl kopieren",
+      "uninstallCommandCopied": "Deinstallationsbefehl kopiert",
+      "breezeDoesNotUninstall": "Breeze deinstalliert diese Clients nicht. Führen Sie den Befehl auf dem Gerät aus, um einen zu entfernen.",
+      "copyFailed": "Kopieren fehlgeschlagen. Markieren Sie den Befehl und kopieren Sie ihn manuell."
+    },
+    "policyCoverage": {
+      "appliesTo_one": "Gilt für {{count}} Gerät",
+      "appliesTo_other": "Gilt für {{count}} Geräte",
+      "appliesToNone": "Gilt für 0 Geräte",
+      "notAssigned": "Über keine Konfigurationsrichtlinie zugewiesen",
+      "overriddenBy": "Überschrieben von {{names}}",
+      "overriddenHint": "Jedes Gerät folgt genau einer Softwarerichtlinie. Auf den Geräten, denen diese Richtlinie zugewiesen ist, gilt {{names}}.",
+      "partlyOverriddenHint": "Jedes Gerät folgt genau einer Softwarerichtlinie. Auf den übrigen zugewiesenen Geräten gilt {{names}}.",
+      "anotherPolicy": "eine andere Softwarerichtlinie",
+      "partnerWide": "partnerweite Richtlinie {{name}}",
+      "unavailable": "Abdeckung nicht verfügbar"
     }
   }
 }

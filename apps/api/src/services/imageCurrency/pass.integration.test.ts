@@ -179,6 +179,53 @@ describe('runImageCurrencyPass', () => {
     expect((await rowsOf(b.device.id))['same-image']!.upstreamCheckedAt!.getTime()).toBeGreaterThan(Date.now() - 60_000);
   });
 
+  // #9067: an image whose provenance the agent could not establish is never
+  // sent to any registry, even an allowlisted public one; a row from an older
+  // agent (NULL) and a confirmed one are looked up exactly as before.
+  it('never looks up an image whose provenance is unknown; confirmed and NULL are looked up as before', async () => {
+    const a = await orgWithDevice('provenance-a');
+    const run = randomUUID().slice(0, 8);
+    const internal = `docker.io/acme/internal-${run}`;
+    const pub = `docker.io/library/redis-${run}`;
+    const img = (repo: string, digest: string) => ({ imageRef: `${repo}:1`, imageRepository: repo, imageTag: '1', imageDigest: digest });
+    await addWorkload(a.org.id, a.device.id, 'unknown', { ...img(internal, D('1')), imageProvenance: 'unknown' });
+    await addWorkload(a.org.id, a.device.id, 'local', { ...img(internal, D('2')), imageProvenance: 'local' });
+    await addWorkload(a.org.id, a.device.id, 'confirmed', { ...img(pub, D('3')), imageProvenance: 'confirmed' });
+    await addWorkload(a.org.id, a.device.id, 'legacy', { ...img(pub, D('3')) });
+
+    const { client, calls } = stubClient({
+      [`${pub}:1`]: { kind: 'ok', digest: D('3'), mediaType: MEDIA_TYPE_DOCKER_MANIFEST, platformDigests: null },
+    });
+    await runImageCurrencyPass({ client, onlyOrgIds: [a.org.id] });
+
+    expect(calls.map((c) => `${c.registry}/${c.path}`)).toEqual([`docker.io/library/redis-${run}`]);
+    const rows = await rowsOf(a.device.id);
+    expect(rows.unknown).toMatchObject({ upstreamStatus: 'provenance_unknown', upstreamDigest: null });
+    expect(rows.unknown!.upstreamCheckedAt).not.toBeNull();
+    expect(rows.local).toMatchObject({ upstreamStatus: 'local' });
+    expect(rows.confirmed).toMatchObject({ upstreamStatus: 'current' });
+    expect(rows.legacy).toMatchObject({ upstreamStatus: 'current' });
+  });
+
+  it('a row whose provenance changed between scan and write is not overwritten', async () => {
+    const a = await orgWithDevice('provenance-race');
+    const run = randomUUID().slice(0, 8);
+    const repo = `docker.io/library/race-${run}`;
+    await addWorkload(a.org.id, a.device.id, 'flip', {
+      imageRef: `${repo}:1`, imageRepository: repo, imageTag: '1', imageDigest: D('7'), imageProvenance: 'confirmed',
+    });
+    const client: RegistryClient = {
+      lookup: async () => {
+        // The agent's next report lands mid-pass: same image, provenance now unknown.
+        await getTestDb().execute(sql`UPDATE device_workloads SET image_provenance = 'unknown' WHERE device_id = ${a.device.id}`);
+        return { kind: 'ok', digest: D('7'), mediaType: MEDIA_TYPE_DOCKER_MANIFEST, platformDigests: null };
+      },
+      requestCount: () => 1,
+    };
+    await runImageCurrencyPass({ client, onlyOrgIds: [a.org.id] });
+    expect((await rowsOf(a.device.id)).flip).toMatchObject({ imageProvenance: 'unknown', upstreamStatus: 'pending' });
+  });
+
   it('a row whose image changed between scan and write is not overwritten', async () => {
     const a = await orgWithDevice('currency-race');
     const run = randomUUID().slice(0, 8);

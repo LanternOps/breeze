@@ -18,6 +18,7 @@ import type { AiSweepKind, AiSweepSeverity } from './aiAgentSchedules';
 import type { AiAgentRunNarrativeDto } from './orgNarrativeReport';
 import type { AnalysisFinding, AnalysisProposedAction } from './aiAgents';
 import type { TicketTriageProposal } from './ticketTriage';
+import type { WispProvenanceDto } from './wispProvenance';
 
 /**
  * Execution plane W04 — the run-detail projection of `AnalysisOutcome`
@@ -655,6 +656,8 @@ export interface AiAgentRunDetailDto {
   /** Wave 6 PR 4 (#3828) — the triggering `metric_anomaly_incidents` row for
    *  a `triggerKind: 'anomaly'` run; null for every other trigger kind. */
   anomalyIncidentId: string | null;
+  /** W07 "Wisp for <user>" provenance; null for a run not admitted under a grant. */
+  wisp: WispProvenanceDto | null;
   triggerKind: AiAgentTriggerKind;
   modeAtStart: Exclude<AiAgentMode, 'off'>;
   status: AiAgentRunStatus;

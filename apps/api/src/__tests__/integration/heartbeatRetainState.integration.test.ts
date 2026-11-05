@@ -39,6 +39,7 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { auditLogs, enrollmentKeys } from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { seedPolicy } from './policySetFixtures';
+import { PROMPT_KIND_NAMES } from '@breeze/shared/promptHost';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
 import { enrollmentRoutes } from '../../routes/agents/enrollment';
 import { heartbeatRoutes } from '../../routes/agents/heartbeat';
@@ -154,12 +155,17 @@ async function forcedPamFailureBeatRaw(device: EnrolledDevice, retain?: unknown)
  * retain-state builder now owns must keep their old values AND positions.
  */
 const LEGACY_KEY_ORDER = [
+  // #4618: every heartbeat includes the additive containment block.
+  'containment',
   'commands', 'configUpdate', 'upgradeTo', 'manageRemoteManagement', 'manifestTrustKeys',
   'manifestKeyDelegations', 'uacInterceptionEnabled', 'helperEnabled', 'helperSettings',
+  // #10190: the prompt-host kill switch is server config, recomputed on EVERY
+  // beat from PROMPT_HOST_ENABLED_KINDS — never retained, always sent.
+  'promptHost',
 ];
 const LEGACY_REMOTE_FRAGMENT = '"upgradeTo":null,"manageRemoteManagement":true,"manifestTrustKeys":[]';
 const LEGACY_TAIL = '"manifestKeyDelegations":[],"uacInterceptionEnabled":false,"helperEnabled":false,'
-  + '"helperSettings":{"enabled":false,"showOpenPortal":true,"showDeviceInfo":true,"showRequestSupport":true,"endpointMessaging":{"enabled":false,"allowUserReply":true}}}';
+  + '"helperSettings":{"enabled":false,"showOpenPortal":true,"showDeviceInfo":true,"showRequestSupport":true,"endpointMessaging":{"enabled":false,"allowUserReply":true}},"promptHost":{"enabledKinds":[]}}';
 
 describe('heartbeat retainState (#8616) — real PostgreSQL', () => {
   afterEach(() => {
@@ -193,11 +199,21 @@ describe('heartbeat retainState (#8616) — real PostgreSQL', () => {
     // every value but exactly 1: the legacy payload, byte for byte.
     const legacyRaw = await forcedPamFailureBeatRaw(device);
     const legacy = JSON.parse(legacyRaw) as Record<string, unknown>;
+    expect(legacy.containment).toEqual({ networkIsolation: null });
     expect(legacy.uacInterceptionEnabled).toBe(false);
     expect('retainState' in legacy).toBe(false);
     expect(Object.keys(legacy)).toEqual(LEGACY_KEY_ORDER);
     expect(legacyRaw).toContain(LEGACY_REMOTE_FRAGMENT);
     expect(legacyRaw.endsWith(LEGACY_TAIL)).toBe(true);
+
+    // promptHost follows the env on every beat (not retained state).
+    const kind = PROMPT_KIND_NAMES[0];
+    vi.stubEnv('PROMPT_HOST_ENABLED_KINDS', kind);
+    const withKind = await beat(device);
+    expect(withKind.promptHost).toEqual({ enabledKinds: [kind] });
+    vi.stubEnv('PROMPT_HOST_ENABLED_KINDS', '');
+    expect((await beat(device)).promptHost).toEqual({ enabledKinds: [] });
+    vi.unstubAllEnvs();
     for (const other of [0, 2, -1, '1', true, 1.5, null]) {
       expect(await forcedPamFailureBeatRaw(device, other)).toBe(legacyRaw);
     }

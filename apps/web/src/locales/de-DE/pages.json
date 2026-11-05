@@ -25,9 +25,10 @@
     "aiAgentsFixMemory": "Fix-Gedächtnis",
     "flows": "Abläufe",
     "flowDetail": "Ablauf",
+    "flowRun": "Ablaufausführung",
     "aiAgentsRunsDetail": "Lauf-Details",
     "aiAgentsRuns": "Agenten-Läufe",
-    "aiForOffice": "KI für Office",
+    "aiForOffice": "Breeze AI for Office",
     "aiRisk": "KI-Risiko-Engine",
     "alertsDelivery": "Warnungen – Zustellung",
     "alertsCorrelations": "Warnmeldungskorrelationen",
@@ -72,7 +73,7 @@
     "dnsSecurity": "DNS-Sicherheit",
     "dr": "Notfallwiederherstellung",
     "extensionsNamePath": "Erweiterung",
-    "fleet": "Flottenorchestrierung",
+    "fleet": "Erkenntnisse",
     "forgotPassword": "Passwort vergessen",
     "incidentsDetail": "Vorfalldetails",
     "incidents": "Sicherheitsvorfälle",
@@ -84,6 +85,7 @@
     "logs": "Protokolle",
     "monitoring": "Netzwerk",
     "oauthConsent": "Zugriff autorisieren",
+    "oauthError": "App-Verbindung fehlgeschlagen",
     "onedrive": "OneDrive",
     "organizations": "Organisationen",
     "organizationsDetail": "Organisation",
@@ -155,6 +157,7 @@
     "settingsProfile": "Profileinstellungen",
     "settingsRoles": "Rollen",
     "settingsSitesDetail": "Standorteinstellungen",
+    "settingsSites": "Standorte",
     "settingsSso": "Single Sign-On (SSO)",
     "settingsUsers": "Benutzer",
     "settingsVariables": "Variablen",
@@ -168,7 +171,6 @@
     "ticketsNew": "Ticket erstellen",
     "timesheet": "Zeiterfassung",
     "vulnerabilities": "Schwachstellen",
-    "workspace": "KI-Assistent",
     "aiAgentsFleetDesign": "Flottendesign",
     "agreementTemplates": "Vereinbarungsvorlagen",
     "agreementTemplateDetail": "Vereinbarungsvorlage",
@@ -178,11 +180,19 @@
     "securityScans": "IOC-Scans",
     "devicesTime": "Zeitsynchronisierung",
     "adminAiModels": "KI-Modelle",
+    "adminWisp": "Wisp",
     "billingAutopay": "Automatische Zahlungen",
     "endpointMessages": "Endpunkt-Nachrichten",
     "securityDetectionRules": "Erkennungsregeln",
     "settingsPlan": "Tarif & Funktionen",
-    "settingsWispMemory": "Wisp-Gedächtnis"
+    "settingsWispMemory": "Wisp-Gedächtnis",
+    "wispThread": "Wisp-Thread",
+    "wisp": "Wisp",
+    "wispChat": "Breeze AI",
+    "aiTasks": "KI-Aufgaben",
+    "aiTask": "KI-Aufgabe",
+    "settingsAi": "KI-Einstellungen",
+    "settingsFlowLimits": "Ablauflimits"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote-Überwachung und -Verwaltung",
@@ -201,6 +211,33 @@
     "referenceIdLabel": "Referenz-ID:",
     "dashboardLink": "Zum Dashboard",
     "signInLink": "Anmelden"
+  },
+  "oauthErrorPage": {
+    "invalidClient": {
+      "heading": "Diese App kann keine Verbindung herstellen",
+      "body": "Breeze erkennt die App nicht, die Sie hierher geleitet hat, oder die App darf sich nicht mit diesem Breeze-Server verbinden. Prüfen Sie, ob die App mit der Adresse dieses Servers eingerichtet ist, und versuchen Sie es dann erneut."
+    },
+    "invalidRedirectUri": {
+      "heading": "Die Rücksprungadresse dieser App ist nicht registriert",
+      "body": "Die App hat Breeze gebeten, Sie an eine Adresse zurückzuleiten, die sie nie registriert hat. Breeze hat hier angehalten, um Ihr Konto zu schützen. Der Entwickler der App oder Ihr Administrator muss die Weiterleitungs-URL der App korrigieren."
+    },
+    "sessionExpired": {
+      "heading": "Diese Anmeldung ist abgelaufen",
+      "body": "Die Verbindung hat zu lange gedauert oder wurde in einem anderen Browser gestartet. Kehren Sie zur App zurück und verbinden Sie sich erneut."
+    },
+    "invalidRequest": {
+      "heading": "Die App hat eine Anfrage gesendet, die Breeze nicht annehmen kann",
+      "body": "Die Verbindungsanfrage der App war unvollständig oder hat etwas angefordert, das dieser Server nicht unterstützt. Kehren Sie zur App zurück und versuchen Sie es erneut. Wenn das Problem weiterhin besteht, wenden Sie sich an den Entwickler der App."
+    },
+    "serverError": {
+      "heading": "Breeze konnte die Verbindung nicht abschließen",
+      "body": "Auf unserer Seite ist ein Fehler aufgetreten. Warten Sie einige Minuten, kehren Sie dann zur App zurück und versuchen Sie es erneut."
+    },
+    "generic": {
+      "heading": "Diese Verbindung konnte nicht hergestellt werden",
+      "body": "Kehren Sie zur App zurück und starten Sie die Verbindung erneut. Wenn das Problem weiterhin besteht, wenden Sie sich an Ihren Breeze-Administrator."
+    },
+    "nextStep": "Es wurde kein Zugriff gewährt. Sie können diese Seite schließen."
   },
   "settingsIndex": {
     "heading": "Einstellungen",
@@ -236,7 +273,7 @@
       },
       "connectedApps": {
         "title": "Verbundene Apps",
-        "description": "Überprüfen und widerrufen Sie KI-Assistenten und MCP-Clients, die Zugriff auf Ihren Mandanten haben."
+        "description": "KI-Clients prüfen und widerrufen, die auf Ihren Mandanten zugreifen dürfen."
       },
       "officeAddinBindings": {
         "title": "Outlook-Add-In-Bindungen",
@@ -273,6 +310,10 @@
       "wispMemory": {
         "title": "Wisp-Gedächtnis",
         "description": "Prüfen, bestätigen und widerrufen, was Wisp sich merkt."
+      },
+      "flowLimits": {
+        "title": "Ablauflimits",
+        "description": "Monatliche Ausführungslimits und das KI-Token-Limit für Abläufe."
       }
     },
     "groups": {
@@ -295,7 +336,7 @@
   },
   "settingsConnectedAppsPage": {
     "heading": "Verbundene Apps",
-    "description": "KI-Assistenten und andere MCP-Clients, die per OAuth für den Zugriff auf Ihren Mandanten autorisiert wurden. Widerrufen Sie den Zugriff jederzeit — das Token der App wird innerhalb von 10 Minuten abgelehnt."
+    "description": "KI-Clients, die über OAuth für den Zugriff auf Ihren Mandanten autorisiert wurden. Der Zugriff kann jederzeit widerrufen werden – das Token der App wird nach spätestens 10 Minuten abgelehnt."
   },
   "settingsOrganizationBillingPage": {
     "backLink": "← Organisationseinstellungen",

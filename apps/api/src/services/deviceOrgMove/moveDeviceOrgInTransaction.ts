@@ -55,6 +55,7 @@ import { assertDeviceTicketsNotPinnedToDeliverable, revalidateTicketAssignee } f
 import { removedTicketLinksFromRows, type RemovedTicketLink } from '../ticketLinkMoveNotes';
 import { lockOrgTicketLinks } from '../ticketLinkLock';
 import { reresolveMovedTicketCalendars } from '../businessCalendars/reresolve';
+import { detachPsaMappingsForDeviceMove } from './psaTicketingGuard';
 
 export type DeviceOrgMoveTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -522,6 +523,45 @@ export async function moveDeviceOrgInTransaction(
          WHERE device_id = ${deviceId}::uuid AND status IN ('opening', 'open')`,
   );
 
+  // #6263 W05 — IOC sweep scans detach from their sweep. The flip below
+  // fires breeze_cascade_device_org_id(), which restamps
+  // security_scans.org_id to the target org, while the
+  // security_scan_sweeps row stays in the SOURCE org (an execution record
+  // of the source org's request). sweep_id is a plain FK, not a composite
+  // (sweep_id, org_id), precisely so this restamp cannot 23503; the cost
+  // is that the pointer must be severed here or a target-org scan would
+  // name a source-org sweep. A still-queued scan was never dispatched and
+  // is cancelled (the target org never asked for it); a running one keeps
+  // its status so a delivered command's result still ingests in the new
+  // org. Every sweep reader (claim, pump, fetch, progress) also requires
+  // sweep.org_id = scan.org_id, the backstop for any writer that reaches
+  // devices.org_id without this statement. Placed before the flip, in the
+  // manual_assets position: after it, the restamped rows would already
+  // name the target org.
+  await tx.execute(
+    sql`UPDATE security_scans SET
+          status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE status END,
+          completed_at = CASE WHEN status = 'queued' THEN now() ELSE completed_at END,
+          sweep_id = NULL
+        WHERE device_id = ${deviceId}::uuid AND sweep_id IS NOT NULL`,
+  );
+
+  // breeze_cascade_device_org_id() restamps alerts.org_id inside the devices
+  // UPDATE, except for site-owned topology alerts that stay with their site.
+  // The composite FK then cascades the moved alerts' refs to the new org.
+  // Discard their refs pinned to another partner BEFORE that flip or the
+  // immediate org/partner FK would abort it. Within one partner this deletes
+  // nothing; site-owned topology refs always stay unchanged with their alert.
+  await tx.execute(
+    sql`DELETE FROM alert_external_refs
+        WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${deviceId}::uuid AND topology_site_id IS NULL)
+          AND partner_id IS DISTINCT FROM (SELECT partner_id FROM organizations WHERE id = ${targetOrgId}::uuid)`,
+  );
+
+  // Cross-partner moves must finish remote PSA work before dropping its ledger.
+  // Site-owned alert mappings remain at the source site, like external refs.
+  await detachPsaMappingsForDeviceMove(tx, deviceId, targetOrgId);
+
   // Flip the device row first so any concurrent agent heartbeat
   // after this point resolves the new org_id.
   const [row] = await tx
@@ -871,13 +911,12 @@ export async function moveDeviceOrgInTransaction(
   );
 
   // #3182 — a device that has LEFT org A cannot remain a member of org
-  // A's device group, and device_group_memberships_group_org_fk
-  // ((group_id, org_id) -> device_groups(id, org_id)) now says so
-  // structurally. Delete, never re-point: device_groups.org_id is NOT
-  // NULL with no partner axis, groups nest and can be site-bound, and
+  // A's device group, and the deferred
+  // device_group_memberships_group_owner_check trigger enforces its owner.
+  // Delete, never re-point: org groups nest and can be site-bound, and
   // there is no deterministic source-group -> target-group mapping.
-  // Dynamic groups in the TARGET org re-materialize on their own next
-  // evaluation.
+  // Partner-group memberships are detached too; dynamic groups
+  // re-materialize on their own next evaluation.
   //
   // Placement is load-bearing, same class as the scope_ticket_id
   // tombstone above: `device_group_memberships` IS returned by

@@ -9,6 +9,17 @@ import { TicketAttachmentList } from './TicketAttachments';
 
 const SYSTEM_TYPES = new Set(['status_change', 'assignment', 'system', 'time_entry']);
 
+/**
+ * #9960: a note Breeze posted itself (the deliverable instructions,
+ * awaiting-evidence and auto-evidence notes) renders as an ordinary internal
+ * comment card, but it has no author — never offer Edit/Delete on it. The API
+ * refuses the write too (409 SYSTEM_COMMENT_READ_ONLY); this keeps the
+ * controls from appearing at all, whatever `canManageComment` says.
+ */
+function isSystemAuthored(c: TicketComment): boolean {
+  return c.authorType === 'system' || c.originPrincipalKind === 'system';
+}
+
 type TFunction = ReturnType<typeof useTranslation>['t'];
 
 function systemLine(c: TicketComment, t: TFunction): string {
@@ -82,6 +93,7 @@ export default function TicketFeed({
   onDeleteComment,
   onDeleteAttachment,
   canManageComment,
+  mergedFromNumbers,
 }: {
   /** W08 #3902 — needed to build the authenticated attachment content URL.
    *  Optional so existing callers keep compiling; attachments simply do not
@@ -99,6 +111,9 @@ export default function TicketFeed({
    *  wiring a caller is follow-up work (W08A review). */
   onDeleteAttachment?: (attachmentId: string) => void;
   canManageComment?: (c: TicketComment) => boolean;
+  /** #8972: display numbers of the tombstones comments were moved from, keyed
+   *  by `mergedFromTicketId`. A missing entry renders "from a merged ticket". */
+  mergedFromNumbers?: Record<string, string>;
 }) {
   const { t } = useTranslation('tickets');
   const blocks = useMemo(() => groupFeed(comments), [comments]);
@@ -109,6 +124,8 @@ export default function TicketFeed({
   if (comments.length === 0) {
     return <p className="px-4 py-8 text-center text-sm text-muted-foreground" data-testid="ticket-feed-empty">{t('ticketFeed.empty')}</p>;
   }
+
+  const canManage = (c: TicketComment): boolean => !isSystemAuthored(c) && Boolean(canManageComment?.(c));
 
   const openEditor = (id: string, content: string) => {
     setEditingId(id);
@@ -154,6 +171,13 @@ export default function TicketFeed({
             >
               <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
                 <span className="font-medium text-foreground">{b.item.authorName ?? (b.item.portalUserId ? t('ticketFeed.requester') : t('ticketFeed.technician'))}</span>
+                {b.item.mergedFromTicketId && (
+                  <span data-testid={`ticket-comment-merged-from-${b.item.id}`}>
+                    {mergedFromNumbers?.[b.item.mergedFromTicketId]
+                      ? t('ticketFeed.mergedFrom', { number: mergedFromNumbers[b.item.mergedFromTicketId] })
+                      : t('ticketFeed.mergedFromUnknown')}
+                  </span>
+                )}
                 {!b.item.isPublic && <span className="font-medium text-warning">{t('ticketFeed.internal')}</span>}
                 {b.item.editedAt && (
                   <span data-testid={`ticket-comment-edited-${b.item.id}`} title={formatDateTime(b.item.editedAt)}>{t('ticketFeed.edited')}</span>
@@ -161,7 +185,7 @@ export default function TicketFeed({
                 <span className="ml-auto" title={formatDateTime(b.item.createdAt)}>
                   {formatDateTime(b.item.createdAt, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                 </span>
-                {canManageComment?.(b.item) && onEditComment && (
+                {canManage(b.item) && onEditComment && (
                   <button
                     type="button"
                     className="text-xs hover:text-foreground"
@@ -171,7 +195,7 @@ export default function TicketFeed({
                     {t('common:actions.edit')}
                   </button>
                 )}
-                {canManageComment?.(b.item) && onDeleteComment && (
+                {canManage(b.item) && onDeleteComment && (
                   <button
                     type="button"
                     className="text-xs hover:text-destructive"
@@ -222,7 +246,7 @@ export default function TicketFeed({
                   ticketId={ticketId}
                   commentId={b.item.id}
                   attachments={b.item.attachments ?? []}
-                  canDelete={Boolean(onDeleteAttachment) && canManageComment?.(b.item)}
+                  canDelete={Boolean(onDeleteAttachment) && canManage(b.item)}
                   onDelete={onDeleteAttachment}
                 />
               )}

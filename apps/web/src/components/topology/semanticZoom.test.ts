@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SUMMARY_ENTER_ZOOM, SUMMARY_EXIT_ZOOM, edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, canvasFillHeight, chipModes, summarySlot, CHIP_OVERLAP_LIMIT, nextFit, type FitState } from './semanticZoom';
+import { SUMMARY_ENTER_ZOOM, SUMMARY_EXIT_ZOOM, edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, canvasFillHeight, chipModes, summarySlot, CHIP_OVERLAP_LIMIT, nextFit, wheelScrollsPage, type FitState } from './semanticZoom';
 
 describe('nextZoomTier', () => {
   it('never enters the summary tier for a flat (non-grouped) view, and leaves it if the view goes flat', () => {
@@ -85,8 +85,37 @@ describe('canvasFillHeight', () => {
     expect(canvasFillHeight({ viewportHeight: 1000, canvasTop: 300, bottomGap: 24 })).toBe(676);
   });
   it('never goes below the minimum, so a tall header or a short window still gets a usable map', () => {
-    expect(canvasFillHeight({ viewportHeight: 1000, canvasTop: 539, bottomGap: 24 })).toBe(480);
+    expect(canvasFillHeight({ viewportHeight: 1000, canvasTop: 700, bottomGap: 24 })).toBe(320);
     expect(canvasFillHeight({ viewportHeight: 700, canvasTop: 600, bottomGap: 16, min: 360 })).toBe(360);
+  });
+  it('fits a laptop window instead of running below the fold (1280x720 leaves about 400px under the toolbar rows)', () => {
+    expect(canvasFillHeight({ viewportHeight: 656, canvasTop: 236, bottomGap: 24 })).toBe(396);
+  });
+});
+
+describe('wheelScrollsPage', () => {
+  const page = (top: number) => ({ top, height: 1400, client: 800 });
+  const view = { top: 64, bottom: 864 };
+  it('zooms the map when it is fully in view', () => {
+    expect(wheelScrollsPage({ deltaY: 100, zoomKey: false, map: { top: 300, bottom: 840 }, viewport: view, scroll: page(0) })).toBe(false);
+    expect(wheelScrollsPage({ deltaY: -100, zoomKey: false, map: { top: 300, bottom: 840 }, viewport: view, scroll: page(300) })).toBe(false);
+  });
+  it('keeps scrolling the page while the map is partly off screen, so the wheel is never trapped zooming it', () => {
+    expect(wheelScrollsPage({ deltaY: 100, zoomKey: false, map: { top: 500, bottom: 1100 }, viewport: view, scroll: page(0) })).toBe(true);
+    expect(wheelScrollsPage({ deltaY: -100, zoomKey: false, map: { top: -40, bottom: 560 }, viewport: view, scroll: page(400) })).toBe(true);
+    // Scrolling on past a map whose top is already hidden: still the page.
+    expect(wheelScrollsPage({ deltaY: 100, zoomKey: false, map: { top: -40, bottom: 560 }, viewport: view, scroll: page(400) })).toBe(true);
+  });
+  it('zooms once the page cannot scroll further that way, even if the map is taller than the window', () => {
+    expect(wheelScrollsPage({ deltaY: 100, zoomKey: false, map: { top: 0, bottom: 1000 }, viewport: view, scroll: page(600) })).toBe(false);
+    expect(wheelScrollsPage({ deltaY: -100, zoomKey: false, map: { top: 300, bottom: 1000 }, viewport: view, scroll: page(0) })).toBe(false);
+  });
+  it('always zooms with Ctrl/Cmd held (a trackpad pinch arrives as one) and leaves horizontal wheels to the map', () => {
+    expect(wheelScrollsPage({ deltaY: 100, zoomKey: true, map: { top: 500, bottom: 1100 }, viewport: view, scroll: page(0) })).toBe(false);
+    expect(wheelScrollsPage({ deltaY: 0, zoomKey: false, map: { top: 500, bottom: 1100 }, viewport: view, scroll: page(0) })).toBe(false);
+  });
+  it('treats sub-pixel overhang as in view', () => {
+    expect(wheelScrollsPage({ deltaY: 100, zoomKey: false, map: { top: 300, bottom: 864.6 }, viewport: view, scroll: page(0) })).toBe(false);
   });
 });
 

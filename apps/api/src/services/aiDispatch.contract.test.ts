@@ -181,6 +181,31 @@ describe('AI device dispatch is attributable by construction (#5022 W01)', () =>
     expect(stale, 'drop the entry: this file no longer inserts directly').toEqual([]);
   });
 
+  // The AI SURFACES that mint `AuthContext.aiOrigin` (once per surface, never
+  // per tool). `requireAiOrigin` refuses device work from any context that
+  // lacks one, so a new surface that forgets to mint is a runtime outage — and
+  // one that mints the wrong kind mislabels who decided. Tool catalog W04
+  // (#5219, Open Decision 16): the flow principal is a minting surface of its
+  // own kind, never tagged `ai_agent` (deterministic automation is not an AI
+  // decision).
+  const AI_ORIGIN_MINTING_SURFACES: ReadonlyArray<{ file: string; mint: RegExp }> = [
+    { file: 'apps/api/src/services/aiAgents/agentAuthContext.ts', mint: /aiOrigin:\s*\{\s*kind:\s*'ai_agent'/ },
+    { file: 'apps/api/src/services/streamingSessionManager.ts', mint: /aiOrigin:\s*\{\s*kind:\s*'ai_assistant'/ },
+    { file: 'apps/api/src/services/mcpToolExecutionLedger.ts', mint: /aiOrigin:\s*\{\s*kind:\s*'ai_assistant'/ },
+    { file: 'apps/api/src/services/flows/flowAuthContext.ts', mint: /aiOrigin:\s*\{\s*kind:\s*'flow',\s*flowRunId:\s*run\.id/ },
+  ];
+
+  it.each(AI_ORIGIN_MINTING_SURFACES)('$file mints its aiOrigin', ({ file, mint }) => {
+    expect(FILES).toContain(file);
+    expect(read(file)).toMatch(mint);
+  });
+
+  it('the flow principal never mints an ai_agent or ai_assistant origin', () => {
+    const text = read('apps/api/src/services/flows/flowAuthContext.ts');
+    expect(text).not.toMatch(/kind:\s*'ai_agent'/);
+    expect(text).not.toMatch(/kind:\s*'ai_assistant'/);
+  });
+
   // #5789 — `aiInsertQueuedCommandInTransaction` (services/aiDispatch.ts) is a
   // required-origin wrapper around `insertQueuedCommandInTransaction`: it
   // stamps the origin columns but writes NO `ai.command.executed` audit row

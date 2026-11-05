@@ -9,6 +9,8 @@ import type {
 } from '@breeze/shared';
 import { Trans, useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import SettingBadge from './partnerSettings/SettingBadge';
+import InheritanceLine from './partnerSettings/InheritanceLine';
 
 const SCHEME_PREFIX = /^[a-zA-Z][a-zA-Z0-9+.\-]*:/;
 
@@ -101,10 +103,12 @@ export default function PartnerRemoteAccessTab({ data, onChange, networkProxy, o
           <div className="flex items-center gap-2">
             <MonitorPlay className="h-5 w-5 text-muted-foreground" />
             <h3 className="text-sm font-semibold">{t('partnerRemoteAccess.title')}</h3>
+            <SettingBadge fieldId="remoteAccessProviders.providers" />
           </div>
           <p className="mt-1 max-w-prose text-sm text-muted-foreground">
             <Trans i18nKey="partnerRemoteAccess.description" t={t} components={{ connect: <span className="font-medium" /> }} />
           </p>
+          <InheritanceLine fieldId="remoteAccessProviders.providers" />
         </div>
         <button
           type="button"
@@ -268,38 +272,35 @@ export default function PartnerRemoteAccessTab({ data, onChange, networkProxy, o
           every session of this partner is served, so no org overrides it. It
           only takes effect where the region offers a dedicated origin. */}
       <div className="border-t pt-6">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <Globe className="h-4 w-4 text-muted-foreground" />
-              <h3 className="text-sm font-semibold">{t('partnerRemoteAccess.networkProxy.title')}</h3>
-            </div>
-            <p id="partner-network-proxy-label" className="mt-2 text-sm font-medium">
-              {t('partnerRemoteAccess.networkProxy.label')}
-            </p>
-            <p id="partner-network-proxy-help" className="mt-1 text-xs text-muted-foreground">
-              {t('partnerRemoteAccess.networkProxy.help')}
-            </p>
-          </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={dedicatedOrigin}
+        <div className="flex items-center gap-2">
+          <Globe className="h-4 w-4 text-muted-foreground" />
+          <h3 className="text-sm font-semibold">{t('partnerRemoteAccess.networkProxy.title')}</h3>
+          <SettingBadge fieldId="networkProxy.dedicatedTunnelOrigin" />
+        </div>
+        {/* A header-saved boolean is a checkbox; the switch look is reserved for
+            autosave controls (spec §3.1). A partner-wide infrastructure choice
+            must not flip on a misclick. */}
+        <label className="mt-2 flex items-start gap-3">
+          <input
+            type="checkbox"
+            checked={dedicatedOrigin}
             aria-labelledby="partner-network-proxy-label"
             aria-describedby="partner-network-proxy-help"
             data-testid="partner-network-proxy-dedicated-origin"
-            onClick={() => onNetworkProxyChange({ ...networkProxy, dedicatedTunnelOrigin: !dedicatedOrigin })}
-            className={`relative mt-1 inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition ${
-              dedicatedOrigin ? 'bg-emerald-500/80' : 'bg-muted'
-            }`}
-          >
-            <span
-              aria-hidden="true"
-              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition ${
-                dedicatedOrigin ? 'translate-x-6' : 'translate-x-1'
-              }`}
-            />
-          </button>
+            onChange={(e) => onNetworkProxyChange({ ...networkProxy, dedicatedTunnelOrigin: e.target.checked })}
+            className="mt-1 h-4 w-4 shrink-0"
+          />
+          <span>
+            <span id="partner-network-proxy-label" className="block text-sm font-medium">
+              {t('partnerRemoteAccess.networkProxy.label')}
+            </span>
+            <span id="partner-network-proxy-help" className="mt-1 block text-xs text-muted-foreground">
+              {t('partnerRemoteAccess.networkProxy.help')}
+            </span>
+          </span>
+        </label>
+        <div className="mt-1 pl-7">
+          <InheritanceLine fieldId="networkProxy.dedicatedTunnelOrigin" />
         </div>
       </div>
     </div>

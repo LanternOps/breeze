@@ -39,6 +39,13 @@ export interface NavGate {
    * Unknown counts as not capable: these are full-partner-admin surfaces.
    */
   requiresPartnerWideAdmin?: boolean;
+  /**
+   * Shown only when the named runtime extension is loaded for this user, i.e.
+   * its registry entry contributes navigation under `/extensions/<name>/`
+   * (`useExtensionNavigation`). Surfaces that don't read the registry leave
+   * `loadedExtensions` unset, so these entries stay hidden there.
+   */
+  requiresExtension?: string;
 }
 
 export interface NavGateContext {
@@ -58,6 +65,8 @@ export interface NavGateContext {
   serviceManagementMode: string | null | undefined;
   /** From the auth store; only consulted for `requiresPartnerWideAdmin` entries. */
   canManagePartnerWide?: boolean;
+  /** Extension names with loaded navigation; only consulted for `requiresExtension` entries; unknown ⇒ hidden. */
+  loadedExtensions?: readonly string[];
 }
 
 export function isNavGateVisible(gate: NavGate, ctx: NavGateContext): boolean {
@@ -68,6 +77,7 @@ export function isNavGateVisible(gate: NavGate, ctx: NavGateContext): boolean {
   if (gate.requiresToolSources && !ctx.toolSourcesEnabled) return false;
   if (gate.requiresFlows && ctx.flowsEnabled !== true) return false;
   if (gate.requiresPreAssignment && ctx.preAssignmentEnabled !== true) return false;
+  if (gate.requiresExtension && !ctx.loadedExtensions?.includes(gate.requiresExtension)) return false;
   if (gate.platformAdminOnly && !ctx.isPlatformAdmin) return false;
   if (gate.requiresPartnerWideAdmin && ctx.canManagePartnerWide !== true) return false;
   if (gate.partnerScopeOnly) {

@@ -36,6 +36,22 @@ describe('Org lifecycle foundations contract', () => {
     expect((result as unknown as unknown[]).length).toBe(1);
   });
 
+  it('device_group_memberships owner trigger is deferrable (merge contract)', async () => {
+    const rows = await db.execute(sql`
+      SELECT tgname, tgdeferrable, tginitdeferred FROM pg_trigger
+      WHERE (tgrelid = 'public.device_group_memberships'::regclass
+             AND tgname = 'device_group_memberships_group_owner_check')
+         OR (tgrelid = 'public.device_groups'::regclass
+             AND tgname = 'device_groups_membership_owner_revalidate')
+      ORDER BY tgname
+    `);
+    expect(rows).toHaveLength(2);
+    for (const row of rows as unknown as Array<{ tgname: string; tgdeferrable: boolean; tginitdeferred: boolean }>) {
+      expect(row.tgdeferrable, row.tgname).toBe(true);
+      expect(row.tginitdeferred, row.tgname).toBe(true);
+    }
+  });
+
   it('every composite FK referencing an org_id column is deferrable (merge contract)', async () => {
     const result = await db.execute(sql`
       SELECT con.conname, con.conrelid::regclass::text AS child_table

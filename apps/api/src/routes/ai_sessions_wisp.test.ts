@@ -92,7 +92,7 @@ vi.mock('../services/effectiveSettings', () => ({
   getEffectiveAiBudget: vi.fn(async () => ({ maxTurnsPerSession: 50 })),
 }));
 vi.mock('../services/aiAgentSystemPrompt', () => ({ AI_SYSTEM_PROMPT_BASE: 'base', AI_SYSTEM_PROMPT_TAIL: 'tail' }));
-vi.mock('../services/aiToolIndex', () => ({ composeStaticSystemPrompt: () => 'BASE PROMPT' }));
+vi.mock('../services/aiToolIndex', () => ({ composeStaticSystemPrompt: () => 'BASE PROMPT', renderPageContextToolBlocks: () => '', resolveToolIndexMode: () => 'lazy' }));
 vi.mock('../services/aiAgentSdkTools', () => ({ listChatSurfaceToolNames: () => [] }));
 vi.mock('../services/brainDeviceContext', () => ({ getActiveDeviceContext: vi.fn(async () => []) }));
 
@@ -257,7 +257,8 @@ describe('POST /ai/sessions — wispGrantId (Wisp W04 Task 3)', () => {
     expect(validateWispGrantForSession).toHaveBeenCalledWith(h.auth, GRANT_ID, ORG_A);
     expect(getOrCreateThread).toHaveBeenCalledWith(GRANT_ID);
     expect(resolveGrantCeiling).toHaveBeenCalledWith(GRANT_ID, 'r1');
-    expect(seedContextForSession).toHaveBeenCalledWith('t1', CEILING);
+    // The creating caller's auth rides along so the seed's links honour its token scope.
+    expect(seedContextForSession).toHaveBeenCalledWith('t1', CEILING, expect.objectContaining({ user: expect.anything() }));
     expect(h.inserted).toHaveLength(1);
     const values = h.inserted[0]!;
     expect(values).toMatchObject({ orgId: ORG_A, wispGrantId: GRANT_ID, wispGrantRevisionId: 'r1' });

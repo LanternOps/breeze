@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderToolIndexByDomain } from './aiToolIndex';
+import { renderAlwaysOnIndex, renderToolIndexByDomain } from './aiToolIndex';
 import { listChatSurfaceToolNames } from './aiAgentSdkTools';
 import { AI_SYSTEM_PROMPT_BASE, AI_SYSTEM_PROMPT_TAIL, BREEZE_AI_GUARDRAILS_CORE } from './aiAgentSystemPrompt';
 
@@ -23,6 +23,13 @@ describe('AI_SYSTEM_PROMPT_TAIL vulnerability tool routing (#2605)', () => {
   it('spells out CVE vocabulary so the domain is findable', () => {
     expect(renderToolIndexByDomain(listChatSurfaceToolNames())).toMatch(/CVE/);
     expect(renderToolIndexByDomain(listChatSurfaceToolNames())).toMatch(/vulnerabilit/i);
+  });
+
+  // W19 (#10065): the default chat prompt carries the always-on index, not the
+  // whole one, so the CVE vocabulary must stay findable there too.
+  it('spells out CVE vocabulary in the always-on index the default chat ships', () => {
+    expect(renderAlwaysOnIndex(listChatSurfaceToolNames())).toMatch(/CVE/);
+    expect(renderAlwaysOnIndex(listChatSurfaceToolNames())).toMatch(/vulnerabilit/i);
   });
 
   it('does not duplicate index disambiguation in the tail', () => {
@@ -138,6 +145,14 @@ it('carries no hand-typed tool index any more', () => {
 // the generated index, not here.
 it('BASE + TAIL stay under 7.5 KB together', () => {
   expect(Buffer.byteLength(AI_SYSTEM_PROMPT_BASE + AI_SYSTEM_PROMPT_TAIL, 'utf8')).toBeLessThan(7.5 * 1024);
+});
+
+// #9855: a live run opened with a call to `list_processes_placeholder`, a name
+// no Breeze text ever contained. Processes, services, files and event logs are
+// commandTypes of execute_command (always loaded), not tools of their own.
+it('tells the model never to guess a tool name and where process listing lives', () => {
+  expect(AI_SYSTEM_PROMPT_BASE).toMatch(/never guess or invent a tool name/i);
+  expect(AI_SYSTEM_PROMPT_BASE).toContain('execute_command with commandType list_processes');
 });
 
 it('tells the model how to continue a paged result and how to read a handle (A-W05)', () => {

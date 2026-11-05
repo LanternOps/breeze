@@ -9,11 +9,33 @@ import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
 
 import { fleetTimeFiltersSchema } from './timeSync/fleetFilters';
 import { z } from 'zod';
+import { partnerSettingsInheritanceInputSchema } from './aiToolSchemasPartnerSettingsInheritance';
+export {
+  PARTNER_SETTINGS_INHERITANCE_BUCKETS,
+  PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT,
+  partnerSettingsInheritanceInputSchema,
+} from './aiToolSchemasPartnerSettingsInheritance';
 import { isIP } from 'node:net';
 import { MEMORY_BLOCK_TYPES, MEMORY_CONFIDENCES, MEMORY_OWNER_KINDS } from '@breeze/shared';
 import {
+  SECURITY_SWEEP_MAX_PATHS,
+  SECURITY_SWEEP_SCAN_TYPES,
+  SECURITY_SWEEP_TTL_HOURS_MAX,
+  YARA_IOC_KINDS,
+  YARA_IOC_LABEL_MAX,
+  YARA_IOC_MAX_PER_BATCH,
+  YARA_IOC_VALUE_MAX_CHARS,
+  YARA_MAX_RULE_SETS_PER_POLICY,
+  YARA_RULE_SEVERITIES,
+  securitySweepScopeSchema,
+} from '@breeze/shared';
+import { IOC_HUNT_ACTIONS } from './iocHuntActions';
+import {
   createWatchInputSchema,
+  linkEntitySchema,
   listConcernsToolSchema,
+  listLinksToolSchema,
+  WISP_THREAD_LINK_LIMIT,
   raiseConcernChatSchema,
   resolveConcernToolSchema,
   snoozeConcernToolSchema,
@@ -24,18 +46,30 @@ import {
   proposeScriptInputSchema,
   ringAutoApproveSchema,
   ringAppRulesSchema,
+  ringFeatureUpdatesSchema,
   scriptVerificationClaimSchema,
   JOURNAL_VACUUM_MAX_BYTES,
   JOURNAL_VACUUM_MIN_BYTES,
   SYSTEM_CLEANUP_ACTION_IDS,
 } from '@breeze/shared/validators';
 import { aiRunContextInputShape } from './scriptRunRequest';
+import { SPECIALIST_KINDS, type SpecialistKind } from './wisp/specialistPolicy';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
 import { topologyToolSchemas } from './aiToolSchemasTopology';
 import { m365ToolSchemas } from './aiToolSchemasM365';
 import { messagingToolSchemas } from './aiToolSchemasMessaging';
+import { ticketOpsToolSchemas } from './aiToolSchemasTicketOps';
+import { alertTriageToolSchemas, fleetHealthActionShape } from './aiToolSchemasAlertTriage';
+import { topologyOpsToolSchemas } from './aiToolSchemasTopologyOps';
+import { networkMonitoringToolSchemas } from './aiToolSchemasNetworkMonitoring';
+import { aiReadToolSchemas } from './aiToolSchemasAiReads';
+import { securityPolicyToolSchemas } from './aiToolSchemasSecurityPolicy';
+import { softwareToolSchemas } from './aiToolSchemasSoftware';
+import { deviceOpsToolSchemas } from './aiToolSchemasDeviceOps';
+import { billingToolSchemas } from './aiToolSchemasBilling';
+import { pax8ToolSchemas } from './aiToolSchemasPax8';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -86,6 +120,73 @@ export const deliveryToolShape = {
   severity: z.enum(['critical','high','medium','low','info']).optional(), kind: monitorKindSchema.optional(),
   siteId: uuid.optional(), monitorId: uuid.optional(), data: z.record(z.string(), z.unknown()).optional(),
 };
+const routingSource = z.enum(['portal', 'email', 'alert', 'manual', 'api', 'ai']);
+const routingPriority = z.enum(['low', 'normal', 'high', 'urgent']);
+/**
+ * ioc_hunt (#6263 W05, #6268): one flat shape over seven actions; the
+ * per-action required keys are enforced by the superRefine on
+ * `toolInputSchemas.ioc_hunt`. Shared with the SDK `tool()` declaration so the
+ * advertised and enforced shapes cannot drift.
+ */
+export const IOC_HUNT_ACTION_VALUES = IOC_HUNT_ACTIONS;
+export const iocHuntShape = {
+  action: z.enum(IOC_HUNT_ACTION_VALUES),
+  orgId: uuid.optional(),
+  ruleSetIds: z.array(uuid).min(1).max(YARA_MAX_RULE_SETS_PER_POLICY).optional(),
+  scope: securitySweepScopeSchema.optional(),
+  scanType: z.enum(SECURITY_SWEEP_SCAN_TYPES).optional(),
+  // safePath: a scan root goes through the default AI path restriction; the
+  // sweep request schema then bounds each to SECURITY_SCAN_PATH_MAX_CHARS.
+  paths: z.array(safePath).min(1).max(SECURITY_SWEEP_MAX_PATHS).optional(),
+  ttlHours: z.number().int().min(1).max(SECURITY_SWEEP_TTL_HOURS_MAX).optional(),
+  expectedDeviceCount: z.number().int().min(0).optional(),
+  previewDigest: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  sweepId: uuid.optional(),
+  ruleSetId: uuid.optional(),
+  iocs: z
+    .array(z.object({ kind: z.enum(YARA_IOC_KINDS), value: z.string().min(1).max(YARA_IOC_VALUE_MAX_CHARS) }).strict())
+    .min(1)
+    .max(YARA_IOC_MAX_PER_BATCH)
+    .optional(),
+  label: z.string().trim().min(1).max(YARA_IOC_LABEL_MAX).optional(),
+  severity: z.enum(YARA_RULE_SEVERITIES).optional(),
+  page: z.number().int().min(1).optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+};
+
+const IOC_HUNT_REQUIRED: Record<(typeof IOC_HUNT_ACTION_VALUES)[number], readonly (keyof typeof iocHuntShape)[]> = {
+  list_rule_sets: [],
+  preview_sweep: ['orgId', 'ruleSetIds', 'scope', 'scanType'],
+  list_sweeps: [],
+  sweep_status: ['sweepId'],
+  sweep: ['orgId', 'ruleSetIds', 'scope', 'scanType', 'expectedDeviceCount', 'previewDigest'],
+  cancel_sweep: ['sweepId'],
+  import_iocs: ['ruleSetId', 'iocs', 'label'],
+};
+
+/** manage_ticket_routing_rules (#8883 W5): flat, nullable-where-clearable shape; the handler validates per action. */
+export const ticketRoutingManageShape = {
+  action: z.enum(['create', 'update', 'reorder', 'delete']),
+  ruleId: uuid.optional().describe('Rule UUID (update, delete)'),
+  ids: z.array(uuid).min(1).max(500).optional().describe('Rule UUIDs of ONE owner in the new evaluation order (reorder)'),
+  ownerScope: z.enum(['organization', 'partner']).optional().describe('create only: organization rule, or partner-wide rule'),
+  orgId: uuid.optional().describe('create only: owning organization (ownerScope organization)'),
+  orgIds: z.array(uuid).min(1).max(500).nullable().optional().describe('Partner-wide rule only: limit to these organization UUIDs; null = all organizations'),
+  name: z.string().max(100).optional().describe('Rule name (max 100)'),
+  enabled: z.boolean().optional().describe('Whether the rule is evaluated'),
+  position: z.number().int().optional().describe('Evaluation order (lower first)'),
+  matchSources: z.array(routingSource).nullable().optional().describe('Match any of these ticket sources; null = any'),
+  matchPriorities: z.array(routingPriority).nullable().optional().describe('Match any of these priorities; null = any'),
+  matchCategoryId: uuid.nullable().optional().describe('Match this category (UUID); null = any'),
+  matchSubjectKeywords: z.array(z.string().max(100)).max(20).nullable().optional().describe('Match subjects containing any keyword (2-100 chars each); null = any'),
+  matchRequesterDomains: z.array(z.string().max(253)).max(50).nullable().optional().describe('Match requester domains: example.com or *.example.com; null = any'),
+  setAssigneeUserId: uuid.nullable().optional().describe('Action: assign to this user (UUID)'),
+  setPriority: routingPriority.nullable().optional().describe('Action: set this priority'),
+  setCategoryId: uuid.nullable().optional().describe('Action: set this category (UUID)'),
+  setStatusId: uuid.nullable().optional().describe('Action: start in this status (UUID; New/Open/Pending/On hold core)'),
+  addTags: z.array(z.string().max(50)).max(20).nullable().optional().describe('Action: add these tags (max 20)'),
+};
+
 export const deliveryToolSchema = z.object(deliveryToolShape).strict().superRefine((v, ctx) => {
   if (v.action === 'resolve' && (!v.severity || !v.orgId)) ctx.addIssue({ code: 'custom', message: 'orgId and severity are required for resolve' });
   if (/^(update|delete)_/.test(v.action) && !v.id) ctx.addIssue({ code: 'custom', path: ['id'], message: 'id is required for update/delete' });
@@ -296,8 +397,68 @@ export const createWatchShape = {
   cadenceMinutes: cw.cadenceMinutes.describe('How often to check, in minutes (15 to 10080)'),
 };
 
+/**
+ * Wisp W08 thread links (services/wisp/linkTools.ts). The shared validators
+ * (packages/shared/src/validators/wisp.ts) are the source of truth, as for the
+ * concern tools; linkTools.test.ts pins the key parity. `list_links` = the
+ * shared empty strict object (never `z.undefined()`) plus the tool-only output
+ * budget (A-W05: every Tier-1 list read takes a `limit`); max 50 = the
+ * per-thread link cap (WISP_THREAD_LINK_LIMIT).
+ */
+const le = linkEntitySchema.shape;
+export const linkEntityShape = {
+  kind: le.kind.describe('What kind of Breeze object to link'),
+  id: le.id.describe("The object's UUID (from the object's own list or get tool)"),
+  orgId: le.orgId.describe('Optional lookup hint: the organization you believe the object belongs to. The org is always read from the object; a wrong hint links nothing'),
+  label: le.label.describe('Ignored: the label always comes from the object itself'),
+};
+export const listLinksInputSchema = listLinksToolSchema.extend({
+  limit: z.number().int().min(1).max(WISP_THREAD_LINK_LIMIT).optional(),
+});
+export const listLinksShape = {
+  limit: listLinksInputSchema.shape.limit.describe(`Max links (default ${WISP_THREAD_LINK_LIMIT}, max ${WISP_THREAD_LINK_LIMIT})`),
+};
+
+// Wisp W07 specialists (services/aiToolsWisp.ts; plan Tasks 4 and 6). The kind
+// list is SPECIALIST_KINDS (leaf module), never a re-typed copy.
+const specialistKindSchema = z.enum(SPECIALIST_KINDS as unknown as [SpecialistKind, ...SpecialistKind[]]);
+export const launchSpecialistInputSchema = z.strictObject({
+  orgId: uuid,
+  kind: specialistKindSchema,
+  params: z.record(z.string(), z.unknown()).optional(),
+  reason: z.string().trim().min(5).max(500),
+});
+const ls = launchSpecialistInputSchema.shape;
+export const launchSpecialistShape = {
+  orgId: ls.orgId.describe('The customer organization the specialist works on (UUID)'),
+  kind: ls.kind.describe('Which specialist. sweep and analysis start at once; every other kind needs approval first'),
+  // #10144: every kind's exact keys — the params schemas in
+  // wisp/specialistLaunchers.ts are strict, so an unlisted key is refused
+  // invalid_params. The two long kinds are listed in the tool description
+  // (aiToolsWisp.ts): a parameter description is capped at 160 chars (A-W03).
+  params: ls.params.describe(
+    'Only these keys per kind: sweep {sweepKinds?}; analysis {goal, deviceIds?, siteId?}; patch_plan {}; remediation_research {deviceId, alertId?}; rest: see tool',
+  ),
+  reason: ls.reason.describe('Why, in one sentence a technician would accept'),
+};
+// The approval carrier: never model-callable (HUMAN_ONLY_TOOLS); the schema
+// bounds what the coordinator mints.
+export const wispSpecialistRequestSchema = z.strictObject({
+  requestId: uuid,
+  kind: specialistKindSchema,
+  orgId: uuid,
+  grantId: uuid,
+  grantRevisionId: uuid,
+  params: z.record(z.string(), z.unknown()),
+  reason: z.string().max(500),
+  pinnedDigest: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+});
+
 // Tool schemas
 export const toolInputSchemas: Record<string, z.ZodType> = {
+  // Wisp W07 specialists.
+  launch_specialist: launchSpecialistInputSchema,
+  wisp_specialist_request: wispSpecialistRequestSchema,
   // Wisp W03 memory (services/wisp/memoryTools.ts).
   recall: z.object(recallShape),
   remember: rememberInputSchema,
@@ -309,6 +470,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   snooze_concern: snoozeConcernToolSchema,
   resolve_concern: resolveConcernToolSchema,
   create_watch: createWatchInputSchema,
+  // Wisp W08 thread links (services/wisp/linkTools.ts).
+  link_entity: linkEntitySchema,
+  list_links: listLinksInputSchema,
   list_time_entries: z.object({
     orgId: uuid.optional(),
     ticketId: uuid.optional(),
@@ -331,7 +495,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     siteId: uuid.optional(),
     search: z.string().max(200).optional(),
     tags: z.array(z.string().max(100)).max(20).optional(),
-    ...pageZodShape(25, 100),
+    ...pageZodShape(20, 100),
   }),
 
   get_device_details: z.object({
@@ -410,7 +574,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   get_elevation_history: z.object({
     deviceId: uuid.optional(),
-    status: z.enum(['pending', 'approved', 'auto_approved', 'denied', 'expired', 'revoked', 'actuating']).optional(),
+    status: z.enum(['pending', 'approved', 'auto_approved', 'denied', 'expired', 'revoked', 'actuating', 'withdrawn']).optional(),
     flowType: z.enum(['uac_intercept', 'tech_jit_admin', 'ai_tool_action']).optional(),
     limit: z.number().int().min(1).optional(),
   }),
@@ -430,6 +594,25 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   // Topology AI tools (M3-D12 + M4 #6000) — strict, extracted to aiToolSchemasTopology.ts
   ...topologyToolSchemas,
   ...messagingToolSchemas,
+  // Full-control W06 (#6776): PSA configuration + ticket operations.
+  ...ticketOpsToolSchemas,
+  // Full-control W07 (#6777): alert correlation + signal triage.
+  ...alertTriageToolSchemas,
+  // Full-control W08 (#6778): network topology tools.
+  ...topologyOpsToolSchemas,
+  // Full-control W09 (#6779): SNMP templates + metrics, asset probe, known guests, UniFi.
+  ...networkMonitoringToolSchemas,
+  // Full-control W10 (#6780): AI-agent read tools.
+  ...aiReadToolSchemas,
+  // Full-control W11 (#6781): security policy tools.
+  ...securityPolicyToolSchemas,
+  // Full-control W12 (#6782): software, fleet-finding and custom-field tools.
+  ...softwareToolSchemas,
+  // Full-control W13 (#6783): device inventory and ops tools (PR A).
+  ...deviceOpsToolSchemas,
+  // Full-control W14 (#6784): billing lifecycle tools (PR A).
+  ...billingToolSchemas,
+  ...pax8ToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),
@@ -538,8 +721,17 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'list_links',
       'link_ticket',
       'unlink_ticket',
+      // #8972 ticket merge: ticketId is the source, intoTicketId the survivor.
+      'merge_preview',
+      'merge',
+      // W06 (#6776): assign/status/priority over up to 50 tickets of one org.
+      'bulk_update',
     ]),
     ticketId: uuid.optional(),
+    // merge_preview / merge (#10161: was registry-only, so the chat SDK stripped it).
+    intoTicketId: uuid.optional(),
+    notifyRequester: z.boolean().optional(),
+    ticketIds: z.array(uuid).min(1).max(50).optional(),
     // create: the type; list: one type or several (#8596).
     ticketType: z.union([ticketTypeSchema, z.array(ticketTypeSchema).min(1)]).optional(),
     targetTicketId: uuid.optional(),
@@ -552,7 +744,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     targetOrgId: uuid.optional(),
     orgId: uuid.optional(),
     deviceId: uuid.optional(),
-    assigneeId: uuid.optional(),
+    assigneeId: uuid.nullable().optional(),
     subject: z.string().min(1).max(255).optional(),
     description: z.string().max(50_000).optional(),
     priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
@@ -614,6 +806,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   get_invoice: z.object({
     invoiceId: uuid,
+    // Full-control W14 (#6784): the devices one line billed (GET /invoices/:id/lines/:lineId/devices).
+    lineId: uuid.optional(),
+    limit: z.number().int().min(1).max(500).optional(),
+    cursor: z.string().max(512).optional(),
   }),
 
   manage_invoices: z.object({
@@ -840,30 +1036,46 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     query: z.string().min(1).max(40),
   }),
 
-  manage_catalog: z.object({
+  manage_billing_catalog: z.object({
     action: z.enum([
       'create_item',
       'update_item',
       'archive_item',
+      // W02-D5 (#6756): implemented and documented, but Zod rejected them, so
+      // chat could never reach them.
+      'set_price',
+      'remove_price',
       'set_org_price',
       'remove_org_price',
       'set_bundle_components',
     ]),
     catalogId: uuid.optional(),
+    // set_price / remove_price. The handler re-parses with the same schema.
+    currencyCode: currencyCodeSchema.optional(),
     orgId: uuid.optional(),
     item: z.record(z.string(), z.unknown()).optional(),
+    // set_price: { unitPrice } (setItemPriceSchema, re-parsed by the handler).
+    price: z.record(z.string(), z.unknown()).optional(),
     override: z.record(z.string(), z.unknown()).optional(),
     components: z.array(z.record(z.string(), z.unknown())).optional(),
+    // set_bundle_components: currency of every component revenueAllocation.
+    // validateToolInput used to STRIP it, so any allocation failed.
+    allocationCurrency: currencyCodeSchema.optional(),
   }),
 
   list_contracts: z.object({
     orgId: uuid.optional(),
     status: z.enum(['draft', 'active', 'paused', 'cancelled', 'expired']).optional(),
     limit: z.number().int().min(1).max(100).optional(),
+    // Full-control W14 (#6784): GET /contracts/currency-mismatches.
+    view: z.enum(['contracts', 'currency_mismatches']).optional(),
+    cursor: uuid.optional(),
   }),
 
   get_contract: z.object({
     contractId: uuid,
+    // Full-control W14 (#6784): GET /contracts/:id/periods/:periodId/outcome.
+    periodId: uuid.optional(),
   }),
 
   manage_contracts: z.object({
@@ -878,12 +1090,20 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'pause',
       'resume',
       'cancel',
+      // Full-control W14 PR B (#6784).
+      'preview_invoice',
+      'generate_invoice',
     ]),
     contractId: uuid.optional(),
     lineId: uuid.optional(),
     input: z.record(z.string(), z.unknown()).optional(),
     line: z.record(z.string(), z.unknown()).optional(),
     patch: z.record(z.string(), z.unknown()).optional(),
+    // generate_invoice assertions, copied from preview_invoice's generateWith (W14 PR B).
+    periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    expectedTotal: z.string().regex(/^\d{1,12}(\.\d{1,2})?$/).optional(),
+    autoIssue: z.boolean().optional(),
+    expectedRecipients: z.array(z.string().max(320)).max(20).optional(),
   }),
 
   // Service deliverables W02 (#5573 spec §10). Payload objects stay open
@@ -939,7 +1159,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     status: z.enum(['active', 'acknowledged', 'resolved', 'suppressed']).optional(),
     severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
     deviceId: uuid.optional(),
-    ...keysetZodShape(15, 100),
+    ...keysetZodShape(12, 100),
     resolutionNote: z.string().max(1000).optional(),
     suppressDuration: z.number().int().min(0).max(720).optional(),
   }).refine(
@@ -989,6 +1209,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
 
   get_huntress_incidents: z.object({
+    incidentId: uuid.optional(),
     orgId: uuid.optional(),
     integrationId: uuid.optional(),
     status: z.enum(['open', 'in_progress', 'resolved', 'dismissed']).optional(),
@@ -997,6 +1218,17 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     search: z.string().max(200).optional(),
     includeResolved: z.boolean().optional(),
     limit: z.number().int().min(1).max(500).optional(),
+    offset: z.number().int().min(0).max(100000).optional(),
+  }),
+
+  get_huntress_agents: z.object({
+    orgId: uuid.optional(),
+    integrationId: uuid.optional(),
+    mapping: z.enum(['mapped', 'unmapped', 'all']).optional(),
+    offlineOnly: z.boolean().optional(),
+    deviceId: uuid.optional(),
+    search: z.string().max(200).optional(),
+    limit: z.number().int().min(1).max(200).optional(),
     offset: z.number().int().min(0).max(100000).optional(),
   }),
 
@@ -1117,6 +1349,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       groupIds: z.array(z.string().guid()).max(1000).optional(),
       deviceIds: z.array(z.string().guid()).max(5000).optional(),
     }).optional(),
+    priority: z.number().int().min(0).max(1000).optional(),
     is_active: z.boolean().optional(),
     exception: z.object({
       vendor: z.string().max(255).optional(),
@@ -1324,7 +1557,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   manage_processes: z.object({
     action: z.enum(['list', 'kill']),
     deviceId: uuid,
-    processId: z.string().max(20).optional(),
+    processId: z.string().regex(/^\d+$/).max(20).optional(),
     // Optional at the tool-schema level (kill still works without it, same
     // as before) — but required for the manage_processes.kill act-manifest
     // entry to admit the call (actManifest.ts): a bare PID alone is never
@@ -1390,6 +1623,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     trendDirection: z.enum(['improving', 'stable', 'degrading']).optional(),
     issueType: z.enum(['crashes', 'hangs', 'hardware', 'services', 'uptime']).optional(),
     includeTopIssues: z.boolean().optional(),
+    ...fleetHealthActionShape,
     ...pageZodShape(15, 100),
   }),
 
@@ -1487,7 +1721,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
    */
   system_cleanup: z.object({
     deviceId: uuid,
-    action: z.enum(['list', 'run', 'status']),
+    action: z.enum(['list', 'run', 'status', 'cancel']),
     actionIds: z
       .array(z.enum(SYSTEM_CLEANUP_ACTION_IDS))
       .min(1)
@@ -1501,7 +1735,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       })
       .strict()
       .optional(),
-    /** run's handle, for `status`. */
+    /** run's handle, for `status` and `cancel`. */
     cleanupRunId: uuid.optional(),
     /** A pending catalog request's id, for a `list` re-check. */
     commandId: uuid.optional(),
@@ -1731,12 +1965,15 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   // Agent log tools
   search_agent_logs: z.object({
+    orgId: uuid.optional(),
     deviceIds: z.array(uuid).max(50).optional(),
     level: z.enum(['debug', 'info', 'warn', 'error']).optional(),
     component: z.string().max(100).optional(),
     startTime: z.string().datetime({ offset: true }).optional(),
     endTime: z.string().datetime({ offset: true }).optional(),
     message: z.string().max(500).optional(),
+    // Full-control W13 (#6783): watchdog logs (component `watchdog.*`) only, or excluding them.
+    source: z.enum(['agent', 'watchdog']).optional(),
     ...keysetZodShape(18, 500),
     includeFields: z.boolean().optional(),
   }),
@@ -1789,6 +2026,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     orgId: uuid,
   }),
 
+  // #9763: partner settings inheritance read (the two inheritance routes' query schemas).
+  get_partner_settings_inheritance: partnerSettingsInheritanceInputSchema,
+
   // Tool Catalog W03 (#5218). `document` is an OPEN record on purpose: a
   // structurally broken or oversized document must reach the flow validator
   // (byte bound first, then the v1 schema) and come back as FlowIssues, not as
@@ -1812,11 +2052,43 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     status: z.enum(['draft', 'enabled', 'paused', 'disabled']).optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }),
+  // Tool Catalog W04 (#5219, Task A11): flow runs.
+  run_flow: z.object({
+    flowId: uuid,
+    orgId: uuid.optional(),
+    inputs: z.record(z.string(), z.unknown()).optional(),
+    idempotencyKey: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional(),
+  }),
+  list_flow_runs: z.object({
+    flowId: uuid.optional(),
+    orgId: uuid.optional(),
+    status: z.enum(['queued', 'running', 'waiting', 'awaiting_approval', 'succeeded', 'failed', 'cancelled', 'timed_out']).optional(),
+    limit: z.number().int().min(1).max(50).optional(),
+  }),
+  get_flow_run: z.object({ runId: uuid }),
+  cancel_flow_run: z.object({ runId: uuid }),
   // #8973 W4: read-only business-hours calendars (spec §5.7).
   list_business_calendars: z.object({
     orgId: uuid.optional(),
     includeArchived: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
+  }),
+  // #8883 W5: ticket routing rules. The handler re-validates writes against
+  // the shared create/update/reorder schemas; these are the model-facing shape.
+  list_ticket_routing_rules: z.object({ orgId: uuid.optional(), limit: z.number().int().min(0).max(200).optional() }),
+  test_ticket_routing_rule: z.object({
+    orgId: uuid,
+    source: z.enum(['portal', 'email', 'alert', 'manual', 'api', 'ai']),
+    subject: z.string().min(1).max(255),
+    requesterEmail: z.string().max(320).nullable(),
+    categoryId: uuid.optional(),
+    priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
+  }),
+  manage_ticket_routing_rules: z.object(ticketRoutingManageShape),
+  ioc_hunt: z.object(iocHuntShape).superRefine((data, ctx) => {
+    for (const key of IOC_HUNT_REQUIRED[data.action]) {
+      if (data[key] === undefined) ctx.addIssue({ code: 'custom', path: [key], message: `${key} is required for ${data.action}` });
+    }
   }),
 
   export_dataset: z.object({
@@ -2047,10 +2319,16 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     category: z.string().optional(),
     limit: z.number().int().min(1).max(50).optional(),
   }),
+  // #10417: scriptId OR deviceId — "did my push run on device X" has no script id.
   get_script_execution_history: z.object({
-    scriptId: uuid,
+    scriptId: uuid.optional(),
+    deviceId: uuid.optional(),
+    since: z.string().datetime({ offset: true }).optional(),
     limit: z.number().int().min(1).max(50).optional(),
-  }),
+  }).refine(
+    (data) => Boolean(data.scriptId || data.deviceId),
+    { message: 'Either scriptId or deviceId must be provided' }
+  ),
   get_script_execution: z.object({
     executionId: uuid,
     stdoutOffset: z.number().int().min(0).optional(),
@@ -2196,8 +2474,18 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     incidentId: uuid,
     deviceId: uuid,
     actionType: z.enum(['process_kill', 'network_isolation', 'account_disable', 'usb_block']),
+    ttlHours: z.number().int().min(1).max(720).optional(),
+    reason: z.string().trim().min(1).max(2000).optional(),
     parameters: z.record(z.string(), z.unknown()).optional(),
     approvalRef: z.string().max(128).optional(),
+  }),
+
+  // Network-isolation W13 (#10101): no generation, org or allowlist field — the
+  // approval binding comes from the pinned effect digest, never from the model.
+  release_containment: z.object({
+    deviceId: uuid,
+    isolationId: uuid,
+    reason: z.string().trim().min(1).max(2000),
   }),
 
   collect_evidence: z.object({
@@ -2229,6 +2517,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     excludeCategories: z.array(z.string().max(100)).max(50).optional(),
     autoApprove: ringAutoApproveSchema.optional(),
     appRules: ringAppRulesSchema.optional(),
+    featureUpdates: ringFeatureUpdatesSchema.optional(),
     enabled: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }),
@@ -2252,7 +2541,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   manage_scheduled_tasks: z.object({
     deviceId: uuid,
     action: z.enum(['list', 'run', 'disable', 'enable']),
-    taskName: z.string().min(1).max(1024).optional(),
+    taskName: z.string().min(1).max(512).optional(),
     search: z.string().max(200).optional(),
   }).refine(
     (d) => !['run', 'disable', 'enable'].includes(d.action) || !!d.taskName,
@@ -2262,8 +2551,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   registry_operations: z.object({
     action: z.enum(['read_key', 'get_value', 'set_value', 'create_key', 'delete_key']),
     deviceId: uuid,
-    keyPath: z.string().min(1).max(2048),
-    valueName: z.string().max(255).optional(),
+    keyPath: z.string().min(1).max(1024),
+    valueName: z.string().max(256).optional(),
     valueData: z.string().max(8192).optional(),
     valueType: z.enum(['REG_SZ', 'REG_DWORD', 'REG_QWORD', 'REG_BINARY', 'REG_EXPAND_SZ', 'REG_MULTI_SZ']).optional(),
   }).refine(

@@ -62,9 +62,47 @@ Two other places show the same list, scoped:
 - A **contract's** page has a **Signed agreements** section listing what was signed for that contract, and its header names the agreement the contract sits under.
 - An **organization's record** has an **Agreements** section under Contracts & Billing, listing everything that customer has signed.
 
+### Send an agreement for signature
+
+You do not need a quote to get an agreement signed. **Send for signature** on **Agreements → Signed agreements** (or from a contract's **Signed agreements** section, which pre-fills the organization and the contract) emails a customer a link to review and sign a template on its own.
+
+<Steps>
+1. Click **Send for signature** and pick the **organization** and the **agreement template**. Only a template's published version can be sent; the request is pinned to that version, so later edits never change what the customer sees.
+2. Optionally choose a **contract** to file the signed agreement against, add the **recipients** (pre-filled from the organization's billing contact), an optional **cover message**, and an **expiry** (by default 30 days from now, or the number of days set under **Settings → Billing → Agreements**). Fill in any manual **Agreement details** the template needs -- a template that uses quote variables (the quote number, totals, expiry date) has no quote to fill them from, so the dialog asks you to type those values in.
+3. Check the **preview**: it is exactly the document the customer will see. Breeze won't send while a variable is still unresolved, so a blank value never ends up in a legal record.
+4. Click **Send**. Every recipient gets an email with the signing link.
+</Steps>
+
+The customer opens the link -- no login -- reads the agreement, types their name and email, and **signs** or **declines** (a reason is optional). You get an email when they answer. A signed request becomes a signed agreement like any other: it appears in the list, is filed against the contract you chose, and both you and the customer get the **certified copy** described below.
+
+Pending requests live under **Awaiting signature**, and **Declined / voided / expired** holds the ones that did not end in a signature. Each pending row has three actions:
+
+- **Remind** re-sends the **same** link to the recipients and counts the reminder ("Reminded 2 times"). It works while the request is awaiting signature or has been opened but not signed. If the email can't go out, Breeze says so and the reminder is still recorded -- use **Copy link** to share it yourself.
+- **Copy link** copies the signing link so you can send it another way.
+- **Void** withdraws the request. The link stops working immediately, and a signed agreement can't be voided.
+
+A request **expires** at its expiry time: the link refuses signatures from that moment, and within about fifteen minutes the request moves to **Declined / voided / expired** as **Expired**. Nothing is deleted -- send a new request to ask again.
+
+### Default expiry and automatic reminders
+
+**Settings → Billing → Agreements** holds two defaults for every agreement request your partner sends. It is the only place they are set; there is no per-organization override.
+
+- **Default link expiry (days)** -- how long a new request's signing link lasts when the sender does not pick a date (1-365, 30 unless you change it). The Send dialog pre-fills the expiry from it and names where it came from; the sender can still pick any other date for that one request. Changing the setting never moves the expiry of a request that already exists.
+- **Send automatic reminders** -- off unless you turn it on. When on, Breeze re-sends the **same** signing link to the recipients every **N** days (1-30) after the request was sent or last reminded, and stops after the number of reminders you choose (1-10). Manual **Remind** clicks count toward that limit and restart the wait. Reminders never go to a request that is signed, declined, voided or expired, nor to an organization that is suspended or archived. Turning reminders off stops them for every request at once.
+
+Automatic reminders go out from an hourly background job (`agreementRequestAutoReminder`), so one can arrive up to an hour after it is due. Each one is audited as `billing.agreement.reminded` with `automatic: true`. If the email fails, the reminder still counts and the next one waits a full interval. On a self-hosted server with no email configured, due reminders wait (nothing is counted) until email works.
+
+Changing these settings needs the Billing settings permission (`invoices:write` with full partner organization access) **and** `agreements:send`.
+
+<Aside type="note" title="What the customer receives">
+  When the customer signs, they are emailed a copy. By default that is the **certified copy**: the agreement as signed, plus a final page recording who signed, when, how, and the document's fingerprint (SHA-256). In the signed agreements list, **Download PDF** gives the certified copy and **Original** gives the file exactly as it was filed.
+</Aside>
+
 ### Record signed agreement
 
-Not every agreement arrives through a quote. When a customer signed your MSA elsewhere -- in DocuSign, on paper, or by replying to an email -- file it with **Record signed agreement** on **Agreements → Signed agreements** (v0.124.0+). The dialog asks for the organization, the agreement template, an optional contract to file it against, **How it was agreed** (verbally or by phone, by email, a signed document, a purchase order, or other), a **Reference** a reviewer could follow -- a PO number, an email and date, or a ticket -- **Who agreed** and their email, the **Date signed**, and an optional **Signed copy** (PDF, PNG or JPEG, up to 10 MB). With a signed copy attached, that file is what gets filed; without one, Breeze files the template version and asks you to fill in any manual **Agreement details** it needs. The recorded agreement carries that evidence -- method, reference, signer and date -- and the list shows it as "recorded by MSP" with the method, as opposed to "via quote". Recording cannot be undone: a recorded agreement cannot be deleted afterwards.
+Not every agreement arrives through a quote or a signing link. When a customer signed your MSA elsewhere -- in DocuSign, on paper, or by replying to an email -- file it with **Record signed agreement** on **Agreements → Signed agreements** (v0.124.0+). The dialog asks for the organization, the agreement template, an optional contract to file it against, **How it was agreed** (verbally or by phone, by email, a signed document, a purchase order, or other), a **Reference** a reviewer could follow -- a PO number, an email and date, or a ticket -- **Who agreed** and their email, the **Date signed**, and an optional **Signed copy** (PDF, PNG or JPEG, up to 10 MB). With a signed copy attached, that file is what gets filed; without one, Breeze files the template version and asks you to fill in any manual **Agreement details** it needs. The recorded agreement carries that evidence -- method, reference, signer and date -- and the list shows it as "recorded by MSP" with the method, as opposed to "via quote". Recording cannot be undone: a recorded agreement cannot be deleted afterwards.
+
+The certified copy of a recorded agreement words its evidence page as *recorded by* your technician *as stated by the client* -- it never claims the client signed it themselves. If you attach a scan or photo, the certified copy is a PDF made from it plus that evidence page, and the **original** download returns your upload untouched.
 
 <Aside type="caution" title="Known gap: templates that use quote variables">
   Without an attached file, a template whose body uses the quote variables stops at "Provide a value for: quote.number", because there is no quote to fill them from. Attach the signed copy instead (#9296).
@@ -76,8 +114,11 @@ Not every agreement arrives through a quote. When a customer signed your MSA els
 |---|---|
 | View agreement templates and signed agreements | `agreements:read` |
 | Create, edit, publish and archive templates; link a signed agreement to a contract | `agreements:write` |
+| Send an agreement for signature, remind, copy its link, void it, record one signed elsewhere | `agreements:send` |
 
 Managing partner-wide templates additionally requires full partner organization access.
+
+**Record signed agreement** needs `agreements:send` from the release after v0.124.0 (it used `agreements:write` before). On upgrade, every role that holds `agreements:write` -- built-in or custom -- is granted `agreements:send` automatically, so nobody loses access; remove it from a role afterwards if that role should edit templates but not send or record agreements.
 
 These are **separate** from contract permissions, deliberately: a technician who needs to pull up a customer's signed MSA does not need contract billing authority, and a billing clerk who runs recurring contracts does not need to author legal terms. Assign them through **Settings → Users & Roles**.
 

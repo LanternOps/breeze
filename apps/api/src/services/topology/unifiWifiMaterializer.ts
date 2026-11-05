@@ -22,7 +22,7 @@ import type { UnifiCollectorAuthority } from './unifiAuthority';
  *
  * Writer ownership: when a request carries `topologyV2`, this module is the sole writer
  * of uptime_seconds / cpu_pct / mem_pct / num_clients and every Wi-Fi column; the legacy
- * reconcile leaves them alone (unifiTelemetryService, `topologyV2Present`).
+ * reconcile leaves them alone (unifiTelemetryService, persisted per-family ownership (`*_observed_at`)).
  *
  * Semantics per family (every family has its own `*_observed_at`):
  * - row PRESENT in an accepted resource: every field of that family is written; an
@@ -98,8 +98,10 @@ export function buildUnifiWifiRows(input: { scope: TopologyScope; capturedAt: Da
     const row = rowFor(detail.deviceId);
     row.detailObservedAt = input.capturedAt;
     row.radioOverview = detail.radios;
+    if (detail.radios !== null && detail.radios.length > 0) capable.add(detail.deviceId); // spec 6.2: non-empty radios confirm AP for this poll
   }
   for (const stats of (byKind('statistics')?.rows ?? []) as RowsOf<'statistics'>) {
+    if (!capable.has(stats.deviceId)) continue;
     const row = rowFor(stats.deviceId);
     row.statisticsObservedAt = input.capturedAt;
     row.uptimeSeconds = stats.uptimeSeconds;

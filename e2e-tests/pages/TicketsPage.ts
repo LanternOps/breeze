@@ -21,6 +21,18 @@ export class TicketsPage {
   composerInternalBanner = () => this.page.getByTestId('ticket-composer-internal-banner');
   composerSend = () => this.page.getByTestId('ticket-composer-send');
   subjectEdit = () => this.page.getByTestId('ticket-workbench-subject-edit');
+  feed = () => this.page.getByTestId('ticket-feed');
+
+  // Merge (#8972)
+  mergeOpen = () => this.page.getByTestId('ticket-merge-open');
+  mergePicker = () => this.page.getByTestId('ticket-merge-picker');
+  mergeOption = (id: string) => this.page.getByTestId(`ticket-merge-option-${id}`);
+  mergePreview = () => this.page.getByTestId('ticket-merge-preview');
+  mergeNotify = () => this.page.getByTestId('ticket-merge-notify');
+  mergeConfirm = () => this.page.getByTestId('ticket-merge-confirm');
+  mergedBanner = () => this.page.getByTestId('ticket-merged-banner');
+  showMergedToggle = () => this.page.getByTestId('ticket-list-show-merged');
+  rowMergedChip = (id: string) => this.page.getByTestId(`ticket-row-merged-${id}`);
 
   // Create form
   formOrg = () => this.page.getByTestId('create-ticket-org-input');

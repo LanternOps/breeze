@@ -1207,7 +1207,9 @@ describe('backup config routes', () => {
       expect(putKey).toMatch(/^acme\/\.breeze-probe-/);
     });
 
-    it('test-connection still probes a stored prefix that is invalid, as before W01 (key trailing slashes trimmed only)', async () => {
+    // W03: backups to a destination whose stored prefix is invalid are refused
+    // at mint, so the connection test must fail too rather than report green.
+    it('test-connection fails on a stored prefix that is invalid, without touching storage', async () => {
       selectMock.mockReturnValueOnce(chainMock([makeConfig({ providerConfig: { ...s3Details, prefix: 'Acme Corp//' } })]));
       updateMock.mockReturnValueOnce(chainMock([makeConfig()]));
       s3SendMock.mockResolvedValue({});
@@ -1218,10 +1220,11 @@ describe('backup config routes', () => {
         headers: { Authorization: 'Bearer token' },
       });
 
-      expect(res.status).toBe(200);
-      expect(s3SendMock).toHaveBeenCalled();
-      const putKey = (s3SendMock.mock.calls[0]?.[0] as { input: { Key: string } }).input.Key;
-      expect(putKey).toMatch(/^Acme Corp\/\.breeze-probe-/);
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.status).toBe('failed');
+      expect(body.error).toMatch(/^Invalid key prefix: .+ Backups to this destination are refused until the prefix is corrected\.$/);
+      expect(s3SendMock).not.toHaveBeenCalled();
     });
 
     it('accepts an update that leaves an invalid stored prefix unchanged, keeping it as stored', async () => {

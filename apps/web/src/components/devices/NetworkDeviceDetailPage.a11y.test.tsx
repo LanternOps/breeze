@@ -10,6 +10,7 @@ import { fetchWithAuth } from '../../stores/auth';
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
+vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({ permissions: [], can: () => false }) }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
@@ -65,8 +66,21 @@ function openMonitoringTab() {
 
 async function renderLoaded(assetOverrides: Record<string, unknown> = {}) {
   fetchWithAuthMock.mockImplementation((url: string) => {
+    if (url.endsWith('/placement')) {
+      return Promise.resolve(makeJsonResponse({
+        subject: { kind: 'asset', id: ASSET_ID },
+        authority: { kind: 'asset', id: ASSET_ID, linked: false },
+        placement: null,
+      }));
+    }
     if (url === `/discovery/assets/${ASSET_ID}`) {
       return Promise.resolve(makeJsonResponse({ data: { ...baseAsset, ...assetOverrides } }));
+    }
+    if (url === `/monitoring/assets/${ASSET_ID}`) {
+      return Promise.resolve(makeJsonResponse({ collection: {
+        templateId: 'tpl-1', lastPolledAt: new Date(Date.now() - 120_000).toISOString(), pollingInterval: 300,
+        status: 'ok', consecutiveFailures: 0, oids: [],
+      }, snmpDevice: null }));
     }
     return Promise.resolve(makeJsonResponse({ data: [] }));
   });
@@ -108,9 +122,9 @@ describe('NetworkDeviceDetailPage accessibility', () => {
     await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('network-detail-ports')));
   });
 
-  it('moves focus to the Monitoring panel when the Last poll stat is used', async () => {
+  it('moves focus to the Monitoring panel when View OIDs is used', async () => {
     await renderLoaded();
-    await userEvent.click(screen.getByTestId('network-detail-stat-last-poll'));
+    await userEvent.click(await screen.findByTestId('network-detail-view-oids'));
     const panel = await screen.findByTestId('network-detail-monitoring');
     await waitFor(() => expect(document.activeElement).toBe(panel));
   });

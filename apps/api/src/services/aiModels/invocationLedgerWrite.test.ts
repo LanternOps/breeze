@@ -51,8 +51,27 @@ describe('recordInvocation prompt provenance (W11 #7609)', () => {
     await recordInvocation(shadow);
     expect(inserted.at(-1)).toMatchObject({ promptProfile: null, promptVariant: null, occurredAt: null });
   });
+  it('writes ai_invocations.flow_run_id from flowRunId, NULL when absent (W5 #5220), also after a JSON replay', async () => {
+    const FLOW_RUN = '99999999-9999-4999-8999-999999999999';
+    await recordInvocation(JSON.parse(JSON.stringify({ ...shadow, flowRunId: FLOW_RUN })));
+    expect(inserted.at(-1)).toMatchObject({ flowRunId: FLOW_RUN });
+    await recordInvocation(shadow);
+    expect(inserted.at(-1)).toMatchObject({ flowRunId: null });
+  });
   it('revives occurredAt from the pending-settlement JSON string', async () => {
     await recordInvocation(JSON.parse(JSON.stringify({ ...shadow, occurredAt: new Date('2026-09-15T12:00:00Z') })));
     expect(inserted.at(-1)).toMatchObject({ occurredAt: new Date('2026-09-15T12:00:00Z') });
+  });
+});
+
+describe('recordInvocation model role (#10413)', () => {
+  const shadow: NewInvocation = { ...base, ledgerMode: 'shadow' };
+  it('writes model_role from modelRole, also after the pending-settlement JSON round trip', async () => {
+    await recordInvocation(JSON.parse(JSON.stringify({ ...shadow, modelRole: 'background', fallbackUsed: false })));
+    expect(inserted.at(-1)).toMatchObject({ modelRole: 'background', fallbackUsed: false });
+  });
+  it('writes NULL for a row settled before the role existed (a replayed pending settlement)', async () => {
+    await recordInvocation(shadow);
+    expect(inserted.at(-1)).toMatchObject({ modelRole: null });
   });
 });

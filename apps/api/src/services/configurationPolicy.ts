@@ -1,3 +1,4 @@
+import { findPartnerOwnedGroupIds } from './deviceGroupOwnership';
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { withDevicePartnerPolicyVisibility } from './configPolicyOwnership';
@@ -57,6 +58,8 @@ import {
   configFeatureInlineSettingsSchema,
   duplicateComplianceItemNameMessage,
   duplicateComplianceItemNames,
+  overlongComplianceItemNameMessage,
+  overlongComplianceItemNames,
   deviceLifecycleInlineSettingsSchema,
   eventLogInlineSettingsSchema,
   hardwareMonitoringInlineSettingsSchema,
@@ -66,6 +69,7 @@ import {
   onedriveHelperInlineSettingsSchema,
   remoteAccessInlineSettingsSchema as remoteAccessCapabilitySettingsSchema,
   systemProtectionInlineSettingsSchema,
+  containmentInlineSettingsSchema,
   timeSyncInlineSettingsSchema,
   workloadInventoryInlineSettingsSchema,
   warrantyInlineSettingsSchema,
@@ -118,6 +122,8 @@ export const remoteAccessConsentSettingsSchema = z.object({
   notifyOnSessionEnd: z.boolean().default(true),
   showActiveIndicator: z.boolean().default(true),
   technicianIdentityLevel: technicianIdentityLevelSchema.default('name_email'),
+  // #10190 W06 (OD-5 (c), Gate A): default ON.
+  allowUserEndSession: z.boolean().default(true),
 });
 
 // Write-path validation for the WHOLE remote_access inlineSettings blob: the
@@ -135,6 +141,7 @@ export const remoteAccessInlineSettingsSchema = remoteAccessCapabilitySettingsSc
   notifyOnSessionEnd: z.boolean().optional(),
   showActiveIndicator: z.boolean().optional(),
   technicianIdentityLevel: technicianIdentityLevelSchema.optional(),
+  allowUserEndSession: z.boolean().optional(),
 });
 
 // Exported so the route can import the same schema (single source of truth).
@@ -181,8 +188,12 @@ export type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'devic
 
 // Discriminated union so a valid result can't carry a stray error string and
 // an invalid result can't omit one — every `return` in validateAssignmentTarget
-// below conforms.
-export type AssignmentTargetValidation = { valid: true } | { valid: false; error: string };
+// below conforms. The structured partner-group refusal carries its HTTP class;
+// routes must not infer that class from human-readable error text.
+export type AssignmentTargetValidation =
+  | { valid: true }
+  | { valid: false; error: string; code?: undefined }
+  | { valid: false; error: string; code: 'PARTNER_GROUP_TARGET_UNSUPPORTED'; status: 400 };
 
 const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {
   device: 5,
@@ -1112,6 +1123,7 @@ async function decomposeInlineSettings(
         notifyOnSessionEnd: parsed.notifyOnSessionEnd,
         showActiveIndicator: parsed.showActiveIndicator,
         technicianIdentityLevel: parsed.technicianIdentityLevel,
+        allowUserEndSession: parsed.allowUserEndSession,
       });
       break;
     }
@@ -1200,6 +1212,7 @@ async function decomposeInlineSettings(
     case 'vulnerability':
     case 'device_lifecycle':
     case 'system_protection':
+    case 'containment':
     case 'security_agents':
       // Pure JSONB — no normalized table needed
       break;
@@ -1223,8 +1236,9 @@ async function decomposeInlineSettings(
  *
  * Mirrors exactly the `case` arms of decomposeInlineSettings that call `.parse`
  * — the others build their rows defensively from `unknown` and cannot throw —
- * plus one rule decompose cannot enforce by itself: compliance rule set names
- * are unique within the link (DuplicateComplianceItemNameError).
+ * plus the compliance rule set name rules decompose cannot enforce by itself:
+ * names are unique within the link (DuplicateComplianceItemNameError) and fit
+ * the 200-character state columns (ComplianceItemNameTooLongError).
  */
 function assertDecomposableInlineSettings(featureType: ConfigFeatureType, settings: unknown): void {
   // Same early-out as decomposeInlineSettings: nothing to decompose, nothing to check.
@@ -1255,7 +1269,7 @@ function assertDecomposableInlineSettings(featureType: ConfigFeatureType, settin
       monitorsInlineSettingsSchema.parse(settings);
       break;
     case 'compliance':
-      assertUniqueComplianceItemNames(settings);
+      assertValidComplianceItemNames(settings);
       break;
     default:
       break;
@@ -1320,6 +1334,7 @@ async function deleteNormalizedRows(
     case 'vulnerability':
     case 'device_lifecycle':
     case 'system_protection':
+    case 'containment':
     case 'security_agents':
       // Pure JSONB — no normalized table to delete
       break;
@@ -1457,6 +1472,7 @@ async function assembleInlineSettings(
         collectCategories: row.collectCategories,
         minimumLevel: row.minimumLevel,
         collectionIntervalMinutes: row.collectionIntervalMinutes,
+        applicationProviders: row.applicationProviders ?? [],
         rateLimitPerHour: row.rateLimitPerHour,
       };
     }
@@ -1568,6 +1584,7 @@ async function assembleInlineSettings(
         notifyOnSessionEnd: row.notifyOnSessionEnd,
         showActiveIndicator: row.showActiveIndicator,
         technicianIdentityLevel: row.technicianIdentityLevel,
+        allowUserEndSession: row.allowUserEndSession,
       };
     }
 
@@ -1624,6 +1641,7 @@ async function assembleInlineSettings(
     case 'vulnerability':
     case 'device_lifecycle':
     case 'system_protection':
+    case 'containment':
     case 'security_agents':
       // Pure JSONB — settings stored directly on feature link
       return null;
@@ -1729,14 +1747,30 @@ export class DuplicateComplianceItemNameError extends Error {
   }
 }
 
-function assertUniqueComplianceItemNames(settings: unknown): void {
+/**
+ * A compliance rule set name longer than the 200-character config_item_name
+ * columns it is copied into (compliance state, alerts, automation runs). The
+ * HTTP routes refuse this with a 400 (COMPLIANCE_RULE_SET_NAME_TOO_LONG); this
+ * is the backstop for every other caller.
+ */
+export class ComplianceItemNameTooLongError extends Error {
+  readonly code = 'COMPLIANCE_RULE_SET_NAME_TOO_LONG' as const;
+
+  constructor(readonly names: string[]) {
+    super(overlongComplianceItemNameMessage(names[0] ?? ''));
+    this.name = 'ComplianceItemNameTooLongError';
+  }
+}
+
+function assertValidComplianceItemNames(settings: unknown): void {
   if (!settings || typeof settings !== 'object') return;
   const items = (settings as { items?: unknown }).items;
   if (!Array.isArray(items)) return;
-  const names = duplicateComplianceItemNames(
-    items.filter((item): item is { name?: unknown } => !!item && typeof item === 'object'),
-  );
+  const objects = items.filter((item): item is { name?: unknown } => !!item && typeof item === 'object');
+  const names = duplicateComplianceItemNames(objects);
   if (names.length > 0) throw new DuplicateComplianceItemNameError(names);
+  const overlong = overlongComplianceItemNames(objects);
+  if (overlong.length > 0) throw new ComplianceItemNameTooLongError(overlong);
 }
 
 /**
@@ -1842,6 +1876,22 @@ export type FeatureLinkWriteOptions = {
   securityAgentsArmAuthorized?: boolean;
 };
 
+/**
+ * OD-11 (#10190): a newly created Breeze Assist (helper) feature link deploys
+ * Assist unless the request decides `enabled` itself. Create path only:
+ * updates store what they are sent. Devices with no helper policy are
+ * unaffected (HELPER_DEFAULTS.enabled stays false in helperSettings.ts),
+ * because defaulting those on would silently install software on every
+ * existing customer's machines (OD-11 option c, rejected).
+ */
+function withHelperCreateDefaults(inlineSettings: unknown): Record<string, unknown> {
+  const settings =
+    inlineSettings !== null && typeof inlineSettings === 'object' && !Array.isArray(inlineSettings)
+      ? (inlineSettings as Record<string, unknown>)
+      : {};
+  return settings.enabled === undefined ? { ...settings, enabled: true } : settings;
+}
+
 export async function addFeatureLink(
   configPolicyId: string,
   featureType: ConfigFeatureType,
@@ -1853,6 +1903,10 @@ export async function addFeatureLink(
 ) {
   if (inlineSettings !== undefined && inlineSettings !== null) {
     inlineSettings = configFeatureInlineSettingsSchema.parse(inlineSettings);
+  }
+
+  if (featureType === 'helper') {
+    inlineSettings = withHelperCreateDefaults(inlineSettings);
   }
 
   if (featureType === 'pam' && inlineSettings !== undefined && inlineSettings !== null) {
@@ -1875,6 +1929,11 @@ export async function addFeatureLink(
     inlineSettings = systemProtectionInlineSettingsSchema.parse(inlineSettings);
   }
 
+  if (featureType === 'containment') {
+    if (featurePolicyId) throw new Error('containment is inline-only; featurePolicyId must not be set');
+    inlineSettings = containmentInlineSettingsSchema.parse(inlineSettings);
+  }
+
   // #5511 W02: warranty gains an hpCmsl block whose consent only the server may
   // write. There is no stored row yet on this path, so `stored` is null and an
   // enable always stamps fresh.
@@ -1893,7 +1952,7 @@ export async function addFeatureLink(
     inlineSettings = remoteAccessInlineSettingsSchema.parse(inlineSettings);
   }
 
-  if (featureType === 'compliance') assertUniqueComplianceItemNames(inlineSettings);
+  if (featureType === 'compliance') assertValidComplianceItemNames(inlineSettings);
 
   // #6960: service-level backstop for the route/AI checks (arming authorization,
   // NULL featurePolicyId, strict settings, enableable vendors). A link without
@@ -2044,6 +2103,13 @@ export async function updateFeatureLink(
 
     if (existing.featureType === 'system_protection' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
       updates.inlineSettings = systemProtectionInlineSettingsSchema.parse(updates.inlineSettings);
+    }
+
+    if (existing.featureType === 'containment') {
+      if (updates.featurePolicyId) throw new Error('containment is inline-only; featurePolicyId must not be set');
+      if (updates.inlineSettings !== undefined) {
+        updates.inlineSettings = containmentInlineSettingsSchema.parse(updates.inlineSettings);
+      }
     }
 
     // #6960: same backstop as addFeatureLink, on whichever fields are sent.
@@ -2436,8 +2502,11 @@ export async function validateAssignmentTarget(
         const [group] = await db
           .select({ id: deviceGroups.id })
           .from(deviceGroups)
-          .innerJoin(organizations, eq(deviceGroups.orgId, organizations.id))
-          .where(and(eq(deviceGroups.id, targetId), eq(organizations.partnerId, partnerId)))
+          .leftJoin(organizations, eq(deviceGroups.orgId, organizations.id))
+          .where(and(eq(deviceGroups.id, targetId), or(
+            eq(organizations.partnerId, partnerId),
+            and(isNull(deviceGroups.orgId), eq(deviceGroups.partnerId, partnerId)),
+          )))
           .limit(1);
         return group
           ? { valid: true }
@@ -2499,9 +2568,16 @@ export async function validateAssignmentTarget(
         .from(deviceGroups)
         .where(and(eq(deviceGroups.id, targetId), eq(deviceGroups.orgId, policyOrgId)))
         .limit(1);
-      return group
-        ? { valid: true }
-        : { valid: false, error: 'Device group target not found in the policy organization' };
+      if (group) return { valid: true };
+      if ((await findPartnerOwnedGroupIds([targetId])).length > 0) {
+        return {
+          valid: false,
+          error: 'Partner-wide device groups can only be targeted by partner-wide policies',
+          code: 'PARTNER_GROUP_TARGET_UNSUPPORTED',
+          status: 400,
+        };
+      }
+      return { valid: false, error: 'Device group target not found in the policy organization' };
     }
 
     case 'device': {
@@ -3130,6 +3206,8 @@ export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = ne
   // the generated software policy is owned on the config policy's own axis and
   // found via software_policies.managed_by_link_id.
   'security_agents',
+  // #10100: partner-wide inline settings; featurePolicyId is always refused below.
+  'containment',
 ]);
 
 /**
@@ -3380,7 +3458,8 @@ export async function validateFeaturePolicyExists(
     featureType === 'device_lifecycle' ||
     featureType === 'monitors' ||
     featureType === 'warranty' ||
-    featureType === 'system_protection'
+    featureType === 'system_protection' ||
+    featureType === 'containment'
   ) {
     // These have no policy table — they require inlineSettings.
     //

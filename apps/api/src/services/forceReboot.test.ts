@@ -53,6 +53,23 @@ describe('forceRebootResourceDigest (#8729)', () => {
     expect(forceRebootResourceDigest({ deviceId: A })).not.toBe(forceRebootResourceDigest({ deviceId: B }));
     expect(forceRebootResourceDigest({ deviceId: A })).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
+
+  // #9380 review: the mint (/auth/mfa/step-up) and the route must agree on
+  // the digest whatever case each side was given the uuid in. The literal below
+  // pins the DIRECTION of the folding, not just that the two agree: the route
+  // hashes `device.id` straight from a uuid column, which Postgres always renders
+  // lowercase, so lowercase has to be the canonical form. An implementation that
+  // upper-cased instead would keep the two sides agreeing with each other while
+  // breaking every grant already minted against a canonical id, and a bare
+  // `toBe(digest(mixed))` assertion would not notice. Pinning the value also
+  // pins that this commit did NOT change the digest of an already-lowercase id,
+  // which is the only backward-compatibility property that matters here.
+  it('folds the device id to lowercase, the spelling Postgres returns', () => {
+    const mixed = 'abcdef12-3456-4789-8abc-def012345678';
+    const canonical = 'sha256:7006256c0099f17ff4c5120efc19bedcd0d992573ad9b6a8b1c678024a0bfe0b';
+    expect(forceRebootResourceDigest({ deviceId: mixed })).toBe(canonical);
+    expect(forceRebootResourceDigest({ deviceId: mixed.toUpperCase() })).toBe(canonical);
+  });
 });
 
 describe('forceRebootOfflinePolicy (#8729, Codex review)', () => {

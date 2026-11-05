@@ -119,7 +119,7 @@ Numbering continues B-W04's D-B25…D-B37.
   SELECT count(DISTINCT actor_id) FILTER (WHERE details->>'uiExtension' = 'true')                                  AS ui_capable_principals,
          count(DISTINCT actor_id) FILTER (WHERE action = 'mcp.resources.read' AND details->>'mcpApp' = 'fleet-health/v1' AND result = 'success') AS view_fetchers,
          count(DISTINCT actor_id) FILTER (WHERE action = 'mcp.tools.call'     AND details->>'mcpApp' = 'fleet-health/v1' AND details->>'uiExtension' = 'true') AS ui_tool_callers,
-         count(*)                 FILTER (WHERE action = 'mcp.tools.call'     AND details->>'mcpApp' = 'fleet-health/v1' AND details->>'uiExtension' = 'true') AS ui_tool_calls
+         count(*)                 FILTER (WHERE action = 'mcp.tools.call'     AND details->>'mcpApp' = 'fleet-health/v1' AND details->>'uiExtension' = 'true' AND result = 'success') AS ui_tool_calls
   FROM audit_logs
   WHERE resource_type = 'mcp_request' AND "timestamp" > now() - interval '30 days';
   ```

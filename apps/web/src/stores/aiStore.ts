@@ -1,13 +1,23 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { AiPageContext, AiStreamEvent, AiApprovalMode, AiTopologyProgressPhase, TopologyAiSelection, AiContinuationRequired, AiModelChoice, AiTurnModel } from '@breeze/shared';
+import type { AiAttachState, AiPageContext, AiStreamEvent, AiApprovalMode, AiTopologyProgressPhase, TopologyAiSelection, AiContinuationRequired, AiModelChoice, AiTurnModel } from '@breeze/shared';
 import { fetchWithAuth } from './auth';
-import { RECOVERABLE_MODEL_CODES, noSessionOrgId, useAiModelPickerStore } from './aiModelPickerStore';
+import { registerLogoutHook } from './logoutHooks';
+import { noSessionOrgId, useAiModelPickerStore } from './aiModelPickerStore';
+import { pageContextAnchorsOrg } from './aiPageContext';
+import { classifySendRefusal } from './aiSendRefusal';
+import { isChatSessionType } from './aiSessionOpen';
+import { attachAiSession, attachBackoffMs, shouldReattach, trackAttach, type AttachOutcome } from './aiSessionAttach';
 import { extractApiError } from '@/lib/apiError';
 import { i18n } from '@/lib/i18n';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
+import { WISP_GRANT_UNUSABLE, wispSessionOrgId } from '@/lib/wispSession';
 import { showToast } from '@/components/shared/Toast';
+import { activeThreadFor, type WispTalkTarget } from '@/lib/wispTalk';
+import { WispTalkError } from '@/lib/wispTalkError';
+import { addWispLink } from '@/lib/wispLinksApi';
 import {
+  attachAnchorMissing,
   processStreamEvent,
   mapMessagesFromApi,
   type AiMessage,
@@ -15,14 +25,8 @@ import {
   type PendingPlan,
   type ActivePlan,
   type ChatRunState,
+  alreadyDecidedOutcome,
 } from './processStreamEvent';
-
-interface SearchResult {
-  id: string;
-  title: string | null;
-  matchedContent: string;
-  createdAt: string;
-}
 
 interface M365Connection {
   id: string;
@@ -53,7 +57,25 @@ export type WispState = {
   floorTickMinutes: number;
   /** Live reach exceeds the grant's snapshot (W02 `wideningAvailable`, spec §4.4). */
   wideningAvailable: boolean;
+  /**
+   * Why a paused grant is paused (W02 A29: `'user_paused'` is the only reason
+   * the user may resume). `undefined` = not known yet (the thread payload
+   * does not carry it); `null` = not paused.
+   */
+  pausedReason?: string | null;
+  /** W05 spend meter (w00 A32): cents charged today under the grant, and when the UTC day resets. */
+  spentTodayCents?: number;
+  budgetResetsAt?: string;
 } | null;
+
+export type WispTalkFocusRequest = {
+  target: WispTalkTarget;
+  from: string;
+  to: string;
+  resolve: (accepted: boolean) => void;
+};
+
+let wispTalkSequence = 0;
 
 interface AiState {
   isOpen: boolean;
@@ -84,6 +106,8 @@ interface AiState {
    * can choose honest copy without parsing `error`. Null on success.
    */
   errorCode: string | null;
+  /** HTTP status of a failed session create, including auth redirects. */
+  errorStatus: number | null;
   /**
    * Topology M4 (#6000): the site the CURRENT session is pinned to when it is
    * an "Explain this" investigation (server-owned pin, echoed here for the
@@ -104,8 +128,6 @@ interface AiState {
   isPaused: boolean;
   sessions: Array<{ id: string; title: string | null; status: string; createdAt: string }>;
   showHistory: boolean;
-  searchResults: SearchResult[];
-  isSearching: boolean;
   isInterrupting: boolean;
   isFlagged: boolean;
   flagReason: string | null;
@@ -119,10 +141,27 @@ interface AiState {
   turnModel: AiTurnModel | null;
   /** W05: offering ids suggested after a model refusal. */
   refusalAlternatives: string[];
+  /**
+   * #9427: attached to a running turn whose reply so far could not be replayed
+   * (`attach_state.partial`); the full reply appears when it finishes.
+   */
+  joinedMidResponse: boolean;
+  /**
+   * #9427: the side-panel composer's text, held here (not persisted) so a
+   * refused send can put its text back and a move can carry a draft.
+   */
+  composerDraft: string;
+  /** An explicit header action asks the mounted sidebar composer for focus. */
+  composerFocusRequest: number;
+  /** Transient inline confirmation, owned by the invoking header button. */
+  wispTalkFocusRequest: WispTalkFocusRequest | null;
   /** Wisp mode (W04); null = ordinary chat. Not persisted. */
   wisp: WispState;
 
   // Actions
+  talkToWispAbout: (target: WispTalkTarget) => Promise<'opened' | 'declined_focus' | 'no_grant' | 'superseded' | 'failed'>;
+  openPlainChatAbout: (target: WispTalkTarget) => Promise<'opened' | 'superseded'>;
+  resolveWispTalkFocus: (accepted: boolean) => void;
   toggle: () => void;
   open: () => void;
   close: () => void;
@@ -136,7 +175,7 @@ interface AiState {
   /** Turn Wisp mode on for a granted thread and open a fresh session under the grant. */
   enterWispMode: (w: NonNullable<WispState>) => Promise<void>;
   /** Change the thread's customer focus (PATCH /wisp/thread/:id/focus); the next turn runs in a new session anchored to it. */
-  setWispFocus: (orgId: string | null, orgName: string | null) => Promise<void>;
+  setWispFocus: (orgId: string | null, orgName: string | null, opts?: { throwOnError: boolean }) => Promise<'focused' | 'superseded' | 'failed'>;
   /** Merge server-confirmed grant fields (refresh / settings) into the Wisp state. */
   updateWisp: (patch: Partial<NonNullable<WispState>>) => void;
   /** Close the current session and leave Wisp mode. */
@@ -153,6 +192,12 @@ interface AiState {
    * approveExecution: it talks to no endpoint.
    */
   clearPendingApproval: () => void;
+  /**
+   * #9431: the window came back (focus / visible) with an undecided approval
+   * card up and no live stream to deliver `approval_resolved` — re-attach so
+   * the server's pending cards replace it. A no-op otherwise.
+   */
+  recheckPendingApproval: () => void;
   approvePlan: (approved: boolean) => Promise<void>;
   abortPlan: () => Promise<void>;
   pauseAi: (paused: boolean) => Promise<void>;
@@ -160,19 +205,42 @@ interface AiState {
   clearError: () => void;
   toggleHistory: () => void;
   interruptResponse: () => Promise<void>;
-  searchConversations: (query: string) => Promise<void>;
   switchSession: (sessionId: string) => Promise<void>;
   flagSession: (reason?: string) => Promise<void>;
   unflagSession: () => Promise<void>;
   loadM365Connections: () => Promise<void>;
   setSelectedM365Connection: (connectionId: string | null) => void;
+  setComposerDraft: (text: string) => void;
+  /**
+   * #9427: attach to the bound session's current turn (GET …/stream) and apply
+   * it until the turn ends, re-attaching per shouldReattach. Takes a new stream
+   * token, so the next send, rebind, release or attach supersedes it. Never
+   * rejects. Exported on the state for tests; the store calls it itself.
+   */
+  attachCurrent: (opts?: { afterClosedOr409?: boolean }) => Promise<void>;
+  /**
+   * #9427: let go of `sessionId` locally (it moved elsewhere). No request at
+   * all — never DELETEs (D3). Cancels the held send reader and the attach
+   * synchronously. A no-op unless `sessionId` is the bound session.
+   */
+  releaseSession: (sessionId: string) => void;
+  /**
+   * #9427: bind `sessionId` as an explicit pick (switchSession semantics: no
+   * org-mismatch drop, chat types only), open the panel and attach. Resolves
+   * once the attach is ready (snapshot applied), never after the turn. An abort
+   * of `signal` before the bind commits → 'aborted' with nothing changed.
+   */
+  adoptSession: (
+    sessionId: string,
+    opts?: { draft?: string; signal?: AbortSignal },
+  ) => Promise<'ok' | 'not_found' | 'closed' | 'error' | 'aborted'>;
 }
 
 /**
- * True when an open session belongs to a different org than the device page the
+ * True when an open session belongs to a different org than the record or device page the
  * chat is now sitting on (#5684).
  *
- * Both sides must be known: a device page context with no `orgId` (an older
+ * Both sides must be known: a page context with no `orgId` (an older
  * caller) and a session with no recorded org both mean "cannot tell", and the
  * session is left alone rather than dropped on a guess.
  */
@@ -181,7 +249,7 @@ function pageContextOrgMismatch(
   sessionOrgId: string | null,
 ): boolean {
   return (
-    !!ctx && ctx.type === 'device' && !!ctx.orgId && !!sessionOrgId && ctx.orgId !== sessionOrgId
+    !!ctx && 'orgId' in ctx && typeof ctx.orgId === 'string' && !!ctx.orgId && !!sessionOrgId && ctx.orgId !== sessionOrgId
   );
 }
 
@@ -213,6 +281,16 @@ const CLEARED_SESSION = {
   thinking: false,
   turnModel: null as AiTurnModel | null,
   refusalAlternatives: [] as string[],
+  joinedMidResponse: false,
+} as const;
+
+/** #9427: turn state that belongs to the chat being switched away from. */
+const SWITCHED_TURN_STATE = {
+  isStreaming: false,
+  joinedMidResponse: false,
+  pendingApproval: null,
+  pendingPlan: null,
+  activePlan: null,
 } as const;
 
 /**
@@ -221,6 +299,17 @@ const CLEARED_SESSION = {
  * or an API that predates W04) drops the Wisp header rather than showing a
  * ceiling the server is not applying.
  */
+/**
+ * W05 (#10136, spec §7): only an active grant gives the panel the Wisp voice.
+ * A paused grant (A29 — the user's "not now") or an ended one (revoked,
+ * expired) leaves it Breeze AI. The server's status is the authority, expiry
+ * included (`GET /wisp/thread` answers only grants live by its own clock), so
+ * no client clock is consulted here.
+ */
+export function isActiveGrant(w: WispState): boolean {
+  return w?.status === 'active';
+}
+
 function wispForLoadedSession(wisp: WispState, session: Record<string, unknown> | undefined): WispState {
   if (!wisp) return null;
   return session?.wispGrantId === wisp.grantId ? wisp : null;
@@ -239,11 +328,16 @@ async function rehydrateWispForSession(sessionId: string, session: Record<string
   const orgId = typeof session?.orgId === 'string' ? session.orgId : null;
   try {
     // Lazy: the step-up/WebAuthn graph stays out of every page's chat bundle.
-    const { fetchWispThread } = await import('@/lib/wispGrant');
+    const { fetchWispThread, isNoActiveGrant } = await import('@/lib/wispGrant');
     // An org grant is keyed by the session's org; a partner-wide one by none.
     for (const scope of orgId ? [orgId, null] : [null]) {
-      const state = await fetchWispThread(scope).catch(() => null);
-      if (state?.grantId === grantId) {
+      const state = await fetchWispThread(scope).catch((err: unknown) => {
+        // "No grant for this scope" is the expected miss; anything else leaves
+        // the header off over a session the server still runs under a grant.
+        if (!isNoActiveGrant(err)) console.warn('[AiStore] Could not read the Wisp thread to restore the session header:', { sessionId, grantId, scope, err });
+        return null;
+      });
+      if (state?.grantId === grantId && isActiveGrant(state)) {
         if (useAiStore.getState().sessionId === sessionId) useAiStore.setState({ wisp: state });
         return;
       }
@@ -253,8 +347,6 @@ async function rehydrateWispForSession(sessionId: string, session: Record<string
   }
 }
 
-/** Session-create refusals that mean the grant cannot carry a session at all. */
-const WISP_GRANT_UNUSABLE = new Set(['grant_inactive', 'grant_not_found', 'grant_not_yours', 'wisp_disabled', 'entitlement_required']);
 
 /** A cleared session has no stamped model: drop the picker, then reload the default menu. */
 function resetModelPicker(): void {
@@ -312,6 +404,62 @@ const claimSessionOwnership = (): (() => boolean) => {
 };
 
 /**
+ * True while sendMessage re-sends a message after rolling a Wisp session at
+ * the turn limit: a second refusal on the fresh session is shown, not retried.
+ */
+let resendingAfterTurnLimit = false;
+
+/**
+ * A Wisp thread is one conversation; its sessions are chunks with a turn
+ * budget (`ai_sessions.max_turns`). When a chunk is spent, close it (its
+ * summary lands on the thread) and open the next one under the same grant
+ * and focus — what setWispFocus does for a focus change. True when the
+ * store is bound to the new session.
+ */
+async function rollWispSession(get: AiGet, model?: AiModelChoice): Promise<boolean> {
+  const w = get().wisp;
+  if (!w) return false;
+  // The thread keeps its model across chunks: the pick for the refused
+  // message, else the model the spent session ran on (when the user may pick).
+  const picker = useAiModelPickerStore.getState().choices;
+  const carried: AiModelChoice | undefined = model
+    ?? (picker?.allowUserChoice && picker.current?.offeringId
+      ? { offeringId: picker.current.offeringId, options: { ...(picker.current.options ?? {}) } }
+      : undefined);
+  const oldSessionId = get().sessionId;
+  if (oldSessionId) {
+    await get().closeSession();
+    // A failed close leaves the old session bound (and open on the server);
+    // the roll goes ahead, but say so rather than letting the next create
+    // wipe the error.
+    if (get().sessionId === oldSessionId) {
+      console.warn(`[AiStore] Could not close Wisp session ${oldSessionId} at the turn limit; rolling anyway:`, get().error);
+    }
+  }
+  useAiStore.setState({ ...CLEARED_SESSION });
+  // Closing reset the picker, so the model is handed to the create (it stamps
+  // the new session) instead of the next chunk falling back to the default.
+  await get().createSession({ wispGrantId: w.grantId, orgId: wispSessionOrgId(w) ?? undefined, ...(carried ? { model: carried } : {}) });
+  return get().sessionId !== null && get().wisp?.grantId === w.grantId;
+}
+
+/**
+ * #9427: the send stream's reader, held so releaseSession can cancel a parked
+ * `read()` synchronously — the stream token alone is only noticed after the
+ * next chunk arrives.
+ */
+let currentSendReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+
+/** #9427: the live attach loop (one per attachCurrent call) and the session it follows. */
+let currentAttach: { controller: AbortController; sessionId: string } | null = null;
+
+function abortCurrentAttach(): void {
+  const attach = currentAttach;
+  currentAttach = null;
+  attach?.controller.abort();
+}
+
+/**
  * Topology M4 (#6000): the only events a topology investigation turn may
  * render. The server already withholds raw text and tool traffic for such a
  * turn; this is the client-side defense in depth — a generic `content_delta`,
@@ -319,7 +467,7 @@ const claimSessionOwnership = (): (() => boolean) => {
  */
 const TOPOLOGY_TURN_EVENTS: ReadonlySet<AiStreamEvent['type']> = new Set<AiStreamEvent['type']>([
   'message_start', 'topology_progress', 'topology_explanation', 'topology_diagnostic_run',
-  'approval_required', 'message_end', 'error', 'done', 'title_updated', 'approval_mode_changed',
+  'approval_required', 'approval_resolved', 'message_end', 'error', 'done', 'title_updated', 'approval_mode_changed',
 ]);
 
 /** IDs-only selection of a topology page context, or null for any other context. */
@@ -345,6 +493,233 @@ function topologyFieldsOf(session: Record<string, unknown> | undefined) {
   };
 }
 
+type AiSet = (partial: Partial<AiState> | ((s: AiState) => Partial<AiState>)) => void;
+type AiGet = () => AiState;
+
+/** Per-attempt bookkeeping of one attach (one GET …/stream). */
+interface AttachAttempt {
+  /** False once a newer send/rebind/release/attach took the store over. */
+  owns: () => boolean;
+  /** Aborts this attempt's reader (stale writer, or a missing anchor). */
+  abort: () => void;
+  topology: boolean;
+  currentAssistantId: string | null;
+}
+
+/**
+ * #9427: the one place attach-delivered events reach the store (the seam
+ * #9429's notifications will hook). Guarded by the attach token and the session
+ * owner: a superseded attach stops its reader and writes nothing.
+ */
+function applyAttachEvent(set: AiSet, get: AiGet, event: AiStreamEvent, attempt: AttachAttempt): boolean {
+  if (!attempt.owns()) {
+    attempt.abort();
+    return false;
+  }
+  attempt.currentAssistantId = processStreamEvent(event, set, get, attempt.currentAssistantId);
+  // Same rule as a topology send: the events that normally withdraw an approval
+  // card never reach a topology turn, so the run announcement or the turn's end does.
+  if (attempt.topology && (event.type === 'done' || event.type === 'topology_diagnostic_run')) set({ pendingApproval: null });
+  return true;
+}
+
+/** Resolves after `ms`, or as soon as `signal` aborts. */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) { resolve(); return; }
+    const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', finish); resolve(); };
+    const timer = setTimeout(finish, ms);
+    signal.addEventListener('abort', finish, { once: true });
+  });
+}
+
+type AttachLoopReady = 'ready' | 'not_found' | 'stopped';
+
+/**
+ * #9427 (spec §3.5): attach the bound session's current turn and keep it
+ * applied until the turn ends. One attach covers one turn; a running attach
+ * that ends without `done` re-attaches per W1's shouldReattach/attachBackoffMs
+ * (Gate B #6). When the loop stops without `done`: one messages re-read (only
+ * if the loop saw or retried anything), `isStreaming:false`,
+ * `joinedMidResponse:false`, `error` untouched. `not_found` unbinds like
+ * loadSession's 404 path.
+ *
+ * `ready` settles once a snapshot is applied (or the loop ends first);
+ * `finished` when the loop ends. Neither rejects.
+ */
+function startAttach(
+  set: AiSet,
+  get: AiGet,
+  opts: { afterClosedOr409?: boolean } = {},
+): { ready: Promise<AttachLoopReady>; finished: Promise<void> } {
+  const sessionId = get().sessionId;
+  if (!sessionId) {
+    const stopped = Promise.resolve<AttachLoopReady>('stopped');
+    return { ready: stopped, finished: stopped.then(() => undefined) };
+  }
+
+  const streamToken = ++activeStreamToken;
+  abortCurrentAttach();
+  const controller = new AbortController();
+  const self = { controller, sessionId };
+  currentAttach = self;
+  const untrack = trackAttach(controller);
+
+  // The attach follows the BOUND session, not a bind attempt: a create/load/
+  // switch/adopt/close that is still in flight (or fails) leaves it running,
+  // so a failed rebind cannot strand a spinner. A committed rebind changes
+  // `sessionId` (and aborts this controller, see the store subscription); a
+  // newer send, release or attach takes the stream token.
+  const owns = () =>
+    !controller.signal.aborted
+    && activeStreamToken === streamToken
+    && get().sessionId === sessionId;
+  const topology = get().topologySiteId !== null;
+  const filter = topology ? (e: AiStreamEvent) => TOPOLOGY_TURN_EVENTS.has(e.type) : undefined;
+
+  let settleReady!: (r: AttachLoopReady) => void;
+  const ready = new Promise<AttachLoopReady>((resolve) => { settleReady = resolve; });
+
+  /** One owner-guarded messages re-read (reconciliation). */
+  const rehydrate = async (): Promise<void> => {
+    try {
+      const res = await fetchWithAuth(`/ai/sessions/${sessionId}`);
+      if (!owns()) return;
+      if (!res.ok) {
+        console.warn('[AI] Attach re-hydrate failed: HTTP', res.status);
+        return;
+      }
+      const data = await res.json();
+      if (!owns()) return;
+      set({ messages: mapMessagesFromApi(data.messages || []) });
+    } catch (err) {
+      console.warn('[AI] Attach re-hydrate failed:', err);
+    }
+  };
+
+  const run = async (): Promise<void> => {
+    const cycle = { attempt: 0, afterClosedOr409: !!opts.afterClosedOr409 };
+    let anchorRetried = false;
+    // Whether a stop re-reads messages: something may have changed since the
+    // hydrate (a refused send, a running snapshot, a re-attach).
+    let reconcileOnStop = cycle.afterClosedOr409;
+    for (;;) {
+      if (!owns()) return;
+      const attemptController = new AbortController();
+      const abortAttempt = () => attemptController.abort();
+      controller.signal.addEventListener('abort', abortAttempt, { once: true });
+      const attempt: AttachAttempt = { owns, abort: abortAttempt, topology, currentAssistantId: null };
+      const seen: { snapshot: AiAttachState | null; messagesBefore: AiMessage[] | null; anchorMissing: boolean; rehydrateOnDone: boolean } = {
+        snapshot: null, messagesBefore: null, anchorMissing: false, rehydrateOnDone: false,
+      };
+
+      const { finished } = attachAiSession(sessionId, {
+        signal: attemptController.signal,
+        filter,
+        onEvent: (event) => {
+          if (event.type !== 'attach_state') {
+            applyAttachEvent(set, get, event, attempt);
+            return;
+          }
+          if (owns() && !anchorRetried && attachAnchorMissing(event, get().messages)) {
+            // Hydrated before this turn's user row was written: re-read, then
+            // attach once more (Advisor findings 2 and 4).
+            seen.anchorMissing = true;
+            abortAttempt();
+            return;
+          }
+          const messagesBefore = get().messages;
+          if (!applyAttachEvent(set, get, event, attempt)) return;
+          seen.messagesBefore = messagesBefore;
+          seen.snapshot = event;
+          // The reply on screen is not the full persisted turn: re-read on done.
+          seen.rehydrateOnDone = event.turn === 'running'
+            && (event.partial || event.turnUserMessageId === null || attachAnchorMissing(event, messagesBefore));
+          settleReady('ready');
+        },
+      });
+      let outcome: AttachOutcome;
+      try {
+        outcome = await finished;
+      } finally {
+        controller.signal.removeEventListener('abort', abortAttempt);
+      }
+      if (!owns()) return;
+
+      if (seen.anchorMissing) {
+        anchorRetried = true;
+        await rehydrate();
+        continue;
+      }
+      const applied = seen.snapshot;
+      if (applied?.turn === 'running') reconcileOnStop = true;
+
+      if (outcome.kind === 'done') {
+        if (seen.rehydrateOnDone) await rehydrate();
+        return;
+      }
+      if (outcome.kind === 'idle') {
+        // Gate B #15: a turn ran on this instance (possibly finishing between
+        // the hydrate and this attach) — re-read once.
+        if (applied?.turnId != null || reconcileOnStop) await rehydrate();
+        return;
+      }
+      if (outcome.kind === 'not_found') {
+        settleReady('not_found');
+        set({
+          sessionId: null, sessionOrgId: null, messages: [], isLoading: false,
+          isStreaming: false, joinedMidResponse: false, pendingApproval: null, pendingPlan: null, activePlan: null,
+        });
+        return;
+      }
+      if (shouldReattach(outcome, cycle)) {
+        // The next snapshot replays the turn from scratch: un-apply this one.
+        if (applied?.turn === 'running' && seen.messagesBefore) set({ messages: seen.messagesBefore });
+        if (outcome.kind === 'closed') cycle.afterClosedOr409 = true;
+        reconcileOnStop = true;
+        await sleep(attachBackoffMs(cycle.attempt), controller.signal);
+        cycle.attempt += 1;
+        continue;
+      }
+      if (outcome.kind === 'error') console.warn('[AI] Attach failed:', outcome.message);
+      if (reconcileOnStop) await rehydrate();
+      if (owns()) set({ isStreaming: false, joinedMidResponse: false });
+      return;
+    }
+  };
+
+  const finished = run()
+    .catch((err) => {
+      console.error('[AI] Attach loop failed:', err);
+      if (owns()) set({ isStreaming: false, joinedMidResponse: false });
+    })
+    .finally(() => {
+      untrack();
+      if (currentAttach === self) currentAttach = null;
+      settleReady('stopped');
+    });
+  return { ready, finished };
+}
+
+/**
+ * #9427 W2: a send refused because another turn is running (Gate B #7). Drop
+ * the refused bubble, put its text back in the composer, no error banner, and
+ * attach to the running turn. #9428's retry will call this with neither
+ * option: it keeps its original bubble and has no fresh text to restore.
+ */
+function attachAfterTurnInProgress(
+  set: AiSet,
+  get: AiGet,
+  refused: { dropMessageId?: string; restoreDraft?: string },
+): void {
+  set((s) => ({
+    messages: refused.dropMessageId ? s.messages.filter((m) => m.id !== refused.dropMessageId) : s.messages,
+    isStreaming: false,
+    ...(refused.restoreDraft !== undefined ? { composerDraft: refused.restoreDraft } : {}),
+  }));
+  void get().attachCurrent({ afterClosedOr409: true });
+}
+
 export const useAiStore = create<AiState>()(
   persist(
     (set, get) => ({
@@ -358,6 +733,7 @@ export const useAiStore = create<AiState>()(
   isLoading: false,
   error: null,
   errorCode: null,
+  errorStatus: null,
   topologySiteId: null,
   topologySelection: null,
   topologyPhase: null,
@@ -370,8 +746,6 @@ export const useAiStore = create<AiState>()(
   isPaused: false,
   sessions: [],
   showHistory: false,
-  searchResults: [],
-  isSearching: false,
   isInterrupting: false,
   isFlagged: false,
   flagReason: null,
@@ -381,6 +755,10 @@ export const useAiStore = create<AiState>()(
   thinking: false,
   turnModel: null,
   refusalAlternatives: [],
+  joinedMidResponse: false,
+  composerDraft: '',
+  composerFocusRequest: 0,
+  wispTalkFocusRequest: null,
   wisp: null,
 
   toggle: () => {
@@ -395,7 +773,7 @@ export const useAiStore = create<AiState>()(
     set({ isOpen: true });
   },
   close: () => set({ isOpen: false }),
-  clearError: () => set({ error: null, errorCode: null }),
+  clearError: () => set({ error: null, errorCode: null, errorStatus: null }),
 
   setPageContext: (ctx) =>
     set((s) =>
@@ -409,7 +787,7 @@ export const useAiStore = create<AiState>()(
     // A different chat begins: the previous chat's pick must not ride along.
     // (A pick handed in via opts.model is the one this create commits.)
     if (!opts?.model) useAiModelPickerStore.getState().clearSelection();
-    set({ isLoading: true, error: null, errorCode: null });
+    set({ isLoading: true, error: null, errorCode: null, errorStatus: null });
     const { pageContext: storeContext, selectedM365ConnectionId, approvalMode } = get();
     const pageContext = opts?.pageContext ?? storeContext;
     const topology = pageContext?.type === 'topology';
@@ -469,17 +847,17 @@ export const useAiStore = create<AiState>()(
     // focus_mismatch) rather than re-anchoring silently.
     const wisp = get().wisp;
     const wispGrantId = opts?.wispGrantId ?? wisp?.grantId;
-    const wispOrgId = opts?.wispGrantId ? null : wisp ? (wisp.focusOrgId ?? wisp.scopeOrgId) : null;
+    const wispOrgId = opts?.wispGrantId ? null : wisp ? wispSessionOrgId(wisp) : null;
     try {
       const orgId = opts?.orgId
         ?? wispOrgId
-        ?? (pageContext?.type === 'device' || opts?.deviceId ? null : await readSelectedOrgId());
+        ?? (pageContextAnchorsOrg(pageContext) || opts?.deviceId ? null : await readSelectedOrgId());
       const res = await fetchWithAuth('/ai/sessions', {
         method: 'POST',
         body: JSON.stringify({
-          // #9529: with no device on the page, the session belongs to the org
-          // selected in the header. A device page / device task lets the
-          // server anchor to the device's org instead (#5593), and no
+          // #9529: without a page org anchor, the session belongs to the org
+          // selected in the header. A device/record page or device task lets
+          // the server resolve and anchor to the entity's org instead, and no
           // selection (All organizations) sends nothing.
           orgId: orgId ?? undefined,
           ...(wispGrantId ? { wispGrantId } : {}),
@@ -502,7 +880,7 @@ export const useAiStore = create<AiState>()(
           // session; the error banner keeps the server's reason.
           set({ errorCode: code, ...(code && WISP_GRANT_UNUSABLE.has(code) ? { wisp: null } : {}) });
         }
-        throw new Error(extractApiError(data, 'Failed to create session'));
+        throw new ActionError(extractApiError(data, 'Failed to create session'), res.status, typeof data?.code === 'string' ? data.code : undefined);
       }
       const data = await res.json();
       if (!ownsSession()) return;
@@ -533,6 +911,8 @@ export const useAiStore = create<AiState>()(
       if (!ownsSession()) return;
       set({
         error: err instanceof Error ? err.message : 'Failed to create session',
+        errorCode: err instanceof ActionError ? err.code ?? null : null,
+        errorStatus: err instanceof ActionError ? err.status : null,
         isLoading: false
       });
     }
@@ -571,6 +951,12 @@ export const useAiStore = create<AiState>()(
       }
       const data = await res.json();
       if (!ownsSession()) return;
+      // #9427: only chat sessions are reachable here; any other type (e.g. a
+      // persisted script_builder id) is handled exactly like the 404 above.
+      if (!isChatSessionType(data.session?.type)) {
+        set({ sessionId: null, sessionOrgId: null, messages: [], isLoading: false });
+        return;
+      }
       if (data.session?.status !== 'active') {
         set({ sessionId: null, sessionOrgId: null, messages: [], isLoading: false });
         return;
@@ -589,6 +975,9 @@ export const useAiStore = create<AiState>()(
       const messages = mapMessagesFromApi(data.messages || []);
 
       set({
+        // #9427: another chat's running turn (and its cards) is not this one's;
+        // this chat's attach sets them from its own snapshot.
+        ...(get().sessionId !== sessionId ? SWITCHED_TURN_STATE : {}),
         sessionId,
         sessionOrgId: restoredOrgId,
         hydratedSessionId: sessionId,
@@ -604,6 +993,8 @@ export const useAiStore = create<AiState>()(
         wisp: wispForLoadedSession(get().wisp, data.session),
       });
       adoptSessionModelPicker(sessionId);
+      // #9427: a successful, still-owned hydrate — join the turn if one runs.
+      void get().attachCurrent();
       void rehydrateWispForSession(sessionId, data.session);
     } catch (err) {
       if (!ownsSession()) return;
@@ -672,8 +1063,11 @@ export const useAiStore = create<AiState>()(
     const topologyTurn = get().topologySiteId !== null;
 
     const streamToken = ++activeStreamToken;
+    // This send supersedes any attach (#9427): stop its reader now.
+    abortCurrentAttach();
     /** False once this stream has been superseded — by a rebind, or a newer send. */
     const ownsStream = () => activeStreamToken === streamToken && get().sessionId === currentSessionId;
+    let heldReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
     try {
       const { pageContext } = get();
@@ -688,23 +1082,34 @@ export const useAiStore = create<AiState>()(
         const code = data && typeof data === 'object' && typeof (data as { code?: unknown }).code === 'string'
           ? (data as { code: string }).code : null;
 
-        if (res.status === 409 && code === 'continuation_required') {
+        const refusal = classifySendRefusal(res.status, code);
+
+        if (refusal === 'attach') {
+          // A refusal that arrives after a rebind/release belongs to a chat
+          // that is no longer on screen: it must not touch this one.
+          if (!ownsStream()) return;
+          // #9427 (Gate B #7): another turn is running on this conversation
+          // (turn_in_progress, or an uncoded 409 from an older API). Join it;
+          // the refused text goes back in the composer, no error banner. The
+          // pick is kept for the next send (it was never committed).
+          attachAfterTurnInProgress(set, get, { dropMessageId: userMsgId, restoreDraft: trimmedContent });
+          return;
+        }
+
+        if (refusal === 'continuation') {
           // W05: the switch cannot resume. The message is parked for the
           // continuation prompt, not lost or errored.
           useAiModelPickerStore.getState().requireContinuation(data as AiContinuationRequired, trimmedContent, currentSessionId);
           set((s) => ({ messages: s.messages.filter((m) => m.id !== userMsgId), isStreaming: false }));
           return;
         }
-        if (res.status === 409 && code && (RECOVERABLE_MODEL_CODES.has(code) || code === 'topology_model_changed')) {
+
+        if (refusal === 'choose_model') {
           // The chosen / stored model is no longer usable: refresh the menu so
-          // the tech can pick another (spec §9.1 "choose another").
+          // the tech can pick another (spec §9.1 "choose another"). The turn
+          // was rejected before it ran: drop the optimistic bubble so the
+          // transcript matches the server's.
           void useAiModelPickerStore.getState().load({ sessionId: currentSessionId });
-        }
-
-        // A coded 409 that is not the continuation prompt rejected this turn
-        // before it ran: drop the optimistic bubble so the transcript matches
-        // the server's (turn_in_progress keeps the pick for the retry).
-        if (res.status === 409 && code && (code === 'turn_in_progress' || code === 'topology_model_changed' || RECOVERABLE_MODEL_CODES.has(code))) {
           set((s) => ({
             messages: s.messages.filter((m) => m.id !== userMsgId),
             error: extractApiError(data, 'Failed to send message'),
@@ -714,10 +1119,28 @@ export const useAiStore = create<AiState>()(
           return;
         }
 
-        // The credit / plan gate refused the turn before it ran (#9450): drop
-        // the optimistic bubble like the coded 409s and keep the code so the
-        // chat can offer a way forward (Buy credits) instead of bare text.
-        if (res.status === 402 && code) {
+        if (refusal === 'turn_limit' && get().wisp && !resendingAfterTurnLimit) {
+          // Nothing ran: roll the thread to a fresh session and carry this
+          // message over. The optimistic bubble is re-added by the re-send.
+          set((s) => ({ messages: s.messages.filter((m) => m.id !== userMsgId), isStreaming: false }));
+          if (!ownsStream()) return;
+          if (await rollWispSession(get, model)) {
+            resendingAfterTurnLimit = true;
+            try {
+              await get().sendMessage(trimmedContent);
+            } finally {
+              resendingAfterTurnLimit = false;
+            }
+            return;
+          }
+          set({ error: extractApiError(data, 'Failed to send message'), errorCode: code });
+          return;
+        }
+
+        if (refusal === 'credits') {
+          // The credit / plan gate refused the turn before it ran (#9450): drop
+          // the optimistic bubble like the coded 409s and keep the code so the
+          // chat can offer a way forward (Buy credits) instead of bare text.
           set((s) => ({
             messages: s.messages.filter((m) => m.id !== userMsgId),
             error: extractApiError(data, 'Failed to send message'),
@@ -727,20 +1150,26 @@ export const useAiStore = create<AiState>()(
           return;
         }
 
-        if (res.status === 409 && !code) {
-          set((s) => ({
-            messages: s.messages.filter((m) => m.id !== userMsgId),
-            error: extractApiError(data, 'Another response is still in progress for this conversation.')
-          }));
-          return;
-        }
-
-        set({ errorCode: code });
-        throw new Error(extractApiError(data, 'Failed to send message'));
+        // refusal === 'error': the generic failure path (#9428 slots its
+        // classifyHttpFailure in here). The server refused the turn before it
+        // ran (e.g. 503 ai_not_configured), so it never stored the message:
+        // drop the optimistic bubble and give the text back to the composer
+        // (#10108), keeping the error banner.
+        if (!ownsStream()) return;
+        set((s) => ({
+          messages: s.messages.filter((m) => m.id !== userMsgId),
+          composerDraft: trimmedContent,
+          error: extractApiError(data, 'Failed to send message'),
+          errorCode: code,
+          isStreaming: false,
+        }));
+        return;
       }
 
       const reader = res.body?.getReader();
       if (!reader) throw new Error('No response body');
+      heldReader = reader;
+      currentSendReader = reader;
 
       const decoder = new TextDecoder();
       let buffer = '';
@@ -784,6 +1213,13 @@ export const useAiStore = create<AiState>()(
           }
         }
       }
+
+      // The turn spent the session's last turns mid-loop: the next send would
+      // be refused, so under Wisp roll to a fresh session now and ask for the
+      // message again (work may have run partway — never re-send by itself).
+      if (ownsStream() && get().errorCode === 'turn_limit_reached' && get().wisp) {
+        if (await rollWispSession(get)) set({ error: i18n.t('ai:wisp.turnLimitRolled'), errorCode: 'turn_limit_reached' });
+      }
     } catch (err) {
       // A superseded stream must not raise an error on the session that
       // replaced it — its failure is no longer anything the user can act on.
@@ -793,6 +1229,7 @@ export const useAiStore = create<AiState>()(
         isStreaming: false
       });
     } finally {
+      if (heldReader && currentSendReader === heldReader) currentSendReader = null;
       if (activeStreamToken === streamToken && get().isStreaming) {
         set({ isStreaming: false });
       }
@@ -810,6 +1247,14 @@ export const useAiStore = create<AiState>()(
       });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
+        // #9431: decided elsewhere first — show that decision on the card.
+        const decided = alreadyDecidedOutcome(res.status, data);
+        if (decided) {
+          set((s) => (s.pendingApproval?.executionId === executionId
+            ? { pendingApproval: { ...s.pendingApproval, resolution: decided } }
+            : {}));
+          return;
+        }
         set({ error: extractApiError(data, 'Failed to process approval. It may have timed out.') });
         return;
       }
@@ -821,6 +1266,14 @@ export const useAiStore = create<AiState>()(
   },
 
   clearPendingApproval: () => set({ pendingApproval: null }),
+
+  recheckPendingApproval: () => {
+    const { sessionId, pendingApproval } = get();
+    if (!sessionId || !pendingApproval || pendingApproval.resolution) return;
+    // A live stream delivers approval_resolved itself.
+    if (currentAttach || currentSendReader) return;
+    void get().attachCurrent();
+  },
 
   approvePlan: async (approved: boolean) => {
     const { sessionId } = get();
@@ -911,7 +1364,7 @@ export const useAiStore = create<AiState>()(
         set({ error: 'Failed to close session' });
         return;
       }
-      set({ sessionId: null, sessionOrgId: null, messages: [], boundM365ConnectionId: null });
+      set({ sessionId: null, sessionOrgId: null, messages: [], boundM365ConnectionId: null, isStreaming: false, joinedMidResponse: false });
       resetModelPicker();
     } catch (err) {
       console.error('[AI] Failed to close session:', err);
@@ -919,7 +1372,7 @@ export const useAiStore = create<AiState>()(
     }
   },
 
-  toggleHistory: () => set((s) => ({ showHistory: !s.showHistory, searchResults: [] })),
+  toggleHistory: () => set((s) => ({ showHistory: !s.showHistory })),
 
   interruptResponse: async () => {
     const { sessionId } = get();
@@ -940,27 +1393,6 @@ export const useAiStore = create<AiState>()(
     }
   },
 
-  searchConversations: async (query: string) => {
-    if (query.length < 2) {
-      set({ searchResults: [], isSearching: false });
-      return;
-    }
-    set({ isSearching: true });
-    try {
-      const res = await fetchWithAuth(`/ai/sessions/search?q=${encodeURIComponent(query)}&limit=20`);
-      if (res.ok) {
-        const data = await res.json();
-        set({ searchResults: data.data || [], isSearching: false });
-      } else {
-        const data = await res.json().catch(() => null);
-        set({ isSearching: false, error: extractApiError(data, 'Search failed') });
-      }
-    } catch (err) {
-      console.error('[AI] Search failed:', err);
-      set({ isSearching: false, error: 'Search failed' });
-    }
-  },
-
   switchSession: async (sessionId: string) => {
     const ownsSession = claimSessionOwnership();
     // Another chat's pick must never ride on this chat's next message.
@@ -971,10 +1403,16 @@ export const useAiStore = create<AiState>()(
       if (!res.ok) throw new Error('Failed to load session');
       const data = await res.json();
       if (!ownsSession()) return;
+      // #9427: only chat sessions are reachable; any other type takes the same
+      // path as a non-OK response (the current session stays bound).
+      if (!isChatSessionType(data.session?.type)) throw new Error('Failed to load session');
 
       const messages = mapMessagesFromApi(data.messages || []);
 
       set({
+        // #9427: another chat's running turn (and its cards) is not this one's;
+        // this chat's attach sets them from its own snapshot.
+        ...(get().sessionId !== sessionId ? SWITCHED_TURN_STATE : {}),
         sessionId,
         // An explicit pick from the history panel is authoritative — it is not
         // dropped on an org mismatch, but the org is recorded so a later page
@@ -993,6 +1431,8 @@ export const useAiStore = create<AiState>()(
         wisp: wispForLoadedSession(get().wisp, data.session),
       });
       adoptSessionModelPicker(sessionId);
+      // #9427: a successful, still-owned hydrate — join the turn if one runs.
+      void get().attachCurrent();
       void rehydrateWispForSession(sessionId, data.session);
     } catch (err) {
       if (!ownsSession()) return;
@@ -1057,16 +1497,227 @@ export const useAiStore = create<AiState>()(
   setSelectedM365Connection: (connectionId: string | null) =>
     set({ selectedM365ConnectionId: connectionId }),
 
+  setComposerDraft: (text: string) => set({ composerDraft: text }),
+
+  attachCurrent: (opts) => startAttach(set, get, opts).finished,
+
+  releaseSession: (sessionId: string) => {
+    if (get().sessionId !== sessionId) return;
+    // An in-flight create/load/switch/close must not rebind after this.
+    claimSessionOwnership();
+    ++activeStreamToken;
+    // The token is only noticed after the next read() returns; cancel the
+    // parked reads now so nothing lands after the release (#5684 class).
+    const reader = currentSendReader;
+    currentSendReader = null;
+    if (reader) void reader.cancel().catch(() => undefined);
+    abortCurrentAttach();
+    set({ ...CLEARED_SESSION, isLoading: false, composerDraft: '' });
+    // Drop the released chat's model picker state without reloading the menu
+    // (that is a request); the sidebar reloads it when it next opens unbound.
+    useAiModelPickerStore.getState().reset();
+    get().close();
+  },
+
+  adoptSession: async (sessionId, opts) => {
+    const signal = opts?.signal;
+    if (signal?.aborted) return 'aborted';
+    const ownsSession = claimSessionOwnership();
+    const stale = () => !!signal?.aborted || !ownsSession();
+    let data: {
+      session?: Record<string, unknown> & {
+        orgId?: string | null; flaggedAt?: unknown; flagReason?: string | null;
+        delegantM365ConnectionId?: string | null; lastTurnModel?: unknown;
+      };
+      messages?: Record<string, unknown>[];
+    };
+    try {
+      const res = await fetchWithAuth(`/ai/sessions/${sessionId}`, signal ? { signal } : undefined);
+      if (stale()) return 'aborted';
+      if (res.status === 404) return 'not_found';
+      if (!res.ok) return 'error';
+      data = await res.json();
+    } catch (err) {
+      if (stale()) return 'aborted';
+      console.warn('[AI] Adopting a session failed:', err);
+      return 'error';
+    }
+    if (stale()) return 'aborted';
+    if (!data.session || !isChatSessionType(data.session.type)) return 'not_found';
+    if (data.session.status !== 'active') return 'closed';
+
+    // Committed from here on: the signal no longer applies.
+    if (get().sessionId !== sessionId) useAiModelPickerStore.getState().clearSelection();
+    set({
+      ...CLEARED_SESSION,
+      sessionId,
+      // An explicit pick, like switchSession: not dropped on an org mismatch,
+      // but the org is recorded so a later page navigation can rebind (#5684).
+      sessionOrgId: data.session.orgId ?? null,
+      hydratedSessionId: sessionId,
+      messages: mapMessagesFromApi(data.messages || []),
+      isLoading: false,
+      error: null,
+      errorCode: null,
+      showHistory: false,
+      isFlagged: !!data.session.flaggedAt,
+      flagReason: data.session.flagReason ?? null,
+      boundM365ConnectionId: data.session.delegantM365ConnectionId ?? null,
+      turnModel: (data.session.lastTurnModel ?? null) as AiTurnModel | null,
+      ...topologyFieldsOf(data.session),
+      composerDraft: opts?.draft ?? '',
+      // #10032: as loadSession/switchSession — Wisp mode survives only for a
+      // session under the same grant; a session under another grant gets its
+      // header back below.
+      wisp: wispForLoadedSession(get().wisp, data.session),
+    });
+    adoptSessionModelPicker(sessionId);
+    void rehydrateWispForSession(sessionId, data.session);
+    get().open();
+    // An attach 404 here means the session went away between the read and the
+    // attach: the loop unbinds it like loadSession's 404 path.
+    const ready = await startAttach(set, get).ready;
+    return ready === 'not_found' ? 'not_found' : 'ok';
+  },
+
+  resolveWispTalkFocus: (accepted) => {
+    const request = get().wispTalkFocusRequest;
+    set({ wispTalkFocusRequest: null });
+    request?.resolve(accepted);
+  },
+
+  openPlainChatAbout: async (target) => {
+    const sequence = ++wispTalkSequence;
+    get().resolveWispTalkFocus(false);
+    if (get().wisp) await get().exitWispMode();
+    if (sequence !== wispTalkSequence) return 'superseded';
+    // A restored session can still be rehydrating its Wisp grant. Start an
+    // explicitly plain session instead of trusting a temporarily null header.
+    set({ ...CLEARED_SESSION });
+    const creating = get().createSession({ orgId: target.orgId ?? undefined });
+    const owner = sessionOwnerToken; // createSession claims ownership synchronously.
+    await creating;
+    if (sequence !== wispTalkSequence || sessionOwnerToken !== owner) return 'superseded';
+    if (!get().sessionId || get().wisp) {
+      const { error, errorStatus } = get();
+      set({ error: null, errorCode: null, errorStatus: null });
+      throw new WispTalkError('session_create_failed', error ?? 'Failed to create session', { status: errorStatus ?? undefined });
+    }
+    set((state) => ({
+      composerDraft: state.composerDraft || i18n.t('ai:wisp.talk.draft', { label: target.label, defaultValue: 'About {{label}}: ' }),
+      composerFocusRequest: state.composerFocusRequest + 1,
+      showHistory: false,
+    }));
+    // Bind a plain session before opening: the sidebar otherwise auto-enters
+    // an ambient org's grant while its own lookup is in flight.
+    get().open();
+    return 'opened';
+  },
+
+  talkToWispAbout: async (target) => {
+    const sequence = ++wispTalkSequence;
+    get().resolveWispTalkFocus(false);
+    const initialWisp = get().wisp;
+    const initialSessionId = get().sessionId;
+    const initialOwner = sessionOwnerToken;
+    const unchanged = () => {
+      const current = get().wisp;
+      return sessionOwnerToken === initialOwner && sequence === wispTalkSequence && get().sessionId === initialSessionId
+        && current?.threadId === initialWisp?.threadId && current?.grantId === initialWisp?.grantId
+        && current?.focusOrgId === initialWisp?.focusOrgId && current?.status === initialWisp?.status;
+    };
+    const reusable = isActiveGrant(initialWisp) && (!initialWisp?.scopeOrgId || initialWisp.scopeOrgId === target.orgId);
+    const grant = reusable ? initialWisp : await activeThreadFor(target.orgId);
+    if (!unchanged()) return 'superseded';
+    if (!grant) {
+      const result = await get().openPlainChatAbout(target);
+      return result === 'opened' ? 'no_grant' : 'superseded';
+    }
+    const needsFocusSwitch = !!grant.focusOrgId && !!target.orgId && grant.focusOrgId !== target.orgId;
+    if (needsFocusSwitch) {
+      const { useOrgStore } = await import('./orgStore');
+      if (!unchanged()) return 'superseded';
+      const orgName = (id: string | null) => (useOrgStore.getState().organizations ?? []).find((org) => org.id === id)?.name
+        ?? i18n.t('ai:wisp.header.scopeFallback');
+      const request: WispTalkFocusRequest = {
+        target, from: grant.focusOrgName ?? orgName(grant.focusOrgId), to: orgName(target.orgId), resolve: () => undefined,
+      };
+      const accepted = await new Promise<boolean>((resolve) => {
+        request.resolve = resolve;
+        set({ wispTalkFocusRequest: request });
+      });
+      // Unmount can resolve its own request directly; never clear a newer
+      // button's confirmation while this continuation unwinds.
+      if (get().wispTalkFocusRequest === request) set({ wispTalkFocusRequest: null });
+      if (!unchanged()) return 'superseded';
+      if (!accepted) return 'declined_focus';
+      // A newly discovered grant can be focused before creating its first
+      // session, avoiding a throwaway session anchored to the previous org.
+      if (get().wisp?.grantId !== grant.grantId) set({ wisp: grant, ...CLEARED_SESSION });
+      try {
+        const result = await get().setWispFocus(target.orgId, orgName(target.orgId), { throwOnError: true });
+        if (result === 'superseded') return 'superseded';
+        if (result === 'failed') return 'failed';
+      } catch (err) {
+        if (sequence !== wispTalkSequence) return 'superseded';
+        if (err instanceof WispTalkError && err.alreadyToasted) return 'failed';
+        throw err;
+      }
+      if (sequence !== wispTalkSequence) return 'superseded';
+      // A refused create can clear a dead grant. Preserve that owned failure
+      // for the common error path instead of calling it a cancellation.
+      if (!get().error && (get().wisp?.grantId !== grant.grantId
+        || get().wisp?.threadId !== grant.threadId || get().wisp?.focusOrgId !== target.orgId)) return 'superseded';
+    } else if (get().wisp?.grantId !== grant.grantId || !get().sessionId) {
+      const entering = get().enterWispMode(grant);
+      const owner = sessionOwnerToken;
+      await entering;
+      if (sessionOwnerToken !== owner) return 'superseded';
+    }
+    if (sequence !== wispTalkSequence) return 'superseded';
+    const current = get().wisp;
+    if (!get().sessionId || current?.grantId !== grant.grantId || current.threadId !== grant.threadId || !isActiveGrant(current)) {
+      const { error, errorStatus } = get();
+      set({ error: null, errorCode: null, errorStatus: null });
+      throw new WispTalkError('session_create_failed', error ?? 'Failed to create session', { status: errorStatus ?? undefined });
+    }
+    const sessionId = get().sessionId;
+    const pinOwner = sessionOwnerToken;
+    try {
+      await addWispLink(grant.threadId, { kind: target.kind, id: target.id, orgId: target.orgId });
+    } catch (err) {
+      if (sequence !== wispTalkSequence || sessionOwnerToken !== pinOwner
+        || get().sessionId !== sessionId || get().wisp?.grantId !== grant.grantId) return 'superseded';
+      // Focus/session creation already succeeded. Reveal that conversation
+      // even when the subsequent pin is refused.
+      set({ showHistory: false });
+      get().open();
+      throw new WispTalkError('pin_failed', err instanceof Error ? err.message : i18n.t('ai:wisp.links.addFailed'), {
+        status: err instanceof ActionError ? err.status : undefined, alreadyToasted: err instanceof ActionError,
+      });
+    }
+    if (sequence !== wispTalkSequence || sessionOwnerToken !== pinOwner
+        || get().sessionId !== sessionId || get().wisp?.grantId !== grant.grantId) return 'superseded';
+    set((state) => ({
+      composerDraft: state.composerDraft || i18n.t('ai:wisp.talk.draft', { label: target.label, defaultValue: 'About {{label}}: ' }),
+      composerFocusRequest: state.composerFocusRequest + 1,
+      showHistory: false,
+    }));
+    get().open();
+    return 'opened';
+  },
+
   enterWispMode: async (w) => {
     // A Wisp conversation starts fresh on the grant's thread; the plain chat
     // that was open stays in history (not closed — it is not the thread's).
     set({ wisp: w, ...CLEARED_SESSION });
-    await get().createSession({ wispGrantId: w.grantId, orgId: w.focusOrgId ?? w.scopeOrgId ?? undefined });
+    await get().createSession({ wispGrantId: w.grantId, orgId: wispSessionOrgId(w) ?? undefined });
   },
 
-  setWispFocus: async (orgId, orgName) => {
+  setWispFocus: async (orgId, orgName, opts) => {
     const w = get().wisp;
-    if (!w) return;
+    if (!w) return 'superseded';
+    const focusOwner = sessionOwnerToken;
     const errorFallback = i18n.t('ai:wisp.toast.focusFailed');
     let focus: { focusOrgId: string | null; focusOrgName: string | null };
     try {
@@ -1084,18 +1735,30 @@ export const useAiStore = create<AiState>()(
         focusOrgName: body?.data?.focusOrgName !== undefined ? body.data.focusOrgName : orgName,
       };
     } catch (err) {
+      if (sessionOwnerToken !== focusOwner) return 'superseded';
       handleActionError(err, errorFallback);
-      return;
+      if (opts?.throwOnError) throw new WispTalkError('focus_failed', err instanceof Error ? err.message : errorFallback, {
+        status: err instanceof ActionError ? err.status : undefined, alreadyToasted: true,
+      });
+      return 'failed';
     }
     const live = get().wisp;
-    if (!live || live.threadId !== w.threadId) return;
+    if (sessionOwnerToken !== focusOwner || !live || live.threadId !== w.threadId || live.grantId !== w.grantId) return 'superseded';
     set({ wisp: { ...live, ...focus } });
     // Switching focus is a chat action on the same thread, not a new thread
     // (spec §6.1): close the current session so its summary lands on the
     // thread, then anchor the next turn's session to the new focus.
-    if (get().sessionId) await get().closeSession();
+    if (get().sessionId) {
+      const closing = get().closeSession();
+      const closeOwner = sessionOwnerToken;
+      await closing;
+      if (sessionOwnerToken !== closeOwner) return 'superseded';
+    }
     set({ ...CLEARED_SESSION });
-    await get().createSession({ wispGrantId: w.grantId, orgId: focus.focusOrgId ?? live.scopeOrgId ?? undefined });
+    const creating = get().createSession({ wispGrantId: w.grantId, orgId: focus.focusOrgId ?? live.scopeOrgId ?? undefined });
+    const createOwner = sessionOwnerToken;
+    await creating;
+    return sessionOwnerToken === createOwner ? 'focused' : 'superseded';
   },
 
   updateWisp: (patch) => set((s) => (s.wisp ? { wisp: { ...s.wisp, ...patch } } : {})),
@@ -1117,3 +1780,29 @@ export const useAiStore = create<AiState>()(
     }
   )
 );
+
+// #9427: once the bound session changes (a committed rebind, a release, the
+// #5684 org-mismatch drop), the attach that followed the old one stops now —
+// its reader is cancelled instead of waiting for its next frame.
+useAiStore.subscribe((state) => {
+  if (currentAttach && currentAttach.sessionId !== state.sessionId) abortCurrentAttach();
+});
+
+// #9840 lab row F1: sign-out navigates to /login without a page load, so this
+// store keeps its memory. Removing `breeze-ai-chat` from storage is not enough:
+// the next persist write would put the old session back, and the next person
+// to sign in on this browser would see the previous user's conversation,
+// rendered from memory. Reset to the initial state here, before auth.ts clears
+// storage, and stop anything still streaming into the old session.
+registerLogoutHook(() => {
+  ++wispTalkSequence;
+  useAiStore.getState().resolveWispTalkFocus(false);
+  claimSessionOwnership();
+  ++activeStreamToken;
+  const reader = currentSendReader;
+  currentSendReader = null;
+  if (reader) void reader.cancel().catch(() => undefined);
+  abortCurrentAttach();
+  useAiModelPickerStore.getState().reset();
+  useAiStore.setState(useAiStore.getInitialState(), true);
+});

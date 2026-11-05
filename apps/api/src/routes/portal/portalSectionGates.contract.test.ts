@@ -11,6 +11,8 @@ const indexSrc = readFileSync(join(dir, 'index.ts'), 'utf8');
 // section row: each must say why, so a new section route cannot ship ungated
 // by accident (#9350).
 const NOT_A_GATED_SECTION: Record<string, string> = {
+  'agreements.ts': 'always on like proposals/invoices: an agreement the MSP sent this org for signature (#9075 W3a); signing gated by the recipient-email match',
+  'signedAgreements.ts': 'always on like proposals/invoices: the org\'s own signed agreements (#9075 W3a)',
   'approvals.ts': 'gated by enable_tickets (portalTicketsEnabledMiddleware)',
   'network.ts': 'fail-open availability response (dataStatus not_enabled), not a 403 gate',
   'paymentMethods.ts': 'autopay surface with its own gate (requireAutopayEnabled), not a visibility flag',

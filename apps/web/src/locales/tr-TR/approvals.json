@@ -42,6 +42,7 @@
   },
   "denyPrompt": "Bu isteği neden reddediyorsunuz? Gerekçe isteğe bağlıdır.",
   "denyReasonPlaceholder": "İsteğe bağlı — isteği yapan kişiyle paylaşılır",
+  "denyReasonShownToUserHint": "Son kullanıcı bunu bildiriminde görür (ilk 500 karakter).",
   "confirmDeny": "Reddi onayla",
   "cancel": "Vazgeç",
   "deny": "Reddet",
@@ -107,7 +108,7 @@
       "cancelled": "İptal edildi",
       "completed": "Tamamlandı",
       "denied": "Reddedildi",
-      "refused": "Onay uygulanmadı",
+      "refused": "Onaylandı, sonra engellendi",
       "approved": "Onaylandı",
       "reported": "Bildirildi",
       "unknown": "Bilinmiyor"
@@ -132,7 +133,7 @@
     "durationValue": "Onaydan itibaren {{minutes}} dakika",
     "purpose": "Amaç",
     "requestedBy": "Talep eden",
-    "principalUser": "Breeze yapay zekâ sohbeti",
+    "principalUser": "Breeze AI",
     "principalApiKey": "MCP API anahtarı",
     "principalOauth": "MCP OAuth bağlantısı",
     "paths": "Yollar",
@@ -150,7 +151,7 @@
     }
   },
   "operatorPlan": {
-    "title": "Yapay zekâ operatörü görevi için plan",
+    "title": "Yapay zekâ görevi için plan",
     "summary_one": "{{count}} etki, plan revizyonu {{revision}}",
     "summary_other": "{{count}} etki, plan revizyonu {{revision}}",
     "groupBreeze": "Breeze cihazları",

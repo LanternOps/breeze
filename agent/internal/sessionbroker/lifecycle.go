@@ -106,6 +106,7 @@ func (m *HelperLifecycleManager) handleSCMEvent(event SCMSessionEvent) {
 	if event.SessionID == 0 {
 		return
 	}
+	m.observeSessionLock(event)
 	systemKey := HelperKey{WindowsSessionID: event.SessionID, Role: ipc.HelperRoleSystem}
 	userKey := HelperKey{WindowsSessionID: event.SessionID, Role: ipc.HelperRoleUser}
 	switch event.EventType {

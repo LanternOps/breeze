@@ -5,17 +5,17 @@ package layout
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/wingpt"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 var log = logging.L("layout")
 
 var runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).Output()
+	return procspawn.CommandContext(ctx, name, args...).Output()
 }
 
 const collectTimeout = 60 * time.Second

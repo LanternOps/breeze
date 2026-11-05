@@ -242,6 +242,7 @@ describe('agent commands routes', () => {
     app = new Hono();
     app.use('*', async (c, next) => {
       c.set('agent', {
+        installIncarnation: 1,
         deviceId: 'device-1',
         agentId: 'agent-1',
         orgId: 'org-1',
@@ -916,6 +917,36 @@ describe('agent commands routes', () => {
     expect(vi.mocked(handleCisCommandResult)).toHaveBeenCalledTimes(1);
   });
 
+  // #8928 — pam_request_notify has no result handler on purpose: nothing on
+  // the server follows its result. Acceptance is by row status, so the
+  // generic terminal write stores it and no registry handler runs.
+  it('accepts and stores a pam_request_notify result with no per-type handler', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: commandId,
+      deviceId: 'device-1',
+      type: 'pam_request_notify',
+      status: 'sent',
+      targetRole: 'agent',
+      payload: { requestId: '33333333-3333-4333-8333-333333333333', outcome: 'expired' },
+    }]));
+    updateMock.mockReturnValueOnce(chainMock([{ id: commandId }]));
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', stdout: '' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(updateMock).toHaveBeenCalled();
+    for (const handler of [
+      fileDeleteRegistryHandlerMock, systemCleanupRegistryHandlerMock, scriptRegistryHandlerMock,
+      peripheralV2RegistryHandlerMock, pamRegistryHandlerMock, cisRegistryHandlerMock, callerRegistryHandlerMock,
+    ]) {
+      expect(handler).not.toHaveBeenCalled();
+    }
+  });
+
   it('claims commands for the authenticated credential role only', async () => {
     claimPendingCommandsForDeviceMock.mockResolvedValueOnce([
       {
@@ -930,7 +961,7 @@ describe('agent commands routes', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'agent', undefined);
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', undefined);
     await expect(res.json()).resolves.toEqual({
       commands: [
         {
@@ -949,6 +980,7 @@ describe('agent commands routes', () => {
     const drainApp = new Hono();
     drainApp.use('*', async (c, next) => {
       c.set('agent', {
+        installIncarnation: 1,
         deviceId: 'device-1',
         agentId: 'agent-1',
         orgId: 'org-1',
@@ -969,7 +1001,7 @@ describe('agent commands routes', () => {
 
     expect(res.status).toBe(200);
     expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
-      'device-1',
+      { deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 },
       10,
       'agent',
       ['self_uninstall']
@@ -1649,6 +1681,7 @@ describe('POST /agents/:id/commands/:commandId/result — drain narrowing (#3986
     const app = new Hono();
     app.use('*', async (c, next) => {
       c.set('agent', {
+        installIncarnation: 1,
         deviceId: opts.deviceId ?? 'device-1',
         agentId: 'agent-1',
         orgId: 'org-1',
@@ -1847,7 +1880,7 @@ describe('POST /agents/:id/commands/:commandId/result — drain narrowing (#3986
     });
 
     expect(res.status).toBe(200);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'agent', [
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', [
       'self_uninstall',
     ]);
   });

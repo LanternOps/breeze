@@ -71,6 +71,7 @@ type Chain = {
   set: { mock: { calls: unknown[][] } };
   values: { mock: { calls: unknown[][] } };
   insert: { mock: { calls: unknown[][] } };
+  update: { mock: { calls: unknown[][] } };
   leftJoin: { mock: { calls: unknown[][] } };
 };
 
@@ -144,6 +145,20 @@ describe('acceptQuote deposit snapshot', () => {
     results.length = 0;
     vi.clearAllMocks();
     stagePax8OrderFromQuoteMock.mockResolvedValue({ orderId: null, lineCount: 0 });
+  });
+
+  it('characterization: a quote group outside the quote org yields 409 before acceptance or contract writes', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent', expiryDate: null }]);
+    queueResult([]); // blocks
+    queueResult([{
+      id: 'line-1', contractLineType: 'per_device_group', customerVisible: true,
+      deviceGroupId: '11111111-1111-4111-8111-111111111111', deviceGroupName: 'Foreign group',
+      siteId: null, siteName: null,
+    }]);
+    queueResult([]); // org-scoped group lookup excludes partner/foreign groups
+    await expect(acceptQuote(baseParams)).rejects.toMatchObject({ status: 409, code: 'QUOTE_LINE_REFERENCE_DELETED' });
+    expect((db as unknown as Chain).insert).not.toHaveBeenCalled();
+    expect(createContractMock).not.toHaveBeenCalled();
   });
 
   it('snapshots quote.depositAmount onto the issued invoice as depositDue when a deposit is configured', async () => {
@@ -817,5 +832,40 @@ describe('acceptQuote quote-line unit cost -> invoice-line cost basis (#9221)', 
     expect(withCost).toBe(withoutCost);
     // ...and the cost did land on the invoice line in the second run.
     expect(invoiceLineValues()).toHaveProperty('costBasis', '612.40');
+  });
+});
+
+// #9963: a quote with no customer-visible line items (sent before the send gate
+// existed, or one whose only lines are internal) must not convert into a $0
+// draft invoice. The customer path refuses with copy the customer can act on.
+describe('acceptQuote empty-quote gate (#9963)', () => {
+  beforeEach(() => {
+    results.length = 0;
+    vi.clearAllMocks();
+    stagePax8OrderFromQuoteMock.mockResolvedValue({ orderId: null, lineCount: 0 });
+  });
+
+  it('refuses a sent quote with no lines (422 QUOTE_EMPTY) and writes nothing', async () => {
+    queueAcceptHappyPath();
+    // Replace the queued line rows (3rd result) with an empty line set.
+    results[2] = [];
+    const err = await acceptQuote(baseParams).catch((e: unknown) => e);
+    expect(err).toMatchObject({ status: 422, code: 'QUOTE_EMPTY' });
+    expect((err as Error).message).toMatch(/contact/i);
+    expect((db as unknown as Chain).insert.mock.calls.length).toBe(0);
+    expect((db as unknown as Chain).update.mock.calls.length).toBe(0);
+  });
+
+  it('refuses a viewed quote whose only lines are internal-only', async () => {
+    queueAcceptHappyPath({ status: 'viewed' }, { customerVisible: false });
+    await expect(acceptQuote(baseParams)).rejects.toMatchObject({ status: 422, code: 'QUOTE_EMPTY' });
+    expect((db as unknown as Chain).insert.mock.calls.length).toBe(0);
+    expect((db as unknown as Chain).update.mock.calls.length).toBe(0);
+  });
+
+  it('keeps the status guard first: an empty DRAFT on the customer path is 409 INVALID_STATE', async () => {
+    queueAcceptHappyPath({ status: 'draft' });
+    results[2] = [];
+    await expect(acceptQuote(baseParams)).rejects.toMatchObject({ status: 409, code: 'INVALID_STATE' });
   });
 });

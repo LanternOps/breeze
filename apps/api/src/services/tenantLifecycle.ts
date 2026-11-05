@@ -121,6 +121,7 @@ export async function severAgentCredentialsForOrgIds(
 
   const now = new Date();
 
+  // own-device-row-allowlisted: tenant-lifecycle-credentials
   const suspended = await db
     .update(devices)
     .set({ agentTokenSuspendedAt: now, agentTokenSuspendedReason: TENANT_SUSPENDED_TOKEN_REASON })
@@ -217,6 +218,7 @@ export async function prepareAgentDrainForOrgIds(
 async function restoreAgentCredentialsForOrgIds(orgIds: string[]): Promise<TenantRestorationResult> {
   if (orgIds.length === 0) return { agentTokensRestored: 0 };
 
+  // own-device-row-allowlisted: tenant-lifecycle-credentials
   const restored = await db
     .update(devices)
     .set({ agentTokenSuspendedAt: null, agentTokenSuspendedReason: null })
@@ -242,6 +244,7 @@ export async function suspendOrganizationTenantAccessReversibly(
 ): Promise<{ agentTokensSuspended: number }> {
   return inAmbientOrNewSystemContext(async () => {
     await invalidateAgentTenantCache([orgId]);
+    // own-device-row-allowlisted: tenant-lifecycle-credentials
     const suspended = await db
       .update(devices)
       .set({
@@ -274,6 +277,7 @@ export async function suspendOrganizationTenantAccessReversibly(
 /** Lift only archive-owned device suspensions; security suspensions survive. */
 export async function liftArchiveSuspension(orgId: string): Promise<TenantRestorationResult> {
   return inAmbientOrNewSystemContext(async () => {
+    // own-device-row-allowlisted: tenant-lifecycle-credentials
     const restored = await db
       .update(devices)
       .set({ agentTokenSuspendedAt: null, agentTokenSuspendedReason: null })

@@ -119,6 +119,14 @@ describe('EDR AI tools — handlers', () => {
     expect(parsed.coverage).toEqual(COVERAGE);
   });
 
+  it('get_edr_status returns legacy integrations so Huntress coverage is visible (#10394)', async () => {
+    const integrations = [{ integration: 'huntress', label: 'Huntress (integration)', orgs: 3, agents: 135 }];
+    mockStatus.mockResolvedValue({ providers: [], integrations, coverage: { ...COVERAGE, orgsWithEdr: 3 } });
+    const parsed = JSON.parse(await handlerFor('get_edr_status')({}, makeAuth()));
+    expect(parsed.integrations).toEqual(integrations);
+    expect(parsed.coverage.orgsWithEdr).toBe(3);
+  });
+
   it('maps EdrReadError to an error result', async () => {
     mockList.mockRejectedValue(new EdrReadError(403, 'Access to this organization denied'));
     mockStatus.mockRejectedValue(new EdrReadError(400, 'bad'));

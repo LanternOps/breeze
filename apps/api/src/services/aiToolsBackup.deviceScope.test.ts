@@ -18,6 +18,14 @@ vi.mock('../jobs/backupEnqueue', () => ({ enqueueBackupDispatch: vi.fn() }));
 // real Postgres in backupStoredBytes.integration.test.ts; mocked here.
 const sumStoredSnapshotBytesMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({ totalBytes: 100, count: 7 })));
 vi.mock('./backupStoredBytes', () => ({ sumStoredSnapshotBytes: sumStoredSnapshotBytesMock }));
+// The vendor-backup leg (#10404) reads the unified backup read model, whose
+// SQL is covered by its own tests; stubbed empty here.
+const readModel = vi.hoisted(() => ({
+  summarizeBackupHealth: vi.fn(async () => ({ endpoints: { total: 0, covered: 0, uncovered: 0 }, byHealth: {}, byStatus: {}, byRecency: {} })),
+  listBackupHealthRows: vi.fn(async () => ({ rows: [], nextCursor: null })),
+  getProviderCoverageForDevices: vi.fn(async () => new Map()),
+}));
+vi.mock('./backupHealthReadModel', () => readModel);
 
 import { db } from '../db';
 import { registerBackupTools } from './aiToolsBackup';
@@ -70,7 +78,9 @@ function isDeviceResolverSelect(cols: unknown): boolean {
   return (
     !!cols && typeof cols === 'object' &&
     'id' in (cols as object) && 'siteId' in (cols as object) &&
-    Object.keys(cols as object).length === 2
+    // get_backup_status also selects the device's orgId (vendor coverage, #10404).
+    (Object.keys(cols as object).length === 2
+      || (Object.keys(cols as object).length === 3 && 'orgId' in (cols as object)))
   );
 }
 
@@ -94,6 +104,9 @@ describe('get_backup_status — exact-device axis (finding 9a)', () => {
     expect(parsed.storage).toBeUndefined();
     expect(String(parsed.error)).toMatch(/deviceId/);
     expect(aggregateScanRan).toBe(false);
+    // The vendor leg (#10404) is org-wide too: it must not run before the refusal.
+    expect(readModel.summarizeBackupHealth).not.toHaveBeenCalled();
+    expect(readModel.listBackupHealthRows).not.toHaveBeenCalled();
   });
 
   it('device-LESS analysis shape (no site axis) also gets no org-wide aggregate', async () => {
@@ -108,6 +121,9 @@ describe('get_backup_status — exact-device axis (finding 9a)', () => {
     expect(parsed.storage).toBeUndefined();
     expect(String(parsed.error)).toMatch(/deviceId/);
     expect(aggregateScanRan).toBe(false);
+    // The vendor leg (#10404) is org-wide too: it must not run before the refusal.
+    expect(readModel.summarizeBackupHealth).not.toHaveBeenCalled();
+    expect(readModel.listBackupHealthRows).not.toHaveBeenCalled();
   });
 
   it('device-bound caller still gets its OWN device summary', async () => {
@@ -116,7 +132,7 @@ describe('get_backup_status — exact-device axis (finding 9a)', () => {
       if (isDeviceResolverSelect(cols)) {
         return {
           from: () => ({
-            where: () => ({ limit: () => Promise.resolve([{ id: 'dev-1', siteId: 'site-1' }]) }),
+            where: () => ({ limit: () => Promise.resolve([{ id: 'dev-1', orgId: 'org-1', siteId: 'site-1' }]) }),
           }),
         };
       }
@@ -148,6 +164,7 @@ describe('get_backup_status — exact-device axis (finding 9a)', () => {
       makeAuth({ allowedDeviceIds: ['dev-1'], allowedSiteIds: ['site-1'] }),
     );
     expect(JSON.parse(raw).error).toBe('Device not found or access denied');
+    expect(readModel.getProviderCoverageForDevices).not.toHaveBeenCalled();
   });
 
   it('unrestricted caller still gets the org-wide aggregate (no regression)', async () => {

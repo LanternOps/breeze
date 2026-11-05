@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   SDK_TOOL_SEARCH_BUILTIN,
   TOOL_SEARCH_MIN_REMAINING_TURNS,
+  TOOL_SEARCH_TURN_HEADROOM,
   isSdkBuiltinToolUse,
+  newRoundTripTally,
+  noteAssistantRoundTrip,
+  sdkMaxTurns,
+  workTurns,
   resolveToolSearchPolicy,
   toolSearchOverride,
 } from './aiToolSearchPolicy';
@@ -88,5 +93,45 @@ describe('isSdkBuiltinToolUse', () => {
     expect(isSdkBuiltinToolUse('ToolSearch')).toBe(true);
     expect(isSdkBuiltinToolUse('mcp__breeze__query_devices')).toBe(false);
     expect(isSdkBuiltinToolUse('query_devices')).toBe(false);
+  });
+});
+
+describe('work-turn accounting (#10400)', () => {
+  const search = { type: 'tool_use', name: SDK_TOOL_SEARCH_BUILTIN };
+  const tool = { type: 'tool_use', name: 'mcp__breeze__query_devices' };
+  const text = { type: 'text' };
+
+  it('discounts only round-trips whose every tool call is ToolSearch', () => {
+    const tally = newRoundTripTally();
+    noteAssistantRoundTrip(tally, { id: 'a', content: [search] });
+    noteAssistantRoundTrip(tally, { id: 'b', content: [text, search] });
+    noteAssistantRoundTrip(tally, { id: 'c', content: [search] });
+    noteAssistantRoundTrip(tally, { id: 'c', content: [tool] });
+    noteAssistantRoundTrip(tally, { id: 'd', content: [text] });
+    expect(workTurns(4, tally)).toBe(2);
+  });
+
+  it('charges a turn that reached the model at least one turn, even if it only searched', () => {
+    const tally = newRoundTripTally();
+    noteAssistantRoundTrip(tally, { id: 'a', content: [search] });
+    noteAssistantRoundTrip(tally, { id: 'b', content: [search] });
+    expect(workTurns(2, tally)).toBe(1);
+    expect(workTurns(1, tally)).toBe(1);
+  });
+
+  it('charges nothing for a turn that never reached the model', () => {
+    expect(workTurns(0, newRoundTripTally())).toBe(0);
+  });
+
+  it('keys id-less messages apart', () => {
+    const tally = newRoundTripTally();
+    noteAssistantRoundTrip(tally, { content: [search] });
+    noteAssistantRoundTrip(tally, { content: [tool] });
+    expect(workTurns(2, tally)).toBe(1);
+  });
+
+  it('adds search headroom to the SDK ceiling only when search is on', () => {
+    expect(sdkMaxTurns(5, true)).toBe(5 + TOOL_SEARCH_TURN_HEADROOM);
+    expect(sdkMaxTurns(5, false)).toBe(5);
   });
 });

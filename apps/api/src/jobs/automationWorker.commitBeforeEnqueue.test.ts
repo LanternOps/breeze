@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+// #5221 B2 — no automation here has a conversion: today's admission path.
+vi.mock('../services/flows/conversion/claims', async () =>
+  (await import('../__tests__/helpers/noConversionClaims')).noConversionClaims());
 
 /**
  * #7187 — a trigger handler must not enqueue `execute-run` before the

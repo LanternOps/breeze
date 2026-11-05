@@ -213,6 +213,10 @@ export const JOB_SCHEDULES = {
   // only `sending-domains-daily` at :03 (and `warranty-batch-sync` at :42);
   // :23 keeps the daily = 3 (mod 5) lane.
   'wisp-concern-retention': '23 21 * * *',
+  // Wisp W06a (#9912) — 15-minute nudge digest + morning-brief sweep (w00 A28).
+  // Sub-hourly, so outside the coarse collision grid; :13/:28/:43/:58 avoid
+  // the unmanaged 0 (mod 5) ticks.
+  'wisp-nudge-digest': '13,28,43,58 * * * *',
   // Disk Cleanup v2 W03 (spec §5.2) — daily sweep of device_filesystem_cleanup_runs:
   // abandoned previews at 7 days, the pinned candidate blob at 90 days, and
   // file runs stuck in `running` at 24 hours. Hour 22 held only the sub-daily
@@ -228,6 +232,15 @@ export const JOB_SCHEDULES = {
   // WEBHOOK_DELIVERY_RETENTION_DAYS (default 90). :13 keeps the daily = 3
   // (mod 5) lane in hour 22.
   'webhook-delivery-retention': '13 22 * * *',
+  // #10020 — daily prune of dns_security_events + dns_event_aggregations past
+  // each integration's retentionDays (default DNS_SECURITY_RETENTION_DAYS_DEFAULT,
+  // 90). :18 keeps the daily = 3 (mod 5) lane in hour 22.
+  'dns-security-retention': '18 22 * * *',
+  // Tool catalog W04 (#5219, plan Task A8) — daily flow run body pruning
+  // (trigger payload, inputs, step inputs/outputs) past FLOW_RUN_RETENTION_DAYS;
+  // rows are never deleted. Hour 23 was free in the daily tier; :03 keeps the
+  // daily = 3 (mod 5) lane.
+  'flow-run-retention': '3 23 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
   // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35. Minute 0
@@ -279,6 +292,16 @@ export const JOB_SCHEDULES = {
   // close-out and 13-month history delete. 4x/day keeps the expiry view within
   // ~6 h; minute 29 on hours 2,8,14,20 is unused in this lane.
   'endpoint-message-retention': '29 2,8,14,20 * * *',
+  // Agreement auto-reminders (#9084) — hourly tick. The effective tick is hourly;
+  // the per-request cadence (partner "remind every N days") is enforced in the
+  // job's due-set SQL, so the tick only bounds how late a due reminder can go
+  // out (<= 1 h). :44 is free in every hour and outside the ≡0 (mod 5) ticks.
+  'agreement-request-auto-reminder': '44 * * * *',
+  // #10521 W2b — 6-hourly safety sweep for partner-owned device groups (and
+  // org groups keyed on software.*). A retry cadence, not a freshness SLA;
+  // each enqueued group head adds up to 15 min of its own jitter. :24 on
+  // hours 5,11,17,23 is unused in this lane and outside the ≡0 (mod 5) ticks.
+  'partner-group-evaluation-sweep': '24 5,11,17,23 * * *',
 } as const;
 
 export type JobScheduleKey = keyof typeof JOB_SCHEDULES;

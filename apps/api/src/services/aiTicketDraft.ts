@@ -69,7 +69,13 @@ function buildUserContent(input: DraftInput): string {
   const lines = input.messages
     .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.content && m.content.trim().length > 0)
     .map((m) => `${m.role === 'user' ? 'Technician/User' : 'Assistant'}: ${m.content!.trim()}`);
-  const ctx = input.contextSnapshot ? `Context: ${JSON.stringify(input.contextSnapshot)}\n` : '';
+  const snapshot = input.contextSnapshot;
+  // Record snapshots hold client badge text and an unverified org hint. The
+  // record is not resolved here, so omit that context rather than promoting
+  // it into model-visible facts. A server-resolved label could be added later.
+  const isRecord = snapshot !== null && typeof snapshot === 'object'
+    && 'type' in snapshot && snapshot.type === 'record';
+  const ctx = snapshot && !isRecord ? `Context: ${JSON.stringify(snapshot)}\n` : '';
   return `${ctx}Elapsed ceiling (minutes): ${input.elapsedMinutes}\n\nTranscript:\n${lines.join('\n')}`;
 }
 

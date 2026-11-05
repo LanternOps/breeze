@@ -269,11 +269,22 @@ const ACTORS_WITHOUT_SITE_AXIS: Readonly<Record<string, string>> = {
   OrgImportActor: 'org import provenance — { userId } only, no allowlist',
   ValueImportActor: 'custom-field value import provenance — { userId } only',
   WarrantyConsentActor: 'a `{ userId } | null` consent stamp, not an authorization struct',
+  // #5219 (flow runner). The audit-row actor derived from an AI/flow origin
+  // (aiOriginColumns.ts aiOriginAuditActor): who to record on the audit row for
+  // a dispatched command. Authorization already happened upstream.
+  AiOriginAuditActor: 'audit-row attribution derived from aiOrigin — no allowlist of any axis, not an authorization struct',
   // `GET /devices/:id/billing` is the only caller and it enforces BOTH axes at
   // the door (`getDeviceWithOrgAndSiteCheck`) before calling the service, and is
   // `requireScope('partner','system')` — a scope that never carries
   // `allowedSiteIds` at all. Worth re-reading if a second caller appears: the
   // service itself would then be site-blind.
+  // #10532 (alerts:write). `AlertActor` in services/alertActions.ts is who
+  // acknowledged — a user id or a Partner API service principal id stamped on
+  // the alert row and event. No allowlist of any axis: the staff route checks
+  // org + site access on its pre-read (`getAlertWithOrgCheck`) before calling,
+  // and the Partner API route reads the alert under the principal's partner
+  // RLS context with its accessible-org set (principals are not site-scoped).
+  AlertActor: 'acknowledge provenance (user or service principal id); callers gate org/site access before the CAS write',
   DeviceCoverageActor: 'org axis only; its single route gates the site axis at the door and is partner/system scope',
 };
 

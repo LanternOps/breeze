@@ -40,6 +40,16 @@ describe('deprecated AI tool aliases', () => {
     expect(isDeprecatedToolAlias('get_fleet_status')).toBe(true);
   });
 
+  it('maps the W02 billing-catalog rename (spec D3, #6756)', () => {
+    expect(resolveDeprecatedToolAlias('manage_catalog')).toBe('manage_billing_catalog');
+    expect(isDeprecatedToolAlias('manage_catalog')).toBe(true);
+    expect(aiTools.has('manage_catalog')).toBe(false);
+    expect(aiTools.has('manage_billing_catalog')).toBe(true);
+    const advertised = new Set(getToolDefinitions().map((d) => d.name));
+    expect(advertised.has('manage_billing_catalog')).toBe(true);
+    expect(advertised.has('manage_catalog')).toBe(false);
+  });
+
   it('passes unknown names through so the caller still reports "Unknown tool"', () => {
     expect(resolveDeprecatedToolAlias('query_devices')).toBe('query_devices');
     expect(resolveDeprecatedToolAlias('not_a_tool')).toBe('not_a_tool');

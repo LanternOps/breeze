@@ -7,7 +7,8 @@ import {
   ScanSearch,
   ShieldAlert,
   ShieldCheck,
-  ShieldOff
+  ShieldOff,
+  XCircle
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -15,13 +16,14 @@ import { ENABLE_EDR_INTEGRATIONS, ENABLE_ENDPOINT_AV_FEATURES } from '../../lib/
 import { friendlyFetchError } from '../../lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
+import { handleActionError, runAction } from '../../lib/runAction';
 import DeviceSecurityStatus from '../security/DeviceSecurityStatus';
 import RecoveryKeysPanel from '../security/RecoveryKeysPanel';
 import DeviceEdrPanel from './DeviceEdrPanel';
 
 type ThreatSeverity = 'low' | 'medium' | 'high' | 'critical';
 type ThreatStatus = 'active' | 'quarantined' | 'removed';
-type ScanStatus = 'queued' | 'running' | 'completed' | 'failed';
+type ScanStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'expired';
 
 type ThreatRecord = {
   id: string;
@@ -39,6 +41,8 @@ type ScanRecord = {
   startedAt: string | null;
   finishedAt: string | null;
   threatsFound: number;
+  /** #10057 gap 2: set on a Scan now; while `queued` it waits for a free scan slot until then. */
+  queueExpiresAt?: string | null;
 };
 
 type DeviceSecurityTabProps = {
@@ -64,7 +68,9 @@ const scanStatusBadge: Record<ScanStatus, string> = {
   queued: 'bg-blue-500/15 text-blue-700 border-blue-500/30',
   running: 'bg-amber-500/20 text-amber-800 border-amber-500/40',
   completed: 'bg-emerald-500/20 text-emerald-700 border-emerald-500/40',
-  failed: 'bg-red-500/15 text-red-700 border-red-500/30'
+  failed: 'bg-red-500/15 text-red-700 border-red-500/30',
+  cancelled: 'bg-muted text-muted-foreground border-border',
+  expired: 'bg-muted text-muted-foreground border-border'
 };
 
 function formatDateTime(value: string | null, timezone?: string): string {
@@ -88,6 +94,7 @@ export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceS
   const [error, setError] = useState<string>();
   const [runningFullScan, setRunningFullScan] = useState(false);
   const [actingThreatId, setActingThreatId] = useState<string | null>(null);
+  const [cancellingScanId, setCancellingScanId] = useState<string | null>(null);
 
   const fetchSecurityData = useCallback(async () => {
     if (!ENABLE_ENDPOINT_AV_FEATURES) {
@@ -144,6 +151,12 @@ export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceS
         body: JSON.stringify({ scanType: 'full' })
       });
 
+      // #10057 gap 2: one waiting Scan now per device; show it rather than fail.
+      if (response.status === 409) {
+        setError(t('deviceSecurityTab.scanAlreadyQueued'));
+        await fetchSecurityData();
+        return;
+      }
       if (!response.ok) {
         throw new Error(`${response.status} ${response.statusText}`);
       }
@@ -153,6 +166,24 @@ export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceS
       setError(friendlyFetchError(err));
     } finally {
       setRunningFullScan(false);
+    }
+  };
+
+  // #10057 gap 2: withdraw a Scan now that is still waiting for a scan slot.
+  const cancelScan = async (scanId: string) => {
+    setCancellingScanId(scanId);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/security/scans/${scanId}/cancel`, { method: 'POST' }),
+        errorFallback: t('deviceSecurityTab.cancelScanFailed'),
+        successMessage: t('deviceSecurityTab.scanCancelled'),
+        friendly: (code) => (code === 'SCAN_RUNNING' ? t('deviceSecurityTab.scanAlreadyRunning') : undefined),
+      });
+    } catch (err) {
+      handleActionError(err, t('deviceSecurityTab.cancelScanFailed'));
+    } finally {
+      setCancellingScanId(null);
+      await fetchSecurityData();
     }
   };
 
@@ -328,10 +359,28 @@ export default function DeviceSecurityTab({ deviceId, orgId, timezone }: DeviceS
                 <div key={scan.id} className="rounded-md border bg-background p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-sm font-medium capitalize">{t('deviceSecurityTab.scanType', { type: t(/* i18n-dynamic */ `deviceSecurityTab.scanTypes.${scan.scanType}`) })}</p>
-                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${scanStatusBadge[scan.status]}`}>
+                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${scanStatusBadge[scan.status] ?? scanStatusBadge.failed}`}>
                       {t(/* i18n-dynamic */ `deviceSecurityTab.scanStatus.${scan.status}`)}
                     </span>
                   </div>
+
+                  {scan.status === 'queued' && scan.queueExpiresAt && (
+                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-xs text-muted-foreground" data-testid={`scan-waiting-${scan.id}`}>
+                        {t('deviceSecurityTab.waitingForSlot', { date: formatDateTime(scan.queueExpiresAt, timezone) })}
+                      </p>
+                      <button
+                        type="button"
+                        data-testid={`scan-cancel-${scan.id}`}
+                        onClick={() => cancelScan(scan.id)}
+                        disabled={cancellingScanId === scan.id}
+                        className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-muted disabled:opacity-60"
+                      >
+                        {cancellingScanId === scan.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <XCircle className="h-3.5 w-3.5" />}
+                        {t('deviceSecurityTab.cancelScan')}
+                      </button>
+                    </div>
+                  )}
 
                   <div className="mt-2 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
                     <p>{t('deviceSecurityTab.started', { date: formatDateTime(scan.startedAt, timezone) })}</p>

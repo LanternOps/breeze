@@ -1,0 +1,13 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import WorkspacePage from '../../components/workspace/WorkspacePage';
+
+// AI surface cohesion W05 (#10136): the full-page Breeze AI chat (multi-tab,
+// up to five conversations). It was /workspace, then /wisp/chat (Wisp W08
+// #9921); both now redirect here. workspaceStore and its persisted
+// `breeze-workspace` tabs are untouched by the move.
+---
+
+<DashboardLayout titleKey="titles.wispChat">
+  <WorkspacePage client:load />
+</DashboardLayout>

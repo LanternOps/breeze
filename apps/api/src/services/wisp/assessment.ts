@@ -13,7 +13,9 @@
  *                          live concerns with this grant's recipient state, a
  *                          five-table digest since the watermark (each read
  *                          pinned to the run's org, gated on the grantor's
- *                          permission for it, ≤ 25 rows, sanitised), the
+ *                          permission for it, ≤ 25 rows, sanitised; on a
+ *                          first look the alerts are the org's open ones,
+ *                          #10389), the
  *                          reason's watch, the org's readiness inventory, and
  *                          the grantor's nudge feedback. null = the grant is no
  *                          longer usable (the run finishes without a model call).
@@ -27,7 +29,8 @@
  * it announces and enqueues after its own transaction commits (#1105; the same
  * seam as metricAnomalySubscriber.ts).
  */
-import { and, desc, eq, gte, inArray, isNull, ne, or, sql } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
+import { and, asc, desc, eq, gte, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import type { Concern, ConcernSeverity, ConcernSubject, ConcernSubjectKind } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { actionIntents } from '../../db/schema/actionIntents';
@@ -39,12 +42,12 @@ import { tickets } from '../../db/schema/portal';
 import { wispGrants } from '../../db/schema/wisp';
 import { wispEnabled } from '../../config/env';
 import { ASSESSMENT_BUDGET_CENTS_PER_RUN } from '../aiAgents/assessmentProfile';
-import { createAndEnqueueAgentRun } from '../aiAgents/runService';
+import { createAndEnqueueAgentRun, type AgentRunSkipReason } from '../aiAgents/runService';
 import { sanitizeSweepText } from '../aiAgents/runnerPrompt';
 import { hasEntitlement } from '../entitlements';
 import { captureException } from '../sentry';
 import { chargeableUnderGrant, notifyBudgetExhaustedOnce, utcDayWindow } from './budget';
-import { listConcernsForCeiling, upsertConcern } from './concerns';
+import { ConcernSubjectHeldError, listConcernsForCeiling, resolveConcernBySignature, upsertConcern } from './concerns';
 import { deliverInApp } from './deliver';
 import {
   CeilingViolationError,
@@ -58,6 +61,7 @@ import { assessableOrgIds } from './assessableOrgs';
 import { readinessInventory } from './readiness';
 import { getOrCreateThread, seedContextForSession, updateThreadSummary } from './threads';
 import { listWatches } from './watches';
+import { incWispAssessment } from '../wispMetrics';
 import type {
   AssessmentDigest,
   AssessmentReason,
@@ -163,32 +167,52 @@ export type DeterministicDigestHint = {
   failed?: boolean;
 };
 
+function skipAssessment(
+  skipped: string,
+  outcome: 'skipped_budget' | 'skipped_grant' | 'skipped_admission',
+): { skipped: string } {
+  incWispAssessment(outcome);
+  return { skipped };
+}
+
 /**
  * Admit one assessment run for (grant, org). `subject` / `failed` are used
  * only on the budget-exhausted path (see DeterministicDigestHint). Never call
  * this from inside a DB transaction you still hold open: admission enqueues.
  */
 export async function enqueueAssessment(
-  input: { grantId: string; orgId: string; reason: AssessmentReason } & DeterministicDigestHint,
+  input: {
+    grantId: string;
+    orgId: string;
+    reason: AssessmentReason;
+    /**
+     * The queue job's identity (`<jobId>@<job.timestamp>`). When set the
+     * dedupe key is derived from it, so a BullMQ retry of the SAME job
+     * occurrence lands on the same `(org_id, dedupe_key)` and admission
+     * returns `duplicate` instead of a second assessment (W05 carry-over,
+     * fixed in W07). Unset → a time-based key (direct callers).
+     */
+    occurrenceKey?: string;
+  } & DeterministicDigestHint,
 ): Promise<{ runId: string } | { skipped: string }> {
-  if (!wispEnabled()) return { skipped: 'wisp_disabled' };
+  if (!wispEnabled()) return skipAssessment('wisp_disabled', 'skipped_admission');
   const { grantId, orgId, reason } = input;
 
   const grant = await loadGrantPin(grantId);
-  if (!grant?.currentRevisionId) return { skipped: 'grant_inactive' };
+  if (!grant?.currentRevisionId) return skipAssessment('grant_inactive', 'skipped_grant');
   // Spec §10 claim-time re-check: a partner that lost the entitlement admits nothing.
-  if (!(await hasEntitlement(grant.partnerId, 'wisp'))) return { skipped: 'not_entitled' };
+  if (!(await hasEntitlement(grant.partnerId, 'wisp'))) return skipAssessment('not_entitled', 'skipped_admission');
 
   let ceiling: GrantCeiling;
   try {
     ceiling = await resolveGrantCeiling(grantId, grant.currentRevisionId);
   } catch (err) {
-    if (err instanceof GrantInactiveError) return { skipped: 'grant_inactive' };
+    if (err instanceof GrantInactiveError) return skipAssessment('grant_inactive', 'skipped_grant');
     throw err;
   }
   // Same spelling as W02's admission skip (step 1d), which re-checks it.
-  if (!ceiling.orgIds.has(orgId)) return { skipped: 'grant_org_out_of_ceiling' };
-  if (!assessableOrgIds(ceiling).has(orgId)) return { skipped: 'grant_org_site_restricted' };
+  if (!ceiling.orgIds.has(orgId)) return skipAssessment('grant_org_out_of_ceiling', 'skipped_grant');
+  if (!assessableOrgIds(ceiling).has(orgId)) return skipAssessment('grant_org_site_restricted', 'skipped_grant');
 
   const budget = await chargeableUnderGrant(grantId, ASSESSMENT_BUDGET_CENTS_PER_RUN);
   if (!budget.ok) {
@@ -199,14 +223,19 @@ export async function enqueueAssessment(
     await recordDeterministicDigest(grantId, orgId, reason, { subject: input.subject, failed: input.failed, ceiling })
       .catch((err: unknown) => { failures.push(err); });
     if (failures.length > 0) throw failures[0];
-    return { skipped: 'budget_exhausted' };
+    return skipAssessment('budget_exhausted', 'skipped_budget');
   }
 
   const watermark = await lastAssessmentWatermark(grantId, orgId);
   const triggerRef: WispAssessmentTriggerRef = {
     grantId,
     grantRevisionId: ceiling.revisionId,
-    reason,
+    // #10389: a floor tick for an org this grant has never assessed (orgs past
+    // onboarding's first 10 reach Wisp this way) is that org's first look, so
+    // it runs as onboarding: first-look framing and the readiness note. Event
+    // and watch reasons keep their reason; loadAssessmentContext still gives
+    // them the first-look digest.
+    reason: watermark === null && reason.kind === 'tick' ? { kind: 'onboarding' } : reason,
     watermark: watermark?.toISOString() ?? null,
   };
   // #1105: admission opens its own context and enqueues after commit, so it
@@ -217,11 +246,78 @@ export async function enqueueAssessment(
     triggerKind: 'schedule',
     deviceId: null,
     profile: 'assessment',
-    dedupeKey: `wisp-assess-${grantId}-${orgId}-${Date.now()}`,
+    dedupeKey: input.occurrenceKey
+      ? `wisp-assess-${grantId}-${orgId}-o${createHash('sha256').update(input.occurrenceKey).digest('hex').slice(0, 24)}`
+      : `wisp-assess-${grantId}-${orgId}-${Date.now()}`,
     triggerRef: { wisp: triggerRef },
     grant: { grantId, grantRevisionId: ceiling.revisionId },
   }));
-  return result.created ? { runId: result.run.id } : { skipped: result.skipped };
+  if (result.created) {
+    incWispAssessment('admitted');
+    await clearNoAgentReadiness(ceiling.partnerId, orgId);
+    return { runId: result.run.id };
+  }
+  // An enabled Triage agent resolved (the skip is something else), so a stale "no agent" concern is false: close it.
+  if (NO_ENABLED_TRIAGE_AGENT_SKIPS.has(result.skipped)) await raiseNoAgentReadiness(grantId, ceiling.partnerId, orgId);
+  else await clearNoAgentReadiness(ceiling.partnerId, orgId);
+  return skipAssessment(result.skipped, 'skipped_admission');
+}
+
+/**
+ * #10143: Wisp looks idle, not blocked, when an org has no effective AI agent.
+ * #10292: an assessment is a `triage` run, so readiness is "an ENABLED Triage
+ * agent resolves" by the same partner-baseline → org-override merge admission
+ * uses (resolveEffectiveAgentSystem, then `effective.enabled` / `mode`). An
+ * agent of another kind never satisfies it, and one that resolves but is
+ * turned off blocks Wisp just the same — the copy names the kind for both.
+ */
+const NO_ENABLED_TRIAGE_AGENT_SKIPS: ReadonlySet<string> = new Set<AgentRunSkipReason>(['no_effective_agent', 'agent_disabled', 'mode_off']);
+const noAgentSignature = (orgId: string): string => `wisp-readiness:no-effective-agent:${orgId}`;
+const NO_AGENT_SUMMARY =
+  "Wisp can't check this organization yet — its checks run as your Triage agent, and no Triage agent is set up "
+  + 'and switched on here (other agent kinds don\'t count). Create one, or check its status and mode, under Settings → AI Agents.';
+const NO_AGENT_HREF = '/settings/ai-agents';
+
+/**
+ * Upsert (keyed by signature, so once per org however many ticks skip). Best
+ * effort: never changes the skip. Subject `readiness`, not `org` (#10386).
+ * The slot can only be held by the onboarding readiness note (system-only
+ * kind); with no agent that inventory is moot, so it yields once.
+ */
+async function raiseNoAgentReadiness(grantId: string, partnerId: string, orgId: string): Promise<void> {
+  const raise = () => upsertConcern({
+    partnerId,
+    orgId,
+    subject: { kind: 'readiness', id: orgId },
+    summary: NO_AGENT_SUMMARY,
+    severity: 'info',
+    evidence: { href: NO_AGENT_HREF, reason: 'no_effective_agent' },
+    signature: noAgentSignature(orgId),
+    raisedByGrantId: grantId,
+  });
+  try {
+    try {
+      await raise();
+    } catch (err) {
+      if (!(err instanceof ConcernSubjectHeldError)) throw err;
+      // Retry only when the onboarding note (`readiness:<org>`, written by
+      // assessmentFinalizer.applyReadiness) was the holder and is now closed.
+      const { resolved } = await resolveConcernBySignature(partnerId, `readiness:${orgId}`, 'superseded_no_effective_agent');
+      if (!resolved) throw err;
+      await raise();
+    }
+  } catch (err) {
+    captureException(err, undefined, { wisp_op: 'raise_no_agent_readiness' }, { fingerprint: ['wisp-readiness', 'raise'] });
+  }
+}
+
+/** An assessment was admitted, so an agent exists: close the readiness concern. Best effort. */
+async function clearNoAgentReadiness(partnerId: string, orgId: string): Promise<void> {
+  try {
+    await resolveConcernBySignature(partnerId, noAgentSignature(orgId), 'ai_agent_configured');
+  } catch (err) {
+    captureException(err, undefined, { wisp_op: 'clear_no_agent_readiness' }, { fingerprint: ['wisp-readiness', 'clear'] });
+  }
 }
 
 /** Run statuses that finished an assessment cleanly enough to advance the watermark. */
@@ -322,13 +418,24 @@ function isNonEmptyString(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUuid = (v: unknown): v is string => typeof v === 'string' && UUID_RE.test(v);
+
 function parseReason(v: unknown): AssessmentReason | null {
   if (typeof v !== 'object' || v === null) return null;
   const r = v as Record<string, unknown>;
   switch (r.kind) {
     case 'event':
+      // #10388: the subject ids are rendered into the prompt, so anything but
+      // a uuid is dropped rather than carried.
       return isNonEmptyString(r.eventType) && isNonEmptyString(r.eventId)
-        ? { kind: 'event', eventType: r.eventType, eventId: r.eventId }
+        ? {
+          kind: 'event',
+          eventType: r.eventType,
+          eventId: r.eventId,
+          ...(isUuid(r.alertId) ? { alertId: r.alertId } : {}),
+          ...(isUuid(r.deviceId) ? { deviceId: r.deviceId } : {}),
+        }
         : null;
     case 'tick':
       return { kind: 'tick' };
@@ -396,17 +503,30 @@ function ceilingAllows(ceiling: GrantCeiling, orgId: string, permission: string)
  * Five bounded reads, each pinned to `orgId` (the ceiling admitted the org;
  * the pin is the second lock) and each gated on the grantor's permission for
  * it (DIGEST_SECTION_PERMISSION): a section the grantor may not read renders
- * empty and issues no query.
+ * empty and issues no query. On a first look the alerts section is the org's
+ * open alerts (loadOpenAlertRows); the other four keep the `since` window.
  */
-async function loadDigest(ceiling: GrantCeiling, orgId: string, currentRunId: string, since: Date): Promise<AssessmentDigest> {
+async function loadDigest(
+  ceiling: GrantCeiling,
+  orgId: string,
+  currentRunId: string,
+  since: Date,
+  firstLook: boolean,
+): Promise<AssessmentDigest> {
   const may = (section: keyof typeof DIGEST_SECTION_PERMISSION) =>
     ceilingAllows(ceiling, orgId, DIGEST_SECTION_PERMISSION[section]);
   return sys(async () => {
-    const alertRows = !may('alerts') ? [] : await db
-      .select({ id: alerts.id, title: alerts.title, severity: alerts.severity, status: alerts.status, at: alerts.triggeredAt })
+    const alertRows = !may('alerts') ? [] : firstLook ? await loadOpenAlertRows(orgId) : await db
+      .select({
+        id: alerts.id, title: alerts.title, severity: alerts.severity, status: alerts.status,
+        at: alerts.triggeredAt, resolvedAt: alerts.resolvedAt,
+      })
       .from(alerts)
-      .where(and(eq(alerts.orgId, orgId), gte(alerts.triggeredAt, since)))
-      .orderBy(desc(alerts.triggeredAt))
+      // #10388: an alert resolved since the watermark is a change too (a
+      // resolve event must leave the run something to read), ordered by
+      // whichever of the two happened last.
+      .where(and(eq(alerts.orgId, orgId), or(gte(alerts.triggeredAt, since), gte(alerts.resolvedAt, since))))
+      .orderBy(desc(sql`GREATEST(${alerts.triggeredAt}, ${alerts.resolvedAt})`))
       .limit(DIGEST_ROW_LIMIT);
     const ticketRows = !may('tickets') ? [] : await db
       .select({ id: tickets.id, number: tickets.ticketNumber, title: tickets.subject, status: tickets.status, updatedAt: tickets.updatedAt })
@@ -434,7 +554,9 @@ async function loadDigest(ceiling: GrantCeiling, orgId: string, currentRunId: st
         title: sanitizeSweepText(r.title, 160),
         severity: sanitizeSweepText(String(r.severity), 20),
         status: sanitizeSweepText(String(r.status), 30),
-        at: toIso(r.at),
+        // The row's latest change, matching the ORDER BY: a resolved alert
+        // shows when it was resolved, not when it first fired.
+        at: toIso(r.resolvedAt && r.resolvedAt > r.at ? r.resolvedAt : r.at),
       })),
       tickets: ticketRows.map((r) => ({
         id: r.id,
@@ -462,6 +584,30 @@ async function loadDigest(ceiling: GrantCeiling, orgId: string, currentRunId: st
       })),
     };
   }, 'wisp.assessment.digest');
+}
+
+/** Alert statuses that are still open: what a first look reports as the org's current state. */
+const OPEN_ALERT_STATUSES = ['active', 'acknowledged'] as const;
+
+/**
+ * #10389: a first look's alerts — the org's open alerts whenever they fired
+ * (a 24 h window on triggered_at hid a high alert open for three weeks),
+ * worst severity first (the enum is declared critical → info), newest first
+ * within a severity, ≤ 25. The (org_id, status, triggered_at) index
+ * (alerts_org_status_triggered_at_idx) finds the org's open rows; the
+ * severity order is a top-N sort over all of them — one sort per (grant, org)
+ * first look. Runs inside loadDigest's system context.
+ */
+function loadOpenAlertRows(orgId: string) {
+  return db
+    .select({
+      id: alerts.id, title: alerts.title, severity: alerts.severity, status: alerts.status,
+      at: alerts.triggeredAt, resolvedAt: alerts.resolvedAt,
+    })
+    .from(alerts)
+    .where(and(eq(alerts.orgId, orgId), inArray(alerts.status, [...OPEN_ALERT_STATUSES])))
+    .orderBy(asc(alerts.severity), desc(alerts.triggeredAt))
+    .limit(DIGEST_ROW_LIMIT);
 }
 
 /**
@@ -566,7 +712,10 @@ export async function loadAssessmentContext(run: {
   const openConcerns = await listConcernsForCeiling(ceiling, { status: ['open', 'snoozed'], orgId: run.orgId });
 
   const since = ref.watermark ? new Date(ref.watermark) : new Date(Date.now() - DEFAULT_LOOKBACK_MS);
-  const digest = await loadDigest(ceiling, run.orgId, run.id, since);
+  // #10389: nothing earlier to diff against, so the alerts are the org's
+  // current open ones rather than the 24 h fallback window.
+  const firstLook = ref.watermark === null || ref.reason.kind === 'onboarding';
+  const digest = await loadDigest(ceiling, run.orgId, run.id, since, firstLook);
 
   const reason = ref.reason;
   const watchId = reason.kind === 'watch' ? reason.watchId : null;
@@ -584,6 +733,7 @@ export async function loadAssessmentContext(run: {
     threadSummary,
     openConcerns,
     changedSince: since.toISOString(),
+    firstLook,
     digest,
     watch,
     reason,

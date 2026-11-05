@@ -25,6 +25,14 @@ import { createRemoteSession, RemoteSessionDeniedError } from './remoteSessionCr
 import { aiExecuteCommand } from './aiDispatch';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import { checkScreenAccessConsentGate, type ScreenAccessSurface } from '../routes/remote/screenAccessConsentGate';
+import {
+  checkSessionRateLimit,
+  checkUserSessionRateLimit,
+  logSessionAudit,
+  MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG,
+  MAX_ACTIVE_REMOTE_SESSIONS_PER_USER,
+} from '../routes/remote/helpers';
+import { checkRemoteAccess } from './remoteAccessPolicy';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { inToolDbPhase } from './aiToolDbContext';
 
@@ -464,6 +472,40 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
 
+      // W04-D11 (#6758): the same gates POST /remote/sessions applies
+      // (routes/remote/sessions.ts), in the same order — the tenant's remote
+      // access policy (terminal and file transfer are both `remoteTools`),
+      // then the org and per-user concurrent-session caps. The route's
+      // same-user stale-session teardown is a browser-reconnect convenience,
+      // not a gate, and is not mirrored.
+      const policyCheck = await checkRemoteAccess(deviceId, 'remoteTools');
+      if (!policyCheck.allowed) {
+        return JSON.stringify({
+          error: policyCheck.reason,
+          code: policyCheck.code ?? 'REMOTE_ACCESS_POLICY_DENIED',
+          capability: 'remoteTools',
+          policyName: policyCheck.policyName,
+        });
+      }
+      const orgLimit = await checkSessionRateLimit(access.device.orgId);
+      if (!orgLimit.allowed) {
+        return JSON.stringify({
+          error: 'Maximum concurrent sessions reached for this organization',
+          currentCount: orgLimit.currentCount,
+          maxAllowed: MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG,
+        });
+      }
+      if (auth.scope !== 'system') {
+        const userLimit = await checkUserSessionRateLimit(auth.user.id);
+        if (!userLimit.allowed) {
+          return JSON.stringify({
+            error: 'Maximum concurrent sessions reached for this user',
+            currentCount: userLimit.currentCount,
+            maxAllowed: MAX_ACTIVE_REMOTE_SESSIONS_PER_USER,
+          });
+        }
+      }
+
       // Insert new remote session
       let session: { id: string; status: string };
       try {
@@ -482,6 +524,15 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
         }
         throw e;
       }
+
+      // Same audit row as the route (it writes on its own connection and
+      // swallows its own failure, so it cannot undo the session).
+      await logSessionAudit('session_initiated', auth.user.id, access.device.orgId, {
+        sessionId: session.id,
+        deviceId,
+        deviceHostname: access.device.hostname,
+        type: sessionType,
+      });
 
       return JSON.stringify({
         id: session.id,

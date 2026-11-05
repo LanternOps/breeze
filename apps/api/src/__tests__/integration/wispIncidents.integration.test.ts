@@ -168,10 +168,15 @@ describe('wisp incidents (real Postgres)', () => {
     expect(wideIds).toContain(incident.id);
     expect(wideIds).toHaveLength(3);
 
-    // One nudge, to the partner-wide grantor only.
+    // One nudge, to the partner-wide grantor only. Since W06 the correlator
+    // nudges through notifyUser, whose dedupe key is per backoff window
+    // (`wisp.nudge:<concern>:<grant>:first` for a first nudge) — W05's
+    // `wisp-incident-<concern>-<grant>` key is gone.
     const wideNotices = await asSystem(() => db.select().from(userNotifications)
-      .where(eq(userNotifications.dedupeKey, `wisp-incident-${incident.id}-${f.wide.grantId}`)));
+      .where(eq(userNotifications.userId, f.wideUser)));
     expect(wideNotices).toHaveLength(1);
+    expect(wideNotices[0]!.dedupeKey).toBe(`wisp.nudge:${incident.id}:${f.wide.grantId}:first`);
+    expect(wideNotices[0]!.metadata).toMatchObject({ concernId: incident.id, grantId: f.wide.grantId });
     expect(wideNotices[0]!.userId).toBe(f.wideUser);
     expect(wideNotices[0]!.link).toMatch(new RegExp(`^/ai/wisp/thread/[0-9a-f-]{36}#concern=${incident.id}$`));
     const scopedNotices = await asSystem(() => db.select().from(userNotifications)
@@ -183,7 +188,7 @@ describe('wisp incidents (real Postgres)', () => {
     await expect(correlateIncidents(scanAt())).resolves.toMatchObject({ partnerIncidentsOpened: 0, updated: 0 });
     expect(await incidentRows(f.partnerId)).toHaveLength(3);
     const again = await asSystem(() => db.select().from(userNotifications)
-      .where(eq(userNotifications.dedupeKey, `wisp-incident-${incident.id}-${f.wide.grantId}`)));
+      .where(eq(userNotifications.userId, f.wideUser)));
     expect(again).toHaveLength(1);
 
     // NULLS NOT DISTINCT: a second live partner-level concern on the same subject collides.

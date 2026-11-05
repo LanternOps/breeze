@@ -19,27 +19,47 @@ export interface CallerRequest {
   deadlineAt?: string;
 }
 
-export type Branding = { partnerName: string; logoUrl: string | null } | null;
+/**
+ * Partner branding from `/api/v1/helper/config`. `logoSha256` (W04) is
+ * `branding.logo.sha256`: the logo the agent also syncs to Assist as bytes.
+ * Absent on an older API.
+ */
+export type Branding = { partnerName: string; logoUrl: string | null; logoSha256?: string | null } | null;
+
+/** The logo to draw, as resolved by `resolveCallerLogo` (callerVerifyLogo.ts). */
+export type CallerLogo = { src: string; kind: 'blob' | 'https' } | null;
 
 export interface CallerVerifyWindowProps {
   req: CallerRequest;
   /** Fixed unix-ms deadline owned by the Rust side; never restarted on render. */
   deadlineMs: number;
   branding: Branding;
+  /**
+   * The resolved logo (W04): the synced bytes as a `blob:` URL, or the https
+   * `logoUrl`, or null for none. Omitted: today's rule (https `logoUrl` only).
+   */
+  logo?: CallerLogo;
   locale: string;
   onDecision: (choice: string) => Promise<void>;
 }
 
-function isHttps(url: string | null | undefined): url is string {
+function hasProtocol(url: string | null | undefined, protocol: 'https:' | 'blob:'): url is string {
   if (!url) return false;
   try {
-    return new URL(url).protocol === 'https:';
+    return new URL(url).protocol === protocol;
   } catch {
     return false;
   }
 }
 
-export function CallerVerifyWindow({ req, deadlineMs, branding, locale, onDecision }: CallerVerifyWindowProps) {
+/** Only a local `blob:` URL or an `https:` URL is ever drawn. */
+function logoSrc(branding: Branding, logo: CallerLogo | undefined): string | null {
+  if (logo === undefined) return hasProtocol(branding?.logoUrl, 'https:') ? branding!.logoUrl : null;
+  if (!logo) return null;
+  return hasProtocol(logo.src, logo.kind === 'blob' ? 'blob:' : 'https:') ? logo.src : null;
+}
+
+export function CallerVerifyWindow({ req, deadlineMs, branding, logo: resolved, locale, onDecision }: CallerVerifyWindowProps) {
   const copy = copyFor(locale);
   const sent = useRef(false);
   const timeoutTried = useRef(false);
@@ -78,7 +98,7 @@ export function CallerVerifyWindow({ req, deadlineMs, branding, locale, onDecisi
   }, [deadlineMs]);
 
   const partner = branding?.partnerName || 'Breeze';
-  const logo = isHttps(branding?.logoUrl) ? branding!.logoUrl : null;
+  const logo = logoSrc(branding, resolved);
   const expired = remaining === 0;
 
   return (

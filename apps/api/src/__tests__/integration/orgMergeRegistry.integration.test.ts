@@ -6,6 +6,7 @@ import { db, withSystemDbAccessContext } from '../../db';
 import {
   partners, organizations, contracts, contractLines, tickets, orgTicketSettings,
   businessCalendars, businessCalendarRevisions, businessCalendarIntervals, businessCalendarHolidays,
+  ticketCategories, ticketRoutingRules, ticketRoutingRuleOrgLinks,
 } from '../../db/schema';
 import { eq } from 'drizzle-orm';
 import { executeOrgMerge } from '../../services/orgMerge';
@@ -201,6 +202,15 @@ const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
   // Conditional immutability guards: RAISE iff org_id changed.
   'action_intents.action_intents_immutable_trg': 'RAISEs iff org_id changed',
   'ai_agent_runs.ai_agent_runs_immutable_trg': 'RAISEs iff org_id changed',
+  // Tool Catalog W04 (#5219, 2027-01-06-130000-flow-runs.sql): RAISEs iff
+  // org_id (or another identity column) changes, and on any status change out
+  // of a terminal state. flow_runs is leave-for-erasure; resolveFlows only
+  // writes cancellation columns on loser runs, never org_id.
+  'flow_runs.flow_runs_immutable_trg': 'RAISEs iff org_id (or any identity column) changed; leave-for-erasure, never repointed',
+  // Tool Catalog W5 (#5220, 2027-01-07-140000-flow-webhooks-tools-budgets.sql).
+  'flow_webhook_deliveries.flow_webhook_deliveries_owner_guard_trg': 'BEFORE INSERT only; validates the owner pair against the parent flow on insert and never fires on a merge UPDATE',
+  'flow_webhook_deliveries.flow_webhook_deliveries_immutable_trg': 'BEFORE UPDATE freezing delivery facts; flow_webhook_deliveries is leave-for-erasure so a merge never updates its rows',
+  'flow_usage_counters.flow_usage_counters_owner_guard_trg': 'BEFORE INSERT only; validates the owner pair against the parent flow on insert and never fires on a merge UPDATE',
   // Wisp W02 (#9908, 2027-01-04-100100): ownership columns incl. org_id are
   // immutable; wisp_grants is leave-for-erasure, never repointed.
   'wisp_grants.wisp_grants_update_guard': 'RAISEs 42501 iff an ownership column (incl. org_id) changed',
@@ -305,10 +315,29 @@ const CUSTOM_EXECUTORS_THAT_NEVER_WRITE_ORG_ID: Readonly<Record<string, string>>
 const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
   ai_invocations: 'append-only invocation ledger (2026-11-14-100300, #7600 W02); usage history follows the merged client, everything but org_id is immutable',
   ai_usage_charge_claims: 'write-once chargeback claims (2026-11-26-100200, #7608 W10); a claim follows its merged invocation so it is never re-claimed, everything but org_id is immutable',
+  contract_documents: 'signed agreements, append-only (2027-01-06-150000, #9075 W4b); column-level UPDATE (contract_id, org_id): the filing link and the merge re-point, all evidence immutable',
+  automation_occurrence_claims: 'append-only cross-engine occurrence claims (2027-01-09-100000, #5221 W06); a claim follows its merged automation so the occurrence is never re-admitted, everything but org_id is immutable',
 };
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // #10521 W1 (2027-01-12-200000): RAISEs only on a partner_id change or an
+  // org_id NULL↔NOT NULL flip, so the merge's org_id → org_id repoint passes.
+  'device_groups.device_groups_owner_immutable': 'freezes partner_id and owner kind only; an org-owned group may repoint org_id to another non-null org_id',
+  // Tool Catalog W04 (#5219, 2027-01-06-130000-flow-runs.sql): freezes a
+  // publication's content (flow_id, publication_seq, definition, pins,
+  // bindings, created_at, a non-NULL delegator retarget) but deliberately
+  // leaves the owner columns out, so the plain flow_versions repoint passes.
+  'flow_versions.flow_versions_immutable_trg': 'freezes publication content only; org_id/partner_id are excluded and may move, so an org_id repoint passes',
+  // Tool Catalog W06 (#5221, 2027-01-09-100000): both guards RAISE on every
+  // change except an org_id → org_id restamp (never to or from NULL, partner_id
+  // unchanged) plus the conversion lifecycle columns. Where the row may move is
+  // pinned by the DEFERRED owner-guard constraint triggers, which require the
+  // owner pair to equal the automation's (and the flow's) at commit — so the
+  // merge's repoint, made after automations/flows move, passes, and any other
+  // retarget fails.
+  'flow_automation_conversions.flow_automation_conversions_immutable_trg': 'admits an org_id → org_id restamp (partner unchanged); the deferred owner guard ties it to the moved automation and flow',
+  'automation_occurrence_claims.automation_occurrence_claims_append_only_trg': 'append-only except an org_id → org_id restamp (partner unchanged); the deferred owner guard ties it to the moved automation',
   // Wisp W04 (#9910, 2027-01-04-110200): BEFORE INSERT OR UPDATE OF
   // wisp_grant_id, wisp_grant_revision_id only — a merge's org_id repoint does
   // not name those columns, so the trigger never fires on it.
@@ -317,6 +346,10 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // the three pinned caller-target columns only. It never reads or reverts
   // org_id, so a merge repoint of action_intents passes.
   'action_intents.action_intents_caller_target_immutable': 'freezes target_entra_tenant_id/target_entra_oid/target_connection_ref only; never reads or reverts org_id',
+  // MCP B-W06 (#6160, 2027-01-04-121000): BEFORE UPDATE stamp of
+  // status_changed_at = clock_timestamp() when status changes. It never reads
+  // or reverts org_id, so a merge repoint of action_intents passes.
+  'action_intents.action_intents_stamp_status_changed_at': 'stamps status_changed_at only when status changes; never reads or reverts org_id',
   // Backup key root W01 (#8731, 2026-12-28-110000): BEFORE UPDATE OF key_layout, key_prefix.
   'backup_snapshots.backup_snapshots_key_root_immutable': 'guards key_layout/key_prefix immutability only; never reads or reverts org_id',
   'backup_snapshot_id_reservations.backup_snapshot_id_reservations_key_root_immutable': 'guards key_layout/key_prefix immutability only; never reads or reverts org_id',
@@ -337,6 +370,9 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // Topology site location W2 (#7886, 2026-12-25-140000): deletes the device's presence read-model row and
   // marks the affected orgs dirty on a site/org change; writes nothing on devices, never RAISEs.
   'devices.breeze_topology_presence_device_moved': 'deletes the device\'s topology_device_presence row (and, outside a merge, its day rows on an org change) and marks presence dirty; never RAISEs or reverts org_id',
+  // Network isolation W1a (#10089, 2027-01-17-200000): returns at once while the source org is 'merging', so a
+  // merge repoint passes untouched; only a plain device org move deletes resolved history or refuses (55000).
+  'devices.breeze_network_isolation_device_moved': 'no-op while OLD.org_id is merging (the merge repoints the episodes with the device); outside a merge deletes resolved isolation history and refuses an unresolved episode; writes nothing on devices, never reverts org_id',
   // Topology site location W3 (#7887, 2026-12-26-190000): clears NEW.site_assignment_confirmed_at on a site/org
   // change; touches no other column, never RAISEs.
   'devices.breeze_devices_site_assignment_confirmation_reset': 'clears site_assignment_confirmed_at on a site/org change; never RAISEs or reverts org_id',
@@ -412,6 +448,14 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // WHERE org_id = <loser>` (buildRepoint, run under withSystemDbAccessContext
   // after the fence). Proven by aiInvocationsAppendOnly.integration.test.ts.
   'ai_invocations.ai_invocations_block_update': 'admits exactly the system-scope, same-partner org_id-only repoint away from a merging org; blocks everything else',
+  // Agreement signing W4b (#9075, 2027-01-06-150000): contract_documents is
+  // append-only, with the SAME org_id predicate as ai_invocations — an org_id
+  // change passes only in system scope, away from an org fenced 'merging', to
+  // an org of the same partner, which is the REPOINT_TABLES statement the
+  // merge runs after the fence. Proven by
+  // contractDocumentsAppendOnly.integration.test.ts and the merge-shape case in
+  // agreementRequestsRls.integration.test.ts.
+  'contract_documents.contract_documents_block_update': 'admits the system-scope, same-partner org_id-only repoint away from a merging org (plus contract_id and FK SET NULL); freezes all evidence',
   // These detach only on DELETE or an actual site change. Org-only repoints
   // retain bindings; topology's ambient merge hooks fence and rekey them.
   'devices.breeze_topology_source_lifecycle': 'same-site org-only updates retain source snapshots; merge prepare/finalize fences authority',
@@ -1099,5 +1143,55 @@ describe('org merge of an org that owns a business calendar (#8973 W4, Gate B15)
     expect(after.ticket?.orgId).toBe(survivor!.id);
     expect(after.ticket?.slaCalendarRevisionId).toBe(seeded.revId);
     expect(after.settings.map((r) => r.businessCalendarId)).toEqual([seeded.survCalId]);
+  });
+});
+
+// #8883 W5: an org that owns routing rules, and is named in a partner-wide
+// rule's org allowlist, merges cleanly. Org-owned rules repoint (no org-axis
+// unique to collide on); the loser's link repoints and dedupes against the
+// survivor's link on the same rule (ticket_routing_rule_org_links_rule_org_uq);
+// the deferrable same-partner reference guard checks the final state.
+describe('org merge of an org that owns routing rules (#8883 W5)', () => {
+  it('repoints org-owned rules and dedupes org links on a partner-wide rule', async () => {
+    const partner = await createPartner();
+    const loser = await createOrganization({ partnerId: partner!.id });
+    const survivor = await createOrganization({ partnerId: partner!.id });
+    const actor = await createUser({ partnerId: partner!.id, email: `rr-merge-${randomUUID().slice(0, 8)}@example.com` });
+
+    const seeded = await withSystemDbAccessContext(async () => {
+      const [cat] = await db.insert(ticketCategories).values({ partnerId: partner!.id, name: `RR ${randomUUID().slice(0, 8)}` }).returning();
+      // Same name and position under both orgs: no org-axis unique exists.
+      const [loserRule] = await db.insert(ticketRoutingRules).values({ orgId: loser!.id, partnerId: null, name: 'Escalate', position: 0, setCategoryId: cat!.id }).returning();
+      const [survRule] = await db.insert(ticketRoutingRules).values({ orgId: survivor!.id, partnerId: null, name: 'Escalate', position: 0, setPriority: 'high' }).returning();
+      const [wide] = await db.insert(ticketRoutingRules).values({ orgId: null, partnerId: partner!.id, name: 'Wide', setPriority: 'urgent' }).returning();
+      await db.insert(ticketRoutingRuleOrgLinks).values([{ ruleId: wide!.id, orgId: loser!.id }, { ruleId: wide!.id, orgId: survivor!.id }]);
+      const [wide2] = await db.insert(ticketRoutingRules).values({ orgId: null, partnerId: partner!.id, name: 'Wide loser only', setPriority: 'low' }).returning();
+      await db.insert(ticketRoutingRuleOrgLinks).values({ ruleId: wide2!.id, orgId: loser!.id });
+      return { loserRuleId: loserRule!.id, survRuleId: survRule!.id, wideId: wide!.id, wide2Id: wide2!.id };
+    });
+
+    const priorDrain = process.env.ORG_MERGE_FENCE_DRAIN_MS;
+    process.env.ORG_MERGE_FENCE_DRAIN_MS = '0';
+    try {
+      await executeOrgMerge({
+        loserOrgId: loser!.id,
+        survivorOrgId: survivor!.id,
+        partnerId: partner!.id,
+        performedBy: actor.id,
+        performedByEmail: actor.email,
+      });
+    } finally {
+      if (priorDrain === undefined) delete process.env.ORG_MERGE_FENCE_DRAIN_MS;
+      else process.env.ORG_MERGE_FENCE_DRAIN_MS = priorDrain;
+    }
+
+    const after = await withSystemDbAccessContext(async () => ({
+      rules: await db.select().from(ticketRoutingRules).where(eq(ticketRoutingRules.orgId, survivor!.id)),
+      wideLinks: await db.select().from(ticketRoutingRuleOrgLinks).where(eq(ticketRoutingRuleOrgLinks.ruleId, seeded.wideId)),
+      wide2Links: await db.select().from(ticketRoutingRuleOrgLinks).where(eq(ticketRoutingRuleOrgLinks.ruleId, seeded.wide2Id)),
+    }));
+    expect(after.rules.map((r) => r.id).sort()).toEqual([seeded.loserRuleId, seeded.survRuleId].sort());
+    expect(after.wideLinks.map((l) => l.orgId)).toEqual([survivor!.id]);
+    expect(after.wide2Links.map((l) => l.orgId)).toEqual([survivor!.id]);
   });
 });

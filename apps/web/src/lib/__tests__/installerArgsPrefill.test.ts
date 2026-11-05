@@ -62,3 +62,19 @@ describe('applySilentArgsPrefill', () => {
     expect(applySilentArgsPrefill(once, 'msi')).toEqual(once);
   });
 });
+
+describe('applySilentArgsPrefill for archive and package types (#6958 PR D)', () => {
+  it.each(['zip', 'pkg', 'dmg', 'deb'] as const)('returns empty args for %s', (type) => {
+    expect(applySilentArgsPrefill(EMPTY, type)).toEqual(EMPTY);
+  });
+
+  it('withdraws the owned msi prefill when switching to zip', () => {
+    const prefilled = { silentInstallArgs: MSI_INSTALL, silentUninstallArgs: MSI_UNINSTALL };
+    expect(applySilentArgsPrefill(prefilled, 'zip')).toEqual(EMPTY);
+  });
+
+  it('keeps user-typed args when switching to zip', () => {
+    const typed = { silentInstallArgs: '/S', silentUninstallArgs: '' };
+    expect(applySilentArgsPrefill(typed, 'zip')).toEqual(typed);
+  });
+});

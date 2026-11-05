@@ -681,6 +681,7 @@
       "disconnected": "Desconectado",
       "failed": "Fallido",
       "pending": "Pendiente",
+      "endedByUser": "Finalizada por el usuario",
       "teardownPending": "Finalizando (esperando al dispositivo)"
     },
     "subtitle": "Registro de auditoría de acceso remoto",
@@ -717,6 +718,7 @@
       "timeline": "Línea de tiempo"
     },
     "subtitle": "Ver y auditar sesiones de acceso remoto",
+    "endedByUser": "Finalizada por el usuario",
     "teardownPending": "Esperando confirmación del dispositivo",
     "title": "Historial de sesiones",
     "viewDevice": "Ver dispositivo",

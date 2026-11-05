@@ -302,6 +302,296 @@ pub fn hide_banner_window(app: &AppHandle) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Prompt cards (#10190): placement
+// ---------------------------------------------------------------------------
+
+/// A rectangle in logical pixels (a monitor's work area).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// A window size in logical pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Size {
+    pub width: f64,
+    pub height: f64,
+}
+
+/// A window position (top-left) in logical pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Position {
+    pub x: f64,
+    pub y: f64,
+}
+
+/// Gap between a card and the work-area edge, and between stacked cards.
+pub const CARD_MARGIN: f64 = 16.0;
+pub const CARD_GAP: f64 = 12.0;
+
+/// Where card `index` (0 = bottom) goes: bottom-right of the work area,
+/// stacked upward, at most [`super::prompt::MAX_VISIBLE_CARDS`] high, and
+/// always clamped inside the work area (a small screen or a large card never
+/// puts any part of a card off screen or under the taskbar).
+pub fn place_card(work_area: Rect, size: Size, index: usize) -> Position {
+    let index = index.min(super::prompt::MAX_VISIBLE_CARDS - 1) as f64;
+    let x = work_area.x + work_area.width - size.width - CARD_MARGIN;
+    let y = work_area.y + work_area.height - CARD_MARGIN - size.height - index * (size.height + CARD_GAP);
+    // The top-left bound wins when the card is larger than the work area.
+    let max_x = (work_area.x + work_area.width - size.width).max(work_area.x);
+    let max_y = (work_area.y + work_area.height - size.height).max(work_area.y);
+    Position { x: x.clamp(work_area.x, max_x), y: y.clamp(work_area.y, max_y) }
+}
+
+// ---------------------------------------------------------------------------
+// Prompt cards (#10190): windows
+// ---------------------------------------------------------------------------
+
+/// The event a card window listens for: a [`super::prompt::VersionNotice`]
+/// only. The card then pulls its own view (`get_prompt_view`, label-checked).
+pub const PROMPT_UPDATED_EVENT: &str = "prompt-updated";
+/// The event the Notifications tab listens for: a version notice only. The
+/// main window then pulls the list (`get_notification_list`, main only).
+pub const PROMPT_LIST_EVENT: &str = "prompt-list-updated";
+
+/// The ONLY place a prompt event is emitted (#10190 W04), and its payload is a
+/// [`super::prompt::VersionNotice`] by type. Tauri 2.12 delivers every emit,
+/// `emit_to` included, to a JS `listen()` registered without a target (an
+/// `Any` listener) in ANY window, so targeting cannot keep a payload out of
+/// chat, consent, caller-verify or message windows; a version number reveals
+/// nothing. Pinned by `lib.rs` `prompt_events_carry_only_version_notices`.
+fn emit_version_notice(app: &AppHandle, label: &str, event: &'static str, notice: super::prompt::VersionNotice) {
+    if let Err(e) = app.emit_to(label, event, notice) {
+        eprintln!("[helper] failed to emit {}: {}", event, e);
+    }
+}
+
+const PROMPT_CARD: Size = Size { width: 400.0, height: 300.0 };
+/// A `modal` prompt (W06: remote consent): a little larger, centred.
+const PROMPT_MODAL: Size = Size { width: 420.0, height: 340.0 };
+/// The `indicator` (W06: the remote-session pill), collapsed and expanded.
+/// Same width, so growing downward keeps it centred at the top of the screen.
+pub const PROMPT_PILL: Size = Size { width: 360.0, height: 56.0 };
+pub const PROMPT_PILL_EXPANDED: Size = Size { width: 360.0, height: 340.0 };
+
+/// The window size a prompt's presentation starts at.
+pub fn prompt_window_size(presentation: super::prompt::Presentation) -> Size {
+    use super::prompt::Presentation;
+    match presentation {
+        Presentation::Modal => PROMPT_MODAL,
+        Presentation::Indicator => PROMPT_PILL,
+        Presentation::Card | Presentation::ListOnly => PROMPT_CARD,
+    }
+}
+
+/// Where a prompt window goes inside `work_area`: a `card` bottom-right in its
+/// stack slot, a `modal` centred, the `indicator` centred 12 px below the top
+/// edge (where the legacy session banner sat). Always inside the work area.
+pub fn place_prompt(work_area: Rect, presentation: super::prompt::Presentation, slot: usize) -> Position {
+    use super::prompt::Presentation;
+    let size = prompt_window_size(presentation);
+    let clamp = |x: f64, y: f64| {
+        let max_x = (work_area.x + work_area.width - size.width).max(work_area.x);
+        let max_y = (work_area.y + work_area.height - size.height).max(work_area.y);
+        Position { x: x.clamp(work_area.x, max_x), y: y.clamp(work_area.y, max_y) }
+    };
+    let center_x = work_area.x + (work_area.width - size.width) / 2.0;
+    match presentation {
+        Presentation::Modal => clamp(center_x, work_area.y + (work_area.height - size.height) / 2.0),
+        Presentation::Indicator => clamp(center_x, work_area.y + 12.0),
+        Presentation::Card | Presentation::ListOnly => place_card(work_area, size, slot),
+    }
+}
+
+/// Create the card window for a prompt: its own small `prompt-<hash>` webview,
+/// NEVER the main Assist window (#8138). Always on top, out of the taskbar and
+/// non-activating; `plan.focused` (rate limited, eligible kinds only) is the
+/// only way it takes keyboard focus. A `card` is placed bottom-right of the
+/// work area of the monitor holding the cursor, stacked by `plan.slot`; a
+/// `modal` is centred and the `indicator` pill sits at the top (W06).
+///
+/// The close box / Alt+F4 is the same as Esc: the safe action on a pending
+/// decision (the card stays up), "hide" otherwise.
+pub fn show_prompt_window(app: &AppHandle, plan: &super::prompt::WindowPlan) -> Result<(), String> {
+    use super::prompt::{ActionVia, DismissEffect, PromptBridge};
+
+    if app.get_webview_window(&plan.label).is_some() {
+        // The tracker never plans a second window for one label.
+        return Err("a prompt card with this label is already open".into());
+    }
+    let size = prompt_window_size(plan.presentation);
+    let builder = WebviewWindowBuilder::new(app, plan.label.clone(), WebviewUrl::App(plan.url.clone().into()))
+        .title("Notification from your IT provider")
+        .inner_size(size.width, size.height)
+        .decorations(false)
+        .always_on_top(true)
+        .focused(plan.focused)
+        .skip_taskbar(true)
+        .resizable(false);
+    let builder = match cursor_work_area(app) {
+        Some(area) => {
+            let p = place_prompt(area, plan.presentation, plan.slot);
+            builder.position(p.x, p.y)
+        }
+        None => builder.center(),
+    };
+    let win = builder.build().map_err(|e| format!("create prompt window: {}", e))?;
+
+    let handle = app.clone();
+    let id = plan.prompt_id.clone();
+    win.on_window_event(move |event| match event {
+        tauri::WindowEvent::CloseRequested { api, .. } => {
+            let Some(bridge) = handle.try_state::<std::sync::Arc<PromptBridge>>() else { return };
+            match bridge.dismiss(super::client::now_unix_ms(), &id, ActionVia::Click) {
+                // A decision keeps its card while its safe action is on its way.
+                Ok(DismissEffect::ActionSent) => api.prevent_close(),
+                // The remote-session pill stays while the session runs (W06):
+                // its close box / Alt+F4 does nothing.
+                Ok(DismissEffect::Kept) => api.prevent_close(),
+                // ...or when it could not be sent: the bridge recorded why on the
+                // prompt (`last_error`, shown on the card) and the person retries.
+                Err(e) => {
+                    eprintln!("[helper] prompt card close box could not act (promptId={id}): {e}");
+                    api.prevent_close();
+                }
+                Ok(DismissEffect::Hidden) | Ok(DismissEffect::Nothing) => {}
+            }
+            publish_prompt_state(&handle, Some(&id));
+        }
+        tauri::WindowEvent::Destroyed => {
+            // Reported only when the tracker did not close it itself.
+            if let Some(bridge) = handle.try_state::<std::sync::Arc<PromptBridge>>() {
+                bridge.window_gone(&id);
+            }
+            publish_prompt_state(&handle, None);
+        }
+        _ => {}
+    });
+    Ok(())
+}
+
+/// Grow or shrink the remote-session pill's own window (W06, P7: expanding is
+/// renderer-local, never a wire action). The width stays, so the pill stays
+/// centred at the top. Never shows, focuses or moves any other window.
+pub fn size_prompt_pill(window: &tauri::WebviewWindow, expanded: bool) -> Result<(), String> {
+    let size = if expanded { PROMPT_PILL_EXPANDED } else { PROMPT_PILL };
+    window
+        .set_size(tauri::LogicalSize::new(size.width, size.height))
+        .map_err(|e| format!("resize the session pill: {e}"))
+}
+
+/// Take a prompt's card down (close, refusal, hide, session end). `destroy`
+/// rather than `close`, so it is not mistaken for the person's close box.
+pub fn close_prompt_window(app: &AppHandle, prompt_id: &str) {
+    if let Some(win) = app.get_webview_window(&super::prompt::window_label(prompt_id)) {
+        if let Err(e) = win.destroy() {
+            eprintln!("[helper] failed to close prompt window: {}", e);
+        }
+    }
+}
+
+/// Tell a prompt's card that its view changed (no-op when it has no card).
+/// The card pulls the view itself through `get_prompt_view`.
+pub fn emit_prompt_view_notice(app: &AppHandle, prompt_id: &str, notice: super::prompt::VersionNotice) {
+    let label = super::prompt::window_label(prompt_id);
+    if app.get_webview_window(&label).is_none() {
+        return;
+    }
+    emit_version_notice(app, &label, PROMPT_UPDATED_EVENT, notice);
+}
+
+/// Tell the main window's Notifications tab that the list changed; it pulls
+/// the list through `get_notification_list`. An event only: this never
+/// shows, focuses or un-minimises the main window.
+pub fn emit_notification_list_notice(app: &AppHandle, notice: super::prompt::VersionNotice) {
+    emit_version_notice(app, "main", PROMPT_LIST_EVENT, notice);
+}
+
+/// The list notice for the app's bridges (a default bridge stands in for one
+/// that is not managed, which only happens before setup).
+fn list_notice(app: &AppHandle) -> super::prompt::VersionNotice {
+    let prompts = app.try_state::<std::sync::Arc<super::prompt::PromptBridge>>();
+    let messages = app.try_state::<std::sync::Arc<super::message::MessageBridge>>();
+    let p = prompts.map(|b| b.tracker().version()).unwrap_or(0);
+    let m = messages.map(|b| b.tracker().version()).unwrap_or(0);
+    super::prompt::VersionNotice { version: p.saturating_add(m) }
+}
+
+/// After any prompt change: notify that prompt's card (if open), the
+/// Notifications tab and the tray entry. Never shows or focuses a window.
+pub fn publish_prompt_state(app: &AppHandle, prompt_id: Option<&str>) {
+    let Some(bridge) = app.try_state::<std::sync::Arc<super::prompt::PromptBridge>>() else { return };
+    // Snapshot first; the tracker lock is never held across a window call.
+    let notice = bridge.tracker().change_notice();
+    if let Some(id) = prompt_id {
+        emit_prompt_view_notice(app, id, notice);
+    }
+    emit_notification_list_notice(app, list_notice(app));
+    crate::refresh_tray_menu(app);
+}
+
+/// After an endpoint message card came or went (#10190 W04: message cards
+/// are in the one notification list): notify the Notifications tab and
+/// relabel the tray. Never shows or focuses a window.
+pub fn publish_notification_list(app: &AppHandle) {
+    emit_notification_list_notice(app, list_notice(app));
+    crate::refresh_tray_menu(app);
+}
+
+/// The one window that may read the notification list (#10190 W04): `main`,
+/// whose Notifications tab shows it. Cards, chat, consent, caller-verify and
+/// banner windows may not. Lives here, not in prompt.rs (#8138 guard).
+pub fn list_window_allowed(label: &str) -> bool {
+    label == "main"
+}
+
+/// Windows that may read the MSP identity (#10190 W03): the main window
+/// (Notifications tab locale) and prompt cards. Message, chat, consent and
+/// other windows may not. Lives here, not in prompt.rs, which never names the
+/// main window (#8138 guard).
+pub fn identity_window_allowed(label: &str) -> bool {
+    label == "main" || label.starts_with(super::prompt::WINDOW_LABEL_PREFIX)
+}
+
+/// The event the identity header listens for (main window and prompt cards).
+pub const PROMPT_IDENTITY_EVENT: &str = "prompt-identity-updated";
+
+/// After a branding sync (or the session that carried it ending): tell the
+/// windows allowed to read the identity that it changed, and relabel the tray
+/// in the synced language. An event only: never shows or focuses a window.
+///
+/// The event is a version notice, never the identity. Tauri delivers every
+/// emit (emit_filter and emit_to alike) to a JS listener registered without a
+/// target in ANY window, so targeting alone cannot keep the identity out of
+/// other windows; the identity is read through `get_prompt_identity`, which
+/// checks the caller's label.
+pub fn publish_prompt_identity(app: &AppHandle) {
+    let Some(bridge) = app.try_state::<std::sync::Arc<super::prompt::PromptBridge>>() else { return };
+    let notice = bridge.tracker().identity_notice();
+    for label in app.webview_windows().into_keys().filter(|l| identity_window_allowed(l)) {
+        emit_version_notice(app, &label, PROMPT_IDENTITY_EVENT, notice);
+    }
+    crate::refresh_tray_menu(app);
+}
+
+/// The logical work area of the monitor holding the cursor (else the primary).
+fn cursor_work_area(app: &AppHandle) -> Option<Rect> {
+    let monitor = app
+        .cursor_position()
+        .ok()
+        .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten())?;
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area();
+    let pos = area.position.to_logical::<f64>(scale);
+    let size = area.size.to_logical::<f64>(scale);
+    Some(Rect { x: pos.x, y: pos.y, width: size.width, height: size.height })
+}
+
 /// Create the small dedicated card window for an endpoint message (#8293).
 /// NEVER the main Assist window (#8138): the card is its own
 /// `message-<messageId>` webview, so a user who has not opened Assist does not
@@ -451,4 +741,71 @@ fn primary_bottom_right(app: &AppHandle, w: f64, h: f64) -> Option<(f64, f64)> {
     let pos = monitor.position().to_logical::<f64>(scale);
     // 16px in from the right, clear of a bottom taskbar (~48px).
     Some((pos.x + size.width - w - 16.0, pos.y + size.height - h - 64.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WA: Rect = Rect { x: 0.0, y: 0.0, width: 1920.0, height: 1040.0 };
+    const CARD: Size = Size { width: 380.0, height: 260.0 };
+
+    fn inside(wa: Rect, size: Size, p: Position) -> bool {
+        p.x >= wa.x
+            && p.y >= wa.y
+            && p.x + size.width <= wa.x + wa.width + 1e-9
+            && p.y + size.height <= wa.y + wa.height + 1e-9
+    }
+
+    #[test]
+    fn place_card_clamps_to_work_area() {
+        // Bottom-right, inset by the margin.
+        let p0 = place_card(WA, CARD, 0);
+        assert_eq!(p0, Position { x: 1920.0 - 380.0 - CARD_MARGIN, y: 1040.0 - 260.0 - CARD_MARGIN });
+        // Stacked upward with a gap.
+        let p1 = place_card(WA, CARD, 1);
+        assert_eq!(p1.x, p0.x);
+        assert_eq!(p1.y, p0.y - 260.0 - CARD_GAP);
+        // At most three high: index 3+ stays on the top slot.
+        let p2 = place_card(WA, CARD, 2);
+        assert_eq!(place_card(WA, CARD, 3), p2);
+        assert_eq!(place_card(WA, CARD, 99), p2);
+        // A work area that does not start at 0,0 (second monitor, top/left taskbar).
+        let wa = Rect { x: -1280.0, y: 40.0, width: 1280.0, height: 984.0 };
+        for i in 0..4 {
+            assert!(inside(wa, CARD, place_card(wa, CARD, i)), "index {i}");
+        }
+        assert_eq!(place_card(wa, CARD, 0).x, -1280.0 + 1280.0 - 380.0 - CARD_MARGIN);
+        // A short screen: the stack is clamped inside rather than off the top.
+        let short = Rect { x: 0.0, y: 0.0, width: 1024.0, height: 600.0 };
+        for i in 0..3 {
+            assert!(inside(short, CARD, place_card(short, CARD, i)), "index {i}");
+        }
+        // A card larger than the work area pins to its top-left corner.
+        let tiny = Rect { x: 10.0, y: 20.0, width: 300.0, height: 200.0 };
+        assert_eq!(place_card(tiny, CARD, 0), Position { x: 10.0, y: 20.0 });
+        assert_eq!(place_card(tiny, CARD, 2), Position { x: 10.0, y: 20.0 });
+    }
+
+    // #10190 W06: the consent modal is centred and the session pill sits at
+    // the top centre; a card keeps its stack place. All inside the work area.
+    #[test]
+    fn place_prompt_by_presentation() {
+        use crate::ipc::prompt::Presentation;
+        let wa = Rect { x: -1280.0, y: 40.0, width: 1280.0, height: 984.0 };
+        let modal = place_prompt(wa, Presentation::Modal, 2);
+        assert_eq!(modal, Position { x: -1280.0 + (1280.0 - PROMPT_MODAL.width) / 2.0, y: 40.0 + (984.0 - PROMPT_MODAL.height) / 2.0 });
+        let pill = place_prompt(wa, Presentation::Indicator, 1);
+        assert_eq!(pill, Position { x: -1280.0 + (1280.0 - PROMPT_PILL.width) / 2.0, y: 52.0 });
+        assert_eq!(place_prompt(wa, Presentation::Card, 1), place_card(wa, PROMPT_CARD, 1));
+        for p in [Presentation::Modal, Presentation::Indicator, Presentation::Card] {
+            assert!(inside(wa, prompt_window_size(p), place_prompt(wa, p, 0)), "{p:?}");
+            let tiny = Rect { x: 10.0, y: 20.0, width: 200.0, height: 40.0 };
+            assert_eq!(place_prompt(tiny, p, 0), Position { x: 10.0, y: 20.0 }, "{p:?}");
+        }
+        // The expanded pill fits below its collapsed top edge on a 768 px screen.
+        let small = Rect { x: 0.0, y: 0.0, width: 1024.0, height: 728.0 };
+        let top = place_prompt(small, Presentation::Indicator, 0);
+        assert!(inside(small, PROMPT_PILL_EXPANDED, top));
+    }
 }

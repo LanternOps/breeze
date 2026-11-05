@@ -3,7 +3,7 @@ import type { HourBlockEstimate } from '@breeze/shared';
 import { db, getCurrentDbAccessContext } from '../db';
 import { contractHourPeriods, timeEntries, type contracts, type contractLines } from '../db/schema';
 import { computePeriod, periodIndexFor, todayISO } from './contractMath';
-import { hourBlockDayStart } from './contractHourBlockHolds';
+import { hourBlockDayStart, hourBlockHoldWindows, isHeldForHourBlock } from './contractHourBlockHolds';
 import { computePeriodMath, sumEntryHours, type HourBlockLineSpec, type RolloverPolicy } from './contractHourBlocks';
 import { overageValue } from './contractAllowance';
 import { ContractServiceError } from './contractTypes';
@@ -139,9 +139,28 @@ export async function computeOpenHourBlockPeriod(
     eq(timeEntries.billingStatus, 'not_billed'), isNotNull(timeEntries.endedAt),
   );
   const minutes = sql<number>`COALESCE(${timeEntries.billableMinutes}, ${timeEntries.durationMinutes}, 0)`;
-  const entries = await db.select({ minutes, isApproved: timeEntries.isApproved, currencyCode: timeEntries.currencyCode })
+  // #8970: whether the entry already sits on an open (draft) invoice line.
+  // invoices/invoice_lines are org-axis RLS; a context that cannot see the
+  // draft reads `false` and the entry counts, the pre-#8970 figure. The
+  // literal `time_entries.id`: Drizzle renders a single-table column unqualified,
+  // which is ambiguous against invoice_lines/invoices inside the subquery.
+  const onDraft = sql<boolean>`EXISTS (
+      SELECT 1 FROM invoice_lines il JOIN invoices i ON i.id = il.invoice_id
+       WHERE il.source_type = 'time_entry' AND il.source_id = time_entries.id
+         AND i.status = 'draft')`;
+  const rows = await db.select({
+    minutes, isApproved: timeEntries.isApproved, currencyCode: timeEntries.currencyCode,
+    endedAt: timeEntries.endedAt, onDraft,
+  })
     .from(timeEntries)
     .where(and(eligible, gte(timeEntries.endedAt, from), lt(timeEntries.endedAt, to)));
+  // A draft can bill its time hourly only when no hold window covers it —
+  // issueInvoice refuses held time (SOURCE_HELD_FOR_HOUR_BLOCK), so held
+  // on-draft time is still the close's to draw and stays counted. Unheld
+  // on-draft time (a live block on a contract that is not active, an
+  // unclaimed period) is what the draft will bill, so it is not "used".
+  const windows = rows.some((r) => r.onDraft) ? await hourBlockHoldWindows(contract.orgId, asOf) : [];
+  const entries = rows.filter((r) => !(r.onDraft && !(r.endedAt && isHeldForHourBlock(windows, r.endedAt))));
   // Not-billed billable entries whose end falls inside a period this line already
   // closed: the ledger cannot re-close, so they bill separately (spec "Out of scope").
   const late = await db.select({ minutes }).from(timeEntries).where(and(

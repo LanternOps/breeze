@@ -12,6 +12,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { publishEvent, type EventType } from './eventBus';
 import { evaluatePamRules, type PamRuleMatch } from './pamRuleEngine';
+import { PamActuationNotFoundError, requestPamCleanup } from './pamActuationLifecycle';
 import {
   deviceScopeCondition,
   deviceSiteDenied,
@@ -20,7 +21,7 @@ import {
   SITE_SCOPE_EMPTY_NOTE,
 } from './aiToolsSiteScope';
 import type { ToolExecutionContext } from './toolExecutionContext';
-import { isAiAgentPrincipal } from '../middleware/auth';
+import { isAutomationPrincipal } from '../middleware/principalKind';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { currentOwnershipEpochSql } from './deviceOwnershipEpoch';
 
@@ -76,7 +77,7 @@ function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContex
  * `isAgentPrincipalCaller` (#6206).
  */
 function isAgentPrincipalCaller(auth: AuthContext): boolean {
-  return isAiAgentPrincipal(auth);
+  return isAutomationPrincipal(auth);
 }
 
 /** #6911: the refusal `revoke_elevation` returns to an agent principal. */
@@ -410,7 +411,21 @@ export function registerPamTools(aiTools: Map<string, AiTool>): void {
           occurredAt: now,
         });
 
-        return { kind: 'ok' as const, row: existing };
+        // W04-D10 (#6758): same transaction, same call as the REST revoke
+        // (routes/pam.ts) — an already-actuated grant gets its device-side
+        // cleanup outboxed. The expiry sweep skips `revoked` rows, so without
+        // this nothing ever removes the elevation on the device. No actuation
+        // row means nothing was ever dispatched (the expiry enforcer's own
+        // reading, jobs/pamJobs.ts); any other failure aborts the revoke.
+        let enforcementStatus: 'cleanup_pending' | 'none_dispatched' = 'cleanup_pending';
+        try {
+          await requestPamCleanup(tx, { elevationRequestId: existing.id, cause: 'revoked' });
+        } catch (err) {
+          if (!(err instanceof PamActuationNotFoundError)) throw err;
+          enforcementStatus = 'none_dispatched';
+        }
+
+        return { kind: 'ok' as const, row: existing, enforcementStatus };
       });
 
       if (result.kind === 'not_found') {
@@ -431,7 +446,11 @@ export function registerPamTools(aiTools: Map<string, AiTool>): void {
         triggerSource: 'brain',
       });
 
-      return JSON.stringify({ elevationRequestId: result.row.id, status: 'revoked' });
+      return JSON.stringify({
+        elevationRequestId: result.row.id,
+        status: 'revoked',
+        enforcementStatus: result.enforcementStatus,
+      });
     }),
   });
 

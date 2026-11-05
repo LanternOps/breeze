@@ -343,6 +343,18 @@ export async function createDevice(options: CreateDeviceOptions): Promise<{ id: 
   return { id: device.id };
 }
 
+/**
+ * A device's current `agent_id`: what an agent authenticated as that device
+ * carries into a command claim (#8318 §6.4 — the claim's flip re-checks it).
+ */
+export async function deviceAgentId(deviceId: string): Promise<string> {
+  const [row] = await getTestDb().execute<{ agent_id: string }>(
+    sql`SELECT agent_id FROM devices WHERE id = ${deviceId}::uuid`,
+  );
+  if (!row) throw new Error(`deviceAgentId: no device ${deviceId}`);
+  return row.agent_id;
+}
+
 // ============================================
 // Role Utilities
 // ============================================

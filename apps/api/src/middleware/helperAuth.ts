@@ -18,6 +18,7 @@ import { evaluateDeviceCredentialLifecycle } from './deviceCredentialLifecycle';
 import { PARKED_DEVICE_REFUSAL } from './agentAuthParked';
 import { isUnassignedPoolOrgType } from '../services/unassignedPool/orgType';
 import { buildHelperConfigUpdate } from '../services/helperSettings';
+import { recordAgentCredentialUse } from '../services/agentCredentialUse';
 
 export interface HelperDevice {
   id: string;
@@ -167,6 +168,10 @@ export const helperAuth: MiddlewareHandler = async (c, next) => {
     return c.json(HELPER_DISABLED_REFUSAL, 403);
   }
   c.set('helperEnabled', helperEnabled);
+
+  // #8318 §6.5: the helper credential counts as the install being alive, so
+  // the reattach confirm's liveness read sees helper-only activity too.
+  recordAgentCredentialUse(device.id);
 
   c.set('helperDevice', {
     id: device.id,

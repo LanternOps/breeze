@@ -224,6 +224,264 @@ interface Binding {
  * comments in `aiGuardrails.ts` beside each mapping.
  */
 const BINDINGS: readonly Binding[] = [
+  // Full-control W09 (#6779): the SNMP / probe / known-guest / UniFi tools bind to the route a technician uses for the same act.
+  { tool: 'manage_snmp_templates', action: 'list', routeFile: 'snmp.ts', method: 'get', path: '/templates' },
+  { tool: 'manage_snmp_templates', action: 'get', routeFile: 'snmp.ts', method: 'get', path: '/templates/:id' },
+  { tool: 'manage_snmp_templates', action: 'browse_oids', routeFile: 'snmp.ts', method: 'get', path: '/oids/browse' },
+  { tool: 'manage_snmp_templates', action: 'validate_oids', routeFile: 'snmp.ts', method: 'post', path: '/oids/validate' },
+  { tool: 'manage_snmp_templates', action: 'create', routeFile: 'snmp.ts', method: 'post', path: '/templates' },
+  { tool: 'manage_snmp_templates', action: 'update', routeFile: 'snmp.ts', method: 'patch', path: '/templates/:id' },
+  { tool: 'manage_snmp_templates', action: 'delete', routeFile: 'snmp.ts', method: 'delete', path: '/templates/:id' },
+  {
+    tool: 'get_snmp_metrics', action: 'history', routeFile: 'monitoringAssetMetrics.ts', method: 'get', path: '/assets/:id/metrics',
+    toolOnly: { extra: [], reason: 'Exact-device callers only see assets linked to allowed devices; the route applies no device gate.' },
+  },
+  { tool: 'get_snmp_metrics', action: 'dashboard', routeFile: 'snmp.ts', method: 'get', path: '/dashboard' },
+  {
+    tool: 'probe_network_asset', routeFile: 'discoveryAssetProbe.ts', method: 'post', path: '/assets/:id/probe',
+    toolOnly: { extra: [], reason: 'Exact-device callers only probe assets linked to allowed devices, and the MFA claim is re-checked in the handler.' },
+  },
+  { tool: 'manage_known_guests', action: 'list', routeFile: 'networkKnownGuests.ts', method: 'get', path: '/' },
+  { tool: 'manage_known_guests', action: 'add', routeFile: 'networkKnownGuests.ts', method: 'post', path: '/' },
+  { tool: 'manage_known_guests', action: 'delete', routeFile: 'networkKnownGuests.ts', method: 'delete', path: '/:id' },
+  // UniFi reads AND the sync need billing:manage (not a reasonable-looking read grant): the tool floor is the route's.
+  { tool: 'get_unifi_status', action: 'status', routeFile: 'unifi/index.ts', method: 'get', path: '/' },
+  { tool: 'get_unifi_status', action: 'hosts', routeFile: 'unifi/index.ts', method: 'get', path: '/hosts' },
+  { tool: 'get_unifi_status', action: 'collectors', routeFile: 'unifi/index.ts', method: 'get', path: '/collectors' },
+  { tool: 'get_unifi_status', action: 'mappings', routeFile: 'unifi/index.ts', method: 'get', path: '/mappings' },
+  { tool: 'get_unifi_status', action: 'telemetry', routeFile: 'unifi/index.ts', method: 'get', path: '/telemetry' },
+  { tool: 'get_unifi_status', action: 'sync_runs', routeFile: 'unifi/index.ts', method: 'get', path: '/sync-runs' },
+  { tool: 'get_unifi_status', action: 'controller_sites', routeFile: 'unifi/index.ts', method: 'get', path: '/controller-sites' },
+  { tool: 'trigger_unifi_sync', routeFile: 'unifi/index.ts', method: 'post', path: '/sync' },
+  // Full-control W10 (#6780): the AI-agent reads bind to the route a technician uses for the same act.
+  {
+    tool: 'get_device_ai_activity', routeFile: 'devices/aiOrigin.ts', method: 'get', path: '/:id/ai-activity',
+    toolOnly: { extra: [], reason: 'Also folds in GET /:id/ai-origin (same devices:read floor); exact-device callers read only their own device, and every unreachable device is one not-found.' },
+  },
+  {
+    tool: 'list_operator_tasks', routeFile: 'aiOperatorTasks.ts', method: 'get', path: '/tasks',
+    toolOnly: { extra: [], reason: 'Refuses site- and device-restricted sessions: a device-less root task can carry device targets, which the route\'s root-only site gate does not check.' },
+  },
+  {
+    tool: 'get_operator_task', routeFile: 'aiOperatorTasks.ts', method: 'get', path: '/tasks/:id',
+    toolOnly: { extra: [], reason: 'Refuses site- and device-restricted sessions, and the output drops every credential hand-over pointer the route relays.' },
+  },
+  { tool: 'list_ai_agent_schedules', routeFile: 'aiAgentSchedules.ts', method: 'get', path: '/', toolOnly: { extra: [], reason: 'A partner baseline\'s fleet-wide run summary is withheld unless the caller reaches every org of the partner.' } },
+  {
+    tool: 'list_fleet_designs', routeFile: 'fleetDesign.ts', method: 'get', path: '/',
+    toolOnly: { extra: [], reason: 'Refuses site- and device-restricted sessions: a design enumerates every device function of the organization.' },
+  },
+  {
+    tool: 'get_fleet_design', routeFile: 'fleetDesign.ts', method: 'get', path: '/:reportRunId',
+    toolOnly: { extra: [], reason: 'Refuses site- and device-restricted sessions, and returns counts plus the design markdown, not the stored outcome with script bodies.' },
+  },
+  // Full-control W11 (#6781): the security policy tools bind to the route a technician uses for the same act.
+  {
+    tool: 'get_security_compliance', routeFile: 'security/dashboard.ts', method: 'get', path: '/dashboard',
+    toolOnly: { extra: [], reason: 'One read over the dashboard, score, trend, status and compliance views (all devices:read); exact-device callers see only their devices and get no org-wide aggregate.' },
+  },
+  { tool: 'get_security_compliance', routeFile: 'security/dashboard.ts', method: 'get', path: '/score-breakdown' },
+  { tool: 'get_security_compliance', routeFile: 'security/status.ts', method: 'get', path: '/status' },
+  { tool: 'get_security_compliance', routeFile: 'security/status.ts', method: 'get', path: '/status/:deviceId' },
+  {
+    tool: 'manage_security_recommendations', action: 'complete', routeFile: 'security/recommendations.ts', method: 'post', path: '/recommendations/:id/complete',
+    toolOnly: { extra: [], reason: 'Refused to site- and device-restricted sessions: the status it records is org-wide.' },
+  },
+  {
+    tool: 'manage_security_recommendations', action: 'dismiss', routeFile: 'security/recommendations.ts', method: 'post', path: '/recommendations/:id/dismiss',
+    toolOnly: { extra: [], reason: 'Refused to site- and device-restricted sessions: the status it records is org-wide.' },
+  },
+  { tool: 'manage_access_reviews', action: 'list', routeFile: 'accessReviews.ts', method: 'get', path: '/' },
+  { tool: 'manage_access_reviews', action: 'get', routeFile: 'accessReviews.ts', method: 'get', path: '/:id' },
+  {
+    tool: 'manage_access_reviews', action: 'create', routeFile: 'accessReviews.ts', method: 'post', path: '/',
+    toolOnly: { extra: [], reason: 'The reviewer must be a member of the review\'s own scope (REST accepts any user id), and restricted sessions are refused.' },
+  },
+  { tool: 'manage_access_reviews', action: 'decide_item', routeFile: 'accessReviews.ts', method: 'patch', path: '/:id/items/:itemId' },
+  { tool: 'manage_audit_baselines', action: 'list', routeFile: 'auditBaselines.ts', method: 'get', path: '/' },
+  {
+    tool: 'manage_audit_baselines', action: 'compliance', routeFile: 'auditBaselines.ts', method: 'get', path: '/compliance',
+    toolOnly: { extra: [], reason: 'Computed over the devices the caller can see (site and exact-device axes); the route aggregates the whole org.' },
+  },
+  { tool: 'manage_audit_baselines', action: 'device_results', routeFile: 'auditBaselines.ts', method: 'get', path: '/devices/:deviceId' },
+  {
+    tool: 'manage_audit_baselines', action: 'create', routeFile: 'auditBaselines.ts', method: 'post', path: '/',
+    toolOnly: { extra: [], reason: 'Create only (no id upsert), refused to restricted sessions and to automation principals.' },
+  },
+  {
+    tool: 'manage_audit_baselines', action: 'request_apply', routeFile: 'auditBaselines.ts', method: 'post', path: '/apply-requests',
+    toolOnly: { extra: [], reason: 'Every device id must be in the baseline\'s org and not decommissioned or parked; refused to automation principals.' },
+  },
+  { tool: 'manage_compliance_policies', action: 'deactivate', routeFile: 'policyManagement/actions.ts', method: 'post', path: '/:id/deactivate' },
+  {
+    tool: 'manage_security_policies', action: 'create', routeFile: 'security/policies.ts', method: 'post', path: '/policies',
+    toolOnly: { extra: [], reason: 'Refused to site- and device-restricted sessions (org-wide config; REST has no ceiling check).' },
+  },
+  {
+    tool: 'manage_security_policies', action: 'update', routeFile: 'security/policies.ts', method: 'put', path: '/policies/:id',
+    toolOnly: { extra: [], reason: 'Refused to site- and device-restricted sessions (org-wide config; REST has no ceiling check).' },
+  },
+  {
+    tool: 'manage_recovery_keys', action: 'list', routeFile: 'security/recoveryKeys.ts', method: 'get', path: '/encryption/devices/:deviceId/recovery-keys',
+    toolOnly: { extra: [], reason: 'The reveal ledger is returned without staff names or emails.' },
+  },
+  {
+    tool: 'manage_recovery_keys', action: 'rotate', routeFile: 'security/recoveryKeys.ts', method: 'post', path: '/encryption/devices/:deviceId/recovery-keys/rotate',
+    toolOnly: { extra: [], reason: 'Windows only: a FileVault rotation needs credentials, which never travel through chat.' },
+  },
+  { tool: 'manage_recovery_keys', action: 'collect', routeFile: 'security/recoveryKeys.ts', method: 'post', path: '/encryption/devices/:deviceId/recovery-keys/collect' },
+  { tool: 'manage_pam_rules', action: 'list_rules', routeFile: 'pam.ts', method: 'get', path: '/rules' },
+  { tool: 'manage_pam_rules', action: 'get_config', routeFile: 'pam.ts', method: 'get', path: '/config' },
+  { tool: 'manage_pam_rules', action: 'list_signer_groups', routeFile: 'pam.ts', method: 'get', path: '/signer-groups' },
+  {
+    tool: 'manage_pam_rules', action: 'create_rule', routeFile: 'pam.ts', method: 'post', path: '/rules',
+    toolOnly: { extra: [], reason: 'Never auto_approve, and a referenced signer group must belong to the rule\'s own org (W11-D3).' },
+  },
+  {
+    tool: 'manage_pam_rules', action: 'update_rule', routeFile: 'pam.ts', method: 'patch', path: '/rules/:id',
+    toolOnly: { extra: [], reason: 'No reapprove, never auto_approve, and no change that could widen an org\'s auto-approval (W11-D3).' },
+  },
+  {
+    tool: 'manage_pam_rules', action: 'delete_rule', routeFile: 'pam.ts', method: 'delete', path: '/rules/:id',
+    toolOnly: { extra: [], reason: 'Refused when deleting the rule could let an elevation fall through to an auto-approve rule (W11-D3).' },
+  },
+  { tool: 'manage_pam_rules', action: 'set_config', routeFile: 'pam.ts', method: 'put', path: '/config' },
+  { tool: 'manage_pam_rules', action: 'create_signer_group', routeFile: 'pam.ts', method: 'post', path: '/signer-groups' },
+  {
+    tool: 'manage_pam_rules', action: 'update_signer_group', routeFile: 'pam.ts', method: 'patch', path: '/signer-groups/:id',
+    toolOnly: { extra: [], reason: 'A membership change is refused in an org with an auto-approve rule (W11-D3).' },
+  },
+  { tool: 'manage_pam_rules', action: 'delete_signer_group', routeFile: 'pam.ts', method: 'delete', path: '/signer-groups/:id' },
+  // Full-control W12 (#6782): the software, fleet-finding and custom-field tools bind to the route a technician uses.
+  { tool: 'manage_software_catalog', action: 'list', routeFile: 'software.ts', method: 'get', path: '/catalog' },
+  {
+    tool: 'manage_software_catalog', action: 'get', routeFile: 'software.ts', method: 'get', path: '/catalog/:id',
+    toolOnly: { extra: [], reason: 'Returns versions and install methods with download URLs reduced to their host; no S3 key or script (quorum QW5).' },
+  },
+  {
+    tool: 'manage_software_catalog', action: 'create', routeFile: 'software.ts', method: 'post', path: '/catalog',
+    toolOnly: { extra: [], reason: 'Refused to site- and device-restricted sessions (org-wide catalog; REST has no ceiling check).' },
+  },
+  { tool: 'manage_software_catalog', action: 'update', routeFile: 'software.ts', method: 'patch', path: '/catalog/:id', toolOnly: { extra: [], reason: 'Refused to site- and device-restricted sessions, and never modifies an existing partner-wide item (W12-D10/D11).' } },
+  { tool: 'manage_software_catalog', action: 'archive', routeFile: 'software.ts', method: 'delete', path: '/catalog/:id', toolOnly: { extra: [], reason: 'Refused to site- and device-restricted sessions, and never modifies an existing partner-wide item (W12-D10/D11).' } },
+  { tool: 'manage_software_catalog', action: 'add_version', routeFile: 'software.ts', method: 'post', path: '/catalog/:id/versions', toolOnly: { extra: [], reason: 'No pre/post-install scripts; built-in and integration items refused; Refused to site- and device-restricted sessions, and never modifies an existing partner-wide item (W12-D10/D11).' } },
+  { tool: 'manage_software_catalog', action: 'update_version', routeFile: 'software.ts', method: 'patch', path: '/catalog/:id/versions/:versionId', toolOnly: { extra: [], reason: 'A version carrying a pre/post-install script is refused (REST requires devices:execute there); Refused to site- and device-restricted sessions, and never modifies an existing partner-wide item (W12-D10/D11).' } },
+  { tool: 'manage_software_catalog', action: 'promote_version', routeFile: 'software.ts', method: 'post', path: '/catalog/:id/versions/:versionId/promote', toolOnly: { extra: [], reason: 'Refused to site- and device-restricted sessions, and never modifies an existing partner-wide item (W12-D10/D11).' } },
+  { tool: 'manage_software_catalog', action: 'add_install_method', routeFile: 'softwareInstallMethods.ts', method: 'post', path: '/catalog/:id/install-methods', toolOnly: { extra: [], reason: 'Partner-wide parents need canManagePartnerWidePolicies and are refused anyway (W12-D10); REST does not gate them (quorum QW2).' } },
+  { tool: 'manage_software_catalog', action: 'update_install_method', routeFile: 'softwareInstallMethods.ts', method: 'patch', path: '/catalog/:id/install-methods/:methodId', toolOnly: { extra: [], reason: 'Built-in and integration items refused (REST checks only on POST); Refused to site- and device-restricted sessions, and never modifies an existing partner-wide item (W12-D10/D11).' } },
+  { tool: 'manage_software_catalog', action: 'delete_install_method', routeFile: 'softwareInstallMethods.ts', method: 'delete', path: '/catalog/:id/install-methods/:methodId', toolOnly: { extra: [], reason: 'Refused to site- and device-restricted sessions, and never modifies an existing partner-wide item (W12-D10/D11).' } },
+  { tool: 'manage_software_catalog', action: 'import_package', routeFile: 'softwareInstallMethods.ts', method: 'post', path: '/catalog/import-package', toolOnly: { extra: [], reason: 'Refused to site- and device-restricted sessions.' } },
+  { tool: 'search_packages', routeFile: 'packageSearch.ts', method: 'get', path: '/package-search' },
+  { tool: 'manage_software_deployments', action: 'list', routeFile: 'software.ts', method: 'get', path: '/deployments', toolOnly: { extra: [], reason: 'Refused to device-bound sessions (an org-wide list).' } },
+  { tool: 'manage_software_deployments', action: 'summary', routeFile: 'software.ts', method: 'get', path: '/deployments/summary', toolOnly: { extra: [], reason: 'Refused to device-bound sessions (an org-wide aggregate).' } },
+  { tool: 'manage_software_deployments', action: 'get', routeFile: 'software.ts', method: 'get', path: '/deployments/:id', toolOnly: { extra: [], reason: 'A device-bound session sees a deployment only when every device in it is in its allowlist (quorum QW7).' } },
+  { tool: 'manage_software_deployments', action: 'results', routeFile: 'software.ts', method: 'get', path: '/deployments/:id/results', toolOnly: { extra: [], reason: 'A device-bound session sees a deployment only when every device in it is in its allowlist (quorum QW7).' } },
+  {
+    tool: 'manage_software_deployments', action: 'create', routeFile: 'software.ts', method: 'post', path: '/deployments',
+    toolOnly: { extra: [], reason: 'Named devices only (at most 100; groups, all and filter absent), each checked on the site and exact-device axes; the dependency fingerprint is pinned by an effect digest (quorum QW3).' },
+  },
+  { tool: 'manage_software_deployments', action: 'cancel', routeFile: 'software.ts', method: 'post', path: '/deployments/:id/cancel', toolOnly: { extra: [], reason: 'A device-bound session acts only on a deployment whose every device is in its allowlist (quorum QW7).' } },
+  { tool: 'manage_software_deployments', action: 'retry', routeFile: 'software.ts', method: 'post', path: '/deployments/:id/retry', toolOnly: { extra: [], reason: 'A device-bound session acts only on a deployment whose every device is in its allowlist (quorum QW7).' } },
+  { tool: 'get_device_software', routeFile: 'devices/software.ts', method: 'get', path: '/:id/software' },
+  { tool: 'manage_device_software', action: 'update', routeFile: 'devices/softwareActions.ts', method: 'post', path: '/:id/software/update' },
+  { tool: 'manage_device_software', action: 'uninstall', routeFile: 'devices/softwareActions.ts', method: 'post', path: '/:id/software/uninstall' },
+  { tool: 'bootstrap_homebrew', routeFile: 'devices/homebrewBootstrap.ts', method: 'post', path: '/:id/homebrew-bootstrap' },
+  { tool: 'manage_software_inventory', action: 'list', routeFile: 'softwareInventory.ts', method: 'get', path: '/' },
+  { tool: 'manage_software_inventory', action: 'names', routeFile: 'softwareInventory.ts', method: 'get', path: '/names' },
+  { tool: 'manage_software_inventory', action: 'devices', routeFile: 'softwareInventory.ts', method: 'get', path: '/:name/devices' },
+  { tool: 'manage_software_inventory', action: 'approve', routeFile: 'softwareInventory.ts', method: 'post', path: '/approve', toolOnly: { extra: [], reason: 'Refuses to adopt a same-named default configuration policy that carries other settings (quorum QW7).' } },
+  { tool: 'manage_software_inventory', action: 'deny', routeFile: 'softwareInventory.ts', method: 'post', path: '/deny', toolOnly: { extra: [], reason: 'Refuses to adopt a same-named default configuration policy that carries other settings (quorum QW7).' } },
+  { tool: 'manage_software_inventory', action: 'clear', routeFile: 'softwareInventory.ts', method: 'post', path: '/clear' },
+  { tool: 'manage_fleet_findings', action: 'acknowledge', routeFile: 'fleetFindings.ts', method: 'patch', path: '/:id' },
+  { tool: 'manage_fleet_findings', action: 'dismiss', routeFile: 'fleetFindings.ts', method: 'patch', path: '/:id' },
+  { tool: 'manage_fleet_findings', action: 'reopen', routeFile: 'fleetFindings.ts', method: 'patch', path: '/:id' },
+  { tool: 'manage_custom_fields', action: 'create_definition', routeFile: 'customFields.ts', method: 'post', path: '/' },
+  { tool: 'manage_custom_fields', action: 'update_definition', routeFile: 'customFields.ts', method: 'patch', path: '/:id', toolOnly: { extra: [], reason: 'An existing partner-wide definition is refused (W12-D10).' } },
+  { tool: 'manage_custom_fields', action: 'delete_definition', routeFile: 'customFields.ts', method: 'delete', path: '/:id', toolOnly: { extra: [], reason: 'An existing partner-wide definition is refused (W12-D10).' } },
+  // Full-control W13 (#6783, PR A): the device inventory and record tools bind to the route a technician uses.
+  {
+    tool: 'get_device_events', routeFile: 'devices/events.ts', method: 'get', path: '/:id/events',
+    toolOnly: { extra: [], reason: 'Narrower projection than REST: no actor email (not even as the name fallback), IP address or details (W13-D4).' },
+  },
+  { tool: 'get_device_health', routeFile: 'devices/health.ts', method: 'get', path: '/:id/health' },
+  { tool: 'get_process_samples', routeFile: 'devices/processSamples.ts', method: 'get', path: '/:id/process-samples' },
+  {
+    tool: 'get_management_posture', routeFile: 'devices/posture.ts', method: 'get', path: '/management-posture/summary',
+    toolOnly: { extra: [], reason: 'Adds the exact-device axis and the parked-device rule to the aggregate scope (W13-D12).' },
+  },
+  { tool: 'manage_device_function', action: 'get', routeFile: 'devices/function.ts', method: 'get', path: '/:id/function' },
+  { tool: 'manage_device_function', action: 'set', routeFile: 'devices/function.ts', method: 'put', path: '/:id/function' },
+  { tool: 'manage_device_links', action: 'list', routeFile: 'devices/links.ts', method: 'get', path: '/link-groups', toolOnly: { extra: [], reason: 'A device-bound session sees only members in its allowlist, and no group with none (W13-D12).' } },
+  { tool: 'manage_device_links', action: 'get', routeFile: 'devices/links.ts', method: 'get', path: '/link-groups/:groupId', toolOnly: { extra: [], reason: 'A device-bound session sees only members in its allowlist, and no group with none (W13-D12).' } },
+  { tool: 'manage_device_links', action: 'for_device', routeFile: 'devices/links.ts', method: 'get', path: '/:id/link-group' },
+  { tool: 'manage_device_links', action: 'create', routeFile: 'devices/links.ts', method: 'post', path: '/link-groups', toolOnly: { extra: [], reason: 'Refused to device-bound sessions (a change touches every member, W13-D12).' } },
+  { tool: 'manage_device_links', action: 'update', routeFile: 'devices/links.ts', method: 'patch', path: '/link-groups/:groupId', toolOnly: { extra: [], reason: 'Refused to device-bound sessions (a change touches every member, W13-D12).' } },
+  { tool: 'manage_device_links', action: 'dissolve', routeFile: 'devices/links.ts', method: 'delete', path: '/link-groups/:groupId', toolOnly: { extra: [], reason: 'Refused to device-bound sessions (a change touches every member, W13-D12).' } },
+  { tool: 'manage_manual_assets', action: 'list', routeFile: 'devices/manual.ts', method: 'get', path: '/manual', toolOnly: { extra: [], reason: 'Refused to device-bound sessions (a manual asset belongs to no device, W13-D12).' } },
+  { tool: 'manage_manual_assets', action: 'create', routeFile: 'devices/manual.ts', method: 'post', path: '/manual', toolOnly: { extra: [], reason: 'Refused to device-bound sessions (a manual asset belongs to no device, W13-D12).' } },
+  { tool: 'manage_manual_assets', action: 'update', routeFile: 'devices/manual.ts', method: 'patch', path: '/manual/:id', toolOnly: { extra: [], reason: 'Refused to device-bound sessions (a manual asset belongs to no device, W13-D12).' } },
+  { tool: 'manage_manual_assets', action: 'delete', routeFile: 'devices/manual.ts', method: 'delete', path: '/manual/:id', toolOnly: { extra: [], reason: 'Refused to device-bound sessions (a manual asset belongs to no device, W13-D12).' } },
+  { tool: 'manage_manual_assets', action: 'link', routeFile: 'devices/manual.ts', method: 'post', path: '/manual/:id/link', toolOnly: { extra: [], reason: 'Refused to device-bound sessions (a manual asset belongs to no device, W13-D12).' } },
+  { tool: 'manage_manual_assets', action: 'unlink', routeFile: 'devices/manual.ts', method: 'delete', path: '/manual/:id/link', toolOnly: { extra: [], reason: 'Refused to device-bound sessions (a manual asset belongs to no device, W13-D12).' } },
+  { tool: 'manage_device_warranty', action: 'get', routeFile: 'devices/warranty.ts', method: 'get', path: '/:id/warranty' },
+  {
+    tool: 'manage_device_warranty', action: 'expiring', routeFile: 'devices/warranty.ts', method: 'get', path: '/warranty/expiring',
+    toolOnly: { extra: [], reason: 'Adds the exact-device axis and the parked-device rule (W13-D12).' },
+  },
+  { tool: 'manage_device_warranty', action: 'refresh', routeFile: 'devices/warranty.ts', method: 'post', path: '/:id/warranty/refresh' },
+  // Full-control W13 PR B (#6783).
+  { tool: 'browse_device_event_log', action: 'list_logs', routeFile: 'systemTools/eventLogs.ts', method: 'get', path: '/devices/:deviceId/eventlogs', parents: ['systemTools/index.ts'] },
+  {
+    tool: 'browse_device_event_log', action: 'query', routeFile: 'systemTools/eventLogs.ts', method: 'get', path: '/devices/:deviceId/eventlogs/:name/events', parents: ['systemTools/index.ts'],
+    toolOnly: { extra: [], reason: 'Supervised for every channel (REST gates only the Security log behind devices:execute, already the floor); the raw event XML is never returned.' },
+  },
+  {
+    tool: 'browse_device_event_log', action: 'get_event', routeFile: 'systemTools/eventLogs.ts', method: 'get', path: '/devices/:deviceId/eventlogs/:name/events/:recordId', parents: ['systemTools/index.ts'],
+    toolOnly: { extra: [], reason: 'Supervised for every channel; the raw event XML is never returned.' },
+  },
+  { tool: 'manage_tenant_variables', action: 'list', routeFile: 'tenantVariables.ts', method: 'get', path: '/tenant-variables', toolOnly: { extra: [], reason: 'Refused to device-bound sessions; a secret value is never returned (W13-D7).' } },
+  { tool: 'manage_tenant_variables', action: 'create', routeFile: 'tenantVariables.ts', method: 'post', path: '/tenant-variables', toolOnly: { extra: [], reason: 'Never a secret (no isSecret input); refused to site- and device-restricted sessions (W13-D7/D13).' } },
+  { tool: 'manage_tenant_variables', action: 'update', routeFile: 'tenantVariables.ts', method: 'put', path: '/tenant-variables/:id', toolOnly: { extra: [], reason: 'A secret or an existing partner-wide row is refused; refused to site- and device-restricted sessions (W13-D7/D13).' } },
+  { tool: 'manage_tenant_variables', action: 'delete', routeFile: 'tenantVariables.ts', method: 'delete', path: '/tenant-variables/:id', toolOnly: { extra: [], reason: 'An existing partner-wide row is refused; refused to site- and device-restricted sessions (W13-D13).' } },
+  { tool: 'manage_support_sessions', action: 'list', routeFile: 'remote/supportSessions.ts', method: 'get', path: '/support-sessions', parents: ['remote/index.ts'], toolOnly: { extra: [], reason: 'Partner scope only, restricted sessions refused, partner pinned in SQL (REST: RLS only); no code hash or claiming IP (W13-D8).' } },
+  { tool: 'manage_support_sessions', action: 'get', routeFile: 'remote/supportSessions.ts', method: 'get', path: '/support-sessions/:id', parents: ['remote/index.ts'], toolOnly: { extra: [], reason: 'Partner scope only, restricted sessions refused, partner pinned in SQL (REST: RLS only); no code hash or claiming IP (W13-D8).' } },
+  { tool: 'manage_support_sessions', action: 'end', routeFile: 'remote/supportSessions.ts', method: 'post', path: '/support-sessions/:id/end', parents: ['remote/index.ts'], toolOnly: { extra: [], reason: 'Partner scope only, restricted sessions refused, the session loaded under the partner predicate before the system-context end (W13-D8).' } },
+  // Full-control W14 (#6784, PR A).
+  { tool: 'manage_billing_profiles', action: 'list', routeFile: 'billingProfiles.ts', method: 'get', path: '/' },
+  { tool: 'manage_billing_profiles', action: 'get', routeFile: 'billingProfiles.ts', method: 'get', path: '/', toolOnly: { extra: [], reason: 'REST returns the card inside the list; the tool reads one card by id with the same service and grant.' } },
+  { tool: 'manage_billing_profiles', action: 'list_work_types', routeFile: 'billingProfiles.ts', method: 'get', path: '/work-types' },
+  { tool: 'manage_billing_profiles', action: 'create', routeFile: 'billingProfiles.ts', method: 'post', path: '/' },
+  { tool: 'manage_billing_profiles', action: 'update', routeFile: 'billingProfiles.ts', method: 'patch', path: '/:id', toolOnly: { extra: [], reason: 'Refuses an AI-coverage change that would delete the AI price list (quorum QW3).' } },
+  { tool: 'manage_billing_profiles', action: 'archive', routeFile: 'billingProfiles.ts', method: 'delete', path: '/:id' },
+  { tool: 'manage_billing_profiles', action: 'set_rows', routeFile: 'billingProfiles.ts', method: 'put', path: '/:id/rows' },
+  { tool: 'manage_billing_profiles', action: 'clone', routeFile: 'billingProfiles.ts', method: 'post', path: '/:id/clone' },
+  { tool: 'manage_billing_profiles', action: 'create_work_type', routeFile: 'billingProfiles.ts', method: 'post', path: '/work-types' },
+  { tool: 'manage_billing_profiles', action: 'update_work_type', routeFile: 'billingProfiles.ts', method: 'patch', path: '/work-types/:id', toolOnly: { extra: [], reason: 'Refuses isActive:false (archive clears ticket-category defaults; web app only, W14-D4).' } },
+  { tool: 'manage_billing_profiles', action: 'get_org_profile', routeFile: 'orgBillingProfile.ts', method: 'get', path: '/organizations/:id/billing-profile' },
+  { tool: 'manage_billing_profiles', action: 'set_org_profile', routeFile: 'orgBillingProfile.ts', method: 'put', path: '/organizations/:id/billing-profile', toolOnly: { extra: [], reason: 'Refused to device-bound sessions (org-wide configuration, W14-D8).' } },
+  { tool: 'manage_billing_profiles', action: 'clear_org_profile', routeFile: 'orgBillingProfile.ts', method: 'delete', path: '/organizations/:id/billing-profile', toolOnly: { extra: [], reason: 'Refused to device-bound sessions (org-wide configuration, W14-D8).' } },
+  { tool: 'manage_billing_settings', action: 'get_partner', routeFile: 'orgs.ts', method: 'get', path: '/partners/me', toolOnly: { extra: [], reason: 'An explicit billing-settings projection of the same partner row.' } },
+  { tool: 'manage_billing_settings', action: 'get_org', routeFile: 'orgs.ts', method: 'get', path: '/organizations/:id', toolOnly: { extra: [], reason: 'An explicit billing-settings projection of the same org row; refused to device-bound sessions.' } },
+  { tool: 'manage_billing_settings', action: 'currency_impact', routeFile: 'invoices/settings.ts', method: 'get', path: '/orgs/:orgId/billing-settings/currency-impact' },
+  { tool: 'manage_billing_settings', action: 'update_partner', routeFile: 'invoices/settings.ts', method: 'patch', path: '/partner/billing-settings', toolOnly: { extra: [], reason: 'Never carries the agreement-reminder keys (W14-D4), so the conditional agreements:send gate never applies.' } },
+  { tool: 'manage_billing_settings', action: 'update_org', routeFile: 'invoices/settings.ts', method: 'patch', path: '/orgs/:orgId/billing-settings', toolOnly: { extra: [], reason: 'Never carries billingProfileId or a currency change (W14-D4); refused to device-bound sessions.' } },
+  { tool: 'manage_contract_templates', action: 'list', routeFile: 'contracts/templates.ts', method: 'get', path: '/', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'No version body; refused to device-bound sessions (W14-D6/D8).' } },
+  { tool: 'manage_contract_templates', action: 'get', routeFile: 'contracts/templates.ts', method: 'get', path: '/:id', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'Versions without body or bytes (W14-D6).' } },
+  { tool: 'manage_contract_templates', action: 'get_version', routeFile: 'contracts/templates.ts', method: 'get', path: '/:id/versions/:versionId', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'Body clipped; never the uploaded bytes (W14-D6).' } },
+  { tool: 'manage_contract_templates', action: 'usage', routeFile: 'contracts/templates.ts', method: 'get', path: '/:id/usage', parents: ['contracts/index.ts'] },
+  { tool: 'manage_contract_templates', action: 'create', routeFile: 'contracts/templates.ts', method: 'post', path: '/', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'Org-owned creates refused to site- and device-restricted sessions (W14-D8).' } },
+  { tool: 'manage_contract_templates', action: 'update', routeFile: 'contracts/templates.ts', method: 'patch', path: '/:id', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'The call asserts ownerScope and a mismatch is refused (W14-D5); org templates refused to restricted sessions.' } },
+  { tool: 'manage_contract_templates', action: 'create_version', routeFile: 'contracts/templates.ts', method: 'post', path: '/:id/versions', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'Refused for a partner-wide template (irreversible + partner-wide, W14-D5 / quorum QW2).' } },
+  { tool: 'manage_contract_templates', action: 'publish', routeFile: 'contracts/templates.ts', method: 'post', path: '/:id/versions/:versionId/publish', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'Refused for a partner-wide template (irreversible + partner-wide, W14-D5).' } },
+  { tool: 'manage_contract_templates', action: 'archive', routeFile: 'contracts/templates.ts', method: 'post', path: '/:id/archive', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'Refused for a partner-wide template (irreversible + partner-wide, W14-D5).' } },
+  { tool: 'manage_contract_documents', action: 'list', routeFile: 'contracts/documents.ts', method: 'get', path: '/', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'No signer email or acceptance reference (W14-D6); refused to device-bound sessions.' } },
+  { tool: 'manage_contract_documents', action: 'link', routeFile: 'contracts/documents.ts', method: 'patch', path: '/:id', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'Identifiers only in the result (QW4); refused to site- and device-restricted sessions.' } },
+  { tool: 'get_device_billing', routeFile: 'devices/billing.ts', method: 'get', path: '/:id/billing' },
+  { tool: 'get_contract', routeFile: 'contracts/periods.ts', method: 'get', path: '/:id/periods/:periodId/outcome', parents: ['contracts/index.ts'] },
+  { tool: 'list_contracts', routeFile: 'contracts/reports.ts', method: 'get', path: '/currency-mismatches', parents: ['contracts/index.ts'] },
+  { tool: 'get_invoice', routeFile: 'invoices/evidence.ts', method: 'get', path: '/:id/lines/:lineId/devices', parents: ['invoices/index.ts'] },
+  // Full-control W14 PR B (#6784).
+  { tool: 'manage_contracts', action: 'generate_invoice', routeFile: 'contracts/generate.ts', method: 'post', path: '/:id/generate', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'Four-eyes with a mandatory pin; refuses a live hour-block contract and any invoice that is not the approved one (PR B quorum QB1-QB3, QB10).' } },
   {
     tool: 'read_artifact', routeFile: 'aiArtifacts.ts', method: 'get', path: '/:id',
     toolOnly: { extra: [], reason: 'Only artifacts anchored to the caller\'s own session or agent run, and only where capture is enabled; the REST download is org-wide.' },
@@ -295,6 +553,30 @@ const BINDINGS: readonly Binding[] = [
   // the handler enforces it (aiToolsDR.ts execute_dr_plan).
   { tool: 'execute_dr_plan', routeFile: 'dr.ts', method: 'post', path: '/plans/:id/execute' },
 
+  // Full-control W03 (#6757): every backup / DR / Hyper-V write action wired
+  // into chat binds to the route a technician uses for the same act.
+  { tool: 'trigger_backup', routeFile: 'backup/jobs.ts', method: 'post', path: '/jobs/run/:deviceId' },
+  { tool: 'trigger_hyperv_backup', routeFile: 'backup/hyperv.ts', method: 'post', path: '/backup' },
+  { tool: 'trigger_mssql_backup', routeFile: 'backup/mssql.ts', method: 'post', path: '/mssql/backup' },
+  { tool: 'verify_mssql_backup', routeFile: 'backup/mssql.ts', method: 'post', path: '/mssql/verify/:snapshotId' },
+  { tool: 'trigger_vault_sync', routeFile: 'backup/vault.ts', method: 'post', path: '/:id/sync' },
+  { tool: 'configure_vault', action: 'update', routeFile: 'backup/vault.ts', method: 'patch', path: '/:id' },
+  { tool: 'trigger_c2c_sync', routeFile: 'c2c/jobs.ts', method: 'post', path: '/configs/:id/run' },
+  { tool: 'restore_c2c_items', routeFile: 'c2c/items.ts', method: 'post', path: '/restore' },
+  ...(['start', 'stop', 'force_stop', 'pause', 'resume', 'save'] as const).map((action) => (
+    { tool: 'manage_hyperv_vm', action, routeFile: 'backup/hyperv.ts', method: 'post' as const, path: '/vm-state/:deviceId/:vmId' }
+  )),
+  ...(['create', 'delete', 'apply'] as const).map((action) => (
+    { tool: 'manage_hyperv_checkpoints', action, routeFile: 'backup/hyperv.ts', method: 'post' as const, path: '/checkpoints/:deviceId/:vmId' }
+  )),
+  { tool: 'manage_backup_profiles', action: 'list', routeFile: 'backup/profiles.ts', method: 'get', path: '/profiles' },
+  { tool: 'manage_backup_profiles', action: 'get', routeFile: 'backup/profiles.ts', method: 'get', path: '/profiles/:id' },
+  { tool: 'manage_backup_profiles', action: 'create', routeFile: 'backup/profiles.ts', method: 'post', path: '/profiles' },
+  { tool: 'manage_backup_profiles', action: 'update', routeFile: 'backup/profiles.ts', method: 'patch', path: '/profiles/:id' },
+  { tool: 'manage_backup_profiles', action: 'delete', routeFile: 'backup/profiles.ts', method: 'delete', path: '/profiles/:id' },
+  { tool: 'configure_backup_sla', action: 'create', routeFile: 'backup/sla.ts', method: 'post', path: '/configs' },
+  { tool: 'configure_backup_sla', action: 'update', routeFile: 'backup/sla.ts', method: 'patch', path: '/configs/:id' },
+
   // §2.5 — backup / Hyper-V / MSSQL reads. query_backups' own binding moved to
   // the per-action rows below (its base tier-1 map is per-action, so a
   // bare-tool binding here can no longer resolve).
@@ -341,6 +623,9 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'manage_scheduled_tasks', action: 'list', routeFile: 'systemTools/scheduledTasks.ts', method: 'get', path: '/devices/:deviceId/tasks', parents: ['systemTools/index.ts'] },
   { tool: 'manage_services', action: 'list', routeFile: 'systemTools/services.ts', method: 'get', path: '/devices/:deviceId/services', parents: ['systemTools/index.ts'] },
   { tool: 'file_operations', action: 'list', routeFile: 'systemTools/fileBrowser.ts', method: 'get', path: '/devices/:deviceId/files', parents: ['systemTools/index.ts'] },
+  // Upload and move also carry scripts:execute (fileBrowser.ts requireScriptsExecute).
+  { tool: 'file_operations', action: 'write', routeFile: 'systemTools/fileBrowser.ts', method: 'post', path: '/devices/:deviceId/files/upload', parents: ['systemTools/index.ts'] },
+  { tool: 'file_operations', action: 'rename', routeFile: 'systemTools/fileBrowser.ts', method: 'post', path: '/devices/:deviceId/files/move', parents: ['systemTools/index.ts'] },
   { tool: 'registry_operations', action: 'get_value', routeFile: 'systemTools/registry.ts', method: 'get', path: '/devices/:deviceId/registry/value', parents: ['systemTools/index.ts'] },
   // Live device reads outside /system-tools. The live request is bound to the
   // route that sends the same command; the stored-data read to the route that
@@ -348,6 +633,7 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'system_cleanup', action: 'list', routeFile: 'devices/filesystemSystemCleanup.ts', method: 'post', path: '/:id/filesystem/system-cleanup/list' },
   { tool: 'system_cleanup', action: 'run', routeFile: 'devices/filesystemSystemCleanup.ts', method: 'post', path: '/:id/filesystem/system-cleanup/run' },
   { tool: 'system_cleanup', action: 'status', routeFile: 'devices/filesystemSystemCleanup.ts', method: 'get', path: '/:id/filesystem/system-cleanup/run/:cleanupRunId' },
+  { tool: 'system_cleanup', action: 'cancel', routeFile: 'devices/filesystemSystemCleanup.ts', method: 'post', path: '/:id/filesystem/system-cleanup/run/:cleanupRunId/cancel' },
   { tool: 'analyze_disk_usage', input: { refresh: true }, routeFile: 'devices/filesystem.ts', method: 'post', path: '/:id/filesystem/scan' },
   { tool: 'analyze_disk_usage', routeFile: 'devices/filesystem.ts', method: 'get', path: '/:id/filesystem' },
   { tool: 'analyze_boot_performance', input: { triggerCollection: true }, routeFile: 'devices/bootMetrics.ts', method: 'post', path: '/:id/collect-boot-metrics' },
@@ -391,8 +677,106 @@ const BINDINGS: readonly Binding[] = [
       reason: 'the handler resolves the pay link from the CONVERTED QUOTE by id before delegating to the invoice route\'s own logic (createQuotePayLink → quotePay.ts), so it needs quotes:read on top of the route\'s invoices:send.',
     },
   },
-  { tool: 'manage_catalog', action: 'archive_item', routeFile: 'catalog/catalog.ts', method: 'post', path: '/:id/archive' },
+  { tool: 'manage_billing_catalog', action: 'archive_item', routeFile: 'catalog/catalog.ts', method: 'post', path: '/:id/archive' },
   { tool: 'test_webhook', routeFile: 'webhooks.ts', method: 'post', path: '/:id/test' },
+  // Full-control W04 (#6758) — every write action of the security / incident /
+  // device-operation tools is bound to the route it mirrors (spec #6096/#6110:
+  // a tool is never weaker than its route). Actions with no single REST twin
+  // are in UNBOUND below.
+  { tool: 'collect_evidence', routeFile: 'devices/commands.ts', method: 'post', path: '/:id/commands' },
+  { tool: 'create_incident', routeFile: 'incidents.ts', method: 'post', path: '/' },
+  {
+    tool: 'execute_containment', routeFile: 'devices/commands.ts', method: 'post', path: '/:id/commands',
+    toolOnly: {
+      extra: ['alerts:write'],
+      reason: 'the tool dispatches the containment command (the route bound here) AND writes incident_actions, which moves the incident to contained; REST gates that incident mutation separately on alerts:write (routes/incidentActions.ts POST /:id/contain), so the single AI call must hold both (W04-D9, quorum QW6).',
+    },
+  },
+  { tool: 'revoke_elevation', routeFile: 'pam.ts', method: 'post', path: '/elevation-requests/:id/revoke' },
+  { tool: 'manage_processes', action: 'kill', routeFile: 'systemTools/processes.ts', method: 'post', path: '/devices/:deviceId/processes/:pid/kill', parents: ['systemTools/index.ts'] },
+  { tool: 'manage_scheduled_tasks', action: 'run', routeFile: 'systemTools/scheduledTasks.ts', method: 'post', path: '/devices/:deviceId/tasks/:path/run', parents: ['systemTools/index.ts'] },
+  { tool: 'manage_scheduled_tasks', action: 'disable', routeFile: 'systemTools/scheduledTasks.ts', method: 'post', path: '/devices/:deviceId/tasks/:path/disable', parents: ['systemTools/index.ts'] },
+  { tool: 'manage_scheduled_tasks', action: 'enable', routeFile: 'systemTools/scheduledTasks.ts', method: 'post', path: '/devices/:deviceId/tasks/:path/enable', parents: ['systemTools/index.ts'] },
+  { tool: 'registry_operations', action: 'set_value', routeFile: 'systemTools/registry.ts', method: 'put', path: '/devices/:deviceId/registry/value', parents: ['systemTools/index.ts'] },
+  { tool: 'registry_operations', action: 'create_key', routeFile: 'systemTools/registry.ts', method: 'post', path: '/devices/:deviceId/registry/key', parents: ['systemTools/index.ts'] },
+  { tool: 'registry_operations', action: 'delete_key', routeFile: 'systemTools/registry.ts', method: 'delete', path: '/devices/:deviceId/registry/key', parents: ['systemTools/index.ts'] },
+  { tool: 'trigger_agent_restart', routeFile: 'devices/agentRecovery.ts', method: 'post', path: '/:id/agent-recovery' },
+  { tool: 'manage_software_policy', action: 'list', routeFile: 'softwarePolicies.ts', method: 'get', path: '/' },
+  { tool: 'manage_software_policy', action: 'get', routeFile: 'softwarePolicies.ts', method: 'get', path: '/:id' },
+  { tool: 'manage_software_policy', action: 'create', routeFile: 'softwarePolicies.ts', method: 'post', path: '/' },
+  { tool: 'manage_software_policy', action: 'update', routeFile: 'softwarePolicies.ts', method: 'patch', path: '/:id' },
+  { tool: 'manage_software_policy', action: 'delete', routeFile: 'softwarePolicies.ts', method: 'delete', path: '/:id' },
+  { tool: 'manage_browser_policy', action: 'list', routeFile: 'browserSecurity.ts', method: 'get', path: '/policies' },
+  { tool: 'manage_browser_policy', action: 'create', routeFile: 'browserSecurity.ts', method: 'post', path: '/policies' },
+  { tool: 'manage_browser_policy', action: 'update', routeFile: 'browserSecurity.ts', method: 'put', path: '/policies/:policyId' },
+  // manage_peripheral_policy: create and update share POST /policies (update = body `id`);
+  // add_exception and remove_exception share POST /exceptions (body `operation`).
+  { tool: 'manage_peripheral_policy', action: 'create', routeFile: 'peripheralControl.ts', method: 'post', path: '/policies' },
+  { tool: 'manage_peripheral_policy', action: 'update', routeFile: 'peripheralControl.ts', method: 'post', path: '/policies' },
+  { tool: 'manage_peripheral_policy', action: 'disable', routeFile: 'peripheralControl.ts', method: 'post', path: '/policies/:id/disable' },
+  { tool: 'manage_peripheral_policy', action: 'add_exception', routeFile: 'peripheralControl.ts', method: 'post', path: '/exceptions' },
+  { tool: 'manage_peripheral_policy', action: 'remove_exception', routeFile: 'peripheralControl.ts', method: 'post', path: '/exceptions' },
+  { tool: 'remediate_sensitive_data', action: 'encrypt', routeFile: 'sensitiveData.ts', method: 'post', path: '/remediate' },
+  { tool: 'remediate_sensitive_data', action: 'quarantine', routeFile: 'sensitiveData.ts', method: 'post', path: '/remediate' },
+  { tool: 'remediate_sensitive_data', action: 'secure_delete', routeFile: 'sensitiveData.ts', method: 'post', path: '/remediate' },
+  { tool: 'remediate_sensitive_data', action: 'accept_risk', routeFile: 'sensitiveData.ts', method: 'post', path: '/remediate' },
+  { tool: 'remediate_sensitive_data', action: 'false_positive', routeFile: 'sensitiveData.ts', method: 'post', path: '/remediate' },
+  { tool: 'remediate_sensitive_data', action: 'mark_remediated', routeFile: 'sensitiveData.ts', method: 'post', path: '/remediate' },
+  { tool: 'remediate_software_violation', routeFile: 'softwarePolicies.ts', method: 'post', path: '/:id/remediate' },
+  { tool: 'assign_security_training', routeFile: 'userRisk.ts', method: 'post', path: '/assign-training' },
+  // configure_network_baseline has no action enum: it creates AND updates. POST / and
+  // PATCH /:id both gate on devices:write, so the create route stands for both.
+  { tool: 'configure_network_baseline', routeFile: 'networkBaselines.ts', method: 'post', path: '/' },
+  { tool: 'acknowledge_network_device', routeFile: 'networkChanges.ts', method: 'post', path: '/:id/acknowledge' },
+  // W02 (#6756) — every write action of the PSA/billing write tools is bound
+  // to its route (W02-D11). The only actions with no REST twin are the
+  // agent-only ticket-triage executors (link_device, draft): their
+  // `tickets:update` grant is deliberately held by no role.
+  { tool: 'manage_tickets', action: 'create', routeFile: 'tickets/tickets.ts', method: 'post', path: '/' },
+  { tool: 'manage_tickets', action: 'update_fields', routeFile: 'tickets/tickets.ts', method: 'patch', path: '/:id' },
+  { tool: 'manage_tickets', action: 'update_status', routeFile: 'tickets/tickets.ts', method: 'post', path: '/:id/status' },
+  { tool: 'manage_tickets', action: 'assign', routeFile: 'tickets/tickets.ts', method: 'post', path: '/:id/assign' },
+  { tool: 'manage_tickets', action: 'comment', routeFile: 'tickets/tickets.ts', method: 'post', path: '/:id/comments' },
+  { tool: 'manage_tickets', action: 'edit_comment', routeFile: 'tickets/tickets.ts', method: 'patch', path: '/:id/comments/:commentId' },
+  { tool: 'manage_tickets', action: 'delete_comment', routeFile: 'tickets/tickets.ts', method: 'delete', path: '/:id/comments/:commentId' },
+  { tool: 'manage_tickets', action: 'link_alert', routeFile: 'tickets/tickets.ts', method: 'post', path: '/:id/alerts' },
+  { tool: 'manage_tickets', action: 'unlink_alert', routeFile: 'tickets/tickets.ts', method: 'delete', path: '/:id/alerts/:alertId' },
+  { tool: 'manage_tickets', action: 'create_from_alert', routeFile: 'alerts/alerts.ts', method: 'post', path: '/:id/create-ticket' },
+  { tool: 'manage_tickets', action: 'log_time_entry', routeFile: 'timeEntries/timeEntries.ts', method: 'post', path: '/' },
+  { tool: 'manage_tickets', action: 'start_timer', routeFile: 'timeEntries/timeEntries.ts', method: 'post', path: '/start' },
+  { tool: 'manage_tickets', action: 'stop_timer', routeFile: 'timeEntries/timeEntries.ts', method: 'post', path: '/stop' },
+  { tool: 'manage_tickets', action: 'update_time_entry', routeFile: 'timeEntries/timeEntries.ts', method: 'patch', path: '/:id' },
+  { tool: 'manage_tickets', action: 'link_ticket', routeFile: 'tickets/links.ts', method: 'post', path: '/:id/links' },
+  { tool: 'manage_tickets', action: 'unlink_ticket', routeFile: 'tickets/links.ts', method: 'delete', path: '/:id/links/:linkId' },
+  { tool: 'manage_quotes', action: 'create_draft', routeFile: 'quotes/quotes.ts', method: 'post', path: '/' },
+  { tool: 'manage_quotes', action: 'update', routeFile: 'quotes/quotes.ts', method: 'patch', path: '/:id' },
+  { tool: 'manage_quotes', action: 'delete_draft', routeFile: 'quotes/quotes.ts', method: 'delete', path: '/:id' },
+  { tool: 'manage_quotes', action: 'add_block', routeFile: 'quotes/quotes.ts', method: 'post', path: '/:id/blocks' },
+  { tool: 'manage_quotes', action: 'update_block', routeFile: 'quotes/quotes.ts', method: 'patch', path: '/:id/blocks/:blockId' },
+  { tool: 'manage_quotes', action: 'delete_block', routeFile: 'quotes/quotes.ts', method: 'delete', path: '/:id/blocks/:blockId' },
+  { tool: 'manage_quotes', action: 'reorder_blocks', routeFile: 'quotes/quotes.ts', method: 'patch', path: '/:id/blocks/reorder' },
+  { tool: 'manage_quotes', action: 'add_manual_line', routeFile: 'quotes/quotes.ts', method: 'post', path: '/:id/lines' },
+  { tool: 'manage_quotes', action: 'add_catalog_line', routeFile: 'quotes/quotes.ts', method: 'post', path: '/:id/lines/catalog' },
+  { tool: 'manage_quotes', action: 'update_line', routeFile: 'quotes/quotes.ts', method: 'patch', path: '/:id/lines/:lineId' },
+  { tool: 'manage_quotes', action: 'remove_line', routeFile: 'quotes/quotes.ts', method: 'delete', path: '/:id/lines/:lineId' },
+  { tool: 'manage_quotes', action: 'move_line', routeFile: 'quotes/quotes.ts', method: 'patch', path: '/:id/lines/:lineId/move' },
+  { tool: 'manage_quotes', action: 'reorder_lines', routeFile: 'quotes/quotes.ts', method: 'patch', path: '/:id/blocks/:blockId/lines/reorder' },
+  { tool: 'manage_quotes', action: 'send', routeFile: 'quotes/lifecycle.ts', method: 'post', path: '/:id/send' },
+  { tool: 'manage_billing_catalog', action: 'create_item', routeFile: 'catalog/catalog.ts', method: 'post', path: '/' },
+  { tool: 'manage_billing_catalog', action: 'update_item', routeFile: 'catalog/catalog.ts', method: 'patch', path: '/:id' },
+  { tool: 'manage_billing_catalog', action: 'set_price', routeFile: 'catalog/pricing.ts', method: 'put', path: '/:id/prices/:currencyCode' },
+  { tool: 'manage_billing_catalog', action: 'remove_price', routeFile: 'catalog/pricing.ts', method: 'delete', path: '/:id/prices/:currencyCode' },
+  { tool: 'manage_billing_catalog', action: 'set_org_price', routeFile: 'catalog/pricing.ts', method: 'put', path: '/:id/pricing/:orgId' },
+  { tool: 'manage_billing_catalog', action: 'remove_org_price', routeFile: 'catalog/pricing.ts', method: 'delete', path: '/:id/pricing/:orgId' },
+  { tool: 'manage_billing_catalog', action: 'set_bundle_components', routeFile: 'catalog/bundles.ts', method: 'put', path: '/:id/components' },
+  { tool: 'manage_saved_filters', action: 'create', routeFile: 'filters.ts', method: 'post', path: '/' },
+  { tool: 'manage_saved_filters', action: 'delete', routeFile: 'filters.ts', method: 'delete', path: '/:id' },
+  { tool: 'manage_tags', action: 'add', routeFile: 'devices/core.ts', method: 'patch', path: '/:id' },
+  { tool: 'manage_tags', action: 'remove', routeFile: 'devices/core.ts', method: 'patch', path: '/:id' },
+  { tool: 'manage_notification_channels', action: 'create', routeFile: 'alerts/channels.ts', method: 'post', path: '/channels' },
+  { tool: 'manage_notification_channels', action: 'update', routeFile: 'alerts/channels.ts', method: 'put', path: '/channels/:id' },
+  { tool: 'manage_notification_channels', action: 'delete', routeFile: 'alerts/channels.ts', method: 'delete', path: '/channels/:id' },
+  { tool: 'manage_notification_channels', action: 'test', routeFile: 'alerts/channels.ts', method: 'post', path: '/channels/:id/test' },
   // Read-only tools: each requires the same permission as its route.
   { tool: 'query_backups', action: 'list_configs', routeFile: 'backup/configs.ts', method: 'get', path: '/configs' },
   { tool: 'query_backups', action: 'list_jobs', routeFile: 'backup/jobs.ts', method: 'get', path: '/jobs' },
@@ -441,6 +825,83 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'list_scripts', routeFile: 'scripts.ts', method: 'get', path: '/' },
   { tool: 'get_script_details', routeFile: 'scripts.ts', method: 'get', path: '/:id' },
   { tool: 'get_script_execution_history', routeFile: 'scripts.ts', method: 'get', path: '/:id/executions' },
+  // #10417: the deviceId form mirrors the device Scripts tab's history read.
+  { tool: 'get_script_execution_history', routeFile: 'devices/scripts.ts', method: 'get', path: '/:id/scripts' },
+
+  // Full-control W06 (#6776): every PSA configuration / ticket-ops action binds to the route a technician uses for the same act.
+  { tool: 'manage_ticket_config', action: 'get_org_settings', routeFile: 'orgTicketSettings.ts', method: 'get', path: '/organizations/:id/ticket-settings' },
+  { tool: 'manage_ticket_config', action: 'update_org_settings', routeFile: 'orgTicketSettings.ts', method: 'patch', path: '/organizations/:id/ticket-settings' },
+  { tool: 'manage_ticket_config', action: 'list_categories', routeFile: 'ticketCategories.ts', method: 'get', path: '/' },
+  { tool: 'manage_ticket_config', action: 'create_category', routeFile: 'ticketCategories.ts', method: 'post', path: '/' },
+  { tool: 'manage_ticket_config', action: 'update_category', routeFile: 'ticketCategories.ts', method: 'patch', path: '/:id' },
+  { tool: 'manage_ticket_config', action: 'delete_category', routeFile: 'ticketCategories.ts', method: 'delete', path: '/:id' },
+  { tool: 'manage_ticket_config', action: 'reorder_categories', routeFile: 'ticketCategories.ts', method: 'put', path: '/reorder' },
+  { tool: 'manage_ticket_config', action: 'get_config', routeFile: 'ticketConfig.ts', method: 'get', path: '/' },
+  { tool: 'manage_ticket_config', action: 'create_status', routeFile: 'ticketConfig.ts', method: 'post', path: '/statuses' },
+  { tool: 'manage_ticket_config', action: 'update_status', routeFile: 'ticketConfig.ts', method: 'patch', path: '/statuses/:id' },
+  { tool: 'manage_ticket_config', action: 'reorder_statuses', routeFile: 'ticketConfig.ts', method: 'post', path: '/statuses/reorder' },
+  { tool: 'manage_ticket_config', action: 'set_priorities', routeFile: 'ticketConfig.ts', method: 'put', path: '/priorities' },
+  { tool: 'manage_ticket_config', action: 'list_domains', routeFile: 'ticketConfig.ts', method: 'get', path: '/inbound-domains' },
+  { tool: 'manage_ticket_config', action: 'create_domain', routeFile: 'ticketConfig.ts', method: 'post', path: '/inbound-domains' },
+  { tool: 'manage_ticket_config', action: 'update_domain', routeFile: 'ticketConfig.ts', method: 'patch', path: '/inbound-domains/:id' },
+  { tool: 'manage_ticket_config', action: 'delete_domain', routeFile: 'ticketConfig.ts', method: 'delete', path: '/inbound-domains/:id' },
+  // The email-inbound LIST is gated on tickets:write (writePerm) like its mutations; the admin predicate is applied in the handler.
+  { tool: 'manage_ticket_inbox', action: 'list', routeFile: 'ticketConfig.ts', method: 'get', path: '/email-inbound' },
+  { tool: 'manage_ticket_inbox', action: 'convert', routeFile: 'ticketConfig.ts', method: 'post', path: '/email-inbound/:id/convert' },
+  { tool: 'manage_ticket_inbox', action: 'dismiss', routeFile: 'ticketConfig.ts', method: 'patch', path: '/email-inbound/:id/dismiss' },
+  { tool: 'manage_ticket_checklist_templates', action: 'list', routeFile: 'ticketChecklistTemplates.ts', method: 'get', path: '/' },
+  { tool: 'manage_ticket_checklist_templates', action: 'get', routeFile: 'ticketChecklistTemplates.ts', method: 'get', path: '/:id' },
+  { tool: 'manage_ticket_checklist_templates', action: 'create', routeFile: 'ticketChecklistTemplates.ts', method: 'post', path: '/' },
+  { tool: 'manage_ticket_checklist_templates', action: 'update', routeFile: 'ticketChecklistTemplates.ts', method: 'patch', path: '/:id' },
+  { tool: 'manage_ticket_checklist_templates', action: 'delete', routeFile: 'ticketChecklistTemplates.ts', method: 'delete', path: '/:id' },
+  { tool: 'manage_ticket_checklist_templates', action: 'add_item', routeFile: 'ticketChecklistTemplates.ts', method: 'post', path: '/:id/items' },
+  { tool: 'manage_ticket_checklist_templates', action: 'update_item', routeFile: 'ticketChecklistTemplates.ts', method: 'patch', path: '/items/:itemId' },
+  { tool: 'manage_ticket_checklist_templates', action: 'remove_item', routeFile: 'ticketChecklistTemplates.ts', method: 'delete', path: '/items/:itemId' },
+  { tool: 'manage_ticket_checklist_templates', action: 'reorder_items', routeFile: 'ticketChecklistTemplates.ts', method: 'post', path: '/:id/items/reorder' },
+  // `list` has no REST twin of its own: attachments ride the ticket detail feed (GET /tickets/:id, tickets:read).
+  { tool: 'manage_ticket_attachments', action: 'list', routeFile: 'tickets/tickets.ts', method: 'get', path: '/:id' },
+  { tool: 'manage_ticket_attachments', action: 'read_content', routeFile: 'tickets/attachments.ts', method: 'get', path: '/:id/attachments/:attachmentId/content' },
+  { tool: 'manage_ticket_attachments', action: 'attach_from_artifact', routeFile: 'tickets/attachments.ts', method: 'post', path: '/:id/attachments/from-artifact' },
+  { tool: 'manage_ticket_attachments', action: 'delete', routeFile: 'tickets/attachments.ts', method: 'delete', path: '/:id/attachments/:attachmentId' },
+  { tool: 'manage_ticket_forms', action: 'list', routeFile: 'tickets/forms.ts', method: 'get', path: '/ticket-forms' },
+  { tool: 'manage_ticket_forms', action: 'available', routeFile: 'tickets/forms.ts', method: 'get', path: '/ticket-forms/available' },
+  { tool: 'manage_ticket_forms', action: 'create', routeFile: 'tickets/forms.ts', method: 'post', path: '/ticket-forms' },
+  { tool: 'manage_ticket_forms', action: 'update', routeFile: 'tickets/forms.ts', method: 'put', path: '/ticket-forms/:id' },
+  { tool: 'manage_ticket_forms', action: 'delete', routeFile: 'tickets/forms.ts', method: 'delete', path: '/ticket-forms/:id' },
+  { tool: 'manage_ticket_response_templates', action: 'list', routeFile: 'tickets/ticketResponseTemplates.ts', method: 'get', path: '/ticket-response-templates' },
+  { tool: 'manage_ticket_response_templates', action: 'create', routeFile: 'tickets/ticketResponseTemplates.ts', method: 'post', path: '/ticket-response-templates' },
+  { tool: 'manage_ticket_response_templates', action: 'update', routeFile: 'tickets/ticketResponseTemplates.ts', method: 'patch', path: '/ticket-response-templates/:id' },
+  { tool: 'manage_ticket_response_templates', action: 'delete', routeFile: 'tickets/ticketResponseTemplates.ts', method: 'delete', path: '/ticket-response-templates/:id' },
+  { tool: 'manage_time_suggestions', action: 'list', routeFile: 'timeEntries/suggestions.ts', method: 'get', path: '/' },
+  { tool: 'manage_time_suggestions', action: 'confirm', routeFile: 'timeEntries/suggestions.ts', method: 'post', path: '/confirm' },
+  { tool: 'manage_time_suggestions', action: 'dismiss', routeFile: 'timeEntries/suggestions.ts', method: 'post', path: '/dismiss' },
+  { tool: 'manage_time_suggestions', action: 'undo', routeFile: 'timeEntries/suggestions.ts', method: 'delete', path: '/dismiss' },
+  { tool: 'manage_tickets', action: 'bulk_update', routeFile: 'tickets/bulk.ts', method: 'post', path: '/bulk' },
+  // Full-control W07 (#6777): alert correlation + signal triage. Each action binds to the route a technician uses for the same act.
+  { tool: 'get_alert_correlations', routeFile: 'alerts/correlations.ts', method: 'get', path: '/correlations' },
+  { tool: 'get_alert_correlations', routeFile: 'alerts/correlations.ts', method: 'get', path: '/correlations/evaluation' },
+  { tool: 'get_alert_correlations', routeFile: 'alerts/correlations.ts', method: 'get', path: '/correlations/:groupId' },
+  { tool: 'get_alert_correlations', routeFile: 'alerts/correlations.ts', method: 'post', path: '/correlations/:groupId/explain' },
+  { tool: 'get_alert_correlations', routeFile: 'alerts/correlations.ts', method: 'get', path: '/:alertId/correlations' },
+  { tool: 'get_alert_correlations', routeFile: 'alertTemplates/correlations.ts', method: 'get', path: '/correlations' },
+  { tool: 'get_alert_correlations', routeFile: 'alertTemplates/correlations.ts', method: 'post', path: '/correlations/analyze' },
+  { tool: 'manage_alert_correlations', action: 'acknowledge_group', routeFile: 'alerts/correlations.ts', method: 'post', path: '/correlations/:groupId/acknowledge' },
+  { tool: 'manage_alert_correlations', action: 'resolve_group', routeFile: 'alerts/correlations.ts', method: 'post', path: '/correlations/:groupId/resolve' },
+  { tool: 'manage_alert_correlations', action: 'acknowledge_related', routeFile: 'alerts/correlations.ts', method: 'post', path: '/:alertId/correlations/acknowledge' },
+  // Both feedback routes are gated on alerts:read (not a write grant); the tool mirrors them exactly.
+  { tool: 'manage_alert_correlations', action: 'feedback', routeFile: 'alerts/correlations.ts', method: 'post', path: '/correlations/:groupId/feedback' },
+  { tool: 'manage_alert_correlations', action: 'rca_feedback', routeFile: 'alerts/correlations.ts', method: 'post', path: '/correlations/:groupId/rca-feedback' },
+  { tool: 'manage_device_anomalies', action: 'list', routeFile: 'devices/anomalies.ts', method: 'get', path: '/:id/anomalies' },
+  { tool: 'manage_device_anomalies', action: 'dismiss', routeFile: 'devices/anomalies.ts', method: 'patch', path: '/:id/anomalies/:anomalyId/status' },
+  { tool: 'manage_device_anomalies', action: 'resolve', routeFile: 'devices/anomalies.ts', method: 'patch', path: '/:id/anomalies/:anomalyId/status' },
+  { tool: 'manage_device_anomalies', action: 'promote', routeFile: 'devices/anomalies.ts', method: 'patch', path: '/:id/anomalies/:anomalyId/status' },
+  // The reliability label route is gated on devices:read (requireReliabilityRead), like the reads.
+  { tool: 'reliability_feedback', routeFile: 'reliability.ts', method: 'post', path: '/:deviceId/feedback' },
+  { tool: 'get_fleet_health', routeFile: 'reliability.ts', method: 'get', path: '/' },
+  { tool: 'get_fleet_health', routeFile: 'reliability.ts', method: 'get', path: '/evaluation' },
+  { tool: 'get_fleet_health', routeFile: 'reliability.ts', method: 'get', path: '/org/:orgId/summary' },
+  { tool: 'get_fleet_health', routeFile: 'reliability.ts', method: 'get', path: '/:deviceId/history' },
+  { tool: 'get_fleet_health', routeFile: 'reliability.ts', method: 'get', path: '/:deviceId/offenders' },
 ];
 
 /**
@@ -448,6 +909,38 @@ const BINDINGS: readonly Binding[] = [
  * an entry here is a tool whose route evidence is still only a comment.
  */
 const UNBOUND: ReadonlyArray<{ tool: string; action?: string; reason: string }> = [
+  // Full-control W14 PR B (#6784).
+  {
+    tool: 'manage_contracts', action: 'preview_invoice',
+    reason: 'No REST twin: a write-free mirror of POST /contracts/:id/generate; it requires contracts:read, the grant of GET /contracts/:id.',
+  },
+  {
+    tool: 'manage_accounting_sync',
+    reason: 'routes/accounting/index.ts composes its grants through partnerScopedPermission(requirePermission(...)) and the entity-aware requireMappingWrite, which the binder cannot parse; the tool requires accounting:read on reads, accounting:manage + organizations:write + catalog:write on mapping writes and accounting:manage + invoices:write on pushes (aiGuardrails TOOL_PERMISSIONS / TOOL_ACTION_EXTRA_PERMISSIONS), equal to or stronger than every route.',
+  },
+  // Full-control W14 (#6784): GET /billing/reporting-totals is deliberately permission-free at REST (public FX
+  // reference facts, routes/invoices/settings.ts), so there is no route grant to bind; the tool floor is invoices:read.
+  {
+    tool: 'manage_billing_settings', action: 'reporting_totals',
+    reason: 'GET /billing/reporting-totals carries no requirePermission (public FX facts); the AI tool requires invoices:read, stronger than REST.',
+  },
+  // Full-control W12 (#6782): PATCH /devices/:id/custom-fields is gated by dualAuth('devices:write', DEVICES_WRITE,
+  // { mfa: true }) (routes/devices/customFieldValues.ts), a helper the binder cannot parse; the tool floor is devices:write.
+  {
+    tool: 'manage_custom_fields', action: 'set_values',
+    reason: 'PATCH /devices/:id/custom-fields is gated by dualAuth (devices:write through a helper), which the binder cannot parse',
+  },
+  // Full-control W11 (#6781): these reads are gated by requireSecurityReadAccess (routes/security/readAuthorization.ts),
+  // a helper middleware rather than a requirePermission call, so the binder cannot read it. It requires devices:read
+  // (and a platform admin for system scope); the tool floors are devices:read.
+  {
+    tool: 'manage_security_recommendations', action: 'list',
+    reason: 'GET /security/recommendations is gated by requireSecurityReadAccess (devices:read through a helper), which the binder cannot parse',
+  },
+  {
+    tool: 'manage_security_policies', action: 'list',
+    reason: 'GET /security/policies is gated by requireSecurityReadAccess (devices:read through a helper), which the binder cannot parse',
+  },
   {
     tool: 'get_hyperv_vm_details',
     reason: 'two registrations (routes/backup/hyperv.ts:94 and :124) gate the same tool; the binder refuses an ambiguous method+path rather than picking one',
@@ -463,6 +956,20 @@ const UNBOUND: ReadonlyArray<{ tool: string; action?: string; reason: string }> 
   {
     tool: 'list_script_templates',
     reason: 'global template table with no matching HTTP route: no endpoint reads script_templates directly',
+  },
+  // Full-control W04 (#6758)
+  {
+    tool: 'request_elevation',
+    reason: 'no human REST create route; requests are agent-ingested (routes/agents/elevationRequests.ts) or remediation-created',
+  },
+  {
+    tool: 'trigger_agent_upgrade',
+    reason: "no per-device REST upgrade route; agentRecovery.ts deliberately rejects update_agent ('a release decision, not a button'); upgrades are heartbeat/pin-driven",
+  },
+  {
+    tool: 'manage_browser_policy',
+    action: 'apply',
+    reason: 'no REST twin: applying queues browser-policy deviceCommands from the AI tool only; it requires devices:execute (parity with apply_cis_remediation)',
   },
   {
     tool: 'query_agent_versions',

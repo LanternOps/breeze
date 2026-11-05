@@ -12,6 +12,8 @@ import {
   SOFTWARE_FILE_TYPES,
   deriveSoftwareFileTypeFromUrl,
   parseSuccessExitCodesText,
+  validateSoftwareVersionInstallSpec,
+  type InstallSpecIssue,
   type DetectionRule,
   type SoftwareFileType,
 } from "@breeze/shared";
@@ -30,6 +32,7 @@ import { applyOsHint } from "@/lib/installerPackageHints";
 import { findUnknownTokens } from "@/lib/installerVariables";
 import { uploadPackageVersion } from "../../lib/softwarePackageUpload";
 import DetectionRulesEditor from "./DetectionRulesEditor";
+import InstallScriptsFields from "./InstallScriptsFields";
 import PackageManagerPicker, {
   type SelectedPackageMethod,
 } from "./PackageManagerPicker";
@@ -68,6 +71,7 @@ const CATEGORIES = [
   "security",
 ] as const;
 const OS_OPTIONS = ["Windows", "macOS", "Linux"] as const;
+
 /**
  * Server-acknowledged bytes → a percentage safe to render as a CSS width.
  *
@@ -98,6 +102,8 @@ const blankForm = {
   supportedOs: [] as string[],
   silentInstallArgs: "",
   silentUninstallArgs: "",
+  preInstallScript: "",
+  postInstallScript: "",
   detectionRules: [] as DetectionRule[],
   // Raw free text (issue #7038); parsed with parseSuccessExitCodesText at
   // submit time. Codes here ADD to the agent's built-in success codes (0
@@ -316,6 +322,26 @@ export default function AddPackageModal({
           "policies:software.addPackageModal.tooManySuccessExitCodes",
         );
   const isManager = form.source === "manager";
+  // The type the server will end up with: the file source derives it from the
+  // uploaded filename; the URL source honors the selector, else the URL.
+  const effectiveFileType: SoftwareFileType | null =
+    form.source === "file"
+      ? deriveSoftwareFileTypeFromUrl(form.fileName)
+      : form.fileType || inferredFileType;
+  const argsHidden =
+    effectiveFileType === "zip" ||
+    effectiveFileType === "pkg" ||
+    effectiveFileType === "dmg" ||
+    effectiveFileType === "deb";
+  const installSpecIssues: InstallSpecIssue[] = isManager
+    ? []
+    : validateSoftwareVersionInstallSpec({
+        fileType: effectiveFileType,
+        supportedOs: form.supportedOs,
+        silentInstallArgs: argsHidden ? null : form.silentInstallArgs,
+        preInstallScript: form.preInstallScript,
+        postInstallScript: form.postInstallScript,
+      });
   const hasSource =
     form.source === "url"
       ? form.downloadUrl.trim() !== ""
@@ -330,6 +356,7 @@ export default function AddPackageModal({
     hasSource &&
     tokenErrors.length === 0 &&
     successExitCodesResult.ok &&
+    installSpecIssues.length === 0 &&
     !saving;
   /** Prefill identity from the first pick, but never overwrite what the user
    *  typed. */
@@ -353,7 +380,10 @@ export default function AddPackageModal({
       version: form.version.trim(),
       architecture: form.architecture,
       releaseNotes: form.notes || undefined,
-      silentInstallArgs: form.silentInstallArgs || undefined,
+      silentInstallArgs:
+        argsHidden || !form.silentInstallArgs ? undefined : form.silentInstallArgs,
+      preInstallScript: form.preInstallScript.trim() ? form.preInstallScript : undefined,
+      postInstallScript: form.postInstallScript.trim() ? form.postInstallScript : undefined,
       silentUninstallArgs: form.silentUninstallArgs || undefined,
       supportedOs: form.supportedOs.length > 0 ? form.supportedOs : undefined,
       detectionRules:
@@ -987,7 +1017,7 @@ export default function AddPackageModal({
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".msi,.exe,.dmg,.deb,.pkg"
+                    accept=".msi,.exe,.dmg,.deb,.pkg,.zip"
                     onChange={handleFile}
                     className="hidden"
                   />
@@ -1047,7 +1077,13 @@ export default function AddPackageModal({
             </div>
             )}
 
-            {!isManager && (
+            {!isManager && argsHidden && (
+              <p className="text-xs text-muted-foreground">
+                {i18n.t("policies:software.addPackageModal.silentArgsNotUsedForType")}
+              </p>
+            )}
+
+            {!isManager && !argsHidden && (
             <div>
               <label className={labelCls} htmlFor="pkg-install">
                 {i18n.t("policies:software.addPackageModal.silentInstallArgs")}
@@ -1065,6 +1101,17 @@ export default function AddPackageModal({
                 />
               </div>
             </div>
+            )}
+
+            {!isManager && (
+              <InstallScriptsFields
+                idPrefix="pkg"
+                preInstallScript={form.preInstallScript}
+                postInstallScript={form.postInstallScript}
+                onPreInstallScriptChange={(v) => update("preInstallScript", v)}
+                onPostInstallScriptChange={(v) => update("postInstallScript", v)}
+                issues={installSpecIssues}
+              />
             )}
           </section>
 

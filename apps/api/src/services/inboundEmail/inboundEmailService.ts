@@ -402,9 +402,11 @@ export async function processInboundEmail(
     // known-portal-user match must NOT be trusted to append a PUBLIC comment, reopen a
     // ticket, or create a ticket as a trusted sender unless the sender's domain is
     // authenticated. We rely on the verdicts the provider already computed at its MX
-    // boundary (aligned SPF+DKIM, or DMARC pass). On a Microsoft 365 mailbox, mail the
-    // tenant's own Exchange stamped as intra-tenant also counts (senderAuth.source
-    // 'exchange-internal', normalizeGraphMessage, #8299). When NOT verified, route the
+    // boundary (aligned SPF+DKIM, or DMARC pass). On a Microsoft 365 mailbox three more
+    // sources count (senderAuth.source, normalizeGraphMessage): Exchange's intra-tenant
+    // stamp ('exchange-internal', #8299), Exchange's own DMARC stamp on external mail
+    // ('exchange-online') and a trusted ARC sealer's verdict ('trusted-arc-sealer',
+    // #10862). When NOT verified, route the
     // message to the EXISTING quarantine/review path instead of auto-acting — mail is
     // never dropped.
     if (!n.senderAuth?.verified) {
@@ -424,8 +426,9 @@ export async function processInboundEmail(
           }
         );
       }
-      const reason = gap
-        ? `unverified sender (SPF/DKIM/DMARC): ${gap}`
+      const reasonDetail = gap ?? n.senderAuthConsulted;
+      const reason = reasonDetail
+        ? `unverified sender (SPF/DKIM/DMARC): ${reasonDetail}`
         : 'unverified sender (SPF/DKIM/DMARC)';
       // Default: route to the review queue. If the partner opted into dropping
       // unverified mail, silently ignore it instead (audit row only, no review
@@ -501,7 +504,7 @@ export async function processInboundEmail(
       await dependencies.afterTicketMatchLock?.(closedOriginal.id);
       // No requester and NO acknowledgement: a reply to a closed ticket spawns a
       // linked ticket, it is not a fresh submission (spec §5).
-      const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber, null, false, policy.defaultAssigneeUserId);
+      const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber, null, false, policy.defaultAssigneeUserId, closedOriginal.id);
       await logCreated(n, partnerId, t);
       return;
     }
@@ -847,7 +850,10 @@ async function createFromEmail(
   priorNumber: string | null,
   requester: EmailTicketRequester,
   autoresponse: boolean,
-  defaultAssigneeUserId: string | null
+  defaultAssigneeUserId: string | null,
+  // #8883 W5 (Gate B14): the closed ticket this one continues; passed only on
+  // the closed-continuation path, so createTicket skips routing for it.
+  continuationOfTicketId: string | null = null
 ) {
   // GUARD (spec §6 layer 2): the resolved org MUST belong to the resolved partner before create.
   const orgOk = await db
@@ -868,7 +874,8 @@ async function createFromEmail(
       submitterEmail: n.from,
       submitterName: n.fromName,
       submittedBy: requester?.kind === 'portal' ? requester.portalUserId : undefined,
-      requesterContactId: requester?.kind === 'contact' ? requester.contactId : undefined
+      requesterContactId: requester?.kind === 'contact' ? requester.contactId : undefined,
+      ...(continuationOfTicketId ? { continuationOfTicketId } : {})
     },
     SYSTEM_ACTOR
   );

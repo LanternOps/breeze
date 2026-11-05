@@ -30,6 +30,13 @@ type TopologyProducerState struct {
 	AcknowledgedDigests  map[string]string `json:"acknowledgedDigests,omitempty"`
 	// DetailCursor rotates the bounded device-detail window across polls.
 	DetailCursor int `json:"detailCursor"`
+	// StatisticsCursor rotates the statistics/latest window across AP targets
+	// (§6.4); StatisticsTokens/StatisticsTokensAtMs persist the token bucket
+	// (§6.3) so a restart can never reset the request budget. A nil balance is
+	// a never-used bucket, which starts at capacity.
+	StatisticsCursor     int      `json:"statisticsCursor,omitempty"`
+	StatisticsTokens     *float64 `json:"statisticsTokens,omitempty"`
+	StatisticsTokensAtMs int64    `json:"statisticsTokensAtMs,omitempty"`
 }
 
 type TopologyState struct {
@@ -99,7 +106,10 @@ func (s *TopologyState) InstallEpoch(source, epoch string) error {
 	if s.data.ProducerEpoch == epoch && s.data.SourceIdentity == source {
 		return nil
 	}
-	next := TopologyProducerState{SourceIdentity: source, ProducerEpoch: epoch, DetailCursor: s.data.DetailCursor}
+	// Rotation cursors and the request token bucket describe controller
+	// traffic, not the digest chain, so they survive an epoch change.
+	next := TopologyProducerState{SourceIdentity: source, ProducerEpoch: epoch, DetailCursor: s.data.DetailCursor,
+		StatisticsCursor: s.data.StatisticsCursor, StatisticsTokens: s.data.StatisticsTokens, StatisticsTokensAtMs: s.data.StatisticsTokensAtMs}
 	if s.lost {
 		// Unknown history under possibly the same epoch: jump past any counter
 		// value it could have reached (one sequence per poll).

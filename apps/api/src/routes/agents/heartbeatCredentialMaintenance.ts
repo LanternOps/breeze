@@ -10,6 +10,8 @@ import { implicitPromotionTokenHash, shouldRotateAgentToken } from './heartbeatT
  */
 export interface CredentialMaintenanceDevice {
   id: string;
+  /** The row's `agent_id`; the implicit promotion is bound to it (#8318 §6.4). */
+  agentId: string;
   mtlsCertIssuedAt: Date | null;
   mtlsCertExpiresAt: Date | null;
   agentTokenHash: string | null;
@@ -95,7 +97,7 @@ export async function computeCredentialMaintenance(
   if (implicitPromotionHash && device.agentTokenHash) {
     try {
       const promoted = await promotePendingAgentCredentials({
-        deviceId: device.id,
+        agent: { deviceId: device.id, agentId: device.agentId },
         pendingTokenHash: implicitPromotionHash,
         expectedAgentTokenHash: device.agentTokenHash,
         pendingWatchdogTokenHash: device.pendingWatchdogTokenHash,

@@ -18,7 +18,7 @@
  * before HP existed.
  */
 import type { WarrantyEntitlement } from './warrantyProviders/types';
-import { normalizeManufacturer } from './warrantyProviders';
+import { getProviderForManufacturer, normalizeManufacturer } from './warrantyProviders';
 
 /** macOS: `CollectAppleWarranty` reads the on-device AppleCare plist. */
 export const AGENT_PLIST_WARRANTY_SOURCE = 'agent_plist';
@@ -42,6 +42,58 @@ export const AGENT_OWNED_WARRANTY_SOURCES: ReadonlySet<string> = new Set(
 
 export function isAgentOwnedWarrantySource(dataSource: string | null | undefined): boolean {
   return typeof dataSource === 'string' && AGENT_OWNED_WARRANTY_SOURCES.has(dataSource);
+}
+
+/** A server-side vendor lookup (`warrantySync.ts` upsertWarranty). Also the column default. */
+export const PROVIDER_WARRANTY_SOURCE = 'provider';
+/** The custom-field value importer (`customFields/import/warrantyTarget.ts`). */
+export const IMPORT_WARRANTY_SOURCE = 'import';
+
+/**
+ * #9862 — true when the stored row holds coverage a vendor lookup did NOT
+ * produce: an agent report, a CSV import, or any future non-vendor writer.
+ *
+ * A server sync that has nothing better — no provider for the manufacturer, a
+ * vendor miss, a lookup error — must leave such a row's coverage alone. Before
+ * this, only agent-owned rows were spared and an imported row was rewritten to
+ * `unknown` with NULL dates by a single Refresh click (or the 7-day sweep).
+ *
+ * Deliberately open-ended (anything that is not 'provider') rather than another
+ * list: the failure mode of a new writer missing from a list is silent data
+ * loss, while the failure mode of this default is a stale row that still shows
+ * where it came from. NULL counts as vendor-shaped — it is the pre-provenance
+ * legacy of the 'provider' default.
+ *
+ * Weaker than agent ownership: a vendor HIT may still replace a non-vendor,
+ * non-agent row, but only when that loses no coverage — see
+ * `vendorHitShortensCoverage`.
+ */
+export function isNonVendorWarrantySource(dataSource: string | null | undefined): boolean {
+  return typeof dataSource === 'string' && dataSource !== PROVIDER_WARRANTY_SOURCE;
+}
+
+/**
+ * #9862 — true when replacing a stored non-vendor (imported) row with a vendor
+ * HIT would erase or shorten its coverage, so the import must be kept.
+ *
+ * OEM warranty APIs routinely omit coverage an MSP bought elsewhere — an
+ * extended Care Pack through a distributor, a third-party contract — and the
+ * MSP imports it by hand. A vendor answer ending before the imported date is
+ * then not a correction, it is the vendor not knowing. A vendor end date that
+ * is the same or later loses nothing, so the vendor wins there.
+ *
+ * Dates are `YYYY-MM-DD` (`date` columns, provider output), so string order is
+ * date order. Mirrored in SQL by `upsertWarranty`'s `setWhere`, which is the
+ * authority; this is the advisory read.
+ */
+export function vendorHitShortensCoverage(input: {
+  storedEndDate: string | null | undefined;
+  vendorEndDate: string | null | undefined;
+}): boolean {
+  const stored = input.storedEndDate ?? null;
+  if (stored === null) return false;
+  const vendor = input.vendorEndDate ?? null;
+  return vendor === null || vendor < stored;
 }
 
 /** Contract bound: at most 25 entitlements per agent report. */
@@ -97,4 +149,42 @@ export function isAgentCollectedWarrantyDevice(input: {
 }): boolean {
   if (isAgentOwnedWarrantySource(input.dataSource)) return true;
   return normalizeManufacturer(input.manufacturer ?? '') === 'hp';
+}
+
+/**
+ * Why a manual warranty refresh would produce nothing, or null when it can.
+ *
+ *  - `agent_collected` — see `isAgentCollectedWarrantyDevice`.
+ *  - `no_vendor_lookup` (#9862) — no registered, configured provider answers
+ *    for this manufacturer (or the device reports none) AND the stored row is
+ *    non-vendor data the sync now keeps as-is. Queuing would change nothing,
+ *    so "refresh queued" would be a lie and the card would poll a `lastSyncAt`
+ *    that never advances.
+ *
+ * A device with no row, or a vendor-shaped row, still queues: the sync records
+ * the honest `unknown` result there, which is the existing behaviour.
+ */
+export type WarrantyRefreshRefusal = 'agent_collected' | 'no_vendor_lookup';
+
+/** One wording for the refresh route and the AI tool. */
+export const WARRANTY_REFRESH_REFUSAL_MESSAGES: Readonly<Record<WarrantyRefreshRefusal, string>> = {
+  agent_collected:
+    "This device's warranty is collected by the Breeze agent, not by a vendor lookup. "
+    + 'A server-side refresh cannot produce newer data.',
+  no_vendor_lookup:
+    'No vendor warranty lookup is available for this manufacturer; the existing warranty data was kept.',
+};
+
+export function warrantyRefreshRefusal(input: {
+  manufacturer: string | null | undefined;
+  dataSource: string | null | undefined;
+}): WarrantyRefreshRefusal | null {
+  if (isAgentCollectedWarrantyDevice(input)) return 'agent_collected';
+  if (
+    isNonVendorWarrantySource(input.dataSource)
+    && !(input.manufacturer && getProviderForManufacturer(input.manufacturer))
+  ) {
+    return 'no_vendor_lookup';
+  }
+  return null;
 }

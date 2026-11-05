@@ -128,6 +128,25 @@ export function toMcpActionStatus(
 
 const NEXT = 'Call get_action_status with this actionId; do not re-issue the call.';
 
+/**
+ * B-W06 (#6160, D-B49): the ONE terminal rendering of an action outcome as a
+ * CallToolResult, extracted verbatim from the URL-elicitation continuation.
+ * `completed` → the (compacted) result text, or the status JSON when there is
+ * none (withheld, or nulled by retention); anything else → the status JSON
+ * with `isError: true`. `structuredContent` is the status wrapper, exactly as
+ * before. Shared by the continuation and the Tasks projection.
+ */
+export function buildTerminalActionResult(status: McpActionStatus): {
+  content: [{ type: 'text'; text: string }];
+  structuredContent: McpActionStatus;
+  isError?: true;
+} {
+  if (status.status === 'completed') {
+    return { content: [{ type: 'text', text: status.result ?? JSON.stringify(status) }], structuredContent: status };
+  }
+  return { content: [{ type: 'text', text: JSON.stringify(status) }], structuredContent: status, isError: true };
+}
+
 /** A normal (non-error) result: the call was filed, not refused. */
 export function buildPendingApprovalResult(status: McpActionStatus): {
   content: Array<{ type: 'text'; text: string }>;

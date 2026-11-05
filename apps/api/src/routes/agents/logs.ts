@@ -12,6 +12,7 @@ import { promisify } from 'node:util';
 const gunzipAsync = promisify(gunzip);
 import { db, withDbTransaction } from '../../db';
 import { devices, agentLogs } from '../../db/schema';
+import { updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
 import { redactAgentLogFields, redactAgentLogMessage } from '../../services/logRedaction';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { getRedis } from '../../services/redis';
@@ -268,18 +269,17 @@ logsRoutes.post(
   // ship warn+ by default, so recency alone is not a health signal). Throttled: skip the write entirely when the column
   // already moved within the last DEVICE_LAST_LOG_AT_THROTTLE_MS, so a
   // healthy device shipping every ~60s doesn't cost a write per batch.
+  //
+  // #8318 §6.4: bound to the authenticated agent_id (`:id`, which the row was
+  // read by) through updateOwnDeviceRow, keeping the throttle predicate.
   if (inserted > 0) {
     try {
-      await db
-        .update(devices)
-        .set({ lastLogAt: receivedAt })
-        .where(and(
-          eq(devices.id, device.id),
-          or(
-            isNull(devices.lastLogAt),
-            lt(devices.lastLogAt, new Date(receivedAt.getTime() - DEVICE_LAST_LOG_AT_THROTTLE_MS)),
-          ),
-        ));
+      await updateOwnDeviceRow(db, { deviceId: device.id, agentId }, { lastLogAt: receivedAt }, {
+        where: or(
+          isNull(devices.lastLogAt),
+          lt(devices.lastLogAt, new Date(receivedAt.getTime() - DEVICE_LAST_LOG_AT_THROTTLE_MS)),
+        ),
+      });
     } catch (err) {
       // Deliberately does not fail the request — the logs themselves already
       // landed — but report it so a silently-stuck column is visible.

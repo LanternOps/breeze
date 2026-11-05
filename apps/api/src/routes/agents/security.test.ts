@@ -11,6 +11,8 @@ const ORG_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 vi.mock('drizzle-orm', () => ({
   eq: (left: unknown, right: unknown) => ({ op: 'eq', left, right }),
+  // updateOwnDeviceRow (#8318 §6.4) ANDs the id + agent_id identity predicate.
+  and: (...args: unknown[]) => ({ op: 'and', args }),
 }));
 
 vi.mock('../../db', () => ({
@@ -85,7 +87,10 @@ function mockDeviceLookup(
   vi.mocked(db.select)
     .mockReturnValueOnce(selectResolving([{ id: DEVICE_ID, orgId: ORG_ID, managementPosture: null, ...device }]))
     .mockReturnValueOnce(selectResolving(previousStatus));
-  const set = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+  // updateOwnDeviceRow (#8318 §6.4) always asks for the matched rows back.
+  const set = vi.fn().mockReturnValue({
+    where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: DEVICE_ID }]) }),
+  });
   vi.mocked(db.update).mockReturnValue({ set } as never);
   return set;
 }
@@ -337,6 +342,42 @@ describe('agent security routes — requireAgentRole gate (F3)', () => {
         expect(res.status).toBe(200);
         const details = (vi.mocked(writeAuditEvent).mock.calls[0]![1] as unknown as { details: { changed: string[] } }).details;
         expect(details.changed).toEqual(['identity', 'categories.mdm', 'categories.rmm']);
+      });
+
+      // Review of wave 1b-1 (must-fix 3): a 0-row write persisted nothing, so
+      // it records no success and audits no change.
+      function zeroRowWrite(rowAfter: Array<Record<string, unknown>>) {
+        mockDeviceLookup({ managementPosture: null });
+        vi.mocked(db.update).mockReturnValueOnce({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+          }),
+        } as never);
+        // ownDeviceRowChangedHands re-reads the row by id once.
+        vi.mocked(db.select).mockReset();
+        vi.mocked(db.select)
+          .mockReturnValueOnce(selectResolving([{ id: DEVICE_ID, orgId: ORG_ID, managementPosture: null }]))
+          .mockReturnValueOnce(selectResolving(rowAfter));
+      }
+
+      it('answers a write the row refused because it changed hands with the stale-credential 401: no success, no audit', async () => {
+        zeroRowWrite([{ agentId: 'agent-after-reattach' }]);
+        const res = await put('management/posture', posture);
+
+        expect(res.status).toBe(401);
+        expect(await res.text()).toBe('Invalid agent credentials');
+        expect(writeAuditEvent).not.toHaveBeenCalled();
+        expect(recordAgentIngestSubmission).not.toHaveBeenCalled();
+      });
+
+      it('answers a write whose row vanished after the read with 404: no success, no audit', async () => {
+        zeroRowWrite([]);
+        const res = await put('management/posture', posture);
+
+        expect(res.status).toBe(404);
+        expect(await res.json()).toEqual({ error: 'Device not found' });
+        expect(writeAuditEvent).not.toHaveBeenCalled();
+        expect(recordAgentIngestSubmission).not.toHaveBeenCalled();
       });
 
       it('counts a failed posture write as a failed ingest', async () => {

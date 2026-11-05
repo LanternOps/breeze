@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllOrganizationsFrom } from '../../lib/fetchAllOrganizations';
-import { runAction, handleActionError } from '../../lib/runAction';
+import { handleActionError, runAction } from '../../lib/runAction';
+import { fetchInboundConfig, saveInboundConfig, type InboundConfig } from './inboundEmailConfig';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { showToast } from '../shared/Toast';
@@ -9,55 +10,12 @@ import { CustomerDomainsCard } from './CustomerDomainsCard';
 import { Trans, useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 
-// How inbound mail from an unmatched ("unknown") sender is handled. Mirrors the
-// API's PartnerInboundPolicy union (settings.ticketing.inbound.unknownSenderMode).
-type UnknownSenderMode = 'quarantine' | 'triage' | 'drop';
-
-interface InboundConfig {
-  enabled: boolean;
-  address: string;
-  addressOverride: string | null;
-  inboundLocalPart: string | null;
-  defaultTriageOrgId: string | null;
-  autoresponderEnabled: boolean;
-  unknownSenderMode: UnknownSenderMode;
-  dropUnverifiedSenders: boolean;
-  // File a staff member's forward under the ORIGINAL sender's customer org.
-  // Absent on an older API -> treated as off.
-  staffForwardRouting?: boolean;
-  // users.id every new inbound ticket is assigned to; null = unassigned.
-  // Absent on an older API -> treated as none.
-  defaultAssigneeUserId?: string | null;
-  autoresponseSubject: string | null;
-  autoresponseBody: string | null;
-  // Reply-content mode. Not yet edited by this card, but carried through so a save
-  // preserves a value set via the API (the PATCH route replaces the inbound
-  // sub-object wholesale — an omitted field is destroyed).
-  fullMessageReply: boolean;
-  slug: string;
-  domainConfigured: boolean;
-  // Connected M365 shared mailboxes (status 'connected'). Absent on an older
-  // API → 0 → the card behaves exactly as it did before this field existed.
-  connectedMailboxCount?: number;
-  // Mirrors the API's IS_HOSTED. Absent (older API) is treated as hosted so we
-  // don't show a self-host-only variable name to a hosted partner.
-  isHosted?: boolean;
-}
-
 // The self-hosted setup section added in #3586.
 const INBOUND_DOCS_URL = 'https://docs.breezermm.com/deploy/environment/#inbound-email-to-ticket-mailgun';
 
 interface OrgOption {
   id: string;
   name: string;
-}
-
-// A row from GET /orgs/partners/me/default-assignee-candidates: exactly the
-// users the API accepts as the default assignee.
-interface AssigneeOption {
-  id: string;
-  name: string | null;
-  email: string;
 }
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
@@ -73,23 +31,19 @@ export default function InboundEmailCard() {
         : undefined;
   const [cfg, setCfg] = useState<InboundConfig | null>(null);
   const [orgs, setOrgs] = useState<OrgOption[]>([]);
-  const [assignees, setAssignees] = useState<AssigneeOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [saving, setSaving] = useState(false);
   const [localPartDraft, setLocalPartDraft] = useState('');
 
   const loadConfig = useCallback(async () => {
-    const res = await fetchWithAuth('/ticket-config');
-    if (!res.ok) {
+    let nextCfg: InboundConfig;
+    try {
+      nextCfg = await fetchInboundConfig();
+    } catch {
       setError(true);
       return;
     }
-    const body = (await res.json()) as { data: { inbound: InboundConfig } };
-    const nextCfg: InboundConfig = {
-      ...body.data.inbound,
-      inboundLocalPart: body.data.inbound.inboundLocalPart ?? null,
-    };
     setCfg(nextCfg);
     setLocalPartDraft(nextCfg.inboundLocalPart ?? (nextCfg.address?.split('@')[0] ?? ''));
   }, []);
@@ -103,31 +57,18 @@ export default function InboundEmailCard() {
     }
   }, []);
 
-  // Candidates for the default assignee, filtered server-side by the same
-  // rule the save enforces (active member, org access, ticket permission).
-  const loadAssignees = useCallback(async () => {
-    try {
-      const res = await fetchWithAuth('/orgs/partners/me/default-assignee-candidates');
-      if (!res.ok) return;
-      const body = (await res.json()) as { data?: AssigneeOption[] };
-      if (Array.isArray(body.data)) setAssignees(body.data.filter((u) => u.id));
-    } catch {
-      // Degrade silently: the picker then lists only the current value.
-    }
-  }, []);
-
   const loadAll = useCallback(
     async () => {
       setLoading(true);
       setError(false);
       try {
-        await Promise.all([loadConfig(), loadOrgs(), loadAssignees()]);
+        await Promise.all([loadConfig(), loadOrgs()]);
       } catch {
         setError(true);
       }
       setLoading(false);
     },
-    [loadConfig, loadOrgs, loadAssignees],
+    [loadConfig, loadOrgs],
   );
 
   useEffect(() => {
@@ -145,7 +86,6 @@ export default function InboundEmailCard() {
           | 'unknownSenderMode'
           | 'dropUnverifiedSenders'
           | 'staffForwardRouting'
-          | 'defaultAssigneeUserId'
           | 'autoresponseSubject'
           | 'autoresponseBody'
         >
@@ -153,35 +93,12 @@ export default function InboundEmailCard() {
     ) => {
       if (!cfg) return;
       const next = { ...cfg, ...patch };
-      // Send the COMPLETE ticketing.inbound object — PATCH /partners/me deep-merges
-      // `ticketing` one level but replaces the `inbound` sub-object wholesale, so any
-      // omitted inbound field is destroyed (this also retires the legacy
-      // `triageUnknownSenders` key, which we no longer send).
-      // Include `address` ONLY when there is a real self-hosted override (never the
-      // derived value, which would persist a derived address as a spurious override).
-      const inbound: Record<string, unknown> = {
-        enabled: next.enabled,
-        defaultTriageOrgId: next.defaultTriageOrgId,
-        autoresponderEnabled: next.autoresponderEnabled,
-        unknownSenderMode: next.unknownSenderMode,
-        dropUnverifiedSenders: next.dropUnverifiedSenders,
-        staffForwardRouting: next.staffForwardRouting === true,
-        defaultAssigneeUserId: next.defaultAssigneeUserId ?? null,
-        autoresponseSubject: next.autoresponseSubject,
-        autoresponseBody: next.autoresponseBody,
-        // Preserve reply mode across a wholesale-replace save, even though this
-        // card does not edit it yet.
-        ...(next.fullMessageReply ? { fullMessageReply: true } : {}),
-      };
-      if (next.addressOverride) inbound.address = next.addressOverride;
+      // The complete inbound object (incl. the carried-through
+      // defaultAssigneeUserId, edited on the Routing tab) is serialized by the
+      // shared helper — PATCH replaces `inbound` wholesale.
       setSaving(true);
       try {
-        await runAction({
-          request: () =>
-            fetchWithAuth('/orgs/partners/me', {
-              method: 'PATCH',
-              body: JSON.stringify({ settings: { ticketing: { inbound } } }),
-            }),
+        await saveInboundConfig(next, {
           errorFallback: saveError,
           successMessage: t('inboundEmail.saved'),
           friendly: friendlyCode,
@@ -294,31 +211,6 @@ export default function InboundEmailCard() {
               </option>
             ))}
           </select>
-        </div>
-
-        <div className="mt-3">
-          <label className="text-xs font-medium" htmlFor="inbound-default-assignee">
-            {t('inboundEmail.defaultAssignee')}
-          </label>
-          <select
-            id="inbound-default-assignee"
-            value={cfg.defaultAssigneeUserId ?? ''}
-            disabled={saving}
-            onChange={(e) => void saveConfig({ defaultAssigneeUserId: e.target.value || null })}
-            className="mt-0.5 block w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
-            data-testid="inbound-default-assignee"
-          >
-            <option value="">{t('common:labels.none')}</option>
-            {cfg.defaultAssigneeUserId && !assignees.some((u) => u.id === cfg.defaultAssigneeUserId) && (
-              <option value={cfg.defaultAssigneeUserId}>{t('inboundEmail.defaultAssigneeUnavailable')}</option>
-            )}
-            {assignees.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name || u.email}
-              </option>
-            ))}
-          </select>
-          <p className="mt-0.5 text-xs text-muted-foreground">{t('inboundEmail.defaultAssigneeDescription')}</p>
         </div>
 
         <fieldset className="mt-4" data-testid="inbound-unknown-sender-mode">

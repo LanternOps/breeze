@@ -88,4 +88,74 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g68', prompt: 'Isolate SALES-LT-12 with Bitdefender — it has a ransomware detection.', expect: [{ tool: 'edr_endpoint_action', action: 'isolate' }, { tool: 'resolve_device_context' }, { tool: 'list_edr_detections' }] },
   // #8167 W03 PR-B: "sync now" for a framework EDR vendor (mutating, so chat set, like g68).
   { id: 'g69', prompt: 'Pull the latest Bitdefender detections now instead of waiting for the next sync.', expect: [{ tool: 'sync_edr_data' }] },
+  // Full-control W02 (#6756): PSA and billing writes reach chat (plan ids g73-g78).
+  { id: 'g70', prompt: 'Add an internal note to ticket 1042: waiting on the vendor RMA.', expect: [{ tool: 'manage_tickets', action: 'comment' }] },
+  { id: 'g71', prompt: 'Set the USD price of our "Managed Workstation" plan to $65.', expect: [{ tool: 'manage_billing_catalog', action: 'set_price' }, { tool: 'search_catalog' }] },
+  { id: 'g72', prompt: 'Save a device filter called "Offline Windows laptops".', expect: [{ tool: 'manage_saved_filters', action: 'create' }] },
+  { id: 'g73', prompt: 'Is the Contoso Slack alert channel set up correctly? Test it.', expect: [{ tool: 'manage_notification_channels', action: 'test' }] },
+  { id: 'g74', prompt: 'Fire a test delivery at our PSA webhook.', expect: [{ tool: 'test_webhook' }, { tool: 'query_webhooks' }] },
+  { id: 'g75', prompt: 'Mark quote Q-2041 declined — the customer said no on the phone today.', expect: [{ tool: 'manage_quotes', action: 'decline' }, { tool: 'list_quotes' }] },
+  // Full-control W03 (#6757): backup, DR and virtualization writes.
+  { id: 'g76', prompt: "Restore last night's snapshot of C:\\Users\\amy\\Documents to AMY-PC.", expect: [{ tool: 'restore_snapshot' }, { tool: 'browse_snapshots' }] },
+  { id: 'g77', prompt: 'Run a rehearsal of the Contoso DR plan.', expect: [{ tool: 'execute_dr_plan' }, { tool: 'query_dr_plans' }] },
+  { id: 'g78', prompt: 'Start the SQL01 VM on HV-HOST-2.', expect: [{ tool: 'manage_hyperv_vm', action: 'start' }, { tool: 'query_hyperv_vms' }] },
+  // Full-control W04 (#6758): security, incident and device-operation writes reach chat.
+  { id: 'g79', prompt: 'Kill the runaway chrome.exe (PID 4412) on WS-042.', expect: [{ tool: 'manage_processes', action: 'kill' }, { tool: 'resolve_device_context' }] },
+  { id: 'g80', prompt: 'Isolate FIN-LAPTOP-07 from the network for incident INC-12.', expect: [{ tool: 'execute_containment' }, { tool: 'list_incidents' }, { tool: 'get_incident_timeline' }, { tool: 'resolve_device_context' }] },
+  { id: 'g81', prompt: 'Restart the Breeze agent on the three offline Contoso servers.', expect: [{ tool: 'trigger_agent_restart' }, { tool: 'query_devices' }] },
+  // Full-control W06 (#6776): PSA configuration and ticket-ops reach chat.
+  { id: 'g82', prompt: 'Add a "Printer" ticket category with a 4 hour response target.', expect: [{ tool: 'manage_ticket_config', action: 'create_category' }, { tool: 'manage_ticket_config', action: 'list_categories' }] },
+  { id: 'g83', prompt: 'Create a checklist template called "New hire setup" with steps for the account, laptop and MFA.', expect: [{ tool: 'manage_ticket_checklist_templates', action: 'create' }, { tool: 'manage_ticket_checklist_templates', action: 'list' }] },
+  { id: 'g84', prompt: 'Log yesterday\'s remote session on FS-01 as time on the printer ticket.', expect: [{ tool: 'manage_time_suggestions', action: 'confirm' }, { tool: 'manage_time_suggestions', action: 'list' }] },
+  // Full-control W07 (#6777): alert correlation and signal triage reach chat.
+  { id: 'g85', prompt: 'Why did those correlated disk and service alerts on FS-01 all fire together?', expect: [{ tool: 'get_alert_correlations', action: 'explain' }, { tool: 'get_alert_correlations', action: 'groups' }, { tool: 'resolve_device_context' }] },
+  { id: 'g86', prompt: 'Is there any unusual CPU or disk behaviour on WS-042 I should look at?', expect: [{ tool: 'manage_device_anomalies', action: 'list' }, { tool: 'resolve_device_context' }] },
+  { id: 'g87', prompt: 'What services keep failing on FS-01 and dragging its reliability score down?', expect: [{ tool: 'get_fleet_health', action: 'offenders' }, { tool: 'resolve_device_context' }] },
+  // Full-control W08 (#6778): network topology reaches chat.
+  { id: 'g88', prompt: 'What is the core switch at the Main Office site connected to?', expect: [{ tool: 'get_topology_graph', action: 'node' }, { tool: 'get_topology_graph', action: 'nodes' }, { tool: 'list_sites' }] },
+  { id: 'g89', prompt: 'Run a gateway connectivity check from WS-042 and tell me if the gateway is reachable.', expect: [{ tool: 'run_topology_diagnostic', action: 'start' }, { tool: 'run_topology_diagnostic', action: 'collectors' }, { tool: 'resolve_device_context' }] },
+  { id: 'g90', prompt: 'What would applying the Standard monitoring template to the Main Office site change?', expect: [{ tool: 'apply_topology_template', action: 'preview' }, { tool: 'manage_topology_templates', action: 'site_options' }, { tool: 'list_sites' }] },
+  // Full-control W09 (#6779): SNMP and network monitoring reach chat.
+  // (The plan's "SNMP device poll/test" prompt became an on-demand asset probe: the SNMP device poll/test routes are 410.)
+  { id: 'g91', prompt: 'Is the print server at the Main Office reachable right now? Check it now.', expect: [{ tool: 'probe_network_asset' }, { tool: 'list_network_assets' }, { tool: 'get_network_asset_reachability' }] },
+  { id: 'g92', prompt: 'Show me the inbound and outbound traffic on the Main Office core switch uplink for the last 24 hours.', expect: [{ tool: 'get_snmp_metrics', action: 'history' }, { tool: 'list_network_assets' }, { tool: 'get_network_asset' }] },
+  { id: 'g93', prompt: 'Sync UniFi now and tell me whether the last sync worked.', expect: [{ tool: 'trigger_unifi_sync' }, { tool: 'get_unifi_status', action: 'sync_runs' }, { tool: 'get_unifi_status', action: 'status' }] },
+  // Full-control W10 (#6780): AI-agent read tools reach chat.
+  { id: 'g94', prompt: 'What has the AI done on the front desk PC in the last week?', expect: [{ tool: 'get_device_ai_activity' }, { tool: 'query_devices' }, { tool: 'resolve_device_context' }] },
+  { id: 'g95', prompt: 'Show me my operator tasks that are waiting on an approval.', expect: [{ tool: 'list_operator_tasks' }, { tool: 'get_operator_task' }] },
+  { id: 'g96', prompt: 'List the fleet designs the designer agent has produced.', expect: [{ tool: 'list_fleet_designs' }, { tool: 'get_fleet_design' }] },
+  // Full-control W11 (#6781): security policy tools reach chat.
+  { id: 'g97', prompt: 'How has our security score trended over the last 90 days?', expect: [{ tool: 'get_security_compliance' }, { tool: 'get_security_posture' }] },
+  { id: 'g98', prompt: 'Dismiss the "enable firewall" security recommendation for Contoso, we use a third-party firewall.', expect: [{ tool: 'manage_security_recommendations', action: 'dismiss' }, { tool: 'manage_security_recommendations', action: 'list' }, { tool: 'list_organizations' }] },
+  { id: 'g99', prompt: 'Rotate the BitLocker recovery key on FIN-LAPTOP-07.', expect: [{ tool: 'manage_recovery_keys', action: 'rotate' }, { tool: 'manage_recovery_keys', action: 'list' }, { tool: 'resolve_device_context' }] },
+  // Full-control W12 (#6782): software tools reach chat.
+  { id: 'g100', prompt: 'What software is installed on FIN-LAPTOP-07?', expect: [{ tool: 'get_device_software' }, { tool: 'resolve_device_context' }, { tool: 'query_devices' }] },
+  { id: 'g101', prompt: 'Deploy 7-Zip from our software catalog to the three reception PCs.', expect: [{ tool: 'manage_software_deployments', action: 'create' }, { tool: 'manage_software_catalog', action: 'list' }, { tool: 'query_devices' }] },
+  { id: 'g102', prompt: 'Approve Zoom in the software inventory for Contoso so it stops showing as unreviewed.', expect: [{ tool: 'manage_software_inventory', action: 'approve' }, { tool: 'manage_software_inventory', action: 'list' }, { tool: 'list_organizations' }] },
+  // Full-control W13 (#6783, PR A): device inventory and record tools reach chat.
+  { id: 'g103', prompt: 'What has happened on FIN-LAPTOP-07 in the last day, and is its Breeze agent healthy?', expect: [{ tool: 'get_device_events' }, { tool: 'get_device_health' }, { tool: 'resolve_device_context' }] },
+  { id: 'g104', prompt: 'Which of our devices have warranties expiring in the next 60 days?', expect: [{ tool: 'manage_device_warranty', action: 'expiring' }, { tool: 'query_devices' }] },
+  { id: 'g105', prompt: 'Mark DC-01 as a domain controller.', expect: [{ tool: 'manage_device_function', action: 'set' }, { tool: 'resolve_device_context' }, { tool: 'query_devices' }] },
+  // Full-control W13 (#6783, PR B).
+  { id: 'g106', prompt: 'Look in the Application event log on FIN-LAPTOP-07 for errors from Outlook.', expect: [{ tool: 'browse_device_event_log', action: 'query' }, { tool: 'browse_device_event_log', action: 'list_logs' }, { tool: 'search_logs' }] },
+  { id: 'g107', prompt: 'Which tenant variables do our scripts get for Contoso?', expect: [{ tool: 'manage_tenant_variables', action: 'list' }, { tool: 'list_organizations' }] },
+  { id: 'g108', prompt: 'End the Quick Support session that is still open from this morning.', expect: [{ tool: 'manage_support_sessions', action: 'end' }, { tool: 'manage_support_sessions', action: 'list' }] },
+  // Full-control W14 (#6784, PR A); generate_invoice and the accounting push are PR B's g112-g113 below.
+  { id: 'g109', prompt: 'Which rate card is Contoso billed on, and what do we charge per hour for after-hours work?', expect: [{ tool: 'manage_billing_profiles', action: 'get_org_profile' }, { tool: 'manage_billing_profiles', action: 'list' }, { tool: 'list_organizations' }] },
+  { id: 'g110', prompt: 'Publish the draft version of the Contoso master services agreement template.', expect: [{ tool: 'manage_contract_templates', action: 'publish' }, { tool: 'manage_contract_templates', action: 'list' }, { tool: 'manage_contract_templates', action: 'get' }] },
+  { id: 'g111', prompt: 'Which contracts bill WS-ACCT-02, and is it covered at all?', expect: [{ tool: 'get_device_billing' }, { tool: 'resolve_device_context' }, { tool: 'query_devices' }] },
+  // Full-control W14 PR B (#6784): generate an invoice (preview first, then a four-eyes generate) and a Xero push (four-eyes).
+  { id: 'g112', prompt: "Generate this month's invoice for the Contoso managed services contract.", expect: [{ tool: 'manage_contracts', action: 'preview_invoice' }, { tool: 'manage_contracts', action: 'generate_invoice' }, { tool: 'list_contracts' }] },
+  { id: 'g113', prompt: 'Push invoice INV-1042 to Xero.', expect: [{ tool: 'manage_accounting_sync', action: 'push' }, { tool: 'manage_accounting_sync', action: 'status' }, { tool: 'list_invoices' }] },
+  // Full-control W15 PR A (#6785): seat drift and local order staging.
+  { id: 'g114', prompt: "Which Pax8 seat counts don't match what we bill?", expect: [{ tool: 'manage_pax8_subscriptions', action: 'drift' }] },
+  { id: 'g115', prompt: 'Stage 5 more Microsoft 365 Business Premium seats for Contoso in Pax8.', expect: [{ tool: 'search_pax8_products', action: 'search' }, { tool: 'manage_pax8_orders', action: 'create_draft' }, { tool: 'manage_pax8_orders', action: 'add_line' }] },
+  // Full-control W15 PR B (#6785): preview, then a four-eyes submit.
+  { id: 'g116', prompt: "Submit Contoso's Pax8 order.", expect: [{ tool: 'manage_pax8_orders', action: 'preview' }, { tool: 'manage_pax8_orders', action: 'submit' }] },
+  // #10161: ticket merge reaches the chat SDK shape (preview first, then the supervised merge).
+  { id: 'g117', prompt: 'Ticket 1043 is a duplicate of 1042, merge it in.', expect: [{ tool: 'manage_tickets', action: 'merge_preview' }, { tool: 'manage_tickets', action: 'merge' }] },
+  // Network-isolation W13 (#10101): lifting a Breeze network isolation (four-eyes), and a
+  // negative — un-quarantining a FILE is a threat action, never release_containment.
+  { id: 'g118', prompt: 'Release the network isolation on FIN-LAPTOP-07, the incident is resolved.', expect: [{ tool: 'release_containment' }, { tool: 'resolve_device_context' }, { tool: 'get_incident_timeline' }, { tool: 'list_incidents' }] },
+  { id: 'g119', prompt: 'Un-quarantine the file Defender flagged on WS-01, it was a false positive.', expect: [{ tool: 'security_scan', action: 'restore' }, { tool: 'security_scan', action: 'status' }, { tool: 'resolve_device_context' }] },
 ];

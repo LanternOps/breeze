@@ -37,12 +37,7 @@ const createPsaConnectionSchema = (t: (key: string) => string) => z.object({
   integrationCode: z.string().optional(),
   secret: z.string().optional(),
   apiKey: z.string().optional(),
-  personalAccessToken: z.string().optional(),
-  syncEnabled: z.boolean(),
-  syncInterval: z.enum(['15m', '30m', '1h', '6h', '24h']),
-  syncDirection: z.enum(['inbound', 'outbound', 'bidirectional']),
-  syncOnClose: z.boolean(),
-  includeNotes: z.boolean()
+  personalAccessToken: z.string().optional()
 });
 
 export type PsaConnectionFormValues = z.infer<ReturnType<typeof createPsaConnectionSchema>>;
@@ -220,11 +215,6 @@ export default function PsaConnectionForm({
       secret: '',
       apiKey: '',
       personalAccessToken: '',
-      syncEnabled: true,
-      syncInterval: '1h',
-      syncDirection: 'bidirectional',
-      syncOnClose: true,
-      includeNotes: true,
       ...defaultValues
     }
   });
@@ -452,9 +442,10 @@ export default function PsaConnectionForm({
         </div>
       </div>
 
-      {/* #9655: no PSA ticket sync worker exists (POST /psa/connections/:id/sync
-          returns 501), so the sync controls are not rendered. The stored sync
-          settings keep their form values and are still sent unchanged. */}
+      {/* #9655/#9947: no PSA ticket sync worker exists (POST /psa/connections/:id/sync
+          returns 501), so the form neither renders nor submits sync settings.
+          Sync keys already stored on a connection are left as-is: PATCH merges
+          `settings`, so omitting them does not clear them. */}
       <div className="space-y-2 border-t pt-6">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           {t('longTail.psa.PsaConnectionForm.sections.syncSettings')}

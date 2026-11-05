@@ -9,12 +9,26 @@ export type ElevationStatus =
   | 'denied'
   | 'expired'
   | 'revoked'
-  | 'actuating';
+  | 'actuating'
+  | 'withdrawn';
 
 export type ElevationFlowType = 'uac_intercept' | 'tech_jit_admin' | 'ai_tool_action';
 
 /** Categories the agent reports for a request it cannot act on (#9517). */
 export type PamDeviceUnableReason = 'helper_unavailable' | 'session_unavailable' | 'helper_start_failed';
+
+/** Why the device user's answer withdrew a pending request (#8971). */
+export type PamWithdrawReason = 'user_denied' | 'user_timeout' | 'dialog_error';
+
+/**
+ * Failure codes the agent sets as an actuation `enforcementReason` when it
+ * refuses to act on an approved/auto_approved request because of the device
+ * user's own decision (#8971).
+ */
+export type PamUserDecisionEnforcementReason =
+  | 'user_declined'
+  | 'user_decision_pending'
+  | 'user_decline_record_untrusted';
 
 export type PamVerdict = 'auto_approve' | 'auto_deny' | 'require_approval' | 'ignore';
 
@@ -53,6 +67,13 @@ export interface ElevationRequest {
   deviceUnableAt?: string | null;
   deviceUnableReason?: PamDeviceUnableReason | string | null;
   deviceUnableDetail?: string | null;
+  // #8971: the device user declined / did not answer; the agent withdrew the
+  // request (terminal). Unknown reasons from a newer server are tolerated.
+  withdrawnAt?: string | null;
+  withdrawnReason?: PamWithdrawReason | string | null;
+  // Failure code from the actuation, set when the agent refused an approved
+  // request (see PamUserDecisionEnforcementReason).
+  enforcementReason?: PamUserDecisionEnforcementReason | string | null;
   // Joined by the API
   deviceHostname?: string | null;
   siteName?: string | null;
@@ -241,6 +262,7 @@ export const STATUS_LABELS: Record<ElevationStatus, string> = {
   expired: 'Expired',
   revoked: 'Revoked',
   actuating: 'Actuating',
+  withdrawn: 'Withdrawn',
 };
 
 export const FLOW_LABELS: Record<ElevationFlowType, string> = {
@@ -283,6 +305,7 @@ export function statusBadgeClass(status: ElevationStatus): string {
     case 'revoked':
       return 'bg-red-500/15 text-red-600 dark:text-red-400';
     case 'expired':
+    case 'withdrawn':
       return 'bg-muted text-muted-foreground';
   }
 }

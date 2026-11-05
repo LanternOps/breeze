@@ -84,3 +84,12 @@ describe('expo-modules-jsi Swift 6.4 patch stays attached to the resolved versio
     expect(patched[`expo-modules-jsi@${version}`]).toMatch(/^patches\/expo-modules-jsi@/);
   });
 });
+
+// Wisp W06: nudges carry `breeze://wisp/thread/:id` deep links. The scheme is
+// registered so the OS owns it; taps route from the push `data` this wave (no
+// Linking listener yet).
+describe('app.json URL scheme (Wisp W06)', () => {
+  it('registers the breeze:// scheme', () => {
+    expect(expo.scheme).toBe('breeze');
+  });
+});

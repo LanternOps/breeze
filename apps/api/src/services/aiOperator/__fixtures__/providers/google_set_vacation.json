@@ -1,0 +1,21 @@
+{
+  "_source": "reference",
+  "_recordedFrom": "reference: Gmail API v1 users.settings.getVacation / updateVacation (VacationSettings resource)",
+  "toolName": "google_set_vacation",
+  "provider": "google",
+  "preSatisfied": {
+    "gmail.settings.getVacation": { "data": { "enableAutoReply": true, "responseSubject": "Out of office", "responseBodyPlainText": "Dana has left the organization. Please contact office@customer.example for help.", "restrictToContacts": false, "restrictToDomain": false } }
+  },
+  "preUnsatisfied": {
+    "gmail.settings.getVacation": { "data": { "enableAutoReply": false, "restrictToContacts": false, "restrictToDomain": false } }
+  },
+  "writeOk": {
+    "gmail.settings.updateVacation": { "data": { "enableAutoReply": true, "responseSubject": "Out of office", "responseBodyPlainText": "Dana has left the organization. Please contact office@customer.example for help." } }
+  },
+  "postSatisfied": {
+    "gmail.settings.getVacation": { "data": { "enableAutoReply": true, "responseSubject": "Out of office", "responseBodyPlainText": "Dana has left the organization. Please contact office@customer.example for help.", "restrictToContacts": false, "restrictToDomain": false } }
+  },
+  "writeRefusal": {
+    "gmail.settings.updateVacation": { "error": { "code": 403, "message": "Delegation denied for dana@customer.example" } }
+  }
+}

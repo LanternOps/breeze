@@ -207,6 +207,26 @@ describe('bulk-lifecycle routes mount order (#2787)', () => {
     expect(await res.json()).toEqual({ error: 'Purge run not found' });
   });
 
+  // #9796: POST /devices/bulk/site lives in its own router (bulkSite.ts), mounted beside this one.
+  // The literal `bulk` must never reach core's `/:id`. The handler's own answer is recognisable by
+  // its BODY: `{ results, summary }` (a routing miss would be a 404 / "Device not found").
+  it('POST /devices/bulk/site reaches the bulk site-move handler, not core', async () => {
+    const SITE_1 = '33333333-3333-4333-8333-333333333333';
+    rigDeviceLookup([{ id: ORG_A_DEVICE, orgId: ORG_A, siteId: SITE_1, hostname: 'host-1', status: 'online' }]);
+
+    const res = await app.request('/devices/bulk/site', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ siteId: SITE_1, devices: [{ id: ORG_A_DEVICE, expectedSiteId: SITE_1 }] }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      results: [{ id: ORG_A_DEVICE, outcome: 'already_there' }],
+      summary: { moved: 0, total: 1 },
+    });
+  });
+
   it('a no-credentials request is still rejected (401) through the assembled routes', async () => {
     const res = await app.request('/devices/bulk/restore', {
       method: 'POST',

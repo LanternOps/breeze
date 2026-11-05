@@ -121,7 +121,22 @@ export default function TopologyEntry({ siteId, sites = [], deviceId, assetId, l
   // explorer remounted it on every site change (the explorer unmounts while the new site loads), which
   // dropped keyboard focus to <body>.
   const [toolbarSlot, setToolbarSlot] = useState<HTMLDivElement | null>(null);
-  return <div className={siteId ? 'space-y-4' : 'space-y-3'} data-testid="topology-entry">
+  // Expanded map (2026-10-25): the whole entry (site select, toolbar, map) fills the window above the app chrome
+  // (z-40: the chrome-overlay band, under modals and toasts). It stays expanded across site changes. Escape leaves it
+  // unless a field (a search box clears itself) or a panel (the inspector closing) already handled that Escape.
+  const [maximized, setMaximized] = useState(false);
+  useEffect(() => {
+    if (!maximized) return;
+    const leave = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (event.target instanceof HTMLElement && event.target.closest('input, select, textarea, [contenteditable="true"]')) return;
+      setMaximized(false);
+    };
+    document.addEventListener('keydown', leave);
+    return () => document.removeEventListener('keydown', leave);
+  }, [maximized]);
+  const frame = maximized ? 'fixed inset-0 z-40 space-y-3 overflow-y-auto bg-background p-3 md:p-4' : siteId ? 'space-y-4' : 'space-y-3';
+  return <div className={frame} data-testid="topology-entry" data-topology-maximized={maximized ? 'true' : undefined}>
     {!siteId && <div data-testid="topology-entry-toolbar" className="flex flex-wrap items-center gap-2">
       <label className="flex items-center gap-2 text-sm text-muted-foreground">{t('site')}<select data-testid="topology-site" className="h-9 rounded-md border bg-background px-2 text-sm text-foreground" value={selectedSite ?? ''} onChange={(event) => { setHashSite(event.target.value); writeTopologyHash({ siteId: event.target.value, view: 'overview', search: '' }); }}><option value="">{t('chooseSite')}</option>{sites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}</select></label>
       <div ref={setToolbarSlot} className="contents" />
@@ -133,6 +148,7 @@ export default function TopologyEntry({ siteId, sites = [], deviceId, assetId, l
     {error && <p role="alert" className="text-destructive">{error}</p>}
     {selectedSite && !settings && !error && <p role="status">{t('loading')}</p>}
     {settings && !settings.capabilities.ui.available && (legacy ?? <TopologyEmptyState reason={settings.capabilities.ui.reason} />)}
-    {settings?.capabilities.ui.available && bindingResolved && selectedSite && (siteId || toolbarSlot) && <Suspense fallback={<p role="status">{t('loading')}</p>}><TopologyExplorer key={`${selectedSite}/${focus ?? ''}`} siteId={selectedSite} siteName={sites.find((site) => site.id === selectedSite)?.name} focusNodeId={focus} settings={settings} toolbarSlot={siteId ? undefined : toolbarSlot ?? undefined} /></Suspense>}
+    {settings?.capabilities.ui.available && bindingResolved && selectedSite && (siteId || toolbarSlot) && <Suspense fallback={<p role="status">{t('loading')}</p>}><TopologyExplorer key={`${selectedSite}/${focus ?? ''}`} siteId={selectedSite} siteName={sites.find((site) => site.id === selectedSite)?.name} focusNodeId={focus} settings={settings} toolbarSlot={siteId ? undefined : toolbarSlot ?? undefined}
+      maximized={maximized} onToggleMaximized={() => setMaximized(!maximized)} /></Suspense>}
   </div>;
 }

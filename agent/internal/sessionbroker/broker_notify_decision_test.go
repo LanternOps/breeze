@@ -245,6 +245,8 @@ func TestRequestNotificationDecisionWithNoSessionsIsNotAnError(t *testing.T) {
 // be indistinguishable from "the user did nothing". It must never surface an
 // ActionClicked the user never clicked.
 func TestRequestNotificationDecisionTimesOutWithNoAnswer(t *testing.T) {
+	// A silent helper: no answer is coming, so skip the reply grace.
+	withDecisionReplyGrace(t, 0)
 	b := New("notify-decision-timeout", nil)
 	newDecisionProbe(t, b, "silent", []string{"notify"}, nil)
 

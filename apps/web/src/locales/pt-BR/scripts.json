@@ -807,7 +807,7 @@
   "scriptAiInput": {
     "placeholder": {
       "ready": "Descreva o script de que você precisa...",
-      "opening": "Abrindo o assistente de IA..."
+      "opening": "Abrindo o Breeze AI..."
     },
     "actions": {
       "stopGenerating": "Parar geração",
@@ -823,15 +823,15 @@
     "approval": {
       "title": "Aprovação obrigatória",
       "approve": "Aprovar",
-      "reject": "Rejeitar"
+      "reject": "Negar"
     },
     "empty": {
-      "title": "Assistente de IA para scripts",
-      "description": "Descreva o que você precisa e eu escreverei o script para você."
+      "title": "Breeze AI",
+      "description": "Peça ao Breeze AI para escrever ou revisar este script."
     }
   },
   "scriptAiPanel": {
-    "title": "Assistente de IA para scripts",
+    "title": "Breeze AI",
     "actions": {
       "redoTitle": "Reaplicar alteração da IA",
       "redo": "Refazer",
@@ -982,7 +982,8 @@
     },
     "confirm": {
       "title": "Confirmar execução",
-      "description": "Executar “{{name}}” em {{count}} dispositivo(s) como {{runAs}}. Os scripts são enfileirados e começam a executar imediatamente."
+      "description": "Executar “{{name}}” em {{count}} dispositivo(s) como {{runAs}}. Os scripts são enfileirados e começam a executar imediatamente.",
+      "descriptionOffline": "Executar “{{name}}” em {{count}} dispositivo(s) como {{runAs}}. Os scripts são enfileirados agora: dispositivos online começam imediatamente e {{offline}} dispositivo(s) offline serão executados quando voltarem a ficar online."
     },
     "selectedCount": "{{count}} dispositivo(s) selecionado(s)",
     "executeBlocked": "A execução não está disponível: um dispositivo selecionado não pode executar este script aqui (ele pode pertencer a uma organização diferente da exibida ou não estar mais acessível).",
@@ -1027,6 +1028,7 @@
       "submitting": "Enviando para {{count}} grupo(s)...",
       "warningsTitle": "Observações do servidor",
       "confirmDescription": "Executar “{{name}}” em {{groups}} grupo(s) de dispositivos como {{runAs}}. Os scripts entram na fila e começam a ser executados imediatamente.",
+      "confirmDescriptionOffline": "Executar “{{name}}” em {{groups}} grupo(s) de dispositivos como {{runAs}}. Os scripts são enfileirados agora: dispositivos online começam imediatamente e {{offline}} dispositivo(s) offline serão executados quando voltarem a ficar online.",
       "confirmMembers": "No momento, {{count}} dispositivo(s) único(s) fazem parte destes grupos; a participação é lida novamente ao confirmar.",
       "confirmMembersUnknown": "A quantidade de dispositivos ainda não é conhecida; a participação é lida ao confirmar.",
       "errors": {
@@ -1134,8 +1136,8 @@
       "exitCodeSeverity": "Gravidade por código de saída"
     },
     "ai": {
-      "toggleTitle": "Alternar assistente de IA para scripts (⌘⇧I)",
-      "button": "Assistente de IA"
+      "toggleTitle": "Alternar Breeze AI (⌘⇧I)",
+      "button": "Breeze AI"
     },
     "parameters": {
       "emptyPrefix": "Ainda não há parâmetros. Parâmetros permitem que usuários informem valores em tempo de execução — referencie-os no script como",

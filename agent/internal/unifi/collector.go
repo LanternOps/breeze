@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/httputil"
 	"github.com/breeze-rmm/agent/internal/observability"
 )
 
@@ -27,13 +29,18 @@ type CollectorConfig struct {
 	TopologySourceIdentity        string `json:"topologySourceIdentity,omitempty"`
 }
 
-func (c CollectorConfig) acceptsTopologyV1() bool {
-	for _, v := range c.AcceptedUnifiTopologyVersions {
-		if v == 1 {
-			return true
+// topologyVersion is the highest topology version this agent implements that
+// the server advertises (spec §4.3): 2 for [1,2] (or [2]), 1 for [1], 0 for
+// nothing (or only versions this agent does not implement). The advertisement
+// is authoritative; v2 is never inferred from anything else.
+func (c CollectorConfig) topologyVersion() int {
+	v := 0
+	for _, a := range c.AcceptedUnifiTopologyVersions {
+		if (a == 1 || a == 2) && a > v {
+			v = a
 		}
 	}
-	return false
+	return v
 }
 
 type CollectorDeps struct {
@@ -57,6 +64,14 @@ type CollectorDeps struct {
 
 	// schedule overrides the fetch cadence; nil means defaultFetchSchedule.
 	schedule *fetchSchedule
+
+	// Test seams (W09, #8148). now is the clock for Retry-After deferral
+	// (nil = time.Now); rnd feeds the Retry-After jitter (nil = rand.Float64);
+	// waitHook sees every wait the loop computes after a fetch and returns the
+	// wait actually used (nil = unchanged).
+	now      func() time.Time
+	rnd      func() float64
+	waitHook func(time.Duration) time.Duration
 }
 
 // agentBase builds the per-agent endpoint prefix the API mounts under
@@ -152,6 +167,10 @@ type telemetryPayload struct {
 	Error       string         `json:"error,omitempty"`
 	// TopologyV1 is the additive typed companion; absent unless negotiated.
 	TopologyV1 *TopologyV1 `json:"topologyV1,omitempty"`
+	// TopologyV2 is the Wi-Fi companion (spec §4.2). At most ONE of TopologyV1 /
+	// TopologyV2 is ever set per poll; it carries no second channel for Wi-Fi
+	// metrics (the legacy body shape above is unchanged).
+	TopologyV2 *TopologyV2 `json:"topologyV2,omitempty"`
 }
 
 func toUploadDevices(in []Device) []uploadDevice {
@@ -187,8 +206,15 @@ func RunOnce(ctx context.Context, deps CollectorDeps, cfg CollectorConfig, contr
 	api := NewAPIClient(cfg.ControllerURL, cfg.APIKey, controllerHTTP)
 	topo := prepareTopology(deps, cfg)
 	opts := PollOptions{}
+	var statsPlan StatisticsPlan
 	if topo != nil {
 		opts = PollOptions{DetailBudget: MaxDetailsPerPoll, DetailCursor: topo.state.Snapshot().DetailCursor}
+		if topo.version == 2 {
+			// §6.3: the budget uses the scheduling interval BEFORE the envelope's
+			// 60 s clamp, and is bounded by the persisted token bucket.
+			statsPlan = topo.state.PlanStatistics(time.Now(), maxInt(cfg.PollIntervalSeconds, 15))
+			opts.Wifi, opts.StatisticsBudget, opts.StatisticsCursor = true, statsPlan.Budget, statsPlan.Cursor
+		}
 	}
 	capturedAt := time.Now()
 	snap, pollErr := api.PollWith(ctx, opts)
@@ -211,7 +237,18 @@ func RunOnce(ctx context.Context, deps CollectorDeps, cfg CollectorConfig, contr
 		if err := topo.state.SetDetailCursor(snap.NextDetailCursor); err != nil {
 			deps.logf("[unifi] collector %s: topology state: %v", cfg.CollectorID, err)
 		}
-		payload.TopologyV1 = topo.build(deps, cfg, snap, capturedAt)
+		if topo.version == 2 {
+			if err := topo.state.CommitStatistics(statsPlan, snap.StatisticsAttempted, snap.NextStatisticsCursor); err != nil {
+				deps.logf("[unifi] collector %s: topology state: %v", cfg.CollectorID, err)
+			}
+			if snap.DroppedCapabilityValues > 0 {
+				// Bounded reason code only: never the raw controller text (§5.1).
+				deps.logf("[unifi] collector %s: dropped %d undocumented capability values (reason=%s)", cfg.CollectorID, snap.DroppedCapabilityValues, reasonCapabilityValueDropped)
+			}
+			payload.TopologyV2 = topo.buildV2(deps, cfg, snap, capturedAt)
+		} else {
+			payload.TopologyV1 = topo.build(deps, cfg, snap, capturedAt)
+		}
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -232,13 +269,27 @@ func RunOnce(ctx context.Context, deps CollectorDeps, cfg CollectorConfig, contr
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusAccepted {
-		return fmt.Errorf("telemetry upload: status %d", resp.StatusCode)
+		return deps.statusError("telemetry upload", resp)
 	}
-	if payload.TopologyV1 != nil {
-		digests, reason := acceptedTopologyDigests(resp.Body, payload.TopologyV1)
+	var sentSeq string
+	sent := map[string]string{}
+	switch {
+	case payload.TopologyV1 != nil:
+		sentSeq = payload.TopologyV1.Sequence
+		for _, r := range payload.TopologyV1.Resources {
+			sent[ResourceKey(r)] = r.ContentDigest
+		}
+	case payload.TopologyV2 != nil:
+		sentSeq = payload.TopologyV2.Sequence
+		for _, r := range payload.TopologyV2.Resources {
+			sent[ResourceKeyV2(r)] = r.ContentDigest
+		}
+	}
+	if sentSeq != "" {
+		digests, reason := acceptedTopologyDigests(resp.Body, sentSeq, sent)
 		if len(digests) == 0 {
-			deps.logf("[unifi] collector %s: topology v1 sequence %s not acknowledged: %s", cfg.CollectorID, payload.TopologyV1.Sequence, reason)
-		} else if err := topo.state.Acknowledge(payload.TopologyV1.Sequence, digests); err != nil {
+			deps.logf("[unifi] collector %s: topology sequence %s not acknowledged: %s", cfg.CollectorID, sentSeq, reason)
+		} else if err := topo.state.Acknowledge(sentSeq, digests); err != nil {
 			deps.logf("[unifi] collector %s: topology state: %v", cfg.CollectorID, err)
 		}
 	}
@@ -269,7 +320,7 @@ type telemetryResponse struct {
 // accepted for exactly this report: same sequence, accepted, and the receipt
 // digest equal to the digest that was sent. HTTP 202 alone acknowledges nothing
 // (an older server that returns no receipts leaves the collector legacy-only).
-func acceptedTopologyDigests(body io.Reader, sent *TopologyV1) (map[string]string, string) {
+func acceptedTopologyDigests(body io.Reader, sentSequence string, sentDigests map[string]string) (map[string]string, string) {
 	var out telemetryResponse
 	if err := json.NewDecoder(io.LimitReader(body, maxTelemetryResponseBytes)).Decode(&out); err != nil {
 		return nil, "no receipts in response"
@@ -277,12 +328,8 @@ func acceptedTopologyDigests(body io.Reader, sent *TopologyV1) (map[string]strin
 	if out.Topology == nil {
 		return nil, "no receipts in response"
 	}
-	if out.Topology.ReportSequence != sent.Sequence {
+	if out.Topology.ReportSequence != sentSequence {
 		return nil, "receipts name another sequence"
-	}
-	sentDigests := make(map[string]string, len(sent.Resources))
-	for _, r := range sent.Resources {
-		sentDigests[ResourceKey(r)] = r.ContentDigest
 	}
 	digests := make(map[string]string)
 	for _, r := range out.Topology.Resources {
@@ -303,16 +350,17 @@ func acceptedTopologyDigests(body io.Reader, sent *TopologyV1) (map[string]strin
 type topologyRun struct {
 	state    *TopologyState
 	sequence uint64
+	version  int // negotiated: 1 or 2 (CollectorConfig.topologyVersion)
 }
 
 // prepareTopology opens state, installs the server epoch and allocates the
 // sequence BEFORE collection. Any failure degrades to the legacy-only upload.
 func prepareTopology(deps CollectorDeps, cfg CollectorConfig) *topologyRun {
-	if !cfg.acceptsTopologyV1() {
+	if cfg.topologyVersion() == 0 {
 		return nil
 	}
 	if deps.StateDir == "" || !validKey(cfg.TopologyProducerEpoch) || !validKey(cfg.TopologySourceIdentity) {
-		deps.logf("[unifi] collector %s: topology v1 advertised without epoch/source identity/state dir; sending legacy telemetry only", cfg.CollectorID)
+		deps.logf("[unifi] collector %s: topology advertised without epoch/source identity/state dir; sending legacy telemetry only", cfg.CollectorID)
 		return nil
 	}
 	st, err := OpenTopologyState(topologyStatePath(deps.StateDir, cfg.CollectorID))
@@ -329,7 +377,7 @@ func prepareTopology(deps CollectorDeps, cfg CollectorConfig) *topologyRun {
 		deps.logf("[unifi] collector %s: topology sequence: %v", cfg.CollectorID, err)
 		return nil
 	}
-	return &topologyRun{state: st, sequence: seq}
+	return &topologyRun{state: st, sequence: seq, version: cfg.topologyVersion()}
 }
 
 func (t *topologyRun) build(deps CollectorDeps, cfg CollectorConfig, snap Snapshot, capturedAt time.Time) *TopologyV1 {
@@ -346,6 +394,25 @@ func (t *topologyRun) build(deps CollectorDeps, cfg CollectorConfig, snap Snapsh
 	}
 	if err != nil {
 		deps.logf("[unifi] collector %s: topology v1 omitted: %v", cfg.CollectorID, err)
+		return nil
+	}
+	return report
+}
+
+func (t *topologyRun) buildV2(deps CollectorDeps, cfg CollectorConfig, snap Snapshot, capturedAt time.Time) *TopologyV2 {
+	if !snap.FirmwareOK {
+		return nil
+	}
+	report, err := BuildTopologyV2(snap, TopologyIdentity{SourceIdentity: cfg.TopologySourceIdentity, ProducerEpoch: cfg.TopologyProducerEpoch},
+		t.sequence, capturedAt, time.Now(), maxInt(cfg.PollIntervalSeconds, 15))
+	if err == nil {
+		var b []byte
+		if b, err = json.Marshal(report); err == nil && len(b) > UnifiTopologyV2MaxBytes {
+			err = fmt.Errorf("companion is %d bytes (limit %d)", len(b), UnifiTopologyV2MaxBytes)
+		}
+	}
+	if err != nil {
+		deps.logf("[unifi] collector %s: topology v2 omitted: %v", cfg.CollectorID, err)
 		return nil
 	}
 	return report
@@ -374,6 +441,14 @@ func StartCollectorLoop(ctx context.Context, deps CollectorDeps) <-chan struct{}
 		timer := time.NewTimer(sched.first)
 		defer timer.Stop()
 		lastRun := map[string]time.Time{}
+		// notBefore: collectors whose telemetry POST was told to back off
+		// (429/503 + Retry-After). They are skipped (not run, not polled)
+		// until the clock passes the mark; the config fetch keeps its own
+		// cadence.
+		notBefore := map[string]time.Time{}
+		// fetchRetryAt: the config route asked us to hold off until then. A
+		// Wake must not fetch before it.
+		var fetchRetryAt time.Time
 		// idle: the last successful fetch returned no collectors. A failed
 		// fetch keeps the current cadence, as the fixed ticker did.
 		idle := false
@@ -388,30 +463,56 @@ func StartCollectorLoop(ctx context.Context, deps CollectorDeps) <-chan struct{}
 				if !idle || time.Since(lastFetch) < sched.wakeGap {
 					continue
 				}
+				if deps.clock().Before(fetchRetryAt) {
+					continue
+				}
 				timer.Stop()
 			case <-timer.C:
 			}
 			configs, err := fetchConfigs(ctx, deps)
 			lastFetch = time.Now()
+			fetchRetryAt = time.Time{}
 			if err != nil {
 				deps.logf("[unifi] fetch configs: %v", err)
+				if at, ok := httputil.RetryAtFrom(err); ok {
+					fetchRetryAt = at
+				}
 			} else {
 				idle = len(configs) == 0
-				now := time.Now()
+				now := deps.clock()
 				for _, cfg := range configs {
 					interval := time.Duration(maxInt(cfg.PollIntervalSeconds, 15)) * time.Second
 					if last, ok := lastRun[cfg.CollectorID]; ok && now.Sub(last) < interval {
 						continue
 					}
+					if until, ok := notBefore[cfg.CollectorID]; ok {
+						if now.Before(until) {
+							continue
+						}
+						delete(notBefore, cfg.CollectorID)
+					}
 					lastRun[cfg.CollectorID] = now
 					if err := RunOnce(ctx, deps, cfg, nil); err != nil {
 						deps.logf("[unifi] collector %s: %v", cfg.CollectorID, err)
+						if at, ok := httputil.RetryAtFrom(err); ok {
+							notBefore[cfg.CollectorID] = at
+							deps.logf("[unifi] collector %s deferred by server Retry-After until %s", cfg.CollectorID, at.UTC().Format(time.RFC3339))
+						}
 					}
 				}
 			}
 			next := sched.active
 			if idle {
 				next = sched.idle()
+			}
+			if !fetchRetryAt.IsZero() {
+				if d := fetchRetryAt.Sub(deps.clock()); d > next {
+					next = d
+					deps.logf("[unifi] fetch deferred by server Retry-After until %s", fetchRetryAt.UTC().Format(time.RFC3339))
+				}
+			}
+			if deps.waitHook != nil {
+				next = deps.waitHook(next)
 			}
 			timer.Reset(next)
 		}
@@ -434,7 +535,7 @@ func fetchConfigs(ctx context.Context, deps CollectorDeps) ([]CollectorConfig, e
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch configs: status %d", resp.StatusCode)
+		return nil, deps.statusError("fetch configs", resp)
 	}
 	var out struct {
 		Collectors []CollectorConfig `json:"collectors"`
@@ -450,4 +551,68 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (d CollectorDeps) clock() time.Time {
+	if d.now != nil {
+		return d.now()
+	}
+	return time.Now()
+}
+
+func (d CollectorDeps) random() float64 {
+	if d.rnd != nil {
+		return d.rnd()
+	}
+	return rand.Float64()
+}
+
+// retryAfterMaxCap mirrors httputil's ceiling on a server-provided Retry-After
+// (ParseRetryAfter already clamps the header; jitter must not push past it).
+const retryAfterMaxCap = 300 * time.Second
+
+// retryAfterJitterFraction spreads a fleet that was shed together across a
+// window: RetryAt = now + RA x (1 + 0.3*U), matching httputil's default
+// JitterFrac.
+const retryAfterJitterFraction = 0.3
+
+// jitterRetryAfter returns ra x (1 + 0.3*rnd), never less than ra and never
+// more than retryAfterMaxCap.
+func jitterRetryAfter(ra time.Duration, rnd float64) time.Duration {
+	if ra <= 0 {
+		return ra
+	}
+	out := time.Duration(float64(ra) * (1 + retryAfterJitterFraction*rnd))
+	if out > retryAfterMaxCap {
+		return retryAfterMaxCap
+	}
+	return out
+}
+
+// statusError builds the error for a non-success response. For a 429/503 that
+// carries a usable Retry-After (and loop-level Retry-After is enabled) it wraps
+// a *httputil.RetryableStatusError whose RetryAt tells the loop when to call
+// this route again; otherwise it is the plain status error, as before.
+func (d CollectorDeps) statusError(what string, resp *http.Response) error {
+	base := fmt.Errorf("%s: status %d", what, resp.StatusCode)
+	if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusServiceUnavailable {
+		return base
+	}
+	if !httputil.LoopRetryAfterEnabled() {
+		return base
+	}
+	now := d.clock()
+	ra := httputil.ParseRetryAfter(resp.Header, now)
+	if ra <= 0 {
+		return base
+	}
+	url := ""
+	if resp.Request != nil && resp.Request.URL != nil {
+		url = resp.Request.URL.String()
+	}
+	return fmt.Errorf("%w: %w", base, &httputil.RetryableStatusError{
+		StatusCode: resp.StatusCode,
+		URL:        url,
+		RetryAt:    now.Add(jitterRetryAfter(ra, d.random())),
+	})
 }

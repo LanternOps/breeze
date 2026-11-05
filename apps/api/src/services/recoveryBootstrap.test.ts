@@ -45,6 +45,7 @@ vi.mock('../db', () => ({
 import {
   asNullableRecord,
   asRecord,
+  bootstrapServesKeyLayout,
   buildRecoveryDownloadDescriptor,
   computeRecoveryDownloadExpiry,
   buildAuthenticatedBootstrapPayload,
@@ -57,6 +58,22 @@ import {
   resolveServerUrl,
   toIsoString,
 } from './recoveryBootstrap';
+
+// ── bootstrapServesKeyLayout (#7081 R19) ─────────────────────────────────────
+describe('bootstrapServesKeyLayout', () => {
+  const withDownload = { bootstrap: { download: { type: 'breeze_proxy' } } };
+  const withoutDownload = { bootstrap: { download: null } };
+
+  it('serves a legacy snapshot with or without a token-mode download', () => {
+    expect(bootstrapServesKeyLayout('legacy_flat', withDownload)).toBe(true);
+    expect(bootstrapServesKeyLayout('legacy_flat', withoutDownload)).toBe(true);
+  });
+
+  it.each(['prefixed_flat', 'device_scoped', undefined, null])('requires the token-mode download for layout %s', (layout) => {
+    expect(bootstrapServesKeyLayout(layout, withDownload)).toBe(true);
+    expect(bootstrapServesKeyLayout(layout, withoutDownload)).toBe(false);
+  });
+});
 
 // ── isHelperVersionAtLeast (#5629) ───────────────────────────────────────────
 // Must agree case-for-case with the recovery console's own versionAtLeast

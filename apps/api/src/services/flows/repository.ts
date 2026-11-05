@@ -10,7 +10,7 @@
  * Callers have already authorized the caller for `owner` (flows/owner.ts) or
  * loaded the row in the caller's own context.
  */
-import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { flows, organizations } from '../../db/schema';
 import type { ToolOwnerRef } from '../toolSources/resolver';
@@ -27,10 +27,18 @@ function system<T>(fn: () => Promise<T>, label: string): Promise<T> {
  *  - org owner: the org's own flows + its partner's partner-wide flows;
  *  - partner owner: its partner-wide flows + every org flow under the partner.
  * `base` is a validated slug (`[a-z0-9_]` only), so it is safe inside the regex.
+ * `excludeFlowId` leaves one flow out (W04 enable: the flow being enabled
+ * already holds its own slug).
  */
-export async function takenFlowSlugs(owner: ToolOwnerRef, base: string): Promise<Set<string>> {
+export async function takenFlowSlugs(
+  owner: ToolOwnerRef,
+  base: string,
+  opts: { excludeFlowId?: string } = {},
+): Promise<Set<string>> {
   const rows = await system(async () => {
     const slugMatch = sql`${flows.slug} ~ ${`^${base}(_[0-9]+)?$`}`;
+    // W04 enable re-checks a flow's OWN slug, which the flow itself must not take.
+    const notSelf = opts.excludeFlowId ? ne(flows.id, opts.excludeFlowId) : undefined;
     const partnerWide = and(isNull(flows.orgId), eq(flows.partnerId, owner.partnerId));
     const scope = owner.orgId
       ? or(eq(flows.orgId, owner.orgId), partnerWide)
@@ -38,7 +46,7 @@ export async function takenFlowSlugs(owner: ToolOwnerRef, base: string): Promise
         partnerWide,
         inArray(flows.orgId, db.select({ id: organizations.id }).from(organizations).where(eq(organizations.partnerId, owner.partnerId))),
       );
-    return db.select({ slug: flows.slug }).from(flows).where(and(slugMatch, scope));
+    return db.select({ slug: flows.slug }).from(flows).where(and(slugMatch, scope, notSelf));
   }, 'flows.takenFlowSlugs');
   return new Set(rows.map((r) => r.slug));
 }

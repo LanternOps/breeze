@@ -79,7 +79,7 @@ export default function TopologyDiagnosticsPanel({ siteId, subject, graphRevisio
       if (active.current) setRuns((current) => current.map((item) => item.id === updated.id ? updated : item));
     } catch (cause) { handleActionError(cause, t('loadFailed'));  }
   };
-  return <section data-testid="topology-diagnostics" className="space-y-4 rounded border bg-card p-4" onKeyDown={(event) => { if (event.key === 'Escape') onClose(); }}>
+  return <section data-testid="topology-diagnostics" className="space-y-4 rounded border bg-card p-4" onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); onClose(); } }}>
     <div className="flex justify-between gap-3"><h3 ref={heading} tabIndex={-1} className="font-semibold">{t('diagnostics')}</h3><button className="underline" onClick={onClose}>{t('close')}</button></div>
     <p className="text-sm text-muted-foreground">{t('diagnosticScope')}</p>
     <div className="flex flex-wrap gap-3">

@@ -722,6 +722,8 @@ describe('processInboundEmail', () => {
     expect(input.submitterEmail).toBe('jane@customer.com');
     expect(input.orgId).toBe('o-1');
     expect(input.submittedBy).toBe('pu-1');
+    // #8883 W5: a fresh create is not a continuation, so routing runs.
+    expect(input).not.toHaveProperty('continuationOfTicketId');
 
     const log = inboundOf();
     expect(log).toHaveLength(1);
@@ -771,6 +773,8 @@ describe('processInboundEmail', () => {
     expect(createTicketMock).toHaveBeenCalledTimes(1);
     // A reply to a CLOSED ticket spawns a linked ticket but is NOT a fresh acknowledgement.
     expect(maybeSendAutoresponseMock).not.toHaveBeenCalled();
+    // #8883 W5 (Gate B14): explicit continuation provenance, so createTicket skips routing.
+    expect((createTicketMock.mock.calls[0]![0] as Record<string, unknown>).continuationOfTicketId).toBe('t-closed');
   });
 
   it('stamps a stable generated anchor on email_thread_key when the inbound email has no Message-Id', async () => {
@@ -905,6 +909,19 @@ describe('processInboundEmail', () => {
     const log = inboundOf();
     expect(log[0]!.parseStatus).toBe('quarantined');
     expect(log[0]!.error).toBe('unverified sender (SPF/DKIM/DMARC)');
+    expect(captureMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('names the source consulted in the quarantine reason without alerting Sentry (#10862)', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    await processInboundEmail(email({
+      senderAuth: { spf: 'fail', dkim: 'fail', dmarc: 'fail', verified: false },
+      senderAuthConsulted: 'Exchange Online stamp: dmarc=fail',
+    }));
+
+    const log = inboundOf();
+    expect(log[0]!.parseStatus).toBe('quarantined');
+    expect(log[0]!.error).toBe('unverified sender (SPF/DKIM/DMARC): Exchange Online stamp: dmarc=fail');
     expect(captureMessageMock).not.toHaveBeenCalled();
   });
 

@@ -11,6 +11,7 @@ const PREHEADER_BY_ID: Record<EmailTemplateId, string> = {
   ticket_resolved: 'Your ticket has been resolved.',
   ticket_merged: 'Your request was merged into another ticket.',
   quote_send: 'A proposal is ready for review.',
+  agreement_request_send: 'An agreement is ready for you to sign.',
   invoice_send: 'An invoice is ready to view.',
   invoice_autopay: 'Your invoice and the date it will be paid automatically.',
   portal_invite: 'Set your password to access your support portal.',
@@ -36,6 +37,7 @@ const FOOTER_BY_ID: Record<EmailTemplateId, string | undefined> = {
   ticket_resolved: undefined,
   ticket_merged: undefined,
   quote_send: undefined,
+  agreement_request_send: undefined,
   invoice_send: undefined,
   invoice_autopay: 'Keep this notice for your records.',
   portal_invite: undefined,
@@ -113,6 +115,12 @@ export function defaultHtml(id: EmailTemplateId, vars: Record<string, string> = 
   }
   if (id === 'quote_send' && !vars.expiry_date?.trim()) {
     html = html.replace('<p>This proposal is valid until <strong>{{expiry_date}}</strong>.</p>\n', '');
+  }
+  if (id === 'agreement_request_send' && !vars.org_name?.trim()) {
+    html = html.replace('has sent {{org_name}} an agreement', 'has sent you an agreement');
+  }
+  if (id === 'agreement_request_send' && !vars.expiry_date?.trim()) {
+    html = html.replace('<p>This link is valid until <strong>{{expiry_date}}</strong>.</p>\n', '');
   }
   if (id === 'portal_invite' && !vars.requester_name?.trim()) {
     html = html.replace('{{requester_name}} invited you to', 'You have been invited to');

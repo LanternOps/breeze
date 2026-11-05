@@ -540,7 +540,9 @@ export async function deliverCancelCommand(
     deviceId,
     payload: row.payload,
   });
-  const sent = deliverable ? sendCommandToAgent(row.agentId, toAgentCommandFrame(deliverable)) : false;
+  // #8318 §6.4: to the agent_id read IN the claim, not `row.agentId` read
+  // before it (a reattach or re-enroll may have committed since).
+  const sent = deliverable ? sendCommandToAgent(claimed.agentId, toAgentCommandFrame(deliverable)) : false;
   if (sent) return true;
 
   // Release rather than strand as `sent`: otherwise the eventual reaper timeout

@@ -648,7 +648,9 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
     expect(r.cancelled).toEqual([{ id: 'other', reason: 'requester_inactive' }]);
   });
 
-  it.each([...TEARDOWN_CLAIM_EXEMPT_TYPES])(
+  // release_containment is also bound to its episode at delivery (#10919), so its
+  // exemption is proven with a bound row in commandClaimEligibility.release.test.ts.
+  it.each([...TEARDOWN_CLAIM_EXEMPT_TYPES].filter((type) => type !== 'release_containment'))(
     '%s survives inactive requester + org drift + erased submitter org + lifecycle + trust denial',
     async (type) => {
       const { TrustDeniedError } = await import('./partnerTrust.commands');
@@ -679,7 +681,7 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
       'file_read', 'file_write', 'registry_set', 'kill_process', 'stop_service', 'task_run', 'task_disable',
       'software_install', 'software_uninstall', 'update_agent', 'pam_apply_v2', 'actuate_elevation',
       'backup_run', 'backup_restore', 'backup_cleanup', 'system_cleanup_run', 'security_threat_remove',
-      'network_diagnostic', 'restart_agent', 'reboot', 'shutdown',
+      'network_diagnostic', 'restart_agent', 'reboot', 'shutdown', 'execute_containment',
     ];
     for (const type of forbidden) expect(TEARDOWN_CLAIM_EXEMPT_TYPES.has(type)).toBe(false);
   });

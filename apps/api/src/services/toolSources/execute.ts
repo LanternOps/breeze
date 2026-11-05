@@ -28,8 +28,14 @@ import {
 
 export interface ExecuteTenantToolOptions {
   orgId?: string | null;
+  /**
+   * Who the call is attributed to (rate-limit key + audit). `flow` (tool
+   * catalog W04, #5219): `id` is the RUN id — the flow runner and the flow
+   * branch of the intent release worker pass it, never the synthetic flow
+   * user id — and the audit row is system automation naming the run.
+   */
   actor?: { kind: 'user' | 'api_key' | 'flow'; id: string };
-  surface: 'chat' | 'mcp' | 'test';
+  surface: 'chat' | 'mcp' | 'test' | 'flow';
 }
 
 const MAX_RESULT_CHARS = 262_144;
@@ -214,6 +220,9 @@ export async function executeTenantToolDetailed(
   resultText = truncate(resultText);
 
   // Audit: never the input values or output — only shape/metadata.
+  // A flow step is system automation (Decision 16): the run goes in the
+  // details, never into actor_id as if it were a person.
+  const flowRunId = opts.actor?.kind === 'flow' ? opts.actor.id : null;
   writeAuditEvent(requestLikeFromSnapshot({}), {
     orgId: opts.orgId ?? auth.orgId,
     action: 'ai.external_tool.call',
@@ -227,9 +236,11 @@ export async function executeTenantToolDetailed(
       surface: opts.surface,
       inputKeys: Object.keys(input),
       isError,
+      ...(flowRunId ? { flowRunId } : {}),
     },
-    actorId: opts.actor?.id ?? auth.user.id,
-    actorEmail: auth.user.email,
+    ...(flowRunId
+      ? { actorType: 'system' as const, actorId: null, initiatedBy: 'automation' as const }
+      : { actorId: opts.actor?.id ?? auth.user.id, actorEmail: auth.user.email }),
   });
 
   return { isError, text: resultText };

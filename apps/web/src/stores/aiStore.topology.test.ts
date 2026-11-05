@@ -47,6 +47,12 @@ function sseResponse(events: unknown[]): Response {
   } as unknown as Response;
 }
 
+/** #9427: the attach a hydrate opens; no turn running. */
+const idleAttach = (): Response => {
+  const bytes = new TextEncoder().encode(`data: ${JSON.stringify({ type: 'attach_state', turn: 'idle', turnId: null, lastSeq: 0, turnUserMessageId: null, partial: false, replay: [], pendingCards: [], activePlan: null, turnModel: null })}\n\n`);
+  return { ok: true, status: 200, body: new ReadableStream<Uint8Array>({ start(c) { c.enqueue(bytes); c.close(); } }) } as unknown as Response;
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   useAiStore.setState({
@@ -93,8 +99,12 @@ describe('topology session creation', () => {
     fetchWithAuthMock.mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveA = resolve; }));
     const creatingA = useAiStore.getState().createSession({ pageContext: topologyContext });
     // Meanwhile the user opens session B from history and starts streaming in it.
-    fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ session: { id: 'sess-b', status: 'active', orgId: 'org-1' }, messages: [] }));
+    fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ session: { id: 'sess-b', status: 'active', orgId: 'org-1', type: 'general' }, messages: [] }));
+    // #9427: the switch attaches to B's turn (none running); let it settle first.
+    fetchWithAuthMock.mockResolvedValueOnce(idleAttach());
     await useAiStore.getState().switchSession('sess-b');
+    await vi.waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith('/ai/sessions/sess-b/stream', expect.anything()));
+    for (let i = 0; i < 20; i++) await Promise.resolve();
     useAiStore.setState({ isStreaming: true });
     resolveA(jsonResponse({ id: 'sess-a', orgId: 'org-1' }));
     await creatingA;

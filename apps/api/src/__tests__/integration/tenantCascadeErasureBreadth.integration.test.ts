@@ -172,6 +172,46 @@ async function residualRowCounts(orgId: string): Promise<Record<string, number>>
   return Object.fromEntries(rows.map((r) => [r.tbl, Number(r.n)]));
 }
 
+/**
+ * One request-sourced signed agreement for `orgId`: an org-owned template +
+ * published version, two contracts (the second is a re-file target), and the
+ * contract_documents row filed under the first. Superuser inserts; INSERT is
+ * not restricted by the append-only guard.
+ */
+async function seedSignedAgreement(
+  partnerId: string,
+  orgId: string,
+): Promise<{ docId: string; secondContractId: string }> {
+  const testDb = getTestDb();
+  const [tv] = (await testDb.execute(sql`
+    WITH t AS (
+      INSERT INTO contract_templates (org_id, name) VALUES (${orgId}, 'Breadth BAA') RETURNING id
+    )
+    INSERT INTO contract_template_versions
+      (template_id, org_id, version_number, status, source_type, body_html, sha256, declared_variables, published_at)
+    SELECT t.id, ${orgId}, 1, 'published', 'authored', '<p>BAA</p>', ${'b'.repeat(64)}, '[]'::jsonb, now() FROM t
+    RETURNING template_id, id
+  `)) as unknown as Array<{ template_id: string; id: string }>;
+  const contractIds: string[] = [];
+  for (let i = 0; i < 2; i += 1) {
+    const [c] = (await testDb.execute(sql`
+      INSERT INTO contracts (partner_id, org_id, name, interval_months, start_date, currency_code)
+      VALUES (${partnerId}, ${orgId}, 'Breadth contract', 1, '2026-10-01', 'USD')
+      RETURNING id
+    `)) as unknown as Array<{ id: string }>;
+    contractIds.push(c!.id);
+  }
+  const [doc] = (await testDb.execute(sql`
+    INSERT INTO contract_documents
+      (org_id, source_kind, contract_id, template_id, template_version_id, pdf_data, byte_size, sha256,
+       signer_name, signed_at, acceptance_origin, acceptance_method, content_sha256, content_hash_version)
+    VALUES (${orgId}, 'request', ${contractIds[0]!}, ${tv!.template_id}, ${tv!.id}, '\\x25504446'::bytea, 4,
+            ${'c'.repeat(64)}, 'Dana Signer', now(), 'customer', 'typed-signature', ${'d'.repeat(64)}, 1)
+    RETURNING id
+  `)) as unknown as Array<{ id: string }>;
+  return { docId: doc!.id, secondContractId: contractIds[1]! };
+}
+
 async function seed(): Promise<SeedHandles> {
   const testDb = getTestDb();
   const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
@@ -459,6 +499,43 @@ describe('cascadeDeleteOrg — erasure breadth', () => {
       sql`SELECT id FROM ml_feedback_events WHERE org_id = ${handles.orgControl}`,
     )) as unknown as unknown[];
     expect(sibling.length).toBe(1);
+  });
+
+  it('erases append-only contract_documents (signed agreements) that the app role provably cannot delete or rewrite', async () => {
+    const testDb = getTestDb();
+    const erased = await seedSignedAgreement(handles.partnerId, handles.orgErased);
+    const sibling = await seedSignedAgreement(handles.partnerId, handles.orgControl);
+    const asAppInSystemScope = (stmt: ReturnType<typeof sql>) =>
+      getAppDb().transaction(async (tx) => {
+        await tx.execute(sql`SELECT set_config('breeze.scope', 'system', true)`);
+        await tx.execute(stmt);
+      });
+    const failureCode = (p: Promise<unknown>) => p.then(() => undefined, (err: unknown) => pgErrorCode(err));
+
+    // Negative controls (#9075 W4b, 2027-01-06-150000). breeze_app holds no
+    // DELETE grant, so the audit-admin escalation in cascadeDeleteOrg is
+    // load-bearing for this table too…
+    expect(await failureCode(asAppInSystemScope(
+      sql`DELETE FROM contract_documents WHERE org_id = ${handles.orgErased}`))).toBe('42501');
+    // …and its UPDATE grant covers only contract_id and org_id: an evidence
+    // rewrite is refused (42501) before contract_documents_append_only runs.
+    expect(await failureCode(asAppInSystemScope(
+      sql`UPDATE contract_documents SET signer_name = 'Mallory' WHERE id = ${erased.docId}`))).toBe('42501');
+    expect(await failureCode(asAppInSystemScope(
+      sql`UPDATE contract_documents SET pdf_data = '\\x00'::bytea WHERE id = ${erased.docId}`))).toBe('42501');
+    // Positive control: re-filing under another contract (what contract adopt does) works.
+    await asAppInSystemScope(
+      sql`UPDATE contract_documents SET contract_id = ${erased.secondContractId} WHERE id = ${erased.docId}`);
+
+    const stats = await cascadeDeleteOrg(handles.orgErased, handles.actorUserId);
+    expect(stats.tablesDeleted.contract_documents).toBe(1);
+    expect(await residualRowCounts(handles.orgErased)).toEqual({});
+
+    // The sibling org's signed agreement is untouched, evidence and all.
+    const [kept] = (await testDb.execute(
+      sql`SELECT org_id, signer_name, sha256 FROM contract_documents WHERE id = ${sibling.docId}`,
+    )) as unknown as Array<{ org_id: string; signer_name: string; sha256: string }>;
+    expect(kept).toEqual({ org_id: handles.orgControl, signer_name: 'Dana Signer', sha256: 'c'.repeat(64) });
   });
 
   it('erases a self-referencing quote revision chain in a single statement', async () => {

@@ -21,6 +21,7 @@ vi.mock('../jobs/peripheralJobs', () => ({
 }));
 
 vi.mock('../db', () => ({
+  runAfterDbContextCommit: (_label: string, work: () => unknown) => work(),
   db: {
     select: mockSelect,
     insert: mockInsert,
@@ -55,7 +56,10 @@ vi.mock('./filterEngine', () => ({
   extractFieldsFromFilter: vi.fn().mockReturnValue([]),
 }));
 
-import { addManualGroupMemberships, validateManualMembershipDevices } from './groupMembership';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
+import { db } from '../db';
+import { addManualGroupMemberships, removeManualGroupMemberships, validateManualMembershipDevices } from './groupMembership';
 
 const ORG_ID = 'org-a';
 const ORG_ID_2 = 'org-b';
@@ -185,6 +189,7 @@ describe('addManualGroupMemberships', () => {
 
     const result = await addManualGroupMemberships({
       groupId: GROUP_ID,
+      group: { id: GROUP_ID, orgId: ORG_ID },
       orgId: ORG_ID,
       deviceIds: [D1, D2],
     });
@@ -200,6 +205,7 @@ describe('addManualGroupMemberships', () => {
   it('does nothing for an empty deviceIds list', async () => {
     const result = await addManualGroupMemberships({
       groupId: GROUP_ID,
+      group: { id: GROUP_ID, orgId: ORG_ID },
       orgId: ORG_ID,
       deviceIds: [],
     });
@@ -214,6 +220,7 @@ describe('addManualGroupMemberships', () => {
 
     const result = await addManualGroupMemberships({
       groupId: GROUP_ID,
+      group: { id: GROUP_ID, orgId: ORG_ID },
       orgId: ORG_ID,
       deviceIds: [D1, D1],
     });
@@ -240,10 +247,57 @@ describe('explicit membership executor', () => {
     };
     const executor = tx as unknown as NonNullable<Parameters<typeof addManualGroupMemberships>[1]>;
     expect(await validateManualMembershipDevices({ deviceIds: [D1], orgId: ORG_ID, siteId: SITE_ID }, executor)).toEqual({ ok: true });
-    expect(await addManualGroupMemberships({ deviceIds: [D1], orgId: ORG_ID, groupId: GROUP_ID }, executor)).toEqual({ added: [D1], skipped: 0 });
+    expect(await addManualGroupMemberships({ deviceIds: [D1], orgId: ORG_ID, groupId: GROUP_ID, group: { id: GROUP_ID, orgId: ORG_ID } }, executor)).toEqual({ added: [D1], skipped: 0 });
     expect(tx.select).toHaveBeenCalledTimes(2);
     expect(tx.insert).toHaveBeenCalledTimes(1);
     expect(mockSelect).not.toHaveBeenCalled();
     expect(mockInsert).not.toHaveBeenCalled();
+  });
+});
+
+describe('removeManualGroupMemberships (#9866)', () => {
+  /** Captures the WHERE of `db.delete().where().returning()` and answers `returned`. */
+  function mockDelete(returned: string[]) {
+    const captured: { where?: SQL } = {};
+    vi.mocked(db.delete).mockReturnValueOnce({
+      where: (cond: SQL) => {
+        captured.where = cond;
+        return { returning: vi.fn().mockResolvedValue(returned.map((deviceId) => ({ deviceId }))) };
+      },
+    } as never);
+    return captured;
+  }
+
+  it('deletes only this group\'s rows for exactly the requested ids, and RETURNING decides what was removed', async () => {
+    const captured = mockDelete([D1]);
+
+    const result = await removeManualGroupMemberships({
+      groupId: GROUP_ID,
+      group: { id: GROUP_ID, orgId: ORG_ID },
+      deviceIds: [D1, D2, D1],
+    });
+
+    expect(result).toEqual({ removed: [D1], notMember: [D2] });
+    const { params } = new PgDialect().sqlToQuery(captured.where!);
+    // The mocked schema columns are plain strings, so they render as params next to their values:
+    // the group scope and the deduplicated id list are both present.
+    expect(params).toEqual(['membership.groupId', GROUP_ID, 'membership.deviceId', D1, D2]);
+    expect(mockSchedulePeripheralPolicyDevice).toHaveBeenCalledTimes(1);
+    expect(mockSchedulePeripheralPolicyDevice).toHaveBeenCalledWith(D1, 'manual_membership_changed');
+  });
+
+  it('writes nothing for an empty id list', async () => {
+    expect(await removeManualGroupMemberships({ groupId: GROUP_ID, group: { id: GROUP_ID, orgId: ORG_ID }, deviceIds: [] }))
+      .toEqual({ removed: [], notMember: [] });
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it('refuses a partner-owned group before writing (defence in depth behind the route)', async () => {
+    await expect(removeManualGroupMemberships({
+      groupId: GROUP_ID,
+      group: { id: GROUP_ID, orgId: null },
+      deviceIds: [D1],
+    })).rejects.toThrow('partner-owned device groups are read-only');
+    expect(db.delete).not.toHaveBeenCalled();
   });
 });

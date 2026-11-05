@@ -55,7 +55,7 @@ describe('SiteList', () => {
     expect(onSiteClick).toHaveBeenCalledTimes(1);
 
     // The overflow trigger and its (portalled) item must not also open the site.
-    fireEvent.click(screen.getAllByTestId('site-s1-menu')[0]);
+    fireEvent.click(screen.getByTestId('site-s1-menu'));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }));
     expect(onDelete).toHaveBeenCalledWith(few[0]);
     expect(onSiteClick).toHaveBeenCalledTimes(1);
@@ -91,7 +91,7 @@ describe('SiteList', () => {
 
     // No standalone Delete button on the row any more.
     expect(screen.queryByRole('button', { name: 'Delete Site 1' })).toBeNull();
-    const trigger = screen.getAllByTestId('site-s1-menu')[0];
+    const trigger = screen.getByTestId('site-s1-menu');
     expect(trigger.getAttribute('aria-label')).toBe('Actions for Site 1');
     fireEvent.click(trigger);
     const del = screen.getByRole('menuitem', { name: 'Delete' });
@@ -100,6 +100,34 @@ describe('SiteList', () => {
     expect(screen.getByRole('menuitem', { name: 'Edit' })).toBeInTheDocument();
     fireEvent.click(del);
     expect(onDelete).toHaveBeenCalledWith(few[0]);
+  });
+
+  it('gives each row action one unique testid per surface, so getByTestId is not ambiguous (#10084)', () => {
+    render(<SiteList sites={few} onSiteClick={vi.fn()} onEdit={vi.fn()} onDelete={vi.fn()} />);
+
+    const desktop = screen.getByTestId('responsive-table-desktop');
+    const cards = screen.getByTestId('responsive-table-cards');
+    for (const id of ['site-s1-menu', 'site-s1-open']) {
+      expect(screen.getAllByTestId(id)).toHaveLength(1);
+      expect(within(desktop).getByTestId(id)).toBeInTheDocument();
+    }
+    for (const id of ['site-s1-card-menu', 'site-s1-card-open']) {
+      expect(screen.getAllByTestId(id)).toHaveLength(1);
+      expect(within(cards).getByTestId(id)).toBeInTheDocument();
+    }
+
+    fireEvent.click(screen.getByTestId('site-s1-menu'));
+    expect(screen.getAllByTestId('site-s1-edit')).toHaveLength(1);
+    expect(screen.getAllByTestId('site-s1-delete')).toHaveLength(1);
+  });
+
+  it('the card surface menu carries its own item testids', () => {
+    render(<SiteList sites={few} onSiteClick={vi.fn()} onEdit={vi.fn()} onDelete={vi.fn()} />);
+
+    fireEvent.click(screen.getByTestId('site-s1-card-menu'));
+    expect(screen.getByTestId('site-s1-card-edit')).toBeInTheDocument();
+    expect(screen.getByTestId('site-s1-card-delete')).toBeInTheDocument();
+    expect(screen.queryByTestId('site-s1-edit')).toBeNull();
   });
 
   it('draws one border: the desktop table sits flat inside the card (#9022)', () => {
@@ -142,5 +170,55 @@ describe('SiteList', () => {
 
     expect(screen.getAllByText('Austin').length).toBeGreaterThan(0);
     expect(screen.queryByText(/object/)).toBeNull();
+  });
+
+  describe('fleet-view options (#9794), all off by default', () => {
+    const fleetSite: Site = { ...site(1), id: 'aaaaaaaa-0000-4000-8000-000000000001', orgId: 'org-a', orgName: 'Alpha Co' };
+
+    it('renders no Organization column, no device-count link, and the legacy row id by default', () => {
+      render(<SiteList sites={[fleetSite]} onAddSite={() => undefined} />);
+      expect(screen.queryByRole('columnheader', { name: 'Organization' })).toBeNull();
+      expect(screen.queryByTestId(`sites-device-count-link-${fleetSite.id}`)).toBeNull();
+      expect(screen.getByTestId(`site-row-${fleetSite.id}`)).toBeInTheDocument();
+    });
+
+    it("showOrgColumn adds an Organization column with each row's org name", () => {
+      render(<SiteList sites={[fleetSite, { ...site(2), orgName: null }]} showOrgColumn />);
+      expect(screen.getByRole('columnheader', { name: 'Organization' })).toBeInTheDocument();
+      expect(within(screen.getByTestId(`site-row-${fleetSite.id}`)).getByText('Alpha Co')).toBeInTheDocument();
+      expect(within(screen.getByTestId('site-row-s2')).getAllByText('—').length).toBeGreaterThan(0);
+    });
+
+    it('deviceCountHref links the count, and a null href leaves plain text', () => {
+      const onSiteClick = vi.fn();
+      render(
+        <SiteList
+          sites={[fleetSite, site(2)]}
+          onSiteClick={onSiteClick}
+          deviceCountHref={(s) => (s.id === fleetSite.id ? '/devices#x' : null)}
+        />,
+      );
+      const link = screen.getAllByTestId(`sites-device-count-link-${fleetSite.id}`)[0]!;
+      expect(link).toHaveAttribute('href', '/devices#x');
+      fireEvent.click(link);
+      expect(onSiteClick).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('sites-device-count-link-s2')).toBeNull();
+    });
+
+    it('rowTestIdPrefix renames the row id; addButtonTestId tags Add; no onAddSite means no Add button', () => {
+      const { unmount } = render(
+        <SiteList sites={[fleetSite]} onAddSite={() => undefined} rowTestIdPrefix="sites-row" addButtonTestId="sites-add-button" />,
+      );
+      expect(screen.getByTestId(`sites-row-${fleetSite.id}`)).toBeInTheDocument();
+      expect(screen.getByTestId('sites-add-button')).toHaveTextContent('Add site');
+      unmount();
+      render(<SiteList sites={[fleetSite]} />);
+      expect(screen.queryByRole('button', { name: 'Add site' })).toBeNull();
+    });
+
+    it('emptyMessage overrides the empty-state copy', () => {
+      render(<SiteList sites={[]} emptyMessage="Nothing here" />);
+      expect(screen.getAllByText('Nothing here').length).toBeGreaterThan(0);
+    });
   });
 });

@@ -45,7 +45,7 @@ describe('KeyboardShortcutsHelp', () => {
     expect(screen.getByText('Ctrl+O', { selector: 'kbd' })).toBeInTheDocument();
     expect(screen.getByText('Ctrl+Shift+A', { selector: 'kbd' })).toBeInTheDocument();
     expect(screen.getByText('Open the organization switcher')).toBeInTheDocument();
-    expect(screen.getByText('Toggle the AI sidebar')).toBeInTheDocument();
+    expect(screen.getByText('Toggle Breeze AI')).toBeInTheDocument();
   });
 
   it('closes from its button and from Escape', () => {

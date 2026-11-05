@@ -2,6 +2,7 @@ import '../../__tests__/integration/setup';
 import { randomUUID } from 'node:crypto';
 import { expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
+import { HTTPException } from 'hono/http-exception';
 import { workloadsReportSchema } from '@breeze/shared';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { devices, deviceWorkloadRuntimes, deviceWorkloads } from '../../db/schema';
@@ -74,6 +75,7 @@ async function fixture(opts: { enabled?: boolean } = {}) {
     withDbAccessContext(context, () =>
       ingestWorkloadsReport({
         deviceId: device!.id,
+        agentId: device!.agentId,
         orgId,
         report: workloadsReportSchema.parse(report),
         receivedAt: new Date(),
@@ -101,6 +103,22 @@ it('creates the runtime row, the workload rows and the host axis from a first re
     { runtime: 'docker', detection: 'present', collection: 'ok', complete: true, runtimeVersion: '27.1.1', observedCount: 2, reportedCount: 2 },
   ]);
   expect(await f.host()).toEqual({ hostsWorkloads: true, workloadRuntimes: ['docker'] });
+});
+
+// #8318 §6.4 (review of wave 1b-1): the device row is read bound to the
+// authenticated agent_id and locked before any child row is written.
+it('refuses a stale caller (the row changed hands after auth) with the stale-credential 401 and writes nothing', async () => {
+  const f = await fixture();
+  await getTestDb().update(devices).set({ agentId: `reattached-${randomUUID()}` }).where(eq(devices.id, f.device.id));
+  const before = await f.host();
+
+  const refused = await f.send(reportFixture({ collectedAt: at(0), runtimes: [runtimeFixture({ workloads: [wl('a')] })] }))
+    .then(() => null, (err: unknown) => err);
+  expect(refused).toBeInstanceOf(HTTPException);
+  expect((refused as HTTPException).status).toBe(401);
+  expect(await f.workloads()).toEqual([]);
+  expect(await f.runtimes()).toEqual([]);
+  expect(await f.host()).toEqual(before);
 });
 
 it('keeps row ids and first_seen_at stable across later reports and advances last_seen_at', async () => {
@@ -383,4 +401,75 @@ it('a complete snapshot reporting a null digest stores null and resets to pendin
   await f.send(reportFixture({ collectedAt: at(1), runtimes: [runtimeFixture({ workloads: [wl('a', { imageDigest: null })] })] }));
   const [row] = await f.workloads();
   expect(row).toMatchObject({ imageDigest: null, upstreamStatus: 'pending' });
+});
+
+// ---- Image provenance (#9067) ----
+
+it('stores imageProvenance, and an older agent that omits it stores null', async () => {
+  const f = await fixture();
+  await f.send(
+    reportFixture({
+      collectedAt: at(0),
+      runtimes: [runtimeFixture({ workloads: [wl('a', { imageProvenance: 'unknown' }), wl('b')] })],
+    }),
+  );
+  const rows = Object.fromEntries((await f.workloads()).map((r) => [r.workloadId, r]));
+  expect(rows.a!.imageProvenance).toBe('unknown');
+  expect(rows.b!.imageProvenance).toBeNull();
+});
+
+it('a provenance change that changes the decision resets the row to pending', async () => {
+  const f = await fixture();
+  await f.send(reportFixture({ collectedAt: at(0), runtimes: [runtimeFixture({ workloads: [wl('a', { imageProvenance: 'confirmed' })] })] }));
+  await markChecked(f.device.id);
+  await f.send(reportFixture({ collectedAt: at(1), runtimes: [runtimeFixture({ workloads: [wl('a', { imageProvenance: 'unknown' })] })] }));
+  const [row] = await f.workloads();
+  expect(row).toMatchObject({ imageProvenance: 'unknown', upstreamStatus: 'pending', upstreamDigest: null, upstreamCheckedAt: null });
+});
+
+it('an agent upgrade from no provenance to confirmed keeps the upstream columns and behind_since', async () => {
+  const f = await fixture();
+  await f.send(reportFixture({ collectedAt: at(0), runtimes: [runtimeFixture({ workloads: [wl('a')] })] }));
+  await getTestDb().execute(
+    sql`UPDATE device_workloads SET upstream_status = 'behind', upstream_digest = ${DIGEST('e')}, upstream_checked_at = now(),
+        behind_since = now() - interval '3 days' WHERE device_id = ${f.device.id}`,
+  );
+  await f.send(reportFixture({ collectedAt: at(1), runtimes: [runtimeFixture({ workloads: [wl('a', { imageProvenance: 'confirmed' })] })] }));
+  const [row] = await f.workloads();
+  expect(row).toMatchObject({ imageProvenance: 'confirmed', upstreamStatus: 'behind', upstreamDigest: DIGEST('e') });
+  expect(row!.behindSince).not.toBeNull();
+});
+
+it('an incomplete snapshot that keeps the stored digest keeps its provenance with it', async () => {
+  const f = await fixture();
+  await f.send(reportFixture({ collectedAt: at(0), runtimes: [runtimeFixture({ workloads: [wl('a', { imageProvenance: 'unknown' })] })] }));
+  await f.send(
+    reportFixture({
+      collectedAt: at(1),
+      runtimes: [runtimeFixture({ complete: false, error: 'images_list_failed', workloads: [wl('a', { imageDigest: null })] })],
+    }),
+  );
+  const [row] = await f.workloads();
+  expect(row).toMatchObject({ imageDigest: DIGEST('a'), imageProvenance: 'unknown' });
+});
+
+it('the database refuses a provenance outside the vocabulary', async () => {
+  const f = await fixture();
+  await f.send(reportFixture({ collectedAt: at(0), runtimes: [runtimeFixture({ workloads: [wl('a')] })] }));
+  await expect(
+    getTestDb().execute(sql`UPDATE device_workloads SET image_provenance = 'pulled' WHERE device_id = ${f.device.id}`),
+  ).rejects.toThrow();
+});
+
+it('an incomplete snapshot keeps the stored digest but takes a fresh provenance the agent did report', async () => {
+  const f = await fixture();
+  await f.send(reportFixture({ collectedAt: at(0), runtimes: [runtimeFixture({ workloads: [wl('a')] })] }));
+  await f.send(
+    reportFixture({
+      collectedAt: at(1),
+      runtimes: [runtimeFixture({ complete: false, error: 'truncated', workloads: [wl('a', { imageDigest: null, imageProvenance: 'local' })] })],
+    }),
+  );
+  const [row] = await f.workloads();
+  expect(row).toMatchObject({ imageDigest: DIGEST('a'), imageProvenance: 'local', upstreamStatus: 'pending' });
 });

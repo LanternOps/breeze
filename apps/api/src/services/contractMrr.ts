@@ -27,7 +27,7 @@ import {
 
 export type ContractMrrBasis = 'active' | 'billed_final_term' | 'paused' | 'draft';
 export type ContractSkipReason =
-  | 'group_evaluation_failed' | 'site_deleted'
+  | 'group_evaluation_failed' | 'site_deleted' | 'manual_quantity_missing'
   | 'final_term_invoice_missing' | 'final_term_invoice_voided'
   | 'final_term_reissue_chain_too_long' | 'final_term_no_contract_lines';
 export type ActiveNotInTermReason = 'starts_later' | 'ended_awaiting_expiry' | 'final_period_not_billed';
@@ -238,6 +238,7 @@ export async function resolveContractMrrRows(
     let cents = 0;
     let base = 0;
     let siteDeleted = false;
+    let manualQuantityMissing = false;
     let unresolvedGroup = false;
     try {
       const lines = byContract.get(c.id) ?? [];
@@ -264,6 +265,12 @@ export async function resolveContractMrrRows(
           siteDeleted = true;
           break;
         }
+        // #9664: generation refuses this contract, so it contributes no MRR.
+        if (r.unresolved === 'manual_quantity_missing') {
+          console.warn('[contracts] MRR rollup skipped contract %s: manual line %s has no quantity', c.id, l.id);
+          manualQuantityMissing = true;
+          break;
+        }
         const unitPrice = l.catalogItemId
           ? (resolvedUnitPrice(l.catalogItemId, c.currencyCode, c.orgId) ?? l.unitPrice)
           : l.unitPrice;
@@ -281,6 +288,7 @@ export async function resolveContractMrrRows(
       throw err;
     }
     if (siteDeleted) { out.skipped.push(skip(c, 'site_deleted')); continue; }
+    if (manualQuantityMissing) { out.skipped.push(skip(c, 'manual_quantity_missing')); continue; }
     const mrr = monthlyOf(c, cents);
     const baseMonthly = monthlyOf(c, base);
     // Exact by construction: the overage is the difference of two rounded

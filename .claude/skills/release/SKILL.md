@@ -55,6 +55,29 @@ If migrations are listed, you're committing prod to those migrations the moment 
 2. **Rows a sweep left `BLOCKED` / `PARTIAL` for want of a live agent are run on the SSH lab rigs before tagging — not deferred to after the cut, and not left for a reporter to find.** Use the non-prod rigs (the second Windows Server VM and the lab-hyperv-host `lab-ubuntu-src` VM are lab-enrolled against a local stack; the first Windows VM and the Ubuntu KVM rig are prod-enrolled — leave those alone unless the row is about prod upgrade behaviour). Recipe: `pnpm wt-stack up` at the commit to be tagged → cross-compile the agent family from that commit (`GOOS=… CGO_ENABLED=0 go build -ldflags "-X main.version=<v>"`) → back up the rig's agent config → re-point `server_url` at the Mac's Tailscale/LAN address and re-enroll → run the rows → restore the config. Record results in the sweep doc.
 3. A row that still cannot be run (no hardware for it) is carried into the release body's known-gaps note with the exact prerequisite, by name.
 
+## Step 0.25 — macOS upgrade-in-place gate: no re-prompt, desktop still works
+
+**Why this gate exists.** Every macOS remote-desktop regression since September 2026 (#5953, #8058, #8390, #8755, #10868) broke the same promise: an agent update pushed to a Mac that *already* has Screen Recording granted must not show another permission prompt and must leave Breeze Remote Desktop working. Each fix was verified in isolation and the next build re-broke it, so partners pinned their fleets and treated every release as a beta. This step makes the promise an acceptance test. It is **not** a hand-install test — the whole point is the auto-update path.
+
+**Hardware.** The Intel leg runs on the lab Intel Mac mini (2018, Sequoia 15.8.1 on the boot volume, a second volume for the previous Sequoia point release; access and recipes live in Todd's memory notes, not in this repo). The Apple Silicon leg runs on the video-lab MacBook Air. Never run a lab agent on a host that carries the installed prod agent. If a leg's host is down, that leg goes into the release body's known-gaps note **by name** ("Intel macOS upgrade-in-place not verified: lab Intel mini offline") — it is never silently skipped.
+
+**Lab stack setup that bites.** The Mac enrolls against a wt-stack over the LAN, so bring it up with `BREEZE_WT_BIND_ADDR=0.0.0.0` and a pinned `BREEZE_WT_CADDY_PORT`, and after every `pnpm wt-stack up` set `PUBLIC_API_URL` in `.env.stack` to the origin the Mac actually uses (for example `http://<lan-ip>:<port>`) and recreate the api container. `wt-stack up` rewrites it to `http://localhost:<port>`, the API hands the agent that URL for the pkg download, and the agent refuses it with `cleartext_not_allowed` because it is not the configured server origin (#5401 family). The candidate is promoted by setting `BREEZE_VERSION=<candidate>` with `AGENT_AUTO_PROMOTE=true` so the API registers the GitHub release and marks it latest, or by the `agent_versions` row change from Step 6.
+
+**Procedure, per leg (Intel, Apple Silicon), on the two newest macOS majors available:**
+1. Start state: the **previous promoted** agent + helper version installed via the normal pkg, enrolled against the lab stack at the commit to be tagged, Screen Recording + Accessibility already granted, a desktop session known to connect. Record the helper's `desktop helper startup probe` line from `~/Library/Logs/Breeze/desktop-helper.log` and the TCC rows for the helper (do not run the probe from Remote Terminal — the result is charged to whatever launched it, #5953).
+2. Promote the candidate on the lab stack and let the device **auto-update** on its own heartbeat. No hand install, no `kickstart`, no `launchctl bootstrap`.
+3. Assert, in order, and paste the evidence into the sweep doc:
+   - **No TCC prompt** of any kind (Screen Recording, Accessibility, monthly acknowledgement) during the update, on the helper restart, or over the next 10 minutes idle. Watch the console session (screenshot from SSH), not just logs.
+   - **Helper is running and loaded within 60 s of the pkg install, with no manual action:** `pgrep -fl breeze-desktop-helper` shows the user-session helper and `launchctl print gui/<uid>/com.breeze.desktop-helper-user` reports it loaded. A helper that is missing until re-login is #10868 (postinstall bootout/bootstrap race) and blocks the tag on its own; the agent log signature is `post-update: launchctl kickstart failed … exit status 37`.
+   - The new startup probe line carries the **candidate** version and reports `captureAccess=granted` / `canCapture=true` / `screenRecording=true`; the agent log shows `TCC permissions received … screenRecordingState=granted`; the device page shows Screen Recording present and the new helper version.
+   - A desktop session connects from the Viewer: video, pointer move, a typed string arrives with the right keys (modifier-latch family, #9595). After the session ends the console wallpaper is back within 60 s (#5859).
+   - The TCC DB still shows the helper's grants at `auth_value=2` with the **same** `last_modified` as before the update, and the stored `csreq` decodes to the installed helper's designated requirement (`codesign -dr - /usr/local/bin/breeze-desktop-helper`). A grant that was re-created means the signing identity changed, which is a packaging regression even if no prompt appeared; a grant that is kept but no longer matches the binary is the #5953 Host B state (granted in the table, denied by preflight, no prompt).
+4. Any failure blocks the tag. Open an issue with the probe output, `codesign -dvv` of the installed helper, the launchd state, and the macOS build, and link it from the sweep doc.
+
+**YARA on the signed build (#10375).** The YARA engine executes code it compiles at run time, which the hardened runtime kills unless `breeze-agent` carries `com.apple.security.cs.allow-unsigned-executable-memory`. On each leg, after the update: `codesign -d --entitlements - --xml /usr/local/bin/breeze-agent` lists that key (and `breeze-desktop-helper` / `breeze-watchdog` do not), then dispatch an IOC scan with one marker rule over a folder holding the marker. Pass = the agent PID is unchanged, no new `breeze-agent-*.ips` in `/Library/Logs/DiagnosticReports`, and the scan result reports engine `yara` (not `legacy` / `engine_unavailable`) with the marker found. Before the cut, `cd agent && go test -count=1 -run Hardened ./internal/yarascan/yarac` on any Mac (without `-short`) re-signs a test binary with the hardened runtime and proves the plists still behave.
+
+**Restore:** leave the lab host on the promoted release, not a lab build, and note which version it runs.
+
 ## Step 0.3 — Dynamic security gates, at the exact commit you will tag
 
 Unit tests and static analysis read the code. These gates exercise it running. All three are run against the SHA you are about to tag, not "main around now". Results and any findings go in the **private** release register in `~/breeze-security`, never in the release body, a PR, or an issue.
@@ -114,6 +137,41 @@ Add a new entry at the **top** of `WHATS_NEW_ENTRIES` (newest-first):
   localStorage is already baselined at the version they're running, so an entry versioned at
   or below the shipped release will never auto-show for them. Version the entry as the *next*
   release and fold the missed highlights into it.
+
+## Step 0.45 — Bump the mobile store version (BEFORE tagging)
+
+Xcode Cloud builds the iOS app on every push to `main` and uploads to App Store Connect.
+Apple closes a version "train" the moment App Review approves it; every later upload
+stamped with that version is rejected (`ITMS-90186 Invalid Pre-Release Train` +
+`ITMS-90062 CFBundleShortVersionString must be higher`) and Apple emails Todd on each
+commit. From 10-23 to 10-25 that silently discarded builds 85–93, including the iOS 27
+crash fix. The cure is a new train per Breeze release, so Todd submits the store update at
+release time from a build that already exists.
+
+Bump the **patch** component (store version is independent of the Breeze semver) in the
+two files that carry it, plus the doc, in one commit merged to `main` before the tag:
+
+```bash
+OLD=$(node -p "require('./apps/mobile/app.json').expo.version")
+NEW=$(echo "$OLD" | awk -F. '{print $1"."$2"."$3+1}')
+sed -i '' "s/\"version\": \"$OLD\"/\"version\": \"$NEW\"/" apps/mobile/app.json apps/mobile/package.json
+sed -i '' "s/^- Store version: \`$OLD\`/- Store version: \`$NEW\`/" apps/mobile/STORE_SUBMISSION.md
+cd apps/mobile && npx vitest run src/config/appJson.test.ts   # app.json shape guards
+```
+
+- `ios.buildNumber` and `android.versionCode` are **not** part of this step: Xcode Cloud
+  assigns iOS build numbers itself, and Android's `versionCode` is bumped only when a Play
+  upload is actually made (`STORE_SUBMISSION.md`).
+- Skip the bump only if the current version was never approved (check App Store Connect →
+  the version's status is still "Prepare for Submission" or "Waiting for Review"). A train
+  that was never approved is still open and accepts new builds.
+- After the release is tagged and the Xcode Cloud build for the bump commit finishes, the
+  build appears in TestFlight under the new version. Todd then creates that version in App
+  Store Connect, attaches the build, and submits. That submission is **his** step, outside
+  this skill; the skill's job ends at making sure a submittable build exists.
+- Optional hardening (App Store Connect UI, not code): restrict the Xcode Cloud workflow's
+  start condition to tags `v*` instead of every `main` push. Then builds only happen at
+  release cuts and the rejection emails cannot recur between releases.
 
 ## Step 0.5 — After tagging: WAIT for the build, confirm ALL artifacts exist
 
@@ -415,6 +473,34 @@ ssh root@<droplet> "cd /opt/breeze && set -a && . ./.env && set +a && \
 
 **Why this check exists.** The deploy line names services explicitly (rather than a bare `docker compose pull && up -d`) for two real reasons: `billing` is built from a local `breeze-billing:local` image that has no registry to pull from, and a bare `up -d` would bounce `caddy`/`redis`/`tunnel` unnecessarily. But that makes the service list a **hand-maintained list that goes stale the moment a new first-party service is added** — and nothing else catches it. `portal` was added in v0.94.0, never made it into the deploy line, and silently sat on `0.94.0` through five releases while `/health` cheerfully reported `0.98.1`; a portal fix shipped in v0.97.0 was invisible in production for 11 days until a customer-facing proposal link surfaced it. Watchtower is **not** a safety net here: it runs with `WATCHTOWER_LABEL_ENABLE=true` and no service carries the enable label, so it updates nothing. The parity check is the backstop that does not depend on anyone remembering to update a list.
 
+### Record the deploy (required)
+
+Once a region is running the new build (`/health` 200 and every parity line `OK`), record it before moving on. Read the digest of the image the running api container was started from, on that host:
+
+```bash
+ssh root@<droplet> "docker image inspect --format '{{index .RepoDigests 0}}' \$(docker inspect --format '{{.Image}}' breeze-api)"
+# prints ghcr.io/lanternops/breeze/api@sha256:<64 hex>; keep the part from "sha256:" on
+```
+
+Then append one line for that region, in exactly this form, to the release register at the path given in `internal/ops/release-infra.md` as `SECURITY_RELEASE_REGISTER`:
+
+```
+deploy <EU|US> <tag> <YYYY-MM-DD> <sha256:digest>
+```
+
+for example `deploy EU v0.X.Y 2026-10-24 sha256:<64 hex>`, with the tag as pushed (`v` prefix) and the UTC date of the deploy. One line per region, written after that region's deploy, never ahead of it. The security steward publishes security advisories only against these lines: a tag missing the line for either region holds every advisory for that tag. `/health` is not a substitute.
+
+Then commit and push that line in the register's own repository. The steward may read a different clone, so a line that is only on this machine counts as missing:
+
+```bash
+REG=$(sed -n 's/^SECURITY_RELEASE_REGISTER=//p' ~/breeze/internal/ops/release-infra.md); REG=${REG/#\~/$HOME}
+D=$(dirname "$REG")
+git -C "$D" pull --rebase && git -C "$D" add "$REG" && \
+  git -C "$D" commit -m "register: deploy <EU|US> <tag>" -- "$REG" && git -C "$D" push
+```
+
+Commit only the register file. If `pull --rebase` refuses because that checkout has other local changes, do not stash, commit or discard them: run `git -C "$D" fetch` and, if the branch is not behind its upstream, commit and push as above. If it is behind, stop and ask Todd.
+
 ### Rolling back is NOT clean if a migration failed mid-set — the partial-migration trap
 
 `autoMigrate` applies each migration file in its own transaction and records success per file. If migration #7 of 10 fails, files #1–6 have **already committed**. Rolling `BREEZE_VERSION` back to `$PREV` restores the old *code* but the DB is now on a **newer-than-$PREV schema**, and the old code can choke on it. This bit us on v0.95.0: the auth-epochs migration committed a `NOT NULL`-no-default column (`refresh_token_families.absolute_expires_at`) before a *later* migration failed; after rolling back, the old version could not `INSERT` a refresh-token family (the column it doesn't know about is `NOT NULL`), so **new logins silently failed while `/health` stayed green**.
@@ -518,6 +604,7 @@ and per-severity clocks: `internal/security-disclosure-policy.md`.
 - [ ] `git diff $PREV..HEAD --stat` + migrations reviewed — blast radius understood
 - [ ] **Pre-cut gates** (Step 0.2): newest sweep doc's "Before the release cut" list cleared, sweep fix PR merged, live-agent rows run on the lab rigs (not deferred)
 - [ ] **Dynamic security gates** (Step 0.3) at the tag SHA: private extended fuzz green, Tenant Isolation E2E green, touched-area pentest playbook entries run on the lab and recorded privately
+- [ ] **macOS upgrade-in-place gate** (Step 0.25): previous version → candidate via auto-update on each Mac leg; no TCC prompt, helper loaded within 60 s with no manual bootstrap (#10868), `canCapture=true`, desktop connects, wallpaper back — a leg with no lab host is named in the release body's known gaps
 - [ ] In-app What's New entry added to `WHATS_NEW_ENTRIES` (`apps/web/src/lib/whatsNew.ts`) and **merged to main BEFORE the tag** — version = bare semver of this release (or deliberately skipped for an internal-only release)
 - [ ] Tag pushed (off main for full release / off $PREV for surgical hotfix)
 - [ ] **Abuse-asset gate** (Step 0.6): agent-family exes/MSI verified unsigned at the byte level, manifest all `edition=self-host`, checksums spot-checked
@@ -530,6 +617,7 @@ and per-severity clocks: `internal/security-disclosure-policy.md`.
 - [ ] Confirmed rollout with Todd
 - [ ] DB backed up per region (encrypted off-region dump) **immediately before that region's deploy** — verified non-trivial dump size (not the `defaultdb` 4K trap)
 - [ ] Droplets deployed — **night region first** (back up → deploy → verify), then the other + `/health` green
+- [ ] Deploy lines recorded and pushed for EU and US
 - [ ] Agent fleet promoted via slot-aware DB row change (both DBs) — only with Todd's go-ahead
 - [ ] Firewall exception removed (if the doctl fallback was used)
 - [ ] CVE requested for each advisory the private disclosure policy says gets one (request from the draft; it stays private until publish)

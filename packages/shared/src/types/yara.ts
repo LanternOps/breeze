@@ -180,4 +180,10 @@ export interface YaraThreatRuleView {
   /** The scan-time quarantine path. */
   quarantinedTo: string | null;
   quarantineFailed: boolean;
+  /**
+   * #6263 W05: the rule-set version the scan was dispatched with, when the
+   * threat came from one of its dispatched sets; null for legacy hits and for
+   * threats ingested before W05. Optional in the type until the web reads it (W05 PR C); the API always sends it.
+   */
+  ruleSetVersion?: number | null;
 }

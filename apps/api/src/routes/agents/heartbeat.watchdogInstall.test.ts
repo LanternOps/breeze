@@ -1,3 +1,5 @@
+// Isolation delivery is covered by heartbeat.containment and the reconcile matrix.
+vi.mock('../../services/networkIsolation/reconcile', () => ({ buildContainmentHeartbeatBlock: vi.fn(async () => ({ networkIsolation: null })), reconcileContainmentReport: vi.fn(async () => undefined), noteIsolationReportDropped: vi.fn(), storedContainmentHeartbeatBlock: vi.fn((row) => ({ networkIsolation: row ? { isolationId: row.id, generation: row.generation, desired: row.desiredState, allow: row.allowSnapshot } : null })) }));
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
@@ -448,11 +450,17 @@ beforeEach(() => { __resetHotPathCachesForTests(); });
 
 // Builds a thenable mock-chain so any `.from().where().limit()` access
 // resolves to the given value.
+// The beat's own-row read is `.limit(1).for('no key update')` (#8318 §6.4,
+// selectOwnDeviceRowForUpdate); every other read awaits `.limit()` directly.
+function lockableResolved(value: unknown) {
+  return Object.assign(Promise.resolve(value), { for: vi.fn(() => Promise.resolve(value)) });
+}
+
 function selectChainResolving(value: unknown) {
   return {
     from: vi.fn(() => ({
       where: vi.fn(() => ({
-        limit: vi.fn().mockResolvedValue(value),
+        limit: vi.fn(() => lockableResolved(value)),
         orderBy: vi.fn(() => ({
           limit: vi.fn().mockResolvedValue(value),
         })),
@@ -478,6 +486,7 @@ function buildApp(agentOverrides: Record<string, unknown> = {}): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
@@ -496,6 +505,7 @@ function buildWatchdogApp(): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
@@ -515,6 +525,7 @@ function buildDrainingApp(role: 'agent' | 'watchdog' = 'agent'): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
@@ -541,6 +552,7 @@ function buildDeviceDrainApp(): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',

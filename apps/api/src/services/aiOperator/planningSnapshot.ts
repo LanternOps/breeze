@@ -70,7 +70,9 @@ export function sealPlanningSnapshot(
 
 export type PlanningSnapshotFailureReason =
   | 'snapshot_required' | 'snapshot_unexpected' | 'snapshot_missing' | 'snapshot_wrong_step'
-  | 'snapshot_not_settled' | 'snapshot_malformed' | 'snapshot_digest_mismatch';
+  | 'snapshot_not_settled' | 'snapshot_malformed' | 'snapshot_digest_mismatch'
+  /** W07 B2: the recipe declares `planningSnapshotStepFor` and it does not name the current step. */
+  | 'snapshot_step_unmapped';
 
 export type PlanningSnapshotLoad =
   | { ok: true; facts: DiscoveryFacts }
@@ -85,6 +87,15 @@ const fail = (reason: PlanningSnapshotFailureReason, detail: string): PlanningSn
  *   exactly today's behaviour, with no read.
  * - Any disagreement, or any row/envelope/digest failure: a typed failure.
  *
+ * WHICH snapshot step (W07 Amendment B2). With `recipe.planningSnapshotStepFor`
+ * absent, the expected step is `recipe.planningSnapshotStepKey` and
+ * `currentStepKey` is ignored — today's path, unchanged. With the map
+ * declared, the expected step is `map[currentStepKey]`; a step the map does
+ * not name (or no step) is `snapshot_step_unmapped`, read nothing, never a
+ * fallback. `snapshot_wrong_step` compares the ref's row against that
+ * resolved step, so a stage-2 wake whose ref still points at stage 1's row
+ * (or the reverse) fails closed.
+ *
  * Reads `ai_operator_task_steps` by `(org_id, task_id, id)` under
  * `withSystemDbAccessContext`. Throws only on I/O, so the wake retries.
  */
@@ -92,8 +103,19 @@ export async function loadPlanningFacts(
   task: Pick<AiOperatorTaskRow, 'id' | 'orgId'>,
   recipe: RecipeDefinition<never>,
   checkpoint: TaskCheckpoint,
+  currentStepKey?: string | null,
 ): Promise<PlanningSnapshotLoad> {
-  const stepKey = recipe.planningSnapshotStepKey;
+  const snapshotFor = recipe.planningSnapshotStepFor;
+  let stepKey = recipe.planningSnapshotStepKey;
+  if (snapshotFor !== undefined) {
+    // `Object.hasOwn`: a step named 'constructor' must not resolve to a
+    // prototype member. The map is total; there is no fallback.
+    if (typeof currentStepKey !== 'string' || !Object.hasOwn(snapshotFor, currentStepKey)) {
+      return fail('snapshot_step_unmapped',
+        `workflow '${recipe.key}' declares per-step planning snapshots but names none for step '${currentStepKey ?? '(none)'}'`);
+    }
+    stepKey = snapshotFor[currentStepKey];
+  }
   const ref = checkpoint.planningSnapshot;
   if (stepKey === undefined && ref === undefined) return { ok: true, facts: {} };
   if (stepKey === undefined) {

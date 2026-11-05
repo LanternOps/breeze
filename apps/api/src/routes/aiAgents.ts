@@ -1,3 +1,4 @@
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from '../services/deviceGroupOwnership';
 import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
@@ -34,7 +35,7 @@ import { zValidator } from '../lib/validation';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   actionIntents, aiAgentGraduation, aiAgentRuns, aiAgents, aiToolExecutions, devices, organizations,
-  reportRuns, reports, ticketDrafts, type AiAgentRow,
+  reportRuns, reports, ticketDrafts, users, wispGrants, type AiAgentRow,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext, type AuthContext } from '../middleware/auth';
 import { policyDecideEnabled } from '../config/env';
@@ -160,6 +161,25 @@ function uuidParam(c: Context, name: string): string | null {
  * that governs agent authority. Naming AiAgentDto (from @breeze/shared, which
  * the web client also imports) is what keeps the two ends from drifting.
  */
+/**
+ * W5 PR C (#5220, Decision 9): an allowlisted `flow__<slug>` with no enabled
+ * manual flow for the agent's owner is saved (the flow may be enabled later;
+ * every agent call is gated live) but the response says so. Best-effort: a
+ * failed read never fails the save.
+ */
+async function flowToolSaveWarnings(row: AiAgentRow): Promise<{ warnings?: Array<{ code: 'flow_tool_unknown'; tools: string[] }> }> {
+  const allowlist = Array.isArray(row.toolAllowlist) ? row.toolAllowlist : [];
+  if (!allowlist.some((t) => typeof t === 'string' && t.startsWith('flow__'))) return {};
+  try {
+    const { unknownFlowToolNames } = await import('../services/flows/agentFlowTools');
+    const unknown = await unknownFlowToolNames({ orgId: row.orgId ?? null, partnerId: row.partnerId ?? null }, allowlist);
+    return unknown.length > 0 ? { warnings: [{ code: 'flow_tool_unknown', tools: unknown }] } : {};
+  } catch (err) {
+    console.error('[aiAgents] flow tool save warning could not be computed', err);
+    return {};
+  }
+}
+
 function mapRow(row: AiAgentRow): AiAgentDto {
   return {
     id: row.id,
@@ -1408,6 +1428,15 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       agentName: aiAgents.name,
       agentKind: aiAgents.kind,
       deviceHostname: devices.hostname,
+      // W07 "Wisp for <user>" provenance. Joined under the REQUEST db context:
+      // if RLS hides the grant row, grantorUserId is null and the DTO's `wisp`
+      // is null (we cannot name a grantor we cannot see). The partner SELECT
+      // branch on wisp_grants admits the partner's own users.
+      grantId: aiAgentRuns.grantId,
+      requestedByRunId: aiAgentRuns.requestedByRunId,
+      depth: aiAgentRuns.depth,
+      grantorUserId: wispGrants.grantorUserId,
+      grantorName: users.name,
     })
     .from(aiAgentRuns)
     // LEFT, not INNER — same residual RLS-visibility gap as `GET /runs` above.
@@ -1418,6 +1447,8 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     // 404ing (see buildRunTrace's `agent: RunTraceAgentInput | null` param).
     .leftJoin(aiAgents, eq(aiAgentRuns.agentId, aiAgents.id))
     .leftJoin(devices, eq(aiAgentRuns.deviceId, devices.id))
+    .leftJoin(wispGrants, eq(aiAgentRuns.grantId, wispGrants.id))
+    .leftJoin(users, eq(wispGrants.grantorUserId, users.id))
     .where(and(
       eq(aiAgentRuns.id, runId),
       auth.orgCondition(aiAgentRuns.orgId),
@@ -2167,6 +2198,8 @@ aiAgentsRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const body = c.req.valid('json');
+    const partnerGroupIds = await findPartnerOwnedGroupIds(body.triggers?.deviceGroupIds ?? []);
+    if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
     let owner: { orgId: string | null; partnerId: string | null };
 
     if (body.ownerScope === 'partner') {
@@ -2187,7 +2220,7 @@ aiAgentsRoutes.post(
 
     try {
       const row = await createAgent(auth, owner, body);
-      return c.json({ data: mapRow(row) }, 201);
+      return c.json({ data: mapRow(row), ...(await flowToolSaveWarnings(row)) }, 201);
     } catch (err) {
       return mapError(c, err);
     }
@@ -2206,8 +2239,10 @@ aiAgentsRoutes.patch(
     const id = uuidParam(c, 'id');
     if (!id) return c.json({ error: 'Agent not found' }, 404);
     try {
+      const partnerGroupIds = await findPartnerOwnedGroupIds(body.triggers?.deviceGroupIds ?? []);
+      if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
       const row = await updateAgent(auth, id, body);
-      return c.json({ data: mapRow(row) });
+      return c.json({ data: mapRow(row), ...(await flowToolSaveWarnings(row)) });
     } catch (err) {
       return mapError(c, err);
     }

@@ -80,7 +80,7 @@ export default function TopologyInspector({ selection, graph, canDiagnose, onDia
   // A connection hidden from this view is not in the graph; its authorized detail still is.
   const entity = inGraph ?? detail?.relationship;
   useEffect(() => { heading.current?.focus(); }, [selection.id]);
-  if (visitor) return <aside data-testid="topology-inspector" className="min-w-0 space-y-4 border-t bg-card p-4 lg:w-80 lg:shrink-0 lg:border-l lg:border-t-0" onKeyDown={(event) => { if (event.key === 'Escape') onClose(); }}>
+  if (visitor) return <aside data-testid="topology-inspector" className="min-w-0 space-y-4 border-t bg-card p-4 lg:max-h-[var(--topology-map-height)] lg:w-80 lg:shrink-0 lg:overflow-y-auto lg:border-l lg:border-t-0" onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); onClose(); } }}>
     <div className="flex items-start justify-between gap-3"><h3 ref={heading} tabIndex={-1} className="break-words text-lg font-semibold">{visitor.label}</h3><button data-testid="topology-inspector-close" className="rounded border px-3 py-2" onClick={onClose}>{t('close')}</button></div>
     <p className="text-sm">{(() => {
       const values = { assigned: visitor.assignedSite.name, site: siteName || t('grouped.thisSite'), prefix: visitor.network.prefix, gateway: visitor.network.gatewayAddress };
@@ -95,7 +95,7 @@ export default function TopologyInspector({ selection, graph, canDiagnose, onDia
   const aiSelection: TopologyAiSelection | null = explain && siteId && view && !schematic && UUID.test(entity.id)
     ? { siteId, subject: { kind: selection.kind === 'edge' ? 'relationship' : 'node', id: entity.id }, view, graphRevision: graph.revisions.graph }
     : null;
-  return <aside data-testid="topology-inspector" className="min-w-0 space-y-4 border-t bg-card p-4 lg:w-80 lg:shrink-0 lg:border-l lg:border-t-0" onKeyDown={(event) => { if (event.key === 'Escape') onClose(); }}>
+  return <aside data-testid="topology-inspector" className="min-w-0 space-y-4 border-t bg-card p-4 lg:max-h-[var(--topology-map-height)] lg:w-80 lg:shrink-0 lg:overflow-y-auto lg:border-l lg:border-t-0" onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); onClose(); } }}>
     <div className="flex items-start justify-between gap-3"><h3 ref={heading} tabIndex={-1} className="break-words text-lg font-semibold">{'label' in entity ? entity.label : entity.meaning}</h3><button data-testid="topology-inspector-close" className="rounded border px-3 py-2" onClick={onClose}>{t('close')}</button></div>
     {schematic && !('group' in entity && entity.group) && <p>{t('schematicExplanation')}</p>}
     {'group' in entity && entity.group && <GroupSummary graph={graph} group={entity} onSelectNode={onSelectNode} siteName={siteName} />}

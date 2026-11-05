@@ -26,6 +26,9 @@ export const LLM_EGRESS_SURFACES = [
   // W06 (#7604): loopback model gateway forwards to a gateway-kind connection.
   // CHECK re-issued in 2026-12-03-100000-ai-gateway-egress-events.sql.
   'gateway_forward',
+  // Tool Catalog W05 (#5220): the flow `ai` step's Messages-API calls.
+  // CHECK re-issued in 2027-01-08-140000-flow-ai-step-egress-surface.sql.
+  'flow_ai_step',
 ] as const;
 
 export type LlmEgressSurface = (typeof LLM_EGRESS_SURFACES)[number];

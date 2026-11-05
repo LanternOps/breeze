@@ -38,6 +38,25 @@ describe('compactToolResultForChat raw-text field fencing', () => {
     expect(parsed.incidents[0]!.description).toContain('[filtered]');
   });
 
+  it('neutralizes instruction-like text in a registered field (get_huntress_agents hostname/deviceHostname/platform/status)', () => {
+    const raw = JSON.stringify({
+      agents: [{
+        hostname: instructionLike, deviceHostname: instructionLike, platform: instructionLike,
+        status: instructionLike, mapped: true, deviceId: 'd-1',
+      }],
+      total: 1,
+    });
+
+    const parsed = JSON.parse(compactToolResultForChat('get_huntress_agents', raw)) as {
+      agents: Array<Record<'hostname' | 'deviceHostname' | 'platform' | 'status', string>>;
+    };
+
+    for (const field of ['hostname', 'deviceHostname', 'platform', 'status'] as const) {
+      expect(parsed.agents[0]![field], field).not.toContain('ignore previous instructions');
+      expect(parsed.agents[0]![field], field).toContain('[filtered]');
+    }
+  });
+
   it('neutralizes instruction-like text in a registered field (manage_tickets ticket.description)', () => {
     const raw = JSON.stringify({ ticket: { id: 't-1', subject: 'ok', description: instructionLike } });
 
@@ -115,6 +134,35 @@ describe('compactToolResultForChat raw-text field fencing', () => {
     expect(parsed.coverage.notes[0]).toBe('Breeze-generated note');
   });
 
+  // #10383: aiToolsFleet.ts became a device-command file; its device-text fields are fenced.
+  it('neutralizes the device-reported osVersion in generate_report inventory data, leaving hostname/agentVersion verbatim', () => {
+    const raw = JSON.stringify({
+      reportType: 'device_inventory',
+      data: [{ id: 'device-1', hostname: 'host-1', osVersion: instructionLike, agentVersion: '0.125.0' }],
+      showing: 1,
+    });
+
+    const parsed = JSON.parse(compactToolResultForChat('generate_report', raw)) as {
+      data: Array<{ hostname: string; osVersion: string; agentVersion: string }>;
+    };
+
+    expect(parsed.data[0]!.osVersion).not.toContain('ignore previous instructions');
+    expect(parsed.data[0]!.hostname).toBe('host-1');
+    expect(parsed.data[0]!.agentVersion).toBe('0.125.0');
+  });
+
+  it('neutralizes finding titles (get_fleet_findings) and recent alert titles (manage_alert_rules get_rule)', () => {
+    const findings = JSON.parse(compactToolResultForChat('get_fleet_findings', JSON.stringify({
+      findings: [{ id: 'f-1', title: instructionLike, kind: 'log_correlation' }], total: 1, showing: 1,
+    }))) as { findings: Array<{ title: string }> };
+    expect(findings.findings[0]!.title).not.toContain('ignore previous instructions');
+
+    const rule = JSON.parse(compactToolResultForChat('manage_alert_rules', JSON.stringify({
+      rule: { id: 'r-1', name: 'CPU high' }, recentAlerts: [{ id: 'a-1', title: instructionLike }],
+    }))) as { recentAlerts: Array<{ title: string }> };
+    expect(rule.recentAlerts[0]!.title).not.toContain('ignore previous instructions');
+  });
+
   it('does not touch a same-named field on an unregistered tool', () => {
     const raw = JSON.stringify({ message: instructionLike });
 
@@ -149,7 +197,7 @@ describe('compactToolResultForChat raw-text field fencing', () => {
  */
 const KNOWN_RAW_TEXT_TOOLS_BY_FAMILY: Readonly<Record<string, readonly string[]>> = {
   'aiToolsEventLogs.ts': ['search_logs', 'get_log_trends', 'detect_log_correlations'],
-  'aiToolsHuntress.ts': ['get_huntress_incidents'],
+  'aiToolsHuntress.ts': ['get_huntress_incidents', 'get_huntress_agents'],
   'aiToolsEdr.ts': ['list_edr_detections'],
   'aiToolsTicketing.ts': ['manage_tickets'],
   'aiToolsAgentLogs.ts': ['search_agent_logs'],

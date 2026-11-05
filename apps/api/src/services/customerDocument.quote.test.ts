@@ -226,6 +226,47 @@ describe('draft resolution (staff only)', () => {
     expect(doc.branding).toMatchObject({ theme: 'classic', pageSize: 'letter' });
   });
 
+  // #9957: the draft PDF printed "Prepared for <org>" (GET /:id/pdf overlays the
+  // resolved bill-to) while the staff Preview, fed the raw row, printed none.
+  it.each([null, '', '   '])('a staff draft with billToName %j gets the org name sending would freeze', async (billToName) => {
+    setRows({ organizations: [{ name: 'Acme Dental Group' }] });
+    const doc = await assembleCustomerQuoteDocument(quote({ ...DRAFT, billToName }), 'staff', { assets: ASSETS });
+    expect(doc.quote.billToName).toBe('Acme Dental Group');
+    expect(doc.quote.sellerSnapshot?.name).toBeTruthy(); // the seller resolution survives the bill-to spread
+    const s = selectOf('organizations');
+    expect(s.ctx).toBe('caller');
+    expect(renderSql(s.where).params).toEqual(expect.arrayContaining([PIN_QUOTE_ORG_ID]));
+    // Contract blocks substitute {{client.name}} from the same resolved row.
+    expect(renderContractsSpy.mock.calls[0]![1]).toMatchObject({ billToName: 'Acme Dental Group' });
+  });
+
+  it('a staff draft keeps a tech-entered billToName and reads no org row', async () => {
+    setRows({ organizations: [{ name: 'Acme Dental Group' }] });
+    const doc = await assembleCustomerQuoteDocument(DRAFT, 'staff', { assets: ASSETS });
+    expect(doc.quote.billToName).toBe(PIN_QUOTE_ROW.billToName);
+    expect(state.db!.selects.filter((x) => x.table === 'organizations')).toHaveLength(0);
+  });
+
+  it('an unreadable org leaves a staff draft without a bill-to name (no throw)', async () => {
+    setRows({ organizations: [] });
+    const doc = await assembleCustomerQuoteDocument(quote({ ...DRAFT, billToName: null }), 'staff', { assets: ASSETS });
+    expect(doc.quote.billToName).toBeNull();
+  });
+
+  it('an issued quote with no frozen billToName is NOT resolved from the org', async () => {
+    setRows({ organizations: [{ name: 'Acme Dental Group' }] });
+    const doc = await assembleCustomerQuoteDocument(quote({ billToName: null }), 'staff', { assets: ASSETS });
+    expect(doc.quote.billToName).toBeNull();
+    expect(state.db!.selects.filter((x) => x.table === 'organizations')).toHaveLength(0);
+  });
+
+  it.each(['public', 'portal'] as const)('%s mode never reads the org for an issued quote with no billToName', async (mode) => {
+    setRows({ organizations: [{ name: 'Acme Dental Group' }] });
+    const doc = await assembleCustomerQuoteDocument(quote({ billToName: null }), mode, { assets: ASSETS });
+    expect(doc.quote.billToName).toBeNull();
+    expect(state.db!.selects.filter((x) => x.table === 'organizations')).toHaveLength(0);
+  });
+
   it('a legacy issued quote with no seller snapshot is NOT synthesized outside a staff draft', async () => {
     const doc = await assembleCustomerQuoteDocument(quote({ sellerSnapshot: null }), 'portal', { assets: ASSETS });
     expect(doc.quote.sellerSnapshot).toBeNull();

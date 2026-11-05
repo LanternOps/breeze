@@ -64,4 +64,34 @@ describe('usePdfDownload', () => {
     await act(async () => { await result.current.download(); });
     expect(errMock).toHaveBeenCalledWith(expect.any(Error), 'nope');
   });
+  it('lets onResponse override the saved filename (called after a 2xx, before the save)', async () => {
+    fetchMock.mockResolvedValue(blobResponse());
+    const anchors: string[] = [];
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      anchors.push(this.download);
+    });
+    const onResponse = vi.fn().mockReturnValue({ filename: 'override.png' });
+    const { result } = renderHook(() => usePdfDownload({ path: '/p', filename: 'f.pdf', onResponse }));
+    await act(async () => { await result.current.download(); });
+    expect(onResponse).toHaveBeenCalledTimes(1);
+    expect(anchors).toEqual(['override.png']);
+    clickSpy.mockRestore();
+  });
+
+  it('keeps the default filename when onResponse returns nothing, and skips onResponse on a failure', async () => {
+    const anchors: string[] = [];
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      anchors.push(this.download);
+    });
+    const onResponse = vi.fn();
+    fetchMock.mockResolvedValue(blobResponse());
+    const { result } = renderHook(() => usePdfDownload({ path: '/p', filename: 'f.pdf', onResponse }));
+    await act(async () => { await result.current.download(); });
+    expect(anchors).toEqual(['f.pdf']);
+    onResponse.mockClear();
+    fetchMock.mockResolvedValue({ ok: false, status: 500 } as unknown as Response);
+    await act(async () => { await result.current.download(); });
+    expect(onResponse).not.toHaveBeenCalled();
+    clickSpy.mockRestore();
+  });
 });

@@ -112,7 +112,12 @@ export default function DeviceUserIdleStat({ deviceId }: DeviceUserIdleStatProps
           —
         </button>
       ) : (
-        <p className="mt-1 text-lg font-semibold" title={tooltip(sessions, t)}>
+        <p
+          className={`mt-1 text-lg font-semibold ${
+            formatIdle(selected, t) === '—' ? 'text-muted-foreground/60' : ''
+          }`}
+          title={tooltip(sessions, t)}
+        >
           {formatIdle(selected, t)}
         </p>
       )}

@@ -70,7 +70,7 @@ const EXPECTED_TIERS: Record<(typeof EXPECTED_TOOLS)[number], number> = {
   get_mssql_backup_status: 1,
   trigger_mssql_backup: 3,
   restore_mssql_database: 3,
-  verify_mssql_backup: 2,
+  verify_mssql_backup: 3, // W03 (#6757): supervised
 };
 
 function createQueryChain(rows: any[] = []) {

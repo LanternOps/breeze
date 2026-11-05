@@ -539,6 +539,39 @@ describe('BackupTab', () => {
     );
   });
 
+  it('disables Save while the destination key prefix is invalid, and re-enables it once fixed (#7081)', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (url === '/backup/configs' && method === 'GET') {
+        return makeJsonResponse({ data: [] });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(
+      <BackupTab
+        policyId="policy-1"
+        existingLink={undefined}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />
+    );
+
+    await screen.findByPlaceholderText(/Production S3 Backups/i);
+    const save = screen.getByRole('button', { name: /^Save$/i });
+    expect(save).not.toBeDisabled();
+
+    const prefixInput = screen.getByPlaceholderText('backups/breeze/');
+    fireEvent.change(prefixInput, { target: { value: 'a//b' } });
+    expect(screen.getByText('Invalid key prefix: it must not contain empty, "." or ".." segments.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Save$/i })).toBeDisabled();
+
+    fireEvent.change(prefixInput, { target: { value: 'msp/acme' } });
+    expect(screen.queryByText(/Invalid key prefix/)).toBeNull();
+    expect(screen.getByRole('button', { name: /^Save$/i })).not.toBeDisabled();
+  });
+
   it('auto-fills the region from an S3-compatible endpoint', async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);

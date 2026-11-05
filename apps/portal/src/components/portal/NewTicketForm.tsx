@@ -14,7 +14,9 @@ import { BTN_PRIMARY, BTN_SECONDARY, INPUT } from './ui';
 const ticketSchema = z.object({
   subject: z.string().min(5, 'Title must be at least 5 characters'),
   description: z.string().min(20, 'Tell us a little more — a couple of sentences helps us help you.'),
-  priority: z.enum(['low', 'normal', 'high', 'urgent'])
+  // Optional: only sent when the customer changed it, so server-side routing
+  // rules can fill an untouched priority.
+  priority: z.enum(['low', 'normal', 'high', 'urgent']).optional()
 });
 
 type TicketFormData = z.infer<typeof ticketSchema>;
@@ -42,6 +44,10 @@ export function NewTicketForm({ forms }: NewTicketFormProps) {
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [formDescription, setFormDescription] = useState('');
   const [formPriority, setFormPriority] = useState<TicketPriority>('normal');
+  // True once the customer changed the priority (or the picked form carries a
+  // default). Untouched => the key is omitted from the request.
+  const [formPriorityTouched, setFormPriorityTouched] = useState(false);
+  const [legacyPriorityTouched, setLegacyPriorityTouched] = useState(false);
 
   const {
     register,
@@ -59,7 +65,11 @@ export function NewTicketForm({ forms }: NewTicketFormProps) {
     setIsLoading(true);
     setError(null);
 
-    const result = await portalApi.createTicket(data);
+    const { priority, ...rest } = data;
+    const result = await portalApi.createTicket({
+      ...rest,
+      ...(legacyPriorityTouched && priority ? { priority } : {})
+    });
 
     if (result.data) {
       await navigateTo(`/tickets/${result.data.id}`);
@@ -77,6 +87,7 @@ export function NewTicketForm({ forms }: NewTicketFormProps) {
     setFormErrors({});
     setFormDescription('');
     setFormPriority(form.defaultPriority ?? 'normal');
+    setFormPriorityTouched(form.defaultPriority != null);
     const defaults: Record<string, unknown> = {};
     for (const f of form.fields) if (f.defaultValue !== undefined) defaults[f.key] = f.defaultValue;
     setFormValues(defaults);
@@ -128,7 +139,7 @@ export function NewTicketForm({ forms }: NewTicketFormProps) {
       formId: selectedForm.id,
       formResponses: parsed.data as Record<string, unknown>,
       description: formDescription.trim() || undefined,
-      priority: formPriority
+      ...(formPriorityTouched ? { priority: formPriority } : {})
     });
 
     if (result.data) {
@@ -271,7 +282,7 @@ export function NewTicketForm({ forms }: NewTicketFormProps) {
                 <select
                   id="form-priority"
                   value={formPriority}
-                  onChange={(e) => setFormPriority(e.target.value as TicketPriority)}
+                  onChange={(e) => { setFormPriority(e.target.value as TicketPriority); setFormPriorityTouched(true); }}
                   data-testid="portal-ticket-form-priority"
                   aria-describedby="form-priority-help"
                   className={inputCls}
@@ -377,7 +388,7 @@ export function NewTicketForm({ forms }: NewTicketFormProps) {
                   id="priority"
                   aria-describedby="priority-help"
                   defaultValue="normal"
-                  {...register('priority')}
+                  {...register('priority', { onChange: () => setLegacyPriorityTouched(true) })}
                   className={inputCls}
                 >
                   {/* Labels describe the customer's situation, not an abstract

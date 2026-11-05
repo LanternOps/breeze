@@ -371,60 +371,22 @@ Agents are off unless your operator sets `BREEZE_AI_AGENTS_ENABLED=true`. Upgrad
 
 Self-hosted operators: see [Environment Variables](/deploy/environment/) for the flag, and remember it must also be mapped in the `api` service's `environment:` block of your compose file — a value in `.env` alone has no effect.
 
-## AI Operator (preview)
+## Findings
 
-An agent run is a single pass: it fires on a trigger, does what it can, and
-finishes. **AI Operator** is the other shape — a long-running *task* you hand off
-and walk away from. Delegate a service-recovery incident to the Operator and it
-keeps working through investigation, action and verification after you close the
-browser, waiting for your approval at the step that needs it.
+These fleet-level tools are how Breeze AI reads and changes estate-wide configuration (policies, deployments, patches, groups, maintenance windows, automations, alert rules and reports). Anything that changes something goes through [Approvals](#approving-what-an-agent-proposes) as usual.
 
-<Aside type="caution" title="Off by default, and a thin first slice">
-  AI Operator ships **disabled**, behind two flags of its own *and* the main
-  `BREEZE_AI_AGENTS_ENABLED` kill switch. Exactly one recipe — **service
-  recovery** — is shipped in this release. Nothing appears in the UI and no task
-  can be created until an operator turns it on. See
-  [Environment Variables](/deploy/environment/#ai).
-</Aside>
+| Tool | What it does |
+|---|---|
+| `manage_configuration_policy` | Create, update, activate/deactivate, and delete configuration policies |
+| `configuration_policy_compliance` | Check org-wide compliance summary or per-device compliance status for a policy |
+| `manage_deployments` | Create, start, pause, resume, and cancel deployments |
+| `manage_patches` | Scan, approve, decline, defer, bulk approve, and rollback patches |
+| `manage_groups` | Create static/dynamic groups and manage membership |
+| `manage_maintenance_windows` | Schedule maintenance windows with timezone support |
+| `manage_automations` | Create and update automation rules and event triggers |
+| `manage_alert_rules` | Configure alerting templates per device or site |
+| `generate_report` | Generate inventory, compliance, performance, and executive summary reports, plus (v0.124.0+) the business reports — ticket SLA attainment, technician time and billability, AR aging, and AI usage by client — which are for MSP staff only and refused for site-restricted callers |
 
-### Delegating a task
+## AI tasks
 
-With the feature on, a **Delegate to Operator** button appears on the device page
-and on alert detail. Choose it, name the service that needs recovering, confirm,
-and Breeze opens the task's own page and starts work. Delegation needs
-**`ai_agents:write`** and a multi-factor confirmation, the same bar as moving an
-agent to Act mode.
-
-### What the task page shows
-
-The task page is the record of the whole hand-off: the task's current state and
-phase, what it is waiting on if it is waiting, each operation it has performed,
-its final outcome, and links to the underlying agent runs so you can read the
-detail of any single step. The device page also carries an Operator feed so you
-can see task activity in the device's own timeline.
-
-Reading tasks needs **`ai_agents:read`**. A task belonging to an organization or
-site you cannot see is reported as not found rather than as forbidden, so the
-route never confirms that someone else's task exists.
-
-### The service-recovery recipe
-
-The one shipped recipe walks five ordered steps — **investigate, execute,
-observe, verify, document**. Only the `execute` step changes anything, and it is
-**always supervised**: the Operator raises a service-restart request into your
-existing [Approvals](#approving-what-an-agent-proposes) inbox and waits there.
-There is no path in this recipe where the Operator restarts a service without a
-human approving it.
-
-A service you have listed as a protected resource is refused **at delegation
-time**, before any request reaches the approvals inbox — so a domain controller's
-critical services can never become a pending approval someone might wave through.
-
-### What runs in the background
-
-Two background workers ship with the feature: a task coordinator that ticks every
-15 seconds, and a publisher that drains task events every 5 seconds. Both are
-registered whether or not the flags are on — deliberately, so that a task already
-in flight when you turn the feature off still finishes cleanly rather than
-stranding an approval — but with the flags off no new task is ever admitted, so
-neither worker has anything to do. No new queue is added.
+For a long-running job you hand off and walk away from, see [AI tasks](/features/ai-tasks/).

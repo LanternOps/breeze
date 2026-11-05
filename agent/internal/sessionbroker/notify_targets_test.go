@@ -209,6 +209,8 @@ func sendNotifySentinel(t *testing.T, probes ...*decisionProbe) {
 // time it returns. Exactly one of the two helpers sharing Windows session 1 may
 // have been asked, and it must be the user-role one.
 func TestRequestNotificationDecisionPromptsOneHelperPerWindowsSession(t *testing.T) {
+	// Silent helpers: no answer is coming, so skip the reply grace.
+	withDecisionReplyGrace(t, 0)
 	b := New("notify-decision-one-per-session", nil)
 	user := newDecisionProbe(t, b, "1-user", []string{"notify"}, nil)
 	bindWindowsHelper(user.session, "1", ipc.HelperRoleUser)
@@ -235,6 +237,8 @@ func TestRequestNotificationDecisionPromptsOneHelperPerWindowsSession(t *testing
 // direction: de-duplication is per SCREEN, not global. Collapsing a multi-session
 // host to one prompt would stop warning every user but the first.
 func TestRequestNotificationDecisionStillPromptsEveryWindowsSession(t *testing.T) {
+	// Silent helpers: no answer is coming, so skip the reply grace.
+	withDecisionReplyGrace(t, 0)
 	b := New("notify-decision-every-session", nil)
 	console := newDecisionProbe(t, b, "1-user", []string{"notify"}, nil)
 	bindWindowsHelper(console.session, "1", ipc.HelperRoleUser)

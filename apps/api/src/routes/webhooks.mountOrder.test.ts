@@ -59,12 +59,16 @@ vi.mock('../services/clientIp', async (importOriginal) => ({
 }));
 
 // --- webhookRoutes-only deps (never reached on the no-auth paths under test) ---
-vi.mock('../workers/webhookDelivery', () => ({
-  getWebhookWorker: vi.fn(() => ({}))
+vi.mock('../jobs/webhookDeliveryQueue', () => ({
+  enqueueWebhookAttempt: vi.fn(async () => undefined)
 }));
 vi.mock('../services/notificationSenders/webhookSender', () => ({
   redactUrlForLogs: vi.fn((u: string) => u),
   validateWebhookUrlSafetyWithDns: vi.fn(async () => [])
+}));
+
+vi.mock('../services/flows/webhook/ingest', () => ({
+  ingestFlowWebhook: vi.fn(async () => ({ http: 401, body: { error: 'unauthorized' } }))
 }));
 
 // --- Stripe webhook deps (the signature handler is reached past auth) ---
@@ -96,7 +100,7 @@ vi.mock('../jobs/accountingReconcileWorker', () => ({
 
 // db is mocked to avoid a real connection at import; the paths under test
 // (no Authorization header) short-circuit before any query runs.
-vi.mock('../db', () => ({
+vi.mock('../db', () => ({ runAfterDbContextCommit: vi.fn((_label, work) => work()),
   db: {},
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => unknown) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
@@ -108,6 +112,10 @@ import { emailWebhookRoutes } from './tickets/emailWebhook';
 import { stripeWebhookRoutes } from './webhooks/stripe';
 import { quickbooksWebhookRoutes } from './webhooks/quickbooks';
 import { xeroWebhookRoutes } from './webhooks/xero';
+import { flowWebhookRoutes } from './flowWebhooks';
+// Keep cold module loading outside the request test's timeout on loaded hosts.
+import { resendWebhookRoutes } from './webhooks/emailProvider';
+import { ingestFlowWebhook } from '../services/flows/webhook/ingest';
 
 // Reproduce the index.ts mount order: CRUD router first, then the public
 // signature-gated siblings — emailWebhookRoutes at /webhooks/tickets,
@@ -120,6 +128,7 @@ function buildApp() {
   app.route('/webhooks', stripeWebhookRoutes);
   app.route('/webhooks', quickbooksWebhookRoutes);
   app.route('/webhooks', xeroWebhookRoutes);
+  app.route('/webhooks/flows', flowWebhookRoutes);
   return app;
 }
 
@@ -190,6 +199,15 @@ describe('webhooks mount-order regression (#2053)', () => {
     expect(qboVerifyWebhookMock).not.toHaveBeenCalled();
   });
 
+  it('flow webhook ingress reaches flowWebhookRoutes with no Authorization header (W05)', async () => {
+    const flowId = '7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e';
+    const res = await buildApp().request(`/webhooks/flows/${flowId}`, { method: 'POST', body: '{}' });
+    // The ingest service answered (uniform 401 body), not session auth's message.
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'unauthorized' });
+    expect(ingestFlowWebhook).toHaveBeenCalledWith(expect.objectContaining({ flowId, rawBody: '{}' }));
+  });
+
   it('Xero webhook reaches the signature handler, not session auth (no sig → empty 401)', async () => {
     process.env.XERO_WEBHOOK_KEY = 'k';
     try {
@@ -202,7 +220,6 @@ describe('webhooks mount-order regression (#2053)', () => {
   });
 
   it('the Svix-signed delivery webhook is reachable under the shared /webhooks prefix', async () => {
-    const { resendWebhookRoutes } = await import('./webhooks/emailProvider');
     const app = new Hono();
     app.route('/webhooks', webhookRoutes);          // session-auth CRUD, mounted FIRST
     app.route('/webhooks', resendWebhookRoutes);    // public, mounted after

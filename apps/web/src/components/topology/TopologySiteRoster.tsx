@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useId } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { PresenceAssignedEntry, PresenceResponse } from '@breeze/shared';
@@ -6,11 +6,12 @@ import type { RosterNetwork } from './renderProjection';
 import type { TopologySelection } from './topologyPresentation';
 import { formatRelativeTime, formatTime } from '../../lib/dateTimeFormat';
 import SiteMoveSuggestion from './SiteMoveSuggestion';
+import { STATUS_ANCHOR, STATUS_PANEL, STATUS_TOGGLE, useStatusPopover } from './TopologySiteNotes';
 
 /**
  * The viewed site's devices that are not on its networks, in up to three sections (site location W1/W2, spec S§4.3):
  * "Observed at other sites", "Other / unidentified networks" (W01's undeclared networks plus devices on unrecognized networks)
- * and "Location unknown". Collapsed by default; each device opens in the inspector. It names a site only when the API sent
+ * and "Location unknown". Collapsed by default, a toggle in the status row whose list floats over the map (2026-10-25); each device opens in the inspector. It names a site only when the API sent
  * that site (a match the viewer may not see arrives as an unrecognized entry with no reason), and never says how far away anything is.
  */
 export default function TopologySiteRoster({ siteName, roster, nodesById, onSelect, presence, deviceNodeIds, canMoveDevices = false, onPresenceChanged }: {
@@ -25,7 +26,7 @@ export default function TopologySiteRoster({ siteName, roster, nodesById, onSele
   onPresenceChanged?: () => void;
 }) {
   const { t, i18n } = useTranslation('topology');
-  const [open, setOpen] = useState(false);
+  const { open, setOpen, root, toggle, onKeyDown } = useStatusPopover<HTMLElement>();
   const bodyId = useId(), observedId = useId(), otherId = useId(), unknownId = useId();
   const entries = [...new Map((presence?.assigned ?? []).filter((entry) => entry.state !== 'home').map((entry) => [entry.deviceId, entry])).values()];
   if (!roster.length && !entries.length) return null;
@@ -83,12 +84,11 @@ export default function TopologySiteRoster({ siteName, roster, nodesById, onSele
         assignedSite={{ id: presence.siteId, name: siteName }} prefix={entry.network?.prefix ?? null} suggestion={entry.suggestion}
         confirmedAt={entry.siteAssignmentConfirmedAt} canMove={canMoveDevices} onChanged={() => onPresenceChanged?.()} />}</li>;
   })}</ul>;
-  return <section data-testid="topology-site-roster" className="rounded-md border bg-card text-sm">
-    <button type="button" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen(!open)}
-      className="flex w-full items-center gap-2 px-3 py-2 text-left font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary">
-      <Chevron className="h-4 w-4" aria-hidden="true" />{t('grouped.crossSite.rosterToggle', { count: deviceCount })}
+  return <section ref={root} data-testid="topology-site-roster" className={`${STATUS_ANCHOR} text-sm`} onKeyDown={onKeyDown}>
+    <button ref={toggle} type="button" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen(!open)} className={STATUS_TOGGLE}>
+      <Chevron className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />{t('grouped.crossSite.rosterToggle', { count: deviceCount })}
     </button>
-    {open && <div id={bodyId} className="space-y-4 border-t px-3 py-3">
+    {open && <div id={bodyId} className={`${STATUS_PANEL} max-h-[min(70vh,36rem)] w-[32rem] space-y-4 overflow-y-auto text-foreground`}>
       {observed.length > 0 && <section aria-labelledby={observedId} data-testid="topology-roster-observed">
         <h4 id={observedId} className="font-medium">{t('grouped.crossSite.observedHeading', { count: observed.length })}</h4>{list(observed)}</section>}
       {(roster.length > 0 || other.length > 0) && <section aria-labelledby={otherId} data-testid="topology-roster-other">

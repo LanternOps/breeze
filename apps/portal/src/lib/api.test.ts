@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { apiPost, buildPortalApiUrl, portalApi, publicApiPath } from './api';
+import { apiPost, buildPortalApiUrl, buildServerForwardHeaders, portalApi, publicApiPath } from './api';
 
 // Regression guard for the same-origin client API base (the deploy relies on it):
 // with PUBLIC_API_URL unset, the browser must issue RELATIVE /api/v1 requests so
@@ -497,5 +497,67 @@ describe('portalApi approvals (#8200)', () => {
     expect(String(fetchMock.mock.calls[1][0])).toMatch(/\/portal\/approvals\/abc\/deny$/);
     expect(fetchMock.mock.calls[0][1].method).toBe('POST');
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(body);
+  });
+});
+
+// #8972 W2: GET /portal/tickets/:id answers a merged tombstone with a TOP-LEVEL
+// `{ merged: true, mergedInto, mergedAt, survivorDeleted? }` and no `ticket`
+// key. Reading `body.ticket` alone turned it into "Ticket not found".
+describe('portalApi.getTicket — merged tombstone envelope', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const stub = (body: unknown) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  };
+
+  it('returns the merged result when the survivor is readable', async () => {
+    stub({ merged: true, mergedInto: { id: 'surv-1', ticketNumber: 'HD0XTUGGVV' }, mergedAt: '2026-10-20T12:00:00.000Z' });
+    const result = await portalApi.getTicket('tomb-1');
+    expect(result.statusCode).toBe(200);
+    expect(result.data).toEqual({
+      merged: true,
+      mergedInto: { id: 'surv-1', ticketNumber: 'HD0XTUGGVV' },
+      mergedAt: '2026-10-20T12:00:00.000Z',
+      survivorDeleted: false,
+    });
+  });
+
+  it('carries survivorDeleted when the survivor was soft-deleted', async () => {
+    stub({ merged: true, mergedInto: null, mergedAt: '2026-10-20T12:00:00.000Z', survivorDeleted: true });
+    const result = await portalApi.getTicket('tomb-1');
+    expect(result.data).toEqual({ merged: true, mergedInto: null, mergedAt: '2026-10-20T12:00:00.000Z', survivorDeleted: true });
+  });
+
+  it('still returns body.ticket for a live ticket', async () => {
+    stub({ ticket: { id: 't-1', ticketNumber: 'T-1', subject: 'Printer', comments: [] } });
+    const result = await portalApi.getTicket('t-1');
+    expect(result.data).toMatchObject({ id: 't-1', subject: 'Printer' });
+    expect(result.data).not.toHaveProperty('merged');
+  });
+});
+
+// #9700: undici drops a caller-set Host, so forwarding the browser's Host never
+// reached the API — the API always sees the INTERNAL_API_URL host (api:3001),
+// which is what its FORCE_HTTPS internal-service exemption keys on. Keep the
+// header set honest about what actually crosses the hop.
+describe('buildServerForwardHeaders', () => {
+  it('forwards cookie and forwarded headers but never a Host', () => {
+    const request = new Request('https://portal.example.com/tickets', {
+      headers: {
+        cookie: 'session=abc',
+        host: 'portal.example.com',
+        'x-forwarded-host': 'portal.example.com',
+        'x-forwarded-proto': 'https',
+      },
+    });
+    const headers = buildServerForwardHeaders(request);
+    expect(headers.get('cookie')).toBe('session=abc');
+    expect(headers.get('x-forwarded-host')).toBe('portal.example.com');
+    expect(headers.get('x-forwarded-proto')).toBe('https');
+    expect(headers.has('host')).toBe(false);
   });
 });

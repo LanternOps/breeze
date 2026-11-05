@@ -72,9 +72,13 @@ describe('agreements permission (agreements vocabulary + IA split, W02)', () => 
 
   // No `manage`: publish and archive are write operations on a template
   // (spec §4). A third action would be an ungated capability with no gate.
-  it('declares no third action', () => {
+  // #9075 W2a (OD7 B) adds `send` — sending a legal document, copying its
+  // link, voiding it and recording a client's assent are a different blast
+  // radius from editing templates. Still no `manage`.
+  it('declares exactly read, write and send', () => {
     const agreementKeys = Object.keys(PERMISSION_GRANTS).filter((k) => k.startsWith('AGREEMENTS_'));
-    expect(agreementKeys.sort()).toEqual(['AGREEMENTS_READ', 'AGREEMENTS_WRITE']);
+    expect(agreementKeys.sort()).toEqual(['AGREEMENTS_READ', 'AGREEMENTS_SEND', 'AGREEMENTS_WRITE']);
+    expect((PERMISSION_GRANTS as Record<string, unknown>).AGREEMENTS_SEND).toEqual({ resource: 'agreements', action: 'send' });
   });
 });
 

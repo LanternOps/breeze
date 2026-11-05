@@ -177,10 +177,11 @@ function buildS3Client(config: {
 /**
  * Presigned GET for ONE exact object key of an S3 backup destination, built
  * with the same tenant-configuration client as the recovery download path.
- * The key is used verbatim (the agent writes `snapshots/<id>/...` without any
- * configured prefix; see backupSnapshotStorage.ts). The caller is responsible
- * for authorizing the key and for bounding `expiresInSeconds` (clamped here to
- * 1..300).
+ * The key is used verbatim: it is the PHYSICAL key, which the caller composes
+ * from the snapshot's recorded key root (#7081, backupKeyLayout.ts
+ * physicalKeyFor); this function never applies the destination's prefix. The
+ * caller is responsible for authorizing the key and for bounding
+ * `expiresInSeconds` (clamped here to 1..300).
  */
 export async function presignSnapshotObjectGet(args: {
   providerConfig: Record<string, unknown>;
@@ -243,13 +244,14 @@ function deriveRemoteStorageKey(
     return keyUnderRecordedRoot(normalizedRemotePath, origin.storagePrefix, origin.snapshotId);
   }
   // #6398: the destination's configured `prefix` is deliberately NOT applied.
-  // The agent's storage providers never apply it — every snapshot object is
-  // written at `snapshots/<id>/...` verbatim — so presigning
-  // `<prefix>/snapshots/...` 404'd every token-mode recovery (bmr-recover,
-  // bare-metal / Restore-as-VM rebuild, DR) on a prefixed destination. GC
-  // (backupSnapshotStorage.ts backupSnapshotRootPrefix) already relies on the
-  // same fact. Only a per-snapshot recorded storagePrefix that names the
-  // snapshot's root relocates its keys (keyUnderRecordedRoot).
+  // This path serves legacy_flat snapshots only, whose objects are at
+  // `snapshots/<id>/...` whatever the destination's prefix is now; presigning
+  // `<prefix>/snapshots/...` for them once 404'd every token-mode recovery
+  // (bmr-recover, bare-metal / Restore-as-VM rebuild, DR). A snapshot written
+  // under a destination prefix records `prefixed_flat` and its keys are mapped
+  // through that recorded root instead (#7081; see the caller). Only a
+  // per-snapshot recorded storagePrefix that names the snapshot's root
+  // relocates a legacy snapshot's keys (keyUnderRecordedRoot).
   const snapshotId = typeof snapshotMetadata.snapshotId === 'string' ? snapshotMetadata.snapshotId : null;
   return keyUnderRecordedRoot(normalizedRemotePath, getStringValue(snapshotMetadata, 'storagePrefix'), snapshotId);
 }

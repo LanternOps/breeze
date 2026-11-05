@@ -15,18 +15,21 @@ import {
   CHAT_RAISE_CONCERN_SUBJECT_KINDS,
   CONCERN_EVIDENCE_MAX_BYTES,
   CONCERN_EVIDENCE_MAX_KEYS,
+  CONCERN_FEEDBACK_NOTE_MAX,
   CONCERN_OUTCOME_MAX,
   CONCERN_SEVERITIES,
   CONCERN_SNOOZE_MAX_DAYS,
   CONCERN_STATUSES,
   CONCERN_SUBJECT_KINDS,
   CONCERN_SUMMARY_MAX,
+  SYSTEM_ONLY_CONCERN_SUBJECT_KINDS,
   WATCH_CADENCE_MAX_MINUTES,
   WATCH_CADENCE_MIN_MINUTES,
   WATCH_KINDS,
   WATCH_PARAMS_MAX_BYTES,
   WATCH_PARAMS_MAX_KEYS,
 } from '../types/wispConcerns';
+import { WISP_SPECIALIST_KINDS, type WispSpecialistKind } from './wispSpecialists';
 
 const jsonBytes = (o: unknown): number => {
   try {
@@ -48,8 +51,9 @@ export const concernSeveritySchema = z.enum(CONCERN_SEVERITIES);
 export const concernStatusSchema = z.enum(CONCERN_STATUSES);
 export const watchKindSchema = z.enum(WATCH_KINDS);
 
+/** A subject a run may raise a concern on: every kind but the system-only ones. */
 export const concernSubjectSchema = z.object({
-  kind: z.enum(CONCERN_SUBJECT_KINDS),
+  kind: z.enum(CONCERN_SUBJECT_KINDS).exclude([...SYSTEM_ONLY_CONCERN_SUBJECT_KINDS]),
   id: z.uuid(),
 });
 
@@ -105,13 +109,29 @@ export const proposeActionSchema = z.object({
 });
 export type ProposeActionInput = z.infer<typeof proposeActionSchema>;
 
-/** W07 fills the body behind it; until then the tool refuses. */
+/**
+ * `request_specialist` (W07): validate-only during the assessment; the
+ * coordinator dispatches each recorded request after the run
+ * (`apps/api/src/services/wisp/specialistDispatch.ts`).
+ */
 export const requestSpecialistSchema = z.object({
-  kind: z.string().trim().min(1).max(100),
+  kind: z.enum(WISP_SPECIALIST_KINDS),
   params: z.record(z.string(), z.unknown()),
   reason: z.string().trim().min(10).max(500),
 });
 export type RequestSpecialistInput = z.infer<typeof requestSpecialistSchema>;
+
+/** Parses a `request_specialist` call; throws (ZodError) on an invalid one. */
+export function validateRequestSpecialist(input: unknown): RequestSpecialistInput {
+  return requestSpecialistSchema.parse(input);
+}
+
+/** What the post-run dispatch did with one recorded request (`requestId` = deriveRequestId(runId, ordinal)). */
+export type SpecialistRequestResult = { requestId: string; kind: WispSpecialistKind } & (
+  | { admitted: true; runId?: string; taskId?: string }
+  | { needsApproval: true; intentId: string }
+  | { refused: string; detail?: string }
+);
 
 /** The run's collected outcome-tool calls, applied by the post-run finalizer (W05b). */
 export interface AssessmentOutcome {
@@ -120,6 +140,8 @@ export interface AssessmentOutcome {
   nudges: NudgeInput[];
   proposedActions: ProposeActionInput[];
   specialistRequests: RequestSpecialistInput[];
+  /** W07 — one entry per `specialistRequests` item, in call order, written by the post-run dispatch. */
+  specialistResults?: SpecialistRequestResult[];
 }
 
 // ---------------------------------------------------------------------------
@@ -195,3 +217,11 @@ export type DismissBody = z.infer<typeof dismissBodySchema>;
 
 export const resolveBodySchema = z.object({ grantId: z.uuid(), outcome: outcomeSchema });
 export type ResolveBody = z.infer<typeof resolveBodySchema>;
+
+/** POST /:id/feedback (w00 A34): one tap "useful / not useful" on a nudged concern, with an optional one-line note. */
+export const concernFeedbackBodySchema = z.object({
+  grantId: z.uuid(),
+  useful: z.boolean(),
+  note: z.string().trim().max(CONCERN_FEEDBACK_NOTE_MAX).optional(),
+});
+export type ConcernFeedbackBody = z.infer<typeof concernFeedbackBodySchema>;

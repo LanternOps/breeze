@@ -205,6 +205,7 @@ describe('ingest: behind_since reset and image alert retirement', () => {
       withDbAccessContext(f.ctx, () =>
         ingestWorkloadsReport({
           deviceId: f.device.id,
+          agentId: f.device.agentId,
           orgId: f.org.id,
           report: workloadsReportSchema.parse(reportFixture({ collectedAt: atMin(minute), runtimes: [runtimeFixture(runtime)] })),
           receivedAt: new Date(),

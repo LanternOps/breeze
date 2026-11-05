@@ -370,7 +370,7 @@ func TestResultProducedAfterStop_IsFlushedOnNextConnect(t *testing.T) {
 	defer srv1.Close()
 
 	h1 := &Heartbeat{backupOutbox: newBackupResultOutbox(root)}
-	ws1 := websocket.New(&websocket.Config{ServerURL: srv1.URL, AgentID: "a", AuthToken: secmem.NewSecureString("t")},
+	ws1 := websocket.New(&websocket.Config{ServerURL: srv1.URL, AgentID: "a", AuthToken: secmem.NewSecureString("t"), StartDialWindow: noStartDialJitter()},
 		func(cmd websocket.Command) websocket.CommandResult {
 			close(started)
 			<-release // still inside WUA when shutdown begins
@@ -418,7 +418,7 @@ func TestResultProducedAfterStop_IsFlushedOnNextConnect(t *testing.T) {
 	defer srv2.Close()
 
 	h2 := &Heartbeat{backupOutbox: newBackupResultOutbox(root)}
-	ws2 := websocket.New(&websocket.Config{ServerURL: srv2.URL, AgentID: "a", AuthToken: secmem.NewSecureString("t")},
+	ws2 := websocket.New(&websocket.Config{ServerURL: srv2.URL, AgentID: "a", AuthToken: secmem.NewSecureString("t"), StartDialWindow: noStartDialJitter()},
 		func(websocket.Command) websocket.CommandResult { return websocket.CommandResult{} })
 	h2.SetWebSocketClient(ws2)
 	go ws2.Start()

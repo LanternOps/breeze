@@ -3,7 +3,7 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
-import { ERROR_CODES, partnerBillingSettingsSchema, orgBillingSettingsSchema, orgCurrencyImpactQuerySchema, reportingTotalsQuerySchema } from '@breeze/shared';
+import { AGREEMENT_DEFAULTS_SETTINGS_KEYS, ERROR_CODES, partnerBillingSettingsSchema, orgBillingSettingsSchema, orgCurrencyImpactQuerySchema, reportingTotalsQuerySchema } from '@breeze/shared';
 import { updatePartnerBillingSettings, updateOrgBillingSettings } from '../../services/invoiceService';
 import { BillingProfileServiceError } from '../../services/billingProfileService';
 import { getOrgCurrencyImpact } from '../../services/orgCurrencyService';
@@ -26,6 +26,7 @@ export const invoiceSettingsRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
 const profileWritePerm = requirePermission(PERMISSIONS.BILLING_PROFILES_WRITE.resource, PERMISSIONS.BILLING_PROFILES_WRITE.action);
 const writePerm = requirePermission(PERMISSIONS.INVOICES_WRITE.resource, PERMISSIONS.INVOICES_WRITE.action);
+const agreementsSendPerm = requirePermission(PERMISSIONS.AGREEMENTS_SEND.resource, PERMISSIONS.AGREEMENTS_SEND.action);
 const requirePartnerWideBillingAdmin = async (c: Context, next: Next) => {
   if (!canManagePartnerWidePolicies(c.get('auth'))) {
     return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED }, 403);
@@ -35,6 +36,16 @@ const requirePartnerWideBillingAdmin = async (c: Context, next: Next) => {
 
 invoiceSettingsRoutes.patch('/partner/billing-settings', authMiddleware, scopes, writePerm, requireMfa(), requirePartnerWideBillingAdmin,
   zValidator('json', partnerBillingSettingsSchema),
+  // #9075 W4a: the agreement defaults (Billing → Agreements) decide when the
+  // partner's customers get reminder emails about legal documents, so a save
+  // that carries any of them also needs agreements:send — the grant that sends
+  // and reminds. A save without them is unaffected (the web page omits them
+  // for a user who lacks the grant).
+  async (c, next) => {
+    const body = c.req.valid('json') as Record<string, unknown>;
+    if (AGREEMENT_DEFAULTS_SETTINGS_KEYS.some((key) => body[key] !== undefined)) return agreementsSendPerm(c, next);
+    await next();
+  },
   async (c) => {
     try {
       const actor = invoiceActorFrom(c);

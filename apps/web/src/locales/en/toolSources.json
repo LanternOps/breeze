@@ -1,9 +1,9 @@
 {
   "title": "Tool Sources",
-  "subtitle": "Connect an MCP server or an OpenAPI (REST) API so its tools become available to AI chat, with per-tool risk tiers and approvals.",
+  "subtitle": "Connect an MCP server or an OpenAPI (REST) API so its tools become available to Breeze AI, with per-tool risk tiers and approvals.",
   "empty": {
     "title": "No tool sources yet",
-    "body": "Add an MCP server or an OpenAPI API to give the assistant read and write access to the systems your team already uses."
+    "body": "Add an MCP server or an OpenAPI API to give Breeze AI read and write access to the systems your team already uses."
   },
   "list": {
     "add": "Add source",
@@ -37,7 +37,7 @@
     "scope": "Availability",
     "allOrganizations": "All organizations",
     "thisOrganizationOnly": "This organization only",
-    "partnerWideWarning": "A partner-wide source exposes everything this credential can reach in {{vendor}} to every organization's AI chat. Use an organization-owned source when the vendor issues per-customer credentials.",
+    "partnerWideWarning": "A partner-wide source exposes everything this credential can reach in {{vendor}} to every organization's Breeze AI. Use an organization-owned source when the vendor issues per-customer credentials.",
     "save": "Save",
     "cancel": "Cancel",
     "auth": {
@@ -65,7 +65,7 @@
     "edit": "Edit",
     "delete": "Delete",
     "deleteTitle": "Delete this tool source?",
-    "deleteConfirm": "Its discovered tools stop being offered to AI chat immediately, and its stored credential is destroyed. This cannot be undone.",
+    "deleteConfirm": "Its discovered tools stop being offered to Breeze AI immediately, and its stored credential is destroyed. This cannot be undone.",
     "endpoint": "Endpoint",
     "specUrl": "OpenAPI document",
     "lastDiscovered": "Last discovered",
@@ -109,14 +109,14 @@
     "notAddressable": "Name not usable",
     "enableReads": "Enable all reads",
     "enableReadsConfirmTitle": "Enable reads for these tools?",
-    "enableReadsConfirmMessage": "{{count}} tool(s) will become callable by AI chat with no approval required:",
+    "enableReadsConfirmMessage": "{{count}} tool(s) will become callable by Breeze AI with no approval required:",
     "enableReadsConfirmEmpty": "No tools are eligible — anything left is already enabled, not tier 1, or still needs review.",
     "enableReadsConfirmSkipped": "{{count}} additional tool(s) still need review and will not be enabled.",
     "disableAll": "Disable all",
     "test": "Test",
-    "tier1": "1 — Read only",
-    "tier2": "2 — Writes, approval by policy",
-    "tier3": "3 — Approval required"
+    "tier1": "Tier 1 — Reads",
+    "tier2": "Tier 2 — Acts and logs (approval by policy)",
+    "tier3": "Tier 3 — Asks first"
   },
   "test": {
     "title": "Test {{tool}}",

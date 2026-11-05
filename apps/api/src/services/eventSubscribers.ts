@@ -115,6 +115,16 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
   });
 
   registerEventSubscriber({
+    id: 'psa-alert-ticketing',
+    eventTypes: ['alert.triggered', 'alert.acknowledged', 'alert.resolved'],
+    handler: async (event: BreezeEvent) => {
+      const { handlePsaAlertEvent } = await import('./psaAlertTicketing/subscriber');
+      return handlePsaAlertEvent(event);
+    },
+    retry: { attempts: 5, backoffMs: 10_000 },
+  });
+
+  registerEventSubscriber({
     id: 'webhook-delivery',
     eventTypes: '*',
     handler: handleWebhookFanoutEvent,
@@ -210,6 +220,27 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
       return handleFixOutcomeEvent(event);
     },
     retry: { attempts: 5, backoffMs: 10_000 },
+  });
+
+  registerEventSubscriber({
+    id: 'flow-event-trigger',
+    // Tool catalog W04 (#5219), Task A9 — starts event-triggered flow runs
+    // (services/flows/eventTrigger.ts, which owns the config below as
+    // `flowEventTriggerSubscriber`; eventTrigger.test.ts pins the two equal).
+    // Every event type: a flow can listen for any known event. Dark when
+    // FLOWS_ENABLED is off (the handler returns first thing). Event flows
+    // only enable when this id is queue-dispatched in enforce mode
+    // (Decision 10), so in practice it always runs from the durable queue.
+    //
+    // Lazy for the same worker-closure reason as the subscribers above:
+    // eventTrigger.ts -> runService.ts reaches the flow validator and the
+    // tool catalog.
+    eventTypes: '*',
+    handler: async (event: BreezeEvent) => {
+      const { flowEventTriggerSubscriber } = await import('./flows/eventTrigger');
+      return flowEventTriggerSubscriber.handler(event);
+    },
+    retry: { attempts: 5, backoffMs: 30_000 },
   });
 
   registerEventSubscriber({

@@ -18,6 +18,7 @@ import {
   mcpApprovalUrl,
   toMcpActionStatus,
   buildApprovalInputRequiredResult,
+  buildTerminalActionResult,
 } from './mcpActionStatus';
 
 const ID = '11111111-1111-4111-8111-111111111111';
@@ -177,5 +178,41 @@ describe('buildApprovalInputRequiredResult (B-W04 D-B32, PR B)', () => {
     expect(msg).toContain(status.toolName);
     expect(msg).toMatch(/declin\w* cancels/i);
     expect(JSON.stringify(r)).not.toContain('"mode":"form"');
+  });
+});
+
+describe('buildTerminalActionResult (B-W06 #6160, D-B49: extracted from the URL-elicitation continuation)', () => {
+  // The continuation's pre-W06 inline rendering, byte for byte (routes/mcpServer.ts
+  // handleToolsCallContinuation terminal branch at B-W05 head 43a3df01ef).
+  function inlineB04(current: ReturnType<typeof toMcpActionStatus>) {
+    if (current.status === 'completed') {
+      return { content: [{ type: 'text', text: current.result ?? JSON.stringify(current) }], structuredContent: current };
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(current) }], structuredContent: current, isError: true };
+  }
+
+  it.each([
+    ['completed with a result', mk({ status: 'completed', result: { ok: 1 } })],
+    ['completed with the result nulled by retention', mk({ status: 'completed', result: null })],
+    ['failed (uncertain)', mk({ status: 'failed', errorCode: 'boom', executedAt: new Date('2026-10-22T00:00:00.000Z') })],
+    ['rejected', mk({ status: 'rejected' })],
+    ['expired', mk({ status: 'expired' })],
+    ['cancelled', mk({ status: 'cancelled' })],
+  ])('reproduces the continuation bytes: %s', (_label, row) => {
+    const status = toMcpActionStatus(row, BASE);
+    expect(JSON.stringify(buildTerminalActionResult(status))).toBe(JSON.stringify(inlineB04(status)));
+  });
+
+  it('completed carries no isError key; every other terminal status is isError true', () => {
+    expect(buildTerminalActionResult(toMcpActionStatus(mk({ status: 'completed', result: { ok: 1 } }), BASE)))
+      .not.toHaveProperty('isError');
+    expect(buildTerminalActionResult(toMcpActionStatus(mk({ status: 'rejected' }), BASE)).isError).toBe(true);
+  });
+
+  it('a secret-bearing completion is withheld (no result text)', () => {
+    secretBearing.mockReturnValue(true);
+    const out = buildTerminalActionResult(toMcpActionStatus(mk({ status: 'completed', result: { temporaryPassword: 'pw-123' } }), BASE));
+    expect(out.structuredContent.resultWithheld).toBe('secret_bearing');
+    expect(JSON.stringify(out)).not.toContain('pw-123');
   });
 });

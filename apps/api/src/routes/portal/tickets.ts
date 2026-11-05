@@ -404,10 +404,12 @@ ticketRoutes.get('/tickets/:id', zValidator('param', ticketParamSchema), async (
   // the read-access arm grants survivors, never tombstones) answers where its
   // request went. `mergedInto` is non-null only while the user may read the
   // survivor; a soft-deleted survivor yields `survivorDeleted` and nothing of
-  // the survivor itself (Review Focus #5).
+  // the survivor itself (Review Focus #5). The survivor is named by its
+  // requester-facing `ticketNumber`, never the staff-side `internalNumber`
+  // (#10072) — the list and the header show the same number.
   if (ticket.mergedIntoTicketId) {
     const [survivor] = await db
-      .select({ id: tickets.id, internalNumber: tickets.internalNumber, deletedAt: tickets.deletedAt })
+      .select({ id: tickets.id, ticketNumber: tickets.ticketNumber, deletedAt: tickets.deletedAt })
       .from(tickets)
       .where(and(
         eq(tickets.id, ticket.mergedIntoTicketId),
@@ -418,7 +420,7 @@ ticketRoutes.get('/tickets/:id', zValidator('param', ticketParamSchema), async (
     const readable = survivor && !survivor.deletedAt;
     return c.json({
       merged: true,
-      mergedInto: readable ? { id: survivor.id, internalNumber: survivor.internalNumber } : null,
+      mergedInto: readable ? { id: survivor.id, ticketNumber: survivor.ticketNumber } : null,
       mergedAt: ticket.mergedAt ? new Date(ticket.mergedAt).toISOString() : null,
       ...(survivor?.deletedAt ? { survivorDeleted: true } : {}),
     });

@@ -201,3 +201,94 @@ describe('createOperatorTaskSchema and operatorTaskDraftSchema (R1a Task 2)', ()
     expect(() => ns.operatorTaskDraftSchema.parse({ ...body, clientIdempotencyKey: 'abcdefgh-4' })).toThrow();
   });
 });
+
+// ---- R2a Task 2 (W07 Amendment B3): the identity_onboarding arm ----
+
+describe('checkpoint arms (R2a Task 2): identity_onboarding', () => {
+  // Through the namespace so a missing export is a failing assertion, not a
+  // module-load error that hides every other case.
+  const ns = checkpointArms as unknown as Record<string, any>;
+  const CONTACT = '00000000-0000-4000-8000-000000000002';
+  const SR_CRITERION = {
+    adapter: 'service_running', adapterVersion: 1,
+    deviceId: DEVICE, serviceName: 'spooler', alertId: null,
+  };
+  const onboardingInput = {
+    displayName: 'Priya Raman',
+    m365: { userPrincipalName: 'priya@customer.example', mailNickname: 'priya', usageLocation: 'CA' },
+  };
+  const onboarding = { version: 1, checkpointKind: 'identity_onboarding', recipeInput: onboardingInput };
+  const offboarding = { version: 1, recipeInput: { contactId: CONTACT } };
+  const serviceRecovery = {
+    version: 1,
+    recipeInput: { deviceId: DEVICE, serviceName: 'spooler', triggeringAlertId: null },
+    criterion: SR_CRITERION,
+  };
+
+  it('exports the arm schema and its guard', () => {
+    expect(ns.identityOnboardingCheckpointSchema).toBeDefined();
+    expect(typeof ns.isIdentityOnboardingCheckpoint).toBe('function');
+  });
+
+  it('an onboarding checkpoint parses on its arm, with the new fields defaulted', () => {
+    const c = taskCheckpointSchema.parse(onboarding) as any;
+    expect(ns.isIdentityOnboardingCheckpoint(c)).toBe(true);
+    expect(c.checkpointKind).toBe('identity_onboarding');
+    expect(c.onboardingWorkCursor).toBe(0);
+    expect(c.createPlanRevision).toBeNull();
+    expect(c.recipeInput.displayName).toBe('Priya Raman');
+    expect(c.recipeInput.m365.skuIds).toEqual([]);
+    expect(ns.identityOnboardingCheckpointSchema.parse(onboarding)).toEqual(c);
+  });
+
+  it('an onboarding checkpoint is accepted by NEITHER the offboarding nor the service-recovery predicate', () => {
+    const c = taskCheckpointSchema.parse(onboarding);
+    expect(ns.isIdentityOffboardingCheckpoint(c)).toBe(false);
+    expect(ns.isServiceRecoveryCheckpoint(c)).toBe(false);
+    expect(Object.hasOwn(c, 'manualWorkCursor')).toBe(false);
+    expect(Object.hasOwn(c, 'criterion')).toBe(false);
+  });
+
+  it('service-recovery and offboarding checkpoints still parse on their own arms and are rejected by the onboarding guard', () => {
+    const sr = taskCheckpointSchema.parse(serviceRecovery);
+    expect(ns.isServiceRecoveryCheckpoint(sr)).toBe(true);
+    expect(ns.isIdentityOnboardingCheckpoint(sr)).toBe(false);
+    const off = taskCheckpointSchema.parse(offboarding);
+    expect(ns.isIdentityOffboardingCheckpoint(off)).toBe(true);
+    expect(ns.isIdentityOnboardingCheckpoint(off)).toBe(false);
+    // The admission-shaped SR row keeps its bytes through the three-arm union (1a-3).
+    expect(JSON.stringify(taskCheckpointSchema.parse(admissionShaped)))
+      .toBe(JSON.stringify(ns.serviceRecoveryCheckpointSchema.parse(admissionShaped)));
+  });
+
+  it('checkpointKind is REQUIRED and literal: without it an onboarding input parses on no arm', () => {
+    expect(taskCheckpointSchema.safeParse({ version: 1, recipeInput: onboardingInput }).success).toBe(false);
+    expect(taskCheckpointSchema.safeParse({ ...onboarding, checkpointKind: 'identity_offboarding' }).success).toBe(false);
+    // And an offboarding row cannot be re-labelled onto the onboarding arm.
+    expect(taskCheckpointSchema.safeParse({ ...offboarding, checkpointKind: 'identity_onboarding' }).success).toBe(false);
+  });
+
+  it('bounds the two new scalars, and the arm is strict', () => {
+    expect(taskCheckpointSchema.safeParse({ ...onboarding, onboardingWorkCursor: 65 }).success).toBe(false);
+    expect(taskCheckpointSchema.safeParse({ ...onboarding, onboardingWorkCursor: -1 }).success).toBe(false);
+    expect(taskCheckpointSchema.safeParse({ ...onboarding, createPlanRevision: -1 }).success).toBe(false);
+    expect((taskCheckpointSchema.parse({ ...onboarding, createPlanRevision: 3 }) as any).createPlanRevision).toBe(3);
+    // Offboarding's discriminator key and the dropped R2 fields are refused (B3).
+    for (const extra of [{ manualWorkCursor: 0 }, { createEffectCursor: 0 }, { accountsStepId: null }, { criterion: SR_CRITERION }]) {
+      expect(taskCheckpointSchema.safeParse({ ...onboarding, ...extra }).success).toBe(false);
+    }
+  });
+
+  it('round-trips: parse(JSON.parse(JSON.stringify(parse(x)))) deep-equals parse(x)', () => {
+    for (const x of [
+      onboarding,
+      { ...onboarding, onboardingWorkCursor: 2, createPlanRevision: 1, resumeStepKey: 'resolve_accounts' },
+      { ...onboarding, recipeInput: { ...onboardingInput, m365: { ...onboardingInput.m365, groupIds: [CONTACT, CONTACT] } } },
+    ]) {
+      const once = taskCheckpointSchema.parse(x);
+      const twice = taskCheckpointSchema.parse(JSON.parse(JSON.stringify(once)));
+      expect(twice).toEqual(once);
+      expect(ns.isIdentityOnboardingCheckpoint(twice)).toBe(true);
+    }
+  });
+});

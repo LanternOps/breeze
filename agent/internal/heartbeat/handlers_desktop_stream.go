@@ -1,6 +1,8 @@
 package heartbeat
 
 import (
+	"time"
+
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 )
@@ -24,6 +26,7 @@ func rememberDesktopPromptFor(sessionID, commandID string, prompt *ipc.DesktopPr
 	desktopPromptsMu.Lock()
 	desktopPrompts[sessionID] = prompt
 	desktopPromptOwners[sessionID] = commandID
+	desktopPromptStarted[sessionID] = time.Now()
 	desktopPromptsMu.Unlock()
 }
 
@@ -39,6 +42,7 @@ func takeDesktopPromptIfOwnedBy(sessionID, commandID string) *ipc.DesktopPrompt 
 	}
 	delete(desktopPrompts, sessionID)
 	delete(desktopPromptOwners, sessionID)
+	delete(desktopPromptStarted, sessionID)
 	return prompt
 }
 

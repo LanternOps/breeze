@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { db } from '../db';
 import { hierarchyFor, type DeviceHierarchy as PassedDeviceHierarchy, type DeviceHierarchyOpts } from './deviceHierarchy';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
@@ -35,6 +36,9 @@ import {
   type SecurityScanSettings,
   systemProtectionInlineSettingsSchema,
   SYSTEM_PROTECTION_DEFAULTS,
+  containmentInlineSettingsSchema,
+  CONTAINMENT_POLICY_DEFAULTS,
+  type ContainmentInlineSettings,
   type SystemProtectionInlineSettings,
 } from '@breeze/shared';
 import {
@@ -44,6 +48,7 @@ import {
   securityAgentsInlineSettingsSchema,
   type SecurityAgentsInlineSettings,
 } from '@breeze/shared/validators';
+import { DEFAULT_RING_FEATURE_UPDATES, ringFeatureUpdatesSchema, type RingFeatureUpdates } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import type { TokenPayload } from './jwt';
 import type { DbExecutor } from './monitors/monitorCompiler';
@@ -270,18 +275,25 @@ function buildTargetConditions(hierarchy: DeviceHierarchy): SQL[] {
  * Sort rows by hierarchy level (device=5 wins first), then assignment priority ASC,
  * then createdAt ASC (earliest first as tiebreaker).
  */
-function sortByHierarchy<T extends { assignmentLevel: string; assignmentPriority: number; assignmentCreatedAt: Date }>(
-  rows: T[]
-): T[] {
-  return rows.sort((a, b) => {
-    const levelDiff =
-      (LEVEL_PRIORITY[b.assignmentLevel as ConfigAssignmentLevel] ?? 0) -
-      (LEVEL_PRIORITY[a.assignmentLevel as ConfigAssignmentLevel] ?? 0);
-    if (levelDiff !== 0) return levelDiff;
-    const priDiff = a.assignmentPriority - b.assignmentPriority;
-    if (priDiff !== 0) return priDiff;
-    return a.assignmentCreatedAt.getTime() - b.assignmentCreatedAt.getTime();
-  });
+type HierarchyRanked = { assignmentLevel: string; assignmentPriority: number; assignmentCreatedAt: Date };
+
+/**
+ * The comparator {@link sortByHierarchy} sorts with: negative when `a` wins
+ * over `b`. Exported so a caller can ask whether an assignment that does not
+ * exist yet would outrank a device's current winner (#9635).
+ */
+export function compareByHierarchy(a: HierarchyRanked, b: HierarchyRanked): number {
+  const levelDiff =
+    (LEVEL_PRIORITY[b.assignmentLevel as ConfigAssignmentLevel] ?? 0) -
+    (LEVEL_PRIORITY[a.assignmentLevel as ConfigAssignmentLevel] ?? 0);
+  if (levelDiff !== 0) return levelDiff;
+  const priDiff = a.assignmentPriority - b.assignmentPriority;
+  if (priDiff !== 0) return priDiff;
+  return a.assignmentCreatedAt.getTime() - b.assignmentCreatedAt.getTime();
+}
+
+function sortByHierarchy<T extends HierarchyRanked>(rows: T[]): T[] {
+  return rows.sort(compareByHierarchy);
 }
 
 // ============================================
@@ -669,6 +681,38 @@ export function patchExclusiveWindowsUpdateFromPolicySet(set: DevicePolicySet): 
       : []);
   if (rows.length === 0) return false;
   return sortByHierarchy(rows)[0]!.exclusiveWindowsUpdate;
+}
+
+/**
+ * The heartbeat's feature_update_settings block from a loaded policy set: the
+ * `feature_updates` of the update ring the same patch winner links
+ * (patchExclusiveWindowsUpdateFromPolicySet picks it), read off the set's
+ * joined `ring` row so a steady beat costs no extra statement. Fails closed to
+ * block when no patch policy applies, the winner links no ring, the ring is
+ * not an enabled `ring` row of the device's own partner, or the stored value
+ * does not validate.
+ */
+export function patchFeatureUpdatesFromPolicySet(set: DevicePolicySet): RingFeatureUpdates {
+  const rows = candidatesWithLink(set, 'patch', PATCH_APPLICABILITY).flatMap(({ candidate, link }) =>
+    link.patch
+      ? [{
+        assignmentLevel: candidate.level, assignmentPriority: candidate.priority,
+        assignmentCreatedAt: candidate.assignmentCreatedAt, ring: link.ring ?? null,
+      }]
+      : []);
+  if (rows.length === 0) return DEFAULT_RING_FEATURE_UPDATES;
+  const ring = sortByHierarchy(rows)[0]!.ring;
+  if (!ring || ring.kind !== 'ring' || ring.enabled !== true) return DEFAULT_RING_FEATURE_UPDATES;
+  // A config policy's featurePolicyId is an unconstrained uuid: never honour
+  // another partner's ring (the evaluator denies with ring_reference_invalid).
+  const partnerId = set.hierarchy.org?.partnerId ?? null;
+  if (!partnerId || ring.partnerId !== partnerId) return DEFAULT_RING_FEATURE_UPDATES;
+  const parsed = ringFeatureUpdatesSchema.safeParse(ring.featureUpdates);
+  if (!parsed.success) {
+    console.warn(`[featureConfigResolver] ring ${ring.id} has malformed feature_updates; sending block to device ${set.deviceId}`);
+    return DEFAULT_RING_FEATURE_UPDATES;
+  }
+  return parsed.data;
 }
 
 /** The policy that wins a device's patch hierarchy, as the batch resolver below reports it. */
@@ -1164,6 +1208,31 @@ export async function resolveComplianceAssignmentForDevice(
 export async function resolveSoftwarePolicyForDevice(
   deviceId: string
 ): Promise<string | null> {
+  const winner = await resolveSoftwarePolicyWinnerForDevice(deviceId);
+  return winner?.featurePolicyId ?? null;
+}
+
+/** The assignment that wins a device's `software_policy` hierarchy (#9635). */
+export interface SoftwarePolicyWinner {
+  featurePolicyId: string | null;
+  /** The ASSIGNED config policy whose assignment won. */
+  configPolicyId: string;
+  assignmentId: string;
+  assignmentLevel: ConfigAssignmentLevel;
+  assignmentPriority: number;
+  assignmentCreatedAt: Date;
+}
+
+/**
+ * The whole winning assignment behind {@link resolveSoftwarePolicyForDevice}
+ * (same query, same ranking — that function is this one's projection), or
+ * null when no software policy reaches the device. #9635 uses it to say which
+ * policy and config policy win a device, and whether a new assignment would
+ * outrank them ({@link compareByHierarchy}).
+ */
+export async function resolveSoftwarePolicyWinnerForDevice(
+  deviceId: string
+): Promise<SoftwarePolicyWinner | null> {
   const hierarchy = await loadDeviceHierarchy(deviceId);
   if (!hierarchy) return null;
 
@@ -1183,6 +1252,7 @@ export async function resolveSoftwarePolicyForDevice(
       assignmentPriority: configPolicyAssignments.priority,
       assignmentCreatedAt: configPolicyAssignments.createdAt,
       assignmentId: configPolicyAssignments.id,
+      configPolicyId: configurationPolicies.id,
     })
     .from(configPolicyAssignments)
     .innerJoin(
@@ -1209,8 +1279,15 @@ export async function resolveSoftwarePolicyForDevice(
 
   if (rows.length === 0) return null;
 
-  const sorted = sortByHierarchy(rows);
-  return sorted[0]!.featurePolicyId;
+  const winner = sortByHierarchy(rows)[0]!;
+  return {
+    featurePolicyId: winner.featurePolicyId,
+    configPolicyId: winner.configPolicyId,
+    assignmentId: winner.assignmentId,
+    assignmentLevel: winner.assignmentLevel,
+    assignmentPriority: winner.assignmentPriority,
+    assignmentCreatedAt: winner.assignmentCreatedAt,
+  };
 }
 
 /**
@@ -1644,6 +1721,42 @@ async function resolveDeviceIdsForManagedSoftwarePolicy(managedByLinkId: string)
 export async function resolveDeviceIdsForSoftwarePolicy(
   softwarePolicyId: string
 ): Promise<string[]> {
+  return (await resolveSoftwarePolicyCoverage(softwarePolicyId)).appliesToDeviceIds;
+}
+
+/** Candidate devices of a software policy that another software policy wins. */
+export interface SoftwarePolicyOverride {
+  /** The winning software policy (null when the winning link names none). */
+  softwarePolicyId: string | null;
+  /** The config policy whose assignment won (the first seen for this winner). */
+  configPolicyId: string;
+  deviceCount: number;
+}
+
+export interface SoftwarePolicyCoverage {
+  /** Devices that hold an assignment of a config policy linking this software policy. */
+  candidateDeviceIds: string[];
+  /** The subset this policy actually governs (what the compliance worker evaluates). */
+  appliesToDeviceIds: string[];
+  /** Candidates lost to another software policy, most devices first. */
+  overriddenBy: SoftwarePolicyOverride[];
+}
+
+/**
+ * #9635: {@link resolveDeviceIdsForSoftwarePolicy} plus WHY a candidate device
+ * is not governed — the per-device winner from
+ * {@link resolveSoftwarePolicyWinnerForDevice}, the same resolver the compliance
+ * worker relies on. Powers the "applies to 0 devices / overridden by X"
+ * indicator. `restrictToDeviceIds` narrows candidates (site-ceiling callers).
+ */
+export async function resolveSoftwarePolicyCoverage(
+  softwarePolicyId: string,
+  opts: { restrictToDeviceIds?: readonly string[] } = {},
+): Promise<SoftwarePolicyCoverage> {
+  const restrict = opts.restrictToDeviceIds ? new Set(opts.restrictToDeviceIds) : null;
+  const narrow = (ids: string[]) => (restrict ? ids.filter((id) => restrict.has(id)) : ids);
+  const empty: SoftwarePolicyCoverage = { candidateDeviceIds: [], appliesToDeviceIds: [], overriddenBy: [] };
+
   // #6960: a generated (managed) policy resolves through its own dimension and
   // ignores the software_policy winner entirely.
   const [owner] = await db
@@ -1652,7 +1765,8 @@ export async function resolveDeviceIdsForSoftwarePolicy(
     .where(eq(softwarePolicies.id, softwarePolicyId))
     .limit(1);
   if (owner?.managedByLinkId) {
-    return resolveDeviceIdsForManagedSoftwarePolicy(owner.managedByLinkId);
+    const ids = narrow(await resolveDeviceIdsForManagedSoftwarePolicy(owner.managedByLinkId));
+    return { candidateDeviceIds: ids, appliesToDeviceIds: ids, overriddenBy: [] };
   }
 
   // 1. Find config policies linking to this software policy
@@ -1675,7 +1789,7 @@ export async function resolveDeviceIdsForSoftwarePolicy(
       )
     );
 
-  if (links.length === 0) return [];
+  if (links.length === 0) return empty;
 
   const configPolicyIds = links.map((l) => l.configPolicyId);
 
@@ -1688,7 +1802,7 @@ export async function resolveDeviceIdsForSoftwarePolicy(
     .from(configPolicyAssignments)
     .where(inArray(configPolicyAssignments.configPolicyId, configPolicyIds));
 
-  if (assignments.length === 0) return [];
+  if (assignments.length === 0) return empty;
 
   // 3. Resolve each assignment to device IDs
   const candidateDeviceIds = new Set<string>();
@@ -1700,13 +1814,14 @@ export async function resolveDeviceIdsForSoftwarePolicy(
     }
   }
 
-  if (candidateDeviceIds.size === 0) return [];
+  const candidates = narrow(Array.from(candidateDeviceIds));
+  if (candidates.length === 0) return empty;
 
   // 4. Verify each candidate — the winning software policy must be this one.
-  // For efficiency, batch-check: resolve the winning policy for each candidate device.
-  // A device is included only if its closest config policy points to this software policy.
+  // A device is included only if its closest config policy points to this
+  // software policy; otherwise record which policy won it.
   const verifiedDeviceIds: string[] = [];
-  const candidates = Array.from(candidateDeviceIds);
+  const overrides = new Map<string | null, SoftwarePolicyOverride>();
 
   // Process in batches to avoid excessive parallel DB queries
   const BATCH_SIZE = 50;
@@ -1714,18 +1829,26 @@ export async function resolveDeviceIdsForSoftwarePolicy(
     const batch = candidates.slice(i, i + BATCH_SIZE);
     const results = await Promise.all(
       batch.map(async (deviceId) => {
-        const winningPolicyId = await resolveSoftwarePolicyForDevice(deviceId);
-        return { deviceId, winningPolicyId };
+        const winner = await resolveSoftwarePolicyWinnerForDevice(deviceId);
+        return { deviceId, winner };
       })
     );
-    for (const { deviceId, winningPolicyId } of results) {
-      if (winningPolicyId === softwarePolicyId) {
+    for (const { deviceId, winner } of results) {
+      if (winner?.featurePolicyId === softwarePolicyId) {
         verifiedDeviceIds.push(deviceId);
+      } else if (winner) {
+        const entry = overrides.get(winner.featurePolicyId);
+        if (entry) entry.deviceCount += 1;
+        else overrides.set(winner.featurePolicyId, { softwarePolicyId: winner.featurePolicyId, configPolicyId: winner.configPolicyId, deviceCount: 1 });
       }
     }
   }
 
-  return verifiedDeviceIds;
+  return {
+    candidateDeviceIds: candidates,
+    appliesToDeviceIds: verifiedDeviceIds,
+    overriddenBy: Array.from(overrides.values()).sort((a, b) => b.deviceCount - a.deviceCount),
+  };
 }
 
 // ============================================
@@ -2629,7 +2752,7 @@ const MIDNIGHT_ANCHOR = { hours: 0, minutes: 0 } as const;
  * warns and falls back to midnight rather than treating the window as never
  * open.
  */
-function parseRecurringWindowAnchor(
+export function parseRecurringWindowAnchor(
   rawWindowStart: string | null
 ): { hours: number; minutes: number } | 'invalid' {
   const value = (rawWindowStart ?? '').trim();
@@ -3200,5 +3323,116 @@ function systemProtectionPlatformDefault(): ResolvedSystemProtection {
     policyRevision: null,
     isPlatformDefault: true,
     invalidStoredSettings: false,
+  };
+}
+
+// ============================================
+// Containment configuration (#10100, config-only)
+// ============================================
+
+export type ContainmentPolicy = ContainmentInlineSettings & {
+  isPlatformDefault: boolean;
+  invalidStoredSettings: boolean;
+  sourcePolicyId: string | null;
+  featureLinkId: string | null;
+};
+
+/**
+ * Closest assignment wins, in the caller's own RLS context. The effective-link
+ * view preserves inherited settings and their source. Extra permits grant a
+ * capability, so self-selected execution-unsafe groups cannot supply this policy.
+ * Malformed stored settings fail closed to the fixed W1 defaults.
+ */
+export async function resolveContainmentPolicy(
+  deviceId: string,
+): Promise<ContainmentPolicy & { revision: string }> {
+  const loaded = await loadDeviceHierarchy(deviceId);
+  if (!loaded) return containmentPlatformDefault();
+  const { allowedGroupIds } = await resolveExecutionSafeGroupIds(loaded.groupIds);
+  const hierarchy: DeviceHierarchy = { ...loaded, groupIds: allowedGroupIds };
+  const targetConditions = buildTargetConditions(hierarchy);
+  const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
+
+  const rows = await db
+    .select({
+      featureLinkId: configPolicyEffectiveFeatureLinks.id,
+      sourcePolicyId: configPolicyEffectiveFeatureLinks.sourcePolicyId,
+      inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
+      assignmentLevel: configPolicyAssignments.level,
+      assignmentPriority: configPolicyAssignments.priority,
+      assignmentCreatedAt: configPolicyAssignments.createdAt,
+    })
+    .from(configPolicyAssignments)
+    .innerJoin(
+      configurationPolicies,
+      and(
+        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active'),
+        policyOwnershipCondition(hierarchy),
+      ),
+    )
+    .innerJoin(
+      configPolicyEffectiveFeatureLinks,
+      and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'containment'),
+      ),
+    )
+    .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+    .orderBy(
+      configPolicyAssignments.level,
+      configPolicyAssignments.priority,
+      configPolicyAssignments.createdAt,
+    );
+
+  if (rows.length === 0) return containmentPlatformDefault();
+
+  const winner = sortByHierarchy(rows)[0]!;
+  const parsed = containmentInlineSettingsSchema.safeParse(winner.inlineSettings);
+  if (!parsed.success) {
+    console.warn('[featureConfigResolver] Malformed containment settings; using platform defaults', {
+      deviceId,
+      featureLinkId: winner.featureLinkId,
+      sourcePolicyId: winner.sourcePolicyId,
+      // Paths only: messages can contain rejected values or unknown key names.
+      issues: parsed.error.issues.map((issue) => issue.path.join('.') || '(root)'),
+    });
+    return {
+      ...containmentPlatformDefault(),
+      // Distinct from the no-policy revision, so a policy going invalid (or being
+      // repaired) is itself a revision change a consumer can detect.
+      revision: 'c1i:' + createHash('sha256').update(`invalid|${winner.featureLinkId}`).digest('hex').slice(0, 32),
+      isPlatformDefault: false,
+      invalidStoredSettings: true,
+      sourcePolicyId: winner.sourcePolicyId,
+      featureLinkId: winner.featureLinkId,
+    };
+  }
+  return {
+    ...parsed.data,
+    revision: containmentRevision(parsed.data),
+    isPlatformDefault: false,
+    invalidStoredSettings: false,
+    sourcePolicyId: winner.sourcePolicyId,
+    featureLinkId: winner.featureLinkId,
+  };
+}
+
+function containmentRevision(settings: ContainmentInlineSettings): string {
+  // Strict Zod objects emit keys in schema order, including every extraAllow
+  // item. Hash only that parsed, default-filled JSON, never source metadata.
+  const stableJson = JSON.stringify(containmentInlineSettingsSchema.parse(settings));
+  return 'c1:' + createHash('sha256').update(stableJson).digest('hex').slice(0, 32);
+}
+
+function containmentPlatformDefault(): ContainmentPolicy & { revision: string } {
+  const settings = containmentInlineSettingsSchema.parse(CONTAINMENT_POLICY_DEFAULTS);
+  return {
+    ...settings,
+    revision: containmentRevision(settings),
+    isPlatformDefault: true,
+    invalidStoredSettings: false,
+    sourcePolicyId: null,
+    featureLinkId: null,
   };
 }

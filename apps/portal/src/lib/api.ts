@@ -138,12 +138,14 @@ export function buildPortalApiUrl(path: string): string {
 export function buildServerForwardHeaders(request: Request): Headers {
   const headers = new Headers();
   const cookie = request.headers.get('cookie');
-  const host = request.headers.get('host');
   const forwardedHost = request.headers.get('x-forwarded-host');
   const forwardedProto = request.headers.get('x-forwarded-proto');
 
   if (cookie) headers.set('cookie', cookie);
-  if (host) headers.set('host', host);
+  // No Host (#9700): undici drops a caller-set Host, so the API always sees the
+  // INTERNAL_API_URL host, which its FORCE_HTTPS internal-service exemption
+  // keys on. The forwarded headers below are ignored by the API unless the
+  // caller is a trusted proxy (it is not).
   if (forwardedHost) headers.set('x-forwarded-host', forwardedHost);
   if (forwardedProto) headers.set('x-forwarded-proto', forwardedProto);
 
@@ -422,6 +424,22 @@ export interface TicketDetails extends TicketSummary {
   comments: TicketComment[];
 }
 
+/**
+ * A request of the viewer's that staff merged into another ticket (#8972, spec
+ * §6.1). `mergedInto` is set only while the viewer may read that ticket;
+ * `survivorDeleted` means it was deleted since, and nothing else of it is sent.
+ */
+export interface PortalMergedTicket {
+  merged: true;
+  // ticketNumber is always present from a current API; optional so a payload
+  // from an older API (which sent internalNumber instead) still type-checks.
+  mergedInto: { id: string; ticketNumber?: string } | null;
+  mergedAt: string | null;
+  survivorDeleted: boolean;
+}
+
+export type PortalTicketDetailResult = TicketDetails | PortalMergedTicket;
+
 // Slim portal-visible intake form (Phase 2). Mirrors the `GET /portal/tickets/forms`
 // payload — no titleTemplate (the server composes the subject) and no showInPortal
 // (the route already filtered to portal-visible forms).
@@ -438,12 +456,12 @@ export interface PortalTicketForm {
 // payload. On the form path the subject/description are composed server-side, so
 // no `subject` key is sent (an optional free-text `description` may still ride along).
 export type CreateTicketInput =
-  | { subject: string; description: string; priority: TicketPriority }
+  | { subject: string; description: string; priority?: TicketPriority }
   | {
       formId: string;
       formResponses: Record<string, unknown>;
       description?: string;
-      priority: TicketPriority;
+      priority?: TicketPriority;
     };
 
 export interface Asset {
@@ -762,6 +780,88 @@ export interface QuoteDetail {
   presentation?: QuotePresentation;
 }
 
+export interface PublicAgreementDetail {
+  request: {
+    id: string;
+    status: 'sent' | 'viewed' | 'signed' | 'declined';
+    coverMessage: string | null;
+    expiresAt: string;            // ISO instant
+    effectiveDate: string | null; // YYYY-MM-DD
+    signedAt: string | null;      // ISO
+    declinedAt: string | null;    // ISO
+  };
+  template: { name: string; versionNumber: number; sourceType: 'authored' | 'uploaded' };
+  /** Server-sanitized agreement HTML (authored templates). */
+  html: string | null;
+  /** API-relative path '/agreements/public/<token>/file' (uploaded templates). */
+  fileUrl: string | null;
+  /** API-relative path '/agreements/public/<token>/signed-copy' when THIS link
+   *  signed the agreement and its certified copy exists (#10695); null otherwise.
+   *  Absent on portal payloads, which download by signedAgreementId instead. */
+  signedCopyUrl?: string | null;
+  parties: { partnerName: string; orgName: string | null };
+  branding: {
+    partnerName: string;
+    logoUrl: string | null;
+    seller: { name: string | null; lines: string[]; phone: string | null; email: string | null; website: string | null } | null;
+  };
+}
+
+/** Browser-facing URL of an uploaded agreement's file (same-origin, token-scoped). */
+export function publicAgreementFilePath(token: string): PublicApiPath {
+  return publicApiPath(`/agreements/public/${encodeURIComponent(token)}/file`);
+}
+
+/** Browser-facing URL of an uploaded agreement's file for the signed-in portal user. */
+export function portalAgreementFilePath(id: string): PublicApiPath {
+  return publicApiPath(`/portal/agreements/${encodeURIComponent(id)}/file`);
+}
+
+/** Download URL of a signed agreement: the certified PDF (default) or the stored original. */
+export function signedAgreementFilePath(documentId: string, copy: 'certified' | 'original' = 'certified'): PublicApiPath {
+  return publicApiPath(`/portal/signed-agreements/${encodeURIComponent(documentId)}/file?copy=${copy}`);
+}
+
+/** An agreement request still awaiting signature (GET /portal/agreements). */
+export interface PortalAgreementSummary {
+  id: string;
+  name: string;
+  templateName: string | null;
+  status: 'sent' | 'viewed';
+  sentAt: string | null;
+  expiresAt: string;
+  /** The signed-in user's email is on the recipient list. */
+  canSign: boolean;
+}
+
+export type PortalAgreementDetail = PublicAgreementDetail & {
+  canSign: boolean;
+  signedAgreementId: string | null;
+  /** The org's zone (org → partner → UTC): format the request's instants in it (#10291). */
+  timezone: string;
+};
+
+/** GET /portal/agreements and /portal/signed-agreements: rows plus the org zone their instants format in (#10291). */
+export interface PortalAgreementListResponse<T> {
+  data: T[];
+  timezone: string;
+}
+
+export interface PortalSignedAgreement {
+  id: string;
+  name: string;
+  templateName: string | null;
+  versionNumber: number | null;
+  sourceKind: 'quote' | 'request';
+  quoteNumber: string | null;
+  mime: string;
+  byteSize: number;
+  signerName: string | null;
+  signedAt: string | null;
+  acceptanceOrigin: 'customer' | 'on_behalf' | null;
+  createdAt: string;
+}
+
 export interface PublicQuoteDetail {
   quote: PublicQuoteHeader;
   blocks: QuoteBlock[];
@@ -776,6 +876,31 @@ export interface PublicQuoteDetail {
    *  payment; automatic-payment clients included). The page still
    *  gates on an amount being due; the server makes the final call on accept. */
   payOnAccept?: boolean;
+}
+
+/** #3740: what paying an accepted quote's invoice charges now (deposit-first). */
+export interface PublicQuotePayment {
+  amount: string;
+  currencyCode: string;
+  isDeposit: boolean;
+  invoiceNumber: string | null;
+}
+
+/** GET /quotes/public/:token/payment — the accepted quote's payment step.
+ *  `payment` is null when nothing can be paid online. */
+export interface PublicQuoteAccepted {
+  partnerName: string | null;
+  payment: PublicQuotePayment | null;
+}
+
+export interface PublicQuoteAcceptResult {
+  status: string;
+  invoiceNumber: string | null;
+  invoiceUrl: string | null;
+  checkoutUrl?: string | null;
+  payDeferred?: boolean;
+  /** Present when payDeferred: the payment step to show in place of the invoice page. */
+  payment?: PublicQuotePayment | null;
 }
 
 /** The public (token-gated) invoice payload — /invoices/public/:token. A VOID
@@ -1105,8 +1230,13 @@ export const portalApi = {
   getTicket: async (
     id: string,
     config: ApiRequestConfig = {}
-  ): Promise<ApiResponse<TicketDetails>> => {
-    const response = await apiGet<{ ticket: TicketDetails }>(`/portal/tickets/${id}`, config);
+  ): Promise<ApiResponse<PortalTicketDetailResult>> => {
+    // A merged tombstone answers top-level `{ merged: true, mergedInto, mergedAt,
+    // survivorDeleted? }` with no `ticket` key (#8972).
+    type Body =
+      | { ticket: TicketDetails; merged?: undefined }
+      | { merged: true; mergedInto?: PortalMergedTicket['mergedInto']; mergedAt?: string | null; survivorDeleted?: boolean };
+    const response = await apiGet<Body>(`/portal/tickets/${id}`, config);
     if (!response.data) {
       return {
         error: response.error,
@@ -1116,8 +1246,22 @@ export const portalApi = {
       };
     }
 
+    const body = response.data;
+    if (body.merged === true) {
+      return {
+        data: {
+          merged: true,
+          mergedInto: body.mergedInto ?? null,
+          mergedAt: body.mergedAt ?? null,
+          survivorDeleted: body.survivorDeleted === true,
+        },
+        statusCode: response.statusCode,
+        headers: response.headers
+      };
+    }
+
     return {
-      data: response.data.ticket,
+      data: body.ticket,
       statusCode: response.statusCode,
       headers: response.headers
     };
@@ -1408,13 +1552,28 @@ export const portalApi = {
     token: string,
     signerName: string,
     signerEmail?: string
-  ): Promise<ApiResponse<{ data: { status: string; invoiceNumber: string | null; invoiceUrl: string | null; checkoutUrl?: string | null; payDeferred?: boolean } }>> => {
-    return apiPost<{ data: { status: string; invoiceNumber: string | null; invoiceUrl: string | null; checkoutUrl?: string | null; payDeferred?: boolean } }>(
+  ): Promise<ApiResponse<{ data: PublicQuoteAcceptResult }>> => {
+    return apiPost<{ data: PublicQuoteAcceptResult }>(
       `/quotes/public/${encodeURIComponent(token)}/accept`,
       { signerName, signerEmail },
       { redirectOnUnauthorized: false }
     );
   },
+
+  // #3740: an accepted quote's link still reaches its invoice's payment (and
+  // only that), including after accepting spent the link.
+  getPublicQuotePayment: async (
+    token: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: PublicQuoteAccepted }>> => {
+    return apiGet<{ data: PublicQuoteAccepted }>(
+      `/quotes/public/${encodeURIComponent(token)}/payment`,
+      { ...config, redirectOnUnauthorized: false }
+    );
+  },
+
+  payPublicQuote: async (token: string): Promise<ApiResponse<{ data: { url: string } }>> =>
+    apiPost<{ data: { url: string } }>(`/quotes/public/${encodeURIComponent(token)}/pay`, {}, { redirectOnUnauthorized: false }),
 
   declinePublicQuote: async (
     token: string,
@@ -1422,6 +1581,84 @@ export const portalApi = {
   ): Promise<ApiResponse<{ data: { status: string } }>> => {
     return apiPost<{ data: { status: string } }>(
       `/quotes/public/${encodeURIComponent(token)}/decline`,
+      { reason },
+      { redirectOnUnauthorized: false }
+    );
+  },
+
+  getAgreements: async (
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<PortalAgreementListResponse<PortalAgreementSummary>>> => {
+    return apiGet<PortalAgreementListResponse<PortalAgreementSummary>>('/portal/agreements', config);
+  },
+
+  getAgreement: async (
+    id: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: PortalAgreementDetail }>> => {
+    return apiGet<{ data: PortalAgreementDetail }>(`/portal/agreements/${encodeURIComponent(id)}`, config);
+  },
+
+  acceptAgreement: async (
+    id: string,
+    signerName: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: { status: 'signed'; signedAt: string; signedAgreementId: string } }>> => {
+    return apiPost<{ data: { status: 'signed'; signedAt: string; signedAgreementId: string } }>(
+      `/portal/agreements/${encodeURIComponent(id)}/accept`,
+      { signerName },
+      config
+    );
+  },
+
+  declineAgreement: async (
+    id: string,
+    reason?: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: { status: 'declined' } }>> => {
+    return apiPost<{ data: { status: 'declined' } }>(
+      `/portal/agreements/${encodeURIComponent(id)}/decline`,
+      { reason },
+      config
+    );
+  },
+
+  getSignedAgreements: async (
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<PortalAgreementListResponse<PortalSignedAgreement>>> => {
+    return apiGet<PortalAgreementListResponse<PortalSignedAgreement>>('/portal/signed-agreements', config);
+  },
+
+  // Public, token-gated agreement signing (no portal account). Hits
+  // /agreements/public/* (NOT /portal/*): a 401 must never bounce to login.
+  getPublicAgreement: async (
+    token: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: PublicAgreementDetail }>> => {
+    return apiGet<{ data: PublicAgreementDetail }>(
+      `/agreements/public/${encodeURIComponent(token)}`,
+      config
+    );
+  },
+
+  acceptPublicAgreement: async (
+    token: string,
+    signerName: string,
+    signerEmail: string
+  ): Promise<ApiResponse<{ data: { status: 'signed'; signedAt: string } }>> => {
+    return apiPost<{ data: { status: 'signed'; signedAt: string } }>(
+      `/agreements/public/${encodeURIComponent(token)}/accept`,
+      { signerName, signerEmail },
+      { redirectOnUnauthorized: false }
+    );
+  },
+
+  declinePublicAgreement: async (
+    token: string,
+    reason?: string
+  ): Promise<ApiResponse<{ data: { status: 'declined' } }>> => {
+    return apiPost<{ data: { status: 'declined' } }>(
+      `/agreements/public/${encodeURIComponent(token)}/decline`,
       { reason },
       { redirectOnUnauthorized: false }
     );

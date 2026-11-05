@@ -62,6 +62,7 @@ vi.mock('../contacts/crud', () => ({
 
 import {
   createContactForTask,
+  createNewContactForTask,
   findLiveTaskForContact,
   identifyTaskPerson,
   lockContactForRecipe,
@@ -310,5 +311,84 @@ describe('resolveProviderAccounts', () => {
     expect(r.problems.join(' ')).toMatch(/google/);
     h.selectQueue = [[]];
     expect((await resolveProviderAccounts(ORG, { contactId: C1, email: null, label: 'x' })).accounts).toEqual([]);
+  });
+});
+
+describe('createNewContactForTask — the refusing sibling for identity_onboarding (R2a Task 10, G4)', () => {
+  const SITE = '00000000-0000-4000-8000-000000000051';
+  const PERSON = { displayName: 'Priya Raman', email: 'Priya@Customer.example', title: 'Analyst', siteId: SITE };
+
+  it('creates on no-match, with name, title and site populated, under the inbound-email per-address lock', async () => {
+    h.selectQueue = [[{ id: SITE }]]; // the site pin
+    h.matchContactByEmail.mockResolvedValue({ kind: 'no-match' });
+    h.createContact.mockResolvedValue({ id: C2 });
+    const r = await createNewContactForTask(ORG, PERSON, 'user-1');
+    expect(r).toEqual({ ok: true, contactId: C2 });
+    // The site read is org-predicated (system scope: the predicate IS the boundary).
+    expectOrgPredicate(h.wheres[0]);
+    expect(render(h.wheres[0]).params).toContain(SITE);
+    const lock = render(h.executes[0]);
+    expect(lock.sql).toContain('pg_advisory_xact_lock(hashtext(');
+    expect(lock.params).toEqual([INBOUND_CONTACT_LOCK_NAMESPACE, `${ORG}:priya@customer.example`]);
+    expect(h.matchContactByEmail).toHaveBeenCalledWith(expect.anything(), ORG, 'priya@customer.example');
+    expect(h.createContact).toHaveBeenCalledWith(
+      expect.anything(),
+      { orgId: ORG, email: 'priya@customer.example', name: 'Priya Raman', title: 'Analyst', siteId: SITE, roles: [] },
+      { userId: 'user-1', destinationSource: 'ai_tool' },
+    );
+  });
+
+  it('an existing contact on the address is contact_already_exists NAMING it, and nothing is created', async () => {
+    h.selectQueue = [[{ id: SITE }]];
+    h.matchContactByEmail.mockResolvedValue({ kind: 'contact', contactId: C1 });
+    const r = await createNewContactForTask(ORG, PERSON, 'user-1');
+    expect(r).toMatchObject({ ok: false, reason: 'contact_already_exists', existingContactId: C1 });
+    expect((r as { detail: string }).detail).toContain(C1);
+    expect(h.createContact).not.toHaveBeenCalled();
+  });
+
+  it('a shared mailbox (two contacts) is the same refusal, saying the address is shared', async () => {
+    h.selectQueue = [[{ id: SITE }]];
+    h.matchContactByEmail.mockResolvedValue({ kind: 'none', reason: 'shared-mailbox' });
+    const r = await createNewContactForTask(ORG, PERSON, 'user-1');
+    expect(r).toMatchObject({ ok: false, reason: 'contact_already_exists', existingContactId: null });
+    expect((r as { detail: string }).detail).toMatch(/shared/);
+    expect(h.createContact).not.toHaveBeenCalled();
+  });
+
+  it('an unusable or vanished match never creates', async () => {
+    for (const reason of ['unusable-address', 'vanished']) {
+      h.selectQueue = [[{ id: SITE }]];
+      h.matchContactByEmail.mockResolvedValue({ kind: 'none', reason });
+      const r = await createNewContactForTask(ORG, PERSON, 'user-1');
+      expect(r, reason).toMatchObject({ ok: false });
+      expect((r as { reason: string }).reason, reason).not.toBe('contact_already_exists');
+    }
+    expect(h.createContact).not.toHaveBeenCalled();
+  });
+
+  it('a siteId outside the org is refused as a PRE-CHECK: no lock, no match, no row', async () => {
+    h.selectQueue = [[]]; // the org-predicated site read finds nothing
+    const r = await createNewContactForTask(ORG, PERSON, 'user-1');
+    expect(r).toMatchObject({ ok: false, reason: 'site_not_in_org' });
+    expectOrgPredicate(h.wheres[0]);
+    expect(render(h.wheres[0]).params).toContain(SITE);
+    expect(h.executes).toHaveLength(0);
+    expect(h.matchContactByEmail).not.toHaveBeenCalled();
+    expect(h.createContact).not.toHaveBeenCalled();
+    expect(h.inserts).toBe(0);
+  });
+
+  it('no siteId reads no site and creates an org-level contact', async () => {
+    h.matchContactByEmail.mockResolvedValue({ kind: 'no-match' });
+    h.createContact.mockResolvedValue({ id: C2 });
+    const r = await createNewContactForTask(ORG, { ...PERSON, siteId: null, title: null }, null);
+    expect(r).toEqual({ ok: true, contactId: C2 });
+    expect(h.wheres).toHaveLength(0);
+    expect(h.createContact).toHaveBeenCalledWith(
+      expect.anything(),
+      { orgId: ORG, email: 'priya@customer.example', name: 'Priya Raman', title: null, siteId: null, roles: [] },
+      { userId: null, destinationSource: 'ai_tool' },
+    );
   });
 });

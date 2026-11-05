@@ -48,6 +48,9 @@ export const COLUMN_IDS = [
   // Manual-asset inventory fields (#4622 W04). `serial` is opt-in for agent
   // rows too (via device_hardware); `assetTag`/`location` are manual-only.
   'serial',
+  // #9863 — warranty end date + status from device_warranty. Opt-in: most
+  // fleets have no warranty data for part of their devices.
+  'warranty',
   'assetTag',
   'location',
   // #5213 — provenance of a network row (scan | unifi | manual). Opt-in: agent
@@ -96,6 +99,7 @@ export const COLUMN_LABELS: Record<ColumnId, string> = {
   hardwareHealth: 'Hardware',
   vpn: 'VPN',
   serial: 'Serial',
+  warranty: 'Warranty Ends',
   assetTag: 'Asset Tag',
   location: 'Location',
   source: 'Source',
@@ -155,6 +159,7 @@ export const COLUMN_GROUPS: Record<ColumnId, ColumnGroup> = {
   ramTotal: 'inventory',
   diskTotal: 'inventory',
   serial: 'inventory',
+  warranty: 'inventory',
   assetTag: 'inventory',
   location: 'inventory',
 };

@@ -8,7 +8,7 @@ vi.mock('../../stores/auth', () => ({
     new Response(
       JSON.stringify(
         url.endsWith('/hardware-health')
-          ? {}
+          ? { error: 'no_hardware_health' }
           : {
               cpuModel: 'CPU model',
               networkAdapters: [],

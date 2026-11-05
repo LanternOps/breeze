@@ -1,4 +1,5 @@
 import type { AuthContext } from '../../middleware/auth';
+import { isAutomationPrincipal, isFlowPrincipal } from '../../middleware/principalKind';
 import {
   canManagePartnerWidePolicies,
   PartnerWideWriteDeniedError,
@@ -35,8 +36,8 @@ export function assertAgentWriteAllowed(
     Partial<Pick<AuthContext, 'allowedDeviceIds'>>,
   row: { orgId: string | null; partnerId: string | null },
 ): void {
-  if (auth.principal.kind === 'ai_agent') {
-    throw new AgentAccessDeniedError('AI agents cannot manage agents');
+  if (isAutomationPrincipal(auth)) {
+    throw new AgentAccessDeniedError(isFlowPrincipal(auth) ? 'Flows cannot manage agents' : 'AI agents cannot manage agents');
   }
 
   // Same ceiling as every other org-wide governance object: a site-restricted

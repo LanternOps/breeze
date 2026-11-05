@@ -29,6 +29,7 @@ import { deliverInApp } from './deliver';
 import { inSystemContext } from './grantAuthority';
 import type { GrantSettingsBounds } from './grants';
 import { getOrCreateThread } from './threads';
+import { incWispBudgetExhausted } from '../wispMetrics';
 
 /**
  * Spec §16 default `budget_cents_per_day` for a new grant. Plans below pro
@@ -141,7 +142,9 @@ export async function chargeableUnderGrant(
     throw new RangeError(`estimateCents must be a non-negative finite number (got ${estimateCents}).`);
   }
   const { grant, spent } = await grantAndSpend(grantId, now);
-  return spent + estimateCents <= grant.budgetCentsPerDay ? { ok: true } : { ok: false, reason: 'budget_exhausted' };
+  if (spent + estimateCents <= grant.budgetCentsPerDay) return { ok: true };
+  incWispBudgetExhausted();
+  return { ok: false, reason: 'budget_exhausted' };
 }
 
 /**
@@ -158,8 +161,10 @@ export async function notifyBudgetExhaustedOnce(grantId: string, now: Date = new
   const { created } = await deliverInApp({
     userId: grant.grantorUserId,
     orgId: grant.orgId,
-    title: 'Wisp paused for today — budget reached',
-    body: 'Raise the daily budget from the thread header to resume.',
+    // The grant stays `active` (see the file header): assessments skip until the UTC day rolls over, so
+    // say "hit the budget", never "paused" — the header and this copy must agree (#10145).
+    title: "Wisp hit today's budget — it resumes at 00:00 UTC",
+    body: 'The daily budget resets at 00:00 UTC. Raise it from the thread header to continue sooner.',
     link,
     threadId: thread.id,
     grantId,

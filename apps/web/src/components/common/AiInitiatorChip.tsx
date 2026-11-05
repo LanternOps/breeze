@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Sparkles } from 'lucide-react';
+import { Sparkles, Workflow } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
@@ -61,7 +61,13 @@ export function AiInitiatorChip({
   if (kind === null) return null;
 
   const clickable = !!loadOrigin;
-  const label = kind === 'ai_agent' ? t('aiInitiator.agent') : t('aiInitiator.assistant');
+  // `flow` (tool catalog W04, #5219, Open Decision 16) is deterministic
+  // automation a human enabled — never labelled "AI".
+  const label = kind === 'flow'
+    ? t('aiInitiator.flow')
+    : kind === 'ai_agent'
+      ? t('aiInitiator.agent')
+      : t('aiInitiator.assistant');
 
   const chip = (
     <span
@@ -70,13 +76,15 @@ export function AiInitiatorChip({
         'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium',
         // Distinct colour families from RunContextChip's amber/sky/red so the
         // two chips are never visually confused when shown side by side.
-        kind === 'ai_agent'
-          ? 'border-violet-500/40 bg-violet-500/15 text-violet-700 dark:text-violet-400'
-          : 'border-indigo-500/40 bg-indigo-500/15 text-indigo-700 dark:text-indigo-400',
+        kind === 'flow'
+          ? 'border-teal-500/40 bg-teal-500/15 text-teal-700 dark:text-teal-400'
+          : kind === 'ai_agent'
+            ? 'border-violet-500/40 bg-violet-500/15 text-violet-700 dark:text-violet-400'
+            : 'border-indigo-500/40 bg-indigo-500/15 text-indigo-700 dark:text-indigo-400',
         className,
       )}
     >
-      <Sparkles className="h-3 w-3" />
+      {kind === 'flow' ? <Workflow className="h-3 w-3" /> : <Sparkles className="h-3 w-3" />}
       {label}
     </span>
   );

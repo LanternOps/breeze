@@ -138,6 +138,7 @@ import {
   registerConfigPolicyTools,
   MAINTENANCE_LINK_MACHINE_PRINCIPAL_DENIED,
   MAINTENANCE_LINK_FEATURE_TYPE_REQUIRED,
+  CONTAINMENT_LINK_FEATURE_TYPE_REQUIRED,
 } from './aiToolsConfigPolicy';
 import {
   addFeatureLink,
@@ -303,9 +304,11 @@ describe('configuration policy AI/MCP mutation MFA boundary', () => {
   // #8340: MFA_GATED_TOOL_ACTIONS is the list the MCP catalog advertises from.
   // These two pin that it is also exactly what the handlers enforce, so the
   // catalog cannot drift from the gate again.
-  it('every MFA_GATED_TOOL_ACTIONS entry names a real tool and real actions', () => {
+  it('every config-policy MFA_GATED_TOOL_ACTIONS entry names a real tool and real actions', () => {
+    // Repo-wide (every gated tool against the full registry): aiToolSchemas.securityPolicy.test.ts.
     const registered = tools();
-    for (const [toolName, gated] of Object.entries(MFA_GATED_TOOL_ACTIONS)) {
+    const configPolicyTools = ['manage_configuration_policy', 'apply_configuration_policy', 'remove_configuration_policy_assignment', 'manage_policy_feature_link'];
+    for (const [toolName, gated] of Object.entries(MFA_GATED_TOOL_ACTIONS).filter(([name]) => configPolicyTools.includes(name))) {
       const tool = registered.get(toolName);
       expect(tool, toolName).toBeDefined();
       if (gated === '*') continue;
@@ -330,7 +333,9 @@ describe('configuration policy AI/MCP mutation MFA boundary', () => {
   });
 
   it.each(
-    Object.keys(MFA_GATED_TOOL_ACTIONS).flatMap((toolName) => {
+    // The config-policy tools this suite registers; other modules' gated tools (e.g. the W11 security policy tools,
+    // #6781) carry their own MFA refusal tests next to their handlers.
+    Object.keys(MFA_GATED_TOOL_ACTIONS).filter((toolName) => tools().has(toolName)).flatMap((toolName) => {
       const definition = tools().get(toolName)!.definition;
       const actionEnum: string[] | undefined = definition.input_schema.properties.action?.enum;
       return (actionEnum ?? [undefined]).map((action) => [toolName, action] as const);
@@ -1520,6 +1525,55 @@ describe('manage_policy_feature_link maintenance inlineSettings validation (#631
     expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
   });
 
+  it.each(['add', 'update'])('containment %s validates inline settings before mutation', async action => {
+    const tools = toolsWithPolicy();
+    if (action === 'update') mockSelectRows([{ featureType: 'containment' }]);
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'containment' } as any);
+    vi.mocked(updateFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'containment' } as any);
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action, configPolicyId: POLICY_ID, featureLinkId: 'link-1', featureType: 'containment',
+      inlineSettings: { version: 1, defaultTtlHours: 0 },
+    }, makeAuth());
+    expect(JSON.parse(output).error).toMatch(/defaultTtlHours/);
+    expect(addFeatureLink).not.toHaveBeenCalled();
+    expect(updateFeatureLink).not.toHaveBeenCalled();
+  });
+
+  it.each(['add', 'update'])('containment %s refuses a standalone reference', async action => {
+    const tools = toolsWithPolicy();
+    if (action === 'update') mockSelectRows([{ featureType: 'containment' }]);
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'containment' } as any);
+    vi.mocked(updateFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'containment' } as any);
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action, configPolicyId: POLICY_ID, featureLinkId: 'link-1', featureType: 'containment',
+      featurePolicyId: POLICY_ID, inlineSettings: { version: 1 },
+    }, makeAuth());
+    expect(JSON.parse(output).error).toMatch(/featurePolicyId/);
+    expect(addFeatureLink).not.toHaveBeenCalled();
+    expect(updateFeatureLink).not.toHaveBeenCalled();
+  });
+
+  it('anti-bypass (#10100): a containment update WITHOUT featureType is refused so the tier-3 escalation cannot be skipped', async () => {
+    const tools = toolsWithPolicy();
+    mockSelectRows([{ featureType: 'containment' }]);
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action: 'update', configPolicyId: POLICY_ID, featureLinkId: 'link-1',
+      inlineSettings: { version: 1, extraAllow: [{ cidr: '198.51.100.0/24', proto: 'tcp', ports: [443], label: 'x' }] },
+    }, makeUserAuth());
+    expect(JSON.parse(output).error).toBe(CONTAINMENT_LINK_FEATURE_TYPE_REQUIRED);
+    expect(vi.mocked(updateFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, null])('containment add with inlineSettings %s returns a field-level version error', async inlineSettings => {
+    const tools = toolsWithPolicy();
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'containment' } as any);
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action: 'add', configPolicyId: POLICY_ID, featureType: 'containment', inlineSettings,
+    }, makeAuth());
+    expect(JSON.parse(output).error).toMatch(/containment/i);
+    expect(addFeatureLink).not.toHaveBeenCalled();
+  });
+
   it('system_protection (#4754): returns a field-level error for an unknown key, not the generic tool error', async () => {
     vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'system_protection' } as any);
 
@@ -1934,6 +1988,12 @@ describe('manage_policy_feature_link security_agents (#6960)', () => {
 
   it('refuses enabled:true with the AI auto-install refusal — an assistant never arms installs', async () => {
     const out = await add({ inlineSettings: ENABLED });
+    expect(out.error).toBe(AI_AUTO_INSTALL_REFUSAL_MESSAGE);
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it.each(['controld', 'nextdns'])('refuses enabled:true for the DNS vendor %s too (#6960 W05: AI callers never arm installs, whatever the registry says)', async (vendor) => {
+    const out = await add({ inlineSettings: { version: 1, agents: [{ vendor, enabled: true }] } });
     expect(out.error).toBe(AI_AUTO_INSTALL_REFUSAL_MESSAGE);
     expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
   });

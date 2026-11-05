@@ -88,4 +88,42 @@ describe('admitServiceRecoveryTask — delegation grant pin (Wisp W02)', () => {
     expect(result).toMatchObject({ ok: false, refusal: 'invalid_input' });
     expect(state.inserted).toEqual([]);
   });
+
+  // Wisp W07 (w00 A11): lineage + the depth-one guard on Operator tasks.
+  const PARENT_RUN = '00000000-0000-4000-8000-0000000000aa';
+
+  it('a specialist task requested by Wisp\'s assessment stamps depth 1 + lineage', async () => {
+    state.selectQueue.unshift([{ grantId: 'g1', orgId: ORG_ID, depth: 0, profile: 'assessment' }]);
+    await expect(admitServiceRecoveryTask({
+      ...input, grant: { grantId: 'g1', grantRevisionId: 'r1', requestedByRunId: PARENT_RUN },
+    })).resolves.toMatchObject({ ok: true });
+    expect(taskValues()).toMatchObject({
+      grantId: 'g1', grantRevisionId: 'r1', requestedByRunId: PARENT_RUN, parentGrantRevisionId: 'r1', depth: 1,
+    });
+  });
+
+  it('a grant without a requesting run, and no grant at all, stamp depth 0 and null lineage', async () => {
+    await admitServiceRecoveryTask({ ...input, grant: { grantId: 'g1', grantRevisionId: 'r1' } });
+    expect(taskValues()).toMatchObject({ requestedByRunId: null, parentGrantRevisionId: null, depth: 0 });
+  });
+
+  it.each([
+    ['a child run (depth 1)', { grantId: 'g1', orgId: ORG_ID, depth: 1, profile: 'assessment' }],
+    ['a non-assessment run', { grantId: 'g1', orgId: ORG_ID, depth: 0, profile: 'sweep' }],
+    ['a run under another grant', { grantId: 'g-other', orgId: ORG_ID, depth: 0, profile: 'assessment' }],
+    ['a run in another org', { grantId: 'g1', orgId: 'org-other', depth: 0, profile: 'assessment' }],
+  ])('throws grant_depth_exceeded when the requester is %s, before any insert', async (_label, row) => {
+    state.selectQueue.unshift([row]);
+    await expect(admitServiceRecoveryTask({
+      ...input, grant: { grantId: 'g1', grantRevisionId: 'r1', requestedByRunId: PARENT_RUN },
+    })).rejects.toMatchObject({ code: 'grant_depth_exceeded' });
+    expect(state.inserted).toEqual([]);
+  });
+
+  it('throws grant_depth_exceeded when the requesting run does not exist', async () => {
+    state.selectQueue.unshift([]);
+    await expect(admitServiceRecoveryTask({
+      ...input, grant: { grantId: 'g1', grantRevisionId: 'r1', requestedByRunId: PARENT_RUN },
+    })).rejects.toMatchObject({ code: 'grant_depth_exceeded' });
+  });
 });

@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { getPolicy, putPolicy, type PolicyResponse } from '@/lib/api/callerVerification';
 import { CallerVerificationPolicyForm, PartnerCallerVerificationPolicy, inheritedDraft } from './CallerVerificationPolicyForm';
 import { useAuthStore } from '@/stores/auth';
+import { usePartnerSettingsDraftStore } from '../settings/partnerSettings/partnerSettingsDraftStore';
 import { ORG, policy, policyValues } from './testFixtures';
 
 const enabled = vi.hoisted(() => ({ value: true }));
@@ -104,13 +105,17 @@ it('offers a retry when loading fails', async () => {
   expect(await screen.findByTestId('cv-policy-save')).toBeVisible();
 });
 
+// W2: the partner settings mount is a form card saved by the page's header Save.
 it.each([[false, true], [true, false], [undefined, false]])('partner mount with canManagePartnerWide=%s is read-only=%s', async (canManagePartnerWide, readOnly) => {
+  usePartnerSettingsDraftStore.getState().reset();
   useAuthStore.setState({ user: { id: 'u', email: 'e', name: 'n', canManagePartnerWide } as never });
   vi.mocked(getPolicy).mockResolvedValue(response());
   render(<PartnerCallerVerificationPolicy />);
-  await screen.findByTestId('cv-policy-form');
-  expect(screen.queryByTestId('cv-policy-save') === null).toBe(readOnly);
-  expect(getPolicy).toHaveBeenCalledWith({ ownerScope: 'partner' }, expect.any(AbortSignal));
+  const card = await screen.findByTestId('cv-policy-form');
+  expect(card.tagName).toBe('DIV');
+  expect(screen.queryByTestId('cv-policy-save')).toBeNull();
+  expect((screen.getByTestId('cv-policy-coolingOffHours') as HTMLInputElement).closest('fieldset')!.disabled).toBe(readOnly);
+  expect(getPolicy).toHaveBeenCalledWith({ ownerScope: 'partner' });
 });
 
 it('accepts a typed multi-digit value and commits it on blur', async () => {

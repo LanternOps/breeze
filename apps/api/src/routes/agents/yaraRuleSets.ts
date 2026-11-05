@@ -14,6 +14,14 @@
  * effective security policy (or be the built-in pack). RLS alone would let a
  * device read any partner-wide set of its partner by guessing the id.
  *
+ * #6263 W05-10: OR the exact `{id, version}` must be among the refs a RUNNING
+ * scan of this device, in the device's org, was dispatched with
+ * (`security_scans.dispatched_rule_sets`) — how an IOC sweep's pinned sets
+ * reach a device whose policy does not attach them. Not sweep state: a cancel
+ * or expiry while the agent loads bundles must not break a scan already
+ * dispatched. Not `queued`: no command exists yet. Evaluated under the agent's
+ * own RLS context like everything else here.
+ *
  * Responses (W02 §C2): 200 with the published bundle bytes, byte for byte,
  * `Content-Type: application/vnd.breeze.yara-bundle+json` and
  * `ETag: "<sha256>"`; 404 when the set is not visible, not attached, disabled
@@ -23,11 +31,11 @@
  */
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { YARA_BUILTIN_RULE_SET_ID, YARA_BUNDLE_CONTENT_TYPE } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
 import { db } from '../../db';
-import { devices, yaraRuleSets } from '../../db/schema';
+import { devices, securityScans, yaraRuleSets } from '../../db/schema';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
 import { resolveSecurityScanPolicyForDevice } from '../../services/featureConfigResolver';
 
@@ -43,6 +51,27 @@ const paramsSchema = z.object({
 
 const NOT_FOUND = { error: 'Rule set not found' } as const;
 
+/** A running scan of this device, in its org, was dispatched with exactly this ref. */
+async function dispatchedToRunningScan(
+  device: { id: string; orgId: string },
+  setId: string,
+  version: number,
+): Promise<boolean> {
+  const [hit] = await db
+    .select({ id: securityScans.id })
+    .from(securityScans)
+    .where(
+      and(
+        eq(securityScans.deviceId, device.id),
+        eq(securityScans.orgId, device.orgId),
+        eq(securityScans.status, 'running'),
+        sql`${securityScans.dispatchedRuleSets} @> jsonb_build_array(jsonb_build_object('id', ${setId}::text, 'version', ${version}::int))`,
+      ),
+    )
+    .limit(1);
+  return !!hit;
+}
+
 agentYaraRuleSetRoutes.get(
   '/:id/yara/rule-sets/:ruleSetId/:version',
   zValidator('param', paramsSchema),
@@ -51,7 +80,7 @@ agentYaraRuleSetRoutes.get(
     const setId = ruleSetId.toLowerCase();
 
     const [device] = await db
-      .select({ id: devices.id })
+      .select({ id: devices.id, orgId: devices.orgId })
       .from(devices)
       .where(eq(devices.agentId, agentId))
       .limit(1);
@@ -60,7 +89,8 @@ agentYaraRuleSetRoutes.get(
     const isBuiltinId = setId === YARA_BUILTIN_RULE_SET_ID;
     if (!isBuiltinId) {
       const policy = await resolveSecurityScanPolicyForDevice(device.id);
-      if (!policy || !policy.settings.ruleSetIds.includes(setId)) return c.json(NOT_FOUND, 404);
+      const attached = !!policy && policy.settings.ruleSetIds.includes(setId);
+      if (!attached && !(await dispatchedToRunningScan(device, setId, version))) return c.json(NOT_FOUND, 404);
     }
 
     const [set] = await db

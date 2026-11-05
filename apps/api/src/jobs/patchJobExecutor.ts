@@ -26,6 +26,7 @@ import {
   type PolicyAppRule,
   type RingConfig,
 } from '../services/patchApprovalEvaluator';
+import { ringFeatureUpdatesSchema, DEFAULT_RING_FEATURE_UPDATES, type RingFeatureUpdates } from '@breeze/shared/validators';
 // W02 (#5748): the DB-facing resolver moved to patchEligibility.ts; the call
 // below and its behaviour are unchanged (golden-fixture parity test there).
 import { resolveApprovedPatchesForDevice } from '../services/patchEligibility';
@@ -42,6 +43,7 @@ import {
   type PatchDeviceTerminal,
 } from '../services/patchJobFinalizer';
 import { captureException } from '../services/sentry';
+import { RING_UNAVAILABLE_SKIP_REASON } from '../services/updateRingQueuedWork';
 import {
   buildRestorePointRequest,
   discardRestorePointRequest,
@@ -107,6 +109,22 @@ export function parseJobAppRules(
     return undefined;
   }
   return rules;
+}
+
+/**
+ * Parse the ring's Windows feature-release policy from a job snapshot
+ * (`ringFeatureUpdates`). Absent → block: a job frozen before the control
+ * existed never offered feature releases, so block is what it meant. Present
+ * but malformed → block, loudly (never widen to allow).
+ */
+export function parseJobFeatureUpdates(value: unknown, patchJobId: string): RingFeatureUpdates {
+  if (value === undefined) return DEFAULT_RING_FEATURE_UPDATES;
+  const parsed = ringFeatureUpdatesSchema.safeParse(value);
+  if (parsed.success) return parsed.data;
+  const message = `[PatchJobExecutor] Job ${patchJobId} has malformed patches.ringFeatureUpdates; treating Windows feature updates as blocked`;
+  console.warn(`${message}:`, JSON.stringify(value));
+  captureException(new Error(message));
+  return DEFAULT_RING_FEATURE_UPDATES;
 }
 
 const { db } = dbModule;
@@ -1134,6 +1152,7 @@ async function prepareDeviceExecution(
     // consulted by the evaluator and is not read (#8188).
     apps?: unknown;
     ringAppRules?: unknown;
+    ringFeatureUpdates?: unknown;
   };
   const targets = patchJob.targets as {
     deployment?: { rebootPolicy?: string; offlineBehavior?: string };
@@ -1257,21 +1276,47 @@ async function prepareDeviceExecution(
     sources: jobSources,
     apps: jobApps,
     ringAppRules: jobRingAppRules,
+    featureUpdates: parseJobFeatureUpdates(patchesConfig?.ringFeatureUpdates, patchJobId),
   };
 
   // If we have a ringId, load deferralDays and partnerId from the ring.
   // partnerId is threaded into ringConfig so the evaluator can guard against
   // cross-partner ring links (a config policy featurePolicyId is unconstrained).
+  //
+  // #8909: the ring must still be live at DISPATCH time, not just when the job
+  // was created. A deleted ring is soft-deleted (`enabled = false`), so the
+  // row survives and only the flag says it is gone; a missing row fails closed
+  // the same way. The read takes FOR SHARE and this whole function runs in one
+  // transaction that also creates the device command, so:
+  //  - a delete/disable that committed first is seen here (the locking read
+  //    returns the latest committed row), and the device is skipped;
+  //  - a delete/disable still uncommitted makes this read WAIT for it, then
+  //    see the disabled row — instead of reading the stale enabled version;
+  //  - a delete/disable that arrives after this read waits on the share lock
+  //    until this dispatch commits, and its sweep
+  //    (services/updateRingQueuedWork.ts) then sees the committed command and
+  //    cancels it if it was only queued, never delivered.
   if (ringConfig.ringId) {
     const [ring] = await db
-      .select({ deferralDays: patchPolicies.deferralDays, partnerId: patchPolicies.partnerId })
+      .select({
+        deferralDays: patchPolicies.deferralDays,
+        partnerId: patchPolicies.partnerId,
+        enabled: patchPolicies.enabled,
+      })
       .from(patchPolicies)
       .where(and(eq(patchPolicies.id, ringConfig.ringId), eq(patchPolicies.kind, 'ring')))
-      .limit(1);
-    if (ring) {
-      ringConfig.deferralDays = ring.deferralDays;
-      ringConfig.ringPartnerId = ring.partnerId;
+      .limit(1)
+      .for('share');
+    if (!ring || ring.enabled !== true) {
+      console.warn(
+        `[PatchJobExecutor] Skipping device ${deviceId} of job ${patchJobId}: update ring ${ringConfig.ringId} `
+        + `is ${ring ? 'deleted or disabled' : 'missing'} (#8909)`
+      );
+      await markDeviceSkipped(patchJobId, deviceId, RING_UNAVAILABLE_SKIP_REASON);
+      return { kind: 'skipped', skipped: true, reason: 'Update ring deleted or disabled' };
     }
+    ringConfig.deferralDays = ring.deferralDays;
+    ringConfig.ringPartnerId = ring.partnerId;
   }
 
   // 1. Resolve approved patches

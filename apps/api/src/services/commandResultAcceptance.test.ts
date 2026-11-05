@@ -161,7 +161,7 @@ describe('commandAcceptsAgentResultCondition (#3607)', () => {
     // the bound-parameter check is what proves every discriminator is bound,
     // not string-interpolated.
     const { sql: text, params } = new PgDialect().sqlToQuery(
-      commandAcceptsAgentResultCondition(),
+      commandAcceptsAgentResultCondition({ installIncarnation: 4 }),
     );
 
     expect(text).toContain('"status" in');
@@ -169,10 +169,15 @@ describe('commandAcceptsAgentResultCondition (#3607)', () => {
     expect(text).toContain(`"result"->>'timedOutBy' IS NOT NULL`);
     expect(text).toContain('"type" in');
     expect(text).toContain(' or ');
+    // #8318 §6.4: both incarnation halves lead — the device's current one
+    // (the SECURITY DEFINER resolver) and the caller's, bound as a parameter.
+    expect(text).toContain('public.breeze_device_command_incarnation_is_current(');
+    expect(text).toContain('COALESCE("device_commands"."device_incarnation", 1) = ');
     // The timedOutBy existence check carries no literal — no agent-supplied
     // value is ever bound for it.
     // Every OTHER literal rides as a placeholder, in predicate order.
     expect(params).toEqual([
+      4,
       ...ACCEPTED_COMMAND_RESULT_STATUSES,
       'failed',
       ...TIMEOUT_REOPEN_EXCLUDED_COMMAND_TYPES,

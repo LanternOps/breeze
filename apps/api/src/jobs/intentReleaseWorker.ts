@@ -26,7 +26,14 @@ import { resolveRecipientUserIds } from '../services/aiAgents/recipients';
 import { transitionIntent, type ActionIntentTransitionPatch } from '../services/actionIntents/intentService';
 import { buildActionLabel } from '../services/actionIntents/actionLabel';
 import { isMcpOriginIntent } from '../services/mcpIntentEligibility';
+import { stripPageResumeJson } from '../services/aiToolPageResume';
 import { beginMcpReleaseLifecycle, writeMcpIntentOutcomeAudit, type McpReleaseLifecycle } from '../services/mcpTier3Lifecycle';
+import {
+  beginOperatorReleaseLedger,
+  isOperatorOriginIntent,
+  type OperatorReleaseLedger,
+  type OperatorReleaseOutcome,
+} from '../services/aiOperator/operatorReleaseLedger';
 import { canonicalPolicyKey } from '../services/actionIntents/canonicalPolicyKey';
 import { insertOpEvidence, intentEvidenceSourceId } from '../services/aiAgents/opEvidence';
 import { createIntentFixWatchRow, createSweepFixWatchRow } from '../services/aiAgents/fixWatch';
@@ -45,7 +52,7 @@ import {
   CALLER_VERIFICATION_REQUIRED_CODE,
   type CallerRefusalPayload,
 } from '../services/callerVerification/refusal';
-import { buildApproverAuthContextForIntent } from '../services/actionIntents/actorContext';
+import { buildApproverAuthContextForIntent, buildFlowToolApproverAuthContext } from '../services/actionIntents/actorContext';
 import { checkToolPermission } from '../services/aiGuardrails';
 import { ensureLaneCheckpointBeforeRelease } from '../services/actionIntents/laneCheckpoint';
 import { readAiKillState } from '../services/aiKillState';
@@ -54,6 +61,11 @@ import { requiresPinnedEffectDigest } from '../services/actionIntents/pinnedEffe
 import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { aiTools, executeTool, requiresLiveSession, toolManagesDbContext } from '../services/aiTools';
 import { executeTenantToolDetailed } from '../services/toolSources/execute';
+import { claimFlowLinkedIntentForDispatch } from '../services/flows/intentClaim';
+import { releaseFlowToolIntent } from '../services/flows/flowToolRelease';
+import { isFlowBuiltinIntent } from '../services/flows/builtins/intentKind';
+import { executeReleasedFlowBuiltin, FlowBuiltinNotRunError } from '../services/flows/builtins/release';
+import { withFlowExecutionContext, type FlowExecutionFrame } from '../services/flows/flowExecutionContext';
 import { withAuthDbAccessContext } from '../middleware/auth';
 import { isTopologyAiToolName, withTopologyReleasePreconditions } from '../services/topology/aiToolGate';
 import { compactToolResultForChat } from '../services/aiToolOutput';
@@ -747,7 +759,7 @@ export async function terminalizeIntent(
     // is safe because task linkage is immutable (action_intents_immutable_trg).
     await publishIntentTerminalOutbox(
       db,
-      { id: intent.id, orgId: intent.orgId, taskId: intent.taskId },
+      { id: intent.id, orgId: intent.orgId, taskId: intent.taskId, requestingFlowRunId: intent.requestingFlowRunId ?? null },
       to === 'completed' ? 'intent_completed' : 'intent_failed',
     );
     let anchor: IntentEvidenceAnchor | null = null;
@@ -883,6 +895,22 @@ const USER_OWNED_RELEASE_ACTIONS: ReadonlySet<string> = new Set([
   // software_policies.created_by (db/schema/softwarePolicies.ts) —
   // manage_software_policy is a whole-tool TIER3_SUPERVISED_TOOLS member.
   'manage_software_policy:create',
+  // Full-control W06 (#6776). Both are tier 3 supervised, so a real approver exists to own the row:
+  // ticket_forms.created_by (db/schema/ticketForms.ts) and the ticket created from an inbound email
+  // (ticketService.createTicket actor, via convertEmailInbound). The paired handler branches check
+  // approverReleaseMismatch(auth, context) before the write.
+  'manage_ticket_forms:create',
+  'manage_ticket_inbox:convert',
+  // Full-control W07 (#6777). Both tools below stamp `auth.user.id` into ml_feedback_events.actor_user_id
+  // (a users FK) through the shared route functions. `manage_device_anomalies:promote` is tier 3
+  // supervised; dismiss / resolve and reliability_feedback resolve to tier 2, which an alert-triage
+  // agent mints through the agentTier2 lane exactly as it does for manage_alerts. Each handler branch
+  // checks approverReleaseMismatch(auth, context) before the write and refuses a direct ai_agent call that
+  // carries no approver release. (manage_alert_correlations is AGENT_HUMAN_ONLY_TOOLS: never released.)
+  'manage_device_anomalies:dismiss',
+  'manage_device_anomalies:resolve',
+  'manage_device_anomalies:promote',
+  'reliability_feedback:',
   // sensitive_data_findings.remediation_metadata.updatedBy (jsonb, not an
   // actual FK — db/schema/sensitiveData.ts — but the contract's own
   // name-level over-approximation is intentional; guarded the same way
@@ -1043,9 +1071,68 @@ async function failOnPlaintextSecretGuard(intent: ActionIntent, err: unknown): P
 }
 
 /**
+ * Tool catalog W04 (#5219): the flow dispatch claim found the run under a live
+ * runner-slice lease and wrote nothing. Thrown so the release job is
+ * redelivered with backoff instead of acked — the intent stays `approved`.
+ */
+export class FlowRunLeasedError extends Error {
+  constructor(intentId: string, runId: string) {
+    super(`flow run ${runId} is leased by a runner slice; release of intent ${intentId} will be retried`);
+    this.name = 'FlowRunLeasedError';
+  }
+}
+
+/**
  * Processes one `intent_approved` job end to end. Exported for direct
  * testing without spinning up a real BullMQ Worker.
  */
+/** W5 PR C (#5220): the flow-tool release, after the claim and revalidation (see the call site). */
+async function releaseInvokedFlowIntent(intent: ActionIntent): Promise<void> {
+  if (!intent.decidedByUserId) {
+    await failIntent(intent, 'approver_required', {
+      details: { reason: 'a flow-tool intent runs as its approver; the intent has no decided_by_user_id', actionName: intent.actionName },
+    });
+    return;
+  }
+  let outcome: Awaited<ReturnType<typeof releaseFlowToolIntent>>;
+  try {
+    // The approver may be on the ORG axis (an internal-IT org admin): the
+    // partner-axis-only `buildApproverAuthContextForIntent` would refuse them.
+    const approverAuth = await buildFlowToolApproverAuthContext(intent, intent.decidedByUserId);
+    if (!approverAuth) {
+      await failIntent(intent, 'actor_invalid', {
+        details: {
+          reason: 'the approving user is no longer active or can no longer reach the intent org',
+          decidedByUserId: intent.decidedByUserId,
+          actionName: intent.actionName,
+        },
+      });
+      return;
+    }
+    outcome = await releaseFlowToolIntent(intent, approverAuth);
+  } catch (err) {
+    // The intent is already claimed (`executing`): a throw must terminalize
+    // it here, never leave it for the stale-executing reaper. createFlowRun is
+    // one transaction, so a throw means no run was created.
+    console.error(`[IntentReleaseWorker] flow-tool release threw for intent ${intent.id}:`, err);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, { intent_id: intent.id, area: 'flow_tool_release' });
+    await failIntent(intent, 'execution_error', { details: { error: err instanceof Error ? err.message : String(err) } });
+    return;
+  }
+  if (!outcome.ok) {
+    await failIntent(intent, outcome.code, { details: { ...outcome.details, actionName: intent.actionName } });
+    return;
+  }
+  const completed = await terminalizeIntent(intent, 'completed', { executedAt: new Date(), result: outcome.result });
+  if (!completed) {
+    // The run exists (and a redelivery returns it: the intent id is its
+    // idempotency key) but the intent did not record it — say where it is.
+    const message = `[IntentReleaseWorker] Lost the executing->completed CAS for flow-tool intent ${intent.id} (run ${outcome.result.runId})`;
+    console.error(message);
+    captureException(new Error(message), undefined, { intent_id: intent.id, flow_run_id: outcome.result.runId, area: 'flow_tool_release' });
+  }
+}
+
 export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // Step 1: load the intent + its winning approval row. Both are fast local
   // reads with no external I/O, so they share one short system-scoped
@@ -1119,7 +1206,32 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // won path is unchanged; the lost-claim path now pays one read it did not
   // pay before, which is a path that does nothing else.
   let claimed: boolean;
-  if (isTaskLinkedIntent(intent) && intent.taskId) {
+  // Tool catalog W04 (#5219), Decision 5: the run frame a flow step executes
+  // under (Decision 14), set only by a won flow claim.
+  let flowFrame: FlowExecutionFrame | null = null;
+  if (intent.requestingFlowRunId) {
+    // A FLOW-originated intent takes the flow-aware claim instead of the plain
+    // CAS: it re-proves, under lock, that the run is still parked on this
+    // intent and that the flow, its publication, the delegator and the step's
+    // pin still hold. A refusal has ALREADY cancelled the intent and written
+    // the run outcome (and woken the run); `lost_race` wrote nothing and is a
+    // silent no-op, never a drift cancel (quorum Q4).
+    const claim = await claimFlowLinkedIntentForDispatch(intent.id);
+    if (claim.claimed) {
+      claimed = true;
+      flowFrame = { runId: claim.runId, chainDepth: claim.chainDepth };
+    } else if (claim.reason === 'run_leased') {
+      // A runner slice owns the run right now (spurious wake, or the minting
+      // slice has not committed its park yet). Nothing was written; throw so
+      // BullMQ redelivers this release with backoff (ACTION_INTENT_JOB_ATTEMPTS).
+      throw new FlowRunLeasedError(intent.id, intent.requestingFlowRunId);
+    } else {
+      if (claim.reason !== 'lost_race') {
+        console.warn(`[IntentReleaseWorker] flow intent ${intentId} refused the dispatch claim (${claim.reason})`);
+      }
+      claimed = false;
+    }
+  } else if (isTaskLinkedIntent(intent) && intent.taskId) {
     const claim = await claimTaskLinkedIntentForDispatch({
       id: intent.id,
       orgId: intent.orgId,
@@ -1186,6 +1298,20 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     return;
   }
   let { auth } = revalidation;
+
+  // W5 PR C (#5220, Decision 8): an INVOKED-FLOW intent (a chat Tier-3
+  // `flow__<slug>` call) starts a flow run with the APPROVER as its
+  // triggerer. It never reaches executeTool (a flow tool is not a registered
+  // tool) and never takes the inline chat release (durableRelease.ts).
+  // `releaseFlowToolIntent` re-resolves the flow live for the approver, fails
+  // `flow_tool_changed` on any other publication, re-runs rule 7 + the
+  // ceiling for the approver, and pins the approved publication on the run
+  // insert. Nothing is executed before the run row exists, so every refusal
+  // is a non-attempted failure.
+  if (intent.invokedFlowId) {
+    await releaseInvokedFlowIntent(intent);
+    return;
+  }
 
   // #4177 (W04): a user-owned release action executes as the APPROVER, never
   // the agent (see USER_OWNED_RELEASE_ACTIONS). Fail loudly rather than
@@ -1281,7 +1407,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // A tool whose pin is MANDATORY (topology diagnose_connectivity, M4-D3) never
   // inherits the NULL-means-nothing-to-check fallback below: no pinned digest
   // is an explicit refusal, before anything executes.
-  if (!hasPinnedDigest(intent) && requiresPinnedEffectDigest(intent.actionName)) {
+  if (!hasPinnedDigest(intent) && requiresPinnedEffectDigest(intent.actionName, intent.arguments as Record<string, unknown> | null)) {
     await failIntent(intent, 'digest_required', { details: { actionName: intent.actionName } });
     return;
   }
@@ -1418,6 +1544,22 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     }
     auth = mcpRelease.auth;
   }
+  // #10129: an AI Operator child (plan-approver `user_session`, task-linked)
+  // gets the same ledger row, on a synthetic `ai_operator` session, so the
+  // /ai-risk feed and its credential reveal entry list it. Same fail-closed
+  // rule as the MCP ledger: no row, no dispatch.
+  let operatorLedger: OperatorReleaseLedger | null = null;
+  if (!mcpRelease && isOperatorOriginIntent(intent)) {
+    operatorLedger = await beginOperatorReleaseLedger(intent);
+    if (!operatorLedger) {
+      await failIntent(intent, 'operator_ledger_unavailable');
+      return;
+    }
+  }
+  const finishReleaseLedgers = async (outcome: OperatorReleaseOutcome): Promise<void> => {
+    await mcpRelease?.finish(outcome);
+    await operatorLedger?.finish(outcome);
+  };
 
   let carrier: SecretToolResult | null = null;
   let rawResult: string;
@@ -1431,15 +1573,35 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // `!truncated` guard and recorded as a COMPLETION. Neither can happen when
   // the executor already told us. Stays null for every core tool.
   let externalIsError: boolean | null = null;
+  // Tool catalog W04 (#5219), Decision 14: a released flow step runs inside
+  // its run's flowExecutionContext frame, so every event the tool publishes
+  // carries the run's ancestry (eventBus.publishEvent stamps it). The frame
+  // wraps the whole dispatch, so the tool body starts inside it.
+  const inFlowFrame = <T,>(fn: () => Promise<T>): Promise<T> =>
+    (flowFrame ? withFlowExecutionContext(flowFrame, fn) : fn());
   try {
-    if (secretAction) {
-      carrier = await withToolTimeout(
+    if (flowFrame && isFlowBuiltinIntent(intent)) {
+      // Tool catalog W05 (#5220), Decision 12: an approved Tier-3 built-in
+      // flow step (an http_request write) is not a registered tool — it runs
+      // in-process through executeFlowBuiltin under the run's flow principal,
+      // never executeTool. It opens its own short system reads and performs
+      // external I/O, so it runs outside any DB context. Its own deadline
+      // (≤ 30 s for http_request) is inside the generic tool timeout.
+      rawResult = await inFlowFrame(() => withToolTimeout(
+        // W6 (#5221): the digest recompute's verified material (the fleet
+        // built-in's script snapshot for the frozen devices) rides along.
+        runOutsideDbContext(() => executeReleasedFlowBuiltin(intent, auth, verifiedContext)),
+        getToolTimeout(intent.actionName),
+        intent.actionName,
+      ));
+    } else if (secretAction) {
+      carrier = await inFlowFrame(() => withToolTimeout(
         withAuthDbAccessContext(auth, () =>
           executeGoogleSecretToolHeadless(intent.actionName, intent.arguments, intent.orgId),
         ),
         getToolTimeout(intent.actionName),
         intent.actionName,
-      );
+      ));
       rawResult = carrier.llmText;
     } else {
       // Tool catalog W01 PR B (#5216): an EXTERNAL (BYO MCP) tool is
@@ -1453,9 +1615,12 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       const invoke = tenantTool
         ? async () => {
             const outcome = await executeTenantToolDetailed(tenantTool, intent.arguments, auth, {
-              surface: 'chat',
+              // Tool catalog W04 (#5219): a released flow step runs on the
+              // 'flow' surface, attributed to its RUN, never to the synthetic
+              // flow user id.
+              surface: flowFrame ? 'flow' : 'chat',
               orgId: intent.orgId,
-              actor: { kind: 'user', id: auth.user.id },
+              actor: flowFrame ? { kind: 'flow', id: flowFrame.runId } : { kind: 'user', id: auth.user.id },
             });
             externalIsError = outcome.isError;
             // Same string shape `executeTenantTool` produces, so the stored
@@ -1507,6 +1672,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
                 ...verifiedContext,
                 actionIntentId: intent.id,
                 releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia ?? null },
+                intentSource: intent.source,
                 // #4177: present ONLY for a user-owned release (above); the
                 // handler asserts the auth it got is this approver and stamps
                 // `source: 'ai_suggested'`. Spread so the no-swap case keeps
@@ -1514,7 +1680,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
                 ...(approverRelease ? { approverRelease } : {}),
               },
             });
-      rawResult = await withToolTimeout(
+      rawResult = await inFlowFrame(() => withToolTimeout(
         // Review R1 (#6671 shape): a topology diagnostic release re-checks
         // topology AI availability inside its start transaction, under the
         // org lock. Its partner-axis preconditions are resolved HERE, before
@@ -1536,10 +1702,10 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
             : withAuthDbAccessContext(auth, invoke))),
         getToolTimeout(intent.actionName),
         intent.actionName,
-      );
+      ));
     }
   } catch (err) {
-    await mcpRelease?.finish({ status: 'failure', error: err });
+    await finishReleaseLedgers({ status: 'failure', error: err });
     // The backend dispatch guard refused right before the outbound mutation:
     // nothing was sent, so this is a clean, non-retried terminal failure that
     // keeps its typed payload (not `executed`, no rethrow).
@@ -1547,6 +1713,16 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     if (refusal) {
       await failIntent(intent, CALLER_VERIFICATION_REQUIRED_CODE, {
         details: { requiresCallerVerification: refusal.requiresCallerVerification },
+        mcpLifecycleAudited: mcpRelease !== null,
+      });
+      return;
+    }
+    if (err instanceof FlowBuiltinNotRunError) {
+      // Tool catalog W05 (#5220): the approved built-in step could not be
+      // started (its run/step is gone, or the principal is not the run's).
+      // Nothing was sent: a clean failure, never `executed`.
+      await failIntent(intent, 'flow_builtin_not_run', {
+        details: { reason: err.message },
         mcpLifecycleAudited: mcpRelease !== null,
       });
       return;
@@ -1587,7 +1763,9 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   } else if (carrier) {
     storedResult = sealToolSecrets(carrier).sealedResult;
   } else {
-    storedResult = normalizeToolResult(rawResult);
+    // #10385: a paged tool's page-resume descriptor is chat-compaction input,
+    // not part of the result — keep it out of the stored record.
+    storedResult = normalizeToolResult(stripPageResumeJson(rawResult));
   }
 
   // A tool that returned an error body (not a throw) is a FAILED release, not a
@@ -1600,9 +1778,10 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // truncation guard — see its declaration. A truncated external error body is
   // still a failed release; it just stores `{truncated:true}` as its evidence.
   const returnedToolError = externalIsError ?? (!truncated && isReturnedToolError(rawResult));
-  // B-W04: close the MCP-origin lifecycle with the release's own classification.
-  // A secret-bearing result is never recorded on the ledger or the audit.
-  await mcpRelease?.finish(returnedToolError
+  // B-W04: close the MCP-origin lifecycle (and #10129's Operator ledger) with
+  // the release's own classification. A secret-bearing result is never
+  // recorded on the ledger or the audit.
+  await finishReleaseLedgers(returnedToolError
     ? { status: 'failure', error: new Error('tool_returned_error') }
     : carrier || isSecretBearingTool(intent.actionName)
       ? { status: 'success' }
@@ -1975,6 +2154,11 @@ async function notifyRequesterOfOutcome(
     return;
   }
 
+  // Tool catalog W04 (#5219): a flow-origin intent has no requester and no
+  // agent recipients — the run's step timeline is its outcome surface (the
+  // terminal transition already woke the run). Notify nobody.
+  if (intent.source === 'flow') return;
+
   // B-W04 (#6158, D-B29): an MCP-origin intent that ended without executing
   // still gets the uniform `mcp.tool.<name>` failure audit the direct MCP path
   // would have written. Deduped inside the writer (at-least-once delivery).
@@ -2293,6 +2477,12 @@ export function classifyIntentReleaseFailure(
 ): WorkerFailureClassification | null {
   if (err instanceof PolicyDecisionTransientError) {
     return { reason: 'action_intent_policy_decide_transient', level: 'error', reportOnlyWhenExhausted: true };
+  }
+  // Tool catalog W04 (#5219): a leased flow run is expected and self-healing
+  // (the slice releases its lease within a checkpoint); report only a release
+  // that exhausted its attempts — that intent then ages out at release_by.
+  if (err instanceof FlowRunLeasedError) {
+    return { reason: 'action_intent_flow_run_leased', level: 'warning', reportOnlyWhenExhausted: true };
   }
   return null;
 }

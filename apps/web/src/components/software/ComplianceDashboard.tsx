@@ -25,6 +25,8 @@ import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 import { replaceUrl, seedRouterHistoryState } from '../../lib/replaceUrl';
 import SecurityAgentCoverageStateBadge from "../security/SecurityAgentCoverageStateBadge";
+import SecurityAgentCoverageSetupLink from "../security/SecurityAgentCoverageSetupLink";
+import SoftwarePolicyCoverageBadge from "./SoftwarePolicyCoverageBadge";
 import {
   COVERAGE_STATES,
   coverageReasonLabel,
@@ -88,6 +90,12 @@ type ViolationRow = {
       rule?: {
         catalogId?: string;
       };
+      // #6958: the observed service behind a not_running / service_unverified violation.
+      service?: {
+        name: string;
+        observedStatus: string | null;
+        observedAt: string | null;
+      };
     }>;
     remediationStatus?: string;
     // Desired-state install remediation, projected by GET /violations (#5509).
@@ -119,6 +127,41 @@ const installStatusBadgeStyles: Record<string, string> = {
   gave_up: "bg-destructive/10 text-destructive",
   skipped: "bg-slate-100 text-slate-600",
 };
+
+// #6958: per-type labels for the recent-violations breakdown. Unknown types
+// render their raw value.
+const violationTypeLabelKeys: Record<string, string> = {
+  unauthorized: "policies:software.complianceDashboard.violationTypes.unauthorized",
+  missing: "policies:software.complianceDashboard.violationTypes.missing",
+  outdated: "policies:software.complianceDashboard.violationTypes.outdated",
+  not_running: "policies:software.complianceDashboard.violationTypes.not_running",
+  service_unverified:
+    "policies:software.complianceDashboard.violationTypes.service_unverified",
+};
+
+const violationTypeBadgeStyles: Record<string, string> = {
+  not_running: "bg-red-100 text-red-700",
+  service_unverified: "bg-muted text-muted-foreground",
+};
+
+type ViolationTypeGroup = { type: string; count: number; serviceName?: string };
+
+function groupViolationsByType(
+  violations: ViolationRow["compliance"]["violations"],
+): ViolationTypeGroup[] {
+  if (!Array.isArray(violations)) return [];
+  const groups = new Map<string, ViolationTypeGroup>();
+  for (const violation of violations) {
+    const type = typeof violation?.type === "string" ? violation.type : "unknown";
+    const group = groups.get(type) ?? { type, count: 0 };
+    group.count += 1;
+    if (!group.serviceName && violation.service?.name) {
+      group.serviceName = violation.service.name;
+    }
+    groups.set(type, group);
+  }
+  return Array.from(groups.values());
+}
 
 function installStatusBadgeClass(status: string): string {
   return installStatusBadgeStyles[status] ?? installStatusBadgeStyles.failed;
@@ -346,6 +389,11 @@ export default function ComplianceDashboard({
       name = params.get("name") ?? "";
       prefillVendor = params.get("vendor") ?? "";
       mode = parsePolicyMode(params.get("mode"));
+      for (const key of ["prefill", "name", "vendor", "mode"]) params.delete(key);
+      const search = params.toString();
+      replaceUrl(
+        window.location.pathname + (search ? `?${search}` : "") + window.location.hash,
+      );
     }
     if (name) {
       setSelectedPolicy({
@@ -360,9 +408,6 @@ export default function ComplianceDashboard({
       });
       setPrefillNonce((n) => n + 1);
       setModalMode("create");
-      // Clean up the URL
-      if (typeof window !== "undefined")
-        replaceUrl(window.location.pathname);
     }
   }, [prefill]);
   const handleCreate = () => {
@@ -739,7 +784,10 @@ export default function ComplianceDashboard({
                         <SecurityAgentCoverageStateBadge state={row.state} />
                       </td>
                       <td className="px-4 py-2 text-muted-foreground">
-                        {coverageReasonLabel(tSecurity, row.reasonCode)}
+                        <span className="flex flex-wrap items-center gap-2">
+                          <span>{coverageReasonLabel(tSecurity, row.reasonCode)}</span>
+                          <SecurityAgentCoverageSetupLink row={row} />
+                        </span>
                       </td>
                     </tr>
                   ))}
@@ -776,6 +824,7 @@ export default function ComplianceDashboard({
                   <td className="px-4 py-3 font-medium">
                     <div className="flex flex-wrap items-center gap-2">
                       <span>{policy.name}</span>
+                      <SoftwarePolicyCoverageBadge policyId={policy.id} />
                       {policy.enforceMode && policy.remediationOptions?.autoInstall && (
                         <span
                           data-testid="policy-autoinstall-badge"
@@ -935,6 +984,39 @@ export default function ComplianceDashboard({
                       : 0,
                   })}
                 </p>
+                {groupViolationsByType(row.compliance.violations).length > 0 && (
+                  <div
+                    className="mt-1 flex flex-wrap gap-1"
+                    data-testid={`violation-types-${row.device.id}`}
+                  >
+                    {groupViolationsByType(row.compliance.violations).map((group) => {
+                      const labelKey = violationTypeLabelKeys[group.type];
+                      const label = labelKey
+                        ? i18n.t(/* i18n-dynamic */ labelKey)
+                        : group.type;
+                      return (
+                        <span
+                          key={group.type}
+                          data-testid={`violation-type-${group.type}`}
+                          title={
+                            group.serviceName
+                              ? i18n.t(
+                                  "policies:software.complianceDashboard.violationTypes.serviceTitle",
+                                  { name: group.serviceName },
+                                )
+                              : undefined
+                          }
+                          className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                            violationTypeBadgeStyles[group.type] ??
+                            "bg-amber-100 text-amber-700"
+                          }`}
+                        >
+                          {group.count > 1 ? `${label} ×${group.count}` : label}
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
               <div className="text-xs text-muted-foreground">
                 {i18n.t("policies:software.complianceDashboard.remediation", {

@@ -10,8 +10,9 @@ const BADGE = "inline-flex items-center rounded-full border px-2 py-0.5 text-xs 
  * Which detection rule fired on a threat (#6263 W04-5), from
  * `GET /security/threats/:id/details`. `matchedStrings[].data` is already
  * escaped by the agent (`\xNN`) — it is rendered as text and never escaped
- * again. The rule's version at detection time is not reported by the agent,
- * so none is shown.
+ * again. The agent does not report a rule version; the server resolves it from
+ * the scan's pinned `dispatched_rule_sets` (W05-9) and sends `ruleSetVersion`,
+ * which is shown only when present (legacy and unmatched hits carry none).
  */
 export default function ThreatRulePanel({ rule }: { rule: YaraThreatRuleView }) {
   const { t } = useTranslation("security");
@@ -27,6 +28,8 @@ export default function ThreatRulePanel({ rule }: { rule: YaraThreatRuleView }) 
       // Clipboard unavailable (insecure context / permission): the hash stays selectable.
     }
   };
+
+  const ruleSetVersion = rule.ruleSetVersion ?? null;
 
   const label = (text: string) => <p className="text-xs uppercase text-muted-foreground">{text}</p>;
 
@@ -78,6 +81,11 @@ export default function ThreatRulePanel({ rule }: { rule: YaraThreatRuleView }) 
               </p>
             ) : (
               <p className="text-sm text-muted-foreground">-</p>
+            )}
+            {ruleSetVersion !== null && (
+              <p data-testid="threat-rule-version" className="mt-1 text-xs text-muted-foreground">
+                {t("securityThreatDetail.rule.version", { version: ruleSetVersion })}
+              </p>
             )}
           </div>
           {rule.tags.length > 0 && (

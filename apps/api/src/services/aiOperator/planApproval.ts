@@ -206,6 +206,42 @@ export function checkToolCeiling(
 }
 
 // ---------------------------------------------------------------------------
+// Set secrecy (R2, D-R2-2)
+// ---------------------------------------------------------------------------
+
+/** The kind of a set that may be approved; a `mixed` set never is. */
+export type PlanSetSecrecy = 'all_secret_bearing' | 'none_secret_bearing';
+
+/**
+ * Classify an effect set by whether its members mint a credential. PURE.
+ *
+ * It uses the SHIPPED `isSecretBearingTool` (which strips an `mcp__…` prefix)
+ * rather than a local list, so there is one classification source.
+ *
+ * WHY A MIXED SET IS REFUSED RATHER THAN CLASSIFIED. Spec §6.4 keeps a
+ * credential on its own intent so it is sealed and revealed once. Bundled
+ * into a list of ordinary effects, a technician would approve a credential
+ * while reading a card about group memberships — which is why E4 refused any
+ * set containing one. A set whose EVERY member mints a credential has neither
+ * problem: the card is about account creation and nothing else, and each
+ * effect is still its own child intent with its own `result` to seal into. So
+ * the refusal narrows to MIXED, and callers enforce it in both directions.
+ *
+ * An EMPTY set is `mixed`: vacuously it is both kinds, so it is provably
+ * neither, and `mixed` is the only value every caller refuses. No caller
+ * reaches it today (`proposePlanApproval` refuses `empty_plan` first;
+ * membership classifies a set that contains the requested effect).
+ */
+export function classifyPlanSetSecrecy(toolNames: readonly string[]): PlanSetSecrecy | 'mixed' {
+  if (toolNames.length === 0) return 'mixed';
+  let secret = 0;
+  for (const name of toolNames) if (isSecretBearingTool(name)) secret += 1;
+  if (secret === 0) return 'none_secret_bearing';
+  if (secret === toolNames.length) return 'all_secret_bearing';
+  return 'mixed';
+}
+
+// ---------------------------------------------------------------------------
 // THE membership predicate
 // ---------------------------------------------------------------------------
 
@@ -213,7 +249,7 @@ export type PlanMembershipRefusal =
   | 'plan_approval_missing' | 'plan_not_approved' | 'plan_superseded' | 'plan_expired'
   | 'revision_moved' | 'approval_mismatch' | 'effect_not_in_set' | 'tool_not_in_set'
   | 'argument_digest_mismatch' | 'effect_count_mismatch' | 'effect_set_digest_mismatch'
-  | 'operation_identity_mismatch';
+  | 'operation_identity_mismatch' | 'mixed_secret_bearing';
 
 export type PlanMembershipResult =
   | {
@@ -223,6 +259,8 @@ export type PlanMembershipResult =
       approvedAssuranceLevel: number | null;
       planRevision: number;
       idempotencyClass: AiOperatorEffectIdempotencyClass;
+      /** The kind of the WHOLE approved set, classified from its rows (R2, D-R2-2). */
+      setSecrecy: PlanSetSecrecy;
     }
   | { ok: false; refusal: PlanMembershipRefusal; detail: string };
 
@@ -346,6 +384,17 @@ export async function checkPlanEffectMembership(
   if (recomputed !== approval.effectSetDigest) {
     return refuse('effect_set_digest_mismatch', 'the stored effect rows no longer match the approved seal');
   }
+  // R2 (D-R2-2): re-classify the WHOLE set from its rows. Propose-time
+  // classification cannot protect a set written some other way, so a mixed
+  // stored set refuses here — for every member, ordinary or secret — at mint
+  // and at release alike.
+  const setSecrecy = classifyPlanSetSecrecy(setRows.map((r) => r.toolName));
+  if (setSecrecy === 'mixed') {
+    return refuse(
+      'mixed_secret_bearing',
+      `the approved set for revision ${approval.planRevision} mixes credential-minting and ordinary effects`,
+    );
+  }
 
   return {
     ok: true,
@@ -354,6 +403,7 @@ export async function checkPlanEffectMembership(
     approvedAssuranceLevel: approval.approvedAssuranceLevel ?? null,
     planRevision: approval.planRevision,
     idempotencyClass: effect.idempotencyClass,
+    setSecrecy,
   };
 }
 
@@ -384,7 +434,7 @@ export interface ProposePlanApprovalInput {
 }
 
 export type ProposePlanRefusal =
-  | 'no_requester' | 'empty_plan' | 'too_many_effects' | 'secret_bearing_effect' | 'revision_moved'
+  | 'no_requester' | 'empty_plan' | 'too_many_effects' | 'mixed_secret_bearing' | 'revision_moved'
   | 'tool_not_in_agent_allowlist' | 'malformed_plan' | 'requester_invalid' | 'mint_failed' | 'already_decided';
 
 export type ProposePlanApprovalResult =
@@ -421,12 +471,16 @@ export async function proposePlanApproval(input: ProposePlanApprovalInput): Prom
   if (input.effects.length > MAX_PLAN_EFFECTS) {
     return { ok: false, reason: 'too_many_effects', detail: `at most ${MAX_PLAN_EFFECTS} effects per plan` };
   }
-  // Spec §6.4: secret-bearing effects never ride a mixed plan. This wave
-  // refuses them under a plan outright (the stricter rule); the R2 onboarding
-  // wave narrows it to "mixed sets refused".
-  const secret = input.effects.find((e) => isSecretBearingTool(e.toolName));
-  if (secret) {
-    return { ok: false, reason: 'secret_bearing_effect', detail: `${secret.toolName} mints a credential and cannot ride a plan approval` };
+  // Spec §6.4 / D-R2-2: a credential-minting effect never shares an approved
+  // set with an ordinary one. A set of only credentials (onboarding's account
+  // creation) or of only ordinary effects proposes; a mixed set is refused.
+  if (classifyPlanSetSecrecy(input.effects.map((e) => e.toolName)) === 'mixed') {
+    const secret = input.effects.find((e) => isSecretBearingTool(e.toolName));
+    return {
+      ok: false,
+      reason: 'mixed_secret_bearing',
+      detail: `${secret?.toolName ?? 'a credential-minting effect'} mints a credential and cannot share a plan approval with ordinary effects`,
+    };
   }
   if (input.effects.some((e) => e.toolName === OPERATOR_PLAN_TOOL)) {
     return { ok: false, reason: 'malformed_plan', detail: 'a plan cannot contain another plan' };
@@ -780,83 +834,121 @@ export async function markPlanApproved(args: { orgId: string; intentId: string }
  *
  * Not called by any recipe in E4 (none changes its plan yet); R1's discovery
  * path calls it. Distinct from `admitReasoningRun`'s boolean of the same name.
+ *
+ * A thin wrapper: it opens its own system-scoped transaction and runs
+ * `bumpPlanRevisionInTx` on it, so its signature and behaviour are what they
+ * were before the core was extracted (W07 Amendment B2/B7).
  */
-export async function bumpPlanRevision(args: {
+export async function bumpPlanRevision(args: BumpPlanRevisionArgs): Promise<BumpPlanRevisionResult> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(() => bumpPlanRevisionInTx(db, args)));
+}
+
+export interface BumpPlanRevisionArgs {
   orgId: string; taskId: string; fromRevision: number; leaseEpoch: number; detail: string;
-}): Promise<{ bumped: boolean; newRevision: number; supersededApprovalId: string | null; cancelledIntentIds: string[] }> {
-  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const moved = await db
-      .update(aiOperatorTasks)
-      .set({ revision: sql`${aiOperatorTasks.revision} + 1`, updatedAt: new Date() })
+}
+
+export interface BumpPlanRevisionResult {
+  bumped: boolean; newRevision: number; supersededApprovalId: string | null; cancelledIntentIds: string[];
+}
+
+/**
+ * The transaction-bound core of `bumpPlanRevision` (W07 Amendment B2/B7):
+ * the same CAS on `(id, org_id, revision, lease_epoch)`, the same
+ * supersede / cancel / event writes, in the same order, on the CALLER's
+ * handle. It opens no transaction or DB context of its own, so a caller that
+ * already holds one (onboarding's `resolve_accounts` stage transition, inside
+ * a leased write) bumps atomically with its other writes; a lost CAS returns
+ * `bumped: false` having written nothing, and the caller decides whether to
+ * throw and roll back. The single writer of `revision` the coordinator
+ * describes is this function (the wrapper delegates to it).
+ *
+ * The handle must be in system scope (the wrapper provides it); the explicit
+ * `org_id` / `task_id` predicates on every statement are the isolation.
+ */
+export async function bumpPlanRevisionInTx(
+  dbh: PlanDbHandle,
+  args: BumpPlanRevisionArgs,
+): Promise<BumpPlanRevisionResult> {
+  const moved = await dbh
+    .update(aiOperatorTasks)
+    .set({ revision: sql`${aiOperatorTasks.revision} + 1`, updatedAt: new Date() })
+    .where(and(
+      eq(aiOperatorTasks.id, args.taskId),
+      eq(aiOperatorTasks.orgId, args.orgId),
+      eq(aiOperatorTasks.revision, args.fromRevision),
+      eq(aiOperatorTasks.leaseEpoch, args.leaseEpoch),
+    ))
+    .returning({ revision: aiOperatorTasks.revision });
+  if (moved.length !== 1) {
+    return { bumped: false, newRevision: args.fromRevision, supersededApprovalId: null, cancelledIntentIds: [] };
+  }
+  const newRevision = moved[0]!.revision;
+
+  const superseded = await dbh
+    .update(aiOperatorPlanApprovals)
+    .set({ state: 'superseded', supersededByRevision: newRevision, updatedAt: new Date() })
+    .where(and(
+      eq(aiOperatorPlanApprovals.orgId, args.orgId),
+      eq(aiOperatorPlanApprovals.taskId, args.taskId),
+      eq(aiOperatorPlanApprovals.planRevision, args.fromRevision),
+      inArray(aiOperatorPlanApprovals.state, ['pending', 'approved']),
+    ))
+    .returning({ id: aiOperatorPlanApprovals.id, intentId: aiOperatorPlanApprovals.intentId });
+  const supersededRow = superseded[0] ?? null;
+
+  // Child intents whose operation never left `reserved` (lock the operation
+  // rows first: task → operation → intent).
+  const reservedOps = await dbh
+    .select({ intentId: aiOperatorOperations.intentId })
+    .from(aiOperatorOperations)
+    .where(and(
+      eq(aiOperatorOperations.orgId, args.orgId),
+      eq(aiOperatorOperations.taskId, args.taskId),
+      eq(aiOperatorOperations.planRevision, args.fromRevision),
+      eq(aiOperatorOperations.dispatchState, 'reserved'),
+    ))
+    .for('update');
+  const candidateIds = [
+    ...(supersededRow?.intentId ? [supersededRow.intentId] : []),
+    ...reservedOps.map((o) => o.intentId).filter((v): v is string => !!v),
+  ];
+  let cancelledIntentIds: string[] = [];
+  if (candidateIds.length > 0) {
+    const { publishIntentTerminalOutbox } = await import('./taskOutbox');
+    const cancelled = await dbh
+      .update(actionIntents)
+      .set({ status: 'cancelled', errorCode: 'plan_superseded' })
       .where(and(
-        eq(aiOperatorTasks.id, args.taskId),
-        eq(aiOperatorTasks.orgId, args.orgId),
-        eq(aiOperatorTasks.revision, args.fromRevision),
-        eq(aiOperatorTasks.leaseEpoch, args.leaseEpoch),
+        eq(actionIntents.orgId, args.orgId),
+        inArray(actionIntents.id, candidateIds),
+        inArray(actionIntents.status, ['pending_approval', 'approved']),
       ))
-      .returning({ revision: aiOperatorTasks.revision });
-    if (moved.length !== 1) {
-      return { bumped: false, newRevision: args.fromRevision, supersededApprovalId: null, cancelledIntentIds: [] };
+      .returning({
+        id: actionIntents.id,
+        orgId: actionIntents.orgId,
+        taskId: actionIntents.taskId,
+        requestingFlowRunId: actionIntents.requestingFlowRunId,
+      });
+    for (const c of cancelled) {
+      await publishIntentTerminalOutbox(
+        dbh,
+        { id: c.id, orgId: c.orgId, taskId: c.taskId, requestingFlowRunId: c.requestingFlowRunId },
+        'intent_cancelled',
+      );
     }
-    const newRevision = moved[0]!.revision;
-
-    const superseded = await db
-      .update(aiOperatorPlanApprovals)
-      .set({ state: 'superseded', supersededByRevision: newRevision, updatedAt: new Date() })
-      .where(and(
-        eq(aiOperatorPlanApprovals.orgId, args.orgId),
-        eq(aiOperatorPlanApprovals.taskId, args.taskId),
-        eq(aiOperatorPlanApprovals.planRevision, args.fromRevision),
-        inArray(aiOperatorPlanApprovals.state, ['pending', 'approved']),
-      ))
-      .returning({ id: aiOperatorPlanApprovals.id, intentId: aiOperatorPlanApprovals.intentId });
-    const supersededRow = superseded[0] ?? null;
-
-    // Child intents whose operation never left `reserved` (lock the operation
-    // rows first: task → operation → intent).
-    const reservedOps = await db
-      .select({ intentId: aiOperatorOperations.intentId })
-      .from(aiOperatorOperations)
-      .where(and(
-        eq(aiOperatorOperations.orgId, args.orgId),
-        eq(aiOperatorOperations.taskId, args.taskId),
-        eq(aiOperatorOperations.planRevision, args.fromRevision),
-        eq(aiOperatorOperations.dispatchState, 'reserved'),
-      ))
-      .for('update');
-    const candidateIds = [
-      ...(supersededRow?.intentId ? [supersededRow.intentId] : []),
-      ...reservedOps.map((o) => o.intentId).filter((v): v is string => !!v),
-    ];
-    let cancelledIntentIds: string[] = [];
-    if (candidateIds.length > 0) {
-      const { publishIntentTerminalOutbox } = await import('./taskOutbox');
-      const cancelled = await db
-        .update(actionIntents)
-        .set({ status: 'cancelled', errorCode: 'plan_superseded' })
-        .where(and(
-          eq(actionIntents.orgId, args.orgId),
-          inArray(actionIntents.id, candidateIds),
-          inArray(actionIntents.status, ['pending_approval', 'approved']),
-        ))
-        .returning({ id: actionIntents.id, orgId: actionIntents.orgId, taskId: actionIntents.taskId });
-      for (const c of cancelled) {
-        await publishIntentTerminalOutbox(db, c, 'intent_cancelled');
-      }
-      cancelledIntentIds = cancelled.map((c) => c.id);
-      if (cancelledIntentIds.length > 0) {
-        const { markOperationCancelled } = await import('./operationService');
-        for (const id of cancelledIntentIds) await markOperationCancelled(db, id);
-      }
+    cancelledIntentIds = cancelled.map((c) => c.id);
+    if (cancelledIntentIds.length > 0) {
+      const { markOperationCancelled } = await import('./operationService');
+      for (const id of cancelledIntentIds) await markOperationCancelled(dbh, id);
     }
+  }
 
-    await appendTaskEvent(db, {
-      orgId: args.orgId, taskId: args.taskId, eventType: 'plan_revision_bumped', actor: { kind: 'coordinator' },
-      stepKey: null, targetId: null,
-      detail: `plan revision ${args.fromRevision} -> ${newRevision}: ${args.detail}`.slice(0, 1000),
-    });
-    return { bumped: true, newRevision, supersededApprovalId: supersededRow?.id ?? null, cancelledIntentIds };
-  }));
+  await appendTaskEvent(dbh, {
+    orgId: args.orgId, taskId: args.taskId, eventType: 'plan_revision_bumped', actor: { kind: 'coordinator' },
+    stepKey: null, targetId: null,
+    detail: `plan revision ${args.fromRevision} -> ${newRevision}: ${args.detail}`.slice(0, 1000),
+  });
+  return { bumped: true, newRevision, supersededApprovalId: supersededRow?.id ?? null, cancelledIntentIds };
 }
 
 // ---------------------------------------------------------------------------

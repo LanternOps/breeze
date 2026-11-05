@@ -9,12 +9,18 @@ const SKIPPED: Array<[string, string]> = [
   ['/agents/download/agent.msi', 'download'],
   ['/agents/dev-123/approve', 'dev-123'],
   ['/agents/dev-123/deny', 'dev-123'],
+  // #8318 §6.4: the reattach confirm authenticates with its own token.
+  ['/agents/dev-123/rebind-confirm', 'dev-123'],
 ];
 const ENFORCED: Array<[string, string]> = [
   ['/agents/dev-123/heartbeat', 'dev-123'],
   ['/agents/dev-123/inventory', 'dev-123'],
   ['/agents/dev-123/commands', 'dev-123'],
   ['/agents/dev-123/logs', 'dev-123'],
+  // #8318 §6.3: phase 1 runs under the source's own agent credentials.
+  ['/agents/dev-123/rebind', 'dev-123'],
+  ['/agents/dev-123/scripts/s-1/rebind-confirm', 'dev-123'],
+  ['/agents/dev-123/rebind-confirmX', 'dev-123'],
   // Regression guards: nested paths ending in approve/deny MUST still enforce.
   ['/agents/dev-123/scripts/s-1/approve', 'dev-123'],
   ['/agents/dev-123/scripts/s-1/deny', 'dev-123'],

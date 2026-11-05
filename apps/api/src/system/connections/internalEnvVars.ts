@@ -18,6 +18,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AGENT_CHANGES_MAX_BYTES_PER_ORG_PER_DAY: 'agent ingest quota knob',
   AGENT_CHANGES_MAX_ROWS_PER_DEVICE_PER_DAY: 'agent ingest quota knob',
   AGENT_CHANGES_MAX_ROWS_PER_ORG_PER_DAY: 'agent ingest quota knob',
+  AGENT_CONNECTIONS_MAX_PER_DEVICE: 'agent ingest cap (stored connections per device)',
   AGENT_EDITION_AUTO_MIGRATE_ENABLED: 'agent edition migration toggle',
   AGENT_ENROLL_RATE_LIMIT: 'rate limit knob',
   AGENT_ENROLL_RATE_WINDOW_SECONDS: 'rate limit knob',
@@ -36,6 +37,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AGENT_ORG_RATE_LIMIT_PER_MIN: 'rate limit knob',
   AGENT_ROLLBACK_DENYLISTED_VERSIONS: 'agent rollback safety list',
   AGENT_ROLLBACK_MIN_VERSION: 'agent rollback safety floor',
+  AGENT_SERVER_URL: 'network isolation management-plane allowlist fallback URL',
   AGENT_TOKEN_ROTATION_MAX_AGE_DAYS: 'agent token rotation window',
   AGENT_WS_COMMAND_RESULT_MESSAGE_BUDGET_CAPACITY: 'agent WS message budget knob',
   AGENT_WS_COMMAND_RESULT_MESSAGE_BUDGET_REFILL_PER_SECOND: 'agent WS message budget knob',
@@ -57,9 +59,12 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AI_TRANSCRIPT_SWEEPER_ENABLED: 'job toggle',
   AI_TRANSCRIPT_SWEEPER_GRACE_HOURS: 'transcript sweep grace window',
   AI_TOOL_SEARCH: 'AI chat tool-search override (auto/on/off)',
+  AI_TOOL_INDEX: 'AI chat system-prompt tool index (lazy/full)',
   // ALERT_*
   ALERT_WORKER_CHUNK_SIZE: 'worker throughput knob',
+  ALERT_WORKER_CONCURRENCY: 'worker concurrency knob (default DB_POOL_MAX/4; DB_POOL_MAX/2 when BREEZE_ROLE=worker)',
   ALERT_WORKER_MAX_DEVICES_PER_RUN: 'worker throughput knob',
+  ALERT_WORKER_STAGGER_WINDOW_MS: 'evaluate-device stagger window',
   // API_*
   API_KEY_PRELOOKUP_RATE_LIMIT: 'rate limit knob',
   API_KEY_PRELOOKUP_RATE_WINDOW_SECONDS: 'rate limit knob',
@@ -241,6 +246,13 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   FILESYSTEM_CLEANUP_PREVIEW_RETENTION_DAYS: 'data retention window',
   FILESYSTEM_CLEANUP_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   FILESYSTEM_CLEANUP_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
+  // FLOW_*
+  FLOW_APPROVAL_TTL_HOURS: 'timing knob (parked flow step approval window)',
+  FLOW_MAX_RUNNING_PER_OWNER: 'flow run concurrency cap knob',
+  FLOW_RUN_RETENTION_DAYS: 'data retention window',
+  FLOW_WEBHOOK_RATE_PER_MINUTE: 'flow webhook intake rate-limit knob',
+  FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS: 'data retention window',
+  FLOW_FOREACH_MAX_PARALLEL: 'flow for-each concurrency cap knob',
   // FRANKFURTER_*
   FRANKFURTER_BASE_URL: 'FX API base override',
   // HEARTBEAT_*
@@ -271,6 +283,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   INTENT_OUTBOX_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   INTENT_OUTBOX_RETENTION_DAYS: 'data retention window',
   INTENT_OUTBOX_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
+  // IOC_*
+  IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD: 'approval threshold knob (#6263 W05)',
   // IP_*
   IP_ALLOWLIST_ENFORCEMENT_MODE: 'enforcement mode',
   IP_HISTORY_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
@@ -325,6 +339,10 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   MCP_APPROVAL_WAIT_MS: 'timing knob',
   MCP_APPROVAL_WAITS_PER_PRINCIPAL: 'rate limit knob',
   MCP_APPS_ENABLED: 'MCP rollout flag',
+  MCP_TASKS_ENABLED: 'MCP rollout flag',
+  MCP_TASK_PENDING_POLL_INTERVAL_MS: 'timing knob',
+  MCP_TASK_POLL_INTERVAL_MS: 'timing knob',
+  MCP_TASK_TTL_GRACE_MS: 'timing knob',
   MCP_TOOLS_LIST_PAGE_SIZE: 'paging knob',
   MCP_UNKNOWN_SESSION_ALERT_THRESHOLD: 'alert threshold',
   // METRICS_*
@@ -369,6 +387,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // MONITOR_*
   MONITOR_EPISODE_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   MONITOR_EPISODE_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
+  // NETWORK_*
+  NETWORK_ISOLATION_ENABLED: 'network isolation rollout kill switch',
+  NETWORK_ISOLATION_ENABLED_PARTNER_IDS: 'network isolation partner canary allowlist',
   // NODE_*
   NODE_ENV: 'runtime mode',
   // NO_*
@@ -424,6 +445,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   PRE_ASSIGNMENT_ENROLLMENT_ENABLED: 'pre-assignment enrollment rollout flag',
   // PROCESS_*
   PROCESS_SAMPLE_RETENTION_DAYS: 'data retention window',
+  // PROMPT_*
+  PROMPT_HOST_ENABLED_KINDS: 'on-device prompt kinds rollout flag / kill switch (#10190)',
   // PROVISION_*
   PROVISION_HANDLE_TTL_MINUTES: 'timing knob',
   // PUBLIC_*
@@ -470,6 +493,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   WEBHOOK_DELIVERY_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   WEBHOOK_DELIVERY_RETENTION_DAYS: 'data retention window',
   WEBHOOK_DELIVERY_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
+  DNS_SECURITY_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
+  DNS_SECURITY_RETENTION_DAYS_DEFAULT: 'data retention window',
+  DNS_SECURITY_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   // S1_*
   S1_SYNC_MAX_PAGES: 'sync paging limit',
   // S3_*
@@ -485,12 +511,21 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // SECURITY_*
   SECURITY_POSTURE_WORKER_CONCURRENCY: 'worker throughput knob',
   SECURITY_SCAN_DEVICE_CONCURRENCY_CAP: 'worker throughput knob',
+  SECURITY_SCAN_MANUAL_QUEUE_TTL_MINUTES: 'timing knob',
   SECURITY_SCAN_ORG_CONCURRENCY_CAP: 'worker throughput knob',
   SECURITY_SCAN_ORG_QUEUE_BACKPRESSURE_LIMIT: 'worker throughput knob',
   SECURITY_SCAN_THROTTLE_REQUEUE_SECONDS: 'timing knob',
   SECURITY_SCAN_WORKER_CONCURRENCY: 'worker throughput knob',
   SECURITY_SCORE_CHANGE_EVENT_LIMIT: 'worker throughput knob',
   SECURITY_SCORE_CHANGE_PUBLISH_CONCURRENCY: 'worker throughput knob',
+  SECURITY_SWEEP_MAX_ACTIVE_PER_ORG: 'IOC sweep cap (#6263 W05)',
+  SECURITY_SWEEP_MAX_DEVICES: 'IOC sweep cap (#6263 W05)',
+  SECURITY_SWEEP_MFA_DEVICE_THRESHOLD: 'IOC sweep MFA threshold (#6263 W05)',
+  SECURITY_SWEEP_PARTNER_RUNNING_CAP: 'worker throughput knob',
+  SECURITY_SWEEP_PUMP_BATCH: 'worker throughput knob',
+  SECURITY_SWEEP_PUMP_INTERVAL_MS: 'timing knob',
+  SECURITY_SWEEP_RUNNING_GRACE_MINUTES: 'timing knob',
+  SECURITY_SWEEP_TTL_HOURS_DEFAULT: 'timing knob',
   // SENSITIVE_*
   SENSITIVE_DATA_DEVICE_CONCURRENCY_CAP: 'worker throughput knob',
   SENSITIVE_DATA_ORG_CONCURRENCY_CAP: 'worker throughput knob',
@@ -536,6 +571,16 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   TERMINAL_INPUT_MAX_BYTES_PER_MIN: 'rate limit knob',
   TERMINAL_INPUT_MAX_MESSAGES_PER_MIN: 'rate limit knob',
   // TICKET_*
+  TICKET_IMPORT_GLOBAL_CONCURRENCY: 'worker concurrency knob',
+  TICKET_IMPORT_LEASE_MS: 'timing knob',
+  TICKET_IMPORT_MAX_BYTES_PER_HOUR: 'rate limit knob',
+  TICKET_IMPORT_MAX_CLOCK_SKEW_MS: 'timing knob',
+  TICKET_IMPORT_MAX_ISSUES_PER_RUN: 'report size cap',
+  TICKET_IMPORT_MAX_TICKET_BYTES: 'size cap',
+  TICKET_IMPORT_SLICE_MS: 'timing knob',
+  TICKET_IMPORT_SOURCE_CONCURRENCY: 'outbound concurrency knob',
+  TICKET_IMPORT_SOURCE_TIMEOUT_MS: 'timing knob',
+  TICKET_IMPORT_WORKER_CONCURRENCY: 'worker concurrency knob',
   TICKET_OUTBOX_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   TICKET_OUTBOX_RETENTION_DAYS: 'data retention window',
   TICKET_OUTBOX_RETENTION_MAX_BATCHES: 'retention sweep batch knob',

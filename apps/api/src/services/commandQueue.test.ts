@@ -376,6 +376,45 @@ describe('command queue service', () => {
     expect(sendCommandToAgent).not.toHaveBeenCalled();
   });
 
+  it('re-arms and pushes to the agent id read in the claim, not the one read before it (#8318 §6.4)', async () => {
+    const commandId = '11111111-1111-4111-8111-111111111111';
+    const deviceId = '22222222-2222-4222-8222-222222222222';
+    const payload = { sessionId: '33333333-3333-4333-8333-333333333333', finalizationId: commandId };
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: commandId, deviceId, type: 'desktop_stream_stop', targetRole: 'agent', payload,
+            }]),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          // Read before the claim.
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ agentId: 'agent-1' }]) }),
+        }),
+      } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    vi.mocked(isAgentConnected).mockReturnValue(true);
+    // A reattach / re-enroll committed between that read and the claim.
+    vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({
+      status: 'claimed', id: commandId, executedAt: new Date(), agentId: 'agent-after-reattach',
+    });
+    vi.mocked(sendCommandToAgent).mockReturnValue(true);
+
+    await expect(rearmIdempotentCommandForDelivery({
+      commandId, deviceId, type: 'desktop_stream_stop', payload,
+    })).resolves.toEqual({ delivered: true });
+    expect(sendCommandToAgent).toHaveBeenCalledTimes(1);
+    expect(sendCommandToAgent).toHaveBeenCalledWith('agent-after-reattach', {
+      id: commandId, type: 'desktop_stream_stop', payload,
+    });
+  });
+
   it('should queue a command for a device', async () => {
     const queued = {
       id: 'cmd-1',
@@ -1109,6 +1148,7 @@ describe('command queue service', () => {
         status: 'claimed',
         id: 'cmd-x',
         executedAt: new Date(),
+        agentId: 'agent-1',
       });
       vi.mocked(releaseClaimedCommandDelivery).mockResolvedValue(undefined);
     }
@@ -1203,6 +1243,25 @@ describe('command queue service', () => {
       // the "device unreachable" UI message rather than burning the timeout.
       expect(result.status).toBe('failed');
       expect(result.error).toBe(DEVICE_UNREACHABLE_ERROR);
+    });
+
+    it('pushes every attempt to the agent id read in the claim, not the device row read before it (#8318 §6.4)', async () => {
+      vi.useFakeTimers();
+      setupOnlineDeviceMocks(); // the device row read before the claim says agent-1
+      vi.mocked(isAgentConnected).mockReturnValue(true);
+      // A reattach / re-enroll committed between that read and the claim.
+      vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({
+        status: 'claimed', id: 'cmd-x', executedAt: new Date(), agentId: 'agent-after-reattach',
+      });
+      vi.mocked(sendCommandToAgent).mockReturnValueOnce(false).mockReturnValueOnce(true);
+
+      const promise = executeCommand('dev-online', CommandTypes.FILE_LIST, { path: '/' });
+      await vi.advanceTimersByTimeAsync(2000);
+      const result = await promise;
+
+      expect(sendCommandToAgent).toHaveBeenCalledTimes(2);
+      for (const call of vi.mocked(sendCommandToAgent).mock.calls) expect(call[0]).toBe('agent-after-reattach');
+      expect(result.status).toBe('completed');
     });
 
     it('skips dispatch entirely when the push claim reports not_claimable', async () => {
@@ -2450,6 +2509,28 @@ describe('ai.command.executed (#5022 W01)', () => {
 
     expect(createAuditLogAsync).toHaveBeenCalledWith(
       expect.objectContaining({ actorType: 'ai_agent', actorId: 'agent-7' }),
+    );
+  });
+
+  // Tool catalog W04 (#5219), Decision 16: a flow-origin command is audited as
+  // system automation carrying its run — never as the flow's synthetic user id
+  // with actorType 'user', and never as an AI decision.
+  it('audits a flow origin as system automation with its run id', async () => {
+    mockQueueCommandDb();
+
+    await queueCommand('dev-1', 'get_processes', {}, 'flow-1', {
+      aiOrigin: { kind: 'flow', flowRunId: 'flow-run-1' },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(createAuditLogAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'ai.command.executed',
+        actorType: 'system',
+        actorId: '00000000-0000-0000-0000-000000000000',
+        initiatedBy: 'automation',
+        details: expect.objectContaining({ aiInitiatorKind: 'flow', flowRunId: 'flow-run-1' }),
+      }),
     );
   });
 

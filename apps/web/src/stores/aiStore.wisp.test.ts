@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('./auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
 vi.mock('./orgStore', () => ({ useOrgStore: { getState: () => ({ currentOrgId: 'org-header' }) } }));
 vi.mock('@/components/shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('@/lib/runAction', async (importOriginal) => {
@@ -9,9 +9,11 @@ vi.mock('@/lib/runAction', async (importOriginal) => {
 });
 
 import { fetchWithAuth } from './auth';
-import { useAiStore, type WispState } from './aiStore';
+import { isActiveGrant, useAiStore, type WispState } from './aiStore';
+import { useAiModelPickerStore } from './aiModelPickerStore';
 import { runAction } from '@/lib/runAction';
 import { showToast } from '@/components/shared/Toast';
+import { i18n } from '@/lib/i18n';
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
@@ -155,7 +157,7 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
 
   it('switching to a history session that is not on the current grant leaves Wisp mode', async () => {
     fetchMock.mockImplementation(async (url: string) => {
-      if (url === '/ai/sessions/sess-plain') return response({ session: { id: 'sess-plain', status: 'active', orgId: 'org-a' }, messages: [] });
+      if (url === '/ai/sessions/sess-plain') return response({ session: { id: 'sess-plain', type: 'general', status: 'active', orgId: 'org-a' }, messages: [] });
       return response({ data: [] });
     });
     useAiStore.setState({ wisp: wisp(), sessionId: 'sess-w' });
@@ -174,8 +176,8 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
 
   it('restoring a Wisp session after a reload (wisp null) rehydrates Wisp mode from its grant', async () => {
     fetchMock.mockImplementation(async (url: string) => {
-      if (url === '/ai/sessions/sess-w') return response({ session: { id: 'sess-w', status: 'active', orgId: 'org-a', wispGrantId: 'grant-pw' }, messages: [] });
-      if (url === '/wisp/thread?orgId=org-a') return response({ code: 'no_active_grant' }, 404);
+      if (url === '/ai/sessions/sess-w') return response({ session: { id: 'sess-w', type: 'general', status: 'active', orgId: 'org-a', wispGrantId: 'grant-pw' }, messages: [] });
+      if (url === '/wisp/thread?orgId=org-a') return response({ data: null });
       if (url === '/wisp/thread') return response(threadBody('grant-pw', null));
       return response({ data: [] });
     });
@@ -185,20 +187,53 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
 
   it('a Wisp session whose grant is no longer live stays plain (no header for a dead grant)', async () => {
     fetchMock.mockImplementation(async (url: string) => {
-      if (url === '/ai/sessions/sess-w') return response({ session: { id: 'sess-w', status: 'active', orgId: 'org-a', wispGrantId: 'grant-old' }, messages: [] });
+      if (url === '/ai/sessions/sess-w') return response({ session: { id: 'sess-w', type: 'general', status: 'active', orgId: 'org-a', wispGrantId: 'grant-old' }, messages: [] });
       if (url.startsWith('/wisp/thread')) return response(threadBody('grant-new', 'org-a'));
       return response({ data: [] });
     });
     await useAiStore.getState().switchSession('sess-w');
     await new Promise((r) => setTimeout(r, 0));
     await new Promise((r) => setTimeout(r, 0));
-    expect(fetchMock).toHaveBeenCalledWith('/wisp/thread?orgId=org-a');
+    expect(fetchMock).toHaveBeenCalledWith('/wisp/thread?orgId=org-a', { skipOrgIdInjection: true });
     expect(useAiStore.getState().wisp).toBeNull();
+  });
+
+  it('a Wisp session whose grant thread reports it paused stays plain (W05: only an active grant gives the panel its voice)', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === '/ai/sessions/sess-w') return response({ session: { id: 'sess-w', type: 'general', status: 'active', orgId: null, wispGrantId: 'grant-pw' }, messages: [] });
+      if (url === '/wisp/thread') {
+        const body = threadBody('grant-pw', null);
+        return response({ data: { ...body.data, grant: { ...body.data.grant, status: 'paused' } } });
+      }
+      return response({ data: [] });
+    });
+    await useAiStore.getState().loadSession('sess-w');
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchMock).toHaveBeenCalledWith('/wisp/thread', { skipOrgIdInjection: true });
+    expect(useAiStore.getState().wisp).toBeNull();
+  });
+
+  it('a Wisp session whose grant thread cannot be read (500) stays plain and says so in the console; no grant is quiet', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === '/ai/sessions/sess-w') return response({ session: { id: 'sess-w', type: 'general', status: 'active', orgId: 'org-a', wispGrantId: 'grant-pw' }, messages: [] });
+      if (url === '/wisp/thread?orgId=org-a') return response({ data: null });
+      if (url === '/wisp/thread') return response({ error: 'boom' }, 500);
+      return response({ data: [] });
+    });
+    await useAiStore.getState().loadSession('sess-w');
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/wisp/thread', { skipOrgIdInjection: true }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(useAiStore.getState().wisp).toBeNull();
+    const wispWarnings = warn.mock.calls.filter(([msg]) => String(msg).includes('Wisp'));
+    expect(wispWarnings).toHaveLength(1);
+    warn.mockRestore();
   });
 
   it('loadSession of a plain session leaves Wisp mode', async () => {
     fetchMock.mockImplementation(async (url: string) => {
-      if (url === '/ai/sessions/sess-plain') return response({ session: { id: 'sess-plain', status: 'active', orgId: 'org-a' }, messages: [] });
+      if (url === '/ai/sessions/sess-plain') return response({ session: { id: 'sess-plain', type: 'general', status: 'active', orgId: 'org-a' }, messages: [] });
       return response({ data: [] });
     });
     useAiStore.setState({ wisp: wisp() });
@@ -232,11 +267,161 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
 
   it('switching to a history session on the same grant keeps Wisp mode', async () => {
     fetchMock.mockImplementation(async (url: string) => {
-      if (url === '/ai/sessions/sess-w2') return response({ session: { id: 'sess-w2', status: 'active', orgId: 'org-a', wispGrantId: 'grant-1' }, messages: [] });
+      if (url === '/ai/sessions/sess-w2') return response({ session: { id: 'sess-w2', type: 'general', status: 'active', orgId: 'org-a', wispGrantId: 'grant-1' }, messages: [] });
       return response({ data: [] });
     });
     useAiStore.setState({ wisp: wisp(), sessionId: 'sess-w' });
     await useAiStore.getState().switchSession('sess-w2');
     expect(useAiStore.getState().wisp?.grantId).toBe('grant-1');
+  });
+});
+
+describe('aiStore — Wisp rolls to a fresh session at the turn limit', () => {
+  const sse = (events: unknown[]): Response => {
+    const bytes = new TextEncoder().encode(events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join(''));
+    return { ok: true, status: 200, body: new ReadableStream<Uint8Array>({ start(c) { c.enqueue(bytes); c.close(); } }) } as unknown as Response;
+  };
+  const messagePosts = () => fetchMock.mock.calls
+    .filter(([url, init]) => String(url).endsWith('/messages') && (init as RequestInit | undefined)?.method === 'POST')
+    .map(([url, init]) => ({ url: String(url), body: JSON.parse(String((init as RequestInit).body)) as Record<string, unknown> }));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useAiStore.setState({
+      sessionId: 'sess-old', sessionOrgId: 'org-a', hydratedSessionId: 'sess-old', messages: [], isLoading: false, isStreaming: false,
+      error: null, errorCode: null, pageContext: null, wisp: wisp(),
+    });
+  });
+
+  it('a 409 turn_limit_reached before the turn ran: closes the session, opens one on the grant, re-sends the same message once', async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/ai/sessions/sess-old/messages') return response({ error: 'Session turn limit reached (50)', code: 'turn_limit_reached', recoverable: true }, 409);
+      if (url === '/ai/sessions/sess-new/messages') return sse([{ type: 'done' }]);
+      if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+      if (init?.method === 'DELETE') return response({ success: true });
+      return response({ data: [] });
+    });
+    await useAiStore.getState().sendMessage('what changed overnight?');
+
+    expect(fetchMock).toHaveBeenCalledWith('/ai/sessions/sess-old', { method: 'DELETE' });
+    expect(createBodies()[0]).toMatchObject({ wispGrantId: 'grant-1' });
+    const posts = messagePosts();
+    expect(posts.map((p) => p.url)).toEqual(['/ai/sessions/sess-old/messages', '/ai/sessions/sess-new/messages']);
+    expect(posts[1]!.body.content).toBe('what changed overnight?');
+    const s = useAiStore.getState();
+    expect(s.sessionId).toBe('sess-new');
+    expect(s.wisp?.grantId).toBe('grant-1');
+    expect(s.error).toBeNull();
+    expect(s.messages.filter((m) => m.role === 'user')).toHaveLength(1);
+  });
+
+  it('the model picked for the refused message rides the rollover onto the fresh session (#10419 review)', async () => {
+    useAiModelPickerStore.setState({
+      choices: { surface: 'chat', allowUserChoice: true, defaultOfferingId: 'def', choices: [], current: { offeringId: 'def', options: null } },
+      selection: { offeringId: 'haiku', options: { budgetThinking: 'on' } },
+      loading: false,
+    });
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/ai/sessions/sess-old/messages') return response({ error: 'Session turn limit reached (50)', code: 'turn_limit_reached', recoverable: true }, 409);
+      if (url === '/ai/sessions/sess-new/messages') return sse([{ type: 'done' }]);
+      if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+      if (init?.method === 'DELETE') return response({ success: true });
+      return response({ data: [] });
+    });
+    await useAiStore.getState().sendMessage('what changed overnight?');
+
+    const posts = messagePosts();
+    expect(posts[0]!.body.model).toEqual({ offeringId: 'haiku', options: { budgetThinking: 'on' } });
+    expect(createBodies()[0]).toMatchObject({ wispGrantId: 'grant-1', offeringId: 'haiku', options: { budgetThinking: 'on' } });
+    expect(posts.map((p) => p.url)).toEqual(['/ai/sessions/sess-old/messages', '/ai/sessions/sess-new/messages']);
+    expect(useAiStore.getState().sessionId).toBe('sess-new');
+  });
+
+  it('a model picked on an earlier message (now the session\'s current) also carries over on the rollover', async () => {
+    useAiModelPickerStore.setState({
+      choices: { surface: 'chat', allowUserChoice: true, defaultOfferingId: 'def', choices: [], current: { offeringId: 'haiku', options: { speed: 'fast' } } },
+      selection: null,
+      loading: false,
+    });
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/ai/sessions/sess-old/messages') return response({ error: 'Session turn limit reached (50)', code: 'turn_limit_reached', recoverable: true }, 409);
+      if (url === '/ai/sessions/sess-new/messages') return sse([{ type: 'done' }]);
+      if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+      if (init?.method === 'DELETE') return response({ success: true });
+      return response({ data: [] });
+    });
+    await useAiStore.getState().sendMessage('hello');
+    expect(createBodies()[0]).toMatchObject({ wispGrantId: 'grant-1', offeringId: 'haiku', options: { speed: 'fast' } });
+  });
+
+  it('a close that fails during the rollover is logged, not hidden (#10419 review)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/ai/sessions/sess-old/messages') return response({ error: 'Session turn limit reached (50)', code: 'turn_limit_reached', recoverable: true }, 409);
+      if (url === '/ai/sessions/sess-new/messages') return sse([{ type: 'done' }]);
+      if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+      if (init?.method === 'DELETE') return response({ error: 'boom' }, 500);
+      return response({ data: [] });
+    });
+    await useAiStore.getState().sendMessage('hello');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('sess-old'), expect.anything());
+    expect(useAiStore.getState().sessionId).toBe('sess-new');
+    warn.mockRestore();
+  });
+
+  it('a second turn_limit_reached on the fresh session is shown, not retried forever', async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/messages')) return response({ error: 'Session turn limit reached (1)', code: 'turn_limit_reached' }, 409);
+      if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+      if (init?.method === 'DELETE') return response({ success: true });
+      return response({ data: [] });
+    });
+    await useAiStore.getState().sendMessage('hello');
+    expect(messagePosts()).toHaveLength(2);
+    expect(useAiStore.getState().errorCode).toBe('turn_limit_reached');
+    expect(useAiStore.getState().error).toBe('Session turn limit reached (1)');
+  });
+
+  it('the limit hit mid-turn (stream error turn_limit_reached): rolls the session and asks for the message again, no auto re-send', async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/ai/sessions/sess-old/messages') return sse([
+        { type: 'message_start', messageId: 'a1' },
+        { type: 'error', message: 'Maximum conversation turns reached.', code: 'turn_limit_reached' },
+      ]);
+      if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+      if (init?.method === 'DELETE') return response({ success: true });
+      return response({ data: [] });
+    });
+    await useAiStore.getState().sendMessage('dig into the printer alerts');
+
+    expect(fetchMock).toHaveBeenCalledWith('/ai/sessions/sess-old', { method: 'DELETE' });
+    expect(createBodies()[0]).toMatchObject({ wispGrantId: 'grant-1' });
+    expect(messagePosts()).toHaveLength(1);
+    const s = useAiStore.getState();
+    expect(s.sessionId).toBe('sess-new');
+    expect(s.errorCode).toBe('turn_limit_reached');
+    expect(s.error).toBe(i18n.t('ai:wisp.turnLimitRolled'));
+  });
+
+  it('a plain chat (no Wisp) at the turn limit keeps the coded error for the panel; no session is rolled', async () => {
+    useAiStore.setState({ wisp: null });
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/messages')) return response({ error: 'Session turn limit reached (50)', code: 'turn_limit_reached' }, 409);
+      return response({ data: [] });
+    });
+    await useAiStore.getState().sendMessage('hello');
+    expect(createBodies()).toHaveLength(0);
+    expect(fetchMock).not.toHaveBeenCalledWith('/ai/sessions/sess-old', { method: 'DELETE' });
+    expect(useAiStore.getState()).toMatchObject({ sessionId: 'sess-old', errorCode: 'turn_limit_reached', error: 'Session turn limit reached (50)' });
+  });
+});
+
+describe('isActiveGrant (W05 #10136)', () => {
+  it('is true only for a grant the server reports active', () => {
+    expect(isActiveGrant(wisp())).toBe(true);
+    expect(isActiveGrant(wisp({ status: 'paused' }))).toBe(false);
+    expect(isActiveGrant(wisp({ status: 'revoked' }))).toBe(false);
+    expect(isActiveGrant(wisp({ status: 'expired' }))).toBe(false);
+    expect(isActiveGrant(null)).toBe(false);
   });
 });

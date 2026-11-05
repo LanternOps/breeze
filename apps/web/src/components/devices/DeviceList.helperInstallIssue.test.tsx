@@ -61,6 +61,22 @@ describe('DeviceList — Breeze Assist install issue badge (#6925)', () => {
     expect(badge.getAttribute('title')).toMatch(/failed repeatedly/i);
   });
 
+  // #10183, #10185: Assist is on disk but the agent does not run it.
+  it.each([
+    ['webview2_outdated', /WebView2 Runtime is too old/],
+    ['crash_loop', /kept closing/],
+    ['unmanaged_install', /not installed by Breeze/],
+  ])('labels %s "Assist unavailable", not "Not installed"', (issue, tooltip) => {
+    const dev = device('44444444-4444-4444-4444-444444444444', 'unavailable', {
+      helperVersion: '0.125.0',
+      helperInstallIssue: issue,
+    });
+    render(<DeviceList devices={[dev]} pageSize={50} />);
+    const badge = screen.getByTestId(`device-${dev.id}-helper-install-issue`);
+    expect(badge.textContent).toBe('Assist unavailable');
+    expect(badge.getAttribute('title')).toMatch(tooltip);
+  });
+
   it('shows no badge for a healthy device', () => {
     const dev = device('33333333-3333-3333-3333-333333333333', 'healthy', { helperVersion: '0.116.0' });
     render(<DeviceList devices={[dev]} pageSize={50} />);

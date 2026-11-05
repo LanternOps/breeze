@@ -122,8 +122,9 @@ async function processSyncIntegration(data: SyncIntegrationJobData): Promise<voi
     return;
   }
 
-  // 2) NO DB context: all UniFi HTTP (listHosts, per-site devices/metrics, 429
-  //    backoff sleeps) runs here without holding a connection idle-in-transaction.
+  // 2) NO DB context: all UniFi HTTP (listHosts, one devices read and one
+  //    ISP-metrics read per run, 429 backoff sleeps) runs here without holding a
+  //    connection idle-in-transaction.
   const client = createUnifiClient({ baseUrl: prep.creds.baseUrl, apiKey: prep.creds.apiKey });
   const collected = await collectSyncData(client, prep.mappings);
 

@@ -158,6 +158,25 @@ describe('ConsentWindow', () => {
     expect(api.close).toHaveBeenCalled();
   });
 
+  // #10190 W06: the legacy path (an agent that sends `consent_request`, or the
+  // kind disabled) keeps its safe defaults; kinds/consent.test.tsx pins the
+  // same two rules on the prompt-contract card.
+  it('legacy: Deny is focused when the prompt paints', async () => {
+    const { api } = fakeApi(v2Req);
+    render(<ConsentWindow api={api} />);
+    await flush();
+    expect(document.activeElement).toBe(screen.getByText('Deny'));
+  });
+
+  it('legacy: Esc denies', async () => {
+    const { api } = fakeApi(v2Req);
+    render(<ConsentWindow api={api} />);
+    await flush();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(api.submit).toHaveBeenCalledWith('sess-1', 'deny', 'nonce-1');
+    expect(api.submit).not.toHaveBeenCalledWith('sess-1', 'allow', expect.anything());
+  });
+
   it('shows a request pushed after mount', async () => {
     const { api, push } = fakeApi(null);
     render(<ConsentWindow api={api} />);

@@ -13,10 +13,10 @@
   "targetDevice": "Dispositivo de destino: {{hostname}}",
   "batch": {
     "approveAll": "Aprobar todo ({{count}})",
-    "declineAll": "Rechazar todo ({{count}})",
+    "declineAll": "Denegar todo ({{count}})",
     "groupTitle": "{{count}} solicitudes similares · {{tool}}",
     "moreHostnames": "+{{count}} más",
-    "denyConfirmSummary": "Esto rechaza {{count}} solicitudes de {{org}}."
+    "denyConfirmSummary": "Esto deniega {{count}} solicitudes de {{org}}."
   },
   "filters": {
     "orgLabel": "Organización",
@@ -42,6 +42,7 @@
   },
   "denyPrompt": "¿Por qué rechazas esta solicitud? El motivo es opcional.",
   "denyReasonPlaceholder": "Opcional: se comparte con quien lo solicitó",
+  "denyReasonShownToUserHint": "El usuario final ve esto en su notificación (primeros 500 caracteres).",
   "confirmDeny": "Confirmar rechazo",
   "cancel": "Cancelar",
   "deny": "Rechazar",
@@ -107,7 +108,7 @@
       "cancelled": "Cancelada",
       "completed": "Completada",
       "denied": "Denegada",
-      "refused": "Aprobación rechazada",
+      "refused": "Aprobada, luego bloqueada",
       "approved": "Aprobada",
       "reported": "Reportada",
       "unknown": "Desconocido"
@@ -132,7 +133,7 @@
     "durationValue": "{{minutes}} minutos desde la aprobación",
     "purpose": "Propósito",
     "requestedBy": "Solicitado por",
-    "principalUser": "Chat de IA de Breeze",
+    "principalUser": "Breeze AI",
     "principalApiKey": "Clave de API de MCP",
     "principalOauth": "Conexión OAuth de MCP",
     "paths": "Rutas",
@@ -150,7 +151,7 @@
     }
   },
   "operatorPlan": {
-    "title": "Plan para la tarea del operador de IA",
+    "title": "Plan para la tarea de IA",
     "summary_one": "{{count}} efecto, revisión {{revision}} del plan",
     "summary_other": "{{count}} efectos, revisión {{revision}} del plan",
     "groupBreeze": "Dispositivos de Breeze",
@@ -171,7 +172,7 @@
       "in_progress": "En curso",
       "completed": "Completada",
       "failed": "Fallida",
-      "rejected": "Rechazada",
+      "rejected": "Denegado",
       "expired": "Vencida",
       "cancelled": "Cancelada"
     }

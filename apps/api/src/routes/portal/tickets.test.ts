@@ -698,6 +698,24 @@ describe('POST /tickets — delegates to createTicket', () => {
     );
   });
 
+  // #8883 W5 T5.4: an untouched portal priority is not an explicit choice, so
+  // a routing rule may set it; the service still defaults to 'normal'.
+  it('passes priority through only when the customer chose one (no schema default)', async () => {
+    await app.request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject: 'No priority', description: 'untouched' })
+    });
+    expect(createTicketMock.mock.calls.at(-1)![0].priority).toBeUndefined();
+
+    await app.request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject: 'Chosen', description: 'touched', priority: 'high' })
+    });
+    expect(createTicketMock.mock.calls.at(-1)![0].priority).toBe('high');
+  });
+
   it('returns the same response shape as before (id, ticketNumber, subject, description, status, priority, createdAt, updatedAt)', async () => {
     const res = await app.request('/tickets', {
       method: 'POST',
@@ -1846,6 +1864,79 @@ describe('portal ticketType is read-only (#8596)', () => {
     expect(dbSelectMock.mock.calls[0]![0]).toHaveProperty('ticketType');
     const body = await res.json();
     expect(body.ticket.ticketType).toBe('service_request');
+  });
+});
+
+// ── Merged tombstone names the survivor by its portal number (#10072) ────────
+// `internal_number` (T-YYYY-NNNN) is the staff-side reference; every other
+// portal surface shows the requester-facing `ticket_number`. The survivor
+// select's mock returns exactly the projection's own keys (as Postgres would),
+// so a projection that still asked for internalNumber would carry it out.
+describe('GET /tickets/:id — merged tombstone (#10072)', () => {
+  const SURVIVOR_ID = '9a9a9a9a-1111-4222-8333-444455556666';
+  const SURVIVOR_DB_ROW: Record<string, unknown> = {
+    id: SURVIVOR_ID,
+    ticketNumber: 'HD0XTUGGVV',
+    internalNumber: 'T-2026-0009',
+    subject: 'Printer offline',
+    deletedAt: null,
+  };
+
+  function mockMergedDetail(survivorRow: Record<string, unknown>) {
+    let callCount = 0;
+    dbSelectMock.mockImplementation((projection: Record<string, unknown>) => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          from: vi.fn(() => ({
+            leftJoin: vi.fn(() => ({
+              where: vi.fn(() => ({
+                limit: vi.fn(() => Promise.resolve([{
+                  ...TICKET_ROW,
+                  statusName: 'Closed',
+                  mergedIntoTicketId: SURVIVOR_ID,
+                  mergedAt: new Date('2026-10-20T12:00:00Z'),
+                }])),
+              })),
+            })),
+          })),
+        };
+      }
+      const row = Object.fromEntries(Object.keys(projection).map((k) => [k, survivorRow[k]]));
+      return { from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([row])) })) })) };
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns the survivor\'s portal ticketNumber, never its internal staff number', async () => {
+    mockMergedDetail(SURVIVOR_DB_ROW);
+    const res = await buildApp().request(`/tickets/${TICKET_ID}`, { headers: { Authorization: 'Bearer portal-token' } });
+
+    expect(res.status).toBe(200);
+    const survivorProjection = dbSelectMock.mock.calls[1]![0] as Record<string, unknown>;
+    expect(survivorProjection).toHaveProperty('ticketNumber');
+    expect(survivorProjection).not.toHaveProperty('internalNumber');
+    const body = await res.json();
+    expect(body).toEqual({
+      merged: true,
+      mergedInto: { id: SURVIVOR_ID, ticketNumber: 'HD0XTUGGVV' },
+      mergedAt: '2026-10-20T12:00:00.000Z',
+    });
+    expect(JSON.stringify(body)).not.toContain('T-2026-0009');
+  });
+
+  it('sends nothing of a soft-deleted survivor, its numbers included', async () => {
+    mockMergedDetail({ ...SURVIVOR_DB_ROW, deletedAt: new Date() });
+    const res = await buildApp().request(`/tickets/${TICKET_ID}`, { headers: { Authorization: 'Bearer portal-token' } });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({ merged: true, mergedInto: null, survivorDeleted: true });
+    expect(JSON.stringify(body)).not.toContain('HD0XTUGGVV');
+    expect(JSON.stringify(body)).not.toContain('T-2026-0009');
   });
 });
 

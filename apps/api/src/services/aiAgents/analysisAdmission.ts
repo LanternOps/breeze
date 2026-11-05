@@ -18,7 +18,12 @@
  * COMPILE ERROR here, not a blank toast in production.
  */
 import { resolveArtifact } from '../artifacts/artifactService';
-import { createAndEnqueueAgentRun, type AgentRunSkipReason } from './runService';
+import {
+  createAndEnqueueAgentRun,
+  GrantDepthExceededError,
+  type AgentRunSkipReason,
+  type CreateAgentRunInput,
+} from './runService';
 
 /**
  * What a technician can be told. Deliberately smaller than the skip union and
@@ -46,7 +51,11 @@ export type AnalysisAdmissionRefusal =
   | 'artifact_forbidden'
   | 'enqueue_failed'
   // AI model registry W03: the agents' AI model is unusable here right now.
-  | 'model_unavailable';
+  | 'model_unavailable'
+  // Wisp W07: the delegation grant refused the admission (inactive, the org
+  // outside its ceiling, or the depth-one guard). Only the Wisp coordinator
+  // passes a grant, so a chat technician never sees it.
+  | 'grant_refused';
 
 export interface AdmitAnalysisRunInput {
   orgId: string;
@@ -58,6 +67,12 @@ export interface AdmitAnalysisRunInput {
   siteId: string | null;
   stagedHandles: string[];
   dedupeKey: string;
+  /**
+   * Wisp W07 — TRUSTED INTERNAL INPUT: the coordinator's analysis launcher
+   * forwards the grant pin (and the requesting assessment run) unchanged.
+   * Never set from a request body.
+   */
+  grant?: CreateAgentRunInput['grant'];
 }
 
 export type AdmitAnalysisRunResult =
@@ -132,10 +147,10 @@ export const SKIP_REASON_REFUSALS = {
   // AI Suggested Fixes W3 — only the automation ai_triage lane supplies the
   // probe that yields this, so it is unreachable from an analysis admission.
   proven_fix_available: 'analysis_not_available',
-  // Wisp W02 — only a grant-bearing admission (Wisp's own coordinator) can
-  // yield these; admitAnalysisRun never passes a grant.
-  grant_inactive: 'analysis_not_available',
-  grant_org_out_of_ceiling: 'analysis_not_available',
+  // Wisp W02/W07 — only a grant-bearing admission (the Wisp coordinator's
+  // analysis launcher) can yield these.
+  grant_inactive: 'grant_refused',
+  grant_org_out_of_ceiling: 'grant_refused',
   // Wisp W05b — the assessment profile's volume guards and its grant
   // precondition; unreachable (an analysis admission is never an assessment).
   max_concurrent_assessment_runs: 'max_concurrent_analysis_runs',
@@ -163,27 +178,37 @@ export async function admitAnalysisRun(input: AdmitAnalysisRunInput): Promise<Ad
     if (!record) return { created: false, refusal: 'artifact_forbidden' };
   }
 
-  const result = await createAndEnqueueAgentRun({
-    orgId: input.orgId,
-    kind: 'triage',
-    triggerKind: 'manual',
-    deviceId: null,
-    dedupeKey: input.dedupeKey,
-    profile: 'analysis',
-    // The chat session, the goal and the site live in `trigger_ref`, not in
-    // dedicated columns: `ai_agent_runs.session_id` is the AGENT session the
-    // run loop opens, a different thing from the chat session that launched
-    // this, and conflating them would make the run page link to the wrong
-    // conversation.
-    triggerRef: {
-      source: 'chat_analysis',
-      goal: input.goal,
-      chatSessionId: input.sessionId,
-      siteId: input.siteId,
-      requestedByUserId: input.requestedByUserId,
-    },
-    analysis: { deviceIds: input.deviceIds, inputHandles: input.stagedHandles },
-  });
+  let result: Awaited<ReturnType<typeof createAndEnqueueAgentRun>>;
+  try {
+    result = await createAndEnqueueAgentRun({
+      orgId: input.orgId,
+      kind: 'triage',
+      triggerKind: 'manual',
+      deviceId: null,
+      dedupeKey: input.dedupeKey,
+      profile: 'analysis',
+      // The chat session, the goal and the site live in `trigger_ref`, not in
+      // dedicated columns: `ai_agent_runs.session_id` is the AGENT session the
+      // run loop opens, a different thing from the chat session that launched
+      // this, and conflating them would make the run page link to the wrong
+      // conversation.
+      triggerRef: {
+        source: 'chat_analysis',
+        goal: input.goal,
+        chatSessionId: input.sessionId,
+        siteId: input.siteId,
+        requestedByUserId: input.requestedByUserId,
+      },
+      analysis: { deviceIds: input.deviceIds, inputHandles: input.stagedHandles },
+      ...(input.grant ? { grant: input.grant } : {}),
+    });
+  } catch (err) {
+    // The depth-one guard throws (w00 A11): the coordinator checks depth
+    // first, so this is a caller bug — refused, never admitted, and never a
+    // 500 on the caller's surface.
+    if (err instanceof GrantDepthExceededError) return { created: false, refusal: 'grant_refused' };
+    throw err;
+  }
 
   if (!result.created) {
     const refusal = SKIP_REASON_REFUSALS[result.skipped];

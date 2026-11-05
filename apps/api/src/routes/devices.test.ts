@@ -116,6 +116,7 @@ vi.mock('drizzle-orm', () => {
     and: vi.fn((...args: unknown[]) => ({ and: args })),
     gte: vi.fn((...args: unknown[]) => ({ gte: args })),
     like: vi.fn((...args: unknown[]) => ({ like: args })),
+    ilike: vi.fn((...args: unknown[]) => ({ ilike: args })),
     sql: sqlTag,
     desc: vi.fn((col: unknown) => ({ desc: col })),
     asc: vi.fn((col: unknown) => ({ asc: col })),

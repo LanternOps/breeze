@@ -28,7 +28,7 @@ import { isEligibleTicketRecipient } from './ticketPush';
 import type { AiDraftOutboxClaim } from './aiTimeEntryProposal';
 import type { AddinTicketSummary, TicketType } from '@breeze/shared';
 import { defaultTicketTypeForSource } from './ticketType';
-import { fromMinorUnits, toMinorUnits } from '@breeze/shared';
+import { fromMinorUnits, TICKET_ATTACHMENT_LIMITS, toMinorUnits } from '@breeze/shared';
 import { markRequestAuditWritten } from './auditRequestTracking';
 import { scrubAlertText } from '../utils/endpointDisplay';
 import { LIVE_TICKET_WRITE, isImportWrite, type ImportTicketWriteMode, type TicketWriteMode } from './ticketWriteMode';
@@ -40,6 +40,7 @@ import {
   slaClockRowOf,
 } from './ticketSlaDeadlines';
 import { resolveBusinessCalendar } from './businessCalendars/resolve';
+import { evaluateRoutingRules, type RoutingOutcome } from './ticketRouting/evaluate';
 import { calendarPatchForOrgMove } from './businessCalendars/reresolve';
 
 export type { OpenWindow, TicketWriteMode } from './ticketWriteMode';
@@ -57,7 +58,7 @@ export const TICKET_STATUS_TRANSITIONS: Record<TicketStatus, readonly TicketStat
   closed: ['open']
 };
 
-export type TicketServiceErrorStatus = 400 | 403 | 404 | 409 | 500;
+export type TicketServiceErrorStatus = 400 | 403 | 404 | 409 | 422 | 500;
 
 /**
  * Machine-readable error codes for callers that aggregate outcomes (e.g. the
@@ -98,7 +99,15 @@ export type TicketServiceErrorCode =
   // #8313 import mode (spec §4.2, §4.4): a historic time in the future or
   // before the ticket was created, or a write outside the window's orgs.
   | 'IMPORT_TIME_INVALID'
-  | 'MIGRATION_WINDOW_ORG_NOT_ALLOWED';
+  | 'MIGRATION_WINDOW_ORG_NOT_ALLOWED'
+  // #9960: an edit/delete aimed at a system-generated or system-authored row.
+  | 'SYSTEM_COMMENT_READ_ONLY'
+  // #8313 W1: an imported file claimed with a stored type outside the
+  // allowlist and application/octet-stream (spec 2026-10-19 §4.4).
+  | 'IMPORT_ATTACHMENT_TYPE_INVALID'
+  // Partner API alert-origin create errors, thrown inside the create transaction.
+  | 'partner_alert_not_found'
+  | 'partner_ticket_alert_org_mismatch';
 
 export class TicketServiceError extends Error {
   constructor(
@@ -604,7 +613,7 @@ function throwIfPartnerUnresolvable(partnerId: string | null): asserts partnerId
  * explicit partner comparison preserves the cross-tenant boundary before the
  * active/read/org/current-site eligibility check below.
  */
-async function assertAssigneeEligible(
+export async function assertAssigneeEligible(
   assigneeId: string,
   partnerId: string | null,
   orgId: string,
@@ -1028,6 +1037,14 @@ interface BaseCreateTicketInput {
   ticketType?: TicketType;
   /** Import mode only (#8313): the source ticket's tags. Ignored on a live create. */
   tags?: string[];
+  /**
+   * #8883 W5 (Gate B14): the id of the closed ticket this one continues (an
+   * inbound reply to a closed thread, an Office add-in follow-up). Explicit
+   * provenance — never inferred from the subject or description. A
+   * continuation skips routing and copies nothing from its predecessor
+   * (today's behaviour). Service-internal: not on any HTTP schema.
+   */
+  continuationOfTicketId?: string;
 }
 
 export type TicketWorkKind = 'support' | 'deliverable' | 'project_task';
@@ -1316,8 +1333,41 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor,
     resolvedSubmitterEmail = resolvedSubmitterEmail ?? namedContact.email ?? null;
   }
 
-  const priority = input.priority ?? intake?.defaultPriority ?? 'normal';
-  const initialCoreStatus: TicketStatus = input.assigneeId ? 'open' : 'new';
+  // #8883 W5 (spec §5.2): routing rules, after the requester is resolved (the
+  // domain condition sees the final address) and before the priority, initial
+  // status, SLA targets and number. Skipped for import mode and continuations
+  // (Gate B14). A rule fills only what the caller — or the intake form, a
+  // configured choice — did not set; the explicit-assignee check above stays
+  // the caller's, the evaluator re-checks a rule assignee itself.
+  const routing: RoutingOutcome | null = importMode || input.continuationOfTicketId || !org.partnerId
+    ? null
+    : await evaluateRoutingRules(
+      db,
+      { partnerId: org.partnerId, orgId: input.orgId, deviceId: input.deviceId ?? null },
+      {
+        source: input.source,
+        priority: input.priority ?? intake?.defaultPriority ?? null,
+        categoryId: effectiveCategoryId ?? null,
+        subject,
+        requesterEmail: resolvedSubmitterEmail,
+      },
+      {
+        priority: input.priority !== undefined || intake?.defaultPriority != null,
+        categoryId: effectiveCategoryId !== undefined,
+        assigneeId: input.assigneeId !== undefined,
+        statusId: false,
+      },
+    );
+  const routed = routing?.ruleId ? routing : null;
+  const finalCategoryId = effectiveCategoryId ?? routed?.applied.categoryId;
+  if (!effectiveCategoryId && routed?.applied.categoryId) {
+    category = await assertCategoryInPartner(routed.applied.categoryId, org.partnerId);
+  }
+  const finalAssigneeId = input.assigneeId ?? routed?.applied.assigneeId;
+
+  const priority = input.priority ?? intake?.defaultPriority ?? routed?.applied.priority ?? 'normal';
+  // A rule's status overrides the assignee derivation (spec §5.2).
+  const initialCoreStatus: TicketStatus = routed?.appliedStatusCore ?? (finalAssigneeId ? 'open' : 'new');
 
   const workKind: TicketWorkKind = input.workKind ?? 'support';
   const ticketType: TicketType =
@@ -1329,7 +1379,7 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor,
     importMode
       ? Promise.resolve({ responseMinutes: null, resolutionMinutes: null })
       : resolveEffectiveSlaTargetsForTicket({ orgId: input.orgId, partnerId: org.partnerId, priority, category, workKind }),
-    getSystemStatusId(org.partnerId, initialCoreStatus),
+    routed?.applied.statusId ? Promise.resolve(routed.applied.statusId) : getSystemStatusId(org.partnerId, initialCoreStatus),
   ]);
 
   // An imported 2021 ticket is T-2021-NNNN: the UTC year of its source time.
@@ -1346,6 +1396,8 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor,
   // new tickets only. An imported ticket carries null targets (§4.3 of the
   // import spec) and keeps the 24×7 snapshot.
   const createdAt = importMode ? importMode.at : new Date();
+  // A routed pending / on_hold status starts the SLA clock paused (spec §5.2).
+  const slaPausedAt = initialCoreStatus === 'pending' || initialCoreStatus === 'on_hold' ? createdAt : null;
   const slaCalendarRevisionId = importMode
     ? null
     : (await resolveBusinessCalendar(db, { partnerId: org.partnerId, orgId: input.orgId })).revisionId;
@@ -1354,7 +1406,7 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor,
       createdAt,
       responseSlaMinutes: effectiveSla.responseMinutes,
       resolutionSlaMinutes: effectiveSla.resolutionMinutes,
-      slaPausedAt: null,
+      slaPausedAt,
       slaPausedBusinessMinutes: 0,
       firstResponseAt: null,
       resolvedAt: null,
@@ -1371,12 +1423,14 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor,
     subject,
     description: [input.description?.trim(), intake?.descriptionBlock].filter(Boolean).join('\n\n') || null,
     deviceId: input.deviceId ?? null,
-    categoryId: effectiveCategoryId ?? null,
+    categoryId: finalCategoryId ?? null,
     priority,
     dueDate: input.dueDate ?? null,
-    assignedTo: input.assigneeId ?? null,
+    assignedTo: finalAssigneeId ?? null,
     status: initialCoreStatus,
     statusId: statusId ?? null,
+    slaPausedAt,
+    routingRuleId: routed?.ruleId ?? null,
     source: input.source,
     submittedBy: resolvedSubmittedBy,
     requesterContactId: resolvedRequesterContactId,
@@ -1398,7 +1452,9 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor,
           resolutionSlaMinutes: 'service_principal' as const,
         }
       : input.ticketType !== undefined ? { ticketType: actorProvenance(actor) } : undefined,
-    tags: importMode && input.tags?.length ? input.tags : intake?.defaultTags.length ? intake.defaultTags : undefined,
+    tags: importMode && input.tags?.length
+      ? input.tags
+      : mergeRoutedTags(intake?.defaultTags ?? [], routed?.applied.tags ?? []),
     customFields: intake ? intake.intakeSnapshot : undefined,
     ...slaDeadlines,
     createdAt,
@@ -1424,10 +1480,17 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor,
   // Ids and enum labels only (never subject/description). No external id:
   // that key is namespaced per Partner API principal (ticket_external_refs)
   // and an org webhook has no single principal to answer for.
+  // #8883 W5 (spec §5.4): the routing explanation is a snapshot on the
+  // ticket, written in this transaction, so renaming or deleting the rule
+  // never erases it.
+  if (routed) await writeRoutingNote(ticket.id, routed);
+
   await fx.writeTicketOutbox(input.orgId, ticket.id, 'ticket.created', {
     internalNumber,
     source: input.source,
-    assigneeId: input.assigneeId ?? null,
+    // The FINAL assignee: a rule's assignment is part of the insert, so no
+    // separate ticket.assigned row (spec §5.2).
+    assigneeId: finalAssigneeId ?? null,
     ...actorEventIdentity(actor),
     partnerId: org.partnerId ?? null,
   });
@@ -1438,10 +1501,72 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor,
     resourceType: 'ticket',
     resourceId: ticket.id,
     resourceName: internalNumber,
-    details: { source: input.source, ...actorAuditDetails(actor) },
+    details: {
+      source: input.source,
+      ...(routed ? { routingRuleId: routed.ruleId, routingActions: { applied: routed.applied, skipped: routed.skipped } } : {}),
+      ...actorAuditDetails(actor),
+    },
     result: 'success'
   });
   return ticket;
+}
+
+/** Intake-form default tags, then a rule's tags not already present. Undefined when empty (column default). */
+function mergeRoutedTags(base: readonly string[], routed: readonly string[]): string[] | undefined {
+  const merged = [...base, ...routed.filter((t) => !base.includes(t))];
+  return merged.length > 0 ? merged : undefined;
+}
+
+const ROUTING_ACTION_LABELS: Record<RoutingOutcome['skipped'][number]['action'], string> = {
+  set_assignee: 'assignee',
+  set_category: 'category',
+  set_status: 'status',
+};
+const ROUTING_SKIP_LABELS: Record<RoutingOutcome['skipped'][number]['reason'], string> = {
+  assignee_ineligible: 'not eligible for this ticket',
+  assignee_deleted: 'user no longer exists',
+  category_foreign: 'category is not available to this organization',
+  status_foreign: 'status is not available to this organization',
+  status_inactive: 'status is inactive',
+  status_core_not_allowed: 'a new ticket cannot start in that status',
+};
+
+/** Plain-text routing explanation: rule name snapshot, applied and skipped actions. */
+export function routingNoteContent(outcome: Pick<RoutingOutcome, 'ruleName' | 'applied' | 'skipped'>): string {
+  const applied: string[] = [];
+  if (outcome.applied.assigneeId) applied.push('assignee');
+  if (outcome.applied.priority) applied.push(`priority (${outcome.applied.priority})`);
+  if (outcome.applied.categoryId) applied.push('category');
+  if (outcome.applied.statusId) applied.push('status');
+  if (outcome.applied.tags?.length) applied.push(`tags (${outcome.applied.tags.join(', ')})`);
+  const lines = [
+    `Routing rule "${outcome.ruleName ?? ''}" matched${applied.length ? ` and set: ${applied.join(', ')}` : ' (no action applied)'}.`,
+  ];
+  if (outcome.skipped.length) {
+    lines.push(`Skipped: ${outcome.skipped.map((s) => `${ROUTING_ACTION_LABELS[s.action]} — ${ROUTING_SKIP_LABELS[s.reason]}`).join('; ')}.`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * The routing system note of a just-created ticket. Registered in
+ * ticketChildWriters.ts as `maintenance`: the ticket row was inserted by this
+ * same transaction moments earlier and no other transaction can see it, so no
+ * ticket lock is needed to order this write and none can form a cycle; and a
+ * brand-new ticket cannot be a merge tombstone.
+ */
+async function writeRoutingNote(ticketId: string, outcome: RoutingOutcome): Promise<void> {
+  await db.insert(ticketComments).values({
+    ticketId,
+    userId: null,
+    portalUserId: null,
+    authorName: 'Breeze',
+    authorType: 'internal',
+    commentType: 'system',
+    originPrincipalKind: 'system',
+    content: routingNoteContent(outcome),
+    isPublic: false,
+  });
 }
 
 export interface ChangeStatusOptions {
@@ -2530,6 +2655,28 @@ export interface AddCommentInput {
 export interface ImportedCommentAuthorship {
   sourceId: string;
   author: { kind: 'staff' | 'requester'; name: string; email?: string | null };
+  /**
+   * #8313 W1 (spec 2026-10-19 §4.3.1): the files of this comment that the
+   * import writer reserved and stored, claimed in this comment's transaction
+   * (the import claim below). Each carries the real metadata that replaces
+   * the reservation's provisional one. No count cap: the live cap of 5 lives
+   * in the upload route's validator, and a historic email keeps every file.
+   */
+  attachments?: ImportedAttachmentClaim[];
+}
+
+/**
+ * The stored types an import claim accepts (#8313 W1, spec 2026-10-19 §4.4):
+ * the sniffed allowlist, or application/octet-stream for everything else.
+ */
+const IMPORTED_ATTACHMENT_TYPES: ReadonlySet<string> = new Set([...TICKET_ATTACHMENT_LIMITS.allowedMimes, 'application/octet-stream']);
+
+/** A reserved import file and its real metadata (sniffed type, size, sha256 hex). */
+export interface ImportedAttachmentClaim {
+  id: string;
+  contentType: string;
+  byteSize: number;
+  sha256: string;
 }
 
 /**
@@ -2542,6 +2689,13 @@ export interface ImportedCommentAuthorship {
  * resume), and advances updated_at with it, never backwards — as on a live
  * comment, no other comment touches updated_at. Nothing is emitted, queued or
  * audited.
+ *
+ * Import mode claims `input.imported.attachments`, never `attachmentIds`
+ * (#8313 W1, spec 2026-10-19 §4.3.1): the owner predicate is the import's
+ * (no uploader, this window's principal, a source id), so neither mode can
+ * claim the other's rows; attached_at and created_at take the source time,
+ * and the real metadata replaces the provisional one. A shortfall is still
+ * 409 ATTACHMENT_NOT_CLAIMABLE and rolls the comment back.
  */
 export async function addTicketComment(
   ticketId: string,
@@ -2559,6 +2713,22 @@ export async function addTicketComment(
     throw new TicketServiceError('An imported comment needs its source id and original author', 400, 'INVALID_INPUT');
   }
   const attachmentIds = input.attachmentIds ?? [];
+  // #8313 W1: an import claims its reservations, never uploads.
+  if (importMode && attachmentIds.length > 0) {
+    throw new TicketServiceError('An imported comment claims its imported attachments only', 400, 'INVALID_INPUT');
+  }
+  const importedAttachments = importMode ? imported?.attachments ?? [] : [];
+  // §4.4: an imported file is stored as one of the sniffed allowlisted types
+  // or application/octet-stream, nothing else (the routes serve the stored
+  // type; anything rendering inline must have passed the sniff).
+  const badType = importedAttachments.find((a) => !IMPORTED_ATTACHMENT_TYPES.has(a.contentType));
+  if (badType) {
+    throw new TicketServiceError(
+      `An imported attachment cannot be stored as ${JSON.stringify(badType.contentType)}`,
+      400,
+      'IMPORT_ATTACHMENT_TYPE_INVALID'
+    );
+  }
 
   // W08 #3902: this used to be four separate writes on the global `db`. The
   // attachment claim must roll back with the comment, so the comment insert,
@@ -2665,6 +2835,51 @@ export async function addTicketComment(
       `);
       claimed = (Array.isArray(result) ? result : []) as typeof claimed;
       if (claimed.length !== attachmentIds.length) {
+        throw new TicketServiceError(
+          'One or more attachments could not be attached to this comment',
+          409,
+          'ATTACHMENT_NOT_CLAIMABLE'
+        );
+      }
+    }
+
+    // #8313 W1 (spec 2026-10-19 §4.3.1): the import claim. The live owner
+    // predicate (uploaded_by_user_id = the human) becomes the import's: no
+    // uploader, this window's principal, a source id. A NULL uploader never
+    // equals a user and a human upload has no origin principal, so neither
+    // claim can take the other's rows. The metadata travels as one JSON
+    // parameter, however many files the comment has.
+    if (importMode && importedAttachments.length > 0) {
+      const at = importMode.at.toISOString();
+      const metadata = JSON.stringify(importedAttachments.map((a) => ({
+        id: a.id, content_type: a.contentType, byte_size: a.byteSize, sha256: a.sha256,
+      })));
+      const result = await tx.execute(sql`
+        UPDATE ticket_attachments AS a
+           SET comment_id = ${row.id}::uuid,
+               attached_at = ${at}::timestamptz,
+               created_at = ${at}::timestamptz,
+               content_type = m.content_type,
+               byte_size = m.byte_size,
+               sha256 = m.sha256,
+               migration_window_id = ${importMode.window.id}::uuid
+          FROM jsonb_to_recordset(${metadata}::jsonb) AS m(id uuid, content_type varchar(64), byte_size integer, sha256 char(64))
+         WHERE a.id = m.id
+           AND a.ticket_id = ${ticketId}::uuid
+           AND a.org_id = ${ticket.orgId}::uuid
+           AND a.comment_id IS NULL
+           AND a.uploaded_by_user_id IS NULL
+           AND a.origin_principal_id = ${importMode.window.principalId}::uuid
+           AND a.import_source_id IS NOT NULL
+        RETURNING a.id,
+                  a.comment_id        AS "commentId",
+                  a.content_type      AS "contentType",
+                  a.byte_size         AS "byteSize",
+                  a.original_filename AS "originalFilename",
+                  a.created_at        AS "createdAt"
+      `);
+      claimed = (Array.isArray(result) ? result : []) as typeof claimed;
+      if (claimed.length !== importedAttachments.length) {
         throw new TicketServiceError(
           'One or more attachments could not be attached to this comment',
           409,
@@ -3506,6 +3721,23 @@ export async function createTicketFromAlert(
  */
 export const SYSTEM_COMMENT_TYPES = new Set(['status_change', 'assignment', 'time_entry', 'system']);
 
+/**
+ * #9960: true for any row Breeze wrote rather than a person — a system comment
+ * TYPE, or a system-authored note that uses an ordinary type (the deliverable
+ * instructions / awaiting-evidence / auto-evidence notes are commentType
+ * 'internal' with authorType 'system' and originPrincipalKind 'system').
+ * Such rows have no author to own them, so `canManageAny` must not unlock them.
+ */
+export function isSystemAuthoredComment(comment: {
+  commentType: string;
+  authorType?: string | null;
+  originPrincipalKind?: string | null;
+}): boolean {
+  return SYSTEM_COMMENT_TYPES.has(comment.commentType)
+    || comment.authorType === 'system'
+    || comment.originPrincipalKind === 'system';
+}
+
 async function loadCommentWithTicket(commentId: string) {
   const rows = await db
     .select()
@@ -3523,8 +3755,8 @@ function assertCommentEditable(
   actor: TicketActor,
   canManageAny: boolean
 ) {
-  if (SYSTEM_COMMENT_TYPES.has(comment.commentType)) {
-    throw new TicketServiceError('System-generated entries cannot be edited or deleted', 400);
+  if (isSystemAuthoredComment(comment)) {
+    throw new TicketServiceError('System-generated entries cannot be edited or deleted', 409, 'SYSTEM_COMMENT_READ_ONLY');
   }
   if (comment.deletedAt) {
     throw new TicketServiceError('Comment already deleted', 409);

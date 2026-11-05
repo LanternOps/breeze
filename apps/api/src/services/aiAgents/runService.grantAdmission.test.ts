@@ -264,8 +264,47 @@ describe('admission depth guard (w00 A11)', () => {
   });
 
   it('requestedByRunId naming a run under the same grant and org (Wisp\'s own assessment) is admitted', async () => {
-    dbMockState.rowQueues.ai_agent_runs!.unshift([{ grantId: 'g1', orgId: ORG_ID }]);
+    dbMockState.rowQueues.ai_agent_runs!.unshift([{ grantId: 'g1', orgId: ORG_ID, depth: 0, profile: 'assessment' }]);
     await expect(createAndEnqueueAgentRun(input({ grant: { ...GRANT, requestedByRunId: PARENT_RUN_ID } }))).resolves.toMatchObject({ created: true });
     expect(dbMockState.insertValues[0]).toMatchObject({ grantId: 'g1', grantRevisionId: 'r1' });
+  });
+
+  // W07 (w00 A11): the true depth-one predicate, keyed on the lineage columns.
+  it('throws GrantDepthExceededError when the requesting run is itself a child (depth 1), even under the same grant and org', async () => {
+    dbMockState.rowQueues.ai_agent_runs!.unshift([{ grantId: 'g1', orgId: ORG_ID, depth: 1, profile: 'assessment' }]);
+    await expect(createAndEnqueueAgentRun(input({ grant: { ...GRANT, requestedByRunId: PARENT_RUN_ID } }))).rejects.toMatchObject({ code: 'grant_depth_exceeded' });
+    expect(dbMockState.insertValues).toEqual([]);
+    expect(resolveGrantCeiling).not.toHaveBeenCalled();
+  });
+
+  it('throws GrantDepthExceededError when the requesting run is grant-bearing but not an assessment', async () => {
+    dbMockState.rowQueues.ai_agent_runs!.unshift([{ grantId: 'g1', orgId: ORG_ID, depth: 0, profile: 'sweep' }]);
+    await expect(createAndEnqueueAgentRun(input({ grant: { ...GRANT, requestedByRunId: PARENT_RUN_ID } }))).rejects.toBeInstanceOf(GrantDepthExceededError);
+    expect(dbMockState.insertValues).toEqual([]);
+  });
+
+  it('stamps depth 1 + lineage on a specialist child', async () => {
+    dbMockState.rowQueues.ai_agent_runs!.unshift([{ grantId: 'g1', orgId: ORG_ID, depth: 0, profile: 'assessment' }]);
+    await createAndEnqueueAgentRun(input({ grant: { ...GRANT, requestedByRunId: PARENT_RUN_ID } }));
+    expect(dbMockState.insertValues[0]).toMatchObject({
+      grantId: 'g1', grantRevisionId: 'r1', requestedByRunId: PARENT_RUN_ID, parentGrantRevisionId: 'r1', depth: 1,
+    });
+  });
+
+  it('stamps depth 0 and null lineage on a grant-bearing run with no requester (an assessment) and on a grant-less run', async () => {
+    await createAndEnqueueAgentRun(input({ grant: GRANT }));
+    expect(dbMockState.insertValues[0]).toMatchObject({ requestedByRunId: null, parentGrantRevisionId: null, depth: 0 });
+    seedAdmission();
+    await createAndEnqueueAgentRun(input());
+    expect(dbMockState.insertValues[1]).toMatchObject({ requestedByRunId: null, parentGrantRevisionId: null, depth: 0 });
+  });
+
+  it('an enqueue-failed reclaim stamps THIS attempt\'s lineage', async () => {
+    dbMockState.rowQueues.ai_agent_runs!.unshift([{ grantId: 'g1', orgId: ORG_ID, depth: 0, profile: 'assessment' }]);
+    dbMockState.insertRows = [];
+    dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, status: 'queued' }];
+    await createAndEnqueueAgentRun(input({ grant: { ...GRANT, requestedByRunId: PARENT_RUN_ID } }));
+    const reclaimSet = dbMockState.updateSets.find((v) => 'policySnapshot' in v);
+    expect(reclaimSet).toMatchObject({ requestedByRunId: PARENT_RUN_ID, parentGrantRevisionId: 'r1', depth: 1 });
   });
 });

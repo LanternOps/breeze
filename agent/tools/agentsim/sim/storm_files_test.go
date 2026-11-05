@@ -15,8 +15,15 @@ func TestCommittedScenariosLoad(t *testing.T) {
 		t.Setenv(k, "placeholder")
 	}
 	files, err := filepath.Glob("../../../../load-tests/agentsim/storms/*.json")
-	if err != nil || len(files) < 7 {
-		t.Fatalf("found %d scenario files (%v), want the 7 W06 ships", len(files), err)
+	if err != nil || len(files) < 8 {
+		t.Fatalf("found %d scenario files (%v), want the 7 W06 ships plus drain-120", len(files), err)
+	}
+	haveDrain := false
+	for _, f := range files {
+		haveDrain = haveDrain || filepath.Base(f) == "drain-120.json"
+	}
+	if !haveDrain {
+		t.Fatal("storms/drain-120.json (W09) is missing")
 	}
 	for _, f := range files {
 		sc, err := LoadScenario(f, os.LookupEnv)

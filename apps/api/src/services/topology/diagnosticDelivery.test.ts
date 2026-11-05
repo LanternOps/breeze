@@ -36,9 +36,19 @@ describe('deliverTopologyDiagnosticCommand', () => {
   });
 
   it('pushes a claimed command', async () => {
-    mocks.claim.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date() });
+    mocks.claim.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date(), agentId: 'agent-1' });
     expect(await deliverTopologyDiagnosticCommand(input)).toBe(true);
     expect(mocks.send).toHaveBeenCalledTimes(1);
+    expect(mocks.send).toHaveBeenCalledWith('agent-1', { id: 'cmd-1', type: 'network_diagnostic', payload: {} });
+  });
+
+  it('pushes to the agent id read in the claim, not the one bound before it (#8318 §6.4)', async () => {
+    // `input.agentId` (agent-1) was read when the command was bound; a
+    // reattach / re-enroll committed before the claim.
+    mocks.claim.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date(), agentId: 'agent-after-reattach' });
+    expect(await deliverTopologyDiagnosticCommand(input)).toBe(true);
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+    expect(mocks.send).toHaveBeenCalledWith('agent-after-reattach', { id: 'cmd-1', type: 'network_diagnostic', payload: {} });
   });
 
   it('never pushes a command the claim cancelled, and does not release it', async () => {

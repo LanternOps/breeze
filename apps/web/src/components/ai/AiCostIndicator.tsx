@@ -121,8 +121,13 @@ export default function AiCostIndicator({
   const costDisplay = (
     monthlyBudget
       ? `${formatCurrency(monthlyUsed / 100)} / ${formatCurrency(monthlyBudget / 100)}`
-      : `${formatCurrency(monthlyUsed / 100)} this month`
-  ) + (usage.credits ? ` · ${formatNumber(usage.credits.remaining)} credits` : '');
+      : t("aiCostIndicator.thisMonth", { amount: formatCurrency(monthlyUsed / 100) })
+  ) + (usage.credits
+    ? ` · ${t("aiCostIndicator.credits", {
+        count: usage.credits.remaining,
+        formatted: formatNumber(usage.credits.remaining),
+      })}`
+    : '');
 
   const barColor =
     percentage > 90

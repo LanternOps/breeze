@@ -30,7 +30,8 @@ export function searchSettingsCatalog(
 
   const hits: SettingsSearchHit[] = [];
   for (const entry of SETTINGS_CATALOG) {
-    if (!isNavGateVisible(entry, ctx)) continue;
+    // Group hubs (Settings → AI) are sidebar navigation, not settings screens.
+    if (entry.sidebarOnly || !isNavGateVisible(entry, ctx)) continue;
     const title = translate(entry.labelKey, entry.name);
     const description = entry.descriptionKey ? translate(entry.descriptionKey, '') : '';
     const haystack = `${title} ${entry.name} ${description}`.toLowerCase();

@@ -807,7 +807,7 @@
   "scriptAiInput": {
     "placeholder": {
       "ready": "Décrivez le script dont vous avez besoin...",
-      "opening": "Ouverture de l’assistant IA..."
+      "opening": "Ouverture de Breeze AI..."
     },
     "actions": {
       "stopGenerating": "Arrêter la génération",
@@ -823,15 +823,15 @@
     "approval": {
       "title": "Approbation requise",
       "approve": "Approuver",
-      "reject": "Rejeter"
+      "reject": "Refuser"
     },
     "empty": {
-      "title": "Assistant IA de script",
-      "description": "Décrivez votre besoin et j’écrirai le script pour vous."
+      "title": "Breeze AI",
+      "description": "Demandez à Breeze AI d’écrire ou de vérifier ce script."
     }
   },
   "scriptAiPanel": {
-    "title": "Assistant IA de script",
+    "title": "Breeze AI",
     "actions": {
       "redoTitle": "Réappliquer la modification IA",
       "redo": "Rétablir",
@@ -982,7 +982,8 @@
     },
     "confirm": {
       "title": "Confirmer l’exécution",
-      "description": "Exécuter « {{name}} » sur {{count}} appareil(s) en tant que {{runAs}}. Les scripts sont mis en file d’attente et commencent à s’exécuter immédiatement."
+      "description": "Exécuter « {{name}} » sur {{count}} appareil(s) en tant que {{runAs}}. Les scripts sont mis en file d’attente et commencent à s’exécuter immédiatement.",
+      "descriptionOffline": "Exécuter « {{name}} » sur {{count}} appareil(s) en tant que {{runAs}}. Les scripts sont mis en file d’attente maintenant : les appareils en ligne démarrent tout de suite, et {{offline}} appareil(s) hors ligne s’exécuteront lorsqu’ils seront de nouveau en ligne."
     },
     "selectedCount": "{{count}} appareil(s) sélectionné(s)",
     "executeBlocked": "L’exécution est indisponible : un appareil sélectionné ne peut pas exécuter ce script ici (il appartient peut-être à une autre organisation que celle affichée, ou il n’est plus accessible).",
@@ -1027,6 +1028,7 @@
       "submitting": "Envoi à {{count}} groupe(s)...",
       "warningsTitle": "Remarques du serveur",
       "confirmDescription": "Exécuter « {{name}} » sur {{groups}} groupe(s) d'appareils en tant que {{runAs}}. Les scripts sont mis en file d'attente et démarrent immédiatement.",
+      "confirmDescriptionOffline": "Exécuter « {{name}} » sur {{groups}} groupe(s) d’appareils en tant que {{runAs}}. Les scripts sont mis en file d’attente maintenant : les appareils en ligne démarrent tout de suite, et {{offline}} appareil(s) hors ligne s’exécuteront lorsqu’ils seront de nouveau en ligne.",
       "confirmMembers": "{{count}} appareil(s) unique(s) font partie de ces groupes en ce moment ; l'appartenance est relue lorsque vous confirmez.",
       "confirmMembersUnknown": "Le nombre d'appareils n'est pas encore connu ; l'appartenance est lue lorsque vous confirmez.",
       "errors": {
@@ -1134,8 +1136,8 @@
       "exitCodeSeverity": "Sévérité des codes de sortie"
     },
     "ai": {
-      "toggleTitle": "Activer/désactiver l’assistant IA de script (⌘⇧I)",
-      "button": "Assistant IA"
+      "toggleTitle": "Activer/désactiver Breeze AI (⌘⇧I)",
+      "button": "Breeze AI"
     },
     "parameters": {
       "emptyPrefix": "Aucun paramètre pour l’instant. Les paramètres permettent aux utilisateurs de fournir des valeurs à l’exécution — référencez-les dans votre script comme",

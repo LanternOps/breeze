@@ -213,14 +213,17 @@ describe('notifyBudgetExhaustedOnce', () => {
     expect(h.deliverInApp).toHaveBeenCalledWith({
       userId: USER,
       orgId: ORG,
-      title: 'Wisp paused for today — budget reached',
-      body: 'Raise the daily budget from the thread header to resume.',
+      // The grant stays active (w00), so the copy must not say "paused" (#10145).
+      title: "Wisp hit today's budget — it resumes at 00:00 UTC",
+      body: 'The daily budget resets at 00:00 UTC. Raise it from the thread header to continue sooner.',
       link: `/ai/wisp/thread/${THREAD}`,
       threadId: THREAD,
       grantId: GRANT,
       deepLink: `/ai/wisp/thread/${THREAD}`,
       dedupeKey: `wisp-budget-${GRANT}-2027-01-05`,
     });
+    // W02a: a budget notice is never a thread post (explicit post kinds only).
+    expect(h.deliverInApp.mock.calls[0]![0]).not.toHaveProperty('post');
   });
 
   it('second call in the same window returns false (dedupe key collides)', async () => {
@@ -291,5 +294,24 @@ describe('plan defaults and bounds', () => {
     const err = new EntitlementResolutionError(PARTNER, new Error('db down'));
     h.getEntitlements.mockRejectedValueOnce(err);
     await expect(grantSettingsBounds(PARTNER)).rejects.toBe(err);
+  });
+});
+
+// --- W07 Task 8: metrics call sites ---
+const wm = vi.hoisted(() => ({
+  incWispAssessment: vi.fn(), incWispNudge: vi.fn(), incWispConcern: vi.fn(),
+  incWispGrantPause: vi.fn(), incWispBudgetExhausted: vi.fn(), setWispGrantsActive: vi.fn(),
+}));
+vi.mock('../wispMetrics', () => wm);
+
+describe('chargeableUnderGrant metrics', () => {
+  it('counts wisp_budget_exhausted_total only on a refusal', async () => {
+    wm.incWispBudgetExhausted.mockClear();
+    h.results.push([grantBudgetRow({ budgetCentsPerDay: 200 })], [{ total: 175 }]);
+    await chargeableUnderGrant(GRANT, 25);
+    expect(wm.incWispBudgetExhausted).not.toHaveBeenCalled();
+    h.results.push([grantBudgetRow({ budgetCentsPerDay: 200 })], [{ total: 176 }]);
+    await chargeableUnderGrant(GRANT, 25);
+    expect(wm.incWispBudgetExhausted).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,0 +1,15 @@
+{
+  "protocolVersion": 1,
+  "uid": 0,
+  "sid": "S-1-5-21-1000000000-1000000000-1000000000-1001",
+  "username": "user",
+  "sessionId": "assist-user-4242",
+  "displayEnv": "",
+  "pid": 4242,
+  "binaryHash": "0f343b0931126a20f133d67c2b018a3b5b0ebf6b7c1a9d2a3e1f6f6a4c2b7e10",
+  "helperRole": "assist",
+  "binaryKind": "assist_helper",
+  "consentProtocolVersion": 2,
+  "supportsMessaging": true,
+  "supportsChat": true
+}

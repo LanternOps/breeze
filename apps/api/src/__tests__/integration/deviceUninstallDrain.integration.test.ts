@@ -89,7 +89,7 @@ vi.mock('../../middleware/auth', async (importOriginal) => {
 });
 
 import { getTestDb } from './setup';
-import { createOrganization, createPartner, createSite, createUser } from './db-utils';
+import { createOrganization, createPartner, createSite, createUser, deviceAgentId } from './db-utils';
 import { withSystemDbAccessContext } from '../../db';
 import { deviceCommands, devices, organizations, partners } from '../../db/schema';
 import { isDeviceUninstallDraining } from '../../services/deviceUninstallDrain';
@@ -338,7 +338,9 @@ describe('#3986 delivery — a Removed device collects its uninstall and nothing
     // watchdog upgrade targets, manifest trust keys, renewCert and
     // rotateToken. Asserting the exact key set is what stops any of those
     // being re-added to a machine that is being uninstalled.
-    expect(Object.keys(beatBody)).toEqual(['commands']);
+    // #4618: drain beats explicitly clear containment without policy or episode work.
+    expect(Object.keys(beatBody)).toEqual(['commands', 'containment']);
+    expect(beatBody.containment).toEqual({ networkIsolation: null });
     const delivered = beatBody.commands as Array<{ id: string; type: string }>;
     expect(delivered.map((cmd) => cmd.type)).toEqual(['self_uninstall']);
 
@@ -640,8 +642,8 @@ describe('#3986 overlap — a device Removed while its tenant is offboarding', (
     expect(await withSystemDbAccessContext(() => isDeviceUninstallDraining(device.id))).toBe(false);
 
     // Still genuinely deliverable on the tenant drain's narrowed claim.
-    const claimed = await withSystemDbAccessContext(() =>
-      claimPendingCommandsForDevice(device.id, 10, 'agent', ['self_uninstall']),
+    const claimed = await withSystemDbAccessContext(async () =>
+      claimPendingCommandsForDevice({ deviceId: device.id, agentId: await deviceAgentId(device.id), installIncarnation: 1 }, 10, 'agent', ['self_uninstall']),
     );
     expect(claimed.map((row) => row.type)).toEqual(['self_uninstall']);
     void tenant;

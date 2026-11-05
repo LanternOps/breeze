@@ -174,7 +174,7 @@ export interface SecurityAgentVendor {
   key: VendorKey; label: string; catalogRef: string;
   orgSource: 'edr_mapping' | 'tenant_var'; requiredVars?: string[];
   platforms: Record<'windows'|'macos'|'linux', PlatformSupport>;
-  presence: { windowsService?: string; macProcess?: string; linuxUnit?: string };
+  presence: { windowsService?: string; macLaunchdLabel?: string; linuxUnit?: string }; // macLaunchdLabel: renamed from macProcess in W5 (#6958 D5: launchd labels are not process names)
   enableable: boolean; // false for every vendor in W1
 }
 export function getVendor(key: VendorKey): SecurityAgentVendor;
@@ -340,12 +340,14 @@ Shape (spec 4.3): `id, org_id NOT NULL, device_id NULL, vendor_endpoint_id NULL,
 ## Wave 5: DNS vendors (prerequisite **P** = #6958) and presence
 
 Precondition: #6958's PRs merged (catalog entries, `controld_provisioning_code` / `nextdns_profile_id` variables, install args, `service_running` and the periodic bridge). If not merged, do only the presence descriptors that do not need them and stop.
-- [ ] Task 5.1 (red): `tenant_var` readiness: missing variable for the device's org yields `not_applicable: var_missing`; macOS depends on #6958's args; registry entries flip `enableable` once catalog rows exist.
-- [ ] Task 5.2: `service_running` is a **detection rule on the vendor's catalog version** (spec 2.6), not a field of the generated policy rule (the policy normalizer drops unknown keys). #6958 delivers it on the built-in catalog versions; this task adds a test that each registry `presence` descriptor matches the shipped detection rule and surfaces the resulting violations. If a built-in version lacks the rule, add it via `builtinDeploymentPackages.ts`. Agent-shipped parts (`service_running`) need an agent release plus Windows/macOS lab checks (not done in this plan's PRs).
+- [ ] Task 5.1 (red): `tenant_var` readiness: missing variable for the device's org yields `not_applicable: var_missing`; macOS depends on #6958's pre-install script and lab gate L2; registry entries flip `enableable` once catalog rows exist.
+- [ ] Task 5.2: `service_running` is a **detection rule on the vendor's catalog version** (spec 2.6), not a field of the generated policy rule (the policy normalizer drops unknown keys). #6958 delivers it on the built-in catalog versions, one catalog row per (vendor, OS) via `builtinPackageKeysForVendor`; this task adds a test that each registry `presence` descriptor matches the shipped detection rule and surfaces the resulting violations. If a built-in version lacks the rule, add it via `builtinDeploymentPackages.ts`. Agent-shipped parts (`service_running`) need an agent release plus Windows/macOS lab checks (not done in this plan's PRs).
 - [ ] Task 5.3: coverage for DNS vendors is `mgmtdetect`/policy-state only (no vendor endpoint source until #3408); document in the tab.
 - [ ] Tests, typecheck, Integration Tests; PR `Refs #6960`, `Refs #6958`.
 
 **W5 leaves behind:** if #6958's bridge never ships, presence shows install state only; stopped-service violations are absent for every vendor.
+
+**W5 implementation notes (2026-10-25, #8739).** Text above amended per the #6958 plan's D5 (`macLaunchdLabel`; macOS depends on the pre-install script and lab gate L2; one rule per (vendor, OS) built-in row). Shipped **code-only** (orchestrator mode (c), Todd 2026-10-25): every W5 seam is wired, but Control D and NextDNS stay `enableable: false` (registry + web `VENDORS`) until #6958 lab gates L1–L5 are recorded; the flip is a follow-up PR. Orchestrator defaults applied: EDR (Huntress/S1) presence stays `{}` (needs the #10038 `builtin_package_key` backfill, verified service names and an agent lab); a secret tenant variable is its own readiness reason `var_secret` (no migration: `reason_code` is varchar(48)); catalog rows are resolved with the read-only `catalogIdForBuiltinKey(ownerPartnerId, key)`, never `ensurePinnedBuiltinPackage`; DNS rules are named after the pinned package (`Control D (Windows)`, `NextDNS CLI (Windows)`), which no inventory entry carries, so presence comes only from the `service_running` bridge; Control D macOS stays `unsupported` while `controld_macos` is hidden. DNS coverage stays policy-state only (pending / not applicable) until #3408. Locale copy goes in all 8 locales (not 7); typecheck is `tsc --build apps/api/tsconfig.tests.json` (plain `tsc --noEmit -p .` OOMs); W5 has no migration.
 
 ---
 

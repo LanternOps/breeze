@@ -29,3 +29,21 @@ it('flows navigation fails closed until the server flag is explicitly on', () =>
   expect(isNavGateVisible(gate, { ...ctx, flowsEnabled: true })).toBe(true);
   expect(isNavGateVisible(gate, { ...ctx, flowsEnabled: true, permissions: [] })).toBe(false);
 });
+
+it('the Wisp sidebar entry locks (not hides) when the flag is off, and still needs ai_sessions:use (#10145, #10136)', async () => {
+  const { navSections } = await import('../components/layout/Sidebar');
+  const entry = navSections.flatMap((s) => s.items).find((i) => i.href === '/wisp');
+  expect(entry).toBeDefined();
+  expect(entry!.lockedWhenWispOff).toBe(true);
+  const ctx = { ...context, permissions: [{ resource: 'ai_sessions', action: 'use' }] };
+  expect(isNavGateVisible(entry!, ctx)).toBe(true);
+  expect(isNavGateVisible(entry!, { ...ctx, permissions: [] })).toBe(false);
+});
+
+it('the Wisp sidebar entry is hidden for a non-partner token: grants are partner-staff only, so it would only bounce to /ai/chat (#10200)', async () => {
+  const { navSections } = await import('../components/layout/Sidebar');
+  const entry = navSections.flatMap((s) => s.items).find((i) => i.href === '/wisp');
+  const ctx = { ...context, permissions: [{ resource: 'ai_sessions', action: 'use' }] };
+  expect(isNavGateVisible(entry!, { ...ctx, getScope: () => 'organization' })).toBe(false);
+  expect(isNavGateVisible(entry!, { ...ctx, getScope: () => 'partner' })).toBe(true);
+});

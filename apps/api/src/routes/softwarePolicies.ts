@@ -14,10 +14,12 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { scheduleSoftwareComplianceCheck } from '../jobs/softwareComplianceWorker';
 import { scheduleSoftwareRemediation } from '../jobs/softwareRemediationWorker';
 import {
+  cleanupSoftwarePolicyElevations,
   normalizeSoftwarePolicyRules,
   recordSoftwarePolicyAudit,
 } from '../services/softwarePolicyService';
 import { computeInstallPreviewEligibleDeviceCount } from '../services/softwarePolicyInstallPreview';
+import { getSoftwarePolicyCoverage } from '../services/softwarePolicyCoverage';
 import {
   MAX_REMEDIATION_DEVICES,
   implicitRemediationConditions,
@@ -29,7 +31,6 @@ import { assertMayArmInstall } from '../services/softwarePolicyAuthorization';
 import { assertMayManageExecutableRules } from '../services/softwarePolicyExecutableRulesAuthorization';
 import { captureException } from '../services/sentry';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
-import { requestPamCleanup } from '../services/pamActuationLifecycle';
 
 export const softwarePoliciesRoutes = new Hono();
 const requireSoftwarePolicyRead = requirePermission(
@@ -199,40 +200,6 @@ function softwarePolicyAccessCondition(auth: AuthContext): SQL | undefined {
     return sql`(${orgCond} OR (${softwarePolicies.orgId} IS NULL AND ${softwarePolicies.partnerId} = ${auth.partnerId}))`;
   }
   return orgCond;
-}
-
-type SoftwarePolicyTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
-
-export async function cleanupSoftwarePolicyElevations(
-  tx: SoftwarePolicyTx,
-  policyId: string,
-): Promise<number> {
-  const result = await tx.execute<{ id: string }>(sql`
-    WITH matching AS (
-      SELECT id
-      FROM elevation_requests
-      WHERE metadata->>'software_policy_match_id' = ${policyId}
-        AND status IN ('approved', 'auto_approved', 'actuating')
-      FOR UPDATE
-    )
-    UPDATE elevation_requests AS request
-    SET status = 'revoked',
-        revoked_at = now(),
-        revision = request.revision + 1,
-        updated_at = now()
-    FROM matching
-    WHERE request.id = matching.id
-      AND request.status IN ('approved', 'auto_approved', 'actuating')
-    RETURNING request.id
-  `);
-  const rows = (result as { rows?: Array<{ id: string }> }).rows ?? [];
-  for (const row of rows) {
-    await requestPamCleanup(tx, {
-      elevationRequestId: row.id,
-      cause: 'policy_removed',
-    });
-  }
-  return rows.length;
 }
 
 async function getPolicyWithAccess(policyId: string, auth: AuthContext) {
@@ -624,6 +591,36 @@ softwarePoliciesRoutes.get(
     });
 
     return c.json({ eligibleDeviceCount });
+  }
+);
+
+// #9635 — which devices this policy actually governs. A device follows ONE
+// software policy (closest assignment, then priority, then age), so a policy
+// can be assigned yet govern no device; the web shows "applies to 0 devices /
+// overridden by X" from this. Read-only, same gates as install-preview.
+softwarePoliciesRoutes.get(
+  '/:id/coverage',
+  requireSoftwarePolicyRead,
+  zValidator('param', policyIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const { id } = c.req.valid('param');
+
+    const policy = await getPolicyWithAccess(id, auth);
+    if (!policy) {
+      return c.json({ error: 'Policy not found' }, 404);
+    }
+
+    let opts: { restrictToDeviceIds?: string[] } = {};
+    if (perms?.allowedSiteIds && auth.orgId) {
+      if (perms.allowedSiteIds.length === 0) {
+        return c.json({ data: { assignedDeviceCount: 0, appliesToDeviceCount: 0, overriddenBy: [] } });
+      }
+      opts = { restrictToDeviceIds: (await resolveSiteAllowedDeviceIds(auth.orgId, perms)) ?? [] };
+    }
+
+    return c.json({ data: await getSoftwarePolicyCoverage(policy.id, opts) });
   }
 );
 

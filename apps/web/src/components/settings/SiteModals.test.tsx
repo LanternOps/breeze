@@ -96,4 +96,45 @@ describe('SiteModals — dialog semantics', () => {
     fireEvent.keyDown(screen.getByRole('dialog', { name: 'Edit Site' }), { key: 'Escape' });
     expect(onClose).not.toHaveBeenCalled();
   });
+
+  describe('fleet-view org picker (#9794)', () => {
+    const ORGS = [{ id: 'org-a', name: 'Alpha Co' }, { id: 'org-b', name: 'Bravo Ltd' }];
+    const pickerModals = (value: string | null, onSubmit: () => void, onChange: (id: string | null) => void) => (
+      <SiteModals
+        mode="add"
+        selectedSite={null}
+        guidingFirstSite={false}
+        submitting={false}
+        onSubmit={onSubmit}
+        onClose={vi.fn()}
+        onConfirmDelete={vi.fn()}
+        getSiteFormDefaults={vi.fn()}
+        orgPicker={{ organizations: ORGS, value, onChange }}
+      />
+    );
+
+    it('blocks submit until an org is picked, then submits', async () => {
+      const onSubmit = vi.fn();
+      const onChange = vi.fn();
+      const { rerender } = render(pickerModals(null, onSubmit, onChange));
+      const picker = screen.getByTestId('sites-org-picker') as HTMLSelectElement;
+      expect(picker.value).toBe('');
+      fireEvent.change(screen.getByLabelText('Site name'), { target: { value: 'New' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Create site' }));
+      expect(await screen.findByText('Choose the organization this site belongs to.')).toBeInTheDocument();
+      expect(onSubmit).not.toHaveBeenCalled();
+
+      fireEvent.change(picker, { target: { value: 'org-b' } });
+      expect(onChange).toHaveBeenCalledWith('org-b');
+      rerender(pickerModals('org-b', onSubmit, onChange));
+      expect(screen.queryByText('Choose the organization this site belongs to.')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Create site' }));
+      await vi.waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    });
+
+    it('renders no picker without the prop', () => {
+      renderModals('add', { selectedSite: null });
+      expect(screen.queryByTestId('sites-org-picker')).toBeNull();
+    });
+  });
 });

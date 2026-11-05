@@ -5,6 +5,7 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import RebootPromptPreview from "./RebootPromptPreview";
 import { fetchWithAuth } from "../../../stores/auth";
 import { extractApiError } from "@/lib/apiError";
 import { Dialog } from "../../shared/Dialog";
@@ -458,6 +459,7 @@ export default function PatchTab({
           autoApprove: values.autoApprove,
           categoryRules: values.categoryRules,
           appRules: values.appRules,
+          featureUpdates: values.featureUpdates,
         }),
       });
       if (!response.ok) {
@@ -1138,6 +1140,8 @@ export default function PatchTab({
                 {promptError}
               </p>
             )}
+            {/* #10190 W05: what the person at the computer will see. */}
+            <RebootPromptPreview settings={settings} />
           </div>
         )}
       </div>
@@ -1271,6 +1275,7 @@ export default function PatchTab({
                     },
                     categoryRules: selectedRing.categoryRules,
                     appRules: selectedRing.appRules ?? [],
+                    featureUpdates: selectedRing.featureUpdates,
                   }
                 : undefined
             }

@@ -10,8 +10,11 @@
  */
 /** Target selection for background work: must reference a parked-device predicate. */
 export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> = {
+  'services/psaAlertTicketing/workerStorage.ts': { guards: 1, reason: 'new creates exclude holding organizations; existing remote tickets still reconcile on their pinned connection' },
+  'services/partnerGroupEvaluation.ts': { guards: 2, reason: 'system-context evaluator: partner organization discovery and per-org eligibility exclude holding organizations' },
   // --- shared resolvers -----------------------------------------------------
   'services/postureEvidence.ts': { guards: 1, reason: 'posture evidence device population (report + trust page)' },
+  'services/partnerFanoutOrgs.ts': { guards: 1, reason: 'the live partner-org predicate shared by the scheduled AI agent sweep fan-out (jobs/aiAgentSweepScheduler.ts loadPartnerOrgIds, also partner-wide flow schedules) and the partner-wide flow event trigger (#5219): holding org and Quick Support out' },
   'services/externalDeviceMatching/candidates.ts': { guards: 1, reason: 'candidate devices for external vendor endpoint matching carry the parked-device predicate' },
   'services/featureConfigResolver.ts': { guards: 6, reason: 'per-device config resolution, partner-wide assignment fan-out, backup and scan device sets, batched security_agents winner walk (no partner-level assignment for a parked device)' },
   'services/configurationPolicy.ts': { guards: 1, reason: 'effective configuration for a device (no partner-level assignment for a parked device)' },
@@ -30,6 +33,8 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'jobs/backupWorker.ts': { guards: 3, reason: 'scheduled backup org enumeration and dispatch' },
   'jobs/cisJobs.ts': { guards: 1, reason: 'scheduled CIS scan targets' },
   'jobs/securityScanJobs.ts': { guards: 1, reason: 'scheduled security scans' },
+  'services/securityScanSweepTargets.ts': { guards: 1, reason: 'IOC sweep target selection' },
+  'jobs/securityScanSweepPump.ts': { guards: 1, reason: 'IOC sweep pump admission (online, unparked devices)' },
   'jobs/sensitiveDataJobs.ts': { guards: 2, reason: 'scheduled sensitive-data scans' },
   'jobs/auditBaselineJobs.ts': { guards: 4, reason: 'audit policy collection' },
   'services/auditBaselineService.ts': { guards: 1, reason: 'default audit baseline seeding over orgs' },
@@ -40,7 +45,6 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'jobs/discoveryWorker.ts': { guards: 1, reason: 'discovery scan executor selection (requested-agent lookup)' },
   'jobs/discoveryAgentSelection.ts': { guards: 2, reason: 'discovery agent selection: site candidates and the pinned-agent lookup (#7969)' },
   'jobs/snmpWorker.ts': { guards: 1, reason: 'SNMP poll executor selection' },
-  'jobs/aiAgentSweepScheduler.ts': { guards: 1, reason: 'scheduled AI agent sweeps over partner orgs' },
   'services/wisp/wake.ts': { guards: 1, reason: 'Wisp wake coordinator (#9917): live partner orgs a grant\'s floor tick / onboarding / event fan-out may assess (Quick Support and holding org out)' },
   'services/aiAgents/patchPlan.ts': { guards: 1, reason: 'AI patch-plan evidence devices' },
   'services/aiAgents/sweepFindings.ts': { guards: 1, reason: 'AI sweep finding devices' },
@@ -59,6 +63,7 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'services/aiToolsOrgs.ts': { guards: 2, reason: 'organization and site listings' },
   'services/aiToolsAgentMgmt.ts': { guards: 2, reason: 'device verifier and agent-version rollup' },
   'services/aiToolsPeripherals.ts': { guards: 1, reason: 'partner-wide peripheral policy fan-out' },
+  'services/aiToolsAuditBaselines.ts': { guards: 2, reason: 'audit-baseline compliance (visible devices) and apply-request targets (W11, #6781)' },
   'services/timeSync/fleet.ts': { guards: 1, reason: 'fleet time report and list_time_sync_issues AI device lookup' },
   // --- org administration -----------------------------------------------------
   'services/orgImport/index.ts': { guards: 1, reason: 'org import never name-matches the holding org' },

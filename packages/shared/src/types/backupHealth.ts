@@ -88,7 +88,7 @@ export interface BackupHealthRow {
   computerName: string | null;
   osType: 'workstation' | 'server' | 'unknown';
   /** `m365` rows are vendor cloud-mailbox accounts and are never linked to a device. */
-  accountType: 'endpoint' | 'm365';
+  accountType: 'endpoint' | 'm365' | 'gws';
   status: ExternalBackupStatus;
   health: BackupHealth;
   recency: BackupRecency;

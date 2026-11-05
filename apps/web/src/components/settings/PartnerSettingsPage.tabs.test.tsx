@@ -5,7 +5,11 @@ import PartnerSettingsPage from './PartnerSettingsPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  // The header Save gates on partner-wide access (W2).
+  useAuthStore: (sel: (s: unknown) => unknown) => sel({ user: { canManagePartnerWide: true } }),
+}));
 vi.mock('../../stores/orgStore', () => ({ useOrgStore: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('../../lib/authScope', () => ({
@@ -25,7 +29,11 @@ vi.mock('../../lib/useCallerVerificationEnabled', () => ({
   useCallerVerificationEnabled: () => flag.loaded && flag.enabled,
 }));
 vi.mock('../../stores/featuresStore', () => ({
-  useFeaturesStore: (sel: (s: { loaded: boolean }) => unknown) => sel({ loaded: flag.loaded }),
+  useFeaturesStore: Object.assign(
+    (sel: (s: { loaded: boolean }) => unknown) => sel({ loaded: flag.loaded }),
+    // The partners/me unit reads the sending-domains flag imperatively (#9949).
+    { getState: () => ({ load: async () => {}, configOk: true, features: { sendingDomains: false } }) },
+  ),
 }));
 
 const PARTNER = {

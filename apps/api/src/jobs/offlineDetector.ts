@@ -22,6 +22,7 @@ import { DEFAULT_OFFLINE_THRESHOLD_MINUTES } from '../services/deviceLiveness';
 import { captureMessage } from '../services/sentry';
 import { throttledReporter } from '../services/sentryThrottle';
 import { EDITION_MIGRATION_SETTLE_INTERVAL } from '../services/editionMigrationWindow';
+import { requestDeviceGroupReevaluation } from './deviceGroupJobs';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -422,6 +423,7 @@ export async function processMarkOffline(data: MarkOfflineJobData): Promise<{
   if (data.transitionId !== expectedTransitionId) throw new Error('Invalid transitionId');
 
   const outcome = await runWithSystemDbAccess(async () => {
+    // own-device-row-allowlisted: offline-sweep-mark-offline
     const [device] = await db.update(devices).set({ status: 'offline' }).where(and(
       eq(devices.id, data.deviceId), eq(devices.orgId, data.orgId),
       inArray(devices.status, ['online', 'updating']),
@@ -509,8 +511,14 @@ export async function transitionDeviceOffline(
     const observedLastSeenAt = canonicalTimestamp(current.lastSeenAt?.toISOString() || '', 'observedLastSeenAt');
     const transitionId = offlineTransitionId(current.orgId, current.id, observedLastSeenAt);
 
+    // #8318 §6.4: shared with the offline sweep and called from the WS
+    // close/error path with no auth context, so the identity predicate is
+    // carried here: `agent_id` = the id this row was just read by. A socket
+    // of a superseded install closing after a reattach confirm matches 0 rows.
+    // own-device-row-allowlisted: transition-device-offline-agent-id
     const [device] = await db.update(devices).set({ status: 'offline', updatedAt: new Date() }).where(and(
       eq(devices.id, current.id), eq(devices.orgId, current.orgId),
+      eq(devices.agentId, agentId),
       inArray(devices.status, fromStatuses),
       // Same ms-precision CAS guard as processMarkOffline (#6024): the write
       // must be against the exact heartbeat observation just read.
@@ -705,6 +713,7 @@ export async function processReapUninstallIntent(): Promise<{
       // the context closes between candidates rather than spanning the whole
       // chunk (#3233).
       const reaped = await runWithSystemDbAccess(async () => {
+        // own-device-row-allowlisted: uninstall-intent-reaper
         const [updated] = await db
           .update(devices)
           // decommissionedAt (#2787 item 4): a reaped device is a REMOVED
@@ -724,6 +733,7 @@ export async function processReapUninstallIntent(): Promise<{
         // banner/badge persists forever with nothing left to compare against.
         // Scoped to the reaped device's own org, matching the surrounding
         // per-candidate write pattern.
+        // own-device-row-allowlisted: uninstall-intent-reaper
         await db
           .update(devices)
           .set({ possibleReplacementOfDeviceId: null, updatedAt: new Date() })
@@ -740,6 +750,15 @@ export async function processReapUninstallIntent(): Promise<{
       if (!reaped) continue;
 
       totalDecommissioned++;
+
+      // #9933: dynamic groups leave out removed devices. The write above has
+      // committed (its context closed), so enqueue directly; never rejects.
+      void requestDeviceGroupReevaluation({
+        deviceId: candidate.id,
+        orgId: candidate.orgId,
+        eventType: 'device.created',
+        reason: 'device_decommissioned',
+      });
 
       createAuditLogAsync({
         orgId: candidate.orgId,

@@ -105,6 +105,17 @@ type Shipper struct {
 	// pendingBatch is the size of the batch shipLoop holds in hand while
 	// shipBatch runs; 0 otherwise. Counted in QueueDepth.
 	pendingBatch atomic.Int32
+	// retryMu guards notBefore and deferLogged. shipChunk (sets) and shipLoop
+	// (reads) run on one goroutine today, but Stop-path drains and tests call
+	// shipBatch from others, so the carried hint is mutex-guarded.
+	retryMu sync.Mutex
+	// notBefore is the earliest time the next batch may be posted: the
+	// server's (jittered, capped) Retry-After from a chunk we gave up on.
+	// Zero means nothing is carried. See carryRetryAfter / shipDeferred.
+	notBefore time.Time
+	// deferLogged is true once the current deferral has been announced on
+	// stderr, so the line is emitted once per deferral, not once per tick.
+	deferLogged bool
 }
 
 // ShipperConfig configures the log shipper.
@@ -406,15 +417,27 @@ func (s *Shipper) expireLevelOverride() {
 func (s *Shipper) shipLoop() {
 	defer s.wg.Done()
 
-	ticker := time.NewTicker(defaultBatchInterval)
-	defer ticker.Stop()
+	tick, stopTick := shipperTick(defaultBatchInterval)
+	defer stopTick()
 
 	batch := make([]LogEntry, 0, defaultMaxBatchSize)
 
 	for {
+		// While a Retry-After hold keeps a full batch unshipped, stop pulling
+		// from the buffer (nil channel never selects) instead of growing the
+		// batch: the 500-entry buffer then fills and Enqueue drops-when-full
+		// with its existing accounting, so memory stays bounded.
+		in := s.buffer
+		if len(batch) >= defaultMaxBatchSize {
+			in = nil
+		}
+
 		select {
 		case <-s.stopChan:
-			// Drain remaining buffered entries
+			// Drain remaining buffered entries. Deliberately ignores any
+			// Retry-After hold: shutdown ships what it can, retrying a
+			// transient failure with the short fixed backoff but never
+			// waiting out a long server Retry-After (see sleep).
 		drain:
 			for {
 				select {
@@ -434,9 +457,9 @@ func (s *Shipper) shipLoop() {
 			}
 			return
 
-		case entry := <-s.buffer:
+		case entry := <-in:
 			batch = append(batch, entry)
-			if len(batch) >= defaultMaxBatchSize {
+			if len(batch) >= defaultMaxBatchSize && !s.shipDeferred() {
 				s.shipHeld(batch)
 				// Release strings and field maps before reusing the backing array.
 				// shipBatch has finished; any re-buffered entries are value copies.
@@ -444,8 +467,8 @@ func (s *Shipper) shipLoop() {
 				batch = batch[:0]
 			}
 
-		case <-ticker.C:
-			if len(batch) > 0 {
+		case <-tick:
+			if len(batch) > 0 && !s.shipDeferred() {
 				s.shipHeld(batch)
 				clear(batch)
 				batch = batch[:0]
@@ -457,7 +480,105 @@ func (s *Shipper) shipLoop() {
 const (
 	shipRetryCount   = 2
 	shipRetryBackoff = 1 * time.Second
+	// retryAfterJitterFrac stretches a server Retry-After by up to +30% so a
+	// fleet told "wait 40 s" does not return in lockstep.
+	retryAfterJitterFrac = 0.3
 )
+
+// Test seams (W09, #8148). Tests swap these and must not run in parallel.
+var (
+	shipperNow   = time.Now
+	shipperAfter = time.After
+	shipperRand  = rand.Float64
+	// shipperTick supplies the flush tick channel and its stop func.
+	shipperTick = func(d time.Duration) (<-chan time.Time, func()) {
+		t := time.NewTicker(d)
+		return t.C, t.Stop
+	}
+)
+
+// loopRetryAfterDisabled is the D10 escape hatch, inverted so the zero value
+// means the feature is ON.
+var loopRetryAfterDisabled atomic.Bool
+
+// SetLoopRetryAfter enables (default) or disables carrying a server
+// Retry-After across batches. When disabled, a chunk given up on forgets the
+// hint, as before W09; in-loop retry waits stay cancellable either way.
+func SetLoopRetryAfter(enabled bool) {
+	loopRetryAfterDisabled.Store(!enabled)
+}
+
+// shipDrainMaxRetryWait is the longest retry wait the shutdown drain still
+// sits through: the fixed backoff plus its jitter. A longer server
+// Retry-After is not waited out once Stop has run.
+const shipDrainMaxRetryWait = shipRetryBackoff + shipRetryBackoff/2
+
+// sleep waits d or until the shipper is stopped. It returns false if stopped.
+// Once stopped (the shutdown drain), a wait no longer than the fixed backoff
+// still runs, so the final flush rides out a transient failure as it did
+// before the waits became cancellable (W09, #8148).
+func (s *Shipper) sleep(d time.Duration) bool {
+	if d <= shipDrainMaxRetryWait {
+		<-shipperAfter(d) // short: bounded, and the same with or without Stop
+		return true
+	}
+	select {
+	case <-s.stopChan:
+		return false
+	default:
+	}
+	select {
+	case <-s.stopChan:
+		return false
+	case <-shipperAfter(d):
+		return true
+	}
+}
+
+// jitterRetryAfter returns ra x (1 + 0.3 x rand) clamped to retryAfterMaxCap.
+// Computed once per hint and reused for the in-loop wait and the carried hold.
+func jitterRetryAfter(ra time.Duration) time.Duration {
+	d := time.Duration(float64(ra) * (1 + retryAfterJitterFrac*shipperRand()))
+	if d > retryAfterMaxCap {
+		d = retryAfterMaxCap
+	}
+	return d
+}
+
+// carryRetryAfter records that no batch should be posted for d, keeping the
+// later of any existing hold. No-op when the loop hint is disabled.
+func (s *Shipper) carryRetryAfter(d time.Duration) {
+	if d <= 0 || loopRetryAfterDisabled.Load() {
+		return
+	}
+	nb := shipperNow().Add(d)
+	s.retryMu.Lock()
+	if nb.After(s.notBefore) {
+		s.notBefore = nb
+		s.deferLogged = false
+	}
+	s.retryMu.Unlock()
+}
+
+// shipDeferred reports whether the ship loop must hold its batch because the
+// server asked us to back off. Logs once per deferral. Only the ticker and
+// batch-full paths consult it; the shutdown drain deliberately does not.
+func (s *Shipper) shipDeferred() bool {
+	now := shipperNow()
+	s.retryMu.Lock()
+	defer s.retryMu.Unlock()
+	if !now.Before(s.notBefore) {
+		s.notBefore = time.Time{}
+		s.deferLogged = false
+		return false
+	}
+	if !s.deferLogged {
+		s.deferLogged = true
+		fmt.Fprintf(os.Stderr, "[log-shipper] deferring log shipping for %v (server Retry-After)\n",
+			s.notBefore.Sub(now).Round(time.Second))
+	}
+	return true
+}
 
 // shipBatch ships a flushed batch, splitting it into chunks of at most
 // maxEntriesPerShipRequest entries per HTTP request — the API rejects any
@@ -575,15 +696,24 @@ func (s *Shipper) shipChunk(entries []LogEntry) bool {
 	// nextSleepOverride, if non-zero, replaces the default fixed-jitter sleep
 	// for the next retry. Set when the server sends Retry-After on 429/503.
 	var nextSleepOverride time.Duration
+	// lastStatus is the most recent retryable HTTP status, for the failure
+	// record when a wait is cut short by shutdown.
+	lastStatus := 0
 
 	for attempt := 0; attempt <= shipRetryCount; attempt++ {
 		if attempt > 0 {
+			wait := shipRetryBackoff + time.Duration(rand.Intn(int(shipRetryBackoff/2)))
 			if nextSleepOverride > 0 {
-				time.Sleep(nextSleepOverride)
+				wait = nextSleepOverride
 				nextSleepOverride = 0
-			} else {
-				jitter := time.Duration(rand.Intn(int(shipRetryBackoff / 2)))
-				time.Sleep(shipRetryBackoff + jitter)
+			}
+			if !s.sleep(wait) {
+				// Shutdown mid-retry: this chunk is lost like any other
+				// terminal drop; the caller drops the remaining chunks.
+				fmt.Fprintf(os.Stderr, "[log-shipper] shutdown during retry wait; dropping %d entries\n", len(entries))
+				s.droppedCount.Add(int64(len(entries)))
+				s.recordShipFailure(sanitizeShipError(nil, lastStatus))
+				return false
 			}
 		}
 
@@ -618,8 +748,9 @@ func (s *Shipper) shipChunk(entries []LogEntry) bool {
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
 			// 429/503: retryable, and may carry Retry-After.
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-			if ra := parseRetryAfter(resp.Header, time.Now()); ra > 0 {
-				nextSleepOverride = ra
+			lastStatus = resp.StatusCode
+			if ra := parseRetryAfter(resp.Header, shipperNow()); ra > 0 {
+				nextSleepOverride = jitterRetryAfter(ra)
 			}
 			resp.Body.Close()
 			cancel()
@@ -632,6 +763,9 @@ func (s *Shipper) shipChunk(entries []LogEntry) bool {
 				resp.StatusCode, shipRetryCount+1, string(body))
 			s.droppedCount.Add(int64(len(entries)))
 			s.recordShipFailure(sanitizeShipError(nil, resp.StatusCode))
+			// The chunk is lost but the server's ask stands: hold the next
+			// batch until it has passed (jittered once, capped at 300 s).
+			s.carryRetryAfter(nextSleepOverride)
 			return false
 		}
 

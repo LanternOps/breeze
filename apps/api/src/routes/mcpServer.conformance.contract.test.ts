@@ -168,9 +168,16 @@ vi.mock('../modules/mcpInvites', () => ({
 
 // B-W04 (#6158): MCP-side Tier-3 intent creation (its own suite covers it).
 // mcpServer.ts loads this module lazily via dynamic import; vi.mock still applies.
-const intentMocks = vi.hoisted(() => ({ createMcpActionIntent: vi.fn() }));
+// B-W06 (#6160): ownership load + live count for the Tasks conformance block.
+const intentMocks = vi.hoisted(() => ({
+  createMcpActionIntent: vi.fn(),
+  loadOwnedMcpIntent: vi.fn(),
+  countLiveMcpIntentsForOrigin: vi.fn(),
+}));
 vi.mock('../services/mcpIntentCreation', () => ({
   createMcpActionIntent: (...args: any[]) => intentMocks.createMcpActionIntent(...args),
+  loadOwnedMcpIntent: (...args: any[]) => intentMocks.loadOwnedMcpIntent(...args),
+  countLiveMcpIntentsForOrigin: (...args: any[]) => intentMocks.countLiveMcpIntentsForOrigin(...args),
   resolveMcpClientLabel: vi.fn(async () => 'MCP · test'),
 }));
 
@@ -522,6 +529,98 @@ describe('MCP Apps conformance for protocol 2026-07-28 (B-W05)', () => {
     expect(a.result).toEqual(b.result);
     expect((await rpc('resources/read', { uri: APP_URI }, UI_CAPS)).result.contents[0].mimeType).toBe('text/html;profile=mcp-app');
     expect((await rpc('resources/read', { uri: APP_URI }, {})).error.code).toBe(-32602);
+  });
+});
+
+// B-W06 (#6160): the Tasks extension (SEP-2663), stateless era only.
+const TASKS_EXT = 'io.modelcontextprotocol/tasks';
+const TASK_CAPS = { extensions: { [TASKS_EXT]: {} } };
+const TASK_ACTION_ID = '44444444-4444-4444-8444-444444444444';
+
+describe('MCP Tasks conformance for protocol 2026-07-28 (B-W06)', () => {
+  beforeEach(() => {
+    vi.stubEnv('MCP_STATELESS_ENABLED', 'true');
+    vi.stubEnv('MCP_TIER3_INTENTS_ENABLED', 'true');
+    vi.stubEnv('MCP_TASKS_ENABLED', 'true');
+    vi.stubEnv('MCP_TOOLS_LIST_PAGE_SIZE', '0');
+    mocks.getToolDefinitions.mockReturnValue(TOOLS);
+    // manage_services is Tier 3 here: it reaches the approval-intent path.
+    mocks.getToolTier.mockImplementation((n: string) => (n === 'manage_services' ? 3 : 1));
+    mocks.apiKeyAuthMiddleware.mockImplementation(async (c: any, next: any) => {
+      setApiKeyContext(c, ['ai:read', 'ai:write', 'ai:execute']);
+      return next();
+    });
+    intentMocks.createMcpActionIntent.mockReset().mockResolvedValue({
+      kind: 'pending', isNew: true,
+      status: {
+        actionId: TASK_ACTION_ID, status: 'pending_approval', toolName: 'manage_services', approvalScope: 'four_eyes',
+        expiresAt: '2026-10-25T10:00:00.000Z', approvalUrl: `https://app.example.com/approvals#intent-${TASK_ACTION_ID}`,
+      },
+    });
+    intentMocks.loadOwnedMcpIntent.mockReset().mockResolvedValue({
+  id: TASK_ACTION_ID, status: 'pending_approval', actionName: 'manage_services', approvalScope: 'four_eyes',
+  createdAt: new Date('2026-10-24T10:00:00.000Z'), expiresAt: new Date('2026-10-25T10:00:00.000Z'),
+  decidedAt: null, executionStartedAt: null, executedAt: null, statusChangedAt: new Date('2026-10-24T10:00:01.000Z'),
+  result: null, errorCode: null,
+});
+    intentMocks.countLiveMcpIntentsForOrigin.mockReset().mockResolvedValue(1);
+  });
+
+  async function rpc(method: string, params: Record<string, unknown>, caps: Record<string, unknown>, name?: string) {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json', 'X-API-Key': 'k',
+      'MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': method,
+    };
+    if (method === 'tools/call') headers['Mcp-Name'] = String(params.name);
+    if (method.startsWith('tasks/')) headers['Mcp-Name'] = name ?? String(params.taskId);
+    const res = await appWithMcpRoutes().request('/mcp/sse', {
+      method: 'POST', headers,
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params: { ...params, _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28', 'io.modelcontextprotocol/clientCapabilities': caps } } }),
+    });
+    return { status: res.status, body: (await res.json()) as any };
+  }
+
+  it('server/discover advertises the Tasks extension (beside ui when Apps is on too)', async () => {
+    expect((await rpc('server/discover', {}, {})).body.result.capabilities.extensions).toEqual({ [TASKS_EXT]: {} });
+    vi.stubEnv('MCP_APPS_ENABLED', 'true');
+    expect((await rpc('server/discover', {}, {})).body.result.capabilities.extensions).toEqual({
+      'io.modelcontextprotocol/ui': {}, [TASKS_EXT]: {},
+    });
+  });
+
+  it('a declaring Tier-3 call → CreateTaskResult → tasks/get with a matching Mcp-Name → working', async () => {
+    const call = await rpc('tools/call', { name: 'manage_services', arguments: { action: 'restart' } }, TASK_CAPS);
+    expect(call.status).toBe(200);
+    expect(call.body.result).toMatchObject({ resultType: 'task', taskId: TASK_ACTION_ID, status: 'working', ttlMs: 25 * 3_600_000 });
+    expect(call.body.result.pollIntervalMs).toBeGreaterThanOrEqual(30_000);
+    expect(call.body.result).not.toHaveProperty('cacheScope');
+    const get = await rpc('tasks/get', { taskId: TASK_ACTION_ID }, TASK_CAPS);
+    expect(get.status).toBe(200);
+    expect(get.body.result).toMatchObject({ resultType: 'complete', taskId: TASK_ACTION_ID, status: 'working' });
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  it('an undeclared Tier-3 call keeps the B-W04 pending_approval result', async () => {
+    const call = await rpc('tools/call', { name: 'manage_services', arguments: { action: 'restart' } }, {});
+    expect(call.body.result.resultType).toBe('complete');
+    expect(call.body.result.structuredContent).toMatchObject({ status: 'pending_approval', actionId: TASK_ACTION_ID });
+  });
+
+  it('a mismatched Mcp-Name on tasks/get → 400 header_mismatch', async () => {
+    const res = await rpc('tasks/get', { taskId: TASK_ACTION_ID }, TASK_CAPS, '55555555-5555-4555-8555-555555555555');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe(-32020);
+  });
+
+  it('not effective (flag off, or stateless off for the flag): no tasks key in discover; tasks/get → -32601 / 404', async () => {
+    vi.stubEnv('MCP_TASKS_ENABLED', '');
+    expect((await rpc('server/discover', {}, {})).body.result.capabilities).not.toHaveProperty('extensions');
+    const get = await rpc('tasks/get', { taskId: TASK_ACTION_ID }, TASK_CAPS);
+    expect(get.status).toBe(404);
+    expect(get.body.error).toEqual({ code: -32601, message: 'Method not found: tasks/get' });
+    const call = await rpc('tools/call', { name: 'manage_services', arguments: { action: 'restart' } }, TASK_CAPS);
+    expect(call.body.result.resultType).toBe('complete');
+    expect(call.body.result.structuredContent.status).toBe('pending_approval');
   });
 });
 

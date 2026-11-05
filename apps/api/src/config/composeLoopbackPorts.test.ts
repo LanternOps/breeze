@@ -19,6 +19,14 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
  * Playwright, `pnpm test-stack`, `pnpm wt-stack`) connects via localhost, so
  * the default host address is loopback; BREEZE_TEST_BIND_ADDR /
  * BREEZE_WT_BIND_ADDR opt back in to another address.
+ *
+ * #9382 brought the two dev stacks under the same rule, via
+ * BREEZE_DEV_BIND_ADDR: docker-compose.override.yml.dev (the documented
+ * quickstart, whose Postgres password comes from .env, where .env.example
+ * ships a placeholder) and docker-compose.dev.yml (the legacy stack, with
+ * fixed breeze/breeze Postgres and minioadmin MinIO credentials). Both are
+ * checked with no per-service exceptions, so adding a published port to either
+ * file without a host address fails here.
  */
 
 // Compose's own merge tags. js-yaml throws on unknown tags, so declare them as
@@ -119,5 +127,48 @@ describe('docker-compose.override.yml.worktree publishes on loopback', () => {
       .toEqual(['127.0.0.1:18080:80']);
     expect(renderedMappings('docker-compose.override.yml.worktree', { BREEZE_WT_BIND_ADDR: '0.0.0.0' }).caddy)
       .toEqual(['0.0.0.0:0:80']);
+  });
+});
+
+describe('the dev stacks publish on loopback (#9382)', () => {
+  // Both files are checked whole: every service that publishes a port, not a
+  // list of the data services. A new published port is then loopback-bound or
+  // this test fails, which is the point of extending it here.
+  it.each([
+    ['docker-compose.override.yml.dev', ['api', 'portal', 'postgres', 'redis', 'web']],
+    ['docker-compose.dev.yml', ['api', 'minio', 'postgres', 'redis', 'web']],
+  ])('binds every published port in %s to 127.0.0.1', (composeFile, expectedServices: string[]) => {
+    const mappings = renderedMappings(composeFile, {});
+    // Pinned so a service that stops publishing — or starts — is noticed here
+    // rather than silently dropping out of the loop below.
+    expect(Object.keys(mappings).sort()).toEqual(expectedServices);
+    for (const [service, rendered] of Object.entries(mappings)) {
+      expect(rendered.length, `${composeFile} ${service}: expected at least one mapping`).toBeGreaterThan(0);
+      for (const mapping of rendered) expect(mapping, `${composeFile} ${service}`).toMatch(LOOPBACK_MAPPING);
+    }
+  });
+
+  it.each(['docker-compose.override.yml.dev', 'docker-compose.dev.yml'])(
+    'honours BREEZE_DEV_BIND_ADDR as an explicit opt-out in %s',
+    (composeFile) => {
+      const mappings = renderedMappings(composeFile, { BREEZE_DEV_BIND_ADDR: '0.0.0.0' });
+      const rendered = Object.values(mappings).flat();
+      expect(rendered.length).toBeGreaterThan(0);
+      // Every mapping moves, not just the data services: the opt-out is one
+      // switch for the whole stack.
+      for (const mapping of rendered) expect(mapping).toMatch(/^0\.0\.0\.0:\d+:\d+$/);
+    },
+  );
+
+  it('publishes the data services on their canonical dev ports', () => {
+    // The ports the quickstart, DEVELOPER_GUIDE and every local tool use. The
+    // bind address must not have moved them.
+    const override = renderedMappings('docker-compose.override.yml.dev', {});
+    expect(override.postgres).toEqual(['127.0.0.1:5432:5432']);
+    expect(override.redis).toEqual(['127.0.0.1:6379:6379']);
+    const legacy = renderedMappings('docker-compose.dev.yml', {});
+    expect(legacy.postgres).toEqual(['127.0.0.1:5432:5432']);
+    expect(legacy.redis).toEqual(['127.0.0.1:6379:6379']);
+    expect(legacy.minio).toEqual(['127.0.0.1:9000:9000', '127.0.0.1:9001:9001']);
   });
 });

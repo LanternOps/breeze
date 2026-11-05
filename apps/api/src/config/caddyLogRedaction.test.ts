@@ -46,6 +46,7 @@ const REQUEST_CREDENTIAL_HEADERS = [
   'X-Xero-Signature',
   'Stripe-Signature',
   'Svix-Signature',
+  'Webhook-Signature',
   'Intuit-Signature',
   'Mcp-Session-Id',
   'Cf-Access-Jwt-Assertion',

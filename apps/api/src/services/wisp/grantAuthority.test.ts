@@ -32,6 +32,8 @@ vi.mock('../unassignedPool/visibility', () => ({
 }));
 
 import {
+  agentDeniedToolNames,
+  assertReadWithinCeiling,
   assertToolCallWithinCeiling,
   assertWithinCeiling,
   ceilingSnapshotHash,
@@ -243,6 +245,54 @@ describe('resolveGrantCeiling', () => {
     await expect(resolveGrantCeiling('g1', 'r1')).rejects.toBeInstanceOf(GrantInactiveError);
     expect(shared.getUserPermissions).not.toHaveBeenCalled();
   });
+  describe('allowPaused (W02a: the thread timeline reads a paused grant\'s history)', () => {
+    const liveOk = () => {
+      queueSelect([{ status: 'active', partnerId: PARTNER }]);
+      shared.getUserPermissions.mockResolvedValueOnce(livePerms([
+        { resource: 'ai_sessions', action: 'use' }, { resource: 'devices', action: 'read' },
+      ]));
+      shared.computeAccessibleOrgIds.mockResolvedValueOnce({ orgIds: ['o1'], partnerOrgAccess: 'selected' });
+      queueSelect([{ id: 'o1' }]);
+    };
+
+    it('resolves a paused grant from its stored revision ∩ the live term, carrying status paused', async () => {
+      queueSelect([grantRow({ status: 'paused' })]);
+      queueSelect([revisionRow()]);
+      liveOk();
+      const c = await resolveGrantCeiling('g1', 'r1', { allowPaused: true });
+      expect(c.status).toBe('paused');
+      expect([...c.orgIds]).toEqual(['o1']);
+    });
+
+    it('the paused ceiling it returns is refused by assertWithinCeiling (never usable to act)', async () => {
+      queueSelect([grantRow({ status: 'paused' })]);
+      queueSelect([revisionRow()]);
+      liveOk();
+      const c = await resolveGrantCeiling('g1', 'r1', { allowPaused: true });
+      expect(() => assertWithinCeiling(c, { orgId: 'o1' })).toThrow(expect.objectContaining({ code: 'inactive' }));
+    });
+
+    it('still refuses revoked, expired and a grantor whose live term fails', async () => {
+      queueSelect([grantRow({ status: 'revoked' })]);
+      queueSelect([revisionRow()]);
+      await expect(resolveGrantCeiling('g1', 'r1', { allowPaused: true })).rejects.toMatchObject({ kind: 'ended' });
+      queueSelect([grantRow({ status: 'paused', expiresAt: new Date(Date.now() - 1000) })]);
+      queueSelect([revisionRow()]);
+      await expect(resolveGrantCeiling('g1', 'r1', { allowPaused: true })).rejects.toMatchObject({ status: 'expired' });
+      queueSelect([grantRow({ status: 'paused' })]);
+      queueSelect([revisionRow()]);
+      queueSelect([{ status: 'disabled', partnerId: PARTNER }]);
+      await expect(resolveGrantCeiling('g1', 'r1', { allowPaused: true })).rejects.toMatchObject({ kind: 'paused' });
+    });
+
+    it('an active grant resolves exactly as without the option', async () => {
+      queueSelect([grantRow()]);
+      queueSelect([revisionRow()]);
+      liveOk();
+      expect((await resolveGrantCeiling('g1', 'r1', { allowPaused: true })).status).toBe('active');
+    });
+  });
+
   it('throws GrantInactiveError for a grant past expires_at even while status is active', async () => {
     queueSelect([grantRow({ expiresAt: new Date(Date.now() - 1000) })]);
     queueSelect([revisionRow()]);
@@ -287,8 +337,31 @@ describe('resolveGrantCeiling', () => {
     expect(c.siteIds).toBeNull();
     expect([...c.toolAllowlist!]).toEqual(['get_device']);
     expect(c.deniedTools.has('snapshot_denied_tool')).toBe(true);
-    for (const t of AGENT_HUMAN_ONLY_TOOLS) expect(c.deniedTools.has(t)).toBe(true);
+    for (const t of AGENT_HUMAN_ONLY_TOOLS) expect(c.deniedTools.has(t)).toBe(t !== 'launch_specialist');
     for (const t of AGENT_DENIED_READ_TOOLS.keys()) expect(c.deniedTools.has(t)).toBe(true);
+  });
+
+  // W07 Task 6: `launch_specialist` is the Tier-2 chat tool a human uses UNDER
+  // a grant to hand work to the coordinator — the only chat path to a
+  // specialist. It sits in AGENT_HUMAN_ONLY_TOOLS so an ai_agent principal can
+  // never call it; folding that registry into the ceiling floor denied it to
+  // the human's own Wisp turn too, so no path remained (live stack: "Wisp
+  // can't use this tool under your current grant." for a *:* grantor).
+  it('assertWithinCeiling admits launch_specialist when the snapshot does not deny it, and still refuses the other agent denies', () => {
+    const c = ceiling({ deniedTools: new Set(), orgIds: new Set(['o1']), permissionKeys: new Set(['*:*']) });
+    expect(() => assertWithinCeiling(c, { toolName: 'launch_specialist' })).not.toThrow();
+    expect(() => assertWithinCeiling(c, { toolName: 'workspace_launch_analysis' })).toThrow(CeilingViolationError);
+    expect(() => assertWithinCeiling(c, { toolName: 'ioc_hunt' })).toThrow(CeilingViolationError);
+    // A revision whose snapshot still lists it (pre-fix) keeps denying until refreshed.
+    expect(() => assertWithinCeiling(ceiling({ deniedTools: new Set(['launch_specialist']) }), { toolName: 'launch_specialist' })).toThrow(CeilingViolationError);
+  });
+
+  it('the ceiling floor keeps every agent deny except launch_specialist, which only a human under a grant may call', () => {
+    const floor = new Set(agentDeniedToolNames());
+    expect(floor.has('launch_specialist')).toBe(false);
+    expect(AGENT_HUMAN_ONLY_TOOLS.has('launch_specialist')).toBe(true); // agents stay denied by the registry itself
+    for (const t of AGENT_HUMAN_ONLY_TOOLS) if (t !== 'launch_specialist') expect(floor.has(t)).toBe(true);
+    for (const t of AGENT_DENIED_READ_TOOLS.keys()) expect(floor.has(t)).toBe(true);
   });
 
   it('clamps an org-scoped grant to its scope org even when the snapshot lists another', async () => {
@@ -366,6 +439,33 @@ describe('resolveGrantCeiling', () => {
 // Org-axis precedence: the grantor's organization_users rows narrow the
 // ceiling per org (permissions.ts getUserPermissions resolves org first).
 // ---------------------------------------------------------------------------
+
+describe('assertReadWithinCeiling (#10104: paused-grant history reads)', () => {
+  it('a PAUSED ceiling passes an org inside it — where assertWithinCeiling refuses it as inactive', () => {
+    const paused = ceiling({ status: 'paused' });
+    expect(() => assertWithinCeiling(paused, { orgId: 'org-a' })).toThrow(expect.objectContaining({ code: 'inactive' }));
+    expect(() => assertReadWithinCeiling(paused, { orgId: 'org-a' })).not.toThrow();
+  });
+  it('still refuses an org outside the ceiling, active or paused', () => {
+    for (const status of ['active', 'paused'] as const) {
+      expect(() => assertReadWithinCeiling(ceiling({ status }), { orgId: 'org-b' })).toThrow(expect.objectContaining({ code: 'org' }));
+    }
+  });
+  it('still applies the site terms: ceiling-wide and the org membership term', () => {
+    const paused = ceiling({ status: 'paused', siteIds: new Set(['s1']) });
+    expect(() => assertReadWithinCeiling(paused, { orgId: 'org-a' })).toThrow(expect.objectContaining({ code: 'site' }));
+    const memberSites = ceiling({ status: 'paused', orgTerms: new Map([['org-a', { permissionKeys: new Set(['*:*']), siteIds: new Set(['s1']) }]]) });
+    expect(() => assertReadWithinCeiling(memberSites, { orgId: 'org-a' })).toThrow(expect.objectContaining({ code: 'site' }));
+  });
+  it('a partner-level (null org) subject still needs a partner-wide grant', () => {
+    expect(() => assertReadWithinCeiling(ceiling({ status: 'paused', partnerWide: false }), { orgId: null })).toThrow(expect.objectContaining({ code: 'org' }));
+    expect(() => assertReadWithinCeiling(ceiling({ status: 'paused', partnerWide: true }), { orgId: null })).not.toThrow();
+  });
+  it('an org-scoped grant never reads past its scope org', () => {
+    const scoped = ceiling({ status: 'paused', scopeOrgId: 'org-a', partnerWide: false, orgIds: new Set(['org-a', 'org-b']) });
+    expect(() => assertReadWithinCeiling(scoped, { orgId: 'org-b' })).toThrow(expect.objectContaining({ code: 'org' }));
+  });
+});
 
 describe('assertWithinCeiling — per-org terms (organization_users precedence)', () => {
   const twoOrgs = (o: Partial<GrantCeiling> = {}) => ceiling({

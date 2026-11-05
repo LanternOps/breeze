@@ -67,6 +67,7 @@ const M365_ACTIONS_PROFILE = 'customer-graph-actions' as const;
 export const RECIPE_AGENT_KINDS: Readonly<Record<string, AiAgentKind>> = Object.freeze({
   service_recovery: 'triage',
   identity_offboarding: 'helpdesk',
+  identity_onboarding: 'helpdesk',
 });
 
 /** Library-card copy, per recipe. */
@@ -79,6 +80,11 @@ const RECIPE_COPY: Readonly<Record<string, { name: string; summary: string }>> =
     name: 'Offboard a person',
     summary: 'Confirm who is leaving, route their mail, remove their access across Microsoft 365 and Google Workspace '
       + 'in a safe order with one approval, and track the hand work on the ticket.',
+  },
+  identity_onboarding: {
+    name: 'Onboard a person',
+    summary: 'Create the new person\'s Microsoft 365 account with one approval, hand over the temporary password once, '
+      + 'then grant their licences and groups with a second approval and track the hand work on the ticket.',
   },
 });
 

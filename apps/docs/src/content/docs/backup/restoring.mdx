@@ -44,7 +44,7 @@ A `system_image` snapshot taken by a v0.112.0 or later agent on Linux or Windows
 | Type | What it recovers | When to use |
 |------|-----------------|-------------|
 | **Full restore** | Everything in the snapshot | Replacing a failed drive or rebuilding a system |
-| **Selective restore** | Individual files you choose (not folders — see below) | Recovering accidentally deleted files |
+| **Selective restore** | The files and folders you choose | Recovering accidentally deleted files or folders |
 | **Bare metal recovery** | Files and/or OS state (registry or `/etc`, services, firewall, scheduled tasks, packages) onto a machine that reinstalls or boots its own OS — or, on Linux, a full disk rebuild from a whole-machine snapshot | Replacing a dead machine entirely. See [Bare Metal Recovery](/backup/bare-metal-recovery/) |
 
 ---
@@ -69,13 +69,13 @@ A `system_image` snapshot taken by a v0.112.0 or later agent on Linux or Windows
 1. Go to **Backup → Restore** in the console to open the **Restore Wizard**. (The **Snapshots** tab links to it from the snapshot file list.)
 2. Choose the device, then select the snapshot. Arriving from the **Snapshots** tab, the snapshot and its device are already selected.
 3. Choose **Selective Restore**.
-4. Browse the file tree and check the boxes next to the individual files you want to recover. Selection is per-file — checking a folder is not supported, and the API rejects a folder path submitted directly; select the files inside it instead.
+4. Browse the file tree and check the files and folders you want to recover. Each folder shows how many backed-up files it holds. Checking a folder selects every file indexed beneath it, and a partly selected folder shows a partial checkmark. When the selection covers more than 1,000 files, Breeze asks you to confirm.
 5. Choose the destination path (see the staging-folder default above).
 6. Review and click **Restore**.
 </Steps>
 
-<Aside type="caution">
-  Selective restore currently matches files by path **prefix**, not by exact folder boundary. If you select `/home/alice`, a sibling folder like `/home/alice2` or `/home/alice-old` is also included in the restore, since its path starts with the same characters. Review the file list carefully before confirming a selective restore of folders with similar names.
+<Aside>
+  A selected folder is expanded to the files the snapshot indexed beneath it, matched on whole folder names: selecting `/home/alice` never includes a sibling such as `/home/alice2`. One restore can expand to at most 10,000 files; a larger selection is refused with the count, so split it into several restores. The same rules apply when you restore a folder through the API or the AI assistant.
 </Aside>
 
 ---

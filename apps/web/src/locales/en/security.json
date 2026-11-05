@@ -1,4 +1,20 @@
 {
+  "aiRisk": {
+    "tiers": {
+      "tier1": {
+        "label": "Tier 1 — Reads"
+      },
+      "tier2": {
+        "label": "Tier 2 — Acts and logs"
+      },
+      "tier3": {
+        "label": "Tier 3 — Asks first"
+      },
+      "tier4": {
+        "label": "Tier 4 — Blocked"
+      }
+    }
+  },
   "aiRiskAiRiskDashboard": {
     "aiRiskEngine": "AI Risk Engine",
     "analytics": "Analytics",
@@ -22,8 +38,8 @@
     "title": "Script Proposals",
     "proposalsPerDay": "Proposals per day",
     "reviewerDisagreements": "Reviewer disagreements",
-    "humanRejectedAfterApprove": "Human rejected after AI approved",
-    "humanApprovedAfterReject": "Human approved after AI rejected",
+    "humanRejectedAfterApprove": "Human denied, AI recommended approving",
+    "humanApprovedAfterReject": "Human approved, AI recommended rejecting",
     "unattendedRuns": "Unattended runs",
     "laneState": "Unattended lane",
     "laneOpen": "Open (paused after repeated failed verifications)",
@@ -38,7 +54,15 @@
     "exec": "Exec: {{duration}}ms",
     "noTier3ToolExecutionsFound": "No Tier 3 tool executions found.",
     "pending": "Pending",
-    "rejected": "Rejected",
+    "rejected": "Denied",
+    "status": {
+      "pending": "Pending",
+      "approved": "Approved",
+      "executing": "Executing",
+      "completed": "Completed",
+      "failed": "Failed",
+      "rejected": "Denied"
+    },
     "session": "Session: {{sessionId}}",
     "tempPasswordAlreadyRevealed": "The temporary password has already been revealed.",
     "tempPasswordCopied": "Copied",
@@ -73,12 +97,13 @@
   },
   "aiRiskRejectionDenialLog": {
     "all2": "All",
-    "denied": "Denied",
+    "denied": "Blocked",
     "error": "Error",
     "failed": "Failed",
-    "noRejectionsOrDenialsFound": "No rejections or denials found.",
-    "rejected": "Rejected",
-    "rejectionsAndDenials": "Rejections & Denials",
+    "noRejectionsOrDenialsFound": "No denied, blocked or failed actions found.",
+    "rejected": "Denied",
+    "rejectionsAndDenials": "Denied & blocked",
+    "stopped": "Stopped",
     "search": "Search...",
     "session": "Session",
     "status": "Status",
@@ -678,6 +703,10 @@
     "wed": "Wed"
   },
   "securitySecurityScanManager": {
+    "scanStatus": {
+      "cancelled": "Cancelled",
+      "expired": "Expired"
+    },
     "activeScans": "Active scans",
     "allScanRequestsFailed": "All {{count}} scan requests failed",
     "cData": "C:\\\\Data\\\\",
@@ -755,13 +784,13 @@
     "threatStatus": "Threat status",
     "threatWasMovedToQuarantineByPolicy": "Threat was moved to quarantine by policy or operator action.",
     "timeline": "Timeline",
-    "actionFailed": "Action failed",
     "quarantineSucceeded": "Threat quarantined",
     "restoreSucceeded": "Threat restored",
     "removeSucceeded": "Threat removed",
     "notFound": "This threat was not found. It may have been deleted, or you may not have access to its device.",
     "relatedLoadFailed": "Related threats could not be loaded.",
     "rule": {
+      "version": "Version {{version}}",
       "title": "Detection rule",
       "legacy": "Built-in signature (legacy scan)",
       "ruleName": "Rule",
@@ -939,6 +968,19 @@
     "statusFilterLabel": "Status",
     "categoryFilterLabel": "Category"
   },
+  "pamEnforcement": {
+    "declineRecordUntrusted": "Refused: device decision record unavailable",
+    "userDeclined": "Declined on the device",
+    "userDecisionPending": "No answer on the device"
+  },
+  "pamRespond": {
+    "withdrawnConflict": "The user withdrew this request on the device."
+  },
+  "pamWithdrawReason": {
+    "dialog_error": "Prompt failed on the device",
+    "user_denied": "Declined by the user",
+    "user_timeout": "No answer on the device"
+  },
   "pamPamAuditTab": {
     "errors": {
       "loadWithStatus": "Failed to load audit history (HTTP {{status}})",
@@ -1108,6 +1150,8 @@
       "durationHelp": "1 to 1440 minutes (24h max).",
       "reasonRecommended": "Reason (recommended)",
       "reasonOptional": "Reason (optional)",
+      "reasonShownToUser": "Reason (shown to the user)",
+      "reasonShownToUserHint": "The end user sees this in their notification (first 500 characters).",
       "reasonPlaceholder": "Recorded in the audit trail"
     },
     "actions": {
@@ -1704,13 +1748,18 @@
       "totalQueries": "Total queries",
       "blocked": "Blocked",
       "allowed": "Allowed",
-      "redirected": "Redirected"
+      "redirected": "Redirected",
+      "notStored": "Not stored"
     },
     "topBlocked": {
       "title": "Top blocked domains",
       "empty": "No blocked domains in the current window."
     },
-    "loading": "Loading…"
+    "loading": "Loading…",
+    "allowedTraffic": {
+      "none": "Allowed queries are not stored for these integrations, so only blocked and redirected queries are counted. To count them, turn on \"Store allowed traffic\" in an integration's stored data settings.",
+      "some": "Allowed queries are stored for some integrations only, so the allowed count is partial."
+    }
   },
   "dnsSecurityDnsSecurityIntegrationsTab": {
     "title": "Configured integrations",
@@ -1726,16 +1775,18 @@
     "actions": {
       "addIntegration": "Add integration",
       "syncNow": "Sync now",
-      "deleteIntegration": "Delete integration"
+      "deleteIntegration": "Delete integration",
+      "editRetention": "Stored data"
     },
     "messages": {
       "loadHttpError": "Failed to load integrations (HTTP {{status}})",
       "loadFailed": "Failed to load integrations",
       "syncFailed": "Failed to trigger sync for {{name}}",
       "syncQueued": "Sync queued for {{name}}",
-      "deleteConfirm": "Delete {{name}}? Stored events are retained per the retention policy.",
+      "deleteConfirm": "Delete {{name}}? Its policies, events and statistics are removed in the background.",
       "deleteFailed": "Failed to delete {{name}}",
-      "deleteSuccess": "Deleted {{name}}"
+      "deleteSuccess": "Deleting {{name}} in the background",
+      "deleteComplete": "{{name}} deleted"
     },
     "loading": "Loading integrations…",
     "empty": {
@@ -1750,7 +1801,31 @@
       "actions": "Actions"
     },
     "lastSyncFailedSuffix": " — failed",
-    "never": "Never"
+    "lastSyncPartialSuffix": " — catching up",
+    "lastSyncTruncatedSuffix": " — some events not fetched",
+    "never": "Never",
+    "deletingInBackground": "Deleting…"
+  },
+  "dnsSecurityEditDnsRetentionModal": {
+    "title": "Stored data",
+    "description": "Choose which DNS queries Breeze stores for this integration and how long it keeps them.",
+    "fieldLabel": "Keep DNS events and statistics for (days)",
+    "fieldHelp": "1–365 days. Leave empty to use the deployment default (90 days unless your administrator changed it).",
+    "invalid": "Enter a whole number of days from 1 to 365, or leave it empty.",
+    "actions": {
+      "dismiss": "Cancel",
+      "submit": "Save",
+      "saving": "Saving…"
+    },
+    "messages": {
+      "saved": "Stored data settings updated for {{name}}",
+      "saveFailed": "Failed to update stored data settings for {{name}}"
+    },
+    "storeAllowedTraffic": {
+      "label": "Store allowed traffic",
+      "helpOff": "Only blocked and redirected queries are stored. Allowed queries are usually almost all of the traffic, and your DNS provider keeps them in its own reports.",
+      "helpOn": "Allowed queries are stored too, which is usually around 100 times more rows. Turning this off later does not delete allowed queries already stored; retention removes them."
+    }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {
     "title": "Block / Allow policies",
@@ -1795,10 +1870,20 @@
       "loadFailed": "Failed to load events"
     },
     "loading": "Loading…",
-    "eventCount_one": "{{shown}} of {{total}} event (most recent 100)",
-    "eventCount_other": "{{shown}} of {{total}} events (most recent 100)",
-    "blockedEventCount_one": "{{shown}} of {{total}} blocked event (most recent 100)",
-    "blockedEventCount_other": "{{shown}} of {{total}} blocked events (most recent 100)",
+    "eventCount_one": "{{shown}} of {{total}} event",
+    "eventCount_other": "{{shown}} of {{total}} events",
+    "blockedEventCount_one": "{{shown}} of {{total}} blocked event",
+    "blockedEventCount_other": "{{shown}} of {{total}} blocked events",
+    "eventCountCapped": "{{shown}} of {{total}}+ events",
+    "blockedEventCountCapped": "{{shown}} of {{total}}+ blocked events",
+    "loadMore": "Load more",
+    "window": {
+      "label": "Time range",
+      "last24h": "Last 24 hours",
+      "last7d": "Last 7 days",
+      "last30d": "Last 30 days",
+      "last90d": "Last 90 days"
+    },
     "showAll": "Show all (not just blocked)",
     "actions": {
       "refresh": "Refresh",
@@ -1977,19 +2062,17 @@
       "statusFilterLabel": "Status"
     },
     "status": {
-      "pendingApproval": "Pending Approval",
-      "pending_approval": "pending approval",
-      "queued": "queued",
-      "inProgress": "In Progress",
-      "in_progress": "in progress",
-      "completed": "completed",
-      "failed": "failed",
-      "cancelled": "cancelled"
+      "pending_approval": "Pending approval",
+      "queued": "Queued",
+      "in_progress": "In progress",
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
     },
     "approval": {
-      "pending": "pending",
-      "approved": "approved",
-      "rejected": "rejected"
+      "pending": "Pending",
+      "approved": "Approved",
+      "rejected": "Rejected"
     },
     "actions": {
       "apply": "apply",
@@ -2310,6 +2393,7 @@
     }
   },
   "securityScansPage": {
+    "sweepsTab": "Sweeps",
     "iocScans": "IOC Scans",
     "subtitle": "Signature-based malware and IOC sweeps across your fleet. Not a replacement for full endpoint protection.",
     "scansTab": "Scans",
@@ -2336,6 +2420,8 @@
       "requiresMdmApproval": "Requires MDM approval",
       "platformNotSelected": "Platform not selected",
       "varMissing": "Deployment variable missing",
+      "varSecret": "Deployment variable is marked secret",
+      "installerMissing": "Installer not uploaded",
       "vendorUnavailable": "Vendor unavailable",
       "installFailed": "Install failed",
       "installNotArmed": "Install not armed",
@@ -2343,6 +2429,164 @@
       "awaitingVendorReport": "Awaiting vendor report",
       "awaitingEvaluation": "Awaiting evaluation",
       "vendorOrgMismatch": "Vendor reports a different organization"
+    },
+    "setupLink": {
+      "installerMissing": "Upload the installer",
+      "default": "Open setup"
+    }
+  },
+  "sweeps": {
+    "title": "IOC sweeps",
+    "started": "Sweep started",
+    "cancelled": "Sweep cancelled. Stopped before delivery: {{queued}}. Already delivered and finishing on the device: {{stillRunning}}.",
+    "detectOnly": "Sweeps only detect. Nothing is quarantined automatically, and no Defender scan is started.",
+    "version": "Version {{version}}",
+    "sweepNow": "Sweep now",
+    "sweepNowUnpublished": "Publish this rule set before sweeping with it.",
+    "sweepNowDisabled": "Enable this rule set before sweeping with it.",
+    "progress": {
+      "finished_one": "{{finished}} of {{count}} device finished",
+      "finished_other": "{{finished}} of {{count}} devices finished",
+      "completed_one": "{{count}} completed",
+      "completed_other": "{{count}} completed",
+      "timedOut_one": "{{count}} timed out",
+      "timedOut_other": "{{count}} timed out",
+      "failed_one": "{{count}} failed",
+      "failed_other": "{{count}} failed",
+      "cancelled_one": "{{count}} cancelled",
+      "cancelled_other": "{{count}} cancelled",
+      "expired_one": "{{count}} expired",
+      "expired_other": "{{count}} expired"
+    },
+    "errors": {
+      "orgOutOfScope": "One or more organizations are outside your access.",
+      "siteOutOfScope": "One or more sites are outside your access.",
+      "deviceOutOfScope": "One or more devices are outside your access.",
+      "ruleSetNotFound": "A selected rule set no longer exists.",
+      "ruleSetNotPublished": "A selected rule set is disabled or has never been published.",
+      "sweepTooLarge": "This sweep would scan {{targeted}} devices; one sweep is limited to {{max}}. Narrow the scope.",
+      "noEligibleDevices": "No device in this scope can run the sweep right now. Check the agent versions and the scope.",
+      "scopeChanged": "The devices or rule sets changed since the preview. Review the new numbers.",
+      "alreadyRunning": "This sweep is already running on these devices.",
+      "tooManyActive": "This organization already has {{max}} active sweeps. Wait for one to finish or cancel one.",
+      "mfaRequired": "This sweep targets {{targeted}} devices, more than {{threshold}}. Sign in with multi-factor authentication, or narrow the scope.",
+      "rateLimited": "Too many sweeps were started recently. Try again later."
+    },
+    "skipReasons": {
+      "agent_too_old_one": "{{count}} device with an agent that is too old",
+      "agent_too_old_other": "{{count}} devices with an agent that is too old",
+      "busy_same_sweep_one": "{{count}} device already running this sweep",
+      "busy_same_sweep_other": "{{count}} devices already running this sweep",
+      "rule_set_not_eligible_one": "{{count}} device the rule sets do not apply to",
+      "rule_set_not_eligible_other": "{{count}} devices the rule sets do not apply to"
+    },
+    "skipExplain": {
+      "agent_too_old": "The agent must be updated before it can run YARA rule sets.",
+      "busy_same_sweep": "An identical sweep is still active on these devices.",
+      "rule_set_not_eligible": "The device's operating system or organization is outside the rule set's reach."
+    },
+    "dialog": {
+      "title": "Sweep devices for IOC matches",
+      "ruleSets": "Rule sets: {{names}}",
+      "rescopeNote": "A sweep does not remember its devices. Choose the scope again; the rule sets, scan type and any custom paths are kept.",
+      "back": "Back",
+      "next": "Next",
+      "previewAction": "Preview",
+      "confirm_one": "Sweep {{count}} device",
+      "confirm_other": "Sweep {{count}} devices",
+      "viewRunning": "View the running sweep",
+      "confirmSummary_one": "{{devices}} in {{orgs}} will be scanned against the rule set versions shown in the preview. Matches are reported as threats; nothing is changed on the device.",
+      "confirmSummary_other": "{{devices}} in {{orgs}} will be scanned against the rule set versions shown in the preview. Matches are reported as threats; nothing is changed on the devices.",
+      "counts": {
+        "devices_one": "{{count}} device",
+        "devices_other": "{{count}} devices",
+        "orgs_one": "{{count}} organization",
+        "orgs_other": "{{count}} organizations"
+      },
+      "steps": {
+        "scope": "Scope",
+        "type": "Scan type",
+        "duration": "Duration",
+        "preview": "Preview",
+        "confirm": "Confirm"
+      },
+      "scope": {
+        "legend": "Which devices?",
+        "all": "All reachable devices",
+        "orgs": "Organizations",
+        "sites": "Sites",
+        "groups": "Device groups",
+        "devices": "Devices",
+        "allHelp": "Every device you can access that can run the sweep.",
+        "noOrgs": "No organizations available.",
+        "siteOrg": "Organization",
+        "pickOrg": "Choose an organization",
+        "noSites": "This organization has no sites.",
+        "sitesFailed": "The sites could not be loaded.",
+        "sitesSelected": "Sites selected: {{selected}}"
+      },
+      "type": {
+        "label": "Scan type",
+        "quick": "Quick",
+        "full": "Full",
+        "custom": "Custom paths",
+        "paths": "Paths, one per line",
+        "pathsHelp": "Up to {{max}} paths, {{chars}} characters each.",
+        "pathsCount": "{{paths}} of {{max}} paths",
+        "pathsTooMany": "{{paths}} of {{max}} paths: remove {{remove}}.",
+        "pathTooLong": "Line {{line}} is longer than {{chars}} characters."
+      },
+      "duration": {
+        "label": "Run for (hours)",
+        "help": "Offline devices run the scan when they come back within this time. Between 1 and {{max}} hours.",
+        "invalid": "Enter a whole number of hours from 1 to {{max}}."
+      },
+      "preview": {
+        "targeted": "{{devices}} in {{orgs}}",
+        "org": "{{org}}: {{devices}}",
+        "ruleSets": "Rule sets",
+        "skipped": "Skipped",
+        "scopeChanged": "The devices or rule sets changed since the preview. Review the new numbers, then confirm again."
+      }
+    },
+    "panel": {
+      "empty": "No IOC sweeps yet. Start one from a detection rule set.",
+      "refreshFailed": "The list could not be refreshed. What you see may be out of date.",
+      "allSweeps": "All sweeps",
+      "openGroup": "Open group",
+      "cancel": "Cancel",
+      "cancelAll": "Cancel all",
+      "resweep": "Sweep again with the current rules",
+      "rulesChanged": "Rules changed since this sweep started",
+      "queued": "Queued: {{queued}}",
+      "running": "Running: {{running}}",
+      "columns": {
+        "ruleSets": "Rule sets",
+        "origin": "Started from",
+        "progress": "Progress",
+        "skipped": "Skipped",
+        "degraded": "Degraded",
+        "threats": "Threats",
+        "created": "Created",
+        "state": "State"
+      },
+      "state": {
+        "active": "Active",
+        "completed": "Completed",
+        "cancelled": "Cancelled",
+        "expired": "Expired"
+      },
+      "origin": {
+        "web": "Web",
+        "api": "API",
+        "ai_chat": "Breeze AI",
+        "mcp": "MCP"
+      },
+      "scanType": {
+        "quick": "Quick scan",
+        "full": "Full scan",
+        "custom": "Custom paths"
+      }
     }
   },
   "detectionRules": {
@@ -2372,6 +2616,7 @@
       "builtin": "Built-in",
       "allOrgs": "All orgs",
       "errors": "Has errors",
+      "checkerUnavailable": "Compiler unavailable",
       "unpublished": "Not published",
       "disabled": "Disabled"
     },
@@ -2428,7 +2673,7 @@
       "autoQuarantineOnly": "Auto-quarantine is off on devices now. Your other changes are not live yet.",
       "published": "Saved and published as version {{version}}",
       "savedDisabled": "Saved. The set is disabled, so devices do not use it.",
-      "checkerUnavailable": "Saved, not published: the rule checker is unavailable. {{devices}}",
+      "checkerUnavailable": "Saved, not published: the YARA compiler is unavailable on this server, so the rules could not be checked. {{devices}}",
       "compileErrors_one": "Saved, not published: {{count}} rule has errors. {{devices}}",
       "compileErrors_other": "Saved, not published: {{count}} rules have errors. {{devices}}",
       "setErrors": "Saved, not published: {{message}}. {{devices}}",
@@ -2437,7 +2682,8 @@
       "devicesKeep": "Devices keep version {{version}}.",
       "neverPublished": "This set has not been published yet, so devices do not use it.",
       "setDisabled": "The set is disabled, so devices do not use it.",
-      "staleBanner": "Not published: fix the errors below. {{devices}}"
+      "staleBanner": "Not published: fix the errors below. {{devices}}",
+      "staleCheckerUnavailable": "Not published: the YARA compiler is unavailable on this server, so rule changes cannot be checked or published. {{devices}}"
     },
     "editor": {
       "tabs": {
@@ -2532,5 +2778,35 @@
   },
   "sensitiveDataAccess": {
     "noOrgAccess": "You don't have access to this organization"
+  },
+  "sensitiveDataLabels": {
+    "risk": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low"
+    },
+    "findingStatus": {
+      "open": "Open",
+      "remediated": "Remediated",
+      "accepted": "Accepted",
+      "falsePositive": "False Positive"
+    },
+    "scanStatus": {
+      "queued": "Queued",
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
+    },
+    "dataType": {
+      "credential": "Credentials",
+      "financial": "Financial"
+    },
+    "a11y": {
+      "editPolicy": "Edit policy {{name}}",
+      "deletePolicy": "Delete policy {{name}}",
+      "togglePolicyActive": "Active: {{name}}"
+    }
   }
 }

@@ -15,6 +15,7 @@ import {
   topologyConfigTemplateVersions,
 } from '../../db/schema';
 import { hasSatisfiedMfa, type AuthContext } from '../../middleware/auth';
+import { isAutomationPrincipal } from '../../middleware/principalKind';
 import {
   canAccessOrg,
   hasPermission,
@@ -81,7 +82,7 @@ export function assertTopologyTemplateAccess(
   // policy, matching the step-up bar other governance writes carry
   // (softwarePolicyAuthorization.ts, ai/scriptPolicy.ts).
   if (write) {
-    if (auth.principal?.kind === 'ai_agent')
+    if (isAutomationPrincipal(auth))
       throw new TopologyOperationError('topology_permission_denied', 403);
     if (!hasSatisfiedMfa(auth))
       throw new TopologyOperationError('topology_mfa_required', 403);

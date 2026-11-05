@@ -5,10 +5,10 @@ package macrelocate
 import (
 	"log/slog"
 	"os"
-	"os/exec"
 	"syscall"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/securefs"
 )
 
@@ -24,8 +24,9 @@ func DefaultDeps(log *slog.Logger) Deps {
 		StartDetached: func(script string) error {
 			// script comes from BuildRelocateScript: fixed plist path plus
 			// this process's own executable path and its trusted twin.
-			cmd := exec.Command("/bin/sh", "-c", script)
+			cmd := procspawn.Command("/bin/sh", "-c", script)
 			cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+			procspawn.Prepare(cmd)
 			if err := cmd.Start(); err != nil {
 				return err
 			}

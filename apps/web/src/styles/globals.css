@@ -34669,3 +34669,16 @@
     --breeze-toast-bottom: 6rem;
   }
 }
+
+/* Wisp companion layout (W01 #10211). The Wisp home and thread page are one
+   conversation that fills the content area, composer at the bottom. <main>
+   becomes a flex column only on those pages so the shell takes exactly the
+   space left under whatever stacks above it (the domain-accent strip, the MFA
+   or trust banners) instead of a fixed `h-full` that those banners would push
+   below the fold. The shell sits directly under <main> (its astro-island is
+   display: contents). */
+main:has(> * > [data-wisp-shell]),
+main:has(> [data-wisp-shell]) {
+  display: flex;
+  flex-direction: column;
+}

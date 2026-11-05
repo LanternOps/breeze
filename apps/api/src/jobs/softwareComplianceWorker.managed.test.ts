@@ -21,7 +21,18 @@ const {
   pruneAllMock: vi.fn(async (..._args: unknown[]) => ({ upserted: 0, pruned: 0 })),
   recordCoverageMock: vi.fn(async (..._args: unknown[]) => ({ upserted: 0, pruned: 0 })),
   repairMock: vi.fn(async () => ({ links: 0, changed: 0, failed: 0 })),
-  dbSelectMock: vi.fn(),
+  // Any read the FIFO below does not prime returns no rows. #6958 PR E added
+  // one such read to every allowlist pass with a catalogId rule (the
+  // software_versions lookup for service_running clauses); [] there means
+  // "no clause", which leaves every assertion in this file unchanged.
+  dbSelectMock: vi.fn(() => {
+    const joined: Record<string, unknown> = {
+      where: () => Object.assign(Promise.resolve([]), { limit: () => Promise.resolve([]) }),
+      limit: () => Promise.resolve([]),
+    };
+    joined.innerJoin = () => joined;
+    return { from: () => joined };
+  }),
   dbUpdateSetMock: vi.fn((_values: Record<string, unknown>) => ({ where: async () => undefined })),
   resolveDeviceIdsMock: vi.fn(async () => ['device-1']),
   upsertMock: vi.fn(async (_inputs: Array<Record<string, unknown>>) => undefined),
@@ -112,10 +123,11 @@ const VENDOR_BY_CATALOG: Record<string, string> = { [HUNTRESS]: 'huntress', [OTH
 function applicability(notReady: Record<string, Record<string, string>>) {
   return {
     vendors: () => [VENDOR_BY_CATALOG[HUNTRESS], VENDOR_BY_CATALOG[OTHER]],
-    evaluateDevice: (deviceId: string) => [HUNTRESS, OTHER].map((catalogId) => {
+    evaluateDevice: (deviceId: string, _presence?: { missingCatalogIds: ReadonlySet<string> }) => [HUNTRESS, OTHER].map((catalogId) => {
       const reason = notReady[deviceId]?.[catalogId];
       return { catalogId, vendor: VENDOR_BY_CATALOG[catalogId], result: reason ? { ok: false, reason } : { ok: true } };
     }),
+    isRuleApplicable: (deviceId: string, catalogId: string) => !notReady[deviceId]?.[catalogId],
     filterViolations: (deviceId: string, violations: Array<{ type: string; rule?: { catalogId?: string } }>) => {
       const kept: typeof violations = [];
       const notApplicable: Array<{ catalogId: string; reason: string }> = [];
@@ -242,6 +254,30 @@ describe('processCheckPolicy — managed (security agents) policy applicability'
       ],
       prune: { deviceIds: ['device-1', 'device-2'], vendors: ['huntress', 'sentinelone'] },
     });
+  });
+
+  // #9247 review: installer_missing applies only where the agent is MISSING, so
+  // the pass hands each device's pre-filter `missing` catalog ids to coverage.
+  it('passes each device the rule catalog ids it was found missing (installed agents excluded)', async () => {
+    const a = applicability({});
+    const evaluateSpy = vi.fn(a.evaluateDevice);
+    applicabilityMock.mockResolvedValueOnce({ ...a, evaluateDevice: evaluateSpy });
+    resolveDeviceIdsMock.mockResolvedValueOnce(['device-1', 'device-2']);
+    primeSelects([
+      [MANAGED_POLICY],
+      ['device-1', 'device-2'].map((id) => ({ id, orgId: `org-of-${id}`, osType: 'windows' })),
+      [],
+    ]);
+    inventoryMock.mockResolvedValueOnce(new Map([
+      ['device-1', [{ name: 'Huntress Agent', version: '1.0', vendor: 'Huntress', catalogId: null }]],
+      ['device-2', []],
+    ]));
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    const presence = new Map(evaluateSpy.mock.calls.map(([deviceId, p]) => [deviceId, [...(p?.missingCatalogIds ?? [])].sort()]));
+    expect(presence.get('device-1')).toEqual([OTHER]);
+    expect(presence.get('device-2')).toEqual([HUNTRESS, OTHER].sort());
   });
 
   it('a device-filtered pass records its devices but never prunes the others', async () => {

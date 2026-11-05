@@ -363,6 +363,20 @@ describe('prerequisite tool bounds match the columns behind them (#2814)', () =>
     }).success).toBe(true);
   });
 
+  it('manage_update_rings advertises and validates the Windows feature-update policy', () => {
+    const def = aiTools.get('manage_update_rings')?.definition;
+    const properties = (def!.input_schema as { properties: Record<string, unknown> }).properties;
+    expect(properties).toHaveProperty('featureUpdates');
+    expect(validateToolInput('manage_update_rings', {
+      action: 'update', ringId: '11111111-1111-4111-8111-111111111111',
+      featureUpdates: { mode: 'pin', product: 'windows-11', targetVersion: '25H2' },
+    }).success).toBe(true);
+    expect(validateToolInput('manage_update_rings', {
+      action: 'update', ringId: '11111111-1111-4111-8111-111111111111',
+      featureUpdates: { mode: 'pin', product: 'windows-11' },
+    }).success).toBe(false);
+  });
+
   it('manage_policy_feature_link accepts canonical types and refuses retired types', () => {
     for (const featureType of CONFIG_FEATURE_TYPES) {
       expect(

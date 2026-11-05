@@ -13,7 +13,8 @@ import { autopayMergeBlockerCount } from './autopay/merge';
  *     its own small system context — none of this belongs in the merge
  *     transaction.
  *
- *   Phase B — re-tenant.  ONE system-context transaction: take both orgs'
+ *   Phase B — re-tenant.  ONE system-context transaction: take the partner's
+ *     partner-owned group rows FOR KEY SHARE (#10692), then both orgs'
  *     partner-export advisory locks (UUID-ascending, as that helper demands),
  *     `SET CONSTRAINTS ALL DEFERRED`, walk the merge registry parents-first
  *     TWICE — once resolving collisions, once moving rows (see
@@ -38,6 +39,7 @@ import * as dbModule from '../db';
 import { extractRowCount } from '../db/rowCount';
 import { organizations, orgMergeEvents } from '../db/schema';
 import { createAuditLog } from './auditService';
+import { findUnresolvedIsolations } from './networkIsolation/lifecycle';
 import { revalidateTicketAssignee } from './ticketService';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup, type Tx } from './authLifecycle';
 import {
@@ -57,6 +59,7 @@ import {
 import { getOrgMergePolicies, type OrgMergePolicy } from './orgMergeRegistry';
 import { captureLoserContacts, finishBindingMerge } from './callerVerification/merge';
 import { applyTicketChildLockOrder } from './ticketOrgMoveLockOrder';
+import { acquirePartnerGroupRowLocks } from './deviceGroupOwnership';
 import { topologicalCascadeOrder } from './tenantCascade';
 import { EVIDENCE_HOLD_LINEAGE_DEPTH_CAP, heldLineageDepth, writeEvidenceHold } from './orgEvidenceHold';
 import {
@@ -175,7 +178,7 @@ export interface MergeBlocker {
  *  - `payment_in_flight`: an autopay collection is still in flight.
  *  - `lineage_depth`: the held evidence lineage would get too deep.
  */
-export type MergeBlockerCode = 'pam_open_actuation' | 'pam_evidence' | 'payment_in_flight' | 'lineage_depth';
+export type MergeBlockerCode = 'pam_open_actuation' | 'pam_evidence' | 'payment_in_flight' | 'lineage_depth' | 'isolation_unresolved';
 
 /** PAM-chain tables whose loser rows a merge leaves at their epoch (registry kind `epoch-frozen`). */
 function isPamEpochFrozenTable(table: string): boolean {
@@ -189,7 +192,8 @@ export function mergeBlockerCodes(
 ): MergeBlockerCode[] {
   const codes = new Set<MergeBlockerCode>();
   for (const b of blockers) {
-    if (b.table === 'invoice_collection_attempts') codes.add('payment_in_flight');
+    if (b.table === 'device_network_isolations') codes.add('isolation_unresolved');
+    else if (b.table === 'invoice_collection_attempts') codes.add('payment_in_flight');
     else if (isPamEpochFrozenTable(b.table)) codes.add(pamTransfer ? 'pam_open_actuation' : 'pam_evidence');
   }
   if (lineageBlocked) codes.add('lineage_depth');
@@ -198,6 +202,12 @@ export function mergeBlockerCodes(
 
 /** Operator-facing refusal text; also embedded in previews and audits. Precondition: `blockers` is non-empty — every caller only invokes this once a blocks-merge table has loser rows. */
 export function buildMergeBlockedMessage(blockers: MergeBlocker[], pamTransfer = false): string {
+  if (blockers.some(b => b.table === 'device_network_isolations')) {
+    const others = blockers.filter(b => b.table !== 'device_network_isolations');
+    return others.length > 0
+      ? `Release network isolation first. ${buildMergeBlockedMessage(others, pamTransfer)}`
+      : 'Release network isolation first';
+  }
   const paymentBlockers = blockers.filter((b) => b.table === 'invoice_collection_attempts');
   if (paymentBlockers.length > 0) {
     const count = paymentBlockers.reduce((n, b) => n + b.loserRows, 0);
@@ -351,6 +361,8 @@ export async function collectMergeBlockers(
 ): Promise<MergeBlocker[]> {
   const transfer = pamTransfer ?? await self.resolveMergePamTransfer();
   const blockers: MergeBlocker[] = [];
+  const isolations = await findUnresolvedIsolations(dbModule.db, { orgId: loserOrgId });
+  if (isolations.length > 0) blockers.push({ table: 'device_network_isolations', loserRows: isolations.length });
   for (const [table, policy] of getOrgMergePolicies()) {
     if (!isRefusingPolicy(policy)) continue;
     const loserRows = await scalarCount(mergeBlockerCount(table, loserOrgId, transfer));
@@ -780,6 +792,18 @@ export async function unfenceLoser(loser: OrgMergeCandidate): Promise<void> {
 // ---------------------------------------------------------------------------
 // Phase B — the registry walk
 // ---------------------------------------------------------------------------
+
+/**
+ * Step 1 of the Phase B lock order (see `executeOrgMerge`): FOR KEY SHARE on
+ * the partner's partner-owned groups as of this read. Not a complete set: a
+ * group created after the read is not locked (the residual gap noted there).
+ */
+export async function lockMergePartnerGroupRows(partnerId: string): Promise<void> {
+  const rows = await dbModule.db.execute<{ id: string }>(sql`
+    SELECT id FROM device_groups
+     WHERE org_id IS NULL AND partner_id = ${uuid(partnerId)}`);
+  await acquirePartnerGroupRowLocks(rows.map(({ id }) => id));
+}
 
 /**
  * Re-read both orgs inside the merge transaction, `FOR NO KEY UPDATE`, and re-assert
@@ -1233,6 +1257,17 @@ async function getOrgMergeWalkOrder(): Promise<string[]> {
 // Execute
 // ---------------------------------------------------------------------------
 
+/** Must run in Phase B after the export locks and assertPairStillMergeable. */
+export async function assertMergeIsolationSafe(orgId: string, pamTransfer: boolean): Promise<void> {
+  // Existing org NO KEY UPDATE is compatible with start's FK KEY SHARE. Never
+  // upgrade it: wait on devices (id order), then read committed episodes. The
+  // already-held export org lock blocks the devices INSERT trigger from committing,
+  // so no new device can become visible to a start after this scan.
+  await dbModule.db.execute(sql`SELECT id FROM devices WHERE org_id = ${uuid(orgId)} ORDER BY id FOR NO KEY UPDATE`);
+  const blockers = await self.collectMergeBlockers(orgId, pamTransfer);
+  if (blockers.length > 0) throw new OrgMergeBlockedError(blockers, 'blocks_merge', pamTransfer);
+}
+
 /**
  * W05 (#8144): drop both orgs' agent hot-path cache entries on every API
  * instance. A merge re-points automation_policies (policy probe), devices and
@@ -1307,15 +1342,45 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
   try {
     result = await dbModule.runOutsideDbContext(() =>
       dbModule.withSystemDbAccessContext(async () => {
-        // Both orgs' export advisory locks, taken ASCENDING by uuid because
-        // breeze_partner_export_lock_orgs_exclusive raises P0001 on
-        // out-of-order acquisition (migrations/2026-07-22-partner-export-lock-
-        // upgrade-hardening.sql). Taken before any row write so the export
-        // triggers' lock hierarchy cannot deadlock against us mid-merge.
+        // Phase B lock order (#10692):
+        // 1. All of the partner's partner-owned group rows FOR KEY SHARE,
+        //    id-ascending via acquirePartnerGroupRowLocks. The deferred
+        //    membership owner check takes KEY SHARE on the group at COMMIT,
+        //    i.e. after the export locks, while a partner-group delete
+        //    (deleteDeviceGroup) takes FOR UPDATE on the group THEN the export
+        //    locks. Taking the row here first makes the two orders agree. The
+        //    W2b evaluators (partnerGroupEvaluation.ts / groupMembership.ts)
+        //    also take the group row before the export lock; their KEY SHARE
+        //    never conflicts with ours. Every partner group is locked, not just
+        //    those with loser memberships: the membership set is only stable
+        //    under the export locks, which come after. The cost is that a
+        //    delete (or owner change) of any of the partner's groups queues
+        //    behind the merge.
+        // 2. Both orgs' exclusive partner-export locks, UUID-ascending:
+        //    breeze_partner_export_lock_orgs_exclusive raises P0001 on
+        //    out-of-order acquisition (migrations/2026-07-22-partner-export-lock-
+        //    upgrade-hardening.sql). Taken before any row write so the export
+        //    triggers' lock hierarchy cannot deadlock against us mid-merge.
+        // 3. Both org rows FOR NO KEY UPDATE in assertPairStillMergeable.
+        // 4. Source devices FOR NO KEY UPDATE, in id order, then isolation
+        //    blockers. Keep step 3 compatible with starts' org FK KEY SHARE.
+        // 5. Registry walk and ticket child row locks (getOrgMergeWalkOrder /
+        //    applyTicketChildLockOrder), then deferred triggers at COMMIT,
+        //    including the membership owner check's KEY SHARE held since 1.
         //
-        // NOTE: this call also takes the partner's SHARED export lock, which is
+        // NOTE: step 2 also takes the partner's SHARED export lock, which is
         // exactly why `organizations` itself is NOT written in this
         // transaction — see `stampTerminalShell`.
+        //
+        // Residual gap: a partner group CREATED after step 1's read is not
+        // locked. It matters only if a membership writer (evaluator or manual
+        // assign) gives it a loser-org membership before step 2 is granted,
+        // including any time spent waiting on the export lock, and the group is
+        // then deleted before this merge commits. That can still 40P01;
+        // Postgres aborts one side. If it is the merge, it rolls back and
+        // unfences as for any Phase B failure; if it is the delete, the caller
+        // sees 40P01.
+        await self.lockMergePartnerGroupRows(input.partnerId);
         const locked = [loser.id, survivor.id].sort();
         await dbModule.db.execute(
           sql`SELECT public.breeze_partner_export_lock_orgs_exclusive(ARRAY[${sql.join(
@@ -1352,8 +1417,7 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         // refusing any PAM history, which the recheck below already enforces.
         const pamTransfer = await self.resolveMergePamTransfer();
         await armOwnershipChange(dbModule.db, 'org_merge', pamTransfer);
-        const txBlockers = await self.collectMergeBlockers(loser.id, pamTransfer);
-        if (txBlockers.length > 0) throw new OrgMergeBlockedError(txBlockers, 'blocks_merge', pamTransfer);
+        await self.assertMergeIsolationSafe(loser.id, pamTransfer);
         await self.assertMergeLineageDepth(loser.id, survivor.id);
 
         const topologyMerge = await prepareTopologyOrgMerge(loser.id, survivor.id);
@@ -1665,6 +1729,8 @@ export async function previewOrgMerge(
       let totalMovableRows = 0;
       let destroyedRows = 0;
       const mergeBlockers: MergeBlocker[] = [];
+      const isolations = await findUnresolvedIsolations(dbModule.db, { orgId: loserOrgId });
+      if (isolations.length > 0) mergeBlockers.push({ table: 'device_network_isolations', loserRows: isolations.length });
       const pamTransfer = await self.resolveMergePamTransfer();
       let heldPamRows = 0;
 

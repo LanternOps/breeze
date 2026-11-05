@@ -152,6 +152,12 @@ function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null
                 {translatedStatusLabel(config, ticket.status, ticket.statusName, t)}
               </span>
               <TicketTypeChip type={ticket.ticketType} testId={`ticket-type-chip-${ticket.id}`} />
+              {ticket.mergedIntoTicketId && (
+                // #8972: a merged tombstone, listed only under "Show merged".
+                <span className="inline-flex items-center rounded-md border border-primary/30 bg-primary/10 px-1.5 py-0.5 font-medium text-primary" data-testid={`ticket-row-merged-${ticket.id}`}>
+                  {t('ticketQueueList.merged')}
+                </span>
+              )}
               {ticket.checklist && ticket.checklist.total > 0 && (
                 <span
                   className={cn(

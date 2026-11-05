@@ -2,6 +2,8 @@ import { useTranslation } from 'react-i18next';
 import TimezoneSelect from '@/components/shared/TimezoneSelect';
 import type { DateFormat, TimeFormat, SupportedLocale } from '@breeze/shared';
 import '@/lib/i18n';
+import FieldLabel from './partnerSettings/FieldLabel';
+import InheritanceLine from './partnerSettings/InheritanceLine';
 
 const DATE_FORMATS: { value: DateFormat; labelKey: string }[] = [
   { value: 'MM/DD/YYYY', labelKey: 'us' },
@@ -50,14 +52,15 @@ export default function PartnerRegionalTab({
             />
           </div>
           <div className="space-y-2">
-            <label htmlFor="partner-date-format" className="text-sm font-medium">{t('partner.regional.dateFormat')}</label>
+            <FieldLabel htmlFor="partner-date-format" fieldId="regional.dateFormat">{t('partner.regional.dateFormat')}</FieldLabel>
             <select id="partner-date-format" value={dateFormat} onChange={e => onDateFormatChange(e.target.value as DateFormat)}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm">
               {DATE_FORMATS.map(fmt => <option key={fmt.value} value={fmt.value}>{fmt.value} ({t(/* i18n-dynamic */ `partner.regional.dateFormats.${fmt.labelKey}`)})</option>)}
             </select>
+            <InheritanceLine fieldId="regional.dateFormat" />
           </div>
           <div className="space-y-2">
-            <label className="text-sm font-medium">{t('partner.regional.timeFormat')}</label>
+            <FieldLabel fieldId="regional.timeFormat">{t('partner.regional.timeFormat')}</FieldLabel>
             <div className="flex gap-4">
               <label className="flex items-center gap-2">
                 <input type="radio" name="timeFormat" checked={timeFormat === '12h'}
@@ -70,6 +73,7 @@ export default function PartnerRegionalTab({
                 <span className="text-sm">{t('partner.regional.twentyFourHour')}</span>
               </label>
             </div>
+            <InheritanceLine fieldId="regional.timeFormat" />
           </div>
           <div className="space-y-2">
             <label htmlFor="partner-language" className="text-sm font-medium">{t('partner.regional.language')}</label>

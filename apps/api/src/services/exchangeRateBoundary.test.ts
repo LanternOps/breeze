@@ -68,6 +68,8 @@ const FX_IMPORT_ALLOWLIST: Record<string, string> = {
   'apps/api/src/routes/admin/exchangeRates.ts': 'platform-admin manual-rate API',
   'apps/api/src/routes/admin/index.ts': 'mounts the platform-admin manual-rate API (no money math)',
   'apps/api/src/routes/invoices/settings.ts': 'the read-only reporting-totals endpoint',
+  'apps/api/src/services/aiToolsFxReportingRead.ts':
+    'AI twin of the read-only reporting-totals endpoint (W14 #6784): calls computeReportingTotal exactly as routes/invoices/settings.ts does, writes nothing',
   'apps/api/src/db/schema/currency.ts': 'the table definition',
   'apps/api/src/jobs/workerReadinessManifest.ts':
     'readiness manifest — a list of worker initializer names; matches on the exchangeRateSync string literal, imports no FX module and does no arithmetic',

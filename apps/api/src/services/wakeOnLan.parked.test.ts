@@ -116,3 +116,42 @@ describe('dispatchWake when the push claim cancels the wake command', () => {
     expect(releaseClaimedCommandDelivery).not.toHaveBeenCalled();
   });
 });
+
+describe('dispatchWake pushes to the relay agent id read in the claim (#8318 §6.4)', () => {
+  it('sends to the claim agent id, not the one the relay selection read before it', async () => {
+    const { claimPendingCommandForDelivery, releaseClaimedCommandDelivery } = await import('./commandDispatch');
+    vi.clearAllMocks();
+    parkedDeviceIds.clear();
+    const RELAY = '22222222-2222-4222-8222-222222222222';
+    const chain = (rows: unknown[]) => {
+      const where = () => Object.assign(Promise.resolve(rows), {
+        limit: async () => rows,
+        orderBy: () => Object.assign(Promise.resolve(rows), { limit: async () => rows }),
+      });
+      return { from: () => ({ where }) };
+    };
+    selectMock
+      .mockReturnValueOnce(chain([{ id: TARGET, orgId: 'org-1', siteId: 'site-1', hostname: 'target' }]))
+      .mockReturnValueOnce(chain([{ mac: 'aa:bb:cc:dd:ee:ff', isPrimary: true, updatedAt: new Date() }]))
+      .mockReturnValueOnce(chain([{ ip: '192.168.1.20', mask: '255.255.255.0', lastSeen: new Date() }]))
+      // The relay as read before the claim.
+      .mockReturnValueOnce(chain([{ id: RELAY, agentId: 'relay-agent', hostname: 'relay', siteId: 'site-1', status: 'online' }]));
+    insertMock.mockReturnValue({
+      values: () => Object.assign(Promise.resolve(undefined), {
+        returning: async () => [{ id: 'wake-cmd' }],
+      }),
+    });
+    // A reattach / re-enroll of the relay committed between that read and the claim.
+    vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({
+      status: 'claimed', id: 'wake-cmd', executedAt: new Date(), agentId: 'relay-agent-after-reattach',
+    });
+    vi.mocked(sendCommandToAgent).mockReturnValue(true);
+
+    const result = await dispatchWake(TARGET, 'user-1', { relayDeviceIdOverride: RELAY });
+
+    expect(result).toMatchObject({ ok: true, commandId: 'wake-cmd' });
+    expect(sendCommandToAgent).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(sendCommandToAgent).mock.calls[0]![0]).toBe('relay-agent-after-reattach');
+    expect(releaseClaimedCommandDelivery).not.toHaveBeenCalled();
+  });
+});

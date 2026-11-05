@@ -42,6 +42,7 @@
   },
   "denyPrompt": "Perché rifiuti questa richiesta? Il motivo è facoltativo.",
   "denyReasonPlaceholder": "Facoltativo: viene condiviso con chi ha inviato la richiesta",
+  "denyReasonShownToUserHint": "L’utente finale lo vede nella sua notifica (primi 500 caratteri).",
   "confirmDeny": "Conferma il rifiuto",
   "cancel": "Annulla",
   "deny": "Rifiuta",
@@ -107,7 +108,7 @@
       "cancelled": "Annullata",
       "completed": "Completata",
       "denied": "Negata",
-      "refused": "Approvazione respinta",
+      "refused": "Approvata, poi bloccata",
       "approved": "Approvata",
       "reported": "Segnalata",
       "unknown": "Sconosciuto"
@@ -132,7 +133,7 @@
     "durationValue": "{{minutes}} minuti dall'approvazione",
     "purpose": "Scopo",
     "requestedBy": "Richiesto da",
-    "principalUser": "Chat IA di Breeze",
+    "principalUser": "Breeze AI",
     "principalApiKey": "Chiave API MCP",
     "principalOauth": "Connessione OAuth MCP",
     "paths": "Percorsi",
@@ -150,7 +151,7 @@
     }
   },
   "operatorPlan": {
-    "title": "Piano per l’attività dell’operatore IA",
+    "title": "Piano per l’attività IA",
     "summary_one": "{{count}} effetto, revisione {{revision}} del piano",
     "summary_other": "{{count}} effetti, revisione {{revision}} del piano",
     "groupBreeze": "Dispositivi Breeze",
@@ -171,7 +172,7 @@
       "in_progress": "In corso",
       "completed": "Completata",
       "failed": "Non riuscita",
-      "rejected": "Rifiutata",
+      "rejected": "Rifiutato",
       "expired": "Scaduta",
       "cancelled": "Annullata"
     }

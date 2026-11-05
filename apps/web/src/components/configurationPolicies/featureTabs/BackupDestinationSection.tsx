@@ -9,7 +9,12 @@ import {
   Shield,
   XCircle,
 } from "lucide-react";
-import { deriveS3RegionFromEndpoint } from "@breeze/shared";
+import {
+  BACKUP_DESTINATION_PREFIX_MAX_LENGTH,
+  type BackupDestinationPrefixInvalidReason,
+  deriveS3RegionFromEndpoint,
+  normalizeBackupDestinationPrefix,
+} from "@breeze/shared";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { i18n } from "@/lib/i18n";
 import { ToggleRow, FieldError } from "./backupTabPrimitives";
@@ -83,6 +88,40 @@ export const emptyConfigForm: ConfigFormState = {
   kmsKeyId: null,
   isDefault: false,
 };
+
+// ── Key prefix validation (#7081) ──────────────────────────────────────────────
+// An S3 destination's prefix relocates its new snapshots to
+// `<prefix>/snapshots/`. The rules are the shared validator's, the same ones
+// the API applies on save and at backup time.
+function prefixReasonMessage(reason: BackupDestinationPrefixInvalidReason): string {
+  switch (reason) {
+    case "too_long":
+      return i18n.t(
+        "policies:configurationPolicies.featureTabs.backupTab.keyPrefixInvalidTooLong",
+        { max: BACKUP_DESTINATION_PREFIX_MAX_LENGTH },
+      );
+    case "empty_or_dot_segment":
+      return i18n.t(
+        "policies:configurationPolicies.featureTabs.backupTab.keyPrefixInvalidSegment",
+      );
+    case "reserved_segment":
+      return i18n.t(
+        "policies:configurationPolicies.featureTabs.backupTab.keyPrefixInvalidReserved",
+      );
+    case "unsafe_characters":
+    case "not_a_string":
+      return i18n.t(
+        "policies:configurationPolicies.featureTabs.backupTab.keyPrefixInvalidCharacters",
+      );
+  }
+}
+
+/** The form's key-prefix error, localized; null when valid or not an S3 destination. */
+export function destinationPrefixError(form: ConfigFormState): string | null {
+  if (form.provider !== "s3") return null;
+  const result = normalizeBackupDestinationPrefix(form.prefix);
+  return result.ok ? null : prefixReasonMessage(result.reason);
+}
 
 export type DestinationMode = "select" | "create" | "edit";
 
@@ -357,6 +396,7 @@ export default function BackupDestinationSection({
 }) {
   const selectedConfig = configs.find((c) => c.id === selectedConfigId);
   const showForm = mode === "create" || mode === "edit";
+  const prefixError = showForm ? destinationPrefixError(form) : null;
 
   if (configsLoading) {
     return (
@@ -711,13 +751,19 @@ export default function BackupDestinationSection({
                     placeholder={i18n.t(
                       "policies:configurationPolicies.featureTabs.backupTab.backupsBreeze",
                     )}
+                    aria-invalid={prefixError ? true : undefined}
+                    aria-describedby="backup-destination-prefix-help"
                     className="mt-1 h-10 w-full rounded-md border bg-background px-3 font-mono text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                   />
-                  <p className="mt-1 chart-legend-xs text-muted-foreground">
+                  <p
+                    id="backup-destination-prefix-help"
+                    className="mt-1 chart-legend-xs text-muted-foreground"
+                  >
                     {i18n.t(
-                      "policies:configurationPolicies.featureTabs.backupTab.keyPrefixForOrganizingObjectsInThe",
+                      "policies:configurationPolicies.featureTabs.backupTab.keyPrefixHelp",
                     )}
                   </p>
+                  <FieldError message={prefixError ?? undefined} />
                 </div>
                 <div>
                   <label className="text-xs text-muted-foreground">

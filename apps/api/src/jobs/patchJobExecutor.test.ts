@@ -735,6 +735,31 @@ describe('patch job executor queueing', () => {
     );
   });
 
+  it('threads ringFeatureUpdates to the evaluator; absent or malformed resolves to block', async () => {
+    await runDeviceJobWithPatches({
+      ringId: null, autoApprove: {}, apps: [],
+      ringFeatureUpdates: { mode: 'pin', product: 'windows-11', targetVersion: '25H2' },
+    });
+    expect(resolveApprovedPatchesForDevice).toHaveBeenLastCalledWith(
+      'device-1', 'org-1',
+      expect.objectContaining({ featureUpdates: { mode: 'pin', product: 'windows-11', targetVersion: '25H2' } }),
+    );
+
+    await runDeviceJobWithPatches({ ringId: null, autoApprove: {}, apps: [] });
+    expect(resolveApprovedPatchesForDevice).toHaveBeenLastCalledWith(
+      'device-1', 'org-1', expect.objectContaining({ featureUpdates: { mode: 'block' } }),
+    );
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await runDeviceJobWithPatches({ ringId: null, autoApprove: {}, apps: [], ringFeatureUpdates: { mode: 'latest' } });
+    expect(resolveApprovedPatchesForDevice).toHaveBeenLastCalledWith(
+      'device-1', 'org-1', expect.objectContaining({ featureUpdates: { mode: 'block' } }),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('ringFeatureUpdates'), expect.any(String));
+    expect(captureException).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
   it('leaves ringAppRules undefined without a warning when the key is absent (pre-#8184 job)', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await runDeviceJobWithPatches({ ringId: null, autoApprove: {}, apps: [] });

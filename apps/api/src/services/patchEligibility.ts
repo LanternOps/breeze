@@ -35,6 +35,7 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { PatchIneligibleReason } from '@breeze/shared';
+import { DEFAULT_RING_FEATURE_UPDATES, featureUpdateAllowed, isWindowsFeatureUpdateCandidate } from '@breeze/shared/validators';
 import { db } from '../db';
 import {
   devicePatches, devices, organizations, patches, patchPolicies,
@@ -167,6 +168,8 @@ export async function evaluatePatchInstallEligibility(args: {
       // Linux (#7800) entries have no vendor releaseDate, so deferral windows
       // anchor on when we first saw the patch instead of failing closed.
       firstSeenAt: devicePatches.createdAt,
+      // 'machine' | 'user' | NULL (#2727). A 'user' row is detection-only.
+      scope: devicePatches.scope,
     })
     .from(devicePatches)
     .innerJoin(patches, eq(devicePatches.patchId, patches.id))
@@ -190,6 +193,13 @@ export async function evaluatePatchInstallEligibility(args: {
     // Without a requested list the query itself is status-filtered; with one,
     // every listed row came back and its status decides.
     if (requested && !isOutstanding(row.status)) { deny(row.patchId, 'not_outstanding'); continue; }
+    // A per-user WinGet install (#2727) cannot be applied by the SYSTEM agent:
+    // dispatching it fails the job, or — after an agent restart wiped its
+    // in-memory user-scope set — installs a second, machine-wide copy. Deny it
+    // here, before any approval rule, so every dispatcher (patch jobs, the AI
+    // patch plan, the release-time effect digest) agrees with the web UI's
+    // disabled Install button (#10249).
+    if (row.scope === 'user') { deny(row.patchId, 'unsupported_user_scope'); continue; }
     if (args.excludeSuperseded && row.supersededBy) { deny(row.patchId, 'superseded'); continue; }
     pendingPatches.push(row);
   }
@@ -244,6 +254,27 @@ export async function evaluatePatchInstallEligibility(args: {
 
   if (categoryFiltered.length === 0) return { eligible, ineligible, ringId: ringConfig.ringId, resolvedAt };
 
+  // Windows feature releases ("Windows 11, version 25H2") follow the ring's
+  // feature-update policy: block (default, and what an absent value means),
+  // allow, or pin to one release. Like the source/category/app-rule gates it
+  // only narrows the candidate set and therefore overrides a manual approval —
+  // a blocked or off-pin release is never installed. Non-feature patches pass.
+  const featurePolicy = ringConfig.featureUpdates ?? DEFAULT_RING_FEATURE_UPDATES;
+  const featureFiltered = categoryFiltered.filter((p) => {
+    if (!isWindowsFeatureUpdateCandidate(p)) return true;
+    if (featureUpdateAllowed(featurePolicy, p.title)) return true;
+    const policyLabel = featurePolicy.mode === 'pin'
+      ? `pin ${featurePolicy.product} ${featurePolicy.targetVersion}`
+      : featurePolicy.mode;
+    console.warn(
+      `[PatchApproval] device ${deviceId}: feature update ${p.patchId} ("${p.title}") excluded by ring feature-update policy (${policyLabel})`
+    );
+    deny(p.patchId, 'blocked_by_feature_update_policy');
+    return false;
+  });
+
+  if (featureFiltered.length === 0) return { eligible, ineligible, ringId: ringConfig.ringId, resolvedAt };
+
   // App rules filter before manual approvals are loaded — a block/pin
   // overrides even an explicit manual approval in the job flow; manual
   // per-device installs bypass this evaluator entirely. The live path fills
@@ -252,7 +283,7 @@ export async function evaluatePatchInstallEligibility(args: {
   const appRuleMaps = [buildAppRuleMap(ringConfig.ringAppRules), buildAppRuleMap(ringConfig.apps)]
     .filter((m) => m.size > 0);
   const finalCandidates = appRuleMaps.length > 0
-    ? categoryFiltered.filter((p) => {
+    ? featureFiltered.filter((p) => {
       if (!p.packageId && isThirdPartyPatchSource(p.source)) {
         // Deliberate allow-with-warn: holding every unidentified third-party
         // patch because one unrelated app is pinned/blocked would be
@@ -272,7 +303,7 @@ export async function evaluatePatchInstallEligibility(args: {
       }
       return true;
     })
-    : categoryFiltered;
+    : featureFiltered;
 
   if (finalCandidates.length === 0) return { eligible, ineligible, ringId: ringConfig.ringId, resolvedAt };
 
@@ -440,6 +471,8 @@ export async function resolveDevicePatchEvaluation(
     // The ring owns the app rules (#8186); the resolver already normalised
     // them (coerceRingAppRules). The policy's inline `apps` is not read.
     ringAppRules: ringId ? ring.appRules : [],
+    // The ring's Windows feature-release policy; no ring → block.
+    featureUpdates: ringId ? ring.featureUpdates : DEFAULT_RING_FEATURE_UPDATES,
   };
 
   if (ringId) {
@@ -447,21 +480,27 @@ export async function resolveDevicePatchEvaluation(
     // executor threads them (jobs/patchJobExecutor.ts) — partnerId feeds the
     // cross-partner ring guard in the evaluator.
     const [ringRow] = await db
-      .select({ deferralDays: patchPolicies.deferralDays, partnerId: patchPolicies.partnerId })
+      .select({
+        deferralDays: patchPolicies.deferralDays,
+        partnerId: patchPolicies.partnerId,
+        enabled: patchPolicies.enabled,
+      })
       .from(patchPolicies)
       .where(and(eq(patchPolicies.id, ringId), eq(patchPolicies.kind, 'ring')))
       .limit(1);
-    if (ringRow) {
+    if (ringRow && ringRow.enabled === true) {
       config.deferralDays = ringRow.deferralDays;
       config.ringPartnerId = ringRow.partnerId;
     } else {
-      // The ring resolved as valid a moment ago and is gone now (deleted
-      // between the two reads). Keeping its category/auto-approve rules with
-      // a zeroed deferral window would fail OPEN — the direction
-      // `disabledForMalformedField` refuses — and treating it as "no ring"
-      // would drop its app rules, the only ones there are (#8186). Fail
-      // closed: deny everything, as for any unresolvable ring, and say so.
-      const message = `[patchEligibility] device ${deviceId}: ring ${ringId} vanished between resolution and read — denying every candidate (ring_reference_invalid)`;
+      // The ring resolved as valid a moment ago and is gone now: deleted or
+      // disabled between the two reads (a delete is a soft delete, so the row
+      // survives with `enabled = false`; #8909). Keeping its
+      // category/auto-approve rules with a zeroed deferral window would fail
+      // OPEN — the direction `disabledForMalformedField` refuses — and
+      // treating it as "no ring" would drop its app rules, the only ones there
+      // are (#8186). Fail closed: deny everything, as for any unresolvable
+      // ring, and say so.
+      const message = `[patchEligibility] device ${deviceId}: ring ${ringId} vanished between resolution and read (${ringRow ? 'disabled' : 'missing'}) — denying every candidate (ring_reference_invalid)`;
       console.warn(message);
       captureException(new Error(message));
       return {

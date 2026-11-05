@@ -209,6 +209,12 @@ export const TICKET_CHILD_WRITERS: Record<string, TicketChildWriter> = {
   'routes/portal/tickets.ts::POST /tickets/:id/comments': TF(['ticket_comments']),
   'services/inboundEmail/emailComments.ts::insertEmailAuthoredComment': TF(['ticket_comments']),
   'services/inboundEmail/inboundAttachments.ts::persistInboundAttachments': TF(['ticket_attachments']),
+  // Ticket import (#8313 W1): the reservation and the skip-delete run inside
+  // importTicket's transactions after lockImportedTicket; each re-takes the
+  // ticket lock (a no-op) and guards the tombstone itself.
+  'services/ticketImport/importAttachments.ts::reserveImportAttachments': TF(['ticket_attachments']),
+  'services/ticketImport/importAttachments.ts::deleteSkippedReservations': TF(['ticket_attachments']),
+  'services/ticketImport/importAttachments.ts::markReservationStored': TF(['ticket_attachments']),
   'routes/tickets/attachments.ts::POST /:id/attachments': TF(['ticket_attachments']),
   'routes/tickets/attachments.ts::POST /:id/attachments/from-artifact': TF(['ticket_attachments']),
   'routes/tickets/attachments.ts::DELETE /:id/attachments/:attachmentId': TF(['ticket_attachments'], {
@@ -217,6 +223,9 @@ export const TICKET_CHILD_WRITERS: Record<string, TicketChildWriter> = {
       'Refuses a tombstone BEFORE the object delete (unlocked read); after the bytes are gone the row must go too, '
       + 'so the locked step cannot refuse. A merge moves attachments by row id, so the delete stays correct.',
   }),
+  // W06 (#6776): the AI twin of the two routes above. attach_from_artifact locks the ticket and refuses a
+  // tombstone on the locked row (isMergedTombstone); delete refuses a tombstone before the object delete, like the route.
+  'services/aiToolsTicketAttachments.ts::handler': TF(['ticket_attachments']),
   'services/ticketLinkMoveNotes.ts::noteTicketLinksRemovedByOrgMove': TF(['ticket_comments']),
   'services/deliverableAutoEvidence.ts::recordRefusal': TF(['ticket_comments']),
   'services/deliverableAutoEvidence.ts::finishRun': TF(['ticket_comments']),
@@ -388,6 +397,15 @@ export const TICKET_CHILD_WRITERS: Record<string, TicketChildWriter> = {
   },
 
   // ── Maintenance ─────────────────────────────────────────────────────────
+  'services/ticketService.ts::writeRoutingNote': {
+    tables: ['ticket_comments'],
+    lock: 'maintenance',
+    tombstoneGuard: false,
+    reason:
+      '#8883 W5 routing note, called only by createTicket right after its own ticket insert: no other transaction can '
+      + 'see the uncommitted ticket row, so there is nothing to lock or wait on and no cycle can form; a brand-new '
+      + 'ticket cannot be a merge tombstone.',
+  },
   'jobs/ticketAttachmentReaper.ts::reapPendingAttachments': {
     tables: ['ticket_attachments'],
     lock: 'maintenance',

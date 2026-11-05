@@ -1,26 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  CONFIGURABLE_AI_SURFACE_ROLES,
-  type AiModelsSnapshotDto,
-  type AiOfferingDto,
-  type AiSurface,
-  type AiSurfaceDefaultsDto,
-  type PartnerAssignmentInput,
-} from '@breeze/shared';
-import { fetchWithAuth } from '../../../stores/auth';
-import { runAction, ActionError } from '../../../lib/runAction';
-import { showToast } from '../../shared/Toast';
-import { navigateTo } from '@/lib/navigation';
-import { ROLE_LABEL_KEYS, SURFACE_LABEL_KEYS, registryFriendly, unavailableIds, unavailableModelLabel } from './surfaceLabels';
+import type { AiModelsSnapshotDto, AiOfferingDto, AiSurfaceDefaultsDto } from '@breeze/shared';
+import { ROLE_LABEL_KEYS, SURFACE_LABEL_KEYS, unavailableIds, unavailableModelLabel } from './surfaceLabels';
 import { FallbackListEditor } from './FallbackListEditor';
-
-const JSON_HEADERS = { 'Content-Type': 'application/json' };
-const onUnauthorized = () => { void navigateTo('/login', { replace: true }); };
-
-type Effort = NonNullable<NonNullable<PartnerAssignmentInput['options']>['effort']>;
-type Display = NonNullable<NonNullable<PartnerAssignmentInput['options']>['thinkingDisplay']>;
-type Speed = NonNullable<NonNullable<PartnerAssignmentInput['options']>['speed']>;
+import { usePartnerSettingsDraftStore, type Slice } from '../partnerSettings/partnerSettingsDraftStore';
+import {
+  entryKey, rowProblem, rowsOf, syncAiFeatureDefaults,
+  dirtyKeys, type AiFeatureDefaultsValue, type Display, type Effort, type RowDraft, type Speed,
+} from '../partnerSettings/units/aiFeatureDefaultsUnit';
 
 // Literal key maps: the i18n keyUsage test cannot check template keys.
 const EFFORT_KEYS: Record<Effort, string> = {
@@ -40,50 +27,9 @@ const SPEED_KEYS: Record<Speed, string> = {
   fast: 'aiModels.defaults.speedValues.fast',
 };
 
-interface RowDraft {
-  defaultOfferingId: string;
-  mode: 'all' | 'list';
-  permitted: string[];
-  allowUserChoice: boolean;
-  effort: Effort | '';
-  display: Display | '';
-  speed: Speed | '';
-  /** Ordered backup models (order matters). */
-  fallbacks: string[];
-  crossFunding: boolean;
-}
-
-/** Drafts are keyed by (surface, role): `ai_agents` carries the three escalation roles beside `default`. */
-const roleKey = (surface: AiSurface, role: string) => `${surface}/${role}`;
-const entryKey = (d: AiSurfaceDefaultsDto) => roleKey(d.surface, d.role);
 /** Test-id suffix: `${surface}` for a default row (W04's form), `${surface}-${role}` for a role sub-row. */
 const idOf = (d: AiSurfaceDefaultsDto) => (d.role === 'default' ? d.surface : `${d.surface}-${d.role}`);
 const isRoleRow = (d: AiSurfaceDefaultsDto) => d.role !== 'default';
-
-function fromSnapshot(d: AiSurfaceDefaultsDto): RowDraft {
-  const p = d.partner;
-  return {
-    defaultOfferingId: p?.defaultOfferingId ?? '',
-    mode: p?.permittedOfferingIds ? 'list' : 'all',
-    permitted: p?.permittedOfferingIds ?? [],
-    allowUserChoice: p?.allowUserChoice ?? true,
-    effort: p?.options?.effort ?? '',
-    display: p?.options?.thinkingDisplay ?? '',
-    speed: p?.options?.speed ?? '',
-    // A legacy /ai/provider remap can leave the default inside its own list
-    // (inert: the walk skips the primary). Never echo it back: the write rejects it.
-    fallbacks: (p?.fallbackOfferingIds ?? []).filter((id) => id !== p?.defaultOfferingId),
-    crossFunding: p?.fallbackMayCrossFunding ?? false,
-  };
-}
-
-const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((v) => b.includes(v));
-
-function rowEquals(a: RowDraft, b: RowDraft): boolean {
-  return a.defaultOfferingId === b.defaultOfferingId && a.mode === b.mode && sameList(a.permitted, b.permitted)
-    && a.allowUserChoice === b.allowUserChoice && a.effort === b.effort && a.display === b.display && a.speed === b.speed
-    && a.crossFunding === b.crossFunding && a.fallbacks.length === b.fallbacks.length && a.fallbacks.every((v, i) => v === b.fallbacks[i]);
-}
 
 /** Enabled offerings a surface may use (tool-capable when the surface calls tools). */
 function eligibleOfferings(snapshot: AiModelsSnapshotDto, requiresTools: boolean): AiOfferingDto[] {
@@ -137,148 +83,53 @@ function normalize(draft: RowDraft, eligible: AiOfferingDto[], d: AiSurfaceDefau
   };
 }
 
-function toInput(draft: RowDraft, d: AiSurfaceDefaultsDto): PartnerAssignmentInput {
-  const options = {
-    ...(draft.effort ? { effort: draft.effort } : {}),
-    ...(draft.display ? { thinkingDisplay: draft.display } : {}),
-    ...(draft.speed ? { speed: draft.speed } : {}),
-  };
-  const set = draft.defaultOfferingId !== '';
-  return {
-    surface: d.surface,
-    role: d.role as PartnerAssignmentInput['role'],
-    defaultOfferingId: draft.defaultOfferingId || null, // '' on a role sub-row = clear (inherit)
-    permittedOfferingIds: set ? (draft.mode === 'all' ? null : draft.permitted) : null,
-    allowUserChoice: draft.allowUserChoice,
-    options: set && Object.keys(options).length > 0 ? options : null,
-    fallbackOfferingIds: set ? draft.fallbacks.filter((id) => id !== draft.defaultOfferingId) : null,
-    fallbackMayCrossFunding: draft.crossFunding,
-    expectedUpdatedAt: d.partner?.updatedAt ?? null,
-  };
-}
-
-interface Tracked {
-  base: Record<string, RowDraft>;
-  stamps: Record<string, string | null>;
-  drafts: Record<string, RowDraft>;
-  conflicts: Record<string, boolean>;
-}
-
-function rowsOf(snapshot: AiModelsSnapshotDto): AiSurfaceDefaultsDto[] {
-  return CONFIGURABLE_AI_SURFACE_ROLES
-    .map((r) => snapshot.defaults.find((d) => d.surface === r.surface && d.role === r.role))
-    .filter((d): d is AiSurfaceDefaultsDto => d !== undefined);
-}
-
-function initial(snapshot: AiModelsSnapshotDto): Tracked {
-  const base: Tracked['base'] = {};
-  const stamps: Tracked['stamps'] = {};
-  for (const d of rowsOf(snapshot)) {
-    base[entryKey(d)] = fromSnapshot(d);
-    stamps[entryKey(d)] = d.partner?.updatedAt ?? null;
-  }
-  return { base, stamps, drafts: { ...base }, conflicts: {} };
-}
-
-/** Merge a reloaded snapshot: clean rows re-initialise, dirty rows keep their draft (marked when the stored row moved). */
-function merge(prev: Tracked, snapshot: AiModelsSnapshotDto): Tracked {
-  const next = initial(snapshot);
-  const drafts: Tracked['drafts'] = {};
-  const conflicts: Tracked['conflicts'] = {};
-  for (const k of Object.keys(next.base)) {
-    const had = prev.drafts[k];
-    const dirty = had !== undefined && prev.base[k] !== undefined && !rowEquals(had, prev.base[k]);
-    if (dirty) {
-      drafts[k] = had;
-      conflicts[k] = prev.conflicts[k] === true || prev.stamps[k] !== next.stamps[k];
-    } else {
-      drafts[k] = next.base[k];
-    }
-  }
-  return { base: next.base, stamps: next.stamps, drafts, conflicts };
-}
-
 export default function FeatureDefaultsCard({
   snapshot,
   onSaved,
 }: {
   snapshot: AiModelsSnapshotDto;
+  /** Refetches the snapshot; called after a header Save of this card (saved or stale write). */
   onSaved: () => void | Promise<void>;
 }) {
   const { t } = useTranslation('settings');
-  const [state, setState] = useState<Tracked>(() => initial(snapshot));
-  const [saving, setSaving] = useState(false);
-  const [invalidRow, setInvalidRow] = useState<string | null>(null);
-  const seen = useRef(snapshot);
+  // The draft lives in the page-scoped store (W2): it survives a tab switch,
+  // and the partner settings header Save sends it (aiFeatureDefaultsUnit.ts).
+  const slice = usePartnerSettingsDraftStore((s) => s.slices.aiFeatureDefaults) as Slice<AiFeatureDefaultsValue>;
+  const setDraft = (next: (v: AiFeatureDefaultsValue) => AiFeatureDefaultsValue) =>
+    usePartnerSettingsDraftStore.getState().setDraft<AiFeatureDefaultsValue>('aiFeatureDefaults', next);
 
+  // Every snapshot (first load and each reload after a model or connection
+  // change) merges into the slice without dropping unsaved rows.
+  useEffect(() => { syncAiFeatureDefaults(snapshot); }, [snapshot]);
+
+  // After a header Save of this unit (saved, or a stale write), refetch the
+  // snapshot: it refreshes the row stamps and marks rows changed elsewhere.
+  const outcome = slice.lastOutcome;
+  const seenOutcome = useRef(outcome);
   useEffect(() => {
-    if (seen.current === snapshot) return;
-    seen.current = snapshot;
-    setState((prev) => merge(prev, snapshot));
-  }, [snapshot]);
+    if (outcome === seenOutcome.current) return;
+    seenOutcome.current = outcome;
+    if (outcome?.status === 'saved' || outcome?.status === 'conflict') void onSaved();
+  }, [outcome, onSaved]);
 
+  if (slice.status !== 'ready' || !slice.draft || !slice.baseline) return null;
+  const state = slice.draft;
+  const base = slice.baseline;
   const rows = rowsOf(snapshot);
-  const dirtyRows = rows.filter((d) => {
-    const k = entryKey(d);
-    return state.drafts[k] && state.base[k] && !rowEquals(state.drafts[k], state.base[k]);
-  });
-  const friendly = registryFriendly(t);
+  const dirty = new Set(dirtyKeys(base, state));
 
   const edit = (d: AiSurfaceDefaultsDto, patch: Partial<RowDraft>) => {
     const eligible = eligibleOfferings(snapshot, d.requiresTools);
     const k = entryKey(d);
-    setState((prev) => ({
+    setDraft((prev) => ({
       ...prev,
-      drafts: { ...prev.drafts, [k]: normalize({ ...prev.drafts[k], ...patch }, eligible, d, snapshot) },
+      rows: { ...prev.rows, [k]: normalize({ ...prev.rows[k], ...patch }, eligible, d, snapshot) },
+      invalidRow: prev.invalidRow === k ? null : prev.invalidRow,
     }));
   };
 
   const handleDiscard = () => {
-    setInvalidRow(null);
-    setState((prev) => ({ ...prev, drafts: { ...prev.base }, conflicts: {} }));
-  };
-
-  const handleSave = async () => {
-    const inputs = dirtyRows.map((d) => toInput(state.drafts[entryKey(d)], d));
-    if (dirtyRows.some((d) => !isRoleRow(d) && !state.drafts[entryKey(d)].defaultOfferingId)) {
-      showToast({ type: 'error', message: t('aiModels.defaults.needsDefault') });
-      return;
-    }
-    if (inputs.some((r) => r.permittedOfferingIds !== null && r.permittedOfferingIds.length === 0)) {
-      showToast({ type: 'error', message: t('aiModels.defaults.needsPermitted') });
-      return;
-    }
-    const savedKeys = dirtyRows.map(entryKey);
-    setSaving(true);
-    setInvalidRow(null);
-    try {
-      await runAction({
-        request: () => fetchWithAuth('/ai/models/assignments', { method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ assignments: inputs }) }),
-        successMessage: t('aiModels.defaults.saved'),
-        errorFallback: t('aiModels.defaults.saveFailed'),
-        friendly,
-        onUnauthorized,
-      });
-      // Saved rows are the new baseline; the reload below then refreshes their stamps.
-      setState((prev) => ({
-        ...prev,
-        base: { ...prev.base, ...Object.fromEntries(savedKeys.map((k) => [k, prev.drafts[k]])) },
-        conflicts: Object.fromEntries(Object.entries(prev.conflicts).filter(([k]) => !savedKeys.includes(k))),
-      }));
-      await onSaved();
-    } catch (err) {
-      if (err instanceof ActionError && err.status === 401) return;
-      if (err instanceof ActionError) {
-        // Already toasted by runAction.
-        const details = (err.body as { details?: { surface?: string; role?: string } } | undefined)?.details;
-        if (details?.surface) setInvalidRow(roleKey(details.surface as AiSurface, details.role ?? 'default'));
-        if (err.code === 'stale_write') await onSaved();
-        return;
-      }
-      showToast({ type: 'error', message: t('aiModels.defaults.saveFailed') });
-    } finally {
-      setSaving(false);
-    }
+    setDraft((prev) => ({ ...prev, rows: { ...base.rows }, conflicts: {}, invalidRow: null }));
   };
 
   return (
@@ -291,18 +142,19 @@ export default function FeatureDefaultsCard({
       <ul className="space-y-3">
         {rows.map((d) => {
           const k = entryKey(d);
-          const draft = state.drafts[k];
+          const draft = state.rows[k];
           if (!draft) return null;
           const roleRow = isRoleRow(d);
           const eligible = eligibleOfferings(snapshot, d.requiresTools);
           const choices = defaultChoices(eligible, draft);
           const model = eligible.find((o) => o.id === draft.defaultOfferingId);
           const opts = optionChoices(model);
-          const invalid = invalidRow === k;
+          const problem = dirty.has(k) ? rowProblem(k, draft) : null;
+          const invalid = state.invalidRow === k || problem !== null;
           const id = idOf(d);
           const nameOf = (offeringId: string) => snapshot.offerings.find((o) => o.id === offeringId)?.displayName;
           // Stored ids that are no longer enabled/eligible stay listed so they can be unticked (the API accepts them as stored).
-          const stale = unavailableIds(state.base[k]?.permitted ?? [], draft.permitted, new Set(eligible.map((o) => o.id as string)));
+          const stale = unavailableIds(base.rows[k]?.permitted ?? [], draft.permitted, new Set(eligible.map((o) => o.id as string)));
           const staleDefault = draft.defaultOfferingId !== '' && !choices.some((o) => o.id === draft.defaultOfferingId);
           const togglePermitted = (offeringId: string, on: boolean) => edit(d, {
             permitted: on ? [...draft.permitted, offeringId] : draft.permitted.filter((p) => p !== offeringId),
@@ -339,6 +191,11 @@ export default function FeatureDefaultsCard({
                   </a>
                 )}
               </div>
+              {problem && (
+                <p data-testid={`ai-defaults-row-error-${id}`} className="text-xs text-destructive">
+                  {problem === 'needsDefault' ? t('aiModels.defaults.needsDefault') : t('aiModels.defaults.needsPermitted')}
+                </p>
+              )}
               {d.surface === 'script_reviewer' && (
                 <p className="text-xs text-muted-foreground">{t('aiModels.defaults.reviewerHelp')}</p>
               )}
@@ -347,6 +204,7 @@ export default function FeatureDefaultsCard({
                 <label className="space-y-1 text-xs font-medium">
                   <span>{t('aiModels.defaults.default')}</span>
                   <select
+                    id={`ai-defaults-default-${id}`}
                     data-testid={`ai-defaults-default-${id}`}
                     value={draft.defaultOfferingId}
                     onChange={(e) => edit(d, { defaultOfferingId: e.target.value })}
@@ -367,6 +225,7 @@ export default function FeatureDefaultsCard({
                 <label className="space-y-1 text-xs font-medium">
                   <span>{t('aiModels.defaults.permitted')}</span>
                   <select
+                    id={`ai-defaults-permitted-mode-${id}`}
                     data-testid={`ai-defaults-permitted-mode-${id}`}
                     value={draft.mode}
                     onChange={(e) => edit(d, e.target.value === 'list' ? { mode: 'list', permitted: [] } : { mode: 'all', permitted: [] })}
@@ -490,26 +349,16 @@ export default function FeatureDefaultsCard({
         })}
       </ul>
 
-      {dirtyRows.length > 0 && (
+      {dirty.size > 0 && (
         <div className="flex flex-wrap items-center justify-end gap-3 border-t pt-3">
           <span data-testid="ai-defaults-dirty" className="text-xs text-muted-foreground">{t('aiModels.defaults.unsaved')}</span>
           <button
             type="button"
             data-testid="ai-defaults-discard"
-            disabled={saving}
             onClick={handleDiscard}
             className="rounded-md border px-3 py-1.5 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50"
           >
             {t('aiModels.defaults.discard')}
-          </button>
-          <button
-            type="button"
-            data-testid="ai-defaults-save"
-            disabled={saving}
-            onClick={() => { void handleSave(); }}
-            className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-          >
-            {saving ? t('common:states.saving') : t('common:actions.save')}
           </button>
         </div>
       )}

@@ -417,8 +417,10 @@
       "createTitle": "Criar anel de atualização"
     },
     "truncatedNotice": "Exibindo {{shown}} de {{total}} patches. Os filtros aqui apenas restringem o que já foi carregado, então o restante não pode ser alcançado nesta visualização — use a API de patches para percorrer o catálogo completo.",
+    "emptyRingSeverityNotice": "Ainda não há dispositivos neste anel. A severidade informada pelos dispositivos aparece quando dispositivos são atribuídos, então até lá a maioria dos patches fica como Sem classificação.",
     "shiftedNotice": "Exibindo {{shown}} de {{total}} patches — o catálogo mudou enquanto carregava. Recarregue para ver o restante.",
     "ringDelete": {
+      "messageNone": "Nenhuma política usa este anel. Suas regras de aprovação e configurações de agendamento serão excluídas e não poderão ser restauradas.",
       "title": "Excluir {{name}}?",
       "messageOne": "1 política deixará de aplicar patches agendados até que você escolha outro anel.",
       "messageMany": "{{count}} políticas deixarão de aplicar patches agendados até que você escolha outro anel.",
@@ -426,7 +428,7 @@
     }
   },
   "patchJobsList": {
-    "empty": "Ainda não há trabalhos de patch. Trabalhos criados por políticas, anéis de atualização ou pelo assistente de IA aparecerão aqui.",
+    "empty": "Ainda não há trabalhos de patch. Trabalhos criados por políticas, anéis de atualização ou pelo Breeze AI aparecerão aqui.",
     "loading": "Carregando trabalhos de patch...",
     "columns": {
       "name": "Trabalho",
@@ -483,6 +485,11 @@
     "rebootRequired": "Necessária",
     "rebootDone": "Concluída",
     "rebootNotRequired": "—",
+    "skipReasons": {
+      "ring_deleted": "Cancelado antes do envio: o anel de atualização foi excluído.",
+      "ring_disabled": "Cancelado antes do envio: o anel de atualização foi desativado.",
+      "ring_unavailable": "Ignorado: o anel de atualização foi excluído ou desativado antes do envio para este dispositivo."
+    },
     "errors": {
       "load": "Falha ao carregar o trabalho de patch"
     }
@@ -549,6 +556,22 @@
       "title": "Obrigatoriedade de instalação",
       "description": "Quanto tempo os dispositivos têm para instalar patches aprovados e por quanto tempo um usuário pode adiar a reinicialização. O comportamento de reinicialização em si é definido por política na aba Patch."
     },
+    "featureUpdates": {
+      "title": "Atualizações de recursos do Windows",
+      "description": "Se os dispositivos deste anel recebem versões de recursos do Windows (por exemplo, 25H2). O Breeze as instala apenas pelas regras de aprovação abaixo; adicione uma substituição de Atualizações de recursos para aprová-las automaticamente.",
+      "modeBlock": "Bloquear",
+      "modeAllow": "Permitir a versão mais recente",
+      "modePin": "Fixar em uma versão",
+      "productLabel": "Versão do Windows",
+      "productWindows11": "Windows 11",
+      "productWindows10": "Windows 10",
+      "releaseLabel": "Versão",
+      "releasePlaceholder": "25H2",
+      "pinNote": "O Windows Update em cada dispositivo é configurado para apontar para esta versão (política de versão de destino do Windows Update for Business). A menos que a configuração \"O Breeze é a única fonte do Windows Update\" da política esteja ativada, o Windows pode baixar e instalar a versão em seu próprio cronograma, fora da aprovação do Breeze.",
+      "validation": {
+        "release": "Informe uma versão como 25H2."
+      }
+    },
     "approvalPolicy": {
       "title": "Política de aprovação",
       "description": "O que é aprovado automaticamente neste anel e por quanto tempo reter um patch após o lançamento pelo fornecedor. O padrão se aplica a todas as categorias; adicione uma substituição para tratar uma delas de forma diferente.",
@@ -606,7 +629,9 @@
       "os": "SO: {{severities}}",
       "thirdParty": "Apps de terceiros",
       "appRules_one": "{{count}} regra de aplicativo",
-      "appRules_other": "{{count}} regras de aplicativo"
+      "appRules_other": "{{count}} regras de aplicativo",
+      "featureUpdatesNewest": "Atualizações de recursos: mais recente",
+      "featureUpdatesPinned": "Atualizações de recursos: {{release}}"
     }
   },
   "ringAppRules": {
@@ -624,7 +649,11 @@
     "noMatches": "Nenhuma correspondência.",
     "orEnterAPackageIDManually": "Ou insira manualmente um ID de pacote",
     "removeRuleFor": "Remover regra de {{application}}",
-    "scopeNote": "Estas regras se aplicam a todos os dispositivos cuja política de configuração vincula este anel."
+    "scopeNote": "Estas regras se aplicam a todos os dispositivos cuja política de configuração vincula este anel.",
+    "linuxPackage": "Pacote Linux",
+    "appPackage": "Pacote de app",
+    "manualRuleType": "Tipo de regra",
+    "linuxPinHint": "Informe a versão completa da lista de patches, incluindo a época, se houver (ex.: 5:24.0.7-1)."
   },
   "patchDetails": {
     "unknown": "Desconhecido",

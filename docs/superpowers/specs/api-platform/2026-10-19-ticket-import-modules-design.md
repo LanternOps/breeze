@@ -25,6 +25,17 @@ related:
 > included (§5.5, §5.9). F31 no longer names main's newest migration. Decisions 24 and 25 stay
 > open for the owner.
 
+> **Revision 4 (2026-10-24): merged tickets (W0, proposed).** Main shipped native ticket merge
+> (#8972) after revision 3. A resumed ticket that this principal imported and a technician merged
+> in Breeze is skipped as `merged_in_breeze`, final like `removed_in_breeze` (§5.5, §5.9, §5.10). A
+> ref that resolves to a ticket this principal did not import is refused, never resumed:
+> `live_ticket`, or `other_principal_ticket` for another principal's import. Known limit: when the
+> survivor had no ref from the same principal, the merge moves the tombstone's ref onto it
+> (`ticketMerge/repoint.ts`), and that source id is then refused on every pass. The exact fix
+> belongs to #8972: the re-point records the origin ticket on a moved `ticket_external_refs` row (a
+> nullable column and its migration), after which the importer answers it as `merged_in_breeze`.
+> Raised in W0's PR as a deviation for the owner to confirm.
+
 > **Revision 3 (2026-10-21): decisions 24 and 25 (#9295).** The owner declined decision 24 and
 > accepted decision 25. Historic owners stay display-only, as #8313 answer 3 and step-1 §8 say: a
 > ticket whose owner matches no user is imported unassigned, with the owner note. The owners
@@ -507,7 +518,9 @@ All in `services/ticketImport/`, so the confinement rules of F4 hold.
      the input;
    - `commentsMissingInSource`: a stored source-article id absent from the input. The writer
      takes `ImportTicketOptions.isSourceArticleId` to tell source articles from composed notes;
-     without it, nothing is counted.
+     without it, nothing is counted. An article the source moved to another ticket (a merge in
+     the source) would read as deleted, so the module (W5) excludes the articles it knows moved,
+     through `isSourceArticleId` or a sibling option.
 
    Each is counted and listed. None changes a row (§5.9).
 4. **`importTicketLink(windowId, { sourceKey, targetKey, linkType, at }, options)`.** It resolves
@@ -670,7 +683,7 @@ CREATE TABLE IF NOT EXISTS ticket_import_items (           -- the per-source tic
   source_id uuid NOT NULL,
   partner_id uuid NOT NULL,
   source_ticket_key varchar(255) NOT NULL,
-  state text NOT NULL CHECK (state IN ('imported', 'skipped', 'failed', 'deleted_in_source', 'hidden_in_source', 'removed_in_breeze')),
+  state text NOT NULL CHECK (state IN ('imported', 'skipped', 'failed', 'deleted_in_source', 'hidden_in_source', 'removed_in_breeze', 'merged_in_breeze')),
   imported_version varchar(64),                         -- source version of the last complete import
   seen_version varchar(64),
   seen_run_id uuid,                                     -- FK-less: runs may be deleted
@@ -866,6 +879,11 @@ Every import run is the same pass, and the first one is just the one where every
    - **Unchanged.** `imported_version = seen_version` and `state = imported`: skip, with no source
      call.
    - **Removed in Breeze.** `state = removed_in_breeze`: skip, whatever the version.
+   - **Merged in Breeze.** `state = merged_in_breeze`: skip, whatever the version. The state is
+     set when `importTicket` answers `outcome: 'skipped'` with `skip.reason: 'merged_in_breeze'`
+     and the survivor's id: a technician merged the imported ticket with Breeze's native merge
+     (#8972), so it is a read-only tombstone and its history lives on the survivor. Final, like a
+     removal, for the same reason: a change made in Breeze wins.
    - **Changed, but gone from Breeze.** `state = imported` with a newer `seen_version`, and this
      principal's `ticket_external_refs` row for the key no longer exists: mark
      `removed_in_breeze`, report it, and do not import. The refs are read in system scope, one
@@ -924,7 +942,7 @@ Breeze, so the report puts these first.
 `counters` (typed, per run): tickets `seen`, `created`, `resumed`, `unchanged`, `skipped`,
 `failed`; comments `written`, `skipped`, `systemSkipped`; attachments `written`, `skipped`, `bytes`,
 `alternativesIgnored`; `linksWritten`, `linksAsNotes`; `statusKept`; `contentTruncated`;
-`clockClamped`; `deletedInSource`, `hiddenInSource`, `removedInBreeze`; `ownersUnmatched` (distinct owners) and
+`clockClamped`; `deletedInSource`, `hiddenInSource`, `removedInBreeze`, `mergedInBreeze`; `ownersUnmatched` (distinct owners) and
 `requestersWithoutContact`; `contactsCreated`; `customAttributes: { name: count }`; and the dry-run
 predictions (`predicted.*`, including `contactsToCreate` per org).
 
@@ -939,7 +957,7 @@ exact beyond it):
   created are listed from the ledger, not from issue rows (§5.13).
 - **Changed in the source:** `comments_changed`, `comments_missing`, `requester_changed`,
   `org_changed`, `deleted_in_source`, `hidden_in_source`.
-- **Removed in Breeze:** `removed_in_breeze` (§5.9).
+- **Removed or merged in Breeze:** `removed_in_breeze`, `merged_in_breeze` (§5.9).
 - **Content:** `content_truncated`.
 
 Issue rows carry source keys, source numbers and codes, never ticket content. Filenames and names

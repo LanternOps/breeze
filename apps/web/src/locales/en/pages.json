@@ -25,9 +25,10 @@
     "aiAgentsFixMemory": "Fix memory",
     "flows": "Flows",
     "flowDetail": "Flow",
+    "flowRun": "Flow run",
     "aiAgentsRunsDetail": "Run Detail",
     "aiAgentsRuns": "Agent Runs",
-    "aiForOffice": "AI for Office",
+    "aiForOffice": "Breeze AI for Office",
     "aiRisk": "AI Risk Engine",
     "alertsDelivery": "Alerts – Delivery",
     "alertsCorrelations": "Alert Correlations",
@@ -72,7 +73,7 @@
     "dnsSecurity": "DNS Security",
     "dr": "Disaster Recovery",
     "extensionsNamePath": "Extension",
-    "fleet": "Fleet Orchestration",
+    "fleet": "Findings",
     "forgotPassword": "Forgot Password",
     "incidentsDetail": "Incident Detail",
     "incidents": "Security Incidents",
@@ -84,6 +85,7 @@
     "logs": "Logs",
     "monitoring": "Network",
     "oauthConsent": "Authorize access",
+    "oauthError": "App connection failed",
     "onedrive": "OneDrive",
     "organizations": "Organizations",
     "organizationsDetail": "Organization",
@@ -155,6 +157,7 @@
     "settingsProfile": "Profile Settings",
     "settingsRoles": "Roles",
     "settingsSitesDetail": "Site Settings",
+    "settingsSites": "Sites",
     "settingsSso": "Single Sign-On",
     "settingsUsers": "Users",
     "settingsVariables": "Variables",
@@ -168,7 +171,6 @@
     "ticketsNew": "Create Ticket",
     "timesheet": "Timesheet",
     "vulnerabilities": "Vulnerabilities",
-    "workspace": "AI Assistant",
     "aiAgentsFleetDesign": "Fleet Design",
     "agreementTemplates": "Agreement templates",
     "agreementTemplateDetail": "Agreement template",
@@ -178,11 +180,19 @@
     "securityScans": "IOC Scans",
     "devicesTime": "Time synchronization",
     "adminAiModels": "AI Models",
+    "adminWisp": "Wisp",
     "billingAutopay": "Automatic payments",
     "endpointMessages": "Endpoint Messages",
     "securityDetectionRules": "Detection Rules",
     "settingsPlan": "Plan & features",
-    "settingsWispMemory": "Wisp memory"
+    "settingsWispMemory": "Wisp memory",
+    "wispThread": "Wisp thread",
+    "wisp": "Wisp",
+    "wispChat": "Breeze AI",
+    "aiTasks": "AI Tasks",
+    "aiTask": "AI task",
+    "settingsAi": "AI settings",
+    "settingsFlowLimits": "Flow limits"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote Monitoring and Management",
@@ -201,6 +211,33 @@
     "referenceIdLabel": "Reference ID:",
     "dashboardLink": "Go to dashboard",
     "signInLink": "Sign in"
+  },
+  "oauthErrorPage": {
+    "invalidClient": {
+      "heading": "This app can't connect",
+      "body": "Breeze doesn't recognize the app that sent you here, or the app isn't allowed to connect to this Breeze server. Check that the app is set up with this server's address, then try again."
+    },
+    "invalidRedirectUri": {
+      "heading": "This app's return address isn't registered",
+      "body": "The app asked Breeze to send you back to an address it never registered, so Breeze stopped here to protect your account. The app's developer or your administrator needs to fix the app's redirect URL."
+    },
+    "sessionExpired": {
+      "heading": "This sign-in has expired",
+      "body": "The connection took too long, or it was started in a different browser. Go back to the app and connect again."
+    },
+    "invalidRequest": {
+      "heading": "The app sent a request Breeze can't accept",
+      "body": "The app's connection request was incomplete or asked for something this server doesn't support. Go back to the app and try again. If it keeps happening, contact the app's developer."
+    },
+    "serverError": {
+      "heading": "Breeze couldn't finish connecting",
+      "body": "Something went wrong on our end. Wait a few minutes, then go back to the app and try again."
+    },
+    "generic": {
+      "heading": "This connection couldn't be completed",
+      "body": "Go back to the app and start the connection again. If it keeps happening, contact your Breeze administrator."
+    },
+    "nextStep": "No access was granted. You can close this page."
   },
   "settingsIndex": {
     "heading": "Settings",
@@ -236,7 +273,7 @@
       },
       "connectedApps": {
         "title": "Connected Apps",
-        "description": "Review and revoke AI assistants and MCP clients authorized to access your tenant."
+        "description": "Review and revoke AI clients authorized to access your tenant."
       },
       "officeAddinBindings": {
         "title": "Outlook Add-in Bindings",
@@ -273,6 +310,10 @@
       "wispMemory": {
         "title": "Wisp memory",
         "description": "Review, confirm, and retract what Wisp remembers."
+      },
+      "flowLimits": {
+        "title": "Flow limits",
+        "description": "Monthly run limits and the AI token limit for flows."
       }
     },
     "groups": {
@@ -295,7 +336,7 @@
   },
   "settingsConnectedAppsPage": {
     "heading": "Connected apps",
-    "description": "AI assistants and other MCP clients that have been authorized to access your tenant via OAuth. Revoke access at any time — the app's token will be rejected within 10 minutes."
+    "description": "AI clients that have been authorized to access your tenant via OAuth. Revoke access at any time — the app's token will be rejected within 10 minutes."
   },
   "settingsOrganizationBillingPage": {
     "backLink": "← Organization settings",

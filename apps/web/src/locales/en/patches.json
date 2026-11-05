@@ -417,8 +417,10 @@
       "createTitle": "Create update ring"
     },
     "truncatedNotice": "Showing {{shown}} of {{total}} patches. The filters here only narrow what's already loaded, so the rest can't be reached from this view — use the patches API to work through the full catalog.",
+    "emptyRingSeverityNotice": "No devices in this ring yet. Device-reported severity appears once devices are assigned, so most patches read Unrated until then.",
     "shiftedNotice": "Showing {{shown}} of {{total}} patches — the catalog changed while it was loading. Reload to see the rest.",
     "ringDelete": {
+      "messageNone": "No policies use this ring. Its approval rules and schedule settings will be deleted and cannot be restored.",
       "title": "Delete {{name}}?",
       "messageOne": "1 policy will stop scheduled patching until you pick another ring.",
       "messageMany": "{{count}} policies will stop scheduled patching until you pick another ring.",
@@ -426,7 +428,7 @@
     }
   },
   "patchJobsList": {
-    "empty": "No patch jobs yet. Jobs created by policies, update rings, or the AI assistant will appear here.",
+    "empty": "No patch jobs yet. Jobs created by policies, update rings, or Breeze AI will appear here.",
     "loading": "Loading patch jobs...",
     "columns": {
       "name": "Job",
@@ -483,6 +485,11 @@
     "rebootRequired": "Required",
     "rebootDone": "Completed",
     "rebootNotRequired": "—",
+    "skipReasons": {
+      "ring_deleted": "Cancelled before dispatch: the update ring was deleted.",
+      "ring_disabled": "Cancelled before dispatch: the update ring was disabled.",
+      "ring_unavailable": "Skipped: the update ring was deleted or disabled before this device was dispatched."
+    },
     "errors": {
       "load": "Failed to load patch job"
     }
@@ -549,6 +556,22 @@
       "title": "Install enforcement",
       "description": "How long devices have to install approved patches, and how long a user can defer the reboot. Reboot behavior itself is set per policy on the Patch tab."
     },
+    "featureUpdates": {
+      "title": "Windows feature updates",
+      "description": "Whether devices in this ring receive Windows feature releases (for example 25H2). Breeze installs them only through the approval rules below; add a Feature Updates override to approve them automatically.",
+      "modeBlock": "Block",
+      "modeAllow": "Allow the newest release",
+      "modePin": "Pin to a release",
+      "productLabel": "Windows version",
+      "productWindows11": "Windows 11",
+      "productWindows10": "Windows 10",
+      "releaseLabel": "Release",
+      "releasePlaceholder": "25H2",
+      "pinNote": "Windows Update on each device is set to target this release (Windows Update for Business target-release policy). Unless the policy's \"Breeze is the only Windows Update source\" setting is on, Windows may download and install the release on its own schedule, outside Breeze approval.",
+      "validation": {
+        "release": "Enter a release like 25H2."
+      }
+    },
     "approvalPolicy": {
       "title": "Approval policy",
       "description": "What auto-approves in this ring, and how long to hold a patch after its vendor release. The default applies to every category; add an override to treat one differently.",
@@ -606,7 +629,9 @@
       "os": "OS: {{severities}}",
       "thirdParty": "3rd-party apps",
       "appRules_one": "{{count}} app rule",
-      "appRules_other": "{{count}} app rules"
+      "appRules_other": "{{count}} app rules",
+      "featureUpdatesNewest": "Feature updates: newest",
+      "featureUpdatesPinned": "Feature updates: {{release}}"
     }
   },
   "ringAppRules": {
@@ -624,7 +649,11 @@
     "noMatches": "No matches.",
     "orEnterAPackageIDManually": "Or enter a package ID manually",
     "removeRuleFor": "Remove rule for {{application}}",
-    "scopeNote": "These rules apply to every device whose configuration policy links this ring."
+    "scopeNote": "These rules apply to every device whose configuration policy links this ring.",
+    "linuxPackage": "Linux package",
+    "appPackage": "App package",
+    "manualRuleType": "Rule type",
+    "linuxPinHint": "Enter the full version from the patch list, including any epoch (e.g. 5:24.0.7-1)."
   },
   "patchDetails": {
     "unknown": "Unknown",

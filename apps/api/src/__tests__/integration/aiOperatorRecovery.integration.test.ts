@@ -19,7 +19,7 @@ import { getTestDb } from './setup';
 
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
   actionIntents,
@@ -35,7 +35,7 @@ import {
   UNSETTLED_CHASE_HORIZON_MS,
   runReconcilerPass,
 } from '../../services/aiOperator/taskReconciler';
-import { handleTaskWake } from '../../services/aiOperator/taskCoordinator';
+import { __testOnly, claimTaskLease, handleTaskWake } from '../../services/aiOperator/taskCoordinator';
 import {
   createOrganization,
   createPartner,
@@ -372,6 +372,144 @@ describe('AI Operator reconciler — scan set 3: running past lease expiry', () 
     const pass = await runReconcilerPass();
     expect(pass.runningPastLease).toBe(0);
     expect((await readTask(task.id))!.leaseEpoch).toBe(3);
+  });
+});
+
+// #9979 / #9980: every `stopping` writer (org-merge fence, device delete /
+// move / reinstall) clears or ignores the lease, so a stopped task that never
+// gets an event wake was invisible to every scan, and one that did get a wake
+// either advanced (minting new work) or threw on `hand_off`.
+describe('AI Operator reconciler — stopping tasks settle and never advance', () => {
+  runDb('a stopping task with NO lease (the org-merge fence write) is picked up and handed off', async () => {
+    const t = await seedTenant();
+    const task = await createTask(t, {
+      state: 'stopping', currentStepKey: 'investigate', leaseOwner: null, leaseExpiresAt: null, nextWakeAt: null,
+    });
+
+    const pass = await runReconcilerPass();
+    expect(pass.runningPastLease).toBe(1);
+    const after = await readTask(task.id);
+    expect(after).toMatchObject({ state: 'handed_off', outcome: 'unresolved', leaseOwner: null, leaseExpiresAt: null });
+    expect(after!.outcomeDetail).toMatch(/^stopped: /);
+    // Nothing was admitted: no run, no intent.
+    const runs = await withSystemDbAccessContext(() => db.select().from(aiAgentRuns).where(eq(aiAgentRuns.taskId, task.id)));
+    expect(runs).toHaveLength(0);
+    // Terminal: the next pass leaves it alone.
+    expect((await runReconcilerPass()).runningPastLease).toBe(0);
+  });
+
+  runDb('a stopping task whose device target was detached names the detach reason', async () => {
+    const t = await seedTenant();
+    const task = await createTask(t, {
+      state: 'stopping', deviceId: null, targetDetachedAt: new Date(), targetDetachedReason: 'device_deleted',
+    });
+    await runReconcilerPass();
+    const after = await readTask(task.id);
+    expect(after).toMatchObject({ state: 'handed_off', outcome: 'unresolved' });
+    expect(after!.outcomeDetail).toMatch(/^stopped: the task's device target was detached \(device_deleted\)/);
+  });
+
+  runDb('a stopping task past its deadline with nothing in flight settles expired', async () => {
+    const t = await seedTenant();
+    const task = await createTask(t, { state: 'stopping', deadlineAt: new Date(Date.now() - 1_000) });
+    await runReconcilerPass();
+    const after = await readTask(task.id);
+    expect(after).toMatchObject({ state: 'expired', outcome: 'unresolved' });
+  });
+
+  runDb('a stopping task with an in-flight device command hands off unknown_effect (set 4 keeps chasing it)', async () => {
+    const t = await seedTenant();
+    const task = await createTask(t, { state: 'stopping', currentStepKey: 'observe' });
+    const intentId = await createIntent(t, 'executing');
+    await withSystemDbAccessContext(() => db.insert(aiOperatorOperations).values({
+      orgId: t.orgId, taskId: task.id, taskStepKey: 'execute', intentId, operationKey: `op-${randomUUID()}`,
+      attemptOrdinal: 0, argumentDigest: 'a'.repeat(64),
+      executionRefKind: 'device_command', executionRefId: randomUUID(),
+      dispatchState: 'dispatched', dispatchedAt: new Date(), resultState: 'pending',
+    } as never));
+    await runReconcilerPass();
+    const after = await readTask(task.id);
+    expect(after).toMatchObject({ state: 'handed_off', outcome: 'unknown_effect' });
+  });
+
+  runDb('a stopping task whose lease is still live is left to its holder', async () => {
+    const t = await seedTenant();
+    const task = await createTask(t, {
+      state: 'stopping', leaseOwner: 'coordinator:alive', leaseExpiresAt: new Date(Date.now() + 60_000), leaseEpoch: 2,
+    });
+    expect((await runReconcilerPass()).runningPastLease).toBe(0);
+    expect(await readTask(task.id)).toMatchObject({ state: 'stopping', leaseEpoch: 2 });
+  });
+
+  runDb('a stopping task with an unparseable checkpoint still hands off (fail is not a stopping arm)', async () => {
+    const t = await seedTenant();
+    const task = await createTask(t, { state: 'stopping' });
+    await withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE ai_operator_tasks SET checkpoint = '{}'::jsonb WHERE id = ${task.id}`));
+    await expect(handleTaskWake({ orgId: t.orgId, taskId: task.id, sourceKind: 'test', sourceId: task.id }))
+      .resolves.toMatch(/^handed off: stopped/);
+    expect(await readTask(task.id)).toMatchObject({ state: 'handed_off', outcome: 'unresolved' });
+  });
+
+  runDb('a stale live snapshot cannot terminalize a stopped task either (settle loses its CAS)', async () => {
+    const t = await seedTenant();
+    const task = await createTask(t, { state: 'queued' });
+    const claim = await claimTaskLease({ orgId: t.orgId, taskId: task.id, requireWakeDue: false });
+    if (!claim.won) throw new Error(`claim lost: ${claim.reason}`);
+    await withSystemDbAccessContext(() => db.update(aiOperatorTasks)
+      .set({ state: 'stopping' }).where(eq(aiOperatorTasks.id, task.id)));
+    await expect(__testOnly.settle({
+      task: claim.task, leaseEpoch: claim.leaseEpoch, event: 'complete', outcome: 'verified_resolved', detail: 'stale',
+    })).resolves.toBe(false);
+    expect(await readTask(task.id)).toMatchObject({ state: 'stopping', outcome: null });
+  });
+
+  runDb('a stopping settle loses its CAS once the row is already terminal, and says so', async () => {
+    const t = await seedTenant();
+    const task = await createTask(t, { state: 'stopping' });
+    const claim = await claimTaskLease({ orgId: t.orgId, taskId: task.id, requireWakeDue: false });
+    if (!claim.won) throw new Error(`claim lost: ${claim.reason}`);
+    // Something else terminalized it under the same epoch.
+    await withSystemDbAccessContext(() => db.update(aiOperatorTasks)
+      .set({ state: 'failed', outcome: 'unresolved', outcomeDetail: 'other writer' }).where(eq(aiOperatorTasks.id, task.id)));
+    const { advanceTask } = await import('../../services/aiOperator/taskCoordinator');
+    await expect(advanceTask(claim.task, claim.leaseEpoch)).resolves.toBe('skipped (stopping settle lost its lease CAS)');
+    expect(await readTask(task.id)).toMatchObject({ state: 'failed', outcomeDetail: 'other writer' });
+  });
+
+  runDb('the recipe advancers\' own lease CAS (leasedWrite) also refuses to write over a stop', async () => {
+    const t = await seedTenant();
+    const task = await createTask(t, { state: 'queued' });
+    const claim = await claimTaskLease({ orgId: t.orgId, taskId: task.id, requireWakeDue: false });
+    if (!claim.won) throw new Error(`claim lost: ${claim.reason}`);
+    await withSystemDbAccessContext(() => db.update(aiOperatorTasks)
+      .set({ state: 'stopping' }).where(eq(aiOperatorTasks.id, task.id)));
+    const { leasedWrite } = await import('../../services/aiOperator/identityAdvancers');
+    const also = vi.fn();
+    await expect(leasedWrite({
+      orgId: t.orgId, taskId: task.id, revision: claim.task.revision, leaseEpoch: claim.leaseEpoch,
+      observedState: claim.task.state, patch: { state: 'waiting' }, alsoInTransaction: also,
+    })).resolves.toBe(false);
+    expect(also).not.toHaveBeenCalled();
+    expect(await readTask(task.id)).toMatchObject({ state: 'stopping' });
+  });
+
+  runDb('a coordinator that leased the task BEFORE a stop cannot write it back to a live state', async () => {
+    const t = await seedTenant();
+    const task = await createTask(t, { state: 'queued' });
+    const claim = await claimTaskLease({ orgId: t.orgId, taskId: task.id, requireWakeDue: false });
+    if (!claim.won) throw new Error(`claim lost: ${claim.reason}`);
+    expect(claim.task.state).toBe('running');
+    // A stop lands while this coordinator is mid-step (what deviceDeletion /
+    // the device-move hook write: state only, lease untouched).
+    await withSystemDbAccessContext(() => db.update(aiOperatorTasks)
+      .set({ state: 'stopping' }).where(eq(aiOperatorTasks.id, task.id)));
+
+    const committed = await __testOnly.yieldToWait({
+      task: claim.task, leaseEpoch: claim.leaseEpoch, reason: 'approval', dependency: null, wakeAfterMs: 60_000,
+    });
+    expect(committed).toBe(false);
+    expect(await readTask(task.id)).toMatchObject({ state: 'stopping' });
   });
 });
 

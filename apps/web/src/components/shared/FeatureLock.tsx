@@ -7,8 +7,12 @@ export type FeatureLockProps = {
   locked: boolean;
   /** The registry `why` line for the gated feature. */
   why: string;
-  /** Where the upsell CTA points. Default '/settings/plan'. */
-  upgradeHref?: string;
+  /**
+   * Where the upsell CTA points. Default '/settings/plan'. `null` = no CTA:
+   * the lock and its reason only, for a feature no plan can unlock here (e.g.
+   * one this server does not run).
+   */
+  upgradeHref?: string | null;
   /** Base test id; the caption and CTA get `-why` / `-cta` suffixes. Default 'feature-lock'. */
   testId?: string;
   children: ReactNode;
@@ -57,9 +61,11 @@ export function FeatureLock({
       >
         <Lock size={12} aria-label={t('featureLock.lockedLabel')} />
         <span>{why}</span>
-        <a href={upgradeHref} className="font-medium not-italic underline" data-testid={`${testId}-cta`}>
-          {t('featureLock.upgrade')}
-        </a>
+        {upgradeHref !== null && (
+          <a href={upgradeHref} className="font-medium not-italic underline" data-testid={`${testId}-cta`}>
+            {t('featureLock.upgrade')}
+          </a>
+        )}
       </p>
     </div>
   );

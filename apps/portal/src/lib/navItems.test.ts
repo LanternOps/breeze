@@ -9,6 +9,7 @@ describe('buildPortalNavItems — enable_tickets nav gating (#2345)', () => {
     expect(items.map((i) => i.href)).toEqual([
       '/quotes',
       '/invoices',
+      '/agreements',
       '/devices',
       '/assets',
       '/profile'
@@ -21,6 +22,11 @@ describe('buildPortalNavItems — enable_tickets nav gating (#2345)', () => {
     const items = buildPortalNavItems({});
     expect(items[0]).toEqual({ label: 'Proposals', href: '/quotes' });
     expect(items[1]).toEqual({ label: 'Invoices', href: '/invoices' });
+  });
+
+  it('always lists Agreements right after Invoices (no flag)', () => {
+    const hrefs = buildPortalNavItems({}).map((i) => i.href);
+    expect(hrefs.indexOf('/agreements')).toBe(hrefs.indexOf('/invoices') + 1);
   });
 
   it('labels /quotes "Proposals", matching every page it leads to', () => {
@@ -58,6 +64,7 @@ describe('buildPortalNavItems — full flag set (#4562)', () => {
       '/dashboard',
       '/quotes',
       '/invoices',
+      '/agreements',
       '/tickets',
       '/approvals',
       '/devices',
@@ -85,6 +92,7 @@ describe('buildPortalNavItems — full flag set (#4562)', () => {
     }).map((item) => item.href)).toEqual([
       '/quotes',
       '/invoices',
+      '/agreements',
       '/profile',
     ]);
   });
@@ -112,6 +120,7 @@ describe('buildPortalNavItems — Network (/network) gating (#6640)', () => {
     expect(items.map((i) => i.href)).toEqual([
       '/quotes',
       '/invoices',
+      '/agreements',
       '/tickets',
       '/approvals',
       '/devices',

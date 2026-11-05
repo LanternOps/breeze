@@ -1,3 +1,5 @@
+const setPageContext = vi.hoisted(() => vi.fn());
+vi.mock('@/stores/aiStore', () => ({ useAiStore: (select: (s: unknown) => unknown) => select({ setPageContext }) }));
 import { configure, fireEvent, getConfig, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -20,9 +22,9 @@ vi.mock('../../stores/auth', () => ({
 
 // Stub only fetchTicketConfig; the real display/grouping helpers run unchanged.
 // Capture the props the rail hands the parts card (#3775: the ticket org's currency).
-const partsCardProps = vi.hoisted(() => ({ last: null as null | { ticketId: string; currencyCode?: string } }));
+const partsCardProps = vi.hoisted(() => ({ last: null as null | { ticketId: string; currencyCode?: string; readOnly?: boolean } }));
 vi.mock('./TicketPartsCard', () => ({
-  default: (p: { ticketId: string; currencyCode?: string }) => { partsCardProps.last = p; return <div data-testid="ticket-parts-card-stub" />; },
+  default: (p: { ticketId: string; currencyCode?: string; readOnly?: boolean }) => { partsCardProps.last = p; return <div data-testid="ticket-parts-card-stub" />; },
 }));
 
 // Stubbed for the same reason TicketPartsCard is: this suite is not testing the
@@ -33,8 +35,9 @@ vi.mock('./TicketPartsCard', () => ({
 // #5808 W01), which would block the status changes these tests assert. The
 // checklist's own behaviour is covered by TicketChecklistCard.test.tsx and
 // TicketWorkbench.checklistConfirm.test.tsx.
+const checklistCardProps = vi.hoisted(() => ({ last: null as null | { ticketId: string; readOnly?: boolean } }));
 vi.mock('./TicketChecklistCard', () => ({
-  default: () => <div data-testid="ticket-checklist-card-stub" />,
+  default: (p: { ticketId: string; readOnly?: boolean }) => { checklistCardProps.last = p; return <div data-testid="ticket-checklist-card-stub" />; },
 }));
 
 // Same reason as the checklist: the links card self-fetches /tickets/:id/links.
@@ -43,6 +46,14 @@ vi.mock('./TicketChecklistCard', () => ({
 const linksCardProps = vi.hoisted(() => ({ last: null as null | { ticketId: string; orgId?: string; ticketType?: string; canWrite?: boolean } }));
 vi.mock('./TicketLinksCard', () => ({
   default: (p: { ticketId: string; orgId?: string; ticketType?: string; canWrite?: boolean }) => { linksCardProps.last = p; return <div data-testid="ticket-links-card-stub" />; },
+}));
+
+// The real button self-gates on the Wisp flag + grant (its own suite covers
+// that); here we only assert the header mounts it with the ticket's ref.
+vi.mock('@/components/wisp/WispTalkButton', () => ({
+  default: ({ kind, id, orgId, label }: { kind: string; id: string; orgId: string | null; label: string }) => (
+    <div data-testid="wisp-talk-button-mock" data-kind={kind} data-id={id} data-org={orgId ?? ''} data-label={label} />
+  ),
 }));
 
 vi.mock('../../lib/ticketConfigApi', async (importOriginal) => {
@@ -128,11 +139,20 @@ describe('TicketWorkbench — organization record link', () => {
     mockTicketApi({ 'tk-1': makeTicket({ orgId: 'org-9', orgName: 'Globex Inc' }) });
     render(<TicketWorkbench ticketId="tk-1" />);
     await screen.findByTestId('ticket-workbench');
+    await waitFor(() => expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'ticket', id: 'tk-1', orgId: 'org-9', label: 'T-2026-0001 Printer is down' })));
 
     const link = screen.getByTestId('org-record-link');
     expect(link.tagName).toBe('A');
     expect(link).toHaveAttribute('href', '/organizations/org-9');
     expect(link).toHaveTextContent('Globex Inc');
+  });
+
+  it('omits trailing whitespace from a ticket context with an empty subject', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ subject: '' }) });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await waitFor(() => expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'record', kind: 'ticket', id: 'tk-1', orgId: 'org-1', label: 'T-2026-0001',
+    })));
   });
 
   it('links the header device hostname to /devices/:id (ui-flow W03)', async () => {
@@ -150,6 +170,24 @@ describe('TicketWorkbench — organization record link', () => {
 
     expect(screen.queryByTestId('device-record-link')).toBeNull();
     expect(screen.getAllByText('DESKTOP-123').length).toBeGreaterThan(0);
+  });
+});
+
+describe('TicketWorkbench — Link to Wisp (W08 Task 10)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('mounts the Talk-to-Wisp button in the header with the loaded ticket and its org', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ orgId: 'org-9' }) });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+
+    const button = screen.getByTestId('wisp-talk-button-mock');
+    expect(button.getAttribute('data-label')?.trim()).toBeTruthy();
+    expect(button).toHaveAttribute('data-kind', 'ticket');
+    expect(button).toHaveAttribute('data-id', 'tk-1');
+    expect(button).toHaveAttribute('data-org', 'org-9');
   });
 });
 
@@ -3259,5 +3297,390 @@ describe('TicketWorkbench — ticket type (#7900)', () => {
     render(<TicketWorkbench ticketId="tk-1" />);
     await screen.findByTestId('ticket-links-card-stub');
     expect(linksCardProps.last).toMatchObject({ canWrite: false });
+  });
+});
+
+// ─── Merge (#8972 W2) ────────────────────────────────────────────────────────
+
+// The dialog has its own suite (MergeTicketDialog.test.tsx); here a stub lets
+// the workbench's open/onMerged wiring be driven directly. vi.mock is hoisted.
+const mergeDialogProps = vi.hoisted(() => ({ last: null as null | { open: boolean; source: { id: string } } }));
+vi.mock('./MergeTicketDialog', () => ({
+  default: (p: { open: boolean; source: { id: string }; onClose: () => void; onMerged: (s: { id: string; internalNumber: string | null }) => void }) => {
+    mergeDialogProps.last = p;
+    if (!p.open) return null;
+    return (
+      <div data-testid="ticket-merge-dialog">
+        <button type="button" data-testid="stub-merge-done" onClick={() => p.onMerged({ id: 'tk-surv', internalNumber: 'T-2026-0002' })} />
+        <button type="button" data-testid="stub-merge-close" onClick={p.onClose} />
+      </div>
+    );
+  },
+}));
+
+describe('TicketWorkbench — merge header action (#8972)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mergeDialogProps.last = null;
+  });
+
+  it('shows "Merge into…" for tickets:write and opens the dialog on the source', async () => {
+    authState.permissions = [{ resource: 'tickets', action: 'write' }];
+    mockTicketApi({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+
+    const open = screen.getByTestId('ticket-merge-open');
+    expect(open).toHaveTextContent('Merge into…');
+    expect(screen.queryByTestId('ticket-merge-dialog')).toBeNull();
+    fireEvent.click(open);
+    expect(screen.getByTestId('ticket-merge-dialog')).toBeInTheDocument();
+    expect(mergeDialogProps.last?.source.id).toBe('tk-1');
+    fireEvent.click(screen.getByTestId('stub-merge-close'));
+    expect(screen.queryByTestId('ticket-merge-dialog')).toBeNull();
+  });
+
+  it('hides "Merge into…" without tickets:write', async () => {
+    authState.permissions = [{ resource: 'tickets', action: 'read' }];
+    mockTicketApi({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    expect(screen.queryByTestId('ticket-merge-open')).toBeNull();
+  });
+
+  it('hands the survivor to onMerged when the host supplies it (split pane)', async () => {
+    authState.permissions = [{ resource: 'tickets', action: 'write' }];
+    mockTicketApi({ 'tk-1': makeTicket() });
+    const onMerged = vi.fn();
+    render(<TicketWorkbench ticketId="tk-1" onMerged={onMerged} />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-merge-open'));
+    fireEvent.click(screen.getByTestId('stub-merge-done'));
+    expect(onMerged).toHaveBeenCalledWith('tk-surv', 'T-2026-0002');
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('ticket-merge-dialog')).toBeNull();
+  });
+
+  it('navigates to the survivor without an onMerged host (full-page view)', async () => {
+    authState.permissions = [{ resource: 'tickets', action: 'write' }];
+    mockTicketApi({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" expanded />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-merge-open'));
+    fireEvent.click(screen.getByTestId('stub-merge-done'));
+    expect(navigateTo).toHaveBeenCalledWith('/tickets/tk-surv');
+  });
+});
+
+describe('TicketWorkbench — merged tombstone (#8972)', () => {
+  const TOMBSTONE = makeTicket({
+    id: 'tk-1',
+    internalNumber: 'T-2026-0009',
+    status: 'closed',
+    resolutionNote: 'Merged into T-2026-0002',
+    mergedIntoTicketId: 'tk-surv',
+    mergedAt: '2026-10-20T12:00:00.000Z',
+    assignedTo: 'u-1',
+    assigneeName: 'Alex',
+    comments: [{
+      id: 'c-1', userId: 'u-1', portalUserId: null, authorName: 'Alex', authorType: 'user', commentType: 'comment',
+      content: 'Old reply', isPublic: true, oldValue: null, newValue: null, createdAt: '2026-10-01T00:00:00.000Z',
+    }],
+  });
+  const SURVIVOR = makeTicket({ id: 'tk-surv', internalNumber: 'T-2026-0002' });
+
+  /** Tombstone + survivor detail, plus a triage suggestion and an AI draft —
+   *  each of which would render write controls on a live ticket. */
+  function mockTombstoneApi(opts: { survivorStatus?: number } = {}) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const get = !init?.method || init.method === 'GET';
+      if (get && url === '/tickets/tk-1') return makeJsonResponse({ data: TOMBSTONE });
+      if (get && url === '/tickets/tk-surv') {
+        return opts.survivorStatus
+          ? makeJsonResponse({ error: 'Ticket not found' }, false, opts.survivorStatus)
+          : makeJsonResponse({ data: SURVIVOR });
+      }
+      if (get && url === '/tickets/tk-1/triage-suggestion') {
+        return makeJsonResponse({ enabled: true, suggestion: { modelVersion: 'v0', confidence: 0.8, priority: 'high', categoryId: null, categoryName: null, reasons: [] } });
+      }
+      if (get && url === '/tickets/tk-1/ai-drafts') {
+        return makeJsonResponse({ data: [{ id: 'd-1', kind: 'reply', content: 'Draft', createdAt: '2026-10-01T00:00:00.000Z', runId: null }] });
+      }
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    linksCardProps.last = null;
+    authState.permissions = [{ resource: 'tickets', action: 'write' }, { resource: 'tickets', action: 'manage' }];
+  });
+
+  it('shows the banner with the survivor number (read from its detail) and a link', async () => {
+    mockTombstoneApi();
+    render(<TicketWorkbench ticketId="tk-1" />);
+    const banner = await screen.findByTestId('ticket-merged-banner');
+    await waitFor(() => expect(banner).toHaveTextContent('This ticket was merged into T-2026-0002'));
+    expect(screen.getByTestId('ticket-merged-banner-link')).toHaveAttribute('href', '/tickets/tk-surv');
+    expect(screen.getByTestId('ticket-merged-banner-link')).toHaveTextContent('Open T-2026-0002');
+  });
+
+  it('shows the deleted-survivor variant with no link when the survivor read 404s', async () => {
+    mockTombstoneApi({ survivorStatus: 404 });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    const banner = await screen.findByTestId('ticket-merged-banner');
+    await waitFor(() => expect(banner).toHaveTextContent('into a ticket that was deleted or that you cannot see'));
+    expect(screen.queryByTestId('ticket-merged-banner-link')).toBeNull();
+  });
+
+  it('disables or hides every write control', async () => {
+    mockTombstoneApi();
+    render(<TicketWorkbench ticketId="tk-1" assignees={[{ id: 'u-1', name: 'Alex', email: 'a@example.com' }]} categories={[{ id: 'cat-1', name: 'Hardware' }]} />);
+    await screen.findByTestId('ticket-merged-banner');
+    await waitFor(() => expect(screen.getByTestId('ticket-merged-banner')).toHaveTextContent('T-2026-0002'));
+
+    // Hidden outright on a tombstone.
+    const mustBeAbsent = [
+      'ticket-workbench-subject-edit', 'ticket-workbench-subject-edit-btn', 'ticket-workbench-type', 'ticket-workbench-unassign', 'ticket-workbench-create-invoice', 'ticket-workbench-move-org',
+      'ticket-delete-button', 'ticket-merge-open', 'ticket-workbench-description-edit-btn', 'ticket-workbench-requester-edit',
+      'ticket-workbench-tag-input', 'ticket-workbench-device-edit', 'ticket-workbench-device-unlink',
+      'ticket-triage-suggestion', 'ticket-triage-apply', 'ticket-triage-reject', 'ticket-ai-draft-reply',
+      'ticket-ai-draft-reply-send', 'ticket-ai-draft-reply-discard', 'ticket-composer', 'ticket-composer-input',
+      'ticket-comment-edit-c-1', 'ticket-comment-delete-c-1', 'ticket-workbench-resolve-form', 'ticket-workbench-pending-form',
+    ];
+    for (const id of mustBeAbsent) expect(screen.queryByTestId(id), id).toBeNull();
+    // Still shown for reading, but inert.
+    const mustBeDisabled = [
+      'ticket-workbench-status', 'ticket-workbench-priority', 'ticket-workbench-category',
+      'ticket-workbench-assignee', 'ticket-workbench-due',
+    ];
+    for (const id of mustBeDisabled) expect(screen.getByTestId(id), id).toBeDisabled();
+    // The type is shown as a chip instead of a select.
+    expect(screen.getByTestId('ticket-workbench-type-chip')).toBeInTheDocument();
+    // A tombstone never asks for AI suggestions or drafts.
+    const requested = fetchMock.mock.calls.map(([u]) => String(u));
+    expect(requested).not.toContain('/tickets/tk-1/triage-suggestion');
+    expect(requested).not.toContain('/tickets/tk-1/ai-drafts');
+    expect(requested).not.toContain('/tickets/tk-1/ai-proposal');
+    // The composer's place shows the read-only note instead.
+    expect(screen.getByTestId('ticket-merged-readonly')).toHaveTextContent('Merged tickets are read-only.');
+    expect(linksCardProps.last).toMatchObject({ canWrite: false });
+    // #10073: the rail's time, billing and parts writes all 409 TICKET_MERGED,
+    // so they are inert too, with the reason and the survivor link above them.
+    for (const id of ['ticket-billing-start-timer', 'ticket-billing-quick-add-toggle', 'timer-work-type']) {
+      expect(screen.getByTestId(id), id).toBeDisabled();
+    }
+    expect(partsCardProps.last).toMatchObject({ ticketId: 'tk-1', readOnly: true });
+    expect(checklistCardProps.last).toMatchObject({ ticketId: 'tk-1', readOnly: true });
+    expect(screen.getByTestId('ticket-rail-merged-readonly')).toHaveTextContent('Time, billing and parts are read-only');
+    expect(screen.getByTestId('ticket-rail-merged-link')).toHaveAttribute('href', '/tickets/tk-surv');
+    expect(screen.getByTestId('ticket-rail-merged-link')).toHaveTextContent('Open T-2026-0002');
+    // Reading is fine: the feed still renders the tombstone's history.
+    expect(screen.getByTestId('ticket-comment-c-1')).toHaveTextContent('Old reply');
+  });
+
+  it('a live ticket has no merged banner', async () => {
+    mockTicketApi({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    expect(screen.queryByTestId('ticket-merged-banner')).toBeNull();
+    expect(screen.getByTestId('ticket-composer')).toBeInTheDocument();
+    expect(screen.queryByTestId('ticket-rail-merged-readonly')).toBeNull();
+    expect(screen.getByTestId('ticket-billing-start-timer')).toBeEnabled();
+    expect(partsCardProps.last).toMatchObject({ readOnly: false });
+    expect(checklistCardProps.last).toMatchObject({ readOnly: false });
+  });
+});
+
+describe('TicketWorkbench — survivor timeline (#8972)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('resolves each distinct source ticket once and marks moved comments "from <number>"', async () => {
+    const comment = (id: string, mergedFromTicketId: string | null) => ({
+      id, userId: 'u-1', portalUserId: null, authorName: 'Alex', authorType: 'user', commentType: 'comment' as const,
+      content: `Body ${id}`, isPublic: true, oldValue: null, newValue: null, createdAt: '2026-10-01T00:00:00.000Z', mergedFromTicketId,
+    });
+    mockTicketApi({
+      'tk-1': makeTicket({ comments: [comment('c-1', 'tk-src'), comment('c-2', 'tk-src'), comment('c-3', null)] }),
+      'tk-src': makeTicket({ id: 'tk-src', internalNumber: 'T-2026-0007', mergedIntoTicketId: 'tk-1' }),
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await waitFor(() => expect(screen.getByTestId('ticket-comment-merged-from-c-1')).toHaveTextContent('from T-2026-0007'));
+    expect(screen.getByTestId('ticket-comment-merged-from-c-2')).toHaveTextContent('from T-2026-0007');
+    expect(screen.queryByTestId('ticket-comment-merged-from-c-3')).toBeNull();
+    expect(fetchMock.mock.calls.filter(([u]) => String(u) === '/tickets/tk-src')).toHaveLength(1);
+  });
+});
+
+// Operator Recipe Library W06 R1b (#6171) — MOUNT proof for the ticket launch
+// point. The launcher only SUGGESTS the requester as the person leaving (#10075)
+// and sends NO source citation: identity_offboarding refuses one and opens its
+// own checklist ticket.
+describe('TicketWorkbench — Offboard a person launcher', () => {
+  const OP_ORG = '11111111-1111-4111-8111-111111111111';
+  const REQUESTER = '33333333-3333-4333-8333-333333333333';
+  const workflow = (readiness: string) => ({
+    recipeKey: 'identity_offboarding', recipeVersion: 4, name: 'Offboard a person', summary: 's',
+    gateClass: 'deterministic', targetKinds: ['contact'], readiness, missingCapabilities: [],
+    alwaysManualCapabilities: [], manualStepCount: 0, degradedEffects: [], agentId: null, agentKind: 'helpdesk',
+  });
+
+  async function resetFeatures() {
+    const { useFeaturesStore } = await import('../../stores/featuresStore');
+    useFeaturesStore.setState({
+      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false },
+      loaded: false,
+    });
+  }
+
+  function mockWithOperator(ticket: TicketDetail, opts: { flag: boolean; readiness?: string }) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/config') return makeJsonResponse({ features: { aiOperatorTasks: opts.flag } });
+      if (url.startsWith('/ai/operator/workflows')) return makeJsonResponse({ data: [workflow(opts.readiness ?? 'ready')] });
+      if (url === '/ai/operator/task-drafts') {
+        return makeJsonResponse({ data: {
+          recipeKey: 'identity_offboarding', recipeVersion: 4, input: {}, workflow: workflow('ready'),
+          person: { resolved: { id: REQUESTER, name: 'Pat', email: 'pat@example.com' }, candidates: [] },
+          plannedEffectTools: ['m365_disable_user'], degradedEffectTools: [], manualWork: [],
+        } });
+      }
+      if (url.startsWith('/devices')) return makeJsonResponse({ data: [] });
+      if ((!init?.method || init.method === 'GET') && url === `/tickets/${ticket.id}`) return makeJsonResponse({ data: ticket });
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  beforeEach(async () => { await resetFeatures(); });
+
+  it('renders on the real workbench and opens the form with the person empty and the requester only suggested', async () => {
+    mockWithOperator(makeTicket({ orgId: OP_ORG, requesterContactId: REQUESTER, submitterName: 'Pat' }), { flag: true });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('offboard-launcher-ticket'));
+    expect(await screen.findByTestId('start-recipe-form')).toBeInTheDocument();
+    expect(screen.queryByTestId('start-recipe-person-contact')).toBeNull();
+    expect((screen.getByTestId('start-recipe-person-hint') as HTMLInputElement).value).toBe('');
+    expect(screen.getByTestId('start-recipe-person-requester')).toHaveTextContent('Pat');
+
+    fireEvent.click(screen.getByTestId('start-recipe-person-use-requester'));
+    expect(screen.getByTestId('start-recipe-person-contact')).toHaveTextContent('Pat');
+    fireEvent.click(screen.getByTestId('start-recipe-preview-button'));
+    expect(await screen.findByTestId('start-recipe-preview')).toHaveTextContent('the task opens its own checklist ticket');
+    const draftCall = fetchMock.mock.calls.find(([u]) => String(u) === '/ai/operator/task-drafts');
+    const body = JSON.parse(String((draftCall![1] as RequestInit).body)) as Record<string, any>;
+    expect(body.orgId).toBe(OP_ORG);
+    expect(body.inputs).toMatchObject({ contactId: REQUESTER, personHint: null });
+    expect(body).not.toHaveProperty('sourceKind');
+    expect(body).not.toHaveProperty('sourceId');
+  });
+
+  it('suggests, but does not pre-fill, the submitter email when the ticket has no requester contact', async () => {
+    mockWithOperator(makeTicket({ orgId: OP_ORG, requesterContactId: null, submitterEmail: 'pat@example.com' }), { flag: true });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('offboard-launcher-ticket'));
+    expect((await screen.findByTestId('start-recipe-person-hint') as HTMLInputElement).value).toBe('');
+    expect(screen.getByTestId('start-recipe-person-requester')).toHaveTextContent('pat@example.com');
+  });
+
+  it.each([
+    ['the server flag is off', { flag: false }],
+    ['the recipe is unavailable', { flag: true, readiness: 'unavailable' }],
+  ])('is absent when %s', async (_label, opts) => {
+    mockWithOperator(makeTicket({ orgId: OP_ORG, requesterContactId: REQUESTER }), opts);
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-links-card-stub');
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u) === '/config')).toBe(true));
+    if (opts.flag) {
+      await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).startsWith('/ai/operator/workflows'))).toBe(true));
+    }
+    const { act } = await import('@testing-library/react');
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.queryByTestId('offboard-launcher-ticket')).not.toBeInTheDocument();
+  });
+});
+
+// Operator Recipe Library W07 R2b (#6172, Task 18) — MOUNT proof for the
+// ticket "Onboard a person" launcher, through the real workbench. The ticket's
+// requester pre-fills the MANAGER (never the new hire), and no source is sent.
+describe('TicketWorkbench — Onboard a person launcher', () => {
+  const OP_ORG = '11111111-1111-4111-8111-111111111111';
+  const REQUESTER = '33333333-3333-4333-8333-333333333333';
+  const wf = (recipeKey: string, readiness: string) => ({
+    recipeKey, recipeVersion: 4, name: recipeKey, summary: 's',
+    gateClass: 'deterministic', targetKinds: ['contact'], readiness, missingCapabilities: [],
+    alwaysManualCapabilities: [], manualStepCount: 0, degradedEffects: [], agentId: null, agentKind: 'helpdesk',
+  });
+
+  async function resetFeatures() {
+    const { useFeaturesStore } = await import('../../stores/featuresStore');
+    useFeaturesStore.setState({
+      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false },
+      loaded: false,
+    });
+  }
+
+  function mockWithOperator(ticket: TicketDetail, opts: { flag: boolean; readiness?: string }) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/config') return makeJsonResponse({ features: { aiOperatorTasks: opts.flag } });
+      if (url.startsWith('/ai/operator/workflows')) {
+        return makeJsonResponse({ data: [wf('identity_offboarding', 'ready'), wf('identity_onboarding', opts.readiness ?? 'ready')] });
+      }
+      if (url.startsWith(`/orgs/organizations/${OP_ORG}/contacts`)) {
+        return makeJsonResponse({ data: [{ id: REQUESTER, name: 'Pat Requester', email: 'pat@customer.example', phone: null, siteId: null }], pagination: { total: 1 } });
+      }
+      if (url.startsWith('/orgs/sites')) return makeJsonResponse({ data: [] });
+      if (url.startsWith('/devices')) return makeJsonResponse({ data: [] });
+      if ((!init?.method || init.method === 'GET') && url === `/tickets/${ticket.id}`) return makeJsonResponse({ data: ticket });
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  beforeEach(async () => { await resetFeatures(); });
+
+  it('renders beside the offboard launcher and opens the onboarding form with the requester as manager', async () => {
+    mockWithOperator(makeTicket({ orgId: OP_ORG, requesterContactId: REQUESTER, submitterName: 'Pat Requester' }), { flag: true });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    expect(await screen.findByTestId('offboard-launcher-ticket')).toBeInTheDocument();
+    fireEvent.click(await screen.findByTestId('launch-onboard-person-ticket'));
+    expect(await screen.findByTestId('start-recipe-form')).toHaveAttribute('data-recipe-key', 'identity_onboarding');
+    expect((screen.getByTestId('start-recipe-display-name') as HTMLInputElement).value).toBe('');
+    expect(screen.getByTestId('start-recipe-manager-prefill-note')).toHaveTextContent('its requester is set as the manager, not as the new person');
+    await waitFor(() => expect((screen.getByTestId('start-recipe-manager') as HTMLSelectElement).value).toBe(REQUESTER));
+  });
+
+  it.each([
+    ['the server flag is off', { flag: false }],
+    ['onboarding is unavailable', { flag: true, readiness: 'unavailable' }],
+  ])('is absent when %s', async (_label, opts) => {
+    mockWithOperator(makeTicket({ orgId: OP_ORG, requesterContactId: REQUESTER }), opts);
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-links-card-stub');
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u) === '/config')).toBe(true));
+    if (opts.flag) {
+      await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).startsWith('/ai/operator/workflows'))).toBe(true));
+    }
+    const { act } = await import('@testing-library/react');
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.queryByTestId('launch-onboard-person-ticket')).not.toBeInTheDocument();
+  });
+
+  it('every page that hosts the workbench mounts it as a client:load island', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const pages = join(__dirname, '../../pages/tickets');
+    const detail = readFileSync(join(pages, '[id].astro'), 'utf8');
+    expect(detail).toMatch(/<TicketWorkbench[^>]*client:load/);
+    const queue = readFileSync(join(pages, 'index.astro'), 'utf8');
+    expect(queue).toMatch(/<TicketsPage[^>]*client:load/);
+    const workbench = readFileSync(join(__dirname, 'TicketWorkbench.tsx'), 'utf8');
+    expect(workbench).toContain('<OnboardPersonLauncher');
   });
 });

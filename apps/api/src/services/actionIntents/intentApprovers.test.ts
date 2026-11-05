@@ -62,6 +62,7 @@ import { requiredPermissionsForTool } from '../aiGuardrails';
 import { getUserPermissions, type UserPermissions } from '../permissions';
 import {
   DEVICE_COMPLETE_TARGET_TOOLS,
+  flowIntentApproverRule,
   isOrgWideGovernanceIntent,
   isAgentIntentDecideAuthorized,
   resolveAgentIntentApprovers,
@@ -1108,5 +1109,26 @@ describe('isOrgWideGovernanceIntent (audit §1.1)', () => {
     await expect(
       resolveIntentTargetScope('manage_ai_agents', { action: 'authorize_supervised_key' }, { deviceId: 'dev-1' }, 'org-1'),
     ).resolves.toEqual({ kind: 'indirect' });
+  });
+});
+
+// Tool catalog W05 (#5220), Decision 12: a Tier-3 BUILT-IN flow step (an
+// http_request write) has no core RBAC mapping; without its own rule nobody
+// would be eligible and every such intent would cancel no_eligible_approvers.
+describe('flowIntentApproverRule', () => {
+  it('a built-in step is approved by holders of its built-in permission over an indirect (org-wide) target', () => {
+    vi.mocked(requiredPermissionsForTool).mockReturnValue(null);
+    expect(flowIntentApproverRule({ actionName: 'http_request', toolSourceToolId: null })).toEqual({
+      required: [{ resource: 'external_tools', action: 'write' }], indirect: true,
+    });
+  });
+  it('an external tool keeps the external-tool grant; a core tool its own mapping and device target', () => {
+    expect(flowIntentApproverRule({ actionName: 'acme__restart', toolSourceToolId: 'tool-1' })).toEqual({
+      required: [{ resource: 'external_tools', action: 'write' }], indirect: true,
+    });
+    vi.mocked(requiredPermissionsForTool).mockReturnValue([{ resource: 'scripts', action: 'execute' }]);
+    expect(flowIntentApproverRule({ actionName: 'run_script', toolSourceToolId: null, arguments: { scriptId: 's' } })).toEqual({
+      required: [{ resource: 'scripts', action: 'execute' }], indirect: false,
+    });
   });
 });

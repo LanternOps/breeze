@@ -2,6 +2,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+// Data-only module (no DB, no registry import), so importing it cannot make this contract vacuous.
+import { AGENT_HUMAN_ONLY_ACTIONS, AGENT_HUMAN_ONLY_TOOLS } from './aiToolExposure';
 
 /**
  * #6907 / #6911 — the `USER_OWNED_RELEASE_ACTIONS` registration contract for
@@ -111,14 +113,20 @@ const ACTION_GUARD_ALIASES: ReadonlyMap<string, readonly string[]> = new Map([
   // `apply_cis_remediation:` this file's own allowlist entry covers. Both
   // values (and the omitted/default case) reach the identical unguarded
   // `approvedBy`/`requestedBy` insert, so all three keys are required.
-  ['services/aiToolsCisBenchmark.ts:520', ['', 'apply', 'rollback']],
-  ['services/aiToolsCisBenchmark.ts:523', ['', 'apply', 'rollback']],
+  ['services/aiToolsCisBenchmark.ts:508', ['', 'apply', 'rollback']],
+  ['services/aiToolsCisBenchmark.ts:511', ['', 'apply', 'rollback']],
   // aiToolsEdr.ts (#8167 W03): edr_endpoint_action has ONE write site — the
   // `requestedBy: auth.user.id` handed to dispatchEdrAction, which writes
   // edr_actions.requested_by for EVERY action. There is no `if (action === …)`
   // guard: the action flows straight into the dispatch. The model is offered
   // isolate/unisolate/scan, the whole input_schema enum (proven below).
   ['services/aiToolsEdr.ts:239', ['isolate', 'unisolate', 'scan']],
+  // aiToolsAnomalies.ts (W07, #6777): manage_device_anomalies has ONE write site, the
+  // `actorUserId` handed to applyAnomalyStatus (-> ml_feedback_events.actor_user_id, a users FK).
+  // It sits after the `action === 'list'` early return rather than inside an `if (action === …)`
+  // guard, and `STATUS_FOR_ACTION` maps exactly the three write actions of the input_schema enum
+  // (dismiss -> dismissed, resolve -> resolved, promote -> promoted).
+  ['services/aiToolsAnomalies.ts:98', ['dismiss', 'resolve', 'promote']],
 ]);
 
 /**
@@ -149,12 +157,12 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   // `resolveCommandCreatedBy` before the `device_commands.created_by` insert
   // — a synthetic (aiAgents) id degrades to NULL there instead of reaching
   // the FK raw.
-  ['services/aiToolsAgentLogs.ts:359', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
-  ['services/aiToolsAgentLogs.ts:436', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsAgentLogs.ts:405', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsAgentLogs.ts:470', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — trigger_agent_upgrade / trigger_agent_restart: same aiExecuteCommand
   // -> resolveCommandCreatedBy path.
-  ['services/aiToolsAgentMgmt.ts:458', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
-  ['services/aiToolsAgentMgmt.ts:566', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsAgentMgmt.ts:481', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsAgentMgmt.ts:622', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (b) — manage_ai_agents is in AGENT_HUMAN_ONLY_TOOLS: an ai_agent
   // principal is refused in checkAgentGuardrails before the handler runs at
   // all (P2-5, #4192 — the tool GRANTS agent authority, so an agent must
@@ -163,29 +171,25 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   // (c) — manage_browser_policy:apply: same aiDispatchDeviceCommand ->
   // queueCommand -> resolveCommandCreatedBy path (create is a real bug,
   // fixed separately with approverReleaseMismatch).
-  ['services/aiToolsBrowser.ts:606', 'aiDispatchDeviceCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
-  // (c) — test_webhook: `userId` lives only in the in-memory `event.metadata`
-  // object handed to the webhook worker's queueDelivery; the actual
-  // `webhookDeliveries` DB insert a few lines above never includes it.
-  ['services/aiToolsIntegrations.ts:340', 'userId is in the webhook worker event payload, never in the webhookDeliveries DB insert'],
+  ['services/aiToolsBrowser.ts:611', 'aiDispatchDeviceCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — execute_command / registry_operations: same aiExecuteCommand ->
   // resolveCommandCreatedBy path.
-  ['services/aiToolsScripts.ts:874', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
-  ['services/aiToolsScripts.ts:1870', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsScripts.ts:877', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsScripts.ts:1917', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — cancel_script_execution: cancelScriptExecution's own comment says
   // it "probes-and-degrades [actorId] against users rather than raising
   // 23503" — the same resolver shape as resolveCommandCreatedBy, just local
   // to scriptCancellation.ts.
-  ['services/aiToolsScripts.ts:976', 'cancelScriptExecution probes-and-degrades actorId against users, not a raw column write'],
+  ['services/aiToolsScripts.ts:979', 'cancelScriptExecution probes-and-degrades actorId against users, not a raw column write'],
   // (c) — remediate_sensitive_data (both write sites): `updatedBy` sits
   // inside `remediationMetadata`, a `jsonb` column on `sensitive_data_findings`
   // (db/schema/sensitiveData.ts) — no FK constraint exists on a JSON key.
-  ['services/aiToolsSecurity.ts:631', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
-  ['services/aiToolsSecurity.ts:720', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
+  ['services/aiToolsSecurity.ts:666', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
+  ['services/aiToolsSecurity.ts:763', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
   // (c) — assign_security_training: `assignedBy` sits inside
   // `userRiskEvents.details`, a `jsonb` column (db/schema/userRisk.ts) — no
   // FK constraint exists on a JSON key.
-  ['services/aiToolsUserRisk.ts:341', 'assignedBy is inside userRiskEvents.details, a jsonb column — no FK'],
+  ['services/aiToolsUserRisk.ts:354', 'assignedBy is inside userRiskEvents.details, a jsonb column — no FK'],
 ]);
 
 function usersFkPropertyNames(): ReadonlySet<string> {
@@ -370,8 +374,7 @@ describe('agent-mintable users-FK writes are user-owned on release (#6907, #6911
 
     const integrationsSrc = readFileSync(join(API_SRC, 'services/aiToolsIntegrations.ts'), 'utf8');
     expect(integrationsSrc).toMatch(/insert\(webhookDeliveries\)/);
-    // The DB insert values block must NOT mention userId — only the
-    // in-memory `event.metadata` a few lines below does.
+    // Delivery rows and ids-only jobs carry no user-owned foreign key.
     const deliveryInsert = /insert\(webhookDeliveries\)[\s\S]*?\.returning/.exec(integrationsSrc);
     expect(deliveryInsert, 'webhookDeliveries insert moved').not.toBeNull();
     expect(deliveryInsert![0]).not.toMatch(/userId/);
@@ -441,15 +444,36 @@ describe('agent-mintable users-FK writes are user-owned on release (#6907, #6911
    * qualifying site satisfies this contract either way: registered in
    * USER_OWNED_RELEASE_ACTIONS (checked for its approverReleaseMismatch
    * guard below, same as tier 3), OR refused for an agent principal before
-   * the write (`isAiAgentPrincipal(auth)` / `isAgentPrincipalCaller(auth)`
+   * the write (`isAiAgentPrincipal(auth)` / `isAutomationPrincipal(auth)`
+   * — agent or flow, #5219 — / `isAgentPrincipalCaller(auth)`
    * followed by a `return`, mirroring aiToolsFleet.ts's
    * `isAgentPrincipalCaller` -> `refuseFleetAgentPrincipal` pair, #6206).
    */
   function hasAgentPrincipalRefusal(branch: string): boolean {
-    const m = /isA(?:gentPrincipalCaller|iAgentPrincipal)\(\s*auth(?:\.principal)?\s*\)/.exec(branch);
+    const m = /is(?:AgentPrincipalCaller|AiAgentPrincipal|AutomationPrincipal)\(\s*auth(?:\.principal)?\s*\)/.exec(branch);
     if (!m) return false;
     return /return\b/.test(branch.slice(m.index));
   }
+
+  // Full-control W11 (#6781): the W11 modules register each tool BEFORE its handler, with a literal `name:` and
+  // literal `if (action === …)` guards, so this scanner attributes their users-FK writes. Pinned so a refactor
+  // back to a constant name or a handler above the registration (which hid them) reds here.
+  it('sees the W11 users-FK writes and every one is agent-unreachable', () => {
+    const w11 = qualifying
+      .filter((s) => /aiTools(AccessReviews|AuditBaselines|PamRules)\.ts$/.test(s.file))
+      .flatMap((s) => s.actions.map((a) => `${s.tool}:${a}:${s.property}`));
+    expect([...new Set(w11)].sort()).toEqual([
+      'manage_access_reviews:decide_item:reviewedBy',
+      'manage_audit_baselines:create:createdBy',
+      'manage_audit_baselines:request_apply:requestedBy',
+      'manage_pam_rules:create_signer_group:createdByUserId',
+      'manage_pam_rules:set_config:updatedByUserId',
+    ]);
+    for (const entry of w11) {
+      const [tool, action] = entry.split(':') as [string, string];
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(tool) || AGENT_HUMAN_ONLY_ACTIONS.has(`${tool}:${action}`), entry).toBe(true);
+    }
+  });
 
   it('every agent-mintable users-FK write is in USER_OWNED_RELEASE_ACTIONS, or (tier 2 only) refuses an agent principal', () => {
     const missing: string[] = [];
@@ -459,6 +483,10 @@ describe('agent-mintable users-FK writes are user-owned on release (#6907, #6911
         if (!agentMintable(site.tool, action, site.baseTier)) continue;
         const key = `${site.tool}:${action}`;
         if (allowlist.has(key)) continue;
+        // Class (b) read from the registries themselves (full-control W11, #6781): an agent can never mint an
+        // intent for a tool in AGENT_HUMAN_ONLY_TOOLS or an action in AGENT_HUMAN_ONLY_ACTIONS —
+        // checkAgentGuardrails denies the call before any intent exists. Removing the entry reds this test.
+        if (AGENT_HUMAN_ONLY_TOOLS.has(site.tool) || AGENT_HUMAN_ONLY_ACTIONS.has(key)) continue;
         // A whole-tool base-Tier-3 registration (e.g. manage_browser_policy,
         // create_remote_session, s1_isolate_device) is real tier 3 exactly
         // like a TIER3_*_ACTIONS entry — checkGuardrails resolves it from

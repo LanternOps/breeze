@@ -101,7 +101,7 @@ describe('DeviceDetails tab layout', () => {
     ]);
     fireEvent.click(screen.getByRole('button', { name: /^more$/i }));
     const items = screen.getAllByRole('menuitem').map((m) => m.textContent);
-    expect(items).toEqual(expect.arrayContaining(['Anomalies', 'Tickets', 'Operator Tasks', 'Monitoring', 'Compliance']));
+    expect(items).toEqual(expect.arrayContaining(['Anomalies', 'Tickets', 'AI Tasks', 'Monitoring', 'Compliance']));
     const headers = Array.from(screen.getByRole('menu').querySelectorAll('[data-overflow-group]')).map((h) => h.textContent);
     expect(headers).toEqual(['Monitoring', 'Inventory', 'Management', 'History & Network']);
   });

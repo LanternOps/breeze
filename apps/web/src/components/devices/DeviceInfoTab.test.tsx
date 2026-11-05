@@ -718,6 +718,28 @@ describe('DeviceInfoTab — Breeze Assist install issue (#6925)', () => {
     await screen.findByText('Operating System');
     expect(screen.queryByTestId('helper-install-issue')).toBeNull();
   });
+
+  // #10183, #10185 (#10190 W01): Assist installed but not run by the agent.
+  it.each([
+    ['webview2_outdated', /WebView2 Runtime is older than Breeze Assist needs/, 'Unavailable: WebView2 Runtime too old'],
+    ['crash_loop', /kept closing right after it started.*6 hours/, 'Unavailable: keeps closing'],
+    ['unmanaged_install', /not installed by Breeze.*Deploy is off/, 'Unavailable: not installed by Breeze'],
+  ])('explains %s and shows Assist unavailable', async (issue, notice, status) => {
+    load({ helperVersion: '0.125.0', helperInstallIssue: issue, helperInstallIssueSince: '2026-10-01T00:00:00.000Z' });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    expect((await screen.findByTestId('helper-install-issue')).textContent).toMatch(notice);
+    expect(screen.getByTestId('assist-status').textContent).toContain(status);
+  });
+
+  it.each([
+    [{ helperVersion: '0.125.0', helperInstallIssue: null }, 'Installed'],
+    [{ helperVersion: null, helperInstallIssue: null }, 'Not deployed'],
+    [{ helperVersion: null, helperInstallIssue: 'awaiting_server_offer' }, 'Unavailable: not installed yet'],
+  ])('derives the Breeze Assist row from %j', async (extra, status) => {
+    load(extra);
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    expect((await screen.findByTestId('assist-status')).textContent).toBe(`Breeze Assist${status}`);
+  });
 });
 
 // #8620 — terminal watchdog-install failure banner. Read-only: the API only

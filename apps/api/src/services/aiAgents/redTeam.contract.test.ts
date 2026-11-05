@@ -312,7 +312,13 @@ function authorityVerdict(verdict: ReturnType<typeof checkAgentGuardrails>): {
  * screen — a reviewed decision, never a silent one. Authority is unaffected
  * either way; that is what the parity sweep above proves.
  */
-const TOOLS_ECHOING_PROSE_INTO_APPROVAL_TEXT: string[] = ['manage_startup_items'];
+const TOOLS_ECHOING_PROSE_INTO_APPROVAL_TEXT: string[] = [
+  'manage_startup_items',
+  // Wisp W07: the approval text quotes the request's reason and, for a bulk
+  // ticket reply, the EXACT message that will be sent — the approver must read
+  // it (w00 A30). Agents are denied launch_specialist outright anyway.
+  'launch_specialist',
+];
 
 beforeEach(() => {
   vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');

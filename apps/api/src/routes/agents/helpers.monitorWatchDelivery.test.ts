@@ -164,7 +164,10 @@ describe('buildMonitoringConfigUpdate — monitor-derived watches (#5291 W04)', 
       ],
     ]);
     expect(await buildMonitoringConfigUpdate(DEVICE_ID)).toEqual({ check_interval_seconds: 60, watches: [] });
-    expect(dbMock.select).toHaveBeenCalledTimes(4);
+    // 4 interval reads + 1 derived software-service-watch read (#6958 PR E),
+    // which runs whenever no beat policy set is passed. No interval read
+    // follows the excluded assignments.
+    expect(dbMock.select).toHaveBeenCalledTimes(5);
   });
 
   it('emits exactly the frozen monitoring_settings key set', async () => {

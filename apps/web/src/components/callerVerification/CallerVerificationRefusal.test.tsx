@@ -46,13 +46,13 @@ it('uses generic copy for an unknown reason', () => {
   expect(document.body.textContent).not.toContain('something_new');
 });
 
-it('tells the technician to ask the assistant again after a usable verification, without retrying anything', async () => {
+it('tells the technician to ask Breeze AI again after a usable verification, without retrying anything', async () => {
   render(<CallerVerificationRefusal output={toolBody} isError />);
   fireEvent.click(screen.getByTestId('cv-refusal-verify'));
   await act(async () => {
     (modal.props!.onChanged as (r: unknown) => void)({ ...row, status: 'verified', usableUntil: new Date(Date.now() + 60000).toISOString() });
   });
-  expect(screen.getByText('Caller verified. Ask the assistant to try again.')).toBeVisible();
+  expect(screen.getByText('Caller verified. Ask Breeze AI to try again.')).toBeVisible();
 });
 
 it('renders nothing for a success result, an unrelated error, or while the feature is off', () => {

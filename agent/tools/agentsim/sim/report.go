@@ -54,6 +54,7 @@ type ReportConfig struct {
 
 	StormFile           string             `json:"stormFile,omitempty"`
 	LegacyRetryFraction float64            `json:"legacyRetryFraction,omitempty"`
+	PreW09Fraction      float64            `json:"preW09Fraction,omitempty"`
 	Gates               map[string]float64 `json:"gates,omitempty"`
 }
 
@@ -66,6 +67,7 @@ type AgentReport struct {
 	Reenrolled         int `json:"reenrolled"`
 	EnrollFailures     int `json:"enrollFailures"`
 	Legacy             int `json:"legacy,omitempty"` // legacy-retry cohort size (ignores Retry-After)
+	PreW09             int `json:"preW09,omitempty"` // #9145-pacing cohort size (no start jitter, ignores drain hints)
 }
 
 type WindowReport struct {
@@ -202,13 +204,13 @@ func BuildReport(rec *Recorder, cfg Config, ended time.Time, started int, storm 
 			AgentVersion: cfg.AgentVersion, OSType: cfg.OSType, CadenceSeconds: cfg.Cadence.Seconds(),
 			CommandsPerMinute: cfg.Commander.PerMinute,
 			Retry:             RetryReport{MaxRetries: cfg.Retry.MaxRetries, InitialDelaySeconds: cfg.Retry.InitialDelay.Seconds(), MaxDelaySeconds: cfg.Retry.MaxDelay.Seconds()},
-			StormFile:         cfg.StormPath, LegacyRetryFraction: cfg.LegacyRetryFraction, Gates: cfg.Gates.asMap(),
+			StormFile:         cfg.StormPath, LegacyRetryFraction: cfg.LegacyRetryFraction, PreW09Fraction: cfg.PreW09Fraction, Gates: cfg.Gates.asMap(),
 		},
 		Agents: AgentReport{
 			Configured: cfg.Agents, Started: started, OnlineAtWindowOpen: onlineAtOpen,
 			EnrolledThisRun: int(rec.enrolled.Load()), ReusedFromStore: int(rec.reused.Load()),
 			Reenrolled: int(rec.reenrolled.Load()), EnrollFailures: int(rec.enrollFailed.Load()),
-			Legacy: legacyCount(&cfg),
+			Legacy: legacyCount(&cfg), PreW09: preW09Count(&cfg),
 		},
 		Window: WindowReport{Start: rec.WindowOpen.UTC(), End: windowEnd.UTC(), Seconds: seconds, AgentMinutes: minutes},
 	}

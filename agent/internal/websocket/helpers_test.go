@@ -50,5 +50,9 @@ func newTestClient(serverURL string, handler CommandHandler) *Client {
 		AgentID:   "test-agent-001",
 		AuthToken: secmem.NewSecureString("brz_test_token"),
 	}
-	return New(cfg, handler)
+	c := New(cfg, handler)
+	// No start jitter for real-clock tests built here; the start-wait tests
+	// set it explicitly (W09, #8148).
+	c.startWindow = 0
+	return c
 }

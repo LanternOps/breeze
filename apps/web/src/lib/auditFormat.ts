@@ -20,6 +20,8 @@ export const DEFAULT_DASHBOARD_EXCLUDE_ACTIONS: readonly string[] = [
   'mcp.initialize',
   'api.post.events.ws-ticket',
   'api.get.events.ws-ticket',
+  // Written on every device-filter chip edit; reads ids, changes nothing (#9856).
+  'filter.preview',
 ];
 
 // Map raw audit action codes (dotted, machine-shaped) to human-readable
@@ -59,6 +61,7 @@ const ACTION_DISPLAY: Record<string, string> = {
   'session_offer_submitted': 'Session offer submitted',
   'session_consent_granted': 'Remote session consent granted',
   'session_consent_denied': 'Remote session declined by user',
+  'remote.session.ended_by_user': 'Remote session ended by the user',
   'session_consent_blocked_unanswered': 'Remote session blocked: consent prompt not answered',
   'session_consent_blocked_unavailable': 'Remote session blocked: consent prompt unavailable',
   'session_consent_bypassed': 'Remote session started without an answer to the consent prompt',
@@ -106,10 +109,10 @@ const ACTION_DISPLAY: Record<string, string> = {
   // the humanized tool name — see `formatAiToolAction`. `*` keeps the key from
   // ever colliding with a real tool name.
   'ai.tool.*': 'AI tool: {tool}',
-  'ai.session.create': 'Started AI chat',
-  'ai.session.close': 'Closed AI chat',
-  'ai.session.flag': 'Flagged AI chat',
-  'ai.session.unflag': 'Unflagged AI chat',
+  'ai.session.create': 'Started a Breeze AI conversation',
+  'ai.session.close': 'Closed a Breeze AI conversation',
+  'ai.session.flag': 'Flagged a Breeze AI conversation',
+  'ai.session.unflag': 'Unflagged a Breeze AI conversation',
   'ai.message.interrupt': 'Stopped AI response',
   'ai.command.executed': 'AI ran a command',
   'ai.script.executed': 'AI ran a script',

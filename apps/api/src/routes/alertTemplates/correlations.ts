@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { db } from '../../db';
 import { alerts, alertCorrelations } from '../../db/schema';
@@ -36,6 +37,113 @@ export function filterCorrelationsToVisibleAlerts<
   );
 }
 
+type ListLinksQuery = z.infer<typeof listCorrelationsSchema>;
+type AnalyzeLinksInput = z.infer<typeof analyzeCorrelationsSchema>;
+
+/** `GET /correlations` body: pairwise alert links the caller can see (site axis applied). */
+export async function listCorrelationLinks(auth: AuthContext, orgId: string, query: ListLinksQuery) {
+  // Get all alert IDs for this org to scope correlations
+  const orgAlertIds = await visibleOrgAlertIds(auth, orgId);
+
+  if (orgAlertIds.length === 0) {
+    return { data: [] as Array<typeof alertCorrelations.$inferSelect>, page: 1, limit: 20, total: 0 };
+  }
+
+  const filterConditions = [
+    inArray(alertCorrelations.parentAlertId, orgAlertIds),
+    inArray(alertCorrelations.childAlertId, orgAlertIds),
+  ];
+
+  if (query.alertId) {
+    filterConditions.push(
+      or(
+        eq(alertCorrelations.parentAlertId, query.alertId),
+        eq(alertCorrelations.childAlertId, query.alertId)
+      )!
+    );
+  }
+
+  let allCorrelations = await db
+    .select()
+    .from(alertCorrelations)
+    .where(and(...filterConditions))
+    .orderBy(desc(alertCorrelations.createdAt));
+  allCorrelations = filterCorrelationsToVisibleAlerts(allCorrelations, orgAlertIds);
+
+  if (query.minConfidence) {
+    const minConfidence = Number.parseFloat(query.minConfidence);
+    if (!Number.isNaN(minConfidence)) {
+      allCorrelations = allCorrelations.filter(
+        link => Number(link.confidence) >= minConfidence
+      );
+    }
+  }
+
+  const { page, limit, offset } = getPagination(query);
+  return {
+    data: allCorrelations.slice(offset, offset + limit),
+    page,
+    limit,
+    total: allCorrelations.length
+  };
+}
+
+/** `POST /correlations/analyze` body: the links around the requested alerts (all visible links when none are named). */
+export async function analyzeCorrelationLinks(auth: AuthContext, orgId: string, data: AnalyzeLinksInput) {
+  const windowMinutes = data.windowMinutes ?? 60;
+
+  const orgAlertIdList = await visibleOrgAlertIds(auth, orgId);
+  const orgAlertIdSet = new Set(orgAlertIdList);
+  const requestedAlertIds = data.alertIds ?? [];
+  const alertIds = requestedAlertIds.filter(id => orgAlertIdSet.has(id));
+
+  if (orgAlertIdList.length === 0) {
+    return {
+      requestedAlertIds: alertIds,
+      windowMinutes,
+      links: [] as Array<typeof alertCorrelations.$inferSelect>,
+      summary: 'No alerts found for this organization.'
+    };
+  }
+
+  const scopeConditions = [
+    inArray(alertCorrelations.parentAlertId, orgAlertIdList),
+    inArray(alertCorrelations.childAlertId, orgAlertIdList),
+  ];
+
+  if (requestedAlertIds.length && alertIds.length > 0) {
+    scopeConditions.push(
+      or(
+        inArray(alertCorrelations.parentAlertId, alertIds),
+        inArray(alertCorrelations.childAlertId, alertIds)
+      )!
+    );
+  }
+
+  // A non-empty request that resolves entirely outside the caller's site
+  // ceiling is an empty selection, not an implicit request for every
+  // visible correlation in the organization.
+  const linkRows = requestedAlertIds.length > 0 && alertIds.length === 0
+    ? []
+    : await db
+      .select()
+      .from(alertCorrelations)
+      .where(and(...scopeConditions))
+      .orderBy(desc(alertCorrelations.createdAt));
+  const links = filterCorrelationsToVisibleAlerts(linkRows, orgAlertIdList);
+
+  return {
+    requestedAlertIds: alertIds,
+    windowMinutes,
+    links,
+    summary: requestedAlertIds.length
+      ? alertIds.length
+        ? 'Correlation analysis complete for requested alerts.'
+        : 'No visible requested alerts found.'
+      : 'Returning all correlation data.'
+  };
+}
+
 correlationRoutes.get(
   '/correlations',
   requireScope('organization', 'partner', 'system'),
@@ -51,50 +159,7 @@ correlationRoutes.get(
 
       const query = c.req.valid('query');
 
-      // Get all alert IDs for this org to scope correlations
-      const orgAlertIds = await visibleOrgAlertIds(auth, orgId);
-
-      if (orgAlertIds.length === 0) {
-        return c.json({ data: [], page: 1, limit: 20, total: 0 });
-      }
-
-      const filterConditions = [
-        inArray(alertCorrelations.parentAlertId, orgAlertIds),
-        inArray(alertCorrelations.childAlertId, orgAlertIds),
-      ];
-
-      if (query.alertId) {
-        filterConditions.push(
-          or(
-            eq(alertCorrelations.parentAlertId, query.alertId),
-            eq(alertCorrelations.childAlertId, query.alertId)
-          )!
-        );
-      }
-
-      let allCorrelations = await db
-        .select()
-        .from(alertCorrelations)
-        .where(and(...filterConditions))
-        .orderBy(desc(alertCorrelations.createdAt));
-      allCorrelations = filterCorrelationsToVisibleAlerts(allCorrelations, orgAlertIds);
-
-      if (query.minConfidence) {
-        const minConfidence = Number.parseFloat(query.minConfidence);
-        if (!Number.isNaN(minConfidence)) {
-          allCorrelations = allCorrelations.filter(
-            link => Number(link.confidence) >= minConfidence
-          );
-        }
-      }
-
-      const { page, limit, offset } = getPagination(query);
-      return c.json({
-        data: allCorrelations.slice(offset, offset + limit),
-        page,
-        limit,
-        total: allCorrelations.length
-      });
+      return c.json(await listCorrelationLinks(auth, orgId, query));
     } catch (error) {
       console.error('[Correlations] Failed to list correlations', error);
       return c.json({ error: 'Failed to list correlations' }, 500);
@@ -205,73 +270,20 @@ correlationRoutes.post(
       }
 
       const data = c.req.valid('json');
-      const windowMinutes = data.windowMinutes ?? 60;
-
-      const orgAlertIdList = await visibleOrgAlertIds(auth, orgId);
-      const orgAlertIdSet = new Set(orgAlertIdList);
-      const requestedAlertIds = data.alertIds ?? [];
-      const alertIds = requestedAlertIds.filter(id => orgAlertIdSet.has(id));
-
-      if (orgAlertIdList.length === 0) {
-        return c.json({
-          data: {
-            requestedAlertIds: alertIds,
-            windowMinutes,
-            links: [],
-            summary: 'No alerts found for this organization.'
-          }
-        });
-      }
-
-      const scopeConditions = [
-        inArray(alertCorrelations.parentAlertId, orgAlertIdList),
-        inArray(alertCorrelations.childAlertId, orgAlertIdList),
-      ];
-
-      if (requestedAlertIds.length && alertIds.length > 0) {
-        scopeConditions.push(
-          or(
-            inArray(alertCorrelations.parentAlertId, alertIds),
-            inArray(alertCorrelations.childAlertId, alertIds)
-          )!
-        );
-      }
-
-      // A non-empty request that resolves entirely outside the caller's site
-      // ceiling is an empty selection, not an implicit request for every
-      // visible correlation in the organization.
-      const linkRows = requestedAlertIds.length > 0 && alertIds.length === 0
-        ? []
-        : await db
-          .select()
-          .from(alertCorrelations)
-          .where(and(...scopeConditions))
-          .orderBy(desc(alertCorrelations.createdAt));
-      const links = filterCorrelationsToVisibleAlerts(linkRows, orgAlertIdList);
+      const analysis = await analyzeCorrelationLinks(auth, orgId, data);
 
       writeRouteAudit(c, {
         orgId,
         action: 'alert_correlation.analyze',
         resourceType: 'alert_correlation',
         details: {
-          requestedAlertCount: alertIds.length,
-          linkCount: links.length,
-          windowMinutes,
+          requestedAlertCount: analysis.requestedAlertIds.length,
+          linkCount: analysis.links.length,
+          windowMinutes: analysis.windowMinutes,
         },
       });
 
-      return c.json({
-        data: {
-          requestedAlertIds: alertIds,
-          windowMinutes,
-          links,
-          summary: requestedAlertIds.length
-            ? alertIds.length
-              ? 'Correlation analysis complete for requested alerts.'
-              : 'No visible requested alerts found.'
-            : 'Returning all correlation data.'
-        }
-      });
+      return c.json({ data: analysis });
     } catch (error) {
       console.error('[Correlations] Failed to analyze correlations', error);
       return c.json({ error: 'Failed to analyze correlations' }, 500);

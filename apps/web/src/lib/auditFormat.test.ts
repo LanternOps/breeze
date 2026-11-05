@@ -94,6 +94,13 @@ describe('formatAuditAction', () => {
     );
   });
 
+  it('labels a session the user ended, in English and every locale', () => {
+    expect(formatAuditAction('remote.session.ended_by_user')).toBe('Remote session ended by the user');
+    for (const locale of ['en', 'de-DE', 'es-419', 'fr-CA', 'fr-FR', 'it-IT', 'pt-BR', 'tr-TR']) {
+      expect(auditActions(locale)['remote.session.ended_by_user'], locale).toBeTruthy();
+    }
+  });
+
   it('labels a refused screen capture or input control on a consent-required device', () => {
     expect(formatAuditAction('screen_access_consent_blocked')).toBe(
       'Screen access blocked: device requires user consent',

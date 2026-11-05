@@ -3,8 +3,17 @@
  * Mounted by W02's hub as `wispRoutes.route('/thread', wispThreadRoutes)`,
  * i.e. /api/v1/wisp/thread.
  *
- *   GET   /?orgId=                → { data: { thread, focusOrgName, grant, wideningAvailable } } | 404 no_active_grant
+ *   GET   /?orgId=                → { data: { thread, focusOrgName, grant, wideningAvailable } } | { data: null } (no active grant for the scope)
  *                                    (grant carries the W05 spend meter: spentTodayCents, budgetResetsAt — w00 A32)
+ *   GET   /:id                    → the same { data: { thread, focusOrgName, grant, wideningAvailable } } for the
+ *                                    caller's own thread (W06 deep links; existence-neutral 404)
+ *   GET   /:id/activity?cursor=&limit= → { data: { items: ActivityItem[], nextCursor, current } } (W06, w00 A31:
+ *                                    the derived, ceiling-filtered timeline + the live "checking…" line)
+ *   GET   /:id/timeline?cursor=&limit=&excludeSessionId= → { data: { items: WispTimelineItem[], nextCursor } }
+ *                                    (W02a #10212: every attached session's messages merged with the thread's
+ *                                    posts, newest first; readable for a PAUSED grant from its stored revision;
+ *                                    409 grant_inactive for revoked / expired / Wisp off / no pinned revision,
+ *                                    500 grant_corrupt for a broken pin, 400 invalid_cursor)
  *   GET   /:id/sessions?limit=&cursor= → { data: [{ sessionId, orgId, attachedAt, title, status }], nextCursor }
  *   PATCH /:id/focus              { orgId: uuid | null } → { data: { focusOrgId, focusOrgName } }
  *   GET   /:id/attachments        → { data: ThreadAttachmentDto[] }   (live only, newest first)
@@ -40,6 +49,7 @@ import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { and, desc, eq, lt, or } from 'drizzle-orm';
 import { z } from 'zod';
+import { wispActivityQuerySchema, wispTimelineQuerySchema } from '@breeze/shared';
 import { aiArtifactCaptureEnabled } from '../config/env';
 import { db } from '../db';
 import { readOwnPartnerAxisRows } from '../db/partnerAxisRead';
@@ -53,8 +63,9 @@ import { bodyLimitOnError } from '../middleware/bodyLimitGate';
 import { userRateLimit } from '../middleware/userRateLimit';
 import { writeRouteAudit } from '../services/auditEvents';
 import { captureException } from '../services/sentry';
+import { currentActivity, InvalidActivityCursorError, listActivity, type CurrentActivity } from '../services/wisp/activity';
 import { spendSummary } from '../services/wisp/budget';
-import { CeilingViolationError, GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from '../services/wisp/grantAuthority';
+import { assertWithinCeiling, CeilingViolationError, GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from '../services/wisp/grantAuthority';
 import { getActiveGrantForUser, wideningAvailable, type WispGrantStatus } from '../services/wisp/grants';
 import {
   THREAD_ATTACHMENT_MAX_BYTES,
@@ -66,6 +77,7 @@ import {
   type ThreadAttachment,
   type ThreadAttachmentContentType,
 } from '../services/wisp/threadAttachments';
+import { InvalidTimelineCursorError, listThreadTimeline } from '../services/wisp/threadTimeline';
 import { getOrCreateThread, setThreadFocus, WispThreadError, type WispThread } from '../services/wisp/threads';
 
 /**
@@ -142,13 +154,22 @@ function attachmentDto(a: ThreadAttachment) {
 // Ownership + reads
 // ---------------------------------------------------------------------------
 
-type OwnThread = {
+export type OwnThread = {
   thread: WispThread;
-  grant: { id: string; orgId: string | null; status: WispGrantStatus; currentRevisionId: string | null };
+  grant: {
+    id: string;
+    orgId: string | null;
+    status: WispGrantStatus;
+    currentRevisionId: string | null;
+    expiresAt: Date;
+    budgetCentsPerDay: number;
+    floorTickMinutes: number;
+    pausedReason: string | null;
+  };
 };
 
 /** The caller's own thread (see OWNERSHIP above), or null for every other case. */
-async function loadOwnThread(c: Context): Promise<OwnThread | null> {
+export async function loadOwnThread(c: Context): Promise<OwnThread | null> {
   const parsed = uuid.safeParse(c.req.param('id'));
   if (!parsed.success) return null;
   const auth = authOf(c);
@@ -168,6 +189,10 @@ async function loadOwnThread(c: Context): Promise<OwnThread | null> {
         grantOrgId: wispGrants.orgId,
         grantStatus: wispGrants.status,
         grantRevisionId: wispGrants.currentRevisionId,
+        grantExpiresAt: wispGrants.expiresAt,
+        grantBudgetCentsPerDay: wispGrants.budgetCentsPerDay,
+        grantFloorTickMinutes: wispGrants.floorTickMinutes,
+        grantPausedReason: wispGrants.pausedReason,
       })
       .from(wispThreads)
       .innerJoin(wispGrants, and(eq(wispGrants.id, wispThreads.grantId), eq(wispGrants.partnerId, wispThreads.partnerId)))
@@ -191,7 +216,16 @@ async function loadOwnThread(c: Context): Promise<OwnThread | null> {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     },
-    grant: { id: row.grantId, orgId: row.grantOrgId ?? null, status: row.grantStatus, currentRevisionId: row.grantRevisionId ?? null },
+    grant: {
+      id: row.grantId,
+      orgId: row.grantOrgId ?? null,
+      status: row.grantStatus,
+      currentRevisionId: row.grantRevisionId ?? null,
+      expiresAt: row.grantExpiresAt,
+      budgetCentsPerDay: row.grantBudgetCentsPerDay,
+      floorTickMinutes: row.grantFloorTickMinutes,
+      pausedReason: row.grantPausedReason ?? null,
+    },
   };
 }
 
@@ -217,11 +251,18 @@ type CeilingOutcome =
  * when the grant has no pinned revision or `resolveGrantCeiling` reports it
  * paused / revoked / expired / Wisp switched off; `corrupt` (→ 500
  * grant_corrupt, already logged and captured) when the pin itself is broken.
+ *
+ * `allowPaused` (READ-ONLY routes only: GET /:id/timeline and /:id/activity): a paused
+ * grant resolves from its stored revision with `status: 'paused'`, which
+ * assertWithinCeiling refuses, so the ceiling can read history but never act.
  */
-async function ceilingOf(own: OwnThread): Promise<CeilingOutcome> {
+export async function ceilingOf(own: OwnThread, opts: { allowPaused?: boolean } = {}): Promise<CeilingOutcome> {
   if (!own.grant.currentRevisionId) return { ok: false, reason: 'inactive' };
   try {
-    return { ok: true, ceiling: await resolveGrantCeiling(own.grant.id, own.grant.currentRevisionId) };
+    const ceiling = opts.allowPaused
+      ? await resolveGrantCeiling(own.grant.id, own.grant.currentRevisionId, { allowPaused: true })
+      : await resolveGrantCeiling(own.grant.id, own.grant.currentRevisionId);
+    return { ok: true, ceiling };
   } catch (err) {
     if (err instanceof GrantInactiveError) {
       if (err.kind !== 'corrupt') return { ok: false, reason: 'inactive' };
@@ -241,8 +282,47 @@ function reportCorruptGrant(err: GrantInactiveError, where: string): void {
 const grantInactive = (c: Context) => fail(c, 409, 'grant_inactive', 'This Wisp delegation is not active');
 const grantCorrupt = (c: Context) =>
   fail(c, 500, 'grant_corrupt', "This Wisp grant can't be used. Turn Wisp off and on again.");
-const ceilingRefusal = (c: Context, reason: 'inactive' | 'corrupt') =>
+export const ceilingRefusal = (c: Context, reason: 'inactive' | 'corrupt') =>
   reason === 'corrupt' ? grantCorrupt(c) : grantInactive(c);
+
+export type GrantForPayload = {
+  id: string;
+  status: WispGrantStatus;
+  orgId: string | null;
+  expiresAt: Date;
+  currentRevisionId: string | null;
+  budgetCentsPerDay: number;
+  floorTickMinutes: number;
+  pausedReason: string | null;
+};
+
+/** GET / and GET /:id return the same members. */
+export async function threadPayload(partnerId: string, thread: WispThread, grant: GrantForPayload) {
+  const [focusOrgName, widening, spend] = await Promise.all([
+    focusOrgNameOf(partnerId, thread.focusOrgId),
+    wideningAvailable(grant.id),
+    spendSummary(grant.id),
+  ]);
+  return {
+    thread: threadDto(thread),
+    focusOrgName,
+    grant: {
+      id: grant.id,
+      status: grant.status,
+      orgId: grant.orgId,
+      expiresAt: grant.expiresAt.toISOString(),
+      currentRevisionId: grant.currentRevisionId,
+      budgetCentsPerDay: grant.budgetCentsPerDay,
+      floorTickMinutes: grant.floorTickMinutes,
+      // w00 A32 spend meter (UTC day, runs charged to the day they were queued).
+      spentTodayCents: spend.spentTodayCents,
+      budgetResetsAt: spend.budgetResetsAt.toISOString(),
+      // W06b/W06c: a paused thread says why (A29 user pause vs system reasons).
+      pausedReason: grant.pausedReason,
+    },
+    wideningAvailable: widening,
+  };
+}
 
 // Keyset cursor over (attached_at DESC, session_id DESC): base64url("<iso>|<uuid>").
 function encodeCursor(attachedAt: Date, sessionId: string): string {
@@ -266,33 +346,76 @@ wispThreadRoutes.get('/', zValidator('query', threadQuery), async (c) => {
   const partnerId = partnerIdOf(auth);
   const { orgId } = c.req.valid('query');
   const grant = await getActiveGrantForUser(auth.user.id, { partnerId, orgId: orgId ?? null });
-  if (!grant) return fail(c, 404, 'no_active_grant', 'No active Wisp delegation for this scope');
+  // No grant for this scope is an expected answer (the panel probes org then
+  // partner-wide), not an error status: 200 with null data (#10200).
+  if (!grant) return c.json({ data: null });
 
   const thread = await getOrCreateThread(grant.id);
-  const [focusOrgName, widening, spend] = await Promise.all([
-    focusOrgNameOf(partnerId, thread.focusOrgId),
-    wideningAvailable(grant.id),
-    spendSummary(grant.id),
-  ]);
-  return c.json({
-    data: {
-      thread: threadDto(thread),
-      focusOrgName,
-      grant: {
-        id: grant.id,
-        status: grant.status,
-        orgId: grant.orgId,
-        expiresAt: grant.expiresAt.toISOString(),
-        currentRevisionId: grant.currentRevisionId,
-        budgetCentsPerDay: grant.budgetCentsPerDay,
-        floorTickMinutes: grant.floorTickMinutes,
-        // w00 A32 spend meter (UTC day, runs charged to the day they were queued).
-        spentTodayCents: spend.spentTodayCents,
-        budgetResetsAt: spend.budgetResetsAt.toISOString(),
-      },
-      wideningAvailable: widening,
-    },
-  });
+  return c.json({ data: await threadPayload(partnerId, thread, grant) });
+});
+
+// W06: the caller's own thread by id (deep links from nudges). Same payload
+// as GET /; partner-admin reads of another tech's thread are not added
+// (W04 call #9) — anything but the grantor's own thread is the same 404.
+wispThreadRoutes.get('/:id', async (c) => {
+  const own = await loadOwnThread(c);
+  if (!own) return c.json(NOT_FOUND, 404);
+  return c.json({ data: await threadPayload(partnerIdOf(authOf(c)), own.thread, { ...own.grant }) });
+});
+
+/** The live line names an org: show it only while that org is still inside the grant's live ceiling. */
+function withinCeiling(ceiling: GrantCeiling, current: CurrentActivity): CurrentActivity {
+  if (!current) return null;
+  try {
+    assertWithinCeiling(ceiling, { orgId: current.orgId });
+    return current;
+  } catch (err) {
+    if (err instanceof CeilingViolationError) return null;
+    throw err;
+  }
+}
+
+// W06 (w00 A31): the derived, ceiling-filtered activity timeline and the live
+// "Wisp is checking …" line. The grant's LIVE ceiling filters every item.
+// A paused grant still reads its history (#10104): its ceiling is the stored
+// revision ∩ the grantor's live term, and `withinCeiling` drops the live line
+// (assertWithinCeiling refuses a paused ceiling), so a pause never claims
+// "checking …". Revoked / expired / unpinned stay 409.
+wispThreadRoutes.get('/:id/activity', zValidator('query', wispActivityQuerySchema), async (c) => {
+  const { cursor, limit } = c.req.valid('query');
+  const own = await loadOwnThread(c);
+  if (!own) return c.json(NOT_FOUND, 404);
+  const outcome = await ceilingOf(own, { allowPaused: true });
+  if (!outcome.ok) return ceilingRefusal(c, outcome.reason);
+  try {
+    const [page, current] = await Promise.all([
+      listActivity(outcome.ceiling, { cursor, limit, threadId: own.thread.id }),
+      currentActivity(own.grant.id),
+    ]);
+    return c.json({ data: { items: page.items, nextCursor: page.nextCursor, current: withinCeiling(outcome.ceiling, current) } });
+  } catch (err) {
+    if (err instanceof InvalidActivityCursorError) return fail(c, 400, 'invalid_cursor', 'Invalid cursor');
+    throw err;
+  }
+});
+
+// W02a (#10212): every attached session's messages merged with the thread's
+// posts (brief / nudge / digest), newest first. The bound session is left out
+// with excludeSessionId (the web store holds it). A paused grant still reads
+// its history; every other ceilingOf refusal applies (409 / 500).
+wispThreadRoutes.get('/:id/timeline', zValidator('query', wispTimelineQuerySchema), async (c) => {
+  const { cursor, limit, excludeSessionId } = c.req.valid('query');
+  const own = await loadOwnThread(c);
+  if (!own) return c.json(NOT_FOUND, 404);
+  const outcome = await ceilingOf(own, { allowPaused: true });
+  if (!outcome.ok) return ceilingRefusal(c, outcome.reason);
+  try {
+    const page = await listThreadTimeline(outcome.ceiling, own.thread.id, { cursor, limit, excludeSessionId });
+    return c.json({ data: { items: page.items, nextCursor: page.nextCursor } });
+  } catch (err) {
+    if (err instanceof InvalidTimelineCursorError) return fail(c, 400, 'invalid_cursor', 'Invalid cursor');
+    throw err;
+  }
 });
 
 wispThreadRoutes.get('/:id/sessions', zValidator('query', sessionsQuery), async (c) => {

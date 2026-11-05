@@ -10,6 +10,7 @@
 
 import { hasSatisfiedMfa, type AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { FLEET_HEALTH_ACTIONS } from './aiToolSchemasAlertTriage';
 import { listReliabilityDevices, summarizeReliabilityDevices, type ReliabilityListItem } from './reliabilityScoring';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import {
@@ -21,6 +22,7 @@ import {
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { filterToDeviceScope, runFrozenDeviceIds } from './aiToolsSiteScope';
 import { resolveWritableToolOrgId } from './aiToolWriteOrg';
+import { runFleetHealthAction } from './aiToolsReliabilityTriage';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -65,13 +67,20 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
     domain: 'devices',
     searchHint: 'fleet device reliability, uptime, crashes, hangs, hardware and service failures',
     alwaysLoad: true,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_fleet_health',
-      description: 'Query device reliability scores across the fleet. Returns devices ranked by reliability (worst first) with uptime, crash history, and failure metrics; the summary covers every matching device, not just the page. Per-device topIssues are opt-in (includeTopIssues).',
+      description: 'Device reliability scores, worst first, with uptime, crash and failure metrics; the summary covers every matching device. topIssues are opt-in. Actions: list (default),history,offenders (deviceId),evaluation,org_summary (orgId).',
       input_schema: {
         type: 'object' as const,
         properties: {
-          orgId: { type: 'string', description: 'Optional org UUID (must be accessible)' },
+          action: { type: 'string', enum: [...FLEET_HEALTH_ACTIONS], description: 'list (default) | history | offenders | evaluation | org_summary' },
+          deviceId: { type: 'string', description: 'history/offenders: device UUID' },
+          days: { type: 'number', description: 'history (default 90) / offenders (default 30): lookback days, 1-365' },
+          topN: { type: 'number', description: 'offenders: rows per category (default 5, max 20)' },
+          atRiskMaxScore: { type: 'number', description: 'evaluation: at-risk score ceiling (default 70)' },
+          labelWindowDays: { type: 'number', description: 'evaluation: feedback window in days (default 90)' },
+          orgId: { type: 'string', description: 'Optional org UUID (must be accessible); required for org_summary' },
           siteId: { type: 'string', description: 'Optional site UUID' },
           scoreRange: { type: 'string', enum: ['critical', 'poor', 'fair', 'good'], description: 'Score range filter' },
           trendDirection: { type: 'string', enum: ['improving', 'stable', 'degrading'], description: 'Trend direction filter' },
@@ -83,6 +92,10 @@ export function registerUserRiskTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input, auth) => {
       try {
+        // W07 (#6777): history / offenders / evaluation / org_summary; the default list falls through.
+        const triage = await runFleetHealthAction(input, auth);
+        if (triage !== null) return triage;
+
         if (typeof input.orgId === 'string' && input.orgId && !auth.canAccessOrg(input.orgId)) {
           return JSON.stringify({ error: 'Access denied to this organization' });
         }

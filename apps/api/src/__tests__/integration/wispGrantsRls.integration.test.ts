@@ -626,11 +626,43 @@ describe('run admission under a grant (Wisp design §4.3, §4.5)', () => {
     // manage_ai_agents is AGENT_HUMAN_ONLY — never delegable.
     expect(row!.policySnapshot.effective.toolAllowlist).toEqual(['query_devices']);
 
-    const child = await createAndEnqueueAgentRun({
+    // W07 (w00 A11): only Wisp's own ASSESSMENT may request grant-bearing
+    // work. A same-grant triage run is not one → the depth guard throws.
+    await expect(createAndEnqueueAgentRun({
       orgId: t.org.id, kind: 'triage', triggerKind: 'manual', deviceId, dedupeKey: `manual:${randomUUID()}`,
       grant: { grantId: g1.grantId, grantRevisionId: g1.revisionId, requestedByRunId: first.run.id },
+    })).rejects.toBeInstanceOf(GrantDepthExceededError);
+    // Fixture shortcut: make `first` the assessment (assessment admission's own
+    // gates are W05's and tested there).
+    await withSystemDbAccessContext(() => db.update(aiAgentRuns).set({ profile: 'assessment' }).where(eq(aiAgentRuns.id, first.run.id)));
+
+    const childDedupe = `manual:${randomUUID()}`;
+    const child = await createAndEnqueueAgentRun({
+      orgId: t.org.id, kind: 'triage', triggerKind: 'manual', deviceId, dedupeKey: childDedupe,
+      grant: { grantId: g1.grantId, grantRevisionId: g1.revisionId, requestedByRunId: first.run.id },
     });
-    expect(child.created).toBe(true);
+    if (!child.created) throw new Error(`expected the child to be admitted, got ${child.skipped}`);
+    const [childRow] = await withSystemDbAccessContext(() => db.select().from(aiAgentRuns).where(eq(aiAgentRuns.id, child.run.id)));
+    expect(childRow).toMatchObject({
+      depth: 1, requestedByRunId: first.run.id, parentGrantRevisionId: g1.revisionId, grantId: g1.grantId,
+    });
+    expect(row).toMatchObject({ depth: 0, requestedByRunId: null, parentGrantRevisionId: null });
+
+    // A grandchild naming the child: depth is one → throws, and writes no row.
+    const grandDedupe = `manual:${randomUUID()}`;
+    await expect(createAndEnqueueAgentRun({
+      orgId: t.org.id, kind: 'triage', triggerKind: 'manual', deviceId, dedupeKey: grandDedupe,
+      grant: { grantId: g1.grantId, grantRevisionId: g1.revisionId, requestedByRunId: child.run.id },
+    })).rejects.toBeInstanceOf(GrantDepthExceededError);
+    const grand = await withSystemDbAccessContext(() => db.select({ id: aiAgentRuns.id }).from(aiAgentRuns)
+      .where(and(eq(aiAgentRuns.orgId, t.org.id), eq(aiAgentRuns.dedupeKey, grandDedupe))));
+    expect(grand).toEqual([]);
+
+    // The lineage CHECK: a depth-0 row never carries lineage; depth is 0 or 1.
+    await expectSqlState(() => withDbAccessContext(SYSTEM_CTX, () =>
+      db.update(aiAgentRuns).set({ depth: 2 }).where(eq(aiAgentRuns.id, child.run.id))), '23514');
+    await expectSqlState(() => withDbAccessContext(SYSTEM_CTX, () =>
+      db.update(aiAgentRuns).set({ requestedByRunId: child.run.id }).where(eq(aiAgentRuns.id, first.run.id))), '23514');
 
     const g2 = await seedGrant({ partnerId: t.partner.id, grantorUserId: t.grantor.id, orgId: t.org.id, orgIds: [t.org.id] });
     await expect(createAndEnqueueAgentRun({

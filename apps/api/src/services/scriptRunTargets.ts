@@ -18,13 +18,15 @@
  *     `TOO_MANY_TARGETS` naming the count. No truncation, no batching.
  *
  * Side-effect-free apart from DB reads (and the shared resolver's refusal
- * audit). It never opens a transaction: the caller runs it inside a short
- * context that commits before dispatch (#7103). The AI path (W3) must call it
- * BEFORE an action intent is created, so the approved set is the executed set.
+ * audit). Target reads use the caller's short context that commits before
+ * dispatch (#7103); the ownership refusal helper classifies supplied ids in
+ * system scope, including partner groups hidden by org-session RLS. The AI
+ * path must call it BEFORE creating an intent so the approved set is the executed set.
  */
 import { and, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { deviceGroupMemberships, deviceGroups, devices } from '../db/schema';
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from './deviceGroupOwnership';
 import { resolveDeploymentTargetsWithWarnings } from './deploymentTargetResolver';
 import { resolveExecutionSafeGroupIds } from './executionTargetGating';
 import { canAccessSite, type UserPermissions } from './permissions';
@@ -44,7 +46,7 @@ export type ResolvedScriptRunGroup = {
   refused: boolean;
 };
 
-export type ScriptRunTargetFailureCode = 'GROUP_NOT_FOUND' | 'NO_TARGETS' | 'TOO_MANY_TARGETS';
+export type ScriptRunTargetFailureCode = 'GROUP_NOT_FOUND' | 'NO_TARGETS' | 'TOO_MANY_TARGETS' | ReturnType<typeof partnerGroupTargetRefusal>['code'];
 
 export type ResolveScriptRunTargetsResult =
   | { ok: true; deviceIds: string[]; warnings: string[]; resolvedGroups: ResolvedScriptRunGroup[] }
@@ -72,6 +74,12 @@ export async function resolveScriptRunTargets(input: {
 }): Promise<ResolveScriptRunTargetsResult> {
   const { auth, permissions } = input;
   const requestedIds = [...new Set(input.target.groupIds)];
+  // Org-session RLS cannot see partner groups; classify supplied ids before
+  // the caller-scoped lookup so unsupported targets get the specific refusal.
+  const requestedPartnerGroupIds = await findPartnerOwnedGroupIds(requestedIds);
+  if (requestedPartnerGroupIds.length > 0) {
+    return { ok: false, status: 400, ...partnerGroupTargetRefusal(requestedPartnerGroupIds) };
+  }
 
   const groupRows = requestedIds.length > 0
     ? await db
@@ -79,7 +87,12 @@ export async function resolveScriptRunTargets(input: {
       .from(deviceGroups)
       .where(inArray(deviceGroups.id, requestedIds))
     : [];
-  const groupsById = new Map(groupRows.map((row) => [row.id, row]));
+  const partnerGroupIds = groupRows.filter((row) => row.orgId === null).map((row) => row.id);
+  if (partnerGroupIds.length > 0) {
+    return { ok: false, status: 400, ...partnerGroupTargetRefusal(partnerGroupIds) };
+  }
+  const orgGroups = groupRows.filter((row): row is typeof row & { orgId: string } => row.orgId !== null);
+  const groupsById = new Map(orgGroups.map((row) => [row.id, row]));
 
   const unusable = requestedIds.filter((groupId) => {
     const group = groupsById.get(groupId);

@@ -266,6 +266,26 @@ export interface RecipeDefinition<Input = unknown> {
    */
   planningSnapshotStepKey?: string;
   /**
+   * Consumer step key → the snapshot step that step plans from (W07
+   * Amendment B2), for a recipe that plans in stages from more than one
+   * snapshot. Absent (`service_recovery`, `identity_offboarding`) → every
+   * consumer plans from `planningSnapshotStepKey`, exactly as before.
+   *
+   * TOTAL when declared: a consumer step the map does not name fails closed
+   * (`snapshot_step_unmapped`); it never falls back to
+   * `planningSnapshotStepKey` and never to `{}`. Every value is a `probe`-kind
+   * step, the map requires `planningSnapshotStepKey`, and that key is one of
+   * the values (`recipeDataProblems`). There is still ONE checkpoint ref; the
+   * recipe re-points it once, and `loadPlanningFacts` compares the ref's row
+   * against the step resolved here (`snapshot_wrong_step`).
+   *
+   * Declaring it also selects the post-stage-1 build-failure policy in
+   * `effectDispatch.ts`: a snapshot or `buildPlan` failure at a step mapped to
+   * any snapshot other than `planningSnapshotStepKey` always hands off,
+   * because an earlier stage may already have changed the world.
+   */
+  planningSnapshotStepFor?: Readonly<Record<string, string>>;
+  /**
    * Effect tool → the tool whose verified success subsumes it (spec §6.6,
    * R1a-0). Absent → every `unknown` post-probe hands off (today). Honoured
    * only for a tool whose probe is structurally unobservable
@@ -279,3 +299,24 @@ export interface RecipeDefinition<Input = unknown> {
 
 /** The registry's value type: a recipe whose Input is not statically known. */
 export type AnyRecipeDefinition = RecipeDefinition<never>;
+
+/**
+ * One unit of work a human performs for a recipe (spec §6.5), before it becomes
+ * a `ticket_checklist_items` row.
+ *
+ * Lives on the recipe contract rather than inside one recipe because every
+ * recipe with a `human_work` step produces these and `manualWork.ts` consumes
+ * them generically. R1 called it `IdentityManualWorkItem`; that name survives
+ * as an alias in `identityOffboarding.ts` so no R1 import changes.
+ */
+export interface RecipeManualWorkItem {
+  /** Stable, e.g. 'collect_hardware'. The dedupe key and the order key. */
+  key: string;
+  /** ≤ 500 chars — the checklist item's label. */
+  label: string;
+  /** Generated instructions. */
+  detail: string;
+  origin: 'always' | 'capability' | 'flag' | 'discovery';
+  /** The capability whose absence generated it, when origin === 'capability'. */
+  capabilityKey: string | null;
+}

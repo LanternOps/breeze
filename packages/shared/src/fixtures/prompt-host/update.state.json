@@ -1,0 +1,12 @@
+{
+  "promptId": "elevation:00000000-0000-4000-8000-0000000000e1",
+  "rev": 3,
+  "lease": { "rendererSession": "assist-user-4242", "epoch": 1 },
+  "state": "approved",
+  "copy": {
+    "title": "Request approved",
+    "body": "Your IT support team approved your request. The program is starting."
+  },
+  "actions": [{ "id": "ok", "label": "OK", "role": "safe" }],
+  "defaultActionId": "ok"
+}

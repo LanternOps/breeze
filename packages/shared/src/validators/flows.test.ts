@@ -105,3 +105,47 @@ describe('slugs', () => {
     expect(isValidFlowSlug(slugifyFlowName('a'))).toBe(true);
   });
 });
+
+describe('W5 document fields (#5220)', () => {
+  const withTrigger = (t: unknown) => { const d: any = example(); d.trigger = t; return d; };
+  it('webhook trigger defaults auth to hmac', () => {
+    const r = flowDocumentV1Schema.safeParse(withTrigger({ type: 'webhook' }));
+    expect(r.success).toBe(true);
+    if (r.success && r.data.trigger.type === 'webhook') expect(r.data.trigger.auth).toBe('hmac');
+    const t = flowDocumentV1Schema.safeParse(withTrigger({ type: 'webhook', auth: 'token' }));
+    expect(t.success && t.data.trigger.type === 'webhook' && t.data.trigger.auth).toBe('token');
+    expect(flowDocumentV1Schema.safeParse(withTrigger({ type: 'webhook', auth: 'query' })).success).toBe(false);
+  });
+  it('orgResolver path must start with body.', () => {
+    const ok = { type: 'webhook', orgResolver: { path: 'body.customer.id', system: 'halo' } };
+    expect(flowDocumentV1Schema.safeParse(withTrigger(ok)).success).toBe(true);
+    expect(flowDocumentV1Schema.safeParse(withTrigger({ type: 'webhook', orgResolver: { path: 'body.org', kind: 'breeze_org_id' } })).success).toBe(true);
+    for (const path of ['customer.id', 'trigger.body.x', 'body', 'body.', 'body..x', 'headers.x', 'body.a-b']) {
+      expect(flowDocumentV1Schema.safeParse(withTrigger({ type: 'webhook', orgResolver: { path, system: 'halo' } })).success).toBe(false);
+    }
+    expect(flowDocumentV1Schema.safeParse(withTrigger({ type: 'webhook', orgResolver: { path: 'body.x', system: 'Bad System' } })).success).toBe(false);
+  });
+  it('orgResolver with system and kind is invalid', () => {
+    const t = { type: 'webhook', orgResolver: { path: 'body.x', system: 'halo', kind: 'breeze_org_id' } };
+    expect(flowDocumentV1Schema.safeParse(withTrigger(t)).success).toBe(false);
+    expect(flowDocumentV1Schema.safeParse(withTrigger({ type: 'webhook', orgResolver: { path: 'body.x' } })).success).toBe(false);
+  });
+  it('limits.monthlyRuns 100001 is invalid', () => {
+    const d: any = example();
+    d.limits = { monthlyRuns: 100_001 };
+    expect(flowDocumentV1Schema.safeParse(d).success).toBe(false);
+    d.limits = { monthlyRuns: 100_000 };
+    expect(flowDocumentV1Schema.safeParse(d).success).toBe(true);
+    d.limits = { monthlyRuns: 0 };
+    expect(flowDocumentV1Schema.safeParse(d).success).toBe(false);
+    d.limits = { monthlyRuns: 5, other: 1 };
+    expect(flowDocumentV1Schema.safeParse(d).success).toBe(false);
+  });
+  it('notices.channelId must be a uuid', () => {
+    const d: any = example();
+    d.notices = { channelId: 'not-a-uuid' };
+    expect(flowDocumentV1Schema.safeParse(d).success).toBe(false);
+    d.notices = { channelId: '7d1c3a5e-2b4f-4c6a-9e8d-1f2a3b4c5d6e' };
+    expect(flowDocumentV1Schema.safeParse(d).success).toBe(true);
+  });
+});

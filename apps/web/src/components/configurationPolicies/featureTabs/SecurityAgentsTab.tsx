@@ -16,9 +16,12 @@ type Platform = 'windows' | 'macos' | 'linux';
 type AgentEntry = { vendor: Vendor; enabled: boolean; platforms?: Platform[] };
 
 // Display order. `enableable` mirrors the API vendor registry
-// (securityAgentVendors.ts): Huntress and SentinelOne can be armed; the DNS
-// vendors cannot yet. Whether this partner can actually arm one (integration
-// connected, SentinelOne MSI uploaded) is decided by the API on save.
+// (securityAgentVendors.ts): Huntress and SentinelOne can be armed. The DNS
+// vendors are wired end to end (#6960 W05) but stay off until the #6958 owner
+// lab gates are recorded; flipping them is these two lines plus the
+// registry's. Whether this partner can actually arm one (integration
+// connected, SentinelOne MSI uploaded, DNS client added from Built-in
+// packages) is decided by the API on save.
 const VENDORS: ReadonlyArray<{ vendor: Vendor; name: string; enableable: boolean }> = [
   { vendor: 'huntress', name: 'Huntress', enableable: true },
   { vendor: 'sentinelone', name: 'SentinelOne', enableable: true },
@@ -27,6 +30,17 @@ const VENDORS: ReadonlyArray<{ vendor: Vendor; name: string; enableable: boolean
 ];
 const VENDOR_IDS = new Set<string>(VENDORS.map((v) => v.vendor));
 const VENDOR_NAMES = new Map<string, string>(VENDORS.map((v) => [v.vendor, v.name]));
+const ENABLEABLE = new Set<Vendor>(VENDORS.filter((v) => v.enableable).map((v) => v.vendor));
+
+// DNS-filtering vendors: enrolled with a per-organization tenant variable
+// (non-secret by design) and installed from a Breeze built-in package the
+// partner adds to its catalog, never from an integration.
+const DNS_VARIABLE: Partial<Record<Vendor, string>> = {
+  controld: 'controld_provisioning_code',
+  nextdns: 'nextdns_profile_id',
+};
+const VARIABLES_PATH = '/settings/variables';
+const BUILTIN_PACKAGES_PATH = '/software';
 const PLATFORMS = new Set<string>(['windows', 'macos', 'linux']);
 
 const CATALOG_MISSING = 'security_agents_catalog_missing';
@@ -130,6 +144,8 @@ export default function SecurityAgentsTab({
   const code = errorDetail?.code;
   const handledError = code === CATALOG_MISSING || code === BINARY_MISSING || code === EXECUTE_REQUIRED;
   const catalogMissingVendor = refusedVendors(errorDetail?.body)[0] ?? 'huntress';
+  // A DNS vendor's package comes from the Built-in packages panel, not an integration.
+  const catalogMissingBuiltin = DNS_VARIABLE[catalogMissingVendor] !== undefined;
   const anyEnabled = VENDORS.some((v) => v.enableable && enabled[v.vendor]);
 
   return (
@@ -164,13 +180,18 @@ export default function SecurityAgentsTab({
         >
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <p>
-            {k('catalogMissing', { vendors: refusedVendorNames(errorDetail?.body, 'huntress') })}{' '}
+            {k(catalogMissingBuiltin ? 'catalogMissingBuiltin' : 'catalogMissing', {
+              vendors: refusedVendorNames(errorDetail?.body, 'huntress'),
+            })}{' '}
             <a
               data-testid="security-agents-catalog-missing-link"
-              href={safeSetupPath(errorDetail?.body, `/integrations#${catalogMissingVendor}`)}
+              href={safeSetupPath(
+                errorDetail?.body,
+                catalogMissingBuiltin ? BUILTIN_PACKAGES_PATH : `/integrations#${catalogMissingVendor}`,
+              )}
               className="font-medium underline"
             >
-              {k('catalogMissingLink')}
+              {k(catalogMissingBuiltin ? 'catalogMissingBuiltinLink' : 'catalogMissingLink')}
             </a>
           </p>
         </div>
@@ -239,6 +260,34 @@ export default function SecurityAgentsTab({
                 <li data-testid="security-agents-sentinelone-msi-note">{k('sentinelOneMsiNote')}</li>
               </ul>
             )}
+            {DNS_VARIABLE[vendor] && (
+              <ul className="mt-2 space-y-1 pl-6 text-xs text-muted-foreground">
+                <li data-testid={`security-agents-${vendor}-platform-windows`}>{k('platformWindows')}</li>
+                <li data-testid={`security-agents-${vendor}-platform-macos`}>{k('platformMacosUnsupported')}</li>
+                <li data-testid={`security-agents-${vendor}-platform-linux`}>{k('platformLinux')}</li>
+                <li data-testid={`security-agents-${vendor}-builtin-note`}>
+                  {k('dnsBuiltinNote', { vendor: name })}{' '}
+                  <a
+                    data-testid={`security-agents-${vendor}-builtin-link`}
+                    href={BUILTIN_PACKAGES_PATH}
+                    className="font-medium underline"
+                  >
+                    {k('catalogMissingBuiltinLink')}
+                  </a>
+                </li>
+                <li data-testid={`security-agents-${vendor}-variable-note`}>
+                  {k('dnsVariableNote', { variable: DNS_VARIABLE[vendor] })}{' '}
+                  <a
+                    data-testid={`security-agents-${vendor}-variable-link`}
+                    href={VARIABLES_PATH}
+                    className="font-medium underline"
+                  >
+                    {k('dnsVariableLink')}
+                  </a>
+                </li>
+                <li data-testid={`security-agents-${vendor}-coverage-note`}>{k('dnsCoverageNote', { vendor: name })}</li>
+              </ul>
+            )}
           </div>
         ))}
       </fieldset>
@@ -265,11 +314,13 @@ export default function SecurityAgentsTab({
   );
 }
 
+/** A stored `enabled` counts only for a vendor the API can arm (a blob never arms one it cannot). */
 function enabledFrom(agents: Map<Vendor, AgentEntry>): Record<Vendor, boolean> {
+  const on = (vendor: Vendor) => ENABLEABLE.has(vendor) && agents.get(vendor)?.enabled === true;
   return {
-    huntress: agents.get('huntress')?.enabled === true,
-    sentinelone: agents.get('sentinelone')?.enabled === true,
-    controld: false,
-    nextdns: false,
+    huntress: on('huntress'),
+    sentinelone: on('sentinelone'),
+    controld: on('controld'),
+    nextdns: on('nextdns'),
   };
 }

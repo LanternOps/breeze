@@ -10,6 +10,7 @@ vi.mock('../../db', () => ({
 vi.mock('../../services/workloads/ingest', () => ({ ingestWorkloadsReport: m.ingest }));
 
 import { workloadsRoutes } from './workloads';
+import { staleAgentCredentialRejection } from '../../middleware/agentAuthRejection';
 import { reportFixture, runtimeFixture, workloadFixture } from '../../services/workloads/testFixtures';
 
 const deviceId = '11111111-1111-4111-8111-111111111111';
@@ -41,6 +42,8 @@ it('ingests with the authenticated ids and returns the per-runtime applied flags
   expect(await response.json()).toEqual({ accepted: true, runtimes: [{ runtime: 'docker', applied: true }] });
   expect(m.ingest).toHaveBeenCalledWith({
     deviceId,
+    // #8318 §6.4: the host-column write is bound to the authenticated agent id.
+    agentId: 'agent-1',
     orgId,
     report: expect.objectContaining({ protocolVersion: 1 }),
     receivedAt: expect.any(Date),
@@ -84,6 +87,16 @@ it('returns 404 for a device that is not visible and 500 for a service failure',
   m.ingest.mockRejectedValue(new Error('database'));
   expect((await request()).status).toBe(500);
   expect(m.ingest).toHaveBeenCalledTimes(1);
+});
+
+// #8318 §6.4 (review of wave 1b-1): the service found the row in another
+// install's hands, wrote nothing and threw the stale-credential 401; the route
+// lets it through as the answer, never a 200.
+it('answers a stale caller the service refused with the stale-credential 401', async () => {
+  m.ingest.mockRejectedValue(staleAgentCredentialRejection());
+  const response = await request();
+  expect(response.status).toBe(401);
+  expect(await response.text()).toBe('Invalid agent credentials');
 });
 
 it('returns 200 with applied: false for a replayed runtime (not an error)', async () => {

@@ -418,11 +418,34 @@ func handleCancelReboot(h *Heartbeat, _ Command) tools.CommandResult {
 		return tools.NewErrorResult(fmt.Errorf("reboot manager not available"), time.Since(start).Milliseconds())
 	}
 
-	if err := h.rebootMgr.Cancel(); err != nil {
-		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
-	}
+	err := h.rebootMgr.Cancel()
+	return cancelRebootResult(err, time.Since(start).Milliseconds())
+}
 
-	return tools.NewSuccessResult(map[string]any{"cancelled": true}, time.Since(start).Milliseconds())
+// cancelRebootReasonNothingScheduled is the reason a cancel_reboot that found
+// nothing to cancel completes with.
+const cancelRebootReasonNothingScheduled = "no_reboot_scheduled"
+
+// cancelRebootResult maps Cancel's outcome onto the command result (#10186).
+//
+// Nothing pending is a success, not a failure: the caller wanted the restart
+// off and it is off, and a red command in the device's activity made every
+// automation and the console special-case it. It completes with
+// cancelled:false so a caller can still tell "I stopped a restart" from
+// "there was none". Every other error stays a failure — those are the cases
+// where the machine may still go down (an OS countdown that could not be
+// aborted, a shutdown already being handed to the OS).
+func cancelRebootResult(err error, durationMs int64) tools.CommandResult {
+	if errors.Is(err, patching.ErrNoRebootScheduled) {
+		return tools.NewSuccessResult(map[string]any{
+			"cancelled": false,
+			"reason":    cancelRebootReasonNothingScheduled,
+		}, durationMs)
+	}
+	if err != nil {
+		return tools.NewErrorResult(err, durationMs)
+	}
+	return tools.NewSuccessResult(map[string]any{"cancelled": true}, durationMs)
 }
 
 func handleGetRebootStatus(h *Heartbeat, _ Command) tools.CommandResult {

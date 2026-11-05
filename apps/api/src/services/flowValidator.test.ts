@@ -8,11 +8,12 @@ vi.mock('./flows/ownedReferences', () => ({
   findOwnedScriptIds: vi.fn(),
   findOwnedDeviceGroupIds: vi.fn(),
   findOwnedDeviceIds: vi.fn(),
+  findOwnedNotificationChannel: vi.fn(),
 }));
 
 import { resolveTenantToolsForOwner, type TenantToolDescriptor } from './toolSources/resolver';
-import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedScriptIds } from './flows/ownedReferences';
-import { validateFlowDocument } from './flowValidator';
+import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedNotificationChannel, findOwnedScriptIds } from './flows/ownedReferences';
+import { revalidateRenderedStep, stepPinsFor, validateFlowDocument, type FlowStepPin } from './flowValidator';
 import { FLOW_LIMITS, type FlowIssue } from '@breeze/shared';
 import { toolInputSchemas } from './aiToolSchemas';
 import { m365ToolTiers } from './aiToolsM365';
@@ -140,11 +141,17 @@ describe('validateFlowDocument', () => {
     expect(codes(b.issues)).toEqual(['tool_not_found']);
     expect(a.issues[0]!.message.replace('no_such_tool', 'X')).toBe(b.issues[0]!.message.replace('hudu__get_asset', 'X'));
     expect(a.effectiveTier).toBeNull();
+    // #9937: a tool the catalog cannot resolve is reported as unknown, never
+    // guessed into "core" or "tenant" from the shape of its name.
+    expect(a.steps[0]!.source).toBe('unknown');
+    expect(b.steps[0]!.source).toBe('unknown');
   });
 
   it('manage_ai_agents is tool_not_allowed', async () => {
     const r = await validateFlowDocument(doc([{ id: 'a', tool: 'manage_ai_agents', input: { action: 'list' } }]), ORG_OWNER);
     expect(codes(r.issues)).toEqual(['tool_not_allowed']);
+    // A registered core tool that flows refuse is still a core tool (#9937).
+    expect(r.steps[0]!.source).toBe('core');
   });
 
   it('a session-only (M365) tool is tool_not_allowed — flows run without a chat session', async () => {
@@ -153,6 +160,7 @@ describe('validateFlowDocument', () => {
     // M365 tools are not in the core execution registry at all (session-aware).
     expect(codes(r.issues)).toEqual(['tool_not_found']);
     expect(r.valid).toBe(false);
+    expect(r.steps[0]!.source).toBe('unknown');
   });
 
   it('a flow-eligible core tool without a Zod schema fails closed (tool_not_allowed)', async () => {
@@ -167,9 +175,45 @@ describe('validateFlowDocument', () => {
     }
   });
 
-  it('notify is builtin_not_available', async () => {
+  // W5 PR B (#5220): every shared built-in is in the API catalog now.
+  it('notify is validated, not builtin_not_available', async () => {
     const r = await validateFlowDocument(doc([{ id: 'a', tool: 'notify', input: {} }]), ORG_OWNER);
-    expect(codes(r.issues)).toEqual(['builtin_not_available']);
+    expect(codes(r.issues)).not.toContain('builtin_not_available');
+    expect(codes(r.issues)).toContain('input_invalid');
+  });
+
+  it('flow__ step is flow_step_not_supported', async () => {
+    const r = await validateFlowDocument(doc([{ id: 'a', tool: 'flow__nightly_cleanup', input: {} }]), ORG_OWNER);
+    expect(codes(r.issues)).toEqual(['flow_step_not_supported']);
+    expect(r.valid).toBe(false);
+    expect(r.steps[0]!.source).toBe('unknown');
+  });
+
+  it('http_request POST pins tier 3 and GET tier 2', async () => {
+    const r = await validateFlowDocument(doc([
+      { id: 'get', tool: 'http_request', input: { method: 'GET', url: 'https://api.example.com/items' } },
+      { id: 'post', tool: 'http_request', input: { method: 'POST', url: 'https://api.example.com/items', body: { a: 1 } } },
+    ]), ORG_OWNER);
+    expect(r.issues).toEqual([]);
+    expect(r.steps.map((s) => [s.id, s.source, s.tier])).toEqual([['get', 'builtin', 2], ['post', 'builtin', 3]]);
+    const pins = await stepPinsFor(r.document!, ORG_OWNER);
+    expect(pins).toEqual([
+      { stepId: 'get', tool: 'http_request', source: 'builtin', tier: 2, approvalScope: null },
+      { stepId: 'post', tool: 'http_request', source: 'builtin', tier: 3, approvalScope: 'supervised' },
+    ]);
+  });
+
+  it('a built-in step issue from validateBuiltins surfaces in the document result', async () => {
+    const r = await validateFlowDocument(doc([{ id: 'a', tool: 'http_request', input: { method: 'GET', url: 'https://{{inputs.kind}}/x' } }]), ORG_OWNER);
+    expect(codes(r.issues)).toEqual(['http_origin_not_literal']);
+    expect(r.issues[0]!.stepId).toBe('a');
+  });
+
+  it('notices.channelId is checked like a notify channel', async () => {
+    const CHANNEL = '66666666-6666-4666-8666-666666666666';
+    vi.mocked(findOwnedNotificationChannel).mockResolvedValue(null);
+    const r = await validateFlowDocument(doc([{ id: 'a', tool: 'wait', input: { minutes: 1 } }], { notices: { channelId: CHANNEL } }), ORG_OWNER);
+    expect(r.issues.map((i) => [i.code, i.pointer])).toEqual([['notify_channel_not_owned', '/notices/channelId']]);
   });
 
   it('built-in wait input is schema-checked', async () => {
@@ -177,10 +221,27 @@ describe('validateFlowDocument', () => {
     expect(codes(r.issues)).toEqual(['input_invalid']);
   });
 
-  it('webhook trigger is trigger_not_available', async () => {
+  it('webhook trigger validates', async () => {
     const r = await validateFlowDocument(doc([{ id: 'a', tool: 'wait', input: { minutes: 1 } }], { trigger: { type: 'webhook' } }), ORG_OWNER);
-    expect(codes(r.issues)).toEqual(['trigger_not_available']);
+    expect(r.issues).toEqual([]);
+    expect(r.valid).toBe(true);
+  });
+
+  it('partner-wide webhook without orgResolver is invalid', async () => {
+    const r = await validateFlowDocument(doc([{ id: 'a', tool: 'wait', input: { minutes: 1 } }], { trigger: { type: 'webhook' } }), PARTNER_OWNER);
+    expect(r.issues.map((i) => [i.code, i.pointer])).toEqual([['webhook_org_resolver_required', '/trigger/orgResolver']]);
     expect(r.valid).toBe(false);
+    const ok = await validateFlowDocument(doc([{ id: 'a', tool: 'wait', input: { minutes: 1 } }], {
+      trigger: { type: 'webhook', orgResolver: { path: 'body.customer.id', system: 'halo' } },
+    }), PARTNER_OWNER);
+    expect(ok.valid).toBe(true);
+  });
+
+  it('org webhook with an orgResolver is webhook_org_resolver_not_allowed', async () => {
+    const r = await validateFlowDocument(doc([{ id: 'a', tool: 'wait', input: { minutes: 1 } }], {
+      trigger: { type: 'webhook', orgResolver: { path: 'body.org', kind: 'breeze_org_id' } },
+    }), ORG_OWNER);
+    expect(codes(r.issues)).toEqual(['webhook_org_resolver_not_allowed']);
   });
 
   it('unknown event is event_unknown', async () => {
@@ -192,6 +253,23 @@ describe('validateFlowDocument', () => {
     const r = await validateFlowDocument(doc([{ id: 'a', tool: 'wait', input: { minutes: 1 } }], { trigger: { type: 'event', event: 'device.offline' } }), ORG_OWNER);
     expect(r.issues.every((i) => i.severity === 'warning')).toBe(true);
     expect(r.valid).toBe(true);
+  });
+
+  it.each([
+    ['off', ''],
+    ['shadow', 'flow-event-trigger'],
+    ['enforce', ''],
+  ])('event delivery that is not durable (%s, subscribers %j) warns event_dispatch_not_durable', async (mode, subs) => {
+    vi.stubEnv('EVENT_DISPATCH_MODE', mode);
+    vi.stubEnv('EVENT_DISPATCH_QUEUE_SUBSCRIBERS', subs);
+    try {
+      const r = await validateFlowDocument(doc([{ id: 'a', tool: 'wait', input: { minutes: 1 } }], { trigger: { type: 'event', event: 'device.offline' } }), ORG_OWNER);
+      expect(r.issues.map((i) => [i.code, i.severity])).toEqual([['event_dispatch_not_durable', 'warning']]);
+      expect(r.issues[0]!.message).toMatch(/durabl/i);
+      expect(r.valid).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('an invalid schedule timezone is a schema issue', async () => {
@@ -206,6 +284,17 @@ describe('validateFlowDocument', () => {
 
   it('templated live-read flag is tier_input_not_literal', async () => {
     const r = await validateFlowDocument(doc([{ id: 'a', tool: 'analyze_disk_usage', input: { deviceId: DEVICE, refresh: '{{inputs.r}}' } }]), ORG_OWNER);
+    expect(codes(r.issues)).toContain('tier_input_not_literal');
+  });
+
+  // W02 (#6756): resolving a ticket and repointing its requester escalate
+  // manage_tickets to tier 3, so a template must never pick those at run time.
+  it.each([
+    ['status', { action: 'update_status', ticketId: SCRIPT, status: '{{inputs.s}}' }],
+    ['statusName', { action: 'update_status', ticketId: SCRIPT, statusName: '{{inputs.s}}' }],
+    ['fields', { action: 'update_fields', ticketId: SCRIPT, fields: { submitterEmail: '{{inputs.s}}' } }],
+  ])('manage_tickets with a templated %s is tier_input_not_literal', async (_key, input) => {
+    const r = await validateFlowDocument(doc([{ id: 'a', tool: 'manage_tickets', input }]), ORG_OWNER);
     expect(codes(r.issues)).toContain('tier_input_not_literal');
   });
 
@@ -278,9 +367,19 @@ describe('validateFlowDocument', () => {
   });
 
   it('structure errors skip the catalog checks', async () => {
-    const r = await validateFlowDocument(doc([{ id: 'a', tool: 'no_such_tool', input: { v: '{{steps.b.output}}' } }, { id: 'b', tool: 'wait', input: { minutes: 1 } }]), ORG_OWNER);
+    const r = await validateFlowDocument(doc([
+      { id: 'a', tool: 'no_such_tool', input: { v: '{{steps.b.output}}' } },
+      { id: 'b', tool: 'wait', input: { minutes: 1 } },
+      { id: 'c', tool: 'halo__create_ticket', input: {} },
+      { id: 'd', tool: 'get_device_details', input: {} },
+    ]), ORG_OWNER);
     expect(codes(r.issues)).toEqual(['forward_reference']);
     expect(resolveTenantToolsForOwner).not.toHaveBeenCalled();
+    // Without the catalog, an unregistered name is unknown rather than "core" (#9937);
+    // a slug__name keeps its tenant shape and a registered core name stays core.
+    expect(r.steps.map((s) => [s.id, s.source])).toEqual([
+      ['a', 'unknown'], ['b', 'builtin'], ['c', 'tenant'], ['d', 'core'],
+    ]);
   });
 
   it('a structurally broken document returns schema issues, never throws', async () => {
@@ -318,5 +417,154 @@ describe('validateFlowDocument', () => {
     expect(r.valid).toBe(true);
     expect(r.effectiveTier).toBe(3);
     expect(r.document?.steps).toHaveLength(4);
+  });
+});
+
+describe('stepPinsFor', () => {
+  beforeEach(() => {
+    vi.mocked(resolveTenantToolsForOwner).mockReset().mockResolvedValue([
+      tenantTool('halo__create_ticket', 3, { type: 'object', properties: { summary: { type: 'string' } } }),
+    ]);
+  });
+
+  it('stepPinsFor carries approvalScope for core tier-3 steps', async () => {
+    const pins = await stepPinsFor(doc([
+      { id: 'read', tool: 'get_device_details', input: { deviceId: '{{trigger.device.id}}' } },
+      { id: 'run', tool: 'run_script', input: { scriptId: SCRIPT, deviceIds: ['{{trigger.device.id}}'] } },
+      { id: 'iso', tool: 's1_isolate_device', input: { deviceId: '{{trigger.device.id}}', isolate: false } },
+      { id: 'pause', tool: 'wait', input: { minutes: 1 } },
+      { id: 'ticket', tool: 'halo__create_ticket', input: { summary: 'x' } },
+    ]) as never, ORG_OWNER);
+    expect(pins).toEqual([
+      { stepId: 'read', tool: 'get_device_details', source: 'core', tier: 1, approvalScope: null },
+      { stepId: 'run', tool: 'run_script', source: 'core', tier: 3, approvalScope: 'supervised' },
+      { stepId: 'iso', tool: 's1_isolate_device', source: 'core', tier: 3, approvalScope: 'four_eyes' },
+      { stepId: 'pause', tool: 'wait', source: 'builtin', tier: 1, approvalScope: null },
+      { stepId: 'ticket', tool: 'halo__create_ticket', source: 'tenant', tier: 3, approvalScope: 'supervised', tenantToolId: 'id-halo__create_ticket', tenantRevision: 'r' },
+    ]);
+  });
+});
+
+describe('revalidateRenderedStep', () => {
+  const OTHER_DEVICE = '77777777-7777-4777-8777-777777777777';
+  const RUN_PIN: FlowStepPin = { stepId: 'run', tool: 'run_script', source: 'core', tier: 3, approvalScope: 'supervised' };
+  const ctx = { owner: ORG_OWNER.owner, runOrgId: ORG };
+
+  beforeEach(() => {
+    vi.mocked(resolveTenantToolsForOwner).mockReset().mockResolvedValue([
+      tenantTool('halo__create_ticket', 3, { type: 'object', required: ['summary'], properties: { summary: { type: 'string' } }, additionalProperties: false }),
+    ]);
+    vi.mocked(findOwnedScriptIds).mockReset().mockImplementation(async (_o, ids) => new Set([...ids].filter((i) => i === SCRIPT)));
+    vi.mocked(findOwnedDeviceIds).mockReset().mockImplementation(async (_o, ids) => new Set([...ids].filter((i) => i === DEVICE)));
+    vi.mocked(findOwnedDeviceGroupIds).mockReset().mockImplementation(async (_o, ids) => new Set([...ids].filter((i) => i === GROUP)));
+  });
+
+  it('a valid rendered run_script passes with its live tier and scope', async () => {
+    const r = await revalidateRenderedStep(RUN_PIN, { scriptId: SCRIPT, deviceIds: [DEVICE] }, ctx);
+    expect(r).toEqual({ ok: true, tier: 3, approvalScope: 'supervised' });
+    expect(findOwnedDeviceIds).toHaveBeenCalledWith(ORG, [DEVICE]);
+  });
+
+  it('templated uuid rendered to "abc" is input_invalid', async () => {
+    const r = await revalidateRenderedStep(RUN_PIN, { scriptId: SCRIPT, deviceIds: ['abc'] }, ctx);
+    expect(r).toMatchObject({ ok: false, code: 'input_invalid' });
+  });
+
+  it('rendered device in another org is reference_not_owned, with the same message as a missing one', async () => {
+    const foreign = await revalidateRenderedStep(RUN_PIN, { scriptId: SCRIPT, deviceIds: [OTHER_DEVICE] }, ctx);
+    const missing = await revalidateRenderedStep(RUN_PIN, { scriptId: SCRIPT, deviceIds: ['66666666-6666-4666-8666-666666666666'] }, ctx);
+    expect(foreign).toMatchObject({ ok: false, code: 'reference_not_owned' });
+    expect(foreign).toEqual(missing);
+  });
+
+  it('a rendered script the owner does not own is reference_not_owned', async () => {
+    const r = await revalidateRenderedStep(RUN_PIN, { scriptId: '66666666-6666-4666-8666-666666666666', deviceIds: [DEVICE] }, ctx);
+    expect(r).toMatchObject({ ok: false, code: 'reference_not_owned' });
+  });
+
+  it('a rendered group outside the run org is reference_not_owned', async () => {
+    const r = await revalidateRenderedStep(RUN_PIN, { scriptId: SCRIPT, groupId: OTHER_DEVICE }, ctx);
+    expect(r).toMatchObject({ ok: false, code: 'reference_not_owned' });
+    expect(findOwnedDeviceGroupIds).toHaveBeenCalledWith(ORG, [OTHER_DEVICE]);
+  });
+
+  it('partner flow rendered device in the run org passes', async () => {
+    const r = await revalidateRenderedStep(RUN_PIN, { scriptId: SCRIPT, deviceIds: [DEVICE] }, { owner: PARTNER_OWNER.owner, runOrgId: ORG });
+    expect(r).toEqual({ ok: true, tier: 3, approvalScope: 'supervised' });
+    expect(findOwnedScriptIds).toHaveBeenCalledWith(PARTNER_OWNER.owner, [SCRIPT]);
+    expect(findOwnedDeviceIds).toHaveBeenCalledWith(ORG, [DEVICE]);
+  });
+
+  it('tenant revision change is drift', async () => {
+    const pin: FlowStepPin = { stepId: 't', tool: 'halo__create_ticket', source: 'tenant', tier: 3, approvalScope: 'supervised', tenantToolId: 'id-halo__create_ticket', tenantRevision: 'r-old' };
+    expect(await revalidateRenderedStep(pin, { summary: 'x' }, ctx)).toMatchObject({ ok: false, code: 'drift' });
+    const same = { ...pin, tenantRevision: 'r' };
+    expect(await revalidateRenderedStep(same, { summary: 'x' }, ctx)).toEqual({ ok: true, tier: 3, approvalScope: 'supervised' });
+  });
+
+  it('tenant input is validated unmasked', async () => {
+    const pin: FlowStepPin = { stepId: 't', tool: 'halo__create_ticket', source: 'tenant', tier: 3, approvalScope: 'supervised', tenantToolId: 'id-halo__create_ticket', tenantRevision: 'r' };
+    expect(await revalidateRenderedStep(pin, { summary: 5 }, ctx)).toMatchObject({ ok: false, code: 'input_invalid' });
+  });
+
+  it('tool removed from catalog is tool_unavailable', async () => {
+    const pin: FlowStepPin = { stepId: 't', tool: 'halo__close_ticket', source: 'tenant', tier: 2, approvalScope: null, tenantToolId: 'gone', tenantRevision: 'r' };
+    expect(await revalidateRenderedStep(pin, {}, ctx)).toMatchObject({ ok: false, code: 'tool_unavailable' });
+  });
+
+  it('supervised step now four_eyes is drift', async () => {
+    const pin: FlowStepPin = { stepId: 'iso', tool: 's1_isolate_device', source: 'core', tier: 3, approvalScope: 'supervised' };
+    expect(await revalidateRenderedStep(pin, { deviceId: DEVICE, isolate: true }, ctx)).toEqual({ ok: true, tier: 3, approvalScope: 'supervised' });
+    expect(await revalidateRenderedStep(pin, { deviceId: DEVICE, isolate: false }, ctx)).toMatchObject({ ok: false, code: 'drift' });
+  });
+
+  it('a live tier above the pin is drift', async () => {
+    const pin: FlowStepPin = { stepId: 'run', tool: 'run_script', source: 'core', tier: 2, approvalScope: null };
+    expect(await revalidateRenderedStep(pin, { scriptId: SCRIPT, deviceIds: [DEVICE] }, ctx)).toMatchObject({ ok: false, code: 'drift' });
+  });
+
+  it('built-in input is validated unmasked', async () => {
+    const pin: FlowStepPin = { stepId: 'pause', tool: 'wait', source: 'builtin', tier: 1, approvalScope: null };
+    expect(await revalidateRenderedStep(pin, { minutes: 'soon' }, ctx)).toMatchObject({ ok: false, code: 'input_invalid' });
+    expect(await revalidateRenderedStep(pin, { minutes: 5 }, ctx)).toEqual({ ok: true, tier: 1, approvalScope: null });
+  });
+
+  it('rendered built-in input is schema-checked at run time (http_request)', async () => {
+    const pin: FlowStepPin = { stepId: 'h', tool: 'http_request', source: 'builtin', tier: 2, approvalScope: null };
+    expect(await revalidateRenderedStep(pin, { method: 'GET', url: 'https://api.example.com/x', extra: 1 }, ctx)).toMatchObject({ ok: false, code: 'input_invalid' });
+    expect(await revalidateRenderedStep(pin, { method: 'GET', url: 'https://api.example.com/x' }, ctx)).toEqual({ ok: true, tier: 2, approvalScope: null });
+  });
+
+  it('a tier-3 built-in revalidates as supervised', async () => {
+    const pin: FlowStepPin = { stepId: 'h', tool: 'http_request', source: 'builtin', tier: 3, approvalScope: 'supervised' };
+    expect(await revalidateRenderedStep(pin, { method: 'DELETE', url: 'https://api.example.com/x' }, ctx)).toEqual({ ok: true, tier: 3, approvalScope: 'supervised' });
+  });
+
+  it('an http_request GET pin whose rendered method writes is drift', async () => {
+    const pin: FlowStepPin = { stepId: 'h', tool: 'http_request', source: 'builtin', tier: 2, approvalScope: null };
+    expect(await revalidateRenderedStep(pin, { method: 'POST', url: 'https://api.example.com/x' }, ctx)).toMatchObject({ ok: false, code: 'drift' });
+  });
+
+  it('ai step whose tool tier rose is drift', async () => {
+    vi.mocked(resolveTenantToolsForOwner).mockResolvedValue([tenantTool('halo__lookup', 2, { type: 'object' })]);
+    const pin: FlowStepPin = { stepId: 'think', tool: 'ai', source: 'builtin', tier: 1, approvalScope: null };
+    const input = { prompt: 'x', tools: ['halo__lookup'], output: { type: 'object' } };
+    expect(await revalidateRenderedStep(pin, input, ctx)).toMatchObject({ ok: false, code: 'drift' });
+    vi.mocked(resolveTenantToolsForOwner).mockResolvedValue([tenantTool('halo__lookup', 1, { type: 'object' })]);
+    expect(await revalidateRenderedStep(pin, input, ctx)).toEqual({ ok: true, tier: 1, approvalScope: null });
+  });
+
+  // W6 (#5221): the generic rendered-reference checks cover core tools only, so
+  // each fleet built-in carries its own explicit owned-reference check.
+  it('a rendered fleet built-in reference outside the owner or the run org is reference_not_owned', async () => {
+    const run: FlowStepPin = { stepId: 'a0', tool: 'run_script_on_targets', source: 'builtin', tier: 3, approvalScope: 'supervised' };
+    const alert: FlowStepPin = { stepId: 'a1', tool: 'create_alert', source: 'builtin', tier: 2, approvalScope: null };
+    const resolve: FlowStepPin = { stepId: 't', tool: 'resolve_targets', source: 'builtin', tier: 1, approvalScope: null };
+    expect(await revalidateRenderedStep(run, { scriptId: SCRIPT, deviceIds: [DEVICE] }, ctx)).toMatchObject({ ok: true });
+    expect(await revalidateRenderedStep(run, { scriptId: SCRIPT, deviceIds: [OTHER_DEVICE] }, ctx)).toMatchObject({ ok: false, code: 'reference_not_owned' });
+    expect(await revalidateRenderedStep(run, { scriptId: OTHER_DEVICE, target: { type: 'all' } }, ctx)).toMatchObject({ ok: false, code: 'reference_not_owned' });
+    expect(await revalidateRenderedStep(alert, { deviceId: OTHER_DEVICE, severity: 'low', message: 'm' }, ctx)).toMatchObject({ ok: false, code: 'reference_not_owned' });
+    expect(await revalidateRenderedStep(resolve, { target: { type: 'groups', groupIds: [OTHER_DEVICE] } }, ctx)).toMatchObject({ ok: false, code: 'reference_not_owned' });
+    expect(await revalidateRenderedStep(resolve, { conditions: [{ type: 'group', value: GROUP }] }, ctx)).toMatchObject({ ok: true });
   });
 });

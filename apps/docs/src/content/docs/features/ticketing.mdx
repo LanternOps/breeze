@@ -99,6 +99,28 @@ If the two organizations bill in different currencies and the ticket still has *
   Tickets can only be moved between organizations of the **same partner**. This is a high-privilege action: it requires ticket and organization edit permissions plus MFA confirmation, and isn't available to site-restricted technicians.
 </Aside>
 
+### Merging duplicate tickets
+
+When the same issue arrives twice (a customer emails and also calls, or two people report one outage), merge the duplicate into the ticket you want to keep.
+
+1. Open the duplicate and choose **Merge into…** in the ticket header.
+2. Pick the ticket to keep. The list shows the organization's open tickets, oldest first, and you can search it. Resolved and closed tickets cannot receive a merge.
+3. Read the preview. It lists what moves to the kept ticket (comments, attachments, time entries, parts, checklist items, linked alerts and emails, tags), the links that are dropped, and whether the kept ticket keeps its own device or takes the duplicate's. When the ticket you picked is not the older one, the preview suggests the older one, which is usually the one to keep.
+4. Decide whether to email the duplicate's requester. **Notify the requester** is ticked by default when the two tickets have different requesters.
+5. Click **Merge** and confirm with MFA.
+
+After the merge:
+
+- The duplicate becomes a **closed, read-only record** with a banner linking to the kept ticket. Nothing can be added to it or changed on it. Comments that moved show "from T-…" next to the author.
+- The kept ticket keeps its own SLA clock, priority and assignee. Time entries and parts move with their amounts and billing state unchanged.
+- **Replies follow the merge.** Email sent to the duplicate's thread is added to the kept ticket.
+- **In the customer portal**, the duplicate shows a "This request was merged into T-…" banner. Its requester can read and reply on the kept ticket.
+- Merged tickets are hidden from the queue. Tick **Show merged** above the list to see them.
+
+A merge cannot be undone. It is refused when the tickets belong to different organizations (move one first), when either ticket has a customer approval request or a budget, when either is tied to a service deliverable or an open migration import, when one is planned work and the other a support ticket, or when the duplicate has AI actions waiting for approval. The preview names the reason before you confirm.
+
+Merging needs ticket edit permission and access to both tickets' sites and devices. The AI assistant can preview and perform a merge through its ticket tool, under the same rules and with approval.
+
 ### Deleting and Restoring Tickets
 
 Click **Delete**, next to **Move to another org…** in the ticket header, to remove a ticket. A confirm dialog explains that the ticket is hidden from every queue and can be restored by an admin, then deletes it. The same **Delete** action is available from the bulk action bar for a batch of selected tickets.
@@ -153,7 +175,7 @@ Reusable procedures live under **Settings → Ticketing → Templates**, in **Ch
 
 Two shortcuts arrived in v0.124.0:
 
-- **Save as template** turns the checklist on a ticket into a template. Give it a name and choose whether to make it available to all organizations. Steps created by an AI Operator task and repeated steps are left out, and the confirmation says how many.
+- **Save as template** turns the checklist on a ticket into a template. Give it a name and choose whether to make it available to all organizations. Steps created by an AI task and repeated steps are left out, and the confirmation says how many.
 - **Duplicate** copies an existing template so you can adapt it without editing the original.
 
 ## Canned Responses
@@ -218,6 +240,27 @@ Tickets enter the queue from four directions:
   on restores everything with its history intact. See
   [Service Management mode](/reference/partner-management/#service-management-mode).
 </Aside>
+
+## Routing rules
+
+Routing rules set who a new ticket goes to, and how it starts, the moment it is created. Manage them in **Settings → Ticketing → Routing**.
+
+A rule has **conditions** and **actions**:
+
+- **Conditions:** where the ticket came from (portal, email, alert, technician, API, AI), its priority, its category, words in the subject, and the requester's email domain. A domain is either exact (`example.com`) or every subdomain (`*.example.com`, which matches `help.example.com` but not `example.com` itself). Within one condition any value can match; every condition you fill in must match. A rule with no conditions matches every ticket, and the editor warns you about it. A priority condition matches only a priority someone chose (the technician, the customer or an intake form); a ticket whose priority was left at the default doesn't match one, even though it is saved as Normal.
+- **Actions:** assign a technician, set the priority, the category or the starting status, and add tags. A rule must have at least one action. The starting status can be a **New**, **Open**, **Pending** or **On hold** status; a ticket that starts Pending or On hold starts with its SLA clock paused.
+
+How rules are applied:
+
+- **Org rules first.** An organization's own rules are checked first, then the partner-wide rules (marked **All orgs**, or limited to the organizations you list). Within each group, the order on the page decides; drag a rule to reorder it. The **first** rule that matches wins.
+- **A rule never overrides a choice.** It only fills in what the person or form creating the ticket left empty: a priority a technician picked, an assignee they chose, or an intake form's own category and priority always win. The rule's category and priority then decide the ticket's SLA targets.
+- **If an action can't be applied**, it is skipped and the rest of the rule still applies. For example, if the technician a rule assigns can't be assigned that ticket (they were disabled, or they can't see that customer's organization), the ticket is created without that assignee. A rule whose only assignee has since been deleted becomes a rule with no action; the editor shows it so you can fix it.
+- **Every routed ticket says why.** The ticket gets an internal note naming the rule and listing the actions it applied and any it skipped, and the ticket keeps that note even if the rule is later renamed or deleted.
+- **Rules run once, at creation.** Editing a ticket later never re-routes it. Imported tickets, and tickets created as a continuation of a closed ticket (a reply to a closed email thread, an Office add-in follow-up), are not routed. Routing sends no notifications of its own; an assigned technician gets the usual [assignment notification](#assignment-notifications).
+
+Use **Test a ticket** on the Routing tab to see which rule a ticket would match, and what it would set, without creating anything.
+
+Partner-wide rules can be created and changed only by staff with access to all of your organizations. Staff with access to some organizations manage those organizations' own rules. Organization users can see the rules that apply to them but can't change them.
 
 ## Email-to-Ticket
 
@@ -302,8 +345,9 @@ Anything else is routed exactly as it would be with the setting off. The origina
 
 #### Default assignee for new inbound tickets
 
-An unassigned ticket sends no assignee notification, so staff can miss it. Pick a **Default assignee for new inbound tickets** on the same card to give every ticket created from inbound email an owner. It's empty (off) by default.
+An unassigned ticket sends no assignee notification, so staff can miss it. Set a default assignee to give every ticket created from inbound email an owner. It's empty (off) by default. The setting lives at the bottom of **Settings → Ticketing → Routing**, under **If no rule assigns an email ticket** (it used to be on the Inbound email card).
 
+- It is the **fallback** after [routing rules](#routing-rules): it applies only when no rule assigned the ticket, including when the matching rule set only a priority or category, or its assignee was skipped.
 - Only **new** tickets are assigned. A reply that threads onto an existing ticket never changes who it's assigned to, and a ticket something else already assigned is left alone.
 - You can pick an **active** member of your team whose organization access isn't set to none and whose role can view tickets. Breeze checks this every time the card saves, and rejects a user from another partner, a disabled user, or someone without ticket access. If the person you picked later stops qualifying, the card shows them as unavailable and won't save other changes until you pick someone else or clear the setting.
 - Each ticket is checked again when it arrives. If the default assignee can no longer be assigned that ticket (for example, they were disabled, or their access doesn't include that customer's organization), the ticket is created **unassigned** and Breeze records why in its inbound email log. The email is never rejected because of this setting.
@@ -336,7 +380,7 @@ Instead of forwarding to your Breeze inbound address, you can connect a Microsof
 
 </Steps>
 
-Once connected, Breeze polls the mailbox every minute or two, turns new messages into tickets (threading and the review queue work exactly as above), and marks each handled message as read so your team can see what's been picked up. Only mail that arrives after you connect is ticketed -- existing inbox history is not imported. Public replies go out **from the support address** and thread natively in the customer's mailbox; internal notes and technician notifications are unaffected. You can connect more than one mailbox (for example `support@` and `billing@`). **Disconnect** stops polling immediately; to fully remove access, also revoke the app's consent in your Microsoft Entra admin center.
+Once connected, Breeze polls the mailbox every minute or two, turns new messages into tickets (threading and the review queue work exactly as above), and marks each handled message as read so your team can see what's been picked up. Only mail that arrives after you connect is ticketed -- existing inbox history is not imported, and Breeze neither marks it read nor sends it an autoresponse. The first poll reads through the inbox to set its starting point, which can take several minutes on a large mailbox; the card then shows how many messages, if any, were already there and will not be imported. Older mail that someone later reads, flags or moves back into the inbox stays out too. Reconnecting a mailbox that lost its consent picks up the mail that arrived while it was down, but connecting one again after you **Disconnect** it starts over from that moment, so mail received in between is not ticketed. Public replies go out **from the support address** and thread natively in the customer's mailbox; internal notes and technician notifications are unaffected. You can connect more than one mailbox (for example `support@` and `billing@`). **Disconnect** stops polling immediately; to fully remove access, also revoke the app's consent in your Microsoft Entra admin center.
 
 A temporary Microsoft Graph problem -- throttling, a Microsoft server error, a network failure or a request that times out -- does not stop the mailbox: it stays **Connected** and Breeze retries on the next poll. Only an authorization failure asks you to reconnect.
 
@@ -349,6 +393,19 @@ If a connection does not complete:
 
 <Aside>
   Connecting or managing a mailbox requires **partner scope and MFA**. The Microsoft 365 mailbox card only appears once your operator has configured the Breeze Ticketing Azure app -- see [Ticket Mailbox environment variables](/deploy/environment/#ticket-mailbox-m365-email-to-ticket).
+</Aside>
+
+#### How external mail is verified on a connected mailbox
+
+Unverified external mail goes to the review queue (or is dropped, if you turned that on), so a forged From address from outside your tenant can't open a ticket under your customer's name. On a Microsoft 365 mailbox Breeze verifies external mail with:
+
+- **Exchange Online's own check.** Mail counts as verified when Exchange marks it as external mail not attributed to a connector, it carries exactly one `Authentication-Results` header with Exchange's authserv-id (`mx.microsoft.com` or a `*.mail.protection.outlook.com` host), and that header says `dmarc=pass` for the From domain. Mail from a domain with no DMARC record (`dmarc=none`) stays in review. A second `Authentication-Results` header also sends a message to review, since Breeze can't tell which one Exchange wrote. Mail Exchange attributes to a partner connector isn't verified from this header.
+- **A trusted mail gateway, if you list one.** With an inline gateway that adds an ARC seal, Exchange checks the gateway instead of the sender and may fail legitimate mail. Under **Mail gateway** on the mailbox, list the gateway's ARC sealing domain: the `d=` value in the gateway's `ARC-Seal` header on a message it delivered (not `microsoft.com`, which is Exchange's own seal). Breeze then verifies the seal and the gateway's signature over the From header, and uses the gateway's verdict, which must be for the From domain. A seal more than 6 hours older than the message's arrival isn't used. The list is empty by default. If the gateway's key can't be fetched, Breeze retries for up to an hour before the message goes to review. A gateway that doesn't add an ARC seal isn't used; Breeze falls back to Exchange's own check, and never reads `Authentication-Results-Original`, because a sender can write that header.
+
+The review queue shows which of these Breeze checked and why the message didn't pass, for example `unverified sender (SPF/DKIM/DMARC): Exchange Online stamp: dmarc=fail`.
+
+<Aside type="caution">
+  Only list a gateway that all of the tenant's inbound mail is forced through: first restrict inbound delivery in Exchange to the gateway with a connector. Without that restriction, Breeze can't tell a message the gateway delivered from one sent directly to Exchange.
 </Aside>
 
 ### Connecting a Google Workspace support mailbox

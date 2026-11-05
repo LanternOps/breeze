@@ -19,6 +19,19 @@ describe('FeatureLock', () => {
     expect(screen.getByText('Surface content').closest('fieldset')).toBeNull();
   });
 
+  it('upgradeHref={null}: a lock with its reason and no upgrade link (nothing to buy, e.g. a server without the feature)', () => {
+    render(
+      <FeatureLock locked why={WHY} upgradeHref={null} testId="srv-lock">
+        <span>Surface content</span>
+      </FeatureLock>,
+    );
+    expect(screen.getByTestId('srv-lock')).toHaveAttribute('data-locked', 'true');
+    expect(screen.getByTestId('srv-lock-why')).toHaveTextContent(WHY);
+    expect(screen.queryByTestId('srv-lock-cta')).toBeNull();
+    expect(screen.queryByRole('link')).toBeNull();
+    expect(screen.getByText('Surface content').closest('fieldset')).toBeDisabled();
+  });
+
   it('locked keeps the surface visible but disabled', () => {
     render(
       <FeatureLock locked why={WHY}>

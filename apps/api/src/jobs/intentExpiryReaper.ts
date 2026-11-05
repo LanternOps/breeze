@@ -11,6 +11,7 @@ import { captureException } from '../services/sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { recordActionIntentEvent, recordActionIntentMetric } from '../services/actionIntents/metrics';
 import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
+import { scheduleFlowRunWake } from '../services/flows/wake';
 import { attachWorkerObservability } from './workerObservability';
 import { recordOperationResult } from '../services/aiOperator/operationService';
 import { enqueueTaskOutbox, INTENT_TERMINAL_OUTBOX_TRANSITION_SEQ } from '../services/aiOperator/taskOutbox';
@@ -141,6 +142,8 @@ type ExpiredIntentRow = {
   expires_at: Date;
   /** #5205 W05 (#5210): non-null iff this is an AI Operator task-linked intent. */
   task_id: string | null;
+  /** Tool catalog W04 (#5219): non-null iff this is a flow-origin intent. */
+  requesting_flow_run_id: string | null;
 };
 
 type StaleExecutingIntentRow = {
@@ -153,6 +156,8 @@ type StaleExecutingIntentRow = {
   decided_at: Date | null;
   /** #5205 W04 (#5209): non-null iff this is an AI Operator task-linked intent. */
   task_id: string | null;
+  /** Tool catalog W04 (#5219): non-null iff this is a flow-origin intent. */
+  requesting_flow_run_id: string | null;
 };
 
 function extractRows<T>(result: unknown): T[] {
@@ -200,7 +205,8 @@ export async function reapExpiredIntents(): Promise<number> {
       a.source,
       a.requested_by_user_id,
       a.expires_at,
-      a.task_id;
+      a.task_id,
+      a.requesting_flow_run_id;
   `);
 
   const rows = extractRows<ExpiredIntentRow>(transitioned);
@@ -266,6 +272,10 @@ export async function reapExpiredIntents(): Promise<number> {
         transitionSeq: INTENT_TERMINAL_OUTBOX_TRANSITION_SEQ.intent_expired,
       });
     }
+    // Tool catalog W04 (#5219): this writer bypasses publishIntentTerminalOutbox,
+    // so it wakes a parked flow run itself — registered in THIS transaction,
+    // run only after it commits (services/flows/wake.ts).
+    if (row.requesting_flow_run_id) scheduleFlowRunWake(row.requesting_flow_run_id);
   }
 
   for (const row of rows) {
@@ -331,7 +341,8 @@ export async function reapStaleExecutingIntents(): Promise<number> {
       a.source,
       a.execution_started_at,
       a.decided_at,
-      a.task_id;
+      a.task_id,
+      a.requesting_flow_run_id;
   `);
 
   const rows = extractRows<StaleExecutingIntentRow>(transitioned);
@@ -375,6 +386,9 @@ export async function reapStaleExecutingIntents(): Promise<number> {
         transitionSeq: INTENT_TERMINAL_OUTBOX_TRANSITION_SEQ.intent_failed,
       });
     }
+    // Tool catalog W04 (#5219): execution_lost on a flow intent — the runner
+    // maps it to an `unknown_outcome` step (Decision 5). Same transaction.
+    if (row.requesting_flow_run_id) scheduleFlowRunWake(row.requesting_flow_run_id);
   }
 
   const requestLike = requestLikeFromSnapshot({});

@@ -182,6 +182,12 @@ type Config struct {
 	Gates Gates
 	// LegacyRetryFraction of agents ignore Retry-After (agents older than v0.64.3).
 	LegacyRetryFraction float64
+	// PreW09Fraction of agents pace reconnects like the #9145 agent: no start
+	// jitter, U(1 s, 5 s) after a server close, drain hints ignored,
+	// Retry-After honoured. Agents older than #9145 are not modelled.
+	PreW09Fraction float64
+
+	wsPaceScale float64 // tests only: scales every reconnect wait; 0 = 1
 
 	executor Executor // tests only; nil = osExecutor
 }
@@ -289,6 +295,9 @@ func (c Config) Validate() error {
 	}
 	if c.LegacyRetryFraction < 0 || c.LegacyRetryFraction > 1 {
 		errs = append(errs, fmt.Errorf("--legacy-retry-fraction must be in [0,1], got %v", c.LegacyRetryFraction))
+	}
+	if c.PreW09Fraction < 0 || c.PreW09Fraction > 1 {
+		errs = append(errs, fmt.Errorf("--pre-w09-fraction must be in [0,1], got %v", c.PreW09Fraction))
 	}
 	if c.ScrapeToken != "" {
 		if c.ScrapeInterval < time.Second {

@@ -1,7 +1,8 @@
 {
   "aiInitiator": {
-    "assistant": "Assistente IA",
+    "assistant": "Breeze AI",
     "agent": "Agente IA",
+    "flow": "Flusso",
     "originUnavailable": "Origine non disponibile",
     "openSession": "Apri conversazione",
     "openAgentRun": "Apri esecuzione dell'agente",
@@ -27,7 +28,7 @@
     "patches": "Patch",
     "vulnerabilities": "Vulnerabilità",
     "oneDrive": "OneDrive",
-    "aiForOffice": "AI per Office",
+    "aiForOffice": "Breeze AI for Office",
     "networkMonitor": "Rete",
     "jobs": "Attività",
     "flows": "Flussi",
@@ -48,6 +49,7 @@
     "timesheets": "Fogli ore",
     "productCatalog": "Catalogo prodotti",
     "deviceGroups": "Gruppi di dispositivi",
+    "sites": "Siti",
     "unassignedDevices": "Dispositivi non assegnati",
     "configPolicies": "Criteri di configurazione",
     "integrations": "Integrazioni",
@@ -65,10 +67,6 @@
     "scriptAuthoring": "Creazione di script",
     "toolSources": "Fonti degli strumenti",
     "aiAgents": "Agenti AI",
-    "aiAgentRuns": "Esecuzioni agenti IA",
-    "aiImpact": "Impatto IA",
-    "fixMemory": "Memoria delle correzioni",
-    "fleetDesign": "Progettazione flotta",
     "customFields": "Campi personalizzati",
     "savedFilters": "Filtri salvati",
     "moreSettings": "Altre impostazioni",
@@ -89,12 +87,11 @@
     "variables": "Variabili",
     "llmProviderCatalog": "Catalogo dei fornitori LLM",
     "aiKillSwitch": "Interruttore di emergenza IA",
+    "wisp": "Wisp",
     "sectionAi": "IA",
     "sectionFleetManagement": "Gestione flotta",
     "sectionBilling": "Fatturazione",
     "sectionAdministration": "Amministrazione",
-    "fleetOrchestration": "Orchestrazione flotta",
-    "aiAssistant": "Assistente IA",
     "software": "Software",
     "softwareInventory": "Inventario software",
     "softwarePolicies": "Criteri software",
@@ -118,7 +115,16 @@
     "ticketsChanges": "Modifiche",
     "endpointMessages": "Messaggi",
     "securityDetectionRules": "Regole di rilevamento",
-    "planAndFeatures": "Piano e funzionalità"
+    "planAndFeatures": "Piano e funzionalità",
+    "breezeAi": "Breeze AI",
+    "workersHeading": "Lavoratori",
+    "agents": "Agenti",
+    "runs": "Esecuzioni",
+    "aiTasks": "Attività IA",
+    "findings": "Rilevazioni",
+    "impact": "Impatto",
+    "aiKnowledgeSources": "Fonti di conoscenza",
+    "wispLockedServer": "Wisp funziona su Breeze Cloud. Non è disponibile su questo server."
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -563,7 +569,9 @@
       "after": "è dopo",
       "between": "è tra",
       "withinLast": "negli ultimi",
-      "notWithinLast": "non negli ultimi"
+      "notWithinLast": "non negli ultimi",
+      "below": "inferiore a",
+      "atLeast": "almeno"
     },
     "value": {
       "noValue": "Nessun valore necessario",
@@ -585,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Rimosso"
-      }
+      },
+      "softwareName": "Nome del software",
+      "softwareVersion": "Versione del software"
     }
   },
   "account": {
@@ -669,7 +679,7 @@
     },
     "apps": {
       "title": "App connesse",
-      "description": "Assistenti AI e altri client MCP (Claude.ai, ChatGPT, Cursor, ...) che hai autorizzato ad agire per tuo conto. Revoca l'accesso in qualsiasi momento: i token smettono di funzionare entro 10 minuti.",
+      "description": "Client AI (Claude.ai, ChatGPT, Cursor, …) che hai autorizzato ad agire per tuo conto. Revoca l'accesso in qualsiasi momento — i token smettono di funzionare entro 10 minuti.",
       "empty": "Nessuna app connessa",
       "emptyDescription": "Quando autorizzi una chat Claude.ai, ChatGPT, Cursor o qualsiasi altro client MCP, apparirà qui in modo da poterlo revocare in seguito.",
       "authorized": "Autorizzato",
@@ -679,7 +689,7 @@
       "revokeTitle": "Revoca {{app}}?",
       "revokeDescription": "Tutte le concessioni e i token di aggiornamento per questo client verranno cancellati. I token smettono di funzionare entro 10 minuti. Dovrai autorizzare nuovamente la prossima volta che lo utilizzerai.",
       "onlyAppTitle": "Questa è la tua unica app autorizzata.",
-      "onlyAppDescription": "Dopo la revoca, dovrai autorizzare nuovamente prima che qualsiasi assistente AI possa agire sul tuo tenant.",
+      "onlyAppDescription": "Dopo la revoca, dovrai autorizzare nuovamente prima che qualsiasi client AI possa agire sul tuo tenant.",
       "reasonPlaceholder": "Non più necessario, attività sospetta...",
       "revokeAction": "Revoca l'accesso"
     }
@@ -736,8 +746,8 @@
     "header": {
       "menu": "Menù",
       "openMenu": "Apri il menu di navigazione",
-      "ai": "Assistente AI",
-      "aiTitle": "Assistente AI (Cmd+Shift+A)",
+      "ai": "Breeze AI",
+      "aiTitle": "Breeze AI (⌘⇧A)",
       "help": "Aiuto e documenti",
       "helpTitle": "Guida e documenti (Cmd+Shift+H)",
       "theme": "Tema",
@@ -806,7 +816,11 @@
         "alertRules": "Regole di avviso",
         "alertRulesDescription": "Gestisci gli avvisi nelle policy di configurazione",
         "keyboardShortcuts": "Scorciatoie da tastiera",
-        "keyboardShortcutsDescription": "Tutti i tasti e le sequenze in un'unica scheda"
+        "keyboardShortcutsDescription": "Tutti i tasti e le sequenze in un'unica scheda",
+        "askBreezeAi": "Chiedi a Breeze AI",
+        "askBreezeAiDescription": "Apri il pannello laterale di Breeze AI",
+        "wispHome": "Apri Wisp",
+        "wispHomeDescription": "Vai alla tua home di Wisp"
       },
       "numberHint": "{{mod}}1–9 per aprire"
     },
@@ -874,7 +888,7 @@
       "help": "Apri il pannello di aiuto",
       "showThis": "Mostra questa scheda",
       "orgSwitcher": "Apri il selettore dell'organizzazione",
-      "aiSidebar": "Mostra o nascondi la barra laterale IA",
+      "aiSidebar": "Mostra o nascondi Breeze AI",
       "close": "Chiudi una finestra di dialogo o un menu",
       "typingNote": "Le scorciatoie a tasto singolo sono sospese mentre digiti in un campo.",
       "create": "Crea",
@@ -1070,6 +1084,68 @@
       }
     },
     "psa": {
+      "PsaAlertTicketingCard": {
+        "title": "Ticket di avviso",
+        "scopeNote": "Valido per l’intero partner; nessuna sostituzione per organizzazione.",
+        "pausedBanner": "In pausa: il PSA ha rifiutato le credenziali. Esegui “Testa connessione” per riprendere.",
+        "yes": "Attivi",
+        "no": "Disattivati",
+        "selectPlaceholder": "Seleziona…",
+        "priorityDefault": "Predefinito del PSA",
+        "closedSuffix": "{{name}} (chiuso)",
+        "saved": "Impostazioni dei ticket di avviso salvate",
+        "saving": "Salvataggio…",
+        "save": "Salva",
+        "conflict": "Queste impostazioni sono state modificate altrove. Sono stati caricati i valori più recenti; verificali e salva di nuovo.",
+        "errors": {
+          "save": "Impossibile salvare le impostazioni dei ticket di avviso"
+        },
+        "status": {
+          "active": "I ticket di avviso sono abilitati per questa connessione.",
+          "notExternal": "Associa questa connessione come PSA di gestione dei servizi (modalità esterna) per usare i ticket di avviso.",
+          "disabled": "I ticket di avviso sono disattivati.",
+          "paused": "I ticket di avviso sono in pausa finché la connessione al PSA non funziona di nuovo.",
+          "companyLinksUnverified": "Conferma i collegamenti delle aziende per questa istanza del PSA.",
+          "invalidConfig": "Le impostazioni salvate dei ticket di avviso non sono valide. Verificale e salvale di nuovo.",
+          "unsupportedProvider": "I ticket di avviso non sono disponibili per questo provider PSA.",
+          "credentialsUnusable": "Le credenziali di questa connessione sono incomplete o illeggibili. Modifica la connessione e inseriscile di nuovo."
+        },
+        "fields": {
+          "enabled": "Abilita i ticket di avviso",
+          "board": "Bacheca",
+          "openStatus": "Stato dei nuovi ticket",
+          "closedStatus": "Stato chiuso",
+          "priorityHeading": "Priorità del PSA in base alla gravità dell’avviso",
+          "minSeverity": "Gravità minima",
+          "minSeverityHelp": "Bassa include i monitor a livello di avvertenza",
+          "closeOnResolve": "Chiudi il ticket quando l’avviso viene risolto",
+          "noteOnAcknowledge": "Aggiungi una nota quando l’avviso viene preso in carico",
+          "confirmCompanyLinks": "I collegamenti alle aziende delle organizzazioni corrispondono a questa istanza del PSA"
+        },
+        "severity": {
+          "critical": "Critica",
+          "high": "Alta",
+          "medium": "Media",
+          "low": "Bassa",
+          "info": "Informazione"
+        },
+        "options": {
+          "error": "Impossibile caricare le opzioni dal PSA",
+          "retry": "Riprova",
+          "truncated": "Vengono mostrati solo i primi risultati del PSA."
+        },
+        "readOnly": {
+          "enabled": "Ticket di avviso"
+        },
+        "loadError": {
+          "message": "Impossibile caricare le impostazioni dei ticket di avviso",
+          "retry": "Riprova"
+        },
+        "configInvalid": {
+          "warning": "Le impostazioni salvate dei ticket di avviso non possono essere lette. Il salvataggio le sostituirà.",
+          "confirm": "Sostituisci le impostazioni illeggibili"
+        }
+      },
       "PsaCompanyImport": {
         "title": "Importa aziende",
         "subtitle": "Crea organizzazioni dalle aziende presenti in {{name}}.",
@@ -1261,7 +1337,7 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "Nessun ticket corrisponde alla tua ricerca o ai tuoi filtri.",
-          "noTickets": "La sincronizzazione dei ticket non è ancora disponibile, quindi i ticket PSA non vengono importati.",
+          "noTickets": "Nessun ticket di avviso. Abilita i ticket degli avvisi nella connessione ConnectWise Manage associata.",
           "title": "Nessun ticket PSA"
         },
         "filters": {
@@ -1274,19 +1350,53 @@
           "updated": "Aggiornato"
         },
         "searchPlaceholder": "Cerca ticket",
-        "status": {
-          "closed": "Chiuso",
-          "inProgress": "In corso",
-          "open": "Aperto",
-          "resolved": "Risolto",
-          "waiting": "In attesa"
-        },
         "ticketCount": "{{filtered}} di {{total}} ticket",
-        "title": "Ticket sincronizzati",
+        "title": "Ticket degli avvisi",
         "unlinked": "Scollegato"
+      },
+      "PsaAlertTicketingActivity": {
+        "title": "Attività dei ticket",
+        "refresh": "Aggiorna",
+        "redrive": "Riprova",
+        "loading": "Caricamento dell’attività dei ticket…",
+        "loadFailed": "Impossibile caricare l’attività dei ticket. Aggiorna per riprovare.",
+        "actionFailed": "Impossibile aggiornare l’attività dei ticket.",
+        "actionSucceeded": "Attività dei ticket aggiornata.",
+        "help": "Riprova ripete le creazioni non riuscite e gli avvisi senza azienda collegata. Segna come gestito interrompe l’elaborazione senza modificare il ticket PSA.",
+        "empty": "Nessun ticket richiede attenzione.",
+        "viewAlert": "Visualizza avviso",
+        "createAnyway": "Crea comunque",
+        "markHandled": "Segna come gestito",
+        "duplicateWarning": "Potrebbe già esistere un ticket nel PSA. Controlla prima: questo unico nuovo tentativo può creare un duplicato.",
+        "confirmCreate": "Crea un altro ticket",
+        "cancel": "Annulla",
+        "previous": "Precedente",
+        "next": "Successiva",
+        "page": "Pagina {{page}} di {{total}}",
+        "states": {
+          "never_attempted": "In coda",
+          "create_in_flight": "Creazione in corso",
+          "created": "Creato",
+          "create_outcome_unknown": "Esito della creazione sconosciuto",
+          "rejected": "Rifiutato",
+          "failed": "Non riuscito",
+          "needs_attention": "Richiede attenzione",
+          "handled": "Gestito",
+          "skipped_no_company": "Nessuna azienda collegata",
+          "skipped_ambiguous_company": "Collegamento azienda ambiguo",
+          "skipped_resolved_before_create": "Risolto prima della creazione"
+        }
       }
     },
     "webhooks": {
+      "ownership": {
+        "label": "Proprietà",
+        "allOrganizations": "Tutte le organizzazioni",
+        "thisOrganizationOnly": "Solo questa organizzazione",
+        "all": "Tutte",
+        "organization": "Organizzazione",
+        "test": "Invio di prova"
+      },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} tentativi di consegna",
         "empty": "Nessun tentativo di consegna ancora.",
@@ -1339,6 +1449,10 @@
             "description": "Attivato quando un dispositivo si connette.",
             "label": "Dispositivo online"
           },
+          "deviceReinstalled": {
+            "description": "Si attiva quando una macchina reinstallata viene ricollegata al record del dispositivo esistente.",
+            "label": "Dispositivo reinstallato"
+          },
           "scriptCompleted": {
             "description": "Attivato al termine di uno script.",
             "label": "Script completato"
@@ -1346,6 +1460,10 @@
           "ticketCreated": {
             "description": "Attivato quando viene creato un ticket.",
             "label": "Ticket creato"
+          },
+          "ticketMerged": {
+            "description": "Attivato quando un ticket viene unito a un altro ticket.",
+            "label": "Ticket unito"
           },
           "ticketCommented": {
             "description": "Attivato quando viene aggiunto un commento o una nota a un ticket.",
@@ -1374,6 +1492,18 @@
           "integrationHealthResolved": {
             "description": "Si attiva quando un incidente di stato di una connessione viene risolto.",
             "label": "Incidente di stato della connessione risolto"
+          },
+          "alertAcknowledged": {
+            "label": "Avviso preso in carico",
+            "description": "Attivato quando un avviso viene preso in carico."
+          },
+          "alertSuppressed": {
+            "label": "Avviso sospeso",
+            "description": "Attivato quando un avviso viene sospeso."
+          },
+          "alertEscalated": {
+            "label": "Avviso escalato",
+            "description": "Attivato quando viene eseguito un passaggio di una policy di escalation per un avviso ancora attivo."
           }
         },
         "fields": {
@@ -1425,6 +1555,22 @@
           "secretRequired": "Il segreto è richiesto per l'autenticazione HMAC.",
           "tokenRequired": "Il token è obbligatorio per l'autenticazione bearer",
           "urlRequired": "L'URL è obbligatorio"
+        },
+        "neverDelivered": {
+          "marker": "Mai recapitato",
+          "explanation": "Breeze non invia mai questo evento. Verrà rimosso al salvataggio del webhook.",
+          "banner": "Breeze non invia mai questo evento, quindi questo webhook non ha mai effettuato una consegna. Scegli un altro evento prima di salvare."
+        },
+        "payloadVersion": {
+          "title": "Versione dei dati",
+          "v2": {
+            "label": "v2 (consigliata)",
+            "description": "Gli eventi di avviso includono nome host, sede, organizzazione, stato e un collegamento all’avviso."
+          },
+          "v1": {
+            "label": "v1 (originale)",
+            "description": "I dati di avviso originali, conservati per le integrazioni esistenti."
+          }
         }
       },
       "WebhookList": {
@@ -1506,7 +1652,8 @@
           "enabled": "Webhook abilitato",
           "retryQueued": "Nuovo tentativo di consegna in coda",
           "testQueued": "Consegna di prova in coda",
-          "updated": "Webhook aggiornato"
+          "updated": "Webhook aggiornato",
+          "deleted": "Webhook \"{{name}}\" eliminato"
         },
         "title": "Webhook"
       }
@@ -1996,8 +2143,8 @@
         "errors": {
           "loadFailed": "Impossibile caricare le statistiche della flotta"
         },
-        "title": "Orchestrazione della flotta",
-        "description": "Gestisci policy, distribuzioni, patch e automazioni nel tuo parco dispositivi",
+        "title": "Rilevazioni",
+        "description": "Schemi tra dispositivi individuati dai lavoratori: un’unica azione invece di molte",
         "partialWarning": "Alcuni dati potrebbero essere incompleti. Impossibile caricare: {{endpoints}}",
         "cards": {
           "policies": "Policy",
@@ -2011,7 +2158,7 @@
           "reports": "Report"
         },
         "aiFleetActions": "Azioni della flotta AI",
-        "aiFleetActionsHint": "Fai clic per chiedere all'assistente AI",
+        "aiFleetActionsHint": "Fai clic per chiedere a Breeze AI",
         "quickActions": {
           "checkCompliance": "Verifica conformità",
           "activeDeployments": "Distribuzioni attive",
@@ -2398,8 +2545,8 @@
             "description": "Gestisci più clienti? Passa da un'organizzazione all'altra qui."
           },
           "aiHelp": {
-            "title": "Assistenza basata sull'AI",
-            "description": "Poni domande sulla tua flotta, risolvi i problemi o genera report. Premi Cmd+Shift+A in qualsiasi momento."
+            "title": "Breeze AI",
+            "description": "Poni domande sulla tua flotta in linguaggio naturale, risolvi i problemi o genera report. Premi ⌘⇧A in qualsiasi momento."
           }
         },
         "skipTour": "Salta il tour",

@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import '@/lib/i18n';
 import AuditFilters from './AuditFilters';
+import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [] }) }),
@@ -33,5 +34,65 @@ describe('AuditFilters (#9672)', () => {
     fireEvent.click(screen.getByRole('button', { name: /clear all/i }));
     fireEvent.click(screen.getByRole('button', { name: /^custom$/i }));
     expect(dates().map((d) => d.value)).toEqual(['', '']);
+  });
+
+  // #9941: the panel unmounts on Apply, so reopening must reflect what is applied.
+  it('reopens showing the applied custom range and selections, not the defaults', () => {
+    render(
+      <AuditFilters
+        initialFilters={{
+          datePreset: 'custom',
+          startDate: '2026-10-01',
+          endDate: '2026-10-05',
+          actions: ['script'],
+          resources: ['device'],
+          search: 'disk',
+        }}
+      />
+    );
+    const dates = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="date"]'));
+    expect(dates.map((d) => d.value)).toEqual(['2026-10-01', '2026-10-05']);
+    expect(screen.getByTestId('audit-date-preset-custom').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByTestId('audit-date-preset-7d').getAttribute('aria-pressed')).toBe('false');
+    expect(screen.getByTestId('audit-action-option-script').querySelector('input')!.checked).toBe(true);
+    expect(screen.getByTestId('audit-resource-option-device').querySelector('input')!.checked).toBe(true);
+    expect(screen.getByTestId<HTMLInputElement>('audit-details-search').value).toBe('disk');
+  });
+
+  it('re-applying a reopened panel unchanged keeps the same filters', () => {
+    const onApply = vi.fn();
+    const applied = {
+      datePreset: 'custom' as const,
+      startDate: '2026-10-01',
+      endDate: '2026-10-05',
+      userId: undefined,
+      userEmail: undefined,
+      actions: ['script'],
+      resources: [],
+      search: '',
+    };
+    render(<AuditFilters initialFilters={applied} onApply={onApply} />);
+    fireEvent.click(screen.getByRole('button', { name: /apply filters/i }));
+    expect(onApply).toHaveBeenCalledWith(applied);
+  });
+
+  it('keeps and shows the applied user while the users list has not loaded', () => {
+    vi.mocked(fetchWithAuth).mockReturnValueOnce(new Promise(() => {}));
+    const onApply = vi.fn();
+    render(
+      <AuditFilters
+        initialFilters={{ datePreset: '7d', userId: 'u1', userEmail: 'dana@example.com', actions: [], resources: [], search: '' }}
+        onApply={onApply}
+      />
+    );
+    expect(screen.getByTestId('audit-user-filter-chip').textContent).toContain('dana@example.com');
+    fireEvent.click(screen.getByRole('button', { name: /apply filters/i }));
+    expect(onApply).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u1', userEmail: 'dana@example.com' }));
+  });
+
+  it('opens with the defaults when no filters are applied', () => {
+    render(<AuditFilters initialFilters={null} />);
+    expect(screen.getByTestId('audit-date-preset-7d').getAttribute('aria-pressed')).toBe('true');
+    expect(document.querySelectorAll('input[type="date"]').length).toBe(0);
   });
 });

@@ -14,6 +14,7 @@ export class VulnerabilitiesPage {
   // Tabs + filters
   tabSoftware = () => this.page.getByTestId('vuln-tab-software');
   tabCves = () => this.page.getByTestId('vuln-tab-cves');
+  tabPanelCves = () => this.page.getByTestId('vuln-tabpanel-cves');
   filterStatus = () => this.page.getByTestId('vuln-filter-status');
 
   // Tables

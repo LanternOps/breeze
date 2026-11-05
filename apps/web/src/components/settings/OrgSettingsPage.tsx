@@ -154,16 +154,11 @@ type OrgDetails = {
   type?: string;
   maxDevices?: number;
   settings?: {
-    branding?: {
-      logoUrl?: string;
-      primaryColor?: string;
-      secondaryColor?: string;
-      theme?: 'light' | 'dark' | 'system';
-      // customCss deliberately absent (#5952) — it now lives in
-      // portal_branding, loaded/saved by OrgBrandingEditor via
-      // /orgs/organizations/:id/portal-settings, not here.
-      portalSubdomain?: string;
-    };
+    // #9673: retired. Nothing reads the org-level blob; the Branding tab lives in portal_branding
+    // (OrgBrandingEditor, /orgs/organizations/:id/portal-settings). Only the
+    // legacy logo is still looked at, to offer it to the org, and the next
+    // Branding save clears the whole category (handleBrandingSaved).
+    branding?: { logoUrl?: string } & Record<string, unknown>;
     defaults?: {
       policyDefaults?: Record<string, string>;
       deviceGroup?: string;
@@ -299,7 +294,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
   usePageItemName(orgDetails?.name);
   const [locked, setLocked] = useState<string[]>([]);
   // Issue #2124: registered versions for the pin selectors + the partner's
-  // effective pins (shown when `defaults.agentVersionPins` is partner-locked).
+  // effective pins (shown when the partner has set `defaults.agentVersionPins`).
   const [pinnableVersions, setPinnableVersions] = useState<PinnableVersions | null>(null);
   const [partnerPins, setPartnerPins] = useState<AgentVersionPinsValue | undefined>(undefined);
   // Issue #2776: the partner's enrollment-link lifetime cap, for the read-only
@@ -409,13 +404,14 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         setEffectiveDefaults(effData.effective?.defaults);
         setAiApprovalTimeout(effData.aiApprovalTimeout ?? null);
         // Issue #2124: pins are inherit-with-override, NOT enforced-locked (see the
-        // assertNotLocked exemption in the org PATCH). But `locked` still carries
-        // `defaults.agentVersionPins` when the PARTNER set one — we use that purely
-        // as a "partner has a pin" signal so the effective value is the partner's
-        // (not the org's own, which mergeCategory would surface when the partner
-        // hasn't pinned). The org selector is never disabled by this.
+        // assertNotLocked exemption in the org PATCH), so since #9762 they are
+        // reported in `partnerDefaults`, never in `locked`. That entry is the
+        // "partner has a pin" signal: only then is the merged effective value the
+        // partner's (otherwise it is the org's own, which mergeCategory surfaces
+        // when the partner hasn't pinned). The org selector is never disabled.
+        const partnerDefaultsList: string[] = effData.partnerDefaults || [];
         setPartnerPins(
-          lockedList.includes('defaults.agentVersionPins')
+          partnerDefaultsList.includes('defaults.agentVersionPins')
             ? effData.effective?.defaults?.agentVersionPins
             : undefined,
         );
@@ -495,6 +491,18 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       return false;
     }
   }, [effectiveOrgId, orgDetails, isArchived, fetchOrgDetails, t]);
+
+  // #9673: the editor has already saved through portal-settings (an archived
+  // org never gets that far: saveBlockedMessage). Clearing the retired blob is
+  // the only org write left.
+  const handleBrandingSaved = useCallback(async () => {
+    const legacy = orgDetails?.settings?.branding;
+    if (legacy && Object.keys(legacy).length > 0) {
+      return handleSaveSettings('branding', {});
+    }
+    setSaveState({ hasUnsavedChanges: false, lastSavedAt: formatTime(new Date()) });
+    return true;
+  }, [orgDetails, handleSaveSettings]);
 
   const handleSaveName = useCallback(async () => {
     if (!effectiveOrgId) return;
@@ -641,9 +649,10 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           <OrgBrandingEditor
             organizationName={displayOrg.name}
             orgId={effectiveOrgId}
-            branding={orgDetails?.settings?.branding}
+            legacyLogoUrl={orgDetails?.settings?.branding?.logoUrl}
             onDirty={handleDirty}
-            onSave={(data) => handleSaveSettings('branding', data)}
+            onSave={handleBrandingSaved}
+            saveBlockedMessage={isArchived ? t('orgSettingsPage.archived.saveBlocked') : undefined}
             locked={locked}
           />
         );
@@ -933,7 +942,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
   };
 
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-6">
+    <div className="flex flex-col gap-6">
       {propOrgId && (
         <>
           <nav className="mb-1 flex items-center gap-1 text-xs text-muted-foreground">
@@ -951,7 +960,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
       )}
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">{t('orgSettingsPage.title')}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">{t('orgSettingsPage.title')}</h1>
           <p className="text-sm text-muted-foreground">
             {t('orgSettingsPage.description', { organization: displayOrg.name })}
           </p>
@@ -1033,6 +1042,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
           activeKey={activeTab}
           onNavigate={key => switchTab(key as TabKey)}
           selectId="org-settings-section"
+          testIdPrefix="org-settings"
         />
 
         <div className="min-w-0 space-y-6">{renderContent()}</div>

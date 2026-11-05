@@ -156,7 +156,7 @@ vi.mock('../services/permissions', async (importOriginal) => {
 
 import { mcpServerRoutes } from './mcpServer';
 
-const FLOW_TOOLS = ['draft_flow', 'validate_flow', 'get_flow', 'list_flows'];
+const FLOW_TOOLS = ['draft_flow', 'validate_flow', 'get_flow', 'list_flows', 'run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run'];
 const def = (name: string) => ({ name, description: name, input_schema: { type: 'object', properties: {} } });
 
 beforeEach(() => {
@@ -165,7 +165,7 @@ beforeEach(() => {
   mocks.executeTool.mockReset().mockResolvedValue(JSON.stringify({ ok: true }));
   mocks.getToolDefinitions.mockReset().mockReturnValue([def('get_invite_funnel'), ...FLOW_TOOLS.map(def)]);
   mocks.getToolTier.mockReset().mockImplementation((name: string) =>
-    name === 'get_invite_funnel' ? 1 : name === 'draft_flow' ? 2 : FLOW_TOOLS.includes(name) ? 1 : undefined,
+    name === 'get_invite_funnel' ? 1 : name === 'draft_flow' || name === 'cancel_flow_run' ? 2 : name === 'run_flow' ? 3 : FLOW_TOOLS.includes(name) ? 1 : undefined,
   );
   mocks.ledgerBegin.mockReset().mockResolvedValue({ id: 'ledger-1' });
   mocks.ledgerComplete.mockReset().mockResolvedValue(undefined);
@@ -186,7 +186,7 @@ async function rpc(method: string, params: Record<string, unknown>) {
 const listedNames = async () => ((await rpc('tools/list', {})).result?.tools ?? []).map((t: { name: string }) => t.name);
 
 describe('MCP flow tools gate (FLOWS_ENABLED)', () => {
-  it('flag off: tools/list omits the four flow tools', async () => {
+  it('flag off: tools/list omits the eight flow tools', async () => {
     vi.stubEnv('FLOWS_ENABLED', 'false');
     const names = await listedNames();
     expect(names).toContain('get_invite_funnel');
@@ -203,13 +203,134 @@ describe('MCP flow tools gate (FLOWS_ENABLED)', () => {
     expect(mocks.executeTool).not.toHaveBeenCalled();
   });
 
-  it('flag on: the flow tools are listed and callable', async () => {
+  it('flag on: the flow tools (bar the Tier 3 run_flow) are listed and callable', async () => {
     vi.stubEnv('FLOWS_ENABLED', 'true');
     const names = await listedNames();
-    for (const n of FLOW_TOOLS) expect(names).toContain(n);
+    for (const n of FLOW_TOOLS.filter((t) => t !== 'run_flow')) expect(names).toContain(n);
     const r = await rpc('tools/call', { name: 'get_flow', arguments: { flowId: '33333333-3333-4333-8333-333333333333' } });
     expect(r.error).toBeUndefined();
     expect(mocks.executeTool).toHaveBeenCalled();
     expect(mocks.executeTool.mock.calls[0]?.[0]).toBe('get_flow');
+  });
+
+  it('flag off: tools/call of every run tool is answered like an unknown tool', async () => {
+    vi.stubEnv('FLOWS_ENABLED', 'false');
+    for (const n of ['run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run']) {
+      const r = await rpc('tools/call', { name: n, arguments: {} });
+      expect(r.error?.message).toBe(`Unknown tool: ${n}`);
+    }
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  it('flag on: MCP tools/call run_flow is refused as approval-required and never executes', async () => {
+    vi.stubEnv('FLOWS_ENABLED', 'true');
+    const r = await rpc('tools/call', { name: 'run_flow', arguments: { flowId: '33333333-3333-4333-8333-333333333333' } });
+    expect(r.result?.isError).toBe(true);
+    expect(r.result?.content?.[0]?.text).toMatch(/approval/i);
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W5 PR C (#5220), Task C4 — flows as MCP tools (`flow__<slug>`), dispatched
+// EXPLICITLY before the tenant branch. The resolver and the run service are
+// mocked; listing, the live tier gate and the dispatch order are real.
+// ---------------------------------------------------------------------------
+const flowMocks = vi.hoisted(() => ({
+  resolveFlowTools: vi.fn(),
+  resolveFlowToolForCall: vi.fn(),
+  startToolRun: vi.fn(),
+  resolveTenantToolByName: vi.fn(),
+}));
+vi.mock('../services/flows/flowTools', () => ({
+  resolveFlowTools: (...a: unknown[]) => flowMocks.resolveFlowTools(...a),
+  resolveFlowToolForCall: (...a: unknown[]) => flowMocks.resolveFlowToolForCall(...a),
+}));
+vi.mock('../services/flows/toolRuns', () => ({ startToolRun: (...a: unknown[]) => flowMocks.startToolRun(...a) }));
+vi.mock('../services/toolSources/resolver', () => ({
+  resolveTenantTools: vi.fn(async () => []),
+  resolveTenantToolByName: (...a: unknown[]) => flowMocks.resolveTenantToolByName(...a),
+  resolveTenantToolHealthByName: vi.fn(async () => ({ found: false })),
+}));
+
+const flowTool = (name: string, tier: 1 | 2 | 3) => ({
+  name, flowId: `f-${name}`, flowName: name, publicationId: `p-${name}`, publicationSeq: 1,
+  owner: { orgId: 'org-1', partnerId: 'partner-1' }, partnerWide: false, tier, revision: `flowpub:p-${name}`,
+  definition: { name, description: `Flow: ${name}`, input_schema: { type: 'object', properties: {} } },
+  validate: () => ({ ok: true, value: { inputs: {}, orgId: null, idempotencyKey: null } }),
+});
+
+describe('MCP flow tools (flow__<slug>, W5 PR C)', () => {
+  beforeEach(() => {
+    vi.stubEnv('FLOWS_ENABLED', 'true');
+    flowMocks.resolveFlowTools.mockReset().mockResolvedValue([flowTool('flow__one', 1), flowTool('flow__two', 2), flowTool('flow__three', 3)]);
+    flowMocks.resolveFlowToolForCall.mockReset();
+    flowMocks.startToolRun.mockReset().mockResolvedValue({ ok: true, runId: 'run-1', duplicate: false, runPath: '/flows/runs/run-1' });
+    flowMocks.resolveTenantToolByName.mockReset().mockResolvedValue(null);
+  });
+
+  it('tier-1 flow listed for ai:read; tier-2 needs ai:write; tier-3 never listed', async () => {
+    testState.scopes = ['ai:read'];
+    let names = await listedNames();
+    expect(names).toContain('flow__one');
+    expect(names).not.toContain('flow__two');
+    expect(names).not.toContain('flow__three');
+    testState.scopes = ['ai:read', 'ai:write', 'ai:execute'];
+    names = await listedNames();
+    expect(names).toContain('flow__two');
+    expect(names).not.toContain('flow__three');
+  });
+
+  it('a tier-1 flow tool call starts an mcp run and never reaches the tenant branch', async () => {
+    testState.scopes = ['ai:read'];
+    flowMocks.resolveFlowToolForCall.mockResolvedValue(flowTool('flow__one', 1));
+    const r = await rpc('tools/call', { name: 'flow__one', arguments: {} });
+    expect(r.result?.isError).toBeFalsy();
+    expect(JSON.parse(r.result.content[0].text)).toEqual({ runId: 'run-1', runPath: '/flows/runs/run-1', duplicate: false });
+    expect(flowMocks.startToolRun).toHaveBeenCalledWith(expect.objectContaining({ name: 'flow__one' }), {}, 'mcp', expect.objectContaining({ kind: 'api_key' }), { defaultOrgId: 'org-1' });
+    expect(flowMocks.resolveTenantToolByName).not.toHaveBeenCalled();
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  it('re-enabled tier-3 flow is refused over MCP (listed at tier 2, live tier 3 at call)', async () => {
+    testState.scopes = ['ai:read', 'ai:write', 'ai:execute'];
+    flowMocks.resolveFlowToolForCall.mockResolvedValue(flowTool('flow__two', 3));
+    const r = await rpc('tools/call', { name: 'flow__two', arguments: {} });
+    expect(r.result?.isError).toBe(true);
+    expect(r.result?.content?.[0]?.text).toMatch(/approval/i);
+    expect(flowMocks.startToolRun).not.toHaveBeenCalled();
+  });
+
+  it('unattended tier-3 principal is still refused', async () => {
+    vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', 'api_key:key-1');
+    testState.scopes = ['ai:read', 'ai:write', 'ai:execute'];
+    flowMocks.resolveFlowToolForCall.mockResolvedValue(flowTool('flow__three', 3));
+    const r = await rpc('tools/call', { name: 'flow__three', arguments: {} });
+    expect(r.result?.isError).toBe(true);
+    expect(flowMocks.startToolRun).not.toHaveBeenCalled();
+  });
+
+  it('a tier-2 flow without ai:write is a scope error', async () => {
+    testState.scopes = ['ai:read'];
+    flowMocks.resolveFlowToolForCall.mockResolvedValue(flowTool('flow__two', 2));
+    const r = await rpc('tools/call', { name: 'flow__two', arguments: {} });
+    expect(r.error?.message).toMatch(/ai:write/);
+    expect(flowMocks.startToolRun).not.toHaveBeenCalled();
+  });
+
+  it('flag off: no flow tools listed or callable, answered like an unknown tool', async () => {
+    vi.stubEnv('FLOWS_ENABLED', 'false');
+    expect((await listedNames()).some((n: string) => n.startsWith('flow__'))).toBe(false);
+    const r = await rpc('tools/call', { name: 'flow__one', arguments: {} });
+    expect(r.error?.message).toBe('Unknown tool: flow__one');
+    expect(flowMocks.resolveFlowToolForCall).not.toHaveBeenCalled();
+    expect(flowMocks.resolveTenantToolByName).not.toHaveBeenCalled();
+  });
+
+  it('an unresolvable flow tool is an unknown tool (no existence oracle), never a tenant lookup', async () => {
+    flowMocks.resolveFlowToolForCall.mockResolvedValue(null);
+    const r = await rpc('tools/call', { name: 'flow__nope', arguments: {} });
+    expect(r.error?.message).toBe('Unknown tool: flow__nope');
+    expect(flowMocks.resolveTenantToolByName).not.toHaveBeenCalled();
   });
 });

@@ -10,6 +10,10 @@ import { validateAuthorizationKeys } from './policyDecidable';
 import { buildAuthContextForIntent } from './actorContext';
 import { isMcpOriginIntent } from '../mcpIntentEligibility';
 import { checkAgentReleaseAuthority } from './agentReleaseAuthority';
+import { checkFlowReleaseAuthority } from '../flows/releaseAuthority';
+import { isFlowToolName } from '../flows/toolNames';
+import { isFlowBuiltinIntent } from '../flows/builtins/intentKind';
+import { flowBuiltinTierFor } from '@breeze/shared';
 import { isOrgWideGovernanceIntent } from './orgWideGovernanceTools';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
 import { IntentScopeLostError } from './intentTargetScope';
@@ -467,9 +471,27 @@ async function revalidateApprovedIntentCore(
   // is fixed at 3 by construction (createActionIntent only accepts Tier-3
   // external bindings).
   const isExternalTool = !!intent.toolSourceToolId;
-  if (isExternalTool) {
+  // W5 PR C (#5220): an INVOKED-FLOW intent has no registry entry either. Its
+  // binding (flow + publication) is revalidated against the live flow by the
+  // worker's flow-tool branch (`flows/flowToolRelease.ts`), atomically with
+  // the run insert; here only its shape is asserted, so a flow tool name never
+  // reaches `getToolTier` (which would fail it as `tier_escalated`).
+  const isInvokedFlow = !!intent.invokedFlowId || isFlowToolName(intent.actionName);
+  if (isInvokedFlow) {
+    if (!intent.invokedFlowId || !isFlowToolName(intent.actionName) || !intent.toolRevision?.startsWith('flowpub:')) {
+      return { ok: false, errorCode: 'flow_tool_changed', details: { reason: 'malformed invoked-flow binding' } };
+    }
+  } else if (isExternalTool) {
     const binding = await revalidateExternalToolBinding(intent);
     if (!binding.ok) return binding;
+  } else if (isFlowBuiltinIntent(intent)) {
+    // Tool catalog W05 (#5220), Decision 12: a flow built-in step (an
+    // http_request write) is not a registered tool — its tier is its own
+    // `tierFor` on the stored arguments, and must not exceed the approved tier.
+    const currentTier = flowBuiltinTierFor(intent.actionName as Parameters<typeof flowBuiltinTierFor>[0], intent.arguments);
+    if (currentTier > intent.riskTier) {
+      return { ok: false, errorCode: 'tier_escalated', details: { currentTier, intentRiskTier: intent.riskTier } };
+    }
   } else {
     const currentTier = getToolTier(intent.actionName);
     if (currentTier === undefined || currentTier > intent.riskTier) {
@@ -510,6 +532,15 @@ async function revalidateApprovedIntentCore(
       return { ok: false, errorCode: authority.errorCode };
     }
     auth = rebuilt.auth;
+  } else if (intent.requestingFlowRunId) {
+    // Tool catalog W04 (#5219): rebuild the RUN's flow principal directly
+    // (not via buildAuthContextForIntent's null-collapsing branch) so the
+    // refusal reason survives into the audit trail.
+    const authority = await checkFlowReleaseAuthority(intent);
+    if (!authority.ok) {
+      return { ok: false, errorCode: 'actor_invalid', details: { reason: authority.code } };
+    }
+    auth = authority.auth;
   } else {
     try {
       auth = await buildAuthContextForIntent(intent);
@@ -556,6 +587,25 @@ async function revalidateApprovedIntentCore(
     return { ok: true, auth };
   }
 
+  // (e') Tool catalog W04 (#5219): a FLOW-originated intent is likewise never
+  // checked against user RBAC (checkToolPermission denies automation
+  // principals as its first statement). Its release authority is structural:
+  // the dispatch claim (services/flows/intentClaim.ts) re-proved, under lock,
+  // that the run is still parked on this intent, the flow is enabled on the
+  // run's publication, the delegator still holds what they delegated and the
+  // step still matches its pin; (c) rebuilt the run's flow principal and
+  // refused an org the flow does not own. Here only the structural
+  // consistency of that rebuild is asserted, and an external step reloads its
+  // descriptor under the flow principal (owner predicate + kill switch).
+  if (intent.requestingFlowRunId) {
+    const principal = auth.principal;
+    if (principal?.kind !== 'flow' || principal.runId !== intent.requestingFlowRunId || auth.orgId !== intent.orgId) {
+      return { ok: false, errorCode: 'actor_invalid', details: { reason: 'flow_principal_mismatch' } };
+    }
+    if (isExternalTool) return revalidateExternalToolForActor(intent, auth);
+    return { ok: true, auth };
+  }
+
   // (f) Site / exact-device ceiling on ORG-WIDE GOVERNANCE intents — the
   // release-time twin of the raise gate in `createActionIntent`.
   //
@@ -587,6 +637,16 @@ async function revalidateApprovedIntentCore(
   // The actor must STILL hold the specific RBAC permission the tool
   // requires, checked against the rebuilt `auth` from (c) — not the caller's
   // original, now possibly stale, permission check.
+  if (isInvokedFlow) {
+    // W5 PR C: starting a Tier ≥ 2 flow is `automations.write` (the chat gate
+    // applied it at creation). The APPROVER, who becomes the run's triggerer,
+    // is re-authorized per step by the worker's flow-tool branch.
+    const permissionDenial = await checkPermissionRequirements(auth, [{ resource: 'automations', action: 'write' }]);
+    if (permissionDenial) {
+      return { ok: false, errorCode: 'rbac_denied', details: { reason: permissionDenial } };
+    }
+    return { ok: true, auth };
+  }
   if (isExternalTool) {
     // Tool catalog W01 PR B (#5216): `checkToolPermission` keys on the core
     // registry and would deny a qualified name outright. External tools

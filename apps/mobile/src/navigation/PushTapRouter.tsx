@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Sentry from '@sentry/react-native';
 
+import { safeReportInternalError } from '../lib/errorReporting';
+
 import { store, useAppDispatch } from '../store';
 import { fetchTickets } from '../store/ticketsSlice';
 import {
@@ -11,11 +13,35 @@ import {
   parseTicketNotification,
   removeNotificationSubscription,
 } from '../services/notifications';
-import { navigateToTicket } from './navigationRef';
-import { LAST_HANDLED_RESPONSE_KEY, shouldHandleTap, shouldReplayResponse } from './pushRouting';
+import { navigateToTicket, navigateToWispThread } from './navigationRef';
+import {
+  LAST_HANDLED_RESPONSE_KEY,
+  resolvePushRoute,
+  shouldHandleTap,
+  shouldReplayResponse,
+  type PushRoute,
+} from './pushRouting';
+
+type Routable = NonNullable<PushRoute>;
+
+function routeOf(notification: { request: { content: { data?: unknown } } }): Routable | null {
+  const data = notification.request.content.data as Record<string, unknown> | undefined;
+  const route = resolvePushRoute(data);
+  // A wisp_nudge the parser refused is API contract drift (missing grantId /
+  // threadId): the tap would silently open nothing, so make it visible.
+  if (!route && data?.type === 'wisp_nudge') {
+    safeReportInternalError(
+      new Error(`unroutable wisp_nudge push (keys: ${Object.keys(data).sort().join(',')})`),
+      'wisp-push-parse',
+    );
+  }
+  return route;
+}
 
 /**
- * W10 (#4336). Ticket-only push listeners.
+ * W10 (#4336). Ticket push listeners; Wisp W06 adds `wisp_nudge` taps, which
+ * open the Wisp thread inside the Home stack. One dedupe key covers both kinds
+ * (a response identifier is unique per notification, whatever its type).
  *
  * Sibling of {@link ApprovalGate}, never a child: `ApprovalGate` returns
  * `<ApprovalScreen />` instead of its children while an approval is focused, so
@@ -36,7 +62,7 @@ export function PushTapRouter() {
   useEffect(() => {
     let cancelled = false;
 
-    const handleTap = async (identifier: string, ticketId: string) => {
+    const handleTap = async (identifier: string, route: Routable) => {
       lastHandled.current = identifier;
       try {
         // Persisted so a relaunch does not replay the same launching tap. A
@@ -49,7 +75,16 @@ export function PushTapRouter() {
       // Re-checked after the await: a sign-out (or any teardown) mid-write must
       // not navigate a tree that has already been swapped out.
       if (cancelled) return;
-      navigateToTicket(ticketId);
+      if (route.kind === 'ticket') {
+        navigateToTicket(route.ticketId);
+        return;
+      }
+      navigateToWispThread({
+        threadId: route.threadId,
+        grantId: route.grantId,
+        concernId: route.concernId,
+        approvalIntentId: route.approvalIntentId,
+      });
     };
 
     // Cold start: the response that launched the app is only available here,
@@ -66,12 +101,12 @@ export function PushTapRouter() {
         const last = await getLastNotificationResponse();
         if (cancelled || !last) return;
 
-        const parsed = parseTicketNotification(last.notification);
-        if (!parsed) return;
+        const route = routeOf(last.notification);
+        if (!route) return;
 
         const identifier = last.notification.request.identifier;
         if (!shouldReplayResponse(identifier, lastHandled.current)) return;
-        await handleTap(identifier, parsed.ticketId);
+        await handleTap(identifier, route);
       } catch (err) {
         // Reported, not just logged: a failure here means the push that
         // launched the app silently opened nothing, which is invisible to us
@@ -82,6 +117,8 @@ export function PushTapRouter() {
     })();
 
     const received = addNotificationReceivedListener((notification) => {
+      // A foreground wisp nudge has no list on screen to refresh: the thread
+      // screen loads its concerns on open. Only ticket pushes act here.
       if (!parseTicketNotification(notification)) return;
       // Foreground: the OS still presents the banner, so all this owes the
       // technician is a list that already reflects the change when they look.
@@ -92,13 +129,13 @@ export function PushTapRouter() {
     });
 
     const tapped = addNotificationResponseReceivedListener((response) => {
-      const parsed = parseTicketNotification(response.notification);
-      if (!parsed) return;
+      const route = routeOf(response.notification);
+      if (!route) return;
       const identifier = response.notification.request.identifier;
       // expo also delivers the app-LAUNCHING response here, so without this the
       // cold-start branch above and this listener both act on the same tap.
       if (!shouldHandleTap(identifier, lastHandled.current)) return;
-      void handleTap(identifier, parsed.ticketId);
+      void handleTap(identifier, route);
     });
 
     return () => {

@@ -16,6 +16,10 @@ func TestClassifyWindowsUpdateCategory(t *testing.T) {
 		{"firmware", []string{"Firmware"}, "firmware"},
 		{"definition (singular WUA name) -> definitions", []string{"Definition Updates"}, "definitions"},
 		{"feature", []string{"Feature Packs"}, "feature"},
+		// WUA files Windows feature releases ("Windows 11, version 25H2") under the
+		// Upgrades classification; rings govern them through the feature category.
+		{"upgrades -> feature", []string{"Windows 11", "Upgrades"}, "feature"},
+		{"upgrade & servicing drivers product category stays driver", []string{"Windows 10 and later upgrade & servicing drivers", "Drivers"}, "driver"},
 		{"service pack -> system", []string{"Service Packs"}, "system"},
 		{"update rollup -> system", []string{"Update Rollups"}, "system"},
 		// The core fix: product name first, real classification second — must NOT

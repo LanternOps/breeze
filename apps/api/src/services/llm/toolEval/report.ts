@@ -6,8 +6,10 @@ import type { CaseScore, summarize } from './score';
 export interface EvalReport {
   generatedAt: string;
   model: string;
-  /** `chat` = the 67-case chat set on one surface; `agent` = the agent golden set, each task on its own surface. */
-  suite: 'chat' | 'agent';
+  /** `chat` = the golden chat set on one surface; `agent` = the agent golden set, each task on its own surface; `lazy-index` = the W19 page-context set on chat. */
+  suite: 'chat' | 'agent' | 'lazy-index';
+  /** W19: `AI_TOOL_INDEX` for the run (chat prompt index text). */
+  toolIndexMode?: 'lazy' | 'full';
   toolSearch: string;
   /** `production` = each surface's own opt-in; `on` = measured as if the surface opted in (#7428). */
   surfaceSearch: 'production' | 'on';
@@ -53,7 +55,7 @@ export function renderMarkdownReport(input: EvalReport): string {
   const lines = [
     `# Tool-selection accuracy ${summary.hits}/${summary.total} = ${(summary.accuracy * 100).toFixed(1)}%`,
     '',
-    `Generated: ${input.generatedAt}; model: ${input.model}; suite: ${input.suite}; surface: ${input.surface}; tool search: ${input.toolSearch}, surface opt-in: ${input.surfaceSearch} (${input.toolSearchEnabled ? 'enabled' : 'disabled'} by policy${input.suite === 'agent' ? ' for every case' : ''}); prompt: ${input.promptVariant ?? 'base'}.`,
+    `Generated: ${input.generatedAt}; model: ${input.model}; suite: ${input.suite}; surface: ${input.surface}; tool search: ${input.toolSearch}, surface opt-in: ${input.surfaceSearch} (${input.toolSearchEnabled ? 'enabled' : 'disabled'} by policy${input.suite === 'agent' ? ' for every case' : ''}); prompt: ${input.promptVariant ?? 'base'}${input.toolIndexMode ? `; tool index: ${input.toolIndexMode}` : ''}.`,
     '',
     '| id | prompt | expected | observed |',
     '| --- | --- | --- | --- |',

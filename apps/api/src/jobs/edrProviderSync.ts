@@ -15,11 +15,14 @@ import {
   EdrProviderRequestError,
   type EdrAdapterContext,
   type EdrDetectionPage,
+  type EdrDetectionRef,
   type EdrProviderAdapter,
 } from '../services/edrProviders/types';
 import {
+  applyDetectionStatusUpdates,
   clearExpiredTenantDenials,
   isDeadlockError,
+  loadOpenDetectionRefs,
   persistDetections,
   persistInventory,
   pruneMissingTenantEndpoints,
@@ -30,7 +33,7 @@ import {
   type TenantFetch,
 } from '../services/edrProviders/persist';
 import { autoMapEdrTenants } from '../services/edrProviders/mapping';
-import { matchEdrEndpoints } from '../services/edrProviders/deviceMatching';
+import { matchEdrEndpoints, strictMatchingFor } from '../services/edrProviders/deviceMatching';
 import {
   evaluateEdrAlerts,
   evaluateEdrEndpointHealth,
@@ -130,6 +133,9 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>, label: string): Pr
   }
   return dbModule.withSystemDbAccessContext(fn, label);
 };
+
+/** Vendor calls assumed per tenant/connection when an adapter declares no `capabilities.estimatedCalls`. */
+export const DEFAULT_ESTIMATED_CALLS = { perTenantDetection: 1, perTenantInventory: 3, perConnectionOverhead: 2 } as const;
 
 const SYNC_ALL_INTERVAL_MINUTES = 5;
 const ADVISORY_LOCK_NAMESPACE = 'edr-provider-sync';
@@ -414,6 +420,17 @@ interface LoadedConnection {
   staleDetailIds: Map<string, string[]>;
   /** inventory only: tenant row id -> every vendor endpoint id already stored */
   knownEndpointIds: Map<string, Set<string>>;
+  /** inventory only, `reread_open_on_inventory` adapters: tenant row id -> live open detections to re-read (stalest first) */
+  openDetections: Map<string, EdrDetectionRef[]>;
+}
+
+/** Open detections re-read per mapped tenant per inventory run unless the adapter declares `rereadOpenPerRun`. */
+const DEFAULT_REREAD_OPEN_PER_RUN = 20;
+
+function rereadCap(adapter: EdrProviderAdapter): number {
+  return adapter.capabilities.detectionStatusModel === 'reread_open_on_inventory' && adapter.rereadDetectionStatus
+    ? (adapter.capabilities.rereadOpenPerRun ?? DEFAULT_REREAD_OPEN_PER_RUN)
+    : 0;
 }
 
 /**
@@ -476,7 +493,25 @@ async function loadForSync(connectionId: string, stream: EdrSyncStream): Promise
         }
       }
     }
-    return { row, tenants, staleDetailIds, knownEndpointIds };
+    let openDetections = new Map<string, EdrDetectionRef[]>();
+    if (stream === 'inventory') {
+      let cap = 0;
+      try {
+        cap = rereadCap(getEdrProvider(row.provider));
+      } catch (error) {
+        // An unknown provider fails loudly later, in the main flow; log so a bug here cannot silently disable the re-read.
+        console.error(`[EdrProviderSync] Connection ${connectionId}: re-read capability lookup failed:`, error);
+      }
+      if (cap > 0) {
+        openDetections = await loadOpenDetectionRefs(
+          db as unknown as EdrSyncTx,
+          connectionId,
+          tenants.filter((t) => t.orgId).map((t) => t.id),
+          cap,
+        );
+      }
+    }
+    return { row, tenants, staleDetailIds, knownEndpointIds, openDetections };
   }, `edrProviderSync.load.${stream}`);
 }
 
@@ -709,7 +744,13 @@ export async function syncEdrInventory(
                 loaded.staleDetailIds.get(known.id) ?? [],
               ))
               : [];
-            return { vendorTenantId: t.vendorTenantId, ok: true, value: { endpoints, details } };
+            // A5: status changes on already-seen detections arrive by re-reading the open ones
+            // (read-only vendor calls). A throw fails this tenant's inventory like any endpoint failure.
+            const refs = loaded.openDetections.get(known.id) ?? [];
+            const reread = refs.length > 0 && adapter.rereadDetectionStatus
+              ? { refs, updates: await adapter.rereadDetectionStatus(ctx, ref, refs) }
+              : undefined;
+            return { vendorTenantId: t.vendorTenantId, ok: true, value: { endpoints, details, reread } };
           } catch (err) {
             // reauth / budget / rate limit: the whole run fails.
             if (err instanceof EdrProviderRequestError && err.scope === 'connection') throw err;
@@ -740,9 +781,24 @@ export async function syncEdrInventory(
       });
       const dropped = fetched.results.length - keep.length;
       const inv = await persistInventory(tx, conn, keep, now);
+      // A5: apply the re-read verdicts (and rotate the omitted refs) BEFORE the open-count read below.
+      for (const r of keep) {
+        if (!r.ok || !r.value.reread) continue;
+        const snap = byVendorId.get(r.vendorTenantId);
+        if (!snap?.orgId) continue;
+        await applyDetectionStatusUpdates(tx, {
+          connectionId: conn.id,
+          tenantId: snap.id,
+          orgId: snap.orgId,
+          updates: r.value.reread.updates,
+          attempted: r.value.reread.refs.map((x) => ({ vendorDetectionId: x.vendorDetectionId, vendorKind: x.vendorKind })),
+        });
+      }
       await pruneMissingTenantEndpoints(tx, conn.id, now);
       await clearExpiredTenantDenials(tx, conn.id, now);
-      const match = await matchEdrEndpoints(tx, conn.id);
+      const match = await matchEdrEndpoints(tx, conn.id, {
+        strictUnique: strictMatchingFor(adapter.capabilities.endpointIdentifiers ?? []),
+      });
       await refreshDetectionDeviceLinks(tx, conn.id);
 
       const unmapped = Math.max(0, tenantCounts.unmapped - mapped.mapped);
@@ -759,7 +815,7 @@ export async function syncEdrInventory(
           detectionsMinutes: loaded.row.detectionIntervalMinutes,
           inventoryMinutes: loaded.row.inventoryIntervalMinutes,
         },
-        estimatedCalls: { perTenantDetection: 1, perTenantInventory: 3, perConnectionOverhead: 2 },
+        estimatedCalls: adapter.capabilities.estimatedCalls ?? DEFAULT_ESTIMATED_CALLS,
       });
 
       const failed = inv.failedTenants;

@@ -1,7 +1,8 @@
 {
   "aiInitiator": {
-    "assistant": "Assistant IA",
+    "assistant": "Breeze AI",
     "agent": "Agent IA",
+    "flow": "Flux",
     "originUnavailable": "Origine non disponible",
     "openSession": "Ouvrir la conversation",
     "openAgentRun": "Ouvrir l'exécution de l'agent",
@@ -27,7 +28,7 @@
     "patches": "Correctifs",
     "vulnerabilities": "Vulnérabilités",
     "oneDrive": "OneDrive",
-    "aiForOffice": "IA pour Office",
+    "aiForOffice": "Breeze AI for Office",
     "networkMonitor": "Réseau",
     "jobs": "Tâches",
     "flows": "Flux",
@@ -48,6 +49,7 @@
     "timesheets": "Feuilles de temps",
     "productCatalog": "Catalogue de produits",
     "deviceGroups": "Groupes d'appareils",
+    "sites": "Sites",
     "unassignedDevices": "Appareils non attribués",
     "configPolicies": "Politiques de configuration",
     "integrations": "Intégrations",
@@ -65,10 +67,6 @@
     "scriptAuthoring": "Rédaction de scripts",
     "toolSources": "Sources d’outils",
     "aiAgents": "Agents IA",
-    "aiAgentRuns": "Exécutions des agents IA",
-    "aiImpact": "Impact de l’IA",
-    "fixMemory": "Mémoire des correctifs",
-    "fleetDesign": "Conception de flotte",
     "customFields": "Champs personnalisés",
     "savedFilters": "Filtres enregistrés",
     "moreSettings": "Plus de paramètres",
@@ -89,12 +87,11 @@
     "variables": "Variables",
     "llmProviderCatalog": "Catalogue des fournisseurs LLM",
     "aiKillSwitch": "Coupe-circuit IA",
+    "wisp": "Wisp",
     "sectionAi": "IA",
     "sectionFleetManagement": "Gestion de la flotte",
     "sectionBilling": "Facturation",
     "sectionAdministration": "Administration",
-    "fleetOrchestration": "Orchestration de la flotte",
-    "aiAssistant": "Assistant IA",
     "software": "Logiciels",
     "softwareInventory": "Inventaire logiciel",
     "softwarePolicies": "Politiques logicielles",
@@ -118,7 +115,16 @@
     "ticketsChanges": "Changements",
     "endpointMessages": "Messagerie",
     "securityDetectionRules": "Règles de détection",
-    "planAndFeatures": "Forfait et fonctionnalités"
+    "planAndFeatures": "Forfait et fonctionnalités",
+    "breezeAi": "Breeze AI",
+    "workersHeading": "Travailleurs",
+    "agents": "Agents",
+    "runs": "Exécutions",
+    "aiTasks": "Tâches IA",
+    "findings": "Constats",
+    "impact": "Impact",
+    "aiKnowledgeSources": "Sources de connaissances",
+    "wispLockedServer": "Wisp fonctionne sur Breeze Cloud. Il n’est pas disponible sur ce serveur."
   },
   "documentTitles": {
     "dashboard": "Tableau de bord",
@@ -563,7 +569,9 @@
       "after": "est après",
       "between": "est entre",
       "withinLast": "dans la fin",
-      "notWithinLast": "Pas dans la dernière"
+      "notWithinLast": "Pas dans la dernière",
+      "below": "inférieure à",
+      "atLeast": "au moins"
     },
     "value": {
       "noValue": "Aucune valeur nécessaire",
@@ -585,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Retiré"
-      }
+      },
+      "softwareName": "Nom du logiciel",
+      "softwareVersion": "Version du logiciel"
     }
   },
   "account": {
@@ -669,7 +679,7 @@
     },
     "apps": {
       "title": "Applications connectées",
-      "description": "Les assistants IA et autres clients MCP (Claude.ai, ChatGPT, Cursor, ...) que vous avez autorisés à agir en votre nom. Révoquez l’accès à tout moment — les jetons cessent de fonctionner dans les 10 minutes.",
+      "description": "Les clients IA (Claude.ai, ChatGPT, Cursor, …) que vous avez autorisés à agir en votre nom. Révoquez l’accès à tout moment — les jetons cessent de fonctionner dans les 10 minutes.",
       "empty": "Aucune application connectée",
       "emptyDescription": "Lorsque vous autorisez un chat Claude.ai, ChatGPT, Cursor ou tout autre client MCP, il apparaîtra ici afin que vous puissiez le révoquer plus tard.",
       "authorized": "Autorisé",
@@ -679,7 +689,7 @@
       "revokeTitle": "Annuler {{app}} ?",
       "revokeDescription": "Toutes les autorisations et tous les jetons d’actualisation de ce client seront effacés. Les jetons cesseront de fonctionner dans les 10 minutes. Vous devrez autoriser de nouveau le client lors de sa prochaine utilisation.",
       "onlyAppTitle": "C’est votre seule application autorisée.",
-      "onlyAppDescription": "Après la révocation, vous devrez réautoriser avant qu’un assistant IA puisse agir sur votre locataire.",
+      "onlyAppDescription": "Après la révocation, vous devrez réautoriser avant qu’un client IA puisse agir sur votre locataire.",
       "reasonPlaceholder": "Plus besoin, activité suspecte, ...",
       "revokeAction": "Révoquer l’accès"
     }
@@ -736,8 +746,8 @@
     "header": {
       "menu": "Menu",
       "openMenu": "Ouvrir le menu de navigation",
-      "ai": "Assistant IA",
-      "aiTitle": "Assistant IA (Cmd+Shift+A)",
+      "ai": "Breeze AI",
+      "aiTitle": "Breeze AI (⌘⇧A)",
       "help": "Aide et documentation",
       "helpTitle": "Aide & Documentation (Cmd+Shift+H)",
       "theme": "Thème",
@@ -806,7 +816,11 @@
         "alertRules": "Règles d'alerte",
         "alertRulesDescription": "Gérer les alertes dans les politiques de configuration",
         "keyboardShortcuts": "Raccourcis clavier",
-        "keyboardShortcutsDescription": "Toutes les touches et séquences sur une seule carte"
+        "keyboardShortcutsDescription": "Toutes les touches et séquences sur une seule carte",
+        "askBreezeAi": "Demander à Breeze AI",
+        "askBreezeAiDescription": "Ouvrir le panneau latéral Breeze AI",
+        "wispHome": "Ouvrir Wisp",
+        "wispHomeDescription": "Accéder à votre accueil Wisp"
       },
       "numberHint": "{{mod}}1–9 pour ouvrir"
     },
@@ -874,7 +888,7 @@
       "help": "Ouvrir le panneau d'aide",
       "showThis": "Afficher cette carte",
       "orgSwitcher": "Ouvrir le sélecteur d'organisation",
-      "aiSidebar": "Afficher ou masquer la barre latérale IA",
+      "aiSidebar": "Afficher ou masquer Breeze AI",
       "close": "Fermer une boîte de dialogue ou un menu",
       "typingNote": "Les raccourcis à une touche sont suspendus pendant la saisie dans un champ.",
       "create": "Créer",
@@ -1070,6 +1084,68 @@
       }
     },
     "psa": {
+      "PsaAlertTicketingCard": {
+        "title": "Billets d’alertes",
+        "scopeNote": "Valide pour tout le partenaire; aucune dérogation par organisation.",
+        "pausedBanner": "En pause : le PSA a refusé les identifiants. Lancez « Tester la connexion » pour reprendre.",
+        "yes": "Activés",
+        "no": "Désactivés",
+        "selectPlaceholder": "Sélectionner…",
+        "priorityDefault": "Valeur par défaut du PSA",
+        "closedSuffix": "{{name}} (fermé)",
+        "saved": "Paramètres des billets d’alertes enregistrés",
+        "saving": "Enregistrement…",
+        "save": "Enregistrer",
+        "conflict": "Ces paramètres ont été modifiés ailleurs. Les valeurs les plus récentes ont été chargées; vérifiez-les et enregistrez de nouveau.",
+        "errors": {
+          "save": "Impossible d’enregistrer les paramètres des billets d’alertes"
+        },
+        "status": {
+          "active": "Les billets d’alertes sont activés pour cette connexion.",
+          "notExternal": "Liez cette connexion comme PSA de gestion des services (mode externe) pour utiliser les billets d’alertes.",
+          "disabled": "Les billets d’alertes sont désactivés.",
+          "paused": "Les billets d’alertes sont en pause jusqu’à ce que la connexion au PSA fonctionne de nouveau.",
+          "companyLinksUnverified": "Confirmez les liens d’entreprises pour cette instance du PSA.",
+          "invalidConfig": "Les paramètres enregistrés des billets d’alertes ne sont pas valides. Vérifiez-les et enregistrez de nouveau.",
+          "unsupportedProvider": "Les billets d’alertes ne sont pas offerts pour ce fournisseur de PSA.",
+          "credentialsUnusable": "Les identifiants de cette connexion sont incomplets ou illisibles. Modifiez la connexion et saisissez-les de nouveau."
+        },
+        "fields": {
+          "enabled": "Activer les billets d’alertes",
+          "board": "Tableau",
+          "openStatus": "Statut des nouveaux billets",
+          "closedStatus": "Statut fermé",
+          "priorityHeading": "Priorité du PSA selon la gravité de l’alerte",
+          "minSeverity": "Gravité minimale",
+          "minSeverityHelp": "Faible inclut les moniteurs de niveau avertissement",
+          "closeOnResolve": "Fermer le billet lorsque l’alerte est résolue",
+          "noteOnAcknowledge": "Ajouter une note lorsque l’alerte est prise en compte",
+          "confirmCompanyLinks": "Les liens d’entreprises des organisations correspondent à cette instance du PSA"
+        },
+        "severity": {
+          "critical": "Critique",
+          "high": "Élevée",
+          "medium": "Moyenne",
+          "low": "Faible",
+          "info": "Information"
+        },
+        "options": {
+          "error": "Impossible de charger les options du PSA",
+          "retry": "Réessayer",
+          "truncated": "Seuls les premiers résultats du PSA sont affichés."
+        },
+        "readOnly": {
+          "enabled": "Billets d’alertes"
+        },
+        "loadError": {
+          "message": "Impossible de charger les paramètres des billets d’alertes",
+          "retry": "Réessayer"
+        },
+        "configInvalid": {
+          "warning": "Les paramètres enregistrés des billets d’alertes sont illisibles. L’enregistrement les remplacera.",
+          "confirm": "Remplacer les paramètres illisibles"
+        }
+      },
       "PsaCompanyImport": {
         "title": "Importer les entreprises",
         "subtitle": "Créez des organisations à partir des entreprises de {{name}}.",
@@ -1261,7 +1337,7 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "Aucun ticket ne correspond à votre recherche ou à vos filtres.",
-          "noTickets": "La synchronisation des tickets n'est pas encore disponible ; les tickets PSA ne sont donc pas importés.",
+          "noTickets": "Aucun billet d’alerte pour le moment. Activez les billets d’alerte sur la connexion ConnectWise Manage associée.",
           "title": "Aucun ticket PSA"
         },
         "filters": {
@@ -1274,19 +1350,53 @@
           "updated": "Mise à jour"
         },
         "searchPlaceholder": "Rechercher des tickets",
-        "status": {
-          "closed": "Fermé",
-          "inProgress": "En cours",
-          "open": "Ouvrir",
-          "resolved": "Résolu",
-          "waiting": "En attente"
-        },
         "ticketCount": "{{filtered}} de {{total}} tickets",
-        "title": "Tickets synchronisés",
+        "title": "Billets d’alerte",
         "unlinked": "Non lié"
+      },
+      "PsaAlertTicketingActivity": {
+        "title": "Activité des billets",
+        "refresh": "Actualiser",
+        "redrive": "Relancer",
+        "loading": "Chargement de l’activité des billets…",
+        "loadFailed": "Impossible de charger l’activité des billets. Actualisez pour réessayer.",
+        "actionFailed": "Impossible de mettre à jour l’activité des billets.",
+        "actionSucceeded": "Activité des billets mise à jour.",
+        "help": "Relancer reprend les créations échouées et les alertes sans entreprise liée. Marquer comme traité arrête le traitement sans modifier le billet PSA.",
+        "empty": "Aucun billet ne nécessite votre attention.",
+        "viewAlert": "Voir l’alerte",
+        "createAnyway": "Créer quand même",
+        "markHandled": "Marquer comme traité",
+        "duplicateWarning": "Un billet existe peut-être déjà dans le PSA. Vérifiez d’abord : cette unique nouvelle tentative peut créer un doublon.",
+        "confirmCreate": "Créer un billet supplémentaire",
+        "cancel": "Annuler",
+        "previous": "Précédent",
+        "next": "Suivant",
+        "page": "Page {{page}} sur {{total}}",
+        "states": {
+          "never_attempted": "En attente",
+          "create_in_flight": "Création en cours",
+          "created": "Créé",
+          "create_outcome_unknown": "Résultat de création inconnu",
+          "rejected": "Refusé",
+          "failed": "Échec",
+          "needs_attention": "Attention requise",
+          "handled": "Traité",
+          "skipped_no_company": "Aucune entreprise liée",
+          "skipped_ambiguous_company": "Lien d’entreprise ambigu",
+          "skipped_resolved_before_create": "Résolu avant la création"
+        }
       }
     },
     "webhooks": {
+      "ownership": {
+        "label": "Propriété",
+        "allOrganizations": "Toutes les organisations",
+        "thisOrganizationOnly": "Cette organisation seulement",
+        "all": "Toutes",
+        "organization": "Organisation",
+        "test": "Envoi de test"
+      },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} tentatives de livraison",
         "empty": "Aucune tentative de livraison pour l’instant.",
@@ -1339,6 +1449,10 @@
             "description": "Déclenché lorsqu’un appareil se connecte.",
             "label": "Appareil en ligne"
           },
+          "deviceReinstalled": {
+            "description": "Déclenché lorsqu’une machine réinstallée est rattachée à sa fiche d’appareil existante.",
+            "label": "Appareil réinstallé"
+          },
           "scriptCompleted": {
             "description": "Déclenché à la fin d’un script.",
             "label": "Scénario terminé"
@@ -1346,6 +1460,10 @@
           "ticketCreated": {
             "description": "Déclenché lors de la création d’un ticket.",
             "label": "Ticket créé"
+          },
+          "ticketMerged": {
+            "description": "Déclenché lorsqu’un ticket est fusionné avec un autre ticket.",
+            "label": "Ticket fusionné"
           },
           "ticketCommented": {
             "description": "Déclenché lorsqu’un commentaire ou une note est ajouté à un ticket.",
@@ -1374,6 +1492,18 @@
           "integrationHealthResolved": {
             "description": "Se déclenche lorsqu'un incident d'état de connexion est résolu.",
             "label": "Incident d'état de connexion résolu"
+          },
+          "alertAcknowledged": {
+            "label": "Alerte prise en compte",
+            "description": "Déclenché quand une alerte est prise en compte."
+          },
+          "alertSuppressed": {
+            "label": "Alerte mise en sourdine",
+            "description": "Déclenché quand une alerte est mise en sourdine."
+          },
+          "alertEscalated": {
+            "label": "Alerte escaladée",
+            "description": "Déclenché quand une étape d’une politique d’escalade s’exécute pour une alerte toujours active."
           }
         },
         "fields": {
@@ -1425,6 +1555,22 @@
           "secretRequired": "Secret est nécessaire pour l’authentification HMAC",
           "tokenRequired": "Le jeton est requis pour l’authentification du porteur",
           "urlRequired": "URL est requis"
+        },
+        "neverDelivered": {
+          "marker": "Jamais livré",
+          "explanation": "Breeze n’envoie jamais cet événement. Il sera retiré à l’enregistrement de ce webhook.",
+          "banner": "Breeze n’envoie jamais cet événement. Ce webhook n’a donc jamais effectué de livraison. Choisissez un autre événement avant d’enregistrer."
+        },
+        "payloadVersion": {
+          "title": "Version des données",
+          "v2": {
+            "label": "v2 (recommandée)",
+            "description": "Les événements d’alerte comprennent le nom d’hôte, le site, l’organisation, l’état et un lien vers l’alerte."
+          },
+          "v1": {
+            "label": "v1 (originale)",
+            "description": "Les données d’alerte d’origine, conservées pour les intégrations existantes."
+          }
         }
       },
       "WebhookList": {
@@ -1506,7 +1652,8 @@
           "enabled": "Webhook activé",
           "retryQueued": "Nouvelle tentative de livraison mise en file d’attente",
           "testQueued": "Livraison de test mise en file d’attente",
-          "updated": "Webhook mis à jour"
+          "updated": "Webhook mis à jour",
+          "deleted": "Webhook \"{{name}}\" supprimé"
         },
         "title": "Webhooks"
       }
@@ -1996,8 +2143,8 @@
         "errors": {
           "loadFailed": "Impossible de charger les statistiques de flotte"
         },
-        "title": "Orchestration de la flotte",
-        "description": "Gérez les politiques, les déploiements, les correctifs et les automatisations à travers votre flotte",
+        "title": "Constats",
+        "description": "Tendances communes à plusieurs appareils repérées par les travailleurs : une seule action au lieu de plusieurs",
         "partialWarning": "Certaines données peuvent être incomplètes. Échec du chargement : {{endpoints}}",
         "cards": {
           "policies": "Politiques",
@@ -2011,7 +2158,7 @@
           "reports": "Rapports"
         },
         "aiFleetActions": "Actions de flotte IA",
-        "aiFleetActionsHint": "Cliquez pour demander à l’assistant IA",
+        "aiFleetActionsHint": "Cliquez pour demander à Breeze AI",
         "quickActions": {
           "checkCompliance": "Vérifier la conformité",
           "activeDeployments": "Déploiements actifs",
@@ -2398,8 +2545,8 @@
             "description": "Gérer plusieurs clients ? Passez d’une organisation à l’autre ici."
           },
           "aiHelp": {
-            "title": "Aide alimentée par l’IA",
-            "description": "Posez des questions sur votre flotte, dépannez les problèmes ou générez des rapports. Appuyez sur Cmd+Maj+A à tout moment."
+            "title": "Breeze AI",
+            "description": "Posez des questions sur votre flotte en langage courant, dépannez les problèmes ou générez des rapports. Appuyez sur ⌘⇧A à tout moment."
           }
         },
         "skipTour": "Ignorer la visite",
@@ -2550,7 +2697,7 @@
           "parameters": "Paramètres"
         },
         "accept": "Accepter",
-        "reject": "Rejeter",
+        "reject": "Refuser",
         "execute": "Exécuter",
         "requestApprovalTitle": "Demander l’approbation du PAM avant exécution",
         "requesting": "Demande...",

@@ -116,6 +116,19 @@ describe('ForcedMfaSetupPage policy-driven enrollment', () => {
     expect(screen.queryByTestId('enrollment-recovery-codes')).not.toBeInTheDocument();
   });
 
+  it('records the selected TOTP method after successful enrollment', async () => {
+    vi.mocked(apiGetMfaEnrollmentOptions).mockResolvedValue(options(true, false, false));
+    vi.mocked(apiEnableTotpMfa).mockResolvedValue(replacement);
+    render(<ForcedMfaSetupPage />);
+
+    await enterPasswordAndContinue();
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/auth/mfa/setup', expect.any(Object)));
+    fireEvent.click(await screen.findByTestId('confirm-totp'));
+
+    await waitFor(() => expect(commitMfaEnrollmentIfCurrent).toHaveBeenCalledWith(1, 'totp', replacement.tokens));
+    expect(screen.getByTestId('enrollment-recovery-codes')).toHaveTextContent('RC-ONE');
+  });
+
   it.each([
     ['sms', apiEnableSmsMfa],
     ['passkey', apiEnrollPasskey],
@@ -129,7 +142,7 @@ describe('ForcedMfaSetupPage policy-driven enrollment', () => {
     await enterPasswordAndContinue();
 
     await waitFor(() => expect(terminal).toHaveBeenCalledWith('correct horse'));
-    expect(commitMfaEnrollmentIfCurrent).toHaveBeenCalledWith(1, replacement.tokens);
+    expect(commitMfaEnrollmentIfCurrent).toHaveBeenCalledWith(1, method, replacement.tokens);
     expect(screen.getByTestId('enrollment-recovery-codes')).toHaveTextContent('RC-ONE');
     expect(navigateTo).not.toHaveBeenCalled();
 
@@ -149,7 +162,7 @@ describe('ForcedMfaSetupPage policy-driven enrollment', () => {
     authState.sessionGeneration += 1;
     resolveEnrollment(replacement);
 
-    await waitFor(() => expect(commitMfaEnrollmentIfCurrent).toHaveBeenCalledWith(1, replacement.tokens));
+    await waitFor(() => expect(commitMfaEnrollmentIfCurrent).toHaveBeenCalledWith(1, 'sms', replacement.tokens));
     expect(screen.queryByTestId('enrollment-recovery-codes')).not.toBeInTheDocument();
     expect(screen.queryByTestId('enrollment-continue')).not.toBeInTheDocument();
   });

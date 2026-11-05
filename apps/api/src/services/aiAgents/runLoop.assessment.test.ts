@@ -21,8 +21,12 @@ const REVISION_ID = '00000000-0000-4000-8000-0000000000e2';
 const GRANTOR = '00000000-0000-4000-8000-0000000000e3';
 const THREAD_ID = '00000000-0000-4000-8000-0000000000e4';
 
+type ExtraTool = { name: string; handler: (args: Record<string, unknown>, extra: unknown) => Promise<unknown> };
+
 interface Hooks {
   getAuth?: () => unknown;
+  /** The outcome tools the run registered (createBreezeMcpServer's `extraTools`). */
+  extraTools?: ExtraTool[];
   pre?: (tool: string, input: Record<string, unknown>) => Promise<{ allowed: boolean; error?: string }>;
   post?: (
     tool: string, input: Record<string, unknown>, output: string, isError: boolean, durationMs: number,
@@ -182,6 +186,10 @@ vi.mock('../wisp/grantAuthority', async (importOriginal) => ({
   resolveGrantCeiling,
 }));
 
+// Wisp W07 — the post-run specialist dispatch (its own rules: specialistDispatch.test.ts).
+const dispatchSpecialistRequests = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('../wisp/specialistDispatch', () => ({ dispatchSpecialistRequests }));
+
 import { executeAgentRun, resolveRunProfileLimits, resolveRunProfileToolAllowlist } from './runLoop';
 import { assessmentToolAllowlist } from './assessmentProfile';
 import { makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
@@ -249,19 +257,34 @@ function assessmentCtx(): AssessmentRunContext {
     grantId: GRANT_ID, grantRevisionId: REVISION_ID, grantorUserId: GRANTOR, threadId: THREAD_ID,
     threadSummary: 'Wisp picture', openConcerns: [], changedSince: null,
     digest: { alerts: [], tickets: [], incidents: [], runs: [], intents: [] },
-    watch: null, reason: { kind: 'tick' }, readiness: null, nudgeFeedback: [],
+    watch: null, reason: { kind: 'tick' }, readiness: null, nudgeFeedback: [], firstLook: false,
   };
 }
 
 const hooks: Hooks = {};
 let lastQuery: { prompt: unknown; options: Record<string, unknown> } | undefined;
 
-function scriptQuery(toolCalls: Array<{ tool: string; input: Record<string, unknown> }> = [], text = 'Assessment done.') {
+/**
+ * `viaHandler` runs the registered tool's REAL handler after an allowed pre
+ * hook and feeds its result (text + isError) to the post hook, as
+ * wrapExtraToolWithHooks does; otherwise an allowed call is a static ack.
+ */
+function scriptQuery(
+  toolCalls: Array<{ tool: string; input: Record<string, unknown>; viaHandler?: boolean }> = [],
+  text = 'Assessment done.',
+) {
   queryMock.mockImplementation((params) => {
     lastQuery = params;
     const generator = (async function* () {
       for (const call of toolCalls) {
         const verdict = await hooks.pre!(call.tool, call.input);
+        if (verdict.allowed && call.viaHandler) {
+          const handler = hooks.extraTools?.find((t) => t.name === call.tool)?.handler;
+          if (!handler) throw new Error(`no registered handler for ${call.tool}`);
+          const result = await handler(call.input, {}) as { content: Array<{ text: string }>; isError?: boolean };
+          await hooks.post!(call.tool, call.input, result.content[0]!.text, result.isError === true, 5);
+          continue;
+        }
         await hooks.post!(call.tool, call.input, verdict.allowed ? '{"status":"recorded"}' : JSON.stringify({ error: verdict.error }), !verdict.allowed, 5);
       }
       yield { type: 'assistant', message: { content: [{ type: 'text', text }] } };
@@ -300,10 +323,11 @@ beforeEach(() => {
   getCachedAiKillStateSnapshot.mockReturnValue({ killed: false, epoch: 0 });
   resolveGrantCeiling.mockResolvedValue(ceiling());
   loadAssessmentContext.mockResolvedValue(assessmentCtx());
-  createBreezeMcpServer.mockImplementation((getAuth, pre, post) => {
+  createBreezeMcpServer.mockImplementation((getAuth, pre, post, _session, extraTools) => {
     hooks.getAuth = getAuth;
     hooks.pre = pre;
     hooks.post = post;
+    hooks.extraTools = extraTools as unknown as ExtraTool[] | undefined;
     return { type: 'sdk', name: 'breeze', instance: {} };
   });
   scriptQuery();
@@ -349,6 +373,48 @@ describe('assessment run-loop wiring (Wisp W05b)', () => {
     expect(finalTransition()?.to).toBe('completed');
   });
 
+  // #10387: the prompt names the run's org, and the record_concern tool the
+  // run actually registers refuses an org subject that is not that org.
+  it('names the run org in the prompt and wires record_concern to refuse another org id', async () => {
+    seedRows({ profile: 'assessment', grant: true });
+    dbMockState.rowQueues.organizations = [[{ id: ORG_ID, partnerId: PARTNER_ID, name: 'Berthoud Vet Care' }]];
+    await executeAgentRun(RUN_ID);
+    const prompt = String(lastQuery?.prompt);
+    expect(prompt).toContain(`Organization id: ${ORG_ID}.`);
+    expect(prompt).toContain('Berthoud Vet Care');
+
+    const record = hooks.extraTools?.find((t) => t.name === 'record_concern');
+    expect(record).toBeDefined();
+    const nil = '00000000-0000-0000-0000-000000000000';
+    const refused = await record!.handler({ subject: { kind: 'org', id: nil }, summary: 'CVEs', severity: 'high' }, {});
+    expect(refused).toMatchObject({ isError: true });
+    expect(JSON.stringify(refused)).toContain(ORG_ID);
+    const ok = await record!.handler({ subject: { kind: 'org', id: ORG_ID }, summary: 'CVEs', severity: 'high' }, {});
+    expect(JSON.stringify(ok)).toContain('recorded');
+  });
+
+  // #10387, end to end: the refused call's isError result reaches the post
+  // hook, which never captures it — so it is neither applied nor even
+  // dropped later as raise_subject_not_in_org.
+  it('a record_concern the tool refused never lands in the outcome or reaches the finalizer', async () => {
+    seedRows({ profile: 'assessment', grant: true });
+    const nil = '00000000-0000-0000-0000-000000000000';
+    scriptQuery([
+      { tool: 'record_concern', input: { subject: { kind: 'org', id: nil }, summary: 'CVEs (wrong id)', severity: 'high' }, viaHandler: true },
+      { tool: 'record_concern', input: { subject: { kind: 'org', id: ORG_ID }, summary: 'CVEs', severity: 'high' }, viaHandler: true },
+    ]);
+    await executeAgentRun(RUN_ID);
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    const outcome = final.patch.outcome as {
+      assessment: { concernsRaised: Array<{ subject: { id: string } }> }; assessmentSkipped?: string[];
+    };
+    expect(outcome.assessment.concernsRaised.map((r) => r.subject.id)).toEqual([ORG_ID]);
+    expect(outcome.assessmentSkipped).toBeUndefined();
+    expect(upsertConcern).toHaveBeenCalledTimes(1);
+    expect(upsertConcern).toHaveBeenCalledWith(expect.objectContaining({ subject: { kind: 'org', id: ORG_ID } }));
+  });
+
   it('an assessment whose grant is inactive (null context) is skipped grant_inactive with no model call', async () => {
     seedRows({ profile: 'assessment', grant: true });
     loadAssessmentContext.mockResolvedValue(null);
@@ -368,7 +434,7 @@ describe('assessment run-loop wiring (Wisp W05b)', () => {
     scriptQuery([
       { tool: 'record_concern', input: raise('first') },
       { tool: 'record_concern', input: raise('second') },
-      { tool: 'request_specialist', input: { kind: 'backup', params: {}, reason: 'needs a backup specialist' } },
+      { tool: 'request_specialist', input: { kind: 'sweep', params: {}, reason: 'needs a backup specialist' } },
     ]);
     await executeAgentRun(RUN_ID);
     expect(upsertConcern).toHaveBeenCalledTimes(2);
@@ -378,6 +444,53 @@ describe('assessment run-loop wiring (Wisp W05b)', () => {
     const outcome = final.patch.outcome as { assessment: { concernsRaised: unknown[]; specialistRequests: unknown[] } };
     expect(outcome.assessment.concernsRaised).toHaveLength(2);
     expect(outcome.assessment.specialistRequests).toHaveLength(1);
+  });
+
+  it('W07: dispatchSpecialistRequests runs after finalizeAssessment and before the run is finished', async () => {
+    seedRows({ profile: 'assessment', grant: true });
+    dispatchSpecialistRequests.mockImplementationOnce(async (...args: unknown[]) => {
+      const result = args[1] as { outcome: { assessment: { specialistResults?: unknown[] } } };
+      result.outcome.assessment.specialistResults = [{ requestId: 'r0', kind: 'sweep', admitted: true }];
+    });
+    scriptQuery([
+      { tool: 'record_concern', input: { subject: { kind: 'org', id: ORG_ID }, summary: 'first', severity: 'low' } },
+      { tool: 'request_specialist', input: { kind: 'sweep', params: {}, reason: 'Backups failed twice at Greenwood' } },
+    ]);
+    await executeAgentRun(RUN_ID);
+    expect(dispatchSpecialistRequests).toHaveBeenCalledTimes(1);
+    const [ctxArg, resultArg] = dispatchSpecialistRequests.mock.calls[0] as unknown as [
+      { run: { id: string } }, { outcome: { assessment: { specialistRequests: unknown[] } } },
+    ];
+    expect(ctxArg.run.id).toBe(RUN_ID);
+    expect(resultArg.outcome.assessment.specialistRequests).toHaveLength(1);
+    // After finalizeAssessment (its rollup is that finalizer's last step) …
+    expect(dispatchSpecialistRequests.mock.invocationCallOrder[0]!)
+      .toBeGreaterThan(rollupPartnerPicture.mock.invocationCallOrder[0]!);
+    // … and before finishRun serializes the outcome it wrote into.
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    expect((final.patch.outcome as { assessment: { specialistResults: unknown[] } }).assessment.specialistResults)
+      .toEqual([{ requestId: 'r0', kind: 'sweep', admitted: true }]);
+  });
+
+  it('W07: a dispatchSpecialistRequests throw never fails the assessment run', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    seedRows({ profile: 'assessment', grant: true });
+    dispatchSpecialistRequests.mockRejectedValueOnce(new Error('dispatch exploded'));
+    scriptQuery([
+      { tool: 'request_specialist', input: { kind: 'sweep', params: {}, reason: 'Backups failed twice at Greenwood' } },
+    ]);
+    await executeAgentRun(RUN_ID);
+    expect(dispatchSpecialistRequests).toHaveBeenCalledTimes(1);
+    expect(finalTransition()?.to).toBe('completed');
+    expect(finalTransition()?.patch.errorCode).toBeUndefined();
+    consoleError.mockRestore();
+  });
+
+  it('W07: a non-assessment run never reaches the specialist dispatch', async () => {
+    seedRows({ profile: 'triage', grant: false });
+    await executeAgentRun(RUN_ID);
+    expect(dispatchSpecialistRequests).not.toHaveBeenCalled();
   });
 
   it('a non-assessment run cannot record an assessment outcome', async () => {

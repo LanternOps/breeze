@@ -28,7 +28,7 @@ export const SUPPORTED_EXTENSION_CAPABILITIES = [
  */
 export const RESERVED_ROUTE_NAMESPACES = new Set([
   'access-reviews', 'accounting', 'action-intents', 'admin', 'agent-versions', 'agent-ws',
-  'agents', 'ai', 'alert-templates', 'alerts', 'analytics', 'api-keys',
+  'agents', 'agreements', 'ai', 'alert-templates', 'alerts', 'analytics', 'api-keys',
   'approvals', 'audit-baselines', 'audit-logs', 'auth', 'authenticator', 'automations', 'autopay',
   'backup', 'billing', 'billing-profiles', 'browser-security', 'business-calendars', 'c2c', 'catalog', 'changes',
   'circuits', 'cis',
@@ -46,12 +46,12 @@ export const RESERVED_ROUTE_NAMESPACES = new Set([
   'peripherals', 'permissions', 'playbooks', 'plugins', 'policies',
   'portal', 'pre-assignment', 'psa', 'quotes', 'reliability', 'remediation-suggestions',
   'remote', 'reports', 'roles', 's', 's1', 'script-library', 'scripts',
-  'search', 'security', 'sensitive-data', 'service-principals', 'settings',
+  'search', 'security', 'sensitive-data', 'service-catalog', 'service-principals', 'settings',
   'snmp', 'software',
   'software-inventory', 'software-policies', 'sso', 'support',
   'system', 'system-tools', 'tags', 'tenant-variables', 'third-party-catalog',
-  'ticket-approval-requests', 'ticket-categories', 'ticket-checklist-templates', 'ticket-config', 'ticket-forms',
-  'ticket-response-templates', 'ticketing', 'tickets', 'time-entries', 'time-status', 'tool-sources', 'topology', 'trust', 'trust-page-template', 'tunnel-http', 'tunnel-ws',
+  'ticket-approval-requests', 'ticket-categories', 'ticket-checklist-templates', 'ticket-config', 'ticket-forms', 'ticket-imports',
+  'ticket-response-templates', 'ticket-routing-rules', 'ticketing', 'tickets', 'time-entries', 'time-status', 'tool-sources', 'topology', 'trust', 'trust-page-template', 'tunnel-http', 'tunnel-ws',
   'tunnels', 'unifi', 'update-rings', 'user-risk', 'users', 'verify', 'viewers',
   'vnc-exchange', 'vnc-viewer', 'vulnerabilities', 'webhooks', 'wisp',
 ]);

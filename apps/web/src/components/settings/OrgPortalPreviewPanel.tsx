@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
+import { summarizeSection } from './orgPortalPreviewSummary';
 
 /**
  * Staff "Customer view" (#9350): a READ-ONLY render of what the customer portal
@@ -51,48 +52,6 @@ const SECTION_TOGGLE: Record<string, string> = {
 
 /** Org record tabs a readiness check can deep-link to (hash state). */
 const FIX_TAB_HASH = new Set(['documents', 'service']);
-
-type Row = { label: string; value: string };
-
-const isRecord = (v: unknown): v is Record<string, unknown> =>
-  v !== null && typeof v === 'object' && !Array.isArray(v);
-
-/** Compact "names, statuses, counts" rows for one section's payload. */
-function summarize(key: string, data: unknown): Row[] {
-  if (!isRecord(data)) return [];
-  if (key === 'documents') {
-    return (Array.isArray(data.groups) ? data.groups : []).flatMap((g: any) =>
-      (g.documents ?? []).filter((d: any) => d?.title).map((d: any) => ({ label: String(d.title), value: String(g.category ?? '') })));
-  }
-  if (key === 'service') {
-    return (Array.isArray(data.groups) ? data.groups : []).flatMap((g: any) =>
-      (g.deliverables ?? []).filter((d: any) => d?.name).map((d: any) => ({ label: String(d.name), value: String(d.status ?? '') })));
-  }
-  if (key === 'reports') {
-    return (Array.isArray(data.data) ? data.data : []).filter((r: any) => r?.name).map((r: any) => ({
-      label: String(r.name), value: String(r.status ?? ''),
-    }));
-  }
-  // Generic: top-level scalars, plus one level into tile objects (status/count).
-  const rows: Row[] = [];
-  for (const [k, v] of Object.entries(data)) {
-    if (k === 'asOf' || k === 'timezone') continue;
-    if (v === null || ['string', 'number', 'boolean'].includes(typeof v)) {
-      rows.push({ label: k, value: String(v) });
-    } else if (Array.isArray(v)) {
-      rows.push({ label: k, value: String(v.length) });
-    } else if (isRecord(v)) {
-      const scalar = Object.entries(v)
-        .filter(([, x]) => x !== null && ['string', 'number', 'boolean'].includes(typeof x))
-        .filter(([f]) => f !== 'asOf' && f !== 'capturedAt' && f !== 'timezone')
-        .slice(0, 3)
-        .map(([f, x]) => `${f}: ${String(x)}`)
-        .join(' · ');
-      rows.push({ label: k, value: scalar });
-    }
-  }
-  return rows;
-}
 
 export default function OrgPortalPreviewPanel({ orgId, refreshKey = 0 }: { orgId: string; refreshKey?: number }) {
   const { t } = useTranslation('settings');
@@ -243,7 +202,7 @@ export default function OrgPortalPreviewPanel({ orgId, refreshKey = 0 }: { orgId
                 const label = toggle
                   ? t(/* i18n-dynamic */ `orgPortalSettingsEditor.visibility.toggles.${toggle}.label`)
                   : s.key;
-                const rows = s.enabled && s.data ? summarize(s.key, s.data) : [];
+                const rows = s.enabled && s.data ? summarizeSection(s.key, s.data, t) : [];
                 return (
                   <div
                     key={s.key}

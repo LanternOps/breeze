@@ -25,7 +25,9 @@ test('unit tests avoid app compilation while dedicated builds remain required', 
     ['web', 'pnpm --filter=@breeze/web test --run'],
     ['portal', 'pnpm --filter=@breeze/portal test'],
   ]) {
-    assert.ok(job(`test-${app}`).includes(`run: ${command}`));
+    // test-api/test-web run under the whole-shard retry wrapper (W1, #10744).
+    const run = new RegExp(`run: (?:node \\.github/scripts/retry-shard\\.mjs [^\\n]*? -- )?${command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'u');
+    assert.match(job(`test-${app}`), run);
     assert.doesNotMatch(job(`test-${app}`), /run: pnpm test --filter=/u);
     assert.ok(job(`build-${app}`).includes(`pnpm build --filter=@breeze/${app}`));
     assert.ok(job('ci-success').includes(`[[ "\${BUILD_${app.toUpperCase()}_RESULT}" != "success" ]]`));
@@ -46,7 +48,8 @@ test('each smoke image is built once, with matching build args and its own cache
   assert.match(producer, /push: false/u);
   assert.doesNotMatch(producer, /packages: write|secrets\.|login-action/u);
   assert.match(producer, /cache-from: type=gha,scope=ci-smoke-\$\{\{ matrix.image \}\}/u);
-  assert.match(producer, /cache-to: type=gha,mode=max,scope=ci-smoke-\$\{\{ matrix.image \}\}/u);
+  // Restore-only: PR and queue refs never save buildx cache (W1, #10744); main seeds it.
+  assert.doesNotMatch(producer, /cache-to:/u);
   assert.match(producer, /outputs: type=docker,dest=\$\{\{ runner.temp \}\}\/\$\{\{ matrix.image \}\}.tar/u);
   assert.match(producer, /name: ci-smoke-image-\$\{\{ matrix.image \}\}/u);
   assert.match(producer, /if-no-files-found: error/u);
@@ -144,6 +147,8 @@ for (const result of ['failure', 'cancelled', 'skipped', '']) {
           // Every per-area flag true: the producer runs because the stack changed.
           API_CHANGED: 'true', WEB_CHANGED: 'true', PORTAL_CHANGED: 'true', ADDINS_CHANGED: 'true', M365_CHANGED: 'true', RUST_CHANGED: 'true',
           INTEGRATION_CHANGED: 'true',
+          // W3 (#10744): the path-read and agent-area flags are tri-state too.
+          PATH_READERS_CHANGED: 'true', AGENT_CODE_CHANGED: 'true',
           MOBILE_NATIVE_REQUIRED: 'true', BUILD_SMOKE_IMAGES_RESULT: result,
           SMOKE_TEST_RESULT: 'skipped', GUIDED_SETUP_SMOKE_RESULT: 'skipped',
         },

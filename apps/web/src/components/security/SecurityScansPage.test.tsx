@@ -1,9 +1,12 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fetchWithAuth = vi.fn();
 
-vi.mock('@/stores/auth', () => ({
+// Partial mock: the Sweeps tab pulls in the sweep dialog -> orgStore, which
+// needs the module's other real exports (registerOrgIdProvider).
+vi.mock('@/stores/auth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/stores/auth')>()),
   fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args),
 }));
 
@@ -122,6 +125,51 @@ describe('SecurityScansPage', () => {
 
     expect((checkbox as HTMLInputElement).checked).toBe(true);
     expect(screen.queryByTestId('security-threat-detail')).toBeNull();
+  });
+
+  it('opens the Sweeps tab from the hash and the selected group survives a reload', async () => {
+    const GROUP = '3f2b8c1e-5a47-4d0e-9c1a-0b7e6d5f4a32';
+    fetchWithAuth.mockImplementation(async (url: string) =>
+      url.startsWith('/security/sweeps/groups/')
+        ? makeJsonResponse({ data: { groupId: GROUP, sweeps: [], targeted: 0, progress: {} } })
+        : makeJsonResponse({ data: [] }),
+    );
+    window.location.hash = `#sweeps&group=${GROUP}`;
+    const first = render(<SecurityScansPage />);
+    expect(await screen.findByTestId('sweep-group-detail')).toBeTruthy();
+    expect(screen.queryByTestId('security-scan-manager')).toBeNull();
+    expect(fetchWithAuth.mock.calls.some(([u]) => u === `/security/sweeps/groups/${GROUP}`)).toBe(true);
+
+    // "Reload": a fresh mount reads the same hash and lands on the same group.
+    first.unmount();
+    fetchWithAuth.mockClear();
+    render(<SecurityScansPage />);
+    expect(await screen.findByTestId('sweep-group-detail')).toBeTruthy();
+    expect(fetchWithAuth.mock.calls.some(([u]) => u === `/security/sweeps/groups/${GROUP}`)).toBe(true);
+    expect(window.location.hash).toBe(`#sweeps&group=${GROUP}`);
+  });
+
+  it('the Sweeps tab writes #sweeps, and Scans/Threats stay bare', async () => {
+    window.location.hash = '';
+    render(<SecurityScansPage />);
+    fireEvent.click(screen.getByTestId('security-scans-tab-sweeps'));
+    await waitFor(() => expect(window.location.hash).toBe('#sweeps'));
+    expect(await screen.findByTestId('sweeps-panel')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('security-scans-tab-scans'));
+    await waitFor(() => expect(window.location.hash).toBe('#scans'));
+    expect(screen.getByTestId('security-scan-manager')).toBeTruthy();
+    expect(window.location.search).toBe('');
+  });
+
+  it('back/forward between tabs follows the hash', async () => {
+    window.location.hash = '#threats';
+    render(<SecurityScansPage />);
+    expect(await screen.findByTestId('security-threat-list')).toBeTruthy();
+    act(() => {
+      window.location.hash = '#sweeps';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(await screen.findByTestId('sweeps-panel')).toBeTruthy();
   });
 
   it('uses no prohibited positioning language', () => {

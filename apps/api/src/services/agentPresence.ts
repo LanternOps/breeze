@@ -105,3 +105,27 @@ export async function readAgentPresence(agentId: string): Promise<AgentPresenceL
     return null;
   }
 }
+
+export type AgentPresenceProbe = { present: boolean } | { unavailable: true };
+
+/**
+ * Like {@link readAgentPresence}, but tells "no lease" apart from "Redis could
+ * not answer". The reattach confirm (#8318 §6.5) counts a live lease as a
+ * liveness signal of the target and must fail closed (`liveness_unknown`)
+ * when it cannot read one.
+ */
+export async function probeAgentPresence(agentId: string): Promise<AgentPresenceProbe> {
+  let redis: ReturnType<typeof getRedis>;
+  try {
+    redis = getRedis();
+  } catch {
+    return { unavailable: true };
+  }
+  if (!redis) return { unavailable: true };
+  try {
+    const raw = await redis.get(presenceKey(agentId));
+    return { present: typeof raw === 'string' && raw.length > 0 };
+  } catch {
+    return { unavailable: true };
+  }
+}

@@ -340,15 +340,28 @@ describe('urlExpiresIn', () => {
   });
 });
 
-// #7081 W01 is behaviour-neutral: no code path records prefixed_flat until the
-// writer is switched on, whatever the destination's prefix.
-describe('resolveMintKeyRoot (writer off)', () => {
+// #7081 W03: a new snapshot id is reserved under the destination's key root —
+// `<prefix>/snapshots/` for an S3 destination with a valid prefix, the bucket
+// root otherwise. An invalid stored prefix refuses; it never falls back to the
+// bucket root.
+describe('resolveMintKeyRoot (writer on)', () => {
   it.each([
-    ['s3', { bucket: 'b', prefix: 'msp/acme' }],
-    ['s3', { bucket: 'b', prefix: 'a//b' }],
-    ['s3', { bucket: 'b' }],
-    ['local', { path: '/x' }],
-  ])('%s %j -> legacy_flat', (provider, config) => {
-    expect(resolveMintKeyRoot(provider, config)).toEqual({ ok: true, root: { layout: 'legacy_flat', prefix: null } });
+    ['s3', { bucket: 'b', prefix: 'msp/acme' }, { layout: 'prefixed_flat', prefix: 'msp/acme' }],
+    ['s3', { bucket: 'b', prefix: '/msp/acme/' }, { layout: 'prefixed_flat', prefix: 'msp/acme' }],
+    ['s3', { bucket: 'b' }, { layout: 'legacy_flat', prefix: null }],
+    ['s3', { bucket: 'b', prefix: '' }, { layout: 'legacy_flat', prefix: null }],
+    ['local', { path: '/x', prefix: 'msp/acme' }, { layout: 'legacy_flat', prefix: null }],
+  ])('%s %j -> %j', (provider, config, root) => {
+    expect(resolveMintKeyRoot(provider, config)).toEqual({ ok: true, root });
+  });
+
+  it.each([
+    { bucket: 'b', prefix: 'a//b' },
+    { bucket: 'b', prefix: 'snapshots' },
+    { bucket: 'b', prefix: 'msp/Snapshots/x' },
+    { bucket: 'b', prefix: 'has space' },
+    { bucket: 'b', prefix: 42 },
+  ])('s3 %j -> refused invalid_destination_prefix', (config) => {
+    expect(resolveMintKeyRoot('s3', config)).toEqual({ ok: false, reason: 'invalid_destination_prefix' });
   });
 });

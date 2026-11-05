@@ -73,6 +73,20 @@ beforeEach(() => {
   createMonitorDefinitionMock.mockImplementation(async (input: Record<string, unknown>) => ({ id: 'new', orgId: ORG, partnerId: null, ...input }));
 });
 
+describe('manage_monitor_definitions partial updates', () => {
+  it('disable hands the service enabled alone, so it resets nothing else', async () => {
+    const result = await manage({ action: 'disable', monitorId: 'm1' });
+    expect(result.error).toBeUndefined();
+    expect(updateMonitorDefinitionMock.mock.calls.at(-1)?.[1]).toStrictEqual({ enabled: false });
+  });
+
+  it('update hands the service only the keys in the definition', async () => {
+    const result = await manage({ action: 'update', monitorId: 'm1', definition: { description: 'x' } });
+    expect(result.error).toBeUndefined();
+    expect(updateMonitorDefinitionMock.mock.calls.at(-1)?.[1]).toStrictEqual({ description: 'x' });
+  });
+});
+
 describe('manage_monitor_definitions update with displayed endpoint values', () => {
   it('keeps the stored URL when the displayed target is written back', async () => {
     const result = await manage({

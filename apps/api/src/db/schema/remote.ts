@@ -64,6 +64,11 @@ export const remoteSessions = pgTable('remote_sessions', {
   // Redis holds only the lease TTL, so a renew after a Redis flush re-derives
   // the baseline from here. NULL on rows predating the revocation lease.
   permissionsEpochSnapshot: bigint('permissions_epoch_snapshot', { mode: 'number' }),
+  // #10190 W06: why the session ended when status / errorMessage do not say.
+  // 'ended_by_user' = the person at the keyboard ended it from the on-screen
+  // indicator (agent desk-userend result). NULL = not known / not a user end.
+  // CHECK-constrained (2027-01-09-120100-remote-sessions-end-reason.sql).
+  endReason: text('end_reason').$type<'ended_by_user'>(),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (t) => [
   // W06 (#3900): one user's ended sessions for a day window; partial so the
@@ -84,6 +89,10 @@ export const remoteSessions = pgTable('remote_sessions', {
   check(
     'remote_sessions_desktop_consent_unavailable_behavior_check',
     sql`${t.desktopConsentUnavailableBehavior} IS NULL OR ${t.desktopConsentUnavailableBehavior} IN ('proceed', 'block')`,
+  ),
+  check(
+    'remote_sessions_end_reason_check',
+    sql`${t.endReason} IS NULL OR ${t.endReason} IN ('ended_by_user')`,
   ),
   check(
     'remote_sessions_termination_phase_check',

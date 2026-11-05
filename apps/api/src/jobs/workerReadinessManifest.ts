@@ -22,6 +22,7 @@ export type WorkerInitializerClassification =
   | {
       kind: 'non_consumer';
       initializer:
+        | 'psaTicketingReconciler'
         | 'desktopSessionOrphanRecovery'
         | 'oauthRevocationRetryWorker'
         | 'topologyOutboxWorker'
@@ -50,6 +51,8 @@ const consumers = (
 });
 
 export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification[] = [
+  consumers('psaTicketingWorker'),
+  { kind: 'non_consumer', initializer: 'psaTicketingReconciler' },
   consumers('alertWorkers', ['alertWorker']),
   consumers('monitorConversionPreviewWorker'),
   consumers('alertCorrelationWorker'),
@@ -108,6 +111,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('restorePointAttemptRetention'),
   // #9128. Plain Redis-required consumer, no feature flag.
   consumers('webhookDeliveryRetention'),
+  // #10019/#10020. Plain Redis-required consumer, no feature flag.
+  consumers('dnsSecurityRetention'),
   consumers('oauthCleanup'),
   consumers('stripeAccountCacheRefresh'),
   consumers('exchangeRateSync'),
@@ -117,6 +122,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('quoteSendWorker'),
   consumers('enrollmentKeyCleanup'),
   consumers('migrationWindowSweep'),
+  consumers('ticketImportWorker'),
   consumers('partnerApiIdempotencyRetention'),
   consumers('quickSupportReaper'),
   consumers('wispGrantReconciler'),
@@ -196,6 +202,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('softwareDeploymentScheduler'),
   consumers('pamJobs', ['pamExpiryEnforcerWorker', 'pamStaleRequestWorker']),
   consumers('approvalExpiryReaper'),
+  consumers('networkIsolationSweeper'),
   consumers('workspaceReaper'),
   consumers('offboardingDrainReaper'),
   consumers('intentOutboxPublisher'),
@@ -210,6 +217,9 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('stripeReconcileSweep'),
   consumers('stripeSessionRevocationSweep'),
   consumers('quoteExpiryReaper'),
+  consumers('agreementRequestExpiryReaper'),
+  // #9075 W4a: automatic agreement-request reminders.
+  consumers('agreementRequestAutoReminder'),
   consumers('suppressionExpiryReaper'),
   consumers('ticketNotifyWorker'),
   // Caller verification (#6354 W01) — post-commit effects publisher; one
@@ -300,6 +310,9 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // Wisp W05b (#9917): daily concern retention — same shape (one Worker, no
   // flag gate before construction, attached under its registry-key name).
   consumers('wispConcernRetention'),
+  // Wisp W06a (#9912): 15-minute nudge digest + morning brief — same shape
+  // (one Worker constructed and attached unconditionally; flag read per run).
+  consumers('wispNudgeDigest'),
   // #5290 (W03) — daily monitor breach-episode retention prune, same shape as
   // mlOutputRetention/metricAnomalyIncidentRetention/agentLogRetention: one
   // Worker, no flag gate, constructs and attaches unconditionally under its
@@ -323,7 +336,11 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // under its registry name.
   consumers('parkedDeviceExpiry'),
   consumers('parkedDevicePurge'),
+  // #8318 wave 1b — reinstall reattach: the per-minute intent expiry sweep.
+  // One Worker, unconditional, attached under its registry name.
+  consumers('deviceReattachIntentSweep'),
   consumers('deviceGroupJobs', ['deviceGroupReevaluationWorker']),
+  consumers('partnerGroupEvaluationJobs', ['partnerGroupEvaluationWorker', 'partnerGroupSweepWorker']),
   // Started outside WORKER_REGISTRY, role-gated in index.ts / worker.ts.
   // D3a: the dispatch consumer is constructed only when EVENT_DISPATCH_MODE is
   // on (or an off-mode backlog remains — that drain then attaches as
@@ -344,6 +361,14 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // TOOL_SOURCES_ENABLED gates the job PROCESSOR body (discoverSource is
   // skipped), not whether the Worker itself constructs and attaches.
   consumers('toolSourceDiscoveryWorker'),
+  // Tool catalog W04 (#5219), Task A8 — each constructs and attaches one
+  // Worker unconditionally under its registry name (FLOWS_ENABLED gates
+  // what a slice does, not whether the Worker exists).
+  consumers('flowRunner'),
+  consumers('flowRunReconciler'),
+  consumers('flowRunRetention'),
+  // Task A9 — the schedule trigger tick (FLOWS_ENABLED gates the tick body).
+  consumers('flowScheduleTick'),
   // Partner sending domains W03. initializeSendingDomainsWorker returns before
   // constructing a Worker when EMAIL_DOMAINS_PROVIDER is unset — the default on
   // every self-hosted install and on hosted until W05 — so a plain-required row

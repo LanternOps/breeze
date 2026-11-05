@@ -29,7 +29,10 @@ export const deliverTopologyDiagnosticCommand: TopologyDiagnosticDelivery = asyn
   // heartbeat claim.
   if (claimed.status !== 'claimed') return false;
 
-  const delivered = sendCommandToAgent(input.agentId, {
+  // #8318 §6.4: to the agent_id read IN the claim, not `input.agentId` read
+  // when the command was bound (a reattach or re-enroll may have committed
+  // since).
+  const delivered = sendCommandToAgent(claimed.agentId, {
     id: input.commandId,
     type: input.type,
     payload: input.payload,

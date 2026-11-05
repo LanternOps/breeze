@@ -31,7 +31,12 @@ export async function denyIntentForProposal(
     .update(actionIntents)
     .set({ status: 'rejected', decidedAt: new Date(), decidedByUserId, errorCode: reason })
     .where(and(eq(actionIntents.id, proposal.intentId), eq(actionIntents.status, 'pending_approval')))
-    .returning({ id: actionIntents.id, orgId: actionIntents.orgId, taskId: actionIntents.taskId });
+    .returning({
+      id: actionIntents.id,
+      orgId: actionIntents.orgId,
+      taskId: actionIntents.taskId,
+      requestingFlowRunId: actionIntents.requestingFlowRunId,
+    });
   const intent = rows[0];
   if (!intent) return false;
 
@@ -40,6 +45,10 @@ export async function denyIntentForProposal(
     .set({ status: 'expired', decidedAt: new Date() })
     .where(and(eq(approvalRequests.intentId, intent.id), eq(approvalRequests.status, 'pending')));
 
-  await publishIntentTerminalOutbox(tx, intent, 'intent_rejected');
+  await publishIntentTerminalOutbox(
+    tx,
+    { id: intent.id, orgId: intent.orgId, taskId: intent.taskId, requestingFlowRunId: intent.requestingFlowRunId },
+    'intent_rejected',
+  );
   return true;
 }

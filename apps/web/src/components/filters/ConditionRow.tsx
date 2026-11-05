@@ -34,7 +34,9 @@ export function ConditionRow({
       onChange({
         field: fieldKey,
         operator: defaultOperator,
-        value: getDefaultValue(field.type, defaultOperator, field.enumValues)
+        value: field.key === 'software.version'
+          ? { name: '', version: '' }
+          : getDefaultValue(field.type, defaultOperator, field.enumValues)
       });
     }
   };

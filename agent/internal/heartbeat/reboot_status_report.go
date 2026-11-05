@@ -35,7 +35,22 @@ type RebootStatusReport struct {
 	// that predates deferral entirely (the whole rebootStatus object absent).
 	DeferralsUsed int `json:"deferralsUsed"`
 	MaxDeferrals  int `json:"maxDeferrals"`
+	// LastUserAction is the person's most recent decision on a restart
+	// prompt (#10190 W05): the server audits it once per atUnixMs. Omitted
+	// when there is none, or when it is older than lastUserActionMaxAge (the
+	// server ignores those anyway).
+	LastUserAction *RebootUserActionReport `json:"lastUserAction,omitempty"`
 }
+
+// RebootUserActionReport is rebootStatus.lastUserAction on the wire.
+type RebootUserActionReport struct {
+	Action   string `json:"action"`   // postponed | restart_now
+	AtUnixMs int64  `json:"atUnixMs"` // when the person decided
+	Renderer string `json:"renderer"` // assist | native | headless
+}
+
+// lastUserActionMaxAge matches the server's cutoff for auditing a decision.
+const lastUserActionMaxAge = 24 * time.Hour
 
 // buildRebootStatusReport projects RebootManager state onto the wire shape.
 //
@@ -64,6 +79,9 @@ func buildRebootStatusReport(state patching.RebootState) *RebootStatusReport {
 	if !state.DeferralAllowed {
 		report.DeferralsUsed = 0
 		report.MaxDeferrals = 0
+	}
+	if a := state.LastUserAction; a != nil && !a.At.IsZero() && time.Since(a.At) <= lastUserActionMaxAge {
+		report.LastUserAction = &RebootUserActionReport{Action: a.Action, AtUnixMs: a.At.UnixMilli(), Renderer: a.Renderer}
 	}
 	return report
 }

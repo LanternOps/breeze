@@ -81,11 +81,28 @@ export function summaryScale(panelW: number, panelH: number, boxW: number, boxH:
 
 /**
  * Canvas height that fills the window below the canvas's top edge (measured with the page scrolled
- * to the top), less the page's bottom gutter, and never under `min` (480px): the map uses the screen
+ * to the top), less the page's bottom gutter, and never under `min` (320px): the map uses the screen
  * it has instead of a fixed height that either leaves empty page or pushes the map under the fold.
+ * The minimum is low enough that a laptop window (1280x720) keeps the whole map above the fold.
  */
-export function canvasFillHeight({ viewportHeight, canvasTop, bottomGap, min = 480 }: { viewportHeight: number; canvasTop: number; bottomGap: number; min?: number }): number {
+export function canvasFillHeight({ viewportHeight, canvasTop, bottomGap, min = 320 }: { viewportHeight: number; canvasTop: number; bottomGap: number; min?: number }): number {
   return Math.max(min, Math.floor(viewportHeight - canvasTop - bottomGap));
+}
+
+/**
+ * Whether a wheel over the map scrolls the page instead of zooming the map. While the map is only partly on
+ * screen the page keeps scrolling, so scrolling up to or past the map never gets trapped zooming it; once the
+ * map is in full view, or the page cannot scroll further that way, the wheel zooms. Ctrl/Cmd + wheel (a
+ * trackpad pinch arrives as one) always zooms, and a horizontal-only wheel is left to the map.
+ */
+export function wheelScrollsPage({ deltaY, zoomKey, map, viewport, scroll }: {
+  deltaY: number; zoomKey: boolean; map: { top: number; bottom: number }; viewport: { top: number; bottom: number };
+  /** The page scroller: scrollTop, scrollHeight, clientHeight. */
+  scroll: { top: number; height: number; client: number };
+}): boolean {
+  if (zoomKey || deltaY === 0) return false;
+  if (map.top >= viewport.top - 1 && map.bottom <= viewport.bottom + 1) return false;
+  return deltaY > 0 ? scroll.top + scroll.client < scroll.height - 1 : scroll.top > 0;
 }
 
 /**

@@ -1,5 +1,6 @@
 import type { TopologyScope } from '@breeze/shared';
 import { hasSatisfiedMfa, isInteractiveUserSession, withAuthDbAccessContext } from '../../middleware/auth';
+import { isAutomationPrincipal } from '../../middleware/principalKind';
 import { TopologyError, requireTopologySiteAccess, type TopologyRequestContext } from './access';
 import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { loadTopologyFlags, withResolvedTopologyFlags, type TopologyFlags } from './flags';
@@ -33,9 +34,9 @@ export type TopologyArmAuthorityDenial =
   | 'interface_health_disabled'
   | 'scope_changed';
 
-/** Arming is a human act with a satisfied second factor; an AI, API key or MCP principal never arms. */
+/** Arming is a human act with a satisfied second factor; an AI, flow, API key or MCP principal never arms. */
 export function requireHumanArmingSession(ctx: Pick<TopologyRequestContext, 'auth'>): void {
-  if (!isInteractiveUserSession(ctx.auth) || ctx.auth.principal?.kind === 'ai_agent') {
+  if (!isInteractiveUserSession(ctx.auth) || isAutomationPrincipal(ctx.auth)) {
     throw new TopologyOperationError('interactive_session_required', 403, 'Arming requires an interactive user session');
   }
   if (!hasSatisfiedMfa(ctx.auth)) throw new TopologyOperationError('mfa_required', 403);

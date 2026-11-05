@@ -55,7 +55,8 @@
         "auto": "auto",
         "groupDeleted": "Gruppe gelöscht",
         "siteDeleted": "Standort gelöscht",
-        "siteDeletedNamed": "Standort gelöscht: {{name}}"
+        "siteDeletedNamed": "Standort gelöscht: {{name}}",
+        "manualQuantityMissing": "Menge fehlt"
       },
       "lineScope": {
         "site": "Standort: {{name}}"
@@ -262,6 +263,8 @@
         "descriptionPlaceholder": "z.B. Arbeitsplatzverwaltung",
         "unitPrice": "Stückpreis",
         "quantity": "Menge",
+        "quantityInvalid": "Geben Sie eine Menge ein (bis zu 2 Dezimalstellen).",
+        "quantityTooLarge": "Die Menge ist zu groß (höchstens 10 Stellen vor dem Dezimalkomma).",
         "siteOptional": "Standort (optional – legt die Geräteanzahl fest)",
         "allSites": "Alle Seiten",
         "linkCatalogItemOptional": "Katalogelement verlinken (optional)",
@@ -392,7 +395,9 @@
         "message_other": "{{count}} Vertragsentwürfe löschen? Es werden nur Entwürfe gelöscht{{untouched}}; Dies kann nicht rückgängig gemacht werden.",
         "untouchedSuffix": "— Alle aktiven oder pausierten Verträge in Ihrer Auswahl bleiben davon unberührt",
         "confirm": "Entwürfe löschen"
-      }
+      },
+      "fromQuoteReady": "Aus {{number}} · bereit zur Aktivierung",
+      "fromQuoteReadyUnnumbered": "Aus einem Angebot · bereit zur Aktivierung"
     },
     "contractPax8Drawer": {
       "title": "Verknüpfen Sie ein Pax8-Abonnement",
@@ -718,7 +723,15 @@
       },
       "fileType": {
         "image": "gescannte Kopie"
-      }
+      },
+      "sendForSignature": "Zur Unterschrift senden",
+      "filter": {
+        "pending": "Wartet auf Unterschrift",
+        "signed": "Unterzeichnet",
+        "closed": "Abgelehnt / annulliert / abgelaufen"
+      },
+      "downloadOriginal": "Originaldatei",
+      "certifiedUnavailable": "Die beglaubigte Kopie konnte für diese Vereinbarung nicht erstellt werden – stattdessen wurde die Originaldatei heruntergeladen."
     },
     "templateEditor": {
       "usage": "Verwendet in {{quotes}} Angeboten · {{signed}} unterzeichneten Vereinbarungen",
@@ -760,10 +773,126 @@
       "fileWrongType": "Hängen Sie eine PDF-, PNG- oder JPEG-Datei an.",
       "variables": "Angaben zur Vereinbarung",
       "unresolved": "Geben Sie einen Wert an für: {{names}}",
+      "needsSignedCopy": "Breeze kann {{names}} ohne Angebot nicht ausfüllen. Hängen Sie die unterschriebene Kopie an, um diese Vereinbarung zu erfassen.",
       "consequence": "Dies legt eine unterzeichnete Vereinbarung für {{org}} ab. Sie kann danach nicht gelöscht werden.",
       "submit": "Unterzeichnete Vereinbarung erfassen",
       "success": "Unterzeichnete Vereinbarung erfasst.",
       "error": "Die unterzeichnete Vereinbarung konnte nicht erfasst werden."
+    },
+    "requests": {
+      "columns": {
+        "template": "Vorlage",
+        "organization": "Organisation",
+        "recipients": "Empfänger",
+        "sent": "Gesendet",
+        "expires": "Läuft ab",
+        "status": "Bearbeitungsstand"
+      },
+      "status": {
+        "draft": "Entwurf",
+        "sent": "Wartet auf Unterschrift",
+        "viewed": "Angesehen",
+        "signed": "Unterzeichnet",
+        "declined": "Abgelehnt",
+        "voided": "Annulliert",
+        "expired": "Abgelaufen"
+      },
+      "empty": {
+        "pending": {
+          "title": "Nichts wartet auf Unterschrift",
+          "description": "Zur Unterschrift gesendete Vereinbarungen erscheinen hier, bis der Kunde unterzeichnet."
+        },
+        "closed": {
+          "title": "Keine abgelehnten, annullierten oder abgelaufenen Anfragen",
+          "description": "Anfragen, die abgelehnt oder annulliert wurden oder abgelaufen sind, erscheinen hier."
+        }
+      },
+      "loadError": "Vereinbarungsanfragen konnten nicht geladen werden.",
+      "recipientsMore": "+{{count}} weitere",
+      "notSent": "Nicht gesendet",
+      "declinedReason": "Abgelehnt: {{reason}}",
+      "voidedReason": "Annulliert: {{reason}}",
+      "copyLink": {
+        "label": "Link kopieren",
+        "success": "Signaturlink kopiert",
+        "error": "Der Signaturlink konnte nicht kopiert werden.",
+        "clipboardError": "Das Kopieren in die Zwischenablage ist fehlgeschlagen. Signierlink: {{link}}"
+      },
+      "void": {
+        "label": "Annullieren",
+        "title": "Diese Vereinbarungsanfrage annullieren?",
+        "description": "Der Signaturlink funktioniert nicht mehr und die Empfänger können diese Vereinbarung nicht mehr unterzeichnen.",
+        "reasonLabel": "Grund (optional)",
+        "confirm": "Anfrage annullieren",
+        "confirming": "Wird annulliert …",
+        "success": "Vereinbarungsanfrage annulliert.",
+        "error": "Die Vereinbarungsanfrage konnte nicht annulliert werden."
+      },
+      "deleteDraft": {
+        "label": "Entwurf löschen",
+        "success": "Entwurf gelöscht.",
+        "error": "Der Entwurf konnte nicht gelöscht werden."
+      },
+      "remind": {
+        "label": "Erinnern",
+        "success_one": "Erinnerung an {{count}} Empfänger gesendet",
+        "success_other": "Erinnerung an {{count}} Empfänger gesendet",
+        "error": "Die Erinnerung konnte nicht gesendet werden.",
+        "notEmailed": {
+          "no_email_service": "Erinnerung vermerkt, aber E-Mail ist nicht eingerichtet. Kopieren Sie den Signaturlink und geben Sie ihn weiter.",
+          "no_recipients": "Erinnerung vermerkt, aber es gab keine Empfänger für die E-Mail. Kopieren Sie den Signaturlink und geben Sie ihn weiter.",
+          "send_failed": "Erinnerung vermerkt, aber die E-Mail konnte nicht zugestellt werden. Kopieren Sie den Signaturlink und geben Sie ihn weiter."
+        }
+      },
+      "remindedCount_one": "{{count}} Mal erinnert",
+      "remindedCount_other": "{{count}} Mal erinnert"
+    },
+    "send": {
+      "title": "Zur Unterschrift senden",
+      "contract": "Einem Vertrag zuordnen (optional)",
+      "contractsError": "Die Verträge dieser Organisation konnten nicht geladen werden. Sie können die Vereinbarung trotzdem senden und später einem Vertrag zuordnen.",
+      "recipients": "Empfänger",
+      "recipientsHelp": "E-Mail-Adressen, getrennt durch Kommas oder Zeilenumbrüche. Vorausgefüllt mit dem Rechnungskontakt der Organisation.",
+      "recipientsRequired": "Fügen Sie mindestens eine Empfänger-E-Mail hinzu.",
+      "recipientsInvalid": "Das sind keine gültigen E-Mail-Adressen: {{emails}}",
+      "recipientsTooMany": "Höchstens 50 Empfänger.",
+      "cover": "Begleitnachricht (optional)",
+      "expiry": "Link läuft ab am",
+      "expiryPast": "Wählen Sie ein Ablaufdatum in der Zukunft.",
+      "expiryDefaultHint_one": "Standard: {{count}} Tag, aus Abrechnungseinstellungen → Vereinbarungen.",
+      "expiryDefaultHint_other": "Standard: {{count}} Tage, aus Abrechnungseinstellungen → Vereinbarungen.",
+      "autoReminderHint_one": "Automatische Erinnerungen werden täglich versendet, insgesamt höchstens {{max}}.",
+      "autoReminderHint_other": "Automatische Erinnerungen werden alle {{count}} Tage versendet, insgesamt höchstens {{max}}.",
+      "expiryDefaultUnavailable": "Der Standardablauf aus den Abrechnungseinstellungen konnte nicht geladen werden. Lassen Sie das Datum leer, dann gilt Ihr Standard beim Erstellen der Vereinbarung.",
+      "expiryBlankHint": "Leer lassen, um Ihren Standard aus Abrechnungseinstellungen → Vereinbarungen zu verwenden.",
+      "label": "Bezeichnung (optional)",
+      "labelHint": "Nur intern. Kunden sehen den Namen der Vorlage.",
+      "createDraft": "Entwurf erstellen und Vorschau anzeigen",
+      "creating": "Wird erstellt …",
+      "preview": {
+        "title": "Vorschau",
+        "loading": "Vorschau wird geladen …",
+        "error": "Die Vorschau konnte nicht geladen werden.",
+        "uploaded": "Diese Vorlage ist ein hochgeladenes Dokument. Der Kunde unterzeichnet die hochgeladene Datei."
+      },
+      "unresolved": {
+        "title": "Fehlende Werte vor dem Senden ausfüllen"
+      },
+      "updatePreview": "Vorschau aktualisieren",
+      "updating": "Wird aktualisiert …",
+      "submit": "Senden",
+      "sending": "Wird gesendet …",
+      "createError": "Der Entwurf konnte nicht erstellt werden.",
+      "updateError": "Die Vereinbarung konnte nicht aktualisiert werden.",
+      "sendError": "Die Vereinbarung konnte nicht gesendet werden.",
+      "discardError": "Der Entwurf konnte nicht verworfen werden – er steht weiterhin unter „Wartet auf Unterschrift“, wo Sie ihn löschen können.",
+      "sent_one": "Vereinbarung an {{count}} Empfänger gesendet",
+      "sent_other": "Vereinbarung an {{count}} Empfänger gesendet",
+      "notEmailed": {
+        "no_email_service": "Gesendet, aber E-Mail ist nicht eingerichtet. Kopieren Sie den Signaturlink unter „Wartet auf Unterschrift“ und geben Sie ihn weiter.",
+        "no_recipients": "Gesendet, aber es gab keine Empfänger für die E-Mail. Kopieren Sie den Signaturlink unter „Wartet auf Unterschrift“ und geben Sie ihn weiter.",
+        "send_failed": "Gesendet, aber die E-Mail konnte nicht zugestellt werden. Kopieren Sie den Signaturlink unter „Wartet auf Unterschrift“ und geben Sie ihn weiter."
+      }
     }
   },
   "quotes": {
@@ -1002,7 +1131,9 @@
         "uploadImage": "Das Bild konnte nicht hochgeladen werden.",
         "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder erfassen Sie eine manuelle Position.",
         "sectionAddedListStale": "Abschnitt hinzugefügt, aber die Liste konnte nicht aktualisiert werden. Laden Sie die Seite neu, um ihn zu sehen.",
-        "lineAddedListStale": "Position hinzugefügt, aber die Liste konnte nicht aktualisiert werden. Laden Sie die Seite neu, um sie zu sehen."
+        "lineAddedListStale": "Position hinzugefügt, aber die Liste konnte nicht aktualisiert werden. Laden Sie die Seite neu, um sie zu sehen.",
+        "saveExpiry": "Das Ablaufdatum konnte nicht gespeichert werden.",
+        "saveIntroNotes": "Die Einleitung konnte nicht gespeichert werden."
       },
       "image": {
         "alt": "Angebotsbild",
@@ -1170,6 +1301,7 @@
         "noPublishedVersion": "Diese Vorlage hat noch keine veröffentlichte Version. Veröffentlichen Sie sie, bevor Sie sie einem Angebot hinzufügen.",
         "pinnedVersion": "Angeheftet an v{{version}}",
         "autoVariablesTitle": "Automatisch aus dem Angebot ausgefüllt",
+        "autoValueBlank": "Leer",
         "autoHint": "Diese Werte werden beim Senden des Angebots aus dem Angebot aufgelöst.",
         "manualVariablesTitle": "Für dieses Angebot ausfüllen",
         "labelFieldLabel": "Abschnittsbezeichnung",
@@ -1226,6 +1358,14 @@
       },
       "warnings": {
         "markupRemoved": "Gespeichert, aber nicht unterstützte Formatierung wurde entfernt: {{tags}}. Rich-Text unterstützt Überschriften, Fett, Kursiv, Unterstrichen, Listen und Links."
+      },
+      "intro": {
+        "expiryLabel": "Gültig bis",
+        "expiryHelper": "Wird auf das Angebot gedruckt. Der Kunde kann bis zum Ende dieses Tages annehmen. Leer lassen für kein Ablaufdatum.",
+        "expiryPast": "Dieses Datum liegt in der Vergangenheit — ein abgelaufenes Angebot kann der Kunde nicht annehmen.",
+        "notesLabel": "Einleitung",
+        "notesHelper": "Wird über dem ersten Abschnitt des Angebots gedruckt.",
+        "notesPlaceholder": "Eine kurze Nachricht an den Kunden, z. B. worum es in diesem Angebot geht."
       }
     },
     "actions": {
@@ -1336,6 +1476,9 @@
       "currencyUnknown": "Die Abrechnungswährung Ihres Stripe-Kontos ist noch nicht zwischengespeichert, daher konnte sie nicht mit diesem Angebot in {{documentCurrency}} abgeglichen werden. Aktualisieren Sie die Stripe-Kontodaten unter Einstellungen → Integrationen, um die Prüfung zu aktivieren.",
       "acceptOnBehalf": {
         "button": "Im Namen des Kunden annehmen",
+        "emptyDraftTitle": "Fügen Sie vor dem Annehmen mindestens einen Artikel hinzu.",
+        "emptySentTitle": "Dieses Angebot enthält keine Artikel. Nutzen Sie „Angebot überarbeiten“, um eine Version mit Artikeln auszustellen.",
+        "errorQuoteEmpty": "Dieses Angebot enthält keine Artikel. Schließen Sie diesen Dialog und fügen Sie einen Artikel hinzu, oder nutzen Sie „Angebot überarbeiten“, falls es bereits gesendet wurde.",
         "title": "Annahme des Kunden erfassen",
         "methodLabel": "Wie hat der Kunde zugestimmt?",
         "method": {
@@ -1528,6 +1671,14 @@
         "attachError": "Die Nachweisdatei konnte nicht angehängt werden.",
         "downloadError": "Die Nachweisdatei konnte nicht heruntergeladen werden.",
         "tooLarge": "Diese Datei ist größer als 10 MB. Wählen Sie eine kleinere Datei."
+      },
+      "generatedContracts": {
+        "title_one": "Aus diesem Angebot wurde {{count}} Vertrag erstellt",
+        "title_other": "Aus diesem Angebot wurden {{count}} Verträge erstellt",
+        "draftHint_one": "{{count}} Entwurf rechnet nichts ab, bis er aktiviert wird. Prüfen und aktivieren Sie ihn, um die Abrechnung zu starten.",
+        "draftHint_other": "{{count}} Entwürfe rechnen nichts ab, bis sie aktiviert werden. Prüfen und aktivieren Sie sie, um die Abrechnung zu starten.",
+        "ready": "Bereit zur Aktivierung",
+        "unavailable": "Die aus diesem Angebot erstellten Verträge konnten nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen."
       }
     },
     "currency": {
@@ -1971,6 +2122,7 @@
       "title": "Diese Rechnung senden?",
       "message": "Die Rechnung über {{amount}} wird per E-Mail an {{customer}} gesendet."
     },
+    "sourceHeldForHourBlock": "Ein Teil der Zeit auf diesem Entwurf ist für ein Stundenkontingent reserviert und wird beim Abschluss des Kontingentzeitraums abgerechnet. Entfernen Sie diese Positionen und stellen Sie dann aus.",
     "unsavedHint": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Ausstellen wird freigegeben, sobald sie gespeichert ist.",
     "unsavedTitle": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Ausstellen wird freigegeben, sobald sie gespeichert ist."
   },
@@ -2358,6 +2510,21 @@
     }
   },
   "partnerBillingSettings": {
+    "agreements": {
+      "title": "Vereinbarungen",
+      "description": "Standardwerte für Vereinbarungen, die Sie zur Unterschrift senden. Absender können bei jeder Anfrage weiterhin ein anderes Ablaufdatum wählen.",
+      "expiryDays": "Standardablauf des Links (Tage)",
+      "expiryDaysHelp": "Der Signaturlink einer neuen Vereinbarungsanfrage läuft so viele Tage nach ihrer Erstellung ab, sofern der Absender kein anderes Datum wählt.",
+      "expiryDaysInvalid": "Geben Sie eine ganze Zahl von Tagen zwischen {{min}} und {{max}} ein.",
+      "remindersEnabled": "Automatische Erinnerungen senden",
+      "remindersHelp": "Sendet den Signaturlink erneut per E-Mail an die Empfänger, bis die Vereinbarung unterzeichnet, abgelehnt, annulliert wird oder abläuft.",
+      "intervalDays": "Erinnern alle (Tage)",
+      "intervalDaysInvalid": "Geben Sie eine ganze Zahl von Tagen zwischen {{min}} und {{max}} ein.",
+      "maxReminders": "Beenden nach (Erinnerungen)",
+      "maxRemindersHelp": "Zählt jede Erinnerung zur Anfrage, ob manuell oder automatisch.",
+      "maxRemindersInvalid": "Geben Sie eine ganze Zahl zwischen {{min}} und {{max}} ein.",
+      "readOnlyNoSend": "Das Ändern der Standardwerte für Vereinbarungen erfordert die Berechtigung, Vereinbarungen zu senden. Sie haben nur Lesezugriff."
+    },
     "company": {
       "addressInherited": "Wie in den Unternehmensdetails",
       "addressLine1": "Adresszeile 1",
@@ -2444,6 +2611,7 @@
   "partnerBillingSettingsTabs": {
     "defaults": "Standardwerte",
     "documents": "Dokumente",
+    "agreements": "Vereinbarungen",
     "connections": "Verbindungen",
     "rates": "Tarife",
     "payments": "Zahlungen"
@@ -2520,7 +2688,7 @@
     "ai": {
       "column": "KI-Nutzung",
       "sectionTitle": "KI-Nutzung",
-      "sectionHelp": "Wie die Nutzung des KI-Assistenten durch Organisationen mit diesem Abrechnungsprofil berechnet wird. Berechnen Sie die Kosten von Breeze plus Aufschlag oder legen Sie einen Preis pro Modell fest.",
+      "sectionHelp": "Wie die Nutzung von Breeze AI durch Organisationen mit diesem Abrechnungsprofil berechnet wird. Berechnen Sie die Kosten von Breeze plus Aufschlag oder legen Sie einen Preis pro Modell fest.",
       "coverage": "Abrechnung der KI-Nutzung",
       "coverageBillable": "Abrechenbar",
       "coverageIncluded": "Inklusive",
@@ -2676,7 +2844,6 @@
       "delivery_failed": "Zustellung der Benachrichtigung fehlgeschlagen",
       "consent_required": "Die Zahlungsautorisierung fehlt. Fordern Sie eine neue Autorisierung an."
     },
-    "noticeTemplate": "Rechnung mit Benachrichtigung zur automatischen Zahlung",
     "chargeFailed": "Die Zahlung konnte nicht gestartet werden. Bitte versuchen Sie es erneut.",
     "chargeResultUnknown": "Wir konnten nicht bestätigen, was mit dieser Zahlung passiert ist. Die Rechnung wird aktualisiert, um ihren aktuellen Status anzuzeigen.",
     "chargeStarted": "Zahlungsversuch gestartet",
@@ -2816,10 +2983,6 @@
     "saveFailed": "Erinnerungseinstellungen konnten nicht gespeichert werden",
     "loadFailed": "Erinnerungseinstellungen konnten nicht geladen werden",
     "retry": "Erneut versuchen",
-    "loading": "Zahlungseinstellungen werden geladen…",
-    "templates": {
-      "paymentReminder": "Zahlungserinnerung",
-      "paymentOverdue": "Erinnerung an überfällige Zahlung"
-    }
+    "loading": "Zahlungseinstellungen werden geladen…"
   }
 }

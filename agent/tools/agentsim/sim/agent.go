@@ -81,6 +81,14 @@ func legacyCount(cfg *Config) int {
 
 func isLegacy(cfg *Config, index int) bool { return index < legacyCount(cfg) }
 
+// preW09Count is how many agents (the lowest indexes) run the #9145 reconnect
+// policy: no start jitter, 1-5 s after any server close, drain hints ignored.
+func preW09Count(cfg *Config) int {
+	return int(math.Round(cfg.PreW09Fraction * float64(cfg.Agents)))
+}
+
+func isPreW09(cfg *Config, index int) bool { return index < preW09Count(cfg) }
+
 // newAgentHTTPClient clones http.DefaultTransport per agent, as heartbeat.go
 // newHeartbeatHTTPClient does, so each simulated agent holds its own
 // keep-alive connection the way a real one does.

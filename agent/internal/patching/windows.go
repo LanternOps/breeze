@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-ole/go-ole"
@@ -30,11 +31,35 @@ const (
 // WindowsUpdateProvider integrates with Windows Update.
 type WindowsUpdateProvider struct {
 	cfg *config.Config
+	// featurePolicy is the ring's Windows feature-release decision, pushed by
+	// the heartbeat (SetFeatureUpdatePolicy) and read by every scan. Atomic
+	// because scans run on their own goroutine. Starts as block
+	// (DefaultFeatureUpdatePolicy) until the server has said otherwise.
+	featurePolicy atomic.Pointer[FeatureUpdatePolicy]
 }
 
 // NewWindowsUpdateProvider creates a new WindowsUpdateProvider.
 func NewWindowsUpdateProvider(cfg *config.Config) *WindowsUpdateProvider {
-	return &WindowsUpdateProvider{cfg: cfg}
+	w := &WindowsUpdateProvider{cfg: cfg}
+	initial := DefaultFeatureUpdatePolicy()
+	w.featurePolicy.Store(&initial)
+	return w
+}
+
+var _ FeatureUpdatePolicySetter = (*WindowsUpdateProvider)(nil)
+
+// SetFeatureUpdatePolicy replaces the feature-release filter for later scans.
+func (w *WindowsUpdateProvider) SetFeatureUpdatePolicy(policy FeatureUpdatePolicy) {
+	w.featurePolicy.Store(&policy)
+}
+
+// currentFeatureUpdatePolicy is the policy scans filter with; block when the
+// provider was built without the constructor (tests, zero value).
+func (w *WindowsUpdateProvider) currentFeatureUpdatePolicy() FeatureUpdatePolicy {
+	if p := w.featurePolicy.Load(); p != nil {
+		return *p
+	}
+	return DefaultFeatureUpdatePolicy()
 }
 
 // ID returns the provider identifier.
@@ -51,7 +76,7 @@ func (w *WindowsUpdateProvider) Name() string {
 func (w *WindowsUpdateProvider) Scan() ([]AvailablePatch, error) {
 	var patches []AvailablePatch
 	return patches, w.withSession(func(session *ole.IDispatch) error {
-		updates, err := w.searchUpdates(session, "IsInstalled=0")
+		updates, err := w.searchUpdates(session, "IsInstalled=0", false)
 		if err != nil {
 			return err
 		}
@@ -237,7 +262,7 @@ func (w *WindowsUpdateProvider) Uninstall(patchID string) error {
 func (w *WindowsUpdateProvider) GetInstalled() ([]InstalledPatch, error) {
 	var patches []InstalledPatch
 	return patches, w.withSession(func(session *ole.IDispatch) error {
-		updates, err := w.searchUpdates(session, "IsInstalled=1")
+		updates, err := w.searchUpdates(session, "IsInstalled=1", true)
 		if err != nil {
 			return err
 		}
@@ -286,7 +311,11 @@ func (w *WindowsUpdateProvider) withSession(action func(session *ole.IDispatch) 
 	return action(session)
 }
 
-func (w *WindowsUpdateProvider) searchUpdates(session *ole.IDispatch, criteria string) ([]AvailablePatch, error) {
+// searchUpdates runs one WUA search. installed=true is the inventory pass
+// (IsInstalled=1): the ring's feature-update policy filters what is OFFERED,
+// never what is already installed, so an installed feature release stays in
+// the inventory under every policy.
+func (w *WindowsUpdateProvider) searchUpdates(session *ole.IDispatch, criteria string, installed bool) ([]AvailablePatch, error) {
 	searcherVar, err := oleutil.CallMethod(session, "CreateUpdateSearcher")
 	if err != nil {
 		return nil, fmt.Errorf("create searcher failed: %w", err)
@@ -354,7 +383,7 @@ func (w *WindowsUpdateProvider) searchUpdates(session *ole.IDispatch, criteria s
 		}
 
 		// Filter excluded update types
-		if w.shouldExcludePatch(patch) {
+		if w.shouldExcludePatch(patch, installed) {
 			excluded++
 			continue
 		}
@@ -403,16 +432,13 @@ func (w *WindowsUpdateProvider) updateToPatch(update *ole.IDispatch) (AvailableP
 	// behaviour (collectors/patches_windows.go). Empty when unavailable.
 	releaseDate := w.getDateProperty(update, "LastDeploymentChangeTime")
 
-	// Determine update type: software, driver, or feature
-	updateType := "software"
+	// Determine update type: software, driver, feature (a Windows feature
+	// release: the Upgrades classification, or a BrowseOnly update whose
+	// title is one — the flag clears once Microsoft pushes the release while
+	// the classification stays) or optional (any other BrowseOnly update).
 	typeVal, _ := w.getIntProperty(update, "Type")
-	if typeVal == 2 {
-		updateType = "driver"
-	}
 	browseOnly, _ := w.getBoolProperty(update, "BrowseOnly")
-	if browseOnly {
-		updateType = "feature"
-	}
+	updateType := windowsUpdateType(typeVal, browseOnly, categoryNames, title)
 
 	return AvailablePatch{
 		ID:             updateID,
@@ -990,16 +1016,25 @@ func (w *WindowsUpdateProvider) acceptEulaIfNeeded(update *ole.IDispatch) error 
 }
 
 // shouldExcludePatch returns true if the patch should be filtered out based on config.
-func (w *WindowsUpdateProvider) shouldExcludePatch(patch AvailablePatch) bool {
-	if w.cfg == nil {
-		return false
+func (w *WindowsUpdateProvider) shouldExcludePatch(patch AvailablePatch, installed bool) bool {
+	// Optional (BrowseOnly, non-feature) updates were never surfaced; keep it
+	// that way on both passes.
+	if patch.UpdateType == UpdateTypeOptional {
+		return true
 	}
-
-	if w.cfg.PatchExcludeDrivers && patch.UpdateType == "driver" {
+	if w.cfg != nil && w.cfg.PatchExcludeDrivers && patch.UpdateType == UpdateTypeDriver {
 		log.Debug("excluding driver update", "title", patch.Title, "id", patch.ID)
 		return true
 	}
-	if w.cfg.PatchExcludeFeatureUpdates && patch.UpdateType == "feature" {
+	// Windows feature releases follow the ring's policy (block / allow / pin),
+	// pushed by the heartbeat; the local config key is only an operator kill
+	// switch that always excludes them. The policy governs what is offered, so
+	// the installed-inventory pass is exempt.
+	if installed {
+		return false
+	}
+	killSwitch := w.cfg != nil && w.cfg.PatchExcludeFeatureUpdates
+	if excludeFeatureUpdate(killSwitch, w.currentFeatureUpdatePolicy(), patch) {
 		log.Debug("excluding feature update", "title", patch.Title, "id", patch.ID)
 		return true
 	}

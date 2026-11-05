@@ -2,6 +2,23 @@
 
 Tracking file for post-implementation feature verification results. Entries are logged most-recent-first.
 
+## Wisp orchestrator (#9906, W01–W08) — 2026-10-25
+
+**Branch:** `qa/wisp-full-2026-10-25` (main `8d1871dfe1` + #10109)
+**Commit:** `ef67814775`, `8adf73e754`, `cd647fe3a8`, `2b606c463e` (fixes)
+**Tested by:** Claude
+**Result:** PARTIAL — 31 PASS / 2 PARTIAL / 3 FAIL fixed on the branch / 3 FAIL open (#10141, #10142, #10104) / 3 BLOCKED or N/A
+
+### What was tested
+- [x] UI + API with a live Anthropic key on a flag-on wt-stack: grant step-up/refresh/pause/resume/revoke, partner switch, locked plan, flag off, org-scoped and viewer users, `/wisp` home, needs-you, links + picker + Link-to-Wisp, memory page, chat tools (`remember`, `raise_concern`, `link_entity`, `launch_specialist`), assessments via wake, watches, nudges + feedback, digest, morning brief, activity + live line, spend meter, run-detail provenance, `/workspace` redirect, gap-finder CLI.
+- [ ] Mobile (W06c/W08c), attachments (no artifact store), `analysis` specialists, ticket clusters — not reachable on the wt-stack.
+
+### Issues Found
+- Fixed on the branch: every Wisp session failed to open (`attachSession` outside the request transaction); `launch_specialist` denied by the grant ceiling for everyone; device picker search case-sensitive/hostname-only.
+- Open: #10141 `/admin/wisp` API missing; #10142 `/wisp/chat` new conversation is not a Wisp session; #10143 "Noted" without `remember` + no readiness hint; #10144 double approvals per specialist call; #10145 budget/partner-pause state vs copy. #10104–#10108 from the 10-24 sweep still open.
+
+Full log: `docs/testing/release-sweeps/2026-10-25-wisp-full-e2e.md`.
+
 ## Hardware Lifecycle Report (PR #5701) — 2026-09-13
 
 **Branch:** `feature/hardware-lifecycle-report`

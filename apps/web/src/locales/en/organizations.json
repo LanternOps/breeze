@@ -392,7 +392,10 @@
           "saved": "Trust Center defaults saved",
           "saveFailed": "Couldn't save the Trust Center defaults",
           "mfaRequired": "Changing these defaults requires multi-factor authentication. Enable MFA in your profile security settings, then try again.",
-          "revisionMismatch": "Someone else changed these defaults. Reload to see their changes."
+          "revisionMismatch": "Someone else changed these defaults. Reload to see their changes.",
+          "conflictNotice": "Someone else saved these defaults while you were editing. Reload theirs to start from their version, or keep editing: saving again will keep failing until you reload.",
+          "reloadTheirs": "Reload theirs",
+          "keepEditing": "Keep editing"
         },
         "title": "Inherited settings"
       },

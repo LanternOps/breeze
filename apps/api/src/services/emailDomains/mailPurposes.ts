@@ -72,6 +72,9 @@ export const MAIL_PURPOSES = {
   'staff.contract_renewal': { lane: 'platform' },
   'staff.trust_declaration_reminder': { lane: 'platform' },
   'staff.quote_outcome': { lane: 'platform' },
+  // #9075 W2b: the request creator (MSP staff) is told the client signed or
+  // declined an agreement request. Send site: services/agreementOutcomeNotify.ts.
+  'staff.agreement_outcome': { lane: 'platform' },
   // W03. The notice that a partner's own sending domain is verified / at risk
   // / failed / suspended / auto-removed. PLATFORM on purpose: a mail saying
   // "your sending domain is broken" must never be sent from that domain
@@ -104,6 +107,15 @@ export const MAIL_PURPOSES = {
   // when a tech accepts on their behalf. Same envelope as the quote itself;
   // its own purpose so delivery history never reports it as a quote send.
   'quote.acceptance_recorded': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
+  // #9075 W2b: the agreement request (signing link) emailed to the client's
+  // recipients — the same envelope as a quote send. Send site:
+  // services/agreementRequestEmail.ts.
+  'agreement.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
+  // #9075 W2b: "Your signed copy" to the signer and every request recipient,
+  // with the signed agreement attached. Customer-facing, its own purpose so
+  // delivery history never reports it as a request send. Send site:
+  // services/agreementSignedCopyEmail.ts.
+  'agreement.signed_copy': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
   'billing.notice': { lane: 'partner', stream: 'billing', fallbackFrom: 'default' },
   'invoice.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
   'report.delivery': { lane: 'partner', stream: 'general', fallbackFrom: 'partner_display_name' },

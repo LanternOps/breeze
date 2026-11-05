@@ -51,6 +51,14 @@ vi.mock('./AiApprovalDialog', async () => {
 });
 vi.mock('./AiPlanReviewCard', () => ({ default: () => null }));
 vi.mock('./AiPlanProgressBar', () => ({ default: () => null }));
+// The run card polls the API; what this file owns is which run id reaches it.
+const runCards = vi.hoisted(() => ({ props: [] as Array<Record<string, unknown>> }));
+vi.mock('./AiRunCard', () => ({
+  default: (props: Record<string, unknown>) => {
+    runCards.props.push(props);
+    return <div data-testid="run-card-stub" data-run-id={String(props.runId)} />;
+  },
+}));
 
 type Msg = {
   id: string;
@@ -65,8 +73,21 @@ const baseProps = {
   onReject: vi.fn(),
 };
 
+/**
+ * Wisp companion W01: tool calls fold into a collapsed group by default. The
+ * suites below this helper pin the per-call wiring inside a group (input
+ * reuse, one card per call, proposal links), so they open every group first.
+ */
+function expandToolGroups(root: ParentNode = document) {
+  root
+    .querySelectorAll<HTMLButtonElement>('[data-testid="ai-tool-group"] > button[aria-expanded="false"]')
+    .forEach((b) => fireEvent.click(b));
+}
+
 function renderWithMessages(messages: Msg[]) {
-  return render(<AiChatMessages {...baseProps} messages={messages as never} />);
+  const view = render(<AiChatMessages {...baseProps} messages={messages as never} />);
+  expandToolGroups(view.container);
+  return view;
 }
 
 // jsdom has no layout engine, so scrollHeight/clientHeight are 0. Stamp a
@@ -583,5 +604,341 @@ describe('one card per tool call (#9534)', () => {
   it('still renders an orphan result (no tool_use row) as its own card', () => {
     renderWithMessages([result('r1', 'gone')]);
     expect(toolCallCards.props).toHaveLength(1);
+  });
+});
+
+/**
+ * Wisp companion W01 (#10211, spec §4.2): prose replies with no avatar, a
+ * name label on the first reply of a run, user bubbles, folded tool activity,
+ * specialist run cards, time dividers, and the page/panel layouts.
+ */
+describe('chat kit units (Wisp companion W01)', () => {
+  const T0 = new Date(2026, 9, 25, 9, 0);
+  const atMin = (m: number) => new Date(T0.getTime() + m * 60_000);
+  const u = (id: string, m = 0) => ({ id, role: 'user', content: `question ${id}`, createdAt: atMin(m) });
+  const a = (id: string, content: string, m = 0, extra: Record<string, unknown> = {}) =>
+    ({ id, role: 'assistant', content, createdAt: atMin(m), ...extra });
+  const tu = (id: string, toolUseId: string, toolName = 'query_devices') =>
+    ({ id, role: 'tool_use', content: '', toolName, toolUseId, toolInput: {}, createdAt: T0 });
+  const tr = (id: string, toolUseId: string, toolName = 'query_devices', extra: Record<string, unknown> = {}) =>
+    ({ id, role: 'tool_result', content: '[]', toolName, toolUseId, toolOutput: [], createdAt: T0, ...extra });
+  const view = (messages: unknown[], props: Record<string, unknown> = {}) =>
+    render(<AiChatMessages {...baseProps} messages={messages as never} {...props} />);
+
+  beforeEach(() => {
+    toolCallCards.props.length = 0;
+    runCards.props.length = 0;
+  });
+
+  it('renders no avatar and labels the first assistant message of a run', () => {
+    const { container, getAllByTestId, rerender } = view([u('u1'), a('a1', 'first'), a('a2', 'second')]);
+    expect(container.querySelector('svg')).toBeNull();
+    expect(getAllByTestId('ai-msg-label').map((n) => n.textContent)).toEqual(['Breeze AI']);
+    expect(getAllByTestId('ai-msg-assistant')).toHaveLength(2);
+    const bubble = getAllByTestId('ai-msg-user')[0] as HTMLElement;
+    expect(bubble.textContent).toBe('question u1');
+    expect(bubble.className).toContain('max-w-[75%]');
+    expect(bubble.className).toContain('break-words');
+    rerender(<AiChatMessages {...baseProps} messages={[u('u1'), a('a1', 'first')] as never} assistantLabel="Wisp" />);
+    expect(getAllByTestId('ai-msg-label').map((n) => n.textContent)).toEqual(['Wisp']);
+  });
+
+  it('blank assistant rows are not rendered; a streaming one shows the caret', () => {
+    const { getAllByTestId, getByTestId, rerender } = view([u('u1'), a('blank', '\n\n')]);
+    expect(() => getAllByTestId('ai-msg-assistant')).toThrow();
+    rerender(<AiChatMessages {...baseProps} messages={[u('u1'), a('live', '', 0, { isStreaming: true })] as never} />);
+    expect(getAllByTestId('ai-msg-assistant')).toHaveLength(1);
+    expect(getByTestId('ai-msg-caret')).toBeTruthy();
+  });
+
+  it('three tool rows render one ai-tool-group; a failed one is expanded and the assistant text after it still renders in order', () => {
+    const { getAllByTestId, container } = view([
+      u('u1'),
+      tu('t1', 'a'), tr('r1', 'a'),
+      a('pre', ' '),
+      tu('t2', 'b', 'list_sites'), tr('r2', 'b', 'list_sites', { isError: true, toolOutput: { error: 'nope' } }),
+      tu('t3', 'c', 'manage_alerts'), tr('r3', 'c', 'manage_alerts'),
+      a('after', 'One check failed.'),
+    ]);
+    const groups = getAllByTestId('ai-tool-group');
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.getAttribute('data-state')).toBe('failed');
+    // Expanded: every call's own card renders inside the group.
+    expect(toolCallCards.props.map((p) => p.toolName)).toEqual(['query_devices', 'list_sites', 'manage_alerts']);
+    const order = Array.from(container.querySelectorAll('[data-testid="ai-msg-user"], [data-testid="ai-tool-group"], [data-testid="ai-msg-assistant"]'))
+      .map((n) => n.getAttribute('data-testid'));
+    expect(order).toEqual(['ai-msg-user', 'ai-tool-group', 'ai-msg-assistant']);
+    expect(getAllByTestId('ai-msg-assistant')[0]?.textContent).toContain('One check failed.');
+  });
+
+  it('a successful group stays collapsed and renders no per-call card until opened', () => {
+    const { getByTestId } = view([u('u1'), tu('t1', 'a'), tr('r1', 'a'), tu('t2', 'b', 'list_sites'), tr('r2', 'b', 'list_sites')]);
+    expect(getByTestId('ai-tool-group').getAttribute('data-state')).toBe('done');
+    expect(toolCallCards.props).toHaveLength(0);
+    expandToolGroups();
+    expect(toolCallCards.props.map((p) => p.toolName)).toEqual(['query_devices', 'list_sites']);
+  });
+
+  it('launch_specialist admitted result renders AiRunCard with its runId', () => {
+    const RUN = '0b9a4c1e-2f3d-4a5b-8c6d-7e8f9a0b1c2d';
+    const RUN_2 = '1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const launch = (id: string, runId: string) => [
+      tu(id, id, 'launch_specialist'),
+      tr(`r-${id}`, id, 'launch_specialist', { toolOutput: undefined, content: JSON.stringify({ admitted: true, runId }) }),
+    ];
+    const { getAllByTestId, queryByText, getByText, rerender } = view([u('u1'), ...launch('s1', RUN)]);
+    expect(getAllByTestId('run-card-stub').map((n) => n.getAttribute('data-run-id'))).toEqual([RUN]);
+    expect(runCards.props[0]).toMatchObject({ runId: RUN, initialStatus: 'queued' });
+    expect(queryByText(/Handed to/)).toBeNull();
+    rerender(<AiChatMessages {...baseProps} messages={[u('u1'), ...launch('s1', RUN), ...launch('s2', RUN_2)] as never} />);
+    expect(getAllByTestId('run-card-stub').map((n) => n.getAttribute('data-run-id'))).toEqual([RUN, RUN_2]);
+    expect(getByText('Handed to 2 specialists')).toBeTruthy();
+  });
+
+  it('a script proposal call stays a visible card so its link is never folded away (#7918)', () => {
+    const PROPOSAL = '6f1c2a4e-8d3b-4c5a-9e7f-0a1b2c3d4e5f';
+    const { getByTestId, queryByTestId } = view([
+      tu('t1', 'p', 'propose_script'),
+      tr('r1', 'p', 'propose_script', { toolOutput: { proposalId: PROPOSAL } }),
+    ]);
+    expect(queryByTestId('ai-tool-group')).toBeNull();
+    expect(getByTestId('ai-script-proposal-link').getAttribute('href')).toBe(`/approvals#proposal-${PROPOSAL}`);
+  });
+
+  it('showTimeDividers inserts ai-chat-divider on a day change', () => {
+    const nextDay = new Date(T0.getFullYear(), T0.getMonth(), T0.getDate() + 1, 8, 15);
+    const { getAllByTestId } = view(
+      [u('u1', 0), a('a1', 'hi', 1), { ...u('u2'), createdAt: nextDay }],
+      { showTimeDividers: true, layout: 'page' },
+    );
+    const dividers = getAllByTestId('ai-chat-divider');
+    expect(dividers).toHaveLength(2);
+    expect(dividers[0]?.getAttribute('role')).toBe('separator');
+    expect(dividers[1]?.textContent).toMatch(/8:15/);
+  });
+
+  it('a call that fails mid-stream opens its group in place, above the text that streams after it', () => {
+    const pending = [u('u1'), tu('t1', 'a'), tu('t2', 'b', 'list_sites')];
+    const { getByTestId, getAllByTestId, container, rerender } = view(pending);
+    const before = getByTestId('ai-tool-group');
+    expect(before.getAttribute('data-state')).toBe('executing');
+    expect(toolCallCards.props).toHaveLength(0);
+    rerender(<AiChatMessages {...baseProps} messages={[
+      ...pending,
+      tr('r1', 'a'),
+      tr('r2', 'b', 'list_sites', { isError: true, toolOutput: { error: 'Site lookup refused' } }),
+      a('after', 'One check failed', 0, { isStreaming: true }),
+    ] as never} />);
+    const after = getByTestId('ai-tool-group');
+    // Same element: the group kept its instance (and any user toggle) when the results arrived.
+    expect(after).toBe(before);
+    expect(after.getAttribute('data-state')).toBe('failed');
+    expect(after.textContent).toContain('1 failed');
+    expect(toolCallCards.props.map((p) => p.toolName)).toEqual(expect.arrayContaining(['query_devices', 'list_sites']));
+    const order = Array.from(container.querySelectorAll('[data-testid="ai-tool-group"], [data-testid="ai-msg-assistant"]'))
+      .map((n) => n.getAttribute('data-testid'));
+    expect(order).toEqual(['ai-tool-group', 'ai-msg-assistant']);
+    expect(getAllByTestId('ai-msg-caret')).toHaveLength(1);
+  });
+
+  it('a failed run_script with a proposal keeps its proposal link visible without a click (#7918)', () => {
+    const PROPOSAL = '6f1c2a4e-8d3b-4c5a-9e7f-0a1b2c3d4e5f';
+    const { getByTestId, queryByTestId } = view([
+      tu('t1', 'r', 'run_script'),
+      tr('r1', 'r', 'run_script', { isError: true, toolOutput: { error: 'Device offline' } }),
+    ].map((m, i) => (i === 0 ? { ...m, toolInput: { proposalId: PROPOSAL } } : m)));
+    expect(queryByTestId('ai-tool-group')).toBeNull();
+    expect(getByTestId('ai-script-proposal-link').getAttribute('href')).toBe(`/approvals#proposal-${PROPOSAL}`);
+  });
+
+  it('assistant prose breaks long unbroken words so a URL cannot widen the 400 px panel', () => {
+    const { getByTestId } = view([u('u1'), a('a1', 'see https://example.com/' + 'x'.repeat(200))]);
+    const prose = getByTestId('ai-msg-assistant').querySelector('.prose') as HTMLElement;
+    expect(prose.className).toContain('break-words');
+  });
+
+  it('layout=panel has no max-w-3xl wrapper and no dividers', () => {
+    // Dividers are opt-in per surface (showTimeDividers); the docked panel never
+    // opts in (AiChatSidebar.wispHome.test pins that it passes no flag).
+    const { container, queryAllByTestId } = view([u('u1', 0), u('u2', 90)]);
+    expect(container.querySelector('.max-w-3xl')).toBeNull();
+    expect(queryAllByTestId('ai-chat-divider')).toHaveLength(0);
+    const page = view([u('u1', 0)], { layout: 'page' });
+    expect(page.container.querySelector('.max-w-3xl')).not.toBeNull();
+  });
+
+  it('emptyState replaces the quick actions', () => {
+    const { getByTestId, queryByText } = view([], { emptyState: <div data-testid="custom-empty">hello</div> });
+    expect(getByTestId('custom-empty')).toBeTruthy();
+    expect(queryByText('Check server health')).toBeNull();
+  });
+
+  it('without emptyState the quick actions still render', () => {
+    const { getByText } = view([]);
+    expect(getByText('Check server health')).toBeTruthy();
+  });
+
+  it('leading renders inside the scroll container before the first message', () => {
+    const { container, getByTestId } = view([u('u1')], { leading: <article data-testid="lead">brief</article>, layout: 'page' });
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
+    const lead = getByTestId('lead');
+    expect(scroller.contains(lead)).toBe(true);
+    const first = getByTestId('ai-msg-user');
+    expect(lead.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('leading still renders, above the empty state, when there are no messages yet', () => {
+    const { getByTestId } = view([], { leading: <article data-testid="lead">brief</article>, emptyState: <div data-testid="custom-empty" /> });
+    const lead = getByTestId('lead');
+    expect(lead.compareDocumentPosition(getByTestId('custom-empty')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+describe('timed extras and Load earlier (Wisp companion W02b)', () => {
+  const T0 = new Date(2026, 9, 26, 9, 0);
+  const atMin = (m: number) => new Date(T0.getTime() + m * 60_000);
+  const u = (id: string, m: number) => ({ id, role: 'user', content: `question ${id}`, createdAt: atMin(m) });
+  const a = (id: string, m: number) => ({ id, role: 'assistant', content: `answer ${id}`, createdAt: atMin(m) });
+  const post = (id: string, m: number) => ({ id, at: atMin(m), render: () => <article data-testid={`post-${id}`}>post {id}</article> });
+  const view = (messages: unknown[], props: Record<string, unknown> = {}) =>
+    render(<AiChatMessages {...baseProps} messages={messages as never} {...props} />);
+
+  let rafCallbacks: FrameRequestCallback[];
+  beforeEach(() => {
+    rafCallbacks = [];
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      rafCallbacks.push(cb);
+      return rafCallbacks.length;
+    });
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+      rafCallbacks[id - 1] = () => {};
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+  const flushRaf = () => act(() => rafCallbacks.splice(0).forEach((cb) => cb(0)));
+
+  it('renders an extra via its render fn in time order', () => {
+    const { getByTestId } = view([u('u1', 0), a('a1', 5)], { extras: [post('p1', 2)] });
+    const bubble = getByTestId('ai-msg-user');
+    const p1 = getByTestId('post-p1');
+    const reply = getByTestId('ai-msg-assistant');
+    expect(bubble.compareDocumentPosition(p1) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(p1.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('extras without messages render instead of the empty state', () => {
+    const { getByTestId, queryByText } = view([], { extras: [post('p1', 0)] });
+    expect(getByTestId('post-p1')).toBeTruthy();
+    expect(queryByText('Check server health')).toBeNull();
+  });
+
+  it('Load earlier renders above leading only with hasEarlier and a handler, and calls it', () => {
+    const onLoadEarlier = vi.fn();
+    const { getByTestId, queryByTestId, rerender } = view([u('u1', 0)], {
+      hasEarlier: true, onLoadEarlier, leading: <article data-testid="lead">lead</article>,
+    });
+    const button = getByTestId('ai-chat-load-earlier');
+    expect(button.textContent).toBe('Load earlier');
+    expect(button.compareDocumentPosition(getByTestId('lead')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(button);
+    expect(onLoadEarlier).toHaveBeenCalledTimes(1);
+
+    rerender(<AiChatMessages {...baseProps} messages={[u('u1', 0)] as never} hasEarlier onLoadEarlier={onLoadEarlier} loadingEarlier />);
+    expect(getByTestId('ai-chat-load-earlier')).toBeDisabled();
+    expect(getByTestId('ai-chat-load-earlier')).toHaveAttribute('aria-busy', 'true');
+
+    rerender(<AiChatMessages {...baseProps} messages={[u('u1', 0)] as never} hasEarlier={false} onLoadEarlier={onLoadEarlier} />);
+    expect(queryByTestId('ai-chat-load-earlier')).toBeNull();
+    rerender(<AiChatMessages {...baseProps} messages={[u('u1', 0)] as never} hasEarlier />);
+    expect(queryByTestId('ai-chat-load-earlier')).toBeNull();
+  });
+
+  it('a prepend keeps the viewport anchored: scrollTop moves by the height delta, never to the bottom', () => {
+    const onLoadEarlier = vi.fn();
+    const newer = [u('u2', 30), a('a2', 31)];
+    const { getByTestId, rerender } = view(newer, { hasEarlier: true, onLoadEarlier });
+    flushRaf();
+    const el = container(document.body);
+    // Reading at the top, where the button is.
+    stampGeometry(el, { scrollHeight: 1000, clientHeight: 300, scrollTop: 0 });
+    fireEvent.scroll(el);
+    fireEvent.click(getByTestId('ai-chat-load-earlier'));
+    rerender(<AiChatMessages {...baseProps} messages={newer as never} hasEarlier onLoadEarlier={onLoadEarlier} loadingEarlier />);
+
+    // The older page lands: 600 px of content above what the reader was looking at.
+    stampGeometry(el, { scrollHeight: 1600, clientHeight: 300, scrollTop: 0 });
+    rerender(
+      <AiChatMessages
+        {...baseProps}
+        messages={[u('u1', 0), a('a1', 1), ...newer] as never}
+        extras={[post('p0', -5)]}
+        hasEarlier={false}
+        onLoadEarlier={onLoadEarlier}
+      />,
+    );
+    expect(el.scrollTop).toBe(600);
+    flushRaf();
+    expect(el.scrollTop).toBe(600);
+  });
+
+  it('a prepend on a short (pinned) thread is anchored too, and the next append still follows the bottom', () => {
+    const onLoadEarlier = vi.fn();
+    const newer = [u('u2', 30)];
+    const { getByTestId, rerender } = view(newer, { hasEarlier: true, onLoadEarlier });
+    flushRaf();
+    const el = container(document.body);
+    stampGeometry(el, { scrollHeight: 1000, clientHeight: 300, scrollTop: 700 });
+    fireEvent.scroll(el);
+    fireEvent.click(getByTestId('ai-chat-load-earlier'));
+
+    stampGeometry(el, { scrollHeight: 1600, clientHeight: 300, scrollTop: 700 });
+    const all = [u('u1', 0), ...newer];
+    rerender(<AiChatMessages {...baseProps} messages={all as never} hasEarlier onLoadEarlier={onLoadEarlier} />);
+    flushRaf();
+    // 700 + 600, not the auto-scroll's scrollHeight (1600).
+    expect(el.scrollTop).toBe(1300);
+
+    fireEvent.scroll(el);
+    stampGeometry(el, { scrollHeight: 1800, clientHeight: 300, scrollTop: 1300 });
+    rerender(<AiChatMessages {...baseProps} messages={[...all, a('a2', 31)] as never} hasEarlier onLoadEarlier={onLoadEarlier} />);
+    flushRaf();
+    expect(el.scrollTop).toBe(1800);
+  });
+
+  it('a load started without the button (a Retry elsewhere) is anchored too', () => {
+    const onLoadEarlier = vi.fn();
+    const newer = [u('u2', 30)];
+    const { rerender } = view(newer, { hasEarlier: true, onLoadEarlier });
+    flushRaf();
+    const el = container(document.body);
+    stampGeometry(el, { scrollHeight: 1000, clientHeight: 300, scrollTop: 120 });
+    fireEvent.scroll(el);
+    // The host starts the load itself: no click on ai-chat-load-earlier.
+    rerender(<AiChatMessages {...baseProps} messages={newer as never} hasEarlier onLoadEarlier={onLoadEarlier} loadingEarlier />);
+    stampGeometry(el, { scrollHeight: 1400, clientHeight: 300, scrollTop: 120 });
+    rerender(<AiChatMessages {...baseProps} messages={[u('u1', 0), ...newer] as never} hasEarlier onLoadEarlier={onLoadEarlier} />);
+    expect(el.scrollTop).toBe(520);
+    expect(onLoadEarlier).not.toHaveBeenCalled();
+  });
+
+  it('a load that adds nothing leaves no stale anchor behind', () => {
+    const onLoadEarlier = vi.fn();
+    const newer = [u('u2', 30)];
+    const { getByTestId, rerender } = view(newer, { hasEarlier: true, onLoadEarlier });
+    flushRaf();
+    const el = container(document.body);
+    stampGeometry(el, { scrollHeight: 1000, clientHeight: 300, scrollTop: 0 });
+    fireEvent.scroll(el);
+    fireEvent.click(getByTestId('ai-chat-load-earlier'));
+    rerender(<AiChatMessages {...baseProps} messages={newer as never} hasEarlier onLoadEarlier={onLoadEarlier} loadingEarlier />);
+    // The fetch failed: loading ends with nothing prepended.
+    rerender(<AiChatMessages {...baseProps} messages={newer as never} hasEarlier onLoadEarlier={onLoadEarlier} />);
+    // Later the thread is replaced wholesale (a rebind): no stale anchor shifts it.
+    stampGeometry(el, { scrollHeight: 1600, clientHeight: 300, scrollTop: 0 });
+    rerender(<AiChatMessages {...baseProps} messages={[u('u0', -60), ...newer] as never} hasEarlier onLoadEarlier={onLoadEarlier} />);
+    expect(el.scrollTop).toBe(0);
   });
 });

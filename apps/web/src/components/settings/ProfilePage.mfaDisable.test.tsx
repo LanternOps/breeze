@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ProfilePage from './ProfilePage';
@@ -17,8 +17,8 @@ import { fetchWithAuth } from '../../stores/auth';
  * recovery-code rotation adopted in #4480/#4646.
  */
 
-const { commitReissuedSessionIfCurrentMock, sessionGeneration } = vi.hoisted(() => ({
-  commitReissuedSessionIfCurrentMock: vi.fn(() => true),
+const { commitMfaDisableIfCurrentMock, sessionGeneration } = vi.hoisted(() => ({
+  commitMfaDisableIfCurrentMock: vi.fn(() => true),
   sessionGeneration: 7,
 }));
 
@@ -32,7 +32,7 @@ vi.mock('../../stores/auth', () => ({
       getState: () => ({
         updateUser: vi.fn(),
         sessionGeneration,
-        commitReissuedSessionIfCurrent: commitReissuedSessionIfCurrentMock,
+        commitMfaDisableIfCurrent: commitMfaDisableIfCurrentMock,
       }),
     },
   ),
@@ -96,7 +96,7 @@ async function disableMfa() {
 describe('ProfilePage — disabling MFA adopts the replacement session (#4934)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    commitReissuedSessionIfCurrentMock.mockReturnValue(true);
+    commitMfaDisableIfCurrentMock.mockReturnValue(true);
     window.history.replaceState(null, '', '/settings/profile');
   });
 
@@ -117,19 +117,22 @@ describe('ProfilePage — disabling MFA adopts the replacement session (#4934)',
     await disableMfa();
 
     await waitFor(() => {
-      expect(commitReissuedSessionIfCurrentMock).toHaveBeenCalledWith(
+      expect(commitMfaDisableIfCurrentMock).toHaveBeenCalledWith(
         sessionGeneration,
         { accessToken: 'reissued-access-token', expiresInSeconds: 900 },
       );
     });
     expect(await screen.findByText(/Multi-factor authentication disabled/i)).toBeTruthy();
+    expect(within(screen.getByTestId('mfa-authenticator-row')).getByText('Disabled')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Enable$/i })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /^Disable$/i })).toBeNull();
   });
 
   it('still reports the disable when the session moved on and the replacement is refused', async () => {
     // A logout/re-login raced the request: the store refuses the stale-generation
     // commit. MFA is already off server-side, so the outcome still has to be
     // shown rather than surfaced as a failure the user would retry.
-    commitReissuedSessionIfCurrentMock.mockReturnValue(false);
+    commitMfaDisableIfCurrentMock.mockReturnValue(false);
     fetchWithAuthMock.mockImplementation(async (url) => {
       if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
       if (String(url) === '/auth/mfa/disable') {
@@ -164,6 +167,6 @@ describe('ProfilePage — disabling MFA adopts the replacement session (#4934)',
     await disableMfa();
 
     expect(await screen.findByText(/Multi-factor authentication disabled/i)).toBeTruthy();
-    expect(commitReissuedSessionIfCurrentMock).not.toHaveBeenCalled();
+    expect(commitMfaDisableIfCurrentMock).toHaveBeenCalledWith(sessionGeneration, undefined);
   });
 });

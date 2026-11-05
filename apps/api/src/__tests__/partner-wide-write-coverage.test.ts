@@ -62,8 +62,23 @@ const API_SRC = resolve(__dirname, '..');
  * partner-wide capability gate. Every entry carries the reason it is exempt.
  */
 const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
+  'routes/devices/groups.ts': 'legacy org-only API; refuses partner-owned groups (#10521 W2a)',
+  'services/deviceGroupDelete.ts': 'data access; gate in routes/groups.ts',
+  'services/fleetDesign/apply.ts': 'org-scoped fleet design; never touches org_id IS NULL rows',
+  'services/groupMembership.ts': 'system-context evaluator; partner memberships derive from the device organization and eligible partner ownership',
+  'services/partnerGroupEvaluation.ts': 'system-context evaluator; materializes partner-group memberships one eligible organization per fresh transaction',
+
+  // --- flows W05 (#5220) ------------------------------------------------------
+  'services/flows/webhook/deliveries.ts': 'W05 (#5220) webhook delivery log (flow_webhook_deliveries): append-only ingress bookkeeping, not partner-wide config. Its only writer is services/flows/webhook/ingest.ts behind the router-auth-exempt POST /api/v1/webhooks/flows/:flowId; there is no AuthContext to gate — every write runs in system context AFTER HMAC/token verification against the flow\'s own secret, and a failed verification writes no row. The partner-wide authority is gated where it is granted: minting/rotating a partner-wide flow\'s secret (services/flows/webhook/secret.ts, partner_wide_forbidden; test secret.test.ts) and enabling a partner-wide flow (services/flows/versions.ts canManagePartnerWidePolicies).',
+  'services/wisp/nudgePreferences.ts': 'Wisp W06a: user-scoped row, RLS pins breeze_current_user_id — writes only wisp_nudge_preferences (user_id PK, the caller\'s own row inside their own partner; the policy ANDs breeze_current_user_id() with breeze_has_partner_access) and the worker digest/brief stamps in system context. The partner-wide urgent-capable writer lives in services/wisp/partnerNudgeSettings.ts and is gated on canManagePartnerWidePolicies',
   // --- business calendars (#8973 W4) ------------------------------------------
+  'services/ticketRouting/repository.ts': 'data access only; every caller-facing write (routes/tickets/routingRules.ts and the manage_ticket_routing_rules AI tool) goes through services/ticketRouting/service.ts, which gates partner-wide rows on canManagePartnerWidePolicies (selected-access denial pinned in service.test.ts)',
+  'services/serviceCatalogService.ts': 'data access only; every caller-facing write goes through routes/tickets/serviceCatalog.ts, which gates partner-wide rows on canManagePartnerWidePolicies via resolveWritePartner (denial pinned in serviceCatalog.test.ts)',
   'services/businessCalendars/repository.ts': 'data access only; every caller-facing write goes through services/businessCalendars/service.ts, which gates partner-wide rows on canManagePartnerWidePolicies (selected-access denial pinned in service.test.ts)',
+  // Worker pauses only tighten operational state after an auth failure. Resume
+  // follows a successful test in routes/psa.ts, behind partnerWideWriteBlocked
+  // (canManagePartnerWidePolicies); neither operation edits ticketing config.
+  'services/psaAlertTicketing/pause.ts': 'system auth-error pause; resume is called only by the capability-gated PSA connection test route to lift that pause',
   // Wisp W02 (#9908): worker/system path only — it only ever TIGHTENS a grant
   // (pause/expire) or lifts a pause it set itself; the caller-facing
   // create/refresh/revoke/settings gates live in services/wisp/grants.ts.
@@ -71,6 +86,8 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // Wisp W04 (#9910): a wisp_threads row is the conversation state of ONE
   // grant, not partner-wide configuration pushed into every org.
   'services/wisp/concerns.ts': 'Wisp W05a triage facts (wisp_concerns / wisp_concern_recipients): per-subject concerns and per-grant recipient state, not partner-wide config; every write runs in system context on ids the caller already authorised (grant-owner routes, chat tools under auth.wispGrant after assertWithinCeiling, the assessment finalizer)',
+  'services/wisp/threadLinks.ts': 'Wisp W08 (#9914) thread links (wisp_thread_links): one grant\'s own thread context, not partner-wide config; every add resolves the entity first (caller permission, live ceiling, token scope — services/wisp/entityRefs.ts) and every query is pinned to (partner_id, thread_id) of a thread the caller owns (loadOwnThread / the chat tool\'s own grant)',
+  'services/wisp/threadPosts.ts': 'Wisp companion W02a (#10212) thread posts (wisp_thread_posts): one grant\'s own proactive output (brief / nudge / digest), not partner-wide config; the only caller is notifyUser, a worker path in system context that cross-checks thread, grant and grantor before it writes, and every row takes the thread\'s own partner and grant',
   'services/wisp/watches.ts': 'Wisp W05a standing checks (wisp_watches): one grant\'s own rows, not partner-wide config; createWatch runs assertWithinCeiling and stamps grant/owner from the ceiling, deleteWatch is keyed by the ceiling\'s grant, the scheduler functions run in system context',
   'services/wisp/threads.ts': 'per-grant conversation state (one row per wisp_grants id), not partner-wide config; writes run in system context on ids the caller already authorised (validateWispGrantForSession / the grant-owner thread routes), and setThreadFocus is keyed by the ceiling\'s own grant + partner after assertWithinCeiling',
   // --- network_monitors became dual-axis in #5291 W04 ------------------------
@@ -160,7 +177,6 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'routes/oauthInteraction.ts': 'records the end-user\'s own OAuth consent grant, not partner configuration',
 
   // --- known gaps, tracked; listed so the count cannot silently grow ---------
-  'routes/softwareInstallMethods.ts': 'software_catalog rows here are catalog metadata, gated by the software permission set',
   // Corrected 2026-09 (site-ceiling gate review): this entry previously read
   // "read-oriented inventory surface; its policy writes delegate to
   // softwarePolicies routes" — false. POST /approve, /deny, /clear DIRECTLY
@@ -184,7 +200,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // MFA + a resource-bound ai_script_lane_grant step-up.
   'routes/ai/scriptPolicy.ts': 'org GRANT writes only (org_id always set); partner ceiling gated at routes/partnerAiScriptPolicy.ts — canManagePartnerWidePolicies on the PUT',
   'routes/ai/dataPolicy.ts': 'org override writes only (org_id always set); partner default gated at routes/partnerAiDataPolicy.ts — canManagePartnerWidePolicies on the PUT',
-  'routes/softwareInventory.ts': 'software_policies/configurationPolicies writes here are always org-scoped — resolveOrgId always resolves a concrete org id, so this route can never create or modify a partner-wide (org_id NULL) row; the site-restricted-user gap is closed separately by canMutateOrgWideGovernance',
+  'services/softwareInventoryPolicy.ts': 'software_policies/configurationPolicies writes here (lifted from routes/softwareInventory.ts) are always org-scoped — resolveOrgId always resolves a concrete org id, so these writes can never create or modify a partner-wide (org_id NULL) row; the site-restricted-user gap is closed separately by canMutateOrgWideGovernance in the route (an AI caller must apply the same gate)',
 
   // ==========================================================================
   // services/** (walk extended 2026-08-23 — the aiProvider/stripeConnect gate
@@ -296,6 +312,15 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // full-partner-admin surfaces gated at the route.
   'services/unassignedPool/parkedExpiry.ts': 'expired/purged holding-area ledger rows, written by the scheduled expiry and purge jobs (system) and by the expire-by-key incident action, whose route resolves the partner through canManagePartnerWidePolicies',
   'services/unassignedPool/poolOrg.ts': 'holding-org provisioning creates an org-axis container (same class as quickSupportOrg.ts)',
+  // #8318 wave 1b — reinstall reattach. device_reattach_intents and
+  // device_reattachments are partner-axis tables, but no row is partner-wide
+  // config: each names two devices of one partner, and every write runs in
+  // system scope behind its own authorization.
+  'services/deviceReattach/requestIntent.ts': 'reattach intent creation and admin cancel (system scope): the §8 access rule (./access.ts canActorReattach) gates every request on canManagePartnerWidePolicies for full partner admins and on per-org access + devices:write/delete for technicians, re-read under the holding-area lock',
+  'services/deviceReattach/stage.ts': 'phase 1 of the rebind (POST /agents/:id/rebind): the SOURCE agent stages hashes on the ONE intent naming it as source, in system scope, after the §6.4 revalidation re-reads the requester through the §8 access rule',
+  'services/deviceReattach/confirm.ts': 'rebind-confirm (confirm-only token): settles the ONE intent the token matches, writes its ledger row and the parked source\'s `reattached` exit, in system scope, after the §6.4 revalidation re-reads the requester through the §8 access rule (canManagePartnerWidePolicies for full partner admins)',
+  'services/deviceReattach/expirySweep.ts': 'the per-minute system job (jobs/deviceReattachIntentSweep.ts): expires open intents past their deadline and prunes terminal ones after 30 days; no caller, no partner-wide config',
+  'services/deviceReattach/intentStore.ts': 'shared locked reads and state transitions of ONE intent (cancel/expire: discard the staged set, demote its pending certificate), called only by the reattach services and parked housekeeping, which hold the authorization',
 
   // --- caller-facing, gated at the route layer (verify the gate when editing
   //     these services or adding ANY new route caller) -----------------------
@@ -334,7 +359,10 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/aiModels/offeringVerificationStore.ts': 'W06 (#7604) Task 12: worker-only writer of a gateway offering\'s verification record (capabilities), run by the ai-model-discovery verify-offering job under system scope for the job\'s (offeringId, partnerId); the route that queues it (routes/aiModels/offerings.ts /verify) is gated BILLING_MANAGE + MFA + requirePartnerWide. Never enables, never takes caller-supplied capabilities',
   'services/aiModels/connectionSettings.ts':'gated at routes/aiModels/connections.ts (BILLING_MANAGE + canManagePartnerWidePolicies + MFA); partner-axis, pinned to input.partnerId from auth',
   'services/automationRuntime.ts': 'manual trigger gated at routes/automations.ts; webhook path requires the provisioned automation secret',
-  'services/builtinDeploymentPackages.ts': 'both callers behind requirePartnerManager (routes/huntress.ts, routes/sentinelOne.ts)',
+  // Tool Catalog W06 (#5221): the create_alert writer, moved verbatim out of
+  // automationRuntime.ts and shared with the flow `create_alert` built-in.
+  'services/alertCreation.ts': 'ORG-axis only by construction: ensureAutomationAlertRule(orgId: string) inserts the per-org template and rule with org_id = that org, target org, and never sets partner_id (pinned in alertCreation.test.ts). Callers pass the device\'s org (automationRuntime.ts) or the flow run\'s org (flow_runs.org_id NOT NULL, shape 1), so a partner-owned flow or automation never writes partner-wide alert config',
+  'services/builtinDeploymentPackages.ts': 'ensureBuiltinPackage: routes/huntress.ts + routes/sentinelOne.ts behind requirePartnerManager; ensurePinnedBuiltinPackage: routes/softwareBuiltinPackages.ts behind canManagePartnerWidePolicies + devices.execute + MFA (#6958 D2); refreshPinnedBuiltinPackages: boot task, no caller',
   'services/partnerServicePrincipalKeys.ts': 'gated at routes/partnerServicePrincipals.ts capability check',
   'services/partnerStripe.ts': 'gated at routes/stripeConnect/index.ts — capability check on every handler (#3916)',
   'services/pax8SyncService.ts': 'every /pax8 route passes the global capability middleware in routes/pax8.ts',
@@ -425,6 +453,14 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/reportSeries/reconcile.ts': 'the multi-org report reconciler writes only ORG-owned series children: inserts carry a concrete org_id from the eligible target set, updates key on id + org_id + series_id, and reports_series_child_shape_chk forbids a partner-owned child. Its callers are services/reportSeries/store.ts (every entry point gated by canManagePartnerWidePolicies through requireSeriesPartner) and the schedule worker gate / repair sweep (system context, no caller)',
   'services/emailDomains/domainSync.ts': 'the sending-domain state machine runs only inside the sending-domains BullMQ worker, under system DB scope, with no caller and no auth context: it takes a domain id from a job payload, advances that ONE row between provider-observed statuses, and creates no partner-owned configuration. Every caller-facing create/update/delete of partner_sending_domains goes through routes/partnerSendingDomains.ts, which carries the canManagePartnerWidePolicies gate',
   'services/migrationWindows.ts': 'system sweep and admin-gated close: every caller-facing write of migration_windows / migration_window_orgs goes through routes/migrationWindows.ts, whose open and close routes carry the canManagePartnerWidePolicies gate (open is further owner-only and step-up bound); the remaining writer is the migration-window-sweep worker under system scope, with no caller',
+  // Ticket import framework (#8313 W4, spec 2026-10-19 §5.5 "Write gate").
+  // The six ticket_import_* tables are partner-axis with no org owner: the
+  // whole feature is partner-wide, so the gate is at the routes, which all run
+  // callerPartner() (routes/ticketImports/shared.ts → canManagePartnerWidePolicies)
+  // before any service call; create, edit and mappings are further owner-only.
+  'services/ticketImport/sourceStore.ts': 'called only from the gated routes/ticketImports (sources.ts, runs.ts), every one of which passes callerPartner() (canManagePartnerWidePolicies) first; create/edit/mappings are also owner-only',
+  'services/ticketImport/runLedger.ts': 'the ticket-import worker\'s writes (run cursor and counters, the per-source ledger, issue rows) under a partner-scoped context with no caller, and the stalled-run sweep (system scope, fails runs with no sign of life, no caller); every caller-facing write of these tables is gated in routes/ticketImports (callerPartner → canManagePartnerWidePolicies)',
+  'services/ticketImport/runStore.ts': 'called only from the gated routes/ticketImports/runs.ts (start, cancel, fail-on-enqueue), every one of which passes callerPartner() (canManagePartnerWidePolicies) first',
   // Partner Entitlements W1 (#9907). partner_entitlements rows are COMMERCIAL
   // facts, not partner-wide configuration: a partner must never write them, so
   // canManagePartnerWidePolicies (which a partner admin passes) is the wrong gate.
@@ -543,7 +579,11 @@ describe('partner-wide write coverage (security review 2026-08-16 §1.1)', () =>
     // allowlist, or the exemption silently outlives the code it excused.
     const stillMutating = new Set(
       collectSourceFiles()
-        .filter((file) => mutatedTables(readFileSync(file, 'utf8'), tableNames).length > 0)
+        // Membership materializers write org-owned child rows of partner groups.
+        // Their documented exemption remains live while those child writes exist,
+        // even though they never mutate a partner-owned definition itself.
+        .filter((file) => mutatedTables(readFileSync(file, 'utf8'),
+          [...tableNames, 'deviceGroupMemberships', 'groupMembershipLog']).length > 0)
         .map((file) => relative(API_SRC, file))
     );
 

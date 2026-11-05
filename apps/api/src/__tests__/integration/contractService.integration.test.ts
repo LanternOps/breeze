@@ -288,9 +288,9 @@ describe('per_device_role lines (#3205)', () => {
     expect(res.generated).toBe(true);
     expect(res.uncoveredDevices).toEqual({ total: 2, byRole: { workstation: 1, unknown: 1 } });
     const rows = await withSystemDbAccessContext(() =>
-      db.select({ quantity: invoiceLines.quantity, description: invoiceLines.description })
+      db.select({ quantity: invoiceLines.quantity, name: invoiceLines.name, description: invoiceLines.description })
         .from(invoiceLines).where(eq(invoiceLines.invoiceId, res.invoiceId!)));
-    expect(rows).toEqual([{ quantity: '1.00', description: 'Servers' }]);
+    expect(rows).toEqual([{ quantity: '1.00', name: 'Servers', description: null }]);
   });
 });
 

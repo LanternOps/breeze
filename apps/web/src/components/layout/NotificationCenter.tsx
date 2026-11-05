@@ -17,6 +17,7 @@ import {
 import { NOTIFICATION_TYPES, type NotificationType } from '@breeze/shared';
 import { cn, formatRelativeTime } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
+import { hashForConcern } from '@/components/wisp/wispThreadHash';
 import { fetchWithAuth } from '../../stores/auth';
 import { useEventStream } from '../../hooks/useEventStream';
 import { useTranslation } from 'react-i18next';
@@ -165,6 +166,8 @@ const buildHref = (type: NotificationDisplayType, raw: RawNotification) => {
   const proposalId = getString(metadata.proposalId);
   const alertId = targetId || getString(metadata.alertId);
   const agentId = getString(metadata.agentId);
+  const wispThreadId = getString(metadata.wispThreadId);
+  const concernId = getString(metadata.concernId);
 
   switch (type) {
     case 'device':
@@ -189,6 +192,10 @@ const buildHref = (type: NotificationDisplayType, raw: RawNotification) => {
       // No stored link and no id to deep-link with: `/ai-risk` is a dead end
       // for a specific run/agent notification, so surface nothing rather than
       // send the user somewhere unrelated (#4461).
+      // A Wisp nudge (W06) names its thread; it outranks a runId because the
+      // thread page is where the user answers it. Reached only for a row with
+      // no stored `link` (normalizeNotification prefers raw.link).
+      if (wispThreadId) return `/ai/wisp/thread/${encodeURIComponent(wispThreadId)}${hashForConcern(concernId ?? null)}`;
       if (runId) return `/ai-agents/runs/${runId}`;
       if (agentId) return `/ai-agents/runs#agent=${agentId}`;
       return undefined;

@@ -22,9 +22,9 @@
  * - Only orgs inside EVERY partner-wide ceiling of the partner are
  *   correlated, so each grantor who can see the partner-level concern can see
  *   every org it names. A partner with only org-scoped grants gets nothing.
- * - Each partner-wide grantor gets one in-app notice per concern
- *   (`deliverInApp`, dedupe `wisp-incident-<concern>-<grant>`); W06 swaps the
- *   delivery for notifyUser. Every tick re-checks each live partner-level
+ * - Each partner-wide grantor gets one nudge per concern through W06's
+ *   `notifyUser` (in-app + push, quiet hours, prefs; it counts the nudge).
+ *   Every tick re-checks each live partner-level
  *   incident's recipients, so a failed delivery is retried on the next tick.
  *   Cost: one recipient read per (live incident, grantor) per tick.
  * - Auto-close (every partner, grant or not): a partner-level incident whose
@@ -40,8 +40,7 @@ import { sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { wispEnabled } from '../../config/env';
 import { captureException } from '../sentry';
-import { recipientState, recordNudge, resolveConcern, updateConcern, upsertConcern } from './concerns';
-import { deliverInApp } from './deliver';
+import { recipientState, resolveConcern, updateConcern, upsertConcern } from './concerns';
 import { assertWithinCeiling, CeilingViolationError, GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
 import { assessableOrgIds } from './assessableOrgs';
 import {
@@ -56,6 +55,8 @@ import {
   topClusterTokens,
   uuidArraySql,
 } from './pollers';
+import { notifyUser } from './notifyUser';
+import { mobileDeepLink } from './nudgeLinks';
 import { getOrCreateThread } from './threads';
 
 export const INCIDENT_CORRELATION_WINDOW_MINUTES = 60;
@@ -226,9 +227,9 @@ async function mergePartnerIncident(live: PartnerIncident, g: Group, healthIds: 
  * One in-app notice per (concern, partner-wide grantor). "Needs a nudge" is
  * read from the grantor's recipient row (never nudged, not dismissed, not
  * snoozed), not from "evidence changed this tick": a delivery that failed is
- * retried on the next tick even when no new ticket arrived. The dedupeKey
- * makes a second delivery impossible (a lost recordNudge after a successful
- * delivery only costs a no-op insert per tick).
+ * retried on the next tick even when no new ticket arrived. notifyUser's
+ * dedupe key makes a second delivery impossible, and it counts an
+ * already-delivered-but-uncounted nudge, so the next tick stops retrying.
  */
 async function nudgeGrantors(touched: Touched, ceilings: GrantCeiling[], now: Date, threads: Map<string, string>): Promise<void> {
   for (const c of [...ceilings].sort((a, b) => (a.grantId < b.grantId ? -1 : 1))) {
@@ -241,21 +242,20 @@ async function nudgeGrantors(touched: Touched, ceilings: GrantCeiling[], now: Da
         threadId = (await getOrCreateThread(c.grantId)).id;
         threads.set(c.grantId, threadId);
       }
-      const link = `/ai/wisp/thread/${threadId}#concern=${touched.id}`;
-      const { created } = await deliverInApp({
+      // W06 Task 4: notifyUser writes the in-app row (dedupe key per backoff
+      // window), pushes, and counts the nudge itself. Lock-screen safe: the
+      // title is a count; the body is the correlator's own token summary.
+      await notifyUser({
         userId: c.grantorUserId,
-        orgId: null,
+        category: 'wisp_nudge',
+        kind: 'concern',
         title: `Wisp: possible incident across ${touched.orgCount} customer${touched.orgCount === 1 ? '' : 's'}`,
         body: touched.summary,
-        link,
-        priority: 'high',
-        dedupeKey: `wisp-incident-${touched.id}-${c.grantId}`,
+        deepLink: mobileDeepLink(threadId, touched.id),
         concernId: touched.id,
         threadId,
         grantId: c.grantId,
-        deepLink: link,
       });
-      if (created) await recordNudge(touched.id, c.grantId, now);
     } catch (err) {
       captureException(err, undefined, { component: 'wisp.incidentCorrelator', op: 'nudge' });
     }

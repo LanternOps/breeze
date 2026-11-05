@@ -90,6 +90,8 @@ pub fn deny_message_window(label: &str) -> Result<(), String> {
     }
     // Endpoint live chat windows (#8743) render technician text too.
     super::chat::deny_chat_window(label)?;
+    // Prompt cards (#10190) render agent and, for restart, operator text.
+    super::prompt::deny_prompt_window(label)?;
     Ok(())
 }
 
@@ -210,6 +212,8 @@ pub enum ShowAction {
 struct Active {
     expires_ms: i64,
     view: MessageView,
+    /// Arrival order, for the notification list (newest first).
+    order: u64,
 }
 
 /// Messages currently on screen plus the focus limiter. Process memory only.
@@ -219,10 +223,15 @@ pub struct MessageTracker {
     resolved: HashSet<String>,
     focus: FocusLimiter,
     seq: u64,
+    /// Bumped by every public `&mut self` method; never by a read. Half of
+    /// the notification list's change counter (`notifications.rs`).
+    version: u64,
+    arrivals: u64,
 }
 
 impl MessageTracker {
     pub fn on_show(&mut self, now_ms: i64, req: &MessageShow) -> ShowAction {
+        self.version += 1;
         if !valid_id(&req.message_id) {
             return ShowAction::Reject("invalid messageId".into());
         }
@@ -265,11 +274,13 @@ impl MessageTracker {
             branding,
             plain,
         };
+        self.arrivals += 1;
         self.active.insert(
             req.message_id.clone(),
             Active {
                 expires_ms,
                 view: view.clone(),
+                order: self.arrivals,
             },
         );
         ShowAction::Show {
@@ -322,11 +333,13 @@ impl MessageTracker {
 
     /// The window could not be built: forget the message (caller replies `failed`).
     pub fn on_show_failed(&mut self, message_id: &str) {
+        self.version += 1;
         self.active.remove(message_id);
     }
 
     /// `message_retract`: true when it was on screen (caller closes the window).
     pub fn on_retract(&mut self, message_id: &str) -> bool {
+        self.version += 1;
         let was = self.active.remove(message_id).is_some();
         if was {
             self.mark_resolved(message_id);
@@ -336,6 +349,7 @@ impl MessageTracker {
 
     /// The user acknowledged. At most one `message_ack` per message.
     pub fn on_ack(&mut self, message_id: &str) -> Option<Outbound> {
+        self.version += 1;
         self.active.remove(message_id)?;
         self.mark_resolved(message_id);
         Some(Outbound {
@@ -347,6 +361,7 @@ impl MessageTracker {
 
     /// The card closed without an ack. At most one terminal frame per message.
     pub fn on_closed(&mut self, message_id: &str) -> Option<Outbound> {
+        self.version += 1;
         self.active.remove(message_id)?;
         self.mark_resolved(message_id);
         Some(self.dismissed(message_id, REASON_USER))
@@ -354,6 +369,7 @@ impl MessageTracker {
 
     /// Cards whose `expiresAt` has passed: `(messageId, message_dismissed expired)`.
     pub fn expire_due(&mut self, now_ms: i64) -> Vec<(String, Outbound)> {
+        self.version += 1;
         let mut due: Vec<String> = self
             .active
             .iter()
@@ -374,6 +390,7 @@ impl MessageTracker {
     /// Forget everything on screen (session ended); returns their ids so the
     /// caller can close the windows. The agent replays sticky messages.
     pub fn clear(&mut self) -> Vec<String> {
+        self.version += 1;
         let mut ids: Vec<String> = self.active.drain().map(|(id, _)| id).collect();
         ids.sort();
         ids
@@ -381,6 +398,24 @@ impl MessageTracker {
 
     pub fn view(&self, message_id: &str) -> Option<MessageView> {
         self.active.get(message_id).map(|a| a.view.clone())
+    }
+
+    /// The change counter (#10190 W04 notification list).
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// The messages on screen in this session, newest first: their entries
+    /// in the one notification list (#10190 W04).
+    pub fn list(&self) -> Vec<MessageView> {
+        let mut active: Vec<&Active> = self.active.values().collect();
+        active.sort_by(|a, b| b.order.cmp(&a.order));
+        active.into_iter().map(|a| a.view.clone()).collect()
+    }
+
+    /// How many messages are on screen (the list's message entries).
+    pub fn count(&self) -> usize {
+        self.active.len()
     }
 
     fn mark_resolved(&mut self, message_id: &str) {
@@ -489,6 +524,62 @@ mod tests {
         assert_eq!(m.branding.accent.as_deref(), Some("#336699"));
         let r: MessageRetract = serde_json::from_str(&format!(r#"{{"messageId":"{ID}"}}"#)).unwrap();
         assert_eq!(r.message_id, ID);
+    }
+
+    fn show_id(id: &str) -> MessageShow {
+        let mut m = show("info", false);
+        m.message_id = id.to_string();
+        m
+    }
+
+    // #10190 W04: message cards join the one notification list. The list is
+    // the messages on screen in this session, newest first; nothing resolved
+    // and nothing from an earlier session.
+    #[test]
+    fn list_holds_the_active_messages_newest_first() {
+        let mut t = MessageTracker::default();
+        assert!(t.list().is_empty());
+        assert!(matches!(t.on_show(NOW, &show_id("a-1")), ShowAction::Show { .. }));
+        assert!(matches!(t.on_show(NOW, &show_id("a-2")), ShowAction::Show { .. }));
+        assert!(matches!(t.on_show(NOW, &show_id("a-3")), ShowAction::Show { .. }));
+        let ids = |t: &MessageTracker| t.list().into_iter().map(|v| v.message_id).collect::<Vec<_>>();
+        assert_eq!(ids(&t), vec!["a-3", "a-2", "a-1"]);
+        assert_eq!(t.count(), 3);
+        // A duplicate (replay) does not reorder or duplicate.
+        assert_eq!(t.on_show(NOW, &show_id("a-1")), ShowAction::AlreadyShown);
+        assert_eq!(ids(&t), vec!["a-3", "a-2", "a-1"]);
+        // Ack, close and retract take an entry out.
+        t.on_ack("a-2");
+        t.on_closed("a-3");
+        assert_eq!(ids(&t), vec!["a-1"]);
+        assert!(t.on_retract("a-1"));
+        assert!(t.list().is_empty());
+        // A session end clears the list.
+        t.on_show(NOW, &show_id("b-1"));
+        t.clear();
+        assert!(t.list().is_empty());
+        assert_eq!(t.count(), 0);
+    }
+
+    #[test]
+    fn version_bumps_on_every_change_and_never_on_a_read() {
+        let mut t = MessageTracker::default();
+        let v0 = t.version();
+        t.on_show(NOW, &show_id("a-1"));
+        let v1 = t.version();
+        assert!(v1 > v0);
+        let _ = t.list();
+        let _ = t.view("a-1");
+        assert_eq!(t.version(), v1);
+        t.on_ack("a-1");
+        let v2 = t.version();
+        assert!(v2 > v1);
+        t.on_show(NOW, &show_id("a-2"));
+        let _ = t.expire_due(NOW + 7_200_000);
+        let v3 = t.version();
+        assert!(v3 > v2);
+        t.clear();
+        assert!(t.version() > v3);
     }
 
     #[test]

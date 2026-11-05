@@ -241,7 +241,7 @@ export async function getOrgAssignment(orgId: string, partnerId: string): Promis
   return row ?? null;
 }
 /** Reuse a supplied transaction so assignment and surrounding settings commit together. */
-export async function assignProfileToOrg(orgId: string, partnerId: string, profileId: string, assignedBy: string, executor?: DbExecutor): Promise<Assignment> {
+export async function assignProfileToOrg(orgId: string, partnerId: string, profileId: string, assignedBy: string | null, executor?: DbExecutor): Promise<Assignment> {
   const assign = async (tx: DbExecutor): Promise<Assignment> => {
     // Canonical org SHARE barrier pairs with changeOrgCurrency's UPDATE lock.
     const { currencyCode } = await readOrgStampingDefaults(tx, orgId);

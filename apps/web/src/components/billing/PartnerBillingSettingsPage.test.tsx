@@ -101,14 +101,14 @@ it.each([false, true])('mounts Payments when autopayEnabled=%s', async autopayEn
     window.location.hash = '';
   });
 
-  it('has five tabs in order: Defaults, Documents, Rates, Payments, Connections (Documents onward behind "More" under jsdom)', async () => {
+  it('has six tabs in order: Defaults, Documents, Agreements, Rates, Payments, Connections (Documents onward behind "More" under jsdom)', async () => {
     fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
     renderPage();
     expect(await screen.findByTestId('billing-settings-tab-defaults')).toBeInTheDocument();
     await userEvent.click(await screen.findByTestId('billing-settings-tab-more'));
     expect(screen.getByTestId('billing-settings-tab-documents')).toBeInTheDocument();
     expect(screen.getByTestId('billing-settings-tab-connections')).toBeInTheDocument();
-    const order = ['billing-settings-tab-defaults', ...['documents', 'rates'].map(id => `billing-settings-tab-${id}`), 'autopay-payments-tab', 'billing-settings-tab-connections'];
+    const order = ['billing-settings-tab-defaults', ...['documents', 'agreements', 'rates'].map(id => `billing-settings-tab-${id}`), 'autopay-payments-tab', 'billing-settings-tab-connections'];
     expect(screen.getAllByRole('tab').map(tab => tab.getAttribute('data-testid'))).toEqual([order[0]]);
     expect(screen.getAllByRole('menuitem').map(item => item.getAttribute('data-testid'))).toEqual(order.slice(1));
   });

@@ -14,7 +14,9 @@ const {
   schedulePeripheralPolicyDeviceMock,
   propagateCancelledMock,
   invalidateDevicePolicyCachesMock,
+  requestDeviceGroupReevaluationAfterCommitMock,
 } = vi.hoisted(() => ({
+  requestDeviceGroupReevaluationAfterCommitMock: vi.fn(),
   invalidateDevicePolicyCachesMock: vi.fn(async () => undefined),
   guardMock: vi.fn(),
   pamGuardMock: vi.fn(),
@@ -37,6 +39,10 @@ vi.mock('../../services/businessCalendars/reresolve', () => ({
 }));
 vi.mock('../../jobs/peripheralJobs', () => ({
   schedulePeripheralPolicyDevice: schedulePeripheralPolicyDeviceMock,
+}));
+
+vi.mock('../../jobs/deviceGroupJobs', () => ({
+  requestDeviceGroupReevaluationAfterCommit: requestDeviceGroupReevaluationAfterCommitMock,
 }));
 
 vi.mock('../../services/devicePolicyCache', () => ({
@@ -288,6 +294,10 @@ let barrierMissingOrgIds = new Set<string>();
  * hand the route something to count.
  */
 let executeResultFor: ((stmtText: string) => unknown[] | null) | null = null;
+// The org the in-transaction device re-read reports (the concurrency guard in
+// moveDeviceOrgInTransaction compares it with the device's pre-read org).
+// Defaults to SOURCE_ORG; a test using different device ids sets it.
+let deviceBarrierOrgId: string = SOURCE_ORG;
 
 /**
  * What the in-transaction `SELECT id/type/payload FROM device_commands` (the
@@ -425,7 +435,7 @@ function rigTransactionSuccess(
         if (cols && 'orgId' in cols) {
           return { from: () => ({ where: () => ({ limit: () => ({ for: async (mode: string) => {
             statements.push(`SELECT devices FOR ${mode}`);
-            return [{ orgId: SOURCE_ORG }];
+            return [{ orgId: deviceBarrierOrgId }];
           } }) }) }) };
         }
         if (!cols && ticketRow) {
@@ -508,8 +518,10 @@ describe('POST /devices/:id/move-org', () => {
   beforeEach(() => {
     enable2faState.value = true;
     vi.clearAllMocks();
+    requestDeviceGroupReevaluationAfterCommitMock.mockReset();
     barrierMissingOrgIds = new Set<string>();
     executeResultFor = null;
+    deviceBarrierOrgId = SOURCE_ORG;
     pendingCommandRows = [];
     pinnedOccurrenceRows = [];
     guardMock.mockReset();
@@ -522,6 +534,42 @@ describe('POST /devices/:id/move-org', () => {
     vi.mocked(lockActorAssurance).mockResolvedValue(true);
     app = new Hono();
     app.route('/devices', moveOrgRoutes);
+  });
+
+  describe('network isolation lifecycle refusal', () => {
+    const move = () => app.request(`/devices/${DEVICE_ID}/move-org`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
+    });
+    function rigMove() {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({ orgRows: [
+        { id: SOURCE_ORG, partnerId: 'partner-1' },
+        { id: TARGET_ORG, partnerId: 'partner-1' },
+      ], siteRow: { id: TARGET_SITE } });
+      return rigTransactionSuccess();
+    }
+    it('refuses unresolved isolation before mutations and proceeds once resolved', async () => {
+      const rig = rigMove();
+      executeResultFor = text => text.includes('device_network_isolations')
+        ? [{ isolationId: 'isolation-1', deviceId: DEVICE_ID }] : null;
+      const refused = await move();
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toEqual({ error: 'isolation_unresolved', message: 'Release network isolation first' });
+      expect(rig.deviceUpdateSets).toEqual([]);
+      executeResultFor = null;
+      rigMove();
+      expect((await move()).status).toBe(200);
+    });
+    it('maps the database isolation move fence to the same 409 after a race', async () => {
+      rigMove();
+      rigTransactionSuccess(undefined, Object.assign(new Error('query failed'), { cause: { code: '55000', message: 'isolation_unresolved: release before moving' } }));
+      const response = await move();
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: 'isolation_unresolved', message: 'Release network isolation first' });
+      expect(disconnectAgent).not.toHaveBeenCalled();
+    });
   });
 
   describe('gate registration', () => {
@@ -603,6 +651,33 @@ describe('POST /devices/:id/move-org', () => {
   });
 
   describe('happy path', () => {
+    it('requests a full group re-evaluation for the target org after commit', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(requestDeviceGroupReevaluationAfterCommitMock).toHaveBeenCalledTimes(1);
+      expect(requestDeviceGroupReevaluationAfterCommitMock).toHaveBeenCalledWith({
+        deviceId: DEVICE_ID,
+        orgId: TARGET_ORG,
+        eventType: 'device.created',
+        reason: 'device_org_moved',
+      });
+    });
+
     it('moves the device and writes audit on both orgs', async () => {
       vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
       rigOrgAndSiteSelects({
@@ -1520,10 +1595,12 @@ describe('POST /devices/:id/move-org', () => {
       const response = await postMove();
 
       expect(response.status).toBe(200);
-      // #4596 — the transaction's unconditional leading statement is
+      // The isolation precheck is read-only; it must not reorder the engine's locks.
+      expect(statements.shift()).toContain('FROM device_network_isolations');
+      // #4596 — the engine's unconditional leading statement is
       // `SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk
       // DEFERRED` (see moveOrg.ts, right after `db.transaction(async (tx) => {`).
-      // It takes no table locks and runs before anything else in the callback,
+      // It takes no table locks and runs before anything else in the engine,
       // so it always occupies index 0 regardless of the PAM guard/lock
       // ordering asserted below — assert it explicitly rather than folding it
       // into the positional slice.
@@ -1658,12 +1735,41 @@ describe('POST /devices/:id/move-org', () => {
       const chatClose = collapseStmt(statements[22]!);
       expect(chatClose).toContain("UPDATE endpoint_conversations SET status = 'closed', close_reason = 'device_moved'");
       expect(chatClose).toContain("status IN ('opening', 'open')");
-      expect(statements[23]).toBe('UPDATE devices');
+      // #6263 W05 — sweep scans detach from their source-org sweep before the
+      // flip (the flip's trigger restamps security_scans.org_id; the sweep row
+      // stays in the source org).
+      expect(collapseStmt(statements[23]!)).toContain('UPDATE security_scans SET');
+      expect(collapseStmt(statements[24]!)).toContain('DELETE FROM alert_external_refs');
+      expect(collapseStmt(statements[24]!)).toContain(`WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${DEVICE_ID}::uuid AND topology_site_id IS NULL)`);
+      expect(collapseStmt(statements[24]!)).toContain('partner_id IS DISTINCT FROM');
+      expect(collapseStmt(statements[25]!)).toContain('WITH moving_mappings AS MATERIALIZED');
+      expect(statements[26]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,
         transferEnabled: false,
       });
+    });
+
+    it('#6263 W05: move detaches sweep scans: queued → cancelled, sweep_id NULL, running keeps status with sweep_id NULL; runs before the devices UPDATE', async () => {
+      rigMove();
+      const { statements } = rigTransactionSuccess();
+
+      const response = await postMove();
+
+      expect(response.status).toBe(200);
+      const detachIdx = statements.findIndex((s) => collapseStmt(s).startsWith('UPDATE security_scans SET'));
+      const flipIdx = statements.indexOf('UPDATE devices');
+      expect(detachIdx).toBeGreaterThan(-1);
+      expect(flipIdx).toBeGreaterThan(detachIdx);
+      const detach = collapseStmt(statements[detachIdx]!);
+      // Every sweep scan of the device loses its sweep pointer ...
+      expect(detach).toContain('sweep_id = NULL');
+      expect(detach).toMatch(/WHERE device_id = .* AND sweep_id IS NOT NULL/);
+      // ... and only a still-queued one is cancelled; running keeps its status
+      // (a delivered command's result still ingests in the new org).
+      expect(detach).toContain("status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE status END");
+      expect(detach).toContain("completed_at = CASE WHEN status = 'queued' THEN now() ELSE completed_at END");
     });
 
     it('#4596/#5783: defers the three ticket/org composite FKs BY NAME as the first statement', async () => {
@@ -1673,10 +1779,25 @@ describe('POST /devices/:id/move-org', () => {
       const response = await postMove();
 
       expect(response.status).toBe(200);
+      expect(statements.shift()).toContain('FROM device_network_isolations');
       expect(statements[0]).toBe(
         'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk, tickets_org_partner_fk, tickets_merged_into_org_fk DEFERRED',
       );
       expect(statements.some((s) => /SET CONSTRAINTS ALL/i.test(s))).toBe(false);
+    });
+
+    it('refuses a cross-partner move with open PSA ticketing work as a 409', async () => {
+      rigMove();
+      const { statements } = rigTransactionSuccess();
+      executeResultFor = text => text.includes('psa_ticket_mappings') ? [{ openMappings: 1 }] : null;
+      const response = await postMove();
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        code: 'PSA_TICKETING_OPEN', error: expect.stringContaining('PSA ticketing'),
+      });
+      expect(statements).not.toContain('UPDATE devices');
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(disconnectAgent).not.toHaveBeenCalled();
     });
 
     it('#5573 W02: refuses with 409 DELIVERABLE_TICKET_PINNED when a ticket on the device is a deliverable work item', async () => {
@@ -1787,6 +1908,7 @@ describe('POST /devices/:id/move-org', () => {
       expect(response.status).toBe(500);
       expect(await response.json()).toEqual({ error: 'Failed to move device between organizations' });
       expect(captureExceptionMock).toHaveBeenCalledWith(unrelated, expect.anything());
+      expect(requestDeviceGroupReevaluationAfterCommitMock).not.toHaveBeenCalled();
       expect(disconnectAgent).not.toHaveBeenCalled();
       expect(schedulePeripheralPolicyDeviceMock).not.toHaveBeenCalled();
       expect(invalidateDevicePolicyCachesMock).not.toHaveBeenCalled();
@@ -2238,6 +2360,95 @@ describe('POST /devices/:id/move-org', () => {
         body: JSON.stringify({ orgId: 'not-a-uuid', siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(400);
+    });
+  });
+
+  // ── #10119: uppercase uuids in the path AND the body ─────────────────────
+  describe('#10119 canonical ids', () => {
+    // Hex LETTERS throughout. The ids this file already defines are digit-only,
+    // so `toUpperCase()` on them is a no-op and a case test built on them would
+    // pass against unfixed code — the trap *Quality review* rule 7 names.
+    const HEX_DEVICE = 'abcdef12-3456-4789-8abc-def012345678';
+    const HEX_SOURCE_ORG = 'bcdef123-4567-4890-9bcd-ef0123456789';
+    const HEX_TARGET_ORG = 'cdef1234-5678-4901-abcd-f01234567890';
+    const HEX_TARGET_SITE = 'def12345-6789-4012-bcde-012345678901';
+
+    function rigHexMove() {
+      // The default mock only grants the digit-only orgs above.
+      setAuth({ canAccessOrg: (id: string) => id === HEX_SOURCE_ORG || id === HEX_TARGET_ORG });
+      deviceBarrierOrgId = HEX_SOURCE_ORG;
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
+        ...SAMPLE_DEVICE,
+        id: HEX_DEVICE,
+        orgId: HEX_SOURCE_ORG,
+      } as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: HEX_SOURCE_ORG, partnerId: 'partner-1' },
+          { id: HEX_TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: HEX_TARGET_SITE },
+      });
+      return rigTransactionSuccess({
+        ...SAMPLE_DEVICE, id: HEX_DEVICE, orgId: HEX_TARGET_ORG, siteId: HEX_TARGET_SITE,
+      });
+    }
+
+    it('moves on an uppercase path id and uppercase body ids, binding and auditing the canonical ones', async () => {
+      const { deviceUpdateSets } = rigHexMove();
+
+      const res = await app.request(`/devices/${HEX_DEVICE.toUpperCase()}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orgId: HEX_TARGET_ORG.toUpperCase(),
+          siteId: HEX_TARGET_SITE.toUpperCase(),
+          stepUpGrant: GRANT_ID,
+        }),
+      });
+
+      expect(res.status).toBe(200);
+
+      // The grant the console minted is bound to the canonical ids, so the
+      // route must hash those and not the caller's spelling.
+      const binding = expect.objectContaining({
+        resourceDigest: moveOrgResourceDigest({
+          deviceId: HEX_DEVICE,
+          targetOrgId: HEX_TARGET_ORG,
+          targetSiteId: HEX_TARGET_SITE,
+          acceptCurrencyMismatch: false,
+        }),
+      });
+      expect(validateStepUpGrant).toHaveBeenCalledWith(GRANT_ID, binding);
+      expect(consumeStepUpGrant).toHaveBeenCalledWith(GRANT_ID, binding);
+
+      // The write, the post-commit work and the audit rows all use one spelling.
+      expect(deviceUpdateSets[0]).toMatchObject({ orgId: HEX_TARGET_ORG, siteId: HEX_TARGET_SITE });
+      expect(schedulePeripheralPolicyDeviceMock).toHaveBeenCalledWith(HEX_DEVICE, 'device_org_changed');
+      const auditRows = vi.mocked(writeRouteAudit).mock.calls.map((call) => call[1] as any);
+      expect(auditRows).toHaveLength(2);
+      for (const row of auditRows) {
+        expect(row.resourceId).toBe(HEX_DEVICE);
+        expect(row.details).toMatchObject({ targetOrgId: HEX_TARGET_ORG, targetSiteId: HEX_TARGET_SITE });
+      }
+    });
+
+    it('still refuses a move to the device\'s own org when that org is spelled in upper case', async () => {
+      // The same-org guard is a JS `===` against `device.orgId`, so without
+      // canonicalising the body id an uppercase spelling of the source org
+      // walks straight past it.
+      rigHexMove();
+      const res = await app.request(`/devices/${HEX_DEVICE}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orgId: HEX_SOURCE_ORG.toUpperCase(),
+          siteId: HEX_TARGET_SITE,
+          stepUpGrant: GRANT_ID,
+        }),
+      });
+      expect(res.status).toBe(400);
+      expect(db.transaction).not.toHaveBeenCalled();
     });
   });
 
