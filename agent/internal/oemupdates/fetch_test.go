@@ -56,16 +56,16 @@ func TestRefusesOffListHost(t *testing.T) {
 }
 
 func TestHostMatchIsExact(t *testing.T) {
-	allow := LaneAllowlist{Hosts: []string{"dl.dell.com"}}
+	allow := LaneAllowlist{Hosts: []string{"dl.vendor.example"}}
 	for _, raw := range []string{
-		"https://dl.dell.com.evil.example/x", "https://evil-dl.dell.com/x", "https://dl.dell.co/x",
-		"https://user@dl.dell.com/x", "https://dl.dell.com:8443/x",
+		"https://dl.vendor.example.evil.example/x", "https://evil-dl.vendor.example/x", "https://dl.vendor.exampl/x",
+		"https://user@dl.vendor.example/x", "https://dl.vendor.example:8443/x",
 	} {
 		if err := checkFetchURL(raw, allow); err == nil {
 			t.Errorf("%s allowed", raw)
 		}
 	}
-	for _, raw := range []string{"https://dl.dell.com/x", "https://DL.Dell.com/x", "https://dl.dell.com:443/x"} {
+	for _, raw := range []string{"https://dl.vendor.example/x", "https://DL.Vendor.Example/x", "https://dl.vendor.example:443/x"} {
 		if err := checkFetchURL(raw, allow); err != nil {
 			t.Errorf("%s refused: %v", raw, err)
 		}
