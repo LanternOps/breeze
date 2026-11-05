@@ -352,8 +352,8 @@ export function isKindShapedRecoveryCondition(kind: MonitorKind, value: unknown)
 }
 
 /**
- * Why `value` cannot be saved as `kind`'s recovery condition, or null when it
- * can. `allowLegacy` admits a raw blob (ND3): rows that already carry one stay
+ * Why `value` cannot be saved as `kind`'s recovery condition, worded to follow
+ * the field name, or null when it can. `allowLegacy` admits a raw blob (ND3): rows that already carry one stay
  * editable, but a new monitor cannot start out with one.
  */
 export function recoveryConditionProblem(
@@ -364,9 +364,9 @@ export function recoveryConditionProblem(
   if (value === null || value === undefined) return null;
   if (allowLegacy && isLegacyRecoveryCondition(value)) return null;
   if (!isRecoveryConditionKind(kind)) {
-    return `autoResolveConditions is only supported for kinds: ${RECOVERY_CONDITION_KINDS.join(', ')}`;
+    return `only supported for kinds: ${RECOVERY_CONDITION_KINDS.join(', ')}`;
   }
-  return isKindShapedRecoveryCondition(kind, value) ? null : `autoResolveConditions does not match kind ${kind}`;
+  return isKindShapedRecoveryCondition(kind, value) ? null : `does not match kind ${kind}`;
 }
 
 /** Responses reuse the automation action vocabulary verbatim. */
@@ -460,7 +460,7 @@ function refineDefinition<T extends z.ZodType<MonitorDefinitionShape>>(
       const fitsSomeKind = RECOVERY_CONDITION_KINDS.some((kind) => recoveryConditionProblem(kind, value, options) === null);
       const problem = v.kind
         ? recoveryConditionProblem(v.kind, value, options)
-        : fitsSomeKind ? null : `autoResolveConditions does not match any of: ${RECOVERY_CONDITION_KINDS.join(', ')}`;
+        : fitsSomeKind ? null : `does not match any of: ${RECOVERY_CONDITION_KINDS.join(', ')}`;
       if (problem) ctx.addIssue({ code: 'custom', path: ['autoResolveConditions'], message: problem });
     })
     .refine(

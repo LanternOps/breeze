@@ -222,7 +222,19 @@
     "psaBoardDefault": "Bağlantının varsayılan panosunu kullan",
     "psaBoardHelp": "Bu monitörün uyarı ticket’ları, bağlantının varsayılan panosu yerine bu panoda oluşturulur.",
     "psaBoardReadOnly": "Uyarı ticket’ları PSA panosu #{{id}} içine gider",
-    "psaBoardUnavailable": "PSA panoları yüklenemedi, bu nedenle pano geçersiz kılma şu anda kullanılamıyor."
+    "psaBoardUnavailable": "PSA panoları yüklenemedi, bu nedenle pano geçersiz kılma şu anda kullanılamıyor.",
+    "clearsWhen": {
+      "title": "Şu durumda temizlenir",
+      "hint": "Yalnızca uyarıyı tetikleyen olaydan sonra kaydedilen bir olayla temizlenir.",
+      "noneHint": "Kurtarma koşulu ayarlanmadı; tetikleyici eşleşmeyi bıraktığında uyarı temizlenir.",
+      "add": "Kurtarma koşulu ekle",
+      "removeCondition": "Kaldır",
+      "keepCustom": "Özel koşulu koru",
+      "customTitle": "Özel kurtarma koşulu (API)",
+      "customHint": "Bu koşul API üzerinden ayarlandı ve burada düzenlenemez. Kaydetmek onu olduğu gibi korur.",
+      "replaceCustom": "Değiştir",
+      "invalid": "Kurtarma koşulunun değerlerinden biri geçerli değil."
+    }
   },
   "kinds": {
     "composite": "Bileşik (birkaç koşulun tümü veya herhangi biri)",

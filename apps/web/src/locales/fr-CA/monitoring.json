@@ -222,7 +222,19 @@
     "psaBoardDefault": "Utiliser le tableau par défaut de la connexion",
     "psaBoardHelp": "Les billets d’alertes de ce moniteur sont créés dans ce tableau plutôt que dans celui par défaut de la connexion.",
     "psaBoardReadOnly": "Les billets d’alertes vont au tableau #{{id}} du PSA",
-    "psaBoardUnavailable": "Impossible de charger les tableaux du PSA; le remplacement du tableau est donc indisponible pour le moment."
+    "psaBoardUnavailable": "Impossible de charger les tableaux du PSA; le remplacement du tableau est donc indisponible pour le moment.",
+    "clearsWhen": {
+      "title": "Se résout lorsque",
+      "hint": "Se résout seulement sur un événement journalisé après l'événement déclencheur de l'alerte.",
+      "noneHint": "Aucune condition de rétablissement n'est définie : l'alerte se résout dès que le déclencheur ne correspond plus.",
+      "add": "Ajouter une condition de rétablissement",
+      "removeCondition": "Retirer",
+      "keepCustom": "Conserver la condition personnalisée",
+      "customTitle": "Condition de rétablissement personnalisée (API)",
+      "customHint": "Cette condition a été définie au moyen de l'API et ne peut pas être modifiée ici. L'enregistrement la conserve telle quelle.",
+      "replaceCustom": "Remplacer",
+      "invalid": "L'une des valeurs de la condition de rétablissement n'est pas valide."
+    }
   },
   "kinds": {
     "composite": "Composite (toutes ou une parmi plusieurs)",

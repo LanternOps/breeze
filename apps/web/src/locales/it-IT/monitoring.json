@@ -222,7 +222,19 @@
     "psaBoardDefault": "Usa il board predefinito della connessione",
     "psaBoardHelp": "I ticket di avviso di questo monitor vengono creati in questo board invece che in quello predefinito della connessione.",
     "psaBoardReadOnly": "I ticket di avviso vanno al board PSA #{{id}}",
-    "psaBoardUnavailable": "Impossibile caricare le bacheche PSA, quindi la sostituzione della bacheca non è disponibile al momento."
+    "psaBoardUnavailable": "Impossibile caricare le bacheche PSA, quindi la sostituzione della bacheca non è disponibile al momento.",
+    "clearsWhen": {
+      "title": "Si risolve quando",
+      "hint": "Si risolve solo con un evento registrato dopo l'evento che ha attivato l'avviso.",
+      "noneHint": "Nessuna condizione di ripristino impostata: l'avviso si risolve quando l'attivatore smette di corrispondere.",
+      "add": "Aggiungi una condizione di ripristino",
+      "removeCondition": "Rimuovi",
+      "keepCustom": "Mantieni la condizione personalizzata",
+      "customTitle": "Condizione di ripristino personalizzata (API)",
+      "customHint": "Questa condizione è stata impostata tramite API e non può essere modificata qui. Il salvataggio la mantiene invariata.",
+      "replaceCustom": "Sostituisci",
+      "invalid": "Uno dei valori della condizione di ripristino non è valido."
+    }
   },
   "kinds": {
     "composite": "Composito (tutte o una di più condizioni)",

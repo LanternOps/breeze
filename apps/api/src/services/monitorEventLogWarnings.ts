@@ -1,4 +1,4 @@
-import { monitorEventLogCollectionWarnings } from '@breeze/shared';
+import { isKindShapedRecoveryCondition, monitorEventLogCollectionWarnings } from '@breeze/shared';
 import { hasDbAccessContext, withDbTransaction } from '../db';
 import { loadPolicyApplicationProviders } from './eventLogPolicyProviders';
 import { captureException } from './sentry';
@@ -14,7 +14,7 @@ import { captureException } from './sentry';
  * built-in check runs.
  */
 export async function policyAwareMonitorEventLogWarnings(row: {
-  kind: unknown; condition: unknown; orgId: string | null; partnerId: string | null;
+  kind: unknown; condition: unknown; autoResolveConditions?: unknown; orgId: string | null; partnerId: string | null;
 }): Promise<string[]> {
   const children = row.condition && typeof row.condition === 'object'
     ? (row.condition as { children?: unknown }).children : undefined;
@@ -31,5 +31,12 @@ export async function policyAwareMonitorEventLogWarnings(row: {
       captureException(err, undefined, { component: 'monitorEventLogWarnings' });
     }
   }
-  return monitorEventLogCollectionWarnings(row.kind, row.condition, providers);
+  const warnings = monitorEventLogCollectionWarnings(row.kind, row.condition, providers);
+  // An uncollected recovery event is worse than an uncollected trigger: the alert
+  // opens on its trigger and then never clears. A raw blob isn't this shape; skip it.
+  if (row.kind === 'event_log' && isKindShapedRecoveryCondition('event_log', row.autoResolveConditions)) {
+    const recovery = monitorEventLogCollectionWarnings(row.kind, row.autoResolveConditions, providers);
+    warnings.push(...recovery.map((warning) => `Recovery condition: ${warning}`));
+  }
+  return warnings;
 }

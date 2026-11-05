@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import type { AlertLifecycleDefaultsResponse, LifecycleSource, RearmMode } from '@breeze/shared';
 import type { MonitorFormValues } from './MonitorEditor';
 import { autoResolveLabel, fetchLifecycleDefaults, rearmLabel, sourceLabel } from './lifecycleDefaults';
+import MonitorClearsWhenFields from './MonitorClearsWhenFields';
 
 const FIELD_CLASS = 'h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring';
 const LABEL_CLASS = 'text-xs font-medium text-muted-foreground';
@@ -86,6 +87,11 @@ export default function MonitorLifecycleFields({ orgId, ready, showPartnerWideHi
   const windowMinutes = kind === 'event_log' ? Number((condition as { windowMinutes?: unknown })?.windowMinutes) : NaN;
   const effectiveCooldown = cooldown ?? effective?.cooldownMinutes ?? null;
   const showWindowWarning = effectiveCooldown !== null && Number.isFinite(windowMinutes) && windowMinutes < effectiveCooldown;
+
+  // An invalid recovery condition keeps the section open even with auto-resolve
+  // off, or the schema would block Save on a field nobody can see.
+  const effectiveAutoResolve = autoResolve ?? effective?.autoResolve ?? null;
+  const showClearsWhen = kind === 'event_log' && (effectiveAutoResolve === true || !!errors.clearsWhen);
 
   return (
     <div className="space-y-3">
@@ -222,6 +228,8 @@ export default function MonitorLifecycleFields({ orgId, ready, showPartnerWideHi
       </div>
 
       <p className="text-xs text-muted-foreground">{t('monitoring:lifecycle.rearmHelp')}</p>
+
+      {showClearsWhen && <MonitorClearsWhenFields />}
 
       {showPartnerWideHint && <p className="text-xs text-muted-foreground">{t('monitoring:editor.lifecycle.partnerWideHint')}</p>}
 

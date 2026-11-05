@@ -222,7 +222,19 @@
     "psaBoardDefault": "Usar el tablero predeterminado de la conexión",
     "psaBoardHelp": "Los tickets de alertas de este monitor se crean en este tablero en lugar del predeterminado de la conexión.",
     "psaBoardReadOnly": "Los tickets de alertas van al tablero #{{id}} del PSA",
-    "psaBoardUnavailable": "No se pudieron cargar los tableros del PSA, por lo que la sustitución del tablero no está disponible por ahora."
+    "psaBoardUnavailable": "No se pudieron cargar los tableros del PSA, por lo que la sustitución del tablero no está disponible por ahora.",
+    "clearsWhen": {
+      "title": "Se borra cuando",
+      "hint": "Solo se borra con un evento registrado después del evento que activó la alerta.",
+      "noneHint": "No hay una condición de recuperación, así que la alerta se borra cuando el activador deja de coincidir.",
+      "add": "Agregar una condición de recuperación",
+      "removeCondition": "Quitar",
+      "keepCustom": "Conservar la condición personalizada",
+      "customTitle": "Condición de recuperación personalizada (API)",
+      "customHint": "Esta condición se configuró mediante la API y no se puede editar aquí. Al guardar, se conserva tal como está.",
+      "replaceCustom": "Reemplazar",
+      "invalid": "Uno de los valores de la condición de recuperación no es válido."
+    }
   },
   "kinds": {
     "composite": "Compuesto (todas o alguna de varias)",

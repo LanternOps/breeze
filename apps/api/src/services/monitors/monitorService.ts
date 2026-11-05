@@ -230,7 +230,7 @@ function normalizeList(actions: unknown): AutomationAction[] {
 
 function assertRecoveryCondition(kind: MonitorKind, value: unknown, options: { allowLegacy: boolean }): void {
   const problem = recoveryConditionProblem(kind, value, options);
-  if (problem) throw new MonitorValidationError(problem);
+  if (problem) throw new MonitorValidationError(`autoResolveConditions ${problem}`);
 }
 
 /**
