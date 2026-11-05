@@ -138,8 +138,22 @@ test('newFindings: moving from production to dev-only (a demotion) is not new', 
 
 test('normalize: a finding with no scope, or scope "unknown", is production (fail closed)', () => {
   assert.deepEqual(normalize('osv', doc([{ ...A, scope: undefined }])), [A]);
-  assert.deepEqual(normalize('osv', doc([{ ...A, scope: 'unknown' }])), [A]);
+  assert.deepEqual(normalize('osv', doc([{ ...A, scope: 'unknown' }])), [{ ...A, scope: 'unknown' }]);
   assert.deepEqual(normalize('osv', doc([dev(A)])), [dev(A)]);
+});
+
+test('newFindings: a base entry of unknown scope never covers a production head finding (failed base walk)', () => {
+  const unknown = { ...A, scope: 'unknown' };
+  assert.deepEqual(newFindings([unknown], [A]), [A]);
+  assert.deepEqual(newFindings([unknown], [unknown]), []); // neither walk placed it: nothing got worse
+  assert.deepEqual(newFindings([A], [unknown]), []);
+  assert.deepEqual(newFindings([dev(A)], [unknown]), [unknown]);
+  assert.deepEqual(newFindings([unknown], [dev(A)]), []);
+});
+
+test('CLI: base walk failed (unknown), head production → error, exit 1', () => {
+  const r = cli('--base', file(doc([{ ...A, scope: 'unknown' }])), '--head', file(doc([A])));
+  assert.equal(r.status, 1, out(r));
 });
 
 test('normalize: an unrecognised scope value is a malformed document', () => {

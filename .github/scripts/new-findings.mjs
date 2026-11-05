@@ -36,6 +36,7 @@ import { fileURLToPath } from 'node:url';
 
 const SCHEMA = 1;
 const SCOPES = new Set(['production', 'dev', 'unknown']);
+const SCOPE_RANK = { dev: 0, unknown: 1, production: 2 };
 const PROBLEM_STATUSES = new Set(['EXPIRED', 'TOO_FAR']);
 
 class UsageError extends Error {}
@@ -79,11 +80,15 @@ export function normalize(tool, json) {
   const byKey = new Map();
   for (const x of doc.findings) {
     if (!x.blocking) continue;
-    const scope = x.scope === 'dev' ? 'dev' : 'production';
+    // No scope field → production. An explicit "unknown" stays distinct: as a
+    // head finding it blocks like production, and as a BASE entry it covers no
+    // production head finding (a failed base walk must not wave a dev→production
+    // move through).
+    const scope = x.scope === undefined ? 'production' : x.scope;
     const f = { id: x.id, pkg: x.package, version: x.version, ecosystem: x.ecosystem, scope };
-    // The same package@version can sit in both scopes; production wins.
+    // The same package@version can sit in several scopes; the widest wins.
     const prior = byKey.get(identityKey(f));
-    if (prior && prior.scope === 'production') continue;
+    if (prior && SCOPE_RANK[prior.scope] >= SCOPE_RANK[scope]) continue;
     byKey.set(identityKey(f), f);
   }
   return [...byKey.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, f]) => f);
@@ -91,11 +96,18 @@ export function normalize(tool, json) {
 
 // Head findings the base does not already carry at the same or a wider scope:
 // a dev-only head finding is covered by any base entry of the same advisory; a
-// production head finding only by a production one.
+// production head finding only by a production base entry; an unknown head
+// finding (blocks like production) by a production entry or an unknown one
+// (neither side's walk placed it, so nothing got worse).
 export function newFindings(base, head) {
   const seen = new Set(base.map(findingKey));
   const anyScope = new Set(base.map(identityKey));
-  return head.filter((f) => (f.scope === 'dev' ? !anyScope.has(identityKey(f)) : !seen.has(findingKey(f))));
+  const covered = (f) => {
+    if (f.scope === 'dev') return anyScope.has(identityKey(f));
+    if (seen.has(`${identityKey(f)}|production`)) return true;
+    return f.scope === 'unknown' && seen.has(findingKey(f));
+  };
+  return head.filter((f) => !covered(f));
 }
 
 // Expired / out-of-policy exception entries of a document.
