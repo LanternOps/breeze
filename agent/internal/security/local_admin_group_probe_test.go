@@ -105,6 +105,179 @@ func TestLocalAdminSummaryCmdletPathUnchanged(t *testing.T) {
 	}
 }
 
+// Both captures come from one Windows 11 host on PowerShell 5.1 (#10998), with
+// host names, user names and SID digits replaced. The structure is unchanged:
+// a null AccountDomainSid on Entra members, numeric PrincipalSource, and members
+// with no resolvable name reported as ObjectClass "Other" with the SID as Name.
+const (
+	// The output of the script before #10998, which selected SID as is.
+	capturedSIDObjectMembers = `[{"Name":"AzureAD\\TestUser","ObjectClass":"User","SID":{"BinaryLength":28,"AccountDomainSid":null,"Value":"S-1-12-1-11-22-33-44"},"PrincipalSource":3},` +
+		`{"Name":"HOST\\Administrator","ObjectClass":"User","SID":{"BinaryLength":28,"AccountDomainSid":"S-1-5-21-1-2-3","Value":"S-1-5-21-1-2-3-500"},"PrincipalSource":1},` +
+		`{"Name":"HOST\\labuser","ObjectClass":"User","SID":{"BinaryLength":28,"AccountDomainSid":"S-1-5-21-1-2-3","Value":"S-1-5-21-1-2-3-1009"},"PrincipalSource":1},` +
+		`{"Name":"S-1-12-1-55-66-77-88","ObjectClass":"Other","SID":{"BinaryLength":28,"AccountDomainSid":null,"Value":"S-1-12-1-55-66-77-88"},"PrincipalSource":3}]`
+	// The output of localAdminMembersPS. The built-in Administrator is a member
+	// of the group while disabled, which is the Windows client default.
+	capturedDisabledBuiltInMembers = `[{"Name":"HOST\\Administrator","SID":"S-1-5-21-1-2-3-500","ObjectClass":"User","PrincipalSource":1,"Enabled":false},` +
+		`{"Name":"HOST\\labuser","SID":"S-1-5-21-1-2-3-1009","ObjectClass":"User","PrincipalSource":1,"Enabled":null}]`
+)
+
+func cmdletAccounts(t *testing.T, output string) []map[string]any {
+	t.Helper()
+	fake := installFakeLocalAdminShell(t)
+	fake.cmdletOut = output
+	summary, err := collectLocalAdminSummaryWindows()
+	if err != nil {
+		t.Fatalf("collectLocalAdminSummaryWindows: %v", err)
+	}
+	if fake.netCalls != 0 {
+		t.Fatalf("net path ran %d times with a healthy cmdlet", fake.netCalls)
+	}
+	return summary["accounts"].([]map[string]any)
+}
+
+func TestLocalAdminMembersScriptSelectsTheSIDString(t *testing.T) {
+	// Selected as is, SID serializes as an object.
+	if !strings.Contains(localAdminMembersPS, "@{n='SID';e={$_.SID.Value}}") {
+		t.Fatalf("script does not select SID.Value: %s", localAdminMembersPS)
+	}
+	if strings.Contains(localAdminMembersPS, ",SID,") {
+		t.Fatalf("script still selects the SID object: %s", localAdminMembersPS)
+	}
+}
+
+func TestLocalAdminMembersScriptReadsEnabledQuietly(t *testing.T) {
+	// A member Get-LocalUser cannot find must not write an error record, which
+	// CombinedOutput would mix into the JSON. Without the else branch, PowerShell
+	// serializes the empty result as {} rather than null.
+	for _, want := range []string{"Get-LocalUser -SID $_.SID -ErrorAction SilentlyContinue", "else{$null}"} {
+		if !strings.Contains(localAdminMembersPS, want) {
+			t.Errorf("script is missing %q: %s", want, localAdminMembersPS)
+		}
+	}
+}
+
+func TestLocalAdminSummaryReadsTheSIDObjectShape(t *testing.T) {
+	want := []map[string]any{
+		{"username": `AzureAD\TestUser`, "isBuiltIn": false, "enabled": true, "objectType": "User"},
+		{"username": `HOST\Administrator`, "isBuiltIn": true, "enabled": true, "objectType": "User", "defaultAccount": true},
+		{"username": `HOST\labuser`, "isBuiltIn": false, "enabled": true, "objectType": "User"},
+		{"username": "S-1-12-1-55-66-77-88", "isBuiltIn": false, "enabled": true, "objectType": "Other"},
+	}
+	if got := cmdletAccounts(t, capturedSIDObjectMembers); !reflect.DeepEqual(got, want) {
+		t.Fatalf("accounts = %#v\nwant %#v", got, want)
+	}
+}
+
+func TestLocalAdminSummaryDoesNotFlagADisabledBuiltIn(t *testing.T) {
+	// The API raises default_account on defaultAccount alone, so a disabled
+	// built-in must not carry it, or every Windows client would be flagged.
+	want := []map[string]any{
+		{"username": `HOST\Administrator`, "isBuiltIn": true, "enabled": false, "objectType": "User"},
+		{"username": `HOST\labuser`, "isBuiltIn": false, "enabled": true, "objectType": "User"},
+	}
+	if got := cmdletAccounts(t, capturedDisabledBuiltInMembers); !reflect.DeepEqual(got, want) {
+		t.Fatalf("accounts = %#v\nwant %#v", got, want)
+	}
+}
+
+// Hand-written from the captured shape: these hosts were not captured.
+func TestLocalAdminCmdletAccountFlags(t *testing.T) {
+	tests := []struct {
+		name        string
+		member      string
+		wantBuiltIn bool
+		wantEnabled bool
+		wantDefault bool
+	}{
+		{
+			name:        "localized built-in flags by RID",
+			member:      `{"Name":"HOST\\Administrateur","SID":"S-1-5-21-1-2-3-500","ObjectClass":"User","Enabled":true}`,
+			wantBuiltIn: true, wantEnabled: true, wantDefault: true,
+		},
+		{
+			name:        "renamed built-in flags by RID",
+			member:      `{"Name":"HOST\\opsadmin","SID":{"Value":"S-1-5-21-1-2-3-500"},"ObjectClass":"User","Enabled":true}`,
+			wantBuiltIn: true, wantEnabled: true, wantDefault: true,
+		},
+		{
+			name:        "enabled guest flags by RID",
+			member:      `{"Name":"HOST\\Invité","SID":"S-1-5-21-1-2-3-501","ObjectClass":"User","Enabled":true}`,
+			wantBuiltIn: true, wantEnabled: true, wantDefault: true,
+		},
+		{
+			name:        "disabled guest is not a finding",
+			member:      `{"Name":"HOST\\Guest","SID":"S-1-5-21-1-2-3-501","ObjectClass":"User","Enabled":false}`,
+			wantBuiltIn: true, wantEnabled: false, wantDefault: false,
+		},
+		{
+			name:        "state that could not be read stays flagged",
+			member:      `{"Name":"CONTOSO\\Administrator","SID":"S-1-5-21-9-8-7-500","ObjectClass":"User","Enabled":null}`,
+			wantBuiltIn: true, wantEnabled: true, wantDefault: true,
+		},
+		{
+			name:        "empty object from PowerShell reads as unknown",
+			member:      `{"Name":"HOST\\Administrator","SID":"S-1-5-21-1-2-3-500","ObjectClass":"User","Enabled":{}}`,
+			wantBuiltIn: true, wantEnabled: true, wantDefault: true,
+		},
+		{
+			name:        "the SID outranks the name",
+			member:      `{"Name":"HOST\\Administrator","SID":"S-1-5-21-1-2-3-1001","ObjectClass":"User","Enabled":null}`,
+			wantBuiltIn: false, wantEnabled: true, wantDefault: false,
+		},
+		{
+			name:        "another RID ending in 500 is not built in",
+			member:      `{"Name":"HOST\\svc","SID":"S-1-5-21-1-2-3-1500","ObjectClass":"User","Enabled":null}`,
+			wantBuiltIn: false, wantEnabled: true, wantDefault: false,
+		},
+		{
+			name:        "an Entra SID has no well-known RIDs",
+			member:      `{"Name":"AzureAD\\Administrator","SID":"S-1-12-1-11-22-33-500","ObjectClass":"User","Enabled":null}`,
+			wantBuiltIn: false, wantEnabled: true, wantDefault: false,
+		},
+		{
+			name:        "no SID falls back to the name without its prefix",
+			member:      `{"Name":"HOST\\Administrator","ObjectClass":"User"}`,
+			wantBuiltIn: true, wantEnabled: true, wantDefault: true,
+		},
+		{
+			name:        "no SID and a localized name cannot be recognized",
+			member:      `{"Name":"HOST\\Administrateur","ObjectClass":"User"}`,
+			wantBuiltIn: false, wantEnabled: true, wantDefault: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cmdletAccounts(t, tt.member)[0]
+			if got["isBuiltIn"] != tt.wantBuiltIn || got["enabled"] != tt.wantEnabled {
+				t.Errorf("account = %#v, want isBuiltIn %v, enabled %v", got, tt.wantBuiltIn, tt.wantEnabled)
+			}
+			if _, isDefault := got["defaultAccount"]; isDefault != tt.wantDefault {
+				t.Errorf("account = %#v, want defaultAccount present = %v", got, tt.wantDefault)
+			}
+		})
+	}
+}
+
+func TestLocalAdminNetPathKeepsItsNameMatch(t *testing.T) {
+	// net prints local accounts bare, so a prefix means a domain account.
+	fake := installFakeLocalAdminShell(t)
+	fake.cmdletOut, fake.cmdletErr = orphanedSIDFailure, errors.New("exit status 1")
+	fake.netOut = "Members\r\n-------------------\r\nAdministrator\r\nCONTOSO\\Administrator\r\nGuest\r\nThe command completed successfully.\r\n"
+
+	summary, err := collectLocalAdminSummaryWindows()
+	if err != nil {
+		t.Fatalf("collectLocalAdminSummaryWindows: %v", err)
+	}
+	want := []map[string]any{
+		{"username": "Administrator", "isBuiltIn": true, "enabled": true, "defaultAccount": true},
+		{"username": `CONTOSO\Administrator`, "isBuiltIn": false, "enabled": true},
+		{"username": "Guest", "isBuiltIn": false, "enabled": true},
+	}
+	if got := summary["accounts"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("accounts = %#v\nwant %#v", got, want)
+	}
+}
+
 func TestLocalAdminSummaryFallsBackOnCmdletFailure(t *testing.T) {
 	tests := map[string]string{
 		"orphaned SID":  orphanedSIDFailure,
