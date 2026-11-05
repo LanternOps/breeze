@@ -1,82 +1,59 @@
 import { type ChangeEvent, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { Eye, Globe, Image, Palette, Save, Wand2, X } from 'lucide-react';
+import { Image, Palette, Save } from 'lucide-react';
 import { sanitizeImageSrc } from '../../lib/safeImageSrc';
 import { MAX_LOGO_BYTES, LOGO_ACCEPT, resizeToDataUrl } from '@/lib/logoDataUrl';
-import { resolveUiColorToken, sanitizeHexColor } from '@/lib/utils';
+import { sanitizeHexColor } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { useStableT } from '@/lib/i18n/useStableT';
-import { PORTAL_PRIMARY_COLOR_PATTERN } from '@breeze/shared';
+import { PORTAL_PRIMARY_COLOR_PATTERN, isPortalLogoUrl } from '@breeze/shared';
 import InheritedField from '../shared/InheritedField';
 
-// customCss and primaryColor are intentionally NOT part of BrandingData: they
-// are persisted via portal_branding (orgPortalSettings.ts), not
-// organizations.settings.branding — this component loads/saves them through a
-// dedicated PATCH /orgs/organizations/:id/portal-settings call so the two
-// writes (this section's other branding fields vs. portal_branding) stay
-// decoupled. customCss moved in #5952; primaryColor in #9962, because
-// portal_branding.primary_color is the org override every quote/invoice
-// renderer reads (resolveDocumentBrand), so a colour saved to the settings blob
-// never reached a customer document.
-type BrandingData = {
-  logoUrl?: string;
-  secondaryColor?: string;
-  theme?: 'light' | 'dark' | 'system';
-  portalSubdomain?: string;
-};
-
+// Everything on this tab lives in portal_branding and is saved through
+// PATCH /orgs/organizations/:id/portal-settings (orgPortalSettings.ts): customCss
+// since #5952, primaryColor since #9962, the logo and secondaryColor since #9673.
+// That row is what the portal and every customer document read
+// (resolveDocumentBrand), with the partner's Branding as the fallback.
+//
+// organizations.settings.branding is retired: nothing reads it. The tab's theme
+// and portal subdomain fields, which only ever saved there, are gone (custom
+// domains are #3282).
 type OrgBrandingEditorProps = {
   organizationName: string;
-  /** Required to load/save customCss via portal-settings. Absent only in
-   *  isolated tests that don't exercise the customCss round-trip. */
+  /** Required to load/save through portal-settings. Absent only in isolated
+   *  tests that don't exercise that round-trip. */
   orgId?: string;
-  branding?: BrandingData;
+  /** A logo in the retired organizations.settings.branding. Offered for the org
+   *  to apply, because it is a real upload (the colours there are the editor's
+   *  old hard-coded defaults, so they are not carried over). */
+  legacyLogoUrl?: string;
   onDirty?: () => void;
-  onSave?: (data: BrandingData) => boolean | void | Promise<boolean | void>;
+  /** Called, with no data, after portal-settings saved. Return false if the
+   *  page could not finish the save, so no success is reported. */
+  onSave?: () => boolean | void | Promise<boolean | void>;
   locked?: string[];
+  /** When set, Save is refused with this message before anything is written
+   *  (an archived org). */
+  saveBlockedMessage?: string;
 };
 
 // The accent quote/invoice renderers use when neither the org nor the partner
 // has a colour (quotePdf/invoicePdf `hexToColor(..., '#2563eb')`).
 const DEFAULT_PRIMARY_COLOR = '#2563eb';
-
-const defaultBranding: BrandingData = {
-  logoUrl: '',
-  secondaryColor: '#14b8a6',
-  theme: 'system',
-  portalSubdomain: ''
-};
+// Only what a colour picker shows when neither level has a secondary colour: a
+// picker cannot be empty. Nothing is saved unless the admin picks a value.
+const DEFAULT_SECONDARY_COLOR = '#14b8a6';
 
 const CUSTOM_CSS_PLACEHOLDER = '/* Add custom portal styling here */\n.portal-header {\n  letter-spacing: 0.04em;\n}';
 
-const themeOptions = [
-  { value: 'light', labelKey: 'orgBrandingEditor.theme.options.light' },
-  { value: 'dark', labelKey: 'orgBrandingEditor.theme.options.dark' },
-  { value: 'system', labelKey: 'orgBrandingEditor.theme.options.system' },
-] as const;
-
-const portalDomain = (() => {
-  try {
-    const url = import.meta.env.PUBLIC_API_URL || '';
-    return new URL(url).hostname;
-  } catch {
-    return 'breezermm.com';
-  }
-})();
-
-export default function OrgBrandingEditor({ organizationName, orgId, branding, onDirty, onSave, locked }: OrgBrandingEditorProps) {
+export default function OrgBrandingEditor({ organizationName, orgId, legacyLogoUrl, onDirty, onSave, locked, saveBlockedMessage }: OrgBrandingEditorProps) {
   const { t } = useTranslation('settings');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const isLocked = (field: string) => locked?.includes(`branding.${field}`) ?? false;
-  const initialData = { ...defaultBranding, ...branding };
-  const [logoPreview, setLogoPreview] = useState(initialData.logoUrl || '');
-  const [logoName, setLogoName] = useState('');
-  const [secondaryColor, setSecondaryColor] = useState(initialData.secondaryColor || defaultBranding.secondaryColor || '#14b8a6');
-  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(initialData.theme || 'system');
   const [customCss, setCustomCss] = useState('');
   const [savingCustomCss, setSavingCustomCss] = useState(false);
   // Tracks whether the initial portal-settings GET failed (network error,
@@ -94,29 +71,53 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
   // value is never re-sent, so a legacy value the strict schema would reject
   // cannot block an unrelated Save.
   const [primaryColorTouched, setPrimaryColorTouched] = useState(false);
-  // The colour field stays disabled until portal-settings has loaded, so a
-  // slow GET can never overwrite what the admin has already typed. Without an
-  // orgId (isolated tests) there is nothing to load.
-  const [primaryColorLoaded, setPrimaryColorLoaded] = useState(!orgId);
-  const primaryColorDisabled = customCssLoadFailed || !primaryColorLoaded;
-  const [portalSubdomain, setPortalSubdomain] = useState(initialData.portalSubdomain || '');
+  // #9673: the same chain for portal_branding.secondary_color.
+  const [secondaryColor, setSecondaryColor] = useState('');
+  const [partnerSecondaryColor, setPartnerSecondaryColor] = useState<string | null>(null);
+  const [secondaryColorTouched, setSecondaryColorTouched] = useState(false);
+  // #9673: portal_branding.logo_url as last loaded or saved. logoEdit is the
+  // admin's unsaved change: null = untouched, '' = removed (inherit the partner).
+  const [storedLogoUrl, setStoredLogoUrl] = useState('');
+  const [partnerLogoUrl, setPartnerLogoUrl] = useState<string | null>(null);
+  const [logoEdit, setLogoEdit] = useState<string | null>(null);
+  const [logoName, setLogoName] = useState('');
+  // These fields stay disabled until portal-settings has loaded, so a slow GET
+  // can never overwrite what the admin has already typed. Without an orgId
+  // (isolated tests) there is nothing to load.
+  const [portalSettingsLoaded, setPortalSettingsLoaded] = useState(!orgId);
+  const brandingFieldsDisabled = customCssLoadFailed || !portalSettingsLoaded;
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
-  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const trimmedPrimaryColor = primaryColor.trim();
   const primaryColorInvalid = trimmedPrimaryColor !== '' && !PORTAL_PRIMARY_COLOR_PATTERN.test(trimmedPrimaryColor);
+  const trimmedSecondaryColor = secondaryColor.trim();
+  const secondaryColorInvalid = trimmedSecondaryColor !== '' && !PORTAL_PRIMARY_COLOR_PATTERN.test(trimmedSecondaryColor);
   // What the org's documents print: its own colour, else the partner's, else
   // the app default the renderers fall back to.
   const resolvedPrimaryColor = sanitizeHexColor(
     trimmedPrimaryColor,
     sanitizeHexColor(partnerPrimaryColor ?? '', DEFAULT_PRIMARY_COLOR),
   );
-  const resolvedSecondaryColor = sanitizeHexColor(secondaryColor, defaultBranding.secondaryColor || '#14b8a6');
-  const primaryToken = resolveUiColorToken(resolvedPrimaryColor, DEFAULT_PRIMARY_COLOR);
-  const secondaryToken = resolveUiColorToken(resolvedSecondaryColor, defaultBranding.secondaryColor || '#14b8a6');
+  const resolvedSecondaryColor = sanitizeHexColor(
+    trimmedSecondaryColor,
+    sanitizeHexColor(partnerSecondaryColor ?? '', DEFAULT_SECONDARY_COLOR),
+  );
+  // Offered only once portal-settings has confirmed the org has no logo of its
+  // own, and only if the write schema would accept it (old rows can hold a
+  // session-local blob: URL, #8017). Save applies it, Remove discards it.
+  const legacyLogoOffered = portalSettingsLoaded
+    && !customCssLoadFailed
+    && !storedLogoUrl
+    && logoEdit === null
+    && Boolean(legacyLogoUrl && isPortalLogoUrl(legacyLogoUrl));
+  const orgLogoUrl = logoEdit ?? (legacyLogoOffered ? legacyLogoUrl! : storedLogoUrl);
+  const safeLogoPreview = sanitizeImageSrc(orgLogoUrl || partnerLogoUrl);
+  const logoInheritanceKey = orgLogoUrl
+    ? 'common:inheritedField.overriding'
+    : partnerLogoUrl
+      ? 'common:inheritedField.inheritsFrom'
+      : 'common:inheritedField.noneConfigured';
 
-  // customCss (#5952) and primaryColor (#9962) live in portal_branding, not
-  // organizations.settings — load their persisted values independently of the
-  // `branding` prop.
+  // Load the portal_branding values this tab edits (see the note at the top).
   // A missing/null value leaves the textarea empty (the sample CSS is only a
   // placeholder, never a saved value). Any failure to load
   // (network error, non-2xx, unparsable body) is treated the same way and
@@ -142,15 +143,18 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
         if (!cancelled && typeof loaded === 'string') {
           setCustomCss(loaded);
         }
-        const loadedColor = body?.data?.primaryColor;
-        const inheritedColor = body?.data?.partnerPrimaryColor;
+        const asString = (value: unknown) => (typeof value === 'string' ? value : null);
         if (!cancelled) {
-          setPrimaryColor(typeof loadedColor === 'string' ? loadedColor : '');
-          setPartnerPrimaryColor(typeof inheritedColor === 'string' ? inheritedColor : null);
-          setPrimaryColorLoaded(true);
+          setPrimaryColor(asString(body?.data?.primaryColor) ?? '');
+          setPartnerPrimaryColor(asString(body?.data?.partnerPrimaryColor));
+          setSecondaryColor(asString(body?.data?.secondaryColor) ?? '');
+          setPartnerSecondaryColor(asString(body?.data?.partnerSecondaryColor));
+          setStoredLogoUrl(asString(body?.data?.logoUrl) ?? '');
+          setPartnerLogoUrl(asString(body?.data?.partnerLogoUrl));
+          setPortalSettingsLoaded(true);
         }
       } catch (err) {
-        console.warn('[OrgBrandingEditor] failed to load portal custom CSS', err);
+        console.warn('[OrgBrandingEditor] failed to load portal settings', err);
         if (!cancelled) {
           setCustomCssLoadFailed(true);
           showToast({ message: stableT('orgBrandingEditor.customCss.loadError'), type: 'error' });
@@ -164,9 +168,9 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
     onDirty?.();
   };
 
-  // The logo is persisted inline (organizations.settings.branding.logoUrl, 400 KB
-  // cap) — there is no upload endpoint. Encode the file to a data URI; a blob:
-  // URL only resolves in this tab and breaks on reload (#8017).
+  // The logo is persisted inline (portal_branding.logo_url, 400 KB cap) — there
+  // is no upload endpoint. Encode the file to a data URI; a blob: URL only
+  // resolves in this tab and breaks on reload (#8017).
   const handleLogoChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const input = event.target;
     const file = input.files?.[0];
@@ -181,8 +185,10 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
         input.value = '';
         return;
       }
-      setLogoPreview(dataUrl);
+      setLogoEdit(dataUrl);
       setLogoName(file.name);
+      // Without this, picking the same file again after Remove fires no change.
+      input.value = '';
       markDirty();
     } catch (err) {
       console.error('[OrgBrandingEditor] Logo file processing failed:', err);
@@ -191,18 +197,19 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
     }
   };
 
-  const handlePreview = () => {
-    setIsPreviewOpen(true);
+  const handleLogoRemove = () => {
+    setLogoEdit('');
+    setLogoName('');
+    markDirty();
   };
 
   const handleSave = async () => {
-    const data: BrandingData = {
-      logoUrl: logoPreview,
-      secondaryColor: resolvedSecondaryColor,
-      theme,
-      portalSubdomain
-    };
     setStatusMessage(null);
+
+    if (saveBlockedMessage) {
+      showToast({ message: saveBlockedMessage, type: 'error' });
+      return;
+    }
 
     if (customCssLoadFailed) {
       // The initial load never confirmed what's actually persisted, so
@@ -220,38 +227,49 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
       return;
     }
 
+    if (secondaryColorTouched && secondaryColorInvalid) {
+      showToast({ message: t('orgBrandingEditor.colors.primaryInvalid'), type: 'error' });
+      return;
+    }
+
     setSavingCustomCss(true);
     try {
-      // Validate/save CSS first, then await the remaining branding settings.
-      // Neither individual write should announce success for a partial save.
+      // portal-settings first, then the page's own step (onSave). Neither
+      // should announce success for a partial save.
       if (orgId) {
+        // An offered legacy logo counts as an edit: Save is what applies it.
+        const logoToSend = logoEdit ?? (legacyLogoOffered ? legacyLogoUrl! : null);
         await runAction({
           request: () => fetchWithAuth(`/orgs/organizations/${orgId}/portal-settings`, {
             method: 'PATCH',
             body: JSON.stringify({
               customCss: customCss.trim() ? customCss : null,
-              ...(primaryColorTouched ? { primaryColor: trimmedPrimaryColor || null } : {})
+              ...(primaryColorTouched ? { primaryColor: trimmedPrimaryColor || null } : {}),
+              ...(secondaryColorTouched ? { secondaryColor: trimmedSecondaryColor || null } : {}),
+              ...(logoToSend !== null ? { logoUrl: logoToSend || null } : {})
             })
           }),
-          errorFallback: t('orgBrandingEditor.customCss.saveError'),
+          errorFallback: t('orgBrandingEditor.saveError'),
           onUnauthorized: () => void navigateTo('/login', { replace: true })
         });
+        // Saved: the next Save must not re-send it, and an offered legacy logo
+        // is now the org's own (or, if removed, must not be offered again).
+        if (logoToSend !== null) {
+          setStoredLogoUrl(logoToSend);
+          setLogoEdit(logoToSend === '' ? '' : null);
+        }
       }
-      if (await onSave?.(data) === false) return;
+      if (await onSave?.() === false) return;
       showToast({ message: t('orgBrandingEditor.saved'), type: 'success' });
       setStatusMessage(t('orgBrandingEditor.saved'));
     } catch (err) {
       if (!(err instanceof ActionError)) {
-        showToast({ message: t('orgBrandingEditor.customCss.saveError'), type: 'error' });
+        showToast({ message: t('orgBrandingEditor.saveError'), type: 'error' });
       }
     } finally {
       setSavingCustomCss(false);
     }
   };
-
-  const previewUrl = `https://${portalSubdomain || 'your-org'}.${portalDomain}`;
-  const isDarkTheme = theme === 'dark';
-  const safeLogoPreview = sanitizeImageSrc(logoPreview);
 
   return (
     <section className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
@@ -262,26 +280,16 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
             {t('orgBrandingEditor.description', { organization: organizationName })}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={handlePreview}
-            className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition hover:bg-muted"
-          >
-            <Eye className="h-4 w-4" />
-            {t('orgBrandingEditor.preview.action')}
-          </button>
-          <button
-            type="button"
-            data-testid="branding-save"
-            onClick={() => void handleSave()}
-            disabled={savingCustomCss}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
-          >
-            <Save className="h-4 w-4" />
-            {t('orgBrandingEditor.save')}
-          </button>
-        </div>
+        <button
+          type="button"
+          data-testid="branding-save"
+          onClick={() => void handleSave()}
+          disabled={savingCustomCss}
+          className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+        >
+          <Save className="h-4 w-4" />
+          {t('orgBrandingEditor.save')}
+        </button>
       </div>
 
       {statusMessage ? (
@@ -297,34 +305,64 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
               <Image className="h-4 w-4" />
               {t('orgBrandingEditor.logo.title')}
             </div>
-            <div className="flex flex-wrap items-center gap-4 rounded-lg border bg-muted/40 p-4">
-              <div className="flex h-16 w-16 items-center justify-center rounded-full border bg-background text-xs text-muted-foreground">
-                {safeLogoPreview ? (
-                  <img
-                    src={safeLogoPreview}
-                    alt={t('orgBrandingEditor.logo.previewAlt')}
-                    className="h-16 w-16 rounded-full object-cover"
-                  />
-                ) : (
-                  organizationName.slice(0, 2).toUpperCase()
-                )}
+            {/* #9673 (settings rules 3 + 4): the ORG level of the logo chain
+                (resolveDocumentBrand). Shows the inherited partner logo and its
+                source while the org has none. Not partner-locked: the `locked`
+                list describes the retired organizations.settings.branding keys. */}
+            <div className="space-y-3 rounded-lg border bg-muted/40 p-4">
+              <div className="flex flex-wrap items-center gap-4">
+                <div className="flex h-16 w-16 items-center justify-center rounded-full border bg-background text-xs text-muted-foreground">
+                  {safeLogoPreview ? (
+                    <img
+                      data-testid="branding-logo-preview"
+                      src={safeLogoPreview}
+                      alt={t('orgBrandingEditor.logo.previewAlt')}
+                      className="h-16 w-16 rounded-full object-cover"
+                    />
+                  ) : (
+                    organizationName.slice(0, 2).toUpperCase()
+                  )}
+                </div>
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">{t('orgBrandingEditor.logo.uploadNew')}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {t('partnerBranding.imageHelp')}
+                  </p>
+                  {logoName ? (
+                    <p className="text-xs text-muted-foreground">{t('orgBrandingEditor.logo.selected', { name: logoName })}</p>
+                  ) : null}
+                  {portalSettingsLoaded ? (
+                    <p className="text-xs text-muted-foreground">
+                      {t(/* i18n-dynamic */ logoInheritanceKey, { source: t('orgBrandingEditor.logo.inheritedSource') })}
+                    </p>
+                  ) : null}
+                </div>
+                <div className="ml-auto flex items-center gap-2">
+                  {orgLogoUrl ? (
+                    <button
+                      type="button"
+                      data-testid="branding-logo-remove"
+                      onClick={handleLogoRemove}
+                      className="inline-flex items-center rounded-md border bg-background px-3 py-2 text-sm font-medium transition hover:bg-muted"
+                    >
+                      {t('orgBrandingEditor.logo.remove')}
+                    </button>
+                  ) : null}
+                  <label className={`inline-flex cursor-pointer items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium transition hover:bg-muted ${brandingFieldsDisabled ? 'opacity-60 pointer-events-none' : ''}`}>
+                    <input type="file" accept={LOGO_ACCEPT} className="hidden" disabled={brandingFieldsDisabled} onChange={handleLogoChange} />
+                    {t('common:actions.upload')}
+                  </label>
+                </div>
               </div>
-              <div className="space-y-1">
-                <p className="text-sm font-medium">{t('orgBrandingEditor.logo.uploadNew')}</p>
-                <p className="text-xs text-muted-foreground">
-                  {t('partnerBranding.imageHelp')}
+              {legacyLogoOffered && (
+                <p data-testid="branding-logo-legacy-notice" className="text-xs text-amber-600 dark:text-amber-400">
+                  {t('orgBrandingEditor.logo.legacyNotice')}
                 </p>
-                {logoName ? (
-                  <p className="text-xs text-muted-foreground">{t('orgBrandingEditor.logo.selected', { name: logoName })}</p>
-                ) : null}
-              </div>
-              <label className={`ml-auto inline-flex cursor-pointer items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium transition hover:bg-muted ${isLocked('logoUrl') ? 'opacity-60 pointer-events-none' : ''}`}>
-                <input type="file" accept={LOGO_ACCEPT} className="hidden" disabled={isLocked('logoUrl')} onChange={handleLogoChange} />
-                {t('common:actions.upload')}
-              </label>
-              {isLocked('logoUrl') && (
-                <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgBrandingEditor.managedByPartner')}</span>
               )}
+              {customCssLoadFailed && (
+                <p className="text-xs text-destructive italic">{t('orgBrandingEditor.logo.loadError')}</p>
+              )}
+              <p className="text-xs text-muted-foreground">{t('orgBrandingEditor.logo.help')}</p>
             </div>
           </div>
 
@@ -345,7 +383,7 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
                 <input
                   type="color"
                   value={resolvedPrimaryColor}
-                  disabled={primaryColorDisabled}
+                  disabled={brandingFieldsDisabled}
                   aria-label={t('orgBrandingEditor.colors.primary')}
                   data-testid="branding-primary-color-picker"
                   onChange={event => {
@@ -368,7 +406,7 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
                     }}
                     inheritedValue={partnerPrimaryColor}
                     inheritedSource={t('orgBrandingEditor.colors.primaryInheritedSource')}
-                    disabled={primaryColorDisabled}
+                    disabled={brandingFieldsDisabled}
                     ariaInvalid={primaryColorInvalid}
                     ariaDescribedBy="org-branding-primary-color-help"
                     data-testid="branding-primary-color"
@@ -386,95 +424,60 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
               </p>
             </div>
 
+            {/* #9673: the ORG level of the secondary colour, same rules as above. */}
             <div className="space-y-2 rounded-lg border bg-muted/40 p-4">
               <div className="flex items-center gap-2 text-sm font-medium">
                 <Palette className="h-4 w-4" />
                 {t('orgBrandingEditor.colors.secondary')}
               </div>
-              <div className={`flex items-center gap-3 ${isLocked('secondaryColor') ? 'opacity-60' : ''}`}>
+              <div className="flex items-start gap-3">
                 <input
                   type="color"
                   value={resolvedSecondaryColor}
-                  disabled={isLocked('secondaryColor')}
+                  disabled={brandingFieldsDisabled}
+                  aria-label={t('orgBrandingEditor.colors.secondary')}
+                  data-testid="branding-secondary-color-picker"
                   onChange={event => {
                     setSecondaryColor(event.target.value);
+                    setSecondaryColorTouched(true);
                     markDirty();
                   }}
-                  className="h-10 w-12 cursor-pointer rounded-md border bg-background"
+                  className="mt-1 h-10 w-12 shrink-0 cursor-pointer rounded-md border bg-background disabled:opacity-60"
                 />
-                <input
-                  type="text"
-                  value={secondaryColor}
-                  disabled={isLocked('secondaryColor')}
-                  onChange={event => {
-                    setSecondaryColor(event.target.value);
-                    markDirty();
-                  }}
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-                />
+                <div className="min-w-0 flex-1">
+                  <InheritedField
+                    id="org-branding-secondary-color"
+                    label={t('orgBrandingEditor.colors.secondary')}
+                    hideLabel
+                    value={secondaryColor}
+                    onChange={(value) => {
+                      setSecondaryColor(value);
+                      setSecondaryColorTouched(true);
+                      markDirty();
+                    }}
+                    inheritedValue={partnerSecondaryColor}
+                    inheritedSource={t('orgBrandingEditor.colors.secondaryInheritedSource')}
+                    disabled={brandingFieldsDisabled}
+                    ariaInvalid={secondaryColorInvalid}
+                    ariaDescribedBy="org-branding-secondary-color-help"
+                    data-testid="branding-secondary-color"
+                  />
+                </div>
               </div>
-              {isLocked('secondaryColor') && (
-                <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgBrandingEditor.managedByPartner')}</span>
+              {secondaryColorInvalid && (
+                <p className="text-xs text-destructive">{t('orgBrandingEditor.colors.primaryInvalid')}</p>
               )}
+              {customCssLoadFailed && (
+                <p className="text-xs text-destructive italic">{t('orgBrandingEditor.colors.secondaryLoadError')}</p>
+              )}
+              <p id="org-branding-secondary-color-help" className="text-xs text-muted-foreground">
+                {t('orgBrandingEditor.colors.secondaryHelp')}
+              </p>
             </div>
           </div>
         </div>
 
         <div className="space-y-6">
-          <div className="space-y-2 rounded-lg border bg-muted/40 p-4">
-            <div className="flex items-center gap-2 text-sm font-medium">
-              <Wand2 className="h-4 w-4" />
-              {t('orgBrandingEditor.theme.title')}
-            </div>
-            <select
-              value={theme}
-              disabled={isLocked('theme')}
-              onChange={event => {
-                setTheme(event.target.value as 'light' | 'dark' | 'system');
-                markDirty();
-              }}
-              className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('theme') ? 'opacity-60' : ''}`}
-            >
-              {themeOptions.map(option => (
-                <option key={option.value} value={option.value}>
-                  {t(/* i18n-dynamic */ option.labelKey)}
-                </option>
-              ))}
-            </select>
-            <p className="text-xs text-muted-foreground">
-              {t('orgBrandingEditor.theme.description')}
-            </p>
-            {isLocked('theme') && (
-              <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgBrandingEditor.managedByPartner')}</span>
-            )}
-          </div>
-
-          <div className="space-y-2 rounded-lg border bg-muted/40 p-4">
-            <div className="flex items-center gap-2 text-sm font-medium">
-              <Globe className="h-4 w-4" />
-              {t('orgBrandingEditor.subdomain.title')}
-            </div>
-            <div className="flex items-center">
-              <input
-                type="text"
-                value={portalSubdomain}
-                onChange={event => {
-                  setPortalSubdomain(event.target.value);
-                  markDirty();
-                }}
-                className="h-10 w-full rounded-l-md border border-r-0 bg-background px-3 text-sm"
-              />
-              <span className="flex h-10 items-center rounded-r-md border bg-muted px-3 text-xs text-muted-foreground">
-                .{portalDomain}
-              </span>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {t('orgBrandingEditor.subdomain.previewUrl', {
-                url: `https://${portalSubdomain || 'your-org'}.${portalDomain}`,
-              })}
-            </p>
-          </div>
-
           <div className="space-y-2 rounded-lg border bg-muted/40 p-4">
             <div className="text-sm font-medium">{t('orgBrandingEditor.customCss.title')}</div>
             <textarea
@@ -501,82 +504,6 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
           </div>
         </div>
       </div>
-
-      {isPreviewOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-3xl overflow-hidden rounded-xl border bg-card shadow-xl">
-            <div className="flex items-center justify-between border-b px-6 py-4">
-              <div>
-                <h3 className="text-base font-semibold">{t('orgBrandingEditor.preview.title')}</h3>
-                <p className="text-xs text-muted-foreground">{t('orgBrandingEditor.preview.description')}</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsPreviewOpen(false)}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-md border text-muted-foreground transition hover:text-foreground"
-                aria-label={t('orgBrandingEditor.preview.close')}
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            <div className="space-y-4 p-6">
-              <div className="overflow-hidden rounded-lg border">
-                <div
-                  className={`flex items-center justify-between px-5 py-4 ${primaryToken.bgClass} ${primaryToken.textOnClass}`}
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white/20 text-xs font-semibold">
-                      {safeLogoPreview ? (
-                        <img src={safeLogoPreview} alt={t('orgBrandingEditor.preview.logoAlt')} className="h-9 w-9 rounded-full object-cover" />
-                      ) : (
-                        organizationName.slice(0, 2).toUpperCase()
-                      )}
-                    </div>
-                    <div>
-                      <p className="text-sm font-semibold">{t('orgBrandingEditor.preview.portalName', { organization: organizationName })}</p>
-                      <p className="text-xs opacity-90">{previewUrl}</p>
-                    </div>
-                  </div>
-                  <span className="rounded-full bg-white/20 px-2 py-1 text-xs uppercase tracking-wide">
-                    {t(/* i18n-dynamic */ themeOptions.find(option => option.value === theme)?.labelKey ?? 'orgBrandingEditor.theme.options.system')}
-                  </span>
-                </div>
-
-                <div className={isDarkTheme ? 'space-y-4 bg-slate-950 p-5 text-slate-100' : 'space-y-4 bg-white p-5 text-slate-900'}>
-                  <h4 className="text-sm font-semibold">{t('orgBrandingEditor.preview.welcome')}</h4>
-                  <p className={isDarkTheme ? 'text-sm text-slate-300' : 'text-sm text-slate-600'}>
-                    {t('orgBrandingEditor.preview.body')}
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      className={`rounded-md px-3 py-2 text-xs font-semibold ${secondaryToken.bgClass} ${secondaryToken.textOnClass}`}
-                    >
-                      {t('orgBrandingEditor.preview.openTicket')}
-                    </button>
-                    <button
-                      type="button"
-                      className={isDarkTheme ? 'rounded-md border border-slate-700 px-3 py-2 text-xs' : 'rounded-md border px-3 py-2 text-xs'}
-                    >
-                      {t('orgBrandingEditor.preview.viewDevices')}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-                {t('orgBrandingEditor.preview.urlLabel')}: <span className="font-medium text-foreground">{previewUrl}</span>
-              </div>
-
-              <div className="rounded-md border bg-muted/30 p-3">
-                <p className="text-xs font-medium">{t('orgBrandingEditor.preview.cssPayload')}</p>
-                <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap chart-legend-xs text-muted-foreground">{customCss || t('orgBrandingEditor.preview.noCustomCss')}</pre>
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </section>
   );
 }

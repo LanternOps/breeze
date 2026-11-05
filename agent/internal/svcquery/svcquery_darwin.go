@@ -8,9 +8,10 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // IsRunning returns true if the named service is loaded and running via launchctl.
@@ -30,7 +31,7 @@ func GetStatus(name string) (ServiceInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	output, err := exec.CommandContext(ctx, "launchctl", "list").Output()
+	output, err := procspawn.CommandContext(ctx, "launchctl", "list").Output()
 	return resolveLaunchdStatus(string(output), err, name, func(p string) (bool, error) {
 		_, statErr := os.Stat(p)
 		if statErr == nil {
@@ -48,7 +49,7 @@ func ListServices() ([]ServiceInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "launchctl", "list")
+	cmd := procspawn.CommandContext(ctx, "launchctl", "list")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("svcquery: launchctl list: %w", err)

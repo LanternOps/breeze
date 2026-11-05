@@ -2,7 +2,8 @@ package bmr
 
 import (
 	"context"
-	"os/exec"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // runCommand executes an external command and returns its combined output.
@@ -16,7 +17,7 @@ import (
 // seam and its test hook must compile everywhere even though every actual
 // production caller is Linux-only.
 var runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	return procspawn.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
 // SetRunCommandForTest swaps runCommand for the duration of a test, in this

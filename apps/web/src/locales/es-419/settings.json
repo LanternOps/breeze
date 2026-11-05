@@ -264,7 +264,17 @@
     }
   },
   "partnerAiBudgets": {
-    "enable": "Habilitar la aplicación del presupuesto AI",
+    "aiAccess": "IA para todas las organizaciones",
+    "aiAccessOptions": {
+      "notSet": "Sin definir, cada organización decide",
+      "on": "Activada para todas las organizaciones",
+      "off": "Desactivada para todas las organizaciones"
+    },
+    "aiAccessHelp": "Este es el interruptor de IA de sus clientes, no un ajuste de presupuesto. Si se define, reemplaza el interruptor de IA propio de cada organización. Los campos de presupuesto de abajo se aplican en ambos casos.",
+    "offWarning": "La IA está desactivada para todas las organizaciones de este partner. El chat, el helper, los complementos de Office, los agentes de IA y el enriquecimiento se rechazan hasta que cambie esto.",
+    "offConfirmTitle": "¿Desactivar la IA para todas las organizaciones?",
+    "offConfirmMessage": "Todas las organizaciones de este partner pierden la IA: el chat, el helper, los complementos de Office, los agentes de IA y el enriquecimiento se rechazan, y las organizaciones no pueden volver a activarla por su cuenta. No cambia nada hasta que guarde.",
+    "offConfirmAction": "Desactivar IA",
     "monthlyBudget": "Presupuesto mensual ($)",
     "dailyBudget": "Presupuesto diario ($)",
     "approvalMode": "Modo de aprobación",
@@ -1734,6 +1744,16 @@
     "baselineSkipped_one": "{{count}} mensaje que ya está en este buzón no se importará. Solo el correo recibido después de conectarlo se convertirá en tickets.",
     "baselineSkipped_other": "{{count}} mensajes que ya están en este buzón no se importarán. Solo el correo recibido después de conectarlo se convertirá en tickets.",
     "retest": "Volver a probar",
+    "gatewayTitle": "Puerta de enlace de correo (opcional)",
+    "gatewayHint": "Si el correo llega a este buzón a través de una puerta de enlace en línea como Avanan, Mimecast, Proofpoint o Barracuda, la comprobación de Microsoft rechaza correo legítimo. Indica el dominio de sellado ARC de la puerta de enlace, el valor d= del encabezado ARC-Seal de un mensaje que haya entregado, y Breeze usará su veredicto. Déjalo vacío si no tienes una puerta de enlace.",
+    "gatewayWarning": "Agrega solo una puerta de enlace por la que deba pasar todo el correo entrante de este inquilino: primero restringe la entrega entrante en Exchange a la puerta de enlace con un conector. De lo contrario, Breeze no puede distinguir el correo entregado por la puerta de enlace del enviado directamente a Exchange.",
+    "gatewayLabel": "Dominios de sellado ARC de confianza",
+    "gatewayPlaceholder": "gateway.ejemplo.com",
+    "gatewaySave": "Guardar lista de puertas de enlace",
+    "gatewaySaved": "Lista de puertas de enlace de correo guardada",
+    "gatewaySaveFailed": "No se pudo guardar la lista de puertas de enlace de correo.",
+    "gatewayInvalid": "\"{{value}}\" no es un nombre de dominio.",
+    "gatewayTooMany": "Ingresa un máximo de {{max}} dominios.",
     "reconnect": "Reconectar",
     "disconnect": "Desconectar",
     "empty": "Aún no hay ningún buzón conectado.",
@@ -1857,16 +1877,21 @@
   },
   "orgBrandingEditor": {
     "title": "Marca",
-    "description": "Personalice la experiencia del portal para {{organization}}.",
+    "description": "Logotipo, colores y CSS personalizado para el portal de clientes y los documentos de {{organization}}.",
     "save": "Guardar marca",
     "saved": "Configuración de marca guardada.",
+    "saveError": "No se pudo guardar la marca.",
     "managedByPartner": "Gestionado por socio",
     "logo": {
       "title": "Logo",
       "previewAlt": "Vista previa del logotipo de la organización",
       "uploadNew": "Suba un nuevo logotipo",
-      "recommendation": "SVG o PNG, recomendado 512x512",
-      "selected": "Seleccionado: {{name}}"
+      "selected": "Seleccionado: {{name}}",
+      "help": "Se muestra en el portal de clientes de esta organización y en sus cotizaciones, facturas e informes. Déjelo vacío para usar el logotipo del socio.",
+      "inheritedSource": "Logotipo del socio",
+      "remove": "Eliminar",
+      "loadError": "No se pudo cargar el logotipo guardado. La carga está deshabilitada hasta que se cargue.",
+      "legacyNotice": "Este logotipo se guardó anteriormente, pero nunca se mostró a los clientes. Guarde para empezar a usarlo o elimínelo."
     },
     "colors": {
       "primary": "color primario",
@@ -1874,42 +1899,16 @@
       "primaryInheritedSource": "Color de marca del socio",
       "primaryHelp": "Color de acento en las cotizaciones, facturas y otros documentos para clientes de esta organización. Déjelo en blanco para usar el color de marca del socio.",
       "primaryInvalid": "Ingrese un color hexadecimal, como #2563eb.",
-      "primaryLoadError": "No se pudo cargar el color primario guardado. La edición está deshabilitada hasta que se cargue."
-    },
-    "theme": {
-      "title": "Tema",
-      "description": "El sistema respeta las preferencias del usuario OS cuando esté disponible.",
-      "options": {
-        "light": "Claro",
-        "dark": "Oscuro",
-        "system": "Sistema"
-      }
-    },
-    "subdomain": {
-      "title": "Subdominio del portal",
-      "previewUrl": "Vista previa disponible URL: {{url}}"
+      "primaryLoadError": "No se pudo cargar el color primario guardado. La edición está deshabilitada hasta que se cargue.",
+      "secondaryInheritedSource": "Color secundario del socio",
+      "secondaryHelp": "Color de los encabezados en los PDF de cotizaciones de esta organización, si es lo bastante oscuro para leerse, y color de acento en sus PDF de informes. Déjelo en blanco para usar el color secundario del socio.",
+      "secondaryLoadError": "No se pudo cargar el color secundario guardado. La edición está deshabilitada hasta que se cargue."
     },
     "customCss": {
       "title": "Personalizado CSS (avanzado)",
       "description": "Utilice estilos personalizados para ajustar el espaciado, la tipografía o el diseño.",
-      "saveError": "No se pudo guardar el CSS personalizado.",
       "loadError": "No se pudo cargar el CSS personalizado guardado actualmente. La edición está deshabilitada hasta que esto se cargue.",
       "saveBlockedByLoadError": "El CSS personalizado no se guardó: no se pudo verificar el valor actual. Vuelva a cargar la página e inténtelo de nuevo."
-    },
-    "preview": {
-      "action": "Vista previa",
-      "title": "Vista previa del portal",
-      "description": "Borrador en vivo basado en aportes actuales de marca",
-      "close": "Cerrar vista previa",
-      "logoAlt": "Vista previa del logotipo",
-      "portalName": "Portal {{organization}}",
-      "welcome": "Bienvenido de nuevo",
-      "body": "Esta vista previa refleja el borrador actual de la marca del portal, incluidos los colores y las opciones de logotipo.",
-      "openTicket": "Abrir ticket de soporte",
-      "viewDevices": "Ver lista de dispositivos",
-      "urlLabel": "Vista previa URL",
-      "cssPayload": "Carga útil CSS personalizada",
-      "noCustomCss": "/* Sin CSS personalizado */"
     }
   },
   "orgDefaultsEditor": {
@@ -6332,7 +6331,7 @@
       "extensionsDescription": "Secciones de extensiones de terceros",
       "portalBranding": "Portal y marca",
       "branding": "Marca",
-      "brandingDescription": "Tema del portal y elementos visuales",
+      "brandingDescription": "Logotipo, colores y CSS personalizado",
       "portal": "Portal del cliente",
       "portalDescription": "Funciones y soporte",
       "securityAccess": "Seguridad y acceso",

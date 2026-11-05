@@ -39,7 +39,7 @@ vi.mock('../../db', () => {
   };
 });
 
-import { combinePortalCustomCss, loadPartnerPortalCustomCss, partnerPortalCustomCss } from './portalCustomCss';
+import { combinePortalCustomCss, loadPartnerPortalDefaults, partnerPortalCustomCss } from './portalCustomCss';
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 
@@ -108,7 +108,7 @@ describe('combinePortalCustomCss', () => {
   });
 });
 
-describe('loadPartnerPortalCustomCss', () => {
+describe('loadPartnerPortalDefaults', () => {
   beforeEach(() => {
     dbState.rows = [];
     dbState.where = undefined;
@@ -119,9 +119,10 @@ describe('loadPartnerPortalCustomCss', () => {
   });
 
   it("reads the org's partner settings in system scope, keyed only by the org id", async () => {
-    dbState.rows = [{ partnerId: 'p-ok', settings: { branding: { customCss: '.p { color: red; }' } } }];
+    const settings = { branding: { customCss: '.p { color: red; }', logoUrl: 'https://x/p.png' } };
+    dbState.rows = [{ partnerId: 'p-ok', settings }];
 
-    await expect(loadPartnerPortalCustomCss(ORG_ID)).resolves.toBe('.p { color: red; }');
+    await expect(loadPartnerPortalDefaults(ORG_ID)).resolves.toEqual({ customCss: '.p { color: red; }', settings, degraded: false });
 
     expect(dbState.outsideContextCalls).toBe(1);
     expect(dbState.systemContextCalls).toBe(1);
@@ -130,17 +131,17 @@ describe('loadPartnerPortalCustomCss', () => {
     expect(query.params).toEqual([ORG_ID]);
   });
 
-  it('returns null when the org has no partner row', async () => {
+  it('returns no defaults when the org has no partner row', async () => {
     dbState.rows = [];
-    await expect(loadPartnerPortalCustomCss(ORG_ID)).resolves.toBeNull();
+    await expect(loadPartnerPortalDefaults(ORG_ID)).resolves.toEqual({ customCss: null, settings: null, degraded: false });
   });
 
-  it('returns null when the stored partner CSS fails the safety rules, warning once per partner', async () => {
+  it('drops stored partner CSS that fails the safety rules, warning once per partner', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       dbState.rows = [{ partnerId: 'p-bad', settings: { branding: { customCss: '@import "x.css";' } } }];
-      await expect(loadPartnerPortalCustomCss(ORG_ID)).resolves.toBeNull();
-      await expect(loadPartnerPortalCustomCss(ORG_ID)).resolves.toBeNull();
+      expect((await loadPartnerPortalDefaults(ORG_ID)).customCss).toBeNull();
+      expect((await loadPartnerPortalDefaults(ORG_ID)).customCss).toBeNull();
 
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn.mock.calls[0]?.[1]).toEqual({ partnerId: 'p-bad' });
@@ -151,10 +152,10 @@ describe('loadPartnerPortalCustomCss', () => {
     }
   });
 
-  it('degrades to null and reports when the lookup fails, so branding still renders', async () => {
+  it('degrades to no defaults and reports when the lookup fails, so branding still renders', async () => {
     dbState.error = new Error('connection reset');
 
-    await expect(loadPartnerPortalCustomCss(ORG_ID)).resolves.toBeNull();
+    await expect(loadPartnerPortalDefaults(ORG_ID)).resolves.toEqual({ customCss: null, settings: null, degraded: true });
 
     expect(captureMock).toHaveBeenCalledWith(dbState.error, undefined, { area: 'portal-branding-partner-css' });
   });

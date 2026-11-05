@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // CollectHardwareProfile captures hardware info via CIM/WMI. It uses PowerShell
@@ -97,7 +99,7 @@ func (c *WindowsCollector) CollectHardwareProfile() (*HardwareProfile, error) {
 	}
 
 	// UEFI detection
-	if out, err := exec.Command("bcdedit").Output(); err == nil {
+	if out, err := procspawn.Command("bcdedit").Output(); err == nil {
 		hw.IsUEFI = strings.Contains(string(out), `\EFI\`)
 	}
 
@@ -132,7 +134,7 @@ func cimCSV(className, filter string, props ...string) ([]byte, error) {
 		script += " -Filter '" + filter + "'"
 	}
 	script += " | Select-Object " + strings.Join(props, ",") + " | ConvertTo-Csv -NoTypeInformation"
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	cmd := procspawn.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
 	out, err := cmd.Output()
 	if err != nil {
 		// Don't let CIM failures vanish silently: an unlogged failure here is
