@@ -320,6 +320,7 @@
     "generateNewToken": "Générer un nouveau jeton",
     "generateNewLink": "Générer un nouveau lien",
     "cliTokenReuse": "Généré précédemment. Valide jusqu’au {{date}}, sauf si toutes ses inscriptions d’appareils ont déjà été utilisées.",
+    "cliTokenReuseVerified": "Généré précédemment. Valide jusqu’au {{date}}.",
     "linkReuse": "Généré précédemment pour {{platform}}. Valide jusqu’au {{date}}.",
     "generateToken": "Générer un jeton",
     "cliTokenNotGenerated": "Aucun jeton pour l’instant. Choisissez le site, le nombre d’appareils et l’expiration, puis générez un jeton. Chaque jeton est une clé d’inscription active.",

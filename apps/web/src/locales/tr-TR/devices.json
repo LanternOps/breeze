@@ -320,6 +320,7 @@
     "generateNewToken": "Yeni belirteç oluştur",
     "generateNewLink": "Yeni bağlantı oluştur",
     "cliTokenReuse": "Daha önce oluşturuldu. Tüm cihaz kayıtları kullanılmadıysa {{date}} tarihine kadar geçerlidir.",
+    "cliTokenReuseVerified": "Daha önce oluşturuldu. {{date}} tarihine kadar geçerlidir.",
     "linkReuse": "{{platform}} için daha önce oluşturuldu. {{date}} tarihine kadar geçerlidir.",
     "generateToken": "Belirteç oluştur",
     "cliTokenNotGenerated": "Henüz belirteç yok. Siteyi, cihaz sayısını ve süreyi seçip bir belirteç oluşturun. Her belirteç etkin bir kayıt anahtarıdır.",

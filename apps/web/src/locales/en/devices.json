@@ -320,6 +320,7 @@
     "generateNewToken": "Generate new token",
     "generateNewLink": "Generate new link",
     "cliTokenReuse": "Generated earlier. Valid until {{date}}, unless its device enrollments have all been used.",
+    "cliTokenReuseVerified": "Generated earlier. Valid until {{date}}.",
     "linkReuse": "Generated earlier for {{platform}}. Valid until {{date}}.",
     "generateToken": "Generate token",
     "cliTokenNotGenerated": "No token yet. Choose the site, number of devices and expiry, then generate a token. Each token is a live enrollment key.",
