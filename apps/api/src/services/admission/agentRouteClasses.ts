@@ -49,8 +49,9 @@ export const AGENT_ROUTE_ADMISSION_CLASSES: Readonly<Record<string, RouteClass>>
   // the agent retries, but a shed call keeps the request approvable meanwhile.
   'POST /:id/elevation-requests/:requestId/withdraw': 'protected',
   // #11065: the post-reboot BitLocker/BIOS check after a vendor update. Once per
-  // run and 4 KiB at most; a non-2xx resend is the only retry the
-  // protection-still-suspended alert gets, so it is not shed.
+  // run and 4 KiB at most, and not periodic: there is no next cycle to resend it
+  // in, so a shed report would leave the protection-still-suspended alert
+  // unresolved (the agent sender, W02, is not built yet).
   'PUT /:id/oem-updates/verification': 'protected',
   'PUT /:id/eventlogs': 'protected',
   'GET /:id/winget-bootstrap/manifest': 'protected',
