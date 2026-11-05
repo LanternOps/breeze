@@ -37,6 +37,7 @@ describe('containmentIssueKey against the shared schema', () => {
     ['a malformed range', 'target', { cidr: 'not-a-range', ...valid }, 'cidrInvalid'],
     ['a wildcard host', 'target', { host: '*.example.com', ...valid }, 'errors.hostInvalid'],
     ['an empty host', 'target', { host: '', ...valid }, 'errors.hostInvalid'],
+    ['a host with an underscore', 'target', { host: 'my_host.example.com', ...valid }, 'errors.hostInvalid'],
     ['an address as a host', 'target', { host: '127.1', ...valid }, 'errors.hostIsAddress'],
     ['localhost', 'target', { host: 'localhost', ...valid }, 'errors.hostLoopback'],
     ['a localhost subdomain', 'target', { host: 'relay.localhost', ...valid }, 'errors.hostLoopback'],

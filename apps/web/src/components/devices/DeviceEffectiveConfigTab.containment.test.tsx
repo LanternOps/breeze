@@ -1,8 +1,13 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
+import deDevices from '@/locales/de-DE/devices.json';
+import dePolicies from '@/locales/de-DE/policies.json';
 import DeviceEffectiveConfigTab from './DeviceEffectiveConfigTab';
 
-const m = vi.hoisted(() => ({ body: {} as unknown }));
+const DE_CARD = deDevices.deviceEffectiveConfigTab.containment;
+const DE_TAB = dePolicies.configurationPolicies.featureTabs.containmentTab;
+
+const m =vi.hoisted(() => ({ body: {} as unknown }));
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(async () => ({ ok: true, status: 200, statusText: 'OK', json: async () => m.body })),
 }));
@@ -45,15 +50,11 @@ describe('DeviceEffectiveConfigTab containment card (#11101)', () => {
 
     const first = within(card).getByTestId('effective-config-containment-row-0');
     expect(first).toHaveTextContent('updates.example.com');
-    expect(first).toHaveTextContent('TCP');
-    expect(first).toHaveTextContent('443, 8443');
-    expect(first).toHaveTextContent('Vendor updates');
+    expect(first).toHaveTextContent('TCP · 443, 8443 · Vendor updates');
 
     const second = within(card).getByTestId('effective-config-containment-row-1');
     expect(second).toHaveTextContent('203.0.113.0/24');
-    expect(second).toHaveTextContent('TCP and UDP');
-    expect(second).toHaveTextContent('53');
-    expect(second).toHaveTextContent('Branch DNS');
+    expect(second).toHaveTextContent('TCP and UDP · 53 · Branch DNS');
     expect(within(card).queryByTestId('effective-config-containment-none')).toBeNull();
   });
 
@@ -102,7 +103,8 @@ describe('DeviceEffectiveConfigTab containment card (#11101)', () => {
       inheritanceChain: [{ ...CHAIN[0], featureTypes: ['warranty'] }],
     };
     render(<DeviceEffectiveConfigTab deviceId="dev-1" />);
-    expect(await screen.findByText('Containment')).toBeInTheDocument();
+    const strip = await screen.findByTestId('effective-config-not-enforced');
+    expect(within(strip).getByText('Containment')).toBeInTheDocument();
     expect(screen.queryByTestId('effective-config-containment-card')).toBeNull();
   });
 
@@ -123,13 +125,19 @@ describe('DeviceEffectiveConfigTab containment card (#11101)', () => {
       const card = await screen.findByTestId('effective-config-containment-card');
       expect(card.textContent).not.toMatch(/containmentTab\.|deviceEffectiveConfigTab\./);
       expect(card.textContent).not.toMatch(/Extra destinations/);
-      expect(within(card).getByTestId('effective-config-containment-row-1').textContent).not.toMatch(/TCP and UDP/);
+      expect(within(card).getByText(DE_TAB.title)).toBeInTheDocument();
+      expect(within(card).getByText(DE_CARD.extraDestinations)).toBeInTheDocument();
+      expect(within(card).getByTestId('effective-config-containment-row-1')).toHaveTextContent(DE_TAB.protoBoth);
       unmount();
 
       respondWith({ version: 1, extraAllow: [] });
+      const none = render(<DeviceEffectiveConfigTab deviceId="dev-1" />);
+      expect(await screen.findByTestId('effective-config-containment-none')).toHaveTextContent(DE_TAB.empty);
+      none.unmount();
+
+      respondWith(null);
       render(<DeviceEffectiveConfigTab deviceId="dev-1" />);
-      const none = await screen.findByTestId('effective-config-containment-none');
-      expect(none.textContent).not.toMatch(/No extra destinations/);
+      expect(await screen.findByTestId('effective-config-containment-invalid')).toHaveTextContent(DE_CARD.invalid);
     } finally {
       await i18n.changeLanguage('en');
     }

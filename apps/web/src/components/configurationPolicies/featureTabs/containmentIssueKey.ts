@@ -2,10 +2,10 @@ import type { z } from 'zod';
 
 export type ContainmentField = 'target' | 'proto' | 'ports' | 'label';
 
-// The shared schema's refinements all raise code `custom` with no params, so the message is the only
-// thing that tells them apart. The strings stay English there for its other consumers (the API routes
-// and the isolation wire contracts); containmentIssueKey.test.ts runs the real schema, so rewording one
-// fails that test.
+// The shared schema's refinements raise code `custom` with no params (the host regex raises
+// `invalid_format`), so the message is the only thing that tells them apart. The strings stay English
+// there for its other consumers (the API routes and the isolation wire contracts);
+// containmentIssueKey.test.ts runs the real schema, so rewording one fails that test.
 const REFINEMENT_KEYS = new Map<string, string>([
   ['host must be a DNS name', 'errors.hostInvalid'],
   ['an IP address is a cidr entry, not a host', 'errors.hostIsAddress'],

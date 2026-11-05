@@ -47,7 +47,7 @@ export default function EffectiveContainmentSummary({ inlineSettings }: { inline
               {"host" in entry ? entry.host : entry.cidr}
             </span>
             <span className="block break-words">
-              {t(/* i18n-dynamic */ PROTO_KEYS[entry.proto])} ·{entry.ports.join(", ")} · {entry.label}
+              {t(/* i18n-dynamic */ PROTO_KEYS[entry.proto])}{" · "}{entry.ports.join(", ")}{" · "}{entry.label}
             </span>
           </li>
         ))}

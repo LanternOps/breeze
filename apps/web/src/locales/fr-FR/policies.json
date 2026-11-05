@@ -1202,7 +1202,7 @@
         "limitReached": "Une politique peut contenir au plus {{max}} destinations supplémentaires.",
         "parentInvalid": "La politique parente contient des destinations qui ne sont plus valides. Corrigez-les dans la politique parente avant de la remplacer.",
         "errors": {
-          "hostInvalid": "Saisissez un nom d’hôte, par exemple updates.example.com. Les caractères génériques ne sont pas autorisés.",
+          "hostInvalid": "Saisissez un nom d’hôte comme updates.example.com, composé uniquement de lettres, de chiffres, de traits d’union et de points. Les caractères génériques ne sont pas autorisés.",
           "hostIsAddress": "Il s’agit d’une adresse IP. Utilisez plutôt le type Plage IP (CIDR).",
           "hostLoopback": "Les noms d’hôte de bouclage, comme localhost, ne sont pas autorisés.",
           "cidrBlanket": "Une plage /0 autoriserait toutes les adresses : elle n’est donc pas permise.",

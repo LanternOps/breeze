@@ -1202,7 +1202,7 @@
         "limitReached": "Bir ilke en fazla {{max}} ek hedef içerebilir.",
         "parentInvalid": "Üst ilke artık geçerli olmayan hedefler içeriyor. Geçersiz kılmadan önce bunları üst ilkede düzeltin.",
         "errors": {
-          "hostInvalid": "updates.example.com gibi bir ana bilgisayar adı girin. Joker karakterlere izin verilmez.",
+          "hostInvalid": "updates.example.com gibi, yalnızca harf, rakam, tire ve nokta içeren bir ana bilgisayar adı girin. Joker karakterlere izin verilmez.",
           "hostIsAddress": "Bu bir IP adresidir. Bunun için IP aralığı (CIDR) türünü kullanın.",
           "hostLoopback": "localhost gibi geri döngü ana bilgisayar adlarına izin verilmez.",
           "cidrBlanket": "/0 aralığı tüm adreslere izin verir, bu nedenle kullanılamaz.",

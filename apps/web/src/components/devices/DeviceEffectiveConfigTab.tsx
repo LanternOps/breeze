@@ -529,7 +529,7 @@ export default function DeviceEffectiveConfigTab({
       {/* Not-enforced baseline features — collapsed into one compact strip so the
           page highlights what's actually applied instead of a wall of grey cards. */}
       {baselineTypes.length > 0 && (
-        <div className="rounded-lg border bg-card p-5 shadow-xs">
+        <div data-testid="effective-config-not-enforced" className="rounded-lg border bg-card p-5 shadow-xs">
           <div className="flex items-center gap-2">
             <h4 className="text-sm font-semibold text-muted-foreground">
               {t("deviceEffectiveConfigTab.notEnforced")}

@@ -1202,7 +1202,7 @@
         "limitReached": "Una política puede tener como máximo {{max}} destinos adicionales.",
         "parentInvalid": "La política principal tiene destinos que ya no son válidos. Corrígelos en la política principal antes de anularla.",
         "errors": {
-          "hostInvalid": "Ingresa un nombre de host, por ejemplo updates.example.com. No se permiten comodines.",
+          "hostInvalid": "Ingresa un nombre de host como updates.example.com, usando solo letras, dígitos, guiones y puntos. No se permiten comodines.",
           "hostIsAddress": "Esta es una dirección IP. Usa el tipo Rango de IP (CIDR) para ella.",
           "hostLoopback": "No se permiten nombres de host de loopback, como localhost.",
           "cidrBlanket": "Un rango /0 permitiría todas las direcciones, por lo que no está permitido.",
