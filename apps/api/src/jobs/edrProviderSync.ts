@@ -468,7 +468,17 @@ async function fetchInstallerOutcomes(
     try {
       const result = await adapter.fetchInstallerMaterial!(ctx, { vendorTenantId: t.vendorTenantId, apiHost: t.apiHost });
       return { ...ids, ...result };
-    } catch {
+    } catch (error) {
+      // The code or class only: vendor and adapter messages can quote the link.
+      if (error instanceof EdrProviderRequestError) {
+        console.warn(`[EdrProviderSync] installer fetch for tenant ${t.id} failed (${error.code})`);
+      } else {
+        const kind = error instanceof Error ? error.name : typeof error;
+        console.warn(`[EdrProviderSync] installer fetch for tenant ${t.id} threw (${kind})`);
+        captureException(new Error(`EDR installer fetch threw ${kind}`), undefined, {
+          service: 'edrProviderSync', operation: 'fetchInstallerMaterial', tenantId: t.id,
+        });
+      }
       return { ...ids, ok: false as const, code: 'vendor_error' as const };
     }
   });

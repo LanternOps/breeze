@@ -5,6 +5,7 @@ import { edrTenants } from '../../db/schema';
 import { decryptEdrSecret, encryptEdrSecret } from './credentials';
 import type { EdrInstallerProviderKey } from './providerKeys';
 import type { EdrInstallerFetchErrorCode } from './types';
+import { captureException } from '../sentry';
 
 /**
  * The ONLY module that names `edr_tenants.installer_secret_encrypted`
@@ -72,7 +73,6 @@ export function installerStateSelect() {
 export function installerSealedSelect() {
   return {
     sealedMaterial: edrTenants.installerSecretEncrypted,
-    installerExpiresAt: edrTenants.installerExpiresAt,
   };
 }
 
@@ -113,14 +113,21 @@ export type InstallerOutcome = { tenantId: string } & (
 type DbExecutor = Pick<typeof db, 'update'>;
 
 /**
- * The vendor answered, and the answer means the stored link can no longer be
- * trusted: the package is gone, there are now several to choose from, or the
- * link it offers is one Breeze refuses. Dispatching the old link would ignore
- * that, and with no expiry nothing else would ever retire it.
+ * What each fetch error does to the stored link. A Record, so a new code cannot
+ * be added without deciding. `retire`: the vendor answered and the answer means
+ * the stored link can no longer be trusted (the package is gone, there are now
+ * several, the key lost the Packages API, or the link offered is one Breeze
+ * refuses); dispatching the old link would ignore that, and with no expiry
+ * nothing else would retire it. `keep`: no answer, so a link that still works stays.
  */
-const VERDICTS_THAT_RETIRE_MATERIAL: ReadonlySet<EdrInstallerFetchErrorCode> = new Set<EdrInstallerFetchErrorCode>([
-  'no_package', 'multiple_packages', 'url_rejected', 'malformed_response',
-]);
+const ON_FETCH_ERROR: Readonly<Record<EdrInstallerFetchErrorCode, 'retire' | 'keep'>> = {
+  no_package: 'retire',
+  multiple_packages: 'retire',
+  url_rejected: 'retire',
+  malformed_response: 'retire',
+  packages_api_disabled: 'retire',
+  vendor_error: 'keep',
+};
 
 const CLEARED_MATERIAL = {
   installerSecretEncrypted: null,
@@ -142,7 +149,10 @@ export async function persistInstallerOutcomes(
 ): Promise<void> {
   for (const outcome of outcomes) {
     let values: Partial<typeof edrTenants.$inferInsert>;
-    if (outcome.ok) {
+    if (outcome.ok && outcome.data === undefined) {
+      // An adapter bug, not a link: sealing it would leave a tenant that looks ready and never opens.
+      values = { ...CLEARED_MATERIAL, installerFetchError: 'malformed_response' };
+    } else if (outcome.ok) {
       try {
         values = {
           installerSecretEncrypted: sealInstallerMaterial(outcome.tenantId, {
@@ -156,12 +166,15 @@ export async function persistInstallerOutcomes(
           installerExpiresAt: outcome.expiresAt,
           installerFetchError: null,
         };
-      } catch {
-        console.error(`[edr:installer] could not seal installer material for tenant ${outcome.tenantId}`);
+      } catch (error) {
+        // The class only: the message of a crypto failure could quote the plaintext.
+        const kind = error instanceof Error ? error.name : typeof error;
+        console.error(`[edr:installer] could not seal installer material for tenant ${outcome.tenantId} (${kind})`);
+        captureException(new Error(`EDR installer material could not be sealed (${kind})`));
         values = { installerFetchError: 'vendor_error' };
       }
     } else {
-      values = VERDICTS_THAT_RETIRE_MATERIAL.has(outcome.code)
+      values = ON_FETCH_ERROR[outcome.code] === 'retire'
         ? { ...CLEARED_MATERIAL, installerFetchError: outcome.code }
         : { installerFetchError: outcome.code };
     }

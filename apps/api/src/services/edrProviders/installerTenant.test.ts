@@ -35,6 +35,8 @@ const row = (over: Record<string, unknown> = {}) => ({
   connectionActive: true,
   connectionStatus: 'connected',
   sealedMaterial: 'sealed',
+  installerHasMaterial: true,
+  installerFetchedAt: new Date(NOW.getTime() - 60 * 60_000),
   installerExpiresAt: null,
   ...over,
 });
@@ -87,6 +89,21 @@ describe('selectInstallerTenant', () => {
     await expect(select()).resolves.toEqual({ kind: 'material_expired' });
   });
 
+  it('material whose refresh has failed for over a week: material_expired, never dispatched forever', async () => {
+    state.rows = [row({ installerFetchedAt: new Date(NOW.getTime() - 8 * 24 * 60 * 60_000) })];
+    await expect(select()).resolves.toEqual({ kind: 'material_expired' });
+  });
+
+  it('material with no fetch time: material_expired (fail closed)', async () => {
+    state.rows = [row({ installerFetchedAt: null })];
+    await expect(select()).resolves.toEqual({ kind: 'material_expired' });
+  });
+
+  it('material six days old: ok', async () => {
+    state.rows = [row({ installerFetchedAt: new Date(NOW.getTime() - 6 * 24 * 60 * 60_000) })];
+    await expect(select()).resolves.toMatchObject({ kind: 'ok' });
+  });
+
   it('material expiring later: ok', async () => {
     const expiresAt = new Date(NOW.getTime() + 2 * 60 * 60_000);
     state.rows = [row({ installerExpiresAt: expiresAt })];
@@ -117,6 +134,19 @@ describe('loadInstallerTenantSelections', () => {
     expect(selections.get(other)).toEqual({ kind: 'ambiguous', count: 2 });
     expect(selections.get(unmapped)).toEqual({ kind: 'not_mapped' });
     expect(selections.size).toBe(3);
+  });
+
+  it('never hands the sealed material to its callers (readiness)', async () => {
+    state.rows = [row()];
+    const selections = await loadInstallerTenantSelections('bitdefender', [ORG], NOW);
+    expect(selections.get(ORG)).toEqual({ kind: 'ok', tenantId: 'tenant-1', connectionId: 'conn-1', expiresAt: null });
+    expect(JSON.stringify([...selections.values()])).not.toContain('sealed');
+  });
+
+  it('reports material_missing from the boolean alone', async () => {
+    state.rows = [row({ installerHasMaterial: false, sealedMaterial: undefined })];
+    const selections = await loadInstallerTenantSelections('bitdefender', [ORG], NOW);
+    expect(selections.get(ORG)).toEqual({ kind: 'material_missing' });
   });
 
   it('no orgs: no query', async () => {

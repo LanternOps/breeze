@@ -130,6 +130,11 @@ describe('resolveEdrInstaller, framework providers', () => {
     await expect(resolve()).resolves.toEqual({ error: UNREADABLE });
   });
 
+  it('a file name whose extension does not match the file type is refused (the agent would reject it)', async () => {
+    m.build.mockReturnValue({ ...SPEC, fileName: 'setupdownloader_synthetic.msi' });
+    await expect(resolve()).resolves.toEqual({ error: UNREADABLE });
+  });
+
   it('a platform the adapter cannot install is refused', async () => {
     m.build.mockReturnValue({ error: 'platform_unsupported' });
     await expect(resolve()).resolves.toEqual({ error: `${L} installer is not available for this platform` });

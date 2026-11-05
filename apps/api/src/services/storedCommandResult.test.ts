@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { buildStoredCommandResult } from './storedCommandResult';
 
@@ -54,3 +56,13 @@ describe('buildStoredCommandResult installer secrecy (#8170)', () => {
     expect(buildStoredCommandResult('software_install', result, leak)).toMatchObject({ stdout: leak, error: leak });
   });
 });
+
+describe('both result-ingest routes hand the command payload to buildStoredCommandResult (#8170)', () => {
+  it.each(['../routes/agentWs.ts', '../routes/agents/commands.ts'])('%s', (file) => {
+    const source = readFileSync(join(__dirname, file), 'utf8');
+    const calls = source.match(/buildStoredCommandResult\([^)]*\)/g) ?? [];
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) expect(call).toMatch(/,\s*command\.payload\s*\)$/);
+  });
+});
+

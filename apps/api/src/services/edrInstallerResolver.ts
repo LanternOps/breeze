@@ -93,10 +93,15 @@ export async function resolveEdrInstaller(params: {
  * install-remediation worker's transaction (#1105). Refusals are operator copy
  * and never quote the link.
  */
+/** A framework install always overrides all three: absent would fall back to the version row's values. */
+type FrameworkResolvedInstaller = ResolvedInstaller & Required<Pick<ResolvedInstaller, 'fileName' | 'fileType' | 'checksum'>> & {
+  downloadUrl: string;
+};
+
 async function resolveFrameworkInstaller(
   provider: EdrInstallerProviderKey,
   orgId: string,
-): Promise<ResolvedInstaller | EdrResolveError> {
+): Promise<FrameworkResolvedInstaller | EdrResolveError> {
   const label = EDR_PROVIDER_LABELS[provider];
   const pkg = getBuiltinPackage(provider);
   if (!pkg.released) return { error: `${label} installs are not available yet` };
@@ -121,20 +126,28 @@ async function resolveFrameworkInstaller(
     }
   }
 
-  const unreadable = { error: `${label} installer link could not be read — reconnect the integration` };
+  const unreadableMessage = `${label} installer link could not be read — reconnect the integration`;
+  // Ids and a reason code only: never the material.
+  const unreadable = (reason: string): EdrResolveError => {
+    console.warn(`[edr:installer] refused stored ${provider} material for tenant ${selection.tenantId} (${reason})`);
+    return { error: unreadableMessage };
+  };
   const envelope = openInstallerMaterial(selection.tenantId, selection.sealedMaterial);
-  if (!envelope || envelope.provider !== provider) return unreadable;
+  if (!envelope) return unreadable('unopenable');
+  if (envelope.provider !== provider) return unreadable('provider_mismatch');
 
   const adapter = getEdrProvider(provider);
   const spec = adapter.buildInstaller?.(envelope.data, pkg.installerPlatform);
-  if (!spec) return unreadable;
+  if (!spec) return unreadable('no_builder');
   if ('error' in spec) {
     return spec.error === 'platform_unsupported'
       ? { error: `${label} installer is not available for this platform` }
-      : unreadable;
+      : unreadable(spec.error);
   }
+  // The agent refuses a file whose extension is not `.<fileType>`; refuse here, before a download.
+  if (!spec.fileName.toLowerCase().endsWith(`.${spec.fileType}`)) return unreadable('extension_mismatch');
   // Again at dispatch: the allowlist can narrow after the material was stored.
-  if (!validateVendorUrl(spec.downloadUrl, adapter.installerHostAllowlist ?? []).ok) return unreadable;
+  if (!validateVendorUrl(spec.downloadUrl, adapter.installerHostAllowlist ?? []).ok) return unreadable('url_rejected');
 
   return {
     downloadUrl: spec.downloadUrl,

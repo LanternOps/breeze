@@ -124,7 +124,8 @@ vi.mock('../services/edrProviders/scheduler', () => ({
 vi.mock('../services/edrProviders/hints', () => ({
   readEdrHints: async () => ({ members: [], hints: [], markerAt: null }), ackEdrHints: async () => ({ stillPending: false }),
 }));
-vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
+const sentry = vi.hoisted(() => ({ captureException: vi.fn() }));
+vi.mock('../services/sentry', () => sentry);
 vi.mock('../services/redis', () => ({ getBullMQConnection: () => ({}), getRedis: () => null }));
 vi.mock('../services/bullmqQueue', () => ({ createInstrumentedQueue: () => ({ getRepeatableJobs: async () => [], add: vi.fn() }) }));
 vi.mock('../services/bullmqUtils', () => ({ enqueueOrReplaceStale: async () => ({ id: 'job-1' }) }));
@@ -243,6 +244,23 @@ describe('installer material refresh in the inventory run', () => {
     expect(connectionWrite()).toMatchObject({ lastInventorySyncStatus: 'success', status: 'connected' });
   });
 
+  it('an unexpected (non-vendor) throw is reported without its message; a vendor error is not reported', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    s.fetchInstallerMaterial.mockRejectedValueOnce(new TypeError('secret-bearing text https://download.example.test/x'));
+    await syncEdrInventory(CONNECTION);
+    expect(sentry.captureException).toHaveBeenCalledTimes(1);
+    const reported = sentry.captureException.mock.calls[0]![0] as Error;
+    expect(reported.message).toContain('TypeError');
+    expect(JSON.stringify([reported.message, warn.mock.calls])).not.toContain('download.example.test');
+
+    sentry.captureException.mockClear();
+    s.fetchInstallerMaterial.mockRejectedValueOnce(new FakeEdrError('x', { code: 'rate_limited', reauth: false, scope: 'connection' }));
+    await syncEdrInventory(CONNECTION);
+    expect(sentry.captureException).not.toHaveBeenCalled();
+    expect(warn.mock.calls.flat().join(' ')).toContain('rate_limited');
+    warn.mockRestore();
+  });
+
   it('a failure to provision the package does not stop the run', async () => {
     s.ensureBuiltinPackage.mockRejectedValue(new Error('catalog down'));
     await expect(syncEdrInventory(CONNECTION)).resolves.toBeUndefined();
@@ -258,8 +276,24 @@ describe('installer material refresh in the inventory run', () => {
     expect(outcomes().map((o) => o.tenantId)).toEqual(['t-mapped2']);
   });
 
-  it('the credential fence drops every outcome', async () => {
-    s.fenceRow = { ...s.connection, credentialsEncrypted: 'rotated' };
+  it.each([
+    ['unmapped since Phase 1', { ...MAPPED, orgId: null }],
+    ['gone since Phase 1', null],
+  ])('a tenant %s loses its outcome: its material was cleared on purpose', async (_label, phase3) => {
+    s.tenants = [MAPPED, MAPPED2];
+    s.phase3Tenants = phase3 ? [phase3, MAPPED2] : [MAPPED2];
+    s.listTenants.mockResolvedValue([vt('v-mapped'), vt('v-mapped2')]);
+    await syncEdrInventory(CONNECTION);
+    expect(outcomes().map((o) => o.tenantId)).toEqual(['t-mapped2']);
+  });
+
+  it.each([
+    ['credentials', { credentialsEncrypted: 'rotated' }],
+    ['Access URL', { baseUrl: 'https://other.example.test/api' }],
+    ['region', { region: 'eu' }],
+    ['vendor root', { vendorRootId: 'other-root' }],
+  ])('the connection fence (%s changed) drops every outcome', async (_label, change) => {
+    s.fenceRow = { ...s.connection, ...change };
     await syncEdrInventory(CONNECTION);
     expect(s.fetchInstallerMaterial).toHaveBeenCalled();
     expect(s.persistInstallerOutcomes).not.toHaveBeenCalled();
@@ -267,6 +301,17 @@ describe('installer material refresh in the inventory run', () => {
 
   it('detection runs never fetch installer material', async () => {
     await syncEdrDetections(CONNECTION);
+    expect(s.fetchInstallerMaterial).not.toHaveBeenCalled();
+    expect(s.ensureBuiltinPackage).not.toHaveBeenCalled();
+  });
+});
+
+describe('with the shipped package definition', () => {
+  it('the real released:false gate makes zero installer calls and provisions nothing', async () => {
+    const actual = await vi.importActual<typeof import('../services/builtinDeploymentPackages')>('../services/builtinDeploymentPackages');
+    s.released = actual.getBuiltinPackage('bitdefender').released;
+    expect(s.released).toBe(false);
+    await syncEdrInventory(CONNECTION);
     expect(s.fetchInstallerMaterial).not.toHaveBeenCalled();
     expect(s.ensureBuiltinPackage).not.toHaveBeenCalled();
   });

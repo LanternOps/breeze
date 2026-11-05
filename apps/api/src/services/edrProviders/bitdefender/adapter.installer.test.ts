@@ -76,8 +76,18 @@ describe('fetchInstallerMaterial', () => {
     await expect(fetchMaterial({ body: fx('installation-links-malformed.json') })).resolves.toEqual({ ok: false, code: 'malformed_response' });
   });
 
+  it.each([[[null]], [['a string']], [[42]]])('an entry that is not an object (%j): malformed_response, not a thrown TypeError', async (result) => {
+    await expect(fetchMaterial(rpc(result))).resolves.toEqual({ ok: false, code: 'malformed_response' });
+  });
+
   it('a result that is not a list: malformed_response', async () => {
     await expect(fetchMaterial(rpc({ items: [] }))).resolves.toEqual({ ok: false, code: 'malformed_response' });
+  });
+
+  it('a link with no company id: malformed_response, since nothing proves which company it enrols into', async () => {
+    await expect(fetchMaterial(rpc([{ packageName: 'Synthetic', installLinkWindows: WINDOWS_URL }]))).resolves.toEqual({
+      ok: false, code: 'malformed_response',
+    });
   });
 
   it('a link another company owns: malformed_response, so it can never install into the wrong company', async () => {

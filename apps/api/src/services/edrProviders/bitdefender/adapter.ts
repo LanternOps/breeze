@@ -330,11 +330,11 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
     if (links.length === 0) return { ok: false, code: 'no_package' };
     // Decision 6: which package to install is the MSP's call, made in the console. Never guess.
     if (links.length > 1) return { ok: false, code: 'multiple_packages' };
-    const link = links[0]!;
-    // Installing another company's link would enrol the device under the wrong customer.
-    if (link.companyId !== undefined && link.companyId !== tenant.vendorTenantId) {
-      return { ok: false, code: 'malformed_response' };
-    }
+    const link = links[0];
+    if (!link || typeof link !== 'object' || Array.isArray(link)) return { ok: false, code: 'malformed_response' };
+    // Installing another company's link would enrol the device under the wrong customer, so the
+    // entry must name this company. [U] the lab (W06.3) confirms the vendor always returns it.
+    if (link.companyId !== tenant.vendorTenantId) return { ok: false, code: 'malformed_response' };
     if (typeof link.installLinkWindows !== 'string' || !link.installLinkWindows) {
       return { ok: false, code: 'malformed_response' };
     }

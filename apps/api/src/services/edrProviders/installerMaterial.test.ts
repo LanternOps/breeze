@@ -141,7 +141,7 @@ describe('persistInstallerOutcomes', () => {
     });
   });
 
-  it.each(['vendor_error', 'packages_api_disabled'] as const)(
+  it.each(['vendor_error'] as const)(
     'no answer from the vendor (%s) records the code and keeps a link that may still work',
     async (code) => {
       const { tx, sets } = fakeTx();
@@ -150,7 +150,7 @@ describe('persistInstallerOutcomes', () => {
     },
   );
 
-  it.each(['no_package', 'multiple_packages', 'url_rejected', 'malformed_response'] as const)(
+  it.each(['no_package', 'multiple_packages', 'url_rejected', 'malformed_response', 'packages_api_disabled'] as const)(
     'a vendor verdict (%s) clears the stored link, so an old package is never dispatched',
     async (code) => {
       const { tx, sets } = fakeTx();
@@ -166,6 +166,14 @@ describe('persistInstallerOutcomes', () => {
     // An empty row id is refused by the row-bound AAD.
     await persistInstallerOutcomes(tx, 'bitdefender', [{ tenantId: '', ok: true, data: envelope.data, expiresAt: null }], NOW);
     expect(sets).toEqual([{ installerFetchError: 'vendor_error', updatedAt: NOW }]);
+  });
+
+  it('an ok outcome with no data is a malformed response, never a sealed empty envelope', async () => {
+    const { tx, sets } = fakeTx();
+    await persistInstallerOutcomes(tx, 'bitdefender', [{ tenantId: TENANT_A, ok: true, data: undefined, expiresAt: null }], NOW);
+    expect(sets).toEqual([{
+      installerSecretEncrypted: null, installerFetchedAt: null, installerExpiresAt: null, installerFetchError: 'malformed_response', updatedAt: NOW,
+    }]);
   });
 
   it('writes nothing for no outcomes', async () => {

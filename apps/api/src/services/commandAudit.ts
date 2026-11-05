@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { CommandPayload, CommandResult } from './commandQueue';
 import { sanitizeAuditPayload } from './auditPayloadSanitizer';
+import { installerSecretsFromPayload } from './installerSecretScrub';
 
 const REDACTED = '[REDACTED]';
 const FILE_WRITE = 'file_write';
@@ -48,7 +49,11 @@ export function sanitizeCommandPayloadForAudit(type: string, rawPayload: Command
   if (!isRecord(rawPayload)) {
     return rawPayload ?? null;
   }
-  const payload = redactStorageDestination(rawPayload);
+  const redacted = redactStorageDestination(rawPayload);
+  // #8170: a framework EDR provider's installer link and file name are per-company secrets.
+  const payload = type === SOFTWARE_INSTALL && installerSecretsFromPayload(redacted)
+    ? { ...redacted, downloadUrl: '[installer]', fileName: '[installer]' }
+    : redacted;
 
   if (type === FILE_WRITE) {
     return {
