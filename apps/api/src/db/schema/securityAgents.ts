@@ -10,13 +10,19 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
+import type { SecurityAgentVendorKey } from '@breeze/shared/validators';
 import { devices } from './devices';
 import { organizations } from './orgs';
 import { softwarePolicies } from './softwarePolicies';
 
-/** Vendors a status row may name. Mirrors the registry (`services/securityAgents/securityAgentVendors.ts`). */
+/**
+ * The vendors `security_agent_device_status_vendor_chk` admits (keep the two
+ * equal). Narrower than the registry while a vendor is dormant: a dormant vendor
+ * gets no rule, so no row names it. `securityAgentVendors.test.ts` fails if an
+ * enableable vendor falls outside this list.
+ */
 export const SECURITY_AGENT_STATUS_VENDORS = ['huntress', 'sentinelone', 'controld', 'nextdns'] as const;
-export type SecurityAgentStatusVendor = (typeof SECURITY_AGENT_STATUS_VENDORS)[number];
+export type SecurityAgentStatusVendor = SecurityAgentVendorKey;
 
 export const SECURITY_AGENT_COVERAGE_STATES = [
   'covered',
