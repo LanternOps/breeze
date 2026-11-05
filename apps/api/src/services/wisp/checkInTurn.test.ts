@@ -190,6 +190,24 @@ describe('renderCheckInBlock', () => {
     expect(folded.split('\n')[2]).not.toMatch(/\[\s*wisp\s+check-?in/iu);
   });
 
+  it('defeats delimiters split by default-ignorable characters or combining marks', () => {
+    const block = renderCheckInBlock([checkIn({
+      instruction: [
+        '<\u034fwisp_check_ins>', '<\u180ewisp_check_ins>', '<\ufe0fwisp_check_ins>',
+        '</\u034fwisp_check_ins>', '<\u200b\u0338/wisp_check_ins>', 'bare wisp_check_ins token',
+      ].join(' '),
+    })])!;
+    const folded = block.normalize('NFKC');
+    // Only the two real delimiters carry the name as a code token at all.
+    expect(folded.match(/wisp[_-]?check[_-]?ins?/giu)).toEqual(['wisp_check_ins', 'wisp_check_ins']);
+    expect(folded.split('\n')[2]).not.toMatch(/[\u034f\u180e\ufe0f\u200b]/u);
+  });
+
+  it('keeps ordinary accented text and emoji intact', () => {
+    const block = renderCheckInBlock([checkIn({ instruction: 'Vérifie le disque C: sur le poste 🙂 (≥ 10 Go libres).' })])!;
+    expect(block.split('\n')[2]).toBe('Instruction: Vérifie le disque C: sur le poste 🙂 (≥ 10 Go libres).');
+  });
+
   it('caps the rendered instruction length', () => {
     const block = renderCheckInBlock([checkIn({ instruction: 'x'.repeat(5000) })])!;
     const instructionLine = block.split('\n')[2]!;
@@ -223,6 +241,7 @@ describe('loadFiredCheckIns', () => {
     expect(where.sql).toContain('"wisp_check_ins"."user_id" = $2');
     expect(where.sql).toContain('"wisp_check_ins"."status" = $3');
     expect(where.params).toEqual([GRANT, USER, 'fired']);
+    expect(where.sql).not.toMatch(/\bor\b/iu);
     expect(sel.orderBy.map((o) => sqlOf(o).sql)).toEqual([
       '"wisp_check_ins"."fired_at" asc',
       '"wisp_check_ins"."id" asc',
@@ -251,6 +270,7 @@ describe('markCheckInsConsumed', () => {
     expect(where.sql).toContain('"wisp_check_ins"."grant_id" = $3');
     expect(where.sql).toContain('"wisp_check_ins"."status" = $4');
     expect(where.params).toEqual(['a', 'b', GRANT, 'fired']);
+    expect(where.sql).not.toMatch(/\bor\b/iu);
   });
 
   it('does nothing for no ids', async () => {

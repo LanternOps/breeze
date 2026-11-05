@@ -197,6 +197,12 @@ const ci = vi.hoisted(() => ({
   load: vi.fn(),
   consume: vi.fn(),
 }));
+// W05 continuation summary: only the DB read is mocked; the wrapper is real.
+const cont = vi.hoisted(() => ({ load: vi.fn(async () => null as string | null) }));
+vi.mock('../services/aiModels/continuation', async (orig) => ({
+  ...(await orig<typeof import('../services/aiModels/continuation')>()),
+  loadContinuationSummary: cont.load,
+}));
 vi.mock('../services/wisp/checkInTurn', async (orig) => ({
   ...(await orig<typeof import('../services/wisp/checkInTurn')>()),
   loadFiredCheckIns: ci.load,
@@ -223,7 +229,7 @@ import { aiRoutes } from './ai';
 import { db } from '../db';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { runPreFlightChecks } from '../services/aiAgentSdk';
-import { reserveAiBudget } from '../services/aiBudgetReservations';
+import { AiBudgetSessionBusyError, reserveAiBudget } from '../services/aiBudgetReservations';
 import { captureException } from '../services/sentry';
 import { makeResolvedModel } from '../services/aiModels/__fixtures__/resolvedModel';
 import { SessionEventBus } from '../services/sessionEventBus';
@@ -406,8 +412,10 @@ describe('POST /ai/sessions/:id/messages — fired Wisp check-ins (#10995)', () 
     expect(res.status).toBe(200);
     await res.text();
     expect(pushed()).toBe('hi there');
-    expect(captureException).toHaveBeenCalledWith(boom, expect.anything());
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('check-ins'), expect.anything());
+    expect(captureException).toHaveBeenCalledWith(
+      boom, expect.anything(), { wisp_check_in_phase: 'read' }, { fingerprint: ['wisp-check-in-turn', 'read'] },
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('check-ins'), expect.objectContaining({ grantId: GRANT_ID }));
     expect(ci.consume).not.toHaveBeenCalled();
     warn.mockRestore();
   });
@@ -419,7 +427,67 @@ describe('POST /ai/sessions/:id/messages — fired Wisp check-ins (#10995)', () 
     const res = await post(app);
     expect(res.status).toBe(200);
     expect(await res.text()).toContain('event: done');
-    expect(captureException).toHaveBeenCalledWith(boom, expect.anything());
+    expect(captureException).toHaveBeenCalledWith(
+      boom, expect.anything(), { wisp_check_in_phase: 'consume' }, { fingerprint: ['wisp-check-in-turn', 'consume'] },
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('consumed'), expect.objectContaining({ grantId: GRANT_ID, ids: ['ci-1', 'ci-2'] }));
     warn.mockRestore();
+  });
+
+  it('a consume that matches no row says so', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    ci.consume.mockResolvedValue(0);
+    await (await post(app)).text();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no Wisp check-in was marked consumed'), expect.objectContaining({ ids: ['ci-1', 'ci-2'] }));
+    warn.mockRestore();
+  });
+
+  it('check-ins come before a continuation summary, and the user text stays last', async () => {
+    preflight({ ...DB_SESSION, continuedFromSessionId: '33333333-3333-4333-8333-333333333333' });
+    cont.load.mockResolvedValueOnce('Earlier: the disk was full.');
+    await (await post(app)).text();
+    const turn = pushed();
+    const checkInEnd = turn.indexOf('</wisp_check_ins>');
+    const summaryAt = turn.indexOf('<prior_conversation_summary>');
+    expect(turn.startsWith('<wisp_check_ins>')).toBe(true);
+    expect(summaryAt).toBeGreaterThan(checkInEnd);
+    expect(turn.endsWith('\n\nhi there')).toBe(true);
+    // Neither block appears anywhere else the model reads from.
+    for (const arg of vi.mocked(streamingSessionManager.getOrCreate).mock.calls[0]!) {
+      expect(JSON.stringify(arg ?? null)).not.toContain('wisp_check_ins');
+    }
+  });
+
+  it('a topology turn never reads or prepends check-ins', async () => {
+    preflight({ ...DB_SESSION, type: 'topology' });
+    topo.prepare.mockResolvedValueOnce({
+      ok: true,
+      prepared: { kind: 'live', runtime: { abort: topo.abort }, prompt: 'TOPOLOGY PROMPT', systemPrompt: 'TOPOLOGY SYSTEM', allowedMcpTools: [] },
+    });
+    await (await post(app)).text();
+    expect(ci.load).not.toHaveBeenCalled();
+    expect(ci.consume).not.toHaveBeenCalled();
+    expect(pushed()).toBe('TOPOLOGY PROMPT');
+  });
+
+  it('consumes nothing when the budget lock reports the session busy (409)', async () => {
+    vi.mocked(reserveAiBudget).mockRejectedValueOnce(new AiBudgetSessionBusyError('busy'));
+    const res = await post(app);
+    expect(res.status).toBe(409);
+    expect(ci.consume).not.toHaveBeenCalled();
+  });
+
+  it('consumes nothing when the session cannot be created (409 wisp_session_unavailable, or a throw)', async () => {
+    vi.mocked(streamingSessionManager.getOrCreate).mockRejectedValueOnce(
+      Object.assign(new Error('grant paused'), { code: 'wisp_session_unavailable' }),
+    );
+    const res = await post(app);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'wisp_session_unavailable' });
+
+    vi.mocked(streamingSessionManager.getOrCreate).mockRejectedValueOnce(new Error('sdk exploded'));
+    const res2 = await post(app);
+    expect(res2.status).toBe(500);
+    expect(ci.consume).not.toHaveBeenCalled();
   });
 });

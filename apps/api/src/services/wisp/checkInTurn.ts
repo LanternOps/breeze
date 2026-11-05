@@ -53,6 +53,18 @@ const FOOTER = 'These are check-ins you scheduled earlier in this thread. Breeze
  * `_`/`-` variants included.
  */
 const FRAME_TAG = /<\s*\/?\s*(?:wisp[\s_-]*check[\s_-]*ins?|prior[\s_-]*conversation[\s_-]*summary|untrusted[\s_-]*data)\b(?:[^<>]{0,200}>)?/giu;
+/**
+ * The same block names as bare code tokens, anywhere: a tag split by a
+ * character the patterns do not know (a combining mark, `≮`) still loses its
+ * name. Underscore/hyphen forms only, so prose ("untrusted data") is kept.
+ */
+const FRAME_NAME = /wisp[_-]?check[_-]?ins?\b|prior_conversation_summary|untrusted_data/giu;
+/**
+ * Invisible format characters (U+034F, U+180E, variation selectors, …) that
+ * the shared sanitizer's list does not cover, any of which could split a
+ * delimiter look-alike.
+ */
+const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/gu;
 /** A forged entry header (`[Wisp check-in fired …]`) or the run-results marker (`[breeze:analysis-results]`). */
 const FRAME_HEADER = /\[\s*(?:wisp[\s_-]*check[\s_-]*ins?\b|breeze\s*:)/giu;
 /** Every line break and vertical separator, ASCII and Unicode (NEL, LS, PS). */
@@ -68,10 +80,11 @@ function codePoints(text: string): string[] {
 }
 
 function onePass(text: string): string {
-  const sanitized = sanitizeUserMessage(text).sanitized;
+  const sanitized = sanitizeUserMessage(text.replace(DEFAULT_IGNORABLE, '')).sanitized;
   return sanitized
     .replace(LINE_BREAKS, ' ')
     .replace(FRAME_TAG, '')
+    .replace(FRAME_NAME, '')
     .replace(FRAME_HEADER, FILTERED)
     .replace(/[^\S\r\n]+/gu, ' ')
     .trim();
@@ -132,7 +145,8 @@ export function renderCheckInBlock(rows: FiredCheckIn[]): string | null {
 /**
  * Ambient db. The grant's `fired` check-ins addressed to its grantor, oldest
  * fired first, at most WISP_CHECK_IN_CONSUME_LIMIT (the rest wait for the
- * next turn).
+ * next turn). Keyed on the grant, which is keying on the thread:
+ * `wisp_threads_grant_uq` makes thread and grant 1:1 (plan SC6).
  */
 export async function loadFiredCheckIns(grantId: string, userId: string): Promise<FiredCheckIn[]> {
   const rows = await db

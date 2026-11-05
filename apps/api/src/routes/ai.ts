@@ -904,9 +904,9 @@ aiRoutes.post(
         firedCheckIns = rows;
       } catch (err) {
         console.warn('[AI] failed to read fired Wisp check-ins; sending the turn without them', {
-          orgId: dbSession.orgId, sessionId, error: err instanceof Error ? err.message : String(err),
+          orgId: dbSession.orgId, sessionId, grantId: wispGrantId, error: err instanceof Error ? err.message : String(err),
         });
-        captureException(err, c);
+        captureException(err, c, { wisp_check_in_phase: 'read' }, { fingerprint: ['wisp-check-in-turn', 'read'] });
       }
     }
 
@@ -1182,13 +1182,19 @@ aiRoutes.post(
     // consumed now (fired → consumed; a row cancelled meanwhile stays
     // cancelled). A failure only means they are prepended again next turn.
     if (wispGrantId && firedCheckIns.length > 0) {
+      const ids = firedCheckIns.map((row) => row.id);
       try {
-        await inRequestDb(() => markCheckInsConsumed({ grantId: wispGrantId, ids: firedCheckIns.map((row) => row.id) }));
+        const consumed = await inRequestDb(() => markCheckInsConsumed({ grantId: wispGrantId, ids }));
+        if (consumed === 0) {
+          // Every row was cancelled since the read — or the UPDATE matched
+          // nothing under RLS, which would re-prepend them every turn.
+          console.warn('[AI] no Wisp check-in was marked consumed', { orgId: dbSession.orgId, sessionId, grantId: wispGrantId, ids });
+        }
       } catch (err) {
         console.warn('[AI] failed to mark Wisp check-ins consumed; they will be prepended again next turn', {
-          orgId: dbSession.orgId, sessionId, error: err instanceof Error ? err.message : String(err),
+          orgId: dbSession.orgId, sessionId, grantId: wispGrantId, ids, error: err instanceof Error ? err.message : String(err),
         });
-        captureException(err, c);
+        captureException(err, c, { wisp_check_in_phase: 'consume' }, { fingerprint: ['wisp-check-in-turn', 'consume'] });
       }
     }
 
