@@ -50,6 +50,12 @@ import { checkInJobId, enqueueCheckIn, isCheckInJobLive, removeCheckInJob } from
 export const CHECK_IN_RECONCILE_GRACE_MS = 120_000;
 /** Orphans re-enqueued per tick, oldest due first; the rest wait for the next tick. */
 export const CHECK_IN_RECONCILE_LIMIT = 200;
+/**
+ * A sweep stops after this many failed rows: a Redis outage fails every row
+ * the same way, and reporting 200 of them per tick would flood Sentry. The
+ * rows left over are retried on the next tick.
+ */
+export const CHECK_IN_RECONCILE_MAX_FAILURES = 5;
 /** listCheckIns never returns more than this, whatever `limit` asks for. */
 const LIST_LIMIT_MAX = 100;
 /** Code points of the instruction shown in the post / bell title. */
@@ -314,7 +320,8 @@ export async function fireCheckIn(checkInId: string, now: Date = new Date()): Pr
  * Re-enqueue (delay 0) every `scheduled` row overdue by more than the grace
  * whose job is not live, at most CHECK_IN_RECONCILE_LIMIT per call, oldest
  * due first. A row whose job is live (waiting, delayed incl. a retry backoff,
- * active) is left to it. Per-row failures are reported and skipped.
+ * active) is left to it. Per-row failures are reported and skipped; after
+ * CHECK_IN_RECONCILE_MAX_FAILURES of them the sweep stops until the next tick.
  */
 export async function reconcileOrphanCheckIns(now: Date): Promise<{ refired: number }> {
   const cutoff = new Date(now.getTime() - CHECK_IN_RECONCILE_GRACE_MS);
@@ -325,7 +332,14 @@ export async function reconcileOrphanCheckIns(now: Date): Promise<{ refired: num
     .orderBy(asc(wispCheckIns.dueAt), asc(wispCheckIns.id))
     .limit(CHECK_IN_RECONCILE_LIMIT), 'wisp-check-in-reconcile');
 
+  if (overdue.length === CHECK_IN_RECONCILE_LIMIT) {
+    // Live-job rows count against the page too, so a long backlog can push a
+    // real orphan to a later tick. Visible here rather than silent.
+    console.warn('[wisp.checkIns] reconcile page full; older overdue rows first, the rest wait for the next tick', { limit: CHECK_IN_RECONCILE_LIMIT });
+  }
+
   let refired = 0;
+  let failures = 0;
   for (const { id } of overdue) {
     try {
       if (await isCheckInJobLive(id)) continue;
@@ -333,6 +347,11 @@ export async function reconcileOrphanCheckIns(now: Date): Promise<{ refired: num
       refired += 1;
     } catch (err) {
       report('reconcile_row', err, { checkInId: id });
+      failures += 1;
+      if (failures >= CHECK_IN_RECONCILE_MAX_FAILURES) {
+        console.error('[wisp.checkIns] reconcile stopped after repeated failures; retried next tick', { failures, refired });
+        break;
+      }
     }
   }
   return { refired };

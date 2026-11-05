@@ -618,13 +618,15 @@ describe('processCheckInJob', () => {
     expect(h.fireCheckIn).not.toHaveBeenCalled();
   });
 
-  it('drops a payload whose checkInId is not a uuid, logs it, and does not throw', async () => {
+  it('drops a payload whose checkInId is not a uuid, logs and reports it, and does not throw', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     for (const data of [{ checkInId: 'nope' }, {}, null] as unknown[]) {
       await expect(processCheckInJob(data as { checkInId: string })).resolves.toBeUndefined();
     }
     expect(h.fireCheckIn).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledTimes(3);
+    expect(h.captureException).toHaveBeenCalledTimes(3);
+    expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, { component: 'wisp.wakeScheduler', op: 'check_in_malformed_payload' });
     warn.mockRestore();
   });
 

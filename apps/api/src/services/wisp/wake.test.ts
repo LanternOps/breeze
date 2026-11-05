@@ -305,6 +305,13 @@ describe('check-in job helpers', () => {
     }
   });
 
+  it('enqueueCheckIn throws when a retained finished record cannot be removed (the add would silently no-op)', async () => {
+    h.jobs.set(checkInJobId(CI), { name: 'check-in', data: { checkInId: CI }, opts: {}, state: 'failed', timestamp: 1 });
+    h.removeFails = true;
+    await expect(enqueueCheckIn(CI, 0)).rejects.toThrow(/could not remove/);
+    expect(h.adds).toHaveLength(0);
+  });
+
   it('enqueueCheckIn leaves a live job alone (no second job, no removal)', async () => {
     h.jobs.set(checkInJobId(CI), { name: 'check-in', data: { checkInId: CI }, opts: { delay: 5 }, state: 'delayed', timestamp: 1 });
     await enqueueCheckIn(CI, 0);

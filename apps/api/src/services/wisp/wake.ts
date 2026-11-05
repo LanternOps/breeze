@@ -168,9 +168,11 @@ export function checkInJobId(checkInId: string): string {
 /**
  * Add the delayed `check-in` job for one row. A LIVE job with this id already
  * covers it, so that case adds nothing. A retained completed / failed record
- * would make BullMQ no-op the add forever, so it is removed first (the
- * requestAssessment precedent). Callers enqueue only outside a DB context
- * (#1105); a throw is the caller's to handle (reconcile picks the row up).
+ * would make BullMQ no-op the add, so it is removed first (the
+ * requestAssessment precedent). If that removal fails this throws rather than
+ * add: the add would be silently ignored, and the caller (create / reconcile)
+ * must see that the row is still not queued. Callers enqueue only outside a
+ * DB context (#1105).
  */
 export async function enqueueCheckIn(checkInId: string, delayMs: number): Promise<void> {
   const queue = getWispWakeQueue();
@@ -180,9 +182,11 @@ export async function enqueueCheckIn(checkInId: string, delayMs: number): Promis
   if (existing) {
     const state = await existing.getState();
     if (LIVE_JOB_STATES.has(state)) return;
-    await existing.remove().catch((err: unknown) => {
-      console.warn('[wisp-wake] could not remove a finished check-in job', { jobId, state, err });
-    });
+    try {
+      await existing.remove();
+    } catch (err) {
+      throw new Error(`[wisp-wake] could not remove the finished check-in job ${jobId} (state ${state}): ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   const data: WispCheckInJobData = { checkInId };

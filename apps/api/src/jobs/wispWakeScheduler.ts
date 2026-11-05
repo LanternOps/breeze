@@ -422,6 +422,8 @@ export async function processCheckInJob(data: WispCheckInJobData): Promise<void>
   const checkInId = (data as { checkInId?: unknown } | null | undefined)?.checkInId;
   if (typeof checkInId !== 'string' || !UUID_RE.test(checkInId)) {
     console.warn('[wisp-wake] check-in job dropped: malformed checkInId', { checkInId });
+    // Only enqueueCheckIn produces these jobs, so this is a bug worth seeing.
+    report(new Error('check-in job with a malformed checkInId'), { op: 'check_in_malformed_payload' });
     return;
   }
   const outcome = await fireCheckIn(checkInId);

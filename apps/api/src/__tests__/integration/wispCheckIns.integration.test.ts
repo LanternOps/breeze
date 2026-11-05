@@ -16,7 +16,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { userNotifications, wispCheckIns, wispGrantRevisions, wispGrants, wispThreadPosts } from '../../db/schema';
-import type { GrantCeiling } from '../../services/wisp/grantAuthority';
+import { CeilingViolationError, type GrantCeiling } from '../../services/wisp/grantAuthority';
 
 const h = vi.hoisted(() => ({
   dispatch: vi.fn(),
@@ -50,6 +50,7 @@ vi.mock('../../services/wisp/notifyUser', async (orig) => {
 import { notifyUser } from '../../services/wisp/notifyUser';
 import { getOrCreateThread } from '../../services/wisp/threads';
 import {
+  CHECK_IN_RECONCILE_MAX_FAILURES,
   CheckInLimitReachedError,
   CheckInWindowError,
   cancelCheckIn,
@@ -185,14 +186,40 @@ describe('createCheckIn', () => {
     const fx = await seed();
     const other = await seed();
     const now = new Date();
-    await expect(create(fx, now, { orgId: other.org.id })).rejects.toThrow();
+    await expect(create(fx, now, { orgId: other.org.id })).rejects.toMatchObject({ name: CeilingViolationError.name, code: 'org' });
     await expect(createCheckIn({ ...fx.ceiling, status: 'paused' } as GrantCeiling, {
       threadId: fx.thread.id, sessionId: null, dueAt: new Date(now.getTime() + 10 * MIN), instruction: 'x', orgId: null, context: null,
-    }, now)).rejects.toThrow();
+    }, now)).rejects.toMatchObject({ code: 'inactive' });
+    await expect(createCheckIn({ ...fx.ceiling, status: 'paused' } as GrantCeiling, {
+      threadId: fx.thread.id, sessionId: null, dueAt: new Date(now.getTime() + 10 * MIN), instruction: 'x', orgId: null, context: null,
+    }, now)).rejects.toBeInstanceOf(CeilingViolationError);
     await expect(createCheckIn(fx.ceiling, {
       threadId: other.thread.id, sessionId: null, dueAt: new Date(now.getTime() + 10 * MIN), instruction: 'x', orgId: null, context: null,
     }, now)).rejects.toThrow(/thread/);
     expect(h.enqueueCheckIn).not.toHaveBeenCalled();
+    const rows = await withSystemDbAccessContext(() => db.select().from(wispCheckIns).where(eq(wispCheckIns.grantId, fx.grantId)));
+    expect(rows).toHaveLength(0);
+  });
+
+  runDb('the per-thread cap holds under 6 concurrent creates: exactly 5 succeed', async () => {
+    const fx = await seed();
+    const now = new Date();
+    const results = await Promise.allSettled(Array.from({ length: 6 }, () => create(fx, now)));
+    const ok = results.filter((r) => r.status === 'fulfilled');
+    const refused = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(ok).toHaveLength(5);
+    expect(refused).toHaveLength(1);
+    expect(refused[0]!.reason).toBeInstanceOf(CheckInLimitReachedError);
+    expect(h.enqueueCheckIn).toHaveBeenCalledTimes(5);
+  });
+
+  runDb('refuses a whitespace-only or 1001-code-point instruction; 1000 code points is accepted', async () => {
+    const fx = await seed();
+    const now = new Date();
+    await expect(create(fx, now, { instruction: '   ' })).rejects.toBeInstanceOf(RangeError);
+    await expect(create(fx, now, { instruction: '🙂'.repeat(1001) })).rejects.toBeInstanceOf(RangeError);
+    expect(h.enqueueCheckIn).not.toHaveBeenCalled();
+    await expect(create(fx, now, { instruction: '🙂'.repeat(1000) })).resolves.toMatchObject({ status: 'scheduled' });
   });
 
   runDb('an enqueue failure still returns the row (reconcile fires it later)', async () => {
@@ -246,6 +273,48 @@ describe('fireCheckIn', () => {
     expect(notes).toHaveLength(1);
     expect(notes[0]).toMatchObject({ dedupeKey: `wisp.check_in:${row.id}`, orgId: fx.org.id });
     expect(posts[0]!.notificationId).toBe(notes[0]!.id);
+  });
+
+  runDb('a partner-level check-in (org null) fires with a null-org post and notification', async () => {
+    const fx = await seed();
+    const row = await create(fx, new Date(), { orgId: null });
+    expect(await fireCheckIn(row.id)).toBe('fired');
+    const [post] = await postsFor(fx.thread.id);
+    expect(post).toMatchObject({ kind: 'check_in', orgId: null });
+    const [note] = await notificationsFor(fx.user.id);
+    expect(note).toMatchObject({ dedupeKey: `wisp.check_in:${row.id}`, orgId: null });
+  });
+
+  runDb('a revoked grant cancels; so does a row whose grantor or thread no longer matches its grant', async () => {
+    // revoked
+    const a = await seed();
+    const ra = await create(a, new Date());
+    await withSystemDbAccessContext(() => db.update(wispGrants)
+      .set({ status: 'revoked', revokedAt: new Date() } as never).where(eq(wispGrants.id, a.grantId)));
+    expect(await fireCheckIn(ra.id)).toBe('cancelled');
+
+    // grantor mismatch: the row names another user of the same partner
+    const b = await seed();
+    const stranger = await createUser({ partnerId: b.partner.id, email: `wisp-checkin-x-${randomUUID()}@wisp.test` });
+    const rb = await create(b, new Date());
+    await withSystemDbAccessContext(() => db.update(wispCheckIns).set({ userId: stranger.id }).where(eq(wispCheckIns.id, rb.id)));
+    expect(await fireCheckIn(rb.id)).toBe('cancelled');
+
+    // thread mismatch: the row's thread belongs to another grant of the same partner
+    const c = await seed();
+    const otherGrantor = await createUser({ partnerId: c.partner.id, email: `wisp-checkin-y-${randomUUID()}@wisp.test` });
+    const otherGrant = await seedGrant(c.partner.id, otherGrantor.id, [c.org.id]);
+    const otherThread = await getOrCreateThread(otherGrant);
+    const rc = await create(c, new Date());
+    await withSystemDbAccessContext(() => db.update(wispCheckIns).set({ threadId: otherThread.id }).where(eq(wispCheckIns.id, rc.id)));
+    expect(await fireCheckIn(rc.id)).toBe('cancelled');
+
+    for (const [fx, id] of [[a, ra.id], [b, rb.id], [c, rc.id]] as const) {
+      expect((await rowOf(id))!.status).toBe('cancelled');
+      expect(await postsFor(fx.thread.id)).toHaveLength(0);
+    }
+    expect(await postsFor(otherThread.id)).toHaveLength(0);
+    expect(vi.mocked(notifyUser)).not.toHaveBeenCalled();
   });
 
   runDb('the title is "Check-in due: " + the first 80 code points of the instruction', async () => {
@@ -403,6 +472,28 @@ describe('reconcileOrphanCheckIns', () => {
     expect(h.enqueueCheckIn).toHaveBeenCalledWith(orphan.id, 0);
     expect(r.refired).toBe(enqueued.length);
     expect(h.enqueueCtx.every((scope) => scope === null)).toBe(true);
+  });
+
+  runDb('a sweep that keeps failing (Redis down) stops after CHECK_IN_RECONCILE_MAX_FAILURES rows', async () => {
+    const fx = await seed();
+    const other = await seed();
+    const now = new Date();
+    for (const f of [fx, other]) {
+      for (let i = 0; i < 4; i += 1) {
+        const row = await create(f, now);
+        await backdate(row.id, new Date(now.getTime() - 20 * MIN), new Date(now.getTime() - 10 * MIN));
+      }
+    }
+    h.enqueueCheckIn.mockClear();
+    h.isCheckInJobLive.mockRejectedValue(new Error('redis down'));
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(reconcileOrphanCheckIns(now)).resolves.toEqual({ refired: 0 });
+    } finally {
+      err.mockRestore();
+    }
+    expect(h.isCheckInJobLive).toHaveBeenCalledTimes(CHECK_IN_RECONCILE_MAX_FAILURES);
+    expect(h.enqueueCheckIn).not.toHaveBeenCalled();
   });
 
   runDb('a per-row failure is reported and the sweep carries on', async () => {
