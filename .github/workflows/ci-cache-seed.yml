@@ -318,6 +318,51 @@ jobs:
                   || echo "::warning::could not delete cache ${key}"
               done
 
+  # security.yml runs trivy-action with its cache off (that cache saves from PR
+  # refs) and restores the DB through the restore-trivy-db composite, which takes
+  # the newest older day when today's key is not saved yet.
+  seed-trivy-db:
+    name: Seed Trivy DB cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Resolve date for the Trivy DB key
+        id: date
+        shell: bash
+        run: echo "date=$(date -u +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+
+      # Exact key only: a miss downloads a fresh DB rather than saving a stale one.
+      - name: Restore Trivy DB cache
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.cache/trivy
+          key: cache-trivy-${{ steps.date.outputs.date }}
+
+      # Any scan downloads the DB into trivy-action's default cache-dir (the path
+      # above). A small target keeps it quick; the findings are not the point.
+      - name: Download Trivy DB
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: 'fs'
+          scan-ref: '.github/actions'
+          format: 'table'
+          exit-code: '0'
+          cache: 'false'
+
+      - name: Save Trivy DB cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.cache/trivy
+          key: cache-trivy-${{ steps.date.outputs.date }}
+
   # Buildkit layer caches (type=gha) are scoped like every other cache, so PR
   # builds read what main exports here. Builds mirror ci.yml's, no push.
   seed-smoke-images:

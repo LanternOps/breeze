@@ -343,3 +343,112 @@ test('the Tauri install phases fit inside rust-check\'s step timeout', () => {
   const total = parts.reduce((sum, re) => sum + seconds(re), 0);
   assert.ok(total < stepMinutes * 60, `${total}s of phases vs a ${stepMinutes}m step`);
 });
+
+// ---- Every other workflow (#10762, #11119) ---------------------------------
+// The same rule as ci.yml, for all of them: an entry saved from a PR ref is
+// readable by that PR alone and still counts toward the 10 GB limit, and a
+// built-in setup-* cache saved on main only duplicates what the seed saves.
+//
+// release.yml is the deliberate exception: it runs on tags only, and it builds
+// signed artifacts, so its caching is out of bounds for a cache-budget change.
+const SAVERS = new Set(['ci-cache-seed.yml', 'release.yml']);
+const WORKFLOWS_DIR = new URL('../workflows/', import.meta.url);
+const workflows = readdirSync(WORKFLOWS_DIR)
+  .filter((f) => /\.ya?ml$/.test(f))
+  .map((name) => ({ name, text: read(new URL(name, WORKFLOWS_DIR)) }));
+const triggers = (text) => text.slice(0, text.search(/^jobs:\s*$/m));
+const runsOnPrRefs = (text) => /^ {2}(?:pull_request|pull_request_target|merge_group):/m.test(triggers(text));
+
+function cacheViolations(text) {
+  const out = [];
+  for (const s of steps(text, 6)) {
+    const uses = usesOf(s);
+    if (uses.startsWith('actions/setup-go@') && !/^\s+cache:\s*false\s*$/m.test(s)) out.push(`setup-go without cache: false:\n${s}`);
+    if (uses.startsWith('actions/setup-node@') && /^\s+cache:/m.test(s)) out.push(`setup-node with a cache input:\n${s}`);
+    if (uses.startsWith('actions/cache') && !uses.startsWith('actions/cache/restore@')) out.push(`${uses} saves a cache`);
+    if (uses.startsWith('Swatinem/rust-cache@') && !/^\s+save-if:\s*false\s*$/m.test(s)) out.push(`rust-cache without save-if: false:\n${s}`);
+    if (uses.startsWith('aquasecurity/trivy-action@') && !/^\s+cache:\s*'false'\s*$/m.test(s)) out.push(`trivy-action without cache: 'false' (its default saves the DB and the binary):\n${s}`);
+    if (/^\s+cache-to:.*type=gha/m.test(s)) out.push(`buildkit exports to gha:\n${s}`);
+  }
+  return out;
+}
+
+test('the PR-ref inventory found the workflows it is meant to police', () => {
+  const pr = workflows.filter((w) => runsOnPrRefs(w.text)).map((w) => w.name);
+  for (const name of ['ci.yml', 'security.yml', 'codeql.yml', 'yara-pack.yml', 'release-build-check.yml',
+    'ci-smoke-binary-source-github.yml', 'ci-smoke-binary-source-local.yml']) {
+    assert.ok(pr.includes(name), `${name} not detected as running on PR refs; saw ${pr}`);
+  }
+  for (const name of SAVERS) assert.ok(!pr.includes(name), `${name} may save caches only because it never runs on a PR ref`);
+});
+
+for (const { name, text } of workflows.filter((w) => runsOnPrRefs(w.text) && !SAVERS.has(w.name))) {
+  test(`${name} saves no Actions cache`, () => {
+    assert.deepEqual(cacheViolations(text), []);
+  });
+}
+
+// Dropping a built-in cache must not quietly leave the job cold: the restore has
+// to be there, after the setup step whose tool it asks for the cache dirs, and
+// gated the same way (codeql sets up Go on one matrix leg only).
+const RESTORES = {
+  'security.yml': ['restore-pnpm-cache', 'restore-go-cache', 'restore-trivy-db'],
+  'codeql.yml': ['restore-go-cache'],
+  'yara-pack.yml': ['restore-go-cache'],
+  'ci-smoke-binary-source-github.yml': ['restore-pnpm-cache'],
+  'ci-smoke-binary-source-local.yml': ['restore-pnpm-cache'],
+};
+const SETUP_FOR = { 'restore-pnpm-cache': 'pnpm/action-setup@', 'restore-go-cache': 'actions/setup-go@' };
+const gateOf = (step) => step.match(/^\s+if:\s*(.+)$/m)?.[1] ?? null;
+
+for (const [name, wanted] of Object.entries(RESTORES)) {
+  test(`${name} restores what it no longer saves`, () => {
+    const { text } = workflows.find((w) => w.name === name);
+    for (const composite of wanted) {
+      assert.match(text, new RegExp(`uses: \\./\\.github/actions/${composite}\\b`), `${name} does not use ${composite}`);
+    }
+    for (const job of jobBlocks(text)) {
+      const jobSteps = steps(job.text, 6);
+      jobSteps.forEach((s, i) => {
+        const composite = usesOf(s).match(/^\.\/\.github\/actions\/(restore-[a-z-]+)$/)?.[1];
+        const setup = SETUP_FOR[composite];
+        if (!setup) return;
+        const at = jobSteps.findIndex((x) => usesOf(x).startsWith(setup));
+        assert.ok(at >= 0 && at < i, `${name}/${job.name}: ${composite} runs before ${setup}`);
+        if (setup === 'actions/setup-go@') {
+          assert.equal(gateOf(s), gateOf(jobSteps[at]), `${name}/${job.name}: ${composite} and setup-go differ in if:`);
+        }
+      });
+    }
+  });
+}
+
+test('every trivy-action step in security.yml runs after the DB restore', () => {
+  const { text } = workflows.find((w) => w.name === 'security.yml');
+  let seen = 0;
+  for (const job of jobBlocks(text)) {
+    const jobSteps = steps(job.text, 6);
+    const first = jobSteps.findIndex((s) => usesOf(s).startsWith('aquasecurity/trivy-action@'));
+    if (first < 0) continue;
+    seen += 1;
+    const restore = jobSteps.findIndex((s) => usesOf(s) === './.github/actions/restore-trivy-db');
+    assert.ok(restore >= 0 && restore < first, `${job.name}: restore at ${restore}, first trivy step at ${first}`);
+  }
+  assert.equal(seen, 2, 'expected trivy-fs-scan and trivy-image-scan');
+});
+
+test('the seed saves the Trivy DB under the key and path the composite restores, and only on a miss', () => {
+  const save = seedStep('Save Trivy DB cache');
+  const composite = composites.find((c) => c.name === 'restore-trivy-db');
+  assert.ok(composite, 'missing restore-trivy-db composite');
+  const restore = steps(composite.text, 4).find((s) => usesOf(s).startsWith('actions/cache/restore@'));
+  assert.equal(withValue(save, 'key'), withValue(restore, 'key'));
+  assert.equal(withValue(save, 'path'), withValue(restore, 'path'));
+  assert.equal(withValue(restore, 'restore-keys'), 'cache-trivy-');
+  assert.match(save, /^\s+if: steps\.cache\.outputs\.cache-hit != 'true'$/m);
+  const job = jobBlocks(seedText()).find((j) => j.name === 'seed-trivy-db');
+  assert.ok(job, 'missing seed-trivy-db job');
+  const download = steps(job.text, 6).find((s) => usesOf(s).startsWith('aquasecurity/trivy-action@'));
+  assert.ok(download, 'seed-trivy-db has no trivy-action step');
+  assert.match(download, /^\s+cache:\s*'false'\s*$/m, 'the seed must not also save through the action');
+});
