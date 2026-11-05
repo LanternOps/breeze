@@ -178,6 +178,7 @@ async function readSession(sessionId: string) {
       status: remoteSessions.status,
       startedAt: remoteSessions.startedAt,
       lastStartAttemptAt: remoteSessions.lastStartAttemptAt,
+      createdAt: remoteSessions.createdAt,
     })
     .from(remoteSessions)
     .where(eq(remoteSessions.id, sessionId))
@@ -441,14 +442,36 @@ describe('#11149 staleness is measured from the latest start attempt', () => {
   });
 
   it('a new row starts its clock at creation, so an abandoned pending row still expires', async () => {
-    const before = Date.now();
     const f = await buildFixture();
-    expectFresh((await readSession(f.sessionId)).lastStartAttemptAt, before);
+    // Both defaults come from the same statement's now(), so this does not
+    // depend on the database and test clocks agreeing.
+    const created = await readSession(f.sessionId);
+    expect(created.lastStartAttemptAt.getTime()).toBe(created.createdAt.getTime());
     expect(await readsAsStale(f.sessionId)).toBe(false);
 
     await backdateAttempt(f.sessionId, agoMs(6 * MINUTE_MS));
 
     expect(await readsAsStale(f.sessionId)).toBe(true);
+  });
+
+  it('a refused offer does not move the attempt clock', async () => {
+    const f = await buildFixture();
+    await commitOffer(f);
+    const attemptAt = agoMs(MINUTE_MS);
+    await backdateAttempt(f.sessionId, attemptAt);
+
+    const refused = await withSystemDbAccessContext(() =>
+      commitDesktopStartIntent({
+        sessionId: f.sessionId,
+        startCommandId: `desk-start-${f.sessionId}-${randomUUID()}`,
+        promptMode: 'off',
+        consentUnavailableBehavior: null,
+        offer: 'v=0\r\nsecond-offer\r\n',
+      }),
+    );
+
+    expect(refused).toEqual({ ok: false, reason: 'start_in_flight' });
+    expect((await readSession(f.sessionId)).lastStartAttemptAt.getTime()).toBe(attemptAt.getTime());
   });
 
   it('an abandoned re-offer is stale 2 minutes after its attempt, however recent the start', async () => {
