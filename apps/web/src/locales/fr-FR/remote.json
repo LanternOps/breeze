@@ -209,6 +209,7 @@
       "copy": "Copier",
       "delete": "Supprimer",
       "download": "Télécharger",
+      "mkdir": "Nouveau dossier",
       "move": "Bouge",
       "purge": "Purger",
       "restore": "Restaurer",
@@ -250,6 +251,7 @@
     "emptyDirectory": "Annuaire vide",
     "errors": {
       "copy": "Impossible de copier",
+      "createFolder": "Impossible de créer le dossier",
       "delete": "Impossible de supprimer",
       "download": "Impossible de télécharger",
       "downloadTooLarge": "Trop volumineux pour être téléchargé ({{size}}). L’explorateur de fichiers transfère des fichiers jusqu’à {{max}}.",
@@ -264,6 +266,15 @@
     "home": "Accueil",
     "modified": "Modifié",
     "moveTo": "Passer à",
+    "newFolder": {
+      "action": "Nouveau dossier",
+      "title": "Nouveau dossier",
+      "nameLabel": "Nom du dossier",
+      "location": "Sera créé dans {{path}}",
+      "created": "Dossier {{name}} créé",
+      "invalidName": "Le nom du dossier ne peut pas contenir de séparateurs de chemin ni de caractères interdits par le système de fichiers de cet appareil.",
+      "nameExists": "Un fichier ou un dossier portant ce nom existe déjà ici."
+    },
     "selectedCount": "Comte sélectionné",
     "size": "Taille",
     "title": "Gestionnaire de fichiers",

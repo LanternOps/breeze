@@ -3139,11 +3139,13 @@ export const TOOL_ACTION_EXTRA_PERMISSIONS: Record<
     add_contract_line: [{ resource: 'contracts', action: 'read' }],
   },
   file_operations: {
-    // write/rename put files on the device with the agent's own privileges:
-    // the same grant as script execution. Mirrors requireScriptsExecute on POST
-    // /system-tools/devices/:id/files/upload and /files/move (fileBrowser.ts).
+    // write/rename/mkdir change the device's file system with the agent's own
+    // privileges: the same grant as script execution. Mirrors
+    // requireScriptsExecute on POST /system-tools/devices/:id/files/upload,
+    // /files/move and /files/mkdir (fileBrowser.ts).
     write: [{ resource: 'scripts', action: 'execute' }],
     rename: [{ resource: 'scripts', action: 'execute' }],
+    mkdir: [{ resource: 'scripts', action: 'execute' }],
   },
 };
 
