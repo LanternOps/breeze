@@ -60,7 +60,15 @@ const TEST_TOOLS = [
   { name: 'manage_access_reviews', tier: 1, schema: { type: 'object', properties: { action: { type: 'string', enum: ['list', 'get'] } } } },
   { name: 'manage_patches', tier: 1, schema: { type: 'object', properties: { action: { type: 'string', enum: ['list', 'approve'] } } } },
   { name: 'list_sites', tier: 1, schema: { type: 'object', properties: {} } },
+  // Tier 3 here (not in the registry) so the intent-filing path is exercised.
+  { name: 'sync_edr_data', tier: 3, schema: { type: 'object', properties: {} } },
+  { name: 'run_script', tier: 3, schema: { type: 'object', properties: {} } },
 ];
+const intentMocks = vi.hoisted(() => ({ createMcpActionIntent: vi.fn() }));
+vi.mock('../services/mcpIntentCreation', () => ({
+  createMcpActionIntent: (...args: any[]) => intentMocks.createMcpActionIntent(...args),
+  resolveMcpClientLabel: vi.fn(async () => 'MCP · test'),
+}));
 vi.mock('../services/aiTools', () => ({
   aiTools: new Map(),
   getToolDefinitions: () => TEST_TOOLS.map((t) => ({ name: t.name, description: t.name, input_schema: t.schema })),
@@ -241,6 +249,36 @@ describe('#10930 partner-wide tools over MCP — tools/call', () => {
       const { parsed } = await callText('manage_patches', { action: 'approve' });
       expect(parsed.error).toBe(PARTNER_WIDE_UNAVAILABLE_OVER_MCP_MESSAGE);
     }
+  });
+
+  it('with MCP intents on, a classified Tier-3 tool is refused before an intent is filed (an unclassified one still files)', async () => {
+    vi.stubEnv('MCP_TIER3_INTENTS_ENABLED', 'true');
+    testState.apiKey!.scopes = ['ai:read', 'ai:write', 'ai:execute'];
+    intentMocks.createMcpActionIntent.mockRejectedValue(new Error('stop after filing'));
+
+    // Control: the harness reaches intent filing for a Tier-3 tool.
+    await rpc('tools/call', { name: 'run_script', arguments: {} });
+    expect(intentMocks.createMcpActionIntent).toHaveBeenCalledTimes(1);
+
+    intentMocks.createMcpActionIntent.mockClear();
+    const { result, parsed } = await callText('sync_edr_data');
+    expect(result.isError).toBe(true);
+    expect(parsed.error).toBe(PARTNER_WIDE_UNAVAILABLE_OVER_MCP_MESSAGE);
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+    expect(await listNames()).not.toContain('sync_edr_data');
+  });
+
+  it('only a pure returned error is rewritten: data mentioning the phrase and non-JSON pass through byte-identical', async () => {
+    const data = JSON.stringify({ items: [], note: 'Full partner scope is required to manage the shared UniFi integration' });
+    mocks.executeTool.mockResolvedValueOnce(data);
+    const { body } = await rpc('tools/call', { name: 'manage_patches', arguments: { action: 'approve' } });
+    expect(body.result.isError).toBeUndefined();
+    expect(body.result.content[0].text).toBe(data);
+
+    mocks.executeTool.mockResolvedValueOnce('Full partner org access required (orgAccess must be "all")');
+    const plain = await rpc('tools/call', { name: 'manage_patches', arguments: { action: 'approve' } });
+    expect(plain.body.result.content[0].text).toBe('Full partner org access required (orgAccess must be "all")');
   });
 
   it('leaves unrelated errors and full-access callers\' results untouched', async () => {
