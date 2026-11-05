@@ -13,7 +13,7 @@ let permissionsState: any;
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'leftJoin', 'orderBy', 'limit', 'as']) {
+  for (const method of ['from', 'where', 'leftJoin', 'orderBy', 'groupBy', 'limit', 'as']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   chain.then = (onFulfilled: (value: unknown) => unknown, onRejected?: (reason: unknown) => unknown) =>
@@ -53,6 +53,12 @@ vi.mock('../../db/schema', () => ({
     errorCount: 'backup_jobs.error_count',
     errorLog: 'backup_jobs.error_log',
   },
+  backupStorageSessions: {
+    jobId: 'backup_storage_sessions.job_id',
+    scope: 'backup_storage_sessions.scope',
+    resumedAt: 'backup_storage_sessions.resumed_at',
+  },
+  IN_FLIGHT_BACKUP_JOB_STATUSES: ['pending', 'running'] as const,
   backupSnapshots: {
     orgId: 'backup_snapshots.org_id',
     deviceId: 'backup_snapshots.device_id',
@@ -88,6 +94,8 @@ vi.mock('drizzle-orm', () => ({
   lte: (column: unknown, value: unknown) => ({ op: 'lte', column, value }),
   inArray: (column: unknown, values: unknown[]) => ({ op: 'inArray', column, values }),
   desc: (value: unknown) => ({ op: 'desc', value }),
+  isNotNull: (column: unknown) => ({ op: 'isNotNull', column }),
+  max: (column: unknown) => ({ op: 'max', column }),
   sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
     op: 'sql',
     strings,
@@ -921,6 +929,120 @@ describe('backup dashboard routes', () => {
       expect(JSON.stringify(orderTerms[0])).toContain('backup_jobs.started_at');
       expect(orderTerms[1]).toEqual({ op: 'desc', value: 'backup_jobs.created_at' });
       expect(orderTerms[2]).toEqual({ op: 'desc', value: 'backup_jobs.id' });
+    });
+  });
+
+  describe('GET /status/:deviceId — activeJobs (#11027)', () => {
+    function inFlight(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'job-x',
+        status: 'running',
+        backupMode: 'file',
+        backupType: 'file',
+        createdAt: new Date('2026-11-05T10:00:00.000Z'),
+        startedAt: new Date('2026-11-05T10:01:00.000Z'),
+        completedAt: null,
+        totalSize: 400,
+        transferredSize: 100,
+        fileCount: 10,
+        totalFiles: 40,
+        lastProgressAt: new Date('2026-11-05T10:05:00.000Z'),
+        lastKeepaliveAt: new Date('2026-11-05T10:06:00.000Z'),
+        errorLog: null,
+        vssMetadata: null,
+        ...overrides,
+      };
+    }
+
+    it('status returns activeJobs running-first with resumedAt', async () => {
+      resolveBackupConfigForDeviceMock.mockResolvedValueOnce(null);
+      const sessionsChain = chainMock([
+        { jobId: 'job-running', resumedAt: new Date('2026-11-05T10:02:00.000Z') },
+      ]);
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]))
+        .mockReturnValueOnce(chainMock([
+          // Created later and never started: a second mode queued behind the
+          // running one on the same device (#11012's shape).
+          inFlight({
+            id: 'job-pending',
+            status: 'pending',
+            backupMode: 'system_image',
+            backupType: 'system_image',
+            createdAt: new Date('2026-11-05T10:00:00.000Z'),
+            startedAt: null,
+            totalSize: null,
+            transferredSize: null,
+            lastProgressAt: null,
+            lastKeepaliveAt: new Date('2026-11-05T10:06:00.000Z'),
+          }),
+          inFlight({ id: 'job-running', transferredSize: 0 }),
+          inFlight({ id: 'job-done', status: 'completed', completedAt: new Date('2026-11-04T10:00:00.000Z'), startedAt: new Date('2026-11-04T09:00:00.000Z') }),
+        ]))
+        .mockReturnValueOnce(sessionsChain);
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const { data } = await res.json();
+      expect(data.activeJobs.map((j: { id: string }) => j.id)).toEqual(['job-running', 'job-pending']);
+      expect(data.activeJobs[0]).toMatchObject({
+        status: 'running',
+        backupMode: 'file',
+        totalSize: 400,
+        transferredSize: 0,
+        fileCount: 10,
+        totalFiles: 40,
+        startedAt: '2026-11-05T10:01:00.000Z',
+        lastKeepaliveAt: '2026-11-05T10:06:00.000Z',
+        resumedAt: '2026-11-05T10:02:00.000Z',
+      });
+      expect(data.activeJobs[1]).toMatchObject({ status: 'pending', startedAt: null, resumedAt: null });
+
+      // One grouped query, scoped to the active ids and to resumed write sessions.
+      const where = JSON.stringify(sessionsChain.where.mock.calls[0]);
+      expect(where).toContain('backup_storage_sessions.job_id');
+      expect(where).toContain('job-running');
+      expect(where).toContain('job-pending');
+      expect(where).not.toContain('job-done');
+      expect(where).toContain('snapshot_write');
+      expect(where).toContain('isNotNull');
+      expect(sessionsChain.groupBy).toHaveBeenCalledWith('backup_storage_sessions.job_id');
+    });
+
+    it('orders same-status jobs by startedAt then createdAt ascending', async () => {
+      resolveBackupConfigForDeviceMock.mockResolvedValueOnce(null);
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]))
+        .mockReturnValueOnce(chainMock([
+          inFlight({ id: 'p-late', status: 'pending', startedAt: null, createdAt: new Date('2026-11-05T11:00:00.000Z') }),
+          inFlight({ id: 'p-early', status: 'pending', startedAt: null, createdAt: new Date('2026-11-05T09:00:00.000Z') }),
+          inFlight({ id: 'r-late', startedAt: new Date('2026-11-05T10:30:00.000Z') }),
+          inFlight({ id: 'r-early', startedAt: new Date('2026-11-05T10:10:00.000Z') }),
+        ]))
+        .mockReturnValueOnce(chainMock([]));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      const { data } = await res.json();
+      expect(data.activeJobs.map((j: { id: string }) => j.id)).toEqual(['r-early', 'r-late', 'p-early', 'p-late']);
+    });
+
+    it('status returns empty activeJobs and skips the session query when nothing is in flight', async () => {
+      resolveBackupConfigForDeviceMock.mockResolvedValueOnce(null);
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]))
+        .mockReturnValueOnce(chainMock([
+          inFlight({ id: 'job-done', status: 'completed', completedAt: new Date('2026-11-04T10:00:00.000Z') }),
+        ]));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const { data } = await res.json();
+      expect(data.activeJobs).toEqual([]);
+      // device lookup + job history only — no backup_storage_sessions read.
+      expect(selectMock).toHaveBeenCalledTimes(2);
     });
   });
 

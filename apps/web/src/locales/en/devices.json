@@ -958,6 +958,8 @@
     "backupStatusJobsSnapshotsAndVerification": "Backup status, jobs, snapshots, and verification",
     "theOsReportsAPendingReboot": "The OS reports a pending reboot (Windows registry / Linux reboot-required markers).",
     "rebootPending": "Reboot pending",
+    "backupRunning": "Backup running",
+    "backupRunningTooltip": "A backup is running on this device. Open the Backup tab to see its progress.",
     "restartScheduled": "Restart scheduled",
     "restartInProgress": "Restarting",
     "restartScheduledFor": "Restart scheduled for {{time}}",

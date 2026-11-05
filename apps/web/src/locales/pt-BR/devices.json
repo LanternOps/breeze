@@ -958,6 +958,8 @@
     "backupStatusJobsSnapshotsAndVerification": "Status, tarefas, snapshots e verificação de backup",
     "theOsReportsAPendingReboot": "O OS informa que há uma reinicialização pendente (Registro do Windows/marcadores reboot-required do Linux).",
     "rebootPending": "Reinicialização pendente",
+    "backupRunning": "Backup em execução",
+    "backupRunningTooltip": "Há um backup em execução neste dispositivo. Abra a aba Backup para ver o progresso.",
     "restartScheduled": "Reinicialização agendada",
     "restartInProgress": "Reiniciando",
     "restartScheduledFor": "Reinicialização agendada para {{time}}",

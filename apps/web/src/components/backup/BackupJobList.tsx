@@ -25,6 +25,7 @@ import { asList } from '@/lib/asList';
 import ReparseSkipNotice from './ReparseSkipNotice';
 import BackupFailureCategoryBadge from './BackupFailureCategoryBadge';
 import { stripInternalTagPrefix, truncateErrorSummary } from './backupErrorText';
+import { estimateRemainingMs, formatEta, nextSpeedSample, stallState } from './backupJobProgress';
 import { splitReparseSkipNotice, stripInlineIndexDropNote, type BackupFailureCategory } from '@breeze/shared';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
@@ -94,11 +95,6 @@ type BackupJob = {
 
 // Poll the jobs list while any job is running so progress/speed stay live.
 const POLL_MS = 5000;
-// A running job whose agent has been silent for this long is flagged as
-// stalled. Keyed on liveness (lastKeepaliveAt), not lastProgressAt: since #2798
-// lastProgressAt moves only when bytes/files advance, and a single large file
-// legitimately holds it still for its whole upload.
-const STALL_MS = 2 * 60 * 1000;
 // Statuses a job can no longer leave — used to reconcile optimistic cancels
 // against a possibly-stale poll response.
 const TERMINAL_STATUSES: readonly JobStatus[] = ['completed', 'failed', 'cancelled', 'partial', 'completed_with_errors'];
@@ -298,23 +294,12 @@ export default function BackupJobList() {
       const samples = speedSamplesRef.current;
       const seen = new Set<string>();
       for (const job of nextJobs) {
-        if (job.status !== 'running' || job.transferredSize == null) continue;
+        if (job.status !== 'running') continue;
+        const { bps, sample } = nextSpeedSample(samples.get(job.id), job, now);
+        if (!sample) continue;
         seen.add(job.id);
-        const prev = samples.get(job.id);
-        let bps: number | undefined;
-        if (prev) {
-          if (now > prev.at && job.transferredSize > prev.bytes) {
-            bps = (job.transferredSize - prev.bytes) / ((now - prev.at) / 1000);
-          }
-          // prior sample but no forward progress -> stalled -> leave bps unset.
-        } else if (job.startedAt) {
-          const elapsedSec = (now - new Date(job.startedAt).getTime()) / 1000;
-          if (elapsedSec > 0) bps = job.transferredSize / elapsedSec;
-        }
-        if (bps != null && Number.isFinite(bps) && bps > 0) {
-          nextSpeeds[job.id] = bps;
-        }
-        samples.set(job.id, { bytes: job.transferredSize, at: now });
+        if (bps != null) nextSpeeds[job.id] = bps;
+        samples.set(job.id, sample);
       }
       // Drop samples for jobs no longer running so the map can't grow unbounded.
       for (const id of samples.keys()) {
@@ -566,14 +551,10 @@ export default function BackupJobList() {
                   : null;
                 const speedBps = isRunning ? speeds[job.id] : undefined;
                 const showFiles = isRunning && job.fileCount != null && job.totalFiles != null;
-                // Rows from a server predating #2798 carry no lastKeepaliveAt;
-                // their lastProgressAt was liveness then.
-                const livenessAt = job.lastKeepaliveAt ?? job.lastProgressAt;
-                const stalledMs = isRunning && livenessAt
-                  ? Date.now() - new Date(livenessAt).getTime()
-                  : 0;
-                const isStalled = isRunning && !!livenessAt && stalledMs > STALL_MS;
-                const stalledMinutes = Math.max(1, Math.floor(stalledMs / 60000));
+                const { stalled: isStalled, minutes: stalledMinutes } = stallState(job, Date.now());
+                const etaMs = isRunning && !isStalled
+                  ? estimateRemainingMs({ transferredSize: job.transferredSize, totalSize: job.totalSizeBytes }, speedBps)
+                  : null;
                 const details = jobDetails[job.id];
                 const detailNotes = splitReparseSkipNotice(cleanedJobLog(details?.errorLog));
                 const isExpanded = expandedJobId === job.id;
@@ -650,6 +631,11 @@ export default function BackupJobList() {
                               )}
                               {speedBps != null && (
                                 <span>{t('backupJobList.speedValue', { value: formatBytes(speedBps) })}</span>
+                              )}
+                              {etaMs != null && (
+                                <span data-testid="backup-job-eta">
+                                  {t('backupJobList.etaValue', { value: formatEta(etaMs) })}
+                                </span>
                               )}
                             </div>
                           </div>

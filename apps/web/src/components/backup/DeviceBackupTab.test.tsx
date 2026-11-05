@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceBackupTab from './DeviceBackupTab';
 import { fetchWithAuth } from '../../stores/auth';
@@ -937,5 +937,146 @@ describe('DeviceBackupTab', () => {
     });
     render(<DeviceBackupTab deviceId="device-1" />);
     expect(await screen.findByTestId('device-backup-empty-external-hint')).toBeInTheDocument();
+  });
+
+  describe('backup in progress (#11027)', () => {
+    const activeJob = (overrides: Record<string, unknown> = {}) => ({
+      id: 'job-live',
+      status: 'running',
+      backupMode: 'file',
+      backupType: 'file',
+      createdAt: '2026-11-05T11:00:00.000Z',
+      startedAt: '2026-11-05T11:00:30.000Z',
+      totalSize: 4000,
+      transferredSize: 1000,
+      fileCount: 1,
+      totalFiles: 4,
+      lastProgressAt: '2026-11-05T11:59:50.000Z',
+      lastKeepaliveAt: '2026-11-05T11:59:50.000Z',
+      resumedAt: null,
+      ...overrides,
+    });
+
+    // Flush fetch → json → setState without timer-based helpers, which do not
+    // compose with fake timers.
+    const flush = async () => {
+      for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    };
+
+    const mockStatus = (activeJobsFor: (call: number) => unknown[]) => {
+      const calls = { status: 0 };
+      fetchMock.mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = (init as RequestInit | undefined)?.method ?? 'GET';
+        if (url === '/backup/status/device-1') {
+          calls.status += 1;
+          return makeJsonResponse({ data: { protected: true, lastJob: null, activeJobs: activeJobsFor(calls.status) } });
+        }
+        if (url === '/backup/jobs?deviceId=device-1') return makeJsonResponse({ data: [] });
+        if (url === '/backup/snapshots?deviceId=device-1') return makeJsonResponse({ data: [] });
+        if (url === '/backup/jobs/job-live/cancel' && method === 'POST') {
+          return makeJsonResponse({ id: 'job-live', status: 'cancelled' });
+        }
+        return makeJsonResponse({}, false, 404);
+      });
+      return calls;
+    };
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('polls while activeJobs is non-empty and stops when it empties', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-11-05T12:00:00.000Z'));
+      const calls = mockStatus((call) => (call < 3 ? [activeJob()] : []));
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+      await act(async () => {
+        await flush();
+      });
+      expect(calls.status).toBe(1);
+      expect(screen.getAllByTestId('device-backup-active-job')).toHaveLength(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+        await flush();
+      });
+      expect(calls.status).toBe(2);
+
+      // The third fetch reports nothing in flight: the card goes and polling stops.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+        await flush();
+      });
+      expect(calls.status).toBe(3);
+      expect(screen.queryByTestId('device-backup-active-job')).toBeNull();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000);
+        await flush();
+      });
+      expect(calls.status).toBe(3);
+    });
+
+    it('does not stack polls while one is still in flight', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-11-05T12:00:00.000Z'));
+      const calls = { status: 0 };
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/backup/status/device-1') {
+          calls.status += 1;
+          // First answer starts the polling; the poll's own request never returns.
+          if (calls.status > 1) return new Promise<Response>(() => {});
+          return makeJsonResponse({ data: { protected: true, lastJob: null, activeJobs: [activeJob()] } });
+        }
+        if (url === '/backup/jobs?deviceId=device-1') return makeJsonResponse({ data: [] });
+        if (url === '/backup/snapshots?deviceId=device-1') return makeJsonResponse({ data: [] });
+        return makeJsonResponse({}, false, 404);
+      });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+      await act(async () => {
+        await flush();
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20000);
+        await flush();
+      });
+      expect(calls.status).toBe(2);
+    });
+
+    it('does not poll when nothing is in flight', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-11-05T12:00:00.000Z'));
+      const calls = mockStatus(() => []);
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+      await act(async () => {
+        await flush();
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000);
+        await flush();
+      });
+      expect(calls.status).toBe(1);
+      expect(screen.queryByTestId('device-backup-active-jobs')).toBeNull();
+    });
+
+    it('renders the in-progress cards above Job History and stops a job through the cancel route', async () => {
+      mockStatus(() => [activeJob()]);
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+      const section = await screen.findByTestId('device-backup-active-jobs');
+      const history = screen.getByText('Job History');
+      expect(section.compareDocumentPosition(history) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+      fireEvent.click(within(section).getByTestId('device-backup-active-job-stop'));
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith('/backup/jobs/job-live/cancel', { method: 'POST' });
+      });
+    });
   });
 });
