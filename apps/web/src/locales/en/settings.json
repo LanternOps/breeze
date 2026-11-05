@@ -264,7 +264,17 @@
     }
   },
   "partnerAiBudgets": {
-    "enable": "Enable AI budget enforcement",
+    "aiAccess": "AI for all organizations",
+    "aiAccessOptions": {
+      "notSet": "Not set, each organization decides",
+      "on": "On for every organization",
+      "off": "Off for every organization"
+    },
+    "aiAccessHelp": "This is the AI on/off switch for your clients, not a budget setting. When set, it replaces each organization's own AI switch. The budget fields below apply either way.",
+    "offWarning": "AI is off for every organization under this partner. Chat, the helper, Office add-ins, AI agents and enrichment are refused until you change this.",
+    "offConfirmTitle": "Turn off AI for every organization?",
+    "offConfirmMessage": "Every organization under this partner loses AI: chat, the helper, Office add-ins, AI agents and enrichment are refused, and organizations can't turn it back on themselves. Nothing changes until you save.",
+    "offConfirmAction": "Turn off AI",
     "monthlyBudget": "Monthly Budget ($)",
     "dailyBudget": "Daily Budget ($)",
     "approvalMode": "Approval Mode",
@@ -1734,6 +1744,16 @@
     "baselineSkipped_one": "{{count}} message already in this inbox will not be imported. Only mail received after you connected becomes tickets.",
     "baselineSkipped_other": "{{count}} messages already in this inbox will not be imported. Only mail received after you connected becomes tickets.",
     "retest": "Re-test",
+    "gatewayTitle": "Mail gateway (optional)",
+    "gatewayHint": "If mail reaches this mailbox through an inline gateway such as Avanan, Mimecast, Proofpoint or Barracuda, Microsoft's own check may fail legitimate mail. List the gateway's ARC sealing domain, the d= value in the ARC-Seal header of a message it delivered, and Breeze uses the gateway's verdict instead. Leave this empty if you have no gateway.",
+    "gatewayWarning": "Only add a gateway that all of this tenant's inbound mail is forced through: first restrict inbound delivery in Exchange to the gateway with a connector. Otherwise Breeze can't tell mail the gateway delivered from mail sent directly to Exchange.",
+    "gatewayLabel": "Trusted ARC sealing domains",
+    "gatewayPlaceholder": "gateway.example.com",
+    "gatewaySave": "Save gateway list",
+    "gatewaySaved": "Mail gateway list saved",
+    "gatewaySaveFailed": "Could not save the mail gateway list.",
+    "gatewayInvalid": "\"{{value}}\" is not a domain name.",
+    "gatewayTooMany": "Enter at most {{max}} domains.",
     "reconnect": "Reconnect",
     "disconnect": "Disconnect",
     "empty": "No mailbox connected yet.",
@@ -1857,16 +1877,21 @@
   },
   "orgBrandingEditor": {
     "title": "Branding",
-    "description": "Customize the portal experience for {{organization}}.",
+    "description": "Logo, colors and custom CSS for {{organization}}'s customer portal and documents.",
     "save": "Save branding",
     "saved": "Branding settings saved.",
+    "saveError": "Failed to save branding.",
     "managedByPartner": "Managed by partner",
     "logo": {
       "title": "Logo",
       "previewAlt": "Organization logo preview",
       "uploadNew": "Upload a new logo",
-      "recommendation": "SVG or PNG, recommended 512x512",
-      "selected": "Selected: {{name}}"
+      "selected": "Selected: {{name}}",
+      "help": "Shown in this organization's customer portal and on its quotes, invoices and reports. Leave empty to use the partner's logo.",
+      "inheritedSource": "Partner logo",
+      "remove": "Remove",
+      "loadError": "Could not load the saved logo. Uploading is disabled until this loads.",
+      "legacyNotice": "This logo was saved earlier but was never shown to customers. Save to start using it, or remove it."
     },
     "colors": {
       "primary": "Primary color",
@@ -1874,42 +1899,16 @@
       "primaryInheritedSource": "Partner brand color",
       "primaryHelp": "Accent color on this organization's quotes, invoices and other customer documents. Leave blank to use the partner's brand color.",
       "primaryInvalid": "Enter a hex color such as #2563eb.",
-      "primaryLoadError": "Could not load the saved primary color. Editing is disabled until this loads."
-    },
-    "theme": {
-      "title": "Theme",
-      "description": "System respects user OS preference when available.",
-      "options": {
-        "light": "Light",
-        "dark": "Dark",
-        "system": "System"
-      }
-    },
-    "subdomain": {
-      "title": "Portal subdomain",
-      "previewUrl": "Available preview URL: {{url}}"
+      "primaryLoadError": "Could not load the saved primary color. Editing is disabled until this loads.",
+      "secondaryInheritedSource": "Partner secondary color",
+      "secondaryHelp": "Heading color on this organization's quote PDFs, when dark enough to read, and accent color on its report PDFs. Leave blank to use the partner's secondary color.",
+      "secondaryLoadError": "Could not load the saved secondary color. Editing is disabled until this loads."
     },
     "customCss": {
       "title": "Custom CSS (advanced)",
       "description": "Use custom styles to fine tune spacing, typography, or layout.",
-      "saveError": "Failed to save custom CSS.",
       "loadError": "Could not load your currently saved custom CSS. Editing is disabled until this loads.",
       "saveBlockedByLoadError": "Custom CSS was not saved: the current value could not be verified. Reload the page and try again."
-    },
-    "preview": {
-      "action": "Preview",
-      "title": "Portal preview",
-      "description": "Live draft based on current branding inputs",
-      "close": "Close preview",
-      "logoAlt": "Preview logo",
-      "portalName": "{{organization}} Portal",
-      "welcome": "Welcome back",
-      "body": "This preview reflects your current portal branding draft, including colors and logo choices.",
-      "openTicket": "Open support ticket",
-      "viewDevices": "View device list",
-      "urlLabel": "Preview URL",
-      "cssPayload": "Custom CSS payload",
-      "noCustomCss": "/* No custom CSS */"
     }
   },
   "orgDefaultsEditor": {
@@ -6380,7 +6379,7 @@
       "extensionsDescription": "Third-party extension sections",
       "portalBranding": "Portal & Branding",
       "branding": "Branding",
-      "brandingDescription": "Portal theme and visuals",
+      "brandingDescription": "Logo, colors and custom CSS",
       "portal": "Customer Portal",
       "portalDescription": "Features and support",
       "securityAccess": "Security & Access",

@@ -24,6 +24,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { FilterSelect } from '../shared/FilterSelect';
 import { cn, formatNumber } from '@/lib/utils';
 import { formatDate, formatTime } from '@/lib/dateTimeFormat';
+import { utcDateOnly } from '@/lib/dateOnly';
 import { formatPercent } from '@/lib/i18n/format';
 import { useStableT } from '@/lib/i18n/useStableT';
 
@@ -132,7 +133,17 @@ const normalizeTrendData = (raw: unknown): Array<{ timestamp: string; value: num
     .filter((item): item is { timestamp: string; value: number } => Boolean(item));
 };
 
-const normalizePerformanceData = (raw: unknown): PerformancePoint[] => {
+const UTC_MIDNIGHT_RE = /^\d{4}-\d{2}-\d{2}T00:00:00(?:\.0+)?Z$/;
+
+/**
+ * `/metrics/trends` day buckets arrive as UTC-midnight instants but mean a
+ * calendar date; reduce them to `YYYY-MM-DD` so the axis does not label them a
+ * day early west of UTC (#10937). Any other label passes through unchanged.
+ */
+const dayBucketLabel = (label: string): string =>
+  UTC_MIDNIGHT_RE.test(label) ? utcDateOnly(label) : label;
+
+export const normalizePerformanceData = (raw: unknown): PerformancePoint[] => {
   const record = getRecord(raw);
   const seriesRecord = isRecord(record.series) ? record.series : record;
   const cpuSeries = Array.isArray(seriesRecord.cpu) ? seriesRecord.cpu : null;
@@ -148,7 +159,7 @@ const normalizePerformanceData = (raw: unknown): PerformancePoint[] => {
       series.forEach((entry, index) => {
         const item = getRecord(entry);
         const label = item.timestamp ?? item.time ?? item.label ?? item.bucket;
-        const timestamp = label ? String(label) : String(index + 1);
+        const timestamp = label ? dayBucketLabel(String(label)) : String(index + 1);
         const value = pickNumber(item.value, item.percent, item.usage, item[key]);
         const existing = merged.get(timestamp) ?? { timestamp, cpu: 0, memory: 0 };
         existing[key] = value;
@@ -174,7 +185,7 @@ const normalizePerformanceData = (raw: unknown): PerformancePoint[] => {
   return data.map((entry, index) => {
     const item = getRecord(entry);
     const label = item.timestamp ?? item.time ?? item.label ?? item.bucket;
-    const timestamp = label ? String(label) : String(index + 1);
+    const timestamp = label ? dayBucketLabel(String(label)) : String(index + 1);
     const metrics = getRecord(item.metrics);
     const value = getRecord(item.value);
     const cpu = pickNumber(

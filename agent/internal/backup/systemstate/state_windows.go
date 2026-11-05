@@ -8,13 +8,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/vss"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"golang.org/x/sys/windows"
 )
 
@@ -175,7 +175,7 @@ func (c *WindowsCollector) collectBootConfig(stagingDir string) ([]Artifact, err
 	}
 
 	outPath := filepath.Join(dir, "bcd_export")
-	cmd := exec.Command("bcdedit", "/export", outPath)
+	cmd := procspawn.Command("bcdedit", "/export", outPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("bcdedit export: %s: %w", string(out), err)
 	}
@@ -193,7 +193,7 @@ func (c *WindowsCollector) collectDrivers(stagingDir string) ([]Artifact, error)
 	}
 
 	outPath := filepath.Join(dir, "inventory.csv")
-	cmd := exec.Command("driverquery", "/v", "/fo", "csv")
+	cmd := procspawn.Command("driverquery", "/v", "/fo", "csv")
 	data, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("driverquery: %w", err)
@@ -223,7 +223,7 @@ func (c *WindowsCollector) collectCertificates(stagingDir string) ([]Artifact, e
 		return nil, err
 	}
 
-	cmd := exec.Command("certutil", "-backupDB", dir)
+	cmd := procspawn.Command("certutil", "-backupDB", dir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("certutil backupDB: %s: %w", string(out), err)
 	}
@@ -241,7 +241,7 @@ func (c *WindowsCollector) collectServices(stagingDir string) ([]Artifact, error
 	}
 
 	outPath := filepath.Join(dir, "services.txt")
-	cmd := exec.Command("sc", "query", "type=service", "state=all")
+	cmd := procspawn.Command("sc", "query", "type=service", "state=all")
 	data, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("sc query: %w", err)
@@ -263,7 +263,7 @@ func (c *WindowsCollector) collectScheduledTasks(stagingDir string) ([]Artifact,
 	}
 
 	outPath := filepath.Join(dir, "tasks.csv")
-	cmd := exec.Command("schtasks", "/query", "/fo", "csv", "/v")
+	cmd := procspawn.Command("schtasks", "/query", "/fo", "csv", "/v")
 	data, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("schtasks: %w", err)
@@ -285,7 +285,7 @@ func (c *WindowsCollector) collectFirewall(stagingDir string) ([]Artifact, error
 	}
 
 	outPath := filepath.Join(dir, "rules.wfw")
-	cmd := exec.Command("netsh", "advfirewall", "export", outPath)
+	cmd := procspawn.Command("netsh", "advfirewall", "export", outPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("netsh advfirewall export: %s: %w", string(out), err)
 	}
@@ -303,7 +303,7 @@ func (c *WindowsCollector) collectFeatures(stagingDir string) ([]Artifact, error
 	}
 
 	outPath := filepath.Join(dir, "features.txt")
-	cmd := exec.Command("dism", "/online", "/get-features", "/format:table")
+	cmd := procspawn.Command("dism", "/online", "/get-features", "/format:table")
 	data, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("dism get-features: %w", err)
@@ -331,7 +331,7 @@ func (c *WindowsCollector) collectIIS(stagingDir string) ([]Artifact, error) {
 	}
 
 	outPath := filepath.Join(dir, "config.xml")
-	cmd := exec.Command(appcmd, "list", "config", "/xml")
+	cmd := procspawn.Command(appcmd, "list", "config", "/xml")
 	data, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("appcmd list config: %w", err)
@@ -347,7 +347,7 @@ func (c *WindowsCollector) collectIIS(stagingDir string) ([]Artifact, error) {
 // ---------------------------------------------------------------------------
 
 func windowsVersion() string {
-	out, err := exec.Command("cmd", "/c", "ver").Output()
+	out, err := procspawn.Command("cmd", "/c", "ver").Output()
 	if err != nil {
 		return "windows"
 	}

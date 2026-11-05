@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -24,6 +23,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/netpolicy"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/secmem"
 )
 
@@ -1645,7 +1645,7 @@ func defaultStagedSignatureCheck(path string) error {
 	if runtime.GOOS != "darwin" {
 		return nil
 	}
-	out, err := exec.Command("codesign", "--verify", "--verbose", path).CombinedOutput()
+	out, err := procspawn.Command("codesign", "--verify", "--verbose", path).CombinedOutput()
 	if err == nil {
 		return nil
 	}

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"strings"
 	"sync"
 	"time"
@@ -57,7 +57,7 @@ var errLocalAdminTimeout = errors.New("local administrators query timed out")
 var runLocalAdminPowerShell = func(timeout time.Duration, script string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	output, err := procspawn.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return string(output), errLocalAdminTimeout
 	}

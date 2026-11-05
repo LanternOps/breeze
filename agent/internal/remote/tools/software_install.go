@@ -24,6 +24,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/netpolicy"
 	"github.com/breeze-rmm/agent/internal/procoutput"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/updater"
 )
 
@@ -804,22 +805,22 @@ func executeInstaller(localPath, fileType, silentInstallArgs string, successExit
 	// OS, so each case only has to say how to run it.
 	switch fileType {
 	case "msi":
-		cmd = exec.CommandContext(ctx, "msiexec", buildMSIExecArgs(localPath, silentInstallArgs)...)
+		cmd = procspawn.CommandContext(ctx, "msiexec", buildMSIExecArgs(localPath, silentInstallArgs)...)
 
 	case "exe":
 		if silentInstallArgs != "" {
 			args := strings.ReplaceAll(silentInstallArgs, "{file}", localPath)
 			parts := splitCommandLine(args)
-			cmd = exec.CommandContext(ctx, localPath, parts...)
+			cmd = procspawn.CommandContext(ctx, localPath, parts...)
 		} else {
-			cmd = exec.CommandContext(ctx, localPath)
+			cmd = procspawn.CommandContext(ctx, localPath)
 		}
 
 	case "deb":
-		cmd = exec.CommandContext(ctx, "dpkg", "-i", localPath)
+		cmd = procspawn.CommandContext(ctx, "dpkg", "-i", localPath)
 
 	case "pkg":
-		cmd = exec.CommandContext(ctx, "installer", "-pkg", localPath, "-target", "/")
+		cmd = procspawn.CommandContext(ctx, "installer", "-pkg", localPath, "-target", "/")
 
 	case "dmg":
 		// Mount, find .app or .pkg, install, unmount
@@ -1067,9 +1068,9 @@ func buildMSIExecArgs(localPath, silentInstallArgs string) []string {
 }
 
 // dmgCommandContext builds installDMG's child processes. A var (not a direct
-// exec.CommandContext call) solely so tests can drive the DMG path without a
+// procspawn.CommandContext call) solely so tests can drive the DMG path without a
 // real disk image; production behavior is unchanged.
-var dmgCommandContext = exec.CommandContext
+var dmgCommandContext = procspawn.CommandContext
 
 // successExitCodes are the version's declared vendor success codes (#7038). They
 // apply to the embedded .pkg — the version's real installer — and never to the

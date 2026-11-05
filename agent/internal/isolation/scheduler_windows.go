@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"syscall"
@@ -15,6 +14,7 @@ import (
 	"unsafe"
 
 	"github.com/breeze-rmm/agent/internal/isolation/journal"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"golang.org/x/sys/windows"
 )
 
@@ -77,7 +77,7 @@ func NewPlatformScheduler(dataDir string) RecoveryScheduler {
 func runRecoveryCommand(timeout time.Duration, path string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, path, args...).CombinedOutput()
+	output, err := procspawn.CommandContext(ctx, path, args...).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("execute %s: %w (%s)", path, err, output)
 	}

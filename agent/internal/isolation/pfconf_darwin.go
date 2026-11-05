@@ -8,9 +8,10 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 const (
@@ -27,7 +28,7 @@ type execPFRunner struct{ ctx context.Context }
 func (r execPFRunner) run(stdin, binary string, args ...string) (string, string, error) {
 	ctx, cancel := context.WithTimeout(r.ctx, pfCommandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd := procspawn.CommandContext(ctx, binary, args...)
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}

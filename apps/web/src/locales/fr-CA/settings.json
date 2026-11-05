@@ -264,7 +264,17 @@
     }
   },
   "partnerAiBudgets": {
-    "enable": "Activer l’application budgétaire par IA",
+    "aiAccess": "IA pour toutes les organisations",
+    "aiAccessOptions": {
+      "notSet": "Non défini, chaque organisation décide",
+      "on": "Activée pour toutes les organisations",
+      "off": "Désactivée pour toutes les organisations"
+    },
+    "aiAccessHelp": "Il s'agit de l'interrupteur IA de vos clients, pas d'un réglage de budget. Lorsqu'il est défini, il remplace l'interrupteur IA propre à chaque organisation. Les champs de budget ci-dessous s'appliquent dans les deux cas.",
+    "offWarning": "L'IA est désactivée pour toutes les organisations de ce partenaire. Le clavardage, le helper, les compléments Office, les agents IA et l'enrichissement sont refusés jusqu'à ce que vous changiez ce réglage.",
+    "offConfirmTitle": "Désactiver l'IA pour toutes les organisations?",
+    "offConfirmMessage": "Toutes les organisations de ce partenaire perdent l'IA : le clavardage, le helper, les compléments Office, les agents IA et l'enrichissement sont refusés, et les organisations ne peuvent pas la réactiver elles-mêmes. Rien ne change avant l'enregistrement.",
+    "offConfirmAction": "Désactiver l'IA",
     "monthlyBudget": "Budget mensuel ($)",
     "dailyBudget": "Budget quotidien ($)",
     "approvalMode": "Mode d’approbation",
@@ -1734,6 +1744,16 @@
     "baselineSkipped_one": "{{count}} message déjà présent dans cette boîte aux lettres ne sera pas importé. Seuls les courriels reçus après la connexion deviendront des billets.",
     "baselineSkipped_other": "{{count}} messages déjà présents dans cette boîte aux lettres ne seront pas importés. Seuls les courriels reçus après la connexion deviendront des billets.",
     "retest": "Retester",
+    "gatewayTitle": "Passerelle de courriel (facultatif)",
+    "gatewayHint": "Si le courriel arrive à cette boîte par une passerelle en ligne comme Avanan, Mimecast, Proofpoint ou Barracuda, la vérification de Microsoft rejette des courriels légitimes. Indiquez le domaine de scellement ARC de la passerelle, soit la valeur d= de l'en-tête ARC-Seal d'un message qu'elle a livré, et Breeze utilisera son verdict. Laissez ce champ vide si vous n'avez pas de passerelle.",
+    "gatewayWarning": "N'ajoutez qu'une passerelle par laquelle tout le courriel entrant de ce locataire doit passer : limitez d'abord la livraison entrante dans Exchange à la passerelle au moyen d'un connecteur. Sinon, Breeze ne peut pas distinguer le courriel livré par la passerelle de celui envoyé directement à Exchange.",
+    "gatewayLabel": "Domaines de scellement ARC approuvés",
+    "gatewayPlaceholder": "gateway.exemple.com",
+    "gatewaySave": "Enregistrer la liste des passerelles",
+    "gatewaySaved": "Liste des passerelles de courriel enregistrée",
+    "gatewaySaveFailed": "Impossible d'enregistrer la liste des passerelles de courriel.",
+    "gatewayInvalid": "« {{value}} » n'est pas un nom de domaine.",
+    "gatewayTooMany": "Entrez au plus {{max}} domaines.",
     "reconnect": "Reconnecter",
     "disconnect": "Déconnecter",
     "empty": "Aucune boîte aux lettres n’est encore connectée.",
@@ -1857,16 +1877,21 @@
   },
   "orgBrandingEditor": {
     "title": "Image de marque",
-    "description": "Personnalisez l’expérience du portail pour {{organization}}.",
+    "description": "Logo, couleurs et CSS personnalisé pour le portail client et les documents de {{organization}}.",
     "save": "Enregistrer l’identité visuelle",
     "saved": "Paramètres de branding enregistrés.",
+    "saveError": "Échec de l’enregistrement de l’image de marque.",
     "managedByPartner": "Géré par un partenaire",
     "logo": {
       "title": "Logo",
       "previewAlt": "Aperçu du logo de l’organisation",
       "uploadNew": "Téléversez un nouveau logo",
-      "recommendation": "SVG ou PNG, recommandé 512x512",
-      "selected": "Sélectionné : {{name}}"
+      "selected": "Sélectionné : {{name}}",
+      "help": "Affiché dans le portail client de cette organisation ainsi que sur ses soumissions, factures et rapports. Laissez vide pour utiliser le logo du partenaire.",
+      "inheritedSource": "Logo du partenaire",
+      "remove": "Retirer",
+      "loadError": "Impossible de charger le logo enregistré. Le téléversement est désactivé jusqu'à son chargement.",
+      "legacyNotice": "Ce logo a été enregistré auparavant, mais n'a jamais été montré aux clients. Enregistrez pour commencer à l'utiliser, ou retirez-le."
     },
     "colors": {
       "primary": "Couleur primaire",
@@ -1874,42 +1899,16 @@
       "primaryInheritedSource": "Couleur de marque du partenaire",
       "primaryHelp": "Couleur d'accent des soumissions, factures et autres documents clients de cette organisation. Laissez vide pour utiliser la couleur de marque du partenaire.",
       "primaryInvalid": "Entrez une couleur hexadécimale, par exemple #2563eb.",
-      "primaryLoadError": "Impossible de charger la couleur primaire enregistrée. La modification est désactivée jusqu'à son chargement."
-    },
-    "theme": {
-      "title": "Thème",
-      "description": "Le système respecte la préférence du système d’exploitation utilisateur lorsque disponible.",
-      "options": {
-        "light": "Lumière",
-        "dark": "Sombre",
-        "system": "Système"
-      }
-    },
-    "subdomain": {
-      "title": "Sous-domaine du portail",
-      "previewUrl": "Aperçu disponible URL : {{url}}"
+      "primaryLoadError": "Impossible de charger la couleur primaire enregistrée. La modification est désactivée jusqu'à son chargement.",
+      "secondaryInheritedSource": "Couleur secondaire du partenaire",
+      "secondaryHelp": "Couleur des titres dans les PDF de soumission de cette organisation, si elle est assez foncée pour être lisible, et couleur d'accent dans ses PDF de rapport. Laissez vide pour utiliser la couleur secondaire du partenaire.",
+      "secondaryLoadError": "Impossible de charger la couleur secondaire enregistrée. La modification est désactivée jusqu'à son chargement."
     },
     "customCss": {
       "title": "Personnalisé CSS (avancé)",
       "description": "Utilisez des styles personnalisés pour affiner l’espacement, la typographie ou la mise en page.",
-      "saveError": "Échec de l’enregistrement du CSS personnalisé.",
       "loadError": "Impossible de charger le CSS personnalisé actuellement enregistré. La modification est désactivée tant qu’il n’est pas chargé.",
       "saveBlockedByLoadError": "Le CSS personnalisé n’a pas été enregistré : la valeur actuelle n’a pas pu être vérifiée. Rechargez la page et réessayez."
-    },
-    "preview": {
-      "action": "Prévisualiser",
-      "title": "Aperçu du portail",
-      "description": "Draft en temps réel, basé sur les apports actuels de la marque",
-      "close": "Aperçu fermé",
-      "logoAlt": "Logo de l’aperçu",
-      "portalName": "{{organization}} Portail",
-      "welcome": "Bon retour",
-      "body": "Cette aperçu reflète votre brouillon de branding actuel sur le portail, y compris les couleurs et les choix de logos.",
-      "openTicket": "Billet de support ouvert",
-      "viewDevices": "Voir la liste des appareils",
-      "urlLabel": "Aperçu URL",
-      "cssPayload": "Charge utile personnalisée CSS",
-      "noCustomCss": "/* Pas de costume CSS */"
     }
   },
   "orgDefaultsEditor": {
@@ -6380,7 +6379,7 @@
       "extensionsDescription": "Sections d'extensions tierces",
       "portalBranding": "Portail & Branding",
       "branding": "Image de marque",
-      "brandingDescription": "Thème du portail et visuels",
+      "brandingDescription": "Logo, couleurs et CSS personnalisé",
       "portal": "Portail client",
       "portalDescription": "Fonctionnalités et support",
       "securityAccess": "Sécurité et accès",

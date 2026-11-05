@@ -1208,6 +1208,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // reference wisp_concerns ON DELETE CASCADE, and recipients + watches
   // reference wisp_grants ON DELETE CASCADE; topologicalCascadeOrder() puts
   // them before their parents.
+  // Wisp check-in timers W01 (#10992). wisp_check_ins is the same
+  // partner-anchored / org-optional shape (DUAL_AXIS_TENANT_TABLES): this pass
+  // deletes its org rows only; a check-in on a partner-level thread (org_id
+  // NULL) leaves with its thread / grant / partner. It references
+  // wisp_threads, wisp_grants, users and organizations ON DELETE CASCADE;
+  // topologicalCascadeOrder() puts it before its parents.
+  'wisp_check_ins',
   'wisp_concern_recipients',
   'wisp_concerns',
   'wisp_thread_attachments',

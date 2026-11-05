@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"golang.org/x/sys/windows/registry"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 const (
@@ -72,11 +74,11 @@ func (winEnforcer) RevertGate(class string) EnforceOutcome {
 }
 
 func (winEnforcer) DisableDevice(instanceID string) EnforceOutcome {
-	cmd := exec.Command("pnputil", "/remove-device", instanceID)
+	cmd := procspawn.Command("pnputil", "/remove-device", instanceID)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		removeErr := err
 		removeOut := strings.TrimSpace(string(out))
-		cmd = exec.Command("pnputil", "/disable-device", instanceID)
+		cmd = procspawn.Command("pnputil", "/disable-device", instanceID)
 		if out, err = cmd.CombinedOutput(); err != nil {
 			return EnforceOutcome{Mechanism: "pnputil", Applied: false, Verified: false,
 				Detail: fmt.Sprintf("pnputil remove: %v: %s; disable: %v: %s",
@@ -84,7 +86,7 @@ func (winEnforcer) DisableDevice(instanceID string) EnforceOutcome {
 		}
 	}
 	// Probe: device should no longer enumerate as present (removed) or report disabled.
-	probe := exec.Command("pnputil", "/enum-devices", "/instanceid", instanceID)
+	probe := procspawn.Command("pnputil", "/enum-devices", "/instanceid", instanceID)
 	pout, perr := probe.CombinedOutput()
 	normalized := strings.Join(strings.Fields(strings.ToLower(string(pout))), " ")
 	var exitErr *exec.ExitError

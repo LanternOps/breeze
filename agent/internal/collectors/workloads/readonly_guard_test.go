@@ -42,7 +42,8 @@ var execAllowedFiles = map[string]bool{"runner.go": true}
 func TestOnlyTheRunnerBuildsCommands(t *testing.T) {
 	seen := false
 	for name, src := range packageSources(t) {
-		if strings.Contains(src, "exec.Command") {
+		// procspawn.Command(Context) is os/exec plus Linux cgroup placement.
+		if strings.Contains(src, "exec.Command") || strings.Contains(src, "procspawn.Command") {
 			if name != "runner.go" {
 				t.Errorf("%s builds a command outside runner.go", name)
 			}
@@ -50,7 +51,7 @@ func TestOnlyTheRunnerBuildsCommands(t *testing.T) {
 		}
 	}
 	if !seen {
-		t.Fatal("found no exec.Command in runner.go; the guard is vacuous")
+		t.Fatal("found no exec.Command / procspawn.Command in runner.go; the guard is vacuous")
 	}
 }
 

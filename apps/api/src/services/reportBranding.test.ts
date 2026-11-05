@@ -26,6 +26,12 @@ vi.mock('../db/schema', () => ({
     name: 'partners.name',
     settings: 'partners.settings',
   },
+  portalBranding: {
+    orgId: 'portal_branding.org_id',
+    logoUrl: 'portal_branding.logo_url',
+    primaryColor: 'portal_branding.primary_color',
+    secondaryColor: 'portal_branding.secondary_color',
+  },
 }));
 
 import { loadReportBrandingForOrg, loadReportBrandingForPartner, pngAspectFromDataUrl } from './reportBranding';
@@ -42,10 +48,11 @@ function selectChain(rows: unknown[]) {
   return chain;
 }
 
-/** Stage the two hops in order: the org lookup, then the partner lookup. */
-function stage(orgRows: unknown[], partnerRows: unknown[] = []) {
+/** Stage the hops in order: the org lookup, the org's portal_branding row, then the partner lookup. */
+function stage(orgRows: unknown[], partnerRows: unknown[] = [], brandRows: unknown[] = []) {
   selectMock
     .mockReturnValueOnce(selectChain(orgRows))
+    .mockReturnValueOnce(selectChain(brandRows))
     .mockReturnValueOnce(selectChain(partnerRows));
 }
 
@@ -136,7 +143,51 @@ describe('loadReportBrandingForOrg', () => {
     stage([{ partnerId: PARTNER_ID }], [{ partnerName: 'Olive MSP', partnerSettings: {} }]);
     await loadReportBrandingForOrg(ORG_ID);
     expect(readWithPartnerAxisVisibilityMock).toHaveBeenCalledTimes(1);
-    expect(selectMock).toHaveBeenCalledTimes(2);
+    expect(selectMock).toHaveBeenCalledTimes(3);
+  });
+
+  // #9673: reports follow the same partner default -> org override chain as
+  // quotes and invoices (resolveDocumentBrand).
+  it("the org's logo and colours override the partner's, field by field", async () => {
+    stage(
+      [{ partnerId: PARTNER_ID }],
+      [{ partnerName: 'Olive MSP', partnerSettings: { branding: { logoUrl: png(1, 2), primaryColor: '#7a1d18', secondaryColor: '#0b1b2d' } } }],
+      [{ logoUrl: png(2, 1), primaryColor: '#123456', secondaryColor: null }],
+    );
+    const branding = await loadReportBrandingForOrg(ORG_ID);
+    expect(branding.logoDataUrl).toBe(png(2, 1));
+    expect(branding.logoAspect).toBe(2);
+    expect(branding.primaryColor).toBe('#123456');
+    expect(branding.accentColor).toBe('#0b1b2d');
+    expect(branding.name).toBe('Olive MSP');
+  });
+
+  it("an org secondary colour becomes the report accent", async () => {
+    stage(
+      [{ partnerId: PARTNER_ID }],
+      [{ partnerName: 'Olive MSP', partnerSettings: { branding: { secondaryColor: '#0b1b2d' } } }],
+      [{ logoUrl: null, primaryColor: null, secondaryColor: '#654321' }],
+    );
+    expect((await loadReportBrandingForOrg(ORG_ID)).accentColor).toBe('#654321');
+  });
+
+  it("the org's portal_branding row is read in the caller's own context, not the partner-axis escape", async () => {
+    let brandReadInsideEscape = false;
+    let insideEscape = false;
+    readWithPartnerAxisVisibilityMock.mockImplementation(async (fn: () => Promise<unknown>) => {
+      insideEscape = true;
+      try { return await fn(); } finally { insideEscape = false; }
+    });
+    const brandChain = selectChain([]);
+    const whereSpy = vi.fn(() => { brandReadInsideEscape = insideEscape; return brandChain; });
+    brandChain.where = whereSpy;
+    selectMock
+      .mockReturnValueOnce(selectChain([{ partnerId: PARTNER_ID }]))
+      .mockReturnValueOnce(brandChain)
+      .mockReturnValueOnce(selectChain([{ partnerName: 'Olive MSP', partnerSettings: {} }]));
+    await loadReportBrandingForOrg(ORG_ID);
+    expect(whereSpy).toHaveBeenCalledOnce();
+    expect(brandReadInsideEscape).toBe(false);
   });
 });
 

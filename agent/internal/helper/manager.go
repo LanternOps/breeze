@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/updater"
 	"gopkg.in/yaml.v3"
@@ -361,7 +361,7 @@ func defaultSpawnFunc(sessionKey, binaryPath string, args ...string) (int, error
 	if len(args) >= 2 && args[0] == "--config" {
 		return spawnWithConfig(binaryPath, sessionKey, args[1])
 	}
-	cmd := exec.Command(binaryPath, args...)
+	cmd := procspawn.Command(binaryPath, args...)
 	cmd.Dir = filepath.Dir(binaryPath)
 	cmd.Stdout = nil
 	cmd.Stderr = nil

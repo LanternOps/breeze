@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/svcquery"
 )
 
@@ -64,7 +65,7 @@ func (d *checkDispatcher) checkCommand(command, parse string) bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
+	cmd := procspawn.CommandContext(ctx, parts[0], parts[1:]...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {

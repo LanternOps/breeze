@@ -31,6 +31,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/spf13/cobra"
 )
@@ -275,6 +276,12 @@ func runBackupHelper() {
 	log := logging.L("backup-helper")
 	if cfgErr != nil {
 		log.Warn("failed to load config, using defaults", "error", cfgErr.Error())
+	}
+	// On an isolated Linux host the agent starts this helper in its own
+	// cgroup, which carries the management-plane permit (backup server, log
+	// shipping). The helper's own children must not share it.
+	if err := procspawn.EnableInAgentCgroup(); err != nil {
+		log.Error("cannot place backup child processes outside the agent cgroup", "error", err.Error())
 	}
 	helperStagingDir = resolveBackupStagingDir(cfg.BackupStagingDir)
 	// #5460: a helper killed mid-export never ran its deferred cleanup; reclaim

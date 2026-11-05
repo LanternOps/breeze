@@ -12,11 +12,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/patching/linuxsession"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 const (
@@ -149,7 +149,7 @@ func wallMessage(title, body string) string {
 // that happened to name a readable file would broadcast that file instead.
 // Both read stdin when given no argument.
 func runWall(ctx context.Context, binary, message string) error {
-	cmd := exec.CommandContext(ctx, binary)
+	cmd := procspawn.CommandContext(ctx, binary)
 	cmd.Stdin = strings.NewReader(message)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
