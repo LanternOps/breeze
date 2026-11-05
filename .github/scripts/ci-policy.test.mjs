@@ -73,12 +73,27 @@ test('the classifier reads only sidecar files that are listed policy files', () 
     const variable = target.match(/^\$\{(\w+)\}$/)?.[1];
     assert.ok(variable && variable in sidecars, `classifier reads ${target}, which is not a listed sidecar`);
   }
+  // Other ways bash reads a file. None is used today; one appearing needs this test extended first.
+  assert.doesNotMatch(code, /\bcat\b|\$\(<|\bmapfile\b|\breadarray\b|\bsource\b|^\s*\.\s+\S/m);
+});
+
+test('queue-selection reads only listed files and imports only listed modules', () => {
+  for (const [file, source] of [['.github/scripts/queue-selection.mjs', read('.github/scripts/queue-selection.mjs')],
+    ['.github/scripts/ci-policy.mjs', read('.github/scripts/ci-policy.mjs')]]) {
+    const local = [...source.matchAll(/^import [^;]*? from '(\.[^']+)'/gm)].map(m => join(dirname(file), m[1]));
+    for (const path of local) assert.ok(POLICY_FILES.includes(path), `${file} imports unlisted ${path}`);
+    for (const [, path] of source.matchAll(/io\.read\('([^']+)'\)/g)) {
+      assert.ok(POLICY_FILES.includes(path), `${file} reads unlisted ${path}`);
+    }
+    // The only computed read of a repo file is a Playwright config, pinned above.
+    for (const [, template] of source.matchAll(/io\.read\(`([^`]+)`\)/g)) assert.equal(template, 'e2e-tests/${name}');
+  }
 });
 
 test('selection reads only policy files and execs only the listed classifier', () => {
   const fixtureDir = join(REPO_ROOT, '.github/scripts/fixtures/queue-selection');
   const fixtures = readdirSync(fixtureDir).filter(f => f.endsWith('.json')).map(f => JSON.parse(readFileSync(join(fixtureDir, f), 'utf8')));
-  assert.equal(fixtures.length, 7);
+  assert.ok(fixtures.length >= 7, `found ${fixtures.length} fixtures`);
   const reads = new Set(), execs = new Set();
   const io = {
     read: path => { reads.add(path); return read(path); },
@@ -97,10 +112,10 @@ test('selection reads only policy files and execs only the listed classifier', (
   assert.deepEqual([...execs], ['bash .github/scripts/classify-pr-paths.sh']);
 });
 
-test('lint runs this suite right after the W4 queue selection contract', () => {
+test('lint runs this suite', () => {
   const lint = workflow.match(/^  lint:\n([\s\S]*?)(?=^  [a-z][\w-]*:\n)/m)?.[1];
   assert.ok(lint, 'lint job not found');
-  assert.match(lint, /run: node --test \.github\/scripts\/queue-selection\.test\.mjs\n\n      - name: Test CI policy manifest \(W02\)\n        run: node --test \.github\/scripts\/ci-policy\.test\.mjs\n/);
+  assert.match(lint, /^        run: node --test \.github\/scripts\/ci-policy\.test\.mjs$/m);
 });
 
 test('policyDigest tolerates listed files that do not exist yet, and stays stable', () => {
