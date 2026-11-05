@@ -134,6 +134,16 @@ import { finalizeDesktopSessionOnce } from '../../services/desktopSessionFinaliz
 import { REAPER_DOMAINS } from '../../jobs/staleCommandReaper';
 import { commitDesktopStartIntent } from '../../services/remoteDesktopStartIntent';
 import {
+  __resetDesktopReconnectGraceForTest,
+  endDesktopSessionAfterReconnectGrace,
+  endHeldDesktopSessionNow,
+  enforceExpiredDesktopReconnectHold,
+  holdDesktopSessionForReconnect,
+  isDesktopSessionHeldForReconnect,
+  markDesktopViewerReconnectIntent,
+} from '../../services/desktopReconnectGrace';
+import { getRedis } from '../../services/redis';
+import {
   buildStopDesktopCommand,
   commitDesktopTerminalIntent,
   confirmDesktopTerminalIntent,
@@ -562,6 +572,21 @@ const WRITERS: WriterCase[] = [
     sendsStop: false,
   },
   {
+    // #10542: the held end of a peer drop that followed a viewer reconnect.
+    writer: 'services/desktopReconnectGrace.ts:endDesktopSessionAfterReconnectGrace',
+    seedStatus: 'active',
+    run: async (fx) => {
+      expect(await endDesktopSessionAfterReconnectGrace({
+        sessionId: fx.sessionId,
+        deviceId: fx.deviceId,
+        startGeneration: SEED_GENERATION,
+      })).toBe('ended');
+    },
+    expectStatus: 'disconnected',
+    expectPhase: 'confirmed',
+    sendsStop: false,
+  },
+  {
     writer: 'routes/agentWs.ts:desk-start consent_denied',
     seedStatus: 'connecting',
     run: async (fx) => {
@@ -804,5 +829,95 @@ describe('one terminal-intent contract for every terminal writer', () => {
       .set({ terminationPhase: 'confirmed' })
       .where(eq(remoteSessions.id, fx.sessionId)))
       .rejects.toMatchObject({ cause: { code: '23514' } });
+  });
+});
+
+// #10542: a peer drop that the viewer's own reconnect caused is held for a
+// short grace instead of ending the session and revoking the viewer token under
+// the reconnect. Real row, real Redis, real agentWs handler.
+describe('#10542 — peer drop during a viewer reconnect', () => {
+  const revokedKey = (sessionId: string) => `viewer-session-revoked:${sessionId}`;
+  const isRevoked = async (sessionId: string) => (await getRedis()!.get(revokedKey(sessionId))) === '1';
+  const peerDrop = (fx: Fixture) => agentResult(fx, {
+    commandId: `desk-disconnect-${fx.sessionId}`,
+    status: 'completed',
+    result: { event: 'peer_disconnected', sessionId: fx.sessionId },
+  });
+
+  afterEach(() => {
+    __resetDesktopReconnectGraceForTest();
+  });
+
+  it('holds the drop, then the reconnect offer is accepted and the expired hold leaves the session alone', async () => {
+    const fx = await seed('active');
+    await markDesktopViewerReconnectIntent(fx.sessionId);
+
+    await peerDrop(fx);
+
+    // Held: still live, token not revoked.
+    expect(isDesktopSessionHeldForReconnect(fx.sessionId)).toBe(true);
+    expect(await readFence(fx.sessionId)).toMatchObject({ status: 'active', generation: SEED_GENERATION, phase: 'none' });
+    expect(await isRevoked(fx.sessionId)).toBe(false);
+
+    // The viewer's reconnect offer commits a new start.
+    const start = await withSystemDbAccessContext(() => commitDesktopStartIntent({
+      sessionId: fx.sessionId,
+      startCommandId: `desk-start-${fx.sessionId}-${randomUUID()}`,
+      promptMode: 'off',
+      consentUnavailableBehavior: null,
+      offer: OFFER,
+    }));
+    expect(start).toMatchObject({ ok: true, generation: SEED_GENERATION + 1n });
+
+    // The grace runs out: the held end names the interrupted start and matches nothing.
+    expect(await endDesktopSessionAfterReconnectGrace({
+      sessionId: fx.sessionId,
+      deviceId: fx.deviceId,
+      startGeneration: SEED_GENERATION,
+    })).toBe('superseded');
+    expect(await readFence(fx.sessionId)).toMatchObject({ status: 'connecting', generation: SEED_GENERATION + 1n, phase: 'none' });
+    expect(await isRevoked(fx.sessionId)).toBe(false);
+  });
+
+  it('Finding #5 unchanged: a drop with no reconnect in flight ends the session and revokes the token at once', async () => {
+    const fx = await seed('active');
+
+    await peerDrop(fx);
+
+    expect(isDesktopSessionHeldForReconnect(fx.sessionId)).toBe(false);
+    expect(await readFence(fx.sessionId)).toMatchObject({ status: 'disconnected', phase: 'confirmed' });
+    expect(await isRevoked(fx.sessionId)).toBe(true);
+  });
+
+  it('a held drop with no reconnect ends and revokes when the grace expires', async () => {
+    const fx = await seed('active');
+    await markDesktopViewerReconnectIntent(fx.sessionId);
+    await peerDrop(fx);
+    expect(isDesktopSessionHeldForReconnect(fx.sessionId)).toBe(true);
+
+    // What the timer runs at expiry (the 20 s wait itself is unit-tested).
+    expect(await endHeldDesktopSessionNow(fx.sessionId, fx.deviceId)).toBe(true);
+
+    expect(await readFence(fx.sessionId)).toMatchObject({ status: 'disconnected', phase: 'confirmed', generation: SEED_GENERATION + 1n });
+    expect(await isRevoked(fx.sessionId)).toBe(true);
+    expect(await getRedis()!.get(`desktop-reconnect-hold:${fx.sessionId}`)).toBeNull();
+  });
+
+  it('a hold whose timer was lost is ended by the next viewer-token check after its deadline', async () => {
+    const fx = await seed('active');
+    expect(await holdDesktopSessionForReconnect({
+      sessionId: fx.sessionId,
+      deviceId: fx.deviceId,
+      startGeneration: SEED_GENERATION,
+      graceMs: 1,
+    })).toBe('held');
+    // The holding instance goes away before its timer fires.
+    __resetDesktopReconnectGraceForTest();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const session = { id: fx.sessionId, deviceId: fx.deviceId, desktopStartGeneration: SEED_GENERATION };
+    expect(await enforceExpiredDesktopReconnectHold(session)).toBe('ended');
+    expect(await readFence(fx.sessionId)).toMatchObject({ status: 'disconnected' });
+    expect(await isRevoked(fx.sessionId)).toBe(true);
   });
 });

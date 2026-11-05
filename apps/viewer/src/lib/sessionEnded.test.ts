@@ -206,6 +206,44 @@ describe('createWebRTCSession — session-ended (401) handling', () => {
     );
   });
 
+  // #10542: a reconnect whose ICE-server fetch already 401s is over. It must
+  // end at once, not build a peer, gather candidates and post an offer that can
+  // only 401 too.
+  it('throws SessionEndedError when the ICE-server fetch returns 401, without building a peer or posting an offer', async () => {
+    let offers = 0;
+    const createOffer = vi.spyOn(FakeRTCPeerConnection.prototype, 'createOffer');
+    stubFetch((url) => {
+      if (url.includes('/ice-servers')) return jsonResponse({ error: 'Session closed' }, 401);
+      if (url.includes('/viewer/offer')) {
+        offers += 1;
+        return jsonResponse('Session closed', 401);
+      }
+      if (url.includes('/viewer/session')) return jsonResponse('Session closed', 401);
+      return jsonResponse({}, 404);
+    });
+
+    const error = await createWebRTCSession(baseParams, videoEl).catch((err) => err);
+    expect(error).toBeInstanceOf(SessionEndedError);
+    expect(error.message).toBe(SESSION_ENDED_DEFAULT_MESSAGE);
+    expect(offers).toBe(0);
+    expect(createOffer).not.toHaveBeenCalled();
+  });
+
+  it('still falls back to STUN-only when the ICE-server fetch fails for another reason', async () => {
+    let offers = 0;
+    stubFetch((url) => {
+      if (url.includes('/ice-servers')) return jsonResponse({ error: 'boom' }, 500);
+      if (url.includes('/viewer/offer')) {
+        offers += 1;
+        return jsonResponse('Session ended', 401);
+      }
+      return jsonResponse({}, 404);
+    });
+
+    await expect(createWebRTCSession(baseParams, videoEl)).rejects.toBeInstanceOf(SessionEndedError);
+    expect(offers).toBe(1);
+  });
+
   // #5300: the no-video watchdog's swallowed capture error reaches
   // remote_sessions.errorMessage on a 'disconnected' session (agentWs.ts,
   // agentWs.desktop.peerDisconnected). When a reconnect's offer POST 401s

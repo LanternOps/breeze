@@ -72,6 +72,11 @@ import { buildStoredCommandResult } from '../services/storedCommandResult';
 import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES, type CriticalResultFamily } from '../services/agentCommandResultValidation';
 import { updateRestoreJobByCommandId, updateRestoreJobFromResult } from '../services/restoreResultPersistence';
 import { captureException } from '../services/sentry';
+import {
+  DESKTOP_RECONNECT_GRACE_MS,
+  endHeldDesktopSessionNow,
+  holdDesktopPeerDropForReconnect,
+} from '../services/desktopReconnectGrace';
 import { ingestRestorePointOutcome } from '../services/restorePointIngest';
 import { publishEvent } from '../services/eventBus';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
@@ -431,7 +436,7 @@ export function disconnectAgentCredentialGeneration(
   if (!revokedTokenHashes.includes(connection.credentialTokenHash)) return 'not-connected';
   connection.credentialRevoked = true;
   recordAgentWsCredentialClose('revoked');
-  try {
+                try {
     connection.ws.close(closeCode, reason);
   } catch (error) {
     console.error(`credential revocation close failed for ${agentId.slice(0, 12)}:`, error);
@@ -458,7 +463,7 @@ function initializeAgentCredentialSubscription(): Promise<void> {
   });
 
   let subscribePromise: Promise<unknown>;
-  try {
+                try {
     subscribePromise = subscriber.subscribe(AGENT_CREDENTIAL_REVOKED_CHANNEL);
   } catch (error) {
     console.error('[AgentWs] Failed to start credential-revocation subscription:', error);
@@ -522,7 +527,7 @@ export async function publishAgentCredentialRevocation(
   if (!parsed) return 'unavailable';
   const redis = getRedis();
   if (!redis || typeof redis.publish !== 'function') return 'unavailable';
-  try {
+                try {
     await redis.publish(AGENT_CREDENTIAL_REVOKED_CHANNEL, JSON.stringify(parsed));
     return 'published';
   } catch (error) {
@@ -896,7 +901,7 @@ function normalizeCriticalResultIfNeeded(
     };
   }
 
-  try {
+                try {
     const validated = validateCriticalCommandResult(commandType, {
       commandId: result.commandId,
       status: result.status,
@@ -1130,7 +1135,7 @@ export async function isAgentDeviceStillAuthorized(
   authenticatedTokenHash?: string,
   identity?: AgentSocketIdentity,
 ): Promise<AgentDeviceAuthorization> {
-  try {
+                try {
     const [row] = await runOutsideDbContext(() =>
       withSystemDbAccessContext(() =>
         db
@@ -1482,7 +1487,7 @@ const TERMINAL_DEVICE_STATUSES = ['decommissioned', 'quarantined'] as const;
  * ('decommissioned' → 'offline' makes the row visible again).
  */
 async function updateDeviceStatus(agent: OwnDeviceRowIdentity, status: 'online' | 'offline'): Promise<void> {
-  try {
+                try {
     // #8318 §6.4: id + agent_id as the socket authenticated them, so a socket
     // of a superseded install matches 0 rows (updateOwnDeviceRow).
     await updateOwnDeviceRow(
@@ -2391,7 +2396,7 @@ async function applyLateCallerVerifyRejection(
     console.warn(`[AgentWs] late caller rejection for command ${result.commandId} could not be recorded; ignored`);
     return true;
   }
-  try {
+                try {
     await runWithAgentOrgDbAccess('agentWs.commandResult.callerRejection', orgId, partnerId, () =>
       late.handleCallerVerifyResult({
         agentId, command: owned.command, commandId: result.commandId, result,
@@ -2426,7 +2431,7 @@ async function processCommandResult(
   // result already recorded). An unexpected error BEFORE that point means
   // nothing was recorded, so the function-level catch nacks rather than acks.
   let resultSettled = false;
-  try {
+                try {
     // #2434 chokepoint — FIRST statement, so "any agent result that enters this
     // function is redacted" is a true invariant for every exit path below
     // (in-process awaiter, orphaned-result branch, device_commands write, and
@@ -3888,45 +3893,65 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
               const stopReason = redactSecretsFromOutput(
                 typeof fastResult.stopReason === 'string' ? fastResult.stopReason.slice(0, 1024) : ''
               ) || null;
+              // #10542: a drop the viewer's own reconnect caused (it closed
+              // the old peer and fetched ICE servers just before) waits
+              // DESKTOP_RECONNECT_GRACE_MS for the new offer instead of
+              // ending the session and revoking the token under it. Every
+              // other drop, and any failure to decide, ends it now (Finding #5).
+              let peerDropHeld = false;
               try {
-                await runWithAgentDbAccess('agentWs.desktop.peerDisconnected', async () => {
-                  // Through the terminal-intent contract. The
-                  // endpoint is the source of this terminal fact — the agent
-                  // has already stopped — so the phase is 'confirmed' at once.
-                  const result = await commitDesktopTerminalIntent({
-                    sessionId,
-                    write: {
-                      status: 'disconnected',
-                      endedAt: new Date(),
-                      // Only fills errorMessage when it's still empty — never
-                      // overwrites a startup-probe failure text (#5284/#5295)
-                      // that a `desk-start` failure already stored there.
-                      ...(stopReason
-                        ? { errorMessage: sql`COALESCE(${remoteSessions.errorMessage}, ${stopReason})` }
-                        : {}),
-                    },
-                    phase: 'confirmed',
-                    where: [
-                      eq(remoteSessions.deviceId, authenticatedAgent.deviceId),
-                      eq(remoteSessions.status, 'active'),
-                    ],
-                  });
-                  if (result.ok) {
-                    // Kill the viewer token too: a peer drop (tab crash, network
-                    // blip, agent restart) must not leave a still-valid token that
-                    // can resurrect the session via /viewer/offer. Finding #5.
-                    await revokeViewerSession(sessionId);
-                    console.log(`[AgentWs] Session ${sessionId} marked disconnected (peer dropped)`);
-                  }
-                });
-                // A WebSocket-fallback stream this agent stopped on its own
-                // (its lease lapsed or was revoked): end the local relay now
-                // so the viewer is told instead of left on a frozen frame.
-                if (isDesktopSessionOwnedByAgent(sessionId, agentId)) {
-                  closeDesktopRelayForStop(sessionId);
-                }
+                peerDropHeld = await holdDesktopPeerDropForReconnect({
+                  sessionId,
+                  deviceId: authenticatedAgent.deviceId,
+                  stopReason,
+                  relayOwned: isDesktopSessionOwnedByAgent(sessionId, agentId),
+                }) === 'held';
               } catch (err) {
-                console.error(`[AgentWs] Failed to update session disconnect:`, err);
+                console.error(`[AgentWs] Reconnect-hold decision failed for session ${sessionId}; ending it now:`, err);
+              }
+              if (peerDropHeld) {
+                console.log(`[AgentWs] Session ${sessionId} peer dropped during a viewer reconnect; holding its end for ${DESKTOP_RECONNECT_GRACE_MS} ms`);
+              } else {
+                try {
+                  await runWithAgentDbAccess('agentWs.desktop.peerDisconnected', async () => {
+                    // Through the terminal-intent contract. The
+                    // endpoint is the source of this terminal fact — the agent
+                    // has already stopped — so the phase is 'confirmed' at once.
+                    const result = await commitDesktopTerminalIntent({
+                      sessionId,
+                      write: {
+                        status: 'disconnected',
+                        endedAt: new Date(),
+                        // Only fills errorMessage when it's still empty — never
+                        // overwrites a startup-probe failure text (#5284/#5295)
+                        // that a `desk-start` failure already stored there.
+                        ...(stopReason
+                          ? { errorMessage: sql`COALESCE(${remoteSessions.errorMessage}, ${stopReason})` }
+                          : {}),
+                      },
+                      phase: 'confirmed',
+                      where: [
+                        eq(remoteSessions.deviceId, authenticatedAgent.deviceId),
+                        eq(remoteSessions.status, 'active'),
+                      ],
+                    });
+                    if (result.ok) {
+                      // Kill the viewer token too: a peer drop (tab crash, network
+                      // blip, agent restart) must not leave a still-valid token that
+                      // can resurrect the session via /viewer/offer. Finding #5.
+                      await revokeViewerSession(sessionId);
+                      console.log(`[AgentWs] Session ${sessionId} marked disconnected (peer dropped)`);
+                    }
+                  });
+                  // A WebSocket-fallback stream this agent stopped on its own
+                  // (its lease lapsed or was revoked): end the local relay now
+                  // so the viewer is told instead of left on a frozen frame.
+                  if (isDesktopSessionOwnedByAgent(sessionId, agentId)) {
+                    closeDesktopRelayForStop(sessionId);
+                  }
+                } catch (err) {
+                  console.error(`[AgentWs] Failed to update session disconnect:`, err);
+                }
               }
             }
           }
@@ -3966,6 +3991,12 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
             const expectedSessionId = extractDesktopSessionId(fastCommandId, 'desk-userend-');
             if (expectedSessionId && fastResult.sessionId === expectedSessionId) {
               const userEndDeviceId = authenticatedAgent.deviceId;
+              // #10542: if this session's end is being held for a viewer
+              // reconnect, the person at the device ending it ends it now.
+              await endHeldDesktopSessionNow(expectedSessionId, userEndDeviceId).catch((err) => {
+                console.error(`[AgentWs] Failed to end held session ${expectedSessionId} after the user ended it:`, err);
+                captureException(err instanceof Error ? err : new Error(String(err)));
+              });
               await recordDesktopSessionEndedByUser({
                 sessionId: expectedSessionId,
                 deviceId: userEndDeviceId,
@@ -4803,7 +4834,7 @@ async function checkAgentWsRateLimitDistributed(agentId: string): Promise<{ allo
   if (!redis) {
     return { allowed: !inMemoryWsRateLimited(agentId), degraded: true };
   }
-  try {
+                try {
     const result = await rateLimiter(redis, `agentws:conn:${agentId}`, WS_RATE_MAX_CONNECTIONS, WS_RATE_WINDOW_SECONDS);
     return { allowed: result.allowed, degraded: false };
   } catch (err) {
@@ -5072,7 +5103,7 @@ async function failUnreadableDesktopStart(
 ): Promise<void> {
   const startCommand = parseDesktopStartCommandId(commandId);
   if (!startCommand) return;
-  try {
+                try {
     await runWithAgentDbAccess('agentWs.desktop.unreadableStart', async () => {
       const result = await commitDesktopTerminalIntent({
         sessionId: startCommand.sessionId,
@@ -5126,7 +5157,7 @@ async function resolveTerminalSessionOwnerDeviceId(
     return cached.deviceId;
   }
   let deviceId: string | null = null;
-  try {
+                try {
     const [row] = await runWithAgentDbAccess('agentWs.terminalOutput.resolveOwner', async () =>
       db.select({ deviceId: remoteSessions.deviceId })
         .from(remoteSessions)
@@ -5450,7 +5481,7 @@ export function sendCommandToAgent(agentId: string, command: AgentCommand): bool
     }
   }
 
-  try {
+                try {
     const json = JSON.stringify(command);
     // Send command directly - agent expects {id, type, payload} at top level
     conn.ws.send(json);
@@ -5480,7 +5511,7 @@ export function sendDesktopIceCandidateToAgent(agentId: string, frame: DesktopIc
   if (partnerTrustMode() === 'enforce' && conn.trustState !== 'trusted') {
     return false;
   }
-  try {
+                try {
     conn.ws.send(JSON.stringify(frame));
     return true;
   } catch (error) {
@@ -5513,7 +5544,7 @@ export type AgentWsDisconnectResult = 'closed' | 'close-failed' | 'not-connected
 export function disconnectAgent(agentId: string, code: number = 4040, reason: string = 'orgId changed, reconnect required'): AgentWsDisconnectResult {
   const conn = activeConnections.get(agentId);
   if (!conn) return 'not-connected';
-  try {
+                try {
     conn.ws.close(code, reason);
   } catch (error) {
     console.error(`disconnectAgent(${agentId.slice(0,12)}) close threw:`, error);

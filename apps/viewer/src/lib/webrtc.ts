@@ -346,13 +346,19 @@ export async function createWebRTCSession(
       } else if (relayOnly) {
         throw new RelayRequiredError();
       }
+    } else if (isSessionEndedResponse(iceResp.status)) {
+      // #10542: the session was ended/revoked server-side. The offer would
+      // 401 too, so end now instead of building a peer, gathering candidates
+      // and posting an offer that cannot succeed.
+      const reason = await fetchSessionEndedReason(params);
+      throw new SessionEndedError(reason ?? undefined);
     } else if (iceResp.status === 409) {
       const iceData = await iceResp.json();
       const relayError = relayRequiredErrorFromResponse(iceData);
       if (relayError) throw relayError;
     }
   } catch (error) {
-    if (error instanceof RelayRequiredError) throw error;
+    if (error instanceof RelayRequiredError || error instanceof SessionEndedError) throw error;
     console.warn('Failed to fetch ICE servers, falling back to STUN-only:', error);
   }
 
