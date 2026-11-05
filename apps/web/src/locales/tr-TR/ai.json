@@ -668,7 +668,8 @@
       "alreadyOnPartner": "Wisp tüm kuruluşlar için zaten açık.",
       "open": "Aç",
       "opening": "Açılıyor…",
-      "grantEnded": "Wisp bu kapsam için artık açık değil. Yeniden açmak için kimliğinizi doğrulayın."
+      "grantEnded": "Wisp bu kapsam için artık açık değil. Yeniden açmak için kimliğinizi doğrulayın.",
+      "unattendedReadsTitle": "Gözetimsiz okumaları aç"
     },
     "header": {
       "scopeAll": "Tüm kuruluşlar",
@@ -692,7 +693,16 @@
       "title": "Bütçe ve kontrol aralığı",
       "budget": "Günlük bütçe",
       "tick": "Kontrol aralığı (dakika)",
-      "save": "Kaydet"
+      "save": "Kaydet",
+      "unattendedReads": {
+        "title": "Gözetimsiz okumalar",
+        "description": "Açıkken Wisp ve arka plan çalıştırmaları aşağıdakileri sormadan yapar:",
+        "registryKey": "Bir kayıt defteri anahtarını oku",
+        "registryValue": "Bir kayıt defteri değerini oku",
+        "securityLog": "Güvenlik olay günlüğünde arama yap",
+        "deviceNote": "Bir cihaz hakkında not kaydet",
+        "applies": "Yeni konuşmalara ve yeni arka plan çalıştırmalarına uygulanır."
+      }
     },
     "focus": {
       "label": "Çalışılan müşteri",
@@ -733,7 +743,11 @@
       "paused": "Wisp duraklatıldı",
       "resumed": "Wisp devam ettirildi",
       "pauseFailed": "Wisp duraklatılamadı",
-      "resumeFailed": "Wisp devam ettirilemedi"
+      "resumeFailed": "Wisp devam ettirilemedi",
+      "unattendedReadsOn": "Gözetimsiz okumalar açıldı",
+      "unattendedReadsOnFailed": "Gözetimsiz okumalar açılamadı",
+      "unattendedReadsOff": "Gözetimsiz okumalar kapatıldı",
+      "unattendedReadsOffFailed": "Gözetimsiz okumalar kapatılamadı"
     },
     "spend": {
       "meter": "Bugün {{budget}} içinden {{spent}}",

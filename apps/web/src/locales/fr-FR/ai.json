@@ -668,7 +668,8 @@
       "alreadyOnPartner": "Wisp est déjà activé pour toutes les organisations.",
       "open": "Ouvrir",
       "opening": "Ouverture…",
-      "grantEnded": "Wisp n’est plus activé pour ce périmètre. Confirmez votre identité pour le réactiver."
+      "grantEnded": "Wisp n’est plus activé pour ce périmètre. Confirmez votre identité pour le réactiver.",
+      "unattendedReadsTitle": "Activer les lectures sans surveillance"
     },
     "header": {
       "scopeAll": "Toutes les organisations",
@@ -692,7 +693,16 @@
       "title": "Budget et point de suivi",
       "budget": "Budget quotidien",
       "tick": "Point de suivi toutes les (minutes)",
-      "save": "Enregistrer"
+      "save": "Enregistrer",
+      "unattendedReads": {
+        "title": "Lectures sans surveillance",
+        "description": "Lorsque cette option est activée, Wisp et ses exécutions en arrière-plan effectuent les actions suivantes sans demander :",
+        "registryKey": "Lire une clé de registre",
+        "registryValue": "Lire une valeur de registre",
+        "securityLog": "Rechercher dans le journal des événements de sécurité",
+        "deviceNote": "Enregistrer une note sur un appareil",
+        "applies": "S’applique aux nouvelles conversations et aux nouvelles exécutions en arrière-plan."
+      }
     },
     "focus": {
       "label": "Travaille sur",
@@ -733,7 +743,11 @@
       "paused": "Wisp mis en pause",
       "resumed": "Wisp réactivé",
       "pauseFailed": "Impossible de mettre Wisp en pause",
-      "resumeFailed": "Impossible de réactiver Wisp"
+      "resumeFailed": "Impossible de réactiver Wisp",
+      "unattendedReadsOn": "Lectures sans surveillance activées",
+      "unattendedReadsOnFailed": "Impossible d’activer les lectures sans surveillance",
+      "unattendedReadsOff": "Lectures sans surveillance désactivées",
+      "unattendedReadsOffFailed": "Impossible de désactiver les lectures sans surveillance"
     },
     "spend": {
       "meter": "{{spent}} sur {{budget}} aujourd’hui",

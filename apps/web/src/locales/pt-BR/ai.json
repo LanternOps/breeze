@@ -668,7 +668,8 @@
       "alreadyOnPartner": "O Wisp já está ativado para todas as organizações.",
       "open": "Abrir",
       "opening": "Abrindo…",
-      "grantEnded": "O Wisp não está mais ativado para este escopo. Confirme que é você para ativá-lo novamente."
+      "grantEnded": "O Wisp não está mais ativado para este escopo. Confirme que é você para ativá-lo novamente.",
+      "unattendedReadsTitle": "Ativar leituras sem supervisão"
     },
     "header": {
       "scopeAll": "Todas as organizações",
@@ -692,7 +693,16 @@
       "title": "Orçamento e verificação periódica",
       "budget": "Orçamento diário",
       "tick": "Verificar a cada (minutos)",
-      "save": "Salvar"
+      "save": "Salvar",
+      "unattendedReads": {
+        "title": "Leituras sem supervisão",
+        "description": "Quando ativado, o Wisp e suas execuções em segundo plano fazem o seguinte sem pedir confirmação:",
+        "registryKey": "Ler uma chave do registro",
+        "registryValue": "Ler um valor do registro",
+        "securityLog": "Pesquisar no log de eventos de segurança",
+        "deviceNote": "Salvar uma nota sobre um dispositivo",
+        "applies": "Aplica-se a novas conversas e a novas execuções em segundo plano."
+      }
     },
     "focus": {
       "label": "Atuando em",
@@ -733,7 +743,11 @@
       "paused": "Wisp pausado",
       "resumed": "Wisp retomado",
       "pauseFailed": "Não foi possível pausar o Wisp",
-      "resumeFailed": "Não foi possível retomar o Wisp"
+      "resumeFailed": "Não foi possível retomar o Wisp",
+      "unattendedReadsOn": "Leituras sem supervisão ativadas",
+      "unattendedReadsOnFailed": "Não foi possível ativar as leituras sem supervisão",
+      "unattendedReadsOff": "Leituras sem supervisão desativadas",
+      "unattendedReadsOffFailed": "Não foi possível desativar as leituras sem supervisão"
     },
     "spend": {
       "meter": "{{spent}} de {{budget}} hoje",

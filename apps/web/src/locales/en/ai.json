@@ -668,7 +668,8 @@
       "alreadyOnPartner": "Wisp is already on for all organizations.",
       "open": "Open",
       "opening": "Opening…",
-      "grantEnded": "Wisp is no longer on for this scope. Confirm it is you to turn it on again."
+      "grantEnded": "Wisp is no longer on for this scope. Confirm it is you to turn it on again.",
+      "unattendedReadsTitle": "Turn on unattended reads"
     },
     "header": {
       "scopeAll": "All organizations",
@@ -692,7 +693,16 @@
       "title": "Budget and check-in",
       "budget": "Daily budget",
       "tick": "Check-in every (minutes)",
-      "save": "Save"
+      "save": "Save",
+      "unattendedReads": {
+        "title": "Unattended reads",
+        "description": "When on, Wisp and its background runs do these without asking:",
+        "registryKey": "Read a registry key",
+        "registryValue": "Read a registry value",
+        "securityLog": "Search the Security event log",
+        "deviceNote": "Save a note about a device",
+        "applies": "Applies to new conversations and new background runs."
+      }
     },
     "focus": {
       "label": "Working on",
@@ -733,7 +743,11 @@
       "paused": "Wisp paused",
       "resumed": "Wisp resumed",
       "pauseFailed": "Could not pause Wisp",
-      "resumeFailed": "Could not resume Wisp"
+      "resumeFailed": "Could not resume Wisp",
+      "unattendedReadsOn": "Unattended reads turned on",
+      "unattendedReadsOnFailed": "Couldn't turn on unattended reads",
+      "unattendedReadsOff": "Unattended reads turned off",
+      "unattendedReadsOffFailed": "Couldn't turn off unattended reads"
     },
     "spend": {
       "meter": "{{spent}} of {{budget}} today",
