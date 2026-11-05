@@ -508,6 +508,28 @@ func TestAdmitAndEnterAreAtomic(t *testing.T) {
 	}
 }
 
+// An exclusive holder may be Enter between its check and its write, with no
+// section on disk yet. An admission that outwaits it must hold, not proceed.
+func TestAdmitRefusedWhileTheLockIsBusy(t *testing.T) {
+	g := newGuard(t, newFakeClock())
+	lock, err := g.acquire(lockExclusive, 0)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	done, err := g.AdmitPowerAction("reboot")
+	if !errors.Is(err, ErrFlashInProgress) || done != nil {
+		t.Fatalf("AdmitPowerAction with the lock busy = %v, done set %v; want ErrFlashInProgress", err, done != nil)
+	}
+	lock.release()
+
+	// Nothing else changed, so the lock was the reason.
+	done, err = g.AdmitPowerAction("reboot")
+	if err != nil {
+		t.Fatalf("AdmitPowerAction after the lock was freed: %v", err)
+	}
+	done()
+}
+
 func TestWaitForPowerActionProceedsOnceTheSectionEnds(t *testing.T) {
 	g := New(t.TempDir(), WithWaitTiming(5*time.Millisecond, time.Minute))
 	release, err := g.Enter("bios", "cmd-1", time.Hour)
