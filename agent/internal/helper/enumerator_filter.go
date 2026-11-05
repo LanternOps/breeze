@@ -26,8 +26,9 @@ func consoleOnlySessions(detected []sessionbroker.DetectedSession, consoleID str
 }
 
 // hasSignedInUser reports whether a Windows session is an interactive user
-// session Assist may launch into (#10379): not Session 0, in the WTSActive or
-// WTSConnected state, and with a user signed in.
+// session Assist may launch into (#10379): in the WTSActive or WTSConnected
+// state, with a user signed in. Session 0 never gets here: consoleOnlySessions
+// returns early when it is the console session.
 //
 // A console session with nobody signed in (the logon screen after boot or
 // sign-out, or a fresh fast-user-switch session) is WTSConnected with an empty
@@ -39,9 +40,6 @@ func consoleOnlySessions(detected []sessionbroker.DetectedSession, consoleID str
 // running Assist over one failed query. A launch is still safe, because the
 // spawn path only uses a user token and otherwise reports ErrNoActiveSession.
 func hasSignedInUser(s sessionbroker.DetectedSession) bool {
-	if s.Session == "0" || s.Type == "services" {
-		return false
-	}
 	if s.State != "active" && s.State != "connected" {
 		return false
 	}

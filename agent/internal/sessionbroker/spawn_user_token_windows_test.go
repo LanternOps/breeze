@@ -72,6 +72,23 @@ func TestAcquireInteractiveUserTokenUsesFirstWorkingStrategy(t *testing.T) {
 	}
 }
 
+func TestAcquireInteractiveUserTokenStopsAtTheFirstWorkingStrategy(t *testing.T) {
+	secondCalls := 0
+	stubUserTokenStrategies(t, []userTokenStrategy{
+		{name: "user (WTS)", acquire: func(uint32) (windows.Token, *uint16, error) { return 0, nil, nil }},
+		{name: "user (explorer)", acquire: func(uint32) (windows.Token, *uint16, error) {
+			secondCalls++
+			return 0, nil, errors.New("must not run")
+		}},
+	})
+
+	_, _, identity, err := AcquireInteractiveUserToken(1)
+
+	if err != nil || identity != "user (WTS)" || secondCalls != 0 {
+		t.Fatalf("identity=%q err=%v secondCalls=%d, want user (WTS), no error, 0", identity, err, secondCalls)
+	}
+}
+
 // The desktop helper spawner keeps its SYSTEM fallback; only the user-only
 // path changed.
 func TestAcquireUserTokenStillFallsBackToSystem(t *testing.T) {

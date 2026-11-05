@@ -134,6 +134,7 @@ func TestConsoleOnlySessions(t *testing.T) {
 			wantKeys:  nil,
 		},
 		{
+			// Pins the early guard: hasSignedInUser alone would admit this row.
 			name: "session 0 is never eligible even when reported as the console",
 			detected: []sessionbroker.DetectedSession{
 				{Session: "0", Username: "SYSTEM", State: "active", Type: "services"},

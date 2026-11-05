@@ -566,9 +566,10 @@ func (m *Manager) Apply(settings *Settings) {
 					// Logged once when it began; reported by InstallIssue.
 					log.Debug("breeze assist not started", "session", si.Key, "reason", err.Error())
 				case errors.Is(err, ErrNoActiveSession):
-					// #10379: no user token in the session. A wait, not a
-					// launch failure; the next heartbeat tries again.
-					m.noteWaitingForUserLocked(state, err.Error())
+					// #10379: no user token in a session the enumerator lists.
+					// A wait, not a launch failure; the next heartbeat tries
+					// again, and a wait that lasts is reported at WARN.
+					m.noteNoUserTokenLocked(state, err)
 				default:
 					log.Error("failed to start breeze assist", "session", si.Key, "error", err.Error())
 				}
@@ -827,7 +828,7 @@ func (m *Manager) ensureRunningSession(state *sessionState) error {
 		// whatever kept it from starting no longer applies.
 		state.launchIssue = ""
 		state.webview2Refusal = ""
-		state.waitingForUser = false
+		state.clearUserWait()
 		if state.watcherGaveUp {
 			log.Info("breeze assist is running again; clearing its crash-loop state", "session", state.key)
 			state.watcherGaveUp = false

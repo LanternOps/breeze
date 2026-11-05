@@ -1,6 +1,9 @@
 package helper
 
-import "runtime"
+import (
+	"runtime"
+	"time"
+)
 
 // #10379: Assist is a desktop app for the person at the console. With nobody
 // signed in there is no user to launch it as; launched as SYSTEM into the
@@ -17,6 +20,14 @@ import "runtime"
 // in, and their spawn paths do not return ErrNoActiveSession.
 
 const waitingForUserMsg = "breeze assist waiting for a signed-in user"
+
+// userTokenGrace is how long Apply may find no user token for a session the
+// enumerator lists before it says so at WARN. A short gap is normal (an Azure
+// AD session whose explorer.exe has not started); a heartbeat apart, several
+// tries fit inside it.
+const userTokenGrace = 5 * time.Minute
+
+const noUserTokenMsg = "breeze assist not started: no user token for the session's signed-in user"
 
 // waitForSignedInUser enables the watcher's and Apply's enumerator-based wait.
 // Windows only: macOS and Linux keep their existing watcher behaviour. A var so
@@ -50,13 +61,41 @@ func (m *Manager) noteWaitingForUserLocked(state *sessionState, reason string) {
 	log.Debug(waitingForUserMsg, "session", state.key, "reason", reason)
 }
 
+// noteNoUserTokenLocked records that Apply got ErrNoActiveSession for a session
+// the enumerator lists. That is a wait like any other at first: the user may
+// be signing out, or explorer.exe may not have started yet. If it lasts
+// userTokenGrace it is not a wait for a sign-in any more, and with no other
+// report (it is neither a crash nor an install issue) the operator would have
+// nothing, so it is logged once at WARN, the level that ships to the server.
+// Causes that fit include a replacement shell with no explorer.exe on a session
+// WTSQueryUserToken refuses, or security software denying access to explorer's
+// token; the strategy errors in err tell them apart. Must be called with m.mu
+// held.
+func (m *Manager) noteNoUserTokenLocked(state *sessionState, err error) {
+	m.noteWaitingForUserLocked(state, err.Error())
+	now := m.nowTime()
+	if state.noTokenSince.IsZero() {
+		state.noTokenSince = now
+		return
+	}
+	if state.noTokenWarned || now.Sub(state.noTokenSince) < userTokenGrace {
+		return
+	}
+	state.noTokenWarned = true
+	log.Warn(noUserTokenMsg,
+		"session", state.key,
+		"waiting", now.Sub(state.noTokenSince).String(),
+		"error", err.Error(),
+	)
+}
+
 // noteUserPresentLocked ends a session's wait after a launch succeeded,
 // logging the change. Must be called with m.mu held.
 func (m *Manager) noteUserPresentLocked(state *sessionState) {
 	if !state.waitingForUser {
 		return
 	}
-	state.waitingForUser = false
+	state.clearUserWait()
 	log.Debug("signed-in user present; breeze assist launched", "session", state.key)
 }
 
