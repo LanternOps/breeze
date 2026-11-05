@@ -203,7 +203,7 @@ describe('dispatchWake target eligibility and MAC ordering', () => {
     expect(applyWakeRelayResult).toHaveBeenCalledTimes(joined ? 0 : 1);
   });
 
-  it('reports a queued wake honestly and leaves the attempt open when delivery throws', async () => {
+  it('reports a queued wake and leaves the attempt open when the claim throws', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       seedWake('offline', [networkMac]);

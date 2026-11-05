@@ -545,40 +545,42 @@ export async function dispatchWake(
     macs,
   };
   const deliver = async (): Promise<WakeResult> => {
+    let claimed: Awaited<ReturnType<typeof claimPendingCommandForDelivery>>;
     try {
-      const claimed = await claimPendingCommandForDelivery(command.id);
-      if (claimed.status === 'cancelled') {
-        if (!joined) await withSystemDbAccessContext(() => applyWakeRelayResult(wakeAttemptId, false));
-        return { ok: false, code: 'COMMAND_CANCELLED', message: cancelledCommandError(claimed.reason) };
-      }
-      if (claimed.status !== 'claimed') {
-        if (!joined) await withSystemDbAccessContext(() => applyWakeRelayResult(wakeAttemptId, false));
-        return { ok: false, code: 'WS_SEND_FAILED', message: 'Failed to claim wake command for dispatch.' };
-      }
-
-      // #8318 §6.4: to the relay's agent_id read IN the claim, not the one the
-      // relay selection read before it (a reattach or re-enroll may have
-      // committed since).
-      const sent = sendCommandToAgent(claimed.agentId, {
-        id: command.id,
-        type: CommandTypes.WAKE_ON_LAN,
-        payload,
-      });
-
-      if (!sent) {
-        if (!joined) await withSystemDbAccessContext(() => applyWakeRelayResult(wakeAttemptId, false));
-        await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
-        return { ok: false, code: 'WS_SEND_FAILED', message: 'Relay agent went offline before the command could be sent. Try again.' };
-      }
-
-      return success;
+      claimed = await claimPendingCommandForDelivery(command.id);
     } catch (error) {
-      // The rows are committed, so the relay can still pick the command up at
-      // its next check-in. The attempt stays open for the sweep to resolve.
-      console.error('[wakeOnLan] wake delivery failed after commit', { commandId: command.id, wakeAttemptId, error });
+      // The claim did not complete, so the committed command is still pending
+      // and the relay can pick it up at its next check-in. The attempt stays
+      // open for the sweep to resolve.
+      console.error('[wakeOnLan] wake claim failed after commit', { commandId: command.id, wakeAttemptId, error });
       captureException(error);
       return { ok: false, code: 'WS_SEND_FAILED', message: 'The wake command is queued but could not be sent right away. The relay may still send it at its next check-in.' };
     }
+    if (claimed.status === 'cancelled') {
+      if (!joined) await withSystemDbAccessContext(() => applyWakeRelayResult(wakeAttemptId, false));
+      return { ok: false, code: 'COMMAND_CANCELLED', message: cancelledCommandError(claimed.reason) };
+    }
+    if (claimed.status !== 'claimed') {
+      if (!joined) await withSystemDbAccessContext(() => applyWakeRelayResult(wakeAttemptId, false));
+      return { ok: false, code: 'WS_SEND_FAILED', message: 'Failed to claim wake command for dispatch.' };
+    }
+
+    // #8318 §6.4: to the relay's agent_id read IN the claim, not the one the
+    // relay selection read before it (a reattach or re-enroll may have
+    // committed since).
+    const sent = sendCommandToAgent(claimed.agentId, {
+      id: command.id,
+      type: CommandTypes.WAKE_ON_LAN,
+      payload,
+    });
+
+    if (!sent) {
+      if (!joined) await withSystemDbAccessContext(() => applyWakeRelayResult(wakeAttemptId, false));
+      await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
+      return { ok: false, code: 'WS_SEND_FAILED', message: 'Relay agent went offline before the command could be sent. Try again.' };
+    }
+
+    return success;
   };
   return { ...success, deliver };
 }
