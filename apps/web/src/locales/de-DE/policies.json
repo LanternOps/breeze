@@ -1199,7 +1199,8 @@
         "portsInvalid": "Geben Sie 1 bis 16 Ports zwischen 1 und 65535 ein, durch Kommas getrennt.",
         "labelInvalid": "Geben Sie eine Bezeichnung mit 1 bis 100 Zeichen ein.",
         "fixRows": "Korrigieren Sie die markierten Ziele vor dem Speichern.",
-        "limitReached": "Eine Richtlinie kann höchstens {{max}} zusätzliche Ziele enthalten."
+        "limitReached": "Eine Richtlinie kann höchstens {{max}} zusätzliche Ziele enthalten.",
+        "parentInvalid": "Die übergeordnete Richtlinie enthält Ziele, die nicht mehr gültig sind. Korrigieren Sie sie dort, bevor Sie sie überschreiben."
       },
       "securityAgentsTab": {
         "title": "Sicherheitsagenten",

@@ -241,6 +241,75 @@ describe('ContainmentTab', () => {
     expect(screen.getByRole('button', { name: /revert to parent/i })).toBeInTheDocument();
   });
 
+  it('blocks saving a stored list over the limit and says why', async () => {
+    const over = Array.from({ length: 33 }, (_, i) => ({
+      host: `h${i}.example.com`, proto: 'tcp', ports: [443], label: `Host ${i}`,
+    }));
+    render(<ContainmentTab {...props} existingLink={link({ version: 1, extraAllow: over })} />);
+    fireEvent.click(screen.getByTestId('containment-save'));
+    await Promise.resolve();
+    expect(m.save).not.toHaveBeenCalled();
+    expect(screen.getByTestId('containment-invalid')).toHaveTextContent('32');
+  });
+
+  it('explains an invalid parent instead of leaving Override dead', () => {
+    const bad = { version: 1, extraAllow: [{ host: '*.example.com', proto: 'tcp', ports: [443], label: 'Bad' }] };
+    render(<ContainmentTab {...props} parentLink={link(bad, 'parent-link')} />);
+    expect(screen.getByTestId('containment-parent-invalid')).toBeInTheDocument();
+    expect((screen.getByRole('button', { name: /override/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('shows the server refusal from the hook', () => {
+    m.hook.error = 'Full partner org access is required';
+    render(<ContainmentTab {...props} />);
+    expect(screen.getByText('Full partner org access is required')).toBeInTheDocument();
+  });
+
+  it('keeps the edits and reports no change when the save fails', async () => {
+    m.save.mockResolvedValue(null);
+    render(<ContainmentTab {...props} existingLink={link(STORED)} />);
+    setValue('containment-row-0-label', 'Edited');
+    fireEvent.click(screen.getByTestId('containment-save'));
+    await waitFor(() => expect(m.save).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    expect(m.changed).not.toHaveBeenCalled();
+    expect(input('containment-row-0-label').value).toBe('Edited');
+  });
+
+  it('re-seeds rows and clears errors when the link changes', () => {
+    const { rerender } = render(<ContainmentTab {...props} existingLink={link(STORED)} />);
+    setValue('containment-row-0-target', '*.example.com');
+    expect(screen.getByTestId('containment-row-0-target-error')).toBeInTheDocument();
+    rerender(
+      <ContainmentTab
+        {...props}
+        existingLink={link({
+          version: 1,
+          extraAllow: [{ host: 'fresh.example.com', proto: 'udp', ports: [53], label: 'Fresh' }],
+        })}
+      />,
+    );
+    expect(input('containment-row-0-target').value).toBe('fresh.example.com');
+    expect(screen.queryByTestId('containment-row-0-target-error')).toBeNull();
+    expect(screen.queryByTestId('containment-row-1')).toBeNull();
+  });
+
+  it('Revert to Parent deletes the override and reports the link gone', async () => {
+    m.remove.mockResolvedValue(true);
+    render(
+      <ContainmentTab
+        {...props}
+        linkedPolicyId="parent-policy"
+        parentLink={link(STORED, 'parent-link')}
+        existingLink={link({ version: 1, extraAllow: [] }, 'own-link')}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /revert to parent/i }));
+    fireEvent.click(screen.getByTestId('feature-tab-revert-confirm'));
+    await waitFor(() => expect(m.remove).toHaveBeenCalledWith('own-link'));
+    await waitFor(() => expect(m.changed).toHaveBeenCalledWith(null, 'containment'));
+  });
+
   it('renders translated copy in a non-English locale (no raw keys)', async () => {
     const { i18n, loadLocale } = await import('@/lib/i18n');
     await loadLocale('de-DE');

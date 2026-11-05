@@ -16,7 +16,6 @@ import '@/lib/i18n';
 // it, and its rejection messages are shown as-is.
 
 const EXTRA_ALLOW = containmentInlineSettingsSchema.shape.extraAllow;
-type ExtraAllowEntry = z.output<typeof EXTRA_ALLOW>[number];
 type Issue = z.core.$ZodIssue;
 
 type Kind = 'host' | 'cidr';
@@ -27,13 +26,14 @@ const PROTOS = ['tcp', 'udp', 'udp+tcp'] as const;
 const PLACEHOLDERS: Record<Kind, string> = { host: 'updates.example.com', cidr: '203.0.113.0/24' };
 
 // The schema owns the entry limit; read it from the schema's own refusal rather than restating it.
+// This only decides when Add stops: if no limit is found, saving still runs the whole list through the schema.
 const MAX_ROWS: number = (() => {
   const probe = { host: 'example.com', proto: 'tcp', ports: [443], label: 'probe' };
   const result = EXTRA_ALLOW.safeParse(
     Array.from({ length: NETWORK_ISOLATION_LIMITS.maxAllowEntries + 1 }, () => probe),
   );
   const tooBig = result.success ? undefined : result.error.issues.find((i) => i.code === 'too_big');
-  return tooBig?.code === 'too_big' ? Number(tooBig.maximum) : NETWORK_ISOLATION_LIMITS.maxAllowEntries;
+  return tooBig?.code === 'too_big' ? Number(tooBig.maximum) : Number.POSITIVE_INFINITY;
 })();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -86,17 +86,15 @@ function fieldOf(issue: Issue): Field {
   return key === 'proto' || key === 'ports' || key === 'label' ? key : 'target';
 }
 
-type RowCheck = { entry?: ExtraAllowEntry; issues: Partial<Record<Field, Issue>> };
-
-function checkRow(row: Row): RowCheck {
-  const result = EXTRA_ALLOW.safeParse([toEntry(row)]);
-  if (result.success) return { entry: result.data[0], issues: {} };
+function rowIssues(row: Row): Partial<Record<Field, Issue>> {
   const issues: Partial<Record<Field, Issue>> = {};
+  const result = EXTRA_ALLOW.safeParse([toEntry(row)]);
+  if (result.success) return issues;
   for (const issue of leafIssues(result.error.issues)) {
     const field = fieldOf(issue);
     issues[field] ??= issue;
   }
-  return { issues };
+  return issues;
 }
 
 export default function ContainmentTab({
@@ -127,10 +125,13 @@ export default function ContainmentTab({
 
   const inherited = !!parentLink && !existingLink;
   const locked = inherited || saving;
-  const checks = rows.map(checkRow);
-  const overLimit = rows.length > MAX_ROWS;
   const atLimit = rows.length >= MAX_ROWS;
-  const invalid = overLimit || checks.some((c) => !c.entry);
+  // Rows are checked one at a time for their messages; the whole list decides what may be saved.
+  const list = EXTRA_ALLOW.safeParse(rows.map(toEntry));
+  const invalid = !list.success;
+  const listIssue = list.success ? undefined : list.error.issues.find((issue) => issue.path.length === 0);
+  // A parent's rows cannot be edited from here, so Override cannot produce a valid link.
+  const parentInvalid = inherited && invalid;
 
   const message = (field: Field, issue: Issue): string => {
     if (field === 'target') {
@@ -150,14 +151,13 @@ export default function ContainmentTab({
 
   const persist = async (id: string | null) => {
     setAttempted(true);
-    if (invalid) return;
+    if (!list.success) return;
     clearError();
     const stored = isRecord(source) ? source : {};
-    const extraAllow = checks.map((c) => c.entry as ExtraAllowEntry);
     const result = await save(id, {
       featureType: 'containment',
       featurePolicyId: null,
-      inlineSettings: { ...stored, version: 1, extraAllow },
+      inlineSettings: { ...stored, version: 1, extraAllow: list.data },
     });
     if (result) onLinkChanged(result, 'containment');
   };
@@ -176,6 +176,7 @@ export default function ContainmentTab({
       isConfigured={!!existingLink || inherited}
       saving={saving}
       saveTestId="containment-save"
+      saveDisabled={parentInvalid}
       error={error}
       onSave={() => void persist(existingLink?.id ?? null)}
       onRemove={existingLink && !linkedPolicyId ? discard : undefined}
@@ -183,6 +184,16 @@ export default function ContainmentTab({
       onOverride={inherited ? () => void persist(null) : undefined}
       onRevert={!inherited && !!linkedPolicyId && !!existingLink ? discard : undefined}
     >
+      {parentInvalid && (
+        <div
+          role="alert"
+          data-testid="containment-parent-invalid"
+          className="mb-4 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>{k('parentInvalid')}</p>
+        </div>
+      )}
       {attempted && invalid && !inherited && (
         <div
           role="alert"
@@ -190,7 +201,11 @@ export default function ContainmentTab({
           className="mb-4 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
         >
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <p>{overLimit ? k('limitReached', { max: MAX_ROWS }) : k('fixRows')}</p>
+          <p>
+            {listIssue?.code === 'too_big'
+              ? k('limitReached', { max: Number(listIssue.maximum) })
+              : (listIssue?.message ?? k('fixRows'))}
+          </p>
         </div>
       )}
 
@@ -202,7 +217,7 @@ export default function ContainmentTab({
 
       <div className="space-y-3">
         {rows.map((row, index) => {
-          const { issues } = checks[index] ?? { issues: {} };
+          const issues = rowIssues(row);
           const n = index + 1;
           const errorFor = (field: Field) => {
             const issue = issues[field];

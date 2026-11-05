@@ -1199,7 +1199,8 @@
         "portsInvalid": "Entrez de 1 à 16 ports entre 1 et 65535, séparés par des virgules.",
         "labelInvalid": "Entrez un libellé de 1 à 100 caractères.",
         "fixRows": "Corrigez les destinations signalées avant d’enregistrer.",
-        "limitReached": "Une politique peut contenir au plus {{max}} destinations supplémentaires."
+        "limitReached": "Une politique peut contenir au plus {{max}} destinations supplémentaires.",
+        "parentInvalid": "La politique parente contient des destinations qui ne sont plus valides. Corrigez-les dans la politique parente avant de la remplacer."
       },
       "securityAgentsTab": {
         "title": "Agents de sécurité",

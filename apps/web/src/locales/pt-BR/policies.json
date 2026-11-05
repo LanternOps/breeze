@@ -1199,7 +1199,8 @@
         "portsInvalid": "Informe de 1 a 16 portas entre 1 e 65535, separadas por vírgulas.",
         "labelInvalid": "Informe um rótulo de 1 a 100 caracteres.",
         "fixRows": "Corrija os destinos destacados antes de salvar.",
-        "limitReached": "Uma política pode ter no máximo {{max}} destinos adicionais."
+        "limitReached": "Uma política pode ter no máximo {{max}} destinos adicionais.",
+        "parentInvalid": "A política pai tem destinos que não são mais válidos. Corrija-os na política pai antes de substituí-la."
       },
       "securityAgentsTab": {
         "title": "Agentes de segurança",

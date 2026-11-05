@@ -1199,7 +1199,8 @@
         "portsInvalid": "Enter 1 to 16 ports between 1 and 65535, separated by commas.",
         "labelInvalid": "Enter a label of 1 to 100 characters.",
         "fixRows": "Fix the highlighted destinations before saving.",
-        "limitReached": "A policy can hold at most {{max}} extra destinations."
+        "limitReached": "A policy can hold at most {{max}} extra destinations.",
+        "parentInvalid": "The parent policy has destinations that are no longer valid. Fix them on the parent policy before overriding."
       },
       "securityAgentsTab": {
         "title": "Security Agents",

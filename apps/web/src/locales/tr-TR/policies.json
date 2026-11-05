@@ -1199,7 +1199,8 @@
         "portsInvalid": "1 ile 65535 arasında, virgülle ayrılmış 1 ila 16 bağlantı noktası girin.",
         "labelInvalid": "1 ila 100 karakterlik bir etiket girin.",
         "fixRows": "Kaydetmeden önce işaretli hedefleri düzeltin.",
-        "limitReached": "Bir ilke en fazla {{max}} ek hedef içerebilir."
+        "limitReached": "Bir ilke en fazla {{max}} ek hedef içerebilir.",
+        "parentInvalid": "Üst ilke artık geçerli olmayan hedefler içeriyor. Geçersiz kılmadan önce bunları üst ilkede düzeltin."
       },
       "securityAgentsTab": {
         "title": "Güvenlik Aracıları",

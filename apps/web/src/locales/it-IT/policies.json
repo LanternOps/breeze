@@ -1199,7 +1199,8 @@
         "portsInvalid": "Inserisci da 1 a 16 porte tra 1 e 65535, separate da virgole.",
         "labelInvalid": "Inserisci un’etichetta da 1 a 100 caratteri.",
         "fixRows": "Correggi le destinazioni evidenziate prima di salvare.",
-        "limitReached": "Un criterio può contenere al massimo {{max}} destinazioni aggiuntive."
+        "limitReached": "Un criterio può contenere al massimo {{max}} destinazioni aggiuntive.",
+        "parentInvalid": "Il criterio padre contiene destinazioni non più valide. Correggile nel criterio padre prima di sostituirlo."
       },
       "securityAgentsTab": {
         "title": "Agenti di sicurezza",

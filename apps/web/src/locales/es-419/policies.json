@@ -1199,7 +1199,8 @@
         "portsInvalid": "Ingresa de 1 a 16 puertos entre 1 y 65535, separados por comas.",
         "labelInvalid": "Ingresa una etiqueta de 1 a 100 caracteres.",
         "fixRows": "Corrige los destinos marcados antes de guardar.",
-        "limitReached": "Una política puede tener como máximo {{max}} destinos adicionales."
+        "limitReached": "Una política puede tener como máximo {{max}} destinos adicionales.",
+        "parentInvalid": "La política principal tiene destinos que ya no son válidos. Corrígelos en la política principal antes de anularla."
       },
       "securityAgentsTab": {
         "title": "Agentes de seguridad",
