@@ -47,6 +47,11 @@ const (
 	// settleAfterBoot delays a resume after a boot, because Windows can finish
 	// installing a firmware device, and ask for another reboot, after it starts.
 	settleAfterBoot = 10 * time.Minute
+	// lateSuspendGrace is how long a record whose volume still reads "on" stays
+	// open with no install started. Killing PowerShell does not cancel the WMI
+	// call behind it, so a suspend can land after it was given up on, and only
+	// the record can show that suspension is ours.
+	lateSuspendGrace = 10 * time.Minute
 
 	recordFile = "bitlocker-guard.json"
 
@@ -73,6 +78,9 @@ var (
 	ErrSuspendUnconfirmed = errors.New("bitlocker suspend did not take effect")
 	// ErrResumeUnconfirmed means the resume returned but the volume is not on.
 	ErrResumeUnconfirmed = errors.New("bitlocker resume did not take effect")
+	// ErrIndeterminate means a command was killed before it finished, so what it
+	// asked for may still happen.
+	ErrIndeterminate = errors.New("the command did not finish and may still take effect")
 
 	errSeamsMissing = errors.New("bitlocker guard is missing a seam")
 )
@@ -305,6 +313,11 @@ func Suspend(ctx context.Context, rebootCount int, deps Deps) (Token, error) {
 	case after == security.BitLockerStateSuspended:
 		// It failed, then took effect. Ours, so it goes straight back.
 		return Token{}, errors.Join(failure, resumeNow(ctx, deps))
+	case errors.Is(failure, ErrIndeterminate) || ctx.Err() != nil:
+		// It reads on now, but the suspend may still land. ResumeOnStart settles
+		// it; removing the record here would make a late suspend look like
+		// someone else's, and it would never be resumed.
+		return Token{}, failure
 	}
 	return Token{}, errors.Join(failure, deps.Store.Remove(recordFile))
 }
@@ -378,6 +391,7 @@ const (
 	ReasonWaitingForReboot = "waiting_for_reboot"
 	ReasonSettling         = "boot_settling"
 	ReasonRebootPending    = "reboot_still_pending"
+	ReasonSuspendMayLand   = "suspend_may_still_land"
 	ReasonRebooted         = "rebooted"
 	ReasonNoInstall        = "no_install_started"
 	// ReasonDeadline is the one a person must hear about: protection is back but
@@ -397,6 +411,8 @@ type Result struct {
 //
 // Only a volume with a record is ever resumed. The order of the checks is the
 // policy:
+//   - not suspended, no install started, inside the grace: hold; a killed suspend
+//     may still land.
 //   - not suspended: Windows (or a person) already dealt with it; close the record.
 //   - past the deadline: resume, whatever else is true.
 //   - no install started: nothing is staged; resume.
@@ -419,6 +435,9 @@ func ResumeOnStart(ctx context.Context, deps Deps) (Result, error) {
 		return Result{Action: ActionHeld}, err
 	}
 	if state != security.BitLockerStateSuspended {
+		if !r.Installing && deps.now().Sub(r.SuspendedAt) < lateSuspendGrace {
+			return Result{Action: ActionHeld, Reason: ReasonSuspendMayLand}, nil
+		}
 		if err := deps.Store.Remove(recordFile); err != nil {
 			return Result{Action: ActionHeld}, err
 		}

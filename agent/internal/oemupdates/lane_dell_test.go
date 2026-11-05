@@ -335,7 +335,7 @@ func TestLaneRegistry(t *testing.T) {
 	if again.Gate() != l.Gate() {
 		t.Fatal("the lane must be a singleton so its availability gate stays cached")
 	}
-	for _, id := range []string{LaneSurface, LaneHP, LaneLenovo, "acme"} {
+	for _, id := range []string{LaneHP, LaneLenovo, "acme"} {
 		if _, ok := LaneFor(id); ok {
 			t.Errorf("lane %s is not built in W02", id)
 		}

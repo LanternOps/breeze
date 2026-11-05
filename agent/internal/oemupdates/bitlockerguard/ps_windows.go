@@ -39,7 +39,12 @@ func runPowerShell(ctx context.Context, script string) error {
 		"-NoProfile", "-NonInteractive", "-Command", script)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, io.Discard, io.Discard
 	cmd.WaitDelay = commandWaitDelay
-	return cmd.Run()
+	err := cmd.Run()
+	// A process the context killed tells us nothing about the WMI call behind it.
+	if err != nil && ctx.Err() != nil {
+		return fmt.Errorf("%w: %v", ErrIndeterminate, err)
+	}
+	return err
 }
 
 func systemSuspend(ctx context.Context, count int) error {

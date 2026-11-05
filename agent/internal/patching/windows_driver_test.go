@@ -131,4 +131,3 @@ func TestSelectionIsBoundedAndDeduplicated(t *testing.T) {
 		seen[u.UpdateID] = true
 	}
 }
-

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { OEM_LANES, type OemLane } from '@breeze/shared';
 import { resolveApplicability } from './applicability';
+import { SHIPPED_OEM_LANES } from './toolManifest';
 
 const base = {
   osType: 'windows',
@@ -97,6 +98,18 @@ describe('resolveApplicability: device shape', () => {
     [{ shippedLanes: ['hp'] as OemLane[] }, 'lane_not_shipped'],
   ])('%j is not applicable: %s', (overrides, reason) => {
     expect(resolveApplicability({ ...base, ...overrides })).toEqual({ state: 'not_applicable', reason });
+  });
+
+  it('the real shipped list reaches Surface and still stops the lanes not built', () => {
+    const real = { ...base, shippedLanes: SHIPPED_OEM_LANES };
+    expect(resolveApplicability({ ...real, manufacturer: 'Microsoft Corporation', model: 'Surface Laptop 5' })).toEqual({
+      state: 'applicable',
+      lane: 'surface',
+    });
+    expect(resolveApplicability({ ...real, manufacturer: 'HP Inc.', model: 'EliteBook' })).toEqual({
+      state: 'not_applicable',
+      reason: 'lane_not_shipped',
+    });
   });
 
   it('a lane enabled elsewhere does not enable this one', () => {

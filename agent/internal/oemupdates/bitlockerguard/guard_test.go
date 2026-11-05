@@ -3,6 +3,7 @@ package bitlockerguard
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -462,11 +463,67 @@ func TestResumeRecoversACrashBetweenRecordAndSuspend(t *testing.T) {
 		_, _ = Suspend(context.Background(), MinRebootCount, d)
 	}()
 	recordKept(t, store)
+	v.now = v.now.Add(lateSuspendGrace)
 	res, err := ResumeOnStart(context.Background(), v.deps(store))
 	if err != nil || res.Action != ActionCleared || v.resumes != 0 {
 		t.Fatalf("res=%+v err=%v resumes=%d: the volume never left on", res, err, v.resumes)
 	}
 	recordGone(t, store)
+}
+
+// A killed PowerShell does not cancel the WMI call behind it, so the suspend can
+// land after the state read. Without the record that volume would read as someone
+// else's and never be resumed.
+func TestSuspendThatMayStillLandKeepsTheRecord(t *testing.T) {
+	v, store := newVolume(), newMemStore()
+	v.suspendErr = fmt.Errorf("%w: timed out", ErrIndeterminate)
+	if _, err := Suspend(context.Background(), MinRebootCount, v.deps(store)); !errors.Is(err, ErrIndeterminate) {
+		t.Fatalf("err = %v", err)
+	}
+	recordKept(t, store)
+
+	// Inside the grace the volume reads on, and the record stays open.
+	res, err := ResumeOnStart(context.Background(), v.deps(store))
+	if err != nil || res.Action != ActionHeld || res.Reason != ReasonSuspendMayLand {
+		t.Fatalf("inside the grace: res=%+v err=%v", res, err)
+	}
+	recordKept(t, store)
+
+	// It landed late: the record proves it is ours.
+	v.state = security.BitLockerStateSuspended
+	res, err = ResumeOnStart(context.Background(), v.deps(store))
+	if err != nil || res.Action != ActionResumed || res.Reason != ReasonNoInstall || v.state != security.BitLockerStateOn {
+		t.Fatalf("landed: res=%+v err=%v state=%s", res, err, v.state)
+	}
+	recordGone(t, store)
+}
+
+func TestSuspendThatNeverLandedClosesAfterTheGrace(t *testing.T) {
+	v, store := newVolume(), newMemStore()
+	v.suspendErr = fmt.Errorf("%w: timed out", ErrIndeterminate)
+	if _, err := Suspend(context.Background(), MinRebootCount, v.deps(store)); err == nil {
+		t.Fatal("want an error")
+	}
+	v.now = v.now.Add(lateSuspendGrace)
+	res, err := ResumeOnStart(context.Background(), v.deps(store))
+	if err != nil || res.Action != ActionCleared || v.resumes != 0 {
+		t.Fatalf("res=%+v err=%v resumes=%d", res, err, v.resumes)
+	}
+	recordGone(t, store)
+}
+
+func TestSuspendCancelledByTheContextKeepsTheRecord(t *testing.T) {
+	v, store := newVolume(), newMemStore()
+	ctx, cancel := context.WithCancel(context.Background())
+	d := v.deps(store)
+	d.SuspendVolume = func(context.Context, int) error {
+		cancel()
+		return errors.New("exit status 1")
+	}
+	if _, err := Suspend(ctx, MinRebootCount, d); err == nil {
+		t.Fatal("want an error")
+	}
+	recordKept(t, store)
 }
 
 func TestResumeBeforeAnyInstallStartedNeedsNoReboot(t *testing.T) {
