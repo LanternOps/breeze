@@ -13,18 +13,17 @@ status: draft (for maintainer review; not approved for implementation)
 
 ## 1. Why
 
-Breeze already has process liveness, dependency/consumer readiness, selected job heartbeats, BullMQ queue counters, and an optional Prometheus/Grafana observability overlay. There is no unified platform-admin **operational health** view in the native System page. Operators must inspect several sources to distinguish a living HTTP process from a runnable service, a stale scheduled job, or a queue with a growing backlog.
+Breeze already has probe endpoints, selected job heartbeats, BullMQ queue counters, and an optional Prometheus/Grafana observability overlay. There is no unified platform-admin **background-processing health** view in the native System page. Operators must inspect several sources to tell whether a scheduled job is stale or a queue has a growing backlog.
 
-The existing `/admin/system` **Connections** tab shows what is *configured* (not whether the service answers), and **Deprecations** addresses another concern. **Health** must remain separate from both: it answers what the Breeze deployment can presently do, and whether the supporting observations are fresh.
+The existing `/admin/system` **Connections** tab shows what is *configured* (not whether the service answers), and **Deprecations** addresses another concern. **Health** must remain separate from both: it answers how background processing is doing, and whether the supporting observations are fresh.
 
 **Goals**
 
-1. Give **platform administrators** a fast, read-only, in-product view of the Breeze platform's operational condition.
-2. Reuse canonical in-process readiness and shared operational signals; do not build another monitoring engine.
-3. Surface **API readiness, PostgreSQL, Redis, required consumer readiness, supported queue depths, and supported scheduled-job heartbeats**.
+1. Give **platform administrators** a fast, read-only, in-product view of background-processing health.
+2. Reuse existing shared operational signals; do not build another monitoring engine.
+3. Surface **supported queue depths and supported scheduled-job heartbeats**, all read from shared Redis.
 4. Represent partial failures honestly: `unknown` is different from `unavailable`, and an intentionally disabled capability is not an incident.
-5. Preserve the distinction between **the responding API process** and **shared deployment-level observations**, especially in multi-replica/worker-split topologies.
-6. Work without the optional monitoring overlay.
+5. Work without the optional monitoring overlay.
 
 **Non-goals**
 
@@ -33,7 +32,7 @@ The existing `/admin/system` **Connections** tab shows what is *configured* (not
 - Host CPU/RAM/disk, Prometheus integration, Grafana visualization, logs, Sentry, or advanced performance analytics.
 - AI diagnosis/recommendations, remediation, process restarts, job retries, queue manipulation, or incident/SLA management.
 - Independently monitoring an API outage while the very API serving this screen is unreachable.
-- Discovering all API replicas or introducing cluster-wide process-health aggregation in the MVP.
+- Per-process or per-host health, API replica discovery, and any overall verdict; these stay with `/health/ready` and the monitoring overlay.
 
 ## 2. Verified foundations and approved direction
 
@@ -43,12 +42,10 @@ The existing `/admin/system` **Connections** tab shows what is *configured* (not
 | `apps/api/src/routes/admin/index.ts` | `adminRoutes.use('*', platformAdminMiddleware)`; System routes are mounted underneath it. |
 | `apps/api/src/routes/admin/systemConnectionHealth.ts` | Read-only, platform-admin-only, Redis-backed job health; Redis failure is represented in response rather than a generic HTTP 500. |
 | `apps/api/src/services/connectionHealth/heartbeat.ts` | Reconciler/digest heartbeat timestamps, stale/missing states, per-kind last success and failure streak; Redis `mget` failure produces a partial status. |
-| `apps/api/src/services/readiness.ts` and `apps/api/src/index.ts` | Cached, single-flight, timeout-bounded readiness evaluator for DB, Redis, and required consumers; `/ready` and `/health/ready` share its handler; `/health` is liveness only. |
 | `apps/api/src/jobs/m365SyncWorker.ts` and `apps/api/src/jobs/eventDispatchWorker.ts` | Existing `getJobCounts` usage; queue state categories and semantics differ by queue. |
-| `docs/operations/health-probes.md` | API and optional split worker have different readiness roles; a replying API replica does not establish another replica's status. |
-| `docker-compose.monitoring.yml` | Optional observability overlay; its presence is not a prerequisite for native readiness. |
+| `docker-compose.monitoring.yml` and `docs/operations/MONITORING.md` | Optional observability overlay; its presence is not a prerequisite for the native Health tab. |
 
-**Maintainer-confirmed, Discussion #10764:** locate the tab at `/admin/system`; follow `systemConnectionHealth.ts` authorization and partial-failure pattern; use existing API-visible signals without requiring a Prometheus client; MVP covers API readiness, PostgreSQL, Redis, queue depth, and job heartbeats; exclude host capacity; identify local versus shared signals. Todd deferred the portal direction; this document goes further by **explicitly removing the portal from this feature's scope**, as requested by the proposer. This exclusion is a project proposal, not a separate maintainer approval.
+**Maintainer-confirmed, Discussion #10764:** locate the tab at `/admin/system`; follow `systemConnectionHealth.ts` authorization and partial-failure pattern; use existing API-visible signals without requiring a Prometheus client; MVP initially listed API readiness, PostgreSQL, Redis, queue depth, and job heartbeats and was narrowed in review to queue depth and job heartbeats; exclude host capacity. Todd deferred the portal direction; this document goes further by **explicitly removing the portal from this feature's scope**, as requested by the proposer. This exclusion is a project proposal, not a separate maintainer approval.
 
 ## 3. Decisions proposed for approval
 
@@ -58,18 +55,16 @@ The existing `/admin/system` **Connections** tab shows what is *configured* (not
 | D2 | **Platform-admin only:** the API is mounted via `adminRoutes.route('/system', ...)`, not directly on the root API; existing `platformAdminMiddleware` remains the gate. |
 | D3 | **Read-only:** GET only; no mutation, service controls, retries, or new permissions. |
 | D4 | **Prometheus-independent:** basic Health is available even when `ENABLE_MONITORING=false`, Prometheus/Grafana are absent, or the optional overlay is down. |
-| D5 | **Reuse readiness:** consume the existing evaluator/its snapshot through a shared internal seam; do not call the public `/health/ready` endpoint over HTTP or duplicate DB/Redis probes. |
-| D6 | **Bounded degradation:** when Redis or a queue/heartbeat read fails, return other available components and mark affected observations unknown; no blanket 500 for a dependency outage. |
-| D7 | **Truthful status:** fresh evidence is required for `operational`; missing/stale/unreadable evidence is `unknown`; disabled optional functionality is `disabled`, not broken. |
-| D8 | **Local vs shared:** every observation carries `scope: 'process' | 'shared'`; process-local readiness is never labeled fleet-/cluster-wide. |
-| D9 | **Curated coverage:** initially include only explicit queue/job descriptors with known configuration and observability semantics; no blind iteration over all BullMQ queues. |
-| D10 | **No global queue threshold:** use existing domain thresholds where justified; an occupied queue, delayed job, or missing optional queue is not automatically degraded. |
-| D11 | **No new persistence:** prefer existing read models/Redis keys; new tables, migrations, and monitoring infrastructure are not part of the MVP. |
-| D12 | **Do not change probe contracts:** existing `/health`, `/ready`, `/health/ready`, and connection-health status route remain behaviorally compatible. |
-| D13 | **No customer scope:** no Portal UI/API, customer organization selector, `portal_branding` field, visibility flag, or tenant-specific data in the report. |
-| D14 | **No secret-bearing payload:** no credentials, connection strings, queue payloads, internal hostnames/IPs, raw logs, or exception messages in the JSON/UI. |
-| D15 | **Native UI:** i18n and existing System-page tab state patterns; fresh/stale/partial-data presentation, manual refresh, bounded background polling. |
-| D16 | **Truthful availability:** if the serving API fails completely, the admin tab may be unreachable; this is not an external availability service. |
+| D5 | **Bounded degradation:** when Redis or a queue/heartbeat read fails, return other available components and mark affected observations unknown; no blanket 500 for a dependency outage. |
+| D6 | **Truthful status:** fresh evidence is required for `operational`; missing/stale/unreadable evidence is `unknown`; disabled optional functionality is `disabled`, not broken. |
+| D7 | **Curated coverage:** initially include only explicit queue/job descriptors with known configuration and observability semantics; no blind iteration over all BullMQ queues. |
+| D8 | **No global queue threshold:** use existing domain thresholds where justified; an occupied queue, delayed job, or missing optional queue is not automatically degraded. |
+| D9 | **No new persistence:** prefer existing read models/Redis keys; new tables, migrations, and monitoring infrastructure are not part of the MVP. |
+| D10 | **Do not change probe contracts:** existing `/health`, `/ready`, `/health/ready`, and connection-health status route remain behaviorally compatible. |
+| D11 | **No customer scope:** no Portal UI/API, customer organization selector, `portal_branding` field, visibility flag, or tenant-specific data in the report. |
+| D12 | **No secret-bearing payload:** no credentials, connection strings, queue payloads, internal hostnames/IPs, raw logs, or exception messages in the JSON/UI. |
+| D13 | **Native UI:** i18n and existing System-page tab state patterns; fresh/stale/partial-data presentation, manual refresh only. |
+| D14 | **Truthful availability:** if the serving API fails completely, the admin tab may be unreachable; this is not an external availability service. |
 
 ## 4. Status vocabulary and evaluation
 
@@ -77,29 +72,16 @@ The existing `/admin/system` **Connections** tab shows what is *configured* (not
 
 | State | Meaning | Permitted evidence |
 |---|---|---|
-| `operational` | A current authoritative observation indicates normal operation | Successful readiness/dependency probe; eligible heartbeat within its known cadence |
-| `degraded` | Function remains possible but an established domain health criterion fails | An existing meaningful backlog/failure criterion, or partial required processing impairment |
-| `unavailable` | An explicitly required capability is confirmed unable to perform its function | Failed dependency readiness or confirmed required consumer failure |
-| `unknown` | No trustworthy current verdict is available | Missing/stale heartbeat, timed-out collection, unreachable monitoring source, non-authoritative replica view |
+| `operational` | A current authoritative observation indicates normal operation | Eligible heartbeat within its known cadence |
+| `degraded` | Function remains possible but an established domain health criterion fails | A known failure streak, or an existing meaningful backlog criterion |
+| `unavailable` | An explicitly required capability is confirmed unable to perform its function | Reserved; no MVP source maps here |
+| `unknown` | No trustworthy current verdict is available | Missing/stale heartbeat, timed-out collection, unreadable Redis, queue without a domain threshold |
 | `disabled` | The optional capability is intentionally turned off | Existing authoritative feature/role flag |
 
 An optional capability **not deployed for this role** should be omitted or marked disabled with a clear reason; it must not become a red component. No `unavailable` status may be inferred solely from a nonexistent optional target.
 
-### 4.2 Overall verdict (proposal)
+### 4.2 Freshness
 
-Aggregate only **applicable, required** capabilities with evidence relevant to the represented scope.
-
-1. A confirmed required dependency/consumer failure makes the **responding process** not ready. Display this clearly; do not assert that every API replica or all Breeze features are down.
-2. A confirmed impairment which does not prove an entire capability unavailable is `degraded`.
-3. If all required checks pass but a required observation is missing/stale, the overall verdict is `unknown` (or an explicitly labeled *partial coverage* verdict; do not silently promote to operational).
-4. `operational` requires fresh successful observations for every required signal **within that verdict's defined scope**.
-5. Optional disabled components do not penalize overall health.
-
-**Open design decision:** whether to expose a single top-level verdict at all, given that process-local readiness and shared queues represent different scopes. Safer default: display **"Responding API process"** readiness and an independent **"Background processing"** summary rather than a misleading deployment-wide green banner. If a combined label is retained, name its coverage and limitations.
-
-### 4.3 Freshness
-
-- Reuse `checkedAt` from readiness; do not replace it with response-render time.
 - Reuse heartbeat cadence/TTL and existing `stale`/`missing` semantics from `connectionHealth/heartbeat.ts`.
 - Every derived queue/job read should have a time of observation and a timeout/failure state.
 - Do not invent success when a Redis read yields no value or errors.
@@ -107,23 +89,7 @@ Aggregate only **applicable, required** capabilities with evidence relevant to t
 
 ## 5. Components and data acquisition
 
-### 5.1 Existing readiness as the base
-
-`createReadinessEvaluator` already implements bounded probes, caching, single-flight, worker registration and invalidation. The new admin service should consume the same evaluator instance (or an internal, injected read-only adapter exposing its snapshot) used by `/health/ready`.
-
-**Do not instantiate a second evaluator or invoke public HTTP readiness from within the API.** In particular, avoid a second DB `SELECT 1` + Redis `PING` per admin refresh.
-
-Proposed process-local cards:
-
-- **API readiness:** `ready` and source timestamp for the process that answered.
-- **PostgreSQL:** `db` readiness result from that process.
-- **Redis:** `redis` readiness result from that process.
-- **Required consumers:** readiness summary based on existing registry and required/optional flags; do not expose raw errors/queue names by default.
-- **API role:** communicate that results reflect the process role (`api`, `worker`, or combined), without claiming another process was inspected.
-
-The existing public readiness response intentionally provides aggregated consumer counts, not consumer names. The admin health read may reuse those counts; any more detailed diagnostics require a separate, security-reviewed explicit allowlist.
-
-### 5.2 Queue depth: explicit bounded registry
+### 5.1 Queue depth: explicit bounded registry
 
 Start from queues whose state can be read safely with existing BullMQ queue instances and known semantics. `m365SyncWorker.ts` counts `waiting`, `prioritized`, `delayed`, `active` for its workload, while `eventDispatchWorker.ts` uses its own categories.
 
@@ -132,15 +98,15 @@ Start from queues whose state can be read safely with existing BullMQ queue inst
 - stable ID and admin-facing localized label;
 - optional configuration/role predicate (active vs disabled vs absent);
 - read-only, bounded count retrieval;
-- explicit named categories (`waiting`, `prioritized`, `delayed`, `active`, `paused` only if meaningful for that queue);
+- explicit named categories (`waiting`, `prioritized`, `delayed`, `active`);
 - domain-defined severity mapping **only where currently justified**;
-- `checkedAt`, `scope: 'shared'`, and `status`.
+- `checkedAt` and `status`.
 
 Avoid interpreting `delayed` as overdue: BullMQ delayed tasks can be scheduled intentionally. Avoid a generic global backlog threshold. If no reliable thresholds exist for a queue, show counts with `status: 'unknown'` for performance/degradation rather than fabricate a healthy/degraded verdict. Collection failure should preserve other queues and dependencies.
 
-**Open inventory for implementation planning:** name the exact initial queues, map their existing queue getters, feature flags, and category/threshold semantics. This spec does not claim every Breeze queue is observable or that a uniform backlog threshold exists.
+**Initial queues are fixed in §12.2.** Implementation planning maps their existing queue getters and feature flags. This spec does not claim every Breeze queue is observable or that a uniform backlog threshold exists.
 
-### 5.3 Scheduled-job heartbeats
+### 5.2 Scheduled-job heartbeats
 
 Reuse `readConnectionHealthJobStatus()` and its existing reconciler/digest/per-kind freshness rules as the first authoritative heartbeat source. Do not create another heartbeat framework for the same jobs.
 
@@ -149,20 +115,15 @@ Report for known, supported jobs:
 - stable ID and admin-facing label;
 - schedule or known expected cadence (if authoritative);
 - last run / last success where already stored;
-- `ok`, `stale`, `missing` and `failing` source states mapped carefully to the UI vocabulary;
-- `scope: 'shared'` when heartbeat storage is shared.
+- `ok`, `stale`, `missing` and `failing` source states mapped carefully to the UI vocabulary.
 
-A stale/missing heartbeat normally means **unknown/not observed**, not proof that the entire API is unavailable. A known positive failure streak may justify degraded/failing status within that job's defined scope. Disabled/unscheduled jobs must be excluded from failure counts.
+A stale/missing heartbeat normally means **unknown/not observed**, not proof that the entire API is unavailable. A known positive failure streak may justify degraded status within that job's defined scope. Disabled/unscheduled jobs must be excluded from failure counts.
 
-**Open inventory:** determine which additional jobs (if any) have authoritative heartbeat data. Adding heartbeat writers requires separate explicit justification and tests; no blanket instrumentation of all background workers.
+**Scope is fixed in §12.3:** connection-health heartbeats only. Adding heartbeat writers for other jobs requires separate explicit justification and tests; no blanket instrumentation of all background workers.
 
-### 5.4 Multiple replicas and split worker
+### 5.3 Replicas and split worker
 
-- **Process-local:** the responding API replica's readiness snapshot, local required consumers, initialization/shutdown state.
-- **Shared:** queue depths and Redis-backed heartbeats, subject to their own freshness and configuration checks.
-- A successful request to one replica **does not establish the readiness of every API replica**.
-- In a split deployment, API-role readiness does not imply worker-role readiness; do not label split-worker health as checked unless there is an authoritative signal for it.
-- No cluster-wide replica discovery/aggregation is required. If only local readiness exists, label it precisely and mark other roles not observed rather than assuming green.
+All observations come from shared Redis; per-process and per-host health stays in `/health/ready` and the monitoring overlay (`docs/operations/MONITORING.md`).
 
 ## 6. API design
 
@@ -184,11 +145,9 @@ Mount a new router under `adminRoutes.route('/system', ...)` in `apps/api/src/ro
 
 ```ts
 type HealthState = 'operational' | 'degraded' | 'unavailable' | 'unknown' | 'disabled';
-type HealthScope = 'process' | 'shared';
 type HealthObservation = {
   id: string;
   status: HealthState;
-  scope: HealthScope;
   checkedAt: string | null;
   detailCode?: string; // stable, allowlisted reason for i18n; never raw exceptions
 };
@@ -196,18 +155,8 @@ type HealthObservation = {
 type SystemHealthResponse = {
   data: {
     generatedAt: string; // response creation time, not proof of freshness
-    process: {
-      readiness: HealthObservation;
-      database: HealthObservation;
-      redis: HealthObservation;
-      requiredConsumers: HealthObservation & {
-        required: number | null;
-        runnable: number | null;
-        unavailable: number | null;
-      };
-    };
     queues: Array<HealthObservation & {
-      counts: Partial<Record<'waiting' | 'prioritized' | 'delayed' | 'active' | 'paused', number>>;
+      counts: Partial<Record<'waiting' | 'prioritized' | 'delayed' | 'active', number>>;
     }>;
     jobs: Array<HealthObservation & {
       lastRunAt: string | null;
@@ -217,14 +166,14 @@ type SystemHealthResponse = {
 };
 ```
 
-Example shapes are illustrative. The implementation plan must settle how missing data maps to nullable values, which queue states are reported, and how source states map to the summary; do not promise a complete cluster-wide overall state.
+Example shapes are illustrative. The implementation plan must settle how missing data maps to nullable values, which queue states are reported, and how source states map to the UI vocabulary; there is no overall verdict.
 
 ### 6.3 Failure isolation and read budget
 
-- An exception in one queue/job adapter must not discard successfully read API/PostgreSQL/Redis results.
-- Redis unavailable: return appropriate DB/Redis readiness and mark Redis-backed queue/heartbeat observations `unknown` (or unobserved); **do not transform this into generic HTTP 500**.
-- Probe and queue reads must be bounded and share existing read paths/caches where available. No unbounded `Promise.all` of every registered queue, and no arbitrary admin-specified queue names.
-- The health endpoint must not block readiness or alter the existing application admission gate.
+- An exception in one queue/job adapter must not discard successfully read observations from the others.
+- Redis unavailable: return 200 with the Redis-backed queue/heartbeat observations marked `unknown`; **do not transform this into generic HTTP 500**.
+- Queue and heartbeat reads must be bounded and share existing read paths where available. No unbounded `Promise.all` of every registered queue, and no arbitrary admin-specified queue names.
+- The health endpoint must not alter the existing application admission gate.
 - Preserve distinct `generatedAt`, source `checkedAt`, and stale semantics.
 
 ## 7. Web design
@@ -235,12 +184,10 @@ Extend `apps/web/src/components/admin/system/SystemPage.tsx` and the existing se
 
 **Suggested sections:**
 
-1. **API process readiness** — clear title limiting the result to the responding instance, and fresh timestamp.
-2. **Dependencies and required consumers** — PostgreSQL, Redis, consumer counts and truthful state badges.
-3. **Background work** — supported queues and jobs; depths, last-run times, optional disabled states, and partial-read notices.
-4. **Coverage note** — no claim of independent external monitoring, host metrics, or fleet-wide replica health.
+1. **Background work** — supported queues and jobs; depths, last-run times, optional disabled states, and partial-read notices.
+2. **Coverage note** — no claim of independent external monitoring, host metrics, or per-process/per-host health (see `/health/ready` and the monitoring overlay).
 
-Show a readable loading state, empty/disabled states, partial errors, inaccessible API state, and a manual Refresh control. Automatic polling should be conservative and paused when the Health tab is not active. Avoid generating a cascade of backend probes on every render.
+Show a readable loading state, empty/disabled states, partial errors, inaccessible API state, and a manual Refresh control, as in the Connections tab. There is no background polling. Avoid generating a cascade of backend reads on every render.
 
 Use existing admin i18n keys and extend all supported locales following repo parity requirements. Keep navigation, title handling, and other System tabs unchanged.
 
@@ -251,9 +198,9 @@ Use existing admin i18n keys and extend all supported locales following repo par
 3. **No tenant payload:** no devices, tenants, customers, queue bodies, job arguments/results, or organization-specific identifiers.
 4. **No secrets / internal infra leakage:** no DSNs, credentials, access tokens, passwords, Redis keys, hostnames, IPs, internal URLs, stack traces or unfiltered error strings in the serialized response.
 5. **No uncontrolled queries:** clients cannot specify metric expressions or arbitrary queue/job names.
-6. **No new schema/migrations:** all observations are derived from existing process/Redis sources.
+6. **No new schema/migrations:** all observations are derived from existing Redis sources.
 7. **No portal:** no `apps/portal`, `portal_branding`, `PORTAL_VISIBILITY_FLAG_KEYS`, customer-safe projection or public status API changes.
-8. **No weakened health gate:** keep existing liveness and readiness behavior, including API container liveness vs worker readiness distinction.
+8. **No weakened health gate:** keep existing liveness and readiness behavior unchanged.
 
 ## 9. Tests and verification requirements
 
@@ -261,12 +208,11 @@ Every test resides alongside its implementation and follows `docs/agents/testing
 
 **API / service unit tests**
 
-- Valid process readiness snapshot; DB down; Redis down; required worker initialization/consumer failure; process shutting down.
+- Redis down.
 - `unknown` for stale, missing, malformed, timed-out, or unreachable observations; `disabled` for legitimately disabled optional capabilities.
-- Single-flight/cache reuse and bounded reads; no extra independent DB/Redis probe path.
+- Bounded reads over the curated registry.
 - Queue category correctness, empty queue, expected delayed jobs, failure isolation, and per-queue criteria (no universal threshold).
-- Heartbeat fresh/stale/missing/failure streak mapping and feature-disabled semantics.
-- Shared vs process scopes, split worker, multi-replica non-claims, and null/unknown coverage.
+- Heartbeat fresh/stale/missing/failure streak mapping (known failure streak is `degraded`) and feature-disabled semantics.
 
 **Route / security tests**
 
@@ -279,74 +225,44 @@ Every test resides alongside its implementation and follows `docs/agents/testing
 
 - Tab parsing and deep-linking (including reload/SSR hydration), existing tabs unchanged.
 - Correct loading, success, disabled, unknown/stale, and error rendering.
-- Manual refresh and inactive-tab polling behavior.
+- Manual refresh; no background polling.
 - i18n parity and admin navigation; selected components use repo `data-testid` conventions where applicable.
 
 **Compatibility and integration**
 
 - Existing `/health`, `/ready`, `/health/ready`, `/admin/system/connections`, and `/admin/system/connection-health` contracts remain intact.
-- Works with monitoring overlay absent and with worker-split enabled.
+- Works with the monitoring overlay absent.
 - Real Redis failure causes partial result without a false green verdict.
 - No new tenant-scoped schema or RLS implications.
 
-For the **spec-only PR**, verify formatting, internal paths, diff scope and absence of secrets. Runtime/API/web suites belong to the implementation PRs, not this documentation-only change.
+For the **spec-only PR**, verify formatting, internal paths, diff scope and absence of secrets. Runtime/API/web suites belong to the implementation PR, not this documentation-only change.
 
-## 10. Delivery proposal (not implementation approval)
+## 10. Delivery
 
-**W01 — API contract and aggregator.** Define curated source registry and source-to-state mapping, expose injected readiness access, implement bounded queue/job readers and the admin GET, and add authorization/failure/security tests.
-
-**W02 — Web tab and documentation.** Add Health tab and i18n, source freshness/error UI, polling/refresh behavior, web tests, and operational documentation.
-
-The two-wave split is a **suggestion**; it requires maintainer approval. Do not register implementation waves or begin work merely because this design PR is open.
+A single implementation PR: curated source registry and source-to-state mapping, bounded queue/job readers, the admin GET, the Health tab with i18n and manual refresh, tests, and operational documentation. Implementation begins only after this spec merges; do not start work merely because this design PR is open.
 
 ## 11. Risks and trade-offs
 
 | Risk | Mitigation |
 |---|---|
-| Local process appears green while another replica is unhealthy | Explicit `process` scope and coverage note; no unearned deployment-wide green |
 | Queue backlogs misclassified | Curated queues, domain-specific semantics; unknown when no established threshold |
 | Stale heartbeat interpreted as proof of outage | Distinguish missing/stale from confirmed failure |
-| Query amplification / DB pressure | Reuse bounded cached evaluator; bounded queue/heartbeat reads and conservative polling |
+| Query amplification / DB pressure | Bounded queue/heartbeat reads over a curated registry; manual refresh only |
 | Redis failure makes health UI fail with 500 | Per-source failure isolation and partial JSON |
 | System tab confuses configuration with live condition | Retain distinct Connections vs Health semantics |
 | Admin UI unavailable during full API outage | Document the limitation; no claim of independent status service |
 | Sensitive diagnostics exposed by future extension | Explicit response allowlist and negative serialization tests |
 
-## 12. Decisions requested from maintainer before implementation
+## 12. Closed decisions (accepted by the maintainer)
 
-Each decision carries the options considered and a recommendation, so approval can be a yes/no. The recommendations rest on code verified on `main` at the time of writing; where a fact could not be established, it is said so.
+Resolved in maintainer review; each is binding for the implementation.
 
-**1. Coverage and terminology.**
-- *Option A:* a process-scoped readiness card plus separate shared background-processing sections (D8).
-- *Option B:* a single deployment-wide status badge.
-- **Recommendation: A.** Readiness is evaluated per API process, so B would present one replica's state as the fleet's. This is the behaviour already stated in §5.4.
-
-**2. Queue inventory (first read-only registry).**
-- *Option A:* the queues whose jobs are already surfaced elsewhere in System: `getConnectionHealthQueue`, `getConnectionHealthDigestQueue`.
-- *Option B:* A plus the high-traffic queues `getAlertQueue` and `getEventDispatchQueue` (the latter already counts its own categories in `eventDispatchWorker.ts`).
-- *Option C:* every queue that has a `get*Queue` getter. Rejected: there are dozens, with no uniform semantics (D9).
-- **Recommendation: B, counts only.** Show `waiting`, `prioritized`, `delayed` and `active` with `status: 'unknown'` for degradation. No established per-queue threshold was found, and D10 rules out a global one. A threshold is added to a queue only when its owning domain defines one.
-
-**3. Job inventory.**
-- *Option A:* the connection-health reconciler, digest and per-kind heartbeats read by `readConnectionHealthJobStatus()`.
-- *Option B:* A plus further jobs with new heartbeat writers.
-- **Recommendation: A for W01.** It is the only authoritative Redis heartbeat source identified, and §5.3 already forbids a second heartbeat framework. Any further job needs its own writer, tests and justification in a separate change.
-
-**4. Degraded vs unavailable.**
-- *Option A:* a failed required consumer maps to `unavailable` for that process; queue and job impairments map to `degraded` or `unknown` depending on evidence.
-- *Option B:* any impairment maps to `degraded`.
-- **Recommendation: A.** It matches D7: only evidence of failure produces a failure state, and stale or missing evidence stays `unknown`.
-
-**5. Read budget and polling.**
-- *Option A:* reuse the cached readiness evaluator for the process card (default TTL `DEFAULT_READINESS_CACHE_TTL_MS = 5_000`, `config/readinessConfig.ts`); read queue counts and heartbeats per request, bounded by the registry from item 2; the web tab refreshes manually, as the Connections tab does with its Refresh button, plus a 30-second background poll that pauses while the tab is hidden.
-- *Option B:* manual refresh only.
-- *Option C:* a shorter poll with a server-side cache for queue counts.
-- **Recommendation: A.** The 30-second interval is a proposal, not an existing constant: no polling interval was found in `components/admin/system`, so the maintainer may prefer B to stay consistent with Connections.
-
-**6. Delivery.**
-- *Option A:* two waves, API then web (§10).
-- *Option B:* one implementation PR.
-- **Recommendation: A.** The API contract can be reviewed and tested without the UI.
+1. **Coverage.** Neither a process-scoped readiness card nor a deployment-wide badge. The tab has only shared background-processing sections and no overall verdict.
+2. **Queues.** First registry is `getConnectionHealthQueue`, `getConnectionHealthDigestQueue`, `getAlertQueue` and `getEventDispatchQueue`, counts only (`waiting`, `prioritized`, `delayed`, `active`). Status is `unknown` until the owning domain defines a threshold (D7, D8).
+3. **Jobs.** Only the connection-health reconciler, digest and per-kind heartbeats read by `readConnectionHealthJobStatus()`. Any further job needs its own writer, tests and justification in a separate change.
+4. **Degraded vs unavailable.** A known failure streak maps to `degraded`; missing or stale evidence maps to `unknown` (D6). There is no consumer-based `unavailable`.
+5. **Polling.** Manual refresh only, as in the Connections tab; no background poll.
+6. **Delivery.** One implementation PR (§10); implementation starts only after this spec merges.
 
 ## 13. Explicit product decision: no Customer Portal exposure
 
