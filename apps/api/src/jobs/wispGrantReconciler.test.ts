@@ -1,0 +1,55 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+/**
+ * jobs/wispGrantReconciler.ts — the 5-minute tick. W2 (#11085) adds the
+ * specialist post-back re-sweep after the grant reconcile; it must never fail
+ * the tick (the grant half is what the job exists for).
+ */
+const h = vi.hoisted(() => ({
+  wispEnabled: vi.fn(() => true),
+  reconcileActiveGrants: vi.fn(),
+  resweepSpecialistResults: vi.fn(),
+  captureException: vi.fn(),
+}));
+
+vi.mock('../config/env', async (orig) => ({ ...(await orig<typeof import('../config/env')>()), wispEnabled: h.wispEnabled }));
+vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
+vi.mock('../services/wisp/grantLifecycle', () => ({ reconcileActiveGrants: h.reconcileActiveGrants }));
+vi.mock('../services/wisp/specialistResult', () => ({ resweepSpecialistResults: h.resweepSpecialistResults }));
+vi.mock('../services/sentry', () => ({ captureException: h.captureException }));
+vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
+vi.mock('bullmq', () => ({ Queue: vi.fn(), Worker: vi.fn() }));
+
+import { processWispGrantReconcile } from './wispGrantReconciler';
+
+const grants = { scanned: 2, paused: 0, resumed: 0, expired: 0, failed: 0 };
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  h.wispEnabled.mockReturnValue(true);
+  h.reconcileActiveGrants.mockResolvedValue(grants);
+  h.resweepSpecialistResults.mockResolvedValue({ scanned: 1, posted: 1, failed: 0 });
+});
+
+describe('processWispGrantReconcile', () => {
+  it('re-sweeps missing specialist posts after reconciling grants', async () => {
+    const result = await processWispGrantReconcile();
+    expect(h.resweepSpecialistResults).toHaveBeenCalledTimes(1);
+    expect(h.resweepSpecialistResults.mock.invocationCallOrder[0]!)
+      .toBeGreaterThan(h.reconcileActiveGrants.mock.invocationCallOrder[0]!);
+    expect(result).toEqual({ skipped: false, ...grants, specialistPosts: 1 });
+  });
+
+  it('a throwing re-sweep is reported and never fails the tick', async () => {
+    h.resweepSpecialistResults.mockRejectedValue(new Error('db down'));
+    await expect(processWispGrantReconcile()).resolves.toEqual({ skipped: false, ...grants, specialistPosts: 0 });
+    expect(h.captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('with Wisp off neither half runs', async () => {
+    h.wispEnabled.mockReturnValue(false);
+    await expect(processWispGrantReconcile()).resolves.toEqual({ skipped: true });
+    expect(h.reconcileActiveGrants).not.toHaveBeenCalled();
+    expect(h.resweepSpecialistResults).not.toHaveBeenCalled();
+  });
+});

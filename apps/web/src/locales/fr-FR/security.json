@@ -2428,10 +2428,14 @@
       "installPending": "Installation en attente",
       "awaitingVendorReport": "En attente du rapport de l'éditeur",
       "awaitingEvaluation": "En attente d'évaluation",
-      "vendorOrgMismatch": "L'éditeur signale une autre organisation"
+      "vendorOrgMismatch": "L'éditeur signale une autre organisation",
+      "tenantAmbiguous": "L'organisation correspond à plus d'une entreprise Bitdefender GravityZone",
+      "installerLinkMissing": "Le lien du programme d'installation de Bitdefender GravityZone n'est pas encore disponible — lancez la synchronisation dans Intégrations"
     },
     "setupLink": {
       "installerMissing": "Importer le programme d'installation",
+      "tenantAmbiguous": "Corriger l'association",
+      "installerLinkMissing": "Ouvrir les intégrations",
       "default": "Ouvrir la configuration"
     }
   },

@@ -17,6 +17,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/secmem"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 	"github.com/breeze-rmm/agent/internal/updater"
 	"gopkg.in/yaml.v3"
 )
@@ -60,8 +61,11 @@ type Config struct {
 // Returns the PID of the spawned process and any error.
 type SpawnFunc func(sessionKey string, binaryPath string, args ...string) (pid int, err error)
 
-// ErrNoActiveSession is returned by SpawnFunc when no user session is available.
-var ErrNoActiveSession = fmt.Errorf("no active user session")
+// ErrNoActiveSession is returned (wrapped) by SpawnFunc when nobody is signed
+// in to the target session, so there is no user to launch Assist as. It is the
+// sessionbroker sentinel so the Windows spawn path's error matches as-is.
+// Callers treat it as a wait for a signed-in user, never as a crash (#10379).
+var ErrNoActiveSession = sessionbroker.ErrNoInteractiveUser
 
 // ErrNotInstalled: Breeze Assist is enabled by policy but the helper binary is
 // not on disk (never installed, or a failed in-place update removed it).
@@ -282,6 +286,9 @@ type Manager struct {
 	pendingOwnershipMark *ownershipMarker
 	// sidecarRejectLogged dedupes the "requirements sidecar ignored" warning.
 	sidecarRejectLogged string
+	// noSignedInUserLogged: the "no session with a signed-in user" DEBUG
+	// line fired for the current episode (wait_for_user.go).
+	noSignedInUserLogged bool
 }
 
 // New creates a new helper Manager. serverURL is a provider (func() string) so
@@ -490,6 +497,7 @@ func (m *Manager) Apply(settings *Settings) {
 	}
 
 	activeSessions := m.sessionEnumerator.ActiveSessions()
+	m.noteSignedInSessionsLocked(len(activeSessions), settings.Enabled)
 	activeKeys := make(map[string]bool, len(activeSessions))
 	baseCfg := settingsToConfig(settings)
 
@@ -557,6 +565,11 @@ func (m *Manager) Apply(settings *Settings) {
 				case errors.Is(err, errWebView2Outdated), errors.Is(err, errCrashLoop):
 					// Logged once when it began; reported by InstallIssue.
 					log.Debug("breeze assist not started", "session", si.Key, "reason", err.Error())
+				case errors.Is(err, ErrNoActiveSession):
+					// #10379: no user token in a session the enumerator lists.
+					// A wait, not a launch failure; the next heartbeat tries
+					// again, and a wait that lasts is reported at WARN.
+					m.noteNoUserTokenLocked(state, err)
 				default:
 					log.Error("failed to start breeze assist", "session", si.Key, "error", err.Error())
 				}
@@ -815,6 +828,7 @@ func (m *Manager) ensureRunningSession(state *sessionState) error {
 		// whatever kept it from starting no longer applies.
 		state.launchIssue = ""
 		state.webview2Refusal = ""
+		state.clearUserWait()
 		if state.watcherGaveUp {
 			log.Info("breeze assist is running again; clearing its crash-loop state", "session", state.key)
 			state.watcherGaveUp = false
@@ -858,6 +872,7 @@ func (m *Manager) ensureRunningSession(state *sessionState) error {
 	if err != nil {
 		return err
 	}
+	m.noteUserPresentLocked(state)
 	state.pid = pid
 	state.spawnedPID = pid
 	// #10302: the heartbeat relaunches Assist outside the watcher; stamping

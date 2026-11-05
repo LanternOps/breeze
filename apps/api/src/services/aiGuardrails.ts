@@ -39,9 +39,11 @@ import {
 } from './wisp/specialistPolicy';
 import { LIVE_READ_INPUT_FLAGS, requestsLiveDeviceRead } from './aiLiveDeviceReads';
 import { classifyChatReadOnlyEventLogsQuery, type PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
+import { classifyWispUnattendedRead, type WispUnattendedRead } from './wisp/unattendedReads';
 // Env-only operator knob; the module imports nothing but @breeze/shared.
 import { iocHuntFourEyesDeviceThreshold } from './securityScanSweepConfig';
 import { IOC_HUNT_RUN_ACTION } from './iocHuntActions';
+import { PORTAL_TOOL_SENSITIVE_LABELS } from './portal/portalSensitiveParents';
 
 // Re-exported so every existing importer of AGENT_HUMAN_ONLY_TOOLS keeps
 // working unchanged after the move to aiToolExposure.ts (W01 quorum
@@ -469,10 +471,15 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   // Full-control W14 PR B (#6784): the accounting reads. remote_candidates never sends the model's term to the
   // provider (filtered in Breeze, quorum QW8).
   manage_accounting_sync: ['status', 'owed_operations', 'customers', 'mappings', 'income_accounts', 'remote_candidates'],
+  // Full-control W18 PR B (#6789): the portal settings read and the recipient list.
+  manage_org_portal_settings: ['get'],
+  manage_report_recipients: ['list'],
   // W15 PR A (#6785): mapped products and subscription/order evidence reads.
   search_pax8_products: ['search', 'provision_details', 'dependencies', 'pricing'],
   manage_pax8_subscriptions: ['list', 'drift'],
   manage_pax8_orders: ['list', 'get', 'preview'],
+  // Full-control W18 PR A (#6789): the role directory's four reads. No role or user write is a tool action (W18-1).
+  list_roles: ['list', 'get', 'users', 'effective_permissions'],
   manage_delivery: ['resolve', 'list_routing', 'list_escalation'],
   manage_deployments: ['list', 'get', 'device_status'],
   manage_groups: ['list', 'get', 'preview', 'membership_log'],
@@ -695,6 +702,9 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   manage_contract_documents: ['link'],
   // Full-control W14 PR B (#6784): see TIER3_SUPERVISED_ACTIONS / TIER3_FOUR_EYES_ACTIONS.
   manage_accounting_sync: ['link_mapping', 'unlink_mapping', 'sync_mapping', 'push', 'push_bulk'],
+  // Full-control W18 PR B (#6789): see TIER3_SUPERVISED_ACTIONS / TIER3_FOUR_EYES_ACTIONS.
+  manage_org_portal_settings: ['update', 'set_sensitive_access'],
+  manage_report_recipients: ['add', 'remove', 'convert'],
   // W15 PR A (#6785, Gate B): sync calls the vendor partner-wide; preflight sends staged content.
   manage_pax8_subscriptions: ['sync', 'link', 'unlink'],
   manage_pax8_orders: ['preflight', 'submit', 'reconcile'],
@@ -806,6 +816,10 @@ export const TIER3_FOUR_EYES_ACTIONS: Record<string, string[]> = {
   // Full-control W14 PR B (#6784, QW1 — Todd sign-off): the invoice is written into the partner's QuickBooks / Xero
   // books (and a not-yet-synced customer / item with it), which no Breeze action reverses. Mandatory pins.
   manage_accounting_sync: ['push', 'push_bulk'],
+  // Full-control W18 PR B (#6789, Decision 2): per-host patch, CVE and rack data, the hours balance and trust-page
+  // editing open to a customer's portal users, and what they have seen cannot be recalled. Mandatory effect digest
+  // over the requested flags and the row's current sensitive values (pinnedEffectPolicy.ts).
+  manage_org_portal_settings: ['set_sensitive_access'],
   // update_org is deliberately ABSENT here: its scope is input-aware (a
   // `status` change is four_eyes, a plain rename is supervised) and is
   // resolved by resolveApprovalScope's override hook, not this static table.
@@ -1104,6 +1118,11 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   // linked one OVERWRITE the remote customer / item with Breeze's values; unlink is local. A sync that would
   // CREATE the remote record is refused in the handler (QB5), so none of these is creation-capable.
   manage_accounting_sync: ['link_mapping', 'unlink_mapping', 'sync_mapping'],
+  // Full-control W18 PR B (#6789): a portal settings change reaches customers at once (reversible, but seen); a
+  // recipient add or convert sends report data out of Breeze on the schedule, and a remove can restore a series
+  // delivery. update refuses a parent enable that would activate a dormant sensitive child (row-locked).
+  manage_org_portal_settings: ['update'],
+  manage_report_recipients: ['add', 'remove', 'convert'],
   // W15 PR A (#6785): local billing links, partner-wide sync and vendor isMock preflight.
   manage_pax8_subscriptions: ['sync', 'link', 'unlink'],
   manage_pax8_orders: ['preflight', 'reconcile'],
@@ -1400,8 +1419,9 @@ export const TIER3_INPUT_AWARE_TOOLS: ReadonlySet<string> = new Set<string>([
  * own tier at run time. Pinned by aiGuardrails.tierDecidingKeys.contract.test.ts;
  * a new input-aware branch needs an entry here.
  *
- * (event_logs_query's payload-aware classification is chat-session only and
- * never applies to a flow, which runs without a chat session.)
+ * (event_logs_query's payload-aware classifications, read-only #7906 and the
+ * #10973 unattended-reads switch, are chat-session only and never apply to a
+ * flow, which runs without a chat session and without a guardrail context.)
  */
 export const TIER_DECIDING_INPUT_KEYS: Readonly<Record<string, readonly string[]>> = {
   // isInputAwareTier3: comment + isPublic === true, update_status to
@@ -1483,6 +1503,15 @@ export interface GuardrailContext {
    * it — so they keep the base Tier 3.
    */
   chatSession?: true;
+  /**
+   * #10973: set ONLY by the chat gate (`chatGuardrailContext`, aiAgentSdk.ts) for
+   * a call whose LIVE Wisp ceiling says the grant-level unattended-reads switch
+   * is on, and only when the gate could skip the card. Lowers a Security
+   * `event_logs_query` from the restricted grammar to Tier 2; honored only with
+   * `chatSession`. `checkAgentGuardrails` strips it. A troubleshooting run reaches
+   * the same switch through its own verified path in runLoop.ts, never this flag.
+   */
+  wispUnattendedReads?: true;
 }
 
 /** A `run_script` call that names a proposal instead of a library script. */
@@ -2885,6 +2914,19 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     link: { resource: 'agreements', action: 'write' },
   },
   get_device_billing: { resource: 'devices', action: 'read' },
+  // Full-control W18 PR B (#6789): each = its REST route's requirePermission (orgPortalSettings.ts, reports/recipients.ts).
+  // add and convert also need reports:export (TOOL_ACTION_EXTRA_PERMISSIONS, Decision 5).
+  manage_org_portal_settings: {
+    get: { resource: 'organizations', action: 'read' },
+    update: { resource: 'organizations', action: 'write' },
+    set_sensitive_access: { resource: 'organizations', action: 'write' },
+  },
+  manage_report_recipients: {
+    list: { resource: 'reports', action: 'read' },
+    add: { resource: 'reports', action: 'write' },
+    remove: { resource: 'reports', action: 'write' },
+    convert: { resource: 'reports', action: 'write' },
+  },
   // Full-control W14 PR B (#6784): routes/accounting/index.ts — accounting:read on the reads, accounting:manage on
   // every write (the rest of each write's floor is in TOOL_ACTION_EXTRA_PERMISSIONS).
   manage_accounting_sync: {
@@ -2902,6 +2944,20 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   },
   // W15 PR A (#6785): REST requires billing:manage even for reads exposing vendor costs.
   get_pax8_status: { resource: 'billing', action: 'manage' },
+  // Full-control W18 PR A (#6789): each = its REST route's requirePermission. The summary and readiness sections
+  // need their own grants on top (resolved in the handler from the live permission set, as on REST).
+  get_org_summary: { resource: 'organizations', action: 'read' },
+  get_account_readiness: { resource: 'organizations', action: 'read' },
+  get_audit_retention: { resource: 'audit', action: 'read' },
+  list_portal_users: { resource: 'organizations', action: 'read' },
+  list_users: { resource: 'users', action: 'read' },
+  get_user: { resource: 'users', action: 'read' },
+  list_roles: {
+    list: { resource: 'users', action: 'read' },
+    get: { resource: 'users', action: 'read' },
+    users: { resource: 'users', action: 'read' },
+    effective_permissions: { resource: 'users', action: 'read' },
+  },
   search_pax8_products: {
     search: { resource: 'billing', action: 'manage' },
     provision_details: { resource: 'billing', action: 'manage' },
@@ -3021,6 +3077,13 @@ export const TOOL_ACTION_EXTRA_PERMISSIONS: Record<
   string,
   Record<string, { resource: string; action: string }[]>
 > = {
+  // Full-control W18 PR B (#6789, Decision 5): a recipient add or convert is a scheduled delivery of report data out
+  // of Breeze, the bulk output reports:export gates on the download and generate paths (recipientGate.ts). REST
+  // requires it only on a series child's add; the tool requires it on every add and convert (tool-only, declared).
+  manage_report_recipients: {
+    add: [{ resource: 'reports', action: 'export' }],
+    convert: [{ resource: 'reports', action: 'export' }],
+  },
   // Full-control W14 PR B (#6784): the REST mapping writes add the entity's grant (organizations:write for a
   // customer, catalog:write for an item, requireMappingWrite); the tool has no input-aware rows, so it requires BOTH
   // (a tightening). Both push routes add invoices:write (requireInvoicePush).
@@ -3105,6 +3168,11 @@ interface GuardrailCheckCommon {
    * these values, never the raw input.
    */
   pinnedEventLogsQuery?: PinnedEventLogsQuery;
+  /**
+   * #10973: set only when `wispUnattendedReads` lowered a Security query to Tier
+   * 2. The chat gate dispatches this classified call, never the raw input.
+   */
+  wispUnattendedRead?: WispUnattendedRead;
   reason?: string;
   description?: string;
 }
@@ -3358,6 +3426,23 @@ export function checkGuardrails(
         pinnedEventLogsQuery,
         description: buildApprovalDescription(toolName, action, input)
       };
+    }
+
+    // #10973: the grant-level switch. Not read-only: this read is Tier 2 only
+    // because the grantor opted in, so it keeps a Tier-2 audit row and no
+    // read-only presentation. Registry reads and set_device_context are Tier 2
+    // already; only this one needs lowering.
+    if (context.wispUnattendedReads === true) {
+      const wispUnattendedRead = classifyWispUnattendedRead(toolName, input);
+      if (wispUnattendedRead?.kind === 'security_event_query') {
+        return {
+          tier: 2,
+          allowed: true,
+          requiresApproval: false,
+          wispUnattendedRead,
+          description: buildApprovalDescription(toolName, action, input)
+        };
+      }
     }
   }
 
@@ -3785,7 +3870,10 @@ export function checkAgentGuardrails(
 ): AgentGuardrailCheck {
   // #7906: the chat-session opt-in is never honored for an agent run, even if
   // a caller hands it in — headless principals keep event_logs_query at Tier 3.
-  const agentContext = context?.chatSession ? { ...context, chatSession: undefined } : context;
+  // #10973: the same for the unattended-reads flag.
+  const agentContext = context?.chatSession || context?.wispUnattendedReads
+    ? { ...context, chatSession: undefined, wispUnattendedReads: undefined }
+    : context;
   const base: GuardrailCheck = opts.resolvedTier === 1 && isFlowToolName(toolName)
     ? { tier: 1, allowed: true, requiresApproval: false, readOnly: true, description: `Run ${toolName}` }
     : checkGuardrails(toolName, input, agentContext);
@@ -5056,6 +5144,41 @@ export function buildApprovalDescription(
       if (action === 'run') {
         const check = input.verificationType === 'test_restore' ? 'test restore' : 'integrity';
         parts.push(`Run a backup ${check} check on device ${w03Id(input.deviceId)}. Queues a command on the machine.`);
+      } else {
+        parts.push(humanizeToolAction(toolName, action));
+      }
+      break;
+
+    // Full-control W18 PR B (#6789): who sees what. Ids are truncated; the flag labels say what a portal user gains.
+    case 'manage_org_portal_settings': {
+      if (action === 'update') {
+        const settings = input.settings && typeof input.settings === 'object' ? Object.keys(input.settings as object) : [];
+        parts.push(`Change ${w03Cap(settings.join(', ') || '(nothing)')} on organization ${w03Id(input.orgId)}'s customer portal. Customers see this immediately.`);
+      } else if (action === 'set_sensitive_access') {
+        const flags = input.flags && typeof input.flags === 'object' ? Object.entries(input.flags as Record<string, unknown>) : [];
+        const label = (key: string) => PORTAL_TOOL_SENSITIVE_LABELS[key as keyof typeof PORTAL_TOOL_SENSITIVE_LABELS] ?? w03Cap(key);
+        const on = flags.filter(([, v]) => v === true).map(([k]) => label(k));
+        const off = flags.filter(([, v]) => v === false).map(([k]) => label(k));
+        parts.push([
+          `Let organization ${w03Id(input.orgId)}'s portal users see: ${on.join(', ') || '(nothing new)'}.`,
+          ...(off.length ? [`Remove: ${off.join(', ')}.`] : []),
+          'Data seen in the portal cannot be recalled.',
+        ].join(' '));
+      } else {
+        parts.push(humanizeToolAction(toolName, action));
+      }
+      break;
+    }
+
+    case 'manage_report_recipients':
+      if (action === 'add' && input.mode === 'remove') {
+        parts.push(`Exclude contact ${w03Id(input.contactId)} from series report ${w03Id(input.reportId)}'s delivery.`);
+      } else if (action === 'add') {
+        parts.push(`Send report ${w03Id(input.reportId)} to contact ${w03Id(input.contactId)} on its schedule. Report data leaves Breeze by email.`);
+      } else if (action === 'remove') {
+        parts.push(`Stop or restore delivery of report ${w03Id(input.reportId)} for contact ${w03Id(input.contactId)}.`);
+      } else if (action === 'convert') {
+        parts.push(`Move ${w03Cap(String(input.email ?? '(unspecified)'))} on report ${w03Id(input.reportId)} to a contact recipient.`);
       } else {
         parts.push(humanizeToolAction(toolName, action));
       }

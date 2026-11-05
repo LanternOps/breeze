@@ -13,7 +13,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 Wisp is a triage companion that works on behalf of one person. Once that person turns it on, Wisp keeps an eye on the estate they are allowed to see, notices things that need a human (a cluster of alerts, a stalled ticket, a failing patch ring), and tells them about it. It remembers preferences and decisions so it nags less over time, and it can hand focused jobs to specialists.
 
-Wisp never has more authority than the person it works for. It acts inside a **grant** that snapshots that person's reach, and it cannot widen it. Anything that changes something in the world goes through the same approval cards you already use on web and mobile. Wisp adds no new approval tier and no bypass.
+Wisp never has more authority than the person it works for. It acts inside a **grant** that snapshots that person's reach, and it cannot widen it. Anything that changes something in the world goes through the same approval cards you already use on web and mobile. Wisp adds no new approval tier, and the only way past a card is a switch you turn on yourself: see [Unattended reads](#unattended-reads).
 
 Wisp threads open at `/ai/wisp/thread/<id>`. Under an active grant the docked Breeze AI side panel speaks as Wisp (there is no toggle; see [Where you talk to Wisp](#where-you-talk-to-wisp)), and the **Wisp** entry in the AI section of the navigation opens the [Wisp home](#the-wisp-home).
 
@@ -147,6 +147,19 @@ A grant can be **paused** rather than ended. You can pause and resume it yoursel
 
 "Asks first" means an approval card in the Approvals inbox, on web and mobile. Approving is a decision by a person; Wisp cannot approve for itself.
 
+### Unattended reads
+
+Unattended reads is a switch on your grant, off by default, under **Budget and check-in settings** in the Wisp header. When it is on, Wisp and its device troubleshooting runs do these four things without a card:
+
+- read a registry key (`registry_operations` `read_key`);
+- read a registry value (`registry_operations` `get_value`);
+- query the Windows Security event log, with an optional filter by event ID, level, provider or age (`event_logs_query`);
+- save a note about a device (`set_device_context`). This is a write, included on purpose: it changes Wisp's notes, not the device.
+
+Anything else still asks first. That includes every other event log channel, a Security query with a filter outside those four, and every registry write.
+
+Only the person who owns the grant can change the switch. Turning it on asks you to verify again, and it applies to new conversations and new background runs. Turning it off needs no verification and applies to the next call, including in a conversation or run already under way. A partner administrator cannot change the switch, but can pause or revoke the grant, which stops everything.
+
 ## Turning Wisp off for your company
 
 A partner administrator can switch Wisp off for the whole company. Go to **Settings → AI Agents** and use the **Wisp enabled** switch on the Wisp card. It is set at partner level only (there is no per-organization override), is on by default, and changes autosave with a confirmation toast. Users who are not partner administrators see it read-only.
@@ -214,6 +227,10 @@ The kinds marked "after you approve" appear as an approval card; nothing starts 
 `launch_specialist` itself runs only `sweep`, `analysis` and `device_troubleshooting` on the call. `operator_recipe`, `patch_plan`, `remediation_research` and `bulk_ticket_reply` escalate to a supervised Tier-3 approval in chat.
 
 A `device_troubleshooting` run stays on the device it was given and refuses a call that names any other device. It never makes a change itself and raises at most three approval requests. Its steps appear on the run card, and the run appears under Workers in the Wisp rail. If the grant is paused or revoked mid-run, the run stops and is marked failed.
+
+When a `device_troubleshooting` run settles, it posts a report into the Wisp thread: what it found and how many steps are waiting for approval. A run stopped by a paused grant says so. You can approve or deny each step on the run card or under Approvals, and each approved step posts its outcome to the thread. These posts never send a push notification, because each step already raised its own approval request.
+
+**Continue** on the run card asks Wisp to start a new run on the same device, seeded with what the earlier run found and what happened to its steps. The earlier run does not resume. A run can be continued up to three times.
 
 Two refusals are user-visible. `bulk_reply_incomplete` means a bulk reply stopped part-way; what was sent and what was not is stored on the intent. `uncertain` means Wisp could not tell whether the work had taken effect, so it did not retry.
 

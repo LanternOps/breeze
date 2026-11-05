@@ -2829,6 +2829,34 @@ describe('logout() and the stashed SSO re-auth grant (#8862)', () => {
   });
 });
 
+// #10923: the Add Device modal remembers live enrollment credentials per site in
+// sessionStorage. Web sign-out is same-document, so nothing else removes them.
+describe('logout() and the remembered enrollment credentials (#10923)', () => {
+  it('clears the stored entries and the in-memory enrollment secret', async () => {
+    const {
+      REMEMBERED_ENROLLMENT_ARTIFACTS_KEY,
+      readRememberedEnrollmentArtifacts,
+      rememberCliToken,
+    } = await import('@/lib/rememberedEnrollmentArtifacts');
+    sessionStorage.clear();
+    const token = {
+      value: 'enroll_abc',
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      maxUsage: 1,
+      serverUrl: null,
+    };
+    rememberCliToken('user-1', 'site-1', token, 'fleet-secret');
+    expect(sessionStorage.getItem(REMEMBERED_ENROLLMENT_ARTIFACTS_KEY)).toContain('enroll_abc');
+
+    useAuthStore.getState().logout();
+
+    expect(sessionStorage.getItem(REMEMBERED_ENROLLMENT_ARTIFACTS_KEY)).toBeNull();
+    rememberCliToken('user-1', 'site-1', token);
+    expect(readRememberedEnrollmentArtifacts('user-1', 'site-1').cli?.enrollmentSecret).toBeUndefined();
+    sessionStorage.clear();
+  });
+});
+
 describe('logout resets the entitlements cache (#9907)', () => {
   it('clears a cached snapshot and invalidates in-flight requests', () => {
     entitlementsCache.value = { plan: 'pro', entitlements: [] };

@@ -2021,6 +2021,14 @@ describe('manage_policy_feature_link security_agents (#6960)', () => {
     expect((call[6] as { securityAgentsArmAuthorized?: boolean } | undefined)?.securityAgentsArmAuthorized).not.toBe(true);
   });
 
+  it('Bitdefender (#8170): the assistant cannot enable it, and the settings doc names it', async () => {
+    const armed = await add({ inlineSettings: { version: 1, agents: [{ vendor: 'bitdefender', enabled: true }] } });
+    expect(armed.error).toBe(AI_AUTO_INSTALL_REFUSAL_MESSAGE);
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+    const { POLICY_FEATURE_INLINE_SETTINGS_REFERENCE } = await import('./aiToolsConfigPolicy');
+    expect(POLICY_FEATURE_INLINE_SETTINGS_REFERENCE.security_agents).toContain('"bitdefender"');
+  });
+
   it('maps a service-backstop refusal to a readable result, not the generic tool error', async () => {
     const { SecurityAgentsLinkWriteError } = await import('./securityAgents/securityAgentsLinkWrite');
     vi.mocked(addFeatureLink).mockRejectedValue(new SecurityAgentsLinkWriteError({

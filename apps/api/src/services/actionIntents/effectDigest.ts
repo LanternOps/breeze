@@ -7,8 +7,9 @@ import {
   tickets, drPlans, partners, aiAgents, configPolicyFeatureLinks, devices,
   notificationChannels, ticketForms, ticketResponseTemplates,
   ticketChecklistTemplates, ticketChecklistTemplateItems,
-  softwareCatalog, softwareVersions, softwareInstallMethods, deviceNetworkIsolations,
+  softwareCatalog, softwareVersions, softwareInstallMethods, deviceNetworkIsolations, portalBranding,
 } from '../../db/schema';
+import { PORTAL_TOOL_SENSITIVE_KEYS } from '../portal/portalSensitiveParents';
 import type { ApprovalBinding } from '../networkIsolation/service';
 import {
   fingerprintSoftwareInstallMethodDependency, fingerprintSoftwareVersionDependency,
@@ -508,6 +509,34 @@ const EFFECT_DIGEST_RESOLVERS: Record<
       if (err instanceof ContractInvoicePreviewNotFound) return TARGET_ABSENT;
       throw err;
     }
+  },
+
+  // manage_org_portal_settings:set_sensitive_access (full-control W18 PR B, #6789; four-eyes, Decision 2). Pins the
+  // org, the requested flags and the row's CURRENT value of every sensitive, permission and parent flag (a missing row
+  // pins as the defaults, all off; a missing or deleted org does not pin). A flag changed after approval, including a child that a requested parent would now
+  // activate, gives another digest and the release refuses. Mandatory per action (pinnedEffectPolicy.ts).
+  'manage_org_portal_settings:set_sensitive_access': async (args, database) => {
+    const orgId = typeof args.orgId === 'string' ? args.orgId.toLowerCase() : null;
+    const flags = args.flags && typeof args.flags === 'object' && !Array.isArray(args.flags) ? args.flags as Record<string, unknown> : null;
+    if (!orgId || !flags) return MISSING_ARG;
+    const keys = PORTAL_TOOL_SENSITIVE_KEYS as readonly string[];
+    const requested = Object.entries(flags);
+    if (requested.length === 0 || requested.some(([key, value]) => !keys.includes(key) || typeof value !== 'boolean')) return MISSING_ARG;
+    if (!UUID_RE.test(orgId)) return TARGET_ABSENT;
+    // A missing or deleted org has nothing to approve (its stale portal row must not pin).
+    const [org] = await database
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt)))
+      .limit(1);
+    if (!org) return TARGET_ABSENT;
+    const [row] = await database
+      .select(Object.fromEntries(PORTAL_TOOL_SENSITIVE_KEYS.map((key) => [key, portalBranding[key]])))
+      .from(portalBranding)
+      .where(eq(portalBranding.orgId, orgId))
+      .limit(1);
+    const current = Object.fromEntries(PORTAL_TOOL_SENSITIVE_KEYS.map((key) => [key, row?.[key] === true]));
+    return material(canonicalJson({ v: 1, orgId, requested: Object.fromEntries(requested), current }));
   },
 
   // W15: one real Pax8 order, with local destination / billing inputs pinned. Vendor rates are

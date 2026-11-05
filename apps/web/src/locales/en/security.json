@@ -2428,10 +2428,14 @@
       "installPending": "Install pending",
       "awaitingVendorReport": "Awaiting vendor report",
       "awaitingEvaluation": "Awaiting evaluation",
-      "vendorOrgMismatch": "Vendor reports a different organization"
+      "vendorOrgMismatch": "Vendor reports a different organization",
+      "tenantAmbiguous": "Organization maps to more than one Bitdefender GravityZone company",
+      "installerLinkMissing": "Bitdefender GravityZone installer link not available yet — run Sync in Integrations"
     },
     "setupLink": {
       "installerMissing": "Upload the installer",
+      "tenantAmbiguous": "Fix the mapping",
+      "installerLinkMissing": "Open integrations",
       "default": "Open setup"
     }
   },

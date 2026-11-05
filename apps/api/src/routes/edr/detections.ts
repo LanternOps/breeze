@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { z } from 'zod';
 import { EDR_DETECTION_STATUSES, EDR_SEVERITIES, type EdrDetectionDto } from '@breeze/shared';
+import { SECURITY_AGENT_VENDOR_KEYS } from '@breeze/shared/validators';
 import { zValidator } from '../../lib/validation';
 import { requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
@@ -133,7 +134,6 @@ edrDetectionRoutes.get(
 // panel) and it shares the same org/site read scope.
 
 const COVERAGE_STATES = ['covered', 'gap', 'vendor_only', 'vendor_offline', 'mismatched_org', 'not_applicable', 'pending'] as const;
-const COVERAGE_VENDORS = ['huntress', 'sentinelone', 'controld', 'nextdns'] as const;
 
 const coverageStateList = z
   .string()
@@ -143,7 +143,7 @@ const coverageStateList = z
 const coverageQuerySchema = z.object({
   orgId: z.string().guid().optional(),
   deviceId: z.string().guid().optional(),
-  vendor: z.enum(COVERAGE_VENDORS).optional(),
+  vendor: z.enum(SECURITY_AGENT_VENDOR_KEYS).optional(),
   state: coverageStateList.optional(),
   limit: z.coerce.number().int().min(1).default(50).transform((n) => Math.min(n, COVERAGE_MAX_LIMIT)),
   offset: z.coerce.number().int().min(0).default(0),

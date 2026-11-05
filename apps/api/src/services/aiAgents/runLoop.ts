@@ -95,6 +95,8 @@ import {
   type GrantCeiling,
 } from '../wisp/grantAuthority';
 
+import { classifyWispUnattendedRead } from '../wisp/unattendedReads';
+
 /** Wisp W02 — how long one run frame reuses a resolved delegation ceiling. */
 const GRANT_CEILING_MEMO_MS = 15_000;
 import { loadProposalGuardrailContext } from '../scriptProposals';
@@ -209,6 +211,7 @@ import { analysisLimits, analysisToolAllowlist, isAnalysisProfile } from './anal
 import { assessmentLimits, assessmentToolAllowlist, isAssessmentProfile } from './assessmentProfile';
 import {
   isTroubleshootProfile, TROUBLESHOOT_MAX_ACTIONS_PER_RUN, troubleshootLimits, troubleshootToolAllowlist,
+  troubleshootPromptContextFromTriggerRef, type TroubleshootPromptContext,
 } from './troubleshootProfile';
 import { emitRunProgress, progressLabelFor } from './runProgress';
 import { loadAssessmentContext } from '../wisp/assessment';
@@ -1159,6 +1162,17 @@ export function createAgentRunPreToolUse(args: {
       : { allowed: true, context: runFrame };
   }
 
+  /** #10973: the ledger row for an unattended read, or null when there is none to rely on. */
+  async function startUnattendedReadExecution(toolName: string, input: Record<string, unknown>): Promise<string | null> {
+    if (!sessionId) return null;
+    try {
+      return await startToolExecution({ sessionId, toolName, toolInput: input });
+    } catch (error) {
+      console.error('[aiAgentRunLoop] unattended read has no ledger row — asking instead', { runId: run.id, toolName, error });
+      return null;
+    }
+  }
+
   return async (toolName, input, _mcpToolName, toolUseId) => {
     // No `.catch` — `isRunResourceScopeCurrent` already fails closed on a throw.
     if (args.revalidateResourceScope && (await args.revalidateResourceScope(toolName)) !== true) {
@@ -1396,6 +1410,38 @@ export function createAgentRunPreToolUse(args: {
     }
 
     if (check.disposition === 'propose') {
+      // #10973 (plan Decision 9): the grant-level unattended-reads switch reaches
+      // a troubleshooting run here, and only as propose → allow; every structural
+      // refusal above has already returned. Nothing re-checks this read at
+      // release, so as in act mode the ceiling is re-resolved FRESH: a switch
+      // turned off inside the memo window applies to this very call. The memo
+      // only spares that read when the switch is already off.
+      const unattendedRead = isTroubleshootProfile(run) && grantCeiling?.unattendedReads === true
+        ? classifyWispUnattendedRead(toolName, input)
+        : null;
+      if (unattendedRead) {
+        const fresh = await resolvePinnedCeiling({ fresh: true });
+        if (!fresh.ok) {
+          outcome.deniedActions.push({ tool: toolName, reason: fresh.reason });
+          return { allowed: false, error: fresh.error };
+        }
+        const denial = delegationCeilingDenial(fresh.ceiling, toolName, input);
+        if (denial) {
+          outcome.deniedActions.push({ tool: toolName, reason: denial });
+          return { allowed: false, error: denial };
+        }
+        if (fresh.ceiling.unattendedReads) {
+          // Unlike an ordinary allowed call, this one needs its ledger row: with
+          // no card, the row is the only record that it ran. Under the forced
+          // shadow mode, any such row in this profile is one of these reads.
+          // No row: ask instead, as the chat gate refuses on a failed audit write.
+          const executionId = await startUnattendedReadExecution(toolName, input);
+          if (executionId) {
+            recordAllowedCall(pairing, toolName, toolUseId, { executionId, actPin: null });
+            return { allowed: true, context: { ...runFrame, pinnedWispUnattendedRead: unattendedRead } };
+          }
+        }
+      }
       return recordProposal(check, toolName, input);
     }
 
@@ -2100,9 +2146,9 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
 }
 
 /** #11084: the launcher writes `goal` into triggerRef (specialistLaunchers.ts); anything else reads as no goal. */
-function troubleshootPromptContext(triggerRef: unknown): { goal: string } | null {
-  const goal = (triggerRef as { goal?: unknown } | null)?.goal;
-  return typeof goal === 'string' && goal.trim().length > 0 ? { goal } : null;
+function troubleshootPromptContext(triggerRef: unknown): TroubleshootPromptContext | null {
+  // W2 (#11085): goal + the optional continuation seed, validated in one place.
+  return troubleshootPromptContextFromTriggerRef(triggerRef);
 }
 
 /**
@@ -3851,6 +3897,26 @@ async function finishRun(
     costCents: result.costCents,
     ...(errorCode ? { errorCode } : {}),
   });
+
+  // Wisp delegation W2 (#11085): a device_troubleshooting run reports back
+  // into the Wisp thread it was handed off from — after the final status is
+  // committed (the post reads it), and never allowed to change it. A failure
+  // is reported here; the grant reconciler re-sweeps any run left without its
+  // post, and the post's dedupe key keeps that to exactly one. Lazy: the
+  // notify graph stays off every other profile's import path.
+  if (isTroubleshootProfile(ctx.run)) {
+    try {
+      const { postSpecialistResult } = await import('../wisp/specialistResult');
+      await runOutsideDbContext(() => postSpecialistResult(ctx.run.id));
+    } catch (error) {
+      console.error('[aiAgentRunLoop] specialist post-back failed — the grant reconciler re-sweeps it', {
+        runId: ctx.run.id, error,
+      });
+      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+        op: 'wisp.specialistResult.finishRun', runId: ctx.run.id,
+      });
+    }
+  }
 
   // Ledger cleanup happens in `executeAgentRun`'s `finally`, not here — this
   // function is skipped entirely on the `!moved` branch above (another

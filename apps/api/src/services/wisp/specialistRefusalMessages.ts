@@ -53,6 +53,7 @@ const MESSAGES: Readonly<Record<SpecialistRefusal, string>> = Object.freeze({
   admission_skipped: 'The agent did not accept the run (see detail): a limit, cooldown, maintenance window or budget stopped it. Try again later.',
   too_many_requests: 'An assessment can request only a few specialists at a time.',
   bulk_reply_incomplete: 'The bulk reply stopped part-way or sent nothing. Check the report before sending again.',
+  continuation_refused: 'That earlier troubleshooting run cannot be continued from here (see detail). Start a new run instead.',
 });
 
 /** Sentences for the `detail` a code carries, where the detail changes the next step. */
@@ -62,6 +63,16 @@ const DETAIL_MESSAGES: Readonly<Partial<Record<SpecialistRefusal, Readonly<Recor
   invalid_params: {
     unknown_recipe: 'That recipe (workflowKey and workflowVersion) is not a released Operator recipe.',
     actor_required: 'A bulk ticket reply needs a person to approve the exact tickets and message.',
+  },
+  // #11085: why a device_troubleshooting run cannot be continued.
+  continuation_refused: {
+    not_found: 'That earlier run was not found.',
+    not_troubleshooting: 'Only a device troubleshooting run can be continued.',
+    other_org: 'That earlier run belongs to another organization.',
+    other_device: 'That earlier run worked on a different device. Continue it on the same device.',
+    other_grant: 'That earlier run was started under a different Wisp grant.',
+    not_settled: 'That earlier run is still running. Wait for it to finish, then continue it.',
+    chain_limit: 'That run has already been continued as far as allowed. Start a new run instead.',
   },
   // Admission skips (runService AgentRunSkipReason) that a person can act on.
   admission_skipped: {

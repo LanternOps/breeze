@@ -18,6 +18,12 @@ describe('wispStateFromThread W06 fields (A32 spend, A29 pause reason)', () => {
     const half = wispStateFromThread(body({ spentTodayCents: 42 }))!;
     expect('spentTodayCents' in half).toBe(false);
   });
+  it('#10973: reads the effective unattended-reads switch, false unless literally true', () => {
+    expect(wispStateFromThread(body({ unattendedReads: true }))!.unattendedReads).toBe(true);
+    expect(wispStateFromThread(body({ unattendedReads: 'true' }))!.unattendedReads).toBe(false);
+    expect(wispStateFromThread(body({}))!.unattendedReads).toBe(false);
+  });
+
   it('leaves pausedReason unknown when the payload omits it, and reads it when present', () => {
     expect('pausedReason' in wispStateFromThread(body({ status: 'paused' }))!).toBe(false);
     expect(wispStateFromThread(body({ status: 'paused', pausedReason: 'user_paused' }))!.pausedReason).toBe('user_paused');

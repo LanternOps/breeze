@@ -15,4 +15,10 @@ describe('aiGuardrails.ts import surface', () => {
     expect(src).not.toMatch(/from '\.\/aiToolSchemas'/);
     expect(src).not.toMatch(/\bgetToolDefinitions\b/);
   });
+
+  it('the #10973 unattended-reads classifier it imports stays pure and DB-free', () => {
+    const src = readFileSync(new URL('./wisp/unattendedReads.ts', import.meta.url), 'utf8');
+    const imports = [...src.matchAll(/from '([^']+)'/g)].map((m) => m[1]);
+    expect(imports.sort()).toEqual(['../aiChatEventLogsReadOnly', 'zod']);
+  });
 });

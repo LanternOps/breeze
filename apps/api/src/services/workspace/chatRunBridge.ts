@@ -63,6 +63,8 @@ export type RunDeliveryStatus = 'completed' | 'failed' | 'awaiting_approval';
 export interface PendingRunResult {
   runId: string;
   status: RunDeliveryStatus;
+  /** The run's profile; `device_troubleshooting` changes how the result is worded to the model. */
+  profile?: string;
   summary: string | null;
   artifacts: AiRunResultArtifactRef[];
   pendingIntentCount?: number;
@@ -70,6 +72,7 @@ export interface PendingRunResult {
 
 interface RunDelivery {
   status: RunDeliveryStatus;
+  profile?: string;
   summary: string | null;
   artifacts: AiRunResultArtifactRef[];
   /** Set with `awaiting_approval` only: the run's intents still pending a decision. */
@@ -89,7 +92,7 @@ async function readRunForDelivery(runId: string, orgId: string): Promise<RunDeli
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const [run] = await db
-        .select({ status: aiAgentRuns.status, summary: aiAgentRuns.summary })
+        .select({ status: aiAgentRuns.status, profile: aiAgentRuns.profile, summary: aiAgentRuns.summary })
         .from(aiAgentRuns)
         .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.orgId, orgId)))
         .limit(1);
@@ -127,10 +130,11 @@ async function readRunForDelivery(runId: string, orgId: string): Promise<RunDeli
           console.error('[ChatRunBridge] pending intent count failed', { runId, err });
           captureException(err);
         }
-        return { status: 'awaiting_approval' as const, summary: run.summary, artifacts: refs, pendingIntentCount };
+        return { status: 'awaiting_approval' as const, profile: run.profile, summary: run.summary, artifacts: refs, pendingIntentCount };
       }
       return {
         status: run.status === 'completed' ? ('completed' as const) : ('failed' as const),
+        profile: run.profile,
         summary: run.summary,
         artifacts: refs,
       };
@@ -397,7 +401,8 @@ export function drainPendingRunResults(session: ActiveSession): string | null {
     const waiting = result.status === 'awaiting_approval' && result.pendingIntentCount !== 0
       ? `\nSteps waiting for approval: ${result.pendingIntentCount ?? 'some'} (in /approvals).`
       : '';
-    return `Run ${result.runId} ${result.status}.${waiting}\nSummary: ${summary}\nFiles it produced:\n${artifacts}`;
+    const label = result.profile === 'device_troubleshooting' ? 'Device troubleshooting run' : 'Run';
+    return `${label} ${result.runId} ${result.status}.${waiting}\nSummary: ${summary}\nFiles it produced:\n${artifacts}`;
   });
 
   return [

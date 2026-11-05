@@ -2,7 +2,16 @@ import { assertBoundModel, registerGatewayAdapter, type GatewayAdapter } from '.
 import { joinByoUrl } from '../byoEndpointPolicy';
 import { noteGatewayFailure } from '../failureNotes';
 import { forwardUpstream, readUpstreamErrorText } from '../forward';
+import { GATEWAY_ERROR_TEXT_MAX } from '../limits';
+import { scrubSecrets } from '../scrub';
 import { GatewayError, gatewayErrorBody, type AnthropicErrorType, type GatewayGrantRecord, type GatewayResponse } from '../types';
+import {
+  contextWindowExceededMessage,
+  parseContextLimitRejection,
+  planAfterRejection,
+  planRequest,
+  rememberContextLimit,
+} from './contextWindow';
 import { genMessageId, translateChatResponse } from './translateResponse';
 import { translateChatStream } from './translateStream';
 import { translateMessagesRequest } from './translateRequest';
@@ -66,9 +75,15 @@ function logUpstreamFailure(grant: GatewayGrantRecord, call: UpstreamCallContext
     + `${detail ? `: ${detail}` : ''}`);
 }
 
-async function upstreamError(res: Response, grant: GatewayGrantRecord, call: UpstreamCallContext): Promise<GatewayResponse> {
+/** Characters of a failed upstream's scrubbed reason shown in a log line or a chat turn. */
+const UPSTREAM_DETAIL_MAX = 300;
+
+const shortDetail = (grant: GatewayGrantRecord, detail: string): string =>
+  scrubSecrets(detail, [grant.credential.secret], UPSTREAM_DETAIL_MAX);
+
+function upstreamError(res: Response, grant: GatewayGrantRecord, call: UpstreamCallContext, fullDetail: string): GatewayResponse {
   const type = upstreamErrorType(res.status);
-  const detail = await readUpstreamErrorText(res, grant);
+  const detail = shortDetail(grant, fullDetail);
   logUpstreamFailure(grant, call, `upstream returned HTTP ${res.status}`, res, detail);
   const message = type === 'authentication_error'
     ? 'The endpoint rejected the connection\'s key.'
@@ -80,20 +95,51 @@ async function upstreamError(res: Response, grant: GatewayGrantRecord, call: Ups
   return { status, headers: { 'content-type': 'application/json' }, body: Buffer.from(gatewayErrorBody(type, message)) };
 }
 
+/** The prompt does not fit the model: a 400 the CLI does not retry, named for the turn's settlement (#10577). */
+function contextWindowRefusal(grant: GatewayGrantRecord, call: UpstreamCallContext, contextWindow: number, promptTokens: number): GatewayResponse {
+  console.warn(`[modelGateway] request does not fit the context window (grant ${grant.id}, connection ${grant.config.connectionId}, `
+    + `model ${JSON.stringify(call.model)}, prompt_tokens ${promptTokens}, context_window ${contextWindow})`);
+  const message = contextWindowExceededMessage(contextWindow, promptTokens);
+  noteGatewayFailure(grant.aiSessionId, message, 'context_window_exceeded');
+  return { status: 400, headers: { 'content-type': 'application/json' }, body: Buffer.from(gatewayErrorBody('invalid_request_error', message)) };
+}
+
 async function messages(body: Buffer, grant: GatewayGrantRecord, signal: AbortSignal): Promise<GatewayResponse> {
   const parsed = parseJson(body) as { model?: unknown };
   const model = assertBoundModel(grant, parsed.model);
   if (grant.config.kind !== 'openai_compatible') throw new Error('openai adapter on a non-openai grant');
   const translated = translateMessagesRequest(parsed, model);
   const call: UpstreamCallContext = { model, stream: translated.stream, startedAt: Date.now(), promptTokensEstimate: estimateInputTokens(parsed) };
-  const res = await forwardUpstream(grant, {
+  const windowKey = { connectionId: grant.config.connectionId, configVersion: grant.config.configVersion, model };
+  const plan = planRequest(windowKey, translated.maxTokens, call.promptTokensEstimate);
+  if (plan.kind === 'too_large') return contextWindowRefusal(grant, call, plan.contextWindow, plan.promptTokens);
+  const send = (maxTokens: number): Promise<Response> => forwardUpstream(grant, {
     url: joinByoUrl(grant.config.baseUrl, 'chat/completions'),
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: translated.stream ? 'text/event-stream' : 'application/json' },
-    body: JSON.stringify(translated.body),
+    body: JSON.stringify({ ...translated.body, max_tokens: maxTokens }),
     stream: translated.stream,
   }, signal);
-  if (!res.ok) return upstreamError(res, grant, call);
+  let res = await send(plan.maxTokens);
+  if (!res.ok) {
+    const detail = await readUpstreamErrorText(res, grant, GATEWAY_ERROR_TEXT_MAX);
+    const reported = parseContextLimitRejection(res.status, detail, plan.maxTokens);
+    if (!reported) return upstreamError(res, grant, call, detail);
+    rememberContextLimit(windowKey, reported, call.promptTokensEstimate);
+    const next = planAfterRejection(reported, plan.maxTokens, call.promptTokensEstimate);
+    if (next.kind === 'too_large') return contextWindowRefusal(grant, call, next.contextWindow, next.promptTokens);
+    if (next.kind === 'surface') return upstreamError(res, grant, call, detail);
+    logUpstreamFailure(grant, call, `upstream rejected max_tokens ${plan.maxTokens} for its context window; retrying once with ${next.maxTokens}`,
+      res, shortDetail(grant, detail));
+    res = await send(next.maxTokens);
+    if (!res.ok) {
+      const retryDetail = await readUpstreamErrorText(res, grant, GATEWAY_ERROR_TEXT_MAX);
+      const again = parseContextLimitRejection(res.status, retryDetail, next.maxTokens);
+      if (!again) return upstreamError(res, grant, call, retryDetail);
+      rememberContextLimit(windowKey, again, call.promptTokensEstimate);
+      return contextWindowRefusal(grant, call, again.contextWindow, again.promptTokens ?? call.promptTokensEstimate);
+    }
+  }
   if (!translated.stream) {
     let payload: unknown;
     try { payload = await res.json(); } catch {

@@ -37,6 +37,7 @@ import type { GrantCeiling } from './grantAuthority';
 import type { SpecialistKind } from './specialistPolicy';
 import { executeBulkTicketReply, type BulkTicketReplyReport } from './specialists/bulkTicketReply';
 import { agentOffMessage, type AgentOffReason } from './specialistRefusalMessages';
+import { buildContinuationSeed, continuationDedupeKey, continuationOf } from './troubleshootContinuation';
 
 // ---------------------------------------------------------------------------
 // Contract
@@ -52,7 +53,10 @@ export type SpecialistRefusal =
   | 'admission_skipped' | 'too_many_requests'
   // bulk_ticket_reply: the batch stopped part-way, or sent nothing at all —
   // never reported as a success (the report travels with the refusal).
-  | 'bulk_reply_incomplete';
+  | 'bulk_reply_incomplete'
+  // device_troubleshooting continueFromRunId (#11085): the prior run may not be
+  // continued from here; detail is the ContinuationRefusalDetail.
+  | 'continuation_refused';
 
 export type LaunchResult =
   | { admitted: true; runId?: string; taskId?: string; report?: BulkTicketReplyReport }
@@ -103,10 +107,15 @@ export const researchParamsSchema = z.strictObject({
   alertId: z.uuid().optional(),
 });
 
-/** #11084: one device, one goal. The goal is the model's restatement of the person's ask — untrusted in the run's prompt. */
+/**
+ * #11084: one device, one goal. The goal is the model's restatement of the
+ * person's ask — untrusted in the run's prompt. #11085: `continueFromRunId`
+ * seeds the run from a settled prior run on the same device and grant.
+ */
 export const troubleshootParamsSchema = z.strictObject({
   deviceId: z.uuid(),
   goal: z.string().trim().min(5).max(500),
+  continueFromRunId: z.uuid().optional(),
 });
 
 const PARAMS_SCHEMAS: Readonly<Record<SpecialistKind, z.ZodType>> = Object.freeze({
@@ -151,11 +160,11 @@ const systemRead = <T>(fn: () => Promise<T>): Promise<T> =>
  * `failed`/`enqueue_failed` is NOT a replay: no worker will ever pick it up,
  * and admission reclaims exactly that row as a new attempt.
  */
-async function existingRunId(orgId: string, requestId: string): Promise<string | null> {
+async function existingRunId(orgId: string, dedupeKey: string): Promise<string | null> {
   const [row] = await systemRead(() => db
     .select({ id: aiAgentRuns.id, status: aiAgentRuns.status, errorCode: aiAgentRuns.errorCode })
     .from(aiAgentRuns)
-    .where(and(eq(aiAgentRuns.orgId, orgId), eq(aiAgentRuns.dedupeKey, specialistDedupeKey(requestId))))
+    .where(and(eq(aiAgentRuns.orgId, orgId), eq(aiAgentRuns.dedupeKey, dedupeKey)))
     .limit(1));
   if (!row || isEnqueueFailed(row)) return null;
   return row.id;
@@ -173,7 +182,10 @@ type RunAdmission = Parameters<typeof createAndEnqueueAgentRun>[0];
  * coordinator bug and refuses.
  */
 async function admitRun(ctx: LaunchContext, input: RunAdmission): Promise<LaunchResult> {
-  const prior = await existingRunId(ctx.orgId, ctx.requestId);
+  // Every launcher keys on the request (specialistDedupeKey); a continuation
+  // keys on (prior run, chain) instead, so the lookup follows the input.
+  const dedupeKey = input.dedupeKey ?? specialistDedupeKey(ctx.requestId);
+  const prior = await existingRunId(ctx.orgId, dedupeKey);
   if (prior) return { admitted: true, runId: prior };
   let result: Awaited<ReturnType<typeof createAndEnqueueAgentRun>>;
   try {
@@ -190,7 +202,7 @@ async function admitRun(ctx: LaunchContext, input: RunAdmission): Promise<Launch
       : { admitted: true, runId: result.run.id };
   }
   if (result.skipped === 'duplicate') {
-    const raced = await existingRunId(ctx.orgId, ctx.requestId);
+    const raced = await existingRunId(ctx.orgId, dedupeKey);
     if (raced) return { admitted: true, runId: raced };
   }
   return { refused: 'admission_skipped', detail: result.skipped };
@@ -371,7 +383,13 @@ export const SPECIALIST_PREREQUISITES: Readonly<Record<SpecialistKind, (args: Pr
   // launch (enabled), so a missing one passes; an existing switched-off one,
   // or the kill switch, is doomed.
   device_troubleshooting: async ({ orgId, params }) => {
-    if (!(await deviceInOrg(orgId, troubleshootParamsSchema.parse(params).deviceId))) return { refused: 'device_not_in_org' };
+    const parsed = troubleshootParamsSchema.parse(params);
+    if (!(await deviceInOrg(orgId, parsed.deviceId))) return { refused: 'device_not_in_org' };
+    // #11085: what can be checked without the grant (the launcher re-checks with it).
+    if (parsed.continueFromRunId) {
+      const cont = await continuationOf({ fromRunId: parsed.continueFromRunId, orgId, deviceId: parsed.deviceId });
+      if (!cont.ok) return { refused: 'continuation_refused', detail: cont.detail };
+    }
     if (agentsKillSwitchOff()) return { ...KILL_SWITCH_REFUSAL };
     const resolved = await resolveEffectiveAgentSystem(orgId, 'troubleshoot');
     return resolved ? agentOffRefusal(resolved) : null;
@@ -522,6 +540,17 @@ export async function launchRemediationResearch(ctx: LaunchContext): Promise<Lau
 export async function launchDeviceTroubleshooting(ctx: LaunchContext): Promise<LaunchResult> {
   const params = troubleshootParamsSchema.parse(ctx.params);
   if (!(await deviceInOrg(ctx.orgId, params.deviceId))) return { refused: 'device_not_in_org' };
+  // #11085: a continuation must name a settled troubleshooting run of this
+  // org, device and grant, below the chain limit — checked before anything
+  // is provisioned or read into a seed.
+  let continuation: { fromRunId: string; chain: number } | null = null;
+  if (params.continueFromRunId) {
+    const cont = await continuationOf({
+      fromRunId: params.continueFromRunId, orgId: ctx.orgId, deviceId: params.deviceId, grantId: ctx.grant.grantId,
+    });
+    if (!cont.ok) return { refused: 'continuation_refused', detail: cont.detail };
+    continuation = { fromRunId: params.continueFromRunId, chain: cont.chain };
+  }
   // Opens and commits its own system transaction (outside any caller context).
   try {
     await runOutsideDbContext(() => ensureTroubleshootAgent(ctx.partnerId));
@@ -532,21 +561,37 @@ export async function launchDeviceTroubleshooting(ctx: LaunchContext): Promise<L
   const agent = await resolveLaunchableAgent(ctx.orgId, 'troubleshoot');
   if (!agent.ok) return agent.refusal;
   const originSessionId = ctx.actorAuth?.wispGrant?.sessionId ?? null;
+  const dedupeKey = continuation
+    ? continuationDedupeKey(continuation.fromRunId, continuation.chain)
+    : specialistDedupeKey(ctx.requestId);
+  // A replayed continuation resolves before the seed is built (admitRun
+  // checks again, for the request-keyed path and the race).
+  if (continuation) {
+    const replay = await existingRunId(ctx.orgId, dedupeKey);
+    if (replay) return reattach(ctx, { admitted: true, runId: replay }, originSessionId);
+  }
+  const seed = continuation ? await buildContinuationSeed(continuation.fromRunId) : null;
   const result = await admitRun(ctx, {
     orgId: ctx.orgId,
     kind: 'troubleshoot',
     triggerKind: 'manual',
     deviceId: params.deviceId,
     profile: 'device_troubleshooting',
-    dedupeKey: specialistDedupeKey(ctx.requestId),
+    dedupeKey,
     triggerRef: triggerRefFor(ctx, {
       kind: 'device_troubleshooting',
       deviceId: params.deviceId,
       goal: params.goal,
       originSessionId,
+      ...(continuation && seed !== null ? { continuation: { ...continuation, seed } } : {}),
     }),
     grant: { ...ctx.grant },
   });
+  return reattach(ctx, result, originSessionId);
+}
+
+/** Attach the origin chat's live stream to an admitted (or replayed) run. */
+async function reattach(ctx: LaunchContext, result: LaunchResult, originSessionId: string | null): Promise<LaunchResult> {
   // Idempotent per runId, so a replay from the same chat simply re-attaches.
   // Lazy: the bridge pulls in the streaming session manager, which imports the
   // chat tool graph that reaches this module (import cycle otherwise).

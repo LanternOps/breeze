@@ -17,6 +17,7 @@ const h = vi.hoisted(() => ({
   admitTask: vi.fn(),
   getRecipe: vi.fn(),
   executeBulkTicketReply: vi.fn(),
+  buildContinuationSeed: vi.fn(),
   recipeKinds: {} as Record<string, string>,
 }));
 
@@ -69,6 +70,10 @@ vi.mock('../aiOperator/taskService', () => ({ admitTask: h.admitTask }));
 vi.mock('../aiOperator/recipes', () => ({ getRecipe: h.getRecipe }));
 vi.mock('../aiOperator/recipeReadiness', () => ({ RECIPE_AGENT_KINDS: h.recipeKinds }));
 vi.mock('./specialists/bulkTicketReply', () => ({ executeBulkTicketReply: h.executeBulkTicketReply }));
+vi.mock('./troubleshootContinuation', async (orig) => ({
+  ...(await orig<typeof import('./troubleshootContinuation')>()),
+  buildContinuationSeed: h.buildContinuationSeed,
+}));
 
 import { GrantDepthExceededError } from '../aiAgents/runService';
 import { SPECIALIST_KINDS } from './specialistPolicy';
@@ -524,6 +529,100 @@ describe('launchDeviceTroubleshooting (#11084)', () => {
     expect(await SPECIALIST_PREREQUISITES.device_troubleshooting({ orgId: ORG, partnerId: PARTNER, params }))
       .toMatchObject({ refused: 'agent_disabled', detail: 'kill_switch_off' });
     expect(h.ensureTroubleshootAgent).not.toHaveBeenCalled();
+  });
+});
+
+describe('device_troubleshooting continuation (W2 #11085)', () => {
+  const PRIOR = '00000000-0000-4000-8000-0000000000c1';
+  const params = { deviceId: DEVICE, goal: 'Continue: Outlook crashes on start', continueFromRunId: PRIOR };
+  const prior = (o: Record<string, unknown> = {}) => ({
+    id: PRIOR, profile: 'device_troubleshooting', orgId: ORG, deviceId: DEVICE, grantId: GRANT, status: 'awaiting_approval',
+    triggerRef: { source: 'wisp_specialist', kind: 'device_troubleshooting' }, ...o,
+  });
+  const ready = () => {
+    h.ensureTroubleshootAgent.mockResolvedValue({ agentId: 'ag', created: false });
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'ag', effective: { enabled: true, mode: 'shadow' } });
+    h.buildContinuationSeed.mockResolvedValue('SEED');
+  };
+
+  it('params accept an optional uuid continueFromRunId', () => {
+    expect(parseSpecialistParams('device_troubleshooting', params)).toEqual(params);
+    expect(parseSpecialistParams('device_troubleshooting', { ...params, continueFromRunId: 'run-1' })).toBeNull();
+  });
+
+  it('admits a continuation seeded from the prior run, chain 1, keyed on (prior, chain)', async () => {
+    ready();
+    h.tables.devices = [[{ id: DEVICE }]];
+    h.tables.ai_agent_runs = [[prior()], [], []]; // prior, replay check, admitRun's check
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: true, run: { id: 'r-cont' } });
+    expect(await launchDeviceTroubleshooting(ctx({ params }))).toEqual({ admitted: true, runId: 'r-cont' });
+    expect(h.buildContinuationSeed).toHaveBeenCalledWith(PRIOR);
+    expect(h.createAndEnqueueAgentRun).toHaveBeenCalledWith(expect.objectContaining({
+      dedupeKey: `wisp-specialist-continue-${PRIOR}-1`,
+      deviceId: DEVICE,
+      triggerRef: expect.objectContaining({ goal: params.goal, continuation: { fromRunId: PRIOR, chain: 1, seed: 'SEED' } }),
+    }));
+  });
+
+  it('the chain counts up from the prior run (chain 2 → 3)', async () => {
+    ready();
+    h.tables.devices = [[{ id: DEVICE }]];
+    h.tables.ai_agent_runs = [[prior({ triggerRef: { source: 'wisp_specialist', continuation: { fromRunId: 'x', chain: 2 } } })], [], []];
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: true, run: { id: 'r3' } });
+    await launchDeviceTroubleshooting(ctx({ params }));
+    expect(h.createAndEnqueueAgentRun).toHaveBeenCalledWith(expect.objectContaining({
+      dedupeKey: `wisp-specialist-continue-${PRIOR}-3`,
+      triggerRef: expect.objectContaining({ continuation: expect.objectContaining({ chain: 3 }) }),
+    }));
+  });
+
+  it('a second continuation of the same run replays the first (same runId, nothing admitted, no seed built)', async () => {
+    ready();
+    h.tables.devices = [[{ id: DEVICE }]];
+    h.tables.ai_agent_runs = [[prior()], [{ id: 'r-first', status: 'running', errorCode: null }]];
+    expect(await launchDeviceTroubleshooting(ctx({ params, requestId: 'req-2' }))).toEqual({ admitted: true, runId: 'r-first' });
+    expect(h.createAndEnqueueAgentRun).not.toHaveBeenCalled();
+    expect(h.buildContinuationSeed).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['another device', { deviceId: '00000000-0000-4000-8000-0000000000d9' }, 'other_device'],
+    ['another org', { orgId: '00000000-0000-4000-8000-0000000000d8' }, 'other_org'],
+    ['another grant', { grantId: '00000000-0000-4000-8000-0000000000d7' }, 'other_grant'],
+    ['a still-running run', { status: 'running' }, 'not_settled'],
+    ['a queued run', { status: 'queued' }, 'not_settled'],
+    ['another profile', { profile: 'remediation_research' }, 'not_troubleshooting'],
+    ['a run at chain 3', { triggerRef: { source: 'wisp_specialist', continuation: { fromRunId: 'x', chain: 3 } } }, 'chain_limit'],
+  ])('refuses continuing %s (continuation_refused / %s) and admits nothing', async (_label, o, detail) => {
+    ready();
+    h.tables.devices = [[{ id: DEVICE }]];
+    h.tables.ai_agent_runs = [[prior(o)]];
+    expect(await launchDeviceTroubleshooting(ctx({ params }))).toEqual({ refused: 'continuation_refused', detail });
+    expect(h.createAndEnqueueAgentRun).not.toHaveBeenCalled();
+    expect(h.ensureTroubleshootAgent).not.toHaveBeenCalled();
+  });
+
+  it('refuses a prior run that does not exist', async () => {
+    h.tables.devices = [[{ id: DEVICE }]];
+    h.tables.ai_agent_runs = [[]];
+    expect(await launchDeviceTroubleshooting(ctx({ params }))).toEqual({ refused: 'continuation_refused', detail: 'not_found' });
+  });
+
+  it('every settled status may be continued', async () => {
+    for (const status of ['completed', 'failed', 'awaiting_approval', 'cancelled']) {
+      ready();
+      h.tables.devices = [[{ id: DEVICE }]];
+      h.tables.ai_agent_runs = [[prior({ status })], [], []];
+      h.createAndEnqueueAgentRun.mockResolvedValue({ created: true, run: { id: `r-${status}` } });
+      expect(await launchDeviceTroubleshooting(ctx({ params }))).toEqual({ admitted: true, runId: `r-${status}` });
+    }
+  });
+
+  it('prerequisite (before any card): refuses the same cases it can see without the grant', async () => {
+    h.tables.devices = [[{ id: DEVICE }]];
+    h.tables.ai_agent_runs = [[prior({ deviceId: '00000000-0000-4000-8000-0000000000d9' })]];
+    expect(await SPECIALIST_PREREQUISITES.device_troubleshooting({ orgId: ORG, partnerId: PARTNER, params }))
+      .toEqual({ refused: 'continuation_refused', detail: 'other_device' });
   });
 });
 

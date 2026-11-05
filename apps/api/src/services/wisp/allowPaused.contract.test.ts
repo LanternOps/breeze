@@ -39,8 +39,24 @@ describe('allowPaused ceiling reads (W02a, #10104)', () => {
       .filter((p) => /\ballowPaused:\s*true\b/.test(readFileSync(p, 'utf8')))
       .map((p) => relative(SRC, p).replace(/\\/g, '/'))
       .sort();
-    // Each forwards it from its own helper (ceilingOf / grantCeilingFor) to resolveGrantCeiling.
-    expect(callers).toEqual(['routes/wispConcerns.ts', 'routes/wispThreads.ts']);
+    // Each route forwards it from its own helper (ceilingOf / grantCeilingFor)
+    // to resolveGrantCeiling. W2 #11085: notifyUser.ts holds the one non-route
+    // read (resolveSpecialistPostAudience), pinned read-only below.
+    expect(callers).toEqual(['routes/wispConcerns.ts', 'routes/wispThreads.ts', 'services/wisp/notifyUser.ts']);
+  });
+
+  it('notifyUser.ts: the paused read lives only in resolveSpecialistPostAudience and only feeds the thread-visibility check', () => {
+    const src = readFileSync(join(SRC, 'services/wisp/notifyUser.ts'), 'utf8');
+    expect(src.match(/\ballowPaused:\s*true\b/g)).toHaveLength(1);
+    const start = src.indexOf('export async function resolveSpecialistPostAudience(');
+    expect(start).toBeGreaterThan(-1);
+    const end = src.indexOf('\n}\n', start);
+    const body = src.slice(start, end);
+    expect(body).toMatch(/allowPaused:\s*true/);
+    // The ceiling answers visibility and names the grantor — nothing else.
+    expect(body).toMatch(/isOrgReadableOnThread\(ceiling, orgId\)/);
+    expect(body.replace(/isOrgReadableOnThread\(ceiling, orgId\)|ceiling\.grantorUserId|ceiling = await|let ceiling: GrantCeiling/g, ''))
+      .not.toMatch(/\bceiling\b/);
   });
 
   it('wispThreads.ts: only GET /:id/timeline and GET /:id/activity read a paused grant', () => {

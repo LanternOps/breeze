@@ -366,8 +366,10 @@ export interface AgentRunPromptContext {
    * server-written triggerRef. Model-authored restatement of a person's ask:
    * rendered only inside the task turn's `<untrusted_data>` fence. Set only
    * for `profile: 'device_troubleshooting'`; optional (absent ≡ null).
+   * W2 (#11085): `continuation` is the seed of a "Continue" run — rendered
+   * by `renderContinuationSeed` with its own fence, appended after the goal.
    */
-  troubleshoot?: { goal: string } | null;
+  troubleshoot?: { goal: string; continuation?: { fromRunId: string; chain: number; seed: string } | null } | null;
 }
 
 /**
@@ -1818,6 +1820,12 @@ function buildTroubleshootTaskPrompt(ctx: AgentRunPromptContext): string {
   lines.push('');
   lines.push('Investigate the goal on the target device with your read tools. Propose a change only when the evidence '
     + 'supports it; each one waits for a person. Then summarize what you found and the next step.');
+  // W2 (#11085): a continuation's seed — fixed lines + one fence of its own
+  // (troubleshootProfile.renderContinuationSeed), stored by the launcher.
+  if (ctx.troubleshoot?.continuation?.seed) {
+    lines.push('');
+    lines.push(ctx.troubleshoot.continuation.seed);
+  }
   return lines.join('\n');
 }
 

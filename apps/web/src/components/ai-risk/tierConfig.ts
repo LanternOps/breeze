@@ -129,6 +129,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'system_cleanup (status)', description: 'Read the progress and result of a native cleanup run', category: 'Files, Disk & Registry' },
       // Logs & Audit
       { name: 'query_audit_log', description: 'Search audit logs', category: 'Logs & Audit' },
+      { name: 'get_audit_retention', description: 'An organization\'s audit-log retention policy: configured or not, retention days, last cleanup', category: 'Logs & Audit' },
       { name: 'query_change_log', description: 'Device change log search', category: 'Logs & Audit' },
       { name: 'search_logs', description: 'Event log search', category: 'Logs & Audit' },
       { name: 'get_log_trends', description: 'Log trend analysis', category: 'Logs & Audit' },
@@ -314,6 +315,16 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_saved_filters (list/get)', description: 'List and view saved filters', category: 'Other' },
       // Endpoint messaging (#8742 W02)
       { name: 'send_endpoint_message (list/get)', description: 'List sent end-user messages and their delivery status', category: 'Ticketing' },
+      // Full-control W18 (#6789): organization, user and role reads. User and role writes are deliberately not AI tools.
+      { name: 'get_org_summary', description: 'One organization at a glance: devices online, open alerts and tickets, contracts, invoices, sites, contact, portal users (sections you lack permission for are omitted)', category: 'Integrations' },
+      { name: 'get_account_readiness', description: 'Setup readiness for up to 50 organizations: contacts, billing address, policy, pending portal invites, overdue invoices, integrations, backup', category: 'Integrations' },
+      { name: 'list_portal_users', description: 'An organization\'s customer-portal logins and their status (active, pending setup, disabled)', category: 'Integrations' },
+      { name: 'list_users', description: 'Breeze staff logins with role, MFA status and last login (full partner access)', category: 'Integrations' },
+      { name: 'get_user', description: 'One Breeze login with its role and organization and site access', category: 'Integrations' },
+      { name: 'list_roles (list/get/users/effective_permissions)', description: 'Breeze roles, one role\'s permissions, who holds it and its effective (inherited) permissions', category: 'Integrations' },
+      // Full-control W18 PR B (#6789): the reads of the two org-admin writers.
+      { name: 'manage_org_portal_settings (get)', description: 'An organization\'s customer portal settings: which sections customers see, support contact, welcome text, logo and colours', category: 'Integrations' },
+      { name: 'manage_report_recipients (list)', description: 'The contacts a scheduled report is emailed to', category: 'Fleet Operations' },
     ],
   },
   {
@@ -581,6 +592,10 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_contracts (generate_invoice)', description: 'Generate a contract\'s due invoice and, when the contract auto-issues, issue and email it; two people approve, and a changed total refuses (not offered to AI agents)', category: 'Billing' },
       { name: 'manage_accounting_sync (link_mapping/unlink_mapping/sync_mapping)', description: 'Link, unlink or re-sync a customer or item with QuickBooks or Xero; linking and syncing overwrite the provider\'s record (not offered to AI agents)', category: 'Billing' },
       { name: 'manage_accounting_sync (push/push_bulk)', description: 'Push invoices (up to 10) into QuickBooks or Xero; two people approve, and they stay in the books (not offered to AI agents)', category: 'Billing' },
+      // Full-control W18 PR B (#6789).
+      { name: 'manage_org_portal_settings (update)', description: 'Change an organization\'s customer portal sections, support contact, text, logo or colours; customers see it at once. Never custom CSS or a sensitive flag (not offered to AI agents)', category: 'Integrations' },
+      { name: 'manage_org_portal_settings (set_sensitive_access)', description: 'Show or hide per-device patch and vulnerability detail, rack placement, the hours balance, network alerts or trust page editing in a customer\'s portal; two people approve (not offered to AI agents)', category: 'Integrations' },
+      { name: 'manage_report_recipients (add/remove/convert)', description: 'Add, remove or convert a scheduled report\'s email recipients; add and convert also need the report export permission (not offered to AI agents)', category: 'Fleet Operations' },
       { name: 'manage_ticket_routing_rules (create/update/reorder/delete)', description: 'Create, change, reorder or delete ticket routing rules', category: 'Ticketing' },
       // Full-control W06 (#6776): PSA configuration. Partner-wide configuration, customer-visible forms,
       // terminal inbox actions and the permanent attachment delete need approval; the four hard deletes
@@ -887,6 +902,17 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'manage_contract_documents', tier: 1, permission: 'agreements.read / agreements.write', category: 'Billing' },
   { toolName: 'manage_contracts', tier: 2, permission: 'contracts.read / contracts.write / contracts.manage', category: 'Billing' },
   { toolName: 'manage_accounting_sync', tier: 1, permission: 'accounting.read / accounting.manage (+ organizations.write + catalog.write, or invoices.write)', category: 'Billing' },
+  // Full-control W18 (#6789): all tier 1.
+  { toolName: 'get_org_summary', tier: 1, permission: 'organizations.read', category: 'Integrations' },
+  { toolName: 'get_account_readiness', tier: 1, permission: 'organizations.read', category: 'Integrations' },
+  { toolName: 'list_portal_users', tier: 1, permission: 'organizations.read', category: 'Integrations' },
+  { toolName: 'list_users', tier: 1, permission: 'users.read', category: 'Integrations' },
+  { toolName: 'get_user', tier: 1, permission: 'users.read', category: 'Integrations' },
+  { toolName: 'list_roles', tier: 1, permission: 'users.read', category: 'Integrations' },
+  // Full-control W18 PR B (#6789).
+  { toolName: 'manage_org_portal_settings', tier: 1, permission: 'organizations.read / organizations.write', category: 'Integrations' },
+  { toolName: 'manage_report_recipients', tier: 1, permission: 'reports.read / reports.write (+ reports.export to add or convert)', category: 'Fleet Operations' },
+  { toolName: 'get_audit_retention', tier: 1, permission: 'audit.read', category: 'Logs & Audit' },
 ];
 
 // ── RBAC mappings (flat reference, not rendered in grouped UI) ───────────────
@@ -968,6 +994,26 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   list_ai_agent_schedules: 'ai_agents.read',
   list_fleet_designs: 'ai_agents.read',
   get_fleet_design: 'ai_agents.read',
+  // Full-control W18 (#6789).
+  get_org_summary: 'organizations.read',
+  get_account_readiness: 'organizations.read',
+  list_portal_users: 'organizations.read',
+  list_users: 'users.read',
+  get_user: 'users.read',
+  list_roles: 'users.read',
+  // Full-control W18 PR B (#6789).
+  manage_org_portal_settings: {
+    get: 'organizations.read',
+    update: 'organizations.write',
+    set_sensitive_access: 'organizations.write',
+  },
+  manage_report_recipients: {
+    list: 'reports.read',
+    add: 'reports.write + reports.export',
+    remove: 'reports.write',
+    convert: 'reports.write + reports.export',
+  },
+  get_audit_retention: 'audit.read',
   // Full-control W11 (#6781): the permission each action needs (access-review, compliance and PAM writes also need your MFA session).
   get_security_compliance: 'devices.read',
   manage_security_recommendations: { list: 'devices.read', complete: 'devices.write', dismiss: 'devices.write' },

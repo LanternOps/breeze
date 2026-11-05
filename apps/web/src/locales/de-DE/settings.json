@@ -3731,6 +3731,7 @@
         "get_active_users": "Aktive Benutzer",
         "get_ai_agent_run": "Details zum KI-Agent-Lauf",
         "get_alert_correlations": "Warnungskorrelationen",
+        "get_audit_retention": "Aufbewahrung des Audit-Protokolls lesen",
         "get_backup_health": "Backup-Zustand",
         "get_backup_status": "Backup-Status",
         "get_browser_security": "Browsersicherheit",

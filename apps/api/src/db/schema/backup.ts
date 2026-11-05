@@ -314,10 +314,11 @@ export const backupJobs = pgTable(
     //    unchanged counters) and by the async started/queued ack. NULL means
     //    the agent never sent a lifecycle signal (legacy agent). Also the
     //    "has the helper spoken yet" marker for the queue lifecycle guards.
-    //  - last_progress_at: PROGRESS. Advanced only when transferred_size or
-    //    file_count actually increases. The stale reaper's no-transfer rule
-    //    keys on it; before #2798 it was bumped by the keepalive too, which
-    //    made the stall rule unreachable for a live-but-wedged agent.
+    //  - last_progress_at: PROGRESS. Advanced only when transferred_size,
+    //    file_count, verified_size or verified_files actually increases. The
+    //    stale reaper's no-transfer rule keys on it; before #2798 it was
+    //    bumped by the keepalive too, which made the stall rule unreachable
+    //    for a live-but-wedged agent.
     lastProgressAt: timestamp('last_progress_at', { withTimezone: true }),
     lastKeepaliveAt: timestamp('last_keepalive_at', { withTimezone: true }),
     // #11013: until when a scheduled job that found its device offline may still
@@ -328,6 +329,14 @@ export const backupJobs = pgTable(
     // against (site-ceiling gate contract §3). NULL for a job queued without one.
     catchUpConfigGeneration: integer('catch_up_config_generation'),
     totalFiles: integer('total_files'),
+    // In flight only (#11014): files, and their source bytes, the agent has
+    // finished CHECKING before deciding whether to upload them — the resume
+    // pass over the checkpoint journal and the dedupe pre-pass re-hash.
+    // Their increase advances last_progress_at, so a multi-hour resume of a
+    // large interrupted snapshot is not reaped as wedged. NULL = the agent
+    // never reported them (older agent, or nothing needed checking).
+    verifiedSize: bigint('verified_size', { mode: 'number' }),
+    verifiedFiles: integer('verified_files'),
     // Incremental-backup dedup stats: files/bytes referenced from a prior
     // snapshot instead of re-transferred this run. NULL = agent didn't report
     // dedup (legacy agent, or nothing was referenced).

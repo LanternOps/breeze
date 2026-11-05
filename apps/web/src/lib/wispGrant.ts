@@ -32,13 +32,23 @@ export class WispPreviewError extends Error {
  * hash, so every create/refresh is `GET /wisp/grants/preview` → mint. The
  * hash is re-read on every attempt: a reach change between two attempts must
  * produce a new proof, never a replay of the old one.
+ *
+ * #10973: a refresh names its grant (`refreshGrantId`), so the server's hash
+ * covers the unattended-reads switch the grant already has; `unattendedReads`
+ * asks for the ceiling that turns it on.
  */
 export async function mintWispGrantStepUp(input: {
   partnerId: string;
   orgId: string | null;
   reauth: StepUpReauth;
+  refreshGrantId?: string;
+  unattendedReads?: boolean;
 }): Promise<string> {
-  const query = input.orgId ? `?orgId=${encodeURIComponent(input.orgId)}` : '';
+  const params = new URLSearchParams();
+  if (input.orgId) params.set('orgId', input.orgId);
+  if (input.refreshGrantId) params.set('grantId', input.refreshGrantId);
+  if (input.unattendedReads) params.set('unattendedReads', 'true');
+  const query = params.size > 0 ? `?${params.toString()}` : '';
   // The URL owns the scope: a partner-wide preview (no orgId) must not pick up
   // the switcher's ambient `?orgId=`, or the step-up is minted against an
   // org-scoped ceiling hash that the partner-wide POST /wisp/grants refuses.
@@ -102,6 +112,8 @@ export function wispStateFromThread(body: unknown): NonNullable<WispState> | nul
     budgetCentsPerDay: int(grant?.budgetCentsPerDay, 200),
     floorTickMinutes: int(grant?.floorTickMinutes, 30),
     wideningAvailable: data?.wideningAvailable === true,
+    // #10973: effective (live AND pinned) on the server; anything but literal true is off.
+    unattendedReads: grant?.unattendedReads === true,
   };
 }
 

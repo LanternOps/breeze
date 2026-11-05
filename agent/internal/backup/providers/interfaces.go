@@ -154,6 +154,16 @@ type WriterFence interface {
 	AwaitWriteAccess(ctx context.Context) error
 }
 
+// SessionWindow is implemented by a provider whose writes are authorized by a
+// storage session with a hard deadline (the brokered writer). After the
+// deadline no write is authorized, so a run that has not finished by then
+// ends partial.
+type SessionWindow interface {
+	// TimeUntilDeadline is how long the session can still authorize writes,
+	// judged on the control plane's clock; <= 0 once the deadline passed.
+	TimeUntilDeadline() time.Duration
+}
+
 // StoredObjectDigester is implemented by providers that can report the
 // SHA-256 and length of an object as stored, by reading it back. A missing
 // object is reported with an error wrapping ErrObjectNotFound.
