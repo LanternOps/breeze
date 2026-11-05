@@ -856,7 +856,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		if vssSession != nil {
 			ssOpts.ShadowPaths = vssSession.ShadowPaths
 		}
-		manifest, stagingDir, ssErr := collectSystemState(ssOpts)
+		manifest, stagingDir, ssErr := collectSystemState(runCtx, ssOpts)
 		if ssErr != nil {
 			systemStateErr = ssErr
 			log.Warn("system state collection failed, proceeding without", "error", ssErr.Error())
