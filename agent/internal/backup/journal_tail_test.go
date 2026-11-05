@@ -502,6 +502,7 @@ func TestJournalTornTail_ARepairThatStoppedPartWayStillDropsRecords(t *testing.T
 				t.Fatal(err)
 			}
 			appendRaw(t, path, longFragment(t))
+			header.VerificationAware = false
 			line, err := json.Marshal(journalHeaderUpdate{HeaderUpdate: header})
 			if err != nil {
 				t.Fatal(err)
@@ -567,6 +568,160 @@ func TestResume_ATornPublishRecordIsAdoptedWithoutAnAttestation(t *testing.T) {
 	}
 	if !strings.Contains(job.Warning, warnAttestationUnavailableResumedPublish) {
 		t.Errorf("warning %q does not carry %s", job.Warning, warnAttestationUnavailableResumedPublish)
+	}
+}
+
+// A tail too long for the line scanner is torn on the same terms as a short one:
+// a power loss can leave megabytes of zeroes, and that must not cost the journal.
+func TestJournalTornTail_AnOversizedTail(t *testing.T) {
+	oversized := strings.Repeat("\x00", 1024*1024+10)
+	entryLine, err := json.Marshal(journalEntryLine{SnapshotFile: tornTestEntry("c")})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("unterminated last line is torn", func(t *testing.T) {
+		dir := t.TempDir()
+		path, id := seedTornTestJournal(t, dir, true)
+		appendRaw(t, path, oversized)
+
+		j, resumed := openTornTestJournal(t, dir)
+		if !resumed || j.snapshotID != id {
+			t.Fatalf("resumed = %v, snapshot %q, want the journal kept", resumed, j.snapshotID)
+		}
+		requireEntries(t, j, "a", "b")
+		if len(j.verifications) != 0 {
+			t.Errorf("records survived the tear: %v", j.verifications)
+		}
+		if err := j.Record(tornTestEntry("d")); err != nil {
+			t.Fatal(err)
+		}
+		j.Abandon()
+		requireWellFormedFile(t, path)
+
+		j2, resumed := openTornTestJournal(t, dir)
+		defer j2.Abandon()
+		if !resumed {
+			t.Fatal("the repaired journal must resume")
+		}
+		requireEntries(t, j2, "a", "b", "d")
+	})
+	for name, tail := range map[string]string{
+		"with a newline after it": oversized + "\n",
+		"with a line after it":    oversized + "\n" + string(entryLine) + "\n",
+		"after a malformed line":  `{"sourcePath":"/x` + "\n" + oversized,
+	} {
+		t.Run(name+" is corruption", func(t *testing.T) {
+			dir := t.TempDir()
+			path, id := seedTornTestJournal(t, dir, false)
+			appendRaw(t, path, tail)
+
+			j, resumed := openTornTestJournal(t, dir)
+			defer j.Abandon()
+			if resumed || j.snapshotID == id {
+				t.Fatalf("resumed = %v, snapshot %q, want a new snapshot", resumed, j.snapshotID)
+			}
+		})
+	}
+}
+
+// A tear after a repair is a tear like the first: records made since the repair
+// go, entries stay, and the offset is the new fragment's.
+func TestJournalTornTail_ATearAfterARepair(t *testing.T) {
+	dir := t.TempDir()
+	path, id := seedTornTestJournal(t, dir, true)
+	appendRaw(t, path, longFragment(t))
+
+	j, _ := openTornTestJournal(t, dir)
+	if err := j.Record(tornTestEntry("d")); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.recordVerification(tornTestEntry("a"), journalVerification{
+		StoredObjectCheck: storedCheckOK, VerifiedAt: time.Now().UTC(), BaseGeneration: j.baseGeneration(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	j.Abandon()
+	appendRaw(t, path, longFragment(t))
+
+	j2, resumed := openTornTestJournal(t, dir)
+	if !resumed || j2.snapshotID != id {
+		t.Fatalf("resumed = %v, snapshot %q, want the journal kept", resumed, j2.snapshotID)
+	}
+	requireEntries(t, j2, "a", "b", "d")
+	if len(j2.verifications) != 0 {
+		t.Errorf("records survived the second tear: %v", j2.verifications)
+	}
+	j2.Abandon()
+	requireWellFormedFile(t, path)
+}
+
+// The real repair, failing for real: a journal it cannot open for writing.
+func TestJournalTornTail_ARepairThatCannotWriteLeavesTheFileAlone(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes to a read-only file")
+	}
+	dir := t.TempDir()
+	path, id := seedTornTestJournal(t, dir, true)
+	appendRaw(t, path, longFragment(t))
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+
+	j, resumed := openTornTestJournal(t, dir)
+	defer j.Abandon()
+	if !resumed || j.snapshotID != id {
+		t.Fatalf("resumed = %v, snapshot %q, want the journal kept", resumed, j.snapshotID)
+	}
+	requireEntries(t, j, "a", "b")
+	if !j.CheckpointingDisabled() {
+		t.Error("a journal that was not repaired must not take writes")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("the failed repair changed the file:\n%q", tailOf(after))
+	}
+}
+
+// A run that cannot checkpoint says so on the job: if it dies, its progress is
+// lost, and nothing else tells anyone. It still finishes the same snapshot.
+func TestRunBackupContext_AFailedRepairWarnsAndStillResumes(t *testing.T) {
+	src := t.TempDir()
+	a := settledFile(t, src, "a.txt", "alpha")
+	staging := t.TempDir()
+	ea := journaledEntry(t, a, brokeredJournalID, "alpha")
+	p := continuingIssuer(map[string]string{ea.BackupPath: "alpha"})
+	identity := backupIdentity(p, []string{src})
+	seedVerifiedJournal(t, staging, identity, brokeredJournalID, brokeredOtherJob, journalEntryLine{SnapshotFile: ea})
+	journalDir, ok := resolveJournalDir(staging)
+	if !ok {
+		t.Fatal("no journal dir")
+	}
+	appendRaw(t, pathpkg.Join(journalDir, journalFileName(identity)), longFragment(t))
+	defer setJournalTailRepairFnForTest(func(string, int64, journalHeader) error {
+		return errors.New("no space left on device")
+	})()
+
+	job, err := brokeredManager(p, src, staging, testJobID).RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("RunBackupContext: %v", err)
+	}
+	if !strings.Contains(job.Warning, warnJournalCheckpointingDisabled) {
+		t.Errorf("warning %q does not carry %s", job.Warning, warnJournalCheckpointingDisabled)
+	}
+	if !manifestPublished(p, brokeredJournalID) {
+		t.Fatalf("the interrupted snapshot was not completed: %v", p.uploadedKeys())
+	}
+	if uploadedSource(p, "a.txt") {
+		t.Errorf("an unchanged entry was uploaded again: %v", p.uploadedKeys())
 	}
 }
 

@@ -193,10 +193,10 @@ func identityFingerprint(identity string) string {
 //
 // Otherwise it returns a fresh journal (new snapshot ID, no entries,
 // resumed=false), covering three cases: no journal file yet (normal first
-// run), a corrupt journal (any parse error except a torn last line, which is
-// repaired, see journal_tail.go — the whole file is discarded, never partially
-// trusted), and a stale journal (identity matches but too old to safely resume
-// — see StaleSnapshotID).
+// run), a corrupt journal (a malformed header, or a malformed line that is not
+// the last — the whole file is discarded), and a stale journal (identity matches
+// but too old to safely resume — see StaleSnapshotID). A torn last line is not
+// corruption, see journal_tail.go.
 //
 // openSnapshotJournal only returns a non-nil error when it cannot create
 // even a *fresh* journal file (e.g. an unwritable/full dir). Callers must
@@ -333,9 +333,9 @@ func openSnapshotJournalAt(path, identity string, maxAge time.Duration) (*snapsh
 			return j, resumed, err
 		}
 	} else if !os.IsNotExist(readErr) {
-		// Any read/parse failure is treated as corruption — never partially
-		// trust a damaged journal (a torn last line is not such a failure, see
-		// journal_tail.go).
+		// Any read or parse failure readJournal reports is corruption, and the
+		// file is discarded whole. A torn last line is not one of them, see
+		// journal_tail.go.
 		slog.Warn("discarding corrupt backup journal", "path", path, "error", readErr.Error())
 		if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
 			slog.Warn("failed to remove corrupt backup journal", "path", path, "error", rmErr.Error())
@@ -363,8 +363,8 @@ type journalRead struct {
 // readJournal reads and validates an existing journal file at path. A torn last
 // line (see journal_tail.go) is ignored, along with every verification record.
 // Any other malformed line, and any malformed header, is reported as an error so
-// the caller discards the whole file rather than resuming from a partially-trusted
-// state.
+// the caller discards the whole file rather than resuming from a state it cannot
+// account for.
 func readJournal(path string) (*journalRead, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -416,7 +416,19 @@ func readJournal(path string) (*journalRead, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		// An oversized line is torn on the same terms as any other: only as the
+		// last line. Past a malformed line it is one line too many.
+		if !errors.Is(err, bufio.ErrTooLong) || r.tornAt != noTornTail {
+			return nil, err
+		}
+		unterminated, readErr := unterminatedFrom(f, lines.next)
+		if readErr != nil {
+			return nil, readErr
+		}
+		if !unterminated {
+			return nil, err
+		}
+		r.tornAt = lines.next
 	}
 	if r.tornAt != noTornTail {
 		slog.Warn("ignoring a torn last line in the backup journal",
