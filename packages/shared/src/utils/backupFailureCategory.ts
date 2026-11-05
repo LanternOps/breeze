@@ -65,6 +65,12 @@ const RULES: ReadonlyArray<{ category: BackupFailureCategory; pattern: RegExp }>
     pattern:
       /\bvss shadow copy\b|\bfailed to open source file\b|\bfiles? could not be read\b|\bfile\(s\) could not be read\b|\baccess is denied\b|\bpermission denied\b|\bbeing used by another process\b|\bsharing violation\b|\blive volume\b/i,
   },
+  {
+    category: 'cancelled',
+    // The agent's errBackupStopped on a row the API settled as failed: the run
+    // was stopped on purpose, whichever side recorded it.
+    pattern: /^backup stopped\b/i,
+  },
 ];
 
 // Written by the reaper (`[stale-backup-reaper] `) and the storage reconcile

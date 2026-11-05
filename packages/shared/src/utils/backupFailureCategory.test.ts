@@ -121,6 +121,9 @@ const WRITER_CORPUS: Row[] = [
   ['failed', '4 file(s) could not be read during collection: open /srv/a: permission denied', 'source_access'],
   ['failed', 'VSS shadow copy could not be created, so every path was read from the live volume, not a point-in-time copy', 'source_access'],
 
+  ['failed', 'backup stopped', 'cancelled'],
+  ['failed', `backup stopped; ${REPARSE_FRAGMENT}`, 'cancelled'],
+
   // Server-side faults with no operator-facing bucket: raw text is the honest answer.
   ['failed', 'Unknown error', 'unknown'],
   ['failed', 'Failed to create backup job', 'unknown'],
