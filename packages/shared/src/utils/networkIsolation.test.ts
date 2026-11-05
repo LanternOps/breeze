@@ -13,12 +13,43 @@ import {
   NETWORK_ISOLATION_TTL,
   RESOLVED_TERMINAL_STATES,
   UNRESOLVED_TERMINAL_STATES,
+  agentAcceptsDeadMan,
+  agentAcceptsPolicyAllow,
   agentSupportsNetworkIsolation,
   isActiveIsolationState,
   isTerminalIsolationState, isUnresolvedTerminalIsolationState, isIsolationFailureCode, failureCodeFromJournalType, ISOLATION_RELEASE_JOURNAL_TYPES,
   isResolvedTerminalIsolationState,
   isUnresolvedIsolationState,
 } from './networkIsolation';
+
+describe('capability predicates (#10100)', () => {
+  it('names policyAllow as level 3', () => {
+    expect(NETWORK_ISOLATION_CAPABILITY.policyAllow).toBe(3);
+  });
+
+  it('accepts policy permits only from an integer level 3 or above', () => {
+    for (const level of [3, 4]) expect(agentAcceptsPolicyAllow(level), String(level)).toBe(true);
+    for (const level of [0, 1, 2, 2.9, 3.5, -3, NaN, Infinity, '3', null, undefined, {}]) {
+      expect(agentAcceptsPolicyAllow(level as never), String(level)).toBe(false);
+    }
+  });
+
+  it('never infers dead-man from the numeric level (decision 28)', () => {
+    for (const level of [0, 1, 2, 3, 4, 999]) {
+      expect(agentAcceptsDeadMan({ networkIsolationVersion: level } as never), String(level)).toBe(false);
+    }
+    expect(agentAcceptsDeadMan(null)).toBe(false);
+    expect(agentAcceptsDeadMan(undefined)).toBe(false);
+    expect(agentAcceptsDeadMan({})).toBe(false);
+  });
+
+  it('reads dead-man only from its own flag, and only a literal true', () => {
+    expect(agentAcceptsDeadMan({ networkIsolationDeadMan: true })).toBe(true);
+    for (const flag of [false, null, undefined, 1, 'true']) {
+      expect(agentAcceptsDeadMan({ networkIsolationDeadMan: flag } as never), String(flag)).toBe(false);
+    }
+  });
+});
 
 describe('network isolation closed sets (plan "Closed sets")', () => {
   it('lists exactly the twelve episode states', () => {
@@ -73,7 +104,7 @@ describe('network isolation closed sets (plan "Closed sets")', () => {
 
   it('pins the TTL and capability constants', () => {
     expect(NETWORK_ISOLATION_TTL).toEqual({ defaultHours: 72, maxHours: 720, expiringSoonHours: 12 });
-    expect(NETWORK_ISOLATION_CAPABILITY).toEqual({ base: 1, deadMan: 2 });
+    expect(NETWORK_ISOLATION_CAPABILITY).toEqual({ base: 1, deadMan: 2, policyAllow: 3 });
   });
 });
 

@@ -17,8 +17,37 @@ import { semverCompare } from './semverCompare';
 // TODO(#10095-activation): pin to the agent release carrying W1g after L1 passes. Todd gate.
 export const NETWORK_ISOLATION_MIN_AGENT_VERSION = '999.0.0';
 
-/** `securityCapabilities.networkIsolationVersion` levels. 0 = cannot isolate. */
-export const NETWORK_ISOLATION_CAPABILITY = { base: 1, deadMan: 2 } as const;
+/**
+ * `securityCapabilities.networkIsolationVersion` levels. 0 = cannot isolate. The numbers are not a
+ * ladder of features: an agent at `policyAllow` (3) still refuses `deadManSeconds != 0`, so read each
+ * capability through its own predicate below, never with a bare `>=`.
+ */
+export const NETWORK_ISOLATION_CAPABILITY = { base: 1, deadMan: 2, policyAllow: 3 } as const;
+
+/**
+ * Whether an agent accepts containment-policy permits: `scope:"any"` entries under a `policyRevision`,
+ * on both the isolate command and the heartbeat block. Fails CLOSED on anything but an integer at or
+ * above `policyAllow`.
+ */
+export function agentAcceptsPolicyAllow(capabilityVersion: number | null | undefined): boolean {
+  return typeof capabilityVersion === 'number'
+    && Number.isInteger(capabilityVersion)
+    && capabilityVersion >= NETWORK_ISOLATION_CAPABILITY.policyAllow;
+}
+
+/** What an agent reports about dead-man support. No agent sends this today; see agentAcceptsDeadMan. */
+export interface NetworkIsolationDeadManCapability { networkIsolationDeadMan?: boolean | null }
+
+/**
+ * Whether an agent can run a dead-man timer. Decision 28 gates dead-man on its OWN flag, because
+ * policy permits shipped at level 3 before dead-man exists, so `>= deadMan` would claim support no
+ * agent has. The contract for W4d: the agent build that implements dead-man reports
+ * `securityCapabilities.networkIsolationDeadMan: true`, and the server stores it and passes it here.
+ * Until then nothing supplies the flag, so this is false for every device. Only a literal `true` counts.
+ */
+export function agentAcceptsDeadMan(capability: NetworkIsolationDeadManCapability | null | undefined): boolean {
+  return capability?.networkIsolationDeadMan === true;
+}
 
 /** TTL policy (OD5): 72 h default, 30 days maximum, a 12 h expiring-soon alert. */
 export const NETWORK_ISOLATION_TTL = { defaultHours: 72, maxHours: 720, expiringSoonHours: 12 } as const;
