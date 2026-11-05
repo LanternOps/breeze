@@ -52,7 +52,7 @@ const h = vi.hoisted(() => {
     deliverInApp: vi.fn(),
     getOrCreateThread: vi.fn(),
     seedContextForSession: vi.fn(),
-    updateThreadSummary: vi.fn(),
+    updateThreadPicture: vi.fn(),
     listWatches: vi.fn(),
     readinessInventory: vi.fn(),
     recallForGrant: vi.fn(),
@@ -107,7 +107,7 @@ vi.mock('./deliver', () => ({ deliverInApp: h.deliverInApp }));
 vi.mock('./threads', () => ({
   getOrCreateThread: h.getOrCreateThread,
   seedContextForSession: h.seedContextForSession,
-  updateThreadSummary: h.updateThreadSummary,
+  updateThreadPicture: h.updateThreadPicture,
 }));
 vi.mock('./watches', () => ({ listWatches: h.listWatches }));
 vi.mock('./readiness', () => ({ readinessInventory: h.readinessInventory }));

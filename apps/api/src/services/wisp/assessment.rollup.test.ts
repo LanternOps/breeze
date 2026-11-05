@@ -4,7 +4,7 @@ import type { Concern, ConcernSeverity } from '@breeze/shared';
 /**
  * services/wisp/assessment.ts — the deterministic partner picture (W05 Task 7):
  * `renderPartnerPicture` (pure) and `rollupPartnerPicture` (ceiling → live
- * concerns → org names → updateThreadSummary). No model anywhere.
+ * concerns → org names → updateThreadPicture). No model anywhere.
  */
 const h = vi.hoisted(() => {
   const results: unknown[][] = [];
@@ -29,7 +29,7 @@ const h = vi.hoisted(() => {
     resolveGrantCeiling: vi.fn(),
     listConcernsForCeiling: vi.fn(),
     getOrCreateThread: vi.fn(),
-    updateThreadSummary: vi.fn(),
+    updateThreadPicture: vi.fn(),
   };
 });
 
@@ -45,7 +45,7 @@ vi.mock('./grantAuthority', () => ({ resolveGrantCeiling: h.resolveGrantCeiling,
 vi.mock('./concerns', () => ({ listConcernsForCeiling: h.listConcernsForCeiling, upsertConcern: vi.fn() }));
 vi.mock('./threads', () => ({
   getOrCreateThread: h.getOrCreateThread,
-  updateThreadSummary: h.updateThreadSummary,
+  updateThreadPicture: h.updateThreadPicture,
   seedContextForSession: vi.fn(),
 }));
 vi.mock('./budget', () => ({ chargeableUnderGrant: vi.fn(), notifyBudgetExhaustedOnce: vi.fn(), utcDayWindow: vi.fn() }));
@@ -228,7 +228,7 @@ describe('renderPartnerPicture', () => {
 });
 
 describe('rollupPartnerPicture', () => {
-  it('loads live concerns under the ceiling, org names in one query, and writes the thread summary', async () => {
+  it('loads live concerns under the ceiling, org names in one query, and writes the thread picture, never the session summary (#10390)', async () => {
     h.resolveGrantCeiling.mockResolvedValue(ceiling());
     h.getOrCreateThread.mockResolvedValue({ id: THREAD, grantId: GRANT, currentRevisionId: REV });
     h.results.push([{ id: GRANT, partnerId: PARTNER, currentRevisionId: REV }]); // grant row
@@ -245,7 +245,7 @@ describe('rollupPartnerPicture', () => {
     expect(h.listConcernsForCeiling).toHaveBeenCalledTimes(1);
     expect(h.listConcernsForCeiling.mock.calls[0]![1]).toEqual({ status: ['open', 'snoozed'] });
     expect(h.db.select).toHaveBeenCalledTimes(2); // grant + org names, one query
-    expect(h.updateThreadSummary).toHaveBeenCalledWith(THREAD, text);
+    expect(h.updateThreadPicture).toHaveBeenCalledWith(THREAD, text);
     const lines = text.split('\n');
     expect(lines[0]).toMatch(/^Wisp picture · 2\/3 orgs · 2 high \/ 0 medium \/ 1 low · as of /);
     expect(lines.slice(1)).toEqual([
@@ -272,6 +272,6 @@ describe('rollupPartnerPicture', () => {
     h.results.push([{ id: GRANT, partnerId: PARTNER, currentRevisionId: REV }]);
     h.resolveGrantCeiling.mockRejectedValue(new h.GrantInactiveError(GRANT, 'paused'));
     await expect(rollupPartnerPicture(GRANT)).rejects.toBeInstanceOf(h.GrantInactiveError);
-    expect(h.updateThreadSummary).not.toHaveBeenCalled();
+    expect(h.updateThreadPicture).not.toHaveBeenCalled();
   });
 });
