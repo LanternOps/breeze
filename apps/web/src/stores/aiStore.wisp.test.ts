@@ -288,6 +288,27 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
     expect(useAiStore.getState().sessionId).toBe('sess-new');
   });
 
+  it('a second startPlainChat during the first close wins: one plain session is created, not two (#10289 review)', async () => {
+    let releaseClose!: () => void;
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+      if (url === '/ai/sessions/sess-p' && init?.method === 'DELETE') {
+        await new Promise<void>((r) => { releaseClose = r; });
+        return response({ success: true });
+      }
+      return response({ data: [] });
+    });
+    useAiStore.setState({ wisp: null, sessionId: 'sess-p' });
+    const first = useAiStore.getState().startPlainChat();
+    await vi.waitFor(() => expect(releaseClose).toBeTypeOf('function'));
+    useAiStore.setState({ sessionId: null });
+    const second = useAiStore.getState().startPlainChat();
+    releaseClose();
+    await Promise.all([first, second]);
+    expect(createBodies()).toHaveLength(1);
+    expect(useAiStore.getState().sessionId).toBe('sess-new');
+  });
+
   it('switching to a history session on the same grant keeps Wisp mode', async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url === '/ai/sessions/sess-w2') return response({ session: { id: 'sess-w2', type: 'general', status: 'active', orgId: 'org-a', wispGrantId: 'grant-1' }, messages: [] });

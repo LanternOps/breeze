@@ -308,6 +308,23 @@ describe('AiChatSidebar voice is decided by the grant (W05 #10136)', () => {
       expect(startPlainChat).not.toHaveBeenCalled();
     });
 
+    it('the real startPlainChat under Wisp: the panel re-reads the grant but does not walk back into it (#10289 review)', async () => {
+      // The create is stubbed to leave no session (as a refused create does), so
+      // only the ended-grant guard keeps the lookup effect from re-entering Wisp.
+      h.threads['/wisp/thread'] = threadBody('grant-1', 'active');
+      useAiStore.setState({ startPlainChat: useAiStore.getInitialState().startPlainChat, wisp: wisp(), sessionId: 'sess-w', hydratedSessionId: 'sess-w' });
+      render(<AiChatSidebar />);
+      fireEvent.click(screen.getByTestId('ai-chat-new-menu'));
+      fireEvent.click(screen.getByTestId('ai-chat-new-plain'));
+      await waitFor(() => expect(createSession).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(wispThreadCalls()).toContain('/wisp/thread'));
+      await settle();
+      expect(closeSession).toHaveBeenCalledTimes(1);
+      expect(enterWispMode).not.toHaveBeenCalled();
+      expect(useAiStore.getState().wisp).toBeNull();
+      expect(screen.getByTestId('ai-chat-mode-plain')).toHaveTextContent('Breeze AI · not Wisp');
+    });
+
     it('no grant: a single "+" with no plain option, and no "not Wisp" label', async () => {
       useAiStore.setState({ sessionId: 'sess-plain', hydratedSessionId: 'sess-plain' });
       render(<AiChatSidebar />);

@@ -346,6 +346,51 @@ describe('a plain Breeze AI chat while a grant is active (#10289)', () => {
     await useWorkspaceStore.getState().sendMessage('tab-r', 'hello');
     expect(createBody()).not.toHaveProperty('wispGrantId');
   });
+
+  it('a reload reads plainChosen back through the persist merge (#10289 review)', async () => {
+    h.data.set('breeze-workspace', JSON.stringify({
+      state: { tabs: [{ id: 'tab-p', sessionId: null, title: 'New Chat', isTitleCustom: false, contextLabel: null, pageContext: null, plainChosen: true }], activeTabId: 'tab-p' },
+      version: 0,
+    }));
+    await useWorkspaceStore.persist.rehydrate();
+    expect(activeTab()).toMatchObject({ id: 'tab-p', plainChosen: true });
+    await useWorkspaceStore.getState().restoreWorkspace();
+    await settle();
+    expect(h.fetchWispThread).not.toHaveBeenCalled();
+    expect(activeTab().wisp).toEqual({ kind: 'plain' });
+  });
+
+  it('a plain tab stays plain without asking even when no grant exists', async () => {
+    h.fetchWispThread.mockReset();
+    h.fetchWispThread.mockRejectedValue(noGrant());
+    useWorkspaceStore.setState({ wispGrantAvailable: true });
+    useWorkspaceStore.getState().createTab(undefined, undefined, { plain: true });
+    await settle();
+    expect(h.fetchWispThread).not.toHaveBeenCalled();
+    expect(activeTab().wisp).toEqual({ kind: 'plain' });
+    expect(useWorkspaceStore.getState().wispGrantAvailable).toBe(true);
+  });
+
+  it('an answer for an org the header has since left, or from before a logout, is dropped (#10289 review)', async () => {
+    let resolve!: (v: unknown) => void;
+    h.fetchWispThread.mockReset();
+    h.fetchWispThread.mockImplementation(() => new Promise((r) => { resolve = r; }));
+    const checking = useWorkspaceStore.getState().checkWispGrant();
+    await vi.waitFor(() => expect(h.fetchWispThread).toHaveBeenCalledWith('org-a'));
+    h.currentOrgId = 'org-b';
+    resolve(grant());
+    await checking;
+    expect(useWorkspaceStore.getState().wispGrantAvailable).toBe(false);
+
+    h.currentOrgId = 'org-a';
+    h.fetchWispThread.mockClear();
+    const again = useWorkspaceStore.getState().checkWispGrant();
+    await vi.waitFor(() => expect(h.fetchWispThread).toHaveBeenCalled());
+    useWorkspaceStore.getState().resetForLogout();
+    resolve(grant());
+    await again;
+    expect(useWorkspaceStore.getState().wispGrantAvailable).toBe(false);
+  });
 });
 
 /** A tab as the persist merge rebuilds it: no session, mode not known. */
