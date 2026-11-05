@@ -124,6 +124,11 @@ vi.mock('../../middleware/auth', async (importOriginal) => {
   };
 });
 
+vi.mock('./commandOrgScope', async () => {
+  const { sql } = await import('drizzle-orm');
+  return { deviceCommandsInCurrentOrg: vi.fn(async () => sql`command_org_scope`) };
+});
+
 vi.mock('./helpers', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./helpers')>()),
   getPagination: vi.fn(() => ({ page: 1, limit: 50, offset: 0 })),
@@ -194,6 +199,7 @@ vi.mock('../../services/authEpochs', () => ({
 }));
 
 import { commandsRoutes } from './commands';
+import { deviceCommandsInCurrentOrg } from './commandOrgScope';
 import { db, runAfterDbContextCommit } from '../../db';
 import { getDeviceWithOrgCheck } from './helpers';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -2133,6 +2139,7 @@ describe('device commands routes', () => {
       expect(res.status).toBe(404);
       expect(txUpdate).not.toHaveBeenCalled();
       expect(cancelDeviceCommands).not.toHaveBeenCalled();
+      expect(deviceCommandsInCurrentOrg).toHaveBeenCalledWith(expect.objectContaining({ id: DEVICE_ID }));
     });
   });
 

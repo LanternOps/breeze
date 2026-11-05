@@ -39,6 +39,7 @@ import {
   systemCleanupCatalogSchema,
 } from '../../services/systemCleanup';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
+import { deviceCommandsInCurrentOrg } from './commandOrgScope';
 import { checkDeviceRemoteToolsPolicy, REMOTE_TOOLS_DISABLED_BY_POLICY } from '../../services/aiRemoteToolsPolicy';
 
 /**
@@ -137,12 +138,14 @@ filesystemSystemCleanupRoutes.get(
     if (device === SITE_ACCESS_DENIED) return c.json({ success: false, error: 'Access to this site denied' }, 403);
     if (!device) return c.json({ success: false, error: 'Device not found' }, 404);
 
+    const inCurrentOrg = await withAuthDbAccessContext(auth, () => deviceCommandsInCurrentOrg(device));
     const [command] = await db
       .select()
       .from(deviceCommands)
       .where(and(
         eq(deviceCommands.id, commandId),
         eq(deviceCommands.deviceId, deviceId),
+        inCurrentOrg,
         eq(deviceCommands.type, CommandTypes.SYSTEM_CLEANUP_LIST),
       ))
       .limit(1);

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 import { patchesRoutes } from './patches';
+import { deviceCommandsInCurrentOrg } from './commandOrgScope';
 
 const DEVICE_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const PATCH_ID = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
@@ -98,6 +99,10 @@ vi.mock('../../middleware/auth', () => ({
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+}));
+
+vi.mock('./commandOrgScope', () => ({
+  deviceCommandsInCurrentOrg: vi.fn(async () => ({ op: 'commandOrgScope' })),
 }));
 
 vi.mock('./helpers', async () => {
@@ -325,6 +330,7 @@ describe('device patch routes', () => {
     expect(body.data.compliancePercent).toBe(50);
     expect(body.data.lastPatchScanAt).toBe('2026-02-09T10:00:00.000Z');
     expect(body.data.lastPatchScanStatus).toBe('completed');
+    expect(deviceCommandsInCurrentOrg).toHaveBeenCalledWith(expect.objectContaining({ id: DEVICE_ID }));
   });
 
   describe('container image term (W06)', () => {
@@ -819,6 +825,7 @@ describe('device patch routes', () => {
     expect(whereClause).toContain('software_update');
     expect(whereClause).toContain('"op":"gte"');
     expect(whereClause).toContain(completedAfter);
+    expect(whereClause).toContain('commandOrgScope');
     expect(body.total).toBe(1);
     expect(body.history).toHaveLength(1);
     expect(body.history[0].type).toBe('software_update');
