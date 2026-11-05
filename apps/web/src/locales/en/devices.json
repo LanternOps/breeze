@@ -320,6 +320,7 @@
     "generateNewToken": "Generate new token",
     "generateNewLink": "Generate new link",
     "cliTokenReuse": "Generated earlier. Valid until {{date}}, unless its device enrollments have all been used.",
+    "cliTokenReuseVerified": "Generated earlier. Valid until {{date}}.",
     "linkReuse": "Generated earlier for {{platform}}. Valid until {{date}}.",
     "generateToken": "Generate token",
     "cliTokenNotGenerated": "No token yet. Choose the site, number of devices and expiry, then generate a token. Each token is a live enrollment key.",
@@ -1038,6 +1039,10 @@
       "label": "approval",
       "byRing": "set by the linked update ring",
       "manualOnly": "manual approvals only (no update ring linked)"
+    },
+    "containment": {
+      "extraDestinations": "Extra destinations while isolated",
+      "invalid": "This policy’s containment settings are not valid, so isolation uses the fixed defaults with no extra destinations."
     },
     "chainResolutionRule": "Level decides first: Device beats Device Group, then Site, Organization, and Partner. Priority (lower number wins) only breaks ties between policies at the same level. Struck-through features were overridden by a closer policy.",
     "featureOverriddenBy": "Overridden by {{policy}}"

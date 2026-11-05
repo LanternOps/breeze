@@ -24,6 +24,8 @@ import {
   selectedFolderFileTotal,
 } from './folderSelection';
 import { formatBytes } from './backupDashboardHelpers';
+import SnapshotIndexNotice from './SnapshotIndexNotice';
+import { indexNoticeKind, parseSnapshotIndexView, useSnapshotIndexState } from './snapshotIndexState';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 
@@ -65,9 +67,6 @@ type Snapshot = {
   integrityStatus?: string | null;
   bareMetalRestorable?: boolean | null;
   bareMetalReasons?: string[] | null;
-  // Set from GET /snapshots/:id/browse: the snapshot recorded files but has no
-  // file index to list them from (not "still processing").
-  manifestUnavailable?: boolean;
 };
 
 type SnapshotTreeItem = {
@@ -144,6 +143,19 @@ export default function SnapshotBrowser() {
   const [actionMessage, setActionMessage] = useState<string>();
   const [actionError, setActionError] = useState<string>();
 
+  // #11026: while the file list is being built nothing is cached that is worth
+  // keeping, so its arrival starts the tree again from the root.
+  const { view: indexView, reportView: reportIndexView, retry: retryIndex, retrying: retryingIndex } = useSnapshotIndexState({
+    snapshotId: selectedSnapshotId,
+    onReady: () => {
+      browseEpoch.current += 1;
+      setDirs({});
+      setExpanded(new Set([ROOT_DIR]));
+      setSelectedFolder(ROOT_DIR);
+      void loadDir(ROOT_DIR);
+    },
+  });
+
   const fetchSnapshots = useCallback(async () => {
     try {
       setLoading(true);
@@ -196,13 +208,7 @@ export default function SnapshotBrowser() {
           loading: false,
         },
       }));
-      if (dir === ROOT_DIR && !cursor) {
-        setSnapshots((prev) => prev.map((snapshot) => (
-          snapshot.id === selectedSnapshotId
-            ? { ...snapshot, manifestUnavailable: payload?.manifestUnavailable === true }
-            : snapshot
-        )));
-      }
+      if (dir === ROOT_DIR && !cursor) reportIndexView(parseSnapshotIndexView(payload));
     } catch (err) {
       if (epoch !== browseEpoch.current) return;
       // A first-page failure must leave the directory "not loaded" so
@@ -218,7 +224,7 @@ export default function SnapshotBrowser() {
       });
       setError(err instanceof Error ? err.message : 'Failed to browse snapshot');
     }
-  }, [selectedSnapshotId]);
+  }, [selectedSnapshotId, reportIndexView]);
 
   // Reset + load the root level whenever the snapshot changes.
   useEffect(() => {
@@ -856,8 +862,8 @@ export default function SnapshotBrowser() {
               <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
                 {!rootEmpty && rootLoaded
                   ? 'Select a folder in the tree to view its files.'
-                  : selectedSnapshot?.manifestUnavailable
-                    ? t('snapshotBrowser.fileIndexUnavailable')
+                  : indexNoticeKind(indexView)
+                    ? <SnapshotIndexNotice view={indexView} retrying={retryingIndex} onRetry={() => void retryIndex()} />
                     : 'No files in this snapshot. The backup may still be processing.'}
               </div>
             )}

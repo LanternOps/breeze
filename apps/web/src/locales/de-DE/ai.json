@@ -944,6 +944,12 @@
       "buttonPlain": "KI dazu fragen",
       "draft": "Zu {{label}}: ",
       "switchFocus": "Wisp konzentriert sich auf {{from}}. Zu {{to}} wechseln?"
+    },
+    "plainChat": {
+      "new": "Neuer einfacher Chat",
+      "newDescription": "Breeze AI mit allen Tools, auf die Sie Zugriff haben. Nicht Wisp.",
+      "wispDescription": "Wisp, mit Ihrer Berechtigung",
+      "label": "Breeze AI · nicht Wisp"
     }
   },
   "wispConcerns": {

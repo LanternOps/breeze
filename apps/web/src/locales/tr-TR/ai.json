@@ -944,6 +944,12 @@
       "buttonPlain": "Bunu yapay zekâya sor",
       "draft": "{{label}} hakkında: ",
       "switchFocus": "Wisp, {{from}} üzerine odaklanmış. {{to}} odağına geçilsin mi?"
+    },
+    "plainChat": {
+      "new": "Yeni basit sohbet",
+      "newDescription": "Erişiminiz olan tüm araçlarla Breeze AI. Wisp değil.",
+      "wispDescription": "Wisp, yetkiniz kapsamında",
+      "label": "Breeze AI · Wisp değil"
     }
   },
   "wispConcerns": {

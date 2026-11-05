@@ -34,7 +34,7 @@ import {
   statIconMap,
   statusConfig
 } from './backupDashboardHelpers';
-import { splitReparseSkipNotice } from '@breeze/shared';
+import { splitReparseSkipNotice, stripInlineIndexDropNote } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 
@@ -285,7 +285,7 @@ export default function BackupOverviewContent(props: BackupOverviewContentProps)
                 }
                 const status = mapped ?? statusConfig.warning;
                 const StatusIcon = status.icon;
-                const jobDiagnostic = splitReparseSkipNotice(job.errorLog).diagnostic;
+                const jobDiagnostic = splitReparseSkipNotice(stripInlineIndexDropNote(job.errorLog).warning).diagnostic;
                 return (
                   <div
                     key={job.id}

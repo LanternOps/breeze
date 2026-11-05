@@ -2,7 +2,7 @@
 anchor_issue: 11026
 related: [3001, 6464, 8230, 11014, 11040, 11109]
 baseline_commit: c9ee81b574
-tracking_issue: TBD (register at Gate B)
+tracking_issue: LanternOps/breeze#11156 (from #11026)
 ---
 
 # Snapshot File Index Out of Band Implementation Plan

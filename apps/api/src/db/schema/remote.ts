@@ -53,6 +53,9 @@ export const remoteSessions = pgTable('remote_sessions', {
   // stop result lands. A start is refused unless this is 'none'.
   terminationPhase: text('termination_phase').$type<'none' | 'pending' | 'confirmed'>().notNull().default('none'),
   iceCandidates: jsonb('ice_candidates').default([]),
+  // The session's original start: the first agent answer, or the first
+  // WebSocket-fallback start. Never moved by a reconnect; the lease hard
+  // deadline (max duration) is measured from it (#11113).
   startedAt: timestamp('started_at'),
   endedAt: timestamp('ended_at'),
   durationSeconds: integer('duration_seconds'),

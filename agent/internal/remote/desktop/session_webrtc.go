@@ -657,6 +657,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			})
 
 		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
+			// The report does not always end the server session at once: when
+			// the viewer announced a reconnect just before closing its peer,
+			// the API holds this peer_disconnected for a short grace instead of
+			// revoking under the reconnect (#10542).
 			logSelectedPair("failed-or-closed")
 			m.StopSession(sessionID)
 			if m.OnSessionStopped != nil {

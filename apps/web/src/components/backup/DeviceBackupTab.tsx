@@ -21,7 +21,7 @@ import ExternalBackupCard from './ExternalBackupCard';
 import { formatBytes } from './backupDashboardHelpers';
 import DeviceVaultStatus from './DeviceVaultStatus';
 import ReparseSkipNotice from './ReparseSkipNotice';
-import { splitReparseSkipNotice } from '@breeze/shared';
+import { splitReparseSkipNotice, stripInlineIndexDropNote } from '@breeze/shared';
 import AlphaBadge from '../shared/AlphaBadge';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
@@ -417,8 +417,10 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
   // #9543: deliberately skipped reparse points are informational — shown on
   // their own muted line, so a run whose only note is the skip is not framed
   // as "completed with warnings" and a failed run's banner keeps its reason.
+  // #11026: nor is a historic note that a file list did not fit in the result:
+  // the list was not lost.
   const { diagnostic: lastJobDiagnostic, reparseSkipped: lastJobReparseSkipped } =
-    splitReparseSkipNotice(lastJob?.errorLog);
+    splitReparseSkipNotice(stripInlineIndexDropNote(lastJob?.errorLog).warning);
   const lastJobFailed = lastJobStatus === 'failed';
   // #5396: distinct from the generic "completed with warnings" framing — this
   // run has a concrete, agent-reported count of files that failed to read or

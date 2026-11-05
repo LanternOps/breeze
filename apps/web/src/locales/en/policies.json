@@ -1200,7 +1200,17 @@
         "labelInvalid": "Enter a label of 1 to 100 characters.",
         "fixRows": "Fix the highlighted destinations before saving.",
         "limitReached": "A policy can hold at most {{max}} extra destinations.",
-        "parentInvalid": "The parent policy has destinations that are no longer valid. Fix them on the parent policy before overriding."
+        "parentInvalid": "The parent policy has destinations that are no longer valid. Fix them on the parent policy before overriding.",
+        "errors": {
+          "hostInvalid": "Enter a host name such as updates.example.com, using only letters, digits, hyphens and dots. Wildcards are not allowed.",
+          "hostIsAddress": "This is an IP address. Use the IP range (CIDR) type for it.",
+          "hostLoopback": "Loopback host names, such as localhost, are not allowed.",
+          "cidrBlanket": "A /0 range would permit every address, so it is not allowed.",
+          "cidrOutOfBounds": "The range must be at least /8 for IPv4 or /32 for IPv6, and cannot include loopback or unspecified addresses.",
+          "portsUnique": "List each port only once.",
+          "labelControlChars": "The label cannot contain control characters.",
+          "generic": "This value is not allowed."
+        }
       },
       "securityAgentsTab": {
         "title": "Security Agents",

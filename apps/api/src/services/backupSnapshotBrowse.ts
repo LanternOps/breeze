@@ -1,5 +1,8 @@
-import { sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db';
+import { backupSnapshotFiles, backupSnapshots } from '../db/schema/backup';
+import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
+import { readableIndexCondition } from './backupRestoreIntegrity';
 import { normalizeSnapshotPath } from './backupSelectedPaths';
 
 /**
@@ -86,6 +89,21 @@ export function shapeBrowseRows(rows: BrowseRow[], segments: string[], limit: nu
   return { entries, nextCursor: hasMore && last ? encodeBrowseCursor(last) : null };
 }
 
+/**
+ * The stored source paths a selective restore may resolve against: the same
+ * rows the listing would show (#11026), decided in the statement that reads
+ * them. Empty when the snapshot has none, or none that may be trusted.
+ */
+export async function readableSnapshotSourcePaths(snapshotDbId: string): Promise<string[]> {
+  const rows = await db
+    .select({ sourcePath: backupSnapshotFiles.sourcePath })
+    .from(backupSnapshotFiles)
+    .innerJoin(backupSnapshots, eq(backupSnapshots.id, backupSnapshotFiles.snapshotDbId))
+    .leftJoin(backupSnapshotAttestations, eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id))
+    .where(and(eq(backupSnapshotFiles.snapshotDbId, snapshotDbId), readableIndexCondition()));
+  return rows.map((row) => row.sourcePath);
+}
+
 export async function listSnapshotDirectory(params: {
   snapshotDbId: string;
   segments: string[];
@@ -107,6 +125,11 @@ export async function listSnapshotDirectory(params: {
         regexp_replace(regexp_replace(replace(source_path, E'\\\\', '/'), '/{2,}', '/', 'g'), '^/+', '') AS np
       FROM backup_snapshot_files
       WHERE snapshot_db_id = ${snapshotDbId}
+        AND EXISTS (
+          SELECT 1 FROM ${backupSnapshots}
+          LEFT JOIN ${backupSnapshotAttestations} ON ${backupSnapshotAttestations.snapshotDbId} = ${backupSnapshots.id}
+          WHERE ${backupSnapshots.id} = ${snapshotDbId} AND ${readableIndexCondition()}
+        )
     ),
     r AS (
       SELECT source_path, size, modified_at,

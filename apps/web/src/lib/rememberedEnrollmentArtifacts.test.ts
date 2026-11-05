@@ -56,6 +56,11 @@ describe('rememberedEnrollmentArtifacts (#10923)', () => {
     expect(readRememberedEnrollmentArtifacts('user-1', 'site-b')).toEqual({});
   });
 
+  it('keeps the child key id of a CLI token when the API sent one (#11116)', () => {
+    rememberCliToken('user-1', 'site-a', cli({ childKeyId: 'key-9' }));
+    expect(readRememberedEnrollmentArtifacts('user-1', 'site-a').cli?.childKeyId).toBe('key-9');
+  });
+
   it('stores in sessionStorage and never in localStorage', () => {
     localStorage.clear();
     rememberCliToken('user-1', 'site-a', cli());

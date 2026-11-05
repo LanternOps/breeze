@@ -97,6 +97,7 @@ import {
 } from './remote/helpers';
 import { recordDesktopClipboardSummary, type DesktopClipboardSummary } from '../services/desktopClipboardAudit';
 import { recordDesktopSessionEndedByUser } from '../services/desktopUserEnd';
+import { originalRemoteSessionStart } from '../services/remoteSessionStaleness';
 import { consentDeniedMessage } from './remote/consentTiming';
 import { CONSENT_OCCUPANCIES, CONSENT_OUTCOMES } from './remote/consentGate';
 import {
@@ -4180,7 +4181,9 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
                     .set({
                       webrtcAnswer: answer,
                       status: 'active',
-                      startedAt: new Date()
+                      // Only the first answer starts the clock. A reconnect's
+                      // answer must not extend the max duration (#11113).
+                      startedAt: originalRemoteSessionStart(),
                     })
                     .where(
                       and(
