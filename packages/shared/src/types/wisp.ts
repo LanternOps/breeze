@@ -127,6 +127,10 @@ export interface WispThreadGrantSummary {
   spentTodayCents: number;
   budgetResetsAt: string;
   pausedReason: string | null;
+  /** #10973: unattended reads are effective on the current revision (the live switch AND the pin). */
+  unattendedReads: boolean;
+  /** #10973: the current revision pins the switch, whether or not it is on now. */
+  unattendedReadsPinned: boolean;
 }
 
 /**

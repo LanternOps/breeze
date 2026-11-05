@@ -2747,6 +2747,7 @@
       "helpdesk": "Picks up tickets and proposes replies and next steps.",
       "designer": "Reads the whole fleet and writes a justified monitoring design for a technician to approve.",
       "research": "Built in. Researches one problem on one device when a technician asks, and suggests safe fixes. It never runs anything.",
+      "troubleshoot": "Built in. Works one device in the background when Wisp hands it off. Every change it wants is a request a person approves.",
       "researchLink": "Open fix memory",
       "designerLink": "Open fleet design"
     },
@@ -2895,7 +2896,8 @@
       "patch": "Patching",
       "helpdesk": "Help desk",
       "designer": "Fleet designer",
-      "research": "Fix research"
+      "research": "Fix research",
+      "troubleshoot": "Device troubleshooting"
     },
     "modes": {
       "off": "Off",
@@ -3700,6 +3702,7 @@
         "assign_security_training": "Assign security training",
         "browse_device_event_log": "Browse a device's event log",
         "browse_snapshots": "Backup snapshots",
+        "cancel_check_in": "Cancel a Wisp check-in",
         "cancel_script_execution": "Cancel a script run",
         "capture_agent_pprof": "Capture agent diagnostics",
         "collect_evidence": "Collect incident evidence",
@@ -3728,6 +3731,7 @@
         "get_active_users": "Active users",
         "get_ai_agent_run": "AI agent run details",
         "get_alert_correlations": "Alert correlations",
+        "get_audit_retention": "Read audit-log retention",
         "get_backup_health": "Backup health",
         "get_backup_status": "Backup status",
         "get_browser_security": "Browser security",
@@ -3820,6 +3824,7 @@
         "list_ai_agents": "AI agents list",
         "list_bmr_recoveries": "Bare-metal recoveries",
         "list_business_calendars": "Business-hours calendars",
+        "list_check_ins": "Wisp check-ins",
         "list_concerns": "Wisp concerns",
         "list_configuration_policies": "Configuration policies list",
         "list_contracts": "Contracts list",
@@ -3976,6 +3981,7 @@
         "run_script": "Run a script",
         "s1_isolate_device": "SentinelOne: isolate device",
         "s1_threat_action": "SentinelOne threat actions",
+        "schedule_check_in": "Schedule a Wisp check-in",
         "search_agent_logs": "Search agent logs",
         "search_catalog": "Search the product catalog",
         "search_documentation": "Search documentation",

@@ -39,6 +39,7 @@ import {
   systemCleanupCatalogSchema,
 } from '../../services/systemCleanup';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
+import { deviceCommandsInCurrentOrg } from './commandOrgScope';
 import { checkDeviceRemoteToolsPolicy, REMOTE_TOOLS_DISABLED_BY_POLICY } from '../../services/aiRemoteToolsPolicy';
 
 /**
@@ -133,9 +134,14 @@ filesystemSystemCleanupRoutes.get(
     const auth = c.get('auth');
     const { id: deviceId, commandId } = c.req.valid('param');
 
-    const device = await withAuthDbAccessContext(auth, () => getDeviceWithOrgAndSiteCheck(c, deviceId, auth));
-    if (device === SITE_ACCESS_DENIED) return c.json({ success: false, error: 'Access to this site denied' }, 403);
-    if (!device) return c.json({ success: false, error: 'Device not found' }, 404);
+    // One context for both reads: this route is polled while the catalogue loads.
+    const scoped = await withAuthDbAccessContext(auth, async () => {
+      const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+      if (device === SITE_ACCESS_DENIED || !device) return { device, inCurrentOrg: null };
+      return { device, inCurrentOrg: await deviceCommandsInCurrentOrg(device) };
+    });
+    if (scoped.device === SITE_ACCESS_DENIED) return c.json({ success: false, error: 'Access to this site denied' }, 403);
+    if (!scoped.inCurrentOrg) return c.json({ success: false, error: 'Device not found' }, 404);
 
     const [command] = await db
       .select()
@@ -143,6 +149,7 @@ filesystemSystemCleanupRoutes.get(
       .where(and(
         eq(deviceCommands.id, commandId),
         eq(deviceCommands.deviceId, deviceId),
+        scoped.inCurrentOrg,
         eq(deviceCommands.type, CommandTypes.SYSTEM_CLEANUP_LIST),
       ))
       .limit(1);

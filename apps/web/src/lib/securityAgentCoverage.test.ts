@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { coverageReasonLabel, coverageSetupLinkLabel, coverageSetupPath } from './securityAgentCoverage';
+import { vendorLabel, coverageReasonLabel, coverageSetupLinkLabel, coverageSetupPath } from './securityAgentCoverage';
 
 const LOCALES = ['en', 'de-DE', 'es-419', 'fr-CA', 'fr-FR', 'it-IT', 'pt-BR', 'tr-TR'] as const;
 
@@ -56,5 +56,31 @@ describe('installer_missing (#9247)', () => {
       expect(coverageSetupPath({ setupPath: unsafe as never })).toBeNull();
     }
     expect(coverageSetupPath({})).toBeNull();
+  });
+});
+
+describe('Bitdefender GravityZone (#8170)', () => {
+  it('labels the vendor', () => {
+    expect(vendorLabel('bitdefender')).toBe('Bitdefender GravityZone');
+  });
+
+  it.each([
+    ['tenant_ambiguous', 'tenantAmbiguous'],
+    ['installer_link_missing', 'installerLinkMissing'],
+  ])('%s maps to the %s reason and setup-link keys', (code, key) => {
+    const echo = (k: string) => k;
+    expect(coverageReasonLabel(echo, code)).toBe(`security:securityAgentCoverage.reasons.${key}`);
+    expect(coverageSetupLinkLabel(echo, code)).toBe(`security:securityAgentCoverage.setupLink.${key}`);
+  });
+
+  it.each(LOCALES)('%s: both reasons and setup links are translated', (locale) => {
+    const t = tFor(locale);
+    for (const code of ['tenant_ambiguous', 'installer_link_missing']) {
+      for (const label of [coverageReasonLabel(t, code), coverageSetupLinkLabel(t, code)]) {
+        expect(label).not.toContain('securityAgentCoverage');
+        expect(label.length).toBeGreaterThan(0);
+      }
+    }
+    expect(coverageReasonLabel(t, 'installer_link_missing')).toContain('Bitdefender GravityZone');
   });
 });

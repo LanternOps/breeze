@@ -258,6 +258,14 @@ export interface AiAgentRunIntentSummaryDto {
   actionName: string;
   approvalScope: AiApprovalScope;
   decidedVia: string | null;
+  /**
+   * W2 #11085 — the approval card's label from the CALLER's own pending,
+   * unexpired approval row for this intent; null when the caller has none
+   * (not an approver, already decided, or the intent is not pending).
+   */
+  actionLabel: string | null;
+  /** W2 #11085 — that row's id, the handle the approve/deny client takes; null alongside actionLabel. */
+  approvalRequestId: string | null;
 }
 
 /**
@@ -657,6 +665,8 @@ export interface AiAgentRunDetailDto {
    *  a `triggerKind: 'anomaly'` run; null for every other trigger kind. */
   anomalyIncidentId: string | null;
   /** W07 "Wisp for <user>" provenance; null for a run not admitted under a grant. */
+  /** W2 #11085 — the run's profile (the run card offers Continue for device_troubleshooting). */
+  profile: AiAgentRunProfile;
   wisp: WispProvenanceDto | null;
   triggerKind: AiAgentTriggerKind;
   modeAtStart: Exclude<AiAgentMode, 'off'>;

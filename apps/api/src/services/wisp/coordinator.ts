@@ -278,8 +278,11 @@ async function decide(
     if (missing) return { refused: missingToRefusal(missing) };
   }
 
-  // 9. Decision. A run asks first for every kind the policy does not auto-admit.
-  if (requester.kind === 'run' && !policy.autoAdmit) {
+  // 9. Decision. A run asks first for every kind an assessment may not admit
+  //    alone (`autoAdmitFromAssessment`; separate from the chat launch tier,
+  //    plan Decision 3 #11084 — device_troubleshooting is a one-click chat
+  //    hand-off but an assessment must still ask).
+  if (requester.kind === 'run' && !policy.autoAdmitFromAssessment) {
     // Lazy: keeps the intent graph off the chat/approval paths' import closure.
     const { raiseSpecialistIntent } = await import('./specialistIntent');
     const { intentId } = await raiseSpecialistIntent({

@@ -31,14 +31,18 @@ import {
 } from '@breeze/shared';
 import { IOC_HUNT_ACTIONS } from './iocHuntActions';
 import {
+  cancelCheckInSchema,
   createWatchInputSchema,
   linkEntitySchema,
+  listCheckInsToolSchema,
   listConcernsToolSchema,
   listLinksToolSchema,
   WISP_THREAD_LINK_LIMIT,
   raiseConcernChatSchema,
   resolveConcernToolSchema,
+  scheduleCheckInSchema,
   snoozeConcernToolSchema,
+  WISP_CHECK_IN_MAX_DELAY_MINUTES,
 } from '@breeze/shared';
 import { WORKLOAD_RUNTIMES, WORKLOAD_STATES, ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema, ticketLinkTypeSchema, ticketTypeSchema } from '@breeze/shared';
 import {
@@ -73,6 +77,8 @@ import { pax8ToolSchemas } from './aiToolSchemasPax8';
 import { backupVerificationToolSchemas } from './aiToolSchemasBackupVerification';
 import { backupRecoveryReadToolSchemas } from './aiToolSchemasBackupRecoveryReads';
 import { c2cConfigToolSchemas } from './aiToolSchemasC2CConfigs';
+import { orgAdminToolSchemas } from './aiToolSchemasOrgAdmin';
+import { orgAdminWriteToolSchemas } from './aiToolSchemasOrgAdminWrites';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -424,6 +430,34 @@ export const listLinksShape = {
   limit: listLinksInputSchema.shape.limit.describe(`Max links (default ${WISP_THREAD_LINK_LIMIT}, max ${WISP_THREAD_LINK_LIMIT})`),
 };
 
+/**
+ * Wisp check-in timers (#10991 W03; services/wisp/checkInTools.ts). The shared
+ * validators (packages/shared/src/validators/wispCheckIns.ts) are the source
+ * of truth, as for the concern and link tools; checkInTools.test.ts pins the
+ * key parity. The delayMinutes / at XOR lives in the shared schema's
+ * superRefine (toolInputSchemas uses it as-is), so the descriptions say it
+ * too. `list_check_ins` = the shared empty strict object plus the tool-only
+ * output budget (A-W05).
+ */
+export const LIST_CHECK_INS_DEFAULT_LIMIT = 20;
+export const LIST_CHECK_INS_MAX_LIMIT = 50;
+const sci = scheduleCheckInSchema.shape;
+export const scheduleCheckInShape = {
+  delayMinutes: sci.delayMinutes.describe(`Minutes from now until it is due (1 to ${WISP_CHECK_IN_MAX_DELAY_MINUTES}). Give this or at, not both`),
+  at: sci.at.describe('When it is due: ISO 8601 datetime with offset, 1 minute to 7 days ahead. Give this or delayMinutes, not both'),
+  instruction: sci.instruction.describe('What to do when it fires: a self-contained imperative naming the object and what to verify (max 1000 chars)'),
+  subject: sci.subject.describe('Optional: the Breeze object it is about (kind + UUID); its org is read from the object'),
+};
+export const listCheckInsInputSchema = listCheckInsToolSchema.extend({
+  limit: z.number().int().min(1).max(LIST_CHECK_INS_MAX_LIMIT).optional(),
+});
+export const listCheckInsShape = {
+  limit: listCheckInsInputSchema.shape.limit.describe(`Max check-ins (default ${LIST_CHECK_INS_DEFAULT_LIMIT}, max ${LIST_CHECK_INS_MAX_LIMIT})`),
+};
+export const cancelCheckInShape = {
+  checkInId: cancelCheckInSchema.shape.checkInId.describe('Check-in UUID (from schedule_check_in or list_check_ins)'),
+};
+
 // Wisp W07 specialists (services/aiToolsWisp.ts; plan Tasks 4 and 6). The kind
 // list is SPECIALIST_KINDS (leaf module), never a re-typed copy.
 const specialistKindSchema = z.enum(SPECIALIST_KINDS as unknown as [SpecialistKind, ...SpecialistKind[]]);
@@ -436,7 +470,7 @@ export const launchSpecialistInputSchema = z.strictObject({
 const ls = launchSpecialistInputSchema.shape;
 export const launchSpecialistShape = {
   orgId: ls.orgId.describe('The customer organization the specialist works on (UUID)'),
-  kind: ls.kind.describe('Which specialist. sweep and analysis start at once; every other kind needs approval first'),
+  kind: ls.kind.describe('Which specialist. sweep, analysis and device_troubleshooting start at once; every other kind needs approval first'),
   // #10144: every kind's exact keys — the params schemas in
   // wisp/specialistLaunchers.ts are strict, so an unlisted key is refused
   // invalid_params. The two long kinds are listed in the tool description
@@ -478,6 +512,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   // Wisp W08 thread links (services/wisp/linkTools.ts).
   link_entity: linkEntitySchema,
   list_links: listLinksInputSchema,
+  // Wisp check-in timers (services/wisp/checkInTools.ts).
+  schedule_check_in: scheduleCheckInSchema,
+  list_check_ins: listCheckInsInputSchema,
+  cancel_check_in: cancelCheckInSchema,
   list_time_entries: z.object({
     orgId: uuid.optional(),
     ticketId: uuid.optional(),
@@ -622,6 +660,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   ...backupVerificationToolSchemas,
   ...backupRecoveryReadToolSchemas,
   ...c2cConfigToolSchemas,
+  // Full-control W18 PR A (#6789): org admin and identity reads.
+  ...orgAdminToolSchemas,
+  // Full-control W18 PR B (#6789): portal settings and report recipients.
+  ...orgAdminWriteToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),

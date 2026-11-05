@@ -204,3 +204,20 @@ describe('device_network_isolations migration', () => {
     expect(sqlText()).not.toMatch(/^\s*COMMIT\s*;/im);
   });
 });
+
+describe('2027-01-21-140000-isolation-allow-snapshot-revision.sql (#10100)', () => {
+  const file = '2027-01-21-140000-isolation-allow-snapshot-revision.sql';
+  const text = () => fs.readFileSync(path.join(__dirname, '../../../migrations', file), 'utf8').replace(/\s+/g, ' ');
+
+  it('adds the policy columns next to allow_snapshot, idempotently', () => {
+    const sql = text();
+    expect(sql).toContain('ALTER TABLE device_network_isolations');
+    for (const column of [
+      'ADD COLUMN IF NOT EXISTS allow_snapshot_revision text',
+      'ADD COLUMN IF NOT EXISTS applied_policy_revision text',
+      'ADD COLUMN IF NOT EXISTS policy_event_seq bigint NOT NULL DEFAULT 0',
+    ]) expect(sql, column).toContain(column);
+    expect(sql).not.toMatch(/\b(BEGIN|COMMIT)\s*;/);
+  });
+});
+

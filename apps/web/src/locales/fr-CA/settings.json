@@ -2747,6 +2747,7 @@
       "helpdesk": "Prend les billets en charge et propose des réponses et des prochaines étapes.",
       "designer": "Lit l’ensemble du parc et rédige une conception de surveillance justifiée qu’un technicien doit approuver.",
       "research": "Intégré. Étudie un problème sur un appareil à la demande d’un technicien et propose des correctifs sûrs. N’exécute jamais rien.",
+      "troubleshoot": "Intégré. Travaille en arrière-plan sur un appareil lorsque Wisp le lui confie. Chaque modification souhaitée est une demande qu'une personne approuve.",
       "researchLink": "Ouvrir la mémoire des correctifs",
       "designerLink": "Ouvrir la conception de flotte"
     },
@@ -2895,7 +2896,8 @@
       "patch": "Correctifs",
       "helpdesk": "Service d’assistance",
       "designer": "Concepteur du parc",
-      "research": "Recherche de correctifs"
+      "research": "Recherche de correctifs",
+      "troubleshoot": "Dépannage d'appareil"
     },
     "modes": {
       "off": "Désactivé",
@@ -3700,6 +3702,7 @@
         "assign_security_training": "Assigner une formation en sécurité",
         "browse_device_event_log": "Parcourir le journal d'événements d'un appareil",
         "browse_snapshots": "Instantanés de sauvegarde",
+        "cancel_check_in": "Annuler un suivi Wisp",
         "cancel_script_execution": "Annuler une exécution de script",
         "capture_agent_pprof": "Capturer les diagnostics de l'agent",
         "collect_evidence": "Recueillir les preuves d'un incident",
@@ -3728,6 +3731,7 @@
         "get_active_users": "Utilisateurs actifs",
         "get_ai_agent_run": "Détails de l'exécution d'un agent IA",
         "get_alert_correlations": "Corrélations d'alertes",
+        "get_audit_retention": "Lire la rétention du journal d'audit",
         "get_backup_health": "État des sauvegardes",
         "get_backup_status": "État des sauvegardes",
         "get_browser_security": "Sécurité des navigateurs",
@@ -3820,6 +3824,7 @@
         "list_ai_agents": "Liste des agents IA",
         "list_bmr_recoveries": "Restaurations bare-metal",
         "list_business_calendars": "Calendriers d'heures ouvrables",
+        "list_check_ins": "Suivis Wisp",
         "list_concerns": "Préoccupations Wisp",
         "list_configuration_policies": "Liste des politiques de configuration",
         "list_contracts": "Liste des contrats",
@@ -3976,6 +3981,7 @@
         "run_script": "Exécuter un script",
         "s1_isolate_device": "SentinelOne: isoler un appareil",
         "s1_threat_action": "Actions sur les menaces SentinelOne",
+        "schedule_check_in": "Planifier un suivi Wisp",
         "search_agent_logs": "Rechercher dans les journaux de l'agent",
         "search_catalog": "Rechercher dans le catalogue de produits",
         "search_documentation": "Rechercher dans la documentation",

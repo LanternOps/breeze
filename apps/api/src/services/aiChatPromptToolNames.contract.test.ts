@@ -18,6 +18,7 @@ import { aiTools, getAllRegisteredToolNames } from './aiTools';
 import { listChatSurfaceToolNames } from './aiAgentSdkTools';
 import { AI_SYSTEM_PROMPT_BASE, AI_SYSTEM_PROMPT_TAIL } from './aiAgentSystemPrompt';
 import { AI_SYSTEM_PROMPT_DIAGNOSIS } from './aiAgentDiagnosisPrompt';
+import { WISP_BEHAVIOUR_BLOCK } from './wisp/threads';
 import {
   composeStaticSystemPrompt,
   DOMAIN_NOTES,
@@ -87,6 +88,7 @@ function chatPromptTexts(): Array<[string, string]> {
     ['AI_SYSTEM_PROMPT_BASE', AI_SYSTEM_PROMPT_BASE],
     ['AI_SYSTEM_PROMPT_TAIL', AI_SYSTEM_PROMPT_TAIL],
     ['AI_SYSTEM_PROMPT_DIAGNOSIS', AI_SYSTEM_PROMPT_DIAGNOSIS],
+    ['WISP_BEHAVIOUR_BLOCK', WISP_BEHAVIOUR_BLOCK],
     ['composeStaticSystemPrompt(lazy)', composeStaticSystemPrompt(names, 'lazy')],
     ['composeStaticSystemPrompt(full)', composeStaticSystemPrompt(names, 'full')],
   ];

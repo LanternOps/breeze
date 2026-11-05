@@ -42,9 +42,11 @@ import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, monitorKindSchema
 import { scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
-import { createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listConcernsShape, listLinksShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas, PARTNER_SETTINGS_INHERITANCE_BUCKETS, PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT } from './aiToolSchemas';
+import { cancelCheckInShape, createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listCheckInsShape, listConcernsShape, listLinksShape, raiseConcernShape, scheduleCheckInShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas, PARTNER_SETTINGS_INHERITANCE_BUCKETS, PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
 import { pax8ToolSchemas } from './aiToolSchemasPax8';
+import { orgAdminToolSchemas } from './aiToolSchemasOrgAdmin';
+import { orgAdminWriteToolSchemas } from './aiToolSchemasOrgAdminWrites';
 import { TOOL_SDK_INPUT_SHAPES } from './aiToolSchemasBackup';
 import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
@@ -522,6 +524,13 @@ export const TOOL_TIERS = {
   // not a plain Tier-1 read (which would bypass agent allowlists).
   link_entity: 2,
   list_links: 1,
+  // Wisp check-in timers (services/wisp/checkInTools.ts, #10991 W03). Declared
+  // to chat only when wispEnabled() (wispCheckInToolDefinitions). schedule /
+  // cancel are Tier 2 like link_entity (audit row; no per_step card via
+  // WISP_SELF_STATE_TOOLS); list is a plain Tier-1 read.
+  schedule_check_in: 2,
+  list_check_ins: 1,
+  cancel_check_in: 2,
   // Wisp W07 (services/aiToolsWisp.ts). Declared to chat only when
   // wispEnabled() (wispSpecialistToolDefinitions); asks-first kinds escalate
   // to Tier 3 (TIER3_ACTIONS keyed on `kind`). wisp_specialist_request is
@@ -739,6 +748,18 @@ export const TOOL_TIERS = {
   search_pax8_products: 1,
   manage_pax8_subscriptions: 1,
   manage_pax8_orders: 1,
+  // W18 PR A (#6789): org admin and identity reads, all tier 1. list_roles' four actions are TIER1_READ_ACTIONS.
+  get_org_summary: 1,
+  get_account_readiness: 1,
+  get_audit_retention: 1,
+  list_portal_users: 1,
+  list_users: 1,
+  get_user: 1,
+  list_roles: 1,
+  // W18 PR B (#6789): tier 1 at the tool level; per-action classes (supervised update / add / remove / convert,
+  // four-eyes set_sensitive_access) live in aiGuardrails.
+  manage_org_portal_settings: 1,
+  manage_report_recipients: 1,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -1042,6 +1063,22 @@ function notifyToolSuccess(
   }
 }
 
+/**
+ * #10973: what the tool runs on. A call a gate classified as an unattended read
+ * runs on the classified copy, never the model's arguments; a pin for any other
+ * tool is a wiring bug and refuses the call.
+ */
+function dispatchArgs(
+  toolName: string,
+  args: Record<string, unknown>,
+  context: ToolExecutionContext | undefined,
+): Record<string, unknown> {
+  const read = context?.pinnedWispUnattendedRead;
+  if (!read) return args;
+  if (read.tool !== toolName) throw new Error(`Unattended-read pin for ${read.tool} reached ${toolName}`);
+  return { ...read.pinned };
+}
+
 function makeToolHandler(
   toolName: string,
   getAuth: () => AuthContext,
@@ -1121,6 +1158,7 @@ function makeToolHandler(
     }
     try {
       const auth = callToolAuth ?? getAuth();
+      const callArgs = dispatchArgs(toolName, args, verifiedContext);
       // Use the user's actual auth scope instead of system context so that
       // RLS policies and DB-level tenant isolation are enforced.
       //
@@ -1170,8 +1208,8 @@ function makeToolHandler(
       };
       const runTool = () =>
         Object.keys(execOptions).length > 0
-          ? executeTool(toolName, args, auth, execOptions)
-          : executeTool(toolName, args, auth);
+          ? executeTool(toolName, callArgs, auth, execOptions)
+          : executeTool(toolName, callArgs, auth);
       // A self-managed tool (#7128) gets NO per-call transaction: it hands work
       // to another process and waits on it, which under this wrapper meant an
       // uncommitted row the other process could not see and a pooled
@@ -1629,6 +1667,28 @@ export function wispLinkToolDefinitions(
   return [
     tool('link_entity', registryDescription('link_entity'), linkEntityShape, handler('link_entity')),
     tool('list_links', registryDescription('list_links'), listLinksShape, handler('list_links')),
+  ];
+}
+
+/**
+ * Wisp check-in timer tools (#10991 W03) — the same `wispEnabled()` EXPOSURE
+ * gate as the W03/W05a/W08 factories. Registration in aiTools and TOOL_TIERS
+ * stays unconditional; Breeze's MCP server gates via `isToolEnvGatedOff`, and
+ * every handler refuses without `auth.wispGrant`.
+ */
+export function wispCheckInToolDefinitions(
+  getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
+  if (!wispEnabled()) return [];
+  // Literal `tool('<name>'` calls: aiAgentSdkTools.mcpCoverage.test.ts scans the source for them.
+  const handler = (toolName: string) => makeToolHandler(toolName, getAuth, getActiveSession, onPreToolUse, onPostToolUse);
+  return [
+    tool('schedule_check_in', registryDescription('schedule_check_in'), scheduleCheckInShape, handler('schedule_check_in')),
+    tool('list_check_ins', registryDescription('list_check_ins'), listCheckInsShape, handler('list_check_ins')),
+    tool('cancel_check_in', registryDescription('cancel_check_in'), cancelCheckInShape, handler('cancel_check_in')),
   ];
 }
 
@@ -5263,6 +5323,26 @@ export function buildBreezeSdkTools(
       makeHandler('manage_pax8_subscriptions', getAuth, onPreToolUse, onPostToolUse)),
     tool('manage_pax8_orders', registryDescription('manage_pax8_orders'), pax8ToolSchemas.manage_pax8_orders.shape,
       makeHandler('manage_pax8_orders', getAuth, onPreToolUse, onPostToolUse)),
+    tool('get_org_summary', registryDescription('get_org_summary'), orgAdminToolSchemas.get_org_summary.shape,
+      makeHandler('get_org_summary', getAuth, onPreToolUse, onPostToolUse)),
+    tool('get_account_readiness', registryDescription('get_account_readiness'), orgAdminToolSchemas.get_account_readiness.shape,
+      makeHandler('get_account_readiness', getAuth, onPreToolUse, onPostToolUse)),
+    tool('get_audit_retention', registryDescription('get_audit_retention'), orgAdminToolSchemas.get_audit_retention.shape,
+      makeHandler('get_audit_retention', getAuth, onPreToolUse, onPostToolUse)),
+    tool('list_portal_users', registryDescription('list_portal_users'), orgAdminToolSchemas.list_portal_users.shape,
+      makeHandler('list_portal_users', getAuth, onPreToolUse, onPostToolUse)),
+    tool('list_users', registryDescription('list_users'), orgAdminToolSchemas.list_users.shape,
+      makeHandler('list_users', getAuth, onPreToolUse, onPostToolUse)),
+    tool('get_user', registryDescription('get_user'), orgAdminToolSchemas.get_user.shape,
+      makeHandler('get_user', getAuth, onPreToolUse, onPostToolUse)),
+    tool('list_roles', registryDescription('list_roles'), orgAdminToolSchemas.list_roles.shape,
+      makeHandler('list_roles', getAuth, onPreToolUse, onPostToolUse)),
+    tool('manage_org_portal_settings', registryDescription('manage_org_portal_settings'),
+      orgAdminWriteToolSchemas.manage_org_portal_settings.shape,
+      makeHandler('manage_org_portal_settings', getAuth, onPreToolUse, onPostToolUse)),
+    tool('manage_report_recipients', registryDescription('manage_report_recipients'),
+      orgAdminWriteToolSchemas.manage_report_recipients.shape,
+      makeHandler('manage_report_recipients', getAuth, onPreToolUse, onPostToolUse)),
     tool(
       'manage_contracts',
       registryDescription('manage_contracts'),
@@ -5686,6 +5766,8 @@ export function buildBreezeSdkTools(
     ...wispConcernToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Wisp W08 link_entity / list_links — behind wispEnabled() (see the factory).
     ...wispLinkToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    // Wisp check-in timers — behind wispEnabled() (see the factory).
+    ...wispCheckInToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Wisp W07 launch_specialist — behind wispEnabled() (see the factory).
     ...wispSpecialistToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Google Workspace helpdesk tools (gated on GOOGLE_WORKSPACE_ENABLED + a

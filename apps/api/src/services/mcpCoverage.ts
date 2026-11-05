@@ -312,6 +312,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'alertTemplates/rules.ts': { tools: ['manage_alert_rules'] },
   'alertTemplates/templates.ts': { tools: ['manage_alert_rules'] },
   'alerts/alerts.ts': { tools: ['manage_alerts'] },
+  'alerts/lifecycleDefaults.ts': { exempt: 'tool_in_later_wave', note: 'Alert lifecycle defaults (partner default / org override, #10765 W02). No MCP tool is scheduled in #10765 yet (same shape as connectionHealthSettings.ts); whether the AI may read or set them is an open decision on the W02 PR.' },
   'alerts/alertExternalTickets.ts': { tools: ['manage_alerts'] },
   'alerts/alertPsaTicket.ts': { exempt: 'vendor_console_admin', note: 'Manual alert -> PSA ticket admission (#10499 W2-C); a human decision to raise a ticket in the external PSA, like psaAlertTicketing.ts.' },
   'alerts/channels.ts': { tools: ['manage_notification_channels'] },
@@ -587,9 +588,9 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'officeAddin/tickets.ts': { exempt: 'addin_surface' },
   'officeAddin/time.ts': { exempt: 'addin_surface' },
   'onedrive.ts': { exempt: 'ui_file_transfer', note: "OneDrive helper library picker; niche browser file-selection surface. From #6800." },
-  'orgAccountReadiness.ts': { gap: '#6789' },
+  'orgAccountReadiness.ts': { tools: ['get_account_readiness'] }, // W18 (#6789)
   'orgArchive.ts': { exempt: 'human_only_tenant_restructure', note: 'Archive/restore an organization -- tenant-restructure decision.' },
-  'orgAuditRetentionSettings.ts': { gap: '#6789' },
+  'orgAuditRetentionSettings.ts': { tools: ['get_audit_retention'] }, // W18 (#6789): PUT stays human (retention is evidence)
   // Per-org billing profile read/write/delete; no AI tool surfaces it yet.
   'orgBillingProfile.ts': { tools: ['manage_billing_profiles'] }, // W14 (#6784): get / set / clear_org_profile
   'orgContacts.ts': { tools: ['list_org_contacts', 'manage_organizations'] },
@@ -597,10 +598,10 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'orgDocuments.ts': { tools: ['list_org_documents', 'manage_org_documents'] },
   'orgKeyDates.ts': { tools: ['manage_key_dates'] },
   'orgMerge.ts': { exempt: 'human_only_tenant_restructure', note: 'Org merge preview/merge/run status -- rewrites which tenant owns the data.' },
-  'orgPortalPreview.ts': { exempt: 'tool_in_later_wave', note: 'Staff read-only Customer view of the portal read models (#9350). No AI tool yet; tracked with the org-settings tool gap #6789 (the frozen-gap list takes no new entries).' },
-  'orgPortalSettings.ts': { gap: '#6789' },
-  'orgPortalUsers.ts': { gap: '#6789' },
-  'orgSummary.ts': { gap: '#6789' },
+  'orgPortalPreview.ts': { exempt: 'tool_in_later_wave', note: 'Staff read-only Customer view of the portal read models (#9350). No AI tool yet; tracked in #11129 (org portal preview tool gap) (the frozen-gap list takes no new entries).' },
+  'orgPortalSettings.ts': { tools: ['manage_org_portal_settings'] }, // W18 PR B (#6789): get, update, four-eyes set_sensitive_access; customCss stays human
+  'orgPortalUsers.ts': { tools: ['list_portal_users'] }, // W18 (#6789): invite / disable / delete stay identity, no tool action (W18-1)
+  'orgSummary.ts': { tools: ['get_org_summary'] }, // W18 (#6789)
   'orgTicketSettings.ts': { tools: ['manage_ticket_config'] }, // W06 (#6776): get_org_settings / update_org_settings
   'orgs.ts': { tools: ['list_sites', 'get_site', 'list_organizations', 'manage_organizations'] },
   'siteLocation.ts': { exempt: 'mobile_surface', note: 'Technician pin of a site coordinate from the phone\'s current fix (#4186), deliberately without MFA step-up. An agent has no position to pin; the same fields are editable through PATCH /orgs/sites/:id.' },
@@ -694,13 +695,13 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'reports/core.ts': { tools: ['generate_report'] },
   'reports/data.ts': { tools: ['generate_report'] },
   'reports/generate.ts': { tools: ['generate_report'] },
-  'reports/recipients.ts': { gap: '#6789' },
+  'reports/recipients.ts': { tools: ['manage_report_recipients'] }, // W18 PR B (#6789): list, add, remove, convert
   'reports/runs.ts': { tools: ['generate_report'] },
   // Multi-org report series (W02): generate_report lists and runs series
   // children like any org report; a series-management tool is a follow-up.
   'reports/series.ts': { tools: ['generate_report'] },
   'reports/seriesCombine.ts': { exempt: 'human_only_migration', note: 'Multi-org report series W04 Combine: an opt-in, one-shot consolidation of existing per-org reports that a human reviews in a dialog (candidate groups, CC resolution) before confirming; spec §3.8 gives it no AI tool and D4 forbids automatic consolidation.' },
-  'roles.ts': { gap: '#6789' },
+  'roles.ts': { tools: ['list_roles'] }, // W18 (#6789): every role write stays identity, no tool action (W18-1)
   'scriptAi.ts': { exempt: 'ai_transport' },
   'scriptBundle.ts': { exempt: 'ui_file_transfer', note: "Bundle export/import; import is bulk content ingestion, low frequency. From #6806." },
   'scriptLibrary.ts': { tools: ['search_script_library'] },
@@ -849,7 +850,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'unifi/index.ts': { gap: '#6779' },
   'updateRings.ts': { tools: ['manage_update_rings'] },
   'userRisk.ts': { tools: ['get_fleet_health', 'get_user_risk_scores', 'get_user_risk_detail', 'assign_security_training'] },
-  'users.ts': { gap: '#6789' },
+  'users.ts': { tools: ['list_users', 'get_user'] }, // W18 (#6789): every user write stays identity (W18-1); /me/* self-service has no tool
   'viewers/download.ts': { exempt: 'internal_plumbing' },
   'vulnerabilities.ts': { tools: ['get_vulnerability_report', 'get_device_vulnerabilities', 'remediate_vulnerability'] },
   'webhooks.ts': { tools: ['query_webhooks', 'test_webhook'] },

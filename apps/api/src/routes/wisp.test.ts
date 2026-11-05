@@ -333,6 +333,23 @@ describe('GET /wisp/grants/preview', () => {
   it('a malformed orgId is 400', async () => {
     expect((await buildApp().request('/wisp/grants/preview?orgId=nope')).status).toBe(400);
   });
+
+  it('#10973: unattendedReads=true and grantId reach the service; anything else is 400', async () => {
+    h.svc.previewGrantCeiling.mockResolvedValue({ scope: {}, ceilingSnapshot: {}, ceilingHash: 'a'.repeat(64) });
+    const res = await buildApp().request(`/wisp/grants/preview?orgId=${ORG}&unattendedReads=true&grantId=${GRANT_ID}`);
+    expect(res.status).toBe(200);
+    expect(h.svc.previewGrantCeiling).toHaveBeenCalledWith(expect.objectContaining({ unattendedReads: true, refreshGrantId: GRANT_ID }));
+    expect((await buildApp().request('/wisp/grants/preview?unattendedReads=false')).status).toBe(400);
+    expect((await buildApp().request('/wisp/grants/preview?grantId=nope')).status).toBe(400);
+  });
+
+  it('#10973: a plain preview asks for neither', async () => {
+    h.svc.previewGrantCeiling.mockResolvedValue({ scope: {}, ceilingSnapshot: {}, ceilingHash: 'a'.repeat(64) });
+    await buildApp().request('/wisp/grants/preview');
+    const [call] = h.svc.previewGrantCeiling.mock.calls[0]!;
+    expect(call).not.toHaveProperty('unattendedReads');
+    expect(call).not.toHaveProperty('refreshGrantId');
+  });
 });
 
 describe('POST /wisp/grants/:id/{refresh,revoke}', () => {
@@ -356,6 +373,29 @@ describe('POST /wisp/grants/:id/{refresh,revoke}', () => {
     expect(await ok.json()).toMatchObject({ currentRevisionId: 'r2' });
     h.svc.refreshGrant.mockRejectedValueOnce(new WispGrantError('not_found', 'gone'));
     expect((await post(buildApp(), `/wisp/grants/${GRANT_ID}/refresh`, { stepUpGrantId: STEP_UP })).status).toBe(404);
+  });
+
+  it('#10973: refresh takes unattendedReads: true only, and the DTO reports both flags', async () => {
+    h.svc.refreshGrant.mockResolvedValueOnce(grant({ unattendedReads: true, unattendedReadsPinned: true }));
+    const ok = await post(buildApp(), `/wisp/grants/${GRANT_ID}/refresh`, { stepUpGrantId: STEP_UP, unattendedReads: true });
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toMatchObject({ unattendedReads: true, unattendedReadsPinned: true });
+    expect(h.svc.refreshGrant).toHaveBeenCalledWith(expect.objectContaining({ grantId: GRANT_ID, unattendedReads: true }));
+    h.svc.refreshGrant.mockClear();
+    expect((await post(buildApp(), `/wisp/grants/${GRANT_ID}/refresh`, { stepUpGrantId: STEP_UP, unattendedReads: false })).status).toBe(400);
+    expect(h.svc.refreshGrant).not.toHaveBeenCalled();
+  });
+
+  it('#10973: a plain refresh passes no flag, so the service keeps the current state', async () => {
+    h.svc.refreshGrant.mockResolvedValueOnce(grant());
+    await post(buildApp(), `/wisp/grants/${GRANT_ID}/refresh`, { stepUpGrantId: STEP_UP });
+    expect(h.svc.refreshGrant.mock.calls[0]![0]).not.toHaveProperty('unattendedReads');
+  });
+
+  it('#10973: a grant is created with the switch off; POST /grants has no way to ask for it', async () => {
+    const res = await post(buildApp(), '/wisp/grants', { orgId: null, stepUpGrantId: STEP_UP, unattendedReads: true });
+    expect(res.status).toBe(400);
+    expect(h.svc.createGrant).not.toHaveBeenCalled();
   });
 });
 
@@ -399,6 +439,23 @@ describe('PATCH /wisp/grants/:id/settings', () => {
     const res = await patch(buildApp(), `/wisp/grants/${GRANT_ID}/settings`, { budgetCentsPerDay: 999999 });
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ code: 'SETTINGS_OUT_OF_BOUNDS' });
+  });
+
+  it('#10973: unattendedReads: true → 400 STEP_UP_REQUIRED, the service never runs', async () => {
+    const res = await patch(buildApp(), `/wisp/grants/${GRANT_ID}/settings`, { unattendedReads: true });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'STEP_UP_REQUIRED' });
+    expect(h.svc.updateGrantSettings).not.toHaveBeenCalled();
+  });
+
+  it('#10973: unattendedReads: false reaches the service; a non-grantor refusal is 403', async () => {
+    h.svc.updateGrantSettings.mockResolvedValueOnce(grant({ unattendedReads: false, unattendedReadsPinned: true }));
+    const res = await patch(buildApp(), `/wisp/grants/${GRANT_ID}/settings`, { unattendedReads: false });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ unattendedReads: false, unattendedReadsPinned: true });
+    expect(h.svc.updateGrantSettings).toHaveBeenCalledWith(expect.objectContaining({ patch: { unattendedReads: false } }));
+    h.svc.updateGrantSettings.mockRejectedValueOnce(new WispGrantError('forbidden', 'no'));
+    expect((await patch(buildApp(), `/wisp/grants/${GRANT_ID}/settings`, { unattendedReads: false })).status).toBe(403);
   });
 });
 

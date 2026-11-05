@@ -96,6 +96,10 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   // Wisp W08: every link_entity is a durable row on the thread every later
   // session is seeded with (cap 50 per thread).
   link_entity: { limit: 20, windowSeconds: 300 },
+  // Wisp check-ins (#10991 W03): every schedule_check_in is a delayed job and
+  // a notification to the grantor (cap 5 scheduled per thread).
+  schedule_check_in: { limit: 10, windowSeconds: 600 },
+  cancel_check_in: { limit: 20, windowSeconds: 300 },
   // Wisp W07: every launch_specialist admits a run or an Operator task (or a
   // client-facing bulk reply) that spends grant budget.
   launch_specialist: { limit: 10, windowSeconds: 3600 },
@@ -283,6 +287,17 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   search_pax8_products: { limit: 30, windowSeconds: 300 },
   manage_pax8_orders: { limit: 30, windowSeconds: 300 },
   manage_pax8_subscriptions: { limit: 10, windowSeconds: 300 },
+  // Full-control W18 PR A (#6789): readiness fans out over up to 50 orgs per call, so it gets half the budget.
+  get_org_summary: { limit: 30, windowSeconds: 300 },
+  get_account_readiness: { limit: 15, windowSeconds: 300 },
+  get_audit_retention: { limit: 30, windowSeconds: 300 },
+  list_portal_users: { limit: 30, windowSeconds: 300 },
+  list_users: { limit: 30, windowSeconds: 300 },
+  get_user: { limit: 30, windowSeconds: 300 },
+  list_roles: { limit: 30, windowSeconds: 300 },
+  // Full-control W18 PR B (#6789): writers that reach customers (the portal) or send report data out (recipients).
+  manage_org_portal_settings: { limit: 15, windowSeconds: 300 },
+  manage_report_recipients: { limit: 20, windowSeconds: 300 },
 };
 
 /**

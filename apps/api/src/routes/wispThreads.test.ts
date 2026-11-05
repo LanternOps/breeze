@@ -273,7 +273,7 @@ describe('GET /wisp/thread', () => {
         id: GRANT_ID, status: 'active', orgId: null, expiresAt: '2027-04-01T00:00:00.000Z',
         currentRevisionId: REV, budgetCentsPerDay: 200, floorTickMinutes: 30,
         // w00 A32 spend meter — field names are the cross-wave contract.
-        spentTodayCents: 42, budgetResetsAt: '2026-10-25T00:00:00.000Z', pausedReason: null,
+        spentTodayCents: 42, budgetResetsAt: '2026-10-25T00:00:00.000Z', pausedReason: null, unattendedReads: false, unattendedReadsPinned: false,
       },
       wideningAvailable: widening,
     });
@@ -661,12 +661,25 @@ describe('GET /wisp/thread/:id (W06 Task 6)', () => {
           id: GRANT_ID, status: 'active', orgId: null, expiresAt: '2027-04-01T00:00:00.000Z', currentRevisionId: REV,
           budgetCentsPerDay: 200, floorTickMinutes: 30, spentTodayCents: 42, budgetResetsAt: '2026-10-25T00:00:00.000Z',
           pausedReason: null,
+          unattendedReads: false, unattendedReadsPinned: false,
         },
         wideningAvailable: false,
       },
     });
     expectOwnershipWhere(h.whereArgs[0]);
     expect(h.spendSummary).toHaveBeenCalledWith(GRANT_ID);
+  });
+
+  it('#10973: the switch reads pinned AND live; a live column over an unpinned revision is off', async () => {
+    h.dbResults.push([ownRow({ grantUnattendedReads: true, grantUnattendedReadsPinned: true })]);
+    let body = await (await buildApp().request(`/wisp/thread/${THREAD_ID}`)).json();
+    expect(body.data.grant).toMatchObject({ unattendedReads: true, unattendedReadsPinned: true });
+    h.dbResults.push([ownRow({ grantUnattendedReads: true, grantUnattendedReadsPinned: false })]);
+    body = await (await buildApp().request(`/wisp/thread/${THREAD_ID}`)).json();
+    expect(body.data.grant).toMatchObject({ unattendedReads: false, unattendedReadsPinned: false });
+    h.dbResults.push([ownRow({ grantUnattendedReads: false, grantUnattendedReadsPinned: true })]);
+    body = await (await buildApp().request(`/wisp/thread/${THREAD_ID}`)).json();
+    expect(body.data.grant).toMatchObject({ unattendedReads: false, unattendedReadsPinned: true });
   });
 
   it('carries pausedReason so a paused thread can say why', async () => {

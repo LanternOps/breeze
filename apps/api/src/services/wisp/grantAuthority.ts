@@ -85,6 +85,13 @@ export type GrantCeiling = {
    */
   orgTerms: ReadonlyMap<string, OrgCeilingTerm>;
   status: WispGrantStatus;
+  /**
+   * #10973: the grant-level unattended-reads switch, pinned AND live (Decision
+   * 7): this revision's snapshot flag and `wisp_grants.unattended_reads`. A
+   * session or run pinned to an older revision never gains it. Only
+   * `resolveGrantCeiling` sets it; absent reads as off.
+   */
+  unattendedReads?: boolean;
 };
 
 export type OrgCeilingTerm = {
@@ -291,6 +298,8 @@ export function ceilingSnapshotHash(snapshot: WispCeilingSnapshot): string {
     toolAllowlist: snapshot.toolAllowlist === null ? null : sortedUnique(snapshot.toolAllowlist),
     version: snapshot.version,
     partnerWide: snapshot.partnerWide === true,
+    // Only when on, so every unflagged ceiling keeps the hash it already had.
+    ...(snapshot.unattendedReads === true ? { unattendedReads: true } : {}),
   });
   return createHash('sha256').update(canonical).digest('hex');
 }
@@ -549,6 +558,7 @@ export const wispCeilingSnapshotSchema = z.object({
   toolAllowlist: z.array(z.string()).nullable(),
   deniedTools: z.array(z.string()),
   partnerWide: z.boolean().optional(),
+  unattendedReads: z.boolean().optional(),
 });
 
 /**
@@ -584,6 +594,7 @@ export async function resolveGrantCeiling(
           grantorUserId: wispGrants.grantorUserId,
           status: wispGrants.status,
           expiresAt: wispGrants.expiresAt,
+          unattendedReads: wispGrants.unattendedReads,
         })
         .from(wispGrants)
         .where(eq(wispGrants.id, grantId))
@@ -638,5 +649,6 @@ export async function resolveGrantCeiling(
     orgTerms: buildOrgTerms({ ...reach, orgIds }, live.orgMemberships),
     // 'paused' only for an allowPaused read; assertWithinCeiling refuses it.
     status: readablePause ? 'paused' : 'active',
+    unattendedReads: grant.unattendedReads === true && snapshot.unattendedReads === true,
   };
 }

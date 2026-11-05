@@ -575,8 +575,24 @@
       "failed": "non riuscito",
       "cancelled": "annullato",
       "expired": "scaduto",
-      "skipped": "saltato"
-    }
+      "skipped": "saltato",
+      "awaiting_approval": "in attesa di approvazione"
+    },
+    "approvals": {
+      "pending_one": "{{count}} passaggio attende la tua approvazione",
+      "pending_other": "{{count}} passaggi attendono la tua approvazione",
+      "waiting": "Alcuni passaggi attendono la tua approvazione",
+      "review": "Verifica in Approvazioni"
+    },
+    "stepApprovals": {
+      "title": "In attesa della tua approvazione",
+      "wispFor": "Wisp per {{name}}",
+      "approve": "Approva",
+      "deny": "Rifiuta",
+      "waitingForApprover": "In attesa di un approvatore"
+    },
+    "continue": "Continua",
+    "continueMessage": "Continua la risoluzione dei problemi dell'esecuzione {{runId}}."
   },
   "aiModelPicker": {
     "chooseModel": "Scegli un modello",
@@ -652,7 +668,8 @@
       "alreadyOnPartner": "Wisp è già attivo per tutte le organizzazioni.",
       "open": "Apri",
       "opening": "Apertura…",
-      "grantEnded": "Wisp non è più attivo per questo ambito. Conferma la tua identità per riattivarlo."
+      "grantEnded": "Wisp non è più attivo per questo ambito. Conferma la tua identità per riattivarlo.",
+      "unattendedReadsTitle": "Attiva le letture non presidiate"
     },
     "header": {
       "scopeAll": "Tutte le organizzazioni",
@@ -676,7 +693,16 @@
       "title": "Budget e controllo periodico",
       "budget": "Budget giornaliero",
       "tick": "Controllo ogni (minuti)",
-      "save": "Salva"
+      "save": "Salva",
+      "unattendedReads": {
+        "title": "Letture non presidiate",
+        "description": "Quando è attivo, Wisp e le sue esecuzioni in background eseguono le seguenti operazioni senza chiedere:",
+        "registryKey": "Leggere una chiave del registro",
+        "registryValue": "Leggere un valore del registro",
+        "securityLog": "Cercare nel registro eventi di sicurezza",
+        "deviceNote": "Salvare una nota su un dispositivo",
+        "applies": "Si applica alle nuove conversazioni e alle nuove esecuzioni in background."
+      }
     },
     "focus": {
       "label": "Sta lavorando su",
@@ -717,7 +743,11 @@
       "paused": "Wisp in pausa",
       "resumed": "Wisp ripreso",
       "pauseFailed": "Impossibile mettere Wisp in pausa",
-      "resumeFailed": "Impossibile riprendere Wisp"
+      "resumeFailed": "Impossibile riprendere Wisp",
+      "unattendedReadsOn": "Letture non presidiate attivate",
+      "unattendedReadsOnFailed": "Impossibile attivare le letture non presidiate",
+      "unattendedReadsOff": "Letture non presidiate disattivate",
+      "unattendedReadsOffFailed": "Impossibile disattivare le letture non presidiate"
     },
     "spend": {
       "meter": "{{spent}} su {{budget}} oggi",
@@ -861,7 +891,8 @@
       "checkIn": "Controllo programmato",
       "summary": "Sintesi",
       "open": "Apri",
-      "unread": "Non letto"
+      "unread": "Non letto",
+      "specialistResult": "Report dello specialista"
     },
     "welcome": {
       "title": "Sto dando un’occhiata a {{scope}}.",
@@ -890,7 +921,14 @@
       "workersEmpty": "Nessuno specialista in esecuzione.",
       "allRuns": "Tutte le esecuzioni",
       "details": "Dettagli",
-      "ended": "Questa autorizzazione è terminata, quindi le sue segnalazioni, i worker e le attività non vengono più mostrati."
+      "ended": "Questa autorizzazione è terminata, quindi le sue segnalazioni, i worker e le attività non vengono più mostrati.",
+      "workerStatus": {
+        "queued": "In coda",
+        "running": "In esecuzione",
+        "awaiting_approval": "In attesa di approvazione",
+        "completed": "Completato",
+        "failed": "Non riuscito"
+      }
     },
     "composer": {
       "placeholder": "Scrivi a Wisp",

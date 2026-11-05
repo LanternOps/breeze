@@ -23,7 +23,20 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_INLINE_RETRY_AFTER_MS = 65_000;
 const DEFAULT_RETRY_AFTER_MS = 60_000;
 
-export type GzOperationClass = 'default' | 'inventory' | 'companies' | 'incidents' | 'actions' | 'push';
+export type GzOperationClass = 'default' | 'inventory' | 'companies' | 'incidents' | 'actions' | 'push' | 'packages';
+
+/**
+ * Download hosts an installer link may point at. Starts wide and is narrowed to
+ * what the owner lab observes (W06.3) [U].
+ */
+export const GZ_INSTALLER_HOST_ALLOWLIST = ['.gravityzone.bitdefender.com', 'download.bitdefender.com'] as const;
+
+/** One installation package. Shape is [U] until the owner lab (W06.3). */
+export interface GzInstallationLinks {
+  packageName?: unknown;
+  companyId?: unknown;
+  installLinkWindows?: unknown;
+}
 
 /**
  * [U] Push event types subscribed for "detections changed" hints (lab gate). An unknown
@@ -410,6 +423,28 @@ export class GravityZoneClient {
       }
     }
     throw this.fail(`GravityZone inventory exceeded ${GZ_MAX_PAGES} pages`, { code: 'too_many_pages', scope: 'tenant' });
+  }
+
+  /**
+   * One entry per installation package of `companyId`. Each entry's links are
+   * per-company secrets, so an error here carries the code only: the vendor's
+   * text could quote a link, company id or package name.
+   */
+  async listInstallationLinks(companyId: string): Promise<GzInstallationLinks[]> {
+    const label = 'GravityZone packages.getInstallationLinks';
+    let result: unknown;
+    try {
+      result = await this.call<unknown>('packages', '1.0', 'getInstallationLinks', { companyId }, { operationClass: 'packages' });
+    } catch (error) {
+      if (!(error instanceof EdrProviderRequestError)) throw error;
+      throw new EdrProviderRequestError(`${label} failed (${error.code})`, {
+        code: error.code, reauth: error.reauth, scope: error.scope, retryAfterMs: error.retryAfterMs,
+      });
+    }
+    if (!Array.isArray(result)) {
+      throw this.fail(`${label} did not return a list`, { code: 'malformed_response', scope: 'tenant' });
+    }
+    return result as GzInstallationLinks[];
   }
 
   async getInventoryTotal(companyId: string): Promise<number> {

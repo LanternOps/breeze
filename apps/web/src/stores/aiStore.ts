@@ -66,6 +66,8 @@ export type WispState = {
   /** W05 spend meter (w00 A32): cents charged today under the grant, and when the UTC day resets. */
   spentTodayCents?: number;
   budgetResetsAt?: string;
+  /** #10973: the grant's unattended-reads switch is effective (the server's pinned AND live answer). */
+  unattendedReads?: boolean;
 } | null;
 
 export type WispTalkFocusRequest = {

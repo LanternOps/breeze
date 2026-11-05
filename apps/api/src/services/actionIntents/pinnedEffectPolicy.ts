@@ -34,6 +34,9 @@ const PINNED_EFFECT_DIGEST_REQUIRED_ACTIONS: ReadonlySet<string> = new Set([
   'manage_pax8_orders:submit',
   'manage_accounting_sync:push',
   'manage_accounting_sync:push_bulk',
+  // Full-control W18 PR B (#6789, Decision 2): portal data a customer has seen cannot be recalled, so the release is
+  // bound to the flags as they stood at approval.
+  'manage_org_portal_settings:set_sensitive_access',
 ]);
 
 export function requiresPinnedEffectDigest(toolName: string, args?: Record<string, unknown> | null): boolean {

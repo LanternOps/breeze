@@ -126,6 +126,25 @@ describe('dispatchSpecialistRequests (Wisp W07)', () => {
     expect(deriveRequestId(RUN_ID, 0)).not.toBe(deriveRequestId(RUN_ID, 1));
   });
 
+  it('hands a device_troubleshooting request to the coordinator with its params; a needsApproval answer is recorded as a card, not an admission or a launched run (#11084)', async () => {
+    const params = { deviceId: '00000000-0000-4000-8000-0000000000d1', symptom: 'slow logins' };
+    requestSpecialist.mockResolvedValueOnce({ needsApproval: true, intentId: 'intent-ts' });
+    const result = resultWith([req('device_troubleshooting', 'Logins on the device are slow', params)]);
+    await dispatchSpecialistRequests(ctxFor(), result);
+
+    expect(requestSpecialist).toHaveBeenCalledTimes(1);
+    expect(requestSpecialist.mock.calls[0]).toEqual([
+      { grantId: GRANT_ID, grantRevisionId: REVISION_ID, orgId: ORG_ID, kind: 'device_troubleshooting', params, requestedByRunId: RUN_ID },
+      { requester: { kind: 'run' }, requestId: deriveRequestId(RUN_ID, 0), reason: 'Logins on the device are slow' },
+    ]);
+    const [recorded] = result.outcome.assessment!.specialistResults!;
+    expect(recorded).toEqual({
+      requestId: deriveRequestId(RUN_ID, 0), kind: 'device_troubleshooting', needsApproval: true, intentId: 'intent-ts',
+    });
+    expect(recorded).not.toHaveProperty('admitted');
+    expect(recorded).not.toHaveProperty('runId');
+  });
+
   it('caps at MAX_SPECIALIST_REQUESTS_PER_ASSESSMENT and records too_many_requests for the rest without calling the coordinator', async () => {
     expect(MAX_SPECIALIST_REQUESTS_PER_ASSESSMENT).toBe(3);
     const result = resultWith([req('sweep'), req('analysis'), req('patch_plan'), req('operator_recipe'), req('sweep')]);

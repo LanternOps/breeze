@@ -77,6 +77,46 @@ const verifiedContext = {
   },
 } as unknown as ToolExecutionContext;
 
+describe('#10973: a classified unattended read dispatches its pinned call', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExecuteTool.mockResolvedValue(JSON.stringify({ ok: true }));
+  });
+
+  const pinned = Object.freeze({ action: 'read_key', deviceId: 'device-1', keyPath: 'HKLM\\SOFTWARE' });
+  const context = { pinnedWispUnattendedRead: { kind: 'registry_read', tool: 'registry_operations', pinned } } as unknown as ToolExecutionContext;
+
+  it('the handler receives the pinned payload, not the raw input', async () => {
+    const onPreToolUse = vi.fn(async () => ({ allowed: true as const, context }));
+    const handler = makeHandler('registry_operations', () => fakeAuth, onPreToolUse);
+
+    await handler({ action: 'read_key', deviceId: 'device-2', keyPath: 'HKLM\\OTHER', valueData: 'smuggled' });
+
+    expect(mockExecuteTool).toHaveBeenCalledTimes(1);
+    const call = mockExecuteTool.mock.calls[0]! as unknown as unknown[];
+    expect(call[1]).toEqual(pinned);
+    expect((call[3] as { context?: unknown }).context).toBe(context);
+  });
+
+  it('a pin for another tool refuses the call instead of running either payload', async () => {
+    const onPreToolUse = vi.fn(async () => ({ allowed: true as const, context }));
+    const handler = makeHandler('set_device_context', () => fakeAuth, onPreToolUse);
+
+    const result = await handler({ deviceId: 'device-1', contextType: 'issue', summary: 'x' });
+
+    expect(mockExecuteTool).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ isError: true });
+  });
+
+  it('with no pin the raw input is dispatched as always', async () => {
+    const onPreToolUse = vi.fn(async () => ({ allowed: true as const }));
+    const handler = makeHandler('registry_operations', () => fakeAuth, onPreToolUse);
+    const input = { action: 'read_key', deviceId: 'device-1', keyPath: 'HKLM\\A' };
+    await handler(input);
+    expect((mockExecuteTool.mock.calls[0]! as unknown as unknown[])[1]).toBe(input);
+  });
+});
+
 describe.each([
   { name: 'Fleet AI', makeHandler },
   {

@@ -18,10 +18,11 @@ export const WISP_QUIET_OVERRIDES = ['never', 'urgent_only'] as const;
 export const WISP_PROACTIVITY_LEVELS = ['quiet', 'normal', 'chatty'] as const;
 /**
  * What a nudge is (w00 A28): one concern, the digest of digest-only concerns,
- * the morning brief, or a check-in Wisp scheduled on its thread (#10991).
+ * the morning brief, a check-in Wisp scheduled on its thread (#10991), or a
+ * device-troubleshooting specialist's report (#11085; never pushed).
  * Not stored in a CHECKed column: the kind is a delivery-time label only.
  */
-export const WISP_NUDGE_KINDS = ['concern', 'digest', 'brief', 'check_in'] as const;
+export const WISP_NUDGE_KINDS = ['concern', 'digest', 'brief', 'check_in', 'specialist_result'] as const;
 export type WispNudgeKind = (typeof WISP_NUDGE_KINDS)[number];
 
 export const WISP_DIGEST_CADENCE_MIN_MINUTES = 15;

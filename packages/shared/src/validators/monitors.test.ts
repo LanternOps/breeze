@@ -7,6 +7,9 @@ import {
   MONITOR_KINDS,
   SERVER_EVALUATED_MONITOR_KINDS,
   compositeConditionSchema,
+  RECOVERY_CONDITION_KINDS,
+  isLegacyRecoveryCondition,
+  recoveryConditionProblem,
 } from './monitors';
 import { automationActionSchema, automationTriggerSchema } from './index';
 
@@ -123,8 +126,6 @@ describe('monitor definition validators (#5289)', () => {
     expect(data).toMatchObject({
       ownerScope: 'organization',
       enabled: true,
-      cooldownMinutes: 5,
-      autoResolve: false,
       responses: [],
       deliveryMode: 'inherit',
       deliveryChannelIds: [],
@@ -421,5 +422,173 @@ describe('network_check condition (W05e widening)', () => {
       ...base, degradedIsFailure: false, pollingIntervalSeconds: 60,
       timeoutSeconds: 5, consecutiveFailures: 2,
     });
+  });
+});
+
+describe('monitor lifecycle overrides (alert re-arm W2, #10765)', () => {
+  const base = { name: 'x', kind: 'offline', severity: 'high', condition: { durationMinutes: 15 } } as const;
+
+  it('create without cooldownMinutes or autoResolve inherits: no default fills them', () => {
+    const data = createMonitorDefinitionSchema.parse(base);
+    expect(data.cooldownMinutes).toBeUndefined();
+    expect(data.autoResolve).toBeUndefined();
+    expect(data.rearmMode).toBeUndefined();
+    expect(data.rearmDelayMinutes).toBeUndefined();
+  });
+
+  it('accepts null as an explicit inherit, and real values including 0 and false', () => {
+    expect(createMonitorDefinitionSchema.parse({ ...base, cooldownMinutes: null, autoResolve: null }))
+      .toMatchObject({ cooldownMinutes: null, autoResolve: null });
+    expect(createMonitorDefinitionSchema.parse({ ...base, cooldownMinutes: 0, autoResolve: false }))
+      .toMatchObject({ cooldownMinutes: 0, autoResolve: false });
+  });
+
+  it('update omitting cooldownMinutes leaves it omitted, and null is kept to mean inherit', () => {
+    expect(updateMonitorDefinitionSchema.parse({ description: 'x' })).toStrictEqual({ description: 'x' });
+    expect(updateMonitorDefinitionSchema.parse({ cooldownMinutes: null, autoResolve: null }))
+      .toStrictEqual({ cooldownMinutes: null, autoResolve: null });
+  });
+
+  it('bounds cooldownMinutes to 0–1440', () => {
+    expect(updateMonitorDefinitionSchema.safeParse({ cooldownMinutes: 1441 }).success).toBe(false);
+    expect(updateMonitorDefinitionSchema.safeParse({ cooldownMinutes: -1 }).success).toBe(false);
+  });
+
+  it('after_delay requires minutes on create and update', () => {
+    const create = createMonitorDefinitionSchema.safeParse({ ...base, rearmMode: 'after_delay' });
+    expect(create.success).toBe(false);
+    expect(create.error?.issues[0]?.path).toEqual(['rearmDelayMinutes']);
+    expect(updateMonitorDefinitionSchema.safeParse({ rearmMode: 'after_delay' }).success).toBe(false);
+    expect(updateMonitorDefinitionSchema.safeParse({ rearmMode: 'after_delay', rearmDelayMinutes: 30 }).success).toBe(true);
+  });
+
+  it('rejects minutes on any other mode, and out-of-range minutes', () => {
+    expect(createMonitorDefinitionSchema.safeParse({ ...base, rearmMode: 'new_evidence', rearmDelayMinutes: 30 }).success).toBe(false);
+    expect(updateMonitorDefinitionSchema.safeParse({ rearmMode: null, rearmDelayMinutes: 30 }).success).toBe(false);
+    expect(updateMonitorDefinitionSchema.safeParse({ rearmMode: 'after_delay', rearmDelayMinutes: 0 }).success).toBe(false);
+    expect(updateMonitorDefinitionSchema.safeParse({ rearmMode: 'after_delay', rearmDelayMinutes: 1441 }).success).toBe(false);
+  });
+
+  it('leaves a delay-only patch to the service, which checks the merged row', () => {
+    expect(updateMonitorDefinitionSchema.safeParse({ rearmDelayMinutes: 45 }).success).toBe(true);
+  });
+});
+
+describe('monitor recovery condition (alert re-arm W3, #10765, #10935)', () => {
+  const trigger = { category: 'application', level: 'warning', sourcePattern: 'APCPBEAgent', messagePattern: 'On Battery' };
+  const recovery = { category: 'application', level: 'info', sourcePattern: 'APCPBEAgent', messagePattern: 'Power Restored', windowMinutes: 60 };
+  const eventLog = { name: 'UPS on battery', kind: 'event_log', severity: 'high', condition: trigger } as const;
+  const offline = { name: 'Down', kind: 'offline', severity: 'high', condition: { durationMinutes: 15 } } as const;
+  // The exact shape #10935 reported: a group with no `logic`, which the engine
+  // reads as a leaf with no type, so the alert can never auto-resolve.
+  const groupWithoutLogic = { conditions: [{ type: 'event_log', category: 'application', level: 'info', countThreshold: 1, windowMinutes: 60 }] };
+  const rawLeaf = { type: 'event_log', category: 'application', level: 'info', messagePattern: 'Power Restored', countThreshold: 1, windowMinutes: 60 };
+  const rawGroup = { logic: 'or', conditions: [rawLeaf, { logic: 'and', conditions: [rawLeaf] }] };
+
+  const issuePaths = (result: { success: boolean; error?: { issues: Array<{ path: PropertyKey[] }> } }) =>
+    result.error?.issues.map((issue) => issue.path.join('.')) ?? [];
+
+  describe('event_log autoResolveConditions must parse as the event_log schema', () => {
+    it('accepts a kind-shaped value, defaulting countThreshold to 1', () => {
+      const parsed = createMonitorDefinitionSchema.safeParse({ ...eventLog, autoResolveConditions: recovery });
+      expect(parsed.success).toBe(true);
+      expect(monitorConditionSchemas.event_log.parse(recovery).countThreshold).toBe(1);
+    });
+
+    it('rejects a value that is not the event_log shape, at autoResolveConditions', () => {
+      const bad = createMonitorDefinitionSchema.safeParse({ ...eventLog, autoResolveConditions: { category: 'nope', level: 'info' } });
+      expect(bad.success).toBe(false);
+      expect(issuePaths(bad)).toEqual(['autoResolveConditions']);
+      expect(createMonitorDefinitionSchema.safeParse({ ...eventLog, autoResolveConditions: {} }).success).toBe(false);
+    });
+
+    it('null and omitted mean no recovery condition', () => {
+      expect(createMonitorDefinitionSchema.safeParse({ ...eventLog, autoResolveConditions: null }).success).toBe(true);
+      expect(createMonitorDefinitionSchema.safeParse(eventLog).success).toBe(true);
+      expect(createMonitorDefinitionSchema.safeParse({ ...offline, autoResolveConditions: null }).success).toBe(true);
+    });
+  });
+
+  it('rejects autoResolveConditions on kinds without a recovery schema', () => {
+    const create = createMonitorDefinitionSchema.safeParse({ ...offline, autoResolveConditions: { durationMinutes: 5 } });
+    expect(create.success).toBe(false);
+    expect(issuePaths(create)).toEqual(['autoResolveConditions']);
+    const update = updateMonitorDefinitionSchema.safeParse({ kind: 'offline', autoResolveConditions: recovery });
+    expect(update.success).toBe(false);
+    expect(issuePaths(update)).toEqual(['autoResolveConditions']);
+  });
+
+  describe('#10935: a group with no logic is refused', () => {
+    it('on create', () => {
+      const result = createMonitorDefinitionSchema.safeParse({ ...eventLog, autoResolveConditions: groupWithoutLogic });
+      expect(result.success).toBe(false);
+      expect(issuePaths(result)).toEqual(['autoResolveConditions']);
+    });
+
+    it('on update, with the kind in the patch', () => {
+      const result = updateMonitorDefinitionSchema.safeParse({ kind: 'event_log', autoResolveConditions: groupWithoutLogic });
+      expect(result.success).toBe(false);
+      expect(issuePaths(result)).toEqual(['autoResolveConditions']);
+    });
+
+    it('on update, with no kind in the patch', () => {
+      const result = updateMonitorDefinitionSchema.safeParse({ autoResolveConditions: groupWithoutLogic });
+      expect(result.success).toBe(false);
+      expect(issuePaths(result)).toEqual(['autoResolveConditions']);
+    });
+
+    it('nested inside an otherwise valid group', () => {
+      const nested = { logic: 'and', conditions: [rawLeaf, groupWithoutLogic] };
+      expect(updateMonitorDefinitionSchema.safeParse({ autoResolveConditions: nested }).success).toBe(false);
+    });
+  });
+
+  describe('accepts an existing raw type-bearing blob on update (ND3)', () => {
+    it('a leaf, unchanged, with or without the kind', () => {
+      expect(updateMonitorDefinitionSchema.parse({ autoResolveConditions: rawLeaf }).autoResolveConditions).toEqual(rawLeaf);
+      expect(updateMonitorDefinitionSchema.safeParse({ kind: 'event_log', autoResolveConditions: rawLeaf }).success).toBe(true);
+    });
+
+    it('on a kind with no recovery schema, because that row already exists', () => {
+      const raw = { type: 'threshold', metric: 'cpuPercent', operator: 'lt', value: 50 };
+      expect(updateMonitorDefinitionSchema.safeParse({ kind: 'cpu', autoResolveConditions: raw }).success).toBe(true);
+    });
+
+    it('a group that has logic, unchanged', () => {
+      expect(updateMonitorDefinitionSchema.parse({ autoResolveConditions: rawGroup }).autoResolveConditions).toEqual(rawGroup);
+    });
+
+    it('refuses group look-alikes the engine could never evaluate', () => {
+      for (const bad of [
+        { logic: 'xor', conditions: [rawLeaf] },
+        { logic: 'and' },
+        { logic: 'and', conditions: [] },
+        { logic: 'and', conditions: 'nope' },
+        { type: '' },
+        { type: 7 },
+      ]) {
+        expect(updateMonitorDefinitionSchema.safeParse({ autoResolveConditions: bad }).success, JSON.stringify(bad)).toBe(false);
+      }
+    });
+
+    it('a new monitor cannot start out with a raw blob', () => {
+      for (const raw of [rawLeaf, rawGroup]) {
+        const result = createMonitorDefinitionSchema.safeParse({ ...eventLog, autoResolveConditions: raw });
+        expect(result.success, JSON.stringify(raw)).toBe(false);
+        expect(issuePaths(result)).toEqual(['autoResolveConditions']);
+      }
+    });
+  });
+
+  it('classifies a value for callers that hold the merged kind', () => {
+    expect(recoveryConditionProblem('event_log', null, { allowLegacy: false })).toBeNull();
+    expect(recoveryConditionProblem('event_log', recovery, { allowLegacy: false })).toBeNull();
+    expect(recoveryConditionProblem('offline', recovery, { allowLegacy: true })).toMatch(/event_log/);
+    expect(recoveryConditionProblem('event_log', groupWithoutLogic, { allowLegacy: true })).toMatch(/event_log/);
+    expect(recoveryConditionProblem('event_log', rawLeaf, { allowLegacy: true })).toBeNull();
+    expect(recoveryConditionProblem('event_log', rawLeaf, { allowLegacy: false })).toMatch(/event_log/);
+    expect(isLegacyRecoveryCondition(rawGroup)).toBe(true);
+    expect(isLegacyRecoveryCondition(recovery)).toBe(false);
+    expect(RECOVERY_CONDITION_KINDS).toEqual(['event_log']);
   });
 });

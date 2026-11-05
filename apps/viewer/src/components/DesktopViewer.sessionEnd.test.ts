@@ -62,3 +62,17 @@ describe('session ended is terminal (#10421)', () => {
     expect(source).toMatch(/if \(status !== 'error'\) setErrorKind\('error'\)/);
   });
 });
+
+describe('reconnect announces itself before closing the old peer (#10542)', () => {
+  it('attemptReconnect awaits announceViewerReconnect before it closes the old WebRTC peer', () => {
+    const body = callbackBody('attemptReconnect');
+    const announce = body.indexOf('await announceViewerReconnect(auth)');
+    const close = body.indexOf('oldRtc?.close()');
+    expect(announce, 'announceViewerReconnect call').toBeGreaterThan(-1);
+    expect(close).toBeGreaterThan(-1);
+    expect(announce).toBeLessThan(close);
+    // Marked in flight before the await, so an interval tick cannot start a
+    // second attempt meanwhile.
+    expect(body.indexOf('reconnectInFlightRef.current = true')).toBeLessThan(announce);
+  });
+});

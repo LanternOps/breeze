@@ -329,7 +329,8 @@ describe('AddDeviceModal', () => {
       if (url === '/enrollment-keys/key-456/installer-link?discardKeyOnFailure=1') {
         return makeJsonResponse({
           url: 'https://api.example.com/api/v1/enrollment-keys/public-download/windows?h=dlh_abc123',
-          expiresAt: '2026-04-14T00:00:00Z',
+          // Relative: a link past its expiry now leaves the screen (#10923).
+          expiresAt: new Date(Date.now() + 3600_000).toISOString(),
           maxUsage: 1,
           platform: 'windows',
           childKeyId: 'child-key-789',

@@ -58,6 +58,7 @@ import type { GrantCeiling } from './wisp/grantAuthority';
 import type { WispCeilingRefusal } from './wisp/chatCeiling';
 // Leaf data module (no imports): loading it never pulls in the Wisp graph.
 import { WISP_SELF_STATE_TOOLS } from './wisp/selfStateTools';
+import { classifyWispUnattendedRead } from './wisp/unattendedReads';
 import { compactToolResultForChat, redactSensitiveToolInput } from './aiToolOutput';
 import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
 import { applyHelperDeviceScope } from './helperToolFilter';
@@ -348,8 +349,17 @@ type ApprovalMethod =
   | 'plan_step' // pre-authorized step of a human-approved action plan
   | 'auto_approve_mode' // session runs auto_approve; Tier 2 executes unprompted
   | 'read_only_auto' // #3130 read-only Tier-2 allowlist; auto-executes in any un-paused mode
-  | 'wisp_self_state_auto'; // #10392 Wisp bookkeeping write under a live grant (wisp/selfStateTools.ts)
+  | 'wisp_self_state_auto' // #10392 Wisp bookkeeping write under a live grant (wisp/selfStateTools.ts)
+  | 'wisp_unattended_read'; // #10973 one of the four reads under the grant's unattended-reads switch
 const lastApprovalBySession = new WeakMap<ActiveSession, { toolName: string; method: ApprovalMethod }>();
+
+/**
+ * #10973: the input objects the gate let through as unattended reads, so the
+ * post hook resolves the same tier as the gate. Keyed by the call's own input
+ * rather than `lastApprovalBySession`, because a Security query's tier depends on
+ * it and the SDK may run sibling calls in parallel.
+ */
+const unattendedReadInputs = new WeakSet<object>();
 
 // Methods that represent an explicit decision on this specific call (a human
 // approver, or the PAM policy ceremony for helper sessions). Plan steps count:
@@ -930,13 +940,37 @@ function reportLostTerminalCas(opts: {
  * governs its tier-2+ calls), or any non-user principal — passes the loaded
  * proposal context through untouched and keeps the base Tier 3. Used by BOTH
  * the gate and postToolUse so the two always resolve the same tier.
+ *
+ * #10973: `unattendedReads` adds the grant-level switch, for the same kind of
+ * principal only.
  */
 function chatGuardrailContext(
   session: ActiveSession,
   base: GuardrailContext | undefined,
+  opts: { unattendedReads?: boolean } = {},
 ): GuardrailContext | undefined {
   const interactiveChat = session.auth.principal?.kind === 'user_session' && !session.auth.helperDeviceId;
-  return interactiveChat ? { ...base, chatSession: true } : base;
+  if (!interactiveChat) return base;
+  return { ...base, chatSession: true, ...(opts.unattendedReads ? { wispUnattendedReads: true } : {}) };
+}
+
+/**
+ * #10973: can the grant's unattended-reads switch apply to this call at all?
+ * The live ceiling must say on, and the gate must be able to skip the card, under
+ * the same carve-outs as every other auto-execution (see the read-only branch in
+ * the gate). A call that fails this keeps its base tier: a paused session's
+ * Security query stays a durable Tier-3 intent instead of becoming a lighter card.
+ */
+function unattendedReadsApply(
+  session: ActiveSession,
+  wispState: WispCallState | null,
+  customTool: boolean,
+): boolean {
+  if (wispState?.ceiling.unattendedReads !== true || customTool || session.isPaused) return false;
+  if (session.auth.principal?.kind !== 'user_session' || session.auth.helperDeviceId) return false;
+  const planInFlight = Boolean(session.activePlanId)
+    && (session.approvalMode === 'action_plan' || session.approvalMode === 'hybrid_plan');
+  return !planInFlight;
 }
 
 /**
@@ -1171,6 +1205,10 @@ async function wispSelfStateSkipsCard(
 ): Promise<boolean> {
   switch (WISP_SELF_STATE_TOOLS.get(toolName)) {
     case 'adds_row':
+      return true;
+    // The handler pins the row to the call's grant (cancelCheckIn is keyed on
+    // grant_id), so the only rows it can touch are this grant's own.
+    case 'own_thread':
       return true;
     case 'own_memory':
       return input.ownerKind === 'user';
@@ -1440,6 +1478,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       ? await loadProposalGuardrailContextInReach(input, (orgId) => proposalReach.canAccessOrg(orgId))
       : null;
     if (runScriptProposal?.proposalOrgId) intentOrgId = runScriptProposal.proposalOrgId;
+    const unattendedReads = unattendedReadsApply(session, wispCall.current, Boolean(flowTool || tenant));
     let guardrailCheck = flowTool
       ? (await import('./flows/flowToolGate')).guardrailCheckForFlowTool(flowTool)
       : tenant
@@ -1450,8 +1489,14 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         chatGuardrailContext(
           session,
           runScriptProposal ? runScriptProposal.context : await loadProposalGuardrailContext(input, session.orgId),
+          { unattendedReads },
         ),
       );
+    // #10973: the classified call, for the card skip below. Tier 2 only, so a
+    // Tier-3 resolution (and anything outside the four) never takes that path.
+    const unattendedRead = unattendedReads && guardrailCheck.tier === 2
+      ? guardrailCheck.wispUnattendedRead ?? classifyWispUnattendedRead(toolName, input)
+      : null;
 
     if (!guardrailCheck.allowed) {
       return { allowed: false, error: guardrailCheck.reason ?? 'Blocked by guardrails' };
@@ -1762,17 +1807,23 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       const wispSelfStateAutoExec = guardrailCheck.tier === 2
         && effectiveMode !== 'auto_approve'
         && !readOnlyAutoExec
+        && !unattendedRead
         && wispCall.current !== null
         && !tenant
         && !flowTool
         && !session.isPaused
         && !planInFlight
         && await wispSelfStateSkipsCard(session, toolName, input, wispCall.current);
-      if (guardrailCheck.tier === 2 && (effectiveMode === 'auto_approve' || readOnlyAutoExec || wispSelfStateAutoExec)) {
+      if (guardrailCheck.tier === 2 && (effectiveMode === 'auto_approve' || readOnlyAutoExec || wispSelfStateAutoExec || unattendedRead)) {
         const liveDenial = await refreshTier2Authority(
           'Authorization changed before execution; the action was not executed.',
         );
         if (liveDenial) return liveDenial;
+        // #10973: the refresh re-read the ceiling. The switch turned off in
+        // between refuses the call rather than running it on the old answer.
+        if (unattendedRead && wispCall.current?.ceiling.unattendedReads !== true) {
+          return { allowed: false, error: 'Authorization changed before execution; the action was not executed.' };
+        }
         try {
           await withDbAccessContext(
             { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
@@ -1791,10 +1842,16 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         }
         lastApprovalBySession.set(session, {
           toolName,
-          method: effectiveMode === 'auto_approve'
-            ? 'auto_approve_mode'
-            : readOnlyAutoExec ? 'read_only_auto' : 'wisp_self_state_auto',
+          method: unattendedRead
+            ? 'wisp_unattended_read'
+            : effectiveMode === 'auto_approve'
+              ? 'auto_approve_mode'
+              : readOnlyAutoExec ? 'read_only_auto' : 'wisp_self_state_auto',
         });
+        if (unattendedRead) {
+          unattendedReadInputs.add(input);
+          verifiedToolContext = { ...verifiedToolContext, pinnedWispUnattendedRead: unattendedRead };
+        }
         return { allowed: true, ...(verifiedToolContext ? { context: verifiedToolContext } : {}) };
       }
 
@@ -3374,6 +3431,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
         toolName === 'run_script'
           ? (await loadProposalGuardrailContextInReach(input, (orgId) => session.toolAuth.canAccessOrg(orgId))).context
           : await loadProposalGuardrailContext(input, session.orgId),
+        { unattendedReads: unattendedReadInputs.has(input) },
       ));
 
     // Script-builder "apply" tools deliver their payload (code / metadata) to

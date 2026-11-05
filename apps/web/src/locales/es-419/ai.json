@@ -575,8 +575,24 @@
       "failed": "fallido",
       "cancelled": "cancelado",
       "expired": "expirado",
-      "skipped": "omitido"
-    }
+      "skipped": "omitido",
+      "awaiting_approval": "esperando aprobación"
+    },
+    "approvals": {
+      "pending_one": "{{count}} paso espera tu aprobación",
+      "pending_other": "{{count}} pasos esperan tu aprobación",
+      "waiting": "Hay pasos esperando tu aprobación",
+      "review": "Revisar en Aprobaciones"
+    },
+    "stepApprovals": {
+      "title": "Esperando tu aprobación",
+      "wispFor": "Wisp para {{name}}",
+      "approve": "Aprobar",
+      "deny": "Denegar",
+      "waitingForApprover": "Esperando a un aprobador"
+    },
+    "continue": "Continuar",
+    "continueMessage": "Continuar la solución de problemas de la ejecución {{runId}}."
   },
   "aiModelPicker": {
     "chooseModel": "Elegir un modelo",
@@ -652,7 +668,8 @@
       "alreadyOnPartner": "Wisp ya está activado para todas las organizaciones.",
       "open": "Abrir",
       "opening": "Abriendo…",
-      "grantEnded": "Wisp ya no está activado para este alcance. Confirma que eres tú para volver a activarlo."
+      "grantEnded": "Wisp ya no está activado para este alcance. Confirma que eres tú para volver a activarlo.",
+      "unattendedReadsTitle": "Activar las lecturas sin supervisión"
     },
     "header": {
       "scopeAll": "Todas las organizaciones",
@@ -676,7 +693,16 @@
       "title": "Presupuesto y revisión periódica",
       "budget": "Presupuesto diario",
       "tick": "Revisión cada (minutos)",
-      "save": "Guardar"
+      "save": "Guardar",
+      "unattendedReads": {
+        "title": "Lecturas sin supervisión",
+        "description": "Cuando está activado, Wisp y sus ejecuciones en segundo plano hacen lo siguiente sin pedir confirmación:",
+        "registryKey": "Leer una clave del registro",
+        "registryValue": "Leer un valor del registro",
+        "securityLog": "Buscar en el registro de eventos de seguridad",
+        "deviceNote": "Guardar una nota sobre un dispositivo",
+        "applies": "Se aplica a las conversaciones nuevas y a las nuevas ejecuciones en segundo plano."
+      }
     },
     "focus": {
       "label": "Trabajando en",
@@ -717,7 +743,11 @@
       "paused": "Wisp en pausa",
       "resumed": "Wisp reanudado",
       "pauseFailed": "No se pudo pausar Wisp",
-      "resumeFailed": "No se pudo reanudar Wisp"
+      "resumeFailed": "No se pudo reanudar Wisp",
+      "unattendedReadsOn": "Lecturas sin supervisión activadas",
+      "unattendedReadsOnFailed": "No se pudieron activar las lecturas sin supervisión",
+      "unattendedReadsOff": "Lecturas sin supervisión desactivadas",
+      "unattendedReadsOffFailed": "No se pudieron desactivar las lecturas sin supervisión"
     },
     "spend": {
       "meter": "{{spent}} de {{budget}} hoy",
@@ -861,7 +891,8 @@
       "checkIn": "Revisión programada",
       "summary": "Resumen",
       "open": "Abrir",
-      "unread": "No leído"
+      "unread": "No leído",
+      "specialistResult": "Informe del especialista"
     },
     "welcome": {
       "title": "Estoy revisando {{scope}}.",
@@ -890,7 +921,14 @@
       "workersEmpty": "No hay especialistas en ejecución.",
       "allRuns": "Todas las ejecuciones",
       "details": "Detalles",
-      "ended": "Este permiso terminó, así que sus alertas, trabajadores y actividad ya no se muestran."
+      "ended": "Este permiso terminó, así que sus alertas, trabajadores y actividad ya no se muestran.",
+      "workerStatus": {
+        "queued": "En cola",
+        "running": "En ejecución",
+        "awaiting_approval": "Esperando aprobación",
+        "completed": "Completado",
+        "failed": "Fallido"
+      }
     },
     "composer": {
       "placeholder": "Enviar mensaje a Wisp",

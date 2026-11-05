@@ -527,6 +527,21 @@ describe('limits v8', () => {
   });
 });
 
+describe('troubleshoot kind (Wisp delegation W1, #11084)', () => {
+  it('is a kind whose modes exclude act: its proposals must never become policy-decidable', () => {
+    expect(AI_AGENT_KINDS).toContain('troubleshoot');
+    expect(allowedModesForKind('troubleshoot')).toEqual(['off', 'shadow']);
+  });
+  it('is never user-creatable at either owner scope (system-provisioned only)', () => {
+    for (const ownerScope of ['partner', 'organization', undefined]) {
+      for (const mode of ['off', 'shadow']) {
+        const parsed = createAiAgentSchema.safeParse({ name: 'T', kind: 'troubleshoot', mode, ...(ownerScope ? { ownerScope } : {}) });
+        expect(parsed.success).toBe(false);
+      }
+    }
+  });
+});
+
 describe('designer kind', () => {
   it('is a create-able kind whose modes exclude shadow', () => {
     expect(AI_AGENT_KINDS).toContain('designer');
