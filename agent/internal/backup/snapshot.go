@@ -69,19 +69,6 @@ func checksumMatches(path, want string) bool {
 	return err == nil && got == want
 }
 
-// storedEntryMatches reports whether a journaled entry's object, stored under
-// this snapshot's own prefix, still holds exactly the recorded bytes. Only a
-// literal entry (never a reference into another snapshot) with a recorded
-// digest can match, and only through a provider that can read the stored
-// object back.
-func storedEntryMatches(ctx context.Context, digester providers.StoredObjectDigester, canVerify bool, entry SnapshotFile, snapshotID string) bool {
-	if !canVerify || entry.Checksum == "" || isReferenceEntry(entry, snapshotID) {
-		return false
-	}
-	stored, err := digester.StoredObjectDigest(ctx, entry.BackupPath)
-	return err == nil && stored.SHA256 == entry.Checksum && stored.Size == entry.Size
-}
-
 const (
 	snapshotRootDir     = "snapshots"
 	snapshotFilesDir    = "files"
@@ -727,7 +714,8 @@ func withLayout(manifest *layout.Manifest) createSnapshotOption {
 //     into this run's manifest — with filesDone/bytesDone pre-seeded from
 //     the matched set before the loop starts, so the very first progress
 //     emission reflects the resume instead of a slow trickle of
-//     skip-iterations.
+//     skip-iterations. Checks an earlier pass recorded are not repeated (see
+//     journal_verification.go).
 //   - Every freshly uploaded file is appended to the journal as it lands.
 //   - On a full success (manifest uploaded), the journal is completed
 //     (closed + removed) — the checkpoint is no longer needed. On every
@@ -1038,64 +1026,31 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// objects already exist in the store, and a not-yet-uploaded twin that
 	// walks earlier must not land on them.
 	keyClaims := objectKeyClaims{}
+	// verifier is nil without a journal.
+	var verifier *resumeVerifier
 	if journal != nil {
 		var resumedBytes int64
-		tainted := journal.foldCollidingKeys()
-		// A snapshot continued from another job also needs the stored
-		// object to still hold the recorded bytes (see ContinueRun).
-		verifyStored := journal.VerifyStoredEntries()
-		digester, canVerifyStored := storedObjectDigesterOf(provider)
-		if verifyStored && canVerifyStored {
-			// Each check reads the stored object back; let a batching
-			// provider authorize those reads in batches.
-			var keys []string
-			for _, file := range files {
-				if entry, ok := journal.Lookup(journalLookupKey(file), file.size, file.modTime); ok && entry.BackupPath != "" {
-					keys = append(keys, entry.BackupPath)
-				}
-			}
-			providers.PrepareDownloads(unwrapProvider(provider), keys)
-		}
+		// Every check an earlier job's pass already recorded is skipped, and
+		// every new result is recorded as it lands, so a pass longer than a
+		// job's session still ends: the next job carries on from where this
+		// one stopped (#11043, see journal_verification.go).
+		verifier = newResumeVerifier(journal, provider, snapshot.ID)
+		verifier.prepareReadBacks(provider, files)
 		for _, file := range files {
-			if entry, ok := journal.Lookup(journalLookupKey(file), file.size, file.modTime); ok {
-				// Size and modification time can match a file whose content
-				// changed. Reuse the entry only when the source still hashes
-				// to the recorded digest (the digest of the uploaded source
-				// bytes — the same quantity sha256File computes). This costs
-				// one full read of every resumable file, still far cheaper
-				// than uploading it again; a mismatch or read error uploads
-				// the file afresh and the recorded digest is never replaced
-				// by anything but a new upload's.
-				if entry.Checksum == "" || !checksumMatches(file.sourcePath, entry.Checksum) {
-					log.Info("journaled file changed since it was uploaded; uploading it again",
-						"path", file.sourcePath,
-						"snapshotId", snapshot.ID,
-					)
-					continue
-				}
-				if tainted[entry.BackupPath] {
-					// A pre-#5582 journal stored this file and a case twin at
-					// keys one object answers to; re-upload rather than
-					// resume a possibly-overwritten object.
-					log.Warn("not resuming journaled file whose object key collides with a case twin; re-uploading",
-						"path", file.sourcePath,
-						"backupPath", entry.BackupPath,
-						"snapshotId", snapshot.ID,
-					)
-					continue
-				}
-				if verifyStored && !storedEntryMatches(ctx, digester, canVerifyStored, entry, snapshot.ID) {
-					log.Info("journaled object from an earlier job does not match its record; uploading it again",
-						"path", file.sourcePath,
-						"backupPath", entry.BackupPath,
-						"snapshotId", snapshot.ID,
-					)
-					continue
-				}
-				resumedFiles[journalLookupKey(file)] = entry
-				resumedBytes += entry.Size
-				keyClaims.claim(entry.BackupPath)
+			key := journalLookupKey(file)
+			entry, ok := journal.Lookup(key, file.size, file.modTime)
+			if !ok {
+				// Changed since its upload: the upload ahead overwrites the
+				// object its record vouches for.
+				journal.clearVerification(key)
+				continue
 			}
+			if !verifier.reusable(ctx, file, entry) {
+				continue
+			}
+			resumedFiles[key] = entry
+			resumedBytes += entry.Size
+			keyClaims.claim(entry.BackupPath)
 		}
 		if len(resumedFiles) > 0 {
 			markDone(len(resumedFiles), resumedBytes)
@@ -1530,6 +1485,11 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 
 	if err := ctx.Err(); err != nil {
 		return abortStopped()
+	}
+
+	// Nothing has been published yet, and nothing is if a reused object is gone.
+	if err := verifier.confirmStoredBeforePublish(provider, snapshot); err != nil {
+		return nil, err
 	}
 
 	// A resumed snapshot id may already hold a layout or system-state
@@ -2142,7 +2102,7 @@ func listSnapshotPrefixItems(provider providers.BackupProvider, snapshotID strin
 // ".gz" key, and only LocalProvider gzips on it (and gunzips on Download).
 // That layout is a cross-module contract — the BMR recovery client, API
 // presigned downloads, older agents and the stored-digest checks
-// (storedEntryMatches) all read cloud objects as raw bytes — so never add
+// (readBackStoredObject) all read cloud objects as raw bytes — so never add
 // or strip ".gz", and never start compressing cloud writes, without a
 // versioned per-entry encoding field shipped to every reader first (#7621).
 //

@@ -75,11 +75,21 @@ type journalHeader struct {
 	// ContinueRun). From then on an entry is reused only when the stored
 	// object still holds the recorded bytes, not only the source.
 	VerifyStoredEntries bool `json:"verifyStoredEntries,omitempty"`
+	// VerificationAware is set on every header update a build that keeps
+	// verification records writes. An older helper rewrites the header
+	// without it, which is how a later reader knows that helper had this
+	// journal, and that the records before that point cannot be trusted (see
+	// journal_verification.go).
+	VerificationAware bool `json:"verificationAware,omitempty"`
 }
 
 // journalFormatVersion is the journal format this build writes: entries carry
 // the digest of the uploaded bytes, and the header carries the run bindings
 // and published control objects.
+//
+// Do not bump this for an optional addition: openSnapshotJournalAt discards any
+// journal below it, so a bump throws away every interrupted run in the fleet on
+// upgrade. Verification records (journal_verification.go) are such an addition.
 const journalFormatVersion = 2
 
 // snapshotJournal is an append-only checkpoint log for one backup
@@ -106,6 +116,11 @@ type snapshotJournal struct {
 	// though callers should read ResumedBytes before any Record call — see
 	// its doc comment.
 	entries map[string]SnapshotFile
+
+	// verifications holds what an earlier resume pass proved about entries,
+	// under the same keys (see journal_verification.go). An entry with none
+	// has never been verified.
+	verifications map[string]journalVerification
 
 	// resumedBytesTotal is a fixed snapshot of the resumed entries' total
 	// size, computed once at open time (before any new Record calls can
@@ -226,7 +241,7 @@ func openSnapshotJournalAt(path, identity string, maxAge time.Duration) (*snapsh
 		}
 	}
 
-	header, entries, readErr := readJournal(path)
+	header, entries, verifications, readErr := readJournal(path)
 	if readErr == nil {
 		identityMatches := header.Identity == identity
 		if identityMatches && time.Since(header.CreatedAt) <= maxAge && header.FormatVersion < journalFormatVersion {
@@ -259,6 +274,7 @@ func openSnapshotJournalAt(path, identity string, maxAge time.Duration) (*snapsh
 					snapshotID:        header.SnapshotID,
 					identity:          identity,
 					entries:           entries,
+					verifications:     verifications,
 					resumedBytesTotal: resumedBytes,
 					resumed:           true,
 					createdAt:         header.CreatedAt,
@@ -306,15 +322,15 @@ func openSnapshotJournalAt(path, identity string, maxAge time.Duration) (*snapsh
 }
 
 // readJournal reads and validates an existing journal file at path,
-// returning its header and the resumed entries (last-entry-wins across
-// repeated sourcePaths). Any malformed line — header or data — is reported
+// returning its header, the resumed entries (last-entry-wins across repeated
+// sourcePaths) and their verification records. Any malformed line — header or data — is reported
 // as an error so the caller discards the whole file rather than resuming
 // from a partially-trusted state.
-func readJournal(path string) (journalHeader, map[string]SnapshotFile, error) {
+func readJournal(path string) (journalHeader, map[string]SnapshotFile, map[string]journalVerification, error) {
 	var header journalHeader
 	f, err := os.Open(path)
 	if err != nil {
-		return header, nil, err
+		return header, nil, nil, err
 	}
 	defer func() { _ = f.Close() }()
 
@@ -323,18 +339,20 @@ func readJournal(path string) (journalHeader, map[string]SnapshotFile, error) {
 
 	if !scanner.Scan() {
 		if scanErr := scanner.Err(); scanErr != nil {
-			return header, nil, scanErr
+			return header, nil, nil, scanErr
 		}
-		return header, nil, fmt.Errorf("backup journal %s is empty", path)
+		return header, nil, nil, fmt.Errorf("backup journal %s is empty", path)
 	}
 	if err := json.Unmarshal(scanner.Bytes(), &header); err != nil {
-		return header, nil, fmt.Errorf("backup journal header: %w", err)
+		return header, nil, nil, fmt.Errorf("backup journal header: %w", err)
 	}
 	if header.SnapshotID == "" {
-		return header, nil, fmt.Errorf("backup journal header missing snapshotId")
+		return header, nil, nil, fmt.Errorf("backup journal header missing snapshotId")
 	}
 
 	entries := make(map[string]SnapshotFile)
+	var verifications map[string]journalVerification
+	var generation string
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -343,26 +361,43 @@ func readJournal(path string) (journalHeader, map[string]SnapshotFile, error) {
 		if bytes.HasPrefix(line, journalHeaderUpdatePrefix) {
 			var update journalHeaderUpdate
 			if err := json.Unmarshal(line, &update); err != nil {
-				return header, nil, fmt.Errorf("backup journal header update: %w", err)
+				return header, nil, nil, fmt.Errorf("backup journal header update: %w", err)
 			}
 			applyHeaderUpdate(&header, update.HeaderUpdate)
+			if !update.HeaderUpdate.VerificationAware {
+				// An older helper had this journal after a rollback. It may
+				// have overwritten objects these records vouch for, without
+				// retracting them.
+				verifications = nil
+			}
 			continue
 		}
-		var entry SnapshotFile
+		var entry journalEntryLine
 		if err := json.Unmarshal(line, &entry); err != nil {
-			return header, nil, fmt.Errorf("backup journal entry: %w", err)
+			return header, nil, nil, fmt.Errorf("backup journal entry: %w", err)
 		}
 		// Keyed by journalEntryKey (OriginalPath when VSS rewrote SourcePath,
 		// else SourcePath itself), matching Record's keying below — a reload
 		// must key entries the same way a live run does, or a resumed
 		// journal's entries become unreachable by Lookup. last-entry-wins.
-		entries[journalEntryKey(entry)] = entry
+		key := journalEntryKey(entry.SnapshotFile)
+		entries[key] = entry.SnapshotFile
+		if entry.Verification == nil {
+			// A line without a record supersedes the one before it.
+			delete(verifications, key)
+			continue
+		}
+		internVerification(entry.Verification, &generation)
+		if verifications == nil {
+			verifications = make(map[string]journalVerification)
+		}
+		verifications[key] = *entry.Verification
 	}
 	if err := scanner.Err(); err != nil {
-		return header, nil, err
+		return header, nil, nil, err
 	}
 
-	return header, entries, nil
+	return header, entries, verifications, nil
 }
 
 // createFreshJournal creates a brand new journal file at path (truncating
@@ -497,6 +532,7 @@ func (j *snapshotJournal) restartFreshWithID(snapshotID string) error {
 	j.header = fresh.header
 	j.createdAt = fresh.createdAt
 	j.entries = nil
+	j.verifications = nil
 	j.resumedBytesTotal = 0
 	j.resumed = false
 	j.continuedFromOtherJob = false
@@ -591,6 +627,7 @@ func (j *snapshotJournal) rewriteHeader() error {
 	if j.file == nil {
 		return errors.New("backup journal is closed")
 	}
+	j.header.VerificationAware = true
 	line, err := json.Marshal(journalHeaderUpdate{HeaderUpdate: j.header})
 	if err != nil {
 		return fmt.Errorf("failed to encode backup journal header update: %w", err)
@@ -650,17 +687,7 @@ func (j *snapshotJournal) Record(f SnapshotFile) error {
 		// see contentlessEntry's doc comment (snapshot.go).
 		return nil
 	}
-	line, err := json.Marshal(f)
-	if err != nil {
-		slog.Warn("failed to encode backup journal entry", "path", j.path, "error", err.Error())
-		return err
-	}
-	if _, err := j.writer.Write(append(line, '\n')); err != nil {
-		slog.Warn("failed to write backup journal entry", "path", j.path, "error", err.Error())
-		return err
-	}
-	if err := j.writer.Flush(); err != nil {
-		slog.Warn("failed to flush backup journal entry", "path", j.path, "error", err.Error())
+	if err := j.appendLine(f); err != nil {
 		return err
 	}
 	if j.entries == nil {
@@ -671,6 +698,31 @@ func (j *snapshotJournal) Record(f SnapshotFile) error {
 	// directly would mean run 2 never matches anything run 1 recorded — see
 	// journalEntryKey and backupFile.originalPath. last-entry-wins on reload.
 	j.entries[journalEntryKey(f)] = f
+	// This upload is what the object holds now; whatever was verified about
+	// the one before says nothing about it. Its line carries no record, so the
+	// same goes for a reload.
+	delete(j.verifications, journalEntryKey(f))
+	return nil
+}
+
+// appendLine writes one data line and flushes it, see Record.
+func (j *snapshotJournal) appendLine(line any) error {
+	if j.file == nil {
+		return errors.New("backup journal is closed")
+	}
+	raw, err := json.Marshal(line)
+	if err != nil {
+		slog.Warn("failed to encode backup journal entry", "path", j.path, "error", err.Error())
+		return err
+	}
+	if _, err := j.writer.Write(append(raw, '\n')); err != nil {
+		slog.Warn("failed to write backup journal entry", "path", j.path, "error", err.Error())
+		return err
+	}
+	if err := j.writer.Flush(); err != nil {
+		slog.Warn("failed to flush backup journal entry", "path", j.path, "error", err.Error())
+		return err
+	}
 	return nil
 }
 
