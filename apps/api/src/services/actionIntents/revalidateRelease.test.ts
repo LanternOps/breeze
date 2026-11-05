@@ -812,6 +812,8 @@ describe('revalidateApprovedIntentForRelease partner-axis approver', () => {
     vi.mocked(isPartnerAxisApprover).mockRejectedValue(new Error('db down'));
     const result = await revalidateApprovedIntentForRelease(scheduleDelete(), { boundArgumentDigest: digest });
     expect(result).toMatchObject({ ok: false, errorCode: 'approver_scope_check_failed' });
+    // The raw error goes to the log and Sentry, never into the intent's stored details.
+    expect(JSON.stringify(result)).not.toContain('db down');
   });
 
   it('releases for a partner-axis approver', async () => {

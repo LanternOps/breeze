@@ -262,7 +262,7 @@ async function refusePartnerWideRelease(
     return {
       ok: false,
       errorCode: 'approver_scope_check_failed',
-      details: { reason: error instanceof Error ? error.message : String(error) },
+      details: { reason: "Could not verify the approver's partner-level access, so the release was refused." },
     };
   }
 }
