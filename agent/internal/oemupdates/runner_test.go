@@ -178,6 +178,13 @@ func TestRefusesAfterNotAfterWithRetryLater(t *testing.T) {
 	if len(f.exec.Calls()) != 0 || len(f.lane.Applied()) != 0 {
 		t.Fatal("ran after notAfter")
 	}
+	// Refused at the door, before the lock, the marker or any tool check.
+	if _, err := ReadMarker(f.store); err == nil {
+		t.Fatal("a run refused for notAfter wrote a marker")
+	}
+	if got := len(f.ver.Verified()); got != 0 {
+		t.Fatalf("verified the tool %d times before refusing", got)
+	}
 }
 
 func TestRunInFlightIsRetryLater(t *testing.T) {
