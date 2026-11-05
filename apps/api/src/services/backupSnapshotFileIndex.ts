@@ -42,7 +42,7 @@ export {
 export type HydrationOutcome =
   | { status: 'complete'; manifestSha256: string; entryCount: number; externalCount: number; originSnapshotIds: string[] }
   | { status: 'failed'; failure: HydrationFailure; reason: string; retryable: boolean }
-  | { status: 'skipped'; reason: 'not_referenced' | 'already_complete' | 'in_progress' };
+  | { status: 'skipped'; reason: 'not_referenced' | 'already_complete' | 'in_progress' | 'superseded' };
 
 export type HydrationDeps = {
   fetchManifestBytes: (args: { provider: string; providerConfig: Record<string, unknown>; key: string }) => Promise<Uint8Array>;
@@ -209,15 +209,36 @@ async function loadReferencedFiles(jobId: string | null | undefined): Promise<nu
   return job?.referencedFiles ?? null;
 }
 
+/**
+ * One hydration's hold on a snapshot: the row it claimed and the
+ * `file_index_hydrated_at` it stamped there. Every write this run makes is
+ * scoped by both, so a run that lost its claim (a stale reclaim by another
+ * worker, an org move resetting the index, a fresh agent result) never
+ * overwrites the newer state.
+ */
+type HydrationClaim = { id: string; claimedAt: Date };
+
+const SUPERSEDED: HydrationOutcome = { status: 'skipped', reason: 'superseded' };
+
+function claimPredicate(claim: HydrationClaim) {
+  return and(
+    eq(backupSnapshots.id, claim.id),
+    eq(backupSnapshots.fileIndexStatus, 'hydrating'),
+    eq(backupSnapshots.fileIndexHydratedAt, claim.claimedAt),
+  );
+}
+
 async function fail(
-  snapshotDbId: string,
+  claim: HydrationClaim,
   failure: HydrationFailure,
   reason: string,
 ): Promise<HydrationOutcome> {
-  await db
+  const [written] = await db
     .update(backupSnapshots)
     .set({ fileIndexStatus: 'failed', fileIndexError: `${failure}: ${reason}` })
-    .where(eq(backupSnapshots.id, snapshotDbId));
+    .where(claimPredicate(claim))
+    .returning({ id: backupSnapshots.id });
+  if (!written) return SUPERSEDED;
   return { status: 'failed', failure, reason, retryable: isRetryableHydrationFailure(failure) };
 }
 
@@ -228,11 +249,11 @@ async function fail(
 // still inside a transaction (see below) but would hit the contextless-write
 // guard here.
 async function failOutsideContext(
-  snapshotDbId: string,
+  claim: HydrationClaim,
   failure: HydrationFailure,
   reason: string,
 ): Promise<HydrationOutcome> {
-  return runOutsideDbContext(() => withSystemDbAccessContext(() => fail(snapshotDbId, failure, reason)));
+  return runOutsideDbContext(() => withSystemDbAccessContext(() => fail(claim, failure, reason)));
 }
 
 type LoadedSnapshot = NonNullable<Awaited<ReturnType<typeof loadSnapshotForHydration>>>;
@@ -242,7 +263,7 @@ type LoadedSnapshot = NonNullable<Awaited<ReturnType<typeof loadSnapshotForHydra
 // null check and its use live in different functions, so a plain narrowed
 // re-read of `snapshot.storageIdentity` at the return site doesn't survive the
 // function boundary; this type carries the guarantee across it instead.
-type ClaimedSnapshot = Omit<LoadedSnapshot, 'storageIdentity'> & { storageIdentity: string; keyRoot: SnapshotKeyRoot };
+type ClaimedSnapshot = Omit<LoadedSnapshot, 'storageIdentity'> & HydrationClaim & { storageIdentity: string; keyRoot: SnapshotKeyRoot };
 
 /**
  * Phase 1 (short transaction): load the snapshot, apply the skip checks,
@@ -340,34 +361,35 @@ async function claimSnapshotForHydration(
 
       // Everything below pins the row AS CLAIMED (see the note above the CAS),
       // not the pre-claim read.
-      const claimedRow = { ...snapshot, ...claimed };
+      const claim: HydrationClaim = { id: snapshotDbId, claimedAt: now };
+      const claimedRow = { ...snapshot, ...claimed, ...claim };
 
       // Nothing an index could be built from is trustworthy for a snapshot
       // whose attestation did not match; storage is not read at all.
       const failedIntegrity = attestationRefusal(snapshot.attestation, null, snapshot.integrityStatus ?? null);
       if (failedIntegrity) {
-        return { outcome: await fail(snapshotDbId, failedIntegrity.failure, failedIntegrity.reason) };
+        return { outcome: await fail(claim, failedIntegrity.failure, failedIntegrity.reason) };
       }
       // The manifest is read under the snapshot's recorded key root (#7081),
       // never a guessed one; storage is not read for a root this server
       // cannot read. (The root is immutable, so the pre-claim read is exact.)
       const keyRoot = snapshotKeyRootOf(snapshot);
       if (!keyRoot) {
-        return { outcome: await fail(snapshotDbId, 'key_root_invalid', `unreadable key root (${String(snapshot.keyLayout)})`) };
+        return { outcome: await fail(claim, 'key_root_invalid', `unreadable key root (${String(snapshot.keyLayout)})`) };
       }
 
       const resolved = await resolveSnapshotProviderConfig(snapshotDbId);
       const providerType = resolved?.providerType ?? null;
       const providerConfig = asRecord(resolved?.providerConfig);
       if (!claimedRow.storageIdentity) {
-        return { outcome: await fail(snapshotDbId, 'storage_identity_unknown', 'snapshot has no pinned storage identity') };
+        return { outcome: await fail(claim, 'storage_identity_unknown', 'snapshot has no pinned storage identity') };
       }
       if (!providerType) {
-        return { outcome: await fail(snapshotDbId, 'storage_identity_unknown', 'could not resolve a provider for this snapshot') };
+        return { outcome: await fail(claim, 'storage_identity_unknown', 'could not resolve a provider for this snapshot') };
       }
       const resolvedIdentity = normalizeStorageIdentity(providerType, providerConfig);
       if (resolvedIdentity !== claimedRow.storageIdentity) {
-        return { outcome: await fail(snapshotDbId, 'storage_identity_drift', `resolved identity ${resolvedIdentity} does not match pinned ${claimedRow.storageIdentity}`) };
+        return { outcome: await fail(claim, 'storage_identity_drift', `resolved identity ${resolvedIdentity} does not match pinned ${claimedRow.storageIdentity}`) };
       }
 
       return {
@@ -410,12 +432,12 @@ async function fetchAndParseManifest(
     });
   } catch (err) {
     if (isBackupObjectNotFound(err)) {
-      return { outcome: await failOutsideContext(snapshotDbId, 'manifest_missing', 'manifest object not found in storage') };
+      return { outcome: await failOutsideContext(snapshot, 'manifest_missing', 'manifest object not found in storage') };
     }
     if (isBackupObjectTooLarge(err)) {
-      return { outcome: await failOutsideContext(snapshotDbId, 'manifest_too_large', err.message) };
+      return { outcome: await failOutsideContext(snapshot, 'manifest_too_large', err.message) };
     }
-    return { outcome: await failOutsideContext(snapshotDbId, 'provider_error', err instanceof Error ? err.message : String(err)) };
+    return { outcome: await failOutsideContext(snapshot, 'provider_error', err instanceof Error ? err.message : String(err)) };
   }
 
   const manifestSha256 = createHash('sha256').update(bytes).digest('hex');
@@ -423,7 +445,7 @@ async function fetchAndParseManifest(
   // early check only avoids writing rows that could never be published.
   const refusal = attestationRefusal(snapshot.attestation, manifestSha256);
   if (refusal) {
-    return { outcome: await failOutsideContext(snapshotDbId, refusal.failure, refusal.reason) };
+    return { outcome: await failOutsideContext(snapshot, refusal.failure, refusal.reason) };
   }
 
   let parsed: z.infer<typeof hydrationManifestSchema>;
@@ -431,14 +453,14 @@ async function fetchAndParseManifest(
     const json = JSON.parse(Buffer.from(bytes).toString('utf8'));
     const result = hydrationManifestSchema.safeParse(json);
     if (!result.success) {
-      return { outcome: await failOutsideContext(snapshotDbId, 'manifest_invalid', summarizeManifestIssues(result.error, json)) };
+      return { outcome: await failOutsideContext(snapshot, 'manifest_invalid', summarizeManifestIssues(result.error, json)) };
     }
     parsed = result.data;
     if (parsed.id !== snapshot.snapshotId) {
       throw new Error(`manifest id ${parsed.id} does not match snapshot ${snapshot.snapshotId}`);
     }
   } catch (err) {
-    return { outcome: await failOutsideContext(snapshotDbId, 'manifest_invalid', err instanceof Error ? err.message : String(err)) };
+    return { outcome: await failOutsideContext(snapshot, 'manifest_invalid', err instanceof Error ? err.message : String(err)) };
   }
 
   const files = parsed.files ?? [];
@@ -452,7 +474,7 @@ async function fetchAndParseManifest(
     if (!file.backupPath) continue;
     const parsedKey = parseBackupObjectKey(file.backupPath);
     if (!parsedKey) {
-      return { outcome: await failOutsideContext(snapshotDbId, 'manifest_key_invalid', `unparseable backupPath: ${file.backupPath}`) };
+      return { outcome: await failOutsideContext(snapshot, 'manifest_key_invalid', `unparseable backupPath: ${file.backupPath}`) };
     }
     if (!file.backupPath.startsWith(ownPrefix)) {
       originCounts.set(parsedKey.snapshotId, (originCounts.get(parsedKey.snapshotId) ?? 0) + 1);
@@ -470,9 +492,16 @@ async function fetchAndParseManifest(
 }
 
 /**
- * Phase 3 (short transaction, opened fresh — no connection was held across
- * the fetch in phase 2): verify each referenced origin against current DB
- * state and write the file/origin rows plus the completion status.
+ * Phase 3 (one transaction, opened fresh — no connection was held across the
+ * fetch in phase 2): take the snapshot row lock, confirm this run still holds
+ * its claim, verify each referenced origin against current DB state, re-check
+ * the attestation, and only then replace the file/origin rows and publish.
+ *
+ * Everything here commits together, so a reader sees the previous rows until
+ * the new index is published and never a partial one. The lock comes first,
+ * as in result persistence and the attestation verifier, so the three never
+ * deadlock; and because every check runs after it, a stale worker or a
+ * tenancy move can never be published over (#11026, D5).
  */
 async function verifyOriginsAndWrite(
   snapshotDbId: string,
@@ -482,7 +511,33 @@ async function verifyOriginsAndWrite(
   const { manifestSha256, fileRows, originCounts } = manifest;
 
   return runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
+    withSystemDbAccessContext(() => db.transaction(async (tx): Promise<HydrationOutcome> => {
+      const [current] = await tx
+        .select({
+          fileIndexStatus: backupSnapshots.fileIndexStatus,
+          fileIndexHydratedAt: backupSnapshots.fileIndexHydratedAt,
+          orgId: backupSnapshots.orgId,
+          deviceId: backupSnapshots.deviceId,
+          metadata: backupSnapshots.metadata,
+          integrityStatus: backupSnapshots.integrityStatus,
+        })
+        .from(backupSnapshots)
+        .where(eq(backupSnapshots.id, snapshotDbId))
+        .limit(1)
+        .for('update');
+      // Another worker reclaimed the row, an org move reset it (the tenancy
+      // trigger sets 'none'), a newer result rewrote it, or it is gone. Its
+      // state is newer than this run's: leave it, and its rows, alone.
+      if (
+        !current
+        || current.fileIndexStatus !== 'hydrating'
+        || current.fileIndexHydratedAt?.getTime() !== snapshot.claimedAt.getTime()
+        || current.orgId !== snapshot.orgId
+        || current.deviceId !== snapshot.deviceId
+      ) {
+        return SUPERSEDED;
+      }
+
       type OriginRow = {
         originSnapshotId: string; originOrgId: string; originDeviceId: string;
         originStorageIdentity: string; originStoragePrefix: string | null; provenance: 'live' | 'retired'; objectCount: number;
@@ -495,9 +550,9 @@ async function verifyOriginsAndWrite(
         return originRoot !== null && sameKeyRoot(originRoot, snapshot.keyRoot);
       };
       const rootMismatch = (originId: string) =>
-        fail(snapshotDbId, 'origin_key_root_mismatch', `origin ${originId}: recorded under another key root than this snapshot`);
+        fail(snapshot, 'origin_key_root_mismatch', `origin ${originId}: recorded under another key root than this snapshot`);
       for (const [originId, objectCount] of originCounts) {
-        const [live] = await db
+        const [live] = await tx
           .select({
             id: backupSnapshots.id,
             orgId: backupSnapshots.orgId,
@@ -519,7 +574,7 @@ async function verifyOriginsAndWrite(
           });
           continue;
         }
-        const [retired] = await db
+        const [retired] = await tx
           .select({
             orgId: backupSnapshotRetirements.orgId,
             deviceId: backupSnapshotRetirements.deviceId,
@@ -543,76 +598,56 @@ async function verifyOriginsAndWrite(
         // (retryable); genuinely no record anywhere for this org/device is
         // origin_unverifiable (terminal).
         if (live && !live.storageIdentity) {
-          return fail(snapshotDbId, 'origin_identity_pending', `origin ${originId}: live snapshot row has no storage identity yet (GC heals it on its next listing)`);
+          return fail(snapshot, 'origin_identity_pending', `origin ${originId}: live snapshot row has no storage identity yet (GC heals it on its next listing)`);
         }
-        return fail(snapshotDbId, 'origin_unverifiable', `origin ${originId}: no live snapshot or retirement record for this device/destination`);
+        return fail(snapshot, 'origin_unverifiable', `origin ${originId}: no live snapshot or retirement record for this device/destination`);
       }
 
-      // Write file rows in 1,000-row batches, each its own transaction.
-      // The delete rides in the SAME transaction as the first insert batch so a
-      // crash between them cannot leave a snapshot with zero rows; every later
-      // batch is its own short transaction. Status stays 'hydrating' until the
-      // final publish, so partial rows are never read as an index.
-      for (let i = 0; i < Math.max(fileRows.length, 1); i += FILE_ROW_BATCH_SIZE) {
-        const batch = fileRows.slice(i, i + FILE_ROW_BATCH_SIZE);
-        await db.transaction(async (tx) => {
-          if (i === 0) {
-            await tx.delete(backupSnapshotFiles).where(eq(backupSnapshotFiles.snapshotDbId, snapshotDbId));
-          }
-          if (batch.length > 0) {
-            await tx.insert(backupSnapshotFiles).values(batch);
-          }
-        });
+      // The attestation is read by a LATER statement than the lock: under
+      // READ COMMITTED a statement's snapshot is taken before it waits for a
+      // lock, so only a statement issued after the lock is held sees the
+      // attestation in force when the index becomes visible. The verifier
+      // (backupAttestationVerify.ts finish) and an attestation being recorded
+      // (backupAttestation.ts) take the same row lock first.
+      const [attestationRow] = await tx
+        .select(indexAttestationColumns())
+        .from(backupSnapshotAttestations)
+        .where(eq(backupSnapshotAttestations.snapshotDbId, snapshotDbId))
+        .limit(1);
+      const refusal = attestationRefusal(indexAttestationOf(attestationRow), manifestSha256, current.integrityStatus ?? null);
+      if (refusal) {
+        // Refused before anything is replaced: the previous rows stay, and
+        // the reader gate keeps them from being listed.
+        await tx
+          .update(backupSnapshots)
+          .set({ fileIndexStatus: 'failed', fileIndexError: `${refusal.failure}: ${refusal.reason}` })
+          .where(claimPredicate(snapshot));
+        return { status: 'failed', failure: refusal.failure, reason: refusal.reason, retryable: false };
+      }
+
+      // Batched only to bound each statement's size: all of them commit
+      // together with the publish below.
+      await tx.delete(backupSnapshotFiles).where(eq(backupSnapshotFiles.snapshotDbId, snapshotDbId));
+      for (let i = 0; i < fileRows.length; i += FILE_ROW_BATCH_SIZE) {
+        await tx.insert(backupSnapshotFiles).values(fileRows.slice(i, i + FILE_ROW_BATCH_SIZE));
       }
 
       const externalCount = [...originCounts.values()].reduce((a, b) => a + b, 0);
-      const refused = await db.transaction(async (tx) => {
-        // The snapshot row lock serializes publication with the attestation
-        // verifier (backupAttestationVerify.ts finish) and with an attestation
-        // being recorded (backupAttestation.ts), which take the same lock
-        // first. The attestation is read by a LATER statement: under READ
-        // COMMITTED a statement's snapshot is taken before it waits for a
-        // lock, so only a statement issued after the lock is held sees the
-        // attestation in force when the index becomes visible.
-        const [current] = await tx
-          .select({ metadata: backupSnapshots.metadata, integrityStatus: backupSnapshots.integrityStatus })
-          .from(backupSnapshots)
-          .where(eq(backupSnapshots.id, snapshotDbId))
-          .limit(1)
-          .for('update');
-        const [attestationRow] = await tx
-          .select(indexAttestationColumns())
-          .from(backupSnapshotAttestations)
-          .where(eq(backupSnapshotAttestations.snapshotDbId, snapshotDbId))
-          .limit(1);
-        const refusal = attestationRefusal(indexAttestationOf(attestationRow), manifestSha256, current?.integrityStatus ?? null);
-        if (refusal) {
-          await tx
-            .update(backupSnapshots)
-            .set({ fileIndexStatus: 'failed', fileIndexError: `${refusal.failure}: ${refusal.reason}` })
-            .where(eq(backupSnapshots.id, snapshotDbId));
-          return refusal;
-        }
-        await tx.delete(backupSnapshotOrigins).where(eq(backupSnapshotOrigins.snapshotDbId, snapshotDbId));
-        if (originRows.length > 0) {
-          await tx.insert(backupSnapshotOrigins).values(originRows.map((o) => ({ snapshotDbId, ...o })));
-        }
-        await tx
-          .update(backupSnapshots)
-          .set({
-            fileIndexStatus: 'complete',
-            fileIndexManifestSha256: manifestSha256,
-            fileIndexHydratedAt: new Date(),
-            fileIndexExternalCount: externalCount,
-            fileIndexError: null,
-            metadata: { ...asRecord(current?.metadata), hasIndexedFiles: true, fileIndexVersion: 2 },
-          })
-          .where(eq(backupSnapshots.id, snapshotDbId));
-        return null;
-      });
-      if (refused) {
-        return { status: 'failed', failure: refused.failure, reason: refused.reason, retryable: false };
+      await tx.delete(backupSnapshotOrigins).where(eq(backupSnapshotOrigins.snapshotDbId, snapshotDbId));
+      if (originRows.length > 0) {
+        await tx.insert(backupSnapshotOrigins).values(originRows.map((o) => ({ snapshotDbId, ...o })));
       }
+      await tx
+        .update(backupSnapshots)
+        .set({
+          fileIndexStatus: 'complete',
+          fileIndexManifestSha256: manifestSha256,
+          fileIndexHydratedAt: new Date(),
+          fileIndexExternalCount: externalCount,
+          fileIndexError: null,
+          metadata: { ...asRecord(current.metadata), hasIndexedFiles: true, fileIndexVersion: 2 },
+        })
+        .where(claimPredicate(snapshot));
 
       return {
         status: 'complete',
@@ -621,7 +656,7 @@ async function verifyOriginsAndWrite(
         externalCount,
         originSnapshotIds: [...originCounts.keys()],
       };
-    }),
+    })),
   );
 }
 
@@ -662,7 +697,7 @@ export async function hydrateSnapshotFileIndex(
   try {
     return await verifyOriginsAndWrite(snapshotDbId, snapshot, parsedManifest.manifest);
   } catch (err) {
-    await failOutsideContext(snapshotDbId, 'provider_error', err instanceof Error ? err.message : String(err));
+    await failOutsideContext(snapshot, 'provider_error', err instanceof Error ? err.message : String(err));
     throw err;
   }
 }

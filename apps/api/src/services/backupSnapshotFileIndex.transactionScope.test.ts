@@ -27,9 +27,27 @@ const {
   contextDepth: { current: 0 },
 }));
 
+// The publish transaction first locks the snapshot row and re-reads the claim
+// (#11026 publish fence); answer it as the row this run claimed.
+function claimedAt(): unknown {
+  for (const result of [...updateMock.mock.results].reverse()) {
+    const set = (result.value as { set?: ReturnType<typeof vi.fn> })?.set;
+    const claim = set?.mock.calls.map((c) => c[0]).find((v) => v?.fileIndexStatus === 'hydrating');
+    if (claim) return claim.fileIndexHydratedAt;
+  }
+  return null;
+}
+function routeSelect(...args: unknown[]) {
+  const fields = args[0];
+  if (fields && typeof fields === 'object' && 'fileIndexHydratedAt' in fields && !('snapshotId' in fields)) {
+    return chainMock([{ fileIndexStatus: 'hydrating', fileIndexHydratedAt: claimedAt(), orgId: ORG_ID, deviceId: DEVICE_ID, metadata: {}, integrityStatus: null }]);
+  }
+  return selectMock(...(args as []));
+}
+
 vi.mock('../db', () => {
   const tx = {
-    select: (...args: unknown[]) => selectMock(...(args as [])),
+    select: (...args: unknown[]) => routeSelect(...args),
     insert: (...args: unknown[]) => insertMock(...(args as [])),
     update: (...args: unknown[]) => updateMock(...(args as [])),
     delete: (...args: unknown[]) => deleteMock(...(args as [])),
@@ -92,7 +110,7 @@ beforeEach(() => {
   updateMock.mockImplementation(() => chainMock([snapshotRow({ fileIndexStatus: 'hydrating' })]));
   deleteMock.mockImplementation(() => chainMock([]));
   transactionMock.mockImplementation(async (cb: any) => cb({
-    select: selectMock, insert: insertMock, update: updateMock, delete: deleteMock,
+    select: routeSelect, insert: insertMock, update: updateMock, delete: deleteMock,
   }));
   resolveSnapshotProviderConfigMock.mockResolvedValue({
     snapshot: snapshotRow(),
