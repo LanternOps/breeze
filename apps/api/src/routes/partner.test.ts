@@ -41,6 +41,8 @@ vi.mock('../db/schema', () => ({
 const postureMock = vi.hoisted(() => ({ listLatestPostureScoresByOrgs: vi.fn(async () => [] as any[]) }));
 vi.mock('../services/securityPosture', () => postureMock);
 
+const currentPermissions: { value: Array<{ resource: string; action: string }> } = { value: [{ resource: '*', action: '*' }] };
+
 // Mutable so a test can swap in an ORGANIZATION-scoped caller — the population
 // GET /partner/me was silently 404ing for (#2822).
 const currentAuth: { value: Record<string, unknown> } = {
@@ -57,6 +59,7 @@ const currentAuth: { value: Record<string, unknown> } = {
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', currentAuth.value);
+    c.set('permissions', { permissions: currentPermissions.value });
     return next();
   }),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
@@ -451,10 +454,40 @@ describe('GET /partner/me/entitlements', () => {
       currentAuth.value = { ...currentAuth.value, accessibleOrgIds: ['org-123', 'org-456'] };
     });
 
+    it('does not read or expose alert counts without alerts:read', async () => {
+      currentPermissions.value = [{ resource: 'orgs', action: 'read' }, { resource: 'devices', action: 'read' }];
+      try {
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockResolvedValue([{ id: 'org-123', name: 'Acme Co', status: 'active' }])
+              })
+            })
+          } as never)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([
+                { id: 'device-1', orgId: 'org-123', hostname: 'h1', status: 'online', lastSeenAt: null },
+              ])
+            })
+          } as never);
+        const res = await app.request('/partner/dashboard', { headers: { Authorization: 'Bearer token' } });
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data[0].alertCount).toBe(0);
+        expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2); // orgs + devices only, no alerts read
+      } finally {
+        currentPermissions.value = [{ resource: '*', action: '*' }];
+      }
+    });
+
     it('fills real open-alert counts and posture scores per org and device', async () => {
       const alertWhere = queueDashboardReads([
         { orgId: 'org-123', deviceId: 'device-1', n: 1 },
         { orgId: 'org-123', deviceId: null, n: 1 },
+        // Open alert on a device the card does not list (decommissioned/hidden).
+        { orgId: 'org-123', deviceId: 'hidden-device', n: 5 },
       ]);
       postureMock.listLatestPostureScoresByOrgs.mockResolvedValueOnce([
         { orgId: 'org-123', deviceId: 'device-1', overallScore: 70 },
@@ -476,7 +509,7 @@ describe('GET /partner/me/entitlements', () => {
 
       // One batched read, scoped to the partner's orgs only.
       expect(postureMock.listLatestPostureScoresByOrgs).toHaveBeenCalledTimes(1);
-      expect(postureMock.listLatestPostureScoresByOrgs).toHaveBeenCalledWith(['org-123', 'org-456']);
+      expect(postureMock.listLatestPostureScoresByOrgs).toHaveBeenCalledWith(['org-123', 'org-456'], ['device-1', 'device-2']);
 
       // The alert filter counts only active/acknowledged — not resolved/suppressed/dismissed.
       const params: unknown[] = [];

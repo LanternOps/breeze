@@ -5,7 +5,7 @@ import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { organizations, devices, partners, partnerUsers, alerts } from '../db/schema';
 import { listLatestPostureScoresByOrgs } from '../services/securityPosture';
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
 import { summarizeActiveContractMrrByOrg } from '../services/contractMrr';
 import { getEmailService } from '../services/email';
 import { ENTITLEMENTS, ENTITLEMENT_KEYS } from '@breeze/shared';
@@ -216,16 +216,30 @@ partnerRoutes.get(
       ne(devices.status, 'decommissioned'),
     ));
 
+  // Only devices the card lists count toward its rollups: hidden (ephemeral,
+  // parked, decommissioned) devices would otherwise make alertCount/compliance
+  // disagree with deviceCount (#5315).
+  const visibleDeviceIds = new Set(deviceRows.map((d) => d.id));
+
   // Open alerts (active + acknowledged; resolved/suppressed/dismissed are not
   // actionable) in one grouped query over the already-scoped org list (#11039).
-  const alertRows = await db
-    .select({ orgId: alerts.orgId, deviceId: alerts.deviceId, n: count() })
-    .from(alerts)
-    .where(and(inArray(alerts.orgId, orgIdList), inArray(alerts.status, ['active', 'acknowledged'])))
-    .groupBy(alerts.orgId, alerts.deviceId);
+  // The route gate is orgs:read + devices:read only (devices:read also covers
+  // the posture scores — same gate as /security reads). Alert counts need
+  // alerts:read: without it they stay 0 (the pre-#11039 value), not leaked.
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  const canReadAlerts = !!perms && hasPermission(perms, PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
+  const alertRows = canReadAlerts
+    ? await db
+        .select({ orgId: alerts.orgId, deviceId: alerts.deviceId, n: count() })
+        .from(alerts)
+        .where(and(inArray(alerts.orgId, orgIdList), inArray(alerts.status, ['active', 'acknowledged'])))
+        .groupBy(alerts.orgId, alerts.deviceId)
+    : [];
   const alertsByOrg = new Map<string, number>();
   const alertsByDevice = new Map<string, number>();
   for (const r of alertRows) {
+    // Org-level alerts (no device) count; device alerts only for listed devices.
+    if (r.deviceId && !visibleDeviceIds.has(r.deviceId)) continue;
     const n = Number(r.n);
     alertsByOrg.set(r.orgId, (alertsByOrg.get(r.orgId) ?? 0) + n);
     if (r.deviceId) alertsByDevice.set(r.deviceId, n);
@@ -233,7 +247,7 @@ partnerRoutes.get(
 
   // Compliance = the persisted security-posture overall score (the same one the
   // security posture views show); an org/device with no snapshot is null, not 100.
-  const postureRows = await listLatestPostureScoresByOrgs(orgIdList);
+  const postureRows = await listLatestPostureScoresByOrgs(orgIdList, [...visibleDeviceIds]);
   const scoreByDevice = new Map<string, number>();
   const orgScores = new Map<string, number[]>();
   for (const r of postureRows) {
