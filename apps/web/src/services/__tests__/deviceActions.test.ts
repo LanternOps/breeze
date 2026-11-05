@@ -4,6 +4,7 @@ import {
   bulkDecommissionDevices,
   decommissionDevice,
   executeScript,
+  requestBulkWakeCommand,
   sendBulkCommand,
   sendDeviceCommand,
   sendWakeCommand,
@@ -315,6 +316,20 @@ describe('deviceActions service', () => {
       fetchWithAuthMock.mockResolvedValue(makeResponse({ message: 'Delete rejected' }, false, 403));
 
       await expect(decommissionDevice('dev-1', { uninstallAgent: true })).rejects.toThrow('Delete rejected');
+    });
+  });
+
+  describe('requestBulkWakeCommand', () => {
+    it('posts the device ids to the bulk commands endpoint as a wake', async () => {
+      const response = makeResponse({ bulkId: 'bulk-1', succeeded: [], failed: [] });
+      fetchWithAuthMock.mockResolvedValue(response);
+
+      await expect(requestBulkWakeCommand(['dev-1', 'dev-2'])).resolves.toBe(response);
+
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/bulk/commands', {
+        method: 'POST',
+        body: JSON.stringify({ deviceIds: ['dev-1', 'dev-2'], type: 'wake' })
+      });
     });
   });
 

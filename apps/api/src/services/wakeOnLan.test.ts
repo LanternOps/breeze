@@ -148,7 +148,10 @@ function seedWake(status: string, network: unknown[] = [], history: unknown[] = 
 }
 
 const networkMac = { mac: 'AA:BB:CC:DD:EE:01', isPrimary: true, updatedAt: new Date() };
-const wake = () => dispatchWake('target', 'user', { relayDeviceIdOverride: 'relay' });
+const wake = async () => {
+  const prepared = await dispatchWake('target', 'user', { relayDeviceIdOverride: 'relay' });
+  return prepared.ok ? prepared.deliver() : prepared;
+};
 
 describe('dispatchWake target eligibility and MAC ordering', () => {
   afterEach(() => vi.useRealTimers());
@@ -200,15 +203,27 @@ describe('dispatchWake target eligibility and MAC ordering', () => {
     expect(applyWakeRelayResult).toHaveBeenCalledTimes(joined ? 0 : 1);
   });
 
-  it('defers the claim and WebSocket send until the committed delivery continuation runs', async () => {
+  it('reports a queued wake honestly and leaves the attempt open when delivery throws', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      seedWake('offline', [networkMac]);
+      vi.mocked(claimPendingCommandForDelivery).mockRejectedValueOnce(new Error('db down'));
+      expect(await wake()).toMatchObject({ ok: false, code: 'WS_SEND_FAILED', message: expect.stringContaining('next check-in') });
+      expect(applyWakeRelayResult).not.toHaveBeenCalled();
+      expect(log).toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('does not claim or send until the caller runs deliver', async () => {
     seedWake('offline', [networkMac]);
-    const result = await dispatchWake('target', 'user', { relayDeviceIdOverride: 'relay', deferDelivery: true });
+    const result = await dispatchWake('target', 'user', { relayDeviceIdOverride: 'relay' });
     expect(result.ok).toBe(true);
     expect(claimPendingCommandForDelivery).not.toHaveBeenCalled();
     expect(sendCommandToAgent).not.toHaveBeenCalled();
     if (!result.ok) throw new Error('Expected prepared wake');
-    expect(result.deliver).toBeTypeOf('function');
-    expect(await result.deliver!()).toMatchObject({ ok: true, commandId: 'command' });
+    expect(await result.deliver()).toMatchObject({ ok: true, commandId: 'command' });
     expect(sendCommandToAgent).toHaveBeenCalledTimes(1);
   });
 

@@ -23,7 +23,7 @@ import { ENABLE_2FA } from '../auth/schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { commandAuditDetails, sanitizeCommandForHistory } from '../../services/commandAudit';
 import { runBulkIsolated } from '../../lib/bulkOps';
-import { dispatchWake, type WakeFailureCode, type WakeResult } from '../../services/wakeOnLan';
+import { dispatchWake, type WakeFailure, type WakeFailureCode, type WakePrepared } from '../../services/wakeOnLan';
 import { dispatchDeviceCommand } from '../../services/dispatchDeviceCommand';
 import type { QueuedCommand } from '../../services/commandQueue';
 import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
@@ -107,7 +107,7 @@ commandsRoutes.post(
       // Each authorization and preparation commits independently. Delivery runs
       // in runBulkIsolated's post-commit hook so fast relay results can see both
       // the command and attempt even while later devices are still preparing.
-      await runBulkIsolated<WakeResult | undefined>(
+      await runBulkIsolated<WakePrepared | WakeFailure | undefined>(
         dbAccessContextFromAuth(auth),
         deviceIds,
         async (deviceId) => {
@@ -139,12 +139,11 @@ commandsRoutes.post(
             ipAddress,
             userAgent,
             bulkId,
-            deferDelivery: true,
           });
         },
         async (deviceId, prepared) => {
           if (!prepared) return;
-          const result = prepared.ok && prepared.deliver ? await prepared.deliver() : prepared;
+          const result = prepared.ok ? await prepared.deliver() : prepared;
           if (result.ok) {
             succeeded.push({
               deviceId,
@@ -510,144 +509,156 @@ commandsRoutes.post(
       return c.json({ error: 'Script commands must be executed through the scripts endpoint' }, 400);
     }
 
-    const device = await getDeviceWithOrgCheck(deviceId, auth);
-    if (!device) {
-      return c.json({ error: 'Device not found' }, 404);
-    }
-    if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
-      return c.json({ error: 'Access to this site denied' }, 403);
-    }
-
-    // Don't allow commands to decommissioned devices
-    if (device.status === 'decommissioned') {
-      return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
-    }
-
-    try {
-      await assertDeviceExecuteAllowed(
-        deviceId,
-        data.type === 'wake' ? COMMAND_WAKE_ON_LAN : data.type,
-        auth.user.id,
-      );
-    } catch (error) {
-      if (!(error instanceof TrustDeniedError)) throw error;
-      return c.json(trustDenyBody({
-        allow: false,
-        code: error.code,
-        capability: 'device_execute',
-        reason: error.reason,
-      }, false), 403);
-    }
-
-    // Dedup refresh_inventory: each click fans out ~12 collectors on the
-    // agent, and the API returns 201 as soon as the row is inserted, so a
-    // fast clicker could queue an unbounded backlog. Reject when a pending
-    // refresh_inventory already exists for this device. Other commands
-    // are self-limiting (reboot/shutdown — the device goes away) or rare
-    // (containment, evidence collection) so this guard is scoped narrowly.
-    // (#830)
-    if (data.type === 'refresh_inventory') {
-      const [existingPending] = await db
-        .select({ id: deviceCommands.id })
-        .from(deviceCommands)
-        .where(
-          and(
-            eq(deviceCommands.deviceId, deviceId),
-            eq(deviceCommands.type, 'refresh_inventory'),
-            eq(deviceCommands.status, 'pending'),
-          ),
-        )
-        .limit(1);
-      if (existingPending) {
-        return c.json(
-          {
-            error: 'An inventory refresh is already pending for this device',
-            code: 'ALREADY_PENDING',
-            commandId: existingPending.id,
-          },
-          409,
-        );
-      }
-    }
-
-    // Wake-on-LAN takes a separate path: the command row must be addressed to
-    // an online relay agent on the target's LAN, not the offline target.
-    if (data.type === 'wake') {
-      const wake = await dispatchWake(deviceId, auth.user.id, {
-        ipAddress: getTrustedClientIpOrUndefined(c),
-        userAgent: c.req.header('user-agent'),
-      });
-      if (!wake.ok) {
-        return c.json({ error: wake.message, code: wake.code }, 412);
-      }
-      return c.json({
-        id: wake.commandId,
-        deviceId,
-        type: 'wake_on_lan',
-        status: 'sent',
-        wakeAttemptId: wake.wakeAttemptId,
-        relay: { deviceId: wake.relayDeviceId, hostname: wake.relayHostname },
-        network: wake.network,
-        broadcast: wake.broadcast,
-        macs: wake.macs,
-      }, 202);
-    }
-
-    // #5128: through the one enqueue seam. The row now carries a delivery
-    // deadline and its submitting org, and an online device gets the socket
-    // push here instead of waiting for its next heartbeat.
-    const res = await dispatchDeviceCommand({
-      deviceId,
-      type: data.type,
-      payload: data.payload || {},
-      userId: auth.user.id,
-    });
-    if (!res.ok) {
-      if (res.code === 'device_decommissioned') {
-        return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
-      }
-      if (res.code === 'device_not_found') {
+    // This route is registered in middleware/selfManagedDbContextRoutes.ts: wake
+    // must commit its attempt and command before the relay can answer. Every
+    // other command keeps one transaction around the whole branch.
+    const outcome = await withAuthDbAccessContext(auth, async () => {
+      const device = await getDeviceWithOrgCheck(deviceId, auth);
+      if (!device) {
         return c.json({ error: 'Device not found' }, 404);
       }
-      if (res.code === 'trust_denied' && res.trust) {
+      if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
+
+      // Don't allow commands to decommissioned devices
+      if (device.status === 'decommissioned') {
+        return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
+      }
+
+      try {
+        await assertDeviceExecuteAllowed(
+          deviceId,
+          data.type === 'wake' ? COMMAND_WAKE_ON_LAN : data.type,
+          auth.user.id,
+        );
+      } catch (error) {
+        if (!(error instanceof TrustDeniedError)) throw error;
         return c.json(trustDenyBody({
           allow: false,
-          code: res.error as TrustDenyCode,
+          code: error.code,
           capability: 'device_execute',
-          reason: res.trust.reason,
+          reason: error.reason,
         }, false), 403);
       }
-      return c.json({ error: res.error }, 500);
-    }
-    const command = res.command;
 
-    writeRouteAudit(c, {
-      orgId: device.orgId,
-      action: 'device.command.queue',
-      resourceType: 'device_command',
-      resourceId: command.id,
-      resourceName: data.type,
-      details: {
-        deviceId,
-        ...commandAuditDetails(command.id, data.type, data.payload || {}),
-        delivery: res.delivery,
+      // Dedup refresh_inventory: each click fans out ~12 collectors on the
+      // agent, and the API returns 201 as soon as the row is inserted, so a
+      // fast clicker could queue an unbounded backlog. Reject when a pending
+      // refresh_inventory already exists for this device. Other commands
+      // are self-limiting (reboot/shutdown — the device goes away) or rare
+      // (containment, evidence collection) so this guard is scoped narrowly.
+      // (#830)
+      if (data.type === 'refresh_inventory') {
+        const [existingPending] = await db
+          .select({ id: deviceCommands.id })
+          .from(deviceCommands)
+          .where(
+            and(
+              eq(deviceCommands.deviceId, deviceId),
+              eq(deviceCommands.type, 'refresh_inventory'),
+              eq(deviceCommands.status, 'pending'),
+            ),
+          )
+          .limit(1);
+        if (existingPending) {
+          return c.json(
+            {
+              error: 'An inventory refresh is already pending for this device',
+              code: 'ALREADY_PENDING',
+              commandId: existingPending.id,
+            },
+            409,
+          );
+        }
       }
-    });
 
+      // Wake-on-LAN takes a separate path: the command row must be addressed to
+      // an online relay agent on the target's LAN, not the offline target.
+      if (data.type === 'wake') {
+        const wake = await dispatchWake(deviceId, auth.user.id, {
+          ipAddress: getTrustedClientIpOrUndefined(c),
+          userAgent: c.req.header('user-agent'),
+        });
+        if (!wake.ok) {
+          return c.json({ error: wake.message, code: wake.code }, 412);
+        }
+        return wake;
+      }
+
+      // #5128: through the one enqueue seam. The row now carries a delivery
+      // deadline and its submitting org, and an online device gets the socket
+      // push here instead of waiting for its next heartbeat.
+      const res = await dispatchDeviceCommand({
+        deviceId,
+        type: data.type,
+        payload: data.payload || {},
+        userId: auth.user.id,
+      });
+      if (!res.ok) {
+        if (res.code === 'device_decommissioned') {
+          return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
+        }
+        if (res.code === 'device_not_found') {
+          return c.json({ error: 'Device not found' }, 404);
+        }
+        if (res.code === 'trust_denied' && res.trust) {
+          return c.json(trustDenyBody({
+            allow: false,
+            code: res.error as TrustDenyCode,
+            capability: 'device_execute',
+            reason: res.trust.reason,
+          }, false), 403);
+        }
+        return c.json({ error: res.error }, 500);
+      }
+      const command = res.command;
+
+      writeRouteAudit(c, {
+        orgId: device.orgId,
+        action: 'device.command.queue',
+        resourceType: 'device_command',
+        resourceId: command.id,
+        resourceName: data.type,
+        details: {
+          deviceId,
+          ...commandAuditDetails(command.id, data.type, data.payload || {}),
+          delivery: res.delivery,
+        }
+      });
+
+      return c.json({
+        id: command.id,
+        deviceId: command.deviceId,
+        type: command.type,
+        status: command.status,
+        createdAt: command.createdAt,
+        // #5128: how the command was handed over, and when it expires if the
+        // device never comes back. 'queued_offline' is what the UI renders as
+        // "Runs when the device is online — expires <date>". 'cancelled' means
+        // the push's claim-time check refused it; `cancelReason` says why.
+        delivery: res.delivery,
+        deliverBy: res.deliverBy,
+        ...(res.cancelReason ? { cancelReason: res.cancelReason } : {}),
+      }, 201);
+    });
+    if (outcome instanceof Response) return outcome;
+
+    const delivered = await outcome.deliver();
+    if (!delivered.ok) {
+      return c.json({ error: delivered.message, code: delivered.code }, 412);
+    }
     return c.json({
-      id: command.id,
-      deviceId: command.deviceId,
-      type: command.type,
-      status: command.status,
-      createdAt: command.createdAt,
-      // #5128: how the command was handed over, and when it expires if the
-      // device never comes back. 'queued_offline' is what the UI renders as
-      // "Runs when the device is online — expires <date>". 'cancelled' means
-      // the push's claim-time check refused it; `cancelReason` says why.
-      delivery: res.delivery,
-      deliverBy: res.deliverBy,
-      ...(res.cancelReason ? { cancelReason: res.cancelReason } : {}),
-    }, 201);
+      id: delivered.commandId,
+      deviceId,
+      type: 'wake_on_lan',
+      status: 'sent',
+      wakeAttemptId: delivered.wakeAttemptId,
+      relay: { deviceId: delivered.relayDeviceId, hostname: delivered.relayHostname },
+      network: delivered.network,
+      broadcast: delivered.broadcast,
+      macs: delivered.macs,
+    }, 202);
   }
 );
 

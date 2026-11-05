@@ -1257,6 +1257,9 @@ async function handleWakeOnLanResult({ command, result, stdout }: Parameters<Com
   const attemptId = payload?.wakeAttemptId;
   if (typeof attemptId !== 'string' || !PG_UUID_REGEX.test(attemptId)) return;
   const parsed = parseAgentJson(z.object({ packetsSent: z.number().int().nonnegative() }), stdout);
+  if (result.status === 'completed' && parsed === null) {
+    console.warn('[wakeAttempts] relay reported completed with unreadable output; recording send_failed', { commandId: command.id, attemptId });
+  }
   await applyWakeRelayResult(attemptId, result.status === 'completed' && parsed !== null && parsed.packetsSent > 0);
 }
 

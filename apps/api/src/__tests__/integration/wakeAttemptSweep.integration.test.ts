@@ -36,6 +36,14 @@ describe('wake attempt sweep and retention (real Postgres)', () => {
     expect(await attempt(a.id)).toMatchObject({ outcome: 'came_online', resolvedAt: now, bootAfterSend: uptime !== null && uptime <= 600 });
     expect(await status(a.deviceId)).toMatchObject({ orgId, lastCameOnlineAt: now, proofFingerprint: null, consecutiveTimeouts: 0 });
   });
+  it('boot_after_send measures from the last sighting, not the current time', async () => {
+    const lastSeen = new Date(+now - 120_000);
+    const booted = await seed('sent', lastSeen, 480);
+    const earlier = await seed('sent', lastSeen, 481);
+    await resolveOpenWakeAttempts(() => now);
+    expect(await attempt(booted.id)).toMatchObject({ outcome: 'came_online', bootAfterSend: true });
+    expect(await attempt(earlier.id)).toMatchObject({ outcome: 'came_online', bootAfterSend: false });
+  });
   it('closes promptly before deadline, using current fingerprint and clearing timeouts', async () => {
     const a = await seed('pending', now, 0, new Date(+now - 60_000));
     await getTestDb().insert(deviceWakeStatus).values({ deviceId: a.deviceId, orgId, fingerprint: 'current', proofFingerprint: 'old', consecutiveTimeouts: 3 });

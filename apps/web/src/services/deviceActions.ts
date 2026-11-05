@@ -123,7 +123,9 @@ export type WakeFailureCode =
   | 'IPV6_ONLY'
   | 'NO_RELAY'
   | 'RELAY_OVERRIDE_INVALID'
-  | 'WS_SEND_FAILED';
+  | 'WS_SEND_FAILED'
+  | 'COMMAND_CANCELLED'
+  | 'DEVICE_PENDING_ASSIGNMENT';
 
 export interface WakeResponse {
   id: string;
@@ -261,15 +263,10 @@ export async function sendWakeCommand(deviceId: string): Promise<WakeResponse> {
   return await response.json();
 }
 
-/** Bulk-wake result codes — same as WakeFailureCode plus two bulk-only
- *  shapes the bulk handler emits before reaching dispatchWake. */
-export type BulkWakeFailureCode =
-  | WakeFailureCode
-  | 'DECOMMISSIONED'
-  // The bulk handler also emits TARGET_NOT_FOUND for "not found OR
-  // partner-scope access denied" — same as dispatchWake's own
-  // TARGET_NOT_FOUND but raised earlier (before dispatchWake is invoked).
-  ;
+/** Bulk-wake result codes: WakeFailureCode plus DECOMMISSIONED, which the bulk
+ *  handler emits before reaching dispatchWake. It also emits TARGET_NOT_FOUND
+ *  early, for "not found OR partner-scope access denied". */
+export type BulkWakeFailureCode = WakeFailureCode | 'DECOMMISSIONED';
 
 export interface BulkWakeSucceeded {
   deviceId: string;
@@ -303,7 +300,7 @@ export function requestBulkWakeCommand(deviceIds: string[]): Promise<Response> {
  * Render a one-line failure-code summary suitable for the bulk-wake toast,
  * grouping by code. Returns an empty string when there are no failures.
  *
- * Example: "3 have no online peer at their site; 1 has no MAC on file"
+ * Example: "3 with no online peer at their site; 1 with no MAC on file"
  */
 export function summarizeBulkWakeFailures(failed: BulkWakeFailed[]): string {
   const buckets = new Map<string, { label: string; count: number }>();

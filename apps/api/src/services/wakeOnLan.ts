@@ -15,6 +15,7 @@ import { cancelledCommandError } from './commandCancelMessage';
 import { isAgentConnected, sendCommandToAgent } from '../routes/agentWs';
 import { isParkedDevice, PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE } from './unassignedPool/deliveryEligibility';
 import { markRequestAuditWritten } from './auditRequestTracking';
+import { captureException } from './sentry';
 
 export type WakeFailureCode =
   | 'TARGET_NOT_FOUND'
@@ -35,8 +36,6 @@ export type WakeFailureCode =
 
 export interface WakeSuccess {
   ok: true;
-  /** Caller must invoke after committing its transaction, with no ambient DB context. */
-  deliver?: () => Promise<WakeResult>;
   commandId: string;
   wakeAttemptId: string;
   targetDeviceId: string;
@@ -57,6 +56,15 @@ export interface WakeFailure {
 }
 
 export type WakeResult = WakeSuccess | WakeFailure;
+
+export interface WakePrepared extends WakeSuccess {
+  /**
+   * Sends the committed command to the relay. Call it after the caller's
+   * transaction commits, with no ambient DB context: a relay result that
+   * arrives before the commit finds no command row and is dropped.
+   */
+  deliver: () => Promise<WakeResult>;
+}
 
 type MaskSource = 'agent' | 'fallback_24';
 
@@ -174,7 +182,9 @@ async function resolveTargetMacs(targetDeviceId: string, orgId: string): Promise
     .orderBy(desc(newestHistory))
     .limit(32);
 
-  // Validate before candidate deduplication and the final eight-MAC cap.
+  // Validate before candidate deduplication and the final eight-MAC cap. The
+  // query's limit runs first, so 32 newer invalid MACs could crowd out a valid
+  // one; it bounds the rival lookup below, and history is only the fallback.
   const candidates = new Map<string, typeof fromHistory[number]>();
   for (const row of fromHistory) {
     if (!row.mac || !isWakeableMac(row.mac)) continue;
@@ -337,8 +347,6 @@ async function selectRelay(
 }
 
 interface DispatchWakeOptions {
-  /** Prepare rows now; the caller commits before invoking the returned delivery continuation. */
-  deferDelivery?: boolean;
   /** Force a specific relay (must be online, same site, same subnet). For troubleshooting. */
   relayDeviceIdOverride?: string;
   /** IP address of the request (for the audit row). */
@@ -355,7 +363,7 @@ export async function dispatchWake(
   targetDeviceId: string,
   userId: string,
   options: DispatchWakeOptions = {},
-): Promise<WakeResult> {
+): Promise<WakePrepared | WakeFailure> {
   const [target] = await db
     .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, hostname: devices.hostname, status: devices.status, lastSeenAt: devices.lastSeenAt })
     .from(devices)
@@ -485,10 +493,8 @@ export async function dispatchWake(
     })
     .returning({ id: deviceCommands.id });
 
-  if (!command) {
-    if (!joined) await withSystemDbAccessContext(() => applyWakeRelayResult(wakeAttemptId, false));
-    return { ok: false, code: 'WS_SEND_FAILED', message: 'Failed to record wake command.' };
-  }
+  // Throwing rolls the attempt back with the caller's transaction.
+  if (!command) throw new Error('Failed to record wake command');
 
   if (!joined) {
     await db.update(deviceWakeAttempts).set({ deviceCommandId: command.id })
@@ -539,32 +545,40 @@ export async function dispatchWake(
     macs,
   };
   const deliver = async (): Promise<WakeResult> => {
-    const claimed = await claimPendingCommandForDelivery(command.id);
-    if (claimed.status === 'cancelled') {
-      if (!joined) await withSystemDbAccessContext(() => applyWakeRelayResult(wakeAttemptId, false));
-      return { ok: false, code: 'COMMAND_CANCELLED', message: cancelledCommandError(claimed.reason) };
-    }
-    if (claimed.status !== 'claimed') {
-      if (!joined) await withSystemDbAccessContext(() => applyWakeRelayResult(wakeAttemptId, false));
-      return { ok: false, code: 'WS_SEND_FAILED', message: 'Failed to claim wake command for dispatch.' };
-    }
+    try {
+      const claimed = await claimPendingCommandForDelivery(command.id);
+      if (claimed.status === 'cancelled') {
+        if (!joined) await withSystemDbAccessContext(() => applyWakeRelayResult(wakeAttemptId, false));
+        return { ok: false, code: 'COMMAND_CANCELLED', message: cancelledCommandError(claimed.reason) };
+      }
+      if (claimed.status !== 'claimed') {
+        if (!joined) await withSystemDbAccessContext(() => applyWakeRelayResult(wakeAttemptId, false));
+        return { ok: false, code: 'WS_SEND_FAILED', message: 'Failed to claim wake command for dispatch.' };
+      }
 
-    // #8318 §6.4: to the relay's agent_id read IN the claim, not the one the
-    // relay selection read before it (a reattach or re-enroll may have
-    // committed since).
-    const sent = sendCommandToAgent(claimed.agentId, {
-      id: command.id,
-      type: CommandTypes.WAKE_ON_LAN,
-      payload,
-    });
+      // #8318 §6.4: to the relay's agent_id read IN the claim, not the one the
+      // relay selection read before it (a reattach or re-enroll may have
+      // committed since).
+      const sent = sendCommandToAgent(claimed.agentId, {
+        id: command.id,
+        type: CommandTypes.WAKE_ON_LAN,
+        payload,
+      });
 
-    if (!sent) {
-      if (!joined) await withSystemDbAccessContext(() => applyWakeRelayResult(wakeAttemptId, false));
-      await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
-      return { ok: false, code: 'WS_SEND_FAILED', message: 'Relay agent went offline before the command could be sent. Try again.' };
+      if (!sent) {
+        if (!joined) await withSystemDbAccessContext(() => applyWakeRelayResult(wakeAttemptId, false));
+        await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
+        return { ok: false, code: 'WS_SEND_FAILED', message: 'Relay agent went offline before the command could be sent. Try again.' };
+      }
+
+      return success;
+    } catch (error) {
+      // The rows are committed, so the relay can still pick the command up at
+      // its next check-in. The attempt stays open for the sweep to resolve.
+      console.error('[wakeOnLan] wake delivery failed after commit', { commandId: command.id, wakeAttemptId, error });
+      captureException(error);
+      return { ok: false, code: 'WS_SEND_FAILED', message: 'The wake command is queued but could not be sent right away. The relay may still send it at its next check-in.' };
     }
-
-    return success;
   };
-  return options.deferDelivery ? { ...success, deliver } : deliver();
+  return { ...success, deliver };
 }

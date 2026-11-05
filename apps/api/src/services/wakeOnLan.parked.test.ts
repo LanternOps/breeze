@@ -80,7 +80,8 @@ describe('dispatchWake for a device parked in a holding org', () => {
       .mockReturnValueOnce(chain([{ id: RELAY, agentId: 'relay-agent', hostname: 'relay', siteId: 'site-1', status: 'online' }]));
     parkedDeviceIds.add(RELAY);
 
-    const result = await dispatchWake(TARGET, 'user-1', { relayDeviceIdOverride: RELAY });
+    const prepared = await dispatchWake(TARGET, 'user-1', { relayDeviceIdOverride: RELAY });
+    const result = prepared.ok ? await prepared.deliver() : prepared;
 
     expect(result).toMatchObject({ ok: false, code: 'DEVICE_PENDING_ASSIGNMENT' });
     expect(insertMock).not.toHaveBeenCalled();
@@ -117,7 +118,8 @@ describe('dispatchWake when the push claim cancels the wake command', () => {
       status: 'cancelled', id: 'wake-cmd', reason: 'requester_inactive',
     });
 
-    const result = await dispatchWake(TARGET, 'user-1', { relayDeviceIdOverride: RELAY });
+    const prepared = await dispatchWake(TARGET, 'user-1', { relayDeviceIdOverride: RELAY });
+    const result = prepared.ok ? await prepared.deliver() : prepared;
 
     expect(result).toMatchObject({
       ok: false,
@@ -161,7 +163,8 @@ describe('dispatchWake pushes to the relay agent id read in the claim (#8318 §6
     });
     vi.mocked(sendCommandToAgent).mockReturnValue(true);
 
-    const result = await dispatchWake(TARGET, 'user-1', { relayDeviceIdOverride: RELAY });
+    const prepared = await dispatchWake(TARGET, 'user-1', { relayDeviceIdOverride: RELAY });
+    const result = prepared.ok ? await prepared.deliver() : prepared;
 
     expect(result).toMatchObject({ ok: true, commandId: 'wake-cmd' });
     expect(sendCommandToAgent).toHaveBeenCalledTimes(1);

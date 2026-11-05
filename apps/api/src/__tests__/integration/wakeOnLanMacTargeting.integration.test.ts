@@ -48,7 +48,10 @@ describe('Wake-on-LAN MAC targeting (real Postgres)', () => {
       deviceId, orgId, interfaceName: address, macAddress: address, updatedAt: ago(days), isPrimary,
     });
   }
-  const wake = () => withSystemDbAccessContext(() => dispatchWake(target, userId, { relayDeviceIdOverride: rival }));
+  const wake = async () => {
+    const prepared = await withSystemDbAccessContext(() => dispatchWake(target, userId, { relayDeviceIdOverride: rival }));
+    return prepared.ok ? prepared.deliver() : prepared;
+  };
 
   it('unions device_network with device_ip_history MACs seen within 30 days, newest first', async () => {
     await network(target, mac(1), 20, true);

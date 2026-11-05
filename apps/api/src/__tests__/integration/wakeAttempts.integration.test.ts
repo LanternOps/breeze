@@ -17,6 +17,7 @@ vi.mock('../../services/commandDispatch', () => ({
 import { sendCommandToAgent } from '../../routes/agentWs';
 import { claimPendingCommandForDelivery } from '../../services/commandDispatch';
 import { runBulkIsolated } from '../../lib/bulkOps';
+import { commandResultHandlers } from '../../services/commandResultHandlers';
 import { dispatchWake } from '../../services/wakeOnLan';
 import { applyWakeRelayResult, openOrJoinWakeAttempt, WAKE_OUTCOME_WINDOW_MS } from '../../services/wakeAttempts';
 
@@ -46,7 +47,10 @@ describe('wake attempts (real Postgres)', () => {
   const input = () => ({ deviceId: target, orgId, relayDeviceId: relay, relayHostname: 'test-relay', requestedBy, macs, broadcast: '192.0.2.255' });
   const open = () => withSystemDbAccessContext(() => openOrJoinWakeAttempt(input()));
   const rows = () => getTestDb().select().from(deviceWakeAttempts).where(eq(deviceWakeAttempts.deviceId, target));
-  const wake = (override = relay) => withSystemDbAccessContext(() => dispatchWake(target, requestedBy, override ? { relayDeviceIdOverride: override } : {}));
+  const wake = async (override = relay) => {
+    const prepared = await withSystemDbAccessContext(() => dispatchWake(target, requestedBy, override ? { relayDeviceIdOverride: override } : {}));
+    return prepared.ok ? prepared.deliver() : prepared;
+  };
   async function seedNetwork(withHistory = true) {
     await getTestDb().insert(deviceNetwork).values({ deviceId: target, orgId, interfaceName: 'eth0', macAddress: macs[0] });
     if (withHistory) await getTestDb().insert(deviceIpHistory).values({
@@ -181,13 +185,13 @@ describe('wake attempts (real Postgres)', () => {
         await secondGate;
         return undefined;
       }
-      const result = await dispatchWake(deviceId, requestedBy, { relayDeviceIdOverride: relay, deferDelivery: true });
+      const result = await dispatchWake(deviceId, requestedBy, { relayDeviceIdOverride: relay });
       // Settle any synchronous-send observations before this transaction commits.
       // A premature send must not pass just because the observer's query is slower.
       await Promise.all(observations);
       return result;
     }, async (_deviceId, value) => {
-      if (value?.ok) await value.deliver?.();
+      if (value?.ok) await value.deliver();
     });
     try {
       await secondEntered;
@@ -243,8 +247,40 @@ describe('wake attempts (real Postgres)', () => {
     const foreignOrg = (await createOrganization({ partnerId })).id;
     const context = { scope: 'organization' as const, orgId: foreignOrg, accessibleOrgIds: [foreignOrg], accessiblePartnerIds: [], userId: null, currentPartnerId: partnerId };
     await withDbAccessContext(context, () => applyWakeRelayResult(attemptId, false));
-    await expect(withDbAccessContext(context, () => openOrJoinWakeAttempt(input()))).rejects.toThrow();
+    const denied = await withDbAccessContext(context, () => openOrJoinWakeAttempt(input())).catch(error => error);
+    expect((denied as { cause?: { code?: string } }).cause?.code).toBe('42501');
     expect(await rows()).toEqual(before);
+  });
+
+  it('the owning organization can apply a relay result', async () => {
+    const { attemptId } = await open();
+    const context = { scope: 'organization' as const, orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null };
+    await withDbAccessContext(context, () => applyWakeRelayResult(attemptId, true));
+    expect(await rows()).toMatchObject([{ outcome: 'sent', resolvedAt: null }]);
+  });
+
+  it('a relay result through the registered handler moves the attempt', async () => {
+    const { attemptId } = await open();
+    const handler = commandResultHandlers.wake_on_lan!;
+    const call = (stdout: string, status: string) => withSystemDbAccessContext(() => handler({
+      agentId: 'relay-agent', commandId: randomUUID(),
+      command: { id: randomUUID(), type: 'wake_on_lan', payload: { wakeAttemptId: attemptId } },
+      result: { status }, stdout,
+    } as never));
+    await call(JSON.stringify({ packetsSent: 3 }), 'completed');
+    expect(await rows()).toMatchObject([{ outcome: 'sent' }]);
+    await getTestDb().update(deviceWakeAttempts).set({ outcome: 'pending' }).where(eq(deviceWakeAttempts.id, attemptId));
+    await call(JSON.stringify({ packetsSent: 0 }), 'completed');
+    expect(await rows()).toMatchObject([{ outcome: 'send_failed' }]);
+  });
+
+  it('stores the bulk id on opened and refused attempts', async () => {
+    const bulkId = randomUUID();
+    await withSystemDbAccessContext(() => openOrJoinWakeAttempt({ ...input(), bulkId }));
+    expect(await rows()).toMatchObject([{ bulkId, outcome: 'pending' }]);
+    await getTestDb().delete(deviceWakeAttempts).where(eq(deviceWakeAttempts.deviceId, target));
+    expect(await withSystemDbAccessContext(() => dispatchWake(target, requestedBy, { bulkId }))).toMatchObject({ ok: false, code: 'NO_MACS' });
+    expect(await rows()).toMatchObject([{ bulkId, outcome: 'refused', refusalCode: 'NO_MACS' }]);
   });
 
   it.each(['WS_SEND_FAILED', 'COMMAND_CANCELLED'] as const)('%s closes pending but preserves a joined sent attempt', async code => {

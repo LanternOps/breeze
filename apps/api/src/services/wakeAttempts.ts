@@ -1,6 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { db, withDbTransaction } from '../db';
 import { deviceWakeAttempts } from '../db/schema/deviceWake';
+import { captureException } from './sentry';
 import type { WakeFailureCode } from './wakeOnLan';
 
 export const WAKE_OUTCOME_WINDOW_MS = 600_000;
@@ -50,6 +51,7 @@ export async function recordWakeRefusal(input: WakeRequest & { code: WakeFailure
     });
   } catch (error) {
     console.error('[wakeAttempts] failed to record wake refusal', { deviceId: input.deviceId, code: input.code, error });
+    captureException(error);
   }
 }
 

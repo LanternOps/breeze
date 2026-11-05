@@ -43,6 +43,29 @@ describe('device wake tables', () => {
     }
   });
 
+  it('a foreign org cannot read, change or delete rows; the owning org can', async () => {
+    const a = await fixture();
+    const b = await fixture();
+    await admin(sql`INSERT INTO device_wake_status (device_id, org_id, consecutive_timeouts)
+      VALUES (${a.device.id}::uuid, ${a.org.id}::uuid, 0)`);
+    await admin(attempt(a));
+    const expectRows = async (orgId: string, count: number) => {
+      const work = async (query: SQL) => (await withDbAccessContext(orgContext(orgId), () => db.execute(query))).length;
+      for (const [table, write] of [
+        ['device_wake_status', sql`consecutive_timeouts = 1`],
+        ['device_wake_attempts', sql`send_count = 2`],
+      ] as const) {
+        const name = sql.raw(table);
+        const where = sql`device_id = ${a.device.id}::uuid`;
+        expect(await work(sql`SELECT 1 FROM ${name} WHERE ${where}`)).toBe(count);
+        expect(await work(sql`UPDATE ${name} SET ${write} WHERE ${where} RETURNING 1`)).toBe(count);
+        expect(await work(sql`DELETE FROM ${name} WHERE ${where} RETURNING 1`)).toBe(count);
+      }
+    };
+    await expectRows(b.org.id, 0);
+    await expectRows(a.org.id, 1);
+  });
+
   it('a second open attempt for one device violates the partial unique index, 23505', async () => {
     const t = await fixture();
     await admin(attempt(t));
