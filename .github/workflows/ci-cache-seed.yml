@@ -9,8 +9,10 @@ name: CI cache seed
 # .github/scripts/ci-cache-policy.test.mjs enforces it.
 #
 # Entries unused for 7 days are evicted, so the daily schedule also restores
-# each entry (which counts as a use) and only re-warms on a miss. Trigger by
-# hand with:
+# each entry (which counts as a use) and only re-warms on a miss. Past the
+# 10 GB limit GitHub evicts least-recently-used entries of any kind, so the
+# last job keeps the total under a budget (docs/agents/testing.md, #11119).
+# Trigger by hand with:
 #   gh workflow run "CI cache seed" --ref main
 on:
   push:
@@ -21,11 +23,18 @@ on:
       - agent/go.mod
       - .github/tauri-apt-packages.txt
       - .github/scripts/tauri-apt.sh
+      - .github/scripts/ci-cache-prune.mjs
       - docker/**
       - .github/actions/**
       - .github/workflows/ci-cache-seed.yml
   schedule:
+    # Daily: every seed job.
     - cron: '17 5 * * *'
+    # The Tauri closure (and the Trivy DB) only: about a minute on a hit, and
+    # it keeps the closure recently used and re-saves it if it was evicted.
+    - cron: '17 11,17,23 * * *'
+    # Weekly: also rebuild the image layer caches (see seed-smoke-images).
+    - cron: '37 5 * * 1'
   workflow_dispatch:
 
 permissions:
@@ -42,6 +51,8 @@ env:
 jobs:
   seed-pnpm:
     name: Seed pnpm cache (${{ matrix.os }})
+    # Not on the six-hourly Tauri-only schedule.
+    if: github.event.schedule != '17 11,17,23 * * *'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     strategy:
@@ -121,6 +132,8 @@ jobs:
 
   seed-go:
     name: Seed Go cache (${{ matrix.os }})
+    # Not on the six-hourly Tauri-only schedule.
+    if: github.event.schedule != '17 11,17,23 * * *'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -223,6 +236,8 @@ jobs:
 
   seed-golangci-lint:
     name: Seed golangci-lint binary cache
+    # Not on the six-hourly Tauri-only schedule.
+    if: github.event.schedule != '17 11,17,23 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -355,6 +370,39 @@ jobs:
                   || echo "::warning::could not delete cache ${key}"
               done
 
+      # A hit saves nothing, and the entry restored at the top of this job can be
+      # evicted before it ends: on 2026-11-05 it was restored at 05:39 and gone by
+      # 09:36 (#11119). Look again on the way out and put back what was restored,
+      # which is the exact closure this job planned, verified when it was first
+      # saved. A listing that fails counts as gone: saving a key that still
+      # exists is refused by the cache service and changes nothing.
+      - name: Check the Tauri apt entry survived
+        id: recheck
+        if: steps.cache.outputs.cache-hit == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: tauri-apt-${{ steps.image.outputs.id }}-${{ hashFiles('.github/tauri-apt-packages.txt') }}-${{ steps.plan.outputs.closure }}
+        run: |
+          if ! n=$(gh cache list --repo "${GITHUB_REPOSITORY}" --ref "${GITHUB_REF}" --key "${KEY}" \
+            --limit 100 --json key --jq '[.[] | select(.key == env.KEY)] | length'); then
+            echo "::warning::could not list caches; saving ${KEY} again in case it is gone"
+            n=0
+          fi
+          if [ "${n}" = "0" ]; then
+            echo "::warning::${KEY} is no longer in the cache; saving it again"
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "${KEY} is still cached"
+          fi
+
+      - name: Re-save Tauri apt cache
+        if: steps.recheck.outputs.missing == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/tauri-debs
+          key: tauri-apt-${{ steps.image.outputs.id }}-${{ hashFiles('.github/tauri-apt-packages.txt') }}-${{ steps.plan.outputs.closure }}
+
   # security.yml runs trivy-action with its cache off (that cache saves from PR
   # refs) and restores the DB through the restore-trivy-db composite, which takes
   # the newest older day when today's key is not saved yet.
@@ -415,8 +463,15 @@ jobs:
 
   # Buildkit layer caches (type=gha) are scoped like every other cache, so PR
   # builds read what main exports here. Builds mirror ci.yml's, no push.
+  #
+  # Not daily: each run exports about 1 GB of new layers (`COPY . .` changes with
+  # every commit, and mode=max keeps every stage), which is what pushed the repo
+  # to its cache limit (#10762, #11119). The layers PRs actually reuse (base
+  # images, dependency installs) change with the paths that trigger this
+  # workflow on push; the weekly run catches anything else.
   seed-smoke-images:
     name: Seed smoke image layers (${{ matrix.image }})
+    if: github.event_name != 'schedule' || github.event.schedule == '37 5 * * 1'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -456,6 +511,8 @@ jobs:
 
   seed-workspace-runtime:
     name: Seed workspace runtime layers
+    # Same schedule as seed-smoke-images.
+    if: github.event_name != 'schedule' || github.event.schedule == '37 5 * * 1'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -475,3 +532,29 @@ jobs:
           push: false
           cache-from: type=gha,scope=workspace-runtime
           cache-to: type=gha,mode=max,scope=workspace-runtime
+
+  # Runs after every other job, so this run's own exports are counted. Deletes
+  # the retired families, then evicts until the total is under the budget:
+  # other refs' entries first, then main's least-recently-used buildkit layers.
+  # Seed keys (go, pnpm, Tauri, Trivy, golangci-lint) are never evicted here, so
+  # GitHub's own LRU eviction, which takes any kind, should not be reached. A red
+  # run means the seed keys alone no longer fit the budget.
+  enforce-cache-budget:
+    name: Enforce the cache budget
+    needs: [seed-pnpm, seed-go, seed-golangci-lint, seed-tauri-apt, seed-trivy-db, seed-smoke-images, seed-workspace-runtime]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write # Delete cache entries.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Enforce the cache budget
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/ci-cache-prune.mjs budget

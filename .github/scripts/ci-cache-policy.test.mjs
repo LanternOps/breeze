@@ -521,3 +521,136 @@ test('the Go seed drops the restored module cache before downloading a new go.su
   const download = warm.search(/go mod download/);
   assert.ok(clean >= 0 && clean < download, 'go clean -modcache must run before go mod download');
 });
+
+// ---- Seed resilience (#11119) ------------------------------------------------
+// The Tauri closure was restored at 05:39 (a hit, so nothing was saved) and gone
+// by 09:36: at the 10 GB limit GitHub evicts least-recently-used entries of any
+// kind, and the seed's own buildkit exports (~1 GB a run) were the churn.
+const DAILY = '17 5 * * *';
+const SIX_HOURLY = '17 11,17,23 * * *';
+const WEEKLY = '37 5 * * 1';
+const jobIf = (name) => {
+  const job = jobBlocks(seedText()).find((j) => j.name === name);
+  assert.ok(job, `missing seed job ${name}`);
+  return job.text.match(/^ {4}if:\s*(.+?)\s*$/m)?.[1] ?? null;
+};
+
+test('seed schedules: daily for everything, six-hourly for the Tauri closure, weekly for image layers', () => {
+  const crons = [...triggers(seedText()).matchAll(/^\s+- cron: '([^']+)'/gm)].map((m) => m[1]);
+  assert.deepEqual(crons.sort(), [DAILY, SIX_HOURLY, WEEKLY].sort());
+  // The six-hourly hours must not include the daily one, or that slot runs twice.
+  assert.ok(!SIX_HOURLY.split(' ')[1].split(',').includes(DAILY.split(' ')[1]));
+});
+
+test('only the Tauri and Trivy seeds run on the six-hourly schedule', () => {
+  for (const name of ['seed-tauri-apt', 'seed-trivy-db']) assert.equal(jobIf(name), null, `${name} is gated`);
+  for (const name of ['seed-pnpm', 'seed-go', 'seed-golangci-lint']) {
+    assert.equal(jobIf(name), `github.event.schedule != '${SIX_HOURLY}'`, name);
+  }
+});
+
+// Each image seed run exports about 1 GB of new layers (`COPY . .` changes on
+// every commit), so a daily rebuild churned the cache for layers PRs never hit.
+// The layers PRs do reuse (deps, base images) change with the paths that already
+// trigger the seed on push.
+test('image layer seeds run on push, dispatch and the weekly schedule only', () => {
+  for (const name of ['seed-smoke-images', 'seed-workspace-runtime']) {
+    assert.equal(jobIf(name), `github.event_name != 'schedule' || github.event.schedule == '${WEEKLY}'`, name);
+  }
+});
+
+test('a Tauri hit re-checks its entry on the way out and saves it again if it is gone', () => {
+  const job = jobBlocks(seedText()).find((j) => j.name === 'seed-tauri-apt');
+  const jobSteps = steps(job.text, 6);
+  const at = (re) => jobSteps.findIndex((s) => re.test(s));
+  const save = jobSteps[at(/name: Save Tauri apt cache$/m)];
+  const recheckAt = at(/name: Check the Tauri apt entry survived$/m);
+  const resaveAt = at(/name: Re-save Tauri apt cache$/m);
+  assert.equal(recheckAt, jobSteps.length - 2, 'the re-check must be the last thing before the re-save');
+  assert.equal(resaveAt, jobSteps.length - 1);
+  const recheck = jobSteps[recheckAt];
+  const resave = jobSteps[resaveAt];
+  assert.match(recheck, /^\s+id: recheck$/m);
+  assert.match(recheck, /^\s+if: steps\.cache\.outputs\.cache-hit == 'true'$/m);
+  assert.equal(sameClosure(withValue(recheck, 'KEY')), sameClosure(withValue(save, 'key')));
+  // Listing failures count as "gone": saving a key that still exists is a no-op.
+  assert.match(recheck, /missing=true/);
+  assert.doesNotMatch(recheck, /continue-on-error/);
+  assert.match(resave, /^\s+if: steps\.recheck\.outputs\.missing == 'true'$/m);
+  assert.ok(usesOf(resave).startsWith('actions/cache/save@'));
+  assert.equal(withValue(resave, 'key'), withValue(save, 'key'));
+  assert.equal(withValue(resave, 'path'), withValue(save, 'path'));
+});
+
+// ---- Cache budget (#11119) ---------------------------------------------------
+const GB = 1e9;
+const at = (h) => new Date(Date.UTC(2026, 10, 5, h)).toISOString();
+
+test('planBudget always deletes retired families, on any ref', async () => {
+  const { planBudget, RETIRED_PREFIXES } = await loadPrune();
+  assert.deepEqual([...RETIRED_PREFIXES].sort(), ['node-cache-', 'setup-go-', 'trivy-binary-']);
+  const entries = [
+    entry('node-cache-Linux-x64-pnpm-a', { sizeInBytes: 0.6 * GB }),
+    entry('setup-go-Windows-x64-go-1.26.10-b', { sizeInBytes: 0.2 * GB, ref: 'refs/pull/1/merge' }),
+    entry('trivy-binary-v0.70.0-Linux-X64', { sizeInBytes: 0.04 * GB }),
+    entry('go-Linux-c', { sizeInBytes: 1.3 * GB }),
+  ];
+  const { deletions, remaining, overBudget } = planBudget(entries, { budgetBytes: 8.5 * GB, mainRef: 'refs/heads/main' });
+  assert.deepEqual(deletions.map((e) => e.key).sort(), entries.slice(0, 3).map((e) => e.key).sort());
+  assert.equal(remaining, 1.3 * GB);
+  assert.equal(overBudget, false);
+});
+
+test('planBudget evicts other refs first, then main buildkit blobs oldest-first, and stops at the budget', async () => {
+  const { planBudget } = await loadPrune();
+  const entries = [
+    entry('go-Linux-a', { sizeInBytes: 4 * GB, lastAccessedAt: at(0) }),
+    entry('tauri-apt-ubuntu26-x-y', { sizeInBytes: 0.2 * GB, lastAccessedAt: at(0) }),
+    entry('buildkit-blob-1-sha256:new', { sizeInBytes: 2 * GB, lastAccessedAt: at(9) }),
+    entry('buildkit-blob-1-sha256:old', { sizeInBytes: 1 * GB, lastAccessedAt: at(1) }),
+    entry('buildkit-blob-1-sha256:mid', { sizeInBytes: 1 * GB, lastAccessedAt: at(5) }),
+    entry('pnpm-Linux-pr', { sizeInBytes: 0.5 * GB, lastAccessedAt: at(10), ref: 'refs/pull/7/merge' }),
+    entry('buildkit-blob-1-sha256:tag', { sizeInBytes: 0.5 * GB, lastAccessedAt: at(11), ref: 'refs/tags/v1.0.0' }),
+  ];
+  // 9.2 GB total; 8.5 budget: the two non-main entries (1 GB) are enough.
+  let plan = planBudget(entries, { budgetBytes: 8.5 * GB, mainRef: 'refs/heads/main' });
+  assert.deepEqual(plan.deletions.map((e) => e.key).sort(), ['buildkit-blob-1-sha256:tag', 'pnpm-Linux-pr']);
+  // 6.5 budget: then main blobs, oldest access first, until under it.
+  plan = planBudget(entries, { budgetBytes: 6.5 * GB, mainRef: 'refs/heads/main' });
+  assert.deepEqual(plan.deletions.map((e) => e.key),
+    ['pnpm-Linux-pr', 'buildkit-blob-1-sha256:tag', 'buildkit-blob-1-sha256:old', 'buildkit-blob-1-sha256:mid']);
+  assert.ok(Math.abs(plan.remaining - 6.2 * GB) < 1);
+  assert.equal(plan.overBudget, false);
+});
+
+test('planBudget never evicts a main entry that is not a buildkit blob, and says when the budget cannot be met', async () => {
+  const { planBudget } = await loadPrune();
+  const entries = [
+    entry('go-Linux-a', { sizeInBytes: 6 * GB }),
+    entry('tauri-apt-ubuntu26-x-y', { sizeInBytes: 0.2 * GB }),
+    entry('buildkit-blob-1-sha256:a', { sizeInBytes: 1 * GB }),
+  ];
+  const plan = planBudget(entries, { budgetBytes: 5 * GB, mainRef: 'refs/heads/main' });
+  assert.deepEqual(plan.deletions.map((e) => e.key), ['buildkit-blob-1-sha256:a']);
+  assert.equal(plan.overBudget, true);
+});
+
+test('planBudget is a no-op under budget', async () => {
+  const { planBudget } = await loadPrune();
+  const plan = planBudget([entry('buildkit-blob-1-sha256:a', { sizeInBytes: 1 * GB })], { budgetBytes: 8.5 * GB, mainRef: 'refs/heads/main' });
+  assert.deepEqual(plan.deletions, []);
+});
+
+test('the seed enforces the budget last, on main only, and a failure shows', async () => {
+  const { BUDGET_BYTES } = await loadPrune();
+  assert.equal(BUDGET_BYTES, 8.5 * GB, 'docs/agents/testing.md documents 8.5 GB (1.5 GB under the limit)');
+  const jobs = jobBlocks(seedText());
+  const budget = jobs.find((j) => j.name === 'enforce-cache-budget');
+  assert.ok(budget, 'missing enforce-cache-budget job');
+  const needs = budget.text.match(/^ {4}needs:\s*\[(.+)\]\s*$/m)?.[1].split(',').map((s) => s.trim()).sort();
+  assert.deepEqual(needs, jobs.map((j) => j.name).filter((n) => n !== 'enforce-cache-budget').sort());
+  assert.match(budget.text, /^ {4}if: \$\{\{ !cancelled\(\) && github\.ref == 'refs\/heads\/main' \}\}$/m);
+  assert.match(budget.text, /^ {4}permissions:\n {6}contents: read\n {6}actions: write\b/m);
+  assert.match(budget.text, /node \.github\/scripts\/ci-cache-prune\.mjs budget$/m);
+  assert.doesNotMatch(budget.text, /continue-on-error/);
+});
