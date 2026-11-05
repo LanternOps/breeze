@@ -1526,8 +1526,9 @@ async function stampDispatchPinAndIdentity(params: {
       } catch (err) {
         // Diagnosis only — the dispatch itself already committed.
         console.warn(
-          `[BackupWorker] Job ${params.jobId} has no incremental base and will upload a FULL copy; ` +
-            `recording the reason failed: ${err instanceof Error ? err.message : String(err)}`,
+          `[BackupWorker] Job ${params.jobId} (device ${params.deviceId}, config ${params.configId}) has no ` +
+            `incremental base and will upload a FULL copy; diagnosing or recording the reason failed: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }

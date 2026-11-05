@@ -642,10 +642,11 @@ describe('full_backup_reason (#11027)', () => {
   async function stampedReason(
     ctx: { deviceId: string; configId: string; dispatchJobId: string },
     providerConfig: Record<string, unknown>,
+    provider = 'local',
   ) {
     const outcome = await withSystemDbAccessContext(() => __testOnly.stampDispatchPinAndIdentity({
       deviceId: ctx.deviceId, configId: ctx.configId, jobId: ctx.dispatchJobId,
-      mode: 'file', provider: 'local', providerConfig,
+      mode: 'file', provider, providerConfig,
     }));
     const row = await withSystemDbAccessContext(async () => {
       const [r] = await db.select().from(backupJobs).where(eq(backupJobs.id, ctx.dispatchJobId));
@@ -666,6 +667,20 @@ describe('full_backup_reason (#11027)', () => {
 
     expect(outcome.baseSnapshotId).toBe('');
     expect(row.fullBackupReason).toBe('no_prior_snapshot');
+  });
+
+  runDb('an invalid destination prefix stamps invalid_destination_prefix', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ctx = await withSystemDbAccessContext(async () => {
+      const { orgId, deviceId, configId } = await seedOrgDeviceConfig(unique);
+      const [dispatchJob] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'pending' }).returning({ id: backupJobs.id });
+      return { deviceId, configId, dispatchJobId: dispatchJob!.id };
+    });
+
+    const { outcome, row } = await stampedReason(ctx, { bucket: `b-${unique}`, region: 'us-east-1', prefix: 'msp//acme' }, 's3');
+
+    expect(outcome.baseSnapshotId).toBe('');
+    expect(row.fullBackupReason).toBe('invalid_destination_prefix');
   });
 
   runDb('dispatch with an eligible base leaves it NULL', async () => {

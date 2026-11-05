@@ -344,6 +344,22 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
 
   // #11027: the reason is explanatory. Dispatch has committed by the time it is
   // stored, so losing it must not turn an accepted full copy into a failed job.
+  it('stores the diagnosed fallback reason, and only over a NULL', async () => {
+    const realUpdate = mockDb.update.getMockImplementation()!;
+    const payloads: Array<Record<string, unknown>> = [];
+    mockDb.update.mockImplementation(((...args: unknown[]) => {
+      const chain = (realUpdate as (...a: unknown[]) => { set: (p: Record<string, unknown>) => unknown })(...args);
+      return { set: (payload: Record<string, unknown>) => { payloads.push(payload); return chain.set(payload); } };
+    }) as never);
+
+    await __testOnly.processDispatchBackup(DATA as any);
+
+    // In the dispatch transaction: no base, so no reason yet (an older helper).
+    expect(payloads[0]).toMatchObject({ baseSnapshotId: null, fullBackupReason: null });
+    // After commit: the probe found no snapshot at all.
+    expect(payloads[1]).toEqual({ fullBackupReason: 'no_prior_snapshot' });
+  });
+
   it('still dispatches when storing the diagnosed fallback reason fails', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const realUpdate = mockDb.update.getMockImplementation()!;
@@ -359,7 +375,7 @@ describe('processDispatchBackup DB-context scoping (final-review fix, #4084/#110
 
     expect(result).toEqual({ dispatched: true });
     expect(agentRelayMock.dispatchCommandToAgent).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('recording the reason failed: reason stamp failed'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('diagnosing or recording the reason failed: reason stamp failed'));
     warn.mockRestore();
   });
 
