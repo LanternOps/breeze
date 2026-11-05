@@ -152,6 +152,7 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "get_alert_correlations.alertIds",
         "get_alert_correlations.groupId",
         "get_alert_correlations.orgId",
+        "get_audit_retention.orgId",
         "get_browser_security.orgId",
         "get_catalog_item.catalogItemId",
         "get_cis_compliance.baselineId",
