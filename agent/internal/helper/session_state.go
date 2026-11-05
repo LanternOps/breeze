@@ -75,6 +75,11 @@ type sessionState struct {
 	lastExit      assistExit
 	lastExitKnown bool
 
+	// waitingForUser: the last launch attempt in this session found nobody
+	// signed in (#10379). Dedupes the DEBUG wait line to one per change; not a
+	// failure, so it never touches crashFailures or watcherGaveUp.
+	waitingForUser bool
+
 	// brandingRejectLogged dedupes the WARN for a rejected branding decision.
 	brandingRejectLogged bool
 	// brandingReadLogged dedupes the WARN for an unreadable stored branding.
