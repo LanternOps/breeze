@@ -485,30 +485,51 @@ test('planSuperseded refuses a keep key outside its own prefix', async () => {
   assert.throws(() => planSuperseded([], { prefix: 'go-Linux-', keep: 'pnpm-Linux-x' }), /prefix/);
 });
 
-// The prune step's KEEP must be the key the job just saved and PREFIX the family
-// its restore falls back to, or it deletes the live entry.
-const SUPERSEDED = {
-  'seed-pnpm': { save: 'Save pnpm cache', prefix: 'pnpm-${{ runner.os }}-' },
-  'seed-go': { save: 'Save Go cache', prefix: 'go-${{ runner.os }}-' },
-  'seed-trivy-db': { save: 'Save Trivy DB cache', prefix: 'cache-trivy-' },
-};
-for (const [jobName, { save, prefix }] of Object.entries(SUPERSEDED)) {
-  test(`${jobName} prunes its superseded keys after saving, with actions: write`, () => {
-    const job = jobBlocks(seedText()).find((j) => j.name === jobName);
-    assert.ok(job, `missing ${jobName}`);
-    assert.match(job.text, /^ {4}permissions:\n {6}contents: read\n {6}actions: write\b/m);
-    const jobSteps = steps(job.text, 6);
-    const saveAt = jobSteps.findIndex((s) => new RegExp(`name: ${save}$`, 'm').test(s));
-    const pruneAt = jobSteps.findIndex((s) => /ci-cache-prune\.mjs superseded/.test(s));
-    assert.ok(saveAt >= 0 && pruneAt > saveAt, `save at ${saveAt}, prune at ${pruneAt}`);
-    const prune = jobSteps[pruneAt];
-    assert.equal(withValue(prune, 'KEEP'), withValue(jobSteps[saveAt], 'key'));
-    assert.equal(withValue(prune, 'PREFIX'), prefix);
-    assert.match(prune, /^\s+continue-on-error: true$/m, 'pruning is housekeeping; it never fails the seed');
-    // Runs on a hit too, so a pair left by an earlier failed prune is cleared.
-    assert.doesNotMatch(prune, /^\s+if:/m);
-  });
-}
+// The prune job recomputes each key the seed jobs saved. If its hash or OS list
+// drifts from theirs it keeps the wrong key: with the "keep not listed" guard
+// that deletes nothing, but it also prunes nothing, silently.
+const seedJob = (name) => jobBlocks(seedText()).find((j) => j.name === name);
+const runnerOs = { 'ubuntu-latest': 'Linux', 'macos-latest': 'macOS', 'windows-latest': 'Windows' };
+const matrixOses = (name) => seedJob(name).text.match(/^\s+os:\s*\[(.+)\]\s*$/m)[1].split(',').map((s) => runnerOs[s.trim()]);
+
+test('the prune job recomputes exactly the keys the pnpm, Go and Trivy seeds save, for every OS they run on', () => {
+  const prune = steps(seedJob('enforce-cache-budget').text, 6).find((s) => /name: Prune superseded seed keys$/m.test(s));
+  assert.ok(prune, 'missing Prune superseded seed keys step');
+  const families = [
+    { job: 'seed-pnpm', save: 'Save pnpm cache', prefix: 'pnpm-', env: 'PNPM_HASH' },
+    { job: 'seed-go', save: 'Save Go cache', prefix: 'go-', env: 'GO_HASH' },
+  ];
+  for (const { job, save, prefix, env } of families) {
+    const key = withValue(steps(seedJob(job).text, 6).find((s) => new RegExp(`name: ${save}$`, 'm').test(s)), 'key');
+    assert.equal(`${prefix}\${{ runner.os }}-${withValue(prune, env)}`, key, `${env} vs the ${job} save key`);
+    const loop = prune.match(new RegExp(`for os in ([A-Za-z ]+); do prune "${prefix}\\$\\{os\\}-" "\\$\\{${env}\\}"; done`));
+    assert.ok(loop, `no prune loop for ${prefix}`);
+    assert.deepEqual(loop[1].trim().split(/\s+/).sort(), matrixOses(job).sort(), `${prefix} OS list vs the ${job} matrix`);
+  }
+  const date = composites.find((c) => c.name === 'restore-trivy-db').text.match(/date=\$\((date [^)]+)\)/)[1];
+  assert.ok(prune.includes(`prune cache-trivy- "$(${date})"`), `Trivy key must use the composite's ${date}`);
+  assert.doesNotMatch(prune, /continue-on-error/);
+  assert.match(prune, /\|\| echo "::warning::/, 'a failed prune warns and moves on; it only costs space');
+});
+
+// Seed jobs run pnpm install (dependency lifecycle scripts), go builds and trivy.
+// A token that can delete caches or dispatch workflows stays out of them.
+test('no seed job that installs, builds or scans holds actions: write', () => {
+  for (const job of jobBlocks(seedText())) {
+    const writes = /^ {6}actions: write\b/m.test(job.text);
+    // seed-tauri-apt prunes its own closures (#11015) and runs apt downloads only.
+    if (job.name === 'enforce-cache-budget' || job.name === 'seed-tauri-apt') continue;
+    assert.ok(!writes, `${job.name} holds actions: write`);
+  }
+  const budget = steps(seedJob('enforce-cache-budget').text, 6);
+  for (const s of budget) {
+    const uses = usesOf(s);
+    assert.ok(!uses || uses.startsWith('actions/checkout@'), `enforce-cache-budget runs ${uses}`);
+    const code = s.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+    assert.doesNotMatch(code, /\b(?:pnpm (?:install|i)|go (?:build|test|mod|install|run)|npm (?:ci|install)|trivy (?:fs|image))\b/,
+      `enforce-cache-budget step runs more than the prune script:\n${s}`);
+  }
+});
 
 test('the pnpm seed starts a new lockfile from an empty store, so the saved store is that lockfile only', () => {
   const restore = seedStep('Restore pnpm cache');
