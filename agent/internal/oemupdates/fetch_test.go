@@ -170,22 +170,35 @@ func TestFetchNon200Fails(t *testing.T) {
 	}
 }
 
-func TestCompiledAllowlist(t *testing.T) {
-	dell, ok := laneAllowlist(LaneDell)
+// The allowlist is per role: the Dell tool installer may only be Dell-signed
+// from Dell's hosts, and only the .NET prerequisite may be Microsoft's.
+// Otherwise any Microsoft-signed binary on a Microsoft host could be run as
+// the "tool installer".
+func TestCompiledAllowlistIsPerRole(t *testing.T) {
+	tool, ok := laneAllowlist(LaneDell)
 	if !ok {
 		t.Fatal("no dell entry in allowlist.json")
 	}
-	for _, p := range []string{"Dell Inc", "Microsoft Corporation"} {
-		if !contains(dell.Publishers, p) {
-			t.Errorf("dell publishers missing %q", p)
-		}
+	if strings.Join(tool.Publishers, ",") != "Dell Inc" {
+		t.Errorf("dell tool publishers = %v, want only Dell Inc", tool.Publishers)
 	}
-	for _, h := range []string{"dl.dell.com", "downloads.dell.com", "builds.dotnet.microsoft.com", "download.visualstudio.microsoft.com"} {
-		if !contains(dell.Hosts, h) {
-			t.Errorf("dell hosts missing %q", h)
-		}
+	if strings.Join(tool.Hosts, ",") != "dl.dell.com,downloads.dell.com" {
+		t.Errorf("dell tool hosts = %v", tool.Hosts)
+	}
+	rt, ok := prerequisiteAllowlist(LaneDell, "dotnet_desktop_runtime")
+	if !ok {
+		t.Fatal("no dotnet_desktop_runtime entry")
+	}
+	if strings.Join(rt.Publishers, ",") != "Microsoft Corporation" {
+		t.Errorf("runtime publishers = %v", rt.Publishers)
+	}
+	if strings.Join(rt.Hosts, ",") != "builds.dotnet.microsoft.com,download.visualstudio.microsoft.com" {
+		t.Errorf("runtime hosts = %v", rt.Hosts)
 	}
 	if _, ok := laneAllowlist("acme"); ok {
 		t.Fatal("an unknown lane has an allowlist")
+	}
+	if _, ok := prerequisiteAllowlist(LaneDell, "anything_else"); ok {
+		t.Fatal("an unknown prerequisite has an allowlist")
 	}
 }

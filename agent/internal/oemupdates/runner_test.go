@@ -418,8 +418,9 @@ func TestDriverOnlyRunKilledAtDeadline(t *testing.T) {
 	}
 }
 
-// Review Focus 5: while the flash guard is held the process is never killed;
-// the run reports interrupted once it ends.
+// Review Focus 5: while the flash guard is held the process is never killed.
+// When it ends late, what the tool reported stands (a reboot it needs must
+// still be scheduled) and the overrun is named in errorCode.
 func TestFlashNotKilledAtDeadline(t *testing.T) {
 	withRunDeadline(t, 50*time.Millisecond)
 	f := newRunFixture(t)
@@ -435,11 +436,26 @@ func TestFlashNotKilledAtDeadline(t *testing.T) {
 		}
 	}
 	r := f.run()
-	if r.Outcome != OutcomeInterrupted || errCode(r) != "flash_overran_deadline" {
+	if r.Outcome != OutcomeSuccessRebootRequired || errCode(r) != "flash_overran_deadline" {
 		t.Fatalf("result = %+v", r)
 	}
 	if !r.RebootRequired || r.RawExitCode == nil || *r.RawExitCode != 1 {
 		t.Fatal("an overrun flash must keep what the tool reported")
+	}
+}
+
+func TestFlashOverrunWithNoToolResultIsInterrupted(t *testing.T) {
+	withRunDeadline(t, 50*time.Millisecond)
+	f := newRunFixture(t)
+	f.deps.Clock = nil
+	f.req.NotAfter = time.Now().Add(time.Hour)
+	f.req.Categories = []string{CategoryBIOS}
+	f.lane.apply = func(ctx context.Context, tool ToolState, plan FilterPlan, ex Exec) (RunResult, error) {
+		time.Sleep(150 * time.Millisecond)
+		return RunResult{Lane: LaneDell}, errors.New("tool vanished")
+	}
+	if r := f.run(); r.Outcome != OutcomeInterrupted || errCode(r) != "flash_overran_deadline" {
+		t.Fatalf("result = %+v", r)
 	}
 }
 

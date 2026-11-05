@@ -190,7 +190,8 @@ func TestPrerequisiteInstalledFirstAndVerified(t *testing.T) {
 	spec.Prerequisites = []Prerequisite{{Name: "dotnet_desktop_runtime", MinVersion: "10.0.8",
 		URL: "https://builds.dotnet.microsoft.com/rt.exe", SHA256: strings.Repeat("b", 64)}}
 	// Downloads are named by role, so the verifier can sign each differently.
-	f.lane.allow.Publishers = []string{"Dell Inc", "Microsoft Corporation"}
+	// The tool allowlist stays Dell-only: the runtime is trusted through its
+	// own role's list, never the tool's.
 	f.deps.Verifier = verifierFunc(func(path string) (string, error) {
 		switch {
 		case strings.HasSuffix(path, "prereq-0.exe"):
@@ -264,6 +265,12 @@ func TestSilentInstallWithoutPrerequisiteDetected(t *testing.T) {
 func TestPrerequisiteThatDoesNotTakeIsDetected(t *testing.T) {
 	f := newInstallFixture()
 	f.lane.prereqs["dotnet_desktop_runtime"] = &fakePrereq{installed: "8.0.0"} // never becomes 10
+	f.deps.Verifier = verifierFunc(func(path string) (string, error) {
+		if strings.HasSuffix(path, "prereq-0.exe") {
+			return "Microsoft Corporation", nil
+		}
+		return "Dell Inc", nil
+	})
 	spec := toolSpec()
 	spec.Prerequisites = []Prerequisite{{Name: "dotnet_desktop_runtime", MinVersion: "10.0.8",
 		URL: "https://builds.dotnet.microsoft.com/rt.exe", SHA256: strings.Repeat("b", 64)}}

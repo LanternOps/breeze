@@ -33,6 +33,28 @@ type Marker struct {
 	FlashStarted bool       `json:"flashStarted"`
 	EndedAt      *time.Time `json:"endedAt,omitempty"`
 	Outcome      Outcome    `json:"outcome,omitempty"`
+	// RebootRequired and ShutdownRequired are the ended run's, kept so a
+	// result lost before hand-off still asks for the reboot it needs.
+	RebootRequired   bool `json:"rebootRequired,omitempty"`
+	ShutdownRequired bool `json:"shutdownRequired,omitempty"`
+}
+
+// LostResult is reported for a run that ended but whose result never left
+// the agent: the recorded outcome stands, and errorCode says the detail was
+// lost. ok is false when the marker has no usable outcome.
+func (m Marker) LostResult() (RunResult, bool) {
+	if m.EndedAt == nil || !containsOutcome(m.Outcome) {
+		return RunResult{}, false
+	}
+	r := RunResult{
+		Lane: m.Lane, Outcome: m.Outcome, ErrorCode: strPtr("result_lost_after_run"),
+		RebootRequired: m.RebootRequired, ShutdownRequired: m.ShutdownRequired, Takeover: TakeoverNotAttempted,
+	}
+	if m.ToolVersion != "" {
+		v := sanitizeToolText(m.ToolVersion, maxVersionLen)
+		r.ToolVersion = &v
+	}
+	return r, r.Validate() == nil
 }
 
 // WriteMarker records m durably.

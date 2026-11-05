@@ -10,7 +10,8 @@ import (
 )
 
 const (
-	pendingFile = "verify.json"
+	pendingFile        = "verify.json"
+	pendingCorruptFile = "verify.json.corrupt"
 	// maxPendingVerifications bounds the file. Two firmware runs without a
 	// reboot between them is already unusual.
 	maxPendingVerifications = 8
@@ -71,8 +72,15 @@ func addPendingVerification(store Store, p PendingVerification) error {
 	defer pendingMu.Unlock()
 	list, err := readPendingLocked(store)
 	if err != nil {
-		// An unreadable file must not block recording a flash: start over.
-		log.Warn("pending vendor update verifications unreadable; replacing", "error", err.Error())
+		// An unreadable file must not block recording a flash. Its entries
+		// are earlier flashes still owed a check, so the bytes are kept beside
+		// it for a person to read rather than overwritten.
+		if raw, rerr := store.ReadFile(pendingFile); rerr == nil {
+			if werr := store.WriteFile(pendingCorruptFile, raw); werr != nil {
+				log.Error("could not keep an unreadable pending-verification file; earlier entries are lost", "error", werr.Error())
+			}
+		}
+		log.Error("pending vendor update verifications unreadable; kept as "+pendingCorruptFile+" and replaced", "error", err.Error())
 		list = nil
 	}
 	next := make([]PendingVerification, 0, len(list)+1)

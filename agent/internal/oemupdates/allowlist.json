@@ -1,11 +1,14 @@
 {
   "dell": {
-    "publishers": ["Dell Inc", "Microsoft Corporation"],
-    "hosts": [
-      "dl.dell.com",
-      "downloads.dell.com",
-      "builds.dotnet.microsoft.com",
-      "download.visualstudio.microsoft.com"
-    ]
+    "tool": {
+      "publishers": ["Dell Inc"],
+      "hosts": ["dl.dell.com", "downloads.dell.com"]
+    },
+    "prerequisites": {
+      "dotnet_desktop_runtime": {
+        "publishers": ["Microsoft Corporation"],
+        "hosts": ["builds.dotnet.microsoft.com", "download.visualstudio.microsoft.com"]
+      }
+    }
   }
 }

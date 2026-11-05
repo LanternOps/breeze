@@ -46,6 +46,17 @@ func EnsureTool(ctx context.Context, lane Lane, spec *ToolSpec, deps Deps) (Tool
 	needInstall := !state.Present
 	code := "tool_absent"
 	if state.Present {
+		// The cached version is up to a day old; the range is decided on a
+		// fresh read, and a change makes the gate detect again next time.
+		fresh, err := lane.ToolVersion(state.Path)
+		if err != nil {
+			log.Debug("vendor tool version unreadable", "lane", lane.ID(), "path", state.Path, "error", err.Error())
+			fresh = ""
+		}
+		if fresh != state.Version {
+			gate.Invalidate()
+			state.Version = fresh
+		}
 		switch eff.position(state.Version) {
 		case inRange:
 			if err := verifyPublisher(deps.Verifier, state.Path, lane.Allow()); err != nil {
@@ -97,8 +108,8 @@ func installTool(ctx context.Context, lane Lane, spec *ToolSpec, eff VersionRang
 	handlers := make([]PrerequisiteHandler, len(spec.Prerequisites))
 	for i, p := range spec.Prerequisites {
 		h, ok := lane.Prerequisite(p.Name)
-		if !ok {
-			return ToolState{}, runErr("unknown_prerequisite", fmt.Errorf("lane %s has no prerequisite %q", lane.ID(), p.Name))
+		if !ok || h.Installed == nil || h.InstallArgs == nil || len(h.Allow.Publishers) == 0 || len(h.Allow.Hosts) == 0 {
+			return ToolState{}, runErr("unknown_prerequisite", fmt.Errorf("lane %s has no usable prerequisite %q", lane.ID(), p.Name))
 		}
 		handlers[i] = h
 	}
@@ -108,7 +119,7 @@ func installTool(ctx context.Context, lane Lane, spec *ToolSpec, eff VersionRang
 			continue
 		}
 		installer := filepath.Join(dir, fmt.Sprintf("prereq-%d.exe", i))
-		if err := fetchAndVerify(ctx, deps, p.URL, p.SHA256, allow, installer); err != nil {
+		if err := fetchAndVerify(ctx, deps, p.URL, p.SHA256, h.Allow, installer); err != nil {
 			return ToolState{}, err
 		}
 		args := h.InstallArgs(installer, filepath.Join(dir, fmt.Sprintf("prereq-%d.log", i)))

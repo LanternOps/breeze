@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/flashguard"
@@ -21,17 +22,31 @@ const flashSectionKind = "oem_update"
 
 const workDir = "work"
 
-// Run executes one oem_update_run. The order is fixed: elevation, notAfter,
-// lock, marker, preflight, tool (gate, fresh verification, install), category
-// split, flash guard, Apply, mapped result, marker end. It never returns an
-// invalid result: anything the contract would refuse becomes "failed".
+// Run executes one oem_update_run. The order is fixed: seams, elevation,
+// request, notAfter, lock, marker, preflight, tool (gate, fresh verification,
+// install), category split, re-check, flash guard, Apply, mapped result, marker
+// end. It never returns a result the contract would refuse: anything else
+// becomes "failed" with errorCode result_invalid.
 func Run(ctx context.Context, req RunRequest, lane Lane, deps Deps) RunResult {
+	return finalize(req, lane, runChecked(ctx, req, lane, deps))
+}
+
+func runChecked(ctx context.Context, req RunRequest, lane Lane, deps Deps) RunResult {
+	if deps.Store == nil || deps.Exec == nil || deps.Verifier == nil {
+		return refuse(req.Lane, OutcomeFailed, "deps_missing", errors.New("run needs a store, an exec and a verifier"))
+	}
 	elevated := deps.Elevated
 	if elevated == nil {
 		elevated = isElevated
 	}
 	if !elevated() {
 		return refuse(req.Lane, OutcomeFailed, "not_elevated", errNotElevated)
+	}
+	if err := req.validate(true); err != nil {
+		return refuse(req.Lane, OutcomeFailed, "invalid_request", err)
+	}
+	if lane == nil || lane.ID() != req.Lane {
+		return refuse(req.Lane, OutcomeFailed, "invalid_request", errors.New("lane does not match the request"))
 	}
 	start := deps.now()
 	// Review Focus 4: a device clock running fast refuses here, the safe
@@ -59,6 +74,27 @@ func Run(ctx context.Context, req RunRequest, lane Lane, deps Deps) RunResult {
 	return result
 }
 
+// finalize is the last contract check on every result Run returns. The
+// fallback carries only fields it sets itself.
+func finalize(req RunRequest, lane Lane, res RunResult) RunResult {
+	if res.Takeover == "" {
+		res.Takeover = TakeoverNotAttempted
+	}
+	err := res.Validate()
+	if err == nil {
+		return res
+	}
+	id := req.Lane
+	if !IsLane(id) && lane != nil {
+		id = lane.ID()
+	}
+	if !IsLane(id) {
+		id = LaneDell // unreachable through the handler, which parses the lane first
+	}
+	log.Warn("vendor update result failed the contract; reporting failed", "lane", id, "error", err.Error())
+	return RunResult{Lane: id, Outcome: OutcomeFailed, ErrorCode: strPtr("result_invalid"), Takeover: TakeoverNotAttempted}
+}
+
 type run struct {
 	req     RunRequest
 	lane    Lane
@@ -66,6 +102,9 @@ type run struct {
 	start   time.Time
 	marker  Marker
 	pending PendingVerification
+	// gateNote names a firmware gate whose reading failed, so an all-skipped
+	// outcome says the reading failed rather than only "no key" or "battery".
+	gateNote map[string]string
 }
 
 func (r *run) setStage(stage string) {
@@ -79,7 +118,7 @@ func (r *run) execute(ctx context.Context) RunResult {
 	deps := r.deps
 	if deps.Preflight != nil {
 		if err := deps.Preflight(); err != nil {
-			return refuse(r.req.Lane, OutcomeRetryLater, "preflight_failed", err)
+			return r.finish(refuse(r.req.Lane, OutcomeRetryLater, "preflight_failed", err), ToolState{}, nil)
 		}
 	}
 
@@ -91,7 +130,7 @@ func (r *run) execute(ctx context.Context) RunResult {
 	r.setStage(StageVerifying)
 	tool, outcome, err := EnsureTool(runCtx, r.lane, r.req.Tool, deps)
 	if outcome != "" {
-		return refuse(r.req.Lane, outcome, codeOr(err, "tool_unavailable"), err)
+		return r.finish(refuse(r.req.Lane, outcome, codeOr(err, "tool_unavailable"), err), ToolState{}, nil)
 	}
 	r.marker.ToolVersion = tool.Version
 
@@ -100,7 +139,7 @@ func (r *run) execute(ctx context.Context) RunResult {
 		return r.finish(refuse(r.req.Lane, OutcomeFailed, codeOr(err, "invalid_filter"), err), tool, skips)
 	}
 	if len(plan.Categories) == 0 {
-		return r.finish(allSkipped(r.req.Lane, skips), tool, skips)
+		return r.finish(r.allSkipped(skips), tool, skips)
 	}
 	dir, err := deps.Store.Dir(workDir)
 	if err != nil {
@@ -113,22 +152,45 @@ func (r *run) execute(ctx context.Context) RunResult {
 	if refusal, stop := r.recheck(ctx, deadline); stop {
 		return r.finish(refusal, tool, skips)
 	}
+	// A section left by a previous process may belong to a flash that is
+	// still running; no vendor tool starts beside it.
+	if deps.Guard != nil {
+		if s, active := deps.Guard.Active(); active {
+			return r.finish(refuse(r.req.Lane, OutcomeRetryLater, "flash_in_progress",
+				fmt.Errorf("flash section open for command %s", s.CommandID)), tool, skips)
+		}
+	}
 
+	// flash: the plan writes BIOS or firmware, so every firmware gate applied
+	// and a post-reboot verification is owed. mayFlash adds runs whose tool can
+	// write firmware the filter cannot exclude: they hold the guard and are
+	// never killed too, but owe no BitLocker verification.
 	flash := plan.HasFlash()
-	var releaseGuard func() error
-	if flash {
-		var refusal RunResult
-		releaseGuard, refusal, err = r.enterFlash()
+	mayFlash := flash || r.lane.FlashesOutsideFilter()
+	releaseGuard := func() {}
+	if mayFlash {
+		release, refusal, err := r.enterFlash(flash)
 		if err != nil {
 			return r.finish(refusal, tool, skips)
 		}
+		var once sync.Once
+		releaseGuard = func() {
+			once.Do(func() {
+				if err := release(); err != nil {
+					log.Error("could not release the flash guard section; power actions stay held until it expires",
+						"commandId", r.req.CommandID, "error", err.Error())
+				}
+			})
+		}
+		// Released even if Apply panics: a held section blocks every reboot.
+		defer releaseGuard()
 	} else {
 		deps.progress(StageInstalling)
 		r.setStage(StageInstalling)
 	}
 
 	applyCtx := runCtx
-	if flash {
+	if mayFlash {
 		// Never killed while the guard is held: not at the deadline and not
 		// when the agent stops. The ceiling is the section's own TTL, past
 		// which the guard no longer holds power actions back either.
@@ -137,23 +199,22 @@ func (r *run) execute(ctx context.Context) RunResult {
 		defer cancelFlash()
 	}
 	res, applyErr := r.lane.Apply(applyCtx, tool, plan, deps.Exec)
-	if releaseGuard != nil {
-		if err := releaseGuard(); err != nil {
-			log.Warn("could not release the flash guard section; it expires on its own", "error", err.Error())
-		}
-	}
+	releaseGuard()
 
 	switch {
-	case flash && !deps.now().Before(deadline):
+	case mayFlash && !deps.now().Before(deadline):
 		// The install overran while it could not be stopped. What the tool
-		// reported is kept; the outcome says the run did not end in time.
-		if res.Outcome == "" && applyErr != nil {
-			res.RawExitCode = nil
+		// reported stands, so a reboot it needs is still scheduled; the overrun
+		// is named. With nothing reported, the run is interrupted.
+		if res.Outcome == "" {
+			res.Outcome = OutcomeInterrupted
 		}
-		res.Outcome, res.ErrorCode = OutcomeInterrupted, strPtr("flash_overran_deadline")
-	case applyErr != nil && !flash && errors.Is(applyCtx.Err(), context.DeadlineExceeded):
+		if res.ErrorCode == nil {
+			res.ErrorCode = strPtr("flash_overran_deadline")
+		}
+	case applyErr != nil && !mayFlash && errors.Is(applyCtx.Err(), context.DeadlineExceeded):
 		res.Outcome, res.ErrorCode = OutcomeFailed, strPtr("deadline_exceeded")
-	case applyErr != nil && !flash && ctx.Err() != nil:
+	case applyErr != nil && !mayFlash && ctx.Err() != nil:
 		res.Outcome, res.ErrorCode = OutcomeInterrupted, strPtr("agent_stopping")
 	case applyErr != nil && res.Outcome == "":
 		res.Outcome = OutcomeFailed
@@ -183,10 +244,11 @@ func (r *run) recheck(ctx context.Context, deadline time.Time) (RunResult, bool)
 }
 
 // enterFlash opens the flash-guard section and makes the run durable before a
-// firmware install starts: the marker says a flash began, and a pending
-// verification exists in case the machine never comes back to this process.
-// Both writes are mandatory; failing either releases the section and refuses.
-func (r *run) enterFlash() (release func() error, refusal RunResult, err error) {
+// run that may write firmware starts. With verify (the plan has BIOS or
+// firmware) the marker says a flash began and a pending verification exists
+// in case the machine never comes back to this process. The writes are
+// mandatory; failing any releases the section and refuses.
+func (r *run) enterFlash(verify bool) (release func() error, refusal RunResult, err error) {
 	deps := r.deps
 	if deps.Guard == nil {
 		err = errors.New("no flash guard")
@@ -199,23 +261,31 @@ func (r *run) enterFlash() (release func() error, refusal RunResult, err error) 
 		}
 		return nil, refuse(r.req.Lane, OutcomeFailed, "flash_guard_unavailable", err), err
 	}
-	r.pending = PendingVerification{CommandID: r.req.CommandID, VerifyAfter: deps.now(), CreatedAt: deps.now()}
-	if deps.System != nil {
-		if bios, berr := deps.System.BiosVersion(); berr == nil {
-			r.pending.BiosVersionBefore = sanitizeToolText(bios, maxVersionLen)
-		}
-	}
-	r.marker.FlashStarted = true
 	r.marker.Stage = StageInstalling
-	if err = WriteMarker(deps.Store, r.marker); err == nil {
+	if verify {
+		r.pending = PendingVerification{CommandID: r.req.CommandID, VerifyAfter: deps.now(), CreatedAt: deps.now()}
+		if deps.System != nil {
+			if bios, berr := deps.System.BiosVersion(); berr == nil {
+				r.pending.BiosVersionBefore = sanitizeToolText(bios, maxVersionLen)
+			} else {
+				log.Debug("BIOS version unreadable before a firmware install; no before/after comparison", "error", berr.Error())
+			}
+		}
+		r.marker.FlashStarted = true
+	}
+	if err = WriteMarker(deps.Store, r.marker); err == nil && verify {
 		err = addPendingVerification(deps.Store, r.pending)
 	}
 	if err != nil {
 		r.marker.FlashStarted = false
 		if rerr := release(); rerr != nil {
-			log.Warn("could not release the flash guard section; it expires on its own", "error", rerr.Error())
+			log.Error("could not release the flash guard section; power actions stay held until it expires", "error", rerr.Error())
 		}
-		_ = removePendingVerification(deps.Store, r.req.CommandID)
+		if verify {
+			if rerr := removePendingVerification(deps.Store, r.req.CommandID); rerr != nil {
+				log.Warn("could not clear the pending verification of a refused flash; a spurious report may follow", "error", rerr.Error())
+			}
+		}
 		return nil, refuse(r.req.Lane, OutcomeFailed, "marker_unwritable", err), err
 	}
 	deps.progress(StageInstalling)
@@ -228,6 +298,9 @@ func (r *run) enterFlash() (release func() error, refusal RunResult, err error) 
 func (r *run) splitCategories() (FilterPlan, []SkippedCategory, error) {
 	plan, err := r.lane.Filter(r.req.Categories, r.req.BlockedUpdateIDs)
 	if err != nil {
+		return FilterPlan{}, nil, err
+	}
+	if err := checkNarrowed(plan, r.req.Categories, r.req.BlockedUpdateIDs); err != nil {
 		return FilterPlan{}, nil, err
 	}
 	var skips []SkippedCategory
@@ -266,10 +339,18 @@ func (r *run) splitCategories() (FilterPlan, []SkippedCategory, error) {
 		}
 		return false
 	}
+	unreadable := func(reason, code string) {
+		if r.gateNote == nil {
+			r.gateNote = map[string]string{}
+		}
+		r.gateNote[reason] = code
+	}
 	if hasFlash() {
 		if r.deps.Power == nil {
+			unreadable(SkipPower, "power_unreadable")
 			skipFlash(SkipPower, "no power reading")
 		} else if status, err := r.deps.Power.Status(); err != nil {
+			unreadable(SkipPower, "power_unreadable")
 			skipFlash(SkipPower, err.Error())
 		} else if ok, why := CheckFlashPower(status); !ok {
 			skipFlash(SkipPower, why)
@@ -277,8 +358,10 @@ func (r *run) splitCategories() (FilterPlan, []SkippedCategory, error) {
 	}
 	if hasFlash() {
 		if r.deps.Protectors == nil {
+			unreadable(SkipNoRecoveryKey, "bitlocker_unreadable")
 			skipFlash(SkipNoRecoveryKey, "no protector reading")
 		} else if live, err := r.deps.Protectors.Live(); err != nil {
+			unreadable(SkipNoRecoveryKey, "bitlocker_unreadable")
 			skipFlash(SkipNoRecoveryKey, err.Error())
 		} else if !CheckRecoveryKey(live.RecoveryPasswordIDs, r.req.EscrowedProtectorIDs, live.BitLockerOn) {
 			skipFlash(SkipNoRecoveryKey, "no live recovery-password protector is escrowed")
@@ -291,12 +374,35 @@ func (r *run) splitCategories() (FilterPlan, []SkippedCategory, error) {
 		return FilterPlan{}, skips, nil
 	}
 	plan, err = r.lane.Filter(keep, r.req.BlockedUpdateIDs)
+	if err == nil {
+		err = checkNarrowed(plan, keep, r.req.BlockedUpdateIDs)
+	}
 	return plan, skips, err
 }
 
+// checkNarrowed refuses a lane plan wider than what was asked: a category not
+// requested (or repeated, or unknown), or a requested blocked id dropped.
+func checkNarrowed(plan FilterPlan, cats, blocked []string) error {
+	seen := map[string]bool{}
+	for _, c := range plan.Categories {
+		if !IsCategory(c) || !contains(cats, c) || seen[c] {
+			return runErr("lane_filter_widened", fmt.Errorf("lane plan category %q was not requested", c))
+		}
+		seen[c] = true
+	}
+	for _, id := range blocked {
+		if !contains(plan.BlockedIDs, id) {
+			return runErr("lane_filter_widened", fmt.Errorf("lane plan dropped blocked id %q", id))
+		}
+	}
+	return nil
+}
+
 // allSkipped names the outcome when every category was skipped: a missing key
-// first, then power, since those are what a tech can act on.
-func allSkipped(lane string, skips []SkippedCategory) RunResult {
+// first, then power, since those are what a tech can act on. When the gate's
+// reading failed, errorCode says so, so the tech chases the right cause.
+func (r *run) allSkipped(skips []SkippedCategory) RunResult {
+	lane := r.req.Lane
 	has := func(reason string) bool {
 		for _, s := range skips {
 			if s.Reason == reason {
@@ -307,9 +413,9 @@ func allSkipped(lane string, skips []SkippedCategory) RunResult {
 	}
 	switch {
 	case has(SkipNoRecoveryKey):
-		return refuse(lane, OutcomeBlockedNoRecoveryKey, "", nil)
+		return refuse(lane, OutcomeBlockedNoRecoveryKey, r.gateNote[SkipNoRecoveryKey], nil)
 	case has(SkipPower):
-		return refuse(lane, OutcomeBlockedOnBattery, "", nil)
+		return refuse(lane, OutcomeBlockedOnBattery, r.gateNote[SkipPower], nil)
 	}
 	return refuse(lane, OutcomeFailed, "all_categories_skipped", errors.New("every requested category was skipped"))
 }
@@ -328,10 +434,11 @@ func (r *run) finish(res RunResult, tool ToolState, skips []SkippedCategory) Run
 	res.Items = sanitizeItems(res.Items)
 	if err := res.Validate(); err != nil {
 		log.Warn("vendor update result failed the contract; reporting failed", "lane", r.req.Lane, "error", err.Error())
+		// Only fields set here, plus the reboot flags: a bool cannot break the
+		// contract, and a reboot the tool needs must still be scheduled.
 		return RunResult{
-			Lane: r.req.Lane, Outcome: OutcomeFailed, ToolVersion: res.ToolVersion, RawExitCode: res.RawExitCode,
-			ErrorCode: strPtr("result_invalid"), RebootRequired: res.RebootRequired, ShutdownRequired: res.ShutdownRequired,
-			SkippedCategories: res.SkippedCategories, Takeover: TakeoverNotAttempted,
+			Lane: r.req.Lane, Outcome: OutcomeFailed, ErrorCode: strPtr("result_invalid"),
+			RebootRequired: res.RebootRequired, ShutdownRequired: res.ShutdownRequired, Takeover: TakeoverNotAttempted,
 		}
 	}
 	return res
@@ -372,6 +479,7 @@ func (r *run) end(res RunResult) {
 	now := r.deps.now()
 	r.marker.EndedAt = &now
 	r.marker.Outcome = res.Outcome
+	r.marker.RebootRequired, r.marker.ShutdownRequired = res.RebootRequired, res.ShutdownRequired
 	if err := WriteMarker(r.deps.Store, r.marker); err != nil {
 		log.Warn("could not end the vendor update run marker", "error", err.Error())
 	}

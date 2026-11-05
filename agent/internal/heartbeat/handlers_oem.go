@@ -124,15 +124,25 @@ func productionOemDeps(h *Heartbeat, commandID string) oemupdates.Deps {
 	return oemupdates.ProductionDeps(preflight, progress)
 }
 
-// oemInterruptedResultBody is the journal's stdout for an oem_update_run the
-// previous process died running: the marker's interrupted result when the
-// marker belongs to that command.
+// oemInterruptedResultBody is the journal's stdout for an oem_update_run whose
+// result the previous process never handed off, when the marker belongs to
+// that command: its interrupted result if the run never ended, or its recorded
+// outcome if it ended and only the delivery was lost.
 func oemInterruptedResultBody(commandID string) (string, bool) {
-	m, ok := oemupdates.ReadInterruptedMarker(oemStore())
-	if !ok || m.CommandID != commandID {
+	m, err := oemupdates.ReadMarker(oemStore())
+	if err != nil || m.CommandID != commandID {
 		return "", false
 	}
-	body, err := json.Marshal(m.InterruptedResult())
+	result := m.InterruptedResult()
+	if m.EndedAt != nil {
+		// The run ended; only its hand-off was lost. The outcome stands.
+		lost, ok := m.LostResult()
+		if !ok {
+			return "", false
+		}
+		result = lost
+	}
+	body, err := json.Marshal(result)
 	if err != nil {
 		return "", false
 	}

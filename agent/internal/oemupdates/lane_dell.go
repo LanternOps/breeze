@@ -95,6 +95,13 @@ func (l *dellLane) Allow() LaneAllowlist         { return l.allow }
 func (l *dellLane) Range() VersionRange          { return dellRange }
 func (l *dellLane) SkippedForNoReboot() []string { return []string{CategoryBIOS, CategoryFirmware} }
 
+// ToolVersion re-reads dcu-cli.exe's PE version.
+func (l *dellLane) ToolVersion(path string) (string, error) { return l.host.fileVersion(path) }
+
+// FlashesOutsideFilter is true: Dell documents that dock firmware ignores
+// -updateType, so even a driver-only run may write firmware.
+func (l *dellLane) FlashesOutsideFilter() bool { return true }
+
 // detect looks for dcu-cli.exe under both Program Files directories, 64-bit
 // first. An unreadable version is reported as "", which is never in range.
 func (l *dellLane) detect() ToolState {
@@ -273,7 +280,12 @@ func (l *dellLane) Prerequisite(name string) (PrerequisiteHandler, bool) {
 	if name != dotnetDesktopRuntime {
 		return PrerequisiteHandler{}, false
 	}
+	allow, ok := prerequisiteAllowlist(LaneDell, name)
+	if !ok {
+		return PrerequisiteHandler{}, false
+	}
 	return PrerequisiteHandler{
+		Allow: allow,
 		Installed: func() string {
 			best := ""
 			for _, v := range l.host.dotnetDesktopVersions() {

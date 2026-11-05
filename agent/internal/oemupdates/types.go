@@ -112,8 +112,10 @@ var (
 	takeovers    = []string{TakeoverOK, TakeoverPolicyLocked, TakeoverNotAttempted}
 	bitlockerOut = []string{BitLockerOn, BitLockerSuspended, BitLockerOff, BitLockerUnknown}
 
-	sha256Pattern    = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	uuidPattern      = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	// uuidPattern is zod 4's .uuid(): RFC 9562 version 1-8 and variant 10xx,
+	// plus the nil and max UUIDs.
+	uuidPattern      = regexp.MustCompile(`^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|[fF]{8}-[fF]{4}-[fF]{4}-[fF]{4}-[fF]{12})$`)
 	errorCodePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]+$`)
 )
 
@@ -180,18 +182,99 @@ type wireRunRequest struct {
 	NotAfter             *string   `json:"notAfter"`
 	EscrowedProtectorIDs *[]string `json:"escrowedProtectorIds"`
 	Tool                 *ToolSpec `json:"tool"`
-	toolPresent          bool
 }
 
-// ParseRunRequest decodes and validates a payload strictly: an unknown key at
-// any depth, a missing key, a value out of bounds or trailing data is refused.
+// Exact key sets of the strict zod objects. encoding/json matches keys
+// case-insensitively and lets a duplicate key win silently; zod's .strict()
+// does neither, so keys are checked byte-exact before the struct decode.
+var (
+	payloadKeys      = []string{"lane", "trigger", "occurrenceKey", "categories", "blockedUpdateIds", "rebootControlled", "notAfter", "escrowedProtectorIds", "tool"}
+	toolKeys         = []string{"version", "minSafeVersion", "supportedRange", "url", "sha256", "prerequisites"}
+	rangeKeys        = []string{"min", "maxExclusive"}
+	prerequisiteKeys = []string{"name", "minVersion", "url", "sha256"}
+)
+
+// exactObject reads a JSON object whose keys must all be in allowed, each at
+// most once, compared byte for byte. It returns the raw value of each key.
+func exactObject(raw json.RawMessage, allowed []string) (map[string]json.RawMessage, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return nil, errors.New("not an object")
+	}
+	out := map[string]json.RawMessage{}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, _ := tok.(string)
+		if !contains(allowed, key) {
+			return nil, fmt.Errorf("unknown key %q", key)
+		}
+		if _, dup := out[key]; dup {
+			return nil, fmt.Errorf("duplicate key %q", key)
+		}
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			return nil, err
+		}
+		out[key] = v
+	}
+	if _, err := dec.Token(); err != nil {
+		return nil, err
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("trailing data after object")
+	}
+	return out, nil
+}
+
+func checkPayloadKeys(raw []byte) (map[string]json.RawMessage, error) {
+	top, err := exactObject(raw, payloadKeys)
+	if err != nil {
+		return nil, err
+	}
+	tool, ok := top["tool"]
+	if !ok || string(tool) == "null" {
+		return top, nil
+	}
+	tk, err := exactObject(tool, toolKeys)
+	if err != nil {
+		return nil, fmt.Errorf("tool: %w", err)
+	}
+	if r, ok := tk["supportedRange"]; ok {
+		if _, err := exactObject(r, rangeKeys); err != nil {
+			return nil, fmt.Errorf("tool.supportedRange: %w", err)
+		}
+	}
+	if p, ok := tk["prerequisites"]; ok && string(p) != "null" {
+		var items []json.RawMessage
+		if err := json.Unmarshal(p, &items); err != nil {
+			return nil, fmt.Errorf("tool.prerequisites: %w", err)
+		}
+		for i, it := range items {
+			if _, err := exactObject(it, prerequisiteKeys); err != nil {
+				return nil, fmt.Errorf("tool.prerequisites[%d]: %w", i, err)
+			}
+		}
+	}
+	return top, nil
+}
+
+// ParseRunRequest decodes and validates a payload strictly: an unknown,
+// case-variant or duplicate key at any depth, a missing key, a value out of
+// bounds or trailing data is refused.
 func ParseRunRequest(raw []byte) (RunRequest, error) {
 	if len(raw) > maxPayloadBytes {
 		return RunRequest{}, fmt.Errorf("payload larger than %d bytes", maxPayloadBytes)
 	}
-	var keys map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &keys); err != nil {
-		return RunRequest{}, fmt.Errorf("payload is not an object: %w", err)
+	keys, err := checkPayloadKeys(raw)
+	if err != nil {
+		return RunRequest{}, fmt.Errorf("payload: %w", err)
 	}
 	var w wireRunRequest
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -199,87 +282,91 @@ func ParseRunRequest(raw []byte) (RunRequest, error) {
 	if err := dec.Decode(&w); err != nil {
 		return RunRequest{}, fmt.Errorf("decode payload: %w", err)
 	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return RunRequest{}, errors.New("trailing data after payload")
+	for _, k := range payloadKeys {
+		if _, ok := keys[k]; !ok {
+			return RunRequest{}, fmt.Errorf("%s is missing", k)
+		}
 	}
-	_, w.toolPresent = keys["tool"]
-	_, occurrencePresent := keys["occurrenceKey"]
-
-	var req RunRequest
 	switch {
-	case w.Lane == nil || !IsLane(*w.Lane):
-		return req, errors.New("lane is missing or unknown")
-	case w.Trigger == nil || (*w.Trigger != TriggerScheduled && *w.Trigger != TriggerOnDemand):
-		return req, errors.New("trigger is missing or unknown")
-	case !occurrencePresent:
-		return req, errors.New("occurrenceKey is missing")
-	case w.OccurrenceKey != nil && utf8.RuneCountInString(*w.OccurrenceKey) > maxOccurrenceKeyLen:
-		return req, errors.New("occurrenceKey is too long")
-	case w.Categories == nil:
-		return req, errors.New("categories is missing")
-	case w.BlockedUpdateIDs == nil:
-		return req, errors.New("blockedUpdateIds is missing")
-	case w.RebootControlled == nil:
-		return req, errors.New("rebootControlled is missing")
-	case w.NotAfter == nil:
-		return req, errors.New("notAfter is missing")
-	case w.EscrowedProtectorIDs == nil:
-		return req, errors.New("escrowedProtectorIds is missing")
-	case !w.toolPresent:
-		return req, errors.New("tool is missing")
-	}
-	cats := *w.Categories
-	if len(cats) < 1 || len(cats) > len(allCategories) {
-		return req, errors.New("categories must hold 1 to 4 entries")
-	}
-	seen := map[string]bool{}
-	for _, c := range cats {
-		if !IsCategory(c) {
-			return req, fmt.Errorf("unknown category %q", c)
-		}
-		if seen[c] {
-			return req, errors.New("categories must be unique")
-		}
-		seen[c] = true
-	}
-	blocked := *w.BlockedUpdateIDs
-	if len(blocked) > maxBlockedIDs {
-		return req, fmt.Errorf("more than %d blocked ids", maxBlockedIDs)
-	}
-	for _, id := range blocked {
-		if n := utf8.RuneCountInString(id); n < 1 || n > maxBlockedIDLen {
-			return req, errors.New("a blocked id must be 1 to 128 characters")
-		}
+	case w.Lane == nil, w.Trigger == nil, w.Categories == nil, w.BlockedUpdateIDs == nil,
+		w.RebootControlled == nil, w.NotAfter == nil, w.EscrowedProtectorIDs == nil:
+		return RunRequest{}, errors.New("a required field is null")
 	}
 	notAfter, err := time.Parse(time.RFC3339Nano, *w.NotAfter)
 	if err != nil {
-		return req, fmt.Errorf("notAfter is not an ISO timestamp: %w", err)
+		return RunRequest{}, fmt.Errorf("notAfter is not an ISO timestamp: %w", err)
 	}
-	protectors := *w.EscrowedProtectorIDs
-	if len(protectors) > maxProtectorIDs {
-		return req, fmt.Errorf("more than %d escrowed protector ids", maxProtectorIDs)
-	}
-	for _, id := range protectors {
-		if !uuidPattern.MatchString(id) {
-			return req, errors.New("an escrowed protector id is not a uuid")
-		}
-	}
-	if w.Tool != nil {
-		if err := w.Tool.validate(); err != nil {
-			return req, fmt.Errorf("tool: %w", err)
-		}
-	}
-	return RunRequest{
+	req := RunRequest{
 		Lane:                 *w.Lane,
 		Trigger:              *w.Trigger,
 		OccurrenceKey:        w.OccurrenceKey,
-		Categories:           cats,
-		BlockedUpdateIDs:     blocked,
+		Categories:           *w.Categories,
+		BlockedUpdateIDs:     *w.BlockedUpdateIDs,
 		RebootControlled:     *w.RebootControlled,
 		NotAfter:             notAfter,
-		EscrowedProtectorIDs: protectors,
+		EscrowedProtectorIDs: *w.EscrowedProtectorIDs,
 		Tool:                 w.Tool,
-	}, nil
+	}
+	if err := req.validate(false); err != nil {
+		return RunRequest{}, err
+	}
+	return req, nil
+}
+
+// validate applies the payload schema's rules to a request however it was
+// built. Run calls it with requireCommandID, because the command id becomes
+// the marker's, the flash section's and the verification's key.
+func (r RunRequest) validate(requireCommandID bool) error {
+	if requireCommandID && !uuidPattern.MatchString(r.CommandID) {
+		return errors.New("command id is not a uuid")
+	}
+	if !IsLane(r.Lane) {
+		return errors.New("lane is missing or unknown")
+	}
+	if r.Trigger != TriggerScheduled && r.Trigger != TriggerOnDemand {
+		return errors.New("trigger is missing or unknown")
+	}
+	if r.OccurrenceKey != nil && utf8.RuneCountInString(*r.OccurrenceKey) > maxOccurrenceKeyLen {
+		return errors.New("occurrenceKey is too long")
+	}
+	if len(r.Categories) < 1 || len(r.Categories) > len(allCategories) {
+		return errors.New("categories must hold 1 to 4 entries")
+	}
+	seen := map[string]bool{}
+	for _, c := range r.Categories {
+		if !IsCategory(c) {
+			return fmt.Errorf("unknown category %q", c)
+		}
+		if seen[c] {
+			return errors.New("categories must be unique")
+		}
+		seen[c] = true
+	}
+	if len(r.BlockedUpdateIDs) > maxBlockedIDs {
+		return fmt.Errorf("more than %d blocked ids", maxBlockedIDs)
+	}
+	for _, id := range r.BlockedUpdateIDs {
+		if n := utf8.RuneCountInString(id); n < 1 || n > maxBlockedIDLen {
+			return errors.New("a blocked id must be 1 to 128 characters")
+		}
+	}
+	if r.NotAfter.IsZero() {
+		return errors.New("notAfter is missing")
+	}
+	if len(r.EscrowedProtectorIDs) > maxProtectorIDs {
+		return fmt.Errorf("more than %d escrowed protector ids", maxProtectorIDs)
+	}
+	for _, id := range r.EscrowedProtectorIDs {
+		if !uuidPattern.MatchString(id) {
+			return errors.New("an escrowed protector id is not a uuid")
+		}
+	}
+	if r.Tool != nil {
+		if err := r.Tool.validate(); err != nil {
+			return fmt.Errorf("tool: %w", err)
+		}
+	}
+	return nil
 }
 
 func (t *ToolSpec) validate() error {
@@ -588,6 +675,8 @@ func (p FilterPlan) HasFlash() bool {
 // prerequisite. A name the lane does not know is refused: the payload cannot
 // make the agent install arbitrary software, even signed.
 type PrerequisiteHandler struct {
+	// Allow is this prerequisite's own publishers and hosts, never the tool's.
+	Allow LaneAllowlist
 	// Installed returns the highest installed version, or "" when absent.
 	Installed func() string
 	// InstallArgs are the silent-install arguments for the downloaded installer.
@@ -598,10 +687,21 @@ type PrerequisiteHandler struct {
 type Lane interface {
 	ID() string
 	Gate() *ToolGate
+	// Allow is the tool installer's and the tool's publishers and hosts.
 	Allow() LaneAllowlist
+	// ToolVersion reads the version of the tool at path now. The gate's answer
+	// is up to a day old and the range is a safety check, so the range is
+	// tested against this, not the cache. It must not spawn a process.
+	ToolVersion(path string) (string, error)
+	// FlashesOutsideFilter reports that a run may write firmware the category
+	// filter cannot exclude (Dell docks ignore -updateType). Such a run holds
+	// the flash guard and is never killed, whatever categories it asked for.
+	FlashesOutsideFilter() bool
 	// Range is the compiled supported range. The payload can narrow it, never
 	// widen it: a vulnerable or unknown tool version cannot be run by asking.
 	Range() VersionRange
+	// Filter must be pure: the runner calls it again after gates drop
+	// categories, and refuses a plan wider than the request.
 	Filter(cats []string, blocked []string) (FilterPlan, error)
 	Apply(ctx context.Context, tool ToolState, plan FilterPlan, ex Exec) (RunResult, error)
 	// SkippedForNoReboot lists the categories that need a reboot Breeze controls.

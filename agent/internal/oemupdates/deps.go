@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/authenticode"
+	"github.com/breeze-rmm/agent/internal/flashguard"
 )
 
 // Every external effect of a run goes through one of these seams, so the runner
@@ -64,6 +65,9 @@ type Clock interface {
 // FlashGuard is the subset of flashguard.Guard a run uses.
 type FlashGuard interface {
 	Enter(kind, commandID string, ttl time.Duration) (release func() error, err error)
+	// Active reports an open section, including one a previous process left
+	// for a flash that may still be running.
+	Active() (flashguard.Section, bool)
 }
 
 // Deps carries every seam. Production values come from ProductionDeps.

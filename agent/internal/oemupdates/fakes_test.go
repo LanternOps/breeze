@@ -130,11 +130,16 @@ type fakeFetcher struct {
 	mu      sync.Mutex
 	fail    map[string]error
 	fetched []string
+	allows  map[string]LaneAllowlist
 }
 
-func (f *fakeFetcher) Fetch(_ context.Context, url, _ string, _ LaneAllowlist, dest string) error {
+func (f *fakeFetcher) Fetch(_ context.Context, url, _ string, allow LaneAllowlist, dest string) error {
 	f.mu.Lock()
 	f.fetched = append(f.fetched, url)
+	if f.allows == nil {
+		f.allows = map[string]LaneAllowlist{}
+	}
+	f.allows[url] = allow
 	err := f.fail[url]
 	f.mu.Unlock()
 	if err != nil {
@@ -163,7 +168,28 @@ type fakeLane struct {
 	detects atomic.Int64
 	// onInstall is what the installed tool becomes when its installer runs.
 	onInstall *ToolState
+	// freshVersion, when set, is what a fresh read of the tool's file
+	// returns, standing in for a binary replaced since the gate cached it.
+	freshVersion string
+	// outsideFilter makes the lane report that it may flash firmware the
+	// category filter cannot exclude (Dell docks).
+	outsideFilter bool
+	// filter overrides Filter.
+	filter func(cats, blocked []string) (FilterPlan, error)
 }
+
+var fakePrereqAllow = LaneAllowlist{Publishers: []string{"Microsoft Corporation"}, Hosts: []string{"builds.dotnet.microsoft.com"}}
+
+func (l *fakeLane) ToolVersion(path string) (string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.freshVersion != "" {
+		return l.freshVersion, nil
+	}
+	return l.tool.Version, nil
+}
+
+func (l *fakeLane) FlashesOutsideFilter() bool { return l.outsideFilter }
 
 type fakePrereq struct {
 	installed string
@@ -200,6 +226,9 @@ func (l *fakeLane) SkippedForNoReboot() []string {
 	return []string{CategoryBIOS, CategoryFirmware}
 }
 func (l *fakeLane) Filter(cats, blocked []string) (FilterPlan, error) {
+	if l.filter != nil {
+		return l.filter(cats, blocked)
+	}
 	return FilterPlan{Categories: append([]string(nil), cats...), BlockedIDs: blocked}, nil
 }
 func (l *fakeLane) Apply(ctx context.Context, tool ToolState, plan FilterPlan, ex Exec) (RunResult, error) {
@@ -229,6 +258,7 @@ func (l *fakeLane) Prerequisite(name string) (PrerequisiteHandler, bool) {
 		return PrerequisiteHandler{}, false
 	}
 	return PrerequisiteHandler{
+		Allow:       fakePrereqAllow,
 		Installed:   func() string { l.mu.Lock(); defer l.mu.Unlock(); return p.installed },
 		InstallArgs: func(installer, logPath string) []string { return []string{"/install", "/quiet", "/norestart"} },
 	}, true

@@ -122,13 +122,23 @@ func verifyOne(ctx context.Context, deps Deps, p PendingVerification, report fun
 	delay := verifyBackoffBase
 	var lastErr error
 	for attempt := 1; attempt <= maxVerifyAttemptsPerStart; attempt++ {
-		v := Verification{CommandID: p.CommandID, BitlockerAfter: deps.Protectors.State()}
+		state := deps.Protectors.State()
+		if !contains(bitlockerOut, state) {
+			state = BitLockerUnknown // report the check, never drop it over a reading
+		}
+		v := Verification{CommandID: p.CommandID, BitlockerAfter: state}
 		if bios, err := deps.System.BiosVersion(); err == nil && bios != "" {
 			s := sanitizeToolText(bios, maxVersionLen)
 			v.BiosVersionAfter = &s
+		} else if err != nil {
+			log.Debug("BIOS version unreadable after reboot", "commandId", p.CommandID, "error", err.Error())
 		}
 		if err := v.Validate(); err != nil {
-			_ = removePendingVerification(deps.Store, p.CommandID)
+			// Only a command id Run never accepts gets here; retrying cannot fix it.
+			log.Error("vendor update verification is invalid; dropped", "commandId", p.CommandID, "error", err.Error())
+			if rerr := removePendingVerification(deps.Store, p.CommandID); rerr != nil {
+				log.Warn("could not drop an invalid pending verification", "error", rerr.Error())
+			}
 			return fmt.Errorf("verification for %s is invalid, dropped: %w", p.CommandID, err)
 		}
 		lastErr = report(v)
