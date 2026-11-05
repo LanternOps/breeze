@@ -163,11 +163,12 @@ describe('resolve helpers', () => {
     expect(db.select).not.toHaveBeenCalled();
   });
 
-  it('one failed resolve does not strand the rest of the batch', async () => {
+  it('one failed resolve does not strand the rest of the batch, and then surfaces so the caller retries', async () => {
     dbState.selects = [[{ id: 'a1' }, { id: 'a2' }]];
     vi.mocked(resolveAlert).mockRejectedValueOnce(new Error('boom'));
 
-    await expect(resolveReturnedDeviceAlerts(['d1'])).resolves.toBe(1);
+    await expect(resolveReturnedDeviceAlerts(['d1'])).rejects.toThrow(/1 of 2/);
+    expect(resolveAlert).toHaveBeenCalledTimes(2);
   });
 
   it('resolves the protection alert once protection is back', async () => {

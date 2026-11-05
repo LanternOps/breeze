@@ -2528,6 +2528,16 @@ const envSchema = envObjectSchema
         message: 'BREEZE_OEM_UPDATES_LAB_DEVICE_IDS must not be set in production: it opens closed vendor update gates and is for lab devices only.',
       });
     }
+    // An empty allowlist means every partner, so a value that parses to nothing
+    // would open the feature to everyone while looking like a restriction.
+    const oemAllowlistRaw = (data.BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST ?? '').trim();
+    if (oemAllowlistRaw && !oemAllowlistRaw.split(',').some((id) => id.trim())) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST'],
+        message: 'BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST names no partner. Leave it unset to allow every partner.',
+      });
+    }
     const unknownOemLanes = (data.BREEZE_OEM_UPDATES_DISABLED_LANES ?? '')
       .split(',')
       .map((lane) => lane.trim().toLowerCase())

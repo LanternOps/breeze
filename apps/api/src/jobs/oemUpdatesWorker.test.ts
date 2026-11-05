@@ -150,7 +150,21 @@ describe('runOemUpdatesTick: the not-returned monitor', () => {
     await runOemUpdatesTick(now);
     expect(emitDeviceNotReturnedAlert).not.toHaveBeenCalled();
     expect(state.updates).toEqual([expect.objectContaining({ returnDeadlineAt: null })]);
-    expect(resolveReturnedDeviceAlerts).not.toHaveBeenCalled();
+  });
+
+  it('coming back resolves any open alert even when the marker write was lost', async () => {
+    state.rows = [row({ deviceStatus: 'online', notReturnedAlertedAt: null })];
+    await runOemUpdatesTick(now);
+    expect(resolveReturnedDeviceAlerts).toHaveBeenCalledWith(['d1']);
+  });
+
+  it('a failed resolve keeps the row armed, so the next tick tries again', async () => {
+    const alertedAt = new Date(now.getTime() - HOUR);
+    vi.mocked(resolveReturnedDeviceAlerts).mockRejectedValueOnce(new Error('boom'));
+    state.rows = [row({ notReturnedAlertedAt: alertedAt, lastSeenAt: new Date(alertedAt.getTime() + 60_000) })];
+    await expect(runOemUpdatesTick(now)).resolves.toBeUndefined();
+    expect(state.updates).toEqual([]);
+    expect(captureException).toHaveBeenCalledTimes(1);
   });
 
   it('online at the deadline is back, even with no result', async () => {

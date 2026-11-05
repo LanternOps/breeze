@@ -83,8 +83,11 @@ async function sweepRow(row: ArmedRow, now: Date): Promise<void> {
       await clearDeadline(row, now);
       return;
     case 'returned':
+      // Resolve first, and whether or not the marker is set: an alert raised just
+      // before a lost marker write is still open. A failure leaves the row armed,
+      // so the next tick tries again.
+      await resolveReturnedDeviceAlerts([row.deviceId]);
       await clearDeadline(row, now);
-      if (row.notReturnedAlertedAt) await resolveReturnedDeviceAlerts([row.deviceId]);
       return;
     case 'alert': {
       // The device's current org: it may have moved since the run started.

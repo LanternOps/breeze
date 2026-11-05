@@ -14,7 +14,6 @@ import { alertRules, alertTemplates, alerts, devices } from '../../db/schema';
 import { createAlert, resolveAlert, RESOLVABLE_ALERT_STATUSES } from '../alertService';
 import { insertBuiltInAlertRule } from '../builtInAlertRules';
 import { checkDeviceMaintenanceWindow } from '../featureConfigResolver';
-import { captureException } from '../sentry';
 
 const { db } = dbModule;
 
@@ -198,18 +197,19 @@ async function resolveOpenAlerts(deviceIds: string[], ruleName: string, note: st
       .limit(RESOLVE_BATCH);
 
     let resolved = 0;
+    let failed = 0;
     for (const row of rows) {
       // Isolate each row: one bad alert must not strand the rest of the batch.
       try {
         if (await resolveAlert(row.id, note, undefined, false, 'condition_cleared')) resolved++;
       } catch (error) {
+        failed++;
         console.error(`[oemUpdates/alerts] failed to resolve alert ${row.id}:`, error);
-        captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
-          errorId: 'oem-updates-alert-resolve-failed',
-          alertId: row.id,
-        });
       }
     }
+    // Surfaced, not swallowed: the caller keeps its state so the resolve is retried,
+    // or a critical alert stays open on a healthy machine with nothing coming back to it.
+    if (failed > 0) throw new Error(`[oemUpdates/alerts] failed to resolve ${failed} of ${rows.length} alert(s)`);
     return resolved;
   });
 }

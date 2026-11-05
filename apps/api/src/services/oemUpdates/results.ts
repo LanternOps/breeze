@@ -77,14 +77,37 @@ function rebootOwedBy(result: OemUpdateRunResult): boolean {
   return result.rebootRequired || result.outcome === 'blocked_reboot_pending';
 }
 
-/** Nothing left to happen at a restart: this device is here and the flash, if any, is done. */
-function disarmsMonitor(result: OemUpdateRunResult, status: Awaited<ReturnType<typeof loadStatus>>): boolean {
-  return Boolean(status?.returnDeadlineAt) && !rebootOwedBy(result) && !result.shutdownRequired;
+/** Did this command ask for a flash? An unreadable payload reads as no, which keeps a monitor armed. */
+function askedForFlash(payload: unknown): boolean {
+  const categories = (payload as { categories?: unknown } | null)?.categories;
+  return Array.isArray(categories) && categories.some((category) => category === 'bios' || category === 'firmware');
+}
+
+/**
+ * Whether this result ends the wait for the device to come back.
+ *
+ * Blocked by a pending reboot: the tool never ran, so a flash run flashed nothing
+ * and there is nothing to come back from. A driver-only run blocked the same way
+ * says nothing about an earlier flash that armed the monitor, so that stays armed.
+ *
+ * Otherwise, a run that owes no restart means the device is here. The agent's
+ * preflight blocks a run while a reboot is pending, so a clean result also means
+ * an earlier flash's reboot has happened.
+ */
+function disarmsMonitor(
+  result: OemUpdateRunResult,
+  status: Awaited<ReturnType<typeof loadStatus>>,
+  commandPayload: unknown,
+): boolean {
+  if (!status?.returnDeadlineAt) return false;
+  if (result.outcome === 'blocked_reboot_pending') return askedForFlash(commandPayload);
+  return !result.rebootRequired && !result.shutdownRequired;
 }
 
 function outcomeFields(
   parsed: OemUpdateRunResult | null,
   status: Awaited<ReturnType<typeof loadStatus>>,
+  commandPayload: unknown,
   model: string | null,
   now: Date,
 ) {
@@ -116,7 +139,7 @@ function outcomeFields(
     ...(rebootOwed
       ? (status?.rebootPendingSince ? {} : { rebootPendingSince: now })
       : { rebootPendingSince: null }),
-    ...(disarmsMonitor(parsed, status) ? { returnDeadlineAt: null, notReturnedAlertedAt: null } : {}),
+    ...(disarmsMonitor(parsed, status, commandPayload) ? { returnDeadlineAt: null, notReturnedAlertedAt: null } : {}),
   };
 }
 
@@ -130,7 +153,12 @@ export async function applyOemUpdateResult(input: {
   try {
     const disarmed = await withSystemDbAccessContext(async () => {
       const [command] = await db
-        .select({ id: deviceCommands.id, deviceId: deviceCommands.deviceId, type: deviceCommands.type })
+        .select({
+          id: deviceCommands.id,
+          deviceId: deviceCommands.deviceId,
+          type: deviceCommands.type,
+          payload: deviceCommands.payload,
+        })
         .from(deviceCommands)
         .where(eq(deviceCommands.id, commandId))
         .limit(1);
@@ -141,12 +169,15 @@ export async function applyOemUpdateResult(input: {
       }
 
       const device = await loadDevice(deviceId);
-      if (!device) return false;
+      if (!device) {
+        console.warn('[oemUpdates/results] ignoring a result for a device that is gone', { commandId, deviceId });
+        return false;
+      }
 
       const status = await loadStatus(deviceId);
       // A late result for an older run must not overwrite the newer one. The seam
       // writes this id in the transaction that queues the command.
-      if (status?.lastCommandId && status.lastCommandId !== commandId) {
+      if (status && status.lastCommandId !== commandId) {
         console.warn('[oemUpdates/results] ignoring a result for a superseded run', { commandId, deviceId });
         return false;
       }
@@ -154,7 +185,7 @@ export async function applyOemUpdateResult(input: {
       const check = oemUpdateRunResultSchema.safeParse(input.result);
       const parsed = check.success && (!status?.lane || status.lane === check.data.lane) ? check.data : null;
       if (!parsed) {
-        console.warn('[oemUpdates/results] unparseable result', { commandId, deviceId });
+        console.warn('[oemUpdates/results] unparseable or wrong-lane result, recording it as failed', { commandId, deviceId });
       }
 
       if (!status) {
@@ -173,10 +204,10 @@ export async function applyOemUpdateResult(input: {
       const now = new Date();
       await db
         .update(deviceOemUpdateStatus)
-        .set(outcomeFields(parsed, status, device.hardwareModel ?? null, now))
+        .set(outcomeFields(parsed, status, command.payload, device.hardwareModel ?? null, now))
         .where(and(eq(deviceOemUpdateStatus.deviceId, deviceId), eq(deviceOemUpdateStatus.lastCommandId, commandId)));
 
-      return parsed !== null && disarmsMonitor(parsed, status);
+      return parsed !== null && disarmsMonitor(parsed, status, command.payload);
     });
     if (disarmed) await resolveReturnedDeviceAlerts([deviceId]);
   } catch (error) {
@@ -188,6 +219,9 @@ export async function applyOemUpdateResult(input: {
  * The agent's post-reboot report. Records BitLocker's state and the BIOS version
  * next to the one from before the run. No write of protection state: Decision 8
  * is report and alert in v1. False when the report is not for the current run.
+ *
+ * An alert failure throws. The write is idempotent and createAlert dedupes, so the
+ * route's 5xx makes the agent resend, and that is the only retry a report gets.
  */
 export async function applyOemUpdateVerification(input: {
   deviceId: string;
@@ -196,7 +230,13 @@ export async function applyOemUpdateVerification(input: {
   const { deviceId, verification } = input;
   const orgId = await withSystemDbAccessContext(async () => {
     const status = await loadStatus(deviceId);
-    if (!status || status.lastCommandId !== verification.commandId) return null;
+    if (!status || status.lastCommandId !== verification.commandId) {
+      console.warn('[oemUpdates/results] ignoring a verification for a run that is not current', {
+        commandId: verification.commandId,
+        deviceId,
+      });
+      return null;
+    }
     const device = await loadDevice(deviceId);
     if (!device) return null;
 
@@ -222,16 +262,11 @@ export async function applyOemUpdateVerification(input: {
   });
   if (!orgId) return false;
 
-  // The report is recorded. A failed alert must not make the agent resend it.
-  try {
-    await resolveReturnedDeviceAlerts([deviceId]);
-    if (verification.bitlockerAfter === 'suspended') {
-      await emitProtectionStillSuspendedAlert({ deviceId, orgId, commandId: verification.commandId });
-    } else if (verification.bitlockerAfter === 'on') {
-      await resolveProtectionRestoredAlerts(deviceId);
-    }
-  } catch (error) {
-    report(error, 'oem-updates-verification-alert-failed', deviceId);
+  await resolveReturnedDeviceAlerts([deviceId]);
+  if (verification.bitlockerAfter === 'suspended') {
+    await emitProtectionStillSuspendedAlert({ deviceId, orgId, commandId: verification.commandId });
+  } else if (verification.bitlockerAfter === 'on') {
+    await resolveProtectionRestoredAlerts(deviceId);
   }
   return true;
 }

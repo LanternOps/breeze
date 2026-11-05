@@ -108,7 +108,7 @@ function statusRow(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
-  state.command = { id: COMMAND_ID, deviceId: DEVICE_ID, type: 'oem_update_run' };
+  state.command = { id: COMMAND_ID, deviceId: DEVICE_ID, type: 'oem_update_run', payload: { categories: ['bios'] } };
   state.device = { orgId: ORG_ID, hardwareModel: 'Latitude 7420', hardwareBiosVersion: '1.20.0' };
   state.status = statusRow();
   state.updates = [];
@@ -164,7 +164,7 @@ describe('applyOemUpdateResult', () => {
     expect(captureException).toHaveBeenCalledTimes(1);
   });
 
-  it("a result for another org's device is ignored", async () => {
+  it("a result naming another device's command is ignored", async () => {
     state.command = { id: COMMAND_ID, deviceId: OTHER_DEVICE_ID, type: 'oem_update_run' };
     await apply(goodResult());
     expect(state.updates).toEqual([]);
@@ -291,6 +291,27 @@ describe('applyOemUpdateResult', () => {
       expect(resolveReturnedDeviceAlerts).not.toHaveBeenCalled();
     });
 
+    it('a BIOS run blocked by a pending reboot flashed nothing: it disarms', async () => {
+      state.status = armed();
+      await apply(goodResult({ outcome: 'blocked_reboot_pending' }));
+      expect(state.updates[0]).toMatchObject({ returnDeadlineAt: null, notReturnedAlertedAt: null });
+      expect(state.updates[0]!.rebootPendingSince).toBeInstanceOf(Date);
+      expect(resolveReturnedDeviceAlerts).toHaveBeenCalledWith([DEVICE_ID]);
+    });
+
+    it('a blocked BIOS run disarms even when the agent also reports the reboot it found', async () => {
+      state.status = armed();
+      await apply(goodResult({ outcome: 'blocked_reboot_pending', rebootRequired: true }));
+      expect(state.updates[0]).toMatchObject({ returnDeadlineAt: null });
+    });
+
+    it('a driver-only run blocked by a pending reboot says nothing about an earlier flash: it stays armed', async () => {
+      state.command = { id: COMMAND_ID, deviceId: DEVICE_ID, type: 'oem_update_run', payload: { categories: ['driver'] } };
+      state.status = armed();
+      await apply(goodResult({ outcome: 'blocked_reboot_pending' }));
+      expect(state.updates[0]).not.toHaveProperty('returnDeadlineAt');
+    });
+
     it('a malformed result stays armed: it is no evidence of anything', async () => {
       state.status = armed();
       await apply('garbage');
@@ -354,11 +375,10 @@ describe('applyOemUpdateVerification', () => {
     expect(resolveProtectionRestoredAlerts).not.toHaveBeenCalled();
   });
 
-  it('a failed alert still keeps the recorded report', async () => {
+  it('a failed alert surfaces to the caller, so the agent resends an idempotent report', async () => {
     vi.mocked(emitProtectionStillSuspendedAlert).mockRejectedValue(new Error('boom'));
-    await expect(verify({ bitlockerAfter: 'suspended' })).resolves.toBe(true);
+    await expect(verify({ bitlockerAfter: 'suspended' })).rejects.toThrow('boom');
     expect(state.updates).toHaveLength(1);
-    expect(captureException).toHaveBeenCalledTimes(1);
   });
 
   it('a report for a run that is not the current one is ignored', async () => {

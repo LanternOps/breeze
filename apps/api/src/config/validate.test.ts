@@ -3138,6 +3138,12 @@ describe('validateConfig', () => {
     });
   });
 
+  it('rejects a partner allowlist that parses to nothing: empty means every partner', () => {
+    withEnv({ ...validEnv, BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: ' , ,' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST/);
+    });
+  });
+
   it('rejects an unknown lane in BREEZE_OEM_UPDATES_DISABLED_LANES', () => {
     withEnv({ ...validEnv, BREEZE_OEM_UPDATES_DISABLED_LANES: 'dell,dels' }, () => {
       expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_DISABLED_LANES.*dels/);
