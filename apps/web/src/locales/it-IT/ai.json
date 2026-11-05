@@ -659,7 +659,8 @@
       "alreadyOnPartner": "Wisp è già attivo per tutte le organizzazioni.",
       "open": "Apri",
       "opening": "Apertura…",
-      "grantEnded": "Wisp non è più attivo per questo ambito. Conferma la tua identità per riattivarlo."
+      "grantEnded": "Wisp non è più attivo per questo ambito. Conferma la tua identità per riattivarlo.",
+      "unattendedReadsTitle": "Attiva le letture non presidiate"
     },
     "header": {
       "scopeAll": "Tutte le organizzazioni",
@@ -683,7 +684,16 @@
       "title": "Budget e controllo periodico",
       "budget": "Budget giornaliero",
       "tick": "Controllo ogni (minuti)",
-      "save": "Salva"
+      "save": "Salva",
+      "unattendedReads": {
+        "title": "Letture non presidiate",
+        "description": "Quando è attivo, Wisp e le sue esecuzioni in background eseguono le seguenti operazioni senza chiedere:",
+        "registryKey": "Leggere una chiave del registro",
+        "registryValue": "Leggere un valore del registro",
+        "securityLog": "Cercare nel registro eventi di sicurezza",
+        "deviceNote": "Salvare una nota su un dispositivo",
+        "applies": "Si applica alle nuove conversazioni e alle nuove esecuzioni in background."
+      }
     },
     "focus": {
       "label": "Sta lavorando su",
@@ -724,7 +734,11 @@
       "paused": "Wisp in pausa",
       "resumed": "Wisp ripreso",
       "pauseFailed": "Impossibile mettere Wisp in pausa",
-      "resumeFailed": "Impossibile riprendere Wisp"
+      "resumeFailed": "Impossibile riprendere Wisp",
+      "unattendedReadsOn": "Letture non presidiate attivate",
+      "unattendedReadsOnFailed": "Impossibile attivare le letture non presidiate",
+      "unattendedReadsOff": "Letture non presidiate disattivate",
+      "unattendedReadsOffFailed": "Impossibile disattivare le letture non presidiate"
     },
     "spend": {
       "meter": "{{spent}} su {{budget}} oggi",

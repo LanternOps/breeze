@@ -16,8 +16,12 @@ export type WispGrantStepUpModalProps = {
   defaultOrgId: string | null;
   onClose(): void;
   onGranted(w: NonNullable<WispState>): void;
-  /** Refresh an existing grant (same handshake, its own scope) instead of creating one. */
-  refresh?: { grantId: string; orgId: string | null };
+  /**
+   * Refresh an existing grant (same handshake, its own scope) instead of
+   * creating one. `unattendedReads` turns that switch on in the same refresh
+   * (#10973); without it the server keeps the switch as the grant has it.
+   */
+  refresh?: { grantId: string; orgId: string | null; unattendedReads?: true };
 };
 
 type GrantDto = { id: string; orgId: string | null };
@@ -77,6 +81,10 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
   }, [open, initialScope]);
 
   const orgId = refresh ? refresh.orgId : scope === 'org' ? defaultOrgId : null;
+  const enablingUnattendedReads = refresh?.unattendedReads === true;
+  const title = enablingUnattendedReads
+    ? t('wisp.modal.unattendedReadsTitle')
+    : refresh ? t('wisp.modal.refreshTitle') : t('wisp.modal.title');
   const missingOrg = !refresh && scope === 'org' && !defaultOrgId;
   const scopeKey = orgId ?? '*';
   // Only "turn on" can re-enter a grant; a refresh always takes a new proof.
@@ -166,14 +174,27 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
     setBusy(true);
     setError(null);
     const reauth: StepUpReauth = tier === 'passkey' ? { method: 'passkey' } : { method: 'totp', code };
-    const errorFallback = refresh ? t('wisp.toast.refreshFailed') : t('wisp.toast.onFailed');
-    const successMessage = refresh ? t('wisp.toast.refreshed') : t('wisp.toast.on');
+    const errorFallback = enablingUnattendedReads
+      ? t('wisp.toast.unattendedReadsOnFailed')
+      : refresh ? t('wisp.toast.refreshFailed') : t('wisp.toast.onFailed');
+    const successMessage = enablingUnattendedReads
+      ? t('wisp.toast.unattendedReadsOn')
+      : refresh ? t('wisp.toast.refreshed') : t('wisp.toast.on');
     const attempt = async (): Promise<GrantDto> => {
-      const stepUpGrantId = await mintWispGrantStepUp({ partnerId, orgId, reauth });
+      const stepUpGrantId = await mintWispGrantStepUp({
+        partnerId,
+        orgId,
+        reauth,
+        ...(refresh ? { refreshGrantId: refresh.grantId } : {}),
+        ...(enablingUnattendedReads ? { unattendedReads: true } : {}),
+      });
       return runAction<GrantDto>({
         request: () =>
           refresh
-            ? fetchWithAuth(`/wisp/grants/${refresh.grantId}/refresh`, { method: 'POST', body: JSON.stringify({ stepUpGrantId }) })
+            ? fetchWithAuth(`/wisp/grants/${refresh.grantId}/refresh`, {
+              method: 'POST',
+              body: JSON.stringify({ stepUpGrantId, ...(enablingUnattendedReads ? { unattendedReads: true } : {}) }),
+            })
             : fetchWithAuth('/wisp/grants', { method: 'POST', body: JSON.stringify({ orgId, stepUpGrantId }) }),
         errorFallback,
         // Handled below rather than toasted: a stale proof (re-verify) and an
@@ -223,10 +244,13 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
   };
 
   return (
-    <Dialog open={open} onClose={busy ? () => {} : onClose} title={refresh ? t('wisp.modal.refreshTitle') : t('wisp.modal.title')} maxWidth="md" className="p-5">
+    <Dialog open={open} onClose={busy ? () => {} : onClose} title={title} maxWidth="md" className="p-5">
       <div data-testid="wisp-grant-modal" className="space-y-4">
-        <h2 className="text-base font-semibold">{refresh ? t('wisp.modal.refreshTitle') : t('wisp.modal.title')}</h2>
+        <h2 className="text-base font-semibold">{title}</h2>
         {!reenter && <p className="text-sm text-muted-foreground">{t('wisp.modal.explain')}</p>}
+        {enablingUnattendedReads && (
+          <p className="text-sm text-muted-foreground">{t('wisp.settings.unattendedReads.applies')}</p>
+        )}
 
         {!refresh && (
           <fieldset className="space-y-2" disabled={busy}>

@@ -96,6 +96,8 @@ export default function WispThreadHeader({
   const [confirmRevoke, setConfirmRevoke] = useState(false);
   const [revoking, setRevoking] = useState(false);
   const [refreshOpen, setRefreshOpen] = useState(false);
+  const [refreshEnables, setRefreshEnables] = useState(false);
+  const [unattendedReadsSaving, setUnattendedReadsSaving] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [budget, setBudget] = useState(centsToDollars(wisp.budgetCentsPerDay));
   const [tick, setTick] = useState(String(wisp.floorTickMinutes));
@@ -164,6 +166,36 @@ export default function WispThreadHeader({
     }
   };
 
+  /** `enableUnattendedReads`: the same refresh, also turning the switch on (#10973). */
+  const openRefresh = (enableUnattendedReads: boolean) => {
+    setRefreshEnables(enableUnattendedReads);
+    setRefreshOpen(true);
+  };
+
+  // #10973: on widens what Wisp may do without asking, so it is a step-up
+  // refresh (the modal); off never widens, so it autosaves here.
+  const unattendedReadsOn = wisp.unattendedReads === true;
+  const toggleUnattendedReads = async () => {
+    if (!unattendedReadsOn) {
+      openRefresh(true);
+      return;
+    }
+    setUnattendedReadsSaving(true);
+    const errorFallback = t('wisp.toast.unattendedReadsOffFailed');
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/wisp/grants/${wisp.grantId}/settings`, { method: 'PATCH', body: JSON.stringify({ unattendedReads: false }) }),
+        errorFallback,
+        successMessage: t('wisp.toast.unattendedReadsOff'),
+      });
+      updateWisp({ unattendedReads: false });
+    } catch (err) {
+      handleMutationError(err, errorFallback);
+    } finally {
+      setUnattendedReadsSaving(false);
+    }
+  };
+
   const openSettings = (force = false) => {
     setBudget(centsToDollars(wisp.budgetCentsPerDay));
     setTick(String(wisp.floorTickMinutes));
@@ -226,7 +258,7 @@ export default function WispThreadHeader({
             type="button"
             data-testid="wisp-refresh-grant"
             data-variant={wideningAvailable ? 'primary' : 'secondary'}
-            onClick={() => setRefreshOpen(true)}
+            onClick={() => openRefresh(false)}
             title={t('wisp.header.refresh')}
             className={
               wideningAvailable
@@ -351,6 +383,32 @@ export default function WispThreadHeader({
               {t('wisp.settings.save')}
             </button>
           </div>
+          {/* #10973, settings rule 7: its own section, outside the Save form. Off autosaves; on asks for a step-up. */}
+          <section className="space-y-1 border-t pt-2" data-testid="wisp-settings-unattended-reads" aria-labelledby="wisp-unattended-reads-title">
+            <div className="flex items-center justify-between gap-2">
+              <p id="wisp-unattended-reads-title" className="font-medium">{t('wisp.settings.unattendedReads.title')}</p>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={unattendedReadsOn}
+                aria-labelledby="wisp-unattended-reads-title"
+                data-testid="wisp-unattended-reads-switch"
+                disabled={unattendedReadsSaving}
+                onClick={() => void toggleUnattendedReads()}
+                className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${unattendedReadsOn ? 'bg-primary' : 'bg-muted'}`}
+              >
+                <span className={`inline-block h-3 w-3 rounded-full bg-background shadow transition-transform ${unattendedReadsOn ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+              </button>
+            </div>
+            <p className="text-muted-foreground">{t('wisp.settings.unattendedReads.description')}</p>
+            <ul className="list-disc space-y-0.5 pl-4 text-muted-foreground">
+              <li>{t('wisp.settings.unattendedReads.registryKey')}</li>
+              <li>{t('wisp.settings.unattendedReads.registryValue')}</li>
+              <li>{t('wisp.settings.unattendedReads.securityLog')}</li>
+              <li>{t('wisp.settings.unattendedReads.deviceNote')}</li>
+            </ul>
+            <p className="text-muted-foreground">{t('wisp.settings.unattendedReads.applies')}</p>
+          </section>
         </div>
       )}
 
@@ -369,7 +427,7 @@ export default function WispThreadHeader({
       <WispGrantStepUpModal
         open={refreshOpen}
         defaultOrgId={wisp.scopeOrgId}
-        refresh={{ grantId: wisp.grantId, orgId: wisp.scopeOrgId }}
+        refresh={{ grantId: wisp.grantId, orgId: wisp.scopeOrgId, ...(refreshEnables ? { unattendedReads: true as const } : {}) }}
         onClose={() => setRefreshOpen(false)}
         onGranted={(fresh) => {
           setRefreshOpen(false);

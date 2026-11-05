@@ -659,7 +659,8 @@
       "alreadyOnPartner": "Wisp ist für alle Organisationen bereits aktiviert.",
       "open": "Öffnen",
       "opening": "Wird geöffnet…",
-      "grantEnded": "Wisp ist für diesen Bereich nicht mehr aktiviert. Bestätigen Sie Ihre Identität, um Wisp wieder zu aktivieren."
+      "grantEnded": "Wisp ist für diesen Bereich nicht mehr aktiviert. Bestätigen Sie Ihre Identität, um Wisp wieder zu aktivieren.",
+      "unattendedReadsTitle": "Unbeaufsichtigte Lesezugriffe aktivieren"
     },
     "header": {
       "scopeAll": "Alle Organisationen",
@@ -683,7 +684,16 @@
       "title": "Budget und Check-in",
       "budget": "Tagesbudget",
       "tick": "Check-in alle (Minuten)",
-      "save": "Speichern"
+      "save": "Speichern",
+      "unattendedReads": {
+        "title": "Unbeaufsichtigte Lesezugriffe",
+        "description": "Wenn aktiviert, führen Wisp und seine Hintergrundläufe Folgendes ohne Rückfrage aus:",
+        "registryKey": "Registrierungsschlüssel lesen",
+        "registryValue": "Registrierungswert lesen",
+        "securityLog": "Sicherheitsereignisprotokoll durchsuchen",
+        "deviceNote": "Notiz zu einem Gerät speichern",
+        "applies": "Gilt für neue Unterhaltungen und neue Hintergrundläufe."
+      }
     },
     "focus": {
       "label": "Arbeitet an",
@@ -724,7 +734,11 @@
       "paused": "Wisp pausiert",
       "resumed": "Wisp fortgesetzt",
       "pauseFailed": "Wisp konnte nicht pausiert werden",
-      "resumeFailed": "Wisp konnte nicht fortgesetzt werden"
+      "resumeFailed": "Wisp konnte nicht fortgesetzt werden",
+      "unattendedReadsOn": "Unbeaufsichtigte Lesezugriffe aktiviert",
+      "unattendedReadsOnFailed": "Unbeaufsichtigte Lesezugriffe konnten nicht aktiviert werden",
+      "unattendedReadsOff": "Unbeaufsichtigte Lesezugriffe deaktiviert",
+      "unattendedReadsOffFailed": "Unbeaufsichtigte Lesezugriffe konnten nicht deaktiviert werden"
     },
     "spend": {
       "meter": "{{spent}} von {{budget}} heute",
