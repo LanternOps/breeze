@@ -3,12 +3,13 @@ package heartbeat
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 type cachedAgentComponentProbe struct {
@@ -67,7 +68,7 @@ func probeInstalledAgentComponent(path string) rollbackComponentProbe {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, path, "version").CombinedOutput()
+	output, err := procspawn.CommandContext(ctx, path, "version").CombinedOutput()
 	if err != nil {
 		probe := rollbackComponentProbe{Installed: true, Trusted: false}
 		agentComponentProbeCache.Store(path, cachedAgentComponentProbe{size: info.Size(), modTime: info.ModTime(), probe: probe})

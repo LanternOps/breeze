@@ -395,6 +395,19 @@ If a connection does not complete:
   Connecting or managing a mailbox requires **partner scope and MFA**. The Microsoft 365 mailbox card only appears once your operator has configured the Breeze Ticketing Azure app -- see [Ticket Mailbox environment variables](/deploy/environment/#ticket-mailbox-m365-email-to-ticket).
 </Aside>
 
+#### How external mail is verified on a connected mailbox
+
+Unverified external mail goes to the review queue (or is dropped, if you turned that on), so a forged From address from outside your tenant can't open a ticket under your customer's name. On a Microsoft 365 mailbox Breeze verifies external mail with:
+
+- **Exchange Online's own check.** Mail counts as verified when Exchange marks it as external mail not attributed to a connector, it carries exactly one `Authentication-Results` header with Exchange's authserv-id (`mx.microsoft.com` or a `*.mail.protection.outlook.com` host), and that header says `dmarc=pass` for the From domain. Mail from a domain with no DMARC record (`dmarc=none`) stays in review. A second `Authentication-Results` header also sends a message to review, since Breeze can't tell which one Exchange wrote. Mail Exchange attributes to a partner connector isn't verified from this header.
+- **A trusted mail gateway, if you list one.** With an inline gateway that adds an ARC seal, Exchange checks the gateway instead of the sender and may fail legitimate mail. Under **Mail gateway** on the mailbox, list the gateway's ARC sealing domain: the `d=` value in the gateway's `ARC-Seal` header on a message it delivered (not `microsoft.com`, which is Exchange's own seal). Breeze then verifies the seal and the gateway's signature over the From header, and uses the gateway's verdict, which must be for the From domain. A seal more than 6 hours older than the message's arrival isn't used. The list is empty by default. If the gateway's key can't be fetched, Breeze retries for up to an hour before the message goes to review. A gateway that doesn't add an ARC seal isn't used; Breeze falls back to Exchange's own check, and never reads `Authentication-Results-Original`, because a sender can write that header.
+
+The review queue shows which of these Breeze checked and why the message didn't pass, for example `unverified sender (SPF/DKIM/DMARC): Exchange Online stamp: dmarc=fail`.
+
+<Aside type="caution">
+  Only list a gateway that all of the tenant's inbound mail is forced through: first restrict inbound delivery in Exchange to the gateway with a connector. Without that restriction, Breeze can't tell a message the gateway delivered from one sent directly to Exchange.
+</Aside>
+
 ### Connecting a Google Workspace support mailbox
 
 A Google Workspace mailbox (for example `support@yourdomain.com` or an alias of it) can also feed tickets directly, with no MX or forwarding changes and no OAuth redirect. Breeze reads it through the **domain-wide delegation** service account of an organization's Google Workspace connection. Set it up on the **Google Workspace support mailbox** card under **Settings → Ticketing → Inbound Email**.

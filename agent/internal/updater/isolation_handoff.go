@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 type isolationInstallHook struct {
@@ -33,7 +34,7 @@ func SetIsolationInstallHook(prepare func(staged, target string) error) {
 func StagedIsolationSchema(ctx context.Context, staged string) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, staged, "containment", "journal-schema").Output()
+	output, err := procspawn.CommandContext(ctx, staged, "containment", "journal-schema").Output()
 	if err != nil {
 		return 0, fmt.Errorf("query staged isolation journal schema: %w", err)
 	}

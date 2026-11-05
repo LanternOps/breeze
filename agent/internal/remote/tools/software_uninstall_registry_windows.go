@@ -12,6 +12,8 @@ import (
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // machineUninstallKeyPaths are the machine-wide Uninstall keys, the same HKLM
@@ -117,13 +119,13 @@ func startRegistryUninstallerOS(plan registryUninstallPlan) (uninstallerProcess,
 		return nil, errors.New("uninstaller " + exePath + " is not a regular file")
 	}
 
-	cmd := &exec.Cmd{
+	cmd := procspawn.Prepare(&exec.Cmd{
 		Path: exePath,
 		SysProcAttr: &syscall.SysProcAttr{
 			CmdLine:    cmdLine,
 			HideWindow: true,
 		},
-	}
+	})
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}

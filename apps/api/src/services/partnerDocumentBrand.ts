@@ -2,11 +2,10 @@
 //
 // Partners set these under Settings → Partner → Branding, stored in
 // `partners.settings.branding` — the same source report PDFs read
-// (reportBranding.ts). The per-customer `portal_branding` row has logo/colour
-// columns too, but nothing in the app writes them yet, so documents that read
-// only that row printed in the default palette with a text wordmark even for
-// fully branded partners (Q-2026-0027). The org row still wins field by field
-// once it is populated.
+// (reportBranding.ts). The per-customer `portal_branding` row, written by the
+// org Branding tab (#9962, #9673), wins field by field; a document that read
+// only that row used to print in the default palette with a text wordmark even
+// for fully branded partners (Q-2026-0027).
 //
 // Pure: callers pass `partners.settings` from the partner row they already
 // read under their own tenancy rules — this module never touches the DB.
@@ -17,6 +16,7 @@ export interface DocumentBrand {
   logoUrl: string | null;
   /** From the partner: #rgb / #rrggbb, else null. An org value overrides it as stored. */
   primaryColor: string | null;
+  /** From the partner: #rgb / #rrggbb, else null. A hex org value overrides it. */
   secondaryColor: string | null;
 }
 
@@ -47,17 +47,18 @@ export function partnerDocumentBrand(settings: unknown): DocumentBrand {
 }
 
 /** A customer org's portal_branding values win; the partner's branding fills
- *  whatever the org row leaves empty (null or blank). Org values pass through
- *  as stored — the web views have always rendered them directly — so only the
- *  partner fallback is validated here. */
+ *  whatever the org row leaves empty (null or blank). The logo and primary
+ *  colour pass through as stored — the web views have always rendered them
+ *  directly, and the write schema validates them — so only the partner fallback
+ *  is validated for those. */
 export function resolveDocumentBrand(
-  orgBrand: { logoUrl?: string | null; primaryColor?: string | null } | undefined,
+  orgBrand: { logoUrl?: string | null; primaryColor?: string | null; secondaryColor?: string | null } | undefined,
   partnerSettings: unknown,
 ): DocumentBrand {
   const partner = partnerDocumentBrand(partnerSettings);
   return {
     logoUrl: orgBrand?.logoUrl?.trim() || partner.logoUrl,
     primaryColor: orgBrand?.primaryColor?.trim() || partner.primaryColor,
-    secondaryColor: partner.secondaryColor,
+    secondaryColor: hexOrNull(orgBrand?.secondaryColor) ?? partner.secondaryColor,
   };
 }

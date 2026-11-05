@@ -8,11 +8,13 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 func listEventLogsOS(startTime time.Time) CommandResult {
 	// Use PowerShell to get event log names
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
+	cmd := procspawn.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
 		utf8PowerShellCommand(`Get-WinEvent -ListLog * -ErrorAction SilentlyContinue | Select-Object LogName, RecordCount, MaximumSizeInBytes | ConvertTo-Json`))
 	output, err := cmd.Output()
 	if err != nil {
@@ -46,7 +48,7 @@ func queryEventLogsOS(logName, source, xpathQuery string, levelNum, eventID, pag
 	maxEvents := page * limit
 	script := buildEventLogQueryScript(logName, source, xpathQuery, levelNum, eventID, maxEvents)
 
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
+	cmd := procspawn.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
 		utf8PowerShellCommand(script))
 
 	output, err := cmd.Output()
@@ -93,7 +95,7 @@ func queryEventLogsOS(logName, source, xpathQuery string, levelNum, eventID, pag
 }
 
 func getEventLogEntryOS(logName string, recordID int64, startTime time.Time) CommandResult {
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
+	cmd := procspawn.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
 		utf8PowerShellCommand(buildEventLogGetEntryScript(logName, recordID)))
 
 	output, err := cmd.Output()

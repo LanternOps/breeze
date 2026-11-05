@@ -912,6 +912,19 @@ describe('processInboundEmail', () => {
     expect(captureMessageMock).not.toHaveBeenCalled();
   });
 
+  it('names the source consulted in the quarantine reason without alerting Sentry (#10862)', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    await processInboundEmail(email({
+      senderAuth: { spf: 'fail', dkim: 'fail', dmarc: 'fail', verified: false },
+      senderAuthConsulted: 'Exchange Online stamp: dmarc=fail',
+    }));
+
+    const log = inboundOf();
+    expect(log[0]!.parseStatus).toBe('quarantined');
+    expect(log[0]!.error).toBe('unverified sender (SPF/DKIM/DMARC): Exchange Online stamp: dmarc=fail');
+    expect(captureMessageMock).not.toHaveBeenCalled();
+  });
+
   it('creates a NEW linked ticket when the matched ticket is closed', async () => {
     resolveMock.mockResolvedValue('p-1');
     state.selectRows['ticket_email_inbound'] = [];

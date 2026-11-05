@@ -4,8 +4,9 @@ package userhelper
 
 import (
 	"context"
-	"os/exec"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // probeUILocaleOS reads the user's preferred languages. The user-helper runs
@@ -13,7 +14,7 @@ import (
 func probeUILocaleOS() string {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "/usr/bin/defaults", "read", "-g", "AppleLanguages").Output()
+	out, err := procspawn.CommandContext(ctx, "/usr/bin/defaults", "read", "-g", "AppleLanguages").Output()
 	if err != nil {
 		return ""
 	}

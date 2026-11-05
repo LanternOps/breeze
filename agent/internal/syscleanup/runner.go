@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/breeze-rmm/agent/internal/procoutput"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // maxOutputBytes caps each captured stream. Cleaner output is a few lines of
@@ -238,7 +239,7 @@ func runProcessWithTreeIdle(ctx context.Context, timeout time.Duration, limits i
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, path, args...)
+	cmd := procspawn.CommandContext(runCtx, path, args...)
 	cmd.Env = cLocaleEnv(os.Environ())
 
 	var stdout, stderr lockedBuffer
