@@ -306,18 +306,29 @@ func TestRunBackupContext_FailedJournalRestartDisablesCheckpointing(t *testing.T
 		provider := newMockProvider()
 		mgr := serverOwnedManager(t, provider, []string{src}, "")
 		mgr.config.StagingDir = staging
-		oldID := seedBoundJournal(t, staging, backupIdentity(provider, []string{src}), testJobID, "")
+		entry := journaledEntry(t, pathpkg.Join(src, "a.txt"), brokeredJournalID, "alpha")
+		provider.mu.Lock()
+		provider.files[entry.BackupPath] = []byte("alpha")
+		provider.mu.Unlock()
+		seedBrokeredJournal(t, staging, backupIdentity(provider, []string{src}), brokeredJournalID, testJobID, "", entry)
 		failJournalRestarts(t) // never reached: same job, same base
 
 		job, err := mgr.RunBackupContext(context.Background(), nil)
 		if err != nil {
 			t.Fatalf("RunBackupContext: %v", err)
 		}
-		if job.Snapshot.ID != oldID {
-			t.Fatalf("same job must resume %s, got %s", oldID, job.Snapshot.ID)
+		if job.Snapshot.ID != brokeredJournalID {
+			t.Fatalf("same job must resume %s, got %s", brokeredJournalID, job.Snapshot.ID)
 		}
 		if strings.Contains(job.Warning, warnJournalCheckpointingDisabled) {
 			t.Errorf("warning %q on a run whose journal never restarted", job.Warning)
+		}
+		reused := false
+		for _, f := range job.Snapshot.Files {
+			reused = reused || f.BackupPath == entry.BackupPath
+		}
+		if !reused {
+			t.Errorf("the journaled entry was not reused: %+v", job.Snapshot.Files)
 		}
 	})
 }
@@ -360,7 +371,16 @@ func TestBrokeredRun_FailedJournalRestartDisablesCheckpointing(t *testing.T) {
 			// The entry's object exists, so a run that kept the entry would
 			// reuse it instead of uploading.
 			p.backing.files[entry.BackupPath] = []byte("alpha")
-			failJournalRestarts(t)
+			journalDir, ok := resolveJournalDir(staging)
+			if !ok {
+				t.Fatal("no journal dir")
+			}
+			journalPath := pathpkg.Join(journalDir, journalFileName(backupIdentity(p, []string{src})))
+			before, err := os.ReadFile(journalPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			restore := failJournalRestarts(t)
 
 			job, err := brokeredManager(p, src, staging, testJobID).RunBackupContext(context.Background(), nil)
 			if err != nil {
@@ -377,12 +397,19 @@ func TestBrokeredRun_FailedJournalRestartDisablesCheckpointing(t *testing.T) {
 			}
 			uploaded := false
 			for _, k := range p.uploadedKeys() {
-				if strings.Contains(k, "a.txt") {
+				if strings.HasPrefix(k, path.Join(snapshotRootDir, brokeredIssuedID)+"/") && strings.Contains(k, "a.txt") {
 					uploaded = true
 				}
 			}
 			if !uploaded {
-				t.Fatalf("a.txt was reused from the discarded journal instead of uploaded: %v", p.uploadedKeys())
+				t.Fatalf("a.txt was not uploaded under the issued snapshot: %v", p.uploadedKeys())
+			}
+			after, err := os.ReadFile(journalPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Errorf("a run without checkpointing changed the journal:\n%s", after)
 			}
 			asked := false
 			for _, e := range p.eventList() {
@@ -392,6 +419,20 @@ func TestBrokeredRun_FailedJournalRestartDisablesCheckpointing(t *testing.T) {
 			}
 			if asked != tc.wantResumeAsked {
 				t.Errorf("asked to resume = %v, want %v: %v", asked, tc.wantResumeAsked, p.eventList())
+			}
+
+			// Once the disk recovers the next run gets the journal lock back
+			// and completes the discard.
+			restore()
+			next, err := brokeredManager(p, src, staging, testJobID).RunBackupContext(context.Background(), nil)
+			if err != nil {
+				t.Fatalf("next run: %v", err)
+			}
+			if strings.Contains(next.Warning, warnJournalCheckpointingDisabled) {
+				t.Errorf("next run's warning %q carries %s", next.Warning, warnJournalCheckpointingDisabled)
+			}
+			if !strings.Contains(next.Warning, warnJournalDiscardedOtherRun) {
+				t.Errorf("next run's warning %q does not report the discard that now completed", next.Warning)
 			}
 		})
 	}

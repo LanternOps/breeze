@@ -480,7 +480,9 @@ func (j *snapshotJournal) DiscardedOtherRun() string {
 // opening, before the journal's state is used. Only a brokered write can
 // carry an unfinished snapshot across jobs, and only when the control plane
 // allows it (bindBrokeredJournal, ContinueRun); every other destination
-// restarts from zero on a new job.
+// restarts from zero on a new job. If the fresh journal cannot be created the
+// error wraps errJournalUnusable and the caller must drop this journal; any other
+// error is a lost header update, which the caller may log and carry on from.
 func (j *snapshotJournal) BindRun(jobID, dispatchedBaseSnapshotID string) error {
 	if j == nil {
 		return nil
@@ -509,14 +511,15 @@ func (j *snapshotJournal) BindRun(jobID, dispatchedBaseSnapshotID string) error 
 }
 
 // restartFresh replaces the journal's content with a fresh journal (new
-// snapshot id, no entries) at the same path. The discarded snapshot's partial
-// prefix is left to the server's manifest-less-prefix cleanup.
+// snapshot id, no entries) at the same path, or fails as restartFreshWithID
+// describes. The discarded snapshot's partial prefix is left to the server's
+// manifest-less-prefix cleanup.
 func (j *snapshotJournal) restartFresh() error {
 	return j.restartFreshWithID("")
 }
 
 // errJournalUnusable reports that the checkpoint journal could not be restarted,
-// so it holds no resume state and no file (see restartFreshWithID). The run
+// so it holds no resume state and no open file (see restartFreshWithID). The run
 // proceeds without one.
 var errJournalUnusable = errors.New("checkpoint journal could not be restarted")
 
@@ -526,8 +529,10 @@ var errJournalUnusable = errors.New("checkpoint journal could not be restarted")
 // that fails still discards it: the journal keeps nothing of the old run in
 // memory, and with no file behind it every later append is refused. The error
 // wraps errJournalUnusable, and the run must drop the journal rather than carry
-// on with it. Whether the old file survives depends on how far the create got;
-// a later open either discards it again or finds it empty and starts afresh.
+// on with it. Whether the old file survives depends on how far the create got. A
+// later open finds it empty and starts afresh, or finds it intact and treats it
+// as usual: another job or base discards it, and the job that wrote it resumes it,
+// since this run wrote nothing to its snapshot.
 func (j *snapshotJournal) restartFreshWithID(snapshotID string) error {
 	if j.file != nil {
 		_ = j.file.Close()

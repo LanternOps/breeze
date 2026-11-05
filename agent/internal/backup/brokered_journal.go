@@ -25,8 +25,10 @@ import (
 //     starts afresh under the issued id;
 //   - a journal written for another dispatched base is never offered.
 //
-// An error other than errJournalUnusable fails the run: the control plane
-// could not be asked.
+// A restart that cannot create its file returns errJournalUnusable whichever of
+// these led to it, and the caller drops the journal: the run proceeds under the
+// issued id without one. Any other error fails the run: the control plane could
+// not be asked.
 func (m *BackupManager) bindBrokeredJournal(ctx context.Context, journal *snapshotJournal, issuer providers.SnapshotIDIssuer, dispatched string) (readOnly bool, err error) {
 	jobID := m.config.JobID
 	issued := issuer.SnapshotID()
