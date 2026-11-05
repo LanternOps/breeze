@@ -61,7 +61,8 @@ vi.mock('./runProgress', async (importOriginal) => ({
 
 import { TOOL_TIERS } from '../aiAgentSdkTools';
 import { GrantInactiveError, type GrantCeiling } from '../wisp/grantAuthority';
-import { createAgentRunCallPairing, createAgentRunPreToolUse, PROPOSAL_RECORDED_TEXT } from './runLoop';
+import { aiTools } from '../aiToolNames';
+import { createAgentRunCallPairing, createAgentRunPreToolUse, PROPOSAL_RECORDED_TEXT, troubleshootStoppedByGrant } from './runLoop';
 import { progressLabelFor } from './runProgress';
 import { TROUBLESHOOT_MAX_ACTIONS_PER_RUN, troubleshootToolAllowlist } from './troubleshootProfile';
 
@@ -219,6 +220,109 @@ describe('device_troubleshooting pre-tool hook (#11084)', () => {
     expect((result as { error: string }).error).toMatch(/approval requests.*per run/i);
     expect(intentMocks.createActionIntent).toHaveBeenCalledTimes(TROUBLESHOOT_MAX_ACTIONS_PER_RUN);
     expect(outcome.deniedActions.at(-1)).toMatchObject({ tool: 'set_device_context' });
+  });
+
+  it('(f) the cap holds when the SDK runs tool calls in parallel: the slot is reserved before the mint', async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    intentMocks.createActionIntent.mockImplementation(async () => {
+      await gate;
+      return { id: `intent-${++intentSeq}`, status: 'pending_approval', errorCode: null };
+    });
+    const outcome = makeOutcome();
+    const intentIds: string[] = [];
+    const pre = makeHook({ outcome, intentIds });
+    const calls = Array.from({ length: TROUBLESHOOT_MAX_ACTIONS_PER_RUN + 2 }, (_, i) =>
+      pre('set_device_context', { deviceId: DEVICE_ID, summary: `note ${i}` }));
+    // Let every hook pass its cap check while no mint has finished.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    release();
+    await Promise.all(calls);
+    expect(intentMocks.createActionIntent).toHaveBeenCalledTimes(TROUBLESHOOT_MAX_ACTIONS_PER_RUN);
+    expect(intentIds).toHaveLength(TROUBLESHOOT_MAX_ACTIONS_PER_RUN);
+  });
+
+  it('an intent not left pending says so, emits no "waiting" step, and gives its slot back', async () => {
+    intentMocks.createActionIntent.mockImplementationOnce(async () => ({
+      id: 'intent-cancelled', status: 'cancelled', errorCode: 'no_eligible_approvers',
+    }));
+    const outcome = makeOutcome();
+    const intentIds: string[] = [];
+    const pre = makeHook({ outcome, intentIds });
+    const first = await pre('set_device_context', { deviceId: DEVICE_ID, summary: 'nobody can approve this' });
+    expect((first as { error: string }).error).toMatch(/not submitted for approval: no_eligible_approvers/);
+    expect(intentIds).toEqual([]);
+    expect(progressMocks.emitRunProgress).not.toHaveBeenCalled();
+    for (let i = 0; i < TROUBLESHOOT_MAX_ACTIONS_PER_RUN; i++) {
+      await pre('set_device_context', { deviceId: DEVICE_ID, summary: `note ${i}` });
+    }
+    expect(intentIds).toHaveLength(TROUBLESHOOT_MAX_ACTIONS_PER_RUN);
+  });
+
+  it('a mint that throws records the proposal, tells the model, and gives its slot back', async () => {
+    intentMocks.createActionIntent.mockRejectedValueOnce(new Error('agent_policy_denied'));
+    const outcome = makeOutcome();
+    const intentIds: string[] = [];
+    const pre = makeHook({ outcome, intentIds });
+    const first = await pre('set_device_context', { deviceId: DEVICE_ID, summary: 'x' });
+    expect((first as { error: string }).error).toMatch(/not submitted for approval/);
+    expect(intentIds).toEqual([]);
+    expect(outcome.proposedActions[0]).toMatchObject({ tool: 'set_device_context', intentError: 'agent_policy_denied' });
+    for (let i = 0; i < TROUBLESHOOT_MAX_ACTIONS_PER_RUN; i++) {
+      await pre('set_device_context', { deviceId: DEVICE_ID, summary: `note ${i}` });
+    }
+    expect(intentIds).toHaveLength(TROUBLESHOOT_MAX_ACTIONS_PER_RUN);
+  });
+
+  it.each([
+    ['a number', { deviceId: 123 }],
+    ['an object', { deviceId: {} }],
+    ['an empty string', { deviceId: '' }],
+    ['a mixed array', { deviceIds: [DEVICE_ID, 7] }],
+    ['an array with a null', { deviceIds: [DEVICE_ID, null] }],
+    ['a foreign string in deviceIds', { deviceIds: 'x' }],
+  ])('(d) a malformed device argument fails closed: %s', async (_name, input) => {
+    const outcome = makeOutcome();
+    const result = await makeHook({ outcome })('get_device_details', input as Record<string, unknown>);
+    expect(result.allowed).toBe(false);
+    expect((result as { error: string }).error).toMatch(/pinned to its device/);
+  });
+
+  it('(d) control: an omitted or null device argument is not a pin refusal', async () => {
+    const outcome = makeOutcome();
+    const pre = makeHook({ outcome });
+    expect((await pre('get_device_details', { deviceId: DEVICE_ID })).allowed).toBe(true);
+    const nullId = await pre('list_scripts', { deviceId: null });
+    expect((nullId as { error?: string }).error ?? '').not.toMatch(/pinned to its device/);
+  });
+
+  it('(d) every device argument any floor tool declares is pinned', async () => {
+    const declared = troubleshootToolAllowlist([]).flatMap((tool) =>
+      (aiTools.get(tool)?.deviceArgs ?? []).map((arg) => [tool, arg] as const));
+    expect(declared.length).toBeGreaterThan(0);
+    for (const [tool, arg] of declared) {
+      const outcome = makeOutcome();
+      const result = await makeHook({ outcome })(tool, { [arg]: OTHER_DEVICE_ID });
+      expect(result.allowed, `${tool}.${arg}`).toBe(false);
+      expect((result as { error: string }).error, `${tool}.${arg}`).toMatch(/pinned to its device/);
+    }
+  });
+
+  it('(e) a grant paused mid-run: the call after the memo window is refused, and the run reads as stopped by the grant', async () => {
+    vi.useFakeTimers({ now: new Date('2027-01-05T00:00:00Z') });
+    try {
+      const outcome = makeOutcome();
+      const pre = makeHook({ outcome });
+      expect((await pre('get_device_details', { deviceId: DEVICE_ID })).allowed).toBe(true);
+      expect(troubleshootStoppedByGrant(outcome)).toBe(false);
+      grantMocks.resolveGrantCeiling.mockRejectedValue(new GrantInactiveError('g1', 'paused'));
+      vi.setSystemTime(new Date('2027-01-05T00:00:16Z'));
+      const result = await pre('get_device_details', { deviceId: DEVICE_ID });
+      expect(result.allowed).toBe(false);
+      expect(troubleshootStoppedByGrant(outcome)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('a read-classified tool outside the floor is refused (authority backstop)', async () => {

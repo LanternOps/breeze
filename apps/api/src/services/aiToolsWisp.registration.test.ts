@@ -136,6 +136,16 @@ describe('launch_specialist (Tier-2 chat tool)', () => {
       .toMatchObject({ tier: 3, requiresApproval: true, approvalScope: 'supervised' });
   });
 
+  it('the device_troubleshooting card shows the goal, one line and bounded (#11084)', () => {
+    const text = describeSpecialistRequest(
+      { orgId: 'o', kind: 'device_troubleshooting', reason: 'Multi-step device work', params: { deviceId: 'd', goal: `Outlook crashes\non start ${'x'.repeat(400)}` } },
+      'Greenwood',
+    );
+    expect(text).toMatch(/^Wisp wants to run device troubleshooting at Greenwood: Multi-step device work — one device, goal: "Outlook crashes on start x/);
+    expect(text).not.toContain('\n');
+    expect(text.length).toBeLessThan(330);
+  });
+
   it('the card names the org, not a raw id prefix, when the chat gate resolved its name', () => {
     const input = { orgId: '64233cbe-0000-4000-8000-000000000001', kind: 'sweep', reason: 'disks are filling' };
     expect(describeSpecialistRequest(input, 'Default Organization'))

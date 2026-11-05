@@ -230,6 +230,18 @@ describe('device_troubleshooting runs are always admitted shadow', () => {
   });
 });
 
+describe('step 8a row-level pin', () => {
+  // The input kind is caller-supplied; the ai_agents ROW is authoritative. A
+  // caller claiming 'troubleshoot' over a row that is actually another kind
+  // must not get a device_troubleshooting run.
+  it("ownership_mismatch and no insert when the ai_agents row's kind is not troubleshoot", async () => {
+    dbMockState.rowQueues.ai_agents = [[{ id: AGENT_ID, orgId: null, partnerId: PARTNER_ID, name: 'Triage', kind: 'triage' }]];
+    const result = await createAndEnqueueAgentRun(input());
+    expect(result).toEqual({ created: false, skipped: 'ownership_mismatch' });
+    expect(dbMockState.insertValues).toEqual([]);
+  });
+});
+
 describe("profileCaps('device_troubleshooting') — pinned per-(agent, org) caps", () => {
   it('max_concurrent_troubleshoot_runs at TROUBLESHOOT_MAX_CONCURRENT_RUNS', async () => {
     seedAdmission({ concurrent: TROUBLESHOOT_MAX_CONCURRENT_RUNS });

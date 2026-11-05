@@ -752,3 +752,22 @@ describe('AiAgentForm — built-in research agent (W2)', () => {
     expect((sent.limits as Record<string, number>).researchDeepBudgetCentsPerRun).toBe(40);
   });
 });
+
+describe('AiAgentForm — built-in troubleshoot agent (#11084)', () => {
+  it('hides the mode control and the policy sections; shows only name and enabled', () => {
+    mockEndpoints();
+    // Control: a triage agent DOES render these, so the absences below are not vacuous.
+    const first = renderForm({ agent: makeAgent({ kind: 'triage' }) });
+    expect(screen.getByTestId('ai-agent-mode-field')).toBeTruthy();
+    expect(screen.getByTestId('ai-agent-instructions')).toBeTruthy();
+    first.unmount();
+
+    renderForm({ agent: makeAgent({ kind: 'troubleshoot', toolAllowlist: [] }) });
+    expect(screen.getByTestId('ai-agent-name')).toBeTruthy();
+    expect(screen.getByTestId('ai-agent-enabled')).toBeTruthy();
+    expect(screen.queryByTestId('ai-agent-mode-field')).toBeNull();
+    expect(screen.queryByTestId('ai-agent-mode')).toBeNull();
+    expect(screen.queryByTestId('ai-agent-instructions')).toBeNull();
+    expect(screen.queryByTestId('ai-agent-model')).toBeNull();
+  });
+});

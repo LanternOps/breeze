@@ -2,7 +2,11 @@ import { render, waitFor, act } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    // Echo `count` so assertions can pin the number, not just the key.
+    t: (key: string, opts?: unknown) =>
+      opts && typeof opts === 'object' && 'count' in opts ? `${key}:${(opts as { count: number }).count}` : key,
+  }),
 }));
 
 const fetchWithAuth = vi.hoisted(() => vi.fn());
@@ -140,7 +144,9 @@ describe('AiRunCard (spec §5.5)', () => {
       <AiRunCard runId={RUN} initialStatus="queued" run={undefined} />,
     );
     await waitFor(() => expect(getByTestId('ai-run-card-status').textContent).toContain('awaiting_approval'));
-    expect(queryByTestId('ai-run-card-open')).toBeNull();
+    // The run link is useful while parked on approval; the offline notice is terminal-only.
+    expect(getByTestId('ai-run-card-open').getAttribute('href')).toBe(`/ai-agents/runs/${RUN}`);
+    expect(queryByTestId('ai-run-card-offline-notice')).toBeNull();
   });
 
   it('escapes artifact names rather than interpreting them as markup', async () => {
@@ -218,9 +224,10 @@ describe('AiRunCard (spec §5.5)', () => {
       );
       await act(async () => { await vi.advanceTimersByTimeAsync(0); });
       const block = getByTestId('ai-run-card-approvals');
-      expect(block.textContent).toContain('aiRunCard.approvals.pending');
+      // Two pending_approval intents; the completed one is filtered out.
+      expect(block.textContent).toContain('aiRunCard.approvals.pending:2');
       expect(block.querySelector('a')?.getAttribute('href')).toBe('/approvals');
-      expect(queryByTestId('ai-run-card-open')).toBeNull();
+      expect(queryByTestId('ai-run-card-open')).not.toBeNull();
       await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
       expect(fetchWithAuth).toHaveBeenCalledTimes(1);
     } finally {
@@ -241,6 +248,127 @@ describe('AiRunCard (spec §5.5)', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
       expect(getByTestId('ai-run-card-approvals')).toBeTruthy();
       expect(fetchWithAuth).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not spin on awaiting_approval (static clock icon)', async () => {
+    fetchWithAuth.mockResolvedValue(detail({ status: 'awaiting_approval' }));
+    const { getByTestId, container } = render(
+      <AiRunCard runId={RUN} initialStatus="running" run={undefined} />,
+    );
+    await waitFor(() => expect(getByTestId('ai-run-card-status').textContent).toContain('awaiting_approval'));
+    expect(container.querySelector('svg.animate-spin')).toBeNull();
+  });
+
+  it('does not spin on a cancelled run either', async () => {
+    fetchWithAuth.mockResolvedValue(detail({ status: 'cancelled', summary: null, artifacts: [] }));
+    const { findByTestId, container } = render(
+      <AiRunCard runId={RUN} initialStatus="running" run={undefined} />,
+    );
+    await findByTestId('ai-run-card-open');
+    expect(container.querySelector('svg.animate-spin')).toBeNull();
+  });
+
+  it('still spins while running', () => {
+    const { container } = render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
+    expect(container.querySelector('svg.animate-spin')).not.toBeNull();
+  });
+
+  it('renders no approvals block when nothing is pending any more (count 0)', async () => {
+    const { queryByTestId } = render(
+      <AiRunCard
+        runId={RUN}
+        initialStatus="running"
+        run={{ runId: RUN, status: 'awaiting_approval', summary: null, artifacts: [], progress: [], pendingIntentCount: 0 }}
+      />,
+    );
+    expect(queryByTestId('ai-run-card-approvals')).toBeNull();
+  });
+
+  it('keeps the generic waiting line when the count is unknown', () => {
+    const { getByTestId } = render(
+      <AiRunCard
+        runId={RUN}
+        initialStatus="running"
+        run={{ runId: RUN, status: 'awaiting_approval', summary: null, artifacts: [], progress: [] }}
+      />,
+    );
+    expect(getByTestId('ai-run-card-approvals').textContent).toContain('aiRunCard.approvals.waiting');
+  });
+
+  it('a live pendingIntentCount wins while the poll still says running', async () => {
+    fetchWithAuth.mockResolvedValue(detail({
+      status: 'running',
+      intents: [{ id: 'i1', status: 'pending_approval' }],
+    }));
+    const { rerender, getByTestId } = render(
+      <AiRunCard runId={RUN} initialStatus="running" run={undefined} />,
+    );
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+    await act(async () => { await Promise.resolve(); });
+    rerender(
+      <AiRunCard
+        runId={RUN}
+        initialStatus="running"
+        run={{ runId: RUN, status: 'awaiting_approval', summary: null, artifacts: [], progress: [], pendingIntentCount: 3 }}
+      />,
+    );
+    expect(getByTestId('ai-run-card-approvals').textContent).toContain('aiRunCard.approvals.pending:3');
+  });
+
+  it('the polled count wins once the poll says awaiting_approval', async () => {
+    fetchWithAuth.mockResolvedValue(detail({
+      status: 'awaiting_approval',
+      intents: [{ id: 'i1', status: 'pending_approval' }, { id: 'i2', status: 'completed' }],
+    }));
+    const { getByTestId } = render(
+      <AiRunCard
+        runId={RUN}
+        initialStatus="running"
+        run={{ runId: RUN, status: 'running', summary: null, artifacts: [], progress: [], pendingIntentCount: 3 }}
+      />,
+    );
+    await waitFor(() => expect(getByTestId('ai-run-card-approvals').textContent).toContain('aiRunCard.approvals.pending:1'));
+  });
+
+  it('a poll resolving running after a live awaiting_approval does not regress the status', async () => {
+    let resolveFetch!: (v: unknown) => void;
+    fetchWithAuth.mockReturnValue(new Promise((r) => { resolveFetch = r; }));
+    const { rerender, getByTestId } = render(
+      <AiRunCard runId={RUN} initialStatus="running" run={undefined} />,
+    );
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+    rerender(
+      <AiRunCard
+        runId={RUN}
+        initialStatus="running"
+        run={{ runId: RUN, status: 'awaiting_approval', summary: null, artifacts: [], progress: [], pendingIntentCount: 2 }}
+      />,
+    );
+    await act(async () => { resolveFetch(detail({ status: 'running' })); await Promise.resolve(); });
+    expect(getByTestId('ai-run-card-status').textContent).toContain('awaiting_approval');
+  });
+
+  it('does not re-arm polling when live settles while a poll is in flight', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveFetch!: (v: unknown) => void;
+      fetchWithAuth.mockReturnValue(new Promise((r) => { resolveFetch = r; }));
+      const { rerender } = render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+      rerender(
+        <AiRunCard
+          runId={RUN}
+          initialStatus="running"
+          run={{ runId: RUN, status: 'awaiting_approval', summary: null, artifacts: [], progress: [], pendingIntentCount: 1 }}
+        />,
+      );
+      await act(async () => { resolveFetch(detail({ status: 'running' })); await vi.advanceTimersByTimeAsync(0); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(fetchWithAuth).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }

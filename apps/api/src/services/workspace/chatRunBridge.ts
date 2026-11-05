@@ -109,15 +109,25 @@ async function readRunForDelivery(runId: string, orgId: string): Promise<RunDeli
       // drivers, and the wire type is a number.
       const refs = artifacts.map((a) => ({ ...a, bytes: Number(a.bytes) }));
       if (run.status === 'awaiting_approval') {
-        const [pending] = await db
-          .select({ n: count() })
-          .from(actionIntents)
-          .where(and(
-            eq(actionIntents.requestingAgentRunId, runId),
-            eq(actionIntents.orgId, orgId),
-            eq(actionIntents.status, 'pending_approval'),
-          ));
-        return { status: 'awaiting_approval' as const, summary: run.summary, artifacts: refs, pendingIntentCount: Number(pending?.n ?? 0) };
+        // The count is decoration on a delivery that has already been unwatched:
+        // a failed read leaves it unset (the card says "steps are waiting"), and
+        // never costs the person the result.
+        let pendingIntentCount: number | undefined;
+        try {
+          const [pending] = await db
+            .select({ n: count() })
+            .from(actionIntents)
+            .where(and(
+              eq(actionIntents.requestingAgentRunId, runId),
+              eq(actionIntents.orgId, orgId),
+              eq(actionIntents.status, 'pending_approval'),
+            ));
+          pendingIntentCount = Number(pending?.n ?? 0);
+        } catch (err) {
+          console.error('[ChatRunBridge] pending intent count failed', { runId, err });
+          captureException(err);
+        }
+        return { status: 'awaiting_approval' as const, summary: run.summary, artifacts: refs, pendingIntentCount };
       }
       return {
         status: run.status === 'completed' ? ('completed' as const) : ('failed' as const),
@@ -230,6 +240,23 @@ export function getChatRunBridge(): ChatRunBridge {
 
 export function watchRunForSession(watch: WatchedRun): void {
   getChatRunBridge().watch(watch);
+}
+
+/**
+ * #11084 — attach a Wisp hand-off to the chat that made it, when that chat can
+ * take the delivery. A partner-wide Wisp chat can hand off a device in another
+ * org; `deliverRunEvent`'s tenant assertion stays strict, so such a run is not
+ * watched rather than reported as a registry bug. Its card still polls. Returns
+ * whether the watch was registered.
+ */
+export function watchRunForOriginSession(watch: WatchedRun): boolean {
+  const session = streamingSessionManager.get(watch.sessionId);
+  if (!session || session.orgId !== watch.orgId || session.breezeSessionId !== watch.sessionId) {
+    incChatRunDelivery('not_attached');
+    return false;
+  }
+  getChatRunBridge().watch(watch);
+  return true;
 }
 
 export function unwatchRun(runId: string): void {
@@ -367,8 +394,8 @@ export function drainPendingRunResults(session: ActiveSession): string | null {
       : '  (none)';
     // The summary is model-written, often from device output (rule 6a): fenced as DATA.
     const summary = result.summary ? wrapUntrustedData('agent_run_summary', result.summary) : '(no summary was produced)';
-    const waiting = result.status === 'awaiting_approval'
-      ? `\nSteps waiting for approval: ${result.pendingIntentCount ?? 0} (in /approvals).`
+    const waiting = result.status === 'awaiting_approval' && result.pendingIntentCount !== 0
+      ? `\nSteps waiting for approval: ${result.pendingIntentCount ?? 'some'} (in /approvals).`
       : '';
     return `Run ${result.runId} ${result.status}.${waiting}\nSummary: ${summary}\nFiles it produced:\n${artifacts}`;
   });

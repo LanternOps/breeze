@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CheckCircle, Clock, Download, Loader2, XCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AiAgentRunStatus } from '@breeze/shared';
@@ -108,7 +108,6 @@ function formatBytes(bytes: number): string {
 export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps) {
   const { t } = useTranslation('ai');
   const [polled, setPolled] = useState<PolledRun | null>(null);
-  const stopped = useRef(false);
 
   // A live settled result beats a poll that predates it.
   const status = run && isSettled(run.status) && !isSettled(polled?.status)
@@ -123,12 +122,15 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
   const deliveredLive = run !== undefined && isTerminal(run.status);
 
   useEffect(() => {
-    stopped.current = false;
     if (liveSettled) return;
+    // Per-effect flags: a shared ref would be reset by the NEXT effect run while
+    // this run's in-flight tick was still pending, letting it re-arm a timer.
+    let cancelled = false;
+    let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const tick = async () => {
-      if (stopped.current) return;
+      if (cancelled || settled) return;
       try {
         const res = await fetchWithAuth(`/ai/agents/runs/${runId}`);
         // A non-OK response falls THROUGH to the reschedule below, deliberately.
@@ -138,13 +140,13 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
         // strictly worse than the transient-failure behaviour promised below.
         if (res.ok) {
           const body = (await res.json()) as { data?: PolledRun };
-          if (stopped.current) return;
+          if (cancelled) return;
           if (body.data) {
             setPolled(body.data);
             if (isSettled(body.data.status)) {
               // A finished (or approval-parked) run never changes on its own; keep polling and every open
               // chat with an old run card becomes a background request forever.
-              stopped.current = true;
+              settled = true;
               return;
             }
           }
@@ -153,12 +155,13 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
         // A transient failure is not worth a visible error on a card whose
         // whole job is "this is still working" — the next tick retries.
       }
+      if (cancelled || settled) return;
       timer = setTimeout(() => void tick(), POLL_INTERVAL_MS);
     };
 
     void tick();
     return () => {
-      stopped.current = true;
+      cancelled = true;
       if (timer) clearTimeout(timer);
     };
   }, [runId, liveSettled]);
@@ -188,9 +191,11 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
     ? CheckCircle
     : status === 'failed'
       ? XCircle
-      : status === 'queued'
+      : status === 'queued' || isSettled(status)
         ? Clock
         : Loader2;
+  // Spin only while the run is genuinely in flight; every settled status is static.
+  const spinning = StatusIcon === Loader2;
 
   return (
     <div
@@ -199,7 +204,7 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
     >
       <div className="flex items-center gap-2 text-xs font-medium">
         <StatusIcon
-          className={`h-3.5 w-3.5 ${status === 'failed' ? 'text-red-600' : status === 'completed' ? 'text-green-600' : 'animate-spin text-gray-500'}`}
+          className={`h-3.5 w-3.5 ${status === 'failed' ? 'text-red-600' : status === 'completed' ? 'text-green-600' : spinning ? 'animate-spin text-gray-500' : 'text-gray-500'}`}
         />
         <span>{t('aiRunCard.title')}</span>
         <span data-testid="ai-run-card-status" className="text-muted-foreground">
@@ -215,7 +220,7 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
         </ol>
       )}
 
-      {status === 'awaiting_approval' && (
+      {status === 'awaiting_approval' && pendingCount !== 0 && (
         <div data-testid="ai-run-card-approvals" className="mt-2 text-xs">
           <p>
             {pendingCount !== undefined
@@ -266,7 +271,7 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
         </p>
       )}
 
-      {runIsTerminal && (
+      {(runIsTerminal || status === 'awaiting_approval') && (
         <a
           data-testid="ai-run-card-open"
           href={`/ai-agents/runs/${runId}`}

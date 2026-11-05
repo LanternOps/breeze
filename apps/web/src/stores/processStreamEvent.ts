@@ -470,6 +470,7 @@ export function processStreamEvent(
                 ? existing.status
                 : 'running',
               progress,
+              ...(existing?.pendingIntentCount !== undefined ? { pendingIntentCount: existing.pendingIntentCount } : {}),
               summary: existing?.summary ?? null,
               artifacts: existing?.artifacts ?? [],
             },

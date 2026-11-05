@@ -17,6 +17,7 @@ import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { AI_SWEEP_KINDS, bulkTicketReplyParamsSchema, type AiAgentKind } from '@breeze/shared';
 import { envFlag } from '../../config/env';
+import { captureException } from '../sentry';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiAgentRuns, aiAgents } from '../../db/schema/aiAgents';
 import { devices } from '../../db/schema/devices';
@@ -25,7 +26,7 @@ import { getAiAgentSweepQueue, getSweepOccurrenceJobId } from '../../jobs/aiAgen
 import { admitAnalysisRun } from '../aiAgents/analysisAdmission';
 import { resolveEffectiveAgentSystem } from '../aiAgents/effectivePolicy';
 import { ensureResearchAgent } from '../aiAgents/researchProvisioning';
-import { ensureTroubleshootAgent } from '../aiAgents/troubleshootProvisioning';
+import { ensureTroubleshootAgent, TroubleshootBaselineConflictError } from '../aiAgents/troubleshootProvisioning';
 import { createAndEnqueueAgentRun, GrantDepthExceededError } from '../aiAgents/runService';
 import { effectiveSchedule } from '../aiAgents/scheduleMerge';
 import { resolveEffectiveSchedulesForPartner } from '../aiAgents/scheduleService';
@@ -522,7 +523,12 @@ export async function launchDeviceTroubleshooting(ctx: LaunchContext): Promise<L
   const params = troubleshootParamsSchema.parse(ctx.params);
   if (!(await deviceInOrg(ctx.orgId, params.deviceId))) return { refused: 'device_not_in_org' };
   // Opens and commits its own system transaction (outside any caller context).
-  await runOutsideDbContext(() => ensureTroubleshootAgent(ctx.partnerId));
+  try {
+    await runOutsideDbContext(() => ensureTroubleshootAgent(ctx.partnerId));
+  } catch (err) {
+    if (err instanceof TroubleshootBaselineConflictError) return { refused: 'no_effective_agent', detail: err.code };
+    throw err;
+  }
   const agent = await resolveLaunchableAgent(ctx.orgId, 'troubleshoot');
   if (!agent.ok) return agent.refusal;
   const originSessionId = ctx.actorAuth?.wispGrant?.sessionId ?? null;
@@ -544,9 +550,18 @@ export async function launchDeviceTroubleshooting(ctx: LaunchContext): Promise<L
   // Idempotent per runId, so a replay from the same chat simply re-attaches.
   // Lazy: the bridge pulls in the streaming session manager, which imports the
   // chat tool graph that reaches this module (import cycle otherwise).
+  //
+  // A failed attach costs the live stream only (the card polls and the Workers
+  // panel lists the run). It must not surface as a failed launch: each chat
+  // call has its own request id, so a retry would start a second run.
   if ('admitted' in result && result.runId && originSessionId) {
-    const { watchRunForSession } = await import('../workspace/chatRunBridge');
-    watchRunForSession({ runId: result.runId, sessionId: originSessionId, orgId: ctx.orgId });
+    try {
+      const { watchRunForOriginSession } = await import('../workspace/chatRunBridge');
+      watchRunForOriginSession({ runId: result.runId, sessionId: originSessionId, orgId: ctx.orgId });
+    } catch (err) {
+      console.error('[wispSpecialistLaunchers] run admitted but its chat bridge did not attach', { runId: result.runId, err });
+      captureException(err);
+    }
   }
   return result;
 }

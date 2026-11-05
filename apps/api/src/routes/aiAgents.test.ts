@@ -37,6 +37,7 @@ import { AgentModelNotAllowedError } from '../services/aiAgents/agentModelErrors
 // below) — needed so a PATCH test can construct the exact instance
 // `updateAgentMock` rejects with.
 import { ModeNotAllowedForKindError } from '../services/aiAgents/agentService';
+import { TroubleshootAgentEditError } from '../services/aiAgents/troubleshootAgentEdit';
 
 const {
   selectMock,
@@ -4657,6 +4658,46 @@ describe('PATCH /ai-agents/:id — mode vs kind (Fleet Designer W01)', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body).toEqual({ error: 'mode_not_allowed_for_kind' });
+  });
+});
+
+describe('troubleshoot agent edit restrictions (#11084)', () => {
+  it('PATCH maps TroubleshootAgentEditError to 400 troubleshoot_agent_edit_restricted with fields', async () => {
+    updateAgentMock.mockRejectedValueOnce(new TroubleshootAgentEditError(['mode', 'toolAllowlist']));
+
+    const res = await buildApp().request(`/ai-agents/${AGENT_ID}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'act' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      code: 'troubleshoot_agent_edit_restricted',
+      fields: ['mode', 'toolAllowlist'],
+    });
+  });
+
+  it('mapError maps it directly', () => {
+    const jsonMock = vi.fn((body: unknown, status: number) => ({ body, status }));
+    const ctx = { json: jsonMock } as unknown as Parameters<typeof mapError>[0];
+    mapError(ctx, new TroubleshootAgentEditError(['kind']));
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'troubleshoot_agent_edit_restricted', fields: ['kind'] }),
+      400,
+    );
+  });
+
+  it('POST with kind troubleshoot is refused at the zod layer (400) and never reaches createAgent', async () => {
+    const { createAgent } = await import('../services/aiAgents/agentService');
+    vi.mocked(createAgent).mockClear();
+    const res = await buildApp().request('/ai-agents', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'T', kind: 'troubleshoot', mode: 'shadow' }),
+    });
+    expect(res.status).toBe(400);
+    expect(vi.mocked(createAgent)).not.toHaveBeenCalled();
   });
 });
 

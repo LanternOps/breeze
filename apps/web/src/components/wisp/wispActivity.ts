@@ -1,13 +1,17 @@
 // Wisp W06 (web) Task 14: the activity timeline client (w00 A31). Types are
 // W06a's shared DTOs (`packages/shared/src/types/wispActivity.ts`), never re-typed.
-import { WISP_ACTIVITY_KINDS } from '@breeze/shared';
-import type { ActivityItem, CurrentActivity, WispActivityKind } from '@breeze/shared';
+import { AI_AGENT_RUN_STATUSES, WISP_ACTIVITY_KINDS } from '@breeze/shared';
+import type { ActivityItem, AiAgentRunStatus, CurrentActivity, WispActivityKind } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
 
 const PAGE_LIMIT = 50;
 
 function isKind(v: unknown): v is WispActivityKind {
   return typeof v === 'string' && (WISP_ACTIVITY_KINDS as readonly string[]).includes(v);
+}
+
+function isRunStatus(v: unknown): v is AiAgentRunStatus {
+  return typeof v === 'string' && (AI_AGENT_RUN_STATUSES as readonly string[]).includes(v);
 }
 
 function parseItem(raw: unknown): ActivityItem | null {
@@ -24,6 +28,8 @@ function parseItem(raw: unknown): ActivityItem | null {
     detail: typeof r.detail === 'string' ? r.detail : null,
     href: typeof r.href === 'string' ? r.href : null,
     costCents: typeof r.costCents === 'number' ? r.costCents : null,
+    // Specialist items only; an unknown status is omitted rather than trusted.
+    ...(isRunStatus(r.runStatus) ? { runStatus: r.runStatus } : {}),
   };
 }
 

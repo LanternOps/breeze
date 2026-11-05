@@ -4378,6 +4378,11 @@ export function describeSpecialistRequest(input: Record<string, unknown>, orgNam
     text += ` — sends this message to ${ids} ticket(s)${params.holdTickets === true ? ' and sets them to pending' : ''}`;
     if (message) text += `: "${message.length > 300 ? `${message.slice(0, 300)}…` : message}"`;
   }
+  if (kind === 'device_troubleshooting') {
+    // Model-written restatement of the ask: one line, bounded, like the org name.
+    const goal = nonEmptyText(params.goal)?.replace(/\s+/g, ' ').trim();
+    if (goal) text += ` — one device, goal: "${goal.length > 200 ? `${goal.slice(0, 200)}…` : goal}"`;
+  }
   return text;
 }
 

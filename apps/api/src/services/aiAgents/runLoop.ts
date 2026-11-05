@@ -837,6 +837,18 @@ function takeAllowedCall(
  * Exported so the red-team contract suite can drive it directly and assert that
  * no RBAC helper is ever reached from an agent run.
  */
+const GRANT_INACTIVE_DENIAL = 'delegation grant is no longer active';
+
+/**
+ * #11084 Review Focus 2 — a device_troubleshooting run whose grant was paused
+ * or revoked mid-run was stopped, not finished: `failed` with `grant_inactive`,
+ * so its card and W2's post never read as a completed investigation. Any
+ * intents it already raised cannot execute (release re-checks the grant).
+ */
+export function troubleshootStoppedByGrant(outcome: Pick<AgentRunOutcome, 'deniedActions'>): boolean {
+  return outcome.deniedActions.some((denied) => denied.reason === GRANT_INACTIVE_DENIAL);
+}
+
 export function createAgentRunPreToolUse(args: {
   // #5205 W06 adds the three task-linkage columns: `taskId` selects
   // `submit_task_step` (via `outcomeToolsForRun`) and switches the tool fence
@@ -922,6 +934,9 @@ export function createAgentRunPreToolUse(args: {
    */
   let taskFence: TaskFence | null = null;
 
+  /** #11084 — approval requests this device_troubleshooting run holds; see `recordProposal`. */
+  let troubleshootApprovalSlots = 0;
+
   /**
    * Wisp W02 — the live delegation ceiling of the run's PINNED grant revision,
    * memoised for GRANT_CEILING_MEMO_MS inside this run frame so a burst of
@@ -949,7 +964,7 @@ export function createAgentRunPreToolUse(args: {
       // Same deny shape as the task fence: there is no run-level stop flag, so
       // the model is told to stop and release makes any further effect impossible.
       const reason = error instanceof GrantInactiveError
-        ? 'delegation grant is no longer active'
+        ? GRANT_INACTIVE_DENIAL
         : 'delegation ceiling could not be verified';
       if (!(error instanceof GrantInactiveError) || error.kind === 'corrupt') {
         console.error('[aiAgentRunLoop] delegation ceiling read failed; denying', { runId: run.id, grantId: run.grantId, error });
@@ -1010,13 +1025,17 @@ export function createAgentRunPreToolUse(args: {
     // approvals queue; the refusal tells the model to stop and summarize.
     const troubleshoot = isTroubleshootProfile(run);
     if (troubleshoot && (check.tier === 2 || check.tier === 3)) {
-      const minted = outcome.proposedActions.filter((p) => p.intentId !== undefined).length;
-      if (minted >= TROUBLESHOOT_MAX_ACTIONS_PER_RUN) {
+      if (troubleshootApprovalSlots >= TROUBLESHOOT_MAX_ACTIONS_PER_RUN) {
         const reason = `This run already raised ${TROUBLESHOOT_MAX_ACTIONS_PER_RUN} approval requests, the most per run`;
         outcome.deniedActions.push({ tool: toolName, reason });
         return { allowed: false, error: `${reason}. Do not propose more; finish with your summary.` };
       }
+      // Reserved BEFORE the await: the SDK runs tool calls in parallel, so a
+      // count taken after the mint would let one turn overshoot the cap. Given
+      // back below when no pending intent came of it.
+      troubleshootApprovalSlots += 1;
     }
+    let leftPending = false;
     if (check.tier === 3 || (troubleshoot && check.tier === 2)) {
       try {
         const intent = await createActionIntent(agentAuth, {
@@ -1070,6 +1089,7 @@ export function createAgentRunPreToolUse(args: {
         // pending intent is something a human still owns.
         if (intent.status === 'pending_approval') {
           intentIds.push(intent.id);
+          leftPending = true;
         } else {
           intentError = intent.errorCode ?? `intent ${intent.status}`;
           entry.intentError = intentError;
@@ -1090,8 +1110,9 @@ export function createAgentRunPreToolUse(args: {
       }
     }
 
+    if (troubleshoot && (check.tier === 2 || check.tier === 3) && !leftPending) troubleshootApprovalSlots -= 1;
     outcome.proposedActions.push(entry);
-    if (troubleshoot && entry.intentId) {
+    if (troubleshoot && leftPending) {
       await emitRunProgress(
         { orgId: run.orgId, runId: run.id },
         'approval',
@@ -3540,6 +3561,10 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // `decidedIntentIds` stays empty and this is behaviorally IDENTICAL to
     // the old check for verdict/sweep/narrative/full runs.
     ledgerOutcome = 'completed';
+    if (isTroubleshootProfile(run) && troubleshootStoppedByGrant(result.outcome)) {
+      await finishRun(ctx, 'failed', 'grant_inactive', result);
+      return;
+    }
     await finishRun(
       ctx,
       classifyIntentAwaitingApproval(intentIds, result.decidedIntentIds) ? 'awaiting_approval' : 'completed',
@@ -3874,7 +3899,10 @@ async function finishRun(
   // notifies nor watches.
   // Wisp W05b: an assessment runs on every wake-up and talks to its person
   // only through nudges (spec §7.4 discipline) — never a run-finished notice.
-  const notifies = !isVerdictProfile(ctx.run) && !isResearchProfile(ctx.run) && !isAssessmentProfile(ctx.run);
+  // #11084: the built-in troubleshoot agent has no recipients; the run card (and
+  // W2's thread post) is how a device_troubleshooting run reports.
+  const notifies = !isVerdictProfile(ctx.run) && !isResearchProfile(ctx.run) && !isAssessmentProfile(ctx.run)
+    && !isTroubleshootProfile(ctx.run);
   // Fleet Designer W01 (#5651): `watches` gains the design exclusion, same
   // reasoning as sweep/narrative/triage — a design run executes nothing (its
   // tool floor is read-only and `designLimits` pins `maxActionsPerRun: 0`),

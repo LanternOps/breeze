@@ -11,7 +11,7 @@ const h = vi.hoisted(() => ({
   resolveEffectiveAgentSystem: vi.fn(),
   ensureResearchAgent: vi.fn(),
   ensureTroubleshootAgent: vi.fn(),
-  watchRunForSession: vi.fn(),
+  watchRunForOriginSession: vi.fn(),
   createAndEnqueueAgentRun: vi.fn(),
   resolveEffectiveSchedulesForPartner: vi.fn(),
   admitTask: vi.fn(),
@@ -51,8 +51,13 @@ vi.mock('../../jobs/aiAgentSweepScheduler', () => ({
 vi.mock('../aiAgents/analysisAdmission', () => ({ admitAnalysisRun: h.admitAnalysisRun }));
 vi.mock('../aiAgents/effectivePolicy', () => ({ resolveEffectiveAgentSystem: h.resolveEffectiveAgentSystem }));
 vi.mock('../aiAgents/researchProvisioning', () => ({ ensureResearchAgent: h.ensureResearchAgent }));
-vi.mock('../aiAgents/troubleshootProvisioning', () => ({ ensureTroubleshootAgent: h.ensureTroubleshootAgent }));
-vi.mock('../workspace/chatRunBridge', () => ({ watchRunForSession: h.watchRunForSession }));
+vi.mock('../aiAgents/troubleshootProvisioning', () => ({
+  ensureTroubleshootAgent: h.ensureTroubleshootAgent,
+  TroubleshootBaselineConflictError: class TroubleshootBaselineConflictError extends Error {
+    readonly code = 'troubleshoot_agent_not_system_provisioned';
+  },
+}));
+vi.mock('../workspace/chatRunBridge', () => ({ watchRunForOriginSession: h.watchRunForOriginSession }));
 vi.mock('../aiAgents/runService', () => ({
   createAndEnqueueAgentRun: h.createAndEnqueueAgentRun,
   GrantDepthExceededError: class GrantDepthExceededError extends Error {},
@@ -453,7 +458,7 @@ describe('launchDeviceTroubleshooting (#11084)', () => {
       }),
     }));
     // The chat that asked gets the live run card.
-    expect(h.watchRunForSession).toHaveBeenCalledWith({ runId: 'r1', sessionId: SESSION, orgId: ORG });
+    expect(h.watchRunForOriginSession).toHaveBeenCalledWith({ runId: 'r1', sessionId: SESSION, orgId: ORG });
   });
 
   it('the run/approval paths carry originSessionId null and register no bridge watch', async () => {
@@ -466,7 +471,7 @@ describe('launchDeviceTroubleshooting (#11084)', () => {
     expect(h.createAndEnqueueAgentRun).toHaveBeenCalledWith(expect.objectContaining({
       triggerRef: expect.objectContaining({ originSessionId: null }),
     }));
-    expect(h.watchRunForSession).not.toHaveBeenCalled();
+    expect(h.watchRunForOriginSession).not.toHaveBeenCalled();
   });
 
   it('a replayed request resolves the prior run without admitting a second one', async () => {
@@ -475,6 +480,29 @@ describe('launchDeviceTroubleshooting (#11084)', () => {
     h.ensureTroubleshootAgent.mockResolvedValue({ agentId: 'ag', created: false });
     h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'ag', effective: { enabled: true, mode: 'shadow' } });
     expect(await launchDeviceTroubleshooting(ctx({ params, actorAuth: chatActor }))).toEqual({ admitted: true, runId: 'r-prior' });
+    expect(h.createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+
+  it('an admitted run stays admitted when the live attach fails: a retry would start a second run', async () => {
+    h.tables.devices = [[{ id: DEVICE }]];
+    h.tables.ai_agent_runs = [[]];
+    h.ensureTroubleshootAgent.mockResolvedValue({ agentId: 'ag', created: false });
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'ag', effective: { enabled: true, mode: 'shadow' } });
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: true, run: { id: 'r3' } });
+    h.watchRunForOriginSession.mockImplementation(() => { throw new Error('redis unavailable'); });
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    expect(await launchDeviceTroubleshooting(ctx({ params, actorAuth: chatActor }))).toEqual({ admitted: true, runId: 'r3' });
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('a live partner row that was not system-provisioned refuses instead of throwing', async () => {
+    const { TroubleshootBaselineConflictError } = await import('../aiAgents/troubleshootProvisioning');
+    h.tables.devices = [[{ id: DEVICE }]];
+    h.ensureTroubleshootAgent.mockRejectedValue(new (TroubleshootBaselineConflictError as unknown as new () => Error)());
+    expect(await launchDeviceTroubleshooting(ctx({ params }))).toEqual({
+      refused: 'no_effective_agent', detail: 'troubleshoot_agent_not_system_provisioned',
+    });
     expect(h.createAndEnqueueAgentRun).not.toHaveBeenCalled();
   });
 
