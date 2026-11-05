@@ -297,6 +297,26 @@ describe('backup dashboard routes', () => {
     expect(body.data.points.every((point: { totalBytes: number }) => point.totalBytes === 0)).toBe(true);
   });
 
+  it('adds failureCategory to dashboard latestJobs', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ count: 2 }]))
+      .mockReturnValueOnce(chainMock([{ completed: 1, failed: 1, running: 0, pending: 0 }]))
+      .mockReturnValueOnce(chainMock([
+        makeRecentJob({ id: 'job-bad', status: 'failed', errorLog: 'failed to upload file to s3: SlowDown' }),
+        makeRecentJob({ id: 'job-ok', status: 'completed', errorLog: null }),
+      ]));
+
+    const res = await app.request('/backup/dashboard');
+
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.latestJobs[0].failureCategory).toBe('storage');
+    expect(data.latestJobs[1]).toHaveProperty('failureCategory', null);
+  });
+
   it('keeps unrestricted dashboard behavior unchanged', async () => {
     resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([
       { deviceId: DEVICE_ID, configId: 'config-1', featureLinkId: 'feature-1' },
@@ -699,6 +719,44 @@ describe('backup dashboard routes', () => {
       const body = await res.json();
       expect(body.data.lastJob).toHaveProperty('vssMetadata');
       expect(body.data.lastJob.vssMetadata).toBeNull();
+    });
+
+    it('status lastJob and lastFailure carry failureCategory', async () => {
+      mockStatusQueries(makeJob({ status: 'failed', errorLog: 'backup helper exited unexpectedly' }));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const { data } = await res.json();
+      expect(data.lastJob.failureCategory).toBe('agent');
+      expect(data.lastFailureCategory).toBe('agent');
+    });
+
+    it('classifies lastFailure from the failed run when a later run succeeded', async () => {
+      resolveBackupConfigForDeviceMock.mockResolvedValueOnce(null);
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]))
+        .mockReturnValueOnce(chainMock([
+          makeJob({ id: 'job-ok', status: 'completed', createdAt: new Date('2026-04-02T00:00:00.000Z') }),
+          makeJob({ id: 'job-bad', status: 'failed', errorLog: 'Agent not connected' }),
+        ]));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const { data } = await res.json();
+      expect(data.lastJob.failureCategory).toBeNull();
+      expect(data.lastFailureCategory).toBe('device_offline');
+    });
+
+    it('reports null failure categories for a device with no failed run', async () => {
+      mockStatusQueries(makeJob());
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      const { data } = await res.json();
+      expect(data.lastJob).toHaveProperty('failureCategory', null);
+      expect(data).toHaveProperty('lastFailureCategory', null);
     });
 
     it('includes errorLog — the ONLY channel a total VSS failure has', async () => {
