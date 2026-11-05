@@ -263,9 +263,7 @@ Otherwise Windows Update keeps delivering it. A consumer Dell the tool refuses, 
 - **Registration:** `CORE_ORG_CASCADE_DELETE_ORDER`, `orgMergeRegistry.ts`, `CORE_TENANT_EXPORT_POLICY`, and **both** device org-move registrations in `docs/agents/tenancy-rls.md`.
 - **Precedent:** `security_agent_device_status`, `device_restore_point_attempts`.
 
-**Run history** stays in `device_commands.result`. `patch_jobs` is not reused, because it's built around approved-patch snapshots. Command rows currently have no retention limit. Two things in the existing history route (`routes/devices/patches.ts:56`, `:261`) must be fixed before reuse:
-- **Org moves.** The route authorizes against the device's current org and returns commands and their authors without filtering by org, and completed commands survive a move. Reusing it as is shows the previous org's history, including who ran what, to the new org. History must filter to the current org.
-- **Type filter.** Adding to `PATCH_COMMAND_TYPES` covers `all`, not `type=install`, and the OEM result needs its own normalization.
+**Run history** stays in `device_commands.result`. `patch_jobs` is not reused, because it's built around approved-patch snapshots. Command rows currently have no retention limit. The existing history route (`routes/devices/patches.ts`) needs two changes before reuse, tracked separately: its result set must be scoped to the current organization, and the type filter must normalize the OEM result (adding to `PATCH_COMMAND_TYPES` covers `all`, not `type=install`).
 
 **Machines that don't come back.** The worst failures happen before a final result can be sent, so the check can't depend on one. When a run's categories include BIOS or firmware, the API arms a monitor at dispatch and records `bios_version_before`. If the device doesn't check in within 24 hours of the run starting, raise an alert. It stands in for what a tech would otherwise find at the next ticket: a machine stuck at BitLocker recovery or a failed flash. After reboot, compare `device_hardware.biosVersion` to the value before the run and record any mismatch.
 
