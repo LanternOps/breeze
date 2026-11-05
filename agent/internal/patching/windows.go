@@ -269,8 +269,8 @@ func (w *WindowsUpdateProvider) SearchDriverUpdates(ctx context.Context) ([]Driv
 		if err != nil {
 			return fmt.Errorf("updates count failed: %w", err)
 		}
-		defer countVar.Clear()
 		count := int(countVar.Val)
+		_ = countVar.Clear()
 
 		found := make([]DriverUpdate, 0, count)
 		for i := 0; i < count; i++ {
