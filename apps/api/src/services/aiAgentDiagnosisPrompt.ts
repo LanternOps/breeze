@@ -41,7 +41,7 @@ export const BREEZE_AGENT_WINDOWS_FACTS: readonly BreezeAgentFact[] = [
       { file: 'internal/agentapp/service_cmd_windows.go', contains: ['windowsServiceName = "BreezeAgent"'] },
       { file: 'internal/collectors/command_limits.go', contains: ['cmd := exec.CommandContext(ctx, name, args...)'] },
       { file: 'internal/collectors/hardware.go', contains: ['cpuInfo, err := cpu.Info()'] },
-      { file: 'internal/collectors/classify_windows.go', contains: ['exec.Command("wmic", "systemenclosure"'] },
+      { file: 'internal/collectors/hostname_windows.go', contains: ['wmicGet([]string{"computersystem"}, "Name")'] },
     ],
   },
   {
@@ -61,12 +61,13 @@ export const BREEZE_AGENT_WINDOWS_FACTS: readonly BreezeAgentFact[] = [
     ],
   },
   {
-    text: 'Every 5 min: security status, four serial PowerShell calls (SecurityCenter2 AntiVirusProduct, skipped on Windows Server, Get-MpComputerStatus, Get-NetFirewallProfile, Get-LocalGroupMember); the slow probes (Get-BitLockerVolume twice, secedit /export) are cached 30 min (10 min after an error), and the recovery-key Get-BitLockerVolume runs at most every 30 min.',
+    text: 'Every 5 min: security status, up to four serial PowerShell calls (SecurityCenter2 AntiVirusProduct, skipped on Windows Server, Get-MpComputerStatus, Get-NetFirewallProfile, Get-LocalGroupMember); the slow probes (Get-BitLockerVolume twice, secedit /export) are cached 30 min (10 min after an error), and the recovery-key Get-BitLockerVolume runs at most every 30 min.',
     anchors: [
       { file: 'internal/heartbeat/heartbeat.go', contains: ['shouldSendSecurity := now.Sub(h.lastSecurityUpdate) > 5*time.Minute', 'go h.sendRecoveryKeys()'] },
       { file: 'internal/security/windows_security_center.go', contains: ['root/SecurityCenter2 -ClassName AntiVirusProduct', 'hostIsWindowsServer()'] },
-      { file: 'internal/security/defender_windows.go', contains: ['Get-MpComputerStatus'] },
-      { file: 'internal/security/status.go', contains: ['Get-NetFirewallProfile', 'Get-BitLockerVolume -MountPoint $env:SystemDrive', 'Get-BitLockerVolume | Select-Object MountPoint', 'Get-LocalGroupMember'] },
+      { file: 'internal/security/defender_availability.go', contains: ['const defenderStatusPS = "Get-MpComputerStatus', 'defenderAvailabilityTTL = 24 * time.Hour', 'defenderServiceDisabledTTL = time.Hour'] },
+      { file: 'internal/security/status.go', contains: ['Get-NetFirewallProfile', 'Get-BitLockerVolume -MountPoint $env:SystemDrive', 'Get-BitLockerVolume | Select-Object MountPoint'] },
+      { file: 'internal/security/local_admin_group_probe.go', contains: ['Get-LocalGroupMember -SID'] },
       { file: 'internal/security/password_policy_windows.go', contains: ['"secedit.exe"', '"/export", "/areas", "SECURITYPOLICY"'] },
       { file: 'internal/security/slow_probe.go', contains: ['slowProbeTTL = 30 * time.Minute', 'slowProbeErrorTTL = 10 * time.Minute'] },
       { file: 'internal/heartbeat/handlers_encryption.go', contains: ['recoveryKeyCollectInterval = 30 * time.Minute'] },
@@ -74,7 +75,7 @@ export const BREEZE_AGENT_WINDOWS_FACTS: readonly BreezeAgentFact[] = [
     ],
   },
   {
-    text: 'Every 15 min and at startup: inventory. Collectors run in parallel, so several powershell.exe can overlap (each up to 30 s): Get-ScheduledTask, Win32_UserAccount, Win32_Service, Get-Service (VPN check), the hardware batch (Get-WmiSafe on Win32_BIOS, Win32_BaseBoard, Win32_ComputerSystem, Win32_VideoController; SilentlyContinue; no storage-pool query) and wmic systemenclosure. Hardware upload: startup and every 24 h.',
+    text: 'Every 15 min and at startup: inventory. Collectors run in parallel, so several powershell.exe can overlap (each up to 30 s): Get-ScheduledTask, Win32_UserAccount, Win32_Service, Get-Service (VPN check) and the hardware batch (Get-WmiSafe on Win32_BIOS, Win32_BaseBoard, Win32_ComputerSystem, Win32_VideoController; SilentlyContinue; no storage-pool query). Hardware upload: startup and every 24 h.',
     anchors: [
       { file: 'internal/heartbeat/heartbeat.go', contains: ['now.Sub(h.lastInventoryUpdate) > 15*time.Minute', 'dueForRun(now, h.lastHardwareUpdate, 24*time.Hour)', 'h.sendNetworkInventory,'] },
       { file: 'internal/collectors/change_tracker.go', contains: ['hwCollector.CollectHardware()'] },

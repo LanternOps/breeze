@@ -627,6 +627,8 @@ export const TOOL_TIERS = {
   // agent maintenance and device writes supervised; remote sessions and PAM
   // elevation requests four-eyes; collect_evidence screenshot input-aware).
   execute_containment: 3,
+  // Network-isolation W13 (#10101): four-eyes (aiGuardrails TIER3_FOUR_EYES_TOOLS).
+  release_containment: 3,
   create_incident: 2,
   collect_evidence: 2,
   request_elevation: 3,
@@ -4121,6 +4123,15 @@ export function buildBreezeSdkTools(
       registryDescription('execute_containment'),
       inputShape('execute_containment'),
       makeHandler('execute_containment', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Network-isolation W13 (#10101): four-eyes; runs only as an approved
+    // release carrying the effect-digest binding (aiToolsIncident.ts).
+    tool(
+      'release_containment',
+      registryDescription('release_containment'),
+      inputShape('release_containment'),
+      makeHandler('release_containment', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

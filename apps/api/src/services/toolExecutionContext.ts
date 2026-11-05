@@ -5,6 +5,7 @@ import type { RunScriptSnapshot } from './actionIntents/runScriptSnapshot';
 import type { TenantVariableScope } from './tenantVariableResolution';
 import type { TopologyRequestContext } from './topology/access';
 import type { VerifiedTopologyDiagnostic } from './topology/aiDiagnosticEffect';
+import type { ApprovalBinding } from './networkIsolation/service';
 import type { PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
 import type { FlowToolCallInput, FlowToolDescriptor } from './flows/flowTools';
 
@@ -204,6 +205,17 @@ export type ToolExecutionContext = {
    * transaction; it never selects a different origin or target.
    */
   verifiedTopologyDiagnostic?: VerifiedTopologyDiagnostic;
+  /**
+   * Network-isolation W13 (#10101, spec §3.8 "Approval binding"): the episode
+   * a four-eyes `release_containment` approval was pinned over —
+   * `(orgId, deviceId, isolationId, generation)` as of approval time. Set ONLY
+   * from the release path's effect-digest recompute on a MATCH (so it equals
+   * what the approver saw), never from model arguments, and travels with
+   * `actionIntentId`. The handler refuses without both and passes it to
+   * `releaseNetworkIsolation`, which re-checks it under the episode lock: an
+   * extend (a new generation) or an org move after approval refuses the release.
+   */
+  verifiedIsolationRelease?: Readonly<ApprovalBinding>;
   /**
    * #7906: the strictly-parsed `event_logs_query` payload the chat gate
    * classified as Tier-2 read-only (System/Setup, no XPath). Set ONLY by

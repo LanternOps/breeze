@@ -53,7 +53,7 @@ func TestEnsureRecoveryRawSwapAndExistingVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(i.InstallDir, "isolation-recovery", "1.2.3", "breeze-isolation-recovery.exe")
+	want := filepath.Join(i.InstallDir, "isolation-recovery", "1.2.3", recoveryExecutableName())
 	if path != want || *downloads != 1 || len(*repointed) != 2 {
 		t.Fatalf("path=%q downloads=%d repoints=%v", path, *downloads, *repointed)
 	}
@@ -151,7 +151,7 @@ func TestEnsureRecoveryRejectsUnsafeVersions(t *testing.T) {
 
 func TestEnsureRecoveryRefusesConcurrentDifferentTarget(t *testing.T) {
 	i, _, repointed := installerFixture(t)
-	target := filepath.Join(i.InstallDir, "isolation-recovery", "1.2.3", "breeze-isolation-recovery.exe")
+	target := filepath.Join(i.InstallDir, "isolation-recovery", "1.2.3", recoveryExecutableName())
 	i.SelfTest = func(context.Context, string) error { return os.WriteFile(target, []byte("other binary"), 0700) }
 	if _, err := i.EnsureRecovery(context.Background(), "1.2.3"); err == nil {
 		t.Fatal("overwrote racing target")

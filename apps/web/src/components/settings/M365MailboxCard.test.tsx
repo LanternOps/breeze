@@ -293,6 +293,65 @@ describe('M365MailboxCard', () => {
     expect(await screen.findByText('Mailbox verification failed: Graph 403 (ErrorAccessDenied)')).toBeInTheDocument();
   });
 
+  describe('connect baseline note (#10863)', () => {
+    const row = (connectBaseline: unknown, status = 'connected') => ({
+      id: 'c1',
+      mailboxAddress: 'support@a.com',
+      displayName: null,
+      status,
+      lastPolledAt: null,
+      lastMessageAt: null,
+      verificationError: null,
+      connectBaseline,
+    });
+    const done = '2026-11-01T12:10:00.000Z';
+
+    it('says how many messages already in the inbox will not be imported', async () => {
+      fetchWithAuth.mockResolvedValueOnce(
+        jsonRes({ connections: [row({ skippedCount: 9487, completedAt: done })] }),
+      );
+      render(<M365MailboxCard />);
+      const note = await screen.findByTestId('m365-baseline-note');
+      expect(note.textContent).toContain('9487 messages already in this inbox will not be imported');
+      expect(screen.queryByTestId('m365-baseline-running')).toBeNull();
+    });
+
+    it('uses the singular for one message', async () => {
+      fetchWithAuth.mockResolvedValueOnce(
+        jsonRes({ connections: [row({ skippedCount: 1, completedAt: done })] }),
+      );
+      render(<M365MailboxCard />);
+      const note = await screen.findByTestId('m365-baseline-note');
+      expect(note.textContent).toContain('1 message already in this inbox will not be imported');
+    });
+
+    it('says the inbox is being read while the baseline runs, without a partial count', async () => {
+      fetchWithAuth.mockResolvedValueOnce(
+        jsonRes({ connections: [row({ skippedCount: 2000, completedAt: null })] }),
+      );
+      render(<M365MailboxCard />);
+      const note = await screen.findByTestId('m365-baseline-running');
+      expect(note.textContent).toMatch(/already in it will not be imported/);
+      expect(note.textContent).not.toContain('2000');
+      expect(screen.queryByTestId('m365-baseline-note')).toBeNull();
+    });
+
+    it.each([
+      ['an empty inbox', { skippedCount: 0, completedAt: done }, 'connected'],
+      ['a mailbox from before the floor', null, 'connected'],
+      ['an older API with no field', undefined, 'connected'],
+      ['a malformed count', { skippedCount: 'many', completedAt: done }, 'connected'],
+      ['a negative count', { skippedCount: -1, completedAt: done }, 'connected'],
+      ['a mailbox that is not polling', { skippedCount: 12, completedAt: done }, 'reauth_required'],
+    ])('stays quiet for %s', async (_label, value, status) => {
+      fetchWithAuth.mockResolvedValueOnce(jsonRes({ connections: [row(value, status)] }));
+      render(<M365MailboxCard />);
+      expect(await screen.findByText('support@a.com')).toBeInTheDocument();
+      expect(screen.queryByTestId('m365-baseline-note')).toBeNull();
+      expect(screen.queryByTestId('m365-baseline-running')).toBeNull();
+    });
+  });
+
   describe('repeated transient poll failures (#8308)', () => {
     const connectedRow = (transientPollFailures: unknown) => ({
       id: 'c1',
