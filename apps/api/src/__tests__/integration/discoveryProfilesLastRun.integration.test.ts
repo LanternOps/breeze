@@ -35,8 +35,9 @@ describe('GET /discovery/profiles lastRunAt', () => {
       profileId, orgId: organization.id, siteId: site.id, status, completedAt,
     });
     await admin().insert(discoveryJobs).values([
-      job(ran.id, 'completed', new Date('2026-03-01T10:00:00.000Z')),
+      // Newest first, so insertion order cannot pass for completed_at order.
       job(ran.id, 'completed', NEWEST_COMPLETED),
+      job(ran.id, 'completed', new Date('2026-03-01T10:00:00.000Z')),
       // Newer, but not completed: must not count as the last run.
       job(ran.id, 'failed', new Date('2026-03-03T10:00:00.000Z')),
       job(neverRan.id, 'failed', new Date('2026-03-03T10:00:00.000Z')),

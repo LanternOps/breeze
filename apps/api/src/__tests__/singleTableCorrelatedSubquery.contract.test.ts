@@ -1,6 +1,7 @@
 /**
  * #9692 — a correlated `sql` subquery in the selection of a single-table drizzle
- * query silently binds its outer column to the INNER table (#9644).
+ * query silently binds its outer column to the INNER table when that table has a
+ * column of the same name (#9644).
  *
  * With no joins, drizzle's `buildSelection` runs in `isSingleTable` mode and
  * rewrites every column that is a DIRECT chunk of a selection `sql` to a bare
@@ -20,6 +21,9 @@
  *
  * The first block pins drizzle's real rendering, so an upgrade that changes the
  * rule fails here and the walker's model gets re-reviewed.
+ *
+ * Known limit: selections and helpers reached through an object's property
+ * (`{ x: projections.foo }`, `helpers.f(outer.id)`) are not followed.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
@@ -131,12 +135,36 @@ function collectDecls(file: ts.SourceFile): Map<string, Decl[]> {
   return decls;
 }
 
-/** The select call behind `.from(...)`, or undefined when this `.from` is not a select's. */
-function selectCallOf(from: ts.CallExpression): ts.CallExpression | undefined {
+function asSelectCall(node: ts.Expression | undefined): ts.CallExpression | undefined {
+  if (!node || !ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) return undefined;
+  return SELECT_METHODS.has(node.expression.name.text) ? node : undefined;
+}
+
+/**
+ * The select call behind `.from(...)`, direct or held in a const
+ * (`const q = db.select(...); q.from(t)`). Undefined when this `.from` is not a select's.
+ */
+function selectCallOf(from: ts.CallExpression, decls: Map<string, Decl[]>): ts.CallExpression | undefined {
   if (!ts.isPropertyAccessExpression(from.expression) || from.expression.name.text !== 'from') return undefined;
   const receiver = unwrap(from.expression.expression);
-  if (!ts.isCallExpression(receiver) || !ts.isPropertyAccessExpression(receiver.expression)) return undefined;
-  return SELECT_METHODS.has(receiver.expression.name.text) ? receiver : undefined;
+  if (ts.isIdentifier(receiver)) {
+    return decls.get(receiver.text)?.map((decl) => asSelectCall(decl.expr)).find(Boolean);
+  }
+  return asSelectCall(receiver);
+}
+
+/** `sql` plus any local name drizzle's `sql` is imported under in this file. */
+function isSqlTag(tag: ts.Expression): boolean {
+  if (!ts.isIdentifier(tag)) return false;
+  if (tag.text === 'sql') return true;
+  return tag.getSourceFile().statements.some((statement) => {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) return false;
+    if (statement.moduleSpecifier.text !== 'drizzle-orm') return false;
+    const bindings = statement.importClause?.namedBindings;
+    return !!bindings && ts.isNamedImports(bindings) && bindings.elements.some(
+      (el) => el.name.text === tag.text && el.propertyName?.text === 'sql',
+    );
+  });
 }
 
 /** Method names applied after `.from(...)` on the same fluent chain. */
@@ -207,7 +235,8 @@ interface Walk {
   globals: Map<string, Decl[]>;
   imports: Set<string>;
   outerRoot: string;
-  seen: Set<ts.Node>;
+  /** Nodes on the current path. A cycle guard only: a helper called twice is walked twice. */
+  active: Set<ts.Node>;
   report: (template: ts.TemplateExpression, columns: string[], inner: string[], field: string) => void;
 }
 
@@ -244,9 +273,13 @@ function innerTables(template: ts.TemplateExpression): string[] {
 /** Walks a selection value down to the sql templates drizzle would treat as selection fields. */
 function walkField(expr: ts.Expression, field: string, env: Env, walk: Walk): void {
   const node = unwrap(expr);
-  if (walk.seen.has(node)) return;
-  walk.seen.add(node);
+  if (walk.active.has(node)) return;
+  walk.active.add(node);
+  visitField(node, field, env, walk);
+  walk.active.delete(node);
+}
 
+function visitField(node: ts.Expression, field: string, env: Env, walk: Walk): void {
   if (ts.isObjectLiteralExpression(node)) {
     for (const prop of node.properties) {
       if (ts.isSpreadAssignment(prop)) walkField(prop.expression, field, env, walk);
@@ -291,7 +324,7 @@ function walkField(expr: ts.Expression, field: string, env: Env, walk: Walk): vo
     }
     return;
   }
-  if (ts.isTaggedTemplateExpression(node) && node.tag.getText() === 'sql' && ts.isTemplateExpression(node.template)) {
+  if (ts.isTaggedTemplateExpression(node) && isSqlTag(node.tag) && ts.isTemplateExpression(node.template)) {
     const template = node.template;
     const inside = spansInsideSubquery(template);
     const columns = template.templateSpans.flatMap((span, index) => {
@@ -314,7 +347,7 @@ function findHits(source: string, path: string, globals: Map<string, Decl[]>): H
 
   const scan = (selection: ts.Expression, outer: string, via: Hit['via']) => {
     walkField(selection, '', new Map(), {
-      decls, globals, imports, outerRoot: outer.split('.')[0]!, seen: new Set(),
+      decls, globals, imports, outerRoot: outer.split('.')[0]!, active: new Set(),
       report: (template, columns, inner, field) => {
         // A helper's template lives in its own module; report where it is written.
         const home = template.getSourceFile();
@@ -334,14 +367,16 @@ function findHits(source: string, path: string, globals: Map<string, Decl[]>): H
 
   const visit = (node: ts.Node) => {
     if (ts.isCallExpression(node)) {
-      const select = selectCallOf(node);
+      const select = selectCallOf(node, decls);
       if (select && !chainedMethods(node).some((m) => /Join(?:Lateral)?$/.test(m))) {
         const method = (select.expression as ts.PropertyAccessExpression).name.text;
         const selection = select.arguments[method === 'selectDistinctOn' ? 1 : 0];
         const outer = node.arguments[0];
         if (selection && outer) scan(selection, unwrap(outer).getText().replace(/\s+/g, ''), 'select');
       }
-      // insert/delete/update returning() also render through isSingleTable.
+      // insert, delete and from-less update returning() also render through
+      // isSingleTable. update().from().returning() does not; scanning it too can
+      // only add a false positive.
       if (ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'returning' && node.arguments[0]) {
         let receiver: ts.Expression = node.expression.expression;
         while (ts.isCallExpression(receiver) && ts.isPropertyAccessExpression(receiver.expression)
@@ -364,7 +399,7 @@ function sweep(): Hit[] {
   // Helpers exported from another module resolve by name. Same-file names win.
   const globals = new Map<string, Decl[]>();
   for (const { path, source } of files) {
-    if (!source.includes('sql`') && !source.includes('sql<')) continue;
+    if (!/sql[`<]/i.test(source) && !/\bsql as\b/.test(source)) continue;
     for (const [name, decls] of collectDecls(parse(path, source))) {
       globals.set(name, [...(globals.get(name) ?? []), ...decls]);
     }
@@ -467,8 +502,21 @@ describe('walker', () => {
     ['helper function with column argument', `const f = (c) => sql\`(select 1 from \${inner} where \${inner.a} = \${c})\`; db.select({ n: f(outer.id) }).from(outer);`],
     ['exists', 'db.select({ n: sql`exists (select 1 from ${inner} where ${inner.a} = ${outer.id})` }).from(outer);'],
     ['returning', `db.update(outer).set(v).where(w).returning({ n: ${bad} });`],
+    ['a query split across statements', `const q = db.select({ n: ${bad} }); q.from(outer);`],
+    ['an aliased sql import', "import { sql as q } from 'drizzle-orm'; db.select({ n: q`(select 1 from b where a = ${outer.id})` }).from(outer);"],
   ])('flags %s', (_name, body) => {
     expect(fixture(body)).toHaveLength(1);
+  });
+
+  it('reads the inner table from a literal aliased FROM, the shape two real bugs used', () => {
+    const [hit] = fixture('db.select({ n: sql`(select 1 from inner_t x where x.a = ${outer.id})` }).from(outer);');
+    expect(hit?.inner).toEqual(['inner_t']);
+    expect(hit?.columns).toEqual(['outer.id']);
+  });
+
+  it('reports each call of a helper, so an allowlisted first call cannot hide a second', () => {
+    const hits = fixture('const f = (c) => sql`(select 1 from b where a = ${c})`; db.select({ x: f(outer.id), y: f(outer.name) }).from(outer);');
+    expect(hits.map((hit) => [hit.field, hit.columns])).toEqual([['x', ['outer.id']], ['y', ['outer.name']]]);
   });
 
   it.each([

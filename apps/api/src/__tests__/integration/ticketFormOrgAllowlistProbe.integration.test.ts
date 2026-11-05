@@ -54,4 +54,18 @@ describe('getTicketFormForOrg allowlist probe', () => {
     // The other form's link must not put this form's allowlist in effect.
     await expect(forOrg(fx.unlisted)).resolves.toMatchObject({ id: fx.formId });
   });
+
+  it('does not admit an org because another form lists it', async () => {
+    const [other] = await admin()
+      .insert(ticketForms)
+      .values({ partnerId: fx.partnerId, orgId: null, name: 'other' })
+      .returning({ id: ticketForms.id });
+    await admin().insert(ticketFormOrgLinks).values([
+      { formId: fx.formId, orgId: fx.listed },
+      { formId: other.id, orgId: fx.unlisted },
+    ]);
+
+    const refused = await forOrg(fx.unlisted).catch((err: unknown) => err);
+    expect(refused).toBeInstanceOf(TicketFormError);
+  });
 });
