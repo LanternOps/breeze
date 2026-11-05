@@ -77,6 +77,7 @@ import { pax8ToolSchemas } from './aiToolSchemasPax8';
 import { backupVerificationToolSchemas } from './aiToolSchemasBackupVerification';
 import { backupRecoveryReadToolSchemas } from './aiToolSchemasBackupRecoveryReads';
 import { c2cConfigToolSchemas } from './aiToolSchemasC2CConfigs';
+import { orgAdminToolSchemas } from './aiToolSchemasOrgAdmin';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -658,6 +659,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   ...backupVerificationToolSchemas,
   ...backupRecoveryReadToolSchemas,
   ...c2cConfigToolSchemas,
+  // Full-control W18 PR A (#6789): org admin and identity reads.
+  ...orgAdminToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),

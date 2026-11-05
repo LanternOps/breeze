@@ -135,6 +135,8 @@ import { registerPax8OrderTools } from './aiToolsPax8Orders';
 import { registerBackupVerificationTools } from './aiToolsBackupVerification';
 import { registerBackupRecoveryReadTools } from './aiToolsBackupRecoveryReads';
 import { registerC2CConfigTools } from './aiToolsC2CConfigs';
+import { registerOrgAdminReadTools } from './aiToolsOrgAdminReads';
+import { registerIdentityReadTools } from './aiToolsIdentityReads';
 import { registerBillingProfileTools } from './aiToolsBillingProfiles';
 import { registerBillingSettingsTools } from './aiToolsBillingSettings';
 import { registerContractTemplateTools } from './aiToolsContractTemplates';
@@ -483,6 +485,10 @@ registerPax8OrderTools(aiTools);
 registerBackupVerificationTools(aiTools);
 registerBackupRecoveryReadTools(aiTools);
 registerC2CConfigTools(aiTools);
+// Full-control W18 PR A (#6789): org admin reads (summary, readiness, audit retention, portal users) and the
+// read-only identity directory (Breeze logins, roles). No identity write is a tool (W18-1).
+registerOrgAdminReadTools(aiTools);
+registerIdentityReadTools(aiTools);
 registerBillingSettingsTools(aiTools);
 registerContractTemplateTools(aiTools);
 registerDeviceBillingTools(aiTools);
