@@ -41,6 +41,7 @@
     "stalledTooltip": "Seit {{minutes}} Min. keine Daten empfangen",
     "filesProgress": "{{done}} / {{total}} Dateien",
     "speedValue": "{{value}}/s",
+    "etaValue": "noch etwa {{value}}",
     "created": "Erstellt",
     "updated": "Aktualisiert",
     "files": "Dateien",
@@ -224,7 +225,26 @@
     "hold": "Aufbewahrungssperre",
     "standard": "Standard",
     "restorePointCount_one": "{{count}} Wiederherstellungspunkt",
-    "restorePointCount_other": "{{count}} Wiederherstellungspunkte"
+    "restorePointCount_other": "{{count}} Wiederherstellungspunkte",
+    "activePhase": {
+      "waiting_for_device": "An das Gerät gesendet, wartet auf den Start",
+      "queued_on_device": "Wartet, bis eine andere Sicherung auf diesem Gerät abgeschlossen ist",
+      "resuming": "Unterbrochene Sicherung wird fortgesetzt",
+      "scanning": "Dateien werden durchsucht",
+      "backing_up": "Wird gesichert"
+    },
+    "activeJobs": {
+      "title": "Laufende Sicherung",
+      "processedOfTotal": "{{done}} von {{total}} verarbeitet",
+      "processed": "{{done}} verarbeitet",
+      "lastHeard": "Letzte Meldung des Geräts: {{relative}}",
+      "mode": {
+        "file": "Dateisicherung",
+        "system_image": "System-Image-Sicherung",
+        "mssql": "SQL Server-Sicherung",
+        "hyperv": "Hyper-V-Sicherung"
+      }
+    }
   },
   "deviceVaultStatus": {
     "loadingVaultStatus": "Tresorstatus wird geladen...",

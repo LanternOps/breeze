@@ -961,6 +961,8 @@
     "backupStatusJobsSnapshotsAndVerification": "Stato backup, processi, snapshot e verifica",
     "theOsReportsAPendingReboot": "L'OS segnala un riavvio in sospeso (Windows registry / Linux reboot-required markers).",
     "rebootPending": "Riavvio in sospeso",
+    "backupRunning": "Backup attivo",
+    "backupRunningTooltip": "Su questo dispositivo è in corso un backup. Apri la scheda Backup per vederne lo stato di avanzamento.",
     "restartScheduled": "Riavvio programmato",
     "restartInProgress": "Riavvio in corso",
     "restartScheduledFor": "Riavvio programmato per le {{time}}",

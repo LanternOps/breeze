@@ -961,6 +961,8 @@
     "backupStatusJobsSnapshotsAndVerification": "Yedekleme durumu, işler, anlık görüntüler ve doğrulama",
     "theOsReportsAPendingReboot": "İşletim sistemi, beklemede olan bir yeniden başlatma rapor ediyor (Windows kayıt defteri / Linux'un yeniden başlatılması gereken işaretler).",
     "rebootPending": "Yeniden başlatma bekleniyor",
+    "backupRunning": "Yedekleme çalışıyor",
+    "backupRunningTooltip": "Bu cihazda bir yedekleme çalışıyor. İlerlemeyi görmek için Yedekleme sekmesini açın.",
     "restartScheduled": "Yeniden başlatma planlandı",
     "restartInProgress": "Yeniden başlatılıyor",
     "restartScheduledFor": "Yeniden başlatma {{time}} için planlandı",
