@@ -89,11 +89,40 @@ function getOrgId(auth: AuthContext): string | null {
 // `aiTools.findAlertWithAccess.test.ts`; do not reintroduce a local copy in
 // either module.
 export async function findAlertWithAccess(alertId: string, auth: AuthContext) {
+  const [alert] = await db.select().from(alerts).where(alertByIdInOrgScope(alertId, auth)).limit(1);
+  if (!alert) return null;
+  return (await alertAccessDenied(alert, auth)) ? null : alert;
+}
+
+/**
+ * The same lookup and access axes as `findAlertWithAccess`, returning only the
+ * columns those axes read. For a tool that checks an alert is reachable and
+ * never shows it (create_operator_task): `alerts.message`/`context` can hold
+ * credentials under names the output chokepoint cannot mask, so a caller that
+ * does not need them must not load them (aiToolOutput.encryptedColumns.test.ts).
+ */
+export async function findAlertRefWithAccess(alertId: string, auth: AuthContext) {
+  const [alert] = await db
+    .select({ id: alerts.id, orgId: alerts.orgId, deviceId: alerts.deviceId, topologySiteId: alerts.topologySiteId })
+    .from(alerts)
+    .where(alertByIdInOrgScope(alertId, auth))
+    .limit(1);
+  if (!alert) return null;
+  return (await alertAccessDenied(alert, auth)) ? null : alert;
+}
+
+function alertByIdInOrgScope(alertId: string, auth: AuthContext): SQL | undefined {
   const conditions: SQL[] = [eq(alerts.id, alertId)];
   const orgCond = auth.orgCondition(alerts.orgId);
   if (orgCond) conditions.push(orgCond);
-  const [alert] = await db.select().from(alerts).where(and(...conditions)).limit(1);
-  if (!alert) return null;
+  return and(...conditions);
+}
+
+/** The access axes beyond org scope, shared by both alert lookups above. */
+async function alertAccessDenied(
+  alert: { deviceId: string | null; topologySiteId: string | null },
+  auth: AuthContext,
+): Promise<boolean> {
   // Exact-device axis (#6096), independent of the site axis. A device-bound
   // run (`allowedDeviceIds`) may only touch alerts attributable to a device in
   // its allowlist — a device-LESS org-wide alert is attributable to none of
@@ -101,7 +130,7 @@ export async function findAlertWithAccess(alertId: string, auth: AuthContext) {
   // short-circuit below. A device-LESS ANALYSIS run carries no site axis at
   // all, so this check cannot be folded into the site one.
   if (auth.allowedDeviceIds
-    && (!alert.deviceId || !auth.allowedDeviceIds.includes(alert.deviceId))) return null;
+    && (!alert.deviceId || !auth.allowedDeviceIds.includes(alert.deviceId))) return true;
   // Helper device axis: a Helper-authenticated caller (routes/helper/*, the
   // tray app) is pinned to its OWN device the same way an exact-device AI run
   // is pinned to `allowedDeviceIds` above. The site-axis check below is not
@@ -109,16 +138,16 @@ export async function findAlertWithAccess(alertId: string, auth: AuthContext) {
   // restriction, so without this it could read (Tier 1 `get`) any org-wide or
   // sibling-device alert by UUID.
   if (auth.helperDeviceId
-    && (!alert.deviceId || alert.deviceId !== auth.helperDeviceId)) return null;
+    && (!alert.deviceId || alert.deviceId !== auth.helperDeviceId)) return true;
   // A topology policy alert is owned by its topology site (M3-D6): the site
   // axis follows that site, never the origin device's current one.
   if (alert.topologySiteId) {
     const allowedSites = siteAllowlistOf(auth);
-    return allowedSites !== undefined && !allowedSites.includes(alert.topologySiteId) ? null : alert;
+    return allowedSites !== undefined && !allowedSites.includes(alert.topologySiteId);
   }
-  if (!alert.deviceId && siteAllowlistOf(auth) !== undefined) return null;
-  if (alert.deviceId && (await deviceIdSiteDenied(auth, alert.deviceId))) return null;
-  return alert;
+  if (!alert.deviceId && siteAllowlistOf(auth) !== undefined) return true;
+  if (alert.deviceId && (await deviceIdSiteDenied(auth, alert.deviceId))) return true;
+  return false;
 }
 
 export function registerAlertTools(aiTools: Map<string, AiTool>): void {

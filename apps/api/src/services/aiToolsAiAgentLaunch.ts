@@ -168,10 +168,11 @@ export async function createOperatorTaskHandler(
   try {
     // The alert becomes the task's recurrence check, so it must be one the
     // caller can reach and must be about this device (stricter than REST,
-    // which takes the citation as given).
+    // which takes the citation as given). The ref lookup loads no alert text:
+    // the message is never shown, so it is never read.
     if (alertId) {
-      const { findAlertWithAccess } = await import('./aiToolsAlerts');
-      const alert = await findAlertWithAccess(alertId, auth);
+      const { findAlertRefWithAccess } = await import('./aiToolsAlerts');
+      const alert = await findAlertRefWithAccess(alertId, auth);
       if (!alert || alert.orgId !== orgId || alert.deviceId !== deviceId) {
         audit({ refused: 'ALERT_NOT_FOUND' }, false);
         return jsonError('Alert not found for this device, or access denied', 'NOT_FOUND');

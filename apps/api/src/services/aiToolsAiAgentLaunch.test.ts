@@ -9,7 +9,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock('./aiAgents/patchPlanLaunch', () => ({ launchPatchPlanRun: (...a: unknown[]) => h.launchPatch(...a) }));
 vi.mock('./aiOperator/serviceRecoveryLaunch', () => ({ launchServiceRecoveryTask: (...a: unknown[]) => h.launchTask(...a) }));
-vi.mock('./aiToolsAlerts', () => ({ findAlertWithAccess: (...a: unknown[]) => h.findAlert(...a) }));
+vi.mock('./aiToolsAlerts', () => ({ findAlertRefWithAccess: (...a: unknown[]) => h.findAlert(...a) }));
 vi.mock('./aiToolsSecurityPolicyShared', async () => {
   const actual = await vi.importActual<typeof import('./aiToolsSecurityPolicyShared')>('./aiToolsSecurityPolicyShared');
   return { ...actual, auditToolWrite: h.audit };
