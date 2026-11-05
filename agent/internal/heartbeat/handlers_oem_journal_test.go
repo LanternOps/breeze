@@ -24,6 +24,7 @@ func TestJournalReportsAnEndedRunsOutcome(t *testing.T) {
 	if err := oemupdates.WriteMarker(store, oemupdates.Marker{
 		CommandID: journalTestCmdID, Lane: "dell", StartedAt: ended.Add(-time.Hour), Stage: oemupdates.StageInstalling,
 		ToolVersion: "5.7.2", FlashStarted: true, EndedAt: &ended, Outcome: oemupdates.OutcomeSuccessRebootRequired,
+		RebootRequired: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
