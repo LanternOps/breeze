@@ -101,15 +101,6 @@ describe('file index acceptance at 1.1M entries', () => {
     const spoolBaseDir = await mkdtemp(join(tmpdir(), 'breeze-acceptance-spool-'));
 
     try {
-      // Manifest size and digest, read the way every consumer reads it.
-      const hash = createHash('sha256');
-      let bytes = 0;
-      for (const chunk of manifestChunks(snapshotId)) {
-        hash.update(chunk);
-        bytes += chunk.length;
-      }
-      const manifestSha256 = hash.digest('hex');
-
       const hydration = await measured(() =>
         runOutsideDbContext(() =>
           hydrateSnapshotFileIndex(snapshotDbId, {
@@ -118,6 +109,15 @@ describe('file index acceptance at 1.1M entries', () => {
           }),
         ),
       );
+      // Only now: reading the whole manifest here first would grow this
+      // process's heap before the baseline above, and flatter the memory figure.
+      const hash = createHash('sha256');
+      let bytes = 0;
+      for (const chunk of manifestChunks(snapshotId)) {
+        hash.update(chunk);
+        bytes += chunk.length;
+      }
+      const manifestSha256 = hash.digest('hex');
       expect(hydration.result).toMatchObject({ status: 'complete', entryCount: TOTAL_ENTRIES, manifestSha256 });
 
       const verifierDeps: AttestationVerifyDeps = {
