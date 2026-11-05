@@ -78,9 +78,9 @@ const (
 // stands for that, whatever StoredObjectCheck says.
 type journalVerification struct {
 	StoredObjectCheck storedObjectCheck `json:"storedObjectCheck,omitempty"`
-	// VerifiedAt is when the record's newest evidence was gathered: the read
-	// that produced StoredObjectCheck when one ran, else the source hash. It
-	// is never renewed by reusing a record.
+	// VerifiedAt is when the record was written. Only a stored "ok" has its age
+	// judged, and that write is the read that produced it: reusing a record
+	// never rewrites it, so reuse cannot renew the "ok".
 	VerifiedAt time.Time `json:"verifiedAt"`
 	// BaseGeneration is the context the evidence holds in, see
 	// journalBaseGeneration.
@@ -159,18 +159,19 @@ func (j *snapshotJournal) clearVerification(key string) {
 	delete(j.verifications, key)
 }
 
-// appendEvidenceLine writes a line that changes key's record. If key already
-// has one and the write fails, that record can no longer be retracted and may
-// come to vouch for an object it never saw. A journal is never worth that, so
-// it is poisoned (see Complete): the next run starts a new snapshot. Truncating
-// works where appending failed, on a full disk for one. A write that only adds
-// evidence is merely lost, like any other journal write.
+// appendEvidenceLine writes a line that changes key's record. If the line
+// retracts trust the record holds and the write fails, that record stays on disk
+// and may come to vouch for an object it never saw. A journal is never worth
+// that, so it is poisoned (see Complete): the next run starts a new snapshot.
+// Truncating works where appending failed, on a full disk for one. A write that
+// keeps or adds trust is merely lost, like any other journal write: the record
+// left behind is still true, and the next job checks again what it does not cover.
 func (j *snapshotJournal) appendEvidenceLine(key string, line journalEntryLine) error {
 	err := j.appendLine(line)
 	if err == nil {
 		return nil
 	}
-	if _, retracting := j.verifications[key]; retracting {
+	if j.retractsTrust(key, line) {
 		if poisonErr := poisonJournalFile(j.path); poisonErr != nil {
 			slog.Error("could not retract a backup verification record or poison the journal",
 				"path", j.path, "error", errors.Join(err, poisonErr).Error())
@@ -180,6 +181,20 @@ func (j *snapshotJournal) appendEvidenceLine(key string, line journalEntryLine) 
 		}
 	}
 	return err
+}
+
+// retractsTrust reports whether line takes away something key's record lets a
+// later job skip: the whole record (a plain line), or its stored "ok". Any other
+// change leaves the read-back owing either way, so losing it is harmless.
+func (j *snapshotJournal) retractsTrust(key string, line journalEntryLine) bool {
+	old, ok := j.verifications[key]
+	if !ok {
+		return false
+	}
+	if line.Verification == nil {
+		return true
+	}
+	return old.StoredObjectCheck == storedCheckOK && line.Verification.StoredObjectCheck != storedCheckOK
 }
 
 // resumeVerifier decides, entry by entry, whether a resumed run may reuse a
@@ -264,10 +279,12 @@ func (v *resumeVerifier) prepareReadBacks(provider providers.BackupProvider, fil
 // without uploading. New evidence is journaled as soon as it exists, so a pass
 // that dies part way loses at most the file it was on. When the answer is no,
 // the file is about to be uploaded over the object, so no record may be left
-// vouching for that object.
+// that lets a later job skip checking that object: at most one that still owes
+// the read-back.
 func (v *resumeVerifier) reusable(ctx context.Context, file backupFile, entry SnapshotFile) bool {
 	key := journalLookupKey(file)
 	rec, standing := v.standingRecord(key, entry)
+	started := time.Now()
 
 	// Size and modification time can match a file whose content changed.
 	// Without a standing record, reuse the entry only when the source still
@@ -298,7 +315,7 @@ func (v *resumeVerifier) reusable(ctx context.Context, file backupFile, entry Sn
 	}
 	if !v.verifyStored {
 		if !standing {
-			v.recordEvidence(file, entry, storedCheckNone)
+			v.recordEvidence(file, entry, storedCheckNone, started)
 		}
 		return true
 	}
@@ -325,10 +342,10 @@ func (v *resumeVerifier) reusable(ctx context.Context, file backupFile, entry Sn
 			"snapshotId", v.snapshotID,
 			"error", err.Error(),
 		)
-		v.recordEvidence(file, entry, storedCheckNone)
+		v.recordEvidence(file, entry, storedCheckNone, started)
 		return false
 	}
-	v.recordEvidence(file, entry, check)
+	v.recordEvidence(file, entry, check, started)
 	if check != storedCheckOK {
 		log.Info("journaled object from an earlier job does not match its record; uploading it again",
 			"path", file.sourcePath,
@@ -343,18 +360,18 @@ func (v *resumeVerifier) reusable(ctx context.Context, file backupFile, entry Sn
 
 // recordEvidence journals what the pass just established about entry, unless
 // the entry cannot hold a record (see racyModTimeMargin and standingRecord): any
-// record it has is retracted then, since the caller may upload next. The
-// journal's own writes are best effort, as everywhere: a lost record costs a
-// re-verify next time.
-func (v *resumeVerifier) recordEvidence(file backupFile, entry SnapshotFile, check storedObjectCheck) {
-	now := time.Now().UTC()
-	if entry.Volatile || now.Sub(file.modTime) < racyModTimeMargin {
+// record it has is retracted then, since the caller may upload next. checksStarted
+// is when the checks began, which is what the margin is about: a long hash must
+// not carry a file past it. The journal's own writes are best effort, as
+// everywhere: a lost record costs a re-verify next time.
+func (v *resumeVerifier) recordEvidence(file backupFile, entry SnapshotFile, check storedObjectCheck, checksStarted time.Time) {
+	if entry.Volatile || checksStarted.Sub(file.modTime) < racyModTimeMargin {
 		v.journal.clearVerification(journalEntryKey(entry))
 		return
 	}
 	_ = v.journal.recordVerification(entry, journalVerification{
 		StoredObjectCheck: check,
-		VerifiedAt:        now,
+		VerifiedAt:        time.Now().UTC(),
 		BaseGeneration:    v.generation,
 	})
 }

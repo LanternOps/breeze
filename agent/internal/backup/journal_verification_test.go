@@ -444,6 +444,73 @@ func TestResumeVerify_VolatileEntryNeverUsesARecordedStoredCheck(t *testing.T) {
 	}
 }
 
+func TestResumeVerify_EntriesThatCannotBeReusedLoseTheirRecord(t *testing.T) {
+	// Each of these ends in an upload that may overwrite the object the record
+	// vouched for, and the run dies before recording that upload.
+	cases := []struct {
+		name  string
+		setup func(ea *SnapshotFile) []journalEntryLine
+		check func(t *testing.T, v journalVerification, ok bool)
+	}{
+		{
+			name: "case twin",
+			setup: func(ea *SnapshotFile) []journalEntryLine {
+				twin := SnapshotFile{SourcePath: "/elsewhere", BackupPath: strings.Replace(ea.BackupPath, "a.txt", "A.TXT", 1),
+					Size: ea.Size, ModTime: ea.ModTime, Checksum: ea.Checksum}
+				return []journalEntryLine{{SnapshotFile: *ea, Verification: recordFor(storedCheckOK, time.Hour)}, {SnapshotFile: twin}}
+			},
+			check: func(t *testing.T, v journalVerification, ok bool) {
+				if ok {
+					t.Fatalf("record survived: %+v", v)
+				}
+			},
+		},
+		{
+			name: "reference into another snapshot",
+			setup: func(ea *SnapshotFile) []journalEntryLine {
+				ea.BackupPath = path.Join(snapshotRootDir, "snapshot-older", snapshotFilesDir, "a.txt")
+				return []journalEntryLine{{SnapshotFile: *ea, Verification: recordFor(storedCheckOK, time.Hour)}}
+			},
+			check: func(t *testing.T, v journalVerification, ok bool) {
+				if ok {
+					t.Fatalf("record survived: %+v", v)
+				}
+			},
+		},
+		{
+			name: "expired ok whose read-back fails",
+			setup: func(ea *SnapshotFile) []journalEntryLine {
+				return []journalEntryLine{{SnapshotFile: *ea, Verification: recordFor(storedCheckOK, storedCheckMaxAge+time.Hour)}}
+			},
+			check: func(t *testing.T, v journalVerification, ok bool) {
+				if !ok || v.StoredObjectCheck != storedCheckNone {
+					t.Fatalf("record = %+v ok=%v, want the source hash kept and the ok gone", v, ok)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fastUploadRetries(t)
+			src := t.TempDir()
+			a := settledFile(t, src, "a.txt", "alpha")
+			staging := t.TempDir()
+			ea := journaledEntry(t, a, brokeredJournalID, "alpha")
+			lines := tc.setup(&ea)
+			backing := continuingIssuer(map[string]string{ea.BackupPath: "alpha"})
+			identity := backupIdentity(backing, []string{src})
+			seedVerifiedJournal(t, staging, identity, brokeredJournalID, brokeredOtherJob, lines...)
+			backing.digestErr = errors.New("session expired")
+			p := &failingDigester{fakeIssuer: backing, failAfter: 0, err: errors.New("session expired")}
+			_, _ = brokeredManager(p, src, staging, testJobID).RunBackupContext(context.Background(), nil)
+
+			j := journalAfter(t, staging, identity)
+			v, ok := j.verifications[journalEntryKey(ea)]
+			tc.check(t, v, ok)
+		})
+	}
+}
+
 func TestResumeVerify_TaintedEntryIsUploadedEvenWithARecord(t *testing.T) {
 	// A pre-#5582 journal's case twins share one object on a case-insensitive
 	// store. A record must not excuse that check.
@@ -696,6 +763,9 @@ func TestJournalVerification_ARetractionThatCannotBeWrittenPoisonsTheJournal(t *
 		t.Fatal(err)
 	}
 	j.clearVerification("/a")
+	if fi, err := os.Stat(j.path); err != nil || fi.Size() != 0 {
+		t.Fatalf("journal not poisoned: %+v err=%v", fi, err)
+	}
 	j.Abandon()
 
 	j2, resumed, err := openSnapshotJournal(dir, "identity-a", journalMaxAge)
@@ -705,6 +775,53 @@ func TestJournalVerification_ARetractionThatCannotBeWrittenPoisonsTheJournal(t *
 	defer j2.Abandon()
 	if resumed || len(j2.verifications) != 0 {
 		t.Fatalf("journal with an unretractable record was resumed: resumed=%v records=%d", resumed, len(j2.verifications))
+	}
+}
+
+func TestJournalVerification_ALostWriteOnlyPoisonsWhenItRetractsTrust(t *testing.T) {
+	// A full disk during a long pass must not throw away the checkpoint unless
+	// the record left behind would say more than is true.
+	ok := storedCheckOK
+	none := storedCheckNone
+	mismatch := storedCheckMismatch
+	cases := []struct {
+		name       string
+		old        *storedObjectCheck
+		new        storedObjectCheck
+		wantPoison bool
+	}{
+		{"nothing recorded yet", nil, ok, false},
+		{"ok refreshed with ok", &ok, ok, false},
+		{"not checked becomes ok", &none, ok, false},
+		{"not checked becomes mismatch", &none, mismatch, false},
+		{"ok becomes not checked", &ok, none, true},
+		{"ok becomes mismatch", &ok, mismatch, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			j, _, _ := openSnapshotJournal(dir, "identity-a", journalMaxAge)
+			_ = j.BindRun("job-1", "")
+			e := SnapshotFile{SourcePath: "/a", BackupPath: "k", Size: 1, Checksum: strings.Repeat("a", 64)}
+			_ = j.Record(e)
+			if tc.old != nil {
+				_ = j.recordVerification(e, journalVerification{StoredObjectCheck: *tc.old, VerifiedAt: time.Now().UTC(), BaseGeneration: "g"})
+			}
+			if err := j.file.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := j.recordVerification(e, journalVerification{StoredObjectCheck: tc.new, VerifiedAt: time.Now().UTC(), BaseGeneration: "g"}); err == nil {
+				t.Fatal("setup: the write did not fail")
+			}
+			fi, err := os.Stat(j.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if poisoned := fi.Size() == 0; poisoned != tc.wantPoison {
+				t.Fatalf("poisoned = %v, want %v", poisoned, tc.wantPoison)
+			}
+			j.Abandon()
+		})
 	}
 }
 
@@ -738,12 +855,21 @@ func TestJournalVerification_AnOlderHelperInvalidatesEarlierRecords(t *testing.T
 	if err != nil || !resumed {
 		t.Fatalf("reopen: resumed=%v err=%v", resumed, err)
 	}
-	defer j2.Abandon()
 	if len(j2.verifications) != 0 {
 		t.Fatalf("records survived an older helper: %+v", j2.verifications)
 	}
 	if len(j2.entries) != 1 {
 		t.Fatalf("entries = %d, want them kept", len(j2.entries))
+	}
+	// What this build proves after taking the journal back does count.
+	_ = j2.StartAttempt()
+	_ = j2.recordVerification(e, journalVerification{StoredObjectCheck: storedCheckOK, VerifiedAt: time.Now().UTC(), BaseGeneration: j2.baseGeneration()})
+	_ = j2.StartAttempt()
+	j2.Abandon()
+	j3, _, _ := openSnapshotJournal(dir, "identity-a", journalMaxAge)
+	defer j3.Abandon()
+	if len(j3.verifications) != 1 {
+		t.Fatalf("a record written after the older helper was dropped: %+v", j3.verifications)
 	}
 }
 
@@ -861,6 +987,32 @@ func TestResumeVerify_TheCheckCoversEveryObjectTheManifestNames(t *testing.T) {
 	}
 	if manifestPublished(backing, brokeredJournalID) {
 		t.Fatal("published over an uploaded object that is gone")
+	}
+}
+
+func TestConfirmStoredBeforePublish_ChecksOnlyThisSnapshotsOwnObjects(t *testing.T) {
+	own := path.Join(snapshotRootDir, "s1", snapshotFilesDir, "a")
+	p := newMockProvider()
+	p.files[own] = []byte("x")
+	j, _, err := openSnapshotJournal(t.TempDir(), "identity-a", journalMaxAge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Abandon()
+	v := &resumeVerifier{journal: j, reliedOnCachedStored: true, generation: "g"}
+	snapshot := &Snapshot{ID: "s1", Files: []SnapshotFile{
+		{SourcePath: "/a", BackupPath: own},
+		{SourcePath: "/link", Kind: KindSymlink},
+		// Stored under an older snapshot: this prefix's listing never shows it.
+		{SourcePath: "/ref", BackupPath: path.Join(snapshotRootDir, "s0", snapshotFilesDir, "ref")},
+	}}
+	if err := v.confirmStoredBeforePublish(p, snapshot); err != nil {
+		t.Fatalf("own object is listed and the rest is not this snapshot's: %v", err)
+	}
+	// A control: the same check does see an own object that is gone.
+	delete(p.files, own)
+	if err := v.confirmStoredBeforePublish(p, snapshot); err == nil || !strings.Contains(err.Error(), "missing from storage") {
+		t.Fatalf("err = %v", err)
 	}
 }
 

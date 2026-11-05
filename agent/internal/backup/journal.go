@@ -323,9 +323,9 @@ func openSnapshotJournalAt(path, identity string, maxAge time.Duration) (*snapsh
 
 // readJournal reads and validates an existing journal file at path,
 // returning its header, the resumed entries (last-entry-wins across repeated
-// sourcePaths) and their verification records. Any malformed line — header or data — is reported
-// as an error so the caller discards the whole file rather than resuming
-// from a partially-trusted state.
+// sourcePaths) and their verification records. Any malformed line — header or
+// data — is reported as an error so the caller discards the whole file rather
+// than resuming from a partially-trusted state.
 func readJournal(path string) (journalHeader, map[string]SnapshotFile, map[string]journalVerification, error) {
 	var header journalHeader
 	f, err := os.Open(path)

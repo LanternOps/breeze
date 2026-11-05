@@ -714,7 +714,8 @@ func withLayout(manifest *layout.Manifest) createSnapshotOption {
 //     into this run's manifest — with filesDone/bytesDone pre-seeded from
 //     the matched set before the loop starts, so the very first progress
 //     emission reflects the resume instead of a slow trickle of
-//     skip-iterations. Checks an earlier pass recorded are not repeated (see
+//     skip-iterations. A source hash or stored-object check an earlier pass
+//     recorded as passing, and still fresh, is not repeated (see
 //     journal_verification.go).
 //   - Every freshly uploaded file is appended to the journal as it lands.
 //   - On a full success (manifest uploaded), the journal is completed
@@ -1040,8 +1041,8 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			key := journalLookupKey(file)
 			entry, ok := journal.Lookup(key, file.size, file.modTime)
 			if !ok {
-				// Changed since its upload: the upload ahead overwrites the
-				// object its record vouches for.
+				// New, or changed since its upload. If changed, the upload
+				// ahead overwrites the object its record vouches for.
 				journal.clearVerification(key)
 				continue
 			}
