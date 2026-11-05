@@ -56,9 +56,12 @@ describe('partners/me unit', () => {
     expect(buildPartnersMePayload(edited)).toEqual(buildPartnersMePayload(base));
   });
 
-  it('a threshold box hidden by disabled budgets never blocks Save', () => {
-    const state = { ...fixtureState(), aiBudgets: { enabled: false }, aiBudgetsThresholdsRaw: 'abc' };
-    expect(partnersMeValidity(state).aiBudgets?.isValid).toBe(true);
+  // #9666: the threshold box no longer hides behind the AI switch, so bad text
+  // blocks Save whatever the switch says (including "not set").
+  it.each([{ enabled: false }, {}])('unparseable threshold text blocks Save with aiBudgets %j', (aiBudgets) => {
+    const state = { ...fixtureState(), aiBudgets, aiBudgetsThresholdsRaw: 'abc' };
+    expect(partnersMeValidity(state).aiBudgets?.isValid).toBe(false);
+    expect(tabSnapshots(state).aiBudgets).not.toBe(tabSnapshots({ ...state, aiBudgetsThresholdsRaw: null }).aiBudgets);
   });
 
   it('flags security limits outside the shared server bounds, first field in form order (#10081)', () => {

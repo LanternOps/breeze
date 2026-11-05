@@ -20,6 +20,7 @@ import (
 )
 
 var ErrUnavailable = errors.New("recovery distribution is not available")
+
 var versionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?(?:\+[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$`)
 
 // Task identifies a recovery task to create or update. Repoint must change and read back
@@ -209,7 +210,7 @@ func (i *Installer) stage(ctx context.Context, version, path string) (TrustPath,
 	}
 	// Files inherit the protected service directory ACL, then are explicitly
 	// hardened before any untrusted downloaded content is executed.
-	tmp, err := os.CreateTemp(dir, ".recovery-*.exe")
+	tmp, err := os.CreateTemp(dir, ".recovery-*"+filepath.Ext(recoveryExecutableName()))
 	if err != nil {
 		return "", err
 	}

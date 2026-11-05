@@ -14,9 +14,10 @@ Breeze's data model supports white-label branding -- logo, colors, custom CSS, a
 <Aside type="caution">
   What reaches customers depends on the level:
 
-  - **Partner Branding logo and colors appear on customer documents.** Quotes and invoices -- the web views and the PDFs -- use the logo and primary color saved under **Settings > Partner > Branding** (quote PDFs also set headings in the secondary color when it is dark enough to read), and agreement signing pages show the logo. An organization's own portal branding logo or primary color, when one is stored, wins field by field. The organization's **Primary color** is set on **Settings > Organization > Branding** (see [Organization primary color](#organization-primary-color)); nothing in the dashboard writes the organization logo yet, so your partner logo is what customers see.
-  - **The end-user portal does not use partner Branding.** The portal's logo, colors, and custom domain come only from the organization's portal branding record, and there is no dashboard control or API for writing the logo, secondary color or custom domain yet. The logo, secondary color, and theme on the **Settings > Organization > Branding** tab are a separate dashboard/appearance preference and do not change the portal or customer documents. The **Primary color** on that tab is the exception: from v0.126.0 it is written to the organization's portal branding record, so it sets the accent color on that organization's documents and portal pages (see below).
-  - **Organization custom CSS does reach the portal.** The **Custom CSS** field on **Settings > Organization > Branding** is saved with the organization's portal settings and injected into portal pages.
+  - **Logo and colors resolve the same way everywhere.** The logo and colors saved under **Settings > Partner > Branding** are the default for every organization. A value saved on **Settings > Organization > Branding** overrides it for that one customer, field by field (see [Organization logo and colors](#organization-logo-and-colors)).
+  - **Where they appear.** The logo appears in the end-user portal, on quotes and invoices (the web views and the PDFs), on agreement signing pages, and on report PDFs (an uploaded image only). The primary color is the accent on documents and report PDFs, and on documents shown in the portal. The secondary color sets headings on quote PDFs when it is dark enough to read, and is the accent on report PDFs. The portal's navigation colors come from its own chrome accent setting.
+  - **Custom domains and favicons are not configurable yet.** There is no dashboard control or API for writing them.
+  - **Custom CSS reaches the portal.** The **Custom CSS** field on **Settings > Organization > Branding** is saved with the organization's portal settings and injected into portal pages, after the partner's Custom CSS.
 
   Outbound email templates (**Settings → Partner → Email templates**) edit the inner HTML of customer ticket, quote, invoice, and portal-invite mail; they do not change the email card's accent bar and do not pull colors from the Branding tab.
 </Aside>
@@ -27,8 +28,8 @@ Breeze's data model supports white-label branding -- logo, colors, custom CSS, a
 
 Branding is configured at two levels:
 
-- **Partner (MSP)** -- an appearance preference (logo, colors, theme, custom CSS) intended as the default for the partner's managed organizations.
-- **Organization (customer)** -- the same kind of appearance preference, plus the portal's feature toggles and support-contact fields, which are what customers actually see today (see [Organization Branding](#organization-branding)).
+- **Partner (MSP)** -- the logo, colors and custom CSS that apply to all of the partner's managed organizations by default.
+- **Organization (customer)** -- an override of the logo and colors for one customer, its own custom CSS, and the portal's feature toggles and support-contact fields (see [Organization Branding](#organization-branding)).
 
 ---
 
@@ -42,7 +43,7 @@ Breeze currently supports a single logo per organization and per partner (MSP) -
 
 1. Navigate to **Settings > Organization > Branding** (or **Settings > Partner > Branding** to set the MSP-wide default).
 
-2. In the **Logo** section, upload an image file or paste a hosted image URL.
+2. In the **Logo** section, upload an image file. The partner tab also accepts a pasted hosted image URL.
 
 3. A preview appears immediately in the editor.
 
@@ -51,39 +52,38 @@ Breeze currently supports a single logo per organization and per partner (MSP) -
 </Steps>
 
 <Aside type="caution">
-  Logo URLs are sanitized before rendering to prevent XSS attacks. Only `https://`, `http://`, and `/` (relative) URL schemes, or a data URL produced by the upload control itself, are accepted. Hand-typed `javascript:` URLs and pasted `blob:` URLs are rejected. Quotes, invoices, and agreement pages only show a partner logo that was uploaded or uses `https://`.
+  Logo URLs are sanitized before rendering to prevent XSS attacks. Hand-typed `javascript:` URLs and pasted `blob:` URLs are rejected. The portal, quotes, invoices and agreement pages only show a logo that was uploaded or uses `https://`. An organization logo saved through the API must be a PNG data URL or an `https://` URL.
 </Aside>
 
 <Aside type="caution">
-  There is no dedicated file-storage upload for logos yet. The **partner**-level editor resizes an uploaded image client-side and stores it as an inline data URL (capped at roughly 400 KB) alongside the rest of the partner's settings, so large or high-resolution source images will be rejected -- paste a hosted image URL instead if that limit is a problem. The **organization**-level logo picker is preview-only: the selected file is not currently persisted, so it reverts to blank the next time the page loads. Use a hosted image URL at the organization level if you need the logo to stick.
+  There is no dedicated file-storage upload for logos yet. Both editors resize an uploaded image client-side, encode it as PNG and store it inline (capped at roughly 400 KB), so large or high-resolution source images are scaled down or rejected. PDFs (quotes, invoices, reports) only draw an uploaded image; a hosted URL logo prints as the company name there.
 </Aside>
 
 ---
 
 ## Color Customization
 
-Two brand colors control the visual theme across all branded surfaces:
+Two brand colors apply to customer documents and the portal:
 
-| Color | Default | Usage |
+| Color | When none is set | Usage |
 |-------|---------|-------|
-| **Primary** | `#2563eb` (blue) | Dashboard header, portal header background, link colors, primary buttons |
-| **Secondary** | `#f97316` (orange) at partner level, `#14b8a6` (teal) at org level | Call-to-action buttons, accent borders, secondary highlights |
+| **Primary** | `#2563eb` (blue) | Accent on quotes, invoices, other customer documents and report PDFs, and the portal's document accent |
+| **Secondary** | the renderer's default | Heading color on quote PDFs, when dark enough to read on white, and accent on report PDFs. The portal does not use it |
 
 ### Setting Colors
 
-Colors are entered as hex values (3 or 6 digit). The editor provides both a color picker and a text input. Invalid hex values are silently replaced with the default.
+Colors are entered as hex values (3 or 6 digit). The editor provides both a color picker and a text input. On the organization tab an invalid hex value blocks the save, and a blank field inherits the partner's color.
 
 <Steps>
 
 1. Open **Settings > Organization > Branding** (or **Settings > Partner > Branding**).
 2. Use the color pickers or enter hex codes in the **Primary color** and **Secondary color** fields.
-3. Use the preview panel to see how the colors look before saving.
-4. Click **Save**.
+3. Click **Save**.
 
 </Steps>
 
 <Aside type="note">
-  There is no separate API for setting branding colors -- they are saved through the same settings update as the rest of the branding editor's fields.
+  The organization colors are saved through `PATCH /organizations/:id/portal-settings` (see [API Reference](#api-reference)); the partner colors with the rest of the partner settings.
 </Aside>
 
 ### Contrast Calculation
@@ -101,7 +101,7 @@ This ensures buttons and headers remain readable regardless of the chosen brand 
 
 ## Organization Branding
 
-Each organization has its own branding record in the `portal_branding` table, keyed by `orgId` (unique constraint). The visual fields below (logo, colors, custom domain) are read by the portal when rendering, and the logo and primary color override your partner Branding on quotes and invoices when set. The primary color is written from **Settings > Organization > Branding**; there is currently no admin-facing way to write the other visual fields. The portal feature toggles and support-contact fields (`enableTickets`, `enableAssetCheckout`, `enableSelfService`, `enablePasswordReset`, `supportEmail`, `supportPhone`, `welcomeMessage`, `footerText`) are set from **Settings > Organization > Portal**, and `customCss` from the **Custom CSS** field on **Settings > Organization > Branding**.
+Each organization has its own branding record in the `portal_branding` table, keyed by `orgId` (unique constraint). The logo and colors override your partner Branding when set, and are written from **Settings > Organization > Branding**. There is currently no admin-facing way to write the favicon, accent color or custom domain. The portal feature toggles and support-contact fields (`enableTickets`, `enableAssetCheckout`, `enableSelfService`, `enablePasswordReset`, `supportEmail`, `supportPhone`, `welcomeMessage`, `footerText`) are set from **Settings > Organization > Portal**, and `customCss` from the **Custom CSS** field on **Settings > Organization > Branding**.
 
 ### Branding Schema
 
@@ -124,28 +124,33 @@ Each organization has its own branding record in the `portal_branding` table, ke
 | `enableSelfService` | boolean | Enable self-service tools on the portal |
 | `enablePasswordReset` | boolean | Enable password reset on the portal |
 
-### Organization primary color
+### Organization logo and colors
 
-The **Primary color** on **Settings > Organization > Branding** is the accent color on that organization's quotes, invoices and other customer documents. It overrides your partner Branding color for that one customer.
+The fields on **Settings > Organization > Branding** override your partner Branding for that one customer:
+
+- **Logo** -- shown in that organization's portal and on its quotes, invoices, agreements and report PDFs.
+- **Primary color** -- the accent color on its quotes, invoices, other customer documents and report PDFs.
+- **Secondary color** -- the heading color on its quote PDFs, when dark enough to read, and the accent color on its report PDFs.
 
 <Steps>
 
 1. Open **Settings > Organization > Branding** for the customer.
-2. Enter a hex color (such as `#2563eb`) or use the color picker. Leave the field blank to use the partner's brand color, which the field shows as the inherited value.
+2. Upload a logo, and enter a hex color (such as `#2563eb`) or use the color picker. Leave a field empty to use the partner's value, which the tab shows as the inherited value. **Remove** clears an organization logo.
 3. Click **Save**. An invalid hex value blocks the save and nothing is written.
 
 </Steps>
+
+A logo uploaded on this tab in an earlier release was saved but never shown to customers. The tab offers it with a notice: **Save** starts using it, and **Remove** discards it. Colors saved in earlier releases are not carried over, because the tab used to save a default whether or not anyone chose a color.
 
 ### Org Branding Editor
 
 **Settings > Organization > Branding** provides a simplified appearance editor compared to the partner-level one. It includes:
 
-- **Logo upload** -- single logo (preview-only today; see the caution above)
+- **Logo upload** -- single logo
 - **Primary and secondary color** pickers
-- **Theme selector** -- `light`, `dark`, or `system` (respects OS preference)
-- **Portal subdomain** -- configures the `<subdomain>.breeze.app` URL field
 - **Custom CSS** -- advanced styling overrides
-- **Live preview** -- modal showing how the portal will look with current settings
+
+To see the result, open the organization's portal, or use the staff **Customer view**.
 
 <Aside>
   The org branding editor is available under **Settings > Organization** and requires the `organization:write` permission.
@@ -155,7 +160,7 @@ The **Primary color** on **Settings > Organization > Branding** is the accent co
 
 ## Partner Branding
 
-Partners (MSPs) set an appearance preference -- logo, colors, theme, and custom CSS -- intended as the default for organizations under their management from **Settings > Partner > Branding**.
+Partners (MSPs) set the logo, colors and custom CSS that apply by default to organizations under their management from **Settings > Partner > Branding**.
 
 ### Partner Branding Editor
 
@@ -167,7 +172,7 @@ The partner-level editor provides:
 - **Custom CSS** -- added to the end-user portal of every organization under the partner (see [Custom CSS](#custom-css))
 
 <Aside type="caution">
-  Apart from Custom CSS, neither the org-level nor partner-level cascade of these appearance preferences down to the organizations they manage is implemented today -- each level's settings are stored independently. The partner **logo** and **colors** are used on customer quotes, invoices, and agreement signing pages (see the caution near the top of this page); they do not change the end-user portal. A hosted logo URL must use `https://` to appear on customer documents.
+  The partner **logo** and **colors** apply to every organization that has not set its own, in the portal and on customer documents (see the caution near the top of this page). The partner **theme** is not used anywhere yet. A hosted logo URL must use `https://` to appear on customer documents.
 </Aside>
 
 ---
@@ -184,9 +189,8 @@ Custom portal domains (e.g., `support.acmecorp.com`) are not configurable yet --
 
 | Format | Notes |
 |--------|-------|
-| SVG | Preferred for logos -- scales to any size without pixelation |
 | PNG | Use transparent backgrounds for best results |
-| JPEG | Supported but not recommended -- no transparency support |
+| JPEG, WebP | Accepted by the upload control, which re-encodes them as PNG |
 
 ### Size Recommendations
 
@@ -232,11 +236,11 @@ body {
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/organizations/:id/portal-settings` | Get the portal feature toggles and support-contact fields for an organization |
-| PATCH | `/organizations/:id/portal-settings` | Update the portal feature toggles and support-contact fields |
+| GET | `/organizations/:id/portal-settings` | Get the portal feature toggles, support-contact fields, organization logo, colors and custom CSS, plus the inherited partner values |
+| PATCH | `/organizations/:id/portal-settings` | Update those fields |
 
 <Aside type="caution">
-  These are the only writable portal branding fields today, plus `customCss` and `primaryColor` (which the organization **Branding** tab saves through this endpoint). `primaryColor` must be a `#rgb` or `#rrggbb` hex value, and `null` inherits the partner color; `GET` also returns `partnerPrimaryColor`, the inherited value. The other visual fields (logo, secondary color, custom domain) are rejected by this endpoint -- see the caution near the top of this page.
+  These are the only writable portal branding fields today, plus `customCss`, `logoUrl`, `primaryColor` and `secondaryColor` (which the organization **Branding** tab saves through this endpoint). The colors must be `#rgb` or `#rrggbb` hex values. `logoUrl` must be a PNG data URI of at most 400 KB, or an `https://` URL. `null` inherits the partner's value; `GET` also returns `partnerLogoUrl`, `partnerPrimaryColor` and `partnerSecondaryColor`, the inherited values. The other visual fields (favicon, accent color, custom domain) are rejected by this endpoint.
 </Aside>
 
 ### Portal Branding
@@ -247,7 +251,7 @@ body {
 | GET | `/portal/branding` | Requires an authenticated portal session. Resolves branding for the logged-in user's own organization |
 
 <Aside>
-  Only `/portal/branding/:domain` is public (no authentication required), since it is called by the portal frontend before the user logs in. Unverified custom domains return 404. `/portal/branding` (no domain segment) requires a valid portal session and returns the caller's own organization's branding.
+  Only `/portal/branding/:domain` is public (no authentication required), since it is called by the portal frontend before the user logs in. Unverified custom domains return 404. `/portal/branding` (no domain segment) requires a valid portal session and returns the caller's own organization's branding. Both resolve `logoUrl`, `primaryColor` and `secondaryColor` from the organization's record, falling back to the partner's Branding. An organization with no portal branding record gets only its partner's logo, colors and custom CSS (no feature flags), or 404 when the partner has set none.
 </Aside>
 
 ### Request / Response Examples
@@ -328,13 +332,10 @@ GET /portal/branding/support.acmecorp.com
 ## Troubleshooting
 
 **Logo doesn't show up on quotes or invoices.**
-Quotes and invoices use the logo saved under **Settings > Partner > Branding**. Check that a logo is saved there: an uploaded image is stored inline, and a pasted URL must start with `https://` (an `http://` URL is not used on customer documents). The organization-level Branding logo does not appear on documents.
+Quotes and invoices use the organization's logo if it has one, otherwise the logo saved under **Settings > Partner > Branding**. Check that a logo is saved at one of those levels: an uploaded image is stored inline, and a pasted URL must start with `https://` (an `http://` URL is not used on customer documents). PDFs draw only uploaded images, so a pasted URL shows the company name instead.
 
 **Logo doesn't show up on the customer portal.**
-This is expected today -- see the caution near the top of this page. Neither the organization nor the partner branding editor currently writes the logo that the portal renders.
-
-**Live preview does not match saved branding.**
-The live preview reflects unsaved changes in the editor. Confirm the save operation completed (check for the "Branding settings saved" confirmation). Note that a saved appearance preference does not currently change what end users see on the portal itself -- see the caution near the top of this page.
+The portal uses the same logo as documents: the organization's, otherwise the partner's. A logo uploaded on the organization tab in an earlier release has to be saved once more to take effect (see [Organization logo and colors](#organization-logo-and-colors)).
 
 **"Failed to fetch branding" error in the editor.**
 This typically indicates an authentication issue. The editor calls `GET /organizations/:id/portal-settings` (organization level) with the user's session token. If the token has expired, the editor redirects to the login page. Ensure the user has the `organization:write` permission.

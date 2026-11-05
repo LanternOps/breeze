@@ -295,6 +295,10 @@ func (b *Broker) spawnBackupHelper(binaryPath string) (session *Session, err err
 	}
 
 	log.Info("spawning backup helper", "path", path, "socket", b.socketPath)
+	// breeze-backup reaches the backup server through the scope:"breeze"
+	// permit, so it stays in the agent cgroup; it places its own children
+	// with procspawn.EnableInAgentCgroup.
+	//procspawn:exempt Breeze backup binary needs the agent's management-plane permit
 	cmd := exec.Command(path, "--socket", b.socketPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

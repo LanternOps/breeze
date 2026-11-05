@@ -4,13 +4,14 @@ package tools
 
 import (
 	"fmt"
-	"os/exec"
 	"strings"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 func listServicesOS(search, statusFilter string) ([]ServiceInfo, error) {
 	// Use launchctl to list services
-	cmd := exec.Command("launchctl", "list")
+	cmd := procspawn.Command("launchctl", "list")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list services: %w", err)
@@ -72,11 +73,11 @@ func listServicesOS(search, statusFilter string) ([]ServiceInfo, error) {
 
 func getServiceOS(name string) (*ServiceInfo, error) {
 	// Get service info using launchctl
-	cmd := exec.Command("launchctl", "print", "system/"+name)
+	cmd := procspawn.Command("launchctl", "print", "system/"+name)
 	output, err := cmd.Output()
 	if err != nil {
 		// Try user domain
-		cmd = exec.Command("launchctl", "print", "gui/"+name)
+		cmd = procspawn.Command("launchctl", "print", "gui/"+name)
 		output, err = cmd.Output()
 		if err != nil {
 			return nil, fmt.Errorf("service not found: %w", err)
@@ -101,10 +102,10 @@ func getServiceOS(name string) (*ServiceInfo, error) {
 
 func startServiceOS(name string) error {
 	// Try kickstart first (for launchd services)
-	cmd := exec.Command("launchctl", "kickstart", "-k", "system/"+name)
+	cmd := procspawn.Command("launchctl", "kickstart", "-k", "system/"+name)
 	if err := cmd.Run(); err != nil {
 		// Fall back to load
-		cmd = exec.Command("launchctl", "load", "-w", fmt.Sprintf("/Library/LaunchDaemons/%s.plist", name))
+		cmd = procspawn.Command("launchctl", "load", "-w", fmt.Sprintf("/Library/LaunchDaemons/%s.plist", name))
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to start service: %w", err)
 		}
@@ -113,10 +114,10 @@ func startServiceOS(name string) error {
 }
 
 func stopServiceOS(name string) error {
-	cmd := exec.Command("launchctl", "kill", "SIGTERM", "system/"+name)
+	cmd := procspawn.Command("launchctl", "kill", "SIGTERM", "system/"+name)
 	if err := cmd.Run(); err != nil {
 		// Fall back to unload
-		cmd = exec.Command("launchctl", "unload", fmt.Sprintf("/Library/LaunchDaemons/%s.plist", name))
+		cmd = procspawn.Command("launchctl", "unload", fmt.Sprintf("/Library/LaunchDaemons/%s.plist", name))
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to stop service: %w", err)
 		}

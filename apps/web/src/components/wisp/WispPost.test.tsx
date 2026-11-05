@@ -69,6 +69,27 @@ describe('WispPost', () => {
     expect(screen.getByTestId('wisp-post-open')).toBeTruthy();
   });
 
+  it('renders a check_in post with the Check-in eyebrow and no Open link', () => {
+    render(
+      <WispPost
+        post={post({
+          kind: 'check_in',
+          title: 'Check-in due: Verify no msiexec processes remain',
+          body: 'Verify no msiexec processes remain on FS-01.',
+          link: '/ai/wisp/thread/th-1#checkin=ci-1',
+          concernId: null,
+        })}
+      />,
+    );
+    const root = screen.getByTestId('wisp-post');
+    expect(root.getAttribute('data-kind')).toBe('check_in');
+    expect(screen.getByText('Check-in')).toBeTruthy();
+    expect(screen.getByTestId('wisp-post-title').textContent).toBe('Check-in due: Verify no msiexec processes remain');
+    expect(screen.getByTestId('wisp-post-body').textContent).toBe('Verify no msiexec processes remain on FS-01.');
+    // The link points at this same thread; an "Open" link would be a no-op.
+    expect(screen.queryByTestId('wisp-post-open')).toBeNull();
+  });
+
   it.each(['https://evil.example/x', '//evil', 'javascript:alert(1)', null])(
     'renders no link for unsafe link %s',
     (link) => {

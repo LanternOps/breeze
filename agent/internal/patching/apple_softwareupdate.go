@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // AppleSoftwareUpdateProvider integrates with macOS softwareupdate.
@@ -30,7 +32,7 @@ func (p *AppleSoftwareUpdateProvider) Name() string {
 }
 
 func (p *AppleSoftwareUpdateProvider) Scan() ([]AvailablePatch, error) {
-	cmd := exec.Command("softwareupdate", "-l")
+	cmd := procspawn.Command("softwareupdate", "-l")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 2 {
@@ -61,7 +63,7 @@ func (p *AppleSoftwareUpdateProvider) Install(patchID string) (InstallResult, er
 		}
 	}
 
-	cmd := exec.Command("softwareupdate", "--agree-to-license", "-i", resolvedID)
+	cmd := procspawn.Command("softwareupdate", "--agree-to-license", "-i", resolvedID)
 	output, err := cmd.CombinedOutput()
 	outStr := strings.TrimSpace(string(output))
 	if err != nil {
@@ -167,7 +169,7 @@ func (p *AppleSoftwareUpdateProvider) Uninstall(patchID string) error {
 }
 
 func (p *AppleSoftwareUpdateProvider) GetInstalled() ([]InstalledPatch, error) {
-	cmd := exec.Command("system_profiler", "SPInstallHistoryDataType", "-json")
+	cmd := procspawn.Command("system_profiler", "SPInstallHistoryDataType", "-json")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("system_profiler install history failed: %w", err)

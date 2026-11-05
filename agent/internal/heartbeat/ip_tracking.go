@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 const ipStateFileName = "ip_state.json"
@@ -229,7 +229,7 @@ func leaseFileContains(path, ifaceName, ipAddress string) bool {
 func commandOutput(timeout time.Duration, name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	return procspawn.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
 func macOSDHCPLeaseEvidence(ifaceName, ipAddress string) bool {

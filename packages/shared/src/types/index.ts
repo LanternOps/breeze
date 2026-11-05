@@ -1041,4 +1041,5 @@ export * from './wispMemory';
 export * from './wispConcerns';
 export * from './wispActivity';
 export * from './wispTimeline';
+export * from './wispCheckIns';
 export * from './wisp';

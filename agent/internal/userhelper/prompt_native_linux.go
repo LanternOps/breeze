@@ -8,13 +8,15 @@ import (
 	"errors"
 	"os/exec"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // showNativePromptOS draws a native prompt with zenity. What it shows and
 // how its exit code maps back is decided in prompt_native.go.
 func showNativePromptOS(ctx context.Context, m nativePromptModel, presented func()) nativeOutcome {
 	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "zenity", nativePromptZenityArgs(m, time.Now())...)
+	cmd := procspawn.CommandContext(ctx, "zenity", nativePromptZenityArgs(m, time.Now())...)
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		return nativeOutcome{Err: err}

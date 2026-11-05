@@ -111,6 +111,7 @@ async function loadQuotePartnerAndBrand(quote: QuoteRow) {
     db.select({
       logoUrl: portalBranding.logoUrl,
       primaryColor: portalBranding.primaryColor,
+      secondaryColor: portalBranding.secondaryColor,
       supportEmail: portalBranding.supportEmail,
       supportPhone: portalBranding.supportPhone,
     }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1)));

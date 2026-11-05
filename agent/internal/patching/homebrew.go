@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/breeze-rmm/agent/internal/maintenance"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 const brewCaskPrefix = "cask:"
@@ -202,12 +203,12 @@ func (h *HomebrewProvider) brewCommand(args ...string) (*exec.Cmd, error) {
 		}
 
 		sudoArgs := append([]string{"-n", "-H", "-u", account.Username, brewPath}, args...)
-		cmd := exec.Command("/usr/bin/sudo", sudoArgs...)
+		cmd := procspawn.Command("/usr/bin/sudo", sudoArgs...)
 		cmd.Env = brewEnv(brewPath, account.HomeDir)
 		return cmd, nil
 	}
 
-	cmd := exec.Command(brewPath, args...)
+	cmd := procspawn.Command(brewPath, args...)
 	cmd.Env = brewEnv(brewPath, "")
 	return cmd, nil
 }
@@ -385,7 +386,7 @@ func RunBrewCleanupBounded(ctx context.Context, dryRun bool) (string, error) {
 		return "", fmt.Errorf("brew cleanup: could not build command: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, built.Path, built.Args[1:]...)
+	cmd := procspawn.CommandContext(ctx, built.Path, built.Args[1:]...)
 	cmd.Env = built.Env
 	cmd.Dir = built.Dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

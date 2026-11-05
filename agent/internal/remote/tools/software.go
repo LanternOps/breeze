@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 type uninstallAttempt struct {
@@ -336,7 +338,7 @@ var (
 	runUninstallCommand = func(attempt uninstallAttempt) ([]byte, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		return exec.CommandContext(ctx, attempt.command, attempt.args...).CombinedOutput()
+		return procspawn.CommandContext(ctx, attempt.command, attempt.args...).CombinedOutput()
 	}
 	uninstallVerifyStillPresent = softwareStillInstalled
 )

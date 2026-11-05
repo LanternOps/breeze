@@ -70,7 +70,15 @@ import type { FlowToolDescriptor } from './flows/flowTools';
 import { flowsEnabled } from '../config/env';
 import { buildFlowSdkTools, chatFlowToolRunStarter, flowMcpToolNames } from './flows/sdkFlowTools';
 import { sessionMayStartFlows } from './flows/flowToolGate';
-import { isSdkBuiltinToolUse, resolveToolSearchPolicy } from './aiToolSearchPolicy';
+import {
+  isSdkBuiltinToolUse,
+  newRoundTripTally,
+  noteAssistantRoundTrip,
+  resolveToolSearchPolicy,
+  sdkMaxTurns,
+  workTurns,
+  type RoundTripTally,
+} from './aiToolSearchPolicy';
 import { noteStreamedToolUse, resetToolUseCorrelationMarkers, takeDroppedToolUse } from './aiToolUseCorrelation';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
@@ -542,6 +550,21 @@ export interface ActiveSession {
    * after every flush (normal `result` or the abandoned-turn fallback below).
    */
   pendingTurnToolExecutionCount: number;
+  /**
+   * #10400: this turn's model round-trips, split into work and ToolSearch-only
+   * retrieval, so settlement charges the session's turn budget for work only.
+   * Shares pendingTurnUsage's reset-at-settlement lifecycle. Optional so
+   * fixtures that build ActiveSession literals compile unchanged.
+   */
+  pendingTurnRoundTrips?: RoundTripTally;
+  /**
+   * #10400: the work turns this query may spend, set only when it can search.
+   * Its SDK `maxTurns` carries search headroom, so the SDK no longer stops real
+   * work at the session's limit and the background processor has to.
+   */
+  workTurnLimit?: number;
+  /** Set when workTurnLimit stopped the turn; cleared at settlement. */
+  workTurnLimitStopped?: boolean;
   /** Synchronously reserved focal auto-link slots; shares the tool-count reset lifecycle. */
   pendingTurnAutoLinkCount: number;
   /**
@@ -799,6 +822,13 @@ async function loadApprovalMode(orgId: string): Promise<AiApprovalMode> {
   }
   return 'per_step';
 }
+
+/** Coded so a client can act on it: the next send would be refused too (preflight). */
+const TURN_LIMIT_ERROR = {
+  type: 'error',
+  message: 'Maximum conversation turns reached.',
+  code: 'turn_limit_reached',
+} as const;
 
 export class StreamingSessionManager {
   private sessions = new Map<string, ActiveSession>();
@@ -1175,6 +1205,7 @@ export class StreamingSessionManager {
       toolUseIdQueue: [],
       pendingTurnUsage: emptyPendingTurnUsage(),
       pendingTurnToolExecutionCount: 0,
+      pendingTurnRoundTrips: newRoundTripTally(),
       pendingTurnAutoLinkCount: 0,
       toolUseNames: new Map(),
       resultedToolUseIds: new Set(),
@@ -1242,6 +1273,9 @@ export class StreamingSessionManager {
     session.mcpServer = mcpServer;
     session.mcpPrefix = `mcp__${mcpServerName}__`;
 
+    // The session's remaining WORK turns (#10400: ToolSearch round-trips are
+    // not charged to turn_count). The SDK's own ceiling counts every
+    // round-trip, so a searching query gets headroom on top (sdkMaxTurns).
     const maxTurns = Math.max(1, dbSession.maxTurns - dbSession.turnCount);
 
     // Inject approval mode instructions into system prompt
@@ -1341,6 +1375,7 @@ export class StreamingSessionManager {
           childEnv,
           remainingTurns: maxTurns,
         });
+        session.workTurnLimit = toolSearchPolicy.enabled ? maxTurns : undefined;
         const sdkQuery = query({
           prompt: inputController.getInputStream(),
           options: {
@@ -1349,7 +1384,7 @@ export class StreamingSessionManager {
             // fallbackModel (the refusal fallback) and thinking/effort: all
             // from the resolved model, nothing derived here.
             ...sdkModelOptions(resolved),
-            maxTurns,
+            maxTurns: sdkMaxTurns(maxTurns, toolSearchPolicy.enabled),
             maxBudgetUsd,
             tools: toolSearchPolicy.tools,
             allowedTools: allowedTools ?? [...BREEZE_MCP_TOOL_NAMES, ...tenantMcpToolNames(tenantDescriptors), ...flowMcpToolNames(flowDescriptors)],
@@ -1624,6 +1659,7 @@ export class StreamingSessionManager {
     // ("...last night.Here's a summary"). Reset at message_start, alongside
     // `messageStarted` above.
     let sawTextBlockThisMessage = false;
+    let workTurnLimitReported = false;
 
     try {
       for await (const message of session.query) {
@@ -1786,6 +1822,28 @@ export class StreamingSessionManager {
               cache_read_input_tokens?: number | null;
               cache_creation_input_tokens?: number | null;
             } | undefined;
+            // #10400: which round-trips did work, for the turn budget.
+            const roundTrips = session.pendingTurnRoundTrips ??= newRoundTripTally();
+            noteAssistantRoundTrip(roundTrips, message.message);
+            // Mirrors the SDK's own ceiling: the limit's last round-trip runs,
+            // and the next real call stops the turn. That call may already be
+            // dispatching (through the normal tool gates) when the interrupt
+            // lands, and its round-trip is charged, so a turn can end one over.
+            if (
+              session.workTurnLimit !== undefined
+              && !session.workTurnLimitStopped
+              && roundTrips.workCalls.size > session.workTurnLimit
+            ) {
+              session.workTurnLimitStopped = true;
+              // As in interrupt(): an approval wait would otherwise block it
+              // (#3089). Settling only acts on a wait already in flight; the
+              // over-limit call's preToolUse may be past its stop check and not
+              // yet waiting, so spend the cycle's wait budget too: its wait then
+              // returns at once (the hook refuses any later call outright).
+              settleApprovalWaits(session);
+              session.approvalWaitDeadline = Date.now();
+              void Promise.resolve().then(() => session.query.interrupt()).catch(() => undefined);
+            }
             if (apiUsage) {
               session.pendingTurnUsage.inputTokens += apiUsage.input_tokens ?? 0;
               session.pendingTurnUsage.outputTokens += apiUsage.output_tokens ?? 0;
@@ -1988,7 +2046,10 @@ export class StreamingSessionManager {
               : null;
             let isErrorSuccessMessage: string | null = null;
 
-            if (resultMsg.subtype !== 'success') {
+            if (session.workTurnLimitStopped) {
+              // Whatever the interrupted query reported, the reason is the limit.
+              session.eventBus.publish(TURN_LIMIT_ERROR);
+            } else if (resultMsg.subtype !== 'success') {
               const errors = 'errors' in resultMsg ? resultMsg.errors : [];
               const errorMsg = errors.length > 0 ? errors[0] : `AI query ended: ${resultMsg.subtype}`;
 
@@ -2001,7 +2062,7 @@ export class StreamingSessionManager {
                 // next send would be refused too (preflight). Wisp rolls to a
                 // fresh session on this code; the user re-sends by hand (work
                 // may have run partway, so never automatically).
-                session.eventBus.publish({ type: 'error', message: 'Maximum conversation turns reached.', code: 'turn_limit_reached' });
+                session.eventBus.publish(TURN_LIMIT_ERROR);
               } else {
                 session.eventBus.publish({
                   type: 'error',
@@ -2072,7 +2133,8 @@ export class StreamingSessionManager {
       const topologyTurn = Boolean(session.topologyInvestigation);
       await this.abortTopologyTurn(session);
       const gatewayNote = takeGatewayFailureNote(session.breezeSessionId);
-      session.eventBus.publish({
+      workTurnLimitReported = session.workTurnLimitStopped === true;
+      session.eventBus.publish(workTurnLimitReported ? TURN_LIMIT_ERROR : {
         type: 'error',
         message: topologyTurn ? 'The topology explanation could not be completed.' : gatewayNote ?? sanitizeErrorForClient(err),
       });
@@ -2081,6 +2143,11 @@ export class StreamingSessionManager {
       // W05: a turn that ended without a `result` mid-thought (teardown,
       // crash) still closes the indicator.
       this.stopThinking(session);
+      // A work-limit stop whose query ended without a `result` still says why.
+      if (session.workTurnLimitStopped && !workTurnLimitReported) {
+        session.eventBus.publish(TURN_LIMIT_ERROR);
+        session.eventBus.publish({ type: 'done' });
+      }
       // A turn that ended without a `result` (teardown, crash) discards any
       // unvalidated topology output and releases its lease.
       await this.abortTopologyTurn(session);
@@ -2146,6 +2213,10 @@ export class StreamingSessionManager {
   ): Promise<{ inputTokens: number; outputTokens: number; costCents: number; outcome: TurnOutcome }> {
     const toolExecutionCount = session.pendingTurnToolExecutionCount;
     session.pendingTurnToolExecutionCount = 0;
+    const roundTrips = session.pendingTurnRoundTrips ?? newRoundTripTally();
+    session.pendingTurnRoundTrips = newRoundTripTally();
+    const stoppedAtWorkLimit = session.workTurnLimitStopped === true;
+    session.workTurnLimitStopped = false;
     session.pendingTurnAutoLinkCount = 0;
     session.pendingTurnUsage = emptyPendingTurnUsage();
     const observation = session.refusalObservation;
@@ -2220,7 +2291,13 @@ export class StreamingSessionManager {
         // reused query keeps the system prompt it was created with).
         prompt: session.promptProvenance,
         toolExecutionCount,
-        turnCount: result ? (result.num_turns ?? 0) : 1,
+        // #10400: work round-trips only — a ToolSearch-only round-trip loads
+        // tool definitions and is not charged to the session's turn budget.
+        // A work-limit stop with no `result` still spent its real round-trips:
+        // charged as 1, the next send would pass preflight and run again.
+        turnCount: result
+          ? workTurns(result.num_turns ?? 0, roundTrips)
+          : stoppedAtWorkLimit ? roundTrips.workCalls.size : 1,
         sdkUsage: {
           sessionId: session.breezeSessionId,
           nextSnapshot: turn.nextSnapshot,
