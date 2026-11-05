@@ -665,6 +665,8 @@ test('planBudget is a no-op under budget', async () => {
 test('the seed enforces the budget last, on main only, and a failure shows', async () => {
   const { BUDGET_BYTES } = await loadPrune();
   assert.equal(BUDGET_BYTES, 8.5 * GB, 'docs/agents/testing.md documents 8.5 GB (1.5 GB under the limit)');
+  const doc = read(new URL('../../docs/agents/testing.md', import.meta.url));
+  assert.match(doc, new RegExp(`total under \\*\\*${BUDGET_BYTES / GB} GB\\*\\*`), 'testing.md must state the budget the script enforces');
   const jobs = jobBlocks(seedText());
   const budget = jobs.find((j) => j.name === 'enforce-cache-budget');
   assert.ok(budget, 'missing enforce-cache-budget job');
