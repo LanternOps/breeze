@@ -3118,6 +3118,41 @@ describe('validateConfig', () => {
     });
   });
 
+  // Vendor updates (#11065): the lab override opens closed firmware gates, so it
+  // never reaches production. A typo in the kill switch would silently not stop a lane.
+  it('refuses BREEZE_OEM_UPDATES_LAB_DEVICE_IDS under NODE_ENV=production', () => {
+    withEnv({ ...workspaceProdEnv, BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: '11111111-1111-4111-8111-111111111111' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_LAB_DEVICE_IDS must not be set in production/);
+    });
+  });
+
+  it('allows BREEZE_OEM_UPDATES_LAB_DEVICE_IDS outside production', () => {
+    withEnv({ ...validEnv, BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: '11111111-1111-4111-8111-111111111111' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it('rejects a non-boolean BREEZE_OEM_UPDATES_ENABLED', () => {
+    withEnv({ ...validEnv, BREEZE_OEM_UPDATES_ENABLED: 'maybe' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_ENABLED must be a boolean/);
+    });
+  });
+
+  it('rejects a partner allowlist that parses to nothing: empty means every partner', () => {
+    withEnv({ ...validEnv, BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: ' , ,' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST/);
+    });
+  });
+
+  it('rejects an unknown lane in BREEZE_OEM_UPDATES_DISABLED_LANES', () => {
+    withEnv({ ...validEnv, BREEZE_OEM_UPDATES_DISABLED_LANES: 'dell,dels' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_OEM_UPDATES_DISABLED_LANES.*dels/);
+    });
+    withEnv({ ...validEnv, BREEZE_OEM_UPDATES_DISABLED_LANES: 'dell, HP' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
   // computePriceMultiplier() falls back to 1 for anything unparseable, silently.
   // Without a boot-time refusal a typo runs at 1x forever and only ever surfaces
   // as a margin discrepancy nobody traces back to an env var.

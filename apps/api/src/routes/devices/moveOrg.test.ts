@@ -803,6 +803,7 @@ describe('POST /devices/:id/move-org', () => {
         'peripheral_policy_delivery_events',
         'device_restore_point_attempts',
         'security_agent_device_status',
+        'device_oem_update_status',
         'device_wake_attempts',
         'device_wake_status',
       ]);

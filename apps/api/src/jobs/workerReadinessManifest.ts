@@ -183,6 +183,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('patchJobWorker', ['patchJobWorker', 'patchJobDeviceWorker']),
   consumers('patchSchedulerWorker'),
   consumers('maintenanceRebootWorker'),
+  consumers('oemUpdatesWorker'),
   consumers('backupWorker'),
   consumers('backupSnapshotFileIndexWorker'),
   consumers('backupSnapshotAttestationWorker'),
