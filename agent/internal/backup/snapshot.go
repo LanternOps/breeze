@@ -76,26 +76,6 @@ func checksumMatches(path, want string) (match bool, err error) {
 	return got == want, nil
 }
 
-// storedEntryMatches reports whether a journaled entry's object, stored under
-// this snapshot's own prefix, still holds exactly the recorded bytes. Only a
-// literal entry (never a reference into another snapshot) with a recorded
-// digest can match, and only through a provider that can read the stored
-// object back. err is set when the object could not be read back for a
-// reason other than its absence (a missing object is an answer: no match).
-func storedEntryMatches(ctx context.Context, digester providers.StoredObjectDigester, canVerify bool, entry SnapshotFile, snapshotID string) (match bool, err error) {
-	if !canVerify || entry.Checksum == "" || isReferenceEntry(entry, snapshotID) {
-		return false, nil
-	}
-	stored, err := digester.StoredObjectDigest(ctx, entry.BackupPath)
-	if errors.Is(err, providers.ErrObjectNotFound) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return stored.SHA256 == entry.Checksum && stored.Size == entry.Size, nil
-}
-
 const (
 	snapshotRootDir     = "snapshots"
 	snapshotFilesDir    = "files"
@@ -776,7 +756,9 @@ func withLayout(manifest *layout.Manifest) createSnapshotOption {
 //     reports done work reflects the whole resume instead of a slow
 //     trickle of skip-iterations. Building the set re-reads each match
 //     (see the resume pass); emissions during it report verified progress
-//     only.
+//     only. A source hash or stored-object check an earlier pass recorded
+//     as passing, and still fresh, is not repeated, and that entry still
+//     counts as verified (see journal_verification.go).
 //   - Every freshly uploaded file is appended to the journal as it lands.
 //   - On a full success (manifest uploaded), the journal is completed
 //     (closed + removed) — the checkpoint is no longer needed. On every
@@ -1098,9 +1080,10 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// deciding file-by-file inside the loop below) so filesDone/bytesDone
 	// can be pre-seeded with the resumed totals and reported in one jump
 	// before any real upload work happens. Building it re-reads every
-	// journaled file (and, for a continued snapshot, every stored object):
-	// on a large resume that is hours of work, reported as it goes through
-	// the verified counters and stoppable between files (#11014).
+	// journaled file (and, for a continued snapshot, every stored object)
+	// that no earlier pass recorded as checked: on a large resume that is
+	// hours of work, reported as it goes through the verified counters and
+	// stoppable between files (#11014).
 	resumedFiles := make(map[string]SnapshotFile)
 	// resumeChecked holds every file the resume pass examined, so a later
 	// dedupe hash of the same file is not counted as verified a second time.
@@ -1111,116 +1094,48 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// objects already exist in the store, and a not-yet-uploaded twin that
 	// walks earlier must not land on them.
 	keyClaims := objectKeyClaims{}
+	// verifier is nil without a journal.
+	var verifier *resumeVerifier
 	if journal != nil {
 		var resumedBytes int64
-		tainted := journal.foldCollidingKeys()
-		// A snapshot continued from another job also needs the stored
-		// object to still hold the recorded bytes (see ContinueRun).
-		verifyStored := journal.VerifyStoredEntries()
-		digester, canVerifyStored := storedObjectDigesterOf(provider)
-		if verifyStored && canVerifyStored {
-			// Each check reads the stored object back; let a batching
-			// provider authorize those reads in batches.
-			var keys []string
-			for _, file := range files {
-				if entry, ok := journal.Lookup(journalLookupKey(file), file.size, file.modTime); ok && entry.BackupPath != "" {
-					keys = append(keys, entry.BackupPath)
-				}
-			}
-			providers.PrepareDownloads(unwrapProvider(provider), keys)
-		}
-		// resumable decides whether a journaled entry can be reused as is.
-		// checked is false when a read the decision needed failed: the entry
-		// is not reused, and the check did not complete.
-		resumable := func(file backupFile, entry SnapshotFile) (reuse, checked bool) {
-			// Size and modification time can match a file whose content
-			// changed. Reuse the entry only when the source still hashes to
-			// the recorded digest (the digest of the uploaded source bytes —
-			// the same quantity sha256File computes). This costs one full
-			// read of every resumable file, still far cheaper than uploading
-			// it again; a mismatch or read error uploads the file afresh and
-			// the recorded digest is never replaced by anything but a new
-			// upload's.
-			if entry.Checksum == "" {
-				return false, true
-			}
-			match, err := checksumMatches(file.sourcePath, entry.Checksum)
-			if err != nil {
-				log.Warn("could not read journaled file to check it; uploading it again",
-					"path", file.sourcePath,
-					"snapshotId", snapshot.ID,
-					"error", err.Error(),
-				)
-				return false, false
-			}
-			if !match {
-				log.Info("journaled file changed since it was uploaded; uploading it again",
-					"path", file.sourcePath,
-					"snapshotId", snapshot.ID,
-				)
-				return false, true
-			}
-			if tainted[entry.BackupPath] {
-				// A pre-#5582 journal stored this file and a case twin at
-				// keys one object answers to; re-upload rather than resume a
-				// possibly-overwritten object.
-				log.Warn("not resuming journaled file whose object key collides with a case twin; re-uploading",
-					"path", file.sourcePath,
-					"backupPath", entry.BackupPath,
-					"snapshotId", snapshot.ID,
-				)
-				return false, true
-			}
-			if verifyStored {
-				match, err := storedEntryMatches(ctx, digester, canVerifyStored, entry, snapshot.ID)
-				if err != nil {
-					if ctx.Err() == nil {
-						log.Warn("could not read back a journaled object from an earlier job; uploading it again",
-							"path", file.sourcePath,
-							"backupPath", entry.BackupPath,
-							"snapshotId", snapshot.ID,
-							"error", err.Error(),
-						)
-					}
-					return false, false
-				}
-				if !match {
-					log.Info("journaled object from an earlier job does not match its record; uploading it again",
-						"path", file.sourcePath,
-						"backupPath", entry.BackupPath,
-						"snapshotId", snapshot.ID,
-					)
-					return false, true
-				}
-			}
-			return true, true
-		}
+		// Every check an earlier job's pass already recorded is skipped, and
+		// every new result is recorded as it lands, so a pass longer than a
+		// job's session still ends: the next job carries on from where this
+		// one stopped (#11043, see journal_verification.go).
+		verifier = newResumeVerifier(journal, provider, snapshot.ID)
+		verifier.prepareReadBacks(provider, files)
 		for _, file := range files {
-			entry, ok := journal.Lookup(journalLookupKey(file), file.size, file.modTime)
+			key := journalLookupKey(file)
+			entry, ok := journal.Lookup(key, file.size, file.modTime)
 			if !ok {
+				// New, or changed since its upload. If changed, the upload
+				// ahead overwrites the object its record vouches for.
+				journal.clearVerification(key)
 				continue
 			}
-			// This pass reads every journaled source file back (and, for a
+			// This pass can read every journaled source file back (and, for a
 			// continued snapshot, every stored object), which for a multi-TB
 			// resume takes hours before the first upload: honour a stop
 			// between files, like the upload loop does. Nothing has been
-			// uploaded by this run yet and the journal is kept, so a stop
-			// here leaves the resume state exactly as it was.
+			// uploaded by this run yet and the journal is kept, along with the
+			// records this pass wrote, so the next job carries on from here.
 			if ctx.Err() != nil {
 				return nil, errBackupStopped
 			}
-			reuse, checked := resumable(file, entry)
-			resumeChecked[journalLookupKey(file)] = struct{}{}
+			reuse, checked := verifier.reusable(ctx, file, entry)
+			resumeChecked[key] = struct{}{}
 			// A completed check counts whether or not it matched: the read is
-			// the work (#11014). A failed read does not, so a broken read path
-			// cannot pass for steady progress while everything is re-uploaded.
+			// the work (#11014), and an entry an earlier pass already proved
+			// counts too, or a resume made of those would report no progress.
+			// A failed read does not, so a broken read path cannot pass for
+			// steady progress while everything is re-uploaded.
 			if checked {
 				markVerified(file.size)
 			}
 			if !reuse {
 				continue
 			}
-			resumedFiles[journalLookupKey(file)] = entry
+			resumedFiles[key] = entry
 			resumedBytes += entry.Size
 			keyClaims.claim(entry.BackupPath)
 		}
@@ -1707,6 +1622,11 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 
 	if err := ctx.Err(); err != nil {
 		return abortStopped()
+	}
+
+	// Nothing has been published yet, and nothing is if a reused object is gone.
+	if err := verifier.confirmStoredBeforePublish(provider, snapshot); err != nil {
+		return nil, err
 	}
 
 	// A resumed snapshot id may already hold a layout or system-state
@@ -2319,7 +2239,7 @@ func listSnapshotPrefixItems(provider providers.BackupProvider, snapshotID strin
 // ".gz" key, and only LocalProvider gzips on it (and gunzips on Download).
 // That layout is a cross-module contract — the BMR recovery client, API
 // presigned downloads, older agents and the stored-digest checks
-// (storedEntryMatches) all read cloud objects as raw bytes — so never add
+// (readBackStoredObject) all read cloud objects as raw bytes — so never add
 // or strip ".gz", and never start compressing cloud writes, without a
 // versioned per-entry encoding field shipped to every reader first (#7621).
 //
