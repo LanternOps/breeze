@@ -1039,6 +1039,10 @@
       "byRing": "set by the linked update ring",
       "manualOnly": "manual approvals only (no update ring linked)"
     },
+    "containment": {
+      "extraDestinations": "Extra destinations while isolated",
+      "invalid": "This policy’s containment settings are not valid, so isolation uses the fixed defaults with no extra destinations."
+    },
     "chainResolutionRule": "Level decides first: Device beats Device Group, then Site, Organization, and Partner. Priority (lower number wins) only breaks ties between policies at the same level. Struck-through features were overridden by a closer policy.",
     "featureOverriddenBy": "Overridden by {{policy}}"
   },

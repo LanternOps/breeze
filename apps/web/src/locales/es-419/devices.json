@@ -1039,6 +1039,10 @@
       "byRing": "definida por el anillo de actualización vinculado",
       "manualOnly": "solo aprobaciones manuales (sin anillo de actualización vinculado)"
     },
+    "containment": {
+      "extraDestinations": "Destinos adicionales durante el aislamiento",
+      "invalid": "La configuración de contención de esta política no es válida, por lo que el aislamiento usa los valores predeterminados fijos, sin destinos adicionales."
+    },
     "chainResolutionRule": "Primero decide el nivel: Dispositivo gana a Grupo de dispositivos, luego Sitio, Organización y Socio. La prioridad (gana el número más bajo) solo desempata entre políticas del mismo nivel. Las funciones tachadas fueron anuladas por una política más cercana.",
     "featureOverriddenBy": "Anulada por {{policy}}"
   },

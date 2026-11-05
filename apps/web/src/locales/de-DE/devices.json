@@ -1039,6 +1039,10 @@
       "byRing": "durch den verknüpften Update-Ring festgelegt",
       "manualOnly": "nur manuelle Genehmigungen (kein Update-Ring verknüpft)"
     },
+    "containment": {
+      "extraDestinations": "Zusätzliche Ziele während der Isolierung",
+      "invalid": "Die Eindämmungseinstellungen dieser Richtlinie sind ungültig. Bei der Isolierung gelten daher die festen Standardwerte ohne zusätzliche Ziele."
+    },
     "chainResolutionRule": "Zuerst entscheidet die Ebene: Gerät vor Gerätegruppe, dann Standort, Organisation und Partner. Die Priorität (niedrigere Zahl gewinnt) entscheidet nur zwischen Richtlinien auf derselben Ebene. Durchgestrichene Funktionen wurden von einer näheren Richtlinie überschrieben.",
     "featureOverriddenBy": "Überschrieben von {{policy}}"
   },

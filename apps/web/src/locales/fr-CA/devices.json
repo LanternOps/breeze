@@ -1039,6 +1039,10 @@
       "byRing": "définie par l'anneau de mise à jour lié",
       "manualOnly": "approbations manuelles seulement (aucun anneau de mise à jour lié)"
     },
+    "containment": {
+      "extraDestinations": "Destinations supplémentaires pendant l’isolement",
+      "invalid": "Les paramètres de confinement de cette politique ne sont pas valides. L’isolement utilise donc les valeurs par défaut fixes, sans destination supplémentaire."
+    },
     "chainResolutionRule": "Le niveau décide d’abord : Appareil l’emporte sur Groupe d’appareils, puis Site, Organisation et Partenaire. La priorité (le plus petit nombre l’emporte) ne départage que les politiques d’un même niveau. Les fonctionnalités barrées ont été remplacées par une politique plus proche.",
     "featureOverriddenBy": "Remplacée par {{policy}}"
   },
