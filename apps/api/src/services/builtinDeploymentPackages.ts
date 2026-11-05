@@ -104,7 +104,7 @@ export function getBuiltinPackage(provider: BuiltinProvider): BuiltinPackageDef 
 }
 
 /** Single-brace `{name}` placeholders the package's install-args template substitutes at dispatch. */
-export function installArgPlaceholders(provider: LegacyBuiltinProvider): string[] {
+export function installArgPlaceholders(provider: BuiltinProvider): string[] {
   return Array.from(getBuiltinPackage(provider).silentInstallArgsTemplate.matchAll(/(?<!\{)\{[a-z0-9_]+\}(?!\})/g), (m) => m[0]);
 }
 
@@ -116,7 +116,7 @@ export function installArgPlaceholders(provider: LegacyBuiltinProvider): string[
  * installer without its key. `{{name}}` (the tenant-variable form) does not
  * count: the resolver's replace would leave the outer braces in place.
  */
-export function installArgsCarryPlaceholders(provider: LegacyBuiltinProvider, args: string | null | undefined): boolean {
+export function installArgsCarryPlaceholders(provider: BuiltinProvider, args: string | null | undefined): boolean {
   if (!args) return false;
   return installArgPlaceholders(provider).every((placeholder) => {
     const escaped = placeholder.replace(/[{}]/g, (brace) => `\\${brace}`);
