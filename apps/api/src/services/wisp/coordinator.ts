@@ -27,8 +27,9 @@
  *    8. the kind's permissions inside the ceiling — and, on the user/approval
  *       paths, held by that human NOW            → permission_missing /
  *                                                   workspace_execute_required
- *    9. decision: run × asks-first kind → approval card (needsApproval);
- *       every other cell → launch
+ *    9. decision: run × asks-first kind → the kind's prerequisite
+ *       (SPECIALIST_PREREQUISITES, #10487), then an approval card
+ *       (needsApproval); every other cell → launch
  *   10. launcher refusal → { refused }; wispMetrics.incSpecialistRequest
  *
  * Authority is structural: the `ai_agent` principal stays, nothing is
@@ -283,6 +284,20 @@ async function decide(
   //    plan Decision 3 #11084 — device_troubleshooting is a one-click chat
   //    hand-off but an assessment must still ask).
   if (requester.kind === 'run' && !policy.autoAdmitFromAssessment) {
+    // #10487 — the kind's prerequisite first, as the chat path does before its
+    // card (#10144/#10193): a request the launcher would refuse at release
+    // (agent switched off, no effective agent, device not in the org) never
+    // asks a person. The refusal is the result, recorded on the assessment's
+    // specialistResults by the dispatch. The launcher still re-checks at
+    // release: state can change while a card waits.
+    const prerequisite = await SPECIALIST_PREREQUISITES[input.kind]({ orgId: input.orgId, partnerId: ceiling.partnerId, params });
+    if (prerequisite) {
+      return {
+        refused: prerequisite.refused,
+        ...(prerequisite.detail ? { detail: prerequisite.detail } : {}),
+        message: prerequisite.message ?? specialistRefusalMessage(prerequisite.refused, prerequisite.detail),
+      };
+    }
     // Lazy: keeps the intent graph off the chat/approval paths' import closure.
     const { raiseSpecialistIntent } = await import('./specialistIntent');
     const { intentId } = await raiseSpecialistIntent({

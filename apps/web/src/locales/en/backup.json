@@ -179,6 +179,7 @@
     "oneOrMoreVssWritersAreNotStable": "One or more VSS writers are not stable. Review the latest writer states before the next run.",
     "vssUnprotectedVolumes": "Read from the live volume, not a VSS shadow copy: {{volumes}}. In-use files on these volumes may have been skipped or captured in an inconsistent state.",
     "lastBackupFailed": "Last backup failed",
+    "lastBackupFailedWithCategory": "Last backup failed: {{category}}",
     "lastBackupCompletedWithWarnings": "Last backup completed with warnings",
     "lastBackupCompletedWithErrors": "Last backup completed with errors",
     "writer": "Writer",
@@ -651,7 +652,11 @@
     "providerEnforcedImmutabilityCannotBeReleasedFromBreeze": "Provider-enforced immutability cannot be released from Breeze.",
     "fileTree": "File Tree",
     "noFileTreeAvailable": "No file tree available.",
-    "fileIndexUnavailable": "This snapshot has files, but its file index isn't available, so they can't be listed here.",
+    "fileIndexBuilding": "Preparing this snapshot's file list. This can take a few minutes for large backups.",
+    "fileIndexUnavailable": "This snapshot's file list isn't available right now. You can still restore the whole snapshot.",
+    "fileIndexIntegrityFailed": "This snapshot failed its integrity check, so its files can't be listed.",
+    "fileIndexDeviceLocal": "This snapshot is stored on the device, and Breeze can't read its file list from there yet.",
+    "fileIndexRetry": "Try again",
     "path": "Path:",
     "useTheRestoreWorkflowToRecoverOrExport": "Use the restore workflow to recover or export files from this snapshot.",
     "select": "Select",
@@ -1184,5 +1189,40 @@
     "summary_one": "{{count}} reparse point skipped: junctions and mount points are not followed and are not restored. This is expected, not an error.",
     "summary_other": "{{count}} reparse points skipped: junctions and mount points are not followed and are not restored. This is expected, not an error.",
     "showDetails": "Show skipped paths"
+  },
+  "failureCategory": {
+    "device_offline": {
+      "label": "Device offline",
+      "hint": "The device lost its connection to Breeze during the backup. Keep it powered on and online through the backup window."
+    },
+    "timeout": {
+      "label": "Stalled or timed out",
+      "hint": "The backup stopped making progress or ran past its time limit. Very large backups can need more than one window. Check the device's load and the size of the backup selection."
+    },
+    "storage": {
+      "label": "Storage problem",
+      "hint": "Breeze could not write to the backup destination, or the upload authorization expired. Test the storage configuration and check its credentials and free space."
+    },
+    "agent": {
+      "label": "Agent problem",
+      "hint": "The backup component on the device stopped unexpectedly. Update the agent and run the backup again. If it keeps happening, check the device's agent logs."
+    },
+    "configuration": {
+      "label": "Configuration problem",
+      "hint": "There was nothing valid to back up, or the backup configuration changed while the job was starting. Review the device's backup profile."
+    },
+    "source_access": {
+      "label": "Files could not be read",
+      "hint": "Some files were locked, in use, or not readable by the agent. Check the files listed below and the VSS status."
+    },
+    "cancelled": {
+      "label": "Cancelled",
+      "hint": "Stopped by a user, or by Breeze, before it finished."
+    },
+    "unknown": {
+      "label": "Other error",
+      "hint": "Breeze does not recognise this error yet. The full message is shown below."
+    },
+    "troubleshootingLink": "Troubleshooting guide"
   }
 }

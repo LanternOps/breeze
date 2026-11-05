@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next';
+import type { WispBriefSchedule } from '@breeze/shared';
 
 type SuggestionKey = 'needsMe' | 'offline' | 'sweep' | 'overnight';
 
@@ -9,6 +10,8 @@ export default function WispWelcome({
   onSuggest,
   intro = true,
   briefNote = true,
+  firstLook = false,
+  briefSchedule = null,
 }: {
   scopeLabel: string;
   onSuggest: (prompt: string) => void;
@@ -20,6 +23,10 @@ export default function WispWelcome({
    * is the home's first-visit line (#10195).
    */
   briefNote?: boolean;
+  /** The first-look post is in the thread (#10402): "looking around" and "once I have had a look" are over. */
+  firstLook?: boolean;
+  /** When and where the brief goes out; null on surfaces with no home payload. */
+  briefSchedule?: WispBriefSchedule | null;
 }) {
   const { t } = useTranslation('ai');
 
@@ -28,8 +35,17 @@ export default function WispWelcome({
       {intro && (
         <div>
           <p className="mb-1 text-xs font-medium text-muted-foreground">{t('wisp.title')}</p>
-          <p className="text-sm">{t('wisp.welcome.title', { scope: scopeLabel })}</p>
-          {briefNote && <p className="mt-1 text-sm">{t('wisp.welcome.body')}</p>}
+          <p className="text-sm">
+            {firstLook ? t('wisp.welcome.firstLookTitle', { scope: scopeLabel }) : t('wisp.welcome.title', { scope: scopeLabel })}
+          </p>
+          {briefNote && (
+            <p className="mt-1 text-sm">{firstLook ? t('wisp.welcome.firstLookBody') : t('wisp.welcome.body')}</p>
+          )}
+          {briefNote && briefSchedule?.timeLocal && (
+            <p data-testid="wisp-welcome-brief-at" className="mt-1 text-sm text-muted-foreground">
+              {t('wisp.welcome.briefAt', { time: briefSchedule.timeLocal, timezone: briefSchedule.timezone })}
+            </p>
+          )}
         </div>
       )}
       <div className="flex flex-wrap gap-2">

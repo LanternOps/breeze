@@ -3,6 +3,7 @@ import { AlertTriangle, Plus, ShieldBan, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { z } from 'zod';
 import { containmentInlineSettingsSchema, NETWORK_ISOLATION_LIMITS } from '@breeze/shared';
+import { containmentIssueKey, type ContainmentField } from './containmentIssueKey';
 import type { FeatureTabProps } from './types';
 import { useFeatureLink } from './useFeatureLink';
 import FeatureTabShell from './FeatureTabShell';
@@ -13,13 +14,13 @@ import '@/lib/i18n';
 // stored keys (defaultTtlHours, deadManMinutes, remoteRelay,
 // requireSignedReleaseToken) belong to later waves and are written back
 // untouched. The shared schema is the only validator: rows are checked with
-// it, and its rejection messages are shown as-is.
+// it, and containmentIssueKey turns its refusals into localised messages.
 
 const EXTRA_ALLOW = containmentInlineSettingsSchema.shape.extraAllow;
 type Issue = z.core.$ZodIssue;
 
 type Kind = 'host' | 'cidr';
-type Field = 'target' | 'proto' | 'ports' | 'label';
+type Field = ContainmentField;
 type Row = { key: number; kind: Kind; target: string; proto: string; ports: string; label: string };
 
 const PROTOS = ['tcp', 'udp', 'udp+tcp'] as const;
@@ -132,17 +133,6 @@ export default function ContainmentTab({
   // A parent's rows cannot be edited from here, so Override cannot produce a valid link.
   const parentInvalid = inherited && invalid;
 
-  const message = (field: Field, issue: Issue): string => {
-    if (field === 'target') {
-      // A malformed range fails inside the v4/v6 union, whose message is only "Invalid input".
-      return issue.code === 'invalid_union' ? k('cidrInvalid') : issue.message;
-    }
-    if (field === 'proto') return k('protoInvalid');
-    // Schema-authored refinements (unique ports, control characters) read well; type/size defaults do not.
-    if (issue.code === 'custom') return issue.message;
-    return field === 'ports' ? k('portsInvalid') : k('labelInvalid');
-  };
-
   const update = (key: number, patch: Partial<Row>) =>
     setRows((prev) => prev.map((r) => (r.key === key ? { ...r, ...patch } : r)));
   const touch = (key: number, field: Field) =>
@@ -201,9 +191,7 @@ export default function ContainmentTab({
         >
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <p>
-            {listIssue?.code === 'too_big'
-              ? k('limitReached', { max: Number(listIssue.maximum) })
-              : (listIssue?.message ?? k('fixRows'))}
+            {listIssue?.code === 'too_big' ? k('limitReached', { max: Number(listIssue.maximum) }) : k('fixRows')}
           </p>
         </div>
       )}
@@ -223,7 +211,7 @@ export default function ContainmentTab({
             if (!issue || !(attempted || touched.has(`${row.key}:${field}`))) return null;
             return (
               <p data-testid={`containment-row-${index}-${field}-error`} className="mt-1 text-xs text-destructive">
-                {message(field, issue)}
+                {k(containmentIssueKey(field, issue))}
               </p>
             );
           };

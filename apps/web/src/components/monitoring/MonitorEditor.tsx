@@ -18,6 +18,8 @@ import {
   alertCooldownMinutesSchema,
   rearmModeSchema,
   rearmDelayMinutesSchema,
+  isKindShapedRecoveryCondition,
+  isLegacyRecoveryCondition,
   isValidRearmPair,
   REARM_PAIR_MESSAGE,
   MONITOR_KINDS,
@@ -87,6 +89,15 @@ export interface MonitorFormValues {
   autoResolve: boolean | null;
   rearmMode: RearmMode | null;
   rearmDelayMinutes: number | null;
+  // The recovery condition in this kind's shape, used only while `clearsWhenEnabled`.
+  // A flag rather than setting `clearsWhen` to null: once it has a stored value,
+  // react-hook-form 7.90 throws in getDirtyFields on `setValue(path, null, { shouldDirty })`.
+  clearsWhenEnabled: boolean;
+  clearsWhen: Record<string, unknown> | null;
+  // A stored recovery condition this form can't edit (a raw API blob). Form-only:
+  // it is never sent, so leaving the key out of the PATCH keeps it as stored.
+  // `unknown` because it is opaque here: its shape must never be able to block Save.
+  rawRecoveryCondition: unknown;
   responses: Array<Record<string, unknown>>;
   deliveryMode: MonitorDeliveryMode;
   deliveryChannelIds: string[];
@@ -114,8 +125,8 @@ export interface MonitorFormValues {
 // reject every submission that sets a recurrence threshold. The server still
 // runs the full shared schema on the built payload and is the source of truth
 // for the business rules (delivery channels required, ai_triage needs an
-// agent, recurrence threshold/window set together); this schema only catches
-// shape errors early.
+// agent, recurrence threshold/window set together); this schema catches shape
+// errors early, plus the per-kind rules in the superRefine below.
 // Marks the specific "restart service needs a name" zod issue so the error
 // rendering (below) can show it instead of the generic invalidResponses copy.
 const RESTART_SERVICE_NAME_ISSUE = 'restartServiceRequiresName';
@@ -132,6 +143,9 @@ const monitorFormSchema = z
     autoResolve: z.boolean().nullable(),
     rearmMode: rearmModeSchema.nullable(),
     rearmDelayMinutes: rearmDelayMinutesSchema.nullable(),
+    clearsWhenEnabled: z.boolean(),
+    clearsWhen: z.record(z.string(), z.unknown()).nullable(),
+    rawRecoveryCondition: z.unknown(),
     responses: z.array(z.record(z.string(), z.unknown())),
     deliveryMode: monitorDeliveryModeSchema,
     deliveryChannelIds: z.array(z.string()),
@@ -154,6 +168,9 @@ const monitorFormSchema = z
     const responses = monitorResponsesSchema.safeParse(value.responses);
     if (!responses.success) ctx.addIssue({ code: 'custom', path: ['responses'], message: 'Invalid responses' });
     if (!isValidRearmPair(value)) ctx.addIssue({ code: 'custom', path: ['rearmDelayMinutes'], message: REARM_PAIR_MESSAGE });
+    if (value.clearsWhenEnabled && !isKindShapedRecoveryCondition(value.kind, value.clearsWhen)) {
+      ctx.addIssue({ code: 'custom', path: ['clearsWhen'], message: 'Invalid recovery condition' });
+    }
     // D1: a `restart_service` response carries no service name of its own — it
     // compiles to `auto_restart: true` on the delivered watch, which only ever
     // targets the service named on the monitor's own `service`-kind condition
@@ -186,6 +203,9 @@ const DEFAULT_VALUES: MonitorFormValues = {
   autoResolve: null,
   rearmMode: null,
   rearmDelayMinutes: null,
+  clearsWhenEnabled: false,
+  clearsWhen: null,
+  rawRecoveryCondition: null,
   responses: [],
   deliveryMode: 'inherit',
   deliveryChannelIds: [],
@@ -471,6 +491,8 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
       setMonitorOrgId(typeof monitor.orgId === 'string' ? monitor.orgId : null);
       setMonitorPartnerId(typeof monitor.partnerId === 'string' ? monitor.partnerId : null);
       setLoadedName(typeof monitor.name === 'string' ? monitor.name : undefined);
+      const storedRecovery = monitor.autoResolveConditions ?? null;
+      const recoveryIsKindShaped = isKindShapedRecoveryCondition(monitor.kind, storedRecovery);
       reset({
         name: monitor.name ?? '',
         description: monitor.description ?? '',
@@ -484,6 +506,9 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         // The delay only exists with after_delay. A stray one would fail the pair rule on a
         // field that isn't rendered, and Save would do nothing with no visible reason.
         rearmDelayMinutes: monitor.rearmMode === 'after_delay' ? (monitor.rearmDelayMinutes ?? null) : null,
+        clearsWhenEnabled: recoveryIsKindShaped,
+        clearsWhen: recoveryIsKindShaped ? storedRecovery : null,
+        rawRecoveryCondition: recoveryIsKindShaped ? null : storedRecovery,
         responses: monitor.responses ?? [],
         deliveryMode: monitor.deliveryMode ?? 'inherit',
         deliveryChannelIds: monitor.deliveryChannelIds ?? [],
@@ -515,6 +540,8 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   const handleKindChange = (kind: MonitorKind) => {
     setValue('kind', kind, { shouldDirty: true });
     setValue('condition', defaultConditionFor(kind), { shouldDirty: true });
+    // An authored recovery condition belongs to the old kind and would fail validation on the new one.
+    setValue('clearsWhenEnabled', false, { shouldDirty: true });
   };
 
   useEffect(() => {
@@ -612,6 +639,16 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         pauseResponsesOnEscalation: values.pauseResponsesOnEscalation,
         aiAgentId: values.aiAgentId || null,
       };
+      // Omitted on PATCH = keep the stored raw condition. Replace turns authoring on, which wins.
+      // On a kind change, the API re-checks a stored value, and one the engine could never
+      // evaluate has no value worth keeping: the section is hidden on most kinds, so a refusal
+      // would leave the user with no way to fix it.
+      const kindChanged = values.kind !== methods.formState.defaultValues?.kind;
+      if (values.clearsWhenEnabled) {
+        payload.autoResolveConditions = values.clearsWhen;
+      } else if (values.rawRecoveryCondition === null || (kindChanged && !isLegacyRecoveryCondition(values.rawRecoveryCondition))) {
+        payload.autoResolveConditions = null;
+      }
       // Omit the key entirely unless the select was shown: a caller who cannot manage
       // partner-wide config must never send (or null out) the board override.
       if (showPsaBoardSelect) {

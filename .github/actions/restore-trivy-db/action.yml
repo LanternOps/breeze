@@ -1,0 +1,24 @@
+name: Restore Trivy DB cache
+description: >
+  Restore (never save) the Trivy vulnerability DB into the directory
+  trivy-action reads by default. Call trivy-action with cache 'false' after
+  this: its own cache saves the DB and the binary from every ref, PRs included.
+  Only the seed workflow on main saves the DB (ci-cache-seed.yml, which must
+  save exactly the key and path below). Run AFTER actions/checkout. See #10762.
+runs:
+  using: composite
+  steps:
+    # The same daily key trivy-action uses. A day the seed has not reached yet
+    # restores the newest older DB, and Trivy refreshes a stale one itself.
+    - name: Resolve date for the Trivy DB key
+      id: date
+      shell: bash
+      run: echo "date=$(date -u +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+
+    - name: Restore Trivy DB
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ github.workspace }}/.cache/trivy
+        key: cache-trivy-${{ steps.date.outputs.date }}
+        restore-keys: |
+          cache-trivy-

@@ -5,7 +5,7 @@ import WispBriefPost from './WispBriefPost';
 import { safeActivityHref } from './wispActivity';
 
 /**
- * One durable proactive Wisp post (morning brief, nudge, digest, check-in) in the Wisp
+ * One durable proactive Wisp post (morning brief, nudge, digest, check-in, first look) in the Wisp
  * chat thread. A brief with sections reuses the brief card; every other post
  * is a plain prose block: eyebrow, title, optional body and an optional "Open"
  * link. Nudge actions live in the rail's concern row (that row component is
@@ -38,10 +38,12 @@ export default function WispPost({ post, now }: { post: WispTimelinePost; now?: 
           ? t('wisp.post.checkIn')
           : post.kind === 'specialist_result'
             ? t('wisp.post.specialistResult')
-            : t('wisp.post.brief');
-  // A check-in's link is this same thread (`#checkin=<id>`), so an "Open" link
+            : post.kind === 'first_look'
+              ? t('wisp.post.firstLook')
+              : t('wisp.post.brief');
+  // A check-in's and a first look's link is this same thread, so an "Open" link
   // would go nowhere.
-  const href = post.kind === 'check_in' ? null : safeActivityHref(post.link);
+  const href = post.kind === 'check_in' || post.kind === 'first_look' ? null : safeActivityHref(post.link);
 
   return (
     <article data-testid="wisp-post" data-kind={post.kind} className="space-y-1">

@@ -21,7 +21,9 @@ import ExternalBackupCard from './ExternalBackupCard';
 import { formatBytes } from './backupDashboardHelpers';
 import DeviceVaultStatus from './DeviceVaultStatus';
 import ReparseSkipNotice from './ReparseSkipNotice';
-import { splitReparseSkipNotice } from '@breeze/shared';
+import { splitReparseSkipNotice, stripInlineIndexDropNote, type BackupFailureCategory } from '@breeze/shared';
+import BackupFailureCategoryBadge, { BackupFailureCategoryHint } from './BackupFailureCategoryBadge';
+import { stripInternalTagPrefix, truncateErrorSummary } from './backupErrorText';
 import AlphaBadge from '../shared/AlphaBadge';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
@@ -64,6 +66,7 @@ type BackupJob = {
   // be created, so paths were read live). Rendered accordingly below — labelled
   // by the job's own status rather than always as an error.
   errorLog?: string | null;
+  failureCategory?: BackupFailureCategory | null;
 };
 
 type Snapshot = {
@@ -417,9 +420,12 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
   // #9543: deliberately skipped reparse points are informational — shown on
   // their own muted line, so a run whose only note is the skip is not framed
   // as "completed with warnings" and a failed run's banner keeps its reason.
+  // #11026: nor is a historic note that a file list did not fit in the result:
+  // the list was not lost.
   const { diagnostic: lastJobDiagnostic, reparseSkipped: lastJobReparseSkipped } =
-    splitReparseSkipNotice(lastJob?.errorLog);
+    splitReparseSkipNotice(stripInlineIndexDropNote(lastJob?.errorLog).warning);
   const lastJobFailed = lastJobStatus === 'failed';
+  const lastFailureCategory = lastJobFailed ? (lastJob?.failureCategory ?? null) : null;
   // #5396: distinct from the generic "completed with warnings" framing — this
   // run has a concrete, agent-reported count of files that failed to read or
   // upload (still under the `partial` threshold), which the banner should name.
@@ -562,6 +568,9 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
                   const cfg = jobStatusConfig[jStatus] ?? jobStatusConfig.pending;
                   const Icon = cfg.icon;
                   const errorCount = job.errorCount ?? 0;
+                  const jobDiagnostic = splitReparseSkipNotice(
+                    stripInlineIndexDropNote(job.errorLog ? stripInternalTagPrefix(job.errorLog) : null).warning
+                  ).diagnostic;
                   return (
                     <tr key={job.id} className="border-b last:border-0">
                       <td className="py-2 pr-4 capitalize text-foreground">
@@ -588,14 +597,29 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
                         {formatBytes(job.totalSize, '-')}
                       </td>
                       <td className="py-2">
-                        {errorCount > 0 ? (
-                          <span className="inline-flex items-center gap-1 text-destructive">
-                            <AlertTriangle className="h-3.5 w-3.5" />
-                            {errorCount}
-                          </span>
-                        ) : (
-                          <span className="text-muted-foreground">0</span>
-                        )}
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <BackupFailureCategoryBadge category={job.failureCategory} />
+                          {errorCount > 0 ? (
+                            <span
+                              data-testid="backup-job-error-count"
+                              className="inline-flex items-center gap-1 text-destructive"
+                            >
+                              <AlertTriangle className="h-3.5 w-3.5" />
+                              {errorCount}
+                            </span>
+                          ) : (
+                            !job.failureCategory && !jobDiagnostic && <span className="text-muted-foreground">0</span>
+                          )}
+                          {jobDiagnostic && (
+                            <span
+                              data-testid="backup-job-error-summary"
+                              title={jobDiagnostic}
+                              className="text-xs text-muted-foreground"
+                            >
+                              {truncateErrorSummary(jobDiagnostic)}
+                            </span>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -626,12 +650,17 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
           <div>
             <p className="font-medium">
               {lastJobFailed
-                ? t('deviceBackupTab.lastBackupFailed')
+                ? lastFailureCategory
+                  ? t('deviceBackupTab.lastBackupFailedWithCategory', {
+                      category: t(/* i18n-dynamic */ `failureCategory.${lastFailureCategory}.label`),
+                    })
+                  : t('deviceBackupTab.lastBackupFailed')
                 : lastJobCompletedWithErrors
                   ? t('deviceBackupTab.lastBackupCompletedWithErrors')
                   : t('deviceBackupTab.lastBackupCompletedWithWarnings')}
             </p>
             <p className="mt-1 whitespace-pre-line break-words opacity-90">{lastJobDiagnostic}</p>
+            {lastFailureCategory && <BackupFailureCategoryHint category={lastFailureCategory} className="mt-2" />}
           </div>
         </div>
       )}

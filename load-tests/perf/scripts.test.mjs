@@ -75,6 +75,7 @@ function makeFixture({ envExample = true } = {}) {
       'prev=""; for a in "$@"; do [ "$prev" = --report ] && echo "{}" > "$a"; prev="$a"; done\n' +
       'echo "run.sh pid $$" >> "$STUB_LOG"\n' +
       '[ -n "${STUB_RUN_SLEEP:-}" ] && sleep "$STUB_RUN_SLEEP"\n' +
+      '[ -n "${STUB_EXIT_MARK:-}" ] && date +%s > "$STUB_EXIT_MARK"\n' +
       '[ -n "${STUB_RUN_FAIL:-}" ] && exit 1\nexit 0\n',
   );
   script(path.join(agentsim, 'lab-setup.sh'), '#!/usr/bin/env bash\necho "lab-setup" >> "$STUB_LOG"\necho "AGENTSIM_STORE=/stub/store.json"\n');
@@ -126,6 +127,7 @@ function run(fx, file, args, extraEnv = {}) {
       INTERVAL: '0',
       MAX_SAMPLES: '2',
       IDLE_SECONDS: '0',
+      TAIL_SECONDS: '0',
       ...extraEnv,
     },
   });
@@ -397,6 +399,21 @@ test('run-perf.sh --storm runs storm.sh with admission enforce and a pinned cadd
   assert.ok(existsSync(path.join(out, 'storm.json')));
   const red = run(fx, 'run-perf.sh', args, { STUB_STORM_RC: '3' });
   assert.equal(red.code, 3, red.err);
+});
+
+test("run-perf.sh keeps sampling past the simulator's exit so the window end edge is covered", () => {
+  const fx = makeFixture();
+  const out = path.join(fx.root, 'tail');
+  const mark = path.join(fx.root, 'sim-exit');
+  // The simulator exits at the window end; kpi.mjs needs a sample after it.
+  const r = run(fx, 'run-perf.sh', ['--profile', 'smoke', '--out-dir', out], {
+    INTERVAL: '2', MAX_SAMPLES: '', TAIL_SECONDS: '3', STUB_RUN_SLEEP: '3', STUB_EXIT_MARK: mark,
+  });
+  assert.equal(r.code, 0, r.err);
+  const exitSec = Number(readFileSync(mark, 'utf8').trim());
+  const rows = readFileSync(path.join(out, 'samples.csv'), 'utf8').trim().split('\n').slice(1);
+  const lastTs = Date.parse(rows[rows.length - 1].split(',')[0]) / 1000;
+  assert.ok(lastTs > exitSec, `last sample ${lastTs} must be after simulator exit ${exitSec}`);
 });
 
 test('run-perf.sh refuses --storm together with --profile', () => {

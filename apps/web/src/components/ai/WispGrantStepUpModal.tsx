@@ -5,7 +5,7 @@ import { showToast } from '@/components/shared/Toast';
 import { useJwtClaims } from '@/lib/authScope';
 import { StepUpMintError, type StepUpReauth } from '@/lib/mfaStepUp';
 import { ActionError, runAction } from '@/lib/runAction';
-import { discoverStepUpTier, fetchWispThread, isNoActiveGrant, mintWispGrantStepUp, WispPreviewError } from '@/lib/wispGrant';
+import { detectBrowserTimezone, discoverStepUpTier, fetchWispThread, isNoActiveGrant, mintWispGrantStepUp, WispPreviewError } from '@/lib/wispGrant';
 import { fetchWithAuth } from '@/stores/auth';
 import type { WispState } from '@/stores/aiStore';
 import type { ReauthTier } from '@/components/settings/StepUpPrompt';
@@ -194,6 +194,7 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
         ...(refresh ? { refreshGrantId: refresh.grantId } : {}),
         ...(enablingUnattendedReads ? { unattendedReads: true } : {}),
       });
+      const browserTimezone = detectBrowserTimezone();
       const dto = await runAction<GrantDto>({
         request: () =>
           refresh
@@ -201,7 +202,10 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
               method: 'POST',
               body: JSON.stringify({ stepUpGrantId, ...(enablingUnattendedReads ? { unattendedReads: true } : {}) }),
             })
-            : fetchWithAuth('/wisp/grants', { method: 'POST', body: JSON.stringify({ orgId, stepUpGrantId }) }),
+            : fetchWithAuth('/wisp/grants', {
+              method: 'POST',
+              body: JSON.stringify({ orgId, stepUpGrantId, ...(browserTimezone ? { browserTimezone } : {}) }),
+            }),
         errorFallback,
         // Handled below rather than toasted: a stale proof (re-verify) and an
         // already-live grant for this scope (reopen it).

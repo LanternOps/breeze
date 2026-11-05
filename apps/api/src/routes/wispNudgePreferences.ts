@@ -5,6 +5,7 @@
  *
  *   GET /api/v1/wisp/nudge-preferences → { data: { settings: WispNudgePreferences } }   (missing row = defaults; never inserts)
  *   PUT /api/v1/wisp/nudge-preferences   updateWispNudgePreferencesSchema (strict, non-empty) → { data: { settings } }
+ *   PUT /api/v1/wisp/nudge-preferences/browser-timezone   { timezone } (strict; #10402) → { data: { timezone } }
  *   GET /api/v1/wisp/nudge-settings    → { data: { settings: { urgentCapableSeverities } } }   (any partner member)
  *   PUT /api/v1/wisp/nudge-settings      { urgentCapableSeverities } (strict) → 403 partner_admin_required unless
  *                                        canManagePartnerWidePolicies(auth)
@@ -24,7 +25,7 @@
  * mark is API-only this wave (spec §7.4 "default: none").
  */
 import { Hono, type Context } from 'hono';
-import { updateWispNudgePreferencesSchema, updateWispNudgeSettingsSchema } from '@breeze/shared';
+import { updateWispBrowserTimezoneSchema, updateWispNudgePreferencesSchema, updateWispNudgeSettingsSchema } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import type { AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -33,7 +34,7 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
   PartnerWideWriteDeniedError,
 } from '../services/partnerWideAccess';
-import { loadNudgePrefs, upsertNudgePrefs } from '../services/wisp/nudgePreferences';
+import { loadNudgePrefs, saveBrowserTimezone, upsertNudgePrefs } from '../services/wisp/nudgePreferences';
 import { loadUrgentCapableSeverities, upsertUrgentCapableSeverities } from '../services/wisp/partnerNudgeSettings';
 
 const authOf = (c: Context): AuthContext => c.get('auth') as AuthContext;
@@ -63,6 +64,23 @@ wispNudgePreferenceRoutes.put('/', zValidator('json', updateWispNudgePreferences
     details: { fields: Object.keys(patch).sort() },
   });
   return c.json({ data: { settings } });
+});
+
+// #10402: what the web sends when the browser reports a zone the server does
+// not have yet. Inferred, so it has its own column and never touches
+// brief_timezone (the zone the user chose). Not a setting: no screen edits it.
+wispNudgePreferenceRoutes.put('/browser-timezone', zValidator('json', updateWispBrowserTimezoneSchema), async (c) => {
+  const auth = authOf(c);
+  const { timezone } = c.req.valid('json');
+  await saveBrowserTimezone(auth.user.id, partnerIdOf(auth), timezone);
+  writeRouteAudit(c, {
+    orgId: auth.orgId ?? null,
+    action: 'wisp.nudge_preferences.browser_timezone',
+    resourceType: 'user',
+    resourceId: auth.user.id,
+    details: { timezone },
+  });
+  return c.json({ data: { timezone } });
 });
 
 export const wispNudgeSettingsRoutes = new Hono();

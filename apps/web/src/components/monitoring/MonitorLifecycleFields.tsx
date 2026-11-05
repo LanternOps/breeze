@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import type { AlertLifecycleDefaultsResponse, LifecycleSource, RearmMode } from '@breeze/shared';
 import type { MonitorFormValues } from './MonitorEditor';
 import { autoResolveLabel, fetchLifecycleDefaults, rearmLabel, sourceLabel } from './lifecycleDefaults';
+import MonitorClearsWhenFields from './MonitorClearsWhenFields';
 
 const FIELD_CLASS = 'h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring';
 const LABEL_CLASS = 'text-xs font-medium text-muted-foreground';
@@ -67,6 +68,8 @@ export default function MonitorLifecycleFields({ orgId, ready, showPartnerWideHi
   const autoResolve = watch('autoResolve');
   const rearmMode = watch('rearmMode');
   const cooldown = watch('cooldownMinutes');
+  const clearsWhenEnabled = watch('clearsWhenEnabled');
+  const rawRecovery = watch('rawRecoveryCondition');
 
   const effective = defaults?.effective ?? null;
   const sources = defaults?.sources ?? null;
@@ -86,6 +89,17 @@ export default function MonitorLifecycleFields({ orgId, ready, showPartnerWideHi
   const windowMinutes = kind === 'event_log' ? Number((condition as { windowMinutes?: unknown })?.windowMinutes) : NaN;
   const effectiveCooldown = cooldown ?? effective?.cooldownMinutes ?? null;
   const showWindowWarning = effectiveCooldown !== null && Number.isFinite(windowMinutes) && windowMinutes < effectiveCooldown;
+
+  // An invalid recovery condition keeps the section open even with auto-resolve
+  // off, or the schema would block Save on a field nobody can see. If the inherited
+  // value can't be read, a stored condition stays visible rather than vanishing.
+  const effectiveAutoResolve = autoResolve ?? effective?.autoResolve ?? null;
+  const hasStoredRecovery = clearsWhenEnabled || (rawRecovery !== null && rawRecovery !== undefined);
+  const showClearsWhen = kind === 'event_log' && (
+    effectiveAutoResolve === true
+    || !!errors.clearsWhen
+    || (effectiveAutoResolve === null && unavailable && hasStoredRecovery)
+  );
 
   return (
     <div className="space-y-3">
@@ -222,6 +236,8 @@ export default function MonitorLifecycleFields({ orgId, ready, showPartnerWideHi
       </div>
 
       <p className="text-xs text-muted-foreground">{t('monitoring:lifecycle.rearmHelp')}</p>
+
+      {showClearsWhen && <MonitorClearsWhenFields />}
 
       {showPartnerWideHint && <p className="text-xs text-muted-foreground">{t('monitoring:editor.lifecycle.partnerWideHint')}</p>}
 

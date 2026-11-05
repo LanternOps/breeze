@@ -31,10 +31,13 @@ import { deliverRecoveryCommandIntegrity, defaultRecoveryCommandIntegrityDeps } 
 import { defaultVerifyDeps, verifySnapshotAttestation } from '../../services/backupAttestationVerify';
 import { hydrateSnapshotFileIndex, readSnapshotFileIndexState } from '../../services/backupSnapshotFileIndex';
 import { resolveRestoreIntegrity } from '../../services/backupRestoreIntegrity';
+import { listSnapshotDirectory, readableSnapshotSourcePaths } from '../../services/backupSnapshotBrowse';
+import { readSnapshotIndexView } from '../../services/backupSnapshotIndexView';
 import { deliverBrokeredReadCommand } from '../../services/backupStorageSessions';
 import { backupReadCredentialPayload } from '../../services/backupCommandCredentials';
 import { CommandDeliveryDeferredError } from '../../services/commandDeliveryRefusal';
-import { WRITE_IDENTITY, insertSnapshotRow, orgContext, seedWriteTenant, type WriteTenant } from './backupWriteFixtures';
+import { WRITE_IDENTITY, insertSnapshotRow, orgContext, seedWriteDevice, seedWriteTenant, type WriteTenant } from './backupWriteFixtures';
+import postgres from 'postgres';
 import { getTestDb } from './setup';
 import { markHelperChecksAttestations } from './restoreIntegrityFixture';
 
@@ -404,6 +407,139 @@ describe('a failed integrity lookup is never delivered, and never aborts the del
       return db.execute(sql`SELECT count(*)::int AS n FROM devices WHERE id = ${t.deviceId}`);
     });
     expect((after as unknown as Array<{ n: number }>)[0]!.n).toBe(1);
+  });
+});
+
+// #11026: the reader gate and the index view under the caller's own RLS
+// context, where the attestation must be visible for the gate to apply.
+describe('reader gate under RLS', () => {
+  runDb('an org user sees a mismatched snapshot as unavailable and lists nothing; another org sees nothing at all', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const other = await seedWriteTenant({ jobStatus: 'completed' });
+    const { snapshotId, snapshotDbId, manifest } = await seedSnapshot(t);
+    await getTestDb().execute(sql`
+      INSERT INTO backup_snapshot_files (snapshot_db_id, source_path, backup_path)
+      VALUES (${snapshotDbId}, 'C:/a', ${`snapshots/${snapshotId}/files/a`})
+    `);
+    await setIndex(snapshotDbId, 'agent', null);
+    await insertAttestation(t, snapshotDbId, snapshotId, manifest);
+
+    const asOwner = () => withDbAccessContext(orgContext(t.orgId), async () => ({
+      view: await readSnapshotIndexView(snapshotDbId, t.orgId),
+      listed: (await listSnapshotDirectory({ snapshotDbId, segments: [], limit: 50 })).entries.map((e) => e.name),
+    }));
+
+    expect(await asOwner()).toMatchObject({ view: { view: { state: 'ready' } }, listed: ['C:'] });
+
+    await getTestDb().execute(sql`UPDATE backup_snapshot_attestations SET status = 'mismatch', verified_at = now() WHERE snapshot_db_id = ${snapshotDbId}`);
+    expect(await asOwner()).toMatchObject({
+      view: { view: { state: 'unavailable', failure: 'attestation_failed', retryable: false }, shouldRequestHydration: false },
+      listed: [],
+    });
+
+    const asOther = await withDbAccessContext(orgContext(other.orgId), async () => ({
+      view: await readSnapshotIndexView(snapshotDbId, other.orgId),
+      listed: (await listSnapshotDirectory({ snapshotDbId, segments: [], limit: 50 })).entries,
+      paths: await readableSnapshotSourcePaths(snapshotDbId),
+    }));
+    expect(asOther).toEqual({ view: null, listed: [], paths: [] });
+  });
+});
+
+// #11026 D5: the publish transaction locks the snapshot row first and re-checks
+// the claim, so a superseded run never publishes, and readers keep the old rows
+// until the new index commits.
+describe('publish fence', () => {
+  const adminSql = postgres(process.env.DATABASE_URL ?? '', { max: 1 });
+  afterAll(async () => { await adminSql.end({ timeout: 5 }); });
+
+  const sourcePaths = async (snapshotDbId: string) =>
+    ((await getTestDb().execute(sql`
+      SELECT source_path FROM backup_snapshot_files WHERE snapshot_db_id = ${snapshotDbId} ORDER BY source_path
+    `)) as unknown as Array<{ source_path: string }>).map((r) => r.source_path);
+
+  runDb('a device move while the manifest is read (the tenancy trigger resets the index) is superseded, and publishes nothing', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const { snapshotId, snapshotDbId, manifest } = await seedSnapshot(t);
+    const otherDevice = await seedWriteDevice(t.orgId, t.siteId);
+
+    const outcome = await hydrate(snapshotDbId, async () => {
+      await getTestDb().execute(sql`UPDATE backup_snapshots SET device_id = ${otherDevice} WHERE id = ${snapshotDbId}`);
+      return manifest;
+    });
+
+    expect(outcome).toEqual({ status: 'skipped', reason: 'superseded' });
+    expect(await indexRow(snapshotDbId)).toMatchObject({ status: 'none', digest: null });
+    expect(await sourcePaths(snapshotDbId)).toEqual([]);
+    void snapshotId;
+  });
+
+  runDb('a run whose claim was taken over by another worker publishes nothing, and its failure does not overwrite the newer claim', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const { snapshotId, snapshotDbId } = await seedSnapshot(t);
+    const newerClaim = new Date(Date.now() + 60_000);
+
+    const superseded = await hydrate(snapshotDbId, async () => {
+      await getTestDb().execute(sql`UPDATE backup_snapshots SET file_index_hydrated_at = ${newerClaim.toISOString()} WHERE id = ${snapshotDbId}`);
+      return manifestFor(snapshotId);
+    });
+    expect(superseded).toEqual({ status: 'skipped', reason: 'superseded' });
+    expect(await sourcePaths(snapshotDbId)).toEqual([]);
+
+    await setIndex(snapshotDbId, 'none', null);
+    const failedLate = await hydrate(snapshotDbId, async () => {
+      await getTestDb().execute(sql`UPDATE backup_snapshots SET file_index_hydrated_at = ${new Date(Date.now() + 120_000).toISOString()} WHERE id = ${snapshotDbId}`);
+      throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+    }, true);
+    expect(failedLate).toEqual({ status: 'skipped', reason: 'superseded' });
+    expect((await indexRow(snapshotDbId)).status).toBe('hydrating');
+  });
+
+  runDb('a concurrent reader sees the old rows until the new index commits', async () => {
+    const t = await seedWriteTenant({ jobStatus: 'completed' });
+    const { snapshotId, snapshotDbId, manifest } = await seedSnapshot(t);
+    await getTestDb().execute(sql`
+      INSERT INTO backup_snapshot_files (snapshot_db_id, source_path, backup_path)
+      VALUES (${snapshotDbId}, 'C:/old', ${`snapshots/${snapshotId}/files/old`})
+    `);
+    await setIndex(snapshotDbId, 'agent', null);
+
+    // Hold the publish at its origin rewrite, after the file rows were replaced
+    // inside its (still open) transaction.
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    let locked!: () => void;
+    const tableLocked = new Promise<void>((r) => { locked = r; });
+    const lockTx = adminSql.begin(async (tx) => {
+      await tx`LOCK TABLE backup_snapshot_origins IN ACCESS EXCLUSIVE MODE`;
+      locked();
+      await held;
+    });
+    await tableLocked;
+
+    const hydration = hydrate(snapshotDbId, async () => manifest);
+    try {
+      const deadline = Date.now() + 15_000;
+      for (;;) {
+        const rows = (await getTestDb().execute(sql`
+          SELECT count(*)::int AS n FROM pg_stat_activity
+           WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid()
+             AND query ILIKE 'delete from "backup_snapshot_origins"%'
+        `)) as unknown as Array<{ n: number }>;
+        if ((rows[0]?.n ?? 0) > 0) break;
+        if (Date.now() > deadline) throw new Error('the publish never reached the origin rewrite');
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(await sourcePaths(snapshotDbId)).toEqual(['C:/old']);
+      expect((await indexRow(snapshotDbId)).status).toBe('hydrating');
+    } finally {
+      release();
+      await lockTx;
+    }
+
+    expect(await hydration).toMatchObject({ status: 'complete', manifestSha256: sha(manifest) });
+    expect(await sourcePaths(snapshotDbId)).toEqual(['C:/a']);
+    expect((await indexRow(snapshotDbId)).status).toBe('complete');
   });
 });
 

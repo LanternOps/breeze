@@ -182,6 +182,14 @@ describe('nudgeDedupeKey check_in', () => {
   });
 });
 
+describe('nudgeDedupeKey first_look (#10402)', () => {
+  it('is one key per grant, independent of time, thread and cadence', () => {
+    const key = (n: Date, cadence: number) => nudgeDedupeKey({ kind: 'first_look', concernId: null, grantId: 'g1', threadId: 't1', nextEligibleNudgeAt: null, now: n, digestCadenceMinutes: cadence });
+    expect(key(now, 240)).toBe('wisp.first_look:g1');
+    expect(key(new Date('2027-01-01T00:00:00Z'), 15)).toBe('wisp.first_look:g1');
+  });
+});
+
 describe('notifyUser', () => {
   const payload: NudgePayload = {
     userId: 'u1', category: 'wisp_nudge', kind: 'concern', title: 'Ticket 4021 stale', body: '3 days, printer driver',
@@ -465,6 +473,40 @@ describe('notifyUser', () => {
       await notifyUser(checkIn);
       expect(h.deliverInApp).not.toHaveBeenCalled();
       expect(h.recordThreadPost).toHaveBeenCalledWith(expect.objectContaining({ kind: 'check_in', orgId: 'o7', dedupeKey: 'wisp.check_in:ci1', notificationId: null }));
+    });
+  });
+
+  describe('first_look (#10402)', () => {
+    const firstLook: NudgePayload = {
+      ...payload, kind: 'first_look', concernId: null, approvalIntentId: null, deepLink: 'breeze://wisp/thread/t1',
+      title: 'First look done: 2 of 2 organizations', body: 'I looked at your 2 organizations.', push: false,
+    };
+
+    it('writes the in-app row + a first_look post with no org and the per-grant key, and pushes nothing', async () => {
+      queue([threadRow], deviceRows);
+      await expect(notifyUser(firstLook)).resolves.toEqual({ inApp: true, pushed: 0, suppressed: null });
+      expect(h.deliverInApp).toHaveBeenCalledWith(expect.objectContaining({
+        orgId: null, dedupeKey: 'wisp.first_look:g1', concernId: null,
+        post: expect.objectContaining({ kind: 'first_look', orgId: null, title: firstLook.title, body: firstLook.body, concernId: null }),
+      }));
+      expect(h.dispatchPushToTokens).not.toHaveBeenCalled();
+      expect(h.checkNotificationThrottle).not.toHaveBeenCalled();
+    });
+
+    it('never pushes, even if a caller forgets push:false', async () => {
+      queue([threadRow], deviceRows);
+      await expect(notifyUser({ ...firstLook, push: undefined })).resolves.toEqual({ inApp: true, pushed: 0, suppressed: null });
+      expect(h.dispatchPushToTokens).not.toHaveBeenCalled();
+    });
+
+    it('with the in-app channel off the post is still written, under the same key', async () => {
+      queue([threadRow], deviceRows);
+      h.loadNudgePrefs.mockResolvedValue(P({ channels: { inApp: false, push: true } }));
+      h.recordThreadPost.mockResolvedValue({ created: true, id: 'post1' });
+      await notifyUser(firstLook);
+      expect(h.recordThreadPost).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'first_look', orgId: null, dedupeKey: 'wisp.first_look:g1', notificationId: null,
+      }));
     });
   });
 

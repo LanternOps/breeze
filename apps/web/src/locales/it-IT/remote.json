@@ -209,6 +209,7 @@
       "copy": "Copia",
       "delete": "Elimina",
       "download": "Scarica",
+      "mkdir": "Nuova cartella",
       "move": "Sposta",
       "purge": "Elimina definitivamente",
       "restore": "Ripristina",
@@ -250,6 +251,7 @@
     "emptyDirectory": "Directory vuota",
     "errors": {
       "copy": "Impossibile copiare",
+      "createFolder": "Impossibile creare la cartella",
       "delete": "Impossibile eliminare",
       "download": "Impossibile scaricare",
       "downloadTooLarge": "Troppo grande per il download ({{size}}). Il browser file trasferisce file fino a {{max}}.",
@@ -264,6 +266,15 @@
     "home": "Home",
     "modified": "Modificato",
     "moveTo": "Sposta in",
+    "newFolder": {
+      "action": "Nuova cartella",
+      "title": "Nuova cartella",
+      "nameLabel": "Nome della cartella",
+      "location": "Verrà creata in {{path}}",
+      "created": "Cartella {{name}} creata",
+      "invalidName": "Il nome della cartella non può contenere separatori di percorso né caratteri non consentiti dal file system di questo dispositivo.",
+      "nameExists": "Qui esiste già un file o una cartella con questo nome."
+    },
     "selectedCount": "Numero selezionato",
     "size": "Dimensione",
     "title": "Gestione file",

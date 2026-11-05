@@ -222,7 +222,20 @@
     "psaBoardDefault": "Standard-Board der Verbindung verwenden",
     "psaBoardHelp": "Alarm-Tickets für diesen Monitor werden in diesem Board statt im Standard-Board der Verbindung erstellt.",
     "psaBoardReadOnly": "Alarm-Tickets gehen an PSA-Board #{{id}}",
-    "psaBoardUnavailable": "PSA-Boards konnten nicht geladen werden, daher ist die Board-Überschreibung derzeit nicht verfügbar."
+    "psaBoardUnavailable": "PSA-Boards konnten nicht geladen werden, daher ist die Board-Überschreibung derzeit nicht verfügbar.",
+    "clearsWhen": {
+      "title": "Wird aufgehoben, wenn",
+      "hint": "Wird nur durch ein Ereignis aufgehoben, das nach dem auslösenden Ereignis des Alarms protokolliert wurde.",
+      "noneHint": "Es ist keine Wiederherstellungsbedingung festgelegt. Der Alarm wird aufgehoben, sobald der Auslöser nicht mehr zutrifft.",
+      "add": "Wiederherstellungsbedingung hinzufügen",
+      "removeCondition": "Entfernen",
+      "keepCustom": "Benutzerdefinierte Bedingung behalten",
+      "customTitle": "Benutzerdefinierte Wiederherstellungsbedingung (API)",
+      "customHint": "Diese Bedingung wurde über die API festgelegt und kann hier nicht bearbeitet werden. Beim Speichern bleibt sie unverändert.",
+      "replaceCustom": "Ersetzen",
+      "invalid": "Einer der Werte der Wiederherstellungsbedingung ist ungültig.",
+      "customUnusable": "Diese Bedingung kann nicht ausgewertet werden, daher werden die Alarme dieses Monitors nicht automatisch aufgehoben. Ersetzen Sie sie, um das zu beheben."
+    }
   },
   "kinds": {
     "composite": "Kombiniert (alle oder eine von mehreren)",

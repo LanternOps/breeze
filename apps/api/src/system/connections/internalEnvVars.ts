@@ -88,6 +88,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AUTH_LEGACY_INVITE_PREVIEW_PATH: 'legacy route toggle',
   AUTH_REFRESH_RATE_LIMIT: 'rate limit knob',
   AUTH_REFRESH_RATE_WINDOW_SECONDS: 'rate limit knob',
+  USER_RATE_LIMIT_PER_MINUTE: 'rate limit knob',
   AUTH_TRANSITION_TEST_CONTROL_SECRET: 'test-only barrier secret',
   // AUTOMATION_*
   AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET: 'legacy compatibility toggle',
@@ -130,6 +131,10 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BREEZE_INTEGRATION_ALLOW_LEDGER_DRIFT: 'test harness (testUtils)',
   BREEZE_INTEGRATION_LOCK_NOWAIT: 'test harness (testUtils)',
   BREEZE_LEGACY_ALERTING_SWEEP: 'boot sweep opt-out (legacy alerting retirement)',
+  BREEZE_OEM_UPDATES_DISABLED_LANES: 'vendor update per-lane kill switch (#11065)',
+  BREEZE_OEM_UPDATES_ENABLED: 'vendor update rollout flag (#11065, dark by default)',
+  BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: 'vendor update lab-device gate override (refused in production)',
+  BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: 'vendor update rollout allowlist (#11065)',
   BREEZE_PLATFORM_ADMINS: 'platform-admin bootstrap list',
   BREEZE_REGION: 'hosted topology label',
   BREEZE_ROLE: 'process role (api/worker)',

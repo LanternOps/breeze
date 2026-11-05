@@ -87,7 +87,19 @@
     },
     "createPsaTicket": "Create PSA ticket",
     "psaTicketRequested": "PSA ticket requested",
-    "failedToCreatePsaTicket": "Failed to request PSA ticket"
+    "failedToCreatePsaTicket": "Failed to request PSA ticket",
+    "lifecycleLine": {
+      "text": "{{rearm}} · cooldown {{minutes}} min ({{source}})",
+      "rearmNewEvidence": "Re-arms on new evidence",
+      "rearmAfterDelay": "Re-arms after {{minutes}} min",
+      "sources": {
+        "monitor": "this monitor",
+        "org": "org default",
+        "partner": "partner default",
+        "builtin": "built-in default",
+        "legacy": "alert rule"
+      }
+    }
   },
   "alertDetails": {
     "closePanel": "Close panel",

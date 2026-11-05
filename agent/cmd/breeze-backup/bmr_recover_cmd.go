@@ -31,11 +31,6 @@ func defaultRecoveryContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
-func init() {
-	rootCmd.AddCommand(newBMRRecoverCommand())
-	rootCmd.AddCommand(newRecoveryConsoleCommand())
-}
-
 func newBMRRecoverCommand() *cobra.Command {
 	var token string
 	var server string

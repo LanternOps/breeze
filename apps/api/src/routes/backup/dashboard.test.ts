@@ -297,6 +297,26 @@ describe('backup dashboard routes', () => {
     expect(body.data.points.every((point: { totalBytes: number }) => point.totalBytes === 0)).toBe(true);
   });
 
+  it('adds failureCategory to dashboard latestJobs', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ count: 2 }]))
+      .mockReturnValueOnce(chainMock([{ completed: 1, failed: 1, running: 0, pending: 0 }]))
+      .mockReturnValueOnce(chainMock([
+        makeRecentJob({ id: 'job-bad', status: 'failed', errorLog: 'failed to upload file to s3: SlowDown' }),
+        makeRecentJob({ id: 'job-ok', status: 'completed', errorLog: null }),
+      ]));
+
+    const res = await app.request('/backup/dashboard');
+
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.latestJobs[0].failureCategory).toBe('storage');
+    expect(data.latestJobs[1]).toHaveProperty('failureCategory', null);
+  });
+
   it('keeps unrestricted dashboard behavior unchanged', async () => {
     resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([
       { deviceId: DEVICE_ID, configId: 'config-1', featureLinkId: 'feature-1' },
@@ -408,6 +428,39 @@ describe('backup dashboard routes', () => {
     expect(body.data.attentionItems).toHaveLength(1);
     expect(body.data.attentionItems[0].description).toMatch(/^backup stopped · Last unsuccessful /);
     expect(body.data.attentionItems[0].description).not.toContain('reparse');
+  });
+
+  // #11026: rows persisted before the server stopped storing it can still carry
+  // the note that a file list did not fit in the result. It is never the reason.
+  it('keeps the recoverable index drop note out of an attention item reason', async () => {
+    const indexNote = 'snapshot file index omitted (17950 entries): the result exceeded the 4934464 byte server result budget, so per-file restore browsing is unavailable for this snapshot';
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // configCount
+      .mockReturnValueOnce(chainMock([{ count: 2 }])) // jobCount
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // snapshotCount
+      .mockReturnValueOnce(chainMock([{ completed: 0, failed: 2, running: 0, pending: 0 }])) // last24hStats
+      .mockReturnValueOnce(chainMock([])) // recentJobsRaw
+      .mockReturnValueOnce(chainMock([])) // ranked-jobs subquery build (value unused)
+      .mockReturnValueOnce(chainMock([
+        {
+          deviceId: FAILING_DEVICE_ID,
+          status: 'failed',
+          errorLog: `backup stopped || bounded: ${indexNote}`,
+          completedAt: new Date('2026-07-14T10:00:00.000Z'),
+          createdAt: new Date('2026-07-14T09:55:00.000Z'),
+          rn: 1,
+          deviceName: 'Finance Laptop',
+          deviceHostname: 'fin-laptop-01',
+        },
+      ])); // ranked-jobs rows
+
+    const res = await app.request('/backup/dashboard');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.attentionItems[0].description).toMatch(/^backup stopped · Last unsuccessful /);
+    expect(body.data.attentionItems[0].description).not.toContain('snapshot file index');
   });
 
   // #3000: a device whose latest backup landed `partial` (a real snapshot, but
@@ -699,6 +752,44 @@ describe('backup dashboard routes', () => {
       const body = await res.json();
       expect(body.data.lastJob).toHaveProperty('vssMetadata');
       expect(body.data.lastJob.vssMetadata).toBeNull();
+    });
+
+    it('status lastJob and lastFailure carry failureCategory', async () => {
+      mockStatusQueries(makeJob({ status: 'failed', errorLog: 'backup helper exited unexpectedly' }));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const { data } = await res.json();
+      expect(data.lastJob.failureCategory).toBe('agent');
+      expect(data.lastFailureCategory).toBe('agent');
+    });
+
+    it('classifies lastFailure from the failed run when a later run succeeded', async () => {
+      resolveBackupConfigForDeviceMock.mockResolvedValueOnce(null);
+      selectMock
+        .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, siteId: SITE_A }]))
+        .mockReturnValueOnce(chainMock([
+          makeJob({ id: 'job-ok', status: 'completed', createdAt: new Date('2026-04-02T00:00:00.000Z') }),
+          makeJob({ id: 'job-bad', status: 'failed', errorLog: 'Agent not connected' }),
+        ]));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const { data } = await res.json();
+      expect(data.lastJob.failureCategory).toBeNull();
+      expect(data.lastFailureCategory).toBe('device_offline');
+    });
+
+    it('reports null failure categories for a device with no failed run', async () => {
+      mockStatusQueries(makeJob());
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      const { data } = await res.json();
+      expect(data.lastJob).toHaveProperty('failureCategory', null);
+      expect(data).toHaveProperty('lastFailureCategory', null);
     });
 
     it('includes errorLog — the ONLY channel a total VSS failure has', async () => {

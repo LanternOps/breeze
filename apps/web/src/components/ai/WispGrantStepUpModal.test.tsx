@@ -96,7 +96,10 @@ describe('WispGrantStepUpModal (W04 Task 7, w00 A4 handshake)', () => {
       reauth: { method: 'totp', code: '123456' },
     });
     const post = calls('/wisp/grants').find(([u, i]) => u === '/wisp/grants' && (i as RequestInit)?.method === 'POST')!;
-    expect(JSON.parse(String((post[1] as RequestInit).body))).toEqual({ orgId: 'org-1', stepUpGrantId: 'su-1' });
+    // #10402: the browser's zone travels with the grant, for the morning brief.
+    expect(JSON.parse(String((post[1] as RequestInit).body))).toEqual({
+      orgId: 'org-1', stepUpGrantId: 'su-1', browserTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    });
   });
 
   it('then fetches /wisp/thread?orgId= and calls onGranted with grant + thread', async () => {
@@ -531,7 +534,7 @@ describe('WispGrantStepUpModal (W04 Task 7, w00 A4 handshake)', () => {
     expect(calls('/wisp/grants/preview')[0]![0]).toBe('/wisp/grants/preview?orgId=org-1');
     await waitFor(() => expect(h.fetchWithAuth.mock.calls.some(([u]) => u === '/wisp/grants')).toBe(true));
     const post = h.fetchWithAuth.mock.calls.find(([u]) => u === '/wisp/grants')!;
-    expect(JSON.parse(String((post[1] as RequestInit).body))).toEqual({ orgId: 'org-1', stepUpGrantId: 'su-1' });
+    expect(JSON.parse(String((post[1] as RequestInit).body))).toMatchObject({ orgId: 'org-1', stepUpGrantId: 'su-1' });
   });
 
   it('an account without a passkey or authenticator app cannot confirm', async () => {

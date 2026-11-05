@@ -471,31 +471,9 @@ export async function linkDevicesVmHost(
   return data.data ?? data;
 }
 
-/**
- * Permanently delete a REMOVED device.
- *
- * The body is `{ success: true }` and nothing else. It used to carry
- * `agentUninstallSent` / `warning` describing a best-effort WS uninstall the
- * API fired after the cascade; #2787 deleted that dispatch — permanent delete
- * now REFUSES (409 `UNINSTALL_PENDING`) while a durable agent uninstall is
- * still collectable, instead of destroying it and reporting a warning. There
- * is nothing best-effort left to report, so the fields are gone rather than
- * left declared-but-never-populated.
- */
-export async function permanentDeleteDevice(
-  deviceId: string
-): Promise<{ success: boolean }> {
-  const response = await fetchWithAuth(`/devices/${deviceId}/permanent`, {
-    method: 'DELETE'
-  });
-
-  if (!response.ok) {
-    throw new Error(await getErrorMessage(response, 'Failed to permanently delete device'));
-  }
-
-  const data = await response.json();
-  return data.data ?? data;
-}
+// Single-device permanent delete lives in components/devices/ForcePermanentDeleteDialog.tsx
+// (permanentDeleteRequest): it goes through runAction and handles the #11153
+// UNINSTALL_NOT_CONFIRMED refusal, which this thin service could not express.
 
 export interface BulkDecommissionFailed {
   id: string;
@@ -644,6 +622,7 @@ export type BulkLifecycleFailureCode =
   | 'NOT_FOUND'
   | 'NOT_REMOVED'
   | 'UNINSTALL_PENDING'
+  | 'UNINSTALL_NOT_CONFIRMED'
   | 'SITE_ACCESS_DENIED'
   | 'STATE_CHANGED'
   | 'DEVICE_LIMIT_REACHED'

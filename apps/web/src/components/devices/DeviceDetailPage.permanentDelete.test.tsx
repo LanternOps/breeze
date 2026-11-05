@@ -5,7 +5,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceDetailPage from './DeviceDetailPage';
 import { fetchWithAuth } from '../../stores/auth';
-import { permanentDeleteDevice } from '../../services/deviceActions';
 import { showToast } from '../shared/Toast';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
@@ -19,7 +18,6 @@ vi.mock('../../services/deviceActions', () => ({
   toggleMaintenanceMode: vi.fn(),
   decommissionDevice: vi.fn(),
   clearDeviceSessions: vi.fn(),
-  permanentDeleteDevice: vi.fn(),
   sendWakeCommand: vi.fn(),
   watchWakeOutcome: vi.fn(),
   WakeCommandError: class WakeCommandError extends Error {},
@@ -37,6 +35,35 @@ vi.mock('./MoveDeviceOrgDialog', () => ({ default: () => null }));
 vi.mock('./ScriptPickerModal', () => ({ default: () => null }));
 
 const DEVICE_ID = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+
+const DEVICE_BODY = {
+  id: DEVICE_ID,
+  hostname: 'alpha-01',
+  osType: 'windows',
+  status: 'decommissioned',
+  orgId: 'org-1',
+  siteId: 'site-1',
+};
+
+// #11153: permanent delete goes through runAction -> fetchWithAuth now.
+const deleteCalls = () =>
+  vi.mocked(fetchWithAuth).mock.calls.filter(
+    ([url, init]) => String(url).endsWith('/permanent') && (init as RequestInit | undefined)?.method === 'DELETE',
+  );
+function mockPermanentDelete(...responses: Response[]) {
+  const queue = [...responses];
+  vi.mocked(fetchWithAuth).mockImplementation(async (url: string, init?: RequestInit) => {
+    if (String(url).endsWith('/permanent') && init?.method === 'DELETE') {
+      return queue.shift() ?? new Response(JSON.stringify({ success: true }), { status: 200 });
+    }
+    return new Response(JSON.stringify(DEVICE_BODY), { status: 200 });
+  });
+}
+const notConfirmed = (uninstallState: string) =>
+  new Response(
+    JSON.stringify({ error: 'Agent uninstall was not confirmed', code: 'UNINSTALL_NOT_CONFIRMED', uninstallState }),
+    { status: 409 },
+  );
 
 // #4368 was "surface the API's `warning` when the agent could not be reached".
 // #2787 deleted that warning along with the best-effort WS uninstall it
@@ -82,13 +109,16 @@ describe('DeviceDetailPage permanent delete toasts success, with no warning bran
   }
 
   it('shows a success toast for the plain { success: true } body the API now returns', async () => {
-    vi.mocked(permanentDeleteDevice).mockResolvedValue({ success: true });
+    mockPermanentDelete(new Response(JSON.stringify({ success: true }), { status: 200 }));
 
     await runPermanentDelete();
 
     const calls = vi.mocked(showToast).mock.calls.map(c => c[0]);
     expect(calls).toContainEqual(expect.objectContaining({ type: 'success' }));
     expect(calls.some(c => c.type === 'warning')).toBe(false);
+    // First request never forces (#11153): bodyless.
+    expect(deleteCalls()).toHaveLength(1);
+    expect((deleteCalls()[0][1] as RequestInit).body).toBeUndefined();
   });
 
   /**
@@ -97,10 +127,10 @@ describe('DeviceDetailPage permanent delete toasts success, with no warning bran
    * behind would keep claiming an uninstall attempt that no longer happens.
    */
   it('ignores a stray legacy `warning` field instead of resurrecting the old toast', async () => {
-    vi.mocked(permanentDeleteDevice).mockResolvedValue({
+    mockPermanentDelete(new Response(JSON.stringify({
       success: true,
       warning: 'The agent could not be reached for remote uninstall.',
-    } as never);
+    }), { status: 200 }));
 
     await runPermanentDelete();
 
@@ -121,7 +151,7 @@ describe('DeviceDetailPage permanent delete toasts success, with no warning bran
 
     expect(await screen.findByText('Delete alpha-01 permanently?')).toBeTruthy();
     expect(screen.getByText(/deletes all history for this device/i)).toBeTruthy();
-    expect(vi.mocked(permanentDeleteDevice)).not.toHaveBeenCalled();
+    expect(deleteCalls()).toHaveLength(0);
     // The gate precedes the timer: no undo toast has been raised either.
     expect(vi.mocked(showToast).mock.calls.some(c => c[0].type === 'undo')).toBe(false);
   });
@@ -136,6 +166,86 @@ describe('DeviceDetailPage permanent delete toasts success, with no warning bran
     await waitFor(() =>
       expect(screen.queryByTestId('detail-permanent-delete-confirm')).toBeNull(),
     );
-    expect(vi.mocked(permanentDeleteDevice)).not.toHaveBeenCalled();
+    expect(deleteCalls()).toHaveLength(0);
   });
 });
+
+// #11153: a 409 UNINSTALL_NOT_CONFIRMED opens a force dialog instead of a toast.
+describe('DeviceDetailPage permanent delete of an unconfirmed uninstall (#11153)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function confirmFirstDialog() {
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+    fireEvent.click(await screen.findByText('Permanent Delete'));
+    const confirmBtn = await screen.findByTestId('detail-permanent-delete-confirm');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(confirmBtn);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it('shows the force dialog with the state copy and no error toast', async () => {
+    mockPermanentDelete(notConfirmed('agent_returned'));
+
+    await confirmFirstDialog();
+
+    expect(await screen.findByTestId('detail-permanent-delete-force-confirm')).toBeTruthy();
+    expect(screen.getByText('The agent did not confirm removal')).toBeTruthy();
+    expect(screen.getByText(/checked in since/i)).toBeTruthy();
+    expect(screen.getByText(/installed and running/i)).toBeTruthy();
+    expect(deleteCalls()).toHaveLength(1);
+    expect((deleteCalls()[0][1] as RequestInit).body).toBeUndefined();
+    expect(vi.mocked(showToast).mock.calls.some(([t]) => t.type === 'error')).toBe(false);
+  });
+
+  it('Delete anyway re-sends with { force: true } and toasts success', async () => {
+    mockPermanentDelete(notConfirmed('cancelled'), new Response(JSON.stringify({ success: true }), { status: 200 }));
+
+    await confirmFirstDialog();
+    fireEvent.click(await screen.findByTestId('detail-permanent-delete-force-confirm'));
+
+    await waitFor(() => expect(deleteCalls()).toHaveLength(2));
+    expect((deleteCalls()[1][1] as RequestInit).body).toBe(JSON.stringify({ force: true }));
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'success', message: expect.stringContaining('alpha-01') }),
+      ),
+    );
+  });
+
+  it('cancelling the force dialog sends no second request', async () => {
+    mockPermanentDelete(notConfirmed('none'));
+
+    await confirmFirstDialog();
+    await screen.findByTestId('detail-permanent-delete-force-confirm');
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('detail-permanent-delete-force-confirm')).toBeNull(),
+    );
+    expect(deleteCalls()).toHaveLength(1);
+  });
+
+  it('a different 409 still toasts an error and shows no force dialog', async () => {
+    mockPermanentDelete(
+      new Response(JSON.stringify({ error: 'Uninstall still pending', code: 'UNINSTALL_PENDING' }), { status: 409 }),
+    );
+
+    await confirmFirstDialog();
+
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: expect.stringContaining('Uninstall still pending') }),
+      ),
+    );
+    expect(screen.queryByTestId('detail-permanent-delete-force-confirm')).toBeNull();
+  });
+});
+
