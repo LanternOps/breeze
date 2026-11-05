@@ -13,7 +13,7 @@
  * device out. Runs on its own transaction and pushes to the socket after commit,
  * because a fast agent can answer before an open transaction would be visible.
  */
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import {
   agentSupportsOemUpdates,
   OEM_LANES,
@@ -32,6 +32,7 @@ import {
 } from '../../db/schema';
 import { CommandTypes } from '../commandTypes';
 import { dispatchDeviceCommand, type DispatchDeviceCommandResult } from '../dispatchDeviceCommand';
+import { assertDeviceExecuteAllowed } from '../partnerTrust.commands';
 import { isUnassignedPoolOrgType } from '../unassignedPool/orgType';
 import { resolveApplicability } from './applicability';
 import { laneDisabledByKillSwitch, oemUpdatesEnabled } from './flags';
@@ -78,8 +79,28 @@ export type OemDispatchRefusal =
   | 'cancelled_at_claim';
 
 export type OemDispatchResult =
-  | { ok: true; commandId: string; categories: OemCategory[] }
+  | {
+      ok: true;
+      commandId: string;
+      categories: OemCategory[];
+      /** Open and requested, dropped only because Breeze does not control the reboot. */
+      skippedCategories: OemCategory[];
+    }
   | { ok: false; refusal: OemDispatchRefusal };
+
+/**
+ * The partner trust check a caller makes before asking for a run, so a denial can
+ * answer with its reason. This module keeps the command type to itself: everything
+ * outside the seam reaches the run through these exports, and none of them can queue.
+ */
+export function assertOemRunAllowedForActor(deviceId: string, userId: string): Promise<void> {
+  return assertDeviceExecuteAllowed(deviceId, CommandTypes.OEM_UPDATE_RUN, userId);
+}
+
+/** Selects run rows for a read. A condition, not the type: it cannot be handed to a queue. */
+export function oemRunCommandFilter(): SQL {
+  return eq(deviceCommands.type, CommandTypes.OEM_UPDATE_RUN);
+}
 
 /** A BIOS or firmware run that has not shown the device came back within this raises an alert. */
 export const OEM_RETURN_DEADLINE_MS = 24 * 60 * 60 * 1000;
@@ -126,7 +147,13 @@ function refusalForEnqueueCode(code: Extract<DispatchDeviceCommandResult, { ok: 
 
 type Prepared =
   | { ok: false; refusal: OemDispatchRefusal }
-  | { ok: true; commandId: string; categories: OemCategory[]; dispatched: Extract<DispatchDeviceCommandResult, { ok: true }> };
+  | {
+      ok: true;
+      commandId: string;
+      categories: OemCategory[];
+      skippedCategories: OemCategory[];
+      dispatched: Extract<DispatchDeviceCommandResult, { ok: true }>;
+    };
 
 async function prepareRun(input: OemDispatchInput): Promise<Prepared> {
   const [device] = await db
@@ -188,8 +215,9 @@ async function prepareRun(input: OemDispatchInput): Promise<Prepared> {
   if (stillNotSupported(status, lane, device.model ?? null)) return { ok: false, refusal: 'not_supported' };
 
   const open = new Set(openCategoriesForLane(lane, gateScope));
-  const categories = [...new Set(input.requestedCategories)].filter((category) =>
-    open.has(category) && (input.rebootControlled || !FLASH_CATEGORIES.has(category)));
+  const requestedOpen = [...new Set(input.requestedCategories)].filter((category) => open.has(category));
+  const categories = requestedOpen.filter((category) => input.rebootControlled || !FLASH_CATEGORIES.has(category));
+  const skippedCategories = requestedOpen.filter((category) => !categories.includes(category));
   if (categories.length === 0) return { ok: false, refusal: 'no_open_categories' };
 
   // The seam's own policy is `reject`. It is overridden only to carry a deadline
@@ -279,7 +307,7 @@ async function prepareRun(input: OemDispatchInput): Promise<Prepared> {
     .values({ deviceId: device.id, orgId: device.orgId, ...run })
     .onConflictDoUpdate({ target: deviceOemUpdateStatus.deviceId, set: run });
 
-  return { ok: true, commandId: dispatched.command.id, categories, dispatched };
+  return { ok: true, commandId: dispatched.command.id, categories, skippedCategories, dispatched };
 }
 
 export async function dispatchOemUpdateRun(input: OemDispatchInput): Promise<OemDispatchResult> {
@@ -287,10 +315,10 @@ export async function dispatchOemUpdateRun(input: OemDispatchInput): Promise<Oem
   const prepared = await runOutsideDbContext(() => withSystemDbAccessContext(() => prepareRun(input)));
   if (!prepared.ok) return prepared;
 
-  const { commandId, categories, dispatched } = prepared;
+  const { commandId, categories, skippedCategories, dispatched } = prepared;
   if (dispatched.deliver) {
     const delivered = await dispatched.deliver();
     if (delivered.ok && delivered.delivery === 'cancelled') return { ok: false, refusal: 'cancelled_at_claim' };
   }
-  return { ok: true, commandId, categories };
+  return { ok: true, commandId, categories, skippedCategories };
 }

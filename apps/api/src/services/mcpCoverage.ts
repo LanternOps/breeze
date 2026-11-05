@@ -160,6 +160,14 @@ export type McpExemptReason =
    */
   | 'human_only_force_reboot'
   /**
+   * "Run vendor updates" (#11065): runs the device maker's update tool, which can
+   * flash a BIOS or firmware and restart the machine. Interactive user session,
+   * devices:execute and MFA, with the reboot choice made by a person. v1 adds no
+   * AI tool by design (spec, Decision 9); an agent-reachable path would remove the
+   * human from a firmware flash.
+   */
+  | 'human_only_oem_updates'
+  /**
    * The chat / script-builder session transport itself (sessions, messages,
    * interrupt, approve-plan). This is the plumbing the AI features run over,
    * not a tool surface an AI agent calls (W05 gap triage).
@@ -494,6 +502,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/networkIsolation.ts': { tools: ['execute_containment', 'release_containment'] },
   'agents/isolationVerify.ts': { exempt: 'agent_transport' },
   'devices/forceReboot.ts': { exempt: 'human_only_force_reboot', note: 'Force reboot now: closes running apps; step-up bound to one device.' },
+  'devices/oemUpdates.ts': { exempt: 'human_only_oem_updates', note: 'Run vendor updates (BIOS, firmware, drivers through the maker\'s tool) plus its status and history reads; no AI tool in v1 (#11065 Decision 9).' },
   'devices/moveOrg.ts': { exempt: 'human_only_tenant_restructure', note: 'Cross-tenant device move -- rewrites which tenant owns the device.' },
   'devices/network.ts': { tools: ['list_network_assets'] },
   'devices/options.ts': { exempt: 'internal_plumbing' },

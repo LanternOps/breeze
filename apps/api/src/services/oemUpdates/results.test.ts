@@ -7,6 +7,7 @@ const state = vi.hoisted(() => ({
   updates: [] as Array<Record<string, unknown>>,
   inserts: [] as Array<Record<string, unknown>>,
   failReads: false,
+  afterCommit: [] as Promise<unknown>[],
 }));
 
 vi.mock('../../db', () => {
@@ -48,8 +49,21 @@ vi.mock('../../db', () => {
       })),
     },
     withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
+    // Runs the work after "commit"; collected so a test can await it.
+    runAfterDbContextCommit: vi.fn((_label: string, work: () => unknown) => {
+      state.afterCommit.push(Promise.resolve().then(work));
+    }),
   };
 });
+
+vi.mock('../patchRebootHandler', () => ({
+  resolveRebootPlan: vi.fn(async () => ({
+    delayMinutes: 30,
+    deferral: { allowDeferral: true, maxDeferrals: 2, deferralMinutes: 60 },
+    promptText: { title: 'Restart' },
+  })),
+  executeReboot: vi.fn(async () => ({ success: true, delayMinutes: 30 })),
+}));
 
 vi.mock('./alerts', () => ({
   emitProtectionStillSuspendedAlert: vi.fn(async () => 'alert-1'),
@@ -66,6 +80,8 @@ import {
   resolveReturnedDeviceAlerts,
 } from './alerts';
 import { applyOemUpdateResult, applyOemUpdateVerification } from './results';
+import { executeReboot, resolveRebootPlan } from '../patchRebootHandler';
+import { runAfterDbContextCommit } from '../../db';
 import { getLaneManifest } from './toolManifest';
 
 const COMMAND_ID = '11111111-1111-4111-8111-111111111111';
@@ -114,6 +130,10 @@ beforeEach(() => {
   state.updates = [];
   state.inserts = [];
   state.failReads = false;
+  state.afterCommit = [];
+  vi.mocked(executeReboot).mockClear();
+  vi.mocked(executeReboot).mockResolvedValue({ success: true, delayMinutes: 30 });
+  vi.mocked(resolveRebootPlan).mockClear();
   vi.mocked(captureException).mockClear();
   vi.mocked(emitProtectionStillSuspendedAlert).mockClear();
   vi.mocked(emitProtectionStillSuspendedAlert).mockResolvedValue('alert-1');
@@ -401,5 +421,114 @@ describe('applyOemUpdateVerification', () => {
   it('a report with no status row is ignored', async () => {
     state.status = null;
     await expect(verify()).resolves.toBe(false);
+  });
+});
+
+describe('reboot when finished (#11065 W04)', () => {
+  const whenFinished = (over: Record<string, unknown> = {}) => {
+    state.command = {
+      id: COMMAND_ID,
+      deviceId: DEVICE_ID,
+      type: 'oem_update_run',
+      submittedOrgId: ORG_ID,
+      payload: { categories: ['bios'], trigger: 'on_demand', rebootControlled: true },
+      ...over,
+    };
+  };
+  const needsReboot = (over: Record<string, unknown> = {}) =>
+    goodResult({ outcome: 'success_reboot_required', rebootRequired: true, ...over });
+  const applied = async (result: unknown) => {
+    await apply(result);
+    await Promise.all(state.afterCommit);
+  };
+
+  it('when_finished then rebootRequired queues schedule_reboot with source oem_updates', async () => {
+    whenFinished();
+    await applied(needsReboot());
+    expect(executeReboot).toHaveBeenCalledTimes(1);
+    expect(executeReboot).toHaveBeenCalledWith(DEVICE_ID, expect.any(String), {
+      // The patch policy's delay, deferral and prompt text.
+      delayMinutes: 30,
+      deferral: { allowDeferral: true, maxDeferrals: 2, deferralMinutes: 60 },
+      promptText: { title: 'Restart' },
+      expectedOrgId: ORG_ID,
+      source: 'oem_updates',
+      commitBeforeDelivery: true,
+    });
+  });
+
+  it('waits for the result to commit: the reboot never rides the result transaction', async () => {
+    whenFinished();
+    await apply(needsReboot());
+    expect(runAfterDbContextCommit).toHaveBeenCalledWith('oemUpdates.rebootWhenFinished', expect.any(Function));
+    await Promise.all(state.afterCommit);
+  });
+
+  it('leave_to_me queues no reboot, and the clock still shows it is owed', async () => {
+    whenFinished({ payload: { categories: ['driver'], trigger: 'on_demand', rebootControlled: false } });
+    await applied(needsReboot());
+    expect(executeReboot).not.toHaveBeenCalled();
+    expect(state.updates[0]!.rebootPendingSince).toBeInstanceOf(Date);
+  });
+
+  it.each([
+    ['nothing needs one', goodResult()],
+    ['only a shutdown was asked for', goodResult({ shutdownRequired: true })],
+    ['the result cannot be read', { rebootRequired: true }],
+  ])('queues no reboot when %s', async (_label, result) => {
+    whenFinished();
+    await applied(result);
+    expect(executeReboot).not.toHaveBeenCalled();
+  });
+
+  it('a scheduled run is not this path: the scheduler owns its reboots', async () => {
+    whenFinished({ payload: { categories: ['bios'], trigger: 'scheduled', rebootControlled: true } });
+    await applied(needsReboot());
+    expect(executeReboot).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['no payload', null],
+    ['no reboot choice', { trigger: 'on_demand' }],
+    ['a truthy string', { trigger: 'on_demand', rebootControlled: 'true' }],
+  ])('an unreadable choice (%s) is not consent to restart', async (_label, payload) => {
+    whenFinished({ payload });
+    await applied(needsReboot());
+    expect(executeReboot).not.toHaveBeenCalled();
+  });
+
+  it('a device moved mid-run gets no reboot: the consent was given under another org', async () => {
+    whenFinished({ submittedOrgId: '99999999-9999-4999-8999-999999999999' });
+    await applied(needsReboot());
+    expect(executeReboot).not.toHaveBeenCalled();
+    expect(state.updates[0]!.rebootPendingSince).toBeInstanceOf(Date);
+  });
+
+  it('a row with no stamp gets no reboot', async () => {
+    whenFinished({ submittedOrgId: null });
+    await applied(needsReboot());
+    expect(executeReboot).not.toHaveBeenCalled();
+  });
+
+  it('a superseded run queues no reboot', async () => {
+    whenFinished();
+    state.status = statusRow({ lastCommandId: '99999999-9999-4999-8999-999999999999' });
+    await applied(needsReboot());
+    expect(executeReboot).not.toHaveBeenCalled();
+  });
+
+  it('a refused reboot is reported, the result stands, and the row keeps showing it is owed', async () => {
+    whenFinished();
+    vi.mocked(executeReboot).mockResolvedValue({ success: false, error: 'trust denied' });
+    await expect(applied(needsReboot())).resolves.toBeUndefined();
+    expect(captureException).toHaveBeenCalledTimes(1);
+    expect(state.updates[0]!.rebootPendingSince).toBeInstanceOf(Date);
+  });
+
+  it('a throwing reboot never escapes into the deferred-work runner', async () => {
+    whenFinished();
+    vi.mocked(executeReboot).mockRejectedValue(new Error('pool'));
+    await expect(applied(needsReboot())).resolves.toBeUndefined();
+    expect(captureException).toHaveBeenCalledTimes(1);
   });
 });

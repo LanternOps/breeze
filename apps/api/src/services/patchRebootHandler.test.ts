@@ -3,7 +3,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // The module pulls in the command queue and the policy resolver; both drag DB /
 // websocket import chains into a DB-less unit run, so they are mocked and the
 // behaviour under test is the delay resolution and the dispatch shape.
-vi.mock('./commandQueue', () => ({ queueCommandForExecution: vi.fn() }));
+vi.mock('./commandQueue', () => ({
+  queueCommandForExecution: vi.fn(),
+  queueCommandForExecutionWithSystemPrecheck: vi.fn(),
+}));
 vi.mock('./featureConfigResolver', () => ({
   checkDeviceMaintenanceWindow: vi.fn(),
   resolvePatchConfigForDevice: vi.fn(),
@@ -26,7 +29,7 @@ import {
   resolveRebootDeferralSettings,
   rebootPromptTextFrom,
 } from './patchRebootHandler';
-import { queueCommandForExecution } from './commandQueue';
+import { queueCommandForExecution, queueCommandForExecutionWithSystemPrecheck } from './commandQueue';
 import { checkDeviceMaintenanceWindow, resolvePatchConfigForDevice } from './featureConfigResolver';
 import { captureException } from './sentry';
 
@@ -191,6 +194,40 @@ describe('executeReboot', () => {
     vi.mocked(queueCommandForExecution).mockResolvedValue({ error: 'Device is offline, cannot execute command' } as never);
     const res = await executeReboot('dev-1', 'reason', { delayMinutes: 15 });
     expect(res).toEqual({ success: false, error: 'Device is offline, cannot execute command' });
+  });
+
+  // #11065 W04: a vendor update run's reboot says where it came from, and is
+  // queued from outside any DB context, committed before the socket push.
+  it('carries the caller\'s source and commits before delivery when asked', async () => {
+    vi.mocked(queueCommandForExecutionWithSystemPrecheck).mockResolvedValue({ command: { id: 'c-1' } } as never);
+    const res = await executeReboot('dev-1', 'Vendor updates need a restart', {
+      delayMinutes: 15,
+      deferral: DEFERRAL_OFF,
+      promptText: {},
+      expectedOrgId: 'org-9',
+      source: 'oem_updates',
+      commitBeforeDelivery: true,
+    });
+    expect(res).toEqual({ success: true, delayMinutes: 15 });
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+    expect(queueCommandForExecutionWithSystemPrecheck).toHaveBeenCalledWith(
+      'dev-1',
+      'schedule_reboot',
+      expect.objectContaining({ source: 'oem_updates', delayMinutes: 15, reason: 'Vendor updates need a restart' }),
+      { expectedOrgId: 'org-9' },
+    );
+  });
+
+  it('refuses to commit before delivery without the org it is for', async () => {
+    const res = await executeReboot('dev-1', 'reason', {
+      delayMinutes: 15,
+      deferral: DEFERRAL_OFF,
+      promptText: {},
+      commitBeforeDelivery: true,
+    });
+    expect(res.success).toBe(false);
+    expect(queueCommandForExecutionWithSystemPrecheck).not.toHaveBeenCalled();
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
   });
 });
 
