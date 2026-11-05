@@ -22,9 +22,13 @@ export function isSeriesSchedule(value: string | undefined): value is SeriesSche
  * If W02 exported SERIES_UNSUPPORTED_REPORT_TYPES from @breeze/shared, import
  * it here instead (Contract concern 7).
  */
+/** Mirrors the server's list in services/reportSeries/validation.ts (#11018 D7). */
+const SERIES_PENDING_MANAGED_EVIDENCE_TYPES = ['ticket_sla_performance'] as const;
+
 const SERIES_REFUSED_TYPES: ReadonlySet<string> = new Set<string>([
   ...BUSINESS_REPORT_TYPES,
   ...MANAGED_EVIDENCE_REPORT_TYPES,
+  ...SERIES_PENDING_MANAGED_EVIDENCE_TYPES,
   'ai_org_narrative',
   'ai_fleet_design',
 ]);
