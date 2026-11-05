@@ -96,6 +96,10 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   // Wisp W08: every link_entity is a durable row on the thread every later
   // session is seeded with (cap 50 per thread).
   link_entity: { limit: 20, windowSeconds: 300 },
+  // Wisp check-ins (#10991 W03): every schedule_check_in is a delayed job and
+  // a notification to the grantor (cap 5 scheduled per thread).
+  schedule_check_in: { limit: 10, windowSeconds: 600 },
+  cancel_check_in: { limit: 20, windowSeconds: 300 },
   // Wisp W07: every launch_specialist admits a run or an Operator task (or a
   // client-facing bulk reply) that spends grant budget.
   launch_specialist: { limit: 10, windowSeconds: 3600 },

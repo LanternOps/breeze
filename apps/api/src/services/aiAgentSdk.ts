@@ -1172,6 +1172,10 @@ async function wispSelfStateSkipsCard(
   switch (WISP_SELF_STATE_TOOLS.get(toolName)) {
     case 'adds_row':
       return true;
+    // The handler pins the row to the call's grant (cancelCheckIn is keyed on
+    // grant_id), so the only rows it can touch are this grant's own.
+    case 'own_thread':
+      return true;
     case 'own_memory':
       return input.ownerKind === 'user';
     case 'own_concern': {

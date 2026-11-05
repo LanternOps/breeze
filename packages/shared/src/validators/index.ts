@@ -1460,6 +1460,7 @@ export * from './trustCenterEmbed';
 export * from './launchPurchaseSelection';
 export * from './signupIntent';
 export * from './wispConcerns';
+export * from './wispCheckIns';
 export * from './wispNudgePreferences';
 export * from './wispSpecialists';
 export * from './wisp';
