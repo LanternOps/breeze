@@ -116,7 +116,8 @@ describe('LoginPage navigation after login', () => {
     await waitFor(() => expect(navigateTo).toHaveBeenCalled());
     expect(navigateTo).toHaveBeenCalledWith('/oauth/consent?uid=abc');
     await act(async () => finishNavigation('hard'));
-    await waitFor(() => expect(screen.getByLabelText(/email/i)).toBeInTheDocument());
+    expect(screen.getByTestId('login-welcome')).toBeInTheDocument();
+    expect(screen.queryByLabelText(/email/i)).toBeNull();
   });
 
   it('restores the login form when navigation fails', async () => {

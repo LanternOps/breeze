@@ -217,8 +217,7 @@ export default function LoginPage({ next, partnerSlug }: LoginPageProps = {}) {
     try {
       await navigateTo(postLoginDestination(requiresSetup, safeNext));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Unable to complete sign in');
-    } finally {
+      setError(caught instanceof Error ? caught.message : t('login.completeSignInFailed', { defaultValue: 'Unable to complete sign in' }));
       setWelcomeUser(null);
       setLoading(false);
     }
