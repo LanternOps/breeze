@@ -68,13 +68,20 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      # Restore-only: the seed on main saves the pnpm store, and setup-node's own
+      # cache duplicated it there as node-cache-* (#11119).
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: agent/go.mod
-          cache-dependency-path: agent/go.sum
+          cache: false
+
+      - name: Restore Go cache
+        uses: ./.github/actions/restore-go-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -176,13 +183,20 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      # Restore-only: the seed on main saves the pnpm store, and setup-node's own
+      # cache duplicated it there as node-cache-* (#11119).
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: agent/go.mod
-          cache-dependency-path: agent/go.sum
+          cache: false
+
+      - name: Restore Go cache
+        uses: ./.github/actions/restore-go-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

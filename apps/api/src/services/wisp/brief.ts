@@ -86,6 +86,9 @@ function localParts(d: Date, tz: string): { date: string; minutes: number } {
   return { date: `${parts.year}-${parts.month}-${parts.day}`, minutes: Number(parts.hour) * 60 + Number(parts.minute) };
 }
 
+/** A brief time is `HH:MM` (24 h); anything else means no brief. */
+const BRIEF_TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
 export function briefDue(
   prefs: { briefTimeLocal: string | null; briefTimezone: string | null },
   lastBriefAt: Date | null,
@@ -94,7 +97,7 @@ export function briefDue(
 ): { due: boolean; localDate: string } {
   const tz = safeTimeZone(prefs.briefTimezone ?? fallbackTz);
   const today = localParts(now, tz);
-  const m = prefs.briefTimeLocal === null ? null : /^([01]\d|2[0-3]):([0-5]\d)$/.exec(prefs.briefTimeLocal);
+  const m = prefs.briefTimeLocal === null ? null : BRIEF_TIME_RE.exec(prefs.briefTimeLocal);
   if (!m) return { due: false, localDate: today.date };
   if (today.minutes < Number(m[1]) * 60 + Number(m[2])) return { due: false, localDate: today.date };
   // YYYY-MM-DD compares correctly as a string.
@@ -214,6 +217,20 @@ async function fallbackTimezones(userIds: string[]): Promise<Map<string, string>
   const out = new Map<string, string>();
   for (const r of rows) if (r.timezone && !out.has(r.userId)) out.set(r.userId, r.timezone);
   return out;
+}
+
+/**
+ * #10391: when this user's brief fires, resolved as the sweep below resolves it
+ * (preference timezone, else the oldest mobile device's, else UTC) — for the
+ * Wisp chat seed. `timeLocal` null = briefs off. Elects system scope.
+ */
+export async function briefScheduleFor(userId: string): Promise<{ timeLocal: string | null; timezone: string }> {
+  const prefs = (await loadNudgeBookkeeping([userId])).get(userId)?.prefs ?? resolveWispNudgePrefs(null);
+  const fallback = prefs.briefTimezone
+    ? undefined
+    : (await inSystemContext(() => fallbackTimezones([userId]))).get(userId);
+  const timeLocal = prefs.briefTimeLocal !== null && BRIEF_TIME_RE.test(prefs.briefTimeLocal) ? prefs.briefTimeLocal : null;
+  return { timeLocal, timezone: safeTimeZone(prefs.briefTimezone ?? fallback ?? 'UTC') };
 }
 
 export async function runMorningBriefs(now: Date = new Date()): Promise<{ due: number; sent: number; suppressed: number }> {

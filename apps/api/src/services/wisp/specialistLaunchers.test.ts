@@ -155,6 +155,10 @@ describe('specialistDedupeKey / parseSpecialistParams', () => {
 });
 
 describe('launchSweep', () => {
+  beforeEach(() => {
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'ag-t', effective: { enabled: true, mode: 'shadow' } });
+  });
+
   it('enqueues exactly one occurrence job for the effective baseline', async () => {
     h.resolveEffectiveSchedulesForPartner.mockResolvedValue([entry({ id: 'sched-9' })]);
     const res = await launchSweep(ctx());
@@ -189,6 +193,56 @@ describe('launchSweep', () => {
     h.resolveEffectiveSchedulesForPartner.mockResolvedValue(entries);
     expect(await launchSweep(ctx({ params }))).toEqual({ refused: 'no_sweep_schedule' });
     expect(h.sweepAdd).not.toHaveBeenCalled();
+  });
+
+  // #10487: the occurrence admits one run of the org's effective triage agent;
+  // per-org admission would skip it (agent_disabled / mode_off / no agent), so
+  // "queued" is a refusal the caller can name, not a silent `admitted`.
+  describe('the org\'s triage agent (#10487)', () => {
+    beforeEach(() => {
+      h.resolveEffectiveSchedulesForPartner.mockResolvedValue([entry()]);
+    });
+
+    it('checks the org\'s effective triage agent before enqueueing', async () => {
+      expect(await launchSweep(ctx())).toEqual({ admitted: true });
+      expect(h.resolveEffectiveAgentSystem).toHaveBeenCalledWith(ORG, 'triage');
+    });
+
+    it('refuses no_effective_agent without a triage agent, and enqueues nothing', async () => {
+      h.resolveEffectiveAgentSystem.mockResolvedValue(null);
+      expect(await launchSweep(ctx())).toEqual({ refused: 'no_effective_agent' });
+      expect(h.sweepAdd).not.toHaveBeenCalled();
+    });
+
+    it('refuses agent_disabled, naming the agent, for a switched-off triage agent', async () => {
+      h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'ag-t', effective: { enabled: false, mode: 'shadow' } });
+      h.tables.ai_agents = [[{ name: 'QA Triage agent' }]];
+      expect(await launchSweep(ctx())).toEqual({
+        refused: 'agent_disabled', detail: 'disabled', message: expect.stringContaining('"QA Triage agent" is switched off'),
+      });
+      expect(h.sweepAdd).not.toHaveBeenCalled();
+    });
+
+    it('refuses agent_disabled (mode_off) for a triage agent set to mode Off', async () => {
+      h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'ag-t', effective: { enabled: true, mode: 'off' } });
+      h.tables.ai_agents = [[{ name: 'QA Triage agent' }]];
+      expect(await launchSweep(ctx())).toMatchObject({ refused: 'agent_disabled', detail: 'mode_off' });
+      expect(h.sweepAdd).not.toHaveBeenCalled();
+    });
+
+    it('refuses kill_switch_off before resolving the agent', async () => {
+      vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'false');
+      expect(await launchSweep(ctx())).toMatchObject({ refused: 'agent_disabled', detail: 'kill_switch_off' });
+      expect(h.resolveEffectiveAgentSystem).not.toHaveBeenCalled();
+      expect(h.sweepAdd).not.toHaveBeenCalled();
+    });
+
+    it('a missing schedule is named first (no agent read)', async () => {
+      h.resolveEffectiveSchedulesForPartner.mockResolvedValue([]);
+      h.resolveEffectiveAgentSystem.mockResolvedValue(null);
+      expect(await launchSweep(ctx())).toEqual({ refused: 'no_sweep_schedule' });
+      expect(h.resolveEffectiveAgentSystem).not.toHaveBeenCalled();
+    });
   });
 });
 
@@ -714,6 +768,7 @@ describe('SPECIALIST_PREREQUISITES (#10144)', () => {
   });
 
   it('sweep: refuses no_sweep_schedule without a matching enabled baseline, passes with one', async () => {
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'ag-t', effective: { enabled: true, mode: 'shadow' } });
     h.resolveEffectiveSchedulesForPartner.mockResolvedValue([]);
     expect(await pre('sweep')).toEqual({ refused: 'no_sweep_schedule' });
     h.resolveEffectiveSchedulesForPartner.mockResolvedValue([entry({ sweepKinds: ['disk_pressure'] })]);
@@ -721,6 +776,20 @@ describe('SPECIALIST_PREREQUISITES (#10144)', () => {
     expect(await pre('sweep', { sweepKinds: ['disk_pressure'] })).toBeNull();
     expect(await pre('sweep')).toBeNull();
     expect(h.resolveEffectiveSchedulesForPartner).toHaveBeenCalledWith(PARTNER);
+    noSideEffects();
+  });
+
+  // #10487: the sweep's run is the org's triage agent's; a switched-off one is doomed.
+  it('sweep: refuses agent_disabled / no_effective_agent for the org\'s triage agent', async () => {
+    h.resolveEffectiveSchedulesForPartner.mockResolvedValue([entry()]);
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'ag-t', effective: { enabled: false, mode: 'shadow' } });
+    h.tables.ai_agents = [[{ name: 'QA Triage agent' }]];
+    expect(await pre('sweep')).toEqual({
+      refused: 'agent_disabled', detail: 'disabled', message: expect.stringContaining('"QA Triage agent" is switched off'),
+    });
+    h.resolveEffectiveAgentSystem.mockResolvedValue(null);
+    expect(await pre('sweep')).toEqual({ refused: 'no_effective_agent' });
+    expect(h.resolveEffectiveAgentSystem).toHaveBeenCalledWith(ORG, 'triage');
     noSideEffects();
   });
 

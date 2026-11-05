@@ -2456,11 +2456,17 @@ jobs:
       # and flashing vendor tools. authenticode's signer read and flashguard's
       # LockFileEx path exist only on Windows, so this is the one place either
       # executes before a lab. Neither depends on remote/desktop or cgo.
+      #
+      # ./internal/oemupdates (#11065 W02) is the vendor-update runner: its
+      # Windows build reads GetSystemPowerStatus, PE file versions and the BIOS
+      # registry key, and its tests run the real flash guard. It pulls
+      # remote/desktop in through privilege -> remote/tools, and its test binary
+      # still builds with CGO_ENABLED=0.
       - name: Run Windows Go tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/authenticode ./internal/flashguard ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/backup/wingpt ./internal/backup/layout ./internal/backup/windisks ./internal/recoveryconsole ./internal/backup/rebuild ./internal/backup/winhive ./internal/backup/bmr ./internal/backup/hosttool ./internal/collectors/timesync ./internal/executor ./internal/securefs ./internal/winsvcinstall ./internal/svcquery ./internal/pamdecline ./cmd/breeze-watchdog
+        run: go test ./internal/authenticode ./internal/flashguard ./internal/oemupdates ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/backup/wingpt ./internal/backup/layout ./internal/backup/windisks ./internal/recoveryconsole ./internal/backup/rebuild ./internal/backup/winhive ./internal/backup/bmr ./internal/backup/hosttool ./internal/collectors/timesync ./internal/executor ./internal/securefs ./internal/winsvcinstall ./internal/svcquery ./internal/pamdecline ./cmd/breeze-watchdog
 
       # The step above runs without -v, so a t.Skip is indistinguishable from a
       # pass in its output. That matters here more than usual: elevaccount's two
