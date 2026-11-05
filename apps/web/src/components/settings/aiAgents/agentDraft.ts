@@ -93,7 +93,13 @@ export function toggle<T>(list: T[], value: T): T[] {
  */
 export function creatableKinds(agents: AiAgentDto[], ownerScope: OwnerScope): AiAgentKind[] {
   const hasResearchBaseline = agents.some((row) => row.kind === 'research' && row.ownerScope === 'partner');
-  return AI_AGENT_KINDS.filter((kind) => kind !== 'research' || (ownerScope === 'organization' && hasResearchBaseline));
+  // `troubleshoot` is system-provisioned and never user-creatable (server:
+  // troubleshoot_agent_edit_restricted); only enabled/name can be edited.
+  return AI_AGENT_KINDS.filter(
+    (kind) =>
+      kind !== 'troubleshoot' &&
+      (kind !== 'research' || (ownerScope === 'organization' && hasResearchBaseline)),
+  );
 }
 
 /**
@@ -280,6 +286,9 @@ export function buildAgentSaveBody(
   opts: { isCreate: boolean; orgId: string | null },
 ): Record<string, unknown> {
   if (draft.kind === 'research') return buildResearchSaveBody(draft, opts);
+  // The built-in troubleshoot agent accepts only enabled and name on PATCH;
+  // anything else is a 400 (troubleshoot_agent_edit_restricted).
+  if (draft.kind === 'troubleshoot') return { name: draft.name.trim(), enabled: draft.enabled };
   // On PATCH the server merges each nested object one level onto the stored
   // jsonb (updatePolicyColumns), so the narrowing fields this form does not
   // expose — triggers.siteIds / deviceGroupIds / deviceTags,

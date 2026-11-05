@@ -433,7 +433,7 @@ export const launchSpecialistInputSchema = z.strictObject({
 const ls = launchSpecialistInputSchema.shape;
 export const launchSpecialistShape = {
   orgId: ls.orgId.describe('The customer organization the specialist works on (UUID)'),
-  kind: ls.kind.describe('Which specialist. sweep and analysis start at once; every other kind needs approval first'),
+  kind: ls.kind.describe('Which specialist. sweep, analysis and device_troubleshooting start at once; every other kind needs approval first'),
   // #10144: every kind's exact keys — the params schemas in
   // wisp/specialistLaunchers.ts are strict, so an unlisted key is refused
   // invalid_params. The two long kinds are listed in the tool description

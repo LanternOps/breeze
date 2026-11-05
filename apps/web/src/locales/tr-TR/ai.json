@@ -557,7 +557,14 @@
       "failed": "başarısız",
       "cancelled": "iptal edildi",
       "expired": "süresi doldu",
-      "skipped": "atlandı"
+      "skipped": "atlandı",
+      "awaiting_approval": "onay bekliyor"
+    },
+    "approvals": {
+      "pending_one": "{{count}} adım onayınızı bekliyor",
+      "pending_other": "{{count}} adım onayınızı bekliyor",
+      "waiting": "Onayınızı bekleyen adımlar var",
+      "review": "Onaylar'da incele"
     }
   },
   "aiModelPicker": {
@@ -872,7 +879,14 @@
       "workersEmpty": "Çalışan uzman yok.",
       "allRuns": "Tüm çalıştırmalar",
       "details": "Ayrıntılar",
-      "ended": "Bu yetki sona erdi; bu nedenle sorunları, çalışanları ve etkinlikleri artık gösterilmiyor."
+      "ended": "Bu yetki sona erdi; bu nedenle sorunları, çalışanları ve etkinlikleri artık gösterilmiyor.",
+      "workerStatus": {
+        "queued": "Sırada",
+        "running": "Çalışıyor",
+        "awaiting_approval": "Onay bekliyor",
+        "completed": "Tamamlandı",
+        "failed": "Başarısız"
+      }
     },
     "composer": {
       "placeholder": "Wisp'e mesaj",

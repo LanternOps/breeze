@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type { AiAgentRunStatus } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
 import { downloadArtifact } from '@/lib/downloadArtifact';
-import type { ChatRunState } from '@/stores/processStreamEvent';
+import type { ChatRunProgressEntry, ChatRunState } from '@/stores/processStreamEvent';
 
 /** Poll cadence, matching the run detail page's DETAIL_POLL_INTERVAL_MS. */
 const POLL_INTERVAL_MS = 5_000;
@@ -23,6 +23,10 @@ interface PolledRun {
   computeCents: number;
   costCents: number;
   artifacts: PolledArtifact[];
+  /** Progress ring from `GET /ai/agents/runs/:id` (routes/aiAgents.ts `progress`). */
+  progress?: ChatRunProgressEntry[];
+  /** `RunTraceIntentRowInput` rows linked to the run (`intents`). */
+  intents?: Array<{ status: string }>;
 }
 
 interface AiRunCardProps {
@@ -53,6 +57,22 @@ const TERMINAL_BY_STATUS: Record<AiAgentRunStatus, boolean> = {
   // AI model registry W03: model unavailable / refused — final, like skipped.
   blocked: true,
 };
+
+/**
+ * Statuses after which polling is pointless: terminal ones, plus
+ * `awaiting_approval` (the run will not move until a person decides). Kept
+ * apart from TERMINAL_BY_STATUS so the status copy and the "open the full run"
+ * link still treat an approval-parked run as in flight. Total map for the same
+ * reason as above.
+ */
+const SETTLED_FOR_POLLING: Record<AiAgentRunStatus, boolean> = {
+  ...TERMINAL_BY_STATUS,
+  awaiting_approval: true,
+};
+
+function isSettled(status: string | undefined): boolean {
+  return status !== undefined && SETTLED_FOR_POLLING[status as AiAgentRunStatus] === true;
+}
 
 function isTerminal(status: string): boolean {
   return TERMINAL_BY_STATUS[status as AiAgentRunStatus] === true;
@@ -90,7 +110,11 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
   const [polled, setPolled] = useState<PolledRun | null>(null);
   const stopped = useRef(false);
 
-  const status = polled?.status ?? run?.status ?? initialStatus;
+  // A live settled result beats a poll that predates it.
+  const status = run && isSettled(run.status) && !isSettled(polled?.status)
+    ? run.status
+    : polled?.status ?? run?.status ?? initialStatus;
+  const liveSettled = run !== undefined && isSettled(run.status);
   const runIsTerminal = isTerminal(status);
   /**
    * True only when a `run_result` event actually reached this tab — i.e. a turn
@@ -100,6 +124,7 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
 
   useEffect(() => {
     stopped.current = false;
+    if (liveSettled) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const tick = async () => {
@@ -116,8 +141,8 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
           if (stopped.current) return;
           if (body.data) {
             setPolled(body.data);
-            if (isTerminal(body.data.status)) {
-              // A finished run never changes again; keep polling and every open
+            if (isSettled(body.data.status)) {
+              // A finished (or approval-parked) run never changes on its own; keep polling and every open
               // chat with an old run card becomes a background request forever.
               stopped.current = true;
               return;
@@ -136,7 +161,7 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
       stopped.current = true;
       if (timer) clearTimeout(timer);
     };
-  }, [runId]);
+  }, [runId, liveSettled]);
 
   const summary = polled?.summary ?? run?.summary ?? null;
   const artifacts: PolledArtifact[] = polled?.artifacts
@@ -147,7 +172,17 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
       contentType: a.contentType,
       downloadPath: `/api/v1/ai/artifacts/${a.handle}`,
     }));
-  const progress = run?.progress ?? [];
+  // Live and polled steps merge by ordinal (live wins), so a stream attached
+  // mid-run and the 5 s poll never double a step.
+  const byOrdinal = new Map<number, ChatRunProgressEntry>();
+  for (const p of polled?.progress ?? []) byOrdinal.set(p.ordinal, p);
+  for (const p of run?.progress ?? []) byOrdinal.set(p.ordinal, p);
+  const progress = [...byOrdinal.values()].sort((a, b) => a.ordinal - b.ordinal);
+
+  const polledPending = polled?.intents?.filter((i) => i.status === 'pending_approval').length;
+  const pendingCount = polled?.status === 'awaiting_approval' && polledPending !== undefined
+    ? polledPending
+    : run?.pendingIntentCount ?? polledPending;
 
   const StatusIcon = status === 'completed'
     ? CheckCircle
@@ -178,6 +213,17 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
             <li key={p.ordinal}>{p.label}</li>
           ))}
         </ol>
+      )}
+
+      {status === 'awaiting_approval' && (
+        <div data-testid="ai-run-card-approvals" className="mt-2 text-xs">
+          <p>
+            {pendingCount !== undefined
+              ? t('aiRunCard.approvals.pending', { count: pendingCount })
+              : t('aiRunCard.approvals.waiting')}
+          </p>
+          <a href="/approvals" className="underline">{t('aiRunCard.approvals.review')}</a>
+        </div>
       )}
 
       {summary && (

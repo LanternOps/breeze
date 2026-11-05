@@ -446,7 +446,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Wisp thread links (W08 #9914): links one object you can see to the thread.
       { name: 'link_entity', description: 'Link a ticket, device, quote or other object to the Wisp thread', category: 'AI Governance' },
       // Wisp specialists (W07a #9913): sweeps and sandbox analysis run on the call.
-      { name: 'launch_specialist (sweep/analysis)', description: 'Ask Wisp to hand a sweep or sandbox analysis to a specialist agent', category: 'AI Governance' },
+      { name: 'launch_specialist (sweep/analysis/device_troubleshooting)', description: 'Ask Wisp to hand a sweep, a sandbox analysis or a device investigation to a specialist agent', category: 'AI Governance' },
     ],
   },
   {

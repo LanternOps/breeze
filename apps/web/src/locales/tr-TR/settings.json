@@ -2747,6 +2747,7 @@
       "helpdesk": "Talepleri üstlenir; yanıt ve sonraki adım önerir.",
       "designer": "Tüm filoyu okur ve bir teknisyenin onaylaması için gerekçeli bir izleme tasarımı yazar.",
       "research": "Yerleşik. Bir teknisyen istediğinde bir cihazdaki tek bir sorunu araştırır ve güvenli çözümler önerir. Asla bir şey çalıştırmaz.",
+      "troubleshoot": "Yerleşiktir. Wisp devrettiğinde arka planda tek bir cihaz üzerinde çalışır. İstediği her değişiklik, bir kişinin onayladığı bir istektir.",
       "researchLink": "Düzeltme belleğini aç",
       "designerLink": "Filo tasarımını aç"
     },
@@ -2895,7 +2896,8 @@
       "patch": "Yama yönetimi",
       "helpdesk": "Yardım masası",
       "designer": "Filo tasarımcısı",
-      "research": "Çözüm araştırması"
+      "research": "Çözüm araştırması",
+      "troubleshoot": "Cihaz sorun giderme"
     },
     "modes": {
       "off": "Kapalı",

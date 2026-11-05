@@ -57,7 +57,7 @@ vi.mock('./grantAuthority', async (orig) => ({
 vi.mock('./budget', () => ({ chargeableUnderGrant: h.chargeableUnderGrant }));
 vi.mock('./specialistLaunchers', async (orig) => {
   const actual = await orig<typeof import('./specialistLaunchers')>();
-  const kinds = ['sweep', 'analysis', 'operator_recipe', 'patch_plan', 'remediation_research', 'bulk_ticket_reply'];
+  const kinds = ['sweep', 'analysis', 'operator_recipe', 'patch_plan', 'remediation_research', 'bulk_ticket_reply', 'device_troubleshooting'];
   for (const k of kinds) h.launch[k] = vi.fn(async () => ({ admitted: true, runId: `run-${k}` }));
   for (const k of kinds) h.prereq[k] = vi.fn(async () => null);
   return {
@@ -106,6 +106,7 @@ const PARAMS: Record<SpecialistKind, Record<string, unknown>> = {
   patch_plan: {},
   remediation_research: { deviceId: DEVICE },
   bulk_ticket_reply: { concernId: null, ticketIds: [TICKET], message: 'We are on it.' },
+  device_troubleshooting: { deviceId: DEVICE, goal: 'Outlook crashes on start' },
 };
 
 function base(o: { kind?: SpecialistKind; params?: Record<string, unknown>; orgId?: string; requestedByRunId?: string | null } = {}) {
@@ -233,6 +234,9 @@ describe('requestSpecialist gating matrix', () => {
     ['remediation_research', 'run', 'needsApproval'], ['bulk_ticket_reply', 'run', 'needsApproval'],
     ['operator_recipe', 'user', 'admitted'], ['patch_plan', 'approval', 'admitted'],
     ['bulk_ticket_reply', 'user', 'admitted'], ['bulk_ticket_reply', 'approval', 'admitted'],
+    // #11084 Decision 3: a one-click chat hand-off, but an assessment still asks first.
+    ['device_troubleshooting', 'run', 'needsApproval'], ['device_troubleshooting', 'user', 'admitted'],
+    ['device_troubleshooting', 'approval', 'admitted'],
   ] as const)('%s from %s → %s', async (kind, requester, expected) => {
     const r = await requestSpecialist(base({ kind, requestedByRunId: requester === 'user' ? null : RUN }), { requester: requesterOf(requester), requestId: 'req-1' });
     expect(Object.keys(r)[0]).toBe(expected);

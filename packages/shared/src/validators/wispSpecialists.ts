@@ -23,6 +23,7 @@ export const WISP_SPECIALIST_KINDS = [
   'patch_plan',
   'remediation_research',
   'bulk_ticket_reply',
+  'device_troubleshooting',
 ] as const;
 export type WispSpecialistKind = (typeof WISP_SPECIALIST_KINDS)[number];
 

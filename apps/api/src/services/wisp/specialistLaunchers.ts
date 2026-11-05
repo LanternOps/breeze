@@ -25,6 +25,7 @@ import { getAiAgentSweepQueue, getSweepOccurrenceJobId } from '../../jobs/aiAgen
 import { admitAnalysisRun } from '../aiAgents/analysisAdmission';
 import { resolveEffectiveAgentSystem } from '../aiAgents/effectivePolicy';
 import { ensureResearchAgent } from '../aiAgents/researchProvisioning';
+import { ensureTroubleshootAgent } from '../aiAgents/troubleshootProvisioning';
 import { createAndEnqueueAgentRun, GrantDepthExceededError } from '../aiAgents/runService';
 import { effectiveSchedule } from '../aiAgents/scheduleMerge';
 import { resolveEffectiveSchedulesForPartner } from '../aiAgents/scheduleService';
@@ -101,6 +102,12 @@ export const researchParamsSchema = z.strictObject({
   alertId: z.uuid().optional(),
 });
 
+/** #11084: one device, one goal. The goal is the model's restatement of the person's ask — untrusted in the run's prompt. */
+export const troubleshootParamsSchema = z.strictObject({
+  deviceId: z.uuid(),
+  goal: z.string().trim().min(5).max(500),
+});
+
 const PARAMS_SCHEMAS: Readonly<Record<SpecialistKind, z.ZodType>> = Object.freeze({
   sweep: sweepParamsSchema,
   analysis: analysisParamsSchema,
@@ -108,6 +115,7 @@ const PARAMS_SCHEMAS: Readonly<Record<SpecialistKind, z.ZodType>> = Object.freez
   patch_plan: patchPlanParamsSchema,
   remediation_research: researchParamsSchema,
   bulk_ticket_reply: bulkTicketReplyParamsSchema,
+  device_troubleshooting: troubleshootParamsSchema,
 });
 
 /** The parsed params for `kind`, or null when they do not fit its schema. */
@@ -358,6 +366,15 @@ export const SPECIALIST_PREREQUISITES: Readonly<Record<SpecialistKind, (args: Pr
   },
   // Deterministic and agent-less: it checks every ticket when it runs.
   bulk_ticket_reply: async () => null,
+  // #11084: same shape as research — the troubleshoot agent is provisioned at
+  // launch (enabled), so a missing one passes; an existing switched-off one,
+  // or the kill switch, is doomed.
+  device_troubleshooting: async ({ orgId, params }) => {
+    if (!(await deviceInOrg(orgId, troubleshootParamsSchema.parse(params).deviceId))) return { refused: 'device_not_in_org' };
+    if (agentsKillSwitchOff()) return { ...KILL_SWITCH_REFUSAL };
+    const resolved = await resolveEffectiveAgentSystem(orgId, 'troubleshoot');
+    return resolved ? agentOffRefusal(resolved) : null;
+  },
 });
 
 // ---------------------------------------------------------------------------
@@ -494,6 +511,47 @@ export async function launchRemediationResearch(ctx: LaunchContext): Promise<Lau
 }
 
 /**
+ * Wisp delegation W1 (#11084) — a background, device-pinned troubleshooting
+ * run owned by the partner's built-in troubleshoot agent. Admission forces it
+ * to shadow and pins it to this device (runService), so every change it wants
+ * becomes an approval intent. `originSessionId` is the chat session that
+ * handed the work off (null on the run/approval paths, which have no live
+ * chat); when set, that chat's bridge streams the run's progress and result.
+ */
+export async function launchDeviceTroubleshooting(ctx: LaunchContext): Promise<LaunchResult> {
+  const params = troubleshootParamsSchema.parse(ctx.params);
+  if (!(await deviceInOrg(ctx.orgId, params.deviceId))) return { refused: 'device_not_in_org' };
+  // Opens and commits its own system transaction (outside any caller context).
+  await runOutsideDbContext(() => ensureTroubleshootAgent(ctx.partnerId));
+  const agent = await resolveLaunchableAgent(ctx.orgId, 'troubleshoot');
+  if (!agent.ok) return agent.refusal;
+  const originSessionId = ctx.actorAuth?.wispGrant?.sessionId ?? null;
+  const result = await admitRun(ctx, {
+    orgId: ctx.orgId,
+    kind: 'troubleshoot',
+    triggerKind: 'manual',
+    deviceId: params.deviceId,
+    profile: 'device_troubleshooting',
+    dedupeKey: specialistDedupeKey(ctx.requestId),
+    triggerRef: triggerRefFor(ctx, {
+      kind: 'device_troubleshooting',
+      deviceId: params.deviceId,
+      goal: params.goal,
+      originSessionId,
+    }),
+    grant: { ...ctx.grant },
+  });
+  // Idempotent per runId, so a replay from the same chat simply re-attaches.
+  // Lazy: the bridge pulls in the streaming session manager, which imports the
+  // chat tool graph that reaches this module (import cycle otherwise).
+  if ('admitted' in result && result.runId && originSessionId) {
+    const { watchRunForSession } = await import('../workspace/chatRunBridge');
+    watchRunForSession({ runId: result.runId, sessionId: originSessionId, orgId: ctx.orgId });
+  }
+  return result;
+}
+
+/**
  * The pinned bulk ticket reply (w00 A30). Deterministic, no agent: it runs at
  * the moment of launch under the ACTING HUMAN (the chat user, or the approver
  * of the card) and the grant ceiling. The auto-admit run path never reaches
@@ -534,4 +592,5 @@ export const SPECIALIST_LAUNCHERS: Readonly<Record<SpecialistKind, (ctx: LaunchC
   patch_plan: launchPatchPlan,
   remediation_research: launchRemediationResearch,
   bulk_ticket_reply: launchBulkTicketReply,
+  device_troubleshooting: launchDeviceTroubleshooting,
 });

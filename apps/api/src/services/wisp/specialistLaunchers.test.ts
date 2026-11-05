@@ -10,6 +10,8 @@ const h = vi.hoisted(() => ({
   admitAnalysisRun: vi.fn(),
   resolveEffectiveAgentSystem: vi.fn(),
   ensureResearchAgent: vi.fn(),
+  ensureTroubleshootAgent: vi.fn(),
+  watchRunForSession: vi.fn(),
   createAndEnqueueAgentRun: vi.fn(),
   resolveEffectiveSchedulesForPartner: vi.fn(),
   admitTask: vi.fn(),
@@ -49,6 +51,8 @@ vi.mock('../../jobs/aiAgentSweepScheduler', () => ({
 vi.mock('../aiAgents/analysisAdmission', () => ({ admitAnalysisRun: h.admitAnalysisRun }));
 vi.mock('../aiAgents/effectivePolicy', () => ({ resolveEffectiveAgentSystem: h.resolveEffectiveAgentSystem }));
 vi.mock('../aiAgents/researchProvisioning', () => ({ ensureResearchAgent: h.ensureResearchAgent }));
+vi.mock('../aiAgents/troubleshootProvisioning', () => ({ ensureTroubleshootAgent: h.ensureTroubleshootAgent }));
+vi.mock('../workspace/chatRunBridge', () => ({ watchRunForSession: h.watchRunForSession }));
 vi.mock('../aiAgents/runService', () => ({
   createAndEnqueueAgentRun: h.createAndEnqueueAgentRun,
   GrantDepthExceededError: class GrantDepthExceededError extends Error {},
@@ -68,6 +72,7 @@ import {
   SPECIALIST_PREREQUISITES,
   launchAnalysis,
   launchBulkTicketReply,
+  launchDeviceTroubleshooting,
   launchOperatorRecipe,
   launchPatchPlan,
   launchRemediationResearch,
@@ -407,6 +412,93 @@ describe('launchRemediationResearch', () => {
   });
 });
 
+describe('launchDeviceTroubleshooting (#11084)', () => {
+  const params = { deviceId: DEVICE, goal: 'Outlook crashes on start' };
+  const SESSION = '00000000-0000-4000-8000-0000000000b1';
+  const chatActor = { user: { id: GRANTOR }, wispGrant: { grantId: GRANT, grantRevisionId: REV, sessionId: SESSION } } as never;
+
+  it('validates params: a uuid device and a 5–500 char goal, nothing else', () => {
+    expect(parseSpecialistParams('device_troubleshooting', params)).toEqual(params);
+    expect(parseSpecialistParams('device_troubleshooting', { deviceId: DEVICE, goal: 'abc' })).toBeNull();
+    expect(parseSpecialistParams('device_troubleshooting', { deviceId: DEVICE, goal: 'x'.repeat(501) })).toBeNull();
+    expect(parseSpecialistParams('device_troubleshooting', { deviceId: 'nope', goal: 'Outlook crashes' })).toBeNull();
+    expect(parseSpecialistParams('device_troubleshooting', { ...params, extra: 1 })).toBeNull();
+    expect(specialistParamsError('device_troubleshooting', {})).toMatch(/deviceId/);
+    expect(specialistParamsError('device_troubleshooting', {})).toMatch(/goal/);
+  });
+
+  it('refuses a device outside the org and never provisions the troubleshoot agent', async () => {
+    h.tables.devices = [[]];
+    expect(await launchDeviceTroubleshooting(ctx({ params }))).toEqual({ refused: 'device_not_in_org' });
+    expect(h.ensureTroubleshootAgent).not.toHaveBeenCalled();
+    expect(h.createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+
+  it('provisions, resolves, then admits a device-pinned device_troubleshooting run carrying the origin session', async () => {
+    h.tables.devices = [[{ id: DEVICE }]];
+    h.tables.ai_agent_runs = [[]];
+    const order: string[] = [];
+    h.ensureTroubleshootAgent.mockImplementation(async () => { order.push('ensure'); return { agentId: 'ag', created: true }; });
+    h.resolveEffectiveAgentSystem.mockImplementation(async () => { order.push('resolve'); return { agentId: 'ag', effective: { enabled: true, mode: 'act' } }; });
+    h.createAndEnqueueAgentRun.mockImplementation(async () => { order.push('admit'); return { created: true, run: { id: 'r1' } }; });
+    expect(await launchDeviceTroubleshooting(ctx({ params, actorAuth: chatActor }))).toEqual({ admitted: true, runId: 'r1' });
+    expect(order).toEqual(['ensure', 'resolve', 'admit']);
+    expect(h.ensureTroubleshootAgent).toHaveBeenCalledWith(PARTNER);
+    expect(h.resolveEffectiveAgentSystem).toHaveBeenCalledWith(ORG, 'troubleshoot');
+    expect(h.createAndEnqueueAgentRun).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: ORG, kind: 'troubleshoot', profile: 'device_troubleshooting', deviceId: DEVICE, triggerKind: 'manual',
+      dedupeKey: 'wisp-specialist-req-1', grant: GRANT_REF,
+      triggerRef: expect.objectContaining({
+        source: 'wisp_specialist', kind: 'device_troubleshooting', deviceId: DEVICE, goal: params.goal, originSessionId: SESSION,
+      }),
+    }));
+    // The chat that asked gets the live run card.
+    expect(h.watchRunForSession).toHaveBeenCalledWith({ runId: 'r1', sessionId: SESSION, orgId: ORG });
+  });
+
+  it('the run/approval paths carry originSessionId null and register no bridge watch', async () => {
+    h.tables.devices = [[{ id: DEVICE }]];
+    h.tables.ai_agent_runs = [[]];
+    h.ensureTroubleshootAgent.mockResolvedValue({ agentId: 'ag', created: false });
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'ag', effective: { enabled: true, mode: 'shadow' } });
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: true, run: { id: 'r2' } });
+    expect(await launchDeviceTroubleshooting(ctx({ params, actorAuth: null }))).toEqual({ admitted: true, runId: 'r2' });
+    expect(h.createAndEnqueueAgentRun).toHaveBeenCalledWith(expect.objectContaining({
+      triggerRef: expect.objectContaining({ originSessionId: null }),
+    }));
+    expect(h.watchRunForSession).not.toHaveBeenCalled();
+  });
+
+  it('a replayed request resolves the prior run without admitting a second one', async () => {
+    h.tables.devices = [[{ id: DEVICE }]];
+    h.tables.ai_agent_runs = [[{ id: 'r-prior', status: 'running', errorCode: null }]];
+    h.ensureTroubleshootAgent.mockResolvedValue({ agentId: 'ag', created: false });
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'ag', effective: { enabled: true, mode: 'shadow' } });
+    expect(await launchDeviceTroubleshooting(ctx({ params, actorAuth: chatActor }))).toEqual({ admitted: true, runId: 'r-prior' });
+    expect(h.createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+
+  it('refuses agent_disabled when the troubleshoot agent is switched off', async () => {
+    h.tables.devices = [[{ id: DEVICE }]];
+    h.tables.ai_agents = [[{ name: 'Device troubleshooting (built-in)' }]];
+    h.ensureTroubleshootAgent.mockResolvedValue({ agentId: 'ag', created: false });
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'ag', effective: { enabled: false, mode: 'shadow' } });
+    expect(await launchDeviceTroubleshooting(ctx({ params }))).toMatchObject({ refused: 'agent_disabled', detail: 'disabled' });
+    expect(h.createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+
+  it('prerequisite: device outside the org refuses before any card; kill switch off refuses', async () => {
+    h.tables.devices = [[]];
+    expect(await SPECIALIST_PREREQUISITES.device_troubleshooting({ orgId: ORG, partnerId: PARTNER, params }))
+      .toEqual({ refused: 'device_not_in_org' });
+    h.tables.devices = [[{ id: DEVICE }]];
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'false');
+    expect(await SPECIALIST_PREREQUISITES.device_troubleshooting({ orgId: ORG, partnerId: PARTNER, params }))
+      .toMatchObject({ refused: 'agent_disabled', detail: 'kill_switch_off' });
+    expect(h.ensureTroubleshootAgent).not.toHaveBeenCalled();
+  });
+});
+
 describe('launchBulkTicketReply', () => {
   const params = { concernId: null, ticketIds: [TICKET], message: 'hi' };
   const actor = { user: { id: GRANTOR } } as never;
@@ -471,7 +563,7 @@ describe('launchBulkTicketReply', () => {
 describe('SPECIALIST_LAUNCHERS', () => {
   it('has exactly the policy kinds', () => {
     expect(Object.keys(SPECIALIST_LAUNCHERS).sort()).toEqual([...SPECIALIST_KINDS].sort());
-    expect(SPECIALIST_KINDS).toHaveLength(6);
+    expect(SPECIALIST_KINDS).toHaveLength(7);
   });
 });
 

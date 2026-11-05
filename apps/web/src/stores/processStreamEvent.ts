@@ -146,8 +146,10 @@ export interface ChatRunProgressEntry {
  */
 export interface ChatRunState {
   runId: string;
-  status: 'queued' | 'running' | 'completed' | 'failed';
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'awaiting_approval';
   progress: ChatRunProgressEntry[];
+  /** Set with `awaiting_approval`: how many of the run's intents are still pending. */
+  pendingIntentCount?: number;
   summary: string | null;
   artifacts: AiRunResultArtifactRef[];
 }
@@ -464,7 +466,7 @@ export function processStreamEvent(
               runId: event.runId,
               // Never downgrade a run that already reported terminal: a late
               // progress event must not resurrect a finished card.
-              status: existing?.status === 'completed' || existing?.status === 'failed'
+              status: existing?.status === 'completed' || existing?.status === 'failed' || existing?.status === 'awaiting_approval'
                 ? existing.status
                 : 'running',
               progress,
@@ -489,6 +491,7 @@ export function processStreamEvent(
               progress: existing?.progress ?? [],
               summary: event.summary,
               artifacts: event.artifacts,
+              ...(event.pendingIntentCount !== undefined ? { pendingIntentCount: event.pendingIntentCount } : {}),
             },
           },
         };

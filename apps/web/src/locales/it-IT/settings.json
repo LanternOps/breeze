@@ -2747,6 +2747,7 @@
       "helpdesk": "Prende in carico i ticket e propone risposte e prossimi passi.",
       "designer": "Legge l'intera flotta e scrive una progettazione di monitoraggio motivata da approvare da parte di un tecnico.",
       "research": "Integrato. Analizza un problema su un dispositivo su richiesta di un tecnico e suggerisce correzioni sicure. Non esegue mai nulla.",
+      "troubleshoot": "Integrato. Lavora in background su un singolo dispositivo quando Wisp glielo affida. Ogni modifica che desidera è una richiesta che una persona approva.",
       "researchLink": "Apri la memoria delle correzioni",
       "designerLink": "Apri la progettazione flotta"
     },
@@ -2895,7 +2896,8 @@
       "patch": "Gestione delle patch",
       "helpdesk": "Assistenza",
       "designer": "Progettista della flotta",
-      "research": "Ricerca correzioni"
+      "research": "Ricerca correzioni",
+      "troubleshoot": "Risoluzione dei problemi del dispositivo"
     },
     "modes": {
       "off": "Disattivato",

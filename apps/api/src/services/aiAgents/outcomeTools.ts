@@ -243,6 +243,10 @@ export function outcomeToolsForProfile(profile: AiAgentRunProfile): OutcomeToolN
     // returned here.
     case 'assessment':
       return ['record_concern', 'update_concern', 'nudge', 'propose_action', 'request_specialist'];
+    // Wisp delegation W1 (#11084) — no outcome tool: the run's output is its
+    // summary plus the approval intents its proposals mint.
+    case 'device_troubleshooting':
+      return [];
     default: {
       const exhaustive: never = profile;
       throw new Error(`[outcomeToolsForProfile] Unknown run profile: ${String(exhaustive)}`);
@@ -1050,7 +1054,7 @@ export function buildOutcomeSdkTools(
         return tool(
           'request_specialist',
           'Ask Wisp for a specialist (sweep, analysis, operator_recipe, patch_plan, remediation_research, '
-          + 'bulk_ticket_reply) on this org. The request is recorded now and handled by Wisp\'s coordinator after '
+          + 'bulk_ticket_reply, device_troubleshooting) on this org. The request is recorded now and handled by Wisp\'s coordinator after '
           + 'the assessment ends — nothing launches during this run. Kinds that ask first become an approval card '
           + 'for the person Wisp works for. At most 3 requests per assessment; extra requests are refused.',
           requestSpecialistSchema.shape,

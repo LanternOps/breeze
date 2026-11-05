@@ -207,6 +207,7 @@ import { loadProvenFixesForRun, profileConsultsFixMemory } from '../fixMemory/ru
 import type { ResearchToolRefs } from './researchSubmission';
 import { analysisLimits, analysisToolAllowlist, isAnalysisProfile } from './analysisProfile';
 import { assessmentLimits, assessmentToolAllowlist, isAssessmentProfile } from './assessmentProfile';
+import { isTroubleshootProfile, troubleshootLimits, troubleshootToolAllowlist } from './troubleshootProfile';
 import { loadAssessmentContext } from '../wisp/assessment';
 import { watchPromptLines } from '../wisp/watches';
 import type { AgentRunAssessmentPromptContext } from './assessmentPrompt';
@@ -1254,6 +1255,15 @@ export function createAgentRunPreToolUse(args: {
       outcome.deniedActions.push({ tool: toolName, reason });
       return { allowed: false, error: reason };
     }
+    // Wisp delegation W1 (#11084) — same authority backstop for the
+    // troubleshooting floor: a read-classified tool outside it (which the
+    // guardrail alone would allow) is refused, so the run's reach is exactly
+    // its reads plus the proposable set. Exposure already hides the rest.
+    if (isTroubleshootProfile(run) && !troubleshootToolAllowlist([]).includes(toolName)) {
+      const reason = `${toolName} is not available to device_troubleshooting runs`;
+      outcome.deniedActions.push({ tool: toolName, reason });
+      return { allowed: false, error: reason };
+    }
 
     if (grantCeiling) {
       const ceilingDenial = delegationCeilingDenial(grantCeiling, toolName, input);
@@ -2007,7 +2017,14 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
     assessment: ctx.assessment
       ? assessmentPromptContext(ctx.assessment, { id: ctx.run.orgId, name: ctx.orgName ?? null })
       : null,
+    troubleshoot: ctx.run.profile === 'device_troubleshooting' ? troubleshootPromptContext(ctx.run.triggerRef) : null,
   };
+}
+
+/** #11084: the launcher writes `goal` into triggerRef (specialistLaunchers.ts); anything else reads as no goal. */
+function troubleshootPromptContext(triggerRef: unknown): { goal: string } | null {
+  const goal = (triggerRef as { goal?: unknown } | null)?.goal;
+  return typeof goal === 'string' && goal.trim().length > 0 ? { goal } : null;
 }
 
 /**
@@ -2125,6 +2142,7 @@ export function resolveRunProfileLimits(run: RunProfileRef, limits: AiAgentLimit
   if (isResearchProfile(run)) return researchLimits(limits, researchDepthOf(run.triggerRef));
   if (isAnalysisProfile(run)) return analysisLimits(limits);
   if (isAssessmentProfile(run)) return assessmentLimits(limits);
+  if (isTroubleshootProfile(run)) return troubleshootLimits(limits);
   return limits;
 }
 
@@ -2143,6 +2161,7 @@ export function resolveRunProfileToolAllowlist(run: RunProfileRef, agentAllowlis
   if (isResearchProfile(run)) return researchToolAllowlist(agentAllowlist);
   if (isAnalysisProfile(run)) return analysisToolAllowlist(agentAllowlist);
   if (isAssessmentProfile(run)) return assessmentToolAllowlist(agentAllowlist);
+  if (isTroubleshootProfile(run)) return troubleshootToolAllowlist(agentAllowlist);
   return null;
 }
 

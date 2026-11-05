@@ -105,6 +105,7 @@ export default function AiAgentsPage() {
     helpdesk: t('aiAgentsPage.kinds.helpdesk'),
     designer: t('aiAgentsPage.kinds.designer'),
     research: t('aiAgentsPage.kinds.research'),
+    troubleshoot: t('aiAgentsPage.kinds.troubleshoot'),
   };
   const KIND_HINT: Record<(typeof AI_AGENT_KINDS)[number], string> = {
     triage: t('aiAgentsPage.kindHints.triage'),
@@ -112,6 +113,7 @@ export default function AiAgentsPage() {
     helpdesk: t('aiAgentsPage.kindHints.helpdesk'),
     designer: t('aiAgentsPage.kindHints.designer'),
     research: t('aiAgentsPage.kindHints.research'),
+    troubleshoot: t('aiAgentsPage.kindHints.troubleshoot'),
   };
   // #10135: fix memory / fleet design are reports written by these agent
   // kinds; they are no longer in the sidebar, so the roster links to them.

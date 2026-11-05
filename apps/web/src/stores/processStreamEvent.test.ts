@@ -604,6 +604,18 @@ describe('execution-plane run events (spec §5.5)', () => {
     expect(patch.chatRuns!.r1!.artifacts[0]!.name).toBe('failed-logons.csv');
   });
 
+  it('carries an awaiting_approval result and its pending count onto the run', () => {
+    const state = makeState();
+    let patch: Partial<StreamableState> = {};
+    processStreamEvent(
+      { type: 'run_result', runId: 'r1', status: 'awaiting_approval', summary: 'needs approval', artifacts: [], pendingIntentCount: 2 },
+      (fn) => { patch = fn(state); },
+      () => state,
+      null,
+    );
+    expect(patch.chatRuns!.r1).toMatchObject({ status: 'awaiting_approval', pendingIntentCount: 2 });
+  });
+
   it('keeps the progress already collected when the result arrives', () => {
     const state = makeState();
     state.chatRuns = {

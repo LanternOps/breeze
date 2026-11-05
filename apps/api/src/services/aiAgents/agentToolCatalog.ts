@@ -569,6 +569,9 @@ export const AGENT_KIND_PRESETS: Readonly<Record<AiAgentKind, readonly string[]>
   designer: [],
   // AI Suggested Fixes W2 — research is system-provisioned and read-only: zero actions.
   research: [],
+  // Wisp delegation W1 (#11084) — never user-created; the provisioner stores
+  // its allowlist (troubleshootProvisioning.ts), so there is no create preset.
+  troubleshoot: [],
 };
 
 function isSessionOnly(name: string): boolean {
@@ -705,6 +708,7 @@ export function buildAgentToolCatalog(): AgentToolCatalogDto {
       helpdesk: [...AGENT_KIND_PRESETS.helpdesk],
       designer: [...AGENT_KIND_PRESETS.designer],
       research: [...AGENT_KIND_PRESETS.research],
+      troubleshoot: [...AGENT_KIND_PRESETS.troubleshoot],
     },
     unreachableTools: listUnreachableRegisteredTools(),
   };

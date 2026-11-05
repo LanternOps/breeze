@@ -32,8 +32,8 @@ import { AGENT_COORDINATOR_CARRIER_TOOLS, AGENT_HUMAN_ONLY_ACTIONS, AGENT_HUMAN_
 // Leaf data module (no imports) — the specialist kind table, so the tier
 // tables below derive from it instead of re-typing kind names.
 import {
-  ASK_FIRST_SPECIALIST_KINDS,
-  AUTO_ADMIT_SPECIALIST_KINDS,
+  CHAT_TIER2_SPECIALIST_KINDS,
+  CHAT_TIER3_SPECIALIST_KINDS,
   SPECIALIST_KIND_LABELS,
   isSpecialistKind,
 } from './wisp/specialistPolicy';
@@ -79,9 +79,9 @@ export const TOOL_ACTION_INPUT_KEYS: Record<string, string> = {
 // tierConfig.ts parity guard, issue #2686). Not part of the runtime API —
 // resolution always goes through checkGuardrails().
 export const TIER2_ACTIONS: Record<string, string[]> = {
-  // Wisp W07 (spec §3 "acts alone"): the auto-admit specialist kinds, derived
-  // from SPECIALIST_KIND_POLICY (leaf data module).
-  launch_specialist: [...AUTO_ADMIT_SPECIALIST_KINDS],
+  // Wisp W07 (spec §3 "acts alone") + #11084 Decision 3: the chat Tier-2
+  // launch kinds, derived from SPECIALIST_KIND_POLICY (leaf data module).
+  launch_specialist: [...CHAT_TIER2_SPECIALIST_KINDS],
   manage_policy_feature_link: ['describe', 'list'], // list is a pure read (#10412); add/update/remove keep their tiers
   // EDR response actions (#8167 W03, spec §4.10): a scan is non-disruptive,
   // so it runs without approval. The tool's base tier is 3, so every OTHER
@@ -497,10 +497,10 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
 // Mutations that require approval (Tier 3) even if the tool is registered as Tier 1
 // Exported for contract tests only — see the note on TIER2_ACTIONS.
 export const TIER3_ACTIONS: Record<string, string[]> = {
-  // Wisp W07 (spec §3 "asks first"): every specialist kind the policy does not
-  // auto-admit needs the person's approval in chat — for a bulk reply the card
+  // Wisp W07 (spec §3 "asks first"): every chat Tier-3 specialist kind
+  // needs the person's approval in chat — for a bulk reply the card
   // shows the exact ticket list and message.
-  launch_specialist: [...ASK_FIRST_SPECIALIST_KINDS],
+  launch_specialist: [...CHAT_TIER3_SPECIALIST_KINDS],
   // Customer-visible: the text is shown to an end user under the MSP's brand,
   // so a human must always have read it (same class as a public ticket reply).
   send_endpoint_message: ['send'],
@@ -909,7 +909,7 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
 export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   // Wisp W07: one approver (the person asking, or a colleague) — the
   // specialist's own effects still mint their own intents.
-  launch_specialist: [...ASK_FIRST_SPECIALIST_KINDS],
+  launch_specialist: [...CHAT_TIER3_SPECIALIST_KINDS],
   // #6268 Gate B 8: an IOC import authors detection rules (a set with
   // auto-quarantine on is refused in the handler, under the set lock).
   // ioc_hunt:sweep is NOT here: its scope is input-aware (expectedDeviceCount).

@@ -557,7 +557,14 @@
       "failed": "fallido",
       "cancelled": "cancelado",
       "expired": "expirado",
-      "skipped": "omitido"
+      "skipped": "omitido",
+      "awaiting_approval": "esperando aprobación"
+    },
+    "approvals": {
+      "pending_one": "{{count}} paso espera tu aprobación",
+      "pending_other": "{{count}} pasos esperan tu aprobación",
+      "waiting": "Hay pasos esperando tu aprobación",
+      "review": "Revisar en Aprobaciones"
     }
   },
   "aiModelPicker": {
@@ -872,7 +879,14 @@
       "workersEmpty": "No hay especialistas en ejecución.",
       "allRuns": "Todas las ejecuciones",
       "details": "Detalles",
-      "ended": "Este permiso terminó, así que sus alertas, trabajadores y actividad ya no se muestran."
+      "ended": "Este permiso terminó, así que sus alertas, trabajadores y actividad ya no se muestran.",
+      "workerStatus": {
+        "queued": "En cola",
+        "running": "En ejecución",
+        "awaiting_approval": "Esperando aprobación",
+        "completed": "Completado",
+        "failed": "Fallido"
+      }
     },
     "composer": {
       "placeholder": "Enviar mensaje a Wisp",

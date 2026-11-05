@@ -2747,6 +2747,7 @@
       "helpdesk": "Toma tickets y propone respuestas y próximos pasos.",
       "designer": "Lee toda la flota y escribe un diseño de monitoreo justificado para que un técnico lo apruebe.",
       "research": "Integrado. Investiga un problema en un dispositivo cuando un técnico lo pide y sugiere soluciones seguras. Nunca ejecuta nada.",
+      "troubleshoot": "Integrado. Trabaja en segundo plano en un dispositivo cuando Wisp se lo transfiere. Cada cambio que quiere hacer es una solicitud que una persona aprueba.",
       "researchLink": "Abrir memoria de correcciones",
       "designerLink": "Abrir diseño de flota"
     },
@@ -2895,7 +2896,8 @@
       "patch": "Aplicación de parches",
       "helpdesk": "Mesa de ayuda",
       "designer": "Diseñador de flota",
-      "research": "Investigación de soluciones"
+      "research": "Investigación de soluciones",
+      "troubleshoot": "Solución de problemas de dispositivos"
     },
     "modes": {
       "off": "Desactivado",

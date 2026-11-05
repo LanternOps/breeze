@@ -2747,6 +2747,7 @@
       "helpdesk": "Nimmt Tickets auf und schlägt Antworten und nächste Schritte vor.",
       "designer": "Liest die gesamte Flotte und erstellt ein begründetes Überwachungsdesign zur Freigabe durch einen Techniker.",
       "research": "Integriert. Recherchiert auf Anfrage ein Problem auf einem Gerät und schlägt sichere Lösungen vor. Führt nie etwas aus.",
+      "troubleshoot": "Integriert. Bearbeitet im Hintergrund ein einzelnes Gerät, wenn Wisp es übergibt. Jede gewünschte Änderung ist eine Anfrage, die eine Person genehmigt.",
       "researchLink": "Fix-Gedächtnis öffnen",
       "designerLink": "Flottendesign öffnen"
     },
@@ -2895,7 +2896,8 @@
       "patch": "Patch-Verwaltung",
       "helpdesk": "Helpdesk",
       "designer": "Flottendesigner",
-      "research": "Fehlerbehebungs-Recherche"
+      "research": "Fehlerbehebungs-Recherche",
+      "troubleshoot": "Geräte-Fehlerbehebung"
     },
     "modes": {
       "off": "Aus",

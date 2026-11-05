@@ -139,12 +139,13 @@ export function registerWispTools(aiTools: Map<string, AiTool>): void {
     tier: 2,
     domain: 'ai',
     deviceArgs: [],
-    searchHint: 'hand work to a specialist agent: sweep, sandbox analysis, Operator task, patch plan, research, bulk ticket reply',
+    searchHint: 'hand work to a specialist agent: sweep, sandbox analysis, Operator task, patch plan, research, bulk ticket reply, device troubleshooting',
     definition: {
       name: 'launch_specialist',
-      // #10144: the params of the two long kinds live here (the params field's
-      // description is capped at 160 chars and lists the rest).
-      description: 'Hand bounded work to a specialist agent under your Wisp grant. Sweeps and analysis start at once; other kinds need approval first. params for bulk_ticket_reply {concernId, ticketIds, message, holdTickets?}; operator_recipe {workflowKey, workflowVersion, objective, recipeInput}.',
+      // #10144: the params of the long kinds live here (the params field's
+      // description is capped at 160 chars and lists the rest). #11084:
+      // device_troubleshooting is a chat Tier-2 launch like sweep/analysis.
+      description: 'Hand work to a Wisp specialist agent. sweep, analysis and device_troubleshooting start at once; others ask first. params: device_troubleshooting {deviceId, goal}; bulk_ticket_reply {concernId, ticketIds, message, holdTickets?}; operator_recipe {workflowKey, workflowVersion, objective, recipeInput}.',
       input_schema: jsonSchema(launchSpecialistShape),
     },
     handler: (input, auth) => launchSpecialistHandler(input, auth),

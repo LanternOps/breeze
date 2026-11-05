@@ -2747,6 +2747,7 @@
       "helpdesk": "Picks up tickets and proposes replies and next steps.",
       "designer": "Reads the whole fleet and writes a justified monitoring design for a technician to approve.",
       "research": "Built in. Researches one problem on one device when a technician asks, and suggests safe fixes. It never runs anything.",
+      "troubleshoot": "Built in. Works one device in the background when Wisp hands it off. Every change it wants is a request a person approves.",
       "researchLink": "Open fix memory",
       "designerLink": "Open fleet design"
     },
@@ -2895,7 +2896,8 @@
       "patch": "Patching",
       "helpdesk": "Help desk",
       "designer": "Fleet designer",
-      "research": "Fix research"
+      "research": "Fix research",
+      "troubleshoot": "Device troubleshooting"
     },
     "modes": {
       "off": "Off",

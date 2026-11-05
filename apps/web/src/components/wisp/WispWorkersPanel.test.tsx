@@ -1,5 +1,5 @@
-import { render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { render, screen, waitFor, act } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({ fetch: vi.fn() }));
 vi.mock('./wispActivity', async (orig) => ({ ...(await orig<typeof import('./wispActivity')>()), fetchWispActivity: h.fetch }));
@@ -59,5 +59,49 @@ describe('WispWorkersPanel', () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(screen.queryByText('stale')).toBeNull();
     expect(screen.getByText('fresh')).toBeTruthy();
+  });
+
+  describe('polling', () => {
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('refetches every 10s while a specialist is running, then stops when none are', async () => {
+      vi.useFakeTimers();
+      h.fetch.mockResolvedValueOnce({ items: [mk('w', 'specialist', { runStatus: 'running' })], nextCursor: null, current: null });
+      h.fetch.mockResolvedValueOnce({ items: [mk('w', 'specialist', { runStatus: 'running' })], nextCursor: null, current: null });
+      h.fetch.mockResolvedValue({ items: [mk('w', 'specialist', { runStatus: 'completed' })], nextCursor: null, current: null });
+      render(<WispWorkersPanel threadId="t1" />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(h.fetch).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(h.fetch).toHaveBeenCalledTimes(2);
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(h.fetch).toHaveBeenCalledTimes(3);
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(h.fetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not poll when nothing is queued or running (awaiting_approval is settled)', async () => {
+      vi.useFakeTimers();
+      h.fetch.mockResolvedValue({ items: [mk('w', 'specialist', { runStatus: 'awaiting_approval' })], nextCursor: null, current: null });
+      render(<WispWorkersPanel threadId="t1" />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(h.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('stops polling on unmount', async () => {
+      vi.useFakeTimers();
+      h.fetch.mockResolvedValue({ items: [mk('w', 'specialist', { runStatus: 'queued' })], nextCursor: null, current: null });
+      const { unmount } = render(<WispWorkersPanel threadId="t1" />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      unmount();
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(h.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows a status label per row', async () => {
+      h.fetch.mockResolvedValue({ items: [mk('w', 'specialist', { runStatus: 'awaiting_approval' })], nextCursor: null, current: null });
+      render(<WispWorkersPanel threadId="t1" />);
+      expect((await screen.findByTestId('wisp-worker-status')).textContent).toBe('Awaiting approval');
+    });
   });
 });

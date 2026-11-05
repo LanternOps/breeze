@@ -557,7 +557,14 @@
       "failed": "non riuscito",
       "cancelled": "annullato",
       "expired": "scaduto",
-      "skipped": "saltato"
+      "skipped": "saltato",
+      "awaiting_approval": "in attesa di approvazione"
+    },
+    "approvals": {
+      "pending_one": "{{count}} passaggio attende la tua approvazione",
+      "pending_other": "{{count}} passaggi attendono la tua approvazione",
+      "waiting": "Alcuni passaggi attendono la tua approvazione",
+      "review": "Verifica in Approvazioni"
     }
   },
   "aiModelPicker": {
@@ -872,7 +879,14 @@
       "workersEmpty": "Nessuno specialista in esecuzione.",
       "allRuns": "Tutte le esecuzioni",
       "details": "Dettagli",
-      "ended": "Questa autorizzazione è terminata, quindi le sue segnalazioni, i worker e le attività non vengono più mostrati."
+      "ended": "Questa autorizzazione è terminata, quindi le sue segnalazioni, i worker e le attività non vengono più mostrati.",
+      "workerStatus": {
+        "queued": "In coda",
+        "running": "In esecuzione",
+        "awaiting_approval": "In attesa di approvazione",
+        "completed": "Completato",
+        "failed": "Non riuscito"
+      }
     },
     "composer": {
       "placeholder": "Scrivi a Wisp",

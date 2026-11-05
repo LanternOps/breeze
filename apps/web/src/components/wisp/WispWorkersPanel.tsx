@@ -6,12 +6,27 @@ import { fetchWispActivity, safeActivityHref } from './wispActivity';
 
 const MAX_ROWS = 5;
 const FETCH_LIMIT = 50;
+/** Refetch cadence while any listed specialist is still queued or running. */
+const POLL_INTERVAL_MS = 10_000;
+
+const WORKER_STATUS_KEYS = ['queued', 'running', 'awaiting_approval', 'completed', 'failed'] as const;
+const isLive = (i: ActivityItem) => i.runStatus === 'queued' || i.runStatus === 'running';
 
 export default function WispWorkersPanel({ threadId, refreshKey = 0 }: { threadId: string; refreshKey?: number }) {
   const { t } = useTranslation('ai');
   const [items, setItems] = useState<ActivityItem[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
+  const polling = items.some(isLive);
+  const [tick, setTick] = useState(0);
+
+  // Poll only while something is live; the interval is torn down the moment
+  // the list settles (or on unmount) so an idle panel makes no requests.
+  useEffect(() => {
+    if (!polling) return;
+    const id = setInterval(() => setTick((n) => n + 1), POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [polling]);
 
   useEffect(() => {
     // Cleanup flips this, so an unmounted or outdated request never commits.
@@ -30,7 +45,7 @@ export default function WispWorkersPanel({ threadId, refreshKey = 0 }: { threadI
         setLoaded(true);
       });
     return () => { current = false; };
-  }, [threadId, refreshKey]);
+  }, [threadId, refreshKey, tick]);
 
   return (
     <section data-testid="wisp-workers">
@@ -55,6 +70,11 @@ export default function WispWorkersPanel({ threadId, refreshKey = 0 }: { threadI
                       <a href={href} className="font-medium hover:underline">{item.title}</a>
                     ) : (
                       <span className="font-medium">{item.title}</span>
+                    )}
+                    {item.runStatus && (WORKER_STATUS_KEYS as readonly string[]).includes(item.runStatus) && (
+                      <span data-testid="wisp-worker-status" className="shrink-0 text-muted-foreground">
+                        {t(/* i18n-dynamic */ `wisp.rail.workerStatus.${item.runStatus}`)}
+                      </span>
                     )}
                     <span className="ml-auto shrink-0 text-muted-foreground">{formatRelativeTime(new Date(item.at))}</span>
                   </div>

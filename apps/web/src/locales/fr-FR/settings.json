@@ -2747,6 +2747,7 @@
       "helpdesk": "Prend en charge les tickets et propose des réponses et des étapes suivantes.",
       "designer": "Lit l'ensemble du parc et rédige une conception de surveillance justifiée qu'un technicien doit approuver.",
       "research": "Intégré. Étudie un problème sur un appareil à la demande d’un technicien et propose des correctifs sûrs. N’exécute jamais rien.",
+      "troubleshoot": "Intégré. Travaille en arrière-plan sur un appareil lorsque Wisp le lui confie. Chaque modification souhaitée est une demande qu'une personne approuve.",
       "researchLink": "Ouvrir la mémoire des correctifs",
       "designerLink": "Ouvrir la conception de flotte"
     },
@@ -2895,7 +2896,8 @@
       "patch": "Correctifs",
       "helpdesk": "Centre d’assistance",
       "designer": "Concepteur du parc",
-      "research": "Recherche de correctifs"
+      "research": "Recherche de correctifs",
+      "troubleshoot": "Dépannage d'appareil"
     },
     "modes": {
       "off": "Désactivé",

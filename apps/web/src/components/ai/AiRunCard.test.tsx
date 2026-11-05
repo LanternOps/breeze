@@ -1,4 +1,4 @@
-import { render, waitFor } from '@testing-library/react';
+import { render, waitFor, act } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 vi.mock('react-i18next', () => ({
@@ -113,9 +113,9 @@ describe('AiRunCard (spec §5.5)', () => {
       fetchWithAuth.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) });
       fetchWithAuth.mockResolvedValue(detail());
       render(<AiRunCard runId={RUN} initialStatus="queued" run={undefined} />);
-      await vi.advanceTimersByTimeAsync(0);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
       expect(fetchWithAuth).toHaveBeenCalledTimes(1);
-      await vi.advanceTimersByTimeAsync(5_000);
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
       expect(fetchWithAuth).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
@@ -159,5 +159,90 @@ describe('AiRunCard (spec §5.5)', () => {
     );
     await findByTestId('ai-run-card-artifact-a2');
     expect(container.querySelector('img')).toBeNull();
+  });
+  it('fills the step list from the poll when no live stream is attached', async () => {
+    fetchWithAuth.mockResolvedValue(detail({
+      status: 'running',
+      progress: [
+        { step: 'get_device_health', label: 'Checking device health', ordinal: 1 },
+        { step: 'search_logs', label: 'Searching logs', ordinal: 2 },
+      ],
+    }));
+    const { findByTestId } = render(<AiRunCard runId={RUN} initialStatus="queued" run={undefined} />);
+    const list = await findByTestId('ai-run-card-progress');
+    expect(list.textContent).toContain('Checking device health');
+    expect(list.textContent).toContain('Searching logs');
+  });
+
+  it('merges live and polled steps by ordinal without duplicates', async () => {
+    fetchWithAuth.mockResolvedValue(detail({
+      status: 'running',
+      progress: [
+        { step: 'a', label: 'Polled one', ordinal: 1 },
+        { step: 'b', label: 'Polled two', ordinal: 2 },
+      ],
+    }));
+    const { findByTestId } = render(
+      <AiRunCard
+        runId={RUN}
+        initialStatus="running"
+        run={{
+          runId: RUN, status: 'running', summary: null, artifacts: [],
+          progress: [
+            { step: 'b', label: 'Live two', ordinal: 2 },
+            { step: 'c', label: 'Live three', ordinal: 3 },
+          ],
+        }}
+      />,
+    );
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());
+    const list = await findByTestId('ai-run-card-progress');
+    await waitFor(() => expect(list.querySelectorAll('li')).toHaveLength(3));
+    const text = Array.from(list.querySelectorAll('li')).map((li) => li.textContent);
+    expect(text).toEqual(['Polled one', 'Live two', 'Live three']);
+  });
+
+  it('stops polling on awaiting_approval and shows the pending count and /approvals link', async () => {
+    vi.useFakeTimers();
+    try {
+      fetchWithAuth.mockResolvedValue(detail({
+        status: 'awaiting_approval',
+        intents: [
+          { id: 'i1', status: 'pending_approval', actionName: 'x', approvalScope: 'single', decidedVia: null },
+          { id: 'i2', status: 'pending_approval', actionName: 'y', approvalScope: 'single', decidedVia: null },
+          { id: 'i3', status: 'completed', actionName: 'z', approvalScope: 'single', decidedVia: null },
+        ],
+      }));
+      const { getByTestId, queryByTestId } = render(
+        <AiRunCard runId={RUN} initialStatus="running" run={undefined} />,
+      );
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      const block = getByTestId('ai-run-card-approvals');
+      expect(block.textContent).toContain('aiRunCard.approvals.pending');
+      expect(block.querySelector('a')?.getAttribute('href')).toBe('/approvals');
+      expect(queryByTestId('ai-run-card-open')).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+      expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows the approvals block from a live awaiting_approval result and does not poll', async () => {
+    vi.useFakeTimers();
+    try {
+      const { getByTestId } = render(
+        <AiRunCard
+          runId={RUN}
+          initialStatus="running"
+          run={{ runId: RUN, status: 'awaiting_approval', summary: 'Needs a restart', artifacts: [], progress: [], pendingIntentCount: 3 }}
+        />,
+      );
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(getByTestId('ai-run-card-approvals')).toBeTruthy();
+      expect(fetchWithAuth).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

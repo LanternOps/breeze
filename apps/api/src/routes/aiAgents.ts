@@ -48,6 +48,7 @@ import {
 import { AgentAccessDeniedError, AgentSiteCeilingDeniedError, assertAgentWriteAllowed } from '../services/aiAgents/access';
 import { AgentModelNotAllowedError } from '../services/aiAgents/agentModelErrors';
 import { ResearchAgentEditError } from '../services/aiAgents/researchAgentEdit';
+import { TroubleshootAgentEditError } from '../services/aiAgents/troubleshootAgentEdit';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { getCircuitState, resetCircuit } from '../services/aiAgents/agentCircuit';
 import { readAiKillState } from '../services/aiKillState';
@@ -248,7 +249,7 @@ function isAgentKindConflict(err: unknown): boolean {
 }
 
 export function mapError(c: Context, err: unknown) {
-  if (err instanceof ResearchAgentEditError) {
+  if (err instanceof ResearchAgentEditError || err instanceof TroubleshootAgentEditError) {
     return c.json({ error: err.message, code: err.code, fields: err.fields }, 400);
   }
   if (err instanceof UnsupportedAgentModeError) {

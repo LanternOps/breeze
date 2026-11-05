@@ -557,7 +557,14 @@
       "failed": "fehlgeschlagen",
       "cancelled": "abgebrochen",
       "expired": "abgelaufen",
-      "skipped": "übersprungen"
+      "skipped": "übersprungen",
+      "awaiting_approval": "wartet auf Genehmigung"
+    },
+    "approvals": {
+      "pending_one": "{{count}} Schritt wartet auf deine Genehmigung",
+      "pending_other": "{{count}} Schritte warten auf deine Genehmigung",
+      "waiting": "Schritte warten auf deine Genehmigung",
+      "review": "In Genehmigungen prüfen"
     }
   },
   "aiModelPicker": {
@@ -872,7 +879,14 @@
       "workersEmpty": "Keine Spezialisten aktiv.",
       "allRuns": "Alle Läufe",
       "details": "Einzelheiten",
-      "ended": "Diese Berechtigung ist beendet, daher werden ihre Anliegen, Worker und Aktivitäten nicht mehr angezeigt."
+      "ended": "Diese Berechtigung ist beendet, daher werden ihre Anliegen, Worker und Aktivitäten nicht mehr angezeigt.",
+      "workerStatus": {
+        "queued": "In Warteschlange",
+        "running": "Läuft",
+        "awaiting_approval": "Wartet auf Genehmigung",
+        "completed": "Abgeschlossen",
+        "failed": "Fehlgeschlagen"
+      }
     },
     "composer": {
       "placeholder": "Nachricht an Wisp",

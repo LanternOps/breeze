@@ -44,7 +44,7 @@ const MESSAGES: Readonly<Record<SpecialistRefusal, string>> = Object.freeze({
   budget_exhausted: "This Wisp grant has used today's AI budget. Try again tomorrow.",
   permission_missing: 'This specialist needs a permission that the Wisp grant or the person asking does not hold.',
   workspace_execute_required: 'Sandbox analysis needs the ai_workspace:execute permission, in the Wisp grant and for the person asking.',
-  unknown_kind: 'That is not a specialist kind. Use sweep, analysis, operator_recipe, patch_plan, remediation_research or bulk_ticket_reply.',
+  unknown_kind: 'That is not a specialist kind. Use sweep, analysis, operator_recipe, patch_plan, remediation_research, bulk_ticket_reply or device_troubleshooting.',
   invalid_params: 'The params do not fit this specialist kind (see detail). Correct the call and try again.',
   device_not_in_org: 'That device is not in this organization.',
   no_sweep_schedule: `No enabled health-sweep schedule covers this organization. Turn one on under ${AGENTS_SETTINGS}, then ask again.`,
