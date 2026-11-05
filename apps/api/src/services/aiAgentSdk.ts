@@ -1506,7 +1506,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       try {
         const target = await resolveAiDesignIntentTarget(toolName, input);
         const reach = callReach(session, wispCall.current);
-        if (target?.orgId ? reach.canAccessOrg(target.orgId) : target?.partnerId && target.partnerId === reach.partnerId) {
+        if (target && (target.orgId ? reach.canAccessOrg(target.orgId) : target.partnerId !== null && target.partnerId === reach.partnerId)) {
           if (target.orgId) intentOrgId = target.orgId;
           designCardDetail = target.cardDetail;
         }

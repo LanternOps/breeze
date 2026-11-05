@@ -5233,7 +5233,7 @@ export function buildApprovalDescription(
     case 'manage_ai_agent_schedules':
       if (action === 'create') {
         parts.push(input.ownerScope === 'partner'
-          ? `Schedule ${w03Cap(String(input.kind ?? 'sweep'))} runs of agent ${w03Id(input.agentId)} (${String(input.cron ?? '')}, ${String(input.timezone ?? '')}) for every organization. Each run uses AI credits and may notify people.`
+          ? `Schedule ${input.kind ? `${w03Cap(String(input.kind))} ` : ''}runs of agent ${w03Id(input.agentId)} (${w03Cap(String(input.cron ?? ''))}, ${w03Cap(String(input.timezone ?? ''))}) for every organization. Each run uses AI credits and may notify people.`
           : `Set organization ${w03Id(input.orgId)}'s override of schedule ${w03Id(input.baselineScheduleId)}${input.enabled === false ? ', turning its runs off' : ''}. Each run uses AI credits and may notify people.`);
       } else if (action === 'update') {
         const changed = Object.keys(input).filter((key) => key !== 'action' && key !== 'scheduleId');
