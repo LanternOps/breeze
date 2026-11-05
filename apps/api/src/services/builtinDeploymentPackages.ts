@@ -5,8 +5,21 @@ import { softwareCatalog, softwareVersions } from '../db/schema';
 import { compareSoftwareVersions } from './softwarePolicyService';
 import { insertLatestSoftwareVersion } from './softwareVersionShared';
 import { captureException } from './sentry';
+import { isEdrInstallerProviderKey, type EdrInstallerProviderKey } from './edrProviders/providerKeys';
 
-export type BuiltinProvider = 'huntress' | 'sentinelone';
+export const LEGACY_BUILTIN_PROVIDERS = ['huntress', 'sentinelone'] as const;
+export type LegacyBuiltinProvider = (typeof LEGACY_BUILTIN_PROVIDERS)[number];
+export type BuiltinProvider = LegacyBuiltinProvider | EdrInstallerProviderKey;
+
+/**
+ * A provider Breeze can provision and dispatch a built-in package for. A
+ * framework provider without an installer is admitted by the catalog CHECK but
+ * is not one of these.
+ */
+export function isBuiltinProvider(value: string | null | undefined): value is BuiltinProvider {
+  if (!value) return false;
+  return (LEGACY_BUILTIN_PROVIDERS as readonly string[]).includes(value) || isEdrInstallerProviderKey(value);
+}
 
 interface BuiltinPackageBase {
   provider: BuiltinProvider;
@@ -18,6 +31,11 @@ interface BuiltinPackageBase {
   fileType: string;
   supportedOs: string[];
   silentInstallArgsTemplate: string;
+  /** False = never provisioned and never dispatched, whatever a catalog row says. */
+  released: boolean;
+  originalFileName: string | null;
+  /** The one OS this catalog row installs: a catalog has a single `is_latest` version. */
+  installerPlatform: 'windows';
 }
 
 /**
@@ -43,6 +61,9 @@ export const BUILTIN_PACKAGES: Record<BuiltinProvider, BuiltinPackageDef> = {
     silentInstallArgsTemplate:
       '/ACCT_KEY="{huntress_acct_key}" /ORG_KEY="{huntress_org_key}" /S',
     requiresBinaryUpload: false,
+    released: true,
+    originalFileName: 'HuntressInstaller.exe',
+    installerPlatform: 'windows',
   },
   sentinelone: {
     provider: 'sentinelone',
@@ -54,6 +75,27 @@ export const BUILTIN_PACKAGES: Record<BuiltinProvider, BuiltinPackageDef> = {
     supportedOs: ['windows'],
     silentInstallArgsTemplate: 'SITE_TOKEN={s1_site_token} /q /NORESTART',
     requiresBinaryUpload: true,
+    released: true,
+    originalFileName: null,
+    installerPlatform: 'windows',
+  },
+  // Dormant until the owner lab (W06.3) flips `released`. The two placeholders only
+  // keep the version row from being blank: the framework resolver replaces the whole
+  // URL, args and file name from the tenant's sealed material, substituting nothing.
+  bitdefender: {
+    provider: 'bitdefender',
+    name: 'Bitdefender GravityZone Agent',
+    vendor: 'Bitdefender',
+    category: 'security',
+    websiteUrl: 'https://www.bitdefender.com',
+    fileType: 'exe',
+    supportedOs: ['windows'],
+    downloadUrlTemplate: '{edr_installer_url}',
+    silentInstallArgsTemplate: '{edr_installer_args}',
+    requiresBinaryUpload: false,
+    released: false,
+    originalFileName: 'GravityZoneInstaller.exe',
+    installerPlatform: 'windows',
   },
 };
 
@@ -62,7 +104,7 @@ export function getBuiltinPackage(provider: BuiltinProvider): BuiltinPackageDef 
 }
 
 /** Single-brace `{name}` placeholders the package's install-args template substitutes at dispatch. */
-export function installArgPlaceholders(provider: BuiltinProvider): string[] {
+export function installArgPlaceholders(provider: LegacyBuiltinProvider): string[] {
   return Array.from(getBuiltinPackage(provider).silentInstallArgsTemplate.matchAll(/(?<!\{)\{[a-z0-9_]+\}(?!\})/g), (m) => m[0]);
 }
 
@@ -74,7 +116,7 @@ export function installArgPlaceholders(provider: BuiltinProvider): string[] {
  * installer without its key. `{{name}}` (the tenant-variable form) does not
  * count: the resolver's replace would leave the outer braces in place.
  */
-export function installArgsCarryPlaceholders(provider: BuiltinProvider, args: string | null | undefined): boolean {
+export function installArgsCarryPlaceholders(provider: LegacyBuiltinProvider, args: string | null | undefined): boolean {
   if (!args) return false;
   return installArgPlaceholders(provider).every((placeholder) => {
     const escaped = placeholder.replace(/[{}]/g, (brace) => `\\${brace}`);
@@ -86,13 +128,15 @@ export function installArgsCarryPlaceholders(provider: BuiltinProvider, args: st
  * Idempotently upsert the partner-scoped built-in package (and its templated
  * version, when the binary URL is derivable). Safe to call on every integration
  * connect. Runs in a system DB context because the caller's request scope is
- * partner-level and we are writing a partner-axis row.
+ * partner-level and we are writing a partner-axis row. An unreleased package
+ * provisions nothing and touches no table.
  */
 export async function ensureBuiltinPackage(params: {
   provider: BuiltinProvider;
   partnerId: string;
-}): Promise<{ catalogId: string }> {
+}): Promise<{ catalogId: string } | { catalogId: null; skipped: 'unreleased' }> {
   const def = getBuiltinPackage(params.provider);
+  if (!def.released) return { catalogId: null, skipped: 'unreleased' };
 
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
@@ -134,7 +178,7 @@ export async function ensureBuiltinPackage(params: {
             version: 'latest',
             downloadUrl: def.downloadUrlTemplate,
             fileType: def.fileType,
-            originalFileName: 'HuntressInstaller.exe',
+            originalFileName: def.originalFileName,
             supportedOs: def.supportedOs,
             silentInstallArgs: def.silentInstallArgsTemplate,
             isLatest: true,

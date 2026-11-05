@@ -119,11 +119,25 @@ describe('persistInstallerOutcomes', () => {
     });
   });
 
-  it('failure records the code and leaves the sealed material and fetch time alone', async () => {
-    const { tx, sets } = fakeTx();
-    await persistInstallerOutcomes(tx, 'bitdefender', [{ tenantId: TENANT_A, ok: false, code: 'no_package' }], NOW);
-    expect(sets).toEqual([{ installerFetchError: 'no_package', updatedAt: NOW }]);
-  });
+  it.each(['vendor_error', 'packages_api_disabled'] as const)(
+    'no answer from the vendor (%s) records the code and keeps a link that may still work',
+    async (code) => {
+      const { tx, sets } = fakeTx();
+      await persistInstallerOutcomes(tx, 'bitdefender', [{ tenantId: TENANT_A, ok: false, code }], NOW);
+      expect(sets).toEqual([{ installerFetchError: code, updatedAt: NOW }]);
+    },
+  );
+
+  it.each(['no_package', 'multiple_packages', 'url_rejected', 'malformed_response'] as const)(
+    'a vendor verdict (%s) clears the stored link, so an old package is never dispatched',
+    async (code) => {
+      const { tx, sets } = fakeTx();
+      await persistInstallerOutcomes(tx, 'bitdefender', [{ tenantId: TENANT_A, ok: false, code }], NOW);
+      expect(sets).toEqual([{
+        installerSecretEncrypted: null, installerFetchedAt: null, installerExpiresAt: null, installerFetchError: code, updatedAt: NOW,
+      }]);
+    },
+  );
 
   it('a material that cannot be sealed records vendor_error instead of failing the inventory run', async () => {
     const { tx, sets } = fakeTx();

@@ -86,10 +86,26 @@ export type InstallerOutcome = { tenantId: string } & (
 type DbExecutor = Pick<typeof db, 'update'>;
 
 /**
- * Phase 3 of the inventory run. A failed fetch keeps the existing material and
- * fetch time: a vendor outage must not take away a link that still works. An
- * outcome that cannot be sealed is a tenant-level error, because an installer
- * outcome never fails inventory.
+ * The vendor answered, and the answer means the stored link can no longer be
+ * trusted: the package is gone, there are now several to choose from, or the
+ * link it offers is one Breeze refuses. Dispatching the old link would ignore
+ * that, and with no expiry nothing else would ever retire it.
+ */
+const VERDICTS_THAT_RETIRE_MATERIAL: ReadonlySet<EdrInstallerFetchErrorCode> = new Set<EdrInstallerFetchErrorCode>([
+  'no_package', 'multiple_packages', 'url_rejected', 'malformed_response',
+]);
+
+const CLEARED_MATERIAL = {
+  installerSecretEncrypted: null,
+  installerFetchedAt: null,
+  installerExpiresAt: null,
+} as const;
+
+/**
+ * Phase 3 of the inventory run. A vendor verdict retires the stored material; a
+ * failure to get an answer keeps it, because an outage must not take away a link
+ * that still works. An outcome that cannot be sealed is a tenant-level error,
+ * because an installer outcome never fails inventory.
  */
 export async function persistInstallerOutcomes(
   tx: DbExecutor,
@@ -118,7 +134,9 @@ export async function persistInstallerOutcomes(
         values = { installerFetchError: 'vendor_error' };
       }
     } else {
-      values = { installerFetchError: outcome.code };
+      values = VERDICTS_THAT_RETIRE_MATERIAL.has(outcome.code)
+        ? { ...CLEARED_MATERIAL, installerFetchError: outcome.code }
+        : { installerFetchError: outcome.code };
     }
     await tx.update(edrTenants).set({ ...values, updatedAt: now }).where(eq(edrTenants.id, outcome.tenantId));
   }
@@ -135,7 +153,7 @@ export async function clearTenantInstallerMaterial(
 ): Promise<number> {
   const rows = await tx
     .update(edrTenants)
-    .set({ installerSecretEncrypted: null, installerFetchedAt: null, installerExpiresAt: null, installerFetchError: null })
+    .set({ ...CLEARED_MATERIAL, installerFetchError: null })
     .where('connectionId' in where ? eq(edrTenants.connectionId, where.connectionId) : eq(edrTenants.id, where.tenantId))
     .returning({ id: edrTenants.id });
   return rows.length;

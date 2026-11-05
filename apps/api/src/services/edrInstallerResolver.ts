@@ -2,11 +2,26 @@ import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { huntressIntegrations, huntressOrgMappings, s1Integrations, s1OrgMappings } from '../db/schema';
 import { decryptForColumn } from './secretCrypto';
-import { installArgsCarryPlaceholders, type BuiltinProvider } from './builtinDeploymentPackages';
+import { getBuiltinPackage, installArgsCarryPlaceholders, type BuiltinProvider } from './builtinDeploymentPackages';
+import { validateVendorUrl } from './edrProviders/guardedFetch';
+import { openInstallerMaterial } from './edrProviders/installerMaterial';
+import { selectInstallerTenant } from './edrProviders/installerTenant';
+import {
+  EDR_PROVIDER_LABELS,
+  isEdrInstallerProviderKey,
+  type EdrInstallerProviderKey,
+} from './edrProviders/providerKeys';
+import { getEdrProvider } from './edrProviders/registry';
+import type { EdrInstallerFileType } from './edrProviders/types';
 
 export interface ResolvedInstaller {
   downloadUrl: string | null;
   silentInstallArgs: string | null;
+  /** Absent = keep the version row's value. */
+  fileName?: string;
+  fileType?: EdrInstallerFileType;
+  /** Absent = keep the version's checksum; null = the vendor publishes none (dispatch sends no checksum). */
+  checksum?: string | null;
 }
 /** Failure outcome. No HTTP `status` — callers always map this to a 200 body with `status:'failed'`. */
 export type EdrResolveError = { error: string };
@@ -57,6 +72,7 @@ export async function resolveEdrInstaller(params: {
   downloadUrlTemplate: string | null;
   silentInstallArgsTemplate: string | null;
 }): Promise<ResolvedInstaller | EdrResolveError> {
+  if (isEdrInstallerProviderKey(params.provider)) return resolveFrameworkInstaller(params.provider, params.orgId);
   // Exhaustive (#6960): a provider without its own branch is refused, never
   // handed to another vendor's key lookup.
   switch (params.provider) {
@@ -69,6 +85,64 @@ export async function resolveEdrInstaller(params: {
       return { error: `Unsupported integration provider: ${String(unsupported)}` };
     }
   }
+}
+
+/**
+ * An installer for a framework provider, built from material the sync worker
+ * sealed on the tenant row. No vendor HTTP here: dispatch can run inside the
+ * install-remediation worker's transaction (#1105). Refusals are operator copy
+ * and never quote the link.
+ */
+async function resolveFrameworkInstaller(
+  provider: EdrInstallerProviderKey,
+  orgId: string,
+): Promise<ResolvedInstaller | EdrResolveError> {
+  const label = EDR_PROVIDER_LABELS[provider];
+  const pkg = getBuiltinPackage(provider);
+  if (!pkg.released) return { error: `${label} installs are not available yet` };
+
+  const selection = await selectInstallerTenant(provider, orgId);
+  switch (selection.kind) {
+    case 'ok':
+      break;
+    case 'not_mapped':
+      return { error: `Organization not mapped to ${label}` };
+    case 'ambiguous':
+      return { error: `Organization maps to ${selection.count} ${label} tenants — map it to one` };
+    case 'inactive':
+      return { error: `${label} integration is disconnected` };
+    case 'material_missing':
+      return { error: `${label} installer link not fetched yet — run Sync in Integrations` };
+    case 'material_expired':
+      return { error: `${label} installer link has expired — run Sync in Integrations` };
+    default: {
+      const unhandled: never = selection;
+      return { error: `Unsupported installer selection: ${String(unhandled)}` };
+    }
+  }
+
+  const unreadable = { error: `${label} installer link could not be read — reconnect the integration` };
+  const envelope = openInstallerMaterial(selection.tenantId, selection.sealedMaterial);
+  if (!envelope || envelope.provider !== provider) return unreadable;
+
+  const adapter = getEdrProvider(provider);
+  const spec = adapter.buildInstaller?.(envelope.data, pkg.installerPlatform);
+  if (!spec) return unreadable;
+  if ('error' in spec) {
+    return spec.error === 'platform_unsupported'
+      ? { error: `${label} installer is not available for this platform` }
+      : unreadable;
+  }
+  // Again at dispatch: the allowlist can narrow after the material was stored.
+  if (!validateVendorUrl(spec.downloadUrl, adapter.installerHostAllowlist ?? []).ok) return unreadable;
+
+  return {
+    downloadUrl: spec.downloadUrl,
+    silentInstallArgs: spec.silentInstallArgs,
+    fileName: spec.fileName,
+    fileType: spec.fileType,
+    checksum: spec.checksum,
+  };
 }
 
 async function resolveHuntress(params: {

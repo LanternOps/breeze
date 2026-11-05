@@ -2705,7 +2705,7 @@ async function processCommandResult(
     // blocking for the whole backup/restore. What makes the row reopenable
     // for the REAL result later is the BACKUP_QUEUE_ACK_RESULT_STATUS marker
     // written into the STORED result.status (see commandAcceptsAgentResultCondition).
-    const storedResult = buildStoredCommandResult(command.type, normalizedResult, stdout);
+    const storedResult = buildStoredCommandResult(command.type, normalizedResult, stdout, command.payload);
     const finalizedCommand = command;
     const commandPayload =
       command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)

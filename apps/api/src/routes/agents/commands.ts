@@ -520,7 +520,7 @@ commandsRoutes.post(
     // the terminal pre-read above usually short-circuits first — which is
     // itself a useful signal.
     const terminalCompletedAt = new Date();
-    const storedCommandResult = buildStoredCommandResult(command.type, normalizedData, stdout);
+    const storedCommandResult = buildStoredCommandResult(command.type, normalizedData, stdout, command.payload);
     const commandPayload =
       command.payload && typeof command.payload === 'object' && !Array.isArray(command.payload)
         ? command.payload as Record<string, unknown>
