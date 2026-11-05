@@ -7,6 +7,8 @@ const h = vi.hoisted(() => ({
   hasPerm: vi.fn<(resource: string, action: string) => boolean>(() => true),
   mfaOk: vi.fn(() => true),
   publishEvent: vi.fn(async () => 'evt-1'),
+  saveBrowserTimezone: vi.fn(async () => true),
+  captureException: vi.fn(),
   hasEntitlement: vi.fn(async () => true),
   grantSettingsBounds: vi.fn(async () => ({ budgetCentsPerDayMax: 1000, minFloorTickMinutes: 15 })),
   svc: {
@@ -59,6 +61,14 @@ vi.mock('../services/wisp/grants', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/wisp/grants')>();
   return { ...actual, ...h.svc };
 });
+vi.mock('../services/wisp/nudgePreferences', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/wisp/nudgePreferences')>()),
+  saveBrowserTimezone: h.saveBrowserTimezone,
+}));
+vi.mock('../services/sentry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/sentry')>()),
+  captureException: h.captureException,
+}));
 
 import { wispRoutes } from './wisp';
 import { GrantLimitReachedError, WispGrantError } from '../services/wisp/grants';
@@ -209,6 +219,39 @@ describe('POST /wisp/grants', () => {
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ code: 'STEP_UP_REQUIRED' });
     expect(h.publishEvent).not.toHaveBeenCalled();
+    expect(h.saveBrowserTimezone).not.toHaveBeenCalled();
+  });
+
+  describe('browserTimezone (#10402)', () => {
+    const body = { orgId: null, stepUpGrantId: STEP_UP, browserTimezone: 'America/Denver' };
+    const created = () => expect(h.svc.createGrant).toHaveBeenCalledTimes(1);
+    beforeEach(() => { h.svc.createGrant.mockResolvedValue(grant()); });
+
+    it('is stored for the grantor once the grant exists', async () => {
+      const res = await post(buildApp(), '/wisp/grants', body);
+      expect(res.status).toBe(201);
+      created();
+      expect(h.saveBrowserTimezone).toHaveBeenCalledWith(USER, PARTNER, 'America/Denver');
+    });
+
+    it('is optional: nothing stored without it', async () => {
+      const res = await post(buildApp(), '/wisp/grants', { orgId: null, stepUpGrantId: STEP_UP });
+      expect(res.status).toBe(201);
+      expect(h.saveBrowserTimezone).not.toHaveBeenCalled();
+    });
+
+    it('a zone the server cannot resolve never costs the user the grant', async () => {
+      const res = await post(buildApp(), '/wisp/grants', { ...body, browserTimezone: 'America/Brand_New_Zone' });
+      expect(res.status).toBe(201);
+      created();
+    });
+
+    it('a failing store is reported and the grant still answers 201', async () => {
+      h.saveBrowserTimezone.mockRejectedValueOnce(new Error('db down'));
+      const res = await post(buildApp(), '/wisp/grants', body);
+      expect(res.status).toBe(201);
+      expect(h.captureException).toHaveBeenCalled();
+    });
   });
 
   it('maps already_active to 409 and org_out_of_reach / partner_mismatch to 404', async () => {

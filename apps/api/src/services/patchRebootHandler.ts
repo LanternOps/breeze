@@ -5,7 +5,7 @@
  * reboot commands via the existing command queue infrastructure.
  */
 
-import { queueCommandForExecution } from './commandQueue';
+import { queueCommandForExecution, queueCommandForExecutionWithSystemPrecheck } from './commandQueue';
 import { checkDeviceMaintenanceWindow, resolvePatchConfigForDevice } from './featureConfigResolver';
 import { captureException } from './sentry';
 import { rebootPromptTextSchemas } from '@breeze/shared/validators';
@@ -437,8 +437,27 @@ export async function executeReboot(
      * without it a mismatched device id would receive a reboot.
      */
     expectedOrgId?: string;
-  } = {}
+    /** Echoed back on the heartbeat as `rebootStatus.source`. Defaults to `patch_job`. */
+    source?: 'patch_job' | 'oem_updates';
+  } & (
+    | { commitBeforeDelivery?: false }
+    | {
+        /**
+         * Commit the row on its own short transaction, then push it. For a caller with
+         * no DB context held, where a push from inside a transaction could reach an
+         * agent before the row is visible (#7103). Needs `expectedOrgId`, because the
+         * device lookup runs in system scope.
+         */
+        commitBeforeDelivery: true;
+        expectedOrgId: string;
+      }
+  ) = {}
 ): Promise<RebootResult> {
+  // The type requires it. A tenancy boundary is still worth checking at runtime.
+  if (options.commitBeforeDelivery && !options.expectedOrgId) {
+    return { success: false, error: 'commitBeforeDelivery requires expectedOrgId' };
+  }
+
   const explicitDelay =
     options.delayMinutes !== undefined ? clampRebootDelayMinutes(options.delayMinutes) : undefined;
   // One policy walk answers every question; skipped entirely only when the
@@ -452,24 +471,26 @@ export async function executeReboot(
   const promptText = options.promptText ?? plan!.promptText;
   const deadline = computeRebootDeadline(new Date(), delayMinutes, deferral, options.windowEndsAt);
 
-  const result = await queueCommandForExecution(
-    deviceId,
-    'schedule_reboot',
-    {
-      delayMinutes,
-      reason,
-      source: 'patch_job',
-      // #3207. Additive keys: an agent that predates them reads only the three
-      // above, and `allowDeferral` absent must never mean "enabled".
-      deadline: deadline.toISOString(),
-      allowDeferral: deferral.allowDeferral,
-      maxDeferrals: deferral.maxDeferrals,
-      deferralMinutes: deferral.deferralMinutes,
-      // #8030. Additive and only present when set; see rebootPromptPayload.
-      ...rebootPromptPayload(promptText),
-    },
-    { expectedOrgId: options.expectedOrgId }
-  );
+  const payload = {
+    delayMinutes,
+    reason,
+    source: options.source ?? 'patch_job',
+    // #3207. Additive keys: an agent that predates them reads only the three
+    // above, and `allowDeferral` absent must never mean "enabled".
+    deadline: deadline.toISOString(),
+    allowDeferral: deferral.allowDeferral,
+    maxDeferrals: deferral.maxDeferrals,
+    deferralMinutes: deferral.deferralMinutes,
+    // #8030. Additive and only present when set; see rebootPromptPayload.
+    ...rebootPromptPayload(promptText),
+  };
+  const result = options.commitBeforeDelivery
+    ? await queueCommandForExecutionWithSystemPrecheck(deviceId, 'schedule_reboot', payload, {
+        expectedOrgId: options.expectedOrgId,
+      })
+    : await queueCommandForExecution(deviceId, 'schedule_reboot', payload, {
+        expectedOrgId: options.expectedOrgId,
+      });
 
   if (result.error) {
     return { success: false, error: result.error };

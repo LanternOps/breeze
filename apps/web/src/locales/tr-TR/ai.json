@@ -892,11 +892,15 @@
       "summary": "Özet",
       "open": "Aç",
       "unread": "Okunmamış",
-      "specialistResult": "Uzman raporu"
+      "specialistResult": "Uzman raporu",
+      "firstLook": "İlk bakış"
     },
     "welcome": {
       "title": "{{scope}} kapsamına göz atıyorum.",
       "body": "İlk özetiniz, göz attıktan sonra her sabah gelir. Bu arada bana her şeyi sorabilirsiniz.",
+      "firstLookTitle": "{{scope}} kapsamına ilk kez göz attım.",
+      "firstLookBody": "Bulduklarım yukarıdaki gönderide. Bununla ilgili bana her şeyi sorabilirsiniz.",
+      "briefAt": "Sabah özetiniz {{time}} saatinde gönderilir ({{timezone}}).",
       "suggestions": {
         "needsMe": {
           "label": "Bugün neye ihtiyacım var?",

@@ -892,11 +892,15 @@
       "summary": "Récapitulatif",
       "open": "Ouvrir",
       "unread": "Non lu",
-      "specialistResult": "Rapport du spécialiste"
+      "specialistResult": "Rapport du spécialiste",
+      "firstLook": "Premier tour"
     },
     "welcome": {
       "title": "Je fais le tour de {{scope}}.",
       "body": "Votre premier résumé arrive chaque matin, une fois que j’ai regardé. D’ici là, posez-moi vos questions.",
+      "firstLookTitle": "J’ai fait un premier tour de {{scope}}.",
+      "firstLookBody": "Ce que j’ai trouvé est dans le message ci-dessus. Posez-moi vos questions à ce sujet.",
+      "briefAt": "Votre résumé du matin est envoyé à {{time}} ({{timezone}}).",
       "suggestions": {
         "needsMe": {
           "label": "Qu’est-ce qui demande mon attention aujourd’hui ?",

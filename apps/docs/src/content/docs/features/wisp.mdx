@@ -60,6 +60,7 @@ How the thread reads:
 - Long threads load the newest page first. **Load earlier** at the top of the conversation brings in older messages and posts without moving what you are reading.
 - New posts appear while the page is open. The home refreshes every 30 seconds, and the thread re-reads its newest messages when that refresh shows Wisp starting or finishing a check, a newer brief, or a change in the concerns that need you. If that read fails, the thread says so and offers **Retry**.
 - An empty thread shows Wisp's welcome and four suggestions: **What needs me today?**, **Which devices are offline?**, **Run a health sweep** and **What happened overnight?**. Select one to send it. When a morning brief is already in the thread, only the suggestions show.
+- When you first turn Wisp on, it looks at your first ten organizations, usually within a few minutes. When that batch finishes, a **First look** post appears in the thread: how many organizations it looked at and how many are still queued for its regular checks, your open concerns by severity, and what it can't watch yet. The welcome then changes from "I'm looking around" to "I've had a first look". The post is not sent as a push notification, and each delegation gets one.
 
 The composer says **Message Wisp**. Enter sends and Shift+Enter adds a line. The plus button links an item to the thread; see [Working set](#working-set). The thread resumes the last session instead of starting a new one on every visit. **New conversation** closes it, so its summary lands on the thread, and starts a fresh one on the grant. Nothing starts while the grant is paused or ended. While Wisp is paused, the conversation still shows its history, read-only, and the composer is replaced by the paused notice. When the grant has ended, the history is not shown.
 
@@ -184,7 +185,7 @@ You control delivery in your nudge preferences:
 - **Quiet hours.** Wisp respects your quiet hours. You can let urgent items through (`urgent only`) or never.
 - **Proactivity dial.** `quiet`, `normal` (the default) or `chatty`.
 - **Digest cadence.** How often batched items arrive (default every four hours).
-- **Morning brief.** A short summary at a time you choose (default 08:00) in your timezone.
+- **Morning brief.** A short summary at a time you choose (default 08:00) in your timezone. The Wisp home shows the time and the timezone it uses. If you have not chosen a timezone, Wisp uses your phone's, then the one your browser reports, then your company's, then UTC.
 
 Every nudge accepts feedback, and Wisp uses it to tune what it raises. The thread page also shows an activity feed of what Wisp did and a spend meter.
 

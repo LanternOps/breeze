@@ -79,6 +79,13 @@ describe('fetchWispTimeline', () => {
     expect(page.items).toEqual([sr]);
   });
 
+  it('keeps first_look post rows (#10402)', async () => {
+    const fl = post('p-fl', '2026-10-26T09:00:00.000Z', { kind: 'first_look' });
+    fetchMock.mockResolvedValue(ok({ data: { items: [fl], nextCursor: null } }));
+    const page = await fetchWispTimeline('th-1', {});
+    expect(page.items).toEqual([fl]);
+  });
+
   it('logs which kinds of rows were dropped, never their content', async () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchMock.mockResolvedValue(ok({

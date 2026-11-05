@@ -90,6 +90,16 @@ describe('WispPost', () => {
     expect(screen.queryByTestId('wisp-post-open')).toBeNull();
   });
 
+  it('renders a first_look post with the First look eyebrow and no Open link (#10402)', () => {
+    render(<WispPost post={post({ kind: 'first_look', title: 'First look done: 2 of 2 organizations', body: 'Open concerns: 1 high.', link: '/ai/wisp/thread/th-1', concernId: null })} />);
+    expect(screen.getByTestId('wisp-post').getAttribute('data-kind')).toBe('first_look');
+    expect(screen.getByText('First look')).toBeTruthy();
+    expect(screen.getByTestId('wisp-post-title').textContent).toBe('First look done: 2 of 2 organizations');
+    expect(screen.getByTestId('wisp-post-body').textContent).toBe('Open concerns: 1 high.');
+    // The link points at this same thread.
+    expect(screen.queryByTestId('wisp-post-open')).toBeNull();
+  });
+
   it('renders a specialist_result post with the Specialist report heading', () => {
     render(<WispPost post={post({ kind: 'specialist_result', title: 'FS-01 troubleshooting', body: 'Disk cleaned.', link: null, concernId: null })} />);
     expect(screen.getByTestId('wisp-post').getAttribute('data-kind')).toBe('specialist_result');
