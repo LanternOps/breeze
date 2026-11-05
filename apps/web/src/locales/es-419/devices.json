@@ -434,6 +434,18 @@
         "message": "¿Quitar {{hostname}}? Se sacará de su flota activa y dejará de ser supervisado. El historial se conserva y puede restaurarlo más adelante.",
         "confirm": "Quitar"
       },
+      "forcePermanentDelete": {
+        "confirm": "Eliminar de todos modos",
+        "reason": {
+          "agentReturned": "Una desinstalación se completó antes, pero el agente se ha vuelto a conectar desde entonces (se reinstaló).",
+          "cancelled": "La desinstalación del agente se canceló antes de ejecutarse.",
+          "expired": "El agente nunca volvió a recoger la desinstalación antes de que venciera.",
+          "failed": "El comando de desinstalación se ejecutó en el dispositivo, pero informó un error.",
+          "none": "No se puso en cola ninguna desinstalación del agente para este dispositivo (se eliminó dejando el agente instalado)."
+        },
+        "risk": "Si elimina {{hostname}} ahora, el agente puede quedar instalado y en ejecución sin que nadie lo administre. Esta acción no se puede deshacer.",
+        "title": "El agente no confirmó la eliminación"
+      },
       "permanentDelete": {
         "title": "¿Eliminar {{hostname}} de forma permanente?",
         "message": "Esto elimina todo el historial de este dispositivo: tickets, alertas y registros de parches y respaldos. No se puede deshacer.",
@@ -2693,6 +2705,7 @@
       "bulkMaintenanceSuccess_other": "dispositivos {{count}} {{verb}} modo de mantenimiento",
       "bulkPurgeFailed": "Error al eliminar definitivamente: {{reason}}",
       "bulkPurgeNoneDeleted": "No se eliminó ningún dispositivo: {{reasons}}",
+      "bulkPurgeSkipUninstallNotConfirmed": "omitidos: el agente nunca confirmó que se desinstaló (elimínelos uno por uno desde el dispositivo)",
       "bulkWakeAllFailed": "Error en la reactivación masiva de todos",
       "bulkWakeSent": "Despertador masivo enviado",
       "bulkWakeSomeFailed": "Despertar en masa algunos falló",

@@ -434,6 +434,18 @@
         "message": "{{hostname}}'yi çıkarmak istediğinizden emin misiniz? Cihaz etkin filonuzdan çıkarılacak ve izlenmeyecektir. Geçmiş korunur ve daha sonra geri yükleyebilirsiniz.",
         "confirm": "Çıkar"
       },
+      "forcePermanentDelete": {
+        "confirm": "Yine de sil",
+        "reason": {
+          "agentReturned": "Daha önce bir kaldırma işlemi tamamlandı, ancak araç o zamandan beri yeniden bağlandı (yeniden yüklendi).",
+          "cancelled": "Aracı kaldırma işlemi çalışmadan önce iptal edildi.",
+          "expired": "Aracı, süresi dolmadan önce kaldırma işlemini almaya hiç geri dönmedi.",
+          "failed": "Kaldırma komutu cihazda çalıştı ancak bir hata bildirdi.",
+          "none": "Bu cihaz için aracı kaldırma işlemi sıraya alınmadı (cihaz, araç yüklü bırakılarak kaldırıldı)."
+        },
+        "risk": "{{hostname}} cihazını şimdi silmek, aracın kimse tarafından yönetilmeden yüklü ve çalışır durumda kalmasına neden olabilir. Bu işlem geri alınamaz.",
+        "title": "Aracı kaldırıldığını doğrulamadı"
+      },
       "permanentDelete": {
         "title": "{{hostname}} kalıcı olarak silinsin mi?",
         "message": "Bu işlem, bu cihaza ait tüm geçmişi siler: talepler, uyarılar, yama ve yedekleme kayıtları. Geri alınamaz.",
@@ -2698,6 +2710,7 @@
       "bulkMaintenanceSuccess_other": "{{count}} cihazlar {{verb}} bakım modu",
       "bulkPurgeFailed": "Kalıcı silme başarısız: {{reason}}",
       "bulkPurgeNoneDeleted": "Hiçbir cihaz silinmedi: {{reasons}}",
+      "bulkPurgeSkipUninstallNotConfirmed": "atlandı: aracı kaldırıldığını hiç doğrulamadı (bunları cihaz üzerinden tek tek silin)",
       "bulkWakeAllFailed": "Toplu Uyandırma Hepsi Başarısız",
       "bulkWakeSent": "Toplu Uyandırma Gönderildi",
       "bulkWakeSomeFailed": "Toplu Uyandırma Bazıları Başarısız Oldu",

@@ -434,6 +434,18 @@
         "message": "Remove {{hostname}}? It will be taken out of your active fleet and stop being monitored. History is kept and you can restore it later.",
         "confirm": "Remove"
       },
+      "forcePermanentDelete": {
+        "confirm": "Delete anyway",
+        "reason": {
+          "agentReturned": "An uninstall completed earlier, but the agent has checked in since (it was reinstalled).",
+          "cancelled": "The agent uninstall was cancelled before it ran.",
+          "expired": "The agent never came back to collect the uninstall before it expired.",
+          "failed": "The uninstall command ran on the device but reported a failure.",
+          "none": "No agent uninstall was queued for this device (it was removed with the agent left installed)."
+        },
+        "risk": "Deleting {{hostname}} now can leave the agent installed and running with nobody managing it. This cannot be undone.",
+        "title": "The agent did not confirm removal"
+      },
       "permanentDelete": {
         "title": "Delete {{hostname}} permanently?",
         "message": "This deletes all history for this device — tickets, alerts, patch and backup records. It cannot be undone.",
@@ -2699,6 +2711,7 @@
       "bulkMaintenanceSuccess_other": "{{count}} devices {{verb}} maintenance mode",
       "bulkPurgeFailed": "Permanent delete failed: {{reason}}",
       "bulkPurgeNoneDeleted": "No device was deleted: {{reasons}}",
+      "bulkPurgeSkipUninstallNotConfirmed": "skipped: the agent never confirmed it was uninstalled (delete these one at a time from the device)",
       "bulkWakeAllFailed": "Bulk Wake All Failed",
       "bulkWakeSent": "Bulk Wake Sent",
       "bulkWakeSomeFailed": "Bulk Wake Some Failed",

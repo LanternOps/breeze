@@ -430,6 +430,18 @@
         "message": "Vuoi davvero rimuovere {{hostname}}? Il dispositivo verrà tolto dalla tua flotta attiva e non sarà più monitorato. La cronologia viene conservata e potrai ripristinarlo in seguito.",
         "confirm": "Rimuovi"
       },
+      "forcePermanentDelete": {
+        "confirm": "Elimina comunque",
+        "reason": {
+          "agentReturned": "Una disinstallazione era stata completata in precedenza, ma l'agent si è collegato di nuovo da allora (è stato reinstallato).",
+          "cancelled": "La disinstallazione dell'agent è stata annullata prima dell'esecuzione.",
+          "expired": "L'agent non è mai tornato a ritirare la disinstallazione prima della scadenza.",
+          "failed": "Il comando di disinstallazione è stato eseguito sul dispositivo ma ha segnalato un errore.",
+          "none": "Nessuna disinstallazione dell'agent è stata messa in coda per questo dispositivo (è stato rimosso lasciando l'agent installato)."
+        },
+        "risk": "Eliminare {{hostname}} ora può lasciare l'agent installato e in esecuzione senza che nessuno lo gestisca. Questa azione non può essere annullata.",
+        "title": "L'agent non ha confermato la rimozione"
+      },
       "permanentDelete": {
         "title": "Eliminare {{hostname}} definitivamente?",
         "message": "Questa operazione elimina tutta la cronologia del dispositivo: ticket, avvisi, record di patch e backup. Non è reversibile.",
@@ -2698,6 +2710,7 @@
       "bulkMaintenanceSuccess_other": "{{count}} dispositivi {{verb}} modalità di manutenzione",
       "bulkPurgeFailed": "Eliminazione definitiva non riuscita: {{reason}}",
       "bulkPurgeNoneDeleted": "Nessun dispositivo è stato eliminato: {{reasons}}",
+      "bulkPurgeSkipUninstallNotConfirmed": "saltati: l'agent non ha mai confermato la disinstallazione (eliminali uno alla volta dal dispositivo)",
       "bulkWakeAllFailed": "Riattivazione in blocco non riuscita per tutti i dispositivi",
       "bulkWakeSent": "Riattivazione in blocco inviata",
       "bulkWakeSomeFailed": "Riattivazione in blocco parzialmente non riuscita",

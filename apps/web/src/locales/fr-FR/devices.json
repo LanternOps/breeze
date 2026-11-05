@@ -434,6 +434,18 @@
         "message": "Retirer {{hostname}} ? Il sera sorti de votre parc actif et ne sera plus surveillé. L’historique est conservé et vous pourrez le restaurer plus tard.",
         "confirm": "Retirer"
       },
+      "forcePermanentDelete": {
+        "confirm": "Supprimer quand même",
+        "reason": {
+          "agentReturned": "Une désinstallation a déjà été effectuée, mais l'agent s'est reconnecté depuis (il a été réinstallé).",
+          "cancelled": "La désinstallation de l'agent a été annulée avant son exécution.",
+          "expired": "L'agent n'est jamais revenu récupérer la désinstallation avant son expiration.",
+          "failed": "La commande de désinstallation s'est exécutée sur l'appareil, mais elle a signalé un échec.",
+          "none": "Aucune désinstallation d'agent n'a été mise en file d'attente pour cet appareil (il a été retiré en laissant l'agent installé)."
+        },
+        "risk": "Supprimer {{hostname}} maintenant peut laisser l'agent installé et actif sans que personne ne le gère. Cette action est irréversible.",
+        "title": "L'agent n'a pas confirmé sa suppression"
+      },
       "permanentDelete": {
         "title": "Supprimer {{hostname}} définitivement ?",
         "message": "Cela supprime tout l’historique de cet appareil : tickets, alertes, enregistrements de correctifs et de sauvegardes. Cette action est irréversible.",
@@ -2693,6 +2705,7 @@
       "bulkMaintenanceSuccess_other": "{{count}} appareils {{verb}} mode maintenance",
       "bulkPurgeFailed": "Échec de la suppression définitive : {{reason}}",
       "bulkPurgeNoneDeleted": "Aucun appareil n'a été supprimé : {{reasons}}",
+      "bulkPurgeSkipUninstallNotConfirmed": "ignorés : l'agent n'a jamais confirmé sa désinstallation (supprimez-les un par un depuis l'appareil)",
       "bulkWakeAllFailed": "Réveil en vrac échoué",
       "bulkWakeSent": "Envoi d’un sillage en masse",
       "bulkWakeSomeFailed": "Bulk Wake Certains ont échoué",
