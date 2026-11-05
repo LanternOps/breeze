@@ -185,7 +185,7 @@ func (h *Heartbeat) putOemVerification(v oemupdates.Verification) error {
 		h.noteLoopAnswer(http.MethodPut, url, err)
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		return nil
