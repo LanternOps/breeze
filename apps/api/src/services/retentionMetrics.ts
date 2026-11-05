@@ -57,6 +57,7 @@ export const RETENTION_JOB_NAMES = [
   'snmp_retention',
   'ticket_outbox_retention',
   'user_risk_retention',
+  'wake_attempt_retention',
   'webhook_delivery_retention',
 ] as const;
 
@@ -100,6 +101,7 @@ export interface RetentionRunOutcome {
 interface RetentionMetricsRecorder {
   onRetentionRun: (jobName: RetentionJobName, outcome: RetentionRunOutcome) => void;
   onRollupRun: (status: RollupRunStatus, durationSeconds: number) => void;
+  onCompactionStalled: (stalledMonths: number) => void;
 }
 
 const noop = () => {};
@@ -107,6 +109,7 @@ const noop = () => {};
 let recorder: RetentionMetricsRecorder = {
   onRetentionRun: noop,
   onRollupRun: noop,
+  onCompactionStalled: noop,
 };
 
 export function setRetentionMetricsRecorder(
@@ -115,6 +118,7 @@ export function setRetentionMetricsRecorder(
   recorder = {
     onRetentionRun: next?.onRetentionRun ?? noop,
     onRollupRun: next?.onRollupRun ?? noop,
+    onCompactionStalled: next?.onCompactionStalled ?? noop,
   };
 }
 
@@ -160,11 +164,20 @@ export function recordRollupRun(status: RollupRunStatus, durationSeconds: number
   safelyRecord(`rollup run (${status})`, () => recorder.onRollupRun(status, durationSeconds));
 }
 
+/**
+ * Record how many legacy months the last metric-rollup-maintenance run left
+ * stalled on lock contention (#10960). 0 clears it.
+ */
+export function recordMetricRollupCompactionStalled(stalledMonths: number): void {
+  safelyRecord('compaction stall', () => recorder.onCompactionStalled(stalledMonths));
+}
+
 const ROWS_DELETED_METRIC = 'breeze_retention_rows_deleted_total';
 const LAST_RUN_METRIC = 'breeze_retention_last_run_timestamp_seconds';
 const BACKLOG_METRIC = 'breeze_retention_backlog_incomplete';
 const ROLLUP_RUNS_METRIC = 'breeze_rollup_runs_total';
 const ROLLUP_DURATION_METRIC = 'breeze_rollup_duration_seconds';
+const COMPACTION_STALLED_METRIC = 'breeze_metric_rollup_compaction_stalled_months';
 
 function safeCount(value: number): number {
   return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
@@ -175,7 +188,7 @@ function safeSeconds(value: number): number {
 }
 
 /**
- * Registers (or reuses, if this Registry already carries them) the five series
+ * Registers (or reuses, if this Registry already carries them) the six series
  * and binds them as the live recorder. Called once from `routes/metrics.ts`.
  *
  * NOTHING is seeded here — deliberately. The retention workers are `global` /
@@ -236,6 +249,18 @@ export function registerRetentionPrometheusMetrics(registry: Registry): void {
       registers: [registry],
     });
 
+  // Labelled like its siblings even with one value: prom-client publishes an
+  // unlabelled gauge as 0 from registration, which would seed this on every
+  // replica that never runs the job.
+  const compactionStalledMonths =
+    (registry.getSingleMetric(COMPACTION_STALLED_METRIC) as Gauge<'job_name'> | undefined) ??
+    new Gauge({
+      name: COMPACTION_STALLED_METRIC,
+      help: 'Legacy metric_rollups months the last maintenance run left stalled on lock contention, past their stall threshold',
+      labelNames: ['job_name'] as const,
+      registers: [registry],
+    });
+
   setRetentionMetricsRecorder({
     onRetentionRun: (jobName, outcome) => {
       lastRunTimestampSeconds.labels(jobName).set(Date.now() / 1000);
@@ -249,6 +274,9 @@ export function registerRetentionPrometheusMetrics(registry: Registry): void {
     onRollupRun: (status, durationSeconds) => {
       rollupRunsTotal.labels(status).inc();
       rollupDurationSeconds.labels(status).observe(safeSeconds(durationSeconds));
+    },
+    onCompactionStalled: (stalledMonths) => {
+      compactionStalledMonths.labels('metric_rollup_maintenance').set(safeCount(stalledMonths));
     },
   });
 }

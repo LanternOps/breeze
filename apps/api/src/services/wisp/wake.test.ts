@@ -20,6 +20,8 @@ const h = vi.hoisted(() => ({
   jobs: new Map<string, FakeJobRecord>(),
   adds: [] as Array<{ name: string; data: unknown; opts: Record<string, unknown>; inSystem: boolean }>,
   resolveGrantCeiling: vi.fn(),
+  /** Make Job.remove() reject (BullMQ refuses to remove an active / locked job). */
+  removeFails: false,
 }));
 
 vi.mock('../../db', async () => {
@@ -53,7 +55,10 @@ vi.mock('bullmq', () => {
     data: rec.data,
     timestamp: rec.timestamp,
     getState: async () => rec.state,
-    remove: async () => { h.jobs.delete(id); },
+    remove: async () => {
+      if (h.removeFails) throw new Error('Job is locked');
+      h.jobs.delete(id);
+    },
   });
   return {
     Queue: class {
@@ -79,11 +84,16 @@ vi.mock('bullmq', () => {
 
 import { GrantInactiveError } from './grantAuthority';
 import {
+  CHECK_IN_JOB,
   WISP_WAKE_DEBOUNCE_MS,
   WISP_WAKE_QUEUE,
   WISP_WAKE_TICK_INTERVAL_MS,
+  checkInJobId,
+  enqueueCheckIn,
   handleWispWakeEvent,
+  isCheckInJobLive,
   pickRoundRobinOrg,
+  removeCheckInJob,
   requestAssessment,
   wakeJobId,
 } from './wake';
@@ -149,6 +159,7 @@ beforeEach(() => {
   h.executes = [];
   h.jobs = new Map();
   h.adds = [];
+  h.removeFails = false;
   useFixtures({});
   h.resolveGrantCeiling.mockReset();
 });
@@ -254,6 +265,96 @@ describe('requestAssessment', () => {
       grantId: G1, orgId: O1, reason: { kind: 'tick' }, subject: { kind: 'alert', id: ALERT },
     });
     expect(h.jobs.get(wakeJobId(G1, O1))!.data).toMatchObject({ subject: { kind: 'alert', id: ALERT } });
+  });
+});
+
+describe('check-in job helpers', () => {
+  const CI = '00000000-0000-4000-8000-0000000000c9';
+
+  it('checkInJobId is wisp-check-in-<id> and contains no colon', () => {
+    expect(CHECK_IN_JOB).toBe('check-in');
+    expect(checkInJobId(CI)).toBe(`wisp-check-in-${CI}`);
+    expect(checkInJobId(CI)).not.toContain(':');
+  });
+
+  it('enqueueCheckIn adds name check-in with the retry options and the delay', async () => {
+    await enqueueCheckIn(CI, 600_000);
+    expect(h.adds).toHaveLength(1);
+    expect(h.adds[0]).toMatchObject({
+      name: 'check-in',
+      data: { checkInId: CI },
+      opts: {
+        jobId: `wisp-check-in-${CI}`,
+        delay: 600_000,
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 30_000 },
+        removeOnComplete: true,
+        removeOnFail: { count: 100 },
+      },
+    });
+  });
+
+  it('enqueueCheckIn removes a retained completed / failed record with the same id first', async () => {
+    for (const state of ['completed', 'failed']) {
+      h.jobs.set(checkInJobId(CI), { name: 'check-in', data: { checkInId: CI }, opts: {}, state, timestamp: 1 });
+      h.adds = [];
+      await enqueueCheckIn(CI, 0);
+      expect(h.adds).toHaveLength(1);
+      // The retained record is gone, so the add created a fresh waiting job.
+      expect(h.jobs.get(checkInJobId(CI))!.state).toBe('waiting');
+    }
+  });
+
+  it('enqueueCheckIn throws when a retained finished record cannot be removed (the add would silently no-op)', async () => {
+    h.jobs.set(checkInJobId(CI), { name: 'check-in', data: { checkInId: CI }, opts: {}, state: 'failed', timestamp: 1 });
+    h.removeFails = true;
+    await expect(enqueueCheckIn(CI, 0)).rejects.toThrow(/could not remove/);
+    expect(h.adds).toHaveLength(0);
+  });
+
+  it('enqueueCheckIn leaves a live job alone (no second job, no removal)', async () => {
+    h.jobs.set(checkInJobId(CI), { name: 'check-in', data: { checkInId: CI }, opts: { delay: 5 }, state: 'delayed', timestamp: 1 });
+    await enqueueCheckIn(CI, 0);
+    expect(h.adds).toHaveLength(0);
+    expect(h.jobs.get(checkInJobId(CI))!.timestamp).toBe(1);
+  });
+
+  it('enqueueCheckIn clamps a negative or non-finite delay to 0', async () => {
+    await enqueueCheckIn(CI, -5_000);
+    expect(h.adds[0]!.opts.delay).toBe(0);
+    h.jobs.clear();
+    await enqueueCheckIn(CI, Number.NaN);
+    expect(h.adds[1]!.opts.delay).toBe(0);
+  });
+
+  it('removeCheckInJob removes a present job and returns true', async () => {
+    h.jobs.set(checkInJobId(CI), { name: 'check-in', data: { checkInId: CI }, opts: {}, state: 'delayed', timestamp: 1 });
+    expect(await removeCheckInJob(CI)).toBe(true);
+    expect(h.jobs.has(checkInJobId(CI))).toBe(false);
+  });
+
+  it('removeCheckInJob returns false for a missing job', async () => {
+    expect(await removeCheckInJob(CI)).toBe(false);
+  });
+
+  it('removeCheckInJob swallows a remove error (active job) and returns false', async () => {
+    h.jobs.set(checkInJobId(CI), { name: 'check-in', data: { checkInId: CI }, opts: {}, state: 'active', timestamp: 1 });
+    h.removeFails = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await removeCheckInJob(CI)).toBe(false);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('isCheckInJobLive is false for a missing job and for completed / failed, true for live states', async () => {
+    expect(await isCheckInJobLive(CI)).toBe(false);
+    for (const [state, live] of [['completed', false], ['failed', false], ['delayed', true], ['waiting', true], ['active', true], ['prioritized', true]] as const) {
+      h.jobs.set(checkInJobId(CI), { name: 'check-in', data: { checkInId: CI }, opts: {}, state, timestamp: 1 });
+      expect(await isCheckInJobLive(CI)).toBe(live);
+    }
   });
 });
 

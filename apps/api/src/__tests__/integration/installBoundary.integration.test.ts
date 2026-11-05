@@ -700,3 +700,35 @@ describe('install incarnation boundary — every category (#8318 §5, §5.8)', (
     await expect(runBoundary(randomUUID(), 1, null)).rejects.toMatchObject({ code: 'device_not_found' });
   });
 });
+
+
+describe('wake tracking at the install boundary', () => {
+  it.each(['pending', 'sent'])('clears status and resolves %s attempts while preserving closed history and other devices', async (outcome) => {
+    const env = await setupTestEnvironment();
+    const target = await makeDevice(env);
+    const control = await makeDevice(env);
+    for (const deviceId of [target, control]) {
+      await exec(sql`INSERT INTO device_wake_status (device_id, org_id, readiness_state)
+        VALUES (${deviceId}::uuid, ${env.organization.id}::uuid, 'ready')`);
+      await exec(sql`INSERT INTO device_wake_attempts (device_id, org_id, outcome)
+        VALUES (${deviceId}::uuid, ${env.organization.id}::uuid, ${outcome})`);
+      await exec(sql`INSERT INTO device_wake_attempts (device_id, org_id, outcome, resolved_at)
+        VALUES (${deviceId}::uuid, ${env.organization.id}::uuid, 'timed_out', '2026-01-01'::timestamptz)`);
+    }
+    const closedBefore = await exec(sql`SELECT * FROM device_wake_attempts
+      WHERE device_id = ${target}::uuid AND outcome = 'timed_out'`);
+    const controlBefore = await exec(sql`SELECT * FROM device_wake_attempts WHERE device_id = ${control}::uuid ORDER BY id`);
+    const result = await withSystemDbAccessContext(() => runInstallIncarnationBoundary({
+      deviceId: target, expectedIncarnation: 1, actorUserId: env.user.id,
+    }));
+    expect(await exec(sql`SELECT * FROM device_wake_status WHERE device_id = ${target}::uuid`)).toHaveLength(0);
+    expect(await exec(sql`SELECT * FROM device_wake_status WHERE device_id = ${control}::uuid`)).toHaveLength(1);
+    expect(await exec(sql`SELECT outcome, resolved_at IS NOT NULL AS resolved FROM device_wake_attempts
+      WHERE device_id = ${target}::uuid AND outcome <> 'timed_out'`)).toEqual([{ outcome: 'unknown', resolved: true }]);
+    expect(await exec(sql`SELECT * FROM device_wake_attempts
+      WHERE device_id = ${target}::uuid AND outcome = 'timed_out'`)).toEqual(closedBefore);
+    expect(await exec(sql`SELECT * FROM device_wake_attempts WHERE device_id = ${control}::uuid ORDER BY id`)).toEqual(controlBefore);
+    expect(result.counts.install_state['device_wake_status.deleted']).toBe(1);
+    expect(result.counts.work_in_flight['device_wake_attempts.unknown']).toBe(1);
+  });
+});

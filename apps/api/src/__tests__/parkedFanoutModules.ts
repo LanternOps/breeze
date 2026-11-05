@@ -100,3 +100,8 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'services/unifi/unifiCollectorService.ts': { guards: 1, reason: '1 guarded site' },
   'services/wakeOnLan.ts': { guards: 2, reason: '2 guarded sites' },
 };
+
+// services/wakeAttempts.ts is ledger-only: it neither reads devices nor selects
+// work, so parkedFanout.contract.test.ts does not discover it. dispatchWake
+// (classified above) gates both target and relay before opening an attempt;
+// result ingestion only updates an existing pending row in the caller context.

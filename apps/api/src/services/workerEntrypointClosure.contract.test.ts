@@ -292,7 +292,7 @@ const EXPECTED_NAMES = [
   'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention', 'wispConcernRetention', 'wispNudgeDigest',
   'ipHistoryRetention', 'reliabilityRetention', 'processSampleRetention', 'deviceMetricsRetention',
   'm365SyncRetention', 'filesystemCleanupRunRetention',
-  'serviceProcessCheckRetention', 'changeLogRetention', 'restorePointAttemptRetention', 'webhookDeliveryRetention', 'dnsSecurityRetention', 'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
+  'serviceProcessCheckRetention', 'changeLogRetention', 'restorePointAttemptRetention', 'wakeAttemptSweep', 'wakeAttemptRetention', 'webhookDeliveryRetention', 'dnsSecurityRetention', 'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
   'quoteSendWorker', 'enrollmentKeyCleanup', 'migrationWindowSweep', 'ticketImportWorker', 'partnerApiIdempotencyRetention', 'quickSupportReaper', 'wispGrantReconciler', 'softwareUploadSessionCleanup',
   'softwareRemediationRequestCleanup', 'auditRetention', 'pamEvidenceRetention', 'auditChainVerify', 'auditChainAnchor',

@@ -11,11 +11,38 @@ vi.mock('@/lib/runAction', async (importOriginal) => ({
   runAction: (opts: { request: () => Promise<Response> }) => runAction(opts),
 }));
 
-import { fetchScriptProposal, requestScriptProposalChanges, promoteScriptProposal } from './scriptProposals';
+import {
+  fetchScriptProposal, requestScriptProposalChanges, promoteScriptProposal,
+  overrideRunScriptProposal, overrideSaveScriptProposal,
+} from './scriptProposals';
 
 beforeEach(() => vi.clearAllMocks());
 
 describe('scriptProposals api', () => {
+  // #10954: both overrides go through runAction and carry the sign-off.
+  it('routes override-run through runAction with the sign-off and acknowledgements', async () => {
+    fetchWithAuth.mockResolvedValue({ ok: true, json: async () => ({ status: 'executed', results: [] }) });
+    await expect(overrideRunScriptProposal('p1', ['hit'])).resolves.toEqual({ status: 'executed', results: [] });
+    expect(runAction).toHaveBeenCalledTimes(1);
+    expect(fetchWithAuth).toHaveBeenCalledWith(
+      '/ai/script-proposals/p1/override-run',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ confirmNoPassingReview: true, acknowledgedPatterns: ['hit'] }) }),
+    );
+  });
+
+  it('routes override-promote through runAction with the sign-off', async () => {
+    fetchWithAuth.mockResolvedValue({ ok: true, json: async () => ({ scriptId: 's1', versionId: 'v1' }) });
+    await overrideSaveScriptProposal('p1', { name: 'n', ownerScope: 'partner', acknowledgedPatterns: [] });
+    expect(runAction).toHaveBeenCalledTimes(1);
+    expect(fetchWithAuth).toHaveBeenCalledWith(
+      '/ai/script-proposals/p1/override-promote',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ name: 'n', ownerScope: 'partner', acknowledgedPatterns: [], confirmNoPassingReview: true }),
+      }),
+    );
+  });
+
   it('GETs the detail endpoint', async () => {
     fetchWithAuth.mockResolvedValue({ ok: true, json: async () => ({ proposal: { id: 'p1' } }) });
     await fetchScriptProposal('p1');
