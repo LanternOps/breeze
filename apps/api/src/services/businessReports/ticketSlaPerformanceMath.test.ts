@@ -11,7 +11,7 @@ import {
 /** Mon–Fri 09:00–17:00 UTC. */
 const WEEKDAYS: CalendarRevision = {
   timezone: 'UTC',
-  intervals: [1, 2, 3, 4, 5].map((weekday) => ({ weekday, startMinute: 9 * 60, endMinute: 17 * 60 })),
+  intervals: ([1, 2, 3, 4, 5] as const).map((weekday) => ({ weekday, startMinute: 9 * 60, endMinute: 17 * 60 })),
 };
 const OFFICE = { revision: WEEKDAYS, holidays: [] };
 
