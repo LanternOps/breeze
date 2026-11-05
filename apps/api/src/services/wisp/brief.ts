@@ -85,6 +85,9 @@ function localParts(d: Date, tz: string): { date: string; minutes: number } {
   return { date: `${parts.year}-${parts.month}-${parts.day}`, minutes: Number(parts.hour) * 60 + Number(parts.minute) };
 }
 
+/** A brief time is `HH:MM` (24 h); anything else means no brief. */
+const BRIEF_TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
 export function briefDue(
   prefs: { briefTimeLocal: string | null; briefTimezone: string | null },
   lastBriefAt: Date | null,
@@ -93,7 +96,7 @@ export function briefDue(
 ): { due: boolean; localDate: string } {
   const tz = safeTimeZone(prefs.briefTimezone ?? fallbackTz);
   const today = localParts(now, tz);
-  const m = prefs.briefTimeLocal === null ? null : /^([01]\d|2[0-3]):([0-5]\d)$/.exec(prefs.briefTimeLocal);
+  const m = prefs.briefTimeLocal === null ? null : BRIEF_TIME_RE.exec(prefs.briefTimeLocal);
   if (!m) return { due: false, localDate: today.date };
   if (today.minutes < Number(m[1]) * 60 + Number(m[2])) return { due: false, localDate: today.date };
   // YYYY-MM-DD compares correctly as a string.
@@ -200,6 +203,31 @@ export async function buildBrief(
 // ---------------------------------------------------------------------------
 
 type SweepGrant = { id: string; partnerId: string; grantorUserId: string; status: string; pausedReason: string | null };
+
+/**
+ * #10391: when this user's brief fires, resolved exactly as the sweep resolves it
+ * (preference → phone → browser → partner → UTC) — for the Wisp chat seed.
+ * `timeLocal` null = briefs off. Elects system scope for the device/partner reads.
+ */
+export async function briefScheduleFor(
+  userId: string,
+  partnerId?: string | null,
+): Promise<{ timeLocal: string | null; timezone: string }> {
+  const book = (await loadNudgeBookkeeping([userId])).get(userId);
+  const prefs = book?.prefs ?? resolveWispNudgePrefs(null);
+  const { phoneTz, partnerTz } = await inSystemContext(async () => ({
+    phoneTz: await phoneTimezones([userId]),
+    partnerTz: partnerId ? await partnerTimezones([partnerId]) : new Map<string, string>(),
+  }));
+  const timezone = resolveBriefTimezone({
+    preference: prefs.briefTimezone,
+    phone: phoneTz.get(userId),
+    browser: book?.browserTimezone,
+    partner: partnerId ? partnerTz.get(partnerId) : null,
+  });
+  const timeLocal = prefs.briefTimeLocal !== null && BRIEF_TIME_RE.test(prefs.briefTimeLocal) ? prefs.briefTimeLocal : null;
+  return { timeLocal, timezone: safeTimeZone(timezone) };
+}
 
 export async function runMorningBriefs(now: Date = new Date()): Promise<{ due: number; sent: number; suppressed: number }> {
   const result = { due: 0, sent: 0, suppressed: 0 };

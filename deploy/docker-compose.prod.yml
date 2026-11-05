@@ -410,6 +410,11 @@ x-api-env: &api-env
   BREEZE_AI_ARTIFACT_CAPTURE_ENABLED: ${BREEZE_AI_ARTIFACT_CAPTURE_ENABLED:-false}
   # Wisp (hosted only; wispEnabled() in config/env.ts). Default false.
   BREEZE_WISP_ENABLED: ${BREEZE_WISP_ENABLED:-false}
+  # Vendor updates (#11065). Dark by default; the manifest gates in code stay
+  # closed until a lab wave opens them. DISABLED_LANES stops new runs with no deploy.
+  BREEZE_OEM_UPDATES_ENABLED: ${BREEZE_OEM_UPDATES_ENABLED:-false}
+  BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: ${BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST:-}
+  BREEZE_OEM_UPDATES_DISABLED_LANES: ${BREEZE_OEM_UPDATES_DISABLED_LANES:-}
   # EDR response actions (#8167): server-wide kill switch, default on. Each
   # EDR connection must still opt in (off by default).
   BREEZE_EDR_ACTIONS_ENABLED: ${BREEZE_EDR_ACTIONS_ENABLED:-}

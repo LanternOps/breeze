@@ -163,6 +163,10 @@ const LIVE: readonly string[] = [
   // already passed; the arm simply mints the next one when the collector is
   // back, so an offline collector is a rejection, never a queued row.
   C.TOPOLOGY_INTERFACE_POLL,
+  // Vendor updates (#11065): refused for an offline device. The seam
+  // (services/oemUpdates/dispatch.ts) stamps deliver_by from the run's notAfter,
+  // so a device that drops offline after dispatch cannot start past its window.
+  C.OEM_UPDATE_RUN,
   // Non-CommandTypes literals whose only dispatch path is `executeCommand`,
   // which waits for the result synchronously (`waitForCommandResult`) — the one
   // combination the design forbids pairing with `queue` (#5128 §A). The two

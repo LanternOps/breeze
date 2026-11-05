@@ -290,6 +290,13 @@ export async function createSession(
   // RLS still applies) but is required for the partner-axis `partners` read.
   const budget = await withSystemDbAccessContext(() => getEffectiveAiBudget(orgId));
 
+  // The thread seed, built once the model is chosen: its standing-loop section
+  // names the session's model (#10391). The caller's auth rides along so the
+  // seed's links honour its token scope.
+  const wispSeed = wisp
+    ? await (await import('./wisp/threads')).seedContextForSession(wisp.threadId, wisp.ceiling, auth, { model: choice.model })
+    : '';
+
   const [session] = await db
     .insert(aiSessions)
     .values({
@@ -309,7 +316,7 @@ export async function createSession(
       ...(options.approvalMode ? { approvalMode: options.approvalMode } : {}),
       ...(wisp ? { wispGrantId: wisp.grantId, wispGrantRevisionId: wisp.revisionId } : {}),
       systemPrompt: wisp
-        ? [await buildSystemPrompt(auth, sanitizedPageContext, undefined, wisp.ceiling), wisp.seed].filter(Boolean).join('\n')
+        ? [await buildSystemPrompt(auth, sanitizedPageContext, undefined, wisp.ceiling), wispSeed].filter(Boolean).join('\n')
         : await buildSystemPrompt(auth, sanitizedPageContext)
     })
     .returning();
@@ -336,8 +343,6 @@ type WispSessionAnchor = {
   /** The session org after focus anchoring. */
   orgId: string;
   focusOrgId: string | null;
-  /** Thread seed appended to the system prompt ('' when empty). */
-  seed: string;
 };
 
 /**
@@ -373,7 +378,7 @@ async function anchorWispSession(
   // Lazy: only a Wisp session loads the Wisp graph.
   const [
     { validateWispGrantForSession, assertGrantCoversSessionOrg, WispSessionError },
-    { getOrCreateThread, seedContextForSession, setThreadFocus },
+    { getOrCreateThread, setThreadFocus },
     { resolveGrantCeiling, assertWithinCeiling, CeilingViolationError, GrantInactiveError },
   ] = await Promise.all([
     import('./wisp/sessionGrant'),
@@ -438,8 +443,6 @@ async function anchorWispSession(
     threadId: thread.id,
     orgId,
     focusOrgId,
-    // The caller's auth: an org-scoped sign-in never sees another org's or a partner-level link.
-    seed: await seedContextForSession(thread.id, ceiling, auth),
   };
 }
 

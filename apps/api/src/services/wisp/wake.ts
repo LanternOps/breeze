@@ -31,8 +31,10 @@ import { getBullMQConnection } from '../redis';
 import { notHoldingOrgCondition } from '../unassignedPool/selectorPredicate';
 import type { BreezeEvent } from '../eventBus';
 import { GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
-import { assessableOrgIds } from './assessableOrgs';
+import { assessableOrgIds, ONBOARDING_ORG_LIMIT } from './assessableOrgs';
 import type { AssessmentReason, DeterministicDigestHint } from './assessment';
+
+export { ONBOARDING_ORG_LIMIT };
 
 export const WISP_WAKE_QUEUE = 'wisp-wake';
 export const WISP_WAKE_DEBOUNCE_MS = 60_000;
@@ -40,9 +42,6 @@ export const WISP_WAKE_DEBOUNCE_MS = 60_000;
 // literal (scheduleRegistry.contract.test.ts resolves `repeat: { every }`
 // from same-file consts only); its test pins the two equal.
 export const WISP_WAKE_TICK_INTERVAL_MS = 5 * 60 * 1000;
-
-/** w00 A33: onboarding assesses at most this many orgs at once; the rest reach the floor tick. */
-export const ONBOARDING_ORG_LIMIT = 10;
 
 export const ASSESS_JOB = 'assess';
 const ASSESS_JOB_ATTEMPTS = 3;

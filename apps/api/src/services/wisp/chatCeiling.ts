@@ -245,12 +245,15 @@ export async function enforceWispCeiling(args: {
  * for the fenced Viewing now line. A
  * CORRUPT pin also yields '' but is logged and captured (grantAuthority's
  * contract) — the next tool call fails closed on it as gate-unavailable.
+ * `model` is this turn's resolved model; given, the seed carries the
+ * standing-loop section that names it (#10391).
  */
 export async function wispSeedForSession(
   grant: WispSessionGrant,
   auth: AuthContext | null = null,
   ceiling?: GrantCeiling,
   pageContext?: AiPageContext,
+  model?: string,
 ): Promise<string> {
   try {
     const live = ceiling ?? await resolveGrantCeiling(grant.grantId, grant.revisionId);
@@ -272,8 +275,9 @@ export async function wispSeedForSession(
         captureException(err, undefined, { grantId: grant.grantId, op: 'wisp.seed_viewing' });
       }
     }
-    return viewing
-      ? await seedContextForSession(grant.threadId, live, auth, { viewing })
+    const seedOpts = { ...(viewing ? { viewing } : {}), ...(model !== undefined ? { model } : {}) };
+    return Object.keys(seedOpts).length > 0
+      ? await seedContextForSession(grant.threadId, live, auth, seedOpts)
       : await seedContextForSession(grant.threadId, live, auth);
   } catch (err) {
     if (err instanceof GrantInactiveError && err.kind === 'corrupt') {
