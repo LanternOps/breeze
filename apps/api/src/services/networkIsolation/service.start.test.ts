@@ -193,6 +193,7 @@ describe('startNetworkIsolation', () => {
       expect(sent().allow.every((entry: { scope: string }) => entry.scope === 'breeze')).toBe(true);
       expect(h.resolvePolicy).not.toHaveBeenCalled();
       expect(sent()).not.toHaveProperty('policyRevision');
+      expect(h.row.allowSnapshotRevision).toBeNull();
     });
     it('level 3: appends the policy permits as scope any, without their label', async () => {
       h.device.networkIsolationVersion = 3;
@@ -202,6 +203,7 @@ describe('startNetworkIsolation', () => {
       expect(sent().allow).toContainEqual({ kind: 'host', host: 'edr.example.test', proto: 'tcp', ports: [443], scope: 'any' });
       expect(h.row.allowSnapshot).toEqual(sent().allow);
       expect(sent().policyRevision).toBe('c1:policy');
+      expect(h.row.allowSnapshotRevision).toBe('c1:policy');
     });
     it('level 3 with an empty policy: sends no revision although the resolver has one', async () => {
       h.device.networkIsolationVersion = 3;

@@ -64,6 +64,8 @@ export type CreateEpisodeInput = Omit<
   | 'releaseKind'
   | 'mechanism'
   | 'lastAgentReport'
+  | 'appliedPolicyRevision'
+  | 'policyEventSeq'
   | 'breakGlassAckSeq'
   | 'expiryWarnedAt'
   | 'dispatchedAt'
@@ -100,6 +102,8 @@ export async function createEpisode(tx: EpisodeTx, values: CreateEpisodeInput): 
     releaseKind: null,
     mechanism: null,
     lastAgentReport: null,
+    appliedPolicyRevision: null,
+    policyEventSeq: 0,
     breakGlassAckSeq: null,
     expiryWarnedAt: null,
     dispatchedAt: null,

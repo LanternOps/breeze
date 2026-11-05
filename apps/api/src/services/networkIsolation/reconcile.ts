@@ -1,6 +1,6 @@
 import { and, eq, sql } from 'drizzle-orm';
 import {
-  ISOLATION_RELEASE_JOURNAL_TYPES, failureCodeFromJournalType, isUnresolvedTerminalIsolationState, networkIsolationReportSchema,
+  ISOLATION_RELEASE_JOURNAL_TYPES, agentAcceptsPolicyAllow, failureCodeFromJournalType, isUnresolvedTerminalIsolationState, networkIsolationReportSchema,
   type ContainmentDesiredBlock, type NetworkIsolationReport, type IsolationFailureCode, type SafeAgentReport,
 } from '@breeze/shared';
 import { deviceNetworkIsolations, incidents, type DeviceNetworkIsolation } from '../../db/schema';
@@ -11,7 +11,7 @@ import { buildIsolationAllowlist, IsolationAllowlistError } from './allowlist';
 import { findHeartbeatEpisode, toEpisodeSnapshot, withEpisodeLock, writeEpisodeSnapshot, writeAgentReport, type EpisodeTx } from './episodeStore';
 import { applyEpisodeEvent, type EpisodeEvent } from './stateMachine';
 import { synchronizeEpisodeOutcome } from './outcome';
-import { readIsolationPolicy } from './policy';
+import { readIsolationPolicy, type IsolationPolicy } from './policy';
 
 interface IsolationDevice { id: string; orgId: string; agentServerUrl?: string | null; networkIsolationVersion?: number | null }
 export const ISOLATION_SECRET_COLUMN = {
@@ -50,13 +50,18 @@ export function noteIsolationReportDropped(deviceId: string, raw: unknown): void
   });
 }
 
-/** Stored management-plane permits provide a response even when a current read or decrypt fails. */
-export function storedContainmentHeartbeatBlock(row?: DeviceNetworkIsolation | null): ContainmentDesiredBlock {
+/**
+ * Stored management-plane permits provide a response even when a current read or decrypt fails. They
+ * go out under the revision the snapshot was built with, because the agent rejects `scope:"any"`
+ * entries without one. An agent that cannot take them gets the rest, which is a narrowing it applies.
+ */
+export function storedContainmentHeartbeatBlock(row?: DeviceNetworkIsolation | null, device?: Pick<IsolationDevice, 'networkIsolationVersion'> | null): ContainmentDesiredBlock {
   if (!row || (row.desiredState === 'released' && row.releaseConfirmedAt)) return { networkIsolation: null };
   const base = { isolationId: row.id, generation: row.generation, expiresAt: row.expiresAt.toISOString(), deadManSeconds: row.deadManSeconds, remoteRelay: row.remoteRelay };
-  return row.desiredState === 'released'
-    ? { networkIsolation: { ...base, desired: 'released', allow: [] } }
-    : { networkIsolation: { ...base, desired: 'isolated', allow: row.allowSnapshot } };
+  if (row.desiredState === 'released') return { networkIsolation: { ...base, desired: 'released', allow: [] } };
+  const revision = agentAcceptsPolicyAllow(device?.networkIsolationVersion) ? row.allowSnapshotRevision : null;
+  const allow = revision ? row.allowSnapshot : row.allowSnapshot.filter(entry => entry.scope !== 'any');
+  return { networkIsolation: { ...base, desired: 'isolated', allow, ...(revision && allow.some(entry => entry.scope === 'any') ? { policyRevision: revision } : {}) } };
 }
 async function heartbeatEpisode(tx: EpisodeTx, deviceId: string, context: HeartbeatEpisodeContext) {
   if (context.row === undefined) context.row = await findHeartbeatEpisode(tx, deviceId);
@@ -66,12 +71,24 @@ async function heartbeatEpisode(tx: EpisodeTx, deviceId: string, context: Heartb
 /** Only a delivered copy contains the secret; neither permits nor ciphertext enter telemetry. */
 export async function buildContainmentHeartbeatBlock(tx: EpisodeTx, device: IsolationDevice, context: HeartbeatEpisodeContext = {}): Promise<ContainmentDesiredBlock> {
   const row = await heartbeatEpisode(tx, device.id, context);
-  const block = storedContainmentHeartbeatBlock(row);
-  if (!row || !block.networkIsolation || block.networkIsolation.desired === 'released') return block;
+  const block = storedContainmentHeartbeatBlock(row, device);
+  const desired = block.networkIsolation;
+  if (!row || !desired || desired.desired === 'released') return block;
+  let policy: IsolationPolicy;
   try {
-    const policy = await readIsolationPolicy(device);
-    block.networkIsolation.allow = buildIsolationAllowlist({ serverUrl: device.agentServerUrl ?? process.env.AGENT_SERVER_URL ?? '', remoteRelay: row.remoteRelay, policyExtras: policy.extras });
-    if (policy.revision) block.networkIsolation.policyRevision = policy.revision;
+    policy = await readIsolationPolicy(device);
+  } catch (err) {
+    // No new answer, so the held one stands: a read fault must not look like a policy removal.
+    policy = { extras: desired.allow.filter(entry => entry.scope === 'any'), revision: desired.policyRevision ?? null };
+    throttled(`policy:${row.id}`, () => {
+      console.error('[isolation] policy unavailable', { deviceId: device.id, isolationId: row.id });
+      captureException(err, undefined, { phase: 'isolation_policy_unavailable', deviceId: device.id, isolationId: row.id });
+    });
+  }
+  try {
+    desired.allow = buildIsolationAllowlist({ serverUrl: device.agentServerUrl ?? process.env.AGENT_SERVER_URL ?? '', remoteRelay: row.remoteRelay, policyExtras: policy.extras });
+    if (policy.revision) desired.policyRevision = policy.revision;
+    else delete desired.policyRevision;
   } catch (err) {
     throttled(`allow:${row.id}`, () => {
       const source = err instanceof IsolationAllowlistError ? 'configuration' : 'builder';
@@ -83,7 +100,7 @@ export async function buildContainmentHeartbeatBlock(tx: EpisodeTx, device: Isol
     try {
       const secret = decryptSecret(row.breakGlassSecretEnc, { aad: columnAad(ISOLATION_SECRET_COLUMN, row.id), strict: true });
       if (!secret) throw new Error('isolation_secret_unavailable');
-      block.networkIsolation.breakGlassSecret = secret;
+      desired.breakGlassSecret = secret;
     } catch (err) {
       throttled(`secret:${row.id}`, () => {
         console.error('[isolation] heartbeat secret unavailable', { deviceId: device.id, isolationId: row.id });

@@ -18,7 +18,7 @@ vi.mock('./episodeStore', async (original) => ({
   writeEpisodeSnapshot: vi.fn(async (_tx, _id, _prev, next) => { Object.assign(store.row!, next); return true; }),
 }));
 vi.mock('../secretCrypto', () => ({ decryptSecret: vi.fn(() => Buffer.alloc(32, 7).toString('base64')) }));
-import { buildContainmentHeartbeatBlock, reconcileContainmentReport, __resetIsolationLogThrottleForTests } from './reconcile';
+import { buildContainmentHeartbeatBlock, reconcileContainmentReport, storedContainmentHeartbeatBlock, __resetIsolationLogThrottleForTests } from './reconcile';
 const id = '11111111-1111-4111-8111-111111111111';
 const device = { id: '22222222-2222-4222-8222-222222222222', orgId: '33333333-3333-4333-8333-333333333333', agentServerUrl: 'https://control.example.test' };
 const now = new Date('2026-10-31T12:00:00Z');
@@ -233,3 +233,56 @@ describe('containment policy permits on the heartbeat (#10100)', () => {
     expect(store.resolvePolicy).not.toHaveBeenCalled();
   });
 });
+
+describe('stored fallback carries the snapshot revision (#10100)', () => {
+  const held = () => ({ ...row(), allowSnapshot: [...allow, EDR_ENTRY], allowSnapshotRevision: 'c1:held' }) as unknown as DeviceNetworkIsolation;
+  const level3 = { ...device, networkIsolationVersion: 3 };
+
+  it('sends the stored permits under the stored revision at level 3', () => {
+    expect(storedContainmentHeartbeatBlock(held(), level3).networkIsolation).toMatchObject({ allow: [...allow, EDR_ENTRY], policyRevision: 'c1:held' });
+  });
+  it.each([undefined, { ...device, networkIsolationVersion: 2 }, { ...device, networkIsolationVersion: null }])('strips policy permits and the revision for an agent that cannot take them (%j)', (who) => {
+    const block = storedContainmentHeartbeatBlock(held(), who).networkIsolation!;
+    expect(block.allow).toEqual(allow);
+    expect(block).not.toHaveProperty('policyRevision');
+  });
+  it('never sends a scope any entry without a revision', () => {
+    const block = storedContainmentHeartbeatBlock({ ...held(), allowSnapshotRevision: null }, level3).networkIsolation!;
+    expect(block.allow).toEqual(allow);
+    expect(block).not.toHaveProperty('policyRevision');
+  });
+  it('never sends a revision without a scope any entry', () => {
+    const block = storedContainmentHeartbeatBlock({ ...held(), allowSnapshot: allow as never }, level3).networkIsolation!;
+    expect(block).not.toHaveProperty('policyRevision');
+  });
+  it('a tombstone carries no revision', () => {
+    const block = storedContainmentHeartbeatBlock({ ...held(), state: 'release_requested', desiredState: 'released' }, level3).networkIsolation!;
+    expect(block).toMatchObject({ desired: 'released', allow: [] });
+    expect(block).not.toHaveProperty('policyRevision');
+  });
+  it('keeps the held permits and revision when the allowlist cannot be built', async () => {
+    store.row = held();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const block = await buildContainmentHeartbeatBlock(tx, { ...level3, agentServerUrl: 'invalid-url' });
+      expect(block.networkIsolation).toMatchObject({ allow: [...allow, EDR_ENTRY], policyRevision: 'c1:held' });
+    } finally { error.mockRestore(); }
+  });
+  it('keeps the held policy, with fresh control-plane permits, when the policy cannot be read', async () => {
+    store.row = held();
+    store.resolvePolicy.mockRejectedValue(new Error('read failed'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      for (let beat = 0; beat < 3; beat++) {
+        const block = await buildContainmentHeartbeatBlock(tx, { ...level3, agentServerUrl: 'https://moved.example.test' });
+        expect(block.networkIsolation!.allow).toContainEqual(EDR_ENTRY);
+        expect(block.networkIsolation!.allow).toContainEqual({ kind: 'host', host: 'moved.example.test', proto: 'tcp', ports: [443], scope: 'breeze' });
+        expect(block.networkIsolation).toHaveProperty('policyRevision', 'c1:held');
+      }
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(captureException).toHaveBeenCalledTimes(1);
+      expect(captureException).toHaveBeenCalledWith(expect.any(Error), undefined, { phase: 'isolation_policy_unavailable', deviceId: device.id, isolationId: id });
+    } finally { error.mockRestore(); }
+  });
+});
+

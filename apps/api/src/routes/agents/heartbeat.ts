@@ -2366,7 +2366,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     } catch (err) {
       console.error('[heartbeat] isolation block failed', { deviceId: device.id, isolationId: isolationContext.row?.id });
       captureException(err, undefined, { phase: 'isolation_heartbeat_block', deviceId: device.id, isolationId: isolationContext.row?.id ?? 'unknown' });
-      containment = storedContainmentHeartbeatBlock(isolationContext.row);
+      containment = storedContainmentHeartbeatBlock(isolationContext.row, device);
     }
   }
 

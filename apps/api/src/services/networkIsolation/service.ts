@@ -126,7 +126,7 @@ export async function startNetworkIsolation(auth: AuthContext, deviceId: string,
       result: { commandId }, approvalRef: opts.approvalRef ?? null, executedAt: now });
     const created = await createEpisode(tx, { id, orgId: device.orgId, deviceId: device.id, incidentId, incidentActionId: actionId, commandId,
       requestedByKind: opts.requestedByKind, requestedByUserId: opts.requestedByKind === 'system' ? null : auth.user.id,
-      reason: input.reason, expiresAt, deadManSeconds: 0, remoteRelay, allowSnapshot: allow,
+      reason: input.reason, expiresAt, deadManSeconds: 0, remoteRelay, allowSnapshot: allow, allowSnapshotRevision: policy.revision,
       breakGlassSecretEnc: sealedSecret,
     });
     if (!created.ok) return refuse(created.error);
