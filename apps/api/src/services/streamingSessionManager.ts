@@ -180,21 +180,27 @@ export function turnTimeoutMsFor(approvalWaitBudgetMs: number): number {
 const MCP_PREFIX = 'mcp__breeze__';
 // Use the directly-imported runOutsideDbContext (see commandQueue.ts for explanation).
 const runOutsideDbContextSafe = runOutsideDbContext;
+const WISP_SUMMARY_FINALIZE_CONCURRENCY = 4;
 
 /**
  * Wisp W04 Task 5: recompute the thread summary of each session just retired.
  * Lazy import keeps wisp code out of this hot module's eager graph (as for
  * chatCeiling). Never rejects: failures go to Sentry only.
+ *
+ * #10390: finalizing can include a model call of up to a minute, so sessions run
+ * a few at a time rather than one by one: one session's slow call must not hold
+ * back the digest another thread's next chat is seeded with.
  */
 async function finalizeWispSummaries(sessionIds: string[]): Promise<void> {
   if (sessionIds.length === 0) return;
   try {
     const { finalizeWispSessionSummary } = await import('./wisp/threadSummary');
-    for (const id of sessionIds) {
-      await finalizeWispSessionSummary(id).catch((err) => {
-        console.error(`[StreamingSessionManager] Wisp thread summary finalize failed for expired session ${id}:`, err);
-        captureException(err);
-      });
+    for (let i = 0; i < sessionIds.length; i += WISP_SUMMARY_FINALIZE_CONCURRENCY) {
+      await Promise.all(sessionIds.slice(i, i + WISP_SUMMARY_FINALIZE_CONCURRENCY).map((id) =>
+        finalizeWispSessionSummary(id).catch((err) => {
+          console.error(`[StreamingSessionManager] Wisp thread summary finalize failed for expired session ${id}:`, err);
+          captureException(err);
+        })));
     }
   } catch (err) {
     console.error(`[StreamingSessionManager] Wisp thread summary finalize failed for ${sessionIds.length} session(s) (${sessionIds.join(', ')}):`, err);

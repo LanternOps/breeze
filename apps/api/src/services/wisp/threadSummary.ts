@@ -34,8 +34,11 @@ const SESSION_MESSAGE_LIMIT = 200;
 const SESSION_MESSAGE_MAX_CHARS = 8_000;
 
 const SENTENCE_BREAK = /(?<=[.!?…])\s+/;
-const ENDS_IN_QUESTION = /\?["')\]*_`]*$/;
-const OPENS_AN_OFFER = /^[*_`]*(?:ask me|let me know|want me to|would you like|do you want|shall i|should i|if you(?:'d| would)? (?:like|prefer|want)|if you want|i can also|happy to|just say|tell me)\b/i;
+// A closing-line heuristic for the digest only, biased towards keeping text: a
+// stray offer in the digest is harmless, a dropped conclusion is not. So "If you
+// want X, set Y" stays; only "If you want, I can…" reads as an offer.
+const ENDS_IN_QUESTION = /\?[)\]*_`]*$/;
+const OPENS_AN_OFFER = /^(?:[-*•]\s+)?[*_`]*(?:(?:also|and|or|so),?\s+)?(?:ask me|let me know|want me to|would you like|do you want|shall i|should i|if you want me to|if you(?:'d| would)? (?:like|prefer|want)\b[^.]*\bi(?:'ll| can| could)\b|check back|i'll check back|feel free|happy to|just say|tell me)\b/i;
 
 function isHighSurrogate(code: number): boolean {
   return code >= 0xd800 && code <= 0xdbff;

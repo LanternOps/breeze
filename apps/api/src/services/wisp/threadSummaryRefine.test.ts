@@ -27,17 +27,9 @@ const h = vi.hoisted(() => ({
   captureException: vi.fn(),
 }));
 
-const { FakeFailedError, FakeLlmUnavailableError } = vi.hoisted(() => {
-  class FakeFailedError extends Error {
-    constructor(
-      message: string,
-      readonly attempts: unknown[],
-      readonly providerOutcomeUnknown: boolean,
-      readonly overBudget = false,
-    ) { super(message); }
-  }
+const { FakeLlmUnavailableError } = vi.hoisted(() => {
   class FakeLlmUnavailableError extends Error {}
-  return { FakeFailedError, FakeLlmUnavailableError };
+  return { FakeLlmUnavailableError };
 });
 
 vi.mock('../../db', () => ({
@@ -71,16 +63,9 @@ vi.mock('../aiBudgetReservations', () => ({
   reserveAiBudget: h.reserveAiBudget,
 }));
 vi.mock('../aiModels/connectionFactory', () => ({ anthropicClientFor: h.anthropicClientFor }));
-vi.mock('../aiModels/continuation', () => ({
-  ContinuationSummaryFailedError: FakeFailedError,
-  buildContinuationTranscript: (messages: Array<{ role: string; content: string | null; toolName?: string | null }>, maxChars: number) => ({
-    text: messages
-      .map((m) => (m.role === 'tool_use' ? `[tool: ${m.toolName}]` : `${m.role}: ${m.content}`))
-      .join('\n')
-      .slice(0, maxChars),
-    includedMessages: messages.length,
-    omittedMessages: 0,
-  }),
+// The real transcript builder and error class: only the provider call is faked.
+vi.mock('../aiModels/continuation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../aiModels/continuation')>()),
   summarizeForContinuation: h.summarizeForContinuation,
 }));
 vi.mock('../aiModels/invocationUsage', () => ({
@@ -93,6 +78,7 @@ vi.mock('../aiModels/settleInvocation', () => ({ settleInvocation: h.settleInvoc
 vi.mock('../aiModels/turnBinding', () => ({ turnBindingFrom: h.turnBindingFrom }));
 vi.mock('../llm/llmConfigResolver', () => ({ LlmUnavailableError: FakeLlmUnavailableError }));
 
+import { ContinuationSummaryFailedError } from '../aiModels/continuation';
 import {
   THREAD_SUMMARY_INPUT_MAX_CHARS,
   THREAD_SUMMARY_MODEL_TIMEOUT_MS,
@@ -109,7 +95,9 @@ const CONVERSATION = [
 const input = {
   threadId: 'thread-1', sessionId: 'session-1', previousSummary: 'Concluded: backups green.', messages: CONVERSATION,
 };
-const ATTEMPTS = [{ wireModel: 'm', message: {} }];
+const ATTEMPTS = [{ wireModel: 'm', message: {} }] as never[];
+const failed = (message: string, attempts: never[], unknown: boolean, overBudget = false) =>
+  new ContinuationSummaryFailedError(message, attempts, unknown, { overBudget });
 
 function expectNoSpend(): void {
   expect(h.summarizeForContinuation).not.toHaveBeenCalled();
@@ -184,13 +172,32 @@ describe('refineThreadSummary', () => {
     expect(h.summarizeForContinuation.mock.calls[0]![0].transcript).not.toContain('previous_summary');
   });
 
-  it('bounds the transcript it sends', async () => {
+  it('bounds the transcript it sends, and keeps the newest messages', async () => {
     await refineThreadSummary({
       ...input,
-      messages: [{ role: 'user', content: 'q'.repeat(100_000) }, { role: 'assistant', content: 'a' }],
+      previousSummary: '',
+      messages: [
+        { role: 'user', content: 'q'.repeat(100_000) },
+        ...Array.from({ length: 40 }, (_, i) => ({ role: 'assistant', content: `reply ${i} ${'a'.repeat(2000)}` })),
+      ],
     });
-    expect(h.summarizeForContinuation.mock.calls[0]![0].transcript.length)
-      .toBeLessThanOrEqual(THREAD_SUMMARY_INPUT_MAX_CHARS + 200);
+    const { transcript } = h.summarizeForContinuation.mock.calls[0]![0];
+    expect(transcript.length).toBeLessThanOrEqual(THREAD_SUMMARY_INPUT_MAX_CHARS);
+    expect(transcript).toContain('reply 39');
+    expect(transcript).not.toContain('reply 0 ');
+  });
+
+  it('sends tool names but never tool payloads', async () => {
+    await refineThreadSummary({
+      ...input,
+      messages: [
+        ...CONVERSATION,
+        { role: 'tool_result', content: 'SECRET-DEVICE-OUTPUT', toolName: 'mcp__breeze__get_device_software' },
+      ],
+    });
+    const { transcript } = h.summarizeForContinuation.mock.calls[0]![0];
+    expect(transcript).toContain('[tool: mcp__breeze__get_device_software]');
+    expect(transcript).not.toContain('SECRET-DEVICE-OUTPUT');
   });
 
   it('bounds what it stores to the summary limit', async () => {
@@ -281,7 +288,7 @@ describe('refineThreadSummary', () => {
 
   describe('failed model call: the digest stays', () => {
     it('an over-budget prompt was never sent, so the reservation goes back', async () => {
-      h.summarizeForContinuation.mockRejectedValue(new FakeFailedError('over', [], false, true));
+      h.summarizeForContinuation.mockRejectedValue(failed('over', [], false, true));
       await refineThreadSummary(input);
       expect(h.releaseUnusedAiBudgetReservation).toHaveBeenCalledWith({ orgId: 'org-1', reservationId: 'res-1' });
       expect(h.settleInvocation).not.toHaveBeenCalled();
@@ -289,7 +296,7 @@ describe('refineThreadSummary', () => {
     });
 
     it('an empty reply the provider billed is settled', async () => {
-      h.summarizeForContinuation.mockRejectedValue(new FakeFailedError('empty', ATTEMPTS, false));
+      h.summarizeForContinuation.mockRejectedValue(failed('empty', ATTEMPTS, false));
       await refineThreadSummary(input);
       expect(h.messagesUsage).toHaveBeenCalledWith(expect.anything(), ATTEMPTS);
       expect(h.settleInvocation).toHaveBeenCalledTimes(1);
@@ -297,25 +304,25 @@ describe('refineThreadSummary', () => {
     });
 
     it('a dispatch error with a completed attempt settles that attempt', async () => {
-      h.summarizeForContinuation.mockRejectedValue(new FakeFailedError('fallback threw', ATTEMPTS, true));
+      h.summarizeForContinuation.mockRejectedValue(failed('fallback threw', ATTEMPTS, true));
       await refineThreadSummary(input);
       expect(h.messagesUsageAfterDispatchError).toHaveBeenCalledWith(expect.anything(), ATTEMPTS);
       expect(h.settleInvocation).toHaveBeenCalledTimes(1);
     });
 
     it('an unknown provider outcome holds the reservation indeterminate, never released', async () => {
-      h.summarizeForContinuation.mockRejectedValue(new FakeFailedError('timeout', [], true));
+      h.summarizeForContinuation.mockRejectedValue(failed('timeout', [], true));
       await refineThreadSummary(input);
       expect(h.markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: 'org-1', reservationId: 'res-1' });
       expect(h.releaseUnusedAiBudgetReservation).not.toHaveBeenCalled();
     });
 
     it('a model that gave no summary is reported; an over-budget prompt is not', async () => {
-      h.summarizeForContinuation.mockRejectedValueOnce(new FakeFailedError('over', [], false, true));
+      h.summarizeForContinuation.mockRejectedValueOnce(failed('over', [], false, true));
       await refineThreadSummary(input);
       expect(h.captureException).not.toHaveBeenCalled();
       h.selects = 0;
-      h.summarizeForContinuation.mockRejectedValueOnce(new FakeFailedError('empty', ATTEMPTS, false));
+      h.summarizeForContinuation.mockRejectedValueOnce(failed('empty', ATTEMPTS, false));
       await refineThreadSummary(input);
       expect(h.captureException).toHaveBeenCalledTimes(1);
     });
@@ -326,6 +333,27 @@ describe('refineThreadSummary', () => {
       await expect(refineThreadSummary(input)).rejects.toBe(boom);
       expect(h.releaseUnusedAiBudgetReservation).toHaveBeenCalledWith({ orgId: 'org-1', reservationId: 'res-1' });
       expect(h.replaceClaimedThreadSummary).not.toHaveBeenCalled();
+    });
+
+    it('a failed release never masks the original error, and is reported itself', async () => {
+      const boom = new Error('bug');
+      h.summarizeForContinuation.mockRejectedValue(boom);
+      h.releaseUnusedAiBudgetReservation.mockRejectedValue(new Error('lock timeout'));
+      await expect(refineThreadSummary(input)).rejects.toBe(boom);
+      expect(h.captureException).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('lock timeout') }),
+        undefined,
+        expect.objectContaining({ org_id: 'org-1', ai_reservation_id: 'res-1' }),
+      );
+    });
+
+    it('a failed release does not hide the model failure that caused it', async () => {
+      h.summarizeForContinuation.mockRejectedValue(failed('no answer', [], false));
+      h.releaseUnusedAiBudgetReservation.mockRejectedValue(new Error('lock timeout'));
+      await expect(refineThreadSummary(input)).resolves.toBeUndefined();
+      const reported = h.captureException.mock.calls.map((c) => String((c[0] as Error).message));
+      expect(reported.some((m) => m.includes('lock timeout'))).toBe(true);
+      expect(reported).toContain('no answer');
     });
 
     it('a failed settlement holds the reservation indeterminate and is reported', async () => {

@@ -83,6 +83,27 @@ describe('digestFromMessages', () => {
     expect(digest).not.toMatch(/want me|let me know|would you like|if you would like|do you want/i);
   });
 
+  it.each([
+    'Check back in 5–10 minutes.',
+    "I'll check back shortly.",
+    'Feel free to ask for the full log.',
+    '- Want me to list them',
+    'Also, let me know if you want the log.',
+  ])('drops the closing line %j, however it is phrased', (closing) => {
+    expect(digestFromMessages([{ role: 'assistant', content: `The disk is healthy.\n\n${closing}` }]))
+      .toBe('Last answer: The disk is healthy.');
+  });
+
+  it.each([
+    'I can also confirm the cert is valid.',
+    'If you want the old behaviour, set the flag to 0.',
+    'The vendor note asks "is it patched?" and the answer is yes.',
+    'The disk is green, and let me know if you want details.',
+    'Next step: reboot during the maintenance window.',
+  ])('keeps the conclusion %j, which only looks like an offer', (conclusion) => {
+    expect(digestFromMessages([{ role: 'assistant', content: conclusion }])).toBe(`Last answer: ${conclusion}`);
+  });
+
   it('keeps the sentence in front of a closing question in the same paragraph', () => {
     expect(digestFromMessages([
       { role: 'assistant', content: "I haven't changed anything. Want me to list the updates?" },

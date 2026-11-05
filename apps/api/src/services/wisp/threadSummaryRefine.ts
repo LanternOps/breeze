@@ -141,13 +141,20 @@ export async function refineThreadSummary(input: RefineThreadSummaryInput): Prom
       sessionId: input.sessionId, surface: 'chat', userId,
       maxTokens: THREAD_SUMMARY_MODEL_MAX_TOKENS, transport: 'messages_api',
     });
-    if (!turn.ok) return;
+    if (!turn.ok) {
+      // A partner with no usable model keeps digests forever; say why somewhere.
+      console.warn('[wisp] thread summary stays a digest: no model for the session', { orgId, reason: turn.reason });
+      return;
+    }
 
     let client;
     try {
       client = anthropicClientFor(turn, { surface: 'one_shot_wisp_thread_summary', orgId });
     } catch (err) {
-      if (err instanceof LlmUnavailableError) return;
+      if (err instanceof LlmUnavailableError) {
+        console.warn('[wisp] thread summary stays a digest: the session model is unavailable', { orgId });
+        return;
+      }
       throw err;
     }
     // reserveAiBudget enforces caps, NOT prepaid credits or the plan gate.
@@ -172,6 +179,13 @@ export async function refineThreadSummary(input: RefineThreadSummaryInput): Prom
     const holdIndeterminate = () => markAiBudgetReservationIndeterminate({ orgId, reservationId })
       .catch((markError) => {
         captureException(new Error(`wisp thread summary reservation not retained as indeterminate: ${safeErrorMessage(markError)}`), undefined, {
+          org_id: orgId, ai_reservation_id: reservationId,
+        });
+      });
+    // Nothing was sent: hand the reservation back. Never throws, so it cannot mask the error that led here.
+    const releaseUnsent = () => releaseUnusedAiBudgetReservation({ orgId, reservationId })
+      .catch((releaseError) => {
+        captureException(new Error(`wisp thread summary reservation release failed: ${safeErrorMessage(releaseError)}`), undefined, {
           org_id: orgId, ai_reservation_id: reservationId,
         });
       });
@@ -209,7 +223,7 @@ export async function refineThreadSummary(input: RefineThreadSummaryInput): Prom
       });
     } catch (err) {
       if (!(err instanceof ContinuationSummaryFailedError)) {
-        await releaseUnusedAiBudgetReservation({ orgId, reservationId });
+        await releaseUnsent();
         throw err;
       }
       if (err.attempts.length > 0) {
@@ -218,7 +232,7 @@ export async function refineThreadSummary(input: RefineThreadSummaryInput): Prom
       } else if (err.providerOutcomeUnknown) {
         await holdIndeterminate();
       } else {
-        await releaseUnusedAiBudgetReservation({ orgId, reservationId });
+        await releaseUnsent();
       }
       // Out of budget is an answer, not a fault; any other miss is worth seeing.
       if (!err.overBudget) {

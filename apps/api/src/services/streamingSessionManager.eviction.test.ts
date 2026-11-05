@@ -592,6 +592,21 @@ describe('StreamingSessionManager eviction (#4514)', () => {
       expect(ctxAtFinalize).toBeUndefined();
     });
 
+    it("a session's slow model summary does not hold back the digest of the next one (#10390)", async () => {
+      mockState.nextRows = [{ id: 'slow' }, { id: 'next' }];
+      let releaseSlow: (v: { updated: boolean }) => void = () => undefined;
+      finalizeMock.mockImplementationOnce(() => new Promise((resolve) => { releaseSlow = resolve; }));
+      seed(manager, 'slow', 'org-a', { idleFor: 3 * HOUR, state: 'idle' });
+      seed(manager, 'next', 'org-a', { idleFor: 3 * HOUR, state: 'idle' });
+
+      internals(manager).evictStaleSessions();
+      await settle();
+      await settle();
+
+      expect(finalizeMock.mock.calls.map((c) => c[0])).toEqual(['slow', 'next']);
+      releaseSlow({ updated: false });
+    });
+
     it('does not finalize when the write itself failed', async () => {
       mockState.failOrgIds = new Set(['org-a']);
       seed(manager, 'v-a', 'org-a', { idleFor: 3 * HOUR, state: 'idle' });

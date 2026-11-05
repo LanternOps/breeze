@@ -720,6 +720,10 @@ describe('finalizeWispSessionSummary (W04 T5, Review Focus 5)', () => {
     await expect(replaceClaimedThreadSummary(thread.id, first, 'Concluded: first.')).resolves.toBe(true);
     await expect(threadRow(thread.id)).resolves.toMatchObject({ summary: 'Concluded: first.' });
 
+    // A repeated close neither puts the digest back nor reaches the model step.
+    await expect(finalizeWispSessionSummary(first)).resolves.toEqual({ updated: false });
+    await expect(threadRow(thread.id)).resolves.toMatchObject({ summary: 'Concluded: first.', summarySessionId: first });
+
     await finalizeWispSessionSummary(second);
     await expect(replaceClaimedThreadSummary(thread.id, first, 'Concluded: too late.')).resolves.toBe(false);
     await expect(threadRow(thread.id)).resolves.toMatchObject({ summary: 'Last answer: Second.', summarySessionId: second });
