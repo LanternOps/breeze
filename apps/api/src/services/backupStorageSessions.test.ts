@@ -1084,6 +1084,108 @@ describe('storage session object resolution', () => {
   });
 });
 
+describe('a write session queued behind another backup (#11012)', () => {
+  const agent = { deviceId: EXEC_DEVICE, orgId: ORG };
+
+  /** A write session as dispatch mints it for one job of a schedule batch, never used yet. */
+  async function mintWriteSession(state: FakeState) {
+    const { desc, row } = await mintSession(state);
+    const stored = state.sessions.get(row.id)!;
+    Object.assign(stored, {
+      scope: 'snapshot_write',
+      commandId: null,
+      snapshotId: null,
+      jobId: '77777777-7777-4777-8777-777777777777',
+      reservationSnapshotId: 'snapshot-queued',
+      reservationGeneration: 1,
+      // Dispatch grants a full write deadline; the lease is the short window.
+      deadline: new Date(NOW.getTime() + 24 * 3600_000),
+      callCount: 0,
+      lastUsedAt: null,
+      urlHorizonAt: null,
+      resumedAt: null,
+    });
+    return { desc, stored };
+  }
+  /** The moment the helper finally starts the parked job: lease long gone, deadline far away. */
+  const afterLongWait = (stored: StorageSessionRow) => new Date(stored.expiresAt.getTime() + 3 * 3600_000);
+  const auth = (desc: SessionDescriptor, deps: BrokeredReadDeps) =>
+    authenticateStorageSession({ sessionId: desc.sessionId, token: desc.token, agent }, deps);
+
+  it('accepts an unused write session whose lease lapsed before its deadline, and renew issues a fresh lease from now', async () => {
+    const state = makeState();
+    const { desc, stored } = await mintWriteSession(state);
+    const startedAt = afterLongWait(stored);
+    const deps = makeDeps(state, { now: () => startedAt });
+
+    const result = await auth(desc, deps);
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok) return;
+
+    const renewed = await renewStorageSession(result.session, deps);
+    expect(renewed.status).toBe(200);
+    if (renewed.status !== 200) return;
+    expect(Date.parse(renewed.body.expiresAt)).toBe(startedAt.getTime() + STORAGE_SESSION_LEASE_MS);
+    expect(renewed.body.expiresIn).toBe(STORAGE_SESSION_LEASE_MS / 1000);
+    expect(state.sessions.get(desc.sessionId)!.callCount).toBe(1);
+
+    // From here the lease is a liveness window as for any running session.
+    expect(await auth(desc, deps)).toMatchObject({ ok: true });
+    const lapsedAgain = makeDeps(state, { now: () => new Date(startedAt.getTime() + STORAGE_SESSION_LEASE_MS + 1) });
+    expect(await auth(desc, lapsedAgain)).toMatchObject({ ok: false, status: 410 });
+  });
+
+  it('only a renew re-arms the lease: a different first call spends the exemption and the next call is refused', async () => {
+    // The helper renews any lease with under a third left before each call
+    // (storagesession ensureLease), so its first call here is always a renew.
+    const state = makeState();
+    const { desc, stored } = await mintWriteSession(state);
+    const deps = makeDeps(state, { now: () => afterLongWait(stored) });
+    expect(await auth(desc, deps)).toMatchObject({ ok: true });
+    // Any charged write call raises call_count (backupStorageWriteSessions consume()).
+    expect(await deps.store.consumeBudget(desc.sessionId, { calls: 1, objects: 0 }, afterLongWait(stored))).toMatchObject({ kind: 'granted' });
+    expect(await auth(desc, deps)).toMatchObject({ ok: false, status: 410, error: 'Storage session has expired' });
+  });
+
+  it.each([
+    ['has made a call', { callCount: 1 }],
+    ['has a recorded use', { lastUsedAt: NOW }],
+    ['has resumed a snapshot', { resumedAt: NOW }],
+    ['has issued upload URLs', { urlHorizonAt: NOW }],
+  ])('refuses a lapsed lease once the session %s', async (_name, used) => {
+    const state = makeState();
+    const { desc, stored } = await mintWriteSession(state);
+    Object.assign(stored, used);
+    const deps = makeDeps(state, { now: () => afterLongWait(stored) });
+    expect(await auth(desc, deps)).toMatchObject({ ok: false, status: 410, error: 'Storage session has expired' });
+  });
+
+  it('refuses an unused write session once its deadline has passed', async () => {
+    const state = makeState();
+    const { desc, stored } = await mintWriteSession(state);
+    const deps = makeDeps(state, { now: () => new Date(stored.deadline.getTime() + 1) });
+    expect(await auth(desc, deps)).toMatchObject({ ok: false, status: 410 });
+  });
+
+  it('refuses an unused write session that was revoked', async () => {
+    const state = makeState();
+    const { desc, stored } = await mintWriteSession(state);
+    stored.revokedAt = NOW;
+    const deps = makeDeps(state, { now: () => afterLongWait(stored) });
+    expect(await auth(desc, deps)).toMatchObject({ ok: false, status: 410, error: 'Storage session has been revoked' });
+  });
+
+  it('leaves read sessions unchanged: an unused read session still expires with its lease', async () => {
+    const state = makeState();
+    const { desc, row } = await mintSession(state);
+    const stored = state.sessions.get(row.id)!;
+    stored.deadline = new Date(NOW.getTime() + 24 * 3600_000);
+    expect(stored.callCount).toBe(0);
+    const deps = makeDeps(state, { now: () => new Date(stored.expiresAt.getTime() + 1) });
+    expect(await auth(desc, deps)).toMatchObject({ ok: false, status: 410, error: 'Storage session has expired' });
+  });
+});
+
 describe('storage session renewal', () => {
   it('charges one call and no objects against the session budget', async () => {
     const state = makeState();

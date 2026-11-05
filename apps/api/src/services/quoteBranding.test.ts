@@ -34,6 +34,17 @@ function source(overrides: Partial<QuoteBrandingSource> = {}): QuoteBrandingSour
 beforeEach(() => { dbRows.next = []; dbRows.i = 0; });
 
 describe('resolveQuoteBranding', () => {
+  // #9673: the org secondary colour (quote PDF headings) overrides the partner's.
+  it("the org's secondary colour overrides the partner's", async () => {
+    queue({ ...basePartner, settings: { branding: { secondaryColor: '#0b1b2d' } } }, { ...baseBrand, secondaryColor: '#654321' });
+    expect((await resolveQuoteBranding(source())).secondaryColor).toBe('#654321');
+  });
+
+  it("the partner's secondary colour applies when the org has none", async () => {
+    queue({ ...basePartner, settings: { branding: { secondaryColor: '#0b1b2d' } } }, { ...baseBrand, secondaryColor: null });
+    expect((await resolveQuoteBranding(source())).secondaryColor).toBe('#0b1b2d');
+  });
+
   it('footer precedence: quote.terms wins over partner + portal footer', async () => {
     queue(basePartner, baseBrand);
     const b = await resolveQuoteBranding(source({ terms: 'quote terms' }));

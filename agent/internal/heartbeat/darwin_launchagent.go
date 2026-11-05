@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // Post-update revival of the macOS desktop-helper LaunchAgent (#10868).
@@ -43,7 +45,7 @@ type launchctlFunc func(args ...string) (int, string)
 func runLaunchctl(args ...string) (int, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), launchctlTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "launchctl", args...)
+	cmd := procspawn.CommandContext(ctx, "launchctl", args...)
 	// Bound the wait for output too: a killed launchctl's children could
 	// otherwise hold the pipe open past the timeout.
 	cmd.WaitDelay = time.Second

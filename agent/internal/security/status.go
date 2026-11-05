@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // ErrNotSupported is returned when platform-specific operations are unavailable.
@@ -782,54 +783,6 @@ func collectEncryptionDetails() (map[string]any, error) {
 	}
 }
 
-func collectLocalAdminSummaryWindows() (map[string]any, error) {
-	output, err := runCommand(
-		10*time.Second,
-		"powershell",
-		"-NoProfile",
-		"-NonInteractive",
-		"-Command",
-		"Get-LocalGroupMember -Group 'Administrators' | Select-Object Name,ObjectClass,SID,PrincipalSource | ConvertTo-Json -Compress",
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	parsed, err := parseJSONValue(output)
-	if err != nil {
-		return nil, err
-	}
-
-	members := toObjectSlice(parsed)
-	accounts := make([]map[string]any, 0, len(members))
-	for _, member := range members {
-		username, _ := stringFromAny(member["Name"])
-		if username == "" {
-			continue
-		}
-		sid, _ := stringFromAny(member["SID"])
-		isBuiltIn := strings.HasSuffix(strings.TrimSpace(sid), "-500") ||
-			strings.EqualFold(username, "Administrator")
-		entry := map[string]any{
-			"username":   username,
-			"isBuiltIn":  isBuiltIn,
-			"enabled":    true,
-			"objectType": member["ObjectClass"],
-		}
-		if isBuiltIn {
-			entry["defaultAccount"] = true
-		}
-		accounts = append(accounts, entry)
-	}
-
-	return map[string]any{
-		"source":            "windows_local_group",
-		"adminCount":        len(accounts),
-		"localAccountCount": len(accounts),
-		"accounts":          accounts,
-	}, nil
-}
-
 func collectLocalAdminSummaryDarwin() (map[string]any, error) {
 	output, err := runCommand(6*time.Second, "dscl", ".", "-read", "/Groups/admin", "GroupMembership")
 	if err != nil {
@@ -1306,28 +1259,29 @@ func getFirewallStatusWindows() (bool, error) {
 	return false, nil
 }
 
+// runFirewallCommand is a seam so the darwin firewall order is testable off-macOS.
+var runFirewallCommand = runCommand
+
 func getFirewallStatusDarwin() (bool, error) {
-	// Prefer locale-invariant numeric check via defaults read.
-	// globalstate: 0=off, 1=on, 2=on (essential services only).
-	output, err := runCommand(5*time.Second, "defaults", "read", "/Library/Preferences/com.apple.alf", "globalstate")
-	if err == nil {
-		switch strings.TrimSpace(output) {
-		case "1", "2":
-			return true, nil
-		case "0":
-			return false, nil
+	// macOS 15+ dropped the com.apple.alf defaults domain, so spawning
+	// defaults there only fails (#10911).
+	if major, known := macOSMajorVersion(); !known || major < 15 {
+		// Locale-invariant numeric check: 0=off, 1=on, 2=on (essential services only).
+		output, err := runFirewallCommand(5*time.Second, "defaults", "read", "/Library/Preferences/com.apple.alf", "globalstate")
+		if err == nil {
+			switch strings.TrimSpace(output) {
+			case "1", "2":
+				return true, nil
+			case "0":
+				return false, nil
+			}
 		}
 	}
 
-	// Fallback: socketfilterfw text output (locale-dependent, English-only match).
-	output, err = runCommand(5*time.Second, "/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate")
+	output, err := runFirewallCommand(5*time.Second, "/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate")
 	if err == nil {
-		lower := strings.ToLower(output)
-		if strings.Contains(lower, "enabled") {
-			return true, nil
-		}
-		if strings.Contains(lower, "disabled") {
-			return false, nil
+		if enabled, ok := parseSocketfilterfwState(output); ok {
+			return enabled, nil
 		}
 	}
 
@@ -1350,7 +1304,7 @@ func firewallStatusFromCommand(timeout time.Duration, name string, args ...strin
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procspawn.CommandContext(ctx, name, args...)
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return "", false, false
@@ -1557,7 +1511,7 @@ func runCommand(timeout time.Duration, name string, args ...string) (string, err
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procspawn.CommandContext(ctx, name, args...)
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return "", fmt.Errorf("command timed out: %s", name)
