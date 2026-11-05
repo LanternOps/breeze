@@ -2,7 +2,7 @@
 // the evidence, and nothing from the candidate tree is ever executed.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize } from 'node:path';
 import { after, test } from 'node:test';
@@ -173,7 +173,7 @@ test('extractAggregator stops at the end of the run block', () => {
 test('extractAggregator rejects anything it cannot map, as aggregator_unparseable', () => {
   const unparseable = text => assert.throws(() => gate.extractAggregator(text), err => err.code === 'aggregator_unparseable', text.slice(0, 80));
   for (const line of ['X: ${{ needs.lint.result || \'success\' }}', 'X: success', 'X: ${{ github.sha }}',
-    'X: ${{ needs.lint.outputs }}', 'X: ${{ needs.other.result }}', 'X: ${{ needs.other.outputs.key }}',
+    'X: ${{ needs.lint.outputs }}', 'X: ${{ needs.lint.outputs.key }}', 'X: ${{ needs.other.result }}', 'X: ${{ needs.other.outputs.key }}',
     'X: ${{ needs.lint.result }} # comment', '# comment']) {
     unparseable(aggregatorYml([line]));
   }
@@ -425,4 +425,232 @@ test('deriveMobileRequired: closure failure or an unparseable filter is true (fa
     assert.notEqual(baseCi, realCi);
     assert.equal(derive({ 'packages/shared/x.ts': 'x' }, { '.github/workflows/ci.yml': baseCi }), 'true');
   }
+});
+
+// ── B3: verdict over fixtures recorded from real queue runs ──────────────
+
+const FIXTURE_DIR = join(REPO_ROOT, '.github/scripts/fixtures/ci-gate');
+const fixtureNames = readdirSync(FIXTURE_DIR).filter(name => name.endsWith('.json')).sort();
+const fixtures = Object.fromEntries(fixtureNames.map(name => [name.replace(/\.json$/, ''), JSON.parse(readFileSync(join(FIXTURE_DIR, name), 'utf8'))]));
+const snapshot = name => readFileSync(join(FIXTURE_DIR, name), 'utf8');
+// The test-only edits a fixture may ask for on its head ci.yml.
+const applyHeadEdit = (ci, edit) => {
+  if (!edit) return ci;
+  const [from, to] = edit.rename_job;
+  const out = ci.replace(new RegExp(`^  ${from}:$`, 'm'), `  ${to}:`);
+  assert.notEqual(out, ci, `head edit ${from} did not apply`);
+  return out;
+};
+const contextOf = (f, over = {}) => ({
+  flags: f.flags, mobile: f.mobile, event: 'merge_group',
+  aggregator: gate.extractAggregator(snapshot(f.base_ci)), headCi: applyHeadEdit(snapshot(f.head_ci), f.head_ci_edit), ...over });
+const judgeIo = gate.createGateIO({ cwd: REPO_ROOT, env: { PATH: process.env.PATH } });
+const judge = (f, jobs = f.jobs, over = {}) => gate.judge(judgeIo, contextOf(f, over), jobs);
+const setJobs = (jobs, pattern, conclusion) => jobs.map(job => pattern.test(job.name) ? { ...job, conclusion } : job);
+
+test('fixtures: the directory holds exactly the eight recorded and derived shapes', () => {
+  assert.deepEqual(Object.keys(fixtures).sort(), ['classifier-narrowing', 'docs-only', 'doctored-classifier', 'doctored-needs',
+    'failed-shard', 'path-gated-rust-false', 'required-job-deleted', 'tooling-only']);
+  for (const [name, f] of Object.entries(fixtures)) {
+    for (const key of ['changed', 'flags', 'mobile', 'jobs', 'ci_success', 'base_ci', 'head_ci', 'source', 'expect']) assert.ok(key in f, `${name}.${key}`);
+    assert.ok(Number.isSafeInteger(f.source.run_id), `${name}: recorded from a real run`);
+    // A recorded fixture's expectation is what CI Success said; a derived one says how it was derived.
+    if (!f.source.derived) assert.equal(f.expect.verdict, f.ci_success === 'success' ? 'pass' : 'fail', name);
+    else assert.ok(f.source.derived.length > 20, `${name}: describe the mutation`);
+  }
+});
+
+test('fixtures: every snapshot is a lossless trim of a real ci.yml', () => {
+  for (const f of Object.values(fixtures)) for (const name of [f.base_ci, f.head_ci]) assert.equal(gate.trimWorkflow(snapshot(name)), snapshot(name), name);
+  // Trimming keeps everything the gate reads.
+  const trimmed = gate.trimWorkflow(realCi);
+  assert.ok(trimmed.length < realCi.length / 3);
+  assert.deepEqual(gate.extractAggregator(trimmed), gate.extractAggregator(realCi));
+  for (const id of Object.keys(gate.workflowJobsOf(realCi))) {
+    assert.deepEqual(gate.jobInstances(trimmed, id), gate.jobInstances(realCi, id), id);
+    const coe = ci => gate.workflowJobsOf(ci)[id].body.match(/^    continue-on-error: (.*)$/m)?.[1];
+    assert.equal(coe(trimmed), coe(realCi), id);
+  }
+  assert.match(gate.workflowJobsOf(trimmed)['mobile-native-changes'].body, /filters: \|/);
+});
+
+test('fixtures: each verdict matches its expectation and names the job it blames', () => {
+  for (const [name, f] of Object.entries(fixtures)) {
+    const out = judge(f);
+    assert.equal(out.verdict, f.expect.verdict, `${name}: ${out.reason}`);
+    if (f.expect.reason) assert.match(out.reason, new RegExp(f.expect.reason), name);
+  }
+});
+
+test('path-gated-rust-false: Rust Check skipped passes; the same entry with Rust Check success fails', () => {
+  const f = fixtures['path-gated-rust-false'];
+  assert.equal(f.flags.rust, 'false');
+  assert.equal(f.jobs.find(job => job.name === 'Rust Check (Tauri apps)').conclusion, 'skipped');
+  assert.equal(judge(f).verdict, 'pass');
+  const ran = judge(f, setJobs(f.jobs, /^Rust Check \(Tauri apps\)$/, 'success'));
+  assert.equal(ran.verdict, 'fail');
+  assert.match(ran.reason, /rust-check/);
+});
+
+test('docs: docs=false with a successful Docs Check stays green, because that rule is not three-branch', () => {
+  const f = fixtures['path-gated-rust-false'];
+  assert.equal(f.flags.code, 'true');
+  assert.equal(judge(f, setJobs(f.jobs, /^Docs Check$/, 'success'), { flags: { ...f.flags, docs: 'false' } }).verdict, 'pass');
+  assert.equal(fixtures['docs-only'].flags.code, 'false');
+});
+
+test('classifier-narrowing: a classifier edit gets every area from the base and passes with all jobs run', () => {
+  const f = fixtures['classifier-narrowing'];
+  assert.ok(f.changed.includes('.github/scripts/classify-pr-paths.sh'));
+  for (const area of ['api', 'web', 'portal', 'addins', 'm365', 'rust', 'agent_code']) assert.equal(f.flags[area], 'true', area);
+});
+
+test('verdict: end to end in a repository with the real classifier and ci.yml', () => {
+  const files = { '.github/workflows/ci.yml': realCi, 'pnpm-lock.yaml': lockfile('4.13.5', '19.1.0'),
+    '.github/scripts/mobile-lockfile-closure.mjs': closureScript };
+  for (const name of ['classify-pr-paths.sh', 'qemu-gate-paths.txt', 'integration-floor-paths.txt', 'path-reader-map.txt']) {
+    files[`.github/scripts/${name}`] = readFileSync(join(REPO_ROOT, '.github/scripts', name), 'utf8');
+  }
+  const r = repo(files, { 'docs/guide.md': '# x\n' });
+  // Every needs job skipped under its literal name, except the two a docs-only entry runs.
+  const { needs } = gate.extractAggregator(realCi);
+  const jobs = needs.map(id => ({ name: gate.jobInstances(realCi, id).template,
+    conclusion: ['changes', 'docs-check'].includes(id) ? 'success' : 'skipped' }));
+  const out = gate.verdict(r.io, { baseSha: r.base, headSha: r.head, apiJobs: jobs, event: 'merge_group' });
+  assert.equal(out.verdict, 'pass', out.reason);
+  assert.equal(out.flags.code, 'false');
+  assert.deepEqual(out.policyPaths, []);
+  assert.equal(Object.keys(out.results).length, needs.length);
+  const red = gate.verdict(r.io, { baseSha: r.base, headSha: r.head, apiJobs: setJobs(jobs, /^Docs Check$/, 'failure'), event: 'merge_group' });
+  assert.deepEqual([red.verdict, red.reason], ['fail', 'required_jobs_failed:docs-check']);
+});
+
+test('verdict: a gate error is a fail with its reason, never a throw', () => {
+  const r = repo({ 'a.txt': 'x' }, { 'b.txt': 'y' });
+  const out = gate.verdict(r.io, { baseSha: r.base, headSha: r.head, apiJobs: [], event: 'merge_group' });
+  assert.deepEqual([out.verdict, out.reason], ['fail', 'base_unreadable']);
+  const bad = gate.verdict(r.io, { baseSha: 'nope', headSha: r.head, apiJobs: [], event: 'merge_group' });
+  assert.deepEqual([bad.verdict, bad.reason], ['fail', 'base_unreadable']);
+});
+
+// ── B3: replay against a fake Actions API ────────────────────────────────
+
+const GREEN = fixtures['path-gated-rust-false'];
+const RED = fixtures['failed-shard'];
+const sha = n => n.toString(16).padStart(40, 'a');
+function fakeReplay(samples, { unfetchable = new Set(), oracle = {} } = {}) {
+  const runs = samples.map((s, i) => ({ id: 1000 + i, event: 'merge_group', path: '.github/workflows/ci.yml', status: 'completed',
+    conclusion: s.cancelled ? 'cancelled' : s.fixture.ci_success, run_attempt: 1, head_sha: sha(2 * i + 1),
+    head_branch: `gh-readonly-queue/main/pr-${500 + i}-${sha(2 * i + 2)}` }));
+  const calls = [];
+  const io = {
+    gh: args => {
+      calls.push(args.join(' '));
+      const endpoint = args[1];
+      let match;
+      if ((match = endpoint.match(/workflows\/ci\.yml\/runs\?.*page=(\d+)/))) {
+        const page = Number(match[1]);
+        return JSON.stringify({ total_count: runs.length, workflow_runs: runs.slice((page - 1) * 100, page * 100) });
+      }
+      if ((match = endpoint.match(/runs\/(\d+)\/jobs/))) {
+        const s = samples[Number(match[1]) - 1000];
+        return JSON.stringify([{ total_count: 1, jobs: [...s.jobs, { name: 'CI Success', conclusion: s.fixture.ci_success }] }]);
+      }
+      if ((match = endpoint.match(/runs\/(\d+)\/artifacts/))) {
+        const found = oracle[Number(match[1]) - 1000];
+        return JSON.stringify([{ total_count: found ? 1 : 0, artifacts: found ? [{ name: 'ci-needs-oracle-attempt-1', expired: false }] : [] }]);
+      }
+      if (args[0] === 'run' && args[1] === 'download') {
+        const dir = args[args.indexOf('--dir') + 1];
+        writeFileSync(join(dir, 'ci-needs-oracle.json'), JSON.stringify(oracle[Number(args[2]) - 1000]));
+        return '';
+      }
+      throw Error(`unexpected gh ${args.join(' ')}`);
+    },
+    git: args => {
+      if (args.some(arg => unfetchable.has(arg) || unfetchable.has(arg.replace('^{commit}', '')))) throw Object.assign(Error('missing'), { status: 128 });
+      return '';
+    },
+    temp: () => tempDir(), remove: () => {}, read: path => readFileSync(path, 'utf8'), exists: () => true,
+    runIsolated: judgeIo.runIsolated, stdout: () => {}, stderr: () => {},
+  };
+  // prepare is replaced; everything after it (rollup, aggregator, controls) is real.
+  const prepare = (_, { headSha }) => {
+    const s = samples[runs.findIndex(run => run.head_sha === headSha)];
+    return { ...contextOf(s.fixture), ...s.over };
+  };
+  return { io, calls, runs, run: opts => gate.replay(io, { repository: 'o/r', limit: 50, minEvaluated: 15, widenTo: 200, prepare, ...opts }) };
+}
+const sample = (fixture, over = {}) => ({ fixture, jobs: fixture.jobs, ...over });
+
+test('replay: green and red samples agree with CI Success, every control goes red', () => {
+  const { run } = fakeReplay([...Array.from({ length: 16 }, () => sample(GREEN)), sample(RED), sample(fixtures['docs-only'])]);
+  const out = run();
+  assert.equal(out.ok, true, JSON.stringify(out.problems));
+  assert.equal(out.evaluated, 18);
+  assert.equal(out.red, 1);
+  assert.equal(out.disagreements.length, 0);
+  assert.equal(out.controlFailures.length, 0);
+  assert.ok(out.controlsRun >= 17 * 3 - 1, `controls run: ${out.controlsRun}`);
+});
+
+test('replay: too few evaluated fails; cancelled runs are excluded; unfetchable heads are counted, not failed', () => {
+  const samples = [...Array.from({ length: 14 }, () => sample(GREEN)), sample(RED), sample(GREEN, { cancelled: true }), sample(GREEN)];
+  const { run, runs } = fakeReplay(samples, { unfetchable: new Set([sha(31)]) });
+  assert.equal(runs[15].head_sha, sha(31));
+  const out = run();
+  assert.equal(out.evaluated, 16);
+  assert.equal(out.unfetchable, 0, 'the cancelled run is excluded before any fetch');
+  const short = fakeReplay(samples.slice(0, 14).concat(sample(RED)), { unfetchable: new Set([sha(1)]) }).run();
+  assert.equal(short.evaluated, 14);
+  assert.equal(short.unfetchable, 1);
+  assert.equal(short.ok, false);
+  assert.match(short.problems.join(), /evaluated 14 < 15/);
+});
+
+test('replay: no red sample fails, after widening past the limit to find one', () => {
+  const greens = Array.from({ length: 60 }, () => sample(GREEN));
+  const none = fakeReplay(greens).run({ limit: 20 });
+  assert.equal(none.ok, false);
+  assert.match(none.problems.join(), /no red sample/);
+  assert.equal(none.evaluated, 20, 'past the limit only red runs are evaluated');
+  const widened = fakeReplay([...greens, sample(RED)]).run({ limit: 20 });
+  assert.equal(widened.ok, true, JSON.stringify(widened.problems));
+  assert.equal(widened.red, 1);
+  const beyond = fakeReplay([...Array.from({ length: 210 }, () => sample(GREEN)), sample(RED)]).run({ limit: 20 });
+  assert.equal(beyond.red, 0, 'the search stops at widenTo');
+});
+
+test('replay: a verdict that disagrees with CI Success fails the replay', () => {
+  const lying = sample(GREEN, { jobs: setJobs(GREEN.jobs, /^Lint$/, 'failure') });
+  const out = fakeReplay([...Array.from({ length: 15 }, () => sample(GREEN)), sample(RED), lying]).run();
+  assert.equal(out.ok, false);
+  assert.equal(out.disagreements.length, 1);
+  assert.equal(out.disagreements[0].recorded, 'success');
+  assert.match(out.disagreements[0].reason, /lint/);
+});
+
+test('replay: a control that stays green fails the replay', () => {
+  // The base script still parses for targets, but can no longer see anything.
+  const aggregator = contextOf(GREEN).aggregator;
+  const blind = sample(GREEN, { over: { aggregator: { ...aggregator, script: `exit 0\n${aggregator.script}` } } });
+  const out = fakeReplay([...Array.from({ length: 15 }, () => sample(GREEN)), sample(RED), blind]).run();
+  assert.equal(out.ok, false);
+  assert.deepEqual(out.controlFailures.map(c => c.control).sort(), ['missing', 'three_branch', 'unconditional_failure']);
+});
+
+test('replay: the three-branch control is parsed from the base script, not hardcoded', () => {
+  const f = GREEN;
+  const targets = gate.controlTargets(contextOf(f).aggregator, f.flags);
+  assert.equal(targets.unconditional, 'lint');
+  assert.ok(targets.threeBranch, 'a code entry with a false flag has a three-branch target');
+  assert.equal(f.flags[contextOf(f).aggregator.env[targets.threeBranch.flagVar].key], 'false');
+  const docs = fixtures['docs-only'];
+  const docsTargets = gate.controlTargets(contextOf(docs).aggregator, docs.flags);
+  assert.equal(docsTargets.unconditional, 'changes');
+  // On a docs-only entry only the top-level rules are live.
+  assert.ok(!docsTargets.threeBranch || docsTargets.threeBranch.flagVar === 'PATH_READERS_CHANGED');
+  const renamed = { ...contextOf(f).aggregator, script: contextOf(f).aggregator.script.replaceAll('RUST_CHANGED', 'RUST_AREA'),
+    env: Object.fromEntries(Object.entries(contextOf(f).aggregator.env).map(([k, v]) => [k === 'RUST_CHANGED' ? 'RUST_AREA' : k, v])) };
+  assert.ok(gate.controlTargets(renamed, f.flags).threeBranch);
 });

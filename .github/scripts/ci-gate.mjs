@@ -11,6 +11,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { isPolicyPath } from './ci-policy.mjs';
 import { createIO, workflowJobs } from './queue-selection.mjs';
@@ -32,6 +33,7 @@ export class GateError extends Error {
   }
 }
 
+const DERIVED_OUTPUTS = new Set(['mobile-native-changes.mobile']);
 const isSha = value => typeof value === 'string' && /^[a-f\d]{40}$/i.test(value);
 const nonEmptyLines = text => text.split('\n').filter(Boolean);
 
@@ -47,6 +49,7 @@ export function createGateIO(options = {}) {
   // Real path: on macOS tmpdir() is a symlink, and a script's own main-module
   // check compares argv[1] with its resolved URL.
   io.temp = () => realpathSync(mkdtempSync(join(tmpdir(), 'ci-gate-')));
+  io.sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
   // Base-revision code runs with exactly this environment. The token never reaches it.
   io.runIsolated = (command, args, { input, childEnv = {}, dir } = {}) => execFileSync(command, args, {
     cwd: dir ?? cwd, env: { PATH: env.PATH, ...childEnv }, input, encoding: 'utf8',
@@ -95,7 +98,11 @@ function parseEnvValue(value, needs) {
   let match;
   if ((match = value.match(/^\$\{\{ needs\.([\w-]+)\.result \}\}$/))) return { kind: 'result', job: known(match[1]) };
   if ((match = value.match(/^\$\{\{ needs\.changes\.outputs\.(\w+) \}\}$/))) { known('changes'); return { kind: 'changes', key: match[1] }; }
-  if ((match = value.match(/^\$\{\{ needs\.([\w-]+)\.outputs\.(\w+) \}\}$/))) return { kind: 'output', job: known(match[1]), key: match[2] };
+  if ((match = value.match(/^\$\{\{ needs\.([\w-]+)\.outputs\.(\w+) \}\}$/))) {
+    // The gate can only supply an output it derives itself.
+    if (!DERIVED_OUTPUTS.has(`${match[1]}.${match[2]}`)) throw new GateError('aggregator_unparseable', `no derivation for ${value}`);
+    return { kind: 'output', job: known(match[1]), key: match[2] };
+  }
   if (value === "${{ github.event_name == 'pull_request' }}") return { kind: 'is_pr' };
   throw new GateError('aggregator_unparseable', `unsupported env value: ${value}`);
 }
@@ -313,4 +320,270 @@ export function runAggregator(io, aggregator, values) {
     if (!Number.isInteger(error.status)) throw new GateError('aggregator_exec', String(error.message ?? error));
     return { passed: false, stdout: String(error.stdout ?? '') };
   } finally { io.remove(dir); }
+}
+
+// ── Verdict ──────────────────────────────────────────────────────────────
+
+const CI_YML = '.github/workflows/ci.yml';
+
+export function prepare(io, { baseSha, headSha, event }) {
+  const { flags, changed, policyPaths } = baseFlags(io, baseSha, headSha);
+  const ciAt = (revision, code) => {
+    try { return showAt(io, revision, CI_YML); } catch (error) { throw new GateError(code, String(error.message ?? error)); }
+  };
+  const aggregator = extractAggregator(ciAt(baseSha, 'base_unreadable'));
+  const headCi = ciAt(headSha, 'head_unreadable');
+  return { flags, changed, policyPaths, aggregator, headCi, event, mobile: deriveMobileRequired(io, baseSha, headSha, changed) };
+}
+
+// The base script's own answer; the blame list only explains a red one.
+export function judge(io, ctx, apiJobs) {
+  let results;
+  try {
+    results = Object.fromEntries(ctx.aggregator.needs.map(job => [job, rollup(job, apiJobs, ctx.headCi, { event: ctx.event })]));
+  } catch (error) {
+    if (!(error instanceof GateError)) throw error;
+    return { verdict: 'fail', reason: error.code, detail: error.message, results: {}, stdout: '' };
+  }
+  const run = values => runAggregator(io, ctx.aggregator, { results: values, flags: ctx.flags,
+    outputs: { 'mobile-native-changes.mobile': ctx.mobile }, isPr: ctx.event === 'pull_request' });
+  const first = run(results);
+  if (first.passed) return { verdict: 'pass', reason: 'required_jobs_passed', results, stdout: first.stdout };
+  // Jobs that did not finish cleanly, then any single job whose other state
+  // would satisfy the script once those are repaired.
+  const blamed = new Set(ctx.aggregator.needs.filter(job => !['success', 'skipped'].includes(results[job])));
+  const repaired = Object.fromEntries(Object.entries(results).map(([job, result]) => [job, blamed.has(job) ? 'success' : result]));
+  if (!run(repaired).passed) {
+    for (const job of ctx.aggregator.needs) {
+      if (run({ ...repaired, [job]: repaired[job] === 'success' ? 'skipped' : 'success' }).passed) blamed.add(job);
+    }
+  }
+  return { verdict: 'fail', reason: blamed.size ? `required_jobs_failed:${[...blamed].join(',')}` : 'required_jobs_failed',
+    results, stdout: first.stdout };
+}
+
+export function verdict(io, { baseSha, headSha, apiJobs, event }) {
+  let ctx;
+  try {
+    ctx = prepare(io, { baseSha, headSha, event });
+  } catch (error) {
+    if (!(error instanceof GateError)) throw error;
+    return { verdict: 'fail', reason: error.code, detail: error.message, flags: null, policyPaths: [], results: {}, stdout: '' };
+  }
+  return { ...judge(io, ctx, apiJobs), flags: ctx.flags, policyPaths: ctx.policyPaths, mobile: ctx.mobile };
+}
+
+// ── Replay controls ──────────────────────────────────────────────────────
+//
+// On a green sample, each must turn the verdict red. A control that stays
+// green means the verdict cannot see that kind of breakage.
+
+export function controlTargets(aggregator, flags) {
+  const varFor = (kind, key) => Object.entries(aggregator.env).find(([, ref]) => ref.kind === kind && ref.key === key)?.[0];
+  const lines = aggregator.script.split('\n');
+  const codeVar = varFor('changes', 'code');
+  const codeAt = codeVar ? lines.findIndex(line => line.includes(`[[ "\${${codeVar}}" != "false" ]] && {`)) : -1;
+  const docsOnly = flags.code === 'false' && codeAt >= 0;
+  const live = docsOnly ? lines.slice(0, codeAt) : lines;
+  const resultJob = name => aggregator.env[name]?.kind === 'result' ? aggregator.env[name].job : null;
+  let unconditional = null;
+  for (const line of docsOnly || codeAt < 0 ? live : lines.slice(codeAt + 1)) {
+    const match = line.match(/^\s*(?:if )?\[\[ "\$\{(\w+)\}" != "success" \]\] \|\| \\$/);
+    if (match && resultJob(match[1])) { unconditional = resultJob(match[1]); break; }
+  }
+  let threeBranch = null;
+  for (const line of live) {
+    const match = line.match(/\{ \[\[ "\$\{(\w+)\}" == "false" \]\] && \[\[ "\$\{(\w+)\}" != "skipped" \]\]; \}/);
+    const ref = match && aggregator.env[match[1]];
+    if (ref?.kind === 'changes' && flags[ref.key] === 'false' && resultJob(match[2])) {
+      threeBranch = { flagVar: match[1], job: resultJob(match[2]) };
+      break;
+    }
+  }
+  return { unconditional, threeBranch };
+}
+
+function setJob(apiJobs, headCi, jobId, conclusion) {
+  const { template, expected } = jobInstances(headCi, jobId);
+  const names = new Set([template, ...expected]);
+  return conclusion === null ? apiJobs.filter(job => !names.has(job.name))
+    : apiJobs.map(job => names.has(job.name) ? { ...job, conclusion } : job);
+}
+
+export function runControls(io, ctx, apiJobs) {
+  const { unconditional, threeBranch } = controlTargets(ctx.aggregator, ctx.flags);
+  const controls = [];
+  if (unconditional) {
+    controls.push({ control: 'unconditional_failure', job: unconditional, jobs: setJob(apiJobs, ctx.headCi, unconditional, 'failure') });
+    controls.push({ control: 'missing', job: unconditional, jobs: setJob(apiJobs, ctx.headCi, unconditional, null) });
+  }
+  if (threeBranch) controls.push({ control: 'three_branch', job: threeBranch.job, jobs: setJob(apiJobs, ctx.headCi, threeBranch.job, 'success') });
+  const failures = [];
+  if (!unconditional) failures.push({ control: 'unconditional_failure', job: null, verdict: 'no_target' });
+  for (const { control, job, jobs } of controls) {
+    const out = judge(io, ctx, jobs);
+    if (out.verdict !== 'fail') failures.push({ control, job, verdict: out.verdict });
+  }
+  return { run: controls.length, failures };
+}
+
+// ── Replay against real merge-queue runs ─────────────────────────────────
+
+const QUEUE_REF = /^gh-readonly-queue\/[\w.-]+\/pr-(\d+)-([a-f\d]{40})$/;
+
+function hasCommit(io, sha) {
+  try { io.git(['cat-file', '-e', `${sha}^{commit}`]); return true; } catch { /* not local yet */ }
+  // An ejected group's head may be gone from the server.
+  try { io.git(['fetch', '--no-tags', '--quiet', 'origin', sha]); io.git(['cat-file', '-e', `${sha}^{commit}`]); return true; } catch { return false; }
+}
+
+// The Actions API returns transient 5xx often enough that one attempt is a bug. Reads only.
+function ghJson(io, args) {
+  for (let attempt = 1; ; attempt++) {
+    try { return JSON.parse(io.gh(args)); } catch (error) {
+      if (attempt >= 3) throw new GateError('api_error', `${args[1]}: ${String(error.message ?? error).split('\n')[0]}`);
+      io.sleep?.(attempt * 5_000);
+    }
+  }
+}
+
+export function runJobs(io, repository, runId) {
+  // The default filter is the latest attempt, which is what needs.<job> sees.
+  const pages = ghJson(io, ['api', `repos/${repository}/actions/runs/${runId}/jobs?per_page=100&filter=latest`, '--paginate', '--slurp']);
+  if (!Array.isArray(pages)) throw new GateError('api_error', 'jobs pagination');
+  return pages.flatMap(page => page.jobs ?? []).map(({ name, conclusion, status }) => ({ name, conclusion, status }));
+}
+
+function queueSample(io, repository, run) {
+  const ref = run.head_branch?.match(QUEUE_REF);
+  if (!ref || !isSha(run.head_sha)) return { skip: 'excluded' };
+  const [, pr, baseSha] = ref;
+  if (!hasCommit(io, baseSha) || !hasCommit(io, run.head_sha)) return { skip: 'unfetchable' };
+  const jobs = runJobs(io, repository, run.id);
+  const recorded = jobs.find(job => job.name === 'CI Success')?.conclusion;
+  if (!['success', 'failure'].includes(recorded)) return { skip: 'excluded' };
+  return { pr: Number(pr), baseSha, headSha: run.head_sha, jobs, recorded };
+}
+
+export function replay(io, { repository, limit = 50, minEvaluated = 15, widenTo = 200, prepare: prep = prepare }) {
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repository ?? '')) throw new GateError('invalid_repository', String(repository));
+  const out = { evaluated: 0, red: 0, unfetchable: 0, excluded: 0, apiErrors: 0, oracleCompared: 0, controlsRun: 0,
+    considered: 0, disagreements: [], controlFailures: [], problems: [] };
+  const evaluate = run => {
+    let s;
+    try { s = queueSample(io, repository, run); } catch (error) {
+      if (error?.code !== 'api_error') throw error;
+      s = { skip: 'apiErrors' };
+      io.stderr(`ci-gate-replay: run ${run.id}: ${error.message}`);
+    }
+    if (s.skip) { out[s.skip]++; return; }
+    let ctx = null, result;
+    try {
+      ctx = prep(io, { baseSha: s.baseSha, headSha: s.headSha, event: 'merge_group' });
+      result = judge(io, ctx, s.jobs);
+    } catch (error) {
+      if (!(error instanceof GateError)) throw error;
+      result = { verdict: 'fail', reason: error.code };
+    }
+    out.evaluated++;
+    if (s.recorded === 'failure') out.red++;
+    const agrees = (result.verdict === 'pass') === (s.recorded === 'success');
+    if (!agrees) out.disagreements.push({ run: run.id, pr: s.pr, recorded: s.recorded, verdict: result.verdict, reason: result.reason });
+    let controls = '';
+    if (agrees && s.recorded === 'success' && ctx) {
+      const c = runControls(io, ctx, s.jobs);
+      out.controlsRun += c.run;
+      out.controlFailures.push(...c.failures.map(failure => ({ run: run.id, ...failure })));
+      controls = ` controls=${c.run} control_failures=${c.failures.length}`;
+    }
+    io.stdout(`ci-gate-replay-run: run=${run.id} pr=${s.pr} recorded=${s.recorded} verdict=${result.verdict} reason=${result.reason}${controls}`);
+  };
+  pages: for (let page = 1; out.considered < widenTo; page++) {
+    const list = ghJson(io, ['api', `repos/${repository}/actions/workflows/ci.yml/runs?event=merge_group&status=completed&per_page=100&page=${page}`]);
+    const runs = list.workflow_runs ?? [];
+    if (!runs.length) break;
+    for (const run of runs) {
+      if (run.event !== 'merge_group' || run.path !== CI_YML || run.conclusion === 'cancelled') continue;
+      if (out.considered >= widenTo || (out.considered >= limit && out.red > 0)) break pages;
+      out.considered++;
+      // Past the limit, widen only to find a red sample.
+      if (out.considered > limit && run.conclusion !== 'failure') continue;
+      evaluate(run);
+    }
+  }
+  if (out.evaluated < minEvaluated) out.problems.push(`evaluated ${out.evaluated} < ${minEvaluated}`);
+  if (out.red === 0) out.problems.push(`no red sample in ${out.considered} runs`);
+  if (out.disagreements.length) out.problems.push(`${out.disagreements.length} disagreement(s) with CI Success`);
+  if (out.controlFailures.length) out.problems.push(`${out.controlFailures.length} control(s) stayed green`);
+  return { ...out, ok: out.problems.length === 0 };
+}
+
+// ── Fixtures ─────────────────────────────────────────────────────────────
+
+const TRIM_HEADER = 'name: CI (trimmed by ci-gate.mjs trimWorkflow; job headers, ci-success and mobile-native-changes)';
+
+// Keeps exactly what the gate reads: each job's header (name, strategy,
+// continue-on-error), the whole aggregator, and the mobile filter.
+export function trimWorkflow(ciYml) {
+  const out = [TRIM_HEADER, 'jobs:'];
+  for (const [id, { body }] of Object.entries(workflowJobs(ciYml))) {
+    out.push(`  ${id}:`);
+    const lines = body.split('\n');
+    if (id === 'ci-success' || id === 'mobile-native-changes') {
+      while (lines.length && (!lines.at(-1).trim() || /^  #/.test(lines.at(-1)))) lines.pop();
+      out.push(...lines);
+    } else {
+      const steps = lines.indexOf('    steps:');
+      out.push(...(steps < 0 ? lines : lines.slice(0, steps)).filter(line => line.trim() && !/^\s*#/.test(line)));
+    }
+  }
+  return `${out.join('\n')}\n`;
+}
+
+export function recordFixture(io, { repository, runId }) {
+  const run = ghJson(io, ['api', `repos/${repository}/actions/runs/${runId}`]);
+  const s = queueSample(io, repository, run);
+  if (s.skip) throw new GateError('not_recordable', `${runId}: ${s.skip}`);
+  const ctx = prepare(io, { baseSha: s.baseSha, headSha: s.headSha, event: 'merge_group' });
+  const snapshots = {};
+  const snap = revision => {
+    const name = `ci-${io.git(['rev-parse', `${revision}:${CI_YML}`]).trim().slice(0, 12)}.yml`;
+    snapshots[name] = trimWorkflow(showAt(io, revision, CI_YML));
+    return name;
+  };
+  const fixture = { source: { run_id: run.id, pr: s.pr }, changed: ctx.changed, flags: ctx.flags, mobile: ctx.mobile,
+    jobs: s.jobs.filter(job => job.name !== 'CI Success').map(({ name, conclusion }) => ({ name, conclusion })),
+    ci_success: s.recorded, base_ci: snap(s.baseSha), head_ci: snap(s.headSha),
+    expect: { verdict: s.recorded === 'success' ? 'pass' : 'fail' } };
+  return { fixture, snapshots };
+}
+
+// ── CLI ──────────────────────────────────────────────────────────────────
+
+export function runCLI(io, args, env) {
+  const repository = env.GITHUB_REPOSITORY;
+  if (args[0] === 'replay') {
+    const out = replay(io, { repository });
+    io.stdout(`ci-gate-replay: evaluated=${out.evaluated} red=${out.red} disagreements=${out.disagreements.length} ` +
+      `controlFailures=${out.controlFailures.length} oracleCompared=${out.oracleCompared} unfetchable=${out.unfetchable} ` +
+      `excluded=${out.excluded} apiErrors=${out.apiErrors} considered=${out.considered} controlsRun=${out.controlsRun}`);
+    for (const d of out.disagreements) io.stderr(`::error title=ci-gate replay disagreement::${JSON.stringify(d)}`);
+    for (const c of out.controlFailures) io.stderr(`::error title=ci-gate replay control stayed green::${JSON.stringify(c)}`);
+    for (const p of out.problems) io.stderr(`ci-gate-replay: FAIL ${p}`);
+    return out.ok ? 0 : 1;
+  }
+  if (args[0] === 'record-fixture') {
+    const [, runId, dir, name] = args;
+    if (!/^\d+$/.test(runId ?? '') || !dir || !/^[\w-]+$/.test(name ?? '')) throw new GateError('usage', 'record-fixture <run-id> <dir> <name>');
+    const { fixture, snapshots } = recordFixture(io, { repository, runId });
+    for (const [file, text] of Object.entries(snapshots)) io.write(join(dir, file), text);
+    io.write(join(dir, `${name}.json`), `${JSON.stringify({ name, ...fixture }, null, 2)}\n`);
+    return 0;
+  }
+  throw new GateError('usage', 'ci-gate.mjs replay | record-fixture <run-id> <dir> <name>');
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+  try { process.exitCode = runCLI(createGateIO(), process.argv.slice(2), process.env); }
+  catch (error) { process.stderr.write(`ci-gate: ${String(error.message ?? error)}\n`); process.exitCode = 1; }
 }
