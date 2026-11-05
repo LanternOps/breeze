@@ -202,6 +202,13 @@ sim_rc=0
 SIM_PID=$!
 wait "$SIM_PID" || sim_rc=$?
 SIM_PID=""
+# The simulator exits exactly at the window end, and kpi.mjs needs a counter
+# sample on both sides of each window edge. Keep sampling one more interval
+# (plus margin) so a row lands after window.end. The start edge needs nothing:
+# the sampler starts before the simulator, and the window opens only after
+# ramp + warmup, so the first row already precedes it.
+sleep "${TAIL_SECONDS:-$(( ${INTERVAL:-10} + 5 ))}" &
+wait $!
 stop_sampler
 if [ "$sim_rc" -ne 0 ]; then
   echo "run-perf: simulator exited $sim_rc" >&2
