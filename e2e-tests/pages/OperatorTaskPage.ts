@@ -125,6 +125,10 @@ export class ApprovalsInboxPage extends BasePage {
    */
   async approve(approvalId: string): Promise<number> {
     await this.row(approvalId).waitFor({ timeout: 30_000 });
+    // The app retries exactly once after a step-up 403, so only the FIRST one
+    // is skipped; a second (refused proof) settles and fails with its real
+    // status instead of timing out.
+    let stepUpSkipped = false;
     const [response] = await Promise.all([
       this.page.waitForResponse(
         async (r) => {
@@ -133,7 +137,10 @@ export class ApprovalsInboxPage extends BasePage {
           }
           if (r.status() !== 403) return true;
           const body = await r.json().catch(() => null);
-          return (body as { error?: unknown } | null)?.error !== 'step_up_required';
+          if ((body as { error?: unknown } | null)?.error !== 'step_up_required') return true;
+          if (stepUpSkipped) return true;
+          stepUpSkipped = true;
+          return false;
         },
         { timeout: 30_000 },
       ),

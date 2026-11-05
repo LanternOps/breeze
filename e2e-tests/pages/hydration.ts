@@ -63,7 +63,7 @@ export async function waitForLoginFormReady(page: Page, timeout = 60_000): Promi
   await page.getByTestId('login-email-input').waitFor({ timeout });
   await page.waitForFunction(
     () => {
-      const form = document.querySelector('form');
+      const form = document.querySelector('[data-testid="login-email-input"]')?.closest('form');
       return !!form && Object.keys(form).some((k) => k.startsWith('__reactFiber$'));
     },
     undefined,
