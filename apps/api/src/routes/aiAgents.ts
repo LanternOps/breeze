@@ -2,7 +2,7 @@ import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from '../services
 import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, sql, type SQL } from 'drizzle-orm';
 import {
   AI_AGENT_GRADUATION_BY_ORG_LIMIT,
   AI_AGENT_IMPACT_REBUILD_DAYS,
@@ -32,9 +32,10 @@ import {
   type AgentCeilingDto,
 } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
+import { selectRunIntentsForCaller } from '../services/aiAgents/runIntentsForCaller';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
-  actionIntents, aiAgentGraduation, aiAgentRuns, aiAgents, aiToolExecutions, approvalRequests, devices, organizations,
+  actionIntents, aiAgentGraduation, aiAgentRuns, aiAgents, aiToolExecutions, devices, organizations,
   reportRuns, reports, ticketDrafts, users, wispGrants, type AiAgentRow,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext, type AuthContext } from '../middleware/auth';
@@ -1494,39 +1495,13 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
   // condition stays as defence-in-depth beside RLS — same posture as the
   // batched hostname read below.
   //
-  // W2 #11085 — the run card decides a pending step inline (Wisp delegation),
-  // so each intent carries the CALLER's own pending, unexpired approval row:
-  // its id (the decide endpoint's handle) and the card's label. LEFT JOIN on
-  // the caller's user id: another approver's row is never exposed, and a
-  // caller with no row gets nulls (the decide route re-checks everything).
-  const intentJoinRows = await db
-    .select({
-      id: actionIntents.id,
-      status: actionIntents.status,
-      actionName: actionIntents.actionName,
-      approvalScope: actionIntents.approvalScope,
-      decidedVia: actionIntents.decidedVia,
-      approvalRequestId: approvalRequests.id,
-      actionLabel: approvalRequests.actionLabel,
-    })
-    .from(actionIntents)
-    .leftJoin(approvalRequests, and(
-      eq(approvalRequests.intentId, actionIntents.id),
-      eq(approvalRequests.userId, auth.user.id),
-      eq(approvalRequests.status, 'pending'),
-      gt(approvalRequests.expiresAt, new Date()),
-    ))
-    .where(and(
-      eq(actionIntents.requestingAgentRunId, run.id),
-      eq(actionIntents.orgId, run.orgId),
-      auth.orgCondition(actionIntents.orgId),
-    ));
-  // One row per intent even if the join ever matched twice (first wins).
-  const seenIntentIds = new Set<string>();
-  const intentRows = intentJoinRows.filter((row) => {
-    if (seenIntentIds.has(row.id)) return false;
-    seenIntentIds.add(row.id);
-    return true;
+  // W2 #11085: plus the caller's own pending approval row per intent
+  // (selectRunIntentsForCaller's header).
+  const intentRows = await selectRunIntentsForCaller({
+    runId: run.id,
+    runOrgId: run.orgId,
+    userId: auth.user.id,
+    orgCondition: auth.orgCondition(actionIntents.orgId),
   });
 
   // Phase 2 wave P2-2 (scheduled sweeps), Task A7 — a sweep run is

@@ -171,8 +171,13 @@ export default function AiRunCard({ runId, initialStatus, run, onContinue }: AiR
           if (cancelled) return;
           if (body.data) {
             setPolled(body.data);
-            const hasPending = (body.data.intents ?? []).some((i) => i.status === 'pending_approval');
-            if (isSettled(body.data.status) && !hasPending) {
+            // Keep polling a settled run only while a pending step is THIS
+            // viewer's to decide (it leaves the list once decided). A step
+            // only someone else can decide never ends this tab's polling.
+            const hasActionable = (body.data.intents ?? []).some(
+              (i) => i.status === 'pending_approval' && !!i.approvalRequestId,
+            );
+            if (isSettled(body.data.status) && !hasActionable) {
               // A finished (or approval-parked) run never changes on its own; keep polling and every open
               // chat with an old run card becomes a background request forever.
               settled = true;

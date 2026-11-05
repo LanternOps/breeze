@@ -24,6 +24,7 @@ const h = vi.hoisted(() => {
     resolveGrantCeiling: vi.fn(),
     getOrCreateThread: vi.fn(),
     wispEnabled: vi.fn(() => true),
+    captureException: vi.fn(),
   };
 });
 
@@ -41,12 +42,14 @@ vi.mock('./grantAuthority', async (orig) => ({
   resolveGrantCeiling: h.resolveGrantCeiling,
 }));
 vi.mock('./threads', () => ({ getOrCreateThread: h.getOrCreateThread }));
+vi.mock('../sentry', () => ({ captureException: h.captureException }));
 vi.mock('../../config/env', async (orig) => ({
   ...(await orig<typeof import('../../config/env')>()),
   wispEnabled: h.wispEnabled,
 }));
 
 import { GrantInactiveError } from './grantAuthority';
+import { SpecialistAudienceRefusedError } from './notifyUser';
 import {
   SPECIALIST_RESULT_BODY_MAX_CHARS,
   postSpecialistResult,
@@ -161,6 +164,12 @@ describe('postSpecialistResult', () => {
     expect(h.notifyUser.mock.calls[1]![0].title).toBe('Device troubleshooting on WS-01: cancelled');
   });
 
+  it('the grant changing between our check and notifyUser\'s is a skip, not a failure', async () => {
+    queue([runRow()], []);
+    h.notifyUser.mockRejectedValueOnce(new SpecialistAudienceRefusedError('grant_inactive', 'revoked meanwhile'));
+    await expect(postSpecialistResult(RUN)).resolves.toEqual({ posted: false, reason: 'grant_inactive' });
+  });
+
   it('a run in an org outside the current ceiling → posted: false, org_out_of_ceiling, nothing delivered', async () => {
     queue([runRow()]);
     h.resolveGrantCeiling.mockResolvedValue(ceiling({ orgIds: ['o9'] }));
@@ -272,15 +281,36 @@ describe('postSpecialistStepOutcome', () => {
 describe('resweepSpecialistResults (reconciler)', () => {
   it('posts each settled troubleshooting run that has no post yet, and reports per-run failures without stopping', async () => {
     const R2 = '33333333-3333-4333-8333-333333333333';
-    // sweep query → two candidates; then run 1 (read, no post), run 2 throws in notifyUser.
-    queue([{ id: RUN }, { id: R2 }], [runRow()], [], [runRow({ id: R2 })], []);
+    // run candidates → two; step candidates → none; then run 1 (read, no post), run 2 throws in notifyUser.
+    queue([{ id: RUN }, { id: R2 }], [], [runRow()], [], [runRow({ id: R2 })], []);
     h.notifyUser.mockResolvedValueOnce({ inApp: true, pushed: 0, suppressed: null }).mockRejectedValueOnce(new Error('db down'));
-    await expect(resweepSpecialistResults(new Date('2027-01-21T12:00:00Z'))).resolves.toEqual({ scanned: 2, posted: 1, failed: 1 });
+    await expect(resweepSpecialistResults(new Date('2027-01-21T12:00:00Z')))
+      .resolves.toEqual({ scanned: 2, posted: 1, failed: 1, skipped: {} });
+    expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ op: 'wisp.specialistResult.resweep', id: R2 }));
+  });
+
+  it('re-sweeps a released step whose post-back was lost', async () => {
+    const intentRow = { id: INTENT, orgId: 'o1', status: 'completed', requestingAgentRunId: RUN, actionName: 'manage_services', result: { stdout: 'ok' }, errorCode: null };
+    // no run candidates; one step candidate; then the step's reads.
+    queue([], [{ id: INTENT }], [intentRow], [runRow({ status: 'awaiting_approval' })], [{ actionLabel: 'Restart' }], []);
+    await expect(resweepSpecialistResults(new Date())).resolves.toEqual({ scanned: 1, posted: 1, failed: 0, skipped: {} });
+    expect(h.notifyUser.mock.calls[0]![0].specialist.dedupeKey).toBe(`wisp.specialist_step:${INTENT}:completed`);
+  });
+
+  it('tallies skips; a skip that means a bug (no grant pinned) is reported, an ordinary one is not', async () => {
+    const R2 = '33333333-3333-4333-8333-333333333333';
+    queue([{ id: RUN }, { id: R2 }], [], [runRow({ grantRevisionId: null })], [runRow({ id: R2 })]);
+    h.resolveGrantCeiling.mockResolvedValueOnce(ceiling({ orgIds: ['o9'] }));
+    await expect(resweepSpecialistResults(new Date())).resolves.toEqual({
+      scanned: 2, posted: 0, failed: 0, skipped: { no_grant: 1, org_out_of_ceiling: 1 },
+    });
+    expect(h.captureException).toHaveBeenCalledTimes(1);
+    expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ reason: 'no_grant', id: RUN }));
   });
 
   it('does nothing with Wisp off', async () => {
     h.wispEnabled.mockReturnValue(false);
-    await expect(resweepSpecialistResults(new Date())).resolves.toEqual({ scanned: 0, posted: 0, failed: 0 });
+    await expect(resweepSpecialistResults(new Date())).resolves.toEqual({ scanned: 0, posted: 0, failed: 0, skipped: {} });
     expect(h.db.select).not.toHaveBeenCalled();
   });
 });

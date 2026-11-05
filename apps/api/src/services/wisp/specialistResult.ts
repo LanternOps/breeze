@@ -41,10 +41,11 @@ import { actionIntents } from '../../db/schema/actionIntents';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { approvalRequests } from '../../db/schema/approvals';
 import { devices } from '../../db/schema/devices';
+import { wispGrants } from '../../db/schema/wisp';
 import { wispThreadPosts } from '../../db/schema/wispThreadPosts';
 import { sanitizeUntrustedToolText } from '../aiInputSanitizer';
 import { captureException } from '../sentry';
-import { notifyUser, resolveSpecialistPostAudience } from './notifyUser';
+import { notifyUser, resolveSpecialistPostAudience, SpecialistAudienceRefusedError } from './notifyUser';
 import { getOrCreateThread } from './threads';
 
 /** The post body cap, in characters (code points), whatever it carries. */
@@ -233,7 +234,9 @@ async function deliver(args: {
 }): Promise<SpecialistPostResult> {
   if (await postExists(args.threadId, args.dedupeKey)) return { posted: false, reason: 'already_posted' };
   const link = specialistRunLink(args.runId);
-  const res = await notifyUser({
+  let res: Awaited<ReturnType<typeof notifyUser>>;
+  try {
+    res = await notifyUser({
     userId: args.userId,
     category: 'wisp_nudge',
     kind: 'specialist_result',
@@ -245,7 +248,12 @@ async function deliver(args: {
     grantId: args.grantId,
     push: false,
     specialist: { orgId: args.orgId, grantRevisionId: args.grantRevisionId, dedupeKey: args.dedupeKey, link },
-  });
+    });
+  } catch (err) {
+    // The grant changed between our audience check and notifyUser's: a skip.
+    if (err instanceof SpecialistAudienceRefusedError) return { posted: false, reason: err.reason };
+    throw err;
+  }
   // 'backoff' is notifyUser's dedupe hit: a racing caller wrote it first.
   return res.suppressed === 'backoff' ? { posted: false, reason: 'already_posted' } : { posted: true };
 }
@@ -334,44 +342,97 @@ export async function postSpecialistStepOutcome(intentId: string): Promise<Speci
   });
 }
 
+/** Skips that mean a bug (the item should have posted), not a state change: reported. */
+const SUSPICIOUS_SKIPS: ReadonlySet<SpecialistPostSkip> = new Set(['run_not_found', 'intent_not_found', 'not_a_specialist_run', 'no_grant']);
+
+export type SpecialistResweepResult = {
+  scanned: number;
+  posted: number;
+  failed: number;
+  /** Why a candidate did not post, by reason (an org that left the ceiling, a race, …). */
+  skipped: Partial<Record<SpecialistPostSkip, number>>;
+};
+
 /**
- * The grant reconciler's re-sweep: every settled troubleshooting run of the
- * last 24 h whose thread has no post with its dedupe key gets
- * `postSpecialistResult` (idempotent, so a run the finalizer is posting right
- * now still ends with one post). Per-run failures are reported, not thrown.
+ * The grant reconciler's re-sweep, two halves, each idempotent through its
+ * dedupe key (so a finalizer or release posting right now still ends with
+ * one post):
+ *   - settled troubleshooting runs of the last 24 h whose thread has no
+ *     `wisp.specialist_result:<run>:<status>` post → `postSpecialistResult`;
+ *   - completed / failed steps of those runs whose status changed in the last
+ *     24 h with no `wisp.specialist_step:<intent>:<status>` post →
+ *     `postSpecialistStepOutcome` (a release whose post-back failed).
+ * Only grants that can still carry a post (active or paused) are scanned, so
+ * a revoked or expired grant's runs never crowd the per-tick limit. Per-item
+ * failures are reported, never thrown; skips are tallied, and a skip that
+ * means a bug is reported too.
  */
-export async function resweepSpecialistResults(now: Date): Promise<{ scanned: number; posted: number; failed: number }> {
-  if (!wispEnabled()) return { scanned: 0, posted: 0, failed: 0 };
-  const since = new Date(now.getTime() - SPECIALIST_RESULT_RESWEEP_WINDOW_MS);
-  const candidates = await systemRead(() => db
+export async function resweepSpecialistResults(now: Date): Promise<SpecialistResweepResult> {
+  const out: SpecialistResweepResult = { scanned: 0, posted: 0, failed: 0, skipped: {} };
+  if (!wispEnabled()) return out;
+  // Raw `sql` carries no column type to encode a Date with: bind the ISO string.
+  const since = sql`${new Date(now.getTime() - SPECIALIST_RESULT_RESWEEP_WINDOW_MS).toISOString()}::timestamptz`;
+  const settledAt = sql`coalesce(${aiAgentRuns.finishedAt}, ${aiAgentRuns.queuedAt})`;
+  const liveSpecialistRun = and(
+    eq(aiAgentRuns.profile, PROFILE),
+    sql`${aiAgentRuns.triggerRef}->>'source' = 'wisp_specialist'`,
+    inArray(wispGrants.status, ['active', 'paused']),
+  );
+
+  const runs = await systemRead(() => db
     .select({ id: aiAgentRuns.id })
     .from(aiAgentRuns)
+    .innerJoin(wispGrants, eq(wispGrants.id, aiAgentRuns.grantId))
     .where(and(
-      eq(aiAgentRuns.profile, PROFILE),
+      liveSpecialistRun,
       inArray(aiAgentRuns.status, [...SETTLED_STATUSES]),
-      // Raw `sql` carries no column type to encode a Date with: bind the ISO string.
-      sql`coalesce(${aiAgentRuns.finishedAt}, ${aiAgentRuns.queuedAt}) >= ${since.toISOString()}::timestamptz`,
-      sql`${aiAgentRuns.triggerRef}->>'source' = 'wisp_specialist'`,
-      sql`${aiAgentRuns.grantId} IS NOT NULL`,
+      sql`${settledAt} >= ${since}`,
       sql`NOT EXISTS (
         SELECT 1 FROM ${wispThreadPosts}
         WHERE ${wispThreadPosts.grantId} = ${aiAgentRuns.grantId}
           AND ${wispThreadPosts.dedupeKey} = 'wisp.specialist_result:' || ${aiAgentRuns.id}::text || ':' || ${aiAgentRuns.status}
       )`,
     ))
-    .orderBy(desc(sql`coalesce(${aiAgentRuns.finishedAt}, ${aiAgentRuns.queuedAt})`))
+    .orderBy(desc(settledAt))
     .limit(SPECIALIST_RESULT_RESWEEP_LIMIT));
 
-  let posted = 0;
-  let failed = 0;
-  for (const { id } of candidates) {
+  const steps = await systemRead(() => db
+    .select({ id: actionIntents.id })
+    .from(actionIntents)
+    .innerJoin(aiAgentRuns, and(eq(aiAgentRuns.id, actionIntents.requestingAgentRunId), eq(aiAgentRuns.orgId, actionIntents.orgId)))
+    .innerJoin(wispGrants, eq(wispGrants.id, aiAgentRuns.grantId))
+    .where(and(
+      liveSpecialistRun,
+      inArray(actionIntents.status, ['completed', 'failed']),
+      sql`${actionIntents.statusChangedAt} >= ${since}`,
+      sql`NOT EXISTS (
+        SELECT 1 FROM ${wispThreadPosts}
+        WHERE ${wispThreadPosts.grantId} = ${aiAgentRuns.grantId}
+          AND ${wispThreadPosts.dedupeKey} = 'wisp.specialist_step:' || ${actionIntents.id}::text || ':' || ${actionIntents.status}
+      )`,
+    ))
+    .orderBy(desc(actionIntents.statusChangedAt))
+    .limit(SPECIALIST_RESULT_RESWEEP_LIMIT));
+
+  const attempt = async (kind: 'run' | 'step', id: string) => {
+    out.scanned += 1;
     try {
-      if ((await postSpecialistResult(id)).posted) posted += 1;
+      const res = kind === 'run' ? await postSpecialistResult(id) : await postSpecialistStepOutcome(id);
+      if (res.posted) { out.posted += 1; return; }
+      out.skipped[res.reason] = (out.skipped[res.reason] ?? 0) + 1;
+      if (SUSPICIOUS_SKIPS.has(res.reason)) {
+        console.warn('[wisp.specialistResult] re-sweep candidate cannot post', { kind, id, reason: res.reason });
+        captureException(new Error(`specialist ${kind} ${id} cannot post: ${res.reason}`), undefined, {
+          op: 'wisp.specialistResult.resweep.skip', kind, id, reason: res.reason,
+        });
+      }
     } catch (err) {
-      failed += 1;
-      console.error('[wisp.specialistResult] re-sweep post failed', { runId: id, err });
-      captureException(err, undefined, { op: 'wisp.specialistResult.resweep', runId: id });
+      out.failed += 1;
+      console.error('[wisp.specialistResult] re-sweep post failed', { kind, id, err });
+      captureException(err, undefined, { op: 'wisp.specialistResult.resweep', kind, id });
     }
-  }
-  return { scanned: candidates.length, posted, failed };
+  };
+  for (const { id } of runs) await attempt('run', id);
+  for (const { id } of steps) await attempt('step', id);
+  return out;
 }

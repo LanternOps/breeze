@@ -23,12 +23,13 @@ vi.mock('../../services/eventBus', async (importOriginal) => {
 
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
-  actionIntents, aiAgentRuns, aiAgents, devices, partnerUsers, userNotifications, wispGrantRevisions, wispGrants, wispThreadPosts,
+  actionIntents, aiAgentRuns, aiAgents, approvalRequests, devices, partnerUsers, userNotifications, wispGrantRevisions, wispGrants, wispThreadPosts,
 } from '../../db/schema';
 import type { WispCeilingSnapshot } from '../../db/schema/wisp';
 import { createActionIntent } from '../../services/actionIntents/intentService';
 import { buildAgentAuthContext } from '../../services/aiAgents/agentAuthContext';
 import { registerAgentRunEnqueuer } from '../../services/aiAgents/runService';
+import { selectRunIntentsForCaller } from '../../services/aiAgents/runIntentsForCaller';
 import { CONTINUATION_NO_REPEAT_LINE } from '../../services/aiAgents/troubleshootProfile';
 import type { AuthContext } from '../../middleware/auth';
 import { requestSpecialist } from '../../services/wisp/coordinator';
@@ -327,5 +328,73 @@ describe('continuation (real Postgres)', () => {
       { requester: { kind: 'user', auth: t.approver }, requestId: randomUUID() },
     );
     expect(result).toEqual({ refused: 'continuation_refused', detail: 'not_settled' });
+  });
+});
+
+describe('step re-sweep (real Postgres)', () => {
+  it('a released step whose post-back was lost is posted by the reconciler once', async () => {
+    const t = await seedTenant();
+    const { runId, auth } = await admit(t);
+    const intent = await propose(t, auth, 'Profile looks corrupt');
+    await settle(runId, 'awaiting_approval', { intentIds: [intent.id] });
+    await postSpecialistResult(runId);
+    await sys(() => db.update(actionIntents).set({
+      status: 'completed', executedAt: new Date(), statusChangedAt: new Date(), result: { message: 'Context note saved' },
+    } as never).where(eq(actionIntents.id, intent.id)));
+
+    const first = await resweepSpecialistResults(new Date());
+    expect(first.failed).toBe(0);
+    const keys = (await postsFor(t.grant.grantId)).map((p) => p.dedupeKey).sort();
+    expect(keys).toEqual([specialistResultDedupeKey(runId, 'awaiting_approval'), specialistStepDedupeKey(intent.id, 'completed')].sort());
+
+    await resweepSpecialistResults(new Date());
+    expect(await postsFor(t.grant.grantId)).toHaveLength(2);
+  });
+
+  it('a revoked grant\'s runs are not candidates at all', async () => {
+    const t = await seedTenant();
+    const { runId } = await admit(t);
+    await settle(runId, 'completed');
+    await sys(() => db.update(wispGrants).set({ status: 'revoked', revokedAt: new Date() } as never)
+      .where(eq(wispGrants.id, t.grant.grantId)));
+    const out = await resweepSpecialistResults(new Date());
+    expect(out.skipped.grant_inactive ?? 0).toBe(0);
+    expect(await postsFor(t.grant.grantId)).toHaveLength(0);
+  });
+});
+
+describe('run-detail intents for the caller (real Postgres, user RLS)', () => {
+  it('each approver sees only their own pending approval row; a user with none gets nulls', async () => {
+    const t = await seedTenant();
+    const { runId, auth } = await admit(t);
+    const intent = await propose(t, auth, 'Profile looks corrupt');
+    const rows = await sys(() => db.select({ id: approvalRequests.id, userId: approvalRequests.userId, status: approvalRequests.status })
+      .from(approvalRequests).where(eq(approvalRequests.intentId, intent.id)));
+    const pending = rows.filter((r) => r.status === 'pending');
+    // The fixture fans out to at least two approvers; this case needs two.
+    expect(pending.length).toBeGreaterThanOrEqual(2);
+    const outsider = await createUser({ partnerId: t.partner.id, email: `wisp-post-out-${randomUUID()}@wisp.test` });
+
+    const readAs = (userId: string) => withDbAccessContext({
+      scope: 'partner', orgId: null, accessibleOrgIds: [t.org.id], accessiblePartnerIds: [t.partner.id], userId,
+    } as DbAccessContext, () => selectRunIntentsForCaller({ runId, runOrgId: t.org.id, userId, orgCondition: undefined }));
+
+    for (const row of pending) {
+      const [mine] = await readAs(row.userId);
+      expect(mine).toMatchObject({ id: intent.id, approvalRequestId: row.id });
+      expect(mine!.actionLabel).toEqual(expect.any(String));
+    }
+    const [theirs] = await readAs(outsider.id);
+    expect(theirs).toMatchObject({ id: intent.id, approvalRequestId: null, actionLabel: null });
+
+    // The join's own user predicate isolates too, without RLS (system scope):
+    // RLS is the boundary, the predicate is the belt.
+    const sysRead = (userId: string) => sys(() => selectRunIntentsForCaller({ runId, runOrgId: t.org.id, userId, orgCondition: undefined }));
+    const [outsiderNoRls] = await sysRead(outsider.id);
+    expect(outsiderNoRls).toMatchObject({ approvalRequestId: null });
+    for (const row of pending) {
+      const [mine] = await sysRead(row.userId);
+      expect(mine).toMatchObject({ approvalRequestId: row.id });
+    }
   });
 });

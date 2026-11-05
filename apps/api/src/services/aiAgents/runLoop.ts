@@ -3867,7 +3867,9 @@ async function finishRun(
       console.error('[aiAgentRunLoop] specialist post-back failed — the grant reconciler re-sweeps it', {
         runId: ctx.run.id, error,
       });
-      captureException(error instanceof Error ? error : new Error(String(error)));
+      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+        op: 'wisp.specialistResult.finishRun', runId: ctx.run.id,
+      });
     }
   }
 

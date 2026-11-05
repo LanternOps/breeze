@@ -223,8 +223,8 @@ describe('AiRunCard (spec §5.5)', () => {
       fetchWithAuth.mockResolvedValue(detail({
         status: 'awaiting_approval',
         intents: [
-          { id: 'i1', status: 'pending_approval', actionName: 'x', approvalScope: 'single', decidedVia: null },
-          { id: 'i2', status: 'pending_approval', actionName: 'y', approvalScope: 'single', decidedVia: null },
+          { id: 'i1', status: 'pending_approval', actionName: 'x', approvalScope: 'single', decidedVia: null, approvalRequestId: 'r1' },
+          { id: 'i2', status: 'pending_approval', actionName: 'y', approvalScope: 'single', decidedVia: null, approvalRequestId: 'r2' },
           { id: 'i3', status: 'completed', actionName: 'z', approvalScope: 'single', decidedVia: null },
         ],
       }));
@@ -451,6 +451,19 @@ describe('AiRunCard (spec §5.5)', () => {
         await act(async () => { await vi.advanceTimersByTimeAsync(0); });
         await act(async () => { await vi.advanceTimersByTimeAsync(11_000); });
         expect(fetchWithAuth.mock.calls.length).toBeGreaterThanOrEqual(3);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('stops polling a settled run when no pending step is the caller\'s to decide', async () => {
+      vi.useFakeTimers();
+      try {
+        fetchWithAuth.mockResolvedValue(awaiting([intent('a', { approvalRequestId: null })]));
+        render(<AiRunCard runId={RUN} initialStatus="running" run={undefined} />);
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+        expect(fetchWithAuth).toHaveBeenCalledTimes(1);
       } finally {
         vi.useRealTimers();
       }

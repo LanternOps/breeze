@@ -237,6 +237,14 @@ export function isOrgReadableOnThread(ceiling: Pick<GrantCeiling, 'orgIds' | 'si
   return (ceiling.orgTerms.get(orgId)?.siteIds ?? null) === null;
 }
 
+/** A specialist report the grant's thread may not carry (now): an expected skip, not a fault. */
+export class SpecialistAudienceRefusedError extends Error {
+  constructor(public readonly reason: 'grant_inactive' | 'org_out_of_ceiling', message: string) {
+    super(message);
+    this.name = 'SpecialistAudienceRefusedError';
+  }
+}
+
 /**
  * Who a specialist report about `orgId` goes to under (grant, revision), or
  * why it may not go anywhere. The ONE non-route `allowPaused` read
@@ -278,7 +286,11 @@ async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
   if (p.specialist) {
     const audience = await resolveSpecialistPostAudience(p.grantId, p.specialist.grantRevisionId, p.specialist.orgId);
     if (!audience.ok) {
-      throw new Error(`notifyUser: org ${p.specialist.orgId} is outside what grant ${p.grantId}'s thread may show (${audience.reason})`);
+      // Typed: the grant can change between the caller's check and this one.
+      throw new SpecialistAudienceRefusedError(
+        audience.reason,
+        `notifyUser: org ${p.specialist.orgId} is outside what grant ${p.grantId}'s thread may show (${audience.reason})`,
+      );
     }
     if (audience.grantorUserId !== p.userId) throw new Error(`notifyUser: user ${p.userId} is not the grantor of grant ${p.grantId}`);
   }

@@ -446,6 +446,14 @@ describe('device_troubleshooting post-back (W2 #11085)', () => {
     expect(statusAtPost).toBe('completed');
   });
 
+  it('an awaiting_approval finish posts too', async () => {
+    seedRun('device_troubleshooting');
+    scriptQuery([{ tool: 'set_device_context', input: { deviceId: DEVICE_ID, summary: 'Outlook profile corrupt' } }]);
+    await executeAgentRun(RUN_ID);
+    expect(finalTransition()!.to).toBe('awaiting_approval');
+    expect(postSpecialistResult).toHaveBeenCalledWith(RUN_ID);
+  });
+
   it('Review Focus 2: a run stopped by the grant posts too (its post says why)', async () => {
     seedRun('device_troubleshooting');
     scriptQuery(mintThenGrantDies());
