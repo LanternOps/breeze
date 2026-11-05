@@ -72,6 +72,13 @@ describe('fetchWispTimeline', () => {
     err.mockRestore();
   });
 
+  it('keeps specialist_result post rows', async () => {
+    const sr = post('p-sr', '2026-10-26T09:00:00.000Z', { kind: 'specialist_result' });
+    fetchMock.mockResolvedValue(ok({ data: { items: [sr], nextCursor: null } }));
+    const page = await fetchWispTimeline('th-1', {});
+    expect(page.items).toEqual([sr]);
+  });
+
   it('logs which kinds of rows were dropped, never their content', async () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchMock.mockResolvedValue(ok({

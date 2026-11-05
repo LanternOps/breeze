@@ -90,6 +90,13 @@ describe('WispPost', () => {
     expect(screen.queryByTestId('wisp-post-open')).toBeNull();
   });
 
+  it('renders a specialist_result post with the Specialist report heading', () => {
+    render(<WispPost post={post({ kind: 'specialist_result', title: 'FS-01 troubleshooting', body: 'Disk cleaned.', link: null, concernId: null })} />);
+    expect(screen.getByTestId('wisp-post').getAttribute('data-kind')).toBe('specialist_result');
+    expect(screen.getByText('Specialist report')).toBeTruthy();
+    expect(screen.getByTestId('wisp-post-title').textContent).toBe('FS-01 troubleshooting');
+  });
+
   it.each(['https://evil.example/x', '//evil', 'javascript:alert(1)', null])(
     'renders no link for unsafe link %s',
     (link) => {

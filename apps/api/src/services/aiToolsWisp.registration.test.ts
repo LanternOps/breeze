@@ -168,7 +168,7 @@ describe('launch_specialist (Tier-2 chat tool)', () => {
     expect(paramsField).toMatch(/patch_plan \{\}/);
     expect(text.match(/goal/g)).toHaveLength(2);
     expect(paramsField).toMatch(/analysis \{goal/);
-    expect(def.description).toMatch(/device_troubleshooting \{deviceId, goal\}/);
+    expect(def.description).toMatch(/device_troubleshooting \{deviceId, goal, continueFromRunId\?\}/);
     expect(def.description?.length ?? 0).toBeLessThanOrEqual(300);
   });
 

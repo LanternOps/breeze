@@ -215,6 +215,10 @@ The kinds marked "after you approve" appear as an approval card; nothing starts 
 
 A `device_troubleshooting` run stays on the device it was given and refuses a call that names any other device. It never makes a change itself and raises at most three approval requests. Its steps appear on the run card, and the run appears under Workers in the Wisp rail. If the grant is paused or revoked mid-run, the run stops and is marked failed.
 
+When a `device_troubleshooting` run settles, it posts a report into the Wisp thread: what it found and how many steps are waiting for approval. A run stopped by a paused grant says so. You can approve or deny each step on the run card or under Approvals, and each approved step posts its outcome to the thread. These posts never send a push notification, because each step already raised its own approval request.
+
+**Continue** on the run card asks Wisp to start a new run on the same device, seeded with what the earlier run found and what happened to its steps. The earlier run does not resume. A run can be continued up to three times.
+
 Two refusals are user-visible. `bulk_reply_incomplete` means a bulk reply stopped part-way; what was sent and what was not is stored on the intent. `uncertain` means Wisp could not tell whether the work had taken effect, so it did not retry.
 
 Work started this way is labeled **Wisp for** followed by the person's name on the agent run and the Operator task detail pages, so the audit trail shows who it was done for. Platform admins also have an `/admin/wisp` page with fleet-level health and counts.

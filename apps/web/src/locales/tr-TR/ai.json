@@ -583,7 +583,16 @@
       "pending_other": "{{count}} adım onayınızı bekliyor",
       "waiting": "Onayınızı bekleyen adımlar var",
       "review": "Onaylar'da incele"
-    }
+    },
+    "stepApprovals": {
+      "title": "Onayınız bekleniyor",
+      "wispFor": "{{name}} için Wisp",
+      "approve": "Onayla",
+      "deny": "Reddet",
+      "waitingForApprover": "Bir onaylayıcı bekleniyor"
+    },
+    "continue": "Devam et",
+    "continueMessage": "{{runId}} çalıştırması için sorun gidermeye devam et."
   },
   "aiModelPicker": {
     "chooseModel": "Model seçin",
@@ -868,7 +877,8 @@
       "checkIn": "Planlı kontrol",
       "summary": "Özet",
       "open": "Aç",
-      "unread": "Okunmamış"
+      "unread": "Okunmamış",
+      "specialistResult": "Uzman raporu"
     },
     "welcome": {
       "title": "{{scope}} kapsamına göz atıyorum.",

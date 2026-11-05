@@ -209,6 +209,7 @@ import { analysisLimits, analysisToolAllowlist, isAnalysisProfile } from './anal
 import { assessmentLimits, assessmentToolAllowlist, isAssessmentProfile } from './assessmentProfile';
 import {
   isTroubleshootProfile, TROUBLESHOOT_MAX_ACTIONS_PER_RUN, troubleshootLimits, troubleshootToolAllowlist,
+  troubleshootPromptContextFromTriggerRef, type TroubleshootPromptContext,
 } from './troubleshootProfile';
 import { emitRunProgress, progressLabelFor } from './runProgress';
 import { loadAssessmentContext } from '../wisp/assessment';
@@ -2100,9 +2101,9 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
 }
 
 /** #11084: the launcher writes `goal` into triggerRef (specialistLaunchers.ts); anything else reads as no goal. */
-function troubleshootPromptContext(triggerRef: unknown): { goal: string } | null {
-  const goal = (triggerRef as { goal?: unknown } | null)?.goal;
-  return typeof goal === 'string' && goal.trim().length > 0 ? { goal } : null;
+function troubleshootPromptContext(triggerRef: unknown): TroubleshootPromptContext | null {
+  // W2 (#11085): goal + the optional continuation seed, validated in one place.
+  return troubleshootPromptContextFromTriggerRef(triggerRef);
 }
 
 /**
@@ -3851,6 +3852,26 @@ async function finishRun(
     costCents: result.costCents,
     ...(errorCode ? { errorCode } : {}),
   });
+
+  // Wisp delegation W2 (#11085): a device_troubleshooting run reports back
+  // into the Wisp thread it was handed off from — after the final status is
+  // committed (the post reads it), and never allowed to change it. A failure
+  // is reported here; the grant reconciler re-sweeps any run left without its
+  // post, and the post's dedupe key keeps that to exactly one. Lazy: the
+  // notify graph stays off every other profile's import path.
+  if (isTroubleshootProfile(ctx.run)) {
+    try {
+      const { postSpecialistResult } = await import('../wisp/specialistResult');
+      await runOutsideDbContext(() => postSpecialistResult(ctx.run.id));
+    } catch (error) {
+      console.error('[aiAgentRunLoop] specialist post-back failed — the grant reconciler re-sweeps it', {
+        runId: ctx.run.id, error,
+      });
+      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+        op: 'wisp.specialistResult.finishRun', runId: ctx.run.id,
+      });
+    }
+  }
 
   // Ledger cleanup happens in `executeAgentRun`'s `finally`, not here — this
   // function is skipped entirely on the `!moved` branch above (another

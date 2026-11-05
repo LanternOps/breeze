@@ -35,6 +35,7 @@ import {
   type AiAgentMode,
   type AiAgentRunDetailDto,
   type AiAgentRunIntentSummaryDto,
+  type AiAgentRunProfile,
   type AiAgentRunSweepProposalOutcome,
   type AiAgentRunLedgerEntryDto,
   type AiAgentRunNarrativeDeliveryDto,
@@ -51,6 +52,8 @@ import {
 } from '@breeze/shared';
 
 export interface RunTraceRunInput {
+  /** W2 #11085 — the run's profile; optional for older fixtures (the column defaults to 'full'). */
+  profile?: AiAgentRunProfile;
   /** W07 provenance (optional: callers without the grant join read as no provenance). */
   grantId?: string | null;
   /** `wisp_grants.grantor_user_id` via LEFT JOIN; null when the grant row is invisible under RLS. */
@@ -227,6 +230,9 @@ export interface RunTraceIntentRowInput {
   actionName: string;
   approvalScope: ActionIntentApprovalScope;
   decidedVia: string | null;
+  /** W2 #11085 — the caller's own pending approval row, when the route joined one. */
+  actionLabel?: string | null;
+  approvalRequestId?: string | null;
 }
 
 /**
@@ -424,6 +430,8 @@ function mapIntentRow(row: RunTraceIntentRowInput): AiAgentRunIntentSummaryDto {
     actionName: row.actionName,
     approvalScope: row.approvalScope,
     decidedVia: row.decidedVia,
+    actionLabel: row.actionLabel ?? null,
+    approvalRequestId: row.approvalRequestId ?? null,
   };
 }
 
@@ -572,6 +580,7 @@ export function buildRunTrace(
     deviceId: run.deviceId,
     deviceHostname: device?.hostname ?? null,
     alertId: run.alertId,
+    profile: run.profile ?? 'full',
     anomalyIncidentId: run.anomalyIncidentId,
     // No grant, or a grant row the caller's RLS context cannot see (grantor
     // unknown): no provenance. A partner-scope viewer sees the partner's grants.

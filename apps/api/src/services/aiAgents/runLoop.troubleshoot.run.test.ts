@@ -184,6 +184,10 @@ vi.mock('../userNotifications', () => ({ createNotification }));
 const deliverRunFinishedNotifications = vi.hoisted(() => vi.fn<(runId: string) => Promise<void>>(async () => undefined));
 vi.mock('./runFinishedNotify', () => ({ deliverRunFinishedNotifications }));
 
+// W2 (#11085): the thread post-back a troubleshoot finish hands off to.
+const postSpecialistResult = vi.hoisted(() => vi.fn<(runId: string) => Promise<unknown>>(async () => ({ posted: true })));
+vi.mock('../wisp/specialistResult', () => ({ postSpecialistResult }));
+
 const enqueueAgentNotifyRetry = vi.hoisted(() => vi.fn<(runId: string) => Promise<void>>(async () => undefined));
 vi.mock('../../jobs/agentNotifyRetryWorker', () => ({ enqueueAgentNotifyRetry }));
 
@@ -426,5 +430,43 @@ describe('device_troubleshooting finish (#11084)', () => {
     expect(final.patch.errorCode).not.toBe('grant_inactive');
     expect(final.to).not.toBe('failed');
     expect(deliverRunFinishedNotifications).toHaveBeenCalledWith(RUN_ID);
+    expect(postSpecialistResult).not.toHaveBeenCalled();
+  });
+});
+
+describe('device_troubleshooting post-back (W2 #11085)', () => {
+  it('a settled troubleshoot run hands its id to postSpecialistResult once, after the final status is written', async () => {
+    seedRun('device_troubleshooting');
+    let statusAtPost: string | undefined;
+    postSpecialistResult.mockImplementationOnce(async () => { statusAtPost = finalTransition()?.to; return { posted: true }; });
+    scriptQuery([{ tool: 'get_device_details', input: { deviceId: DEVICE_ID } }]);
+    await executeAgentRun(RUN_ID);
+    expect(postSpecialistResult).toHaveBeenCalledTimes(1);
+    expect(postSpecialistResult).toHaveBeenCalledWith(RUN_ID);
+    expect(statusAtPost).toBe('completed');
+  });
+
+  it('an awaiting_approval finish posts too', async () => {
+    seedRun('device_troubleshooting');
+    scriptQuery([{ tool: 'set_device_context', input: { deviceId: DEVICE_ID, summary: 'Outlook profile corrupt' } }]);
+    await executeAgentRun(RUN_ID);
+    expect(finalTransition()!.to).toBe('awaiting_approval');
+    expect(postSpecialistResult).toHaveBeenCalledWith(RUN_ID);
+  });
+
+  it('Review Focus 2: a run stopped by the grant posts too (its post says why)', async () => {
+    seedRun('device_troubleshooting');
+    scriptQuery(mintThenGrantDies());
+    await executeAgentRun(RUN_ID);
+    expect(finalTransition()!.patch.errorCode).toBe('grant_inactive');
+    expect(postSpecialistResult).toHaveBeenCalledWith(RUN_ID);
+  });
+
+  it('a failing post-back never changes the run outcome (the reconciler re-sweeps it)', async () => {
+    seedRun('device_troubleshooting');
+    postSpecialistResult.mockRejectedValueOnce(new Error('notify down'));
+    scriptQuery([{ tool: 'get_device_details', input: { deviceId: DEVICE_ID } }]);
+    await expect(executeAgentRun(RUN_ID)).resolves.not.toThrow();
+    expect(finalTransition()!.to).toBe('completed');
   });
 });

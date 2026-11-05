@@ -583,7 +583,16 @@
       "pending_other": "{{count}} steps are waiting for your approval",
       "waiting": "Steps are waiting for your approval",
       "review": "Review in Approvals"
-    }
+    },
+    "stepApprovals": {
+      "title": "Waiting for your approval",
+      "wispFor": "Wisp for {{name}}",
+      "approve": "Approve",
+      "deny": "Deny",
+      "waitingForApprover": "Waiting for an approver"
+    },
+    "continue": "Continue",
+    "continueMessage": "Continue troubleshooting run {{runId}}."
   },
   "aiModelPicker": {
     "chooseModel": "Choose a model",
@@ -868,7 +877,8 @@
       "checkIn": "Check-in",
       "summary": "Summary",
       "open": "Open",
-      "unread": "Unread"
+      "unread": "Unread",
+      "specialistResult": "Specialist report"
     },
     "welcome": {
       "title": "I'm looking around {{scope}}.",

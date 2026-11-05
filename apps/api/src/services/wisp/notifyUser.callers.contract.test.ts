@@ -53,11 +53,13 @@ describe('Wisp delivery funnel (w00 A18)', () => {
       'services/wisp/nudgeDigest.ts', // the 15-minute digest
       'services/wisp/brief.ts', // the morning brief (A28)
       'services/wisp/checkIns.ts', // a fired check-in timer (#10991)
+      'services/wisp/specialistResult.ts', // a device-troubleshooting run's report / approved step (#11085)
     ]);
     const sites = callers('notifyUser');
     expect(sites.filter((f) => !allowed.has(f))).toEqual([]);
     expect(sites).toContain('services/aiAgents/assessmentFinalizer.ts');
     expect(sites).toContain('services/wisp/incidentCorrelator.ts');
+    expect(sites).toContain('services/wisp/specialistResult.ts');
   });
 
   it('deliverInApp is called only by notifyUser and the non-nudge notices', () => {

@@ -22,7 +22,7 @@ describe('wisp check-in constants', () => {
     expect(WISP_CHECK_IN_CONSUME_LIMIT).toBe(5);
   });
 
-  it('WISP_TIMELINE_POST_KINDS ends with check_in', () => {
-    expect([...WISP_TIMELINE_POST_KINDS]).toEqual(['brief', 'nudge', 'digest', 'check_in']);
+  it('WISP_TIMELINE_POST_KINDS keeps check_in (later kinds, e.g. specialist_result #11085, append after it)', () => {
+    expect(WISP_TIMELINE_POST_KINDS.slice(0, 4)).toEqual(['brief', 'nudge', 'digest', 'check_in']);
   });
 });
