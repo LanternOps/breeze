@@ -328,6 +328,23 @@ describe('DeviceVendorUpdatesSection', () => {
     expect(statusReads()).toBe(before + 1);
   });
 
+  it('a queued run goes back to the first page, where it will be', async () => {
+    fetchMock.mockImplementation(async (path: string) => {
+      if (path.includes('/oem-updates/status')) return ok(statusBody());
+      return path.includes('offset=5')
+        ? ok({ runs: [run('run-6')], total: 6 })
+        : ok({ runs: ['run-1', 'run-2', 'run-3', 'run-4', 'run-5'].map((id) => run(id)), total: 6 });
+    });
+    render(<DeviceVendorUpdatesSection deviceId={DEVICE_ID} />);
+    const root = await section();
+    await within(root).findByTestId('vendor-updates-run-run-1');
+    await userEvent.click(within(root).getByTestId('vendor-updates-history-next'));
+    await within(root).findByTestId('vendor-updates-run-run-6');
+
+    announceOemRunQueued(DEVICE_ID);
+    await within(root).findByTestId('vendor-updates-run-run-1');
+  });
+
   it('refresh reads the state again', async () => {
     answer(statusBody({ displayState: 'waiting_for_reboot' }), { runs: [], total: 0 });
     render(<DeviceVendorUpdatesSection deviceId={DEVICE_ID} />);
