@@ -1,6 +1,8 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { OEM_UPDATE_MIN_AGENT_VERSION } from '@breeze/shared';
+import { fetchWithAuth } from '../../stores/auth';
 
 const h = vi.hoisted(() => ({ granted: new Set<string>() }));
 vi.mock('../../lib/permissions', () => ({
@@ -100,6 +102,110 @@ describe('DeviceActions Remote Tools is permission-gated (live device inspection
     render(<DeviceActions device={onlineDevice} compact />);
     await userEvent.click(screen.getByTestId('device-actions-menu'));
     expect(screen.getByRole('menuitem', { name: /remote tools/i })).toBeInTheDocument();
+  });
+});
+
+// #11065 W04: "Run vendor updates" can flash a BIOS. Only for devices:execute, only
+// when the status route says a lane could reach this device, so with the feature
+// off it shows nowhere. The server's refusals stay the real check.
+describe('DeviceActions — Run vendor updates (#11065)', () => {
+  const dell: Device = { ...offlineDevice, status: 'online', agentVersion: OEM_UPDATE_MIN_AGENT_VERSION };
+  const statusBody = (lane: string | null) => ({
+    displayState: 'not_managed',
+    lane,
+    status: null,
+    gates: { bios: 'closed', firmware: 'closed', driver: 'closed', application: 'closed' },
+  });
+  const answerStatus = (lane: string | null) =>
+    vi.mocked(fetchWithAuth).mockResolvedValue({ ok: true, status: 200, json: async () => statusBody(lane) } as Response);
+  const item = () => screen.queryByTestId('device-action-run-vendor-updates');
+
+  beforeEach(() => {
+    vi.mocked(fetchWithAuth).mockReset();
+    answerStatus('dell');
+  });
+
+  const openMore = async () => {
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/devices/device-1/oem-updates/status'));
+    await userEvent.click(screen.getByTestId('device-actions-menu'));
+  };
+
+  it('hidden without devices.execute, and the status is not even asked for', async () => {
+    render(<DeviceActions device={dell} compact />);
+    await userEvent.click(screen.getByTestId('device-actions-menu'));
+    expect(item()).toBeNull();
+    expect(fetchWithAuth).not.toHaveBeenCalledWith('/devices/device-1/oem-updates/status');
+  });
+
+  it('hidden when status says not_managed and no lane', async () => {
+    h.granted.add('devices:execute');
+    answerStatus(null);
+    render(<DeviceActions device={dell} compact />);
+    await openMore();
+    expect(item()).toBeNull();
+  });
+
+  it('hidden when the status cannot be read', async () => {
+    h.granted.add('devices:execute');
+    vi.mocked(fetchWithAuth).mockResolvedValue({ ok: false, status: 500, json: async () => ({}) } as Response);
+    render(<DeviceActions device={dell} compact />);
+    await openMore();
+    expect(item()).toBeNull();
+  });
+
+  it('never asked for off Windows: v1 is Windows only', async () => {
+    h.granted.add('devices:execute');
+    render(<DeviceActions device={{ ...dell, os: 'macos' }} compact />);
+    await userEvent.click(screen.getByTestId('device-actions-menu'));
+    expect(item()).toBeNull();
+    expect(fetchWithAuth).not.toHaveBeenCalledWith('/devices/device-1/oem-updates/status');
+  });
+
+  it('opens the dialog from the compact menu', async () => {
+    h.granted.add('devices:execute');
+    render(<DeviceActions device={dell} compact />);
+    await openMore();
+    const action = await screen.findByTestId('device-action-run-vendor-updates');
+    expect(action.getAttribute('aria-disabled')).not.toBe('true');
+    await userEvent.click(action);
+    expect(await screen.findByTestId('run-vendor-updates-dialog')).toHaveTextContent('edge-01');
+  });
+
+  it('is offered in the full menu too', async () => {
+    h.granted.add('devices:execute');
+    render(<DeviceActions device={dell} />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());
+    await userEvent.click(screen.getByLabelText(/more actions/i));
+    expect(await screen.findByTestId('device-action-run-vendor-updates')).toBeInTheDocument();
+  });
+
+  it('disabled with upgrade hint below minimum agent', async () => {
+    h.granted.add('devices:execute');
+    render(<DeviceActions device={{ ...dell, agentVersion: '0.126.9' }} compact />);
+    await openMore();
+    const action = await screen.findByTestId('device-action-run-vendor-updates');
+    expect(action.getAttribute('aria-disabled')).toBe('true');
+    expect(action.getAttribute('title')).toContain(OEM_UPDATE_MIN_AGENT_VERSION);
+    await userEvent.click(action);
+    expect(screen.queryByTestId('run-vendor-updates-dialog')).toBeNull();
+  });
+
+  it('disabled on an unknown agent version: the check fails closed', async () => {
+    h.granted.add('devices:execute');
+    render(<DeviceActions device={{ ...dell, agentVersion: '' }} compact />);
+    await openMore();
+    const action = await screen.findByTestId('device-action-run-vendor-updates');
+    expect(action.getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('disabled while offline, with the reason: a run only starts on a device online now', async () => {
+    h.granted.add('devices:execute');
+    render(<DeviceActions device={{ ...dell, status: 'offline' }} compact />);
+    await openMore();
+    const action = await screen.findByTestId('device-action-run-vendor-updates');
+    expect(action.getAttribute('aria-disabled')).toBe('true');
+    await userEvent.click(action);
+    expect(screen.queryByTestId('run-vendor-updates-dialog')).toBeNull();
   });
 });
 

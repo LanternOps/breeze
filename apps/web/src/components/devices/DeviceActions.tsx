@@ -21,6 +21,7 @@ import {
   Zap,
   ChevronDown,
   ArrowRightLeft,
+  PackageCheck,
 } from "lucide-react";
 import type { Device, DeviceStatus } from "./DeviceList";
 import ConnectDesktopButton from "../remote/ConnectDesktopButton";
@@ -28,8 +29,16 @@ import { ConfirmDialog } from "../shared/ConfirmDialog";
 import RemoveDeviceDialog from "./RemoveDeviceDialog";
 import { useIsolationMenu } from "./networkIsolation/useIsolationMenu";
 import ForceRebootDialog from "./ForceRebootDialog";
+import RunVendorUpdatesDialog from "./RunVendorUpdatesDialog";
+import { readOemStatus } from "./vendorUpdatesApi";
 import { showToast } from "../shared/Toast";
-import { agentSupportsForceReboot, FORCE_REBOOT_MIN_AGENT_VERSION } from "@breeze/shared";
+import {
+  agentSupportsForceReboot,
+  agentSupportsOemUpdates,
+  FORCE_REBOOT_MIN_AGENT_VERSION,
+  OEM_UPDATE_MIN_AGENT_VERSION,
+  type OemLane,
+} from "@breeze/shared";
 import { DelegateToOperatorButton } from "../aiOperator/DelegateToOperatorButton";
 import { isInMaintenance } from "../../lib/maintenanceResource";
 import { useCanMoveDeviceOrg } from "@/lib/moveOrgCapability";
@@ -439,6 +448,13 @@ export default function DeviceActions({
   // interactive session, MFA and a step-up the dialog collects).
   const canForceReboot = can("devices", "execute");
   const [forceRebootOpen, setForceRebootOpen] = useState(false);
+  // #11065 W04: POST /devices/:id/oem-updates/run requires devices.execute (plus an
+  // interactive session and MFA). Offered only when the status route names a lane,
+  // so with the feature off this action shows nowhere. Windows only in v1.
+  const canRunVendorUpdates = can("devices", "execute");
+  const asksForVendorLane = canRunVendorUpdates && device.os === "windows";
+  const [vendorLane, setVendorLane] = useState<OemLane | null>(null);
+  const [vendorUpdatesOpen, setVendorUpdatesOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [powerMenuOpen, setPowerMenuOpen] = useState(false);
   const moreTriggerRef = useRef<HTMLButtonElement>(null);
@@ -462,6 +478,18 @@ export default function DeviceActions({
     setPowerMenuOpen(false);
   };
 
+  useEffect(() => {
+    setVendorLane(null);
+    if (!asksForVendorLane) return;
+    let current = true;
+    void readOemStatus(device.id).then((read) => {
+      if (current && read.kind === "ok") setVendorLane(read.view.lane);
+    });
+    return () => {
+      current = false;
+    };
+  }, [asksForVendorLane, device.id]);
+
   const isolationMenu = useIsolationMenu(device, can("devices", "execute"), menuOpen, closeMenus);
 
   const handleAction = async (action: string) => {
@@ -469,6 +497,10 @@ export default function DeviceActions({
     // hostname and the step-up itself.
     if (action === "force_reboot") {
       openForceReboot();
+      return;
+    }
+    if (action === "run_vendor_updates") {
+      openVendorUpdates();
       return;
     }
     // Return focus to the open menu's trigger before the item unmounts, so a
@@ -559,6 +591,45 @@ export default function DeviceActions({
           message: t("deviceActions.forceRebootQueued", { hostname: device.hostname }),
         })
       }
+    />
+  );
+
+  // Disabled with its reason. A run only starts on a device that is online now, and
+  // the server's 409s stay the real check (see the note at the top of this file:
+  // this is not a queued command).
+  const vendorUpdatesSupported = agentSupportsOemUpdates(device.agentVersion);
+  const vendorUpdatesReason = !online
+    ? offlineTitle
+    : !vendorUpdatesSupported
+      ? t("deviceActions.runVendorUpdatesAgentUpgradeRequired", { version: OEM_UPDATE_MIN_AGENT_VERSION })
+      : undefined;
+  const openVendorUpdates = () => {
+    if (menuOpen) moreTriggerRef.current?.focus();
+    closeMenus();
+    setVendorUpdatesOpen(true);
+  };
+  const runVendorUpdatesMenuItem = vendorLane && (
+    <button
+      type="button"
+      data-testid="device-action-run-vendor-updates"
+      onClick={openVendorUpdates}
+      aria-disabled={vendorUpdatesReason ? true : undefined}
+      title={vendorUpdatesReason ?? t("deviceActions.runVendorUpdatesHint")}
+      role="menuitem"
+      tabIndex={-1}
+      className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+    >
+      <PackageCheck className="h-4 w-4" />
+      {t("deviceActions.runVendorUpdates")}
+    </button>
+  );
+  const runVendorUpdatesDialog = vendorUpdatesOpen && vendorLane && (
+    <RunVendorUpdatesDialog
+      open
+      device={{ id: device.id, hostname: device.hostname }}
+      lane={vendorLane}
+      onClose={() => setVendorUpdatesOpen(false)}
+      onCompleted={() => undefined}
     />
   );
 
@@ -742,6 +813,7 @@ export default function DeviceActions({
                   {t("deviceActions.rebootToSafeMode")}{" "}
                 </button>
               )}
+              {runVendorUpdatesMenuItem}
               <button
                 type="button"
                 onClick={() => handleAction("deploy-software")}
@@ -805,6 +877,7 @@ export default function DeviceActions({
         </DropdownRoot>
 
         {forceRebootDialog}
+        {runVendorUpdatesDialog}
         {isolationMenu.dialog}
         {modalType === "decommission" ? (
           <RemoveDeviceDialog
@@ -1037,6 +1110,14 @@ export default function DeviceActions({
               icon: <Shield className="h-4 w-4" />,
             })}
             <hr className="my-1" />
+            {vendorLane &&
+              sheetItem({
+                action: "run_vendor_updates",
+                label: t("deviceActions.runVendorUpdates"),
+                icon: <PackageCheck className="h-4 w-4" />,
+                reason: vendorUpdatesReason,
+                testId: "device-action-run-vendor-updates",
+              })}
             {sheetItem({
               action: "deploy-software",
               label: t("deviceActions.deploySoftware"),
@@ -1304,6 +1385,7 @@ export default function DeviceActions({
                   ? t("deviceActions.exitMaintenance")
                   : t("deviceActions.enterMaintenance")}
               </button>
+              {runVendorUpdatesMenuItem}
               <button
                 type="button"
                 onClick={() => handleAction("deploy-software")}
@@ -1381,6 +1463,7 @@ export default function DeviceActions({
       )}
 
       {forceRebootDialog}
+      {runVendorUpdatesDialog}
       {isolationMenu.dialog}
       {modalType === "decommission" ? (
         <RemoveDeviceDialog
