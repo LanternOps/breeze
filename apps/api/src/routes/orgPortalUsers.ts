@@ -1,6 +1,6 @@
 import type { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
-import { and, eq, isNull, desc, ne, sql } from 'drizzle-orm';
+import { and, eq, isNull, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { organizations, partners, portalUsers, tickets, ticketComments, assetCheckouts } from '../db/schema';
 import { linkLoginToContact, type LoginContactOutcome } from '../services/contacts/loginLink';
@@ -13,6 +13,7 @@ import { getRedis } from '../services/redis';
 import { purgeClientAiSessionsForUsers } from '../services/clientAiSessionStore';
 import { storePortalInviteToken, buildPortalUrl, purgePortalSessionsForUsers } from './portal/helpers';
 import { invitePortalUserSchema, bulkInvitePortalUsersSchema, updatePortalUserSchema } from '@breeze/shared';
+import { listPortalUsersForOrg } from '../services/portalUserDirectory';
 
 // MSP-facing customer-portal user management (portal_users): list, invite,
 // patch (disable/reactivate), resend-invite, bulk-invite, and delete.
@@ -21,39 +22,10 @@ import { invitePortalUserSchema, bulkInvitePortalUsersSchema, updatePortalUserSc
 // module-local resolveAccessibleOrg (duplicated rather than shared, per
 // the pattern established there).
 
-type PortalUserListRow = {
-  id: string;
-  email: string;
-  name: string | null;
-  passwordHash: string | null;
-  status: string;
-  receiveNotifications: boolean;
-  lastLoginAt: Date | null;
-  invitedAt: Date | null;
-};
-
-// A portal user is 'active' only once they've actually set a password
-// (accepted their invite) AND aren't administratively disabled. Rows
-// created by an invite sit in DB status 'invited' with passwordHash
-// null — those must read back as 'pending_setup', not 'active'.
-export function effectivePortalStatus(row: { status: string; passwordHash: string | null }): 'active' | 'disabled' | 'pending_setup' {
-  if (row.status === 'disabled') return 'disabled';
-  if (!row.passwordHash) return 'pending_setup';
-  return 'active';
-}
-
-function toListItem(row: PortalUserListRow) {
-  return {
-    id: row.id,
-    email: row.email,
-    name: row.name,
-    status: row.status,
-    effectiveStatus: effectivePortalStatus(row),
-    receiveNotifications: row.receiveNotifications,
-    lastLoginAt: row.lastLoginAt,
-    invitedAt: row.invitedAt
-  };
-}
+// The list read (and `effectivePortalStatus`) moved to
+// services/portalUserDirectory.ts, shared with the list_portal_users AI tool
+// (full-control W18, #6789). Re-exported for existing importers.
+export { effectivePortalStatus } from '../services/portalUserDirectory';
 
 async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> {
   const auth = c.get('auth') as AuthContext;
@@ -178,17 +150,7 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
   orgRoutes.get('/organizations/:id/portal-users', requireScope('partner', 'system'), requireOrgRead, async (c) => {
     const org = await resolveAccessibleOrg(c);
     if (org instanceof Response) return org;
-    const rows = await db.select({
-      id: portalUsers.id,
-      email: portalUsers.email,
-      name: portalUsers.name,
-      passwordHash: portalUsers.passwordHash,
-      status: portalUsers.status,
-      receiveNotifications: portalUsers.receiveNotifications,
-      lastLoginAt: portalUsers.lastLoginAt,
-      invitedAt: portalUsers.invitedAt
-    }).from(portalUsers).where(eq(portalUsers.orgId, org.id)).orderBy(desc(portalUsers.createdAt));
-    return c.json({ data: rows.map(toListItem) });
+    return c.json({ data: await listPortalUsersForOrg(org.id) });
   });
 
   orgRoutes.post('/organizations/:id/portal-users/invite', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), zValidator('json', invitePortalUserSchema), async (c) => {
