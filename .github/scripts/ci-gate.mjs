@@ -86,8 +86,11 @@ export function baseFlags(io, baseSha, headSha) {
   // including git's quoting of unusual paths.
   try { changed = nonEmptyLines(io.git(['diff', '--name-only', '--no-renames', `${baseSha}...${headSha}`])); }
   catch (error) { throw new GateError('base_unreadable', String(error.message ?? error)); }
-  const policyPaths = changed.filter(path => isPolicyPath(path.replace(/^"/, '')));
-  return { flags: classifyAtBase(io, baseSha, changed), changed, policyPaths };
+  // Policy paths from an unquoted (-z) listing of the same diff, so an unusual name still matches.
+  let unquoted;
+  try { unquoted = io.git(['diff', '-z', '--name-only', '--no-renames', `${baseSha}...${headSha}`]).split('\0').filter(Boolean); }
+  catch (error) { throw new GateError('base_unreadable', String(error.message ?? error)); }
+  return { flags: classifyAtBase(io, baseSha, changed), changed, policyPaths: unquoted.filter(isPolicyPath) };
 }
 
 function parseEnvValue(value, needs) {
@@ -424,7 +427,7 @@ export function runControls(io, ctx, apiJobs) {
     const out = judge(io, ctx, jobs);
     if (out.verdict !== 'fail') failures.push({ control, job, verdict: out.verdict });
   }
-  return { run: controls.length, failures };
+  return { run: controls.map(c => c.control), failures };
 }
 
 // ── The needs oracle ─────────────────────────────────────────────────────
@@ -496,7 +499,8 @@ function queueSample(io, repository, run) {
 
 export function replay(io, { repository, limit = 50, minEvaluated = 15, widenTo = 200, prepare: prep = prepare }) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository ?? '')) throw new GateError('invalid_repository', String(repository));
-  const out = { evaluated: 0, red: 0, unfetchable: 0, excluded: 0, apiErrors: 0, oracleCompared: 0, controlsRun: 0,
+  const out = { evaluated: 0, red: 0, unfetchable: 0, excluded: 0, apiErrors: 0, oracleCompared: 0, oracleUnreadable: 0,
+    controlsRun: 0, controlKinds: {},
     considered: 0, disagreements: [], controlFailures: [], problems: [] };
   const evaluate = run => {
     let s;
@@ -516,18 +520,24 @@ export function replay(io, { repository, limit = 50, minEvaluated = 15, widenTo 
     }
     out.evaluated++;
     if (s.recorded === 'failure') out.red++;
-    const agrees = (result.verdict === 'pass') === (s.recorded === 'success');
+    // A red sample agrees only when the verdict blames jobs; a gate error that
+    // happens to be red would otherwise satisfy the "found a red" bar.
+    const agrees = s.recorded === 'success' ? result.verdict === 'pass'
+      : result.verdict === 'fail' && result.reason.startsWith('required_jobs_failed');
     if (!agrees) out.disagreements.push({ kind: 'verdict', run: run.id, pr: s.pr, recorded: s.recorded, verdict: result.verdict, reason: result.reason });
     let controls = '';
     if (agrees && s.recorded === 'success' && ctx) {
       const c = runControls(io, ctx, s.jobs);
-      out.controlsRun += c.run;
+      out.controlsRun += c.run.length;
+      for (const control of c.run) out.controlKinds[control] = (out.controlKinds[control] ?? 0) + 1;
       out.controlFailures.push(...c.failures.map(failure => ({ run: run.id, ...failure })));
-      controls = ` controls=${c.run} control_failures=${c.failures.length}`;
+      controls = ` controls=${c.run.length} control_failures=${c.failures.length}`;
     }
     if (ctx && Object.keys(result.results ?? {}).length) {
       let oracle = null;
       try { oracle = readOracle(io, repository, run); } catch (error) {
+        // The artifact was listed, so this is not "no oracle": count it.
+        out.oracleUnreadable++;
         io.stderr(`ci-gate-replay: run ${run.id}: oracle unreadable: ${String(error.message ?? error).split('\n')[0]}`);
       }
       if (oracle) {
@@ -554,6 +564,10 @@ export function replay(io, { repository, limit = 50, minEvaluated = 15, widenTo 
   if (out.red === 0) out.problems.push(`no red sample in ${out.considered} runs`);
   if (out.disagreements.length) out.problems.push(`${out.disagreements.length} disagreement(s) with CI Success`);
   if (out.controlFailures.length) out.problems.push(`${out.controlFailures.length} control(s) stayed green`);
+  if (!out.controlKinds.three_branch) out.problems.push('three_branch control never ran');
+  if (out.oracleUnreadable) out.problems.push(`${out.oracleUnreadable} oracle artifact(s) unreadable`);
+  // Unfetchable heads are expected (ejected groups); API errors are not, past a few.
+  if (out.apiErrors * 10 > out.considered) out.problems.push(`API errors on ${out.apiErrors} of ${out.considered} runs`);
   return { ...out, ok: out.problems.length === 0 };
 }
 
@@ -605,7 +619,8 @@ export function runCLI(io, args, env) {
     const out = replay(io, { repository });
     io.stdout(`ci-gate-replay: evaluated=${out.evaluated} red=${out.red} disagreements=${out.disagreements.length} ` +
       `controlFailures=${out.controlFailures.length} oracleCompared=${out.oracleCompared} unfetchable=${out.unfetchable} ` +
-      `excluded=${out.excluded} apiErrors=${out.apiErrors} considered=${out.considered} controlsRun=${out.controlsRun}`);
+      `excluded=${out.excluded} apiErrors=${out.apiErrors} oracleUnreadable=${out.oracleUnreadable} considered=${out.considered} ` +
+      `controlsRun=${out.controlsRun} controlKinds=${JSON.stringify(out.controlKinds)}`);
     for (const d of out.disagreements) io.stderr(`::error title=ci-gate replay disagreement::${JSON.stringify(d)}`);
     for (const c of out.controlFailures) io.stderr(`::error title=ci-gate replay control stayed green::${JSON.stringify(c)}`);
     for (const p of out.problems) io.stderr(`ci-gate-replay: FAIL ${p}`);

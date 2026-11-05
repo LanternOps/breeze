@@ -9,6 +9,7 @@ import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import * as gate from './ci-gate.mjs';
+import { evaluateIf } from './queue-selection.mjs';
 
 const REPO_ROOT = normalize(join(dirname(fileURLToPath(import.meta.url)), '../..'));
 const realCi = readFileSync(join(REPO_ROOT, '.github/workflows/ci.yml'), 'utf8');
@@ -118,7 +119,7 @@ test('baseFlags: a quoted (non-ASCII) policy path is still listed', () => {
   const { io, base, head } = repo({ [`${SCRIPTS}/classify-pr-paths.sh`]: fakeClassifier({}) }, { [name]: 'x' });
   const { changed, policyPaths } = gate.baseFlags(io, base, head);
   assert.match(changed[0], /^"/, 'git quotes this path; the classifier sees it as the changes job does');
-  assert.equal(policyPaths.length, 1);
+  assert.deepEqual(policyPaths, [name]);
 });
 
 test('baseFlags: an unreadable revision is base_unreadable, not a flag set', () => {
@@ -226,20 +227,23 @@ const rollup = (job, jobs, event = 'merge_group', ci = realCi) => gate.rollup(jo
 test('jobInstances: all five matrices in ci.yml parse, by name and count derived from the file', () => {
   const matrixJobs = Object.entries(gate.workflowJobsOf(realCi)).filter(([, job]) => /^      matrix:$/m.test(job.body)).map(([id]) => id);
   assert.deepEqual(matrixJobs.sort(), ['build-agent', 'build-smoke-images', 'integration-test', 'test-api', 'test-web']);
-  const counts = { 'test-api': 8, 'test-web': 4, 'integration-test': 16 };
+  // Counts come from the file: an inline list's length, or one per include entry.
+  const matrixBlock = id => gate.workflowJobsOf(realCi)[id].body.split(/^      matrix:$/m)[1];
+  const count = id => {
+    const inline = matrixBlock(id).match(/^ {8}\w+: \[([^\]]*)\]$/m);
+    return inline ? inline[1].split(',').length : (matrixBlock(id).match(/^ {10}- /gm) ?? []).length;
+  };
   for (const id of matrixJobs) {
     const { template, expected } = gate.jobInstances(realCi, id);
     assert.match(template, /\$\{\{ matrix\.\w+ \}\}/, id);
+    assert.ok(count(id) > 1, `${id}: matrix count parsed from the file`);
+    assert.equal(expected.length, count(id), id);
     assert.equal(new Set(expected).size, expected.length, `${id}: expanded names are unique`);
     for (const name of expected) assert.doesNotMatch(name, /\$\{\{/, `${id}: ${name}`);
-    if (counts[id]) assert.equal(expected.length, counts[id], id);
   }
-  // The include matrices: one expansion per include entry, counted from the file.
-  const includes = id => (gate.workflowJobsOf(realCi)[id].body.split(/^      matrix:$/m)[1].match(/^ {10}- /gm) ?? []).length;
-  assert.equal(gate.jobInstances(realCi, 'build-agent').expected.length, includes('build-agent'));
-  assert.equal(gate.jobInstances(realCi, 'build-smoke-images').expected.length, includes('build-smoke-images'));
-  assert.ok(gate.jobInstances(realCi, 'build-smoke-images').expected.includes('Build Smoke Image (web)'));
-  assert.ok(gate.jobInstances(realCi, 'test-api').expected.includes('Test API (shard 8/8)'));
+  // Spot-check the expansion itself against a shard name the API reports.
+  const shards = gate.jobInstances(realCi, 'test-api').expected;
+  assert.equal(shards.at(-1), `Test API (shard ${shards.length}/${shards.length})`);
 });
 
 test('jobInstances: a plain job is its display name, or its id without one; an absent id is null', () => {
@@ -538,7 +542,7 @@ test('verdict: a gate error is a fail with its reason, never a throw', () => {
 const GREEN = fixtures['path-gated-rust-false'];
 const RED = fixtures['failed-shard'];
 const sha = n => n.toString(16).padStart(40, 'a');
-function fakeReplay(samples, { unfetchable = new Set(), oracle = {} } = {}) {
+function fakeReplay(samples, { unfetchable = new Set(), oracle = {}, apiDown = new Set(), seen = [] } = {}) {
   const runs = samples.map((s, i) => ({ id: 1000 + i, event: 'merge_group', path: '.github/workflows/ci.yml', status: 'completed',
     conclusion: s.cancelled ? 'cancelled' : s.fixture.ci_success, run_attempt: 1, head_sha: sha(2 * i + 1),
     head_branch: `gh-readonly-queue/main/pr-${500 + i}-${sha(2 * i + 2)}` }));
@@ -553,8 +557,13 @@ function fakeReplay(samples, { unfetchable = new Set(), oracle = {} } = {}) {
         return JSON.stringify({ total_count: runs.length, workflow_runs: runs.slice((page - 1) * 100, page * 100) });
       }
       if ((match = endpoint.match(/runs\/(\d+)\/jobs/))) {
-        const s = samples[Number(match[1]) - 1000];
-        return JSON.stringify([{ total_count: 1, jobs: [...s.jobs, { name: 'CI Success', conclusion: s.fixture.ci_success }] }]);
+        const index = Number(match[1]) - 1000;
+        if (apiDown.has(index)) throw Error('gh: Server Error (HTTP 502)');
+        const s = samples[index];
+        // Two pages, as --paginate --slurp returns them for more than per_page jobs.
+        const all = [...s.jobs, { name: 'CI Success', conclusion: s.fixture.ci_success }];
+        const half = Math.ceil(all.length / 2);
+        return JSON.stringify([{ total_count: all.length, jobs: all.slice(0, half) }, { total_count: all.length, jobs: all.slice(half) }]);
       }
       if ((match = endpoint.match(/runs\/(\d+)\/artifacts/))) {
         const found = oracle[Number(match[1]) - 1000];
@@ -562,7 +571,8 @@ function fakeReplay(samples, { unfetchable = new Set(), oracle = {} } = {}) {
       }
       if (args[0] === 'run' && args[1] === 'download') {
         const dir = args[args.indexOf('--dir') + 1];
-        writeFileSync(join(dir, 'ci-needs-oracle.json'), JSON.stringify(oracle[Number(args[2]) - 1000]));
+        const value = oracle[Number(args[2]) - 1000];
+        writeFileSync(join(dir, 'ci-needs-oracle.json'), typeof value === 'string' ? value : JSON.stringify(value));
         return '';
       }
       throw Error(`unexpected gh ${args.join(' ')}`);
@@ -575,8 +585,11 @@ function fakeReplay(samples, { unfetchable = new Set(), oracle = {} } = {}) {
     runIsolated: judgeIo.runIsolated, stdout: () => {}, stderr: () => {},
   };
   // prepare is replaced; everything after it (rollup, aggregator, controls) is real.
-  const prepare = (_, { headSha }) => {
-    const s = samples[runs.findIndex(run => run.head_sha === headSha)];
+  const prepare = (_, { baseSha, headSha, event }) => {
+    const index = runs.findIndex(run => run.head_sha === headSha);
+    seen.push({ index, baseSha, headSha, event });
+    const s = samples[index];
+    if (s.throws) throw new gate.GateError(s.throws);
     return { ...contextOf(s.fixture), ...s.over };
   };
   return { io, calls, runs, run: opts => gate.replay(io, { repository: 'o/r', limit: 50, minEvaluated: 15, widenTo: 200, prepare, ...opts }) };
@@ -639,6 +652,90 @@ test('replay: a control that stays green fails the replay', () => {
   assert.deepEqual(out.controlFailures.map(c => c.control).sort(), ['missing', 'three_branch', 'unconditional_failure']);
 });
 
+test('replay: base comes from the queue branch, head from head_sha, jobs from every page', () => {
+  const seen = [];
+  const { run, runs } = fakeReplay([...Array.from({ length: 15 }, () => sample(GREEN)), sample(RED)], { seen });
+  const out = run();
+  assert.equal(out.ok, true, JSON.stringify(out.problems));
+  assert.equal(seen.length, 16);
+  for (const { index, baseSha, headSha, event } of seen) {
+    assert.equal(baseSha, runs[index].head_branch.split('-').at(-1));
+    assert.equal(headSha, runs[index].head_sha);
+    assert.equal(event, 'merge_group');
+  }
+  // Had the second page been dropped, CI Success (last) would be missing and the run excluded.
+  assert.equal(out.excluded, 0);
+  const odd = fakeReplay([sample(GREEN)]);
+  odd.runs[0].head_branch = 'gh-readonly-queue/main/not-a-queue-ref';
+  assert.equal(odd.run({ minEvaluated: 0 }).excluded, 1);
+});
+
+test('replay: a red sample agrees only when the verdict blames a job, not when the gate errored', () => {
+  const errored = sample(RED, { throws: 'head_unparseable' });
+  const out = fakeReplay([...Array.from({ length: 15 }, () => sample(GREEN)), errored]).run();
+  assert.equal(out.ok, false);
+  assert.deepEqual(out.disagreements.map(d => [d.recorded, d.reason]), [['failure', 'head_unparseable']]);
+});
+
+test('replay: the three-branch control must run at least once', () => {
+  // Same bash semantics, but the control parser no longer recognises the rule.
+  const aggregator = contextOf(GREEN).aggregator;
+  const hidden = { ...aggregator, script: aggregator.script.replaceAll('== "false" ]] && [[', '== "false"  ]] && [[') };
+  const out = fakeReplay([...Array.from({ length: 15 }, () => sample(GREEN, { over: { aggregator: hidden } })), sample(RED)]).run();
+  assert.equal(out.disagreements.length, 0);
+  assert.equal(out.ok, false);
+  assert.match(out.problems.join(), /three_branch control never ran/);
+});
+
+test('replay: an oracle that exists but cannot be read is a problem, not a silent skip', () => {
+  const samples = [...Array.from({ length: 15 }, () => sample(GREEN)), sample(RED), sample(GREEN)];
+  const out = fakeReplay(samples, { oracle: { 16: '{"truncated":' } }).run();
+  assert.equal(out.oracleUnreadable, 1);
+  assert.equal(out.ok, false);
+});
+
+test('replay: API errors on more than a tenth of the runs fail the replay', () => {
+  const samples = [...Array.from({ length: 19 }, () => sample(GREEN)), sample(RED)];
+  const few = fakeReplay(samples, { apiDown: new Set([3]) }).run();
+  assert.equal(few.apiErrors, 1);
+  assert.equal(few.ok, true, JSON.stringify(few.problems));
+  const many = fakeReplay(samples, { apiDown: new Set([3, 4, 5]) }).run();
+  assert.equal(many.ok, false);
+  assert.match(many.problems.join(), /API errors on 3 of 20/);
+});
+
+test('verdict: end to end, a candidate that drops a job from its own ci-success and skips it fails', () => {
+  const files = { '.github/workflows/ci.yml': realCi, 'pnpm-lock.yaml': lockfile('4.13.5', '19.1.0'),
+    '.github/scripts/mobile-lockfile-closure.mjs': closureScript };
+  for (const name of ['classify-pr-paths.sh', 'qemu-gate-paths.txt', 'integration-floor-paths.txt', 'path-reader-map.txt']) {
+    files[`.github/scripts/${name}`] = readFileSync(join(REPO_ROOT, '.github/scripts', name), 'utf8');
+  }
+  const doctored = realCi.replace(/^(    needs: \[.*), test-shared(,.*\])$/m, '$1$2').replace(/^ {10}TEST_SHARED_RESULT: .*\n/m, '')
+    .replace(/^ {13}\[\[ "\$\{TEST_SHARED_RESULT\}" != "success" \]\] \|\| \\\n/m, '');
+  assert.equal(gate.extractAggregator(doctored).needs.includes('test-shared'), false);
+  const r = repo(files, { '.github/workflows/ci.yml': doctored });
+  // Each job runs as its classifier condition says under the base flags, except
+  // the one the candidate dropped. Conditions the evaluator cannot read run.
+  const { needs } = gate.extractAggregator(realCi);
+  const { flags } = gate.baseFlags(r.io, r.base, r.head);
+  const runs = id => {
+    const condition = gate.workflowJobsOf(realCi)[id].condition;
+    try { return !condition || evaluateIf(condition, flags); } catch { return true; }
+  };
+  const jobs = needs.flatMap(id => {
+    const { template, expected } = gate.jobInstances(realCi, id);
+    if (id === 'test-shared') return [{ name: template, conclusion: 'skipped' }];
+    return runs(id) ? expected.map(name => ({ name, conclusion: 'success' })) : [{ name: template, conclusion: 'skipped' }];
+  });
+  const base = gate.verdict(r.io, { baseSha: r.base, headSha: r.head, apiJobs: jobs, event: 'merge_group' });
+  assert.equal(base.flags.api, 'true');
+  assert.deepEqual(base.policyPaths, ['.github/workflows/ci.yml']);
+  assert.deepEqual([base.verdict, base.reason], ['fail', 'required_jobs_failed:test-shared']);
+  // Control: the same jobs with test-shared run pass.
+  const ran = jobs.map(job => job.name === 'Test Shared' ? { ...job, conclusion: 'success' } : job);
+  assert.equal(gate.verdict(r.io, { baseSha: r.base, headSha: r.head, apiJobs: ran, event: 'merge_group' }).verdict, 'pass');
+});
+
 test('replay: the three-branch control is parsed from the base script, not hardcoded', () => {
   const f = GREEN;
   const targets = gate.controlTargets(contextOf(f).aggregator, f.flags);
@@ -664,6 +761,8 @@ test('ci-success: the first step writes the oracle from an env var and cannot fa
   const [oracle, upload, check] = stepsOf(ciJob('ci-success'));
   assert.match(oracle, /^name: Record needs oracle \(W02, advisory\)\n/);
   assert.match(oracle, /^        continue-on-error: true$/m);
+  // continue-on-error does not bound how long a step can hold up the required check.
+  for (const step of [oracle, upload]) assert.match(step, /^        timeout-minutes: [1-5]$/m);
   assert.match(oracle, /^          NEEDS_JSON: \$\{\{ toJSON\(needs\) \}\}$/m);
   assert.match(oracle, /^        run: printf '%s\\n' "\$\{NEEDS_JSON\}" > ci-needs-oracle\.json$/m);
   assert.doesNotMatch(oracle, /\$\{\{[^}]*\}\}[^\n]*>|run:[^\n]*\$\{\{/, 'needs reaches the shell only through env');

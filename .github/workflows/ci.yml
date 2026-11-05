@@ -5029,9 +5029,10 @@ jobs:
     steps:
       # W02 (#10746): what this job saw as needs.<job>.result, for the gate's
       # replay to compare with. Written by the candidate, so it is advisory and
-      # never authority. Neither step can fail CI Success.
+      # never authority. Neither step can fail CI Success, and each is capped.
       - name: Record needs oracle (W02, advisory)
         continue-on-error: true
+        timeout-minutes: 2
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: printf '%s\n' "${NEEDS_JSON}" > ci-needs-oracle.json
@@ -5039,6 +5040,8 @@ jobs:
       - name: Upload needs oracle (W02, advisory)
         if: ${{ !cancelled() }}
         continue-on-error: true
+        # An artifact-service outage must not hold up the required check.
+        timeout-minutes: 2
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ci-needs-oracle-attempt-${{ github.run_attempt }}
