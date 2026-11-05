@@ -68,6 +68,8 @@ export default function MonitorLifecycleFields({ orgId, ready, showPartnerWideHi
   const autoResolve = watch('autoResolve');
   const rearmMode = watch('rearmMode');
   const cooldown = watch('cooldownMinutes');
+  const clearsWhenEnabled = watch('clearsWhenEnabled');
+  const rawRecovery = watch('rawRecoveryCondition');
 
   const effective = defaults?.effective ?? null;
   const sources = defaults?.sources ?? null;
@@ -89,9 +91,15 @@ export default function MonitorLifecycleFields({ orgId, ready, showPartnerWideHi
   const showWindowWarning = effectiveCooldown !== null && Number.isFinite(windowMinutes) && windowMinutes < effectiveCooldown;
 
   // An invalid recovery condition keeps the section open even with auto-resolve
-  // off, or the schema would block Save on a field nobody can see.
+  // off, or the schema would block Save on a field nobody can see. If the inherited
+  // value can't be read, a stored condition stays visible rather than vanishing.
   const effectiveAutoResolve = autoResolve ?? effective?.autoResolve ?? null;
-  const showClearsWhen = kind === 'event_log' && (effectiveAutoResolve === true || !!errors.clearsWhen);
+  const hasStoredRecovery = clearsWhenEnabled || (rawRecovery !== null && rawRecovery !== undefined);
+  const showClearsWhen = kind === 'event_log' && (
+    effectiveAutoResolve === true
+    || !!errors.clearsWhen
+    || (effectiveAutoResolve === null && unavailable && hasStoredRecovery)
+  );
 
   return (
     <div className="space-y-3">

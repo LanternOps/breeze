@@ -233,7 +233,8 @@
       "customTitle": "Benutzerdefinierte Wiederherstellungsbedingung (API)",
       "customHint": "Diese Bedingung wurde über die API festgelegt und kann hier nicht bearbeitet werden. Beim Speichern bleibt sie unverändert.",
       "replaceCustom": "Ersetzen",
-      "invalid": "Einer der Werte der Wiederherstellungsbedingung ist ungültig."
+      "invalid": "Einer der Werte der Wiederherstellungsbedingung ist ungültig.",
+      "customUnusable": "Diese Bedingung kann nicht ausgewertet werden, daher werden die Alarme dieses Monitors nicht automatisch aufgehoben. Ersetzen Sie sie, um das zu beheben."
     }
   },
   "kinds": {

@@ -233,7 +233,8 @@
       "customTitle": "Custom recovery condition (API)",
       "customHint": "This condition was set through the API and can't be edited here. Saving keeps it as it is.",
       "replaceCustom": "Replace",
-      "invalid": "One of the recovery condition's values isn't valid."
+      "invalid": "One of the recovery condition's values isn't valid.",
+      "customUnusable": "This condition can't be evaluated, so this monitor's alerts won't auto-resolve. Replace it to fix this."
     }
   },
   "kinds": {

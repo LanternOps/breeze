@@ -19,6 +19,7 @@ import {
   rearmModeSchema,
   rearmDelayMinutesSchema,
   isKindShapedRecoveryCondition,
+  isLegacyRecoveryCondition,
   isValidRearmPair,
   REARM_PAIR_MESSAGE,
   MONITOR_KINDS,
@@ -124,8 +125,8 @@ export interface MonitorFormValues {
 // reject every submission that sets a recurrence threshold. The server still
 // runs the full shared schema on the built payload and is the source of truth
 // for the business rules (delivery channels required, ai_triage needs an
-// agent, recurrence threshold/window set together); this schema only catches
-// shape errors early.
+// agent, recurrence threshold/window set together); this schema catches shape
+// errors early, plus the per-kind rules in the superRefine below.
 // Marks the specific "restart service needs a name" zod issue so the error
 // rendering (below) can show it instead of the generic invalidResponses copy.
 const RESTART_SERVICE_NAME_ISSUE = 'restartServiceRequiresName';
@@ -639,8 +640,15 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         aiAgentId: values.aiAgentId || null,
       };
       // Omitted on PATCH = keep the stored raw condition. Replace turns authoring on, which wins.
-      if (values.clearsWhenEnabled) payload.autoResolveConditions = values.clearsWhen;
-      else if (values.rawRecoveryCondition === null) payload.autoResolveConditions = null;
+      // On a kind change, the API re-checks a stored value, and one the engine could never
+      // evaluate has no value worth keeping: the section is hidden on most kinds, so a refusal
+      // would leave the user with no way to fix it.
+      const kindChanged = values.kind !== methods.formState.defaultValues?.kind;
+      if (values.clearsWhenEnabled) {
+        payload.autoResolveConditions = values.clearsWhen;
+      } else if (values.rawRecoveryCondition === null || (kindChanged && !isLegacyRecoveryCondition(values.rawRecoveryCondition))) {
+        payload.autoResolveConditions = null;
+      }
       // Omit the key entirely unless the select was shown: a caller who cannot manage
       // partner-wide config must never send (or null out) the board override.
       if (showPsaBoardSelect) {

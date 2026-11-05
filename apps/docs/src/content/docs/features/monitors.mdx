@@ -123,7 +123,9 @@ coverage. The device Monitoring tab shows the effective result.
 ## Alert lifecycle
 
 An **episode** is one alert from the moment it opens until it closes. Three
-settings decide how an episode ends and when the next one can start.
+settings decide how an episode ends and when the next one can start. The re-arm
+setting, the **Lifecycle defaults** card and **Clears when** are available in
+releases after v0.126.0.
 
 | Setting | What it does | Built-in default |
 |---|---|---|
@@ -164,8 +166,9 @@ organizations can get different values from one monitor.
 
 An alert keeps the values it opened with. Changing a setting affects the next
 episode, not one already open. The alert's page shows what it is using, for
-example _Re-arms on new evidence · cooldown 5 min (partner default)_. Alerts
-opened before this line existed do not show it.
+example _Re-arms on new evidence · cooldown 5 min (partner default)_. The brackets
+name where the cooldown came from. Alerts opened before this line existed do not
+show it.
 
 ### Clears when
 
@@ -194,13 +197,16 @@ Other monitor kinds always clear on the inverse of their trigger.
 
 A condition saved through the API in the older raw format appears read-only as
 **Custom recovery condition (API)**. Saving the monitor keeps it unchanged.
-**Replace** swaps it for an editable condition when you save.
+**Replace** swaps it for an editable condition when you save. If the editor says
+the condition can't be evaluated, that monitor's alerts never auto-resolve until
+you replace it. Changing such a monitor's kind removes the condition.
 
 ### Recipe: a UPS on battery
 
-Alert when a server's UPS goes on battery, and clear when power returns. APC
-PowerChute logs both events to the Application log, and its provider is collected
-at Information level by default.
+Alert when a Windows server's UPS goes on battery, and clear when power returns.
+APC PowerChute logs both events to the Application log, and its provider is a
+built-in one, so it needs no policy entry. Check that the device's Event Logs
+policy collects the Application category at Information level.
 
 | | Category | Level | Source matches | Message matches |
 |---|---|---|---|---|
@@ -222,8 +228,9 @@ These changes apply to every event-log alert, with no setting to enable them:
   when events age out of the window. `recurrenceThreshold` may therefore count
   more, shorter episodes.
 
-To get repeat alerts back while a problem persists, set re-arm to **After N
-minutes** on a monitor or in the lifecycle defaults.
+In releases after v0.126.0, you can get repeat alerts back while a problem
+persists: set re-arm to **After N minutes** on a monitor or in the lifecycle
+defaults.
 
 ## Legacy rules
 

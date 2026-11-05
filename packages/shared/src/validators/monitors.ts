@@ -346,7 +346,7 @@ export function isLegacyRecoveryCondition(value: unknown, depth = 0): boolean {
   return typeof record.type === 'string' && record.type.length > 0;
 }
 
-/** A value the editor and the compiler can treat as this kind's recovery condition. */
+/** True when `value` parses as `kind`'s schema and `kind` supports a recovery condition. */
 export function isKindShapedRecoveryCondition(kind: MonitorKind, value: unknown): boolean {
   return isRecoveryConditionKind(kind) && monitorConditionSchemas[kind].safeParse(value).success;
 }

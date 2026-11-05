@@ -233,7 +233,8 @@
       "customTitle": "Condición de recuperación personalizada (API)",
       "customHint": "Esta condición se configuró mediante la API y no se puede editar aquí. Al guardar, se conserva tal como está.",
       "replaceCustom": "Reemplazar",
-      "invalid": "Uno de los valores de la condición de recuperación no es válido."
+      "invalid": "Uno de los valores de la condición de recuperación no es válido.",
+      "customUnusable": "Esta condición no se puede evaluar, así que las alertas de este monitor no se resolverán automáticamente. Reemplázala para solucionarlo."
     }
   },
   "kinds": {

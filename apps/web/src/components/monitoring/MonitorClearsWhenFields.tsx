@@ -1,5 +1,6 @@
 import { useFormContext } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
+import { isLegacyRecoveryCondition } from '@breeze/shared';
 import type { MonitorFormValues } from './MonitorEditor';
 import MonitorConditionFields from './MonitorConditionFields';
 
@@ -71,6 +72,11 @@ export default function MonitorClearsWhenFields() {
         <div data-testid="clears-when-raw" className="space-y-2">
           <p className="text-xs font-medium">{t('editor.clearsWhen.customTitle')}</p>
           <p className="text-xs text-muted-foreground">{t('editor.clearsWhen.customHint')}</p>
+          {!isLegacyRecoveryCondition(raw) && (
+            <p data-testid="clears-when-raw-unusable" className="text-xs text-amber-700 dark:text-amber-400">
+              {t('editor.clearsWhen.customUnusable')}
+            </p>
+          )}
           <pre className="max-h-48 overflow-auto rounded-md bg-muted p-2 text-xs">{JSON.stringify(raw, null, 2)}</pre>
           <button type="button" data-testid="clears-when-replace" className={BUTTON_CLASS} onClick={startAuthoring}>
             {t('editor.clearsWhen.replaceCustom')}

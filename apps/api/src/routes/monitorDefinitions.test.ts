@@ -352,6 +352,21 @@ describe('#10935: autoResolveConditions without logic never reaches the service'
     expect(res.status).toBe(201);
     expect(createMonitorDefinitionMock).toHaveBeenCalledTimes(1);
   });
+
+  it('returns the warning for a recovery event that is not collected', async () => {
+    createMonitorDefinitionMock.mockResolvedValue(monitorRow({
+      ...eventLog,
+      autoResolveConditions: { category: 'application', level: 'info', sourcePattern: 'Nothing-Collects-This', countThreshold: 1, windowMinutes: 60 },
+    }));
+    const res = await jsonRequest(buildApp(), 'POST', '', validCreateBody({
+      ...eventLog,
+      autoResolveConditions: { category: 'application', level: 'info', sourcePattern: 'Nothing-Collects-This' },
+    }));
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { warnings?: string[] };
+    expect(body.warnings).toEqual(expect.arrayContaining([expect.stringContaining('Recovery condition')]));
+  });
 });
 
 describe('POST /monitor-definitions', () => {

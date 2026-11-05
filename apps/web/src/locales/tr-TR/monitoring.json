@@ -233,7 +233,8 @@
       "customTitle": "Özel kurtarma koşulu (API)",
       "customHint": "Bu koşul API üzerinden ayarlandı ve burada düzenlenemez. Kaydetmek onu olduğu gibi korur.",
       "replaceCustom": "Değiştir",
-      "invalid": "Kurtarma koşulunun değerlerinden biri geçerli değil."
+      "invalid": "Kurtarma koşulunun değerlerinden biri geçerli değil.",
+      "customUnusable": "Bu koşul değerlendirilemiyor, bu nedenle bu monitörün uyarıları otomatik olarak çözülmeyecek. Düzeltmek için koşulu değiştirin."
     }
   },
   "kinds": {

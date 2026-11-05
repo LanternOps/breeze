@@ -72,10 +72,21 @@ describe('policyAwareMonitorEventLogWarnings', () => {
       expect(await policyAwareMonitorEventLogWarnings(row(uncollected))).toEqual([]);
     });
 
-    it('says nothing for a collected source, no condition, or a raw blob it cannot read', async () => {
+    it('says nothing for a collected source, no condition, or a raw blob the engine can evaluate', async () => {
       expect(await policyAwareMonitorEventLogWarnings(row({ ...uncollected, sourcePattern: 'APCPBEAgent' }))).toEqual([]);
       expect(await policyAwareMonitorEventLogWarnings(row(null))).toEqual([]);
       expect(await policyAwareMonitorEventLogWarnings(row({ logic: 'or', conditions: [{ type: 'event_log' }] }))).toEqual([]);
+    });
+
+    it('#10935: says a stored value can never resolve, on any kind, whenever that monitor is saved', async () => {
+      const [warning, ...rest] = await policyAwareMonitorEventLogWarnings(row({ conditions: [{ type: 'event_log' }] }));
+      expect(rest).toEqual([]);
+      expect(warning).toContain('Recovery condition');
+      expect(warning).toContain('auto-resolve');
+
+      const cpu = { kind: 'cpu', condition: {}, autoResolveConditions: uncollected, orgId: ORG, partnerId: null };
+      expect(await policyAwareMonitorEventLogWarnings(cpu)).toHaveLength(1);
+      expect(loadPolicyApplicationProviders).toHaveBeenCalledTimes(1);
     });
   });
 

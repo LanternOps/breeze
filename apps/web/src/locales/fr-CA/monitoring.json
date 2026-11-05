@@ -233,7 +233,8 @@
       "customTitle": "Condition de rétablissement personnalisée (API)",
       "customHint": "Cette condition a été définie au moyen de l'API et ne peut pas être modifiée ici. L'enregistrement la conserve telle quelle.",
       "replaceCustom": "Remplacer",
-      "invalid": "L'une des valeurs de la condition de rétablissement n'est pas valide."
+      "invalid": "L'une des valeurs de la condition de rétablissement n'est pas valide.",
+      "customUnusable": "Cette condition ne peut pas être évaluée : les alertes de ce moniteur ne se résoudront pas automatiquement. Remplacez-la pour corriger le problème."
     }
   },
   "kinds": {

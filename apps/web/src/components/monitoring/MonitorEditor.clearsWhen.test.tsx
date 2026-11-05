@@ -236,6 +236,28 @@ describe('MonitorEditor "Clears when"', () => {
     warn.mockRestore();
   });
 
+  it('a failed defaults read still shows a stored condition, so it can be seen and removed', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    install({
+      monitor: { autoResolve: null, autoResolveConditions: RECOVERY },
+      defaults: () => json({ error: 'nope' }, false, 500),
+    });
+    render(<MonitorEditor monitorId="m1" />);
+
+    expect(await screen.findByTestId('clears-when-message')).toHaveValue('Power Restored');
+    warn.mockRestore();
+  });
+
+  it('a failed defaults read shows no section when there is nothing stored', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    install({ monitor: { autoResolve: null }, defaults: () => json({ error: 'nope' }, false, 500) });
+    render(<MonitorEditor monitorId="m1" />);
+
+    await screen.findByTestId('monitor-editor-lifecycle-unavailable');
+    expect(screen.queryByTestId('monitor-editor-clears-when')).toBeNull();
+    warn.mockRestore();
+  });
+
   it('switching to a kind with no recovery schema clears an authored condition', async () => {
     install({ monitor: { autoResolveConditions: RECOVERY } });
     await renderLoaded();
@@ -300,6 +322,35 @@ describe('MonitorEditor "Clears when"', () => {
       await renderLoaded();
 
       expect(await screen.findByTestId('clears-when-raw')).toHaveTextContent('"conditions"');
+      expect(screen.getByTestId('clears-when-raw-unusable')).toHaveTextContent("can't be evaluated");
+      expect(await saveAndGetBody()).not.toHaveProperty('autoResolveConditions');
+    });
+
+    it('a raw condition the engine can evaluate does not say it is unusable', async () => {
+      install({ monitor: { autoResolveConditions: RAW_LEAF } });
+      await renderLoaded();
+
+      await screen.findByTestId('clears-when-raw');
+      expect(screen.queryByTestId('clears-when-raw-unusable')).toBeNull();
+    });
+
+    it('changing the kind drops a stored value that could never be evaluated, or the API would refuse the save', async () => {
+      install({ monitor: { autoResolveConditions: { conditions: [RAW_LEAF] } } });
+      await renderLoaded();
+      await screen.findByTestId('clears-when-raw');
+
+      fireEvent.change(screen.getByTestId('monitor-editor-kind'), { target: { value: 'offline' } });
+
+      expect((await saveAndGetBody()).autoResolveConditions).toBeNull();
+    });
+
+    it('changing the kind keeps a raw condition the engine can evaluate', async () => {
+      install({ monitor: { autoResolveConditions: RAW_LEAF } });
+      await renderLoaded();
+      await screen.findByTestId('clears-when-raw');
+
+      fireEvent.change(screen.getByTestId('monitor-editor-kind'), { target: { value: 'offline' } });
+
       expect(await saveAndGetBody()).not.toHaveProperty('autoResolveConditions');
     });
 

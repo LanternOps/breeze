@@ -1084,6 +1084,43 @@ describe('recovery condition is checked against the MERGED kind (alert re-arm W3
     expect(dbMock.transaction).not.toHaveBeenCalled();
   });
 
+  it('create refuses a raw blob the update path would accept', async () => {
+    await expect(createMonitorDefinition(
+      input({ kind: 'event_log', condition: EVENT_LOG_CONDITION, autoResolveConditions: RAW_LEAF }),
+      auth(),
+    )).rejects.toBeInstanceOf(MonitorValidationError);
+    expect(dbMock.transaction).not.toHaveBeenCalled();
+  });
+
+  describe('what gets written', () => {
+    function captureWrite() {
+      const set = vi.fn((values: Record<string, unknown>) => ({
+        where: () => ({ returning: async () => [{ ...eventLogRow(), ...values }] }),
+      }));
+      const tx = { update: vi.fn(() => ({ set })) };
+      dbMock.transaction.mockImplementation((async (work: (value: typeof tx) => Promise<unknown>) => work(tx)) as never);
+      return set;
+    }
+    const compiled = { alertTemplateId: 't', alertRuleId: 'r', automationId: 'a', hash: 'h' };
+
+    it.each([
+      ['omitted keeps a stored raw blob', { name: 'Renamed' }, RAW_LEAF, RAW_LEAF],
+      ['omitted keeps a stored kind-shaped value', { name: 'Renamed' }, RECOVERY, RECOVERY],
+      ['null clears it', { autoResolveConditions: null }, RAW_LEAF, null],
+      ['a new value replaces it', { autoResolveConditions: RECOVERY }, RAW_LEAF, RECOVERY],
+    ])('%s', async (_name, body, stored, expected) => {
+      mockExisting(eventLogRow({ autoResolveConditions: stored }));
+      const set = captureWrite();
+      const compile = vi.spyOn(monitorCompiler, 'compileMonitorInTx').mockResolvedValue(compiled);
+      try {
+        await patch(body);
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({ autoResolveConditions: expected }));
+      } finally {
+        compile.mockRestore();
+      }
+    });
+  });
+
   it('a recovery-only patch on a cpu monitor is refused, though the schema cannot see the kind', async () => {
     mockExisting(existingRow());
     await expect(patch({ autoResolveConditions: RECOVERY })).rejects.toThrow(/autoResolveConditions/);

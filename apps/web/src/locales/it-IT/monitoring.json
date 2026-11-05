@@ -233,7 +233,8 @@
       "customTitle": "Condizione di ripristino personalizzata (API)",
       "customHint": "Questa condizione è stata impostata tramite API e non può essere modificata qui. Il salvataggio la mantiene invariata.",
       "replaceCustom": "Sostituisci",
-      "invalid": "Uno dei valori della condizione di ripristino non è valido."
+      "invalid": "Uno dei valori della condizione di ripristino non è valido.",
+      "customUnusable": "Questa condizione non può essere valutata, quindi gli avvisi di questo monitor non si risolveranno automaticamente. Sostituiscila per correggere il problema."
     }
   },
   "kinds": {
