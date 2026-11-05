@@ -1,7 +1,7 @@
 ---
 title: Backup visibility — failure reasons, running backups on the device page, uploaded vs reused bytes
 issue: 11027
-tracking_issue:
+tracking_issue: LanternOps/breeze#11161 (from #11027)
 status: drafted
 ---
 
