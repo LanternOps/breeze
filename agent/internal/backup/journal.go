@@ -79,7 +79,8 @@ type journalHeader struct {
 	// verification records writes. An older helper rewrites the header
 	// without it, which is how a later reader knows that helper had this
 	// journal, and that the records before that point cannot be trusted (see
-	// journal_verification.go).
+	// journal_verification.go). The repair of a torn tail leaves it unset on
+	// purpose, for the same reason (see repairJournalTail).
 	VerificationAware bool `json:"verificationAware,omitempty"`
 }
 
@@ -192,9 +193,10 @@ func identityFingerprint(identity string) string {
 //
 // Otherwise it returns a fresh journal (new snapshot ID, no entries,
 // resumed=false), covering three cases: no journal file yet (normal first
-// run), a corrupt journal (any parse error — the whole file is discarded,
-// never partially trusted), and a stale journal (identity matches but too
-// old to safely resume — see StaleSnapshotID).
+// run), a corrupt journal (any parse error except a torn last line, which is
+// repaired, see journal_tail.go — the whole file is discarded, never partially
+// trusted), and a stale journal (identity matches but too old to safely resume
+// — see StaleSnapshotID).
 //
 // openSnapshotJournal only returns a non-nil error when it cannot create
 // even a *fresh* journal file (e.g. an unwritable/full dir). Callers must
@@ -241,8 +243,9 @@ func openSnapshotJournalAt(path, identity string, maxAge time.Duration) (*snapsh
 		}
 	}
 
-	header, entries, verifications, readErr := readJournal(path)
+	read, readErr := readJournal(path)
 	if readErr == nil {
+		header := read.header
 		identityMatches := header.Identity == identity
 		if identityMatches && time.Since(header.CreatedAt) <= maxAge && header.FormatVersion < journalFormatVersion {
 			// Written by an older helper: its entries may describe a
@@ -261,25 +264,45 @@ func openSnapshotJournalAt(path, identity string, maxAge time.Duration) (*snapsh
 			return j, resumed, err
 		}
 		if identityMatches && time.Since(header.CreatedAt) <= maxAge {
-			f, openErr := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+			writable := true
+			if read.tornAt != noTornTail {
+				if repairErr := journalTailRepairFn(path, read.tornAt, header); repairErr != nil {
+					// The disk may well still be full. What the journal holds is
+					// worth far more than what this run could add: resume from it
+					// and write nothing (a journal with no file refuses writes),
+					// since an append would land on the fragment. The tear stays
+					// for the next open, which tries again.
+					slog.Warn("could not repair a torn backup journal; resuming without checkpointing this run",
+						"path", path, "offset", read.tornAt, "error", repairErr.Error())
+					writable = false
+				}
+			}
+			var f *os.File
+			var openErr error
+			if writable {
+				f, openErr = os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+			}
 			if openErr == nil {
 				var resumedBytes int64
-				for _, entry := range entries {
+				for _, entry := range read.entries {
 					resumedBytes += entry.Size
 				}
-				return &snapshotJournal{
+				j := &snapshotJournal{
 					file:              f,
-					writer:            bufio.NewWriter(f),
 					path:              path,
 					snapshotID:        header.SnapshotID,
 					identity:          identity,
-					entries:           entries,
-					verifications:     verifications,
+					entries:           read.entries,
+					verifications:     read.verifications,
 					resumedBytesTotal: resumedBytes,
 					resumed:           true,
 					createdAt:         header.CreatedAt,
 					header:            header,
-				}, true, nil
+				}
+				if writable {
+					j.writer = bufio.NewWriter(f)
+				}
+				return j, true, nil
 			}
 			slog.Warn("failed to reopen backup journal for append, starting fresh",
 				"path", path, "error", openErr.Error())
@@ -311,7 +334,8 @@ func openSnapshotJournalAt(path, identity string, maxAge time.Duration) (*snapsh
 		}
 	} else if !os.IsNotExist(readErr) {
 		// Any read/parse failure is treated as corruption — never partially
-		// trust a damaged journal.
+		// trust a damaged journal (a torn last line is not such a failure, see
+		// journal_tail.go).
 		slog.Warn("discarding corrupt backup journal", "path", path, "error", readErr.Error())
 		if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
 			slog.Warn("failed to remove corrupt backup journal", "path", path, "error", rmErr.Error())
@@ -321,83 +345,125 @@ func openSnapshotJournalAt(path, identity string, maxAge time.Duration) (*snapsh
 	return createFreshJournal(path, identity)
 }
 
-// readJournal reads and validates an existing journal file at path,
-// returning its header, the resumed entries (last-entry-wins across repeated
-// sourcePaths) and their verification records. Any malformed line — header or
-// data — is reported as an error so the caller discards the whole file rather
-// than resuming from a partially-trusted state.
-func readJournal(path string) (journalHeader, map[string]SnapshotFile, map[string]journalVerification, error) {
-	var header journalHeader
+// journalRead is what readJournal found in a journal file.
+type journalRead struct {
+	header journalHeader
+	// entries holds the resumed entries, last-entry-wins across repeated
+	// sourcePaths.
+	entries map[string]SnapshotFile
+	// verifications holds the entries' records.
+	verifications map[string]journalVerification
+	// generation interns the records' base generation, see internVerification.
+	generation string
+	// tornAt is the byte offset of a torn last line (see journal_tail.go), or
+	// noTornTail. The caller repairs the tail before appending to the file.
+	tornAt int64
+}
+
+// readJournal reads and validates an existing journal file at path. A torn last
+// line (see journal_tail.go) is ignored, along with every verification record.
+// Any other malformed line, and any malformed header, is reported as an error so
+// the caller discards the whole file rather than resuming from a partially-trusted
+// state.
+func readJournal(path string) (*journalRead, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return header, nil, nil, err
+		return nil, err
 	}
 	defer func() { _ = f.Close() }()
 
+	lines := &journalLines{}
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Split(lines.split)
 
 	if !scanner.Scan() {
 		if scanErr := scanner.Err(); scanErr != nil {
-			return header, nil, nil, scanErr
+			return nil, scanErr
 		}
-		return header, nil, nil, fmt.Errorf("backup journal %s is empty", path)
+		return nil, fmt.Errorf("backup journal %s is empty", path)
 	}
-	if err := json.Unmarshal(scanner.Bytes(), &header); err != nil {
-		return header, nil, nil, fmt.Errorf("backup journal header: %w", err)
+	// The header is never tolerated: without it there is no snapshot to resume.
+	if !lines.terminated {
+		return nil, errors.New("backup journal header is unterminated")
 	}
-	if header.SnapshotID == "" {
-		return header, nil, nil, fmt.Errorf("backup journal header missing snapshotId")
+	r := &journalRead{entries: make(map[string]SnapshotFile), tornAt: noTornTail}
+	if err := json.Unmarshal(scanner.Bytes(), &r.header); err != nil {
+		return nil, fmt.Errorf("backup journal header: %w", err)
+	}
+	if r.header.SnapshotID == "" {
+		return nil, fmt.Errorf("backup journal header missing snapshotId")
 	}
 
-	entries := make(map[string]SnapshotFile)
-	var verifications map[string]journalVerification
-	var generation string
 	for scanner.Scan() {
+		if !lines.terminated {
+			r.tornAt = lines.start
+			break
+		}
 		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
 		}
-		if bytes.HasPrefix(line, journalHeaderUpdatePrefix) {
-			var update journalHeaderUpdate
-			if err := json.Unmarshal(line, &update); err != nil {
-				return header, nil, nil, fmt.Errorf("backup journal header update: %w", err)
+		if err := r.applyLine(line); err != nil {
+			start := lines.start
+			for scanner.Scan() {
+				if len(scanner.Bytes()) > 0 {
+					return nil, err
+				}
 			}
-			applyHeaderUpdate(&header, update.HeaderUpdate)
-			if !update.HeaderUpdate.VerificationAware {
-				// An older helper had this journal after a rollback. It may
-				// have overwritten objects these records vouch for, without
-				// retracting them.
-				verifications = nil
-			}
-			continue
+			r.tornAt = start
+			break
 		}
-		var entry journalEntryLine
-		if err := json.Unmarshal(line, &entry); err != nil {
-			return header, nil, nil, fmt.Errorf("backup journal entry: %w", err)
-		}
-		// Keyed by journalEntryKey (OriginalPath when VSS rewrote SourcePath,
-		// else SourcePath itself), matching Record's keying below — a reload
-		// must key entries the same way a live run does, or a resumed
-		// journal's entries become unreachable by Lookup. last-entry-wins.
-		key := journalEntryKey(entry.SnapshotFile)
-		entries[key] = entry.SnapshotFile
-		if entry.Verification == nil {
-			// A line without a record supersedes the one before it.
-			delete(verifications, key)
-			continue
-		}
-		internVerification(entry.Verification, &generation)
-		if verifications == nil {
-			verifications = make(map[string]journalVerification)
-		}
-		verifications[key] = *entry.Verification
 	}
 	if err := scanner.Err(); err != nil {
-		return header, nil, nil, err
+		return nil, err
 	}
+	if r.tornAt != noTornTail {
+		slog.Warn("ignoring a torn last line in the backup journal",
+			"path", path, "offset", r.tornAt, "verificationRecordsDropped", len(r.verifications))
+		r.verifications = nil
+	}
+	return r, nil
+}
 
-	return header, entries, verifications, nil
+// applyLine folds one line after the header into r, leaving r as it was when the
+// line is malformed.
+func (r *journalRead) applyLine(line []byte) error {
+	if bytes.HasPrefix(line, journalHeaderUpdatePrefix) {
+		var update journalHeaderUpdate
+		if err := json.Unmarshal(line, &update); err != nil {
+			return fmt.Errorf("backup journal header update: %w", err)
+		}
+		applyHeaderUpdate(&r.header, update.HeaderUpdate)
+		if !update.HeaderUpdate.VerificationAware {
+			// Either an older helper had this journal after a rollback, and may
+			// have overwritten objects these records vouch for without retracting
+			// them, or this is a repaired tear (see repairJournalTail).
+			r.verifications = nil
+		}
+		return nil
+	}
+	var entry journalEntryLine
+	if err := json.Unmarshal(line, &entry); err != nil {
+		return fmt.Errorf("backup journal entry: %w", err)
+	}
+	// Keyed by journalEntryKey (OriginalPath when VSS rewrote SourcePath,
+	// else SourcePath itself), matching Record's keying below — a reload
+	// must key entries the same way a live run does, or a resumed
+	// journal's entries become unreachable by Lookup. last-entry-wins.
+	key := journalEntryKey(entry.SnapshotFile)
+	r.entries[key] = entry.SnapshotFile
+	if entry.Verification == nil {
+		// A line without a record supersedes the one before it.
+		delete(r.verifications, key)
+		return nil
+	}
+	internVerification(entry.Verification, &r.generation)
+	if r.verifications == nil {
+		r.verifications = make(map[string]journalVerification)
+	}
+	r.verifications[key] = *entry.Verification
+	return nil
 }
 
 // createFreshJournal creates a brand new journal file at path (truncating
