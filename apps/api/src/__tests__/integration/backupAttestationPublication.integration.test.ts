@@ -24,7 +24,8 @@ import { sql } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
 import { runBackupWriteSessionJanitor } from '../../jobs/backupWriteSessionJanitor';
 import { findPendingServerFetchedAttestations } from '../../jobs/backupSnapshotAttestationWorker';
-import { defaultVerifyDeps, verifySnapshotAttestation } from '../../services/backupAttestationVerify';
+import { verifySnapshotAttestation } from '../../services/backupAttestationVerify';
+import { verifyDepsFromBytes } from '../helpers/verifyDepsFromBytes';
 import { RESERVATION_CLEANUP_EVERY_MS } from '../../services/backupSnapshotIdReservations';
 import { WRITE_IDENTITY, insertSnapshotRow, reservationRow, seedWriteTenant, type WriteTenant } from './backupWriteFixtures';
 import { getTestDb } from './setup';
@@ -107,7 +108,7 @@ describe('brokered snapshot attestation across publication', () => {
       if (key !== `snapshots/${snapshotId}/manifest.json`) throw Object.assign(new Error('missing'), { name: 'NoSuchKey' });
       return manifest;
     });
-    const deps = { ...defaultVerifyDeps, fetchObject };
+    const deps = verifyDepsFromBytes(fetchObject);
 
     // 1. Sealing: never read, retried when publication is due.
     expect(await verifySnapshotAttestation(snapshotDbId, deps)).toEqual({ outcome: 'retry', reason: 'snapshot_sealing' });
@@ -148,7 +149,7 @@ describe('brokered snapshot attestation across publication', () => {
     await insertPendingAttestation(t, snapshotDbId, snapshotId, manifest);
 
     const before = Date.now();
-    expect(await verifySnapshotAttestation(snapshotDbId, { ...defaultVerifyDeps, fetchObject: vi.fn() }))
+    expect(await verifySnapshotAttestation(snapshotDbId, verifyDepsFromBytes(vi.fn())))
       .toEqual({ outcome: 'retry', reason: 'snapshot_sealing' });
     const delay = new Date((await attestationRow(snapshotDbId)).next_attempt_at!).getTime() - before;
     expect(delay).toBeGreaterThan(14 * 60_000);
