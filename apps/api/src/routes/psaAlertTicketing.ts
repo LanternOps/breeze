@@ -40,7 +40,7 @@ import {
 } from '../middleware/auth';
 import { requireOrgWideIntegrationAccess } from '../middleware/integrationConnectionScope';
 import { userRateLimit } from '../middleware/userRateLimit';
-import { db } from '../db';
+import { db, runAfterDbContextCommit } from '../db';
 import { partners, psaConnections, psaTicketMappings } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
@@ -404,6 +404,11 @@ const MAX_REQUEST_WAKES = 100;
  * at most one sweep. The BullMQ connection keeps an offline queue, so `add()`
  * can hang rather than reject while Redis is down; each wake is time-boxed and
  * a large re-drive wakes only the first MAX_REQUEST_WAKES rows.
+ *
+ * Callers defer this with runAfterDbContextCommit: the re-arm is in the request
+ * transaction, so a worker woken earlier reads the pre-commit row, finds nothing
+ * due and drops the wake (#10933, the #10926 shape). The response never waits
+ * on it.
  */
 async function wakeHumanActions(ids: string[]) {
   const woken = ids.slice(0, MAX_REQUEST_WAKES);
@@ -433,7 +438,8 @@ psaAlertTicketingRoutes.post('/:id/alert-ticketing/redrive', ...humanActionGates
     if (!rows.length) return c.json({ error: 'No alert tickets remain in the requested states. Reload and try again.' }, 409);
     writeRouteAudit(c, { orgId: null, action: 'psa.alert_ticketing.redrive', resourceType: 'psa_connection', resourceId: loaded.row.id,
       details: { states, count: rows.length, ...auditOwnerFields(loaded.row) } });
-    await wakeHumanActions(rows.map(row => row.id));
+    const ids = rows.map(row => row.id);
+    runAfterDbContextCommit('psa-ticketing.redrive-wake', () => wakeHumanActions(ids));
     return c.json({ data: { count: rows.length } });
   });
 
@@ -471,7 +477,7 @@ for (const action of ['create-anyway', 'mark-handled'] as const) {
       if (!updated) return c.json({ error: 'This action is no longer available. Reload the alert tickets.' }, 409);
       writeRouteAudit(c, { orgId: null, action: `psa.alert_ticketing.${action.replace('-', '_')}`, resourceType: 'psa_ticket_mapping', resourceId: id,
         details: { previousState: expectedState, connectionId: loaded.row.id, ...auditOwnerFields(loaded.row) } });
-      if (action === 'create-anyway') await wakeHumanActions([id]);
+      if (action === 'create-anyway') runAfterDbContextCommit('psa-ticketing.create-anyway-wake', () => wakeHumanActions([id]));
       return c.json({ data: updated });
     });
 }
