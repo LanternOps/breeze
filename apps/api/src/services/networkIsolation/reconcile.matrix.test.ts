@@ -4,8 +4,9 @@ import type { DeviceNetworkIsolation } from '../../db/schema';
 import type { EpisodeTx } from './episodeStore';
 import { captureException } from '../sentry';
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
-const store = vi.hoisted(() => ({ row: null as DeviceNetworkIsolation | null, writes: [] as Record<string, unknown>[], afterCommit: [] as Array<() => Promise<void>>, published: vi.fn() }));
-vi.mock('../../db', () => ({ runAfterDbContextCommit: (_label: string, fn: () => Promise<void>) => { store.afterCommit.push(fn); } }));
+const store = vi.hoisted(() => ({ row: null as DeviceNetworkIsolation | null, writes: [] as Record<string, unknown>[], afterCommit: [] as Array<() => Promise<void>>, published: vi.fn(), resolvePolicy: vi.fn() }));
+vi.mock('../../db', () => ({ withDbTransaction: (fn: () => Promise<unknown>) => fn(), runAfterDbContextCommit: (_label: string, fn: () => Promise<void>) => { store.afterCommit.push(fn); } }));
+vi.mock('../featureConfigResolver', () => ({ resolveContainmentPolicy: (...args: unknown[]) => store.resolvePolicy(...args) }));
 vi.mock('../deviceSiteResolver', () => ({ resolveDeviceSiteId: vi.fn(async () => 'site') }));
 vi.mock('../eventBus', () => ({ publishEvent: (...args: unknown[]) => store.published(...args) }));
 vi.mock('./episodeStore', async (original) => ({
@@ -34,7 +35,9 @@ function row(desired = 'isolated'): DeviceNetworkIsolation {
     releaseConfirmedAt: null, failureCode: null, releaseKind: null, lastAgentReport: null,
   } as unknown as DeviceNetworkIsolation;
 }
-beforeEach(() => { __resetIsolationLogThrottleForTests?.(); store.row = row(); store.writes = []; store.afterCommit = []; vi.clearAllMocks(); });
+const EDR_ENTRY = { kind: 'host', host: 'edr.example.test', proto: 'tcp', ports: [443], scope: 'any' };
+const WITH_EXTRAS = { extraAllow: [{ host: 'edr.example.test', proto: 'tcp', ports: [443], label: 'EDR cloud' }], revision: 'c1:policy', refusedGroups: [] };
+beforeEach(() => { __resetIsolationLogThrottleForTests?.(); store.row = row(); store.writes = []; store.afterCommit = []; vi.clearAllMocks(); store.resolvePolicy.mockReset(); store.resolvePolicy.mockResolvedValue(WITH_EXTRAS); });
 // Every same-generation/non-stale cell has a complete explicit outcome.
 const EXPECTED = {
   isolated: {
@@ -200,4 +203,24 @@ it('captures a decrypt outage once per episode while every beat retains containm
   }
   expect(captureException).toHaveBeenCalledTimes(1);
   expect(captureException).toHaveBeenCalledWith(expect.any(Error), undefined, { phase: 'isolation_heartbeat_block', deviceId: device.id, isolationId: id });
+});
+
+describe('containment policy permits on the heartbeat (#10100)', () => {
+  const scopes = (block: Awaited<ReturnType<typeof buildContainmentHeartbeatBlock>>) => block.networkIsolation!.allow.map(entry => entry.scope);
+  it.each([undefined, null, 0, 1, 2])('level %s: sends no extras and never reads the policy', async (level) => {
+    const block = await buildContainmentHeartbeatBlock(tx, { ...device, networkIsolationVersion: level as number | null | undefined });
+    expect(scopes(block)).not.toContain('any');
+    expect(store.resolvePolicy).not.toHaveBeenCalled();
+  });
+  it('level 3: appends the policy permits as scope any', async () => {
+    const block = await buildContainmentHeartbeatBlock(tx, { ...device, networkIsolationVersion: 3 });
+    expect(store.resolvePolicy).toHaveBeenCalledWith(device.id);
+    expect(block.networkIsolation!.allow).toContainEqual(EDR_ENTRY);
+  });
+  it('a tombstone never reads the policy or carries a permit', async () => {
+    store.row = row('released');
+    const block = await buildContainmentHeartbeatBlock(tx, { ...device, networkIsolationVersion: 3 });
+    expect(block.networkIsolation).toMatchObject({ desired: 'released', allow: [] });
+    expect(store.resolvePolicy).not.toHaveBeenCalled();
+  });
 });

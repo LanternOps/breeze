@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   device: {} as any, incident: {} as any, row: null as any, active: null as any, tombstone: null as any,
   writes: [] as any[], order: [] as string[], dispatch: vi.fn(), trust: vi.fn(), audit: vi.fn(),
-  txDepth: 0, seal: vi.fn(), decrypt: vi.fn(),
+  txDepth: 0, seal: vi.fn(), decrypt: vi.fn(), resolvePolicy: vi.fn(),
 }));
 vi.mock('../../db', () => {
   const chain = (rows: () => unknown[]) => { const promise = Promise.resolve().then(rows); return { limit: () => Object.assign(promise, { for: () => promise }) }; };
@@ -33,6 +33,7 @@ vi.mock('../dispatchDeviceCommand', () => ({ dispatchDeviceCommand: (...args: un
 vi.mock('../sensitiveCommandPayload', () => ({ encryptSensitivePayloadFields: (_type: string, payload: any) => ({ ...payload, ...(payload.breakGlassSecret ? { breakGlassSecret: `enc:${payload.breakGlassSecret}` } : {}) }) }));
 vi.mock('../secretCrypto', () => ({ encryptSecret: (...args: unknown[]) => h.seal(...args), decryptSecret: (...args: unknown[]) => h.decrypt(...args) }));
 vi.mock('../auditEvents', () => ({ writeRouteAudit: (...args: unknown[]) => h.audit(...args), requestLikeFromSnapshot: () => ({ req: { header: () => undefined } }) }));
+vi.mock('../featureConfigResolver', () => ({ resolveContainmentPolicy: (...args: unknown[]) => h.resolvePolicy(...args) }));
 vi.mock('./reconcile', () => ({ ISOLATION_SECRET_COLUMN: { table: 'device_network_isolations', column: 'break_glass_secret_enc', kind: 'text', aadBinding: 'row', description: 'Test' } }));
 vi.mock('./episodeStore', async original => ({
   ...(await original<typeof import('./episodeStore')>()),
@@ -56,6 +57,8 @@ const orgId = '22222222-2222-4222-8222-222222222222';
 const isolationId = '33333333-3333-4333-8333-333333333333';
 const auth = { user: { id: '55555555-5555-4555-8555-555555555555' }, canAccessOrg: (id: string) => id === orgId, canAccessSite: () => true } as unknown as AuthContext;
 const input = { createIncident: { title: 'Containment investigation', severity: 'p2' as const }, reason: 'Investigation' };
+const NO_EXTRAS = { extraAllow: [], revision: 'c1:defaults', refusedGroups: [] };
+const WITH_EXTRAS = { extraAllow: [{ host: 'edr.example.test', proto: 'tcp', ports: [443], label: 'EDR cloud' }], revision: 'c1:policy', refusedGroups: [] };
 function episode(extra: Record<string, unknown> = {}) {
   return { id: isolationId, deviceId, orgId, state: 'verified', desiredState: 'isolated', generation: 3, lastJournalSeq: 5,
     expiresAt: new Date(Date.now() + 3_600_000), breakGlassSecretEnc: 'enc:stored', breakGlassAckSeq: 2,
@@ -68,6 +71,7 @@ beforeEach(() => {
   h.device = { id: deviceId, orgId, siteId: 'site-1', osType: 'windows', agentVersion: '999.0.0', networkIsolationVersion: 1, networkIsolationReady: true, status: 'online', agentServerUrl: 'https://control.example.test' };
   h.incident = { id: '66666666-6666-4666-8666-666666666666', orgId, affectedDevices: [deviceId], status: 'detected' };
   h.row = null; h.active = null; h.tombstone = null; h.writes = []; h.order = [];
+  h.resolvePolicy.mockReset(); h.resolvePolicy.mockResolvedValue(NO_EXTRAS);
   h.trust.mockResolvedValue(undefined); h.seal.mockReturnValue('enc:episode'); h.decrypt.mockReturnValue(Buffer.alloc(32, 8).toString('base64'));
   h.dispatch.mockImplementation(async (args) => { expect(h.txDepth).toBe(1); h.order.push('dispatch'); return { ok: true, command: { id: args.commandId }, delivery: 'queued_offline' }; });
 });
@@ -179,4 +183,33 @@ describe('startNetworkIsolation', () => {
     expect(h.dispatch.mock.calls[1]![0].offlinePolicy.deliverWithinMs).toBeGreaterThan(72 * 3_600_000 - 1000);
   });
 
+
+  describe('containment policy permits (#10100)', () => {
+    const sent = () => h.dispatch.mock.calls[0]![0].payload.parameters;
+    it.each([1, 2])('level %i: sends no extras and does not read the policy', async (level) => {
+      h.device.networkIsolationVersion = level;
+      h.resolvePolicy.mockResolvedValue(WITH_EXTRAS);
+      expect(await startNetworkIsolation(auth, deviceId, input, { requestedByKind: 'user' })).not.toHaveProperty('error');
+      expect(sent().allow.every((entry: { scope: string }) => entry.scope === 'breeze')).toBe(true);
+      expect(h.resolvePolicy).not.toHaveBeenCalled();
+    });
+    it('level 3: appends the policy permits as scope any, without their label', async () => {
+      h.device.networkIsolationVersion = 3;
+      h.resolvePolicy.mockResolvedValue(WITH_EXTRAS);
+      expect(await startNetworkIsolation(auth, deviceId, input, { requestedByKind: 'user' })).not.toHaveProperty('error');
+      expect(h.resolvePolicy).toHaveBeenCalledWith(deviceId);
+      expect(sent().allow).toContainEqual({ kind: 'host', host: 'edr.example.test', proto: 'tcp', ports: [443], scope: 'any' });
+      expect(h.row.allowSnapshot).toEqual(sent().allow);
+    });
+    it('an unreadable policy still isolates, on the fixed permits, and reports the fault', async () => {
+      h.device.networkIsolationVersion = 3;
+      h.resolvePolicy.mockRejectedValue(new Error('read failed'));
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(await startNetworkIsolation(auth, deviceId, input, { requestedByKind: 'user' })).not.toHaveProperty('error');
+        expect(sent().allow.every((entry: { scope: string }) => entry.scope === 'breeze')).toBe(true);
+        expect(error).toHaveBeenCalledWith('[isolation] policy unavailable', { deviceId });
+      } finally { error.mockRestore(); }
+    });
+  });
 });

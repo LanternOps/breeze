@@ -20,6 +20,7 @@ import { generateEpisodeSecret, currentBreakGlassCodes } from './breakGlass';
 import { createEpisode, findUnresolvedEpisode, findUnconfirmedTombstone, withEpisodeLock, writeEpisodeSnapshot, toEpisodeSnapshot, listEpisodes, type EpisodeTx } from './episodeStore';
 import { applyEpisodeEvent, type EpisodeEvent } from './stateMachine';
 import { ISOLATION_SECRET_COLUMN } from './reconcile';
+import { NO_ISOLATION_POLICY, readIsolationPolicy } from './policy';
 import { captureException } from '../sentry';
 import { isolationStartGate, type IsolationStartRefusal } from './gates';
 export type { IsolationStartRefusal } from './gates';
@@ -92,8 +93,16 @@ export async function startNetworkIsolation(auth: AuthContext, deviceId: string,
     if (await findUnconfirmedTombstone(tx, device.id)) return refuse('isolation_already_active');
     const remoteRelay = input.remoteRelay ?? false;
     if (remoteRelay && !process.env.TURN_HOST?.trim() && !process.env.TURN_TLS_HOST?.trim()) return refuse('relay_unavailable');
+    // Containment must not wait on policy: without one the device isolates on the fixed permits, and
+    // the next heartbeat that can read the policy adds its permits under a new generation.
+    let policy = NO_ISOLATION_POLICY;
+    try { policy = await readIsolationPolicy(device); }
+    catch (error) {
+      console.error('[isolation] policy unavailable', { deviceId: device.id });
+      captureException(error, undefined, { phase: 'isolation_policy_unavailable', deviceId: device.id });
+    }
     let allow;
-    try { allow = buildIsolationAllowlist({ serverUrl: device.agentServerUrl ?? process.env.AGENT_SERVER_URL ?? '', remoteRelay }); }
+    try { allow = buildIsolationAllowlist({ serverUrl: device.agentServerUrl ?? process.env.AGENT_SERVER_URL ?? '', remoteRelay, policyExtras: policy.extras }); }
     catch (error) { if (error instanceof IsolationAllowlistError) return refuse('invalid_allowlist'); throw error; }
     const now = new Date();
     let incidentId = input.incidentId;

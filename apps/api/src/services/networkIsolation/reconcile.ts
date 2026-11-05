@@ -11,8 +11,9 @@ import { buildIsolationAllowlist, IsolationAllowlistError } from './allowlist';
 import { findHeartbeatEpisode, toEpisodeSnapshot, withEpisodeLock, writeEpisodeSnapshot, writeAgentReport, type EpisodeTx } from './episodeStore';
 import { applyEpisodeEvent, type EpisodeEvent } from './stateMachine';
 import { synchronizeEpisodeOutcome } from './outcome';
+import { readIsolationPolicy } from './policy';
 
-interface IsolationDevice { id: string; orgId: string; agentServerUrl?: string | null }
+interface IsolationDevice { id: string; orgId: string; agentServerUrl?: string | null; networkIsolationVersion?: number | null }
 export const ISOLATION_SECRET_COLUMN = {
   table: 'device_network_isolations', column: 'break_glass_secret_enc', kind: 'text', aadBinding: 'row', description: 'Per-episode offline release secret',
 } as const;
@@ -68,7 +69,8 @@ export async function buildContainmentHeartbeatBlock(tx: EpisodeTx, device: Isol
   const block = storedContainmentHeartbeatBlock(row);
   if (!row || !block.networkIsolation || block.networkIsolation.desired === 'released') return block;
   try {
-    block.networkIsolation.allow = buildIsolationAllowlist({ serverUrl: device.agentServerUrl ?? process.env.AGENT_SERVER_URL ?? '', remoteRelay: row.remoteRelay });
+    const policy = await readIsolationPolicy(device);
+    block.networkIsolation.allow = buildIsolationAllowlist({ serverUrl: device.agentServerUrl ?? process.env.AGENT_SERVER_URL ?? '', remoteRelay: row.remoteRelay, policyExtras: policy.extras });
   } catch (err) {
     throttled(`allow:${row.id}`, () => {
       const source = err instanceof IsolationAllowlistError ? 'configuration' : 'builder';
