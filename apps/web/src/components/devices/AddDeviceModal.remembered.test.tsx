@@ -159,7 +159,7 @@ describe('AddDeviceModal — remembers the last still-valid token and link (#109
       expect(mintCalls('/devices/onboarding-token')).toHaveLength(1);
     });
 
-    it('says a restored token may be used up, since the token route returns no key id to check', async () => {
+    it('says a restored token may be used up when the API sent no key id (older API), without any lookup', async () => {
       const { reopen } = renderModal();
       await generateCliToken();
       reopen();
@@ -167,6 +167,74 @@ describe('AddDeviceModal — remembers the last still-valid token and link (#109
 
       expect((await screen.findByTestId('cli-token-reuse')).textContent).toMatch(/unless/);
       expect(childKeyLookups()).toHaveLength(0);
+    });
+
+    describe('with the child key id from the token route (#11116)', () => {
+      const withKeyId = () =>
+        json({
+          token: 'enroll_token_1',
+          maxUsage: 5,
+          siteId: SITE_A.id,
+          expiresAt: inMs(HOUR),
+          serverUrl: 'https://api.example.test',
+          childKeyId: 'cli-key-1',
+        });
+      const cliKeyLookups = () =>
+        fetchMock.mock.calls.filter(([url, init]) => url === '/enrollment-keys/cli-key-1' && !init?.method);
+
+      it('checks the key on reopen and drops the "may be used up" caveat when it is usable', async () => {
+        routeFetch({ token: withKeyId });
+        const { reopen } = renderModal();
+        await generateCliToken();
+        reopen();
+        fireEvent.click(screen.getByTestId('tab-cli'));
+
+        expect(await screen.findByText('enroll_token_1')).toBeDefined();
+        const reuse = screen.getByTestId('cli-token-reuse');
+        expect(reuse.textContent).not.toMatch(/unless/);
+        expect(reuse.textContent).toContain(formatDateTime(JSON.parse(sessionStorage.getItem(KEY)!).sites[SITE_A.id].cli.expiresAt));
+        expect(cliKeyLookups()).toHaveLength(1);
+        expect(mintCalls('/devices/onboarding-token')).toHaveLength(1);
+      });
+
+      it('clears a consumed token instead of showing it', async () => {
+        routeFetch({
+          token: withKeyId,
+          childKey: (id) => json({ id, expiresAt: inMs(HOUR), maxUsage: 5, usageCount: 5 }),
+        });
+        const { reopen } = renderModal();
+        await generateCliToken();
+        reopen();
+        fireEvent.click(screen.getByTestId('tab-cli'));
+
+        await waitFor(() => expect(cliKeyLookups()).toHaveLength(1));
+        await waitFor(() => expect(JSON.parse(sessionStorage.getItem(KEY) ?? '{"sites":{}}').sites[SITE_A.id]?.cli).toBeUndefined());
+        expect(screen.queryByText('enroll_token_1')).toBeNull();
+        expect(screen.queryByTestId('cli-token-reuse')).toBeNull();
+      });
+
+      it('clears a token whose key is gone (404)', async () => {
+        routeFetch({ token: withKeyId, childKey: () => json({ error: 'not found' }, 404) });
+        const { reopen } = renderModal();
+        await generateCliToken();
+        reopen();
+        fireEvent.click(screen.getByTestId('tab-cli'));
+
+        await waitFor(() => expect(JSON.parse(sessionStorage.getItem(KEY) ?? '{"sites":{}}').sites[SITE_A.id]?.cli).toBeUndefined());
+        expect(screen.queryByText('enroll_token_1')).toBeNull();
+      });
+
+      it('does not show a token when the check itself fails, but keeps it for the next open', async () => {
+        routeFetch({ token: withKeyId, childKey: () => json({ error: 'boom' }, 500) });
+        const { reopen } = renderModal();
+        await generateCliToken();
+        reopen();
+        fireEvent.click(screen.getByTestId('tab-cli'));
+
+        await waitFor(() => expect(cliKeyLookups()).toHaveLength(1));
+        expect(screen.queryByText('enroll_token_1')).toBeNull();
+        expect(JSON.parse(sessionStorage.getItem(KEY)!).sites[SITE_A.id].cli.childKeyId).toBe('cli-key-1');
+      });
     });
 
     it('stored past expiresAt gives the empty Generate state and leaves storage', async () => {

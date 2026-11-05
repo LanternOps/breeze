@@ -320,6 +320,7 @@
     "generateNewToken": "Generar nuevo token",
     "generateNewLink": "Generar enlace nuevo",
     "cliTokenReuse": "Generado anteriormente. Válido hasta {{date}}, a menos que ya se hayan usado todas sus inscripciones de dispositivos.",
+    "cliTokenReuseVerified": "Generado anteriormente. Válido hasta {{date}}.",
     "linkReuse": "Generado anteriormente para {{platform}}. Válido hasta {{date}}.",
     "generateToken": "Generar token",
     "cliTokenNotGenerated": "Aún no hay token. Elige el sitio, la cantidad de dispositivos y el vencimiento, y luego genera un token. Cada token es una clave de inscripción activa.",

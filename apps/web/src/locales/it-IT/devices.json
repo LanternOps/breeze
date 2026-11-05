@@ -320,6 +320,7 @@
     "generateNewToken": "Genera nuovo token",
     "generateNewLink": "Genera nuovo link",
     "cliTokenReuse": "Generato in precedenza. Valido fino al {{date}}, a meno che tutte le registrazioni dei dispositivi non siano già state utilizzate.",
+    "cliTokenReuseVerified": "Generato in precedenza. Valido fino al {{date}}.",
     "linkReuse": "Generato in precedenza per {{platform}}. Valido fino al {{date}}.",
     "generateToken": "Genera token",
     "cliTokenNotGenerated": "Nessun token. Scegli la sede, il numero di dispositivi e la scadenza, quindi genera un token. Ogni token è una chiave di registrazione attiva.",

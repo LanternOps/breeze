@@ -124,7 +124,7 @@ function useExpiryTimer(expiresAt: string | null, onExpire: () => void) {
 }
 
 /**
- * Asks the server whether a remembered link's child key can still be used
+ * Asks the server whether a remembered link's or CLI token's child key can still be used
  * (#10923). Mirrors two of the public download route's 410 rules: past its
  * expiry, or usage_count at max_usage. Not the third: a key inside
  * INSTALLER_PARENT_MIN_REMAINING_SECONDS of expiry reads as usable here and
@@ -313,6 +313,8 @@ export default function AddDeviceModal({
   const [tokenCopied, setTokenCopied] = useState(false);
   // True when the token on screen was read back from storage (#10923).
   const [tokenRestored, setTokenRestored] = useState(false);
+  // True when a restored token's key was checked against the server (#11116).
+  const [tokenVerified, setTokenVerified] = useState(false);
   // #1108: how many machines this CLI token may enroll, and its real expiry,
   // both reported by the server so the UI never advertises a stale single-use
   // token as good for the whole fleet.
@@ -464,6 +466,7 @@ export default function AddDeviceModal({
     setTokenMaxUsage(null);
     setTokenExpiresAt(null);
     setTokenRestored(false);
+    setTokenVerified(false);
     setTokenCopied(false);
   }, []);
 
@@ -478,7 +481,7 @@ export default function AddDeviceModal({
   // it is shown. A CLI token cannot be, because its route returns no key id, so
   // it stands on its stored expiry and its copy says it may be used up.
   useEffect(() => {
-    cliDisplayGeneration.current += 1;
+    const cliGeneration = ++cliDisplayGeneration.current;
     const linkGeneration = ++linkDisplayGeneration.current;
     if (!isOpen) return;
 
@@ -490,13 +493,32 @@ export default function AddDeviceModal({
 
     const { cli, link } = readRememberedEnrollmentArtifacts(userId, selectedSiteId);
     if (cli) {
-      setOnboardingToken(cli.value);
-      setTokenSiteId(selectedSiteId);
-      setEnrollmentSecret(cli.enrollmentSecret ?? "");
-      setTokenServerUrl(cli.serverUrl ?? "");
-      setTokenMaxUsage(cli.maxUsage);
-      setTokenExpiresAt(cli.expiresAt);
-      setTokenRestored(true);
+      const showCli = (verified: boolean, remainingUses: number | null) => {
+        setOnboardingToken(cli.value);
+        setTokenSiteId(selectedSiteId);
+        setEnrollmentSecret(cli.enrollmentSecret ?? "");
+        setTokenServerUrl(cli.serverUrl ?? "");
+        setTokenMaxUsage(remainingUses ?? cli.maxUsage);
+        setTokenExpiresAt(cli.expiresAt);
+        setTokenRestored(true);
+        setTokenVerified(verified);
+      };
+      if (cli.childKeyId) {
+        // #11116: hidden until the key check answers, like a remembered link.
+        // A token minted by an API that predates the key id has none and falls
+        // back to the stored expiry, with copy that says it may be used up.
+        void checkInstallerLinkChild(cli.childKeyId).then((check) => {
+          if (cliGeneration !== cliDisplayGeneration.current) return;
+          if (check.status === "unusable") {
+            forgetEnrollmentArtifact(userId, selectedSiteId, "cli");
+            return;
+          }
+          if (check.status === "unknown") return;
+          showCli(true, check.remainingUses);
+        });
+      } else {
+        showCli(false, null);
+      }
     }
     if (!link) return;
 
@@ -622,7 +644,14 @@ export default function AddDeviceModal({
         rememberCliToken(
           userId,
           boundSiteId,
-          { value: data.token, expiresAt, maxUsage, serverUrl, epoch },
+          {
+            value: data.token,
+            expiresAt,
+            maxUsage,
+            serverUrl,
+            childKeyId: typeof data.childKeyId === "string" ? data.childKeyId : null,
+            epoch,
+          },
           data.enrollmentSecret || undefined,
         );
       } else if (userId) {
@@ -1541,9 +1570,12 @@ export default function AddDeviceModal({
                         )}
                         {tokenRestored && tokenExpiresAt && (
                           <p data-testid="cli-token-reuse">
-                            {t("addDeviceModal.cliTokenReuse", {
-                              date: formatDateTime(tokenExpiresAt),
-                            })}
+                            {t(
+                              tokenVerified
+                                ? "addDeviceModal.cliTokenReuseVerified"
+                                : "addDeviceModal.cliTokenReuse",
+                              { date: formatDateTime(tokenExpiresAt) },
+                            )}
                           </p>
                         )}
                       </div>
