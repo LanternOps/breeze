@@ -256,6 +256,22 @@ describe('purge uninstall state (#11153)', () => {
     expect(await stateOf(device.id)).toBe('completed');
   });
 
+  it('agent_returned: a completion with no timestamp fails closed once the agent has been seen', async () => {
+    const tenant = await seedTenant();
+    const device = await seedRemovedDevice(tenant, { lastSeenAt: new Date(Date.now() - DAY_MS) });
+    await seedUninstall(device.id, { completedAt: null });
+
+    expect(await stateOf(device.id)).toBe('agent_returned');
+  });
+
+  it('ephemeral outranks a failed uninstall row (the carve-out comes first)', async () => {
+    const tenant = await seedTenant();
+    const device = await seedRemovedDevice(tenant, { isEphemeral: true });
+    await seedUninstall(device.id, { status: 'failed', completedAt: null });
+
+    expect(await stateOf(device.id)).toBe('ephemeral');
+  });
+
   it('agent_reported_uninstall: the installer told us and the agent has been silent since', async () => {
     const tenant = await seedTenant();
     const device = await seedRemovedDevice(tenant, {

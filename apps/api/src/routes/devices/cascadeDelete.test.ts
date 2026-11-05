@@ -772,7 +772,7 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     expect(res.status).toBe(200);
     expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'device.permanent_delete',
-      details: { detachedTopologyAlerts: 2, force: false, uninstallState: 'completed' },
+      details: { detachedTopologyAlerts: 2, force: false, forced: false, uninstallState: 'completed' },
     }));
   });
 
@@ -1217,7 +1217,7 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     expect(res.status).toBe(200);
     // The gate was consulted (and overridden), not skipped.
     expect(statements.some((s) => s.includes('uninstall_state'))).toBe(true);
-    expect(await auditDetails()).toMatchObject({ force: true, uninstallState: 'none' });
+    expect(await auditDetails()).toMatchObject({ force: true, forced: true, uninstallState: 'none' });
   });
 
   it('audits force: false and the confirmed state on an ordinary bodyless delete (#11153)', async () => {
@@ -1230,7 +1230,21 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     });
 
     expect(res.status).toBe(200);
-    expect(await auditDetails()).toMatchObject({ force: false, uninstallState: 'completed' });
+    expect(await auditDetails()).toMatchObject({ force: false, forced: false, uninstallState: 'completed' });
+  });
+
+  it('records force: true but forced: false when force was sent for an already-confirmed device (#11153)', async () => {
+    rigDeviceLookup(DEVICE);
+    rigDeleteTransaction({ uninstallState: 'completed' });
+
+    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force: true }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await auditDetails()).toMatchObject({ force: true, forced: false, uninstallState: 'completed' });
   });
 
   it.each([

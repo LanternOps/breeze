@@ -949,7 +949,7 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
           the two screens read identically. The undo toast still follows on
           confirm; the dialog is what stops a single stray click from starting
           the countdown at all. */}
-            {pendingPermanentDelete && (
+      {pendingPermanentDelete && (
         <ConfirmDialog
           open
           onClose={() => setPendingPermanentDelete(null)}

@@ -117,9 +117,13 @@ export function purgeUninstallStateSql(): SQL<string> {
       SELECT CASE
         WHEN c.status = 'completed' THEN
           CASE
+            -- A completion with no timestamp cannot be shown to postdate the
+            -- agent's last beat, so a seen agent fails closed.
             WHEN devices.last_seen_at IS NOT NULL
-              AND c.completed_at IS NOT NULL
-              AND devices.last_seen_at > c.completed_at + ${UNINSTALL_COMPLETED_RETURN_GRACE}::interval
+              AND (
+                c.completed_at IS NULL
+                OR devices.last_seen_at > c.completed_at + ${UNINSTALL_COMPLETED_RETURN_GRACE}::interval
+              )
               THEN 'agent_returned'
             ELSE 'completed'
           END

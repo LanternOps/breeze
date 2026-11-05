@@ -2952,7 +2952,7 @@ export default function DevicesPage() {
           question to ask (uninstall the agent, or leave it?), not just a
           yes/no. Every other gated action keeps the generic ConfirmDialog
           below with the shared deviceActions.confirm.* copy. */}
-            {pendingDeviceAction && pendingDeviceAction.action === 'decommission' && (
+      {pendingDeviceAction && pendingDeviceAction.action === 'decommission' && (
         <RemoveDeviceDialog
           open
           targets={[{

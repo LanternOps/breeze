@@ -197,6 +197,7 @@ describe('processDeviceBulkPurgeJob', () => {
     expect(result.skipped).toEqual([{ deviceId: DEV_1, code: 'UNINSTALL_NOT_CONFIRMED' }]);
     expect(result.purged).toEqual([DEV_2]);
     // Bulk has no "delete anyway": the fourth (options) argument is never a force.
+    expect(vi.mocked(purgeRemovedDevice).mock.calls).toHaveLength(2);
     for (const call of vi.mocked(purgeRemovedDevice).mock.calls) {
       expect((call[3] as { force?: boolean } | undefined)?.force).not.toBe(true);
     }

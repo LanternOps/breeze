@@ -252,7 +252,7 @@ export type ParkedPurgeOutcome =
       hostname: string;
       holdingOrgId: string;
       /** #11153 — the uninstall state that allowed the purge, for the audit row. */
-      uninstallState?: PurgeResult['uninstallState'];
+      uninstallState: PurgeResult['uninstallState'];
     }
   | { purged: false; deviceId: string; reason: ParkedPurgeSkip };
 
@@ -303,7 +303,7 @@ export async function purgeExpiredParkedDevice(input: {
         deviceId,
         hostname: device.hostname,
         holdingOrgId: device.orgId,
-        uninstallState: purged?.uninstallState,
+        uninstallState: purged.uninstallState,
       };
     });
   } catch (err) {

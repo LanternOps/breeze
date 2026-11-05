@@ -398,6 +398,7 @@ describe('runRemovedDevicePurgeOnce', () => {
     expect(result.skippedUninstallNotConfirmed).toBe(1);
     expect(result.skippedRaced).toBe(0);
     expect(result.purged).toBe(1);
+    expect(purgeRemovedDeviceMock.mock.calls).toHaveLength(2);
     for (const call of purgeRemovedDeviceMock.mock.calls) {
       expect((call[3] as { force?: boolean } | undefined)?.force).not.toBe(true);
     }

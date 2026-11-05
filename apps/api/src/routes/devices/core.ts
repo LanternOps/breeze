@@ -2645,6 +2645,7 @@ coreRoutes.delete(
     let detachedTopologyAlerts = 0;
     let screenshotStorageKeys: string[] = [];
     let uninstallState: PurgeResult['uninstallState'] = 'none';
+    let forced = false;
 
     // Delegated to `purgeRemovedDevice` (services/deviceLifecycle.ts) since
     // #2787 — one implementation shared with POST /devices/bulk/permanent-delete
@@ -2713,6 +2714,7 @@ coreRoutes.delete(
       linkGroupDissolved = purge.linkGroupDissolved;
       detachedTopologyAlerts = purge.detachedTopologyAlerts;
       uninstallState = purge.uninstallState;
+      forced = purge.forced;
     } catch (err: unknown) {
       if (err instanceof NetworkIsolationUnresolvedError) {
         return c.json({ error: err.code, message: err.message }, 409);
@@ -2797,10 +2799,12 @@ coreRoutes.delete(
         // Site-owned topology alerts this device originated (M3-D6) — after a
         // move-org they belong to ANOTHER org; record the detached provenance.
         ...(detachedTopologyAlerts > 0 ? { detachedTopologyAlerts } : {}),
-        // #11153 — always present: whether the operator sent force, and what
-        // the agent's uninstall looked like under the lock. force + an
-        // unconfirmed state is the record of a deliberate "delete anyway".
+        // #11153 — always present: whether the operator sent force, whether
+        // force is what let the device through (`forced`), and what the
+        // agent's uninstall looked like under the lock. `forced: true` is the
+        // record of a deliberate "delete anyway".
         force,
+        forced,
         uninstallState,
       }
     });

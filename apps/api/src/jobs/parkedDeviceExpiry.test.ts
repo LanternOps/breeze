@@ -204,6 +204,7 @@ describe('parked lifecycle isolation refusals', () => {
     h.purgeRemoved.mockResolvedValueOnce({ uninstallState: 'agent_reported_uninstall', forced: false });
     const outcome = await purgeExpiredParkedDevice({ partnerId, deviceId, cutoff: new Date('2026-03-01') });
     expect(outcome).toMatchObject({ purged: true, uninstallState: 'agent_reported_uninstall' });
+    expect(h.purgeRemoved.mock.calls).toHaveLength(1);
     for (const call of h.purgeRemoved.mock.calls) {
       expect((call[3] as { force?: boolean } | undefined)?.force).not.toBe(true);
     }
