@@ -111,15 +111,20 @@ export function deviceHasBackupCatchUp(): SQL<boolean> {
   )`;
 }
 
-/** What a catch-up dispatch needs from a deferred row. */
-const deferredJobColumns = {
+/**
+ * What a catch-up dispatch needs from a deferred row. Built per call, not at
+ * module load: route tests that mock `../db/schema` with a partial export set
+ * import this module transitively (routes → backupWorker → here), and a
+ * top-level `backupJobs.id` would throw before their own setup runs.
+ */
+const deferredJobColumns = () => ({
   jobId: backupJobs.id,
   configId: backupJobs.configId,
   orgId: backupJobs.orgId,
   deviceId: backupJobs.deviceId,
   catchUpUntil: backupJobs.catchUpUntil,
   configGeneration: backupJobs.catchUpConfigGeneration,
-};
+});
 
 const insideCatchUpWindow = () => and(
   eq(backupJobs.status, 'pending'),
@@ -173,7 +178,7 @@ async function enqueueDeferredJobs(jobs: DeferredJob[]): Promise<number> {
  */
 export async function dispatchBackupCatchUpJobs(deviceId: string): Promise<number> {
   const jobs = await runWithSystemDbAccess(() => db
-    .select(deferredJobColumns)
+    .select(deferredJobColumns())
     .from(backupJobs)
     .where(and(eq(backupJobs.deviceId, deviceId), insideCatchUpWindow())));
   return enqueueDeferredJobs(jobs);
@@ -189,7 +194,7 @@ export async function dispatchBackupCatchUpJobs(deviceId: string): Promise<numbe
  */
 export async function dispatchCatchUpsForConnectedDevices(): Promise<number> {
   const rows = await runWithSystemDbAccess(() => db
-    .select({ ...deferredJobColumns, agentId: devices.agentId })
+    .select({ ...deferredJobColumns(), agentId: devices.agentId })
     .from(backupJobs)
     .innerJoin(devices, eq(backupJobs.deviceId, devices.id))
     .where(and(
