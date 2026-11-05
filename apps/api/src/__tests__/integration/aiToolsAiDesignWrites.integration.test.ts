@@ -346,6 +346,35 @@ describe('approver scope for a partner-wide intent', () => {
     await expect(getTestDb().select().from(aiAgentSchedules).where(eq(aiAgentSchedules.id, baseline.id))).resolves.toHaveLength(1);
   });
 
+  runDb('a full-partner member who is also an org member is refused when deciding from an org session', async () => {
+    const f = await seedSchedules();
+    const dual = await addPartnerApprover(f.partner.id);
+    await assignUserToOrganization(dual.id, f.org.id, f.approver.roleId);
+    const { snapshot } = await fileBaselineDelete(f);
+    const [row] = (await approversOf(snapshot.id)).filter((r) => r.userId === dual.id);
+
+    const res = await approve({ ...dual, roleId: f.approver.roleId }, f.org.id, f.partner.id, row!.id, 'organization');
+
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toMatchObject({ error: 'approver_scope_required' });
+    expect((await intentRow(snapshot.id)).status).toBe('pending_approval');
+  });
+
+  runDb("an override in another org cannot use the session org's approvers: scope falls to the partner axis", async () => {
+    const f = await seedSchedules();
+    const partnerApprover = await addPartnerApprover(f.partner.id);
+    const otherOrg = await createOrganization({ partnerId: f.partner.id });
+    const baseline = await seedBaseline(f.partner.id, f.agentId);
+    const override = await seedOverride(otherOrg.id, baseline);
+
+    const snapshot = await createActionIntent(f.auth, {
+      toolName: 'manage_ai_agent_schedules', input: { action: 'delete', scheduleId: override.id }, source: 'chat', orgId: f.org.id,
+    } as never);
+
+    expect(snapshot.status, JSON.stringify(snapshot)).toBe('pending_approval');
+    expect((await approversOf(snapshot.id)).map((r) => r.userId)).toEqual([partnerApprover.id]);
+  });
+
   runDb('with no other full-partner approver the requester gets the sole-operator row, not an org admin', async () => {
     const f = await seedSchedules();
     const { snapshot } = await fileBaselineDelete(f);

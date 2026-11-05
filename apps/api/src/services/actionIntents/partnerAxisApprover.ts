@@ -20,6 +20,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiAgentSchedules, organizations } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { canManagePartnerWidePolicies } from '../partnerWideAccess';
+import { captureException } from '../sentry';
 import { resolvePartnerUsersWithPermission } from '../usersWithPermission';
 import { mayHavePartnerWideEffect } from './partnerWideEffect';
 
@@ -59,6 +60,7 @@ export async function intentRequiresPartnerAxisApprover(intent: {
     return !(await scheduleStaysInOrg(intent.arguments ?? {}, intent.orgId));
   } catch (err) {
     console.error('[partnerAxisApprover] could not read an intent target; requiring a partner-axis approver', err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
     return true;
   }
 }

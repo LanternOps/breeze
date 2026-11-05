@@ -8,7 +8,8 @@
  * on `action_intents.org_id`, so an approver of org A would otherwise be approving a
  * change to org B and a worker release would refuse. A partner baseline has no org:
  * its intent stays in the session org, and a delete's card says how many organizations
- * lose an override.
+ * lose an override. That delete's approvers are the partner-axis holders
+ * (`partnerAxisApprover.ts`), not the session org's members.
  *
  * Read as system, because the row may be in an org the session is not bound to. Nothing
  * here is an access check: the caller (`createSessionPreToolUse`) uses a target only

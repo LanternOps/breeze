@@ -24,10 +24,12 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
 }));
+vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../usersWithPermission', () => ({
   resolvePartnerUsersWithPermission: vi.fn(async () => h.partnerApprovers),
 }));
 
+import { captureException } from '../sentry';
 import { resolvePartnerUsersWithPermission } from '../usersWithPermission';
 import { isPartnerAxisApprover, intentRequiresPartnerAxisApprover, resolvePartnerAxisApprovers } from './partnerAxisApprover';
 import { mayHavePartnerWideEffect } from './partnerWideEffect';
@@ -91,9 +93,10 @@ describe('intentRequiresPartnerAxisApprover', () => {
     await expect(intentRequiresPartnerAxisApprover(scheduleDelete())).resolves.toBe(true);
   });
 
-  it('requires the partner axis when the read fails', async () => {
+  it('requires the partner axis when the read fails, and reports the failure', async () => {
     h.throwOnRead = true;
     await expect(intentRequiresPartnerAxisApprover(scheduleDelete())).resolves.toBe(true);
+    expect(captureException).toHaveBeenCalledTimes(1);
   });
 
   it.each([['malformed', 'nope'], ['missing', undefined], ['not a string', 7]])(

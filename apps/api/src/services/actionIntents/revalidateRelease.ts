@@ -242,6 +242,10 @@ function isSystemDecided(intent: ActionIntent): boolean {
  * The approver must STILL hold the partner axis at release, and an intent with no
  * recorded approver has nobody to hold it. Loaded on demand: only a registered action
  * reaches this, and every other release keeps its import graph.
+ *
+ * A throw must not escape: the intent is already CAS'd `executing`, and an escaping
+ * error leaves it to the stale-executing reaper's generic `execution_lost`. A failed
+ * read refuses under its own code, so nobody reads it as the approver lacking authority.
  */
 async function refusePartnerWideRelease(
   intent: ActionIntent,
@@ -254,8 +258,12 @@ async function refusePartnerWideRelease(
     return (await isPartnerAxisApprover(intent.decidedByUserId, intent.orgId)) ? null : refusal;
   } catch (error) {
     console.error('[revalidateRelease] could not verify a partner-axis approver; refusing the release', error);
-    captureException(error);
-    return refusal;
+    captureException(error instanceof Error ? error : new Error(String(error)));
+    return {
+      ok: false,
+      errorCode: 'approver_scope_check_failed',
+      details: { reason: error instanceof Error ? error.message : String(error) },
+    };
   }
 }
 
@@ -584,8 +592,7 @@ async function revalidateApprovedIntentCore(
   }
 
   // (d') Approver scope on a partner-wide intent: the release-time twin of the decide
-  // gate. Placed before every origin's return below, so no origin skips it. A throw
-  // must not escape: the intent is already CAS'd `executing` and this job has no retry.
+  // gate. Placed before every origin's return below, so no origin skips it.
   if (mayHavePartnerWideEffect(intent.actionName, intent.arguments)) {
     const refused = await refusePartnerWideRelease(intent);
     if (refused) return refused;

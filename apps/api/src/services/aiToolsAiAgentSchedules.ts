@@ -12,6 +12,8 @@
  *    override, and that tightening cannot be restored. It is static for both owners
  *    because the input names no owner, so a single-org override on an unarmed
  *    baseline is stricter than the class rule requires (recorded in the plan).
+ *    A baseline delete's second approver must hold the partner axis
+ *    (actionIntents/partnerWideEffect.ts).
  *
  * The tool never arms act mode (Decision 3). `create` takes no `actMode`, `update`
  * takes only `false`, and while a baseline is armed a write may only narrow what it

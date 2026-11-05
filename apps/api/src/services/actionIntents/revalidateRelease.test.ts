@@ -807,11 +807,11 @@ describe('revalidateApprovedIntentForRelease partner-axis approver', () => {
     expect(isPartnerAxisApprover).not.toHaveBeenCalled();
   });
 
-  it('refuses, and does not throw, when the membership read fails', async () => {
+  it('refuses under its own code, and does not throw, when the membership read fails', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.mocked(isPartnerAxisApprover).mockRejectedValue(new Error('db down'));
     const result = await revalidateApprovedIntentForRelease(scheduleDelete(), { boundArgumentDigest: digest });
-    expect(result).toMatchObject({ ok: false, errorCode: 'approver_scope_required' });
+    expect(result).toMatchObject({ ok: false, errorCode: 'approver_scope_check_failed' });
   });
 
   it('releases for a partner-axis approver', async () => {

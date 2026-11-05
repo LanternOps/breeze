@@ -61,8 +61,10 @@ import { resolvePartnerAxisApprovers } from './partnerAxisApprover';
 
 /**
  * Resolve the distinct user ids eligible to decide an action intent for
- * `orgId`. Empty array when none qualify. Pure-read; opens its own system DB
- * context, so it may be called from any ambient context (or none).
+ * `orgId`: the org's `approvals:decide` holders, or with `requirePartnerAxis`
+ * the full-partner holders of its partner. Empty array when none qualify.
+ * Pure-read; opens its own system DB context, so it may be called from any
+ * ambient context (or none).
  */
 export interface ResolveIntentApproversOpts {
   /**
