@@ -346,24 +346,26 @@ async function deviceInOrg(orgId: string, deviceId: string): Promise<boolean> {
 }
 
 /**
- * The cheap, read-only prerequisite each kind needs before it could launch —
- * the same checks its launcher makes, without enqueueing, admitting or
- * provisioning anything. The chat gate runs these BEFORE raising an approval
- * card (`coordinator.precheckSpecialistRequest`) so a request that would be
- * refused deterministically never asks first. The launchers still re-check at
- * launch: state can change while the card waits.
- */
-/**
  * #10487 — a sweep occurrence admits one run of the org's effective TRIAGE
  * agent (aiAgentSweepScheduler `case 'sweep'`), which per-org admission skips
  * when that agent is missing, switched off or mode Off. Checked up front so
  * the request is refused by name instead of "queued" and silently skipped.
+ * (Admission's other skips — trigger filter, cooldown, breaker — stay there.)
  */
 async function sweepAgentRefusal(orgId: string): Promise<PrerequisiteRefusal | null> {
   const agent = await resolveLaunchableAgent(orgId, 'triage');
   return agent.ok ? null : agent.refusal;
 }
 
+/**
+ * The cheap, read-only prerequisite each kind needs before it could launch —
+ * the same checks its launcher makes, without enqueueing, admitting or
+ * provisioning anything. Both the chat gate
+ * (`coordinator.precheckSpecialistRequest`) and an assessment's request
+ * (coordinator gate 9, #10487) run these BEFORE raising an approval card, so a
+ * request that would be refused deterministically never asks first. The
+ * launchers still re-check at launch: state can change while the card waits.
+ */
 export const SPECIALIST_PREREQUISITES: Readonly<Record<SpecialistKind, (args: PrerequisiteArgs) => Promise<PrerequisiteRefusal | null>>> = Object.freeze({
   sweep: async ({ orgId, partnerId, params }) => {
     const { sweepKinds } = sweepParamsSchema.parse(params);
@@ -416,8 +418,8 @@ export const SPECIALIST_PREREQUISITES: Readonly<Record<SpecialistKind, (args: Pr
  * A one-off occurrence of the partner's enabled sweep baseline, restricted to
  * this org and carrying the grant. The org's triage agent must be able to
  * accept the run (#10487) — otherwise it refuses as the prerequisite does.
- * `admitted` here means QUEUED: per-org
- * admission (budget, overrides, duplicate) happens in the occurrence job, and
+ * `admitted` here means QUEUED: per-org admission (budget, overrides,
+ * duplicate) happens in the occurrence job, and
  * its outcome lands on the sweep run, not on this result. Going through the sweep queue keeps the
  * system-collected evidence step a sweep run depends on. The run itself is
  * admitted by `processSweepOccurrence` (dedupe

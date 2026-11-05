@@ -282,6 +282,16 @@ describe('requestSpecialist gating matrix', () => {
       expect(h.raiseSpecialistIntent).toHaveBeenCalledTimes(1);
     });
 
+    // A prerequisite read that throws (DB error, missing org) rejects — the
+    // dispatch records it `dispatch_failed` and reports it — and never falls
+    // through to minting the card.
+    it('a prerequisite that throws rejects without minting a card', async () => {
+      h.prereq.patch_plan!.mockRejectedValue(new Error('db down'));
+      await expect(requestSpecialist(base({ kind: 'patch_plan' }))).rejects.toThrow('db down');
+      expect(h.raiseSpecialistIntent).not.toHaveBeenCalled();
+      expect(launchCalls()).toBe(0);
+    });
+
     it('the prerequisite runs after the permission gates (a budget refusal never reads agent state)', async () => {
       h.chargeableUnderGrant.mockResolvedValue({ ok: false, reason: 'budget_exhausted' });
       await expect(requestSpecialist(base({ kind: 'patch_plan' }))).resolves.toEqual({ refused: 'budget_exhausted' });
