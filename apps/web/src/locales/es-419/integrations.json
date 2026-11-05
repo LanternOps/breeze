@@ -1518,6 +1518,16 @@
       "auto_external_code": "Automática",
       "manual_unmapped": "Sin asignar a propósito"
     },
+    "installer": {
+      "ready": "Instalador: listo (obtenido {{time}})",
+      "packagesApiDisabled": "Instalador: la API de Packages no está habilitada en la clave de API",
+      "noPackage": "Instalador: esta empresa no tiene un paquete de instalación",
+      "multiplePackages": "Instalador: esta empresa tiene más de un paquete de instalación. Conserva uno en la consola del proveedor",
+      "malformedResponse": "Instalador: el proveedor devolvió un enlace que Breeze no puede usar",
+      "urlRejected": "Instalador: el enlace del proveedor apunta a un host que Breeze no permite",
+      "vendorError": "Instalador: falló la última actualización del enlace. Breeze reintentará en la próxima sincronización",
+      "unavailable": "Enlace del instalador no disponible"
+    },
     "endpointsTitle": "Endpoints sin vincular",
     "endpointsHelp": "Vincule los endpoints de EDR que no se pudieron asociar automáticamente a un dispositivo de Breeze.",
     "endpointsFilter": "Estado del endpoint",

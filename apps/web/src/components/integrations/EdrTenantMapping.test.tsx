@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { EDR_INSTALLER_FETCH_ERROR_CODES } from "@breeze/shared";
 
 vi.mock("../../stores/auth", () => ({ fetchWithAuth: vi.fn() }));
 vi.mock("../shared/Toast", () => ({ showToast: vi.fn() }));
@@ -81,6 +82,56 @@ describe("EdrTenantMapping", () => {
     render(<EdrTenantMapping connectionId="conn-1" orgs={orgs} canManage onChanged={vi.fn()} />);
     expect(await screen.findByTestId("edr-tenant-missing-ten-1")).toBeInTheDocument();
     expect(screen.getByTestId("edr-mapping-summary").textContent).toContain("12");
+  });
+
+  describe("installer status (#8170)", () => {
+    const statusOf = async (o: Record<string, unknown>) => {
+      route([tenant(o)]);
+      render(<EdrTenantMapping connectionId="conn-1" orgs={orgs} canManage onChanged={vi.fn()} />);
+      await screen.findByTestId("edr-tenant-row-ten-1");
+      return screen.queryByTestId("edr-tenant-installer-status-ten-1");
+    };
+
+    it("shows ready with the fetch time when material is stored", async () => {
+      const status = await statusOf({
+        hasInstallerSecret: true, installerFetchedAt: "2026-09-15T11:50:00.000Z", installerFetchError: null,
+      });
+      expect(status?.textContent).toMatch(/^Installer: ready \(fetched .+\)$/);
+    });
+
+    const COPY: Array<[string, string]> = [
+      ["packages_api_disabled", "the Packages API is not enabled"],
+      ["no_package", "no installation package"],
+      ["multiple_packages", "more than one installation package"],
+      ["malformed_response", "a link Breeze cannot use"],
+      ["url_rejected", "a host Breeze does not allow"],
+      ["vendor_error", "the last link refresh failed"],
+    ];
+
+    it("covers every fetch error code", () => {
+      expect(COPY.map(([code]) => code).sort()).toEqual([...EDR_INSTALLER_FETCH_ERROR_CODES].sort());
+    });
+
+    it.each(COPY)("shows the copy for %s", async (code, copy) => {
+      const status = await statusOf({ hasInstallerSecret: false, installerFetchedAt: null, installerFetchError: code });
+      expect(status?.textContent).toContain(copy);
+    });
+
+    it("an error outranks stored material: a kept link is not reported as ready", async () => {
+      const status = await statusOf({
+        hasInstallerSecret: true, installerFetchedAt: "2026-09-15T11:50:00.000Z", installerFetchError: "vendor_error",
+      });
+      expect(status?.textContent).toContain("the last link refresh failed");
+    });
+
+    it("falls back to generic copy for a code this build does not know", async () => {
+      const status = await statusOf({ hasInstallerSecret: false, installerFetchedAt: null, installerFetchError: "new_code" });
+      expect(status?.textContent).toBe("Installer link unavailable");
+    });
+
+    it("shows nothing for a provider without an installer, or before the first fetch", async () => {
+      expect(await statusOf({ hasInstallerSecret: false, installerFetchedAt: null, installerFetchError: null })).toBeNull();
+    });
   });
 
   it("hides mapping controls when the user cannot manage", async () => {

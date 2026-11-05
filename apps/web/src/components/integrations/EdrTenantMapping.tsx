@@ -17,6 +17,20 @@ export type EdrMappingOrg = { id: string; name: string };
  */
 const UNMAPPED = "__unmapped__";
 
+/**
+ * Copy for `edr_tenants.installer_fetch_error`. Every code in
+ * EDR_INSTALLER_FETCH_ERROR_CODES has an entry (the test pins it); a code from a
+ * newer API falls back to generic copy instead of showing a raw key.
+ */
+const INSTALLER_ERROR_COPY: Record<string, string> = {
+  packages_api_disabled: "edrProviders.installer.packagesApiDisabled",
+  no_package: "edrProviders.installer.noPackage",
+  multiple_packages: "edrProviders.installer.multiplePackages",
+  malformed_response: "edrProviders.installer.malformedResponse",
+  url_rejected: "edrProviders.installer.urlRejected",
+  vendor_error: "edrProviders.installer.vendorError",
+};
+
 export default function EdrTenantMapping({
   connectionId,
   orgs,
@@ -142,6 +156,21 @@ export default function EdrTenantMapping({
                               {t("edrProviders.missingSince", { date: formatDate(row.vendorMissingSince) })}
                             </div>
                           )}
+                          {row.installerFetchError ? (
+                            <div
+                              data-testid={`edr-tenant-installer-status-${row.id}`}
+                              className="mt-1 text-xs text-amber-700"
+                            >
+                              {t(/* i18n-dynamic */ INSTALLER_ERROR_COPY[row.installerFetchError] ?? "edrProviders.installer.unavailable")}
+                            </div>
+                          ) : row.hasInstallerSecret && row.installerFetchedAt ? (
+                            <div
+                              data-testid={`edr-tenant-installer-status-${row.id}`}
+                              className="mt-1 text-xs text-muted-foreground"
+                            >
+                              {t("edrProviders.installer.ready", { time: formatRelativeTime(row.installerFetchedAt) })}
+                            </div>
+                          ) : null}
                         </td>
                         <td className="py-3 pr-4 text-muted-foreground">{row.endpointCount ?? 0}</td>
                         <td className="py-3 pr-4 text-muted-foreground">{row.openDetectionCount ?? 0}</td>

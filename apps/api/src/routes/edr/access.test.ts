@@ -75,3 +75,12 @@ describe('public select lists', () => {
     expect(EDR_TENANT_PUBLIC_SELECT).toHaveProperty('hasInstallerSecret');
   });
 });
+
+describe('EDR_TENANT_PUBLIC_SELECT installer fields (#8170)', () => {
+  it('exposes installer status and a boolean, never the sealed material', () => {
+    const keys = Object.keys(EDR_TENANT_PUBLIC_SELECT);
+    expect(keys).toEqual(expect.arrayContaining(['installerFetchedAt', 'installerExpiresAt', 'installerFetchError', 'hasInstallerSecret']));
+    expect(keys).not.toContain('installerSecretEncrypted');
+    expect(keys).not.toContain('sealedMaterial');
+  });
+});

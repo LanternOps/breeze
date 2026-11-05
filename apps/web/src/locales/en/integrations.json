@@ -1497,6 +1497,16 @@
       "auto_external_code": "Automatic",
       "manual_unmapped": "Left unmapped"
     },
+    "installer": {
+      "ready": "Installer: ready (fetched {{time}})",
+      "packagesApiDisabled": "Installer: the Packages API is not enabled on the API key",
+      "noPackage": "Installer: this company has no installation package",
+      "multiplePackages": "Installer: this company has more than one installation package. Keep one in the vendor console",
+      "malformedResponse": "Installer: the vendor returned a link Breeze cannot use",
+      "urlRejected": "Installer: the vendor's link points at a host Breeze does not allow",
+      "vendorError": "Installer: the last link refresh failed. Breeze retries on the next sync",
+      "unavailable": "Installer link unavailable"
+    },
     "endpointsTitle": "Unlinked endpoints",
     "endpointsHelp": "Link EDR endpoints that could not be matched to a Breeze device automatically.",
     "endpointsFilter": "Endpoint state",

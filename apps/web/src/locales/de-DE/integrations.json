@@ -1518,6 +1518,16 @@
       "auto_external_code": "Automatisch",
       "manual_unmapped": "Bewusst nicht zugeordnet"
     },
+    "installer": {
+      "ready": "Installationsprogramm: bereit (abgerufen {{time}})",
+      "packagesApiDisabled": "Installationsprogramm: Die Packages-API ist für den API-Schlüssel nicht aktiviert",
+      "noPackage": "Installationsprogramm: Dieses Unternehmen hat kein Installationspaket",
+      "multiplePackages": "Installationsprogramm: Dieses Unternehmen hat mehr als ein Installationspaket. Behalten Sie eines in der Herstellerkonsole",
+      "malformedResponse": "Installationsprogramm: Der Hersteller hat einen Link geliefert, den Breeze nicht verwenden kann",
+      "urlRejected": "Installationsprogramm: Der Link des Herstellers verweist auf einen Host, den Breeze nicht zulässt",
+      "vendorError": "Installationsprogramm: Die letzte Link-Aktualisierung ist fehlgeschlagen. Breeze versucht es bei der nächsten Synchronisierung erneut",
+      "unavailable": "Installationslink nicht verfügbar"
+    },
     "endpointsTitle": "Nicht verknüpfte Endpoints",
     "endpointsHelp": "Verknüpfen Sie EDR-Endpoints, die nicht automatisch einem Breeze-Gerät zugeordnet werden konnten.",
     "endpointsFilter": "Endpoint-Status",
