@@ -219,8 +219,6 @@ func Preflight(ctx context.Context, deps Deps) (PCR7Bound bool, err error) {
 
 const pcrProfileLabel = "pcr validation profile:"
 
-var pcrListPattern = regexp.MustCompile(`^\d+(?:\s*,\s*\d+)*$`)
-
 // parsePCR7 reads every TPM protector's validation profile. All of them must
 // include PCR 7. Errors here must never repeat the output, which on a misbehaving
 // manage-bde could hold a recovery password.
@@ -249,14 +247,11 @@ func parsePCR7(out string) (bool, error) {
 }
 
 func listHasPCR7(list string) (bool, error) {
-	if !pcrListPattern.MatchString(list) {
-		return false, fmt.Errorf("%w: the validation profile is not a list of PCRs", ErrPreflightUnknown)
-	}
 	has7 := false
 	for _, field := range strings.Split(list, ",") {
 		n, err := strconv.Atoi(strings.TrimSpace(field))
 		if err != nil || n < 0 || n > maxPCR {
-			return false, fmt.Errorf("%w: the validation profile names an impossible PCR", ErrPreflightUnknown)
+			return false, fmt.Errorf("%w: the validation profile is not a list of PCRs", ErrPreflightUnknown)
 		}
 		has7 = has7 || n == 7
 	}
