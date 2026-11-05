@@ -23,7 +23,7 @@ import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
 import { asList } from '@/lib/asList';
 import ReparseSkipNotice from './ReparseSkipNotice';
-import { splitReparseSkipNotice } from '@breeze/shared';
+import { splitReparseSkipNotice, stripInlineIndexDropNote } from '@breeze/shared';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -194,12 +194,17 @@ function formatTime(iso?: string | null): string {
   });
 }
 
+// #11026: rows persisted before the server stopped storing it can still carry
+// the note that a snapshot's file list did not fit in the result. The list was
+// not lost, so it is not a job problem.
+function cleanedJobLog(errorLog: string | null | undefined): string | null {
+  return stripInlineIndexDropNote(errorLog ? stripInternalTagPrefix(errorLog) : null).warning;
+}
+
 function mapJob(raw: BackupJobRaw): BackupJob {
   // #9543: skipped reparse points are informational, not errors — keep them
   // out of the Errors column so the real failure text is what shows there.
-  const cleanedErrorLog = splitReparseSkipNotice(
-    raw.errorLog ? stripInternalTagPrefix(raw.errorLog) : null
-  ).diagnostic;
+  const cleanedErrorLog = splitReparseSkipNotice(cleanedJobLog(raw.errorLog)).diagnostic;
   return {
     id: raw.id,
     deviceName: raw.deviceName ?? raw.deviceId?.slice(0, 8) ?? '--',
@@ -576,9 +581,7 @@ export default function BackupJobList() {
                 const isStalled = isRunning && !!livenessAt && stalledMs > STALL_MS;
                 const stalledMinutes = Math.max(1, Math.floor(stalledMs / 60000));
                 const details = jobDetails[job.id];
-                const detailNotes = splitReparseSkipNotice(
-                  details?.errorLog ? stripInternalTagPrefix(details.errorLog) : null
-                );
+                const detailNotes = splitReparseSkipNotice(cleanedJobLog(details?.errorLog));
                 const isExpanded = expandedJobId === job.id;
                 const isLoadingDetails = loadingDetailsId === job.id;
                 return (

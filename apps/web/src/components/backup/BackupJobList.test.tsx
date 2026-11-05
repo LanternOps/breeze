@@ -1156,6 +1156,35 @@ describe('BackupJobList', () => {
       expect(errorLog.textContent).toBe('backup stopped');
     });
 
+    describe('the recoverable index drop note on historic rows (#11026)', () => {
+      const indexNote = 'snapshot file index omitted (17950 entries): the result exceeded the 4934464 byte server result budget, so per-file restore browsing is unavailable for this snapshot';
+
+      it('hides the note when it is all the row carries', async () => {
+        mockJob('completed', `bounded: ${indexNote}`);
+        render(<BackupJobList />);
+        const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+        expect(within(row).queryByTestId('backup-job-error-summary')).toBeNull();
+        expect(row.textContent).not.toContain('snapshot file index');
+
+        fireEvent.click(screen.getByRole('button', { name: /View details for Gamma Laptop backup/i }));
+        await waitFor(() => expect(screen.queryByText('Error Log')).toBeNull());
+        expect(document.body.textContent).not.toContain('snapshot file index');
+      });
+
+      it('keeps the other text, in the Errors column and the error log', async () => {
+        mockJob('failed', `disk full || bounded: ${indexNote}`);
+        render(<BackupJobList />);
+        const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+        const summary = within(row).getByTestId('backup-job-error-summary');
+        expect(summary.textContent).toContain('disk full');
+        expect(summary.textContent).not.toContain('snapshot file index');
+
+        fireEvent.click(screen.getByRole('button', { name: /View details for Gamma Laptop backup/i }));
+        const label = await screen.findByText('Error Log');
+        expect((label.nextElementSibling as HTMLElement).textContent).toBe('disk full');
+      });
+    });
+
     it('shows no error at all for a completed run whose only note is skipped reparse points', async () => {
       mockJob('completed', reparseNote);
 

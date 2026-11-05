@@ -410,6 +410,39 @@ describe('backup dashboard routes', () => {
     expect(body.data.attentionItems[0].description).not.toContain('reparse');
   });
 
+  // #11026: rows persisted before the server stopped storing it can still carry
+  // the note that a file list did not fit in the result. It is never the reason.
+  it('keeps the recoverable index drop note out of an attention item reason', async () => {
+    const indexNote = 'snapshot file index omitted (17950 entries): the result exceeded the 4934464 byte server result budget, so per-file restore browsing is unavailable for this snapshot';
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // configCount
+      .mockReturnValueOnce(chainMock([{ count: 2 }])) // jobCount
+      .mockReturnValueOnce(chainMock([{ count: 0 }])) // snapshotCount
+      .mockReturnValueOnce(chainMock([{ completed: 0, failed: 2, running: 0, pending: 0 }])) // last24hStats
+      .mockReturnValueOnce(chainMock([])) // recentJobsRaw
+      .mockReturnValueOnce(chainMock([])) // ranked-jobs subquery build (value unused)
+      .mockReturnValueOnce(chainMock([
+        {
+          deviceId: FAILING_DEVICE_ID,
+          status: 'failed',
+          errorLog: `backup stopped || bounded: ${indexNote}`,
+          completedAt: new Date('2026-07-14T10:00:00.000Z'),
+          createdAt: new Date('2026-07-14T09:55:00.000Z'),
+          rn: 1,
+          deviceName: 'Finance Laptop',
+          deviceHostname: 'fin-laptop-01',
+        },
+      ])); // ranked-jobs rows
+
+    const res = await app.request('/backup/dashboard');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.attentionItems[0].description).toMatch(/^backup stopped · Last unsuccessful /);
+    expect(body.data.attentionItems[0].description).not.toContain('snapshot file index');
+  });
+
   // #3000: a device whose latest backup landed `partial` (a real snapshot, but
   // a disproportionate share of the data missing) must reach attentionItems.
   // Before the partial status existed such a run was indistinguishable from a
