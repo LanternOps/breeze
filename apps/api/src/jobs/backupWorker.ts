@@ -1285,7 +1285,13 @@ async function stampDispatchPinAndIdentity(params: {
   // full-copy dispatch into a failed backup (and in Postgres a statement
   // error aborts the surrounding transaction outright, so catching it inside
   // would not help).
-  let pendingFallback: FullBackupFallbackReason | 'diagnose' | null = null;
+  // 'diagnose' explains a missing base from the probe below. 'diagnose_attested'
+  // does the same for a helper that verifies its base: the transaction already
+  // stamped 'no_verified_base', which the probe replaces with the first mirrored
+  // filter a snapshot fails, or 'no_prior_snapshot' when there is none at all
+  // (#11027: otherwise every new device's first backup reads as a verification
+  // failure).
+  let pendingFallback: FullBackupFallbackReason | 'diagnose' | 'diagnose_attested' | null = null;
 
   const outcome = await db.transaction(async (tx) => {
     // Review fix (spec §3.1 selection criteria): "no retirement row" is part
@@ -1443,7 +1449,7 @@ async function stampDispatchPinAndIdentity(params: {
       .where(eq(backupJobs.id, params.jobId));
 
     if (!candidate) {
-      pendingFallback = requireAttestedBase ? 'no_verified_base' : 'diagnose';
+      pendingFallback = requireAttestedBase ? 'diagnose_attested' : 'diagnose';
       return { baseSnapshotId: '', publishLeaseExpiresAt, baseAttestation: null };
     }
 
@@ -1489,24 +1495,34 @@ async function stampDispatchPinAndIdentity(params: {
       configId: params.configId,
       storageIdentity,
     };
-    if (pendingFallback !== 'diagnose') {
+    if (pendingFallback !== 'diagnose' && pendingFallback !== 'diagnose_attested') {
       logFullBackupFallback(pendingFallback, logParams);
     } else {
       try {
         const probe = await readBaseCandidateProbe(params.deviceId, params.configId);
-        const reason = classifyMissingBaseReason(probe, {
+        const attested = pendingFallback === 'diagnose_attested';
+        const classified = classifyMissingBaseReason(probe, {
           storageIdentity,
           mode,
           now: dispatchedAt,
           keyRoot: mintRoot.ok ? mintRoot.root : LEGACY_FLAT_ROOT,
         });
+        // A snapshot that passes every mirrored filter was refused for its
+        // attestation, which the probe does not see.
+        const reason = attested && probe !== null && classified === 'no_prior_snapshot'
+          ? 'no_verified_base'
+          : classified;
         logFullBackupFallback(reason, logParams);
         // #11027: stored for the job's detail view. Same rule as the probe: a
-        // failure here never fails a dispatch that already committed.
+        // failure here never fails a dispatch that already committed, and only
+        // the value this dispatch stamped is replaced.
         await db
           .update(backupJobs)
           .set({ fullBackupReason: reason })
-          .where(and(eq(backupJobs.id, params.jobId), isNull(backupJobs.fullBackupReason)));
+          .where(and(
+            eq(backupJobs.id, params.jobId),
+            attested ? eq(backupJobs.fullBackupReason, 'no_verified_base') : isNull(backupJobs.fullBackupReason),
+          ));
       } catch (err) {
         // Diagnosis only — the dispatch itself already committed.
         console.warn(

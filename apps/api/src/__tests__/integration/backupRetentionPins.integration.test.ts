@@ -715,17 +715,52 @@ describe('full_backup_reason (#11027)', () => {
     expect(row.fullBackupReason).toBe('key_root_changed');
   });
 
-  runDb('a device whose helper verifies its base stamps no_verified_base inside the dispatch', async () => {
-    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const ctx = await withSystemDbAccessContext(async () => {
+  // A helper that verifies its base is only handed an attested one. The
+  // transaction stamps no_verified_base; the probe after commit then says why
+  // more precisely when it can.
+  async function seedAttestedHelper(unique: string, snapshot?: Record<string, unknown>) {
+    return withSystemDbAccessContext(async () => {
       const { orgId, deviceId, configId } = await seedOrgDeviceConfig(unique);
       await db.update(devices).set({ backupIntegrityProtocolVersion: 1 }).where(eq(devices.id, deviceId));
+      if (snapshot) {
+        const [baseJob] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'completed', startedAt: new Date(), completedAt: new Date() }).returning({ id: backupJobs.id });
+        await db.insert(backupSnapshots).values({
+          orgId, jobId: baseJob!.id, deviceId, configId,
+          snapshotId: `reason-attest-${unique}`, backupType: 'file', storageIdentity: `local::/tmp/gc-test-${unique}`,
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+          ...snapshot,
+        });
+      }
       const [dispatchJob] = await db.insert(backupJobs).values({ orgId, configId, deviceId, status: 'pending' }).returning({ id: backupJobs.id });
       return { deviceId, configId, dispatchJobId: dispatchJob!.id };
     });
+  }
+
+  runDb('a verifying helper with no earlier backup at all stamps no_prior_snapshot', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ctx = await seedAttestedHelper(unique);
 
     const { row } = await stampedReason(ctx, { path: `/tmp/gc-test-${unique}` });
 
+    expect(row.fullBackupReason).toBe('no_prior_snapshot');
+  });
+
+  runDb('a verifying helper whose only candidate is unattested stamps no_verified_base', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ctx = await seedAttestedHelper(unique, {});
+
+    const { outcome, row } = await stampedReason(ctx, { path: `/tmp/gc-test-${unique}` });
+
+    expect(outcome.baseSnapshotId).toBe('');
     expect(row.fullBackupReason).toBe('no_verified_base');
+  });
+
+  runDb('a verifying helper after a prefix change stamps key_root_changed', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ctx = await seedAttestedHelper(unique, { keyLayout: 'prefixed_flat', keyPrefix: 'msp/old' });
+
+    const { row } = await stampedReason(ctx, { path: `/tmp/gc-test-${unique}` });
+
+    expect(row.fullBackupReason).toBe('key_root_changed');
   });
 });
