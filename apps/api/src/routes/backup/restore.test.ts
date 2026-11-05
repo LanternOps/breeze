@@ -669,7 +669,7 @@ describe('restore routes', () => {
     );
   });
 
-  it('expands a selected directory to the indexed files beneath it only (#9628)', async () => {
+  it('sends a selected directory as its stored-form prefix, which the agent expands (#9628, #11026)', async () => {
     selectMock
       .mockReturnValueOnce(
         chainMock([{ id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1', configId: 'cfg-1' }])
@@ -681,12 +681,13 @@ describe('restore routes', () => {
       ]))
       .mockReturnValueOnce(chainMock([{ id: 'device-1', status: 'online' }]))
       .mockReturnValueOnce(chainMock([{ provider: 's3', providerConfig: { bucket: 'breeze-backups', region: 'us-east-1' } }]));
-    insertMock.mockReturnValueOnce(chainMock([{
+    const insertChain = chainMock([{
       id: 'restore-1', snapshotId: 'snap-db-1', deviceId: 'device-1', restoreType: 'selective',
-      selectedPaths: ['/data/pick/a.txt', '/data/pick/sub/b.txt'], status: 'pending', targetPath: null, startedAt: null,
+      selectedPaths: ['/data/pick'], status: 'pending', targetPath: null, startedAt: null,
       completedAt: null, restoredSize: null, restoredFiles: null, targetConfig: null, commandId: null,
       createdAt: new Date('2026-04-01T00:00:00Z'), updatedAt: new Date('2026-04-01T00:00:00Z'),
-    }]));
+    }]);
+    insertMock.mockReturnValueOnce(insertChain);
     queueCommandForExecutionMock.mockResolvedValueOnce({ command: { id: 'command-1', status: 'sent' } });
 
     const res = await app.request('/restore', {
@@ -696,16 +697,54 @@ describe('restore routes', () => {
     });
 
     expect(res.status).toBe(201);
+    expect(insertChain.values).toHaveBeenCalledWith(expect.objectContaining({ selectedPaths: ['/data/pick'] }));
     expect(queueCommandForExecutionMock).toHaveBeenCalledWith(
       'device-1',
       'backup_restore',
-      expect.objectContaining({ selectedPaths: ['/data/pick/a.txt', '/data/pick/sub/b.txt'] }),
+      expect.objectContaining({ selectedPaths: ['/data/pick'] }),
       expect.anything()
     );
   });
 
-  it('answers 400 naming the count when a directory expands past the cap (#9628)', async () => {
-    const rows = Array.from({ length: 10_001 }, (_, i) => ({ id: `f${i}`, sourcePath: `/big/f${i}.txt` }));
+  it('restores a 50,000-file folder with one prefix, reading the index in pages (#11026)', async () => {
+    const rows = Array.from({ length: 50_000 }, (_, i) => ({ sourcePath: `/big/f${String(i).padStart(5, '0')}.txt` }));
+    const pages: Array<ReturnType<typeof chainMock>> = [];
+    for (let i = 0; i < rows.length; i += 5000) pages.push(chainMock(rows.slice(i, i + 5000)));
+    selectMock.mockReturnValueOnce(
+      chainMock([{ id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1', configId: 'cfg-1' }])
+    );
+    for (const page of pages) selectMock.mockReturnValueOnce(page);
+    selectMock
+      .mockReturnValueOnce(chainMock([]))
+      .mockReturnValueOnce(chainMock([{ id: 'device-1', status: 'online' }]))
+      .mockReturnValueOnce(chainMock([{ provider: 's3', providerConfig: { bucket: 'breeze-backups', region: 'us-east-1' } }]));
+    insertMock.mockReturnValueOnce(chainMock([{
+      id: 'restore-1', snapshotId: 'snap-db-1', deviceId: 'device-1', restoreType: 'selective',
+      selectedPaths: ['/big'], status: 'pending', targetPath: null, startedAt: null,
+      completedAt: null, restoredSize: null, restoredFiles: null, targetConfig: null, commandId: null,
+      createdAt: new Date('2026-04-01T00:00:00Z'), updatedAt: new Date('2026-04-01T00:00:00Z'),
+    }]));
+    queueCommandForExecutionMock.mockResolvedValueOnce({ command: { id: 'command-1', status: 'sent' } });
+
+    const res = await app.request('/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshotId: 'snap-db-1', restoreType: 'selective', selectedPaths: ['/big'] }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(queueCommandForExecutionMock).toHaveBeenCalledWith(
+      'device-1',
+      'backup_restore',
+      expect.objectContaining({ selectedPaths: ['/big'] }),
+      expect.anything()
+    );
+    // Each page after the first starts after the last path of the one before.
+    expect(pages[1]!.limit).toHaveBeenCalledWith(5000);
+  });
+
+  it('answers 400 naming the count when a mixed-separator folder expands past the cap (#9628)', async () => {
+    const rows = Array.from({ length: 10_002 }, (_, i) => ({ id: `f${i}`, sourcePath: i % 2 ? `/big/f${i}.txt` : `\\big\\f${i}.txt` }));
     selectMock
       .mockReturnValueOnce(
         chainMock([{ id: 'snap-db-1', orgId: 'org-1', deviceId: 'device-1', snapshotId: 'provider-snap-1', configId: 'cfg-1' }])
@@ -719,7 +758,7 @@ describe('restore routes', () => {
     });
 
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toContain('10001');
+    expect((await res.json()).error).toContain('10000-file limit');
     expect(insertMock).not.toHaveBeenCalled();
     expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
   });

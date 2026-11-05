@@ -1,9 +1,9 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { backupSnapshotFiles, backupSnapshots } from '../db/schema/backup';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { readableIndexCondition } from './backupRestoreIntegrity';
-import { normalizeSnapshotPath } from './backupSelectedPaths';
+import { createSelectionResolver, normalizeSnapshotPath, type SelectedSnapshotPathsResolution } from './backupSelectedPaths';
 
 /**
  * One-level, keyset-paged listing of a snapshot's file index (#8230).
@@ -89,19 +89,75 @@ export function shapeBrowseRows(rows: BrowseRow[], segments: string[], limit: nu
   return { entries, nextCursor: hasMore && last ? encodeBrowseCursor(last) : null };
 }
 
+/** Stored paths read per statement while resolving a selection. */
+export const SELECTION_PAGE_SIZE = 5000;
+
 /**
- * The stored source paths a selective restore may resolve against: the same
- * rows the listing would show (#11026), decided in the statement that reads
- * them. Empty when the snapshot has none, or none that may be trusted.
+ * One keyset page of the stored source paths a selective restore may resolve
+ * against: the same rows the listing would show (#11026), decided in the
+ * statement that reads them. Ordered by source_path, the second column of
+ * backup_snapshot_files_snapshot_source_idx, so each page is an index range.
  */
-export async function readableSnapshotSourcePaths(snapshotDbId: string): Promise<string[]> {
+async function readableSourcePathPage(snapshotDbId: string, after: string | null): Promise<string[]> {
   const rows = await db
     .select({ sourcePath: backupSnapshotFiles.sourcePath })
     .from(backupSnapshotFiles)
     .innerJoin(backupSnapshots, eq(backupSnapshots.id, backupSnapshotFiles.snapshotDbId))
     .leftJoin(backupSnapshotAttestations, eq(backupSnapshotAttestations.snapshotDbId, backupSnapshots.id))
-    .where(and(eq(backupSnapshotFiles.snapshotDbId, snapshotDbId), readableIndexCondition()));
+    .where(and(
+      eq(backupSnapshotFiles.snapshotDbId, snapshotDbId),
+      readableIndexCondition(),
+      ...(after === null ? [] : [gt(backupSnapshotFiles.sourcePath, after)]),
+    ))
+    .orderBy(asc(backupSnapshotFiles.sourcePath))
+    .limit(SELECTION_PAGE_SIZE);
   return rows.map((row) => row.sourcePath);
+}
+
+async function* readableSourcePaths(snapshotDbId: string): AsyncGenerator<string[]> {
+  let after: string | null = null;
+  for (;;) {
+    const page = await readableSourcePathPage(snapshotDbId, after);
+    if (page.length > 0) yield page;
+    if (page.length < SELECTION_PAGE_SIZE) return;
+    after = page[page.length - 1]!;
+  }
+}
+
+/**
+ * Every readable stored path of a snapshot, held in memory. For tests and small
+ * fixtures: request paths walk pages instead (resolveSelectedSnapshotPathsInDb).
+ */
+export async function readableSnapshotSourcePaths(snapshotDbId: string): Promise<string[]> {
+  const all: string[] = [];
+  for await (const page of readableSourcePaths(snapshotDbId)) all.push(...page);
+  return all;
+}
+
+export type SnapshotSelectionResolution =
+  | SelectedSnapshotPathsResolution
+  /** The snapshot has no rows that may be trusted: nothing can be selected yet. */
+  | { ok: false; reason: 'no_readable_index' };
+
+/**
+ * Resolves a selective restore's selections against a snapshot's readable
+ * index (createSelectionResolver) without loading every path: the rows are
+ * walked in keyset pages, and only the selections and their results are held.
+ */
+export async function resolveSelectedSnapshotPathsInDb(
+  snapshotDbId: string,
+  selected: readonly string[],
+): Promise<SnapshotSelectionResolution> {
+  const resolver = createSelectionResolver(selected);
+  let anyRows = false;
+  for await (const page of readableSourcePaths(snapshotDbId)) {
+    anyRows = true;
+    for (const path of page) resolver.add(path);
+    // Nothing to match: the first page already answers whether rows exist.
+    if (selected.length === 0) break;
+  }
+  if (!anyRows) return { ok: false, reason: 'no_readable_index' };
+  return resolver.finish();
 }
 
 export async function listSnapshotDirectory(params: {
