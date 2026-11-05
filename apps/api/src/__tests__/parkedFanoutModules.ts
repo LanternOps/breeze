@@ -31,6 +31,7 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'jobs/monitorScriptWorker.ts': { guards: 2, reason: 'partner-wide script monitor org and device fan-out' },
   'jobs/automationWorker.ts': { guards: 2, reason: 'automation assignment devices and event triggers' },
   'jobs/backupWorker.ts': { guards: 3, reason: 'scheduled backup org enumeration and dispatch' },
+  'jobs/backupCatchUp.ts': { guards: 1, reason: 'per-tick sweep of connected devices with a backup waiting for them (#11013)' },
   'jobs/cisJobs.ts': { guards: 1, reason: 'scheduled CIS scan targets' },
   'jobs/securityScanJobs.ts': { guards: 1, reason: 'scheduled security scans' },
   'services/securityScanSweepTargets.ts': { guards: 1, reason: 'IOC sweep target selection' },

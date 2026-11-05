@@ -24,6 +24,7 @@ import {
 import { handleTunnelDataFromAgent, isTunnelOwnedByAgent, registerTunnelOwnership } from './tunnelWs';
 import { enqueueDiscoveryResults, type DiscoveredHostResult, type DeviceAdjacency } from '../jobs/discoveryWorker';
 import { enqueueBackupResults } from '../jobs/backupWorker';
+import { deviceHasBackupCatchUp, dispatchBackupCatchUpJobs } from '../jobs/backupCatchUp';
 import { enqueueSnmpPollResults, type SnmpMetricResult } from '../jobs/snmpWorker';
 import { enqueueMonitorCheckResult, recordMonitorCheckResult, type MonitorCheckResult } from '../jobs/monitorWorker';
 import { transitionDeviceOffline } from '../jobs/offlineDetector';
@@ -3270,11 +3271,31 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
       if (agentDb) {
         try {
           const [deviceInfo] = await runWithAgentDbAccess('agentWs.onOpen.loadDevice', async () =>
-            db.select({ id: devices.id, siteId: devices.siteId, hostname: devices.hostname, agentVersion: devices.agentVersion, isEphemeral: devices.isEphemeral })
+            db.select({
+              id: devices.id,
+              siteId: devices.siteId,
+              hostname: devices.hostname,
+              agentVersion: devices.agentVersion,
+              isEphemeral: devices.isEphemeral,
+              // #11013: read on this row so a connect with no missed backup,
+              // nearly all of them, pays no extra query (partial index).
+              hasBackupCatchUp: deviceHasBackupCatchUp(),
+            })
               .from(devices)
               .where(eq(devices.agentId, agentId))
               .limit(1)
           );
+          // #11013: run the backups this device missed while it was off. Not
+          // awaited, as the check-schedules sweep retries a failure, and outside
+          // the agent's context because the enqueue opens system contexts.
+          if (deviceInfo?.hasBackupCatchUp) {
+            void dispatchBackupCatchUpJobs(deviceInfo.id).catch((err) => {
+              console.error(`[AgentWs] Failed to dispatch backup catch-ups for device ${deviceInfo.id}:`, err);
+              captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+                backup_dispatch_issue: 'catch-up-connect-failed',
+              });
+            });
+          }
           if (deviceInfo) {
             publishEvent('device.online', agentDb.orgId, {
               deviceId: deviceInfo.id,

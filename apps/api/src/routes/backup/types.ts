@@ -19,6 +19,7 @@ export type BackupPolicySchedule = {
   dayOfMonth?: number;
   windowStart?: string;
   windowEnd?: string;
+  runMissedBackupsOnConnect?: boolean;
 };
 
 export type BackupPolicyRetention = {

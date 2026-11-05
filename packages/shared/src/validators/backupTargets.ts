@@ -110,6 +110,9 @@ export const backupScheduleSchema = z.object({
   dayOfMonth: z.number().int().min(1).max(28).optional(),
   windowStart: z.string().regex(/^\d{2}:\d{2}$/).optional(),
   windowEnd: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  // #11013: run a backup missed while the device was offline when it next
+  // connects. Absent means on.
+  runMissedBackupsOnConnect: z.boolean().optional(),
 });
 
 const backupRetentionSchemaBase = z.object({

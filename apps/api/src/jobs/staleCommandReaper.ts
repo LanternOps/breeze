@@ -1,7 +1,7 @@
 import { RESTORE_POINT_PAYLOAD_KEY, SOFTWARE_INSTALL_SERVER_TIMEOUT_MS } from '@breeze/shared';
 import { REMOTE_SESSION_ACTIVE_MAX_AGE_MS } from '../services/remoteSessionStaleness';
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq, lt, sql, inArray, isNotNull, isNull, or } from 'drizzle-orm';
+import { and, eq, lt, lte, sql, inArray, isNotNull, isNull, or } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { db, hasDbAccessContext, withDbTransaction } from '../db';
 import {
@@ -38,6 +38,7 @@ import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/ba
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { terminalIntentSet } from '../services/remoteDesktopTerminalIntent';
 import { backupHelperSupportsQueue } from '../services/backupHelperCapabilities';
+import { catchUpExpiryReason } from './backupCatchUp';
 import { queueBackupStopCommand, CommandTypes } from '../services/commandQueue';
 import { envInt } from '../utils/envInt';
 
@@ -1710,6 +1711,8 @@ export async function reapStaleBackupJobs(): Promise<number> {
       createdAt: backupJobs.createdAt,
       lastProgressAt: backupJobs.lastProgressAt,
       lastKeepaliveAt: backupJobs.lastKeepaliveAt,
+      startedAt: backupJobs.startedAt,
+      catchUpUntil: backupJobs.catchUpUntil,
       deviceStatus: devices.status,
       deviceLastSeenAt: devices.lastSeenAt,
       deviceBackupVersion: devices.backupVersion,
@@ -1719,7 +1722,12 @@ export async function reapStaleBackupJobs(): Promise<number> {
     .where(
       and(
         eq(backupJobs.status, 'pending'),
-        lt(backupJobs.createdAt, pendingCutoff),
+        // #11013: a pending job's started_at is set only by the claim of a job
+        // that waited for its device, whose clock starts there, not at the
+        // schedule. A job still waiting is left out until its window lapses, so
+        // waiting rows cannot use up this run's MAX_REAP_PER_RUN.
+        sql`COALESCE(${backupJobs.startedAt}, ${backupJobs.createdAt}) < ${pendingCutoff.toISOString()}`,
+        sql`(${backupJobs.catchUpUntil} IS NULL OR ${backupJobs.catchUpUntil} <= ${new Date(now).toISOString()})`,
         sql`(COALESCE(${backupJobs.lastKeepaliveAt}, ${backupJobs.lastProgressAt}) IS NULL OR COALESCE(${backupJobs.lastKeepaliveAt}, ${backupJobs.lastProgressAt}) < ${pendingProgressCutoff.toISOString()})`,
       ),
     )
@@ -1727,7 +1735,33 @@ export async function reapStaleBackupJobs(): Promise<number> {
 
   for (const job of pendingCandidates) {
     if (reaped >= MAX_REAP_PER_RUN) break;
-    if (now - job.createdAt.getTime() < BACKUP_PENDING_TIMEOUT_MS) continue;
+    if (now - (job.startedAt ?? job.createdAt).getTime() < BACKUP_PENDING_TIMEOUT_MS) continue;
+
+    // #11013: never sent, so there is no late result to recognise and nothing on
+    // the helper to stop. Settled with the exact reason reporting keys on.
+    if (job.catchUpUntil) {
+      if (job.catchUpUntil.getTime() > now) continue;
+      const failedAt = new Date();
+      const expired = await db
+        .update(backupJobs)
+        .set({
+          status: 'failed',
+          completedAt: failedAt,
+          updatedAt: failedAt,
+          errorLog: catchUpExpiryReason(job.deviceLastSeenAt, job.createdAt),
+        })
+        .where(and(
+          eq(backupJobs.id, job.id),
+          eq(backupJobs.status, 'pending'),
+          // Still waiting and still lapsed: never a row a catch-up claimed.
+          isNotNull(backupJobs.catchUpUntil),
+          lte(backupJobs.catchUpUntil, new Date(now)),
+        ))
+        .returning({ id: backupJobs.id });
+      if (expired.length > 0) reaped++;
+      continue;
+    }
+
     // A pending job still being kept alive by recent pings is not dead.
     const pendingLiveness = job.lastKeepaliveAt ?? job.lastProgressAt ?? null;
     if (pendingLiveness && now - pendingLiveness.getTime() < BACKUP_STALL_TIMEOUT_MS) continue;

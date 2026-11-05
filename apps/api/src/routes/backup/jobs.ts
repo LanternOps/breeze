@@ -706,8 +706,13 @@ jobsRoutes.post(
     console.warn(`[BackupJobs] Failed to remove queued dispatch for job ${row.id}:`, err);
   }
 
+  // A job still waiting for its device was never sent (#11013): there is nothing
+  // to stop, and a pre-queue helper would apply the stop to the whole device.
+  // Read off the row the cancel itself settled, not `current`: a catch-up claim
+  // between that read and the cancel clears the window and sends the backup.
+  const neverSent = current.status === 'pending' && row.catchUpUntil != null;
   let stopQueued = false;
-  if (current.status === 'running' || (current.status === 'pending' && !dispatchRemoved)) {
+  if (current.status === 'running' || (current.status === 'pending' && !dispatchRemoved && !neverSent)) {
     try {
       const { error } = await queueBackupStopCommand(row.deviceId, {
         userId: auth?.user?.id ?? undefined,
