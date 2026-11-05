@@ -139,7 +139,8 @@ const namespaceDuplicateBaselines = {
     // wording — it is intentionally identical in every catalog.
     'quick.json': 1,
     'remote.json': 12,
-    'reports.json': 40, // +1: reports.series.recipients.ccPlaceholder (name@example.com, locale-invariant)
+    // +1: reports.series.recipients.ccPlaceholder (name@example.com, locale-invariant)
+    'reports.json': 41, // +1 (#11018): reportPreview.slaPerformance.priorities.normal ("Normal" is the Portuguese word).
     'restorePoints.json': 0,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
@@ -332,7 +333,8 @@ const namespaceDuplicateBaselines = {
     // wording — it is intentionally identical in every catalog.
     'quick.json': 1,
     'remote.json': 12,
-    'reports.json': 33, // +1: reports.series.recipients.ccPlaceholder (name@example.com, locale-invariant)
+    // +1: reports.series.recipients.ccPlaceholder (name@example.com, locale-invariant)
+    'reports.json': 34, // +1 (#11018): reportPreview.slaPerformance.priorities.normal ("Normal" is the Spanish word).
     'restorePoints.json': 0,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
     // wording, and "Script" is the standard loanword in this locale (#3162).
@@ -956,7 +958,7 @@ const namespaceDuplicateBaselines = {
     // wording — it is intentionally identical in every catalog.
     'quick.json': 1,
     'remote.json': 14,
-    'reports.json': 53,
+    'reports.json': 55, // +2 (#11018): reportPreview.slaPerformance.median and .priorities.normal ("Median", "Normal" are the German words).
     'restorePoints.json': 0,
     // +1: automationRunHistory.scriptOutput.stderr — a stream name, not
     // wording; intentionally identical in every catalog (#3162).
@@ -1278,7 +1280,8 @@ const namespaceDuplicateBaselines = {
     'portal.json': 2,
     'quick.json': 1,
     'remote.json': 4,
-    'reports.json': 32, // +1: reports.series.recipients.ccPlaceholder (name@example.com, locale-invariant)
+    // +1: reports.series.recipients.ccPlaceholder (name@example.com, locale-invariant)
+    'reports.json': 33, // +1 (#11018): reportPreview.slaPerformance.priorities.normal ("Normal" is the Turkish word).
     'restorePoints.json': 0,
     'scripts.json': 41, // +3 W01 #10132: script-editor panel title, empty-state title, button "Breeze AI" brand name
     'security.json': 89, // +1 W01 #10132: sweeps.panel.origin.ai_chat "Breeze AI" brand name; +1 #10080: sweeps.dialog.preview.org "{{org}}: {{devices}}" is placeholders only
