@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Configuration>
+  <Group Name="Settings" Version="5.7.2" TimeSaved="2026-11-01T01:00:00.0000000+00:00">
+    <Group Name="General">
+      <Property Name="SettingsModifiedTime">
+        <Value>2026-11-01T01:00:00</Value>
+      </Property>
+      <Property Name="DownloadPath" Default="ValueIsDefault" />
+      <Property Name="UserConsent">
+        <Value>false</Value>
+      </Property>
+      <Property Name="UpdatesNotification">
+        <Value>true</Value>
+      </Property>
+    </Group>
+    <Group Name="Schedule">
+      <Property Name="ScheduleMode">
+        <Value>Auto</Value>
+      </Property>
+      <Property Name="AutomationMode">
+        <Value>ScanDownloadApplyNotify</Value>
+      </Property>
+    </Group>
+  </Group>
+</Configuration>

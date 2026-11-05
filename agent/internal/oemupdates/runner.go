@@ -105,6 +105,24 @@ type run struct {
 	// gateNote names a firmware gate whose reading failed, so an all-skipped
 	// outcome says the reading failed rather than only "no key" or "battery".
 	gateNote map[string]string
+	// takeover is the scheduled run's takeover value, carried onto whatever
+	// result the run ends with. Empty when none was attempted.
+	takeover string
+}
+
+// takeOver takes the vendor tool's own schedule over for a scheduled run
+// (spec §4.2). Its failure never stops the run: the run goes ahead and the
+// result says what happened to the schedule.
+func (r *run) takeOver(ctx context.Context, tk LaneTakeover) {
+	ex := VerifiedExec(r.deps.Exec, r.deps.Verifier, r.lane.Allow())
+	got, err := tk.Takeover(ctx, ex, r.deps.Store)
+	if !contains(takeovers, got) {
+		got = TakeoverNotAttempted
+	}
+	if err != nil {
+		log.Warn("vendor schedule takeover incomplete", "lane", r.req.Lane, "takeover", got, "error", err.Error())
+	}
+	r.takeover = got
 }
 
 func (r *run) setStage(stage string) {
@@ -133,6 +151,18 @@ func (r *run) execute(ctx context.Context) RunResult {
 		return r.finish(refuse(r.req.Lane, outcome, codeOr(err, "tool_unavailable"), err), ToolState{}, nil)
 	}
 	r.marker.ToolVersion = tool.Version
+
+	if r.req.Trigger == TriggerScheduled {
+		if tk, ok := r.lane.(LaneTakeover); ok {
+			r.takeOver(runCtx, tk)
+			// The takeover ran the tool; the install that follows is another
+			// execution and is verified fresh too.
+			if err := verifyPublisher(deps.Verifier, tool.Path, r.lane.Allow()); err != nil {
+				r.lane.Gate().Invalidate()
+				return r.finish(refuse(r.req.Lane, OutcomeToolUnavailable, codeOr(err, "publisher_unverified"), err), ToolState{}, nil)
+			}
+		}
+	}
 
 	plan, skips, err := r.splitCategories()
 	if err != nil {
@@ -423,6 +453,9 @@ func (r *run) allSkipped(skips []SkippedCategory) RunResult {
 // finish normalizes a result against the contract.
 func (r *run) finish(res RunResult, tool ToolState, skips []SkippedCategory) RunResult {
 	res.Lane = r.req.Lane
+	if r.takeover != "" {
+		res.Takeover = r.takeover
+	}
 	if res.Takeover == "" {
 		res.Takeover = TakeoverNotAttempted
 	}
@@ -436,9 +469,13 @@ func (r *run) finish(res RunResult, tool ToolState, skips []SkippedCategory) Run
 		log.Warn("vendor update result failed the contract; reporting failed", "lane", r.req.Lane, "error", err.Error())
 		// Only fields set here, plus the reboot flags: a bool cannot break the
 		// contract, and a reboot the tool needs must still be scheduled.
+		takeover := TakeoverNotAttempted
+		if r.takeover != "" {
+			takeover = r.takeover
+		}
 		return RunResult{
 			Lane: r.req.Lane, Outcome: OutcomeFailed, ErrorCode: strPtr("result_invalid"),
-			RebootRequired: res.RebootRequired, ShutdownRequired: res.ShutdownRequired, Takeover: TakeoverNotAttempted,
+			RebootRequired: res.RebootRequired, ShutdownRequired: res.ShutdownRequired, Takeover: takeover,
 		}
 	}
 	return res
