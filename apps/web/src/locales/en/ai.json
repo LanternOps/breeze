@@ -940,6 +940,12 @@
       "buttonPlain": "Ask AI about this",
       "draft": "About {{label}}: ",
       "switchFocus": "Wisp is focused on {{from}}. Switch to {{to}}?"
+    },
+    "plainChat": {
+      "new": "New plain chat",
+      "newDescription": "Breeze AI with every tool you have access to. Not Wisp.",
+      "wispDescription": "Wisp, under your grant",
+      "label": "Breeze AI · not Wisp"
     }
   },
   "wispConcerns": {
