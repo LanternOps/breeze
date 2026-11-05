@@ -1070,6 +1070,14 @@ function asCaptureEnvelope(value: unknown): { artifact: Record<string, unknown>;
  * external vendor feed, or portal/email submission.
  */
 export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string>>> = {
+  // Full-control W18 PR A (#6789): names and emails are typed by people (contacts, portal invitees, staff), role
+  // names and descriptions by tenant admins, external-link labels by integrations. None becomes instructions.
+  get_org_summary: new Set(['name', 'email', 'phone', 'siteName']),
+  get_account_readiness: new Set(['name', 'email', 'phone', 'mobile', 'label', 'provider']),
+  list_portal_users: new Set(['name', 'email']),
+  list_users: new Set(['name', 'email', 'roleName']),
+  get_user: new Set(['name', 'email', 'roleName']),
+  list_roles: new Set(['name', 'description', 'roleName', 'parentRoleName', 'sourceRoleName', 'email']),
   // W15: vendor/person text never becomes instructions (including provisioned field values).
   get_pax8_status: new Set(['commitmentTerm', 'billingTerm', 'catalogSku', 'name', 'pax8CompanyName', 'mappedOrgName', 'lastSyncError', 'error']),
   search_pax8_products: new Set(['commitmentTerm', 'billingTerm', 'catalogSku', 'productName', 'vendorName', 'catalogName', 'catalogDescription', 'label', 'description', 'possibleValues', 'error']),

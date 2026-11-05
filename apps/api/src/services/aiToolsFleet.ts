@@ -79,7 +79,8 @@ async function scheduleAiGroupPeripheralReconciliation(deviceIds: readonly strin
 import type { AiTool } from './aiTools';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
-import { getUserPermissions, type UserPermissions } from './permissions';
+import { type UserPermissions } from './permissions';
+import { aiCallerPermissions } from './aiToolCallerPermissions';
 import {
   missingReportTypePermission,
   reportAudienceCondition,
@@ -368,16 +369,6 @@ export function requireOrgOwnedReportRow<T extends { orgId: string | null; partn
     return null;
   }
   return row as T & { orgId: string };
-}
-
-/** The AI caller's LIVE permission set — what `requirePermission` would
- *  resolve for the same token on an HTTP route. */
-function aiCallerPermissions(auth: AuthContext): Promise<UserPermissions | null> {
-  return getUserPermissions(auth.user.id, {
-    partnerId: auth.partnerId || undefined,
-    orgId: auth.orgId || undefined,
-    scope: auth.scope,
-  });
 }
 
 /**

@@ -12,7 +12,11 @@
  * `organizations:read` grant the whole route is gated on, so they are always
  * present. Every query lives in services/orgAccountReadiness.ts.
  */
+import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
+import { db } from '../db';
+import { organizations } from '../db/schema';
 import { PERMISSIONS } from './permissions';
+import { notHiddenOrgType } from './unassignedPool/visibility';
 import { getServiceManagementMode, type ServiceManagementMode } from './serviceManagement';
 import { isBillingEnabledForPartner } from './billingEnabled';
 import {
@@ -146,6 +150,35 @@ export interface AccountReadinessInput {
   /** The caller's accessible orgs; null ONLY for system scope (a partner list that never resolved is []). */
   accessibleOrgIds: string[] | null;
   can: GrantCheck;
+}
+
+/**
+ * W18 Decision 7: the `get_account_readiness` tool's default set when the model
+ * names no orgs — the caller's first `limit` live orgs of the partner by name,
+ * plus whether more exist. Same filters as `resolveAcceptedOrgs` (partner,
+ * not deleted, not a hidden org type, inside the allowlist), so the default
+ * can never name an org the explicit path would drop.
+ */
+export async function listDefaultReadinessOrgIds(input: {
+  partnerId: string;
+  accessibleOrgIds: string[] | null;
+  limit: number;
+}): Promise<{ orgIds: string[]; truncated: boolean }> {
+  if (input.accessibleOrgIds !== null && input.accessibleOrgIds.length === 0) return { orgIds: [], truncated: false };
+  const rows = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(
+      and(
+        eq(organizations.partnerId, input.partnerId),
+        isNull(organizations.deletedAt),
+        notHiddenOrgType(),
+        input.accessibleOrgIds === null ? undefined : inArray(organizations.id, input.accessibleOrgIds),
+      ),
+    )
+    .orderBy(asc(organizations.name), asc(organizations.id))
+    .limit(input.limit + 1);
+  return { orgIds: rows.slice(0, input.limit).map((row) => row.id), truncated: rows.length > input.limit };
 }
 
 export async function buildAccountReadinessResponse(input: AccountReadinessInput): Promise<AccountReadinessResponse> {
