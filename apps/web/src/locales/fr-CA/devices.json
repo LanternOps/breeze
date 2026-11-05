@@ -4993,7 +4993,7 @@
       "bios": "BIOS",
       "firmware": "Micrologiciel",
       "driver": "Pilotes",
-      "application": "Applications"
+      "application": "Logiciels"
     },
     "gateOpen": "Disponible",
     "gateClosed": "Pas encore disponible chez {{vendor}}. Breeze n’active chaque type de mise à jour qu’après l’avoir testé sur du matériel réel.",

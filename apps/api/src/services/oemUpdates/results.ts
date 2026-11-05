@@ -24,7 +24,6 @@ import {
 import { db, runAfterDbContextCommit, withSystemDbAccessContext } from '../../db';
 import { deviceCommands, deviceHardware, deviceOemUpdateStatus, devices } from '../../db/schema';
 import { CommandTypes } from '../commandTypes';
-import { executeReboot, resolveRebootPlan } from '../patchRebootHandler';
 import { captureException } from '../sentry';
 import {
   emitProtectionStillSuspendedAlert,
@@ -160,9 +159,13 @@ function techChoseRebootWhenFinished(payload: unknown): boolean {
  * delay, deferral and prompt text, so it warns the user like any other. Runs with
  * no context held. A refusal leaves `reboot_pending_since` set, so the device reads
  * as waiting for a reboot rather than done.
+ *
+ * The reboot handler loads lazily so the agents router, which mounts the
+ * verification route from this module, does not pull the command queue in at import.
  */
 async function scheduleRebootWhenFinished(deviceId: string, orgId: string): Promise<void> {
   try {
+    const { executeReboot, resolveRebootPlan } = await import('../patchRebootHandler');
     const plan = await withSystemDbAccessContext(() => resolveRebootPlan(deviceId));
     const queued = await executeReboot(deviceId, 'Vendor updates finished and need a restart', {
       delayMinutes: plan.delayMinutes,
