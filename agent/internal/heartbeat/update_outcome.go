@@ -321,7 +321,7 @@ func summarizeUpdateHelperLog(path string) string {
 		log.Warn("failed to open update helper failure log", "path", path, "error", err.Error())
 		return ""
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only handle; close errors carry no information here
 	var exception, operation string
 	sc := bufio.NewScanner(io.LimitReader(f, updateHelperLogReadMax))
 	sc.Buffer(make([]byte, 0, 4096), updateHelperLogReadMax)

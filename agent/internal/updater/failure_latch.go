@@ -108,7 +108,7 @@ func (l *FailureLatch) loadLocked() (FailureLatchState, bool) {
 		}
 		return FailureLatchState{}, false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only handle; close errors carry no information here
 	data, err := io.ReadAll(io.LimitReader(f, failureLatchFileMax+1))
 	if err == nil && len(data) > failureLatchFileMax {
 		err = errors.New("file exceeds size limit")
