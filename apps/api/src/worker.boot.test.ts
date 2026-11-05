@@ -310,6 +310,7 @@ beforeEach(() => {
   delete process.env.METRICS_SCRAPE_IP_ALLOWLIST;
 
   vi.clearAllMocks();
+  mocks.registerGatewayConnectionCheck.mockReset();
   mocks.shutdownPhaseCalls.length = 0;
 
   // Baseline "everything healthy" defaults; individual tests override.

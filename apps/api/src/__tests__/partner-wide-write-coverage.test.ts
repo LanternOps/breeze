@@ -603,7 +603,13 @@ describe('partner-wide write coverage (security review 2026-08-16 §1.1)', () =>
     expect(source.match(/\.(insert|update|delete)\(\s*\w+/g)).toEqual(['.insert(aiAgents']);
     const systemScope = source.indexOf('return inSystemDbContext(');
     expect(systemScope).toBeGreaterThan(-1);
-    expect(source.indexOf('.insert(aiAgents')).toBeGreaterThan(systemScope);
+    const insertAt = source.indexOf('.insert(aiAgents');
+    expect(insertAt).toBeGreaterThan(systemScope);
+    expect(insertAt).toBeLessThan(source.indexOf("'troubleshootProvisioning.ensure'"));
+
+    // The pattern above sees only builder calls. Raw SQL or an upsert would be a
+    // second write, and an upsert could overwrite a partner's existing row.
+    expect(source).not.toMatch(/\.execute\(|onConflictDoUpdate|\.set\(/);
 
     // No request-derived values reach this file: it never sees an auth context.
     expect(source).not.toMatch(/\bAuthContext\b|\bauth\.|from 'hono'/);
@@ -616,8 +622,9 @@ describe('partner-wide write coverage (security review 2026-08-16 §1.1)', () =>
     expect(callers.sort()).toEqual(['services/aiAgents/troubleshootProvisioning.ts', 'services/wisp/specialistLaunchers.ts']);
     expect(readFileSync(join(API_SRC, 'services/wisp/specialistLaunchers.ts'), 'utf8'))
       .toContain('ensureTroubleshootAgent(ctx.partnerId)');
-    expect(readFileSync(join(API_SRC, 'services/wisp/coordinator.ts'), 'utf8'))
-      .toMatch(/SPECIALIST_LAUNCHERS\[input\.kind\]\(\{[^}]*partnerId: ceiling\.partnerId,/);
+    const coordinator = readFileSync(join(API_SRC, 'services/wisp/coordinator.ts'), 'utf8');
+    expect(coordinator.match(/SPECIALIST_LAUNCHERS\[/g)).toHaveLength(1);
+    expect(coordinator).toMatch(/SPECIALIST_LAUNCHERS\[input\.kind\]\(\{[^}]*partnerId: ceiling\.partnerId,/);
   }, 30_000);
 
   it('every allowlist entry documents why it is exempt', () => {
