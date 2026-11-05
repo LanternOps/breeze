@@ -44,6 +44,14 @@ func EnsureTool(ctx context.Context, lane Lane, spec *ToolSpec, deps Deps) (Tool
 		}
 		return state, outcome, err
 	}
+	if checked, ok := lane.(HardwareCheckedLane); ok {
+		if outcome, err := checked.CheckHardware(); outcome != "" || err != nil {
+			if outcome == "" {
+				outcome = OutcomeToolUnavailable // an error never reads as ready
+			}
+			return ToolState{}, outcome, err
+		}
+	}
 	eff, err := effectiveRange(lane.Range(), spec)
 	if err != nil {
 		return ToolState{}, OutcomeToolUnavailable, runErr("invalid_version_range", err)

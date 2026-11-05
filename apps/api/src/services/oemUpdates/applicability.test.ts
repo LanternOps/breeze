@@ -100,15 +100,26 @@ describe('resolveApplicability: device shape', () => {
     expect(resolveApplicability({ ...base, ...overrides })).toEqual({ state: 'not_applicable', reason });
   });
 
-  it('the real shipped list reaches Surface and still stops the lanes not built', () => {
+  it('the real shipped list reaches Surface and HP and still stops the lanes not built', () => {
     const real = { ...base, shippedLanes: SHIPPED_OEM_LANES };
     expect(resolveApplicability({ ...real, manufacturer: 'Microsoft Corporation', model: 'Surface Laptop 5' })).toEqual({
       state: 'applicable',
       lane: 'surface',
     });
     expect(resolveApplicability({ ...real, manufacturer: 'HP Inc.', model: 'EliteBook' })).toEqual({
+      state: 'applicable',
+      lane: 'hp',
+    });
+    expect(resolveApplicability({ ...real, manufacturer: 'LENOVO', model: 'ThinkPad' })).toEqual({
       state: 'not_applicable',
       reason: 'lane_not_shipped',
+    });
+  });
+
+  it.each(['HPE', 'Hewlett Packard Enterprise'])('shipping the HP lane does not reach %s', (manufacturer) => {
+    expect(resolveApplicability({ ...base, shippedLanes: SHIPPED_OEM_LANES, manufacturer, model: 'ProLiant' })).toEqual({
+      state: 'not_applicable',
+      reason: 'unknown_manufacturer',
     });
   });
 

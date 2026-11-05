@@ -57,8 +57,8 @@ const ALL_CLOSED: Record<OemCategory, GateState> = Object.freeze({
   application: 'closed',
 });
 
-/** The lanes whose agent code has shipped. W13 and W16 add the others. */
-export const SHIPPED_OEM_LANES: readonly OemLane[] = Object.freeze(['dell', 'surface']);
+/** The lanes whose agent code has shipped. W16 adds Lenovo. */
+export const SHIPPED_OEM_LANES: readonly OemLane[] = Object.freeze(['dell', 'surface', 'hp']);
 
 /**
  * Lanes with no vendor tool. Surface updates come through Windows Update, so the
@@ -84,7 +84,22 @@ const MANIFEST: Readonly<Record<OemLane, LaneManifest>> = Object.freeze({
     },
   },
   surface: { lane: 'surface', laneGate: 'closed', categoryGates: ALL_CLOSED, codeBlocks: [], tool: null },
-  hp: { lane: 'hp', laneGate: 'closed', categoryGates: ALL_CLOSED, codeBlocks: [], tool: null },
+  hp: {
+    lane: 'hp',
+    laneGate: 'closed',
+    categoryGates: ALL_CLOSED,
+    codeBlocks: [],
+    // HP Image Assistant. Floor from CVE-2025-13492, pin from HP's page at research
+    // time. W14 re-checks them, decides the licence (H1), and records url and sha256.
+    tool: {
+      version: '5.3.7',
+      minSafeVersion: '5.3.3',
+      supportedRange: { min: '5.3.3', maxExclusive: '6.0.0' },
+      url: null,
+      sha256: null,
+      prerequisites: [],
+    },
+  },
   lenovo: { lane: 'lenovo', laneGate: 'closed', categoryGates: ALL_CLOSED, codeBlocks: [], tool: null },
 });
 

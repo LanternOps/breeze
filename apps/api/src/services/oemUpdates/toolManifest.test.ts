@@ -85,8 +85,23 @@ describe('tool manifest contract', () => {
     expect(payloadToolFor(surface)).toBeNull();
   });
 
+  it('hp has shipped, with the HPIA floor, every gate closed and nothing pinned until the lab wave', () => {
+    expect(SHIPPED_OEM_LANES).toContain('hp');
+    const hp = getLaneManifest('hp');
+    expect(hp.laneGate).toBe('closed');
+    expect(openCategoriesForLane('hp')).toEqual([]);
+    expect(hp.tool).toMatchObject({
+      minSafeVersion: '5.3.3',
+      supportedRange: { min: '5.3.3', maxExclusive: '6.0.0' },
+      url: null,
+      sha256: null,
+      prerequisites: [],
+    });
+    expect(payloadToolFor(hp)).toBeNull();
+  });
+
   it('only lanes with a built agent lane are shipped', () => {
-    expect([...SHIPPED_OEM_LANES].sort()).toEqual(['dell', 'surface']);
+    expect([...SHIPPED_OEM_LANES].sort()).toEqual(['dell', 'hp', 'surface']);
   });
 
   it('surface can open a gate without a tool, because it installs none', () => {

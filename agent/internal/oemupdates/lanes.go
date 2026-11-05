@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
@@ -12,17 +13,32 @@ var (
 )
 
 // LaneFor returns the lane built into this agent. Each lane is a process-wide
-// singleton so its availability gate stays cached across runs. W02 builds only
-// Dell and Surface; HP and Lenovo arrive in their own waves.
+// singleton so its availability gate stays cached across runs. Lenovo arrives in
+// its own wave.
 func LaneFor(id string) (Lane, bool) {
 	lanesOnce.Do(func() {
 		lanes = map[string]Lane{
 			LaneDell:    newDellLane(systemDellHost()),
 			LaneSurface: newSurfaceLane(systemSurfaceHost()),
+			LaneHP:      newHPLane(systemHPHost()),
 		}
 	})
 	l, ok := lanes[id]
 	return l, ok
+}
+
+func systemHPHost() hpHost {
+	store := DefaultStore()
+	return hpHost{
+		identity:      hpSMBIOSIdentity,
+		toolDir:       func() (string, error) { return store.Dir(hpToolDirName) },
+		exists:        regularFileNoLink,
+		fileVersion:   peFileVersion,
+		rebootPending: detectPendingReboot,
+		bootTime:      systemInfo{}.BootTime,
+		now:           time.Now,
+		store:         store,
+	}
 }
 
 func systemDellHost() dellHost {
