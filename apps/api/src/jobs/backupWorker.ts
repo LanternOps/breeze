@@ -9,6 +9,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { Worker, Job } from 'bullmq';
+import type { BackupFullRunReason } from '@breeze/shared';
 import * as dbModule from '../db';
 import {
   backupJobs,
@@ -1102,26 +1103,7 @@ type BackupDispatchPrepare =
  * condition is visible in the API log rather than only by counting objects in
  * the bucket.
  */
-export type FullBackupFallbackReason =
-  | 'no_prior_snapshot'
-  | 'base_expired'
-  | 'storage_identity_changed'
-  | 'backup_type_mismatch'
-  | 'base_job_not_completed'
-  | 'base_retired'
-  | 'base_deleted_race'
-  | 'base_retired_race'
-  // The helper verifies its base and no candidate carries a verified
-  // snapshot attestation.
-  | 'no_verified_base'
-  // #7081 (I4): no candidate is recorded under the key root this run writes
-  // (the destination prefix changed); chains never span roots.
-  | 'key_root_changed'
-  // #7081: the newest snapshot records a key root this server cannot read.
-  | 'base_key_root_unreadable'
-  // #7081: the destination's key prefix is invalid, so this run has no key
-  // root to match a base against (mint refuses the write itself).
-  | 'invalid_destination_prefix';
+export type FullBackupFallbackReason = BackupFullRunReason;
 
 /**
  * The newest snapshot for this device+config ignoring EVERY eligibility
@@ -1338,7 +1320,7 @@ async function stampDispatchPinAndIdentity(params: {
       // No root to match: no base. Mint refuses the write itself.
       await tx
         .update(backupJobs)
-        .set({ storageIdentity, publishLeaseExpiresAt, baseSnapshotId: null })
+        .set({ storageIdentity, publishLeaseExpiresAt, baseSnapshotId: null, fullBackupReason: 'invalid_destination_prefix' })
         .where(eq(backupJobs.id, params.jobId));
       pendingFallback = 'invalid_destination_prefix';
       return { baseSnapshotId: '', publishLeaseExpiresAt, baseAttestation: null };
@@ -1454,6 +1436,9 @@ async function stampDispatchPinAndIdentity(params: {
         storageIdentity,
         publishLeaseExpiresAt,
         baseSnapshotId: candidate?.snapshotId ?? null,
+        // #11027: NULL when a base was found. A diagnosed fallback fills this
+        // in after commit, and a redispatch must not keep an earlier reason.
+        fullBackupReason: !candidate && requireAttestedBase ? 'no_verified_base' : null,
       })
       .where(eq(backupJobs.id, params.jobId));
 
@@ -1472,7 +1457,7 @@ async function stampDispatchPinAndIdentity(params: {
 
     if (!locked) {
       // Row already gone — a concurrent retention delete won the race.
-      await tx.update(backupJobs).set({ baseSnapshotId: null }).where(eq(backupJobs.id, params.jobId));
+      await tx.update(backupJobs).set({ baseSnapshotId: null, fullBackupReason: 'base_deleted_race' }).where(eq(backupJobs.id, params.jobId));
       pendingFallback = 'base_deleted_race';
       return { baseSnapshotId: '', publishLeaseExpiresAt, baseAttestation: null };
     }
@@ -1489,7 +1474,7 @@ async function stampDispatchPinAndIdentity(params: {
       .limit(1);
 
     if (retirement) {
-      await tx.update(backupJobs).set({ baseSnapshotId: null }).where(eq(backupJobs.id, params.jobId));
+      await tx.update(backupJobs).set({ baseSnapshotId: null, fullBackupReason: 'base_retired_race' }).where(eq(backupJobs.id, params.jobId));
       pendingFallback = 'base_retired_race';
       return { baseSnapshotId: '', publishLeaseExpiresAt, baseAttestation: null };
     }
@@ -1509,20 +1494,24 @@ async function stampDispatchPinAndIdentity(params: {
     } else {
       try {
         const probe = await readBaseCandidateProbe(params.deviceId, params.configId);
-        logFullBackupFallback(
-          classifyMissingBaseReason(probe, {
-            storageIdentity,
-            mode,
-            now: dispatchedAt,
-            keyRoot: mintRoot.ok ? mintRoot.root : LEGACY_FLAT_ROOT,
-          }),
-          logParams,
-        );
+        const reason = classifyMissingBaseReason(probe, {
+          storageIdentity,
+          mode,
+          now: dispatchedAt,
+          keyRoot: mintRoot.ok ? mintRoot.root : LEGACY_FLAT_ROOT,
+        });
+        logFullBackupFallback(reason, logParams);
+        // #11027: stored for the job's detail view. Same rule as the probe: a
+        // failure here never fails a dispatch that already committed.
+        await db
+          .update(backupJobs)
+          .set({ fullBackupReason: reason })
+          .where(and(eq(backupJobs.id, params.jobId), isNull(backupJobs.fullBackupReason)));
       } catch (err) {
         // Diagnosis only — the dispatch itself already committed.
         console.warn(
           `[BackupWorker] Job ${params.jobId} has no incremental base and will upload a FULL copy; ` +
-            `the reason probe failed: ${err instanceof Error ? err.message : String(err)}`,
+            `recording the reason failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
