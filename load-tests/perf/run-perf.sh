@@ -207,7 +207,7 @@ SIM_PID=""
 # (plus margin) so a row lands after window.end. The start edge needs nothing:
 # the sampler starts before the simulator, and the window opens only after
 # ramp + warmup, so the first row already precedes it.
-sleep "${TAIL_SECONDS:-$(( ${INTERVAL:-10} + 5 ))}" &
+sleep "${TAIL_SECONDS:-$(( ${INTERVAL:-10} + 10 ))}" &
 wait $!
 stop_sampler
 if [ "$sim_rc" -ne 0 ]; then

@@ -407,7 +407,7 @@ test("run-perf.sh keeps sampling past the simulator's exit so the window end edg
   const mark = path.join(fx.root, 'sim-exit');
   // The simulator exits at the window end; kpi.mjs needs a sample after it.
   const r = run(fx, 'run-perf.sh', ['--profile', 'smoke', '--out-dir', out], {
-    INTERVAL: '1', MAX_SAMPLES: '', TAIL_SECONDS: '2', STUB_RUN_SLEEP: '2', STUB_EXIT_MARK: mark,
+    INTERVAL: '2', MAX_SAMPLES: '', TAIL_SECONDS: '3', STUB_RUN_SLEEP: '3', STUB_EXIT_MARK: mark,
   });
   assert.equal(r.code, 0, r.err);
   const exitSec = Number(readFileSync(mark, 'utf8').trim());

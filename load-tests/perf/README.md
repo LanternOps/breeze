@@ -54,7 +54,7 @@ A self-hosted runner for `perf.yml` needs:
 - `build-essential`
 - `libpcap-dev` (the agent build imports `gopacket/pcap`; without it the build fails on `pcap.h`)
 
-After the simulator exits, `run-perf.sh` keeps the sampler running for `TAIL_SECONDS` (default `INTERVAL + 5`) so a sample lands after the window end; the comparator rejects a run without one.
+After the simulator exits, `run-perf.sh` keeps the sampler running for `TAIL_SECONDS` (default `INTERVAL + 10`) so a sample lands after the window end; the comparator rejects a run without one.
 
 ## CLI
 
