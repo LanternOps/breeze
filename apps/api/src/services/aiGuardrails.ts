@@ -474,6 +474,8 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   // Full-control W18 PR B (#6789): the portal settings read and the recipient list.
   manage_org_portal_settings: ['get'],
   manage_report_recipients: ['list'],
+  // Full-control W16 PR B (#6786): preview takes a short row lock and writes nothing; applied reads the ledger.
+  manage_fleet_designs: ['preview', 'applied'],
   // W15 PR A (#6785): mapped products and subscription/order evidence reads.
   search_pax8_products: ['search', 'provision_details', 'dependencies', 'pricing'],
   manage_pax8_subscriptions: ['list', 'drift'],
@@ -705,6 +707,9 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // Full-control W18 PR B (#6789): see TIER3_SUPERVISED_ACTIONS / TIER3_FOUR_EYES_ACTIONS.
   manage_org_portal_settings: ['update', 'set_sensitive_access'],
   manage_report_recipients: ['add', 'remove', 'convert'],
+  // Full-control W16 PR B (#6786): see TIER3_SUPERVISED_ACTIONS / TIER3_FOUR_EYES_ACTIONS.
+  manage_ai_agent_schedules: ['create', 'update', 'delete'],
+  manage_fleet_designs: ['run', 'apply', 'rollback', 'document'],
   // W15 PR A (#6785, Gate B): sync calls the vendor partner-wide; preflight sends staged content.
   manage_pax8_subscriptions: ['sync', 'link', 'unlink'],
   manage_pax8_orders: ['preflight', 'submit', 'reconcile'],
@@ -820,6 +825,13 @@ export const TIER3_FOUR_EYES_ACTIONS: Record<string, string[]> = {
   // editing open to a customer's portal users, and what they have seen cannot be recalled. Mandatory effect digest
   // over the requested flags and the row's current sensitive values (pinnedEffectPolicy.ts).
   manage_org_portal_settings: ['set_sensitive_access'],
+  // Full-control W16 PR B (#6786). delete: a baseline cascades every org's override, and that tightening cannot be
+  // restored. Static for both owners because the input names no owner, so a single-org override on an unarmed baseline
+  // is stricter than the class rule requires (recorded in the plan). apply bills through role corrections and reaches
+  // every device a design names; rollback removes monitoring and reverses those roles (Decision 5). All three carry a
+  // mandatory effect digest (pinnedEffectPolicy.ts).
+  manage_ai_agent_schedules: ['delete'],
+  manage_fleet_designs: ['apply', 'rollback'],
   // update_org is deliberately ABSENT here: its scope is input-aware (a
   // `status` change is four_eyes, a plain rename is supervised) and is
   // resolved by resolveApprovalScope's override hook, not this static table.
@@ -1123,6 +1135,11 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   // delivery. update refuses a parent enable that would activate a dormant sensitive child (row-locked).
   manage_org_portal_settings: ['update'],
   manage_report_recipients: ['add', 'remove', 'convert'],
+  // Full-control W16 PR B (#6786). Schedule create and update: each run a schedule starts uses credits and may notify
+  // people, so neither can be tier 2. Fleet run: Decision 1's recorded exception, because a design run applies nothing
+  // (maxActionsPerRun 0). Fleet document: deleting the document reverses it.
+  manage_ai_agent_schedules: ['create', 'update'],
+  manage_fleet_designs: ['run', 'document'],
   // W15 PR A (#6785): local billing links, partner-wide sync and vendor isMock preflight.
   manage_pax8_subscriptions: ['sync', 'link', 'unlink'],
   manage_pax8_orders: ['preflight', 'reconcile'],
@@ -2931,6 +2948,22 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     get: { resource: 'organizations', action: 'read' },
     update: { resource: 'organizations', action: 'write' },
     set_sensitive_access: { resource: 'organizations', action: 'write' },
+  },
+  // Full-control W16 PR B (#6786): each = its REST route's requirePermission. scripts:write (apply and preview with
+  // automation refs; rollback's script rows) and contracts:write (document's evidence link) depend on the input, on
+  // REST too, so the handler enforces them.
+  manage_ai_agent_schedules: {
+    create: { resource: 'ai_agents', action: 'write' },
+    update: { resource: 'ai_agents', action: 'write' },
+    delete: { resource: 'ai_agents', action: 'write' },
+  },
+  manage_fleet_designs: {
+    run: { resource: 'ai_agents', action: 'write' },
+    preview: { resource: 'devices', action: 'write' },
+    applied: { resource: 'ai_agents', action: 'read' },
+    apply: { resource: 'devices', action: 'write' },
+    rollback: { resource: 'devices', action: 'write' },
+    document: { resource: 'documents', action: 'write' },
   },
   manage_report_recipients: {
     list: { resource: 'reports', action: 'read' },
@@ -5194,6 +5227,45 @@ export function buildApprovalDescription(
       parts.push(`Start an AI task to restore the ${w03Cap(String(input.serviceName ?? '(unspecified)'))} service on device ${w03Id(input.deviceId)}. `
         + 'It uses AI credits. Each change it makes asks for approval.');
       break;
+
+    // Full-control W16 PR B (#6786): the headline is input-only, so ids are truncated. A chat intent's card adds what
+    // only the stored rows can say (aiDesignIntentTarget.ts: devices, automatic restarts, the overrides a delete loses).
+    case 'manage_ai_agent_schedules':
+      if (action === 'create') {
+        parts.push(input.ownerScope === 'partner'
+          ? `Schedule ${w03Cap(String(input.kind ?? 'sweep'))} runs of agent ${w03Id(input.agentId)} (${String(input.cron ?? '')}, ${String(input.timezone ?? '')}) for every organization. Each run uses AI credits and may notify people.`
+          : `Set organization ${w03Id(input.orgId)}'s override of schedule ${w03Id(input.baselineScheduleId)}${input.enabled === false ? ', turning its runs off' : ''}. Each run uses AI credits and may notify people.`);
+      } else if (action === 'update') {
+        const changed = Object.keys(input).filter((key) => key !== 'action' && key !== 'scheduleId');
+        // The two brakes are different, and the approver has to be able to tell them apart (Decision 3).
+        parts.push(input.actMode === false
+          ? `Stop unattended actions from schedule ${w03Id(input.scheduleId)}, including ones already waiting.`
+          : input.enabled === false
+            ? `Stop future runs of schedule ${w03Id(input.scheduleId)}.`
+            : `Change ${changed.join(', ') || '(nothing)'} on schedule ${w03Id(input.scheduleId)}.`);
+      } else if (action === 'delete') {
+        parts.push(`Delete schedule ${w03Id(input.scheduleId)}. If it is a baseline, every organization's override of it goes too. This cannot be undone.`);
+      } else {
+        parts.push(humanizeToolAction(toolName, action));
+      }
+      break;
+    case 'manage_fleet_designs': {
+      const approval = input.approval && typeof input.approval === 'object' ? input.approval as Record<string, unknown> : {};
+      const count = (key: string) => (Array.isArray(approval[key]) ? new Set(approval[key] as unknown[]).size : 0);
+      if (action === 'run') {
+        parts.push(`Run a Fleet Design for organization ${w03Id(input.orgId)}${input.siteId ? ` at site ${w03Id(input.siteId)}` : ''}. It uses AI credits and may notify people; nothing is applied.`);
+      } else if (action === 'apply') {
+        parts.push(`Apply Fleet Design ${w03Id(input.reportRunId)} to its organization: ${count('functions')} function groups, ${count('monitoring')} monitoring items, `
+          + `${count('automation')} scripts, ${count('roleCorrections')} device role changes (billing). Undo is available until the objects change.`);
+      } else if (action === 'rollback') {
+        parts.push(`Undo Fleet Design ${w03Id(input.reportRunId)}. Monitoring it added stops, and device roles it changed are restored (billing). Items changed since the apply stay as they are.`);
+      } else if (action === 'document') {
+        parts.push(`File Fleet Design ${w03Id(input.reportRunId)} in its organization's documents, and attach it to a deliverable when one is meant to carry it.`);
+      } else {
+        parts.push(humanizeToolAction(toolName, action));
+      }
+      break;
+    }
 
     case 'manage_report_recipients':
       if (action === 'add' && input.mode === 'remove') {

@@ -94,6 +94,7 @@ import {
   type ToolHandoffStatus,
 } from './aiToolHandoff';
 import { computeEffectDigestForRelease, hasPinnedDigest } from './actionIntents/effectDigest';
+import { AI_DESIGN_INTENT_TOOLS, resolveAiDesignIntentTarget } from './actionIntents/aiDesignIntentTarget';
 import { requiresPinnedEffectDigest } from './actionIntents/pinnedEffectPolicy';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import {
@@ -1495,6 +1496,25 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       && callReach(session, wispCall.current).canAccessOrg(input.orgId)) {
       intentOrgId = input.orgId;
     }
+    // W16 PR B (#6786, #11181): the two design tools name their org through a row, so
+    // an approver of org A is never approving a change to org B. Same reach rule as
+    // above; a target outside it adds nothing to the card, so a foreign id reveals
+    // nothing. A failed lookup is non-fatal: the intent stays in the session org, and
+    // the handler answers not found or refuses at release.
+    let designCardDetail: string | undefined;
+    if (!flowTool && !tenant && AI_DESIGN_INTENT_TOOLS.has(toolName)) {
+      try {
+        const target = await resolveAiDesignIntentTarget(toolName, input);
+        const reach = callReach(session, wispCall.current);
+        if (target?.orgId ? reach.canAccessOrg(target.orgId) : target?.partnerId && target.partnerId === reach.partnerId) {
+          if (target.orgId) intentOrgId = target.orgId;
+          designCardDetail = target.cardDetail;
+        }
+      } catch (err) {
+        captureException(err instanceof Error ? err : new Error(String(err)));
+        console.error('[AI-SDK] Failed to resolve a design tool\'s target org:', err);
+      }
+    }
     const unattendedReads = unattendedReadsApply(session, wispCall.current, Boolean(flowTool || tenant));
     let guardrailCheck = flowTool
       ? (await import('./flows/flowToolGate')).guardrailCheckForFlowTool(flowTool)
@@ -2222,9 +2242,10 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         ? await loadProposalApprovalSummary(input as Record<string, unknown>, intentOrgId)
         : null;
 
-      const baseDescription = specialistOrgName
+      const namedDescription = specialistOrgName
         ? describeSpecialistRequest(input, specialistOrgName)
         : guardrailCheck.description ?? `Execute ${toolName}`;
+      const baseDescription = designCardDetail ? `${namedDescription} ${designCardDetail}` : namedDescription;
       // Appended to the DESCRIPTION (not only to the SSE field) so it reaches
       // every surface that renders one: the chat card, the durable intent's
       // stored reason, the /approvals queue, and the mobile push.

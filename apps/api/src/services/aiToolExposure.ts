@@ -81,6 +81,13 @@ export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   // ceiling floor (isNeverDelegableTool), so launch_specialist stays the Wisp door.
   'run_patch_plan',
   'create_operator_task',
+  // Full-control W16 PR B (#6786, Decision 7). Schedules schedule autonomous work, and assertAgentWriteAllowed refuses
+  // every automation principal anyway. manage_fleet_designs is a recorded exception to spec D4's "action-level where
+  // only some actions grant authority": only `run` is Q4, but no agent workflow needs apply or rollback, a designer agent
+  // proposing its own design's apply adds a self-review loop, and an agent has no devices:write user permissions for
+  // preview. Agents keep the W10 reads. Membership also puts both in the Wisp grant ceiling floor.
+  'manage_ai_agent_schedules',
+  'manage_fleet_designs',
   // Full-control W08 (#6778, W08-D1): every topology tool resolves its caller through
   // requireTopologySiteAccess / the template library, both of which read the caller's USER permissions
   // (getUserPermissions). An ai_agent principal's id is not a user, so each call would be refused; the

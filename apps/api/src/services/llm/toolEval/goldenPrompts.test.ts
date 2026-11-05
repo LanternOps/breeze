@@ -44,13 +44,19 @@ describe('GOLDEN_CASES', () => {
     // g127-g132 (full-control W18, #6789 PR A): org summary, readiness, audit retention, portal users, Breeze logins, roles.
     // g133-g135 (full-control W18, #6789 PR B): portal settings update, the four-eyes sensitive access, a recipient add.
     // g136-g137 (full-control W16, #6786 PR A): run the patch agent, delegate a service recovery, from ordinary chat.
-    expect(GOLDEN_CASES).toHaveLength(137);
-    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(137);
+    // g138-g142 (full-control W16, #6786 PR B): schedule writes and Fleet Designs.
+    expect(GOLDEN_CASES).toHaveLength(142);
+    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(142);
     expect(GOLDEN_CASES.find((c) => c.id === 'g136')?.expect[0]).toEqual({ tool: 'run_patch_plan' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g137')?.expect[0]).toEqual({ tool: 'create_operator_task' });
     for (const id of ['g136', 'g137']) {
       expect(GOLDEN_CASES.find((c) => c.id === id)?.expect.map((e) => e.tool), id).not.toContain('launch_specialist');
     }
+    expect(GOLDEN_CASES.find((c) => c.id === 'g138')?.expect[0]).toEqual({ tool: 'manage_ai_agent_schedules', action: 'create' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g139')?.expect.map((e) => e.action)).toEqual(['update', 'create']);
+    expect(GOLDEN_CASES.find((c) => c.id === 'g140')?.expect[0]).toEqual({ tool: 'manage_fleet_designs', action: 'run' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g141')?.expect.map((e) => e.tool)).toEqual(['list_fleet_designs', 'manage_fleet_designs', 'manage_fleet_designs']);
+    expect(GOLDEN_CASES.find((c) => c.id === 'g142')?.expect.map((e) => e.action)).toEqual(['applied', 'rollback']);
     expect(GOLDEN_CASES.find((c) => c.id === 'g133')?.expect[0]).toEqual({ tool: 'manage_org_portal_settings', action: 'update' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g134')?.expect[0]).toEqual({ tool: 'manage_org_portal_settings', action: 'set_sensitive_access' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g135')?.expect[0]).toEqual({ tool: 'manage_report_recipients', action: 'add' });

@@ -22,6 +22,8 @@ import { AGENT_DENIED_READ_TOOLS, AGENT_HUMAN_ONLY_ACTIONS } from './aiToolExpos
 import { getToolTier, getAllRegisteredToolNames, getToolDefinitions } from './aiTools';
 import { toolInputSchemas } from './aiToolSchemas';
 import { isNeverDelegableTool } from './wisp/grantAuthority';
+import { effectDigestResolverKey, requiresPinnedEffectDigest } from './actionIntents/effectDigest';
+import { isOrgWideGovernanceIntent } from './actionIntents/orgWideGovernanceTools';
 import { ExtensionContributionRegistry } from '../extensions/contributionRegistry';
 
 /** (tool, action) pairs from a scope table, flattened with their expected scope. */
@@ -1834,6 +1836,62 @@ describe('W16 PR A class rows (#6786)', () => {
       expect(AGENT_DENIED_READ_TOOLS.has(tool), tool).toBe(false);
       expect(isNeverDelegableTool(tool), tool).toBe(true);
     }
+  });
+});
+
+// ── W16 PR B class rows (#6786) ────────────────────────────────────────────
+// Copied from the W16 plan's PR B class review table, NOT derived from the guardrail tables.
+const W16B_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_ai_agent_schedules: { create: 'supervised', update: 'supervised', delete: 'four_eyes' },
+  manage_fleet_designs: { run: 'supervised', preview: 't1', applied: 't1', apply: 'four_eyes', rollback: 'four_eyes', document: 'supervised' },
+};
+
+describe('W16 PR B class rows (#6786)', () => {
+  const rows = Object.entries(W16B_EXPECTED).flatMap(([tool, actions]) => Object.entries(actions).map(([action, cls]) => [tool, action, cls] as const));
+
+  it.each(rows)('%s:%s is %s', (tool, action, cls) => {
+    expect(classOf(tool, { action })).toBe(cls);
+    if (cls !== 't1') expect(resolveApprovalScope(tool, action, { action })).toBe(cls);
+  });
+
+  it('the rows name every action of each tool', () => {
+    for (const [tool, actions] of Object.entries(W16B_EXPECTED)) {
+      expect([...(toolActionEnum(tool) ?? [])].sort(), tool).toEqual(Object.keys(actions).sort());
+    }
+  });
+
+  it('every four-eyes action has a mandatory pinned digest and a resolver', () => {
+    for (const [tool, action] of [['manage_ai_agent_schedules', 'delete'], ['manage_fleet_designs', 'apply'], ['manage_fleet_designs', 'rollback']] as const) {
+      expect(requiresPinnedEffectDigest(tool, { action }), `${tool}:${action}`).toBe(true);
+      expect(effectDigestResolverKey(tool, action), `${tool}:${action}`).toBe(`${tool}:${action}`);
+    }
+    for (const [tool, action] of [['manage_ai_agent_schedules', 'update'], ['manage_fleet_designs', 'run'], ['manage_fleet_designs', 'document']] as const) {
+      expect(requiresPinnedEffectDigest(tool, { action }), `${tool}:${action}`).toBe(false);
+    }
+  });
+
+  it('MFA follows the routes', () => {
+    for (const action of ['create', 'update', 'delete']) expect(isMfaGatedToolAction('manage_ai_agent_schedules', action), action).toBe(true);
+    for (const action of ['run', 'preview', 'apply', 'rollback']) expect(isMfaGatedToolAction('manage_fleet_designs', action), action).toBe(true);
+    for (const action of ['applied', 'document']) expect(isMfaGatedToolAction('manage_fleet_designs', action), action).toBe(false);
+  });
+
+  it('agent exposure: both whole tools are human-only and never delegable, the D4 exception for manage_fleet_designs (Decision 7)', () => {
+    for (const tool of Object.keys(W16B_EXPECTED)) {
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(true);
+      expect(AGENT_DENIED_READ_TOOLS.has(tool), tool).toBe(false);
+      expect(isNeverDelegableTool(tool), tool).toBe(true);
+    }
+  });
+
+  it('org-wide governance covers the writes that apply beyond one site', () => {
+    for (const action of ['create', 'update', 'delete']) expect(isOrgWideGovernanceIntent('manage_ai_agent_schedules', { action }), action).toBe(true);
+    for (const action of ['apply', 'rollback']) expect(isOrgWideGovernanceIntent('manage_fleet_designs', { action }), action).toBe(true);
+    for (const action of ['run', 'preview', 'applied', 'document']) expect(isOrgWideGovernanceIntent('manage_fleet_designs', { action }), action).toBe(false);
+  });
+
+  it('no action arms act mode: the description of every schedule write says nothing can', () => {
+    expect(toolInputSchemas.manage_ai_agent_schedules?.safeParse({ action: 'update', scheduleId: '00000000-0000-4000-8000-000000000001', actMode: true }).success).toBe(false);
   });
 });
 

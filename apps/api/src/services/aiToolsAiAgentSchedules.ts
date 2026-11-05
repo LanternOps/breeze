@@ -162,7 +162,7 @@ export function registerAiAgentScheduleTool(aiTools: Map<string, AiTool>): void 
     tier: 1,
     domain: 'ai',
     deviceArgs: [],
-    searchHint: 'schedule an AI agent: recurring sweeps, reports, designs or patch runs for all customers or one organization, or stop them',
+    searchHint: 'schedule an AI agent: recurring sweeps, reports, designs or patch runs for all customers or one org',
     definition: {
       name: TOOL,
       description:

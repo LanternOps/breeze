@@ -140,6 +140,8 @@ import { registerIdentityReadTools } from './aiToolsIdentityReads';
 import { registerOrgPortalSettingsTool } from './aiToolsOrgPortalSettings';
 import { registerReportRecipientsTool } from './aiToolsReportRecipients';
 import { registerAiAgentLaunchTools } from './aiToolsAiAgentLaunch';
+import { registerAiAgentScheduleTool } from './aiToolsAiAgentSchedules';
+import { registerFleetDesignTool } from './aiToolsFleetDesigns';
 import { registerBillingProfileTools } from './aiToolsBillingProfiles';
 import { registerBillingSettingsTools } from './aiToolsBillingSettings';
 import { registerContractTemplateTools } from './aiToolsContractTemplates';
@@ -498,6 +500,9 @@ registerOrgPortalSettingsTool(aiTools);
 registerReportRecipientsTool(aiTools);
 // Full-control W16 PR A (#6786): the two supervised launch tools (patch-plan run, service-recovery operator task).
 registerAiAgentLaunchTools(aiTools);
+// Full-control W16 PR B (#6786): the schedule and Fleet Design multiplexers, each with four-eyes actions.
+registerAiAgentScheduleTool(aiTools);
+registerFleetDesignTool(aiTools);
 registerBillingSettingsTools(aiTools);
 registerContractTemplateTools(aiTools);
 registerDeviceBillingTools(aiTools);

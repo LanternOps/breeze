@@ -77,6 +77,10 @@ export const MFA_GATED_TOOL_ACTIONS: Readonly<Record<string, '*' | readonly stri
   // Full-control W16 PR A (#6786): POST /ai/patch-plan/runs and POST /ai/operator/tasks carry requireMfa().
   run_patch_plan: '*',
   create_operator_task: '*',
+  // Full-control W16 PR B (#6786): every schedule write carries requireMfa(), as do the Fleet Design run, preview, apply
+  // and rollback routes. GET applied and POST document do not.
+  manage_ai_agent_schedules: '*',
+  manage_fleet_designs: Object.freeze(['run', 'preview', 'apply', 'rollback']),
   manage_pam_rules: Object.freeze([
     'create_rule', 'update_rule', 'delete_rule', 'set_config',
     'create_signer_group', 'update_signer_group', 'delete_signer_group',

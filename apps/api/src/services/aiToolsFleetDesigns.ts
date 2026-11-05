@@ -308,7 +308,7 @@ export function registerFleetDesignTool(aiTools: Map<string, AiTool>): void {
     tier: 1,
     domain: 'ai',
     deviceArgs: [],
-    searchHint: 'run a Fleet Design for an organization, preview and apply its functions, monitoring, scripts and role corrections, undo it, or file it',
+    searchHint: 'run a Fleet Design for an org, preview and apply it, undo it, or file it in the org documents',
     definition: {
       name: TOOL,
       description:

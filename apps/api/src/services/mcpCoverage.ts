@@ -296,7 +296,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'ai/scriptPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Unattended script-lane grant plus lane reset (approvals:decide + step-up) -- the AI must not widen its own authority.' },
   'ai/scriptProposals.ts': { tools: ['propose_script', 'get_script_proposal'] },
   'aiAttach.ts': { exempt: 'ai_transport', note: 'Chat session transport (#9427): a read-only SSE attach to the caller\'s own running chat turn; a browser surface, not an agent action.' },
-  'aiAgentSchedules.ts': { tools: ['list_ai_agent_schedules'] }, // W10 (#6780): the read; schedule CRUD is W16 (#6786)
+  'aiAgentSchedules.ts': { tools: ['list_ai_agent_schedules', 'manage_ai_agent_schedules'] }, // W10 (#6780) read; W16 PR B (#6786): create, update, four-eyes delete. Left human (Decision 3): arming act mode (actMode: true) stays on the AI Agents page
   'aiAgents.ts': { tools: ['list_ai_agents', 'list_ai_agent_runs', 'get_ai_agent_run', 'manage_ai_agents'] },
   'aiArtifacts.ts': { tools: ['read_artifact'] },
   'aiModels/assignments.ts': { exempt: 'human_only_ai_governance', note: 'Per-feature model defaults and permitted sets -- the AI must not choose its own model policy.' },
@@ -539,7 +539,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'externalServices.ts': { exempt: 'breeze_account', note: 'The partner\'s Breeze billing portal and support forward.' },
   'filters.ts': { tools: ['manage_saved_filters'] },
   'fixMemory.ts': { tools: ['find_proven_fixes'] },
-  'fleetDesign.ts': { tools: ['list_fleet_designs', 'get_fleet_design'] }, // W10 (#6780): list + detail reads; run / apply / rollback / document are W16 (#6786)
+  'fleetDesign.ts': { tools: ['list_fleet_designs', 'get_fleet_design', 'manage_fleet_designs'] }, // W10 (#6780) reads; W16 PR B (#6786): run, preview, applied, four-eyes apply and rollback, document. Left human: POST /designer/enable creates or enables an autonomous agent (manage_ai_agents territory), and GET /designer is its setup probe
   'fleetFindings.ts': { tools: ['get_fleet_findings', 'manage_fleet_findings'] }, // W12 (#6782): acknowledge / dismiss / reopen; remediate stays UI-only
   'google.ts': { exempt: 'vendor_console_admin' },
   'groups.ts': { tools: ['manage_groups'] },
