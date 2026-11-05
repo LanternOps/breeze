@@ -39,7 +39,7 @@ import { pgErrorCode, pgErrorConstraint } from '../../utils/pgErrors';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { attachSession } from '../../services/wisp/threads';
 import { buildWispOverview } from '../../services/wisp/adminOverview';
-import { chargeableUnderGrant, spentUnderGrant, summaryRefineSourceRef } from '../../services/wisp/budget';
+import { chargeableUnderGrant, spentUnderGrant, summaryRefineSourceRef, utcDayWindow } from '../../services/wisp/budget';
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: null, userId: null,
@@ -791,6 +791,8 @@ describe("#10390 a model-written session summary is charged to the grant's daily
     await insertInvocation(f.orgA1, summaryRefineSourceRef(f.grantA.grantId), 100, YESTERDAY);
     await insertInvocation(f.orgB1, summaryRefineSourceRef(f.grantB.grantId), 50, NOW);
     await insertInvocation(f.orgA1, 'continuation_summary', 70, NOW);
+    // Outside the grant's partner: the read is bounded to its orgs, which is what lets the org index serve it.
+    await insertInvocation(f.orgB1, summaryRefineSourceRef(f.grantA.grantId), 40, NOW);
 
     expect(await spentUnderGrant(f.grantA.grantId, NOW)).toBe(13);
     expect(await spentUnderGrant(f.grantB.grantId, NOW)).toBe(50);
@@ -798,6 +800,15 @@ describe("#10390 a model-written session summary is charged to the grant's daily
     await asSystem(() => db.update(wispGrants).set({ budgetCentsPerDay: 14 }).where(eq(wispGrants.id, f.grantA.grantId)));
     await expect(chargeableUnderGrant(f.grantA.grantId, 1, NOW)).resolves.toEqual({ ok: true });
     await expect(chargeableUnderGrant(f.grantA.grantId, 2, NOW)).resolves.toEqual({ ok: false, reason: 'budget_exhausted' });
+  });
+
+  it('the UTC day is [start, end): a row at midnight counts today, a row at the next midnight does not', async () => {
+    const f = await seed();
+    const { start, end } = utcDayWindow(NOW);
+    await insertInvocation(f.orgA1, summaryRefineSourceRef(f.grantA.grantId), 3, start);
+    await insertInvocation(f.orgA1, summaryRefineSourceRef(f.grantA.grantId), 500, end);
+    await insertInvocation(f.orgA1, summaryRefineSourceRef(f.grantA.grantId), 500, new Date(start.getTime() - 1));
+    expect(await spentUnderGrant(f.grantA.grantId, NOW)).toBe(3);
   });
 
   it('the admin overview counts a grant exhausted by summaries alone', async () => {

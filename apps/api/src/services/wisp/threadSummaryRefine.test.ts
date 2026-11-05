@@ -4,11 +4,14 @@
  * reply leaves the digest alone; every provider reply is settled.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 const h = vi.hoisted(() => ({
   session: { orgId: 'org-1', userId: 'user-1', wispGrantId: 'grant-1' } as Record<string, unknown> | null,
   grant: { status: 'active', summaryRefine: true } as Record<string, unknown> | null,
   selects: 0,
+  whereArgs: [] as unknown[],
   wispEnabled: vi.fn(() => true),
   chargeableUnderGrant: vi.fn(),
   resolveSessionTurn: vi.fn(),
@@ -38,7 +41,8 @@ vi.mock('../../db', () => ({
       const call = h.selects;
       h.selects += 1;
       const chain: Record<string, unknown> = {};
-      for (const m of ['from', 'where', 'limit']) chain[m] = () => chain;
+      for (const m of ['from', 'limit']) chain[m] = () => chain;
+      chain.where = (cond: unknown) => { h.whereArgs.push(cond); return chain; };
       chain.then = (res: (v: unknown) => unknown) => {
         const row = call === 0 ? h.session : h.grant;
         return Promise.resolve(row ? [row] : []).then(res);
@@ -111,6 +115,7 @@ function expectNoSpend(): void {
 beforeEach(() => {
   vi.clearAllMocks();
   h.selects = 0;
+  h.whereArgs.length = 0;
   h.session = { orgId: 'org-1', userId: 'user-1', wispGrantId: 'grant-1' };
   h.grant = { status: 'active', summaryRefine: true };
   h.wispEnabled.mockReturnValue(true);
@@ -225,6 +230,13 @@ describe('refineThreadSummary', () => {
       expect(h.chargeableUnderGrant).not.toHaveBeenCalled();
       expect(h.resolveSessionTurn).not.toHaveBeenCalled();
       expect(h.reserveAiBudget).not.toHaveBeenCalled();
+    });
+
+    it("reads the switch from the session's own grant", async () => {
+      h.session = { orgId: 'org-1', userId: 'user-1', wispGrantId: 'grant-of-this-session' };
+      await refineThreadSummary(input);
+      const grantQuery = new PgDialect().sqlToQuery(h.whereArgs[1] as SQL);
+      expect(grantQuery.params).toContain('grant-of-this-session');
     });
 
     it('a grant row without the flag reads as off', async () => {
@@ -346,6 +358,8 @@ describe('refineThreadSummary', () => {
       await refineThreadSummary(input);
       expect(h.messagesUsage).toHaveBeenCalledWith(expect.anything(), ATTEMPTS);
       expect(h.settleInvocation).toHaveBeenCalledTimes(1);
+      // Burned tokens without a summary still count against the grant.
+      expect(h.settleInvocation).toHaveBeenCalledWith(expect.objectContaining({ sourceRef: 'wisp_thread_summary:grant-1' }));
       expect(h.replaceClaimedThreadSummary).not.toHaveBeenCalled();
     });
 
@@ -353,7 +367,7 @@ describe('refineThreadSummary', () => {
       h.summarizeForContinuation.mockRejectedValue(failed('fallback threw', ATTEMPTS, true));
       await refineThreadSummary(input);
       expect(h.messagesUsageAfterDispatchError).toHaveBeenCalledWith(expect.anything(), ATTEMPTS);
-      expect(h.settleInvocation).toHaveBeenCalledTimes(1);
+      expect(h.settleInvocation).toHaveBeenCalledWith(expect.objectContaining({ sourceRef: 'wisp_thread_summary:grant-1' }));
     });
 
     it('an unknown provider outcome holds the reservation indeterminate, never released', async () => {

@@ -169,6 +169,8 @@ describe('spentUnderGrant', () => {
     expect(q.sql).toContain('"ai_invocations"."source_ref" = $');
     expect(q.sql).toContain('"ai_invocations"."created_at" >= $');
     expect(q.sql).toContain('"ai_invocations"."created_at" < $');
+    // Bounded to the grant's partner, so ai_invocations_org_created_idx serves it, not a day of every tenant.
+    expect(q.sql).toContain('"ai_invocations"."org_id" IN (SELECT');
     expect(q.params).toEqual(expect.arrayContaining([
       `wisp_thread_summary:${GRANT}`, '2027-01-05T00:00:00.000Z', '2027-01-06T00:00:00.000Z',
     ]));

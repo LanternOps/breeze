@@ -140,6 +140,9 @@ export async function spentUnderGrant(grantId: string, now: Date = new Date()): 
       .select({ total: sql<string | number | null>`ceil(coalesce(sum(${aiInvocations.costCents}), 0))::bigint` })
       .from(aiInvocations)
       .where(and(
+        // The ledger is the busiest table: the partner's orgs let ai_invocations_org_created_idx
+        // serve this, instead of reading a day of every tenant's rows on each budget check.
+        sql`${aiInvocations.orgId} IN (SELECT o.id FROM organizations o JOIN wisp_grants g ON g.partner_id = o.partner_id WHERE g.id = ${grantId}::uuid)`,
         eq(aiInvocations.sourceRef, summaryRefineSourceRef(grantId)),
         gte(aiInvocations.createdAt, start),
         lt(aiInvocations.createdAt, end),
