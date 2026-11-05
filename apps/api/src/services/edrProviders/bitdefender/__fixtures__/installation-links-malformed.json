@@ -1,0 +1,11 @@
+{
+  "id": "1",
+  "jsonrpc": "2.0",
+  "result": [
+    {
+      "packageName": "Synthetic Package",
+      "companyId": "5f0a1b2c3d4e5f60718293a1",
+      "installLinkMac": "https://cloud.gravityzone.bitdefender.com/Packages/MAC/0/synthetic.pkg"
+    }
+  ]
+}

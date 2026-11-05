@@ -23,7 +23,11 @@ describe('edr provider registry', () => {
     }
   });
 
-  it.todo('EDR_INSTALLER_PROVIDER_KEYS is exactly the adapters that can supply an installer');
+  it('EDR_INSTALLER_PROVIDER_KEYS is exactly the adapters that can supply an installer', () => {
+    expect([...EDR_INSTALLER_PROVIDER_KEYS]).toEqual(
+      listEdrProviders().filter((a) => a.capabilities.installer !== 'none').map((a) => a.key),
+    );
+  });
 
   it('registry keys are the pinned set and each adapter reports its own key', () => {
     expect([...EDR_PROVIDER_KEYS]).toEqual(['bitdefender', 'emsisoft']);

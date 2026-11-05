@@ -8,7 +8,7 @@ describe('capabilitySnapshot', () => {
     expect(capabilitySnapshot(bitdefenderAdapter, ['quarantine: API not enabled on key'])).toEqual([
       'tenants:partner',
       'detections:poll_and_push',
-      'installer:none',
+      'installer:api_generated_link',
       'action:isolate',
       'action:unisolate',
       'action:scan',
@@ -18,7 +18,7 @@ describe('capabilitySnapshot', () => {
 
   it('no notes -> keys only', () => {
     expect(capabilitySnapshot(bitdefenderAdapter, [])).toEqual([
-      'tenants:partner', 'detections:poll_and_push', 'installer:none',
+      'tenants:partner', 'detections:poll_and_push', 'installer:api_generated_link',
       'action:isolate', 'action:unisolate', 'action:scan',
     ]);
   });

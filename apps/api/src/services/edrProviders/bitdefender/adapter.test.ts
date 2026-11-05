@@ -127,7 +127,7 @@ describe('testConnection', () => {
     const r = await adapter.testConnection(ctx);
     expect(r).toEqual({
       ok: true, rootId: P0, rootName: 'Example Partner', rootType: 'partner', tenantCount: 3,
-      capabilityNotes: ['quarantine: API not enabled on key'],
+      capabilityNotes: ['quarantine: API not enabled on key', 'packages: API not enabled on key'],
     });
     expect(count('incidents.getIncidentsList')).toBe(0);
     expect(count('quarantine/computers.getQuarantineItemsList')).toBe(0);
