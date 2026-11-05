@@ -17,7 +17,7 @@ let permissionsState: any;
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
-  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'orderBy']) {
+  for (const method of ['from', 'where', 'limit', 'returning', 'values', 'set', 'orderBy', 'innerJoin', 'leftJoin']) {
     chain[method] = vi.fn(() => Object.assign(Promise.resolve(resolvedValue), chain));
   }
   return Object.assign(Promise.resolve(resolvedValue), chain);
@@ -157,6 +157,10 @@ const gateDeps = vi.hoisted(() => ({
 }));
 vi.mock('../../services/backupRestoreIntegrity', () => ({
   resolveRestoreIntegrity: (...args: unknown[]) => gateDeps.resolveRestoreIntegrity(...args),
+  // The condition itself is proved against Postgres (backupSnapshotBrowse.integration.test.ts).
+  readableIndexCondition: () => undefined,
+  INDEX_BINDABLE_ATTESTATION_STATUSES: new Set(['pending', 'verified', 'producer_only']),
+  indexFailedOnAttestation: () => false,
 }));
 vi.mock('../auth/helpers', () => ({
   userIsMfaProtected: (...args: unknown[]) => gateDeps.userIsMfaProtected(...args),

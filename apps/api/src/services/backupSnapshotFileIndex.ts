@@ -23,51 +23,21 @@ import { parseBackupObjectKey } from './backupObjectKey';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { indexMatchesAttestation } from './backupRestoreIntegrity';
 import { physicalKeyFor, sameKeyRoot, snapshotKeyRootOf, type SnapshotKeyRoot } from './backupKeyLayout';
+import {
+  HYDRATING_STALE_MS,
+  hydrationFailureFromError,
+  isRetryableHydrationFailure,
+  type FileIndexStatus,
+  type HydrationFailure,
+} from './backupSnapshotIndexView';
 
-export type FileIndexStatus = 'none' | 'agent' | 'hydrating' | 'complete' | 'failed';
-
-export type HydrationFailure =
-  | 'storage_identity_unknown'
-  | 'storage_identity_drift'
-  | 'manifest_missing'
-  | 'manifest_invalid'
-  | 'manifest_too_large'
-  | 'manifest_key_invalid'
-  | 'origin_unverifiable'
-  | 'origin_identity_pending'
-  | 'provider_error'
-  // The manifest bytes read from storage are not the ones the snapshot's
-  // attestation names.
-  | 'manifest_differs_from_attestation'
-  // The snapshot's attestation did not match its stored objects.
-  | 'attestation_failed'
-  // The snapshot records a key root this server cannot read (#7081).
-  | 'key_root_invalid'
-  // An origin the manifest references lives under another key root than the
-  // snapshot (#7081 I4): a dedupe chain never spans roots.
-  | 'origin_key_root_mismatch';
-
-const HYDRATION_FAILURES: readonly HydrationFailure[] = [
-  'storage_identity_unknown', 'storage_identity_drift', 'manifest_missing', 'manifest_invalid',
-  'manifest_too_large', 'manifest_key_invalid', 'origin_unverifiable', 'origin_identity_pending', 'provider_error',
-  'manifest_differs_from_attestation', 'attestation_failed', 'key_root_invalid', 'origin_key_root_mismatch',
-];
-
-// Retryability is a pure function of the failure code so that the route glue
-// (authenticate/exchange) and the BullMQ worker agree without a second column:
-// transient storage/network conditions and "GC has not healed this identity
-// yet" retry; a malformed manifest or an unprovable origin never will.
-export const RETRYABLE_HYDRATION_FAILURES: ReadonlySet<HydrationFailure> = new Set<HydrationFailure>([
-  'manifest_missing', 'provider_error', 'origin_identity_pending',
-]);
-export function isRetryableHydrationFailure(failure: HydrationFailure): boolean {
-  return RETRYABLE_HYDRATION_FAILURES.has(failure);
-}
-export function hydrationFailureFromError(error: string | null): HydrationFailure | null {
-  if (!error) return null;
-  const prefix = error.split(':', 1)[0] ?? '';
-  return (HYDRATION_FAILURES as readonly string[]).includes(prefix) ? (prefix as HydrationFailure) : null;
-}
+export {
+  hydrationFailureFromError,
+  isRetryableHydrationFailure,
+  RETRYABLE_HYDRATION_FAILURES,
+  type FileIndexStatus,
+  type HydrationFailure,
+} from './backupSnapshotIndexView';
 
 export type HydrationOutcome =
   | { status: 'complete'; manifestSha256: string; entryCount: number; externalCount: number; originSnapshotIds: string[] }
@@ -79,7 +49,6 @@ export type HydrationDeps = {
   now?: () => Date;
 };
 
-const HYDRATING_STALE_MS = 30 * 60 * 1000;
 const FILE_ROW_BATCH_SIZE = 1000;
 
 // Same field shape as backupSnapshotReconcile.ts's private reconcileManifestSchema
