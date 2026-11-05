@@ -14,7 +14,7 @@ export const WISP_TIMELINE_MAX_LIMIT = 100;
  * `wisp_thread_posts_kind_chk` CHECK (migration and Drizzle schema); change
  * all together (pinned by apps/api threadPostKinds.contract.test.ts).
  */
-export const WISP_TIMELINE_POST_KINDS = ['brief', 'nudge', 'digest', 'check_in'] as const;
+export const WISP_TIMELINE_POST_KINDS = ['brief', 'nudge', 'digest', 'check_in', 'specialist_result'] as const;
 export type WispTimelinePostKind = (typeof WISP_TIMELINE_POST_KINDS)[number];
 
 /** An ai_messages row from one of the thread's sessions. */

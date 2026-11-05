@@ -2,6 +2,7 @@ import type { Browser, BrowserContext } from '@playwright/test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { waitForLoginFormReady } from './pages/hydration';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -181,6 +182,7 @@ export async function loginAndSaveState(browser: Browser, baseURL: string, state
     });
 
     await page.goto('/login');
+    await waitForLoginFormReady(page);
     await page.locator('[data-testid="login-email-input"]').fill(email);
     await page.locator('[data-testid="login-password-input"]').fill(password);
     await page.locator('[data-testid="login-submit"]').click();

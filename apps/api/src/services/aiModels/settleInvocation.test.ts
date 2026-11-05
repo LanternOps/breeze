@@ -436,6 +436,13 @@ describe('SDK usage snapshot (W05 spike)', () => {
     expect(m.captureMessage).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ eventCode: 'ai_usage_snapshot_regressed' }));
   });
 
+  it('a context-window refusal is confirmed: no ai_usage_unconfirmed warning (#10577)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await settleInvocation(base({ usage: [], sdkUsage: { sessionId: 's1', nextSnapshot: null, usageConfirmed: true, usageNote: 'context_window_exceeded' } }));
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('ai_usage_unconfirmed');
+    warn.mockRestore();
+  });
+
   it('any other unconfirmed usage is a structured warning, not a Sentry event', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await settleInvocation(base({ usage: [], sdkUsage: { sessionId: 's1', nextSnapshot: null, usageConfirmed: false, usageNote: 'no_result' } }));

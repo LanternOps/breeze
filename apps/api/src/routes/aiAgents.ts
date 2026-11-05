@@ -32,6 +32,7 @@ import {
   type AgentCeilingDto,
 } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
+import { selectRunIntentsForCaller } from '../services/aiAgents/runIntentsForCaller';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   actionIntents, aiAgentGraduation, aiAgentRuns, aiAgents, aiToolExecutions, devices, organizations,
@@ -1493,20 +1494,15 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
   // it. TWO org predicates: the run's OWN org pins the read, and the caller's
   // condition stays as defence-in-depth beside RLS — same posture as the
   // batched hostname read below.
-  const intentRows = await db
-    .select({
-      id: actionIntents.id,
-      status: actionIntents.status,
-      actionName: actionIntents.actionName,
-      approvalScope: actionIntents.approvalScope,
-      decidedVia: actionIntents.decidedVia,
-    })
-    .from(actionIntents)
-    .where(and(
-      eq(actionIntents.requestingAgentRunId, run.id),
-      eq(actionIntents.orgId, run.orgId),
-      auth.orgCondition(actionIntents.orgId),
-    ));
+  //
+  // W2 #11085: plus the caller's own pending approval row per intent
+  // (selectRunIntentsForCaller's header).
+  const intentRows = await selectRunIntentsForCaller({
+    runId: run.id,
+    runOrgId: run.orgId,
+    userId: auth.user.id,
+    orgCondition: auth.orgCondition(actionIntents.orgId),
+  });
 
   // Phase 2 wave P2-2 (scheduled sweeps), Task A7 — a sweep run is
   // device-less but its findings each name one device, so the detail needs

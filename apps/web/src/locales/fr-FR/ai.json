@@ -583,7 +583,16 @@
       "pending_other": "{{count}} étapes attendent votre approbation",
       "waiting": "Des étapes attendent votre approbation",
       "review": "Examiner dans Approbations"
-    }
+    },
+    "stepApprovals": {
+      "title": "En attente de votre approbation",
+      "wispFor": "Wisp pour {{name}}",
+      "approve": "Approuver",
+      "deny": "Refuser",
+      "waitingForApprover": "En attente d'un approbateur"
+    },
+    "continue": "Continuer",
+    "continueMessage": "Poursuivre le dépannage de l'exécution {{runId}}."
   },
   "aiModelPicker": {
     "chooseModel": "Choisir un modèle",
@@ -882,7 +891,8 @@
       "checkIn": "Point de suivi",
       "summary": "Récapitulatif",
       "open": "Ouvrir",
-      "unread": "Non lu"
+      "unread": "Non lu",
+      "specialistResult": "Rapport du spécialiste"
     },
     "welcome": {
       "title": "Je fais le tour de {{scope}}.",

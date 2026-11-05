@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/flashguard"
 	"github.com/breeze-rmm/agent/internal/isolation"
 	"github.com/breeze-rmm/agent/internal/macosuninstall"
 	"github.com/breeze-rmm/agent/internal/procspawn"
@@ -70,6 +71,14 @@ func handleSelfUninstall(h *Heartbeat, cmd Command) tools.CommandResult {
 		)
 	}
 
+	// Refused rather than waited out, before anything is touched: the operator
+	// can send it again. On success the admission is kept through the hand-off,
+	// because this process is on its way out and a flash must not start meanwhile.
+	admissionDone, err := flashguard.Default().AdmitPowerAction("self_uninstall")
+	if err != nil {
+		return tools.NewErrorResult(fmt.Errorf("self_uninstall refused: %w; nothing was removed", err), time.Since(start).Milliseconds())
+	}
+
 	removeConfig := tools.GetPayloadBool(cmd.Payload, "removeConfig", true)
 
 	log.Warn("self_uninstall command received — uninstalling agent",
@@ -77,10 +86,12 @@ func handleSelfUninstall(h *Heartbeat, cmd Command) tools.CommandResult {
 	)
 
 	if err := releaseIsolationForUninstallFn(h); err != nil {
+		admissionDone()
 		return tools.NewErrorResult(fmt.Errorf("self-uninstall refused: isolation release could not be confirmed; agent service remains installed: %w", err), time.Since(start).Milliseconds())
 	}
 
 	if err := prepareSelfUninstallFn(removeConfig); err != nil {
+		admissionDone()
 		log.Error("self-uninstall preparation failed — teardown NOT handed off, agent service remains installed",
 			"error", err.Error(),
 		)
@@ -90,6 +101,7 @@ func handleSelfUninstall(h *Heartbeat, cmd Command) tools.CommandResult {
 		)
 	}
 
+	flashguard.HoldFor(admissionDone, flashguard.RestartHandoffHold)
 	scheduleSelfUninstallShutdownFn(h)
 
 	return tools.NewSuccessResult(map[string]string{

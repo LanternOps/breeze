@@ -35,6 +35,7 @@ const h = vi.hoisted(() => {
     loadUrgentCapableSeverities: vi.fn(),
     checkNotificationThrottle: vi.fn(),
     userPushTargetsQuery: vi.fn(),
+    resolveGrantCeiling: vi.fn(),
   };
 });
 
@@ -54,8 +55,13 @@ vi.mock('./nudgePreferences', () => ({ loadNudgePrefs: h.loadNudgePrefs }));
 vi.mock('./partnerNudgeSettings', () => ({ loadUrgentCapableSeverities: h.loadUrgentCapableSeverities }));
 vi.mock('../notificationThrottle', () => ({ checkNotificationThrottle: h.checkNotificationThrottle }));
 vi.mock('../ticketPush', () => ({ userPushTargetsQuery: h.userPushTargetsQuery }));
+vi.mock('./grantAuthority', () => ({
+  resolveGrantCeiling: h.resolveGrantCeiling,
+  GrantInactiveError: class GrantInactiveError extends Error {},
+}));
 
-import { decideNudgeDelivery, notifyUser, nudgeDedupeKey, type NudgePayload } from './notifyUser';
+import { GrantInactiveError } from './grantAuthority';
+import { decideNudgeDelivery, notifyUser, nudgeDedupeKey, resolveSpecialistPostAudience, type NudgePayload } from './notifyUser';
 
 const now = new Date('2026-10-24T10:07:00Z');
 const quiet = { start: '00:00', end: '23:59', enabled: true };
@@ -460,6 +466,100 @@ describe('notifyUser', () => {
       expect(h.deliverInApp).not.toHaveBeenCalled();
       expect(h.recordThreadPost).toHaveBeenCalledWith(expect.objectContaining({ kind: 'check_in', orgId: 'o7', dedupeKey: 'wisp.check_in:ci1', notificationId: null }));
     });
+  });
+
+  describe('specialist_result (W2 #11085)', () => {
+    const ceiling = (o: { orgIds?: string[]; siteIds?: string[] | null; orgTerms?: Map<string, { siteIds: Set<string> | null }> } = {}) => ({
+      grantorUserId: 'u1',
+      orgIds: new Set(o.orgIds ?? ['o2']),
+      siteIds: o.siteIds === undefined || o.siteIds === null ? null : new Set(o.siteIds),
+      orgTerms: o.orgTerms ?? new Map(),
+    });
+    const specialist: NudgePayload = {
+      ...payload, kind: 'specialist_result', concernId: null, approvalIntentId: null, deepLink: '/ai-agents/runs/r1',
+      push: false,
+      specialist: { orgId: 'o2', grantRevisionId: 'rev1', dedupeKey: 'wisp.specialist_result:r1:completed', link: '/ai-agents/runs/r1' },
+    };
+    beforeEach(() => { h.resolveGrantCeiling.mockResolvedValue(ceiling()); });
+
+    it("writes the in-app row + post with the run's org, the run link and the run dedupe key, and pushes nothing", async () => {
+      queue([threadRow], deviceRows);
+      await expect(notifyUser(specialist)).resolves.toEqual({ inApp: true, pushed: 0, suppressed: null });
+      expect(h.resolveGrantCeiling).toHaveBeenCalledWith('g1', 'rev1', { allowPaused: true });
+      expect(h.deliverInApp).toHaveBeenCalledWith(expect.objectContaining({
+        orgId: 'o2', link: '/ai-agents/runs/r1', dedupeKey: 'wisp.specialist_result:r1:completed', concernId: null,
+        post: expect.objectContaining({ kind: 'specialist_result', orgId: 'o2', link: '/ai-agents/runs/r1', concernId: null }),
+      }));
+      expect(h.dispatchPushToTokens).not.toHaveBeenCalled();
+      expect(h.checkNotificationThrottle).not.toHaveBeenCalled();
+      expect(h.recordNudge).not.toHaveBeenCalled();
+    });
+
+    it('a step dedupe key is accepted too', async () => {
+      queue([threadRow], deviceRows);
+      await notifyUser({ ...specialist, specialist: { ...specialist.specialist!, dedupeKey: 'wisp.specialist_step:i1:completed' } });
+      expect(h.deliverInApp).toHaveBeenCalledWith(expect.objectContaining({ dedupeKey: 'wisp.specialist_step:i1:completed' }));
+    });
+
+    it('an org the thread timeline cannot show (outside the ceiling, or site-restricted) throws and writes nothing', async () => {
+      for (const c of [
+        ceiling({ orgIds: ['o9'] }),
+        ceiling({ siteIds: ['s1'] }),
+        ceiling({ orgTerms: new Map([['o2', { siteIds: new Set(['s1']) }]]) }),
+      ]) {
+        h.resolveGrantCeiling.mockResolvedValueOnce(c);
+        queue([threadRow], deviceRows);
+        await expect(notifyUser(specialist)).rejects.toThrow(/outside/);
+      }
+      expect(h.deliverInApp).not.toHaveBeenCalled();
+      expect(h.recordThreadPost).not.toHaveBeenCalled();
+    });
+
+    it('an inactive grant (the ceiling cannot be resolved even paused) throws and writes nothing', async () => {
+      h.resolveGrantCeiling.mockRejectedValueOnce(new (GrantInactiveError as unknown as new () => Error)());
+      queue([threadRow], deviceRows);
+      await expect(notifyUser(specialist)).rejects.toThrow(/grant_inactive/);
+      expect(h.deliverInApp).not.toHaveBeenCalled();
+    });
+
+    it('a ceiling read that fails for another reason propagates as itself (not a refusal)', async () => {
+      h.resolveGrantCeiling.mockRejectedValueOnce(new Error('db down'));
+      await expect(resolveSpecialistPostAudience('g1', 'rev1', 'o2')).rejects.toThrow('db down');
+    });
+
+    it('a recipient other than the ceiling\'s grantor throws and writes nothing', async () => {
+      queue([threadRow], deviceRows);
+      await expect(notifyUser({ ...specialist, userId: 'u9' })).rejects.toThrow(/not the grantor/);
+      expect(h.deliverInApp).not.toHaveBeenCalled();
+    });
+
+    it('shape: specialist is required for, and only for, specialist_result; the dedupe key must be a specialist key', async () => {
+      await expect(notifyUser({ ...specialist, specialist: undefined })).rejects.toThrow(/needs specialist/);
+      await expect(notifyUser({ ...payload, specialist: specialist.specialist })).rejects.toThrow(/carries no specialist/);
+      await expect(notifyUser({ ...specialist, specialist: { ...specialist.specialist!, dedupeKey: 'wisp.brief:t1:2026-10-24' } }))
+        .rejects.toThrow(/dedupe key/);
+      await expect(notifyUser({ ...specialist, specialist: { ...specialist.specialist!, link: 'https://evil.example/x' } }))
+        .rejects.toThrow(/relative/);
+      expect(h.deliverInApp).not.toHaveBeenCalled();
+    });
+
+    it('with the in-app channel off the post is still written, under the run dedupe key', async () => {
+      queue([threadRow], deviceRows);
+      h.loadNudgePrefs.mockResolvedValue(P({ channels: { inApp: false, push: true } }));
+      h.recordThreadPost.mockResolvedValue({ created: true, id: 'post1' });
+      await notifyUser(specialist);
+      expect(h.recordThreadPost).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'specialist_result', orgId: 'o2', dedupeKey: 'wisp.specialist_result:r1:completed', notificationId: null,
+      }));
+      expect(h.dispatchPushToTokens).not.toHaveBeenCalled();
+    });
+  });
+
+  it('push: false withholds the push of any nudge kind (in-app still written)', async () => {
+    queue([threadRow], [concernRow], deviceRows);
+    await expect(notifyUser({ ...payload, push: false })).resolves.toEqual({ inApp: true, pushed: 0, suppressed: null });
+    expect(h.deliverInApp).toHaveBeenCalledTimes(1);
+    expect(h.dispatchPushToTokens).not.toHaveBeenCalled();
   });
 
   it('digest payload (concernId null) skips recipientState, counts nothing and uses the digest key', async () => {

@@ -36,7 +36,9 @@ export default function WispPost({ post, now }: { post: WispTimelinePost; now?: 
         ? t('wisp.post.digest')
         : post.kind === 'check_in'
           ? t('wisp.post.checkIn')
-          : t('wisp.post.brief');
+          : post.kind === 'specialist_result'
+            ? t('wisp.post.specialistResult')
+            : t('wisp.post.brief');
   // A check-in's link is this same thread (`#checkin=<id>`), so an "Open" link
   // would go nowhere.
   const href = post.kind === 'check_in' ? null : safeActivityHref(post.link);

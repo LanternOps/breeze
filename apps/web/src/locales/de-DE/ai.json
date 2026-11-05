@@ -583,7 +583,16 @@
       "pending_other": "{{count}} Schritte warten auf deine Genehmigung",
       "waiting": "Schritte warten auf deine Genehmigung",
       "review": "In Genehmigungen prüfen"
-    }
+    },
+    "stepApprovals": {
+      "title": "Wartet auf Ihre Genehmigung",
+      "wispFor": "Wisp für {{name}}",
+      "approve": "Genehmigen",
+      "deny": "Ablehnen",
+      "waitingForApprover": "Wartet auf einen Genehmiger"
+    },
+    "continue": "Fortsetzen",
+    "continueMessage": "Fehlerbehebung für Lauf {{runId}} fortsetzen."
   },
   "aiModelPicker": {
     "chooseModel": "Modell auswählen",
@@ -882,7 +891,8 @@
       "checkIn": "Nachkontrolle",
       "summary": "Zusammenfassung",
       "open": "Öffnen",
-      "unread": "Ungelesen"
+      "unread": "Ungelesen",
+      "specialistResult": "Spezialistenbericht"
     },
     "welcome": {
       "title": "Ich sehe mich in {{scope}} um.",
