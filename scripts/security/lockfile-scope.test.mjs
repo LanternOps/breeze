@@ -114,6 +114,39 @@ test('a package the walk cannot place (or never saw) is unknown, which consumers
   assert.equal(scopeOf(s, 'not-in-lockfile', '1.0.0'), 'unknown');
 });
 
+test('an edge into a key that is not a snapshot throws rather than dropping its subtree', () => {
+  const bad = LOCK.replace('      react: 19.0.0\n', '      react: 19.0.0\n      ghost: 0.0.1\n');
+  assert.throws(() => lockfileScopes(bad), /no snapshot/);
+});
+
+test('a file: dependency is followed, so its children are production even when a dev package also reaches them', () => {
+  const lock = `importers:
+
+  .:
+    dependencies:
+      vendored:
+        specifier: file:vendor/vendored.tgz
+        version: file:vendor/vendored.tgz
+    devDependencies:
+      tool:
+        specifier: ^1.0.0
+        version: 1.0.0
+
+snapshots:
+
+  'vendored@file:vendor/vendored.tgz':
+    dependencies:
+      shared-child: 1.0.0
+
+  tool@1.0.0:
+    dependencies:
+      shared-child: 1.0.0
+
+  shared-child@1.0.0: {}
+`;
+  assert.equal(scopeOf(lockfileScopes(lock), 'shared-child', '1.0.0'), 'production');
+});
+
 test('a lockfile with no importers or no snapshots throws (cannot walk, fail closed)', () => {
   assert.throws(() => lockfileScopes("lockfileVersion: '9.0'\n"), /importers/);
   assert.throws(() => lockfileScopes('importers:\n\n  .:\n    dependencies:\n      a:\n        version: 1.0.0\n'), /snapshots/);

@@ -504,6 +504,19 @@ snapshots:
   assert.deepEqual(scopes, { 'prod-root': 'production', 'dev-root': 'dev', stray: 'unknown' }, out(res));
 });
 
+test('--findings-json: a lockfile the scope walk cannot read yields scope unknown with a warning, never a pass', () => {
+  const res = runGate({
+    osvReport: report(finding('lodash', 'GHSA-1111-2222-3333')),
+    exceptions: { exceptions: [] },
+    args: ['--findings-json', 'out/findings.json'],
+    setup: (root) => mkdirSync(join(root, 'out')),
+  });
+  assert.equal(res.status, 1, out(res));
+  assert.match(res.stdout, /::warning title=Dependency scope walk failed::/, out(res));
+  const doc = JSON.parse(readFileSync(join(res.root, 'out', 'findings.json'), 'utf8'));
+  assert.deepEqual(doc.findings.map((x) => x.scope), ['unknown']);
+});
+
 test('--findings-json is not written when scan integrity fails, and a stale one is removed', () => {
   const cases = [
     { osvReport: report(), scannerExit: 2 },

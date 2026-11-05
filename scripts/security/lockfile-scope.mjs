@@ -30,9 +30,13 @@ const snapshotId = (key) => stripPeers(unquote(key));
 // edges that are not registry packages (link:, file:, workspace).
 function edgeTarget(name, value) {
   const v = unquote(value.trim());
-  if (v === '' || /^(link:|file:|workspace:)/.test(v)) return null;
-  // npm: alias — the value is already "realname@version".
-  if (/^(@[^/]+\/)?[^@(]+@/.test(v)) return stripPeers(v);
+  // link:/workspace: point at a workspace importer, which is already a root.
+  // file: and URL specs have their own snapshot (`name@file:…`) and children,
+  // so the edge is followed.
+  if (v === '' || /^(link:|workspace:)/.test(v)) return null;
+  // npm: alias — the value is already "realname@version" (a package name never
+  // contains ':' or '/' beyond the scope slash, which excludes URL specs).
+  if (/^(@[^/:]+\/)?[^@/:(]+@/.test(v)) return stripPeers(v);
   return `${name}@${stripPeers(v)}`;
 }
 
@@ -96,6 +100,14 @@ export function lockfileScopes(text) {
 
   if (!sawImporters || roots.prod.size + roots.dev.size === 0) throw new Error('lockfile has no importers with dependencies — cannot walk the production closure');
   if (!sawSnapshots || edges.size === 0) throw new Error('lockfile has no snapshots section — cannot walk the production closure');
+
+  // An edge into a key that is not a snapshot (a URL spec the edge parser
+  // misread, a lockfile shape change) would silently drop its subtree and could
+  // leave a production package scoped dev. Refuse instead.
+  const dangling = new Set();
+  for (const id of [...roots.prod, ...roots.dev]) if (!edges.has(id)) dangling.add(id);
+  for (const targets of edges.values()) for (const id of targets) if (!edges.has(id)) dangling.add(id);
+  if (dangling.size > 0) throw new Error(`${dangling.size} dependency edge(s) point at no snapshot (e.g. ${[...dangling][0]}) — cannot trust the production closure`);
 
   const walk = (start) => {
     const seen = new Set();

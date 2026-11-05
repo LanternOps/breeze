@@ -148,6 +148,7 @@ test('normalize: an unrecognised scope value is a malformed document', () => {
 
 test('normalize: the same advisory in two scopes is reported once, as production', () => {
   assert.deepEqual(normalize('osv', doc([dev(A), A])), [A]);
+  assert.deepEqual(normalize('osv', doc([A, dev(A)])), [A]);
 });
 
 // ── exceptionProblems / findingsTable ────────────────────────────────────
