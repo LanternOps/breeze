@@ -205,8 +205,8 @@ describe('device_network_isolations migration', () => {
   });
 });
 
-describe('2027-01-20-200000-isolation-allow-snapshot-revision.sql (#10100)', () => {
-  const file = '2027-01-20-200000-isolation-allow-snapshot-revision.sql';
+describe('2027-01-20-240000-isolation-allow-snapshot-revision.sql (#10100)', () => {
+  const file = '2027-01-20-240000-isolation-allow-snapshot-revision.sql';
   const text = () => fs.readFileSync(path.join(__dirname, '../../../migrations', file), 'utf8').replace(/\s+/g, ' ');
 
   it('adds the policy columns next to allow_snapshot, idempotently', () => {
