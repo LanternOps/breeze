@@ -261,6 +261,7 @@ func TestWatcherOffWindowsDoesNotWaitOnTheEnumerator(t *testing.T) {
 func TestWatcherNoInteractiveUserSpawnErrorIsAWait(t *testing.T) {
 	buf := captureLogs(t)
 	fastWatcher(t)
+	windowsWaitForUser(t)
 	mgr, _ := newNotInstalledManager(t)
 	t.Cleanup(mgr.Shutdown)
 	alive := true
@@ -297,6 +298,7 @@ func TestWatcherNoInteractiveUserSpawnErrorIsAWait(t *testing.T) {
 func TestWatcherStillCountsACrashWithAUserSignedIn(t *testing.T) {
 	buf := captureLogs(t)
 	fastWatcher(t)
+	windowsWaitForUser(t)
 	mgr, _ := newNotInstalledManager(t)
 	t.Cleanup(mgr.Shutdown)
 	alive := true

@@ -63,9 +63,9 @@ func TestConsoleOnlySessions(t *testing.T) {
 			consoleID: "",
 			wantKeys:  nil,
 		},
-		// #10379: snapshots shaped as listSessionsCounted builds them from
-		// WTSEnumerateSessions + WTSQuerySessionInformation on a Windows 11
-		// workstation. Assist may only launch into a console session a user is
+		// #10379: hand-written snapshots in the shape listSessionsCounted builds
+		// from WTSEnumerateSessions + WTSQuerySessionInformation, not captured
+		// from a host. Assist may only launch into a console session a user is
 		// signed in to.
 		{
 			name: "#10379 nobody signed in: logon-screen console session is excluded",
