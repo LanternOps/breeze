@@ -134,11 +134,15 @@ func TestRunHappyPath(t *testing.T) {
 		t.Fatalf("result violates the contract: %v", err)
 	}
 	m, err := ReadMarker(f.store)
-	if err != nil || m.EndedAt == nil || m.Outcome != OutcomeSuccess || !m.FlashStarted || !m.VerifyPending {
+	if err != nil || m.EndedAt == nil || m.Outcome != OutcomeSuccess || !m.FlashStarted {
 		t.Fatalf("marker after a bios run = %+v, %v", m, err)
 	}
-	if m.BiosVersionBefore != "1.20.0" {
-		t.Fatalf("bios before = %q", m.BiosVersionBefore)
+	pending, err := readPendingVerifications(f.store)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending = %+v, %v", pending, err)
+	}
+	if p := pending[0]; p.CommandID != testCommandID || p.BiosVersionBefore != "1.20.0" || !p.VerifyAfter.Equal(*m.EndedAt) {
+		t.Fatalf("pending = %+v; verification must wait for a boot after the install ended", p)
 	}
 	want := []string{StageVerifying, StageInstalling, StageReporting}
 	if len(f.stages) != len(want) {

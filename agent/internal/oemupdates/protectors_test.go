@@ -31,7 +31,10 @@ func TestLiveProtectorsSuspendedCountsAsOn(t *testing.T) {
 }
 
 func TestLiveProtectorsOffReadsNoKeys(t *testing.T) {
-	read := func() ([]security.RecoveryKey, error) { t.Fatal("read keys for an unencrypted volume"); return nil, nil }
+	read := func() ([]security.RecoveryKey, error) {
+		t.Fatal("read keys for an unencrypted volume")
+		return nil, nil
+	}
 	live, err := liveProtectors(func() (string, error) { return security.BitLockerStateOff, nil }, read, "C:")
 	if err != nil || live.BitLockerOn {
 		t.Fatalf("live = %+v, %v", live, err)

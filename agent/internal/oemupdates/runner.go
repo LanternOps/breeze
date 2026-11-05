@@ -60,11 +60,12 @@ func Run(ctx context.Context, req RunRequest, lane Lane, deps Deps) RunResult {
 }
 
 type run struct {
-	req    RunRequest
-	lane   Lane
-	deps   Deps
-	start  time.Time
-	marker Marker
+	req     RunRequest
+	lane    Lane
+	deps    Deps
+	start   time.Time
+	marker  Marker
+	pending PendingVerification
 }
 
 func (r *run) setStage(stage string) {
@@ -82,9 +83,13 @@ func (r *run) execute(ctx context.Context) RunResult {
 		}
 	}
 
+	deadline := r.start.Add(runDeadline)
+	runCtx, cancelRun := context.WithDeadline(ctx, deadline)
+	defer cancelRun()
+
 	deps.progress(StageVerifying)
 	r.setStage(StageVerifying)
-	tool, outcome, err := EnsureTool(ctx, r.lane, r.req.Tool, deps)
+	tool, outcome, err := EnsureTool(runCtx, r.lane, r.req.Tool, deps)
 	if outcome != "" {
 		return refuse(r.req.Lane, outcome, codeOr(err, "tool_unavailable"), err)
 	}
@@ -103,39 +108,34 @@ func (r *run) execute(ctx context.Context) RunResult {
 	}
 	plan.WorkDir = dir
 
+	// The tool step can take a while (a download, an install). Re-check
+	// everything that gates starting before anything irreversible begins.
+	if refusal, stop := r.recheck(ctx, deadline); stop {
+		return r.finish(refusal, tool, skips)
+	}
+
 	flash := plan.HasFlash()
-	applyCtx, cancel := context.WithDeadline(ctx, r.start.Add(runDeadline))
+	var releaseGuard func() error
+	if flash {
+		var refusal RunResult
+		releaseGuard, refusal, err = r.enterFlash()
+		if err != nil {
+			return r.finish(refusal, tool, skips)
+		}
+	} else {
+		deps.progress(StageInstalling)
+		r.setStage(StageInstalling)
+	}
+
+	applyCtx := runCtx
 	if flash {
 		// Never killed while the guard is held: not at the deadline and not
 		// when the agent stops. The ceiling is the section's own TTL, past
 		// which the guard no longer holds power actions back either.
-		cancel()
-		applyCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), flashguard.MaxTTL)
+		var cancelFlash context.CancelFunc
+		applyCtx, cancelFlash = context.WithTimeout(context.WithoutCancel(ctx), flashguard.MaxTTL)
+		defer cancelFlash()
 	}
-	defer cancel()
-
-	var releaseGuard func() error
-	if flash {
-		if deps.Guard == nil {
-			return r.finish(refuse(r.req.Lane, OutcomeFailed, "flash_guard_unavailable", errors.New("no flash guard")), tool, skips)
-		}
-		if deps.System != nil {
-			if bios, err := deps.System.BiosVersion(); err == nil {
-				r.marker.BiosVersionBefore = sanitizeToolText(bios, maxVersionLen)
-			}
-		}
-		releaseGuard, err = deps.Guard.Enter(flashSectionKind, r.req.CommandID, flashguard.MaxTTL)
-		if err != nil {
-			if errors.Is(err, flashguard.ErrPowerActionPending) || errors.Is(err, flashguard.ErrSectionActive) {
-				return r.finish(refuse(r.req.Lane, OutcomeBlockedRebootPending, "flash_guard_busy", err), tool, skips)
-			}
-			return r.finish(refuse(r.req.Lane, OutcomeFailed, "flash_guard_unavailable", err), tool, skips)
-		}
-		r.marker.FlashStarted = true
-	}
-	deps.progress(StageInstalling)
-	r.setStage(StageInstalling)
-
 	res, applyErr := r.lane.Apply(applyCtx, tool, plan, deps.Exec)
 	if releaseGuard != nil {
 		if err := releaseGuard(); err != nil {
@@ -144,7 +144,7 @@ func (r *run) execute(ctx context.Context) RunResult {
 	}
 
 	switch {
-	case flash && !deps.now().Before(r.start.Add(runDeadline)):
+	case flash && !deps.now().Before(deadline):
 		// The install overran while it could not be stopped. What the tool
 		// reported is kept; the outcome says the run did not end in time.
 		if res.Outcome == "" && applyErr != nil {
@@ -165,6 +165,61 @@ func (r *run) execute(ctx context.Context) RunResult {
 		log.Warn("vendor update tool run failed", "lane", r.req.Lane, "outcome", string(res.Outcome), "error", applyErr.Error())
 	}
 	return r.finish(res, tool, skips)
+}
+
+// recheck refuses a run that should no longer start: the agent is stopping,
+// notAfter has passed, or the run deadline has.
+func (r *run) recheck(ctx context.Context, deadline time.Time) (RunResult, bool) {
+	now := r.deps.now()
+	switch {
+	case ctx.Err() != nil:
+		return refuse(r.req.Lane, OutcomeInterrupted, "agent_stopping", ctx.Err()), true
+	case !now.Before(r.req.NotAfter):
+		return refuse(r.req.Lane, OutcomeRetryLater, "not_after_passed", errors.New("notAfter passed before the install")), true
+	case !now.Before(deadline):
+		return refuse(r.req.Lane, OutcomeFailed, "deadline_exceeded", errors.New("run deadline passed before the install")), true
+	}
+	return RunResult{}, false
+}
+
+// enterFlash opens the flash-guard section and makes the run durable before a
+// firmware install starts: the marker says a flash began, and a pending
+// verification exists in case the machine never comes back to this process.
+// Both writes are mandatory; failing either releases the section and refuses.
+func (r *run) enterFlash() (release func() error, refusal RunResult, err error) {
+	deps := r.deps
+	if deps.Guard == nil {
+		err = errors.New("no flash guard")
+		return nil, refuse(r.req.Lane, OutcomeFailed, "flash_guard_unavailable", err), err
+	}
+	release, err = deps.Guard.Enter(flashSectionKind, r.req.CommandID, flashguard.MaxTTL)
+	if err != nil {
+		if errors.Is(err, flashguard.ErrPowerActionPending) || errors.Is(err, flashguard.ErrSectionActive) {
+			return nil, refuse(r.req.Lane, OutcomeBlockedRebootPending, "flash_guard_busy", err), err
+		}
+		return nil, refuse(r.req.Lane, OutcomeFailed, "flash_guard_unavailable", err), err
+	}
+	r.pending = PendingVerification{CommandID: r.req.CommandID, VerifyAfter: deps.now(), CreatedAt: deps.now()}
+	if deps.System != nil {
+		if bios, berr := deps.System.BiosVersion(); berr == nil {
+			r.pending.BiosVersionBefore = sanitizeToolText(bios, maxVersionLen)
+		}
+	}
+	r.marker.FlashStarted = true
+	r.marker.Stage = StageInstalling
+	if err = WriteMarker(deps.Store, r.marker); err == nil {
+		err = addPendingVerification(deps.Store, r.pending)
+	}
+	if err != nil {
+		r.marker.FlashStarted = false
+		if rerr := release(); rerr != nil {
+			log.Warn("could not release the flash guard section; it expires on its own", "error", rerr.Error())
+		}
+		_ = removePendingVerification(deps.Store, r.req.CommandID)
+		return nil, refuse(r.req.Lane, OutcomeFailed, "marker_unwritable", err), err
+	}
+	deps.progress(StageInstalling)
+	return release, RunResult{}, nil
 }
 
 // splitCategories asks the lane what it will run, then removes the firmware
@@ -317,9 +372,22 @@ func (r *run) end(res RunResult) {
 	now := r.deps.now()
 	r.marker.EndedAt = &now
 	r.marker.Outcome = res.Outcome
-	r.marker.VerifyPending = r.marker.FlashStarted && flashMayHaveRun(res.Outcome)
 	if err := WriteMarker(r.deps.Store, r.marker); err != nil {
 		log.Warn("could not end the vendor update run marker", "error", err.Error())
+	}
+	if !r.marker.FlashStarted {
+		return
+	}
+	if !flashMayHaveRun(res.Outcome) {
+		if err := removePendingVerification(r.deps.Store, r.req.CommandID); err != nil {
+			log.Warn("could not clear a pending vendor update verification", "error", err.Error())
+		}
+		return
+	}
+	// The reboot the install needs comes after it ends.
+	r.pending.VerifyAfter = now
+	if err := addPendingVerification(r.deps.Store, r.pending); err != nil {
+		log.Warn("could not update a pending vendor update verification; the one from the flash start stands", "error", err.Error())
 	}
 }
 

@@ -33,25 +33,6 @@ type Marker struct {
 	FlashStarted bool       `json:"flashStarted"`
 	EndedAt      *time.Time `json:"endedAt,omitempty"`
 	Outcome      Outcome    `json:"outcome,omitempty"`
-
-	// BiosVersionBefore is read just before a firmware install.
-	BiosVersionBefore string `json:"biosVersionBefore,omitempty"`
-	// VerifyPending asks the next start after a reboot to report BitLocker and
-	// the BIOS version. Cleared once the report is accepted or given up on.
-	VerifyPending bool `json:"verifyPending"`
-	// VerifyAfter is the instant a boot must follow before verifying. Unset, it
-	// is EndedAt.
-	VerifyAfter *time.Time `json:"verifyAfter,omitempty"`
-}
-
-func (m Marker) verifyAfter() time.Time {
-	if m.VerifyAfter != nil {
-		return *m.VerifyAfter
-	}
-	if m.EndedAt != nil {
-		return *m.EndedAt
-	}
-	return m.StartedAt
 }
 
 // WriteMarker records m durably.

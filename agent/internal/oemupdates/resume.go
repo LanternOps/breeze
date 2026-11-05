@@ -17,9 +17,9 @@ var (
 )
 
 const (
-	maxVerifyAttempts = 8
-	verifyBackoffBase = 30 * time.Second
-	verifyBackoffMax  = 30 * time.Minute
+	maxVerifyAttemptsPerStart = 8
+	verifyBackoffBase         = 30 * time.Second
+	verifyBackoffMax          = 30 * time.Minute
 )
 
 // resumeSleep waits between report attempts; a variable for tests.
@@ -34,12 +34,26 @@ var resumeSleep = func(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// ResumePending runs once at agent start. It closes a marker for a run the
-// previous process never finished (its interrupted result reaches the server
-// through the command journal), and after a reboot reports BitLocker and the
-// BIOS version for a firmware install. It only reads: a volume still suspended
-// is reported, never changed (Decision 8).
+// ResumePending is RecoverInterrupted then VerifyPending. The agent calls the
+// two separately: the first before it accepts commands, the second in the
+// background.
 func ResumePending(ctx context.Context, deps Deps, report func(Verification) error) error {
+	if err := RecoverInterrupted(deps); err != nil {
+		log.Warn("could not close an interrupted vendor update run", "error", err.Error())
+	}
+	return VerifyPending(ctx, deps, report)
+}
+
+// RecoverInterrupted closes the marker of a run the previous process never
+// finished. Its interrupted result reaches the server through the command
+// journal, which reads the marker first. It takes the run lock, so it never
+// closes the marker of a run that is live in this process.
+func RecoverInterrupted(deps Deps) error {
+	release, err := AcquireRunLock(deps.Store)
+	if err != nil {
+		return nil // a run is live; its marker is its own
+	}
+	defer release()
 	m, err := ReadMarker(deps.Store)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -47,21 +61,31 @@ func ResumePending(ctx context.Context, deps Deps, report func(Verification) err
 		}
 		return err
 	}
-	if m.EndedAt == nil {
-		now := deps.now()
-		m.EndedAt = &now
-		m.Outcome = OutcomeInterrupted
-		m.VerifyPending = m.FlashStarted
-		// The run ended at an unknown point after it started, most likely in
-		// the reboot a flash caused, so any boot since the start counts.
-		m.VerifyAfter = &m.StartedAt
-		if err := WriteMarker(deps.Store, m); err != nil {
-			return fmt.Errorf("close interrupted marker: %w", err)
-		}
-		log.Warn("a vendor update run was interrupted by an agent stop",
-			"commandId", m.CommandID, "lane", m.Lane, "stage", m.Stage, "flashStarted", m.FlashStarted)
+	if m.EndedAt != nil {
+		return nil
 	}
-	if !m.VerifyPending {
+	now := deps.now()
+	m.EndedAt = &now
+	m.Outcome = OutcomeInterrupted
+	if err := WriteMarker(deps.Store, m); err != nil {
+		return fmt.Errorf("close interrupted marker: %w", err)
+	}
+	log.Warn("a vendor update run was interrupted by an agent stop",
+		"commandId", m.CommandID, "lane", m.Lane, "stage", m.Stage, "flashStarted", m.FlashStarted)
+	return nil
+}
+
+// VerifyPending reports, after the reboot each needed, BitLocker and the BIOS
+// version for every recorded firmware install. It only reads: a volume still
+// suspended is reported, never changed (Decision 8). An entry ends when the
+// report is accepted or rejected, or when it ages out; a transient failure
+// keeps it for the next start. It never touches the run marker.
+func VerifyPending(ctx context.Context, deps Deps, report func(Verification) error) error {
+	list, err := readPendingVerifications(deps.Store)
+	if err != nil {
+		return fmt.Errorf("read pending verifications: %w", err)
+	}
+	if len(list) == 0 {
 		return nil
 	}
 	if deps.System == nil || deps.Protectors == nil {
@@ -71,53 +95,65 @@ func ResumePending(ctx context.Context, deps Deps, report func(Verification) err
 	if err != nil {
 		return fmt.Errorf("read boot time: %w", err)
 	}
-	// Verify only after the reboot the install needed. Before it, BitLocker
-	// reads "suspended" by design and the BIOS version is still the old one.
-	if !boot.After(m.verifyAfter()) {
-		log.Debug("vendor update verification waits for a reboot", "commandId", m.CommandID)
-		return nil
-	}
-
-	v := Verification{CommandID: m.CommandID, BitlockerAfter: deps.Protectors.State()}
-	if bios, err := deps.System.BiosVersion(); err == nil && bios != "" {
-		s := sanitizeToolText(bios, maxVersionLen)
-		v.BiosVersionAfter = &s
-	}
-	if err := v.Validate(); err != nil {
-		m.VerifyPending = false
-		_ = WriteMarker(deps.Store, m)
-		return fmt.Errorf("verification is invalid, dropped: %w", err)
-	}
-	if m.BiosVersionBefore != "" && v.BiosVersionAfter != nil && *v.BiosVersionAfter == m.BiosVersionBefore {
-		log.Info("BIOS version unchanged after a vendor update reboot", "commandId", m.CommandID, "version", m.BiosVersionBefore)
-	}
-
-	var lastErr error
-	delay := verifyBackoffBase
-	for attempt := 1; attempt <= maxVerifyAttempts; attempt++ {
-		lastErr = report(v)
-		if lastErr == nil || errors.Is(lastErr, ErrVerificationRejected) {
-			break
+	var errs []error
+	for _, p := range list {
+		if deps.now().Sub(p.VerifyAfter) > maxVerifyAge {
+			log.Warn("vendor update verification aged out unsent", "commandId", p.CommandID, "verifyAfter", p.VerifyAfter)
+			_ = removePendingVerification(deps.Store, p.CommandID)
+			continue
 		}
-		if attempt == maxVerifyAttempts {
+		// Before the reboot BitLocker reads "suspended" by design and the BIOS
+		// is still the old one.
+		if !boot.After(p.VerifyAfter) {
+			log.Debug("vendor update verification waits for a reboot", "commandId", p.CommandID)
+			continue
+		}
+		if err := verifyOne(ctx, deps, p, report); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func verifyOne(ctx context.Context, deps Deps, p PendingVerification, report func(Verification) error) error {
+	delay := verifyBackoffBase
+	var lastErr error
+	for attempt := 1; attempt <= maxVerifyAttemptsPerStart; attempt++ {
+		v := Verification{CommandID: p.CommandID, BitlockerAfter: deps.Protectors.State()}
+		if bios, err := deps.System.BiosVersion(); err == nil && bios != "" {
+			s := sanitizeToolText(bios, maxVersionLen)
+			v.BiosVersionAfter = &s
+		}
+		if err := v.Validate(); err != nil {
+			_ = removePendingVerification(deps.Store, p.CommandID)
+			return fmt.Errorf("verification for %s is invalid, dropped: %w", p.CommandID, err)
+		}
+		lastErr = report(v)
+		if lastErr == nil {
+			if p.BiosVersionBefore != "" && v.BiosVersionAfter != nil && *v.BiosVersionAfter == p.BiosVersionBefore {
+				log.Info("BIOS version unchanged after a vendor update reboot", "commandId", p.CommandID, "version", p.BiosVersionBefore)
+			}
+			log.Info("vendor update verified after reboot", "commandId", p.CommandID, "bitlocker", v.BitlockerAfter)
+			return removePendingVerification(deps.Store, p.CommandID)
+		}
+		if errors.Is(lastErr, ErrVerificationRejected) {
+			log.Warn("vendor update verification rejected; dropped", "commandId", p.CommandID, "error", lastErr.Error())
+			_ = removePendingVerification(deps.Store, p.CommandID)
+			return lastErr
+		}
+		if attempt == maxVerifyAttemptsPerStart {
 			break
 		}
 		if err := resumeSleep(ctx, delay); err != nil {
-			// The agent is stopping: keep it pending for the next start.
 			return err
 		}
 		if delay *= 2; delay > verifyBackoffMax {
 			delay = verifyBackoffMax
 		}
 	}
-	m.VerifyPending = false
-	if err := WriteMarker(deps.Store, m); err != nil {
-		log.Warn("could not clear the pending vendor update verification", "error", err.Error())
-	}
-	if lastErr != nil {
-		log.Warn("vendor update verification not delivered; giving up", "commandId", m.CommandID, "error", lastErr.Error())
-		return lastErr
-	}
-	log.Info("vendor update verified after reboot", "commandId", m.CommandID, "bitlocker", v.BitlockerAfter)
-	return nil
+	log.Warn("vendor update verification not delivered; kept for the next start", "commandId", p.CommandID, "error", lastErr.Error())
+	return lastErr
 }
