@@ -158,6 +158,8 @@ func TestReportPamUnableIgnoresNilAndEmptyRequest(t *testing.T) {
 
 func TestDeliverPamUnableCancelsInFlightOnStop(t *testing.T) {
 	h := unableReportHeartbeat("https://example.test")
+	// Short budget so joining Stop at cleanup costs milliseconds, not the 5s default.
+	h.shutdownTimeout = 100 * time.Millisecond
 	// A broker drain that uses its whole shutdown budget: the report must be
 	// cancelled before it, not after.
 	h.stopBrokerAcceptingAndWait = func(ctx context.Context) error {
