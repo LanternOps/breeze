@@ -78,7 +78,7 @@ describe('registration (#6786)', () => {
       expect(tool.tier, name).toBe(3);
       expect(tool.domain, name).toBe('ai');
       expect(tool.definition.input_schema.additionalProperties, name).toBe(false);
-      expect(tool.definition.description.length, name).toBeLessThanOrEqual(300);
+      expect(tool.definition.description?.length ?? 0, name).toBeLessThanOrEqual(300);
     }
     expect(tools.get('run_patch_plan')!.deviceArgs).toEqual([]);
     expect(tools.get('create_operator_task')!.deviceArgs).toEqual(['deviceId']);

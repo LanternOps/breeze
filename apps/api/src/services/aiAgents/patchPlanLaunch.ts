@@ -29,7 +29,8 @@ import { createAndEnqueueAgentRun } from './runService';
 
 export type PatchPlanLaunchResult =
   | { ok: true; runId: string; agentId: string; enqueueFailed: boolean; replayed: boolean }
-  | { ok: false; code: 'NOT_FOUND' | 'NO_PATCH_AGENT' }
+  | { ok: false; code: 'NOT_FOUND' }
+  | { ok: false; code: 'NO_PATCH_AGENT' }
   | { ok: false; code: 'SKIPPED'; skipped: string; agentId: string };
 
 const isEnqueueFailed = (run: { status?: string | null; errorCode?: string | null }) =>

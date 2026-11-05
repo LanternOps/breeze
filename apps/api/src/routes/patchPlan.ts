@@ -61,22 +61,26 @@ patchPlanRoutes.post(
     // documents. A human pressing "Run now" twice means twice, so each press
     // gets its own key, the same posture as every other manual-trigger route.
     const result = await launchPatchPlanRun(auth, orgId, `patch-manual-${randomUUID()}`);
-    if (!result.ok && result.code === 'NOT_FOUND') return c.json({ error: 'not_found' }, 404);
-    if (!result.ok && result.code === 'NO_PATCH_AGENT') return c.json({ error: 'no_patch_agent' }, 404);
 
-    // Every outcome is audited: admission writes no audit row of its own, so
-    // this is the only record of which human asked for a patch run —
+    // Every admission outcome is audited: admission writes no audit row of its
+    // own, so this is the only record of which human asked for a patch run —
     // including when the answer was "not now".
-    writeRouteAudit(c, {
+    const audit = (details: Record<string, unknown>, agentId: string, ok: boolean) => writeRouteAudit(c, {
       orgId,
       action: 'ai_patch_plan.run.manual_trigger',
       resourceType: 'ai_agent',
-      resourceId: result.agentId,
-      details: result.ok ? { runId: result.runId } : { skipped: result.skipped },
-      result: result.ok ? 'success' : 'failure',
+      resourceId: agentId,
+      details,
+      result: ok ? 'success' : 'failure',
     });
 
-    if (!result.ok) return c.json({ success: false, skipped: result.skipped }, 200);
+    if (!result.ok) {
+      if (result.code === 'NOT_FOUND') return c.json({ error: 'not_found' }, 404);
+      if (result.code === 'NO_PATCH_AGENT') return c.json({ error: 'no_patch_agent' }, 404);
+      audit({ skipped: result.skipped }, result.agentId, false);
+      return c.json({ success: false, skipped: result.skipped }, 200);
+    }
+    audit({ runId: result.runId }, result.agentId, true);
     return c.json({ runId: result.runId }, 202);
   },
 );
