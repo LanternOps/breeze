@@ -52,7 +52,8 @@ const (
 type hpBiosStep struct {
 	state hpBiosState
 	code  string
-	exit  int64
+	// exit is nil when PowerShell gave no exit code, or never ran.
+	exit *int64
 }
 
 // flashMayHaveStarted is what decides a reboot is owed.
@@ -152,7 +153,13 @@ func (l *hpLane) runBIOS(ctx context.Context, plan FilterPlan, ex Exec) hpBiosSt
 	if err != nil {
 		l.cmsl.Invalidate()
 		log.Warn("HP BIOS path not run: CMSL could not be verified", "error", err.Error())
-		return hpBiosStep{state: hpBiosSkipped, code: "hp_cmsl_unverified"}
+		// A bad signature reads differently from an unexpected layout: one may be
+		// tampering, the other a CMSL version this lane has not seen.
+		code := "hp_cmsl_unverified"
+		if c := errorCodeOf(err); c != "" {
+			code = "hp_cmsl_" + c
+		}
+		return hpBiosStep{state: hpBiosSkipped, code: code}
 	}
 	// Before the flash: a process that dies in it must still leave the reboot owed.
 	if err := l.writeRebootOwed(); err != nil {
@@ -169,7 +176,7 @@ func (l *hpLane) runBIOS(ctx context.Context, plan FilterPlan, ex Exec) hpBiosSt
 		log.Warn("HP BIOS path ended without an answer", "error", err.Error())
 		return hpBiosStep{state: hpBiosUncertain, code: "bios_flash_uncertain"}
 	}
-	step := hpBiosStep{exit: out.ExitCode}
+	step := hpBiosStep{exit: int64Ptr(out.ExitCode)}
 	switch out.ExitCode {
 	case hpBiosExitStaged:
 		step.state = hpBiosStaged
@@ -196,17 +203,18 @@ func hpBiosOnly(res RunResult, step hpBiosStep) RunResult {
 		// Nothing ran. Not "failed": the runner keeps a pending verification for a
 		// failed run, which could later raise an alert against nothing.
 		res.Outcome = OutcomeRetryLater
-		if step.code == "hp_cmsl_absent" || step.code == "hp_cmsl_unverified" {
+		if strings.HasPrefix(step.code, "hp_cmsl_") {
 			res.Outcome = OutcomeToolUnavailable
 		}
+	case hpBiosNoFlash:
+		// Nothing flashed, so the same reason as a skip.
+		res.Outcome = OutcomeRetryLater
 	case hpBiosStaged:
 		res.Outcome = OutcomeSuccessRebootRequired
-	case hpBiosNoFlash, hpBiosUncertain:
+	case hpBiosUncertain:
 		res.Outcome = OutcomeFailed
 	}
-	if step.state != hpBiosSkipped {
-		res.RawExitCode = int64Ptr(step.exit)
-	}
+	res.RawExitCode = step.exit
 	return hpBiosNotes(res, step)
 }
 
@@ -236,7 +244,8 @@ func hpMergeBios(res RunResult, step hpBiosStep) RunResult {
 		case clean:
 			res.Outcome = OutcomePartial
 		case none:
-			res.Outcome = OutcomeFailed
+			// Nothing ran at all, so not "failed": see hpBiosOnly.
+			res.Outcome = OutcomeRetryLater
 		}
 		if res.ErrorCode == nil {
 			res.ErrorCode = strPtr(step.code)

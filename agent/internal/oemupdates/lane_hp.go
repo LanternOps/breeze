@@ -289,16 +289,9 @@ func (l *hpLane) Apply(ctx context.Context, tool ToolState, plan FilterPlan, ex 
 		return hpBiosOnly(res, bios), nil
 	}
 
+	// An error comes with its outcome set, except from the analysis, which only runs
+	// with an id blocked, when BIOS never does. The runner keeps what is merged here.
 	res, err = l.runHPIA(ctx, tool, plan, ex)
-	if err != nil && bios.flashMayHaveStarted() {
-		// What the flash needs must survive: the runner would keep only a bare failure.
-		log.Warn("HPIA did not run after an HP BIOS flash", "error", err.Error())
-		err = nil
-		res.Outcome = OutcomeFailed
-		if res.ErrorCode == nil {
-			res.ErrorCode = strPtr("tool_exec_failed")
-		}
-	}
 	if bios.state != hpBiosNotAsked {
 		res = hpMergeBios(res, bios)
 	}
@@ -369,7 +362,12 @@ func (l *hpLane) runHPIA(ctx context.Context, tool ToolState, plan FilterPlan, e
 
 	out, err := ex.Run(ctx, ExecSpec{Path: tool.Path, Args: args})
 	if err != nil {
-		return res, err
+		// The install may have been under way, and FlashesOutsideFilter says that can
+		// mean firmware. A needless overnight reboot costs far less than firmware
+		// waiting on a reboot nobody knows about.
+		log.Warn("HPIA install ended without an exit code", "error", err.Error())
+		res.Outcome, res.ErrorCode, res.RebootRequired = OutcomeFailed, strPtr("tool_exec_failed"), true
+		return res, nil
 	}
 	res.RawExitCode = int64Ptr(out.ExitCode)
 	outcome, mapped := hpExitCodes[out.ExitCode]
@@ -383,10 +381,10 @@ func (l *hpLane) runHPIA(ctx context.Context, tool ToolState, plan FilterPlan, e
 		res.ErrorCode = strPtr("install_failed")
 	}
 	res.Outcome = outcome
-	res.RebootRequired = out.ExitCode == 3010 || out.ExitCode == 3011
-	if outcome == OutcomeFailed && contains(plan.Categories, CategoryFirmware) {
-		// A capsule may be staged, whatever else failed. A needless overnight reboot
-		// costs far less than firmware waiting on a reboot nobody knows about.
+	// 3020 is "one or more failed", so others may have installed and want the reboot.
+	res.RebootRequired = out.ExitCode == 3010 || out.ExitCode == 3011 || out.ExitCode == 3020
+	if !mapped && contains(plan.Categories, CategoryFirmware) {
+		// What this exit means is unknown, and a capsule may be staged.
 		res.RebootRequired = true
 		res.ErrorCode = strPtr("firmware_install_uncertain")
 	}
@@ -398,8 +396,13 @@ func (l *hpLane) runHPIA(ctx context.Context, tool ToolState, plan FilterPlan, e
 	if !ok {
 		// The report format is unconfirmed: a report that cannot be read costs the
 		// item list, never the run.
+		log.Warn("HPIA report could not be read; no item list for this run")
 		if res.ErrorCode == nil {
 			res.ErrorCode = strPtr("report_unavailable")
+		}
+		if len(plan.BlockedIDs) > 0 && (outcome == OutcomeSuccess || outcome == OutcomeSuccessRebootRequired) {
+			// Only the report could show that an install honoured /SPList.
+			res.Outcome, res.ErrorCode = OutcomePartial, strPtr("blocked_updates_unconfirmed")
 		}
 		return res, nil
 	}
@@ -467,10 +470,18 @@ func hpApplyReport(res *RunResult, recs []hpRecommendation, blocked map[string]b
 
 func hpBlockedSet(ids []string) map[string]bool {
 	out := map[string]bool{}
+	ignored := 0
 	for _, id := range ids {
 		if n := hpSoftPaqNumber(id); n != "" {
 			out[n] = true
+		} else {
+			ignored++
 		}
+	}
+	if ignored > 0 {
+		// Normal for another vendor's id. A mistyped HP id would block nothing, so it
+		// is worth a line when a blocked update installs anyway.
+		log.Info("blocked ids that are not HP SoftPaq numbers were ignored", "count", ignored)
 	}
 	return out
 }
@@ -550,20 +561,22 @@ func (l *hpLane) noteRebootOwed() {
 	}
 }
 
+type hpStatus int
+
 const (
-	hpStatusUnknown = iota
+	hpStatusUnknown hpStatus = iota
 	hpStatusInstalled
 	hpStatusFailed
 	hpStatusDownloaded
 )
 
-// hpRecommendation is one update in HPIA's report. Every field is untrusted text.
+// hpRecommendation is one update in HPIA's report. Every text field is untrusted.
 type hpRecommendation struct {
 	category string
 	id       string
 	name     string
 	version  string
-	status   int
+	status   hpStatus
 }
 
 func (r hpRecommendation) item(result string) Item {
@@ -575,7 +588,7 @@ func (r hpRecommendation) item(result string) Item {
 	}
 }
 
-func hpStatusOf(s string) int {
+func hpStatusOf(s string) hpStatus {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "installed", "success":
 		return hpStatusInstalled
@@ -623,7 +636,7 @@ func readHpReport(dir string) (recs []hpRecommendation, ok bool) {
 // undefined entity is a syntax error. HP does not publish this schema, so element
 // names match in any case. ok is false on anything but a whole HPIA document.
 func parseHpReport(data []byte) (recs []hpRecommendation, ok bool) {
-	dec := xml.NewDecoder(bytes.NewReader(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))))
+	dec := xml.NewDecoder(bytes.NewReader(data))
 	var stack []string
 	var cur *hpRecommendation
 	var text strings.Builder

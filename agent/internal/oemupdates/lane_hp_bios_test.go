@@ -309,7 +309,8 @@ func TestHpBiosExitMap(t *testing.T) {
 	}{
 		{"up to date", hpBiosExitUpToDate, OutcomeNoUpdates, false, "", 0, false},
 		{"staged", hpBiosExitStaged, OutcomeSuccessRebootRequired, true, "", 1, true},
-		{"failed before the flash", hpBiosExitNoFlash, OutcomeFailed, false, "bios_check_failed", 0, false},
+		// Not "failed": nothing flashed, and a failed run keeps a pending verification.
+		{"failed before the flash", hpBiosExitNoFlash, OutcomeRetryLater, false, "bios_check_failed", 0, false},
 		{"failed in the flash", hpBiosExitFlashError, OutcomeFailed, true, "bios_flash_uncertain", 1, true},
 		{"PowerShell's own failure", 1, OutcomeFailed, true, "bios_flash_uncertain", 1, true},
 		{"anything else", 77, OutcomeFailed, true, "bios_flash_uncertain", 1, true},
@@ -338,6 +339,27 @@ func TestHpBiosSpawnFailureIsTreatedAsUncertain(t *testing.T) {
 	r := f.apply(t, []string{CategoryBIOS}, nil, ex)
 	if r.Outcome != OutcomeFailed || !r.RebootRequired || hpCode(r) != "bios_flash_uncertain" {
 		t.Fatalf("%+v code=%q", r, hpCode(r))
+	}
+	if r.RawExitCode != nil {
+		t.Fatalf("an exit code was made up: %d", *r.RawExitCode)
+	}
+}
+
+func TestHpBiosRebootSurvivesAnHpiaThatCouldNotPrepare(t *testing.T) {
+	f := newHpFixture(t)
+	f.installCmsl()
+	notADir := filepath.Join(realTempDir(t), "file")
+	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan := f.plan(t, []string{CategoryBIOS, CategoryDriver}, nil)
+	plan.WorkDir = notADir
+	r, err := f.lane.Apply(context.Background(), f.tool(), plan, biosExec(hpBiosExitStaged, 0))
+	if err == nil {
+		t.Fatal("no error")
+	}
+	if r.Outcome != OutcomePartial || !r.RebootRequired || hpCode(r) != "stale_report" {
+		t.Fatalf("the flash's reboot was lost: %+v code=%q", r, hpCode(r))
 	}
 }
 
@@ -376,11 +398,15 @@ func TestHpBiosMerge(t *testing.T) {
 		{"up to date, drivers clean", hpBiosExitUpToDate, 0, OutcomeSuccess, false, ""},
 		{"up to date, no drivers", hpBiosExitUpToDate, 256, OutcomeNoUpdates, false, ""},
 		{"check failed, drivers clean", hpBiosExitNoFlash, 0, OutcomePartial, false, "bios_check_failed"},
-		{"check failed, no drivers", hpBiosExitNoFlash, 256, OutcomeFailed, false, "bios_check_failed"},
-		{"check failed, drivers failed", hpBiosExitNoFlash, 3020, OutcomeFailed, false, "install_failed"},
+		{"check failed, no drivers", hpBiosExitNoFlash, 256, OutcomeRetryLater, false, "bios_check_failed"},
+		{"check failed, drivers want a reboot", hpBiosExitNoFlash, 3010, OutcomePartial, true, "bios_check_failed"},
+		{"check failed, drivers failed", hpBiosExitNoFlash, 3020, OutcomeFailed, true, "install_failed"},
+		{"up to date, drivers want a reboot", hpBiosExitUpToDate, 3010, OutcomeSuccessRebootRequired, true, ""},
+		{"staged, unmapped exit", hpBiosExitStaged, 4097, OutcomePartial, true, "unmapped_exit_code"},
 		{"flash uncertain, drivers clean", hpBiosExitFlashError, 0, OutcomePartial, true, "bios_flash_uncertain"},
 		{"flash uncertain, no drivers", hpBiosExitFlashError, 256, OutcomeFailed, true, "bios_flash_uncertain"},
 		{"flash uncertain, drivers failed", hpBiosExitFlashError, 3020, OutcomeFailed, true, "bios_flash_uncertain"},
+		{"flash uncertain, model refused", hpBiosExitFlashError, 4096, OutcomePartial, true, "bios_flash_uncertain"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newHpFixture(t)
@@ -395,7 +421,50 @@ func TestHpBiosMerge(t *testing.T) {
 			if err := r.Validate(); err != nil {
 				t.Fatal(err)
 			}
+			// Every reboot asked for is remembered, whichever step asked.
+			if _, err := f.store.ReadFile(hpRebootOwedFile); (err == nil) != tc.reboot {
+				t.Fatalf("owed record present = %v, reboot = %v", err == nil, tc.reboot)
+			}
+			biosItems := 0
+			for _, it := range r.Items {
+				if it.Category == CategoryBIOS {
+					biosItems++
+				}
+			}
+			flashed := tc.bios == hpBiosExitStaged || tc.bios == hpBiosExitFlashError
+			if (biosItems == 1) != flashed || biosItems > 1 {
+				t.Fatalf("BIOS items = %d, flash may have started = %v", biosItems, flashed)
+			}
+			if _, skipped := skipOf(r, CategoryBIOS); skipped {
+				t.Fatalf("BIOS ran and was also reported skipped: %+v", r.SkippedCategories)
+			}
 		})
+	}
+}
+
+func TestHpBiosSkippedKeepsHpiasOwnAnswer(t *testing.T) {
+	f := newHpFixture(t)
+	r := f.apply(t, []string{CategoryBIOS, CategoryDriver}, nil, biosExec(0, 3020))
+	if r.Outcome != OutcomeFailed || hpCode(r) != "install_failed" {
+		t.Fatalf("%+v code=%q", r, hpCode(r))
+	}
+	if _, ok := skipOf(r, CategoryBIOS); !ok {
+		t.Fatalf("skips = %+v", r.SkippedCategories)
+	}
+}
+
+func TestHpBiosUncertainSurvivesAnHpiaFailureToStart(t *testing.T) {
+	f := newHpFixture(t)
+	f.installCmsl()
+	ex := &fakeExec{run: func(ctx context.Context, spec ExecSpec) (ExecResult, error) {
+		if spec.Path == testPowerShell {
+			return ExecResult{ExitCode: hpBiosExitFlashError}, nil
+		}
+		return ExecResult{}, errors.New("spawn")
+	}}
+	r := f.apply(t, []string{CategoryBIOS, CategoryDriver}, nil, ex)
+	if r.Outcome != OutcomeFailed || !r.RebootRequired || hpCode(r) != "bios_flash_uncertain" {
+		t.Fatalf("%+v code=%q", r, hpCode(r))
 	}
 }
 
@@ -445,36 +514,42 @@ func TestHpBiosVerifiesCmslFreshBeforeEveryRun(t *testing.T) {
 }
 
 func TestHpBiosRefusesWhatItCannotVerify(t *testing.T) {
-	for name, setup := range map[string]func(f *hpFixture){
-		"signed by HPE":    func(f *hpFixture) { f.cmslVerifier.publisher = "Hewlett Packard Enterprise" },
-		"signed by nobody": func(f *hpFixture) { f.cmslVerifier.err = errors.New("no signature") },
-		"HP.Firmware by another signer": func(f *hpFixture) {
+	for name, tc := range map[string]struct {
+		setup func(f *hpFixture)
+		code  string
+	}{
+		"signed by HPE":    {func(f *hpFixture) { f.cmslVerifier.publisher = "Hewlett Packard Enterprise" }, "hp_cmsl_publisher_mismatch"},
+		"signed by nobody": {func(f *hpFixture) { f.cmslVerifier.err = errors.New("no signature") }, "hp_cmsl_signature_invalid"},
+		"HP.Firmware by another signer": {func(f *hpFixture) {
 			f.cmslVerifier.byPath = map[string]string{testFirmwarePsm: "Someone Else"}
-		},
-		"no version directory":  func(f *hpFixture) { f.dirs[testCmslDir] = []string{"notes"} },
-		"no HP.Firmware module": func(f *hpFixture) { delete(f.dirs, testFirmwareDir) },
-		"a version dir that could escape": func(f *hpFixture) {
+		}, "hp_cmsl_publisher_mismatch"},
+		"no version directory":  {func(f *hpFixture) { f.dirs[testCmslDir] = []string{"notes"} }, "hp_cmsl_unverified"},
+		"no HP.Firmware module": {func(f *hpFixture) { delete(f.dirs, testFirmwareDir) }, "hp_cmsl_unverified"},
+		"a version dir that could escape": {func(f *hpFixture) {
 			f.dirs[testCmslDir] = []string{`1.8.5'; Remove-Item C:\; '`}
-		},
-		"a quote in Program Files": func(f *hpFixture) {
+		}, "hp_cmsl_unverified"},
+		"a quote in Program Files": {func(f *hpFixture) {
 			f.programFiles = `C:\Pro'gram Files`
 			f.dirs[`C:\Pro'gram Files\WindowsPowerShell\Modules\HPCMSL`] = []string{"1.8.5"}
 			f.dirs[`C:\Pro'gram Files\WindowsPowerShell\Modules\HP.Firmware`] = []string{"1.9.1"}
-		},
-		"a curly quote in Program Files": func(f *hpFixture) {
+		}, "hp_cmsl_unverified"},
+		"a curly quote in Program Files": {func(f *hpFixture) {
 			f.programFiles = "C:\\Pro\u2019gram Files"
 			f.dirs["C:\\Pro\u2019gram Files\\WindowsPowerShell\\Modules\\HPCMSL"] = []string{"1.8.5"}
 			f.dirs["C:\\Pro\u2019gram Files\\WindowsPowerShell\\Modules\\HP.Firmware"] = []string{"1.9.1"}
-		},
+		}, "hp_cmsl_unverified"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newHpFixture(t)
 			f.installCmsl()
-			setup(f)
+			tc.setup(f)
 			ex := biosExec(hpBiosExitStaged, 0)
 			r := f.apply(t, []string{CategoryBIOS}, nil, ex)
-			if len(ex.Calls()) != 0 || r.Outcome != OutcomeToolUnavailable || hpCode(r) != "hp_cmsl_unverified" || r.RebootRequired {
+			if len(ex.Calls()) != 0 || r.Outcome != OutcomeToolUnavailable || hpCode(r) != tc.code || r.RebootRequired {
 				t.Fatalf("%+v code=%q calls=%+v", r, hpCode(r), ex.Calls())
+			}
+			if err := r.Validate(); err != nil {
+				t.Fatal(err)
 			}
 			if _, err := f.store.ReadFile(hpRebootOwedFile); err == nil {
 				t.Fatal("recorded a reboot for a flash that never ran")
@@ -501,7 +576,7 @@ func TestHpBiosNoVerifierRefuses(t *testing.T) {
 	f.lane.host.verifier = nil
 	ex := biosExec(hpBiosExitStaged, 0)
 	r := f.apply(t, []string{CategoryBIOS}, nil, ex)
-	if len(ex.Calls()) != 0 || hpCode(r) != "hp_cmsl_unverified" {
+	if len(ex.Calls()) != 0 || hpCode(r) != "hp_cmsl_publisher_unverified" || r.Outcome != OutcomeToolUnavailable {
 		t.Fatalf("%+v calls=%d", r, len(ex.Calls()))
 	}
 }

@@ -1,6 +1,7 @@
 package oemupdates
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -220,7 +221,8 @@ func TestHpExitMap(t *testing.T) {
 		{3010, OutcomeSuccessRebootRequired, true, ""},
 		// HP: 3011 takes precedence over 3010 and 3020, so it can hide a reboot.
 		{3011, OutcomePartial, true, "non_ssm_softpaqs"},
-		{3020, OutcomeFailed, false, "install_failed"},
+		// "One or more failed": the others may have installed and want the reboot.
+		{3020, OutcomeFailed, true, "install_failed"},
 		{4096, OutcomeNotSupported, false, ""},
 		{4097, OutcomeFailed, false, "unmapped_exit_code"},
 		{4104, OutcomeFailed, false, "unmapped_exit_code"},
@@ -242,12 +244,24 @@ func TestHpExitMap(t *testing.T) {
 }
 
 func TestHpFailedFirmwareRunOwesAReboot(t *testing.T) {
-	// "One or more failed" says nothing about which: a capsule may be staged.
-	for _, code := range []int64{3020, 4097} {
+	for code, want := range map[int64]string{3020: "install_failed", 4097: "firmware_install_uncertain"} {
 		f := newHpFixture(t)
 		r := f.apply(t, []string{CategoryFirmware, CategoryDriver}, nil, hpExecWriting(t, nil, code))
-		if r.Outcome != OutcomeFailed || !r.RebootRequired || hpCode(r) != "firmware_install_uncertain" {
+		if r.Outcome != OutcomeFailed || !r.RebootRequired || hpCode(r) != want {
 			t.Errorf("exit %d: %+v code=%q", code, r, hpCode(r))
+		}
+		if _, err := f.store.ReadFile(hpRebootOwedFile); err != nil {
+			t.Errorf("exit %d: the owed reboot was not recorded: %v", code, err)
+		}
+	}
+}
+
+func TestHpEveryRebootAskedForIsRecorded(t *testing.T) {
+	for _, code := range []int64{3010, 3011, 3020} {
+		f := newHpFixture(t)
+		f.apply(t, []string{CategoryDriver}, nil, hpExecWriting(t, nil, code))
+		if _, err := f.store.ReadFile(hpRebootOwedFile); err != nil {
+			t.Errorf("exit %d: %v", code, err)
 		}
 	}
 }
@@ -258,12 +272,156 @@ func TestHpItemsFromReport(t *testing.T) {
 	if len(r.Items) != 3 {
 		t.Fatalf("items = %+v", r.Items)
 	}
-	first := r.Items[0]
-	if first.Title != "Example Network Driver" || first.Category != CategoryDriver || first.Version != "1.2.0" || first.Result != ItemInstalled {
-		t.Fatalf("first = %+v", first)
+	want := []Item{
+		{Title: "Example Network Driver", Category: CategoryDriver, Version: "1.2.0", Result: ItemInstalled},
+		{Title: "Example Audio Driver", Category: CategoryDriver, Version: "2.1.0", Result: ItemInstalled},
+		{Title: "Example Utility", Category: CategoryApplication, Version: "3.0.1", Result: ItemInstalled},
 	}
-	if r.Items[2].Category != CategoryApplication {
-		t.Fatalf("third = %+v", r.Items[2])
+	for i := range want {
+		if r.Items[i] != want[i] {
+			t.Errorf("item %d = %+v, want %+v", i, r.Items[i], want[i])
+		}
+	}
+}
+
+func hpReportWith(status string) []byte {
+	return []byte(`<HPIA><Recommendations><Drivers><Recommendation><Solution><Softpaq><Id>sp1</Id><Name>n</Name><Version>1</Version></Softpaq></Solution>` +
+		`<Status>` + status + `</Status></Recommendation></Drivers></Recommendations></HPIA>`)
+}
+
+func TestHpReportStatusSpellings(t *testing.T) {
+	for status, want := range map[string]string{
+		"Installed":     ItemInstalled,
+		"SUCCESS":       ItemInstalled,
+		"Failed":        ItemFailed,
+		"error":         ItemFailed,
+		"Downloaded":    ItemSkipped,
+		"Download Only": ItemSkipped,
+		"DownloadOnly":  ItemSkipped,
+	} {
+		f := newHpFixture(t)
+		r := f.apply(t, []string{CategoryDriver}, nil, hpExecWriting(t, hpReportWith(status), 0))
+		if len(r.Items) != 1 || r.Items[0].Result != want {
+			t.Errorf("%q: items = %+v, want %s", status, r.Items, want)
+		}
+	}
+}
+
+func TestHpHostileTextIsSanitized(t *testing.T) {
+	report := "<HPIA><Recommendations><Drivers><Recommendation><Solution><Softpaq><Id>sp1</Id>" +
+		"<Name>a&#9;b " + strings.Repeat("x", 3000) + "</Name><Version>1\xc3\x28</Version></Softpaq></Solution></Recommendation></Drivers></Recommendations></HPIA>"
+	f := newHpFixture(t)
+	r := f.apply(t, []string{CategoryDriver}, nil, hpExecWriting(t, []byte(report), 0))
+	if err := r.Validate(); err != nil {
+		t.Fatalf("%v: %+v", err, r)
+	}
+}
+
+func TestHpReportParserEdges(t *testing.T) {
+	rec := func(id string) string {
+		return `<Recommendation><Solution><Softpaq><Id>` + id + `</Id><Name>n</Name><Version>1</Version></Softpaq></Solution></Recommendation>`
+	}
+	for name, tc := range map[string]struct {
+		doc  string
+		ok   bool
+		want int
+	}{
+		"a byte order mark":   {"\xef\xbb\xbf<?xml version=\"1.0\" encoding=\"utf-8\"?><HPIA><Recommendations><Drivers>" + rec("sp1") + "</Drivers></Recommendations></HPIA>", true, 1},
+		"any element case":    {"<hpia><RECOMMENDATIONS><drivers><recommendation><solution><SOFTPAQ><ID>sp1</ID></SOFTPAQ></solution></recommendation></drivers></RECOMMENDATIONS></hpia>", true, 1},
+		"an unknown group":    {"<HPIA><Recommendations><Foo>" + rec("sp1") + "</Foo></Recommendations></HPIA>", true, 0},
+		"outside any group":   {"<HPIA>" + rec("sp1") + "</HPIA>", true, 0},
+		"a nested one is one": {"<HPIA><Recommendations><Drivers><Recommendation>" + rec("sp1") + "</Recommendation></Drivers></Recommendations></HPIA>", true, 1},
+		"two roots":           {"<HPIA></HPIA><HPIA></HPIA>", false, 0},
+		"no root":             {"", false, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			recs, ok := parseHpReport([]byte(tc.doc))
+			if ok != tc.ok || len(recs) != tc.want {
+				t.Fatalf("ok=%v recs=%+v, want %v and %d", ok, recs, tc.ok, tc.want)
+			}
+		})
+	}
+}
+
+func TestHpReportTextIsBounded(t *testing.T) {
+	doc := `<HPIA><Recommendations><Drivers><Recommendation><Solution><Softpaq><Id>sp1</Id><Name>` +
+		strings.Repeat("x", maxHpTextBytes+1) + `</Name></Softpaq></Solution></Recommendation></Drivers></Recommendations></HPIA>`
+	recs, ok := parseHpReport([]byte(doc))
+	if !ok || len(recs) != 1 || len(recs[0].name) > maxHpTextBytes {
+		t.Fatalf("ok=%v len=%d", ok, len(recs))
+	}
+}
+
+func TestHpReadReportPicksAReadableFile(t *testing.T) {
+	dir := realTempDir(t)
+	good := []byte(`<HPIA><Recommendations/></HPIA>`)
+	for name, data := range map[string][]byte{"a.xml": []byte("<<<"), "b.XML": good, "c.html": []byte("<html/>")} {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, ok := readHpReport(dir); !ok {
+		t.Fatal("a readable report was passed over")
+	}
+}
+
+func TestHpReadReportRefusesOversizeAndLinks(t *testing.T) {
+	dir := realTempDir(t)
+	// A valid document, so only the size can refuse it.
+	big := append([]byte(`<HPIA/>`), bytes.Repeat([]byte(" "), maxHpReportBytes)...)
+	if err := os.WriteFile(filepath.Join(dir, "big.xml"), big, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := readHpReport(dir); ok {
+		t.Fatal("an oversize report was read")
+	}
+	target := filepath.Join(realTempDir(t), "t.xml")
+	if err := os.WriteFile(target, []byte(`<HPIA/>`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linked := realTempDir(t)
+	if err := os.Symlink(target, filepath.Join(linked, "l.xml")); err != nil {
+		t.Skip("no symlinks here")
+	}
+	if _, ok := readHpReport(linked); ok {
+		t.Fatal("a linked report was read")
+	}
+}
+
+func TestHpBlockedInstallWithUnreadableReportIsUnconfirmed(t *testing.T) {
+	// Only the report could show the install honoured /SPList.
+	f := newHpFixture(t)
+	analysis := hpFixtureBytes(t, "report-recommendations.xml")
+	ex := &fakeExec{}
+	ex.run = func(ctx context.Context, spec ExecSpec) (ExecResult, error) {
+		if _, second := spListOf(spec); second {
+			return ExecResult{ExitCode: 3010}, nil
+		}
+		writeHpReport(t, spec, analysis)
+		return ExecResult{}, nil
+	}
+	r := f.apply(t, []string{CategoryDriver}, []string{"sp100002"}, ex)
+	if r.Outcome != OutcomePartial || !r.RebootRequired || hpCode(r) != "blocked_updates_unconfirmed" {
+		t.Fatalf("%+v code=%q", r, hpCode(r))
+	}
+}
+
+func TestHpSecondStepExitMapping(t *testing.T) {
+	analysis := hpFixtureBytes(t, "report-recommendations.xml")
+	for code, want := range map[int64]Outcome{3010: OutcomeSuccessRebootRequired, 3020: OutcomeFailed, 4097: OutcomeFailed} {
+		f := newHpFixture(t)
+		ex := &fakeExec{}
+		ex.run = func(ctx context.Context, spec ExecSpec) (ExecResult, error) {
+			writeHpReport(t, spec, analysis)
+			if _, second := spListOf(spec); second {
+				return ExecResult{ExitCode: code}, nil
+			}
+			return ExecResult{}, nil
+		}
+		r := f.apply(t, []string{CategoryDriver}, []string{"sp100002"}, ex)
+		if r.Outcome != want || r.RawExitCode == nil || *r.RawExitCode != code {
+			t.Errorf("exit %d: %+v", code, r)
+		}
 	}
 }
 
@@ -829,16 +987,75 @@ func TestHpCorruptOwedRecordBlocksOnceThenHeals(t *testing.T) {
 	}
 }
 
-func TestHpExecFailureLeavesTheOutcomeToTheRunner(t *testing.T) {
+func TestHpInstallEndingWithoutAnExitCodeOwesAReboot(t *testing.T) {
+	// Killed at the guard's ceiling, say: it may have been staging firmware.
+	f := newHpFixture(t)
+	ex := &fakeExec{run: func(context.Context, ExecSpec) (ExecResult, error) { return ExecResult{}, errors.New("killed") }}
+	r := f.apply(t, []string{CategoryDriver}, nil, ex)
+	if r.Outcome != OutcomeFailed || !r.RebootRequired || hpCode(r) != "tool_exec_failed" || r.RawExitCode != nil {
+		t.Fatalf("%+v code=%q", r, hpCode(r))
+	}
+	if _, err := f.store.ReadFile(hpRebootOwedFile); err != nil {
+		t.Fatalf("the owed reboot was not recorded: %v", err)
+	}
+}
+
+func TestHpAnalyzeEndingWithoutAnExitCodeOwesNothing(t *testing.T) {
+	// /Action:List installs nothing, and the runner decides this outcome.
 	f := newHpFixture(t)
 	ex := &fakeExec{run: func(context.Context, ExecSpec) (ExecResult, error) { return ExecResult{}, errors.New("spawn") }}
-	r, err := f.lane.Apply(context.Background(), f.tool(), f.plan(t, []string{CategoryDriver}, nil), ex)
-	if err == nil {
-		t.Fatal("no error")
+	r, err := f.lane.Apply(context.Background(), f.tool(), f.plan(t, []string{CategoryDriver}, []string{"sp1"}), ex)
+	if err == nil || r.Outcome != "" || r.RebootRequired {
+		t.Fatalf("%+v %v", r, err)
 	}
-	if r.Outcome != "" {
-		t.Fatalf("the runner decides this outcome: %+v", r)
+	if _, rerr := f.store.ReadFile(hpRebootOwedFile); rerr == nil {
+		t.Fatal("recorded a reboot for a run that installed nothing")
 	}
+}
+
+func TestHpBootAtTheRecordedTimeIsStillOwed(t *testing.T) {
+	f := newHpFixture(t)
+	f.apply(t, []string{CategoryDriver}, nil, hpExecWriting(t, nil, 3010))
+	f.boot = f.now
+	if owed, err := f.lane.rebootOwed(); err != nil || !owed {
+		t.Fatalf("owed=%v err=%v", owed, err)
+	}
+}
+
+func TestHpEmptyOwedRecordIsCorrupt(t *testing.T) {
+	f := newHpFixture(t)
+	if err := f.store.WriteFile(hpRebootOwedFile, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.lane.rebootOwed(); err == nil {
+		t.Fatal("a record with no time read as nothing owed")
+	}
+	if owed, err := f.lane.rebootOwed(); err != nil || owed {
+		t.Fatalf("never healed: owed=%v err=%v", owed, err)
+	}
+}
+
+func TestHpCheckHardwareRunsBeforeAToolFreeBranch(t *testing.T) {
+	l := &hwCheckedFreeLane{fakeLane: newFakeLane()}
+	_, outcome, err := EnsureTool(context.Background(), l, nil, Deps{})
+	if outcome != OutcomeNotSupported || errorCodeOf(err) != "not_hp" || l.readied {
+		t.Fatalf("%s %v readied=%v", outcome, err, l.readied)
+	}
+}
+
+// hwCheckedFreeLane is both kinds of lane: the hardware check must still run.
+type hwCheckedFreeLane struct {
+	*fakeLane
+	readied bool
+}
+
+func (l *hwCheckedFreeLane) toolFree() {}
+func (l *hwCheckedFreeLane) Ready() (ToolState, Outcome, error) {
+	l.readied = true
+	return ToolState{}, "", nil
+}
+func (l *hwCheckedFreeLane) CheckHardware() (Outcome, error) {
+	return OutcomeNotSupported, runErr("not_hp", errors.New("no"))
 }
 
 func TestHpLaneRegistered(t *testing.T) {
