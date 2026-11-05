@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"math"
 	"net"
 	"net/http"
 	"net/netip"
@@ -54,30 +53,16 @@ func validateContainmentPayload(payload map[string]any, server string, now time.
 	if err != nil {
 		return errContainmentSpec
 	}
-	var spec struct {
-		isolation.Spec
-		PolicyRevision any `json:"policyRevision"`
-	}
+	var spec isolation.Spec
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&spec) != nil {
 		return errContainmentSpec
 	}
-	if !validContainmentIdentity(spec.Spec, now) {
+	if !validContainmentIdentity(spec, now) || (spec.PolicyRevision != "" && !spec.PolicyRevision.Valid()) {
 		return errContainmentSpec
 	}
-	return validateContainmentAllow(spec.Allow, server, validContainmentPolicyRevision(spec.PolicyRevision))
-}
-
-func validContainmentPolicyRevision(v any) bool {
-	switch r := v.(type) {
-	case string:
-		return strings.TrimSpace(r) != ""
-	case float64:
-		return r > 0 && !math.IsInf(r, 0) && math.Trunc(r) == r
-	default:
-		return false
-	}
+	return validateContainmentAllow(spec.Allow, server, spec.PolicyRevision.Valid())
 }
 
 func validContainmentIdentity(s isolation.Spec, now time.Time) bool {
@@ -143,12 +128,60 @@ func validateContainmentAllow(allow []isolation.AllowEntry, server string, polic
 		default:
 			return errContainmentSpec
 		}
+		if e.Scope == isolation.ScopeAny && !validContainmentPolicyEntry(e) {
+			return errContainmentSpec
+		}
 		found = found || (match && e.Scope == isolation.ScopeBreeze && e.Proto != isolation.ProtoUDP && hasPort)
 	}
 	if !found {
 		return errContainmentSpec
 	}
 	return nil
+}
+
+// containmentBlockedRanges mirrors BLOCKED_RANGES in
+// packages/shared/src/validators/containmentPolicy.ts: loopback and "this host",
+// which Linux and macOS route to the local host, in every IPv6 spelling of them.
+var containmentBlockedRanges = []netip.Prefix{
+	netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("::/96"),
+	netip.MustParsePrefix("::ffff:127.0.0.0/104"), netip.MustParsePrefix("::ffff:0.0.0.0/104"),
+	netip.MustParsePrefix("64:ff9b::127.0.0.0/104"), netip.MustParsePrefix("64:ff9b::0.0.0.0/104"),
+}
+
+// validContainmentPolicyEntry holds a scope:"any" entry to the floor the policy
+// schema enforces on the server. The server is trusted to be the source of these
+// entries, not to be the only check on how far they open a contained device.
+func validContainmentPolicyEntry(e isolation.AllowEntry) bool {
+	if e.Kind == isolation.KindHost {
+		host := strings.ToLower(e.Host)
+		if host == "localhost" || strings.HasSuffix(host, ".localhost") || host == "localhost.localdomain" || host == "ip6-localhost" || host == "ip6-loopback" {
+			return false
+		}
+		for _, label := range strings.Split(host, ".") {
+			if strings.HasPrefix(label, "0x") {
+				return false
+			}
+		}
+		return true
+	}
+	prefix, err := netip.ParsePrefix(e.CIDR)
+	if err != nil {
+		return false
+	}
+	floor := 32
+	if prefix.Addr().Is4() {
+		floor = 8
+	}
+	if prefix.Bits() < floor {
+		return false
+	}
+	for _, blocked := range containmentBlockedRanges {
+		if prefix.Overlaps(blocked) {
+			return false
+		}
+	}
+	return true
 }
 
 func validContainmentHost(host string) bool {
@@ -180,13 +213,41 @@ func validateContainmentDesired(d *isolation.Desired, server string, now time.Ti
 	if d.Desired != isolation.DesiredIsolated || !validContainmentIdentity(d.Spec, now) {
 		return errContainmentSpec
 	}
-	return validateContainmentAllow(d.Allow, server, false)
+	// This runs only on the heartbeat response, the authenticated path that
+	// also delivers release tombstones. scope:"any" entries are accepted here
+	// only with a valid revision; what a revision may change against the held
+	// episode is the Manager's rule (policy.go).
+	revision := d.PolicyRevision.Valid()
+	if d.PolicyRevision != "" && !revision {
+		return errContainmentSpec
+	}
+	return validateContainmentAllow(d.Allow, server, revision)
+}
+
+// containmentPolicyRejection names why a rejected block counts as a rejected
+// policy, or "" when it carried no policy (only logged, as before policies).
+// It reads the block, never quotes it: a journal event's detail is a closed set.
+func containmentPolicyRejection(d *isolation.Desired) isolation.PolicyRejectReason {
+	hasAny := false
+	for _, e := range d.Allow {
+		hasAny = hasAny || e.Scope == isolation.ScopeAny
+	}
+	switch {
+	case d.PolicyRevision != "" && !d.PolicyRevision.Valid():
+		return isolation.PolicyRejectRevisionInvalid
+	case hasAny && d.PolicyRevision == "":
+		return isolation.PolicyRejectRevisionMissing
+	case hasAny || d.PolicyRevision != "":
+		return isolation.PolicyRejectSpecInvalid
+	}
+	return ""
 }
 
 type containmentManager interface {
 	HandleIsolate(context.Context, map[string]any) isolation.CommandOutcome
 	HandleRelease(context.Context, map[string]any) isolation.CommandOutcome
 	Reconcile(context.Context, *isolation.DesiredBlock)
+	NotePolicyRejected(ctx context.Context, isolationID string, generation int, reason isolation.PolicyRejectReason)
 	Startup(context.Context)
 	Tick(context.Context)
 	Report() *isolation.Report
@@ -199,14 +260,37 @@ type containmentManager interface {
 type containmentRuntime struct {
 	manager    containmentManager
 	desired    chan *isolation.DesiredBlock
+	rejected   chan containmentRejection
 	queueMu    sync.Mutex
 	startOnce  sync.Once
 	initialize func(context.Context)
 	refresh    func(context.Context)
 }
 
+// containmentRejection is a policy block the heartbeat path refused. It waits in
+// its own slot: journalling takes the journal lock, which the heartbeat path must
+// not wait on, and it must not displace a valid assertion that is still pending.
+type containmentRejection struct {
+	isolationID string
+	generation  int
+	reason      isolation.PolicyRejectReason
+}
+
 func newContainmentRuntime(m containmentManager) *containmentRuntime {
-	return &containmentRuntime{manager: m, desired: make(chan *isolation.DesiredBlock, 1)}
+	return &containmentRuntime{manager: m, desired: make(chan *isolation.DesiredBlock, 1), rejected: make(chan containmentRejection, 1)}
+}
+
+func (r *containmentRuntime) reject(rejection containmentRejection) {
+	r.queueMu.Lock()
+	defer r.queueMu.Unlock()
+	select {
+	case <-r.rejected:
+	default:
+	}
+	select {
+	case r.rejected <- rejection:
+	default:
+	}
 }
 
 func (r *containmentRuntime) enqueue(d *isolation.DesiredBlock) {
@@ -233,6 +317,8 @@ func (r *containmentRuntime) run(ctx context.Context, ticks <-chan time.Time) {
 			return
 		case d := <-r.desired:
 			r.manager.Reconcile(ctx, d)
+		case rejection := <-r.rejected:
+			r.manager.NotePolicyRejected(ctx, rejection.isolationID, rejection.generation, rejection.reason)
 		case <-ticks:
 			if r.refresh != nil {
 				r.refresh(ctx)
@@ -373,8 +459,12 @@ func (h *Heartbeat) reconcileContainment(d *isolation.DesiredBlock) {
 	}
 	if err := validateContainmentDesired(d.NetworkIsolation, h.serverURL(), time.Now()); err != nil {
 		n := d.NetworkIsolation
+		reason := containmentPolicyRejection(n)
 		log.Warn("ignoring invalid containment desired state", "isolationId", n.IsolationID,
-			"generation", n.Generation, "desired", n.Desired, "error", err.Error())
+			"generation", n.Generation, "desired", n.Desired, "error", err.Error(), "policyRejection", string(reason))
+		if reason != "" {
+			h.containment.reject(containmentRejection{isolationID: n.IsolationID, generation: n.Generation, reason: reason})
+		}
 		return
 	}
 	h.containment.enqueue(d)
@@ -395,7 +485,7 @@ func containmentCapabilities(c *SecurityCapabilities) {
 		iso = isolation.NewPlatformIsolator()
 	}
 	cap := iso.Capability()
-	c.NetworkIsolationVersion = cap.Version
+	c.NetworkIsolationVersion = cap.AdvertisedVersion()
 	c.NetworkIsolationMechanism = cap.Mechanism
 	c.NetworkIsolationUnsupportedReason = cap.UnsupportedReason
 	c.NetworkIsolationReady = cap.Version >= 1 && cap.Ready
