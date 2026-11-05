@@ -266,6 +266,14 @@ describe('validateFolderName', () => {
     expect(validateFolderName('Reports', POSIX, ['Reports'])).toBe('exists');
   });
 
+  it.each(['macos', 'darwin'])('treats a case-only difference as taken on %s, whose default volume ignores case', (osType) => {
+    expect(validateFolderName('reports', '/Users/tech', ['Reports'], osType)).toBe('exists');
+  });
+
+  it('keeps Windows rules off a macOS path', () => {
+    expect(validateFolderName('a:b', '/Users/tech', [], 'macos')).toBeNull();
+  });
+
   it('reports an invalid name ahead of a clash', () => {
     expect(validateFolderName('..', POSIX, ['..'])).toBe('invalid');
   });

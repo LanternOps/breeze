@@ -9,6 +9,7 @@ type NewFolderDialogProps = {
   open: boolean;
   parentPath: string;
   existingNames: string[];
+  osType?: string;
   busy: boolean;
   onSubmit: (name: string) => void;
   onClose: () => void;
@@ -18,6 +19,7 @@ export default function NewFolderDialog({
   open,
   parentPath,
   existingNames,
+  osType,
   busy,
   onSubmit,
   onClose,
@@ -30,7 +32,7 @@ export default function NewFolderDialog({
   }, [open]);
 
   const trimmed = name.trim();
-  const problem = trimmed ? validateFolderName(trimmed, parentPath, existingNames) : null;
+  const problem = trimmed ? validateFolderName(trimmed, parentPath, existingNames, osType) : null;
   const canSubmit = trimmed !== '' && problem === null && !busy;
 
   const handleSubmit = (event: FormEvent) => {

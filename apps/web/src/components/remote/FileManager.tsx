@@ -121,12 +121,20 @@ function isUnverifiedBody(body: unknown): boolean {
     && (body as { unverified?: unknown }).unverified === true;
 }
 
+// The API's text for a device that is plainly offline. DEVICE_OFFLINE also covers
+// a device that is updating or quarantined; the translation calls those "offline"
+// too, which sends a technician looking for a network fault, so any other text
+// under this code names the real state and is kept.
+const PLAIN_OFFLINE_TEXT = 'The device is offline.';
+
 function agentReason(code: string, _message: string, body?: unknown): string | undefined {
-  if (!AGENT_REASON_CODES.has(code) && !isUnverifiedBody(body)) return undefined;
   const error = typeof body === 'object' && body !== null
     ? (body as { error?: unknown }).error
     : undefined;
-  return typeof error === 'string' && error ? error : undefined;
+  if (typeof error !== 'string' || !error) return undefined;
+  if (AGENT_REASON_CODES.has(code) || isUnverifiedBody(body)) return error;
+  if (code === ERROR_CODES.DEVICE_OFFLINE && error !== PLAIN_OFFLINE_TEXT) return error;
+  return undefined;
 }
 
 // Get file icon based on extension
@@ -1322,6 +1330,7 @@ export default function FileManager({
         open={showNewFolder}
         parentPath={currentPath}
         existingNames={entries.map(e => e.name)}
+        osType={osType}
         busy={creatingFolder}
         onSubmit={handleCreateFolder}
         onClose={() => setShowNewFolder(false)}

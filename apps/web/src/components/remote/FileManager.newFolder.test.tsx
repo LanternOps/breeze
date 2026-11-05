@@ -23,7 +23,7 @@ function mkdirResponse(status: number, body: unknown) {
 }
 
 /** Listing GETs answer with `entries`; the mkdir POST with `mkdir()`. */
-function setup(opts: { path?: string; entries?: Entry[]; mkdir?: () => unknown } = {}) {
+function setup(opts: { path?: string; osType?: string; entries?: Entry[]; mkdir?: () => unknown } = {}) {
   const entries = opts.entries ?? [{ name: 'existing', path: '/data/existing', type: 'directory' as const }];
   const mkdir = opts.mkdir ?? (() => Promise.resolve(mkdirResponse(200, { success: true, data: { path: 'x' } })));
   mockFetchWithAuth.mockImplementation((url: string) => {
@@ -32,7 +32,12 @@ function setup(opts: { path?: string; entries?: Entry[]; mkdir?: () => unknown }
     return Promise.resolve({ ok: true, json: async () => ({ data: entries }) });
   });
   return render(
-    <FileManager deviceId="device-1" deviceHostname="workstation-1" initialPath={opts.path ?? '/data'} />
+    <FileManager
+      deviceId="device-1"
+      deviceHostname="workstation-1"
+      initialPath={opts.path ?? '/data'}
+      osType={opts.osType}
+    />
   );
 }
 
@@ -116,6 +121,8 @@ describe('FileManager new folder', () => {
 
     fireEvent.click(screen.getByText(/^Activity/));
     expect(await screen.findByText('/data/Reports')).toBeInTheDocument();
+    // The toolbar button plus the activity row's action label.
+    expect(screen.getAllByText('New folder')).toHaveLength(2);
   });
 
   it('cancel closes without posting', async () => {
@@ -182,6 +189,24 @@ describe('FileManager new folder', () => {
       fireEvent.submit(screen.getByTestId('new-folder-form'));
       expect(mkdirCalls()).toHaveLength(0);
     });
+
+    it('passes the device OS through, so a case-only clash is caught on macOS', async () => {
+      setup({ osType: 'macos' });
+      await openDialog();
+
+      typeName('EXISTING');
+
+      expect(screen.getByTestId('new-folder-error')).toHaveTextContent(/already exists/i);
+    });
+
+    it('allows a case-only difference on Linux', async () => {
+      setup({ osType: 'linux' });
+      await openDialog();
+
+      typeName('EXISTING');
+
+      expect(screen.queryByTestId('new-folder-error')).not.toBeInTheDocument();
+    });
   });
 
   describe('failures', () => {
@@ -220,6 +245,24 @@ describe('FileManager new folder', () => {
       expect(errorToasts()[0].message).toBe('failed to create directory: permission denied');
     });
 
+    it('records a failure in the activity panel with its reason', async () => {
+      setup({
+        mkdir: () => Promise.resolve(mkdirResponse(500, {
+          error: 'failed to create directory: permission denied',
+          code: 'AGENT_EXECUTION_FAILED',
+        })),
+      });
+      await openDialog();
+
+      typeName('new');
+      fireEvent.click(screen.getByTestId('new-folder-submit'));
+      await waitFor(() => expect(errorToasts()).toHaveLength(1));
+
+      fireEvent.click(screen.getByText(/^Activity/));
+      expect(await screen.findByText('/data/new')).toBeInTheDocument();
+      expect(screen.getByText('failed to create directory: permission denied')).toBeInTheDocument();
+    });
+
     it('keeps the localized copy for a device that is offline', async () => {
       setup({
         mkdir: () => Promise.resolve(mkdirResponse(503, {
@@ -233,8 +276,23 @@ describe('FileManager new folder', () => {
       fireEvent.click(screen.getByTestId('new-folder-submit'));
 
       await waitFor(() => expect(errorToasts()).toHaveLength(1));
-      expect(errorToasts()[0].message).not.toBe('The device is offline.');
+      // The errors:DEVICE_OFFLINE translation, not the API's text.
+      expect(errorToasts()[0].message).toBe('The device is offline');
       expect(screen.getByTestId('new-folder-name')).toBeInTheDocument();
+    });
+
+    it.each(['quarantined', 'updating'])('names the real state of a device that is %s, not "offline"', async (state) => {
+      const text = `The device is ${state} and cannot run commands.`;
+      setup({
+        mkdir: () => Promise.resolve(mkdirResponse(503, { error: text, code: 'DEVICE_OFFLINE' })),
+      });
+      await openDialog();
+
+      typeName('new');
+      fireEvent.click(screen.getByTestId('new-folder-submit'));
+
+      await waitFor(() => expect(errorToasts()).toHaveLength(1));
+      expect(errorToasts()[0].message).toBe(text);
     });
 
     it('on an unverified timeout, warns that it may have completed, closes and refreshes', async () => {
@@ -256,6 +314,10 @@ describe('FileManager new folder', () => {
       expect(errorToasts()[0].message).toBe(unverified);
       await waitFor(() => expect(screen.queryByTestId('new-folder-name')).not.toBeInTheDocument());
       await waitFor(() => expect(listingCalls().length).toBe(listingsBefore + 1));
+
+      fireEvent.click(screen.getByText(/^Activity/));
+      expect(await screen.findByText('/data/new')).toBeInTheDocument();
+      expect(screen.getByText(unverified)).toBeInTheDocument();
     });
 
     it('toasts the fallback when the request never reaches the API', async () => {
