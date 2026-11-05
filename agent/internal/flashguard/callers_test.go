@@ -34,7 +34,11 @@ var powerLiterals = []string{"shutdown", "shutdown.exe", "reboot", "poweroff", "
 
 // powerBuilders build the argv of a real shutdown, so every function calling one
 // is a power path even though the literal lives elsewhere.
-var powerBuilders = []string{"buildShutdownCommand", "ForceRebootArgv", "execOSReboot"}
+var powerBuilders = []string{"buildShutdownCommand", "ForceRebootArgv", "execOSReboot", "runShutdownCommand"}
+
+// argvOnly are builders that only compute an argv. A function may call one before
+// it asks the guard, so long as nothing runs until it has.
+var argvOnly = []string{"ForceRebootArgv"}
 
 type site struct {
 	file   string // relative to the agent module root, with forward slashes
@@ -65,6 +69,10 @@ var powerSites = map[site]admission{
 	{"internal/remote/tools/system.go", "shutdownArgv", "shutdown"}:                                  {"internal/remote/tools/system.go", "Reboot"},
 	{"internal/remote/tools/system.go", "Reboot", "buildShutdownCommand"}:                            {"internal/remote/tools/system.go", "Reboot"},
 	{"internal/remote/tools/system.go", "Shutdown", "buildShutdownCommand"}:                          {"internal/remote/tools/system.go", "Shutdown"},
+	{"internal/remote/tools/system.go", packageLevel, "runShutdownCommand"}:                          {"internal/remote/tools/system.go", "Reboot"},
+	{"internal/remote/tools/system.go", "Reboot", "runShutdownCommand"}:                              {"internal/remote/tools/system.go", "Reboot"},
+	{"internal/remote/tools/system.go", "Shutdown", "runShutdownCommand"}:                            {"internal/remote/tools/system.go", "Shutdown"},
+	{"internal/remote/tools/system.go", "ForceReboot", "runShutdownCommand"}:                         {"internal/remote/tools/system.go", "ForceReboot"},
 	{"internal/remote/tools/system.go", "ForceReboot", "ForceRebootArgv"}:                            {"internal/remote/tools/system.go", "ForceReboot"},
 	{"internal/remote/tools/system_safemode_windows.go", "RebootToSafeMode", "buildShutdownCommand"}: {"internal/remote/tools/system_safemode_windows.go", "RebootToSafeMode"},
 
@@ -319,6 +327,69 @@ func TestEveryPowerSiteHoldsAnAdmission(t *testing.T) {
 			t.Errorf("%s: %s is named as holding the admission but does not call AdmitPowerAction or WaitForPowerAction", a.file, a.fn)
 		}
 	}
+
+	// Where the holder is the function with the power call itself, it must ask
+	// first: a check after the shutdown guards nothing.
+	funcs := map[admission]*ast.FuncDecl{}
+	for _, f := range files {
+		for _, decl := range f.file.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
+				funcs[admission{f.rel, fn.Name.Name}] = fn
+			}
+		}
+	}
+	for s, a := range powerSites {
+		if a.file != s.file || a.fn != s.fn || slices.Contains(argvOnly, s.symbol) {
+			continue
+		}
+		fn := funcs[a]
+		if fn == nil {
+			continue
+		}
+		guard, use := firstGuardCall(fn), firstUse(fn, s.symbol)
+		if guard == token.NoPos || use == token.NoPos || use < guard {
+			t.Errorf("%s: %s uses %s before it asks the flash guard", s.file, s.fn, s.symbol)
+		}
+	}
+}
+
+func firstGuardCall(fn *ast.FuncDecl) token.Pos {
+	pos := token.NoPos
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok && pos == token.NoPos &&
+			(sel.Sel.Name == "AdmitPowerAction" || sel.Sel.Name == "WaitForPowerAction") {
+			pos = sel.Pos()
+		}
+		return pos == token.NoPos
+	})
+	return pos
+}
+
+// firstUse finds the first reference to symbol in fn: a selector, a bare
+// identifier, or a string literal, whichever the scan matched it as.
+func firstUse(fn *ast.FuncDecl, symbol string) token.Pos {
+	pos := token.NoPos
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if pos != token.NoPos {
+			return false
+		}
+		switch x := n.(type) {
+		case *ast.SelectorExpr:
+			if x.Sel.Name == symbol {
+				pos = x.Pos()
+			}
+		case *ast.Ident:
+			if x.Name == symbol {
+				pos = x.Pos()
+			}
+		case *ast.BasicLit:
+			if value, err := strconv.Unquote(x.Value); err == nil && value == symbol {
+				pos = x.Pos()
+			}
+		}
+		return pos == token.NoPos
+	})
+	return pos
 }
 
 func callsGuard(fn *ast.FuncDecl) bool {

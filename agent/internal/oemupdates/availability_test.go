@@ -153,6 +153,36 @@ func TestRedetectsAfterTTL(t *testing.T) {
 	}
 }
 
+// An absent tool has no path or version, whatever detect returned with it.
+func TestAnAbsentAnswerCarriesNoPath(t *testing.T) {
+	gate := NewToolGate("dcu", func() ToolState {
+		return ToolState{Present: false, Path: `C:\stale\dcu-cli.exe`, Version: "5.7.2"}
+	})
+	if got := gate.Get(); got.Path != "" || got.Version != "" {
+		t.Fatalf("absent answer = %+v, want no path or version", got)
+	}
+}
+
+// A clock wound back must not make one answer last for ever.
+func TestAClockWoundBackRedetects(t *testing.T) {
+	var calls atomic.Int64
+	now := time.Unix(1_800_000_000, 0)
+	gate := NewToolGate("dcu", func() ToolState { calls.Add(1); return ToolState{} })
+	gate.now = func() time.Time { return now }
+	gate.Get()
+	now = now.Add(-time.Hour)
+	gate.Get()
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("detect ran %d times, want 2 after the clock went backwards", got)
+	}
+}
+
+func TestANilDetectReportsAbsent(t *testing.T) {
+	if NewToolGate("dcu", nil).Get().Present {
+		t.Fatal("a gate with no detect reported a tool")
+	}
+}
+
 // CheckedAt is the gate's to set, so a detect cannot make an answer look fresher
 // or staler than it is.
 func TestCheckedAtComesFromTheGate(t *testing.T) {

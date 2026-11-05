@@ -72,8 +72,8 @@ func handleSelfUninstall(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 
 	// Refused rather than waited out, before anything is touched: the operator
-	// can send it again. On success the admission is never released, because this
-	// process is on its way out and a flash must not start in the meantime.
+	// can send it again. On success the admission is kept through the hand-off,
+	// because this process is on its way out and a flash must not start meanwhile.
 	admissionDone, err := flashguard.Default().AdmitPowerAction("self_uninstall")
 	if err != nil {
 		return tools.NewErrorResult(fmt.Errorf("self_uninstall refused: %w; nothing was removed", err), time.Since(start).Milliseconds())
@@ -101,6 +101,7 @@ func handleSelfUninstall(h *Heartbeat, cmd Command) tools.CommandResult {
 		)
 	}
 
+	flashguard.HoldFor(admissionDone, flashguard.RestartHandoffHold)
 	scheduleSelfUninstallShutdownFn(h)
 
 	return tools.NewSuccessResult(map[string]string{

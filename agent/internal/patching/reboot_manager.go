@@ -33,12 +33,11 @@ import (
 
 const (
 	// flashHoldRetryInterval is how often a reboot held for a firmware update
-	// asks again. Every section ends by itself within flashguard.MaxTTL, so this
-	// cannot go on for ever.
+	// asks again. Each section ends by itself within flashguard.MaxTTL.
 	flashHoldRetryInterval = time.Minute
 
 	flashHoldResumeTitle = "Restarting Shortly"
-	flashHoldResumeBody  = "A firmware update has finished. Your computer will restart in about a minute. Save your work now."
+	flashHoldResumeBody  = "A firmware update has finished. Your computer will restart shortly. Save your work now."
 )
 
 // RebootState tracks the current reboot scheduling state. Serialised to the API

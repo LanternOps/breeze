@@ -98,7 +98,8 @@ func ForceRebootArgv(goos string) (string, []string, error) {
 //
 // Force closes applications, not firmware installs: during a flash this waits
 // for the section to end rather than being refused, because the operator asked
-// for a reboot and should get one. The wait is bounded by the section TTL.
+// for a reboot and should get one. The wait is bounded by flashguard.MaxTTL;
+// running out returns a refusal and does not reboot.
 func ForceReboot(_ map[string]any) CommandResult {
 	startTime := time.Now()
 	name, args, err := ForceRebootArgv(runtime.GOOS)

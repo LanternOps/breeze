@@ -620,14 +620,16 @@ func (h *Heartbeat) restartForIdentity(previousMarker *identityRestartMarker) {
 		return
 	}
 	// A firmware section can open during the wait too. Admission is held through
-	// the restart, so one cannot open after this check.
+	// the restart request and for a while after it, because on Windows the restart
+	// itself is done a few seconds later by a detached helper.
 	done, err := flashguard.Default().AdmitPowerAction("identity_restart")
 	if err != nil {
 		h.yieldIdentityRestart(previousMarker, "a firmware update started")
 		return
 	}
-	defer done()
-	if err := restartForIdentityFn(); err != nil {
+	restartErr := restartForIdentityFn()
+	flashguard.ReleaseAfterHandoff(done, restartErr == nil)
+	if err := restartErr; err != nil {
 		// Release the gate: the upgrades, credential rotation and mTLS cert
 		// renewal it holds back must not wait for a restart that will not
 		// come (a lapsed cert takes the device offline), and beats and

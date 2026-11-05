@@ -1,13 +1,18 @@
 package flashguard
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/logging"
 )
 
 type fakeClock struct {
@@ -340,7 +345,13 @@ func TestUnusableDirRefusesEnterButNotPowerActions(t *testing.T) {
 // while a power action is executing. Run with -race.
 func TestAdmitAndEnterAreAtomic(t *testing.T) {
 	g := New(t.TempDir())
-	var inSection, inAction, violations atomic.Int64
+	var inSection, inAction, violations, entered, admitted atomic.Int64
+	t.Cleanup(func() {
+		// Both sides must have run, or the invariant was never exercised.
+		if entered.Load() == 0 || admitted.Load() == 0 {
+			t.Errorf("vacuous run: %d sections, %d power actions", entered.Load(), admitted.Load())
+		}
+	})
 	var wg sync.WaitGroup
 	stop := time.Now().Add(300 * time.Millisecond)
 
@@ -353,6 +364,7 @@ func TestAdmitAndEnterAreAtomic(t *testing.T) {
 				if err != nil {
 					continue
 				}
+				entered.Add(1)
 				inSection.Add(1)
 				if inAction.Load() != 0 {
 					violations.Add(1)
@@ -368,6 +380,7 @@ func TestAdmitAndEnterAreAtomic(t *testing.T) {
 				if err != nil {
 					continue
 				}
+				admitted.Add(1)
 				inAction.Add(1)
 				if inSection.Load() != 0 {
 					violations.Add(1)
@@ -426,6 +439,142 @@ func TestWaitForPowerActionGivesUpWithoutActing(t *testing.T) {
 	done, err := g.WaitForPowerAction("force_reboot")
 	if !errors.Is(err, ErrFlashInProgress) || done != nil {
 		t.Fatalf("WaitForPowerAction past its ceiling = (%v, %v), want (nil, ErrFlashInProgress)", done != nil, err)
+	}
+}
+
+// A section file that exists but cannot be read (a sharing violation, a file
+// replaced by a directory or a link) may be a live flash. It holds like a corrupt
+// one, for MaxTTL from when it was written, and never longer.
+func TestAnUnreadableSectionHoldsUntilItAgesOut(t *testing.T) {
+	g := New(t.TempDir(), WithLockWait(50*time.Millisecond))
+	path := filepath.Join(g.dir, sectionFile)
+	if err := os.MkdirAll(path, 0o700); err != nil { // present, but not a regular file
+		t.Fatal(err)
+	}
+	if _, err := g.AdmitPowerAction("reboot"); !errors.Is(err, ErrFlashInProgress) {
+		t.Fatalf("admit with an unreadable section = %v, want ErrFlashInProgress", err)
+	}
+	if _, err := g.Enter("bios", "cmd-1", time.Hour); !errors.Is(err, ErrSectionActive) {
+		t.Fatalf("Enter with an unreadable section = %v, want ErrSectionActive", err)
+	}
+	old := time.Now().Add(-MaxTTL - time.Minute)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	done, err := g.AdmitPowerAction("reboot")
+	if err != nil {
+		t.Fatalf("an unreadable section older than MaxTTL must not block: %v", err)
+	}
+	done()
+}
+
+// Enter fails closed: a countdown it cannot read may be a reboot about to happen.
+func TestAnUnreadableCountdownRefusesEnter(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		plant func(path string) error
+	}{
+		{"corrupt", func(path string) error { return os.WriteFile(path, []byte("{nope"), 0o600) }},
+		{"not a file", func(path string) error { return os.MkdirAll(path, 0o700) }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			g := New(t.TempDir(), WithLockWait(50*time.Millisecond))
+			if err := os.MkdirAll(g.dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(g.dir, countdownFile)
+			if err := tt.plant(path); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := g.Enter("bios", "cmd-1", time.Hour); !errors.Is(err, ErrPowerActionPending) {
+				t.Fatalf("Enter = %v, want ErrPowerActionPending", err)
+			}
+			old := time.Now().Add(-maxNotedCountdown - time.Minute)
+			if err := os.Chtimes(path, old, old); err != nil {
+				t.Fatal(err)
+			}
+			release, err := g.Enter("bios", "cmd-1", time.Hour)
+			if err != nil {
+				t.Fatalf("an unreadable countdown older than any countdown must not block: %v", err)
+			}
+			_ = release()
+		})
+	}
+}
+
+// Active runs on every heartbeat that re-offers an upgrade, and a corrupt section
+// holds for hours: its warning is logged once, not on every read.
+func TestACorruptSectionWarnsOnce(t *testing.T) {
+	var buf bytes.Buffer
+	logging.Init("text", "debug", &buf)
+	t.Cleanup(func() { logging.Init("text", "info", nil) })
+	g := New(t.TempDir(), WithLockWait(50*time.Millisecond))
+	if err := os.MkdirAll(g.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(g.dir, sectionFile), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		g.Active()
+		_, _ = g.AdmitPowerAction("reboot")
+	}
+	if got := strings.Count(buf.String(), "level=WARN"); got != 1 {
+		t.Fatalf("logged %d WARN lines for one corrupt section, want 1:\n%s", got, buf.String())
+	}
+}
+
+// A restart hands off to another process that stops this one a few seconds
+// later. HoldFor keeps the admission through that gap, and still lets go if the
+// restart never comes.
+func TestHoldForKeepsTheAdmissionThenLetsGo(t *testing.T) {
+	g := New(t.TempDir(), WithLockWait(50*time.Millisecond))
+	done, err := g.AdmitPowerAction("agent_restart")
+	if err != nil {
+		t.Fatalf("AdmitPowerAction: %v", err)
+	}
+	HoldFor(done, time.Second) // longer than Enter waits for the lock
+	runtime.GC()               // the held lock must not depend on staying reachable by luck
+	if _, err := g.Enter("bios", "cmd-1", time.Hour); !errors.Is(err, ErrPowerActionPending) {
+		t.Fatalf("Enter during the hand-off = %v, want ErrPowerActionPending", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		release, err := g.Enter("bios", "cmd-1", time.Hour)
+		if err == nil {
+			_ = release()
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the hand-off hold never let go: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// The watchdog and the agent must agree on one directory, so a relative one is
+// refused rather than resolved against whatever each process's cwd is.
+func TestARelativeDirFailsClosedForEnterAndOpenForAdmission(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	g := New("relative-flashguard", WithLockWait(50*time.Millisecond))
+	if _, err := g.Enter("bios", "cmd-1", time.Hour); err == nil {
+		t.Fatal("Enter accepted a relative directory")
+	}
+	done, err := g.AdmitPowerAction("reboot")
+	if err != nil {
+		t.Fatalf("admission fails open on an unusable directory: %v", err)
+	}
+	done()
+	if _, err := os.Stat(filepath.Join(cwd, "relative-flashguard")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a relative directory was created in the working directory: %v", err)
+	}
+}
+
+func TestNonPositiveTimingFallsBackToDefaults(t *testing.T) {
+	g := New(t.TempDir(), WithLockWait(-1), WithWaitTiming(0, -1), WithClock(nil))
+	if g.lockWait != defaultLockWait || g.waitPoll != defaultWaitPoll || g.waitMax != MaxTTL || g.now == nil {
+		t.Fatalf("got lockWait=%v waitPoll=%v waitMax=%v now=%v", g.lockWait, g.waitPoll, g.waitMax, g.now != nil)
 	}
 }
 

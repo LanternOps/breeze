@@ -9,9 +9,15 @@ import { OEM_CATEGORIES, OEM_LANES, OEM_OUTCOMES } from '../utils/oemUpdates';
 
 const laneSchema = z.enum(OEM_LANES);
 const categorySchema = z.enum(OEM_CATEGORIES);
-const versionSchema = z.string().min(1).max(64);
+// Text that may come from a vendor tool: no control characters, so it cannot forge
+// a log line or a terminal escape wherever it is shown.
+const NO_CONTROL_CHARS = /^[^\u0000-\u001f\u007f]*$/;
+const toolText = (max: number) => z.string().max(max).regex(NO_CONTROL_CHARS, 'must not contain control characters');
 
-const sha256Schema = z.string().regex(/^[0-9a-fA-F]{64}$/, 'sha256 must be 64 hex characters');
+const versionSchema = toolText(64).min(1);
+
+// Lowercase only: the manifest is ours, and the agent compares the digest as text.
+const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/, 'sha256 must be 64 lowercase hex characters');
 
 const httpsUrlSchema = z
   .string()
@@ -52,6 +58,7 @@ export const oemUpdateRunPayloadSchema = z
     occurrenceKey: z.string().max(64).nullable(),
     categories: z
       .array(categorySchema)
+      .min(1)
       .max(4)
       .refine((c) => new Set(c).size === c.length, { message: 'categories must be unique' }),
     blockedUpdateIds: z.array(z.string().min(1).max(128)).max(200),
@@ -65,9 +72,9 @@ export type OemUpdateRunPayload = z.infer<typeof oemUpdateRunPayloadSchema>;
 
 const resultItemSchema = z
   .object({
-    title: z.string().max(200),
+    title: toolText(200),
     category: categorySchema,
-    version: z.string().max(64),
+    version: toolText(64),
     result: z.enum(['installed', 'failed', 'skipped']),
   })
   .strict();
@@ -83,9 +90,15 @@ export const oemUpdateRunResultSchema = z
   .object({
     lane: laneSchema,
     outcome: z.enum(OEM_OUTCOMES),
-    toolVersion: z.string().max(64).nullable(),
-    rawExitCode: z.number().int().nullable(),
-    errorCode: z.string().max(64).nullable(),
+    toolVersion: toolText(64).nullable(),
+    // A Windows exit code is a DWORD, often reported signed: either reading fits.
+    rawExitCode: z.number().int().min(-2147483648).max(4294967295).nullable(),
+    errorCode: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[A-Za-z0-9_.:-]+$/, 'errorCode must be an identifier')
+      .nullable(),
     rebootRequired: z.boolean(),
     shutdownRequired: z.boolean(),
     items: z.array(resultItemSchema).max(200),
@@ -99,7 +112,7 @@ export const oemUpdateVerificationSchema = z
   .object({
     commandId: z.string().uuid(),
     bitlockerAfter: z.enum(['on', 'suspended', 'off', 'unknown']),
-    biosVersionAfter: z.string().max(64).nullable(),
+    biosVersionAfter: toolText(64).nullable(),
   })
   .strict();
 export type OemUpdateVerification = z.infer<typeof oemUpdateVerificationSchema>;

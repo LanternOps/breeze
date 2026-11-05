@@ -103,6 +103,33 @@ describe('oemUpdateRunResultSchema', () => {
   });
 });
 
+// Review round 1: vendor tool output is untrusted, and the manifest is ours.
+describe('oem update contract bounds', () => {
+  it('requires a lowercase sha256, as the agent compares it', () => {
+    expect(okPayload({ tool: { ...payload().tool, sha256: 'A'.repeat(64) } })).toBe(false);
+  });
+  it('requires at least one category', () => {
+    expect(okPayload({ categories: [] })).toBe(false);
+  });
+  it('bounds the exit code to what a Windows process can return', () => {
+    expect(okResult({ ...sample, rawExitCode: 4294967295 })).toBe(true);
+    expect(okResult({ ...sample, rawExitCode: -2147483648 })).toBe(true);
+    expect(okResult({ ...sample, rawExitCode: 4294967296 })).toBe(false);
+    expect(okResult({ ...sample, rawExitCode: -2147483649 })).toBe(false);
+  });
+  it('limits errorCode to an identifier', () => {
+    expect(okResult({ ...sample, errorCode: 'dcu.exit_500' })).toBe(true);
+    expect(okResult({ ...sample, errorCode: 'bad code' })).toBe(false);
+    expect(okResult({ ...sample, errorCode: '' })).toBe(false);
+  });
+  it('rejects control characters in text from the tool', () => {
+    const item = sample.items[0];
+    expect(okResult({ ...sample, items: [{ ...item, title: 'BIOS\u0007' }] })).toBe(false);
+    expect(okResult({ ...sample, items: [{ ...item, version: '1.0\n2' }] })).toBe(false);
+    expect(okResult({ ...sample, toolVersion: '5.7.2\u0000' })).toBe(false);
+  });
+});
+
 describe('oemUpdateVerificationSchema', () => {
   const v = { commandId: uuid, bitlockerAfter: 'on', biosVersionAfter: null };
   const ok = (x: unknown) => oemUpdateVerificationSchema.safeParse(x).success;

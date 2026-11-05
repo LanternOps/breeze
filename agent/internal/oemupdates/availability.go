@@ -51,8 +51,12 @@ type ToolGate struct {
 	answered bool
 }
 
-// NewToolGate returns a gate for one tool. name appears only in logs.
+// NewToolGate returns a gate for one tool. name appears only in logs. A nil
+// detect reports the tool absent.
 func NewToolGate(name string, detect func() ToolState) *ToolGate {
+	if detect == nil {
+		detect = func() ToolState { return ToolState{} }
+	}
 	return &ToolGate{name: name, ttl: toolAvailabilityTTL, detect: detect, now: time.Now}
 }
 
@@ -62,10 +66,15 @@ func (g *ToolGate) Get() ToolState {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := g.now()
-	if g.valid && now.Sub(g.value.CheckedAt) < g.ttl {
+	// A negative age is a clock that went backwards; detect again rather than
+	// trust the answer until the clock catches up.
+	if age := now.Sub(g.value.CheckedAt); g.valid && age >= 0 && age < g.ttl {
 		return g.value
 	}
 	next := g.detect()
+	if !next.Present {
+		next = ToolState{}
+	}
 	next.CheckedAt = now
 	if g.answered && !next.sameTool(g.value) {
 		log.Debug(toolStateChangedLog, "tool", g.name, "present", next.Present, "path", next.Path, "version", next.Version)

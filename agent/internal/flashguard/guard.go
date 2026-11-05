@@ -14,7 +14,8 @@
 // reboots forever.
 //
 // With no section open this package changes nothing about a power action except
-// a file lock around it, and a failure to take that lock does not stop one.
+// a file lock around it. If that lock cannot be taken at all the action proceeds,
+// though a section recorded on disk still refuses it.
 package flashguard
 
 import (
@@ -62,6 +63,13 @@ const (
 
 	maxStateFileBytes = 4096
 
+	// RestartHandoffHold is how long HoldFor keeps an admission after a restart
+	// has been handed to another process. The hand-off returns before the
+	// restart: on Windows a detached helper waits, then restarts the service.
+	// Long enough for any service stop; short enough that a restart which never
+	// comes does not refuse flashes for long.
+	RestartHandoffHold = 5 * time.Minute
+
 	defaultLockWait     = 5 * time.Second
 	defaultWaitPoll     = 5 * time.Second
 	enterLockWait       = 250 * time.Millisecond
@@ -98,6 +106,15 @@ type Guard struct {
 
 	probeMu sync.Mutex
 	probe   func() bool
+
+	// noteMu makes NoteCountdown's read-compare-write atomic within a process.
+	// Its callers hold only a shared admission, so the file lock cannot.
+	noteMu sync.Mutex
+
+	// warnMu and lastWarn keep a condition that persists, such as a corrupt
+	// state file, to one warning: it is read on every heartbeat.
+	warnMu   sync.Mutex
+	lastWarn string
 }
 
 // Option adjusts a Guard built by New.
@@ -115,7 +132,10 @@ func WithWaitTiming(poll, ceiling time.Duration) Option {
 	return func(g *Guard) { g.waitPoll, g.waitMax = poll, ceiling }
 }
 
-// New returns a Guard keeping its state in dir, which must be absolute.
+// New returns a Guard keeping its state in dir. dir must be absolute: the agent
+// and the watchdog have to agree on it, so a relative one is refused when the
+// guard is used (Enter fails, admission fails open). Non-positive timings and a
+// nil clock fall back to the defaults.
 func New(dir string, opts ...Option) *Guard {
 	g := &Guard{
 		dir:      dir,
@@ -127,8 +147,70 @@ func New(dir string, opts ...Option) *Guard {
 	for _, opt := range opts {
 		opt(g)
 	}
+	if g.now == nil {
+		g.now = time.Now
+	}
+	if g.lockWait <= 0 {
+		g.lockWait = defaultLockWait
+	}
+	if g.waitPoll <= 0 {
+		g.waitPoll = defaultWaitPoll
+	}
+	if g.waitMax <= 0 {
+		g.waitMax = MaxTTL
+	}
 	return g
 }
+
+// HoldFor releases an admission after d instead of now. It is for a power action
+// that hands its restart to another process and returns before the restart
+// happens.
+//
+// The admission is kept in handoffHolds until then. An unreachable admission is
+// closed by the garbage collector, and since Go 1.23 an unreferenced timer is
+// collectable too, so the timer alone would not keep it alive.
+func HoldFor(done func(), d time.Duration) {
+	handoffMu.Lock()
+	handoffSeq++
+	id := handoffSeq
+	handoffHolds[id] = done
+	handoffMu.Unlock()
+	time.AfterFunc(d, func() {
+		handoffMu.Lock()
+		delete(handoffHolds, id)
+		handoffMu.Unlock()
+		done()
+	})
+}
+
+// ReleaseAfterHandoff releases done now if the restart was not handed off, and
+// after RestartHandoffHold if it was.
+func ReleaseAfterHandoff(done func(), handedOff bool) {
+	if handedOff {
+		HoldFor(done, RestartHandoffHold)
+		return
+	}
+	done()
+}
+
+var (
+	handoffMu    sync.Mutex
+	handoffSeq   uint64
+	handoffHolds = map[uint64]func(){}
+)
+
+// warnOnce logs msg unless the same key was the last thing warned about.
+func (g *Guard) warnOnce(key, msg string, args ...any) {
+	g.warnMu.Lock()
+	repeat := g.lastWarn == key
+	g.lastWarn = key
+	g.warnMu.Unlock()
+	if !repeat {
+		log.Warn(msg, args...)
+	}
+}
+
+var errRelativeDir = errors.New("flashguard: state directory must be absolute")
 
 var (
 	defaultOnce  sync.Once
@@ -151,6 +233,7 @@ func Default() *Guard {
 
 // SetDefault makes g the process-wide Guard until the returned function runs.
 // It exists so a test of a wired path never touches the real data directory.
+// Tests that use it must not run in parallel with each other.
 func SetDefault(g *Guard) (restore func()) {
 	previous := override.Swap(g)
 	return func() { override.Store(previous) }
@@ -173,14 +256,31 @@ func (g *Guard) countdownArmed() bool {
 		return true
 	}
 	var noted notedCountdown
-	if err := g.readJSON(countdownFile, &noted); err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			log.Warn("could not read the noted shutdown countdown", "error", err.Error())
+	err := g.readJSON(countdownFile, &noted)
+	now := g.now()
+	switch {
+	case err == nil:
+		return now.Before(noted.Until) && noted.Until.Sub(now) <= maxNotedCountdown
+	case errors.Is(err, fs.ErrNotExist):
+		return false
+	}
+	// A countdown file that exists but cannot be read may be a reboot about to
+	// happen. Enter fails closed, so it counts as armed for as long as any noted
+	// countdown could run from when the file was written.
+	info, statErr := os.Lstat(filepath.Join(g.dir, countdownFile))
+	if statErr != nil {
+		if !errors.Is(statErr, fs.ErrNotExist) {
+			g.warnOnce("countdown-stat:"+statErr.Error(), "could not inspect the noted shutdown countdown", "error", statErr.Error())
 		}
 		return false
 	}
-	now := g.now()
-	return now.Before(noted.Until) && noted.Until.Sub(now) <= maxNotedCountdown
+	armedUntil := info.ModTime().Add(maxNotedCountdown)
+	if !now.Before(armedUntil) {
+		return false
+	}
+	g.warnOnce("countdown:"+info.ModTime().String(), "noted shutdown countdown is unreadable; refusing firmware updates until it ages out",
+		"error", err.Error(), "until", armedUntil)
+	return true
 }
 
 // Enter opens a section lasting ttl, capped at MaxTTL. It fails closed: if the
@@ -292,13 +392,15 @@ func (g *Guard) clearExpired() {
 // AdmitPowerAction asks to take the machine or the agent down. On success the
 // caller holds its admission until it calls done, which it must do only after
 // the OS invocation returns; Enter is refused for that whole time. done is safe
-// to call more than once, and a process that exits never has to call it.
+// to call more than once. A caller whose restart happens in another process after
+// it returns passes done to HoldFor rather than dropping it: an unreachable
+// admission is closed by the garbage collector.
 //
 // During a section it returns ErrFlashInProgress and a nil done.
 //
-// If the lock cannot be taken at all, the action proceeds. Enter fails closed on
-// the same error, so this process cannot have opened a section, and an agent with
-// a broken data directory keeps the reboots it had before this guard.
+// If the lock cannot be taken at all, the lock is skipped and a section recorded
+// on disk still refuses the action. Enter fails closed on the same error, so an
+// agent with a broken data directory keeps the reboots it had before this guard.
 func (g *Guard) AdmitPowerAction(name string) (done func(), err error) {
 	lock, err := g.acquire(lockShared, g.lockWait)
 	switch {
@@ -320,8 +422,9 @@ func (g *Guard) AdmitPowerAction(name string) (done func(), err error) {
 }
 
 // WaitForPowerAction is AdmitPowerAction for a caller that must wait out a
-// section rather than be refused. It gives up after MaxTTL, which is longer than
-// any one section lasts, and running out returns ErrFlashInProgress: it never
+// section rather than be refused. By default it gives up after MaxTTL, which is
+// at least the remaining life of any one section; a new section opening straight
+// after can still outlast it. Running out returns ErrFlashInProgress: it never
 // means acting during a flash.
 func (g *Guard) WaitForPowerAction(name string) (done func(), err error) {
 	deadline := g.now().Add(g.waitMax)
@@ -347,6 +450,8 @@ func (g *Guard) WaitForPowerAction(name string) (done func(), err error) {
 // A shorter note never replaces a longer one. Failing to record it is logged and
 // otherwise ignored: the reboot has already been issued.
 func (g *Guard) NoteCountdown(delay time.Duration) {
+	g.noteMu.Lock()
+	defer g.noteMu.Unlock()
 	until := g.now().Add(delay + CountdownSlack)
 	var existing notedCountdown
 	if err := g.readJSON(countdownFile, &existing); err == nil && existing.Until.After(until) {
@@ -371,10 +476,12 @@ const (
 
 // readSection reads and classifies the section file.
 //
-// A file that exists but cannot be parsed holds, for MaxTTL from when it was
-// written. The atomic write cannot tear, so nothing normal produces one, and it
-// may be a live flash. A file that cannot be read at all does not hold: that
-// error would repeat for ever, and only MaxTTL is allowed to block a reboot.
+// A file that exists but cannot be parsed or read holds, for MaxTTL from when it
+// was written. The atomic write cannot tear, so nothing normal produces one, and
+// it may be a live flash: a sharing violation from a scanner is the likely cause
+// on Windows. Only when even its existence cannot be established does it not
+// hold, because that error could repeat for ever and only MaxTTL may block a
+// reboot.
 func (g *Guard) readSection() (Section, sectionState) {
 	var s Section
 	err := g.readJSON(sectionFile, &s)
@@ -382,11 +489,8 @@ func (g *Guard) readSection() (Section, sectionState) {
 	case err == nil:
 	case errors.Is(err, fs.ErrNotExist):
 		return Section{}, sectionNone
-	case errors.Is(err, errCorruptState):
-		return g.classifyCorrupt()
 	default:
-		log.Warn("could not read the firmware update section", "error", err.Error())
-		return Section{}, sectionNone
+		return g.classifyUnreadable(err)
 	}
 	now := g.now()
 	expires := s.ExpiresAt
@@ -400,16 +504,20 @@ func (g *Guard) readSection() (Section, sectionState) {
 	return s, sectionActive
 }
 
-func (g *Guard) classifyCorrupt() (Section, sectionState) {
-	info, err := securefs.StatFile(g.dir, sectionFile)
+func (g *Guard) classifyUnreadable(readErr error) (Section, sectionState) {
+	info, err := os.Lstat(filepath.Join(g.dir, sectionFile))
 	if err != nil {
-		log.Warn("could not inspect a corrupt firmware update section", "error", err.Error())
+		if !errors.Is(err, fs.ErrNotExist) {
+			g.warnOnce("section-stat:"+err.Error(), "could not read or inspect the firmware update section",
+				"readError", readErr.Error(), "error", err.Error())
+		}
 		return Section{}, sectionNone
 	}
 	written := info.ModTime()
 	s := Section{Kind: "unknown", CommandID: "unknown", StartedAt: written, ExpiresAt: written.Add(MaxTTL)}
 	if g.now().Before(s.ExpiresAt) {
-		log.Warn("firmware update section is unreadable; holding power actions until it ages out", "expiresAt", s.ExpiresAt)
+		g.warnOnce("section:"+written.String(), "firmware update section is unreadable; holding power actions until it ages out",
+			"error", readErr.Error(), "expiresAt", s.ExpiresAt)
 		return s, sectionActive
 	}
 	return s, sectionExpired
@@ -447,6 +555,9 @@ func (g *Guard) readJSON(name string, into any) error {
 // writeJSON publishes the file atomically. The temp file is synced first so the
 // state is on disk before the flash it guards begins.
 func (g *Guard) writeJSON(name string, value any) error {
+	if !filepath.IsAbs(g.dir) {
+		return errRelativeDir
+	}
 	data, err := json.Marshal(value)
 	if err != nil {
 		return err
@@ -508,6 +619,9 @@ func (l *heldLock) release() {
 // the directory's permissions is not free and contends with other callers, and a
 // transient failure there would turn into a fail-open admission.
 func (g *Guard) openLockFile() (*os.File, error) {
+	if !filepath.IsAbs(g.dir) {
+		return nil, errRelativeDir
+	}
 	path := filepath.Join(g.dir, lockFile)
 	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err == nil || !errors.Is(err, fs.ErrNotExist) {

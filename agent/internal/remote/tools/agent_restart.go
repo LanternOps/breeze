@@ -18,9 +18,9 @@ var spawnDelayedRestartFn = spawnDelayedRestart
 // command result can be reported back before the agent dies.
 func RestartAgentService(startTime time.Time) CommandResult {
 	slog.Info("agent restart requested via service manager")
-	// Refused during a firmware update. On success the admission is never
-	// released: the helper stops this process in a few seconds, and a flash must
-	// not start in the meantime.
+	// Refused during a firmware update. On success the admission is kept through
+	// the hand-off: the helper stops this process a few seconds from now, and a
+	// flash must not start in the meantime. If the restart never comes, it lapses.
 	done, err := flashguard.Default().AdmitPowerAction("agent_restart")
 	if err != nil {
 		return NewErrorResult(fmt.Errorf("agent restart refused: %w", err), time.Since(startTime).Milliseconds())
@@ -35,6 +35,7 @@ func RestartAgentService(startTime time.Time) CommandResult {
 		)
 	}
 
+	flashguard.HoldFor(done, flashguard.RestartHandoffHold)
 	slog.Info("delayed restart process spawned, agent will restart in ~3 seconds")
 
 	result := map[string]any{

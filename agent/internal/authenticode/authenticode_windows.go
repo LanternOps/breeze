@@ -158,6 +158,8 @@ func readLeafSigner(state windows.Handle) (Signer, error) {
 	if cert == nil || cert.EncodedCert == nil || cert.Length == 0 {
 		return Signer{}, errors.New("read signer: empty leaf certificate")
 	}
-	// Parsed here, while the state is open; the parse copies what it keeps.
+	// Parsed while the state is open. The parse aliases this buffer, but Signer
+	// holds only strings built from it, so nothing refers to wintrust's memory
+	// after the close.
 	return signerFromDER(unsafe.Slice(cert.EncodedCert, cert.Length))
 }

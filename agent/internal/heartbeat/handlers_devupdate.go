@@ -347,12 +347,14 @@ func handleDevUpdateAgent(h *Heartbeat, start time.Time, downloadURL, checksum, 
 	// Run the update in a goroutine since UpdateFromURL triggers a restart
 	handedOff = true
 	go func() {
-		defer done()
 		h.sendUpdateStatus(version)
 		// dev_push is agent-only — no user-helper swap on this path. If a
 		// future dev-push surface needs to swap a companion binary too, pass
 		// updater.UpdateOptions{UserHelper: ...} here.
-		if err := u.UpdateFromURL(downloadURL, checksum, updater.UpdateOptions{}); err != nil {
+		updateErr := u.UpdateFromURL(downloadURL, checksum, updater.UpdateOptions{})
+		// Success has started a restart that can finish after this returns.
+		flashguard.ReleaseAfterHandoff(done, updateErr == nil)
+		if err := updateErr; err != nil {
 			// See updater.SafeDownloadErrorFields: this must not log
 			// err.Error() directly. net/http wraps EVERY transport-level
 			// failure — not just a policy rejection — in a *url.Error that

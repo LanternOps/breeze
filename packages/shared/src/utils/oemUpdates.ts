@@ -7,8 +7,8 @@ import { semverCompare } from './semverCompare';
  */
 
 /**
- * First agent release that can run the OEM update command. The latest tag is v0.126.0, so this is
- * the next agent release.
+ * First agent release that ships the OEM update command. Set when the contract was added; move it
+ * if that release slips.
  */
 export const OEM_UPDATE_MIN_AGENT_VERSION = '0.127.0';
 
