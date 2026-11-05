@@ -732,7 +732,7 @@ async function runPreFlightAdmission(
       const ceiling = await resolveGrantCeiling(grant.grantId, grant.revisionId);
       systemPrompt = [
         await buildSystemPrompt(auth, sanitizedPageContext, undefined, ceiling),
-        await wispSeedForSession(grant, auth, ceiling, sanitizedPageContext),
+        await wispSeedForSession(grant, auth, ceiling, sanitizedPageContext, model.logicalModel),
       ].filter(Boolean).join('\n');
     } catch (err) {
       if (err instanceof WispSessionUnavailableError) return { ok: false, error: err.message, status: 409 };

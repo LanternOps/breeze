@@ -26,6 +26,7 @@ const h = vi.hoisted(() => ({
   attachmentSeedLines: vi.fn(),
   listWorkingSet: vi.fn(),
   listConcernsForCeiling: vi.fn(),
+  loadStandingLoopFacts: vi.fn(),
   captureException: vi.fn(),
   execute: vi.fn(async (q: unknown) => {
     const { text, params } = sqlOf(q);
@@ -113,6 +114,10 @@ vi.mock('./memoryBroker', () => ({
 }));
 vi.mock('./threadLinks', () => ({ listWorkingSet: h.listWorkingSet }));
 vi.mock('./concerns', () => ({ listConcernsForCeiling: h.listConcernsForCeiling }));
+vi.mock('./standingLoop', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./standingLoop')>()),
+  loadStandingLoopFacts: h.loadStandingLoopFacts,
+}));
 vi.mock('../sentry', () => ({ captureException: h.captureException }));
 vi.mock('./threadAttachments', () => ({
   listThreadAttachments: h.listThreadAttachments,
@@ -326,6 +331,48 @@ describe('updateThreadSummary', () => {
 });
 
 describe('seedContextForSession', () => {
+  describe('standing loop (#10391)', () => {
+    const loopFacts = {
+      status: 'active' as const,
+      floorTickMinutes: 30,
+      lastFloorTickAt: new Date('2026-11-05T09:15:00Z'),
+      firstLook: { assessedOrgs: 10, inFlight: 0, totalOrgs: 10 },
+      brief: { timeLocal: '08:00', timezone: 'UTC' },
+    };
+
+    it('a chat seed (model given) appends the standing loop filled from the grant, after the behaviour block', async () => {
+      h.threads = [threadRow];
+      h.loadStandingLoopFacts.mockResolvedValueOnce(loopFacts);
+      const out = await seedContextForSession(THREAD, ceiling, null, { model: 'claude-sonnet-5-5' });
+      expect(h.loadStandingLoopFacts).toHaveBeenCalledWith(ceiling);
+      expect(out.startsWith(WISP_BEHAVIOUR_BLOCK)).toBe(true);
+      expect(out).toContain('## Wisp standing loop');
+      expect(out).toContain('You are Wisp, running on claude-sonnet-5-5.');
+      expect(out).toContain('every 30 min');
+      expect(out).toContain('10 of 10 orgs assessed');
+      expect(out).toContain('08:00 UTC');
+    });
+
+    it('without a model (the assessment seed) there is no standing-loop section and no fact read', async () => {
+      h.threads = [threadRow];
+      h.loadStandingLoopFacts.mockClear();
+      const out = await seedContextForSession(THREAD, ceiling);
+      expect(out).toBe(WISP_BEHAVIOUR_BLOCK);
+      expect(h.loadStandingLoopFacts).not.toHaveBeenCalled();
+    });
+
+    it('a failed fact read is captured and the section still renders, without numbers', async () => {
+      h.threads = [threadRow];
+      h.captureException.mockClear();
+      h.loadStandingLoopFacts.mockRejectedValueOnce(new Error('db down'));
+      const out = await seedContextForSession(THREAD, ceiling, null, { model: 'claude-sonnet-5-5' });
+      expect(out).toContain('## Wisp standing loop');
+      expect(out).toContain('You are Wisp, running on claude-sonnet-5-5.');
+      expect(out).not.toMatch(/\d+ of \d+ orgs/);
+      expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ op: 'wisp.seed_standing_loop' }));
+    });
+  });
+
   it('seedContextForSession with nothing to recall is only the Wisp behaviour block (#10143)', async () => {
     h.threads = [threadRow];
     const out = await seedContextForSession(THREAD, ceiling);
