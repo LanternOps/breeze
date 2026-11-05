@@ -1,5 +1,5 @@
 // Wisp W05: widened ai_agent_runs_profile_chk with 'assessment'. Wisp
-// delegation W1 (2027-01-20-180000-ai-agent-kind-troubleshoot.sql) redefined it
+// delegation W1 (2027-01-20-220000-ai-agent-kind-troubleshoot.sql) redefined it
 // again, so the assertion below is FROZEN at what this migration shipped (a
 // shipped migration is immutable); the live CHECK == AI_AGENT_RUN_PROFILES
 // contract lives in aiAgentsTroubleshootKind.migration.test.ts.

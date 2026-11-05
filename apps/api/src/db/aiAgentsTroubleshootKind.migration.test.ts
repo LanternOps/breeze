@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { AI_AGENT_KINDS, AI_AGENT_RUN_PROFILES } from '@breeze/shared';
 
-const FILE = '2027-01-20-180000-ai-agent-kind-troubleshoot.sql';
+const FILE = '2027-01-20-220000-ai-agent-kind-troubleshoot.sql';
 const DIR = new URL('../../migrations/', import.meta.url);
 const SQL = readFileSync(new URL(FILE, DIR), 'utf8');
 const listed = (re: RegExp) => (re.exec(SQL)?.[1] ?? '').split(',').map((s) => s.trim().replace(/'/g, '')).filter(Boolean);
