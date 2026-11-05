@@ -102,9 +102,9 @@ type Manager struct {
 	// the next Tick retries it. Guarded by opMu.
 	expiryUnarmed bool
 
-	// lastPolicyRejection is the newest rejection journalled by this process.
-	// Guarded by opMu.
-	lastPolicyRejection string
+	// policyRejections are the rejections journalled since a policy was last
+	// adopted, for dedupe (bounded by maxPolicyRejections). Guarded by opMu.
+	policyRejections map[string]struct{}
 
 	// Test seams.
 	beforeEffect func(Effect) error
@@ -771,6 +771,7 @@ func (o *op) persist(next LocalState, ev Event, effects []Effect) error {
 		}
 		if a.policy != nil {
 			a.policy.adopt(j, now)
+			o.m.policyRejections = nil
 		}
 	}
 	if terminalSeq > 0 && (next.Phase == journal.PhaseReleased || next.Phase == journal.PhaseRolledBack || (next.Phase == journal.PhaseNone && next.ReleaseKind == ReleaseSystem)) {
@@ -1227,12 +1228,6 @@ func (m *Manager) isolate(ctx context.Context, spec Spec) CommandOutcome {
 
 func (o *op) isolateLocked(spec Spec) {
 	o.report = nil
-	// A block that fails the policy rule is rejected whole, secret included.
-	if reason := o.policyRefusal(spec); reason != "" {
-		o.rejectPolicy(spec.IsolationID, spec.Generation, reason)
-		o.report = policyRefusalEffect(reason)
-		return
-	}
 	// A late secret for the episode already held (the heartbeat path).
 	if o.state.IsolationID == spec.IsolationID && o.j.Episode != nil && len(o.j.Episode.BreakGlassSecret) == 0 &&
 		len(spec.BreakGlassSecret) == breakGlassSecretBytes && activePhase(o.state.Phase) {
@@ -1241,6 +1236,14 @@ func (o *op) isolateLocked(spec Spec) {
 		if err := o.save(); err != nil {
 			o.noteError("store the break-glass secret: " + err.Error())
 		}
+	}
+
+	// A block that fails the policy rule changes no rules. Its secret, handled
+	// above, belongs to the episode and is the offline way out, so it is kept.
+	if reason := o.policyRefusal(spec); reason != "" {
+		o.rejectPolicy(spec.IsolationID, spec.Generation, reason)
+		o.report = policyRefusalEffect(reason)
+		return
 	}
 
 	// The desired episode differs from the journalled one: release it first.
@@ -1283,6 +1286,7 @@ func (o *op) isolateLocked(spec Spec) {
 			}
 		} else if ep := o.j.Episode; string(spec.PolicyRevision) != ep.PolicyRevision || spec.Generation > ep.PolicyGeneration {
 			stampOf(spec).adopt(o.j, o.now())
+			o.m.policyRejections = nil
 			if err := o.save(); err != nil {
 				o.noteError("record the containment policy: " + err.Error())
 			}

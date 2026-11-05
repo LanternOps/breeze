@@ -25,7 +25,7 @@ type containmentFake struct {
 	rejections chan containmentRejection
 }
 
-func (f *containmentFake) NotePolicyRejected(_ context.Context, id string, gen int, reason string) {
+func (f *containmentFake) NotePolicyRejected(_ context.Context, id string, gen int, reason isolation.PolicyRejectReason) {
 	if f.rejections != nil {
 		f.rejections <- containmentRejection{isolationID: id, generation: gen, reason: reason}
 	}

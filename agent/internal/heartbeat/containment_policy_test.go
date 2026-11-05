@@ -56,7 +56,7 @@ func TestContainmentDesiredPolicyAcceptance(t *testing.T) {
 		name     string
 		revision string
 		extras   []map[string]any
-		reason   string // empty: accepted
+		reason   isolation.PolicyRejectReason // empty: accepted
 	}{
 		{"valid revision", valid, []map[string]any{containmentExtra(nil)}, ""},
 		{"valid revision, host entry", valid, []map[string]any{host("edr.example.test")}, ""},
@@ -135,6 +135,26 @@ func TestContainmentDesiredPolicyAcceptance(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+// The isolate command holds the same line as the heartbeat: a present but
+// malformed revision is refused even when no scope:"any" entry needs it.
+func TestContainmentPayloadRefusesMalformedRevision(t *testing.T) {
+	now := time.Now()
+	for _, rev := range []any{true, 0, -1, 1.5, "a b", map[string]any{}} {
+		p := containmentPayload(now)
+		p["parameters"].(map[string]any)["policyRevision"] = rev
+		if validateContainmentPayload(p, "https://control.example.test", now) == nil {
+			t.Errorf("revision %v accepted", rev)
+		}
+	}
+	for _, rev := range []any{nil, "", containmentPolicyRevision, 7} {
+		p := containmentPayload(now)
+		p["parameters"].(map[string]any)["policyRevision"] = rev
+		if err := validateContainmentPayload(p, "https://control.example.test", now); err != nil {
+			t.Errorf("revision %v refused: %v", rev, err)
+		}
+	}
 }
 
 // A malformed policyRevision must cost the containment block, never the response.
@@ -273,7 +293,7 @@ func TestReconcileContainmentRoutesPolicyRejection(t *testing.T) {
 		got := takeContainmentRejection(t, rt)
 		m.NotePolicyRejected(context.Background(), got.isolationID, got.generation, got.reason)
 		r := m.Report()
-		if len(r.Events) != 1 || r.Events[0].Type != "policy_rejected" || r.Events[0].Detail != isolation.PolicyRejectRevisionInvalid || r.Phase != journal.PhaseCommitted || r.State != isolation.StateVerified {
+		if len(r.Events) != 1 || r.Events[0].Type != "policy_rejected" || r.Events[0].Detail != string(isolation.PolicyRejectRevisionInvalid) || r.Phase != journal.PhaseCommitted || r.State != isolation.StateVerified {
 			t.Fatalf("report %+v", r)
 		}
 	})

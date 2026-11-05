@@ -59,7 +59,7 @@ func validateContainmentPayload(payload map[string]any, server string, now time.
 	if decoder.Decode(&spec) != nil {
 		return errContainmentSpec
 	}
-	if !validContainmentIdentity(spec, now) {
+	if !validContainmentIdentity(spec, now) || (spec.PolicyRevision != "" && !spec.PolicyRevision.Valid()) {
 		return errContainmentSpec
 	}
 	return validateContainmentAllow(spec.Allow, server, spec.PolicyRevision.Valid())
@@ -227,7 +227,7 @@ func validateContainmentDesired(d *isolation.Desired, server string, now time.Ti
 // containmentPolicyRejection names why a rejected block counts as a rejected
 // policy, or "" when it carried no policy (only logged, as before policies).
 // It reads the block, never quotes it: a journal event's detail is a closed set.
-func containmentPolicyRejection(d *isolation.Desired) string {
+func containmentPolicyRejection(d *isolation.Desired) isolation.PolicyRejectReason {
 	hasAny := false
 	for _, e := range d.Allow {
 		hasAny = hasAny || e.Scope == isolation.ScopeAny
@@ -247,7 +247,7 @@ type containmentManager interface {
 	HandleIsolate(context.Context, map[string]any) isolation.CommandOutcome
 	HandleRelease(context.Context, map[string]any) isolation.CommandOutcome
 	Reconcile(context.Context, *isolation.DesiredBlock)
-	NotePolicyRejected(ctx context.Context, isolationID string, generation int, reason string)
+	NotePolicyRejected(ctx context.Context, isolationID string, generation int, reason isolation.PolicyRejectReason)
 	Startup(context.Context)
 	Tick(context.Context)
 	Report() *isolation.Report
@@ -273,7 +273,7 @@ type containmentRuntime struct {
 type containmentRejection struct {
 	isolationID string
 	generation  int
-	reason      string
+	reason      isolation.PolicyRejectReason
 }
 
 func newContainmentRuntime(m containmentManager) *containmentRuntime {
@@ -461,7 +461,7 @@ func (h *Heartbeat) reconcileContainment(d *isolation.DesiredBlock) {
 		n := d.NetworkIsolation
 		reason := containmentPolicyRejection(n)
 		log.Warn("ignoring invalid containment desired state", "isolationId", n.IsolationID,
-			"generation", n.Generation, "desired", n.Desired, "error", err.Error(), "policyRejection", reason)
+			"generation", n.Generation, "desired", n.Desired, "error", err.Error(), "policyRejection", string(reason))
 		if reason != "" {
 			h.containment.reject(containmentRejection{isolationID: n.IsolationID, generation: n.Generation, reason: reason})
 		}

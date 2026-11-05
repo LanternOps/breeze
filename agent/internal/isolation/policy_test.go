@@ -3,8 +3,10 @@ package isolation
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -82,15 +84,23 @@ func TestEpisodeJournalsPolicyRevision(t *testing.T) {
 			t.Fatalf("episode %+v", ep)
 		}
 	})
-	t.Run("no policy leaves no revision, and a malformed one is not journalled", func(t *testing.T) {
+	t.Run("no policy leaves no revision", func(t *testing.T) {
 		h := newHarness(t)
-		p := h.payload(idA, 1, 72*time.Hour)
-		p["parameters"].(map[string]any)["policyRevision"] = true
-		if out := h.m.HandleIsolate(context.Background(), p); out.Failed() {
-			t.Fatalf("isolate: %+v", out)
-		}
+		h.mustIsolate(idA, 1)
 		if ep := h.journal().Episode; ep.PolicyRevision != "" || ep.PolicyGeneration != 1 {
 			t.Fatalf("episode %+v", ep)
+		}
+	})
+	t.Run("a malformed revision is refused even with no policy entries", func(t *testing.T) {
+		// Read as "no policy", it would narrow a held policy and be recorded as a
+		// deliberate removal, hiding a server serialisation bug.
+		for _, rev := range []any{true, 0, 1.5, "a b", strings.Repeat("x", maxPolicyRevisionLen+1)} {
+			h := newHarness(t)
+			p := h.payload(idA, 1, 72*time.Hour)
+			p["parameters"].(map[string]any)["policyRevision"] = rev
+			if out := h.m.HandleIsolate(context.Background(), p); !out.Failed() || out.ErrorCode != wire.ErrCodeIsolationInvalidSpec || h.iso.applies != 0 {
+				t.Fatalf("revision %v: outcome %+v, applies %d", rev, out, h.iso.applies)
+			}
 		}
 	})
 	t.Run("the new fields are additive on disk", func(t *testing.T) {
@@ -136,7 +146,7 @@ func (h *harness) heldPolicy(gen int) AllowEntry {
 func (h *harness) installedHas(want AllowEntry) bool {
 	_, spec, _ := h.iso.state()
 	for _, e := range spec.Entries {
-		if !e.Proxy && e.Kind == want.Kind && e.CIDR == want.CIDR && e.Scope == want.Scope {
+		if !e.Proxy && allowKey(e.AllowEntry) == allowKey(want) {
 			return true
 		}
 	}
@@ -241,7 +251,7 @@ func TestPolicyWideningNeedsNewGenerationAfterNarrowing(t *testing.T) {
 	if h.installedHas(extra) {
 		t.Fatal("a stale block widened the rules at the generation that narrowed them")
 	}
-	if got := policyEvents(h.journal(), "policy_rejected"); len(got) != 1 || got[0].Detail != PolicyRejectGenerationNotAdvanced {
+	if got := policyEvents(h.journal(), "policy_rejected"); len(got) != 1 || got[0].Detail != string(PolicyRejectGenerationNotAdvanced) {
 		t.Fatalf("policy_rejected events %+v", got)
 	}
 
@@ -257,7 +267,7 @@ func TestPolicyRevisionRules(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		block  func(h *harness) *DesiredBlock
-		reason string // empty: accepted
+		reason PolicyRejectReason // empty: accepted
 		rev    string
 		gen    int
 	}{
@@ -268,6 +278,16 @@ func TestPolicyRevisionRules(t *testing.T) {
 		{"same generation, different revision, widening", func(h *harness) *DesiredBlock { return h.policyBlock(2, revB, first, second) }, PolicyRejectRevisionRegressed, revA, 2},
 		{"same generation, same revision, widening", func(h *harness) *DesiredBlock { return h.policyBlock(2, revA, first, second) }, PolicyRejectGenerationNotAdvanced, revA, 2},
 		{"same generation, same revision, changed entry", func(h *harness) *DesiredBlock { return h.policyBlock(2, revA, second) }, PolicyRejectGenerationNotAdvanced, revA, 2},
+		{"same generation, same revision, changed ports", func(h *harness) *DesiredBlock {
+			moved := first
+			moved.Ports = []uint16{443}
+			return h.policyBlock(2, revA, moved)
+		}, PolicyRejectGenerationNotAdvanced, revA, 2},
+		{"same generation, same revision, changed protocol", func(h *harness) *DesiredBlock {
+			moved := first
+			moved.Proto = ProtoUDPTCP
+			return h.policyBlock(2, revA, moved)
+		}, PolicyRejectGenerationNotAdvanced, revA, 2},
 		{"older generation, different revision", func(h *harness) *DesiredBlock { return h.policyBlock(1, revB, first) }, PolicyRejectRevisionRegressed, revA, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -289,7 +309,7 @@ func TestPolicyRevisionRules(t *testing.T) {
 				}
 				return
 			}
-			if len(rejected) != 1 || rejected[0].Detail != tc.reason {
+			if len(rejected) != 1 || rejected[0].Detail != string(tc.reason) {
 				t.Fatalf("policy_rejected events %+v, want reason %s", rejected, tc.reason)
 			}
 			if h.iso.applies != applies || !allowEqual(j.Episode.Allow, before.Allow) || j.Phase != journal.PhaseCommitted {
@@ -305,14 +325,130 @@ func TestPolicyRevisionRules(t *testing.T) {
 }
 
 // A rejected block is rejected whole: its secret is not stored either.
-func TestRejectedPolicyBlockStoresNoSecret(t *testing.T) {
+// A rejected policy must not cost the device its break-glass secret: the secret
+// belongs to the episode, not to the allowlist, and is the offline way out.
+func TestRejectedPolicyBlockStillDeliversSecret(t *testing.T) {
 	h := newHarness(t)
-	h.heldPolicy(2)
-	block := h.policyBlock(2, revB, policyExtra("203.0.113.0/24"))
+	first := h.heldPolicy(2)
+	second := policyExtra("192.0.2.128/25")
+	block := h.policyBlock(2, revB, first, second)
 	block.NetworkIsolation.BreakGlassSecret = h.secret
 	h.m.Reconcile(context.Background(), block)
-	if j := h.journal(); len(j.Episode.BreakGlassSecret) != 0 || j.SecretAckSeq != 0 {
-		t.Fatalf("a rejected block stored its secret: %+v", j.Episode)
+	j := h.journal()
+	if string(j.Episode.BreakGlassSecret) != string(h.secret) || j.SecretAckSeq == 0 {
+		t.Fatalf("the secret was not stored: %+v", j.Episode)
+	}
+	if h.installedHas(second) || j.Episode.PolicyRevision != revA {
+		t.Fatalf("the rejected policy was applied: %+v", j.Episode)
+	}
+	if got := policyEvents(j, "policy_rejected"); len(got) != 1 {
+		t.Fatalf("policy_rejected events %+v", got)
+	}
+}
+
+// Removing one permit of several is the common narrowing.
+func TestPolicyPartialNarrowingAtSameGeneration(t *testing.T) {
+	h := newHarness(t)
+	first, second := policyExtra("203.0.113.0/24"), policyExtra("192.0.2.128/25")
+	h.m.Reconcile(context.Background(), h.policyBlock(2, revA, first, second))
+	h.m.Reconcile(context.Background(), h.policyBlock(2, revA, first))
+	j := h.journal()
+	if !h.installedHas(first) || h.installedHas(second) || j.Episode.PolicyRevision != revA {
+		t.Fatalf("not narrowed to the first permit: %+v", j.Episode)
+	}
+	if got := policyEvents(j, "policy_rejected"); len(got) != 0 {
+		t.Fatalf("a narrowing was rejected: %+v", got)
+	}
+}
+
+func TestNewEpisodeStartsWithItsOwnPolicy(t *testing.T) {
+	h := newHarness(t)
+	h.heldPolicy(5)
+	block := h.desired(idB, 1, DesiredIsolated, 72*time.Hour, false)
+	h.m.Reconcile(context.Background(), block)
+	j := h.journal()
+	if j.Episode.IsolationID != idB || j.Episode.PolicyRevision != "" || j.Episode.PolicyGeneration != 1 || hasAnyScope(j.Episode.Allow) {
+		t.Fatalf("the new episode inherited the old policy: %+v", j.Episode)
+	}
+}
+
+// A crash at any point of a policy refresh leaves either the old or the new
+// rules, and the next heartbeat after restart still completes the change.
+func TestCrashDuringPolicyRefreshRecovers(t *testing.T) {
+	for n := 0; ; n++ {
+		h := newHarness(t)
+		first := h.heldPolicy(2)
+		second := policyExtra("192.0.2.128/25")
+		count := crashAt(h.m, n)
+		h.m.Reconcile(context.Background(), h.policyBlock(3, revB, first, second))
+		if *count <= n {
+			if n == 0 {
+				t.Fatal("the refresh ran no effects")
+			}
+			return // every effect index has been crashed at
+		}
+		h.m = h.newManager()
+		h.m.Startup(context.Background())
+		endStateOK(t, h, fmt.Sprintf("crash before effect %d", n))
+		if ep := h.journal().Episode; ep.PolicyRevision != revA && ep.PolicyRevision != revB {
+			t.Fatalf("crash %d: revision %q", n, ep.PolicyRevision)
+		}
+
+		h.m.Reconcile(context.Background(), h.policyBlock(3, revB, first, second))
+		j := h.journal()
+		if !h.installedHas(first) || !h.installedHas(second) || j.Episode.PolicyRevision != revB || j.Episode.PolicyGeneration != 3 {
+			t.Fatalf("crash %d: the retry did not complete the change: %+v", n, j.Episode)
+		}
+	}
+}
+
+// The command path and the heartbeat path serialise on the Manager; under the
+// race detector neither may corrupt the policy state of the other.
+func TestPolicyPathsConcurrently(t *testing.T) {
+	h := newHarness(t)
+	first := h.heldPolicy(2)
+	second := policyExtra("192.0.2.128/25")
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(3)
+		go func() { defer wg.Done(); h.m.Reconcile(ctx, h.policyBlock(3, revB, first, second)) }()
+		go func() { defer wg.Done(); h.m.Reconcile(ctx, h.policyBlock(2, revB, first)) }()
+		go func() { defer wg.Done(); h.m.NotePolicyRejected(ctx, idA, 2, PolicyRejectRevisionMissing) }()
+	}
+	wg.Wait()
+	endStateOK(t, h, "after concurrent policy operations")
+	j := h.journal()
+	if j.Episode.PolicyRevision != revB || !h.installedHas(second) || j.Episode.PolicyGeneration != 3 {
+		t.Fatalf("final state %+v", j.Episode)
+	}
+}
+
+func TestIsolateCommandRefusesAnyScopeWithoutRevision(t *testing.T) {
+	h := newHarness(t)
+	p := h.payload(idA, 1, 72*time.Hour)
+	params := p["parameters"].(map[string]any)
+	params["allow"] = append(params["allow"].([]any), map[string]any{"kind": "cidr", "cidr": "203.0.113.0/24", "proto": "tcp", "ports": []any{float64(8443)}, "scope": "any"})
+	if out := h.m.HandleIsolate(context.Background(), p); !out.Failed() || out.ErrorCode != wire.ErrCodeIsolationInvalidSpec || h.iso.applies != 0 {
+		t.Fatalf("outcome %+v", out)
+	}
+}
+
+// Dedupe holds per reason and generation, survives alternation, and lets a
+// rejection journal again once a policy has been adopted in between.
+func TestPolicyRejectionDedupe(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	for _, reason := range []PolicyRejectReason{PolicyRejectRevisionMissing, PolicyRejectRevisionInvalid, PolicyRejectRevisionMissing, PolicyRejectRevisionInvalid} {
+		h.m.NotePolicyRejected(ctx, idA, 1, reason)
+	}
+	if got := len(h.m.Report().Events); got != 2 {
+		t.Fatalf("alternating rejections journalled %d events, want 2", got)
+	}
+	h.heldPolicy(1)
+	h.m.NotePolicyRejected(ctx, idA, 1, PolicyRejectRevisionMissing)
+	if got := policyEvents(h.journal(), "policy_rejected"); len(got) != 3 {
+		t.Fatalf("after an adoption the rejection was not journalled again: %+v", got)
 	}
 }
 
@@ -326,7 +462,7 @@ func TestFailedPolicyRefreshRetriesAtSameGeneration(t *testing.T) {
 
 	h.m.Reconcile(context.Background(), h.policyBlock(3, revB, first, second))
 	j := h.journal()
-	if h.installedHas(second) || j.Episode.Generation != 3 || j.Episode.PolicyRevision != revA || j.Episode.PolicyGeneration != 2 {
+	if h.installedHas(second) || !h.installedHas(first) || j.Episode.Generation != 3 || j.Episode.PolicyRevision != revA || j.Episode.PolicyGeneration != 2 {
 		t.Fatalf("after the failed refresh: %+v", j.Episode)
 	}
 
@@ -401,7 +537,7 @@ func TestIsolateCommandCannotChangePolicyAtSameGeneration(t *testing.T) {
 	if !out.Failed() || out.ErrorCode != wire.ErrCodeIsolationInvalidSpec {
 		t.Fatalf("outcome %+v", out)
 	}
-	if got := policyEvents(h.journal(), "policy_rejected"); len(got) != 1 || got[0].Detail != PolicyRejectRevisionRegressed {
+	if got := policyEvents(h.journal(), "policy_rejected"); len(got) != 1 || got[0].Detail != string(PolicyRejectRevisionRegressed) {
 		t.Fatalf("policy_rejected events %+v", got)
 	}
 }
@@ -436,7 +572,7 @@ func TestNotePolicyRejected(t *testing.T) {
 		if r == nil || r.IsolationID != "" || r.Phase != journal.PhaseNone || len(r.Events) != 1 {
 			t.Fatalf("report %+v", r)
 		}
-		if e := r.Events[0]; e.Type != "policy_rejected" || e.Detail != PolicyRejectRevisionMissing || e.IsolationID != idA || e.Generation != 4 {
+		if e := r.Events[0]; e.Type != "policy_rejected" || e.Detail != string(PolicyRejectRevisionMissing) || e.IsolationID != idA || e.Generation != 4 {
 			t.Fatalf("event %+v", e)
 		}
 		if h.m.Active() {
