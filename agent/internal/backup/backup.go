@@ -669,6 +669,9 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		if journal.DiscardedOldFormat() {
 			appendWarning(job, warnJournalDiscardedOldFormat+": an interrupted run's checkpoint from an earlier helper version was discarded; this run started a new snapshot")
 		}
+		if journal.CheckpointingDisabled() {
+			appendWarning(job, warnJournalCheckpointingDisabled+": the interrupted run's checkpoint is damaged and could not be repaired, often because the disk is full; this run resumed from it but records no new progress")
+		}
 		if resumedJournal {
 			log.Info("resuming interrupted backup from checkpoint journal",
 				"snapshotId", journal.snapshotID,
