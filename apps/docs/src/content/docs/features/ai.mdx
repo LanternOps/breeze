@@ -479,6 +479,13 @@ The AI assistant can query, manage, and operate backups, disaster recovery plans
 | `query_dr_plans` | 1 | List disaster recovery plans |
 | `get_dr_plan_details` | 1 | Details for one disaster recovery plan, including its groups |
 | `get_dr_execution_status` | 1 | Status of a disaster recovery plan execution |
+| `manage_backup_verification (health/list/readiness)` | 1 | See backup verification results, past checks and how recoverable each device is |
+| `manage_backup_verification (run)` | 3 | Queue a backup integrity check or test restore on a device. It needs approval |
+| `get_vss_status` | 2 | Read the Volume Shadow Copy writers on one online Windows device, live from its agent. It changes nothing on the machine and runs without an approval prompt |
+| `list_bmr_recoveries (list/get)` | 1 | See where a bare-metal recovery has got to: status, phase times, failure reason and warnings. Starting or cancelling a recovery stays in the web app |
+| `get_backup_health` | 1 | Backup health per device across your organizations, from Breeze jobs and connected backup providers together |
+| `manage_c2c_configs (list)` | 1 | List cloud-to-cloud backup configs, including which mailboxes each covers. Not available to AI agents |
+| `manage_c2c_configs (create/update/delete)` | 3 | Create, change or delete a cloud-to-cloud backup config: whose mail is copied, where and when. A config with backup history cannot be deleted. Not available to AI agents |
 | `manage_backup_profiles (list/get)` | 1 | List backup profiles and see what each one backs up |
 | `manage_backup_profiles (create)` | 2 | Create an organization backup profile. A partner-wide profile (`ownerScope: partner`, "all orgs") needs approval (Tier 3) |
 | `manage_backup_profiles (update/delete)` | 3 | Change or delete a backup profile. It may be partner-wide, and narrowing one stops protecting data in every organization, so the requester approves |

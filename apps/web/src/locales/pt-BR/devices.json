@@ -2777,7 +2777,8 @@
       "bulkMoveSiteNotMovedForbidden": "{{devices}} (você não tem acesso ao site atual ou ao site de destino)",
       "bulkMoveSiteNotMovedNotFound": "{{devices}} (não encontrado; pode ter sido excluído)",
       "bulkMoveSiteNotMovedError": "{{devices}} (ocorreu um erro inesperado; tente novamente)",
-      "deviceMovedToSite": "{{hostname}} movido para um novo site"
+      "deviceMovedToSite": "{{hostname}} movido para um novo site",
+      "bulkWakeResult": "Enviado para {{sent}}, ignorados {{skipped}}"
     },
     "tryAgain": "Tentar novamente",
     "unknownDevice": "Desconhecido",
@@ -2816,7 +2817,18 @@
     "emptyOrgTitleUnnamed": "Ainda não há dispositivos nesta organização",
     "emptyOrgDescription": "Instale o agente em uma máquina desta organização para começar a monitorá-la, ou mude para todas as organizações para ver o restante da sua frota.",
     "viewAllOrganizations": "Ver todas as organizações",
-    "importFromRmmShort": "Importar"
+    "importFromRmmShort": "Importar",
+    "wakeSkipReasons": {
+      "online": "já online",
+      "relayUnavailable": "sem agente online no local",
+      "missingMac": "sem endereço MAC registrado (o agente ainda não se conectou)",
+      "missingSubnet": "sem histórico IPv4 utilizável",
+      "ipv6": "somente com histórico IPv6",
+      "relayDisconnected": "relay desconectado durante o envio — tente novamente",
+      "missingTarget": "não encontrados ou acesso negado",
+      "removed": "removidos",
+      "invalidRelay": "com seleção de relay inválida"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Adicionar filtro",

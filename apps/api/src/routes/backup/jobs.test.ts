@@ -124,6 +124,20 @@ vi.mock('../../jobs/backupWorker', () => ({
   enqueueBackupDispatch: (...args: unknown[]) => enqueueBackupDispatchMock(...(args as [])),
 }));
 
+const { removeQueuedBackupDispatchMock, queueBackupStopCommandMock } = vi.hoisted(() => ({
+  removeQueuedBackupDispatchMock: vi.fn(),
+  queueBackupStopCommandMock: vi.fn(),
+}));
+
+vi.mock('../../jobs/backupEnqueue', () => ({
+  removeQueuedBackupDispatch: removeQueuedBackupDispatchMock,
+}));
+
+vi.mock('../../services/commandQueue', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/commandQueue')>()),
+  queueBackupStopCommand: queueBackupStopCommandMock,
+}));
+
 vi.mock('../../services/backupMetrics', () => ({
   recordBackupDispatchFailure: vi.fn(),
 }));
@@ -165,6 +179,59 @@ describe('backup jobs routes', () => {
       await next();
     });
     app.route('/', jobsRoutes);
+  });
+
+  describe('POST /jobs/:id/cancel of a job waiting for its device (#11013)', () => {
+    const JOB_ID = '33333333-3333-4333-8333-333333333333';
+    const pendingJob = (catchUpUntil: Date | null) => ({
+      id: JOB_ID,
+      orgId: 'org-a',
+      deviceId: 'device-1',
+      status: 'pending',
+      catchUpUntil,
+      createdAt: new Date('2026-11-04T05:00:00Z'),
+      updatedAt: new Date('2026-11-04T05:00:00Z'),
+    });
+    const wireCancel = (current: Record<string, unknown>, settled: Record<string, unknown> = {}) => {
+      selectMock.mockReturnValueOnce(makeSelectChain([current]));
+      updateMock.mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ ...current, status: 'cancelled', ...settled }]),
+          }),
+        }),
+      } as any);
+      removeQueuedBackupDispatchMock.mockResolvedValue(false);
+      queueBackupStopCommandMock.mockResolvedValue({});
+    };
+
+    it('queues no stop: nothing was sent, and a pre-queue helper would stop the whole device', async () => {
+      wireCancel(pendingJob(new Date(Date.now() + 3_600_000)));
+
+      const res = await app.request(`/jobs/${JOB_ID}/cancel`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      expect(queueBackupStopCommandMock).not.toHaveBeenCalled();
+    });
+
+    it('queues the stop when a catch-up claimed the job between the read and the cancel', async () => {
+      // `current` still shows the window; the row the cancel settled does not.
+      wireCancel(pendingJob(new Date(Date.now() + 3_600_000)), { catchUpUntil: null });
+
+      const res = await app.request(`/jobs/${JOB_ID}/cancel`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-1', expect.objectContaining({ jobId: JOB_ID }));
+    });
+
+    it('still queues a stop for an ordinary pending job whose dispatch had already left the queue', async () => {
+      wireCancel(pendingJob(null));
+
+      const res = await app.request(`/jobs/${JOB_ID}/cancel`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-1', expect.objectContaining({ jobId: JOB_ID }));
+    });
   });
 
   it('denies an explicit out-of-scope device filter for site-restricted users', async () => {

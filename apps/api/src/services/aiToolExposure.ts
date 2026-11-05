@@ -67,6 +67,9 @@ export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   // ceiling. An operator agent reads correlations (get_alert_correlations) and acts per alert through
   // manage_alerts, whose alert id is gated against that ceiling when the proposal is minted.
   'manage_alert_correlations',
+  // Full-control W17 (#6788, Decision 4): list returns target mailboxes (the search_c2c_items / query_c2c_jobs
+  // reasoning) and the writes choose whose mail is copied. No agent need is known, so the whole tool stays human.
+  'manage_c2c_configs',
   // Full-control W08 (#6778, W08-D1): every topology tool resolves its caller through
   // requireTopologySiteAccess / the template library, both of which read the caller's USER permissions
   // (getUserPermissions). An ai_agent principal's id is not a user, so each call would be refused; the

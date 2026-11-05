@@ -47,6 +47,9 @@ type BackupScheduleSettings = {
   scheduleTime: string;
   scheduleDayOfWeek: number;
   scheduleDayOfMonth: number;
+  // #11013: API-only for now. Not editable here, but it has to survive a save:
+  // the schedule is rebuilt from these fields, which would turn it back on.
+  runMissedBackupsOnConnect?: boolean;
   retentionPreset: RetentionPreset;
   retentionDays: number;
   retentionVersions: number;
@@ -322,7 +325,7 @@ function scheduleDescription(s: BackupScheduleSettings): string {
   }
 }
 
-function inflateSettings(
+export function inflateSettings(
   stored?: Record<string, unknown> | null,
 ): BackupScheduleSettings {
   const schedule = (stored?.schedule ?? {}) as Record<string, unknown>;
@@ -347,6 +350,9 @@ function inflateSettings(
       (schedule.dayOfWeek as number) ?? scheduleDefaults.scheduleDayOfWeek,
     scheduleDayOfMonth:
       (schedule.dayOfMonth as number) ?? scheduleDefaults.scheduleDayOfMonth,
+    ...(typeof schedule.runMissedBackupsOnConnect === "boolean"
+      ? { runMissedBackupsOnConnect: schedule.runMissedBackupsOnConnect }
+      : {}),
     retentionPreset:
       (retention.preset as RetentionPreset) ?? scheduleDefaults.retentionPreset,
     retentionDays:
@@ -394,7 +400,7 @@ function hasAdvancedValues(s: BackupScheduleSettings): boolean {
   );
 }
 
-function buildInlineSettings(
+export function buildInlineSettings(
   settings: BackupScheduleSettings,
   backupMode: string,
   targets: Record<string, unknown>,
@@ -421,6 +427,9 @@ function buildInlineSettings(
         : {}),
       ...(settings.backupWindowEnd
         ? { windowEnd: settings.backupWindowEnd }
+        : {}),
+      ...(settings.runMissedBackupsOnConnect !== undefined
+        ? { runMissedBackupsOnConnect: settings.runMissedBackupsOnConnect }
         : {}),
     },
     retention: {

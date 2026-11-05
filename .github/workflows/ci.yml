@@ -358,6 +358,9 @@ jobs:
       - name: Test queue selection contract (W4)
         run: node --test .github/scripts/queue-selection.test.mjs
 
+      - name: Test CI policy manifest (W02)
+        run: node --test .github/scripts/ci-policy.test.mjs
+
       - name: CI cache policy contract
         run: node --test .github/scripts/ci-cache-policy.test.mjs
 

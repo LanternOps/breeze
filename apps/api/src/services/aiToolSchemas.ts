@@ -70,6 +70,9 @@ import { softwareToolSchemas } from './aiToolSchemasSoftware';
 import { deviceOpsToolSchemas } from './aiToolSchemasDeviceOps';
 import { billingToolSchemas } from './aiToolSchemasBilling';
 import { pax8ToolSchemas } from './aiToolSchemasPax8';
+import { backupVerificationToolSchemas } from './aiToolSchemasBackupVerification';
+import { backupRecoveryReadToolSchemas } from './aiToolSchemasBackupRecoveryReads';
+import { c2cConfigToolSchemas } from './aiToolSchemasC2CConfigs';
 import { orgAdminToolSchemas } from './aiToolSchemasOrgAdmin';
 import {
   peripheralDeviceClassEnum,
@@ -616,6 +619,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   // Full-control W14 (#6784): billing lifecycle tools (PR A).
   ...billingToolSchemas,
   ...pax8ToolSchemas,
+  // Full-control W17 (#6788): backup verification, VSS, recovery reads and C2C configs.
+  ...backupVerificationToolSchemas,
+  ...backupRecoveryReadToolSchemas,
+  ...c2cConfigToolSchemas,
   // Full-control W18 PR A (#6789): org admin and identity reads.
   ...orgAdminToolSchemas,
 

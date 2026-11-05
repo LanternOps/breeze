@@ -13,6 +13,8 @@
  */
 
 import { z } from 'zod';
+import { CommandTypes } from './commandTypes';
+import { applyWakeRelayResult } from './wakeAttempts';
 import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import {
   AGENT_UPDATE_REQUIRED_ERROR,
@@ -1250,7 +1252,19 @@ export async function handleSystemCleanupRunResult(
   });
 }
 
+async function handleWakeOnLanResult({ command, result, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  const payload = command.payload as Record<string, unknown> | null;
+  const attemptId = payload?.wakeAttemptId;
+  if (typeof attemptId !== 'string' || !PG_UUID_REGEX.test(attemptId)) return;
+  const parsed = parseAgentJson(z.object({ packetsSent: z.number().int().nonnegative() }), stdout);
+  if (result.status === 'completed' && parsed === null) {
+    console.warn('[wakeAttempts] relay reported completed with unreadable output; recording send_failed', { commandId: command.id, attemptId });
+  }
+  await applyWakeRelayResult(attemptId, result.status === 'completed' && parsed !== null && parsed.packetsSent > 0);
+}
+
 export const commandResultHandlers: Record<string, CommandResultHandler> = {
+  [CommandTypes.WAKE_ON_LAN]: handleWakeOnLanResult,
   network_discovery: handleDiscoveryResult,
   backup_verify: handleBackupVerificationResult,
   backup_test_restore: handleBackupVerificationResult,

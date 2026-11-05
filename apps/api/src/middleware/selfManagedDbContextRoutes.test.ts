@@ -8,6 +8,10 @@ import { isSelfManagedDbContextRoute } from './selfManagedDbContextRoutes';
 // fails to match re-pins a pooled connection across the network call.
 describe('isSelfManagedDbContextRoute', () => {
   const MATCH: ReadonlyArray<[string, string]> = [
+    ['POST', '/api/v1/devices/bulk/commands'],
+    ['POST', '/api/v1/devices/bulk/commands/'],
+    ['POST', '/api/v1/devices/abc-123/commands'],
+    ['POST', '/api/v1/devices/abc-123/commands/'],
     ['POST', '/api/v1/devices/abc-123/filesystem/cleanup-execute'],
     // Ticket import sources and runs (#8313 W4): outbound connect / commit-then-enqueue.
     ['POST', '/api/v1/ticket-imports/sources'],

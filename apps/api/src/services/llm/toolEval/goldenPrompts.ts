@@ -158,12 +158,20 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   // negative — un-quarantining a FILE is a threat action, never release_containment.
   { id: 'g118', prompt: 'Release the network isolation on FIN-LAPTOP-07, the incident is resolved.', expect: [{ tool: 'release_containment' }, { tool: 'resolve_device_context' }, { tool: 'get_incident_timeline' }, { tool: 'list_incidents' }] },
   { id: 'g119', prompt: 'Un-quarantine the file Defender flagged on WS-01, it was a false positive.', expect: [{ tool: 'security_scan', action: 'restore' }, { tool: 'security_scan', action: 'status' }, { tool: 'resolve_device_context' }] },
-  // Full-control W18 PR A (#6789): org admin reads and the read-only identity directory. g124 names Breeze logins, not
+  // Full-control W17 (#6788): backup verification, VSS, C2C configs, bare-metal recovery and backup health.
+  { id: 'g120', prompt: 'Did the last backup verification on FIN-LAPTOP-07 pass?', expect: [{ tool: 'manage_backup_verification', action: 'list' }, { tool: 'resolve_device_context' }] },
+  { id: 'g121', prompt: 'Which devices are we least confident we could recover?', expect: [{ tool: 'manage_backup_verification', action: 'readiness' }] },
+  { id: 'g122', prompt: "Run an integrity check on WS-01's latest backup.", expect: [{ tool: 'manage_backup_verification', action: 'run' }] },
+  { id: 'g123', prompt: 'Are the VSS writers healthy on SQL-02?', expect: [{ tool: 'get_vss_status' }, { tool: 'resolve_device_context' }] },
+  { id: 'g124', prompt: 'Set up a daily cloud-to-cloud mailbox backup for the finance team.', expect: [{ tool: 'manage_c2c_configs', action: 'create' }, { tool: 'query_c2c_connections' }] },
+  { id: 'g125', prompt: 'Where did the bare-metal recovery of DC-01 get to?', expect: [{ tool: 'list_bmr_recoveries', action: 'list' }] },
+  { id: 'g126', prompt: 'Which devices have failing backups across all customers, including Cove?', expect: [{ tool: 'get_backup_health' }] },
+  // Full-control W18 PR A (#6789): org admin reads and the read-only identity directory. g131 names Breeze logins, not
   // Microsoft 365 identities or device sessions (Decision 6: the descriptions carry that distinction).
-  { id: 'g120', prompt: 'Give me a quick overview of Contoso.', expect: [{ tool: 'get_org_summary' }, { tool: 'list_organizations' }] },
-  { id: 'g121', prompt: "Which of our customers aren't fully set up?", expect: [{ tool: 'get_account_readiness' }] },
-  { id: 'g122', prompt: "How long do we keep Contoso's audit logs?", expect: [{ tool: 'get_audit_retention' }, { tool: 'list_organizations' }] },
-  { id: 'g123', prompt: 'Who has portal access at Contoso?', expect: [{ tool: 'list_portal_users' }, { tool: 'list_organizations' }] },
-  { id: 'g124', prompt: "Which of our technicians don't have MFA turned on?", expect: [{ tool: 'list_users' }] },
-  { id: 'g125', prompt: 'What can someone with the Technician role actually do?', expect: [{ tool: 'list_roles', action: 'effective_permissions' }, { tool: 'list_roles', action: 'list' }] },
+  { id: 'g127', prompt: 'Give me a quick overview of Contoso.', expect: [{ tool: 'get_org_summary' }, { tool: 'list_organizations' }] },
+  { id: 'g128', prompt: "Which of our customers aren't fully set up?", expect: [{ tool: 'get_account_readiness' }] },
+  { id: 'g129', prompt: "How long do we keep Contoso's audit logs?", expect: [{ tool: 'get_audit_retention' }, { tool: 'list_organizations' }] },
+  { id: 'g130', prompt: 'Who has portal access at Contoso?', expect: [{ tool: 'list_portal_users' }, { tool: 'list_organizations' }] },
+  { id: 'g131', prompt: "Which of our technicians don't have MFA turned on?", expect: [{ tool: 'list_users' }] },
+  { id: 'g132', prompt: 'What can someone with the Technician role actually do?', expect: [{ tool: 'list_roles', action: 'effective_permissions' }, { tool: 'list_roles', action: 'list' }] },
 ];

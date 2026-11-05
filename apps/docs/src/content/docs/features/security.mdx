@@ -40,6 +40,8 @@ The agent reports a `SecurityStatus` payload on each heartbeat. The payload incl
 | **`lastScanType`** | Type of last scan: `quick`, `full`, or `custom` |
 | **`threatCount`** | Number of active threats on the device |
 | **`firewallEnabled`** | Whether the host firewall is active. `null` when the agent could not read it; shown as **Unknown** |
+| **`firewallStatus`** | `enabled`, `disabled` or `unsupported`, as the agent reports it. Omitted when the read failed. The API does not store this field yet, so an `unsupported` host shows as **Unknown** |
+| **`firewallStatusReason`** | Why a host is `unsupported`: `no_firewall_tool` (ufw, firewalld, nftables and iptables are all absent) or `permission` (the agent may not read the ruleset) |
 | **`encryptionStatus`** | Disk encryption state: `encrypted`, `partial`, or `unencrypted` |
 | **`encryptionDetails`** | Per-volume encryption breakdown (method, mount point, protection status) |
 | **`localAdminSummary`** | Local administrator account inventory with issue flags |
@@ -65,7 +67,7 @@ The agent reports a `SecurityStatus` payload on each heartbeat. The payload incl
     - **Password policy**: `pwpolicy -getglobalpolicy` parses min chars, complexity, lockout, and history
   </TabItem>
   <TabItem label="Linux">
-    - **Firewall**: Checks `ufw status`, `firewall-cmd --state`, and `systemctl is-active firewalld` in order
+    - **Firewall**: Checks `ufw status`, then `firewall-cmd --state` and `systemctl is-active firewalld`, then reads the kernel ruleset with `nft list ruleset` and `iptables -S INPUT`. The full `iptables -S` is read only when INPUT jumps to other chains. A ruleset counts as enabled when it has a drop policy on input, or a drop or reject rule on input or in a chain input jumps to. Both rulesets are read, because iptables-legacy rules do not appear in `nft list ruleset`
     - **Encryption**: `lsblk -J` walks the block device tree looking for `crypt` type entries (LUKS)
     - **Local admins**: `getent group sudo` or `getent group wheel` enumerates privileged group members
     - **Password policy**: Parses `/etc/login.defs` for min length and max age, checks PAM modules for complexity, and reads `/etc/security/faillock.conf` for lockout threshold

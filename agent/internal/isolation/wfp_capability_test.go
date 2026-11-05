@@ -3,29 +3,41 @@ package isolation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/isolation/recoveryinstall"
 )
 
 func TestWFPCapabilityInputs(t *testing.T) {
 	failure := errors.New("unavailable")
+	untrusted := fmt.Errorf("verify recovery trust: %w", recoveryinstall.ErrUntrusted)
 	for _, tc := range []struct {
 		name             string
 		engine, recovery error
 		scheduler        bool
 		activated        bool
 		want             Capability
+		trust            recoveryinstall.TrustPath
+		schedUntrusted   bool
 	}{
-		{"engine", failure, nil, true, true, Capability{Mechanism: "wfp", UnsupportedReason: "bfe_unavailable"}},
-		{"recovery", nil, failure, true, true, Capability{Mechanism: "wfp", UnsupportedReason: "recovery_unavailable"}},
-		{"scheduler", nil, nil, false, true, Capability{Mechanism: "wfp", UnsupportedReason: "scheduler_unavailable"}},
-		{"ready", nil, nil, true, true, Capability{Version: 1, Mechanism: "wfp", Ready: true}},
-		{"not activated", nil, nil, true, false, Capability{Mechanism: "wfp", UnsupportedReason: "not_activated"}},
+		{name: "engine", engine: failure, scheduler: true, activated: true, want: Capability{Mechanism: "wfp", UnsupportedReason: "bfe_unavailable"}},
+		{name: "recovery", recovery: failure, scheduler: true, activated: true, want: Capability{Mechanism: "wfp", UnsupportedReason: "recovery_unavailable"}},
+		{name: "scheduler", activated: true, want: Capability{Mechanism: "wfp", UnsupportedReason: "scheduler_unavailable"}},
+		{name: "ready", scheduler: true, activated: true, want: Capability{Version: 1, Mechanism: "wfp", Ready: true}},
+		{name: "not activated", scheduler: true, want: Capability{Mechanism: "wfp", UnsupportedReason: "not_activated"}},
+		{name: "installer refused an untrusted exe", recovery: untrusted, scheduler: true, activated: true, want: Capability{Mechanism: "wfp", UnsupportedReason: "recovery_untrusted"}},
+		{name: "scheduler refused an untrusted exe", schedUntrusted: true, activated: true, want: Capability{Mechanism: "wfp", UnsupportedReason: "recovery_untrusted"}},
+		{name: "untrusted is masked while not activated", recovery: untrusted, want: Capability{Mechanism: "wfp", UnsupportedReason: "not_activated"}},
+		{name: "ready via Authenticode", scheduler: true, activated: true, trust: recoveryinstall.TrustCodeSignature, want: Capability{Version: 1, Mechanism: "wfp", Ready: true}},
+		{name: "ready via self-host manifest hash", scheduler: true, activated: true, trust: recoveryinstall.TrustManifestHash, want: Capability{Version: 1, Mechanism: "wfp", Ready: true, UnsupportedReason: "self_host_manifest_hash"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := wfpCapability(tc.engine, tc.recovery, tc.scheduler, "scheduler details", tc.activated)
+			in := readinessInputs{engineErr: tc.engine, recoveryErr: tc.recovery, schedulerReady: tc.scheduler, schedulerReason: "scheduler details", schedulerUntrusted: tc.schedUntrusted, recoveryTrust: tc.trust}
+			got := wfpCapability(in, tc.activated)
 			if got != tc.want {
 				t.Fatalf("got %+v want %+v", got, tc.want)
 			}

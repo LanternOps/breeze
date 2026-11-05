@@ -22,6 +22,13 @@ type containmentFake struct {
 	reconciles atomic.Int32
 	entered    chan struct{}
 	unblock    chan struct{}
+	rejections chan containmentRejection
+}
+
+func (f *containmentFake) NotePolicyRejected(_ context.Context, id string, gen int, reason isolation.PolicyRejectReason) {
+	if f.rejections != nil {
+		f.rejections <- containmentRejection{isolationID: id, generation: gen, reason: reason}
+	}
 }
 
 func (f *containmentFake) HandleIsolate(context.Context, map[string]any) isolation.CommandOutcome {

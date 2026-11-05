@@ -91,6 +91,7 @@ export const commandsRoutes = new Hono();
  * receive — a behaviour change beyond this PR's one intentional one.
  */
 const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
+  'wake_on_lan',
   // Disk Cleanup v2 W04. Listed here because this route has NO inline block
   // for it — the handler is registry-only precisely so both transports run
   // exactly the same code.
