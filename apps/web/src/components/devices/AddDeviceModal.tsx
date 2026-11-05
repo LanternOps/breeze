@@ -1571,12 +1571,13 @@ export default function AddDeviceModal({
                         )}
                         {tokenRestored && tokenExpiresAt && (
                           <p data-testid="cli-token-reuse">
-                            {t(
-                              tokenVerified
-                                ? "addDeviceModal.cliTokenReuseVerified"
-                                : "addDeviceModal.cliTokenReuse",
-                              { date: formatDateTime(tokenExpiresAt) },
-                            )}
+                            {tokenVerified
+                              ? t("addDeviceModal.cliTokenReuseVerified", {
+                                  date: formatDateTime(tokenExpiresAt),
+                                })
+                              : t("addDeviceModal.cliTokenReuse", {
+                                  date: formatDateTime(tokenExpiresAt),
+                                })}
                           </p>
                         )}
                       </div>
