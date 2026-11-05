@@ -25,6 +25,12 @@ type hpFixture struct {
 	boot    time.Time
 	bootE   error
 	now     time.Time
+
+	// The CMSL module tree, as directory -> subdirectory names.
+	programFiles string
+	dirs         map[string][]string
+	dirChecks    int
+	cmslVerifier *fakeVerifier
 }
 
 func realTempDir(t *testing.T) string {
@@ -46,6 +52,10 @@ func newHpFixture(t *testing.T) *hpFixture {
 		maker:   "HP",
 		boot:    now.Add(-time.Hour),
 		now:     now,
+
+		programFiles: `C:\Program Files`,
+		dirs:         map[string][]string{},
+		cmslVerifier: &fakeVerifier{publisher: "HP Inc."},
 	}
 	f.lane = newHPLane(hpHost{
 		identity:      func() (string, string, error) { return f.maker, "EliteBook 840", f.makerE },
@@ -56,6 +66,15 @@ func newHpFixture(t *testing.T) *hpFixture {
 		bootTime:      func() (time.Time, error) { return f.boot, f.bootE },
 		now:           func() time.Time { return f.now },
 		store:         f.store,
+		programFiles:  func() string { return f.programFiles },
+		dirExists: func(p string) bool {
+			f.dirChecks++
+			_, ok := f.dirs[p]
+			return ok
+		},
+		listDir:    func(p string) []string { return f.dirs[p] },
+		verifier:   f.cmslVerifier,
+		powershell: func() string { return testPowerShell },
 	})
 	return f
 }

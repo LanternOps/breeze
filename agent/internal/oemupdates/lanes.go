@@ -38,6 +38,26 @@ func systemHPHost() hpHost {
 		bootTime:      systemInfo{}.BootTime,
 		now:           time.Now,
 		store:         store,
+		programFiles:  func() string { return os.Getenv("ProgramFiles") },
+		dirExists: func(path string) bool {
+			info, err := os.Lstat(path)
+			return err == nil && info.IsDir()
+		},
+		listDir: func(path string) []string {
+			entries, err := os.ReadDir(path)
+			if err != nil {
+				return nil
+			}
+			out := make([]string, 0, len(entries))
+			for _, e := range entries {
+				if e.IsDir() {
+					out = append(out, e.Name())
+				}
+			}
+			return out
+		},
+		verifier:   authenticodeVerifier{},
+		powershell: hpPowerShellPath,
 	}
 }
 

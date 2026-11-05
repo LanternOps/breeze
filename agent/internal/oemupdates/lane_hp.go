@@ -105,11 +105,20 @@ type hpHost struct {
 	bootTime      func() (time.Time, error)
 	now           func() time.Time
 	store         Store
+
+	// The BIOS path (lane_hp_bios.go). programFiles, dirExists and listDir answer
+	// without a process. verifier checks CMSL's signature, fresh, before each flash.
+	programFiles func() string
+	dirExists    func(path string) bool
+	listDir      func(path string) []string
+	verifier     Verifier
+	powershell   func() string
 }
 
 type hpLane struct {
 	host  hpHost
 	gate  *ToolGate
+	cmsl  *ToolGate
 	allow LaneAllowlist
 }
 
@@ -119,6 +128,7 @@ func newHPLane(host hpHost) *hpLane {
 	l := &hpLane{host: host}
 	l.allow, _ = laneAllowlist(LaneHP)
 	l.gate = NewToolGate("hp-image-assistant", l.detect)
+	l.cmsl = NewToolGate("hp-cmsl", l.detectCMSL)
 	return l
 }
 
@@ -268,19 +278,34 @@ func (l *hpLane) Apply(ctx context.Context, tool ToolState, plan FilterPlan, ex 
 		return res, nil
 	}
 
+	// BIOS first: the runner read power and the recovery key immediately before this
+	// call. HPIA can take an hour, and this lane cannot read the key again. The volume
+	// stays suspended a little longer for it, and a reboot follows either way.
+	var bios hpBiosStep
 	if contains(plan.Categories, CategoryBIOS) {
-		res.SkippedCategories = append(res.SkippedCategories, SkippedCategory{Category: CategoryBIOS, Reason: SkipGate})
+		bios = l.runBIOS(ctx, plan, ex)
 	}
 	if len(hpCategoryFlags(plan)) == 0 {
-		res.Outcome, res.ErrorCode = OutcomeToolUnavailable, strPtr("hp_cmsl_absent")
-		return res, nil
+		return hpBiosOnly(res, bios), nil
 	}
-	hpia, err := l.runHPIA(ctx, tool, plan, ex)
-	hpia.SkippedCategories = res.SkippedCategories
-	if hpia.RebootRequired {
+
+	res, err = l.runHPIA(ctx, tool, plan, ex)
+	if err != nil && bios.flashMayHaveStarted() {
+		// What the flash needs must survive: the runner would keep only a bare failure.
+		log.Warn("HPIA did not run after an HP BIOS flash", "error", err.Error())
+		err = nil
+		res.Outcome = OutcomeFailed
+		if res.ErrorCode == nil {
+			res.ErrorCode = strPtr("tool_exec_failed")
+		}
+	}
+	if bios.state != hpBiosNotAsked {
+		res = hpMergeBios(res, bios)
+	}
+	if res.RebootRequired && !bios.flashMayHaveStarted() {
 		l.noteRebootOwed()
 	}
-	return hpia, err
+	return res, err
 }
 
 // runHPIA is one install. With any id blocked it is two steps, because /Category is

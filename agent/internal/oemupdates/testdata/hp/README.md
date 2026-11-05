@@ -18,3 +18,18 @@ What is not confirmed, and what W14 must capture on real hardware:
 - **HP Sure Admin.** HP's page says that with Enhanced BIOS Authentication Mode on, the BIOS cannot be updated through HPIA in Download Only mode; the spec reads it as updates becoming download-only. What the report says in that case is unknown, and `<Status>Downloaded</Status>` is a placeholder.
 - **Argument quoting.** Go quotes the whole of `/ReportFolder:C:\a b\c` when a path has a space. The data directory normally has none, so this has not been exercised.
 - **Licence (H1).** HP says a valid licence from HP is required. Nothing fetches HPIA until the owner decides and a manifest pin exists.
+
+**CMSL, the BIOS path (leg H4; `bios` stays closed until H4 passes and Decision 7 is settled)**
+
+CMSL is hand-installed for the lab only. This lane detects it and never installs it; #5515 owns the install and its EULA consent.
+
+- **Module layout.** The lane expects `Program Files\WindowsPowerShell\Modules\HPCMSL\<version>\HPCMSL.psd1` and `HP.Firmware\<version>\HP.Firmware.psm1`, and verifies both. Anything else refuses with `hp_cmsl_unverified`.
+- **Signature checks on script files.** The publisher pin was written for executables. Whether it reads a signed `.psd1` and `.psm1` is not shown; a failure refuses the flash.
+- **`Get-HPBIOSUpdates -Check`.** HP's how-to uses it to test whether an update is needed. The lane reads a true answer as "up to date". If that is backwards, `-Flash` runs on a current BIOS, and -Flash without `-Force` is expected not to reinstall it; confirm both.
+- **`-Flash` errors.** The lane's script gives its own exit codes: 256 up to date, 3010 staged, 2 failed before the flash, 1 failed in it. Any other code, including PowerShell's own, is treated as possibly flashed, and a reboot is asked for. A `-Flash` run on a current BIOS, with nothing staged, would still read as staged.
+- **Does `-Flash` reboot by itself?** Nothing here can stop it. The flash guard only holds Breeze's own power actions.
+- **`-BitLocker suspend`.** The reboot count and whether protection returns after the reboot Breeze schedules. The W11 BitLocker guard does not cover this suspension, because CMSL makes it, so nothing resumes it if the reboot never comes.
+- **HP Sure Admin.** CMSL's offline flash needs a password or payload, and v1 passes no BIOS password. The lane expects a refusal and reports `bios_flash_uncertain`; record what really happens.
+- **Blocked ids.** `Get-HPBIOSUpdates` takes no list, so any blocked id skips BIOS with `bios_blocklist_unenforceable`, even one for a driver or another vendor. Decide in W14 whether the BIOS's SoftPaq number can be read first.
+- **HPIA is still required.** The run's tool step checks HPIA before any category is read, so without HPIA a BIOS-only run reports `tool_unavailable`.
+- **The CMSL answer is cached for 24 hours**, like every availability gate. After hand-installing it, restart the agent or wait.

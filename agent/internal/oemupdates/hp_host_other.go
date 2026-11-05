@@ -9,3 +9,6 @@ import "errors"
 func hpSMBIOSIdentity() (string, string, error) {
 	return "", "", errors.New("the HP lane only runs on windows")
 }
+
+// hpPowerShellPath has no answer off Windows, which refuses the BIOS path.
+func hpPowerShellPath() string { return "" }
