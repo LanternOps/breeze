@@ -297,14 +297,6 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // supplies no device selector. Its device access sits past the old byte
   // window.
   'routes/backup/bmr.ts:POST /bmr/recover/authenticate',
-  // Org record-page overview: partner/system scope only, gated on ORGS_READ +
-  // auth.canAccessOrg(id), and the `devices` read is a pure aggregate
-  // (count(*) FILTER …) over `eq(devices.orgId, id)` — no per-device rows are
-  // returned, so no cross-site device is disclosed. Same posture as the
-  // org-wide aggregates above; site-scoping the totals themselves remains the
-  // same separate product call. Its `devices` block sits past the old window
-  // (the handler is a long chain of per-permission aggregate blocks).
-  'routes/orgSummary.ts:GET /organizations/:id/summary',
 ]);
 
 // SITE_SCOPE_INPUT_EXEMPT entries that ARE reached via the user `authMiddleware`
