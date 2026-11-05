@@ -904,6 +904,14 @@
       "firstLook": "Primera revisión",
       "couldntLook": "Aún sin revisar"
     },
+    "checkIn": {
+      "runNow": "Ejecutar ahora",
+      "runNowMessage": "Adelante con la revisión programada",
+      "scheduledAt": "Wisp volverá a revisar a las {{time}}",
+      "cancel": "Cancelar revisión programada",
+      "cancelled": "Revisión programada cancelada",
+      "cancelFailed": "No se pudo cancelar la revisión programada."
+    },
     "welcome": {
       "title": "Estoy revisando {{scope}}.",
       "body": "Tu primer resumen llega cada mañana, una vez que haya echado un vistazo. Mientras tanto, pregúntame lo que quieras.",
