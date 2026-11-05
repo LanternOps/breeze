@@ -154,6 +154,10 @@ type snapshotJournal struct {
 	// control objects are rebuilt, never adopted.
 	continuedFromOtherJob bool
 
+	// tailUnrepaired is set when a torn tail could not be repaired: the run
+	// resumes from the journal with no file to write to (see journal_tail.go).
+	tailUnrepaired bool
+
 	// lock is this run's exclusive hold on the journal path, released by
 	// Complete or Abandon.
 	lock *journalLock
@@ -302,6 +306,7 @@ func openSnapshotJournalAt(path, identity string, maxAge time.Duration) (*snapsh
 				if writable {
 					j.writer = bufio.NewWriter(f)
 				}
+				j.tailUnrepaired = !writable
 				return j, true, nil
 			}
 			slog.Warn("failed to reopen backup journal for append, starting fresh",
@@ -606,6 +611,7 @@ func (j *snapshotJournal) restartFreshWithID(snapshotID string) error {
 	}
 	j.file = fresh.file
 	j.writer = fresh.writer
+	j.tailUnrepaired = false
 	j.snapshotID = fresh.snapshotID
 	j.header = fresh.header
 	j.createdAt = fresh.createdAt

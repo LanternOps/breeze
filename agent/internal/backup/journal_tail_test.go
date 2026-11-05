@@ -743,10 +743,26 @@ func TestJournalTornTail_AnUnrepairedJournalCanStillRestartOrComplete(t *testing
 		if j.snapshotID == id {
 			t.Error("another job must start a new snapshot")
 		}
+		if j.CheckpointingDisabled() {
+			t.Error("a restarted journal checkpoints again")
+		}
 		if err := j.Record(tornTestEntry("d")); err != nil {
 			t.Fatalf("a restarted journal must write: %v", err)
 		}
 		requireWellFormedFile(t, path)
+	})
+	t.Run("a healthy journal whose restart failed is not called damaged", func(t *testing.T) {
+		dir := t.TempDir()
+		seedTornTestJournal(t, dir, false)
+		j, _ := openTornTestJournal(t, dir)
+		defer j.Abandon()
+		j.path = pathpkg.Join(dir, "missing", "journal.jsonl")
+		if err := j.restartFresh(); err == nil {
+			t.Fatal("fixture: the restart must fail")
+		}
+		if j.CheckpointingDisabled() {
+			t.Error("the warning would blame a tear that never happened")
+		}
 	})
 	t.Run("complete", func(t *testing.T) {
 		dir := t.TempDir()

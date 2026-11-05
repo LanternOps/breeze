@@ -77,11 +77,12 @@ func unterminatedFrom(f *os.File, offset int64) (bool, error) {
 	}
 }
 
-// CheckpointingDisabled reports whether this run cannot write to its journal: a
-// torn tail could not be repaired, so it resumes from the journal without adding
-// to it.
+// CheckpointingDisabled reports whether a torn tail could not be repaired, so this
+// run resumes from the journal without adding to it. A journal can lack a file for
+// other reasons (a restart that failed, see restartFreshWithID), and those are not
+// this.
 func (j *snapshotJournal) CheckpointingDisabled() bool {
-	return j != nil && j.file == nil
+	return j != nil && j.tailUnrepaired
 }
 
 // journalTailRepairFn is a test seam over repairJournalTail so a repair that fails
