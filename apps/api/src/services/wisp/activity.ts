@@ -7,8 +7,8 @@
  *   approval    action_intents       requesting_agent_run_id → a run with grant_id = G
  *   memory      ai_memory_blocks     authored_by_grant_id = G
  *   nudge/brief user_notifications   user_id = grantor AND metadata->>'grantId' = G
- *   specialist  — W07 lineage (`ai_agent_runs.requested_by_run_id`) does not
- *                 exist yet; the source is added with that column.
+ *   specialist  ai_agent_runs        grant_id = G, trigger_ref->>'source' = 'wisp_specialist'
+ *                 (#11084; read in the same query as assessments)
  *
  * Every read runs in system context (the caller may be a request, a worker or
  * the brief), pinned to the ceiling's grant / partner / grantor. Isolation is
@@ -28,12 +28,14 @@ import { WISP_ACTIVITY_KINDS, type ActivityItem, type CurrentActivity, type Wisp
 import { db } from '../../db';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
+import { devices } from '../../db/schema/devices';
 import { aiMemoryBlocks } from '../../db/schema/aiMemoryBlocks';
 import { userNotifications } from '../../db/schema/notifications';
 import { organizations } from '../../db/schema/orgs';
 import { wispConcernRecipients, wispConcerns } from '../../db/schema/wispConcerns';
 import { assertReadWithinCeiling, CeilingViolationError, inSystemContext, type GrantCeiling } from './grantAuthority';
 import { webDeepLink } from './nudgeLinks';
+import { SPECIALIST_KIND_LABELS, type SpecialistKind } from './specialistPolicy';
 
 export type { ActivityItem, CurrentActivity } from '@breeze/shared';
 
@@ -52,6 +54,8 @@ const MAX_CURSOR_LENGTH = 256;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** The assessment profile literal (`isAssessmentProfile`, aiAgents/assessmentProfile.ts) as SQL needs it. */
 const ASSESSMENT_PROFILE = 'assessment' as const;
+/** `triggerRefFor` (specialistLaunchers.ts) stamps every coordinator-admitted run with this source. */
+const SPECIALIST_SOURCE = 'wisp_specialist' as const;
 
 export type ActivityCursor = { at: Date; kind: WispActivityKind; id: string };
 
@@ -155,8 +159,28 @@ const humanize = (s: string): string => s.replace(/_/g, ' ');
 function row(kind: WispActivityKind, id: string, at: Date, fields: Omit<ActivityItem, 'id' | 'at' | 'kind'>): Row {
   return {
     key: { ms: at.getTime(), kind, id },
-    item: { id, at: at.toISOString(), kind, orgId: fields.orgId, title: fields.title, detail: fields.detail, href: fields.href, costCents: fields.costCents },
+    item: {
+      id, at: at.toISOString(), kind, orgId: fields.orgId, title: fields.title, detail: fields.detail, href: fields.href, costCents: fields.costCents,
+      ...(fields.runStatus ? { runStatus: fields.runStatus } : {}),
+    },
   };
+}
+
+/** The specialist kind a coordinator-admitted run's profile came from (#11084). */
+const PROFILE_SPECIALIST_KIND: Readonly<Record<string, SpecialistKind>> = Object.freeze({
+  device_troubleshooting: 'device_troubleshooting',
+  remediation_research: 'remediation_research',
+  patch: 'patch_plan',
+  analysis: 'analysis',
+  sweep: 'sweep',
+});
+
+/** "Device troubleshooting · FRONT-DESK-01" — the label without its article, then the device or the org. */
+function specialistTitle(profile: string, deviceHostname: string | null, orgName: string): string {
+  const kind = Object.hasOwn(PROFILE_SPECIALIST_KIND, profile) ? PROFILE_SPECIALIST_KIND[profile] : undefined;
+  const label = kind ? SPECIALIST_KIND_LABELS[kind].replace(/^(a|an) /, '') : 'specialist';
+  const target = deviceHostname && deviceHostname.trim() ? deviceHostname : orgName;
+  return truncate(`${label.charAt(0).toUpperCase()}${label.slice(1)} · ${target}`, 140);
 }
 
 function assessmentTitle(status: string, orgName: string): string {
@@ -176,32 +200,57 @@ const relativeHref = (link: string | null): string | null => (link && link.start
 
 type SourceArgs = { ceiling: GrantCeiling; readable: string[]; cursor: ActivityCursor | null; take: number; threadId: string | null };
 
-async function assessmentRows({ ceiling, readable, cursor, take }: SourceArgs): Promise<Row[]> {
+/**
+ * Assessments and (#11084) specialist runs under the grant, in ONE query: both
+ * are `ai_agent_runs` rows pinned to the grant, told apart by profile / the
+ * launcher's trigger_ref source. `kind` is an SQL expression for the keyset.
+ */
+async function runRows({ ceiling, readable, cursor, take }: SourceArgs): Promise<Row[]> {
   // ai_agent_runs.org_id is NOT NULL: there is no partner-level branch.
   if (readable.length === 0) return [];
   const at = ms(sql`COALESCE(${aiAgentRuns.finishedAt}, ${aiAgentRuns.queuedAt})`);
+  const triggerSource = sql<string | null>`${aiAgentRuns.triggerRef} ->> 'source'`;
+  const isAssessment = sql`${aiAgentRuns.profile} = ${ASSESSMENT_PROFILE}`;
+  const kind = sql<string>`(CASE WHEN ${isAssessment} THEN 'assessment' ELSE 'specialist' END)`;
   const rows = await db
     .select({
       id: aiAgentRuns.id, orgId: aiAgentRuns.orgId, orgName: organizations.name, status: aiAgentRuns.status,
       summary: aiAgentRuns.summary, costCents: aiAgentRuns.costCents, queuedAt: aiAgentRuns.queuedAt, finishedAt: aiAgentRuns.finishedAt,
+      profile: aiAgentRuns.profile, triggerSource, deviceHostname: devices.hostname,
     })
     .from(aiAgentRuns)
     .innerJoin(organizations, and(eq(organizations.id, aiAgentRuns.orgId), eq(organizations.partnerId, ceiling.partnerId)))
+    .leftJoin(devices, and(eq(devices.id, aiAgentRuns.deviceId), eq(devices.orgId, aiAgentRuns.orgId)))
     .where(and(
       eq(aiAgentRuns.grantId, ceiling.grantId),
-      eq(aiAgentRuns.profile, ASSESSMENT_PROFILE),
+      or(isAssessment, sql`${triggerSource} = ${SPECIALIST_SOURCE}`),
       inArray(aiAgentRuns.orgId, readable),
-      keysetAfter(cursor, at, 'assessment', aiAgentRuns.id),
+      keysetAfter(cursor, at, kind, aiAgentRuns.id),
     ))
-    .orderBy(desc(at), desc(aiAgentRuns.id))
+    .orderBy(desc(at), sql`${kind} COLLATE "C" DESC`, desc(aiAgentRuns.id))
     .limit(take);
-  return rows.map((r) => row('assessment', r.id, r.finishedAt ?? r.queuedAt, {
-    orgId: r.orgId,
-    title: assessmentTitle(r.status, r.orgName),
-    detail: optionalText(r.summary, 200),
-    href: `/ai-agents/runs/${r.id}`,
-    costCents: r.costCents,
-  }));
+  return rows.map((r) => {
+    const at = r.finishedAt ?? r.queuedAt;
+    // Belt: a row is a specialist only when BOTH the source says so and it is
+    // not an assessment (the SQL CASE above, re-derived from the row).
+    if (r.triggerSource === SPECIALIST_SOURCE && r.profile !== ASSESSMENT_PROFILE) {
+      return row('specialist', r.id, at, {
+        orgId: r.orgId,
+        title: specialistTitle(r.profile, r.deviceHostname ?? null, r.orgName),
+        detail: optionalText(r.summary, 200),
+        href: `/ai-agents/runs/${r.id}`,
+        costCents: r.costCents,
+        runStatus: r.status,
+      });
+    }
+    return row('assessment', r.id, at, {
+      orgId: r.orgId,
+      title: assessmentTitle(r.status, r.orgName),
+      detail: optionalText(r.summary, 200),
+      href: `/ai-agents/runs/${r.id}`,
+      costCents: r.costCents,
+    });
+  });
 }
 
 async function concernRows({ ceiling, readable, cursor, take, threadId }: SourceArgs): Promise<Row[]> {
@@ -318,7 +367,7 @@ async function notificationRows({ ceiling, readable, cursor, take }: SourceArgs)
   }));
 }
 
-const SOURCES = [assessmentRows, concernRows, approvalRows, memoryRows, notificationRows] as const;
+const SOURCES = [runRows, concernRows, approvalRows, memoryRows, notificationRows] as const;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -361,7 +410,10 @@ export async function listActivity(
   return { items: page.filter((r) => passesCeiling(ceiling, r.item)).map((r) => r.item), nextCursor };
 }
 
-/** The oldest queued/running assessment under the grant, for "Wisp is checking Greenwood…"; null when idle. */
+/**
+ * The oldest queued/running assessment or (#11084) specialist run under the
+ * grant, for "Wisp is checking Greenwood…"; null when idle.
+ */
 export async function currentActivity(grantId: string): Promise<CurrentActivity> {
   const [run] = await inSystemContext(() => db
     .select({ orgId: aiAgentRuns.orgId, orgName: organizations.name, startedAt: aiAgentRuns.startedAt, queuedAt: aiAgentRuns.queuedAt })
@@ -369,7 +421,10 @@ export async function currentActivity(grantId: string): Promise<CurrentActivity>
     .innerJoin(organizations, eq(organizations.id, aiAgentRuns.orgId))
     .where(and(
       eq(aiAgentRuns.grantId, grantId),
-      eq(aiAgentRuns.profile, ASSESSMENT_PROFILE),
+      or(
+        eq(aiAgentRuns.profile, ASSESSMENT_PROFILE),
+        sql`${aiAgentRuns.triggerRef} ->> 'source' = ${SPECIALIST_SOURCE}`,
+      ),
       inArray(aiAgentRuns.status, ['queued', 'running']),
     ))
     .orderBy(asc(aiAgentRuns.queuedAt), asc(aiAgentRuns.id))
