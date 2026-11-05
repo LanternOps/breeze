@@ -179,6 +179,7 @@
     "oneOrMoreVssWritersAreNotStable": "Un ou plusieurs rédacteurs VSS ne sont pas stables. Consultez les derniers écrits des auteurs avant la prochaine édition.",
     "vssUnprotectedVolumes": "Lu à partir du volume actif, et non d’une copie fantôme VSS : {{volumes}}. Les fichiers en cours d’utilisation sur ces volumes peuvent avoir été ignorés ou capturés dans un état incohérent.",
     "lastBackupFailed": "Échec de la dernière sauvegarde",
+    "lastBackupFailedWithCategory": "Échec de la dernière sauvegarde : {{category}}",
     "lastBackupCompletedWithWarnings": "Dernière sauvegarde terminée avec des avertissements",
     "lastBackupCompletedWithErrors": "Dernière sauvegarde terminée avec des erreurs",
     "writer": "Écrivain",
@@ -1184,5 +1185,40 @@
     "summary_one": "{{count}} point d'analyse ignoré : les jonctions et les points de montage ne sont ni suivis ni restaurés. C'est normal, ce n'est pas une erreur.",
     "summary_other": "{{count}} points d'analyse ignorés : les jonctions et les points de montage ne sont ni suivis ni restaurés. C'est normal, ce n'est pas une erreur.",
     "showDetails": "Afficher les chemins ignorés"
+  },
+  "failureCategory": {
+    "device_offline": {
+      "label": "Appareil hors ligne",
+      "hint": "L’appareil a perdu sa connexion à Breeze pendant la sauvegarde. Laissez-le allumé et en ligne pendant toute la fenêtre de sauvegarde."
+    },
+    "timeout": {
+      "label": "Bloquée ou délai dépassé",
+      "hint": "La sauvegarde a cessé de progresser ou a dépassé sa limite de temps. Les très grandes sauvegardes peuvent nécessiter plus d’une fenêtre. Vérifiez la charge de l’appareil et la taille de la sélection de sauvegarde."
+    },
+    "storage": {
+      "label": "Problème de stockage",
+      "hint": "Breeze n’a pas pu écrire dans la destination de sauvegarde, ou l’autorisation de téléversement a expiré. Testez la configuration du stockage et vérifiez ses identifiants et l’espace libre."
+    },
+    "agent": {
+      "label": "Problème d’agent",
+      "hint": "Le composant de sauvegarde de l’appareil s’est arrêté de façon inattendue. Mettez à jour l’agent et relancez la sauvegarde. Si le problème persiste, consultez les journaux de l’agent sur l’appareil."
+    },
+    "configuration": {
+      "label": "Problème de configuration",
+      "hint": "Il n’y avait rien de valide à sauvegarder, ou la configuration de sauvegarde a changé pendant le démarrage de la tâche. Vérifiez le profil de sauvegarde de l’appareil."
+    },
+    "source_access": {
+      "label": "Fichiers illisibles",
+      "hint": "Certains fichiers étaient verrouillés, en cours d’utilisation ou illisibles par l’agent. Vérifiez les fichiers listés ci-dessous et l’état de VSS."
+    },
+    "cancelled": {
+      "label": "Annulée",
+      "hint": "Arrêtée par un utilisateur, ou par Breeze, avant la fin."
+    },
+    "unknown": {
+      "label": "Autre erreur",
+      "hint": "Breeze ne reconnaît pas encore cette erreur. Le message complet est affiché ci-dessous."
+    },
+    "troubleshootingLink": "Guide de dépannage"
   }
 }

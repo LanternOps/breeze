@@ -297,6 +297,102 @@ describe('DeviceBackupTab', () => {
     expect(screen.getByText(/Assign a backup policy to protect this device/i, { selector: 'p,span' })).toBeTruthy();
   });
 
+  describe('failure category (#11027)', () => {
+    const baseJob = {
+      id: 'job-bad',
+      deviceId: 'device-1',
+      type: 'file',
+      startedAt: '2026-03-30T00:00:00Z',
+      completedAt: '2026-03-30T00:10:00Z',
+      errorCount: 0,
+    };
+    const mockTab = ({ lastJob, jobs }: { lastJob?: unknown; jobs?: unknown[] }) =>
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/backup/status/device-1') {
+          return makeJsonResponse({ data: { protected: true, lastJob: lastJob ?? null } });
+        }
+        if (url === '/backup/jobs?deviceId=device-1') return makeJsonResponse({ data: jobs ?? [] });
+        if (url === '/backup/snapshots?deviceId=device-1') return makeJsonResponse({ data: [] });
+        return makeJsonResponse({}, false, 404);
+      });
+    const historyRow = async () => {
+      const card = (await screen.findByText('Job History')).parentElement as HTMLElement;
+      return (await within(card).findAllByRole('row'))[1] as HTMLElement;
+    };
+
+    it('job history Errors cell shows the category for failed jobs', async () => {
+      const longError = `[stale-backup-reaper] ${'x'.repeat(80)}`;
+      mockTab({ jobs: [{ ...baseJob, status: 'failed', errorLog: longError, failureCategory: 'timeout' }] });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      const row = await historyRow();
+      expect(within(row).getByTestId('backup-failure-category').getAttribute('data-category')).toBe('timeout');
+      const summary = within(row).getByTestId('backup-job-error-summary');
+      // BackupJobList's rule: the tag is stripped, 57 characters plus an ellipsis, full text on hover.
+      expect(summary.textContent).toBe(`${'x'.repeat(57)}...`);
+      expect(summary.getAttribute('title')).toBe('x'.repeat(80));
+    });
+
+    it('keeps the failed-file count next to the category', async () => {
+      mockTab({ jobs: [{ ...baseJob, status: 'partial', errorCount: 4, errorLog: 'a.txt: in use', failureCategory: 'source_access' }] });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      const row = await historyRow();
+      expect(within(row).getByTestId('backup-failure-category')).toBeTruthy();
+      expect(within(row).getByTestId('backup-job-error-count').textContent).toBe('4');
+    });
+
+    it('still shows 0 and no badge for a clean job', async () => {
+      mockTab({ jobs: [{ ...baseJob, status: 'completed', errorLog: null, failureCategory: null }] });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      const row = await historyRow();
+      expect(within(row).queryByTestId('backup-failure-category')).toBeNull();
+      expect(within(row).queryByTestId('backup-job-error-summary')).toBeNull();
+      expect(within(row).getByText('0')).toBeTruthy();
+    });
+
+    it('last-run banner title uses the category label', async () => {
+      mockTab({
+        lastJob: { ...baseJob, status: 'failed', errorLog: 'backup helper exited unexpectedly', failureCategory: 'agent' },
+      });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      const banner = await screen.findByTestId('backup-last-job-diagnostic');
+      expect(within(banner).getByText('Last backup failed: Agent problem')).toBeTruthy();
+      expect(within(banner).getByText('backup helper exited unexpectedly')).toBeTruthy();
+      expect(within(banner).getByText(/The backup component on the device stopped unexpectedly/)).toBeTruthy();
+      expect(within(banner).getByRole('link', { name: 'Troubleshooting guide' })).toBeTruthy();
+    });
+
+    it('keeps the plain banner title when the API sends no category', async () => {
+      mockTab({ lastJob: { ...baseJob, status: 'failed', errorLog: 'backup helper exited unexpectedly' } });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      const banner = await screen.findByTestId('backup-last-job-diagnostic');
+      expect(within(banner).getByText('Last backup failed')).toBeTruthy();
+      expect(within(banner).queryByRole('link')).toBeNull();
+    });
+
+    it('does not put a category on a banner for a run that did not fail', async () => {
+      mockTab({
+        lastJob: { ...baseJob, status: 'completed_with_errors', errorCount: 2, errorLog: 'a.txt: in use', failureCategory: 'source_access' },
+      });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      const banner = await screen.findByTestId('backup-last-job-diagnostic');
+      expect(banner.textContent).toContain('Last backup completed with errors');
+      expect(banner.textContent).not.toContain('Files could not be read');
+    });
+  });
+
   it('keeps line breaks in the completed-with-errors file list (#7213)', async () => {
     const errorLog = '2 file(s) could not be read:\nC:\\a.txt: permission denied\nC:\\b.txt: in use';
     fetchMock.mockImplementation(async (input) => {

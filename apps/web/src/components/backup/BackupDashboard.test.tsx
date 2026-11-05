@@ -544,6 +544,40 @@ describe('BackupDashboard usage history chart', () => {
     expect(screen.queryByText(/reparse point/i)).toBeNull();
   });
 
+  it('labels a recent job diagnostic with its failure category (#11027)', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/backup/dashboard') {
+        return makeJsonResponse({
+          data: {
+            stats: [],
+            recentJobs: [
+              { id: 'job-bad', device: 'edge-05', config: 'Primary S3', status: 'failed', started: '5m ago', duration: '3m', size: '85 B', errorLog: 'Agent not connected', failureCategory: 'device_offline' },
+              { id: 'job-ok', device: 'edge-06', config: 'Primary S3', status: 'completed', started: '6m ago', duration: '3m', size: '85 B', errorLog: null, failureCategory: null },
+            ],
+            storageProviders: [],
+            attentionItems: [],
+          },
+        });
+      }
+
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BackupDashboard />);
+
+    await screen.findByText('edge-06');
+    const badges = screen.getAllByTestId('backup-failure-category');
+    expect(badges).toHaveLength(1);
+    expect(badges[0]?.getAttribute('data-category')).toBe('device_offline');
+    expect(screen.getByText('Agent not connected')).toBeTruthy();
+  });
+
   it('counts completed_with_errors jobs as successful restore points in the 24h success rate (#5396)', async () => {
     // completed_with_errors is a restorable snapshot, so it belongs in the
     // numerator (like completed) as well as the denominator — not just the
