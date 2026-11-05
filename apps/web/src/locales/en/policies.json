@@ -1252,7 +1252,8 @@
         "executeRequired": "Turning on vendor updates, adding a category, switching on overnight restarts or unblocking an update needs the devices.execute permission and MFA. Ask someone who has it to save this change.",
         "gateClosedRefusal": "One of the selected update categories is not available yet, so the policy was not saved. Clear it and save again.",
         "invalid": "Check the schedule: the window is 1 to 8 whole hours, catch-up is 0 to 14 nights, and the start time is HH:MM.",
-        "gatesError": "Could not load which update categories are available. Every category is shown as unavailable until the page is reloaded.",
+        "storedInvalid": "The saved settings for this policy are not valid, so vendor updates are off for the devices it reaches. Review the settings below and save to fix them.",
+        "gatesError": "Could not load which update categories are available, so saving is turned off. Reload the page to try again.",
         "stillGated": "No update category is available yet, so this policy does not install anything today. Categories open here as each vendor finishes validation.",
         "armingNotice": "Breeze runs the vendor's own signed tool and never hosts vendor files. A device that has not checked in after a BIOS update raises an alert."
       },

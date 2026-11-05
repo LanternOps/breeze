@@ -18,8 +18,14 @@ const perms = (grants: Array<{ resource: string; action: string }>) => ({ permis
 const EXECUTE = [{ resource: 'devices', action: 'execute' }];
 const WRITE_ONLY = [{ resource: 'devices', action: 'write' }];
 
-const ARMED = { enabled: true, vendors: { dell: { enabled: true, categories: { driver: true } } } };
-const OFF = { enabled: false, vendors: { dell: { enabled: true, categories: { driver: true } } } };
+const BASE = {
+  version: 1,
+  schedule: { weekOfMonth: 'third', dayOfWeek: 'wed', windowStart: '01:00', windowHours: 4 },
+  catchUpNights: 7,
+  reboot: 'overnight',
+};
+const ARMED = { ...BASE, enabled: true, vendors: { dell: { enabled: true, categories: { driver: true }, blockedUpdateIds: [] } } };
+const OFF = { ...BASE, enabled: false, vendors: { dell: { enabled: true, categories: { driver: true }, blockedUpdateIds: [] } } };
 const link = (inlineSettings: unknown) => ({ featureType: 'oem_updates', inlineSettings });
 const other = { featureType: 'patch', inlineSettings: ARMED };
 
@@ -78,6 +84,12 @@ describe('overrideDeleteArmsOemUpdates', () => {
 
   it('an unresolvable parent fails closed', () => {
     expect(overrideDeleteArmsOemUpdates({ parentPolicyId: 'p', featureLinks: [link(OFF)], parentPolicy: null })).toBe(true);
+  });
+
+  it('an own link that no longer parses shields nothing: reverting to an armed parent arms', () => {
+    // Leniently this reads as armed (identical categories), but the resolver treats it as disabled.
+    const corrupt = { ...ARMED, unknownKey: true };
+    expect(overrideDeleteArmsOemUpdates({ parentPolicyId: 'p', featureLinks: [link(corrupt)], parentPolicy: { featureLinks: [link(ARMED)] } })).toBe(true);
   });
 });
 

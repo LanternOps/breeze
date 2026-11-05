@@ -1,7 +1,7 @@
 import type { AuthContext } from '../../middleware/auth';
 import { hasSatisfiedMfa } from '../../middleware/auth';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
-import { armsBeyond, hasArmedCategory } from '@breeze/shared';
+import { armsBeyond, hasArmedCategory, oemUpdatesInlineSettingsSchema } from '@breeze/shared';
 import { OEM_UPDATES_EXECUTE_REQUIRED_MESSAGE } from '../../services/oemUpdates/oemUpdatesLinkWrite';
 
 /**
@@ -97,7 +97,10 @@ export function overrideDeleteArmsOemUpdates(policy: PolicyLike): boolean {
   const inherited = inheritedOemUpdatesSettings(policy);
   if (inherited === UNRESOLVED_PARENT) return true;
   if (inherited === null) return false;
-  return armsBeyond(oemLinkSettings(policy.featureLinks).settings, inherited);
+  // The override as the resolver sees it: one that no longer parses resolves as
+  // disabled, so it shields nothing and the revert is compared with nothing.
+  const own = oemUpdatesInlineSettingsSchema.safeParse(oemLinkSettings(policy.featureLinks).settings);
+  return armsBeyond(own.success ? own.data : null, inherited);
 }
 
 /** What a new or edited link is compared against: the settings in effect, null when unresolvable (strict). */

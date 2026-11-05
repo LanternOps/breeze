@@ -126,6 +126,35 @@ describe('checkOemUpdatesLinkWrite', () => {
     expect(code({ featurePolicyId: null, previous: null, next: settings({}, { categories: {} }), armAuthorized: true }, ALL_CLOSED)).toBe('ok');
   });
 
+  it('a category already stored true may be resent on a closed gate, so narrowing never fails on it', () => {
+    const stored = settings({}, { categories: { bios: true, driver: true } });
+    // Switching off and blocking an update, with bios still true from when its gate was open.
+    for (const next of [
+      settings({ enabled: false }, { categories: { bios: true, driver: true } }),
+      settings({}, { categories: { bios: true, driver: true }, blockedUpdateIds: ['X1'] }),
+    ]) {
+      expect(code({ featurePolicyId: null, previous: stored, next, armAuthorized: false })).toBe('ok');
+    }
+    // A newly true closed category is still refused, even next to a resent one.
+    expect(code({
+      featurePolicyId: null,
+      previous: stored,
+      next: settings({}, { categories: { bios: true, firmware: true, driver: true } }),
+      armAuthorized: true,
+    })).toBe('oem_updates_category_gate_closed');
+  });
+
+  it('a previous that no longer parses counts as nothing armed', () => {
+    // Leniently armed, but the resolver treats it as disabled: removing the bad key must not arm silently.
+    const corrupt = { ...settings(), unknownKey: true };
+    expect(code({ featurePolicyId: null, previous: corrupt, next: settings(), armAuthorized: false }))
+      .toBe('oem_updates_execute_required');
+    // Nor may it vouch for a closed category.
+    const corruptBios = { ...settings({}, { categories: { bios: true } }), unknownKey: true };
+    expect(code({ featurePolicyId: null, previous: corruptBios, next: settings({}, { categories: { bios: true } }), armAuthorized: true }))
+      .toBe('oem_updates_category_gate_closed');
+  });
+
   it('featurePolicyId set is 400', () => {
     expect(code({ featurePolicyId: POLICY_ID, previous: null, next: OFF, armAuthorized: false }))
       .toBe('oem_updates_feature_policy_not_allowed');

@@ -16,6 +16,12 @@ import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { configurationPolicies, configPolicyFeatureLinks, configPolicyAssignments, devices } from '../../db/schema';
 import { resolveOemUpdatesLinkForDevice, resolveOemUpdatesLinksForDevices } from '../../services/oemUpdates/resolver';
+import {
+  addFeatureLink,
+  parentPolicyArmsOemUpdates,
+  policyEffectivelyArmsOemUpdates,
+} from '../../services/configurationPolicy';
+import { OemUpdatesLinkWriteError } from '../../services/oemUpdates/oemUpdatesLinkWrite';
 import { createPartner, createOrganization, createSite } from './db-utils';
 
 const SYSTEM_CTX: DbAccessContext = {
@@ -103,7 +109,7 @@ async function seedPolicy(
 
 async function assign(
   configPolicyId: string,
-  level: 'partner' | 'organization' | 'device',
+  level: 'partner' | 'organization' | 'device' | 'site',
   targetId: string,
   extra: { roleFilter?: string[] } = {},
 ) {
@@ -204,25 +210,125 @@ describe('resolveOemUpdatesLinkForDevice on real Postgres (#11070)', () => {
     expect(a!.settings.enabled).toBe(false);
   });
 
-  it('the batch form agrees with the per-device walk', async () => {
+  it('the batch form agrees with the per-device walk, rule for rule', async () => {
     const f = await fleet();
+    const siteA2 = await createSite({ orgId: f.orgA.id });
+    const deviceA2 = await seedDevice(f.orgA.id, siteA2.id);
+    const serverB = await seedDevice(f.deviceB.orgId, f.deviceB.siteId, 'server');
+
     const partnerWide = await seedPolicy({ orgId: null, partnerId: f.partner.id }, settings({ driver: true }));
     await assign(partnerWide, 'partner', f.partner.id);
-    const orgOff = await seedPolicy({ orgId: f.orgB.id, partnerId: null }, settings({}, { enabled: false }));
-    await assign(orgOff, 'organization', f.orgB.id);
+    // orgB override that applies to servers only.
+    const serversOff = await seedPolicy({ orgId: f.orgB.id, partnerId: null }, settings({}, { enabled: false }));
+    await assign(serversOff, 'organization', f.orgB.id, { roleFilter: ['server'] });
+    // An inactive site policy for deviceA2 must be ignored.
+    const inactive = await seedPolicy({ orgId: f.orgA.id, partnerId: null }, settings({}, { enabled: false }), { status: 'inactive' });
+    await assign(inactive, 'site', siteA2.id);
+    // deviceA: a child inheriting its parent's link, assigned at device level.
+    const parent = await seedPolicy({ orgId: f.orgA.id, partnerId: null }, settings({ application: true }));
+    const child = await seedPolicy({ orgId: f.orgA.id, partnerId: null }, null, { parentPolicyId: parent });
+    await assign(child, 'device', f.deviceA.id);
+    // deviceB: an unparseable device-level link.
+    const bad = await seedPolicy({ orgId: f.orgB.id, partnerId: null }, { ...settings({ driver: true }), windowHours: 99 } as never);
+    await assign(bad, 'device', f.deviceB.id);
 
-    const batch = await withDbAccessContext(SYSTEM_CTX, () =>
-      resolveOemUpdatesLinksForDevices([f.deviceA.id, f.deviceB.id, f.deviceC.id]));
-    expect(batch.get(f.deviceA.id)).toMatchObject({ configPolicyId: partnerWide });
-    expect(batch.get(f.deviceB.id)).toMatchObject({ configPolicyId: orgOff });
-    expect(batch.has(f.deviceC.id)).toBe(false);
-
-    for (const [device, orgId, partnerId] of [
+    const all = [
       [f.deviceA, f.orgA.id, f.partner.id],
+      [deviceA2, f.orgA.id, f.partner.id],
       [f.deviceB, f.orgB.id, f.partner.id],
-    ] as const) {
+      [serverB, f.orgB.id, f.partner.id],
+      [f.deviceC, f.orgC.id, f.otherPartner.id],
+    ] as const;
+    const batch = await withDbAccessContext(SYSTEM_CTX, () => resolveOemUpdatesLinksForDevices(all.map(([d]) => d.id)));
+    for (const [device, orgId, partnerId] of all) {
       const single = await withDbAccessContext(orgContext(orgId, partnerId), () => resolveOemUpdatesLinkForDevice(device.id));
-      expect(batch.get(device.id)?.linkId).toBe(single?.linkId);
+      expect(batch.get(device.id) ?? null).toEqual(single);
     }
+    // And the singles are what the rules say.
+    expect(batch.get(f.deviceA.id)).toMatchObject({ configPolicyId: parent, assignedPolicyId: child });
+    expect(batch.get(deviceA2.id)).toMatchObject({ configPolicyId: partnerWide });
+    expect(batch.get(f.deviceB.id)).toMatchObject({ configPolicyId: bad, invalidStoredSettings: true });
+    expect(batch.get(serverB.id)).toMatchObject({ configPolicyId: serversOff });
+    expect(batch.has(f.deviceC.id)).toBe(false);
   });
+});
+
+describe('vendor updates arming helpers on real Postgres (#11070)', () => {
+  const ARMED = settings({ driver: true });
+  const OFF = settings({}, { enabled: false });
+  const blind = (orgId: string): DbAccessContext => ({ ...orgContext(orgId, 'unused'), currentPartnerId: null });
+
+  it('policyEffectivelyArmsOemUpdates: own link first, else the parent whole', async () => {
+    const f = await fleet();
+    const ctx = orgContext(f.orgA.id, f.partner.id);
+    const armedParent = await seedPolicy({ orgId: f.orgA.id, partnerId: null }, ARMED);
+    const inherits = await seedPolicy({ orgId: f.orgA.id, partnerId: null }, null, { parentPolicyId: armedParent });
+    const overridesOff = await seedPolicy({ orgId: f.orgA.id, partnerId: null }, OFF, { parentPolicyId: armedParent });
+    const plain = await seedPolicy({ orgId: f.orgA.id, partnerId: null }, null);
+    await withDbAccessContext(ctx, async () => {
+      expect(await policyEffectivelyArmsOemUpdates(armedParent)).toBe(true);
+      expect(await policyEffectivelyArmsOemUpdates(inherits)).toBe(true);
+      expect(await policyEffectivelyArmsOemUpdates(overridesOff)).toBe(false);
+      expect(await policyEffectivelyArmsOemUpdates(plain)).toBe(false);
+    });
+  });
+
+  it('policyEffectivelyArmsOemUpdates fails closed on a policy or parent this context cannot see', async () => {
+    const f = await fleet();
+    const partnerWideParent = await seedPolicy({ orgId: null, partnerId: f.partner.id }, OFF);
+    const child = await seedPolicy({ orgId: f.orgA.id, partnerId: null }, null, { parentPolicyId: partnerWideParent });
+    // Visible parent, disarmed: not armed.
+    await withDbAccessContext(orgContext(f.orgA.id, f.partner.id), async () => {
+      expect(await policyEffectivelyArmsOemUpdates(child)).toBe(false);
+    });
+    // Same child, parent invisible (no current partner): "can't tell" reads as armed.
+    await withDbAccessContext(blind(f.orgA.id), async () => {
+      expect(await policyEffectivelyArmsOemUpdates(child)).toBe(true);
+    });
+    // A policy of another org is invisible: armed, never "nothing here".
+    await withDbAccessContext(orgContext(f.orgB.id, f.partner.id), async () => {
+      expect(await policyEffectivelyArmsOemUpdates(child)).toBe(true);
+    });
+  });
+
+  it('parentPolicyArmsOemUpdates reads only the parent oem_updates link', async () => {
+    const f = await fleet();
+    const armed = await seedPolicy({ orgId: f.orgA.id, partnerId: null }, ARMED);
+    const off = await seedPolicy({ orgId: f.orgA.id, partnerId: null }, OFF);
+    const otherFeature = await seedPolicy({ orgId: f.orgA.id, partnerId: null }, null);
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      // A link of another type carrying armed-looking settings must not count.
+      await db.insert(configPolicyFeatureLinks).values({ configPolicyId: otherFeature, featureType: 'patch', inlineSettings: ARMED });
+    });
+    await withDbAccessContext(orgContext(f.orgA.id, f.partner.id), async () => {
+      expect(await parentPolicyArmsOemUpdates(armed)).toBe(true);
+      expect(await parentPolicyArmsOemUpdates(off)).toBe(false);
+      expect(await parentPolicyArmsOemUpdates(otherFeature)).toBe(false);
+    });
+  });
+
+  it('addFeatureLink compares a new override with the inherited link, through the real view', async () => {
+    const f = await fleet();
+    const ctx = orgContext(f.orgA.id, f.partner.id);
+    const armedParent = await seedPolicy({ orgId: f.orgA.id, partnerId: null }, ARMED);
+    const narrowing = await seedPolicy({ orgId: f.orgA.id, partnerId: null }, null, { parentPolicyId: armedParent });
+    const arming = await seedPolicy({ orgId: f.orgA.id, partnerId: null }, null);
+    // Every gate is closed, so a stored link selects no category.
+    const enabledNoCategories = settings({});
+
+    await withDbAccessContext(ctx, async () => {
+      const stored = await addFeatureLink(narrowing, 'oem_updates', null, enabledNoCategories);
+      expect(stored).toMatchObject({ featureType: 'oem_updates', inlineSettings: enabledNoCategories });
+    });
+    await expect(withDbAccessContext(ctx, () => addFeatureLink(arming, 'oem_updates', null, enabledNoCategories)))
+      .rejects.toBeInstanceOf(OemUpdatesLinkWriteError);
+  });
+
+  it('a partner-wide policy takes an inline oem_updates link', async () => {
+    const f = await fleet();
+    const partnerWide = await seedPolicy({ orgId: null, partnerId: f.partner.id }, null);
+    const link = await withDbAccessContext(SYSTEM_CTX, () => addFeatureLink(partnerWide, 'oem_updates', null, OFF));
+    expect(link).toMatchObject({ featureType: 'oem_updates', featurePolicyId: null });
+  });
+
 });

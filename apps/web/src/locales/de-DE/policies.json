@@ -1252,7 +1252,8 @@
         "executeRequired": "Zum Aktivieren von Hersteller-Updates, Hinzufügen einer Kategorie, Aktivieren von Neustarts über Nacht oder Entsperren eines Updates sind die Berechtigung devices.execute und MFA erforderlich. Bitten Sie jemanden mit dieser Berechtigung, diese Änderung zu speichern.",
         "gateClosedRefusal": "Eine der ausgewählten Update-Kategorien ist noch nicht verfügbar, daher wurde die Richtlinie nicht gespeichert. Entfernen Sie sie und speichern Sie erneut.",
         "invalid": "Prüfen Sie den Zeitplan: Das Fenster umfasst 1 bis 8 volle Stunden, das Nachholen 0 bis 14 Nächte, und die Startzeit hat das Format HH:MM.",
-        "gatesError": "Die verfügbaren Update-Kategorien konnten nicht geladen werden. Alle Kategorien werden als nicht verfügbar angezeigt, bis die Seite neu geladen wird.",
+        "storedInvalid": "Die gespeicherten Einstellungen dieser Richtlinie sind ungültig, daher sind Hersteller-Updates für die betroffenen Geräte ausgeschaltet. Prüfen Sie die Einstellungen unten und speichern Sie, um sie zu korrigieren.",
+        "gatesError": "Die verfügbaren Update-Kategorien konnten nicht geladen werden, daher ist das Speichern deaktiviert. Laden Sie die Seite neu, um es erneut zu versuchen.",
         "stillGated": "Noch keine Update-Kategorie ist verfügbar, daher installiert diese Richtlinie derzeit nichts. Kategorien werden hier freigeschaltet, sobald ein Hersteller die Validierung abgeschlossen hat.",
         "armingNotice": "Breeze führt das eigene signierte Tool des Herstellers aus und hostet nie Herstellerdateien. Ein Gerät, das sich nach einem BIOS-Update nicht wieder gemeldet hat, löst einen Alarm aus."
       },

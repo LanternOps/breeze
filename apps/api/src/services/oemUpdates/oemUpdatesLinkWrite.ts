@@ -27,10 +27,18 @@ import { isCategoryOpen } from './toolManifest';
  *      only the normal link write: stopping a bad update never needs more.
  *   2. `featurePolicyId` must be NULL (Pattern B, inline settings).
  *   3. Strict inline-settings parse.
- *   4. A category whose availability gate is closed cannot be stored true
- *      (`oem_updates_category_gate_closed`), whatever the vendor and policy
- *      toggles say. A stored `true` would start flashing the day the gate opens,
- *      which spec 4.1 forbids: opening a gate must change no stored link.
+ *   4. A category whose availability gate is closed cannot be newly stored
+ *      true (`oem_updates_category_gate_closed`), whatever the vendor and policy
+ *      toggles say. A new `true` would start flashing the day the gate opens,
+ *      which spec 4.1 forbids: opening a gate must change no stored link. A
+ *      `true` already in effect (stored while the gate was open, before it was
+ *      closed again) may be resent unchanged, so switching updates off or
+ *      blocking an update never fails on it; the dispatch seam re-checks every
+ *      gate per device anyway.
+ *
+ * `previous` is read strictly: a blob that no longer parses (only a direct
+ * database edit can produce one) counts as null, nothing armed. The resolver
+ * treats such a blob as disabled, so the gate must not credit it with anything.
  *
  * `previous` is the settings in effect for the policy before this write: its own
  * link, else the one it inherits, else null. A caller that cannot tell passes
@@ -93,16 +101,26 @@ export type OemUpdatesGateReader = (lane: OemLane, category: OemCategory) => boo
 export function closedGateCategories(
   settings: OemUpdatesInlineSettings,
   isCategoryGateOpen: OemUpdatesGateReader = (lane, category) => isCategoryOpen(lane, category),
+  previous: OemUpdatesInlineSettings | null = null,
 ): string[] {
   const closed: string[] = [];
   for (const lane of OEM_LANES) {
     const vendor = settings.vendors[lane];
     if (!vendor) continue;
     for (const category of OEM_CATEGORIES) {
-      if (vendor.categories[category] === true && !isCategoryGateOpen(lane, category)) closed.push(`${lane}:${category}`);
+      if (vendor.categories[category] !== true || isCategoryGateOpen(lane, category)) continue;
+      // Already stored true before this write: resending it is not a new choice.
+      if (previous?.vendors[lane]?.categories[category] === true) continue;
+      closed.push(`${lane}:${category}`);
     }
   }
   return closed;
+}
+
+/** `previous` as the gate may trust it: strictly parsed, else null. */
+function strictPrevious(previous: unknown): OemUpdatesInlineSettings | null {
+  const parsed = oemUpdatesInlineSettingsSchema.safeParse(previous);
+  return parsed.success ? parsed.data : null;
 }
 
 export function checkOemUpdatesLinkWrite(
@@ -111,7 +129,8 @@ export function checkOemUpdatesLinkWrite(
 ):
   | { ok: true; inlineSettings: OemUpdatesInlineSettings | undefined }
   | { ok: false; refusal: OemUpdatesLinkWriteRefusal } {
-  if (input.next !== undefined && !input.armAuthorized && armsBeyond(input.previous, input.next)) {
+  const previous = strictPrevious(input.previous);
+  if (input.next !== undefined && !input.armAuthorized && armsBeyond(previous, input.next)) {
     return {
       ok: false,
       refusal: { status: 403, body: { error: OEM_UPDATES_EXECUTE_REQUIRED_MESSAGE, code: 'oem_updates_execute_required' } },
@@ -148,7 +167,7 @@ export function checkOemUpdatesLinkWrite(
     };
   }
 
-  const closed = closedGateCategories(parsed.data, deps.isCategoryGateOpen);
+  const closed = closedGateCategories(parsed.data, deps.isCategoryGateOpen, previous);
   if (closed.length > 0) {
     return {
       ok: false,

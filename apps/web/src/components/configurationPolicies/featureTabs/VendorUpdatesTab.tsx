@@ -25,7 +25,11 @@ import '@/lib/i18n';
 // Two rules from spec 4.1 shape this tab:
 //  - A category is offered only once its rollout gate is open
 //    (GET /configuration-policies/oem-updates/gates). A closed one renders
-//    disabled with the reason, and is never sent as true.
+//    disabled with the reason and cannot be newly turned on. One already
+//    stored true (its gate closed again after it was chosen) is shown as it is
+//    stored and sent back unchanged: the API accepts that, and the dispatch
+//    seam re-checks every gate. Saving waits for the gates, so a failed read
+//    can never rewrite what is stored.
 //  - Opening a gate turns nothing on. A link that never set a now-open
 //    category shows "now available" and keeps it off until a person turns it on.
 // Turning updates on, or adding a category, needs devices.execute + MFA; the API
@@ -179,6 +183,8 @@ export default function VendorUpdatesTab({
 
   const inherited = !!parentLink && !existingLink;
   const partnerWide = orgId === null;
+  // What the resolver will make of the stored link: one that no longer parses resolves as disabled.
+  const storedInvalid = source != null && !oemUpdatesInlineSettingsSchema.safeParse(source).success;
   const anyOpen = !!gates?.lanes.some((l) => OEM_CATEGORIES.some((c) => l.categories[c]));
 
   const buildSettings = () => {
@@ -190,8 +196,6 @@ export default function VendorUpdatesTab({
       for (const category of OEM_CATEGORIES) {
         const value = vendor.categories[category];
         if (value === undefined) continue;
-        // Never resend true for a category whose gate is closed (or since closed).
-        if (value && !isOpen(lane, category)) continue;
         categories[category] = value;
       }
       const blockedUpdateIds = Array.from(new Set(vendor.blocked.split(/[\s,]+/).map((id) => id.trim()).filter(Boolean)));
@@ -243,7 +247,8 @@ export default function VendorUpdatesTab({
       configuredButInactive={!form.enabled}
       saving={saving}
       saveTestId="vendor-updates-save"
-      saveDisabled={inherited && !parsed.success}
+      // No save until the gates are known: the form could not tell a stored category from a closed one.
+      saveDisabled={!gates || (inherited && !parsed.success)}
       error={handledError ? undefined : error}
       onSave={() => void persist(existingLink?.id ?? null)}
       onRemove={existingLink && !linkedPolicyId ? discard : undefined}
@@ -271,6 +276,12 @@ export default function VendorUpdatesTab({
         <div role="alert" data-testid="vendor-updates-gate-closed" className="mb-4 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <p>{k('gateClosedRefusal')}</p>
+        </div>
+      )}
+      {storedInvalid && (
+        <div role="alert" data-testid="vendor-updates-stored-invalid" className="mb-4 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>{k('storedInvalid')}</p>
         </div>
       )}
       {attempted && !parsed.success && !inherited && (
@@ -394,7 +405,7 @@ export default function VendorUpdatesTab({
                             <input
                               data-testid={`vendor-updates-${lane}-${category}`}
                               type="checkbox"
-                              checked={open && value === true}
+                              checked={value === true}
                               disabled={!open}
                               onChange={(e) => setVendor(lane, { categories: { ...vendor.categories, [category]: e.target.checked } })}
                             />

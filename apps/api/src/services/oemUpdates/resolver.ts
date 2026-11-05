@@ -22,6 +22,7 @@ import {
   sortByHierarchy,
 } from '../featureConfigResolver';
 import { isUnassignedPoolOrgType } from '../unassignedPool/orgType';
+import { captureException } from '../sentry';
 
 /**
  * The winning Vendor updates (`oem_updates`) link for a device (#11070, spec 4.1).
@@ -70,11 +71,15 @@ function toResolved(winner: {
     // Once per link: a bad partner-wide link would otherwise log for every
     // device it reaches. Paths only: messages can echo rejected values.
     warnedUnparseableLinks.add(winner.linkId);
-    console.error('[oemUpdates] vendor updates link has unparseable settings; resolving as disabled', {
+    const detail = {
       linkId: winner.linkId,
       configPolicyId: winner.sourcePolicyId,
       issues: parsed.error.issues.map((issue) => issue.path.join('.') || '(root)'),
-    });
+    };
+    console.error('[oemUpdates] vendor updates link has unparseable settings; resolving as disabled', detail);
+    // The write path cannot store such a blob, so this is a direct edit or a
+    // schema change: make it reach someone, not only the process log.
+    captureException(new Error(`oem_updates link ${winner.linkId} has unparseable settings; resolving as disabled`));
   }
   return {
     linkId: winner.linkId,

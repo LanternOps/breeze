@@ -2198,6 +2198,30 @@ describe('AI tools cannot arm vendor updates (#11070)', () => {
     expect((await call({ action: 'update', name: 'Renamed' })).success).toBe(true);
   });
 
+  it('activation is refused for an armed link inherited from the parent, and for an unresolvable parent', async () => {
+    for (const policy of [
+      { status: 'inactive', parentPolicyId: 'parent', parentPolicy: { id: 'parent', featureLinks: [oemLink(ARMED)] } },
+      { status: 'archived', parentPolicyId: 'parent', parentPolicy: null },
+    ]) {
+      const map = tools(policy);
+      const out = JSON.parse(await map.get('manage_configuration_policy')!.handler({ action: 'activate', policyId: POLICY_ID }, makeAuth()));
+      expect(out.code).toBe('oem_updates_execute_required');
+    }
+    expect(vi.mocked(updateConfigPolicy)).not.toHaveBeenCalled();
+  });
+
+  it('remove of an override with an unresolvable parent fails closed', async () => {
+    const out = await link(tools({ parentPolicyId: 'parent', parentPolicy: null, featureLinks: [oemLink(OFF)] }), { action: 'remove', featureLinkId: 'link-1' });
+    expect(out.code).toBe('oem_updates_execute_required');
+    expect(vi.mocked(removeFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('add of an override with an unresolvable parent is compared with nothing', async () => {
+    const out = await link(tools({ parentPolicyId: 'parent', parentPolicy: null }), { action: 'add', featureType: 'oem_updates', inlineSettings: settings() });
+    expect(out.code).toBe('oem_updates_execute_required');
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
   it('manage_configuration_policy activates an unarmed policy', async () => {
     const map = tools({ status: 'inactive', featureLinks: [oemLink(OFF)] });
     vi.mocked(updateConfigPolicy).mockResolvedValue({ id: POLICY_ID, name: 'Org policy', status: 'active' } as any);

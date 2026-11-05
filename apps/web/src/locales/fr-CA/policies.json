@@ -1251,8 +1251,9 @@
         "blockedHelp": "Breeze n’installe jamais une mise à jour listée ici.",
         "executeRequired": "L’activation des mises à jour fabricant, l’ajout d’une catégorie, l’activation des redémarrages de nuit ou le déblocage d’une mise à jour nécessitent l’autorisation devices.execute et l’authentification MFA. Demandez à une personne qui la possède d’enregistrer cette modification.",
         "gateClosedRefusal": "L’une des catégories de mise à jour sélectionnées n’est pas encore disponible; la politique n’a donc pas été enregistrée. Retirez-la, puis enregistrez de nouveau.",
-        "invalid": "Vérifiez la horaire : la fenêtre dure de 1 à 8 heures entières, le rattrapage de 0 à 14 nuits, et l’heure de début est au format HH:MM.",
-        "gatesError": "Impossible de charger les catégories de mise à jour disponibles. Toutes les catégories sont affichées comme indisponibles jusqu’au rechargement de la page.",
+        "invalid": "Vérifiez l’horaire : la fenêtre dure de 1 à 8 heures entières, le rattrapage de 0 à 14 nuits, et l’heure de début est au format HH:MM.",
+        "storedInvalid": "Les paramètres enregistrés de cette politique ne sont pas valides : les mises à jour fabricant sont donc désactivées sur les appareils visés. Vérifiez les paramètres ci-dessous et enregistrez pour les corriger.",
+        "gatesError": "Impossible de charger les catégories de mise à jour disponibles : l’enregistrement est donc désactivé. Rechargez la page pour réessayer.",
         "stillGated": "Aucune catégorie de mise à jour n’est encore disponible; cette politique n’installe donc rien pour l’instant. Les catégories s’ouvrent ici à mesure que chaque fabricant termine la validation.",
         "armingNotice": "Breeze exécute l’outil signé du fabricant et n’héberge jamais de fichiers fabricant. Un appareil qui ne s’est pas reconnecté après une mise à jour du BIOS déclenche une alerte."
       },

@@ -1252,7 +1252,8 @@
         "executeRequired": "Üretici güncellemelerini açmak, kategori eklemek, gece yeniden başlatmalarını açmak veya bir güncellemenin engelini kaldırmak için devices.execute izni ve MFA gerekir. Bu izne sahip birinden bu değişikliği kaydetmesini isteyin.",
         "gateClosedRefusal": "Seçilen güncelleme kategorilerinden biri henüz kullanılamıyor, bu nedenle ilke kaydedilmedi. Kategoriyi kaldırıp yeniden kaydedin.",
         "invalid": "Zamanlamayı kontrol edin: pencere 1 ile 8 tam saat arasında, telafi 0 ile 14 gece arasında olmalı ve başlangıç saati HH:MM biçiminde olmalıdır.",
-        "gatesError": "Hangi güncelleme kategorilerinin kullanılabilir olduğu yüklenemedi. Sayfa yeniden yüklenene kadar tüm kategoriler kullanılamıyor olarak gösterilir.",
+        "storedInvalid": "Bu ilkenin kayıtlı ayarları geçerli değil, bu nedenle ulaştığı cihazlarda üretici güncellemeleri kapalı. Düzeltmek için aşağıdaki ayarları gözden geçirip kaydedin.",
+        "gatesError": "Hangi güncelleme kategorilerinin kullanılabilir olduğu yüklenemedi, bu nedenle kaydetme kapalı. Yeniden denemek için sayfayı yenileyin.",
         "stillGated": "Henüz hiçbir güncelleme kategorisi kullanılamıyor, bu nedenle bu ilke şu an hiçbir şey yüklemez. Kategoriler, her üretici doğrulamayı tamamladıkça burada açılır.",
         "armingNotice": "Breeze, üreticinin kendi imzalı aracını çalıştırır ve üretici dosyalarını asla barındırmaz. BIOS güncellemesinden sonra bağlanmayan bir cihaz uyarı oluşturur."
       },

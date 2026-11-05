@@ -47,10 +47,9 @@ vi.mock('../../middleware/auth', () => ({
   requireScope: vi.fn(() => (c: any, next: any) => next()),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
   // Route-level MFA stand-in; crud.test.ts exercises the real one.
-  requireMfa: vi.fn(() => async (c: any, next: any) => {
-    if (!mfaState.satisfied) return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
-    await next();
-  }),
+  // Pass-through: the route-level MFA gate is covered elsewhere. A pass-through
+  // here makes the no-MFA cases prove the oem_updates gate's own MFA check.
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
   hasSatisfiedMfa: vi.fn(() => mfaState.satisfied),
 }));
 
@@ -129,6 +128,16 @@ describe('POST / — oem_updates create-with-parent gate (#11070)', () => {
     expect(createConfigPolicyMock).not.toHaveBeenCalled();
   });
 
+  it('creating a child of an armed parent with execute but no MFA is refused by the gate itself', async () => {
+    permState.permissions = EXECUTE;
+    mfaState.satisfied = false;
+    parentPolicyArmsOemUpdatesMock.mockResolvedValue(true);
+    const res = await createChild();
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'MFA_REQUIRED' });
+    expect(createConfigPolicyMock).not.toHaveBeenCalled();
+  });
+
   it('creating a child of an armed parent with execute and MFA passes', async () => {
     permState.permissions = EXECUTE;
     parentPolicyArmsOemUpdatesMock.mockResolvedValue(true);
@@ -165,6 +174,16 @@ describe('PATCH /:id — oem_updates activation gate (#11070)', () => {
     expect((await patchPolicy({ status: 'active' })).status).toBe(403);
     getConfigPolicyMock.mockResolvedValue(stored({ parentPolicyId: PARENT_ID, parentPolicy: null }));
     expect((await patchPolicy({ status: 'active' })).status).toBe(403);
+    expect(updateConfigPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('activating an armed policy with execute but no MFA is refused by the gate itself', async () => {
+    permState.permissions = EXECUTE;
+    mfaState.satisfied = false;
+    getConfigPolicyMock.mockResolvedValue(stored({ featureLinks: [oem(ARMED)] }));
+    const res = await patchPolicy({ status: 'active' });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'MFA_REQUIRED' });
     expect(updateConfigPolicyMock).not.toHaveBeenCalled();
   });
 

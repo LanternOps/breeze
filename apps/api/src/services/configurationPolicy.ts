@@ -3319,7 +3319,8 @@ export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = ne
   // found via software_policies.managed_by_link_id.
   'security_agents',
   // #10100: partner-wide inline settings; featurePolicyId is always refused below.
-  'containment',  // #11065: partner-wide inline settings; featurePolicyId is always refused below.
+  'containment',
+  // #11065: partner-wide inline settings; featurePolicyId is always refused below.
   'oem_updates',
 ]);
 

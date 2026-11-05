@@ -1252,7 +1252,8 @@
         "executeRequired": "Ativar atualizações de fabricantes, adicionar uma categoria, ativar reinicializações noturnas ou desbloquear uma atualização exige a permissão devices.execute e MFA. Peça a alguém que a tenha para salvar esta alteração.",
         "gateClosedRefusal": "Uma das categorias de atualização selecionadas ainda não está disponível, então a política não foi salva. Remova-a e salve novamente.",
         "invalid": "Verifique a programação: a janela é de 1 a 8 horas inteiras, a recuperação é de 0 a 14 noites e o horário de início está no formato HH:MM.",
-        "gatesError": "Não foi possível carregar quais categorias de atualização estão disponíveis. Todas as categorias aparecem como indisponíveis até a página ser recarregada.",
+        "storedInvalid": "As configurações salvas desta política não são válidas, por isso as atualizações de fabricantes estão desativadas nos dispositivos que ela alcança. Revise as configurações abaixo e salve para corrigi-las.",
+        "gatesError": "Não foi possível carregar quais categorias de atualização estão disponíveis, por isso salvar está desativado. Recarregue a página para tentar novamente.",
         "stillGated": "Nenhuma categoria de atualização está disponível ainda, então esta política não instala nada hoje. As categorias são liberadas aqui à medida que cada fabricante conclui a validação.",
         "armingNotice": "O Breeze executa a ferramenta assinada do próprio fabricante e nunca hospeda arquivos de fabricantes. Um dispositivo que não se reconectou após uma atualização de BIOS gera um alerta."
       },

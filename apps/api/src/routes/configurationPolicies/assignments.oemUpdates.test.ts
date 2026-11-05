@@ -38,10 +38,9 @@ vi.mock('../../middleware/auth', () => ({
   requireScope: vi.fn(() => (c: any, next: any) => next()),
   requirePermission: vi.fn(() => (c: any, next: any) => next()),
   // Route-level MFA stand-in, same shape as assignments.test.ts.
-  requireMfa: vi.fn(() => async (c: any, next: any) => {
-    if (!mfaState.satisfied) return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
-    await next();
-  }),
+  // Pass-through: the route-level MFA gate is covered elsewhere. A pass-through
+  // here makes the no-MFA cases prove the oem_updates gate's own MFA check.
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
   hasSatisfiedMfa: vi.fn(() => mfaState.satisfied),
 }));
 
@@ -119,6 +118,7 @@ describe('POST /:id/assignments — oem_updates gate (#11070)', () => {
     getConfigPolicyMock.mockResolvedValue(policy({ featureLinks: [oem(ARMED)] }));
     const res = await assign();
     expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'MFA_REQUIRED' });
     expect(assignPolicyMock).not.toHaveBeenCalled();
   });
 

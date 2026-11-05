@@ -184,12 +184,40 @@ describe('VendorUpdatesTab', () => {
     expect(screen.getByTestId('vendor-updates-gate-closed')).toBeTruthy();
   });
 
-  it('a stored category whose gate has since closed is dropped on save, never resent as true', async () => {
+  it('a stored category whose gate has since closed is shown as stored and sent back unchanged', async () => {
     render(<VendorUpdatesTab {...props} existingLink={link(stored({ bios: true }))} />);
     await waitFor(() => expect(screen.getByTestId('vendor-updates-dell-bios-closed')).toBeTruthy());
+    expect(box('vendor-updates-dell-bios').checked).toBe(true);
+    expect(box('vendor-updates-dell-bios').disabled).toBe(true);
+    // Switching the policy off still saves, with the stored choice untouched.
+    fireEvent.click(box('vendor-updates-enabled'));
     fireEvent.click(screen.getByTestId('vendor-updates-save'));
     await waitFor(() => expect(m.save).toHaveBeenCalled());
-    expect(lastSaved().vendors.dell.categories).toEqual({});
+    expect(lastSaved()).toMatchObject({ enabled: false, vendors: { dell: { categories: { bios: true } } } });
+  });
+
+  it('cannot save before the gates are known, so a stored category is never rewritten blind', async () => {
+    m.fetch.mockReturnValue(new Promise(() => {}));
+    render(<VendorUpdatesTab {...props} existingLink={link(stored({ driver: true }))} />);
+    const save = screen.getByTestId('vendor-updates-save') as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    fireEvent.click(save);
+    expect(m.save).not.toHaveBeenCalled();
+  });
+
+  it('stored settings that no longer parse are flagged on load', async () => {
+    render(<VendorUpdatesTab {...props} existingLink={link({ ...stored({}), catchUpNights: 99 })} />);
+    expect(screen.getByTestId('vendor-updates-stored-invalid')).toBeTruthy();
+  });
+
+  it('an inherited link that no longer parses is flagged too, not left as a silent disabled button', async () => {
+    render(<VendorUpdatesTab {...props} parentLink={link({ ...stored({}), unknownKey: 1 })} />);
+    expect(screen.getByTestId('vendor-updates-stored-invalid')).toBeTruthy();
+  });
+
+  it('valid stored settings carry no warning', async () => {
+    render(<VendorUpdatesTab {...props} existingLink={link(stored({}))} />);
+    expect(screen.queryByTestId('vendor-updates-stored-invalid')).toBeNull();
   });
 
   it('shows the partner-wide badge on a partner-wide policy', () => {
@@ -204,11 +232,11 @@ describe('VendorUpdatesTab', () => {
     expect(box('vendor-updates-enabled').matches(':disabled')).toBe(true);
   });
 
-  it('a gates read failure keeps every category closed', async () => {
+  it('a gates read failure keeps every category closed and saving off', async () => {
     m.fetch.mockResolvedValue(new Response('{}', { status: 500 }));
     render(<VendorUpdatesTab {...props} existingLink={link(stored({ driver: true }))} />);
     await waitFor(() => expect(screen.getByTestId('vendor-updates-gates-error')).toBeTruthy());
     expect(box('vendor-updates-dell-driver').disabled).toBe(true);
-    expect(box('vendor-updates-dell-driver').checked).toBe(false);
+    expect((screen.getByTestId('vendor-updates-save') as HTMLButtonElement).disabled).toBe(true);
   });
 });
