@@ -1,6 +1,6 @@
 # Backup provider: Axcient x360Recover (design)
 
-**Status:** DRAFT, not yet approved. Open decisions are in [Decisions](#decisions).
+**Status:** APPROVED 2026-11-06 (Todd, defaults taken). Decision 1 (live account) is still owed and blocks W03 only.
 **Date:** 2026-11-06
 **Builds on:** `2026-09-15-backup-provider-integration-cove-design.md` (feature #6008, Cove phase 1) and `2026-10-27-backup-provider-dropsuite-design.md` (second adapter, feature #10598). The provider model, sync job, customer mapping, device matching, alerting, read model and portal surfaces all apply unchanged unless this document says otherwise.
 **Scope:** Phase 1 only. Breeze reads x360Recover's per-device backup health for every client under the MSP and shows it everywhere Cove status already appears. Breeze writes nothing to Axcient.
@@ -165,7 +165,7 @@ W03 is blocked until Decision 1 is resolved. W01 and W02 are not.
 
 ## Decisions
 
-Open unless marked resolved.
+All resolved as the defaults below on 2026-11-06, except decision 1, which is owed before W03.
 
 1. **Live account.** Options: (a) an Axcient partner trial under OliveTech; (b) a read-only key from the prospect that keeps Axcient, as a design-partner arrangement; (c) ship on fixtures and verify with the first real partner connection. **Recommend (a), fall back to (b).** Shipping unverified repeats the Cove visa mistake, where the integration never worked against the real API until a customer hit it.
 2. **Inactive clients are listed** (`active: false`), not filtered. Resolved as the default: hiding them silently would make a parked customer look like a sync bug.
