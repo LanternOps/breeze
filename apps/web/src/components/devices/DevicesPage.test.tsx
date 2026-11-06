@@ -3108,6 +3108,41 @@ describe('DevicesPage — bulk restore and bulk permanent delete (#2787)', () =>
     );
   });
 
+  it('names devices left out at start without claiming anything is already deleted', async () => {
+    const { startBulkPurge, fetchPurgeRun } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(startBulkPurge).mockResolvedValue({
+      jobId: 'job-3',
+      accepted: 1,
+      rejected: [
+        { deviceId: DEV_1, code: 'UNINSTALL_NOT_CONFIRMED' },
+        { deviceId: DEV_2, code: 'SOME_OTHER_CODE' },
+      ],
+    } as Awaited<ReturnType<typeof startBulkPurge>>);
+    vi.mocked(fetchPurgeRun).mockResolvedValue({
+      state: 'waiting',
+      progress: { done: 0, total: 1 },
+      result: null,
+      failedReason: null,
+    });
+
+    await renderWithRemovedFleet();
+    fireEvent.click(screen.getByTestId('bulk-permanent-delete'));
+    fireEvent.change(await screen.findByTestId('bulk-purge-count'), { target: { value: '2' } });
+    fireEvent.click(screen.getByTestId('confirm-bulk-purge'));
+
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith({
+        type: 'warning',
+        message:
+          '1 skipped because its agent never confirmed the uninstall. Delete it on its own from the device page. 1 skipped with reason SOME_OTHER_CODE.',
+      }),
+    );
+    expect(vi.mocked(showToast)).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('permanently deleted') }),
+    );
+  });
+
   it('surfaces a whole-selection rejection and never starts polling', async () => {
     const { startBulkPurge, fetchPurgeRun } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');

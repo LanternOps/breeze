@@ -733,7 +733,7 @@ const namespaceDuplicateBaselines = {
     // +1: the input placeholder "XXX-XXX-XXX" is a code-shape mask, not
     // wording — it is intentionally identical in every catalog.
     'quick.json': 1,
-    'remote.json': 17,
+    'remote.json': 18, // +1: servicesManager.title "Services" is the French word too
     'reports.json': 48, // +5: reports.series ccPlaceholder + drilldown.columns.actions, drilldown.states.active, child.summary.type, child.summary.format (identical French cognates)
     'restorePoints.json': 0,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not

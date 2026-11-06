@@ -2141,8 +2141,9 @@ export default function DevicesPage() {
         // survive a delete the operator believes they ordered.
         const byCode: Record<string, number> = {};
         for (const r of started.rejected) byCode[r.code] = (byCode[r.code] ?? 0) + 1;
-        const reasons = describePurgeSkips(byCode);
-        showToast({ type: 'warning', message: t('devicesPage.toasts.bulkPurgeDoneWithSkips', { count: started.accepted, skipped: started.rejected.length, reasons }) });
+        // The success toast above already says how many are being deleted;
+        // nothing is deleted yet, so this one names only what was left out.
+        showToast({ type: 'warning', message: describePurgeSkips(byCode) });
       }
       stopPurgePolling(); // drop anything from a previous run
       const token = purgePollTokenRef.current;
