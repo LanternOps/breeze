@@ -2,7 +2,7 @@ import { queueTopologyAging } from './collectionAging';
 import { purgeAgedUnboundStubNodes } from './unboundNodeRetention';
 import { sql } from 'drizzle-orm';
 import type { TopologyScope } from '@breeze/shared';
-import { db, assertInTransaction } from '../../db';
+import { db, assertInTransaction, withDbTransaction } from '../../db';
 import { captureException } from '../sentry';
 /**
  * Purge the passive collection evidence of a producer whose device row is GONE.
@@ -71,7 +71,7 @@ export async function expireTopologyEvidence(scope:TopologyScope,now=new Date())
     // retention above, nor stop the site's updated_at bump that rotates the queue.
     let purgedStubNodes=0;
     try{
-      purgedStubNodes=await db.transaction(async()=>(await purgeAgedUnboundStubNodes(scope,now)).deleted);
+      purgedStubNodes=await withDbTransaction(async()=>(await purgeAgedUnboundStubNodes(scope,now)).deleted);
       if(purgedStubNodes>0)console.info('[topology-retention] purged unbound stub nodes',{orgId:scope.orgId,siteId:scope.siteId,deleted:purgedStubNodes});
     }catch(error){
       console.error('[topology-retention] unbound stub purge failed',{orgId:scope.orgId,siteId:scope.siteId});

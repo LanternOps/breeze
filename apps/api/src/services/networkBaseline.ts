@@ -1,5 +1,5 @@
 import { and, desc, eq, gte, inArray, or, sql, type SQL } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withDbTransactionIfHeld } from '../db';
 import {
   alerts,
   alertTemplates,
@@ -443,7 +443,7 @@ async function resolveAlertDeviceForChangeEvent(
 
   // Strategy 2: Discovered asset with exact IP match
   try {
-    const [linkedAsset] = await db
+    const [linkedAsset] = await withDbTransactionIfHeld(() => db
       .select({ linkedDeviceId: discoveredAssets.linkedDeviceId })
       .from(discoveredAssets)
       .where(
@@ -453,7 +453,7 @@ async function resolveAlertDeviceForChangeEvent(
           sql`${discoveredAssets.linkedDeviceId} is not null`
         )
       )
-      .limit(1);
+      .limit(1));
 
     if (linkedAsset?.linkedDeviceId) {
       return {
@@ -480,7 +480,7 @@ async function resolveAlertDeviceForChangeEvent(
     }
 
     if (candidateConditions.length > 0) {
-      const [candidate] = await db
+      const [candidate] = await withDbTransactionIfHeld(() => db
         .select({ deviceId: deviceNetwork.deviceId })
         .from(deviceNetwork)
         .innerJoin(devices, eq(devices.id, deviceNetwork.deviceId))
@@ -491,7 +491,7 @@ async function resolveAlertDeviceForChangeEvent(
             or(...candidateConditions)
           )
         )
-        .limit(1);
+        .limit(1));
 
       if (candidate?.deviceId) {
         return {
@@ -510,7 +510,7 @@ async function resolveAlertDeviceForChangeEvent(
 
   // Strategy 4: Most recently seen device at the same site
   try {
-    const [siteAnchorDevice] = await db
+    const [siteAnchorDevice] = await withDbTransactionIfHeld(() => db
       .select({ id: devices.id })
       .from(devices)
       .where(
@@ -520,7 +520,7 @@ async function resolveAlertDeviceForChangeEvent(
         )
       )
       .orderBy(desc(devices.lastSeenAt), desc(devices.enrolledAt))
-      .limit(1);
+      .limit(1));
 
     if (siteAnchorDevice?.id) {
       return {
@@ -538,12 +538,12 @@ async function resolveAlertDeviceForChangeEvent(
 
   // Strategy 5: Most recently seen device in the same org
   try {
-    const [orgAnchorDevice] = await db
+    const [orgAnchorDevice] = await withDbTransactionIfHeld(() => db
       .select({ id: devices.id })
       .from(devices)
       .where(eq(devices.orgId, changeEvent.orgId))
       .orderBy(desc(devices.lastSeenAt), desc(devices.enrolledAt))
-      .limit(1);
+      .limit(1));
 
     if (orgAnchorDevice?.id) {
       return {

@@ -1,7 +1,7 @@
 import { and, desc, eq, sql } from 'drizzle-orm';
 import type { AiInitiatorKind, AiOriginSummaryDto } from '@breeze/shared';
 import { isAiInitiatorKind } from '@breeze/shared';
-import { db } from '../db';
+import { db, withDbTransactionIfHeld } from '../db';
 import { auditLogs, aiAgentRuns, aiAgents, deviceCommands, devices, scriptExecutions } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { getSession } from './aiAgent';
@@ -170,7 +170,7 @@ async function loadAgentRunRow(
 async function loadToolName(source: { kind: 'execution' | 'command'; id: string; deviceId: string }): Promise<string | null> {
   try {
     const detailsKey = source.kind === 'execution' ? 'executionId' : 'commandId';
-    const [row] = await db
+    const [row] = await withDbTransactionIfHeld(() => db
       .select({ details: auditLogs.details })
       .from(auditLogs)
       .where(
@@ -181,7 +181,7 @@ async function loadToolName(source: { kind: 'execution' | 'command'; id: string;
         ),
       )
       .orderBy(desc(auditLogs.timestamp))
-      .limit(1);
+      .limit(1));
     const details = row?.details as { toolName?: unknown } | null | undefined;
     return typeof details?.toolName === 'string' ? details.toolName : null;
   } catch (err) {

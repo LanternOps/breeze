@@ -1,5 +1,5 @@
 import { and, eq, inArray, like, or, sql } from 'drizzle-orm';
-import { db, runAfterDbContextExit } from '../db';
+import { db, runAfterDbContextExit, withDbTransactionIfHeld } from '../db';
 import {
   backupJobs,
   backupSnapshotFiles,
@@ -1854,7 +1854,9 @@ export async function applyBackupCommandResultToJob(params: {
 
   if (snapshot) {
     try {
-      const protection = await resolveSnapshotProtectionSettingsForJob(jobId, timestamp);
+      // Each statement below is its own savepoint rather than one around the
+      // block, so the provider calls in between hold none open (#11225).
+      const protection = await withDbTransactionIfHeld(() => resolveSnapshotProtectionSettingsForJob(jobId, timestamp));
       let protectionUpdate = {
         legalHold: protection.legalHold,
         legalHoldReason: protection.legalHoldReason,
@@ -1874,7 +1876,7 @@ export async function applyBackupCommandResultToJob(params: {
         protection.immutableUntil
       ) {
         try {
-          const storage = await resolveBackupConfigStorage(updatedJob.configId ?? null);
+          const storage = await withDbTransactionIfHeld(() => resolveBackupConfigStorage(updatedJob.configId ?? null));
           if (!storage) {
             throw new Error('Backup config storage details unavailable');
           }
@@ -1939,10 +1941,10 @@ export async function applyBackupCommandResultToJob(params: {
         }
       }
 
-      await db
+      await withDbTransactionIfHeld(() => db
         .update(backupSnapshots)
         .set(protectionUpdate)
-        .where(eq(backupSnapshots.id, snapshot.id));
+        .where(eq(backupSnapshots.id, snapshot.id)));
     } catch (err) {
       console.error(
         `[BackupPersistence] Failed to apply protection settings to snapshot ${snapshot.id}:`,
@@ -1951,7 +1953,7 @@ export async function applyBackupCommandResultToJob(params: {
     }
 
     try {
-      await reconcileMssqlBackupChain({
+      await withDbTransactionIfHeld(() => reconcileMssqlBackupChain({
         // #3036: the job row's org, not the caller's — a stale value here would
         // miss the device's real chain and fork a duplicate under the old org.
         orgId: effectiveOrgId,
@@ -1960,7 +1962,7 @@ export async function applyBackupCommandResultToJob(params: {
         snapshotDbId: snapshot.id,
         timestamp,
         metadata: snapshotMetadata,
-      });
+      }));
     } catch (err) {
       console.error(
         `[BackupPersistence] Failed to reconcile MSSQL chain for snapshot ${snapshot.id}:`,
@@ -1969,15 +1971,17 @@ export async function applyBackupCommandResultToJob(params: {
     }
 
     try {
-      const tags = await applyGfsTagsToSnapshot(snapshot.id, timestamp, jobId);
-      const gfsConfig = await resolveGfsConfigForJob(jobId);
-      const expiresAt = computeExpiresAt(timestamp, tags, gfsConfig);
-      if (expiresAt) {
-        await db
-          .update(backupSnapshots)
-          .set({ expiresAt })
-          .where(eq(backupSnapshots.id, snapshot.id));
-      }
+      await withDbTransactionIfHeld(async () => {
+        const tags = await applyGfsTagsToSnapshot(snapshot.id, timestamp, jobId);
+        const gfsConfig = await resolveGfsConfigForJob(jobId);
+        const expiresAt = computeExpiresAt(timestamp, tags, gfsConfig);
+        if (expiresAt) {
+          await db
+            .update(backupSnapshots)
+            .set({ expiresAt })
+            .where(eq(backupSnapshots.id, snapshot.id));
+        }
+      });
     } catch (err) {
       console.error(
         `[BackupPersistence] Failed to apply GFS tags to snapshot ${snapshot.id}:`,

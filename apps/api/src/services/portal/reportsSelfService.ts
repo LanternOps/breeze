@@ -10,7 +10,7 @@ import {
   type PortalRunDto,
   type PortalRunsDto,
 } from '@breeze/shared';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { tightenStatementTimeout } from '../../db/lockTimeout';
 import { portalBranding, reportRuns, reports } from '../../db/schema';
 import { checkRateLimit, PORTAL_USE_REDIS } from './rateLimit';
@@ -651,40 +651,44 @@ export async function generatePortalReport(args: {
     if (!run) throw new Error('Failed to create portal report run');
 
     try {
-      const result = await generateReport(
-        definition.type,
-        organizationScope(args.orgId),
-        effectiveConfig,
-        authority,
-      );
-      const previous = await previousBaselineFor(
-        definition.id,
-        authority.fingerprint,
-      );
-      if (previous) result.previous = previous;
+      // One savepoint: the catch below stamps the run failed on this same
+      // transaction, so a SQL failure in here must stop at the savepoint (#11225).
+      return await withDbTransaction(async () => {
+        const result = await generateReport(
+          definition.type,
+          organizationScope(args.orgId),
+          effectiveConfig,
+          authority,
+        );
+        const previous = await previousBaselineFor(
+          definition.id,
+          authority.fingerprint,
+        );
+        if (previous) result.previous = previous;
 
-      const completedAt = new Date();
-      const rowCount = result.rowCount
-        ?? (Array.isArray(result.rows) ? result.rows.length : null);
-      const [completed] = await db.update(reportRuns).set({
-        status: 'completed',
-        completedAt,
-        rowCount,
-        result,
-        outputUrl: `/api/v1/portal/reports/runs/${run.id}/pdf`,
-      }).where(eq(reportRuns.id, run.id)).returning();
+        const completedAt = new Date();
+        const rowCount = result.rowCount
+          ?? (Array.isArray(result.rows) ? result.rows.length : null);
+        const [completed] = await db.update(reportRuns).set({
+          status: 'completed',
+          completedAt,
+          rowCount,
+          result,
+          outputUrl: `/api/v1/portal/reports/runs/${run.id}/pdf`,
+        }).where(eq(reportRuns.id, run.id)).returning();
 
-      // The MSP Reports list reads this column; the MSP generate path and the
-      // scheduler stamp it, so a portal run must too or the MSP sees "Never".
-      await db.update(reports)
-        .set({ lastGeneratedAt: completedAt, updatedAt: completedAt })
-        .where(eq(reports.id, definition.id));
+        // The MSP Reports list reads this column; the MSP generate path and the
+        // scheduler stamp it, so a portal run must too or the MSP sees "Never".
+        await db.update(reports)
+          .set({ lastGeneratedAt: completedAt, updatedAt: completedAt })
+          .where(eq(reports.id, definition.id));
 
-      return toDto({
-        ...completed!,
-        csvAvailable: Array.isArray(result.rows),
-        name: definition.name,
-        type: definition.type as PortalReportType,
+        return toDto({
+          ...completed!,
+          csvAvailable: Array.isArray(result.rows),
+          name: definition.name,
+          type: definition.type as PortalReportType,
+        });
       });
     } catch (error) {
       const errorMessage = error instanceof Error

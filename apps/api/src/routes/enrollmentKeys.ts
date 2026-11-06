@@ -3381,8 +3381,9 @@ publicShortLinkRoutes.get("/:code", async (c) => {
  * Undo a /s/:code redemption that produced no installer (#7217): delete the
  * transport download key it minted (cascading any bootstrap token issued from
  * it) and give the claimed use back to the link. Runs inside the route's
- * system DB context. Failures are logged and reported, never thrown — the
- * visitor still gets the original error response.
+ * system DB context. Failures are logged and reported, never thrown. Deliberately
+ * no savepoint (#11225): a failed statement fails the route's commit, which rolls
+ * back the mint and the claim, so no live download key outlives a failed redemption.
  */
 async function releaseFailedShortLinkClaim(
   c: Context,

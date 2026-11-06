@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withDbTransactionIfHeld } from '../db';
 import { captureException } from './sentry';
 import { PamActuationNotFoundError, requestPamCleanup } from './pamActuationLifecycle';
 import {
@@ -714,7 +714,7 @@ export async function recordSoftwarePolicyAudit(input: {
     if (!input.orgId && !input.partnerId) {
       throw new Error('software policy audit requires at least one owner axis (orgId or partnerId)');
     }
-    await db.insert(softwarePolicyAudit).values({
+    await withDbTransactionIfHeld(() => db.insert(softwarePolicyAudit).values({
       orgId: input.orgId,
       partnerId: input.partnerId ?? null,
       policyId: input.policyId ?? null,
@@ -723,7 +723,7 @@ export async function recordSoftwarePolicyAudit(input: {
       actor: input.actor,
       actorId: input.actorId ?? null,
       details: input.details ?? null,
-    });
+    }));
   } catch (err) {
     // Audit rows exist for accountability — losing one silently defeats the
     // point, so surface to Sentry (mirrors auditService's exhausted-retry

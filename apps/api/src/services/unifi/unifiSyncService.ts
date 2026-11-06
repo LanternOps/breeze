@@ -418,73 +418,84 @@ export async function applySyncData(
         // stale sweep so a transient per-site error doesn't stale still-online devices.
         if (fetched.devices === undefined) failedMappingIds.add(mapping.id);
 
+        // Per-site savepoint: one worker transaction spans every site, and the
+        // catch keeps going with the next one (#11225). The writes roll back, so
+        // the counts do too. Shadowing `db` keeps every statement on the savepoint.
+        const countsBefore = {
+          devicesCreated: result.devicesCreated,
+          devicesUpdated: result.devicesUpdated,
+          devicesUnchanged: result.devicesUnchanged,
+        };
         try {
-          if (fetched.metrics !== undefined) {
-            await db
-              .update(unifiSiteMappings)
-              .set({
-                wanMetrics: fetched.metrics?.raw ?? null,
-                wanMetricsAt: new Date(),
-                updatedAt: new Date(),
-              })
-              .where(eq(unifiSiteMappings.id, mapping.id));
-          }
-
-          for (const d of fetched.devices ?? []) {
-            seenDeviceIds.add(d.unifiDeviceId);
-            const discoveredAssetId = await reconcileDiscoveredAsset(db, d, mapping);
-
-            const existing = await db
-              .select({ id: unifiDevices.id, raw: unifiDevices.raw })
-              .from(unifiDevices)
-              .where(
-                and(
-                  eq(unifiDevices.integrationId, integration.id),
-                  eq(unifiDevices.unifiDeviceId, d.unifiDeviceId),
-                ),
-              )
-              .limit(1);
-
-            const fields = {
-              orgId: mapping.orgId,
-              siteId: mapping.siteId,
-              integrationId: integration.id,
-              mappingId: mapping.id,
-              discoveredAssetId,
-              unifiDeviceId: d.unifiDeviceId,
-              mac: d.mac,
-              name: d.name,
-              model: d.model,
-              deviceType: unifiToBreezeDeviceType(d.deviceType),
-              ipAddress: d.ip,
-              firmwareVersion: d.firmwareVersion,
-              firmwareUpdatable: d.firmwareUpdatable,
-              adoptionState: d.adoptionState,
-              uptimeSeconds: d.uptimeSeconds,
-              isStale: false,
-              lastSeenAt: new Date(),
-              raw: d.raw,
-              lastSyncedAt: new Date(),
-              updatedAt: new Date(),
-            };
-
-            if (existing[0]) {
-              const changed = JSON.stringify(existing[0].raw) !== JSON.stringify(d.raw);
+          await db.transaction(async (db) => {
+            if (fetched.metrics !== undefined) {
               await db
-                .update(unifiDevices)
-                .set(fields)
-                .where(eq(unifiDevices.id, existing[0].id));
-              if (changed) {
-                result.devicesUpdated++;
-              } else {
-                result.devicesUnchanged++;
-              }
-            } else {
-              await db.insert(unifiDevices).values(fields);
-              result.devicesCreated++;
+                .update(unifiSiteMappings)
+                .set({
+                  wanMetrics: fetched.metrics?.raw ?? null,
+                  wanMetricsAt: new Date(),
+                  updatedAt: new Date(),
+                })
+                .where(eq(unifiSiteMappings.id, mapping.id));
             }
-          }
+
+            for (const d of fetched.devices ?? []) {
+              seenDeviceIds.add(d.unifiDeviceId);
+              const discoveredAssetId = await reconcileDiscoveredAsset(db, d, mapping);
+
+              const existing = await db
+                .select({ id: unifiDevices.id, raw: unifiDevices.raw })
+                .from(unifiDevices)
+                .where(
+                  and(
+                    eq(unifiDevices.integrationId, integration.id),
+                    eq(unifiDevices.unifiDeviceId, d.unifiDeviceId),
+                  ),
+                )
+                .limit(1);
+
+              const fields = {
+                orgId: mapping.orgId,
+                siteId: mapping.siteId,
+                integrationId: integration.id,
+                mappingId: mapping.id,
+                discoveredAssetId,
+                unifiDeviceId: d.unifiDeviceId,
+                mac: d.mac,
+                name: d.name,
+                model: d.model,
+                deviceType: unifiToBreezeDeviceType(d.deviceType),
+                ipAddress: d.ip,
+                firmwareVersion: d.firmwareVersion,
+                firmwareUpdatable: d.firmwareUpdatable,
+                adoptionState: d.adoptionState,
+                uptimeSeconds: d.uptimeSeconds,
+                isStale: false,
+                lastSeenAt: new Date(),
+                raw: d.raw,
+                lastSyncedAt: new Date(),
+                updatedAt: new Date(),
+              };
+
+              if (existing[0]) {
+                const changed = JSON.stringify(existing[0].raw) !== JSON.stringify(d.raw);
+                await db
+                  .update(unifiDevices)
+                  .set(fields)
+                  .where(eq(unifiDevices.id, existing[0].id));
+                if (changed) {
+                  result.devicesUpdated++;
+                } else {
+                  result.devicesUnchanged++;
+                }
+              } else {
+                await db.insert(unifiDevices).values(fields);
+                result.devicesCreated++;
+              }
+            }
+          });
         } catch (siteErr) {
+          Object.assign(result, countsBefore);
           failedMappingIds.add(mapping.id);
           anySiteFailed = true;
           result.error = `site ${mapping.unifiSiteId}: ${(siteErr as Error).message}`;
