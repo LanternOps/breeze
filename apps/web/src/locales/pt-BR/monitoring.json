@@ -72,6 +72,7 @@
     "descriptionOrg": "Substitui o padrão do parceiro para esta organização. Deixe um campo em branco para herdá-lo. A configuração própria de um monitor prevalece sobre este valor.",
     "readOnly": "Você não tem permissão para alterar o padrão do parceiro.",
     "saved": "Padrões do ciclo de vida salvos",
+    "saveAction": "Salvar padrões",
     "overrideCount_one": "{{count}} monitor substitui isto",
     "overrideCount_other": "{{count}} monitores substituem isto",
     "errors": {
