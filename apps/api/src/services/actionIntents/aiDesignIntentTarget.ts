@@ -12,8 +12,8 @@
  * (`partnerAxisApprover.ts`), not the session org's members.
  *
  * Read as system, because the row may be in an org the session is not bound to. Nothing
- * here is an access check: the caller (`createSessionPreToolUse`) uses a target only
- * when the call's reach covers it, so a foreign id reveals nothing, and the handler
+ * here is an access check: the callers (`createSessionPreToolUse`, `createMcpActionIntent`)
+ * use a target only when the call's reach covers it, so a foreign id reveals nothing, and the handler
  * still answers not found.
  *
  * A design's names were written by a model from device evidence, and they reach a

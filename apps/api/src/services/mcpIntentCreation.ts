@@ -19,6 +19,7 @@ import { actionIntents, type ActionIntent } from '../db/schema/actionIntents';
 import { oauthClients } from '../db/schema/oauth';
 import { apiKeys } from '../db/schema/apiKeys';
 import { withAuthDbAccessContext } from '../middleware/auth';
+import { AI_DESIGN_INTENT_TOOLS, resolveAiDesignIntentTarget } from './actionIntents/aiDesignIntentTarget';
 import { ActionIntentError, cancelActionIntent, createActionIntent } from './actionIntents/intentService';
 import { validateToolInput } from './aiToolSchemas';
 import { rateLimiter } from './rate-limit';
@@ -59,7 +60,8 @@ export type McpIntentRefusalCode =
   | 'no_eligible_approvers'
   | 'no_eligible_approvers_site_ceiling'
   | 'invalid_params'
-  | 'principal_not_supported';
+  | 'principal_not_supported'
+  | 'effect_digest_unresolvable';
 
 export type CreateMcpActionIntentOutcome =
   | { kind: 'pending'; status: McpActionStatus; isNew: boolean }
@@ -75,12 +77,14 @@ const REFUSAL_MESSAGES: Record<McpIntentRefusalCode, string> = {
     'Nobody who can approve this action has access to every site it affects, so it was not filed.',
   invalid_params: 'Invalid params',
   principal_not_supported: 'This connection cannot file actions for approval.',
+  effect_digest_unresolvable: 'The target of this action could not be read in this organization, so it was not filed.',
 };
 
 const PASSTHROUGH_REFUSALS: ReadonlySet<string> = new Set([
   'too_many_pending_actions',
   'rate_limited',
   'principal_not_supported',
+  'effect_digest_unresolvable',
 ]);
 
 const HOUR_S = 3600;
@@ -96,6 +100,25 @@ async function chargeCreation(originRef: string, userId: string): Promise<void> 
   if (!perOrigin.allowed) throw new ActionIntentError(REFUSAL_MESSAGES.rate_limited, 'rate_limited');
   const perUser = await rateLimiter(redis, `mcp-intent-create:user:${userId}`, mcpIntentCreatesPerUserPerHour(), HOUR_S);
   if (!perUser.allowed) throw new ActionIntentError(REFUSAL_MESSAGES.rate_limited, 'rate_limited');
+}
+
+/**
+ * W16 PR B (#6786): the two design tools name their org through a row, so the org a
+ * partner-scope call falls back to is not the target. As the chat gate does, an intent
+ * goes to the row's org when the call reaches it; a pinned key or bearer never moves.
+ * A failed lookup keeps the execution org, where a pinned action then has no digest.
+ */
+async function intentOrgFor(input: CreateMcpActionIntentInput): Promise<string> {
+  const { auth, apiKey, toolName, toolInput, executionOrgId } = input;
+  if (!AI_DESIGN_INTENT_TOOLS.has(toolName) || apiKey.orgId || auth.orgId) return executionOrgId;
+  try {
+    const target = await resolveAiDesignIntentTarget(toolName, toolInput);
+    return target?.orgId && auth.canAccessOrg(target.orgId) ? target.orgId : executionOrgId;
+  } catch (err) {
+    console.error('[MCP] Failed to resolve a design tool\'s target org:', err);
+    captureException(err);
+    return executionOrgId;
+  }
 }
 
 export async function createMcpActionIntent(input: CreateMcpActionIntentInput): Promise<CreateMcpActionIntentOutcome> {
@@ -119,6 +142,7 @@ export async function createMcpActionIntent(input: CreateMcpActionIntentInput): 
   // auth_epoch has moved) and bound into the idempotency key, so a retry after
   // a bump files a fresh intent instead of replaying the stale live one.
   const originAuthEpoch = auth.principal.kind === 'oauth_grant' ? apiKey.oauthAuthEpoch ?? undefined : undefined;
+  const intentOrgId = await intentOrgFor(input);
 
   let snapshot: Awaited<ReturnType<typeof createActionIntent>>;
   try {
@@ -126,7 +150,7 @@ export async function createMcpActionIntent(input: CreateMcpActionIntentInput): 
       toolName,
       input: toolInput,
       source: 'mcp_api',
-      orgId: input.executionOrgId,
+      orgId: intentOrgId,
       idempotencyKey: mcpIntentIdempotencyKey(originRef, toolName, argumentDigest, originAuthEpoch),
       correlationId: input.correlationRequestId,
       requestingClientLabel: input.clientLabel.slice(0, 255),

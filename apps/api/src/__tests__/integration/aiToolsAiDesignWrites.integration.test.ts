@@ -713,6 +713,19 @@ describe('manage_fleet_designs under the report-run lock (Review Focus #3)', () 
     expect(filed).toEqual([]);
   });
 
+  runDb('a partner-owned report of the Fleet Design type has no digest for any org', async () => {
+    const f = await seedFleet();
+    const [report] = await getTestDb().insert(reports).values({
+      orgId: null, partnerId: f.partner.id, name: 'Fleet Design', type: 'ai_fleet_design', config: {}, schedule: 'one_time', format: 'pdf', createdBy: null,
+    }).returning({ id: reports.id });
+    const [run] = await getTestDb().insert(reportRuns).values({
+      reportId: report!.id, status: 'completed', startedAt: new Date(), completedAt: new Date(), rowCount: 0, result: { rows: [], rowCount: 0 },
+    }).returning({ id: reportRuns.id });
+
+    const result = await withSystemDbAccessContext(() => computeEffectDigestForRelease('manage_fleet_designs', { action: 'rollback', reportRunId: run!.id }, db, { intentOrgId: f.org.id }));
+    expect(result).toEqual({ digest: null });
+  });
+
   runDb('a preview reads the design under the caller context, with no approval', async () => {
     const f = await seedFleet();
     const preview = await runFleet(f.auth, { action: 'preview', reportRunId: f.reportRunId, approval: functionsOnly });

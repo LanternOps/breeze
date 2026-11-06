@@ -4964,6 +4964,7 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
       limit: vi.fn(async () => [
         {
           id: 'intent-digest-cas-lost',
+          orgId: 'org-of-the-intent',
           boundArgumentDigest: 'digest',
           actionName: 'execute_command',
           arguments: { command: 'whoami' },
@@ -4976,6 +4977,11 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     const session = makeActiveSession({ approvalMode: 'per_step' });
 
     const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+    // The recompute is for the org the intent is filed in (W16 PR B, #6786).
+    expect(mockComputeEffectDigest).toHaveBeenCalledWith(
+      'execute_command', { command: 'whoami' }, expect.anything(), { intentOrgId: 'org-of-the-intent' },
+    );
 
     // Still refuses to execute — losing the terminal CAS must not turn a
     // content_changed stop into an allowed run.
@@ -5829,6 +5835,14 @@ describe('intentCreationRefusal — device-group run_script refusals', () => {
   ])('passes the %s message through for run_script', (code) => {
     const message = `the reason for ${code}`;
     expect(intentCreationRefusal('run_script', { groupId: 'g' }, refusal(code, message))).toBe(`${code}: ${message}`);
+  });
+
+  it('a Fleet Design with no pin says what to check, without the resolver detail or whose design it might be', () => {
+    const text = intentCreationRefusal('manage_fleet_designs', { action: 'apply' }, refusal('effect_digest_unresolvable', 'effect digest for manage_fleet_designs could not be resolved: target_absent'));
+    expect(text).toContain('list_fleet_designs');
+    expect(text).not.toContain('target_absent');
+    expect(text).not.toContain('Failed to create approval record');
+    expect(intentCreationRefusal('manage_ai_agent_schedules', {}, refusal('effect_digest_unresolvable', 'x'))).toBe('Failed to create approval record');
   });
 
   it('keeps the generic message for any other code or tool', () => {
