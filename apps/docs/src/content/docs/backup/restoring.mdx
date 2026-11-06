@@ -59,7 +59,7 @@ The browser and the selective-restore tree read a per-snapshot **file list** tha
   | `--max-old-space-size=1024` | about 107–115 MB |
   | Node's default limit | about 408–418 MB |
 
-  In the same test the browse root settled in 2.8–3.7 s and event-loop delay stayed near 13 ms. The shipped compose files set no `NODE_OPTIONS`, so the default-limit figure applies unless you set one. The manifest is also spooled to a temporary file next to the directory named by `PATCH_REPORT_STORAGE_PATH` (in a `manifest-spool` folder), so that volume needs room for one manifest at a time. These figures are a single lab host, not a sizing guide, and large snapshots are still bounded elsewhere: see the measured bound below.
+  The heap limits above are the two settings that were measured, not a recommendation. In the same test the browse root settled in 2.8–3.7 s and event-loop delay stayed near 13 ms. The shipped compose files set no `NODE_OPTIONS`, so the default-limit figure applies unless you set one. The manifest is also spooled to a temporary file next to the directory named by `PATCH_REPORT_STORAGE_PATH` (in a `manifest-spool` folder), so that volume needs room for one manifest at a time. These figures are a single lab host, not a sizing guide, and large snapshots are still bounded elsewhere: see the measured bound below.
 </Aside>
 
 <Aside type="note" title="Large snapshots: current bound">
