@@ -66,7 +66,9 @@ vi.mock('./AiContextBadge', () => ({ default: () => null }));
 vi.mock('./AiCostIndicator', () => ({ default: () => null }));
 vi.mock('./AiModelPicker', () => ({ default: () => null }));
 vi.mock('./AiContinuationPrompt', () => ({ default: () => null }));
-vi.mock('./WispThreadHeader', () => ({ default: () => <div data-testid="wisp-thread-header-mock" /> }));
+vi.mock('./WispThreadHeader', () => ({
+  default: (p: { homeHref?: string }) => <div data-testid="wisp-thread-header-mock" data-home-href={p.homeHref ?? ''} />,
+}));
 vi.mock('./WispThreadAttachments', () => ({ default: () => null }));
 vi.mock('./WispConcernsPanel', () => ({ WispConcernsPanel: () => <div data-testid="wisp-concerns-mock" /> }));
 
@@ -109,18 +111,17 @@ describe('AiChatSidebar in Wisp mode defers to the home (W08 Task 10)', () => {
     useAiStore.setState(BASE);
   });
 
-  it('Wisp mode: "Open in Wisp" links to /wisp and the concern list is gone (the header stays)', () => {
+  it('Wisp mode: the header gets the /wisp home link and the concern list is gone (the header stays)', () => {
     useAiStore.setState({ wisp: wisp() });
     render(<AiChatSidebar />);
-    expect(screen.getByTestId('wisp-thread-header-mock')).toBeInTheDocument();
-    const link = screen.getByTestId('wisp-sidebar-open-home');
-    expect(link).toHaveAttribute('href', '/wisp');
-    expect(link).toHaveTextContent('Open in Wisp');
+    expect(screen.getByTestId('wisp-thread-header-mock')).toHaveAttribute('data-home-href', '/wisp');
+    expect(screen.queryByTestId('wisp-sidebar-open-home')).toBeNull();
     expect(screen.queryByTestId('wisp-concerns-mock')).toBeNull();
   });
 
-  it('plain chat: no Wisp link', () => {
+  it('plain chat: no Wisp header or link', () => {
     render(<AiChatSidebar />);
+    expect(screen.queryByTestId('wisp-thread-header-mock')).toBeNull();
     expect(screen.queryByTestId('wisp-sidebar-open-home')).toBeNull();
   });
 

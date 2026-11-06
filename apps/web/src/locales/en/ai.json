@@ -691,7 +691,7 @@
       "dismissNote": "Dismiss"
     },
     "settings": {
-      "title": "Budget and check-in",
+      "title": "Wisp settings",
       "budget": "Daily budget",
       "tick": "Check-in every (minutes)",
       "save": "Save",

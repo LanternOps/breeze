@@ -155,4 +155,16 @@ describe('WispGrantPauseControl (W06 T15, w00 A29)', () => {
     expect(onChange).not.toHaveBeenCalled();
     expect(h.showToast).not.toHaveBeenCalled();
   });
+
+  it('variant="icon": an active grant renders an icon-only Pause button with an accessible name', async () => {
+    h.fetchWithAuth.mockResolvedValue({ ok: true, status: 200, json: async () => ({ id: 'g-1', status: 'paused', pausedReason: 'user_paused' }) });
+    const onChange = vi.fn();
+    render(<WispGrantPauseControl wisp={wisp()} onChange={onChange} variant="icon" />);
+    expect(screen.queryByTestId('wisp-pause-control')).toBeNull();
+    const pause = screen.getByTestId('wisp-pause');
+    expect(pause).toHaveAttribute('aria-label', 'Pause Wisp');
+    expect(pause.textContent).toBe('');
+    fireEvent.click(pause);
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith({ status: 'paused', pausedReason: 'user_paused' }));
+  });
 });
