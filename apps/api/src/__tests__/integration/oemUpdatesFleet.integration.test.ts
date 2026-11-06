@@ -126,6 +126,16 @@ const payloadFor = (env: TestEnvironment, scope: 'organization' | 'partner'): Om
   sid: randomUUID(),
 });
 
+// 2,500 by default: seeding 10,000 devices through the export-watermark triggers took ~50 s on
+// a fresh test database. The scale guard is the route's two-statement count (fleet.test.ts) and
+// the org-index plan below, neither of which needs 10k rows. OEM_FLEET_SCALE_ROWS=10000 for a
+// local full-size run.
+const FLEET_ROWS = Number(process.env.OEM_FLEET_SCALE_ROWS ?? 2_500);
+const SEED_BATCH = 500;
+// Measured seed ~4.5 s at 2,500 rows on a fresh database (~50 s at 10,000); the 60 s floor is >10x
+// the 2,500 figure for a loaded CI host, and larger overrides scale with their row count.
+const FLEET_TEST_TIMEOUT_MS = Math.max(60_000, FLEET_ROWS * 12);
+
 describe('#11074 GET /oem-updates/fleet', () => {
   let app: Hono;
 
@@ -286,27 +296,48 @@ describe('#11074 GET /oem-updates/fleet', () => {
     expect(body.devices[0].displayState).toBe('not_managed');
   });
 
-  runDb('10,000 devices: correct counts in bounded time, and a small org stays on the org index', async () => {
+  runDb('fleet at scale: correct counts in bounded time, and a small org stays on the org index', async () => {
     const env = await setupTestEnvironment({ scope: 'partner' });
     const small = await createOrganization({ partnerId: env.partner.id });
     const smallSite = await createSite({ orgId: small.id });
     const smallDevice = await seedDevice(small.id, smallSite.id);
 
-    await withSystemDbAccessContext(() => db.execute(sql`
-      INSERT INTO devices (org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version, status, enrolled_at)
-      SELECT ${env.organization.id}::uuid, ${env.site.id}::uuid, 'fleet-bulk-' || n, 'bulk-' || lpad(n::text, 5, '0'),
-             'windows', '11', 'amd64', '0.127.0', 'online', ${LONG_AGO.toISOString()}::timestamp
-      FROM generate_series(1, 10000) AS n
-    `));
-    await withSystemDbAccessContext(() => db.execute(sql`
-      INSERT INTO device_hardware (device_id, org_id, manufacturer, model)
-      SELECT id, org_id, 'Dell Inc.', 'Latitude 7420' FROM devices WHERE org_id = ${env.organization.id}::uuid
-    `));
-    await withSystemDbAccessContext(() => db.execute(sql`
-      INSERT INTO device_oem_update_status (device_id, org_id, applicability, lane, last_outcome, occurrence_key, last_success_at)
-      SELECT id, org_id, 'applicable', 'dell', 'success', '2020-01', ${LONG_AGO.toISOString()}::timestamptz
-      FROM devices WHERE org_id = ${env.organization.id}::uuid
-    `));
+    // Seeding is batched: the device-child tables carry statement-level triggers over a
+    // transition table, and one 10,000-row statement is quadratic in them (~100 s on a
+    // fresh database). 500 rows a statement, in one transaction, is linear. It goes through
+    // the owner connection: under the app role, RLS is evaluated on every row the triggers
+    // touch, which costs ~3 s a batch instead of ~50 ms.
+    const seedStartedAt = performance.now();
+    const orgId = env.organization.id;
+    const seedDb = getTestDb();
+    await seedDb.transaction(async (tx) => {
+      for (let lo = 1; lo <= FLEET_ROWS; lo += SEED_BATCH) {
+        const hi = Math.min(lo + SEED_BATCH - 1, FLEET_ROWS);
+        await tx.execute(sql`
+          INSERT INTO devices (org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version, status, enrolled_at)
+          SELECT ${orgId}::uuid, ${env.site.id}::uuid, 'fleet-bulk-' || n, 'bulk-' || lpad(n::text, 5, '0'),
+                 'windows', '11', 'amd64', '0.127.0', 'online', ${LONG_AGO.toISOString()}::timestamp
+          FROM generate_series(${lo}::int, ${hi}::int) AS n
+        `);
+      }
+      await tx.execute(sql`ANALYZE devices`);
+      for (let lo = 1; lo <= FLEET_ROWS; lo += SEED_BATCH) {
+        const hi = Math.min(lo + SEED_BATCH - 1, FLEET_ROWS);
+        await tx.execute(sql`
+          INSERT INTO device_hardware (device_id, org_id, manufacturer, model)
+          SELECT d.id, d.org_id, 'Dell Inc.', 'Latitude 7420'
+          FROM generate_series(${lo}::int, ${hi}::int) AS n
+          JOIN devices d ON d.org_id = ${orgId}::uuid AND d.agent_id = 'fleet-bulk-' || n
+        `);
+        await tx.execute(sql`
+          INSERT INTO device_oem_update_status (device_id, org_id, applicability, lane, last_outcome, occurrence_key, last_success_at)
+          SELECT d.id, d.org_id, 'applicable', 'dell', 'success', '2020-01', ${LONG_AGO.toISOString()}::timestamptz
+          FROM generate_series(${lo}::int, ${hi}::int) AS n
+          JOIN devices d ON d.org_id = ${orgId}::uuid AND d.agent_id = 'fleet-bulk-' || n
+        `);
+      }
+    });
+    process.stderr.write(`[oemUpdatesFleet] seeded ${FLEET_ROWS} devices in ${Math.round(performance.now() - seedStartedAt)} ms\n`);
     await withSystemDbAccessContext(() => db.execute(sql`ANALYZE devices`));
     await withSystemDbAccessContext(() => db.execute(sql`ANALYZE device_hardware`));
     await withSystemDbAccessContext(() => db.execute(sql`ANALYZE device_oem_update_status`));
@@ -326,15 +357,15 @@ describe('#11074 GET /oem-updates/fleet', () => {
     const elapsedMs = performance.now() - startedAt;
 
     expect(status).toBe(200);
-    expect(body.total).toBe(10_000);
+    expect(body.total).toBe(FLEET_ROWS);
     expect(body.devices).toHaveLength(50);
     expect(body.counts.overdue).toBe(100);
-    expect(body.counts.not_managed).toBe(9_900);
+    expect(body.counts.not_managed).toBe(FLEET_ROWS - 100);
     // The query count itself is pinned in routes/oemUpdates/fleet.test.ts, where db.select
     // can be counted. Here, a per-device walk would not finish in this time: it would be
     // several queries for each of 10,000 devices.
     expect(elapsedMs).toBeLessThan(30_000);
-    process.stderr.write(`[oemUpdatesFleet] 10,000 devices in ${Math.round(elapsedMs)} ms\n`);
+    process.stderr.write(`[oemUpdatesFleet] ${FLEET_ROWS} devices in ${Math.round(elapsedMs)} ms\n`);
 
     // The route's own statement, for the small org: the plan starts from its org id, not the table.
     const statement = fleetRowsQuery(fleetScopeCondition({
@@ -350,7 +381,7 @@ describe('#11074 GET /oem-updates/fleet', () => {
 
     const small_ = await fleet(token, `?orgId=${small.id}`);
     expect(small_.body.devices.map((row: any) => row.deviceId)).toEqual([smallDevice.id]);
-  }, 120_000);
+  }, FLEET_TEST_TIMEOUT_MS);
 });
 
 describe('#11074 overdue alerts, through the real createAlert', () => {
