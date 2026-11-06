@@ -276,6 +276,27 @@ describe('stableOffsetMinutes', () => {
     }
   });
 
+  it('every device is seen by at least two ticks before its notAfter, whatever the tick phase', () => {
+    // The worker ticks every 10 minutes on a fixed phase. An offset in the last tick
+    // before notAfter would be seen by none, every night.
+    for (const windowMinutes of [60, 90, 120, 180, 240, 480]) {
+      const start = Date.UTC(2027, 0, 20, 1, 0);
+      const notAfter = notAfterFor(new Date(start + windowMinutes * MINUTE), windowMinutes).getTime();
+      for (let phase = 0; phase < 10; phase += 1) {
+        for (const id of ids) {
+          const startsAt = start + stableOffsetMinutes(id, windowMinutes) * MINUTE;
+          let ticks = 0;
+          for (let t = start + phase * MINUTE; t < notAfter; t += 10 * MINUTE) if (t >= startsAt) ticks += 1;
+          expect(ticks, `${windowMinutes} min window, phase ${phase}, ${id}`).toBeGreaterThanOrEqual(2);
+        }
+      }
+    }
+  });
+
+  it('a 3-hour window or longer still spreads over its whole first hour', () => {
+    expect(Math.max(...ids.map((id) => stableOffsetMinutes(id, 180)))).toBeGreaterThan(50);
+  });
+
   it('spreads devices out', () => {
     expect(new Set(ids.map((id) => stableOffsetMinutes(id, 240))).size).toBeGreaterThan(20);
   });

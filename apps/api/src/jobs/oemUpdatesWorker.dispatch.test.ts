@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ResolvedOemUpdatesLink } from '../services/oemUpdates/resolver';
 
 vi.mock('../db', () => {
@@ -91,6 +91,10 @@ function due(over: Partial<DueDevice> = {}): DueDevice {
 }
 
 beforeEach(() => {
+  // The worker compares notAfter with the real clock, so the clock is pinned to NOW:
+  // without it these tests would start failing once the real date passes 2027-01-20.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(NOW);
   resetOemDispatchCursorForTests();
   vi.mocked(selectDueDevices).mockReset();
   vi.mocked(selectDueDevices).mockResolvedValue([]);
@@ -101,6 +105,10 @@ beforeEach(() => {
   vi.mocked(runOemRebootSweep).mockReset();
   vi.mocked(runOemReleaseSweep).mockReset();
   vi.mocked(captureException).mockClear();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('runOemUpdatesTick: scheduled dispatch', () => {
@@ -166,7 +174,7 @@ describe('runOemUpdatesTick: scheduled dispatch', () => {
   });
 
   it('a finished occurrence stays quiet: the decision re-reads the status it was selected on', async () => {
-    vi.mocked(selectDueDevices).mockResolvedValue([due({ status: { occurrenceKey: '2027-01', lastOutcome: 'success', attempts: 1 } })]);
+    vi.mocked(selectDueDevices).mockResolvedValue([due({ status: { occurrenceKey: '2027-01', lastOutcome: 'success', lastTrigger: 'scheduled', attempts: 1 } })]);
     await runOemUpdatesTick(NOW);
     expect(dispatchOemUpdateRun).not.toHaveBeenCalled();
   });
@@ -198,12 +206,8 @@ describe('runOemUpdatesTick: scheduled dispatch', () => {
   it('a deadline the real clock has passed is skipped, not thrown at the seam', async () => {
     vi.mocked(selectDueDevices).mockResolvedValue([due()]);
     // A long tick: selected inside the window, and the clock has moved past notAfter.
-    const spy = vi.spyOn(Date, 'now').mockReturnValue(new Date('2027-01-20T04:00:00.000Z').getTime() + 1);
-    try {
-      await runOemUpdatesTick(NOW);
-    } finally {
-      spy.mockRestore();
-    }
+    vi.setSystemTime(new Date('2027-01-20T04:00:00.001Z'));
+    await runOemUpdatesTick(NOW);
     expect(dispatchOemUpdateRun).not.toHaveBeenCalled();
     expect(captureException).not.toHaveBeenCalled();
   });

@@ -131,17 +131,26 @@ export function nightlyWindow(schedule: OemWindowSchedule, timezone: string, now
   throw new RangeError(`no window after ${now.toISOString()} in ${timezone}`);
 }
 
+/** The worker's tick. Its repeat lands on whole multiples of this, so a device sees one every this many minutes. */
+export const OEM_TICK_MINUTES = 10;
+
 /** The first hour of the window, or its first half when that is shorter. */
 function spreadMinutes(windowMinutes: number): number {
   return Math.min(60, windowMinutes / 2);
 }
 
 /**
- * How far into the window this device starts, to spread out the downloads. In
- * `[0, min(60, windowMinutes / 2))`, so it always lands before {@link notAfterFor}.
+ * How far into the window this device starts, to spread out the downloads.
+ *
+ * Below the first hour (or half) of the window, and also at least two ticks before
+ * {@link notAfterFor}: an offset in the last tick before it would be seen by no tick
+ * at all, night after night, since both the offset and the tick phase are fixed. So a
+ * 1-hour window spreads over its first 10 minutes, a 2-hour one over 40, and a window
+ * of 3 hours or more over the full hour.
  */
 export function stableOffsetMinutes(deviceId: string, windowMinutes: number): number {
-  const bound = Math.floor(spreadMinutes(windowMinutes));
+  const beforeNotAfter = windowMinutes - spreadMinutes(windowMinutes) - 2 * OEM_TICK_MINUTES;
+  const bound = Math.floor(Math.min(spreadMinutes(windowMinutes), beforeNotAfter));
   if (bound <= 0) return 0;
   // FNV-1a: small, stable across processes, and no crypto import for a spread.
   let hash = 0x811c9dc5;

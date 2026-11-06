@@ -184,6 +184,21 @@ describe('runOemUpdatesTick: the not-returned monitor', () => {
     expect(state.updates).toEqual([expect.objectContaining({ returnDeadlineAt: null })]);
   });
 
+  it('online with the flash restart still owed keeps watching: the held restart is what applies it', async () => {
+    state.rows = [row({ deviceStatus: 'online', rebootRequired: true })];
+    await runOemUpdatesTick(now);
+    expect(emitDeviceNotReturnedAlert).not.toHaveBeenCalled();
+    expect(resolveReturnedDeviceAlerts).not.toHaveBeenCalled();
+    expect(state.updates).toEqual([]);
+  });
+
+  it('leaves out decommissioned devices and pages by device', async () => {
+    await runOemUpdatesTick(now);
+    const query = new PgDialect().sqlToQuery(state.where as SQL);
+    expect(query.sql).toContain('"devices"."status" <>');
+    expect(query.params).toContain('decommissioned');
+  });
+
   it('a reboot still owed and offline at the deadline raises, whatever it reported before', async () => {
     state.rows = [row({ rebootRequired: true, lastSeenAt: new Date(started.getTime() + 20 * HOUR) })];
     await runOemUpdatesTick(now);

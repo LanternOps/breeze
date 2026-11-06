@@ -658,6 +658,34 @@ describe('applyOemUpdateResult: attempts (#11065 W07)', () => {
   });
 });
 
+describe('applyOemUpdateResult: a run that applied nothing leaves an owed reboot alone (#11065 W07)', () => {
+  const owed = new Date('2027-01-19T02:00:00.000Z');
+  const armed = new Date('2027-01-20T02:00:00.000Z');
+
+  it.each([
+    ['blocked_on_battery', null],
+    ['blocked_no_recovery_key', null],
+    ['tool_unavailable', null],
+    ['retry_later', 'not_after_passed'],
+    ['retry_later', 'flash_in_progress'],
+    ['interrupted', null],
+    ['failed', 'not_elevated'],
+  ])('%s (%s) keeps the clock, the flag and the monitor', async (outcome, errorCode) => {
+    state.status = statusRow({ rebootPendingSince: owed, returnDeadlineAt: armed });
+    await apply(goodResult({ outcome, errorCode, rebootRequired: false, items: [] }));
+    expect(state.updates[0]).not.toHaveProperty('rebootPendingSince');
+    expect(state.updates[0]).not.toHaveProperty('rebootRequired');
+    expect(state.updates[0]).not.toHaveProperty('returnDeadlineAt');
+    expect(resolveReturnedDeviceAlerts).not.toHaveBeenCalled();
+  });
+
+  it('a clean run that applied something still clears them', async () => {
+    state.status = statusRow({ rebootPendingSince: owed, returnDeadlineAt: armed });
+    await apply(goodResult({ outcome: 'no_updates', rebootRequired: false, items: [] }));
+    expect(state.updates[0]).toMatchObject({ rebootPendingSince: null, rebootRequired: false, returnDeadlineAt: null });
+  });
+});
+
 describe('applyOemUpdateResult: reboot owed (#11065 W07)', () => {
   it('a shutdown request is not a reboot: no pending clock', async () => {
     await apply(goodResult({ outcome: 'success', rebootRequired: false, shutdownRequired: true }));

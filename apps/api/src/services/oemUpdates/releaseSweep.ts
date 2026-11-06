@@ -13,7 +13,8 @@
  *   releasing + lane back         → cancel the queued release → taken_over
  *   releasing + nothing in flight → taken_over, and the path above retries
  *
- * **Retry cap:** {@link OEM_RELEASE_MAX_ATTEMPTS} delivered failures, at least
+ * **Retry cap:** {@link OEM_RELEASE_MAX_ATTEMPTS} delivered releases that left the
+ * takeover standing, at least
  * {@link OEM_RELEASE_RETRY_SPACING_MS} apart. Then it stops, marks the row's `reason`
  * and reports once. The device keeps its takeover, so nothing is lost and nothing
  * runs: a later scheduled run clears the marker. A queued release that expired without
@@ -34,6 +35,7 @@ import {
   dispatchOemUpdateRelease,
   oemReleaseCommandFilter,
 } from './dispatch';
+import { maxDispatchPerTick } from './candidates';
 import { resolveOemUpdatesLinksForDevices, type ResolvedOemUpdatesLink } from './resolver';
 
 export const OEM_RELEASE_MAX_ATTEMPTS = 3;
@@ -42,7 +44,12 @@ export const OEM_RELEASE_GAVE_UP = 'release_gave_up';
 
 const PAGE_SIZE = 500;
 const HISTORY_LIMIT = 10;
-const FAILED_STATUSES: ReadonlySet<string> = new Set(['failed', 'timeout']);
+/**
+ * A delivered release that is still taken over afterwards did not work. `completed`
+ * is here too: a successful ack clears the state in the same transaction, so a
+ * completed release with the takeover still standing is one whose answer did not parse.
+ */
+const DELIVERED_STATUSES: ReadonlySet<string> = new Set(['failed', 'timeout', 'completed']);
 
 type TakeoverRow = {
   deviceId: string;
@@ -112,13 +119,16 @@ async function moveState(row: TakeoverRow, to: OemTakeoverState, now: Date, extr
     )));
 }
 
-/** Delivered releases that failed, since the last success and the last run. */
+/**
+ * Delivered releases since the device's last run. A run is the only thing that takes
+ * a schedule over, so it starts a new count; and every one of them, since the row is
+ * still taken over, is one that did not hand it back.
+ */
 function failuresOf(row: TakeoverRow, history: ReleaseHistoryRow[]): ReleaseHistoryRow[] {
   const failures: ReleaseHistoryRow[] = [];
   for (const entry of history) {
-    if (entry.commandStatus === 'completed') break;
     if (row.lastAttemptAt && entry.createdAt.getTime() <= row.lastAttemptAt.getTime()) break;
-    if (FAILED_STATUSES.has(entry.commandStatus) && entry.executedAt) failures.push(entry);
+    if (DELIVERED_STATUSES.has(entry.commandStatus) && entry.executedAt) failures.push(entry);
   }
   return failures;
 }
@@ -138,11 +148,12 @@ async function keepTakeover(row: TakeoverRow, now: Date): Promise<void> {
   await moveState(row, 'taken_over', now);
 }
 
-async function release(row: TakeoverRow, now: Date): Promise<void> {
+/** True when a release was queued. */
+async function release(row: TakeoverRow, now: Date): Promise<boolean> {
   const history = await loadHistory(row.deviceId);
   if (inFlight(history)) {
     if (row.takeoverState !== 'releasing') await moveState(row, 'releasing', now);
-    return;
+    return false;
   }
 
   const failures = failuresOf(row, history);
@@ -153,12 +164,12 @@ async function release(row: TakeoverRow, now: Date): Promise<void> {
     } else if (row.takeoverState === 'releasing') {
       await moveState(row, 'taken_over', now);
     }
-    return;
+    return false;
   }
   const lastFailure = failures[0];
   if (lastFailure && now.getTime() - lastFailure.createdAt.getTime() < OEM_RELEASE_RETRY_SPACING_MS) {
     if (row.takeoverState === 'releasing') await moveState(row, 'taken_over', now);
-    return;
+    return false;
   }
 
   const outcome = await dispatchOemUpdateRelease({
@@ -172,15 +183,27 @@ async function release(row: TakeoverRow, now: Date): Promise<void> {
   if ((outcome.ok || outcome.refusal === 'release_in_flight') && row.takeoverState !== 'releasing') {
     await moveState(row, 'releasing', now);
   }
+  return outcome.ok;
 }
 
-async function sweepRow(row: TakeoverRow, link: ResolvedOemUpdatesLink | null, now: Date): Promise<void> {
-  if (link?.invalidStoredSettings) return;
+/** True when a release was queued. */
+async function sweepRow(row: TakeoverRow, link: ResolvedOemUpdatesLink | null, now: Date): Promise<boolean> {
+  if (link?.invalidStoredSettings) return false;
   const laneStillEnabled = link?.settings.enabled === true && link.settings.vendors[row.lane]?.enabled === true;
-  await (laneStillEnabled ? keepTakeover(row, now) : release(row, now));
+  if (laneStillEnabled) {
+    await keepTakeover(row, now);
+    return false;
+  }
+  return release(row, now);
 }
 
+/**
+ * Releases are capped per tick like runs and reboots: a removed partner-wide policy
+ * would otherwise queue one per device in a single tick. The rest go on later ticks,
+ * which reach them because a queued one turns its row to `releasing`.
+ */
 export async function runOemReleaseSweep(now: Date): Promise<void> {
+  let remaining = maxDispatchPerTick();
   let after: string | null = null;
   for (;;) {
     const cursor: string | null = after;
@@ -190,16 +213,19 @@ export async function runOemReleaseSweep(now: Date): Promise<void> {
     const links = await withSystemDbAccessContext(() =>
       resolveOemUpdatesLinksForDevices(page.map((row) => row.deviceId)));
     for (const row of page) {
+      if (remaining <= 0) break;
       // One device's failure must not strand the rest. Its state is unchanged, so
       // the next tick picks it up again.
       try {
-        await sweepRow(row, links.get(row.deviceId) ?? null, now);
+        if (await sweepRow(row, links.get(row.deviceId) ?? null, now)) remaining -= 1;
       } catch (error) {
         report(error, row);
       }
     }
 
-    if (page.length < PAGE_SIZE) return;
+    if (remaining <= 0 || page.length < PAGE_SIZE) break;
     after = page[page.length - 1]!.deviceId;
   }
+  const queued = maxDispatchPerTick() - remaining;
+  if (queued > 0) console.log('[OemUpdates] release sweep', { queued });
 }

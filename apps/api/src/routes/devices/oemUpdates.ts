@@ -9,7 +9,7 @@ import {
   type OemLane,
 } from '@breeze/shared';
 import { db } from '../../db';
-import { deviceHardware, deviceOemUpdateStatus, organizations } from '../../db/schema';
+import { deviceHardware, deviceOemUpdateStatus, devices, organizations, partners, sites } from '../../db/schema';
 import { zValidator } from '../../lib/validation';
 import {
   authMiddleware,
@@ -30,7 +30,7 @@ import {
 } from '../../services/oemUpdates/dispatch';
 import { deriveOemDisplayState } from '../../services/oemUpdates/displayState';
 import { oemUpdatesEnabled } from '../../services/oemUpdates/flags';
-import { resolveDeviceTimezone } from '../../services/featureConfigResolver';
+import { effectiveTimezoneFrom } from '../../services/oemUpdates/candidates';
 import { listOemRuns } from '../../services/oemUpdates/history';
 import { computeOccurrence } from '../../services/oemUpdates/occurrence';
 import { resolveOemUpdatesLinkForDevice } from '../../services/oemUpdates/resolver';
@@ -237,17 +237,37 @@ async function offeredLane(device: {
  * nothing is scheduled, so there is no policy to read. Run Now does not read this:
  * it works with or without a policy, and whether a policy's blocked IDs bind it is
  * still open (its `blockedUpdateIds: []` above).
+ *
+ * The zone is read on the request's own connection, with the scheduler's rule
+ * (`effectiveTimezoneFrom`). An org-scoped caller cannot see the partner row, so a
+ * zone set only on the partner falls through to UTC here: a display edge of at most a
+ * few hours around a window, accepted so a page load never takes a second pooled
+ * connection for the partner read.
  */
 async function policySide(deviceId: string, lane: OemLane | null, now: Date) {
   const unmanaged = { linkEnabled: false, occurrence: null };
   if (!lane) return unmanaged;
   const link = await resolveOemUpdatesLinkForDevice(deviceId);
   if (!link?.settings.enabled || !link.settings.vendors[lane]?.enabled) return unmanaged;
+  const [zone] = await db
+    .select({
+      siteTimezone: sites.timezone,
+      orgSettings: organizations.settings,
+      partnerTimezone: partners.timezone,
+      partnerSettings: partners.settings,
+    })
+    .from(devices)
+    .innerJoin(organizations, eq(organizations.id, devices.orgId))
+    .leftJoin(partners, eq(partners.id, organizations.partnerId))
+    .leftJoin(sites, eq(sites.id, devices.siteId))
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+  const timezone = effectiveTimezoneFrom(zone ?? { siteTimezone: null, orgSettings: null, partnerTimezone: null, partnerSettings: null });
   const { schedule, catchUpNights, reboot } = link.settings;
   return {
     linkEnabled: true,
     rebootMode: reboot,
-    occurrence: computeOccurrence({ ...schedule, catchUpNights }, await resolveDeviceTimezone(deviceId), now),
+    occurrence: computeOccurrence({ ...schedule, catchUpNights }, timezone, now),
   };
 }
 

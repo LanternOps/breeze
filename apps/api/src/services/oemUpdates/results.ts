@@ -81,6 +81,28 @@ function rebootOwedBy(result: OemUpdateRunResult): boolean {
   return result.rebootRequired || result.outcome === 'blocked_reboot_pending';
 }
 
+/** Outcomes where no vendor tool applied anything this time. */
+const TOOL_DID_NOT_APPLY: ReadonlySet<OemOutcome> = new Set([
+  'blocked_on_battery',
+  'blocked_no_recovery_key',
+  'tool_unavailable',
+  'retry_later',
+  'interrupted',
+]);
+/** `failed` codes from the agent before any vendor tool started. */
+const FAILED_BEFORE_START_CODES: ReadonlySet<string> = new Set(['not_elevated']);
+
+/**
+ * Whether this result is evidence about the device's reboot state. A run where the
+ * tool never got to apply anything (refused before it started, blocked, interrupted)
+ * says nothing about whether an earlier flash's restart has happened, so it must not
+ * clear the reboot clock or disarm the monitor: that would drop a reboot still owed.
+ */
+function speaksForRebootState(result: OemUpdateRunResult): boolean {
+  if (TOOL_DID_NOT_APPLY.has(result.outcome)) return false;
+  return !(result.outcome === 'failed' && result.errorCode !== null && FAILED_BEFORE_START_CODES.has(result.errorCode));
+}
+
 /** Did this command ask for a flash? An unreadable payload reads as no, which keeps a monitor armed. */
 function askedForFlash(payload: unknown): boolean {
   const categories = (payload as { categories?: unknown } | null)?.categories;
@@ -106,6 +128,7 @@ function disarmsMonitor(
   commandPayload: unknown,
 ): boolean {
   if (!status?.returnDeadlineAt) return false;
+  if (!speaksForRebootState(result)) return false;
   if (result.outcome === 'blocked_reboot_pending') return !status.rebootPendingSince && askedForFlash(commandPayload);
   return !result.rebootRequired && !result.shutdownRequired;
 }
@@ -122,13 +145,15 @@ function outcomeFields(
   }
   const { outcome, rebootRequired, items } = parsed;
   const rebootOwed = rebootOwedBy(parsed);
+  const speaks = rebootOwed || speaksForRebootState(parsed);
   return {
     lastOutcome: outcome,
     lastErrorCode: parsed.errorCode,
     toolVersion: parsed.toolVersion,
     installedCount: items.filter((item) => item.result === 'installed').length,
     failedCount: items.filter((item) => item.result === 'failed').length,
-    rebootRequired,
+    // A run that applied nothing leaves an owed reboot exactly as it was.
+    ...(speaks ? { rebootRequired } : {}),
     updatedAt: now,
     ...(outcome === 'not_supported'
       ? {
@@ -144,7 +169,7 @@ function outcomeFields(
     ...(COMPLETED_OUTCOMES.has(outcome) && !status?.firstCompletedAt ? { firstCompletedAt: now } : {}),
     ...(rebootOwed
       ? (status?.rebootPendingSince ? {} : { rebootPendingSince: now })
-      : { rebootPendingSince: null }),
+      : speaks ? { rebootPendingSince: null } : {}),
     ...(disarmsMonitor(parsed, status, commandPayload) ? { returnDeadlineAt: null, notReturnedAlertedAt: null } : {}),
   };
 }

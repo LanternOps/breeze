@@ -45,6 +45,9 @@ vi.mock('../../db', () => {
 });
 
 vi.mock('./resolver', () => ({ resolveOemUpdatesLinksForDevices: vi.fn() }));
+vi.mock('./candidates', () => ({
+  maxDispatchPerTick: () => Number(process.env.OEM_UPDATES_MAX_DISPATCH_PER_TICK) || 200,
+}));
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./dispatch', () => ({
   cancelPendingOemUpdateRelease: vi.fn(),
@@ -316,23 +319,34 @@ describe('runOemReleaseSweep: the retry cap', () => {
     seed([row()]);
     state.history = [
       failedRelease(25, { commandStatus: 'timeout', executedAt: null }),
-      failedRelease(50, { commandStatus: 'cancelled', executedAt: null }),
+      failedRelease(50, { commandStatus: 'timeout', executedAt: null }),
       failedRelease(75),
     ];
     await runOemReleaseSweep(NOW);
     expect(dispatchOemUpdateRelease).toHaveBeenCalledTimes(1);
   });
 
-  it('a success resets the count: this is a new takeover', async () => {
+  it('a release that completed but left the takeover standing counts: its answer did not parse', async () => {
     seed([row()]);
     state.history = [
-      failedRelease(25),
-      { commandStatus: 'completed', createdAt: new Date(NOW.getTime() - 40 * HOUR), executedAt: NOW },
-      failedRelease(50),
-      failedRelease(75),
+      failedRelease(25, { commandStatus: 'completed' }),
+      failedRelease(50, { commandStatus: 'completed' }),
+      failedRelease(75, { commandStatus: 'completed' }),
     ];
     await runOemReleaseSweep(NOW);
-    expect(dispatchOemUpdateRelease).toHaveBeenCalledTimes(1);
+    expect(dispatchOemUpdateRelease).not.toHaveBeenCalled();
+    expect(state.updates).toEqual([expect.objectContaining({ reason: OEM_RELEASE_GAVE_UP })]);
+  });
+
+  it('caps releases per tick', async () => {
+    vi.stubEnv('OEM_UPDATES_MAX_DISPATCH_PER_TICK', '1');
+    try {
+      seed([row({ deviceId: D1 }), row({ deviceId: D2 })]);
+      await runOemReleaseSweep(NOW);
+      expect(dispatchOemUpdateRelease).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('failures from before the last run do not count: a run since is a new takeover', async () => {

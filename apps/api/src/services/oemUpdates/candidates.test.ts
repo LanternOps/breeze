@@ -299,12 +299,32 @@ describe('selectDueDevices: one exclusion each', () => {
 
   it('finished this occurrence', async () => {
     for (const lastOutcome of ['success', 'success_reboot_required', 'no_updates'] as const) {
-      await expect(selected(device({ occurrenceKey: OCCURRENCE, lastOutcome, attempts: 1 })), lastOutcome).resolves.toEqual([]);
+      await expect(selected(device({ occurrenceKey: OCCURRENCE, lastOutcome, lastTrigger: 'scheduled', attempts: 1 })), lastOutcome).resolves.toEqual([]);
     }
   });
 
+  it('a Run Now success does not finish the occurrence: it may have skipped bios and firmware', async () => {
+    await expect(selected(device({ occurrenceKey: OCCURRENCE, lastOutcome: 'success', lastTrigger: 'on_demand', attempts: 1 })))
+      .resolves.toEqual([D1]);
+  });
+
+  it('a site left on its UTC default does not hide the org zone', async () => {
+    // 02:00 UTC is 13:00 in Sydney: working hours, not the 01:00 window.
+    await expect(selected(device({ siteTimezone: 'UTC', orgSettings: { timezone: 'Australia/Sydney' } }))).resolves.toEqual([]);
+    // 14:30 UTC on the 20th is 01:30 on the 21st in Sydney: catch-up night 1 is open there.
+    await expect(selected(
+      device({ siteTimezone: 'UTC', orgSettings: { timezone: 'Australia/Sydney' } }),
+      link(),
+      new Date('2027-01-20T14:30:00.000Z'),
+    )).resolves.toEqual([D1]);
+  });
+
+  it('a site, org and partner all on UTC is UTC', async () => {
+    await expect(selected(device({ siteTimezone: 'utc', orgSettings: { timezone: 'UTC' }, partnerTimezone: 'UTC' }))).resolves.toEqual([D1]);
+  });
+
   it('a finish from last month does not count', async () => {
-    await expect(selected(device({ occurrenceKey: '2026-12', lastOutcome: 'success', attempts: 1 }))).resolves.toEqual([D1]);
+    await expect(selected(device({ occurrenceKey: '2026-12', lastOutcome: 'success', lastTrigger: 'scheduled', attempts: 1 }))).resolves.toEqual([D1]);
   });
 
   it('run in flight', async () => {
@@ -431,6 +451,41 @@ describe('selectDueDevices: one exclusion each', () => {
 
   it('a release still on its way to the agent', async () => {
     await expect(selected(device({ takeoverState: 'releasing' }))).resolves.toEqual([]);
+  });
+});
+
+describe('selectDueDevices: paging', () => {
+  it('reads the next page after the last id of a full one, and selects from it', async () => {
+    const full = Array.from({ length: 500 }, (_, i) =>
+      device({ deviceId: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`, agentVersion: '0.126.0' }));
+    const last = full[full.length - 1]!.deviceId;
+    const onPageTwo = '00000000-0000-4000-9000-000000000001';
+    state.results = [[ARMED_POLICY], full, [device({ deviceId: onPageTwo })]];
+    vi.mocked(resolveOemUpdatesLinksForDevices).mockImplementation(async (deviceIds) =>
+      new Map(deviceIds.map((deviceId) => [deviceId, link()])));
+
+    const due = await selectDueDevices(NOW, { limit: 200 });
+
+    expect(due.map((d) => d.deviceId)).toEqual([onPageTwo]);
+    const second = new PgDialect().sqlToQuery(state.wheres[2] as SQL);
+    expect(second.sql).toContain('"devices"."id" >');
+    expect(second.params).toContain(last);
+  });
+
+  it('the wrap-round pass stops at the cursor it started from', async () => {
+    state.results = [[ARMED_POLICY], [], []];
+    await selectDueDevices(NOW, { limit: 200, startAfter: D1 });
+    const wrap = new PgDialect().sqlToQuery(state.wheres[2] as SQL);
+    expect(wrap.sql).toContain('"devices"."id" <=');
+    expect(wrap.params).toContain(D1);
+  });
+
+  it('an org-owned policy scopes the query to that org', async () => {
+    state.results = [[{ ...ARMED_POLICY, orgId: 'org-1', partnerId: null }], []];
+    await selectDueDevices(NOW, { limit: 200 });
+    const { sql, params } = new PgDialect().sqlToQuery(state.wheres[1] as SQL);
+    expect(sql).toContain('"devices"."org_id" in');
+    expect(params).toContain('org-1');
   });
 });
 

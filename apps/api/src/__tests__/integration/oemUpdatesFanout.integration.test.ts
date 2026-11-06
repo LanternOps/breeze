@@ -1,7 +1,9 @@
 /**
  * Scheduled vendor updates against real Postgres and RLS (#11065 W07): a
  * partner-wide link fans out by the device org's partner, status rows take the
- * device's org, and every exclusion the selection query owns holds on real rows.
+ * device's org, and the selection query's exclusions hold on real rows. Parked
+ * devices are refused by the resolver and the seam too, so the parked cases here
+ * prove the outcome, not this query's own predicate (the unit test pins that).
  *
  * Gates are closed in code until the lab wave, so the lab override opens them for
  * the seeded devices. The arming gate is a write-path rule, so the settings go in
@@ -25,10 +27,14 @@ import {
 import { runOemUpdatesTick } from '../../jobs/oemUpdatesWorker';
 import { commandResultHandlers } from '../../services/commandResultHandlers';
 import { selectDueDevices } from '../../services/oemUpdates/candidates';
-import { dispatchOemUpdateRun, oemReleaseCommandFilter } from '../../services/oemUpdates/dispatch';
-import { runOemRebootSweep } from '../../services/oemUpdates/rebootSweep';
+import {
+  cancelPendingOemUpdateRelease,
+  dispatchOemUpdateRun,
+  oemReleaseCommandFilter,
+} from '../../services/oemUpdates/dispatch';
+import { resetOemRebootSightingsForTests, runOemRebootSweep } from '../../services/oemUpdates/rebootSweep';
 import { runOemReleaseSweep } from '../../services/oemUpdates/releaseSweep';
-import { applyOemUpdateResult } from '../../services/oemUpdates/results';
+import { applyOemUpdateRelease, applyOemUpdateResult } from '../../services/oemUpdates/results';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -150,6 +156,7 @@ async function fanoutFixture() {
 
 beforeEach(() => {
   labDevices.length = 0;
+  resetOemRebootSightingsForTests();
   vi.stubEnv('BREEZE_OEM_UPDATES_ENABLED', 'true');
 });
 
@@ -221,6 +228,28 @@ describe('oemUpdates fan-out against real Postgres', () => {
       .from(deviceCommands)
       .where(eq(deviceCommands.deviceId, device)));
     expect(commands).toHaveLength(1);
+  });
+
+  runDb('an org-owned policy reaches its own org only', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const sibling = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const siblingSite = await createSite({ orgId: sibling.id });
+    const [policy] = await getTestDb().insert(configurationPolicies).values({
+      orgId: org.id,
+      partnerId: null,
+      name: `vendor updates ${randomUUID()}`,
+      status: 'active',
+    }).returning({ id: configurationPolicies.id });
+    await getTestDb().insert(configPolicyFeatureLinks).values({ configPolicyId: policy!.id, featureType: 'oem_updates', inlineSettings: armedSettings() });
+    await getTestDb().insert(configPolicyAssignments).values({ configPolicyId: policy!.id, level: 'organization', targetId: org.id });
+    const inOrg = await seedDevice(org.id, site.id);
+    const inSibling = await seedDevice(sibling.id, siblingSite.id);
+
+    const due = await dueIds();
+    expect(due).toContain(inOrg);
+    expect(due).not.toContain(inSibling);
   });
 
   runDb('leaves out offline, ephemeral, virtual and server devices', async () => {
@@ -385,16 +414,29 @@ describe('oemUpdates reboot sweep against real Postgres', () => {
       },
     });
 
-    await runOemRebootSweep(new Date());
-    await runOemRebootSweep(new Date());
-
-    const reboots = await withSystemDbAccessContext(() => db
-      .select({ payload: deviceCommands.payload, submittedOrgId: deviceCommands.submittedOrgId })
+    const reboots = () => withSystemDbAccessContext(() => db
+      .select({ id: deviceCommands.id, payload: deviceCommands.payload, submittedOrgId: deviceCommands.submittedOrgId })
       .from(deviceCommands)
       .where(and(eq(deviceCommands.deviceId, device), eq(deviceCommands.type, 'schedule_reboot'))));
-    expect(reboots).toHaveLength(1);
-    expect(reboots[0]!.submittedOrgId).toBe(orgA.id);
-    expect(reboots[0]!.payload).toMatchObject({ deadlineAction: 'hold', source: 'oem_updates' });
+
+    await runOemRebootSweep(new Date());
+    await runOemRebootSweep(new Date());
+    expect(await reboots()).toHaveLength(1);
+    const [first] = await reboots();
+    expect(first!.submittedOrgId).toBe(orgA.id);
+    expect(first!.payload).toMatchObject({ deadlineAction: 'hold', source: 'oem_updates' });
+
+    // The agent answers as soon as it has scheduled the restart: still tonight's one.
+    await getTestDb().update(deviceCommands).set({ status: 'completed' }).where(eq(deviceCommands.id, first!.id));
+    await runOemRebootSweep(new Date());
+    expect(await reboots()).toHaveLength(1);
+
+    // Held, and no boot since: the next night asks again.
+    await getTestDb().update(deviceCommands)
+      .set({ createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000) })
+      .where(eq(deviceCommands.id, first!.id));
+    await runOemRebootSweep(new Date());
+    expect(await reboots()).toHaveLength(2);
   });
 
   runDb('a boot since the reboot was owed clears it', async () => {
@@ -411,6 +453,8 @@ describe('oemUpdates reboot sweep against real Postgres', () => {
     });
     await getTestDb().update(devices).set({ lastSeenAt: new Date(), uptimeSeconds: 60 }).where(eq(devices.id, device));
 
+    // Two ticks have to agree on the boot.
+    await runOemRebootSweep(new Date());
     await runOemRebootSweep(new Date());
 
     const [row] = await withSystemDbAccessContext(() => db
@@ -500,6 +544,34 @@ describe('oemUpdates release sweep against real Postgres', () => {
 
     expect(await stateOf(device)).toBe('taken_over');
     expect((await releases(device)).map((row) => row.status)).toEqual(['cancelled']);
+  });
+
+  runDb('a release already sent cannot be cancelled', async () => {
+    const { device } = await deviceWithoutPolicy();
+    await runOemReleaseSweep(new Date());
+    const [release] = await releases(device);
+    await getTestDb().update(deviceCommands).set({ status: 'sent' }).where(eq(deviceCommands.id, release!.id));
+
+    await expect(withSystemDbAccessContext(() => cancelPendingOemUpdateRelease(device, new Date()))).resolves.toBe(false);
+    expect((await releases(device)).map((row) => row.status)).toEqual(['sent']);
+  });
+
+  runDb('an ack does not undo a policy_locked row', async () => {
+    const { device, org } = await deviceWithoutPolicy();
+    await getTestDb().update(deviceOemUpdateStatus).set({ takeoverState: 'policy_locked' }).where(eq(deviceOemUpdateStatus.deviceId, device));
+    const commandId = randomUUID();
+    await getTestDb().insert(deviceCommands).values({
+      id: commandId,
+      deviceId: device,
+      type: 'oem_update_release',
+      payload: { lane: 'dell' },
+      status: 'completed',
+      submittedOrgId: org.id,
+    });
+
+    await applyOemUpdateRelease({ commandId, deviceId: device, result: { lane: 'dell', outcome: 'restored', errorCode: null } });
+
+    expect(await stateOf(device)).toBe('policy_locked');
   });
 
   runDb('an org move does not release when the new org policy also resolves, and does when none does', async () => {

@@ -20,7 +20,7 @@
  * With nothing armed and nothing owed, a tick is a few small reads.
  */
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq, isNotNull, lte } from 'drizzle-orm';
+import { and, eq, gt, isNotNull, lte, ne } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { deviceCommands, deviceOemUpdateStatus, devices } from '../db/schema';
 import { emitDeviceNotReturnedAlert, resolveReturnedDeviceAlerts } from '../services/oemUpdates/alerts';
@@ -73,7 +73,10 @@ function decide(row: ArmedRow, now: Date): MonitorDecision {
 
   const started = row.commandExecutedAt;
   if (now.getTime() < started.getTime() + RETURN_WINDOW_MS) return 'wait';
-  if (row.deviceStatus === 'online') return 'returned';
+  // Online with the flash's restart still owed has not come back from anything yet:
+  // an overnight restart can be held for nights, and that restart is what applies the
+  // flash. The reboot sweep clears the debt once the device has booted.
+  if (row.deviceStatus === 'online') return row.rebootRequired ? 'wait' : 'returned';
   // Offline at the deadline. A device that checked in after the run window has come
   // back and has since been shut, unless a reboot is still owed: then its last
   // check-in may be from before the restart that stranded it.
@@ -129,8 +132,8 @@ async function sweepRow(row: ArmedRow, now: Date): Promise<void> {
   }
 }
 
-async function runNotReturnedMonitor(now: Date): Promise<void> {
-  const rows: ArmedRow[] = await withSystemDbAccessContext(() => db
+async function loadArmedPage(now: Date, after: string | null): Promise<ArmedRow[]> {
+  return withSystemDbAccessContext(() => db
     .select({
       deviceId: deviceOemUpdateStatus.deviceId,
       orgId: devices.orgId,
@@ -150,23 +153,37 @@ async function runNotReturnedMonitor(now: Date): Promise<void> {
       isNotNull(deviceOemUpdateStatus.returnDeadlineAt),
       lte(deviceOemUpdateStatus.returnDeadlineAt, now),
       eq(devices.isEphemeral, false),
+      ne(devices.status, 'decommissioned'),
       notParkedDeviceCondition(),
+      ...(after ? [gt(deviceOemUpdateStatus.deviceId, after)] : []),
     ))
-    .orderBy(deviceOemUpdateStatus.returnDeadlineAt)
+    // Paged by device: rows still out, or with their alert rule off, stay armed, and
+    // a fixed first batch of them must not hide every row behind it.
+    .orderBy(deviceOemUpdateStatus.deviceId)
     .limit(SWEEP_BATCH));
+}
 
-  for (const row of rows) {
-    // One device's failure must not strand the rest. Its state is unchanged, so
-    // the next tick picks it up again.
-    try {
-      await sweepRow(row, now);
-    } catch (error) {
-      console.error(`[OemUpdates] monitor failed for device ${row.deviceId}:`, error);
-      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
-        worker: 'oemUpdatesWorker',
-        org_id: row.orgId,
-      });
-    }
+async function runNotReturnedMonitor(now: Date): Promise<void> {
+  let after: string | null = null;
+  for (;;) {
+    const rows: ArmedRow[] = await loadArmedPage(now, after);
+    for (const row of rows) await sweepArmedRow(row, now);
+    if (rows.length < SWEEP_BATCH) return;
+    after = rows[rows.length - 1]!.deviceId;
+  }
+}
+
+async function sweepArmedRow(row: ArmedRow, now: Date): Promise<void> {
+  // One device's failure must not strand the rest. Its state is unchanged, so the
+  // next tick picks it up again.
+  try {
+    await sweepRow(row, now);
+  } catch (error) {
+    console.error(`[OemUpdates] monitor failed for device ${row.deviceId}:`, error);
+    captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+      worker: 'oemUpdatesWorker',
+      org_id: row.orgId,
+    });
   }
 }
 

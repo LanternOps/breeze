@@ -5,6 +5,7 @@ import type { SQL } from 'drizzle-orm';
 const state = vi.hoisted(() => ({
   rows: [] as Array<Record<string, unknown>>,
   tonightsReboots: [] as Array<{ id: string }>,
+  clockRun: { trigger: 'scheduled', occurrenceKey: '2027-03' } as Record<string, unknown> | null,
   updates: [] as Array<Record<string, unknown>>,
   wheres: [] as unknown[],
 }));
@@ -26,8 +27,11 @@ vi.mock('../../db', () => {
   };
   return {
     db: {
-      select: vi.fn((shape: Record<string, unknown>) =>
-        ('commandId' in shape ? chain(() => state.tonightsReboots) : chain(() => state.rows))),
+      select: vi.fn((shape: Record<string, unknown>) => {
+        if ('commandId' in shape) return chain(() => state.tonightsReboots);
+        if ('payload' in shape) return chain(() => (state.clockRun === undefined ? [] : [{ payload: state.clockRun }]));
+        return chain(() => state.rows);
+      }),
       update: vi.fn(() => ({
         set: (values: Record<string, unknown>) => ({
           where: () => {
@@ -42,6 +46,10 @@ vi.mock('../../db', () => {
 });
 
 vi.mock('./resolver', () => ({ resolveOemUpdatesLinksForDevices: vi.fn() }));
+vi.mock('./dispatch', async () => {
+  const { sql } = await import('drizzle-orm');
+  return { oemRunCommandFilter: () => sql`"type" = 'run'` };
+});
 vi.mock('../featureConfigResolver', () => ({
   checkDeviceMaintenanceWindow: vi.fn(),
   partnerTimezoneFrom: (column: string | null) => column,
@@ -57,7 +65,7 @@ import { checkDeviceMaintenanceWindow } from '../featureConfigResolver';
 import { executeReboot, resolveRebootPlan } from '../patchRebootHandler';
 import { captureException } from '../sentry';
 import { deriveOemDisplayState } from './displayState';
-import { runOemRebootSweep } from './rebootSweep';
+import { resetOemRebootSightingsForTests, runOemRebootSweep } from './rebootSweep';
 import { resolveOemUpdatesLinksForDevices, type ResolvedOemUpdatesLink } from './resolver';
 
 const D1 = '00000000-0000-4000-8000-000000000001';
@@ -88,7 +96,6 @@ function row(over: Record<string, unknown> = {}): Record<string, unknown> {
     orgSettings: null,
     partnerTimezone: 'UTC',
     partnerSettings: null,
-    commandPayload: { trigger: 'scheduled', occurrenceKey: '2027-03' },
     ...over,
   };
 }
@@ -124,6 +131,8 @@ beforeEach(() => {
   vi.stubEnv('BREEZE_OEM_UPDATES_DISABLED_LANES', '');
   state.rows = [];
   state.tonightsReboots = [];
+  state.clockRun = { trigger: 'scheduled', occurrenceKey: '2027-03' };
+  resetOemRebootSightingsForTests();
   state.updates = [];
   state.wheres = [];
   vi.mocked(resolveOemUpdatesLinksForDevices).mockReset();
@@ -167,10 +176,20 @@ describe('runOemRebootSweep: overnight', () => {
     });
   });
 
-  it('blocked_reboot_pending with overnight reboots the same way: the row is what it reads', async () => {
-    seed([row({ commandPayload: { trigger: 'scheduled', occurrenceKey: '2027-03' } })]);
+  it('ownership is the run that started the clock, not the latest one: a later Run Now cannot take it', async () => {
+    seed([row()]);
     await runOemRebootSweep(TONIGHT);
+    const ownership = state.wheres
+      .map((where) => new PgDialect().sqlToQuery(where as SQL))
+      .find((query) => query.sql.includes(`"type" = 'run'`));
+    expect(ownership?.sql).toContain('"created_at" <=');
     expect(executeReboot).toHaveBeenCalledTimes(1);
+  });
+
+  it('the policy no longer running this vendor sends nothing', async () => {
+    seed([row()], link({ vendors: { dell: { enabled: false, categories: { driver: true }, blockedUpdateIds: [] } } }));
+    await runOemRebootSweep(TONIGHT);
+    expect(executeReboot).not.toHaveBeenCalled();
   });
 
   it('a night outside any occurrence still holds nightly, not till next month', async () => {
@@ -281,13 +300,18 @@ describe('runOemRebootSweep: what it never reboots', () => {
   });
 
   it('Run Now keeps its own reboot choice: a leave-to-me run is never rebooted by the policy', async () => {
-    seed([row({ commandPayload: { trigger: 'on_demand', rebootControlled: false, occurrenceKey: null } })]);
+    state.clockRun = { trigger: 'on_demand', rebootControlled: false, occurrenceKey: null };
+    seed([row()]);
     await runOemRebootSweep(TONIGHT);
     expect(executeReboot).not.toHaveBeenCalled();
   });
 
-  it('an unreadable last command is not consent', async () => {
-    seed([row({ commandPayload: null })]);
+  it('an unreadable run, or none, is not consent', async () => {
+    state.clockRun = null;
+    seed([row()]);
+    await runOemRebootSweep(TONIGHT);
+    expect(executeReboot).not.toHaveBeenCalled();
+    state.clockRun = undefined as never;
     await runOemRebootSweep(TONIGHT);
     expect(executeReboot).not.toHaveBeenCalled();
   });
@@ -327,15 +351,38 @@ describe('runOemRebootSweep: what it never reboots', () => {
 });
 
 describe('runOemRebootSweep: the reboot happened', () => {
-  it('a reboot held then completed clears reboot_pending_since', async () => {
+  it('a reboot held then completed clears reboot_pending_since, once two ticks agree', async () => {
     const pendingSince = new Date(TONIGHT.getTime() - 2 * DAY);
     // Booted a day after the reboot became owed.
     const lastSeenAt = new Date(TONIGHT.getTime() - 60_000);
     const uptimeSeconds = (lastSeenAt.getTime() - (pendingSince.getTime() + DAY)) / 1000;
     seed([row({ rebootPendingSince: pendingSince, lastSeenAt, uptimeSeconds })]);
     await runOemRebootSweep(TONIGHT);
+    // The first reading neither clears nor reboots again.
+    expect(state.updates).toEqual([]);
+    expect(executeReboot).not.toHaveBeenCalled();
+
+    seed([row({ rebootPendingSince: pendingSince, lastSeenAt: new Date(lastSeenAt.getTime() + 600_000), uptimeSeconds: uptimeSeconds + 600 })]);
+    await runOemRebootSweep(new Date(TONIGHT.getTime() + 600_000));
     expect(state.updates).toEqual([expect.objectContaining({ rebootRequired: false, rebootPendingSince: null })]);
     expect(executeReboot).not.toHaveBeenCalled();
+  });
+
+  it('a socket reopening before the first heartbeat is not a reboot', async () => {
+    const pendingSince = new Date(TONIGHT.getTime() - 60 * 60_000);
+    // Booted 3 hours before the reboot was owed, slept, and reconnected: last_seen_at
+    // is fresh but the uptime is still the one written before it slept.
+    const stale = row({ rebootPendingSince: pendingSince, lastSeenAt: TONIGHT, uptimeSeconds: 30 * 60 });
+    seed([stale]);
+    await runOemRebootSweep(TONIGHT);
+    expect(state.updates).toEqual([]);
+
+    // The first heartbeat brings the real uptime: the boot is from before the clock.
+    const fresh = row({ rebootPendingSince: pendingSince, lastSeenAt: new Date(TONIGHT.getTime() + 600_000), uptimeSeconds: 5 * 60 * 60 });
+    seed([fresh]);
+    await runOemRebootSweep(new Date(TONIGHT.getTime() + 600_000));
+    expect(state.updates).toEqual([]);
+    expect(executeReboot).toHaveBeenCalledTimes(1);
   });
 
   it('clears it whatever the policy says, even with the flag off', async () => {
@@ -343,6 +390,8 @@ describe('runOemRebootSweep: the reboot happened', () => {
     const lastSeenAt = new Date(TONIGHT.getTime() - 60_000);
     seed([row({ rebootPendingSince: new Date(TONIGHT.getTime() - DAY), lastSeenAt, uptimeSeconds: 60 })], null);
     await runOemRebootSweep(TONIGHT);
+    seed([row({ rebootPendingSince: new Date(TONIGHT.getTime() - DAY), lastSeenAt: new Date(lastSeenAt.getTime() + 600_000), uptimeSeconds: 660 })], null);
+    await runOemRebootSweep(new Date(TONIGHT.getTime() + 600_000));
     expect(state.updates).toEqual([expect.objectContaining({ rebootPendingSince: null })]);
   });
 

@@ -14,9 +14,10 @@
  * Reads run in short system contexts, one per page, so a tick never pins a pooled
  * connection across the fleet (#1105).
  */
-import { and, eq, gt, inArray, lte, ne, or, type SQL } from 'drizzle-orm';
+import { and, eq, gt, inArray, lte, ne, or, sql, type SQL } from 'drizzle-orm';
 import {
   agentSupportsOemUpdates,
+  canonicalizeTimezone,
   hasArmedCategory,
   OEM_CATEGORIES,
   OEM_LANES,
@@ -70,6 +71,8 @@ export type ScheduledRunStatus = {
   occurrenceKey?: string | null;
   attempts?: number | null;
   lastOutcome?: OemOutcome | null;
+  /** The trigger of the run `lastOutcome` came from. Only a scheduled run finishes an occurrence. */
+  lastTrigger?: string | null;
   lastAttemptAt?: Date | null;
   rebootPendingSince?: Date | null;
 };
@@ -153,7 +156,11 @@ export function decideScheduledRun(
   if (now.getTime() < startsAt) return refused('offset_not_reached');
 
   if (status.occurrenceKey === occurrence.occurrenceKey) {
-    if (status.lastOutcome && FINISHED_OUTCOMES.has(status.lastOutcome)) return refused('finished');
+    // A Run Now success does not count: it may have left out bios and firmware, and
+    // the policy's run would then wait a month for them.
+    if (status.lastTrigger === 'scheduled' && status.lastOutcome && FINISHED_OUTCOMES.has(status.lastOutcome)) {
+      return refused('finished');
+    }
     if ((status.attempts ?? 0) >= OEM_MAX_ATTEMPTS_PER_OCCURRENCE) return refused('attempts_exhausted');
   }
   // One run a night: a failure retries on the next night (spec 4.2), not the next tick.
@@ -184,13 +191,25 @@ export type DeviceTimezoneFields = {
   partnerSettings: unknown;
 };
 
-/** The same chain as `resolveDeviceTimezone`, from columns a page has already read. */
+/**
+ * The zone a device's windows open in, from columns a page has already read: site,
+ * then org, then partner, then UTC, as `resolveDeviceTimezone`, with one difference.
+ *
+ * A site's `UTC` counts as unset here. `sites.timezone` is NOT NULL with a `UTC`
+ * default, and sites are created with it, so the plain chain stops at the site for
+ * almost every device and an org or partner zone is never reached: a default 01:00
+ * window would open at 17:00 on the US west coast and at noon in Sydney, for BIOS
+ * flashes and reboots. The partner column already treats its `UTC` default the same
+ * way (`partnerTimezoneFrom`). A site that really is on UTC still gets UTC when its
+ * org and partner say nothing else.
+ */
 export function effectiveTimezoneFrom(row: DeviceTimezoneFields): string {
   const orgTz = row.orgSettings && typeof row.orgSettings === 'object'
     ? (row.orgSettings as Record<string, unknown>).timezone
     : null;
+  const siteTz = canonicalizeTimezone(row.siteTimezone);
   return normalizeTimezone(resolveEffectiveTimezone({
-    siteTz: row.siteTimezone,
+    siteTz: siteTz === 'UTC' ? null : siteTz,
     orgTz: typeof orgTz === 'string' ? orgTz : null,
     partnerTz: partnerTimezoneFrom(row.partnerTimezone, row.partnerSettings),
   }));
@@ -277,6 +296,7 @@ async function loadPage(scope: SQL, after: string | null, upTo: string | null): 
       notSupportedModel: deviceOemUpdateStatus.notSupportedModel,
       takeoverState: deviceOemUpdateStatus.takeoverState,
       commandStatus: deviceCommands.status,
+      lastTrigger: sql<string | null>`${deviceCommands.payload} ->> 'trigger'`,
     })
     .from(devices)
     .innerJoin(organizations, eq(organizations.id, devices.orgId))
