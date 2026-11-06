@@ -109,9 +109,11 @@ Axcient reports a health verdict per device, not a last-job result. The map is v
 | `TROUBLED` | `OFFSITE_NEVER_RUN`, or all three `latest_*_rp` null | `no_backups` |
 | `TROUBLED` | `SCHEDULE_DISABLED` | `no_selection` |
 | `TROUBLED` | anything else | `failed` |
-| `PARKED` | any | `not_started` |
+| `PARKED` | any | `paused` (new canonical value, see below) |
 | `UNPROTECTED` | any | `no_backups` |
 | missing or unrecognised | any | `unknown` |
+
+**`paused` is a new canonical status.** Cove maps its `NotStarted` session code and Dropsuite maps disabled or empty customers to `not_started`, and both should keep alerting when that state persists, because for them it means a backup that never ran. Axcient `PARKED` means an operator deliberately stopped protecting the device, which is a different fact. Overloading `not_started` would force a global alert exclusion that silences Cove and Dropsuite, so instead the `external_backup_status` enum and `EXTERNAL_BACKUP_STATUSES` gain `paused` (severity 25, between `unknown` and `not_started`; health derives as `warning` regardless of recency; bucketed with `not_started` and `unknown` in the "other" group; never raises an alert). The enum value is added with `ALTER TYPE … ADD VALUE IF NOT EXISTS` in its own migration, separate from the column migration, because a new enum value cannot be used in the transaction that adds it (house precedent: `2026-10-26-170000-ticket-checklist-operator-task-source.sql`, no `@no-transaction` directive).
 
 Reasons are strings and the documented list is not closed (the spec example says `APPLIANCE_OFFLINE`, the help centre says `APPLIANCE_OFFLINED`), so the map treats an unrecognised reason as "anything else" and never throws. AutoVerify does **not** change `status` in phase 1: a device whose backups run but whose last boot check failed stays `completed`, and the failed check is surfaced as evidence (below) rather than as a backup failure. That keeps the Axcient health light and the Breeze status in agreement, which is what a technician checking both consoles expects.
 
@@ -130,7 +132,7 @@ This is the one place Axcient adds a concept Cove lacks. `vendor_raw` is `exclud
 
 Device matching is the existing hostname-then-MAC path, on the assumption that `name` is the agent hostname (the OpenAPI describes it only as "Name of the device"; third-party integrators treat it as hostname, *inferred*). If W03 shows `name` is an operator-editable label, matching on `local_ps_id` against the agent-reported machine UUID moves from phase 2 into W03. `local_ps_id` is kept in `raw` either way.
 
-Alerts are device-level through the existing conditions; `failed`, `no_backups`, `no_selection`, `completed_with_errors` and `stale` all arise from the table above. One evaluator change: **`not_started` is excluded from the `stale` condition.** Today `not_started` with an old or missing last success falls through to a stale alert, which would make every parked Axcient server alert on every sync. Parked means an operator paused it on purpose; it still renders as uncovered in `/backup` and in the portal, it just does not page anyone. W01 checks whether any Cove code maps to `not_started` and documents the behaviour change in the PR if so. The alert label comes from the adapter label.
+Alerts are device-level through the existing conditions; `failed`, `no_backups`, `no_selection`, `completed_with_errors` and `stale` all arise from the table above. One evaluator change: **`paused` raises no condition, including `stale`.** A parked server still renders as uncovered in `/backup` and in the portal; it just does not page anyone. Cove and Dropsuite behaviour is unchanged. The alert label comes from the adapter label.
 
 ### Surfaces
 
@@ -143,11 +145,11 @@ All exist for Cove. Work is limited to:
 
 ### Tenancy
 
-No new tables. `provider` is a varchar and `account_type = 'backup_manager'` already exists. One migration adds the three nullable `verified_bootable*` columns to `backup_provider_devices` (named to sort after the newest shipped migration; `pnpm db:check-drift`), with the export-policy entries in the same PR. RLS, cascade and export registration from #6008 cover every row.
+No new tables. `provider` is a varchar and `account_type = 'backup_manager'` already exists. Two migrations, named to sort after the newest shipped migration: one file adding the `paused` enum value, and one adding the three nullable `verified_bootable*` columns to `backup_provider_devices`, with the export-policy entries in the same PR; then `pnpm db:check-drift`. The RLS integration test that compares `EXTERNAL_BACKUP_STATUSES` with `pg_enum` pins the order. RLS, cascade and export registration from #6008 cover every row.
 
 ## Testing
 
-- Adapter unit tests from fixtures: the status map including every documented reason, unrecognised reason and missing health; `osType` for all four `type` values; `lastSuccessAt` as max-of-three with nulls; D2C versus appliance `dataSources`; screenshot-URL scrub; array-not-object responses for `/client`.
+- Adapter unit tests from fixtures: the status map including every documented reason and `PARKED` → `paused`, unrecognised reason and missing health; `osType` for all four `type` values; `lastSuccessAt` as max-of-three with nulls; D2C versus appliance `dataSources`; screenshot-URL scrub; array-not-object responses for `/client`.
 - Error classification: 401 → `reauth`; 403 `ForbiddenException` → `reauth` with the scope message; per-customer 5xx → `failedCustomerIds`, rows kept; 429 → retry; the "401 for a non-numeric id" quirk never classifies as reauth when the id came from our own data (ids are numeric by construction, asserted in a test).
 - `registry.test.ts` and `routes/backup/providers.test.ts` provider-key lists gain `axcient`.
 - Client unit tests against a fake Axcient HTTP server (the Dropsuite `client.test.ts` pattern): pagination to a short page, the array-not-object shapes, the error bodies above.
@@ -157,7 +159,7 @@ No new tables. `provider` is a varchar and `account_type = 'backup_manager'` alr
 
 ## Rollout
 
-1. **W01, adapter + client + registry + credentials + migration:** fixtures from the OpenAPI examples and WireMock, status map, scope-error message, per-customer isolation, the `verified_bootable*` columns and persist, the `not_started` evaluator exclusion. API-only.
+1. **W01, adapter + client + registry + credentials + migrations:** fixtures from the OpenAPI examples and WireMock, status map, scope-error message, per-customer isolation, the `paused` status and the `verified_bootable*` columns with persist, the `paused` evaluator exclusion. API-only.
 2. **W02, surfaces:** form descriptor refactor (create + rotate) and Axcient form, boot-check fields on the device route, card, health row and backup status report, docs, locales.
 3. **W03, live verification** against a real account: rate-limit discovery, the 403/Billing-scope claim, real `device_details_page_url` host, timestamp timezone, and the `/device` 500 cap; replace fixtures with scrubbed captures; release notes.
 
@@ -174,7 +176,7 @@ All resolved as the defaults below on 2026-11-06, except decision 1, which is ow
 5. **Both product scopes named in the 403 message** (x360Recover and Billing) until W03 proves whether Billing is really required.
 6. **The form refactor (per-provider descriptor) happens in W02**, not as a separate PR, and covers both the create form and the connection card's rotate form. Posted bodies are unchanged and covered by the existing route tests.
 7. **Posture `backups_verified` control stays first-party only in phase 1.** Counting Axcient AutoVerify passes there would change what a customer-facing control means. Default: not in phase 1; the backup status report column is where the evidence shows. **Todd's call** whether to widen the control.
-8. **Parked devices do not alert** (`not_started` excluded from `stale`). They still show as uncovered. Default taken; see the alerts section for why.
+8. **Parked devices get a new `paused` status and do not alert.** They still show as uncovered. Chosen over excluding `not_started` from `stale`, which would have silenced Cove `NotStarted` and Dropsuite disabled customers too.
 9. **Hostname matching ships on the `name` = hostname assumption**; `local_ps_id` matching is pulled into W03 only if live verification disproves it.
 
 ## Phase 2
