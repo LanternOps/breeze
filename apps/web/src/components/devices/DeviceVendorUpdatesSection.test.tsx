@@ -94,6 +94,17 @@ describe('DeviceVendorUpdatesSection', () => {
     expect(row).toHaveTextContent('A Tech');
   });
 
+  it('names failing / not_supported / not_managed as the Patches tab does', async () => {
+    const expected: Record<string, string> = { failing: 'Failing', not_supported: 'Not supported', not_managed: 'Not managed' };
+    for (const [displayState, label] of Object.entries(expected)) {
+      answer(statusBody({ displayState }));
+      const { unmount } = render(<DeviceVendorUpdatesSection deviceId={DEVICE_ID} />);
+      const state = within(await section()).getByTestId('vendor-updates-state');
+      expect(state).toHaveTextContent(label);
+      unmount();
+    }
+  });
+
   it('each display state has its own copy', async () => {
     const seen = new Map<string, string>();
     for (const displayState of ['up_to_date', 'overdue', 'failing', 'not_supported', 'not_managed', 'waiting_for_reboot', 'reboot_overdue']) {
