@@ -16,9 +16,12 @@
  * back here. An alert still open from an earlier occurrence stands in for a new one.
  *
  * Maintenance windows suppress, and the device stays eligible, so it is raised on a
- * later tick once the window has passed. Each attempt counts against a per-tick cap, so
- * a fleet going overdue together, or an org-wide window over thousands of devices, is
- * paced rather than a burst of notifications. Anything left is simply next tick's.
+ * later tick once the window has passed. Each attempt counts against a per-tick cap, per
+ * rule, so a fleet going overdue together, or an org-wide window over thousands of
+ * devices, is paced rather than a burst of notifications. A step that hits its cap
+ * resumes behind the last device it tried, then wraps round: devices that cannot alert
+ * right now take a turn each, not every tick's first slots, so they cannot starve the
+ * other orgs' devices behind them.
  *
  * Reads run in short system contexts, one per page (#1105).
  */
@@ -128,8 +131,9 @@ function sweepContext(now: Date) {
   return {
     now,
     occurrenceOf: oemOccurrenceMemo(now),
-    /** What is left of this tick's cap. */
+    /** What is left of the current step's cap. */
     remaining: maxDispatchPerTick(),
+    lastAttempted: null as string | null,
     switchedOff: new Map<string, boolean>(),
   };
 }
@@ -171,12 +175,12 @@ const SETTLERS: ReadonlyArray<{
       if (row.lastSuccessAt && row.lastSuccessAt >= alert.createdAt) {
         return { keep: false, note: 'Auto-resolved: a vendor update run finished' };
       }
-      if (classified.state === 'not_supported' || !classified.side.linkEnabled) {
-        return { keep: false, note: LEFT_MANAGEMENT };
-      }
+      if (classified.state === 'not_supported') return { keep: false, note: LEFT_MANAGEMENT };
       // Still managed with no finished run, into the next occurrence's nights too: not
-      // reading overdue right now does not mean it updated.
-      return KEEP;
+      // reading overdue right now does not mean it updated. A pause is not an answer
+      // either: closing these would also spend the occurrence's one alert.
+      if (classified.side.linkEnabled || classified.side.paused) return KEEP;
+      return { keep: false, note: LEFT_MANAGEMENT };
     },
   },
   {
@@ -269,6 +273,7 @@ async function raiseAll(
     if (off) continue;
 
     context.remaining -= 1;
+    context.lastAttempted = raise.row.deviceId;
     try {
       if (await emit(raise)) raised += 1;
     } catch (error) {
@@ -278,17 +283,34 @@ async function raiseAll(
   return raised;
 }
 
+/** Where each step stopped when it hit its cap. In memory: a restart just starts over. */
+const resumeAfter = new Map<string, string>();
+
+export function resetOemOverdueCursorsForTests(): void {
+  resumeAfter.clear();
+}
+
 async function raiseFromPages(
+  ruleName: string,
   where: SQL | undefined,
   context: SweepContext,
   pick: (page: SweepRow[]) => Promise<void>,
 ): Promise<void> {
-  let after: string | null = null;
-  while (context.remaining > 0) {
+  context.remaining = maxDispatchPerTick();
+  context.lastAttempted = null;
+  let after: string | null = resumeAfter.get(ruleName) ?? null;
+  for (;;) {
     const cursor: string | null = after;
     const page: SweepRow[] = await loadRows(where, cursor);
     await pick(page);
-    if (page.length < PAGE_SIZE) return;
+    if (context.remaining <= 0) {
+      resumeAfter.set(ruleName, context.lastAttempted!);
+      return;
+    }
+    if (page.length < PAGE_SIZE) {
+      resumeAfter.delete(ruleName);
+      return;
+    }
     after = page[page.length - 1]!.deviceId;
   }
 }
@@ -305,7 +327,7 @@ async function raiseOverdue(context: SweepContext): Promise<number> {
     eq(devices.isVirtual, false),
     ne(devices.deviceRole, 'server'),
   );
-  await raiseFromPages(where, context, async (page) => {
+  await raiseFromPages(OEM_OVERDUE_RULE_NAME, where, context, async (page) => {
     const states = await classifyPage(page, context);
     const raises = page.flatMap((row): Raise[] => {
       const classified = states.get(row.deviceId);
@@ -324,7 +346,7 @@ async function raiseOverdue(context: SweepContext): Promise<number> {
 async function raiseRebootOverdue(context: SweepContext): Promise<number> {
   let raised = 0;
   const cutoff = new Date(context.now.getTime() - OEM_REBOOT_OVERDUE_NIGHTS * DAY_MS);
-  await raiseFromPages(lte(deviceOemUpdateStatus.rebootPendingSince, cutoff), context, async (page) => {
+  await raiseFromPages(OEM_REBOOT_OVERDUE_RULE_NAME, lte(deviceOemUpdateStatus.rebootPendingSince, cutoff), context, async (page) => {
     const states = await classifyPage(page, context);
     const raises = page.flatMap((row): Raise[] => (
       states.get(row.deviceId)?.state === 'reboot_overdue' && row.rebootPendingSince
@@ -343,7 +365,7 @@ async function raiseRebootOverdue(context: SweepContext): Promise<number> {
 async function raiseScheduleNotHandedBack(context: SweepContext): Promise<number> {
   let raised = 0;
   const where = and(eq(deviceOemUpdateStatus.reason, OEM_RELEASE_GAVE_UP), isNotNull(deviceOemUpdateStatus.lane));
-  await raiseFromPages(where, context, async (page) => {
+  await raiseFromPages(OEM_SCHEDULE_NOT_HANDED_BACK_RULE_NAME, where, context, async (page) => {
     // Keyed on the run that took the schedule over: another give-up needs another takeover.
     const raises = page.map((row): Raise => ({ row, dedupeKey: row.lastAttemptAt?.toISOString() ?? 'none' }));
     raised += await raiseAll(OEM_SCHEDULE_NOT_HANDED_BACK_RULE_NAME, raises, context, ({ row, dedupeKey }) => emitScheduleNotHandedBackAlert({

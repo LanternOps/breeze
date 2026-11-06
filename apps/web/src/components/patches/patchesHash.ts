@@ -8,7 +8,7 @@
 // `state` and `lane` filter the Vendor updates tab (#11074).
 // Built on the shared parser/writer in lib/hashParams.ts; writers preserve keys
 // they don't own and parsers ignore unknown keys and invalid values.
-import { OEM_LANES, type OemLane } from '@breeze/shared';
+import { OEM_DISPLAY_STATES, OEM_LANES, type OemDisplayState, type OemLane } from '@breeze/shared';
 import { parseHashGrammar, writeHashKeys } from '../../lib/hashParams';
 
 export const PATCHES_TABS = ['rings', 'patches', 'compliance', 'jobs', 'vendor-updates'] as const;
@@ -30,17 +30,8 @@ export const COMPLIANCE_STATUS_FILTERS = [
 export type ComplianceStatusFilter = (typeof COMPLIANCE_STATUS_FILTERS)[number];
 export type ComplianceStatusSelection = ComplianceStatusFilter | 'all';
 
-/** The display states of `GET /oem-updates/fleet`, in the order the tab shows them. */
-export const VENDOR_UPDATE_STATES = [
-  'up_to_date',
-  'overdue',
-  'failing',
-  'not_supported',
-  'not_managed',
-  'waiting_for_reboot',
-  'reboot_overdue',
-] as const;
-export type VendorUpdateState = (typeof VENDOR_UPDATE_STATES)[number];
+export const VENDOR_UPDATE_STATES = OEM_DISPLAY_STATES;
+export type VendorUpdateState = OemDisplayState;
 export type VendorUpdateStateSelection = VendorUpdateState | 'all';
 export type VendorUpdateLaneSelection = OemLane | 'all';
 

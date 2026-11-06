@@ -68,6 +68,8 @@ A scheduled run never starts outside its window, and Breeze sets no wake timers.
 
 A device that came under a schedule after that month's last night had already opened is not Overdue for that month. This covers a policy created or changed late in the month, a new assignment, and a newly enrolled device. A policy armed on the 28th does not turn the fleet Overdue for nights that passed before it existed.
 
+The month's nights are counted in the device's time zone: site, then organization, then partner. A user scoped to one organization cannot read a partner-level zone, so around the edge of a window their view can differ by a few hours from a partner user's and from the alert.
+
 An agent that is too old to run vendor updates is not hidden as Not managed. It can read **Overdue**, because the device really has stopped updating and updating the agent is the fix.
 
 ### Not managed
@@ -91,7 +93,7 @@ Vendor updates use the normal [alerts](/features/alerts/) machinery. An organiza
 
 | Rule | Fires when | Resolves when |
 |---|---|---|
-| `Vendor update: device overdue` | A device reads Overdue. Raised once per monthly occurrence, even if a technician closes the alert. | A run finishes after the alert, or the device leaves management. |
+| `Vendor update: device overdue` | A device reads Overdue. Raised once per monthly occurrence, even if a technician closes the alert. An alert still open from an earlier month stands in for a new one. | A run finishes after the alert, or the device leaves management. A kill switch or a closed gate leaves it open. |
 | `Vendor update: restart overdue` | A device reads Restart overdue. Raised once per owed restart. | The device is no longer Restart overdue. |
 | `Vendor update: schedule not handed back` | No policy runs vendor updates on the device any more, and giving the vendor tool's own schedule back failed 3 times. | The handback goes through. |
 | `Vendor update: device did not come back` | A device has not checked in after a BIOS or firmware update started, past its return deadline. It may be at a BitLocker recovery prompt or a failed flash. | The device checks in again. |
@@ -119,6 +121,6 @@ Set these on the API:
 | `BREEZE_OEM_UPDATES_ENABLED` | off | Master switch. |
 | `BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST` | empty (all partners) | Comma-separated partner IDs. When set, only those partners get the feature. |
 | `BREEZE_OEM_UPDATES_DISABLED_LANES` | empty | Comma-separated makers (`dell`, `surface`, `hp`, `lenovo`) to pause. Takes effect once the API restarts with the new value. Lenovo's agent support has not shipped yet, so its lane stays closed regardless. |
-| `OEM_UPDATES_MAX_DISPATCH_PER_TICK` | 200 | Most vendor update runs sent in one scheduler pass. It also caps the alerts raised in one pass, so a fleet going overdue together is paced rather than sent at once. Must be a whole number above zero. |
+| `OEM_UPDATES_MAX_DISPATCH_PER_TICK` | 200 | Most vendor update runs sent in one scheduler pass. It also caps the alerts attempted per rule in one pass, so a fleet going overdue together is paced rather than sent at once. The next pass carries on where this one stopped. Must be a whole number above zero. |
 
 With `BREEZE_OEM_UPDATES_ENABLED` off, no policy is read and nothing is dispatched. Every device reads **Not managed**, except a device that already has a recorded state such as **Not supported** or an owed restart.

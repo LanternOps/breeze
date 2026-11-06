@@ -193,6 +193,40 @@ describe('VendorUpdatesView', () => {
     await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(before));
   });
 
+  it('another org\'s rows and counts do not stay on screen while the new org loads', async () => {
+    const { rerender } = render(<VendorUpdatesView />);
+    await screen.findByText('LAPTOP-01');
+
+    let answer: (value: Response) => void = () => {};
+    fetchMock.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    org.currentOrgId = 'org-2';
+    rerender(<VendorUpdatesView />);
+
+    expect(screen.queryByText('LAPTOP-01')).toBeNull();
+    expect(screen.getByTestId('vendor-updates-count-overdue')).not.toHaveTextContent('3');
+
+    await act(async () => {
+      answer(respond({ counts: COUNTS, total: 1, devices: [device({ deviceId: 'other', hostname: 'OTHER-ORG' })] }));
+    });
+    expect(await screen.findByText('OTHER-ORG')).toBeInTheDocument();
+  });
+
+  it('says it is loading while a new filter is on its way, and stops when it lands', async () => {
+    render(<VendorUpdatesView />);
+    await screen.findByText('LAPTOP-01');
+    await waitFor(() => expect(screen.getByTestId('vendor-updates-view')).toHaveAttribute('aria-busy', 'false'));
+
+    let answer: (value: Response) => void = () => {};
+    fetchMock.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    fireEvent.click(screen.getByTestId('vendor-updates-count-overdue'));
+
+    await waitFor(() => expect(screen.getByTestId('vendor-updates-view')).toHaveAttribute('aria-busy', 'true'));
+    await act(async () => {
+      answer(respond({ counts: COUNTS, total: 1, devices: [device()] }));
+    });
+    await waitFor(() => expect(screen.getByTestId('vendor-updates-view')).toHaveAttribute('aria-busy', 'false'));
+  });
+
   it('a slow answer for an old filter does not overwrite the new one', async () => {
     let answerOld: (value: Response) => void = () => {};
     fetchMock.mockImplementationOnce(() => new Promise((resolve) => { answerOld = resolve; }));

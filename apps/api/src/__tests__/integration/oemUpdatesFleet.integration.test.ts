@@ -26,7 +26,7 @@ import {
   organizationUsers,
 } from '../../db/schema';
 import { authMiddleware } from '../../middleware/auth';
-import { oemUpdatesFleetRoutes } from '../../routes/oemUpdates/fleet';
+import { fleetRowsQuery, fleetScopeCondition, oemUpdatesFleetRoutes } from '../../routes/oemUpdates/fleet';
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
 import { runOemOverdueSweep } from '../../services/oemUpdates/overdueSweep';
 import { clearPermissionCache } from '../../services/permissions';
@@ -308,7 +308,16 @@ describe('#11074 GET /oem-updates/fleet', () => {
       FROM devices WHERE org_id = ${env.organization.id}::uuid
     `));
     await withSystemDbAccessContext(() => db.execute(sql`ANALYZE devices`));
-    vi.stubEnv('BREEZE_OEM_UPDATES_ENABLED', 'true');
+    await withSystemDbAccessContext(() => db.execute(sql`ANALYZE device_hardware`));
+    await withSystemDbAccessContext(() => db.execute(sql`ANALYZE device_oem_update_status`));
+    // The lab override re-reads its list per device, so a sample: enough to prove the
+    // pass classifies each row on its own, and the rest of the fleet stays closed.
+    const sample = await withSystemDbAccessContext(() => db
+      .select({ id: devices.id })
+      .from(devices)
+      .where(eq(devices.orgId, env.organization.id))
+      .limit(100));
+    openGatesFor(...sample.map((row) => row.id));
     await armPolicy({ partnerId: env.partner.id }, { level: 'partner', id: env.partner.id });
 
     const token = await createAccessToken(payloadFor(env, 'partner'));
@@ -319,25 +328,28 @@ describe('#11074 GET /oem-updates/fleet', () => {
     expect(status).toBe(200);
     expect(body.total).toBe(10_000);
     expect(body.devices).toHaveLength(50);
-    expect(Object.values<number>(body.counts).reduce((sum, count) => sum + count, 0)).toBe(10_000);
+    expect(body.counts.overdue).toBe(100);
+    expect(body.counts.not_managed).toBe(9_900);
     // The query count itself is pinned in routes/oemUpdates/fleet.test.ts, where db.select
     // can be counted. Here, a per-device walk would not finish in this time: it would be
     // several queries for each of 10,000 devices.
     expect(elapsedMs).toBeLessThan(30_000);
     process.stderr.write(`[oemUpdatesFleet] 10,000 devices in ${Math.round(elapsedMs)} ms\n`);
 
-    // The same shape of read for the small org: the plan starts from its org id, not the table.
-    const plan = await withSystemDbAccessContext(() => db.execute(sql`
-      EXPLAIN SELECT d.id, d.hostname
-      FROM devices d
-      INNER JOIN organizations o ON o.id = d.org_id
-      LEFT JOIN device_oem_update_status s ON s.device_id = d.id
-      WHERE d.is_ephemeral = false AND d.status <> 'decommissioned' AND d.org_id = ${small.id}::uuid
-      ORDER BY lower(d.hostname), d.id
-    `)) as unknown as Array<{ 'QUERY PLAN': string }>;
+    // The route's own statement, for the small org: the plan starts from its org id, not the table.
+    const statement = fleetRowsQuery(fleetScopeCondition({
+      orgCondition: eq(devices.orgId, small.id),
+      orgId: small.id,
+    }), true).toSQL();
+    const literal = (value: unknown) => (typeof value === 'string' ? `'${value.replaceAll("'", "''")}'` : String(value));
+    const inlined = statement.sql.replace(/\$(\d+)/g, (_, index) => literal(statement.params[Number(index) - 1]));
+    const plan = await withSystemDbAccessContext(() => db.execute(sql.raw(`EXPLAIN ${inlined}`))) as unknown as Array<{ 'QUERY PLAN': string }>;
     const text = plan.map((line) => line['QUERY PLAN']).join('\n');
+    expect(text, text).toMatch(/devices/);
     expect(text, text).not.toMatch(/Seq Scan on devices/);
-    expect(smallDevice.id).toBeTruthy();
+
+    const small_ = await fleet(token, `?orgId=${small.id}`);
+    expect(small_.body.devices.map((row: any) => row.deviceId)).toEqual([smallDevice.id]);
   }, 120_000);
 });
 
@@ -422,6 +434,31 @@ describe('#11074 overdue alerts, through the real createAlert', () => {
 
     const afterRestart = await openAlerts(device.id);
     expect(afterRestart.find((alert) => alert.name === 'Vendor update: restart overdue')?.status).toBe('resolved');
+  });
+
+  runDb('each org gets its own rule and alert, and one org\'s alert does not silence another\'s', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const second = await createOrganization({ partnerId: env.partner.id });
+    const secondSite = await createSite({ orgId: second.id });
+    const a = await seedDevice(env.organization.id, env.site.id);
+    const b = await seedDevice(second.id, secondSite.id);
+    openGatesFor(a.id, b.id);
+    await armPolicy({ partnerId: env.partner.id }, { level: 'partner', id: env.partner.id });
+    for (const [deviceId, orgId] of [[a.id, env.organization.id], [b.id, second.id]] as const) {
+      await getTestDb().insert(deviceOemUpdateStatus).values({
+        deviceId, orgId, applicability: 'applicable', lane: 'dell', lastOutcome: 'success', occurrenceKey: '2020-01', lastSuccessAt: LONG_AGO,
+      });
+    }
+
+    await runOemOverdueSweep(new Date());
+
+    expect(await openAlerts(a.id)).toHaveLength(1);
+    expect(await openAlerts(b.id)).toHaveLength(1);
+    const rules = await withSystemDbAccessContext(() => db
+      .select({ orgId: alertRules.orgId })
+      .from(alertRules)
+      .where(eq(alertRules.name, 'Vendor update: device overdue')));
+    expect(rules.map((rule) => rule.orgId)).toEqual(expect.arrayContaining([env.organization.id, second.id]));
   });
 
   runDb('with the flag off, nothing goes overdue and nothing is raised', async () => {

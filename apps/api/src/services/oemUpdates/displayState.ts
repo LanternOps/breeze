@@ -1,18 +1,9 @@
-import type { OemOutcome } from '@breeze/shared';
+import { OEM_DISPLAY_STATES, type OemDisplayState, type OemOutcome } from '@breeze/shared';
 import type { DeviceOemUpdateStatus } from '../../db/schema';
 import { OEM_MAX_ATTEMPTS_PER_OCCURRENCE } from './occurrence';
 
-export const OEM_DISPLAY_STATES = [
-  'up_to_date',
-  'overdue',
-  'failing',
-  'not_supported',
-  'not_managed',
-  'waiting_for_reboot',
-  'reboot_overdue',
-] as const;
-
-export type OemDisplayState = (typeof OEM_DISPLAY_STATES)[number];
+export { OEM_DISPLAY_STATES };
+export type { OemDisplayState };
 
 export type OemDisplayStatus = Pick<
   DeviceOemUpdateStatus,

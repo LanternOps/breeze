@@ -56,8 +56,14 @@ type FleetRow = OemDeviceFacts & {
  * back to the database. The org and partner zones are read out of their settings
  * rather than carrying a whole settings blob per device. Memberships are inline, off
  * the membership primary key, and only when a group assignment could use them.
+ *
+ * An org-scoped caller cannot see the partner row, so a zone set only on the partner
+ * reads as UTC for them: at most a few hours' difference around a window's edge against
+ * a partner caller and the alert sweep, the same edge the device section accepts.
+ *
+ * Exported for the integration test, which asks Postgres to plan this very statement.
  */
-function loadFleetRows(where: SQL | undefined, withGroups: boolean): Promise<FleetRow[]> {
+export function fleetRowsQuery(where: SQL | undefined, withGroups: boolean) {
   return db
     .select({
       deviceId: devices.id,
@@ -103,7 +109,27 @@ function loadFleetRows(where: SQL | undefined, withGroups: boolean): Promise<Fle
     .leftJoin(deviceHardware, eq(deviceHardware.deviceId, devices.id))
     .leftJoin(deviceOemUpdateStatus, eq(deviceOemUpdateStatus.deviceId, devices.id))
     .where(where)
-    .orderBy(sql`lower(${devices.hostname})`, devices.id) as Promise<FleetRow[]>;
+    .orderBy(sql`lower(${devices.hostname})`, devices.id);
+}
+
+/** Who may see which devices: what bounds the fleet read, in the list and the counts alike. */
+export function fleetScopeCondition(scope: {
+  orgCondition: SQL | undefined;
+  orgId?: string;
+  allowedSiteIds?: string[];
+}): SQL | undefined {
+  const { orgCondition, orgId, allowedSiteIds } = scope;
+  return and(
+    // Quick Support devices sit in an org the caller can reach; nothing else drops them.
+    eq(devices.isEphemeral, false),
+    notParkedDeviceCondition(),
+    ne(devices.status, 'decommissioned'),
+    orgCondition,
+    orgId ? eq(devices.orgId, orgId) : undefined,
+    allowedSiteIds
+      ? (allowedSiteIds.length > 0 ? inArray(devices.siteId, allowedSiteIds) : sql`false`)
+      : undefined,
+  );
 }
 
 type Classified = { row: FleetRow; lane: OemLane | null; state: OemDisplayState };
@@ -176,23 +202,16 @@ oemUpdatesFleetRoutes.get(
       return c.json({ error: 'orgId is required' }, 400);
     }
 
-    const allowedSiteIds = permissions.allowedSiteIds;
-    const where = and(
-      // Quick Support devices sit in an org the caller can reach; nothing else drops them.
-      eq(devices.isEphemeral, false),
-      notParkedDeviceCondition(),
-      ne(devices.status, 'decommissioned'),
-      auth.orgCondition(devices.orgId),
-      orgId ? eq(devices.orgId, orgId) : undefined,
-      allowedSiteIds
-        ? (allowedSiteIds.length > 0 ? inArray(devices.siteId, allowedSiteIds) : sql`false`)
-        : undefined,
-    );
+    const where = fleetScopeCondition({
+      orgCondition: auth.orgCondition(devices.orgId),
+      orgId,
+      allowedSiteIds: permissions.allowedSiteIds,
+    });
 
     // No flag, no lane, so no policy is ever consulted.
     const candidates = oemUpdatesFlagOn() ? await loadOemLinkCandidates() : [];
     const withGroups = candidates.some((candidate) => candidate.assignmentLevel === 'device_group');
-    const rows = await loadFleetRows(where, withGroups);
+    const rows = await (fleetRowsQuery(where, withGroups) as unknown as Promise<FleetRow[]>);
 
     const classified = classify(rows, candidates, new Date());
     const inLane = lane ? classified.filter((entry) => entry.lane === lane) : classified;

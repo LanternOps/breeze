@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { OEM_UPDATES_POLICY_DEFAULTS } from '@breeze/shared';
 
@@ -17,21 +17,36 @@ const h = vi.hoisted(() => ({
   links: new Map<string, unknown>(),
   armed: true,
   open: ['driver'] as string[],
+  queries: [] as Array<{ sql: string; params: unknown[] }>,
 }));
+
+/** The page after a keyset cursor, so the paging loops run against something that ends. */
+function afterCursor<T extends Record<string, unknown>>(
+  rows: T[],
+  query: { sql: string; params: unknown[] },
+  column: string,
+  key: keyof T,
+): T[] {
+  const match = query.sql.match(new RegExp(`${column} > \\$(\\d+)`));
+  if (!match) return rows;
+  const cursor = String(query.params[Number(match[1]) - 1]);
+  return rows.filter((row) => String(row[key]) > cursor);
+}
 
 function rowsFor(shape: Record<string, unknown>, where: unknown): unknown[] {
   const query = where ? new PgDialect().sqlToQuery(where as never) : { sql: '', params: [] as unknown[] };
+  h.queries.push(query);
   if ('alertId' in shape) {
     const ruleName = Object.keys(h.openAlerts).find((name) => query.params.includes(name));
-    return ruleName ? h.openAlerts[ruleName]! : [];
+    return ruleName ? afterCursor(h.openAlerts[ruleName]!, query, '"alerts"."id"', 'alertId') : [];
   }
   if ('dedupeKey' in shape) return h.priorAlerts;
   if ('isActive' in shape) return h.ruleActive === null ? [] : [{ isActive: h.ruleActive }];
   if ('manufacturer' in shape) {
-    if (query.sql.includes('"reboot_pending_since"')) return h.rebootRows;
-    if (query.sql.includes('"reason"')) return h.gaveUpRows;
+    if (query.sql.includes('"reboot_pending_since"')) return afterCursor(h.rebootRows, query, '"devices"."id"', 'deviceId');
+    if (query.sql.includes('"reason"')) return afterCursor(h.gaveUpRows, query, '"devices"."id"', 'deviceId');
     if (query.sql.includes('"devices"."id" in')) return h.byIdRows;
-    return h.managedRows;
+    return afterCursor(h.managedRows, query, '"devices"."id"', 'deviceId');
   }
   if ('hostname' in shape) return [{ hostname: 'host-1' }];
   if ('id' in shape) return [{ id: 'rule-1' }];
@@ -47,7 +62,7 @@ vi.mock('../../db', () => {
       leftJoin: () => c,
       where: (condition: unknown) => { seenWhere = condition; return c; },
       orderBy: () => c,
-      limit: () => Promise.resolve(rowsFor(shape, seenWhere)),
+      limit: (count: number) => Promise.resolve(rowsFor(shape, seenWhere).slice(0, count)),
       then: (resolve: (value: unknown[]) => unknown) => Promise.resolve(rowsFor(shape, seenWhere)).then(resolve),
     };
     return c;
@@ -90,7 +105,7 @@ vi.mock('./toolManifest', async (importOriginal) => ({
 import { createAlert, resolveAlert } from '../alertService';
 import { checkDeviceMaintenanceWindow } from '../featureConfigResolver';
 import { captureException } from '../sentry';
-import { runOemOverdueSweep } from './overdueSweep';
+import { resetOemOverdueCursorsForTests, runOemOverdueSweep } from './overdueSweep';
 
 const NOW = new Date('2027-03-01T12:00:00.000Z');
 const LONG_AGO = new Date('2026-01-01T00:00:00.000Z');
@@ -146,7 +161,11 @@ function row(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 // Priors arrive with their real status, and the status set comes from the alertService mock.
 const raised = () => vi.mocked(createAlert).mock.calls.map(([params]) => params);
 
+afterEach(() => vi.unstubAllEnvs());
+
 beforeEach(() => {
+  resetOemOverdueCursorsForTests();
+  h.queries = [];
   vi.stubEnv('BREEZE_OEM_UPDATES_ENABLED', 'true');
   h.managedRows = [];
   h.rebootRows = [];
@@ -240,8 +259,6 @@ describe('runOemOverdueSweep: overdue', () => {
     arrange();
     await runOemOverdueSweep(NOW);
     expect(createAlert).not.toHaveBeenCalled();
-    vi.unstubAllEnvs();
-    vi.stubEnv('BREEZE_OEM_UPDATES_ENABLED', 'true');
   });
 
   it('with the flag off, or nothing armed, it walks no device', async () => {
@@ -267,16 +284,70 @@ describe('runOemOverdueSweep: overdue', () => {
     expect(checkDeviceMaintenanceWindow).not.toHaveBeenCalled();
   });
 
-  it('caps the alerts raised in one tick, and leaves the rest for the next', async () => {
+  it('caps the alerts raised in one tick, and the next tick carries on behind them', async () => {
     vi.stubEnv('OEM_UPDATES_MAX_DISPATCH_PER_TICK', '2');
     const ids = ['d1', 'd2', 'd3', 'd4'];
     h.managedRows = ids.map((deviceId) => row({ deviceId }));
     h.links = new Map(ids.map((id) => [id, link]));
 
     await runOemOverdueSweep(NOW);
-
     expect(raised().map((params) => params.deviceId)).toEqual(['d1', 'd2']);
-    vi.unstubAllEnvs();
+
+    vi.mocked(createAlert).mockClear();
+    h.priorAlerts = [
+      { deviceId: 'd1', dedupeKey: '2027-02', status: 'active' },
+      { deviceId: 'd2', dedupeKey: '2027-02', status: 'active' },
+    ];
+    await runOemOverdueSweep(NOW);
+    expect(raised().map((params) => params.deviceId)).toEqual(['d3', 'd4']);
+  });
+
+  it('devices a window keeps quiet cannot starve the devices behind them', async () => {
+    vi.stubEnv('OEM_UPDATES_MAX_DISPATCH_PER_TICK', '2');
+    const ids = ['d1', 'd2', 'd3'];
+    h.managedRows = ids.map((deviceId) => row({ deviceId }));
+    h.links = new Map(ids.map((id) => [id, link]));
+    vi.mocked(checkDeviceMaintenanceWindow).mockImplementation((async (deviceId: string) => (
+      deviceId === 'd3' ? { active: false, suppressAlerts: false } : { active: true, suppressAlerts: true }
+    )) as never);
+
+    await runOemOverdueSweep(NOW);
+    expect(createAlert).not.toHaveBeenCalled();
+
+    await runOemOverdueSweep(NOW);
+    expect(raised().map((params) => params.deviceId)).toEqual(['d3']);
+    vi.mocked(checkDeviceMaintenanceWindow).mockImplementation((async () => h.maintenance) as never);
+  });
+
+  it('one rule at its cap does not use up another rule\'s', async () => {
+    vi.stubEnv('OEM_UPDATES_MAX_DISPATCH_PER_TICK', '1');
+    h.rebootRows = [row({ deviceId: 'r1', rebootPendingSince: FOUR_DAYS_AGO })];
+    h.managedRows = [row({ deviceId: 'd1' })];
+    h.links = new Map([['r1', link], ['d1', link]]);
+
+    await runOemOverdueSweep(NOW);
+
+    expect(raised().map((params) => params.deviceId).sort()).toEqual(['d1', 'r1']);
+  });
+
+  it('walks past the first page, raising each device once, and stops', async () => {
+    vi.stubEnv('OEM_UPDATES_MAX_DISPATCH_PER_TICK', '5000');
+    const ids = Array.from({ length: 1001 }, (_, index) => `d${String(index).padStart(5, '0')}`);
+    h.managedRows = ids.map((deviceId) => row({ deviceId }));
+    h.links = new Map(ids.map((id) => [id, link]));
+
+    await runOemOverdueSweep(NOW);
+
+    expect(raised().map((params) => params.deviceId)).toEqual(ids);
+  });
+
+  it('asks only for the overdue rule\'s own alerts, from this source', async () => {
+    h.managedRows = [row()];
+    await runOemOverdueSweep(NOW);
+    const prior = h.queries.filter((query) => query.params.includes(OVERDUE) && query.sql.includes('"device_id" in'));
+    expect(prior).toHaveLength(1);
+    expect(prior[0]!.sql).toContain("->>'source'");
+    expect(prior[0]!.params).toContain('oem-updates');
   });
 
   it('one failure does not strand the rest, and reaches Sentry', async () => {
@@ -326,6 +397,48 @@ describe('runOemOverdueSweep: resolving overdue', () => {
     await runOemOverdueSweep(NOW);
     expect(resolveAlert).toHaveBeenCalledTimes(1);
     expect(vi.mocked(resolveAlert).mock.calls[0]![1]).toContain('no longer');
+  });
+
+  it.each([
+    ['a kill switch', () => { vi.stubEnv('BREEZE_OEM_UPDATES_DISABLED_LANES', 'dell'); }],
+    ['a closed gate on a category it asks for', () => { h.open = []; }],
+    ['stored settings that no longer parse', () => {
+      h.links = new Map([['BY-ID', { ...link, invalidStoredSettings: true, settings: OEM_UPDATES_POLICY_DEFAULTS }]]);
+    }],
+  ])('stays open through %s: the device has not left management', async (_label, arrange) => {
+    h.openAlerts = { [OVERDUE]: [open] };
+    h.byIdRows = [row({ deviceId: 'BY-ID' })];
+    h.links = new Map([['BY-ID', link]]);
+    arrange();
+    await runOemOverdueSweep(NOW);
+    expect(resolveAlert).not.toHaveBeenCalled();
+  });
+
+  it('resolves when the policy stops asking for anything', async () => {
+    h.openAlerts = { [OVERDUE]: [open] };
+    h.byIdRows = [row({ deviceId: 'BY-ID' })];
+    h.links = new Map([['BY-ID', {
+      ...link,
+      settings: { ...link.settings, vendors: { dell: { enabled: true, categories: {}, blockedUpdateIds: [] } } },
+    }]]);
+    await runOemOverdueSweep(NOW);
+    expect(resolveAlert).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves with the flag off', async () => {
+    vi.stubEnv('BREEZE_OEM_UPDATES_ENABLED', 'false');
+    h.openAlerts = { [OVERDUE]: [open] };
+    h.byIdRows = [row({ deviceId: 'BY-ID' })];
+    await runOemOverdueSweep(NOW);
+    expect(resolveAlert).toHaveBeenCalledTimes(1);
+  });
+
+  it('settles past the first page, and stops', async () => {
+    const opens = Array.from({ length: 501 }, (_, index) => ({ ...open, alertId: `a${String(index).padStart(4, '0')}` }));
+    h.openAlerts = { [OVERDUE]: opens };
+    h.byIdRows = [];
+    await runOemOverdueSweep(NOW);
+    expect(resolveAlert).toHaveBeenCalledTimes(501);
   });
 
   it('a failed resolve is reported and left open for the next tick', async () => {
@@ -401,6 +514,9 @@ describe('runOemOverdueSweep: release_gave_up', () => {
     await runOemOverdueSweep(NOW);
     expect(raised()).toHaveLength(1);
     expect(raised()[0]).toMatchObject({ context: { dedupeKey: LONG_AGO.toISOString() } });
+    const selection = h.queries.find((query) => query.sql.includes('"reason"'));
+    expect(selection!.params).toContain('release_gave_up');
+    expect(selection!.sql).toContain('"lane" is not null');
     expect(raised()[0]!.title).toMatch(/schedule/i);
 
     vi.mocked(createAlert).mockClear();

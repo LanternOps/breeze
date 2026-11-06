@@ -105,7 +105,6 @@ vi.mock('../../services/oemUpdates/toolManifest', async (importOriginal) => ({
 
 vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
 
-import { devices } from '../../db/schema';
 import { deriveOemDisplayState, OEM_DISPLAY_STATES } from '../../services/oemUpdates/displayState';
 import { computeOccurrence } from '../../services/oemUpdates/occurrence';
 import { oemUpdatesFleetRoutes } from './fleet';
@@ -299,10 +298,13 @@ describe('GET /oem-updates/fleet: filters and paging', () => {
   });
 
   it('orgId narrows the query', async () => {
+    // Reachable among others, so only the filter itself can narrow to it.
     const orgId = '44444444-4444-4444-8444-444444444444';
-    h.auth.accessibleOrgIds = [orgId];
+    h.auth.accessibleOrgIds = [orgId, 'org-2'];
     await getFleet(`?orgId=${orgId}`);
-    expect(fleetWhere().params).toContain(orgId);
+    const where = fleetWhere();
+    expect(where.sql).toContain('"devices"."org_id" = ');
+    expect(where.params.filter((param) => param === orgId)).toHaveLength(2);
   });
 
   it('state narrows the list and total, and the counts still show every state', async () => {
@@ -535,10 +537,5 @@ describe('GET /oem-updates/fleet: 10,000 devices', () => {
     h.fleetRows = [row()];
     const { body } = await getFleet();
     expect(body.devices[0].displayState).toBe('not_managed');
-  });
-
-  it('references the device table it scopes', () => {
-    // Guards the where-clause assertions above against a mocked schema.
-    expect(devices.orgId.name).toBe('org_id');
   });
 });

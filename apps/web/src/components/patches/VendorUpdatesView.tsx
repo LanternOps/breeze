@@ -77,7 +77,7 @@ type LoadState =
   | { status: 'loading' }
   | { status: 'failed' }
   | { status: 'pick_org' }
-  | { status: 'loaded'; fleet: Fleet };
+  | { status: 'loaded'; fleet: Fleet; orgId: string | null };
 
 /**
  * The Vendor updates tab (#11074): how many machines are in each state, and which.
@@ -111,6 +111,7 @@ export default function VendorUpdatesView() {
 
   const [reloadCount, setReloadCount] = useState(0);
   const [load, setLoad] = useState<LoadState>({ status: 'loading' });
+  const [busy, setBusy] = useState(true);
   const latestRequest = useRef(0);
 
   useEffect(() => {
@@ -120,7 +121,8 @@ export default function VendorUpdatesView() {
     if (stateFilter !== 'all') params.set('state', stateFilter);
     if (laneFilter !== 'all') params.set('lane', laneFilter);
 
-    // The counts stay on screen while a new page or filter loads; only the first load has none.
+    // The counts stay on screen, dimmed, while a new page or filter loads. Another org's do not.
+    setBusy(true);
     setLoad((current) => (current.status === 'loaded' ? current : { status: 'loading' }));
     void (async () => {
       let next: LoadState;
@@ -129,13 +131,16 @@ export default function VendorUpdatesView() {
         const response = await fetchWithAuth(`/oem-updates/fleet?${params.toString()}`);
         if (response.status === 400) next = { status: 'pick_org' };
         else if (!response.ok) next = { status: 'failed' };
-        else next = { status: 'loaded', fleet: await response.json() as Fleet };
+        else next = { status: 'loaded', fleet: await response.json() as Fleet, orgId: currentOrgId };
       } catch (error) {
         console.error('[VendorUpdatesView] load failed', error);
         next = { status: 'failed' };
       }
       // A slow answer for a filter the user has left must not overwrite the current one.
-      if (request === latestRequest.current) setLoad(next);
+      if (request === latestRequest.current) {
+        setLoad(next);
+        setBusy(false);
+      }
     })();
   }, [stateFilter, laneFilter, offset, currentOrgId, reloadCount]);
 
@@ -166,15 +171,16 @@ export default function VendorUpdatesView() {
     );
   }
 
-  const fleet = load.status === 'loaded' ? load.fleet : null;
+  const fleet = load.status === 'loaded' && load.orgId === currentOrgId ? load.fleet : null;
+  const dimmed = busy && fleet !== null;
   const total = fleet?.total ?? 0;
   const pageEnd = Math.min(offset + PAGE_SIZE, total);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4" data-testid="vendor-updates-view" aria-busy={busy}>
       <p className="text-sm text-muted-foreground">{t('vendorUpdates.description')}</p>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7">
+      <div className={cn('grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7', dimmed && 'opacity-60')}>
         {VENDOR_UPDATE_STATES.map((state) => (
           <button
             key={state}
@@ -211,7 +217,7 @@ export default function VendorUpdatesView() {
         </select>
       </div>
 
-      <div className="overflow-x-auto rounded-lg border bg-card">
+      <div className={cn('overflow-x-auto rounded-lg border bg-card', dimmed && 'opacity-60')}>
         <table className="min-w-full text-sm">
           <thead className="border-b text-left text-xs text-muted-foreground">
             <tr>
