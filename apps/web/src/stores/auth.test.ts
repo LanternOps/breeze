@@ -261,6 +261,61 @@ describe('auth store fetchWithAuth', () => {
     expect(url).not.toContain('/v1/v1/');
   });
 
+  // #11195: a read that hits a 429 waits out Retry-After and retries once.
+  it('retries a GET once after Retry-After on a 429', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(Math, 'random').mockReturnValue(0);
+      useAuthStore.getState().login(baseUser, baseTokens);
+      const ok = makeResponse({ data: [] }, true, 200);
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response('{}', { status: 429, headers: { 'Retry-After': '2' } }))
+        .mockResolvedValueOnce(ok);
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = fetchWithAuth('/devices');
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(2);
+      expect(await pending).toBe(ok);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('retries only once: a second 429 is returned to the caller', async () => {
+    vi.useFakeTimers();
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      const fetchMock = vi
+        .fn()
+        .mockImplementation(async () => new Response('{}', { status: 429, headers: { 'Retry-After': '1' } }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = fetchWithAuth('/devices');
+      await vi.advanceTimersByTimeAsync(5000);
+      expect((await pending).status).toBe(429);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never replays a mutation on a 429', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response('{}', { status: 429, headers: { 'Retry-After': '1' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await fetchWithAuth('/devices', { method: 'POST', body: '{}' });
+    expect(res.status).toBe(429);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('refreshes and retries when access token is expired', async () => {
     useAuthStore.getState().login(baseUser, baseTokens);
     const refreshedTokens: Tokens = {

@@ -20,6 +20,7 @@ import { clearSsoReauthGrant } from '@/lib/ssoReauthGrant';
 import { clearRememberedEnrollmentArtifacts } from '@/lib/rememberedEnrollmentArtifacts';
 import { getSafeNext, loginPathWithNext } from '@/lib/authNext';
 import { isGlobalScopeRoute } from '@/lib/routeScope';
+import { throttleRetryDelayMs } from '@/lib/throttleRetry';
 import {
   parseMfaChallengeResponse,
   type MfaChallenge,
@@ -1609,6 +1610,32 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
       }
     } catch {
       // Not JSON or parse failed — surface as a normal 428 to caller
+    }
+  }
+
+  // 429 on a READ: the condition clears on its own, so wait out the advertised
+  // window (bounded + jittered) and retry once instead of handing the caller a
+  // failure (#11195). Safe methods only — a mutation is never replayed. A
+  // second 429, a missing/oversized wait, or an aborted signal falls through to
+  // the caller, whose error UI reads a 429 as "Please wait".
+  const method = (init.method ?? 'GET').toUpperCase();
+  if (response.status === 429 && (method === 'GET' || method === 'HEAD') && !signal.aborted) {
+    const waitMs = await throttleRetryDelayMs(response);
+    if (waitMs !== null) {
+      const stillLive = await new Promise<boolean>((resolve) => {
+        const onAbort = () => {
+          clearTimeout(timer);
+          resolve(false);
+        };
+        const timer = setTimeout(() => {
+          signal.removeEventListener('abort', onAbort);
+          resolve(true);
+        }, waitMs);
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
+      if (stillLive) {
+        response = await fetch(buildApiUrl(url), { ...init, headers, credentials: 'include', signal });
+      }
     }
   }
 
