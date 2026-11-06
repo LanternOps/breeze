@@ -22,6 +22,33 @@ export function agentSupportsOemUpdates(agentVersion: string | null | undefined)
   return cmp !== null && cmp >= 0;
 }
 
+/**
+ * First agent release that handles `oem_update_release` (hand a vendor tool's own update schedule
+ * back). Set when the contract was added; move it if that release slips.
+ */
+export const OEM_UPDATE_RELEASE_MIN_AGENT_VERSION = '0.127.0';
+
+/** Whether an agent can run `oem_update_release`. Fails CLOSED, like `agentSupportsOemUpdates`. */
+export function agentSupportsOemUpdateRelease(agentVersion: string | null | undefined): boolean {
+  if (typeof agentVersion !== 'string') return false;
+  const cmp = semverCompare(agentVersion.trim(), OEM_UPDATE_RELEASE_MIN_AGENT_VERSION);
+  return cmp !== null && cmp >= 0;
+}
+
+/**
+ * First agent release that honours `deadlineAction: 'hold'` on `schedule_reboot`. An older agent
+ * ignores the key and would force the reboot at the deadline. Set when the contract was added; move
+ * it if that release slips.
+ */
+export const OEM_REBOOT_HOLD_MIN_AGENT_VERSION = '0.127.0';
+
+/** Whether an agent honours the reboot hold. Fails CLOSED. */
+export function agentSupportsOemRebootHold(agentVersion: string | null | undefined): boolean {
+  if (typeof agentVersion !== 'string') return false;
+  const cmp = semverCompare(agentVersion.trim(), OEM_REBOOT_HOLD_MIN_AGENT_VERSION);
+  return cmp !== null && cmp >= 0;
+}
+
 export const OEM_LANES = ['dell', 'surface', 'hp', 'lenovo'] as const;
 export type OemLane = (typeof OEM_LANES)[number];
 

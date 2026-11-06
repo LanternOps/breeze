@@ -4,7 +4,7 @@ import { HTTPException } from 'hono/http-exception';
 import { zValidator, formatZodError, isJsonContentType } from '../../lib/validation';
 import { z } from 'zod';
 import { and, or, eq, ne, sql, desc, gte, lte, inArray, isNull, notExists, type SQL } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransaction } from '../../db';
 import {
   aiAlertVerdicts,
   alertCorrelationGroups,
@@ -747,7 +747,8 @@ alertsRoutes.post(
             skippedIds.push(alert.id);
             continue;
           }
-          written = await db
+          // Savepoint so a failed UPDATE rolls back and later iterations still run (#11203).
+          written = await withDbTransaction(async () => db
             .update(alerts)
             .set({
               status: 'acknowledged',
@@ -755,7 +756,7 @@ alertsRoutes.post(
               acknowledgedBy: auth.user.id,
             })
             .where(and(eq(alerts.id, alert.id), eq(alerts.status, alert.status)))
-            .returning({ id: alerts.id });
+            .returning({ id: alerts.id }));
         } else if (action === 'suppress') {
           // A resolved or dismissed alert can't be suppressed (matches the single endpoint).
           if (alert.status === 'resolved' || alert.status === 'dismissed') {
@@ -763,14 +764,14 @@ alertsRoutes.post(
             skippedIds.push(alert.id);
             continue;
           }
-          written = await db
+          written = await withDbTransaction(async () => db
             .update(alerts)
             .set({
               status: 'suppressed',
               suppressedUntil,
             })
             .where(and(eq(alerts.id, alert.id), eq(alerts.status, alert.status)))
-            .returning({ id: alerts.id });
+            .returning({ id: alerts.id }));
         } else if (action === 'dismiss') {
           // Dismiss is terminal and valid from ANY other status — it exists
           // precisely so already-resolved alerts can be cleared for good.
@@ -779,7 +780,7 @@ alertsRoutes.post(
             skippedIds.push(alert.id);
             continue;
           }
-          written = await db
+          written = await withDbTransaction(async () => db
             .update(alerts)
             .set({
               status: 'dismissed',
@@ -787,14 +788,14 @@ alertsRoutes.post(
               dismissedBy: auth.user.id,
             })
             .where(and(eq(alerts.id, alert.id), eq(alerts.status, alert.status)))
-            .returning({ id: alerts.id });
+            .returning({ id: alerts.id }));
         } else {
           if (alert.status === 'resolved' || alert.status === 'dismissed') {
             results.skipped++;
             skippedIds.push(alert.id);
             continue;
           }
-          written = await db
+          written = await withDbTransaction(async () => db
             .update(alerts)
             .set({
               status: 'resolved',
@@ -803,7 +804,7 @@ alertsRoutes.post(
               resolutionReason: 'manual',
             })
             .where(and(eq(alerts.id, alert.id), eq(alerts.status, alert.status)))
-            .returning({ id: alerts.id });
+            .returning({ id: alerts.id }));
         }
         if (written.length === 0) {
           // Status changed between our snapshot and the write — don't emit

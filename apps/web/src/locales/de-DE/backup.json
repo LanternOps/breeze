@@ -49,7 +49,6 @@
     "policyId": "Richtlinien-ID",
     "featureLinkId": "Feature-Link-ID",
     "errorLog": "Fehlerprotokoll",
-    "savings": "{{protected}} gesichert — {{uploaded}} hochgeladen",
     "errorCount_one": "{{count}} Fehler",
     "errorCount_other": "{{count}} Fehler",
     "failedCount_one": "{{count}} fehlgeschlagen",
@@ -1244,5 +1243,36 @@
       "hint": "Breeze erkennt diesen Fehler noch nicht. Die vollständige Meldung wird unten angezeigt."
     },
     "troubleshootingLink": "Leitfaden zur Fehlerbehebung"
+  },
+  "fullRunReason": {
+    "no_prior_snapshot": "Erste Sicherung für dieses Gerät und Ziel",
+    "base_expired": "Die vorherige Sicherung war durch die Aufbewahrung abgelaufen",
+    "storage_identity_changed": "Das Sicherungsziel wurde geändert",
+    "backup_type_mismatch": "Die vorherige Sicherung hatte einen anderen Typ",
+    "base_job_not_completed": "Keine frühere Sicherung wurde erfolgreich abgeschlossen",
+    "base_retired": "Die vorherige Sicherung wurde durch die Aufbewahrung entfernt",
+    "base_retired_race": "Die vorherige Sicherung wurde durch die Aufbewahrung entfernt",
+    "base_deleted_race": "Die vorherige Sicherung wurde durch die Aufbewahrung entfernt",
+    "no_verified_base": "Keine frühere Sicherung hat die Integritätsprüfung bestanden",
+    "key_root_changed": "Der Zielordner (Präfix) wurde geändert",
+    "base_key_root_unreadable": "Der Speicherort der vorherigen Sicherung konnte nicht gelesen werden",
+    "invalid_destination_prefix": "Das Zielpräfix ist ungültig",
+    "nothing_reused": "Eine frühere Sicherung war vorhanden, aber es konnten keine unveränderten Dateien wiederverwendet werden",
+    "unrecorded": "Grund nicht erfasst (diese Sicherung lief, bevor Breeze ihn aufgezeichnet hat)"
+  },
+  "jobDataSummary": {
+    "uploadedAndReused": "{{uploaded}} hochgeladen · {{reused}} wiederverwendet",
+    "processedBeforeStopped": "{{processed}} verarbeitet, bevor der Lauf endete",
+    "full": "Voll",
+    "heading": "Was dieser Lauf gespeichert hat",
+    "protected": "Gesichert",
+    "uploadedThisRun": "In diesem Lauf hochgeladen",
+    "reusedFromEarlier": "Aus früheren Sicherungen wiederverwendet",
+    "backupType": "Sicherungstyp",
+    "incremental": "Inkrementell",
+    "fullWithReason": "Voll — {{reason}}",
+    "explainer": "Nur neue oder geänderte Dateien werden hochgeladen. Unveränderte Dateien werden aus früheren Sicherungen dieses Geräts am selben Ziel wiederverwendet.",
+    "learnMore": "So funktionieren inkrementelle Sicherungen",
+    "resumedAt": "Dieser Lauf hat am {{time}} eine unterbrochene Sicherung fortgesetzt."
   }
 }

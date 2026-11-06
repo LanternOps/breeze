@@ -2319,7 +2319,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       const topology = resolvedFlags.materialization
         ? await withResolvedTopologyFlags(
           { orgId: agent.orgId, flags: resolvedFlags },
-          () => db.transaction(() => topologyHeartbeat(device, data)),
+          () => withDbTransaction(() => topologyHeartbeat(device, data)),
         )
         : topologyHeartbeatWithoutMaterialization(device, data);
       mergedConfigUpdate.networkContext = topology.config;

@@ -14,13 +14,6 @@ import { ReportSeriesError } from './errors';
  */
 const SYSTEM_AUTHORED_REPORT_TYPES: ReadonlySet<string> = new Set(['ai_org_narrative', 'ai_fleet_design']);
 const BUSINESS_TYPES: ReadonlySet<string> = new Set(BUSINESS_REPORT_TYPES);
-/**
- * Types becoming managed evidence in a later wave of their feature (#11018
- * D7). Refused from the start, so no series row exists that the registry's
- * `execution` flag would later refuse. Delete an entry once that flag flips.
- */
-const SERIES_PENDING_MANAGED_EVIDENCE_TYPES: ReadonlySet<string> = new Set(['ticket_sla_performance']);
-
 function unsupported(type: string, reason: string): ReportSeriesError {
   return new ReportSeriesError('series_type_unsupported', 400, { type, reason });
 }
@@ -39,9 +32,7 @@ export function assertSeriesTypeSupported(type: string): void {
   if (!def) throw unsupported(type, 'unknown_type');
   if (SYSTEM_AUTHORED_REPORT_TYPES.has(type)) throw unsupported(type, 'system_authored');
   if (BUSINESS_TYPES.has(type) || def.audience === 'msp_staff') throw unsupported(type, 'partner_aggregate');
-  if (def.execution !== 'user' || SERIES_PENDING_MANAGED_EVIDENCE_TYPES.has(type)) {
-    throw unsupported(type, 'managed_evidence');
-  }
+  if (def.execution !== 'user') throw unsupported(type, 'managed_evidence');
   if (!def.supportedScopes.includes('organization')) throw unsupported(type, 'not_org_executable');
 }
 

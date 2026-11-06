@@ -20,6 +20,7 @@ import (
 func init() {
 	handlerRegistry[tools.CmdOemUpdateRun] = handleOemUpdateRun
 	interruptedResultBodies[tools.CmdOemUpdateRun] = oemInterruptedResultBody
+	handlerRegistry[tools.CmdOemUpdateRelease] = handleOemUpdateRelease
 }
 
 // Seams, so the handler tests on any OS without running a vendor tool.
@@ -30,7 +31,62 @@ var (
 	oemRun      = oemupdates.Run
 	oemDepsFor  = productionOemDeps
 	oemStore    = oemupdates.DefaultStore
+	oemRelease  = oemupdates.Release
 )
+
+// handleOemUpdateRelease hands a vendor tool's schedule back (#11065 W06). The
+// result is stdout JSON; a release that restored, or found nothing of
+// Breeze's to restore, completes (the API clears its takeover state), and
+// anything else fails so the API releases again.
+func handleOemUpdateRelease(h *Heartbeat, cmd Command) tools.CommandResult {
+	start := time.Now()
+	raw, err := json.Marshal(cmd.Payload)
+	if err != nil {
+		return tools.NewErrorResult(fmt.Errorf("invalid oem_update_release payload: %w", err), time.Since(start).Milliseconds())
+	}
+	req, err := oemupdates.ParseReleaseRequest(raw)
+	if err != nil {
+		return tools.NewErrorResult(fmt.Errorf("invalid oem_update_release payload: %w", err), time.Since(start).Milliseconds())
+	}
+	nothing := func(code string) tools.CommandResult {
+		return oemReleaseCommandResult(oemupdates.ReleaseResult{Lane: req.Lane, Outcome: oemupdates.ReleaseNothingToRestore, ErrorCode: &code}, time.Since(start).Milliseconds())
+	}
+	// Off Windows, or a lane this agent does not build: no takeover ever ran.
+	if oemGOOS != "windows" {
+		return nothing("os_not_supported")
+	}
+	if !oemElevated() {
+		log.Warn("oem_update_release refused: agent is not elevated", "commandId", cmd.ID)
+		code := "not_elevated"
+		return oemReleaseCommandResult(oemupdates.ReleaseResult{Lane: req.Lane, Outcome: oemupdates.ReleaseFailed, ErrorCode: &code}, time.Since(start).Milliseconds())
+	}
+	lane, ok := oemLaneFor(req.Lane)
+	if !ok {
+		return nothing("lane_not_built")
+	}
+	ctx, cancel := h.oemRunContext()
+	defer cancel()
+	result := oemRelease(ctx, req, lane, oemDepsFor(h, cmd.ID))
+	return oemReleaseCommandResult(result, time.Since(start).Milliseconds())
+}
+
+func oemReleaseCommandResult(r oemupdates.ReleaseResult, durationMs int64) tools.CommandResult {
+	if err := r.Validate(); err != nil {
+		log.Warn("vendor schedule release result failed the contract; reporting failed", "error", err.Error())
+		code := "result_invalid"
+		r = oemupdates.ReleaseResult{Lane: r.Lane, Outcome: oemupdates.ReleaseFailed, ErrorCode: &code}
+		if !oemupdates.IsLane(r.Lane) {
+			r.Lane = oemupdates.LaneDell // unreachable: the payload's lane was parsed first
+		}
+	}
+	out := tools.NewSuccessResult(r, durationMs)
+	if out.Status == "completed" && !r.Acked() {
+		out.Status = "failed"
+		out.ExitCode = 1
+		out.Error = "vendor schedule release: " + r.Outcome
+	}
+	return out
+}
 
 // handleOemUpdateRun runs one vendor lane. The payload is parsed strictly; a
 // payload that does not parse is a plain failure with no run result, since it

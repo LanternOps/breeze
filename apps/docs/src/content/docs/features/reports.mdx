@@ -304,6 +304,10 @@ Below the table is the list of **breaches**: every first response or resolution 
 
 **Creating and delivering it.** Choose the **SLA performance** template card (it appears to users with the `tickets:read` permission), pick the period (default: last full month) and whether to include subjects, and set the schedule and recipients as for any template report. It can be emailed on a schedule to organization contacts or to extra email addresses, and downloaded as PDF, CSV or Excel. The Excel download has a second sheet listing the breaches. It is available for one organization at a time. The report reflects ticket state when it was generated: a ticket reopened later is measured again in a later report.
 
+**As service-plan evidence.** A [service deliverable](/features/contracts/#service-deliverables) can produce this report for you each period. Pick **Service evidence — SLA performance** as the deliverable's evidence report, or **SLA performance** as a template item's evidence source. Each occurrence then generates the report for that occurrence's own period on its due day. Because the period ends on the due day, the report counts what was decided up to the moment it ran and says so; anything decided later that day is in neither this report nor the next. Evidence reports always leave ticket subjects off, and that setting can't be changed, because a delivered report is visible to every portal user of the organization while a portal user can otherwise read only their own tickets.
+
+**What the customer sees.** With the organization's portal **Reports** section on, the customer sees the report under Reports, with PDF and CSV downloads, once you deliver the occurrence, and not before. Customers can't generate this report themselves. Delivering is the point of release: every portal user of that organization can then read it, whether or not the tickets are their own. Reports you create from the template card and email stay out of the portal. A report series can't include this type; use a service-plan template to cover several organizations.
+
 ---
 
 ## Business Reports

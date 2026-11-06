@@ -174,7 +174,7 @@ vi.mock('../../services/permissions', async (importOriginal) => {
   };
 });
 
-vi.mock('../../db', () => ({ db: dbMock }));
+vi.mock('../../db', () => ({ db: dbMock, withDbTransaction: (fn: () => Promise<unknown>) => fn(), }));
 vi.mock('../../db/schema', () => ({
   alertCorrelationGroups: {}, alertCorrelationMembers: {},
   alertRules: {}, alertTemplates: {}, alerts: tables.alerts, notificationChannels: {},

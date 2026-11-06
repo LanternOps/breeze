@@ -31,6 +31,7 @@ vi.mock('../../db', () => ({
   db: {
     select: (...args: unknown[]) => selectMock(...(args as [])),
   },
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -303,6 +304,37 @@ describe('backup dashboard routes', () => {
     expect(storedSnapshotBytesByProviderSinceMock).not.toHaveBeenCalled();
     const body = await res.json();
     expect(body.data.points.every((point: { totalBytes: number }) => point.totalBytes === 0)).toBe(true);
+  });
+
+  it('adds dataAccounting to dashboard latestJobs', async () => {
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([]);
+    selectMock
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ count: 0 }]))
+      .mockReturnValueOnce(chainMock([{ count: 2 }]))
+      .mockReturnValueOnce(chainMock([{ completed: 1, failed: 1, running: 0, pending: 0 }]))
+      .mockReturnValueOnce(chainMock([
+        makeRecentJob({
+          id: 'job-inc', status: 'completed', backupMode: 'file',
+          totalSize: 1000, referencedSize: 900, baseSnapshotId: 'snap-base',
+        }),
+        makeRecentJob({
+          id: 'job-bad', status: 'failed', backupMode: 'file',
+          totalSize: 2000, transferredSize: 1500, baseSnapshotId: null, fullBackupReason: 'base_expired',
+        }),
+      ]));
+
+    const res = await app.request('/backup/dashboard');
+
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.latestJobs[0].dataAccounting).toMatchObject({ uploadedBytes: 100, reusedBytes: 900, runKind: 'incremental' });
+    expect(data.latestJobs[1].dataAccounting).toMatchObject({
+      uploadedBytes: null,
+      processedBytes: 1500,
+      runKind: 'full',
+      fullRunReason: 'base_expired',
+    });
   });
 
   it('adds failureCategory to dashboard latestJobs', async () => {
@@ -760,6 +792,26 @@ describe('backup dashboard routes', () => {
       const body = await res.json();
       expect(body.data.lastJob).toHaveProperty('vssMetadata');
       expect(body.data.lastJob.vssMetadata).toBeNull();
+    });
+
+    it('status lastJob carries dataAccounting', async () => {
+      mockStatusQueries(makeJob({
+        status: 'completed',
+        backupMode: 'system_image',
+        totalSize: 1000,
+        referencedSize: 0,
+        baseSnapshotId: 'snap-base',
+      }));
+
+      const res = await app.request(`/backup/status/${DEVICE_ID}`);
+
+      expect(res.status).toBe(200);
+      const { data } = await res.json();
+      expect(data.lastJob.dataAccounting).toMatchObject({
+        uploadedBytes: 1000,
+        runKind: 'full',
+        fullRunReason: 'nothing_reused',
+      });
     });
 
     it('status lastJob and lastFailure carry failureCategory', async () => {

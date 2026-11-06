@@ -19,6 +19,7 @@ import { useScrollToError } from '../../lib/scrollToError';
 import BackupVerificationTab from './BackupVerificationTab';
 import ExternalBackupCard from './ExternalBackupCard';
 import { formatBytes } from './backupDashboardHelpers';
+import BackupJobDataSummary from './BackupJobDataSummary';
 import DeviceVaultStatus from './DeviceVaultStatus';
 import ReparseSkipNotice from './ReparseSkipNotice';
 import {
@@ -26,6 +27,7 @@ import {
   stripInlineIndexDropNote,
   type ActiveBackupJob,
   type BackupFailureCategory,
+  type BackupJobDataAccounting,
 } from '@breeze/shared';
 import DeviceBackupActiveJobs from './DeviceBackupActiveJobs';
 import { runAction, handleActionError } from '../../lib/runAction';
@@ -77,6 +79,8 @@ type BackupJob = {
   // by the job's own status rather than always as an error.
   errorLog?: string | null;
   failureCategory?: BackupFailureCategory | null;
+  // Absent on an older API during a rolling deploy.
+  dataAccounting?: BackupJobDataAccounting | null;
 };
 
 type Snapshot = {
@@ -669,7 +673,11 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
                         {formatDuration(job.startedAt, job.completedAt)}
                       </td>
                       <td className="py-2 pr-4 text-muted-foreground">
-                        {formatBytes(job.totalSize, '-')}
+                        {job.dataAccounting && job.status !== 'running' && job.status !== 'pending' ? (
+                          <BackupJobDataSummary accounting={job.dataAccounting} variant="cell" />
+                        ) : (
+                          formatBytes(job.totalSize, '-')
+                        )}
                       </td>
                       <td className="py-2">
                         <div className="flex flex-wrap items-center gap-1.5">

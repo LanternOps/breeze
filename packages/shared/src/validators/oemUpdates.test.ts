@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
+  oemUpdateReleasePayloadSchema,
+  oemUpdateReleaseResultSchema,
   oemUpdateRunPayloadSchema,
   oemUpdateRunResultSchema,
   oemUpdateVerificationSchema,
@@ -138,5 +140,24 @@ describe('oemUpdateVerificationSchema', () => {
     expect(ok({ ...v, extra: 1 })).toBe(false);
     expect(ok({ ...v, bitlockerAfter: 'maybe' })).toBe(false);
     expect(ok({ ...v, commandId: 'x' })).toBe(false);
+  });
+});
+
+describe('oem update release contracts', () => {
+  it('payload is a strict lane', () => {
+    expect(oemUpdateReleasePayloadSchema.safeParse({ lane: 'dell' }).success).toBe(true);
+    expect(oemUpdateReleasePayloadSchema.safeParse({ lane: 'acme' }).success).toBe(false);
+    expect(oemUpdateReleasePayloadSchema.safeParse({}).success).toBe(false);
+    expect(oemUpdateReleasePayloadSchema.safeParse({ lane: 'dell', extra: 1 }).success).toBe(false);
+  });
+  it('result carries a known outcome and an identifier errorCode', () => {
+    const ok = (v: unknown) => oemUpdateReleaseResultSchema.safeParse(v).success;
+    expect(ok({ lane: 'hp', outcome: 'restored' })).toBe(true);
+    expect(ok({ lane: 'hp', outcome: 'failed', errorCode: 'export.timeout' })).toBe(true);
+    expect(ok({ lane: 'hp', outcome: 'nothing_to_restore', errorCode: null })).toBe(true);
+    expect(ok({ lane: 'hp', outcome: 'done' })).toBe(false);
+    expect(ok({ lane: 'hp', outcome: 'failed', errorCode: 'bad code' })).toBe(false);
+    expect(ok({ lane: 'hp', outcome: 'failed', errorCode: 'x'.repeat(65) })).toBe(false);
+    expect(ok({ lane: 'hp', outcome: 'restored', extra: 1 })).toBe(false);
   });
 });

@@ -13,7 +13,7 @@ vi.mock('../jobs/peripheralJobs', () => ({
   schedulePeripheralPolicyDevices: schedulePolicyDevicesMock,
 }));
 
-vi.mock('../db', () => ({ db: { insert: insertMock, update: updateMock, select: selectMock } }));
+vi.mock('../db', () => ({ db: { insert: insertMock, update: updateMock, select: selectMock }, hasDbAccessContext: () => false }));
 
 vi.mock('../db/schema/patches', () => ({
   patchPolicies: {

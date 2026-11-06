@@ -901,13 +901,21 @@
       "open": "Öffnen",
       "unread": "Ungelesen",
       "specialistResult": "Spezialistenbericht",
-      "firstLook": "Erster Überblick"
+      "firstLook": "Erster Überblick",
+      "couldntLook": "Noch kein Überblick"
     },
     "welcome": {
       "title": "Ich sehe mich in {{scope}} um.",
       "body": "Ihr erster Bericht kommt jeden Morgen, sobald ich mich umgesehen habe. Fragen Sie mich in der Zwischenzeit gern alles.",
       "firstLookTitle": "Ich habe mir {{scope}} ein erstes Mal angesehen.",
       "firstLookBody": "Was ich gefunden habe, steht im Beitrag oben. Fragen Sie mich gern alles dazu.",
+      "couldntLookTitle": "Ich konnte mir {{scope}} noch nicht ansehen.",
+      "couldntLookBody": "Im Beitrag oben steht, warum und wann ich es erneut versuche. Fragen Sie mich in der Zwischenzeit gern alles.",
+      "couldntLookChat": "Auf der Wisp-Startseite steht, warum und wann ich es erneut versuche.",
+      "progress_one": "Angesehene Organisationen: {{lookedAt}} von {{count}}",
+      "progress_other": "Angesehene Organisationen: {{lookedAt}} von {{count}}",
+      "progressQueued": "{{count}} in Warteschlange",
+      "progressFailed": "{{count}} fehlgeschlagen",
       "briefAt": "Ihr Morgenbericht kommt um {{time}} ({{timezone}}).",
       "suggestions": {
         "needsMe": {

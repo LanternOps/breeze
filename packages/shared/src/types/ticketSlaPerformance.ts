@@ -44,6 +44,37 @@ export type TicketSlaPerformanceRow = {
   resolutionTimedSample: number;
 };
 
+/**
+ * Column headers for the customer's portal CSV (#11018). Total over the row so a
+ * new column can't ship as a raw camelCase header. Attainment stays a ratio in
+ * the cell, so the header says so.
+ */
+export const TICKET_SLA_PERFORMANCE_ROW_CSV_LABELS = {
+  priority: 'Priority',
+  ticketsOpened: 'Tickets opened',
+  ticketsWithoutTarget: 'Tickets without a target',
+  responseTargetMinutes: 'Response target (minutes)',
+  responseTargetVaries: 'Response target varies',
+  responseMeasured: 'Responses measured',
+  responseMet: 'Responses within SLA',
+  responseMissed: 'Responses missed',
+  responseMissedOpen: 'Responses missed and still open',
+  responseAttainment: 'Response within SLA (0-1)',
+  responseMedianMinutes: 'Median response (minutes)',
+  responseMeanMinutes: 'Mean response (minutes)',
+  responseTimedSample: 'Responses timed',
+  resolutionTargetMinutes: 'Resolution target (minutes)',
+  resolutionTargetVaries: 'Resolution target varies',
+  resolutionMeasured: 'Resolutions measured',
+  resolutionMet: 'Resolutions within SLA',
+  resolutionMissed: 'Resolutions missed',
+  resolutionMissedOpen: 'Resolutions missed and still open',
+  resolutionAttainment: 'Resolution within SLA (0-1)',
+  resolutionMedianMinutes: 'Median resolution (minutes)',
+  resolutionMeanMinutes: 'Mean resolution (minutes)',
+  resolutionTimedSample: 'Resolutions timed',
+} as const satisfies Record<keyof TicketSlaPerformanceRow, string>;
+
 export type TicketSlaBreachRow = {
   ticketId: string;
   ticketNumber: string;

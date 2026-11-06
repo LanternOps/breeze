@@ -86,6 +86,15 @@ describe('fetchWispTimeline', () => {
     expect(page.items).toEqual([fl]);
   });
 
+  it("keeps a couldn't-look post's variant, and drops one it does not know (#11145)", async () => {
+    const couldntLook = post('p-cl', '2026-10-26T09:00:00.000Z', { kind: 'first_look', variant: 'couldnt_look' });
+    const unknown = post('p-x', '2026-10-26T08:00:00.000Z', { kind: 'first_look', variant: 'something_new' as never });
+    fetchMock.mockResolvedValue(ok({ data: { items: [couldntLook, unknown], nextCursor: null } }));
+    const page = await fetchWispTimeline('th-1', {});
+    expect(page.items[0]).toEqual(couldntLook);
+    expect(page.items[1]).not.toHaveProperty('variant');
+  });
+
   it('logs which kinds of rows were dropped, never their content', async () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchMock.mockResolvedValue(ok({

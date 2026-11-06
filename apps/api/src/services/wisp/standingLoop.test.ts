@@ -42,7 +42,7 @@ const facts: StandingLoopFacts = {
   status: 'active',
   floorTickMinutes: 45,
   lastFloorTickAt: new Date('2026-11-05T14:30:12Z'),
-  firstLook: { assessedOrgs: 7, inFlight: 3, totalOrgs: 12 },
+  firstLook: { assessedOrgs: 7, settledOrgs: 7, inFlight: 3, totalOrgs: 12 },
   brief: { timeLocal: '07:30', timezone: 'America/Chicago' },
 };
 
@@ -80,7 +80,7 @@ describe('renderStandingLoop', () => {
     const quiet = renderStandingLoop({
       ...facts,
       lastFloorTickAt: null,
-      firstLook: { assessedOrgs: 4, inFlight: 0, totalOrgs: 4 },
+      firstLook: { assessedOrgs: 4, settledOrgs: 4, inFlight: 0, totalOrgs: 4 },
       brief: { timeLocal: null, timezone: 'UTC' },
     }, 'm');
     expect(quiet).toContain('4 of 4 orgs assessed');
@@ -111,7 +111,7 @@ describe('renderStandingLoop', () => {
       status: 'active',
       floorTickMinutes: 240,
       lastFloorTickAt: new Date('2026-12-31T23:59:59Z'),
-      firstLook: { assessedOrgs: 99999, inFlight: 99999, totalOrgs: 99999 },
+      firstLook: { assessedOrgs: 99999, settledOrgs: 99999, inFlight: 99999, totalOrgs: 99999 },
       brief: { timeLocal: '23:59', timezone: 'America/Argentina/ComodRivadavia' },
     }, 'x'.repeat(80));
     expect(Buffer.byteLength(worst, 'utf8')).toBeLessThanOrEqual(STANDING_LOOP_MAX_BYTES);
@@ -177,13 +177,13 @@ describe('loadStandingLoopFacts', () => {
     const siteRestricted = { ...ceiling, siteIds: new Set(['s1']) } as unknown as GrantCeiling;
     const out = await loadStandingLoopFacts(siteRestricted);
     expect(h.issued).toHaveLength(1);
-    expect(out?.firstLook).toEqual({ assessedOrgs: 0, inFlight: 0, totalOrgs: 0 });
+    expect(out?.firstLook).toEqual({ assessedOrgs: 0, settledOrgs: 0, inFlight: 0, totalOrgs: 0 });
   });
 
   it('reads the cadence, the floor-tick cursor, the first-look counts and the grantor brief schedule', async () => {
     h.selects.push(
       [{ status: 'active', floorTickMinutes: 60, lastFloorTickAt: new Date('2026-11-05T10:00:00Z') }],
-      [{ assessedOrgs: 2, inFlight: 1 }],
+      [{ assessedOrgs: 2, settledOrgs: 3, inFlight: 1 }],
     );
     h.briefScheduleFor.mockResolvedValue({ timeLocal: '08:00', timezone: 'Europe/Berlin' });
     const out = await loadStandingLoopFacts(ceiling);
@@ -191,7 +191,7 @@ describe('loadStandingLoopFacts', () => {
       status: 'active',
       floorTickMinutes: 60,
       lastFloorTickAt: new Date('2026-11-05T10:00:00Z'),
-      firstLook: { assessedOrgs: 2, inFlight: 1, totalOrgs: 3 },
+      firstLook: { assessedOrgs: 2, settledOrgs: 3, inFlight: 1, totalOrgs: 3 },
       brief: { timeLocal: '08:00', timezone: 'Europe/Berlin' },
     });
     expect(h.briefScheduleFor).toHaveBeenCalledWith(ceiling.grantorUserId, ceiling.partnerId);

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq, and, desc, gte, lte, sql, inArray } from 'drizzle-orm';
-import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, withDbTransaction } from '../../db';
 import { backupSnapshots, restoreJobs, devices, deviceCommands } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -562,12 +562,14 @@ restoreRoutes.post(
     if (rebuildRecoveryId) {
       // Free the device's recovery slot so the next rebuild isn't refused.
       try {
-        await cancelBareMetalRecovery({
+        // Savepoint so a failed statement rolls back and the request transaction
+        // survives this catch (#11203).
+        await withDbTransaction(async () => cancelBareMetalRecovery({
           recoveryId: rebuildRecoveryId,
           orgId,
           userId: auth?.user?.id ?? null,
           reason,
-        });
+        }));
       } catch (err) {
         // invalid_state = recovery already terminal, which is the goal state.
         if (!(err instanceof BareMetalRecoveryError && err.code === 'invalid_state')) {

@@ -19,7 +19,8 @@ import { actionIntents, type ActionIntent } from '../db/schema/actionIntents';
 import { oauthClients } from '../db/schema/oauth';
 import { apiKeys } from '../db/schema/apiKeys';
 import { withAuthDbAccessContext } from '../middleware/auth';
-import { AI_DESIGN_INTENT_TOOLS, resolveAiDesignIntentTarget } from './actionIntents/aiDesignIntentTarget';
+import { AI_DESIGN_INTENT_TOOLS } from './actionIntents/aiDesignIntentTarget';
+import { INTENT_ROW_UNREADABLE, argumentTargetOrg, decideIntentOrg, resolveIntentTarget } from './actionIntents/intentTargetOrg';
 import { ActionIntentError, cancelActionIntent, createActionIntent } from './actionIntents/intentService';
 import { validateToolInput } from './aiToolSchemas';
 import { rateLimiter } from './rate-limit';
@@ -103,21 +104,50 @@ async function chargeCreation(originRef: string, userId: string): Promise<void> 
 }
 
 /**
- * W16 PR B (#6786): the two design tools name their org through a row, so the org a
- * partner-scope call falls back to is not the target. As the chat gate does, an intent
- * goes to the row's org when the call reaches it; a pinned key or bearer never moves.
- * A failed lookup keeps the execution org, where a pinned action then has no digest.
+ * #11181 (generalising W16 PR B, #6786): the org the intent is filed in. As the chat gate
+ * does (`actionIntents/intentTargetOrg.ts`):
+ *  - an org ARGUMENT that names the changed org is the intent's org when the call reaches
+ *    it, and refuses when it does not: `resolveMcpExecutionOrgId` discards an unreachable
+ *    `orgId` and falls back to the first org in reach, and an org-pinned key or bearer
+ *    ignores it, so either would file the approval in an org the action does not change.
+ *  - a ROW named by id (#11222) is treated the same: its org when the call reaches it, a
+ *    refusal when it does not or no such row exists. An org-pinned key or bearer reaches
+ *    only its own org. A row that could not be read refuses as unresolvable, not as bad
+ *    params. An org-less row of the caller's partner keeps the execution org.
+ *  - a design tool's ROW moves a partner-scope call to the row's org when reachable; a
+ *    pinned key or bearer never moves, and a row out of reach keeps the execution org.
+ *  - anything else keeps the execution org. A failed design-tool lookup keeps it too, where
+ *    a pinned action then has no digest.
  */
-async function intentOrgFor(input: CreateMcpActionIntentInput): Promise<string> {
+async function intentOrgFor(input: CreateMcpActionIntentInput): Promise<{ orgId: string } | { refused: McpIntentRefusalCode }> {
   const { auth, apiKey, toolName, toolInput, executionOrgId } = input;
-  if (!AI_DESIGN_INTENT_TOOLS.has(toolName) || apiKey.orgId || auth.orgId) return executionOrgId;
+  const pinnedOrgId = apiKey.orgId ?? auth.orgId ?? null;
+  const named = argumentTargetOrg(toolName, toolInput);
+  if (named) {
+    if (pinnedOrgId ? named !== pinnedOrgId : !auth.canAccessOrg(named)) return { refused: 'invalid_params' };
+    return { orgId: named };
+  }
+  if (!AI_DESIGN_INTENT_TOOLS.has(toolName)) {
+    const reach = {
+      canAccessOrg: (id: string) => (pinnedOrgId ? id === pinnedOrgId : auth.canAccessOrg(id)),
+      partnerId: auth.partnerId,
+      scope: auth.scope,
+    };
+    const decision = decideIntentOrg(await resolveIntentTarget(toolName, toolInput), reach);
+    if (decision.kind === 'refuse') {
+      return { refused: decision.error === INTENT_ROW_UNREADABLE ? 'effect_digest_unresolvable' : 'invalid_params' };
+    }
+    return { orgId: decision.kind === 'target' ? decision.orgId : executionOrgId };
+  }
+  if (pinnedOrgId) return { orgId: executionOrgId };
   try {
-    const target = await resolveAiDesignIntentTarget(toolName, toolInput);
-    return target?.orgId && auth.canAccessOrg(target.orgId) ? target.orgId : executionOrgId;
+    const decision = decideIntentOrg(await resolveIntentTarget(toolName, toolInput), { canAccessOrg: (id) => auth.canAccessOrg(id) });
+    if (decision.kind === 'refuse') return { refused: 'invalid_params' };
+    return { orgId: decision.kind === 'target' ? decision.orgId : executionOrgId };
   } catch (err) {
     console.error('[MCP] Failed to resolve a design tool\'s target org:', err);
     captureException(err);
-    return executionOrgId;
+    return { orgId: executionOrgId };
   }
 }
 
@@ -142,7 +172,9 @@ export async function createMcpActionIntent(input: CreateMcpActionIntentInput): 
   // auth_epoch has moved) and bound into the idempotency key, so a retry after
   // a bump files a fresh intent instead of replaying the stale live one.
   const originAuthEpoch = auth.principal.kind === 'oauth_grant' ? apiKey.oauthAuthEpoch ?? undefined : undefined;
-  const intentOrgId = await intentOrgFor(input);
+  const intentOrg = await intentOrgFor(input);
+  if ('refused' in intentOrg) return refused(intentOrg.refused);
+  const intentOrgId = intentOrg.orgId;
 
   let snapshot: Awaited<ReturnType<typeof createActionIntent>>;
   try {

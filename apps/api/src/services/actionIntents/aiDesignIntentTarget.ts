@@ -39,6 +39,8 @@ export type AiDesignIntentTarget = {
   partnerId: string | null;
   /** Appended to the approval headline, once the target is known to be in reach. */
   cardDetail?: string;
+  /** The org came from the caller's own `orgId` argument, not a stored row (#11181: out of reach refuses). */
+  fromArgument?: true;
 };
 
 const asSystem = <T>(fn: () => Promise<T>): Promise<T> => runOutsideDbContext(() => withSystemDbAccessContext(fn));
@@ -58,7 +60,7 @@ function listNames(names: string[]): string {
 async function scheduleTarget(input: Record<string, unknown>): Promise<AiDesignIntentTarget | null> {
   const { action } = input;
   if (action === 'create') {
-    return input.ownerScope === 'organization' && typeof input.orgId === 'string' ? { orgId: input.orgId, partnerId: null } : null;
+    return input.ownerScope === 'organization' && typeof input.orgId === 'string' ? { orgId: input.orgId, partnerId: null, fromArgument: true } : null;
   }
   if (typeof input.scheduleId !== 'string' || !UUID_RE.test(input.scheduleId)) return null;
   const scheduleId = input.scheduleId;
@@ -121,7 +123,7 @@ function describeRollback(rows: ReadonlyArray<{ itemKind: string; status: string
 
 async function fleetDesignTarget(input: Record<string, unknown>): Promise<AiDesignIntentTarget | null> {
   const { action } = input;
-  if (action === 'run') return typeof input.orgId === 'string' ? { orgId: input.orgId, partnerId: null } : null;
+  if (action === 'run') return typeof input.orgId === 'string' ? { orgId: input.orgId, partnerId: null, fromArgument: true } : null;
   // The reads file no intent, so they read nothing here.
   if (action !== 'apply' && action !== 'rollback' && action !== 'document') return null;
   if (typeof input.reportRunId !== 'string' || !UUID_RE.test(input.reportRunId)) return null;

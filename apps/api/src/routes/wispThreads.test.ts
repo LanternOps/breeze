@@ -24,6 +24,7 @@ const h = vi.hoisted(() => {
     hasEntitlement: vi.fn(async () => true),
     getActiveGrantForUser: vi.fn(),
     wideningAvailable: vi.fn(async () => false),
+    firstLookPostTimes: vi.fn(async (): Promise<{ firstLookAt: string | null; couldntLookAt: string | null }> => ({ firstLookAt: null, couldntLookAt: null })),
     spendSummary: vi.fn(),
     getOrCreateThread: vi.fn(),
     setThreadFocus: vi.fn(),
@@ -115,6 +116,10 @@ vi.mock('../services/wisp/activity', async (importOriginal) => ({
 vi.mock('../services/wisp/threadTimeline', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/wisp/threadTimeline')>()),
   listThreadTimeline: h.listThreadTimeline,
+}));
+vi.mock('../services/wisp/threadPosts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/wisp/threadPosts')>()),
+  firstLookPostTimes: h.firstLookPostTimes,
 }));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: h.writeRouteAudit }));
 vi.mock('../services/sentry', () => ({ captureException: h.captureException }));
@@ -276,7 +281,20 @@ describe('GET /wisp/thread', () => {
         spentTodayCents: 42, budgetResetsAt: '2026-10-25T00:00:00.000Z', pausedReason: null, unattendedReads: false, unattendedReadsPinned: false, summaryRefine: false,
       },
       wideningAvailable: widening,
+      firstLookState: 'looking',
     });
+  });
+
+  it.each([
+    [{ firstLookAt: null, couldntLookAt: null }, 'looking'],
+    [{ firstLookAt: null, couldntLookAt: '2027-01-22T10:00:00.000Z' }, 'couldnt_look'],
+    [{ firstLookAt: '2027-01-22T11:00:00.000Z', couldntLookAt: '2027-01-22T10:00:00.000Z' }, 'done'],
+  ])('#11145: carries the first-look state for the chat surfaces (%o → %s)', async (times, state) => {
+    h.getActiveGrantForUser.mockResolvedValue(grant());
+    h.getOrCreateThread.mockResolvedValue(thread());
+    h.firstLookPostTimes.mockResolvedValueOnce(times);
+    const res = await buildApp().request('/wisp/thread');
+    expect((await res.json() as { data: { firstLookState: string } }).data.firstLookState).toBe(state);
   });
 
   it('returns thread.focusOrgId and focusOrgName (no org read when unfocused)', async () => {
@@ -664,6 +682,7 @@ describe('GET /wisp/thread/:id (W06 Task 6)', () => {
           unattendedReads: false, unattendedReadsPinned: false, summaryRefine: false,
         },
         wideningAvailable: false,
+        firstLookState: 'looking',
       },
     });
     expectOwnershipWhere(h.whereArgs[0]);

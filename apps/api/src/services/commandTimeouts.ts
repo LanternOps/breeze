@@ -127,6 +127,11 @@ const MEDIUM_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.SECURITY_THREAT_REMOVE,
   CommandTypes.SECURITY_THREAT_RESTORE,
   CommandTypes.BACKUP_RESTORE,
+  // Vendor updates (#11065): the vendor CLI exports then imports its settings,
+  // which takes minutes. The 30-minute tier fits (the 2-hour LONG tier is for
+  // the run, which downloads a tool and flashes firmware); listed explicitly so
+  // the budget is a decision rather than the unknown-type fallback.
+  CommandTypes.OEM_UPDATE_RELEASE,
 ]);
 
 /**

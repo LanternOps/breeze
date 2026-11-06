@@ -31,6 +31,13 @@ describe('ambient services in a driver-owned nested transaction', () => {
     expect((await getTestDb().select().from(topologyManualNodes).where(eq(topologyManualNodes.id, manual!.id)))[0]!.label).toBe('Outer commit');
     expect(getCurrentDbAccessContext()).toBeUndefined();
   });
+  it('CONTROL (#11203): db.transaction with a callback that ignores tx does not isolate, the ambient db stays on the outer scope', async () => {
+    const tenant = await createTopologyTenant();
+    await expect(withDbAccessContext(orgContext(tenant.orgId), async () => {
+      await db.transaction(async () => { await db.execute(sql`SELECT 1/0`); }).catch(() => undefined);
+      return 'caught';
+    })).rejects.toThrow(/division by zero/);
+  });
   it('restores the immediate executor after nested failures without changing RLS authority', async () => {
     const tenant = await createTopologyTenant(); const context = orgContext(tenant.orgId);
     const [manual] = await getTestDb().insert(topologyManualNodes).values({ orgId: tenant.orgId, siteId: tenant.siteId, label: 'Root', role: 'switch' }).returning();

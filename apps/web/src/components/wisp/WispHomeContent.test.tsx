@@ -85,6 +85,8 @@ const payload = (over: Partial<WispHomePayload> = {}): WispHomePayload => ({
   partner: { enabled: true },
   briefSchedule: { timeLocal: '08:00', timezone: 'America/Denver', browserTimezone: 'America/Denver' },
   firstLookAt: null,
+  firstLookState: 'looking',
+  firstLookProgress: null,
   ...over,
 });
 const wisp = { grantId: 'g-1', threadId: 'th-1', scopeOrgId: null, focusOrgId: null, focusOrgName: null, status: 'active', expiresAt: '2026-12-01T00:00:00Z', summary: '', budgetCentsPerDay: 200, floorTickMinutes: 30, wideningAvailable: false };
@@ -188,6 +190,41 @@ describe('WispHomeContent', () => {
         h.fetchWispHome.mockResolvedValue({ kind: 'ready', payload: payload({ brief, firstLookAt: '2026-10-24T08:00:00Z' }), wisp });
         await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
         await waitFor(() => expect(h.threadProps?.refreshKey).toBe(1));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe('first look on the poll (#11145, #11146)', () => {
+    it("the couldn't-look post appearing re-reads the timeline, even with nothing else changing", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        h.fetchWispHome.mockResolvedValue({ kind: 'ready', payload: payload({ brief: null }), wisp });
+        render(<WispHomeContent />);
+        await screen.findByTestId('wisp-home-thread');
+        expect(h.threadProps?.refreshKey).toBe(0);
+        h.fetchWispHome.mockResolvedValue({ kind: 'ready', payload: payload({ brief: null, firstLookState: 'couldnt_look' }), wisp: { ...wisp, firstLookState: 'couldnt_look' } });
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        await waitFor(() => expect(h.threadProps?.refreshKey).toBe(1));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('hands the progress to the thread, and the poll refreshes it without re-reading the timeline', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const first = { lookedAtOrgs: 1, queuedOrgs: 2, failedOrgs: 0, totalOrgs: 3 };
+        const next = { lookedAtOrgs: 2, queuedOrgs: 1, failedOrgs: 0, totalOrgs: 3 };
+        h.fetchWispHome.mockResolvedValue({ kind: 'ready', payload: payload({ brief: null, firstLookProgress: first }), wisp });
+        render(<WispHomeContent />);
+        await screen.findByTestId('wisp-home-thread');
+        expect(h.threadProps?.firstLookProgress).toEqual(first);
+        h.fetchWispHome.mockResolvedValue({ kind: 'ready', payload: payload({ brief: null, firstLookProgress: next }), wisp });
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        await waitFor(() => expect(h.threadProps?.firstLookProgress).toEqual(next));
+        expect(h.threadProps?.refreshKey).toBe(0);
       } finally {
         vi.useRealTimers();
       }

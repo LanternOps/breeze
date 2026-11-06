@@ -45,7 +45,10 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: h.withSystemDbAccessContext,
 }));
 vi.mock('./deliver', () => ({ deliverInApp: h.deliverInApp }));
-vi.mock('./threadPosts', () => ({ recordThreadPost: h.recordThreadPost }));
+vi.mock('./threadPosts', () => ({
+  recordThreadPost: h.recordThreadPost,
+  couldntLookDedupeKey: (grantId: string) => `wisp.first_look_failed:${grantId}`,
+}));
 vi.mock('../expoPush', async (orig) => ({
   ...(await orig<typeof import('../expoPush')>()),
   dispatchPushToTokens: h.dispatchPushToTokens,
@@ -183,6 +186,11 @@ describe('nudgeDedupeKey check_in', () => {
 });
 
 describe('nudgeDedupeKey first_look (#10402)', () => {
+  it("#11145: the couldn't-look variant has its own key, so it cannot block the real first look", () => {
+    const key = nudgeDedupeKey({ kind: 'first_look', firstLookVariant: 'couldnt_look', concernId: null, grantId: 'g1', threadId: 't1', nextEligibleNudgeAt: null, now, digestCadenceMinutes: 240 });
+    expect(key).toBe('wisp.first_look_failed:g1');
+  });
+
   it('is one key per grant, independent of time, thread and cadence', () => {
     const key = (n: Date, cadence: number) => nudgeDedupeKey({ kind: 'first_look', concernId: null, grantId: 'g1', threadId: 't1', nextEligibleNudgeAt: null, now: n, digestCadenceMinutes: cadence });
     expect(key(now, 240)).toBe('wisp.first_look:g1');
@@ -491,6 +499,17 @@ describe('notifyUser', () => {
       }));
       expect(h.dispatchPushToTokens).not.toHaveBeenCalled();
       expect(h.checkNotificationThrottle).not.toHaveBeenCalled();
+    });
+
+    it("#11145: the couldn't-look variant is a first_look post under its own key, and pushes nothing", async () => {
+      queue([threadRow], deviceRows);
+      await expect(notifyUser({ ...firstLook, firstLookVariant: 'couldnt_look', title: "I couldn't look yet: 0 of 2 organizations" }))
+        .resolves.toEqual({ inApp: true, pushed: 0, suppressed: null });
+      expect(h.deliverInApp).toHaveBeenCalledWith(expect.objectContaining({
+        dedupeKey: 'wisp.first_look_failed:g1',
+        post: expect.objectContaining({ kind: 'first_look', title: "I couldn't look yet: 0 of 2 organizations" }),
+      }));
+      expect(h.dispatchPushToTokens).not.toHaveBeenCalled();
     });
 
     it('never pushes, even if a caller forgets push:false', async () => {

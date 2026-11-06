@@ -8,7 +8,8 @@
  *
  * W2 (#11085): each tick also re-sweeps device-troubleshooting runs settled in
  * the last 24 h whose thread post is missing (services/wisp/specialistResult.ts).
- * #10402: and new grants whose first-look post is missing or now due
+ * #10402: and new grants whose first-look post is missing or now due, including
+ * #11145's post for a batch where nothing was looked at
  * (services/wisp/firstLook.ts). Both halves are best-effort: a failure is
  * reported, never fails the tick.
  *
@@ -59,7 +60,7 @@ export async function processWispGrantReconcile(): Promise<
     firstLookPosts = swept.posted;
     const nothingLookedAt = swept.skipped.nothing_looked_at ?? 0;
     if (swept.posted || swept.failed || nothingLookedAt) {
-      console.log(`[WispGrantReconciler] first-look posts scanned=${swept.scanned} posted=${swept.posted} failed=${swept.failed} nothingLookedAt=${nothingLookedAt}`);
+      console.log(`[WispGrantReconciler] first-look posts scanned=${swept.scanned} posted=${swept.posted} couldntLook=${swept.couldntLook} failed=${swept.failed} nothingLookedAt=${nothingLookedAt}`);
     }
   } catch (err) {
     console.error('[WispGrantReconciler] first-look post re-sweep failed', err);

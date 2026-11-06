@@ -107,12 +107,12 @@ describe('REPORT_GENERATORS', () => {
     const def = REPORT_GENERATORS.ticket_sla_performance;
     expect(def.supportedScopes).toEqual(['organization']);
     expect(def.audience).toBe('any');
-    expect(def.execution).toBe('user');
+    expect(def.execution).toBe('managed_evidence');
     expect(def.detailRowCap).toBe(Number.POSITIVE_INFINITY);
     expect(def.requiredPermissions).toBe(REPORT_TYPE_REQUIRED_PERMISSIONS.ticket_sla_performance);
     expect(def.requiredPermissions).toEqual([{ resource: 'tickets', action: 'read' }]);
     expect(GENERATE_REPORT_TYPES as readonly string[]).not.toContain('ticket_sla_performance');
-    expect(Object.keys(MANAGED_EVIDENCE_REGISTRY)).not.toContain('ticket_sla_performance');
+    expect(Object.keys(MANAGED_EVIDENCE_REGISTRY)).toContain('ticket_sla_performance');
   });
 
   it('no pre-#3198 type gains a permission requirement (route middleware is unchanged)', () => {

@@ -5,6 +5,10 @@ import {
   OEM_OUTCOMES,
   OEM_UPDATE_MIN_AGENT_VERSION,
   agentSupportsOemUpdates,
+  OEM_UPDATE_RELEASE_MIN_AGENT_VERSION,
+  agentSupportsOemUpdateRelease,
+  OEM_REBOOT_HOLD_MIN_AGENT_VERSION,
+  agentSupportsOemRebootHold,
 } from './oemUpdates';
 
 describe('OEM vocab', () => {
@@ -30,6 +34,22 @@ describe('agentSupportsOemUpdates', () => {
   it('refuses older and unparseable versions (fails closed)', () => {
     for (const v of ['0.126.0', '', 'garbage', 'dev', 'v0.127.0', null, undefined]) {
       expect(agentSupportsOemUpdates(v as string | null | undefined)).toBe(false);
+    }
+  });
+});
+
+describe.each([
+  ['agentSupportsOemUpdateRelease', OEM_UPDATE_RELEASE_MIN_AGENT_VERSION, agentSupportsOemUpdateRelease],
+  ['agentSupportsOemRebootHold', OEM_REBOOT_HOLD_MIN_AGENT_VERSION, agentSupportsOemRebootHold],
+])('%s', (_name, min, gate) => {
+  it('accepts the minimum, its prerelease and newer versions', () => {
+    expect(gate(min)).toBe(true);
+    expect(gate(`${min}-rc.1`)).toBe(true);
+    expect(gate(' 0.128.3 ')).toBe(true);
+  });
+  it('refuses older and unparseable versions (fails closed)', () => {
+    for (const v of ['0.126.0', '', 'garbage', 'dev', null, undefined]) {
+      expect(gate(v as string | null | undefined)).toBe(false);
     }
   });
 });

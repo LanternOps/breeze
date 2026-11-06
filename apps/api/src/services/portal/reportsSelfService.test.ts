@@ -95,6 +95,7 @@ import {
   listPortalRuns,
   portalDefinitionPredicate,
   portalReportDefinitionsInsertQuery,
+  PORTAL_DEFINITIONS_FOR_TEST,
   portalRunListPredicate,
   portalRunPredicate,
   PortalReportNoTabularDataError,
@@ -105,7 +106,10 @@ import {
   renderRunPdf,
 } from './reportsSelfService';
 import { MSP_STAFF_REPORT_TYPES } from '../reportRegistry';
-import { POSTURE_DEVICE_ROW_CSV_LABELS } from '@breeze/shared';
+import { managedEvidenceEntry, MANAGED_EVIDENCE_REGISTRY } from '../managedEvidenceRegistry';
+import {
+  BUSINESS_REPORT_TYPES, POSTURE_DEVICE_ROW_CSV_LABELS, TICKET_SLA_PERFORMANCE_ROW_CSV_LABELS,
+} from '@breeze/shared';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const USER_ID = '22222222-2222-4222-8222-222222222222';
@@ -124,6 +128,7 @@ describe('provisionPortalReportDefinitions', () => {
       { type: 'endpoint_management_review' },
       { type: 'vulnerability_management' },
       { type: 'identity_access_review' },
+      { type: 'ticket_sla_performance' },
     ]);
 
     state.insertReturning.mockResolvedValue([]);
@@ -253,6 +258,19 @@ describe('provisionPortalReportDefinitions', () => {
         executionScopeUserId: USER_ID,
         executionScopePrincipalKind: 'user',
       }),
+      // #11018 W2 — managed evidence, provisioned but never self-service.
+      expect.objectContaining({
+        orgId: ORG_ID,
+        name: 'Service evidence — SLA performance',
+        type: 'ticket_sla_performance',
+        schedule: 'one_time',
+        format: 'pdf',
+        portalSelfService: true,
+        createdBy: USER_ID,
+        executionScopeKind: 'unrestricted',
+        executionScopeUserId: USER_ID,
+        executionScopePrincipalKind: 'user',
+      }),
     ]);
     expect(state.conflict).toHaveBeenCalledOnce();
   });
@@ -368,6 +386,29 @@ describe('portal report SQL scope', () => {
     expect(query.params).toEqual(expect.arrayContaining([...MSP_STAFF_REPORT_TYPES]));
   });
 
+  // #11018 W2. W1 gated this type on tickets:read for staff. A portal customer has
+  // no permission set, so without the exemption a delivered run would never list.
+  it.each([
+    ['listing', () => portalRunListPredicate(ORG_ID, true)],
+    ['rendering', () => portalRunPredicate(RUN_ID, ORG_ID, true)],
+  ])('admits a delivered ticket_sla_performance run to %s and keeps every business type out', (_label, build) => {
+    const { params } = new PgDialect().sqlToQuery(build());
+    // Once, in the delivery gate. A second occurrence is the permission gate hiding it.
+    expect(params.filter((p) => p === 'ticket_sla_performance')).toHaveLength(1);
+    expect(params).toEqual(expect.arrayContaining([...BUSINESS_REPORT_TYPES]));
+  });
+
+  // Delivery is a managed type's only route to the customer: an orphaned run
+  // (its evidence row removed) must not fall through the unreferenced arm.
+  it.each([
+    ['listing', () => portalRunListPredicate(ORG_ID, true)],
+    ['rendering', () => portalRunPredicate(RUN_ID, ORG_ID, true)],
+  ])('confines the unreferenced arm of %s to non-managed types', (_label, build) => {
+    const { sql: text, params } = new PgDialect().sqlToQuery(build());
+    expect(text).toMatch(/"reports"\."type" not in \([^)]*\)\s+AND NOT EXISTS \(\s*select 1 from service_deliverable_evidence/i);
+    expect(params).toEqual(expect.arrayContaining(Object.keys(MANAGED_EVIDENCE_REGISTRY)));
+  });
+
   it('gates run listing on delivery (#5784 OD-12): unreferenced runs stay visible, referenced runs need a delivered occurrence', () => {
     const query = new PgDialect().sqlToQuery(portalRunListPredicate(ORG_ID, true));
     expect(query.sql).toMatch(/not exists \(\s*select 1 from service_deliverable_evidence/i);
@@ -429,6 +470,23 @@ describe('identity_access_review portal provisioning (#5784 W06)', () => {
     // A customer generating an identity report on demand would be a new compute
     // surface AND a new PII surface (user principal names, IP addresses).
     expect(PORTAL_REPORT_TYPES as readonly string[]).not.toContain('identity_access_review');
+  });
+});
+
+describe('ticket_sla_performance portal provisioning (#11018 W2)', () => {
+  it('PORTAL_DEFINITIONS ticket_sla_performance matches the managed registry entry', () => {
+    const def = PORTAL_DEFINITIONS_FOR_TEST.find((d) => d.type === 'ticket_sla_performance');
+    const entry = managedEvidenceEntry('ticket_sla_performance');
+    expect(def?.name).toBe(entry.definitionName);
+    expect(def?.config).toEqual(entry.defaultConfig);
+    expect(JSON.stringify(def?.config)).toBe(JSON.stringify(entry.defaultConfig));
+    expect((def?.config as { includeSubjects?: boolean }).includeSubjects).toBe(false);
+  });
+
+  it('ticket_sla_performance is not portal-generatable', () => {
+    // The generate schema is built from this list; routes/portal/reports.test.ts
+    // proves the route refuses the type.
+    expect(PORTAL_REPORT_TYPES as readonly string[]).not.toContain('ticket_sla_performance');
   });
 });
 
@@ -1252,6 +1310,20 @@ describe('portal run rendering', () => {
 
     const query = new PgDialect().sqlToQuery(state.where as SQL);
     expect(query.params).toContain('hardware_lifecycle');
+  });
+
+  it('labels the ticket_sla_performance CSV header row for the customer', async () => {
+    state.selected.mockResolvedValue([{
+      id: RUN_ID,
+      type: 'ticket_sla_performance',
+      result: { rows: [{ priority: 'high' }] },
+      completedAt: new Date('2026-09-02T12:00:00.000Z'),
+    }]);
+    await renderRunCsv(RUN_ID, ORG_ID);
+    expect(state.rowsToCsv).toHaveBeenCalledWith(
+      [{ priority: 'high' }],
+      { headerLabels: TICKET_SLA_PERFORMANCE_ROW_CSV_LABELS },
+    );
   });
 
   it('renders a stored run as PDF with the requested timezone', async () => {

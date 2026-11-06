@@ -90,6 +90,16 @@ describe('WispPost', () => {
     expect(screen.queryByTestId('wisp-post-open')).toBeNull();
   });
 
+  it("a couldn't-look post has its own eyebrow, and never reads as a first look (#11145)", () => {
+    render(<WispPost post={post({ kind: 'first_look', variant: 'couldnt_look', title: "I couldn't look yet: 0 of 2 organizations", body: 'Why.', link: '/ai/wisp/thread/th-1', concernId: null })} />);
+    const el = screen.getByTestId('wisp-post');
+    expect(el.getAttribute('data-kind')).toBe('first_look');
+    expect(el.getAttribute('data-variant')).toBe('couldnt_look');
+    expect(screen.getByText("Couldn't look yet")).toBeTruthy();
+    expect(screen.queryByText('First look')).toBeNull();
+    expect(screen.queryByTestId('wisp-post-open')).toBeNull();
+  });
+
   it('renders a first_look post with the First look eyebrow and no Open link (#10402)', () => {
     render(<WispPost post={post({ kind: 'first_look', title: 'First look done: 2 of 2 organizations', body: 'Open concerns: 1 high.', link: '/ai/wisp/thread/th-1', concernId: null })} />);
     expect(screen.getByTestId('wisp-post').getAttribute('data-kind')).toBe('first_look');

@@ -12,7 +12,7 @@ import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal, PARTNER_GROUP_AI_R
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { reportRunOwnerColumns } from './reportRunOwner';
 import type Anthropic from '@anthropic-ai/sdk';
-import { db } from '../db';
+import { db, hasDbAccessContext, withDbTransaction } from '../db';
 import { pgErrorCode, pgErrorConstraint } from '../utils/pgErrors';
 import {
   automationPolicies,
@@ -701,7 +701,8 @@ async function alertRuleTargetDenied(
 function safeHandler(toolName: string, fn: FleetHandler): FleetHandler {
   return async (input, auth, context) => {
     try {
-      return await fn(input, auth, context);
+      // In a savepoint, or the error JSON below is lost to the commit (#11203).
+      return await (hasDbAccessContext() ? withDbTransaction(() => fn(input, auth, context)) : fn(input, auth, context));
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Internal error';
       const code = pgErrorCode(err);

@@ -10,7 +10,7 @@ import { and, eq, inArray, or } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { nanoid } from 'nanoid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransaction } from '../db';
 import { users, partnerUsers, organizationUsers, roles, organizations, partners, ticketPushPreferences } from '../db/schema';
 import { PUSHOVER_USER_KEY_PATTERN, sealPushoverUserKey } from '../services/ticketPushover';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
@@ -374,11 +374,12 @@ async function resolveInvitePartnerBranding(
     if (scopeContext.scope === 'partner') {
       partnerId = scopeContext.partnerId;
     } else {
-      const [org] = await db
+      // Savepoint so a failed lookup rolls back and the request transaction survives (#11203).
+      const [org] = await withDbTransaction(async () => db
         .select({ partnerId: organizations.partnerId })
         .from(organizations)
         .where(eq(organizations.id, scopeContext.orgId))
-        .limit(1);
+        .limit(1));
       partnerId = org?.partnerId ?? null;
     }
     if (!partnerId) return { custom: null };
