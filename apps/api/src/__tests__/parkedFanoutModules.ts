@@ -43,6 +43,7 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'jobs/oemUpdatesWorker.ts': { guards: 1, reason: 'vendor update not-returned monitor over armed status rows' },
   'services/oemUpdates/candidates.ts': { guards: 1, reason: 'due-device selection for scheduled vendor update runs' },
   'services/oemUpdates/rebootSweep.ts': { guards: 1, reason: 'overnight reboots owed by scheduled vendor update runs' },
+  'services/oemUpdates/laneDelivery.ts': { guards: 1, reason: 'which update classes a vendor lane delivers on a device: a parked device has none, so its patch jobs are unchanged' },
   'services/oemUpdates/releaseSweep.ts': { guards: 1, reason: 'vendor schedule releases for devices with no enabled lane' },
   'services/oemUpdates/overdueSweep.ts': { guards: 1, reason: 'devices that are overdue for a vendor update run or restart, for their alerts' },
   'services/oemUpdates/resolver.ts': { guards: 1, reason: 'vendor updates link resolution for a device set (no partner-level assignment for a parked device)' },

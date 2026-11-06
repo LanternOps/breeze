@@ -3165,6 +3165,7 @@
           "blocked_by_source": "Exclue par les sources de mise à jour de la politique",
           "held_by_deferral": "Retenue par la fenêtre de report",
           "blocked_by_category": "Exclue par les règles de catégorie de l'anneau",
+          "managed_by_vendor_updates": "Géré par les mises à jour du constructeur",
           "blocked_by_app_rule": "Bloquée par une règle d'application",
           "blocked_by_feature_update_policy": "Exclu par la politique de mises à jour de fonctionnalités Windows de l'anneau",
           "awaiting_manual_approval": "En attente d'approbation manuelle",

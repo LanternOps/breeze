@@ -555,6 +555,10 @@ func (w *WindowsUpdateProvider) updateToPatch(update *ole.IDispatch) (AvailableP
 	browseOnly, _ := w.getBoolProperty(update, "BrowseOnly")
 	updateType := windowsUpdateType(typeVal, browseOnly, categoryNames, title)
 
+	reportedType, reportedOwner := reportedWindowsUpdate(updateType, category, title, func(property string) (string, error) {
+		return w.getStringProperty(update, property)
+	})
+
 	return AvailablePatch{
 		ID:             updateID,
 		Title:          title,
@@ -568,7 +572,10 @@ func (w *WindowsUpdateProvider) updateToPatch(update *ole.IDispatch) (AvailableP
 		RebootRequired: rebootBehavior != 0,
 		ReleaseDate:    releaseDate,
 		UpdateType:     updateType,
-		EulaAccepted:   eulaAccepted,
+		// Reported per device: the API keeps it off the shared patches row.
+		ReportedUpdateType:  reportedType,
+		ReportedUpdateOwner: reportedOwner,
+		EulaAccepted:        eulaAccepted,
 	}, nil
 }
 

@@ -2145,6 +2145,8 @@
       "deferredUntil": "Aprovação automática em {{date}}",
       "deferredUntilTitle": "O anel de atualização {{ring}} retém patches novos durante a janela de adiamento. Este é aprovado em {{date}} e instalado na execução agendada seguinte.",
       "excluded": "Excluído pela política",
+      "managedByVendorUpdates": "Gerenciado pelas atualizações do fabricante",
+      "managedByVendorUpdatesTitle": "A ferramenta de atualização do fabricante entrega isto neste dispositivo, então as execuções agendadas o ignoram.",
       "excludedSourceTitle": "As origens da política de patches não incluem este patch, então as execuções agendadas o ignoram.",
       "excludedCategoryTitle": "O anel de atualização {{ring}} exclui a categoria deste patch, então as execuções agendadas o ignoram.",
       "excludedAppRuleTitle": "Uma regra de bloqueio ou fixação de aplicativo do anel de atualização vinculado retém este patch, então as execuções agendadas o ignoram.",

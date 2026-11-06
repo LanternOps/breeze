@@ -4403,6 +4403,14 @@ func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []
 		if p.SeveritySource != "" && severity != "unknown" {
 			item["severitySource"] = p.SeveritySource
 		}
+		// Omitted, never defaulted: an absent type means the API leaves the patch
+		// with Windows Update. An API that predates the field ignores it (#11073).
+		if p.ReportedUpdateType != "" {
+			item["reportedUpdateType"] = p.ReportedUpdateType
+		}
+		if p.ReportedUpdateOwner != "" {
+			item["reportedUpdateOwner"] = p.ReportedUpdateOwner
+		}
 		items[i] = item
 	}
 	return items

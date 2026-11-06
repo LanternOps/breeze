@@ -28,6 +28,7 @@ import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestati
 import { indexMatchesAttestation } from './backupRestoreIntegrity';
 import { physicalKeyFor, sameKeyRoot, snapshotKeyRootOf, type SnapshotKeyRoot } from './backupKeyLayout';
 import { recordSnapshotFileIndex } from './backupMetrics';
+import { captureException } from './sentry';
 import {
   HYDRATING_STALE_MS,
   hydrationFailureFromError,
@@ -226,6 +227,9 @@ async function loadReferencedFiles(jobId: string | null | undefined): Promise<nu
  */
 type HydrationClaim = { id: string; claimedAt: Date };
 
+/** Stored when the claim phase throws; raw error text can name hosts, so it is not kept. */
+const CLAIM_PHASE_FAILURE_REASON = 'the snapshot could not be prepared for indexing';
+
 const SUPERSEDED: HydrationOutcome = { status: 'skipped', reason: 'superseded' };
 
 function claimPredicate(claim: HydrationClaim) {
@@ -286,6 +290,7 @@ async function claimSnapshotForHydration(
   includeUnreferenced: boolean,
 ): Promise<
   | { outcome: HydrationOutcome }
+  | { thrown: unknown }
   | { snapshot: ClaimedSnapshot; providerType: string; providerConfig: Record<string, unknown> }
 > {
   return runOutsideDbContext(() =>
@@ -372,42 +377,62 @@ async function claimSnapshotForHydration(
       const claim: HydrationClaim = { id: snapshotDbId, claimedAt: now };
       const claimedRow = { ...snapshot, ...claimed, ...claim };
 
-      // Nothing an index could be built from is trustworthy for a snapshot
-      // whose attestation did not match; storage is not read at all.
-      const failedIntegrity = attestationRefusal(snapshot.attestation, null, snapshot.integrityStatus ?? null);
-      if (failedIntegrity) {
-        return { outcome: await fail(claim, failedIntegrity.failure, failedIntegrity.reason) };
-      }
-      // The manifest is read under the snapshot's recorded key root (#7081),
-      // never a guessed one; storage is not read for a root this server
-      // cannot read. (The root is immutable, so the pre-claim read is exact.)
-      const keyRoot = snapshotKeyRootOf(snapshot);
-      if (!keyRoot) {
-        return { outcome: await fail(claim, 'key_root_invalid', `unreadable key root (${String(snapshot.keyLayout)})`) };
-      }
+      // From here the row is 'hydrating' under this run's claim. A throw (not a
+      // classified refusal) would leave it with no reason until the 30-minute
+      // stale reclaim, so record one (#11179). The write happens here, inside
+      // the context, and the error is handed back to be rethrown: throwing out
+      // of the context would roll the failure write back with it.
+      try {
+        // Nothing an index could be built from is trustworthy for a snapshot
+        // whose attestation did not match; storage is not read at all.
+        const failedIntegrity = attestationRefusal(snapshot.attestation, null, snapshot.integrityStatus ?? null);
+        if (failedIntegrity) {
+          return { outcome: await fail(claim, failedIntegrity.failure, failedIntegrity.reason) };
+        }
+        // The manifest is read under the snapshot's recorded key root (#7081),
+        // never a guessed one; storage is not read for a root this server
+        // cannot read. (The root is immutable, so the pre-claim read is exact.)
+        const keyRoot = snapshotKeyRootOf(snapshot);
+        if (!keyRoot) {
+          return { outcome: await fail(claim, 'key_root_invalid', `unreadable key root (${String(snapshot.keyLayout)})`) };
+        }
 
-      const resolved = await resolveSnapshotProviderConfig(snapshotDbId);
-      const providerType = resolved?.providerType ?? null;
-      const providerConfig = asRecord(resolved?.providerConfig);
-      if (!claimedRow.storageIdentity) {
-        return { outcome: await fail(claim, 'storage_identity_unknown', 'snapshot has no pinned storage identity') };
-      }
-      if (!providerType) {
-        return { outcome: await fail(claim, 'storage_identity_unknown', 'could not resolve a provider for this snapshot') };
-      }
-      const resolvedIdentity = normalizeStorageIdentity(providerType, providerConfig);
-      if (resolvedIdentity !== claimedRow.storageIdentity) {
-        return { outcome: await fail(claim, 'storage_identity_drift', `resolved identity ${resolvedIdentity} does not match pinned ${claimedRow.storageIdentity}`) };
-      }
+        const resolved = await resolveSnapshotProviderConfig(snapshotDbId);
+        const providerType = resolved?.providerType ?? null;
+        const providerConfig = asRecord(resolved?.providerConfig);
+        if (!claimedRow.storageIdentity) {
+          return { outcome: await fail(claim, 'storage_identity_unknown', 'snapshot has no pinned storage identity') };
+        }
+        if (!providerType) {
+          return { outcome: await fail(claim, 'storage_identity_unknown', 'could not resolve a provider for this snapshot') };
+        }
+        const resolvedIdentity = normalizeStorageIdentity(providerType, providerConfig);
+        if (resolvedIdentity !== claimedRow.storageIdentity) {
+          return { outcome: await fail(claim, 'storage_identity_drift', `resolved identity ${resolvedIdentity} does not match pinned ${claimedRow.storageIdentity}`) };
+        }
 
-      return {
-        // Rebuilt (not the bare narrowed variable) so the object literal's own
-        // storageIdentity field carries the non-null type this scope just
-        // proved, across the function boundary into ClaimedSnapshot.
-        snapshot: { ...claimedRow, storageIdentity: claimedRow.storageIdentity, keyRoot },
-        providerType,
-        providerConfig,
-      };
+        return {
+          // Rebuilt (not the bare narrowed variable) so the object literal's own
+          // storageIdentity field carries the non-null type this scope just
+          // proved, across the function boundary into ClaimedSnapshot.
+          snapshot: { ...claimedRow, storageIdentity: claimedRow.storageIdentity, keyRoot },
+          providerType,
+          providerConfig,
+        };
+      } catch (err) {
+        console.error(`[backupSnapshotFileIndex] Claim phase failed for snapshot ${snapshotDbId}:`, err);
+        // The stored reason is deliberately generic; the cause goes to Sentry.
+        captureException(err instanceof Error ? err : new Error(String(err)));
+        try {
+          await fail(claim, 'provider_error', CLAIM_PHASE_FAILURE_REASON);
+        } catch (recordErr) {
+          // Keep the original error. A DB error here has aborted this
+          // transaction, which rolls the claim back with it: nothing is left
+          // 'hydrating'.
+          console.error(`[backupSnapshotFileIndex] Could not record the claim-phase failure of snapshot ${snapshotDbId}:`, recordErr);
+        }
+        return { thrown: err };
+      }
     }),
   );
 }
@@ -816,6 +841,9 @@ async function runHydration(
   );
   if ('outcome' in claim) {
     return claim.outcome;
+  }
+  if ('thrown' in claim) {
+    throw claim.thrown;
   }
   const { snapshot, providerType, providerConfig } = claim;
 
