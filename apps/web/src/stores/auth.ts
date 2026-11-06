@@ -1621,7 +1621,7 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
   const method = (init.method ?? 'GET').toUpperCase();
   if (response.status === 429 && (method === 'GET' || method === 'HEAD') && !signal.aborted) {
     const waitMs = await throttleRetryDelayMs(response);
-    if (waitMs !== null) {
+    if (waitMs !== null && !signal.aborted) {
       const stillLive = await new Promise<boolean>((resolve) => {
         const onAbort = () => {
           clearTimeout(timer);
@@ -1632,9 +1632,29 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
           resolve(true);
         }, waitMs);
         signal.addEventListener('abort', onAbort, { once: true });
+        // Aborted during the body read above: the event already fired.
+        if (signal.aborted) onAbort();
       });
       if (stillLive) {
-        response = await fetch(buildApiUrl(url), { ...init, headers, credentials: 'include', signal });
+        // The first fetch's timeout timer is spent; give the retry its own so a
+        // stalled connection cannot hang it, and pick up any token refreshed
+        // while we waited.
+        const retryTimeout = new AbortController();
+        const retryTimer = setTimeout(
+          () => retryTimeout.abort(new DOMException(`Request timed out after ${Math.round(timeoutMs / 1000)}s`, 'TimeoutError')),
+          timeoutMs,
+        );
+        const retrySignal = externalSignal
+          ? AbortSignal.any([externalSignal, retryTimeout.signal])
+          : retryTimeout.signal;
+        const freshToken = useAuthStore.getState().tokens?.accessToken;
+        if (freshToken) headers.set('Authorization', `Bearer ${freshToken}`);
+        void response.body?.cancel().catch(() => {});
+        try {
+          response = await fetch(buildApiUrl(url), { ...init, headers, credentials: 'include', signal: retrySignal });
+        } finally {
+          clearTimeout(retryTimer);
+        }
       }
     }
   }
