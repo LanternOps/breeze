@@ -72,6 +72,7 @@
     "descriptionOrg": "Overrides the partner default for this organization. Leave a field blank to inherit it. A monitor's own setting beats this.",
     "readOnly": "You do not have permission to change the partner default.",
     "saved": "Lifecycle defaults saved",
+    "saveAction": "Save defaults",
     "overrideCount_one": "{{count}} monitor overrides this",
     "overrideCount_other": "{{count}} monitors override this",
     "errors": {

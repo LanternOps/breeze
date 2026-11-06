@@ -72,6 +72,7 @@
     "descriptionOrg": "Sovrascrive il predefinito del partner per questa organizzazione. Lascia vuoto un campo per ereditarlo. L’impostazione propria di un monitor prevale su questo valore.",
     "readOnly": "Non hai l’autorizzazione per modificare il predefinito del partner.",
     "saved": "Valori predefiniti del ciclo di vita salvati",
+    "saveAction": "Salva impostazioni predefinite",
     "overrideCount_one": "{{count}} monitor lo sovrascrive",
     "overrideCount_other": "{{count}} monitor lo sovrascrivono",
     "errors": {

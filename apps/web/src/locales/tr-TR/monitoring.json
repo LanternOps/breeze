@@ -72,6 +72,7 @@
     "descriptionOrg": "Bu kuruluş için iş ortağı varsayılanını geçersiz kılar. Devralmak için bir alanı boş bırakın. Bir monitörün kendi ayarı bundan önceliklidir.",
     "readOnly": "İş ortağı varsayılanını değiştirme izniniz yok.",
     "saved": "Yaşam döngüsü varsayılanları kaydedildi",
+    "saveAction": "Varsayılanları kaydet",
     "overrideCount_one": "{{count}} monitör bunu geçersiz kılıyor",
     "overrideCount_other": "{{count}} monitör bunu geçersiz kılıyor",
     "errors": {
