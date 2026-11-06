@@ -14,8 +14,9 @@
  * in the device's org, read fresh: a device moved mid-run reports against its
  * current org.
  */
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import {
+  oemUpdateReleaseResultSchema,
   oemUpdateRunResultSchema,
   type OemOutcome,
   type OemUpdateRunResult,
@@ -30,6 +31,7 @@ import {
   resolveProtectionRestoredAlerts,
   resolveReturnedDeviceAlerts,
 } from './alerts';
+import { consumesAttempt } from './occurrence';
 import { getLaneManifest } from './toolManifest';
 
 export const RESULT_UNPARSEABLE = 'result_unparseable';
@@ -65,6 +67,8 @@ async function loadStatus(deviceId: string) {
       firstCompletedAt: deviceOemUpdateStatus.firstCompletedAt,
       rebootPendingSince: deviceOemUpdateStatus.rebootPendingSince,
       returnDeadlineAt: deviceOemUpdateStatus.returnDeadlineAt,
+      occurrenceKey: deviceOemUpdateStatus.occurrenceKey,
+      lastOutcome: deviceOemUpdateStatus.lastOutcome,
     })
     .from(deviceOemUpdateStatus)
     .where(eq(deviceOemUpdateStatus.deviceId, deviceId))
@@ -143,6 +147,39 @@ function outcomeFields(
       : { rebootPendingSince: null }),
     ...(disarmsMonitor(parsed, status, commandPayload) ? { returnDeadlineAt: null, notReturnedAlertedAt: null } : {}),
   };
+}
+
+/**
+ * Spends one of the occurrence's attempts, or does not (`consumesAttempt`).
+ *
+ * Only for the scheduled run the row is on, and only for its first result: the seam
+ * clears the outcome when it queues a scheduled run, so an outcome already there means
+ * this result arrived twice. A malformed result recorded as `failed` is a run that
+ * used its attempt. An increment rather than a value read earlier, so two transports
+ * racing cannot lose one.
+ */
+function attemptFields(
+  parsed: OemUpdateRunResult | null,
+  status: Awaited<ReturnType<typeof loadStatus>>,
+  commandPayload: unknown,
+) {
+  const { trigger, occurrenceKey } = (commandPayload ?? {}) as { trigger?: unknown; occurrenceKey?: unknown };
+  if (trigger !== 'scheduled' || typeof occurrenceKey !== 'string') return {};
+  if (status?.occurrenceKey !== occurrenceKey || status.lastOutcome) return {};
+  if (parsed && !consumesAttempt(parsed.outcome, parsed.errorCode)) return {};
+  return { attempts: sql`${deviceOemUpdateStatus.attempts} + 1` };
+}
+
+/**
+ * `not_attempted` says nothing about a takeover made earlier, so it never overwrites
+ * one: an on-demand run, or a run that could not read the tool's settings this time,
+ * still leaves a schedule Breeze has to hand back. `policy_locked` does replace one:
+ * the agent reports it only when it owns no setting, so there is nothing to hand back.
+ */
+function takeoverFields(parsed: OemUpdateRunResult | null) {
+  if (parsed?.takeover === 'ok') return { takeoverState: 'taken_over' as const };
+  if (parsed?.takeover === 'policy_locked') return { takeoverState: 'policy_locked' as const };
+  return {};
 }
 
 /**
@@ -245,7 +282,11 @@ export async function applyOemUpdateResult(input: {
       const now = new Date();
       await db
         .update(deviceOemUpdateStatus)
-        .set(outcomeFields(parsed, status, command.payload, device.hardwareModel ?? null, now))
+        .set({
+          ...outcomeFields(parsed, status, command.payload, device.hardwareModel ?? null, now),
+          ...attemptFields(parsed, status, command.payload),
+          ...takeoverFields(parsed),
+        })
         .where(and(eq(deviceOemUpdateStatus.deviceId, deviceId), eq(deviceOemUpdateStatus.lastCommandId, commandId)));
 
       if (parsed?.rebootRequired && techChoseRebootWhenFinished(command.payload)) {
@@ -269,6 +310,51 @@ export async function applyOemUpdateResult(input: {
     if (disarmed) await resolveReturnedDeviceAlerts([deviceId]);
   } catch (error) {
     report(error, 'oem-updates-result-apply-failed', deviceId);
+  }
+}
+
+/**
+ * The agent's answer to a release. Restored, or nothing left to restore, ends the
+ * takeover and any give-up marker. A failure, or an answer that does not parse, writes
+ * nothing: the row stays `releasing` with nothing in flight, and the sweep retries it
+ * under its cap. Never throws, as with a run's result.
+ */
+export async function applyOemUpdateRelease(input: {
+  commandId: string;
+  deviceId: string;
+  result: unknown;
+}): Promise<void> {
+  const { commandId, deviceId } = input;
+  const check = oemUpdateReleaseResultSchema.safeParse(input.result);
+  if (!check.success) {
+    console.warn('[oemUpdates/results] ignoring a release answer that does not parse', { commandId, deviceId });
+    return;
+  }
+  if (check.data.outcome === 'failed') {
+    console.warn('[oemUpdates/results] a vendor schedule release failed', { commandId, deviceId, errorCode: check.data.errorCode });
+    return;
+  }
+  try {
+    await withSystemDbAccessContext(async () => {
+      const [command] = await db
+        .select({ deviceId: deviceCommands.deviceId, type: deviceCommands.type })
+        .from(deviceCommands)
+        .where(eq(deviceCommands.id, commandId))
+        .limit(1);
+      if (command?.deviceId !== deviceId) {
+        console.warn('[oemUpdates/results] ignoring a release answer for a command this device does not own', { commandId, deviceId });
+        return;
+      }
+      await db
+        .update(deviceOemUpdateStatus)
+        .set({ takeoverState: 'none', reason: null, updatedAt: new Date() })
+        .where(and(
+          eq(deviceOemUpdateStatus.deviceId, deviceId),
+          inArray(deviceOemUpdateStatus.takeoverState, ['taken_over', 'releasing']),
+        ));
+    });
+  } catch (error) {
+    report(error, 'oem-updates-release-apply-failed', deviceId);
   }
 }
 

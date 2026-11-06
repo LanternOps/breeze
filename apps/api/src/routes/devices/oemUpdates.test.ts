@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 // #11065 W04: Run vendor updates. The interactive-session and MFA gates are the
@@ -13,6 +13,8 @@ const h = vi.hoisted(() => ({
   assertOemRunAllowedForActor: vi.fn(async () => undefined),
   listOemRuns: vi.fn(),
   deviceCommandsInCurrentOrg: vi.fn(async () => 'scope-sql'),
+  resolveOemUpdatesLinkForDevice: vi.fn(async (): Promise<unknown> => null),
+  resolveDeviceTimezone: vi.fn(async () => 'UTC'),
   rows: {
     status: null as Record<string, unknown> | null,
     org: { partnerId: 'partner-1', type: 'customer' } as Record<string, unknown> | null,
@@ -98,6 +100,10 @@ vi.mock('../../services/oemUpdates/dispatch', () => ({
   assertOemRunAllowedForActor: h.assertOemRunAllowedForActor,
 }));
 vi.mock('../../services/oemUpdates/history', () => ({ listOemRuns: h.listOemRuns }));
+vi.mock('../../services/oemUpdates/resolver', () => ({
+  resolveOemUpdatesLinkForDevice: h.resolveOemUpdatesLinkForDevice,
+}));
+vi.mock('../../services/featureConfigResolver', () => ({ resolveDeviceTimezone: h.resolveDeviceTimezone }));
 vi.mock('../../services/oemUpdates/flags', () => ({
   oemUpdatesEnabled: vi.fn(() => h.enabled.value),
 }));
@@ -439,9 +445,94 @@ describe('GET /devices/:id/oem-updates/status', () => {
       installedCount: 3,
       rebootRequired: true,
     });
-    for (const internal of ['returnDeadlineAt', 'notReturnedAlertedAt', 'lastCommandId', 'takeoverState', 'orgId', 'occurrenceKey']) {
+    for (const internal of ['returnDeadlineAt', 'notReturnedAlertedAt', 'lastCommandId', 'takeoverState', 'orgId', 'occurrenceKey', 'attempts']) {
       expect(body.status).not.toHaveProperty(internal);
     }
+  });
+
+  describe('the policy side (#11065 W07)', () => {
+    // The first Thursday of November 2026 at NOW: the third Wednesday of October's
+    // nights are over, and November's anchor is still to come.
+    const policy = (over: Record<string, unknown> = {}, vendor: Record<string, unknown> = {}) => ({
+      linkId: 'link-1',
+      configPolicyId: 'policy-1',
+      assignedPolicyId: 'policy-1',
+      invalidStoredSettings: false,
+      settings: {
+        version: 1,
+        enabled: true,
+        schedule: { weekOfMonth: 'third', dayOfWeek: 'wed', windowStart: '01:00', windowHours: 4 },
+        catchUpNights: 7,
+        reboot: 'overnight',
+        vendors: { dell: { enabled: true, categories: { driver: true }, blockedUpdateIds: [], ...vendor } },
+        ...over,
+      },
+    });
+    const row = (over: Record<string, unknown> = {}) => ({
+      lane: 'dell',
+      applicability: 'applicable',
+      lastOutcome: 'success',
+      lastSuccessAt: new Date(NOW - 3 * 24 * 60 * 60 * 1000),
+      rebootPendingSince: null,
+      occurrenceKey: '2026-10',
+      attempts: 1,
+      ...over,
+    });
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(NOW);
+      h.resolveOemUpdatesLinkForDevice.mockReset();
+      h.resolveDeviceTimezone.mockReset();
+      h.resolveDeviceTimezone.mockResolvedValue('UTC');
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('finished this occurrence reads up to date', async () => {
+      h.resolveOemUpdatesLinkForDevice.mockResolvedValue(policy());
+      h.rows.status = row();
+      expect((await (await get('status')).json()).displayState).toBe('up_to_date');
+    });
+
+    it('no finish this occurrence and out of nights reads overdue', async () => {
+      h.resolveOemUpdatesLinkForDevice.mockResolvedValue(policy());
+      h.rows.status = row({ occurrenceKey: '2026-09', lastOutcome: 'blocked_on_battery' });
+      expect((await (await get('status')).json()).displayState).toBe('overdue');
+    });
+
+    it('three attempts used reads overdue, and the count stays internal', async () => {
+      h.resolveOemUpdatesLinkForDevice.mockResolvedValue(policy());
+      h.rows.status = row({ lastOutcome: 'failed', attempts: 3 });
+      const body = await (await get('status')).json();
+      expect(body.displayState).toBe('overdue');
+      expect(body.status).not.toHaveProperty('attempts');
+    });
+
+    it('a reboot owed under never keeps waiting', async () => {
+      h.resolveOemUpdatesLinkForDevice.mockResolvedValue(policy({ reboot: 'never' }));
+      h.rows.status = row({ rebootPendingSince: new Date(NOW - 10 * 24 * 60 * 60 * 1000) });
+      expect((await (await get('status')).json()).displayState).toBe('waiting_for_reboot');
+    });
+
+    it.each([
+      ['no link reaches it', null],
+      ['the policy is off', policy({ enabled: false })],
+      ['the vendor is off', policy({}, { enabled: false })],
+    ])('%s: not managed', async (_label, link) => {
+      h.resolveOemUpdatesLinkForDevice.mockResolvedValue(link);
+      h.rows.status = row();
+      expect((await (await get('status')).json()).displayState).toBe('not_managed');
+    });
+
+    it('with the flag off it does not look: nothing is scheduled', async () => {
+      h.enabled.value = false;
+      h.rows.status = row();
+      expect((await (await get('status')).json()).displayState).toBe('not_managed');
+      expect(h.resolveOemUpdatesLinkForDevice).not.toHaveBeenCalled();
+    });
   });
 });
 

@@ -30,7 +30,10 @@ import {
 } from '../../services/oemUpdates/dispatch';
 import { deriveOemDisplayState } from '../../services/oemUpdates/displayState';
 import { oemUpdatesEnabled } from '../../services/oemUpdates/flags';
+import { resolveDeviceTimezone } from '../../services/featureConfigResolver';
 import { listOemRuns } from '../../services/oemUpdates/history';
+import { computeOccurrence } from '../../services/oemUpdates/occurrence';
+import { resolveOemUpdatesLinkForDevice } from '../../services/oemUpdates/resolver';
 import { isCategoryOpen, SHIPPED_OEM_LANES, type GateState } from '../../services/oemUpdates/toolManifest';
 import { trustDenyBody } from '../../services/partnerTrust';
 import { TrustDeniedError } from '../../services/partnerTrust.commands';
@@ -228,6 +231,26 @@ async function offeredLane(device: {
   return applicability.state === 'applicable' ? applicability.lane : null;
 }
 
+/**
+ * What the device's policy says, for the display state: whether a schedule manages
+ * this lane, and where that schedule is. No lane (the flag off, a parked device) means
+ * nothing is scheduled, so there is no policy to read. Run Now does not read this:
+ * it works with or without a policy, and whether a policy's blocked IDs bind it is
+ * still open (its `blockedUpdateIds: []` above).
+ */
+async function policySide(deviceId: string, lane: OemLane | null, now: Date) {
+  const unmanaged = { linkEnabled: false, occurrence: null };
+  if (!lane) return unmanaged;
+  const link = await resolveOemUpdatesLinkForDevice(deviceId);
+  if (!link?.settings.enabled || !link.settings.vendors[lane]?.enabled) return unmanaged;
+  const { schedule, catchUpNights, reboot } = link.settings;
+  return {
+    linkEnabled: true,
+    rebootMode: reboot,
+    occurrence: computeOccurrence({ ...schedule, catchUpNights }, await resolveDeviceTimezone(deviceId), now),
+  };
+}
+
 /** GET /devices/:id/oem-updates/status — the device section and whether to offer the action. */
 oemUpdatesRoutes.get(
   '/:id/oem-updates/status',
@@ -257,6 +280,7 @@ oemUpdatesRoutes.get(
         rebootRequired: deviceOemUpdateStatus.rebootRequired,
         rebootPendingSince: deviceOemUpdateStatus.rebootPendingSince,
         occurrenceKey: deviceOemUpdateStatus.occurrenceKey,
+        attempts: deviceOemUpdateStatus.attempts,
         biosVersionBefore: deviceOemUpdateStatus.biosVersionBefore,
         biosVersionAfter: deviceOemUpdateStatus.biosVersionAfter,
         bitlockerAfter: deviceOemUpdateStatus.bitlockerAfter,
@@ -274,17 +298,15 @@ oemUpdatesRoutes.get(
         ])) as Record<OemCategory, GateState>
       : NO_GATES;
 
-    // No policy link until W05 and no occurrence until W07, so only the reboot and
-    // not-supported states can read as anything other than not_managed yet.
+    const now = new Date();
     const displayState = deriveOemDisplayState({
       status: row ?? null,
-      linkEnabled: false,
-      occurrence: null,
-      now: new Date(),
+      ...(await policySide(device.id, lane, now)),
+      now,
     });
 
-    // The occurrence key only feeds the state above.
-    const { occurrenceKey: _occurrenceKey, ...status } = row ?? { occurrenceKey: null };
+    // The occurrence key and the attempt count only feed the state above.
+    const { occurrenceKey: _occurrenceKey, attempts: _attempts, ...status } = row ?? { occurrenceKey: null, attempts: 0 };
     return c.json({ displayState, lane, status: row ? status : null, gates });
   },
 );

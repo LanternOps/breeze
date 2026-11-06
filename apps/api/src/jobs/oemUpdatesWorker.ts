@@ -1,21 +1,39 @@
 /**
  * Vendor updates worker (#11065). A 10-minute tick, on the
- * `maintenanceRebootWorker.ts` model. W03: the not-returned monitor. W07 adds
- * scheduled dispatch.
+ * `maintenanceRebootWorker.ts` model, with four stages. Each fails alone: a broken
+ * sweep must not stop a run from starting, or the other way round.
  *
- * The monitor stands in for what a tech would otherwise find at the next ticket: a
- * machine stuck at a BitLocker recovery prompt or a failed flash, which by nature
- * cannot send a final result. `return_deadline_at` is armed at dispatch for a BIOS
- * or firmware run and cleared once the device shows it came back.
+ *  1. The not-returned monitor stands in for what a tech would otherwise find at
+ *     the next ticket: a machine stuck at a BitLocker recovery prompt or a failed
+ *     flash, which by nature cannot send a final result. `return_deadline_at` is
+ *     armed at dispatch for a BIOS or firmware run and cleared once the device shows
+ *     it came back. It keeps running with the flag off: a run already out there still
+ *     needs watching.
+ *  2. The release sweep hands a vendor's schedule back (`releaseSweep.ts`), also with
+ *     the flag off, since that can be exactly when one has to go back. Ahead of the
+ *     runs, so a policy that came back has its queued release cancelled first.
+ *  3. The reboot sweep (`rebootSweep.ts`), ahead of the runs: a device owing a reboot
+ *     does not get one.
+ *  4. Scheduled runs: select, re-resolve, send through the seam. Every gate is checked
+ *     again at the seam, so with them closed nothing reaches a device.
  *
- * It keeps running with the feature flag off: a run already out there still needs
- * watching, and with nothing armed the tick is one indexed read.
+ * With nothing armed and nothing owed, a tick is a few small reads.
  */
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, isNotNull, lte } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { deviceCommands, deviceOemUpdateStatus, devices } from '../db/schema';
 import { emitDeviceNotReturnedAlert, resolveReturnedDeviceAlerts } from '../services/oemUpdates/alerts';
+import {
+  decideScheduledRun,
+  maxDispatchPerTick,
+  selectDueDevices,
+  type DueDevice,
+} from '../services/oemUpdates/candidates';
+import { dispatchOemUpdateRun } from '../services/oemUpdates/dispatch';
+import { runOemRebootSweep } from '../services/oemUpdates/rebootSweep';
+import { runOemReleaseSweep } from '../services/oemUpdates/releaseSweep';
+import { resolveOemUpdatesLinkForDevice } from '../services/oemUpdates/resolver';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
@@ -111,7 +129,7 @@ async function sweepRow(row: ArmedRow, now: Date): Promise<void> {
   }
 }
 
-export async function runOemUpdatesTick(now: Date = new Date()): Promise<void> {
+async function runNotReturnedMonitor(now: Date): Promise<void> {
   const rows: ArmedRow[] = await withSystemDbAccessContext(() => db
     .select({
       deviceId: deviceOemUpdateStatus.deviceId,
@@ -147,6 +165,91 @@ export async function runOemUpdatesTick(now: Date = new Date()): Promise<void> {
       captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
         worker: 'oemUpdatesWorker',
         org_id: row.orgId,
+      });
+    }
+  }
+}
+
+/** Where the last tick stopped when it hit the cap. In memory: a restart just starts over. */
+let dispatchCursor: string | null = null;
+
+export function resetOemDispatchCursorForTests(): void {
+  dispatchCursor = null;
+}
+
+/** Null when the run was queued, otherwise why not. A refusal is an answer, not an error. */
+async function dispatchDueDevice(device: DueDevice, now: Date): Promise<string | null> {
+  // Immediately before the send: a policy turned off since selection sends nothing,
+  // and a narrowed one sends only what it says now.
+  const link = await withSystemDbAccessContext(() => resolveOemUpdatesLinkForDevice(device.deviceId));
+  const decision = decideScheduledRun({
+    deviceId: device.deviceId,
+    lane: device.lane,
+    status: device.status,
+    link,
+    timezone: device.timezone,
+    now,
+  });
+  if (!decision.due) return `decision:${decision.reason}`;
+  // A long tick can outlast the deadline it selected on. The seam throws on a past one.
+  if (decision.notAfter.getTime() <= Date.now()) return 'decision:past_not_after';
+
+  const outcome = await dispatchOemUpdateRun({
+    deviceId: device.deviceId,
+    expectedOrgId: device.orgId,
+    trigger: 'scheduled',
+    requestedCategories: decision.requestedCategories,
+    blockedUpdateIds: decision.blockedUpdateIds,
+    rebootControlled: decision.rebootControlled,
+    notAfter: decision.notAfter,
+    occurrenceKey: decision.occurrenceKey,
+    actorUserId: null,
+  });
+  return outcome.ok ? null : outcome.refusal;
+}
+
+async function runScheduledDispatch(now: Date): Promise<void> {
+  const limit = maxDispatchPerTick();
+  const due = await selectDueDevices(now, { limit, startAfter: dispatchCursor });
+  dispatchCursor = due.length >= limit ? due[due.length - 1]!.deviceId : null;
+
+  let sent = 0;
+  const notSent = new Map<string, number>();
+  for (const device of due) {
+    // One device's failure must not strand the rest. It stays due, so the next tick
+    // picks it up again.
+    try {
+      const refusal = await dispatchDueDevice(device, now);
+      if (refusal === null) sent += 1;
+      else notSent.set(refusal, (notSent.get(refusal) ?? 0) + 1);
+    } catch (error) {
+      console.error(`[OemUpdates] dispatch failed for device ${device.deviceId}:`, error);
+      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+        worker: 'oemUpdatesWorker',
+        org_id: device.orgId,
+      });
+    }
+  }
+  if (due.length > 0) {
+    console.log('[OemUpdates] scheduled dispatch', { due: due.length, sent, notSent: Object.fromEntries(notSent) });
+  }
+}
+
+export async function runOemUpdatesTick(now: Date = new Date()): Promise<void> {
+  const stages: ReadonlyArray<readonly [string, (at: Date) => Promise<void>]> = [
+    ['not-returned monitor', runNotReturnedMonitor],
+    ['release sweep', runOemReleaseSweep],
+    ['reboot sweep', runOemRebootSweep],
+    ['scheduled dispatch', runScheduledDispatch],
+  ];
+  for (const [name, stage] of stages) {
+    try {
+      await stage(now);
+    } catch (error) {
+      console.error(`[OemUpdates] ${name} failed:`, error);
+      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+        worker: 'oemUpdatesWorker',
+        stage: name,
       });
     }
   }
