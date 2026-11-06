@@ -198,6 +198,23 @@ describe('useSnapshotIndexState', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('a retry inside the rebuild cooldown (429) toasts through runAction and leaves the state in place (#11180)', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(
+      JSON.stringify({ error: "This snapshot's file list was rebuilt recently. Try again in a few minutes.", code: 'RATE_LIMITED', retryAfterSeconds: 420 }),
+      { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '420' } },
+    ));
+    const view = { state: 'unavailable', failure: 'provider_error', retryable: true, deviceLocal: false } as const;
+    const { result } = renderHook(() => useSnapshotIndexState({ snapshotId: 'snap-1', onReady: vi.fn() }));
+    act(() => result.current.reportView(view));
+
+    await act(async () => { await result.current.retry(); });
+
+    expect(result.current.view).toEqual(view);
+    expect(result.current.retrying).toBe(false);
+    expect(showToast).toHaveBeenCalledTimes(1);
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: expect.stringMatching(/\S/) }));
+  });
+
   it('a retry the API refuses toasts through runAction and leaves the honest state in place', async () => {
     fetchMock.mockResolvedValueOnce(json({ error: "This snapshot failed its integrity check, so its file list can't be rebuilt.", code: 'attestation_failed' }, 409));
     const view = { state: 'unavailable', failure: 'provider_error', retryable: true, deviceLocal: false } as const;
