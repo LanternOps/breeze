@@ -202,13 +202,15 @@ const STATUS_LABEL: Record<ExternalBackupStatus, string> = {
   not_started: 'Not started',
   no_backups: 'No backups',
   unknown: 'Unknown',
+  paused: 'Paused',
 };
 
 function statusColor(C: PdfChrome['C'], status: ExternalBackupStatus): RGB {
   switch (status) {
     case 'completed': return C.success;
     case 'completed_with_errors':
-    case 'interrupted': return C.warning;
+    case 'interrupted':
+    case 'paused': return C.warning;
     case 'failed':
     case 'over_quota':
     case 'no_selection':

@@ -1100,7 +1100,8 @@
       "over_quota": "Kontingent überschritten",
       "no_selection": "Nichts ausgewählt",
       "not_started": "Nicht gestartet",
-      "unknown": "Unbekannt"
+      "unknown": "Unbekannt",
+      "paused": "Pausiert"
     },
     "recency": {
       "never": "Nie",

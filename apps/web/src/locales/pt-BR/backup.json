@@ -1100,7 +1100,8 @@
       "over_quota": "Cota excedida",
       "no_selection": "Nada selecionado",
       "not_started": "Não iniciado",
-      "unknown": "Desconhecido"
+      "unknown": "Desconhecido",
+      "paused": "Pausado"
     },
     "recency": {
       "never": "Nunca",

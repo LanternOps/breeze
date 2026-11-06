@@ -22,6 +22,11 @@
  * actionable state. `unknown` means "the vendor reported something we do not
  * recognise", which is a gap in OUR mapping and must never be rendered as
  * either healthy or failed.
+ *
+ * `paused` (appended by `2027-01-22-205900-external-backup-status-paused.sql`)
+ * means an operator deliberately stopped protecting the device (Axcient
+ * `PARKED`). It is never covered and never alerts. It is distinct from
+ * `not_started`, a backup that never ran, which keeps alerting.
  */
 export const EXTERNAL_BACKUP_STATUSES = [
   'completed',
@@ -34,6 +39,7 @@ export const EXTERNAL_BACKUP_STATUSES = [
   'not_started',
   'no_backups',
   'unknown',
+  'paused',
 ] as const;
 
 export type ExternalBackupStatus = (typeof EXTERNAL_BACKUP_STATUSES)[number];

@@ -1100,7 +1100,8 @@
       "over_quota": "Kota aşıldı",
       "no_selection": "Seçim yok",
       "not_started": "Başlamadı",
-      "unknown": "Bilinmiyor"
+      "unknown": "Bilinmiyor",
+      "paused": "Duraklatıldı"
     },
     "recency": {
       "never": "Hiç",
