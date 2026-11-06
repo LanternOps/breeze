@@ -4954,9 +4954,9 @@
     "state": {
       "upToDate": "Em dia",
       "overdue": "Atrasado",
-      "failing": "Requer atenção",
-      "notSupported": "Modelo sem suporte",
-      "notManaged": "Sem agendamento",
+      "failing": "Com falha",
+      "notSupported": "Sem suporte",
+      "notManaged": "Não gerenciado",
       "waitingForReboot": "Aguardando reinicialização",
       "rebootOverdue": "Reinicialização atrasada"
     },

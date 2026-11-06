@@ -4954,9 +4954,9 @@
     "state": {
       "upToDate": "Auf dem neuesten Stand",
       "overdue": "Überfällig",
-      "failing": "Erfordert Aufmerksamkeit",
-      "notSupported": "Modell nicht unterstützt",
-      "notManaged": "Kein Zeitplan",
+      "failing": "Fehlgeschlagen",
+      "notSupported": "Nicht unterstützt",
+      "notManaged": "Nicht verwaltet",
       "waitingForReboot": "Wartet auf Neustart",
       "rebootOverdue": "Neustart überfällig"
     },
