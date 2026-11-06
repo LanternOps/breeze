@@ -22,6 +22,9 @@ const h = vi.hoisted(() => ({
   },
   enabled: { value: true },
   open: { categories: [] as string[] },
+  // What a policy could send. Apart from `open`, which is the gates the route reports.
+  policyOpen: { categories: ['bios', 'firmware', 'driver', 'application'] as string[] },
+  killSwitch: { value: false },
 }));
 
 vi.mock('../../db', () => {
@@ -106,10 +109,12 @@ vi.mock('../../services/oemUpdates/resolver', () => ({
 }));
 vi.mock('../../services/oemUpdates/flags', () => ({
   oemUpdatesEnabled: vi.fn(() => h.enabled.value),
+  laneDisabledByKillSwitch: vi.fn(() => h.killSwitch.value),
 }));
 vi.mock('../../services/oemUpdates/toolManifest', () => ({
   SHIPPED_OEM_LANES: ['dell'],
   isCategoryOpen: vi.fn((_lane: string, category: string) => h.open.categories.includes(category)),
+  openCategoriesForLane: vi.fn(() => h.policyOpen.categories),
 }));
 
 import { oemUpdatesRoutes } from './oemUpdates';
@@ -524,6 +529,41 @@ describe('GET /devices/:id/oem-updates/status', () => {
       h.resolveOemUpdatesLinkForDevice.mockResolvedValue(link);
       h.rows.status = row();
       expect((await (await get('status')).json()).displayState).toBe('not_managed');
+    });
+
+    describe('a schedule that could not have run is not a miss (#11074)', () => {
+      const missed = { occurrenceKey: '2026-09', lastOutcome: 'blocked_on_battery' };
+
+      afterEach(() => {
+        h.policyOpen.categories = ['bios', 'firmware', 'driver', 'application'];
+        h.killSwitch.value = false;
+      });
+
+      it('every gate closed reads not managed', async () => {
+        h.policyOpen.categories = [];
+        h.resolveOemUpdatesLinkForDevice.mockResolvedValue(policy());
+        h.rows.status = row(missed);
+        expect((await (await get('status')).json()).displayState).toBe('not_managed');
+      });
+
+      it('a lane on its kill switch reads not managed', async () => {
+        h.killSwitch.value = true;
+        h.resolveOemUpdatesLinkForDevice.mockResolvedValue(policy());
+        h.rows.status = row(missed);
+        expect((await (await get('status')).json()).displayState).toBe('not_managed');
+      });
+
+      it('a policy armed after the last night opened does not read overdue', async () => {
+        h.resolveOemUpdatesLinkForDevice.mockResolvedValue({ ...policy(), armedAt: new Date(NOW - 60_000) });
+        h.rows.status = row({ ...missed, lastSuccessAt: null });
+        expect((await (await get('status')).json()).displayState).toBe('not_managed');
+      });
+
+      it('a policy armed well before still reads overdue', async () => {
+        h.resolveOemUpdatesLinkForDevice.mockResolvedValue({ ...policy(), armedAt: new Date('2020-01-01T00:00:00.000Z') });
+        h.rows.status = row({ ...missed, lastSuccessAt: null });
+        expect((await (await get('status')).json()).displayState).toBe('overdue');
+      });
     });
 
     it('a site left on UTC reads the org zone, as the scheduler does', async () => {

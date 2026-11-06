@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import '@/lib/i18n';
 
@@ -118,6 +118,59 @@ describe('PatchesPage hash grammar (#9791 C)', () => {
     render(<PatchesPage />);
     await waitFor(() => expect(activeTabText().trim()).toMatch(/^patches$/i));
     expect(orgSwitchKeptHash()).toBe('patches');
+  });
+
+  describe('the Vendor updates tab (#11074)', () => {
+    const fleetCalls = () => fetchMock.mock.calls.map((c) => String(c[0])).filter((u) => u.startsWith('/oem-updates/fleet'));
+
+    beforeEach(() => {
+      const compliance = fetchMock.getMockImplementation();
+      fetchMock.mockImplementation(async (input, init) => (String(input).startsWith('/oem-updates/fleet')
+        ? json({
+            counts: { up_to_date: 0, overdue: 0, failing: 0, not_supported: 0, not_managed: 2, waiting_for_reboot: 0, reboot_overdue: 0 },
+            total: 0,
+            devices: [],
+          })
+        : compliance!(input, init)));
+    });
+
+    it('#vendor-updates selects the tab and loads the fleet', async () => {
+      window.history.replaceState({}, '', '/patches#vendor-updates');
+      render(<PatchesPage />);
+      await waitFor(() => expect(activeTabText().trim()).toMatch(/vendor updates/i));
+      await waitFor(() => expect(fleetCalls().length).toBeGreaterThan(0));
+      expect(screen.queryByRole('combobox', { name: 'Compliance status filter' })).toBeNull();
+      expect(window.location.hash).toBe('#vendor-updates');
+    });
+
+    it('a deep link keeps its filter, and the page does not rewrite it away', async () => {
+      window.history.replaceState({}, '', '/patches#vendor-updates&state=overdue');
+      render(<PatchesPage />);
+      await waitFor(() => expect(fleetCalls().some((u) => u.includes('state=overdue'))).toBe(true));
+      expect(window.location.hash).toBe('#vendor-updates&state=overdue');
+    });
+
+    it('offers the tab and its filter to an org switch', async () => {
+      window.history.replaceState({}, '', '/patches#vendor-updates&state=failing');
+      render(<PatchesPage />);
+      await waitFor(() => expect(activeTabText().trim()).toMatch(/vendor updates/i));
+      expect(orgSwitchKeptHash()).toBe('vendor-updates&state=failing');
+    });
+
+    it('does not load the fleet on the other tabs', async () => {
+      window.history.replaceState({}, '', '/patches');
+      render(<PatchesPage />);
+      await screen.findByRole('combobox', { name: 'Compliance status filter' });
+      expect(fleetCalls()).toEqual([]);
+    });
+
+    it('clicking the tab writes the hash', async () => {
+      window.history.replaceState({}, '', '/patches');
+      render(<PatchesPage />);
+      await screen.findByRole('combobox', { name: 'Compliance status filter' });
+      fireEvent.click(screen.getByRole('button', { name: /vendor updates/i }));
+      await waitFor(() => expect(window.location.hash).toBe('#vendor-updates'));
+    });
   });
 
   it('legacy #patches/<id> still selects the patches tab (RF4)', async () => {

@@ -30,6 +30,7 @@ vi.mock('../services/oemUpdates/resolver', () => ({
   resolveOemUpdatesLinksForDevices: vi.fn(),
 }));
 vi.mock('../services/oemUpdates/rebootSweep', () => ({ runOemRebootSweep: vi.fn(async () => undefined) }));
+vi.mock('../services/oemUpdates/overdueSweep', () => ({ runOemOverdueSweep: vi.fn(async () => undefined) }));
 vi.mock('../services/oemUpdates/releaseSweep', () => ({ runOemReleaseSweep: vi.fn(async () => undefined) }));
 vi.mock('../services/oemUpdates/toolManifest', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/oemUpdates/toolManifest')>()),
@@ -43,6 +44,7 @@ vi.mock('../services/oemUpdates/candidates', async (importOriginal) => ({
 import { captureException } from '../services/sentry';
 import { selectDueDevices, type DueDevice } from '../services/oemUpdates/candidates';
 import { dispatchOemUpdateRun } from '../services/oemUpdates/dispatch';
+import { runOemOverdueSweep } from '../services/oemUpdates/overdueSweep';
 import { runOemRebootSweep } from '../services/oemUpdates/rebootSweep';
 import { runOemReleaseSweep } from '../services/oemUpdates/releaseSweep';
 import { resolveOemUpdatesLinkForDevice } from '../services/oemUpdates/resolver';
@@ -250,6 +252,30 @@ describe('runOemUpdatesTick: the stages', () => {
     await expect(runOemUpdatesTick(NOW)).resolves.toBeUndefined();
     expect(dispatchOemUpdateRun).toHaveBeenCalledTimes(1);
     expect(captureException).toHaveBeenCalledTimes(2);
+  });
+
+  it('the overdue alerts run after the runs, with the tick time', async () => {
+    vi.mocked(runOemOverdueSweep).mockClear();
+    vi.mocked(selectDueDevices).mockResolvedValue([due()]);
+    await runOemUpdatesTick(NOW);
+    expect(runOemOverdueSweep).toHaveBeenCalledWith(NOW);
+    expect(vi.mocked(runOemOverdueSweep).mock.invocationCallOrder[0]!)
+      .toBeGreaterThan(vi.mocked(dispatchOemUpdateRun).mock.invocationCallOrder[0]!);
+  });
+
+  it('the overdue alerts failing costs nothing else, and reaches Sentry', async () => {
+    vi.mocked(runOemOverdueSweep).mockRejectedValueOnce(new Error('alerts down'));
+    vi.mocked(selectDueDevices).mockResolvedValue([due()]);
+    await expect(runOemUpdatesTick(NOW)).resolves.toBeUndefined();
+    expect(dispatchOemUpdateRun).toHaveBeenCalledTimes(1);
+    expect(captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('selection failing does not stop the overdue alerts', async () => {
+    vi.mocked(runOemOverdueSweep).mockClear();
+    vi.mocked(selectDueDevices).mockRejectedValue(new Error('select down'));
+    await runOemUpdatesTick(NOW);
+    expect(runOemOverdueSweep).toHaveBeenCalledTimes(1);
   });
 
   it('selection failing does not stop the sweeps either', async () => {

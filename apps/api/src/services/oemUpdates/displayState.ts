@@ -1,15 +1,9 @@
-import type { OemOutcome } from '@breeze/shared';
+import { OEM_DISPLAY_STATES, type OemDisplayState, type OemOutcome } from '@breeze/shared';
 import type { DeviceOemUpdateStatus } from '../../db/schema';
 import { OEM_MAX_ATTEMPTS_PER_OCCURRENCE } from './occurrence';
 
-export type OemDisplayState =
-  | 'up_to_date'
-  | 'overdue'
-  | 'failing'
-  | 'not_supported'
-  | 'not_managed'
-  | 'waiting_for_reboot'
-  | 'reboot_overdue';
+export { OEM_DISPLAY_STATES };
+export type { OemDisplayState };
 
 export type OemDisplayStatus = Pick<
   DeviceOemUpdateStatus,
@@ -44,15 +38,23 @@ const FAILING_OUTCOMES: ReadonlySet<OemOutcome> = new Set([
  *
  * `rebootMode: 'never'` is a policy that does not reboot, so there is no hold to
  * overrun: the device waits for someone else's restart, however long that takes.
+ *
+ * `managedSince` is when this device came under this schedule: the latest of the
+ * link's last change, its assignment and the device's enrollment. An occurrence
+ * whose last night had already opened by then gave the device no chance to run, so
+ * it is no evidence of a miss: a policy armed on the 28th does not turn a fleet
+ * overdue, or page anyone, for nights that had passed before it existed. Once past
+ * the last night `occurrence.windowStart` is that night's.
  */
 export function deriveOemDisplayState(input: {
   status: OemDisplayStatus | null;
   linkEnabled: boolean;
   rebootMode?: 'overnight' | 'never';
-  occurrence: { occurrenceKey: string; isPastLastNight: boolean } | null;
+  occurrence: { occurrenceKey: string; isPastLastNight: boolean; windowStart?: Date } | null;
+  managedSince?: Date | null;
   now: Date;
 }): OemDisplayState {
-  const { status, linkEnabled, rebootMode, occurrence, now } = input;
+  const { status, linkEnabled, rebootMode, occurrence, managedSince, now } = input;
 
   if (status?.applicability === 'not_supported') return 'not_supported';
 
@@ -77,6 +79,7 @@ export function deriveOemDisplayState(input: {
     inThisOccurrence && status?.lastOutcome && FINISHED_OUTCOMES.has(status.lastOutcome),
   );
   if (finishedThisOccurrence) return 'up_to_date';
-  if (occurrence?.isPastLastNight) return 'overdue';
+  const hadAChance = !(managedSince && occurrence?.windowStart && managedSince >= occurrence.windowStart);
+  if (occurrence?.isPastLastNight && hadAChance) return 'overdue';
   return status?.lastSuccessAt ? 'up_to_date' : 'not_managed';
 }

@@ -32,7 +32,7 @@ import { deriveOemDisplayState } from '../../services/oemUpdates/displayState';
 import { oemUpdatesEnabled } from '../../services/oemUpdates/flags';
 import { effectiveTimezoneFrom } from '../../services/oemUpdates/candidates';
 import { listOemRuns } from '../../services/oemUpdates/history';
-import { computeOccurrence } from '../../services/oemUpdates/occurrence';
+import { oemPolicySide } from '../../services/oemUpdates/policySide';
 import { resolveOemUpdatesLinkForDevice } from '../../services/oemUpdates/resolver';
 import { isCategoryOpen, SHIPPED_OEM_LANES, type GateState } from '../../services/oemUpdates/toolManifest';
 import { trustDenyBody } from '../../services/partnerTrust';
@@ -244,7 +244,8 @@ async function offeredLane(device: {
  * few hours around a window, accepted so a page load never takes a second pooled
  * connection for the partner read.
  */
-async function policySide(deviceId: string, lane: OemLane | null, now: Date) {
+async function policySide(device: { id: string; enrolledAt: Date | null }, lane: OemLane | null, now: Date) {
+  const deviceId = device.id;
   const unmanaged = { linkEnabled: false, occurrence: null };
   if (!lane) return unmanaged;
   const link = await resolveOemUpdatesLinkForDevice(deviceId);
@@ -263,12 +264,7 @@ async function policySide(deviceId: string, lane: OemLane | null, now: Date) {
     .where(eq(devices.id, deviceId))
     .limit(1);
   const timezone = effectiveTimezoneFrom(zone ?? { siteTimezone: null, orgSettings: null, partnerTimezone: null, partnerSettings: null });
-  const { schedule, catchUpNights, reboot } = link.settings;
-  return {
-    linkEnabled: true,
-    rebootMode: reboot,
-    occurrence: computeOccurrence({ ...schedule, catchUpNights }, timezone, now),
-  };
+  return oemPolicySide({ deviceId, lane, link, timezone, now, enrolledAt: device.enrolledAt });
 }
 
 /** GET /devices/:id/oem-updates/status — the device section and whether to offer the action. */
@@ -321,7 +317,7 @@ oemUpdatesRoutes.get(
     const now = new Date();
     const displayState = deriveOemDisplayState({
       status: row ?? null,
-      ...(await policySide(device.id, lane, now)),
+      ...(await policySide(device, lane, now)),
       now,
     });
 

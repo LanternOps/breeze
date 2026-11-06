@@ -74,6 +74,7 @@ export default defineConfig({
               items: [
                 { slug: 'features/patch-management' },
                 { slug: 'features/update-rings' },
+                { slug: 'features/vendor-updates' },
                 { slug: 'features/software-inventory' },
                 { slug: 'features/software-policies' },
               ],

@@ -1,6 +1,6 @@
 /**
  * Vendor updates worker (#11065). A 10-minute tick, on the
- * `maintenanceRebootWorker.ts` model, with four stages. Each fails alone: a broken
+ * `maintenanceRebootWorker.ts` model, with five stages. Each fails alone: a broken
  * sweep must not stop a run from starting, or the other way round.
  *
  *  1. The not-returned monitor stands in for what a tech would otherwise find at
@@ -16,6 +16,7 @@
  *     does not get one.
  *  4. Scheduled runs: select, re-resolve, send through the seam. Every gate is checked
  *     again at the seam, so with them closed nothing reaches a device.
+ *  5. Overdue alerts (`overdueSweep.ts`), last: a page never holds up a run.
  *
  * With nothing armed and nothing owed, a tick is a few small reads.
  */
@@ -31,6 +32,7 @@ import {
   type DueDevice,
 } from '../services/oemUpdates/candidates';
 import { dispatchOemUpdateRun } from '../services/oemUpdates/dispatch';
+import { runOemOverdueSweep } from '../services/oemUpdates/overdueSweep';
 import { runOemRebootSweep } from '../services/oemUpdates/rebootSweep';
 import { runOemReleaseSweep } from '../services/oemUpdates/releaseSweep';
 import { resolveOemUpdatesLinkForDevice } from '../services/oemUpdates/resolver';
@@ -258,6 +260,7 @@ export async function runOemUpdatesTick(now: Date = new Date()): Promise<void> {
     ['release sweep', runOemReleaseSweep],
     ['reboot sweep', runOemRebootSweep],
     ['scheduled dispatch', runScheduledDispatch],
+    ['overdue alerts', runOemOverdueSweep],
   ];
   for (const [name, stage] of stages) {
     try {

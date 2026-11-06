@@ -518,7 +518,7 @@ const namespaceDuplicateBaselines = {
     // scripts.json made titles.scripts an intentional cognate ("Script" is the
     // standard fr-FR loanword) on top of the pre-existing ones.
     'pages.json': 16, // +2 W01 #10132: titles.wispChat and titles.aiForOffice "Breeze AI" brand names; // +1 W08 #9921 titles.wisp "Wisp" (product name); +1 titles.adminWisp "Wisp" (product name); Cognates: CIS Benchmarks, Extension, Incidents, Webhooks (x2), OneDrive, EDR, Variables, Ticket(s) (x2), Scripts, and one settings-card title (Sites).
-    'patches.json': 26, // +3 ring feature-update control: updateRingForm.featureUpdates.productWindows11/productWindows10 are product names and releasePlaceholder "25H2" is a Windows release token — identical in every locale
+    'patches.json': 27, // +1 #11074 vendorUpdates.columns.site "Site" is the fr-CA word; +3 ring feature-update control: updateRingForm.featureUpdates.productWindows11/productWindows10 are product names and releasePlaceholder "25H2" is a Windows release token — identical in every locale
     'peripherals.json': 9,
     'policies.json': 204,
     'portal.json': 4,
@@ -726,7 +726,7 @@ const namespaceDuplicateBaselines = {
     // here) made titles.scripts an intentional cognate ("Script" is the
     // standard loanword) on top of the pre-existing ones.
     'pages.json': 16, // +2 W01 #10132: titles.wispChat and titles.aiForOffice "Breeze AI" brand names; // +1 W08 #9921 titles.wisp "Wisp" (product name); +1 titles.adminWisp "Wisp" (product name); Cognates: CIS Benchmarks, Extension, Incidents, Webhooks (x2), OneDrive, EDR, Variables, Ticket(s) (x2), Scripts, and one settings-card title (Sites).
-    'patches.json': 26, // +3 ring feature-update control: updateRingForm.featureUpdates.productWindows11/productWindows10 are product names and releasePlaceholder "25H2" is a Windows release token — identical in every locale
+    'patches.json': 27, // +1 #11074 vendorUpdates.columns.site "Site" is the fr-FR word; +3 ring feature-update control: updateRingForm.featureUpdates.productWindows11/productWindows10 are product names and releasePlaceholder "25H2" is a Windows release token — identical in every locale
     'peripherals.json': 9,
     'policies.json': 204,
     'portal.json': 4,

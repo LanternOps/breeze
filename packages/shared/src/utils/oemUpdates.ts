@@ -52,6 +52,18 @@ export function agentSupportsOemRebootHold(agentVersion: string | null | undefin
 export const OEM_LANES = ['dell', 'surface', 'hp', 'lenovo'] as const;
 export type OemLane = (typeof OEM_LANES)[number];
 
+/** What a device shows for vendor updates, in the order the fleet tab lists them. */
+export const OEM_DISPLAY_STATES = [
+  'up_to_date',
+  'overdue',
+  'failing',
+  'not_supported',
+  'not_managed',
+  'waiting_for_reboot',
+  'reboot_overdue',
+] as const;
+export type OemDisplayState = (typeof OEM_DISPLAY_STATES)[number];
+
 export const OEM_CATEGORIES = ['bios', 'firmware', 'driver', 'application'] as const;
 export type OemCategory = (typeof OEM_CATEGORIES)[number];
 
