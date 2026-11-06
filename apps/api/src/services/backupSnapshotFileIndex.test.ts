@@ -488,6 +488,39 @@ describe('hydrateSnapshotFileIndex', () => {
     );
   });
 
+  it('records a neutral provider_error reason when the claim phase throws after the CAS (#11179), then rethrows', async () => {
+    selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
+    selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
+    // The CAS has stamped 'hydrating'; resolving the provider then throws.
+    resolveSnapshotProviderConfigMock.mockRejectedValueOnce(new Error('kms unreachable at 10.0.0.9'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await expect(hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { openManifest: vi.fn() } }))
+      .rejects.toThrow(/kms unreachable/);
+
+    const sets = updateMock.mock.results
+      .flatMap((r) => (r.value as { set: ReturnType<typeof vi.fn> }).set.mock.calls.map((c) => c[0]));
+    const failed = sets.find((v) => v?.fileIndexStatus === 'failed');
+    expect(failed).toBeDefined();
+    expect(failed.fileIndexError).toMatch(/^provider_error: /);
+    // Neutral and bounded: the raw error text (which can name hosts) is not stored.
+    expect(failed.fileIndexError).not.toMatch(/kms|10\.0\.0\.9/);
+    expect(failed.fileIndexError.length).toBeLessThan(200);
+    consoleError.mockRestore();
+  });
+
+  it('still rethrows the original claim-phase error when recording the reason also fails (#11179)', async () => {
+    selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
+    selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
+    resolveSnapshotProviderConfigMock.mockRejectedValueOnce(new Error('kms down'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    updateMock
+      .mockImplementationOnce(() => chainMock([{ id: SNAPSHOT_DB_ID }]))
+      .mockImplementationOnce(() => { throw new Error('db gone'); });
+    await expect(hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { openManifest: vi.fn() } })).rejects.toThrow('kms down');
+    consoleError.mockRestore();
+  });
+
   it('on any hydration failure sets status failed with the reason, leaving whatever rows already wrote untouched', async () => {
     selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
     selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));

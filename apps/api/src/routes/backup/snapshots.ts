@@ -38,6 +38,8 @@ import { readSnapshotIndexView, type SnapshotIndexView } from '../../services/ba
 import { enqueueSnapshotFileIndexHydration } from '../../jobs/backupSnapshotFileIndexWorker';
 import { requestFileIndexHydrationAfterContext } from './fileIndexHydrationRequest';
 import { captureException } from '../../services/sentry';
+import { getRedis } from '../../services/redis';
+import { ERROR_CODES } from '@breeze/shared';
 import {
   authorizeRouteResilienceResources,
   resolveRouteAuthorizedDeviceIds,
@@ -46,6 +48,46 @@ import {
 export const snapshotsRoutes = new Hono();
 
 const snapshotIdParamSchema = z.object({ id: z.string().guid() });
+
+/** How long after an accepted rebuild the same snapshot refuses another (#11180). */
+export const FILE_INDEX_REBUILD_COOLDOWN_SECONDS = 10 * 60;
+
+const rebuildCooldownKey = (snapshotDbId: string) => `backup:file-index-rebuild:${snapshotDbId}`;
+
+/**
+ * Claim the snapshot's rebuild slot (SET NX EX). Fails OPEN when Redis is
+ * unavailable: the cooldown only bounds how often a rebuild runs, and the
+ * queue's own job-id dedupe still applies, so an outage must not stop a person
+ * from recovering their file list.
+ */
+async function takeRebuildCooldown(
+  snapshotDbId: string,
+): Promise<{ blocked: false } | { blocked: true; retryAfterSeconds: number }> {
+  try {
+    const redis = getRedis();
+    if (!redis) return { blocked: false };
+    const key = rebuildCooldownKey(snapshotDbId);
+    const taken = await redis.set(key, '1', 'EX', FILE_INDEX_REBUILD_COOLDOWN_SECONDS, 'NX');
+    if (taken === 'OK') return { blocked: false };
+    // The key is held, so the request is blocked even if the TTL read fails.
+    const remaining = await redis.ttl(key).catch(() => -1);
+    return {
+      blocked: true,
+      retryAfterSeconds: remaining > 0 ? remaining : FILE_INDEX_REBUILD_COOLDOWN_SECONDS,
+    };
+  } catch (err) {
+    console.error(`[backup] File-index rebuild cooldown check failed for snapshot ${snapshotDbId} (allowing the rebuild):`, err);
+    return { blocked: false };
+  }
+}
+
+async function releaseRebuildCooldown(snapshotDbId: string): Promise<void> {
+  try {
+    await getRedis()?.del(rebuildCooldownKey(snapshotDbId));
+  } catch (err) {
+    console.error(`[backup] Could not release the file-index rebuild cooldown for snapshot ${snapshotDbId}:`, err);
+  }
+}
 
 // #8230: browse is one directory level per request. `dir` is a tree path as
 // returned in a previous page's directory entries (or a raw Windows path);
@@ -401,25 +443,48 @@ snapshotsRoutes.post(
       return c.json({ error: "This snapshot failed its integrity check, so its file list can't be rebuilt.", code: 'attestation_failed' }, 409);
     }
 
+    // BullMQ's job id only dedupes a rebuild that is still queued; a client
+    // that asks again after each completion would re-hydrate a large manifest
+    // back to back (#11180). Take the per-snapshot cooldown before any write.
+    const cooldown = await takeRebuildCooldown(index.id);
+    if (cooldown.blocked) {
+      c.header('Retry-After', String(cooldown.retryAfterSeconds));
+      return c.json({
+        error: "This snapshot's file list was rebuilt recently. Try again in a few minutes.",
+        code: ERROR_CODES.RATE_LIMITED,
+        retryAfterSeconds: cooldown.retryAfterSeconds,
+      }, 429);
+    }
+
     // A failed index stays failed until the worker claims it, and a person
     // polling meanwhile would read the old failure back and stop. Set it to
     // not-built first: the view then reads as building (and asks again on its
     // own if this request is lost). Only a failed row: never one a hydration
     // is running on or one that is complete.
-    await db
-      .update(backupSnapshots)
-      .set({ fileIndexStatus: 'none', fileIndexError: null })
-      .where(and(
-        eq(backupSnapshots.id, index.id),
-        eq(backupSnapshots.orgId, orgId),
-        eq(backupSnapshots.fileIndexStatus, 'failed'),
-      ));
+    try {
+      await db
+        .update(backupSnapshots)
+        .set({ fileIndexStatus: 'none', fileIndexError: null })
+        .where(and(
+          eq(backupSnapshots.id, index.id),
+          eq(backupSnapshots.orgId, orgId),
+          eq(backupSnapshots.fileIndexStatus, 'failed'),
+        ));
+    } catch (err) {
+      // Nothing was started: do not lock the person out for the window. The
+      // error is rethrown unchanged (not caught into a 4xx/200), so the request
+      // still fails as before.
+      await releaseRebuildCooldown(index.id);
+      throw err;
+    }
 
     try {
       await enqueueSnapshotFileIndexHydration(index.id, 'rebuild', { force: true });
     } catch (err) {
       console.error(`[backup] Failed to request a file-index rebuild for snapshot ${index.id}:`, err);
       captureException(err instanceof Error ? err : new Error(String(err)));
+      // Nothing was started, so the person may try again at once.
+      await releaseRebuildCooldown(index.id);
       return c.json({ error: "Couldn't start rebuilding the file list. Try again in a moment.", code: 'rebuild_unavailable' }, 503);
     }
 

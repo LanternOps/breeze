@@ -67,6 +67,24 @@ vi.mock('../../db', () => ({
 const captureExceptionMock = vi.fn();
 vi.mock('../../services/sentry', () => ({ captureException: (...args: unknown[]) => captureExceptionMock(...args) }));
 
+// #11180: the rebuild cooldown's Redis key (SET NX EX), faked with a map so a
+// test can let the TTL "elapse" by deleting the key.
+const redisFake = vi.hoisted(() => {
+  const store = new Map<string, number>();
+  return {
+    store,
+    available: true,
+    set: vi.fn(async (key: string, _v: string, _ex: string, ttl: number, nx: string) => {
+      if (nx === 'NX' && store.has(key)) return null;
+      store.set(key, ttl);
+      return 'OK';
+    }),
+    ttl: vi.fn(async (key: string) => (store.has(key) ? 420 : -2)),
+    del: vi.fn(async (key: string) => (store.delete(key) ? 1 : 0)),
+  };
+});
+vi.mock('../../services/redis', () => ({ getRedis: () => (redisFake.available ? redisFake : null) }));
+
 vi.mock('../../jobs/backupSnapshotFileIndexWorker', () => ({
   enqueueSnapshotFileIndexHydration: (...args: unknown[]) => enqueueHydrationMock(...args),
 }));
@@ -196,6 +214,11 @@ describe('snapshot routes', () => {
     afterContextWork = [];
     enqueueHydrationMock.mockReset();
     captureExceptionMock.mockReset();
+    redisFake.store.clear();
+    redisFake.available = true;
+    redisFake.set.mockClear();
+    redisFake.ttl.mockClear();
+    redisFake.del.mockClear();
     enqueueHydrationMock.mockResolvedValue('job-1');
     authorizeResilienceResourcesMock.mockResolvedValue({ resources: [] });
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
@@ -747,6 +770,107 @@ describe('snapshot routes', () => {
       authorizeResilienceResourcesMock.mockRejectedValueOnce(new ResilienceAuthorizationError(403, 'site_access_denied'));
       expect((await rebuild()).status).toBe(403);
       expect(enqueueHydrationMock).not.toHaveBeenCalled();
+    });
+
+    describe('per-snapshot cooldown (#11180)', () => {
+      const OTHER_ID = '99999999-9999-4999-8999-999999999999';
+
+      it('the first request takes a 10-minute NX key and proceeds', async () => {
+        selectMock.mockReturnValueOnce(chainMock([failedRow('provider_error: x')]));
+        expect((await rebuild()).status).toBe(202);
+        expect(redisFake.set).toHaveBeenCalledWith(expect.stringContaining(SNAPSHOT_ID), expect.any(String), 'EX', 600, 'NX');
+      });
+
+      it('a second request inside the window is 429 with Retry-After and a RATE_LIMITED body, and enqueues/audits nothing', async () => {
+        selectMock.mockReturnValue(chainMock([failedRow('provider_error: x')]));
+        expect((await rebuild()).status).toBe(202);
+        enqueueHydrationMock.mockClear();
+        writeRouteAuditMock.mockClear();
+        const res = await rebuild();
+        expect(res.status).toBe(429);
+        expect(res.headers.get('Retry-After')).toBe('420');
+        expect(await res.json()).toMatchObject({ code: 'RATE_LIMITED', retryAfterSeconds: 420, error: expect.stringMatching(/rebuilt recently/i) });
+        expect(enqueueHydrationMock).not.toHaveBeenCalled();
+        expect(writeRouteAuditMock).not.toHaveBeenCalled();
+      });
+
+      it('a different snapshot is unaffected', async () => {
+        redisFake.store.set(`backup:file-index-rebuild:${OTHER_ID}`, 600);
+        selectMock.mockReturnValueOnce(chainMock([failedRow('provider_error: x')]));
+        expect((await rebuild()).status).toBe(202);
+      });
+
+      it('the first request after the TTL elapses is accepted', async () => {
+        selectMock.mockReturnValue(chainMock([failedRow('provider_error: x')]));
+        expect((await rebuild()).status).toBe(202);
+        expect((await rebuild()).status).toBe(429);
+        redisFake.store.clear(); // TTL elapsed
+        expect((await rebuild()).status).toBe(202);
+      });
+
+      it('a cross-org or unknown snapshot is still 404 and does not take the key', async () => {
+        selectMock.mockReturnValueOnce(chainMock([]));
+        expect((await rebuild()).status).toBe(404);
+        expect(redisFake.set).not.toHaveBeenCalled();
+      });
+
+      it('an integrity-failed snapshot is still 409 and does not take the key', async () => {
+        selectMock.mockReturnValueOnce(chainMock([failedRow('attestation_failed: no match')]));
+        expect((await rebuild()).status).toBe(409);
+        expect(redisFake.set).not.toHaveBeenCalled();
+      });
+
+      it('a refused enqueue (503) releases the key so the person can retry at once', async () => {
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        selectMock.mockReturnValue(chainMock([failedRow('provider_error: x')]));
+        enqueueHydrationMock.mockRejectedValueOnce(new Error('redis down'));
+        expect((await rebuild()).status).toBe(503);
+        expect(redisFake.store.size).toBe(0);
+        expect((await rebuild()).status).toBe(202);
+        consoleError.mockRestore();
+      });
+
+      it('a failure resetting the index state (500) releases the key too, so the retry is not locked out', async () => {
+        selectMock.mockReturnValue(chainMock([failedRow('provider_error: x')]));
+        updateMock.mockImplementationOnce(() => { throw new Error('db blip'); });
+        expect((await rebuild()).status).toBe(500);
+        expect(redisFake.store.size).toBe(0);
+        expect((await rebuild()).status).toBe(202);
+      });
+
+      it('a 429 leaves the failed index state untouched (cooldown is taken before the reset)', async () => {
+        selectMock.mockReturnValue(chainMock([failedRow('provider_error: x')]));
+        expect((await rebuild()).status).toBe(202);
+        expect(updateMock).toHaveBeenCalledTimes(1);
+        updateMock.mockClear();
+        expect((await rebuild()).status).toBe(429);
+        expect(updateMock).not.toHaveBeenCalled();
+      });
+
+      it('falls back to the full window for Retry-After when the key vanished before TTL was read', async () => {
+        selectMock.mockReturnValue(chainMock([failedRow('provider_error: x')]));
+        redisFake.set.mockResolvedValueOnce(null as never);
+        redisFake.ttl.mockResolvedValueOnce(-2);
+        const res = await rebuild();
+        expect(res.status).toBe(429);
+        expect(res.headers.get('Retry-After')).toBe('600');
+      });
+
+      it('fails open when the Redis call itself errors', async () => {
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        selectMock.mockReturnValueOnce(chainMock([failedRow('provider_error: x')]));
+        redisFake.set.mockRejectedValueOnce(new Error('ECONNRESET'));
+        expect((await rebuild()).status).toBe(202);
+        expect(enqueueHydrationMock).toHaveBeenCalled();
+        expect(consoleError).toHaveBeenCalled();
+        consoleError.mockRestore();
+      });
+
+      it('fails open when Redis is unavailable: the rebuild still proceeds', async () => {
+        redisFake.available = false;
+        selectMock.mockReturnValueOnce(chainMock([failedRow('provider_error: x')]));
+        expect((await rebuild()).status).toBe(202);
+      });
     });
   });
 
