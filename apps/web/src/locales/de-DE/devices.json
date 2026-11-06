@@ -2145,6 +2145,8 @@
       "deferredUntil": "Automatische Genehmigung am {{date}}",
       "deferredUntilTitle": "Der Update-Ring {{ring}} hält neue Patches für sein Zurückstellungsfenster zurück. Dieser wird am {{date}} genehmigt und mit dem nächsten geplanten Patch-Lauf danach installiert.",
       "excluded": "Durch Richtlinie ausgeschlossen",
+      "managedByVendorUpdates": "Von Hersteller-Updates verwaltet",
+      "managedByVendorUpdatesTitle": "Das Update-Tool des Herstellers liefert dies auf diesem Gerät, daher überspringen geplante Patch-Läufe es.",
       "excludedSourceTitle": "Die Quellen der Patch-Richtlinie umfassen diesen Patch nicht, daher überspringen geplante Patch-Läufe ihn.",
       "excludedCategoryTitle": "Der Update-Ring {{ring}} schließt die Kategorie dieses Patches aus, daher überspringen geplante Patch-Läufe ihn.",
       "excludedAppRuleTitle": "Eine App-Sperr- oder Pin-Regel des verknüpften Update-Rings hält diesen Patch zurück, daher überspringen geplante Patch-Läufe ihn.",

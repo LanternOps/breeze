@@ -397,6 +397,14 @@ function getEffectiveApprovalBadge(
       return { label: t('devicePatchStatusTab.approval.deferredUntil', { date }), className: APPROVAL_BADGE_CLASS.info, title: t('devicePatchStatusTab.approval.deferredUntilTitle', { ring, date }) };
     }
     case 'excluded': {
+      // A vendor lane owns this class here (spec 4.6): no policy blocked it.
+      if (effective.reason === 'managed_by_vendor_updates') {
+        return {
+          label: t('devicePatchStatusTab.approval.managedByVendorUpdates'),
+          className: APPROVAL_BADGE_CLASS.muted,
+          title: t('devicePatchStatusTab.approval.managedByVendorUpdatesTitle'),
+        };
+      }
       const title = effective.reason === 'blocked_by_source'
         ? t('devicePatchStatusTab.approval.excludedSourceTitle')
         : effective.reason === 'blocked_by_app_rule'

@@ -2145,6 +2145,8 @@
       "deferredUntil": "Auto-approves {{date}}",
       "deferredUntilTitle": "Update ring {{ring}} holds new patches for its deferral window. This one is approved on {{date}} and installs with the next scheduled patch run after that.",
       "excluded": "Excluded by policy",
+      "managedByVendorUpdates": "Managed by Vendor updates",
+      "managedByVendorUpdatesTitle": "The manufacturer's update tool delivers this on this device, so scheduled patch runs skip it.",
       "excludedSourceTitle": "The patch policy's sources do not cover this patch, so scheduled patch runs skip it.",
       "excludedCategoryTitle": "Update ring {{ring}} excludes this patch's category, so scheduled patch runs skip it.",
       "excludedAppRuleTitle": "An app block or pin rule on the linked Update Ring holds this patch, so scheduled patch runs skip it.",

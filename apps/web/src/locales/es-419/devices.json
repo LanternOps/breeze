@@ -2145,6 +2145,8 @@
       "deferredUntil": "Se aprueba automáticamente el {{date}}",
       "deferredUntilTitle": "El anillo de actualización {{ring}} retiene los parches nuevos durante su período de aplazamiento. Este se aprueba el {{date}} y se instala en la siguiente ejecución programada de parches.",
       "excluded": "Excluido por la directiva",
+      "managedByVendorUpdates": "Administrado por actualizaciones del fabricante",
+      "managedByVendorUpdatesTitle": "La herramienta de actualización del fabricante entrega esto en este dispositivo, así que las ejecuciones programadas lo omiten.",
       "excludedSourceTitle": "Los orígenes de la directiva de parches no incluyen este parche, así que las ejecuciones programadas lo omiten.",
       "excludedCategoryTitle": "El anillo de actualización {{ring}} excluye la categoría de este parche, así que las ejecuciones programadas lo omiten.",
       "excludedAppRuleTitle": "Una regla de bloqueo o fijación de aplicación del anillo de actualización vinculado retiene este parche, así que las ejecuciones programadas lo omiten.",
