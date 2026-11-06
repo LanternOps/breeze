@@ -68,6 +68,7 @@ export type WispGrant = {
   unattendedReadsPinned: boolean;
   /** #10390: a closed session's summary is also written by the model, charged to this grant's budget. */
   summaryRefine: boolean;
+  createdAt: Date;
 };
 
 export type WispGrantErrorCode =
@@ -146,6 +147,7 @@ function toGrant(row: WispGrantRow, unattendedReadsPinned = false): WispGrant {
     unattendedReads: row.unattendedReads === true && unattendedReadsPinned,
     unattendedReadsPinned,
     summaryRefine: row.summaryRefine === true,
+    createdAt: row.createdAt,
   };
 }
 

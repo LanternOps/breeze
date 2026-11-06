@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Sparkles } from "lucide-react";
-import WispWelcome from "../wisp/WispWelcome";
+import WispChatWelcome from "../wisp/WispChatWelcome";
 import { useWispScopeLabel } from "../wisp/useWispScopeLabel";
 
 import AiChatMessages from "../ai/AiChatMessages";
@@ -210,10 +210,12 @@ export default function WorkspaceChatPanel({ tab, onContinueInPanel }: Workspace
         assistantLabel={tabWisp ? t("wisp.title") : undefined}
         emptyState={
           tabWisp ? (
-            <WispWelcome
+            <WispChatWelcome
+              key={tabWisp.grantId}
+              grantId={tabWisp.grantId}
+              orgId={tabWisp.orgId}
               scopeLabel={wispScopeLabel}
               onSuggest={(prompt) => sendMessage(tab.id, prompt)}
-              briefNote={false}
             />
           ) : undefined
         }

@@ -93,7 +93,7 @@ function chatPromptTexts(): Array<[string, string]> {
     // #10391: both shapes of the Wisp chat seed's standing-loop section.
     ['renderStandingLoop(facts)', renderStandingLoop({
       status: 'active', floorTickMinutes: 30, lastFloorTickAt: null,
-      firstLook: { assessedOrgs: 1, inFlight: 1, totalOrgs: 12 }, brief: { timeLocal: '08:00', timezone: 'UTC' },
+      firstLook: { assessedOrgs: 1, settledOrgs: 1, inFlight: 1, totalOrgs: 12 }, brief: { timeLocal: '08:00', timezone: 'UTC' },
     }, 'claude-sonnet-5-5')],
     ['renderStandingLoop(null)', renderStandingLoop(null, 'claude-sonnet-5-5')],
     ['composeStaticSystemPrompt(lazy)', composeStaticSystemPrompt(names, 'lazy')],

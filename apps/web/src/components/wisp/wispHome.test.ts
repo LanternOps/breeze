@@ -25,6 +25,8 @@ const homePayload = (over: Partial<WispHomePayload> = {}): WispHomePayload => ({
   partner: { enabled: true },
   briefSchedule: { timeLocal: '08:00', timezone: 'UTC', browserTimezone: null },
   firstLookAt: null,
+  firstLookState: 'looking',
+  firstLookProgress: null,
   ...over,
 });
 

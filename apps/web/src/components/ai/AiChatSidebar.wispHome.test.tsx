@@ -406,7 +406,7 @@ describe('AiChatSidebar speaks one voice and follows the grant live (#10195)', (
 
   it('under a Wisp header the empty state and the composer are Wisp too, not the generic Breeze AI prompts', () => {
     const sendMessage = vi.fn(async () => {});
-    useAiStore.setState({ wisp: wisp(), sessionId: 'sess-w', hydratedSessionId: 'sess-w', sendMessage });
+    useAiStore.setState({ wisp: { ...wisp(), firstLookState: 'looking' }, sessionId: 'sess-w', hydratedSessionId: 'sess-w', sendMessage });
     render(<AiChatSidebar />);
     expect(kitProps.input?.placeholder).toBe('Message Wisp');
     render(<>{kitProps.messages?.emptyState as React.ReactNode}</>);
@@ -418,10 +418,21 @@ describe('AiChatSidebar speaks one voice and follows the grant live (#10195)', (
 
   it('an org-scoped Wisp session greets with the organization name', () => {
     useOrgStore.setState({ organizations: [{ id: 'org-a', name: 'Acme' }] } as never);
-    useAiStore.setState({ wisp: { ...wisp(), scopeOrgId: 'org-a' }, sessionId: 'sess-w', hydratedSessionId: 'sess-w' });
+    useAiStore.setState({ wisp: { ...wisp(), scopeOrgId: 'org-a', firstLookState: 'looking' }, sessionId: 'sess-w', hydratedSessionId: 'sess-w' });
     render(<AiChatSidebar />);
     render(<>{kitProps.messages?.emptyState as React.ReactNode}</>);
     expect(screen.getByTestId('wisp-welcome')).toHaveTextContent("I'm looking around Acme.");
+  });
+
+  it.each([
+    ['couldnt_look', "I couldn't look at All organizations yet."],
+    ['done', "I've had a first look at All organizations."],
+  ] as const)('#11145: a %s grant does not say "looking around" in the panel', (firstLookState, text) => {
+    useAiStore.setState({ wisp: { ...wisp(), firstLookState }, sessionId: 'sess-w', hydratedSessionId: 'sess-w' });
+    render(<AiChatSidebar />);
+    render(<>{kitProps.messages?.emptyState as React.ReactNode}</>);
+    expect(screen.getByTestId('wisp-welcome')).toHaveTextContent(text);
+    expect(screen.getByTestId('wisp-welcome')).not.toHaveTextContent('looking around');
   });
 
   it('a plain chat keeps the Breeze AI empty state and placeholder', () => {

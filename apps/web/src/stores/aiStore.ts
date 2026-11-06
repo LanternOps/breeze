@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { AiAttachState, AiPageContext, AiStreamEvent, AiApprovalMode, AiTopologyProgressPhase, TopologyAiSelection, AiContinuationRequired, AiModelChoice, AiTurnModel } from '@breeze/shared';
+import type { AiAttachState, AiPageContext, AiStreamEvent, AiApprovalMode, AiTopologyProgressPhase, TopologyAiSelection, AiContinuationRequired, AiModelChoice, AiTurnModel, WispFirstLookState } from '@breeze/shared';
 import { fetchWithAuth } from './auth';
 import { registerLogoutHook } from './logoutHooks';
 import { noSessionOrgId, useAiModelPickerStore } from './aiModelPickerStore';
@@ -63,6 +63,8 @@ export type WispState = {
    * does not carry it); `null` = not paused.
    */
   pausedReason?: string | null;
+  /** #11145: how the grant's first look stands, for the surfaces with no timeline. `undefined` = not known. */
+  firstLookState?: WispFirstLookState;
   /** W05 spend meter (w00 A32): cents charged today under the grant, and when the UTC day resets. */
   spentTodayCents?: number;
   budgetResetsAt?: string;

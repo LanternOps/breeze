@@ -11,6 +11,20 @@ const body = (grant: Record<string, unknown> = {}) => ({
   },
 });
 
+describe('wispStateFromThread firstLookState (#11145)', () => {
+  const withState = (firstLookState: unknown) => ({
+    data: { thread: { id: 't1' }, grant: { id: 'g1', status: 'active', expiresAt: '2027-01-01T00:00:00.000Z' }, firstLookState },
+  });
+
+  it.each(['looking', 'done', 'couldnt_look'])('keeps %s', (state) => {
+    expect(wispStateFromThread(withState(state))?.firstLookState).toBe(state);
+  });
+
+  it.each([[undefined], ['maybe'], [7]])('anything else (%s) is unknown, never a default', (value) => {
+    expect(wispStateFromThread(withState(value))?.firstLookState).toBeUndefined();
+  });
+});
+
 describe('wispStateFromThread W06 fields (A32 spend, A29 pause reason)', () => {
   it('carries the spend meter only when both halves are present', () => {
     expect(wispStateFromThread(body({ spentTodayCents: 42, budgetResetsAt: '2026-10-25T00:00:00.000Z' })))

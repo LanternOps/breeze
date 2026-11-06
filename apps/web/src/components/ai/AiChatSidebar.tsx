@@ -36,7 +36,7 @@ import { ActionMenu } from "../shared/ActionMenu";
 import BuyCreditsLink from "./BuyCreditsLink";
 import WispThreadHeader from "./WispThreadHeader";
 import WispThreadAttachments from "./WispThreadAttachments";
-import WispWelcome from "../wisp/WispWelcome";
+import WispChatWelcome from "../wisp/WispChatWelcome";
 import { useWispScopeLabel } from "../wisp/useWispScopeLabel";
 import { wispSessionOrgId } from "@/lib/wispSession";
 import { useTranslation } from "react-i18next";
@@ -562,7 +562,14 @@ export default function AiChatSidebar() {
               assistantLabel={wisp ? t("wisp.title") : undefined}
               emptyState={
                 wisp ? (
-                  <WispWelcome scopeLabel={wispScopeLabel} onSuggest={sendMessage} briefNote={false} />
+                  <WispChatWelcome
+                    key={wisp.grantId}
+                    grantId={wisp.grantId}
+                    orgId={wispSessionOrgId(wisp)}
+                    initialState={wisp.firstLookState}
+                    scopeLabel={wispScopeLabel}
+                    onSuggest={sendMessage}
+                  />
                 ) : undefined
               }
             />

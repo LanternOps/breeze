@@ -901,13 +901,21 @@
       "open": "Open",
       "unread": "Unread",
       "specialistResult": "Specialist report",
-      "firstLook": "First look"
+      "firstLook": "First look",
+      "couldntLook": "Couldn't look yet"
     },
     "welcome": {
       "title": "I'm looking around {{scope}}.",
       "body": "Your first brief arrives each morning once I have had a look. Ask me anything in the meantime.",
       "firstLookTitle": "I've had a first look at {{scope}}.",
       "firstLookBody": "What I found is in the post above. Ask me anything about it.",
+      "couldntLookTitle": "I couldn't look at {{scope}} yet.",
+      "couldntLookBody": "The post above says why and when I'll try again. Ask me anything in the meantime.",
+      "couldntLookChat": "The Wisp home says why and when I'll try again.",
+      "progress_one": "{{lookedAt}} of {{count}} organization looked at",
+      "progress_other": "{{lookedAt}} of {{count}} organizations looked at",
+      "progressQueued": "{{count}} queued",
+      "progressFailed": "{{count}} failed",
       "briefAt": "Your morning brief goes out at {{time}} ({{timezone}}).",
       "suggestions": {
         "needsMe": {
