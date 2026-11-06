@@ -64,6 +64,14 @@ describe('processWispGrantReconcile', () => {
     log.mockRestore();
   });
 
+  it("#11145: a couldn't-look post counts as a post and is named in the log", async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    h.resweepFirstLookPosts.mockResolvedValue({ scanned: 1, posted: 1, couldntLook: 1, failed: 0, skipped: {} });
+    await expect(processWispGrantReconcile()).resolves.toMatchObject({ firstLookPosts: 1 });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('couldntLook=1'));
+    log.mockRestore();
+  });
+
   it('#10402: a throwing first-look sweep is reported and never fails the tick', async () => {
     h.resweepFirstLookPosts.mockRejectedValue(new Error('db down'));
     await expect(processWispGrantReconcile()).resolves.toEqual({ skipped: false, ...grants, specialistPosts: 1, firstLookPosts: 0 });

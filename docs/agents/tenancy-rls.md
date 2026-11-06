@@ -18,6 +18,13 @@ API connects to Postgres as unprivileged `breeze_app`. Every tenant-scoped table
 
 **DB context helpers** (`apps/api/src/db/index.ts`): `withDbAccessContext` (request path), `withSystemDbAccessContext` (background/seeds — call `runOutsideDbContext` first if inside a request), bare pool is forbidden in request code.
 
+**A catch around a query needs `withDbTransaction`** (#11203). postgres.js rethrows a failed statement when the transaction it ran on ends, even when the caller caught it, and every statement after the failure fails with 25P02. So inside a held context (request or system), a `try/catch` or `.catch()` that survives a query failure, whether it falls back, degrades or maps to a 4xx, cannot work on its own: the answer becomes a 500 at commit. Run the query in `withDbTransaction(() => ...)` with the catch outside it. Raw `SAVEPOINT` / `ROLLBACK TO` does not work, because postgres.js still records the error on the outer scope. Where the conflict is the only expected failure, not raising at all (`onConflictDoNothing`) is simpler. The traps:
+
+- **`db.transaction(async () => { await db.insert(...) })` does not isolate.** A callback that ignores its `tx` leaves the ambient `db` on the outer scope. Use `withDbTransaction`, or issue the statements on `tx`.
+- **A catch inside the `withDbTransaction` callback does not isolate.** It must be outside.
+- **Do not start `withDbTransaction` beside sibling statements in a `Promise.all`.** All of them share one connection, so a failed savepoint waits one round trip for its rollback, and a sibling's next statement lands in the aborted transaction and fails on the outer scope. Two parallel savepoints also fail together. Run the optional read before or after the parallel block, and read in sequence inside the savepoint.
+- **Mocked-Drizzle unit tests cannot see any of this.** Prove a degraded path or a mapped 4xx through the real router on real Postgres: `caughtQueryRequestTransaction.integration.test.ts`, `tunnel-allowlist-duplicate-savepoint.integration.test.ts`.
+
 **Intentionally system-scoped:** `device_commands` (agent WS path). Anything else flagged `INTENTIONAL_UNSCOPED` in a plan doc.
 
 **Workflow for a new tenant-scoped table:**

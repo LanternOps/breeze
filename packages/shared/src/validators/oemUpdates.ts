@@ -116,3 +116,16 @@ export const oemUpdateVerificationSchema = z
   })
   .strict();
 export type OemUpdateVerification = z.infer<typeof oemUpdateVerificationSchema>;
+
+/** Hand a vendor tool's own update schedule back (restore what Breeze changed when it took over). */
+export const oemUpdateReleasePayloadSchema = z.object({ lane: z.enum(OEM_LANES) }).strict();
+export type OemUpdateReleasePayload = z.infer<typeof oemUpdateReleasePayloadSchema>;
+
+export const oemUpdateReleaseResultSchema = z
+  .object({
+    lane: z.enum(OEM_LANES),
+    outcome: z.enum(['restored', 'nothing_to_restore', 'failed']),
+    errorCode: z.string().regex(/^[A-Za-z0-9_.:-]+$/).max(64).nullable().optional(),
+  })
+  .strict();
+export type OemUpdateReleaseResult = z.infer<typeof oemUpdateReleaseResultSchema>;

@@ -51,6 +51,7 @@ import { userNotifications } from '../../db/schema/notifications';
 import { wispThreadPosts } from '../../db/schema/wispThreadPosts';
 import { wispThreadSessions } from '../../db/schema/wispThreads';
 import { inSystemContext, type GrantCeiling } from './grantAuthority';
+import { couldntLookDedupeKey } from './threadPosts';
 
 export type TimelineSource = WispTimelineItem['source'];
 export type TimelineCursor = { at: Date; source: TimelineSource; id: string };
@@ -210,6 +211,7 @@ async function postRows({ ceiling, threadId, cursor, take }: SourceArgs): Promis
       sections: wispThreadPosts.sections,
       concernId: wispThreadPosts.concernId,
       notificationId: wispThreadPosts.notificationId,
+      dedupeKey: wispThreadPosts.dedupeKey,
       read: userNotifications.read,
       createdAt: wispThreadPosts.createdAt,
     })
@@ -231,12 +233,14 @@ async function postRows({ ceiling, threadId, cursor, take }: SourceArgs): Promis
     .limit(take);
 
   const readableSet = new Set(readable);
+  const couldntLookKey = couldntLookDedupeKey(ceiling.grantId);
   return rows.map((r) => {
     const visible = r.orgId === null || readableSet.has(r.orgId);
     const item: WispTimelinePost = {
       source: 'post',
       id: r.id,
       kind: r.kind,
+      ...(r.dedupeKey === couldntLookKey ? { variant: 'couldnt_look' as const } : {}),
       title: r.title,
       body: r.body ?? null,
       link: r.link ?? null,

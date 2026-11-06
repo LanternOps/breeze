@@ -332,6 +332,9 @@ const STANDARD_REVIEWED: readonly string[] = [
   C.EXECUTE_CONTAINMENT,
   C.RELEASE_CONTAINMENT,
   C.SYSTEM_STATE_COLLECT,
+  // Vendor updates (#11065): a policy removal must hand the vendor tool's
+  // schedule back even if the device is offline right now, so it queues.
+  C.OEM_UPDATE_RELEASE,
 ];
 
 const TIME_SYNC: readonly string[] = [

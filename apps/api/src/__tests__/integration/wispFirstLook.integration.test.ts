@@ -6,8 +6,9 @@
  *   - the counts come from the grant's real runs and the org's real concerns;
  *   - an unsettled org holds the post until the grace limit, and the reconciler
  *     sweep then finds the grant, posts it once and stops finding it;
- *   - a grant past its first day, a paused grant, or a batch nothing finished
- *     posts nothing;
+ *   - a grant past its first day or a paused grant posts nothing;
+ *   - #11145: a batch nothing finished posts one couldn't-look post, which a later
+ *     look does not block;
  *   - the browser zone lands in its own column and the resolver reads it.
  */
 import './setup';
@@ -33,8 +34,10 @@ import {
   postFirstLookIfDone,
   resweepFirstLookPosts,
 } from '../../services/wisp/firstLook';
+import { resolveGrantCeiling } from '../../services/wisp/grantAuthority';
+import { buildHomeSections } from '../../services/wisp/home';
 import { loadBriefSchedule, saveBrowserTimezone, upsertNudgePrefs } from '../../services/wisp/nudgePreferences';
-import { firstLookPostedAt } from '../../services/wisp/threadPosts';
+import { couldntLookDedupeKey, firstLookPostTimes, firstLookStateFrom } from '../../services/wisp/threadPosts';
 import { getOrCreateThread } from '../../services/wisp/threads';
 import { onboardingBatch } from '../../services/wisp/wake';
 import {
@@ -57,7 +60,7 @@ const PERMS = [
   { resource: 'tickets', action: 'read' },
 ];
 
-async function seedTenant(orgCount: number, opts: { createdAt?: Date } = {}) {
+async function seedTenant(orgCount: number, opts: { createdAt?: Date; siteIds?: string[] } = {}) {
   const partner = await createPartner();
   const orgs: Array<{ id: string }> = [];
   for (let i = 0; i < orgCount; i += 1) orgs.push(await createOrganization({ partnerId: partner.id }));
@@ -73,7 +76,7 @@ async function seedTenant(orgCount: number, opts: { createdAt?: Date } = {}) {
       ...(opts.createdAt ? { createdAt: opts.createdAt } : {}),
     }).returning({ id: wispGrants.id });
     const snapshot: WispCeilingSnapshot = {
-      version: 1, permissionKeys: PERMS.map((p) => `${p.resource}:${p.action}`), orgIds: orgs.map((o) => o.id), siteIds: null,
+      version: 1, permissionKeys: PERMS.map((p) => `${p.resource}:${p.action}`), orgIds: orgs.map((o) => o.id), siteIds: opts.siteIds ?? null,
       toolAllowlist: null, deniedTools: [],
     };
     const [r] = await db.insert(wispGrantRevisions).values({
@@ -97,9 +100,9 @@ async function seedTenant(orgCount: number, opts: { createdAt?: Date } = {}) {
 
 type Tenant = Awaited<ReturnType<typeof seedTenant>>;
 
-const seedRun = (t: Tenant, orgId: string, status: string) => sys(() => db.insert(aiAgentRuns).values({
+const seedRun = (t: Tenant, orgId: string, status: string, errorCode: string | null = null) => sys(() => db.insert(aiAgentRuns).values({
   agentId: t.agentId, orgId, triggerKind: 'schedule', dedupeKey: `seed:${randomUUID()}`, modeAtStart: 'shadow',
-  policySnapshot: {} as never, profile: 'assessment', status, finishedAt: status === 'queued' || status === 'running' ? null : new Date(),
+  policySnapshot: {} as never, profile: 'assessment', status, errorCode, finishedAt: status === 'queued' || status === 'running' ? null : new Date(),
   grantId: t.grantId, grantRevisionId: t.revisionId,
 } as never));
 
@@ -126,7 +129,7 @@ describe('postFirstLookIfDone (real Postgres)', () => {
     await seedConcern(t, t.orgs[0]!, 'low');
     await seedConcern(t, t.orgs[1]!, 'low');
 
-    await expect(postFirstLookIfDone(t.grantId)).resolves.toEqual({ posted: true });
+    await expect(postFirstLookIfDone(t.grantId)).resolves.toEqual({ posted: true, variant: 'first_look' });
     await expect(postFirstLookIfDone(t.grantId)).resolves.toEqual({ posted: false, reason: 'already_posted' });
 
     const posts = await postsFor(t.grantId);
@@ -143,7 +146,7 @@ describe('postFirstLookIfDone (real Postgres)', () => {
     )));
     expect(notes).toHaveLength(1);
     const thread = await getOrCreateThread(t.grantId);
-    await expect(firstLookPostedAt(thread.id)).resolves.toBe(posts[0]!.createdAt.toISOString());
+    await expect(firstLookPostTimes(thread.id)).resolves.toEqual({ firstLookAt: posts[0]!.createdAt.toISOString(), couldntLookAt: null });
   });
 
   it('two runs finishing at once still leave one post', async () => {
@@ -165,7 +168,7 @@ describe('postFirstLookIfDone (real Postgres)', () => {
     expect(await postsFor(t.grantId)).toHaveLength(0);
 
     await seedRun(t, t.orgs[1]!, 'failed');
-    await expect(postFirstLookIfDone(t.grantId)).resolves.toEqual({ posted: true });
+    await expect(postFirstLookIfDone(t.grantId)).resolves.toEqual({ posted: true, variant: 'first_look' });
     const [post] = await postsFor(t.grantId);
     expect(post!.title).toBe('First look done: 1 of 2 organizations');
     expect(post!.body).toContain('I could not finish 1 organization');
@@ -178,18 +181,121 @@ describe('postFirstLookIfDone (real Postgres)', () => {
     const named = await sys(() => db.select({ id: organizations.id, name: organizations.name }).from(organizations).where(eq(organizations.partnerId, t.partnerId)));
     for (const o of onboardingBatch(named)) await seedRun(t, o.id, 'completed');
 
-    await expect(postFirstLookIfDone(t.grantId)).resolves.toEqual({ posted: true });
+    await expect(postFirstLookIfDone(t.grantId)).resolves.toEqual({ posted: true, variant: 'first_look' });
     const [post] = await postsFor(t.grantId);
     expect(post!.title).toBe('First look done: 10 of 11 organizations');
     expect(post!.body).toContain('1 more is still queued');
   });
 
-  it('nothing finished: no post, however long it has been (the readiness and budget notices speak for those)', async () => {
-    const t = await seedTenant(1);
-    await seedRun(t, t.orgs[0]!, 'failed');
-    const later = new Date(Date.now() + FIRST_LOOK_GRACE_MS + 60_000);
-    await expect(postFirstLookIfDone(t.grantId, later)).resolves.toEqual({ posted: false, reason: 'nothing_looked_at' });
-    expect(await postsFor(t.grantId)).toHaveLength(0);
+  describe('nothing was looked at (#11145)', () => {
+    it('every run failing writes one couldn\'t-look post + one notification; a second settle writes nothing', async () => {
+      const t = await seedTenant(2);
+      await seedRun(t, t.orgs[0]!, 'failed', 'llm_unavailable');
+      await seedRun(t, t.orgs[1]!, 'failed', 'sdk_error');
+
+      await expect(postFirstLookIfDone(t.grantId)).resolves.toEqual({ posted: true, variant: 'couldnt_look' });
+      await expect(postFirstLookIfDone(t.grantId)).resolves.toEqual({ posted: false, reason: 'couldnt_look_posted' });
+
+      const posts = await postsFor(t.grantId);
+      expect(posts).toHaveLength(1);
+      expect(posts[0]).toMatchObject({ kind: 'first_look', orgId: null, dedupeKey: couldntLookDedupeKey(t.grantId), title: "I couldn't look yet: 0 of 2 organizations" });
+      expect(posts[0]!.body).toContain("The AI model wasn't available or couldn't finish for 2 organizations.");
+      expect(posts[0]!.body).toContain("I'll try again around");
+      expect(posts[0]!.body).not.toContain('llm_unavailable');
+      const notes = await sys(() => db.select().from(userNotifications).where(eq(userNotifications.dedupeKey, couldntLookDedupeKey(t.grantId))));
+      expect(notes).toHaveLength(1);
+
+      const thread = await getOrCreateThread(t.grantId);
+      const times = await firstLookPostTimes(thread.id);
+      expect(times).toEqual({ firstLookAt: null, couldntLookAt: posts[0]!.createdAt.toISOString() });
+      expect(firstLookStateFrom(times)).toBe('couldnt_look');
+    });
+
+    it('concurrent settles still leave one post', async () => {
+      const t = await seedTenant(1);
+      await seedRun(t, t.orgs[0]!, 'failed', 'llm_unavailable');
+      const results = await Promise.all([postFirstLookIfDone(t.grantId), postFirstLookIfDone(t.grantId), postFirstLookIfDone(t.grantId)]);
+      expect(await postsFor(t.grantId)).toHaveLength(1);
+      expect(results.filter((r) => r.posted)).toHaveLength(1);
+    });
+
+    it('holds while a run is still in flight, even past the grace limit: it may yet look', async () => {
+      const t = await seedTenant(2);
+      await seedRun(t, t.orgs[0]!, 'failed', 'llm_unavailable');
+      await seedRun(t, t.orgs[1]!, 'running');
+      const later = new Date(Date.now() + FIRST_LOOK_GRACE_MS + 60_000);
+      await expect(postFirstLookIfDone(t.grantId, later)).resolves.toEqual({ posted: false, reason: 'in_progress' });
+      expect(await postsFor(t.grantId)).toHaveLength(0);
+    });
+
+    it('one run that looked means the ordinary post, never this one', async () => {
+      const t = await seedTenant(2);
+      await seedRun(t, t.orgs[0]!, 'failed', 'llm_unavailable');
+      await seedRun(t, t.orgs[1]!, 'completed');
+      await expect(postFirstLookIfDone(t.grantId)).resolves.toEqual({ posted: true, variant: 'first_look' });
+      const posts = await postsFor(t.grantId);
+      expect(posts).toHaveLength(1);
+      expect(posts[0]!.dedupeKey).toBe(firstLookDedupeKey(t.grantId));
+    });
+
+    it('no run at all past the grace limit, with no agent readiness concern: admission refused', async () => {
+      const t = await seedTenant(1);
+      const later = new Date(Date.now() + FIRST_LOOK_GRACE_MS + 60_000);
+      await expect(postFirstLookIfDone(t.grantId, later)).resolves.toEqual({ posted: true, variant: 'couldnt_look' });
+      const [post] = await postsFor(t.grantId);
+      expect(post!.body).toContain("My check wasn't allowed to start for 1 organization");
+    });
+
+    it('a no-agent readiness concern names the missing agent', async () => {
+      const t = await seedTenant(1);
+      await sys(() => db.insert(wispConcerns).values({
+        partnerId: t.partnerId, orgId: t.orgs[0]!, subjectKind: 'readiness', subjectId: t.orgs[0]!, summary: 'No Triage agent', severity: 'info',
+        evidence: { reason: 'no_effective_agent' }, signature: `wisp-readiness:no-effective-agent:${t.orgs[0]!}`,
+      }));
+      const later = new Date(Date.now() + FIRST_LOOK_GRACE_MS + 60_000);
+      await expect(postFirstLookIfDone(t.grantId, later)).resolves.toEqual({ posted: true, variant: 'couldnt_look' });
+      const [post] = await postsFor(t.grantId);
+      expect(post!.body).toContain('1 organization has no Triage agent switched on.');
+    });
+
+    it('a spent grant budget says so and retries at the reset', async () => {
+      const t = await seedTenant(1);
+      await sys(() => db.update(wispGrants).set({ budgetCentsPerDay: 0 }).where(eq(wispGrants.id, t.grantId)));
+      const later = new Date(Date.now() + FIRST_LOOK_GRACE_MS + 60_000);
+      await expect(postFirstLookIfDone(t.grantId, later)).resolves.toEqual({ posted: true, variant: 'couldnt_look' });
+      const [post] = await postsFor(t.grantId);
+      expect(post!.body).toContain('An AI budget limit stopped me for 1 organization.');
+      expect(post!.body).toContain("I'll try again on my regular checks once the daily budget resets");
+    });
+
+    it('a grant with no org it may assess (site-restricted) posts nothing: nothing was attempted', async () => {
+      const t = await seedTenant(1, { siteIds: [randomUUID()] });
+      const later = new Date(Date.now() + FIRST_LOOK_GRACE_MS + 60_000);
+      await expect(postFirstLookIfDone(t.grantId, later)).resolves.toEqual({ posted: false, reason: 'nothing_looked_at' });
+      expect(await postsFor(t.grantId)).toHaveLength(0);
+    });
+
+    it('a retry that looks still gets the real first look, after the couldn\'t-look post and even past the first day', async () => {
+      const t = await seedTenant(1, { createdAt: new Date(Date.now() - FIRST_LOOK_WINDOW_MS + 60_000) });
+      await seedRun(t, t.orgs[0]!, 'failed', 'llm_unavailable');
+      await expect(postFirstLookIfDone(t.grantId)).resolves.toEqual({ posted: true, variant: 'couldnt_look' });
+
+      await seedRun(t, t.orgs[0]!, 'completed');
+      const pastWindow = new Date(Date.now() + 120_000);
+      await expect(postFirstLookIfDone(t.grantId, pastWindow)).resolves.toEqual({ posted: true, variant: 'first_look' });
+
+      const posts = await postsFor(t.grantId);
+      expect(posts.map((p) => p.dedupeKey).sort()).toEqual([couldntLookDedupeKey(t.grantId), firstLookDedupeKey(t.grantId)].sort());
+      const thread = await getOrCreateThread(t.grantId);
+      expect(firstLookStateFrom(await firstLookPostTimes(thread.id))).toBe('done');
+    });
+
+    it('a grant past its first day never gets the couldn\'t-look post', async () => {
+      const t = await seedTenant(1, { createdAt: new Date(Date.now() - FIRST_LOOK_WINDOW_MS - 60_000) });
+      await seedRun(t, t.orgs[0]!, 'failed', 'llm_unavailable');
+      await expect(postFirstLookIfDone(t.grantId)).resolves.toEqual({ posted: false, reason: 'past_window' });
+      expect(await postsFor(t.grantId)).toHaveLength(0);
+    });
   });
 
   it('a grant past its first day never gets one (grants that predate this post)', async () => {
@@ -216,6 +322,7 @@ describe('resweepFirstLookPosts (real Postgres)', () => {
 
     const first = await resweepFirstLookPosts(later);
     expect(first.posted).toBeGreaterThanOrEqual(1);
+    expect(first.couldntLook).toBe(0);
     const [post] = await postsFor(t.grantId);
     expect(post!.title).toBe('First look done: 1 of 2 organizations');
     expect(post!.body).toContain('1 more is still queued');
@@ -230,19 +337,111 @@ describe('resweepFirstLookPosts (real Postgres)', () => {
   it('a revoked grant is not scanned at all', async () => {
     const later = new Date(Date.now() + FIRST_LOOK_GRACE_MS + 60_000);
     const t = await seedTenant(1);
-    await seedRun(t, t.orgs[0]!, 'failed'); // Never posts, so it stays a candidate while active.
+    await seedRun(t, t.orgs[0]!, 'failed', 'llm_unavailable'); // A couldn't-look post leaves it a candidate while active: a later look still owes the real one.
     const active = await resweepFirstLookPosts(later);
     await sys(() => db.update(wispGrants).set({ status: 'revoked' }).where(eq(wispGrants.id, t.grantId)));
     const revoked = await resweepFirstLookPosts(later);
     expect(revoked.scanned).toBeLessThan(active.scanned);
-    expect(await postsFor(t.grantId)).toHaveLength(0);
+    expect(await postsFor(t.grantId)).toHaveLength(1);
   });
 
-  it('a batch nothing finished is counted, so it can be seen in the sweep log', async () => {
+  it('a batch nothing finished posts once from the sweep, and is counted so it can be seen in the log (#11145)', async () => {
     const t = await seedTenant(1);
-    await seedRun(t, t.orgs[0]!, 'failed');
-    const swept = await resweepFirstLookPosts(new Date(Date.now() + FIRST_LOOK_GRACE_MS + 60_000));
-    expect(swept.skipped.nothing_looked_at).toBeGreaterThanOrEqual(1);
+    await seedRun(t, t.orgs[0]!, 'failed', 'llm_unavailable');
+    const later = new Date(Date.now() + FIRST_LOOK_GRACE_MS + 60_000);
+
+    const first = await resweepFirstLookPosts(later);
+    expect(first.posted).toBe(1);
+    expect(first.couldntLook).toBe(1);
+    const [post] = await postsFor(t.grantId);
+    expect(post!.dedupeKey).toBe(couldntLookDedupeKey(t.grantId));
+
+    const second = await resweepFirstLookPosts(later);
+    expect(second.skipped.couldnt_look_posted).toBeGreaterThanOrEqual(1);
+    expect(await postsFor(t.grantId)).toHaveLength(1);
+  });
+});
+
+describe('resweepFirstLookPosts past the first day (#11145)', () => {
+  const nearlyOld = () => new Date(Date.now() - FIRST_LOOK_WINDOW_MS + 60_000);
+  const pastWindow = () => new Date(Date.now() + 120_000);
+
+  it('a grant told it could not be looked at gets the real post from the sweep once a look lands, if finishRun missed it', async () => {
+    const t = await seedTenant(1, { createdAt: nearlyOld() });
+    await seedRun(t, t.orgs[0]!, 'failed', 'llm_unavailable');
+    await expect(postFirstLookIfDone(t.grantId)).resolves.toEqual({ posted: true, variant: 'couldnt_look' });
+    await seedRun(t, t.orgs[0]!, 'completed');
+
+    const swept = await resweepFirstLookPosts(pastWindow());
+    expect(swept).toMatchObject({ scanned: 1, posted: 1, couldntLook: 0 });
+    const keys = (await postsFor(t.grantId)).map((p) => p.dedupeKey);
+    expect(keys).toContain(firstLookDedupeKey(t.grantId));
+
+    await expect(resweepFirstLookPosts(pastWindow())).resolves.toMatchObject({ scanned: 0 });
+  });
+
+  it('past the first day with no look yet it is not scanned: no agent could otherwise keep it a candidate for good', async () => {
+    const t = await seedTenant(1, { createdAt: nearlyOld() });
+    await seedRun(t, t.orgs[0]!, 'failed', 'llm_unavailable');
+    await expect(postFirstLookIfDone(t.grantId)).resolves.toEqual({ posted: true, variant: 'couldnt_look' });
+    await expect(resweepFirstLookPosts(pastWindow())).resolves.toMatchObject({ scanned: 0 });
+  });
+
+  it('a look on a grant never told it could not be looked at does not bring it back', async () => {
+    const t = await seedTenant(1, { createdAt: nearlyOld() });
+    await seedRun(t, t.orgs[0]!, 'completed');
+    await expect(resweepFirstLookPosts(pastWindow())).resolves.toMatchObject({ scanned: 0 });
+    expect(await postsFor(t.grantId)).toHaveLength(0);
+  });
+});
+
+describe('first-look progress on the home (real Postgres, #11146)', () => {
+  const home = async (t: Tenant, grantCreatedAt = new Date()) => {
+    const thread = await getOrCreateThread(t.grantId);
+    return buildHomeSections({
+      auth: {} as never,
+      partnerId: t.partnerId,
+      grantId: t.grantId,
+      grantorUserId: t.grantorId,
+      threadId: thread.id,
+      grantCreatedAt,
+      ceiling: await resolveGrantCeiling(t.grantId, t.revisionId),
+    });
+  };
+
+  it('counts an org once: failed then looked at is looked at, and a suspended org is in no count, as in the post', async () => {
+    const t = await seedTenant(4);
+    const [retried, failed, running, suspended] = t.orgs as [string, string, string, string];
+    await seedRun(t, retried, 'failed', 'llm_unavailable');
+    await seedRun(t, retried, 'completed');
+    await seedRun(t, failed, 'failed', 'llm_unavailable');
+    await seedRun(t, running, 'running');
+    await seedRun(t, suspended, 'completed');
+    await sys(() => db.update(organizations).set({ status: 'suspended' }).where(eq(organizations.id, suspended)));
+
+    expect((await home(t)).firstLookProgress).toEqual({ lookedAtOrgs: 1, failedOrgs: 1, queuedOrgs: 1, totalOrgs: 3 });
+  });
+
+  it('gone once the first look is posted', async () => {
+    const t = await seedTenant(1);
+    await seedRun(t, t.orgs[0]!, 'completed');
+    expect((await home(t)).firstLookProgress).toEqual({ lookedAtOrgs: 1, failedOrgs: 0, queuedOrgs: 0, totalOrgs: 1 });
+    await postFirstLookIfDone(t.grantId);
+    expect((await home(t)).firstLookProgress).toBeNull();
+  });
+
+  it("gone once the couldn't-look post is written, and that post is not a first look", async () => {
+    const t = await seedTenant(1);
+    await seedRun(t, t.orgs[0]!, 'failed', 'llm_unavailable');
+    await postFirstLookIfDone(t.grantId);
+    const sections = await home(t);
+    expect(sections.firstLookProgress).toBeNull();
+    expect(sections.firstLookAt).toBeNull();
+  });
+
+  it('gone past the grant\'s first day, with no post ever coming', async () => {
+    const t = await seedTenant(1);
+    expect((await home(t, new Date(Date.now() - FIRST_LOOK_WINDOW_MS - 60_000))).firstLookProgress).toBeNull();
   });
 });
 

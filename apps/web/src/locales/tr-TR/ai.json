@@ -901,13 +901,21 @@
       "open": "Aç",
       "unread": "Okunmamış",
       "specialistResult": "Uzman raporu",
-      "firstLook": "İlk bakış"
+      "firstLook": "İlk bakış",
+      "couldntLook": "Henüz bakılamadı"
     },
     "welcome": {
       "title": "{{scope}} kapsamına göz atıyorum.",
       "body": "İlk özetiniz, göz attıktan sonra her sabah gelir. Bu arada bana her şeyi sorabilirsiniz.",
       "firstLookTitle": "{{scope}} kapsamına ilk kez göz attım.",
       "firstLookBody": "Bulduklarım yukarıdaki gönderide. Bununla ilgili bana her şeyi sorabilirsiniz.",
+      "couldntLookTitle": "{{scope}} kapsamına henüz göz atamadım.",
+      "couldntLookBody": "Nedenini ve ne zaman yeniden deneyeceğimi yukarıdaki gönderide bulabilirsiniz. Bu arada bana her şeyi sorabilirsiniz.",
+      "couldntLookChat": "Nedenini ve ne zaman yeniden deneyeceğimi Wisp ana sayfasında bulabilirsiniz.",
+      "progress_one": "{{count}} kuruluştan {{lookedAt}} tanesine bakıldı",
+      "progress_other": "{{count}} kuruluştan {{lookedAt}} tanesine bakıldı",
+      "progressQueued": "{{count}} sırada",
+      "progressFailed": "{{count}} başarısız",
       "briefAt": "Sabah özetiniz {{time}} saatinde gönderilir ({{timezone}}).",
       "suggestions": {
         "needsMe": {

@@ -167,6 +167,8 @@ fleetDesignRoutes.post(
     if (!result.ok && result.code === 'NOT_FOUND') return c.json({ error: 'not_found' }, 404);
     if (!result.ok && result.code === 'NO_DESIGNER_AGENT') return c.json({ error: 'no_designer_agent' }, 404);
 
+    const enqueueFailed = result.ok && result.enqueueFailed;
+
     // Every outcome is audited: createAndEnqueueAgentRun writes no audit row
     // of its own, so this is the only record of which human asked for a
     // design run — including when the answer was "no".
@@ -177,10 +179,18 @@ fleetDesignRoutes.post(
       resourceId: result.agentId,
       details: {
         siteId: siteId ?? null,
-        ...(result.ok ? { runId: result.runId } : { skipped: result.skipped }),
+        ...(result.ok
+          ? (enqueueFailed ? { skipped: 'enqueue_failed', runId: result.runId } : { runId: result.runId })
+          : { skipped: result.skipped }),
       },
-      result: result.ok ? 'success' : 'failure',
+      result: result.ok && !enqueueFailed ? 'success' : 'failure',
     });
+
+    // The run row exists but BullMQ never took it (already marked
+    // failed/enqueue_failed). Not a 202, and no runId the queue does not hold.
+    if (enqueueFailed) {
+      return c.json({ error: 'The design run could not be queued. Try again shortly.', code: 'enqueue_failed' }, 503);
+    }
 
     // A declined admission is not an error — the caller asked for a design and
     // the admission rules said not now (mode off, cap reached, budget). It is

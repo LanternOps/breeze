@@ -1187,7 +1187,12 @@ export function assertInTransaction(label: string): void {
  * only the executor: the caller's RLS GUCs and access metadata are unchanged.
  * Using raw SQL SAVEPOINT here is insufficient: postgres.js also tracks errors
  * in its transaction callback, so a caught SQL failure would poison the outer
- * commit even after an explicit ROLLBACK TO. */
+ * commit even after an explicit ROLLBACK TO.
+ *
+ * Catch outside this call, and do not start it beside sibling statements in a
+ * Promise.all: they share one connection, so a sibling's next statement can land
+ * in the aborted transaction before the rollback runs, and fail on the outer
+ * scope (#11203). */
 export async function withDbTransaction<T>(fn: () => Promise<T>): Promise<T> {
   assertInTransaction('withDbTransaction');
   const executor = dbContextStorage.getStore()!;

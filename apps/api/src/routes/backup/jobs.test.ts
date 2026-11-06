@@ -57,6 +57,11 @@ vi.mock('../../db/schema', () => ({
     id: 'backupConfigs.id',
     name: 'backupConfigs.name',
   },
+  backupStorageSessions: {
+    jobId: 'backup_storage_sessions.job_id',
+    scope: 'backup_storage_sessions.scope',
+    resumedAt: 'backup_storage_sessions.resumed_at',
+  },
   devices: {
     id: 'devices.id',
     orgId: 'devices.orgId',
@@ -82,6 +87,8 @@ vi.mock('drizzle-orm', () => ({
   gte: (column: unknown, value: unknown) => ({ op: 'gte', column, value }),
   lte: (column: unknown, value: unknown) => ({ op: 'lte', column, value }),
   inArray: (column: unknown, values: unknown[]) => ({ op: 'inArray', column, values }),
+  isNotNull: (column: unknown) => ({ op: 'isNotNull', column }),
+  max: (column: unknown) => ({ op: 'max', column }),
   sql: Object.assign(
     (strings: TemplateStringsArray, ...values: unknown[]) => ({ op: 'sql', strings, values }),
     { join: (values: unknown[]) => values }
@@ -346,6 +353,87 @@ describe('backup jobs routes', () => {
 
     expect(res.status).toBe(200);
     expect((await res.json()).failureCategory).toBe('agent');
+  });
+
+  it('GET /jobs/:id returns dataAccounting and resumedAt', async () => {
+    selectMock
+      .mockReturnValueOnce(makeSelectChain([
+        {
+          job: makeJob({
+            status: 'completed',
+            backupMode: 'file',
+            backupType: 'file',
+            totalSize: 1000,
+            transferredSize: 100,
+            referencedSize: 900,
+            baseSnapshotId: 'snap-base',
+          }),
+          deviceName: 'Device',
+          deviceHostname: 'host',
+          siteId: null,
+          configName: 'Primary Backup',
+        },
+      ]))
+      .mockReturnValueOnce(makeSelectChain([
+        { jobId: 'job-1', resumedAt: new Date('2026-11-05T10:02:00.000Z') },
+      ]));
+
+    const res = await app.request('/jobs/job-1');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.dataAccounting).toEqual({
+      protectedBytes: 1000,
+      uploadedBytes: 100,
+      reusedBytes: 900,
+      processedBytes: null,
+      runKind: 'incremental',
+      fullRunReason: null,
+    });
+    expect(body.resumedAt).toBe('2026-11-05T10:02:00.000Z');
+  });
+
+  it('GET /jobs/:id returns a null resumedAt for a run that never resumed', async () => {
+    selectMock.mockReturnValueOnce(makeSelectChain([
+      {
+        job: makeJob({ status: 'running' }),
+        deviceName: 'Device',
+        deviceHostname: 'host',
+        siteId: null,
+        configName: 'Primary Backup',
+      },
+    ]));
+
+    const res = await app.request('/jobs/job-1');
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).resumedAt).toBeNull();
+  });
+
+  it('GET /jobs returns dataAccounting per row, a stored full-run reason included, and looks up no sessions', async () => {
+    selectMock.mockReturnValueOnce(makeSelectChain([
+      {
+        job: makeJob({
+          status: 'completed',
+          backupMode: 'file',
+          totalSize: 500,
+          baseSnapshotId: null,
+          fullBackupReason: 'no_prior_snapshot',
+        }),
+        deviceName: 'Device',
+        deviceHostname: 'host',
+        siteId: null,
+        configName: 'Primary Backup',
+      },
+    ]));
+
+    const res = await app.request('/jobs');
+
+    expect(res.status).toBe(200);
+    const [row] = (await res.json()).data;
+    expect(row.dataAccounting).toMatchObject({ runKind: 'full', fullRunReason: 'no_prior_snapshot', uploadedBytes: 500 });
+    expect(row).not.toHaveProperty('resumedAt');
+    expect(selectMock).toHaveBeenCalledTimes(1);
   });
 
   it('exposes live-progress fields (transferredSize, totalFiles, lastProgressAt) in the job response', async () => {

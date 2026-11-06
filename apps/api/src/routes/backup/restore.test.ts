@@ -38,6 +38,7 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: (...args: unknown[]) => runOutsideDbContextMock(...(args as [any])),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => unknown) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   runAfterDbContextExit: (_label: string, work: () => unknown) => { afterContextWork.push(work); },
 }));
 

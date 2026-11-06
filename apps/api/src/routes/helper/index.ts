@@ -11,7 +11,7 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { streamSSE } from 'hono/streaming';
 import { eq, and, desc, sql, asc, isNull } from 'drizzle-orm';
-import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, withDbTransaction } from '../../db';
 import { aiSessions, aiMessages, devices } from '../../db/schema';
 import { streamingSessionManager } from '../../services/streamingSessionManager';
 import { buildHelperSystemPrompt } from '../../services/helperAiAgent';
@@ -619,13 +619,14 @@ helperRoutes.post(
     // place a client tool's output is recorded. Generic: output = whatever the
     // client posted (its output, or an { error } payload).
     try {
-      await db.insert(aiMessages).values({
+      // Savepoint so a failed insert rolls back and the request transaction survives (#11203).
+      await withDbTransaction(async () => db.insert(aiMessages).values({
         sessionId,
         role: 'tool_result',
         toolName: toolName ?? null,
         toolOutput: error !== undefined ? { error } : (output ?? null),
         toolUseId,
-      });
+      }));
     } catch (err) {
       console.error('[Helper] Failed to persist tool_result message:', err);
     }

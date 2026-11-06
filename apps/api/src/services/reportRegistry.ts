@@ -408,14 +408,14 @@ const generators = {
   ticket_sla_performance: {
     type: 'ticket_sla_performance', label: 'SLA performance',
     configSchema: ticketSlaPerformanceConfigSchema, supportedScopes: ORG_ONLY,
-    execution: 'user', audience: 'any',
+    execution: 'managed_evidence', audience: 'any',
     requiredPermissions: REPORT_TYPE_REQUIRED_PERMISSIONS.ticket_sla_performance!,
     detailRowCap: UNCAPPED,
-    generate: async (scope, config, authority) => {
+    generate: async (scope, config, authority, evidence) => {
       orgOf(scope);
       const orgAuthority = orgAxisAuthority(authority, 'ticket_sla_performance');
       const { generateTicketSlaPerformanceReport } = await import('./businessReports/ticketSlaPerformanceReport');
-      return generateTicketSlaPerformanceReport(scope, config, orgAuthority);
+      return generateTicketSlaPerformanceReport(scope, config, orgAuthority, evidence);
     },
   },
 } satisfies { readonly [K in ReportType]: ReportTypeDef & { type: K } };

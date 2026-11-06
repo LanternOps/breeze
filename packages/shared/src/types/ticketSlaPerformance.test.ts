@@ -1,5 +1,26 @@
 import { describe, expect, it } from 'vitest';
-import { emptyTicketSlaPerformanceSummary, isTicketSlaPerformanceSummary } from './ticketSlaPerformance';
+import {
+  emptyTicketSlaPerformanceSummary,
+  isTicketSlaPerformanceSummary,
+  TICKET_SLA_PERFORMANCE_ROW_CSV_LABELS,
+  zeroTicketSlaPerformanceRow,
+} from './ticketSlaPerformance';
+
+// The portal CSV header row is customer-facing (#11018).
+describe('TICKET_SLA_PERFORMANCE_ROW_CSV_LABELS', () => {
+  it('labels every column of a row with readable text, never the raw key', () => {
+    const keys = Object.keys(zeroTicketSlaPerformanceRow('high'));
+    expect(Object.keys(TICKET_SLA_PERFORMANCE_ROW_CSV_LABELS).sort()).toEqual([...keys].sort());
+    for (const label of Object.values(TICKET_SLA_PERFORMANCE_ROW_CSV_LABELS)) {
+      expect(label).not.toMatch(/[a-z][A-Z]/);
+    }
+  });
+
+  it('gives every column a distinct header', () => {
+    const labels = Object.values(TICKET_SLA_PERFORMANCE_ROW_CSV_LABELS);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+});
 
 describe('emptyTicketSlaPerformanceSummary', () => {
   it('empty summary has four zero priority rows urgent→low and null ratios', () => {

@@ -340,6 +340,42 @@ describe('DeviceBackupTab', () => {
       expect(summary.getAttribute('title')).toBe('x'.repeat(80));
     });
 
+    it('job history Size cell shows uploaded vs reused bytes and the Full chip (#11027)', async () => {
+      mockTab({
+        jobs: [{
+          ...baseJob,
+          status: 'completed',
+          totalSize: 10_485_760,
+          dataAccounting: { protectedBytes: 10_485_760, uploadedBytes: 10_485_760, reusedBytes: 0, processedBytes: null, runKind: 'full', fullRunReason: 'unrecorded' },
+        }],
+      });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      const row = await historyRow();
+      expect(within(row).getByTestId('backup-job-data-summary').textContent).toContain('10.0 MB uploaded · 0 B reused');
+      expect(within(row).getByTestId('backup-run-full').getAttribute('title')).toBe(
+        'Reason not recorded (this backup ran before Breeze tracked it)',
+      );
+    });
+
+    it('job history Size cell keeps the plain size for a running job', async () => {
+      mockTab({
+        jobs: [{
+          ...baseJob,
+          status: 'running',
+          totalSize: 10_485_760,
+          dataAccounting: { protectedBytes: null, uploadedBytes: null, reusedBytes: null, processedBytes: 1024, runKind: 'incremental', fullRunReason: null },
+        }],
+      });
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      const row = await historyRow();
+      expect(within(row).queryByTestId('backup-job-data-summary')).toBeNull();
+      expect(row.textContent).toContain('10.0 MB');
+    });
+
     it('keeps the recoverable index drop note out of the job history Errors cell (#11026)', async () => {
       const indexNote = 'snapshot file index omitted (17950 entries): the result exceeded the 4934464 byte server result budget, so per-file restore browsing is unavailable for this snapshot';
       mockTab({ jobs: [{ ...baseJob, status: 'failed', errorLog: `backup stopped || bounded: ${indexNote}`, failureCategory: 'cancelled' }] });

@@ -11,7 +11,7 @@
  */
 import { and, eq, inArray } from 'drizzle-orm';
 import type { FleetDesignOutcome, FleetDesignRollbackRefusal, FleetDesignRollbackResult } from '@breeze/shared';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import {
   configPolicyAssignments,
   configPolicyFeatureLinks,
@@ -103,7 +103,7 @@ export async function rollbackFleetDesign(
     if (row.itemKind === 'watch' || row.itemKind === 'rule') continue; // handled with the policy row
     const group = row.itemKind === 'policy' ? itemRowsByPolicy.get(row.createdRefs?.policyId ?? '') ?? [] : [];
     try {
-      await db.transaction(async () => {
+      await withDbTransaction(async () => {
         switch (row.itemKind) {
           case 'role_correction': await rollbackRoleCorrection(ctx, row); break;
           case 'policy': await rollbackPolicy(ctx, row); break;

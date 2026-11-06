@@ -1,14 +1,14 @@
 import type { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { and, eq, isNull, ne, sql } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
 import { organizations, partners, portalUsers, tickets, ticketComments, assetCheckouts } from '../db/schema';
 import { linkLoginToContact, type LoginContactOutcome } from '../services/contacts/loginLink';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { getEmailService } from '../services/email';
-import { partnerEmailCustomFromSettings } from '../services/emailTemplates/renderPartnerEmail';
+import { partnerEmailCustomFromSettings, type PartnerEmailCustom } from '../services/emailTemplates/renderPartnerEmail';
 import { getRedis } from '../services/redis';
 import { purgeClientAiSessionsForUsers } from '../services/clientAiSessionStore';
 import { storePortalInviteToken, buildPortalUrl, purgePortalSessionsForUsers } from './portal/helpers';
@@ -65,16 +65,19 @@ async function issueAndSendInvite(c: any, orgId: string, user: { id: string; ema
   // has partnerId === null, which resolves to the platform sender.
   const partnerId = (c.get('auth') as AuthContext | undefined)?.partnerId ?? null;
   let partnerName: string | undefined;
-  let custom = null;
+  let custom: PartnerEmailCustom | null = null;
   try {
-    const orgRows = await db.select({ partnerId: organizations.partnerId }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
-    const orgRow = Array.isArray(orgRows) ? orgRows[0] : undefined;
-    if (orgRow?.partnerId) {
-      const partnerRows = await db.select({ name: partners.name, settings: partners.settings }).from(partners).where(eq(partners.id, orgRow.partnerId)).limit(1);
-      const partner = Array.isArray(partnerRows) ? partnerRows[0] : undefined;
-      partnerName = partner?.name ?? undefined;
-      custom = partnerEmailCustomFromSettings(partner?.settings, 'portal_invite');
-    }
+    // Savepoint so a failed branding read rolls back and the request transaction survives (#11203).
+    await withDbTransaction(async () => {
+      const orgRows = await db.select({ partnerId: organizations.partnerId }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
+      const orgRow = Array.isArray(orgRows) ? orgRows[0] : undefined;
+      if (orgRow?.partnerId) {
+        const partnerRows = await db.select({ name: partners.name, settings: partners.settings }).from(partners).where(eq(partners.id, orgRow.partnerId)).limit(1);
+        const partner = Array.isArray(partnerRows) ? partnerRows[0] : undefined;
+        partnerName = partner?.name ?? undefined;
+        custom = partnerEmailCustomFromSettings(partner?.settings, 'portal_invite');
+      }
+    });
   } catch {
     custom = null;
   }

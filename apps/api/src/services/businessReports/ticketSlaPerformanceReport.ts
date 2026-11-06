@@ -7,7 +7,7 @@ import {
 } from '@breeze/shared';
 import { db } from '../../db';
 import { ticketSlaPerformanceConfigSchema } from '../reportConfigSchemas';
-import type { ReportResult } from '../reportGenerationService';
+import type { EvidenceRunContext, ReportResult } from '../reportGenerationService';
 import { reportOwnerOfScope, runInReportScope, type ReportScope } from '../reportScope';
 import type { ReportGenerationAuthority } from '../siteScope';
 import { loadTicketCalendars } from '../ticketSlaDeadlines';
@@ -68,10 +68,18 @@ function toDecidedTarget(r: DecidedRow): DecidedTarget {
   };
 }
 
+/** A calendar date in the owner's timezone, so the printed day matches the period's. */
+function dateInZone(instant: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(instant);
+}
+
 export async function generateTicketSlaPerformanceReport(
   scope: ReportScope,
   rawConfig: Record<string, unknown>,
   authority: ReportGenerationAuthority,
+  evidence?: EvidenceRunContext,
 ): Promise<ReportResult> {
   // Parse BEFORE any query: a stored config the type rejects never runs.
   const config = ticketSlaPerformanceConfigSchema.parse(rawConfig ?? {});
@@ -80,7 +88,7 @@ export async function generateTicketSlaPerformanceReport(
   }
   const orgId = scope.orgId;
   const includeSubjects = config.includeSubjects ?? false;
-  const generatedAt = new Date();
+  const generatedAt = evidence ? new Date(evidence.generatedAt) : new Date();
 
   // Tickets have no site axis, so a restricted authority has no filter to apply:
   // nothing is queried. No rows either, because a CSV of zeros would read as "no
@@ -100,7 +108,16 @@ export async function generateTicketSlaPerformanceReport(
 
   return runInReportScope(scope, async () => {
     const timeZone = await resolveReportOwnerTimezone(reportOwnerOfScope(scope));
-    const period = resolveReportPeriod(config.period ?? { kind: 'last_full_month' }, timeZone, generatedAt);
+    // The occurrence's period is the contract of an evidence run, whatever the
+    // definition's config says: a re-run of a late occurrence must report the
+    // same month (#5784 OD-11). Its end date is inclusive, like a custom period's.
+    const period = resolveReportPeriod(
+      evidence
+        ? { kind: 'custom', start: evidence.periodStart, end: evidence.periodEnd }
+        : config.period ?? { kind: 'last_full_month' },
+      timeZone,
+      generatedAt,
+    );
     // Clipped so a run during its own period counts nothing it could not know;
     // whatever is decided later falls to the re-run or the next report.
     const windowEnd = new Date(Math.min(period.end.getTime(), generatedAt.getTime()));
@@ -127,6 +144,13 @@ export async function generateTicketSlaPerformanceReport(
     );
 
     const notes = [...NOTES];
+    // Generation runs on the due day, which is the period's last day. Whatever is
+    // decided later that day falls outside this run and before the next period,
+    // so the artifact says where it stopped. A late run reached the period's end
+    // and has nothing to disclose.
+    if (evidence && windowEnd.getTime() < period.end.getTime()) {
+      notes.push(`This service report was generated on ${dateInZone(generatedAt, period.timeZone)} and covers outcomes decided through that time.`);
+    }
     if (fold.unmeasuredDurations > 0) {
       notes.push(`${fold.unmeasuredDurations} outcome(s) are included in the percentages but not in the times because their business-hours calendar could not be read.`);
     }
