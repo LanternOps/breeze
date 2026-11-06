@@ -27,6 +27,9 @@ function jsonResponse(body: unknown, status = 200) {
   );
 }
 
+const GROUP_SERVERS = '44444444-4444-4444-8444-444444444444';
+const GROUPS = [{ id: GROUP_SERVERS, name: 'Servers', orgId: ORG_ID, type: 'static' }];
+
 const SITES = [
   { id: SITE_HQ, orgId: ORG_ID, name: 'HQ' },
   { id: SITE_DEPOT, orgId: ORG_ID, name: 'Depot' },
@@ -61,10 +64,37 @@ function mockApi(options: {
   sitesStatus?: number;
   portalUsers?: unknown;
   portalUsersStatus?: number;
+  /** contactId -> current responsibility set served by the GET. */
+  responsibilities?: Record<string, unknown[]>;
+  responsibilitiesStatus?: number;
+  groups?: unknown;
+  putStatus?: number;
 } = {}) {
-  fetchWithAuthMock.mockImplementation((url: string) => {
+  fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+    const method = init?.method?.toUpperCase() ?? 'GET';
     if (url.includes('/portal-users')) {
       return jsonResponse(options.portalUsers ?? { data: [] }, options.portalUsersStatus ?? 200);
+    }
+    if (url.startsWith('/device-groups')) {
+      return jsonResponse(options.groups ?? { data: GROUPS, total: GROUPS.length });
+    }
+    const respMatch = /^\/orgs\/contacts\/([^/]+)\/responsibilities$/.exec(url);
+    if (respMatch) {
+      if (method === 'PUT') {
+        return jsonResponse(
+          options.putStatus && options.putStatus >= 400
+            ? { error: 'nope', code: 'duplicate-assignment' }
+            : { responsibilities: [] },
+          options.putStatus ?? 200,
+        );
+      }
+      return jsonResponse(
+        { responsibilities: options.responsibilities?.[respMatch[1]!] ?? [] },
+        options.responsibilitiesStatus ?? 200,
+      );
+    }
+    if (method === 'POST' && url === `/orgs/organizations/${ORG_ID}/contacts`) {
+      return jsonResponse({ data: { id: 'c-new' } }, 201);
     }
     if (url.startsWith('/orgs/sites')) {
       return jsonResponse(
@@ -223,10 +253,11 @@ describe('ContactsCard mutations', () => {
     fireEvent.change(screen.getByTestId('contact-form-name-input'), { target: { value: 'Katherine Johnson' } });
     fireEvent.change(screen.getByTestId('contact-form-email-input'), { target: { value: 'kj@acme.test' } });
     fireEvent.change(screen.getByTestId('contact-form-site-select'), { target: { value: SITE_HQ } });
-    fireEvent.click(screen.getByTestId('contact-form-role-billing'));
     fireEvent.click(screen.getByTestId('contact-form-primary-input'));
     fireEvent.click(screen.getByTestId('contact-form-submit'));
 
+    // POST (no roles); an empty responsibilities list needs no PUT, so a
+    // site-confined caller (who is refused the PUT) can still create contacts.
     await waitFor(() => expect(mutationCalls().length).toBe(1));
     const [url, init] = mutationCalls()[0]!;
     expect(url).toBe(`/orgs/organizations/${ORG_ID}/contacts`);
@@ -235,7 +266,6 @@ describe('ContactsCard mutations', () => {
       siteId: SITE_HQ,
       name: 'Katherine Johnson',
       email: 'kj@acme.test',
-      roles: ['billing'],
       isPrimary: true,
     });
 
@@ -243,6 +273,7 @@ describe('ContactsCard mutations', () => {
     // refetched rather than patched — a local patch would leave two rows
     // claiming the same scope.
     await waitFor(() => expect(listCalls().length).toBeGreaterThan(listsBefore));
+    expect(mutationCalls().every(([, i]) => i.method !== 'PUT')).toBe(true);
   });
 
   it('updates a contact through the contact-scoped PATCH path, sending the whole form', async () => {
@@ -270,7 +301,6 @@ describe('ContactsCard mutations', () => {
       mobile: null,
       title: 'Chief Analyst',
       notes: null,
-      roles: ['technical', 'escalation'],
       isPrimary: true,
     });
   });
@@ -289,7 +319,7 @@ describe('ContactsCard mutations', () => {
     const body = JSON.parse(mutationCalls()[0]![1].body as string);
     expect(body.siteId).toBeNull();
     // Un-pinning must not quietly drop the rest of the person.
-    expect(body.roles).toEqual(['site']);
+    expect(body).not.toHaveProperty('roles');
     expect(body.isPrimary).toBe(true);
   });
 
@@ -831,4 +861,185 @@ describe('ContactsCard — Onboard a person launcher', () => {
     const record = readFileSync(join(__dirname, '../organizations/record/OrganizationRecordPage.tsx'), 'utf8');
     expect(record).toMatch(/effectiveTab === 'contacts' && \(?\s*<ContactsCard/);
   });
+});
+
+describe('ContactsCard scoped responsibilities editor', () => {
+  const ASSIGNED = {
+    'c-ada': [
+      { role: 'billing', scope: { type: 'organization' }, isPrimary: false },
+      { role: 'technical', scope: { type: 'site', siteId: SITE_HQ }, isPrimary: true },
+      { role: 'escalation', scope: { type: 'device_group', deviceGroupId: GROUP_SERVERS }, isPrimary: false },
+    ],
+  };
+
+  async function openEdit(id = 'c-ada') {
+    fireEvent.click(screen.getByTestId(`org-contacts-edit-${id}`));
+    await waitFor(() => expect(screen.getByTestId('contact-form')).toBeInTheDocument());
+  }
+  const putCalls = () => mutationCalls().filter(([, i]) => i.method === 'PUT');
+
+  it('renders the existing assignments loaded for the contact', async () => {
+    mockApi({ responsibilities: ASSIGNED });
+    await renderCard();
+    await openEdit();
+    await waitFor(() => expect(screen.getByTestId('contact-resp-row-2')).toBeInTheDocument());
+    expect(screen.getByTestId('contact-resp-role-0')).toHaveValue('billing');
+    expect(screen.getByTestId('contact-resp-scope-0')).toHaveValue('organization');
+    expect(screen.getByTestId('contact-resp-role-1')).toHaveValue('technical');
+    expect(screen.getByTestId('contact-resp-site-1')).toHaveValue(SITE_HQ);
+    expect(screen.getByTestId('contact-resp-scope-2')).toHaveValue('device_group');
+    await waitFor(() => expect(screen.getByTestId('contact-resp-group-2')).toHaveValue(GROUP_SERVERS));
+    // The legacy checkboxes are gone.
+    expect(screen.queryByTestId('contact-form-role-billing')).not.toBeInTheDocument();
+  });
+
+  it('shows no subordinate selector for Organization scope', async () => {
+    mockApi();
+    await renderCard();
+    await openEdit();
+    await waitFor(() => expect(screen.getByTestId('contact-resp-add')).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId('contact-resp-add'));
+    expect(screen.getByTestId('contact-resp-scope-0')).toHaveValue('organization');
+    expect(screen.queryByTestId('contact-resp-site-0')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('contact-resp-group-0')).not.toBeInTheDocument();
+    expect(screen.getByTestId('contact-form-submit')).not.toBeDisabled();
+  });
+
+  it('requires a Site for Site scope and blocks Save until chosen', async () => {
+    mockApi();
+    await renderCard();
+    await openEdit();
+    await waitFor(() => expect(screen.getByTestId('contact-resp-add')).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId('contact-resp-add'));
+    fireEvent.change(screen.getByTestId('contact-resp-scope-0'), { target: { value: 'site' } });
+    expect(screen.getByTestId('contact-resp-incomplete-0')).toBeInTheDocument();
+    expect(screen.getByTestId('contact-form-submit')).toBeDisabled();
+    fireEvent.change(screen.getByTestId('contact-resp-site-0'), { target: { value: SITE_DEPOT } });
+    expect(screen.queryByTestId('contact-resp-incomplete-0')).not.toBeInTheDocument();
+    expect(screen.getByTestId('contact-form-submit')).not.toBeDisabled();
+  });
+
+  it('requires a Device Group for Device Group scope and blocks Save until chosen', async () => {
+    mockApi();
+    await renderCard();
+    await openEdit();
+    await waitFor(() => expect(screen.getByTestId('contact-resp-add')).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId('contact-resp-add'));
+    fireEvent.change(screen.getByTestId('contact-resp-scope-0'), { target: { value: 'device_group' } });
+    expect(screen.getByTestId('contact-resp-incomplete-0')).toBeInTheDocument();
+    expect(screen.getByTestId('contact-form-submit')).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Servers' })).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('contact-resp-group-0'), { target: { value: GROUP_SERVERS } });
+    expect(screen.getByTestId('contact-form-submit')).not.toBeDisabled();
+    expect(fetchWithAuthMock).toHaveBeenCalledWith(`/device-groups?orgId=${ORG_ID}&ownerScope=organization`);
+  });
+
+  it('flags an exact duplicate row and blocks Save', async () => {
+    mockApi();
+    await renderCard();
+    await openEdit();
+    await waitFor(() => expect(screen.getByTestId('contact-resp-add')).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId('contact-resp-add'));
+    fireEvent.click(screen.getByTestId('contact-resp-add'));
+    expect(screen.getByTestId('contact-resp-duplicate-1')).toBeInTheDocument();
+    expect(screen.getByTestId('contact-form-submit')).toBeDisabled();
+    fireEvent.change(screen.getByTestId('contact-resp-role-1'), { target: { value: 'billing' } });
+    expect(screen.queryByTestId('contact-resp-duplicate-1')).not.toBeInTheDocument();
+    expect(screen.getByTestId('contact-form-submit')).not.toBeDisabled();
+  });
+
+  it('PUTs the whole edited set with the contract body, after the PATCH, without roles in the PATCH', async () => {
+    mockApi({ responsibilities: ASSIGNED });
+    await renderCard();
+    await openEdit();
+    await waitFor(() => expect(screen.getByTestId('contact-resp-row-2')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('contact-resp-remove-2'));
+    fireEvent.click(screen.getByTestId('contact-resp-remove-1'));
+    fireEvent.click(screen.getByTestId('contact-form-submit'));
+
+    await waitFor(() => expect(putCalls()).toHaveLength(1));
+    const calls = mutationCalls();
+    expect(calls.map(([, i]) => i.method)).toEqual(['PATCH', 'PUT']);
+    expect(JSON.parse(calls[0]![1].body as string)).not.toHaveProperty('roles');
+    expect(calls[1]![0]).toBe('/orgs/contacts/c-ada/responsibilities');
+    expect(JSON.parse(calls[1]![1].body as string)).toEqual({
+      responsibilities: [{ role: 'billing', scope: { type: 'organization' }, isPrimary: false }],
+    });
+  });
+
+  it('does not PUT when the set was not changed', async () => {
+    mockApi({ responsibilities: ASSIGNED });
+    await renderCard();
+    await openEdit();
+    await waitFor(() => expect(screen.getByTestId('contact-resp-row-2')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('contact-form-submit'));
+    await waitFor(() => expect(screen.queryByTestId('contact-form')).not.toBeInTheDocument());
+    expect(mutationCalls().map(([, i]) => i.method)).toEqual(['PATCH']);
+  });
+
+  it('creates with POST (no roles) and then PUTs the set to the new id', async () => {
+    mockApi();
+    await renderCard();
+    fireEvent.click(screen.getByTestId('org-contacts-add-button'));
+    await waitFor(() => expect(screen.getByTestId('contact-form')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('contact-form-name-input'), { target: { value: 'New Person' } });
+    fireEvent.click(screen.getByTestId('contact-resp-add'));
+    fireEvent.change(screen.getByTestId('contact-resp-role-0'), { target: { value: 'portal' } });
+    fireEvent.click(screen.getByTestId('contact-form-submit'));
+
+    await waitFor(() => expect(putCalls()).toHaveLength(1));
+    const calls = mutationCalls();
+    expect(calls.map(([, i]) => i.method)).toEqual(['POST', 'PUT']);
+    expect(JSON.parse(calls[0]![1].body as string)).not.toHaveProperty('roles');
+    expect(calls[1]![0]).toBe('/orgs/contacts/c-new/responsibilities');
+    expect(JSON.parse(calls[1]![1].body as string)).toEqual({
+      responsibilities: [{ role: 'portal', scope: { type: 'organization' }, isPrimary: false }],
+    });
+    await waitFor(() => expect(screen.queryByTestId('contact-form')).not.toBeInTheDocument());
+  });
+
+  it('keeps the drawer open when the PUT fails and the next Save repeats only the PUT', async () => {
+    mockApi({ putStatus: 400 });
+    await renderCard();
+    fireEvent.click(screen.getByTestId('org-contacts-add-button'));
+    await waitFor(() => expect(screen.getByTestId('contact-form')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('contact-form-name-input'), { target: { value: 'New Person' } });
+    fireEvent.click(screen.getByTestId('contact-resp-add'));
+    fireEvent.click(screen.getByTestId('contact-form-submit'));
+
+    await waitFor(() => expect(putCalls()).toHaveLength(1));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(screen.getByTestId('contact-form')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('contact-form-submit'));
+    await waitFor(() => expect(putCalls()).toHaveLength(2));
+    expect(mutationCalls().filter(([, i]) => i.method === 'POST')).toHaveLength(1);
+    expect(screen.getByTestId('contact-form')).toBeInTheDocument();
+  });
+
+  it('locks the editor and sends no PUT while the current set failed to load', async () => {
+    mockApi({ responsibilitiesStatus: 500 });
+    await renderCard();
+    await openEdit();
+    await waitFor(() => expect(screen.getByTestId('contact-responsibilities-load-error')).toBeInTheDocument());
+    expect(screen.getByTestId('contact-resp-add')).toBeDisabled();
+    expect(screen.getByTestId('contact-form-submit')).toBeDisabled();
+  });
+
+  it('the editor is mounted only by ContactsCard', async () => {
+    const { readdirSync, readFileSync, statSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const root = join(__dirname, '..', '..');
+    const hits: string[] = [];
+    const walk = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        const full = join(dir, name);
+        if (statSync(full).isDirectory()) { walk(full); continue; }
+        if (!/\.(tsx?|astro)$/.test(name) || /\.test\./.test(name)) continue;
+        if (readFileSync(full, 'utf8').includes('ContactResponsibilitiesEditor')) hits.push(name);
+      }
+    };
+    walk(root);
+    expect(hits.sort()).toEqual(['ContactResponsibilitiesEditor.tsx', 'ContactsCard.tsx']);
+  }, 60_000);
 });

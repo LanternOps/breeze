@@ -7745,6 +7745,35 @@
       "update": "Kişi kaydedilemedi.",
       "delete": "Kişi silinemedi."
     },
+    "responsibilities": {
+      "heading": "Sorumluluklar",
+      "help": "Bu kişinin neyden ve nerede sorumlu olduğu. Kuruluş her yerde geçerlidir; Site ve Cihaz grubu kapsamı daraltır.",
+      "empty": "Atanmış sorumluluk yok.",
+      "loadError": "Bu kişinin sorumlulukları yüklenemedi.",
+      "role": "Rol",
+      "scope": "Kapsam",
+      "scopes": {
+        "organization": "Kuruluş",
+        "site": "Site",
+        "deviceGroup": "Cihaz grubu"
+      },
+      "selectSite": "Bir site seçin",
+      "selectGroup": "Bir cihaz grubu seçin",
+      "groupsLoading": "Gruplar yükleniyor…",
+      "groupsError": "Bu kuruluşun cihaz grupları yüklenemedi.",
+      "unknownGroup": "Grup kullanılamıyor",
+      "siteRequired": "Bir site seçin.",
+      "groupRequired": "Bir cihaz grubu seçin.",
+      "duplicate": "Başka bir satırın kopyası.",
+      "add": "Sorumluluk ekle",
+      "remove": "Kaldır",
+      "toasts": {
+        "saved": "Sorumluluklar kaydedildi"
+      },
+      "errors": {
+        "save": "Sorumluluklar kaydedilemedi."
+      }
+    },
     "portal": {
       "column": "Portal",
       "status": {

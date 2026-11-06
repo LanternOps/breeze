@@ -7836,6 +7836,35 @@
       "update": "Could not save the contact.",
       "delete": "Could not delete the contact."
     },
+    "responsibilities": {
+      "heading": "Responsibilities",
+      "help": "What this person is responsible for, and where. Organization applies everywhere; Site and Device Group narrow it.",
+      "empty": "No responsibilities assigned.",
+      "loadError": "Could not load this contact's responsibilities.",
+      "role": "Role",
+      "scope": "Scope",
+      "scopes": {
+        "organization": "Organization",
+        "site": "Site",
+        "deviceGroup": "Device group"
+      },
+      "selectSite": "Select a site",
+      "selectGroup": "Select a device group",
+      "groupsLoading": "Loading groups…",
+      "groupsError": "Could not load this organization's device groups.",
+      "unknownGroup": "Group unavailable",
+      "siteRequired": "Choose a site.",
+      "groupRequired": "Choose a device group.",
+      "duplicate": "Duplicate of another row.",
+      "add": "Add responsibility",
+      "remove": "Remove",
+      "toasts": {
+        "saved": "Responsibilities saved"
+      },
+      "errors": {
+        "save": "Could not save the responsibilities."
+      }
+    },
     "portal": {
       "column": "Portal",
       "status": {

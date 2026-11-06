@@ -4,7 +4,14 @@ import { contactRoles } from '../../db/schema/contactRoles';
 import { contacts } from '../../db/schema/contacts';
 import { deviceGroupMemberships, deviceGroups } from '../../db/schema/devices';
 import { sites } from '../../db/schema/orgs';
-import type { ContactExecutor } from './compat';
+// Cycle note: compat.ts imports this module too. Both sides only call each
+// other's functions at request time (nothing at module load), so the cycle is safe.
+import {
+  BILLING_ROLE,
+  lockOrganizationForProjection,
+  projectBillingContact,
+  type ContactExecutor,
+} from './compat';
 import { CONTACT_ROLES, type ContactRole } from './types';
 
 export type ResponsibilityScopeInput =
@@ -375,6 +382,42 @@ export async function replaceContactResponsibilities(
   }
 
   await replaceCanonicalSet(exec, input);
+}
+
+/**
+ * Replace a contact's whole responsibility set from the Contacts editor
+ * (spec §8.2-8.4, §21). Lock order is organization -> contact (the order every
+ * billing-projecting writer takes), and `organizations.billing_contact` is
+ * re-projected when either the old or the new set holds `billing @ Organization`,
+ * the only row that can feed it. `sites.contact` follows `contacts.is_primary`,
+ * not `roles[]`, so no Site lock is needed here.
+ */
+export async function setContactResponsibilities(
+  exec: ContactExecutor,
+  input: { contactId: string; orgId: string; responsibilities: readonly ContactResponsibilityInput[] },
+): Promise<void> {
+  await lockOrganizationForProjection(exec, input.orgId);
+
+  const [locked] = await exec
+    .select({ id: contacts.id })
+    .from(contacts)
+    .where(and(eq(contacts.id, input.contactId), eq(contacts.orgId, input.orgId)))
+    .limit(1)
+    .for('no key update');
+  if (!locked) throw new ResponsibilityValidationError('Contact does not belong to this organization', 'contact-not-in-org');
+
+  const before = await exec
+    .select({ role: contactRoles.role, siteId: contactRoles.siteId, deviceGroupId: contactRoles.deviceGroupId })
+    .from(contactRoles)
+    .where(and(eq(contactRoles.contactId, input.contactId), eq(contactRoles.orgId, input.orgId)));
+  const heldOrgBilling = before.some((row) =>
+    row.role === BILLING_ROLE && row.siteId === null && row.deviceGroupId === null);
+
+  await replaceContactResponsibilities(exec, input);
+
+  const wantsOrgBilling = input.responsibilities.some((assignment) =>
+    assignment.role === BILLING_ROLE && assignment.scope.type === 'organization');
+  if (heldOrgBilling || wantsOrgBilling) await projectBillingContact(exec, input.orgId);
 }
 
 export async function listContactResponsibilities(

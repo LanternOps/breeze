@@ -7745,6 +7745,35 @@
       "update": "Der Kontakt konnte nicht gespeichert werden.",
       "delete": "Der Kontakt konnte nicht gelöscht werden."
     },
+    "responsibilities": {
+      "heading": "Zuständigkeiten",
+      "help": "Wofür diese Person zuständig ist und wo. Organisation gilt überall; Standort und Gerätegruppe schränken ein.",
+      "empty": "Keine Zuständigkeiten zugewiesen.",
+      "loadError": "Die Zuständigkeiten dieses Kontakts konnten nicht geladen werden.",
+      "role": "Rolle",
+      "scope": "Bereich",
+      "scopes": {
+        "organization": "Organisation",
+        "site": "Standort",
+        "deviceGroup": "Gerätegruppe"
+      },
+      "selectSite": "Standort auswählen",
+      "selectGroup": "Gerätegruppe auswählen",
+      "groupsLoading": "Gruppen werden geladen…",
+      "groupsError": "Die Gerätegruppen dieser Organisation konnten nicht geladen werden.",
+      "unknownGroup": "Gruppe nicht verfügbar",
+      "siteRequired": "Wählen Sie einen Standort.",
+      "groupRequired": "Wählen Sie eine Gerätegruppe.",
+      "duplicate": "Doppelt zu einer anderen Zeile.",
+      "add": "Zuständigkeit hinzufügen",
+      "remove": "Entfernen",
+      "toasts": {
+        "saved": "Zuständigkeiten gespeichert"
+      },
+      "errors": {
+        "save": "Die Zuständigkeiten konnten nicht gespeichert werden."
+      }
+    },
     "portal": {
       "column": "Portal",
       "status": {
