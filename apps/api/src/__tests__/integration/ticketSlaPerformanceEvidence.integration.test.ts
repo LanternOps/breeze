@@ -28,14 +28,17 @@ import { and, eq } from 'drizzle-orm';
 import type { TicketSlaPerformanceSummary } from '@breeze/shared';
 import { runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
-  portalBranding, reportRuns, reports, serviceDeliverableOccurrences, serviceDeliverables, tickets,
+  portalBranding, reportRuns, reports, serviceDeliverableEvidence, serviceDeliverableOccurrences,
+  serviceDeliverables, tickets,
 } from '../../db/schema';
 import { runDeliverableSweep } from '../../jobs/deliverableWorker';
 import { portalOrgDbAccessContext } from '../../routes/portal/portalDbContext';
 import { applyTemplateSet, createTemplateSet, type TemplateActor } from '../../services/deliverableTemplateService';
-import { listPortalRuns, renderRunCsv, renderRunPdf } from '../../services/portal/reportsSelfService';
+import {
+  listPortalRuns, PortalReportNotFoundError, renderRunCsv, renderRunPdf,
+} from '../../services/portal/reportsSelfService';
 import { generateManagedEvidenceReport } from '../../services/reportGenerationService';
-import { deliverOccurrence } from '../../services/serviceDeliverableService';
+import { deliverOccurrence, removeEvidence } from '../../services/serviceDeliverableService';
 import {
   assignUserToPartner, createOrganization, createPartner, createRole, createUser, grantRolePermissions,
 } from './db-utils';
@@ -199,6 +202,7 @@ describe('ticket_sla_performance evidence on real Postgres (#11018 W2)', () => {
     expect(run).toMatchObject({
       status: 'completed', requestedByKind: 'system', requestedByUserId: null,
       executionScopePrincipalKind: 'system', executionScopeKind: 'unrestricted',
+      // One row per priority, whatever the ticket count.
       rowCount: 4,
     });
 
@@ -239,8 +243,8 @@ describe('ticket_sla_performance evidence on real Postgres (#11018 W2)', () => {
     expect(run.status).toBe('completed');
 
     expect(await listIdsAs(t.orgId, t.orgId)).not.toContain(run.id);
-    await expect(asPortalUserOf(t.orgId, () => renderRunPdf(run.id, t.orgId, 'UTC'))).rejects.toThrow();
-    await expect(asPortalUserOf(t.orgId, () => renderRunCsv(run.id, t.orgId))).rejects.toThrow();
+    await expect(asPortalUserOf(t.orgId, () => renderRunPdf(run.id, t.orgId, 'UTC'))).rejects.toThrow(PortalReportNotFoundError);
+    await expect(asPortalUserOf(t.orgId, () => renderRunCsv(run.id, t.orgId))).rejects.toThrow(PortalReportNotFoundError);
 
     await deliver(t, occ.id);
 
@@ -253,7 +257,34 @@ describe('ticket_sla_performance evidence on real Postgres (#11018 W2)', () => {
     const pdf = await asPortalUserOf(t.orgId, () => renderRunPdf(run.id, t.orgId, 'UTC'));
     expect(pdf.toString('latin1')).toContain('Service Level Performance');
     const csv = await asPortalUserOf(t.orgId, () => renderRunCsv(run.id, t.orgId));
-    expect(csv.split('\n')[0]).toContain('responseAttainment');
+    // Customer-facing header row, not the raw row keys.
+    const header = csv.split('\n')[0]!;
+    expect(header).toContain('Response within SLA (0-1)');
+    expect(header).not.toMatch(/responseAttainment|[a-z][A-Z]/);
+  });
+
+  // Delivery is the customer's only grant. A run whose evidence row was removed was
+  // never delivered, so it must not read as an ordinary self-service run.
+  runDb('removing the evidence from an undelivered occurrence does not publish the run', async () => {
+    const t = await seedTenant();
+    await seedOutcomes(t);
+    await applyMonthlyTemplate(t);
+    await runDeliverableSweep(AS_OF);
+
+    const { run } = await managedRunOf(t.orgId);
+    const occ = await firstOccurrenceOf(t.orgId);
+    expect(occ.status).not.toBe('delivered');
+    const [evidence] = await getTestDb().select().from(serviceDeliverableEvidence)
+      .where(eq(serviceDeliverableEvidence.occurrenceId, occ.id));
+    await system(() => removeEvidence(t.orgId, occ.id, evidence!.id,
+      { userId: t.techId, partnerId: t.partnerId, accessibleOrgIds: [t.orgId] }));
+    const remaining = await getTestDb().select().from(serviceDeliverableEvidence)
+      .where(eq(serviceDeliverableEvidence.occurrenceId, occ.id));
+    expect(remaining).toEqual([]);
+
+    expect(await listIdsAs(t.orgId, t.orgId)).not.toContain(run.id);
+    await expect(asPortalUserOf(t.orgId, () => renderRunPdf(run.id, t.orgId, 'UTC'))).rejects.toThrow(PortalReportNotFoundError);
+    await expect(asPortalUserOf(t.orgId, () => renderRunCsv(run.id, t.orgId))).rejects.toThrow(PortalReportNotFoundError);
   });
 
   runDb("org A's portal user never sees org B's run", async () => {
@@ -275,11 +306,11 @@ describe('ticket_sla_performance evidence on real Postgres (#11018 W2)', () => {
     expect(await listIdsAs(b.orgId, b.orgId)).toEqual([runB.id]);
 
     // The explicit org predicate, under org A's own context.
-    await expect(asPortalUserOf(a.orgId, () => renderRunPdf(runB.id, a.orgId, 'UTC'))).rejects.toThrow();
-    await expect(asPortalUserOf(a.orgId, () => renderRunCsv(runB.id, a.orgId))).rejects.toThrow();
+    await expect(asPortalUserOf(a.orgId, () => renderRunPdf(runB.id, a.orgId, 'UTC'))).rejects.toThrow(PortalReportNotFoundError);
+    await expect(asPortalUserOf(a.orgId, () => renderRunCsv(runB.id, a.orgId))).rejects.toThrow(PortalReportNotFoundError);
     // RLS as the backstop: org A's context asking for org B directly gets nothing.
     expect(await listIdsAs(a.orgId, b.orgId)).toEqual([]);
-    await expect(asPortalUserOf(a.orgId, () => renderRunPdf(runB.id, b.orgId, 'UTC'))).rejects.toThrow();
+    await expect(asPortalUserOf(a.orgId, () => renderRunPdf(runB.id, b.orgId, 'UTC'))).rejects.toThrow(PortalReportNotFoundError);
   });
 
   runDb('the delivered artifact contains no ticket subject strings', async () => {

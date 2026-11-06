@@ -106,8 +106,10 @@ import {
   renderRunPdf,
 } from './reportsSelfService';
 import { MSP_STAFF_REPORT_TYPES } from '../reportRegistry';
-import { managedEvidenceEntry } from '../managedEvidenceRegistry';
-import { BUSINESS_REPORT_TYPES, POSTURE_DEVICE_ROW_CSV_LABELS } from '@breeze/shared';
+import { managedEvidenceEntry, MANAGED_EVIDENCE_REGISTRY } from '../managedEvidenceRegistry';
+import {
+  BUSINESS_REPORT_TYPES, POSTURE_DEVICE_ROW_CSV_LABELS, TICKET_SLA_PERFORMANCE_ROW_CSV_LABELS,
+} from '@breeze/shared';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const USER_ID = '22222222-2222-4222-8222-222222222222';
@@ -391,8 +393,20 @@ describe('portal report SQL scope', () => {
     ['rendering', () => portalRunPredicate(RUN_ID, ORG_ID, true)],
   ])('admits a delivered ticket_sla_performance run to %s and keeps every business type out', (_label, build) => {
     const { params } = new PgDialect().sqlToQuery(build());
-    expect(params).not.toContain('ticket_sla_performance');
+    // Once, in the delivery gate. A second occurrence is the permission gate hiding it.
+    expect(params.filter((p) => p === 'ticket_sla_performance')).toHaveLength(1);
     expect(params).toEqual(expect.arrayContaining([...BUSINESS_REPORT_TYPES]));
+  });
+
+  // Delivery is a managed type's only route to the customer: an orphaned run
+  // (its evidence row removed) must not fall through the unreferenced arm.
+  it.each([
+    ['listing', () => portalRunListPredicate(ORG_ID, true)],
+    ['rendering', () => portalRunPredicate(RUN_ID, ORG_ID, true)],
+  ])('confines the unreferenced arm of %s to non-managed types', (_label, build) => {
+    const { sql: text, params } = new PgDialect().sqlToQuery(build());
+    expect(text).toMatch(/"reports"\."type" not in \([^)]*\)\s+AND NOT EXISTS \(\s*select 1 from service_deliverable_evidence/i);
+    expect(params).toEqual(expect.arrayContaining(Object.keys(MANAGED_EVIDENCE_REGISTRY)));
   });
 
   it('gates run listing on delivery (#5784 OD-12): unreferenced runs stay visible, referenced runs need a delivered occurrence', () => {
@@ -1296,6 +1310,20 @@ describe('portal run rendering', () => {
 
     const query = new PgDialect().sqlToQuery(state.where as SQL);
     expect(query.params).toContain('hardware_lifecycle');
+  });
+
+  it('labels the ticket_sla_performance CSV header row for the customer', async () => {
+    state.selected.mockResolvedValue([{
+      id: RUN_ID,
+      type: 'ticket_sla_performance',
+      result: { rows: [{ priority: 'high' }] },
+      completedAt: new Date('2026-09-02T12:00:00.000Z'),
+    }]);
+    await renderRunCsv(RUN_ID, ORG_ID);
+    expect(state.rowsToCsv).toHaveBeenCalledWith(
+      [{ priority: 'high' }],
+      { headerLabels: TICKET_SLA_PERFORMANCE_ROW_CSV_LABELS },
+    );
   });
 
   it('renders a stored run as PDF with the requested timezone', async () => {

@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { reportRunOwnerColumns } from '../reportRunOwner';
-import { and, count, desc, eq, ne, sql } from 'drizzle-orm';
+import { and, count, desc, eq, ne, notInArray, sql } from 'drizzle-orm';
 import { buildReportPdf, type BuildOpts } from '@breeze/shared/reportPdf';
 import {
   POSTURE_DEVICE_ROW_CSV_LABELS,
+  TICKET_SLA_PERFORMANCE_ROW_CSV_LABELS,
   rowsToCsv,
   type HardwareLifecycleSummary,
   type PortalRunDto,
@@ -21,6 +22,7 @@ import {
 } from '../reportGenerationService';
 import { organizationScope } from '../reportScope';
 import { getReportBranding } from '../reportBranding';
+import { MANAGED_EVIDENCE_REGISTRY, type ManagedEvidenceType } from '../managedEvidenceRegistry';
 import {
   reportAudienceCondition,
   reportTypePermissionCondition,
@@ -386,6 +388,11 @@ function lifecycleExclusion(lifecycleEnabled: boolean) {
  *
  * Runs no deliverable references (ordinary portal self-service) are unaffected.
  * Fail-closed: a run referenced only by non-delivered occurrences is hidden.
+ *
+ * A managed evidence type has no self-service path, so delivery is its only route
+ * to the customer (#11018). Removing the evidence from an undelivered occurrence
+ * leaves the completed run with no evidence row; the first arm below must not read
+ * that as an ordinary self-service run.
  * `sd_evidence_report_run_idx` (report_run_id) serves both sub-queries.
  */
 /**
@@ -416,9 +423,12 @@ function customerAudienceOnly() {
 
 export function deliveredEvidenceOnly() {
   return sql`(
-    NOT EXISTS (
-      SELECT 1 FROM service_deliverable_evidence e
-      WHERE e.report_run_id = ${reportRuns.id}
+    (
+      ${notInArray(reports.type, Object.keys(MANAGED_EVIDENCE_REGISTRY) as ManagedEvidenceType[])}
+      AND NOT EXISTS (
+        SELECT 1 FROM service_deliverable_evidence e
+        WHERE e.report_run_id = ${reportRuns.id}
+      )
     )
     OR EXISTS (
       SELECT 1 FROM service_deliverable_evidence e
@@ -833,6 +843,7 @@ export async function renderRunPdf(
  */
 const PORTAL_CSV_HEADER_LABELS: Partial<Record<string, Readonly<Record<string, string>>>> = {
   security_compliance_posture: POSTURE_DEVICE_ROW_CSV_LABELS,
+  ticket_sla_performance: TICKET_SLA_PERFORMANCE_ROW_CSV_LABELS,
 };
 
 export async function renderRunCsv(
