@@ -1670,8 +1670,8 @@ function trustRig({ baseFiles = tinyPolicy(), headFiles = { 'src/a.ts': 'a\n' } 
   const anchorOf = over => ({ schema: 1, head_sha: r.headSha, merge_sha: r.merge, base_sha: r.baseSha, pr_number: 7, run_id: 900, run_attempt: 1,
     created_at: '2026-11-06T16:30:16.000Z', files: ['src/a.ts'], files_source: 'merge-commit', policy_digest: 'd'.repeat(64), policy_in_files: false, ...over });
   // One pinned gate run, its identity line, and its anchor artifact.
-  r.addAnchor = ({ id = 900, attempt = 1, run = {}, anchor = {}, expired = false, identity } = {}) => {
-    state.runs.push(pinnedRun({ id, head_sha: r.headSha, run_attempt: attempt, ...run }));
+  r.addAnchor = ({ id = 900, attempt = 1, run = {}, anchor = {}, expired = false, identity, addRun = true } = {}) => {
+    if (addRun) state.runs.push(pinnedRun({ id, head_sha: r.headSha, run_attempt: attempt, ...run }));
     const name = `ci-gate-anchor-attempt-${attempt}`;
     (state.artifacts[id] ??= []).push({ name, expired });
     state.files[`${id}/${name}`] = { [gate.ANCHOR_FILE]: JSON.stringify(anchorOf({ run_id: id, run_attempt: attempt, ...anchor })) };
@@ -2137,9 +2137,9 @@ test('verify: the selection is given a time limit that ends before the job timeo
   const lateLimits = [];
   late.limitTime = at => lateLimits.push(at);
   const lateStart = late.now();
-  const slowWait = () => { late.sleep(141 * MIN); return finished(); };
+  const slowWait = () => { late.sleep(139 * MIN); return finished(); };
   gate.verify(late, verifyEnv(), { waitForCi: slowWait, verdict: () => passing(), selection: () => SHADOW_OUT });
-  assert.equal(lateLimits[0] - lateStart, 143 * MIN, 'never past the point the job would time out');
+  assert.equal(lateLimits[0] - lateStart, 141 * MIN, 'never near the job timeout, which also covers the steps before verify');
 });
 
 test('limitTime: bounds every child and sleep on the gate io, and an unlimited io is unchanged', () => {
@@ -2275,5 +2275,107 @@ test('docs: the runbook explains the selection line and that it never changes a 
   assert.match(merge, /never changes? a verdict/);
   for (const reason of ['no_anchor', 'anchor_not_pinned', 'anchor_policy_in_p', 'no_verified_pr_run', 'no_base_flags']) {
     assert.ok(merge.includes(`\`${reason}\``), `${reason} is not in the runbook`);
+  }
+});
+
+// ── W02d: what review found ──────────────────────────────────────────────
+
+test('two anchors: job names come from the newest merge, the skew check and the record from the oldest', () => {
+  const r = trustRig();
+  // A later commit standing in for the newer merge, whose ci.yml renames a job.
+  mkdirSync(dirname(join(r.origin, CI_PATH)), { recursive: true });
+  writeFileSync(join(r.origin, CI_PATH), tinyCi.replace('name: Lint', 'name: Lint (renamed)'));
+  r.inOrigin('add', '-A');
+  r.inOrigin('commit', '-q', '-m', 'newer merge');
+  const newerMerge = r.inOrigin('rev-parse', 'HEAD');
+  r.addAnchor({ id: 901, run: { created_at: '2026-11-06T16:30:00Z' }, anchor: { created_at: '2026-11-06T16:30:16.000Z' } });
+  r.addAnchor({ id: 902, run: { created_at: '2026-11-06T18:00:00Z' }, anchor: { merge_sha: newerMerge, created_at: '2026-11-06T18:00:16.000Z' } });
+  r.addCi({ run: { created_at: '2026-11-06T16:30:00Z' }, attempts: [api(['Detect', 'success'], ['Lint (renamed)', 'success'], ['Integration', 'skipped'])] });
+  const record = r.trust();
+  assert.equal(record.suites_passed, true, 'the newest merge names the jobs, and the oldest anchor is as old as the run');
+  assert.equal(record.merge_sha, r.merge);
+  assert.equal(record.created_at, '2026-11-06T16:30:16.000Z');
+});
+
+test('two anchors: the oldest anchor by run id is the one the skew check reads', () => {
+  const r = trustRig();
+  r.addAnchor({ id: 901, run: { created_at: '2026-11-06T18:00:00Z' } });
+  r.addAnchor({ id: 902, run: { created_at: '2026-11-06T16:30:00Z' } });
+  r.addCi({ run: { created_at: '2026-11-06T16:30:00Z' } });
+  assert.equal(r.trust().reason, 'no_verified_pr_run');
+});
+
+test('a re-run gate: every attempt\'s anchor counts, though the run object reports only the latest attempt', () => {
+  const r = trustRig();
+  const newerBase = r.inOrigin('commit-tree', `${r.baseSha}^{tree}`, '-p', r.baseSha, '-m', 'main moved');
+  r.addAnchor({ attempt: 1, run: { run_attempt: 2 } });
+  r.addAnchor({ attempt: 2, addRun: false, anchor: { base_sha: newerBase } });
+  r.addCi();
+  const stats = {};
+  const record = r.trust(stats);
+  assert.equal(stats.anchors, 2);
+  assert.equal(record.base_sha, r.baseSha, 'attempt 1 is the older');
+});
+
+test('a re-run gate: an attempt whose log names another attempt is not pinned, and the good one still counts', () => {
+  const r = trustRig();
+  const line = attempt => `2026-11-06T16:30:13.0Z ci-gate-identity: workflow_ref=${PINNED_REF} workflow_sha=${r.workflowSha} gate_run=900 gate_attempt=${attempt}\n`;
+  r.addAnchor({ attempt: 1, run: { run_attempt: 2 } });
+  r.addAnchor({ attempt: 2, addRun: false, identity: line(1) });
+  r.addCi();
+  const stats = {};
+  assert.equal(r.trust(stats).suites_passed, true);
+  assert.equal(stats.anchors, 1);
+  assert.deepEqual(stats.not_pinned.map(({ attempt }) => attempt), [2]);
+});
+
+test('two anchors: the classifier sees the union of files, not one anchor\'s', () => {
+  const readsFiles = prGatedClassifier.replace('cat > /dev/null', 'input="$(cat)"; api=false; [[ "$input" == *apps/api/* ]] && api=true').replace('api=false\\n', 'api=%s\\n').replace('"$integration"', '"$api" "$integration"');
+  const r = trustRig({ baseFiles: { [CI_PATH]: tinyCi, [`${SCRIPTS}/classify-pr-paths.sh`]: readsFiles } });
+  r.addAnchor({ id: 901 });
+  r.addAnchor({ id: 902, anchor: { files: ['apps/api/x.ts'] } });
+  r.addCi();
+  assert.equal(r.trust().selection.api, 'true');
+});
+
+test('no_verified_pr_run: a time that will not parse fails closed, either side', () => {
+  for (const [anchorTime, ciTime] of [[undefined, '2026-11-06T16:30:04Z'], ['2026-11-06T16:30:04Z', undefined], ['nonsense', 'nonsense']]) {
+    const r = trustRig();
+    r.addAnchor({ run: { created_at: anchorTime } });
+    r.addCi({ run: { created_at: ciTime } });
+    const stats = {};
+    assert.equal(r.trust(stats).reason, 'no_verified_pr_run');
+    assert.match(stats.verification, /anchor/);
+  }
+});
+
+test('no_verified_pr_run: a classifier that fails says so, rather than judging the PR under full flags', () => {
+  const r = trustRig({ baseFiles: { [CI_PATH]: tinyCi, [`${SCRIPTS}/classify-pr-paths.sh`]: '#!/usr/bin/env bash\nexit 9\n' } });
+  r.addAnchor();
+  r.addCi();
+  const stats = {};
+  assert.equal(r.trust(stats).reason, 'no_verified_pr_run');
+  assert.match(stats.verification, /classifier/);
+  const empty = trustRig({ baseFiles: { [CI_PATH]: tinyCi, [`${SCRIPTS}/classify-pr-paths.sh`]: '#!/usr/bin/env bash\necho nothing=useful\n' } });
+  empty.addAnchor();
+  empty.addCi();
+  const emptyStats = {};
+  assert.equal(empty.trust(emptyStats).reason, 'no_verified_pr_run');
+  assert.match(emptyStats.verification, /classifier/);
+});
+
+test('trustedRecord: an ancestry check that could not run is an error, not a claim that the run is unpinned', () => {
+  const r = rigWithEvidence();
+  const git = r.io.git;
+  r.io.git = args => { if (args[0] === 'merge-base') throw Object.assign(Error('no origin/main'), { status: 128 }); return git(args); };
+  assert.throws(() => r.trust(), /ancestry check/);
+});
+
+test('verify: a selection result that cannot be formatted still leaves one line and the verdict', () => {
+  for (const bad of [undefined, { mode: 'shadow', reason: '', p: 1n }]) {
+    const io = verifyIo();
+    assert.equal(gate.verify(io, verifyEnv(), { waitForCi: finished, verdict: () => passing(), selection: () => bad }), 0);
+    assert.equal(selectionLines(io).length, 1);
+    assert.match(selectionLines(io)[0], /^ci-gate-selection: mode=full reason=error /);
   }
 });

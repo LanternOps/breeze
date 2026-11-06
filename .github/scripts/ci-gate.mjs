@@ -81,14 +81,15 @@ function runBaseClassifier(io, dir, baseSha, input, args) {
   return io.runIsolated('bash', [join(dir, 'classify-pr-paths.sh'), ...args], { input, dir });
 }
 
-function classifyAtBase(io, baseSha, changed, args = []) {
+const parseFlags = stdout => Object.fromEntries(nonEmptyLines(stdout).map(line => {
+  const at = line.indexOf('=');
+  return [line.slice(0, at), line.slice(at + 1)];
+}));
+
+function classifyAtBase(io, baseSha, changed) {
   const dir = io.temp();
   try {
-    const stdout = runBaseClassifier(io, dir, baseSha, `${changed.join('\n')}\n`, args);
-    const flags = Object.fromEntries(nonEmptyLines(stdout).map(line => {
-      const at = line.indexOf('=');
-      return [line.slice(0, at), line.slice(at + 1)];
-    }));
+    const flags = parseFlags(runBaseClassifier(io, dir, baseSha, `${changed.join('\n')}\n`, []));
     return 'code' in flags ? flags : { ...FULL_SUITE_FLAGS };
   } catch {
     // Same as the `changes` job: an unusable classifier runs the full suite.
@@ -705,11 +706,13 @@ const SAME_EVENT_SKEW_MS = 10 * MINUTE;
 // null when it is.
 //
 // `workflow_id` is what the candidate cannot choose. A run started by the org
-// ruleset carries an id GitHub does not list for this repository; a copy of the
-// file a PR enabled for itself is an ordinary run, under an id it does list. The
-// identity line is corroboration, not proof: once the id shows main's gate wrote
-// the log, the line says which ref the ruleset ran. On its own a candidate copy
-// could print anything, so it is never enough without the id.
+// ruleset carries an id GitHub does not list for this repository (seen at E2). A
+// copy of the file a PR enabled for itself should be an ordinary run under a listed
+// id; negative leg N1 proves that, and until then it is inferred. If it is wrong,
+// this is shadow data and W05 must not rely on it. The identity line is
+// corroboration, not proof: once the id shows main's gate wrote the log, the line
+// says which ref the ruleset ran. A candidate copy could print anything, so it is
+// never enough without the id.
 export function pinnedRunFailure(run, { repository, head, attempt, workflows, identity, workflowOnMain }) {
   if (run.path !== GATE_WORKFLOW) return `path ${run.path}`;
   if (run.event !== 'pull_request') return `event ${run.event}`;
@@ -755,7 +758,22 @@ function runIdentity(io, repository, run, attempt) {
 }
 
 function isOnMain(io, sha) {
-  try { io.git(['merge-base', '--is-ancestor', sha, 'origin/main']); return true; } catch { return false; }
+  try { io.git(['merge-base', '--is-ancestor', sha, 'origin/main']); return true; } catch (error) {
+    // Exit 1 is the answer "no". Anything else says nothing about the run.
+    if (error?.status === 1) return false;
+    throw new GateError('selection_ancestry', `ancestry check for ${sha} failed: ${failureText(error)}`);
+  }
+}
+
+// Unlike classifyAtBase, a classifier that fails here is not read as "everything
+// changed": judging the PR's run under flags it never ran with would blame the PR.
+function prFlagsAtBase(io, baseSha, files) {
+  const dir = io.temp();
+  try {
+    const flags = parseFlags(runBaseClassifier(io, dir, baseSha, `${files.join('\n')}\n`, ['--pull-request']));
+    return 'code' in flags ? { flags } : { why: 'classifier printed no flags' };
+  } catch (error) { return { why: `classifier failed: ${failureText(error)}` }; }
+  finally { io.remove(dir); }
 }
 
 function anchorFailure(value, { head, pr, run, attempt }) {
@@ -785,8 +803,9 @@ function readAnchor(io, repository, run, name) {
   } finally { io.remove(dir); }
 }
 
-// Pinned anchors for this head, oldest first. Ignoring the rest is safe: fewer
-// anchors can only mean less evidence, and no anchor means run everything.
+// Pinned anchors for this head, oldest first. No anchor means run everything.
+// Losing the oldest (expired, rejected) raises the base, so verifiedPrRun refuses
+// a base newer than the run it verifies.
 function pinnedAnchors(io, repository, { head, pr, runs, stats }) {
   const workflows = listAll(io, `repos/${repository}/actions/workflows?per_page=100`, 'workflows').flatMap(page => page.workflows);
   const anchors = [];
@@ -796,7 +815,7 @@ function pinnedAnchors(io, repository, { head, pr, runs, stats }) {
       const attempt = Number(artifact.name?.match(ANCHOR_ARTIFACT)?.[1]);
       if (!attempt || artifact.expired) continue;
       const identity = runIdentity(io, repository, run, attempt);
-      const why = pinnedRunFailure(run, { repository, head, attempt, workflows, identity, workflowOnMain: !!identity && isOnMain(io, identity.workflow_sha) });
+      const why = pinnedRunFailure(run, { repository, head, attempt, workflows, identity, workflowOnMain: !!identity && hasCommit(io, identity.workflow_sha) && isOnMain(io, identity.workflow_sha) });
       if (why) { stats.not_pinned.push({ run: run.id, attempt, why }); continue; }
       const value = readAnchor(io, repository, run, artifact.name);
       const bad = value === null ? 'not json' : anchorFailure(value, { head, pr, run, attempt });
@@ -815,8 +834,9 @@ function verifiedPrRun(io, repository, { head, pr, runs, oldest, newest, files }
     (!run.pull_requests?.length || run.pull_requests.some(({ number }) => number === pr))).sort((a, b) => b.id - a.id)[0];
   if (!ci) return { why: 'no pull_request CI run for this head' };
   if (ci.status !== 'completed') return { why: `CI run ${ci.id} is ${ci.status}` };
-  // "The oldest base errs old" only holds if some anchor is as old as what this run tested.
-  if (Date.parse(oldest.run_created_at) > Date.parse(ci.created_at) + SAME_EVENT_SKEW_MS) return { why: `oldest anchor is newer than CI run ${ci.id}` };
+  // "The oldest base errs old" only holds if some anchor is as old as what this run
+  // tested. Written so that a time that will not parse fails too.
+  if (!(Date.parse(oldest.run_created_at) <= Date.parse(ci.created_at) + SAME_EVENT_SKEW_MS)) return { why: `oldest anchor is newer than CI run ${ci.id}, or a time is unreadable` };
   for (const sha of new Set([oldest.base_sha, oldest.merge_sha, newest.merge_sha])) {
     const cause = fetchFailure(io, sha);
     if (cause) return { why: `cannot fetch ${sha}: ${cause}` };
@@ -827,7 +847,8 @@ function verifiedPrRun(io, repository, { head, pr, runs, oldest, newest, files }
     // A pull_request run uses the merge commit's workflow, so that names its jobs.
     headCi = showAt(io, newest.merge_sha, CI_YML);
   } catch (error) { return { why: failureText(error) }; }
-  const flags = classifyAtBase(io, oldest.base_sha, files, ['--pull-request']);
+  const { flags, why } = prFlagsAtBase(io, oldest.base_sha, files);
+  if (why) return { why };
   const out = judge(io, { flags, aggregator, headCi, event: 'pull_request',
     mobile: deriveMobileRequired(io, oldest.base_sha, oldest.merge_sha, files) }, runJobs(io, repository, ci.id));
   return out.verdict === 'pass' ? { ci, flags } : { why: `CI run ${ci.id}: ${out.reason}` };
@@ -850,8 +871,8 @@ export function trustedRecord(io, { head, pr }, stats = {}) {
   if (!anchors.length) return { reason: stats.not_pinned.length ? 'anchor_not_pinned' : 'no_anchor' };
   if (anchors.some(({ policy_in_files }) => policy_in_files)) return { reason: 'anchor_policy_in_p' };
 
-  // Two anchors mean a close and reopen. The oldest base and every file only
-  // make Δ larger, so an error here thickens the selection and never thins it.
+  // More than one anchor comes from a close and reopen, or a re-run of the gate.
+  // The oldest base and every file over-approximate Δ and P.
   const oldest = anchors[0], newest = anchors.at(-1);
   const files = [...new Set(anchors.flatMap(anchor => anchor.files))];
   const verified = verifiedPrRun(io, repository, { head, pr, runs, oldest, newest, files });
@@ -865,8 +886,9 @@ export function trustedRecord(io, { head, pr }, stats = {}) {
 }
 
 // shadowCore reads policy through this, so everything it reads is the entry's
-// base revision, whatever is checked out. policyAtBase is true by construction,
-// and only the base's classifier can be executed, with no token.
+// base revision, whatever is checked out. So policyAtBase is true by construction
+// and its check does no work here; the digest comparison still does. Only the
+// base's classifier can be executed, with no token.
 export function baseRevisionIO(io, baseSha) {
   return { ...io,
     read: path => showAt(io, baseSha, path),
@@ -877,7 +899,8 @@ export function baseRevisionIO(io, baseSha) {
       const dir = io.temp();
       try { return runBaseClassifier(io, dir, baseSha, input, args.slice(1)); } finally { io.remove(dir); }
     },
-    // A ref rather than the pulls API, which this workflow has no permission for.
+    // A ref, because `contents: read` covers it. This workflow's token has no
+    // `pull-requests` scope, and whether the pulls API works without one is not checked.
     prHead(pr) {
       if (!Number.isSafeInteger(pr) || pr <= 0) throw new GateError('invalid_repository', 'invalid PR');
       return io.git(['ls-remote', 'origin', `refs/pull/${pr}/head`]).match(/^([a-f\d]{40})\t/)?.[1] ?? '';
@@ -895,22 +918,26 @@ export function queueSelection(io, env, flags) {
 }
 
 const SELECTION_MS = 3 * MINUTE;
-const SELECTION_ENDS_BY_MS = 143 * MINUTE; // from the start of verify; the job allows 145
+// From the start of verify. The job allows 145, and that also covers the steps before verify.
+const SELECTION_ENDS_BY_MS = 141 * MINUTE;
+
+const selectionLine = out => `ci-gate-selection: mode=${out.mode} reason=${out.reason} ${SHADOW_FIELDS.map(key => `${key}=${logValue(out[key] ?? null)}`).join(' ')}`;
 
 // One line, the verdict already decided. It gets neither `line` nor the exit code,
-// and whatever goes wrong in here, including running long, stays in here.
+// and whatever goes wrong in here, including running long, stays in here. The limit
+// covers children and sleeps, which is where this code spends its time.
 function logSelection(io, env, flags, select, started) {
-  let out;
+  let text;
   try {
-    if (!flags) out = { mode: 'full', reason: 'no_base_flags' };
+    if (!flags) text = selectionLine({ mode: 'full', reason: 'no_base_flags' });
     else {
       io.limitTime?.(Math.min(io.now() + SELECTION_MS, started + SELECTION_ENDS_BY_MS));
-      out = select(io, env, flags);
+      text = selectionLine(select(io, env, flags));
     }
-  } catch (error) { out = { mode: 'full', reason: 'error', error: failureText(error) }; }
+  } catch (error) { text = selectionLine({ mode: 'full', reason: 'error', error: failureText(error) }); }
   try {
     io.limitTime?.(Infinity);
-    io.stdout(`ci-gate-selection: mode=${out.mode} reason=${out.reason} ${SHADOW_FIELDS.map(key => `${key}=${logValue(out[key] ?? null)}`).join(' ')}`);
+    io.stdout(text);
   } catch { /* the verdict is unaffected, and is already logged */ }
 }
 

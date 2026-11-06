@@ -43,7 +43,7 @@ Moved verbatim from `CLAUDE.md` (2026-10-07). Read before merging a PR or deploy
 
 `oracle=disagree:<n>` is a warning and never changes a verdict, but it means the gate's rollup differs from `needs.<job>.result`. Look into it. On a PR, no anchor is safe: W05 treats it as "run everything". So when counting verdicts, read `reason`, because a PR with no anchor also logs `verdict=pass`.
 
-**The shadow selection.** After the verdict, a queue run logs one `ci-gate-selection: mode=… reason=… pr=… head=… B=… p=… …` line, with the same fields as the candidate-side `queue-selection:` line. It never changes a verdict: it runs after the `ci-gate:` line, an exception in it is only logged, and it stops after 3 minutes so it cannot outlast the job. W05 will read it. Its evidence comes only from sources the candidate cannot write: anchors from pinned gate runs, and the latest attempt of the PR's newest `ci.yml` run, judged by the base's script and classifier. `provenance.json` is never read. A pinned run is one at `.github/workflows/ci-gate.yml` whose `workflow_id` is not listed by `actions/workflows`, with a `ci-gate-identity:` line naming `@refs/heads/main`. `record_stats` has the detail. Each of these means "run everything":
+**The shadow selection.** After the verdict, a queue run logs one `ci-gate-selection: mode=… reason=… pr=… head=… B=… p=… …` line, with the same fields as the candidate-side `queue-selection:` line. It never changes a verdict: it runs after the `ci-gate:` line, an exception in it is only logged, and its children and sleeps stop after 3 minutes so it cannot outlast the job. W05 will read it. Its evidence comes only from sources the candidate cannot write: anchors from pinned gate runs, and the latest attempt of the PR's newest `ci.yml` run, judged by the base's script and classifier. `provenance.json` is never read. A pinned run is one at `.github/workflows/ci-gate.yml` whose `workflow_id` is not listed by `actions/workflows`, with a `ci-gate-identity:` line naming `@refs/heads/main`. `record_stats` has the detail. Each of these means "run everything":
 
 | Reason | Meaning |
 |---|---|
@@ -52,7 +52,7 @@ Moved verbatim from `CLAUDE.md` (2026-10-07). Read before merging a PR or deploy
 | `anchor_policy_in_p` | an anchor's files include a policy path |
 | `no_verified_pr_run` | the PR's run did not pass the base's script, or could not be checked (`record_stats.verification`) |
 | `no_base_flags` | the verdict produced no flags, so no selection was computed |
-| `selection_time_limit`, `base_io_refused` | shadow only, under `reason=error` with this in `error`: out of time, or a read tried to run something other than the base classifier |
+| `selection_time_limit`, `selection_ancestry`, `base_io_refused` | shadow only, and text rather than a `reason=` value: usually in `error` under `reason=error`. Out of time, the check that a run's sha is on `main` could not run, or a read tried to run something other than the base classifier. Running out of time can also show as `delta_uncomputable` or `no_verified_pr_run`, and a child killed at the limit shows a timeout error |
 
 Any other reason is a W4 fallback (`stale_base`, `entry_outside_p`, and so on).
 
