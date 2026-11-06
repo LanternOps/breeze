@@ -130,6 +130,8 @@ const ALLOWED_RELEASE: Record<string, string> = {
   'services/partnerTrust.ts': 'gated (operator-directed) classification',
   'services/commandQueue.ts': 'always audited',
   'services/commandMinVersion.ts': 'minimum agent version',
+  'services/commandResultHandlers.ts': 'result handler registration: the ack that ends a takeover',
+  'routes/agents/commands.ts': 'HTTP result transport reaches the same handler',
   'services/oemUpdates/dispatch.ts': 'the one seam that queues it',
 };
 

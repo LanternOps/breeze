@@ -3165,6 +3165,7 @@
           "blocked_by_source": "Excluded by the policy's update sources",
           "held_by_deferral": "Held by the deferral window",
           "blocked_by_category": "Excluded by the ring's category rules",
+          "managed_by_vendor_updates": "Managed by Vendor updates",
           "blocked_by_app_rule": "Blocked by an app rule",
           "blocked_by_feature_update_policy": "Excluded by the ring's Windows feature-update policy",
           "awaiting_manual_approval": "Awaiting manual approval",

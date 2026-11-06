@@ -75,10 +75,12 @@ function seqSelect(results: Array<unknown[]>) {
   let call = 0;
   mockDb.select.mockImplementation(() => {
     const rows = results[call++] ?? [];
-    // The snapshot-files read is awaited without .limit(), so where() must be
-    // thenable as well as chainable.
+    // The snapshot-files read is a keyset page (#11026): where().orderBy().limit().
     const query: Record<string, unknown> = {
-      where: () => Object.assign(Promise.resolve(rows), { limit: () => Promise.resolve(rows) }),
+      where: () => Object.assign(Promise.resolve(rows), {
+        limit: () => Promise.resolve(rows),
+        orderBy: () => ({ limit: () => Promise.resolve(rows) }),
+      }),
     };
     // The snapshot-files read joins the snapshot and its attestation.
     query.innerJoin = () => query;

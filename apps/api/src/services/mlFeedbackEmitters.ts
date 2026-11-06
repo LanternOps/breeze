@@ -1,4 +1,5 @@
 import type { MlFeedbackEventInput } from '@breeze/shared';
+import { withDbTransactionIfHeld } from '../db';
 import { emitMlFeedbackEvent, emitMlFeedbackEvents } from './mlFeedback';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -9,7 +10,9 @@ function actorUserIdOrNull(actorUserId: string | null | undefined): string | nul
 
 async function emitFeedbackBestEffort(input: MlFeedbackEventInput, logContext: string): Promise<void> {
   try {
-    await emitMlFeedbackEvent(input);
+    // Callers include request handlers mid-transaction: without the savepoint a
+    // failed label write fails the commit of the change it describes (#11225).
+    await withDbTransactionIfHeld(() => emitMlFeedbackEvent(input));
   } catch (error) {
     console.error(`[MlFeedback] Failed to emit ${logContext}:`, error);
   }

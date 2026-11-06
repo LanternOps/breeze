@@ -31,8 +31,8 @@ import { deviceScopeCondition, deviceSiteDenied, resolveSiteAllowedDeviceIds } f
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
 import { authorizeAiRestore } from './aiToolsRestoreAuthorization';
 import { backupJobHistoryOrderBy, latestBackupRunOrderBy } from './backupJobOrdering';
-import { resolveSelectedSnapshotPaths, selectedSnapshotPathError } from './backupSelectedPaths';
-import { readableSnapshotSourcePaths } from './backupSnapshotBrowse';
+import { selectedSnapshotPathError } from './backupSelectedPaths';
+import { resolveSelectedSnapshotPathsInDb } from './backupSnapshotBrowse';
 import { inArray } from 'drizzle-orm';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { restoreIntegrityRefusalForActor } from './backupRestoreActorGate';
@@ -768,18 +768,13 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
 
       let resolvedSelectedPaths: string[] = [];
       if (restoreType === 'selective') {
-        const sourcePaths = await readableSnapshotSourcePaths(snapshot.id);
-
-        if (sourcePaths.length === 0) {
+        // Map each selection (possibly in the browse tree's forward-slash
+        // form) back to the stored original the agent matches against, and
+        // each folder to its stored-form prefix (#11026).
+        const resolution = await resolveSelectedSnapshotPathsInDb(snapshot.id, selectedPaths ?? []);
+        if (!resolution.ok && resolution.reason === 'no_readable_index') {
           return JSON.stringify({ error: 'Selective restore is unavailable for snapshots without indexed files' });
         }
-
-        // Map each selection (possibly in the browse tree's forward-slash
-        // form) back to the stored original the agent matches against.
-        const resolution = resolveSelectedSnapshotPaths(
-          selectedPaths ?? [],
-          sourcePaths
-        );
         if (!resolution.ok) {
           return JSON.stringify({ error: selectedSnapshotPathError(resolution) });
         }

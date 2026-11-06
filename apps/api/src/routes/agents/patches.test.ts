@@ -49,6 +49,8 @@ const tables = vi.hoisted(() => ({
     reportedSeverity: 'devicePatches.reportedSeverity',
     reportedSeveritySource: 'devicePatches.reportedSeveritySource',
     reportedCategory: 'devicePatches.reportedCategory',
+    reportedUpdateType: 'devicePatches.reportedUpdateType',
+    reportedUpdateOwner: 'devicePatches.reportedUpdateOwner',
     updatedAt: 'devicePatches.updatedAt',
   },
 }));
@@ -159,6 +161,7 @@ function mockPatchInsertTx() {
   const insertedRows: Array<Record<string, unknown>> = [];
   const devicePatchValues: Array<Record<string, unknown>> = [];
   const devicePatchConflictSets: Array<Record<string, unknown>> = [];
+  const patchConflictSets: Array<Record<string, unknown>> = [];
   const tx = {
     update: vi.fn(() => ({
       set: vi.fn(() => ({
@@ -181,6 +184,7 @@ function mockPatchInsertTx() {
           if (table === patches) {
             const row = { id: PATCH_ID, ...values };
             insertedRows.push(row);
+            patchConflictSets.push(config?.set ?? {});
             return {
               returning: vi.fn().mockResolvedValue([row]),
             };
@@ -195,7 +199,7 @@ function mockPatchInsertTx() {
       })),
     })),
   };
-  return { tx, insertedRows, devicePatchValues, devicePatchConflictSets };
+  return { tx, insertedRows, devicePatchValues, devicePatchConflictSets, patchConflictSets };
 }
 
 type MockSqlFragment = {
@@ -1044,6 +1048,106 @@ describe('PUT /agents/:id/patches/pending - full scan coverage scoping (#2217)',
       const set = devicePatchConflictSets[0] ?? {};
       expect(JSON.stringify(set.reportedSeverity)).toContain(tables.devicePatches.reportedSeverity);
       expect(JSON.stringify(set.reportedSeveritySource)).toContain(tables.devicePatches.reportedSeveritySource);
+    });
+  });
+
+  // #11073: what this device says the update is. It decides what Breeze patch jobs
+  // leave to a vendor lane on THIS device, so it must never reach the shared row.
+  describe('reported update type (#11073)', () => {
+    async function submit(patch: Record<string, unknown>) {
+      const mocks = mockPatchInsertTx();
+      vi.mocked(db.transaction).mockImplementation(async (fn) => fn(mocks.tx as unknown as Parameters<typeof fn>[0]));
+      const res = await mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/pending`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source: 'microsoft',
+          patches: [{ name: 'Dell Inc. - Display', source: 'microsoft', externalId: 'wu-driver-1', ...patch }],
+        }),
+      });
+      expect(res.status).toBe(200);
+      return mocks;
+    }
+
+    it.each(['driver', 'firmware', 'quality', 'feature', 'definition', 'other'])(
+      'a scan writes device_patches.reported_update_type: %s',
+      async (value) => {
+        const { devicePatchValues, devicePatchConflictSets } = await submit({ reportedUpdateType: value });
+
+        expect(devicePatchValues[0]).toMatchObject({ reportedUpdateType: value });
+        expect(devicePatchConflictSets[0]).toHaveProperty('reportedUpdateType', value);
+      },
+    );
+
+    it('never writes to patches, so one tenant cannot influence another', async () => {
+      const { insertedRows, patchConflictSets } = await submit({ reportedUpdateType: 'driver', reportedUpdateOwner: 'dell' });
+
+      expect(insertedRows[0]).not.toHaveProperty('reportedUpdateType');
+      expect(patchConflictSets[0]).not.toHaveProperty('reportedUpdateType');
+      expect(JSON.stringify(insertedRows[0])).not.toContain('reportedUpdateType');
+      expect(JSON.stringify(patchConflictSets[0])).not.toContain('reportedUpdateType');
+      expect(JSON.stringify(insertedRows[0])).not.toContain('reportedUpdateOwner');
+      expect(JSON.stringify(patchConflictSets[0])).not.toContain('reportedUpdateOwner');
+    });
+
+    it('absent stays null, and a later scan without it keeps the stored value', async () => {
+      const { devicePatchValues, devicePatchConflictSets } = await submit({});
+
+      expect(devicePatchValues[0]).toHaveProperty('reportedUpdateType', null);
+      expect(JSON.stringify(devicePatchConflictSets[0]?.reportedUpdateType)).toContain(tables.devicePatches.reportedUpdateType);
+    });
+
+    // The value is refused, not the scan: as with severitySource above, a label from
+    // a newer agent must not cost the device its whole patch inventory. It replaces a
+    // stored type with null: the agent has said this is no longer what we recorded,
+    // and null leaves the patch with Windows Update.
+    it.each([
+      ['an unknown value', 'driver-ish'],
+      ['the wrong case', 'DRIVER'],
+      ['a category name that is not a type', 'security'],
+    ])('an unknown value is rejected: %s is not stored and the scan still lands', async (_label, value) => {
+      const { devicePatchValues, devicePatchConflictSets } = await submit({ reportedUpdateType: value, reportedUpdateOwner: 'dell' });
+
+      expect(devicePatchValues[0]).toHaveProperty('reportedUpdateType', null);
+      expect(devicePatchConflictSets[0]).toHaveProperty('reportedUpdateType', null);
+      expect(devicePatchConflictSets[0]).toHaveProperty('reportedUpdateOwner', null);
+    });
+
+    it.each([
+      ['an oversized value', 'x'.repeat(200)],
+      ['a number', 7],
+    ])('malformed is as good as absent: %s', async (_label, value) => {
+      const { devicePatchValues, devicePatchConflictSets } = await submit({ reportedUpdateType: value });
+
+      expect(devicePatchValues[0]).toHaveProperty('reportedUpdateType', null);
+      expect(JSON.stringify(devicePatchConflictSets[0]?.reportedUpdateType)).toContain(tables.devicePatches.reportedUpdateType);
+    });
+
+    it.each(['dell', 'surface', 'hp', 'lenovo'])('stores the owner the agent reports: %s', async (owner) => {
+      const { devicePatchValues, devicePatchConflictSets } = await submit({ reportedUpdateType: 'driver', reportedUpdateOwner: owner });
+
+      expect(devicePatchValues[0]).toHaveProperty('reportedUpdateOwner', owner);
+      expect(devicePatchConflictSets[0]).toHaveProperty('reportedUpdateOwner', owner);
+    });
+
+    it('a type reported without an owner clears a stored owner, since they describe one report', async () => {
+      const { devicePatchValues, devicePatchConflictSets } = await submit({ reportedUpdateType: 'driver' });
+
+      expect(devicePatchValues[0]).toHaveProperty('reportedUpdateOwner', null);
+      expect(devicePatchConflictSets[0]).toHaveProperty('reportedUpdateOwner', null);
+    });
+
+    it('an unknown owner is refused and never trips the CHECK', async () => {
+      const { devicePatchValues } = await submit({ reportedUpdateType: 'driver', reportedUpdateOwner: 'acer' });
+
+      expect(devicePatchValues[0]).toHaveProperty('reportedUpdateType', 'driver');
+      expect(devicePatchValues[0]).toHaveProperty('reportedUpdateOwner', null);
+    });
+
+    it('a scan with no type keeps the stored pair', async () => {
+      const { devicePatchConflictSets } = await submit({});
+
+      expect(JSON.stringify(devicePatchConflictSets[0]?.reportedUpdateOwner)).toContain(tables.devicePatches.reportedUpdateOwner);
     });
   });
 

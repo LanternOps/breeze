@@ -2733,3 +2733,72 @@ describe('device worker re-delays while the parent is still scheduled (#6632)', 
     expect(job.moveToDelayed).not.toHaveBeenCalled();
   });
 });
+
+// #11073, spec 4.6: what a vendor lane delivers is decided when the job runs, by the
+// evaluator (patchEligibility.test.ts), and is never part of the frozen snapshot.
+describe('a vendor lane is read at execution, not frozen in the job snapshot (#11073)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.useFakeTimers();
+    shared.processorRef = undefined;
+    shared.processorRefs = {};
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(evaluateRebootPolicy).mockResolvedValue({
+      shouldReboot: false,
+      reason: 'No reboot required',
+      deferred: false,
+      windowEndsAt: null,
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('the same snapshot installs again on the next run once the lane stops delivering', async () => {
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createSelectChain([{
+        id: 'job-1',
+        orgId: 'org-1',
+        status: 'running',
+        patches: { ringId: null, autoApprove: {} },
+        targets: { deviceIds: ['device-1'], deployment: { rebootPolicy: 'never' } },
+      }]) as any)
+      .mockImplementationOnce(() => createSelectChain([{ id: 'device-1' }]) as any)
+      .mockImplementationOnce(() => createSelectChain([]) as any);
+    vi.mocked(db.insert).mockImplementationOnce(() => ({ values: vi.fn(() => Promise.resolve()) }) as any);
+    vi.mocked(db.update).mockImplementationOnce(() => ({
+      set: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
+    }) as any);
+    // The lane is delivering the only candidate, so nothing is approved.
+    vi.mocked(resolveApprovedPatchesForDevice).mockResolvedValueOnce([]);
+
+    createPatchJobDeviceWorker();
+    const first = await shared.processorRefs['patch-job-devices']({
+      data: { type: 'execute-patch-job-device', patchJobId: 'job-1', deviceId: 'device-1', orgId: 'org-1' },
+    });
+    expect(first).toEqual({ kind: 'skipped', skipped: true, reason: 'No approved patches' });
+
+    // The lane has gone Overdue: the evaluator now hands the driver back.
+    await runDeviceExecution({
+      approvedPatches: [{ patchId: 'patch-1', externalId: 'wu-driver-1', requiresReboot: false }],
+      rebootPolicy: 'never',
+      command: agentCommandRow({
+        success: true,
+        installedCount: 1,
+        failedCount: 0,
+        rebootRequired: false,
+        results: [{ id: 'patch-1', externalId: 'wu-driver-1', status: 'installed', rebootRequired: false }],
+      }),
+    });
+
+    expect(resolveApprovedPatchesForDevice).toHaveBeenCalledTimes(2);
+    expect(dispatchDeviceCommand).toHaveBeenCalledTimes(1);
+    const [, , firstConfig] = vi.mocked(resolveApprovedPatchesForDevice).mock.calls[0]!;
+    const [, , secondConfig] = vi.mocked(resolveApprovedPatchesForDevice).mock.calls[1]!;
+    expect(secondConfig).toEqual(firstConfig);
+    expect(JSON.stringify(firstConfig)).not.toMatch(/vendor|managed|oem/i);
+  });
+});

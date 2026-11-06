@@ -107,6 +107,63 @@ func ClassifyDriverUpdate(u DriverUpdate) DriverKind {
 	return DriverKindDriver
 }
 
+// Manufacturers that name a vendor lane's own updates, on the whole trimmed string,
+// as the API matches a device to its lane. UNCONFIRMED for Dell, HP and Lenovo: their
+// lab waves capture what Windows Update really says and correct these.
+var (
+	dellManufacturer   = regexp.MustCompile(`(?i)^dell(?: inc\.?)?$`)
+	hpManufacturer     = regexp.MustCompile(`(?i)^(?:hp(?: inc\.?)?|hewlett-packard)$`)
+	lenovoManufacturer = regexp.MustCompile(`(?i)^lenovo$`)
+)
+
+// pcLaneDriverClasses are the DriverClass values of a PC's own hardware. UNCONFIRMED,
+// like the manufacturers above. An allowlist: the vendor's name on a printer, monitor
+// or dock does not put it in that PC lane's catalog, and a class nobody has seen yet
+// gets the same answer.
+var pcLaneDriverClasses = map[string]bool{
+	"system": true, "video": true, "display": true, "sound": true, "media": true,
+	"net": true, "networking": true, "bluetooth": true, "storage": true, "chipset": true,
+}
+
+// isPCLaneDriverClass also takes a class that names firmware. A blank class does not
+// count here, though it classifies as firmware: nothing shows the lane would take it.
+func isPCLaneDriverClass(class string) bool {
+	class = strings.ToLower(strings.TrimSpace(class))
+	if pcLaneDriverClasses[class] {
+		return true
+	}
+	for _, word := range []string{"firmware", "uefi", "bios"} {
+		if strings.Contains(class, word) {
+			return true
+		}
+	}
+	return false
+}
+
+// driverUpdateOwner names the vendor lane whose own update this is, or "" for an
+// update no lane takes. A lane only delivers its vendor's updates: an Intel display
+// driver on a Surface, or a printer driver on any PC, stays with Windows Update, so
+// Breeze patch jobs must keep installing it. Surface goes by the rule its lane
+// selects with; the other lanes pick for themselves, so this can only be cautious.
+func driverUpdateOwner(u DriverUpdate) string {
+	if IsSurfaceDriverUpdate(u) {
+		return "surface"
+	}
+	if !isPCLaneDriverClass(u.DriverClass) {
+		return ""
+	}
+	maker := strings.TrimSpace(u.DriverManufacturer)
+	switch {
+	case dellManufacturer.MatchString(maker):
+		return "dell"
+	case hpManufacturer.MatchString(maker):
+		return "hp"
+	case lenovoManufacturer.MatchString(maker):
+		return "lenovo"
+	}
+	return ""
+}
+
 // SurfaceDriverPlan is what a Surface run may install.
 type SurfaceDriverPlan struct {
 	Drivers  []DriverUpdate

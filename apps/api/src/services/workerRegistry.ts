@@ -1238,10 +1238,10 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
-    // Vendor updates (#11065). W03: the not-returned monitor, no dispatch, so
-    // global. W07 adds dispatch and moves this to socket-owner.
+    // Vendor updates (#11065): the not-returned monitor, scheduled runs, nightly
+    // reboots and schedule releases. socket-owner: it dispatches device commands.
     name: 'oemUpdatesWorker',
-    placement: 'global',
+    placement: 'socket-owner',
     load: async () => {
       const m = await import('../jobs/oemUpdatesWorker');
       return { init: m.initializeOemUpdatesWorker, shutdown: m.shutdownOemUpdatesWorker };

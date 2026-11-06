@@ -78,7 +78,7 @@ import { handleNotifyUserResult, handleRetractMessageResult } from './endpointMe
 import { handleChatMessageResult, handleChatOpenResult } from './endpointMessaging/chatResults';
 // #9662: AI/incident containment actions follow their command's real outcome.
 import { handleExecuteContainmentResult } from './incidentContainmentResults';
-import { applyOemUpdateResult } from './oemUpdates/results';
+import { applyOemUpdateRelease, applyOemUpdateResult } from './oemUpdates/results';
 
 export type CommandResultHandlerOutcome =
   | { kind: 'pam'; classification: PamActuationResultClassification }
@@ -1279,8 +1279,20 @@ async function handleOemUpdateRunResult({ commandId, resolvedDeviceId, stdout }:
   await applyOemUpdateResult({ commandId, deviceId: resolvedDeviceId, result });
 }
 
+/** The agent's answer to a vendor schedule release, the same way: JSON on stdout. */
+async function handleOemUpdateReleaseResult({ commandId, resolvedDeviceId, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  let result: unknown = stdout;
+  try {
+    result = JSON.parse(stdout ?? '');
+  } catch {
+    // Left as the raw text: the parser refuses it.
+  }
+  await applyOemUpdateRelease({ commandId, deviceId: resolvedDeviceId, result });
+}
+
 export const commandResultHandlers: Record<string, CommandResultHandler> = {
   [CommandTypes.OEM_UPDATE_RUN]: handleOemUpdateRunResult,
+  [CommandTypes.OEM_UPDATE_RELEASE]: handleOemUpdateReleaseResult,
   [CommandTypes.WAKE_ON_LAN]: handleWakeOnLanResult,
   network_discovery: handleDiscoveryResult,
   backup_verify: handleBackupVerificationResult,

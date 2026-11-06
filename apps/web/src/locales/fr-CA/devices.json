@@ -2145,6 +2145,8 @@
       "deferredUntil": "Approbation automatique le {{date}}",
       "deferredUntilTitle": "L'anneau de mise à jour {{ring}} retient les nouveaux correctifs pendant sa période de report. Celui-ci est approuvé le {{date}} et installé lors de l'exécution planifiée suivante.",
       "excluded": "Exclu par la politique",
+      "managedByVendorUpdates": "Géré par les mises à jour du constructeur",
+      "managedByVendorUpdatesTitle": "L'outil de mise à jour du constructeur livre ceci sur cet appareil, alors les exécutions planifiées l'ignorent.",
       "excludedSourceTitle": "Les sources de la politique de correctifs ne couvrent pas ce correctif, alors les exécutions planifiées l'ignorent.",
       "excludedCategoryTitle": "L'anneau de mise à jour {{ring}} exclut la catégorie de ce correctif, alors les exécutions planifiées l'ignorent.",
       "excludedAppRuleTitle": "Une règle de blocage ou d'épinglage d'application de l'anneau de mise à jour lié retient ce correctif, alors les exécutions planifiées l'ignorent.",

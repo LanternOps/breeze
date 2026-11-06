@@ -6,7 +6,7 @@ import { renewRevocationLease } from '../services/remoteRevocationLease';
 import { applyProbeResult, parseProbeCommandId } from '../services/assetProbe';
 import { eq, and, or, ne, notInArray, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'crypto';
-import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
+import { db, withDbAccessContext, withDbTransaction, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { dbWriteExpectingRows } from '../db/dbWriteExpectingRows';
 import { commandCasPriorStatusTags } from '../services/commandCasDiagnostics';
 import { devices, deviceCommands, discoveryJobs, scriptExecutions, scriptExecutionBatches, remoteSessions, backupJobs, restoreJobs, tunnelSessions, supportSessions, organizations } from '../db/schema';
@@ -1491,7 +1491,8 @@ async function updateDeviceStatus(agent: OwnDeviceRowIdentity, status: 'online' 
   try {
     // #8318 §6.4: id + agent_id as the socket authenticated them, so a socket
     // of a superseded install matches 0 rows (updateOwnDeviceRow).
-    await updateOwnDeviceRow(
+    // A savepoint, so this catch survives: every caller holds a context (#11225).
+    await withDbTransaction(() => updateOwnDeviceRow(
       db,
       agent,
       {
@@ -1500,7 +1501,7 @@ async function updateDeviceStatus(agent: OwnDeviceRowIdentity, status: 'online' 
         updatedAt: new Date()
       },
       { where: notInArray(devices.status, [...TERMINAL_DEVICE_STATUSES]) },
-    );
+    ));
   } catch (error) {
     console.error(`Failed to update device status for ${agent.agentId}:`, error);
   }
@@ -3712,83 +3713,84 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
           if (agentDb && beginAgentUpdateStatusWrite(agentId, targetVersion)) {
             let written = false;
             try {
-              await runWithAgentDbAccess('agentWs.updateStatus', async () => {
-                try {
-                  const now = new Date();
-                  // #4073 — every update_status precedes an update ATTEMPT (a
-                  // wedged update re-sends it on every heartbeat), so record the
-                  // episode on the device row: first attempt, last attempt,
-                  // count. The heartbeat clears it on convergence; an old open
-                  // record that is still retrying is a stuck update, visible
-                  // without depending on log shipping. A failed read must never
-                  // cost the status flip — it just starts a fresh episode.
-                  // Oversized targets (column is varchar(50)) are not recorded.
-                  let attempt: ReturnType<typeof nextAgentUpdateAttempt> | null = null;
-                  if (targetVersion.length > 0 && targetVersion.length <= 50) {
-                    let prev: {
-                      targetVersion: string | null;
-                      startedAt: Date | null;
-                      lastAttemptAt: Date | null;
-                      attemptCount: number | null;
-                    } | undefined;
-                    try {
-                      [prev] = await db
-                        .select({
-                          targetVersion: devices.updateAttemptTargetVersion,
-                          startedAt: devices.updateAttemptStartedAt,
-                          lastAttemptAt: devices.updateAttemptLastAt,
-                          attemptCount: devices.updateAttemptCount,
-                        })
-                        .from(devices)
-                        .where(eq(devices.agentId, agentId))
-                        .limit(1);
-                    } catch (readError) {
-                      console.error(`[AgentWs] Failed to read update attempt record for ${agentId}:`, readError);
-                    }
-                    attempt = nextAgentUpdateAttempt(
-                      prev ?? { targetVersion: null, startedAt: null, lastAttemptAt: null, attemptCount: null },
-                      targetVersion,
-                      now,
-                    );
-                  } else {
-                    console.warn(`[AgentWs] Not recording update attempt for ${agentId}: targetVersion length ${targetVersion.length} is outside 1..50`);
+              // The catch is outside the context, so a failed write rolls this
+              // transaction back rather than failing its commit (#11225).
+              written = await runWithAgentDbAccess('agentWs.updateStatus', async () => {
+                const now = new Date();
+                // #4073 — every update_status precedes an update ATTEMPT (a
+                // wedged update re-sends it on every heartbeat), so record the
+                // episode on the device row: first attempt, last attempt,
+                // count. The heartbeat clears it on convergence; an old open
+                // record that is still retrying is a stuck update, visible
+                // without depending on log shipping. A failed read must never
+                // cost the status flip — it just starts a fresh episode.
+                // Oversized targets (column is varchar(50)) are not recorded.
+                let attempt: ReturnType<typeof nextAgentUpdateAttempt> | null = null;
+                if (targetVersion.length > 0 && targetVersion.length <= 50) {
+                  let prev: {
+                    targetVersion: string | null;
+                    startedAt: Date | null;
+                    lastAttemptAt: Date | null;
+                    attemptCount: number | null;
+                  } | undefined;
+                  try {
+                    [prev] = await withDbTransaction(() => db
+                      .select({
+                        targetVersion: devices.updateAttemptTargetVersion,
+                        startedAt: devices.updateAttemptStartedAt,
+                        lastAttemptAt: devices.updateAttemptLastAt,
+                        attemptCount: devices.updateAttemptCount,
+                      })
+                      .from(devices)
+                      .where(eq(devices.agentId, agentId))
+                      .limit(1));
+                  } catch (readError) {
+                    console.error(`[AgentWs] Failed to read update attempt record for ${agentId}:`, readError);
                   }
-                  // Same terminal-status guard as updateDeviceStatus (#2230):
-                  // this write must not resurrect a decommissioned/quarantined
-                  // row to 'updating'. #8318 §6.4: bound to the socket's
-                  // authenticated id + agent_id through updateOwnDeviceRow.
-                  const flipped = await updateOwnDeviceRow(
-                    db,
-                    agentDb,
-                    {
-                      status: 'updating',
-                      lastSeenAt: now,
-                      updatedAt: now,
-                      ...(attempt
-                        ? {
-                            updateAttemptTargetVersion: attempt.targetVersion,
-                            updateAttemptStartedAt: attempt.startedAt,
-                            updateAttemptLastAt: attempt.lastAttemptAt,
-                            updateAttemptCount: attempt.attemptCount,
-                          }
-                        : {}),
-                    },
-                    { where: notInArray(devices.status, [...TERMINAL_DEVICE_STATUSES]) },
+                  attempt = nextAgentUpdateAttempt(
+                    prev ?? { targetVersion: null, startedAt: null, lastAttemptAt: null, attemptCount: null },
+                    targetVersion,
+                    now,
                   );
-                  // Only a write that matched the row counts: a terminal-status
-                  // row, or one a reattach / re-enroll handed to another
-                  // install after this socket authenticated, recorded nothing,
-                  // so the coalescer must not absorb the next frame as if it had.
-                  written = flipped.length > 0;
-                  if (written) {
-                    console.log(`[AgentWs] Agent ${agentId} entering update to ${targetVersion}`);
-                  } else {
-                    console.warn(`[AgentWs] update_status from ${agentId} matched no device row (terminal status or the row changed hands); nothing recorded`);
-                  }
-                } catch (error) {
-                  console.error(`[AgentWs] Failed to set updating status for ${agentId}:`, error);
+                } else {
+                  console.warn(`[AgentWs] Not recording update attempt for ${agentId}: targetVersion length ${targetVersion.length} is outside 1..50`);
                 }
+                // Same terminal-status guard as updateDeviceStatus (#2230):
+                // this write must not resurrect a decommissioned/quarantined
+                // row to 'updating'. #8318 §6.4: bound to the socket's
+                // authenticated id + agent_id through updateOwnDeviceRow.
+                const flipped = await updateOwnDeviceRow(
+                  db,
+                  agentDb,
+                  {
+                    status: 'updating',
+                    lastSeenAt: now,
+                    updatedAt: now,
+                    ...(attempt
+                      ? {
+                          updateAttemptTargetVersion: attempt.targetVersion,
+                          updateAttemptStartedAt: attempt.startedAt,
+                          updateAttemptLastAt: attempt.lastAttemptAt,
+                          updateAttemptCount: attempt.attemptCount,
+                        }
+                      : {}),
+                  },
+                  { where: notInArray(devices.status, [...TERMINAL_DEVICE_STATUSES]) },
+                );
+                // Only a write that matched the row counts: a terminal-status
+                // row, or one a reattach / re-enroll handed to another
+                // install after this socket authenticated, recorded nothing,
+                // so the coalescer must not absorb the next frame as if it had.
+                if (flipped.length > 0) {
+                  console.log(`[AgentWs] Agent ${agentId} entering update to ${targetVersion}`);
+                  return true;
+                }
+                console.warn(`[AgentWs] update_status from ${agentId} matched no device row (terminal status or the row changed hands); nothing recorded`);
+                return false;
               });
+            } catch (error) {
+              console.error(`[AgentWs] Failed to set updating status for ${agentId}:`, error);
+              captureException(error instanceof Error ? error : new Error(String(error)));
             } finally {
               finishAgentUpdateStatusWrite(agentId, targetVersion, written);
             }
@@ -4698,11 +4700,14 @@ onClose: async (_event: unknown, ws: WSContext) => {
           try {
             await runWithAgentDbAccess('agentWs.onClose.markOffline', async () => {
               try {
-                const [current] = await db
+                // A savepoint, so a failed read reaches the offline fallback below
+                // without failing this context's commit (#11225). The transition
+                // runs in its own system context, outside this one.
+                const [current] = await withDbTransaction(() => db
                   .select({ id: devices.id, siteId: devices.siteId, status: devices.status, hostname: devices.hostname })
                   .from(devices)
                   .where(eq(devices.agentId, agentId))
-                  .limit(1);
+                  .limit(1));
                 if (!current) {
                   console.warn(`[AgentWs] Device not found for agent ${agentId} on disconnect, skipping status update`);
                   return;
@@ -4757,11 +4762,11 @@ if (activeConnections.get(agentId)?.ws === ws) {
       } else if (agentDb) {
         void runWithAgentDbAccess('agentWs.onError.markOffline', async () => {
           try {
-            const [current] = await db
+            const [current] = await withDbTransaction(() => db
               .select({ status: devices.status })
               .from(devices)
               .where(eq(devices.agentId, agentId))
-              .limit(1);
+              .limit(1));
             if (!current) {
               console.warn(`[AgentWs] Device not found for agent ${agentId} on error disconnect, skipping status update`);
               return;
