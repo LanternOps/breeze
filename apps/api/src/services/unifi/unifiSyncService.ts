@@ -1,4 +1,6 @@
 import { and, eq, sql } from 'drizzle-orm';
+import { captureException } from '../sentry';
+import { safeErrorMessage } from '../aiModels/safeDbError';
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import { unifiSiteMappings, unifiDevices, unifiSyncRuns, discoveredAssets } from '../../db/schema';
 import { buildClassificationWrite, type ClassificationWrite } from '../discoveredAssetClassification';
@@ -498,7 +500,11 @@ export async function applySyncData(
           Object.assign(result, countsBefore);
           failedMappingIds.add(mapping.id);
           anySiteFailed = true;
-          result.error = `site ${mapping.unifiSiteId}: ${(siteErr as Error).message}`;
+          // Stored and shown to the partner: never the failed query's values.
+          const siteError = safeErrorMessage(siteErr);
+          console.error('[UnifiSync] Failed to save a site', { integrationId: integration.id, mappingId: mapping.id, error: siteError });
+          captureException(siteErr, undefined, { integrationId: integration.id, mappingId: mapping.id });
+          result.error = `site ${mapping.unifiSiteId}: ${siteError}`;
         }
       }
 

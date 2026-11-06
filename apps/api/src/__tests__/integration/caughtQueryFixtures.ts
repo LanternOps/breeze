@@ -41,34 +41,42 @@ export const orgContext = (t: Pick<Tenant, 'orgId' | 'partnerId'>): DbAccessCont
   currentPartnerId: t.partnerId,
 });
 
-/** Assert a site rename written beside the code under test committed. */
-async function expectNameCommitted(siteId: string, name: string) {
-  const [site] = await getTestDb().select({ name: sites.name }).from(sites).where(eq(sites.id, siteId));
-  expect(site!.name).toBe(name);
+/** What the helpers below write beside the code under test: two columns of the same site row. */
+type Marker = { name: string; timezone: string };
+
+const newMarker = (): Marker => ({ name: `kept-${randomUUID()}`, timezone: `before-${randomUUID()}` });
+
+/** Assert both marker writes committed. The first is made before `fn` runs, so a savepoint that rolled back too far is caught. */
+async function expectMarkerCommitted(siteId: string, marker: Marker) {
+  const [site] = await getTestDb().select({ name: sites.name, timezone: sites.timezone }).from(sites).where(eq(sites.id, siteId));
+  expect(site!.name).toBe(marker.name);
+  expect(site!.timezone).toBe(marker.timezone);
 }
 
-/** Run `fn` in a held org context, then write beside it and prove that write committed. */
-export async function inHeldContext<T>(t: Tenant, fn: () => Promise<T>): Promise<T> {
-  const name = `kept-${randomUUID()}`;
-  const result = await withDbAccessContext(orgContext(t), async () => {
+async function inHeld<T>(
+  run: <R>(fn: () => Promise<R>) => Promise<R>,
+  siteId: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const marker = newMarker();
+  const result = await run(async () => {
+    await db.update(sites).set({ timezone: marker.timezone }).where(eq(sites.id, siteId));
     const value = await fn();
-    await db.update(sites).set({ name }).where(eq(sites.id, t.siteId));
+    await db.update(sites).set({ name: marker.name }).where(eq(sites.id, siteId));
     return value;
   });
-  await expectNameCommitted(t.siteId, name);
+  await expectMarkerCommitted(siteId, marker);
   return result;
+}
+
+/** Run `fn` in a held org context with a marker write before and after it; both must commit. */
+export function inHeldContext<T>(t: Tenant, fn: () => Promise<T>): Promise<T> {
+  return inHeld((work) => withDbAccessContext(orgContext(t), work), t.siteId, fn);
 }
 
 /** The same proof in the held system context a worker runs in. */
-export async function inHeldSystemContext<T>(t: Pick<Tenant, 'siteId'>, fn: () => Promise<T>): Promise<T> {
-  const name = `kept-${randomUUID()}`;
-  const result = await withSystemDbAccessContext(async () => {
-    const value = await fn();
-    await db.update(sites).set({ name }).where(eq(sites.id, t.siteId));
-    return value;
-  });
-  await expectNameCommitted(t.siteId, name);
-  return result;
+export function inHeldSystemContext<T>(t: Pick<Tenant, 'siteId'>, fn: () => Promise<T>): Promise<T> {
+  return inHeld((work) => withSystemDbAccessContext(work), t.siteId, fn);
 }
 
 /** An org-scoped AuthContext for the AI tool handlers and route-shaped services. */

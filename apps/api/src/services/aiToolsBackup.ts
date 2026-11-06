@@ -7,6 +7,7 @@
  */
 
 import { db, runOutsideDbContext, withDbAccessContext, withDbTransactionIfHeld } from '../db';
+import { safeErrorMessage } from './aiModels/safeDbError';
 import {
   backupConfigs,
   backupJobs,
@@ -891,7 +892,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         // A fixed message: target_config is tenant- and model-readable, the raw
         // error goes to the log.
         const error = 'Failed to dispatch restore command to agent';
-        console.error('[aiToolsBackup] Failed to dispatch restore:', err);
+        console.error('[aiToolsBackup] Failed to dispatch restore:', safeErrorMessage(err));
         await markRestoreJobFailed(restoreJob.id, error);
         return JSON.stringify({ error });
       }

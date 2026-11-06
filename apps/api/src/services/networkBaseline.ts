@@ -1,4 +1,6 @@
 import { and, desc, eq, gte, inArray, or, sql, type SQL } from 'drizzle-orm';
+import { captureException } from './sentry';
+import { safeErrorMessage } from './aiModels/safeDbError';
 import { db, withDbTransactionIfHeld } from '../db';
 import {
   alerts,
@@ -465,8 +467,9 @@ async function resolveAlertDeviceForChangeEvent(
   } catch (error) {
     console.error(
       `[NetworkBaseline] resolveAlertDevice strategy 'discovered_asset_exact_ip' failed for event ${changeEvent.id}:`,
-      error instanceof Error ? error.message : error
+      safeErrorMessage(error)
     );
+    captureException(error, undefined, { strategy: 'discovered_asset_exact_ip', changeEventId: changeEvent.id });
   }
 
   // Strategy 3: Device network table match by IP or MAC
@@ -504,8 +507,9 @@ async function resolveAlertDeviceForChangeEvent(
   } catch (error) {
     console.error(
       `[NetworkBaseline] resolveAlertDevice strategy 'device_network_match' failed for event ${changeEvent.id}:`,
-      error instanceof Error ? error.message : error
+      safeErrorMessage(error)
     );
+    captureException(error, undefined, { strategy: 'device_network_match', changeEventId: changeEvent.id });
   }
 
   // Strategy 4: Most recently seen device at the same site
@@ -532,8 +536,9 @@ async function resolveAlertDeviceForChangeEvent(
   } catch (error) {
     console.error(
       `[NetworkBaseline] resolveAlertDevice strategy 'site_anchor_device' failed for event ${changeEvent.id}:`,
-      error instanceof Error ? error.message : error
+      safeErrorMessage(error)
     );
+    captureException(error, undefined, { strategy: 'site_anchor_device', changeEventId: changeEvent.id });
   }
 
   // Strategy 5: Most recently seen device in the same org
@@ -555,8 +560,9 @@ async function resolveAlertDeviceForChangeEvent(
   } catch (error) {
     console.error(
       `[NetworkBaseline] resolveAlertDevice strategy 'org_anchor_device' failed for event ${changeEvent.id}:`,
-      error instanceof Error ? error.message : error
+      safeErrorMessage(error)
     );
+    captureException(error, undefined, { strategy: 'org_anchor_device', changeEventId: changeEvent.id });
   }
 
   return {

@@ -44,6 +44,20 @@ export async function failStatementsOn(table: string): Promise<void> {
   });
 }
 
+/**
+ * Run every cleanup, newest first, even when one fails (a failed rename-back must not
+ * strand the faults queued behind it), then rethrow the first failure.
+ */
 export async function clearStatementFaults(): Promise<void> {
-  while (cleanups.length > 0) await cleanups.pop()!();
+  const pending = cleanups.splice(0).reverse();
+  let first: unknown;
+  let failed = false;
+  for (const cleanup of pending) {
+    try {
+      await cleanup();
+    } catch (err) {
+      if (!failed) { failed = true; first = err; }
+    }
+  }
+  if (failed) throw first;
 }

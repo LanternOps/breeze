@@ -65,6 +65,7 @@
  *     key — all via the shared `admitTriageRun` helper.
  */
 import { and, desc, eq, isNotNull, isNull, ne, or } from 'drizzle-orm';
+import { captureException } from '../sentry';
 import * as dbModule from '../../db';
 import { aiAgentRuns, ticketComments, ticketDrafts, tickets } from '../../db/schema';
 import type { BreezeEvent } from '../eventBus';
@@ -147,6 +148,7 @@ async function humanCommentIsNewerThanAgentActivity(
     return humanCommentCreatedAt.getTime() > newestAgent.createdAt.getTime();
   } catch (err) {
     console.error('[ticketHelpdesk] loop-guard read failed — denying admission:', { ticketId, err });
+    captureException(err);
     return false;
   }
 }
@@ -313,6 +315,7 @@ async function triageRunCeilingReached(ticketId: string): Promise<boolean> {
     return rows.length >= MAX_TRIAGE_RUNS_PER_TICKET;
   } catch (err) {
     console.error('[ticketHelpdesk] triage-run ceiling read failed — denying admission:', { ticketId, err });
+    captureException(err);
     return true;
   }
 }

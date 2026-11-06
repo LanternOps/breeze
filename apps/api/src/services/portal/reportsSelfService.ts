@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { safeErrorMessage } from '../aiModels/safeDbError';
 import { reportRunOwnerColumns } from '../reportRunOwner';
 import { and, count, desc, eq, ne, notInArray, sql } from 'drizzle-orm';
 import { buildReportPdf, type BuildOpts } from '@breeze/shared/reportPdf';
@@ -691,8 +692,9 @@ export async function generatePortalReport(args: {
         });
       });
     } catch (error) {
+      // Stored on the run: never the failed query's values.
       const errorMessage = error instanceof Error
-        ? error.message
+        ? safeErrorMessage(error)
         : 'Report generation failed';
       console.error('[portal-reports] Report generation failed', {
         runId: run.id,

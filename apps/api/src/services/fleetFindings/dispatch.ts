@@ -32,6 +32,7 @@
  *     {@link REMEDIATION_BOUND_PARAMETER_ERROR}.
  */
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { safeErrorMessage } from '../aiModels/safeDbError';
 
 import { db, withDbTransaction } from '../../db';
 import { sqlTimestamp } from '../../db/sqlValues';
@@ -872,7 +873,8 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
       await markTargetFailed(
         runId,
         target.targetDeviceUuid,
-        err instanceof Error ? err.message : 'Failed to queue command'
+        // Stored and tenant-readable: never the failed query's values.
+        err instanceof Error ? safeErrorMessage(err) : 'Failed to queue command'
       );
     }
   }
