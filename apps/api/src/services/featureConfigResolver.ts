@@ -429,7 +429,7 @@ export interface ResolvedPatchConfigDetails {
 // legacy `settings.timezone` JSONB key as a non-destructive fallback (the column
 // is backfilled from that key but the UI still writes the key today — see
 // issue #1318 / migration 2026-06-13-c).
-function partnerTimezoneFrom(
+export function partnerTimezoneFrom(
   column: string | null | undefined,
   settings: unknown,
 ): string | null {
