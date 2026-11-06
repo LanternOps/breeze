@@ -329,7 +329,8 @@
     "title": "Süreç Yöneticisi",
     "totalCpu": "Toplam CPU",
     "pid": "PID",
-    "cpu": "CPU"
+    "cpu": "CPU",
+    "monitorThis": "Bunu izle"
   },
   "proxyTunnelPage": {
     "errors": {
@@ -656,7 +657,8 @@
     "summary": "{{device}} üzerindeki {{total}} hizmetten {{shown}} tanesi",
     "title": "Başlık",
     "windowsOnlyDescription": "Hizmetler Yöneticisi yalnızca Windows cihazlar için kullanılabilir. {{device}}, {{os}} çalıştırıyor.",
-    "windowsOnlyTitle": "Windows Yalnızca Başlık"
+    "windowsOnlyTitle": "Windows Yalnızca Başlık",
+    "monitorThis": "Bunu izle"
   },
   "sessionHistory": {
     "columns": {

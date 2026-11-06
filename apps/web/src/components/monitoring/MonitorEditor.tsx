@@ -240,7 +240,7 @@ export function tabFromHash(hash: string): EditorTab | undefined {
 }
 export function editorHashForTab(hash: string, tab: EditorTab): string {
   const params = editorHashParams(hash);
-  if (!['policy', 'kind', 'assetId', 'checkType', 'target'].some(key => params.has(key))) return `#${tab}`;
+  if (!['policy', 'kind', 'assetId', 'checkType', 'target', 'serviceName', 'processName'].some(key => params.has(key))) return `#${tab}`;
   params.set('tab', tab);
   return `#${params.toString()}`;
 }
@@ -556,8 +556,17 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
       if (['icmp_ping', 'tcp_port', 'http_check', 'dns_check'].includes(checkType ?? '')) condition.checkType = checkType;
       if (params.get('target')) condition.target = params.get('target');
     }
+    // "Monitor this" handoff from Remote Tools (#10927): prefill the watched name.
+    const watchedName = kind === 'service' ? params.get('serviceName')
+      : kind === 'process' ? params.get('processName') : null;
+    if (watchedName) {
+      condition[kind === 'service' ? 'serviceName' : 'processName'] = watchedName;
+      if (!getValues('name')) {
+        setValue('name', `${kind === 'service' ? stableT('monitoring:kinds.service') : stableT('monitoring:kinds.process')} ${watchedName}`, { shouldDirty: true });
+      }
+    }
     setValue('condition', condition);
-  }, [isNew, setValue]);
+  }, [isNew, setValue, getValues, stableT]);
 
   useEffect(() => {
     if (!isNew) return;

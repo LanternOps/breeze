@@ -329,7 +329,8 @@
     "title": "Responsable de processus",
     "totalCpu": "CPU total",
     "pid": "PID",
-    "cpu": "CPU"
+    "cpu": "CPU",
+    "monitorThis": "Surveiller ceci"
   },
   "proxyTunnelPage": {
     "errors": {
@@ -656,7 +657,8 @@
     "summary": "{{shown}} de {{total}} services sur {{device}}",
     "title": "Titre",
     "windowsOnlyDescription": "Le Gestionnaire de Services n’est disponible que pour les appareils Windows. {{device}} court {{os}}.",
-    "windowsOnlyTitle": "Windows Seul titre"
+    "windowsOnlyTitle": "Windows Seul titre",
+    "monitorThis": "Surveiller ceci"
   },
   "sessionHistory": {
     "columns": {
