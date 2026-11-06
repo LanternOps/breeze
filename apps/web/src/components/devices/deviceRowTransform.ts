@@ -104,6 +104,7 @@ export function toDeviceListRow(raw: ApiDeviceRow): DeviceListRow {
     linkGroupRole: normalizeLinkGroupRole(d.linkGroupRole),
     enrolledAt: d.enrolledAt as string | undefined,
     desktopAccess: (d.desktopAccess as Device['desktopAccess']) ?? null,
+    disks: Array.isArray(d.disks) ? d.disks as Device['disks'] : [],
     hardware: hardware ? {
       cpuModel: hardware.cpuModel as string | undefined,
       cpuCores: typeof hardware.cpuCores === 'number' ? hardware.cpuCores : undefined,

@@ -97,10 +97,12 @@ import { authMiddleware } from '../../middleware/auth';
 
 function rigDeviceListRows(
   rows: unknown[],
-  // Rows the batched LAN-IP lateral returns (#2503). The handler issues two
-  // db.execute calls per request in a fixed order — latest metrics first, then
-  // the LAN-IP lookup — so the LAN rig has to be the SECOND queued result.
+  // Batched lookups run in order: latest metrics, LAN IP, disk inventory.
   lanIpRows: Array<{ device_id: string; ip_address: string }> = [],
+  diskRows: Array<{
+    device_id: string; mount_point: string; total_gb: number;
+    used_gb: number; free_gb: number; used_percent: number;
+  }> = [],
 ) {
   const offset = vi.fn().mockResolvedValue(rows);
   const limit = vi.fn().mockReturnValue({ offset });
@@ -118,7 +120,8 @@ function rigDeviceListRows(
   vi.mocked(db.execute)
     .mockResolvedValue([] as never)
     .mockResolvedValueOnce([] as never)      // latest-metrics lateral
-    .mockResolvedValueOnce(lanIpRows as never); // LAN-IP lateral (#2503)
+    .mockResolvedValueOnce(lanIpRows as never)
+    .mockResolvedValueOnce(diskRows as never);
   return { where, leftJoin };
 }
 
@@ -127,8 +130,69 @@ describe('GET /devices — response shape', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.execute).mockReset();
     app = new Hono();
     app.route('/devices', coreRoutes);
+  });
+
+  it('returns each disk usage reading under its own device without duplicating rows', async () => {
+    const first = '11111111-1111-4111-8111-111111111111';
+    const second = '22222222-2222-4222-8222-222222222222';
+    rigDeviceListRows([{ id: first }, { id: second }], [], [
+      { device_id: first, mount_point: 'C:\\', total_gb: 100, used_gb: 75, free_gb: 25, used_percent: 75 },
+      { device_id: first, mount_point: 'D:\\', total_gb: 200, used_gb: 100, free_gb: 100, used_percent: 50 },
+      { device_id: second, mount_point: '/', total_gb: 500, used_gb: 0, free_gb: 500, used_percent: 0 },
+    ]);
+
+    const response = await app.request('/devices');
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.data).toHaveLength(2);
+    expect(body.data[0].disks).toEqual([
+      { mountPoint: 'C:\\', totalGb: 100, usedGb: 75, freeGb: 25, usedPercent: 75 },
+      { mountPoint: 'D:\\', totalGb: 200, usedGb: 100, freeGb: 100, usedPercent: 50 },
+    ]);
+    expect(body.data[1].disks).toEqual([
+      { mountPoint: '/', totalGb: 500, usedGb: 0, freeGb: 500, usedPercent: 0 },
+    ]);
+    const query = new PgDialect().sqlToQuery(vi.mocked(db.execute).mock.calls[2]![0] as SQL);
+    expect(query.sql).toContain('INNER JOIN "device_disks" AS disk ON disk.device_id = d.device_id');
+    expect(query.params).toEqual([first, second]);
+  });
+
+  it('returns an empty disk list when inventory has not been reported', async () => {
+    rigDeviceListRows([{ id: '11111111-1111-4111-8111-111111111111' }]);
+    const response = await app.request('/devices');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data[0].disks).toEqual([]);
+  });
+
+  it('restricts disk inventory to the authorized returned page, excluding the cursor peek row', async () => {
+    const first = '11111111-1111-4111-8111-111111111111';
+    const peek = '22222222-2222-4222-8222-222222222222';
+    rigDeviceListRows([{ id: first, hostname: 'a' }, { id: peek, hostname: 'b' }]);
+    const response = await app.request('/devices?limit=1');
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.data).toHaveLength(1);
+    expect(body.pagination.nextCursor).toBeTruthy();
+    const query = new PgDialect().sqlToQuery(vi.mocked(db.execute).mock.calls[2]![0] as SQL);
+    expect(query.params).toEqual([first]);
+  });
+
+  it('does not query disk inventory for an empty authorized page', async () => {
+    rigDeviceListRows([]);
+    const response = await app.request('/devices');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data).toEqual([]);
+    expect(db.execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects another organization before querying disk inventory', async () => {
+    const response = await app.request('/devices?orgId=22222222-2222-4222-8222-222222222222');
+    expect(response.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.execute).not.toHaveBeenCalled();
   });
 
   it('includes watchdog health fields in each list row', async () => {
@@ -460,9 +524,10 @@ describe('GET /devices — response shape', () => {
     const projection = vi.mocked(db.select).mock.calls[0]?.[0];
     expect(projection).not.toHaveProperty('warrantyEndDate');
     expect(projection).not.toHaveProperty('warrantyStatus');
-    // No extra query for warranty enrichment on the default hot path.
+    // No extra query for warranty enrichment on the default hot path:
+    // the batched lookups are metrics, LAN IP, and disk inventory.
     expect(db.select).toHaveBeenCalledTimes(1);
-    expect(db.execute).toHaveBeenCalledTimes(2);
+    expect(db.execute).toHaveBeenCalledTimes(3);
   });
   it('projects the warranty end date and status on list rows', async () => {
     const { leftJoin } = rigDeviceListRows([{

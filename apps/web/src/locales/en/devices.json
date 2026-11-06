@@ -1661,6 +1661,11 @@
     "online": "Online"
   },
   "deviceList": {
+    "diskUsage": "Disk Usage",
+    "diskUsageScope": "Disks to display",
+    "allDisks": "All disks",
+    "osDiskOnly": "OS disk only",
+    "sortByDiskUsage": "Sort by disk usage (highest displayed usage)",
     "selectedComposition": "{{agent}} agent, {{network}} network",
     "agentOnlyBulkAction": "Applies to agent devices only",
     "eligibleOfSelected": "{{count}} of {{total}}",
