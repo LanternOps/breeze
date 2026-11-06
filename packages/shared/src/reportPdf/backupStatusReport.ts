@@ -14,7 +14,12 @@ import type {
   BackupRecency,
   ExternalBackupStatus,
 } from '../types/backupHealth';
-import { saasWorkloadLabel, type BackupStatusBucketId } from '../utils/backupHealth';
+import {
+  saasWorkloadLabel,
+  verifiedBootableState,
+  type BackupStatusBucketId,
+  type VerifiedBootableState,
+} from '../utils/backupHealth';
 
 type RGB = [number, number, number];
 
@@ -175,6 +180,7 @@ const COLUMNS: Col[] = [
   { key: 'history', label: '28 days', w: 36, halign: 'left' },
   { key: 'status', label: 'Status', w: 24, halign: 'left' },
   { key: 'errors', label: 'Errors', w: 13, halign: 'right' },
+  { key: 'verifiedBootable', label: 'Verified bootable', w: 20, halign: 'left' },
 ];
 const STATUS_COL = COLUMNS.findIndex((c) => c.key === 'status');
 const HISTORY_COL = COLUMNS.findIndex((c) => c.key === 'history');
@@ -205,6 +211,13 @@ const STATUS_LABEL: Record<ExternalBackupStatus, string> = {
   paused: 'Paused',
 };
 
+const VERIFIED_BOOTABLE_LABEL: Record<VerifiedBootableState, string> = {
+  passed: 'Passed',
+  failed: 'Failed',
+  never_run: 'Never run',
+  not_applicable: 'n/a',
+};
+
 function statusColor(C: PdfChrome['C'], status: ExternalBackupStatus): RGB {
   switch (status) {
     case 'completed': return C.success;
@@ -233,6 +246,7 @@ function cellText(row: BackupHealthRow, key: string): string {
     case 'used': return formatBytes(row.usedBytes);
     case 'errors': return String(row.errorsCount);
     case 'status': return STATUS_LABEL[row.status];
+    case 'verifiedBootable': return VERIFIED_BOOTABLE_LABEL[verifiedBootableState(row)];
     // Drawn by hand in didDrawCell (a 28-cell colour strip); text stays empty
     // so autoTable never prints a stray label under the drawing.
     case 'history':

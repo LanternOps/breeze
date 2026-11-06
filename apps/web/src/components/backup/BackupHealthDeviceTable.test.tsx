@@ -31,6 +31,9 @@ function makeRow(overrides: Partial<BackupHealthRow> = {}): BackupHealthRow {
     dataSources: ['files'],
     history28d: [],
     agentOnline: true,
+    verifiedBootableAt: null,
+    verifiedBootable: null,
+    verifiedBootableFailedChecks: null,
     ...overrides,
   };
 }
@@ -75,5 +78,28 @@ describe('BackupHealthDeviceTable SaaS workloads', () => {
   it('preserves navigation to linked endpoint devices', () => {
     render(<BackupHealthDeviceTable rows={[makeRow()]} />);
     expect(screen.getByTestId('backup-health-device-link-breeze:dev-1')).toHaveAttribute('href', '/devices/dev-1');
+  });
+});
+
+describe('BackupHealthDeviceTable — Verified bootable column', () => {
+  it('renders the verified-bootable column: Passed for axcient true, n/a for Cove and Breeze rows', () => {
+    render(<BackupHealthDeviceTable rows={[
+      makeRow({ key: 'provider:axcient', source: 'provider', providerKey: 'axcient', providerLabel: 'Axcient x360Recover', verifiedBootable: true, verifiedBootableAt: '2026-11-05T03:12:00.000Z', verifiedBootableFailedChecks: [] }),
+      makeRow({ key: 'provider:cove', source: 'provider', providerKey: 'cove', providerLabel: 'Cove Data Protection' }),
+      makeRow({ key: 'breeze:dev-1' }),
+    ]} />);
+    expect(screen.getByRole('columnheader', { name: 'Verified bootable' })).toBeInTheDocument();
+    expect(screen.getByTestId('backup-health-verified-provider:axcient')).toHaveTextContent('Passed');
+    expect(screen.getByTestId('backup-health-verified-provider:cove')).toHaveTextContent('n/a');
+    expect(screen.getByTestId('backup-health-verified-breeze:dev-1')).toHaveTextContent('n/a');
+  });
+
+  it('separates a failed check from one that never ran', () => {
+    render(<BackupHealthDeviceTable rows={[
+      makeRow({ key: 'provider:bad', source: 'provider', providerKey: 'axcient', verifiedBootable: false, verifiedBootableFailedChecks: ['system_boot'] }),
+      makeRow({ key: 'provider:new', source: 'provider', providerKey: 'axcient' }),
+    ]} />);
+    expect(screen.getByTestId('backup-health-verified-provider:bad')).toHaveTextContent('Failed');
+    expect(screen.getByTestId('backup-health-verified-provider:new')).toHaveTextContent('Never run');
   });
 });

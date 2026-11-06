@@ -1,5 +1,5 @@
 // apps/web/src/components/backup/BackupHealthDeviceTable.tsx
-import type { BackupHealthRow } from '@breeze/shared';
+import { verifiedBootableState, type BackupHealthRow } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
@@ -38,7 +38,7 @@ export default function BackupHealthDeviceTable({ rows }: { rows: BackupHealthRo
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[1100px] text-sm">
+      <table className="w-full min-w-[1200px] text-sm">
         <thead>
           <tr className="border-b text-left text-xs font-semibold uppercase text-muted-foreground">
             <th className="pb-2 pr-3">{t('backupHealth.table.device')}</th>
@@ -52,6 +52,7 @@ export default function BackupHealthDeviceTable({ rows }: { rows: BackupHealthRo
             <th className="pb-2 pr-3">{t('backupHealth.table.history')}</th>
             <th className="pb-2 pr-3">{t('common:labels.status')}</th>
             <th className="pb-2 pr-3">{t('backupHealth.table.errors')}</th>
+            <th className="pb-2 pr-3">{t('backupHealth.table.verifiedBootable')}</th>
             <th className="pb-2">{t('backupHealth.table.agent')}</th>
           </tr>
         </thead>
@@ -108,6 +109,9 @@ export default function BackupHealthDeviceTable({ rows }: { rows: BackupHealthRo
                   {t(/* i18n-dynamic */ `backupHealth.status.${row.status}`, { defaultValue: row.status })}
                 </td>
                 <td className="py-2 pr-3 text-muted-foreground">{row.errorsCount}</td>
+                <td data-testid={`backup-health-verified-${row.key}`} className="py-2 pr-3 text-muted-foreground">
+                  {t(/* i18n-dynamic */ `backupHealth.verifiedBootable.${verifiedBootableState(row)}`)}
+                </td>
                 <td className="py-2 text-muted-foreground">
                   {row.agentOnline == null
                     ? '--'
