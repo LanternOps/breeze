@@ -1,4 +1,4 @@
-import type { OemLane } from '@breeze/shared';
+import type { OemCategory, OemLane } from '@breeze/shared';
 
 /**
  * Which vendor lane a device belongs to, or why none applies (spec 4.3).
@@ -39,6 +39,19 @@ function laneFor(manufacturer: string | null, model: string | null): OemLane | n
   if (LENOVO.test(maker)) return 'lenovo';
   if (MICROSOFT.test(maker) && SURFACE_MODEL.test(model?.trim() ?? '')) return 'surface';
   return null;
+}
+
+/** They write the machine's firmware, so they need a reboot Breeze controls (spec 4.5). */
+export const OEM_FLASH_CATEGORIES: ReadonlySet<OemCategory> = new Set(['bios', 'firmware']);
+
+/** Sticky until the tool version or the model changes: each is a new question (spec 4.3). */
+export function stillNotSupported(
+  status: { applicability?: string | null; notSupportedToolVersion?: string | null; notSupportedModel?: string | null } | undefined,
+  currentToolVersion: string | null,
+  model: string | null,
+): boolean {
+  if (status?.applicability !== 'not_supported') return false;
+  return status.notSupportedToolVersion === currentToolVersion && status.notSupportedModel === model;
 }
 
 export function resolveApplicability(input: {

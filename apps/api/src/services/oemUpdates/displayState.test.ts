@@ -43,6 +43,13 @@ describe('deriveOemDisplayState', () => {
     ['a Run Now reboot pending on an unmanaged device', { status: status({ rebootPendingSince: new Date(now.getTime() - DAY) }), linkEnabled: false, occurrence: null, now }, 'waiting_for_reboot'],
     ['two nights held', { status: status({ rebootPendingSince: new Date(now.getTime() - 2.9 * DAY) }), linkEnabled: true, occurrence: inOccurrence, now }, 'waiting_for_reboot'],
     ['three nights held', { status: status({ rebootPendingSince: new Date(now.getTime() - 3 * DAY) }), linkEnabled: true, occurrence: inOccurrence, now }, 'reboot_overdue'],
+    ['three attempts used is overdue, with nights left', { status: status({ lastOutcome: 'failed', attempts: 3 }), linkEnabled: true, occurrence: inOccurrence, now }, 'overdue'],
+    ['two attempts used still reads as failing', { status: status({ lastOutcome: 'failed', attempts: 2 }), linkEnabled: true, occurrence: inOccurrence, now }, 'failing'],
+    ['three attempts from last month do not count', { status: status({ lastOutcome: 'failed', attempts: 3, occurrenceKey: '2027-01' }), linkEnabled: true, occurrence: inOccurrence, now }, 'failing'],
+    ['three attempts and finished on the last is up to date', { status: status({ lastOutcome: 'success', attempts: 3 }), linkEnabled: true, occurrence: inOccurrence, now }, 'up_to_date'],
+    ['reboot never, however long, waits for the reboot', { status: status({ rebootPendingSince: new Date(now.getTime() - 20 * DAY) }), linkEnabled: true, rebootMode: 'never', occurrence: inOccurrence, now }, 'waiting_for_reboot'],
+    ['reboot never, blocked by a pending reboot, is not failing', { status: status({ lastOutcome: 'blocked_reboot_pending', rebootPendingSince: new Date(now.getTime() - DAY) }), linkEnabled: true, rebootMode: 'never', occurrence: inOccurrence, now }, 'waiting_for_reboot'],
+    ['overnight goes overdue after three nights', { status: status({ rebootPendingSince: new Date(now.getTime() - 3 * DAY) }), linkEnabled: true, rebootMode: 'overnight', occurrence: inOccurrence, now }, 'reboot_overdue'],
   ])('%s', (_name, input, expected) => {
     expect(deriveOemDisplayState(input)).toBe(expected);
   });

@@ -395,6 +395,8 @@ x-api-env: &api-env
   BREEZE_OEM_UPDATES_ENABLED: ${BREEZE_OEM_UPDATES_ENABLED:-false}
   BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: ${BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST:-}
   BREEZE_OEM_UPDATES_DISABLED_LANES: ${BREEZE_OEM_UPDATES_DISABLED_LANES:-}
+  # Scheduled runs and overnight reboots started per 10-minute tick. Empty keeps the default.
+  OEM_UPDATES_MAX_DISPATCH_PER_TICK: ${OEM_UPDATES_MAX_DISPATCH_PER_TICK:-}
   # Lab only: opens closed gates for the listed device ids. The API refuses to
   # boot with it set under NODE_ENV=production, so the prod template omits it.
   BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: ${BREEZE_OEM_UPDATES_LAB_DEVICE_IDS:-}

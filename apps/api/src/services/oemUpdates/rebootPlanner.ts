@@ -22,6 +22,7 @@
  */
 import { agentSupportsOemRebootHold } from '@breeze/shared';
 import { clampRebootDelayMinutes, type RebootDeferralSettings } from '../patchRebootHandler';
+import { getLocalTimeParts, zonedWallClockToUtc } from '../zonedTime';
 
 /** The overnight grace when the patch policy's does not fit the window (spec §4.5). */
 export const OEM_REBOOT_GRACE_MINUTES = 15;
@@ -112,10 +113,10 @@ export function planOvernightReboot(input: OvernightRebootInput): OvernightReboo
  * instant.
  */
 export function nextWindowStartAfter(windowStart: Date, timezone: string, after: Date): Date {
-  const start = localParts(windowStart, timezone);
+  const start = getLocalTimeParts(windowStart, timezone);
   // Begin from whichever local date is later, so a window several nights old
   // does not walk forward one night at a time.
-  const from = after.getTime() > windowStart.getTime() ? localParts(after, timezone) : start;
+  const from = after.getTime() > windowStart.getTime() ? getLocalTimeParts(after, timezone) : start;
   for (let offset = -1; offset <= 3; offset += 1) {
     const day = new Date(Date.UTC(from.year, from.month - 1, from.day + offset));
     const candidate = zonedWallClockToUtc(
@@ -134,39 +135,3 @@ export function nextWindowStartAfter(windowStart: Date, timezone: string, after:
   throw new RangeError(`no window opening after ${after.toISOString()} in ${timezone}`);
 }
 
-type LocalParts = { year: number; month: number; day: number; hour: number; minute: number };
-
-function localParts(instant: Date, timezone: string): LocalParts {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(instant);
-  const get = (type: string) => Number.parseInt(parts.find((p) => p.type === type)?.value ?? '0', 10);
-  return { year: get('year'), month: get('month'), day: get('day'), hour: get('hour') % 24, minute: get('minute') };
-}
-
-function zoneOffsetMsAt(instant: number, timezone: string): number {
-  const p = localParts(new Date(instant), timezone);
-  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, 0) - Math.floor(instant / MINUTE_MS) * MINUTE_MS;
-}
-
-/**
- * The instant of a wall-clock time in `timezone`. The same rule as the patch
- * scheduler's (jobs/patchSchedulerWorker.ts): a time inside a spring-forward gap
- * moves forward into it, and an ambiguous fall-back time is its first occurrence.
- */
-function zonedWallClockToUtc(parts: LocalParts, timezone: string): Date {
-  const wallAsUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, 0);
-  const firstOffset = zoneOffsetMsAt(wallAsUtc, timezone);
-  const firstCandidate = wallAsUtc - firstOffset;
-  const secondOffset = zoneOffsetMsAt(firstCandidate, timezone);
-  if (secondOffset === firstOffset) return new Date(firstCandidate);
-  const secondCandidate = wallAsUtc - secondOffset;
-  if (zoneOffsetMsAt(secondCandidate, timezone) === secondOffset) return new Date(secondCandidate);
-  return new Date(Math.max(firstCandidate, secondCandidate));
-}
