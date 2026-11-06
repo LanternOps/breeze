@@ -235,6 +235,18 @@ export const ticketSlaConfigSchema = legacyReportConfigSchema.extend({
 export type TicketSlaConfig = z.infer<typeof ticketSlaConfigSchema>;
 
 /**
+ * #11018 — Customer SLA performance. Org-only, so the selectors are refused as
+ * on the business types. No `.default()`: the generator applies
+ * `last_full_month` and `includeSubjects: false`.
+ */
+export const ticketSlaPerformanceConfigSchema = legacyReportConfigSchema.extend({
+  ...BUSINESS_SELECTOR_REFUSALS,
+  period: periodSchema.optional(),
+  includeSubjects: z.boolean().optional(),
+});
+export type TicketSlaPerformanceConfig = z.infer<typeof ticketSlaPerformanceConfigSchema>;
+
+/**
  * #3198 W02 R2 — Technician time & billability (spec §3.3 R2).
  *
  * - `groupBy` (default `technician`, applied in the generator) narrows the
