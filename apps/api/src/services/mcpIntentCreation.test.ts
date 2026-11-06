@@ -297,6 +297,54 @@ describe('createMcpActionIntent', () => {
     });
   });
 
+  // #11181: a tool whose orgId argument names the org it changes is filed there, and a
+  // named org the caller cannot reach refuses instead of falling back to another org.
+  describe('a tool that names its target org as an argument (#11181)', () => {
+    const ORG_B = '66666666-6666-4666-8666-666666666666';
+    const FOREIGN = '88888888-8888-4888-8888-888888888888';
+    const partnerAuth = (reach: string[]) => ({
+      principal: { kind: 'api_key', apiKeyId: 'key-A' }, user: { id: USER }, orgId: null, canAccessOrg: (id: string) => reach.includes(id),
+    }) as never;
+    const sensitive = (orgId: string) => ({ action: 'set_sensitive_access', orgId, flags: { showPatches: true } });
+    const partnerInput = (over: Partial<CreateMcpActionIntentInput> = {}) => input({
+      auth: partnerAuth([ORG, ORG_B]),
+      apiKey: { id: 'key-A', orgId: null, name: 'ci key', mcpDomains: null } as never,
+      toolName: 'manage_org_portal_settings',
+      toolInput: sensitive(ORG_B),
+      executionOrgId: ORG_B,
+      ...over,
+    });
+    const filedOrg = () => (mocks.createActionIntent.mock.calls[0] as unknown as [unknown, { orgId: string }])[1].orgId;
+
+    it('set_sensitive_access is filed in the org it names', async () => {
+      await createMcpActionIntent(partnerInput());
+      expect(filedOrg()).toBe(ORG_B);
+    });
+
+    it('a named org out of reach refuses with invalid_params and files nothing (never the fallback org)', async () => {
+      // resolveMcpExecutionOrgId discards an unreachable orgId and falls back to the first org.
+      const out = await createMcpActionIntent(partnerInput({ toolInput: sensitive(FOREIGN), executionOrgId: ORG }));
+      expect(out).toMatchObject({ kind: 'refused', code: 'invalid_params' });
+      expect(mocks.createActionIntent).not.toHaveBeenCalled();
+    });
+
+    it('an org-pinned key naming another org refuses: the pinned org is not the target', async () => {
+      const out = await createMcpActionIntent(input({ toolName: 'manage_org_portal_settings', toolInput: sensitive(ORG_B) }));
+      expect(out).toMatchObject({ kind: 'refused', code: 'invalid_params' });
+      expect(mocks.createActionIntent).not.toHaveBeenCalled();
+    });
+
+    it('an org-pinned key naming its own org files there', async () => {
+      await createMcpActionIntent(input({ toolName: 'manage_org_portal_settings', toolInput: sensitive(ORG) }));
+      expect(filedOrg()).toBe(ORG);
+    });
+
+    it('a call with no org argument keeps the execution org', async () => {
+      await createMcpActionIntent(partnerInput({ toolName: 'manage_billing_settings', toolInput: { action: 'update_partner' }, executionOrgId: ORG }));
+      expect(filedOrg()).toBe(ORG);
+    });
+  });
+
   it('a replayed live intent returns pending with isNew false', async () => {
     mocks.createActionIntent.mockResolvedValue({ id: INTENT, status: 'approved', replayed: true });
     mocks.loadRow.mockResolvedValue([row({ status: 'approved' })]);
