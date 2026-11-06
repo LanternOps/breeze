@@ -3,6 +3,8 @@ import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { withDevicePartnerPolicyVisibility } from './configPolicyOwnership';
 import { assertSecurityAgentsLinkWrite } from './securityAgents/securityAgentsLinkWrite';
+import { assertOemUpdatesLinkWrite } from './oemUpdates/oemUpdatesLinkWrite';
+import { armsBeyond, hasArmedCategory } from '@breeze/shared';
 import { syncManagedSoftwarePolicy } from './securityAgents/managedPolicyGenerator';
 import {
   configurationPolicies,
@@ -545,6 +547,59 @@ export async function policyEffectivelyEnablesHpCmslCollection(policyId: string)
     )
     .limit(1);
   return warrantyHpCmslCollectionEffective(row?.inlineSettings);
+}
+
+/**
+ * True when the named parent policy carries an `oem_updates` link that would
+ * install anything (#11070) — the input to the create-with-parent gate in
+ * routes/configurationPolicies/crud.ts. One level, for the reason given on
+ * parentPolicyEnablesHpCmslCollection: a parent is always a root policy, and a
+ * parent this context cannot see makes createConfigPolicy refuse the create.
+ */
+export async function parentPolicyArmsOemUpdates(parentId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ inlineSettings: configPolicyFeatureLinks.inlineSettings })
+    .from(configPolicyFeatureLinks)
+    .where(
+      and(
+        eq(configPolicyFeatureLinks.configPolicyId, parentId),
+        eq(configPolicyFeatureLinks.featureType, 'oem_updates')
+      )
+    )
+    .limit(1);
+  return hasArmedCategory(row?.inlineSettings);
+}
+
+/**
+ * True when the `oem_updates` link in effect on a policy (its own, else its
+ * parent's, whole) would install anything (#11070). For callers without a loaded
+ * policy aggregate (the AI tools). FAILS CLOSED: a policy or a parent that is set
+ * but not visible to this context reads as armed, because "can't tell" must not
+ * read as "no parent" — the effective view alone would drop it silently.
+ */
+export async function policyEffectivelyArmsOemUpdates(policyId: string): Promise<boolean> {
+  const [own] = await db
+    .select({ inlineSettings: configPolicyFeatureLinks.inlineSettings })
+    .from(configPolicyFeatureLinks)
+    .where(and(eq(configPolicyFeatureLinks.configPolicyId, policyId), eq(configPolicyFeatureLinks.featureType, 'oem_updates')))
+    .limit(1);
+  if (own) return hasArmedCategory(own.inlineSettings);
+
+  const [policy] = await db
+    .select({ parentPolicyId: configurationPolicies.parentPolicyId })
+    .from(configurationPolicies)
+    .where(eq(configurationPolicies.id, policyId))
+    .limit(1);
+  if (!policy) return true;
+  if (!policy.parentPolicyId) return false;
+
+  const [parent] = await db
+    .select({ id: configurationPolicies.id })
+    .from(configurationPolicies)
+    .where(eq(configurationPolicies.id, policy.parentPolicyId))
+    .limit(1);
+  if (!parent) return true;
+  return parentPolicyArmsOemUpdates(parent.id);
 }
 
 export async function listEligibleParentPolicies(
@@ -1213,6 +1268,7 @@ async function decomposeInlineSettings(
     case 'device_lifecycle':
     case 'system_protection':
     case 'containment':
+    case 'oem_updates':
     case 'security_agents':
       // Pure JSONB — no normalized table needed
       break;
@@ -1335,6 +1391,7 @@ async function deleteNormalizedRows(
     case 'device_lifecycle':
     case 'system_protection':
     case 'containment':
+    case 'oem_updates':
     case 'security_agents':
       // Pure JSONB — no normalized table to delete
       break;
@@ -1642,6 +1699,7 @@ async function assembleInlineSettings(
     case 'device_lifecycle':
     case 'system_protection':
     case 'containment':
+    case 'oem_updates':
     case 'security_agents':
       // Pure JSONB — settings stored directly on feature link
       return null;
@@ -1874,7 +1932,33 @@ export type FeatureLinkWriteOptions = {
    * caller that never checked (the AI tool, a future job) cannot enable a vendor.
    */
   securityAgentsArmAuthorized?: boolean;
+  /**
+   * `oem_updates` links only (#11070): the caller has verified the writer may
+   * arm vendor updates (devices.execute + MFA). Absent means NOT authorized, so
+   * the AI tool and any future job can narrow a link but never arm one.
+   */
+  oemUpdatesArmAuthorized?: boolean;
 };
+
+/**
+ * The `oem_updates` settings in effect on a policy before a new link is added:
+ * the one it inherits (the effective view returns the parent's link while the
+ * policy has none of its own). Read in the caller's context; a parent it cannot
+ * see reads as null, which only makes the arming check stricter.
+ */
+async function effectiveOemUpdatesSettings(configPolicyId: string, executor: DbExecutor): Promise<unknown> {
+  const [row] = await executor
+    .select({ inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings })
+    .from(configPolicyEffectiveFeatureLinks)
+    .where(
+      and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configPolicyId),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'oem_updates'),
+      ),
+    )
+    .limit(1);
+  return row?.inlineSettings ?? null;
+}
 
 /**
  * OD-11 (#10190): a newly created Breeze Assist (helper) feature link deploys
@@ -1962,6 +2046,23 @@ export async function addFeatureLink(
       featurePolicyId: featurePolicyId ?? null,
       inlineSettings: inlineSettings ?? null,
       armAuthorized: options.securityAgentsArmAuthorized === true,
+    });
+  }
+
+  // #11070: service-level backstop for the route/AI checks (arming authorization
+  // against what is in effect now, NULL featurePolicyId, strict settings, closed
+  // gates). The inherited link is read only when this write could arm at all:
+  // `armsBeyond(null, next)` is false exactly when no previous could make it arm.
+  if (featureType === 'oem_updates') {
+    const armAuthorized = options.oemUpdatesArmAuthorized === true;
+    const previous = !armAuthorized && armsBeyond(null, inlineSettings ?? null)
+      ? await effectiveOemUpdatesSettings(configPolicyId, executor)
+      : null;
+    inlineSettings = assertOemUpdatesLinkWrite({
+      featurePolicyId: featurePolicyId ?? null,
+      previous,
+      next: inlineSettings ?? null,
+      armAuthorized,
     });
   }
 
@@ -2118,6 +2219,17 @@ export async function updateFeatureLink(
         featurePolicyId: updates.featurePolicyId,
         inlineSettings: updates.inlineSettings,
         armAuthorized: options.securityAgentsArmAuthorized === true,
+      });
+      if (updates.inlineSettings !== undefined) updates.inlineSettings = parsed;
+    }
+
+    // #11070: same backstop as addFeatureLink, compared with the stored row.
+    if (existing.featureType === 'oem_updates') {
+      const parsed = assertOemUpdatesLinkWrite({
+        featurePolicyId: updates.featurePolicyId,
+        previous: existing.inlineSettings,
+        next: updates.inlineSettings,
+        armAuthorized: options.oemUpdatesArmAuthorized === true,
       });
       if (updates.inlineSettings !== undefined) updates.inlineSettings = parsed;
     }
@@ -3208,6 +3320,8 @@ export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = ne
   'security_agents',
   // #10100: partner-wide inline settings; featurePolicyId is always refused below.
   'containment',
+  // #11065: partner-wide inline settings; featurePolicyId is always refused below.
+  'oem_updates',
 ]);
 
 /**
@@ -3459,7 +3573,8 @@ export async function validateFeaturePolicyExists(
     featureType === 'monitors' ||
     featureType === 'warranty' ||
     featureType === 'system_protection' ||
-    featureType === 'containment'
+    featureType === 'containment' ||
+    featureType === 'oem_updates'
   ) {
     // These have no policy table — they require inlineSettings.
     //

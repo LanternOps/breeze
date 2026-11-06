@@ -1212,6 +1212,61 @@
           "generic": "This value is not allowed."
         }
       },
+      "vendorUpdatesTab": {
+        "title": "Vendor updates",
+        "description": "Run each hardware vendor's own update tool (Dell, Surface, HP, Lenovo) on a monthly overnight schedule.",
+        "partnerWideBadge": "Partner-wide: applies to every organization this policy is assigned to",
+        "enabled": "Run vendor updates on this schedule",
+        "enabledHelp": "Turning this on, or adding an update category, needs the devices.execute permission. Turning it off never does.",
+        "scheduleHeading": "Schedule",
+        "weekOfMonth": "Week of the month",
+        "dayOfWeek": "Day",
+        "windowStart": "Window starts (device local time)",
+        "windowHours": "Window length (hours, 1 to 8)",
+        "catchUpNights": "Catch-up nights (0 to 14)",
+        "reboot": "Restart",
+        "rebootOvernight": "Overnight, inside the window",
+        "rebootNever": "Never restart",
+        "scheduleHelp": "A run starts only inside its window. A device that misses its night tries again on each catch-up night.",
+        "rebootNeverHelp": "Without a restart Breeze controls, BIOS and firmware updates are skipped.",
+        "weeks": {
+          "first": "First",
+          "second": "Second",
+          "third": "Third",
+          "fourth": "Fourth",
+          "last": "Last"
+        },
+        "days": {
+          "sun": "Sunday",
+          "mon": "Monday",
+          "tue": "Tuesday",
+          "wed": "Wednesday",
+          "thu": "Thursday",
+          "fri": "Friday",
+          "sat": "Saturday"
+        },
+        "vendorsHeading": "Vendors and update categories",
+        "vendorEnabled": "Update {{vendor}} devices",
+        "notShipped": "Coming in a later release",
+        "categories": {
+          "bios": "BIOS",
+          "firmware": "Firmware",
+          "driver": "Drivers",
+          "application": "Vendor applications"
+        },
+        "categoryClosed": "Not available yet: this category is still being validated on real hardware.",
+        "nowAvailable": "Now available. It stays off until you turn it on.",
+        "blockedLabel": "Blocked updates",
+        "blockedPlaceholder": "Update IDs, separated by commas",
+        "blockedHelp": "Breeze never installs an update listed here.",
+        "executeRequired": "Turning on vendor updates, adding a category, switching on overnight restarts or unblocking an update needs the devices.execute permission and MFA. Ask someone who has it to save this change.",
+        "gateClosedRefusal": "One of the selected update categories is not available yet, so the policy was not saved. Clear it and save again.",
+        "invalid": "Check the schedule: the window is 1 to 8 whole hours, catch-up is 0 to 14 nights, and the start time is HH:MM.",
+        "storedInvalid": "The saved settings for this policy are not valid, so vendor updates are off for the devices it reaches. Review the settings below and save to fix them.",
+        "gatesError": "Could not load which update categories are available, so saving is turned off. Reload the page to try again.",
+        "stillGated": "No update category is available yet, so this policy does not install anything today. Categories open here as each vendor finishes validation.",
+        "armingNotice": "Breeze runs the vendor's own signed tool and never hosts vendor files. A device that has not checked in after a BIOS update raises an alert."
+      },
       "securityAgentsTab": {
         "title": "Security Agents",
         "description": "Deploy and keep managed security agents installed on devices",

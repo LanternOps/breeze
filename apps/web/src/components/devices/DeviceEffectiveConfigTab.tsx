@@ -23,6 +23,7 @@ import {
   Trash2,
   Zap,
   type LucideIcon,
+  Cpu,
 } from "lucide-react";
 
 import type { ConfigFeatureType } from "@breeze/shared";
@@ -161,6 +162,12 @@ const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
       return i18n.t("policies:configurationPolicies.featureTabs.containmentTab.title");
     },
     Icon: ShieldBan,
+  },
+  oem_updates: {
+    get label() {
+      return i18n.t("policies:configurationPolicies.featureTabs.vendorUpdatesTab.title");
+    },
+    Icon: Cpu,
   },
 };
 

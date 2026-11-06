@@ -22,6 +22,8 @@ import { AGENT_DENIED_READ_TOOLS, AGENT_HUMAN_ONLY_ACTIONS } from './aiToolExpos
 import { getToolTier, getAllRegisteredToolNames, getToolDefinitions } from './aiTools';
 import { toolInputSchemas } from './aiToolSchemas';
 import { isNeverDelegableTool } from './wisp/grantAuthority';
+import { effectDigestResolverKey, requiresPinnedEffectDigest } from './actionIntents/effectDigest';
+import { isOrgWideGovernanceIntent } from './actionIntents/orgWideGovernanceTools';
 import { ExtensionContributionRegistry } from '../extensions/contributionRegistry';
 
 /** (tool, action) pairs from a scope table, flattened with their expected scope. */
@@ -423,6 +425,17 @@ describe('tier-3 approval scope classification', () => {
     expect(resolveApprovalScope('manage_policy_feature_link', 'add', { featureType: 'containment' })).toBe('supervised');
     expect(resolveApprovalScope('manage_policy_feature_link', 'update', { featureType: 'containment' })).toBe('supervised');
     expect(checkGuardrails('manage_policy_feature_link', { action: 'add', featureType: 'containment' }).tier).toBe(3);
+  });
+
+  it('manage_policy_feature_link stays tier 2 for oem_updates: the handler refuses arming outright (#11070)', () => {
+    // Deliberately NOT escalated. Every arming write is refused by the handler
+    // (oemUpdatesToolRefusal, armAuthorized:false) whatever an approver says, so
+    // an approval card would only stand in front of a call that cannot succeed.
+    // What is left (off, a category removed, an update blocked) is the narrowing
+    // a person must never need extra rights for, as with security_agents.
+    const armed = { featureType: 'oem_updates', inlineSettings: { enabled: true, vendors: { dell: { enabled: true, categories: { bios: true } } } } };
+    expect(checkGuardrails('manage_policy_feature_link', { action: 'add', ...armed }).tier).toBe(2);
+    expect(checkGuardrails('manage_policy_feature_link', { action: 'update', ...armed }).tier).toBe(2);
   });
 
   it('checkGuardrails surfaces the input-aware escalation on both branches', () => {
@@ -1834,6 +1847,97 @@ describe('W16 PR A class rows (#6786)', () => {
       expect(AGENT_DENIED_READ_TOOLS.has(tool), tool).toBe(false);
       expect(isNeverDelegableTool(tool), tool).toBe(true);
     }
+  });
+});
+
+// ── W16 PR B class rows (#6786) ────────────────────────────────────────────
+// Copied from the W16 plan's PR B class review table, NOT derived from the guardrail tables.
+const W16B_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_ai_agent_schedules: { create: 'supervised', update: 'supervised', delete: 'four_eyes' },
+  manage_fleet_designs: { run: 'supervised', preview: 't1', applied: 't1', apply: 'four_eyes', rollback: 'four_eyes', document: 'supervised' },
+};
+
+describe('W16 PR B class rows (#6786)', () => {
+  const rows = Object.entries(W16B_EXPECTED).flatMap(([tool, actions]) => Object.entries(actions).map(([action, cls]) => [tool, action, cls] as const));
+
+  it.each(rows)('%s:%s is %s', (tool, action, cls) => {
+    expect(classOf(tool, { action })).toBe(cls);
+    if (cls !== 't1') expect(resolveApprovalScope(tool, action, { action })).toBe(cls);
+  });
+
+  it('the rows name every action of each tool', () => {
+    for (const [tool, actions] of Object.entries(W16B_EXPECTED)) {
+      expect([...(toolActionEnum(tool) ?? [])].sort(), tool).toEqual(Object.keys(actions).sort());
+    }
+  });
+
+  it('every four-eyes action has a mandatory pinned digest and a resolver', () => {
+    for (const [tool, action] of [['manage_ai_agent_schedules', 'delete'], ['manage_fleet_designs', 'apply'], ['manage_fleet_designs', 'rollback']] as const) {
+      expect(requiresPinnedEffectDigest(tool, { action }), `${tool}:${action}`).toBe(true);
+      expect(effectDigestResolverKey(tool, action), `${tool}:${action}`).toBe(`${tool}:${action}`);
+    }
+    for (const [tool, action] of [['manage_ai_agent_schedules', 'update'], ['manage_fleet_designs', 'run'], ['manage_fleet_designs', 'document']] as const) {
+      expect(requiresPinnedEffectDigest(tool, { action }), `${tool}:${action}`).toBe(false);
+    }
+  });
+
+  it('MFA follows the routes', () => {
+    for (const action of ['create', 'update', 'delete']) expect(isMfaGatedToolAction('manage_ai_agent_schedules', action), action).toBe(true);
+    for (const action of ['run', 'preview', 'apply', 'rollback']) expect(isMfaGatedToolAction('manage_fleet_designs', action), action).toBe(true);
+    for (const action of ['applied', 'document']) expect(isMfaGatedToolAction('manage_fleet_designs', action), action).toBe(false);
+  });
+
+  it('agent exposure: both whole tools are human-only and never delegable, the D4 exception for manage_fleet_designs (Decision 7)', () => {
+    for (const tool of Object.keys(W16B_EXPECTED)) {
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(true);
+      expect(AGENT_DENIED_READ_TOOLS.has(tool), tool).toBe(false);
+      expect(isNeverDelegableTool(tool), tool).toBe(true);
+    }
+  });
+
+  it('org-wide governance covers the writes that apply beyond one site', () => {
+    for (const action of ['create', 'update', 'delete']) expect(isOrgWideGovernanceIntent('manage_ai_agent_schedules', { action }), action).toBe(true);
+    for (const action of ['apply', 'rollback']) expect(isOrgWideGovernanceIntent('manage_fleet_designs', { action }), action).toBe(true);
+    for (const action of ['run', 'preview', 'applied', 'document']) expect(isOrgWideGovernanceIntent('manage_fleet_designs', { action }), action).toBe(false);
+  });
+
+  it('no schedule write can arm act mode', () => {
+    expect(toolInputSchemas.manage_ai_agent_schedules?.safeParse({ action: 'update', scheduleId: '00000000-0000-4000-8000-000000000001', actMode: true }).success).toBe(false);
+  });
+
+  describe('approval copy', () => {
+    const SCHEDULE = '00000000-0000-4000-8000-000000000001';
+    const copy = (tool: string, input: Record<string, unknown>) => checkGuardrails(tool, input).description ?? '';
+
+    it('the two brakes read differently (Decision 3)', () => {
+      expect(copy('manage_ai_agent_schedules', { action: 'update', scheduleId: SCHEDULE, actMode: false })).toContain('stop unattended actions, including ones already waiting');
+      expect(copy('manage_ai_agent_schedules', { action: 'update', scheduleId: SCHEDULE, enabled: false })).toContain('stop future runs');
+    });
+
+    it('a brake never hides what else the same update changes', () => {
+      const text = copy('manage_ai_agent_schedules', { action: 'update', scheduleId: SCHEDULE, actMode: false, enabled: true, sweepKinds: ['disk_pressure', 'stale_agents'], cron: '0 * * * *', timezone: 'UTC' });
+      expect(text).toContain('stop unattended actions');
+      expect(text).toContain('turn its runs on');
+      expect(text).toContain('disk_pressure, stale_agents');
+      expect(text).toContain('0 * * * *');
+      expect(text).toContain('UTC');
+      const stopping = copy('manage_ai_agent_schedules', { action: 'update', scheduleId: SCHEDULE, enabled: false, cron: '0 * * * *' });
+      expect(stopping).toContain('stop future runs');
+      expect(stopping).toContain('0 * * * *');
+    });
+
+    it('create says what it costs and how far it reaches; delete says it cannot be undone', () => {
+      expect(copy('manage_ai_agent_schedules', { action: 'create', ownerScope: 'partner', kind: 'patch', agentId: SCHEDULE, cron: '0 2 * * *', timezone: 'UTC' })).toMatch(/every organization.*AI credits.*notify people/);
+      expect(copy('manage_ai_agent_schedules', { action: 'delete', scheduleId: SCHEDULE })).toContain('cannot be undone');
+    });
+
+    it('apply counts what it does and marks roles as billing; rollback and run say what they do', () => {
+      const text = copy('manage_fleet_designs', { action: 'apply', reportRunId: SCHEDULE, approval: { functions: ['a', 'a'], monitoring: ['m'], automation: [], roleCorrections: ['r', 's'] } });
+      expect(text).toContain('1 function groups');
+      expect(text).toContain('2 device role changes (billing)');
+      expect(copy('manage_fleet_designs', { action: 'rollback', reportRunId: SCHEDULE })).toContain('Monitoring it added stops');
+      expect(copy('manage_fleet_designs', { action: 'run', orgId: SCHEDULE })).toContain('nothing is applied');
+    });
   });
 });
 

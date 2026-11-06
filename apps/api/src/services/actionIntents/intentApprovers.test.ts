@@ -248,6 +248,54 @@ describe('resolveIntentApprovers — requireOrgWideGovernance (audit §1.1 fan-o
   });
 });
 
+describe('resolveIntentApprovers: requirePartnerAxis (partner-wide intents)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+  });
+
+  /** The org's partner, then the granting roles, then the partner's members. */
+  function queuePartnerAxis(partnerId: string | null, partnerMembers: Array<{ userId: string; orgAccess: string; orgIds: string[] | null }>) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(partnerId ? [{ partnerId }] : []) }),
+      }),
+    } as any);
+    if (!partnerId) return;
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ roleId: 'role-decide' }]) }) }),
+    } as any);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(partnerMembers) }) }),
+    } as any);
+  }
+
+  it('counts only full-partner members: a selected member is not eligible, and no org-member query runs', async () => {
+    queuePartnerAxis('partner-1', [
+      { userId: 'u-all', orgAccess: 'all', orgIds: null },
+      { userId: 'u-selected', orgAccess: 'selected', orgIds: ['org-1'] },
+    ]);
+    await expect(resolveIntentApprovers('org-1', { requirePartnerAxis: true })).resolves.toEqual(['u-all']);
+    expect(db.select).toHaveBeenCalledTimes(3);
+  });
+
+  it('is empty when the org has no partner: no fallback to org members', async () => {
+    queuePartnerAxis(null, []);
+    await expect(resolveIntentApprovers('org-1', { requirePartnerAxis: true })).resolves.toEqual([]);
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('CONTROL: without it, an org member stays eligible', async () => {
+    queueSelects({
+      grantingRoles: [{ roleId: 'role-decide' }],
+      org: [{ partnerId: 'partner-1' }],
+      orgMembers: [{ userId: 'u-org' }],
+      partnerMembers: [],
+    });
+    await expect(resolveIntentApprovers('org-1')).resolves.toEqual(['u-org']);
+  });
+});
+
 describe('resolveIntentApproversWithDiagnostics', () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;
 

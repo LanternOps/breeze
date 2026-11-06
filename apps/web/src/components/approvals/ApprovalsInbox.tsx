@@ -18,6 +18,7 @@ import {
   isNoApproverDeviceError,
   isNotSoleApprover,
   isSiteCeiling,
+  isApproverScopeRequired,
   isStepUpRequired,
   type BatchRowResult,
 } from '@/lib/intentApprovals';
@@ -89,6 +90,8 @@ type DecisionErrorKind =
   // governance ceiling twin of `notSoleApprover`. Terminal for this viewer;
   // never falls back to the generic `decisionFailed` "Try again" copy.
   | 'siteCeiling'
+  // A partner-wide intent needs a partner-level approver. Terminal for this viewer too.
+  | 'approverScopeRequired'
   | 'verificationFailed'
   | 'alreadyDecided'
   | 'expired'
@@ -212,6 +215,7 @@ function classifyDecideError(err: unknown): DecisionErrorKind | null {
   if (isNoApproverDeviceError(err) || isStepUpRequired(err)) return 'noApproverDevice';
   if (isNotSoleApprover(err)) return 'notSoleApprover';
   if (isSiteCeiling(err)) return 'siteCeiling';
+  if (isApproverScopeRequired(err)) return 'approverScopeRequired';
   if (err instanceof CeremonyError) return 'verificationFailed';
   if (err instanceof ActionError && err.status === 401) {
     const token = (err.body as { error?: unknown } | null | undefined)?.error;
@@ -233,6 +237,7 @@ function rowErrorKind(result: BatchRowResult): DecisionErrorKind {
   if (token === 'step_up_required') return 'noApproverDevice';
   if (token === 'not_sole_approver') return 'notSoleApprover';
   if (token === 'site_ceiling') return 'siteCeiling';
+  if (token === 'approver_scope_required') return 'approverScopeRequired';
   if (token === 'assertion_failed' || token === 'reauth_required') {
     return 'verificationFailed';
   }

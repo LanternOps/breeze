@@ -49,7 +49,6 @@
     "policyId": "Politique ID",
     "featureLinkId": "Lien de fonctionnalité ID",
     "errorLog": "Journal d’erreurs",
-    "savings": "{{protected}} protégés — {{uploaded}} téléversés",
     "errorCount_one": "{{count}} erreur",
     "errorCount_other": "{{count}} erreurs",
     "failedCount_one": "{{count}} en échec",
@@ -1244,5 +1243,36 @@
       "hint": "Breeze ne reconnaît pas encore cette erreur. Le message complet est affiché ci-dessous."
     },
     "troubleshootingLink": "Guide de dépannage"
+  },
+  "fullRunReason": {
+    "no_prior_snapshot": "Première sauvegarde pour cet appareil et cette destination",
+    "base_expired": "La sauvegarde précédente avait expiré selon la rétention",
+    "storage_identity_changed": "La destination de sauvegarde a changé",
+    "backup_type_mismatch": "La sauvegarde précédente était d'un autre type",
+    "base_job_not_completed": "Aucune sauvegarde antérieure ne s'est terminée avec succès",
+    "base_retired": "La sauvegarde précédente a été supprimée par la rétention",
+    "base_retired_race": "La sauvegarde précédente a été supprimée par la rétention",
+    "base_deleted_race": "La sauvegarde précédente a été supprimée par la rétention",
+    "no_verified_base": "Aucune sauvegarde antérieure n'a réussi la vérification d'intégrité",
+    "key_root_changed": "Le dossier de destination (préfixe) a changé",
+    "base_key_root_unreadable": "L'emplacement de stockage de la sauvegarde précédente n'a pas pu être lu",
+    "invalid_destination_prefix": "Le préfixe de destination n'est pas valide",
+    "nothing_reused": "Une sauvegarde antérieure était disponible, mais aucun fichier inchangé n'a pu être réutilisé",
+    "unrecorded": "Raison non enregistrée (cette sauvegarde a eu lieu avant que Breeze ne la consigne)"
+  },
+  "jobDataSummary": {
+    "uploadedAndReused": "{{uploaded}} téléversés · {{reused}} réutilisés",
+    "processedBeforeStopped": "{{processed}} traités avant l'arrêt",
+    "full": "Complète",
+    "heading": "Ce que cette exécution a stocké",
+    "protected": "Protégés",
+    "uploadedThisRun": "Téléversés pendant cette exécution",
+    "reusedFromEarlier": "Réutilisés à partir de sauvegardes antérieures",
+    "backupType": "Type de sauvegarde",
+    "incremental": "Incrémentielle",
+    "fullWithReason": "Complète : {{reason}}",
+    "explainer": "Seuls les fichiers nouveaux ou modifiés sont téléversés. Les fichiers inchangés sont réutilisés à partir des sauvegardes antérieures de cet appareil vers la même destination.",
+    "learnMore": "Fonctionnement des sauvegardes incrémentielles",
+    "resumedAt": "Cette exécution a repris une sauvegarde interrompue le {{time}}."
   }
 }

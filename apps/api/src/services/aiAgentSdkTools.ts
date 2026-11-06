@@ -48,6 +48,8 @@ import { pax8ToolSchemas } from './aiToolSchemasPax8';
 import { orgAdminToolSchemas } from './aiToolSchemasOrgAdmin';
 import { orgAdminWriteToolSchemas } from './aiToolSchemasOrgAdminWrites';
 import { aiAgentLaunchToolSchemas } from './aiToolSchemasAiAgentLaunch';
+import { aiAgentScheduleToolSchemas } from './aiToolSchemasAiAgentSchedules';
+import { fleetDesignToolSchemas } from './aiToolSchemasFleetDesigns';
 import { TOOL_SDK_INPUT_SHAPES } from './aiToolSchemasBackup';
 import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
@@ -764,6 +766,10 @@ export const TOOL_TIERS = {
   // W16 PR A (#6786): the two launch tools, Tier 3 supervised as a whole (aiGuardrails TIER3_SUPERVISED_TOOLS).
   run_patch_plan: 3,
   create_operator_task: 3,
+  // W16 PR B (#6786): tier 1 at the tool level; per-action classes (supervised create / update / run / document,
+  // four-eyes delete / apply / rollback) live in aiGuardrails.
+  manage_ai_agent_schedules: 1,
+  manage_fleet_designs: 1,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -5351,6 +5357,10 @@ export function buildBreezeSdkTools(
       makeHandler('run_patch_plan', getAuth, onPreToolUse, onPostToolUse)),
     tool('create_operator_task', registryDescription('create_operator_task'), aiAgentLaunchToolSchemas.create_operator_task.shape,
       makeHandler('create_operator_task', getAuth, onPreToolUse, onPostToolUse)),
+    tool('manage_ai_agent_schedules', registryDescription('manage_ai_agent_schedules'), aiAgentScheduleToolSchemas.manage_ai_agent_schedules.shape,
+      makeHandler('manage_ai_agent_schedules', getAuth, onPreToolUse, onPostToolUse)),
+    tool('manage_fleet_designs', registryDescription('manage_fleet_designs'), fleetDesignToolSchemas.manage_fleet_designs.shape,
+      makeHandler('manage_fleet_designs', getAuth, onPreToolUse, onPostToolUse)),
     tool(
       'manage_contracts',
       registryDescription('manage_contracts'),

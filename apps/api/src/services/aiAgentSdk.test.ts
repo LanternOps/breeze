@@ -36,6 +36,11 @@ vi.mock('./aiSessionLiveAuthority', () => ({
 
 const finalizeMock = vi.hoisted(() => vi.fn(async (_id: string) => ({ updated: false })));
 vi.mock('./wisp/threadSummary', () => ({ finalizeWispSessionSummary: finalizeMock }));
+const mockResolveDesignTarget = vi.hoisted(() => vi.fn());
+vi.mock('./actionIntents/aiDesignIntentTarget', () => ({
+  AI_DESIGN_INTENT_TOOLS: new Set(['manage_ai_agent_schedules', 'manage_fleet_designs']),
+  resolveAiDesignIntentTarget: mockResolveDesignTarget,
+}));
 
 vi.mock('../db', () => ({
   runAfterDbContextCommit: vi.fn((_label: string, work: () => unknown) => { void work(); }),
@@ -154,6 +159,8 @@ vi.mock('./aiAgentSdkTools', () => ({
     run_patch_plan: 3,
     create_operator_task: 3,
     manage_org_portal_settings: 1,
+    manage_ai_agent_schedules: 1,
+    manage_fleet_designs: 1,
   },
   BREEZE_MCP_TOOL_NAMES: [],
 }));
@@ -2261,6 +2268,78 @@ describe('createSessionPreToolUse', () => {
         const session = makeActiveSession({ auth, toolAuth: auth });
         await createSessionPreToolUse(session)('manage_org_portal_settings', { action: 'update', orgId: ORG_2, settings: { enableTickets: true } });
         expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ orgId: 'org-1' });
+      });
+
+      // W16 PR B (#6786, #11181): these name the org through a row, so an approver of
+      // org A is never approving a change to org B.
+      describe('a design tool whose target lives in another org (W16 PR B, #11181)', () => {
+        const SCHEDULE = '00000000-0000-4000-8000-0000000000b1';
+        const RUN = '00000000-0000-4000-8000-0000000000b2';
+        const fourEyes: Array<[string, Record<string, unknown>]> = [
+          ['manage_ai_agent_schedules', { action: 'delete', scheduleId: SCHEDULE }],
+          ['manage_fleet_designs', { action: 'apply', reportRunId: RUN, approval: {} }],
+          ['manage_fleet_designs', { action: 'rollback', reportRunId: RUN }],
+        ];
+
+        beforeEach(() => {
+          mockResolveDesignTarget.mockReset();
+        });
+
+        it.each(fourEyes)('%s %j files its intent in the org the row lives in, and the card carries the detail', async (toolName, input) => {
+          mockResolveDesignTarget.mockResolvedValue({ orgId: ORG_2, partnerId: null, cardDetail: 'It covers 3 devices.' });
+          const auth = reachOf('org-1', ORG_2);
+          const session = makeActiveSession({ auth, toolAuth: auth });
+          await createSessionPreToolUse(session)(toolName, input);
+          expect(mockResolveDesignTarget).toHaveBeenCalledWith(toolName, input);
+          expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ toolName, orgId: ORG_2 });
+          expect(mockCreateActionIntent.mock.calls[0]![1].reason).toContain('It covers 3 devices.');
+        });
+
+        it.each(fourEyes)('%s %j: a row outside reach stays in the session org, and nothing about it reaches the card', async (toolName, input) => {
+          mockResolveDesignTarget.mockResolvedValue({ orgId: ORG_9, partnerId: null, cardDetail: 'It covers 3 devices.' });
+          const auth = reachOf('org-1');
+          const session = makeActiveSession({ auth, toolAuth: auth });
+          await createSessionPreToolUse(session)(toolName, input);
+          expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ toolName, orgId: 'org-1' });
+          expect(mockCreateActionIntent.mock.calls[0]![1].reason).not.toContain('3 devices');
+        });
+
+        it("a partner baseline stays in the session org; the card names its overrides only for the caller's own partner", async () => {
+          const input = { action: 'delete', scheduleId: SCHEDULE };
+          const auth = reachOf('org-1', ORG_2);
+          const session = makeActiveSession({ auth, toolAuth: auth });
+
+          mockResolveDesignTarget.mockResolvedValue({ orgId: null, partnerId: auth.partnerId, cardDetail: 'It also deletes 4 overrides.' });
+          await createSessionPreToolUse(session)('manage_ai_agent_schedules', input);
+          expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ orgId: 'org-1' });
+          expect(mockCreateActionIntent.mock.calls[0]![1].reason).toContain('It also deletes 4 overrides.');
+
+          mockCreateActionIntent.mockClear();
+          mockResolveDesignTarget.mockResolvedValue({ orgId: null, partnerId: 'another-partner', cardDetail: 'It also deletes 4 overrides.' });
+          await createSessionPreToolUse(session)('manage_ai_agent_schedules', input);
+          expect(mockCreateActionIntent.mock.calls[0]![1].reason).not.toContain('overrides.');
+        });
+
+        it('a failed lookup keeps the session org and files the intent: the handler refuses at release', async () => {
+          const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+          const boom = new Error('db down');
+          mockResolveDesignTarget.mockImplementation(async () => { throw boom; });
+          const auth = reachOf('org-1', ORG_2);
+          const session = makeActiveSession({ auth, toolAuth: auth });
+          await createSessionPreToolUse(session)('manage_fleet_designs', { action: 'apply', reportRunId: RUN, approval: {} });
+          expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ orgId: 'org-1' });
+          expect(mockCaptureException).toHaveBeenCalledWith(boom);
+          // The approver must know the card is short, not read its silence as "nothing more to know".
+          expect(mockCreateActionIntent.mock.calls[0]![1].reason).toContain('could not be loaded');
+          errSpy.mockRestore();
+        });
+
+        it('any other tool never asks (control)', async () => {
+          const auth = reachOf('org-1', ORG_2);
+          const session = makeActiveSession({ auth, toolAuth: auth });
+          await createSessionPreToolUse(session)('run_patch_plan', { orgId: ORG_2 });
+          expect(mockResolveDesignTarget).not.toHaveBeenCalled();
+        });
       });
     });
 
@@ -4885,6 +4964,7 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
       limit: vi.fn(async () => [
         {
           id: 'intent-digest-cas-lost',
+          orgId: 'org-of-the-intent',
           boundArgumentDigest: 'digest',
           actionName: 'execute_command',
           arguments: { command: 'whoami' },
@@ -4897,6 +4977,11 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     const session = makeActiveSession({ approvalMode: 'per_step' });
 
     const result = await createSessionPreToolUse(session)('execute_command', { command: 'whoami' });
+
+    // The recompute is for the org the intent is filed in (W16 PR B, #6786).
+    expect(mockComputeEffectDigest).toHaveBeenCalledWith(
+      'execute_command', { command: 'whoami' }, expect.anything(), { intentOrgId: 'org-of-the-intent' },
+    );
 
     // Still refuses to execute — losing the terminal CAS must not turn a
     // content_changed stop into an allowed run.
@@ -5750,6 +5835,14 @@ describe('intentCreationRefusal — device-group run_script refusals', () => {
   ])('passes the %s message through for run_script', (code) => {
     const message = `the reason for ${code}`;
     expect(intentCreationRefusal('run_script', { groupId: 'g' }, refusal(code, message))).toBe(`${code}: ${message}`);
+  });
+
+  it('a Fleet Design with no pin says what to check, without the resolver detail or whose design it might be', () => {
+    const text = intentCreationRefusal('manage_fleet_designs', { action: 'apply' }, refusal('effect_digest_unresolvable', 'effect digest for manage_fleet_designs could not be resolved: target_absent'));
+    expect(text).toContain('list_fleet_designs');
+    expect(text).not.toContain('target_absent');
+    expect(text).not.toContain('Failed to create approval record');
+    expect(intentCreationRefusal('manage_ai_agent_schedules', {}, refusal('effect_digest_unresolvable', 'x'))).toBe('Failed to create approval record');
   });
 
   it('keeps the generic message for any other code or tool', () => {

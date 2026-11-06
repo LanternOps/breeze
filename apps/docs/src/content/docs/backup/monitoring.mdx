@@ -26,7 +26,7 @@ At the top of the dashboard, summary cards show:
 | **Snapshots** | Total point-in-time snapshots stored |
 | **Success Rate (24h)** | Percentage of jobs in the last 24 hours that produced a restore point (**Completed** or **Completed with errors**). Color-coded: green (90%+), yellow (70–89%), red (below 70%) |
 | **Devices Protected** | Devices assigned to at least one backup policy |
-| **Storage Used** | Bytes stored across all providers. For each device's backup chain, the oldest retained snapshot counts at its full size and each later incremental counts only the data it uploaded — unchanged files an incremental references from an earlier snapshot are not counted again. It is an estimate from backup results, not a figure reported by the storage provider |
+| **Storage Used** | Bytes stored across all providers. For each device's backup chain, the oldest retained snapshot counts at its full size and each later incremental counts only the data it uploaded — unchanged files an incremental references from an earlier snapshot are not counted again. It is an estimate from backup results, not a figure reported by the storage provider. See [How Incremental Backups Work](/backup/incremental-backups/#why-storage-in-the-bucket-can-be-larger-than-you-expect) |
 
 ### Recent Jobs
 
