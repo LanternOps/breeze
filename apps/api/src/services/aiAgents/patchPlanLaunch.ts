@@ -33,11 +33,11 @@ export type PatchPlanLaunchResult =
   | { ok: false; code: 'NO_PATCH_AGENT' }
   | { ok: false; code: 'SKIPPED'; skipped: string; agentId: string };
 
-const isEnqueueFailed = (run: { status?: string | null; errorCode?: string | null }) =>
+export const isEnqueueFailed = (run: { status?: string | null; errorCode?: string | null }) =>
   run.status === 'failed' && run.errorCode === 'enqueue_failed';
 
 /** The run an earlier attempt admitted on this key, read as system (the key is the caller's own). */
-async function admittedRunId(orgId: string, dedupeKey: string): Promise<string | null> {
+export async function admittedRunId(orgId: string, dedupeKey: string): Promise<string | null> {
   const [row] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
     .select({ id: aiAgentRuns.id, status: aiAgentRuns.status, errorCode: aiAgentRuns.errorCode })
     .from(aiAgentRuns)

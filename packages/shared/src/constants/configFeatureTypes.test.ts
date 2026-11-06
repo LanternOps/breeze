@@ -51,10 +51,19 @@ describe('CONFIG_POLICY_FEATURE_TRUST_TIER', () => {
     expect(CONFIG_POLICY_FEATURE_TRUST_TIER.security_agents).toBe('execution_gated');
   });
 
-  it('containment is appended, partner-wide, and execution-gated because extraAllow grants network permits', () => {
-    expect(CONFIG_FEATURE_TYPES.at(-1)).toBe('containment');
+  it('containment is partner-wide and execution-gated because extraAllow grants network permits', () => {
+    expect(CONFIG_FEATURE_TYPES).toContain('containment');
     expect(CONFIG_POLICY_FEATURE_TRUST_TIER.containment).toBe('execution_gated');
     expect(ORG_SCOPED_ONLY_FEATURE_TYPES.has('containment')).toBe(false);
+  });
+
+  it('oem_updates is appended last, partner-wide, and protective (#11065, spec 4.1)', () => {
+    expect(CONFIG_FEATURE_TYPES.at(-1)).toBe('oem_updates');
+    // Protective, not execution_gated: dropping a group override that turns BIOS
+    // off could expose a broader policy that turns it on. Arming is gated at write.
+    expect(CONFIG_POLICY_FEATURE_TRUST_TIER.oem_updates).toBe('protective');
+    expect(EXECUTION_GATED_FEATURE_TYPES.has('oem_updates')).toBe(false);
+    expect(ORG_SCOPED_ONLY_FEATURE_TYPES.has('oem_updates')).toBe(false);
   });
 
   it('classifies protective/restrictive feature types as protective (never gated)', () => {

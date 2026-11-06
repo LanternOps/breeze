@@ -516,6 +516,9 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   // Full-control W16 PR A (#6786): mapped for completeness; AGENT_HUMAN_ONLY_TOOLS keeps both out of the catalog.
   run_patch_plan: 'tenancy',
   create_operator_task: 'tenancy',
+  // Full-control W16 PR B (#6786): mapped for completeness; AGENT_HUMAN_ONLY_TOOLS keeps both out of the catalog.
+  manage_ai_agent_schedules: 'tenancy',
+  manage_fleet_designs: 'tenancy',
   delete_tenant: 'tenancy',
   test_webhook: 'tenancy',
   query_webhooks: 'tenancy',

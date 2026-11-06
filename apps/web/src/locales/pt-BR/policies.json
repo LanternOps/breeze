@@ -1212,6 +1212,61 @@
           "generic": "Este valor não é permitido."
         }
       },
+      "vendorUpdatesTab": {
+        "title": "Atualizações de fabricantes",
+        "description": "Execute a ferramenta de atualização de cada fabricante de hardware (Dell, Surface, HP, Lenovo) em uma programação noturna mensal.",
+        "partnerWideBadge": "Em todo o parceiro: aplica-se a todas as organizações às quais esta política for atribuída",
+        "enabled": "Executar atualizações de fabricantes nesta programação",
+        "enabledHelp": "Ativar isto ou adicionar uma categoria de atualização exige a permissão devices.execute. Desativar nunca exige.",
+        "scheduleHeading": "Programação",
+        "weekOfMonth": "Semana do mês",
+        "dayOfWeek": "Dia",
+        "windowStart": "Início da janela (horário local do dispositivo)",
+        "windowHours": "Duração da janela (horas, de 1 a 8)",
+        "catchUpNights": "Noites de recuperação (0 a 14)",
+        "reboot": "Reinicialização",
+        "rebootOvernight": "Durante a noite, dentro da janela",
+        "rebootNever": "Nunca reiniciar",
+        "scheduleHelp": "Uma execução só começa dentro da sua janela. Um dispositivo que perde a sua noite tenta de novo em cada noite de recuperação.",
+        "rebootNeverHelp": "Sem uma reinicialização controlada pelo Breeze, as atualizações de BIOS e firmware são ignoradas.",
+        "weeks": {
+          "first": "Primeira",
+          "second": "Segunda",
+          "third": "Terceira",
+          "fourth": "Quarta",
+          "last": "Última"
+        },
+        "days": {
+          "sun": "Domingo",
+          "mon": "Segunda-feira",
+          "tue": "Terça-feira",
+          "wed": "Quarta-feira",
+          "thu": "Quinta-feira",
+          "fri": "Sexta-feira",
+          "sat": "Sábado"
+        },
+        "vendorsHeading": "Fabricantes e categorias de atualização",
+        "vendorEnabled": "Atualizar dispositivos {{vendor}}",
+        "notShipped": "Chega em uma versão futura",
+        "categories": {
+          "bios": "BIOS",
+          "firmware": "Firmware",
+          "driver": "Drivers",
+          "application": "Aplicativos do fabricante"
+        },
+        "categoryClosed": "Ainda não disponível: esta categoria ainda está sendo validada em hardware real.",
+        "nowAvailable": "Agora disponível. Permanece desativada até você ativá-la.",
+        "blockedLabel": "Atualizações bloqueadas",
+        "blockedPlaceholder": "IDs de atualização, separados por vírgulas",
+        "blockedHelp": "O Breeze nunca instala uma atualização listada aqui.",
+        "executeRequired": "Ativar atualizações de fabricantes, adicionar uma categoria, ativar reinicializações noturnas ou desbloquear uma atualização exige a permissão devices.execute e MFA. Peça a alguém que a tenha para salvar esta alteração.",
+        "gateClosedRefusal": "Uma das categorias de atualização selecionadas ainda não está disponível, então a política não foi salva. Remova-a e salve novamente.",
+        "invalid": "Verifique a programação: a janela é de 1 a 8 horas inteiras, a recuperação é de 0 a 14 noites e o horário de início está no formato HH:MM.",
+        "storedInvalid": "As configurações salvas desta política não são válidas, por isso as atualizações de fabricantes estão desativadas nos dispositivos que ela alcança. Revise as configurações abaixo e salve para corrigi-las.",
+        "gatesError": "Não foi possível carregar quais categorias de atualização estão disponíveis, por isso salvar está desativado. Recarregue a página para tentar novamente.",
+        "stillGated": "Nenhuma categoria de atualização está disponível ainda, então esta política não instala nada hoje. As categorias são liberadas aqui à medida que cada fabricante conclui a validação.",
+        "armingNotice": "O Breeze executa a ferramenta assinada do próprio fabricante e nunca hospeda arquivos de fabricantes. Um dispositivo que não se reconectou após uma atualização de BIOS gera um alerta."
+      },
       "securityAgentsTab": {
         "title": "Agentes de segurança",
         "description": "Implante e mantenha instalados agentes de segurança gerenciados nos dispositivos",

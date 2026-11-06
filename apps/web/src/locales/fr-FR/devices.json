@@ -961,6 +961,8 @@
     "backupStatusJobsSnapshotsAndVerification": "État de sauvegarde, tâches, instantanés et vérification",
     "theOsReportsAPendingReboot": "Le système d’exploitation signale un redémarrage imminent (Windows registre / Linux marqueurs de redémarrage requis).",
     "rebootPending": "Redémarrage en attente",
+    "backupRunning": "Sauvegarde en cours",
+    "backupRunningTooltip": "Une sauvegarde est en cours sur cet appareil. Ouvrez l'onglet Sauvegarde pour voir sa progression.",
     "restartScheduled": "Redémarrage programmé",
     "restartInProgress": "Redémarrage en cours",
     "restartScheduledFor": "Redémarrage programmé pour {{time}}",

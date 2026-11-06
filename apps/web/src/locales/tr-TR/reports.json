@@ -380,6 +380,7 @@
         "mrr_renewals": "MRR ve Yenilemeler",
         "quote_win_rate": "Teklif kazanma oranı",
         "client_profitability": "Müşteri karlılığı",
+        "ticket_sla_performance": "SLA performansı",
         "backup_status": "Yedekleme Durumu"
       },
       "threatDetection": {
@@ -409,6 +410,29 @@
         "noncompliant": "Uyumlu değil",
         "notMeasured": "Yok",
         "staleEnrolments": "Eskimiş kayıtlar"
+      },
+      "slaPerformance": {
+        "priority": "Öncelik",
+        "ticketsOpened": "Açılan talepler",
+        "firstResponse": "İlk yanıt",
+        "resolution": "Çözüm",
+        "target": "Hedef",
+        "measured": "Ölçülen",
+        "withinSla": "SLA içinde %",
+        "median": "Medyan",
+        "mean": "Ortalama",
+        "varies": "değişken",
+        "breaches": "İhlaller",
+        "breachCount_one": "{{count}} ihlal",
+        "breachCount_other": "{{count}} ihlal",
+        "unavailable": "Bu çalıştırmanın SLA özeti okunamadı, bu yüzden burada gösterilemiyor. Raporu yeniden oluşturun.",
+        "notes": "Neler ölçülür",
+        "priorities": {
+          "urgent": "Acil",
+          "high": "Yüksek",
+          "normal": "Normal",
+          "low": "Düşük"
+        }
       },
       "identityAccess": {
         "notMeasured": "Yok",
@@ -486,6 +510,7 @@
         "mrr_renewals": "MRR ve Yenilemeler",
         "quote_win_rate": "Teklif kazanma oranı",
         "client_profitability": "Müşteri karlılığı",
+        "ticket_sla_performance": "SLA performansı",
         "backup_status": "Yedekleme Durumu"
       },
       "runsTable": {
@@ -1039,6 +1064,7 @@
         "mrr_renewals": "MRR ve Yenilemeler",
         "quote_win_rate": "Teklif kazanma oranı",
         "client_profitability": "Müşteri karlılığı",
+        "ticket_sla_performance": "SLA performansı",
         "backup_status": "Yedekleme Durumu"
       },
       "schedules": {
@@ -1119,6 +1145,10 @@
         "quote_win_rate": {
           "name": "Teklif kazanma oranı",
           "description": "Gönderilen tekliflerin ne kadarının kazanıldığı; fırsat başına sayılır, bu yüzden revize edilip yeniden gönderilen bir teklif yalnızca bir kez sayılır. Ana oran yalnızca sonuçlanmış fırsatları kapsar, yanında hâlâ açık olanların sayısı gösterilir. Değerler vergiden önceki tutarlardır, para birimi başına bir küme halindedir ve dönüştürülmez."
+        },
+        "ticket_sla_performance": {
+          "name": "SLA performansı",
+          "description": "Müşteriye hazır, önceliğe göre SLA karşısında yanıt ve çözüm süreleri ile ihlaller."
         },
         "client_profitability": {
           "name": "Müşteri karlılığı",
@@ -1271,6 +1301,12 @@
         "currency": "Para birimi"
       },
       "periodNote": "Dönem, teklifin ilk gönderildiği tarihe uygulanır. Revize edilip yeniden gönderilen bir teklif tek bir fırsat olarak yalnızca bir kez sayılır.",
+      "cancel": "İptal",
+      "createReport": "Rapor oluştur"
+    },
+    "ticketSlaPerformanceOptions": {
+      "includeSubjects": "Talep konularını dahil et",
+      "includeSubjectsHelp": "Teslim edilen raporlar bu kuruluşun tüm portal kullanıcılarına görünür. Her kullanıcı her talebin konusunu göremeyecekse kapalı bırakın.",
       "cancel": "İptal",
       "createReport": "Rapor oluştur"
     },

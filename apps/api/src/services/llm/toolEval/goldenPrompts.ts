@@ -182,4 +182,10 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   // and not manage_patches / manage_services.
   { id: 'g136', prompt: 'Run the patch agent for Contoso now.', expect: [{ tool: 'run_patch_plan' }, { tool: 'list_organizations' }] },
   { id: 'g137', prompt: 'Have the AI get the Print Spooler on WS-01 running again.', expect: [{ tool: 'create_operator_task' }, { tool: 'resolve_device_context' }] },
+  // Full-control W16 PR B (#6786): schedule writes and Fleet Designs.
+  { id: 'g138', prompt: 'Schedule a health sweep every night at 2am for all our customers.', expect: [{ tool: 'manage_ai_agent_schedules', action: 'create' }] },
+  { id: 'g139', prompt: 'Stop the nightly sweep for Contoso.', expect: [{ tool: 'manage_ai_agent_schedules', action: 'update' }, { tool: 'manage_ai_agent_schedules', action: 'create' }] },
+  { id: 'g140', prompt: 'Run a Fleet Design for Contoso.', expect: [{ tool: 'manage_fleet_designs', action: 'run' }] },
+  { id: 'g141', prompt: "Apply the functions and monitoring from Contoso's latest Fleet Design.", expect: [{ tool: 'list_fleet_designs' }, { tool: 'manage_fleet_designs', action: 'preview' }, { tool: 'manage_fleet_designs', action: 'apply' }] },
+  { id: 'g142', prompt: 'Undo the Fleet Design we applied at Contoso last week.', expect: [{ tool: 'manage_fleet_designs', action: 'applied' }, { tool: 'manage_fleet_designs', action: 'rollback' }] },
 ];

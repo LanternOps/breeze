@@ -329,6 +329,44 @@ const BINDINGS: readonly Binding[] = [
     tool: 'run_patch_plan', routeFile: 'patchPlan.ts', method: 'post', path: '/runs',
     toolOnly: { extra: [], reason: 'Decision 6: refuses site- and device-restricted sessions, which could not read a device-less run; a release keys the run on its action intent.' },
   },
+  // Full-control W16 PR B (#6786): each action binds to the route a technician uses for the same act. scripts:write and
+  // contracts:write are conditional on the input, on REST as well, so the handler enforces them.
+  {
+    tool: 'manage_ai_agent_schedules', action: 'create', routeFile: 'aiAgentSchedules.ts', method: 'post', path: '/',
+    toolOnly: { extra: [], reason: 'Decision 3: takes no actMode, so it can never arm. Restricted sessions are refused on any scope.' },
+  },
+  {
+    tool: 'manage_ai_agent_schedules', action: 'update', routeFile: 'aiAgentSchedules.ts', method: 'patch', path: '/:id',
+    toolOnly: { extra: [], reason: 'Decision 3: actMode may only be false, and on an armed schedule a change that widens it or moves its cadence is refused.' },
+  },
+  {
+    tool: 'manage_ai_agent_schedules', action: 'delete', routeFile: 'aiAgentSchedules.ts', method: 'delete', path: '/:id',
+    toolOnly: { extra: [], reason: 'Four-eyes with a digest over the row and its overrides; deleting an override that narrows an armed baseline is refused (Decision 3).' },
+  },
+  {
+    tool: 'manage_fleet_designs', action: 'run', routeFile: 'fleetDesign.ts', method: 'post', path: '/runs',
+    toolOnly: { extra: [], reason: 'Decision 6: refuses site- and device-restricted sessions; a release keys the run on its action intent.' },
+  },
+  {
+    tool: 'manage_fleet_designs', action: 'preview', routeFile: 'fleetDesign.ts', method: 'post', path: '/:reportRunId/apply/preview',
+    toolOnly: { extra: [], reason: 'Same gates as the route: scripts:write when automation is non-empty, and a restricted session is refused.' },
+  },
+  {
+    tool: 'manage_fleet_designs', action: 'applied', routeFile: 'fleetDesign.ts', method: 'get', path: '/:reportRunId/applied',
+    toolOnly: { extra: [], reason: 'Decision 6: refuses site- and device-restricted sessions (stricter than REST).' },
+  },
+  {
+    tool: 'manage_fleet_designs', action: 'apply', routeFile: 'fleetDesign.ts', method: 'post', path: '/:reportRunId/apply',
+    toolOnly: { extra: [], reason: 'Four-eyes: runs only as a release carrying the verified digest, re-derived under the report-run lock. scripts:write when automation is non-empty, as the route.' },
+  },
+  {
+    tool: 'manage_fleet_designs', action: 'rollback', routeFile: 'fleetDesign.ts', method: 'post', path: '/:reportRunId/rollback',
+    toolOnly: { extra: [], reason: 'Four-eyes (Decision 5): runs only as a release carrying the verified digest, re-derived under the report-run lock. Passes the live scripts:write, as the route.' },
+  },
+  {
+    tool: 'manage_fleet_designs', action: 'document', routeFile: 'fleetDesign.ts', method: 'post', path: '/:reportRunId/document',
+    toolOnly: { extra: [], reason: 'Decision 6: refuses restricted sessions. Links deliverable evidence only with contracts:write, passed explicitly, as the route.' },
+  },
   {
     tool: 'create_operator_task', routeFile: 'aiOperatorTasks.ts', method: 'post', path: '/tasks',
     toolOnly: { extra: [], reason: 'Decision 4: service_recovery only (no recipeKey input, so no identity recipe); runs only as the release of its own approved intent, which is the idempotency key; a named alert must be on the device.' },

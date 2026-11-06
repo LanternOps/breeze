@@ -81,11 +81,20 @@ describe('reportTypeHiddenByPermission / reportTypePermissionCondition (ruling P
     expect(REPORT_TYPES.filter((t) => reportTypeHiddenByPermission(t, all))).toEqual([]);
   });
 
-  it('an unresolved permission set hides every business type and no legacy type', () => {
+  it('an unresolved permission set hides every permission-gated type and no legacy type', () => {
     for (const granted of [null, undefined, { permissions: [] }]) {
       const hidden = REPORT_TYPES.filter((t) => reportTypeHiddenByPermission(t, granted));
-      expect([...hidden].sort()).toEqual([...BUSINESS_REPORT_TYPES].sort());
+      expect([...hidden].sort()).toEqual([...BUSINESS_REPORT_TYPES, 'ticket_sla_performance'].sort());
     }
+  });
+
+  it('ticket_sla_performance is hidden without tickets:read, on any scope, and only then (#11018)', () => {
+    const reportsOnly = { permissions: [{ resource: 'reports', action: '*' }] };
+    const withTickets = { permissions: [{ resource: 'reports', action: '*' }, { resource: 'tickets', action: 'read' }] };
+    expect(reportTypeHiddenByPermission('ticket_sla_performance', reportsOnly)).toBe(true);
+    expect(reportTypeHiddenByPermission('ticket_sla_performance', withTickets)).toBe(false);
+    // audience 'any': the audience gate never hides it from an org-scope caller.
+    expect(reportTypeHiddenFromCaller('ticket_sla_performance', { scope: 'organization' })).toBe(false);
   });
 
   it('ai_usage_by_client needs BOTH invoices:read and ai_sessions:read_all', () => {

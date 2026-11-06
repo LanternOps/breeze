@@ -80,6 +80,8 @@ import { c2cConfigToolSchemas } from './aiToolSchemasC2CConfigs';
 import { orgAdminToolSchemas } from './aiToolSchemasOrgAdmin';
 import { orgAdminWriteToolSchemas } from './aiToolSchemasOrgAdminWrites';
 import { aiAgentLaunchToolSchemas } from './aiToolSchemasAiAgentLaunch';
+import { aiAgentScheduleToolSchemas } from './aiToolSchemasAiAgentSchedules';
+import { fleetDesignToolSchemas } from './aiToolSchemasFleetDesigns';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -667,6 +669,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   ...orgAdminWriteToolSchemas,
   // Full-control W16 PR A (#6786): the patch-plan and operator-task launches.
   ...aiAgentLaunchToolSchemas,
+  // Full-control W16 PR B (#6786): schedule writes and Fleet Design actions.
+  ...aiAgentScheduleToolSchemas,
+  ...fleetDesignToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),

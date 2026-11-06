@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -21,7 +21,17 @@ import ExternalBackupCard from './ExternalBackupCard';
 import { formatBytes } from './backupDashboardHelpers';
 import DeviceVaultStatus from './DeviceVaultStatus';
 import ReparseSkipNotice from './ReparseSkipNotice';
-import { splitReparseSkipNotice, stripInlineIndexDropNote, type BackupFailureCategory } from '@breeze/shared';
+import {
+  splitReparseSkipNotice,
+  stripInlineIndexDropNote,
+  type ActiveBackupJob,
+  type BackupFailureCategory,
+} from '@breeze/shared';
+import DeviceBackupActiveJobs from './DeviceBackupActiveJobs';
+import { runAction, handleActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
+import { navigateTo } from '@/lib/navigation';
+import { loginPathWithNext } from '../../lib/authScope';
 import BackupFailureCategoryBadge, { BackupFailureCategoryHint } from './BackupFailureCategoryBadge';
 import { stripInternalTagPrefix, truncateErrorSummary } from './backupErrorText';
 import AlphaBadge from '../shared/AlphaBadge';
@@ -97,7 +107,13 @@ type BackupStatus = {
   lastSuccessAt?: string | null;
   nextScheduledAt?: string | null;
   timezone?: string | null;
+  /** In-flight jobs, running first (#11027). Absent on an older API. */
+  activeJobs?: ActiveBackupJob[];
 };
+
+// While a backup is in flight the tab re-fetches so its progress stays live.
+const ACTIVE_POLL_MS = 5000;
+const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
 const jobStatusConfig: Record<BackupJobStatus, { icon: typeof CheckCircle2; className: string; label: string }> = {
   completed: { icon: CheckCircle2, className: 'text-success bg-success/10', label: 'Completed' },
@@ -208,37 +224,44 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
   // without a second fetch. `null` = not answered yet.
   const [hasExternalBackup, setHasExternalBackup] = useState<boolean | null>(null);
 
+  // The tab re-fetches on a timer while a backup is in flight, so requests can
+  // overlap with a refresh or a stop. Only the newest request may write state.
+  const latestFetchRef = useRef(0);
   const fetchData = useCallback(async () => {
-    setError(undefined);
+    const fetchId = ++latestFetchRef.current;
     try {
       const [statusRes, jobsRes, snapshotsRes] = await Promise.all([
         fetchWithAuth(`/backup/status/${deviceId}`),
         fetchWithAuth(`/backup/jobs?deviceId=${deviceId}`),
         fetchWithAuth(`/backup/snapshots?deviceId=${deviceId}`),
       ]);
+      const [statusPayload, jobsPayload, snapshotsPayload] = await Promise.all([
+        statusRes.ok ? statusRes.json() : null,
+        jobsRes.ok ? jobsRes.json() : null,
+        snapshotsRes.ok ? snapshotsRes.json() : null,
+      ]);
+      if (fetchId !== latestFetchRef.current) return;
 
       if (statusRes.ok) {
-        const payload = await statusRes.json();
-        setStatus(payload?.data ?? payload ?? null);
+        setStatus(statusPayload?.data ?? statusPayload ?? null);
       }
 
       if (jobsRes.ok) {
-        const payload = await jobsRes.json();
-        setJobs(Array.isArray(payload?.data) ? payload.data : []);
+        setJobs(Array.isArray(jobsPayload?.data) ? jobsPayload.data : []);
       }
 
       if (snapshotsRes.ok) {
-        const payload = await snapshotsRes.json();
-        setSnapshots(Array.isArray(payload?.data) ? payload.data : []);
+        setSnapshots(Array.isArray(snapshotsPayload?.data) ? snapshotsPayload.data : []);
       }
 
+      // Set from the outcome instead of clearing up front: a banner cleared at
+      // the start of every 5 s poll would blink, and useScrollToError would
+      // pull the page back to it each time it reappeared.
       const firstFail = [statusRes, jobsRes, snapshotsRes].find((r) => !r.ok);
-      if (firstFail) {
-        setError(`Failed to load some data (${firstFail.status})`);
-      }
+      setError(firstFail ? `Failed to load some data (${firstFail.status})` : undefined);
     } catch (err) {
       console.error('[DeviceBackupTab] fetchData:', err);
-      setError(friendlyFetchError(err));
+      if (fetchId === latestFetchRef.current) setError(friendlyFetchError(err));
     } finally {
       setLoading(false);
     }
@@ -281,6 +304,52 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
 
   useEffect(() => {
     fetchData();
+  }, [fetchData]);
+
+  const activeJobs = status?.activeJobs ?? [];
+  const hasActiveJobs = activeJobs.length > 0;
+  useEffect(() => {
+    if (!hasActiveJobs) return;
+    // Skip a tick while the previous poll is unanswered, so a slow API cannot
+    // stack requests.
+    let inFlight = false;
+    const timer = setInterval(() => {
+      if (inFlight) return;
+      inFlight = true;
+      void fetchData().finally(() => {
+        inFlight = false;
+      });
+    }, ACTIVE_POLL_MS);
+    return () => clearInterval(timer);
+  }, [hasActiveJobs, fetchData]);
+
+  // Same cancel route and runAction handling as BackupJobList.handleCancel.
+  const [stoppingId, setStoppingId] = useState<string | null>(null);
+  const stoppingRef = useRef(false);
+  const handleStopJob = useCallback(async (jobId: string) => {
+    if (stoppingRef.current) return;
+    stoppingRef.current = true;
+    setStoppingId(jobId);
+    try {
+      // The cancel route answers HTTP 200 with a `warning` when the job was
+      // marked cancelled but the stop signal could not reach the agent — a
+      // partial success runAction treats as success, so surface it here.
+      const result = await runAction<{ warning?: string } | null>({
+        request: () => fetchWithAuth(`/backup/jobs/${jobId}/cancel`, { method: 'POST' }),
+        errorFallback: 'Failed to cancel job',
+        onUnauthorized: UNAUTHORIZED,
+      });
+      const warning = result && typeof result === 'object' ? result.warning : undefined;
+      if (typeof warning === 'string' && warning.length > 0) {
+        showToast({ message: warning, type: 'warning' });
+      }
+      await fetchData();
+    } catch (err) {
+      handleActionError(err, 'Failed to cancel job');
+    } finally {
+      stoppingRef.current = false;
+      setStoppingId(null);
+    }
   }, [fetchData]);
 
   useEffect(() => {
@@ -539,6 +608,12 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
           </div>
         </div>
       </div>
+
+      <DeviceBackupActiveJobs
+        jobs={activeJobs}
+        onStop={(jobId) => void handleStopJob(jobId)}
+        stoppingId={stoppingId}
+      />
 
       {/* Job History */}
       <div className="rounded-lg border bg-card p-5 shadow-xs">

@@ -41,6 +41,7 @@
     "stalledTooltip": "Aucune donnée reçue depuis {{minutes}} min",
     "filesProgress": "{{done}} / {{total}} fichiers",
     "speedValue": "{{value}}/s",
+    "etaValue": "encore environ {{value}}",
     "created": "Création",
     "updated": "Mise à jour",
     "files": "Dossiers",
@@ -224,7 +225,26 @@
     "hold": "Tiens",
     "standard": "Standard",
     "restorePointCount_one": "{{count}} point de restauration",
-    "restorePointCount_other": "{{count}} points de restauration"
+    "restorePointCount_other": "{{count}} points de restauration",
+    "activePhase": {
+      "waiting_for_device": "Envoyée à l'appareil, en attente de démarrage",
+      "queued_on_device": "En attente de la fin d'une autre sauvegarde sur cet appareil",
+      "resuming": "Reprise d’une sauvegarde interrompue",
+      "scanning": "Analyse des fichiers",
+      "backing_up": "Sauvegarde en cours"
+    },
+    "activeJobs": {
+      "title": "Sauvegarde en cours d’exécution",
+      "processedOfTotal": "{{done}} sur {{total}} traités",
+      "processed": "{{done}} traités",
+      "lastHeard": "Dernier signal de l'appareil : {{relative}}",
+      "mode": {
+        "file": "Sauvegarde de fichiers",
+        "system_image": "Sauvegarde d’image système",
+        "mssql": "Sauvegarde SQL Server",
+        "hyperv": "Sauvegarde Hyper-V"
+      }
+    }
   },
   "deviceVaultStatus": {
     "loadingVaultStatus": "Chargement de l’état du coffre...",

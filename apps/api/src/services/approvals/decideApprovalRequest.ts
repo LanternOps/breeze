@@ -35,6 +35,11 @@ import {
   isAgentIntentDecideAuthorized,
   isOrgWideGovernanceIntent,
 } from '../actionIntents/intentApprovers';
+import {
+  APPROVER_SCOPE_REQUIRED,
+  APPROVER_SCOPE_REQUIRED_MESSAGE,
+  mayHavePartnerWideEffect,
+} from '../actionIntents/partnerWideEffect';
 import { isSoleOperatorSelfApprovalForbidden } from '../actionIntents/selfApprovalPolicy';
 import { buildAuthContextForIntent } from '../actionIntents/actorContext';
 import {
@@ -971,6 +976,32 @@ export async function decideApprovalRequest(
           };
         }
 
+        // Approver scope on a partner-wide intent, the decide-time twin of the fan-out:
+        // a queued row is a durable capability, so an org-only admin holding one is
+        // refused here. Approve-only, like every check in this block. A registered
+        // action loads the reads; every other intent pays one Map lookup.
+        let requirePartnerAxis = false;
+        if (mayHavePartnerWideEffect(linkedIntent.actionName, linkedIntent.arguments)) {
+          const { intentRequiresPartnerAxisApprover, isPartnerAxisApprover } = await import('../actionIntents/partnerAxisApprover');
+          requirePartnerAxis = await intentRequiresPartnerAxisApprover(linkedIntent);
+          if (requirePartnerAxis && !(await isPartnerAxisApprover(userId, linkedIntent.orgId, input.auth))) {
+            recordActionIntentEvent({
+              orgId: linkedIntent.orgId,
+              intentId: linkedIntent.id,
+              actionName: linkedIntent.actionName,
+              argumentDigest: linkedIntent.argumentDigest,
+              source: linkedIntent.source,
+              outcome: 'approver_unauthorized',
+              actorId: userId,
+              details: { approvalId: existing.id, errorCode: APPROVER_SCOPE_REQUIRED },
+            });
+            return {
+              httpStatus: 403,
+              body: { error: APPROVER_SCOPE_REQUIRED, message: APPROVER_SCOPE_REQUIRED_MESSAGE },
+            };
+          }
+        }
+
         // Tool catalog W04 (#5219), Decision 6 — four-eyes on a FLOW intent.
         // The intent has no requester (requested_by_user_id is NULL), so the
         // requester exclusion below excludes nobody. The humans who must never
@@ -1096,6 +1127,7 @@ export async function decideApprovalRequest(
             resolveIntentApprovers(linkedIntent!.orgId, {
               requireOrgWideGovernance: orgWideGovernance,
               alsoRequire,
+              ...(requirePartnerAxis ? { requirePartnerAxis } : {}),
             }),
           );
           const othersEligible = eligibleNow.filter((candidate) => candidate !== userId);

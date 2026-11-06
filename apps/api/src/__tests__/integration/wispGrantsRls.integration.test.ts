@@ -282,6 +282,17 @@ describe('wisp_grants RLS + ownership (2027-01-04-100100)', () => {
       db.update(wispGrants).set({ currentRevisionId: null }).where(eq(wispGrants.id, grantId))), '42501');
   });
 
+  it('#10390: partner admin MAY update summary_refine, either way, like budget', async () => {
+    const t = await seedTenant();
+    const { grantId } = await seedGrant({ partnerId: t.partner.id, grantorUserId: t.grantor.id, orgIds: [t.org.id] });
+    const adminCtx = partnerContext(t.partner.id, [t.org.id], t.admin.id);
+    expect(await readGrant(grantId)).toMatchObject({ summaryRefine: false });
+    for (const summaryRefine of [true, false]) {
+      await withDbAccessContext(adminCtx, () => db.update(wispGrants).set({ summaryRefine }).where(eq(wispGrants.id, grantId)));
+      expect(await readGrant(grantId)).toMatchObject({ summaryRefine });
+    }
+  });
+
   it('partner admin MAY update budget_cents_per_day and floor_tick_minutes (w00 A6); floor_tick_minutes 10 or 241 → 23514', async () => {
     const t = await seedTenant();
     const { grantId } = await seedGrant({ partnerId: t.partner.id, grantorUserId: t.grantor.id, orgIds: [t.org.id] });

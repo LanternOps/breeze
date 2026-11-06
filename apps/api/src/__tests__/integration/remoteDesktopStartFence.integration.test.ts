@@ -441,11 +441,11 @@ describe('desktop start-intent generation fence', () => {
   it('does not expire a WS-fallback start waiting on its answer as stale, however old the session row', async () => {
     const { sessionId } = await seed('pending');
     await getTestDb().execute(sql`
-      UPDATE remote_sessions SET created_at = now() - interval '10 minutes' WHERE id = ${sessionId}::uuid
+      UPDATE remote_sessions SET created_at = now() - interval '10 minutes', last_start_attempt_at = now() - interval '10 minutes' WHERE id = ${sessionId}::uuid
     `);
     const { sessionId: plainOld } = await seed('connecting');
     await getTestDb().execute(sql`
-      UPDATE remote_sessions SET created_at = now() - interval '10 minutes' WHERE id = ${plainOld}::uuid
+      UPDATE remote_sessions SET created_at = now() - interval '10 minutes', last_start_attempt_at = now() - interval '10 minutes' WHERE id = ${plainOld}::uuid
     `);
 
     const started = await withSystemDbAccessContext(() => commitDesktopStreamStartIntent({

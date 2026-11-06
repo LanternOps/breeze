@@ -41,6 +41,7 @@
     "stalledTooltip": "Nenhum dado recebido há {{minutes}} min",
     "filesProgress": "{{done}} / {{total}} arquivos",
     "speedValue": "{{value}}/s",
+    "etaValue": "faltam cerca de {{value}}",
     "created": "Criado",
     "updated": "Atualizado",
     "files": "Arquivos",
@@ -224,7 +225,26 @@
     "hold": "Retenção",
     "standard": "Padrão",
     "restorePointCount_one": "{{count}} ponto de restauração",
-    "restorePointCount_other": "{{count}} pontos de restauração"
+    "restorePointCount_other": "{{count}} pontos de restauração",
+    "activePhase": {
+      "waiting_for_device": "Enviado ao dispositivo, aguardando o início",
+      "queued_on_device": "Aguardando outro backup neste dispositivo terminar",
+      "resuming": "Retomando um backup interrompido",
+      "scanning": "Verificando arquivos",
+      "backing_up": "Fazendo backup"
+    },
+    "activeJobs": {
+      "title": "Backup em andamento",
+      "processedOfTotal": "{{done}} de {{total}} processados",
+      "processed": "{{done}} processados",
+      "lastHeard": "Último sinal do dispositivo: {{relative}}",
+      "mode": {
+        "file": "Backup de arquivos",
+        "system_image": "Backup de imagem do sistema",
+        "mssql": "Backup do SQL Server",
+        "hyperv": "Backup do Hyper-V"
+      }
+    }
   },
   "deviceVaultStatus": {
     "loadingVaultStatus": "Carregando status do vault...",

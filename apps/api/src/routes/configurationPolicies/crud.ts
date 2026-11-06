@@ -20,7 +20,9 @@ import {
   InvalidParentPolicyError,
   PolicyHasChildrenError,
   parentPolicyEnablesHpCmslCollection,
+  parentPolicyArmsOemUpdates,
 } from '../../services/configurationPolicy';
+import { checkOemUpdatesArmAllowed, policyArmsOemUpdates } from './oemUpdatesGate';
 import { invalidateRemoteAccessCache } from '../../services/remoteAccessPolicy';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import {
@@ -79,6 +81,13 @@ crudRoutes.post(
     // the only re-parenting door there is.
     if (data.parentPolicyId && await parentPolicyEnablesHpCmslCollection(data.parentPolicyId)) {
       const gate = checkHpCmslWriteAllowed(auth, c.get('permissions') as UserPermissions | undefined);
+      if (!gate.allowed) return c.json(gate.body, 403);
+    }
+
+    // #11070: the same door for vendor updates. A child inherits its parent's
+    // oem_updates link whole, so a child of an armed parent is armed on creation.
+    if (data.parentPolicyId && await parentPolicyArmsOemUpdates(data.parentPolicyId)) {
+      const gate = checkOemUpdatesArmAllowed(auth, c.get('permissions') as UserPermissions | undefined);
       if (!gate.allowed) return c.json(gate.body, 403);
     }
 
@@ -261,6 +270,19 @@ crudRoutes.patch(
 
     if (Object.keys(data).length === 0) {
       return c.json({ error: 'No updates provided' }, 400);
+    }
+
+    // #11070: re-activating a policy whose oem_updates link in effect is armed
+    // starts vendor updates on every device it is assigned to, so it is arming
+    // through another door. Only an actual change to active is gated;
+    // deactivating never is. An unreadable policy falls through to the
+    // service's own 404.
+    if (data.status === 'active') {
+      const current = await getConfigPolicy(id, auth);
+      if (current && current.status !== 'active' && policyArmsOemUpdates(current)) {
+        const gate = checkOemUpdatesArmAllowed(auth, c.get('permissions') as UserPermissions | undefined);
+        if (!gate.allowed) return c.json(gate.body, 403);
+      }
     }
 
     let updated;

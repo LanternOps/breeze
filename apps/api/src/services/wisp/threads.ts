@@ -2,8 +2,9 @@
  * Wisp W04 — the durable conversation thread (Wisp design §6; w00 "Threads
  * (W04)" + A24). One thread per grant; SDK sessions are short-lived and
  * attached to it. A new session inherits only what `seedContextForSession`
- * renders: the focus line, the deterministic summary, live attachments (by
- * handle) and recalled memory — every user/model-authored piece fenced as
+ * renders: the focus line, the concern picture, the last session's summary,
+ * live attachments (by handle) and recalled memory — every user/model-authored
+ * piece fenced as
  * untrusted data. Context, never authority.
  *
  * Every read/write runs in SYSTEM scope: callers are the request path
@@ -31,7 +32,7 @@ import { attachmentSeedLines, listThreadAttachments } from './threadAttachments'
 import { listWorkingSet } from './threadLinks';
 import { listConcernsForCeiling } from './concerns';
 import type { ResolvedEntity } from './entityRefs';
-import { THREAD_SUMMARY_MAX_CHARS, truncateSummary } from './threadSummary';
+import { THREAD_PICTURE_MAX_CHARS, THREAD_SUMMARY_MAX_CHARS, truncateSummary } from './threadSummary';
 import { loadStandingLoopFacts, renderStandingLoop, type StandingLoopFacts } from './standingLoop';
 
 export type WispThread = {
@@ -86,6 +87,8 @@ const SEED_LINK_MAX_BYTES = 4096;
 /** An entity status is a short enum-ish string; a longer one is not a status. */
 const SEED_LINK_STATUS_MAX_CHARS = 40;
 const SEED_LINKS_HEADER = "Linked objects (by handle; call the object's own read tool for detail):";
+const SEED_PICTURE_LABEL = 'Partner picture (open concerns across customers, from the latest assessment):';
+const SEED_SUMMARY_LABEL = 'Previous session summary (what was concluded and what is open):';
 
 /**
  * W08 Task 5: the thread's VISIBLE links, one line each by handle — kind,
@@ -270,13 +273,61 @@ export async function attachSession(threadId: string, sessionId: string): Promis
   });
 }
 
-/** Store `truncateSummary(summary)` (≤ 4 000) and stamp `summary_updated_at`. */
-export async function updateThreadSummary(threadId: string, summary: string): Promise<void> {
+/**
+ * #10390: a closing session takes the thread's summary, in one compare-and-set
+ * statement: not when this session already holds it (a repeated close must not
+ * rewrite it or pay for a second model call), and not when a later-attached
+ * session holds it (an older session expiring late must not overwrite a newer
+ * conclusion). False when the statement matched nothing.
+ */
+export async function claimThreadSummary(threadId: string, sessionId: string, digest: string): Promise<boolean> {
+  const stored = truncateSummary(digest);
+  return inSystemContext(async () => {
+    const rows = await db
+      .update(wispThreads)
+      .set({ summary: stored, summaryUpdatedAt: sql`now()`, summarySessionId: sessionId, updatedAt: sql`now()` })
+      .where(and(
+        eq(wispThreads.id, threadId),
+        sql`${wispThreads.summarySessionId} IS DISTINCT FROM ${sessionId}::uuid`,
+        sql`NOT EXISTS (
+          SELECT 1
+            FROM wisp_thread_sessions holder
+            JOIN wisp_thread_sessions mine ON mine.thread_id = holder.thread_id
+           WHERE holder.thread_id = ${wispThreads.id}
+             AND holder.session_id = ${wispThreads.summarySessionId}
+             AND mine.session_id = ${sessionId}::uuid
+             AND holder.attached_at > mine.attached_at
+        )`,
+      ))
+      .returning({ id: wispThreads.id });
+    return rows.length > 0;
+  });
+}
+
+/**
+ * #10390: the model-written summary replaces this session's digest, only while
+ * this session still holds the summary. False when a newer session took it
+ * during the model call.
+ */
+export async function replaceClaimedThreadSummary(threadId: string, sessionId: string, summary: string): Promise<boolean> {
   const stored = truncateSummary(summary);
-  await inSystemContext(async () => {
+  return inSystemContext(async () => {
     const rows = await db
       .update(wispThreads)
       .set({ summary: stored, summaryUpdatedAt: sql`now()`, updatedAt: sql`now()` })
+      .where(and(eq(wispThreads.id, threadId), eq(wispThreads.summarySessionId, sessionId)))
+      .returning({ id: wispThreads.id });
+    return rows.length > 0;
+  });
+}
+
+/** #10390: the assessment rollup's picture, in its own column (≤ 4 000). Never touches the session summary. */
+export async function updateThreadPicture(threadId: string, picture: string): Promise<void> {
+  const stored = truncateSummary(picture, THREAD_PICTURE_MAX_CHARS);
+  await inSystemContext(async () => {
+    const rows = await db
+      .update(wispThreads)
+      .set({ picture: stored, pictureUpdatedAt: sql`now()`, updatedAt: sql`now()` })
       .where(eq(wispThreads.id, threadId))
       .returning({ id: wispThreads.id });
     if (rows.length === 0) throw new WispThreadError('thread_not_found', `Wisp thread ${threadId} not found`);
@@ -289,7 +340,8 @@ export async function updateThreadSummary(threadId: string, summary: string): Pr
  *
  *   ## Wisp thread
  *   Focus: <org name>                              (focused threads only)
- *   <wisp_thread_summary fence>                    (non-empty summary only)
+ *   Partner picture …: <wisp_thread_picture fence> (non-empty picture only; the assessment rollup)
+ *   Previous session summary …: <wisp_thread_summary fence> (non-empty summary only; the last session close)
  *   <wisp_thread_attachments fence>                (live attachments only, by handle)
  *   Linked objects …: <wisp_thread_links fence>    (visible links only, by handle; W08)
  *   <memory>                                       (focused: user+org for the focus, then partner;
@@ -351,12 +403,20 @@ async function threadSeed(threadId: string, ceiling: GrantCeiling, auth: AuthCon
       if (org) parts.push(`Focus: ${sanitizeUntrustedText(org.name, FOCUS_NAME_MAX_CHARS, flags)}`);
     }
 
+    if (row.picture !== '') {
+      parts.push(`${SEED_PICTURE_LABEL}\n${wrapUntrustedData(
+        'wisp_thread_picture',
+        sanitizeUntrustedText(row.picture, THREAD_PICTURE_MAX_CHARS, flags),
+        flags,
+      )}`);
+    }
+
     if (thread.summary !== '') {
-      parts.push(wrapUntrustedData(
+      parts.push(`${SEED_SUMMARY_LABEL}\n${wrapUntrustedData(
         'wisp_thread_summary',
         sanitizeUntrustedText(thread.summary, THREAD_SUMMARY_MAX_CHARS, flags),
         flags,
-      ));
+      )}`);
     }
 
     const attachments = await listThreadAttachments(threadId);
