@@ -99,6 +99,7 @@ vi.mock('../services/redis', () => ({
 
 vi.mock('../services/patchEligibility', () => ({
   resolveApprovedPatchesForDevice: vi.fn(),
+  areAllPendingPatchesManagedByVendorLane: vi.fn(async () => false),
 }));
 
 vi.mock('../services/patchRebootHandler', () => ({

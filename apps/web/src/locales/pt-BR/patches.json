@@ -488,7 +488,8 @@
     "skipReasons": {
       "ring_deleted": "Cancelado antes do envio: o anel de atualização foi excluído.",
       "ring_disabled": "Cancelado antes do envio: o anel de atualização foi desativado.",
-      "ring_unavailable": "Ignorado: o anel de atualização foi excluído ou desativado antes do envio para este dispositivo."
+      "ring_unavailable": "Ignorado: o anel de atualização foi excluído ou desativado antes do envio para este dispositivo.",
+      "all_managed_by_vendor_updates": "Ignorado: todas as atualizações pendentes neste dispositivo são gerenciadas pelas atualizações do fabricante, então nenhuma aprovação é necessária."
     },
     "errors": {
       "load": "Falha ao carregar o trabalho de patch"
