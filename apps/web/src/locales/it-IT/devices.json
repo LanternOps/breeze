@@ -2145,6 +2145,8 @@
       "deferredUntil": "Approvazione automatica il {{date}}",
       "deferredUntilTitle": "L'anello di aggiornamento {{ring}} trattiene le nuove patch per la sua finestra di rinvio. Questa viene approvata il {{date}} e installata con la successiva esecuzione pianificata.",
       "excluded": "Esclusa dal criterio",
+      "managedByVendorUpdates": "Gestita dagli aggiornamenti del produttore",
+      "managedByVendorUpdatesTitle": "Lo strumento di aggiornamento del produttore la distribuisce su questo dispositivo, quindi le esecuzioni pianificate la saltano.",
       "excludedSourceTitle": "Le origini del criterio patch non includono questa patch, quindi le esecuzioni pianificate la saltano.",
       "excludedCategoryTitle": "L'anello di aggiornamento {{ring}} esclude la categoria di questa patch, quindi le esecuzioni pianificate la saltano.",
       "excludedAppRuleTitle": "Una regola di blocco o di fissaggio app dell'anello di aggiornamento collegato trattiene questa patch, quindi le esecuzioni pianificate la saltano.",
