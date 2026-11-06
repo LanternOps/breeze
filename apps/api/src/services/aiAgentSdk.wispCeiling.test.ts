@@ -970,6 +970,32 @@ describe('createSessionPreToolUse — launch_specialist pre-approval gates (#101
     });
   });
 
+  // #11181: the intent is filed in the org the launch names, judged by the CEILING-narrowed
+  // reach, never the session's wider login auth.
+  describe('the intent org follows the named org, within the ceiling (#11181)', () => {
+    const narrowedTo = (...orgIds: string[]) => (base: Record<string, unknown>) => ({
+      ...base, accessibleOrgIds: orgIds, canAccessOrg: (orgId: string) => orgIds.includes(orgId),
+    });
+    beforeEach(() => {
+      vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 3, requiresApproval: true, approvalScope: 'supervised', description: 'x' } as any);
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-ls', actionName: 'launch_specialist' }));
+      mockWaitForIntentDecision.mockResolvedValue('rejected');
+    });
+
+    it('a launch on an org the ceiling reaches is filed in that org', async () => {
+      wisp.narrowAuthToCeiling.mockImplementation(narrowedTo('org-1', ORG_ID));
+      await createSessionPreToolUse(wispSession())('launch_specialist', { ...SWEEP, kind: 'patch_plan' });
+      expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ toolName: 'launch_specialist', orgId: ORG_ID });
+    });
+
+    it('a launch on an org the session reaches but the ceiling does not refuses, and files nothing', async () => {
+      wisp.narrowAuthToCeiling.mockImplementation(narrowedTo('org-1'));
+      const result = await createSessionPreToolUse(wispSession())('launch_specialist', { ...SWEEP, kind: 'patch_plan' });
+      expect(result).toEqual({ allowed: false, error: 'Access denied to this organization' });
+      expect(mockCreateActionIntent).not.toHaveBeenCalled();
+    });
+  });
+
   // #10193: the approval a Wisp session raises is attributed to Wisp, not "Breeze AI".
   it('attributes the approval to Wisp on both the Tier-3 intent and the Tier-2 approval row + push', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 3, requiresApproval: true, approvalScope: 'supervised', description: 'x' } as any);

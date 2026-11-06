@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { aiTools } from '../aiTools';
-import { TIER3_FOUR_EYES_ACTIONS, TIER3_INPUT_AWARE_ACTIONS, TIER3_SUPERVISED_ACTIONS } from '../aiGuardrails';
+import { TIER3_ACTIONS, TIER3_FOUR_EYES_ACTIONS, TIER3_INPUT_AWARE_ACTIONS, TIER3_SUPERVISED_ACTIONS } from '../aiGuardrails';
 import { AI_DESIGN_INTENT_TOOLS } from './aiDesignIntentTarget';
 import { INTENT_ORG_ARGUMENT, ORG_ARGUMENT_NOT_TARGET } from './intentTargetOrg';
 
@@ -19,7 +19,9 @@ function schemaProps(toolName: string): Record<string, unknown> {
 }
 
 function tier3Actions(toolName: string): Set<string> {
-  return new Set([...(TIER3_SUPERVISED_ACTIONS[toolName] ?? []), ...(TIER3_FOUR_EYES_ACTIONS[toolName] ?? [])]);
+  return new Set([
+    ...(TIER3_ACTIONS[toolName] ?? []), ...(TIER3_SUPERVISED_ACTIONS[toolName] ?? []), ...(TIER3_FOUR_EYES_ACTIONS[toolName] ?? []),
+  ]);
 }
 
 function hasTier3(toolName: string): boolean {

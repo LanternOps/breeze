@@ -339,6 +339,13 @@ describe('createMcpActionIntent', () => {
       expect(filedOrg()).toBe(ORG);
     });
 
+    it('a design tool naming its org as an argument out of reach refuses, never the execution org', async () => {
+      mocks.resolveTarget.mockResolvedValueOnce({ orgId: FOREIGN, partnerId: null, fromArgument: true });
+      const out = await createMcpActionIntent(partnerInput({ toolName: 'manage_fleet_designs', toolInput: { action: 'run', orgId: FOREIGN }, executionOrgId: ORG }));
+      expect(out).toMatchObject({ kind: 'refused', code: 'invalid_params' });
+      expect(mocks.createActionIntent).not.toHaveBeenCalled();
+    });
+
     it('a call with no org argument keeps the execution org', async () => {
       await createMcpActionIntent(partnerInput({ toolName: 'manage_billing_settings', toolInput: { action: 'update_partner' }, executionOrgId: ORG }));
       expect(filedOrg()).toBe(ORG);

@@ -49,6 +49,23 @@ describe('argumentTargetOrg (#11181)', () => {
   });
 });
 
+describe('the `when` predicates (#11181)', () => {
+  // Every org-or-partner create: a partner-owned row is partner-wide and stays in the session org.
+  it.each([
+    ['manage_configuration_policy', 'create'], ['manage_delivery', 'create_routing'], ['manage_software_policies', 'create'],
+    ['manage_tenant_variables', 'create'], ['manage_ticket_forms', 'create'], ['manage_ticket_routing_rules', 'create'],
+  ])('%s %s: org-owned moves, partner-owned does not', (tool, action) => {
+    expect(argumentTargetOrg(tool, { action, orgId: ORG_B })).toBe(ORG_B);
+    expect(argumentTargetOrg(tool, { action, ownerScope: 'organization', orgId: ORG_B })).toBe(ORG_B);
+    expect(argumentTargetOrg(tool, { action, ownerScope: 'partner', orgId: ORG_B })).toBeNull();
+  });
+
+  it('configure_network_baseline: a create moves, an update of a named baseline does not', () => {
+    expect(argumentTargetOrg('configure_network_baseline', { org_id: ORG_B, subnet: '10.0.0.0/24' })).toBe(ORG_B);
+    expect(argumentTargetOrg('configure_network_baseline', { org_id: ORG_B, baseline_id: ORG_X })).toBeNull();
+  });
+});
+
 describe('resolveIntentTarget + decideIntentOrg (#11181)', () => {
   it('set_sensitive_access names org B in reach: the intent is filed in org B', async () => {
     const target = await resolveIntentTarget('manage_org_portal_settings', { action: 'set_sensitive_access', orgId: ORG_B, flags: { showPatches: true } });

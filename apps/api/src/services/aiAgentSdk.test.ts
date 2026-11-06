@@ -2319,6 +2319,22 @@ describe('createSessionPreToolUse', () => {
         expect(mockCreateActionIntent).not.toHaveBeenCalled();
       });
 
+      it('reach is the call\'s tool auth, not the session auth: an org only the session auth reaches refuses (#11181)', async () => {
+        const session = makeActiveSession({ auth: reachOf('org-1', ORG_2), toolAuth: reachOf('org-1') });
+        const result = await createSessionPreToolUse(session)('run_patch_plan', { orgId: ORG_2 });
+        expect(result).toEqual({ allowed: false, error: 'Access denied to this organization' });
+        expect(mockCreateActionIntent).not.toHaveBeenCalled();
+      });
+
+      it('a design tool naming its org as an ARGUMENT out of reach refuses like any argument (#11181)', async () => {
+        mockResolveDesignTarget.mockResolvedValueOnce({ orgId: ORG_9, partnerId: null, fromArgument: true });
+        const auth = reachOf('org-1');
+        const session = makeActiveSession({ auth, toolAuth: auth });
+        const result = await createSessionPreToolUse(session)('manage_fleet_designs', { action: 'run', orgId: ORG_9 });
+        expect(result).toEqual({ allowed: false, error: 'Access denied to this organization' });
+        expect(mockCreateActionIntent).not.toHaveBeenCalled();
+      });
+
       it('a Tier-1 call naming an out-of-reach org is not refused here: no intent, the handler answers (#11181)', async () => {
         vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 1, requiresApproval: false, readOnly: true, description: 'Read' } as any);
         const auth = reachOf('org-1');

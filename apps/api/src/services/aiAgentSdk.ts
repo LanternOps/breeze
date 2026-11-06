@@ -94,7 +94,7 @@ import {
   type ToolHandoffStatus,
 } from './aiToolHandoff';
 import { computeEffectDigestForRelease, hasPinnedDigest } from './actionIntents/effectDigest';
-import { decideIntentOrg, resolveIntentTarget } from './actionIntents/intentTargetOrg';
+import { decideIntentOrg, resolveIntentTarget, type IntentTarget } from './actionIntents/intentTargetOrg';
 import { requiresPinnedEffectDigest } from './actionIntents/pinnedEffectPolicy';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import {
@@ -1500,15 +1500,22 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     let designCardDetail: string | undefined;
     let intentOrgRefusal: string | undefined;
     if (!flowTool && !tenant) {
+      // Only a design tool's row read can throw: an argument target is read from the input
+      // alone, so the fail-open below never covers it, and neither does a reach failure.
+      const reach = callReach(session, wispCall.current);
+      let target: IntentTarget | null = null;
       try {
-        const decision = decideIntentOrg(await resolveIntentTarget(toolName, input), callReach(session, wispCall.current));
-        if (decision.kind === 'target') intentOrgId = decision.orgId;
-        if (decision.kind === 'refuse') intentOrgRefusal = decision.error;
-        else designCardDetail = decision.cardDetail;
+        target = await resolveIntentTarget(toolName, input);
       } catch (err) {
         captureException(err instanceof Error ? err : new Error(String(err)));
         console.error('[AI-SDK] Failed to resolve a design tool\'s target org:', err);
         designCardDetail = 'The details of this change could not be loaded, so this card may not show everything it affects.';
+      }
+      if (target) {
+        const decision = decideIntentOrg(target, reach);
+        if (decision.kind === 'target') intentOrgId = decision.orgId;
+        if (decision.kind === 'refuse') intentOrgRefusal = decision.error;
+        else designCardDetail = decision.cardDetail;
       }
     }
     const unattendedReads = unattendedReadsApply(session, wispCall.current, Boolean(flowTool || tenant));
