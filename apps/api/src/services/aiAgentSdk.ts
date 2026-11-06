@@ -1490,18 +1490,20 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     // stored reason and a durable release's rebuilt authority are all keyed on
     // `action_intents.org_id`, so a session-org intent would have an approver of org A
     // approving a change to org B, and a worker release would refuse. Which calls name
-    // their org, and how, is `actionIntents/intentTargetOrg.ts`: an org ARGUMENT outside
-    // reach refuses below (Tier 3 only, so a read still reaches its handler); a ROW outside
-    // reach stays in the session org with nothing about it on the card, so a foreign id
-    // reveals nothing; a partner-wide effect stays in the session org. A failed row lookup
-    // is non-fatal: the intent stays in the session org and the card says it is short. A
-    // Fleet Design of another org then has no pin for that org, so no intent is filed; a
-    // schedule's handler answers not found or refuses at release.
+    // their org, and how, is `actionIntents/intentTargetOrg.ts`: an org ARGUMENT or a ROW
+    // named by id (#11222) outside reach refuses below (Tier 3 only, so a read still reaches
+    // its handler), and so does a named row that is missing or could not be read; a design
+    // tool's row outside reach stays in the session org with nothing about it on the card,
+    // so a foreign id reveals nothing; a partner-wide effect stays in the session org. A
+    // design tool's failed row lookup is non-fatal: the intent stays in the session org and
+    // the card says it is short. A Fleet Design of another org then has no pin for that org,
+    // so no intent is filed; a schedule's handler answers not found or refuses at release.
     let designCardDetail: string | undefined;
     let intentOrgRefusal: string | undefined;
     if (!flowTool && !tenant) {
       // Only a design tool's row read can throw: an argument target is read from the input
-      // alone, so the fail-open below never covers it, and neither does a reach failure.
+      // alone, and a row-identified write's failed read comes back refused, so the fail-open
+      // below never covers either, and neither does a reach failure.
       const reach = callReach(session, wispCall.current);
       let target: IntentTarget | null = null;
       try {

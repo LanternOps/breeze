@@ -41,6 +41,8 @@ vi.mock('./actionIntents/aiDesignIntentTarget', () => ({
   AI_DESIGN_INTENT_TOOLS: new Set(['manage_ai_agent_schedules', 'manage_fleet_designs']),
   resolveAiDesignIntentTarget: mockResolveDesignTarget,
 }));
+const mockResolveRowTarget = vi.hoisted(() => vi.fn());
+vi.mock('./actionIntents/intentRowTarget', () => ({ resolveIntentRowTarget: mockResolveRowTarget }));
 
 vi.mock('../db', () => ({
   runAfterDbContextCommit: vi.fn((_label: string, work: () => unknown) => { void work(); }),
@@ -2294,11 +2296,9 @@ describe('createSessionPreToolUse', () => {
         expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ toolName, orgId: ORG_2 });
       });
 
-      // The handler of these ignores orgId and changes the row it names, so an orgId the
-      // model adds must not move the intent (intentTargetOrg.ts: ORG_ARGUMENT_NOT_TARGET).
+      // Partner-wide: the handler ignores orgId, so an orgId the model adds must not move the
+      // intent (intentTargetOrg.ts: ORG_ARGUMENT_NOT_TARGET).
       it.each<[string, Record<string, unknown>]>([
-        ['manage_invoices', { action: 'void', orgId: ORG_2, invoiceId: DEVICE }],
-        ['manage_tenant_variables', { action: 'delete', orgId: ORG_2, variableId: DEVICE }],
         ['manage_tenant_variables', { action: 'create', ownerScope: 'partner', orgId: ORG_2, key: 'K', value: 'v' }],
         ['manage_billing_settings', { action: 'update_partner', orgId: ORG_2 }],
       ])('%s %j: an orgId the handler does not write to keeps the session org (#11181)', async (toolName, input) => {
@@ -2306,6 +2306,98 @@ describe('createSessionPreToolUse', () => {
         const session = makeActiveSession({ auth, toolAuth: auth });
         await createSessionPreToolUse(session)(toolName, input);
         expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ toolName, orgId: 'org-1' });
+      });
+
+      // #11222: these name the row they change by id, so the row picks the org, and an
+      // orgId the model adds does not (intentRowTarget.ts).
+      describe('a write that names its target by row id (#11222)', () => {
+        // Every converted action is pinned in intentRowTarget.test.ts; these prove the gate.
+        const rowWrites: Array<[string, Record<string, unknown>]> = [
+          ['manage_invoices', { action: 'void', invoiceId: DEVICE }],
+          ['manage_tenant_variables', { action: 'delete', variableId: DEVICE }],
+        ];
+
+        afterEach(() => {
+          mockResolveRowTarget.mockReset();
+        });
+
+        it.each(rowWrites)('%s %j files its intent in the row\'s org', async (toolName, input) => {
+          mockResolveRowTarget.mockResolvedValue({ orgId: ORG_2, partnerId: null });
+          const auth = reachOf('org-1', ORG_2);
+          const session = makeActiveSession({ auth, toolAuth: auth });
+          await createSessionPreToolUse(session)(toolName, input);
+          expect(mockResolveRowTarget).toHaveBeenCalledWith(toolName, input);
+          expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ toolName, orgId: ORG_2 });
+        });
+
+        it.each(rowWrites)('%s %j refuses a row outside reach before any approval card', async (toolName, input) => {
+          mockResolveRowTarget.mockResolvedValue({ orgId: ORG_9, partnerId: null });
+          const auth = reachOf('org-1', ORG_2);
+          const session = makeActiveSession({ auth, toolAuth: auth });
+          const result = await createSessionPreToolUse(session)(toolName, input);
+          expect(result).toEqual({ allowed: false, error: 'Access denied to this organization' });
+          expect(mockCreateActionIntent).not.toHaveBeenCalled();
+        });
+
+        it.each(rowWrites)('%s %j refuses a missing row with the same answer', async (toolName, input) => {
+          mockResolveRowTarget.mockResolvedValue({ orgId: null, partnerId: null });
+          const auth = reachOf('org-1', ORG_2);
+          const session = makeActiveSession({ auth, toolAuth: auth });
+          const result = await createSessionPreToolUse(session)(toolName, input);
+          expect(result).toEqual({ allowed: false, error: 'Access denied to this organization' });
+          expect(mockCreateActionIntent).not.toHaveBeenCalled();
+        });
+
+        it('an orgId the model adds does not move the intent off the row\'s org', async () => {
+          mockResolveRowTarget.mockResolvedValue({ orgId: ORG_2, partnerId: null });
+          const auth = reachOf('org-1', ORG_2);
+          const session = makeActiveSession({ auth, toolAuth: auth });
+          await createSessionPreToolUse(session)('manage_invoices', { action: 'void', orgId: 'org-1', invoiceId: DEVICE });
+          expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ orgId: ORG_2 });
+        });
+
+        it('a partner-wide row of the caller\'s own partner stays in the session org', async () => {
+          const auth = reachOf('org-1', ORG_2);
+          mockResolveRowTarget.mockResolvedValue({ orgId: null, partnerId: auth.partnerId });
+          const session = makeActiveSession({ auth, toolAuth: auth });
+          await createSessionPreToolUse(session)('manage_tenant_variables', { action: 'delete', variableId: DEVICE });
+          expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ orgId: 'org-1' });
+        });
+
+        it('a partner-wide row of another partner refuses like a missing row', async () => {
+          mockResolveRowTarget.mockResolvedValue({ orgId: null, partnerId: '00000000-0000-4000-8000-0000000000ee' });
+          const auth = reachOf('org-1', ORG_2);
+          const session = makeActiveSession({ auth, toolAuth: auth });
+          const result = await createSessionPreToolUse(session)('manage_tenant_variables', { action: 'delete', variableId: DEVICE });
+          expect(result).toEqual({ allowed: false, error: 'Access denied to this organization' });
+          expect(mockCreateActionIntent).not.toHaveBeenCalled();
+        });
+
+        it('a failed read refuses: never filed in the session org', async () => {
+          mockResolveRowTarget.mockRejectedValue(new Error('connection reset'));
+          const auth = reachOf('org-1', ORG_2);
+          const session = makeActiveSession({ auth, toolAuth: auth });
+          const result = await createSessionPreToolUse(session)('manage_invoices', { action: 'void', invoiceId: DEVICE });
+          expect(result).toEqual({ allowed: false, error: 'The target of this action could not be read, so it was not filed.' });
+          expect(mockCreateActionIntent).not.toHaveBeenCalled();
+        });
+
+        it('reach is the call\'s tool auth: a row only the session auth reaches refuses', async () => {
+          mockResolveRowTarget.mockResolvedValue({ orgId: ORG_2, partnerId: null });
+          const session = makeActiveSession({ auth: reachOf('org-1', ORG_2), toolAuth: reachOf('org-1') });
+          const result = await createSessionPreToolUse(session)('manage_invoices', { action: 'void', invoiceId: DEVICE });
+          expect(result).toEqual({ allowed: false, error: 'Access denied to this organization' });
+          expect(mockCreateActionIntent).not.toHaveBeenCalled();
+        });
+
+        it('a call that resolves below Tier 3 is not refused here: no intent, the handler answers', async () => {
+          vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 1, requiresApproval: false, readOnly: true, description: 'Read' } as any);
+          mockResolveRowTarget.mockResolvedValue({ orgId: ORG_9, partnerId: null });
+          const auth = reachOf('org-1');
+          const session = makeActiveSession({ auth, toolAuth: auth });
+          const result = await createSessionPreToolUse(session)('manage_invoices', { action: 'void', invoiceId: DEVICE });
+          expect(result).toMatchObject({ allowed: true });
+        });
       });
 
       it('set_sensitive_access naming an org out of reach refuses before any approval card (#11181)', async () => {
