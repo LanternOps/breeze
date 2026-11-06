@@ -516,6 +516,32 @@ describe('managed evidence system execution path (#5784 OD-5 = B)', () => {
     expect(db.select).not.toHaveBeenCalled();
   });
 
+  // #11018 W2. The evidence context is what makes the run report the occurrence's
+  // period, so the registry arm dropping it would silently report last month.
+  it('system authority may generate ticket_sla_performance, and the evidence context reaches the generator', async () => {
+    const { generateManagedEvidenceReport } = await import('./reportGenerationService');
+    const { generateTicketSlaPerformanceReport } = await import('./businessReports/ticketSlaPerformanceReport');
+    const evidence = {
+      periodStart: '2026-10-01', periodEnd: '2026-10-31',
+      generatedAt: '2026-10-31T05:18:00.000Z', deliverableId: USER_ID,
+    };
+    const result = await generateManagedEvidenceReport('ticket_sla_performance' as never, ORG_ID, { includeSubjects: false }, evidence);
+    expect(result.summary).toEqual({ generator: 'ticket_sla_performance' });
+    expect(generateTicketSlaPerformanceReport).toHaveBeenCalledTimes(1);
+    const [scope, config, passedAuthority, passedEvidence] = vi.mocked(generateTicketSlaPerformanceReport).mock.calls[0]! as unknown[];
+    expect(scope).toEqual({ kind: 'organization', orgId: ORG_ID });
+    expect(config).toEqual({ includeSubjects: false });
+    expect(passedAuthority).toMatchObject({ principalKind: 'system', scope: { kind: 'unrestricted', orgId: ORG_ID } });
+    expect(passedEvidence).toEqual(evidence);
+  });
+
+  it('portal-user authority may not generate ticket_sla_performance', async () => {
+    const { generateTicketSlaPerformanceReport } = await import('./businessReports/ticketSlaPerformanceReport');
+    await expect(generateReport('ticket_sla_performance', organizationScope(ORG_ID), {}, portalAuthority()))
+      .rejects.toThrow(/portal|authority|report type/i);
+    expect(generateTicketSlaPerformanceReport).not.toHaveBeenCalled();
+  });
+
   it('refuses a system authority whose scope is not org-wide unrestricted', () => {
     expect(() => assertReportExecutionPreflight(ORG_ID, {}, {
       principalKind: 'system',

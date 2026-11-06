@@ -135,6 +135,18 @@ const PORTAL_DEFINITIONS = [
       adminDetail: true,
     },
   },
+  // #11018 W2 — MANAGED EVIDENCE, not self-service: absent from PORTAL_REPORT_TYPES
+  // and from both allowlist literals in reportGenerationService.ts, so a customer
+  // can read a DELIVERED artifact but can never generate one on demand. Subjects
+  // stay off: a delivered run reaches every portal user of the org, while a portal
+  // user may only read their own tickets. Spelled identically to the registry entry.
+  {
+    type: 'ticket_sla_performance',
+    name: 'Service evidence — SLA performance',
+    config: {
+      includeSubjects: false,
+    },
+  },
 ] as const;
 
 /** Exported for `managedEvidenceRegistry.test.ts`, which pins this array
@@ -388,14 +400,17 @@ function lifecycleExclusion(lifecycleEnabled: boolean) {
  * Ruling P8b: every scope applying `reportAudienceCondition` must also apply
  * the per-type permission filter. A portal customer never has a resolved
  * report-permission set (`granted: null`), so `reportTypePermissionCondition`
- * excludes every permission-gated (business) report type here too — those
- * types are already outside the three fixed portal definitions, so this is
- * belt-and-suspenders, not a behavior change.
+ * excludes every permission-gated (business) report type here too.
+ *
+ * #11018: a permission-gated MANAGED EVIDENCE type (`ticket_sla_performance`,
+ * tickets:read for staff) is exempt. Its gate is about which staff may read it;
+ * the customer's grant is the MSP delivering the occurrence, which
+ * `deliveredEvidenceOnly` enforces beside this predicate.
  */
 function customerAudienceOnly() {
   return and(
     reportAudienceCondition({ scope: 'organization' }, reports.type),
-    reportTypePermissionCondition(null, reports.type),
+    reportTypePermissionCondition(null, reports.type, { exceptManagedEvidence: true }),
   );
 }
 
