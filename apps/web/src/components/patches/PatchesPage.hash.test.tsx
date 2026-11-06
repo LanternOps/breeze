@@ -41,7 +41,11 @@ const activeTabText = () =>
 describe('PatchesPage hash grammar (#9791 C)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useFeaturesStore.setState({ loaded: false, configOk: false });
+    useFeaturesStore.setState({
+      loaded: false,
+      configOk: false,
+      features: { ...useFeaturesStore.getState().features, vendorUpdates: false },
+    });
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/config') return json({ features: { vendorUpdates: false } });
@@ -162,6 +166,27 @@ describe('PatchesPage hash grammar (#9791 C)', () => {
       expect(orgSwitchKeptHash()).toBe('vendor-updates&state=failing');
     });
 
+    it('a deep link survives /config still being in flight, then selects the tab (#11249)', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const base = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation(async (input, init) => {
+        if (String(input) === '/config') { await gate; return json({ features: { vendorUpdates: true } }); }
+        return base(input, init);
+      });
+      window.history.replaceState({}, '', '/patches#vendor-updates&state=overdue');
+      render(<PatchesPage />);
+      await screen.findByRole('combobox', { name: 'Compliance status filter' });
+      expect(activeTabText()).toMatch(/compliance/i);
+      expect(window.location.hash).toBe('#vendor-updates&state=overdue');
+      expect(fleetCalls()).toEqual([]);
+
+      release();
+      await waitFor(() => expect(activeTabText().trim()).toMatch(/vendor updates/i));
+      await waitFor(() => expect(fleetCalls().some((u) => u.includes('state=overdue'))).toBe(true));
+      expect(window.location.hash).toBe('#vendor-updates&state=overdue');
+    });
+
     it('does not load the fleet on the other tabs', async () => {
       window.history.replaceState({}, '', '/patches');
       render(<PatchesPage />);
@@ -173,7 +198,7 @@ describe('PatchesPage hash grammar (#9791 C)', () => {
       window.history.replaceState({}, '', '/patches');
       render(<PatchesPage />);
       await screen.findByRole('combobox', { name: 'Compliance status filter' });
-      fireEvent.click(screen.getByRole('button', { name: /vendor updates/i }));
+      fireEvent.click(await screen.findByRole('button', { name: /vendor updates/i }));
       await waitFor(() => expect(window.location.hash).toBe('#vendor-updates'));
     });
   });
@@ -199,6 +224,8 @@ describe('PatchesPage hash grammar (#9791 C)', () => {
       expect(activeTabText()).toMatch(/compliance/i);
       expect(fleetCalls()).toEqual([]);
       expect(screen.queryByRole('alert')).toBeNull();
+      // the page shows the default tab but never rewrites the URL
+      expect(window.location.hash).toBe('#vendor-updates&state=overdue');
     });
 
     it('a failed /config also hides the tab and never reads the fleet', async () => {
