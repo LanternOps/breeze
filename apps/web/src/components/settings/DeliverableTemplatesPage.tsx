@@ -38,12 +38,6 @@ interface LoadFailure {
 const CADENCES: readonly DeliverableCadence[] = ['monthly', 'quarterly', 'semiannual', 'annual', 'one_time'];
 const COMPLETION_MODES: readonly DeliverableCompletionMode[] = ['explicit', 'on_ticket_resolve'];
 
-/** Fallback label for a managed evidence type until its wave adds a locale key. */
-function humanizeReportType(type: string): string {
-  const words = type.replace(/_/g, ' ');
-  return words.charAt(0).toUpperCase() + words.slice(1);
-}
-
 interface ItemFormState {
   name: string;
   cadence: DeliverableCadence;
@@ -128,6 +122,7 @@ const labelClass = 'block text-xs font-medium text-muted-foreground';
  */
 export default function DeliverableTemplatesPage() {
   const { t } = useTranslation('deliverables');
+  const { t: tReports } = useTranslation('reports');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const uid = useId();
 
@@ -614,10 +609,10 @@ export default function DeliverableTemplatesPage() {
                           }
                         >
                           <option value="">{t('form.autoEvidenceNone')}</option>
-                          {/* Each report-type wave adds its label under
-                              `reports.types` when it lands (#5784 W02 first). */}
                           {MANAGED_EVIDENCE_REPORT_TYPES.map((type) => (
-                            <option key={type} value={type}>{humanizeReportType(type)}</option>
+                            <option key={type} value={type}>
+                              {tReports(/* i18n-dynamic */ `reports.reportsList.reportTypes.${type}`)}
+                            </option>
                           ))}
                         </select>
                         <p className="mt-1 text-xs text-muted-foreground">{t('form.autoEvidenceHelp')}</p>

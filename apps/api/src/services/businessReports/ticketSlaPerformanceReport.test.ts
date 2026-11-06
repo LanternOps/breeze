@@ -33,6 +33,7 @@ import type { TicketSlaPerformanceSummary } from '@breeze/shared';
 import { db } from '../../db';
 import { ReportScopeMismatchError } from '../reportScope';
 import type { ReportGenerationAuthority } from '../siteScope';
+import { resolveOrgTimezone } from '../portal/timezone';
 import { SITE_RESTRICTED_NOTE } from './common';
 import { generateTicketSlaPerformanceReport } from './ticketSlaPerformanceReport';
 
@@ -258,6 +259,91 @@ describe('generateTicketSlaPerformanceReport', () => {
     expect(s.priorities.map((r) => r.priority)).toEqual(['urgent', 'high', 'normal', 'low']);
     expect(s.priorities[0]).toMatchObject({ ticketsOpened: 2, ticketsWithoutTarget: 1 });
     expect(s.priorities[1]).toMatchObject({ responseMissed: 1, responseMedianMinutes: 90 });
+  });
+
+  describe('evidence runs (#11018 W2)', () => {
+    // Monthly occurrence: inclusive period end, generated on the due day.
+    const evidence = (generatedAt: string) => ({
+      periodStart: '2026-10-01',
+      periodEnd: '2026-10-31',
+      generatedAt,
+      deliverableId: '44444444-4444-4444-8444-444444444444',
+    });
+
+    it('an evidence run uses the occurrence period, not config.period', async () => {
+      stubDb();
+      const result = await generateTicketSlaPerformanceReport(
+        orgScope, { period: { kind: 'custom', start: '2026-01-01', end: '2026-01-31' } }, authority,
+        evidence('2026-11-02T12:00:00.000Z'),
+      );
+      const s = summaryOf(result);
+      expect(s.period.kind).toBe('custom');
+      expect(s.period.start).toBe('2026-10-01T00:00:00.000Z');
+      expect(s.period.end).toBe('2026-11-01T00:00:00.000Z');
+      expect(s.period.label).toBe('2026-10-01 to 2026-10-31');
+      expect(JSON.stringify(decidedCall().params)).toContain('2026-11-01T00:00:00.000Z');
+      expect(JSON.stringify(decidedCall().params)).not.toContain('2026-01-01');
+      expect(JSON.stringify(openedCall().params)).toContain('2026-10-01T00:00:00.000Z');
+    });
+
+    it('an evidence run takes its generation time from the context, not from now', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2027-03-15T12:00:00Z'));
+      stubDb();
+      const s = summaryOf(await generateTicketSlaPerformanceReport(
+        orgScope, {}, authority, evidence('2026-11-02T12:00:00.000Z'),
+      ));
+      expect(s.period.start).toBe('2026-10-01T00:00:00.000Z');
+      expect(s.generatedAt).toBe('2026-11-02T12:00:00.000Z');
+    });
+
+    it('an evidence run clips the window at generatedAt and says so', async () => {
+      stubDb();
+      const generatedAt = '2026-10-31T05:18:00.000Z';
+      const s = summaryOf(await generateTicketSlaPerformanceReport(orgScope, {}, authority, evidence(generatedAt)));
+      expect(s.generatedAt).toBe(generatedAt);
+      // The period keeps its whole last day; only the measurement stops early.
+      expect(s.period.end).toBe('2026-11-01T00:00:00.000Z');
+      expect(s.period.measuredThrough).toBe(generatedAt);
+      expect(JSON.stringify(decidedCall().params)).toContain(generatedAt);
+      expect(JSON.stringify(decidedCall().params)).not.toContain('2026-11-01T00:00:00.000Z');
+      expect(s.notes).toContain(
+        'This service report was generated on 2026-10-31 and covers outcomes decided through that time.',
+      );
+    });
+
+    it('a late evidence run is measured through the period end and does not claim otherwise', async () => {
+      stubDb();
+      const s = summaryOf(await generateTicketSlaPerformanceReport(
+        orgScope, {}, authority, evidence('2026-11-20T09:00:00.000Z'),
+      ));
+      expect(s.period.measuredThrough).toBe('2026-11-01T00:00:00.000Z');
+      expect(s.notes.join(' ')).not.toMatch(/service report was generated on/);
+    });
+
+    it('prints the generation date in the owner timezone, not UTC', async () => {
+      vi.mocked(resolveOrgTimezone).mockResolvedValueOnce('America/Denver');
+      stubDb();
+      // 03:00Z on Oct 31 is still Oct 30 in Denver.
+      const s = summaryOf(await generateTicketSlaPerformanceReport(
+        orgScope, {}, authority, evidence('2026-10-31T03:00:00.000Z'),
+      ));
+      expect(s.notes).toContain(
+        'This service report was generated on 2026-10-30 and covers outcomes decided through that time.',
+      );
+    });
+
+    it('a staff run prints no evidence note', async () => {
+      stubDb();
+      const s = summaryOf(await generateTicketSlaPerformanceReport(orgScope, { period: OCTOBER }, authority));
+      expect(s.notes.join(' ')).not.toMatch(/service report was generated on/);
+    });
+
+    it('a site-restricted authority still queries nothing on an evidence run', async () => {
+      stubDb();
+      await generateTicketSlaPerformanceReport(orgScope, {}, restricted, evidence('2026-10-31T05:18:00.000Z'));
+      expect(db.execute).not.toHaveBeenCalled();
+    });
   });
 
   it('fills the period, the org name and the generation stamp', async () => {

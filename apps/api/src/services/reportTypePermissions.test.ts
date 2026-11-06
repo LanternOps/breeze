@@ -137,6 +137,21 @@ describe('reportTypeHiddenByPermission / reportTypePermissionCondition (ruling P
     })).toBe(false);
   });
 
+  // #11018 W2. A portal customer has no permission set, so `granted: null` hides
+  // every gated type. Delivering a managed evidence run is what publishes it, so
+  // the customer reader exempts exactly that execution class and nothing else.
+  it('exceptManagedEvidence lifts the gate for managed evidence types only', () => {
+    const condition = reportTypePermissionCondition(null, reports.type, { exceptManagedEvidence: true });
+    const { params } = dialect.sqlToQuery(condition as SQL);
+    expect(params).not.toContain('ticket_sla_performance');
+    expect([...params].sort()).toEqual([...BUSINESS_REPORT_TYPES].sort());
+  });
+
+  it('without the option, a caller with no permission set still loses ticket_sla_performance', () => {
+    const { params } = dialect.sqlToQuery(reportTypePermissionCondition(null, reports.type) as SQL);
+    expect(params).toContain('ticket_sla_performance');
+  });
+
   it('an unknown type is not hidden and never throws', () => {
     expect(reportTypeHiddenByPermission('not_a_type', null)).toBe(false);
   });

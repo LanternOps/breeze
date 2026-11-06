@@ -34,6 +34,10 @@ describe('portal visibility DTOs', () => {
     >();
   });
 
+  it('PortalRunDto type includes ticket_sla_performance', () => {
+    expectTypeOf<'ticket_sla_performance'>().toMatchTypeOf<PortalRunDto['type']>();
+  });
+
   it('exports every approved top-level DTO', () => {
     expectTypeOf<DashboardDto>().toBeObject();
     // #9351: absent (not null) when the org turned portal Backups off.
