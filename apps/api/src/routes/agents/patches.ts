@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { z } from 'zod';
+import { OEM_LANES, type OemLane } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, type Database } from '../../db';
@@ -181,6 +182,12 @@ function narrowReportedUpdateType(value: string | null | undefined): ReportedUpd
   return (REPORTED_UPDATE_TYPES as readonly string[]).includes(value) ? (value as ReportedUpdateType) : null;
 }
 
+/** Values of `device_patches.reported_update_owner` (#11073; DB CHECK device_patches_reported_update_owner_chk). */
+function narrowReportedUpdateOwner(value: string | null | undefined): OemLane | null {
+  if (!value) return null;
+  return (OEM_LANES as readonly string[]).includes(value) ? (value as OemLane) : null;
+}
+
 // Derive vendor from package id; ignore agent-supplied vendor for winget-style ids.
 function deriveVendor(packageId: string | null | undefined, fallback: string | null | undefined): string | null {
   if (packageId && /^[^.]+\.[^.]+/.test(packageId)) {
@@ -308,6 +315,7 @@ async function upsertPendingPatches(
     const reportedSeveritySource = narrowReportedSeveritySource(reportedSeverity, patchData.severitySource);
     const reportedCategory = category ?? null;
     const reportedUpdateType = narrowReportedUpdateType(patchData.reportedUpdateType);
+    const reportedUpdateOwner = reportedUpdateType ? narrowReportedUpdateOwner(patchData.reportedUpdateOwner) : null;
 
     const [patch] = await executor
       .insert(patches)
@@ -391,6 +399,7 @@ async function upsertPendingPatches(
         reportedSeveritySource: reportedSeveritySource,
         reportedCategory: reportedCategory,
         reportedUpdateType: reportedUpdateType,
+        reportedUpdateOwner: reportedUpdateOwner,
         lastCheckedAt: new Date()
       })
       .onConflictDoUpdate({
@@ -417,7 +426,15 @@ async function upsertPendingPatches(
             ? sql`${devicePatches.reportedSeveritySource}`
             : reportedSeveritySource,
           reportedCategory: updateIfReported(devicePatches.reportedCategory, reportedCategory),
-          reportedUpdateType: updateIfReported(devicePatches.reportedUpdateType, reportedUpdateType),
+          // A pair from one report. A scan that says nothing keeps them. One that
+          // says something replaces them both, so a value this API does not know
+          // clears a stale `driver` rather than leaving the patch with a lane.
+          reportedUpdateType: patchData.reportedUpdateType === undefined
+            ? sql`${devicePatches.reportedUpdateType}`
+            : reportedUpdateType,
+          reportedUpdateOwner: patchData.reportedUpdateType === undefined
+            ? sql`${devicePatches.reportedUpdateOwner}`
+            : reportedUpdateOwner,
           lastCheckedAt: new Date(),
           updatedAt: new Date()
         }

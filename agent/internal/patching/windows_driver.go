@@ -107,6 +107,34 @@ func ClassifyDriverUpdate(u DriverUpdate) DriverKind {
 	return DriverKindDriver
 }
 
+// Manufacturers that name a vendor lane's own updates, on the whole trimmed string,
+// as the API matches a device to its lane. UNCONFIRMED for Dell, HP and Lenovo: their
+// lab waves capture what Windows Update really says and correct these.
+var (
+	dellManufacturer   = regexp.MustCompile(`(?i)^dell(?: inc\.?)?$`)
+	hpManufacturer     = regexp.MustCompile(`(?i)^(?:hp(?: inc\.?)?|hewlett-packard)$`)
+	lenovoManufacturer = regexp.MustCompile(`(?i)^lenovo$`)
+)
+
+// driverUpdateOwner names the vendor lane whose own update this is, or "" for an
+// update no lane takes. A lane only delivers its vendor's updates: an Intel display
+// driver on a Surface, or a printer driver on a Dell, stays with Windows Update, so
+// Breeze patch jobs must keep installing it.
+func driverUpdateOwner(u DriverUpdate) string {
+	maker := strings.TrimSpace(u.DriverManufacturer)
+	switch {
+	case IsSurfaceDriverUpdate(u):
+		return "surface"
+	case dellManufacturer.MatchString(maker):
+		return "dell"
+	case hpManufacturer.MatchString(maker):
+		return "hp"
+	case lenovoManufacturer.MatchString(maker):
+		return "lenovo"
+	}
+	return ""
+}
+
 // SurfaceDriverPlan is what a Surface run may install.
 type SurfaceDriverPlan struct {
 	Drivers  []DriverUpdate

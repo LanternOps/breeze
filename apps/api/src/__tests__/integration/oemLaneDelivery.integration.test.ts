@@ -23,6 +23,7 @@ import {
   configPolicyAssignments,
   configPolicyFeatureLinks,
   configurationPolicies,
+  deviceCommands,
   deviceHardware,
   deviceOemUpdateStatus,
   devicePatches,
@@ -105,9 +106,36 @@ async function seedPartnerWidePolicy(partnerId: string, settings: Record<string,
 }
 
 /** A lane that finished this occurrence, whatever day the test runs on. */
-async function seedDeliveringStatus(deviceId: string, orgId: string, over: Partial<typeof deviceOemUpdateStatus.$inferInsert> = {}) {
+async function seedDeliveringStatus(
+  deviceId: string,
+  orgId: string,
+  over: Partial<typeof deviceOemUpdateStatus.$inferInsert> = {},
+  run: { trigger?: string; skippedCategories?: Array<{ category: string; reason: string }> } = {},
+) {
   const now = new Date();
+  const [command] = await getTestDb().insert(deviceCommands).values({
+    deviceId,
+    type: 'oem_update_run',
+    payload: { lane: 'dell', trigger: run.trigger ?? 'scheduled', categories: ['bios', 'firmware', 'driver'] },
+    status: 'completed',
+    submittedOrgId: orgId,
+    result: {
+      stdout: JSON.stringify({
+        lane: 'dell',
+        outcome: 'success',
+        toolVersion: '5.7.2',
+        rawExitCode: 0,
+        errorCode: null,
+        rebootRequired: false,
+        shutdownRequired: false,
+        items: [],
+        skippedCategories: run.skippedCategories ?? [],
+        takeover: 'ok',
+      }),
+    },
+  }).returning({ id: deviceCommands.id });
   await getTestDb().insert(deviceOemUpdateStatus).values({
+    lastCommandId: command!.id,
     deviceId,
     orgId,
     lane: 'dell',
@@ -149,7 +177,12 @@ async function devicePatchRow(deviceId: string, externalId: string) {
 }
 
 /** A device with a scanned driver, approved so that only the lane can hold it back. */
-async function deliveringFixture(settings: Record<string, unknown> = armedSettings(), type = 'driver', category = 'driver') {
+async function deliveringFixture(
+  settings: Record<string, unknown> = armedSettings(),
+  type = 'driver',
+  category = 'driver',
+  owner: string | null = 'dell',
+) {
   const partner = await createPartner();
   const org = await createOrganization({ partnerId: partner.id });
   const site = await createSite({ orgId: org.id });
@@ -157,7 +190,7 @@ async function deliveringFixture(settings: Record<string, unknown> = armedSettin
   const device = await seedDevice(org.id, site.id);
   const externalId = `wu-${randomUUID()}`;
   const res = await scan(org.id, device, [
-    { name: 'Dell Inc. - Display', source: 'microsoft', externalId, category, reportedUpdateType: type },
+    { name: 'Dell Inc. - Display', source: 'microsoft', externalId, category, reportedUpdateType: type, reportedUpdateOwner: owner ?? undefined },
   ]);
   expect(res.status).toBe(200);
   const row = await devicePatchRow(device.id, externalId);
@@ -296,6 +329,31 @@ describe('the predicate and the evaluator together (real Postgres)', () => {
     const neverRan = await deliveringFixture();
     await seedDeliveringStatus(neverRan.device.id, neverRan.org.id, { firstCompletedAt: null });
     expect(await approvedIds(neverRan.device.id, neverRan.org.id)).toEqual([neverRan.patchId]);
+  });
+
+  runDb('a driver the lane does not own stays with Windows Update while the lane delivers', async () => {
+    const intel = await deliveringFixture(armedSettings(), 'driver', 'driver', null);
+    await seedDeliveringStatus(intel.device.id, intel.org.id);
+    expect(await approvedIds(intel.device.id, intel.org.id)).toEqual([intel.patchId]);
+
+    const printer = await deliveringFixture(armedSettings(), 'driver', 'driver', 'hp');
+    await seedDeliveringStatus(printer.device.id, printer.org.id);
+    expect(await approvedIds(printer.device.id, printer.org.id)).toEqual([printer.patchId]);
+  });
+
+  runDb('a Run Now since the last scheduled run hands the class back', async () => {
+    const { org, device, patchId } = await deliveringFixture();
+    await seedDeliveringStatus(device.id, org.id, {}, { trigger: 'on_demand' });
+
+    expect(await approvedIds(device.id, org.id)).toEqual([patchId]);
+  });
+
+  runDb('firmware the last run refused stays with Windows Update', async () => {
+    const { org, device, patchId } = await deliveringFixture(armedSettings(), 'firmware', 'driver');
+    await seedDeliveringStatus(device.id, org.id, {}, { skippedCategories: [{ category: 'firmware', reason: 'no_recovery_key' }] });
+
+    expect(await withSystemDbAccessContext(() => getVendorManagedClasses(device.id))).toEqual(new Set(['driver']));
+    expect(await approvedIds(device.id, org.id)).toEqual([patchId]);
   });
 
   runDb('a security classification on a driver stays with Windows Update', async () => {

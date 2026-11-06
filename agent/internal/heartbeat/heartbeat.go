@@ -4408,6 +4408,9 @@ func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []
 		if p.ReportedUpdateType != "" {
 			item["reportedUpdateType"] = p.ReportedUpdateType
 		}
+		if p.ReportedUpdateOwner != "" {
+			item["reportedUpdateOwner"] = p.ReportedUpdateOwner
+		}
 		items[i] = item
 	}
 	return items

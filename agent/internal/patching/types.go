@@ -20,7 +20,10 @@ type AvailablePatch struct {
 	// the Windows Update provider and reported to the API per device (#11073).
 	// Empty means the provider has no such concept.
 	ReportedUpdateType string
-	EulaAccepted       bool
+	// ReportedUpdateOwner is the vendor lane whose own update this is ("dell",
+	// "surface", "hp", "lenovo"), or empty when no lane takes it (#11073).
+	ReportedUpdateOwner string
+	EulaAccepted        bool
 	// Scope records the install scope the patch was discovered at, for
 	// providers that can distinguish one (currently winget:
 	// PatchScopeMachine vs PatchScopeUser). Empty means the provider has no

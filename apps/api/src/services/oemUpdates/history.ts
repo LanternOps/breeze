@@ -8,14 +8,11 @@
  * was, and it is not worth showing an actor from someone else's tenure to find out.
  */
 import { and, desc, eq, isNotNull, sql, type SQL } from 'drizzle-orm';
-import {
-  oemUpdateRunResultSchema,
-  type OemOutcome,
-  type OemUpdateRunResult,
-} from '@breeze/shared';
+import type { OemOutcome, OemUpdateRunResult } from '@breeze/shared';
 import { db } from '../../db';
 import { deviceCommands, users } from '../../db/schema';
 import { oemRunCommandFilter } from './dispatch';
+import { parseStoredOemResult } from './storedResult';
 
 export type OemRunRow = {
   id: string;
@@ -47,24 +44,9 @@ export type OemRunView = {
   actor: { id: string; name: string | null; email: string | null } | null;
 };
 
-/** The agent's result is JSON text on the envelope's stdout. Anything else is no result. */
-function parseStoredResult(stored: unknown): OemUpdateRunResult | null {
-  if (!stored || typeof stored !== 'object') return null;
-  const { stdout } = stored as { stdout?: unknown };
-  if (typeof stdout !== 'string') return null;
-  let json: unknown;
-  try {
-    json = JSON.parse(stdout);
-  } catch {
-    return null;
-  }
-  const parsed = oemUpdateRunResultSchema.safeParse(json);
-  return parsed.success ? parsed.data : null;
-}
-
 /** Vendor tool output is untrusted: a result that fails the contract shows as no result. */
 export function normalizeOemRun(row: OemRunRow): OemRunView {
-  const result = parseStoredResult(row.result);
+  const result = parseStoredOemResult(row.result);
   const payload = (row.payload && typeof row.payload === 'object' ? row.payload : {}) as {
     trigger?: unknown;
     rebootControlled?: unknown;

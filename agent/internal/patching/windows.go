@@ -555,14 +555,9 @@ func (w *WindowsUpdateProvider) updateToPatch(update *ole.IDispatch) (AvailableP
 	browseOnly, _ := w.getBoolProperty(update, "BrowseOnly")
 	updateType := windowsUpdateType(typeVal, browseOnly, categoryNames, title)
 
-	// Only a driver has these. An unreadable class stays empty, and
-	// ClassifyDriverUpdate reads that as firmware.
-	driverKind := DriverKindDriver
-	if updateType == UpdateTypeDriver {
-		driverClass, _ := w.getStringProperty(update, "DriverClass")
-		driverModel, _ := w.getStringProperty(update, "DriverModel")
-		driverKind = ClassifyDriverUpdate(DriverUpdate{Title: title, DriverClass: driverClass, DriverModel: driverModel})
-	}
+	reportedType, reportedOwner := reportedWindowsUpdate(updateType, category, title, func(property string) (string, error) {
+		return w.getStringProperty(update, property)
+	})
 
 	return AvailablePatch{
 		ID:             updateID,
@@ -578,8 +573,9 @@ func (w *WindowsUpdateProvider) updateToPatch(update *ole.IDispatch) (AvailableP
 		ReleaseDate:    releaseDate,
 		UpdateType:     updateType,
 		// Reported per device: the API keeps it off the shared patches row.
-		ReportedUpdateType: reportedWindowsUpdateType(updateType, category, driverKind),
-		EulaAccepted:       eulaAccepted,
+		ReportedUpdateType:  reportedType,
+		ReportedUpdateOwner: reportedOwner,
+		EulaAccepted:        eulaAccepted,
 	}, nil
 }
 

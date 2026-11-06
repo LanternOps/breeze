@@ -52,7 +52,7 @@ vi.mock('./toolManifest', async (importOriginal) => {
   };
 });
 
-import { getVendorManagedClasses, getVendorManagedClassesForDevices } from './laneDelivery';
+import { getVendorLaneDelivery, getVendorManagedClasses, getVendorManagedClassesForDevices } from './laneDelivery';
 import { computeOccurrence } from './occurrence';
 import { resolveOemUpdatesLinksForDevices, type ResolvedOemUpdatesLink } from './resolver';
 
@@ -63,6 +63,24 @@ const PARTNER_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const NOW = new Date('2027-03-18T15:00:00.000Z');
 const SCHEDULE = { weekOfMonth: 'third', dayOfWeek: 'wed', windowStart: '01:00', windowHours: 4 } as const;
 const OCCURRENCE_KEY = computeOccurrence({ ...SCHEDULE, catchUpNights: 7 }, 'UTC', NOW).occurrenceKey;
+
+/** What a run stores on `device_commands.result`: the agent's JSON on stdout. */
+function storedResult(skippedCategories: Array<{ category: string; reason: string }> = []) {
+  return {
+    stdout: JSON.stringify({
+      lane: 'dell',
+      outcome: 'success',
+      toolVersion: '5.7.2',
+      rawExitCode: 0,
+      errorCode: null,
+      rebootRequired: false,
+      shutdownRequired: false,
+      items: [],
+      skippedCategories,
+      takeover: 'ok',
+    }),
+  };
+}
 
 function settings(overrides: Partial<OemUpdatesInlineSettings> = {}): OemUpdatesInlineSettings {
   const categories = { bios: true, firmware: true, driver: true, application: false };
@@ -113,6 +131,8 @@ function row(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     lastSuccessAt: new Date('2027-03-17T02:00:00.000Z'),
     firstCompletedAt: new Date('2027-02-17T02:00:00.000Z'),
     rebootPendingSince: null,
+    commandPayload: { trigger: 'scheduled', categories: ['bios', 'firmware', 'driver'] },
+    commandResult: storedResult(),
     ...overrides,
   };
 }
@@ -215,6 +235,115 @@ describe('getVendorManagedClasses: each spec 4.6 condition alone false gives the
   it('Failing', async () => {
     givenDevice({ lastOutcome: 'failed' });
     expect(await classes()).toEqual(new Set());
+  });
+});
+
+// deriveOemDisplayState answers a pending reboot before it looks at anything else,
+// so a reboot nobody will ask for must not hide a lane that has stopped working.
+describe('getVendorManagedClasses: a pending reboot does not hide a lane that stopped delivering', () => {
+  const pending = { rebootPendingSince: new Date('2027-03-17T03:00:00.000Z') };
+
+  it.each([['never'], ['overnight']] as const)('%s: Failing', async (reboot) => {
+    givenDevice({ ...pending, lastOutcome: 'failed' }, link({ reboot }));
+    expect(await classes()).toEqual(new Set());
+  });
+
+  it.each([['never'], ['overnight']] as const)('%s: out of attempts', async (reboot) => {
+    givenDevice({ ...pending, attempts: 3, lastOutcome: 'blocked_reboot_pending' }, link({ reboot }));
+    expect(await classes()).toEqual(new Set());
+  });
+
+  it.each([['never'], ['overnight']] as const)('%s: past the last night with nothing finished', async (reboot) => {
+    givenDevice(
+      { ...pending, occurrenceKey: '2027-02', lastOutcome: 'blocked_reboot_pending', lastSuccessAt: new Date('2027-02-17T02:00:00.000Z') },
+      link({ reboot }),
+    );
+    expect(await getVendorManagedClasses(DEVICE_ID, { now: new Date('2027-03-26T15:00:00.000Z') })).toEqual(new Set());
+  });
+
+  it('never: a finished run waiting for someone else\'s restart still delivers drivers, however long it waits', async () => {
+    givenDevice(
+      { rebootPendingSince: new Date('2027-01-17T03:00:00.000Z'), lastOutcome: 'success_reboot_required' },
+      link({ reboot: 'never' }),
+    );
+    expect(await classes()).toEqual(new Set(['driver']));
+  });
+});
+
+// A success says the tool ran, not that it was asked for this class or took it.
+describe('getVendorManagedClasses: the last run has to have delivered the class', () => {
+  it('a Run Now since the last scheduled run proves nothing about the schedule', async () => {
+    givenDevice({ commandPayload: { trigger: 'on_demand', categories: ['bios', 'firmware', 'driver'] } });
+    expect(await classes()).toEqual(new Set());
+  });
+
+  it('a run still in flight has no result yet', async () => {
+    givenDevice({ commandResult: null });
+    expect(await classes()).toEqual(new Set());
+  });
+
+  it('a result that fails the contract is no result', async () => {
+    givenDevice({ commandResult: { stdout: '{"outcome":"success"}' } });
+    expect(await classes()).toEqual(new Set());
+  });
+
+  it('a command row retention has removed is no evidence', async () => {
+    givenDevice({ commandPayload: null, commandResult: null });
+    expect(await classes()).toEqual(new Set());
+  });
+
+  it('firmware the lane refused stays with Windows Update while drivers are delivered', async () => {
+    givenDevice({ commandResult: storedResult([{ category: 'firmware', reason: 'no_recovery_key' }]) });
+    expect(await classes()).toEqual(new Set(['driver']));
+  });
+
+  it('a BIOS skipped for power keeps firmware with Windows Update on a lane with a separate BIOS', async () => {
+    givenDevice({ commandResult: storedResult([{ category: 'bios', reason: 'power' }]) });
+    expect(await classes()).toEqual(new Set(['driver']));
+  });
+
+  it('a class the policy armed after the last run waits for a run that asked for it', async () => {
+    givenDevice({ commandPayload: { trigger: 'scheduled', categories: ['driver'] } });
+    expect(await classes()).toEqual(new Set(['driver']));
+  });
+
+  it('a Surface skipping bios still delivers firmware, since its UEFI arrives as firmware', async () => {
+    givenDevice({
+      manufacturer: 'Microsoft Corporation',
+      model: 'Surface Laptop 5',
+      statusLane: 'surface',
+      commandResult: storedResult([{ category: 'bios', reason: 'gate' }]),
+    });
+    expect(await classes()).toEqual(new Set(['driver', 'firmware']));
+  });
+});
+
+describe('getVendorManagedClasses: the schedule is read in the device zone', () => {
+  // The last night's window ends 05:00 on the 24th: in Auckland (UTC+13) that is
+  // 16:00Z on the 23rd, hours before it ends in UTC.
+  const between = new Date('2027-03-23T20:00:00.000Z');
+  const lastMonth = { occurrenceKey: '2027-02', lastSuccessAt: new Date('2027-02-17T02:00:00.000Z') };
+
+  it('Overdue has already begun for a device whose night has passed', async () => {
+    givenDevice({ ...lastMonth, siteTimezone: 'Pacific/Auckland' });
+    expect(await getVendorManagedClasses(DEVICE_ID, { now: between })).toEqual(new Set());
+  });
+
+  it('and not yet for a device on UTC', async () => {
+    givenDevice(lastMonth);
+    expect(await getVendorManagedClasses(DEVICE_ID, { now: between })).toEqual(new Set(['driver', 'firmware']));
+  });
+});
+
+describe('getVendorLaneDelivery', () => {
+  it('names the lane, so a caller can tell whose updates those classes are', async () => {
+    givenDevice();
+    expect(await getVendorLaneDelivery(DEVICE_ID, { now: NOW })).toEqual({ lane: 'dell', classes: new Set(['driver', 'firmware']) });
+  });
+
+  it('names no lane when none delivers', async () => {
+    givenDevice({ lastOutcome: 'failed' });
+    expect(await getVendorLaneDelivery(DEVICE_ID, { now: NOW })).toEqual({ lane: null, classes: new Set() });
   });
 });
 

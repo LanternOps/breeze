@@ -1237,6 +1237,7 @@ const pendingPatchSchema = z.object({
   // ingest for the same reason as `severitySource`: an unrecognised or malformed
   // value is dropped rather than costing the device its whole patch inventory.
   reportedUpdateType: z.string().max(32).optional().catch(undefined),
+  reportedUpdateOwner: z.string().max(32).optional().catch(undefined),
   size: z.number().int().optional(),
   requiresRestart: z.boolean().optional(),
   releaseDate: z.string().optional(),

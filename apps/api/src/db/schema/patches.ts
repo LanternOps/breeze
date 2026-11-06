@@ -247,6 +247,10 @@ export const devicePatches = pgTable('device_patches', {
   // NULL (older agents, other providers) is never left to a lane. Constrained by
   // device_patches_reported_update_type_chk.
   reportedUpdateType: varchar('reported_update_type', { length: 16 }),
+  // The vendor lane whose own update this is (#11073): dell, surface, hp or lenovo.
+  // A lane only delivers its vendor's updates, so NULL (an Intel driver on a Surface,
+  // say) is never left to one. Constrained by device_patches_reported_update_owner_chk.
+  reportedUpdateOwner: varchar('reported_update_owner', { length: 16 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({

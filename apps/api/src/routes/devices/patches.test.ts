@@ -906,7 +906,7 @@ describe('device patch routes', () => {
     vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
     vi.mocked(db.select)
       .mockReturnValueOnce(selectWhereResult([
-        { id: PATCH_ID, source: 'custom', externalId: 'wu-driver-1', packageId: null, title: 'Dell Inc. - Display', reportedUpdateType: 'driver', category: 'driver' }
+        { id: PATCH_ID, source: 'microsoft', externalId: 'wu-driver-1', packageId: 'windows-update:wu-driver-1', title: 'Dell Inc. - Display' }
       ]) as any)
       .mockReturnValueOnce(selectWhereResult([
         { patchId: PATCH_ID, status: 'approved', ringId: null, updatedAt: null }

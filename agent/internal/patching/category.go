@@ -99,3 +99,18 @@ func reportedWindowsUpdateType(updateType, category string, kind DriverKind) str
 	}
 	return ReportedUpdateTypeOther
 }
+
+// reportedWindowsUpdate is what one scanned update reports: its type, and for a
+// driver the vendor lane that owns it. read is the COM property reader on Windows.
+// A property that cannot be read stays empty: an empty class reads as firmware, and
+// an empty manufacturer has no owner, both the safe direction.
+func reportedWindowsUpdate(updateType, category, title string, read func(property string) (string, error)) (reportedType, owner string) {
+	if updateType != UpdateTypeDriver {
+		return reportedWindowsUpdateType(updateType, category, DriverKindDriver), ""
+	}
+	class, _ := read("DriverClass")
+	model, _ := read("DriverModel")
+	maker, _ := read("DriverManufacturer")
+	u := DriverUpdate{Title: title, DriverClass: class, DriverModel: model, DriverManufacturer: maker}
+	return reportedWindowsUpdateType(updateType, category, ClassifyDriverUpdate(u)), driverUpdateOwner(u)
+}

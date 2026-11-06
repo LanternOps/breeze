@@ -7,15 +7,26 @@
  * Read live at job execution and never stored, so a lane that starts failing hands
  * the class back to Windows Update on the next job.
  *
- * Two rules go past the spec's list, both because the category being on does not
- * mean the lane delivers it:
+ * These go past the spec's list, because the category being on does not mean the
+ * lane delivers it:
  *
+ * - The last run has to be a scheduled one that asked for the class and did not skip
+ *   it. A status row's success says only that the tool ran: a Surface run that
+ *   installed drivers and refused firmware reports `success`, and a Run Now can leave
+ *   out bios and firmware. A run still in flight has no result, so it proves nothing.
+ *   A Run Now hands the class back until the next scheduled run, which is the safe way.
  * - Firmware needs a reboot Breeze controls. Without one the seam drops bios and
  *   firmware from every run, so a `never` policy delivers neither.
  * - Firmware needs BIOS on as well, on a lane where BIOS is its own category.
  *   Windows Update files a system BIOS capsule as firmware and nothing on the update
  *   tells them apart, so firmware alone could strand a BIOS. Surface has no separate
  *   BIOS: its lane flashes everything as firmware.
+ * - A reboot still owed does not hide the rest. `deriveOemDisplayState` answers a
+ *   pending reboot first, and under `never` that wait has no end, so the state is
+ *   read twice: as it stands, and as if no reboot were owed.
+ *
+ * Classes are not the whole answer: a lane only delivers its own vendor's updates, so
+ * callers compare `lane` with the update's reported owner.
  *
  * Runs in the caller's RLS context. Like `policySide` on the status route, a caller
  * that cannot see the partner row falls through to UTC for the zone, which moves the
@@ -31,6 +42,7 @@ import {
 } from '@breeze/shared';
 import { db } from '../../db';
 import {
+  deviceCommands,
   deviceHardware,
   deviceOemUpdateStatus,
   devices,
@@ -45,9 +57,15 @@ import { deriveOemDisplayState, type OemDisplayState } from './displayState';
 import { laneDisabledByKillSwitch, oemUpdatesEnabled, oemUpdatesFlagOn } from './flags';
 import { computeOccurrence } from './occurrence';
 import { resolveOemUpdatesLinksForDevices, type ResolvedOemUpdatesLink } from './resolver';
+import { parseStoredOemResult } from './storedResult';
 import { isCategoryOpen, isLaneOpen, SHIPPED_OEM_LANES } from './toolManifest';
 
 export type VendorManagedClass = 'driver' | 'firmware';
+
+/** Which lane delivers on a device, and what. `lane` is null when it delivers nothing. */
+export type VendorLaneDelivery = { lane: OemLane | null; classes: Set<VendorManagedClass> };
+
+const NO_DELIVERY = (): VendorLaneDelivery => ({ lane: null, classes: new Set() });
 
 const CHUNK = 500;
 
@@ -77,10 +95,22 @@ type LaneDeliveryRow = DeviceTimezoneFields & {
   lastSuccessAt: Date | null;
   firstCompletedAt: Date | null;
   rebootPendingSince: Date | null;
+  commandPayload: unknown;
+  commandResult: unknown;
 };
 
-function deliveredClasses(row: LaneDeliveryRow, link: ResolvedOemUpdatesLink | undefined, now: Date): Set<VendorManagedClass> {
-  const delivered = new Set<VendorManagedClass>();
+/** The categories the row's last run really ran, or null when it proves nothing. */
+function categoriesLastRunDelivered(row: LaneDeliveryRow): Set<string> | null {
+  const { trigger, categories } = (row.commandPayload ?? {}) as { trigger?: unknown; categories?: unknown };
+  if (trigger !== 'scheduled' || !Array.isArray(categories)) return null;
+  const result = parseStoredOemResult(row.commandResult);
+  if (!result) return null;
+  const skipped = new Set<string>(result.skippedCategories.map((skip) => skip.category));
+  return new Set(categories.filter((category): category is string => typeof category === 'string' && !skipped.has(category)));
+}
+
+function deliveredClasses(row: LaneDeliveryRow, link: ResolvedOemUpdatesLink | undefined, now: Date): VendorLaneDelivery {
+  const delivered = NO_DELIVERY();
   const { deviceId } = row;
 
   if (!oemUpdatesEnabled(row.partnerId)) return delivered;
@@ -107,34 +137,41 @@ function deliveredClasses(row: LaneDeliveryRow, link: ResolvedOemUpdatesLink | u
   if (row.applicability !== 'applicable' || row.statusLane !== lane) return delivered;
   if (!row.firstCompletedAt) return delivered;
 
+  const lastRun = categoriesLastRunDelivered(row);
+  if (!lastRun) return delivered;
+
   const { schedule, catchUpNights, reboot } = link.settings;
-  const displayState = deriveOemDisplayState({
+  const occurrence = computeOccurrence({ ...schedule, catchUpNights }, effectiveTimezoneFrom(row), now);
+  const stateWith = (rebootPendingSince: Date | null) => deriveOemDisplayState({
     status: {
       applicability: 'applicable',
       lastOutcome: row.lastOutcome,
       occurrenceKey: row.occurrenceKey,
       lastSuccessAt: row.lastSuccessAt,
-      rebootPendingSince: row.rebootPendingSince,
+      rebootPendingSince,
       attempts: row.attempts,
     },
     linkEnabled: true,
     rebootMode: reboot,
-    occurrence: computeOccurrence({ ...schedule, catchUpNights }, effectiveTimezoneFrom(row), now),
+    occurrence,
     now,
   });
-  if (!DELIVERING_STATES.has(displayState)) return delivered;
+  if (!DELIVERING_STATES.has(stateWith(row.rebootPendingSince)) || !DELIVERING_STATES.has(stateWith(null))) {
+    return delivered;
+  }
 
   const categoryDelivered = (category: OemCategory) =>
-    vendor.categories[category] === true && isCategoryOpen(lane, category, { deviceId });
+    vendor.categories[category] === true && isCategoryOpen(lane, category, { deviceId }) && lastRun.has(category);
 
-  if (categoryDelivered('driver')) delivered.add('driver');
+  if (categoryDelivered('driver')) delivered.classes.add('driver');
   if (
     reboot === 'overnight'
     && categoryDelivered('firmware')
     && (LANES_WITHOUT_SEPARATE_BIOS.has(lane) || categoryDelivered('bios'))
   ) {
-    delivered.add('firmware');
+    delivered.classes.add('firmware');
   }
+  if (delivered.classes.size > 0) delivered.lane = lane;
   return delivered;
 }
 
@@ -161,6 +198,8 @@ async function loadRows(deviceIds: string[]): Promise<LaneDeliveryRow[]> {
       lastSuccessAt: deviceOemUpdateStatus.lastSuccessAt,
       firstCompletedAt: deviceOemUpdateStatus.firstCompletedAt,
       rebootPendingSince: deviceOemUpdateStatus.rebootPendingSince,
+      commandPayload: deviceCommands.payload,
+      commandResult: deviceCommands.result,
     })
     .from(devices)
     // Inner: a device with no status row has never had a lane, so it stops here.
@@ -169,6 +208,8 @@ async function loadRows(deviceIds: string[]): Promise<LaneDeliveryRow[]> {
     .leftJoin(partners, eq(partners.id, organizations.partnerId))
     .leftJoin(sites, eq(sites.id, devices.siteId))
     .leftJoin(deviceHardware, eq(deviceHardware.deviceId, devices.id))
+    // Left: a row retention has removed is no evidence, not no device.
+    .leftJoin(deviceCommands, eq(deviceCommands.id, deviceOemUpdateStatus.lastCommandId))
     .where(and(
       inArray(devices.id, deviceIds),
       eq(devices.isEphemeral, false),
@@ -176,22 +217,15 @@ async function loadRows(deviceIds: string[]): Promise<LaneDeliveryRow[]> {
     )) as Promise<LaneDeliveryRow[]>;
 }
 
-/**
- * The classes a lane delivers on each device, with a fixed number of queries per
- * chunk of 500. Every asked device has an entry, empty when no lane delivers there.
- */
-export async function getVendorManagedClassesForDevices(
+async function loadDeliveries(
   deviceIds: readonly string[],
-  options: { now?: Date } = {},
-): Promise<Map<string, Set<VendorManagedClass>>> {
+  now: Date,
+): Promise<Map<string, VendorLaneDelivery>> {
   const unique = Array.from(new Set(deviceIds));
-  const result = new Map<string, Set<VendorManagedClass>>(
-    unique.map((deviceId) => [deviceId, new Set<VendorManagedClass>()]),
-  );
+  const result = new Map<string, VendorLaneDelivery>(unique.map((deviceId) => [deviceId, NO_DELIVERY()]));
   // The common case on every install until a lab wave: nothing to read.
   if (unique.length === 0 || !oemUpdatesFlagOn()) return result;
 
-  const now = options.now ?? new Date();
   for (let i = 0; i < unique.length; i += CHUNK) {
     const rows = await loadRows(unique.slice(i, i + CHUNK));
     if (rows.length === 0) continue;
@@ -203,10 +237,29 @@ export async function getVendorManagedClassesForDevices(
   return result;
 }
 
+/**
+ * The classes a lane delivers on each device, with a fixed number of queries per
+ * chunk of 500. Every asked device has an entry, empty when no lane delivers there.
+ */
+export async function getVendorManagedClassesForDevices(
+  deviceIds: readonly string[],
+  options: { now?: Date } = {},
+): Promise<Map<string, Set<VendorManagedClass>>> {
+  const deliveries = await loadDeliveries(deviceIds, options.now ?? new Date());
+  return new Map(Array.from(deliveries, ([deviceId, delivery]) => [deviceId, delivery.classes]));
+}
+
+export async function getVendorLaneDelivery(
+  deviceId: string,
+  options: { now?: Date } = {},
+): Promise<VendorLaneDelivery> {
+  const deliveries = await loadDeliveries([deviceId], options.now ?? new Date());
+  return deliveries.get(deviceId) ?? NO_DELIVERY();
+}
+
 export async function getVendorManagedClasses(
   deviceId: string,
   options: { now?: Date } = {},
 ): Promise<Set<VendorManagedClass>> {
-  const result = await getVendorManagedClassesForDevices([deviceId], options);
-  return result.get(deviceId) ?? new Set();
+  return (await getVendorLaneDelivery(deviceId, options)).classes;
 }

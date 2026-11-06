@@ -43,7 +43,7 @@ import {
 } from '../db/schema';
 import { loadPolicyLocalPatchConfig } from './configPolicyPatching';
 import { resolvePatchConfigPolicyForDevice } from './featureConfigResolver';
-import { getVendorManagedClasses, type VendorManagedClass } from './oemUpdates/laneDelivery';
+import { getVendorLaneDelivery, type VendorManagedClass } from './oemUpdates/laneDelivery';
 import { captureException } from './sentry';
 import { resolveLatestManualDecisions, selectManualDecisionRows } from './patchManualDecisions';
 import { EFFECTIVE_PATCH_CATEGORY_SQL, EFFECTIVE_PATCH_SEVERITY_SQL } from './patchSeverityOverlay';
@@ -102,15 +102,18 @@ const isOutstanding = (status: string): boolean => (OUTSTANDING_DEVICE_PATCH_STA
 /**
  * The update class a vendor lane could own this patch under, or null when it stays
  * with Windows Update whatever a lane does (spec 4.6). Goes by what this device says
- * the update is, so a NULL from an older agent is never left to a lane. A security
- * classification beats the type: such an update is not the lane's to withhold.
+ * the update is, so a NULL from an older agent is never left to a lane. Nor is an
+ * update no lane owns: a Surface run leaves an Intel driver to Windows Update, and a
+ * printer driver is not in a PC vendor's catalog. A security classification beats
+ * the type: such an update is not the lane's to withhold.
  */
 function vendorManagedClassOf(patch: {
   source: string;
   category: string | null;
   reportedUpdateType: string | null;
+  reportedUpdateOwner: string | null;
 }): VendorManagedClass | null {
-  if (patch.source !== 'microsoft') return null;
+  if (patch.source !== 'microsoft' || !patch.reportedUpdateOwner) return null;
   if (patch.reportedUpdateType !== 'driver' && patch.reportedUpdateType !== 'firmware') return null;
   if (patch.category && canonicalizePatchCategory(patch.category) === 'security') return null;
   return patch.reportedUpdateType;
@@ -190,6 +193,7 @@ export async function evaluatePatchInstallEligibility(args: {
       scope: devicePatches.scope,
       // This device's own report (#11073), never the shared row's.
       reportedUpdateType: devicePatches.reportedUpdateType,
+      reportedUpdateOwner: devicePatches.reportedUpdateOwner,
     })
     .from(devicePatches)
     .innerJoin(patches, eq(devicePatches.patchId, patches.id))
@@ -334,12 +338,15 @@ export async function evaluatePatchInstallEligibility(args: {
   // install on the device (routes/devices/patches.ts) bypasses this evaluator. Only
   // a device with such a candidate pays for the read, and a failed read throws as
   // the reads above do, rather than guessing either way.
-  const vendorManaged = appRuleFiltered.some((p) => vendorManagedClassOf(p) !== null)
-    ? await getVendorManagedClasses(deviceId)
-    : new Set<VendorManagedClass>();
+  const delivery = appRuleFiltered.some((p) => vendorManagedClassOf(p) !== null)
+    ? await getVendorLaneDelivery(deviceId)
+    : null;
   const finalCandidates = appRuleFiltered.filter((p) => {
     const vendorClass = vendorManagedClassOf(p);
-    if (!vendorClass || !vendorManaged.has(vendorClass)) return true;
+    if (!delivery?.lane || !vendorClass || !delivery.classes.has(vendorClass) || p.reportedUpdateOwner !== delivery.lane) {
+      return true;
+    }
+    console.warn(`[PatchApproval] device ${deviceId}: patch ${p.patchId} (${vendorClass}) left to the ${delivery.lane} vendor lane`);
     deny(p.patchId, 'managed_by_vendor_updates');
     return false;
   });

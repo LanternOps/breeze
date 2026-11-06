@@ -226,12 +226,18 @@ func TestAvailablePatchesToMaps_SeveritySource(t *testing.T) {
 func TestPendingPatchIncludesUpdateType(t *testing.T) {
 	h := &Heartbeat{}
 	items := h.availablePatchesToMaps([]patching.AvailablePatch{
-		{ID: "a", Provider: "windows-update", Title: "Dell driver", ReportedUpdateType: patching.ReportedUpdateTypeDriver},
+		{ID: "a", Provider: "windows-update", Title: "Dell driver", ReportedUpdateType: patching.ReportedUpdateTypeDriver, ReportedUpdateOwner: "dell"},
 		{ID: "b", Provider: "windows-update", Title: "Surface firmware", ReportedUpdateType: patching.ReportedUpdateTypeFirmware},
 		{ID: "Mozilla.Firefox", Provider: "winget", Title: "Firefox"},
 	})
 	if got := items[0]["reportedUpdateType"]; got != "driver" {
 		t.Errorf("driver item reportedUpdateType = %v, want driver", got)
+	}
+	if got := items[0]["reportedUpdateOwner"]; got != "dell" {
+		t.Errorf("driver item reportedUpdateOwner = %v, want dell", got)
+	}
+	if got, ok := items[1]["reportedUpdateOwner"]; ok {
+		t.Errorf("an update no lane owns must omit the owner, got %v", got)
 	}
 	if got := items[1]["reportedUpdateType"]; got != "firmware" {
 		t.Errorf("firmware item reportedUpdateType = %v, want firmware", got)
