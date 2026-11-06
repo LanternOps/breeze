@@ -77,6 +77,24 @@ describe('manage_ticket_inbox (W06)', () => {
     expect(perms.hasPermission).toHaveBeenCalledWith(expect.anything(), 'tickets', 'email_review');
   });
 
+  it('convert also passes with tickets:email_review alone (#10951)', async () => {
+    perms.getUserPermissions.mockResolvedValue({ permissions: [{ resource: 'tickets', action: 'email_review' }] });
+    perms.hasPermission.mockImplementation((_p: unknown, resource: string, action: string) => resource === 'tickets' && action === 'email_review');
+    cfg.convertEmailInbound.mockResolvedValue({ id: ID, ticketId: 't-1' });
+    const res = await run({ action: 'convert', id: ID, orgId: ORG }, makeAuth({ user: { id: 'u', isPlatformAdmin: false } }));
+    expect(res).not.toHaveProperty('code');
+    expect(cfg.convertEmailInbound).toHaveBeenCalled();
+  });
+
+  it('tickets:read + tickets:write without email_review is denied for every action (#10951)', async () => {
+    perms.getUserPermissions.mockResolvedValue({ permissions: [{ resource: 'tickets', action: 'write' }, { resource: 'tickets', action: 'read' }] });
+    perms.hasPermission.mockImplementation((_p: unknown, resource: string, action: string) => resource === 'tickets' && action !== 'email_review');
+    for (const action of ['list', 'convert', 'dismiss']) {
+      expect(await run({ action, id: ID, orgId: ORG }, makeAuth({ user: { id: 'u', isPlatformAdmin: false } }))).toMatchObject({ code: 'ACCESS_DENIED' });
+    }
+    for (const fn of Object.values(cfg)) expect(fn).not.toHaveBeenCalled();
+  });
+
   it('refuses an organization token', async () => {
     expect(await run({ action: 'list' }, makeAuth({ scope: 'organization', orgId: ORG, partnerOrgAccess: undefined })))
       .toMatchObject({ code: 'PARTNER_SCOPE_REQUIRED' });

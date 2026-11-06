@@ -55,8 +55,8 @@ export function partnerWideDeniedError(): string {
 /**
  * `adminMiddleware` of routes/ticketConfig.ts, as a predicate: full partner
  * access AND (platform admin OR a wildcard `*:*` grant). `tickets:write` alone
- * is not enough for statuses, priorities, inbound domains or the email-inbound
- * queue. `TOOL_PERMISSIONS` cannot express this, so the handler applies it.
+ * is not enough for statuses, priorities or inbound domains (the email-inbound
+ * queue has its own `tickets:email_review` gate, see `ticketEmailReviewDenied`). `TOOL_PERMISSIONS` cannot express this, so the handler applies it.
  * Returns an error JSON string to return, or null when the caller passes.
  */
 export async function ticketConfigAdminDenied(auth: AuthContext): Promise<string | null> {
