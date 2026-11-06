@@ -28,6 +28,7 @@ import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestati
 import { indexMatchesAttestation } from './backupRestoreIntegrity';
 import { physicalKeyFor, sameKeyRoot, snapshotKeyRootOf, type SnapshotKeyRoot } from './backupKeyLayout';
 import { recordSnapshotFileIndex } from './backupMetrics';
+import { captureException } from './sentry';
 import {
   HYDRATING_STALE_MS,
   hydrationFailureFromError,
@@ -420,6 +421,8 @@ async function claimSnapshotForHydration(
         };
       } catch (err) {
         console.error(`[backupSnapshotFileIndex] Claim phase failed for snapshot ${snapshotDbId}:`, err);
+        // The stored reason is deliberately generic; the cause goes to Sentry.
+        captureException(err instanceof Error ? err : new Error(String(err)));
         try {
           await fail(claim, 'provider_error', CLAIM_PHASE_FAILURE_REASON);
         } catch (recordErr) {

@@ -69,7 +69,8 @@ async function takeRebuildCooldown(
     const key = rebuildCooldownKey(snapshotDbId);
     const taken = await redis.set(key, '1', 'EX', FILE_INDEX_REBUILD_COOLDOWN_SECONDS, 'NX');
     if (taken === 'OK') return { blocked: false };
-    const remaining = await redis.ttl(key);
+    // The key is held, so the request is blocked even if the TTL read fails.
+    const remaining = await redis.ttl(key).catch(() => -1);
     return {
       blocked: true,
       retryAfterSeconds: remaining > 0 ? remaining : FILE_INDEX_REBUILD_COOLDOWN_SECONDS,
@@ -460,14 +461,22 @@ snapshotsRoutes.post(
     // not-built first: the view then reads as building (and asks again on its
     // own if this request is lost). Only a failed row: never one a hydration
     // is running on or one that is complete.
-    await db
-      .update(backupSnapshots)
-      .set({ fileIndexStatus: 'none', fileIndexError: null })
-      .where(and(
-        eq(backupSnapshots.id, index.id),
-        eq(backupSnapshots.orgId, orgId),
-        eq(backupSnapshots.fileIndexStatus, 'failed'),
-      ));
+    try {
+      await db
+        .update(backupSnapshots)
+        .set({ fileIndexStatus: 'none', fileIndexError: null })
+        .where(and(
+          eq(backupSnapshots.id, index.id),
+          eq(backupSnapshots.orgId, orgId),
+          eq(backupSnapshots.fileIndexStatus, 'failed'),
+        ));
+    } catch (err) {
+      // Nothing was started: do not lock the person out for the window. The
+      // error is rethrown unchanged (not caught into a 4xx/200), so the request
+      // still fails as before.
+      await releaseRebuildCooldown(index.id);
+      throw err;
+    }
 
     try {
       await enqueueSnapshotFileIndexHydration(index.id, 'rebuild', { force: true });

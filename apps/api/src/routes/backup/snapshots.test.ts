@@ -830,6 +830,42 @@ describe('snapshot routes', () => {
         consoleError.mockRestore();
       });
 
+      it('a failure resetting the index state (500) releases the key too, so the retry is not locked out', async () => {
+        selectMock.mockReturnValue(chainMock([failedRow('provider_error: x')]));
+        updateMock.mockImplementationOnce(() => { throw new Error('db blip'); });
+        expect((await rebuild()).status).toBe(500);
+        expect(redisFake.store.size).toBe(0);
+        expect((await rebuild()).status).toBe(202);
+      });
+
+      it('a 429 leaves the failed index state untouched (cooldown is taken before the reset)', async () => {
+        selectMock.mockReturnValue(chainMock([failedRow('provider_error: x')]));
+        expect((await rebuild()).status).toBe(202);
+        expect(updateMock).toHaveBeenCalledTimes(1);
+        updateMock.mockClear();
+        expect((await rebuild()).status).toBe(429);
+        expect(updateMock).not.toHaveBeenCalled();
+      });
+
+      it('falls back to the full window for Retry-After when the key vanished before TTL was read', async () => {
+        selectMock.mockReturnValue(chainMock([failedRow('provider_error: x')]));
+        redisFake.set.mockResolvedValueOnce(null as never);
+        redisFake.ttl.mockResolvedValueOnce(-2);
+        const res = await rebuild();
+        expect(res.status).toBe(429);
+        expect(res.headers.get('Retry-After')).toBe('600');
+      });
+
+      it('fails open when the Redis call itself errors', async () => {
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        selectMock.mockReturnValueOnce(chainMock([failedRow('provider_error: x')]));
+        redisFake.set.mockRejectedValueOnce(new Error('ECONNRESET'));
+        expect((await rebuild()).status).toBe(202);
+        expect(enqueueHydrationMock).toHaveBeenCalled();
+        expect(consoleError).toHaveBeenCalled();
+        consoleError.mockRestore();
+      });
+
       it('fails open when Redis is unavailable: the rebuild still proceeds', async () => {
         redisFake.available = false;
         selectMock.mockReturnValueOnce(chainMock([failedRow('provider_error: x')]));
