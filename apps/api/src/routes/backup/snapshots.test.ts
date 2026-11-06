@@ -8,11 +8,13 @@ vi.mock('./deviceNames', async (importOriginal) => ({
   attachDeviceNames: (...args: [string, unknown[]]) => attachNamesMock(...args),
 }));
 
-const listDirMock = vi.hoisted(() => vi.fn());
+const { listDirMock, searchMock } = vi.hoisted(() => ({ listDirMock: vi.fn(), searchMock: vi.fn() }));
 vi.mock('../../services/backupSnapshotBrowse', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/backupSnapshotBrowse')>()),
   listSnapshotDirectory: (...args: unknown[]) => listDirMock(...args),
+  searchSnapshotFiles: (...args: unknown[]) => searchMock(...args),
 }));
+import { IndexQueryTimeoutError } from '../../services/backupSnapshotBrowse';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const SNAPSHOT_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -537,6 +539,129 @@ describe('snapshot routes', () => {
       expect(text).not.toContain(secret);
       expect(text).not.toContain('X-Amz');
       expect(JSON.parse(text).index).toEqual({ state: 'unavailable', failure: 'provider_error', retryable: true, deviceLocal: false });
+    });
+  });
+
+  describe('#11026 statement timeouts and search', () => {
+    const readyRow = () => ({
+      id: SNAPSHOT_ID, fileCount: 5, fileIndexStatus: 'complete', fileIndexManifestSha256: 'a'.repeat(64),
+      fileIndexError: null, fileIndexHydratedAt: new Date(), integrityStatus: 'pending', storageIdentity: 's3::e::b',
+      attestationStatus: null, attestationManifestSha256: null, hasRows: true,
+    });
+    const search = (query: string) => app.request(`/backup/snapshots/${SNAPSHOT_ID}/search?${query}`, {
+      method: 'GET', headers: { Authorization: 'Bearer token' },
+    });
+
+    it('a browse that runs out of time answers 503 index_query_timeout', async () => {
+      selectMock.mockReturnValueOnce(chainMock([readyRow()]));
+      listDirMock.mockRejectedValueOnce(new IndexQueryTimeoutError());
+      const res = await app.request(`/backup/snapshots/${SNAPSHOT_ID}/browse`, { method: 'GET', headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({ code: 'index_query_timeout' });
+    });
+
+    it('searches the readable index with the query, the limit and the decoded cursor', async () => {
+      selectMock.mockReturnValueOnce(chainMock([readyRow()]));
+      searchMock.mockResolvedValueOnce({
+        entries: [{ name: 'q3.xlsx', path: 'C:/finance/q3.xlsx', type: 'file', sizeBytes: 5 }],
+        nextCursor: 'next-cursor',
+      });
+      const cursor = Buffer.from('C:\\finance\\a.txt', 'utf8').toString('base64url');
+      const res = await search(`q=Q3&limit=20&cursor=${cursor}`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        data: [{ name: 'q3.xlsx', path: 'C:/finance/q3.xlsx', type: 'file', sizeBytes: 5 }],
+        nextCursor: 'next-cursor',
+        index: { state: 'ready' },
+      });
+      expect(searchMock).toHaveBeenCalledWith({ snapshotDbId: SNAPSHOT_ID, query: 'Q3', limit: 20, after: 'C:\\finance\\a.txt' });
+    });
+
+    it('defaults the limit to 50', async () => {
+      selectMock.mockReturnValueOnce(chainMock([readyRow()]));
+      searchMock.mockResolvedValueOnce({ entries: [], nextCursor: null });
+      await search('q=report');
+      expect(searchMock).toHaveBeenCalledWith(expect.objectContaining({ limit: 50, after: null }));
+    });
+
+    it.each([
+      ['a one-character query', 'q=a'],
+      ['a query over 256 characters', `q=${'a'.repeat(257)}`],
+      ['no query', ''],
+      ['a limit over 100', 'q=ab&limit=101'],
+      ['a limit of 0', 'q=ab&limit=0'],
+      ['a NUL in the query, which Postgres cannot take as text', 'q=ab%00cd'],
+    ])('refuses %s with 400, without searching', async (_name, query) => {
+      const res = await search(query);
+      expect(res.status).toBe(400);
+      expect(searchMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses a cursor holding a NUL with 400, without searching', async () => {
+      selectMock.mockReturnValueOnce(chainMock([readyRow()]));
+      const cursor = Buffer.from('C:\\a\u0000b', 'utf8').toString('base64url');
+      const res = await search(`q=ab&cursor=${cursor}`);
+      expect(res.status).toBe(400);
+      expect(searchMock).not.toHaveBeenCalled();
+    });
+
+    it('accepts a 256-character query', async () => {
+      selectMock.mockReturnValueOnce(chainMock([readyRow()]));
+      searchMock.mockResolvedValueOnce({ entries: [], nextCursor: null });
+      expect((await search(`q=${'a'.repeat(256)}`)).status).toBe(200);
+    });
+
+    it('passes % and _ through untouched: they are matched literally, not as patterns', async () => {
+      selectMock.mockReturnValueOnce(chainMock([readyRow()]));
+      searchMock.mockResolvedValueOnce({ entries: [], nextCursor: null });
+      await search(`q=${encodeURIComponent('100%_done')}`);
+      expect(searchMock).toHaveBeenCalledWith(expect.objectContaining({ query: '100%_done' }));
+    });
+
+    it('a search that runs out of time answers 503 index_query_timeout', async () => {
+      selectMock.mockReturnValueOnce(chainMock([readyRow()]));
+      searchMock.mockRejectedValueOnce(new IndexQueryTimeoutError());
+      const res = await search('q=report');
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({ code: 'index_query_timeout' });
+    });
+
+    it("another org's snapshot is 404 and is never searched", async () => {
+      selectMock.mockReturnValueOnce(chainMock([]));
+      const res = await search('q=report');
+      expect(res.status).toBe(404);
+      expect(searchMock).not.toHaveBeenCalled();
+    });
+
+    it('a site-restricted caller without access is refused', async () => {
+      permissionsState = { allowedSiteIds: [SITE_A] };
+      authorizeResilienceResourcesMock.mockRejectedValueOnce(new ResilienceAuthorizationError(403, 'site_access_denied'));
+      const res = await search('q=report');
+      expect(res.status).toBe(403);
+      expect(searchMock).not.toHaveBeenCalled();
+    });
+
+    it('needs backup:read', async () => {
+      grantedPermissions = new Set([]);
+      const res = await search('q=report');
+      expect(res.status).toBe(403);
+      expect(searchMock).not.toHaveBeenCalled();
+    });
+
+    it('a snapshot still building its index asks for it, as browse does', async () => {
+      selectMock.mockReturnValueOnce(chainMock([{ ...readyRow(), fileIndexStatus: 'none', fileIndexManifestSha256: null, hasRows: false, fileCount: 18000 }]));
+      searchMock.mockResolvedValueOnce({ entries: [], nextCursor: null });
+      const body = await (await search('q=report')).json();
+      expect(body.index).toEqual({ state: 'building' });
+      await runAfterContext();
+      expect(enqueueHydrationMock).toHaveBeenCalledWith(SNAPSHOT_ID, 'browse');
+    });
+
+    it('an undecodable cursor is 400', async () => {
+      selectMock.mockReturnValueOnce(chainMock([readyRow()]));
+      const res = await search('q=report&cursor=%20');
+      expect(res.status).toBe(400);
+      expect(searchMock).not.toHaveBeenCalled();
     });
   });
 

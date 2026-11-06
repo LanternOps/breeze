@@ -13,8 +13,8 @@ import { backupReadCredentialPayload } from '../../services/backupCommandCredent
 import { resolveScopedOrgId } from './helpers';
 import { attachDeviceNames, restoreModeFromTargetConfig } from './deviceNames';
 import { restoreListSchema, restoreSchema } from './schemas';
-import { resolveSelectedSnapshotPaths, selectedSnapshotPathError } from '../../services/backupSelectedPaths';
-import { readableSnapshotSourcePaths } from '../../services/backupSnapshotBrowse';
+import { selectedSnapshotPathError } from '../../services/backupSelectedPaths';
+import { resolveSelectedSnapshotPathsInDb } from '../../services/backupSnapshotBrowse';
 import { readSnapshotIndexView } from '../../services/backupSnapshotIndexView';
 import { requestFileIndexHydrationAfterContext } from './fileIndexHydrationRequest';
 import {
@@ -245,9 +245,12 @@ restoreRoutes.post(
 
     let selectedPaths: string[] = [];
     if (payload.restoreType === 'selective') {
-      const sourcePaths = await readableSnapshotSourcePaths(snapshot.id);
+      // The browse tree shows forward-slash paths; map each selection back to
+      // the stored original the agent indexed (and matches against), and each
+      // folder to its stored-form prefix. The index is read in pages (#11026).
+      const resolution = await resolveSelectedSnapshotPathsInDb(snapshot.id, payload.selectedPaths ?? []);
 
-      if (sourcePaths.length === 0) {
+      if (!resolution.ok && resolution.reason === 'no_readable_index') {
         // #11026: a snapshot that has files but no index yet builds one, so
         // the selection can be made once its list is ready.
         const index = await readSnapshotIndexView(snapshot.id, orgId);
@@ -256,13 +259,6 @@ restoreRoutes.post(
         }
         return c.json({ error: 'Selective restore is unavailable for snapshots without indexed files', code: 'index_unavailable' }, 409);
       }
-
-      // The browse tree shows forward-slash paths; map each selection back to
-      // the stored original the agent indexed (and matches against).
-      const resolution = resolveSelectedSnapshotPaths(
-        payload.selectedPaths ?? [],
-        sourcePaths
-      );
       if (!resolution.ok) {
         return c.json({ error: selectedSnapshotPathError(resolution) }, 400);
       }

@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { eq, and, desc, inArray } from 'drizzle-orm';
@@ -24,8 +24,15 @@ import {
   BROWSE_DEFAULT_LIMIT,
   BROWSE_MAX_LIMIT,
   decodeBrowseCursor,
+  decodeSearchCursor,
   dirSegments,
+  IndexQueryTimeoutError,
   listSnapshotDirectory,
+  SEARCH_DEFAULT_LIMIT,
+  SEARCH_MAX_LIMIT,
+  SEARCH_QUERY_MAX_LENGTH,
+  SEARCH_QUERY_MIN_LENGTH,
+  searchSnapshotFiles,
 } from '../../services/backupSnapshotBrowse';
 import { readSnapshotIndexView, type SnapshotIndexView } from '../../services/backupSnapshotIndexView';
 import { enqueueSnapshotFileIndexHydration } from '../../jobs/backupSnapshotFileIndexWorker';
@@ -48,6 +55,19 @@ const snapshotBrowseQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(BROWSE_MAX_LIMIT).default(BROWSE_DEFAULT_LIMIT),
   cursor: z.string().max(2048).optional(),
 });
+
+// #11026: `cursor` carries a stored path (up to 32k on Windows), base64url.
+const snapshotSearchQuerySchema = z.object({
+  // Postgres cannot take a NUL as text: a 400, not a 500 from the query.
+  q: z.string().min(SEARCH_QUERY_MIN_LENGTH).max(SEARCH_QUERY_MAX_LENGTH).refine((q) => !q.includes('\0'), 'q must not contain a NUL'),
+  limit: z.coerce.number().int().min(1).max(SEARCH_MAX_LIMIT).default(SEARCH_DEFAULT_LIMIT),
+  cursor: z.string().max(65_536).optional(),
+});
+
+/** A browse or search past its statement timeout: try again, nothing is wrong with the snapshot. */
+function indexQueryTimeout(c: Context) {
+  return c.json({ error: 'Listing this snapshot took too long. Try again in a moment.', code: 'index_query_timeout' }, 503);
+}
 
 /**
  * True once this org's erasure cascade has been handed to the worker
@@ -281,12 +301,18 @@ snapshotsRoutes.get('/snapshots/:id/browse', requirePermission(PERMISSIONS.BACKU
   // instead of materialising and serialising the whole file index (#8230).
   // The listing itself only reads an index that may be trusted.
   const segments = dirSegments(query.dir);
-  const page = await listSnapshotDirectory({
-    snapshotDbId: index.id,
-    segments,
-    limit: query.limit,
-    cursor,
-  });
+  let page: Awaited<ReturnType<typeof listSnapshotDirectory>>;
+  try {
+    page = await listSnapshotDirectory({
+      snapshotDbId: index.id,
+      segments,
+      limit: query.limit,
+      cursor,
+    });
+  } catch (err) {
+    if (err instanceof IndexQueryTimeoutError) return indexQueryTimeout(c);
+    throw err;
+  }
 
   // Kept for web bundles that predate `index`.
   const manifestUnavailable =
@@ -299,6 +325,45 @@ snapshotsRoutes.get('/snapshots/:id/browse', requirePermission(PERMISSIONS.BACKU
     data: page.entries,
     nextCursor: page.nextCursor,
   });
+});
+
+// #11026: find a snapshot's files by part of a name or folder, without walking
+// the tree. Same authorization and index gate as browse.
+snapshotsRoutes.get('/snapshots/:id/search', requirePermission(PERMISSIONS.BACKUP_READ.resource, PERMISSIONS.BACKUP_READ.action), zValidator('param', snapshotIdParamSchema), zValidator('query', snapshotSearchQuerySchema), async (c) => {
+  const auth = c.get('auth');
+  const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
+  if (!orgId) {
+    return c.json({ error: 'orgId is required for this scope' }, 400);
+  }
+
+  const { id: snapshotId } = c.req.valid('param');
+  const query = c.req.valid('query');
+  const authorization = await authorizeRouteResilienceResources(c, orgId, [
+    { kind: 'snapshot', id: snapshotId, role: 'source' },
+  ], 'read');
+  if (!authorization.ok) return authorization.response;
+
+  const index = await readSnapshotIndexView(snapshotId, orgId);
+  if (!index) {
+    return c.json({ error: 'Snapshot not found' }, 404);
+  }
+
+  const after = query.cursor ? decodeSearchCursor(query.cursor) : null;
+  if (query.cursor && after === null) {
+    return c.json({ error: 'Invalid cursor' }, 400);
+  }
+
+  if (index.shouldRequestHydration) {
+    requestFileIndexHydrationAfterContext(index.id, 'browse');
+  }
+
+  try {
+    const page = await searchSnapshotFiles({ snapshotDbId: index.id, query: query.q, limit: query.limit, after });
+    return c.json({ data: page.entries, nextCursor: page.nextCursor, index: index.view });
+  } catch (err) {
+    if (err instanceof IndexQueryTimeoutError) return indexQueryTimeout(c);
+    throw err;
+  }
 });
 
 // #11026: build a snapshot's file list again from its manifest, for a person

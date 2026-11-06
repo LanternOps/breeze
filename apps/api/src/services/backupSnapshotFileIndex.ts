@@ -6,9 +6,11 @@
 // referenced OLDER snapshot's provenance before marking the index complete.
 // See docs/superpowers/plans/backup/_w09-part0.md §3 for the full algorithm.
 import { createHash } from 'node:crypto';
+import type { Writable } from 'node:stream';
 import { z } from 'zod';
-import { and, eq, isNull, lt, ne, or } from 'drizzle-orm';
+import { and, eq, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { extractRowCount } from '../db/rowCount';
 import {
   backupJobs,
   backupSnapshotFiles,
@@ -18,7 +20,9 @@ import {
 } from '../db/schema';
 import { asRecord, getStringValue, resolveSnapshotProviderConfig } from './recoveryBootstrap';
 import { normalizeStorageIdentity } from '../jobs/backupRetention';
-import { backupSnapshotManifestKey, fetchBackupObjectBytes, isBackupObjectNotFound, isBackupObjectTooLarge, MANIFEST_FETCH_MAX_BYTES } from './backupSnapshotStorage';
+import { backupSnapshotManifestKey, isBackupObjectNotFound, isBackupObjectTooLarge, MANIFEST_STREAM_MAX_BYTES, openBackupObjectStream } from './backupSnapshotStorage';
+import { ManifestScanError, scanManifest } from './backupManifestScanner';
+import { spoolManifest, type ManifestSpool } from './backupManifestSpool';
 import { parseBackupObjectKey } from './backupObjectKey';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
 import { indexMatchesAttestation } from './backupRestoreIntegrity';
@@ -46,83 +50,86 @@ export type HydrationOutcome =
   | { status: 'skipped'; reason: 'not_referenced' | 'already_complete' | 'in_progress' | 'superseded' };
 
 export type HydrationDeps = {
-  fetchManifestBytes: (args: { provider: string; providerConfig: Record<string, unknown>; key: string }) => Promise<Uint8Array>;
+  /** The manifest's bytes. W03 passes a device upload through this same seam. */
+  openManifest: (args: { provider: string; providerConfig: Record<string, unknown>; key: string }) => Promise<NodeJS.ReadableStream>;
   now?: () => Date;
+  /** Test seams for the spool: where it goes, its cap, and a failing disk. */
+  spoolBaseDir?: string;
+  spoolMaxBytes?: number;
+  openSpoolWriter?: (path: string) => Writable;
 };
 
-const FILE_ROW_BATCH_SIZE = 1000;
+/**
+ * Each batch is one JSON string, and those strings are what survives into the
+ * old generation during a million-entry hydration. 1,000 rows went over the
+ * 300 MB peak-RSS bound in one of two runs at 1.1M entries; 250 stays under it
+ * for about the same wall time (#11026).
+ */
+const FILE_ROW_BATCH_SIZE = 250;
+/**
+ * Distinct older snapshots one manifest may name. Each costs a lookup inside the
+ * publish transaction, and a real chain is bounded by retention, so anything near
+ * this is not a backup. Also bounds the one map pass 1 keeps.
+ */
+const MAX_MANIFEST_ORIGINS = 10_000;
 
-// Same field shape as backupSnapshotReconcile.ts's private reconcileManifestSchema
-// — duplicated deliberately (see Task 3 Interfaces note: a shared schema
-// module would be a bigger refactor than this wave needs) plus a refine that
-// the manifest actually belongs to the snapshot being hydrated (defense
-// against a corrupted/swapped object at the expected key).
-const hydrationManifestSchema = z
+// The entry shape of backupSnapshotReconcile.ts's private reconcileManifestSchema
+// — duplicated deliberately (see W09 Task 3 Interfaces note: a shared schema
+// module would be a bigger refactor than this wave needs). The manifest's own id
+// is checked against the snapshot being hydrated separately, as defense against
+// a corrupted/swapped object at the expected key.
+const hydrationEntrySchema = z
   .object({
-    id: z.string().min(1),
-    timestamp: z.string().optional(),
+    sourcePath: z.string().min(1),
+    originalPath: z.string().min(1).optional(),
+    // Empty ONLY on a content-less entry — see the refine below.
+    backupPath: z.string(),
+    // agent/internal/backup/snapshot.go SnapshotFile.Kind: "" (or
+    // omitted — the tag is omitempty) for a regular file whose
+    // bytes live at backupPath; "symlink" / "dir" for an entry
+    // that uploads nothing and so carries backupPath "". A plain
+    // string, not an enum: a newer agent adding a kind must not
+    // fail the whole manifest closed here — the refine below only
+    // lets the two known content-less kinds omit their object.
+    kind: z.string().optional(),
     size: z.number().nonnegative().optional(),
-    formatVersion: z.number().optional(),
-    baseSnapshotId: z.string().optional(),
-    files: z
-      .array(
-        z
-          .object({
-            sourcePath: z.string().min(1),
-            originalPath: z.string().min(1).optional(),
-            // Empty ONLY on a content-less entry — see the refine below.
-            backupPath: z.string(),
-            // agent/internal/backup/snapshot.go SnapshotFile.Kind: "" (or
-            // omitted — the tag is omitempty) for a regular file whose
-            // bytes live at backupPath; "symlink" / "dir" for an entry
-            // that uploads nothing and so carries backupPath "". A plain
-            // string, not an enum: a newer agent adding a kind must not
-            // fail the whole manifest closed here — the refine below only
-            // lets the two known content-less kinds omit their object.
-            kind: z.string().optional(),
-            size: z.number().nonnegative().optional(),
-            modTime: z.string().optional(),
-          })
-          .passthrough()
-          // D-W09-1 (#6491 KIT lab): a real manifest carries backupPath ""
-          // on every dir/symlink entry (8,220 of 107,636 on a stock Ubuntu
-          // 24.04 host), so a blanket .min(1) rejected every real agent
-          // manifest with manifest_invalid. Tighten by kind instead: a
-          // CONTENT entry (no kind) must still name its object — dropping
-          // the check for files would let a corrupt manifest hydrate a
-          // file with no key and only fail at restore time.
-          .refine((f) => f.backupPath.length > 0 || f.kind === 'symlink' || f.kind === 'dir', {
-            message: 'backupPath must be non-empty on a content entry (kind "" / omitted)',
-            path: ['backupPath'],
-          }),
-      )
+    // Checked here, so a date the database could not take is a bad entry found
+    // before anything is written, not a failure partway through the write.
+    modTime: z
+      .string()
+      .refine((value) => !Number.isNaN(Date.parse(value)), { message: 'modTime is not a date' })
       .optional(),
   })
-  .passthrough();
+  .passthrough()
+  // D-W09-1 (#6491 KIT lab): a real manifest carries backupPath ""
+  // on every dir/symlink entry (8,220 of 107,636 on a stock Ubuntu
+  // 24.04 host), so a blanket .min(1) rejected every real agent
+  // manifest with manifest_invalid. Tighten by kind instead: a
+  // CONTENT entry (no kind) must still name its object — dropping
+  // the check for files would let a corrupt manifest hydrate a
+  // file with no key and only fail at restore time.
+  .refine((f) => f.backupPath.length > 0 || f.kind === 'symlink' || f.kind === 'dir', {
+    message: 'backupPath must be non-empty on a content entry (kind "" / omitted)',
+    path: ['backupPath'],
+  });
 
-// A ZodError's message is the JSON dump of EVERY issue, indexed by array
-// position (`files[41233].backupPath`). On a 100k-entry manifest that is a
-// multi-megabyte string a tech cannot map back to a file. Report the first
-// issue with the offending entry's sourcePath plus the total count instead.
-function summarizeManifestIssues(error: z.ZodError, json: unknown): string {
-  const issues = error.issues;
-  const first = issues[0];
-  if (!first) return 'manifest failed schema validation';
-  const where = first.path.map(String).join('.');
-  let entry = '';
-  if (first.path[0] === 'files' && typeof first.path[1] === 'number') {
-    const files = (json as { files?: unknown[] } | null)?.files;
-    const row = Array.isArray(files) ? files[first.path[1]] : undefined;
-    const sourcePath = row && typeof row === 'object' ? (row as { sourcePath?: unknown }).sourcePath : undefined;
-    if (typeof sourcePath === 'string') entry = ` (entry sourcePath ${JSON.stringify(sourcePath)})`;
-  }
-  const more = issues.length > 1 ? `; ${issues.length - 1} more issue(s)` : '';
-  return `${where || 'manifest'}: ${first.message}${entry}${more}`;
+type HydrationEntry = z.infer<typeof hydrationEntrySchema>;
+
+// Reporting every issue by array position (`files[41233].backupPath`) on a
+// 100k-entry manifest is a multi-megabyte string a tech cannot map back to a
+// file. The first issue is reported with the offending entry's sourcePath, and
+// the rest only as a count.
+function describeEntryIssue(error: z.ZodError, entry: unknown, index: number): string {
+  const first = error.issues[0];
+  const where = ['files', index, ...(first?.path ?? [])].map(String).join('.');
+  const sourcePath = entry && typeof entry === 'object' ? (entry as { sourcePath?: unknown }).sourcePath : undefined;
+  const named = typeof sourcePath === 'string' ? ` (entry sourcePath ${JSON.stringify(sourcePath.slice(0, 1024))})` : '';
+  return `${where}: ${first?.message ?? 'failed schema validation'}${named}`;
 }
 
 function defaultDeps(): HydrationDeps {
   return {
-    fetchManifestBytes: (args) => fetchBackupObjectBytes({ ...args, maxBytes: MANIFEST_FETCH_MAX_BYTES }),
+    openManifest: (args) => openBackupObjectStream({ ...args, maxBytes: MANIFEST_STREAM_MAX_BYTES }),
   };
 }
 
@@ -405,32 +412,41 @@ async function claimSnapshotForHydration(
   );
 }
 
+type FileRowJson = { source_path: string; backup_path: string; size: number | null; modified_at: string | null };
+
+/** What pass 1 learned about a spooled manifest. The rows stay on disk until pass 2. */
 type ParsedManifest = {
   manifestSha256: string;
-  fileRows: Array<{ snapshotDbId: string; sourcePath: string; backupPath: string; size: number | null; modifiedAt: Date | null }>;
+  spool: ManifestSpool;
+  /** Entries that become rows: everything but content-less dirs and symlinks. */
+  eligibleEntries: number;
   originCounts: Map<string, number>;
 };
 
 /**
- * Phase 2 (no DB context held): fetch and parse the manifest. This is the
- * network round trip and the CPU-bound hash/parse step — sized only by
- * MANIFEST_FETCH_MAX_BYTES — and it must not pin a pooled connection idle
- * for however long it takes.
+ * Phase 2a (no DB context held): copy the manifest to disk, hashing as it
+ * arrives. This is the network round trip, sized only by
+ * MANIFEST_STREAM_MAX_BYTES, and it must not pin a pooled connection for however
+ * long it takes.
  */
-async function fetchAndParseManifest(
-  snapshotDbId: string,
+async function spoolManifestForHydration(
   snapshot: ClaimedSnapshot,
   providerType: string,
   providerConfig: Record<string, unknown>,
   deps: HydrationDeps,
-): Promise<{ outcome: HydrationOutcome } | { manifest: ParsedManifest }> {
-  let bytes: Uint8Array;
+): Promise<{ outcome: HydrationOutcome } | { spool: ManifestSpool }> {
   try {
-    bytes = await deps.fetchManifestBytes({
+    const source = await deps.openManifest({
       provider: providerType,
       providerConfig,
       key: physicalKeyFor(snapshot.keyRoot, backupSnapshotManifestKey(snapshot.snapshotId)),
     });
+    const spool = await spoolManifest(source, {
+      maxBytes: deps.spoolMaxBytes ?? MANIFEST_STREAM_MAX_BYTES,
+      ...(deps.spoolBaseDir ? { baseDir: deps.spoolBaseDir } : {}),
+      ...(deps.openSpoolWriter ? { openWriter: deps.openSpoolWriter } : {}),
+    });
+    return { spool };
   } catch (err) {
     if (isBackupObjectNotFound(err)) {
       return { outcome: await failOutsideContext(snapshot, 'manifest_missing', 'manifest object not found in storage') };
@@ -438,58 +454,115 @@ async function fetchAndParseManifest(
     if (isBackupObjectTooLarge(err)) {
       return { outcome: await failOutsideContext(snapshot, 'manifest_too_large', err.message) };
     }
+    // A broken download and a full spool disk are both worth another try, and
+    // neither has touched the existing rows.
     return { outcome: await failOutsideContext(snapshot, 'provider_error', err instanceof Error ? err.message : String(err)) };
   }
+}
 
-  const manifestSha256 = createHash('sha256').update(bytes).digest('hex');
+/**
+ * Phase 2b (no DB context held), pass 1: check the digest, then read every
+ * entry from the spool, validating and counting. Nothing is written until the
+ * whole manifest has passed, the same rule as when it was parsed in memory.
+ */
+async function validateSpooledManifest(
+  snapshot: ClaimedSnapshot,
+  spool: ManifestSpool,
+): Promise<{ outcome: HydrationOutcome } | { manifest: ParsedManifest }> {
   // Checked again under the snapshot row lock when the index is published; this
-  // early check only avoids writing rows that could never be published.
-  const refusal = attestationRefusal(snapshot.attestation, manifestSha256);
+  // early check only avoids reading a manifest that could never be published.
+  const refusal = attestationRefusal(snapshot.attestation, spool.sha256);
   if (refusal) {
     return { outcome: await failOutsideContext(snapshot, refusal.failure, refusal.reason) };
   }
 
-  let parsed: z.infer<typeof hydrationManifestSchema>;
-  try {
-    const json = JSON.parse(Buffer.from(bytes).toString('utf8'));
-    const result = hydrationManifestSchema.safeParse(json);
-    if (!result.success) {
-      return { outcome: await failOutsideContext(snapshot, 'manifest_invalid', summarizeManifestIssues(result.error, json)) };
-    }
-    parsed = result.data;
-    if (parsed.id !== snapshot.snapshotId) {
-      throw new Error(`manifest id ${parsed.id} does not match snapshot ${snapshot.snapshotId}`);
-    }
-  } catch (err) {
-    return { outcome: await failOutsideContext(snapshot, 'manifest_invalid', err instanceof Error ? err.message : String(err)) };
-  }
-
-  const files = parsed.files ?? [];
   const ownPrefix = `snapshots/${snapshot.snapshotId}/`;
   const originCounts = new Map<string, number>();
-  const fileRows: ParsedManifest['fileRows'] = [];
+  let eligibleEntries = 0;
+  let firstIssue: string | null = null;
+  let issueCount = 0;
+  let invalidKey: string | null = null;
+  let tooManyOrigins = false;
 
-  for (const file of files) {
-    // Content-less entries (dir/symlink) upload nothing — the schema above
-    // guarantees an empty backupPath only ever appears on one.
-    if (!file.backupPath) continue;
-    const parsedKey = parseBackupObjectKey(file.backupPath);
-    if (!parsedKey) {
-      return { outcome: await failOutsideContext(snapshot, 'manifest_key_invalid', `unparseable backupPath: ${file.backupPath}`) };
-    }
-    if (!file.backupPath.startsWith(ownPrefix)) {
-      originCounts.set(parsedKey.snapshotId, (originCounts.get(parsedKey.snapshotId) ?? 0) + 1);
-    }
-    fileRows.push({
-      snapshotDbId,
-      sourcePath: file.originalPath ?? file.sourcePath,
-      backupPath: file.backupPath,
-      size: file.size ?? null,
-      modifiedAt: file.modTime ? new Date(file.modTime) : null,
+  let scanned: Awaited<ReturnType<typeof scanManifest>>;
+  try {
+    scanned = await scanManifest(spool.open(), {
+      onEntry: (entry, index) => {
+        const result = hydrationEntrySchema.safeParse(entry);
+        if (!result.success) {
+          issueCount += result.error.issues.length;
+          firstIssue ??= describeEntryIssue(result.error, entry, index);
+          return;
+        }
+        const { backupPath } = result.data;
+        // Content-less entries (dir/symlink) upload nothing — the schema above
+        // guarantees an empty backupPath only ever appears on one.
+        if (!backupPath) return;
+        const parsedKey = parseBackupObjectKey(backupPath);
+        if (!parsedKey) {
+          invalidKey ??= backupPath;
+          return;
+        }
+        if (!backupPath.startsWith(ownPrefix)) {
+          if (originCounts.size >= MAX_MANIFEST_ORIGINS && !originCounts.has(parsedKey.snapshotId)) {
+            tooManyOrigins = true;
+            return;
+          }
+          originCounts.set(parsedKey.snapshotId, (originCounts.get(parsedKey.snapshotId) ?? 0) + 1);
+        }
+        eligibleEntries += 1;
+      },
     });
+  } catch (err) {
+    if (err instanceof ManifestScanError) {
+      const failure = err.kind === 'limit' ? 'manifest_too_large' : 'manifest_invalid';
+      return { outcome: await failOutsideContext(snapshot, failure, err.message) };
+    }
+    // Reading the private spool back failed: the disk, not the manifest.
+    return { outcome: await failOutsideContext(snapshot, 'provider_error', err instanceof Error ? err.message : String(err)) };
   }
 
-  return { manifest: { manifestSha256, fileRows, originCounts } };
+  // In the order whole-document validation reported them: the document's
+  // shape, then whose it is, then its keys.
+  if (scanned.id === null) {
+    issueCount += 1;
+    firstIssue = 'id: manifest has no id';
+  }
+  if (firstIssue !== null) {
+    const more = issueCount > 1 ? `; ${issueCount - 1} more issue(s)` : '';
+    return { outcome: await failOutsideContext(snapshot, 'manifest_invalid', `${firstIssue}${more}`) };
+  }
+  if (scanned.id !== snapshot.snapshotId) {
+    return { outcome: await failOutsideContext(snapshot, 'manifest_invalid', `manifest id ${scanned.id} does not match snapshot ${snapshot.snapshotId}`) };
+  }
+  // Not the same as `files: null`, which is how the agent writes an empty slice:
+  // no key at all means this is not a manifest, and publishing it would show an
+  // empty snapshot as a complete index.
+  if (!scanned.hasFilesKey) {
+    return { outcome: await failOutsideContext(snapshot, 'manifest_invalid', 'manifest has no files key') };
+  }
+  if (invalidKey !== null) {
+    return { outcome: await failOutsideContext(snapshot, 'manifest_key_invalid', `unparseable backupPath: ${invalidKey}`) };
+  }
+  if (tooManyOrigins) {
+    return { outcome: await failOutsideContext(snapshot, 'manifest_invalid', `manifest references more than ${MAX_MANIFEST_ORIGINS} other snapshots`) };
+  }
+
+  return { manifest: { manifestSha256: spool.sha256, spool, eligibleEntries, originCounts } };
+}
+
+/** The spool's bytes, held to the digest pass 1 accepted as they pass. */
+async function* verifiedSpoolBytes(spool: ManifestSpool): AsyncGenerator<Buffer> {
+  const hash = createHash('sha256');
+  for await (const chunk of spool.open()) {
+    hash.update(chunk as Buffer);
+    yield chunk as Buffer;
+  }
+  // A throw here rolls back everything pass 2 inserted. Only something
+  // rewriting a private file mid-run could cause it, and then none of it holds.
+  if (hash.digest('hex') !== spool.sha256) {
+    throw new Error('the spooled manifest changed between validation and publish');
+  }
 }
 
 /**
@@ -509,7 +582,7 @@ async function verifyOriginsAndWrite(
   snapshot: ClaimedSnapshot,
   manifest: ParsedManifest,
 ): Promise<HydrationOutcome> {
-  const { manifestSha256, fileRows, originCounts } = manifest;
+  const { manifestSha256, spool, eligibleEntries, originCounts } = manifest;
 
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(() => db.transaction(async (tx): Promise<HydrationOutcome> => {
@@ -626,11 +699,48 @@ async function verifyOriginsAndWrite(
         return { status: 'failed', failure: refusal.failure, reason: refusal.reason, retryable: false };
       }
 
-      // Batched only to bound each statement's size: all of them commit
-      // together with the publish below.
+      // Pass 2. Batched only to bound each statement's size and what is held
+      // in memory: all of them commit together with the publish below.
       await tx.delete(backupSnapshotFiles).where(eq(backupSnapshotFiles.snapshotDbId, snapshotDbId));
-      for (let i = 0; i < fileRows.length; i += FILE_ROW_BATCH_SIZE) {
-        await tx.insert(backupSnapshotFiles).values(fileRows.slice(i, i + FILE_ROW_BATCH_SIZE));
+      let inserted = 0;
+      let batch: FileRowJson[] = [];
+      const writeBatch = async () => {
+        if (batch.length === 0) return;
+        // One JSON parameter, not the query builder's multi-row VALUES: its
+        // objects for 5,000 values a statement were two thirds of everything
+        // that outlived a minor GC at 1.1M entries, and what grew the heap.
+        // The ::text keeps the driver from serializing the string as JSON again.
+        const written = await tx.execute(sql`
+          INSERT INTO ${backupSnapshotFiles} (snapshot_db_id, source_path, backup_path, size, modified_at)
+          SELECT ${snapshotDbId}::uuid, r.source_path, r.backup_path, r.size, r.modified_at
+          FROM json_to_recordset(${JSON.stringify(batch)}::text::json)
+            AS r(source_path text, backup_path text, size bigint, modified_at timestamp)
+        `);
+        // The database's own count of rows written.
+        inserted += extractRowCount(written);
+        batch = [];
+      };
+      await scanManifest(verifiedSpoolBytes(spool), {
+        onEntry: async (entry) => {
+          // Pass 1 validated these same bytes, and verifiedSpoolBytes holds
+          // them to it.
+          const file = entry as HydrationEntry;
+          if (!file.backupPath) return;
+          batch.push({
+            source_path: file.originalPath ?? file.sourcePath,
+            backup_path: file.backupPath,
+            size: file.size ?? null,
+            // As the column's own mapping sends it: a UTC ISO string, stored
+            // in a timestamp without time zone.
+            modified_at: file.modTime ? new Date(file.modTime).toISOString() : null,
+          });
+          if (batch.length >= FILE_ROW_BATCH_SIZE) await writeBatch();
+        },
+      });
+      await writeBatch();
+      if (inserted !== eligibleEntries) {
+        // Rolls back with the transaction: the previous rows stay.
+        throw new Error(`snapshot ${snapshot.snapshotId}: expected to write ${eligibleEntries} file rows but wrote ${inserted}`);
       }
 
       const externalCount = [...originCounts.values()].reduce((a, b) => a + b, 0);
@@ -653,7 +763,7 @@ async function verifyOriginsAndWrite(
       return {
         status: 'complete',
         manifestSha256,
-        entryCount: fileRows.length,
+        entryCount: inserted,
         externalCount,
         originSnapshotIds: [...originCounts.keys()],
       };
@@ -709,14 +819,18 @@ async function runHydration(
   }
   const { snapshot, providerType, providerConfig } = claim;
 
-  // No DB context is held across this step — see fetchAndParseManifest.
-  const parsedManifest = await fetchAndParseManifest(snapshotDbId, snapshot, providerType, providerConfig, deps);
-  if ('outcome' in parsedManifest) {
-    return parsedManifest.outcome;
+  // No DB context is held across either of these steps.
+  const spooled = await spoolManifestForHydration(snapshot, providerType, providerConfig, deps);
+  if ('outcome' in spooled) {
+    return spooled.outcome;
   }
 
   try {
-    return await verifyOriginsAndWrite(snapshotDbId, snapshot, parsedManifest.manifest);
+    const validated = await validateSpooledManifest(snapshot, spooled.spool);
+    if ('outcome' in validated) {
+      return validated.outcome;
+    }
+    return await verifyOriginsAndWrite(snapshotDbId, snapshot, validated.manifest);
   } catch (err) {
     try {
       await failOutsideContext(snapshot, 'provider_error', err instanceof Error ? err.message : String(err));
@@ -726,6 +840,8 @@ async function runHydration(
       console.error(`[backupSnapshotFileIndex] Could not record the failure of snapshot ${snapshotDbId}:`, recordErr);
     }
     throw err;
+  } finally {
+    await spooled.spool.remove();
   }
 }
 

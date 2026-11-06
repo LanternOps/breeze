@@ -28,7 +28,8 @@ import { runBackupWriteSessionJanitor } from '../../jobs/backupWriteSessionJanit
 import { backupWriteCredentialPayload } from '../../services/backupCommandCredentials';
 import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { applyBackupCommandResultToJob } from '../../services/backupResultPersistence';
-import { defaultVerifyDeps, verifySnapshotAttestation } from '../../services/backupAttestationVerify';
+import { verifySnapshotAttestation } from '../../services/backupAttestationVerify';
+import { verifyDepsFromBytes } from '../helpers/verifyDepsFromBytes';
 import { authenticateStorageSession, renewStorageSession, type StorageSessionRow } from '../../services/backupStorageSessions';
 import {
   abortWriteSessionMultipart,
@@ -290,7 +291,7 @@ describe('verifying the attestation of a brokered snapshot', () => {
         ${createHash('sha256').update(manifest).digest('hex')}, ${manifest.byteLength}, 'pending')
     `);
     const fetchObject = vi.fn(async () => new Uint8Array(manifest));
-    const deps = { ...defaultVerifyDeps, fetchObject };
+    const deps = verifyDepsFromBytes(fetchObject);
 
     const whileSealing = await verifySnapshotAttestation(snapshotDbId, deps);
     expect(whileSealing).toEqual({ outcome: 'retry', reason: 'snapshot_sealing' });

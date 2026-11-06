@@ -59,6 +59,8 @@ vi.mock('bullmq', () => ({
 vi.mock('../services/redis', () => ({ getBullMQConnection: () => ({}) }));
 vi.mock('../db', () => ({ withSystemDbAccessContext: withSystemDbAccessContextMock }));
 vi.mock('../services/backupSnapshotFileIndex', () => ({ hydrateSnapshotFileIndex: hydrateMock }));
+const { cleanStaleManifestSpoolsMock } = vi.hoisted(() => ({ cleanStaleManifestSpoolsMock: vi.fn(async () => undefined) }));
+vi.mock('../services/backupManifestSpool', () => ({ cleanStaleManifestSpools: cleanStaleManifestSpoolsMock }));
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
 
@@ -113,6 +115,23 @@ describe('enqueueSnapshotFileIndexHydration', () => {
       { snapshotDbId: 'snap-db-1', reason: 'rebuild', force: true },
       expect.objectContaining({ jobId: 'hydrate-snap-db-1' }),
     );
+  });
+});
+
+describe('worker start', () => {
+  it('sweeps manifest spools a crashed run left behind (#11026)', async () => {
+    cleanStaleManifestSpoolsMock.mockClear();
+    await initializeBackupSnapshotFileIndexWorker();
+    expect(cleanStaleManifestSpoolsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts even when the sweep fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    cleanStaleManifestSpoolsMock.mockRejectedValueOnce(new Error('EACCES'));
+    await expect(initializeBackupSnapshotFileIndexWorker()).resolves.toBeUndefined();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(capturedProcessorHolder.current).not.toBeNull();
+    warn.mockRestore();
   });
 });
 
