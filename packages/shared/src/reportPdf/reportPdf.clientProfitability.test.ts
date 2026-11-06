@@ -4,10 +4,10 @@ import { describe, expect, it, vi } from 'vitest';
 // head/body handed to it (drawn text alone cannot tell which cells share a row).
 vi.mock('jspdf-autotable', async (importOriginal) => {
   const actual = await importOriginal<typeof import('jspdf-autotable')>();
-  return { ...actual, default: vi.fn(actual.default) };
+  return { ...actual, autoTable: vi.fn(actual.autoTable) };
 });
 
-import autoTable from 'jspdf-autotable';
+import { autoTable } from 'jspdf-autotable';
 import { buildReportPdf } from './reportPdf';
 import * as cpPdf from './clientProfitabilityPdf';
 import {
