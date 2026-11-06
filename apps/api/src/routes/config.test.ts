@@ -80,14 +80,14 @@ describe('GET /config', () => {
   it('returns both flags false when BREEZE_BILLING_URL unset', async () => {
     const { status, body } = await request();
     expect(status).toBe(200);
-    expect(body.features).toEqual({ billing: false, support: false, aiOperatorTasks: false, toolSources: false, flows: true, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, callerVerification: false, preAssignmentEnrollment: false, sendingDomains: false });
+    expect(body.features).toEqual({ billing: false, support: false, aiOperatorTasks: false, toolSources: false, flows: true, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, callerVerification: false, preAssignmentEnrollment: false, sendingDomains: false, vendorUpdates: false });
   });
 
   it('returns both flags true when BREEZE_BILLING_URL is set', async () => {
     process.env.BREEZE_BILLING_URL = 'http://localhost:4000';
     const { status, body } = await request();
     expect(status).toBe(200);
-    expect(body.features).toEqual({ billing: true, support: true, aiOperatorTasks: false, toolSources: false, flows: true, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, callerVerification: false, preAssignmentEnrollment: false, sendingDomains: false });
+    expect(body.features).toEqual({ billing: true, support: true, aiOperatorTasks: false, toolSources: false, flows: true, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, callerVerification: false, preAssignmentEnrollment: false, sendingDomains: false, vendorUpdates: false });
   });
 
   it.each(['true', 'false', '', 'garbage'])('returns caller verification readiness for %s', async (value) => {
@@ -187,6 +187,29 @@ describe('GET /config', () => {
       vi.unstubAllEnvs();
     },
   );
+
+  // #11249: the Patches page hides the Vendor updates tab while the master flag
+  // is off. Read through oemUpdatesFlagOn(), the helper the fleet route and the
+  // worker use, so there is one definition of "on".
+  it.each([['true', true], ['1', true], ['false', false], ['', false], ['garbage', false]])(
+    'features.vendorUpdates reflects BREEZE_OEM_UPDATES_ENABLED=%s', async (value, enabled) => {
+      vi.stubEnv('BREEZE_OEM_UPDATES_ENABLED', value);
+      const { body } = await request();
+      expect(body.features.vendorUpdates).toBe(enabled);
+      vi.unstubAllEnvs();
+    },
+  );
+
+  it('features.vendorUpdates is the oemUpdatesFlagOn() helper, not a second reading of the env', async () => {
+    const flags = await import('../services/oemUpdates/flags');
+    const spy = vi.spyOn(flags, 'oemUpdatesFlagOn').mockReturnValue(true);
+    try {
+      const { body } = await request();
+      expect(body.features.vendorUpdates).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 
   // #9949: the partner settings page reads this before probing
   // GET /partner/sending-domains, which 404s whenever no provider is set.
