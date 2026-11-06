@@ -24,7 +24,7 @@ import {
   automationPolicies, automations, backupProfiles, backupSnapshots, browserPolicies, c2cBackupConfigs,
   c2cBackupItems, configurationPolicies, contractDocuments, contractTemplates, contracts, customFieldDefinitions,
   deployments, deviceGroups, drPlanGroups, drPlans, escalationPolicies, hypervVms, incidents, invoicePayments, invoices,
-  localVaults, maintenanceWindows, manualAssets, monitorDefinitions, networkBaselines, notificationChannels,
+  localVaults, manualAssets, monitorDefinitions, networkBaselines, notificationChannels,
   notificationRoutingRules, pamRules, pamSignerGroups, pax8Orders, pax8SubscriptionSnapshots, peripheralPolicies, quotes,
   reports, scriptExecutions, securityPolicies, softwarePolicies, tenantVariables, ticketChecklistTemplateItems,
   ticketChecklistTemplates, ticketForms, ticketRoutingRules, tickets, topologyConfigTemplates, webhooks, yaraRuleSets,
@@ -109,7 +109,6 @@ export const INTENT_ROW_TARGET: Readonly<Record<string, readonly IntentRowEntry[
   execute_dr_plan: [{ actions: 'all', arg: 'planId', row: owned(() => drPlans) }],
   manage_manual_assets: [{ actions: ['delete'], arg: 'assetId', row: owned(() => manualAssets) }],
   manage_topology_templates: [{ actions: ['publish_version', 'revoke_template'], arg: 'templateId', row: owned(() => topologyConfigTemplates) }],
-  manage_maintenance_windows: [{ actions: ['update', 'delete'], arg: 'windowId', row: owned(() => maintenanceWindows) }],
   manage_automations: [{ actions: ['run'], arg: 'automationId', row: owned(() => automations) }],
   test_webhook: [{ actions: 'all', arg: 'webhookId', row: owned(() => webhooks) }],
   manage_monitor_definitions: [{ actions: ['update', 'delete', 'enable', 'disable'], arg: 'monitorId', row: owned(() => monitorDefinitions) }],
@@ -153,22 +152,29 @@ export const INTENT_ROW_TARGET: Readonly<Record<string, readonly IntentRowEntry[
   cancel_script_execution: [{ actions: 'all', arg: 'executionId', row: owned(() => scriptExecutions) }],
 };
 
+const eachAction = (tool: string, actions: readonly string[], reason: string): Record<string, string> =>
+  Object.fromEntries(actions.map((action) => [`${tool}:${action}`, reason]));
+
 /**
  * Tier-3 id-taking actions whose row has no org at all: the row is the partner's, so the
- * intent stays in the session org. Keyed `tool` or `tool:action`.
+ * intent stays in the session org. Keyed `tool` for a tool with no `action`, else
+ * `tool:action`, so a new action of the tool is not covered by accident.
  */
 export const INTENT_ROW_PARTNER_WIDE: Readonly<Record<string, string>> = {
   delete_tenant: 'the row is the caller\'s own partner',
   'manage_accounting_sync:link_mapping': 'the mapping row is the partner\'s, whichever entity it maps',
   'manage_accounting_sync:unlink_mapping': 'the mapping row is the partner\'s, whichever entity it maps',
   'manage_accounting_sync:sync_mapping': 'the mapping row is the partner\'s, whichever entity it maps',
-  manage_billing_catalog: 'the catalog item writes are partner-wide; the org price writes name their org',
-  manage_billing_profiles: 'the profile and work-type writes are partner-wide; the org profile writes name their org',
+  ...eachAction('manage_billing_catalog', ['update_item', 'archive_item', 'set_price', 'remove_price', 'set_bundle_components'], 'the catalog item writes are partner-wide'),
+  ...eachAction('manage_billing_profiles', ['create', 'update', 'archive', 'set_rows', 'clone', 'create_work_type', 'update_work_type'], 'the profile and work-type writes are partner-wide'),
   'manage_billing_settings:update_partner': 'the partner\'s own settings',
-  manage_ticket_config: 'the category, status, priority and domain writes are partner-wide',
+  ...eachAction('manage_ticket_config', [
+    'create_category', 'update_category', 'delete_category', 'reorder_categories', 'create_status', 'update_status',
+    'reorder_statuses', 'set_priorities', 'create_domain', 'update_domain', 'delete_domain',
+  ], 'the category, status, priority and domain writes are partner-wide'),
   'manage_ticket_inbox:dismiss': 'an inbound email row is keyed on the partner and has no org',
-  manage_ticket_response_templates: 'a response template is keyed on the partner and has no org',
-  manage_update_rings: 'a ring is keyed on the partner and has no org',
+  ...eachAction('manage_ticket_response_templates', ['create', 'update', 'delete'], 'a response template is keyed on the partner and has no org'),
+  ...eachAction('manage_update_rings', ['create', 'update'], 'a ring is keyed on the partner and has no org'),
   'manage_pax8_subscriptions:sync': 'a sync covers the partner\'s whole integration',
   // Tier 3 only for a partner-owned row; an org-owned one stays below it and files nothing.
   'manage_backup_profiles:create': 'Tier 3 only when partner-owned',
@@ -179,23 +185,23 @@ export const INTENT_ROW_PARTNER_WIDE: Readonly<Record<string, string>> = {
   'manage_ticket_checklist_templates:create': 'Tier 3 only when partner-owned',
 };
 
-const DEVICE_TARGETED = 'names a device through `deviceArgs`: MCP resolves the device org, and chat is a separate decision from this row registry';
+export const DEVICE_TARGETED = 'names a device through `deviceArgs`: MCP resolves the device org, and chat is a separate decision from this row registry';
 
 /**
- * Tier-3 id-taking actions that stay where they file today, each with its reason. Keyed
- * `tool` or `tool:action`.
+ * Tier-3 id-taking actions that stay where they file today, each with its reason. Keyed like
+ * `INTENT_ROW_PARTNER_WIDE`, except that a device-targeted tool may be keyed whole.
  */
 export const INTENT_ROW_LEFT: Readonly<Record<string, string>> = {
   // Several rows, with nothing requiring them to share an org.
-  apply_topology_template: 'a preview token, whose sites may span organizations',
+  'apply_topology_template:apply': 'a preview token, whose sites may span organizations',
   'manage_accounting_sync:push_bulk': 'an invoice list that may span the partner\'s organizations',
-  remediate_sensitive_data: 'a finding list that may span organizations',
-  send_endpoint_message: 'the audience is `targets`, which may span organizations',
+  ...eachAction('remediate_sensitive_data', ['encrypt', 'quarantine', 'secure_delete', 'accept_risk', 'false_positive', 'mark_remediated'], 'a finding list that may span organizations'),
+  'send_endpoint_message:send': 'the audience is `targets`, which may span organizations',
 
   // A row that is not the right place to file.
   'manage_support_sessions:end': 'the row\'s org is the partner\'s hidden support org, which has no approvers; the handler scopes by partner',
   operator_plan: 'filed by plan approval in the task\'s org, and release requires that org',
-  manage_ai_agents: '`orgId` must equal the authorized org, and createActionIntent refuses a mismatch',
+  'manage_ai_agents:authorize_supervised_key': '`orgId` must equal the authorized org, and createActionIntent refuses a mismatch',
   wisp_specialist_request: 'filed by the coordinator in the request org, and release refuses another',
   run_flow: 'the run-flow gate resolves the flow\'s org',
   diagnose_connectivity: 'a pinned recipe with its own approval path, resolved through its origin device and site',
@@ -210,14 +216,9 @@ export const INTENT_ROW_LEFT: Readonly<Record<string, string>> = {
 
   // No row to read.
   'manage_access_reviews:create': 'creates; the owner comes from the caller',
-  'manage_maintenance_windows:create': 'creates; the owner comes from the caller',
-  'manage_automations:create': 'creates; the owner comes from the caller',
-  'manage_automations:update': 'disabled: the handler refuses before any read',
-  'manage_automations:delete': 'disabled: the handler refuses before any read',
   'manage_monitor_definitions:create': 'creates; the owner comes from the caller',
   'manage_monitor_definitions:describe': 'a read: it files no row-scoped change',
   'manage_organizations:create_org': 'creates a new organization',
-  'manage_patches:setup_auto_approval': 'disabled',
 
   // Device-targeted.
   'manage_patches:rollback': DEVICE_TARGETED,

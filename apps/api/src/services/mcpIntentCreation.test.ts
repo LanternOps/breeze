@@ -420,6 +420,7 @@ describe('createMcpActionIntent', () => {
     it('a partner-wide row of the caller\'s partner keeps the execution org', async () => {
       mocks.resolveRowTarget.mockResolvedValue({ orgId: null, partnerId: PARTNER });
       await createMcpActionIntent(rowInput({ toolName: 'manage_configuration_policy', toolInput: { action: 'delete', policyId: ROW } }));
+      expect(mocks.resolveRowTarget).toHaveBeenCalledWith('manage_configuration_policy', { action: 'delete', policyId: ROW });
       expect(filedOrg()).toBe(ORG);
     });
 

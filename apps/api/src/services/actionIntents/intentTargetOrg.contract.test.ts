@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { aiTools } from '../aiTools';
 import { TIER3_ACTIONS, TIER3_FOUR_EYES_ACTIONS, TIER3_INPUT_AWARE_ACTIONS, TIER3_INPUT_AWARE_TOOLS, TIER3_SUPERVISED_ACTIONS } from '../aiGuardrails';
 import { AI_DESIGN_INTENT_TOOLS } from './aiDesignIntentTarget';
-import { INTENT_ROW_LEFT, INTENT_ROW_PARTNER_WIDE, INTENT_ROW_TARGET } from './intentRowTarget';
+import { DEVICE_TARGETED, INTENT_ROW_LEFT, INTENT_ROW_PARTNER_WIDE, INTENT_ROW_TARGET } from './intentRowTarget';
 import { INTENT_ORG_ARGUMENT, ORG_ARGUMENT_NOT_TARGET } from './intentTargetOrg';
 
 const ORG_ARGS = ['orgId', 'org_id'] as const;
@@ -76,11 +76,16 @@ describe('intent target org contract (#11181)', () => {
  */
 const ID_ARG = /(^id$|^ids$|Id$|_id$|Ids$|_ids$)/;
 
+function actionEnum(toolName: string): string[] | null {
+  return (schemaProps(toolName).action as { enum?: string[] } | undefined)?.enum ?? null;
+}
+
+/** What a call can actually ask for: a tier table can still list an action the schema no longer offers. */
 function approvalActions(toolName: string): string[] {
+  const offered = actionEnum(toolName);
   const listed = [...tier3Actions(toolName)];
-  if (listed.length > 0) return listed;
-  const action = schemaProps(toolName).action as { enum?: string[] } | undefined;
-  return action?.enum ?? ['*'];
+  if (listed.length > 0) return offered ? listed.filter((action) => offered.includes(action)) : listed;
+  return offered ?? ['*'];
 }
 
 const matchesAction = (actions: readonly string[] | 'all', action: string): boolean => actions === 'all' || actions.includes(action);
@@ -134,6 +139,11 @@ describe('intent target row contract (#11222)', () => {
     it.each(entries.map((entry) => [entry.arg, entry] as const))('%s names a uuid row with an org column, for Tier-3 actions only', (arg, entry) => {
       expect(aiTools.has(toolName)).toBe(true);
       expect(schemaProps(toolName)).toHaveProperty(arg);
+      if (entry.actions !== 'all') {
+        const offered = actionEnum(toolName);
+        expect(offered, 'a listed action needs a tool with an action enum').not.toBeNull();
+        expect(entry.actions.filter((action) => !offered!.includes(action))).toEqual([]);
+      }
       if (entry.actions !== 'all' && aiTools.get(toolName)?.tier !== 3) {
         const tier3 = tier3Actions(toolName);
         expect(entry.actions.filter((action) => !tier3.has(action))).toEqual([]);
@@ -162,7 +172,22 @@ describe('intent target row contract (#11222)', () => {
       expect(aiTools.has(toolName), key).toBe(true);
       expect(hasTier3(toolName), key).toBe(true);
       expect(reason.length, key).toBeGreaterThan(5);
-      if (reason.startsWith('names a device')) expect(aiTools.get(toolName)?.deviceArgs?.length ?? 0, key).toBeGreaterThan(0);
+      if (reason === DEVICE_TARGETED) expect(aiTools.get(toolName)?.deviceArgs?.length ?? 0, key).toBeGreaterThan(0);
     }
+  });
+
+  it('a `tool:action` key names an action the tool offers, so a key cannot outlive its action', () => {
+    const stale = Object.keys({ ...INTENT_ROW_PARTNER_WIDE, ...INTENT_ROW_LEFT }).filter((key) => {
+      const [toolName, action] = key.split(':');
+      return action !== undefined && !(actionEnum(toolName!) ?? []).includes(action);
+    });
+    expect(stale).toEqual([]);
+  });
+
+  it('a whole-tool key is only for a tool with no action, or a device tool: a new action must not be covered by accident', () => {
+    const tooCoarse = Object.entries({ ...INTENT_ROW_PARTNER_WIDE, ...INTENT_ROW_LEFT })
+      .filter(([key, reason]) => !key.includes(':') && actionEnum(key) !== null && reason !== DEVICE_TARGETED)
+      .map(([key]) => key);
+    expect(tooCoarse).toEqual([]);
   });
 });

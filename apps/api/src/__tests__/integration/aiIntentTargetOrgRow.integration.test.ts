@@ -29,6 +29,7 @@ import { buildOrgAccessClosures, type AuthContext } from '../../middleware/auth'
 import { approvalRoutes } from '../../routes/approvals';
 import { releaseApprovedIntent } from '../../jobs/intentReleaseWorker';
 import { createActionIntent } from '../../services/actionIntents/intentService';
+import { INTENT_ROW_TARGET, resolveIntentRowTarget } from '../../services/actionIntents/intentRowTarget';
 import { decideIntentOrg, INTENT_ORG_OUT_OF_REACH, resolveIntentTarget } from '../../services/actionIntents/intentTargetOrg';
 import { createAccessToken } from '../../services/jwt';
 import { clearPermissionCache, PERMISSIONS } from '../../services/permissions';
@@ -122,6 +123,19 @@ async function fileAsChat(session: AuthContext, toolInput: Record<string, unknow
   const snapshot = await createActionIntent(session, { toolName: 'manage_notification_channels', input: toolInput, source: 'chat', orgId } as never);
   return { kind: 'filed' as const, snapshot, orgId };
 }
+
+describe('the row registry against the real schema (#11222)', () => {
+  // The unit suite's db is a mock, so this is what proves each registered read is valid SQL as breeze_app.
+  const entries = Object.entries(INTENT_ROW_TARGET).flatMap(([toolName, list]) => list.map((entry) => [toolName, entry.arg, entry] as const));
+
+  it.each(entries)('%s %s: the read runs and finds no owner for an unknown id', async (toolName, arg, entry) => {
+    if (!process.env.DATABASE_URL) return;
+    const action = entry.actions === 'all' ? undefined : entry.actions[0];
+    const id = randomUUID();
+    await expect(resolveIntentRowTarget(toolName, { ...(action ? { action } : {}), [arg]: entry.firstOfArray ? [id] : id }))
+      .resolves.toEqual({ orgId: null, partnerId: null });
+  });
+});
 
 describe('manage_notification_channels:delete by a partner session bound to a sibling org (#11222)', () => {
   runDb('is filed in the row\'s org, carded to that org\'s approver, and released there by the worker', async () => {

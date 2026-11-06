@@ -2349,11 +2349,11 @@ describe('createSessionPreToolUse', () => {
         });
 
         it('an orgId the model adds does not move the intent off the row\'s org', async () => {
-          mockResolveRowTarget.mockResolvedValue({ orgId: 'org-1', partnerId: null });
+          mockResolveRowTarget.mockResolvedValue({ orgId: ORG_2, partnerId: null });
           const auth = reachOf('org-1', ORG_2);
           const session = makeActiveSession({ auth, toolAuth: auth });
-          await createSessionPreToolUse(session)('manage_invoices', { action: 'void', orgId: ORG_2, invoiceId: DEVICE });
-          expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ orgId: 'org-1' });
+          await createSessionPreToolUse(session)('manage_invoices', { action: 'void', orgId: 'org-1', invoiceId: DEVICE });
+          expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ orgId: ORG_2 });
         });
 
         it('a partner-wide row of the caller\'s own partner stays in the session org', async () => {
