@@ -371,7 +371,7 @@ describe('POST /ai/fleet-design/runs', () => {
 
     expect(res.status).toBe(503);
     const body = await res.json();
-    expect(body).toMatchObject({ error: 'enqueue_failed' });
+    expect(body).toMatchObject({ code: 'enqueue_failed', error: expect.stringContaining('could not be queued') });
     expect(body).not.toHaveProperty('runId');
 
     expect(writeRouteAuditMock).toHaveBeenCalledTimes(1);

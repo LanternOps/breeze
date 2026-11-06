@@ -85,7 +85,7 @@ patchPlanRoutes.post(
     // the caller could poll. Same outcome the `run_patch_plan` tool reports.
     if (result.enqueueFailed) {
       audit({ skipped: 'enqueue_failed', runId: result.runId }, result.agentId, false);
-      return c.json({ error: 'enqueue_failed', message: 'The patch run could not be queued. Try again shortly.' }, 503);
+      return c.json({ error: 'The patch run could not be queued. Try again shortly.', code: 'enqueue_failed' }, 503);
     }
     audit({ runId: result.runId }, result.agentId, true);
     return c.json({ runId: result.runId }, 202);

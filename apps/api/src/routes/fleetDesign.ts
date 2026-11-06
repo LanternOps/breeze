@@ -189,7 +189,7 @@ fleetDesignRoutes.post(
     // The run row exists but BullMQ never took it (already marked
     // failed/enqueue_failed). Not a 202, and no runId the queue does not hold.
     if (enqueueFailed) {
-      return c.json({ error: 'enqueue_failed', message: 'The design run could not be queued. Try again shortly.' }, 503);
+      return c.json({ error: 'The design run could not be queued. Try again shortly.', code: 'enqueue_failed' }, 503);
     }
 
     // A declined admission is not an error — the caller asked for a design and
