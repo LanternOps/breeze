@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { contactRoles } from '../../db/schema/contactRoles';
 import { contacts } from '../../db/schema/contacts';
-import { sites } from '../../db/schema/orgs';
+import { organizations, sites } from '../../db/schema/orgs';
 import { deviceGroupMemberships, deviceGroups } from '../../db/schema/devices';
 import type { ContactExecutor } from './compat';
 import {
@@ -11,6 +11,7 @@ import {
   removeContactResponsibility,
   replaceContactResponsibilities,
   resolveContactResponsibility,
+  setContactResponsibilities,
 } from './responsibilities';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -550,5 +551,57 @@ describe('resolveContactResponsibility', () => {
     expect(f.selects.map((s) => s.table)).toEqual([deviceGroupMemberships, contactRoles]);
     const membershipWhere = compile(f.selects[0]!.where);
     expect(membershipWhere.params).toEqual([ORG, DEVICE]);
+  });
+});
+
+describe('setContactResponsibilities', () => {
+  const oldOrgBilling = { role: 'billing', siteId: null, deviceGroupId: null };
+
+  it('locks organization, then contact, before any write, and re-projects billing last', async () => {
+    const f = makeExec([[], [{ id: CONTACT }], [oldOrgBilling], [{ id: CONTACT }], [], ]);
+    await setContactResponsibilities(f.exec, {
+      contactId: CONTACT, orgId: ORG, responsibilities: [{ role: 'admin', scope: { type: 'organization' } }],
+    });
+    expect(f.selects[0]!.table).toBe(organizations);
+    expect(f.selects[1]!.table).toBe(contacts);
+    expect(f.selects[2]!.table).toBe(contactRoles);
+    expect(f.deletes).toHaveLength(1);
+    expect(f.inserts[0]!.values).toHaveLength(1);
+    // last statement is the organizations.billing_contact projection
+    expect(f.updates.at(-1)!.table).toBe(organizations);
+  });
+
+  it('projects billing when the new set adds billing @ Organization', async () => {
+    const f = makeExec([[], [{ id: CONTACT }], [], [{ id: CONTACT }], []]);
+    await setContactResponsibilities(f.exec, {
+      contactId: CONTACT, orgId: ORG, responsibilities: [{ role: 'billing', scope: { type: 'organization' } }],
+    });
+    expect(f.updates.at(-1)!.table).toBe(organizations);
+  });
+
+  it('does not project billing for billing @ Site on both sides', async () => {
+    const f = makeExec([[], [{ id: CONTACT }], [{ role: 'billing', siteId: SITE, deviceGroupId: null }], [{ id: CONTACT }], [{ id: SITE }]]);
+    await setContactResponsibilities(f.exec, {
+      contactId: CONTACT, orgId: ORG, responsibilities: [{ role: 'billing', scope: { type: 'site', siteId: SITE } }],
+    });
+    expect(f.updates.every((u) => u.table !== organizations)).toBe(true);
+  });
+
+  it('passes validation errors through without writing or projecting', async () => {
+    const f = makeExec([[], [{ id: CONTACT }], [oldOrgBilling], [{ id: CONTACT }], []]);
+    await expect(setContactResponsibilities(f.exec, {
+      contactId: CONTACT, orgId: ORG, responsibilities: [{ role: 'admin', scope: { type: 'site', siteId: SITE } }],
+    })).rejects.toMatchObject({ code: 'site-not-in-org' });
+    expect(f.deletes).toHaveLength(0);
+    expect(f.updates).toHaveLength(0);
+  });
+
+  it('refuses a contact that is not in the organization before reading or writing the set', async () => {
+    const f = makeExec([[], []]);
+    await expect(setContactResponsibilities(f.exec, {
+      contactId: CONTACT, orgId: ORG, responsibilities: [],
+    })).rejects.toMatchObject({ code: 'contact-not-in-org' });
+    expect(f.selects).toHaveLength(2);
+    expect(f.deletes).toHaveLength(0);
   });
 });

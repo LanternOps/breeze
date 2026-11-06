@@ -6839,6 +6839,35 @@
       "create": "Impossible d’ajouter le contact.",
       "update": "Impossible d’enregistrer le contact.",
       "delete": "Impossible de supprimer le contact."
+    },
+    "responsibilities": {
+      "heading": "Responsabilités",
+      "help": "De quoi cette personne est responsable, et où. Organisation s'applique partout ; Site et Groupe d'appareils restreignent.",
+      "empty": "Aucune responsabilité attribuée.",
+      "loadError": "Impossible de charger les responsabilités de ce contact.",
+      "role": "Rôle",
+      "scope": "Portée",
+      "scopes": {
+        "organization": "Organisation",
+        "site": "Site",
+        "deviceGroup": "Groupe d'appareils"
+      },
+      "selectSite": "Sélectionnez un site",
+      "selectGroup": "Sélectionnez un groupe d'appareils",
+      "groupsLoading": "Chargement des groupes…",
+      "groupsError": "Impossible de charger les groupes d'appareils de cette organisation.",
+      "unknownGroup": "Groupe indisponible",
+      "siteRequired": "Choisissez un site.",
+      "groupRequired": "Choisissez un groupe d'appareils.",
+      "duplicate": "Doublon d'une autre ligne.",
+      "add": "Ajouter une responsabilité",
+      "remove": "Retirer",
+      "toasts": {
+        "saved": "Responsabilités enregistrées"
+      },
+      "errors": {
+        "save": "Impossible d'enregistrer les responsabilités."
+      }
     }
   },
   "bulkContactImport": {

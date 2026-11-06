@@ -4,11 +4,17 @@ import { z } from 'zod';
 import { db } from '../db';
 import { contacts, devices, sites } from '../db/schema';
 import { zValidator } from '../lib/validation';
-import { requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { CONTACT_ROLES } from '../services/contacts/types';
-import { resolveContactResponsibility } from '../services/contacts/responsibilities';
-import { canReachContactSite, resolveAccessibleOrg } from './orgContacts';
+import {
+  listContactResponsibilities,
+  resolveContactResponsibility,
+  ResponsibilityValidationError,
+  setContactResponsibilities,
+} from '../services/contacts/responsibilities';
+import { writeContactAudit } from '../services/contacts/audit';
+import { canReachContactSite, resolveAccessibleOrg, resolveContactOrg, validationResponse } from './orgContacts';
 
 /**
  * Read-only "who to contact" (spec 2026-10-06 contact-responsibility-scope, §14 follow-up).
@@ -30,8 +36,116 @@ const querySchema = z
     message: 'Provide exactly one of siteId or deviceId',
   });
 
+/**
+ * Whole-set replace body (spec §21). The scope is a strict discriminated union,
+ * so a Site and a Device Group cannot be expressed in one assignment.
+ */
+const MAX_RESPONSIBILITIES = 200;
+
+const scopeSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('organization') }).strict(),
+  z.object({ type: z.literal('site'), siteId: z.string().guid() }).strict(),
+  z.object({ type: z.literal('device_group'), deviceGroupId: z.string().guid() }).strict(),
+]);
+
+const setResponsibilitiesSchema = z
+  .object({
+    responsibilities: z
+      .array(
+        z
+          .object({
+            role: z.enum(CONTACT_ROLES),
+            scope: scopeSchema,
+            isPrimary: z.boolean().optional(),
+          })
+          .strict(),
+      )
+      .max(MAX_RESPONSIBILITIES),
+  })
+  .strict();
+
+function serializeScope(row: { siteId: string | null; deviceGroupId: string | null }) {
+  if (row.siteId) return { type: 'site' as const, siteId: row.siteId };
+  if (row.deviceGroupId) return { type: 'device_group' as const, deviceGroupId: row.deviceGroupId };
+  return { type: 'organization' as const };
+}
+
 export function registerOrgContactResponsibilitiesRoutes(orgRoutes: Hono) {
   const requireOrgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
+  const requireOrgWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
+
+  const currentSet = async (contactId: string, orgId: string, auth: AuthContext) => {
+    const rows = await listContactResponsibilities(db, { contactId, orgId });
+    return {
+      // A site-confined caller never sees the ids of Sites it cannot reach.
+      responsibilities: rows.filter((row) => canReachContactSite(auth, row.siteId)).map((row) => ({
+        role: row.role,
+        scope: serializeScope(row),
+        isPrimary: row.isPrimary,
+      })),
+    };
+  };
+
+  // Configured (not resolved) assignments of one contact.
+  orgRoutes.get(
+    '/contacts/:contactId/responsibilities',
+    requireScope('organization', 'partner', 'system'),
+    requireOrgRead,
+    async (c) => {
+      const resolved = await resolveContactOrg(c);
+      if (resolved instanceof Response) return resolved;
+      return c.json(await currentSet(resolved.contactId, resolved.orgId, c.get('auth') as AuthContext));
+    },
+  );
+
+  // Replace the contact's whole set. A site-confined caller cannot see or
+  // safely replace Organization-wide / foreign-Site rows, so it is refused.
+  orgRoutes.put(
+    '/contacts/:contactId/responsibilities',
+    requireScope('organization', 'partner', 'system'),
+    requireOrgWrite,
+    requireMfa(),
+    zValidator('json', setResponsibilitiesSchema),
+    async (c) => {
+      const auth = c.get('auth') as AuthContext;
+      if (auth.allowedSiteIds) {
+        return c.json({ error: 'Access to this site denied' }, 403);
+      }
+      const resolved = await resolveContactOrg(c);
+      if (resolved instanceof Response) return resolved;
+      const { responsibilities } = c.req.valid('json');
+
+      try {
+        await setContactResponsibilities(db, {
+          contactId: resolved.contactId,
+          orgId: resolved.orgId,
+          responsibilities,
+        });
+      } catch (err) {
+        // contact-not-in-org (lost a race with a delete) is a 404, not a 400.
+        if (err instanceof ResponsibilityValidationError && err.code === 'contact-not-in-org') {
+          return c.json({ error: 'Contact not found' }, 404);
+        }
+        const refusal = validationResponse(c, err);
+        if (refusal) return refusal;
+        throw err;
+      }
+
+      const byRole: Record<string, number> = {};
+      const byScope: Record<string, number> = {};
+      for (const item of responsibilities) {
+        byRole[item.role] = (byRole[item.role] ?? 0) + 1;
+        byScope[item.scope.type] = (byScope[item.scope.type] ?? 0) + 1;
+      }
+      writeContactAudit(c, {
+        orgId: resolved.orgId,
+        action: 'contact.update',
+        contactId: resolved.contactId,
+        details: { changedFields: ['responsibilities'], count: responsibilities.length, byRole, byScope },
+      });
+      return c.json(await currentSet(resolved.contactId, resolved.orgId, c.get('auth') as AuthContext));
+    },
+  );
 
   orgRoutes.get(
     '/organizations/:id/contact-responsibilities',

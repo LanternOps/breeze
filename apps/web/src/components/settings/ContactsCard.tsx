@@ -10,7 +10,12 @@ import { useCallerVerificationEnabled } from '@/lib/useCallerVerificationEnabled
 import { ContactVerificationDrawer } from '../callerVerification/ContactVerificationDrawer';
 import OffboardPersonLauncher from '../aiOperator/OffboardPersonLauncher';
 import OnboardPersonLauncher from '../aiOperator/OnboardPersonLauncher';
-import { CONTACT_ROLES, CONTACT_ROLE_LABEL_KEYS as ROLE_LABEL_KEYS, isKnownContactRole as isKnownRole, type ContactRole } from '@/lib/contactRoles';
+import { CONTACT_ROLES, CONTACT_ROLE_LABEL_KEYS as ROLE_LABEL_KEYS, isKnownContactRole as isKnownRole } from '@/lib/contactRoles';
+import { asList } from '@/lib/asList';
+import ContactResponsibilitiesEditor, {
+  fingerprint, rowsFromServer, rowsValid, toPayload,
+  type GroupsState, type NamedOption, type RespRow, type ServerResponsibility,
+} from './ContactResponsibilitiesEditor';
 
 /**
  * First-class organization contacts (#3258 W04) — the whole `#contacts` tab of
@@ -54,13 +59,12 @@ type Draft = {
   mobile: string;
   title: string;
   notes: string;
-  roles: string[];
   isPrimary: boolean;
 };
 
 const EMPTY_DRAFT: Draft = {
   siteId: '', name: '', email: '', phone: '', mobile: '', title: '', notes: '',
-  roles: [], isPrimary: false,
+  isPrimary: false,
 };
 
 function draftFrom(contact: Contact): Draft {
@@ -72,7 +76,6 @@ function draftFrom(contact: Contact): Draft {
     mobile: contact.mobile ?? '',
     title: contact.title ?? '',
     notes: contact.notes ?? '',
-    roles: [...contact.roles],
     isPrimary: contact.isPrimary,
   };
 }
@@ -99,7 +102,6 @@ function draftBody(draft: Draft): Record<string, unknown> {
     mobile: nullable(draft.mobile),
     title: nullable(draft.title),
     notes: nullable(draft.notes),
-    roles: draft.roles,
     isPrimary: draft.isPrimary,
   };
 }
@@ -159,6 +161,18 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
   const [formOpen, setFormOpen] = useState(false);
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
   const [saving, setSaving] = useState(false);
+  // Scoped responsibilities (Phase 4b). `respBaseline` is the fingerprint of the
+  // set as loaded; a PUT is sent only when the rows differ from it (or for a new
+  // contact). `createdId` remembers a contact whose POST landed but whose PUT
+  // failed, so the next Save repeats only the PUT.
+  const [resps, setResps] = useState<RespRow[]>([]);
+  const [respBaseline, setRespBaseline] = useState(fingerprint([]));
+  const [respLoadState, setRespLoadState] = useState<'ready' | 'loading' | 'error'>('ready');
+  const [respLoadAttempt, setRespLoadAttempt] = useState(0);
+  const [createdId, setCreatedId] = useState<string | null>(null);
+  const [groups, setGroups] = useState<NamedOption[]>([]);
+  const [groupsState, setGroupsState] = useState<GroupsState>('loading');
+  const [groupsAttempt, setGroupsAttempt] = useState(0);
   /**
    * Monotonic request id. `loadContacts` is fired from an effect AND from every
    * mutation, so two loads can be in flight at once (change a filter mid-delete);
@@ -260,6 +274,63 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
     return () => { cancelled = true; };
   }, [orgId, unauthorized, sitesAttempt]);
 
+  // Current responsibility set of the contact being edited.
+  const editingId = editing?.id ?? null;
+  useEffect(() => {
+    if (!formOpen || !editingId) return;
+    let cancelled = false;
+    setRespLoadState('loading');
+    void (async () => {
+      try {
+        const res = await fetchWithAuth(`/orgs/contacts/${editingId}/responsibilities`);
+        if (res.status === 401) return unauthorized();
+        if (!res.ok) throw new Error(`responsibilities load failed: ${res.status}`);
+        const body = (await res.json()) as { responsibilities?: ServerResponsibility[] };
+        if (cancelled) return;
+        const rows = rowsFromServer(body.responsibilities ?? []);
+        setResps(rows);
+        setRespBaseline(fingerprint(rows));
+        setRespLoadState('ready');
+      } catch (err) {
+        console.warn('[ContactsCard] responsibilities load failed', err);
+        if (!cancelled) setRespLoadState('error');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [formOpen, editingId, unauthorized, respLoadAttempt]);
+
+  // Device groups of THIS organization, fetched once the drawer opens. Reuses
+  // the existing org-scoped list endpoint (see GroupTargetPicker).
+  useEffect(() => {
+    if (!formOpen) return;
+    let cancelled = false;
+    setGroupsState('loading');
+    void (async () => {
+      try {
+        const res = await fetchWithAuth(`/device-groups?orgId=${encodeURIComponent(orgId)}`);
+        if (res.status === 401) return unauthorized();
+        if (!res.ok) throw new Error(`device groups load failed: ${res.status}`);
+        const data = asList<{ id?: unknown; name?: unknown }>(await res.json(), 'groups');
+        if (cancelled) return;
+        setGroups(data
+          .filter((g) => typeof g?.id === 'string' && typeof g?.name === 'string')
+          .map((g) => ({ id: g.id as string, name: g.name as string })));
+        setGroupsState('ready');
+      } catch (err) {
+        console.warn('[ContactsCard] device groups load failed', err);
+        if (!cancelled) setGroupsState('error');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [formOpen, orgId, unauthorized, groupsAttempt]);
+
+  function resetResps(rows: RespRow[] = [], loading = false) {
+    setResps(rows);
+    setRespBaseline(fingerprint(rows));
+    setRespLoadState(loading ? 'loading' : 'ready');
+    setCreatedId(null);
+  }
+
   function changeFilter(next: () => void) {
     // A filter narrows the result set, so whatever page the user was on is
     // almost certainly past the end of the new one.
@@ -270,42 +341,82 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
   function openCreate() {
     setEditing(null);
     setDraft(EMPTY_DRAFT);
+    resetResps();
     setFormOpen(true);
   }
 
   function openEdit(contact: Contact) {
     setEditing(contact);
     setDraft(draftFrom(contact));
+    resetResps([], true);
     setFormOpen(true);
   }
 
   const draftHasIdentifier = IDENTIFIER_FIELDS.some((f) => draft[f].trim() !== '');
+  const respsOk = rowsValid(resps);
+  const respsDirty = fingerprint(resps) !== respBaseline;
+  // While the current set is unknown (loading / failed), a PUT would overwrite
+  // it blind; the rows are locked and not dirty, so nothing is sent.
+  const respsReady = respLoadState === 'ready';
 
   async function save() {
-    if (saving || !draftHasIdentifier) return;
+    if (saving || !draftHasIdentifier || !respsOk || !respsReady) return;
     setSaving(true);
+    // Set once the contact write landed, so a failing PUT does not hide it.
+    let contactWritten = false;
     try {
-      await runAction({
-        request: () => (editing
-          ? fetchWithAuth(`/orgs/contacts/${editing.id}`, {
-              method: 'PATCH',
-              body: JSON.stringify(draftBody(draft)),
-            })
-          : fetchWithAuth(`/orgs/organizations/${orgId}/contacts`, {
-              method: 'POST',
-              body: JSON.stringify(createBody(draft)),
-            })),
-        errorFallback: editing
-          ? t('contactsCard.errors.update')
-          : t('contactsCard.errors.create'),
-        successMessage: editing
-          ? t('contactsCard.toasts.updated')
-          : t('contactsCard.toasts.created'),
-        onUnauthorized: unauthorized,
-      });
+      let contactId = editing?.id ?? createdId;
+      if (!createdId) {
+        const res = await runAction<{ data?: { id?: string } } | null>({
+          request: () => (editing
+            ? fetchWithAuth(`/orgs/contacts/${editing.id}`, {
+                method: 'PATCH',
+                body: JSON.stringify(draftBody(draft)),
+              })
+            : fetchWithAuth(`/orgs/organizations/${orgId}/contacts`, {
+                method: 'POST',
+                body: JSON.stringify(createBody(draft)),
+              })),
+          errorFallback: editing
+            ? t('contactsCard.errors.update')
+            : t('contactsCard.errors.create'),
+          successMessage: editing
+            ? t('contactsCard.toasts.updated')
+            : t('contactsCard.toasts.created'),
+          onUnauthorized: unauthorized,
+        });
+        contactWritten = true;
+        if (!editing) {
+          contactId = res?.data?.id ?? null;
+          if (contactId) setCreatedId(contactId);
+        }
+      }
+      // A new contact with no rows needs no PUT: it starts with no responsibilities,
+      // and a site-confined caller (who cannot PUT) can still create contacts.
+      if (!editing && !contactId && resps.length > 0) {
+        throw new Error(t('contactsCard.errors.create'));
+      }
+      if (contactId && (editing ? respsDirty : resps.length > 0)) {
+        try {
+          await runAction({
+            request: () => fetchWithAuth(`/orgs/contacts/${contactId}/responsibilities`, {
+              method: 'PUT',
+              body: JSON.stringify({ responsibilities: toPayload(resps) }),
+            }),
+            errorFallback: t('contactsCard.responsibilities.errors.save'),
+            successMessage: t('contactsCard.responsibilities.toasts.saved'),
+            onUnauthorized: unauthorized,
+          });
+        } catch (err) {
+          // The contact itself is saved; refresh the list behind the open drawer.
+          if (contactWritten) { notifyContactsChanged(); await loadContacts(); }
+          throw err;
+        }
+      }
       setFormOpen(false);
       setEditing(null);
       setDraft(EMPTY_DRAFT);
+      resetResps();
       notifyContactsChanged();
       // Refetch rather than patch: promoting a primary DEMOTES the previous one
       // in the same scope server-side, and no client-side guess reproduces that
@@ -352,15 +463,6 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
     () => CONTACT_ROLES.map((role) => ({ role, key: ROLE_LABEL_KEYS[role] })),
     [],
   );
-
-  function toggleRole(role: ContactRole) {
-    setDraft((prev) => ({
-      ...prev,
-      roles: prev.roles.includes(role)
-        ? prev.roles.filter((r) => r !== role)
-        : [...prev.roles, role],
-    }));
-  }
 
   return (
     <div data-testid="org-contacts-card" className="space-y-4">
@@ -523,24 +625,17 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
             </label>
           </div>
 
-          <fieldset className="mt-4">
-            <legend className="text-xs text-muted-foreground">
-              {t('contactsCard.form.fields.roles')}
-            </legend>
-            <div className="mt-2 flex flex-wrap gap-3">
-              {roleOptions.map(({ role, key }) => (
-                <label key={role} className="flex items-center gap-1.5 text-xs">
-                  <input
-                    type="checkbox"
-                    data-testid={`contact-form-role-${role}`}
-                    checked={draft.roles.includes(role)}
-                    onChange={() => toggleRole(role)}
-                  />
-                  <span>{t(/* i18n-dynamic */ key)}</span>
-                </label>
-              ))}
-            </div>
-          </fieldset>
+          <ContactResponsibilitiesEditor
+            rows={resps}
+            onChange={setResps}
+            sites={sites}
+            groups={groups}
+            groupsState={groupsState}
+            onRetryGroups={() => setGroupsAttempt((n) => n + 1)}
+            disabled={respLoadState !== 'ready'}
+            loadError={respLoadState === 'error'}
+            onRetryLoad={() => setRespLoadAttempt((n) => n + 1)}
+          />
 
           <label className="mt-4 block text-xs">
             <span className="text-muted-foreground">{t('contactsCard.form.fields.notes')}</span>
@@ -568,7 +663,7 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
               type="button"
               data-testid="contact-form-submit"
               onClick={() => void save()}
-              disabled={saving || !draftHasIdentifier}
+              disabled={saving || !draftHasIdentifier || !respsOk || !respsReady}
               className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
             >
               {saving ? t('contactsCard.actions.saving') : t('contactsCard.actions.save')}
@@ -576,7 +671,7 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
             <button
               type="button"
               data-testid="contact-form-cancel"
-              onClick={() => { setFormOpen(false); setEditing(null); }}
+              onClick={() => { setFormOpen(false); setEditing(null); resetResps(); }}
               className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
             >
               {t('contactsCard.actions.cancel')}
