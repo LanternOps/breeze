@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { eq, and, inArray } from 'drizzle-orm';
 import { db, withDbTransaction } from '../../db';
+import { pgErrorCode } from '../../utils/pgErrors';
 import { backupJobs, backupSnapshots, devices } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../../middleware/auth';
 import { sqlInstances, backupChains } from '../../db/schema/applicationBackup';
@@ -285,7 +286,8 @@ mssqlRoutes.post(
     } catch (err) {
       // Now reachable for a failed upsert too, so say so: the raw output below
       // reads as a success with nothing persisted (#11203).
-      console.error('[backup:mssql] discovery result not parsed or not persisted', { deviceId }, err);
+      // The code, not the error: its message carries query params or raw stdout.
+      console.error('[backup:mssql] discovery result not parsed or not persisted', { deviceId, code: pgErrorCode(err) ?? (err instanceof Error ? err.name : 'unknown') });
       return c.json({ data: result.stdout });
     }
   }

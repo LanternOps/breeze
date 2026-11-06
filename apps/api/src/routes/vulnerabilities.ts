@@ -14,6 +14,7 @@ import {
 } from '@breeze/shared';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransaction } from '../db';
+import { pgErrorCode } from '../utils/pgErrors';
 import { deviceVulnerabilities, devices, vulnerabilities, vulnerabilitySources } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
@@ -1004,7 +1005,8 @@ vulnerabilityRoutes.post(
         });
         tickets.push({ ticketId: ticket.id, orgId, findingCount: rows.length });
       } catch (err) {
-        console.error('[vulnerabilities] ticket creation failed', { orgId, findingCount: rows.length }, err instanceof Error ? err.message : err);
+        // The code, not the message: a drizzle error's message carries the query params.
+        console.error('[vulnerabilities] ticket creation failed', { orgId, findingCount: rows.length, code: pgErrorCode(err) ?? (err instanceof Error ? err.name : 'unknown') });
         // TicketServiceError message is dynamic prose; collapse to the closest code.
         for (const r of rows) skipped.push({ id: r.id, reason: 'ticket_create_failed' });
       }
