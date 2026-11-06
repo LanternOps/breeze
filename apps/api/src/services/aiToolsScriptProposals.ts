@@ -19,6 +19,7 @@ import { dbAccessContextFromAuth } from '../middleware/auth';
 import { isFlowPrincipal } from '../middleware/principalKind';
 import {
   db, getCurrentDbAccessContext, hasDbAccessContext, runOutsideDbContext, withDbAccessContext,
+  withDbTransaction,
 } from '../db';
 import { organizations } from '../db/schema';
 import { inArray } from 'drizzle-orm';
@@ -46,11 +47,16 @@ async function splitByOrg(byOrg: Map<string, string[]>): Promise<SplitByOrg> {
   // runs under the same context and cannot widen reach.
   const names = new Map<string, string>();
   try {
-    const rows = await db.select({ id: organizations.id, name: organizations.name })
-      .from(organizations).where(inArray(organizations.id, [...byOrg.keys()]));
+    // Own savepoint, catch outside it: a bare failing query would poison the
+    // enclosing transaction and turn this degraded answer into a commit error.
+    const rows = await withDbTransaction(() => db.select({ id: organizations.id, name: organizations.name })
+      .from(organizations).where(inArray(organizations.id, [...byOrg.keys()])));
     for (const row of rows) names.set(row.id, row.name);
   } catch (err) {
     console.warn('[propose_script] could not read org names for split_by_org', err);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      service: 'propose_script',
+    });
   }
   return {
     error: 'split_by_org',

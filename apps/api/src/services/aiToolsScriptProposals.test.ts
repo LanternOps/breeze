@@ -28,6 +28,7 @@ const dbState = vi.hoisted(() => ({
   current: undefined as undefined | { label: string },
   events: [] as string[],
 }));
+const orgNameLookup = vi.hoisted(() => ({ fail: false }));
 const AUTH_CTX = vi.hoisted(() => ({ label: 'from-auth' }));
 const { captureExceptionMock, dbAccessContextFromAuthMock } = vi.hoisted(() => ({
   captureExceptionMock: vi.fn(),
@@ -36,10 +37,13 @@ const { captureExceptionMock, dbAccessContextFromAuthMock } = vi.hoisted(() => (
 
 vi.mock('../db', () => ({
   db: {
-    select: () => ({ from: () => ({ where: async () => [
-      { id: 'org-dev', name: 'Org Dev' }, { id: 'org-other', name: 'Org Other' },
-    ] }) }),
+    select: () => ({ from: () => ({ where: async (ids: string[]) => {
+      if (orgNameLookup.fail) throw new Error('boom');
+      return [{ id: 'org-dev', name: 'Org Dev' }, { id: 'org-other', name: 'Org Other' }]
+        .filter((o) => ids.includes(o.id));
+    } }) }),
   },
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   hasDbAccessContext: () => dbState.current !== undefined,
   getCurrentDbAccessContext: () => dbState.current,
   runOutsideDbContext: (fn: () => unknown) => {
@@ -63,7 +67,10 @@ vi.mock('../db', () => ({
   },
 }));
 vi.mock('../db/schema', () => ({ organizations: { id: 'id', name: 'name' } }));
-vi.mock('drizzle-orm', () => ({ inArray: vi.fn() }));
+vi.mock('drizzle-orm', async (orig) => ({
+  ...(await orig<typeof import('drizzle-orm')>()),
+  inArray: (_col: unknown, ids: string[]) => ids,
+}));
 vi.mock('../middleware/auth', () => ({ dbAccessContextFromAuth: dbAccessContextFromAuthMock }));
 vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('../config/env', () => ({ aiScriptAuthoringEnabled: flagMock }));
@@ -270,6 +277,20 @@ describe('propose_script', () => {
     ]);
     expect(out.hint).toMatch(/once per group/i);
     expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it('still returns the split with null names when the org-name lookup fails', async () => {
+    orgNameLookup.fail = true;
+    try {
+      verifyDeviceAccessMock.mockImplementation(async (id: string) => ({
+        device: { id, orgId: id.startsWith('1') ? 'org-dev' : 'org-other' },
+      }));
+      const out = JSON.parse(await tools.get('propose_script')!.handler(
+        { ...input, deviceIds: [...input.deviceIds, '22222222-2222-4222-8222-222222222222'] }, partnerAuth));
+      expect(out.error).toBe('split_by_org');
+      expect(out.groups.map((g: { orgName: unknown }) => g.orgName)).toEqual([null, null]);
+      expect(captureExceptionMock).toHaveBeenCalled();
+    } finally { orgNameLookup.fail = false; }
   });
 
   it('groups three devices over two orgs, keeping every id under its org', async () => {
