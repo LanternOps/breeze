@@ -117,7 +117,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   capturedEvents.length = 0;
   const bus = getEventBus();
-  unsubscribes = ['backup.provider_device_unhealthy', 'backup.provider_device_recovered'].map((type) =>
+  unsubscribes = (['backup.provider_device_unhealthy', 'backup.provider_device_recovered'] as const).map((type) =>
     bus.subscribe(type, (event) => {
       capturedEvents.push(event.type);
       return Promise.resolve();
