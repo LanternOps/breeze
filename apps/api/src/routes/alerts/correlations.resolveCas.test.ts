@@ -145,7 +145,7 @@ const emitRcaFeedback = vi.fn((..._args: unknown[]) => Promise.resolve());
 const writeRouteAudit = vi.fn();
 const captureException = vi.fn();
 
-vi.mock('../../db', () => ({ db: dbMock }));
+vi.mock('../../db', () => ({ db: dbMock, withDbTransaction: (fn: () => Promise<unknown>) => fn(), }));
 vi.mock('../../middleware/auth', () => ({
   // requireScope/requirePermission normally read an `auth` the real
   // authMiddleware set upstream; that middleware isn't mounted on the isolated
