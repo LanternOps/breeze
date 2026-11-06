@@ -1473,7 +1473,7 @@ describe('SaaS backup locale labels', () => {
     for (const key of ['resellerTokenLabel', 'authTokenLabel', 'baseUrlLabel', 'baseUrlHelp', 'dropsuiteCredentialsHelp', 'dropsuiteReentryHelp', 'workloads', 'unmappedWorkloads', 'unmappedWorkloadsSummary', 'workloadMappingHelp', 'deleteWorkloadsConfirm']) {
       expect(strings.get(`integrations.json:backupProviders.${key}`), key).toBeTruthy();
     }
-    for (const key of ['saasAccounts', 'saasAccountsSubtitle', 'saas', 'workloadBackup', 'sourceProvider', 'dataSource.m365_mail', 'dataSource.gws_mail', 'dataSource.gws_drive', 'dataSource.gws_shared_drive']) {
+    for (const key of ['saasAccounts', 'saasAccountsSubtitle', 'saas', 'workloadBackup', 'sourceProvider', 'dataSource.m365_mail', 'dataSource.gws_mail', 'dataSource.gws_drive', 'dataSource.gws_shared_drive', 'status.paused']) {
       expect(strings.get(`backup.json:backupHealth.${key}`), key).toBeTruthy();
     }
   });

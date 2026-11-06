@@ -131,7 +131,7 @@ describe('LEDGER_STATUS_SEVERITY', () => {
     const ordered = [...EXTERNAL_BACKUP_STATUSES].sort((a, b) => sev[b] - sev[a]);
     expect(ordered).toEqual([
       'failed', 'over_quota', 'no_selection', 'no_backups', 'interrupted',
-      'completed_with_errors', 'not_started', 'unknown', 'in_progress', 'completed',
+      'completed_with_errors', 'not_started', 'paused', 'unknown', 'in_progress', 'completed',
     ]);
   });
 });

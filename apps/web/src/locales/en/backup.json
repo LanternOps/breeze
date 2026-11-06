@@ -1100,7 +1100,8 @@
       "over_quota": "Over quota",
       "no_selection": "Nothing selected",
       "not_started": "Not started",
-      "unknown": "Unknown"
+      "unknown": "Unknown",
+      "paused": "Paused"
     },
     "recency": {
       "never": "Never",

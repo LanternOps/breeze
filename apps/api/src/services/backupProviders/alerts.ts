@@ -86,6 +86,10 @@ export function decodeConditionState(value: string | null): ProviderConditionSta
  * their own (`completed`, `in_progress`, `not_started`, `unknown`) but whose
  * last SUCCESS is older than 48 h or absent — independent evidence that does
  * not depend on parsing this session's outcome.
+ *
+ * `paused` raises nothing, not even `stale`: it means an operator parked the
+ * device on purpose (Axcient `PARKED`). It still renders as uncovered; it just
+ * does not page anyone. `not_started` (Cove, Dropsuite) keeps alerting.
  */
 export function computeProviderCondition(
   input: { status: ExternalBackupStatus; lastSuccessAt: Date | null; errorsCount: number },
@@ -98,6 +102,7 @@ export function computeProviderCondition(
     case 'no_backups': return 'no_backups';
     case 'completed_with_errors':
     case 'interrupted': return 'completed_with_errors';
+    case 'paused': return null;
     default: break;
   }
   const { recency } = deriveBackupHealth({

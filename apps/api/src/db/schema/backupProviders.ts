@@ -44,6 +44,8 @@ export const EXTERNAL_BACKUP_STATUS_ENUM_VALUES = [
   'not_started',
   'no_backups',
   'unknown',
+  // 2027-01-22-205900-external-backup-status-paused.sql (Axcient PARKED).
+  'paused',
 ] as const;
 
 export const externalBackupStatusEnum = pgEnum(

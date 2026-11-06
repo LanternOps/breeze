@@ -73,6 +73,7 @@ export const HISTORY_CELL_CLASS: Record<ExternalBackupStatus | 'none', string> =
   no_selection: 'bg-red-300',
   no_backups: 'bg-slate-400',
   unknown: 'bg-slate-300',
+  paused: 'bg-amber-300',
 };
 
 function percentOf(count: number, total: number): number {
