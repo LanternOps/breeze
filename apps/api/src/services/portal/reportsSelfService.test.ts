@@ -61,6 +61,8 @@ vi.mock('../../db', () => ({
     })),
     execute: state.execute,
   },
+  withDbTransaction: (fn: () => unknown) => fn(),
+  withDbTransactionIfHeld: (fn: () => unknown) => fn(),
 }));
 
 vi.mock('../reportGenerationService', () => ({

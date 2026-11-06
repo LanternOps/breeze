@@ -129,7 +129,11 @@ vi.mock('../../db', () => {
     execute: h.mockExecute,
   };
   dbMock.transaction = async (fn: (tx: unknown) => Promise<unknown>) => fn(dbMock);
-  return { db: dbMock };
+  return {
+    db: dbMock,
+    withDbTransaction: (fn: () => unknown) => fn(),
+    withDbTransactionIfHeld: (fn: () => unknown) => fn(),
+  };
 });
 
 vi.mock('../../db/schema', () => ({

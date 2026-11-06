@@ -42,7 +42,7 @@
  */
 import { and, eq } from 'drizzle-orm';
 import { reportRunOwnerColumns } from './reportRunOwner';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransaction } from '../db';
 import { reports, reportRuns } from '../db/schema/reports';
 import { serviceDeliverableEvidence, serviceDeliverableOccurrences } from '../db/schema/serviceDeliverables';
 import { ticketComments } from '../db/schema/portal';
@@ -278,7 +278,7 @@ export async function generateAutoEvidenceForOccurrence(args: AutoEvidenceOccurr
     try {
       // Savepoint: a Postgres error inside the generator must not poison this
       // occurrence's transaction, or the failed-run stamp below could not run.
-      result = await db.transaction(() => generate());
+      result = await withDbTransaction(() => generate());
     } catch (err) {
       // Log the generator's own failure BEFORE the bookkeeping writes: if one of
       // those throws, the whole occurrence transaction rolls back and only the

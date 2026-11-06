@@ -115,6 +115,7 @@ function scriptedDb(opts: {
     insert: (table: any) => makeChain({ op: 'insert', table }),
     update: (table: any) => makeChain({ op: 'update', table }),
     delete: () => makeChain({ op: 'update' }),
+    transaction: (fn) => fn(db),
   };
 
   return { db, writes };
