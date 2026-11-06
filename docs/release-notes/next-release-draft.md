@@ -23,6 +23,8 @@ Last release: **v0.126.0** (2026-11-03).
 
 ## Features / API
 
+- **Restore browsing, search and folder restore work for large S3 snapshots (#11026).** A snapshot with more than roughly 10,000 files used to show an empty or omitted file list in the Snapshot Browser and the selective-restore tree, with a warning saved on the job. Breeze now builds the list from the snapshot's `manifest.json` the first time you browse or start a selective restore, shows *Preparing this snapshot's file list* while it does, and offers **Try again** (needs `backup:write`) if it fails. Search by name or path fragment is new, and a folder is restored by path prefix instead of being expanded to at most 10,000 files. Whole-snapshot restore never depended on the list. Large snapshots (over 250,000 entries) are built on first use, not at backup time. No new env vars, no migration, no agent release required. Memory: hydrating a very large manifest raised the API/worker process's resident memory by about 110 MB with a 1 GB Node heap limit and about 410 MB at the default limit (1.1M-entry test); the shipped compose sets no `NODE_OPTIONS`. The manifest is spooled to a `manifest-spool` folder beside `PATCH_REPORT_STORAGE_PATH`. Storage cleanup and the reconcile job still skip manifests over 200 MiB, so this is not a full large-snapshot support claim. Snapshots on device-local destinations are unchanged.
+
 ## Migrations
 
 - `2027-01-20-170000-device-wake-tracking` adds `device_wake_status` and `device_wake_attempts`. `2027-01-20-170100` and `170200` build `(org_id, lower(mac_address))` indexes on `device_network` and `device_ip_history` with `CREATE INDEX CONCURRENTLY`, outside a transaction.
