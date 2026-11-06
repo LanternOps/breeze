@@ -1,5 +1,5 @@
 import { and, eq, gt, inArray, isNotNull, isNull, or } from 'drizzle-orm';
-import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, getCurrentDbAccessContext, hasDbAccessContext, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../db';
 import { apiKeys, devices, enrollmentKeys, organizationUsers, organizations, partnerUsers } from '../db/schema';
 import { revokeAllOrgOauthArtifacts, revokeAllPartnerOauthArtifacts } from '../oauth/grantRevocation';
 import { AGENT_TOKEN_SUSPEND_REASON } from './agentTokenSuspension';
@@ -76,10 +76,13 @@ export async function disconnectLiveAgentSocketsForOrgIds(orgIds: string[], reas
     const connected = getConnectedAgentIds();
     if (connected.length > 0) {
       const connectedSet = new Set(connected);
-      const deviceRows = await db
+      const readDevices = async () => db
         .select({ agentId: devices.agentId })
         .from(devices)
         .where(and(inArray(devices.orgId, orgIds), isNotNull(devices.agentId)));
+      // A savepoint when a context is held: a failed read here must not abort
+      // the transaction carrying the credential revocation (#11203).
+      const deviceRows = await (hasDbAccessContext() ? withDbTransaction(readDevices) : readDevices());
       for (const row of deviceRows) {
         if (row.agentId && connectedSet.has(row.agentId)) {
           disconnectAgent(row.agentId, 4001, reason);

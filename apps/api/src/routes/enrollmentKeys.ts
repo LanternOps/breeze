@@ -4,7 +4,7 @@ import { zValidator } from '../lib/validation';
 import { z } from "zod";
 import { and, eq, sql, desc, inArray, lt, gt, isNull, isNotNull, or, asc, getTableColumns } from "drizzle-orm";
 import { customAlphabet } from "nanoid";
-import { db, withSystemDbAccessContext } from "../db";
+import { db, withSystemDbAccessContext, withDbTransaction } from "../db";
 import { enrollmentKeys, organizations } from "../db/schema";
 import { sites } from "../db/schema/orgs";
 import {
@@ -593,9 +593,10 @@ export async function redeemShortCode(
       .returning({ id: enrollmentKeys.id });
 
     if (claimed.length === 0) {
-      await db
+      // Savepoint so a failed delete cannot poison the surrounding transaction (#11203).
+      await withDbTransaction(async () => db
         .delete(enrollmentKeys)
-        .where(eq(enrollmentKeys.id, child.id))
+        .where(eq(enrollmentKeys.id, child.id)))
         .catch(() => {});
       return null;
     }

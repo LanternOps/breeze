@@ -5440,7 +5440,7 @@ describe('POST /agents/:id/heartbeat — shared post-commit policy context (#805
     expect(vi.mocked(captureException)).toHaveBeenCalledWith(expect.objectContaining({ message: 'probe read failed' }));
   });
 
-  it('with a policy set, helper and the per-feature builders get it, and only the hierarchy/set savepoint opens (#8142)', async () => {
+  it('with a policy set, helper and the per-feature builders get it, and only the hierarchy/set, probe and topology savepoints open (#8142)', async () => {
     const helpers = await import('./helpers');
     const { loadDevicePolicySet } = await import('../../services/devicePolicySet');
     const set = { deviceId: 'device-1', hierarchy: { ...TEST_HIERARCHY }, candidates: [] };
@@ -5463,9 +5463,10 @@ describe('POST /agents/:id/heartbeat — shared post-commit policy context (#805
       .toHaveBeenCalledWith('device-1', 'org-1', expect.objectContaining({ policySet: set }));
     // No onedrive link in the set → no OneDrive DB phase at all.
     expect(helpers.loadOnedriveHelperConfigPlan).not.toHaveBeenCalled();
-    // Hierarchy/set + two policy probe savepoints. #4618's negative containment
-    // lookup adds no savepoint, and the absent episode needs no block build.
-    expect(callOrder.filter((e) => e === 'savepoint')).toHaveLength(3);
+    // Hierarchy/set + two policy probe savepoints + topology. #4618's negative
+    // containment lookup adds no savepoint, and the absent episode needs no block
+    // build.
+    expect(callOrder.filter((e) => e === 'savepoint')).toHaveLength(4);
   });
 
   it('with a policy set holding a OneDrive settings link, the OneDrive DB phase runs with the set, in a savepoint, before monitoring (#8142)', async () => {

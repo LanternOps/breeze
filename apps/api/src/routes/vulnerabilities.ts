@@ -13,7 +13,7 @@ import {
   type DeviceVulnFinding,
 } from '@breeze/shared';
 
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransaction } from '../db';
 import { deviceVulnerabilities, devices, vulnerabilities, vulnerabilitySources } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
@@ -982,14 +982,19 @@ vulnerabilityRoutes.post(
       }
       const description = buildTicketDescription(rows, deviceNameById, cveByVulnId, note);
       try {
-        const ticket = await createTicket(
-          { orgId, subject: title, description, priority, source: 'manual' },
-          { kind: 'user', userId: auth.user.id, name: auth.user.name, email: auth.user.email },
-        );
-        await db
-          .update(deviceVulnerabilities)
-          .set({ ticketId: ticket.id, updatedAt: new Date() })
-          .where(inArray(deviceVulnerabilities.id, rows.map((r) => r.id)));
+        // Savepoint so a failed ticket create or link rolls back and the next
+        // org's ticket still runs in a live transaction (#11203).
+        const ticket = await withDbTransaction(async () => {
+          const created = await createTicket(
+            { orgId, subject: title, description, priority, source: 'manual' },
+            { kind: 'user', userId: auth.user.id, name: auth.user.name, email: auth.user.email },
+          );
+          await db
+            .update(deviceVulnerabilities)
+            .set({ ticketId: created.id, updatedAt: new Date() })
+            .where(inArray(deviceVulnerabilities.id, rows.map((r) => r.id)));
+          return created;
+        });
         writeRouteAudit(c, {
           orgId,
           action: 'vulnerability.ticket_create',

@@ -68,6 +68,8 @@ function updateSeed(table: unknown, rows: Row[]) {
   dbHolder.updateQueues.set(table, q);
 }
 vi.mock('../../db', () => ({
+  hasDbAccessContext: () => false,
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   db: {
     select: (_proj?: unknown) => ({
       from: (table: unknown) => {

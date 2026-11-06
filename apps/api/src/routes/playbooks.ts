@@ -2,7 +2,8 @@ import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, inArray, sql, SQL } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
+import { isPgForeignKeyViolation } from '../utils/pgErrors';
 import {
   devices,
   playbookDefinitions,
@@ -314,18 +315,22 @@ playbookRoutes.post(
         },
       };
 
-      const [execution] = await db
-        .insert(playbookExecutions)
-        .values({
-          orgId: device.orgId,
-          deviceId: device.id,
-          playbookId: playbook.id,
-          status: 'pending',
-          context: mergedContext,
-          triggeredBy: 'ai',
-          triggeredByUserId: auth.user.id,
-        })
-        .returning();
+      // Savepoint so the caught FK violation cannot poison the request
+      // transaction and turn the 409 into a 500 at commit (#11203).
+      const [execution] = await withDbTransaction(async () =>
+        db
+          .insert(playbookExecutions)
+          .values({
+            orgId: device.orgId,
+            deviceId: device.id,
+            playbookId: playbook.id,
+            status: 'pending',
+            context: mergedContext,
+            triggeredBy: 'ai',
+            triggeredByUserId: auth.user.id,
+          })
+          .returning()
+      );
 
       if (!execution) {
         return c.json({ error: 'Failed to create playbook execution' }, 500);
@@ -346,7 +351,8 @@ playbookRoutes.post(
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('[playbooks] Execute playbook error:', message);
-      if (message.includes('violates foreign key')) {
+      // A drizzle-wrapped error's message is "Failed query: ...", so match the SQLSTATE.
+      if (isPgForeignKeyViolation(err)) {
         return c.json({ error: 'Referenced resource no longer exists' }, 409);
       }
       return c.json({ error: 'Failed to execute playbook' }, 500);
@@ -423,11 +429,15 @@ playbookRoutes.patch(
       }
 
       // Optimistic lock: include current status in WHERE to prevent race conditions
-      const [updated] = await db
-        .update(playbookExecutions)
-        .set(updateData)
-        .where(and(...accessConditions, eq(playbookExecutions.status, existing.status)))
-        .returning();
+      // Savepoint so the caught FK violation cannot poison the request
+      // transaction and turn the 409 into a 500 at commit (#11203).
+      const [updated] = await withDbTransaction(async () =>
+        db
+          .update(playbookExecutions)
+          .set(updateData)
+          .where(and(...accessConditions, eq(playbookExecutions.status, existing.status)))
+          .returning()
+      );
 
       if (!updated) {
         return c.json({ error: 'Execution was modified concurrently, please retry' }, 409);
@@ -437,7 +447,8 @@ playbookRoutes.patch(
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('[playbooks] Update execution error:', message);
-      if (message.includes('violates foreign key')) {
+      // A drizzle-wrapped error's message is "Failed query: ...", so match the SQLSTATE.
+      if (isPgForeignKeyViolation(err)) {
         return c.json({ error: 'Referenced resource no longer exists' }, 409);
       }
       return c.json({ error: 'Failed to update execution' }, 500);

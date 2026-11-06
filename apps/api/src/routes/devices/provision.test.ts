@@ -23,6 +23,7 @@ vi.mock('../../services/partnerDeviceCapacity', () => ({
 // Device-cap admission leaves the request context and opens a short system
 // transaction, so both context helpers are part of the route contract.
 vi.mock('../../db', () => ({
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   db: {
     select: vi.fn(),
     transaction: vi.fn(),
