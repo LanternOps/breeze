@@ -655,9 +655,9 @@
     },
     "stopService": "Stoppen Sie den Dienst",
     "summary": "{{shown}} von {{total}} Leistungen auf {{device}}",
-    "title": "Titel",
+    "title": "Dienste",
     "windowsOnlyDescription": "Der Dienstemanager ist nur für Windows-Geräte verfügbar. {{device}} läuft {{os}}.",
-    "windowsOnlyTitle": "Nur Windows-Titel",
+    "windowsOnlyTitle": "Nur Windows",
     "monitorThis": "Überwachen"
   },
   "sessionHistory": {

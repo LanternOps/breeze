@@ -655,9 +655,9 @@
     },
     "stopService": "Detener servicio",
     "summary": "{{shown}} de los servicios {{total}} en {{device}}",
-    "title": "Título",
+    "title": "Servicios",
     "windowsOnlyDescription": "El Administrador de servicios solo está disponible para dispositivos Windows. {{device}} está ejecutando {{os}}.",
-    "windowsOnlyTitle": "Windows Solo Título",
+    "windowsOnlyTitle": "Solo Windows",
     "monitorThis": "Monitorear esto"
   },
   "sessionHistory": {
