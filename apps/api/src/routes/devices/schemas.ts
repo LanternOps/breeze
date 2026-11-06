@@ -251,6 +251,14 @@ export const permanentDeleteDeviceSchema = z.object({
   force: z.boolean().optional().default(false),
 }).strict();
 
+// POST /devices/:id/remote-access-launch (#10922). `providerId` picks one of
+// the tenant's configured tools; omitted means "the default". Strict, so a
+// misspelled field is a 400 rather than a silent launch of the default tool.
+// The 100-char cap matches the partner-settings provider id limit (orgs.ts).
+export const remoteAccessLaunchSchema = z.object({
+  providerId: z.string().min(1).max(100).optional(),
+}).strict();
+
 export const provisionDeviceSchema = z.object({
   orgId: z.string().guid(),
   siteId: z.string().guid(),

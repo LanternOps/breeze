@@ -1241,6 +1241,8 @@ export default function DeviceActions({
           desktopAccess={device.desktopAccess}
           remoteAccessPolicy={device.remoteAccessPolicy}
           helperLifecycleMode={device.helperLifecycleMode}
+          remoteAccessProviders={device.remoteAccessProviders}
+          remoteAccessDefaultProviderId={device.remoteAccessDefaultProviderId}
         />
         {canUseRemoteTools && (
           <button

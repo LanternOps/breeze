@@ -223,6 +223,11 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
             : null,
         desktopAccess: data.desktopAccess ?? undefined,
         remoteAccessPolicy: data.remoteAccessPolicy ?? undefined,
+        // #10922 — the Connect button's tool menu. Dropped here, the menu
+        // silently never appears (this transform is an explicit whitelist).
+        remoteAccessProviders: Array.isArray(data.remoteAccessProviders) ? data.remoteAccessProviders : [],
+        remoteAccessDefaultProviderId:
+          typeof data.remoteAccessDefaultProviderId === "string" ? data.remoteAccessDefaultProviderId : null,
         // Link-group membership (#2138/#2308). Carried through so the detail
         // page can hide the Linked Profiles tab on an unlinked device (#2865)
         // without a second fetch — the detail endpoint already returns both

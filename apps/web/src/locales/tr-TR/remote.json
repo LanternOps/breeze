@@ -49,7 +49,8 @@
       "securityCheckToast": "Uzaktan başlatma kullanılamıyor: güvenlik kontrolü başarısız oldu. Lütfen yöneticinizle iletişime geçin.",
       "securityPolicy": "Uzaktan başlatma güvenlik politikası tarafından engellendi",
       "server": "Uzaktan başlatma başarısız oldu: sunucu hatası. Lütfen yöneticinizle iletişime geçin.",
-      "vncTunnelFailed": "VNC tüneli açılamadı"
+      "vncTunnelFailed": "VNC tüneli açılamadı",
+      "providerUnavailable": "Bu uzaktan erişim aracı artık bu cihaz için kullanılamıyor. Sayfayı yenileyip tekrar deneyin."
     },
     "fallback": {
       "linuxFirstRun": "Linux'ta indirmeyi yürütülebilir hale getirin (chmod +x) ve bir kez çalıştırın. Bu, izleyiciyi kaydeder, böylece oturumlar bundan sonra otomatik olarak açılır.",
@@ -110,7 +111,14 @@
       "x11AuthFailed": "Görüntü sunucusunda kimlik doğrulaması yapılamadı (X yetkilisi)",
       "x11ConnectFailed": "Bu cihazdaki ekran sunucusuna bağlanılamadı"
     },
-    "opensNewWindow": "(yeni bir pencerede açılır)"
+    "opensNewWindow": "(yeni bir pencerede açılır)",
+    "split": {
+      "builtInViewer": "Yerleşik görüntüleyici",
+      "connectWith": "{{name}} ile bağlan",
+      "connectWithBuiltIn": "Yerleşik görüntüleyici ile bağlan",
+      "menuLabel": "Bağlantı yöntemini seçin",
+      "opensInBrowser": "Yeni bir tarayıcı sekmesinde açılır"
+    }
   },
   "connectVncButton": {
     "creatingTunnel": "Tünel oluşturuluyor...",

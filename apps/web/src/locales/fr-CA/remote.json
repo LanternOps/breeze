@@ -49,7 +49,8 @@
       "securityCheckToast": "Lancement à distance indisponible : le contrôle de sécurité a échoué. Contactez votre administrateur.",
       "securityPolicy": "Lancement à distance bloqué par la politique de sécurité",
       "server": "Échec du lancement à distance : erreur serveur. Contactez votre administrateur.",
-      "vncTunnelFailed": "Le tunnel VNC n'a pas pu s'ouvrir"
+      "vncTunnelFailed": "Le tunnel VNC n'a pas pu s'ouvrir",
+      "providerUnavailable": "Cet outil d'accès à distance n'est plus disponible pour cet appareil. Actualisez la page et réessayez."
     },
     "fallback": {
       "linuxFirstRun": "Sous Linux, rendez le fichier téléchargé exécutable (chmod +x) et lancez-le une fois. Cela enregistre la visionneuse ; les sessions s'ouvriront ensuite automatiquement.",
@@ -110,7 +111,14 @@
       "x11AuthFailed": "Impossible de s’authentifier auprès du serveur d’affichage (autorité X)",
       "x11ConnectFailed": "Impossible de se connecter au serveur d’affichage de cet appareil"
     },
-    "opensNewWindow": "(s’ouvre dans une nouvelle fenêtre)"
+    "opensNewWindow": "(s’ouvre dans une nouvelle fenêtre)",
+    "split": {
+      "builtInViewer": "Visionneuse intégrée",
+      "connectWith": "Se connecter avec {{name}}",
+      "connectWithBuiltIn": "Se connecter avec la visionneuse intégrée",
+      "menuLabel": "Choisir le mode de connexion",
+      "opensInBrowser": "S'ouvre dans un nouvel onglet du navigateur"
+    }
   },
   "connectVncButton": {
     "creatingTunnel": "Création du tunnel...",
