@@ -28,6 +28,16 @@ export interface RemoteToolOption {
 /** What a connect attempt launches: whatever the default resolves to, or a pick from the menu. */
 type ConnectChoice = { kind: 'builtin' } | { kind: 'provider'; id: string };
 
+// 404 codes from POST /devices/:id/remote-access-launch meaning "the picked
+// tool cannot launch on this device any more" (the API's skip reasons), as
+// opposed to the device itself being gone.
+const TOOL_UNAVAILABLE_CODES = new Set([
+  'provider_not_available',
+  'provider_disabled',
+  'missing_device_identifier',
+  'empty_url_template',
+]);
+
 interface Props {
   deviceId: string;
   className?: string;
@@ -349,15 +359,25 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
     // chosen tool's setup) changed since this UI loaded and the user
     // should refresh. In every case, falling through to WebRTC would
     // mask the real failure mode.
-    Sentry.captureMessage(
-      'Remote-access launcher POST failed unexpectedly',
-      { level: 'warning', extra: { deviceId, status: launchRes.status, explicitProvider: providerId !== undefined } },
-    );
-    const friendly = launchRes.status === 404
-      ? providerId !== undefined
-        ? t('connectDesktopButton.errors.providerUnavailable')
-        : t('connectDesktopButton.errors.deviceChanged')
-      : t('connectDesktopButton.errors.server');
+    const failure = await launchRes.json().catch(() => ({})) as { code?: unknown };
+    // A launcher-side 404 carries the resolver's skip reason as `code`; a
+    // device that is gone ("Device not found") carries none.
+    const toolGone = launchRes.status === 404
+      && providerId !== undefined
+      && typeof failure.code === 'string'
+      && TOOL_UNAVAILABLE_CODES.has(failure.code);
+    // A pick from a menu that went stale is an expected outcome, not a fault.
+    if (!toolGone) {
+      Sentry.captureMessage(
+        'Remote-access launcher POST failed unexpectedly',
+        { level: 'warning', extra: { deviceId, status: launchRes.status, explicitProvider: providerId !== undefined } },
+      );
+    }
+    const friendly = toolGone
+      ? t('connectDesktopButton.errors.providerUnavailable')
+      : launchRes.status === 404
+        ? t('connectDesktopButton.errors.deviceChanged')
+        : t('connectDesktopButton.errors.server');
     showToast({ type: 'error', message: friendly });
     setError(t('connectDesktopButton.errors.http', { status: launchRes.status }));
     setStatus('idle');

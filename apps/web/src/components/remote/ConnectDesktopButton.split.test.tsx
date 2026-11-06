@@ -205,6 +205,29 @@ describe('ConnectDesktopButton — choose a remote tool (#10922)', () => {
     expect(fetchMock.mock.calls.some(([p]) => p === '/remote/sessions')).toBe(false);
   });
 
+  it('says the device changed, not the tool, when the device itself is gone', async () => {
+    routeFetches(() => res({ error: 'Device not found' }, 404));
+    render(<ConnectDesktopButton deviceId="dev-1" remoteAccessProviders={PROVIDERS} remoteAccessDefaultProviderId="rustdesk" />);
+
+    fireEvent.click(within(openMenu()).getByRole('menuitem', { name: 'AnyDesk' }));
+
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error',
+      message: expect.stringMatching(/device record changed/i),
+    })));
+  });
+
+  it('says the tool is unavailable when this device lacks the picked tool\'s identifier', async () => {
+    routeFetches(() => res({ error: 'No remote-access launcher available for this device', code: 'missing_device_identifier' }, 404));
+    render(<ConnectDesktopButton deviceId="dev-1" remoteAccessProviders={PROVIDERS} remoteAccessDefaultProviderId="rustdesk" />);
+
+    fireEvent.click(within(openMenu()).getByRole('menuitem', { name: 'AnyDesk' }));
+
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringMatching(/no longer available/i),
+    })));
+  });
+
   it('hides the menu while the device is offline', () => {
     render(
       <ConnectDesktopButton

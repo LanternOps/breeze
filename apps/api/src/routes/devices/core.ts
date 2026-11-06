@@ -1856,10 +1856,6 @@ coreRoutes.get(
     // remote tools the tenant uses. Without it the button simply has no menu.
     let remoteAccessProviders: RemoteAccessProviderOption[] = [];
     let remoteAccessDefaultProviderId: string | null = null;
-    const callerPermissions = c.get('permissions') as UserPermissions | undefined;
-    const mayChooseRemoteTool = !!callerPermissions
-      && hasPermission(callerPermissions, PERMISSIONS.REMOTE_ACCESS.resource, PERMISSIONS.REMOTE_ACCESS.action)
-      && hasSatisfiedMfa(auth);
     try {
       const { availability, providerOptions } = await loadRemoteAccessLauncherViewForDevice(
         device.orgId,
@@ -1871,6 +1867,12 @@ coreRoutes.get(
       } else {
         remoteAccessLaunchSkipReason = availability.skipReason;
       }
+      // Inside the try so a failure here degrades to "no menu", never a 500
+      // for the whole device page.
+      const callerPermissions = c.get('permissions') as UserPermissions | undefined;
+      const mayChooseRemoteTool = !!callerPermissions
+        && hasPermission(callerPermissions, PERMISSIONS.REMOTE_ACCESS.resource, PERMISSIONS.REMOTE_ACCESS.action)
+        && hasSatisfiedMfa(auth);
       if (mayChooseRemoteTool) {
         remoteAccessProviders = providerOptions;
         remoteAccessDefaultProviderId = availability.available ? availability.providerId : null;
