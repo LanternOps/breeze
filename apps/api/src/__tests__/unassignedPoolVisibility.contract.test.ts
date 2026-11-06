@@ -180,8 +180,11 @@ const EPHEMERAL_ONLY: Record<string, string> = {
  * Inventory Approve / Deny placement check resolves (parked guard beside it).
  * 76 → 77 (#11065): jobs/oemUpdatesWorker.ts, the vendor update not-returned
  * monitor (a FANOUT_MODULES entry, parked guard beside the filter).
+ * 77 → 80 (#11072): services/oemUpdates/candidates.ts, rebootSweep.ts and
+ * releaseSweep.ts, the vendor update scheduler's device selectors (each a
+ * parkedFanoutModules entry, parked guard beside the filter).
  */
-const EPHEMERAL_DISCOVERED_FILES = 77;
+const EPHEMERAL_DISCOVERED_FILES = 80;
 
 describe('contract: device counts and listings leave parked devices out', () => {
   const found = DEVICE_FILES

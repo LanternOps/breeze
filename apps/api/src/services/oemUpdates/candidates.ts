@@ -39,6 +39,7 @@ import {
   sites,
 } from '../../db/schema';
 import { checkDeviceMaintenanceWindow, partnerTimezoneFrom } from '../featureConfigResolver';
+import { envInt } from '../../utils/envInt';
 import { captureException } from '../sentry';
 import { notParkedDeviceCondition } from '../unassignedPool/selectorPredicate';
 import { normalizeTimezone } from '../zonedTime';
@@ -62,8 +63,10 @@ const DEFAULT_MAX_DISPATCH_PER_TICK = 200;
 
 /** Across a whole fleet in one window this is 1,200 an hour. A device left over retries next tick. */
 export function maxDispatchPerTick(): number {
-  const configured = Number(process.env.OEM_UPDATES_MAX_DISPATCH_PER_TICK);
-  return Number.isInteger(configured) && configured > 0 ? configured : DEFAULT_MAX_DISPATCH_PER_TICK;
+  // envInt truncates '1.5' to 1; a cap must be a whole number, so a fraction falls back to the default.
+  if (/[.]/.test(process.env.OEM_UPDATES_MAX_DISPATCH_PER_TICK ?? '')) return DEFAULT_MAX_DISPATCH_PER_TICK;
+  const configured = envInt('OEM_UPDATES_MAX_DISPATCH_PER_TICK', DEFAULT_MAX_DISPATCH_PER_TICK);
+  return configured > 0 ? configured : DEFAULT_MAX_DISPATCH_PER_TICK;
 }
 
 /** The status row's fields a decision reads. All absent for a device that has never run. */
