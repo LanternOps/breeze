@@ -146,7 +146,7 @@ export function registerWispTools(aiTools: Map<string, AiTool>): void {
       // description is capped at 160 chars and lists the rest). #11084:
       // device_troubleshooting is a chat Tier-2 launch like sweep/analysis.
       // #11085: continueFromRunId seeds a run from a settled prior one.
-      description: 'Hand work to a Wisp specialist. sweep, analysis, device_troubleshooting run now; others ask. params: device_troubleshooting {deviceId, goal, continueFromRunId?}; bulk_ticket_reply {concernId, ticketIds, message, holdTickets?}; operator_recipe {workflowKey, workflowVersion, objective, recipeInput}.',
+      description: 'Runs now: device_troubleshooting; sweep if scheduled; analysis if workspace on; others ask. params: device_troubleshooting {deviceId, goal, continueFromRunId?}; bulk_ticket_reply {concernId, ticketIds, message, holdTickets?}; operator_recipe {workflowKey, workflowVersion, objective, recipeInput}.',
       input_schema: jsonSchema(launchSpecialistShape),
     },
     handler: (input, auth) => launchSpecialistHandler(input, auth),
