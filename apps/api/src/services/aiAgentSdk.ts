@@ -94,6 +94,7 @@ import {
   type ToolHandoffStatus,
 } from './aiToolHandoff';
 import { computeEffectDigestForRelease, hasPinnedDigest } from './actionIntents/effectDigest';
+import { AI_DESIGN_INTENT_TOOLS, resolveAiDesignIntentTarget } from './actionIntents/aiDesignIntentTarget';
 import { requiresPinnedEffectDigest } from './actionIntents/pinnedEffectPolicy';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import {
@@ -1014,6 +1015,12 @@ export function intentCreationRefusal(toolName: string, input: unknown, err: unk
   if (toolName === 'run_script' && typeof code === 'string' && code.startsWith('group_target_') && err instanceof Error) {
     return `${code}: ${err.message}`;
   }
+  // W16 PR B (#6786): nothing pins for a design outside the intent's org or one that
+  // is missing. One message for both, so it does not say whether the id exists.
+  if (toolName === 'manage_fleet_designs' && code === 'effect_digest_unresolvable') {
+    return 'fleet_design_not_found: Nothing was filed. No Fleet Design with this report id could be read in the '
+      + 'organization this request belongs to. Check the id with list_fleet_designs and try again.';
+  }
   return 'Failed to create approval record';
 }
 
@@ -1494,6 +1501,27 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     if (!flowTool && !tenant && INTENT_ORG_FROM_ARGUMENT_TOOLS.has(toolName) && typeof input.orgId === 'string'
       && callReach(session, wispCall.current).canAccessOrg(input.orgId)) {
       intentOrgId = input.orgId;
+    }
+    // W16 PR B (#6786, #11181): the two design tools name their org through a row, so
+    // an approver of org A is never approving a change to org B. Same reach rule as
+    // above; a target outside it adds nothing to the card, so a foreign id reveals
+    // nothing. A failed lookup is non-fatal: the intent stays in the session org and the
+    // card says it is short. A Fleet Design of another org then has no pin for that org,
+    // so no intent is filed; a schedule's handler answers not found or refuses at release.
+    let designCardDetail: string | undefined;
+    if (!flowTool && !tenant && AI_DESIGN_INTENT_TOOLS.has(toolName)) {
+      try {
+        const target = await resolveAiDesignIntentTarget(toolName, input);
+        const reach = callReach(session, wispCall.current);
+        if (target && (target.orgId ? reach.canAccessOrg(target.orgId) : target.partnerId !== null && target.partnerId === reach.partnerId)) {
+          if (target.orgId) intentOrgId = target.orgId;
+          designCardDetail = target.cardDetail;
+        }
+      } catch (err) {
+        captureException(err instanceof Error ? err : new Error(String(err)));
+        console.error('[AI-SDK] Failed to resolve a design tool\'s target org:', err);
+        designCardDetail = 'The details of this change could not be loaded, so this card may not show everything it affects.';
+      }
     }
     const unattendedReads = unattendedReadsApply(session, wispCall.current, Boolean(flowTool || tenant));
     let guardrailCheck = flowTool
@@ -2222,9 +2250,10 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         ? await loadProposalApprovalSummary(input as Record<string, unknown>, intentOrgId)
         : null;
 
-      const baseDescription = specialistOrgName
+      const namedDescription = specialistOrgName
         ? describeSpecialistRequest(input, specialistOrgName)
         : guardrailCheck.description ?? `Execute ${toolName}`;
+      const baseDescription = designCardDetail ? `${namedDescription} ${designCardDetail}` : namedDescription;
       // Appended to the DESCRIPTION (not only to the SSE field) so it reaches
       // every surface that renders one: the chat card, the durable intent's
       // stored reason, the /approvals queue, and the mobile push.
@@ -2762,7 +2791,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           if (hasPinnedDigest(intentRow)) {
             const recomputed = await runOutsideDbContext(() =>
               withSystemDbAccessContext(() =>
-                computeEffectDigestForRelease(intentRow.actionName, intentRow.arguments, db),
+                computeEffectDigestForRelease(intentRow.actionName, intentRow.arguments, db, { intentOrgId: intentRow.orgId }),
               ),
             );
             if (recomputed.digest !== intentRow.effectDigest) {

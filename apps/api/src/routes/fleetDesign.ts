@@ -36,15 +36,12 @@
 import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { and, eq } from 'drizzle-orm';
 import {
   enableFleetDesignerSchema,
   fleetDesignApprovalSchema,
   triggerFleetDesignRunSchema,
 } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
-import { db } from '../db';
-import { sites } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
 import { PartnerWideWriteDeniedError } from '../services/partnerWideAccess';
@@ -55,8 +52,7 @@ import { FleetDesignApplyError, previewFleetDesignApply } from '../services/flee
 import { rollbackFleetDesign } from '../services/fleetDesign/rollback';
 import { fileFleetDesignDocument } from '../services/fleetDesign/documents';
 import { DesignerEnableError, describeDesignerSetup, enableDesigner } from '../services/fleetDesign/designerSetup';
-import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
-import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
+import { launchFleetDesignRun } from '../services/fleetDesign/runLaunch';
 import { loadFleetDesignReport } from '../services/aiAgents/fleetDesignReport';
 import { writeRouteAudit } from '../services/auditEvents';
 import { captureException } from '../services/sentry';
@@ -162,33 +158,14 @@ fleetDesignRoutes.post(
     const auth = c.get('auth');
     const { orgId, siteId } = c.req.valid('json');
 
+    // A human pressing "run now" twice means twice — same posture as the
+    // device manual-trigger route's dedupe key.
+    const result = await launchFleetDesignRun(auth, { orgId, ...(siteId ? { siteId } : {}) }, `design-manual-${randomUUID()}`);
+
     // 404, not 403: a cross-tenant probe must read identically to a typo'd
     // org id (same posture `loadFleetDesignReport` documents for report ids).
-    if (!auth.canAccessOrg(orgId)) return c.json({ error: 'not_found' }, 404);
-
-    if (siteId) {
-      const [site] = await db
-        .select({ id: sites.id })
-        .from(sites)
-        .where(and(eq(sites.id, siteId), eq(sites.orgId, orgId)))
-        .limit(1);
-      if (!site) return c.json({ error: 'not_found' }, 404);
-    }
-
-    const resolved = await resolveEffectiveAgent(auth, orgId, 'designer');
-    if (!resolved) return c.json({ error: 'no_designer_agent' }, 404);
-
-    const result = await createAndEnqueueAgentRun({
-      orgId,
-      kind: 'designer',
-      triggerKind: 'manual',
-      deviceId: null,
-      profile: 'design',
-      // A human pressing "run now" twice means twice — same posture as the
-      // device manual-trigger route's dedupe key.
-      dedupeKey: `design-manual-${randomUUID()}`,
-      triggerRef: { requestedByUserId: auth.user.id, agentId: resolved.agentId, siteId: siteId ?? null },
-    });
+    if (!result.ok && result.code === 'NOT_FOUND') return c.json({ error: 'not_found' }, 404);
+    if (!result.ok && result.code === 'NO_DESIGNER_AGENT') return c.json({ error: 'no_designer_agent' }, 404);
 
     // Every outcome is audited: createAndEnqueueAgentRun writes no audit row
     // of its own, so this is the only record of which human asked for a
@@ -197,12 +174,12 @@ fleetDesignRoutes.post(
       orgId,
       action: 'ai_fleet_design.run.manual_trigger',
       resourceType: 'ai_agent',
-      resourceId: resolved.agentId,
+      resourceId: result.agentId,
       details: {
         siteId: siteId ?? null,
-        ...(result.created ? { runId: result.run.id } : { skipped: result.skipped }),
+        ...(result.ok ? { runId: result.runId } : { skipped: result.skipped }),
       },
-      result: result.created ? 'success' : 'failure',
+      result: result.ok ? 'success' : 'failure',
     });
 
     // A declined admission is not an error — the caller asked for a design and
@@ -210,8 +187,8 @@ fleetDesignRoutes.post(
     // also not a success: `success: false` is exactly the HTTP-200 failure
     // shape the web's runAction detector reads (apps/web/src/lib/apiError.ts),
     // so a "Run now" button can never toast "queued" for a run that never was.
-    if (!result.created) return c.json({ success: false, skipped: result.skipped }, 200);
-    return c.json({ runId: result.run.id }, 202);
+    if (!result.ok) return c.json({ success: false, skipped: result.skipped }, 200);
+    return c.json({ runId: result.runId }, 202);
   },
 );
 

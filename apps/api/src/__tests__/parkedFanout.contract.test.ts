@@ -338,6 +338,7 @@ const EXEMPT: Record<string, string> = {
   'services/aiOperator/deviceCommandEvidence.ts': 'derived: device lookup by id and org from a task\'s own row',
   'services/aiOperator/identityDiscovery.ts': 'org-pinned: start-form device SUGGESTIONS by last_user, pinned to the task\'s own org; never an effect target',
   'services/aiOperator/requesterAccessGate.ts': 'request path: rechecks a human requester\'s live org/site access to a task\'s device',
+  'services/fleetDesign/applyTargets.ts': 'request path: reads the devices a named Fleet Design report and its approval name, pinned to the report org, for an approval digest; selects no device as a target',
   'services/aiOperator/serviceRecoveryLaunch.ts': 'request path: reads the one device named on a launch request, pinned to the request org and checked against the caller\'s sites',
   'services/aiOperator/taskReadQueries.ts': 'request path: read-only operator task list/detail/plan queries (moved from routes/ai/operator); devices is joined only to apply the caller\'s site restriction, no device is selected as a target',
   'services/aiOperator/taskService.ts': 'request path: creates a task for a device named on the request, scoped to the request org',

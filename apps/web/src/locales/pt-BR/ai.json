@@ -35,6 +35,7 @@
     "expired": "Esta solicitação expirou antes de ser decidida.",
     "notSoleApprover": "Agora é necessário outro aprovador — você não pode mais aprovar a sua própria solicitação.",
     "siteCeiling": "Esta aprovação concede autoridade em toda a organização. Seu acesso é limitado a sites específicos — outro aprovador precisa decidir esta solicitação.",
+    "approverScopeRequired": "Esta aprovação afeta todas as organizações do parceiro, portanto exige um aprovador no nível do parceiro com acesso a todas as organizações.",
     "noApproverDevice": "Aprovar a sua própria solicitação requer Touch ID / Windows Hello.",
     "freshFactorRequired": "Esta verificação exige uma nova confirmação com passkey (Touch ID, Windows Hello ou chave de hardware) feita para esta aprovação. Tente novamente.",
     "registerDevice": "Registrar este dispositivo",

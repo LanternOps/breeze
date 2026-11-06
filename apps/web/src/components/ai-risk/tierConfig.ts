@@ -648,6 +648,11 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Full-control W16 PR A (#6786): the two launches, supervised as a recorded exception (Decision 1).
       { name: 'run_patch_plan', description: 'Run an organization\'s patch agent now. It uses AI credits and may notify people; each install it proposes is its own approval (not offered to AI agents)', category: 'AI Governance' },
       { name: 'create_operator_task', description: 'Start an AI task that gets a stopped service running again on one device. It uses AI credits; each change it makes asks for approval (not offered to AI agents)', category: 'AI Governance' },
+      { name: 'manage_ai_agent_schedules (create/update)', description: 'Create a partner baseline schedule for every organization or one organization\'s tighter override, or change one; an update may only turn act mode off (not offered to AI agents)', category: 'AI Governance' },
+      { name: 'manage_fleet_designs (run)', description: 'Run a Fleet Design for an organization. It uses AI credits and may notify people; it applies nothing (not offered to AI agents)', category: 'AI Governance' },
+      { name: 'manage_fleet_designs (document)', description: 'Write a Fleet Design up as a document; linking it as deliverable evidence also needs the contracts permission (not offered to AI agents)', category: 'AI Governance' },
+      { name: 'manage_ai_agent_schedules (delete)', description: 'Delete a schedule; two people approve. Deleting a baseline deletes every organization\'s override and cannot be undone (not offered to AI agents)', category: 'AI Governance' },
+      { name: 'manage_fleet_designs (apply/rollback)', description: 'Apply a Fleet Design\'s functions and monitoring to devices, or roll an apply back; two people approve, and either refuses if anything it touches changed after approval (not offered to AI agents)', category: 'AI Governance' },
       // Wisp memory (W03 #9909): human-only — a person confirms or retracts on the memory page; never agent-callable.
       { name: 'confirm_memory', description: 'A person confirms a Wisp memory block', category: 'AI Governance' },
       { name: 'retract_memory', description: 'A person retracts a Wisp memory block', category: 'AI Governance' },
@@ -829,6 +834,8 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // Full-control W16 PR A (#6786).
   { toolName: 'run_patch_plan', tier: 3, permission: 'ai_agents.write', category: 'AI Governance' },
   { toolName: 'create_operator_task', tier: 3, permission: 'ai_agents.write', category: 'AI Governance' },
+  { toolName: 'manage_ai_agent_schedules', tier: 1, permission: 'ai_agents.write (+ MFA)', category: 'AI Governance' },
+  { toolName: 'manage_fleet_designs', tier: 1, permission: 'ai_agents.read / ai_agents.write / devices.write / documents.write', category: 'AI Governance' },
   // Other
   { toolName: 'export_dataset', tier: 1, permission: 'devices.read', category: 'Other' },
   // Endpoint messaging (#8742 W02)
@@ -1342,6 +1349,19 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   // Full-control W16 PR A (#6786).
   run_patch_plan: 'ai_agents.write',
   create_operator_task: 'ai_agents.write',
+  manage_ai_agent_schedules: {
+    create: 'ai_agents.write',
+    update: 'ai_agents.write',
+    delete: 'ai_agents.write',
+  },
+  manage_fleet_designs: {
+    run: 'ai_agents.write',
+    preview: 'devices.write (+ scripts.write with automation refs)',
+    applied: 'ai_agents.read',
+    apply: 'devices.write (+ scripts.write with automation refs)',
+    rollback: 'devices.write',
+    document: 'documents.write',
+  },
   wisp_specialist_request: 'ai_sessions.use',
   generate_report: {
     list: 'reports.read',

@@ -260,6 +260,7 @@ export const WISP_NON_FOCAL_TOOLS: ReadonlySet<string> = new Set([
   'm365_set_auto_reply',
   'manage_access_reviews',
   'manage_accounting_sync',
+  'manage_ai_agent_schedules', // W16 PR B (#6786): a schedule id is no working-set subject; never delegable
   'manage_ai_agents',
   'manage_alert_correlations',
   'manage_alert_rules',
@@ -289,6 +290,7 @@ export const WISP_NON_FOCAL_TOOLS: ReadonlySet<string> = new Set([
   'manage_dns_policy',
   'manage_dr_plan',
   'manage_fleet_findings',
+  'manage_fleet_designs', // W16 PR B (#6786): a report run id is no working-set subject; never delegable
   'manage_groups',
   'manage_hyperv_checkpoints',
   'manage_hyperv_vm',

@@ -154,6 +154,13 @@ const DIRECT_READ_ALLOWLIST = new Set([
   // Rollback checks the authored link's identity under an authorized policy
   // before refusing restoration of retired formats. It never resolves config.
   'services/fleetDesign/rollback.ts',
+  // W16 PR B (#6786): the four-eyes digest pins the AUTHORED monitors link of the
+  // policies this design's apply wrote, which is the row apply appends to and rollback
+  // rewrites. Neither writes a parent's link. Through the view, a child with no link
+  // would read its parent's, so a parent edit that changes nothing here would refuse a
+  // matching approval, and monitors resolve cumulatively anyway (monitorResolver.ts).
+  // Never decides what a device gets.
+  'services/fleetDesign/applyTargets.ts',
 
   // Standalone-entity delete guards and authored-link editors.
   'routes/updateRingsHelpers.ts',
