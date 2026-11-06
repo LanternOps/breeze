@@ -1,5 +1,6 @@
 import { and, eq, inArray, like, or, sql } from 'drizzle-orm';
-import { db, runAfterDbContextExit } from '../db';
+import { safeErrorMessage } from './aiModels/safeDbError';
+import { db, runAfterDbContextExit, withDbTransactionIfHeld } from '../db';
 import {
   backupJobs,
   backupSnapshotFiles,
@@ -1854,6 +1855,10 @@ export async function applyBackupCommandResultToJob(params: {
 
   if (snapshot) {
     try {
+      // Deliberately no savepoint here (#11225): a snapshot must not commit without
+      // the legal hold or immutability it was asked for, and a read failure must not
+      // be recorded as a permanent WORM downgrade. The commit fails, and the result
+      // is retried.
       const protection = await resolveSnapshotProtectionSettingsForJob(jobId, timestamp);
       let protectionUpdate = {
         legalHold: protection.legalHold,
@@ -1951,7 +1956,7 @@ export async function applyBackupCommandResultToJob(params: {
     }
 
     try {
-      await reconcileMssqlBackupChain({
+      await withDbTransactionIfHeld(() => reconcileMssqlBackupChain({
         // #3036: the job row's org, not the caller's — a stale value here would
         // miss the device's real chain and fork a duplicate under the old org.
         orgId: effectiveOrgId,
@@ -1960,29 +1965,33 @@ export async function applyBackupCommandResultToJob(params: {
         snapshotDbId: snapshot.id,
         timestamp,
         metadata: snapshotMetadata,
-      });
+      }));
     } catch (err) {
       console.error(
         `[BackupPersistence] Failed to reconcile MSSQL chain for snapshot ${snapshot.id}:`,
-        err instanceof Error ? err.message : err
+        safeErrorMessage(err)
       );
+      captureException(err, undefined, { snapshot_id: snapshot.id, step: 'mssql_chain' });
     }
 
     try {
-      const tags = await applyGfsTagsToSnapshot(snapshot.id, timestamp, jobId);
-      const gfsConfig = await resolveGfsConfigForJob(jobId);
-      const expiresAt = computeExpiresAt(timestamp, tags, gfsConfig);
-      if (expiresAt) {
-        await db
-          .update(backupSnapshots)
-          .set({ expiresAt })
-          .where(eq(backupSnapshots.id, snapshot.id));
-      }
+      await withDbTransactionIfHeld(async () => {
+        const tags = await applyGfsTagsToSnapshot(snapshot.id, timestamp, jobId);
+        const gfsConfig = await resolveGfsConfigForJob(jobId);
+        const expiresAt = computeExpiresAt(timestamp, tags, gfsConfig);
+        if (expiresAt) {
+          await db
+            .update(backupSnapshots)
+            .set({ expiresAt })
+            .where(eq(backupSnapshots.id, snapshot.id));
+        }
+      });
     } catch (err) {
       console.error(
         `[BackupPersistence] Failed to apply GFS tags to snapshot ${snapshot.id}:`,
-        err instanceof Error ? err.message : err
+        safeErrorMessage(err)
       );
+      captureException(err, undefined, { snapshot_id: snapshot.id, step: 'gfs_tags' });
     }
   }
 

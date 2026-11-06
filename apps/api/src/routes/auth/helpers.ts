@@ -1831,11 +1831,13 @@ export async function resolveUserAuditOrgId(userId: string): Promise<string | nu
         return null;
       }
 
-      const [orgAssoc] = await db
+      // Savepoint: the catch is inside the context, so without one the failure
+      // rethrows when the context's transaction ends (#11225).
+      const [orgAssoc] = await dbModule.withDbTransaction(() => db
         .select({ orgId: organizationUsers.orgId })
         .from(organizationUsers)
         .where(eq(organizationUsers.userId, userId))
-        .limit(1);
+        .limit(1));
 
       return orgAssoc?.orgId ?? null;
     } catch (err) {

@@ -782,8 +782,10 @@ export async function handleApproval(
   // but this inline web-chat path historically flipped only ai_tool_executions
   // — leaving the bridge row 'pending' until its 5-minute TTL lapsed, which
   // reads as an unattended-expired approval next to a recorded success in any
-  // audit review. Best-effort: the execution row above is the source of truth
-  // the SDK poll unblocks on, so a mirror failure must not fail the decide.
+  // audit review. The execution row above is the source of truth the SDK poll
+  // unblocks on. Deliberately no savepoint (#11225): with a context held, a failed
+  // mirror still fails the commit and rolls the decision back, so an approval is
+  // never recorded on one ledger and pending on the other. The catch only reports.
   try {
     await db
       .update(approvalRequests)

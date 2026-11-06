@@ -54,6 +54,8 @@ vi.mock('../../db', () => ({
     })),
   },
   getCurrentDbAccessContext: vi.fn(() => dbMockState.ambientContext),
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withDbTransactionIfHeld: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
     const previous = dbMockState.ambientContext;

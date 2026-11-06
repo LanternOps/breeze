@@ -1322,7 +1322,9 @@ async function prepareDeviceExecution(
   // 1. Resolve approved patches
   let approvedPatches;
   try {
-    approvedPatches = await resolveApprovedPatchesForDevice(deviceId, orgId, ringConfig);
+    // Savepoint: the catch writes the skipped row on this same transaction (#11225).
+    approvedPatches = await dbModule.withDbTransaction(() =>
+      resolveApprovedPatchesForDevice(deviceId, orgId, ringConfig));
   } catch (err) {
     console.error(`[PatchJobExecutor] Failed to resolve patches for device ${deviceId}:`, err instanceof Error ? err.message : err);
     await markDeviceSkipped(patchJobId, deviceId, 'error_resolving_patches');

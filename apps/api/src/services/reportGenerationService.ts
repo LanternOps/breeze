@@ -1,6 +1,6 @@
 import { and, eq, sql, desc, gte, lte, inArray, isNull, type SQL } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
-import { db } from '../db';
+import { db, withDbTransactionIfHeld } from '../db';
 import {
   devices,
   manualAssets,
@@ -104,7 +104,7 @@ export async function previousBaselineFor(
   scopeFingerprint: string,
 ): Promise<ReportResult['previous']> {
   try {
-    const [prior] = await db
+    const [prior] = await withDbTransactionIfHeld(() => db
       .select({
         summary: sql<Record<string, unknown> | null>`${reportRuns.result}->'summary'`,
         generatedAt: sql<string | null>`${reportRuns.result}->>'generatedAt'`,
@@ -117,7 +117,7 @@ export async function previousBaselineFor(
         eq(reportRuns.executionScopeFingerprint, scopeFingerprint),
       ))
       .orderBy(desc(reportRuns.completedAt))
-      .limit(1);
+      .limit(1));
     if (!prior?.summary || typeof prior.summary !== 'object') return undefined;
     return {
       generatedAt: prior.generatedAt ?? prior.completedAt?.toISOString() ?? null,

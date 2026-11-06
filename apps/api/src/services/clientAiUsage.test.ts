@@ -7,6 +7,8 @@ const { dbInsertMock, dbSelectMock } = vi.hoisted(() => ({
 
 vi.mock('../db', () => ({
   db: { insert: dbInsertMock, select: dbSelectMock },
+  withDbTransaction: (fn: () => unknown) => fn(),
+  withDbTransactionIfHeld: (fn: () => unknown) => fn(),
 }));
 
 import {
