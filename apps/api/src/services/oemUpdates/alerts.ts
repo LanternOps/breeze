@@ -10,7 +10,7 @@
  * Who raises the overdue rules, and when, is in `overdueSweep.ts`.
  */
 import { and, asc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
-import { PATCH_ALERT_CATEGORY } from '@breeze/shared';
+import { PATCH_ALERT_CATEGORY, type OemOutcome } from '@breeze/shared';
 import * as dbModule from '../../db';
 import { alertRules, alertTemplates, alerts, devices } from '../../db/schema';
 import { createAlert, resolveAlert, RESOLVABLE_ALERT_STATUSES } from '../alertService';
@@ -255,18 +255,27 @@ export function emitScheduleNotHandedBackAlert(input: {
   }));
 }
 
+/** The outcomes that read Failing, in the alert's words. Any other reads "failed". */
+const RUN_FAILING_WORDS: Partial<Record<OemOutcome, string>> = {
+  partial: 'finished only in part',
+  tool_unavailable: 'could not get its tool',
+  interrupted: 'was interrupted',
+  blocked_no_recovery_key: 'had no recovery key',
+};
+
 export function emitRunFailingAlert(input: {
   deviceId: string;
   orgId: string;
   occurrenceKey: string;
-  lastOutcome: string | null;
+  lastOutcome: OemOutcome | null;
   commandId: string | null;
 }): Promise<string | null> {
   const { occurrenceKey, lastOutcome, commandId } = input;
+  const words = (lastOutcome && RUN_FAILING_WORDS[lastOutcome]) ?? 'failed';
   return raiseDeviceAlert(RUN_FAILING_TEMPLATE, input, (label) => ({
     title: `${label} is still failing vendor updates`,
     message:
-      `The last scheduled vendor update run on ${label} for the ${occurrenceKey} schedule ended as ${lastOutcome ?? 'failed'}, `
+      `The last scheduled vendor update run on ${label} for the ${occurrenceKey} schedule ${words}, `
       + 'and that schedule has no nights left to retry. Check its run history, then use Run vendor updates to run it now.',
     context: { occurrenceKey, dedupeKey: occurrenceKey, lastOutcome, commandId },
   }));

@@ -593,6 +593,20 @@ describe('runOemOverdueSweep: run failing', () => {
   });
 
   it.each([
+    ['failed', 'failed'],
+    ['partial', 'finished only in part'],
+    ['tool_unavailable', 'could not get its tool'],
+    ['interrupted', 'was interrupted'],
+    ['blocked_no_recovery_key', 'had no recovery key'],
+  ])('says %s in words, and keeps the outcome in the context', async (lastOutcome, words) => {
+    h.failingRows = [failing({ lastOutcome })];
+    await runOemOverdueSweep(NOW);
+    expect(raised()[0]!.message).toContain(` ${words},`);
+    expect(raised()[0]!.message).not.toMatch(/[a-z]+_[a-z]+/);
+    expect(raised()[0]!.context).toMatchObject({ lastOutcome });
+  });
+
+  it.each([
     ['night 1 of 7, in its window', '2027-03-18T02:00:00.000Z'],
     ['night 1 of 7, between windows', '2027-03-18T12:00:00.000Z'],
     ['the last night, in its window', '2027-03-24T04:59:00.000Z'],

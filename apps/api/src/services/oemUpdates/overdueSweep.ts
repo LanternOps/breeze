@@ -13,9 +13,12 @@
  * | run failing | the state reads `failing`, the last night has passed, and the last run was this occurrence's scheduled one | occurrence | a run finished after the alert, the next occurrence started, or the device left management |
  *
  * Run failing never fires while a retry is possible, and it leaves `overdue` to its own
- * rule: attempts used up reads `overdue`, so a device raises one of the two for that state,
- * never both. A Run Now is told apart by the `trigger` on the command the status row
- * points at (`lastCommandId`, written for every run): a tech who ran it has the answer.
+ * rule: attempts used up reads `overdue`, so that device raises only the overdue rule. A
+ * Run Now is told apart by the `trigger` on the command the status row points at
+ * (`lastCommandId`, written for every run): a tech who ran it has the answer.
+ *
+ * Neither rule fires for a device reading `failing` with no scheduled run this occurrence:
+ * its last failure was an earlier month's, or a Run Now's. It stays visible in the tab only.
  *
  * "Once" outlives the alert: a tech who closes one is not paged again that month. There
  * is no marker column, because the alert row itself is the record, its `dedupeKey` read

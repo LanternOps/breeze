@@ -31,6 +31,7 @@ import { fleetRowsQuery, fleetScopeCondition, oemUpdatesFleetRoutes } from '../.
 import { clearDeviceCooldowns } from '../../services/alertCooldown';
 import { CommandTypes } from '../../services/commandTypes';
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
+import { priorOemAlerts } from '../../services/oemUpdates/alerts';
 import { runOemOverdueSweep } from '../../services/oemUpdates/overdueSweep';
 import { clearPermissionCache } from '../../services/permissions';
 import { createOrganization, createPartner, createSite, setupTestEnvironment, type TestEnvironment } from './db-utils';
@@ -569,6 +570,9 @@ describe('#11074 overdue alerts, through the real createAlert', () => {
       await withSystemDbAccessContext(() => db.update(alerts)
         .set({ status: 'resolved', resolvedAt: new Date() })
         .where(eq(alerts.id, raised[0]!.id)));
+      // What holds it back is this read, not a cooldown: createAlert's lands after the commit,
+      // on the outbox's own time, so a repeat sweep alone would pass with this read broken.
+      expect(await priorOemAlerts(RUN_FAILING, [device.id])).toEqual([{ deviceId: device.id, dedupeKey: '2027-02', open: false }]);
       await runOemOverdueSweep(PAST_FEBRUARY);
       expect(await named(device.id)).toHaveLength(1);
     });
@@ -598,14 +602,17 @@ describe('#11074 overdue alerts, through the real createAlert', () => {
       await getTestDb().update(deviceOemUpdateStatus)
         .set({ occurrenceKey: '2027-03' })
         .where(eq(deviceOemUpdateStatus.deviceId, device.id));
-      // The sweep's clock moved a month and createAlert's cooldown runs on the real one.
-      // A cooldown holds the alert back without spending it, so a later tick still raises.
+      // The sweep's clock moved a month and createAlert's cooldown runs on the real one. The
+      // resolve set it, and it holds the alert back without spending it. Retried because the
+      // raise's own cooldown lands on the outbox's time and can arrive after a clear.
       await runOemOverdueSweep(PAST_MARCH);
       expect(await named(device.id)).toHaveLength(1);
-      await clearDeviceCooldowns(device.id);
-      await runOemOverdueSweep(PAST_MARCH);
-      const both = await named(device.id);
-      expect(both.map((alert) => (alert.context as { dedupeKey: string }).dedupeKey).sort()).toEqual(['2027-02', '2027-03']);
+      await vi.waitFor(async () => {
+        await clearDeviceCooldowns(device.id);
+        await runOemOverdueSweep(PAST_MARCH);
+        const both = await named(device.id);
+        expect(both.map((alert) => (alert.context as { dedupeKey: string }).dedupeKey).sort()).toEqual(['2027-02', '2027-03']);
+      }, { timeout: 20_000, interval: 250 });
     });
 
     runDb('a Run Now failure raises nothing', async () => {
