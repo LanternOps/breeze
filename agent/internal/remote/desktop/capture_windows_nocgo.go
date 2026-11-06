@@ -3,15 +3,13 @@
 package desktop
 
 import (
-	"errors"
 	"fmt"
 	"image"
 	"log/slog"
-	"strings"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
-	"unsafe"
 )
 
 var (
@@ -22,14 +20,14 @@ var (
 	procReleaseDC        = user32.NewProc("ReleaseDC")
 	procGetSystemMetrics = user32.NewProc("GetSystemMetrics")
 
-	procCreateDCW              = gdi32.NewProc("CreateDCW")
-	procCreateCompatibleDC     = gdi32.NewProc("CreateCompatibleDC")
-	procCreateCompatibleBitmap = gdi32.NewProc("CreateCompatibleBitmap")
-	procSelectObject           = gdi32.NewProc("SelectObject")
-	procBitBlt                 = gdi32.NewProc("BitBlt")
-	procDeleteDC               = gdi32.NewProc("DeleteDC")
-	procDeleteObject           = gdi32.NewProc("DeleteObject")
-	procGetDIBits              = gdi32.NewProc("GetDIBits")
+	procCreateDCW          = gdi32.NewProc("CreateDCW")
+	procCreateCompatibleDC = gdi32.NewProc("CreateCompatibleDC")
+	procCreateDIBSection   = gdi32.NewProc("CreateDIBSection")
+	procSelectObject       = gdi32.NewProc("SelectObject")
+	procBitBlt             = gdi32.NewProc("BitBlt")
+	procGdiFlush           = gdi32.NewProc("GdiFlush")
+	procDeleteDC           = gdi32.NewProc("DeleteDC")
+	procDeleteObject       = gdi32.NewProc("DeleteObject")
 )
 
 const (
@@ -43,14 +41,8 @@ var displayDeviceName = syscall.StringToUTF16Ptr("DISPLAY")
 // winGDIFrameOps is the real, syscall-backed gdiFrameOps. The frame sequence
 // itself lives in capture_gdi.go so it can be exercised on the Linux CI runner
 // — this type is only the thin Win32 binding. Every call keeps the errno from
-// LazyProc.Call and returns it; discarding it with `ret, _, _` is what left
-// #5284's Winlogon failure reported as the bare string "GetDIBits failed".
+// LazyProc.Call and returns it.
 type winGDIFrameOps struct{}
-
-func (winGDIFrameOps) SelectObject(hdc, hgdiobj uintptr) (uintptr, error) {
-	prev, _, errno := procSelectObject.Call(hdc, hgdiobj)
-	return prev, errno
-}
 
 func (winGDIFrameOps) BitBlt(dstDC uintptr, width, height int, srcDC uintptr, rop uint32) (bool, error) {
 	ret, _, errno := procBitBlt.Call(dstDC, 0, 0, uintptr(width), uintptr(height),
@@ -58,62 +50,46 @@ func (winGDIFrameOps) BitBlt(dstDC uintptr, width, height int, srcDC uintptr, ro
 	return ret != 0, errno
 }
 
-func (winGDIFrameOps) GetDIBits(hdc, hbm uintptr, lines int, bits *byte, bi *bitmapInfo) (int, error) {
-	copied, _, errno := procGetDIBits.Call(
-		hdc,
-		hbm,
-		0,
-		uintptr(lines),
-		uintptr(unsafe.Pointer(bits)),
-		uintptr(unsafe.Pointer(bi)),
-		dibRGBColors,
-	)
-	return int(copied), errno
+func (winGDIFrameOps) GdiFlush() (bool, error) {
+	ret, _, errno := procGdiFlush.Call()
+	return ret != 0, errno
 }
 
 // currentThreadID returns the calling OS thread's id, or 0 if it cannot be
-// read. See shouldRebuildGDIHandles for why the capturer tracks it.
+// read.
 func currentThreadID() uint32 {
 	tid, _, _ := procGetCurrentThreadId.Call()
 	return uint32(tid)
 }
 
+// gdiThreadRecycleInterval bounds how often a capturer retires its capture
+// thread after an ERROR_BUSY desktop attach. The startup probe retries every
+// 200ms, so this has to be shorter than that for a recycled thread to be ready
+// for the probe's next attempt.
+const gdiThreadRecycleInterval = 150 * time.Millisecond
+
 // gdiCapturer implements ScreenCapturer using Windows GDI (no CGo required).
-// GDI handles are created once and reused across frames for performance.
+//
+// Every GDI and desktop call runs on one dedicated, locked OS thread owned by
+// the capturer (lockedThread), whichever goroutine calls Capture (#8434). That
+// thread attaches itself to the input desktop before creating its display DC
+// and DIB section, and re-attaches (rebuilding both) whenever the input desktop
+// changes, so the desktop switch, the DC and the bitmap can never end up on
+// different threads or different desktops.
 type gdiCapturer struct {
 	config CaptureConfig
 	mu     sync.Mutex
 
-	// Persistent GDI handles
-	screenDC      uintptr
-	screenDCOwned bool // true if screenDC was created via CreateDC (must use DeleteDC)
-	memDC         uintptr
-	hBitmap       uintptr
-	oldBitmap     uintptr
-	bi            bitmapInfo
-	width         int
-	height        int
-	inited        bool
-
-	// ownerThreadID is the OS thread that created the handles above. A display
-	// DC from CreateDC is documented to become invalid once its creating thread
-	// exits, and the GetDC fallback must be released on the same thread, so the
-	// handles are rebuilt when the capturing thread changes. See
-	// shouldRebuildGDIHandles.
-	ownerThreadID uint32
-
-	// Reusable pixel buffer (BGRA from GetDIBits)
-	pixBuf []byte
+	// thread runs all GDI work; state is touched only inside thread.Do.
+	// Both are nil until the first capture, and again after Close or after a
+	// thread is retired (see recycleThreadLocked).
+	thread      *lockedThread
+	state       *gdiThreadState
+	lastRecycle time.Time
 
 	// Failure throttling for secure-desktop transient capture outages.
 	consecutiveCaptureFailures int
 	lastFailureLog             time.Time
-
-	// Throttling for GDI handles Win32 refused to free. Separate from the
-	// capture-failure counters because a leak is a different problem with a
-	// different remedy, and it must not be hidden by the capture throttle.
-	teardownFailures int
-	lastTeardownLog  time.Time
 
 	// lastCaptureErr is the most recent error reported to the caller as a nil
 	// frame. Capture() deliberately swallows failures so a transient
@@ -123,193 +99,76 @@ type gdiCapturer struct {
 	lastCaptureErr error
 }
 
-// ensureHandles creates or recreates GDI handles if needed.
-func (c *gdiCapturer) ensureHandles() error {
-	w, _, _ := procGetSystemMetrics.Call(smCxScreen)
-	h, _, _ := procGetSystemMetrics.Call(smCyScreen)
-	if w == 0 || h == 0 {
-		return fmt.Errorf("GetSystemMetrics returned zero dimensions")
-	}
-	// Round to even dimensions so the bitmap, BitBlt, and pixBuf all agree
-	// with the downstream H264 encoder's required even alignment. On displays
-	// with odd pixel dimensions (e.g. 1512x949 from a physical panel at 125%
-	// scaling) the unrounded capture buffer produces a one-row mismatch
-	// against the encoder's SetDimensions `h &^ 1` and every frame fails to
-	// encode with "frame size 1434888 doesn't match 1512x948".
-	width, height := AlignEven(int(w), int(h))
-
-	tid := currentThreadID()
-	if !shouldRebuildGDIHandles(c.inited, c.width, c.height, width, height, c.ownerThreadID, tid) {
-		return nil
-	}
-	if c.inited && c.width == width && c.height == height && c.ownerThreadID != tid {
-		// Worth a log line: this is the handover from the startup probe's
-		// thread to the streaming loop's thread, and it is the point at which
-		// a stale display DC would otherwise start being used (#5284).
-		slog.Info("Rebuilding GDI capture handles on the current capture thread",
-			"createdOnThread", c.ownerThreadID, "currentThread", tid)
-	}
-
-	// Release old handles if resolution or owning thread changed
-	c.releaseHandles()
-
-	// Use CreateDC("DISPLAY") instead of GetDC(0). GetDC(0) returns a DC
-	// for the desktop window which fails on the Winlogon (secure) desktop.
-	// CreateDC("DISPLAY") creates a DC for the physical display directly,
-	// bypassing the window/desktop association, and works on all desktops.
-	hdc, _, createDCErrno := procCreateDCW.Call(
-		uintptr(unsafe.Pointer(displayDeviceName)),
-		0, 0, 0,
-	)
-	if hdc == 0 {
-		// Fall back to GetDC(0) if CreateDC fails
-		var getDCErrno error
-		hdc, _, getDCErrno = procGetDC.Call(0)
-		if hdc == 0 {
-			return fmt.Errorf("no display DC available: %w; %w",
-				gdiCallError("CreateDC(DISPLAY)", createDCErrno),
-				gdiCallError("GetDC(0)", getDCErrno))
-		}
-		c.screenDCOwned = false
-	} else {
-		c.screenDCOwned = true
-	}
-
-	// Create compatible memory DC
-	memDC, _, memDCErrno := procCreateCompatibleDC.Call(hdc)
-	if memDC == 0 {
-		err := gdiCallError("CreateCompatibleDC", memDCErrno)
-		c.freeScreenDC(hdc)
-		return err
-	}
-
-	// Create compatible bitmap
-	hBitmap, _, bitmapErrno := procCreateCompatibleBitmap.Call(hdc, uintptr(width), uintptr(height))
-	if hBitmap == 0 {
-		err := gdiCallError("CreateCompatibleBitmap", bitmapErrno)
-		procDeleteDC.Call(memDC)
-		c.freeScreenDC(hdc)
-		return err
-	}
-
-	// Select bitmap into memory DC. It is deselected again around every
-	// readback — see captureGDIFrame — because GetDIBits requires it.
-	oldBitmap, _, selectErrno := procSelectObject.Call(memDC, hBitmap)
-	if oldBitmap == 0 {
-		err := gdiCallError("SelectObject", selectErrno)
-		procDeleteObject.Call(hBitmap)
-		procDeleteDC.Call(memDC)
-		c.freeScreenDC(hdc)
-		return err
-	}
-
-	c.screenDC = hdc
-	c.memDC = memDC
-	c.hBitmap = hBitmap
-	c.oldBitmap = oldBitmap
-	c.width = width
-	c.height = height
-	c.ownerThreadID = tid
-	c.inited = true
-
-	// Pre-allocate pixel buffer and BITMAPINFO
-	c.pixBuf = make([]byte, width*height*4)
-	c.bi = newCaptureBitmapInfo(width, height)
-
-	return nil
+// startThreadLocked starts the capture thread. Caller holds c.mu.
+func (c *gdiCapturer) startThreadLocked() {
+	st := &gdiThreadState{}
+	c.state = st
+	c.thread = startLockedThread(st.shutdown)
+	// Safety net only: every owner Closes its capturer, but a capturer that is
+	// dropped without Close would otherwise strand a locked OS thread for the
+	// life of the helper. The cleanup holds the thread, never the capturer.
+	runtime.AddCleanup(c, func(t *lockedThread) { t.stopAsync() }, c.thread)
 }
 
-// freeScreenDC releases a display DC through whichever entry point created it,
-// and reports whether Win32 accepted the release.
-func (c *gdiCapturer) freeScreenDC(hdc uintptr) bool {
-	if hdc == 0 {
-		return true
-	}
-	var ret uintptr
-	if c.screenDCOwned {
-		ret, _, _ = procDeleteDC.Call(hdc) // CreateDC → DeleteDC
-	} else {
-		ret, _, _ = procReleaseDC.Call(0, hdc) // GetDC → ReleaseDC
-	}
-	return ret != 0
-}
-
-// releaseHandles frees all persistent GDI handles.
-//
-// Teardown results are checked rather than discarded. Handles are now rebuilt
-// on a thread change and after an unusable-handle frame, so a driver that
-// persistently rejects these calls would leak one DC and one bitmap PER FRAME
-// against the process-wide 10,000 GDI handle quota — and would do it invisibly,
-// because the capture failure itself is reported while the failed teardown
-// never was. Exhausting the quota breaks unrelated GDI calls elsewhere in the
-// agent, so the leak has to be visible before it gets there.
-func (c *gdiCapturer) releaseHandles() {
-	if !c.inited {
+// recycleThreadLocked retires the capture thread so the next frame starts a
+// fresh one. Used only for ERROR_BUSY from SetThreadDesktop, which is a
+// property of the OS thread (it owns windows or hooks): the retired thread is
+// terminated rather than returned to the Go scheduler, because lockedThread
+// never unlocks it. Caller holds c.mu.
+func (c *gdiCapturer) recycleThreadLocked(cause error) {
+	if c.thread == nil || time.Since(c.lastRecycle) < gdiThreadRecycleInterval {
 		return
 	}
-	var failed []string
-	if c.oldBitmap != 0 && c.memDC != 0 {
-		if ret, _, _ := procSelectObject.Call(c.memDC, c.oldBitmap); ret == 0 {
-			failed = append(failed, "SelectObject(restore default bitmap)")
-		}
-	}
-	if c.hBitmap != 0 {
-		if ret, _, _ := procDeleteObject.Call(c.hBitmap); ret == 0 {
-			failed = append(failed, "DeleteObject(capture bitmap)")
-		}
-	}
-	if c.memDC != 0 {
-		if ret, _, _ := procDeleteDC.Call(c.memDC); ret == 0 {
-			failed = append(failed, "DeleteDC(memory DC)")
-		}
-	}
-	if !c.freeScreenDC(c.screenDC) {
-		failed = append(failed, "releasing the display DC")
-	}
-	if len(failed) > 0 {
-		c.recordTeardownFailureLocked(failed)
-	}
-	c.inited = false
-	c.screenDC = 0
-	c.screenDCOwned = false
-	c.memDC = 0
-	c.hBitmap = 0
-	c.oldBitmap = 0
-	c.ownerThreadID = 0
+	c.lastRecycle = time.Now()
+	c.thread.Stop()
+	c.thread = nil
+	c.state = nil
+	slog.Warn("Retiring GDI capture thread that cannot attach to the input desktop; the next frame starts a new thread",
+		"error", cause.Error())
 }
 
-func (c *gdiCapturer) captureOnceLocked() (*image.RGBA, error) {
-	err := captureGDIFrame(winGDIFrameOps{}, gdiFrameHandles{
-		screenDC:  c.screenDC,
-		memDC:     c.memDC,
-		hBitmap:   c.hBitmap,
-		oldBitmap: c.oldBitmap,
-		width:     c.width,
-		height:    c.height,
-	}, &c.bi, c.pixBuf)
-	if err != nil {
-		// A selection failure leaves the memory DC holding something other
-		// than the capture bitmap; reusing it would blit into the DC's default
-		// 1x1 monochrome bitmap and stream black. Drop the handles so the
-		// retry in Capture rebuilds them.
-		if errors.Is(err, errGDIHandlesUnusable) {
-			c.releaseHandles()
-		}
-		return nil, err
+// Capture captures the primary screen on the capturer's own thread.
+func (c *gdiCapturer) Capture() (*image.RGBA, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.thread == nil {
+		c.startThreadLocked()
+	}
+	st := c.state
+	var img *image.RGBA
+	var capErr error
+	if err := c.thread.Do(func() { img, capErr = st.capture() }); err != nil {
+		capErr = err
+	}
+	if capErr == nil && img != nil {
+		c.resetCaptureFailuresLocked()
+		return img, nil
+	}
+	if capErr == nil {
+		capErr = fmt.Errorf("GDI capture produced no image")
+	}
+	if shouldRecycleCaptureThread(capErr) {
+		c.recycleThreadLocked(capErr)
 	}
 
-	// Convert BGRA to RGBA into a pooled image
-	img := captureImagePool.Get(c.width, c.height)
-	bgraToRGBA(c.pixBuf, img.Pix, c.width*c.height)
-
-	return img, nil
+	// Secure-desktop transitions can invalidate DCs transiently. Treat this as
+	// "no frame yet" so the session loop skips without flooding error logs.
+	// The startup probe (probeCapture) retries then fails on persistent nil
+	// frames — and reads lastCaptureErr back out via LastCaptureError so the
+	// technician is told which Win32 call failed and with what code.
+	c.recordCaptureFailureLocked(capErr)
+	return nil, nil
 }
 
 func (c *gdiCapturer) recordCaptureFailureLocked(err error) {
 	c.consecutiveCaptureFailures++
+	changed := c.lastCaptureErr == nil || c.lastCaptureErr.Error() != err.Error()
 	c.lastCaptureErr = err
 	now := time.Now()
-	if c.consecutiveCaptureFailures == 1 || now.Sub(c.lastFailureLog) >= 2*time.Second {
+	// A different failure is always logged: the throttle exists to stop one
+	// repeating error flooding the log, not to hide that the cause changed.
+	if changed || c.consecutiveCaptureFailures == 1 || now.Sub(c.lastFailureLog) >= 2*time.Second {
 		attrs := []any{
 			"error", err.Error(),
 			"consecutive", c.consecutiveCaptureFailures,
@@ -324,20 +183,6 @@ func (c *gdiCapturer) recordCaptureFailureLocked(err error) {
 	}
 }
 
-// recordTeardownFailureLocked reports GDI handles that Win32 refused to free.
-// Throttled hard: the interesting signal is "this is happening at all" and then
-// the running total, not one line per frame.
-func (c *gdiCapturer) recordTeardownFailureLocked(failed []string) {
-	c.teardownFailures++
-	now := time.Now()
-	if c.teardownFailures == 1 || now.Sub(c.lastTeardownLog) >= 30*time.Second {
-		slog.Warn("GDI handle teardown failed; handles may be leaking",
-			"operations", strings.Join(failed, ", "),
-			"totalTeardownFailures", c.teardownFailures)
-		c.lastTeardownLog = now
-	}
-}
-
 func (c *gdiCapturer) resetCaptureFailuresLocked() {
 	c.consecutiveCaptureFailures = 0
 	c.lastCaptureErr = nil
@@ -348,40 +193,6 @@ func (c *gdiCapturer) LastCaptureError() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.lastCaptureErr
-}
-
-// Capture captures the entire screen using persistent GDI handles.
-func (c *gdiCapturer) Capture() (*image.RGBA, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Try once with current handles, then force handle rebuild and retry.
-	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		if attempt == 1 {
-			c.releaseHandles()
-		}
-		if err := c.ensureHandles(); err != nil {
-			lastErr = err
-			continue
-		}
-		img, err := c.captureOnceLocked()
-		if err == nil {
-			c.resetCaptureFailuresLocked()
-			return img, nil
-		}
-		lastErr = err
-	}
-
-	// Secure-desktop transitions can invalidate DCs transiently. Treat this as
-	// "no frame yet" so the session loop skips without flooding error logs.
-	// The startup probe (probeCapture) retries then fails on persistent nil
-	// frames — and reads lastCaptureErr back out via LastCaptureError so the
-	// technician is told which Win32 call failed and with what code.
-	if lastErr != nil {
-		c.recordCaptureFailureLocked(lastErr)
-	}
-	return nil, nil
 }
 
 // CaptureRegion captures a specific region of the screen.
@@ -421,11 +232,16 @@ func (c *gdiCapturer) GetScreenBounds() (width, height int, err error) {
 	return int(w), int(h), nil
 }
 
-// Close releases persistent GDI handles.
+// Close releases the GDI handles and the desktop handle on the capture thread,
+// then stops the thread. A later Capture starts a new thread.
 func (c *gdiCapturer) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.releaseHandles()
+	if c.thread != nil {
+		c.thread.Stop()
+		c.thread = nil
+		c.state = nil
+	}
 	return nil
 }
 
