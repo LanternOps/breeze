@@ -49,7 +49,8 @@
       "securityCheckToast": "Inicio remoto no disponible: falló la verificación de seguridad. Comunícate con tu administrador.",
       "securityPolicy": "Inicio remoto bloqueado por la política de seguridad",
       "server": "Falló el inicio remoto: error del servidor. Comunícate con tu administrador.",
-      "vncTunnelFailed": "El túnel VNC no se pudo abrir"
+      "vncTunnelFailed": "El túnel VNC no se pudo abrir",
+      "providerUnavailable": "Esa herramienta remota ya no está disponible para este dispositivo. Actualiza la página e inténtalo de nuevo."
     },
     "fallback": {
       "linuxFirstRun": "En Linux, haz que el archivo descargado sea ejecutable (chmod +x) y ábrelo una vez. Eso registra el visor y, a partir de entonces, las sesiones se abren automáticamente.",
@@ -110,7 +111,14 @@
       "x11AuthFailed": "No se pudo autenticar en el servidor de pantalla (autoridad X)",
       "x11ConnectFailed": "No se pudo conectar al servidor de pantalla de este dispositivo"
     },
-    "opensNewWindow": "(se abre en una ventana nueva)"
+    "opensNewWindow": "(se abre en una ventana nueva)",
+    "split": {
+      "builtInViewer": "Visor integrado",
+      "connectWith": "Conectar con {{name}}",
+      "connectWithBuiltIn": "Conectar con el visor integrado",
+      "menuLabel": "Elige cómo conectarte",
+      "opensInBrowser": "Se abre en una pestaña nueva del navegador"
+    }
   },
   "connectVncButton": {
     "creatingTunnel": "Creando túnel...",

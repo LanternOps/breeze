@@ -3,6 +3,7 @@ import {
   buildRemoteAccessLaunchUrl,
   resolveRemoteAccessLaunch,
   checkRemoteAccessLaunchAvailability,
+  listRemoteAccessProviderOptions,
 } from './remoteAccessLauncher';
 import { encryptSecret } from './secretCrypto';
 import type { InheritableRemoteAccessSettings, RemoteAccessProvider } from '@breeze/shared';
@@ -498,5 +499,159 @@ describe('checkRemoteAccessLaunchAvailability — parity with issuance', () => {
       rustdeskSettings,
     );
     expect(availability).toEqual({ available: true, providerId: 'rustdesk', skipReason: null });
+  });
+});
+
+// #10922: a technician picks a tool at click time. The chosen id still only
+// SELECTS from the tenant's record, and unlike a stored preference it never
+// degrades to the default: launching a different tool than the one clicked
+// would issue the wrong credential.
+describe('explicit provider selection (#10922)', () => {
+  const anydesk: RemoteAccessProvider = {
+    id: 'anydesk',
+    name: 'AnyDesk',
+    urlTemplate: 'anydesk:{id}',
+    customFieldKey: 'anydesk_id',
+    password: 'any-secret',
+    enabled: true,
+  };
+  const screenconnect: RemoteAccessProvider = {
+    id: 'sc',
+    name: 'ScreenConnect',
+    urlTemplate: 'https://acme.screenconnect.com/Host#Access///{id}/Join',
+    customFieldKey: 'sc_id',
+    enabled: true,
+  };
+  const disabled: RemoteAccessProvider = {
+    id: 'off',
+    name: 'Retired',
+    urlTemplate: 'retired://{id}',
+    customFieldKey: 'off_id',
+    enabled: false,
+  };
+  const settings: InheritableRemoteAccessSettings = {
+    defaultProviderId: 'rustdesk',
+    providers: [baseProvider, anydesk, screenconnect, disabled],
+  };
+  const device = {
+    customFields: { rustdesk_id: '111', anydesk_id: '222', sc_id: '333', off_id: '444' },
+  };
+
+  describe('resolveRemoteAccessLaunch', () => {
+    it('honours an explicit id over both the default and the preference', () => {
+      const result = resolveRemoteAccessLaunch(device, settings, 'sc', 'anydesk');
+      expect(result.providerId).toBe('anydesk');
+      expect(result.launchUrl).toBe('anydesk:222');
+      expect(result.skipReason).toBeNull();
+    });
+
+    it('resolves the default when no explicit id is given', () => {
+      expect(resolveRemoteAccessLaunch(device, settings).providerId).toBe('rustdesk');
+      expect(resolveRemoteAccessLaunch(device, settings, null, null).providerId).toBe('rustdesk');
+    });
+
+    it.each([
+      ['an unknown id', 'other-tenants-tool'],
+      ['a disabled provider', 'off'],
+    ])('refuses %s without falling back to the default', (_label, id) => {
+      const result = resolveRemoteAccessLaunch(device, settings, null, id);
+      expect(result).toEqual({
+        launchUrl: null,
+        providerId: null,
+        scheme: null,
+        skipReason: 'provider_not_available',
+      });
+    });
+
+    it('refuses an explicit id when the tenant has no providers at all', () => {
+      expect(resolveRemoteAccessLaunch(device, undefined, null, 'anydesk').skipReason).toBe('provider_not_available');
+      expect(resolveRemoteAccessLaunch(device, {}, null, 'anydesk').skipReason).toBe('provider_not_available');
+    });
+
+    it('reports the chosen provider when this device lacks its identifier', () => {
+      const result = resolveRemoteAccessLaunch({ customFields: { rustdesk_id: '111' } }, settings, null, 'anydesk');
+      expect(result.launchUrl).toBeNull();
+      expect(result.providerId).toBe('anydesk');
+      expect(result.skipReason).toBe('missing_device_identifier');
+    });
+
+    it('still applies the post-substitution scheme guard to an explicit choice', () => {
+      const sneaky: RemoteAccessProvider = {
+        id: 'sneaky',
+        name: 'Sneaky',
+        urlTemplate: 'j{id}cript:alert(1)',
+        customFieldKey: 'k',
+        enabled: true,
+      };
+      const result = resolveRemoteAccessLaunch(
+        { customFields: { k: 'avas' } },
+        { defaultProviderId: 'rustdesk', providers: [baseProvider, sneaky] },
+        null,
+        'sneaky',
+      );
+      expect(result.launchUrl).toBeNull();
+      expect(result.skipReason).toBe('scheme_not_allowed');
+    });
+  });
+
+  describe('listRemoteAccessProviderOptions', () => {
+    it('lists exactly the providers a launch would accept for this device', () => {
+      expect(listRemoteAccessProviderOptions(device, settings)).toEqual([
+        { id: 'rustdesk', label: 'RustDesk', kind: 'protocol' },
+        { id: 'anydesk', label: 'AnyDesk', kind: 'protocol' },
+        { id: 'sc', label: 'ScreenConnect', kind: 'web' },
+      ]);
+    });
+
+    it('omits a provider this device has no identifier for', () => {
+      expect(
+        listRemoteAccessProviderOptions({ customFields: { anydesk_id: '222' } }, settings).map((p) => p.id),
+      ).toEqual(['anydesk']);
+    });
+
+    it('omits a provider with an empty template', () => {
+      const blank = { ...anydesk, urlTemplate: '' };
+      expect(listRemoteAccessProviderOptions(device, { providers: [blank] })).toEqual([]);
+    });
+
+    it('agrees with issuance for every configured provider', () => {
+      const listed = new Set(listRemoteAccessProviderOptions(device, settings).map((p) => p.id));
+      for (const provider of settings.providers!) {
+        const issued = resolveRemoteAccessLaunch(device, settings, null, provider.id).launchUrl !== null;
+        expect(listed.has(provider.id)).toBe(issued);
+      }
+    });
+
+    it('carries only id, label and kind, never a credential or template', () => {
+      const [option] = listRemoteAccessProviderOptions(device, settings);
+      expect(Object.keys(option!).sort()).toEqual(['id', 'kind', 'label']);
+      const serialized = JSON.stringify(listRemoteAccessProviderOptions(device, settings));
+      expect(serialized).not.toContain('plain');
+      expect(serialized).not.toContain('any-secret');
+      expect(serialized).not.toContain('{id}');
+      expect(serialized).not.toContain('screenconnect.com');
+      expect(serialized).not.toContain('anydesk_id');
+      expect(serialized).not.toContain('111');
+    });
+
+    it('falls back to the id when the stored name is blank', () => {
+      const unnamed = { ...anydesk, name: '' };
+      expect(listRemoteAccessProviderOptions(device, { providers: [unnamed] })[0]!.label).toBe('anydesk');
+    });
+
+    it('lists a legacy duplicated id once', () => {
+      const dup = { ...anydesk, name: 'AnyDesk copy' };
+      expect(
+        listRemoteAccessProviderOptions(device, { providers: [anydesk, dup] }).map((p) => p.label),
+      ).toEqual(['AnyDesk']);
+    });
+
+    it('returns nothing for absent or malformed settings', () => {
+      expect(listRemoteAccessProviderOptions(device, undefined)).toEqual([]);
+      expect(listRemoteAccessProviderOptions(device, {})).toEqual([]);
+      expect(
+        listRemoteAccessProviderOptions(device, { providers: 'nope' } as unknown as InheritableRemoteAccessSettings),
+      ).toEqual([]);
+    });
   });
 });
