@@ -161,6 +161,12 @@ vi.mock('./aiAgentSdkTools', () => ({
     manage_org_portal_settings: 1,
     manage_ai_agent_schedules: 1,
     manage_fleet_designs: 1,
+    // #11181: tools whose orgId argument names the org they change.
+    manage_billing_settings: 1,
+    manage_invoices: 2,
+    manage_tenant_variables: 1,
+    manage_peripheral_policy: 3,
+    s1_threat_action: 3,
   },
   BREEZE_MCP_TOOL_NAMES: [],
 }));
@@ -2256,18 +2262,85 @@ describe('createSessionPreToolUse', () => {
         expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ toolName, orgId: ORG_2 });
       });
 
-      it('an org outside the call\'s reach never becomes the intent org', async () => {
+      // #11181: an org argument outside reach refuses; it is never filed in the session org.
+      it('an org outside the call\'s reach refuses, and no intent is filed anywhere', async () => {
         const auth = reachOf('org-1');
         const session = makeActiveSession({ auth, toolAuth: auth });
-        await createSessionPreToolUse(session)('run_patch_plan', { orgId: ORG_9 });
-        expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ toolName: 'run_patch_plan', orgId: 'org-1' });
+        const result = await createSessionPreToolUse(session)('run_patch_plan', { orgId: ORG_9 });
+        expect(result).toEqual({ allowed: false, error: 'Access denied to this organization' });
+        expect(mockCreateActionIntent).not.toHaveBeenCalled();
       });
 
-      it('any other tool keeps the session org (control)', async () => {
+      it('a call naming no org keeps the session org (control)', async () => {
         const auth = reachOf('org-1', ORG_2);
         const session = makeActiveSession({ auth, toolAuth: auth });
-        await createSessionPreToolUse(session)('manage_org_portal_settings', { action: 'update', orgId: ORG_2, settings: { enableTickets: true } });
+        await createSessionPreToolUse(session)('manage_billing_settings', { action: 'update_partner' });
         expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ orgId: 'org-1' });
+      });
+
+      // #11181: the general rule, for every tool whose orgId argument names the org it
+      // changes. Four-eyes and supervised writes alike; the approvers createActionIntent
+      // fans out to are the filed org's (resolveIntentApprovers(orgId)).
+      it.each<[string, Record<string, unknown>]>([
+        ['manage_org_portal_settings', { action: 'set_sensitive_access', orgId: ORG_2, flags: { showPatches: true } }],
+        ['manage_org_portal_settings', { action: 'update', orgId: ORG_2, settings: { enableTickets: true } }],
+        ['manage_tenant_variables', { action: 'create', orgId: ORG_2, key: 'K', value: 'v' }],
+        ['manage_peripheral_policy', { action: 'create', org_id: ORG_2, name: 'p' }],
+        ['s1_threat_action', { action: 'kill', orgId: ORG_2, threatIds: ['t1'] }],
+      ])('%s %j files its intent in the named org (#11181)', async (toolName, input) => {
+        const auth = reachOf('org-1', ORG_2);
+        const session = makeActiveSession({ auth, toolAuth: auth });
+        await createSessionPreToolUse(session)(toolName, input);
+        expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ toolName, orgId: ORG_2 });
+      });
+
+      // The handler of these ignores orgId and changes the row it names, so an orgId the
+      // model adds must not move the intent (intentTargetOrg.ts: ORG_ARGUMENT_NOT_TARGET).
+      it.each<[string, Record<string, unknown>]>([
+        ['manage_invoices', { action: 'void', orgId: ORG_2, invoiceId: DEVICE }],
+        ['manage_tenant_variables', { action: 'delete', orgId: ORG_2, variableId: DEVICE }],
+        ['manage_tenant_variables', { action: 'create', ownerScope: 'partner', orgId: ORG_2, key: 'K', value: 'v' }],
+        ['manage_billing_settings', { action: 'update_partner', orgId: ORG_2 }],
+      ])('%s %j: an orgId the handler does not write to keeps the session org (#11181)', async (toolName, input) => {
+        const auth = reachOf('org-1', ORG_2);
+        const session = makeActiveSession({ auth, toolAuth: auth });
+        await createSessionPreToolUse(session)(toolName, input);
+        expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ toolName, orgId: 'org-1' });
+      });
+
+      it('set_sensitive_access naming an org out of reach refuses before any approval card (#11181)', async () => {
+        const auth = reachOf('org-1', ORG_2);
+        const session = makeActiveSession({ auth, toolAuth: auth });
+        const result = await createSessionPreToolUse(session)(
+          'manage_org_portal_settings',
+          { action: 'set_sensitive_access', orgId: ORG_9, flags: { showPatches: true } },
+        );
+        expect(result).toEqual({ allowed: false, error: 'Access denied to this organization' });
+        expect(mockCreateActionIntent).not.toHaveBeenCalled();
+      });
+
+      it('reach is the call\'s tool auth, not the session auth: an org only the session auth reaches refuses (#11181)', async () => {
+        const session = makeActiveSession({ auth: reachOf('org-1', ORG_2), toolAuth: reachOf('org-1') });
+        const result = await createSessionPreToolUse(session)('run_patch_plan', { orgId: ORG_2 });
+        expect(result).toEqual({ allowed: false, error: 'Access denied to this organization' });
+        expect(mockCreateActionIntent).not.toHaveBeenCalled();
+      });
+
+      it('a design tool naming its org as an ARGUMENT out of reach refuses like any argument (#11181)', async () => {
+        mockResolveDesignTarget.mockResolvedValueOnce({ orgId: ORG_9, partnerId: null, fromArgument: true });
+        const auth = reachOf('org-1');
+        const session = makeActiveSession({ auth, toolAuth: auth });
+        const result = await createSessionPreToolUse(session)('manage_fleet_designs', { action: 'run', orgId: ORG_9 });
+        expect(result).toEqual({ allowed: false, error: 'Access denied to this organization' });
+        expect(mockCreateActionIntent).not.toHaveBeenCalled();
+      });
+
+      it('a Tier-1 call naming an out-of-reach org is not refused here: no intent, the handler answers (#11181)', async () => {
+        vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 1, requiresApproval: false, readOnly: true, description: 'Read' } as any);
+        const auth = reachOf('org-1');
+        const session = makeActiveSession({ auth, toolAuth: auth });
+        const result = await createSessionPreToolUse(session)('manage_org_portal_settings', { action: 'get', orgId: ORG_9 });
+        expect(result).toMatchObject({ allowed: true });
       });
 
       // W16 PR B (#6786, #11181): these name the org through a row, so an approver of

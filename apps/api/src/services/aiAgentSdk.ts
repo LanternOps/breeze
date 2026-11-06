@@ -94,7 +94,7 @@ import {
   type ToolHandoffStatus,
 } from './aiToolHandoff';
 import { computeEffectDigestForRelease, hasPinnedDigest } from './actionIntents/effectDigest';
-import { AI_DESIGN_INTENT_TOOLS, resolveAiDesignIntentTarget } from './actionIntents/aiDesignIntentTarget';
+import { decideIntentOrg, resolveIntentTarget, type IntentTarget } from './actionIntents/intentTargetOrg';
 import { requiresPinnedEffectDigest } from './actionIntents/pinnedEffectPolicy';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import {
@@ -316,12 +316,6 @@ export async function settleBlockedTurnForNewMessage(
   if (!settleApprovalWaits(session)) return 'not_blocked_on_approvals';
   return (await waitForTurnToSettle(session, timeoutMs)) ? 'concluded' : 'still_processing';
 }
-
-/**
- * Tools whose Tier-3 intent lives in the org their `orgId` argument names, not
- * in the session org (W16 PR A, #6786). See createSessionPreToolUse.
- */
-const INTENT_ORG_FROM_ARGUMENT_TOOLS: ReadonlySet<string> = new Set(['run_patch_plan', 'create_operator_task']);
 
 /**
  * Tracks the action_intents.id an inline Tier-3 execution is running under,
@@ -1491,36 +1485,37 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       ? await loadProposalGuardrailContextInReach(input, (orgId) => proposalReach.canAccessOrg(orgId))
       : null;
     if (runScriptProposal?.proposalOrgId) intentOrgId = runScriptProposal.proposalOrgId;
-    // W16 PR A (#6786): a launch names the org it acts on, and a partner-scope
-    // session can be bound to another org in reach. The intent lives in the
-    // launched org, as with a proposal above: the approvers, the stored reason and
-    // a durable release's rebuilt authority are all keyed on `action_intents.org_id`,
-    // so a session-org intent would record the approval against the wrong tenant
-    // and refuse at a worker release. An org outside reach stays the session's, and
-    // the handler answers not found.
-    if (!flowTool && !tenant && INTENT_ORG_FROM_ARGUMENT_TOOLS.has(toolName) && typeof input.orgId === 'string'
-      && callReach(session, wispCall.current).canAccessOrg(input.orgId)) {
-      intentOrgId = input.orgId;
-    }
-    // W16 PR B (#6786, #11181): the two design tools name their org through a row, so
-    // an approver of org A is never approving a change to org B. Same reach rule as
-    // above; a target outside it adds nothing to the card, so a foreign id reveals
-    // nothing. A failed lookup is non-fatal: the intent stays in the session org and the
-    // card says it is short. A Fleet Design of another org then has no pin for that org,
-    // so no intent is filed; a schedule's handler answers not found or refuses at release.
+    // #11181 (generalising W16 PR A and PR B, #6786): a call that changes another org in
+    // reach files its intent in THAT org, as a proposal does above. The approvers, the
+    // stored reason and a durable release's rebuilt authority are all keyed on
+    // `action_intents.org_id`, so a session-org intent would have an approver of org A
+    // approving a change to org B, and a worker release would refuse. Which calls name
+    // their org, and how, is `actionIntents/intentTargetOrg.ts`: an org ARGUMENT outside
+    // reach refuses below (Tier 3 only, so a read still reaches its handler); a ROW outside
+    // reach stays in the session org with nothing about it on the card, so a foreign id
+    // reveals nothing; a partner-wide effect stays in the session org. A failed row lookup
+    // is non-fatal: the intent stays in the session org and the card says it is short. A
+    // Fleet Design of another org then has no pin for that org, so no intent is filed; a
+    // schedule's handler answers not found or refuses at release.
     let designCardDetail: string | undefined;
-    if (!flowTool && !tenant && AI_DESIGN_INTENT_TOOLS.has(toolName)) {
+    let intentOrgRefusal: string | undefined;
+    if (!flowTool && !tenant) {
+      // Only a design tool's row read can throw: an argument target is read from the input
+      // alone, so the fail-open below never covers it, and neither does a reach failure.
+      const reach = callReach(session, wispCall.current);
+      let target: IntentTarget | null = null;
       try {
-        const target = await resolveAiDesignIntentTarget(toolName, input);
-        const reach = callReach(session, wispCall.current);
-        if (target && (target.orgId ? reach.canAccessOrg(target.orgId) : target.partnerId !== null && target.partnerId === reach.partnerId)) {
-          if (target.orgId) intentOrgId = target.orgId;
-          designCardDetail = target.cardDetail;
-        }
+        target = await resolveIntentTarget(toolName, input);
       } catch (err) {
         captureException(err instanceof Error ? err : new Error(String(err)));
         console.error('[AI-SDK] Failed to resolve a design tool\'s target org:', err);
         designCardDetail = 'The details of this change could not be loaded, so this card may not show everything it affects.';
+      }
+      if (target) {
+        const decision = decideIntentOrg(target, reach);
+        if (decision.kind === 'target') intentOrgId = decision.orgId;
+        if (decision.kind === 'refuse') intentOrgRefusal = decision.error;
+        else designCardDetail = decision.cardDetail;
       }
     }
     const unattendedReads = unattendedReadsApply(session, wispCall.current, Boolean(flowTool || tenant));
@@ -1569,6 +1564,12 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         guardrailCheck = { ...rest, tier: gate.tier, requiresApproval: gate.tier >= 2, readOnly: gate.tier === 1 };
         verifiedToolContext = { ...verifiedToolContext, runFlowGate: { flowId: gate.flowId, publicationSeq: gate.publicationSeq } };
       }
+    }
+
+    // #11181: an approval-class call naming an org it cannot reach is refused, never filed
+    // in the session org instead (see the target resolution above).
+    if (intentOrgRefusal && guardrailCheck.tier === 3) {
+      return { allowed: false, error: intentOrgRefusal };
     }
 
     // #7906: a read-only event_logs_query was classified on a strictly-parsed

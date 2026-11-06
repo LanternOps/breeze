@@ -61,7 +61,7 @@ beforeEach(() => {
 describe('schedules', () => {
   it('create of an override names its org with no read', async () => {
     await expect(resolveAiDesignIntentTarget('manage_ai_agent_schedules', { action: 'create', ownerScope: 'organization', orgId: ORG }))
-      .resolves.toEqual({ orgId: ORG, partnerId: null });
+      .resolves.toEqual({ orgId: ORG, partnerId: null, fromArgument: true });
     expect(h.system).toBe(0);
   });
 
@@ -110,7 +110,7 @@ describe('schedules', () => {
 
 describe('fleet designs', () => {
   it('run names its org with no read', async () => {
-    await expect(resolveAiDesignIntentTarget('manage_fleet_designs', { action: 'run', orgId: ORG })).resolves.toEqual({ orgId: ORG, partnerId: null });
+    await expect(resolveAiDesignIntentTarget('manage_fleet_designs', { action: 'run', orgId: ORG })).resolves.toEqual({ orgId: ORG, partnerId: null, fromArgument: true });
     expect(h.system).toBe(0);
   });
 
