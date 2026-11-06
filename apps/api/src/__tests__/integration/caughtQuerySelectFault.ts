@@ -23,7 +23,17 @@ export const selectFault = {
   hits: 0,
 };
 
+/** One-shot: the next `db.execute` whose SQL text contains `match` runs `SELECT 1/0` instead. */
+export const executeFault = { match: null as string | null, hits: 0 };
+
+function sqlText(query: unknown): string {
+  const chunks = (query as { queryChunks?: Array<{ value?: unknown } | string> } | null)?.queryChunks ?? [];
+  return chunks.map((c) => (typeof c === 'string' ? c : Array.isArray(c?.value) ? c.value.join('') : '')).join('');
+}
+
 export function resetSelectFault(): void {
+  executeFault.match = null;
+  executeFault.hits = 0;
   selectFault.key = null;
   selectFault.caller = null;
   selectFault.maxHits = null;
@@ -45,6 +55,15 @@ export function faultingDb<T extends object>(actual: T): T {
   return new Proxy(actual, {
     get(target, prop) {
       const value = (target as Record<string | symbol, unknown>)[prop];
+      if (prop === 'execute') {
+        return (query: unknown, ...rest: unknown[]) => {
+          if (executeFault.match && executeFault.hits === 0 && sqlText(query).includes(executeFault.match)) {
+            executeFault.hits += 1;
+            return (value as (q: unknown, ...r: unknown[]) => unknown).call(target, sql`SELECT 1/0`);
+          }
+          return (value as (q: unknown, ...r: unknown[]) => unknown).call(target, query, ...rest);
+        };
+      }
       if (prop !== 'select') return value;
       return (fields?: Record<string, unknown>) => {
         if (selectFault.key && fields && selectFault.key in fields

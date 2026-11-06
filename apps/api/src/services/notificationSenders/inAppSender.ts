@@ -6,6 +6,8 @@
  */
 
 import type { AlertOwnerKind } from '@breeze/shared';
+import { captureException } from '../sentry';
+import { safeErrorMessage } from '../aiModels/safeDbError';
 
 import { db, withDbTransactionIfHeld } from '../../db';
 import { userNotifications, organizationUsers, users, partnerUsers, organizations } from '../../db/schema';
@@ -172,8 +174,10 @@ export async function sendInAppNotification(payload: InAppNotificationPayload): 
       };
     });
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    // Returned to callers and logged: never the failed query's values.
+    const errorMessage = error instanceof Error ? safeErrorMessage(error) : 'Unknown error';
     console.error('[InAppSender] Failed to send in-app notification:', errorMessage);
+    captureException(error, undefined, { alertId: payload.alertId, orgId: payload.orgId });
 
     return {
       success: false,

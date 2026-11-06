@@ -41,6 +41,7 @@
  * nightly sweep does not spam the ticket.
  */
 import { and, eq } from 'drizzle-orm';
+import { safeErrorMessage } from './aiModels/safeDbError';
 import { reportRunOwnerColumns } from './reportRunOwner';
 import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransaction } from '../db';
 import { reports, reportRuns } from '../db/schema/reports';
@@ -284,11 +285,12 @@ export async function generateAutoEvidenceForOccurrence(args: AutoEvidenceOccurr
       // those throws, the whole occurrence transaction rolls back and only the
       // secondary error would otherwise reach the caller and Sentry.
       console.error('[deliverables] auto-evidence generation failed', `occurrenceId=${args.occurrenceId}`,
-        `reportId=${definition.id}`, err instanceof Error ? err.message : String(err));
+        `reportId=${definition.id}`, safeErrorMessage(err));
       const outcome = await recordRefusal('generation_failed');
       await db.update(reportRuns).set({
           status: 'failed', completedAt: new Date(),
-          errorMessage: err instanceof Error ? err.message : 'Failed to generate report',
+          // Stored on the run: never the failed query's values.
+          errorMessage: err instanceof Error ? safeErrorMessage(err) : 'Failed to generate report',
         })
         .where(eq(reportRuns.id, run.id));
       return outcome;

@@ -106,6 +106,9 @@ import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
+/** A bound value that must never come back out in a stored or displayed error message. */
+const SECRET_PARAM = 'secret-param-value-7f3a';
+
 const errorLog = () => vi.spyOn(console, 'error').mockImplementation(() => {});
 const expectLogged = (spy: ReturnType<typeof errorLog>, text: string) =>
   expect(spy.mock.calls.some((call) => typeof call[0] === 'string' && call[0].includes(text))).toBe(true);
@@ -151,7 +154,7 @@ describe('read-only gates and lookups degrade inside a held system context', () 
     const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(await inHeldSystemContext(t, () => resolveDeviceSiteId(t.deviceId))).toBeUndefined();
     expect(selectFault.hits).toBe(1);
-    expect(warned).toHaveBeenCalled();
+    expect(warned.mock.calls.some((call) => String(call[0]).includes('[deviceSiteResolver] failed to resolve siteId'))).toBe(true);
   });
 
   runDb('evidenceBaseline.previousOccurrenceBaselineFor: a failed lookup answers undefined', async () => {
@@ -343,7 +346,10 @@ describe('routes/c2c/m365Auth consent callback: a failed connection insert answe
     });
     expectLogged(logged, '[c2c/m365/callback] Consent callback failed');
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toContain('c2c_error=');
+    const location = res.headers.get('location') ?? '';
+    expect(location).toContain(`c2c_error=${encodeURIComponent('Could not save the connection')}`);
+    expect(location).not.toContain('Failed query');
+    expect(location).not.toContain(tenantGuid);
     expect(await getTestDb().select().from(c2cConnections).where(eq(c2cConnections.orgId, t.orgId))).toHaveLength(0);
     expect(await getTestDb().select().from(c2cConsentSessions).where(eq(c2cConsentSessions.state, state))).toHaveLength(0);
   });
@@ -364,7 +370,7 @@ describe('fleetFindings.dispatchRunChunk: one failing target does not stop the c
     }).returning({ id: fleetFindings.id });
     const [run] = await getTestDb().insert(fleetRemediationRuns).values({
       orgId: t.orgId, findingId: finding!.id, findingRevision: 1, actionKind: 'command', commandType: 'restart_service',
-      parameterSnapshot: { serviceName: 'rows' }, targetCount: 2,
+      parameterSnapshot: { serviceName: SECRET_PARAM }, targetCount: 2,
     }).returning({ id: fleetRemediationRuns.id });
     await getTestDb().insert(fleetRemediationRunTargets).values([failing!, healthy!].map((id) => ({
       runId: run!.id, orgId: t.orgId, targetDeviceUuid: id,
@@ -375,6 +381,11 @@ describe('fleetFindings.dispatchRunChunk: one failing target does not stop the c
     expectLogged(logged, '[fleetFindings] Unexpected error dispatching run');
     const targets = await getTestDb().select().from(fleetRemediationRunTargets).where(eq(fleetRemediationRunTargets.runId, run!.id));
     const byDevice = new Map(targets.map((row) => [row.targetDeviceUuid, row]));
+    // Stored and tenant-readable: no failed query, no bound value.
+    const summary = byDevice.get(failing!)?.resultSummary ?? '';
+    expect(summary).not.toBe('');
+    expect(summary).not.toContain('Failed query');
+    expect(summary).not.toContain(SECRET_PARAM);
     expect(byDevice.get(failing!)?.status).toBe('failed');
     expect(byDevice.get(healthy!)?.status).toBe('queued');
     expect(byDevice.get(healthy!)?.deviceCommandId).toBeTruthy();
@@ -462,7 +473,7 @@ describe('unifiSyncService.applySyncData: one site failing keeps the other site'
       integrationId: integration!.id, orgId: t.orgId, siteId, unifiHostId: `host-${index}`, unifiSiteId: `site-${index}`,
     }))).returning();
     const deviceFor = (n: number) => ({
-      unifiDeviceId: `dev-${n}`, mac: `00:00:5e:00:53:0${n}`, name: `switch-${n}`, model: 'USW', deviceType: 'usw', ip: `192.0.2.${n}`,
+      unifiDeviceId: `dev-${n}`, mac: `00:00:5e:00:53:0${n}`, name: `${SECRET_PARAM}-${n}`, model: 'USW', deviceType: 'usw', ip: `192.0.2.${n}`,
       firmwareVersion: '1.0.0', firmwareUpdatable: false, adoptionState: 'adopted', uptimeSeconds: 10, raw: { n },
     });
     const [failing, healthy] = mappings;
@@ -478,12 +489,17 @@ describe('unifiSyncService.applySyncData: one site failing keeps the other site'
 
     expect(result).toMatchObject({ status: 'partial', devicesCreated: 1, devicesUpdated: 0 });
     expect(result.error).toContain(`site ${failing!.unifiSiteId}`);
+    expect(result.error).not.toContain('Failed query');
+    expect(result.error).not.toContain(SECRET_PARAM);
     const rows = await getTestDb().select({ unifiDeviceId: unifiDevices.unifiDeviceId, mappingId: unifiDevices.mappingId }).from(unifiDevices)
       .where(eq(unifiDevices.integrationId, integration!.id));
     expect(rows).toEqual([{ unifiDeviceId: 'dev-2', mappingId: healthy!.id }]);
-    const [run] = await getTestDb().select({ status: unifiSyncRuns.status, created: unifiSyncRuns.devicesCreated })
+    const [run] = await getTestDb().select({ status: unifiSyncRuns.status, created: unifiSyncRuns.devicesCreated, error: unifiSyncRuns.error })
       .from(unifiSyncRuns).where(eq(unifiSyncRuns.integrationId, integration!.id));
-    expect(run).toEqual({ status: 'partial', created: 1 });
+    expect(run).toMatchObject({ status: 'partial', created: 1 });
+    expect(run?.error).toContain(`site ${failing!.unifiSiteId}`);
+    expect(run?.error).not.toContain('Failed query');
+    expect(run?.error).not.toContain(SECRET_PARAM);
   });
 });
 
@@ -548,6 +564,7 @@ describe('deliverableAutoEvidence: a generator SQL failure leaves the run stampe
     expect(runs).toHaveLength(1);
     expect(runs[0]!.status).toBe('failed');
     expect(runs[0]!.errorMessage).toBeTruthy();
+    expect(runs[0]!.errorMessage).not.toContain('Failed query');
     const [occ] = await getTestDb().select({ refusal: serviceDeliverableOccurrences.autoEvidenceRefusal, at: serviceDeliverableOccurrences.autoEvidenceAttemptedAt })
       .from(serviceDeliverableOccurrences).where(eq(serviceDeliverableOccurrences.id, occurrence!.id));
     expect(occ?.refusal).toBe('generation_failed');

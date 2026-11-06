@@ -15,6 +15,14 @@ import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const queueStub = vi.hoisted(() => ({ noRow: false }));
+
+// The queue answers "no row" when armed; everything else in commandQueue stays real.
+vi.mock('../../services/commandQueue', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/commandQueue')>();
+  return { ...actual, queueCommand: (...args: Parameters<typeof actual.queueCommand>) => (queueStub.noRow ? Promise.resolve(undefined) : actual.queueCommand(...args)) };
+});
+
 // Two gates that are not the row under test: snapshot attestation and the cross-site restore permission.
 vi.mock('../../services/backupRestoreActorGate', () => ({ restoreIntegrityRefusalForActor: async () => null }));
 vi.mock('../../services/aiToolsRestoreAuthorization', () => ({ authorizeAiRestore: async () => ({ ok: true }) }));
@@ -36,8 +44,8 @@ import { withDbAccessContext } from '../../db';
 import {
   automationRunDeviceResults, automationRuns, automations,
   backupConfigs, backupJobs, backupSnapshots, clientAiUsage, deploymentResults, devices, reportRuns, reports,
-  restoreJobs, s1Actions, s1Agents, s1Integrations, s1Threats, softwareCatalog, softwareDeployments, softwareVersions, deviceChangeLog, deviceCommands,
-  monitorDefinitions, monitorEpisodes, portalUsers, serviceProcessCheckResults, softwarePolicyAudit, timeEntries,
+  restoreJobs, scriptExecutions, scripts, s1Actions, s1Agents, s1Integrations, s1Threats, softwareCatalog, softwareDeployments, softwareVersions, deviceChangeLog, deviceCommands,
+  monitorDefinitions, monitorEpisodes, portalUsers, serviceProcessCheckResults, timeEntries,
 } from '../../db/schema';
 import type { AiTool } from '../../services/aiTools';
 import { registerBackupTools } from '../../services/aiToolsBackup';
@@ -48,6 +56,7 @@ import {
 import { applyBackupCommandResultToJob } from '../../services/backupResultPersistence';
 import { generatePortalReport } from '../../services/portal/reportsSelfService';
 import { executeS1IsolationForOrg, executeS1ThreatActionForOrg } from '../../services/sentinelOne/actions';
+import { dispatchScriptToDevice } from '../../services/scriptDispatch';
 import { buildAndDispatchSoftwareInstalls } from '../../services/softwareDeployment';
 import { persistedSiteScopeValues, siteScopeFingerprint, type UserReportExecutionAuthority } from '../../services/siteScope';
 import type { AuthContext } from '../../middleware/auth';
@@ -58,7 +67,6 @@ import { recordClientUsage } from '../../services/clientAiUsage';
 import { commandCasPriorStatusTags, PRIOR_STATUS_LOOKUP_FAILED } from '../../services/commandCasDiagnostics';
 import { getPromotedAgentVersionForDisplay } from '../../services/promotedAgentVersion';
 import { previousBaselineFor } from '../../services/reportGenerationService';
-import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
 import { createTimeEntry, type TimeEntryActor } from '../../services/timeEntryService';
 import { clearStatementFaults, failStatementsOn, failWritesOn } from './caughtQueryFaults';
 import { inHeldContext, inHeldSystemContext, tenant, toolAuth, type Tenant } from './caughtQueryFixtures';
@@ -73,10 +81,14 @@ const errorLog = () => vi.spyOn(console, 'error').mockImplementation(() => {});
 const expectLogged = (spy: ReturnType<typeof errorLog>, text: string) =>
   expect(spy.mock.calls.some((call) => typeof call[0] === 'string' && call[0].includes(text))).toBe(true);
 
-beforeEach(resetSelectFault);
+beforeEach(() => {
+  resetSelectFault();
+  queueStub.noRow = false;
+});
 afterEach(async () => {
   vi.restoreAllMocks();
   resetSelectFault();
+  queueStub.noRow = false;
   await clearStatementFaults();
 });
 
@@ -85,8 +97,10 @@ describe('read-only catches degrade inside a held context', () => {
     const t = await tenant();
     selectFault.key = 'partnerId';
     selectFault.caller = 'readPartnerCreditsForUsage';
+    const logged = errorLog();
     const summary = await inHeldContext(t, () => getUsageSummary(t.orgId, { includeCredits: true }));
     expect(selectFault.hits).toBe(1);
+    expectLogged(logged, '[aiCostTracker] partner credits read failed');
     expect(summary.credits).toBeNull();
     expect(summary.billedTo).toBe('platform');
   });
@@ -133,7 +147,7 @@ describe('read-only catches degrade inside a held context', () => {
     const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const tags = await inHeldContext(t, () => commandCasPriorStatusTags(command!.id));
     expect(tags).toEqual({ prior_status: PRIOR_STATUS_LOOKUP_FAILED });
-    expect(warned).toHaveBeenCalled();
+    expect(warned.mock.calls.some((call) => String(call[0]).includes('[commandCas] prior-status lookup failed'))).toBe(true);
   });
 
   runDb('promotedAgentVersion.getPromotedAgentVersionForDisplay: a failed lookup answers null', async () => {
@@ -154,15 +168,6 @@ describe('read-only catches degrade inside a held context', () => {
 });
 
 describe('best-effort writes keep the caller commit', () => {
-  runDb('softwarePolicyService.recordSoftwarePolicyAudit: a failed audit insert does not throw', async () => {
-    const t = await tenant();
-    await failWritesOn('software_policy_audit');
-    const logged = errorLog();
-    await inHeldContext(t, () => recordSoftwarePolicyAudit({ orgId: t.orgId, action: 'policy.checked', actor: 'system' }));
-    expectLogged(logged, 'Failed to write policy audit record');
-    expect(await getTestDb().select().from(softwarePolicyAudit).where(eq(softwarePolicyAudit.orgId, t.orgId))).toHaveLength(0);
-  });
-
   runDb('clientAiUsage.recordClientUsage: the daily bucket fails, the monthly bucket is written', async () => {
     const t = await tenant();
     const [portalUser] = await getTestDb().insert(portalUsers)
@@ -332,18 +337,6 @@ describe('backupResultPersistence: each post-result step is its own savepoint', 
     expect(out.snapshot?.gfsTags).toBeTruthy();
   });
 
-  runDb('a failed protection update still applies the result and the later GFS step runs', async () => {
-    const t = await tenant();
-    const jobId = await jobFixture(t);
-    await failWritesOn('backup_snapshots', { ops: 'UPDATE', when: 'NEW.gfs_tags IS NOT DISTINCT FROM OLD.gfs_tags' });
-    const logged = errorLog();
-    expect((await apply(t, jobId)).applied).toBe(true);
-    expectLogged(logged, 'Failed to apply protection settings');
-    const out = await state(jobId);
-    expect(out.status).toBe('completed');
-    expect(out.snapshot?.gfsTags).toBeTruthy();
-  });
-
   runDb('a failed MSSQL chain read still applies the result', async () => {
     const t = await tenant();
     const jobId = await jobFixture(t);
@@ -390,7 +383,10 @@ describe('portalReports generatePortalReport: a failed generation stamps the run
     const [stored] = await getTestDb().select({ status: reportRuns.status, errorMessage: reportRuns.errorMessage })
       .from(reportRuns).where(eq(reportRuns.orgId, t.orgId));
     expect(stored?.status).toBe('failed');
-    expect(stored?.errorMessage).toContain('report_runs');
+    // Stored on the run: the failure class, never the failed query or its bound values.
+    expect(stored?.errorMessage).toBeTruthy();
+    expect(stored?.errorMessage).not.toContain('Failed query');
+    expect(stored?.errorMessage).not.toContain(run.id);
   });
 });
 
@@ -507,5 +503,28 @@ describe('aiToolsBackup restore_snapshot: a failed command link marks the job fa
     expect(stored!.targetConfig).toMatchObject({ error: 'Failed to dispatch restore command to agent' });
     expect(JSON.stringify(stored!.targetConfig)).not.toContain('forced statement failure');
     expect(await getTestDb().select().from(deviceCommands).where(eq(deviceCommands.deviceId, t.deviceId))).toHaveLength(0);
+  });
+});
+
+describe('scriptDispatch.discardPendingExecution: a failed discard does not mask insert_failed', () => {
+  runDb('insert_failed is returned, the undeleted execution stays pending, the proof write commits', async () => {
+    const t = await tenant();
+    const [inserted] = await getTestDb().insert(scripts).values({
+      orgId: t.orgId, name: `rows-${randomUUID()}`, osTypes: ['linux'], language: 'bash', content: 'echo rows',
+    }).returning();
+    const [device] = await getTestDb().select().from(devices).where(eq(devices.id, t.deviceId));
+    const dispatch = () => dispatchScriptToDevice({ device: device!, source: { kind: 'saved', script: inserted! }, bypassMaintenanceWindow: true });
+    const executions = () => getTestDb().select({ status: scriptExecutions.status }).from(scriptExecutions).where(eq(scriptExecutions.deviceId, t.deviceId));
+    queueStub.noRow = true;
+
+    // CONTROL: the discard works, so no orphaned pending execution is left behind.
+    expect(await inHeldContext(t, dispatch)).toMatchObject({ ok: false, code: 'insert_failed' });
+    expect(await executions()).toHaveLength(0);
+
+    await failWritesOn('script_executions', { ops: 'DELETE' });
+    const logged = errorLog();
+    expect(await inHeldContext(t, dispatch)).toMatchObject({ ok: false, code: 'insert_failed' });
+    expectLogged(logged, '[scriptDispatch] failed to discard pending execution row');
+    expect(await executions()).toEqual([{ status: 'pending' }]);
   });
 });

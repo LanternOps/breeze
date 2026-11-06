@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { pgErrorCode } from '@breeze/shared/pgErrors';
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { eq, and, gt } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, withDbTransaction } from '../../db';
@@ -354,7 +355,10 @@ m365CallbackRoute.get('/c2c/m365/callback', async (c) => {
     });
     captureException(err);
 
-    const msg = err instanceof Error ? safeErrorMsg(err.message) : 'Unknown error during consent callback';
+    // A database failure carries the query and its values: never in a browser URL.
+    const msg = pgErrorCode(err)
+      ? 'Could not save the connection'
+      : err instanceof Error ? safeErrorMsg(err.message) : 'Unknown error during consent callback';
     clearCookie();
     return c.redirect(`${frontendBase}/c2c?c2c_error=${encodeURIComponent(msg)}`);
   }

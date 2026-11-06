@@ -1,4 +1,5 @@
 import { and, eq, inArray, like, or, sql } from 'drizzle-orm';
+import { safeErrorMessage } from './aiModels/safeDbError';
 import { db, runAfterDbContextExit, withDbTransactionIfHeld } from '../db';
 import {
   backupJobs,
@@ -1854,9 +1855,11 @@ export async function applyBackupCommandResultToJob(params: {
 
   if (snapshot) {
     try {
-      // Each statement below is its own savepoint rather than one around the
-      // block, so the provider calls in between hold none open (#11225).
-      const protection = await withDbTransactionIfHeld(() => resolveSnapshotProtectionSettingsForJob(jobId, timestamp));
+      // Deliberately no savepoint here (#11225): a snapshot must not commit without
+      // the legal hold or immutability it was asked for, and a read failure must not
+      // be recorded as a permanent WORM downgrade. The commit fails, and the result
+      // is retried.
+      const protection = await resolveSnapshotProtectionSettingsForJob(jobId, timestamp);
       let protectionUpdate = {
         legalHold: protection.legalHold,
         legalHoldReason: protection.legalHoldReason,
@@ -1876,7 +1879,7 @@ export async function applyBackupCommandResultToJob(params: {
         protection.immutableUntil
       ) {
         try {
-          const storage = await withDbTransactionIfHeld(() => resolveBackupConfigStorage(updatedJob.configId ?? null));
+          const storage = await resolveBackupConfigStorage(updatedJob.configId ?? null);
           if (!storage) {
             throw new Error('Backup config storage details unavailable');
           }
@@ -1941,10 +1944,10 @@ export async function applyBackupCommandResultToJob(params: {
         }
       }
 
-      await withDbTransactionIfHeld(() => db
+      await db
         .update(backupSnapshots)
         .set(protectionUpdate)
-        .where(eq(backupSnapshots.id, snapshot.id)));
+        .where(eq(backupSnapshots.id, snapshot.id));
     } catch (err) {
       console.error(
         `[BackupPersistence] Failed to apply protection settings to snapshot ${snapshot.id}:`,
@@ -1966,8 +1969,9 @@ export async function applyBackupCommandResultToJob(params: {
     } catch (err) {
       console.error(
         `[BackupPersistence] Failed to reconcile MSSQL chain for snapshot ${snapshot.id}:`,
-        err instanceof Error ? err.message : err
+        safeErrorMessage(err)
       );
+      captureException(err, undefined, { snapshot_id: snapshot.id, step: 'mssql_chain' });
     }
 
     try {
@@ -1985,8 +1989,9 @@ export async function applyBackupCommandResultToJob(params: {
     } catch (err) {
       console.error(
         `[BackupPersistence] Failed to apply GFS tags to snapshot ${snapshot.id}:`,
-        err instanceof Error ? err.message : err
+        safeErrorMessage(err)
       );
+      captureException(err, undefined, { snapshot_id: snapshot.id, step: 'gfs_tags' });
     }
   }
 

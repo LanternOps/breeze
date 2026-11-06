@@ -905,7 +905,8 @@ async function readPartnerCreditsForUsage(orgId: string): Promise<CachedPartnerC
 
     const fetched = await fetchAndCachePartnerCredits(org.partnerId);
     return fetched.ok ? fetched.credits : null;
-  } catch {
+  } catch (err) {
+    console.error('[aiCostTracker] partner credits read failed; /ai/usage shows no credits', { orgId, err });
     return null;
   }
 }
