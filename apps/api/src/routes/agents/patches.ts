@@ -167,6 +167,20 @@ function narrowReportedSeveritySource(
     : null;
 }
 
+/** Values of `device_patches.reported_update_type` (#11073; DB CHECK device_patches_reported_update_type_chk). */
+const REPORTED_UPDATE_TYPES = ['driver', 'firmware', 'quality', 'feature', 'definition', 'other'] as const;
+type ReportedUpdateType = (typeof REPORTED_UPDATE_TYPES)[number];
+
+/**
+ * Narrow the agent's report to a known value or null. A value this API has never
+ * heard of is refused here, before it can trip the CHECK and abort the scan. Null
+ * is the safe reading: a NULL row is never left to a vendor lane.
+ */
+function narrowReportedUpdateType(value: string | null | undefined): ReportedUpdateType | null {
+  if (!value) return null;
+  return (REPORTED_UPDATE_TYPES as readonly string[]).includes(value) ? (value as ReportedUpdateType) : null;
+}
+
 // Derive vendor from package id; ignore agent-supplied vendor for winget-style ids.
 function deriveVendor(packageId: string | null | undefined, fallback: string | null | undefined): string | null {
   if (packageId && /^[^.]+\.[^.]+/.test(packageId)) {
@@ -293,6 +307,7 @@ async function upsertPendingPatches(
     // see the conflict-update below.
     const reportedSeveritySource = narrowReportedSeveritySource(reportedSeverity, patchData.severitySource);
     const reportedCategory = category ?? null;
+    const reportedUpdateType = narrowReportedUpdateType(patchData.reportedUpdateType);
 
     const [patch] = await executor
       .insert(patches)
@@ -375,6 +390,7 @@ async function upsertPendingPatches(
         reportedSeverity: reportedSeverity,
         reportedSeveritySource: reportedSeveritySource,
         reportedCategory: reportedCategory,
+        reportedUpdateType: reportedUpdateType,
         lastCheckedAt: new Date()
       })
       .onConflictDoUpdate({
@@ -401,6 +417,7 @@ async function upsertPendingPatches(
             ? sql`${devicePatches.reportedSeveritySource}`
             : reportedSeveritySource,
           reportedCategory: updateIfReported(devicePatches.reportedCategory, reportedCategory),
+          reportedUpdateType: updateIfReported(devicePatches.reportedUpdateType, reportedUpdateType),
           lastCheckedAt: new Date(),
           updatedAt: new Date()
         }

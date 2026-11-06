@@ -2,6 +2,40 @@ package patching
 
 import "testing"
 
+func TestReportedWindowsUpdateType(t *testing.T) {
+	tests := []struct {
+		name       string
+		updateType string
+		category   string
+		kind       DriverKind
+		want       string
+	}{
+		{"plain driver", UpdateTypeDriver, "driver", DriverKindDriver, ReportedUpdateTypeDriver},
+		{"driver class says firmware", UpdateTypeDriver, "driver", DriverKindFirmware, ReportedUpdateTypeFirmware},
+		{"firmware classification on a driver", UpdateTypeDriver, "firmware", DriverKindDriver, ReportedUpdateTypeFirmware},
+		// The type is a fact about the update. Whether a security classification
+		// keeps it with Windows Update is the API's decision, which reads the category.
+		{"security classification keeps its type", UpdateTypeDriver, "security", DriverKindDriver, ReportedUpdateTypeDriver},
+		// The category string alone never makes a driver: the product category
+		// "Windows 10 and later upgrade & servicing drivers" classifies as driver.
+		{"driver category on software", UpdateTypeSoftware, "driver", DriverKindDriver, ReportedUpdateTypeOther},
+		{"firmware category on software", UpdateTypeSoftware, "firmware", DriverKindDriver, ReportedUpdateTypeOther},
+		{"security update", UpdateTypeSoftware, "security", DriverKindDriver, ReportedUpdateTypeQuality},
+		{"update rollup", UpdateTypeSoftware, "system", DriverKindDriver, ReportedUpdateTypeQuality},
+		{"definitions", UpdateTypeSoftware, "definitions", DriverKindDriver, ReportedUpdateTypeDefinition},
+		{"feature release", UpdateTypeFeature, "feature", DriverKindDriver, ReportedUpdateTypeFeature},
+		{"feature pack on software", UpdateTypeSoftware, "feature", DriverKindDriver, ReportedUpdateTypeFeature},
+		{"unclassified", UpdateTypeSoftware, "application", DriverKindDriver, ReportedUpdateTypeOther},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := reportedWindowsUpdateType(tt.updateType, tt.category, tt.kind); got != tt.want {
+				t.Errorf("reportedWindowsUpdateType(%q, %q, %q) = %q, want %q", tt.updateType, tt.category, tt.kind, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestClassifyWindowsUpdateCategory(t *testing.T) {
 	tests := []struct {
 		name  string

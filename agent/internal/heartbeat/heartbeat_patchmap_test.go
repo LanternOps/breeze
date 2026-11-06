@@ -219,3 +219,24 @@ func TestAvailablePatchesToMaps_SeveritySource(t *testing.T) {
 		}
 	}
 }
+
+// #11073: the Windows Update type travels per device, and only from a provider
+// that has one. An API that predates the field ignores it; an absent field means
+// "not vendor managed", so nothing may be defaulted here.
+func TestPendingPatchIncludesUpdateType(t *testing.T) {
+	h := &Heartbeat{}
+	items := h.availablePatchesToMaps([]patching.AvailablePatch{
+		{ID: "a", Provider: "windows-update", Title: "Dell driver", ReportedUpdateType: patching.ReportedUpdateTypeDriver},
+		{ID: "b", Provider: "windows-update", Title: "Surface firmware", ReportedUpdateType: patching.ReportedUpdateTypeFirmware},
+		{ID: "Mozilla.Firefox", Provider: "winget", Title: "Firefox"},
+	})
+	if got := items[0]["reportedUpdateType"]; got != "driver" {
+		t.Errorf("driver item reportedUpdateType = %v, want driver", got)
+	}
+	if got := items[1]["reportedUpdateType"]; got != "firmware" {
+		t.Errorf("firmware item reportedUpdateType = %v, want firmware", got)
+	}
+	if got, ok := items[2]["reportedUpdateType"]; ok {
+		t.Errorf("a provider with no update type must omit the field, got %v", got)
+	}
+}
