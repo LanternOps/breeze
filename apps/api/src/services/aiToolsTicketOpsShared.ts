@@ -71,6 +71,23 @@ export async function ticketConfigAdminDenied(auth: AuthContext): Promise<string
   return jsonError('Managing ticket configuration requires an admin role', 'ACCESS_DENIED');
 }
 
+/**
+ * Gate of the inbound-email review queue routes: full partner access AND
+ * `tickets:email_review` (a platform admin or `*:*` grant satisfies it too).
+ * Mirrors `requirePartnerGlobalAccess` + `requirePermission` in routes/ticketConfig.ts (#10951).
+ */
+export async function ticketEmailReviewDenied(auth: AuthContext): Promise<string | null> {
+  if (!canManagePartnerWidePolicies(auth)) return partnerWideDeniedError();
+  if (auth.user.isPlatformAdmin) return null;
+  const perms = await getUserPermissions(auth.user.id, {
+    partnerId: auth.partnerId ?? undefined,
+    orgId: auth.orgId ?? undefined,
+    scope: auth.scope,
+  });
+  if (perms && hasPermission(perms, 'tickets', 'email_review')) return null;
+  return jsonError('Reviewing the inbound email queue requires the tickets:email_review permission', 'ACCESS_DENIED');
+}
+
 /** A partner id is required for every partner-keyed table; system callers must carry one too. */
 export function partnerIdOrError(auth: Pick<AuthContext, 'partnerId'>): { partnerId: string } | { error: string } {
   return auth.partnerId

@@ -1772,11 +1772,11 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     remove_item: { resource: 'tickets', action: 'write' },
     reorder_items: { resource: 'tickets', action: 'write' },
   },
-  // routes/ticketConfig.ts gates the email-inbound LIST on tickets:write (writePerm), like its mutations.
+  // routes/ticketConfig.ts gates all three email-inbound routes on tickets:email_review (#10951).
   manage_ticket_inbox: {
-    list: { resource: 'tickets', action: 'write' },
-    convert: { resource: 'tickets', action: 'write' },
-    dismiss: { resource: 'tickets', action: 'write' },
+    list: { resource: 'tickets', action: 'email_review' },
+    convert: { resource: 'tickets', action: 'email_review' },
+    dismiss: { resource: 'tickets', action: 'email_review' },
   },
   manage_ticket_attachments: {
     list: { resource: 'tickets', action: 'read' },

@@ -300,7 +300,7 @@ Edit the acknowledgement under **Settings → Partner → Email templates** (Tic
 
 ### Review queue
 
-Emails that Breeze can't automatically turn into a ticket land in a **review queue** instead -- so unsolicited or unprocessable mail doesn't flood the ticket queue. From there you can convert a message into a ticket (assigning it to the right organization) or dismiss it. Two kinds of mail land here:
+Emails that Breeze can't automatically turn into a ticket land in a **review queue** instead -- so unsolicited or unprocessable mail doesn't flood the ticket queue. From there you can convert a message into a ticket (assigning it to the right organization) or dismiss it. Working the queue needs the `tickets:email_review` permission (full admins already have it), so you can give a triage role or service account access to the queue without making it a full admin. Two kinds of mail land here:
 
 - Any email that **failed to process** -- for example, one with no usable sender address.
 - Emails from **unknown senders**, if your **Unknown senders** setting is left on its default. See [Unknown sender handling](#unknown-sender-handling) below to change that behavior.
