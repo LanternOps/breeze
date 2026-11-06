@@ -10,6 +10,8 @@ import {
   mapBackupJobStatus,
   worstBackupStatus,
   saasWorkloadLabel,
+  verifiedBootableState,
+  VERIFIED_BOOTABLE_PROVIDER_KEYS,
 } from './backupHealth';
 import { EXTERNAL_BACKUP_STATUSES, type ExternalBackupStatus } from '../types/backupHealth';
 
@@ -343,5 +345,28 @@ describe('saasWorkloadLabel', () => {
     [undefined, 'SaaS'],
   ])('labels %s as %s', (source, label) => {
     expect(saasWorkloadLabel(source)).toBe(label);
+  });
+});
+
+describe('verifiedBootableState', () => {
+  it('only Axcient supplies the evidence in phase 1', () => {
+    expect(VERIFIED_BOOTABLE_PROVIDER_KEYS).toEqual(['axcient']);
+  });
+
+  it.each([
+    [{ providerKey: 'axcient', verifiedBootable: true }, 'passed'],
+    [{ providerKey: 'axcient', verifiedBootable: false }, 'failed'],
+    [{ providerKey: 'axcient', verifiedBootable: null }, 'never_run'],
+    [{ providerKey: 'cove', verifiedBootable: null }, 'not_applicable'],
+    // A provider outside the list cannot read as passed even if a value appears.
+    [{ providerKey: 'cove', verifiedBootable: true }, 'not_applicable'],
+    [{ providerKey: 'dropsuite', verifiedBootable: false }, 'not_applicable'],
+    [{ providerKey: null }, 'not_applicable'], // first-party row
+    [{ providerKey: 'cove' }, 'not_applicable'], // field absent: old persisted report row
+    // A report saved before W02 can already hold an Axcient row (W01 shipped the
+    // adapter first). No field means nobody recorded a check, not "never run".
+    [{ providerKey: 'axcient' }, 'not_applicable'],
+  ] as const)('verifiedBootableState(%j) => %s', (row, expected) => {
+    expect(verifiedBootableState(row)).toBe(expected);
   });
 });
