@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ResponseTooLargeError } from '../../urlSafety';
 import {
+  AXCIENT_MAX_RESPONSE_BYTES,
   AXCIENT_SCOPE_MESSAGE,
   AXCIENT_UNAUTHORIZED_MESSAGE,
   AxcientClient,
@@ -163,6 +165,18 @@ describe('AxcientClient', () => {
     expect(error.message).toBe('Axcient request failed');
     expect(error.cause).toBeUndefined();
     expect(JSON.stringify({ ...error, message: error.message })).not.toContain(KEY);
+  });
+
+  it('caps every response body and does not retry an oversized one', async () => {
+    const tooLarge = new ResponseTooLargeError(AXCIENT_MAX_RESPONSE_BYTES);
+    const admin = setup([tooLarge, tooLarge]);
+    await expect(admin.client.listClients()).rejects.toMatchObject({ name: 'ProviderRequestError', code: 'response_too_large' });
+    expect(admin.fetchImpl).toHaveBeenCalledTimes(1);
+    expect(admin.fetchImpl.mock.calls[0]![1].maxBytes).toBe(AXCIENT_MAX_RESPONSE_BYTES);
+    const device = setup([tooLarge]);
+    await expect(device.client.listClientDevices(101)).rejects.toMatchObject({
+      name: 'AxcientCustomerRequestError', code: 'response_too_large',
+    });
   });
 
   it('abort() stops new requests', async () => {

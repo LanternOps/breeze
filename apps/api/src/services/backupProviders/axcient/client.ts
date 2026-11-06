@@ -1,8 +1,14 @@
-import { safeFetch } from '../../urlSafety';
+import { ResponseTooLargeError, safeFetch } from '../../urlSafety';
 import { ProviderRequestError } from '../types';
 
 export const AXCIENT_PAGE_SIZE = 100;
 export const AXCIENT_MAX_PAGES = 200;
+/**
+ * Body ceiling per request. A 100-device page with jobs, vaults and volumes is
+ * well under 1 MiB; this only stops a misbehaving or hostile endpoint from
+ * buffering without bound in the API process.
+ */
+export const AXCIENT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_RETRIES = 3;
 
 export const AXCIENT_UNAUTHORIZED_MESSAGE = 'Axcient rejected the API key.';
@@ -34,6 +40,7 @@ export type AxcientFetchImpl = (url: string, init: {
   headers: Record<string, string>;
   signal: AbortSignal;
   timeoutMs: number;
+  maxBytes: number;
 }) => Promise<AxcientFetchResponse>;
 
 export interface AxcientClientOptions {
@@ -137,9 +144,17 @@ export class AxcientClient {
       try {
         response = await this.fetchImpl(url, {
           method: 'GET', headers, signal: AbortSignal.timeout(this.timeoutMs), timeoutMs: this.timeoutMs,
+          maxBytes: AXCIENT_MAX_RESPONSE_BYTES,
         });
         body = await response.text();
-      } catch {
+      } catch (error) {
+        // Deterministic, so never retried. One oversized customer is isolated
+        // like any other per-customer failure.
+        if (error instanceof ResponseTooLargeError) {
+          const message = 'Axcient returned a response that is too large';
+          if (scope === 'customer') throw new AxcientCustomerRequestError(message, 'response_too_large');
+          throw failure('response_too_large', message);
+        }
         // Network exceptions can echo URLs or headers. Never keep their message
         // or cause in an error that may be logged or persisted.
         if (attempt === MAX_RETRIES) throw failure('network', 'Axcient request failed');
