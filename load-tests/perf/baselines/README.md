@@ -1,6 +1,6 @@
 # Perf baselines
 
-One file per profile, named for the profile: `nightly-200.json`. The file is the `kpi.json` record (`breeze.perf.kpi/v1`) from one measured run on the dedicated perf runner. A later PR commits it, once the runner exists. Until then the nightly workflow fails with "no committed baseline" after uploading its candidate record as an artifact.
+One file per profile, named for the profile: `nightly-200.json`. The file is the `kpi.json` record (`breeze.perf.kpi/v1`) from one measured run on the dedicated perf runner. The first baseline, `nightly-200.json`, is committed (#8146); the nightly workflow compares each candidate record against it.
 
 ## Rules
 
