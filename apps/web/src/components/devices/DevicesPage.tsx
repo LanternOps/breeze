@@ -2041,6 +2041,20 @@ export default function DevicesPage() {
   // unmount), and every terminal state stops the chain explicitly rather than
   // relying on the next tick not being scheduled.
   // -------------------------------------------------------------------------
+  // One sentence per refusal code, each already carrying its count and the
+  // "skipped" wording, so the toast templates never repeat or nest it.
+  const describePurgeSkips = useCallback(
+    (byCode: Record<string, number>) =>
+      Object.entries(byCode)
+        .map(([code, count]) =>
+          code === 'UNINSTALL_NOT_CONFIRMED'
+            ? t('devicesPage.toasts.bulkPurgeSkipUninstallNotConfirmed', { count })
+            : t('devicesPage.toasts.bulkPurgeSkipOther', { count, code }),
+        )
+        .join(' '),
+    [t],
+  );
+
   const stopPurgePolling = useCallback(() => {
     if (purgePollTimeoutRef.current !== null) {
       clearTimeout(purgePollTimeoutRef.current);
@@ -2083,9 +2097,7 @@ export default function DevicesPage() {
           // must not become 40 toasts, and a bare count would hide WHY.
           const byCode: Record<string, number> = {};
           for (const s of skipped) byCode[s.code] = (byCode[s.code] ?? 0) + 1;
-          const reasons = Object.entries(byCode)
-            .map(([code, n]) => `${n} ${code === 'UNINSTALL_NOT_CONFIRMED' ? t('devicesPage.toasts.bulkPurgeSkipUninstallNotConfirmed') : code}`)
-            .join('; ');
+          const reasons = describePurgeSkips(byCode);
           showToast({
             type: 'warning',
             message: purged === 0
@@ -2113,7 +2125,7 @@ export default function DevicesPage() {
 
       scheduleNextTick(); // 'waiting' | 'active' | 'delayed'
     },
-    [refreshDevices, stopPurgePolling, t],
+    [describePurgeSkips, refreshDevices, stopPurgePolling, t],
   );
 
   const runBulkPurge = async (targets: Device[]) => {
@@ -2129,7 +2141,7 @@ export default function DevicesPage() {
         // survive a delete the operator believes they ordered.
         const byCode: Record<string, number> = {};
         for (const r of started.rejected) byCode[r.code] = (byCode[r.code] ?? 0) + 1;
-        const reasons = Object.entries(byCode).map(([code, n]) => `${n} ${code}`).join('; ');
+        const reasons = describePurgeSkips(byCode);
         showToast({ type: 'warning', message: t('devicesPage.toasts.bulkPurgeDoneWithSkips', { count: started.accepted, skipped: started.rejected.length, reasons }) });
       }
       stopPurgePolling(); // drop anything from a previous run

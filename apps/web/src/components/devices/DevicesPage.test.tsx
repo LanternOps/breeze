@@ -3049,6 +3049,65 @@ describe('DevicesPage — bulk restore and bulk permanent delete (#2787)', () =>
     );
   });
 
+  async function runPurgeToCompletion(result: { purged: string[]; skipped: Array<{ deviceId: string; code: string }> }) {
+    const { startBulkPurge, fetchPurgeRun } = await import('../../services/deviceActions');
+    vi.mocked(startBulkPurge).mockResolvedValue({ jobId: 'job-1', accepted: 2, rejected: [] });
+    vi.mocked(fetchPurgeRun).mockResolvedValue({
+      state: 'completed',
+      progress: { done: 2, total: 2 },
+      result,
+      failedReason: null,
+    });
+    await renderWithRemovedFleet();
+    fireEvent.click(screen.getByTestId('bulk-permanent-delete'));
+    fireEvent.change(await screen.findByTestId('bulk-purge-count'), { target: { value: '2' } });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(screen.getByTestId('confirm-bulk-purge'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it('words a partial bulk purge without repeating "skipped" or nesting parentheses', async () => {
+    const { showToast } = await import('../shared/Toast');
+    await runPurgeToCompletion({
+      purged: [DEV_1],
+      skipped: [{ deviceId: DEV_2, code: 'UNINSTALL_NOT_CONFIRMED' }],
+    });
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith({
+        type: 'warning',
+        message:
+          '1 device permanently deleted; 1 skipped because its agent never confirmed the uninstall. Delete it on its own from the device page.',
+      }),
+    );
+  });
+
+  it('words a bulk purge that deleted nothing with the same reason text', async () => {
+    const { showToast } = await import('../shared/Toast');
+    await runPurgeToCompletion({
+      purged: [],
+      skipped: [
+        { deviceId: DEV_1, code: 'UNINSTALL_NOT_CONFIRMED' },
+        { deviceId: DEV_2, code: 'UNINSTALL_NOT_CONFIRMED' },
+      ],
+    });
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith({
+        type: 'warning',
+        message:
+          'No device was deleted. 2 skipped because their agents never confirmed the uninstall. Delete them one at a time from the device page.',
+      }),
+    );
+  });
+
   it('surfaces a whole-selection rejection and never starts polling', async () => {
     const { startBulkPurge, fetchPurgeRun } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
