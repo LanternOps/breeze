@@ -225,7 +225,15 @@ export type McpExemptReason =
    * wave lands. First use: tickets/links.ts (#8592 W02 routes), flipped to
    * manage_tickets list_links/link_ticket/unlink_ticket by W04 (#8596).
    */
-  | 'tool_in_later_wave';
+  | 'tool_in_later_wave'
+  /**
+   * A staff-facing rendering of data the AI already reaches through the
+   * per-domain read tools: the "Customer view" preview of what the portal
+   * shows (#9350). It aggregates every portal read model into one payload for a
+   * human to look at; an AI tool would only re-emit that data in bulk, past the
+   * tool-output limits, without adding a capability. Decided in #11129.
+   */
+  | 'staff_ui_render';
 
 export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'accessReviews.ts': { tools: ['manage_access_reviews'] }, // W11 (#6781): list/get/create/decide items; completing a review (revokes members) stays human-only
@@ -608,7 +616,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'orgDocuments.ts': { tools: ['list_org_documents', 'manage_org_documents'] },
   'orgKeyDates.ts': { tools: ['manage_key_dates'] },
   'orgMerge.ts': { exempt: 'human_only_tenant_restructure', note: 'Org merge preview/merge/run status -- rewrites which tenant owns the data.' },
-  'orgPortalPreview.ts': { exempt: 'tool_in_later_wave', note: 'Staff read-only Customer view of the portal read models (#9350). No AI tool yet; tracked in #11129 (org portal preview tool gap) (the frozen-gap list takes no new entries).' },
+  'orgPortalPreview.ts': { exempt: 'staff_ui_render', note: 'Staff read-only Customer view of the portal read models (#9350). Permanently no AI action (#11129): the route is already gated by orgs:read plus each section\'s staff permission, and every section\'s data is reachable through its own read tool; manage_org_portal_settings stays get/update/set_sensitive_access.' },
   'orgPortalSettings.ts': { tools: ['manage_org_portal_settings'] }, // W18 PR B (#6789): get, update, four-eyes set_sensitive_access; customCss stays human
   'orgPortalUsers.ts': { tools: ['list_portal_users'] }, // W18 (#6789): invite / disable / delete stay identity, no tool action (W18-1)
   'orgSummary.ts': { tools: ['get_org_summary'] }, // W18 (#6789)

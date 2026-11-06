@@ -47,6 +47,10 @@ describe('MCP_COVERAGE (route module → tool surface)', () => {
   it('pins devices/bulkSite.ts as human_only_bulk_destructive (#9796; an MFA-gated bulk write stays off the AI surface)', () => {
     expect(MCP_COVERAGE['devices/bulkSite.ts']).toMatchObject({ exempt: 'human_only_bulk_destructive' });
   });
+  it('pins orgPortalPreview.ts as a permanent staff_ui_render exemption (#11129; the staff Customer view has no AI action, and the route is already gated by orgs:read plus the per-section staff permissions)', () => {
+    expect(MCP_COVERAGE['orgPortalPreview.ts']).toMatchObject({ exempt: 'staff_ui_render' });
+    expect((MCP_COVERAGE['orgPortalPreview.ts'] as { note?: string }).note).toMatch(/#11129/);
+  });
   it('pins partnerSettingsInheritance.ts to its read tool (#9763; the tool_in_later_wave exemption is burned down)', () => {
     expect(MCP_COVERAGE['partnerSettingsInheritance.ts']).toEqual({ tools: ['get_partner_settings_inheritance'] });
   });
