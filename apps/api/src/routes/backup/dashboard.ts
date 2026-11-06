@@ -1,13 +1,12 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { eq, and, sql, gte, lte, inArray, isNotNull, max } from 'drizzle-orm';
+import { eq, and, sql, gte, lte, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import { requirePermission } from '../../middleware/auth';
 import {
   backupConfigs,
   backupJobs,
   backupSnapshots,
-  backupStorageSessions,
   devices,
   IN_FLIGHT_BACKUP_JOB_STATUSES,
   RESTORABLE_BACKUP_JOB_STATUSES,
@@ -22,11 +21,12 @@ import {
 } from '../../services/backupJobOrdering';
 import {
   classifyBackupFailure,
+  deriveBackupJobDataAccounting,
   splitReparseSkipNotice,
   stripInlineIndexDropNote,
   type ActiveBackupJob,
 } from '@breeze/shared';
-import { getNextRun, resolveScopedOrgId } from './helpers';
+import { getNextRun, loadJobResumedAt, resolveScopedOrgId } from './helpers';
 import { usageHistoryQuerySchema } from './schemas';
 import {
   getFirstPartyCoverageForDevices,
@@ -495,6 +495,7 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
     errorCount: r.job.errorCount ?? null,
     errorLog: r.job.errorLog ?? null,
     failureCategory: classifyBackupFailure({ status: r.job.status, errorLog: r.job.errorLog }),
+    dataAccounting: deriveBackupJobDataAccounting(r.job),
   }));
 
   return c.json({
@@ -573,24 +574,7 @@ async function loadActiveBackupJobs(jobs: BackupJobRow[]): Promise<ActiveBackupJ
   const active = jobs.filter((j) => isInFlight(j.status)).sort(compareActiveJobs);
   if (active.length === 0) return [];
 
-  // Runs inside the request's withDbAccessContext, so RLS scopes it to the
-  // caller's orgs; the job ids already came from this org's device.
-  const resumedRows = await db
-    .select({ jobId: backupStorageSessions.jobId, resumedAt: max(backupStorageSessions.resumedAt) })
-    .from(backupStorageSessions)
-    .where(
-      and(
-        inArray(backupStorageSessions.jobId, active.map((j) => j.id)),
-        eq(backupStorageSessions.scope, 'snapshot_write'),
-        isNotNull(backupStorageSessions.resumedAt),
-      ),
-    )
-    .groupBy(backupStorageSessions.jobId);
-
-  const resumedByJob = new Map<string, Date>();
-  for (const row of resumedRows) {
-    if (row.jobId && row.resumedAt) resumedByJob.set(row.jobId, new Date(row.resumedAt));
-  }
+  const resumedByJob = await loadJobResumedAt(active.map((j) => j.id));
 
   return active.map((j) => ({
     id: j.id,
@@ -699,6 +683,7 @@ dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ
             // off the live volume. Already secret-redacted at write time.
             errorLog: lastJob.errorLog ?? null,
             failureCategory: classifyBackupFailure({ status: lastJob.status, errorLog: lastJob.errorLog }),
+            dataAccounting: deriveBackupJobDataAccounting(lastJob),
           }
         : null,
       lastSuccessAt: lastSuccess?.completedAt?.toISOString() ?? null,
