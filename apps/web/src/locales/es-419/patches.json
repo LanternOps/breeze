@@ -356,6 +356,7 @@
     "tabs": {
       "compliance": "Cumplimiento",
       "patches": "Parches",
+      "vendorUpdates": "Actualizaciones de fabricante",
       "jobs": "Trabajos",
       "updateRings": "Actualizar anillos"
     },
@@ -673,5 +674,38 @@
       "hold_one": "Retraso de {{count}} día",
       "hold_other": "Retraso de {{count}} días"
     }
+  },
+  "vendorUpdates": {
+    "description": "La herramienta de actualización de cada fabricante, mantenida en ejecución con una programación mediante una política de configuración. Los dispositivos a los que no llega ninguna política así aparecen como No administrado.",
+    "loadError": "No se pudieron cargar las actualizaciones de fabricante.",
+    "retry": "Intentar de nuevo",
+    "pickOrganization": "Selecciona una organización para ver sus actualizaciones de fabricante.",
+    "loading": "Cargando actualizaciones de fabricante",
+    "empty": "Ningún dispositivo coincide con este filtro.",
+    "vendorFilter": "Fabricante",
+    "allVendors": "Todos los fabricantes",
+    "state": {
+      "upToDate": "Al día",
+      "overdue": "Vencido",
+      "failing": "Con fallas",
+      "notSupported": "No admitido",
+      "notManaged": "No administrado",
+      "waitingForReboot": "Esperando reinicio",
+      "rebootOverdue": "Reinicio vencido"
+    },
+    "columns": {
+      "device": "Dispositivo",
+      "organization": "Organización",
+      "site": "Sitio",
+      "vendor": "Fabricante",
+      "state": "Estado",
+      "lastRun": "Última ejecución",
+      "lastSuccess": "Último éxito"
+    },
+    "never": "Nunca",
+    "scheduleNotHandedBack": "Breeze no pudo devolver la programación de la herramienta del fabricante",
+    "range": "{{from}}–{{to}} de {{total}}",
+    "previous": "Anterior",
+    "next": "Siguiente"
   }
 }
