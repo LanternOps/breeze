@@ -33,7 +33,7 @@
       "search": "Pesquisar...",
       "loading": "Carregando...",
       "restrictThisAssignmentToDevicesWithSpecific": "Restrinja esta atribuição a dispositivos com funções específicas. Deixe em branco para aplicar a todas as funções.",
-      "lowerValuesOverrideHigherOnesWhenMultiple": "Valores menores substituem valores maiores quando várias políticas têm como destino o mesmo dispositivo no mesmo nível.",
+      "lowerValuesOverrideHigherOnesWhenMultiple": "Valores menores substituem valores maiores quando várias políticas têm como destino o mesmo dispositivo no mesmo nível. As políticas de software são cumulativas: a prioridade de atribuição não remove outras políticas de software aplicáveis.",
       "partner": "partner",
       "scopeOfTheAssignmentMoreSpecificLevels": "Escopo da atribuição. Níveis mais específicos (dispositivo) têm precedência sobre níveis mais amplos (organização).",
       "organization": "organization",
@@ -1152,7 +1152,9 @@
         "executableRulesInThisPolicyAlsoGate": "As regras de executáveis desta política também controlam as solicitações de elevação do UAC nos dispositivos atribuídos — uma correspondência com a lista de permissões aprova automaticamente, e uma correspondência com a lista de bloqueios nega automaticamente, antes da execução de qualquer regra do PAM.",
         "rules": "Regras (",
         "and": "...e",
-        "more": "mais"
+        "more": "mais",
+        "addSoftwarePolicy": "Adicionar política de software",
+        "policiesApplyTogether": "Todas as políticas de software vinculadas são aplicadas em conjunto, incluindo as herdadas de atribuições de escopo mais amplo. Adicionar uma política não substitui outra política de software."
       },
       "vulnerabilityTab": {
         "enableVulnerabilityScanning": "Ativar verificação de vulnerabilidades",

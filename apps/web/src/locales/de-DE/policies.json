@@ -33,7 +33,7 @@
       "search": "Suchen...",
       "loading": "Laden...",
       "restrictThisAssignmentToDevicesWithSpecific": "Beschränken Sie diese Zuweisung auf Geräte mit bestimmten Rollen. Lassen Sie das Feld leer, um es auf alle Rollen anzuwenden.",
-      "lowerValuesOverrideHigherOnesWhenMultiple": "Niedrigere Werte haben Vorrang vor höheren, wenn mehrere Richtlinien auf derselben Ebene auf dasselbe Gerät abzielen.",
+      "lowerValuesOverrideHigherOnesWhenMultiple": "Niedrigere Werte haben Vorrang vor höheren, wenn mehrere Richtlinien auf derselben Ebene auf dasselbe Gerät abzielen. Softwarerichtlinien ergänzen sich: Die Zuweisungspriorität entfernt keine anderen geltenden Softwarerichtlinien.",
       "partner": "Partner",
       "scopeOfTheAssignmentMoreSpecificLevels": "Umfang des Auftrags. Spezifischere Ebenen (Gerät) haben Vorrang vor umfassenderen (Organisation).",
       "organization": "Organisation",
@@ -1152,7 +1152,9 @@
         "executableRulesInThisPolicyAlsoGate": "Ausführungsregeln in dieser Richtlinie steuern auch UAC-Rechteerhöhungsanfragen auf zugewiesenen Geräten: Ein Treffer in der Zulassungsliste wird automatisch genehmigt, ein Treffer in der Sperrliste automatisch abgelehnt, bevor PAM-Regeln ausgewertet werden.",
         "rules": "Regeln (",
         "and": "...und",
-        "more": "mehr"
+        "more": "mehr",
+        "addSoftwarePolicy": "Softwarerichtlinie hinzufügen",
+        "policiesApplyTogether": "Alle verknüpften Softwarerichtlinien gelten gemeinsam, einschließlich der Richtlinien, die aus übergeordneten Zuweisungen geerbt werden. Das Hinzufügen einer Richtlinie ersetzt keine andere Softwarerichtlinie."
       },
       "vulnerabilityTab": {
         "enableVulnerabilityScanning": "Aktivieren Sie das Scannen auf Schwachstellen",

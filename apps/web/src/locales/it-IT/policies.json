@@ -33,7 +33,7 @@
       "search": "Cerca...",
       "loading": "Caricamento...",
       "restrictThisAssignmentToDevicesWithSpecific": "Limita questa assegnazione ai dispositivi con ruoli specifici. Lascia vuoto per applicarla a tutti i ruoli.",
-      "lowerValuesOverrideHigherOnesWhenMultiple": "I valori più bassi sovrascrivono quelli più alti quando più criteri hanno come destinazione lo stesso dispositivo allo stesso livello.",
+      "lowerValuesOverrideHigherOnesWhenMultiple": "I valori più bassi sovrascrivono quelli più alti quando più criteri hanno come destinazione lo stesso dispositivo allo stesso livello. I criteri software si sommano: la priorità di assegnazione non rimuove gli altri criteri software applicabili.",
       "partner": "partner",
       "scopeOfTheAssignmentMoreSpecificLevels": "Ambito dell'assegnazione. I livelli più specifici (dispositivo) hanno la precedenza su quelli più ampi (organizzazione).",
       "organization": "organization",
@@ -1152,7 +1152,9 @@
         "executableRulesInThisPolicyAlsoGate": "Le regole sugli eseguibili in questo criterio controllano anche le richieste di elevazione UAC sui dispositivi assegnati: una corrispondenza allowlist approva automaticamente, una corrispondenza blocklist nega automaticamente, prima dell'esecuzione di qualsiasi regola PAM.",
         "rules": "Regole (",
         "and": "...e",
-        "more": "altri"
+        "more": "altri",
+        "addSoftwarePolicy": "Aggiungi criterio software",
+        "policiesApplyTogether": "Tutti i criteri software collegati si applicano insieme, compresi quelli ereditati da assegnazioni con ambito più ampio. L’aggiunta di un criterio non sostituisce un altro criterio software."
       },
       "vulnerabilityTab": {
         "enableVulnerabilityScanning": "Abilita scansione vulnerabilità",
