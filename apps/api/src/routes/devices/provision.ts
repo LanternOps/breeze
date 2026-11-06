@@ -3,7 +3,6 @@ import { zValidator } from '../../lib/validation';
 import { and, eq, isNull } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransaction } from '../../db';
-import { pgErrorCode } from '../../utils/pgErrors';
 import { devices, organizations, sites, provisionCredentialHandles } from '../../db/schema';
 import {
   authMiddleware,
@@ -411,16 +410,11 @@ provisionRoutes.get('/provision/fetch/:token', async (c) => {
   }
 
   // ── 5. Hard-delete so plaintext secrets don't linger at rest ────────────
-  // Savepoint so a failed delete cannot poison the request transaction (#11203).
-  await withDbTransaction(async () => db
+  // Fail closed: no catch. A failed delete must fail the request so the consume
+  // above rolls back with it; the plaintext never outlives a successful consume.
+  await db
     .delete(provisionCredentialHandles)
-    .where(eq(provisionCredentialHandles.id, row.id)))
-    .catch((err) => {
-      // The consume commits regardless, so the plaintext stays at rest until a
-      // sweep removes it: report it (#11203). Never log the row's secrets.
-      console.error('[provision] failed to delete consumed credential handle', { handleId: row.id, code: pgErrorCode(err) ?? (err instanceof Error ? err.name : 'unknown') });
-      captureException(err instanceof Error ? err : new Error(String(err)));
-    });
+    .where(eq(provisionCredentialHandles.id, row.id));
 
   writeRouteAudit(c, {
     orgId: row.orgId,

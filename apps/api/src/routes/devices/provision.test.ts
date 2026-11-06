@@ -659,6 +659,35 @@ describe('POST /devices/provision', () => {
       );
     });
 
+    it('fails closed when the delete of the consumed handle fails: no 200, no credentials returned', async () => {
+      mockHandleSelect([
+        {
+          id: 'handle-1',
+          orgId: ORG_ID,
+          deviceId: 'device-prov-id',
+          credentials: CONFIG,
+          expiresAt: new Date(Date.now() + 60_000),
+          consumedAt: null,
+        },
+      ]);
+      mockHandleConsume([{ id: 'handle-1' }]);
+      // The delete rejects. The error must reach the request transaction so the
+      // consume rolls back, rather than being swallowed into a 200 that leaves
+      // the plaintext at rest.
+      const failing: any = {
+        where: vi.fn(() => failing),
+        catch: vi.fn((cb: any) => Promise.reject(new Error('delete failed')).catch(cb)),
+        then: (_res: any, rej: any) => Promise.reject(new Error('delete failed')).then(_res, rej),
+      };
+      vi.mocked(db.delete).mockReturnValue(failing);
+      vi.mocked(writeRouteAudit).mockClear();
+
+      const res = await fetchReq();
+      expect(res.status).toBe(500);
+      expect(await res.text()).not.toContain('SECRET-KEY');
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
     it('404s a second fetch of an already-consumed handle', async () => {
       // Row exists but consume UPDATE returns empty (lost the single-use race).
       mockHandleSelect([
