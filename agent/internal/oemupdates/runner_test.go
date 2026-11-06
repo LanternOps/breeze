@@ -77,7 +77,10 @@ func newRunFixture(t *testing.T) *runFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 11, 18, 1, 5, 0, 0, time.UTC)
+	// Today, not a fixed date: the run's context deadline runs on the real clock
+	// and is measured from this one, so a date in the past starts every run
+	// with its context already expired.
+	now := time.Now().UTC().Truncate(time.Second)
 	f := &runFixture{
 		lane:  l,
 		ver:   &fakeVerifier{publisher: "Dell Inc"},
@@ -397,24 +400,37 @@ func withRunDeadline(t *testing.T, d time.Duration) {
 	t.Cleanup(func() { runDeadline = prev })
 }
 
+// newOverdueRunFixture is a run whose context deadline has already passed on the
+// real clock, which contexts run on, while the run's own clock, which recheck and
+// the result mapping read, is still before it. The tool always starts, however
+// long a loaded machine takes to reach it, and starts with the deadline in force.
+// passDeadline moves the run's clock to the deadline: an Apply that overran.
+func newOverdueRunFixture(t *testing.T) (f *runFixture, passDeadline func()) {
+	t.Helper()
+	withRunDeadline(t, time.Minute)
+	f = newRunFixture(t)
+	start := time.Now().Add(-time.Hour)
+	f.clock.Set(start)
+	f.req.NotAfter = start.Add(4 * time.Hour)
+	return f, func() { f.clock.Set(start.Add(time.Minute)) }
+}
+
 // Review Focus 5: at the deadline a driver-only run is killed and fails.
 func TestDriverOnlyRunKilledAtDeadline(t *testing.T) {
-	withRunDeadline(t, 50*time.Millisecond)
-	f := newRunFixture(t)
-	f.deps.Clock = nil // context deadlines run on the real clock
-	f.req.NotAfter = time.Now().Add(time.Hour)
+	f, _ := newOverdueRunFixture(t)
 	f.req.Categories = []string{CategoryDriver}
 	f.lane.apply = func(ctx context.Context, tool ToolState, plan FilterPlan, ex Exec) (RunResult, error) {
-		select {
-		case <-ctx.Done():
-			return RunResult{Lane: LaneDell}, ctx.Err()
-		case <-time.After(5 * time.Second):
-			return RunResult{Lane: LaneDell, Outcome: OutcomeSuccess}, nil
+		if err := ctx.Err(); err != nil {
+			return RunResult{Lane: LaneDell}, err
 		}
+		return RunResult{Lane: LaneDell, Outcome: OutcomeSuccess}, nil
 	}
 	r := f.run()
 	if r.Outcome != OutcomeFailed || errCode(r) != "deadline_exceeded" {
 		t.Fatalf("result = %+v", r)
+	}
+	if len(f.lane.Applied()) != 1 {
+		t.Fatal("refused before the tool started; the deadline never reached the tool")
 	}
 }
 
@@ -422,18 +438,14 @@ func TestDriverOnlyRunKilledAtDeadline(t *testing.T) {
 // When it ends late, what the tool reported stands (a reboot it needs must
 // still be scheduled) and the overrun is named in errorCode.
 func TestFlashNotKilledAtDeadline(t *testing.T) {
-	withRunDeadline(t, 50*time.Millisecond)
-	f := newRunFixture(t)
-	f.deps.Clock = nil
-	f.req.NotAfter = time.Now().Add(time.Hour)
+	f, passDeadline := newOverdueRunFixture(t)
 	f.req.Categories = []string{CategoryBIOS}
 	f.lane.apply = func(ctx context.Context, tool ToolState, plan FilterPlan, ex Exec) (RunResult, error) {
-		select {
-		case <-ctx.Done():
-			return RunResult{Lane: LaneDell}, ctx.Err()
-		case <-time.After(300 * time.Millisecond):
-			return RunResult{Lane: LaneDell, Outcome: OutcomeSuccessRebootRequired, RebootRequired: true, RawExitCode: int64Ptr(1)}, nil
+		if err := ctx.Err(); err != nil {
+			return RunResult{Lane: LaneDell}, err
 		}
+		passDeadline()
+		return RunResult{Lane: LaneDell, Outcome: OutcomeSuccessRebootRequired, RebootRequired: true, RawExitCode: int64Ptr(1)}, nil
 	}
 	r := f.run()
 	if r.Outcome != OutcomeSuccessRebootRequired || errCode(r) != "flash_overran_deadline" {
@@ -445,17 +457,44 @@ func TestFlashNotKilledAtDeadline(t *testing.T) {
 }
 
 func TestFlashOverrunWithNoToolResultIsInterrupted(t *testing.T) {
-	withRunDeadline(t, 50*time.Millisecond)
-	f := newRunFixture(t)
-	f.deps.Clock = nil
-	f.req.NotAfter = time.Now().Add(time.Hour)
+	f, passDeadline := newOverdueRunFixture(t)
 	f.req.Categories = []string{CategoryBIOS}
+	var held bool
 	f.lane.apply = func(ctx context.Context, tool ToolState, plan FilterPlan, ex Exec) (RunResult, error) {
-		time.Sleep(150 * time.Millisecond)
+		_, held = f.guard.Active()
+		passDeadline()
 		return RunResult{Lane: LaneDell}, errors.New("tool vanished")
 	}
 	if r := f.run(); r.Outcome != OutcomeInterrupted || errCode(r) != "flash_overran_deadline" {
 		t.Fatalf("result = %+v", r)
+	}
+	if !held {
+		t.Fatal("the overrun was not under the flash guard")
+	}
+}
+
+// The other side of the overrun: a deadline that passes before the flash guard
+// is entered stops the run. Nothing irreversible began, so it is refused, not
+// interrupted, and no tool starts and no verification is owed.
+func TestDeadlinePassedBeforeTheInstallIsRefused(t *testing.T) {
+	f, passDeadline := newOverdueRunFixture(t)
+	f.req.Categories = []string{CategoryBIOS}
+	f.lane.filter = func(cats, blocked []string) (FilterPlan, error) {
+		passDeadline()
+		return FilterPlan{Categories: cats, BlockedIDs: blocked}, nil
+	}
+	if r := f.run(); r.Outcome != OutcomeFailed || errCode(r) != "deadline_exceeded" {
+		t.Fatalf("result = %+v", r)
+	}
+	if len(f.lane.Applied()) != 0 {
+		t.Fatal("a tool started past the run deadline")
+	}
+	m, err := ReadMarker(f.store)
+	if err != nil || m.FlashStarted {
+		t.Fatalf("marker = %+v, %v; the flash guard must not be entered past the deadline", m, err)
+	}
+	if p, _ := readPendingVerifications(f.store); len(p) != 0 {
+		t.Fatalf("pending = %+v; nothing ran, so nothing is owed", p)
 	}
 }
 

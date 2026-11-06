@@ -15,8 +15,10 @@
  */
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import {
+  agentSupportsOemUpdateRelease,
   agentSupportsOemUpdates,
   OEM_LANES,
+  oemUpdateReleasePayloadSchema,
   oemUpdateRunPayloadSchema,
   type OemCategory,
   type OemDispatchRefusal,
@@ -292,6 +294,112 @@ async function prepareRun(input: OemDispatchInput): Promise<Prepared> {
     .onConflictDoUpdate({ target: deviceOemUpdateStatus.deviceId, set: run });
 
   return { ok: true, commandId: dispatched.command.id, categories, skippedCategories, dispatched };
+}
+
+export type OemReleaseRefusal = Extract<
+  OemDispatchRefusal,
+  | 'agent_too_old'
+  | 'ephemeral'
+  | 'parked'
+  | 'offline'
+  | 'not_applicable'
+  | 'device_not_found'
+  | 'decommissioned'
+  | 'trust_denied'
+  | 'cancelled_at_claim'
+> | 'release_in_flight';
+
+export type OemReleaseResult =
+  | { ok: true; commandId: string }
+  | { ok: false; refusal: OemReleaseRefusal };
+
+type PreparedRelease =
+  | { ok: false; refusal: OemReleaseRefusal }
+  | { ok: true; commandId: string; dispatched: Extract<DispatchDeviceCommandResult, { ok: true }> };
+
+async function prepareRelease(input: {
+  deviceId: string;
+  expectedOrgId: string;
+  lane: OemLane;
+  actorUserId: string | null;
+}): Promise<PreparedRelease> {
+  const [device] = await db
+    .select({
+      id: devices.id,
+      orgId: devices.orgId,
+      orgType: organizations.type,
+      status: devices.status,
+      agentVersion: devices.agentVersion,
+      isEphemeral: devices.isEphemeral,
+    })
+    .from(devices)
+    .innerJoin(organizations, eq(organizations.id, devices.orgId))
+    .where(eq(devices.id, input.deviceId))
+    .limit(1);
+
+  if (!device || device.orgId !== input.expectedOrgId) return { ok: false, refusal: 'device_not_found' };
+  if (device.isEphemeral) return { ok: false, refusal: 'ephemeral' };
+  if (isUnassignedPoolOrgType(device.orgType)) return { ok: false, refusal: 'parked' };
+  if (device.status === 'decommissioned') return { ok: false, refusal: 'decommissioned' };
+  // Fails closed, and before anything is queued: an older agent would only fail an unknown type.
+  if (!agentSupportsOemUpdateRelease(device.agentVersion)) return { ok: false, refusal: 'agent_too_old' };
+
+  await db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`oem_update_release:${device.id}`}, 0))`);
+  const inFlight = await db
+    .select({ commandId: deviceCommands.id })
+    .from(deviceCommands)
+    .where(and(
+      eq(deviceCommands.deviceId, device.id),
+      eq(deviceCommands.type, CommandTypes.OEM_UPDATE_RELEASE),
+      inArray(deviceCommands.status, ['pending', 'sent']),
+    ))
+    .limit(1);
+  if (inFlight.length > 0) return { ok: false, refusal: 'release_in_flight' };
+
+  const payload = oemUpdateReleasePayloadSchema.parse({ lane: input.lane });
+
+  // No offlinePolicy override: the registry class is `standard`, which queues, so
+  // the release waits for an offline device.
+  const dispatched = await dispatchDeviceCommand({
+    deviceId: device.id,
+    type: CommandTypes.OEM_UPDATE_RELEASE,
+    payload,
+    ...(input.actorUserId ? { userId: input.actorUserId } : {}),
+    expectedOrgId: input.expectedOrgId,
+    deferDelivery: true,
+  });
+  if (!dispatched.ok) return { ok: false, refusal: refusalForEnqueueCode(dispatched.code) as OemReleaseRefusal };
+
+  return { ok: true, commandId: dispatched.command.id, dispatched };
+}
+
+/**
+ * Hands a vendor tool's own update schedule back to the device (restores what Breeze
+ * changed when it took the schedule over). Queued only here
+ * (`oemUpdateExposure.contract.test.ts`).
+ *
+ * Deliberately does NOT check the env flag, the manifest gates or the kill switches:
+ * a release must still reach a device after the feature is switched off, because that
+ * is exactly when a schedule has to be handed back. It still refuses a foreign,
+ * decommissioned, ephemeral or parked device and an agent below the release minimum,
+ * and it queues while the device is offline. It does not write the status row; the
+ * scheduler owns `takeover_state`.
+ */
+export async function dispatchOemUpdateRelease(input: {
+  deviceId: string;
+  expectedOrgId: string;
+  lane: OemLane;
+  actorUserId: string | null;
+}): Promise<OemReleaseResult> {
+  const prepared = await runOutsideDbContext(() => withSystemDbAccessContext(() => prepareRelease(input)));
+  if (!prepared.ok) return prepared;
+
+  const { commandId, dispatched } = prepared;
+  if (dispatched.deliver) {
+    const delivered = await dispatched.deliver();
+    if (delivered.ok && delivered.delivery === 'cancelled') return { ok: false, refusal: 'cancelled_at_claim' };
+  }
+  return { ok: true, commandId };
 }
 
 export async function dispatchOemUpdateRun(input: OemDispatchInput): Promise<OemDispatchResult> {

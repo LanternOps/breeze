@@ -11,5 +11,10 @@ What is not confirmed, and what W10 must capture on real hardware:
 - **`-updateDeviceCategory`.** The policy's four categories map to `-updateType` only, and nothing in v1 sets a device category, so the lane does not pass it.
 - **Installer arguments.** DCU's installer is run with `/s /l=<log>` and the .NET Desktop Runtime with `/install /quiet /norestart /log <log>`. Both are documented switches, not observed ones.
 - **Signer names and download hosts** in `allowlist.json`.
+- **Schedule takeover (W06).** `settings-export.xml` is a guess at what `/configure -exportSettings=<folder>` writes: nested elements with a `Name` attribute, the leaves being settings. The takeover assumes only that shape, finds the one `.xml` file the export wrote, ignores `*ModifiedTime`/`*TimeSaved` timestamps, and learns what `/configure -scheduleManual -updatesNotification=disable` changed by comparing an export before and after. W10 must confirm:
+  - the export's file name and schema, and that two exports with no change in between differ only in timestamps;
+  - that `/configure -importSettings=<file>` accepts a file built from an export with some settings replaced, and what its exit codes are;
+  - what a policy-locked install (settings controlled by Dell Command | Configure or ADMX) does on `/configure`: a no-op read back as `policy_locked`, or an exit code;
+  - that a device already set to a manual schedule with notifications off reads as `policy_locked` on its first takeover (nothing changed, so nothing is owned). This is the expected answer, not a bug: Breeze then owns nothing and a release restores nothing.
 
 W10 replaces these files with scrubbed captures (no hostnames, serials, usernames, service tags or customer data) and a W10 task deletes `doc-derived/`.
