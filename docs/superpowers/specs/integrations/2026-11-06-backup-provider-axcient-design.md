@@ -1,3 +1,7 @@
+---
+tracking_issue: LanternOps/breeze#11269
+---
+
 # Backup provider: Axcient x360Recover (design)
 
 **Status:** APPROVED 2026-11-06 (Todd, defaults taken). Decision 1 (live account) is still owed and blocks W03 only.

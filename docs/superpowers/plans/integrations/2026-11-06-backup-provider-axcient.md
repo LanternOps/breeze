@@ -1,3 +1,7 @@
+---
+tracking_issue: LanternOps/breeze#11269
+---
+
 # Axcient x360Recover Backup Provider Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -26,7 +30,7 @@
 - Fixtures are synthetic: client names like `Synthetic Client A`, hosts like `SYN-SRV-01`, documentation MACs, the fake key `test-axcient-key-0000`. No real customer data.
 - Scoped tests run as `cd apps/<pkg> && npx vitest run <file>`. Never use `pnpm --filter <pkg> test -- --run <path>`. Integration suites need `pnpm test-stack up` first and `pnpm test-stack down` after.
 - API typecheck: `cd apps/api && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit; echo "exit $?"`. Read the exit code. Never pipe it to `tail`, which hides an OOM.
-- Branches follow `feature/<parent#>-axcient-backup-provider/wave-<sub#>` once `register_feature` has run. Append ` (#<wave sub-issue>)` to each commit subject below.
+- Branches follow `feature/<parent#>-axcient-backup-provider/wave-<sub#>` once `register_feature` has run. Append ` (#<wave>)` to each commit subject below.
 
 ## Review Focus
 
@@ -113,7 +117,7 @@ git commit -m "feat(backup-providers): Axcient x360Recover read-only HTTP client
 Migration body. It is in its own file because a label added by `ALTER TYPE` cannot be used in the transaction that adds it. It writes no rows, so it needs no `breeze.scope` election.
 
 ```sql
--- Axcient x360Recover PARKED -> canonical `paused` (#<W01>). Enum add only.
+-- Axcient x360Recover PARKED -> canonical `paused` (#11270). Enum add only.
 -- The first file that may use the label (2027-01-22-210000-…) sorts after this one. Idempotent.
 ALTER TYPE public.external_backup_status ADD VALUE IF NOT EXISTS 'paused';
 ```
@@ -280,7 +284,7 @@ git commit -m "feat(backup-providers): register the Axcient x360Recover adapter"
 Migration body (DDL only, so no `set_config` is needed):
 
 ```sql
--- Axcient x360Recover AutoVerify evidence (#<W01>). Nullable; Cove and Dropsuite rows stay NULL.
+-- Axcient x360Recover AutoVerify evidence (#11270). Nullable; Cove and Dropsuite rows stay NULL.
 ALTER TABLE backup_provider_devices ADD COLUMN IF NOT EXISTS verified_bootable_at timestamptz;
 ALTER TABLE backup_provider_devices ADD COLUMN IF NOT EXISTS verified_bootable boolean;
 ALTER TABLE backup_provider_devices ADD COLUMN IF NOT EXISTS verified_bootable_failed_checks text[];
