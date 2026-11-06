@@ -439,8 +439,10 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
   // Promise.all above: every statement here shares one connection, so while a
   // failed savepoint waits for its rollback, a sibling's next statement lands
   // in the aborted transaction and fails on the outer scope.
+  let assignedError = false;
   const assignedDevicesRaw = await withDbTransaction(() => resolveAllBackupAssignedDevices(orgId)).catch((err) => {
     console.error(`[BackupDashboard] Failed to resolve assigned devices:`, err instanceof Error ? err.message : err);
+    assignedError = true;
     return [];
   });
   const attention = await resolveAttentionItems(orgId, jobDeviceScope, allowedDeviceIds, noSiteAllowedDevices);
@@ -548,8 +550,9 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
       attentionItems: [...attention.items, ...providerAttention].slice(0, ATTENTION_MAX_ITEMS),
       // Additive, backward-compatible degraded signal: true when the
       // attention-items sub-query failed and the list could not be computed.
-      // The UI must treat this as "unknown", not "all clear".
-      attentionError: attention.error || providerError,
+      // The UI must treat this as "unknown", not "all clear". A failed assigned-
+      // devices read counts: with none known, the overdue list is empty too.
+      attentionError: attention.error || providerError || assignedError,
     },
   });
 });

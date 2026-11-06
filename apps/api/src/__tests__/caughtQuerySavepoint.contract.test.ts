@@ -15,6 +15,9 @@
  * fallback: most of those guard redis, network or agent calls, which an AST
  * cannot tell apart from a catch meant for the query. The degraded-read shape is
  * covered by caughtQueryRequestTransaction.integration.test.ts and the doc rule.
+ * `withSystemDbAccessContext` counts as isolating, though it joins a held context,
+ * and a callback that takes `tx` is trusted to use it. An allowlist key covers a
+ * whole function, so a second catch added inside one is not seen.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
@@ -51,7 +54,7 @@ const ISOLATING_CALLS = new Set([
   'withAuthDbAccessContext',
   'runOutsideDbContext',
 ]);
-const CONSTRAINT_CHECK = /\b(isPgUniqueViolation|isPgForeignKeyViolation|pgErrorCode|customFieldWriteConflict)\b|['"]235(05|03|14)['"]/;
+const CONSTRAINT_CHECK = /\b(isPgUniqueViolation|isPgForeignKeyViolation|pgErrorCode|customFieldWriteConflict|isAssignedContactFkViolation)\b|['"]235(05|03|14)['"]/;
 
 function isCallback(node: ts.Node | undefined): node is ts.ArrowFunction | ts.FunctionExpression {
   return !!node && (ts.isArrowFunction(node) || ts.isFunctionExpression(node));

@@ -7,11 +7,16 @@
  */
 import './setup';
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { eq, sql, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
-import { db, withDbAccessContext } from '../../db';
+import { canonicalizeUnifiResource, type UnifiResource, type UnifiTopologyV1 } from '@breeze/shared';
+import vectors from '../../../../../packages/shared/src/testing/topology-unifi-v1.json';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { topologyIngestFixture } from '../helpers/topologyIngest';
+import { adaptUnifiTopology } from '../../services/topology/unifiAdapter';
+import { currentUnifiCollectorTopology, loadUnifiCollector } from '../../services/topology/unifiAuthority';
 import { contacts, manualAssets } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import type { AiTool } from '../../services/aiTools';
@@ -66,9 +71,8 @@ describe('AI tool safeHandler maps a statement failure and the tool transaction 
     const { out, check } = await runTool(registerPolicyPrereqTools, 'manage_backup_profiles', tenant.orgId, {
       action: 'create', orgId: tenant.orgId, name: TOO_LONG, selections: { file: { enabled: true, paths: ['/data'] } },
     }, auth);
-    // The error must come from the insert, not from input validation.
-    expect(String(out.error)).not.toMatch(/invalid selections/i);
-    expect(out.error).toBeTruthy();
+    // The sanitized thrown-error answer: the failure came from the insert, not validation.
+    expect(String(out.error)).toMatch(/could not complete/i);
     expect(check).toMatchObject({ v: 42 });
   });
 
@@ -77,7 +81,8 @@ describe('AI tool safeHandler maps a statement failure and the tool transaction 
     const { out, check } = await runTool(registerFleetTools, 'manage_groups', tenant.orgId, {
       action: 'create', orgId: tenant.orgId, name: TOO_LONG, type: 'static',
     }, auth);
-    expect(out.error).toBeTruthy();
+    // The sanitized thrown-error answer: an early refusal would read differently.
+    expect(String(out.error)).toMatch(/could not complete/i);
     expect(check).toMatchObject({ v: 42 });
   });
 });
@@ -134,5 +139,51 @@ describe('unifiTopologyAdvertisement degrades inside its savepoint', () => {
     });
     expect(out.advert).toBeNull();
     expect(out.check).toMatchObject({ v: 42 });
+  });
+});
+
+describe('adaptUnifiTopology maps lock contention to producer_busy inside its savepoint', () => {
+  runDb('a locked device row rejects the resource and the ingest request still commits', async () => {
+    const f = await topologyIngestFixture();
+    const integrationId = randomUUID(), collectorId = randomUUID();
+    const sys = <T>(fn: () => Promise<T>) => withSystemDbAccessContext(() => db.transaction(fn));
+    await sys(async () => {
+      await db.execute(sql`INSERT INTO unifi_integrations (id, partner_id, api_key_encrypted) VALUES (${integrationId}::uuid, ${f.partnerId}::uuid, 'k')`);
+      await db.execute(sql`INSERT INTO unifi_collectors (id, integration_id, org_id, site_id, unifi_host_id, collector_device_id, controller_url, local_api_key_encrypted)
+        VALUES (${collectorId}::uuid, ${integrationId}::uuid, ${f.orgId}::uuid, ${f.siteId}::uuid, 'host:1', ${f.deviceId}::uuid, 'https://host-1', 'k')`);
+      await db.execute(sql`INSERT INTO unifi_site_mappings (integration_id, org_id, site_id, unifi_host_id, unifi_site_id)
+        VALUES (${integrationId}::uuid, ${f.orgId}::uuid, ${f.siteId}::uuid, 'host:1', 'site-h')`);
+    });
+    const collector = (await sys(() => loadUnifiCollector(collectorId)))!;
+    const current = (await sys(() => currentUnifiCollectorTopology(f.deviceId, collector)))!;
+    const resource = { ...structuredClone(vectors.vectors[0]!.report.resources.find(r => r.kind === 'device_list')!), controllerSiteId: 'site-h' } as UnifiResource;
+    resource.contentDigest = createHash('sha256').update(canonicalizeUnifiResource(current, resource)).digest('hex');
+    const report = { ...structuredClone(vectors.vectors[0]!.report), producerEpoch: current.producerEpoch, snapshotId: randomUUID(), sequence: '1',
+      capturedAt: new Date(Date.now() - 1000).toISOString(), captureAgeAtSendMs: 0, resources: [resource] } as UnifiTopologyV1;
+
+    // A second connection holds the device row, so the ingest's FOR KEY SHARE NOWAIT fails with 55P03.
+    let release!: () => void;
+    let locked!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const lockTaken = new Promise<void>(resolve => { locked = resolve; });
+    const competitor = runOutsideDbContext(() => withSystemDbAccessContext(() => db.transaction(async () => {
+      await db.execute(sql`SELECT id FROM devices WHERE id=${f.deviceId}::uuid FOR UPDATE`);
+      locked();
+      await held;
+    })));
+    await lockTaken;
+    try {
+      const out = await sys(async () => {
+        const receipt = await adaptUnifiTopology(f.deviceId, collector, report);
+        // A poisoned transaction fails this read with 25P02.
+        const [check] = await db.execute(sql`SELECT 42 AS v`);
+        return { receipt, check };
+      });
+      expect(out.receipt).toMatchObject({ accepted: false, resources: [{ controllerSiteId: 'site-h', accepted: false, reason: 'producer_busy' }] });
+      expect(out.check).toMatchObject({ v: 42 });
+    } finally {
+      release();
+      await competitor;
+    }
   });
 });

@@ -150,6 +150,9 @@ describe('backup dashboard degraded paths inside the request transaction (real P
     const { data } = await res.json();
     expect(data.totals.policies).toBe(0);
     expect(data.totals.jobs).toBe(1);
+    // No assigned devices means no overdue list, so the panel has to say it
+    // could not vouch for that, or it reads as an all-clear.
+    expect(data.attentionError).toBe(true);
     // The first-party attention list is unrelated to assignment and still loads.
     expect(data.attentionItems).toHaveLength(1);
   });

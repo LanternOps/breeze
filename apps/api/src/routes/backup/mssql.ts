@@ -282,7 +282,10 @@ mssqlRoutes.post(
         });
       }
       return c.json({ data });
-    } catch {
+    } catch (err) {
+      // Now reachable for a failed upsert too, so say so: the raw output below
+      // reads as a success with nothing persisted (#11203).
+      console.error('[backup:mssql] discovery result not parsed or not persisted', { deviceId }, err);
       return c.json({ data: result.stdout });
     }
   }

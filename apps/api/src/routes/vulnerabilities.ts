@@ -1003,7 +1003,8 @@ vulnerabilityRoutes.post(
           details: { deviceVulnerabilityIds: rows.map((r) => r.id), title },
         });
         tickets.push({ ticketId: ticket.id, orgId, findingCount: rows.length });
-      } catch {
+      } catch (err) {
+        console.error('[vulnerabilities] ticket creation failed', { orgId, findingCount: rows.length }, err instanceof Error ? err.message : err);
         // TicketServiceError message is dynamic prose; collapse to the closest code.
         for (const r of rows) skipped.push({ id: r.id, reason: 'ticket_create_failed' });
       }

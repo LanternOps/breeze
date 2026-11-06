@@ -414,7 +414,12 @@ provisionRoutes.get('/provision/fetch/:token', async (c) => {
   await withDbTransaction(async () => db
     .delete(provisionCredentialHandles)
     .where(eq(provisionCredentialHandles.id, row.id)))
-    .catch(() => {});
+    .catch((err) => {
+      // The consume commits regardless, so the plaintext stays at rest until a
+      // sweep removes it: report it (#11203). Never log the row's secrets.
+      console.error('[provision] failed to delete consumed credential handle', { handleId: row.id }, err instanceof Error ? err.message : err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    });
 
   writeRouteAudit(c, {
     orgId: row.orgId,
