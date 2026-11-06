@@ -38,7 +38,15 @@ function hasCriticalMetadata(value: unknown): boolean {
   return normalized.some((entry) => entry === 'critical' || entry === 'tier0' || entry === 'tier1');
 }
 
-export async function isCriticalBackupDevice(orgId: string, deviceId: string): Promise<boolean> {
+/**
+ * A failed lookup answers "not critical", so a caller that reports a verdict passes
+ * `onDbReadFailure` and must not treat that answer as known.
+ */
+export async function isCriticalBackupDevice(
+  orgId: string,
+  deviceId: string,
+  onDbReadFailure?: () => void,
+): Promise<boolean> {
   const criticalTags = normalizeConfiguredTags(process.env.BACKUP_CRITICAL_DEVICE_TAGS);
 
   if (isUuid(orgId) && isUuid(deviceId)) {
@@ -57,6 +65,7 @@ export async function isCriticalBackupDevice(orgId: string, deviceId: string): P
       }
     } catch (error) {
       reportBackupDbFallback('[backupVerification] Failed to read device tags for criticality', error);
+      onDbReadFailure?.();
     }
   }
 
@@ -69,6 +78,7 @@ export async function isCriticalBackupDevice(orgId: string, deviceId: string): P
     if (hasCriticalMetadata(asRecord(resolved.settings)?.targets)) return true;
   } catch (error) {
     reportBackupDbFallback('[backupVerification] Failed to resolve backup criticality metadata', error);
+    onDbReadFailure?.();
   }
 
   return false;

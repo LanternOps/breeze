@@ -199,6 +199,8 @@ describe('backup verification with a held context (real PostgreSQL)', () => {
     await failStatementsOn('config_policy_backup_settings');
     const summary = await inHeldContext(t, () => getBackupHealthSummary(t.orgId));
     expect(summary.verification.coveragePercent).toBe(0);
+    // Missing assigned devices also mean missing no-history rows: not "healthy".
+    expect(verificationHealthStatus(summary)).toBe('unknown');
   });
 
   runDb('getBackupHealthSummary: failed criticality checks, run in sequence, count the rows as non-critical and keep the held commit', async () => {
@@ -210,6 +212,18 @@ describe('backup verification with a held context (real PostgreSQL)', () => {
     const summary = await inHeldContext(t, () => getBackupHealthSummary(t.orgId));
     expect(summary.escalations).toEqual({ verificationFailures: 1, criticalVerificationFailures: 0 });
     expect(summary.readiness).toMatchObject({ lowReadinessCount: 1, criticalDevicesAtRisk: 0 });
+    // The failure may be on a critical device, so the verdict cannot claim less.
+    expect(verificationHealthStatus(summary)).toBe('unknown');
+  });
+
+  runDb('getBackupHealthSummary: a failed criticality read alone, with a failed verification and no low readiness, does not read healthy', async () => {
+    const t = await tenant();
+    await persistVerificationToDb({ ...(await verificationRow(t)), status: 'failed' as const });
+    await failStatementsOn('devices');
+    const summary = await inHeldContext(t, () => getBackupHealthSummary(t.orgId));
+    expect(summary.readiness.lowReadinessCount).toBe(0);
+    expect(summary.readFailed).toBe(true);
+    expect(verificationHealthStatus(summary)).toBe('unknown');
   });
 
   runDb('recomputeRecoveryReadinessForDevice: failed backup, bare-metal and readiness statements still score and keep the held commit', async () => {

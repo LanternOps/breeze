@@ -117,13 +117,15 @@ async function addMissingAssignedDevicesToReadiness(
   orgId: string,
   rows: RecoveryReadiness[],
   allowedSiteIds?: readonly string[],
+  onDbReadFailure?: () => void,
 ): Promise<RecoveryReadiness[]> {
   let assignedDevices: BackupAssignedDevice[] = [];
 
   try {
     assignedDevices = await withDbTransactionIfHeld(() => resolveAllBackupAssignedDevices(orgId));
   } catch (error) {
-    console.error(`[BackupReadiness] Failed to resolve assigned devices for readiness listing:`, error instanceof Error ? error.message : error);
+    reportBackupDbFallback('[BackupReadiness] Failed to resolve assigned devices for readiness listing', error);
+    onDbReadFailure?.();
     return rows;
   }
 
@@ -149,6 +151,7 @@ async function addMissingAssignedDevicesToReadiness(
       // it unaugmented drops the synthetic assigned-device rows rather than
       // adding ones we could not confirm are visible — no unscoped row escapes.
       reportBackupDbFallback('[backupVerification] Site-scoped assigned-device lookup failed; skipping synthetic readiness rows', error);
+      onDbReadFailure?.();
       return rows;
     }
   }
@@ -384,7 +387,7 @@ export async function listRecoveryReadiness(
   if (allowedSiteIds?.length === 0) return [];
   const dbRows = await listRecoveryReadinessFromDb(orgId, allowedSiteIds, onDbReadFailure);
   const rows = dbRows ?? (allowedSiteIds ? [] : listRecoveryReadinessFromMemory(orgId));
-  return addMissingAssignedDevicesToReadiness(orgId, rows, allowedSiteIds);
+  return addMissingAssignedDevicesToReadiness(orgId, rows, allowedSiteIds, onDbReadFailure);
 }
 
 // ---- Main readiness computation ----
@@ -580,8 +583,9 @@ export async function getBackupHealthSummary(orgId: string, allowedSiteIds?: rea
 }> {
   // In sequence: each read is its own savepoint when a context is held, and
   // savepoints beside each other on one connection fail together (#11203).
-  // A failed read falls back to an empty list, which would otherwise read as a
-  // healthy fleet. The flag lets the verdict say it does not know.
+  // Every read below can fall back to an empty list or "not critical", which
+  // would otherwise read as a healthy fleet. The flag lets the verdict say it
+  // does not know, so any fallback that feeds the summary must set it.
   let readFailed = false;
   const onDbReadFailure = () => { readFailed = true; };
   const rows = await listBackupVerifications(orgId, { excludeSimulated: true, allowedSiteIds, onDbReadFailure });
@@ -589,7 +593,8 @@ export async function getBackupHealthSummary(orgId: string, allowedSiteIds?: rea
   const assignedResult = await withDbTransactionIfHeld(() => resolveAllBackupAssignedDevices(orgId))
     .then((assigned) => ({ assigned, failed: false as const }))
     .catch((err) => {
-      console.error(`[BackupReadiness] Failed to resolve assigned devices:`, err instanceof Error ? err.message : err);
+      reportBackupDbFallback('[BackupReadiness] Failed to resolve assigned devices', err);
+      onDbReadFailure();
       return { assigned: [] as BackupAssignedDevice[], failed: true as const };
     });
   const now = Date.now();
@@ -613,6 +618,7 @@ export async function getBackupHealthSummary(orgId: string, allowedSiteIds?: rea
         assigned = assigned.filter((device) => visibleIds.has(device.deviceId));
       } catch (error) {
         reportBackupDbFallback('[BackupReadiness] Site-scoped assigned-device lookup failed closed', error);
+        onDbReadFailure();
         assigned = [];
       }
     }
@@ -630,11 +636,11 @@ export async function getBackupHealthSummary(orgId: string, allowedSiteIds?: rea
   const lowReadiness = readiness.filter((row) => row.readinessScore < BACKUP_LOW_READINESS_THRESHOLD);
   const criticalFailures: typeof failedLast24h = [];
   for (const row of failedLast24h) {
-    if (await isCriticalBackupDevice(orgId, row.deviceId)) criticalFailures.push(row);
+    if (await isCriticalBackupDevice(orgId, row.deviceId, onDbReadFailure)) criticalFailures.push(row);
   }
   const criticalReadinessRisk: typeof lowReadiness = [];
   for (const row of lowReadiness) {
-    if (await isCriticalBackupDevice(orgId, row.deviceId)) criticalReadinessRisk.push(row);
+    if (await isCriticalBackupDevice(orgId, row.deviceId, onDbReadFailure)) criticalReadinessRisk.push(row);
   }
 
   const averageScore = readiness.length > 0
