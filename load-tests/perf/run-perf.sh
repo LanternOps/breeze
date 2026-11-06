@@ -35,6 +35,8 @@ go_dur() {
   echo "$out"
 }
 
+INJECT_ALLOW_NON2XX=20
+
 usage() { echo "usage: run-perf.sh --profile nightly-200|smoke --out-dir <dir> [--label clean|inject] | --storm <scenario> --out-dir <dir> [-- storm.sh flags...]" >&2; exit 64; }
 
 PROFILE=""; OUT=""; LABEL="clean"; STORM=""; STORM_ARGS=()
@@ -216,7 +218,11 @@ if [ "$sim_rc" -ne 0 ]; then
 fi
 
 # --- 6. Acceptance: a failing report means the run measured something else.
-if ! "$SIM/check-acceptance.sh" report "$OUT/agentsim.json"; then
+# Only the inject self-test gets a non-2xx allowance: its deliberate event-loop
+# block makes the proxy answer a few 502s. Clean, nightly and storm runs keep zero.
+ACCEPT_ARGS=()
+[ "$LABEL" = inject ] && ACCEPT_ARGS=(--allow-non2xx "$INJECT_ALLOW_NON2XX")
+if ! "$SIM/check-acceptance.sh" report ${ACCEPT_ARGS[@]+"${ACCEPT_ARGS[@]}"} "$OUT/agentsim.json"; then
   echo "run-perf: check-acceptance.sh report failed; run is invalid" >&2
   exit 2
 fi

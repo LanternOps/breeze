@@ -259,6 +259,74 @@ test('run-perf.sh rejects unknown profiles and labels (64)', () => {
   assert.equal(run(fx, 'run-perf.sh', ['--profile', 'smoke']).code, 64);
 });
 
+// --- inject acceptance allowance --------------------------------------------
+const ACCEPT = path.join(HERE, '..', 'agentsim', 'check-acceptance.sh');
+
+function acceptanceReport(non2xx) {
+  const r = JSON.parse(readFileSync(path.join(HERE, 'fixtures', 'agentsim-report.json'), 'utf8'));
+  if (non2xx > 0) r.routes[0].status = { ...r.routes[0].status, 502: non2xx };
+  const file = path.join(mkdtempSync(path.join(tmpdir(), 'accept-')), 'agentsim.json');
+  writeFileSync(file, JSON.stringify(r));
+  return file;
+}
+
+function accept(non2xx, extra = []) {
+  const r = spawnSync('bash', [ACCEPT, 'report', ...extra, acceptanceReport(non2xx)], { encoding: 'utf8', cwd: HERE });
+  return { code: r.status, out: r.stdout + r.stderr };
+}
+
+test('check-acceptance.sh report: 3 non-2xx fail at the default (zero) allowance', () => {
+  const r = accept(3);
+  assert.match(r.out, /^FAIL {2}non-2xx outside crawl-config: 3$/m);
+  assert.doesNotMatch(r.out, /allowance/);
+});
+
+test('check-acceptance.sh report: --allow-non2xx 20 passes 3 non-2xx and prints the allowance', () => {
+  const r = accept(3, ['--allow-non2xx', '20']);
+  assert.match(r.out, /^PASS {2}non-2xx outside crawl-config: 3 \(relaxed allowance: 20\)$/m);
+  assert.equal(r.code, 0, r.out);
+  assert.notEqual(accept(3).code, 0);
+});
+
+test('check-acceptance.sh report: the allowance boundary is inclusive and scoped to the non-2xx check', () => {
+  assert.equal(accept(20, ['--allow-non2xx', '20']).code, 0);
+  assert.notEqual(accept(1, ['--allow-non2xx', '0']).code, 0);
+  // A bad crawl-config answer still fails under an allowance.
+  const rep = JSON.parse(readFileSync(acceptanceReport(0), 'utf8'));
+  rep.routes[1].status = { 200: 1600, 500: 2 };
+  const file = path.join(mkdtempSync(path.join(tmpdir(), 'accept-')), 'agentsim.json');
+  writeFileSync(file, JSON.stringify(rep));
+  const r = spawnSync('bash', [ACCEPT, 'report', '--allow-non2xx', '20', file], { encoding: 'utf8', cwd: HERE });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stdout, /^FAIL {2}crawl-config answers only 200\/401\/404: 2 others$/m);
+});
+
+test('check-acceptance.sh report: a count over the allowance still fails', () => {
+  const r = accept(21, ['--allow-non2xx', '20']);
+  assert.match(r.out, /^FAIL {2}non-2xx outside crawl-config: 21 \(relaxed allowance: 20\)$/m);
+});
+
+test('check-acceptance.sh report: --allow-non2xx rejects a non-numeric value (64)', () => {
+  assert.equal(accept(0, ['--allow-non2xx', 'lots']).code, 64);
+});
+
+test('run-perf.sh passes --allow-non2xx only for the inject label', () => {
+  for (const [label, expectFlag] of [['inject', true], ['clean', false]]) {
+    const fx = makeFixture();
+    const r = run(fx, 'run-perf.sh', ['--profile', 'nightly-200', '--out-dir', path.join(fx.root, 'out'), '--label', label]);
+    assert.equal(r.code, 0, r.err);
+    const line = r.log.split('\n').find((l) => l.startsWith('check-acceptance report'));
+    assert.ok(line, r.log);
+    assert.equal(/--allow-non2xx 20\b/.test(line), expectFlag, `${label}: ${line}`);
+  }
+});
+
+test('run-perf.sh never relaxes acceptance for the default label', () => {
+  const fx = makeFixture();
+  const r = run(fx, 'run-perf.sh', ['--profile', 'nightly-200', '--out-dir', path.join(fx.root, 'out')]);
+  assert.doesNotMatch(r.log, /--allow-non2xx/);
+});
+
 test('run-perf.sh always tears the stack down, also when a step fails', () => {
   const fx = makeFixture();
   let r = run(fx, 'run-perf.sh', ['--profile', 'nightly-200', '--out-dir', path.join(fx.root, 'ok')]);
