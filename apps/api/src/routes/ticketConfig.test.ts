@@ -48,8 +48,14 @@ vi.mock('../middleware/auth', () => ({
     if (!scopes.includes(auth.scope)) return c.json({ error: 'Forbidden' }, 403);
     await next();
   },
-  requirePermission: () => async (c: any, next: any) => {
-    c.set('permissions', permsRef.current);
+  requirePermission: (resource: string, action: string) => async (c: any, next: any) => {
+    const perms = permsRef.current;
+    const auth = c.get('auth');
+    const granted = auth?.user?.isPlatformAdmin || perms.permissions.some(
+      (p) => (p.resource === '*' || p.resource === resource) && (p.action === '*' || p.action === action),
+    );
+    if (!granted) return c.json({ error: 'Permission denied' }, 403);
+    c.set('permissions', perms);
     await next();
   },
 }));
@@ -291,6 +297,59 @@ describe('PUT /priorities', () => {
       body: JSON.stringify({ priorities: { high: { label: 'High' } } }),
     });
     expect(res.status).toBe(403);
+  });
+});
+
+const REVIEW_PERMS = { permissions: [{ resource: 'tickets', action: 'email_review' }] };
+const REVIEW_CASES: Array<[string, string, unknown?]> = [
+  ['GET', '/email-inbound'],
+  ['POST', '/email-inbound/00000000-0000-0000-0000-000000000001/convert', { orgId: '00000000-0000-0000-0000-0000000000aa' }],
+  ['PATCH', '/email-inbound/00000000-0000-0000-0000-000000000001/dismiss'],
+];
+
+describe('tickets:email_review gates the inbound email review queue (#10951)', () => {
+  const call = (method: string, path: string, body?: unknown) =>
+    ticketConfigRoutes.request(path, {
+      method,
+      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+
+  beforeEach(() => {
+    serviceMocks.listEmailInboundQueue.mockResolvedValue({ data: [], pagination: { page: 1, limit: 50, total: 0 } });
+    serviceMocks.convertEmailInbound.mockResolvedValue({ id: 'r-1', ticketId: 't-1' });
+    serviceMocks.dismissEmailInbound.mockResolvedValue({ id: 'r-1' });
+  });
+
+  it.each(REVIEW_CASES)('%s %s: a role holding only tickets:email_review passes', async (method, path, body) => {
+    permsRef.current = REVIEW_PERMS;
+    const res = await call(method, path, body);
+    expect(res.status).toBe(200);
+  });
+
+  it.each(REVIEW_CASES)('%s %s: tickets:read + tickets:write without email_review gets 403', async (method, path, body) => {
+    const res = await call(method, path, body);
+    expect(res.status).toBe(403);
+    for (const m of Object.values(serviceMocks)) expect(m).not.toHaveBeenCalled();
+  });
+
+  it.each(REVIEW_CASES)('%s %s: the wildcard admin role still passes', async (method, path, body) => {
+    permsRef.current = ADMIN_PERMS;
+    const res = await call(method, path, body);
+    expect(res.status).toBe(200);
+  });
+
+  it.each(REVIEW_CASES)('%s %s: email_review does not bypass the full-partner-access requirement', async (method, path, body) => {
+    permsRef.current = REVIEW_PERMS;
+    authRef.current.partnerOrgAccess = 'selected';
+    const res = await call(method, path, body);
+    expect(res.status).toBe(403);
+  });
+
+  it('email_review does not open the other ticket-config admin routes', async () => {
+    permsRef.current = { permissions: [...REVIEW_PERMS.permissions, { resource: 'tickets', action: 'write' }, { resource: 'tickets', action: 'read' }] };
+    expect((await call('GET', '/inbound-domains')).status).toBe(403);
+    expect((await call('POST', '/statuses', { name: 'Triage', coreStatus: 'open' })).status).toBe(403);
   });
 });
 

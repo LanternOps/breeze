@@ -52,6 +52,7 @@ import { loadPolicyLocalPatchConfig } from './configPolicyPatching';
 import { captureException } from './sentry';
 import type { ApprovalEvaluationConfig } from './patchApprovalEvaluator';
 import {
+  areAllPendingPatchesManagedByVendorLane,
   evaluatePatchInstallEligibility,
   resolveApprovedPatchesForDevice,
   resolveDevicePatchEvaluationConfig,
@@ -294,6 +295,29 @@ describe('evaluatePatchInstallEligibility — one owner per update class (#11073
     delivering('driver');
     mockEvaluatorReads([row({ patchId: P1, category: 'driver', reportedUpdateType: 'driver' })], []);
     expect((await evaluate([P1])).ineligible).toEqual([{ patchId: P1, reason: 'managed_by_vendor_updates' }]);
+  });
+});
+
+describe('areAllPendingPatchesManagedByVendorLane (#11243)', () => {
+  const delivering = () => vi.mocked(getVendorLaneDelivery).mockResolvedValue({ lane: 'dell', classes: new Set(['driver']) });
+  const drv = (patchId: string) => row({ patchId, category: 'driver', reportedUpdateType: 'driver' });
+  const ask = () => areAllPendingPatchesManagedByVendorLane(DEV, ORG, ringConfig());
+
+  it('true when every pending update is left to the lane', async () => {
+    delivering();
+    mockEvaluatorReads([drv(P1), drv(P2)], []);
+    expect(await ask()).toBe(true);
+  });
+
+  it('false when something else is pending too (still needs an approval)', async () => {
+    delivering();
+    mockEvaluatorReads([drv(P1), row({ patchId: P2 })], []);
+    expect(await ask()).toBe(false);
+  });
+
+  it('false when nothing is pending', async () => {
+    mockEvaluatorReads([], []);
+    expect(await ask()).toBe(false);
   });
 });
 

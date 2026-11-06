@@ -433,6 +433,25 @@ export async function resolveApprovedPatchesForDevice(
   }));
 }
 
+/**
+ * True when the device has pending updates and EVERY one of them was excluded
+ * by the vendor-lane rule (#11243). The executor asks this only after
+ * `resolveApprovedPatchesForDevice` came back empty, so the job history can say
+ * "left to the vendor lane" instead of "nothing approved". Any other reason
+ * among the exclusions (deferral, no approval, ...) means a tech still has an
+ * action to take, so this stays false.
+ */
+export async function areAllPendingPatchesManagedByVendorLane(
+  deviceId: string,
+  orgId: string,
+  ringConfig: ApprovalEvaluationConfig
+): Promise<boolean> {
+  const verdict = await evaluatePatchInstallEligibility({ deviceId, orgId, config: ringConfig });
+  return verdict.eligible.length === 0
+    && verdict.ineligible.length > 0
+    && verdict.ineligible.every((i) => i.reason === 'managed_by_vendor_updates');
+}
+
 // Strict shape for one stored ring categoryRules entry — the same shape the
 // job executor validates its snapshot with. severityFilter is the legacy
 // stored alias for autoApproveSeverities (pre-2026-08 rows), both read-only.

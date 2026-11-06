@@ -55,7 +55,7 @@ vi.mock('../db', () => {
       shared.txDepth -= 1;
     }
   };
-  return { db, withSystemDbAccessContext };
+  return { db, withSystemDbAccessContext, withSystemDbAccessContextIsolated: withSystemDbAccessContext };
 });
 
 vi.mock('../db/schema', () => ({
@@ -97,6 +97,7 @@ vi.mock('../services/redis', () => ({
 
 vi.mock('../services/patchEligibility', () => ({
   resolveApprovedPatchesForDevice: vi.fn(),
+  areAllPendingPatchesManagedByVendorLane: vi.fn(async () => false),
 }));
 
 vi.mock('../services/patchRebootHandler', () => ({
@@ -137,7 +138,7 @@ import {
   PatchCompletionCheckError,
   __testOnly,
 } from './patchJobExecutor';
-import { resolveApprovedPatchesForDevice } from '../services/patchEligibility';
+import { resolveApprovedPatchesForDevice, areAllPendingPatchesManagedByVendorLane } from '../services/patchEligibility';
 import { queueCommandForExecution } from '../services/commandQueue';
 import { dispatchDeviceCommand } from '../services/dispatchDeviceCommand';
 import { evaluateRebootPolicy, executeReboot } from '../services/patchRebootHandler';
@@ -435,6 +436,42 @@ describe('patch job executor queueing', () => {
       expect.objectContaining({ sources: ['third_party'] }),
     );
     expect(result).toEqual({ kind: 'skipped', skipped: true, reason: 'No approved patches' });
+  });
+
+  // #11243: a device whose only pending updates are left to a vendor lane must
+  // not read as "nothing approved" — a tech would go hunting for an approval.
+  it.each([
+    [true, 'all_managed_by_vendor_updates'],
+    [false, 'no_approved_patches'],
+    ['throws', 'no_approved_patches'],
+  ])('records the skip reason when nothing is approved (all lane-managed=%s → %s)', async (allManaged, expectedReason) => {
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createSelectChain([{
+        id: 'job-1', orgId: 'org-1', status: 'running',
+        patches: { ringId: null, autoApprove: {} },
+        targets: { deviceIds: ['device-1'] },
+      }]) as any)
+      .mockImplementationOnce(() => createSelectChain([{ id: 'device-1' }]) as any)
+      .mockImplementationOnce(() => createSelectChain([]) as any);
+    const values = vi.fn(() => Promise.resolve());
+    vi.mocked(db.insert).mockImplementationOnce(() => ({ values }) as any);
+    vi.mocked(db.update).mockImplementationOnce(() => ({
+      set: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
+    }) as any);
+    vi.mocked(resolveApprovedPatchesForDevice).mockResolvedValueOnce([]);
+    if (typeof allManaged === 'boolean') {
+      vi.mocked(areAllPendingPatchesManagedByVendorLane).mockResolvedValueOnce(allManaged);
+    } else {
+      vi.mocked(areAllPendingPatchesManagedByVendorLane).mockRejectedValueOnce(new Error('db down'));
+    }
+
+    createPatchJobDeviceWorker();
+    const result = await shared.processorRefs['patch-job-devices']({
+      data: { type: 'execute-patch-job-device', patchJobId: 'job-1', deviceId: 'device-1', orgId: 'org-1' },
+    });
+
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'skipped', errorMessage: expectedReason }));
+    expect(result).toMatchObject({ kind: 'skipped', skipped: true });
   });
 
   // #8188 W04: snapshots stopped carrying `apps`, but jobs frozen before

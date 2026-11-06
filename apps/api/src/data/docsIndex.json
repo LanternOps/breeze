@@ -227,6 +227,9 @@
       "`schedule_reboot`",
       "`cancel_reboot`",
       "`get_reboot_status`",
+      "Vendor Updates",
+      "`oem_update_run`",
+      "`oem_update_release`",
       "Security",
       "`security_collect_status`",
       "`security_scan`",
@@ -557,7 +560,7 @@
       {
         "heading": "`schedule_reboot`",
         "anchor": "schedule_reboot",
-        "text": "| Param | Type | Required | Accepted range | If absent |\n|---|---|---|---|---|\n| `delayMinutes` | int | No | 1-10080 (minutes, up to 7 days) | Defaults to `60` |\n| `reason` | string | No | any string | Defaults to `\"Scheduled by administrator\"` |\n| `source` | string | No | `patch_job` (patch installs) or `maintenance_window` (maintenance sweeps) are the values Breeze itself sends | Defaults to `\"manual\"`. Echoed back on the heartbeat as `rebootStatus.source`, so a value outside `^[a-z0-9_]{1,32}$` is dropped by the server rather than stored |\n| `deadline` | string (RFC 3339) | No | must parse as RFC 3339 | Defaults to `now + delayMinutes`. A non-empty but malformed value **fails the command** rather than falling back |\n| `allowDeferral` | bool | No | `true` / `false` | **Absent means OFF.** A restart is never postponable unless this key is explicitly `true` |\n| `maxDeferrals` | int | Only when `allowDeferral` is `true` | 1-10 | Ignored when `allowDeferral` is absent or `false`. When `allowDeferral` is `true`, an absent or out-of-range value **fails the command** |\n| `deferralMinutes` | int | Only when `allowDeferral` is `true` | 5-1440 | Same as `maxDeferrals`: ignored unless `allowDeferral` is `true`, and an absent or out-of-range value then **fails the command** |\n\n`maxDeferrals` and `deferralMinutes` are a hard contract, not a clamp target: a\nvalue outside 1-10 or 5-1440 (respectively) causes the agent to **fail the\n`schedule_reboot` command**, not coerce it to the nearest valid bound. The\nranges mirror the API's own CHECK constraints, so an out-of-range value can\nonly reach the agent via a forged or corrupted payload — clamping it would\nmask that instead of surfacing a failed command.\n\nSupported on Windows, Linux and macOS. The agent warns the logged-in user\nimmediately when the reboot is scheduled, follows up with reminders at 60, 15 and\n5 minutes before (only where those land far enough apart to be worth sending),\nand fires a final critical notice one minute out — which is also when the OS\nshutdown countdown starts, so the countdown the user sees is the one the OS\nhonours. Every delay produces at least one warning, including delays shorter than\nany reminder threshold.\n\nFor post-patch reboots the API does not choose the delay itself: it resolves\n`rebootDelayMinutes` from the device's effective patch Configuration Policy\n(default 15 minutes, range 1-1440), and the maintenance-window reboot path reads\nthe same setting.\n\nThe deferral fields come from the same policy (`rebootAllowDeferral`,\n`rebootMaxDeferrals`, `rebootDeferralMinutes`) and are resolved once, when the\nrestart is scheduled -- editing the policy mid-countdown does not shrink a user's\nremaining postponements. They are **off by default**, and an agent that predates\nthem ignores them, so the restart behaves exactly as it always has. A restart\nissued inside a maintenance window has its `deadline` capped at the close of that\nwindow."
+        "text": "| Param | Type | Required | Accepted range | If absent |\n|---|---|---|---|---|\n| `delayMinutes` | int | No | 1-10080 (minutes, up to 7 days) | Defaults to `60` |\n| `reason` | string | No | any string | Defaults to `\"Scheduled by administrator\"` |\n| `source` | string | No | `patch_job` (patch installs), `maintenance_window` (maintenance sweeps) or `oem_updates` (the overnight restart after a [vendor update](/features/vendor-updates/)) are the values Breeze itself sends | Defaults to `\"manual\"`. Echoed back on the heartbeat as `rebootStatus.source`, so a value outside `^[a-z0-9_]{1,32}$` is dropped by the server rather than stored |\n| `deadline` | string (RFC 3339) | No | must parse as RFC 3339 | Defaults to `now + delayMinutes`. A non-empty but malformed value **fails the command** rather than falling back |\n| `allowDeferral` | bool | No | `true` / `false` | **Absent means OFF.** A restart is never postponable unless this key is explicitly `true` |\n| `maxDeferrals` | int | Only when `allowDeferral` is `true` | 1-10 | Ignored when `allowDeferral` is absent or `false`. When `allowDeferral` is `true`, an absent or out-of-range value **fails the command** |\n| `deferralMinutes` | int | Only when `allowDeferral` is `true` | 5-1440 | Same as `maxDeferrals`: ignored unless `allowDeferral` is `true`, and an absent or out-of-range value then **fails the command** |\n\n`maxDeferrals` and `deferralMinutes` are a hard contract, not a clamp target: a\nvalue outside 1-10 or 5-1440 (respectively) causes the agent to **fail the\n`schedule_reboot` command**, not coerce it to the nearest valid bound. The\nranges mirror the API's own CHECK constraints, so an out-of-range value can\nonly reach the agent via a forged or corrupted payload — clamping it would\nmask that instead of surfacing a failed command.\n\nSupported on Windows, Linux and macOS. The agent warns the logged-in user\nimmediately when the reboot is scheduled, follows up with reminders at 60, 15 and\n5 minutes before (only where those land far enough apart to be worth sending),\nand fires a final critical notice one minute out — which is also when the OS\nshutdown countdown starts, so the countdown the user sees is the one the OS\nhonours. Every delay produces at least one warning, including delays shorter than\nany reminder threshold.\n\nFor post-patch reboots the API does not choose the delay itself: it resolves\n`rebootDelayMinutes` from the device's effective patch Configuration Policy\n(default 15 minutes, range 1-1440), and the maintenance-window reboot path reads\nthe same setting.\n\nThe deferral fields come from the same policy (`rebootAllowDeferral`,\n`rebootMaxDeferrals`, `rebootDeferralMinutes`) and are resolved once, when the\nrestart is scheduled -- editing the policy mid-countdown does not shrink a user's\nremaining postponements. They are **off by default**, and an agent that predates\nthem ignores them, so the restart behaves exactly as it always has. A restart\nissued inside a maintenance window has its `deadline` capped at the close of that\nwindow."
       },
       {
         "heading": "`cancel_reboot`",
@@ -567,7 +570,22 @@
       {
         "heading": "`get_reboot_status`",
         "anchor": "get_reboot_status",
-        "text": "No payload parameters. Returns the full `RebootState` object with schedule\ndetails, including `notificationsPlanned` — how many user warnings the current\nschedule will emit.\n\n---"
+        "text": "No payload parameters. Returns the full `RebootState` object with schedule\ndetails, including `notificationsPlanned` — how many user warnings the current\nschedule will emit."
+      },
+      {
+        "heading": "Vendor Updates",
+        "anchor": "vendor-updates",
+        "text": "Run a hardware maker's own update tool, or hand its schedule back. Windows only, agent 0.127.0 or later. Sent by the API for [Vendor Updates](/features/vendor-updates/); the API refuses to queue them when the feature is off or the lane is closed.\n\n| Action | Description | Key Payload Fields |\n|---|---|---|\n| `oem_update_run` | Run the maker's update tool for one lane | `lane`, `trigger`, `occurrenceKey`, `categories`, `blockedUpdateIds`, `rebootControlled`, `notAfter`, `escrowedProtectorIds`, `tool` |\n| `oem_update_release` | Hand the vendor tool's own update schedule back after Breeze stops managing the device | `lane` |"
+      },
+      {
+        "heading": "`oem_update_run`",
+        "anchor": "oem_update_run",
+        "text": "| Param | Type | Description |\n|---|---|---|\n| `lane` | string | `dell`, `surface`, `hp` or `lenovo` |\n| `trigger` | string | `scheduled` or `on_demand` |\n| `occurrenceKey` | string or null | The monthly occurrence a scheduled run counts toward |\n| `categories` | string[] | 1-4 unique values from `bios`, `firmware`, `driver`, `application` |\n| `blockedUpdateIds` | string[] | Up to 200 update IDs the tool must skip |\n| `rebootControlled` | bool | Whether Breeze will schedule the restart. BIOS and firmware are skipped when `false` |\n| `notAfter` | string (RFC 3339) | Latest time the run may start |\n| `escrowedProtectorIds` | string[] | BitLocker protector IDs whose recovery keys Breeze holds (up to 16) |\n| `tool` | object or null | Expected vendor tool version and checksum. The agent still enforces its own compiled publisher and host allowlist |\n\nThe result carries an `outcome` (`success`, `success_reboot_required`, `no_updates`, `partial`, `failed`, `not_supported`, `tool_unavailable`, `blocked_on_battery`, `blocked_reboot_pending`, `blocked_no_recovery_key`, `retry_later` or `interrupted`), the items installed, and any skipped categories with a reason. A BIOS or firmware install holds the flash guard, so the agent refuses reboots and shutdowns until it ends."
+      },
+      {
+        "heading": "`oem_update_release`",
+        "anchor": "oem_update_release",
+        "text": "Takes only `lane`. Returns `restored`, `nothing_to_restore` or `failed`. The API queues it when no policy runs vendor updates on the device any more, and raises an alert after 3 failures.\n\nWhen a run needs a restart, the API sends an ordinary `schedule_reboot` with `source: \"oem_updates\"` and `deadlineAction: \"hold\"` (agent 0.127.0 or later). With `hold`, a restart that cannot begin before the window closes is dropped instead of forced.\n\n---"
       },
       {
         "heading": "Security",
@@ -732,7 +750,7 @@
       {
         "heading": "Reboot status",
         "anchor": "reboot-status",
-        "text": "`rebootStatus` is a three-way field, not a plain optional -- its meaning changes\nbetween \"the key is missing,\" \"the key is `null`,\" and \"the key holds an\nobject\":\n\n- **Absent from the heartbeat body** -- \"no news.\" An agent built before this\n  field existed omits `rebootStatus` entirely, and the server leaves the\n  device's stored reboot columns untouched.\n- **`rebootStatus: null`** -- there is no restart scheduled: it was cancelled,\n  or it already fired. The server clears the stored columns.\n- **`rebootStatus: { ... }`** -- the live schedule:\n\n| Field | Type | Required | Description |\n|---|---|---|---|\n| `scheduledAt` | string (RFC 3339, with offset) | Yes | When the restart will fire. The only required member -- a malformed value makes the server drop the whole `rebootStatus` object (treated the same as absent) rather than reject the heartbeat |\n| `deadline` | string (RFC 3339, with offset) | No | Absolute cutoff past which the restart happens regardless of remaining deferral budget |\n| `source` | string | No | What requested the restart, echoed back from the `schedule_reboot` command that scheduled it: `patch_job`, `maintenance_window`, or the agent's own `manual` default |\n| `deferralsUsed` | int (0-10) | No | How many times the signed-in user has postponed this restart |\n| `maxDeferrals` | int (0-10) | No | How many postponements this restart allows |\n\n`maxDeferrals: 0` means this restart cannot be postponed at all, which is a\ndifferent statement from `maxDeferrals` being absent (an agent that predates\ndeferral reporting). Do not treat the two as equivalent.\n\n---"
+        "text": "`rebootStatus` is a three-way field, not a plain optional -- its meaning changes\nbetween \"the key is missing,\" \"the key is `null`,\" and \"the key holds an\nobject\":\n\n- **Absent from the heartbeat body** -- \"no news.\" An agent built before this\n  field existed omits `rebootStatus` entirely, and the server leaves the\n  device's stored reboot columns untouched.\n- **`rebootStatus: null`** -- there is no restart scheduled: it was cancelled,\n  or it already fired. The server clears the stored columns.\n- **`rebootStatus: { ... }`** -- the live schedule:\n\n| Field | Type | Required | Description |\n|---|---|---|---|\n| `scheduledAt` | string (RFC 3339, with offset) | Yes | When the restart will fire. The only required member -- a malformed value makes the server drop the whole `rebootStatus` object (treated the same as absent) rather than reject the heartbeat |\n| `deadline` | string (RFC 3339, with offset) | No | Absolute cutoff past which the restart happens regardless of remaining deferral budget |\n| `source` | string | No | What requested the restart, echoed back from the `schedule_reboot` command that scheduled it: `patch_job`, `maintenance_window`, `oem_updates`, or the agent's own `manual` default |\n| `deferralsUsed` | int (0-10) | No | How many times the signed-in user has postponed this restart |\n| `maxDeferrals` | int (0-10) | No | How many postponements this restart allows |\n\n`maxDeferrals: 0` means this restart cannot be postponed at all, which is a\ndifferent statement from `maxDeferrals` being absent (an agent that predates\ndeferral reporting). Do not treat the two as equivalent.\n\n---"
       },
       {
         "heading": "User-Mode Helper",
@@ -21156,6 +21174,81 @@
         "heading": "Idle time is always 0",
         "anchor": "idle-time-is-always-0",
         "text": "- The `idleMinutes` field is currently set to 0 during full refreshes unless the OS provides idle time data. Real-time idle detection depends on the platform-specific session detector implementation.\n- On Windows, idle time is available via the WTS API. On Linux and macOS, idle time detection may require additional configuration."
+      }
+    ]
+  },
+  {
+    "path": "/features/vendor-updates/",
+    "title": "Vendor Updates",
+    "description": "Keep each hardware maker's own update tool (Dell, Surface, HP, Lenovo) running on a monthly schedule with an overnight reboot, run it on demand, and see the fleet on the Patches page.",
+    "headings": [
+      "What has to be open before a device is touched",
+      "BIOS and firmware requirements",
+      "Fleet states",
+      "Overdue",
+      "Not managed",
+      "Restart overdue",
+      "Alerts",
+      "Trust boundary",
+      "Agent commands",
+      "Self-hosting"
+    ],
+    "section": "features",
+    "sections": [
+      {
+        "heading": "",
+        "anchor": "",
+        "text": "Vendor updates keep the update tool each hardware maker ships (Dell, Microsoft Surface, HP, Lenovo) running on a monthly schedule. BIOS, firmware, drivers and vendor applications are handled by the maker's own tool, not by Windows Update, and Breeze controls when it runs and when the machine restarts.\n\n- **Policy.** The **Vendor updates** tab of a [configuration policy](/features/configuration-policies/) sets the schedule (by default the third Wednesday of the month from 01:00 for 4 hours, with 7 catch-up nights), which makers and categories to run, and whether Breeze restarts the device overnight.\n- **Run now.** On a device, **Run vendor updates** starts a run immediately, outside the schedule.\n- **Fleet view.** The **Vendor updates** tab on the Patches page (`#vendor-updates`) shows every device's state, filterable by maker.\n\nScope:\n\n- Windows only. macOS and Linux devices are not covered.\n- Servers, virtual machines and devices from a maker with no lane are not covered, and read **Not managed**. Quick Support devices are left out of the view.\n- There is no per-update approval. You choose categories per maker. You can block individual update IDs by listing them in the policy.\n\n**Availability.** A maker's lane opens only after Breeze has validated that vendor's tool in a lab. Today every lane is closed, so real devices read **Not managed** or **Not supported**. This page describes how the feature behaves once lanes open.\n\n---"
+      },
+      {
+        "heading": "What has to be open before a device is touched",
+        "anchor": "what-has-to-be-open-before-a-device-is-touched",
+        "text": "Four independent locks protect devices. All start closed, and all four must be open for a run to reach a device.\n\n| Lock | Where it lives | Notes |\n|---|---|---|\n| Feature flag | `BREEZE_OEM_UPDATES_ENABLED` on the API. Optionally `BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST`, a comma-separated list of partner IDs | With the allowlist set, only listed partners get the feature. |\n| Manifest gates | In Breeze code, per maker (lane) and per category (BIOS, firmware, driver, application) | Changed only by a Breeze release, after lab validation. A lane gate and the category gate must both be open. A code-level block can also close a category and overrides an open gate. |\n| Kill switches | `BREEZE_OEM_UPDATES_DISABLED_LANES` (comma-separated makers, for example `dell`), and the code-level block above | Stops new runs for that maker and cancels commands not yet picked up. A run already in progress is never interrupted. |\n| Minimum agent version | Agent 0.127.0 or later | Older agents cannot run the command. |\n\nTurning a lock closed never aborts work already under way on a device. It only stops new work."
+      },
+      {
+        "heading": "BIOS and firmware requirements",
+        "anchor": "bios-and-firmware-requirements",
+        "text": "BIOS and firmware are the categories that can make a machine unbootable if interrupted, so they have stricter requirements than drivers and applications. A BIOS or firmware install starts only when all of these hold:\n\n- **Breeze controls the reboot.** The policy's reboot setting is `overnight`. With `never`, BIOS and firmware are skipped, and drivers and applications still run.\n- **AC power.** The device must be on AC. An unknown power state refuses.\n- **Battery at or above 25%.** Desktops with no battery pass this check.\n- **A current escrowed recovery key when BitLocker is on.** Breeze has to hold the device's current BitLocker recovery key before it suspends protection for the flash. Without it the run reports `blocked_no_recovery_key`.\n- **The flash guard.** While a BIOS or firmware install is in progress the agent refuses every reboot, shutdown and agent replacement, so nothing can interrupt the write. The guard ends by itself after a maximum time, so a crash cannot block restarts forever.\n\nWhen a run starts without reboot control, or a check fails, the skipped categories are reported on the run. The on-demand dialog notes when BIOS and firmware were skipped."
+      },
+      {
+        "heading": "Fleet states",
+        "anchor": "fleet-states",
+        "text": "The tab shows one state per device.\n\n| State | Meaning |\n|---|---|\n| **Up to date** | The device finished a run (including \"nothing to install\") for this month's schedule, or it has run successfully before and this month's nights are not yet over. |\n| **Overdue** | Under a managed schedule, the last catch-up night for this month's occurrence has passed with no finished run, or 3 attempts were used up. |\n| **Failing** | The last run failed, was partial, was interrupted, could not get its tool, or had no recovery key. A technician needs to look. Battery blocks and \"retry later\" are not failing, because they retry by themselves. |\n| **Not supported** | The maker's tool reported that it does not support this model. Breeze asks again when the tool version or the model changes. |\n| **Not managed** | Nothing is expected of this device. See below. |\n| **Waiting for restart** | An update finished and the device owes a restart. |\n| **Restart overdue** | A restart has been held for 3 nights or more. |"
+      },
+      {
+        "heading": "Overdue",
+        "anchor": "overdue",
+        "text": "A scheduled run never starts outside its window, and Breeze sets no wake timers. A laptop that is off or asleep every night of the month therefore has no chance to run, and it shows **Overdue**. Use **Run vendor updates** on the device when it is online.\n\nA device that came under a schedule after that month's last night had already opened is not Overdue for that month. This covers a policy created or changed late in the month, a new assignment, and a newly enrolled device. A policy armed on the 28th does not turn the fleet Overdue for nights that passed before it existed.\n\nThe month's nights are counted in the device's time zone: site, then organization, then partner. A user scoped to one organization cannot read a partner-level zone, so around the edge of a window their view can differ by a few hours from a partner user's and from the alert.\n\nAn agent that is too old to run vendor updates is not hidden as Not managed. It can read **Overdue**, because the device really has stopped updating and updating the agent is the fix."
+      },
+      {
+        "heading": "Not managed",
+        "anchor": "not-managed",
+        "text": "A device reads Not managed when nothing is expected of it:\n\n- No policy reaches it.\n- The feature is off for its partner.\n- The maker's lane is closed, or every category the policy asks for is closed.\n- The maker's lane is on its kill switch.\n- It is not a device this feature covers: not Windows, a server, a virtual machine, or a maker with no lane.\n- It has a policy but has never run and still has nights left this month, so there is no evidence either way."
+      },
+      {
+        "heading": "Restart overdue",
+        "anchor": "restart-overdue",
+        "text": "After a vendor update that needs a restart, Breeze schedules it inside the overnight window. If the device cannot restart that night (a user is signed in, the window closes first), the restart is held and retried the next night. Breeze never forces it. After 3 nights the device reads **Restart overdue**. A policy with reboot `never` just reads **Waiting for restart** until someone else restarts the device, however long that takes."
+      },
+      {
+        "heading": "Alerts",
+        "anchor": "alerts",
+        "text": "Vendor updates use the normal [alerts](/features/alerts/) machinery. An organization can switch any of these rules off.\n\n| Rule | Fires when | Resolves when |\n|---|---|---|\n| `Vendor update: device overdue` | A device reads Overdue. Raised once per monthly occurrence, even if a technician closes the alert. An alert still open from an earlier month stands in for a new one. | A run finishes after the alert, or the device leaves management. A kill switch or a closed gate leaves it open. |\n| `Vendor update: restart overdue` | A device reads Restart overdue. Raised once per owed restart. | The device is no longer Restart overdue. |\n| `Vendor update: schedule not handed back` | No policy runs vendor updates on the device any more, and giving the vendor tool's own schedule back failed 3 times. | The handback goes through. |\n| `Vendor update: device did not come back` | A device has not checked in after a BIOS or firmware update started, past its return deadline. It may be at a BitLocker recovery prompt or a failed flash. | The device checks in again. |\n| `Vendor update: BitLocker still suspended` | BitLocker protection did not come back after a vendor update and its restart. | BitLocker protection is back on. |\n\nAll of these are suppressed while a [maintenance window](/features/maintenance-windows/) that suppresses alerts is active. The device stays eligible, so the alert is raised on a later pass once the window ends."
+      },
+      {
+        "heading": "Trust boundary",
+        "anchor": "trust-boundary",
+        "text": "- **Breeze never bundles, mirrors or hosts vendor binaries.** The agent runs a tool that is already installed, or downloads the vendor's own installer from the vendor's own host.\n- **The agent decides what it may fetch or run.** It carries a compiled allowlist of publishers and hosts. The API supplies the expected version and checksum, but a wrong or malicious entry cannot make the agent fetch or run anything outside that list.\n- **Signatures are checked immediately before every execution**, not just when a file is downloaded.\n- **Vendor tool output is untrusted.** Text taken from it is length-capped and validated before it is stored or shown. Raw tool logs are not uploaded."
+      },
+      {
+        "heading": "Agent commands",
+        "anchor": "agent-commands",
+        "text": "The API sends two commands to the agent for this feature; see [Commands & Config](/agents/commands/#vendor-updates)."
+      },
+      {
+        "heading": "Self-hosting",
+        "anchor": "self-hosting",
+        "text": "Set these on the API:\n\n| Variable | Default | Effect |\n|---|---|---|\n| `BREEZE_OEM_UPDATES_ENABLED` | off | Master switch. |\n| `BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST` | empty (all partners) | Comma-separated partner IDs. When set, only those partners get the feature. |\n| `BREEZE_OEM_UPDATES_DISABLED_LANES` | empty | Comma-separated makers (`dell`, `surface`, `hp`, `lenovo`) to pause. Takes effect once the API restarts with the new value. Lenovo's agent support has not shipped yet, so its lane stays closed regardless. |\n| `OEM_UPDATES_MAX_DISPATCH_PER_TICK` | 200 | Most vendor update runs sent in one scheduler pass. It also caps the alerts attempted per rule in one pass, so a fleet going overdue together is paced rather than sent at once. The next pass carries on where this one stopped. Must be a whole number above zero. |\n\nWith `BREEZE_OEM_UPDATES_ENABLED` off, no policy is read and nothing is dispatched. Every device reads **Not managed**, except a device that already has a recorded state such as **Not supported** or an owed restart."
       }
     ]
   },

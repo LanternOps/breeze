@@ -105,6 +105,7 @@ function link(overrides: Partial<OemUpdatesInlineSettings> = {}, invalidStoredSe
     assignedPolicyId: 'policy-1',
     settings: settings(overrides),
     invalidStoredSettings,
+    armedAt: null,
   };
 }
 

@@ -329,7 +329,8 @@
     "title": "Gerenciador de Processos",
     "totalCpu": "CPU total",
     "pid": "PID",
-    "cpu": "CPU"
+    "cpu": "CPU",
+    "monitorThis": "Monitorar isto"
   },
   "proxyTunnelPage": {
     "errors": {
@@ -656,7 +657,8 @@
     "summary": "{{shown}} de {{total}} serviços em {{device}}",
     "title": "Gerenciador de Serviços",
     "windowsOnlyDescription": "O Gerenciador de Serviços está disponível apenas para dispositivos Windows. {{device}} executa {{os}}.",
-    "windowsOnlyTitle": "Disponível apenas no Windows"
+    "windowsOnlyTitle": "Disponível apenas no Windows",
+    "monitorThis": "Monitorar isto"
   },
   "sessionHistory": {
     "columns": {
