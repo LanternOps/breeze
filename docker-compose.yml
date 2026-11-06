@@ -1006,6 +1006,8 @@ services:
     environment:
       <<: *api-env
       BREEZE_ROLE: worker        # hardcoded — never variable-driven
+      # 1 GB V8 heap cap, worker only (#11237); override with WORKER_NODE_OPTIONS.
+      NODE_OPTIONS: ${WORKER_NODE_OPTIONS:---max-old-space-size=1024}
     volumes:
       - api_data:/data
     secrets:
