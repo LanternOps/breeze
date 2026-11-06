@@ -48,7 +48,7 @@ import { deliverInApp, type ThreadPostDraft } from './deliver';
 import { webCheckInLink, webDeepLink } from './nudgeLinks';
 import { loadNudgePrefs } from './nudgePreferences';
 import { loadUrgentCapableSeverities } from './partnerNudgeSettings';
-import { recordThreadPost, type ThreadPostKind } from './threadPosts';
+import { couldntLookDedupeKey, recordThreadPost, type ThreadPostKind } from './threadPosts';
 import { GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
 import { incWispNudge } from '../wispMetrics';
 
@@ -96,6 +96,11 @@ export type NudgePayload = {
    */
   specialist?: { orgId: string; grantRevisionId: string; dedupeKey: string; link: string };
   /**
+   * kind 'first_look' only (#11145): the post that says no org could be looked
+   * at. It has its own dedupe key, so it leaves the real first look still to come.
+   */
+  firstLookVariant?: 'couldnt_look';
+  /**
    * `false` withholds the push channel for this delivery (the in-app row and
    * the post are still written per the user's channels). A specialist_result
    * never pushes whatever this says: its steps already pushed their own
@@ -130,6 +135,7 @@ const BACKOFF: NotifyUserResult = { inApp: false, pushed: 0, suppressed: 'backof
  *   brief   → wisp.brief:<thread>:<local date>
  *   check_in → wisp.check_in:<check-in id> (one delivery per check-in, ever)
  *   first_look → wisp.first_look:<grant> (one per grant, ever)
+ *                wisp.first_look_failed:<grant> for the couldn't-look variant (likewise)
  */
 export function nudgeDedupeKey(k: {
   kind?: WispNudgeKind;
@@ -141,13 +147,14 @@ export function nudgeDedupeKey(k: {
   digestCadenceMinutes: number;
   briefLocalDate?: string;
   checkInId?: string;
+  firstLookVariant?: 'couldnt_look';
 }): string {
   const kind = k.kind ?? (k.concernId ? 'concern' : 'digest');
   if (kind === 'check_in') {
     if (!k.checkInId) throw new Error('nudgeDedupeKey: a check_in key needs checkInId');
     return `wisp.check_in:${k.checkInId}`;
   }
-  if (kind === 'first_look') return firstLookDedupeKey(k.grantId);
+  if (kind === 'first_look') return k.firstLookVariant === 'couldnt_look' ? couldntLookDedupeKey(k.grantId) : firstLookDedupeKey(k.grantId);
   if (kind === 'concern') {
     return `wisp.nudge:${k.concernId}:${k.grantId}:${k.nextEligibleNudgeAt?.toISOString() ?? 'first'}`;
   }
@@ -366,6 +373,7 @@ async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
     digestCadenceMinutes: prefs.digestCadenceMinutes,
     briefLocalDate: p.briefLocalDate,
     checkInId: p.checkIn?.id,
+    firstLookVariant: p.firstLookVariant,
   });
   const post: ThreadPostDraft = {
     threadId: p.threadId,

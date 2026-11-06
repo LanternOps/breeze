@@ -67,6 +67,7 @@ import { currentActivity, InvalidActivityCursorError, listActivity, type Current
 import { spendSummary } from '../services/wisp/budget';
 import { assertWithinCeiling, CeilingViolationError, GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from '../services/wisp/grantAuthority';
 import { getActiveGrantForUser, wideningAvailable, type WispGrantStatus } from '../services/wisp/grants';
+import { firstLookPostTimes, firstLookStateFrom } from '../services/wisp/threadPosts';
 import {
   THREAD_ATTACHMENT_MAX_BYTES,
   THREAD_ATTACHMENT_MESSAGES,
@@ -310,10 +311,11 @@ export type GrantForPayload = {
 
 /** GET / and GET /:id return the same members. */
 export async function threadPayload(partnerId: string, thread: WispThread, grant: GrantForPayload) {
-  const [focusOrgName, widening, spend] = await Promise.all([
+  const [focusOrgName, widening, spend, firstLookTimes] = await Promise.all([
     focusOrgNameOf(partnerId, thread.focusOrgId),
     wideningAvailable(grant.id),
     spendSummary(grant.id),
+    firstLookPostTimes(thread.id),
   ]);
   return {
     thread: threadDto(thread),
@@ -336,6 +338,8 @@ export async function threadPayload(partnerId: string, thread: WispThread, grant
       summaryRefine: grant.summaryRefine === true,
     },
     wideningAvailable: widening,
+    // #11145: the chat surfaces have no timeline to read, so they learn it here.
+    firstLookState: firstLookStateFrom(firstLookTimes),
   };
 }
 

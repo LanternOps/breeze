@@ -136,7 +136,7 @@ export default function WispHomeContent() {
   // or finishing, a newer brief, or a change in the concerns is when a new post
   // can exist: re-read the thread's newest page then, not on every poll.
   const postsSignal = view.kind === 'ready'
-    ? `${liveKey}|${view.payload.brief?.sentAt ?? ''}|${view.payload.firstLookAt ?? ''}|${view.payload.needsYou.map((c) => c.id).sort().join(',')}`
+    ? `${liveKey}|${view.payload.brief?.sentAt ?? ''}|${view.payload.firstLookAt ?? ''}|${view.payload.firstLookState ?? ''}|${view.payload.needsYou.map((c) => c.id).sort().join(',')}`
     : null;
   const lastPostsSignal = useRef<string | null>(null);
   useEffect(() => {
@@ -280,6 +280,7 @@ export default function WispHomeContent() {
           onLinksChange={onLinksChange}
           refreshKey={threadKey}
           briefSchedule={payload.briefSchedule}
+          firstLookProgress={payload.firstLookProgress}
         />
       }
       rail={

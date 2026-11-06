@@ -901,13 +901,21 @@
       "open": "Abrir",
       "unread": "Não lido",
       "specialistResult": "Relatório do especialista",
-      "firstLook": "Primeira olhada"
+      "firstLook": "Primeira olhada",
+      "couldntLook": "Ainda sem olhada"
     },
     "welcome": {
       "title": "Estou dando uma olhada em {{scope}}.",
       "body": "Seu primeiro resumo chega toda manhã, assim que eu der uma olhada. Enquanto isso, pergunte o que quiser.",
       "firstLookTitle": "Já dei uma primeira olhada em {{scope}}.",
       "firstLookBody": "O que encontrei está na publicação acima. Pergunte o que quiser sobre isso.",
+      "couldntLookTitle": "Ainda não consegui dar uma olhada em {{scope}}.",
+      "couldntLookBody": "A publicação acima explica por que e quando vou tentar de novo. Enquanto isso, pergunte o que quiser.",
+      "couldntLookChat": "A página inicial do Wisp explica por que e quando vou tentar de novo.",
+      "progress_one": "Organizações analisadas: {{lookedAt}} de {{count}}",
+      "progress_other": "Organizações analisadas: {{lookedAt}} de {{count}}",
+      "progressQueued": "{{count}} na fila",
+      "progressFailed": "{{count}} com falha",
       "briefAt": "Seu resumo da manhã sai às {{time}} ({{timezone}}).",
       "suggestions": {
         "needsMe": {

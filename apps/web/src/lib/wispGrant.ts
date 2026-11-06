@@ -1,6 +1,7 @@
 // Wisp W04 (web): grant handshake + thread read shared by the step-up modal
 // (create / refresh) and the thread header. Server contracts: W02
 // `routes/wisp.ts` (grants) and W04a `routes/wispThreads.ts` (thread).
+import type { WispFirstLookState } from '@breeze/shared';
 import { fetchWithAuth } from '../stores/auth';
 import type { WispGrantStatus, WispState } from '../stores/aiStore';
 import { extractApiError } from './apiError';
@@ -88,6 +89,8 @@ const int = (v: unknown, fallback: number): number => (typeof v === 'number' && 
  * know (W05 adds `spentTodayCents`/`budgetResetsAt`, A32); null when the
  * required ids or the status are missing.
  */
+const FIRST_LOOK_STATES: ReadonlySet<unknown> = new Set<WispFirstLookState>(['looking', 'done', 'couldnt_look']);
+
 export function wispStateFromThread(body: unknown): NonNullable<WispState> | null {
   const data = (body as { data?: Record<string, unknown> } | null)?.data;
   const thread = data?.thread as Record<string, unknown> | undefined;
@@ -108,6 +111,8 @@ export function wispStateFromThread(body: unknown): NonNullable<WispState> | nul
   }
   // Absent key = unknown (left undefined, WispGrantPauseControl looks it up); present = authoritative.
   if (grant && 'pausedReason' in grant) optional.pausedReason = str(grant.pausedReason);
+  // #11145: anything else (an older API) stays unknown: a chat surface then claims nothing rather than a default.
+  if (FIRST_LOOK_STATES.has(data?.firstLookState)) optional.firstLookState = data?.firstLookState as WispFirstLookState;
   return {
     ...optional,
     grantId,
