@@ -369,5 +369,5 @@ describe('evaluatePamBridge — RLS context guard', () => {
 // ============================================================
 // Cross-org leakage IS tested but lives in the integration test alongside
 // loadActivePoliciesForDevice, since enforcement is RLS + the
-// `resolveSoftwarePolicyForDevice` hierarchy traversal, not the pure matcher.
+// `resolveSoftwarePoliciesForDevice` hierarchy traversal, not the pure matcher.
 // The pure matcher only receives the already-RLS-filtered policy list.

@@ -21,7 +21,7 @@ The system consists of three layers: **policy definitions** that describe the ru
 
 An allowlist policy defines the software that **is** permitted. Any software found on a device that is not matched by at least one rule in the allowlist is flagged as an `unauthorized` violation. This is the most restrictive mode, suitable for locked-down environments such as kiosks, point-of-sale terminals, or compliance-sensitive workstations.
 
-The `allowUnknown` flag (default: not set) controls whether software that does not match any rule is considered a violation. When set to `true`, only software explicitly matched by a deny-style rule is flagged.
+The `allowUnknown` flag (default: not set) controls whether software that does not match any rule is considered a violation. When set to `true`, unlisted installed software is permitted, while missing required apps remain violations. Separate applying blocklists can still prohibit specific apps.
 
 ### Blocklist
 
@@ -195,11 +195,21 @@ For allowlist policies, the `allowUnknown` flag determines how software not cove
 | `allowUnknown` | Behavior |
 |-----------------|----------|
 | `false` or unset | Any software not matching a rule is flagged as `unauthorized` |
-| `true` | Only software explicitly matched by a blocklist-style rule is flagged |
+| `true` | Unlisted installed software is permitted; missing required apps are still reported |
 
 This flag is only meaningful for allowlist policies. Blocklist policies implicitly allow all software not matched by a rule.
 
 ---
+
+## Multiple policies on one device
+
+Software-policy links are additive. A configuration policy can link several software policies, and a device evaluates the union of links from every matching partner, organization, site, group, and device assignment, including inherited links, plus policies that explicitly target it. Duplicate references are evaluated once. Assignment role and OS filters still apply. Partner-owned and organization-owned policies can apply together; compliance and audit records remain per policy and belong to the device's organization.
+
+For example, link a required-app allowlist with `allowUnknown: true`, enforcement and auto-install enabled, alongside a blocklist with enforcement and auto-uninstall enabled. Missing catalog apps are installed, prohibited apps are removed, and other installed software is left alone. Inventory **Approve**, **Deny**, and **Clear** continue to maintain the organization's separate Default Allowlist and Default Blocklist; another configuration policy does not suppress either list.
+
+**Blocklist wins app conflicts**, regardless of assignment specificity or either software policy's priority. When a required rule overlaps a blocklist rule in app identity and version range, the entire overlapping requirement is conservatively excluded from allowlist missing-app compliance and automatic installation, so the two remediation loops do not repeatedly install and uninstall it. Installed prohibited software remains a blocklist violation. Audit policies do not override allowlists or blocklists. Enforcement, grace periods, cooldowns, and the existing MFA and `devices.execute` permission requirements for arming auto-install remain unchanged.
+
+The Software Policy tab lists all linked policies. Effective Configuration names each applying software policy. Other feature types continue to use closest-wins resolution.
 
 ## Violation Detection
 

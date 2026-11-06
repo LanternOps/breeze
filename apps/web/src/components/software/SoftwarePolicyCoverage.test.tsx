@@ -1,8 +1,5 @@
-/**
- * #9635 — a device follows ONE software policy, so a policy can be assigned
- * yet govern no device. The coverage badge says so honestly, and Inventory
- * Approve / Deny surface the API's SOFTWARE_POLICY_WOULD_NOT_APPLY refusal
- * (naming the winning policy) instead of a generic failure.
+/** Coverage reflects additive software policies. Legacy closest-wins responses
+ * and refusals remain displayable during rolling upgrades.
  */
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -41,6 +38,21 @@ beforeEach(() => {
 });
 
 describe("SoftwarePolicyCoverageBadge", () => {
+  it("shows both co-applying policies without an overridden warning", async () => {
+    fetchMock.mockResolvedValue(json({ data: {
+      assignedDeviceCount: 4, appliesToDeviceCount: 4, overriddenBy: [],
+    } }));
+    render(<><SoftwarePolicyCoverageBadge policyId="p-allow" /><SoftwarePolicyCoverageBadge policyId="p-block" /></>);
+    const badges = await screen.findAllByTestId("software-policy-coverage");
+    expect(badges).toHaveLength(2);
+    for (const badge of badges) {
+      expect(badge).toHaveTextContent("Applies to 4 devices");
+      expect(badge).toHaveAttribute("data-state", "applies");
+      expect(badge).not.toHaveAttribute("title");
+    }
+    expect(screen.queryByTestId("software-policy-overridden-by")).toBeNull();
+  });
+
   it("shows 'Applies to 0 devices' and the winning policy when every assigned device is overridden", async () => {
     fetchMock.mockResolvedValueOnce(
       json({ data: { assignedDeviceCount: 4, appliesToDeviceCount: 0, overriddenBy: [WINNER] } }),

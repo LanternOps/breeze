@@ -69,7 +69,8 @@ function mockResolverCalls(
     .mockReturnValueOnce(selectChain(deviceRows) as any)
     .mockReturnValueOnce(selectChain(orgRows) as any)
     .mockReturnValueOnce(selectChain(groupRows) as any)
-    .mockReturnValueOnce(selectChain(assignmentRows) as any);
+    .mockReturnValueOnce(selectChain(assignmentRows) as any)
+    .mockReturnValue(selectChain([]) as any);
 }
 
 const DEVICE = {

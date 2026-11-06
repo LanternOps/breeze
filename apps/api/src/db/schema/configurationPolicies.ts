@@ -170,7 +170,13 @@ export const configPolicyFeatureLinks = pgTable('config_policy_feature_links', {
   featurePolicyIdIdx: index('config_feature_links_feature_policy_id_idx')
     .on(table.featurePolicyId)
     .where(sql`${table.featurePolicyId} IS NOT NULL`),
-  uniqueFeaturePerPolicy: uniqueIndex('config_feature_links_unique').on(table.configPolicyId, table.featureType),
+  // Software policies accumulate; all other features retain one link per policy.
+  uniqueFeaturePerPolicy: uniqueIndex('config_feature_links_unique')
+    .on(table.configPolicyId, table.featureType)
+    .where(sql`${table.featureType} <> 'software_policy'`),
+  uniqueSoftwarePolicyPerPolicy: uniqueIndex('config_feature_links_software_unique')
+    .on(table.configPolicyId, sql`coalesce(${table.featurePolicyId}, '00000000-0000-0000-0000-000000000000'::uuid)`)
+    .where(sql`${table.featureType} = 'software_policy'`),
 }));
 
 // A policy's own feature links PLUS its parent's links for feature types the

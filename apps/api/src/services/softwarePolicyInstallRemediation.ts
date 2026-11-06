@@ -35,6 +35,7 @@ export type PolicyInstallSkipReason =
    * can see that a requested install was not attempted, and why.
    */
   | 'not_currently_missing'
+  | 'blocked_by_policy'
   /**
    * #6960, generated (security agents) policies only: the installer-readiness
    * preflight says the vendor cannot serve this device (org not mapped, keys

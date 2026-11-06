@@ -20,6 +20,8 @@ import {
 import { getBullMQConnection } from '../services/redis';
 import {
   evaluateSoftwareInventoryDetailed,
+  evaluateSoftwarePolicyAgainstInventory,
+  isSoftwareRuleBlocked,
   evaluateSoftwarePolicyArming,
   getSoftwareInventoryByDeviceIds,
   normalizeSoftwarePolicyRules,
@@ -32,6 +34,7 @@ import {
   type SoftwarePolicyRemediationStatus,
 } from '../services/softwarePolicyService';
 import { resolveDeviceIdsForSoftwarePolicy } from '../services/featureConfigResolver';
+import { getSoftwareBlocklistRulesForDevice } from '../services/softwarePolicyConflicts';
 import { readLatestPolicyOwnedInstallByDevice } from '../services/softwarePolicyInstallRemediation';
 import { repairManagedSoftwarePolicies } from '../services/securityAgents/managedPolicyGenerator';
 import {
@@ -825,7 +828,7 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
     };
   }
 
-  // Resolve devices via config policy hierarchy ("closest wins")
+  // Union matching configuration-policy assignments and explicit software-policy targets.
   const resolvedDeviceIds = await resolveDeviceIdsForSoftwarePolicy(policy.id);
   let deviceIds = resolvedDeviceIds;
   if (Array.isArray(data.deviceIds) && data.deviceIds.length > 0) {
@@ -1011,7 +1014,15 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
       const existing = existingByDevice.get(deviceId);
       const inventory = inventoryByDevice.get(deviceId) ?? [];
       const evaluated = evaluateSoftwareInventoryDetailed(policy.mode, normalizedRules, inventory);
-      let evaluatedViolations = evaluated.violations;
+      const blockedRules = policy.mode === 'allowlist'
+        ? await getSoftwareBlocklistRulesForDevice(deviceId)
+        : [];
+      const deviceRules = policy.mode === 'allowlist'
+        ? normalizedRules.software.filter((rule) => !isSoftwareRuleBlocked(rule, blockedRules))
+        : normalizedRules.software;
+      let evaluatedViolations = blockedRules.length > 0
+        ? evaluateSoftwarePolicyAgainstInventory(policy, inventory, blockedRules).violations
+        : evaluated.violations;
       // #6958 PR E: the bridge sees only the names of rules applicable to this
       // device (#10126), so a not-applicable rule's `missing` passes through it
       // untouched — never converted to `service_unverified` — and is dropped
@@ -1021,7 +1032,7 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
         evaluatedViolations = applyServiceRules({
           mode: policy.mode,
           violations: evaluatedViolations,
-          rules: normalizedRules.software ?? [],
+          rules: deviceRules,
           inventoryMatchedRuleNames: evaluated.matchedRuleNames,
           serviceNamesByCatalogId: serviceNamesByDevice.get(deviceId) ?? new Map(),
           observations: observationsByDevice.get(deviceId) ?? new Map(),

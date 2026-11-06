@@ -33,6 +33,7 @@ vi.mock('../db/schema', () => ({
   },
   softwareInventory: {
     deviceId: 'softwareInventory.deviceId',
+    catalogId: 'softwareInventory.catalogId',
     name: 'softwareInventory.name',
     vendor: 'softwareInventory.vendor',
     version: 'softwareInventory.version',
@@ -90,9 +91,11 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
 }));
 
-vi.mock('../services/softwarePolicyService', () => ({
+vi.mock('../services/softwarePolicyService', async (original) => ({
+  ...await original<typeof import('../services/softwarePolicyService')>(),
   recordSoftwarePolicyAudit: vi.fn().mockResolvedValue(undefined),
 }));
+vi.mock('../services/featureConfigResolver', () => ({ resolveSoftwarePoliciesForDevice: vi.fn(async () => ['allow-1', 'block-1']), resolveSecurityAgentsLinkForDevice: vi.fn(async () => ({ linkId: 'security-winner' })) }));
 
 import { softwareInventoryRoutes } from './softwareInventory';
 import { db } from '../db';
@@ -278,7 +281,7 @@ describe('software inventory routes', () => {
     it('applies policy status from active policies', async () => {
       // getPolicyStatusMap - has an allowlist entry
       mockSelectFromWhere([{
-        mode: 'allowlist',
+        id: 'allow-1', mode: 'allowlist',
         rules: { software: [{ name: 'Visual Studio Code', vendor: 'Microsoft' }] },
         isActive: true,
       }]);
@@ -290,7 +293,104 @@ describe('software inventory routes', () => {
           device_count: '5',
           first_seen: '2026-01-01T00:00:00Z',
           last_seen: '2026-03-01T00:00:00Z',
-          version_data: [],
+          version_data: [{ version: '1.0', device_id: 'dev-1' }],
+        }] as any);
+
+      const res = await app.request('/software-inventory', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].policyStatus).toBe('allowed');
+    });
+    it('keeps badges for the winning security-agent managed policy', async () => {
+      mockSelectFromWhere([
+        { id: 'managed-allow', mode: 'allowlist', managedByLinkId: 'security-winner', rules: { software: [{ name: 'Security Agent' }] } },
+        { id: 'managed-loser', mode: 'blocklist', managedByLinkId: 'security-loser', rules: { software: [{ name: 'Security Agent' }] } },
+      ]);
+      vi.mocked(db.execute).mockResolvedValueOnce([{ total: '1' }] as any).mockResolvedValueOnce([{
+        name: 'Security Agent', vendor: 'Vendor', device_count: '1', first_seen: null, last_seen: null,
+        version_data: [{ version: '1.0', device_id: 'dev-1' }],
+      }] as any);
+      const response = await app.request('/software-inventory', { headers: { Authorization: 'Bearer token' } });
+      expect(response.status).toBe(200);
+      expect((await response.json()).data[0].policyStatus).toBe('allowed');
+    });
+
+    it('matches catalog IDs consistently with compliance without inflating version counts', async () => {
+      mockSelectFromWhere([{
+        id: 'block-1', mode: 'blocklist',
+        rules: { software: [{ name: 'Visual Studio Code', catalogId: 'blocked-catalog' }] },
+      }, {
+        id: 'allow-1', mode: 'allowlist',
+        rules: { software: [{ name: 'Visual Studio Code', catalogId: 'allowed-catalog' }] },
+      }]);
+      vi.mocked(db.execute)
+        .mockResolvedValueOnce([{ total: '1' }] as any)
+        .mockResolvedValueOnce([{
+          name: 'Visual Studio Code', vendor: 'Microsoft', device_count: '2',
+          first_seen: '2026-01-01T00:00:00Z', last_seen: '2026-03-01T00:00:00Z',
+          version_data: [
+            { version: '1.0', device_id: 'dev-1', catalog_id: 'allowed-catalog' },
+            { version: '1.0', device_id: 'dev-1', catalog_id: 'other-catalog' },
+            { version: '1.0', device_id: 'dev-2', catalog_id: 'allowed-catalog' },
+          ],
+        }] as any);
+      const res = await app.request('/software-inventory', {
+        headers: { Authorization: 'Bearer token' },
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].policyStatus).toBe('allowed');
+      expect(body.data[0].versions).toEqual([{ version: '1.0', count: 2 }]);
+      expect(body.data[0].deviceCount).toBe(2);
+    });
+
+    it('gives an applying blocklist precedence over an allowlist irrespective of query order', async () => {
+      // getPolicyStatusMap - has an allowlist entry
+      mockSelectFromWhere([{ id: 'block-1', mode: 'blocklist', rules: { software: [{ name: 'Visual Studio*' }] } }, {
+        id: 'allow-1', mode: 'allowlist',
+        rules: { software: [{ name: 'Visual Studio Code', vendor: 'Microsoft' }] },
+        isActive: true,
+      }]);
+      vi.mocked(db.execute)
+        .mockResolvedValueOnce([{ total: '1' }] as any)
+        .mockResolvedValueOnce([{
+          name: 'Visual Studio Code',
+          vendor: 'Microsoft',
+          device_count: '5',
+          first_seen: '2026-01-01T00:00:00Z',
+          last_seen: '2026-03-01T00:00:00Z',
+          version_data: [{ version: '1.0', device_id: 'dev-1' }],
+        }] as any);
+
+      const res = await app.request('/software-inventory', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].policyStatus).toBe('blocked');
+    });
+    it('ignores a blocklist that does not reach any device in the inventory row', async () => {
+      // getPolicyStatusMap - has an allowlist entry
+      mockSelectFromWhere([{ id: 'not-assigned', mode: 'blocklist', rules: { software: [{ name: 'Visual Studio*' }] } }, {
+        id: 'allow-1', mode: 'allowlist',
+        rules: { software: [{ name: 'Visual Studio Code', vendor: 'Microsoft' }] },
+        isActive: true,
+      }]);
+      vi.mocked(db.execute)
+        .mockResolvedValueOnce([{ total: '1' }] as any)
+        .mockResolvedValueOnce([{
+          name: 'Visual Studio Code',
+          vendor: 'Microsoft',
+          device_count: '5',
+          first_seen: '2026-01-01T00:00:00Z',
+          last_seen: '2026-03-01T00:00:00Z',
+          version_data: [{ version: '1.0', device_id: 'dev-1' }],
         }] as any);
 
       const res = await app.request('/software-inventory', {
@@ -331,7 +431,7 @@ describe('software inventory routes', () => {
         // Feature link upsert
         .mockReturnValueOnce({
           values: vi.fn().mockReturnValue({
-            onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+            onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
           }),
         } as any)
         // Assignment upsert
@@ -391,7 +491,7 @@ describe('software inventory routes', () => {
       vi.mocked(db.insert)
         .mockReturnValueOnce({
           values: vi.fn().mockReturnValue({
-            onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+            onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
           }),
         } as any)
         // Assignment upsert

@@ -12,6 +12,8 @@ import { devices, softwareInventory, softwarePolicies } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import type { UserPermissions } from './permissions';
 import { escapeLike } from '../utils/sql';
+import { matchesSoftwareRule, normalizeSoftwarePolicyRules } from './softwarePolicyService';
+import { resolveSoftwarePoliciesForDevice, resolveSecurityAgentsLinkForDevice } from './featureConfigResolver';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 // Bound the distinct-name search like the filter engine does: the picker fires
@@ -42,54 +44,69 @@ export function resolveOrgReadScope(auth: AuthContext, requestedOrgId?: string):
 
 export type PolicyStatus = 'allowed' | 'blocked' | 'audit' | 'no_policy';
 
+type InventoryAggregateRow = {
+  name: string;
+  vendor: string | null;
+  device_count: string;
+  first_seen: string | null;
+  last_seen: string | null;
+  version_data: Array<{ version: string | null; device_id: string; catalog_id?: string | null }> | null;
+};
+
 export async function getPolicyStatusMap(
-  auth: AuthContext,
-  orgFilter: SQL | undefined
+  _auth: AuthContext,
+  orgFilter: SQL | undefined,
+  inventoryRows: InventoryAggregateRow[],
 ): Promise<Map<string, PolicyStatus>> {
-  const conditions: SQL[] = [eq(softwarePolicies.isActive, true)];
-  // Dual-axis (#2126): software policies can be partner-wide templates
-  // (org_id NULL). Those govern every org under the partner, so the badge
-  // must include them — otherwise titles blocked by a partner-wide blocklist
-  // render as no_policy. Partner-scope callers only; RLS hides partner rows
-  // from org-scope tokens regardless.
-  if (orgFilter) {
-    conditions.push(
-      auth.scope === 'partner' && auth.partnerId
-        ? (sql`(${orgFilter} OR (${softwarePolicies.orgId} IS NULL AND ${softwarePolicies.partnerId} = ${auth.partnerId}))` as SQL)
-        : orgFilter
-    );
-  }
-  const policies = await db
-    .select({
-      mode: softwarePolicies.mode,
-      rules: softwarePolicies.rules,
-      isActive: softwarePolicies.isActive,
-    })
-    .from(softwarePolicies)
-    .where(and(...conditions));
-
-  // Keyed by name|vendor with no org dimension. In an "All Orgs" aggregate this
-  // collapses policies from every accessible org onto one row; if two orgs hold
-  // conflicting policies for the same software the badge is last-write-wins. This
-  // is a display approximation on an org-collapsed row, never a cross-tenant read
-  // (RLS still scopes the policies query to accessible orgs).
-  const statusMap = new Map<string, PolicyStatus>();
-
-  for (const policy of policies) {
-    const rules = policy.rules as { software?: Array<{ name: string; vendor?: string }> } | null;
-    if (!rules?.software) continue;
-
-    for (const rule of rules.software) {
-      const key = `${rule.name.toLowerCase()}|${(rule.vendor ?? '').toLowerCase()}`;
-      const status: PolicyStatus =
-        policy.mode === 'allowlist' ? 'allowed' :
-        policy.mode === 'blocklist' ? 'blocked' : 'audit';
-      statusMap.set(key, status);
+  // RLS and the per-device resolver admit partner templates for org callers
+  // as well as partner callers, while excluding unrelated organizations.
+  const policies = await db.select({
+    id: softwarePolicies.id, mode: softwarePolicies.mode, rules: softwarePolicies.rules,
+    managedByLinkId: softwarePolicies.managedByLinkId,
+  }).from(softwarePolicies).where(and(
+    eq(softwarePolicies.isActive, true),
+    orgFilter ? sql`(${orgFilter} OR ${softwarePolicies.orgId} IS NULL)` : undefined,
+  ));
+  const applicableByDevice = new Map<string, Set<string>>();
+  if (policies.length > 0) {
+    const deviceIds = [...new Set(inventoryRows.flatMap((row) => row.version_data?.map((entry) => entry.device_id) ?? []))];
+    // Bound concurrent hierarchy reads for large inventory pages.
+    for (let i = 0; i < deviceIds.length; i += 20) {
+      await Promise.all(deviceIds.slice(i, i + 20).map(async (id) => {
+        const applicable = new Set(await resolveSoftwarePoliciesForDevice(id));
+        if (policies.some((policy) => policy.managedByLinkId)) {
+          const security = await resolveSecurityAgentsLinkForDevice(id);
+          for (const policy of policies) {
+            if (security && policy.managedByLinkId === security.linkId) applicable.add(policy.id);
+          }
+        }
+        applicableByDevice.set(id, applicable);
+      }));
     }
   }
-
+  const rank: Record<PolicyStatus, number> = { no_policy: 0, audit: 1, allowed: 2, blocked: 3 };
+  const statusMap = new Map<string, PolicyStatus>();
+  for (const row of inventoryRows) {
+    const key = `${row.name.toLowerCase()}|${(row.vendor ?? '').toLowerCase()}`;
+    let status: PolicyStatus = 'no_policy';
+    for (const policy of policies) {
+      const rules = normalizeSoftwarePolicyRules(policy.rules);
+      const matches = (row.version_data ?? []).some((entry) =>
+        applicableByDevice.get(entry.device_id)?.has(policy.id)
+        && rules.software.some((rule) => matchesSoftwareRule({
+          name: row.name, vendor: row.vendor, version: entry.version, catalogId: entry.catalog_id ?? null,
+        }, rule)));
+      if (!matches) continue;
+      const next: PolicyStatus = policy.mode === 'blocklist' ? 'blocked' : policy.mode === 'allowlist' ? 'allowed' : 'audit';
+      // Aggregate rows can span devices: any applying deny wins the badge,
+      // independently of SQL row order and configuration-policy specificity.
+      if (rank[next] > rank[status]) status = next;
+    }
+    statusMap.set(key, status);
+  }
   return statusMap;
 }
+
 
 // ============================================
 // Reads
@@ -173,8 +190,7 @@ export async function listInventory(params: {
       COUNT(DISTINCT ${softwareInventory.deviceId}) AS device_count,
       MIN(${softwareInventory.lastSeen}) AS first_seen,
       MAX(${softwareInventory.lastSeen}) AS last_seen,
-      jsonb_agg(DISTINCT jsonb_build_object('version', ${softwareInventory.version}, 'device_id', ${softwareInventory.deviceId}))
-        FILTER (WHERE ${softwareInventory.version} IS NOT NULL) AS version_data
+      jsonb_agg(DISTINCT jsonb_build_object('version', ${softwareInventory.version}, 'device_id', ${softwareInventory.deviceId}, 'catalog_id', ${softwareInventory.catalogId})) AS version_data
     FROM ${softwareInventory}
     INNER JOIN ${devices} ON ${softwareInventory.deviceId} = ${devices.id}
     WHERE ${whereClause}
@@ -184,7 +200,7 @@ export async function listInventory(params: {
   `);
 
   // Build policy status map
-  const policyStatusMap = await getPolicyStatusMap(auth, orgScope.applyTo(softwarePolicies.orgId));
+  const policyStatusMap = await getPolicyStatusMap(auth, orgScope.applyTo(softwarePolicies.orgId), rows as unknown as InventoryAggregateRow[]);
 
   // Process results
   const data = (rows as unknown as Array<{
@@ -193,12 +209,16 @@ export async function listInventory(params: {
     device_count: string;
     first_seen: string | null;
     last_seen: string | null;
-    version_data: Array<{ version: string; device_id: string }> | null;
+    version_data: Array<{ version: string | null; device_id: string; catalog_id?: string | null }> | null;
   }>).map((row) => {
     // Collapse version_data into {version, count} pairs
     const versionCounts: Record<string, number> = {};
+    const countedDeviceVersions = new Set<string>();
     if (row.version_data) {
       for (const entry of row.version_data) {
+        const key = JSON.stringify([entry.device_id, entry.version]);
+        if (countedDeviceVersions.has(key)) continue;
+        countedDeviceVersions.add(key);
         const v = entry.version || 'Unknown';
         versionCounts[v] = (versionCounts[v] ?? 0) + 1;
       }

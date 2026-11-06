@@ -7,7 +7,7 @@ import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Configuration Policies let you bundle device settings — patches, alerts, maintenance windows, compliance rules, and more — into reusable templates and apply them to any scope of your fleet. Policies evaluate automatically on a schedule and can auto-remediate drift without manual intervention.
 
-Policies are **hierarchical**: settings cascade from the broadest scope down to the most specific, and more specific assignments always win.
+Policies are **hierarchical**: settings cascade from the broadest scope down to the most specific, and more specific assignments win for exclusive feature types. Software policies are additive: every matching software-policy link applies, including links inherited from a parent policy.
 
 ```
 Breeze Defaults  (lowest priority — read-only, always present)
@@ -354,14 +354,14 @@ A partner-wide "servers only" assignment reaches server-role devices in every as
 
 3. Optionally set the same **Role Filter** and **OS Filter**. Empty means every device in that target.
 
-4. Set a **Priority** number. When two policies at the same level both define the same feature, the lower priority number wins (priority `1` takes precedence over priority `2`). On an exact tie, the assignment created first wins.
+4. Set a **Priority** number. For exclusive feature types, when two policies at the same level both define the same feature, the lower priority number wins (priority `1` takes precedence over priority `2`). On an exact tie, the assignment created first wins.
 
 5. Click **Assign**.
 
 </Steps>
 
 <Aside>
-  A device-level assignment always takes precedence over all group, site, organization, and partner assignments, regardless of priority number. A partner-wide assignment is the broadest scope and is overridden by any more-specific assignment.
+  Software policies accumulate across matching assignments; they are not replaced by assignment priority or specificity. See [Software Policies](/features/software-policies/#multiple-policies-on-one-device) for blocklist conflict precedence. For other features, a device-level assignment always takes precedence over all group, site, organization, and partner assignments, regardless of priority number. A partner-wide assignment is the broadest scope and is overridden by any more-specific assignment.
 </Aside>
 
 ## Per-device compliance status
@@ -496,4 +496,4 @@ Enforcement mode must be set to `enforce` and a remediation script must be linke
 
 **Feature type conflict between policies at the same level**
 
-When two policies at the same hierarchy level both define the same feature type, the one with the lower **Priority** number wins (priority `1` beats priority `2`). If the assignments tie on every ranking key, the one created first wins. Before v0.122.1 an exact tie had no defined winner, so a device decided by one may change once after upgrading. Assign distinct priorities to make the choice explicit.
+For feature types other than software policies, when two policies at the same hierarchy level both define the same feature type, the one with the lower **Priority** number wins (priority `1` beats priority `2`). If the assignments tie on every ranking key, the one created first wins. Before v0.122.1 an exact tie had no defined winner, so a device decided by one may change once after upgrading. Assign distinct priorities to make the choice explicit.

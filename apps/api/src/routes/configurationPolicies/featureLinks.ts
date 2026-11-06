@@ -610,7 +610,9 @@ featureLinkRoutes.post(
     }
 
     if (!link) {
-      return c.json({ error: `Feature type "${data.featureType}" already linked to this policy` }, 409);
+      return c.json({ error: data.featureType === 'software_policy'
+        ? 'This software policy is already linked to this configuration policy'
+        : `Feature type "${data.featureType}" already linked to this policy` }, 409);
     }
 
     writeRouteAudit(c, {

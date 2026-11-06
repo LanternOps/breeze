@@ -16,6 +16,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getSoftwareBlocklistRulesForDevice } from '../services/softwarePolicyConflicts';
+vi.mock('../services/softwarePolicyConflicts', () => ({ getSoftwareBlocklistRulesForDevice: vi.fn(async () => []) }));
 
 const { addMock, getJobMock, queueCommandMock, recordDecisionMock, recordPolicyAuditMock } = vi.hoisted(() => ({
   addMock: vi.fn(async (..._args: any[]) => ({ id: 'queued-job-1' })),
@@ -46,6 +48,8 @@ vi.mock('../services/softwarePolicyService', async (orig) => {
   const actual = await orig<typeof import('../services/softwarePolicyService')>();
   return {
     evaluateSoftwarePolicyArming: actual.evaluateSoftwarePolicyArming,
+    isSoftwareRuleBlocked: actual.isSoftwareRuleBlocked,
+    normalizeSoftwarePolicyRules: actual.normalizeSoftwarePolicyRules,
     SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS: actual.SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS,
     recordSoftwarePolicyAudit: recordPolicyAuditMock,
   };
@@ -674,6 +678,17 @@ describe('processRemediateDeviceInstall — #5505 W03', () => {
       expect(createPolicyDeploymentMock).toHaveBeenCalledTimes(1);
       expect(deliverMock).not.toHaveBeenCalled();
     });
+  });
+
+  it('rechecks blocklists before dispatching a previously queued install', async () => {
+    primeInstallDb(policyRow({ mode: 'allowlist', ...INSTALL_ARMED }));
+    vi.mocked(getSoftwareBlocklistRulesForDevice).mockResolvedValueOnce([{ name: '*', catalogId: 'cat-1' }]);
+    const result = await processRemediateDeviceInstall(installJob());
+    expect(result.deploymentsCreated).toBe(0);
+    expect(createPolicyDeploymentMock).not.toHaveBeenCalled();
+    expect(recordPolicyAuditMock).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'install_skipped', details: expect.objectContaining({ skipped: expect.arrayContaining([expect.objectContaining({ reason: 'blocked_by_policy' })]) }),
+    }));
   });
 
   it('creates a policy-owned deployment for an armed policy and a missing violation', async () => {
