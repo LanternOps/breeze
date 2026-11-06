@@ -165,6 +165,22 @@ describe('listDevices', () => {
     await expect(adapter.listDevices(CREDS, BASE, '26')).rejects.toMatchObject({ code: 'http_401', reauth: true });
   });
 
+  it('a fatal error stops the other worker from starting another client', async () => {
+    const { fetchImpl } = fakeVendor((path) => {
+      if (path === 'client/101/device') return { status: 401, body: unauthorized, delayMs: 5 };
+      if (path === 'client/102/device') return { body: devices102, delayMs: 50 };
+      return undefined;
+    });
+    await expect(adapter.listDevices(CREDS, BASE, '26')).rejects.toMatchObject({ code: 'http_401', reauth: true });
+    await new Promise((resolve) => setTimeout(resolve, 100)); // let the in-flight 102 call finish
+    expect(paths(fetchImpl)).not.toContain('client/103/device');
+  });
+
+  it('403 ForbiddenException on a device call fails the whole run as reauth', async () => {
+    fakeVendor((path) => (path === 'client/102/device' ? { status: 403, body: forbidden } : undefined));
+    await expect(adapter.listDevices(CREDS, BASE, '26')).rejects.toMatchObject({ code: 'http_403', reauth: true, message: AXCIENT_SCOPE_MESSAGE });
+  });
+
   it('every customer failing throws all_customers_failed', async () => {
     fakeVendor((path) => (path.endsWith('/device') ? { status: 404, body: {} } : undefined));
     await expect(adapter.listDevices(CREDS, BASE, '26')).rejects.toMatchObject({ code: 'all_customers_failed', reauth: false });

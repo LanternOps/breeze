@@ -157,7 +157,12 @@ export class AxcientClient {
         }
         // Network exceptions can echo URLs or headers. Never keep their message
         // or cause in an error that may be logged or persisted.
-        if (attempt === MAX_RETRIES) throw failure('network', 'Axcient request failed');
+        // A device call that keeps failing isolates that customer, so one slow
+        // customer cannot abort every other customer's sync on each poll.
+        if (attempt === MAX_RETRIES) {
+          if (scope === 'customer') throw new AxcientCustomerRequestError('Axcient request failed', 'network');
+          throw failure('network', 'Axcient request failed');
+        }
         await this.sleepImpl(retryDelay(null, attempt));
         continue;
       }

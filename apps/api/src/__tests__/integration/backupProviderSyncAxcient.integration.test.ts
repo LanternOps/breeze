@@ -37,6 +37,7 @@ import {
 import { getEventBus } from '../../services/eventBus';
 import { syncConnectionById } from '../../jobs/backupProviderSync';
 import { axcientDeviceToVendorDevice } from '../../services/backupProviders/axcient/device';
+import { PROVIDER_ALERT_PARKED_NOTE } from '../../services/backupProviders/alerts';
 import devices101 from '../../services/backupProviders/axcient/__fixtures__/devices-client-101.json';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -181,6 +182,31 @@ describe('Axcient x360Recover sync (real Postgres + Redis)', () => {
       expect(row.pendingCondition).toBeNull();
       expect(open).toHaveLength(0);
     }
+    expect(capturedEvents).toEqual([]);
+  });
+
+  runDb('parking a device with an open alert retires the alert without announcing a recovery', async () => {
+    const seeded = await seed(uniqueId(), 'SYN-SRV-02');
+    vendorAccount(seeded.orgId, fixture(503));
+    await syncConnectionById(seeded.connectionId);
+    await syncConnectionById(seeded.connectionId);
+    const raised = await readState(seeded);
+    expect(raised.open).toHaveLength(1);
+    capturedEvents.length = 0;
+
+    vendorAccount(seeded.orgId, { ...fixture(503), current_health_status: { status: 'PARKED', reason: 'PARKED_BY_OPERATOR' } });
+    await syncConnectionById(seeded.connectionId);
+    const parked = await readState(seeded);
+    expect(parked.row.status).toBe('paused');
+    expect(parked.row.pendingCondition).toBeNull();
+    expect(parked.open).toHaveLength(0);
+    const [resolved] = await withSystemDbAccessContext(() => db
+      .select()
+      .from(alerts)
+      .where(eq(alerts.id, raised.open[0]!.id)));
+    expect(resolved!.status).toBe('resolved');
+    expect(resolved!.resolutionNote).toBe(PROVIDER_ALERT_PARKED_NOTE);
+    expect(resolved!.resolutionReason).toBe('source_retired');
     expect(capturedEvents).toEqual([]);
   });
 

@@ -179,6 +179,16 @@ describe('AxcientClient', () => {
     });
   });
 
+  it('device call network failure after retries => AxcientCustomerRequestError', async () => {
+    // One slow or unreachable customer must not abort every other customer's
+    // sync on every poll. An admin call still fails the run.
+    const boom = new Error('timeout');
+    const { client } = setup([boom, boom, boom, boom]);
+    await expect(client.listClientDevices(101)).rejects.toMatchObject({
+      name: 'AxcientCustomerRequestError', code: 'network', message: 'Axcient request failed',
+    });
+  });
+
   it('abort() stops new requests', async () => {
     const { client, fetchImpl } = setup([[{ id: 1 }]]);
     client.abort();
