@@ -183,8 +183,11 @@ const EPHEMERAL_ONLY: Record<string, string> = {
  * 77 → 80 (#11072): services/oemUpdates/candidates.ts, rebootSweep.ts and
  * releaseSweep.ts, the vendor update scheduler's device selectors (each a
  * parkedFanoutModules entry, parked guard beside the filter).
+ * 80 → 81 (#11073): services/oemUpdates/laneDelivery.ts, which classes a vendor
+ * lane delivers on a device (a parkedFanoutModules entry, parked guard beside the
+ * filter).
  */
-const EPHEMERAL_DISCOVERED_FILES = 80;
+const EPHEMERAL_DISCOVERED_FILES = 81;
 
 describe('contract: device counts and listings leave parked devices out', () => {
   const found = DEVICE_FILES
