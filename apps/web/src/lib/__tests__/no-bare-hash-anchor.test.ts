@@ -11,8 +11,12 @@
  * is ignored), including variable-built forms like href={`#${x}`}.
  *
  * Legitimate exceptions carry a `// bare-hash-anchor-exempt: <reason>` comment
- * within the 3 lines directly above the `<a` (e.g. the element installs its
- * own click handler that sets the hash).
+ * as the last line directly above the `<a` (e.g. the element installs its own
+ * click handler that sets the hash).
+ *
+ * Scope: .tsx files, inline href expressions only (literal / template / `+` /
+ * `??` / `||` / conditional). Hrefs hidden behind an identifier or helper call
+ * are not resolved.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -48,10 +52,9 @@ function startsWithHash(expr: ts.Expression): boolean {
 }
 
 function isExempt(src: string, el: ts.Node): boolean {
-  // Only the few lines directly above the element count, so one marker can
-  // never silently exempt a later anchor in the same statement.
-  const above = src.slice(0, el.getStart()).split('\n').slice(-4).join('\n');
-  return /bare-hash-anchor-exempt/.test(above);
+  // The marker must be the last thing before the element (only whitespace
+  // may follow its line), so it can never exempt a neighbouring anchor.
+  return /bare-hash-anchor-exempt[^\n]*\s*$/.test(src.slice(0, el.getStart()));
 }
 
 export function findViolations(src: string, label = 'sample.tsx'): Violation[] {
@@ -112,6 +115,17 @@ describe('guard self-checks (AST analyzer)', () => {
     expect(findViolations(`const x = <a href="/devices#alerts">A</a>;`)).toHaveLength(0);
     expect(findViolations('const x = <a href={`/d/${id}#a`}>A</a>;')).toHaveLength(0);
     expect(findViolations(`const x = <HashLink hash="alerts">A</HashLink>;`)).toHaveLength(0);
+  });
+  it('a marker exempts only the element directly below it', () => {
+    const src = `
+      const x = (
+        <div>
+          {/* bare-hash-anchor-exempt: handled */}
+          <a href="#a">A</a>
+          <a href="#b">B</a>
+        </div>
+      );`;
+    expect(findViolations(src)).toHaveLength(1);
   });
   it('honors the exempt marker', () => {
     const src = `
