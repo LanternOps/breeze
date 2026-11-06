@@ -104,6 +104,7 @@ describe('backup verification selected-site database failure', () => {
     const health = await getBackupHealthSummary(orgId, [siteId]);
 
     expect(health).toEqual({
+      readFailed: true,
       verification: {
         total: 0,
         passedLast24h: 0,

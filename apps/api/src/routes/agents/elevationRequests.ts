@@ -4,6 +4,7 @@ import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { db, runOutsideDbContext, withDbAccessContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
+import { captureException } from '../../services/sentry';
 import {
   approvalRequests,
   devices,
@@ -239,7 +240,7 @@ async function fanOutMobileApprovals(args: {
       for (const userId of approverIds) {
         let approvalId: string;
         try {
-          // A savepoint, so one approver's failure leaves the next approver's
+          // A savepoint, so one approver's failed insert leaves the next approver's
           // insert and this context's commit intact (#11225).
           const [row] = await withDbTransaction(() => db
             .insert(approvalRequests)
@@ -261,9 +262,11 @@ async function fanOutMobileApprovals(args: {
           if (!row) continue;
           approvalId = row.id;
         } catch (err) {
+          // The SQLSTATE or error name only: a Drizzle query error serializes its
+          // bound parameters, which here include the elevated command line.
+          const { cause, name } = err as { cause?: { code?: unknown }; name?: unknown };
           console.error(
-            `[ElevationRequests] mobile approval insert failed for user=${userId} elevation=${elevationRequestId}:`,
-            err,
+            `[ElevationRequests] mobile approval insert failed for user=${userId} elevation=${elevationRequestId}: ${String(cause?.code ?? name ?? 'unknown')}`,
           );
           continue;
         }
@@ -553,6 +556,9 @@ elevationRequestsRoutes.post(
           `[ElevationRequests] decisioning failed for device=${device.id} org=${device.orgId} (failing safe to pending):`,
           err,
         );
+        // A blocklist deny that cannot be evaluated becomes a pending request, so
+        // an outage here has to reach someone.
+        captureException(err instanceof Error ? err : new Error(String(err)));
         decided = { kind: 'pending' };
       }
       const decision = decided;

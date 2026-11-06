@@ -202,13 +202,17 @@ describe('heartbeat catches inside the request transaction (real PostgreSQL)', (
 });
 
 describe('agent socket catches inside the message transaction (real PostgreSQL)', () => {
+  const opened: Array<() => Promise<void>> = [];
   beforeEach(() => {
     faults.selectWithField = null;
+    faults.selectHits = 0;
     vi.mocked(captureException).mockClear();
   });
   afterEach(async () => {
     faults.selectWithField = null;
     await clearStatementFaults();
+    // An open socket keeps a ping timer that could report into a later case.
+    while (opened.length > 0) await opened.pop()!();
   });
 
   async function openSocket(device: DeviceFixture) {
@@ -227,6 +231,7 @@ describe('agent socket catches inside the message transaction (real PostgreSQL)'
       credentialTokenHash: CREDENTIAL_HASH,
     });
     await handlers.onOpen({}, ws);
+    opened.push(async () => { await handlers.onClose({}, ws); });
     sent.length = 0;
     vi.mocked(captureException).mockClear();
     return {
@@ -244,6 +249,7 @@ describe('agent socket catches inside the message transaction (real PostgreSQL)'
     faults.selectWithField = 'attemptCount';
     await socket.send({ type: 'update_status', targetVersion: `9.9.${Date.now()}` });
     faults.selectWithField = null;
+    expect(faults.selectHits).toBe(1);
     expect(socket.sent.filter((frame) => frame.code === 'PROCESSING_ERROR')).toEqual([]);
     const row = await readDevice(device.deviceId);
     expect(row.status).toBe('updating');
@@ -297,6 +303,7 @@ describe('agent socket catches inside the message transaction (real PostgreSQL)'
     faults.selectWithField = 'hostname';
     await socket.handlers.onClose({}, socket.ws);
     faults.selectWithField = null;
+    expect(faults.selectHits).toBe(1);
     expect((await readDevice(device.deviceId)).status).toBe('offline');
     expect(vi.mocked(captureException)).toHaveBeenCalledTimes(1);
   });
@@ -308,9 +315,10 @@ describe('agent socket catches inside the message transaction (real PostgreSQL)'
     socket.handlers.onError({}, socket.ws);
     await vi.waitFor(async () => {
       expect((await readDevice(device.deviceId)).status).toBe('offline');
-    });
+    }, { timeout: 10_000 });
     await new Promise((resolve) => setTimeout(resolve, 50));
     faults.selectWithField = null;
+    expect(faults.selectHits).toBeGreaterThan(0);
     expect(vi.mocked(captureException)).not.toHaveBeenCalled();
   });
 });
@@ -396,9 +404,11 @@ describe('elevation request catches inside their transactions (real PostgreSQL)'
 
   runDb('a failed decisioning read fails safe to pending and commits the request', async () => {
     const device = await deviceFixture();
+    faults.selectHits = 0;
     faults.selectWithField = 'verdict';
     const res = await elevation(device);
     faults.selectWithField = null;
+    expect(faults.selectHits).toBe(1);
     expect(res.status, await res.clone().text()).toBe(201);
     const rows = await getTestDb().select().from(elevationRequests).where(eq(elevationRequests.deviceId, device.deviceId));
     expect(rows.map((row) => row.status)).toEqual(['pending']);

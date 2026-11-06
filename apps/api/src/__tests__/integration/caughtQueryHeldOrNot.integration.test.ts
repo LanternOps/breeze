@@ -18,8 +18,9 @@ import { eq, sql } from 'drizzle-orm';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { db, withDbAccessContext } from '../../db';
-import { backupJobs, deviceCommands, devices, recoveryReadiness, sites } from '../../db/schema';
+import { backupJobs, backupVerifications, deviceCommands, devices, mlFeedbackEvents, recoveryReadiness, sites } from '../../db/schema';
 import { isCriticalBackupDevice } from '../../routes/backup/criticality';
+import { verificationHealthStatus } from '../../routes/backup/verification';
 import {
   getBackupHealthSummary,
   getRecoveryReadinessForDevice,
@@ -29,6 +30,7 @@ import {
 } from '../../routes/backup/readinessCalculator';
 import {
   ensurePostBackupIntegrityChecks,
+  processBackupVerificationResult,
   recalculateReadinessScores,
   timeoutStaleVerifications,
 } from '../../routes/backup/verificationScheduled';
@@ -139,11 +141,15 @@ describe('backup verification with a held context (real PostgreSQL)', () => {
     expect(await getTestDb().select().from(recoveryReadiness).where(eq(recoveryReadiness.deviceId, t.deviceId))).toEqual([]);
   });
 
-  runDb('persistVerificationToDb: a failed write keeps the held commit', async () => {
+  runDb('persistVerificationToDb: a failed write keeps the held commit; with nothing failing the row lands', async () => {
     const t = await tenant();
+    const control = await verificationRow(t);
+    await inHeldContext(t, () => persistVerificationToDb(control));
     const row = await verificationRow(t);
     await failWritesOn('backup_verifications');
     await inHeldContext(t, () => persistVerificationToDb(row));
+    const rows = await getTestDb().select({ id: backupVerifications.id }).from(backupVerifications).where(eq(backupVerifications.deviceId, t.deviceId));
+    expect(rows.map((r) => r.id)).toEqual([control.id]);
   });
 
   runDb('getRecoveryReadinessForDevice: a failed read falls back and keeps the held commit', async () => {
@@ -170,18 +176,61 @@ describe('backup verification with a held context (real PostgreSQL)', () => {
     expect(await inHeldContext(t, () => isCriticalBackupDevice(t.orgId, t.deviceId))).toBe(false);
   });
 
-  runDb('getBackupHealthSummary: optional reads no longer sit beside each other, so one failure stays degraded', async () => {
+  runDb('getBackupHealthSummary CONTROL: with nothing failing, the verdict is healthy and no failure is flagged', async () => {
     const t = await tenant();
-    await failStatementsOn('backup_verifications');
     const summary = await inHeldContext(t, () => getBackupHealthSummary(t.orgId));
-    expect(summary).toBeDefined();
+    expect(summary.readFailed).toBe(false);
+    expect(verificationHealthStatus(summary)).toBe('healthy');
   });
 
-  runDb('getBackupHealthSummary: a failed assigned-device read stays degraded and keeps the held commit', async () => {
+  runDb.each(['backup_verifications', 'recovery_readiness'])(
+    'getBackupHealthSummary: a failed read of %s keeps the held commit and the verdict says unknown, not healthy',
+    async (table) => {
+      const t = await tenant();
+      await failStatementsOn(table);
+      const summary = await inHeldContext(t, () => getBackupHealthSummary(t.orgId));
+      expect(summary.readFailed).toBe(true);
+      expect(verificationHealthStatus(summary)).toBe('unknown');
+    },
+  );
+
+  runDb('getBackupHealthSummary: a failed assigned-device read reports zero coverage and keeps the held commit', async () => {
     const t = await tenant();
     await failStatementsOn('config_policy_backup_settings');
     const summary = await inHeldContext(t, () => getBackupHealthSummary(t.orgId));
-    expect(summary).toBeDefined();
+    expect(summary.verification.coveragePercent).toBe(0);
+  });
+
+  runDb('getBackupHealthSummary: failed criticality checks, run in sequence, count the rows as non-critical and keep the held commit', async () => {
+    const t = await tenant();
+    const row = { ...(await verificationRow(t)), status: 'failed' as const };
+    await persistVerificationToDb(row);
+    await persistRecoveryReadinessToDb({ ...readinessRow(t), readinessScore: 10 });
+    await failStatementsOn('devices');
+    const summary = await inHeldContext(t, () => getBackupHealthSummary(t.orgId));
+    expect(summary.escalations).toEqual({ verificationFailures: 1, criticalVerificationFailures: 0 });
+    expect(summary.readiness).toMatchObject({ lowReadinessCount: 1, criticalDevicesAtRisk: 0 });
+  });
+
+  runDb('recomputeRecoveryReadinessForDevice: failed backup, bare-metal and readiness statements still score and keep the held commit', async () => {
+    const t = await tenant();
+    await failStatementsOn('backup_jobs');
+    await failStatementsOn('bare_metal_recoveries');
+    await failStatementsOn('recovery_readiness');
+    const row = await inHeldContext(t, () => recomputeRecoveryReadinessForDevice(t.orgId, t.deviceId));
+    expect(row.deviceId).toBe(t.deviceId);
+  });
+
+  runDb('listRecoveryReadiness: a failed site-scoped read fails closed and keeps the held commit', async () => {
+    const t = await tenant();
+    await failStatementsOn('devices');
+    expect(await inHeldContext(t, () => listRecoveryReadiness(t.orgId, [t.siteId]))).toEqual([]);
+  });
+
+  runDb('processBackupVerificationResult: failed command lookups fall back and keep the held commit', async () => {
+    const t = await tenant();
+    await failStatementsOn('backup_verifications');
+    await inHeldContext(t, () => processBackupVerificationResult(randomUUID(), { status: 'completed' }));
   });
 
   runDb('recomputeRecoveryReadinessForDevice: a failed verification read still scores and keeps the held commit', async () => {
@@ -240,15 +289,20 @@ describe('backup verification with no context held (real PostgreSQL)', () => {
 describe('the two sites #11224 left unchecked (real PostgreSQL)', () => {
   afterEach(clearStatementFaults);
 
-  runDb('emitFeedbackBestEffort: a failed insert stays best effort and keeps the held commit', async () => {
+  runDb('emitFeedbackBestEffort: with nothing failing the label lands; a failed insert keeps the held commit', async () => {
     const t = await tenant();
-    await failWritesOn('ml_feedback_events');
-    await inHeldContext(t, () => emitAlertStateFeedback({
+    const emit = () => inHeldContext(t, () => emitAlertStateFeedback({
       orgId: t.orgId,
       alertId: randomUUID(),
       eventType: 'alert.acknowledged',
       outcome: 'acknowledged',
     }));
+    const labels = () => getTestDb().select({ id: mlFeedbackEvents.id }).from(mlFeedbackEvents).where(eq(mlFeedbackEvents.orgId, t.orgId));
+    await emit();
+    expect(await labels()).toHaveLength(1);
+    await failWritesOn('ml_feedback_events');
+    await emit();
+    expect(await labels()).toHaveLength(1);
   });
 
   runDb('dispatchDeviceCommand: a failed release after a failed push answers queued_live and keeps the command', async () => {

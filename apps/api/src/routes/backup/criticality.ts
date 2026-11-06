@@ -1,5 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 import { db, withDbTransactionIfHeld, withSystemDbAccessContextIsolated } from '../../db';
+import { reportBackupDbFallback } from './dbFallbackReport';
 import { devices as devicesTable } from '../../db/schema';
 import { resolveBackupConfigForDevice } from '../../services/featureConfigResolver';
 
@@ -55,7 +56,7 @@ export async function isCriticalBackupDevice(orgId: string, deviceId: string): P
         return true;
       }
     } catch (error) {
-      console.warn('[backupVerification] Failed to read device tags for criticality:', error);
+      reportBackupDbFallback('[backupVerification] Failed to read device tags for criticality', error);
     }
   }
 
@@ -67,7 +68,7 @@ export async function isCriticalBackupDevice(orgId: string, deviceId: string): P
     if (hasCriticalMetadata(resolved.settings)) return true;
     if (hasCriticalMetadata(asRecord(resolved.settings)?.targets)) return true;
   } catch (error) {
-    console.warn('[backupVerification] Failed to resolve backup criticality metadata:', error);
+    reportBackupDbFallback('[backupVerification] Failed to resolve backup criticality metadata', error);
   }
 
   return false;

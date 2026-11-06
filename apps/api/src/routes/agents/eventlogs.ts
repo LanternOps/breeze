@@ -367,7 +367,10 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
         }
       } catch (err) {
         insertError = err;
-        console.error(`[EventLogs] Error batch inserting events for device ${deviceId}:`, err);
+        // The SQLSTATE or error name only: a Drizzle query error serializes its
+        // bound parameters, which here are the customer's event messages.
+        const { cause, name } = err as { cause?: { code?: unknown }; name?: unknown };
+        console.error(`[EventLogs] Error batch inserting events for device ${deviceId}: ${String(cause?.code ?? name ?? 'unknown')}`);
         return { inserted, insertError, forwardEvents: null };
       }
 

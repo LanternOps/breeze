@@ -3790,6 +3790,7 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
               });
             } catch (error) {
               console.error(`[AgentWs] Failed to set updating status for ${agentId}:`, error);
+              captureException(error instanceof Error ? error : new Error(String(error)));
             } finally {
               finishAgentUpdateStatusWrite(agentId, targetVersion, written);
             }

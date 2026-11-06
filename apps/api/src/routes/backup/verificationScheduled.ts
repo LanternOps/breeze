@@ -1,5 +1,6 @@
 import { and, desc, eq, inArray, lte, or, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, withSystemDbAccessContextIsolated } from '../../db';
+import { reportBackupDbFallback } from './dbFallbackReport';
 import {
   backupJobs as backupJobsTable,
   deviceCommands,
@@ -105,7 +106,7 @@ async function listCompletedJobsFromDb(orgId?: string): Promise<Array<BackupJob 
       errorLog: row.errorLog,
     }));
   } catch (error) {
-    console.warn('[backupVerification] DB completed job read failed; falling back to memory:', error);
+    reportBackupDbFallback('[backupVerification] DB completed job read failed; falling back to memory', error);
     return null;
   }
 }
@@ -129,7 +130,7 @@ async function listTimedOutVerificationsFromDb(cutoff: Date): Promise<typeof bac
       return normalized;
     });
   } catch (error) {
-    console.warn('[backupVerification] DB timeout scan failed; falling back to memory:', error);
+    reportBackupDbFallback('[backupVerification] DB timeout scan failed; falling back to memory', error);
     return [];
   }
 }
@@ -219,7 +220,7 @@ async function findTimedOutVerificationByCommandId(commandId: string): Promise<B
     backupVerifications.push(normalized);
     return normalized;
   } catch (error) {
-    console.warn('[backupVerification] DB timed-out command lookup failed; falling back to memory:', error);
+    reportBackupDbFallback('[backupVerification] DB timed-out command lookup failed; falling back to memory', error);
     return backupVerifications.find((item) => (
       item.details
       && (item.details as Record<string, unknown>).commandId === commandId
@@ -258,7 +259,7 @@ async function findPendingVerificationByCommandId(commandId: string): Promise<Ba
     backupVerifications.push(normalized);
     return normalized;
   } catch (error) {
-    console.warn('[backupVerification] DB command lookup failed; falling back to memory:', error);
+    reportBackupDbFallback('[backupVerification] DB command lookup failed; falling back to memory', error);
     return null;
   }
 }
@@ -293,7 +294,7 @@ async function collectDevicesToRecompute(orgId?: string, allowedSiteIds?: readon
     }
     return map;
   } catch (error) {
-    console.warn('[backupVerification] DB readiness scan failed; falling back to memory:', error);
+    reportBackupDbFallback('[backupVerification] DB readiness scan failed; falling back to memory', error);
     if (allowedSiteIds) return new Map();
     return null;
   }
@@ -590,11 +591,13 @@ export async function runWeeklyTestRestore(orgId?: string): Promise<number> {
     const targetOrg = (job as BackupJob & { orgId?: string }).orgId ?? orgId ?? jobOrgById.get(job.id);
     return !!targetOrg && (!orgId || targetOrg === orgId);
   });
-  const prioritizedCritical: typeof criticalCandidates = [];
-  for (const job of criticalCandidates) {
-    const targetOrg = (job as BackupJob & { orgId?: string }).orgId ?? orgId ?? jobOrgById.get(job.id);
-    if (targetOrg && await isCriticalBackupDevice(targetOrg, job.deviceId)) prioritizedCritical.push(job);
-  }
+  const criticalFlags = await Promise.all(
+    criticalCandidates.map((job) => {
+      const targetOrg = (job as BackupJob & { orgId?: string }).orgId ?? orgId ?? jobOrgById.get(job.id);
+      return targetOrg ? isCriticalBackupDevice(targetOrg, job.deviceId) : Promise.resolve(false);
+    })
+  );
+  const prioritizedCritical = criticalCandidates.filter((_job, index) => criticalFlags[index]);
   const rotationBucket = Math.floor(now / (7 * DAY_MS));
   const candidates = prioritizedCritical.length > 0
     ? prioritizedCritical

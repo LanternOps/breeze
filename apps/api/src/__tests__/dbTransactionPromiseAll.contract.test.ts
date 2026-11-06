@@ -6,13 +6,15 @@
  * also fail together. Verified on real Postgres; see docs/agents/tenancy-rls.md.
  *
  * This scan flags the shape it can see with confidence: a savepoint helper called
- * as a direct element of the array, or as the body of the callback mapped over it.
+ * as an element of the array (including behind `&&`, `||`, `??` or a ternary), or
+ * anywhere in the body of an inline callback mapped over it.
  *
- * Known limit. It follows no calls, so a helper that opens a savepoint inside
+ * Known limits. It follows no calls, so a helper that opens a savepoint inside
  * itself and is then run in a `Promise.all` is invisible, which is the shape
  * `getBackupHealthSummary` had. No static check here can see that: whether a call
  * reaches a savepoint is a whole-program question. Read a helper before running it
- * in parallel.
+ * in parallel. It also misses an array built in a variable, `.map(namedFunction)`,
+ * and an aliased import.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
@@ -41,6 +43,12 @@ function startsSavepoint(node: ts.Expression): boolean {
       cur = cur.expression;
       continue;
     }
+    if (ts.isConditionalExpression(cur)) return startsSavepoint(cur.whenTrue) || startsSavepoint(cur.whenFalse);
+    if (ts.isBinaryExpression(cur)) {
+      const op = cur.operatorToken.kind;
+      if (op !== ts.SyntaxKind.AmpersandAmpersandToken && op !== ts.SyntaxKind.BarBarToken && op !== ts.SyntaxKind.QuestionQuestionToken) return false;
+      return startsSavepoint(cur.left) || startsSavepoint(cur.right);
+    }
     if (!ts.isCallExpression(cur)) return false;
     if (ts.isIdentifier(cur.expression)) return SAVEPOINT_HELPERS.has(cur.expression.text);
     if (ts.isPropertyAccessExpression(cur.expression)) {
@@ -56,8 +64,19 @@ function startsSavepoint(node: ts.Expression): boolean {
 function callbackStartsSavepoint(callback: ts.Expression | undefined): boolean {
   if (!callback || !(ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))) return false;
   if (!ts.isBlock(callback.body)) return startsSavepoint(callback.body);
-  return callback.body.statements.some((statement) =>
-    ts.isReturnStatement(statement) && !!statement.expression && startsSavepoint(statement.expression));
+  let found = false;
+  // Anywhere in the body: each element's savepoints still run beside the others'.
+  // A nested function is skipped, unless it is that savepoint's own callback.
+  const visit = (node: ts.Node): void => {
+    if (found || ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node)) return;
+    if (ts.isCallExpression(node) && startsSavepoint(node)) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(callback.body);
+  return found;
 }
 
 function elementsStartSavepoint(argument: ts.Expression): boolean {
@@ -117,6 +136,17 @@ describe('the scan sees the shapes it claims to', () => {
   it('flags a savepoint mapped over a list', () => {
     expect(check(`await Promise.all(ids.map((id) => withDbTransaction(() => q(id))));`)).toHaveLength(1);
     expect(check(`await Promise.all(ids.map(async (id) => { return withDbTransaction(() => q(id)); }));`)).toHaveLength(1);
+  });
+  it('flags a savepoint anywhere in a mapped block body', () => {
+    expect(check(`await Promise.all(ids.map(async (id) => { await withDbTransaction(() => q(id)); }));`)).toHaveLength(1);
+    expect(check(`await Promise.all(ids.map(async (id) => { try { await withDbTransaction(() => q(id)); } catch {} }));`)).toHaveLength(1);
+  });
+  it('flags a savepoint behind a condition', () => {
+    expect(check(`await Promise.all([cond && withDbTransaction(() => q()), other()]);`)).toHaveLength(1);
+    expect(check(`await Promise.all([cond ? withDbTransaction(() => q()) : null, other()]);`)).toHaveLength(1);
+  });
+  it('passes a savepoint inside a nested function a mapped body only defines', () => {
+    expect(check(`await Promise.all(ids.map(async (id) => { const later = () => withDbTransaction(() => q(id)); return id; }));`)).toEqual([]);
   });
   it('flags a spread of a mapped savepoint', () => {
     expect(check(`await Promise.all([...ids.map((id) => withDbTransaction(() => q(id))), other()]);`)).toHaveLength(1);

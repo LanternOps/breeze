@@ -25,6 +25,7 @@ export async function failWritesOn(
     CREATE OR REPLACE FUNCTION ${name}() RETURNS trigger LANGUAGE plpgsql AS $fault$
     BEGIN RAISE EXCEPTION 'forced statement failure on ${table}'; END
     $fault$`));
+  await getTestDb().execute(sql.raw(`DROP TRIGGER IF EXISTS ${name} ON ${table}`));
   await getTestDb().execute(sql.raw(`
     CREATE TRIGGER ${name} BEFORE ${ops} ON ${table}
     FOR EACH ROW WHEN (${when}) EXECUTE FUNCTION ${name}()`));

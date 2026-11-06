@@ -23,7 +23,7 @@ describe('ambient services in a driver-owned nested transaction', () => {
         expect(await db.select().from(sites).where(eq(sites.id, foreign.siteId))).toHaveLength(0);
         await db.update(topologyManualNodes).set({ label: 'Must roll back' }).where(eq(topologyManualNodes.id, manual!.id));
         await db.execute(sql`SELECT 1/0`);
-      })).rejects.toThrow();
+      })).rejects.toThrow(/SELECT 1\/0/);
       await db.update(topologyManualNodes).set({ label: 'Outer commit' }).where(eq(topologyManualNodes.id, manual!.id));
     });
     expect((await getTestDb().select().from(topologyManualNodes).where(eq(topologyManualNodes.id, manual!.id)))[0]!.label).toBe('Outer commit');

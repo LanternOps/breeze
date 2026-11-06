@@ -1,5 +1,6 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db, withDbTransactionIfHeld, withSystemDbAccessContextIsolated } from '../../db';
+import { reportBackupDbFallback } from './dbFallbackReport';
 import { backupJobs as backupJobsTable, devices, recoveryReadiness as recoveryReadinessTable, RESTORABLE_BACKUP_JOB_STATUSES } from '../../db/schema';
 import { publishEvent } from '../../services/eventBus';
 import {
@@ -147,7 +148,7 @@ async function addMissingAssignedDevicesToReadiness(
       // `rows` is already site-scoped by listRecoveryReadinessFromDb. Returning
       // it unaugmented drops the synthetic assigned-device rows rather than
       // adding ones we could not confirm are visible — no unscoped row escapes.
-      console.warn('[backupVerification] Site-scoped assigned-device lookup failed; skipping synthetic readiness rows:', error);
+      reportBackupDbFallback('[backupVerification] Site-scoped assigned-device lookup failed; skipping synthetic readiness rows', error);
       return rows;
     }
   }
@@ -248,7 +249,7 @@ async function getLatestCompletedBackup(
         .limit(1));
       if (row) return row;
     } catch (error) {
-      console.warn('[backupVerification] DB latest backup lookup failed; falling back to memory:', error);
+      reportBackupDbFallback('[backupVerification] DB latest backup lookup failed; falling back to memory', error);
     }
   }
 
@@ -260,7 +261,11 @@ async function getLatestCompletedBackup(
   return latestBackup ? { completedAt: latestBackup.completedAt ?? null } : null;
 }
 
-async function listRecoveryReadinessFromDb(orgId: string, allowedSiteIds?: readonly string[]): Promise<RecoveryReadiness[] | null> {
+async function listRecoveryReadinessFromDb(
+  orgId: string,
+  allowedSiteIds?: readonly string[],
+  onDbReadFailure?: () => void,
+): Promise<RecoveryReadiness[] | null> {
   if (!supportsDbOrg(orgId)) return null;
   if (allowedSiteIds?.length === 0) return [];
 
@@ -284,7 +289,8 @@ async function listRecoveryReadinessFromDb(orgId: string, allowedSiteIds?: reado
       riskFactors: row.riskFactors as unknown,
     }));
   } catch (error) {
-    console.warn('[backupVerification] DB readiness read failed; falling back to memory:', error);
+    reportBackupDbFallback('[backupVerification] DB readiness read failed; falling back to memory', error);
+    onDbReadFailure?.();
     if (allowedSiteIds) return [];
     return null;
   }
@@ -311,7 +317,7 @@ export async function getRecoveryReadinessForDevice(
         });
       }
     } catch (error) {
-      console.warn('[backupVerification] DB readiness lookup failed; falling back to memory:', error);
+      reportBackupDbFallback('[backupVerification] DB readiness lookup failed; falling back to memory', error);
     }
   }
 
@@ -342,7 +348,7 @@ export async function persistRecoveryReadinessToDb(row: RecoveryReadiness): Prom
       }
     }));
   } catch (error) {
-    console.warn('[backupVerification] DB readiness write failed; keeping memory record only:', error);
+    reportBackupDbFallback('[backupVerification] DB readiness write failed; keeping memory record only', error);
   }
 }
 
@@ -370,9 +376,13 @@ async function safePublish(
 
 // ---- Public readiness listing ----
 
-export async function listRecoveryReadiness(orgId: string, allowedSiteIds?: readonly string[]): Promise<RecoveryReadiness[]> {
+export async function listRecoveryReadiness(
+  orgId: string,
+  allowedSiteIds?: readonly string[],
+  onDbReadFailure?: () => void,
+): Promise<RecoveryReadiness[]> {
   if (allowedSiteIds?.length === 0) return [];
-  const dbRows = await listRecoveryReadinessFromDb(orgId, allowedSiteIds);
+  const dbRows = await listRecoveryReadinessFromDb(orgId, allowedSiteIds, onDbReadFailure);
   const rows = dbRows ?? (allowedSiteIds ? [] : listRecoveryReadinessFromMemory(orgId));
   return addMissingAssignedDevicesToReadiness(orgId, rows, allowedSiteIds);
 }
@@ -549,6 +559,8 @@ export async function recomputeRecoveryReadinessForDevice(
 // ---- Health summary ----
 
 export async function getBackupHealthSummary(orgId: string, allowedSiteIds?: readonly string[]): Promise<{
+  /** A database read failed, so the figures below may understate the real state. */
+  readFailed: boolean;
   verification: {
     total: number;
     passedLast24h: number;
@@ -568,8 +580,12 @@ export async function getBackupHealthSummary(orgId: string, allowedSiteIds?: rea
 }> {
   // In sequence: each read is its own savepoint when a context is held, and
   // savepoints beside each other on one connection fail together (#11203).
-  const rows = await listBackupVerifications(orgId, { excludeSimulated: true, allowedSiteIds });
-  const readiness = await listRecoveryReadiness(orgId, allowedSiteIds);
+  // A failed read falls back to an empty list, which would otherwise read as a
+  // healthy fleet. The flag lets the verdict say it does not know.
+  let readFailed = false;
+  const onDbReadFailure = () => { readFailed = true; };
+  const rows = await listBackupVerifications(orgId, { excludeSimulated: true, allowedSiteIds, onDbReadFailure });
+  const readiness = await listRecoveryReadiness(orgId, allowedSiteIds, onDbReadFailure);
   const assignedResult = await withDbTransactionIfHeld(() => resolveAllBackupAssignedDevices(orgId))
     .then((assigned) => ({ assigned, failed: false as const }))
     .catch((err) => {
@@ -596,7 +612,7 @@ export async function getBackupHealthSummary(orgId: string, allowedSiteIds?: rea
         const visibleIds = new Set(visible.map((row) => row.id));
         assigned = assigned.filter((device) => visibleIds.has(device.deviceId));
       } catch (error) {
-        console.warn('[BackupReadiness] Site-scoped assigned-device lookup failed closed:', error);
+        reportBackupDbFallback('[BackupReadiness] Site-scoped assigned-device lookup failed closed', error);
         assigned = [];
       }
     }
@@ -631,6 +647,7 @@ export async function getBackupHealthSummary(orgId: string, allowedSiteIds?: rea
     : 100;
 
   return {
+    readFailed,
     verification: {
       total: rows.length,
       passedLast24h: last24h.filter((row) => row.status === 'passed').length,

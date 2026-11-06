@@ -1,5 +1,6 @@
 import { and, desc, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, withSystemDbAccessContextIsolated } from '../../db';
+import { reportBackupDbFallback } from './dbFallbackReport';
 import {
   backupJobs as backupJobsTable,
   backupSnapshots as backupSnapshotsTable,
@@ -72,6 +73,8 @@ type VerificationFilters = {
   limit?: number;
   excludeSimulated?: boolean;
   allowedSiteIds?: readonly string[];
+  /** Called when the database read failed, so a caller can tell the fallback from a real empty result. */
+  onDbReadFailure?: () => void;
 };
 
 export type RunBackupVerificationInput = {
@@ -328,7 +331,8 @@ async function listBackupVerificationsFromDb(
       sizeBytes: row.sizeBytes as number | null,
     }));
   } catch (error) {
-    console.warn('[backupVerification] DB verification read failed; falling back to memory:', error);
+    reportBackupDbFallback('[backupVerification] DB verification read failed; falling back to memory', error);
+    filters.onDbReadFailure?.();
     if (filters.allowedSiteIds) return [];
     return null;
   }
@@ -368,7 +372,7 @@ export async function persistVerificationToDb(row: BackupVerification): Promise<
       }
     }));
   } catch (error) {
-    console.warn('[backupVerification] DB verification write failed; keeping memory record only:', error);
+    reportBackupDbFallback('[backupVerification] DB verification write failed; keeping memory record only', error);
   }
 }
 
@@ -391,7 +395,7 @@ async function resolveSnapshot(orgId: string, snapshotId: string): Promise<Backu
         });
       }
     } catch (error) {
-      console.warn('[backupVerification] DB snapshot lookup failed; falling back to memory:', error);
+      reportBackupDbFallback('[backupVerification] DB snapshot lookup failed; falling back to memory', error);
     }
   }
 
@@ -469,7 +473,7 @@ async function resolveBackupJob(
         throw error;
       }
       if (requireCurrentDbLineage) throw error;
-      console.warn('[backupVerification] DB backup job lookup failed; falling back to memory:', error);
+      reportBackupDbFallback('[backupVerification] DB backup job lookup failed; falling back to memory', error);
     }
   }
 
@@ -523,7 +527,7 @@ async function resolveSnapshotForBackupJob(
       if (requireCurrentDbLineage) return null;
     } catch (error) {
       if (requireCurrentDbLineage) throw error;
-      console.warn('[backupVerification] DB snapshot lookup by job failed; falling back to memory:', error);
+      reportBackupDbFallback('[backupVerification] DB snapshot lookup by job failed; falling back to memory', error);
     }
   }
 
@@ -551,7 +555,7 @@ async function resolveVerificationProviderConfig(
       );
       if (resolved) return resolved;
     } catch (error) {
-      console.warn('[backupVerification] DB provider config lookup failed; falling back to memory:', error);
+      reportBackupDbFallback('[backupVerification] DB provider config lookup failed; falling back to memory', error);
     }
   }
 
