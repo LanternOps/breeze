@@ -329,7 +329,8 @@
     "title": "Process Manager",
     "totalCpu": "Total CPU",
     "pid": "PID",
-    "cpu": "CPU"
+    "cpu": "CPU",
+    "monitorThis": "Monitor this"
   },
   "proxyTunnelPage": {
     "errors": {
@@ -656,7 +657,8 @@
     "summary": "{{shown}} of {{total}} services on {{device}}",
     "title": "Title",
     "windowsOnlyDescription": "The Services Manager is only available for Windows devices. {{device}} is running {{os}}.",
-    "windowsOnlyTitle": "Windows Only Title"
+    "windowsOnlyTitle": "Windows Only Title",
+    "monitorThis": "Monitor this"
   },
   "sessionHistory": {
     "columns": {
