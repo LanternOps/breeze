@@ -265,7 +265,9 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // `data` — so both stay plain `included`. `provider` and
   // `portal_show_provider_name` contain "provider", not "provision", and
   // `client_version` is not "client_key": no reviewedIncluded entries needed.
-  "backup_provider_devices": tablePolicy("org_id", {"included":["id","connection_id","partner_id","org_id","customer_id","provider","portal_show_provider_name","vendor_device_id","vendor_device_name","computer_name","os_type","os_version","client_version","mac_addresses","account_type","data_sources","status","vendor_status_code","last_session_at","last_success_at","last_completed_at","selected_bytes","used_bytes","errors_count","breeze_device_id","device_match_source","pending_condition","vendor_created_at","vendor_expires_at","first_seen_at","last_seen_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["vendor_raw"]}),
+  // verified_bootable_* (#11270) are a timestamp, a boolean and a text[] of
+  // check names: plain evidence, not an open container.
+  "backup_provider_devices": tablePolicy("org_id", {"included":["id","connection_id","partner_id","org_id","customer_id","provider","portal_show_provider_name","vendor_device_id","vendor_device_name","computer_name","os_type","os_version","client_version","mac_addresses","account_type","data_sources","status","vendor_status_code","last_session_at","last_success_at","last_completed_at","selected_bytes","used_bytes","errors_count","breeze_device_id","device_match_source","pending_condition","vendor_created_at","vendor_expires_at","verified_bootable_at","verified_bootable","verified_bootable_failed_checks","first_seen_at","last_seen_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["vendor_raw"]}),
   // backup_restore_authorizations: identifiers, a closed command type and
   // reason, the step-up resource digest (a public digest of the tuple, not a
   // credential) and timestamps. recovery_token_id / recovery_id trip
