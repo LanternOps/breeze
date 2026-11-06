@@ -9,7 +9,7 @@
  *   POST  /grants/:id/revoke          → { success: true }
  *   POST  /grants/:id/pause           → WispGrantDto   (grantor; no step-up — pausing never widens)
  *   POST  /grants/:id/resume          → WispGrantDto | 409 NOT_USER_PAUSED
- *   PATCH /grants/:id/settings        { budgetCentsPerDay?, floorTickMinutes?, unattendedReads?: false } → WispGrantDto (w00 A6)
+ *   PATCH /grants/:id/settings        { budgetCentsPerDay?, floorTickMinutes?, unattendedReads?: false, summaryRefine? } → WispGrantDto (w00 A6)
  *
  *   /thread/*                       → W04 thread routes (routes/wispThreads.ts)
  *   /concerns/*, /watches/*         → W05 triage routes (routes/wispConcerns.ts, routes/wispWatches.ts)
@@ -76,6 +76,8 @@ export type WispGrantDto = {
   unattendedReads: boolean;
   /** #10973: the current revision pins the switch, whether or not it is on now. */
   unattendedReadsPinned: boolean;
+  /** #10390: a closed session's summary is also written by the model, charged to this grant's budget. */
+  summaryRefine: boolean;
 };
 
 function toDto(grant: WispGrant): WispGrantDto {
@@ -93,6 +95,7 @@ function toDto(grant: WispGrant): WispGrantDto {
     floorTickMinutes: grant.floorTickMinutes,
     unattendedReads: grant.unattendedReads === true,
     unattendedReadsPinned: grant.unattendedReadsPinned === true,
+    summaryRefine: grant.summaryRefine === true,
   };
 }
 
@@ -184,9 +187,10 @@ const settingsBody = z
     budgetCentsPerDay: z.number().int().min(0).optional(),
     floorTickMinutes: z.number().int().min(15).max(240).optional(),
     unattendedReads: z.boolean().optional(),
+    summaryRefine: z.boolean().optional(),
   })
-  .refine((v) => v.budgetCentsPerDay !== undefined || v.floorTickMinutes !== undefined || v.unattendedReads !== undefined, {
-    message: 'Provide budgetCentsPerDay, floorTickMinutes and/or unattendedReads',
+  .refine((v) => v.budgetCentsPerDay !== undefined || v.floorTickMinutes !== undefined || v.unattendedReads !== undefined || v.summaryRefine !== undefined, {
+    message: 'Provide budgetCentsPerDay, floorTickMinutes, unattendedReads and/or summaryRefine',
   });
 
 export const wispRoutes = new Hono();

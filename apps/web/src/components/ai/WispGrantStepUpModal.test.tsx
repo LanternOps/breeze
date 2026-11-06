@@ -111,7 +111,7 @@ describe('WispGrantStepUpModal (W04 Task 7, w00 A4 handshake)', () => {
     expect(onGranted).toHaveBeenCalledWith({
       grantId: 'g-1', threadId: 't-1', scopeOrgId: 'org-1', focusOrgId: null, focusOrgName: null, status: 'active',
       expiresAt: '2027-01-01T00:00:00.000Z', summary: 'Last time: patched.', budgetCentsPerDay: 200, floorTickMinutes: 30,
-      wideningAvailable: true, unattendedReads: false,
+      wideningAvailable: true, unattendedReads: false, summaryRefine: false,
     });
     expect(h.showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Wisp is on' }));
   });

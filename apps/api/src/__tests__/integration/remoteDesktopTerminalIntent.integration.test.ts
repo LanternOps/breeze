@@ -216,7 +216,7 @@ async function insertSession(input: {
     desktopStartGeneration: SEED_GENERATION,
     permissionsEpochSnapshot: Number(live!.permissionsEpoch),
     iceCandidates: [],
-    ...(input.createdAt ? { createdAt: input.createdAt } : {}),
+    ...(input.createdAt ? { createdAt: input.createdAt, lastStartAttemptAt: input.createdAt } : {}),
     ...(input.startedAt !== undefined ? { startedAt: input.startedAt } : {}),
   }).returning({ id: remoteSessions.id });
   if (!row) throw new Error('insertSession: no row returned');

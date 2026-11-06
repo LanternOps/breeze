@@ -218,6 +218,16 @@ export type ToolExecutionContext = {
    */
   verifiedIsolationRelease?: Readonly<ApprovalBinding>;
   /**
+   * Full-control W16 PR B (#6786, Fact 8): the digest a four-eyes
+   * `manage_fleet_designs:apply` or `:rollback` release verified. Set ONLY from the
+   * release path's effect-digest recompute on a MATCH, never from model arguments,
+   * and travels with `actionIntentId`. Both release paths verify in an earlier
+   * transaction than the one that writes, so the handler refuses without both and
+   * re-derives the digest under the report-run lock: a change committed in between
+   * refuses (`CONTENT_CHANGED`) instead of applying to what the approver never saw.
+   */
+  verifiedFleetDesignBinding?: Readonly<{ digest: string }>;
+  /**
    * #7906: the strictly-parsed `event_logs_query` payload the chat gate
    * classified as Tier-2 read-only (System/Setup, no XPath). Set ONLY by
    * `createSessionPreToolUse` from `checkGuardrails`' own parse — never from

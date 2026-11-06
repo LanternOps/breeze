@@ -8,6 +8,7 @@ import { afterEach, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
+  PINNED_GATE_RULE,
   inspectWorkflowDirectory,
   inspectWorkflowText,
 } from './check-workflow-security.mjs';
@@ -1664,4 +1665,93 @@ test('the developer agent build carries no signing material', () => {
   );
   assert.doesNotMatch(workflowText, /\bsecrets\s*[.[]/u);
   assert.doesNotMatch(workflowText, /^\s*environment:/mu);
+});
+
+// ── The pinned CI Gate (W02, #10746) ─────────────────────────────────────
+
+const PINNED_GATE = readFileSync(new URL('../workflows/ci-gate.yml', import.meta.url), 'utf8');
+const gateViolations = (text, file = 'ci-gate.yml') => inspectWorkflowText(file, text)
+  .filter(({ rule }) => rule === PINNED_GATE_RULE);
+const VERIFY_STEP = '        run: node .github/scripts/ci-gate.mjs verify\n';
+const CHECKOUT_REF = '          ref: ${{ github.workflow_sha }}\n';
+const SETUP_NODE_INPUTS = "          node-version: '22.23.4'\n          package-manager-cache: false\n";
+const JOB_HEADER = '    name: CI Gate\n    runs-on: ubuntu-latest\n    timeout-minutes: 145\n';
+const addStep = (step) => (text) => text.replace(VERIFY_STEP, `${VERIFY_STEP}\n${step}`);
+
+// Each mutation breaks exactly one invariant and must be reported as such.
+const GATE_MUTATIONS = [
+  ['checkout of the candidate', (t) => t.replace(CHECKOUT_REF, '          ref: ${{ github.sha }}\n'), /must set ref: \$\{\{ github\.workflow_sha \}\}/u],
+  ['checkout with no ref', (t) => t.replace(CHECKOUT_REF, ''), /must set ref: \$\{\{ github\.workflow_sha \}\}/u],
+  ['checkout keeping credentials', (t) => t.replace('persist-credentials: false', 'persist-credentials: true'), /must set persist-credentials: false/u],
+  ['a second checkout without the pins', addStep('      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n'), /actions\/checkout must set ref: \$\{\{ github\.workflow_sha \}\}/u],
+  ['checkout of another repository', (t) => t.replace(CHECKOUT_REF, `${CHECKOUT_REF}          repository: someone/else\n`), /input repository is not allowed/u],
+  ['shallow checkout', (t) => t.replace('fetch-depth: 0', 'fetch-depth: 1'), /must set fetch-depth: 0/u],
+  ['checkout of the whole tree', (t) => t.replace('          sparse-checkout: |\n            .github/scripts\n', ''), /must set sparse-checkout: \.github\/scripts/u],
+  ['pnpm install', addStep('      - run: pnpm install --frozen-lockfile\n'), /run must be exactly one of/u],
+  ['npm ci', addStep('      - run: npm ci\n'), /run must be exactly one of/u],
+  ['go build', addStep('      - run: go build ./...\n'), /run must be exactly one of/u],
+  ['docker run', addStep('      - run: docker run --rm alpine true\n'), /run must be exactly one of/u],
+  ['a docker action', addStep('      - uses: docker://alpine:3\n'), /uses docker:\/\/alpine:3 is not allowed/u],
+  ['a second command hidden in a block scalar', (t) => t.replace(VERIFY_STEP, '        run: |\n          node .github/scripts/ci-gate.mjs verify\n'), /run must be exactly one of/u],
+  ['a setup-node cache', (t) => t.replace(SETUP_NODE_INPUTS, `${SETUP_NODE_INPUTS}          cache: pnpm\n`), /cache is not allowed/u],
+  ['automatic package-manager caching', (t) => t.replace('package-manager-cache: false', 'package-manager-cache: true'), /must set package-manager-cache: false/u],
+  ['the cache action', addStep('      - uses: actions/cache@0123456789abcdef0123456789abcdef01234567\n'), /uses actions\/cache@.* is not allowed/u],
+  ['a secret', (t) => t.replace('GH_TOKEN: ${{ github.token }}', 'GH_TOKEN: ${{ secrets.GH_PAT }}'), /secrets are not allowed/u],
+  ['concurrency with cancel-in-progress', (t) => t.replace('jobs:\n', 'concurrency:\n  group: gate\n  cancel-in-progress: true\n\njobs:\n'), /cancel-in-progress is not allowed/u],
+  ['concurrency at all', (t) => t.replace(JOB_HEADER, `${JOB_HEADER}    concurrency: gate\n`), /concurrency is not allowed/u],
+  ['continue-on-error on a step', (t) => t.replace(VERIFY_STEP, `${VERIFY_STEP}        continue-on-error: true\n`), /continue-on-error is not allowed/u],
+  ['continue-on-error on the job', (t) => t.replace(JOB_HEADER, `${JOB_HEADER}    continue-on-error: true\n`), /continue-on-error is not allowed/u],
+  ['a job-level if', (t) => t.replace(JOB_HEADER, `${JOB_HEADER}    if: github.event_name == 'merge_group'\n`), /job-level if: is not allowed/u],
+  ['a paths filter', (t) => t.replace('  pull_request:\n    branches: [ci-gate-ruleset-only]\n', "  pull_request:\n    branches: [ci-gate-ruleset-only]\n    paths: ['apps/**']\n"), /paths is not allowed/u],
+  ['a paths-ignore filter', (t) => t.replace('  merge_group:\n    branches: [ci-gate-ruleset-only]\n', "  merge_group:\n    branches: [ci-gate-ruleset-only]\n    paths-ignore: ['docs/**']\n"), /paths-ignore is not allowed/u],
+  ['a matching branch filter', (t) => t.replace('  merge_group:\n    branches: [ci-gate-ruleset-only]', '  merge_group:\n    branches: [main]'), /merge_group must be filtered to exactly branches: \[ci-gate-ruleset-only\]/u],
+  ['an unfiltered trigger', (t) => t.replace('  pull_request:\n    branches: [ci-gate-ruleset-only]\n', '  pull_request:\n'), /pull_request must be filtered to exactly/u],
+  ['a third trigger', (t) => t.replace('  merge_group:\n', '  workflow_dispatch:\n  merge_group:\n'), /triggers must be exactly pull_request and merge_group/u],
+  ['a missing trigger', (t) => t.replace('  merge_group:\n    branches: [ci-gate-ruleset-only]\n', ''), /triggers must be exactly pull_request and merge_group/u],
+  ['write permission', (t) => t.replace('  contents: read\n', '  contents: write\n'), /permissions must be exactly contents: read and actions: read/u],
+  ['an extra permission', (t) => t.replace('  actions: read\n', '  actions: read\n  pull-requests: write\n'), /permissions must be exactly/u],
+  ['read-all permissions', (t) => t.replace('permissions:\n  contents: read\n  actions: read\n', 'permissions: read-all\n'), /permissions must be exactly/u],
+  ['job-level permissions', (t) => t.replace(JOB_HEADER, `${JOB_HEADER}    permissions:\n      contents: write\n`), /job-level permissions are not allowed/u],
+  ['a top-level env', (t) => t.replace('jobs:\n', 'env:\n  NODE_OPTIONS: --require ./x.js\n\njobs:\n'), /top-level env is not allowed/u],
+  ['an extra step env', (t) => t.replace('          GH_TOKEN: ${{ github.token }}\n          BASE_SHA', '          GH_TOKEN: ${{ github.token }}\n          NODE_OPTIONS: --require ./x.js\n          BASE_SHA'), /the verify step env must be exactly/u],
+  ['verify on the wrong event', (t) => t.replace("        if: github.event_name == 'merge_group'\n", "        if: github.event_name == 'pull_request'\n"), /the verify step must have if: github\.event_name == 'merge_group'/u],
+  ['a step shell', (t) => t.replace(VERIFY_STEP, `${VERIFY_STEP}        shell: bash\n`), /step key shell is not allowed/u],
+  ['a container', (t) => t.replace(JOB_HEADER, `${JOB_HEADER}    container: node:22\n`), /container is not allowed/u],
+  ['a self-hosted runner', (t) => t.replace('runs-on: ubuntu-latest', 'runs-on: self-hosted'), /runs-on must be ubuntu-latest/u],
+  ['a different timeout', (t) => t.replace('timeout-minutes: 145', 'timeout-minutes: 360'), /timeout-minutes must be 145/u],
+  ['a renamed job', (t) => t.replace('    name: CI Gate\n', '    name: Gate\n'), /the job name must be exactly CI Gate/u],
+  ['uploading the whole checkout', (t) => t.replace('path: ci-gate-anchor.json', 'path: .'), /must set path: ci-gate-anchor\.json/u],
+  ['a longer artifact retention', (t) => t.replace('retention-days: 7', 'retention-days: 90'), /must set retention-days: 7/u],
+  ['failing the PR when there is no anchor', (t) => t.replace('if-no-files-found: ignore', 'if-no-files-found: error'), /must set if-no-files-found: ignore/u],
+  ['an artifact name W05 would not find', (t) => t.replace('name: ci-gate-anchor-attempt-${{ github.run_attempt }}', 'name: anchor'), /must set name: ci-gate-anchor-attempt-/u],
+  ['cone-mode sparse checkout', (t) => t.replace('sparse-checkout-cone-mode: false', 'sparse-checkout-cone-mode: true'), /must set sparse-checkout-cone-mode: false/u],
+  ['a second job', (t) => `${t}\n  other:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n`, /there must be exactly one job/u],
+  ['no verify step', (t) => t.replace(VERIFY_STEP, '        run: node .github/scripts/ci-gate.mjs anchor\n'), /the gate must run node \.github\/scripts\/ci-gate\.mjs verify/u],
+];
+
+test('the pinned CI Gate exists and satisfies every pinned-gate invariant', () => {
+  assert.deepEqual(gateViolations(PINNED_GATE), []);
+  assert.deepEqual(inspectWorkflowText('ci-gate.yml', PINNED_GATE), []);
+});
+
+for (const [name, mutate, message] of GATE_MUTATIONS) {
+  test(`pinned CI Gate: ${name} is a violation`, () => {
+    const mutated = mutate(PINNED_GATE);
+    assert.notEqual(mutated, PINNED_GATE, 'the mutation must apply');
+    const found = gateViolations(mutated);
+    assert.ok(found.some((violation) => message.test(violation.message)),
+      `expected ${message}, got:\n${found.map((violation) => violation.message).join('\n') || '(none)'}`);
+  });
+}
+
+test('the pinned-gate rule is keyed on ci-gate.yml and leaves other workflows alone', () => {
+  const mutated = GATE_MUTATIONS[0][1](PINNED_GATE);
+  assert.ok(gateViolations(mutated).length > 0);
+  assert.deepEqual(gateViolations(mutated, 'other.yml'), []);
+});
+
+test('every workflow in the repository satisfies the pinned-gate rule', () => {
+  const directory = fileURLToPath(new URL('../workflows/', import.meta.url));
+  assert.ok(readdirSync(directory).includes('ci-gate.yml'), 'ci-gate.yml must exist: the org ruleset requires it');
+  assert.deepEqual(inspectWorkflowDirectory(directory).filter(({ rule }) => rule === PINNED_GATE_RULE), []);
 });

@@ -13,6 +13,7 @@ export * from './scriptAdmission';
 export * from './softwareInventoryObservation';
 export * from './scriptProposals';
 export * from './backupHealth';
+export * from './backupActiveJob';
 export * from './edr';
 export * from './aiModelRegistry';
 export * from './aiModelQuality';
@@ -1026,6 +1027,7 @@ export * from './metricAnomalyEpisodes';
 
 // Business reports (#3198 W02)
 export * from './businessReports';
+export * from './ticketSlaPerformance';
 
 // ============================================
 // Backup Status Report (Backup Provider Integration W05)

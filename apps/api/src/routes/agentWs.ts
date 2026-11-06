@@ -4184,6 +4184,7 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
                       // Only the first answer starts the clock. A reconnect's
                       // answer must not extend the max duration (#11113).
                       startedAt: originalRemoteSessionStart(),
+                      lastStartAttemptAt: new Date(),
                     })
                     .where(
                       and(

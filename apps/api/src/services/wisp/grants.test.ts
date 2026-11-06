@@ -386,6 +386,37 @@ describe('updateGrantSettings', () => {
     expect(h.createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({ action: 'wisp.grant.settings_changed' }));
   });
 
+  describe('#10390 summaryRefine: spend, not authority', () => {
+    it('is off on a grant that never set it', async () => {
+      h.results.push([grantRow()], [grantRow({ floorTickMinutes: 60 })]);
+      await expect(updateGrantSettings({ auth: auth(), grantId: 'g1', patch: { floorTickMinutes: 60 } }))
+        .resolves.toMatchObject({ summaryRefine: false });
+    });
+
+    it.each([true, false])('the grantor sets it to %s with no step-up, and the audit records the change', async (value) => {
+      h.results.push([grantRow({ summaryRefine: !value })], [grantRow({ summaryRefine: value })]);
+      const g = await updateGrantSettings({ auth: auth(), grantId: 'g1', patch: { summaryRefine: value } });
+      expect(g.summaryRefine).toBe(value);
+      expect(setsApplied()[0]).toEqual({ summaryRefine: value });
+      expect(h.createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'wisp.grant.settings_changed',
+        details: expect.objectContaining({
+          from: expect.objectContaining({ summaryRefine: !value }),
+          to: expect.objectContaining({ summaryRefine: value }),
+        }),
+      }));
+    });
+
+    it('a partner admin may set it, like budget; another tech → forbidden', async () => {
+      h.results.push([grantRow({ grantorUserId: ADMIN })], [grantRow({ grantorUserId: ADMIN, summaryRefine: true })]);
+      await expect(updateGrantSettings({ auth: auth({ partnerOrgAccess: 'all' }), grantId: 'g1', patch: { summaryRefine: true } }))
+        .resolves.toMatchObject({ summaryRefine: true });
+      h.results.push([grantRow({ grantorUserId: ADMIN })]);
+      await expect(updateGrantSettings({ auth: auth(), grantId: 'g1', patch: { summaryRefine: true } }))
+        .rejects.toMatchObject({ code: 'forbidden' });
+    });
+  });
+
   it('a partner admin (canManagePartnerWidePolicies) may too; another tech → forbidden', async () => {
     h.results.push([grantRow({ grantorUserId: ADMIN })], [grantRow({ grantorUserId: ADMIN, budgetCentsPerDay: 500 })]);
     await expect(updateGrantSettings({ auth: auth({ partnerOrgAccess: 'all' }), grantId: 'g1', patch: { budgetCentsPerDay: 500 } }))

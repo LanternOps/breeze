@@ -119,8 +119,9 @@ deviceActiveSessionRoutes.get(
             ne(remoteSessions.type, 'file_transfer'),
             // Hide pending/connecting attempts that never came up. A row that was
             // already live (startedAt set) and is re-offering — a WebRTC
-            // reconnect, Retry, a session switch — moves back to `connecting`
-            // with its original createdAt; it must not vanish from the banner.
+            // reconnect, Retry, a session switch — must not vanish from the
+            // banner, even once a quiet re-offer reads as stale, until something
+            // ends it.
             not(and(remoteSessionStaleCondition(now)!, isNull(remoteSessions.startedAt))!)
           )
         )

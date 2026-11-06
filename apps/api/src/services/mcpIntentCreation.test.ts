@@ -13,6 +13,12 @@ const mocks = vi.hoisted(() => ({
   rateLimiter: vi.fn(),
   loadRow: vi.fn(),
   approverRows: [] as Array<{ userId: string }>,
+  resolveTarget: vi.fn(),
+}));
+
+vi.mock('./actionIntents/aiDesignIntentTarget', () => ({
+  AI_DESIGN_INTENT_TOOLS: new Set(['manage_ai_agent_schedules', 'manage_fleet_designs']),
+  resolveAiDesignIntentTarget: mocks.resolveTarget,
 }));
 
 vi.mock('./actionIntents/intentService', async (importOriginal) => {
@@ -226,6 +232,69 @@ describe('createMcpActionIntent', () => {
     expect(await createMcpActionIntent(input())).toMatchObject({ kind: 'refused', code: 'too_many_pending_actions' });
     mocks.createActionIntent.mockRejectedValueOnce(new ActionIntentError('sp', 'principal_not_supported'));
     expect(await createMcpActionIntent(input())).toMatchObject({ kind: 'refused', code: 'principal_not_supported' });
+  });
+
+  it('an unresolvable pin is a refusal that says nothing about why, not a fault', async () => {
+    mocks.createActionIntent.mockRejectedValueOnce(new ActionIntentError('effect digest for x could not be resolved: target_absent', 'effect_digest_unresolvable'));
+    const out = await createMcpActionIntent(input());
+    expect(out).toMatchObject({ kind: 'refused', code: 'effect_digest_unresolvable' });
+    expect(JSON.stringify(out)).not.toContain('target_absent');
+  });
+
+  describe('a design tool, which names its org through a row', () => {
+    const OTHER_ORG = '44444444-4444-4444-8444-444444444444';
+    const REPORT_RUN = '55555555-5555-4555-8555-555555555555';
+    const partnerAuth = (reach: string[]) => ({
+      principal: { kind: 'api_key', apiKeyId: 'key-A' }, user: { id: USER }, orgId: null, canAccessOrg: (id: string) => reach.includes(id),
+    }) as never;
+    const designInput = (over: Partial<CreateMcpActionIntentInput> = {}) => input({
+      auth: partnerAuth([ORG, OTHER_ORG]),
+      apiKey: { id: 'key-A', orgId: null, name: 'ci key', mcpDomains: null } as never,
+      toolName: 'manage_fleet_designs',
+      toolInput: { action: 'rollback', reportRunId: REPORT_RUN },
+      ...over,
+    });
+    const filedOrg = () => (mocks.createActionIntent.mock.calls[0] as unknown as [unknown, { orgId: string }])[1].orgId;
+
+    beforeEach(() => {
+      mocks.resolveTarget.mockResolvedValue({ orgId: OTHER_ORG, partnerId: null });
+    });
+
+    it("is filed in the row's org when the caller reaches it", async () => {
+      await createMcpActionIntent(designInput());
+      expect(mocks.resolveTarget).toHaveBeenCalledWith('manage_fleet_designs', { action: 'rollback', reportRunId: REPORT_RUN });
+      expect(filedOrg()).toBe(OTHER_ORG);
+    });
+
+    it('stays in the execution org when the row is out of reach', async () => {
+      await createMcpActionIntent(designInput({ auth: partnerAuth([ORG]) }));
+      expect(filedOrg()).toBe(ORG);
+    });
+
+    it('an org-pinned key never moves, whatever it reaches', async () => {
+      await createMcpActionIntent(designInput({ apiKey: { id: 'key-A', orgId: ORG, name: 'ci key', mcpDomains: null } as never }));
+      expect(mocks.resolveTarget).not.toHaveBeenCalled();
+      expect(filedOrg()).toBe(ORG);
+    });
+
+    it('a row with no org stays in the execution org', async () => {
+      mocks.resolveTarget.mockResolvedValue({ orgId: null, partnerId: 'p' });
+      await createMcpActionIntent(designInput());
+      expect(filedOrg()).toBe(ORG);
+    });
+
+    it('a failed lookup stays in the execution org and is reported', async () => {
+      mocks.resolveTarget.mockRejectedValue(new Error('connection reset'));
+      await createMcpActionIntent(designInput());
+      expect(filedOrg()).toBe(ORG);
+      expect(mocks.captureException).toHaveBeenCalled();
+    });
+
+    it('any other tool reads no row', async () => {
+      await createMcpActionIntent(designInput({ toolName: 'execute_command', toolInput: { deviceId: 'd1', command: 'whoami' } }));
+      expect(mocks.resolveTarget).not.toHaveBeenCalled();
+      expect(filedOrg()).toBe(ORG);
+    });
   });
 
   it('a replayed live intent returns pending with isNew false', async () => {

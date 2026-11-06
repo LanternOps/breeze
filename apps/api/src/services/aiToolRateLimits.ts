@@ -301,6 +301,9 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   // Full-control W16 PR A (#6786): each call admits a credit-debiting run or an operator task.
   run_patch_plan: { limit: 5, windowSeconds: 300 },
   create_operator_task: { limit: 10, windowSeconds: 300 },
+  // Full-control W16 PR B (#6786): a schedule starts recurring credit-debiting runs; a Fleet Design runs or applies.
+  manage_ai_agent_schedules: { limit: 15, windowSeconds: 300 },
+  manage_fleet_designs: { limit: 10, windowSeconds: 300 },
 };
 
 /**

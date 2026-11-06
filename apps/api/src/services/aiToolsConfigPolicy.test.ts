@@ -14,6 +14,11 @@ const { policyEffectivelyEnablesHpCmslCollectionMock } = vi.hoisted(() => ({
   policyEffectivelyEnablesHpCmslCollectionMock: vi.fn(async () => false),
 }));
 
+const { policyEffectivelyArmsOemUpdatesMock } = vi.hoisted(() => ({
+  // Default: the policy arms nothing, so every pre-existing case keeps its meaning.
+  policyEffectivelyArmsOemUpdatesMock: vi.fn(async () => false),
+}));
+
 const { WarrantyConsentErrorMock } = vi.hoisted(() => ({
   WarrantyConsentErrorMock: class WarrantyConsentError extends Error {
     readonly code = 'warranty_hp_cmsl_consent_required' as const;
@@ -131,6 +136,7 @@ vi.mock('./configurationPolicy', () => ({
   PolicyHasChildrenError: PolicyHasChildrenErrorMock,
   WarrantyConsentError: WarrantyConsentErrorMock,
   policyEffectivelyEnablesHpCmslCollection: policyEffectivelyEnablesHpCmslCollectionMock,
+  policyEffectivelyArmsOemUpdates: policyEffectivelyArmsOemUpdatesMock,
 }));
 
 import { db } from '../db';
@@ -2053,5 +2059,179 @@ describe('manage_policy_feature_link security_agents (#6960)', () => {
     }, makeAuth()));
     expect(linked.error).toMatch(/featurePolicyId/);
     expect(vi.mocked(updateFeatureLink)).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================
+// Vendor updates (oem_updates, #11070): the assistant never arms
+// ============================================================
+
+describe('AI tools cannot arm vendor updates (#11070)', () => {
+  const SCHEDULE = { weekOfMonth: 'third', dayOfWeek: 'wed', windowStart: '01:00', windowHours: 4 };
+  const settings = (over: Record<string, unknown> = {}, dell: Record<string, unknown> = {}) => ({
+    version: 1, enabled: true, schedule: SCHEDULE, catchUpNights: 7, reboot: 'overnight',
+    vendors: { dell: { enabled: true, categories: {}, blockedUpdateIds: [], ...dell } },
+    ...over,
+  });
+  const OFF = settings({ enabled: false });
+  const ARMED = settings({}, { categories: { driver: true } });
+  const oemLink = (inlineSettings: unknown) => ({ id: 'link-1', featureType: 'oem_updates', inlineSettings });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(getConfigPolicy).mockReset();
+    vi.mocked(addFeatureLink).mockReset();
+    vi.mocked(updateFeatureLink).mockReset();
+    vi.mocked(removeFeatureLink).mockReset();
+    vi.mocked(updateConfigPolicy).mockReset();
+    canManagePartnerWidePoliciesMock.mockReset().mockReturnValue(true);
+    policyAccessConditionMock.mockReset().mockReturnValue(undefined);
+    policyEffectivelyArmsOemUpdatesMock.mockReset().mockResolvedValue(false);
+    enable2faState.value = true;
+  });
+
+  function tools(policy: Record<string, unknown> = {}) {
+    vi.mocked(getConfigPolicy).mockResolvedValue({
+      id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Org policy', status: 'active',
+      parentPolicyId: null, parentPolicy: null, featureLinks: [], ...policy,
+    } as any);
+    const map = new Map<string, any>();
+    registerConfigPolicyTools(map);
+    return map;
+  }
+
+  const link = async (map: Map<string, any>, args: Record<string, unknown>) =>
+    JSON.parse(await map.get('manage_policy_feature_link')!.handler({ configPolicyId: POLICY_ID, ...args }, makeAuth()));
+
+  it('manage_policy_feature_link add with an enabled vendor is refused', async () => {
+    const out = await link(tools(), { action: 'add', featureType: 'oem_updates', inlineSettings: settings() });
+    expect(out.error).toMatch(/assistant cannot turn on vendor updates/i);
+    expect(out.code).toBe('oem_updates_execute_required');
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('disabled settings pass, without claiming arming authority', async () => {
+    vi.mocked(addFeatureLink).mockResolvedValue(oemLink(OFF) as any);
+    const out = await link(tools(), { action: 'add', featureType: 'oem_updates', inlineSettings: OFF });
+    expect(out.success).toBe(true);
+    const call = vi.mocked(addFeatureLink).mock.calls[0]!;
+    expect(call.slice(0, 4)).toEqual([POLICY_ID, 'oem_updates', null, OFF]);
+    expect((call[6] as { oemUpdatesArmAuthorized?: boolean } | undefined)?.oemUpdatesArmAuthorized).not.toBe(true);
+  });
+
+  it('add of an override that narrows an armed parent passes', async () => {
+    vi.mocked(addFeatureLink).mockResolvedValue(oemLink(OFF) as any);
+    const map = tools({ parentPolicyId: 'parent', parentPolicy: { id: 'parent', featureLinks: [oemLink(ARMED)] } });
+    const out = await link(map, { action: 'add', featureType: 'oem_updates', inlineSettings: settings() });
+    expect(out.success).toBe(true);
+  });
+
+  it('add with invalid settings or a featurePolicyId is refused with the code', async () => {
+    const bad = await link(tools(), { action: 'add', featureType: 'oem_updates', inlineSettings: { ...OFF, catchUpNights: 15 } });
+    expect(bad.code).toBe('oem_updates_invalid_settings');
+    const linked = await link(tools(), { action: 'add', featureType: 'oem_updates', featurePolicyId: POLICY_ID, inlineSettings: OFF });
+    expect(linked.code).toBe('oem_updates_feature_policy_not_allowed');
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('update that arms is refused; update that narrows passes', async () => {
+    const map = tools();
+    mockSelectRows([{ featureType: 'oem_updates', inlineSettings: OFF }]);
+    const armed = await link(map, { action: 'update', featureLinkId: 'link-1', inlineSettings: settings() });
+    expect(armed.code).toBe('oem_updates_execute_required');
+    expect(vi.mocked(updateFeatureLink)).not.toHaveBeenCalled();
+
+    vi.mocked(updateFeatureLink).mockResolvedValue(oemLink(OFF) as any);
+    mockSelectRows([{ featureType: 'oem_updates', inlineSettings: settings() }]);
+    const narrowed = await link(map, { action: 'update', featureLinkId: 'link-1', inlineSettings: OFF });
+    expect(narrowed.success).toBe(true);
+  });
+
+  it('a service-backstop refusal reaches the model as a readable result', async () => {
+    const { OemUpdatesLinkWriteError } = await import('./oemUpdates/oemUpdatesLinkWrite');
+    vi.mocked(addFeatureLink).mockRejectedValue(new OemUpdatesLinkWriteError({
+      status: 403, body: { error: 'x', code: 'oem_updates_execute_required' },
+    }));
+    const out = await link(tools(), { action: 'add', featureType: 'oem_updates', inlineSettings: OFF });
+    expect(out.code).toBe('oem_updates_execute_required');
+    expect(out.error).toMatch(/assistant cannot turn on vendor updates/i);
+  });
+
+  it('remove of an override that reverts to an armed parent is refused; other removes pass', async () => {
+    const armedParent = { parentPolicyId: 'parent', parentPolicy: { id: 'parent', featureLinks: [oemLink(ARMED)] } };
+    const refused = await link(tools({ ...armedParent, featureLinks: [oemLink(OFF)] }), { action: 'remove', featureLinkId: 'link-1' });
+    expect(refused.code).toBe('oem_updates_execute_required');
+    expect(vi.mocked(removeFeatureLink)).not.toHaveBeenCalled();
+
+    vi.mocked(removeFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'oem_updates' } as any);
+    const ok = await link(tools({ featureLinks: [oemLink(ARMED)] }), { action: 'remove', featureLinkId: 'link-1' });
+    expect(ok.success).toBe(true);
+  });
+
+  it('assign_policy_to_target (apply_configuration_policy) refuses an armed policy', async () => {
+    mockSelectRows([{ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Dell fleet' }]);
+    validateAssignmentTargetMock.mockResolvedValue({ valid: true });
+    authorizeAssignmentTargetMock.mockResolvedValue({ valid: true });
+    assignPolicyMock.mockResolvedValue({ id: 'assignment-1' });
+    policyEffectivelyArmsOemUpdatesMock.mockResolvedValueOnce(true);
+    const map = new Map<string, any>();
+    registerConfigPolicyTools(map);
+    const out = JSON.parse(await map.get('apply_configuration_policy')!.handler({
+      configPolicyId: POLICY_ID, level: 'device', targetId: DEVICE_ID,
+    }, makeAuth()));
+    expect(out.code).toBe('oem_updates_execute_required');
+    expect(policyEffectivelyArmsOemUpdatesMock).toHaveBeenCalledWith(POLICY_ID);
+    expect(assignPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('manage_configuration_policy refuses to activate an armed inactive policy, and allows deactivating it', async () => {
+    const map = tools({ status: 'inactive', featureLinks: [oemLink(ARMED)] });
+    const call = (args: Record<string, unknown>) =>
+      map.get('manage_configuration_policy')!.handler({ policyId: POLICY_ID, ...args }, makeAuth()).then(JSON.parse);
+    expect((await call({ action: 'activate' })).code).toBe('oem_updates_execute_required');
+    expect((await call({ action: 'update', status: 'active' })).code).toBe('oem_updates_execute_required');
+    expect(vi.mocked(updateConfigPolicy)).not.toHaveBeenCalled();
+
+    vi.mocked(updateConfigPolicy).mockResolvedValue({ id: POLICY_ID, name: 'Org policy', status: 'inactive' } as any);
+    expect((await call({ action: 'deactivate' })).success).toBe(true);
+    expect((await call({ action: 'update', name: 'Renamed' })).success).toBe(true);
+  });
+
+  it('activation is refused for an armed link inherited from the parent, and for an unresolvable parent', async () => {
+    for (const policy of [
+      { status: 'inactive', parentPolicyId: 'parent', parentPolicy: { id: 'parent', featureLinks: [oemLink(ARMED)] } },
+      { status: 'archived', parentPolicyId: 'parent', parentPolicy: null },
+    ]) {
+      const map = tools(policy);
+      const out = JSON.parse(await map.get('manage_configuration_policy')!.handler({ action: 'activate', policyId: POLICY_ID }, makeAuth()));
+      expect(out.code).toBe('oem_updates_execute_required');
+    }
+    expect(vi.mocked(updateConfigPolicy)).not.toHaveBeenCalled();
+  });
+
+  it('remove of an override with an unresolvable parent fails closed', async () => {
+    const out = await link(tools({ parentPolicyId: 'parent', parentPolicy: null, featureLinks: [oemLink(OFF)] }), { action: 'remove', featureLinkId: 'link-1' });
+    expect(out.code).toBe('oem_updates_execute_required');
+    expect(vi.mocked(removeFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('add of an override with an unresolvable parent is compared with nothing', async () => {
+    const out = await link(tools({ parentPolicyId: 'parent', parentPolicy: null }), { action: 'add', featureType: 'oem_updates', inlineSettings: settings() });
+    expect(out.code).toBe('oem_updates_execute_required');
+    expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it('manage_configuration_policy activates an unarmed policy', async () => {
+    const map = tools({ status: 'inactive', featureLinks: [oemLink(OFF)] });
+    vi.mocked(updateConfigPolicy).mockResolvedValue({ id: POLICY_ID, name: 'Org policy', status: 'active' } as any);
+    const out = JSON.parse(await map.get('manage_configuration_policy')!.handler({ action: 'activate', policyId: POLICY_ID }, makeAuth()));
+    expect(out.success).toBe(true);
+  });
+
+  it('describe documents the shape and says the assistant cannot turn updates on', async () => {
+    const { POLICY_FEATURE_INLINE_SETTINGS_REFERENCE } = await import('./aiToolsConfigPolicy');
+    expect(POLICY_FEATURE_INLINE_SETTINGS_REFERENCE.oem_updates).toMatch(/cannot turn vendor updates on/);
+    expect(POLICY_FEATURE_INLINE_SETTINGS_REFERENCE.oem_updates).toContain('windowHours: 1..8');
   });
 });

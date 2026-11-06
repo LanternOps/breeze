@@ -13,12 +13,13 @@
 import { and, eq, gte, inArray, isNotNull, like, lt, ne, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
+import { aiInvocations } from '../../db/schema/aiInvocations';
 import { aiOperatorTasks } from '../../db/schema/aiOperatorTasks';
 import { partners } from '../../db/schema/orgs';
 import { users } from '../../db/schema/users';
 import { wispGrants, type WispGrantStatus } from '../../db/schema/wisp';
 import { wispConcerns } from '../../db/schema/wispConcerns';
-import { utcDayWindow } from './budget';
+import { SUMMARY_REFINE_SOURCE_REF_PREFIX, utcDayWindow } from './budget';
 
 export interface WispPartnerOverviewRow {
   partnerId: string;
@@ -101,8 +102,8 @@ export async function buildWispOverview(now: Date = new Date()): Promise<WispPar
     .where(inArray(partners.id, partnerIds));
 
   // One pass over today's grant runs. `spentCents` mirrors budget.ts
-  // spentUnderGrant (skipped runs excluded) so "exhausted" here means the same
-  // thing chargeableUnderGrant refuses on.
+  // spentUnderGrant (skipped runs excluded); with `summaryRows` below, "exhausted"
+  // here means the same thing chargeableUnderGrant refuses on.
   const runRows = await db
     .select({
       grantId: aiAgentRuns.grantId,
@@ -138,7 +139,25 @@ export async function buildWispOverview(now: Date = new Date()): Promise<WispPar
     .where(and(eq(wispConcerns.status, 'open'), inArray(wispConcerns.partnerId, partnerIds)))
     .groupBy(wispConcerns.partnerId);
 
+  // #10390: the other half of spentUnderGrant, the model-written session summaries.
+  const summaryRows = await db
+    .select({
+      sourceRef: aiInvocations.sourceRef,
+      total: sql<string | number>`ceil(coalesce(sum(${aiInvocations.costCents}), 0))::bigint`,
+    })
+    .from(aiInvocations)
+    .where(and(
+      sql`starts_with(${aiInvocations.sourceRef}, ${SUMMARY_REFINE_SOURCE_REF_PREFIX})`,
+      gte(aiInvocations.createdAt, start),
+      lt(aiInvocations.createdAt, end),
+    ))
+    .groupBy(aiInvocations.sourceRef);
+
   const runsByGrant = new Map(runRows.map((r) => [r.grantId, r]));
+  const summarySpendByGrant = new Map(summaryRows.map((r) => [
+    (r.sourceRef ?? '').slice(SUMMARY_REFINE_SOURCE_REF_PREFIX.length),
+    toCount(r.total),
+  ]));
   const tasksByGrant = new Map(taskRows.map((r) => [r.grantId, toCount(r.n)]));
   const concernsByPartner = new Map(concernRows.map((r) => [r.partnerId, toCount(r.n)]));
   const partnerById = new Map(partnerRows.map((p) => [p.id, p]));
@@ -173,7 +192,9 @@ export async function buildWispOverview(now: Date = new Date()): Promise<WispPar
     // Live = could run again today: not revoked/expired, and not past expires_at
     // (the status may lag the clock until the lifecycle sweep flips it).
     const live = (g.status === 'active' || g.status === 'paused') && notExpired;
-    if (live && runs && toCount(runs.spentCents) >= g.budgetCentsPerDay) row.budgetExhaustedGrantsToday += 1;
+    const summarySpend = summarySpendByGrant.get(g.id);
+    const spentToday = toCount(runs?.spentCents) + (summarySpend ?? 0);
+    if (live && (runs || summarySpend !== undefined) && spentToday >= g.budgetCentsPerDay) row.budgetExhaustedGrantsToday += 1;
   }
 
   return [...rows.values()].sort((a, b) => a.partnerName.localeCompare(b.partnerName));

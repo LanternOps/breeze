@@ -74,6 +74,9 @@ export const reportTypeEnum = pgEnum('report_type', [
   // snapshot coverage, hours and an optional labor estimate; see
   // services/businessReports/clientProfitabilityReport.ts.
   'client_profitability',
+  // Customer SLA performance (#11018): org-only, audience any; see
+  // services/businessReports/ticketSlaPerformanceReport.ts.
+  'ticket_sla_performance',
 ]);
 
 export const reportScheduleEnum = pgEnum('report_schedule', [

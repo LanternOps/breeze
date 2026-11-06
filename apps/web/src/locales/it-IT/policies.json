@@ -1212,6 +1212,61 @@
           "generic": "Questo valore non è consentito."
         }
       },
+      "vendorUpdatesTab": {
+        "title": "Aggiornamenti dei produttori",
+        "description": "Esegui lo strumento di aggiornamento di ciascun produttore hardware (Dell, Surface, HP, Lenovo) con una pianificazione notturna mensile.",
+        "partnerWideBadge": "A livello di partner: si applica a ogni organizzazione a cui è assegnata questa policy",
+        "enabled": "Esegui gli aggiornamenti dei produttori con questa pianificazione",
+        "enabledHelp": "Per attivare questa opzione o aggiungere una categoria di aggiornamento serve l’autorizzazione devices.execute. Per disattivarla non serve mai.",
+        "scheduleHeading": "Pianificazione",
+        "weekOfMonth": "Settimana del mese",
+        "dayOfWeek": "Giorno",
+        "windowStart": "Inizio della finestra (ora locale del dispositivo)",
+        "windowHours": "Durata della finestra (ore, da 1 a 8)",
+        "catchUpNights": "Notti di recupero (da 0 a 14)",
+        "reboot": "Riavvio",
+        "rebootOvernight": "Durante la notte, entro la finestra",
+        "rebootNever": "Non riavviare mai",
+        "scheduleHelp": "Un’esecuzione parte solo all’interno della sua finestra. Un dispositivo che perde la sua notte riprova a ogni notte di recupero.",
+        "rebootNeverHelp": "Senza un riavvio gestito da Breeze, gli aggiornamenti di BIOS e firmware vengono saltati.",
+        "weeks": {
+          "first": "Prima",
+          "second": "Seconda",
+          "third": "Terza",
+          "fourth": "Quarta",
+          "last": "Ultima"
+        },
+        "days": {
+          "sun": "Domenica",
+          "mon": "Lunedì",
+          "tue": "Martedì",
+          "wed": "Mercoledì",
+          "thu": "Giovedì",
+          "fri": "Venerdì",
+          "sat": "Sabato"
+        },
+        "vendorsHeading": "Produttori e categorie di aggiornamento",
+        "vendorEnabled": "Aggiorna i dispositivi {{vendor}}",
+        "notShipped": "Disponibile in una versione successiva",
+        "categories": {
+          "bios": "BIOS",
+          "firmware": "Firmware",
+          "driver": "Driver",
+          "application": "Applicazioni del produttore"
+        },
+        "categoryClosed": "Non ancora disponibile: questa categoria è ancora in fase di validazione su hardware reale.",
+        "nowAvailable": "Ora disponibile. Resta disattivata finché non la attivi.",
+        "blockedLabel": "Aggiornamenti bloccati",
+        "blockedPlaceholder": "ID degli aggiornamenti, separati da virgole",
+        "blockedHelp": "Breeze non installa mai un aggiornamento elencato qui.",
+        "executeRequired": "Per attivare gli aggiornamenti dei produttori, aggiungere una categoria, attivare i riavvii notturni o sbloccare un aggiornamento servono l’autorizzazione devices.execute e MFA. Chiedi a chi ce l’ha di salvare questa modifica.",
+        "gateClosedRefusal": "Una delle categorie di aggiornamento selezionate non è ancora disponibile, quindi la policy non è stata salvata. Rimuovila e salva di nuovo.",
+        "invalid": "Controlla la pianificazione: la finestra va da 1 a 8 ore intere, il recupero da 0 a 14 notti e l’ora di inizio è nel formato HH:MM.",
+        "storedInvalid": "Le impostazioni salvate di questo criterio non sono valide, quindi gli aggiornamenti dei produttori sono disattivati sui dispositivi interessati. Controlla le impostazioni qui sotto e salva per correggerle.",
+        "gatesError": "Impossibile caricare quali categorie di aggiornamento sono disponibili, quindi il salvataggio è disattivato. Ricarica la pagina per riprovare.",
+        "stillGated": "Nessuna categoria di aggiornamento è ancora disponibile, quindi per ora questa policy non installa nulla. Le categorie si aprono qui man mano che ogni produttore completa la validazione.",
+        "armingNotice": "Breeze esegue lo strumento firmato del produttore e non ospita mai file del produttore. Un dispositivo che non ha ripreso a comunicare dopo un aggiornamento del BIOS genera un avviso."
+      },
       "securityAgentsTab": {
         "title": "Agenti di sicurezza",
         "description": "Distribuisci e mantieni installati agenti di sicurezza gestiti sui dispositivi",

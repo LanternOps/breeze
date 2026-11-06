@@ -1212,6 +1212,61 @@
           "generic": "Cette valeur n’est pas autorisée."
         }
       },
+      "vendorUpdatesTab": {
+        "title": "Mises à jour constructeur",
+        "description": "Exécute l’outil de mise à jour propre à chaque constructeur matériel (Dell, Surface, HP, Lenovo) selon une planification mensuelle de nuit.",
+        "partnerWideBadge": "À l’échelle du partenaire : s’applique à chaque organisation à laquelle cette politique est affectée",
+        "enabled": "Exécuter les mises à jour constructeur selon cette planification",
+        "enabledHelp": "L’activation ou l’ajout d’une catégorie de mise à jour nécessite l’autorisation devices.execute. La désactivation ne la nécessite jamais.",
+        "scheduleHeading": "Planification",
+        "weekOfMonth": "Semaine du mois",
+        "dayOfWeek": "Jour",
+        "windowStart": "Début de la fenêtre (heure locale de l’appareil)",
+        "windowHours": "Durée de la fenêtre (heures, de 1 à 8)",
+        "catchUpNights": "Nuits de rattrapage (0 à 14)",
+        "reboot": "Redémarrage",
+        "rebootOvernight": "De nuit, dans la fenêtre",
+        "rebootNever": "Ne jamais redémarrer",
+        "scheduleHelp": "Une exécution ne démarre que dans sa fenêtre. Un appareil qui manque sa nuit réessaie à chaque nuit de rattrapage.",
+        "rebootNeverHelp": "Sans redémarrage piloté par Breeze, les mises à jour du BIOS et des micrologiciels sont ignorées.",
+        "weeks": {
+          "first": "Première",
+          "second": "Deuxième",
+          "third": "Troisième",
+          "fourth": "Quatrième",
+          "last": "Dernière"
+        },
+        "days": {
+          "sun": "Dimanche",
+          "mon": "Lundi",
+          "tue": "Mardi",
+          "wed": "Mercredi",
+          "thu": "Jeudi",
+          "fri": "Vendredi",
+          "sat": "Samedi"
+        },
+        "vendorsHeading": "Constructeurs et catégories de mise à jour",
+        "vendorEnabled": "Mettre à jour les appareils {{vendor}}",
+        "notShipped": "Disponible dans une prochaine version",
+        "categories": {
+          "bios": "BIOS",
+          "firmware": "Micrologiciels",
+          "driver": "Pilotes",
+          "application": "Applications constructeur"
+        },
+        "categoryClosed": "Pas encore disponible : cette catégorie est encore en cours de validation sur du matériel réel.",
+        "nowAvailable": "Désormais disponible. Elle reste désactivée tant que vous ne l’activez pas.",
+        "blockedLabel": "Mises à jour bloquées",
+        "blockedPlaceholder": "ID de mise à jour, séparés par des virgules",
+        "blockedHelp": "Breeze n’installe jamais une mise à jour listée ici.",
+        "executeRequired": "L’activation des mises à jour constructeur, l’ajout d’une catégorie, l’activation des redémarrages de nuit ou le déblocage d’une mise à jour nécessitent l’autorisation devices.execute et l’authentification MFA. Demandez à une personne qui la possède d’enregistrer cette modification.",
+        "gateClosedRefusal": "L’une des catégories de mise à jour sélectionnées n’est pas encore disponible ; la politique n’a donc pas été enregistrée. Retirez-la, puis enregistrez de nouveau.",
+        "invalid": "Vérifiez la planification : la fenêtre dure de 1 à 8 heures entières, le rattrapage de 0 à 14 nuits, et l’heure de début est au format HH:MM.",
+        "storedInvalid": "Les paramètres enregistrés de cette stratégie ne sont pas valides : les mises à jour constructeur sont donc désactivées sur les appareils concernés. Vérifiez les paramètres ci-dessous et enregistrez pour les corriger.",
+        "gatesError": "Impossible de charger les catégories de mise à jour disponibles : l’enregistrement est donc désactivé. Rechargez la page pour réessayer.",
+        "stillGated": "Aucune catégorie de mise à jour n’est encore disponible ; cette politique n’installe donc rien pour l’instant. Les catégories s’ouvrent ici à mesure que chaque constructeur termine la validation.",
+        "armingNotice": "Breeze exécute l’outil signé du constructeur et n’héberge jamais de fichiers constructeur. Un appareil qui ne s’est pas reconnecté après une mise à jour du BIOS déclenche une alerte."
+      },
       "securityAgentsTab": {
         "title": "Agents de sécurité",
         "description": "Déployer et maintenir installés des agents de sécurité gérés sur les appareils",

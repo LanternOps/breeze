@@ -124,6 +124,8 @@ export function wispStateFromThread(body: unknown): NonNullable<WispState> | nul
     wideningAvailable: data?.wideningAvailable === true,
     // #10973: effective (live AND pinned) on the server; anything but literal true is off.
     unattendedReads: grant?.unattendedReads === true,
+    // #10390: off unless the server says literally true.
+    summaryRefine: grant?.summaryRefine === true,
   };
 }
 

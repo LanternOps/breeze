@@ -35,6 +35,7 @@
     "expired": "Esta solicitação expirou antes de ser decidida.",
     "notSoleApprover": "Agora é necessário outro aprovador — você não pode mais aprovar a sua própria solicitação.",
     "siteCeiling": "Esta aprovação concede autoridade em toda a organização. Seu acesso é limitado a sites específicos — outro aprovador precisa decidir esta solicitação.",
+    "approverScopeRequired": "Esta aprovação afeta todas as organizações do parceiro, portanto exige um aprovador no nível do parceiro com acesso a todas as organizações.",
     "noApproverDevice": "Aprovar a sua própria solicitação requer Touch ID / Windows Hello.",
     "freshFactorRequired": "Esta verificação exige uma nova confirmação com passkey (Touch ID, Windows Hello ou chave de hardware) feita para esta aprovação. Tente novamente.",
     "registerDevice": "Registrar este dispositivo",
@@ -702,6 +703,10 @@
         "securityLog": "Pesquisar no log de eventos de segurança",
         "deviceNote": "Salvar uma nota sobre um dispositivo",
         "applies": "Aplica-se a novas conversas e a novas execuções em segundo plano."
+      },
+      "summaryRefine": {
+        "title": "Notas de sessão escritas pelo modelo",
+        "description": "Quando uma conversa termina, o modelo escreve o que foi concluído e o que continua em aberto. Cada nota é uma chamada ao modelo e conta para o orçamento diário do Wisp. Quando desativado, o Wisp mantém um resumo simples."
       }
     },
     "focus": {
@@ -747,7 +752,10 @@
       "unattendedReadsOn": "Leituras sem supervisão ativadas",
       "unattendedReadsOnFailed": "Não foi possível ativar as leituras sem supervisão",
       "unattendedReadsOff": "Leituras sem supervisão desativadas",
-      "unattendedReadsOffFailed": "Não foi possível desativar as leituras sem supervisão"
+      "unattendedReadsOffFailed": "Não foi possível desativar as leituras sem supervisão",
+      "summaryRefineOn": "Notas de sessão ativadas",
+      "summaryRefineOff": "Notas de sessão desativadas",
+      "summaryRefineFailed": "Não foi possível alterar as notas de sessão"
     },
     "spend": {
       "meter": "{{spent}} de {{budget}} hoje",

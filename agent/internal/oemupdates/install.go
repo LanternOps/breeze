@@ -37,6 +37,15 @@ func verifyPublisher(v Verifier, path string, allow LaneAllowlist) error {
 // never downgraded or run; one below it, or unreadable, is replaced. With no
 // spec, only a tool already in range is used.
 func EnsureTool(ctx context.Context, lane Lane, spec *ToolSpec, deps Deps) (ToolState, Outcome, error) {
+	// First, so no other branch can skip it.
+	if checked, ok := lane.(HardwareCheckedLane); ok {
+		if outcome, err := checked.CheckHardware(); outcome != "" || err != nil {
+			if outcome == "" {
+				outcome = OutcomeToolUnavailable // an error never reads as ready
+			}
+			return ToolState{}, outcome, err
+		}
+	}
 	if free, ok := lane.(ToolFreeLane); ok {
 		state, outcome, err := free.Ready()
 		if err != nil && outcome == "" {

@@ -961,6 +961,8 @@
     "backupStatusJobsSnapshotsAndVerification": "Estado de la copia de seguridad, trabajos, instantáneas y verificación",
     "theOsReportsAPendingReboot": "El OS informa un reinicio pendiente (registro Windows/marcadores de reinicio requerido Linux).",
     "rebootPending": "Reinicio pendiente",
+    "backupRunning": "Respaldo en ejecución",
+    "backupRunningTooltip": "Hay un respaldo en ejecución en este dispositivo. Abra la pestaña Respaldo para ver su progreso.",
     "restartScheduled": "Reinicio programado",
     "restartInProgress": "Reiniciando",
     "restartScheduledFor": "Reinicio programado para {{time}}",

@@ -36,6 +36,9 @@ vi.mock('./businessReports/mrrRenewalsReport', () => ({
 vi.mock('./businessReports/quoteWinRateReport', () => ({
   generateQuoteWinRateReport: vi.fn(async () => ({ rows: [], rowCount: 0, summary: { generator: 'quote_win_rate' } })),
 }));
+vi.mock('./businessReports/ticketSlaPerformanceReport', () => ({
+  generateTicketSlaPerformanceReport: vi.fn(async () => ({ rows: [], rowCount: 0, summary: { generator: 'ticket_sla_performance' } })),
+}));
 vi.mock('./businessReports/clientProfitabilityReport', () => ({
   generateClientProfitabilityReport: vi.fn(async () => ({ rows: [], rowCount: 0, summary: { generator: 'client_profitability' } })),
 }));
@@ -101,6 +104,7 @@ const REPORT_TYPES: readonly ReportType[] = [
   'vulnerability_management',
   'identity_access_review',
   'backup_status',
+  'ticket_sla_performance',
 ];
 /**
  * #5784 W06. `identity_access_review` is org-wide by construction: M365 identity
@@ -110,7 +114,7 @@ const REPORT_TYPES: readonly ReportType[] = [
  * dedicated assertion in its place, so the exclusion is proven, not assumed.
  */
 const SITE_SCOPED_REPORT_TYPES: readonly ReportType[] = REPORT_TYPES
-  .filter((type) => type !== 'identity_access_review' && type !== 'backup_status');
+  .filter((type) => type !== 'identity_access_review' && type !== 'backup_status' && type !== 'ticket_sla_performance');
 /** Every `ReportType` that is NOT generated on demand. P2-3 added the first
  *  one: a weekly AI narrative's artifact is written once by the agent run and
  *  only ever read back — there is no query that could reproduce it. Fleet

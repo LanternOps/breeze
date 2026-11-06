@@ -35,6 +35,7 @@
     "expired": "Esta solicitud expiró antes de poder decidirse.",
     "notSoleApprover": "Ahora se requiere otro aprobador: ya no puedes aprobar tu propia solicitud.",
     "siteCeiling": "Esta aprobación otorga autoridad en toda la organización. Tu acceso está limitado a sitios específicos, así que otro aprobador debe decidir sobre esta solicitud.",
+    "approverScopeRequired": "Esta aprobación afecta a todas las organizaciones del partner, así que requiere un aprobador a nivel de partner con acceso a todas las organizaciones.",
     "noApproverDevice": "Aprobar tu propia solicitud requiere Touch ID / Windows Hello.",
     "freshFactorRequired": "Esta verificación requiere una confirmación nueva con passkey (Touch ID, Windows Hello o una llave de hardware) para esta aprobación. Inténtalo de nuevo.",
     "registerDevice": "Registrar este dispositivo",
@@ -702,6 +703,10 @@
         "securityLog": "Buscar en el registro de eventos de seguridad",
         "deviceNote": "Guardar una nota sobre un dispositivo",
         "applies": "Se aplica a las conversaciones nuevas y a las nuevas ejecuciones en segundo plano."
+      },
+      "summaryRefine": {
+        "title": "Notas de sesión escritas por el modelo",
+        "description": "Cuando termina una conversación, el modelo escribe lo que se concluyó y lo que sigue pendiente. Cada nota es una llamada al modelo y cuenta para el presupuesto diario de Wisp. Si está desactivado, Wisp guarda un resumen sencillo en su lugar."
       }
     },
     "focus": {
@@ -747,7 +752,10 @@
       "unattendedReadsOn": "Lecturas sin supervisión activadas",
       "unattendedReadsOnFailed": "No se pudieron activar las lecturas sin supervisión",
       "unattendedReadsOff": "Lecturas sin supervisión desactivadas",
-      "unattendedReadsOffFailed": "No se pudieron desactivar las lecturas sin supervisión"
+      "unattendedReadsOffFailed": "No se pudieron desactivar las lecturas sin supervisión",
+      "summaryRefineOn": "Notas de sesión activadas",
+      "summaryRefineOff": "Notas de sesión desactivadas",
+      "summaryRefineFailed": "No se pudieron cambiar las notas de sesión"
     },
     "spend": {
       "meter": "{{spent}} de {{budget}} hoy",

@@ -961,6 +961,8 @@
     "backupStatusJobsSnapshotsAndVerification": "Sicherungsstatus, Jobs, Snapshots und Überprüfung",
     "theOsReportsAPendingReboot": "Das Betriebssystem meldet einen ausstehenden Neustart (Markierungen für Windows-Registrierung/Linux-Neustart erforderlich).",
     "rebootPending": "Neustart steht aus",
+    "backupRunning": "Sicherung läuft",
+    "backupRunningTooltip": "Auf diesem Gerät läuft eine Sicherung. Den Fortschritt sehen Sie auf der Registerkarte „Sicherung“.",
     "restartScheduled": "Neustart geplant",
     "restartInProgress": "Wird neu gestartet",
     "restartScheduledFor": "Neustart geplant für {{time}}",

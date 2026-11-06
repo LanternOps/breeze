@@ -35,6 +35,7 @@
     "expired": "Questa richiesta è scaduta prima di poter essere decisa.",
     "notSoleApprover": "Ora è richiesto un altro approvatore — non puoi più approvare la tua stessa richiesta.",
     "siteCeiling": "Questa approvazione concede un'autorità a livello di intera organizzazione. Il tuo accesso è limitato a siti specifici — un altro approvatore deve decidere questa richiesta.",
+    "approverScopeRequired": "Questa approvazione riguarda tutte le organizzazioni del partner, quindi richiede un approvatore a livello di partner con accesso a tutte le organizzazioni.",
     "noApproverDevice": "Approvare la tua stessa richiesta richiede Touch ID / Windows Hello.",
     "freshFactorRequired": "Questo controllo richiede una nuova conferma con passkey (Touch ID, Windows Hello o una chiave hardware) per questa approvazione. Riprova.",
     "registerDevice": "Registra questo dispositivo",
@@ -702,6 +703,10 @@
         "securityLog": "Cercare nel registro eventi di sicurezza",
         "deviceNote": "Salvare una nota su un dispositivo",
         "applies": "Si applica alle nuove conversazioni e alle nuove esecuzioni in background."
+      },
+      "summaryRefine": {
+        "title": "Note di sessione scritte dal modello",
+        "description": "Al termine di una conversazione, il modello scrive ciò che è stato concluso e ciò che resta aperto. Ogni nota è una chiamata al modello e rientra nel budget giornaliero di Wisp. Se disattivata, Wisp conserva invece un semplice riepilogo."
       }
     },
     "focus": {
@@ -747,7 +752,10 @@
       "unattendedReadsOn": "Letture non presidiate attivate",
       "unattendedReadsOnFailed": "Impossibile attivare le letture non presidiate",
       "unattendedReadsOff": "Letture non presidiate disattivate",
-      "unattendedReadsOffFailed": "Impossibile disattivare le letture non presidiate"
+      "unattendedReadsOffFailed": "Impossibile disattivare le letture non presidiate",
+      "summaryRefineOn": "Note di sessione attivate",
+      "summaryRefineOff": "Note di sessione disattivate",
+      "summaryRefineFailed": "Impossibile modificare le note di sessione"
     },
     "spend": {
       "meter": "{{spent}} su {{budget}} oggi",

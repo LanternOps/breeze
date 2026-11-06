@@ -219,6 +219,62 @@ describe('BackupJobList', () => {
     expect(screen.queryByTestId('backup-job-stalled')).toBeNull();
   });
 
+  it('shows an ETA for a running job with a total and a speed', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-01T00:01:00.000Z')); // 60s after startedAt
+
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input) === '/backup/jobs') {
+        return makeJsonResponse({
+          data: [
+            runningJob({
+              // 1 MB in 60 s → 9 MB left at ~16.7 KB/s = 540 s.
+              transferredSize: 1_000_000,
+              totalSize: 10_000_000,
+              lastKeepaliveAt: '2026-04-01T00:00:55.000Z',
+            }),
+          ],
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+    await act(async () => {
+      await flush();
+    });
+
+    expect(screen.getByTestId('backup-job-eta').textContent).toBe('about 9m left');
+  });
+
+  it('shows no ETA for a stalled running job', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-01T00:10:00.000Z'));
+
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input) === '/backup/jobs') {
+        return makeJsonResponse({
+          data: [
+            runningJob({
+              transferredSize: 1_000_000,
+              totalSize: 10_000_000,
+              lastKeepaliveAt: '2026-04-01T00:05:00.000Z',
+            }),
+          ],
+        });
+      }
+      return makeJsonResponse({ error: 'Not found' }, false, 404);
+    });
+
+    render(<BackupJobList />);
+    await act(async () => {
+      await flush();
+    });
+
+    expect(screen.getByTestId('backup-job-stalled')).toBeTruthy();
+    expect(screen.queryByTestId('backup-job-eta')).toBeNull();
+  });
+
   it('updates progress and computes speed across two poll refreshes', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-04-01T00:00:10.000Z'));

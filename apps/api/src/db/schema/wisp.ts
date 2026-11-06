@@ -102,6 +102,12 @@ export const wispGrants = pgTable('wisp_grants', {
    * by wisp_grants_update_guard. Read it with the revision flag, never alone.
    */
   unattendedReads: boolean('unattended_reads').notNull().default(false),
+  /**
+   * #10390 (2027-01-22-190000): a closed session's summary is also written by the
+   * model. One call per close, charged to this grant's daily budget. Off: the
+   * deterministic digest is the summary. Spend, not authority: no revision pin.
+   */
+  summaryRefine: boolean('summary_refine').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({

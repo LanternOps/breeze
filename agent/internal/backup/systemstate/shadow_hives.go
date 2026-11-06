@@ -1,6 +1,7 @@
 package systemstate
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -123,7 +124,7 @@ func shadowConfigDir(shadowPaths map[string]string, systemRoot string) (string, 
 // through opts.SnapshotVolume and releases it as soon as the hives are copied.
 // reg.exe is reached only when that snapshot cannot be taken or does not
 // cover the volume, and that fallback is logged as a warning.
-func collectRegistryHivesForRun(dir, stagingDir, systemRoot string, opts CollectOptions) ([]Artifact, error) {
+func collectRegistryHivesForRun(ctx context.Context, dir, stagingDir, systemRoot string, opts CollectOptions) ([]Artifact, error) {
 	configDir, ok := shadowConfigDir(opts.ShadowPaths, systemRoot)
 	if !ok {
 		var release func()
@@ -133,7 +134,7 @@ func collectRegistryHivesForRun(dir, stagingDir, systemRoot string, opts Collect
 		}
 	}
 	if !ok {
-		return collectRegistryHives(dir, stagingDir, registryHives)
+		return collectRegistryHives(ctx, dir, stagingDir, registryHives)
 	}
 	if opts.AcquireBackupPrivilege != nil {
 		release, err := opts.AcquireBackupPrivilege()
@@ -145,7 +146,7 @@ func collectRegistryHivesForRun(dir, stagingDir, systemRoot string, opts Collect
 		}
 	}
 	slog.Info("systemstate: capturing registry hives from the VSS shadow copy", "configDir", configDir)
-	return collectRegistryHivesFromShadow(dir, stagingDir, configDir, shadowRegistryHives)
+	return collectRegistryHivesFromShadow(ctx, dir, stagingDir, configDir, shadowRegistryHives)
 }
 
 // snapshotSystemVolumeForHives takes the registry step's own shadow copy of
@@ -197,12 +198,12 @@ func snapshotSystemVolumeForHives(systemRoot string, opts CollectOptions) (confi
 // registry_<HIVE> — which is what the rebuild engine reads; each log is an
 // additional registry/<HIVE>.LOG1|.LOG2 artifact (registry_<HIVE>.LOG1|.LOG2),
 // so it downloads next to its hive.
-func collectRegistryHivesFromShadow(dir, stagingDir, configDir string, hives []string) ([]Artifact, error) {
+func collectRegistryHivesFromShadow(ctx context.Context, dir, stagingDir, configDir string, hives []string) ([]Artifact, error) {
 	var artifacts []Artifact
 	var failed []string
 	var firstErr error
 	for _, hive := range hives {
-		arts, err := copyShadowHive(dir, stagingDir, configDir, hive)
+		arts, err := copyShadowHive(ctx, dir, stagingDir, configDir, hive)
 		if err != nil && bestEffortShadowHives[hive] {
 			slog.Warn("systemstate: best-effort hive not captured from shadow copy", "hive", hive, "error", err.Error())
 			continue
@@ -224,7 +225,7 @@ func collectRegistryHivesFromShadow(dir, stagingDir, configDir string, hives []s
 }
 
 // copyShadowHive stages one hive and its existing logs, all or nothing.
-func copyShadowHive(dir, stagingDir, configDir, hive string) ([]Artifact, error) {
+func copyShadowHive(ctx context.Context, dir, stagingDir, configDir, hive string) ([]Artifact, error) {
 	var staged []string
 	cleanup := func() {
 		for _, p := range staged {
@@ -237,7 +238,7 @@ func copyShadowHive(dir, stagingDir, configDir, hive string) ([]Artifact, error)
 	}
 	for i, name := range names {
 		dst := filepath.Join(dir, name)
-		err := copyHiveSourceFile(filepath.Join(configDir, name), dst)
+		err := copyHiveSourceFile(ctx, filepath.Join(configDir, name), dst)
 		if err != nil {
 			_ = os.Remove(dst)
 			if i > 0 && errors.Is(err, fs.ErrNotExist) {
@@ -256,7 +257,7 @@ func copyShadowHive(dir, stagingDir, configDir, hive string) ([]Artifact, error)
 }
 
 // copyHiveSourceFile copies one regular file out of the shadow copy.
-func copyHiveSourceFile(src, dst string) error {
+func copyHiveSourceFile(ctx context.Context, src, dst string) error {
 	in, err := openHiveSource(src)
 	if err != nil {
 		return err
@@ -273,7 +274,7 @@ func copyHiveSourceFile(src, dst string) error {
 	if err != nil {
 		return fmt.Errorf("create %s: %w", dst, err)
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	if _, err := io.Copy(out, contextReader{ctx: ctx, r: in}); err != nil {
 		_ = out.Close()
 		return fmt.Errorf("copy %s: %w", src, err)
 	}

@@ -32,6 +32,13 @@ describe('policyBaselineDefaults', () => {
     });
   });
 
+  it('describes vendor updates as never running without a policy (#11065)', () => {
+    expect(getPolicyBaselineDefaults().find(entry => entry.featureType === 'oem_updates')).toEqual({
+      featureType: 'oem_updates', label: 'Vendor Updates', applied: false, inlineSettings: null,
+      behavior: 'Not enforced — no vendor (Dell, Surface, HP, Lenovo) updates are scheduled for these devices.',
+    });
+  });
+
   it('marks patch (and other unenforced features) as not applied', () => {
     const entry = getPolicyBaselineDefaults().find((e) => e.featureType === 'patch')!;
     expect(entry.applied).toBe(false);

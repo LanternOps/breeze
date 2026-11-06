@@ -34,3 +34,18 @@ export function effectiveSchedule(
     actMode: baseline.actMode === true && override?.actMode !== false,
   };
 }
+
+type EffectiveSchedule = ReturnType<typeof effectiveSchedule>;
+
+/**
+ * Full-control W16 (#6786, Decision 3): whether a write lets the schedule do
+ * anything unattended that it could not do before. Compares the whole effective
+ * schedule, because `enabled`, `sweepKinds` and `actMode` merge independently and
+ * each one on its own widens what an armed schedule runs. A cadence change is
+ * refused separately: it is neither wider nor narrower, just different.
+ */
+export function scheduleWriteWidens(before: EffectiveSchedule, after: EffectiveSchedule): boolean {
+  return (after.enabled && !before.enabled)
+    || after.sweepKinds.some((kind) => !before.sweepKinds.includes(kind))
+    || (after.actMode && !before.actMode);
+}
