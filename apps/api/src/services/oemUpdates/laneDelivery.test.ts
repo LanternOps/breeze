@@ -65,11 +65,11 @@ const SCHEDULE = { weekOfMonth: 'third', dayOfWeek: 'wed', windowStart: '01:00',
 const OCCURRENCE_KEY = computeOccurrence({ ...SCHEDULE, catchUpNights: 7 }, 'UTC', NOW).occurrenceKey;
 
 /** What a run stores on `device_commands.result`: the agent's JSON on stdout. */
-function storedResult(skippedCategories: Array<{ category: string; reason: string }> = []) {
+function storedResult(skippedCategories: Array<{ category: string; reason: string }> = [], outcome = 'success') {
   return {
     stdout: JSON.stringify({
       lane: 'dell',
-      outcome: 'success',
+      outcome,
       toolVersion: '5.7.2',
       rawExitCode: 0,
       errorCode: null,
@@ -285,6 +285,20 @@ describe('getVendorManagedClasses: the last run has to have delivered the class'
   it('a result that fails the contract is no result', async () => {
     givenDevice({ commandResult: { stdout: '{"outcome":"success"}' } });
     expect(await classes()).toEqual(new Set());
+  });
+
+  // These report no skips, because the lane never got as far as the categories.
+  it.each([['blocked_reboot_pending'], ['retry_later'], ['blocked_on_battery']])(
+    'a last run that ended %s ran no category, whatever an older success says',
+    async (outcome) => {
+      givenDevice({ lastOutcome: outcome, commandResult: storedResult([], outcome) });
+      expect(await classes()).toEqual(new Set());
+    },
+  );
+
+  it.each([['success_reboot_required'], ['no_updates']])('a last run that ended %s counts', async (outcome) => {
+    givenDevice({ lastOutcome: outcome, commandResult: storedResult([], outcome) });
+    expect((await classes()).has('driver')).toBe(true);
   });
 
   it('a command row retention has removed is no evidence', async () => {

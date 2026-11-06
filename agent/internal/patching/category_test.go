@@ -81,9 +81,9 @@ func TestReportedWindowsUpdate(t *testing.T) {
 			ReportedUpdateTypeDriver, "surface",
 		},
 		{
-			"an unreadable class is firmware", UpdateTypeDriver, "driver", "Dell - Something",
+			"an unreadable class is firmware, and no lane can be shown to own it", UpdateTypeDriver, "driver", "Dell - Something",
 			map[string]string{"DriverManufacturer": "Dell", "DriverModel": "X"},
-			ReportedUpdateTypeFirmware, "dell",
+			ReportedUpdateTypeFirmware, "",
 		},
 		{
 			"an unreadable manufacturer has no owner", UpdateTypeDriver, "driver", "Unknown",
@@ -115,31 +115,42 @@ func TestReportedWindowsUpdate(t *testing.T) {
 
 func TestDriverUpdateOwner(t *testing.T) {
 	tests := []struct {
-		maker, model, want string
+		maker, class, model, want string
 	}{
-		{"Dell", "", "dell"},
-		{"dell inc", "", "dell"},
-		{"Dell Inc.", "", "dell"},
-		{"HP", "", "hp"},
-		{"HP Inc.", "", "hp"},
-		{"Hewlett-Packard", "", "hp"},
-		{"LENOVO", "", "lenovo"},
-		{"Surface", "", "surface"},
-		{"Microsoft Corporation", "Surface Book 3", "surface"},
+		{"Dell", "System", "", "dell"},
+		{"dell inc", "Video", "", "dell"},
+		{"Dell Inc.", "Firmware", "", "dell"},
+		{"HP", "Net", "", "hp"},
+		{"HP Inc.", "Sound", "", "hp"},
+		{"Hewlett-Packard", " system ", "", "hp"},
+		{"LENOVO", "Bluetooth", "", "lenovo"},
+		{"Lenovo", "System Firmware", "", "lenovo"},
+		{"Surface", "", "", "surface"},
+		{"Surface", "Printers", "", "surface"},
+		{"Microsoft Corporation", "System", "Surface Book 3", "surface"},
+		// The vendor's name on a peripheral: a PC lane's catalog need not carry it,
+		// and a class nobody has seen yet gets the same answer.
+		{"HP", "Printers", "", ""},
+		{"Dell", "Monitor", "", ""},
+		{"Dell", "Imaging", "", ""},
+		{"Lenovo", "Dock", "", ""},
+		{"HP", "", "", ""},
+		{"HP", "  ", "", ""},
 		// Near-misses reach no lane, as on the API's own lane match.
-		{"Dell EMC", "", ""},
-		{"HPE", "", ""},
-		{"Hewlett Packard Enterprise", "", ""},
-		{"CHP Systems", "", ""},
-		{"Microsoft Corporation", "Virtual Machine", ""},
-		{"Microsoft", "Generic", ""},
-		{"Intel", "", ""},
-		{"", "", ""},
+		{"Dell EMC", "System", "", ""},
+		{"HPE", "System", "", ""},
+		{"Hewlett Packard Enterprise", "System", "", ""},
+		{"CHP Systems", "System", "", ""},
+		{"Microsoft Corporation", "System", "Virtual Machine", ""},
+		{"Microsoft", "System", "Generic", ""},
+		{"Intel", "System", "", ""},
+		{"", "System", "", ""},
 	}
 	for _, tt := range tests {
-		t.Run(tt.maker+"/"+tt.model, func(t *testing.T) {
-			if got := driverUpdateOwner(DriverUpdate{DriverManufacturer: tt.maker, DriverModel: tt.model}); got != tt.want {
-				t.Errorf("driverUpdateOwner(%q, %q) = %q, want %q", tt.maker, tt.model, got, tt.want)
+		t.Run(tt.maker+"/"+tt.class+"/"+tt.model, func(t *testing.T) {
+			got := driverUpdateOwner(DriverUpdate{DriverManufacturer: tt.maker, DriverClass: tt.class, DriverModel: tt.model})
+			if got != tt.want {
+				t.Errorf("driverUpdateOwner(%q, %q, %q) = %q, want %q", tt.maker, tt.class, tt.model, got, tt.want)
 			}
 		})
 	}

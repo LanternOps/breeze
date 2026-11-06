@@ -10,8 +10,8 @@
  * These go past the spec's list, because the category being on does not mean the
  * lane delivers it:
  *
- * - The last run has to be a scheduled one that asked for the class and did not skip
- *   it. A status row's success says only that the tool ran: a Surface run that
+ * - The last run has to be a finished, scheduled one that asked for the class and did
+ *   not skip it. A status row's success says only that the tool ran: a Surface run that
  *   installed drivers and refused firmware reports `success`, and a Run Now can leave
  *   out bios and firmware. A run still in flight has no result, so it proves nothing.
  *   A Run Now hands the class back until the next scheduled run, which is the safe way.
@@ -53,7 +53,7 @@ import {
 import { notParkedDeviceCondition } from '../unassignedPool/selectorPredicate';
 import { resolveApplicability } from './applicability';
 import { effectiveTimezoneFrom, type DeviceTimezoneFields } from './candidates';
-import { deriveOemDisplayState, type OemDisplayState } from './displayState';
+import { deriveOemDisplayState, FINISHED_OUTCOMES, type OemDisplayState } from './displayState';
 import { laneDisabledByKillSwitch, oemUpdatesEnabled, oemUpdatesFlagOn } from './flags';
 import { computeOccurrence } from './occurrence';
 import { resolveOemUpdatesLinksForDevices, type ResolvedOemUpdatesLink } from './resolver';
@@ -104,7 +104,9 @@ function categoriesLastRunDelivered(row: LaneDeliveryRow): Set<string> | null {
   const { trigger, categories } = (row.commandPayload ?? {}) as { trigger?: unknown; categories?: unknown };
   if (trigger !== 'scheduled' || !Array.isArray(categories)) return null;
   const result = parseStoredOemResult(row.commandResult);
-  if (!result) return null;
+  // A run that stopped short (a pending reboot, retry later) reports no skips, because
+  // it never reached the categories.
+  if (!result || !FINISHED_OUTCOMES.has(result.outcome)) return null;
   const skipped = new Set<string>(result.skippedCategories.map((skip) => skip.category));
   return new Set(categories.filter((category): category is string => typeof category === 'string' && !skipped.has(category)));
 }
