@@ -31,6 +31,7 @@ vi.mock('../../db', () => ({
     select: mocks.select,
     insert: mocks.insert,
   },
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (ctx: Record<string, unknown>, fn: () => Promise<unknown>) => {
     dbContextCalls.push(ctx);
     contextDepth += 1;

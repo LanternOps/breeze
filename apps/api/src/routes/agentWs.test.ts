@@ -31,7 +31,8 @@ vi.mock('../db', () => ({
     update: vi.fn()
   },
   withSystemDbAccessContext: vi.fn((fn: any) => fn()),
-  withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn())
+  withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
+  withDbTransaction: vi.fn((fn: any) => fn()),
 }));
 
 // #6354 W02: the late caller-rejection branch imports the caller leaf module.
