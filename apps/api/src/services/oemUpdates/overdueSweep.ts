@@ -10,6 +10,15 @@
  * | device overdue | the state reads `overdue` | occurrence | a run finished after the alert, or the device left management |
  * | restart overdue | the state reads `reboot_overdue` | owed restart | the state no longer does |
  * | schedule not handed back | the release sweep gave up | takeover | `reason` no longer says so |
+ * | run failing | the state reads `failing`, the last night has passed, and the last run was this occurrence's scheduled one | occurrence | a run finished after the alert, the next occurrence started, or the device left management |
+ *
+ * Run failing never fires while a retry is possible, and it leaves `overdue` to its own
+ * rule: attempts used up reads `overdue`, so that device raises only the overdue rule. A
+ * Run Now is told apart by the `trigger` on the command the status row points at
+ * (`lastCommandId`, written for every run): a tech who ran it has the answer.
+ *
+ * Neither rule fires for a device reading `failing` with no scheduled run this occurrence:
+ * its last failure was an earlier month's, or a Run Now's. It stays visible in the tab only.
  *
  * "Once" outlives the alert: a tech who closes one is not paged again that month. There
  * is no marker column, because the alert row itself is the record, its `dedupeKey` read
@@ -25,9 +34,10 @@
  *
  * Reads run in short system contexts, one per page (#1105).
  */
-import { and, eq, gt, inArray, isNotNull, lte, ne, type SQL } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNotNull, lte, ne, sql, type SQL } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
+  deviceCommands,
   deviceHardware,
   deviceOemUpdateStatus,
   devices,
@@ -40,11 +50,13 @@ import { notParkedDeviceCondition } from '../unassignedPool/selectorPredicate';
 import {
   emitOverdueAlert,
   emitRebootOverdueAlert,
+  emitRunFailingAlert,
   emitScheduleNotHandedBackAlert,
   listOpenOemAlerts,
   OEM_NOT_RETURNED_RULE_NAME,
   OEM_OVERDUE_RULE_NAME,
   OEM_REBOOT_OVERDUE_RULE_NAME,
+  OEM_RUN_FAILING_RULE_NAME,
   OEM_SCHEDULE_NOT_HANDED_BACK_RULE_NAME,
   oemRuleSwitchedOff,
   priorOemAlerts,
@@ -52,7 +64,7 @@ import {
   type OpenOemAlert,
 } from './alerts';
 import { armedScope, effectiveTimezoneFrom, maxDispatchPerTick, type DeviceTimezoneFields } from './candidates';
-import { OEM_REBOOT_OVERDUE_NIGHTS } from './displayState';
+import { FAILING_OUTCOMES, hadAChanceAtLastNight, OEM_REBOOT_OVERDUE_NIGHTS } from './displayState';
 import { oemUpdatesFlagOn } from './flags';
 import {
   classifyOemDevice,
@@ -72,6 +84,9 @@ type SweepRow = OemDeviceFacts & DeviceTimezoneFields & {
   reason: string | null;
   lastAttemptAt: Date | null;
   returnDeadlineAt: Date | null;
+  lastCommandId: string | null;
+  /** The trigger of the run the status row is on: `scheduled` or `on_demand`. */
+  lastTrigger: string | null;
 };
 
 function report(error: unknown, orgId: string | null, what: string): void {
@@ -108,6 +123,8 @@ function loadRows(where: SQL | undefined, after: string | null): Promise<SweepRo
       lastSuccessAt: deviceOemUpdateStatus.lastSuccessAt,
       rebootPendingSince: deviceOemUpdateStatus.rebootPendingSince,
       returnDeadlineAt: deviceOemUpdateStatus.returnDeadlineAt,
+      lastCommandId: deviceOemUpdateStatus.lastCommandId,
+      lastTrigger: sql<string | null>`${deviceCommands.payload} ->> 'trigger'`,
     })
     .from(devices)
     .innerJoin(organizations, eq(organizations.id, devices.orgId))
@@ -115,6 +132,7 @@ function loadRows(where: SQL | undefined, after: string | null): Promise<SweepRo
     .leftJoin(sites, eq(sites.id, devices.siteId))
     .leftJoin(deviceHardware, eq(deviceHardware.deviceId, devices.id))
     .leftJoin(deviceOemUpdateStatus, eq(deviceOemUpdateStatus.deviceId, devices.id))
+    .leftJoin(deviceCommands, eq(deviceCommands.id, deviceOemUpdateStatus.lastCommandId))
     .where(and(
       eq(devices.isEphemeral, false),
       ne(devices.status, 'decommissioned'),
@@ -161,6 +179,25 @@ type Verdict = { keep: true } | { keep: false; note: string };
 const KEEP: Verdict = { keep: true };
 const LEFT_MANAGEMENT = 'Auto-resolved: vendor updates no longer manage this device';
 
+/** What overdue and run failing share: a finished run or leaving management settles either. */
+function unfinishedRunVerdict(
+  alert: OpenOemAlert,
+  row: SweepRow | undefined,
+  classified: OemClassification | undefined,
+): Verdict {
+  if (!row || !classified) return { keep: false, note: LEFT_MANAGEMENT };
+  // At result time, so a run dispatched before the alert and answered after it counts.
+  if (row.lastSuccessAt && row.lastSuccessAt >= alert.createdAt) {
+    return { keep: false, note: 'Auto-resolved: a vendor update run finished' };
+  }
+  if (classified.state === 'not_supported') return { keep: false, note: LEFT_MANAGEMENT };
+  // Still managed with no finished run, into the next occurrence's nights too: not
+  // reading overdue right now does not mean it updated. A pause is not an answer
+  // either: closing these would also spend the occurrence's one alert.
+  if (classified.side.linkEnabled || classified.side.paused) return KEEP;
+  return { keep: false, note: LEFT_MANAGEMENT };
+}
+
 const SETTLERS: ReadonlyArray<{
   ruleName: string;
   needsState: boolean;
@@ -169,18 +206,19 @@ const SETTLERS: ReadonlyArray<{
   {
     ruleName: OEM_OVERDUE_RULE_NAME,
     needsState: true,
+    verdict: unfinishedRunVerdict,
+  },
+  {
+    ruleName: OEM_RUN_FAILING_RULE_NAME,
+    needsState: true,
     verdict: (alert, row, classified) => {
-      if (!row || !classified) return { keep: false, note: LEFT_MANAGEMENT };
-      // At result time, so a run dispatched before the alert and answered after it counts.
-      if (row.lastSuccessAt && row.lastSuccessAt >= alert.createdAt) {
-        return { keep: false, note: 'Auto-resolved: a vendor update run finished' };
-      }
-      if (classified.state === 'not_supported') return { keep: false, note: LEFT_MANAGEMENT };
-      // Still managed with no finished run, into the next occurrence's nights too: not
-      // reading overdue right now does not mean it updated. A pause is not an answer
-      // either: closing these would also spend the occurrence's one alert.
-      if (classified.side.linkEnabled || classified.side.paused) return KEEP;
-      return { keep: false, note: LEFT_MANAGEMENT };
+      const verdict = unfinishedRunVerdict(alert, row, classified);
+      if (!verdict.keep) return verdict;
+      // Null while paused: the schedule cannot say, so the alert waits with the device.
+      const current = classified?.side.occurrence?.occurrenceKey;
+      return current && current !== alert.dedupeKey
+        ? { keep: false, note: 'Auto-resolved: the next vendor update occurrence has started' }
+        : KEEP;
     },
   },
   {
@@ -315,18 +353,24 @@ async function raiseFromPages(
   }
 }
 
-async function raiseOverdue(context: SweepContext): Promise<number> {
-  if (!oemUpdatesFlagOn()) return 0;
+/** Devices a policy could be running. Null when none: the flag is off, or nothing is armed. */
+async function managedDevices(): Promise<SQL | null> {
+  if (!oemUpdatesFlagOn()) return null;
   const scope = await withSystemDbAccessContext(() => armedScope());
-  if (!scope) return 0;
-  let raised = 0;
+  if (!scope) return null;
   // An offline machine stays in: a laptop asleep every night is exactly who this is for.
-  const where = and(
+  return and(
     scope,
     eq(devices.osType, 'windows'),
     eq(devices.isVirtual, false),
     ne(devices.deviceRole, 'server'),
-  );
+  )!;
+}
+
+async function raiseOverdue(context: SweepContext): Promise<number> {
+  const where = await managedDevices();
+  if (!where) return 0;
+  let raised = 0;
   await raiseFromPages(OEM_OVERDUE_RULE_NAME, where, context, async (page) => {
     const states = await classifyPage(page, context);
     const raises = page.flatMap((row): Raise[] => {
@@ -338,6 +382,41 @@ async function raiseOverdue(context: SweepContext): Promise<number> {
       deviceId: row.deviceId,
       orgId: row.orgId,
       occurrenceKey: dedupeKey,
+    }));
+  });
+  return raised;
+}
+
+/**
+ * The occurrence this device owes an alert for, or null. Attempts used up already reads
+ * `overdue`, and past the last night no other retry exists, so the state settles both. The
+ * status row's key moves only with a scheduled run, so a failure from an earlier month is
+ * not this one's. A policy armed after the last night opened gave the run no further chance.
+ */
+function runFailingOccurrence(row: SweepRow, classified: OemClassification | undefined): string | null {
+  const occurrence = classified?.side.occurrence;
+  if (classified?.state !== 'failing' || !occurrence?.isPastLastNight) return null;
+  if (row.occurrenceKey !== occurrence.occurrenceKey || row.lastTrigger !== 'scheduled') return null;
+  return hadAChanceAtLastNight(classified.side.managedSince, occurrence) ? occurrence.occurrenceKey : null;
+}
+
+async function raiseRunFailing(context: SweepContext): Promise<number> {
+  const managed = await managedDevices();
+  if (!managed) return 0;
+  let raised = 0;
+  const where = and(managed, inArray(deviceOemUpdateStatus.lastOutcome, [...FAILING_OUTCOMES]));
+  await raiseFromPages(OEM_RUN_FAILING_RULE_NAME, where, context, async (page) => {
+    const states = await classifyPage(page, context);
+    const raises = page.flatMap((row): Raise[] => {
+      const occurrenceKey = runFailingOccurrence(row, states.get(row.deviceId));
+      return occurrenceKey ? [{ row, dedupeKey: occurrenceKey }] : [];
+    });
+    raised += await raiseAll(OEM_RUN_FAILING_RULE_NAME, raises, context, ({ row, dedupeKey }) => emitRunFailingAlert({
+      deviceId: row.deviceId,
+      orgId: row.orgId,
+      occurrenceKey: dedupeKey,
+      lastOutcome: row.lastOutcome,
+      commandId: row.lastCommandId,
     }));
   });
   return raised;
@@ -395,6 +474,7 @@ export async function runOemOverdueSweep(now: Date): Promise<void> {
     ['restart overdue', raiseRebootOverdue],
     ['schedule not handed back', raiseScheduleNotHandedBack],
     ['device overdue', raiseOverdue],
+    ['run failing', raiseRunFailing],
   ];
   for (const [name, step] of steps) {
     try {

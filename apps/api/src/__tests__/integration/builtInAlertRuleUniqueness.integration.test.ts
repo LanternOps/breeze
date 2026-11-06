@@ -40,6 +40,7 @@ import {
   devices,
 } from '../../db/schema';
 import { BUILT_IN_ALERT_RULE_SOURCES } from '../../services/builtInAlertRules';
+import { emitRunFailingAlert } from '../../services/oemUpdates/alerts';
 import { ensurePatchJobFailureRule, ensureRebootPendingRule } from '../../services/patchAlerts';
 import { ensureRule as ensurePolicyRule } from '../../services/policyAlertBridge';
 import {
@@ -140,6 +141,25 @@ describe('built-in alert rules: concurrent first fire (#7650)', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.name.startsWith(`Config Compliance Rule:${rule.featureLinkId}:`)).toBe(true);
     expect(new Set(ids)).toEqual(new Set([rows[0]!.id]));
+  });
+
+  runDb('the vendor update run failing rule is created once under a concurrent first fire', async () => {
+    const { orgId, siteId } = await seedOrg();
+    const deviceId = await seedDevice(orgId, siteId);
+    // Only the rule is asserted: which racers get an alert is createAlert's own dedupe.
+    await Promise.allSettled(Array.from({ length: RACERS }, () => withSystemDbAccessContext(() => emitRunFailingAlert({
+      deviceId,
+      orgId,
+      occurrenceKey: '2027-02',
+      lastOutcome: 'failed',
+      commandId: null,
+    }))));
+    const rows = await withSystemDbAccessContext(() => db
+      .select({ overrideSettings: alertRules.overrideSettings })
+      .from(alertRules)
+      .where(and(eq(alertRules.orgId, orgId), eq(alertRules.name, 'Vendor update: run failing'), isNull(alertRules.retiredAt))));
+    expect(rows).toHaveLength(1);
+    expect(BUILT_IN_ALERT_RULE_SOURCES).toContain((rows[0]!.overrideSettings as { source: string }).source);
   });
 
   runDb('an existing inactive rule is returned, not re-created ("off" stays off)', async () => {
