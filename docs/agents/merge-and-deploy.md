@@ -43,6 +43,19 @@ Moved verbatim from `CLAUDE.md` (2026-10-07). Read before merging a PR or deploy
 
 `oracle=disagree:<n>` is a warning and never changes a verdict, but it means the gate's rollup differs from `needs.<job>.result`. Look into it. On a PR, no anchor is safe: W05 treats it as "run everything". So when counting verdicts, read `reason`, because a PR with no anchor also logs `verdict=pass`.
 
+**The shadow selection.** After the verdict, a queue run logs one `ci-gate-selection: mode=… reason=… pr=… head=… B=… p=… …` line, with the same fields as the candidate-side `queue-selection:` line. It never changes a verdict: it runs after the `ci-gate:` line, an exception in it is only logged, and it stops after 3 minutes so it cannot outlast the job. W05 will read it. Its evidence comes only from sources the candidate cannot write: anchors from pinned gate runs, and the latest attempt of the PR's newest `ci.yml` run, judged by the base's script and classifier. `provenance.json` is never read. A pinned run is one at `.github/workflows/ci-gate.yml` whose `workflow_id` is not listed by `actions/workflows`, with a `ci-gate-identity:` line naming `@refs/heads/main`. `record_stats` has the detail. Each of these means "run everything":
+
+| Reason | Meaning |
+|---|---|
+| `no_anchor` | no usable anchor for this head: no gate run, nothing written, expired after 7 days, or rejected (`record_stats.rejected`) |
+| `anchor_not_pinned` | anchors exist, but only from runs that are not the pinned gate (`record_stats.not_pinned`); a PR enabling its own copy of the gate looks like this |
+| `anchor_policy_in_p` | an anchor's files include a policy path |
+| `no_verified_pr_run` | the PR's run did not pass the base's script, or could not be checked (`record_stats.verification`) |
+| `no_base_flags` | the verdict produced no flags, so no selection was computed |
+| `selection_time_limit`, `base_io_refused` | shadow only, under `reason=error` with this in `error`: out of time, or a read tried to run something other than the base classifier |
+
+Any other reason is a W4 fallback (`stale_base`, `entry_outside_p`, and so on).
+
 **Changing the gate.** Any PR changing `ci-gate.mjs` or `ci-gate.yml` attaches a green replay run: `gh workflow run CI --ref <branch>`, then read the `ci-gate-replay:` line (`disagreements=0 controlFailures=0`). The dispatch cannot run `ci-gate.yml` itself. `pinned-ci-gate-invariants` in `check-workflow-security.mjs` fixes the workflow's shape.
 
 **Removing a required job takes two PRs.** The queue judges a PR with its base's `ci-success`, so deleting a job in the PR that drops it reads as `missing` and goes red. First drop it from `ci-success`'s `needs` and script, keeping the job. Delete the job in a later PR, once the first has landed. Changing only a display name needs no staging: job ids are the identity.

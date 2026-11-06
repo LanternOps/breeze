@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 import * as gate from './ci-gate.mjs';
 import { evaluateIf, policyDigest } from './queue-selection.mjs';
+import * as queueSelection from './queue-selection.mjs';
 
 const REPO_ROOT = normalize(join(dirname(fileURLToPath(import.meta.url)), '../..'));
 const realCi = readFileSync(join(REPO_ROOT, '.github/workflows/ci.yml'), 'utf8');
@@ -1533,4 +1534,746 @@ test('runCLI: verify and anchor are subcommands, and an unknown one is still a u
   assert.equal(gate.runCLI(a, ['anchor'], { GITHUB_EVENT_NAME: 'pull_request' }), 0);
   assert.match(gateLines(a)[0], /verdict=pass reason=anchor_invalid_input/);
   assert.throws(() => gate.runCLI(verifyIo(), ['nope'], {}), /verify.*anchor/s);
+});
+
+// ── W02d: trusted PR evidence, in shadow ─────────────────────────────────
+
+const GATE_PATH = '.github/workflows/ci-gate.yml';
+const CI_PATH = '.github/workflows/ci.yml';
+// Values seen on real runs at E2, as fixture data only. The code derives the
+// identity from the workflow list; nothing in it knows these numbers.
+const LISTED_GATE_ID = 408750167;
+const RULESET_GATE_ID = 409546478;
+const LISTED = [{ id: LISTED_GATE_ID, path: GATE_PATH }, { id: 223405554, path: CI_PATH }];
+const PINNED_REF = `${REPO}/${GATE_PATH}@refs/heads/main`;
+
+const pinnedRun = over => ({ id: 900, path: GATE_PATH, event: 'pull_request', head_sha: HEAD_SHA, workflow_id: RULESET_GATE_ID,
+  run_attempt: 1, status: 'completed', conclusion: 'success', created_at: '2026-11-06T16:30:04Z', ...over });
+const identityOf = over => ({ workflow_ref: PINNED_REF, workflow_sha: WORKFLOW_SHA, gate_run: 900, gate_attempt: 1, ...over });
+const pinFacts = over => ({ repository: REPO, head: HEAD_SHA, attempt: 1, workflows: LISTED, identity: identityOf(), workflowOnMain: true, ...over });
+
+test('pinnedRunFailure: a ruleset run with its identity line is the pinned gate', () => {
+  assert.equal(gate.pinnedRunFailure(pinnedRun(), pinFacts()), null);
+});
+
+const NOT_PINNED = [
+  ['a candidate-copy run: the id GitHub lists for that path', pinnedRun({ workflow_id: LISTED_GATE_ID }), {}, /listed/],
+  ['a run whose id is listed under any other path', pinnedRun({ workflow_id: 223405554 }), {}, /listed/],
+  ['a same-named workflow at another path', pinnedRun({ path: '.github/workflows/ci-gate-2.yml' }), {}, /path/],
+  ['a path with a ref suffix', pinnedRun({ path: `${GATE_PATH}@refs/heads/main` }), {}, /path/],
+  ['an event other than pull_request', pinnedRun({ event: 'merge_group' }), {}, /event/],
+  ['another head', pinnedRun({ head_sha: BASE_SHA }), {}, /head/],
+  ['no workflow_id at all', pinnedRun({ workflow_id: undefined }), {}, /workflow_id/],
+  ['a workflow list with no entry for the gate path', pinnedRun(), { workflows: [{ id: 223405554, path: CI_PATH }] }, /no listed workflow/],
+  ['an empty workflow list', pinnedRun(), { workflows: [] }, /no listed workflow/],
+  ['no identity line', pinnedRun(), { identity: null }, /identity/],
+  ['an identity line naming a branch, not main', pinnedRun(), { identity: identityOf({ workflow_ref: `${REPO}/${GATE_PATH}@refs/heads/feature` }) }, /workflow_ref/],
+  ['an identity line naming a pull ref', pinnedRun(), { identity: identityOf({ workflow_ref: `${REPO}/${GATE_PATH}@refs/pull/7/merge` }) }, /workflow_ref/],
+  ['an identity line from another repository', pinnedRun(), { identity: identityOf({ workflow_ref: `other/repo/${GATE_PATH}@refs/heads/main` }) }, /workflow_ref/],
+  ['an identity line from another run', pinnedRun(), { identity: identityOf({ gate_run: 901 }) }, /gate_run/],
+  ['an identity line from another attempt', pinnedRun(), { attempt: 2 }, /gate_attempt/],
+  ['a workflow sha that is not on main', pinnedRun(), { workflowOnMain: false }, /not on main/],
+];
+for (const [name, run, facts, why] of NOT_PINNED) {
+  test(`pinnedRunFailure: rejects ${name}`, () => assert.match(gate.pinnedRunFailure(run, pinFacts(facts)) ?? 'accepted', why));
+}
+
+test('pinnedRunFailure: a candidate copy cannot talk its way in with a forged identity line', () => {
+  const forged = identityOf({ workflow_ref: PINNED_REF });
+  assert.match(gate.pinnedRunFailure(pinnedRun({ workflow_id: LISTED_GATE_ID }), pinFacts({ identity: forged })), /listed/);
+});
+
+test('parseIdentity: the one line logIdentity writes, timestamped as the logs endpoint returns it', () => {
+  const line = `ci-gate-identity: workflow_ref=${PINNED_REF} workflow_sha=${WORKFLOW_SHA} gate_run=900 gate_attempt=2`;
+  const parsed = identityOf({ gate_attempt: 2 });
+  assert.deepEqual(gate.parseIdentity(`2026-11-06T16:30:13.0Z ${line}\n2026-11-06T16:30:14.0Z other\n`), parsed);
+  assert.equal(gate.parseIdentity('2026-11-06T16:30:13.0Z other\n'), null);
+  assert.equal(gate.parseIdentity(`2026-11-06T16:30:13.0Z ${line}\n2026-11-06T16:30:14.0Z ${line}\n`), null, 'two lines are not an identity');
+  assert.equal(gate.parseIdentity(`2026-11-06T16:30:13.0Z x ${line}\n`), null, 'quoted inside another line');
+  assert.equal(gate.parseIdentity(`2026-11-06T16:30:13.0Z ${line} extra\n`), null);
+});
+
+// A small base policy, so the rules under test stay readable. PR_ONLY_IF exits
+// non-zero unless the script sees IS_PR=true; integration is demanded by flag.
+const tinyCi = `name: CI
+jobs:
+  changes:
+    name: Detect
+    runs-on: ubuntu-latest
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+  integration-test:
+    name: Integration
+    runs-on: ubuntu-latest
+  ci-success:
+    name: CI Success
+    needs: [changes, lint, integration-test]
+    steps:
+      - name: Check all jobs passed
+        env:
+          CHANGES_RESULT: \${{ needs.changes.result }}
+          LINT_RESULT: \${{ needs.lint.result }}
+          INT_RESULT: \${{ needs.integration-test.result }}
+          INT: \${{ needs.changes.outputs.integration }}
+          IS_PR: \${{ github.event_name == 'pull_request' }}
+        run: |
+          [[ "\${IS_PR}" == "true" ]] || exit 3
+          [[ "\${LINT_RESULT}" == "success" ]] || exit 4
+          if [[ "\${INT}" == "true" ]]; then [[ "\${INT_RESULT}" == "success" ]] || exit 5; else [[ "\${INT_RESULT}" == "skipped" ]] || exit 6; fi
+`;
+// `--pull-request` is the only thing that path-gates integration, as in the real classifier.
+const prGatedClassifier = `#!/usr/bin/env bash
+cat > /dev/null
+integration=true
+[[ "\${1:-}" == "--pull-request" ]] && integration=false
+printf 'code=true\\ndocs=false\\nagent=false\\napp=true\\napi=false\\nweb=false\\nportal=false\\naddins=false\\nm365=false\\nrust=false\\ntopology_browser=false\\nagent_code=false\\nintegration=%s\\npath_readers=false\\nreader_tests=\\n' "$integration"
+`;
+const tinyPolicy = () => ({ [CI_PATH]: tinyCi, [`${SCRIPTS}/classify-pr-paths.sh`]: prGatedClassifier });
+const prJobs = over => api(['Detect', 'success'], ['Lint', 'success'], ['Integration', 'skipped'], ...(over ?? []));
+
+// A real repository for the commits, a fake Actions API for the runs.
+function trustRig({ baseFiles = tinyPolicy(), headFiles = { 'src/a.ts': 'a\n' } } = {}) {
+  const r = anchorRemote(headFiles, baseFiles);
+  r.io.repository = REPO;
+  const state = { workflows: LISTED, runs: [], artifacts: {}, files: {}, jobIds: {}, logs: {}, jobs: {}, calls: [], downloads: [] };
+  let nextJob = 5000;
+  r.io.gh = args => {
+    state.calls.push(args);
+    if (args[0] === 'run' && args[1] === 'download') {
+      const name = args[args.indexOf('--name') + 1];
+      state.downloads.push(`${args[2]}/${name}`);
+      for (const [file, text] of Object.entries(state.files[`${args[2]}/${name}`] ?? {})) writeFileSync(join(args[args.indexOf('--dir') + 1], file), text);
+      return '';
+    }
+    const endpoint = args.find(arg => arg.startsWith('repos/'));
+    let m;
+    if (/\/actions\/workflows\?/.test(endpoint)) return JSON.stringify([{ workflows: state.workflows }]);
+    if (/\/actions\/runs\?/.test(endpoint)) return JSON.stringify([{ total_count: state.runs.length, workflow_runs: state.runs }]);
+    if ((m = endpoint.match(/\/actions\/runs\/(\d+)\/artifacts/))) return JSON.stringify([{ artifacts: state.artifacts[m[1]] ?? [] }]);
+    if ((m = endpoint.match(/\/actions\/runs\/(\d+)\/attempts\/(\d+)\/jobs/))) {
+      const key = `${m[1]}/${m[2]}`;
+      state.jobIds[key] ??= nextJob++;
+      return JSON.stringify([{ jobs: [{ id: state.jobIds[key], name: 'CI Gate' }] }]);
+    }
+    if ((m = endpoint.match(/\/actions\/jobs\/(\d+)\/logs/))) {
+      const key = Object.keys(state.jobIds).find(k => state.jobIds[k] === Number(m[1]));
+      return state.logs[key] ?? '';
+    }
+    if ((m = endpoint.match(/\/actions\/runs\/(\d+)\/jobs\?(.*)$/))) {
+      const attempts = state.jobs[m[1]] ?? [];
+      // filter=latest is the jobs of the latest attempt; anything else lists every attempt's.
+      return JSON.stringify([{ jobs: /filter=latest/.test(m[2]) ? attempts.at(-1) ?? [] : attempts.flat() }]);
+    }
+    throw Error(`unexpected gh ${args.join(' ')}`);
+  };
+  const anchorOf = over => ({ schema: 1, head_sha: r.headSha, merge_sha: r.merge, base_sha: r.baseSha, pr_number: 7, run_id: 900, run_attempt: 1,
+    created_at: '2026-11-06T16:30:16.000Z', files: ['src/a.ts'], files_source: 'merge-commit', policy_digest: 'd'.repeat(64), policy_in_files: false, ...over });
+  // One pinned gate run, its identity line, and its anchor artifact.
+  r.addAnchor = ({ id = 900, attempt = 1, run = {}, anchor = {}, expired = false, identity } = {}) => {
+    state.runs.push(pinnedRun({ id, head_sha: r.headSha, run_attempt: attempt, ...run }));
+    const name = `ci-gate-anchor-attempt-${attempt}`;
+    (state.artifacts[id] ??= []).push({ name, expired });
+    state.files[`${id}/${name}`] = { [gate.ANCHOR_FILE]: JSON.stringify(anchorOf({ run_id: id, run_attempt: attempt, ...anchor })) };
+    state.logs[`${id}/${attempt}`] = identity ?? `2026-11-06T16:30:13.0Z ci-gate-identity: workflow_ref=${PINNED_REF} workflow_sha=${r.workflowSha} gate_run=${id} gate_attempt=${attempt}\n`;
+    state.jobIds[`${id}/${attempt}`] ??= nextJob++;
+  };
+  r.addCi = ({ id = 800, attempts = [prJobs()], run = {} } = {}) => {
+    state.runs.push({ id, path: CI_PATH, event: 'pull_request', head_sha: r.headSha, workflow_id: 223405554, run_attempt: attempts.length,
+      status: 'completed', conclusion: 'success', created_at: '2026-11-06T16:30:04Z', pull_requests: [{ number: 7 }], ...run });
+    state.jobs[id] = attempts;
+  };
+  r.state = state;
+  r.trust = (stats = {}) => gate.trustedRecord(r.io, { head: r.headSha, pr: 7 }, stats);
+  return r;
+}
+const rigWithEvidence = options => { const r = trustRig(options); r.addAnchor(); r.addCi(); return r; };
+
+test('trustedRecord: a pinned anchor and a verified run give a record in W4\'s schema', () => {
+  const r = rigWithEvidence();
+  const record = r.trust();
+  assert.deepEqual(Object.keys(record).sort(), ['base_sha', 'created_at', 'files', 'files_source', 'head_sha', 'merge_sha', 'non_gating_jobs', 'policy_digest',
+    'policy_in_files', 'pr_number', 'run_attempt', 'run_id', 'schema', 'selection', 'suites_passed'].sort());
+  assert.equal(queueSelection.validateRecord(record, r.headSha), record);
+  assert.equal(queueSelection.pickRecord([record], r.headSha), record);
+  assert.deepEqual([record.base_sha, record.head_sha, record.merge_sha, record.pr_number, record.run_id, record.run_attempt, record.suites_passed, record.policy_in_files],
+    [r.baseSha, r.headSha, r.merge, 7, 800, 1, true, false]);
+  assert.deepEqual(record.files, ['src/a.ts']);
+  assert.equal(record.policy_digest, 'd'.repeat(64));
+  assert.deepEqual(Object.keys(record.selection), queueSelection.CLASSIFIER_KEYS);
+  assert.equal(record.selection.integration, 'false', 'the classifier ran with --pull-request');
+});
+
+test('trustedRecord: an anchor from a candidate-copy run is anchor_not_pinned, and is never downloaded', () => {
+  const r = trustRig();
+  r.addAnchor({ run: { workflow_id: LISTED_GATE_ID } });
+  r.addCi();
+  const stats = {};
+  assert.deepEqual(r.trust(stats).reason, 'anchor_not_pinned');
+  assert.deepEqual(r.state.downloads, []);
+  assert.equal(stats.not_pinned.length, 1);
+  assert.match(stats.not_pinned[0].why, /listed/);
+});
+
+test('trustedRecord: an identity line naming another ref is anchor_not_pinned', () => {
+  const r = trustRig();
+  r.addAnchor({ identity: `2026-11-06T16:30:13.0Z ci-gate-identity: workflow_ref=${REPO}/${GATE_PATH}@refs/heads/fork workflow_sha=${'f'.repeat(40)} gate_run=900 gate_attempt=1\n` });
+  r.addCi();
+  assert.equal(r.trust().reason, 'anchor_not_pinned');
+});
+
+test('trustedRecord: a workflow sha not on main is anchor_not_pinned', () => {
+  const r = trustRig();
+  r.addAnchor({ identity: `2026-11-06T16:30:13.0Z ci-gate-identity: workflow_ref=${PINNED_REF} workflow_sha=${r.headSha} gate_run=900 gate_attempt=1\n` });
+  r.addCi();
+  r.io.git(['fetch', '--no-tags', '--quiet', 'origin', r.headSha]);
+  assert.equal(r.trust().reason, 'anchor_not_pinned');
+});
+
+test('trustedRecord: a candidate-copy anchor beside a pinned one adds nothing', () => {
+  const r = trustRig();
+  r.addAnchor({ id: 901 });
+  r.addAnchor({ id: 500, run: { workflow_id: LISTED_GATE_ID }, anchor: { base_sha: 'a'.repeat(40), files: ['forged.ts'] } });
+  r.addCi();
+  const record = r.trust();
+  assert.equal(record.base_sha, r.baseSha);
+  assert.deepEqual(record.files, ['src/a.ts']);
+  assert.deepEqual(r.state.downloads, ['901/ci-gate-anchor-attempt-1']);
+});
+
+test('trustedRecord: a same-named run at another path is not looked at, which is no_anchor', () => {
+  const r = trustRig();
+  r.addAnchor({ run: { path: '.github/workflows/ci-gate-2.yml', name: 'CI Gate' } });
+  r.addCi();
+  assert.equal(r.trust().reason, 'no_anchor');
+  assert.deepEqual(r.state.downloads, []);
+});
+
+test('trustedRecord: two anchors for one head give the oldest base and the union of files', () => {
+  const r = trustRig();
+  const newerBase = r.inOrigin('commit-tree', `${r.baseSha}^{tree}`, '-p', r.baseSha, '-m', 'main moved');
+  // Listed newest first, as the API does: the rule must not depend on the order.
+  r.addAnchor({ id: 902, anchor: { base_sha: newerBase, files: ['src/a.ts', 'src/b.ts'], policy_digest: 'e'.repeat(64) } });
+  r.addAnchor({ id: 901, anchor: { files: ['src/a.ts', 'src/c.ts'] } });
+  r.addCi();
+  const record = r.trust();
+  assert.equal(record.base_sha, r.baseSha);
+  assert.deepEqual([...record.files].sort(), ['src/a.ts', 'src/b.ts', 'src/c.ts']);
+  assert.equal(record.policy_digest, 'd'.repeat(64), 'the digest belongs to the oldest base');
+});
+
+test('trustedRecord: a policy path in any anchor is anchor_policy_in_p', () => {
+  const r = trustRig();
+  r.addAnchor({ id: 901 });
+  r.addAnchor({ id: 902, anchor: { policy_in_files: true, policy_digest: null, files: ['.github/workflows/foo.yml'] } });
+  r.addCi();
+  assert.equal(r.trust().reason, 'anchor_policy_in_p');
+});
+
+test('trustedRecord: no anchor at all, or only an expired one, is no_anchor', () => {
+  const none = trustRig();
+  none.addCi();
+  assert.equal(none.trust().reason, 'no_anchor');
+  const expired = trustRig();
+  expired.addAnchor({ expired: true });
+  expired.addCi();
+  assert.equal(expired.trust().reason, 'no_anchor');
+  assert.deepEqual(expired.state.downloads, []);
+});
+
+const BAD_ANCHORS = [
+  ['another head', r => ({ head_sha: r.baseSha })],
+  ['another PR', () => ({ pr_number: 8 })],
+  ['another run', () => ({ run_id: 901 })],
+  ['another attempt', () => ({ run_attempt: 2 })],
+  ['another schema', () => ({ schema: 2 })],
+  ['a base that is not a sha', () => ({ base_sha: 'main' })],
+  ['a merge that is not a sha', () => ({ merge_sha: null })],
+  ['files that are not a list of strings', () => ({ files: 'src/a.ts' })],
+  ['a files_source other than merge-commit', () => ({ files_source: 'api' })],
+  ['a digest missing with no policy path', () => ({ policy_digest: null })],
+  ['policy_in_files that is not a boolean', () => ({ policy_in_files: 'false' })],
+];
+for (const [name, bad] of BAD_ANCHORS) {
+  test(`trustedRecord: an anchor with ${name} is rejected, which is no_anchor`, () => {
+    const r = trustRig();
+    r.addAnchor({ anchor: bad(r) });
+    r.addCi();
+    const stats = {};
+    assert.equal(r.trust(stats).reason, 'no_anchor');
+    assert.equal(stats.rejected.length, 1);
+  });
+}
+
+test('trustedRecord: an artifact whose file is not JSON is rejected, not a crash', () => {
+  const r = trustRig();
+  r.addAnchor();
+  r.state.files['900/ci-gate-anchor-attempt-1'] = { [gate.ANCHOR_FILE]: '{' };
+  r.addCi();
+  assert.equal(r.trust().reason, 'no_anchor');
+});
+
+test('suites_passed: true needs IS_PR=true, the base classifier and --pull-request', () => {
+  // Integration ran and passed: under --pull-request the flag is false, so the
+  // three-branch rule rejects it. Without --pull-request it would have passed.
+  const ran = trustRig();
+  ran.addAnchor();
+  ran.addCi({ attempts: [api(['Detect', 'success'], ['Lint', 'success'], ['Integration', 'success'])] });
+  assert.equal(ran.trust().reason, 'no_verified_pr_run');
+  // Integration skipped: passes only because --pull-request gated it.
+  assert.equal(rigWithEvidence().trust().suites_passed, true);
+});
+
+test('suites_passed: the classifier and script come from base_sha, never from the merge or the head', () => {
+  const editedCi = tinyCi.replace('[[ "${LINT_RESULT}" == "success" ]] || exit 4', 'true');
+  const r = trustRig({ headFiles: { 'src/a.ts': 'a\n', [CI_PATH]: editedCi, [`${SCRIPTS}/classify-pr-paths.sh`]: `#!/usr/bin/env bash\nexit 0\n` } });
+  r.addAnchor();
+  r.addCi({ attempts: [api(['Detect', 'success'], ['Lint', 'failure'], ['Integration', 'skipped'])] });
+  assert.equal(r.trust().reason, 'no_verified_pr_run', 'the candidate script waved a failed Lint through');
+});
+
+test('suites_passed: the base classifier sets the flags, though the merge commit edits it to say otherwise', () => {
+  // The merge's classifier demands integration; the base's gates it off, so a skipped Integration passes.
+  const demanding = prGatedClassifier.replace('integration=false', 'integration=true');
+  const r = trustRig({ headFiles: { 'src/a.ts': 'a\n', [`${SCRIPTS}/classify-pr-paths.sh`]: demanding } });
+  r.addAnchor();
+  r.addCi();
+  const record = r.trust();
+  assert.equal(record.suites_passed, true);
+  assert.equal(record.selection.integration, 'false');
+});
+
+test('suites_passed: job display names come from the merge commit, which is the ci.yml that ran', () => {
+  const renamed = tinyCi.replace('name: Lint', 'name: Lint (renamed)');
+  const r = trustRig({ headFiles: { 'src/a.ts': 'a\n', [CI_PATH]: renamed } });
+  r.addAnchor();
+  r.addCi({ attempts: [api(['Detect', 'success'], ['Lint (renamed)', 'success'], ['Integration', 'skipped'])] });
+  assert.equal(r.trust().suites_passed, true);
+});
+
+test('suites_passed: a job id removed by the candidate is a failed verification', () => {
+  const removed = tinyCi.replace('  lint:\n    name: Lint\n    runs-on: ubuntu-latest\n', '').replace('needs: [changes, lint, integration-test]', 'needs: [changes, integration-test]');
+  const r = trustRig({ headFiles: { 'src/a.ts': 'a\n', [CI_PATH]: removed } });
+  r.addAnchor();
+  r.addCi({ attempts: [api(['Detect', 'success'], ['Integration', 'skipped'])] });
+  assert.equal(r.trust().reason, 'no_verified_pr_run');
+});
+
+test('suites_passed: a forged provenance.json has no effect, and is never read', () => {
+  const forged = JSON.stringify({ schema: 1, head_sha: 'x', suites_passed: true, files: [], files_source: 'merge-commit', base_sha: 'a'.repeat(40) });
+  // It cannot make a failed run pass.
+  const red = trustRig();
+  red.addAnchor();
+  red.addCi({ attempts: [prJobs([['Other', 'skipped']]).map(job => job.name === 'Lint' ? { ...job, conclusion: 'failure' } : job)] });
+  red.state.artifacts[800] = [{ name: 'ci-provenance-attempt-1', expired: false }];
+  red.state.files['800/ci-provenance-attempt-1'] = { 'provenance.json': forged };
+  assert.equal(red.trust().reason, 'no_verified_pr_run');
+  assert.deepEqual(red.state.downloads, ['900/ci-gate-anchor-attempt-1']);
+  // It cannot narrow a passing one either.
+  const green = rigWithEvidence();
+  green.state.artifacts[800] = [{ name: 'ci-provenance-attempt-1', expired: false }];
+  green.state.files['800/ci-provenance-attempt-1'] = { 'provenance.json': forged };
+  assert.deepEqual(green.trust().files, ['src/a.ts']);
+  assert.deepEqual(green.state.downloads, ['900/ci-gate-anchor-attempt-1']);
+});
+
+test('partial re-run: the latest attempt rules, in both directions', () => {
+  const failedThenFixed = [api(['Detect', 'success'], ['Lint', 'failure'], ['Integration', 'skipped']), prJobs()];
+  const fixed = trustRig();
+  fixed.addAnchor();
+  fixed.addCi({ attempts: failedThenFixed });
+  const record = fixed.trust();
+  assert.equal(record.suites_passed, true);
+  assert.equal(record.run_attempt, 2);
+  const jobCalls = fixed.state.calls.flat().filter(arg => /\/runs\/800\/jobs/.test(arg));
+  assert.ok(jobCalls.length && jobCalls.every(arg => /filter=latest/.test(arg)), jobCalls.join());
+
+  const passedThenBroke = [prJobs(), api(['Detect', 'success'], ['Lint', 'failure'], ['Integration', 'skipped'])];
+  const broke = trustRig();
+  broke.addAnchor();
+  broke.addCi({ attempts: passedThenBroke });
+  assert.equal(broke.trust().reason, 'no_verified_pr_run');
+});
+
+test('no_verified_pr_run: no CI run, or only runs that are not the pull_request ci.yml', () => {
+  const none = trustRig();
+  none.addAnchor();
+  assert.equal(none.trust().reason, 'no_verified_pr_run');
+  const others = trustRig();
+  others.addAnchor();
+  others.addCi({ id: 801, run: { event: 'merge_group' } });
+  others.addCi({ id: 802, run: { path: '.github/workflows/ci-copy.yml' } });
+  others.addCi({ id: 803, run: { head_sha: others.baseSha } });
+  assert.equal(others.trust().reason, 'no_verified_pr_run');
+});
+
+test('no_verified_pr_run: a run for this head on another PR is not this PR\'s evidence; a fork run with no PR list is', () => {
+  const other = trustRig();
+  other.addAnchor();
+  other.addCi({ run: { pull_requests: [{ number: 8 }] } });
+  assert.equal(other.trust().reason, 'no_verified_pr_run');
+  const fork = trustRig();
+  fork.addAnchor();
+  fork.addCi({ run: { pull_requests: [] } });
+  assert.equal(fork.trust().suites_passed, true);
+});
+
+test('no_verified_pr_run: the newest run decides; an older green run does not rescue a newer red one', () => {
+  const r = trustRig();
+  r.addAnchor();
+  r.addCi({ id: 801 });
+  r.addCi({ id: 802, attempts: [api(['Detect', 'success'], ['Lint', 'failure'], ['Integration', 'skipped'])] });
+  assert.equal(r.trust().reason, 'no_verified_pr_run');
+  const newerGreen = trustRig();
+  newerGreen.addAnchor();
+  newerGreen.addCi({ id: 801, attempts: [api(['Detect', 'success'], ['Lint', 'failure'], ['Integration', 'skipped'])] });
+  newerGreen.addCi({ id: 802 });
+  assert.equal(newerGreen.trust().run_id, 802);
+});
+
+test('no_verified_pr_run: a run still going is not evidence, even with green jobs so far', () => {
+  const r = trustRig();
+  r.addAnchor();
+  r.addCi({ run: { status: 'in_progress', conclusion: null } });
+  assert.equal(r.trust().reason, 'no_verified_pr_run');
+});
+
+test('no_verified_pr_run: an anchor made after the run tested something else, so its base would not err old', () => {
+  const r = trustRig();
+  r.addAnchor({ run: { created_at: '2026-11-06T18:00:00Z' } });
+  r.addCi({ run: { created_at: '2026-11-06T16:30:04Z' } });
+  const stats = {};
+  assert.equal(r.trust(stats).reason, 'no_verified_pr_run');
+  assert.match(stats.verification, /anchor/);
+  // The same event's two runs are created moments apart, either way round.
+  const same = trustRig();
+  same.addAnchor({ run: { created_at: '2026-11-06T16:30:09Z' } });
+  same.addCi({ run: { created_at: '2026-11-06T16:30:04Z' } });
+  assert.equal(same.trust().suites_passed, true);
+});
+
+test('no_verified_pr_run: a base that cannot be fetched is a failed verification, not a crash', () => {
+  const r = trustRig();
+  r.addAnchor({ anchor: { base_sha: 'a'.repeat(40) } });
+  r.addCi();
+  const stats = {};
+  assert.equal(r.trust(stats).reason, 'no_verified_pr_run');
+  assert.match(stats.verification, /cannot fetch/);
+});
+
+test('trustedRecord: an Actions API failure throws, so the shadow says error rather than a reason about the PR', () => {
+  const r = rigWithEvidence();
+  const gh = r.io.gh;
+  r.io.sleep = () => {};
+  r.io.gh = args => { if (args.some(arg => /\/actions\/workflows\?/.test(arg))) throw Error('HTTP 502'); return gh(args); };
+  assert.throws(() => r.trust(), error => error.code === 'api_error');
+});
+
+test('trustedRecord: reads a job log with the flag new gh requires, and without it on a gh that lacks it', () => {
+  const r = rigWithEvidence();
+  const gh = r.io.gh;
+  const seen = [];
+  r.io.gh = args => {
+    if (/\/logs$/.test(args.find(arg => arg.startsWith('repos/')) ?? '')) {
+      seen.push(args.includes('--allow-escape-sequences'));
+      if (args.includes('--allow-escape-sequences')) throw Error('unknown flag: --allow-escape-sequences');
+    }
+    return gh(args);
+  };
+  assert.equal(r.trust().suites_passed, true);
+  assert.deepEqual(seen, [true, false]);
+});
+
+test('trustedRecord: a log that cannot be read at all is an API failure, not a pass', () => {
+  const r = rigWithEvidence();
+  const gh = r.io.gh;
+  r.io.gh = args => { if (/\/logs$/.test(args.find(arg => arg.startsWith('repos/')) ?? '')) throw Error('HTTP 410'); return gh(args); };
+  assert.throws(() => r.trust(), error => error.code === 'api_error');
+});
+
+test('trustedRecord: an invalid repository, head or PR throws before any API call', () => {
+  const r = trustRig();
+  r.io.repository = 'nope';
+  assert.throws(() => r.trust(), error => error.code === 'invalid_repository');
+  assert.equal(r.state.calls.length, 0);
+  r.io.repository = REPO;
+  assert.throws(() => gate.trustedRecord(r.io, { head: 'main', pr: 7 }));
+  assert.throws(() => gate.trustedRecord(r.io, { head: r.headSha, pr: 0 }));
+  assert.equal(r.state.calls.length, 0);
+});
+
+test('trustedRecord: more runs for a head than the API will list is not treated as a complete list', () => {
+  const r = rigWithEvidence();
+  const gh = r.io.gh;
+  r.io.sleep = () => {};
+  r.io.gh = args => {
+    if (args.some(arg => /\/actions\/runs\?/.test(arg))) return JSON.stringify([{ total_count: 1001, workflow_runs: [] }]);
+    return gh(args);
+  };
+  assert.throws(() => r.trust(), error => error.code === 'api_error');
+});
+
+// ── The base-revision io ─────────────────────────────────────────────────
+
+test('baseRevisionIO: read and exists answer from the base, whatever the working tree holds', () => {
+  const { io, base, cwd } = repo({ 'policy.txt': 'base\n', 'gone.txt': 'base\n' }, { 'policy.txt': 'head\n', 'gone.txt': null, 'new.txt': 'head\n' });
+  assert.equal(readFileSync(join(cwd, 'policy.txt'), 'utf8'), 'head\n');
+  const baseIo = gate.baseRevisionIO(io, base);
+  assert.equal(baseIo.read('policy.txt'), 'base\n');
+  assert.equal(baseIo.read('gone.txt'), 'base\n');
+  assert.equal(baseIo.exists('policy.txt'), true);
+  assert.equal(baseIo.exists('gone.txt'), true);
+  assert.equal(baseIo.exists('new.txt'), false);
+  assert.equal(baseIo.blob('policy.txt'), execFileSync('git', ['rev-parse', `${base}:policy.txt`], { cwd, encoding: 'utf8' }).trim());
+});
+
+test('baseRevisionIO: runs only the base classifier, from a temp copy, with no token in its environment', () => {
+  const probe = `#!/usr/bin/env bash\ncat > /dev/null\n[[ -z "\${GH_TOKEN:-}" ]] || exit 7\nprintf 'code=base\\nargs=%s\\n' "$*"\n`;
+  const { base, cwd } = repo({ [`${SCRIPTS}/classify-pr-paths.sh`]: probe }, { [`${SCRIPTS}/classify-pr-paths.sh`]: `#!/usr/bin/env bash\necho code=head\n` });
+  const io = gate.createGateIO({ cwd, env: { PATH: process.env.PATH, GH_TOKEN: 'secret' } });
+  const baseIo = gate.baseRevisionIO(io, base);
+  assert.match(baseIo.exec('bash', [`${SCRIPTS}/classify-pr-paths.sh`], 'a\n'), /^code=base\nargs=\n$/);
+  assert.match(baseIo.exec('bash', [`${SCRIPTS}/classify-pr-paths.sh`, '--pull-request'], 'a\n'), /args=--pull-request/);
+  assert.throws(() => baseIo.exec('bash', ['evil.sh'], ''), /refuses/);
+  assert.throws(() => baseIo.exec('node', [`${SCRIPTS}/classify-pr-paths.sh`], ''), /refuses/);
+});
+
+test('baseRevisionIO: the PR head comes from refs/pull, which needs no pull-requests permission', () => {
+  const r = trustRig();
+  r.inOrigin('update-ref', 'refs/pull/7/head', r.headSha);
+  const baseIo = gate.baseRevisionIO(r.io, r.baseSha);
+  assert.equal(baseIo.prHead(7), r.headSha);
+  assert.equal(baseIo.prHead(8), '', 'no such PR');
+  assert.throws(() => baseIo.prHead('7 --upload-pack=x'));
+});
+
+// ── The shadow line in verify ────────────────────────────────────────────
+
+const selectionLines = io => io.all().filter(line => /^ci-gate-selection:/.test(line));
+const SHADOW_OUT = { mode: 'shadow', reason: '', pr: 7, head: HEAD_SHA, B: BASE_SHA, p: ['a.ts'], thin_jobs: ['lint'], full_jobs: ['lint', 'test-api'], would_skip: ['test-api'] };
+
+test('verify: logs one ci-gate-selection line, asked about the queue shas with the verdict\'s own flags', () => {
+  const io = verifyIo();
+  const asked = [];
+  const code = gate.verify(io, verifyEnv(), { waitForCi: finished, verdict: () => passing(), selection: (_, env, flags) => { asked.push([env.BASE_SHA, env.HEAD_SHA, flags]); return SHADOW_OUT; } });
+  assert.equal(code, 0);
+  assert.deepEqual(asked, [[BASE_SHA, HEAD_SHA, { code: 'true', rust: 'false' }]]);
+  assert.equal(gateLines(io).length, 1);
+  const lines = selectionLines(io);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^ci-gate-selection: mode=shadow reason= pr=7 /);
+  assert.match(lines[0], /would_skip=\["test-api"\]/);
+  assert.ok(io.out.indexOf(gateLines(io)[0]) < io.out.indexOf(lines[0]), 'the verdict line lands first');
+});
+
+test('verify: the selection line carries the same fields as the candidate-side queue-selection line', () => {
+  const io = verifyIo();
+  gate.verify(io, verifyEnv(), { waitForCi: finished, verdict: () => passing(), selection: () => SHADOW_OUT });
+  const keys = [...selectionLines(io)[0].matchAll(/ (\w+)=/g)].map(match => match[1]);
+  assert.deepEqual(keys, ['mode', 'reason', ...queueSelection.SHADOW_FIELDS]);
+});
+
+test('verify: an exception in the selection leaves the verdict untouched, both ways', () => {
+  const boom = () => { throw Error('selection blew up'); };
+  const pass = verifyIo();
+  assert.equal(gate.verify(pass, verifyEnv(), { waitForCi: finished, verdict: () => passing(), selection: boom }), 0);
+  assert.match(gateLines(pass)[0], /verdict=pass reason=required_jobs_passed/);
+  assert.equal(gateLines(pass).length, 1);
+  assert.match(selectionLines(pass)[0], /^ci-gate-selection: mode=full reason=error /);
+  assert.match(selectionLines(pass)[0], /selection blew up/);
+
+  const fail = verifyIo();
+  const red = () => passing({ verdict: 'fail', reason: 'required_jobs_failed:lint' });
+  assert.equal(gate.verify(fail, verifyEnv(), { waitForCi: finished, verdict: red, selection: boom }), 1);
+  assert.match(gateLines(fail)[0], /verdict=fail reason=required_jobs_failed:lint/);
+});
+
+test('verify: a selection that says thin cannot make a red entry green, nor full a green one red', () => {
+  const red = verifyIo();
+  assert.equal(gate.verify(red, verifyEnv(), { waitForCi: finished, verdict: () => passing({ verdict: 'fail', reason: 'required_jobs_failed:lint' }), selection: () => SHADOW_OUT }), 1);
+  const green = verifyIo();
+  assert.equal(gate.verify(green, verifyEnv(), { waitForCi: finished, verdict: () => passing(), selection: () => ({ mode: 'full', reason: 'no_anchor' }) }), 0);
+  assert.match(selectionLines(green)[0], /mode=full reason=no_anchor/);
+});
+
+test('verify: a failing stdout for the selection line does not change the exit code', () => {
+  const io = verifyIo();
+  const stdout = io.stdout;
+  io.stdout = text => { if (/^ci-gate-selection:/.test(text)) throw Error('EPIPE'); stdout(text); };
+  assert.equal(gate.verify(io, verifyEnv(), { waitForCi: finished, verdict: () => passing(), selection: () => SHADOW_OUT }), 0);
+});
+
+test('verify: no flags means no selection is computed, and the line says so', () => {
+  const noVerdict = verifyIo();
+  const called = [];
+  const selection = () => { called.push(1); return SHADOW_OUT; };
+  assert.equal(gate.verify(noVerdict, verifyEnv(), { waitForCi: () => ({ reason: 'ci_cancelled' }), verdict: () => passing(), selection }), 1);
+  assert.match(selectionLines(noVerdict)[0], /^ci-gate-selection: mode=full reason=no_base_flags /);
+  const noFlags = verifyIo();
+  assert.equal(gate.verify(noFlags, verifyEnv(), { waitForCi: finished, verdict: () => ({ verdict: 'fail', reason: 'base_unreadable', flags: null }), selection }), 1);
+  assert.match(selectionLines(noFlags)[0], /reason=no_base_flags/);
+  assert.deepEqual(called, []);
+});
+
+test('verify: paths in the selection line cannot start a line or carry a workflow command', () => {
+  const io = verifyIo();
+  gate.verify(io, verifyEnv(), { waitForCi: finished, verdict: () => passing(), selection: () => ({ ...SHADOW_OUT, p: ['a\n::error::forged', '##[error]forged'], error: 'x\n::warning::y' }) });
+  assert.equal(selectionLines(io).length, 1);
+  assert.deepEqual(io.all().filter(line => /^(::|##\[)/.test(line)), []);
+  assert.ok(!selectionLines(io)[0].includes('##['));
+  assert.ok(!selectionLines(io)[0].includes('\n'));
+});
+
+test('verify: the selection is given a time limit that ends before the job timeout, and it is lifted after', () => {
+  const io = verifyIo();
+  const limits = [];
+  io.limitTime = at => limits.push(at);
+  const start = io.now();
+  gate.verify(io, verifyEnv(), { waitForCi: finished, verdict: () => passing(), selection: () => SHADOW_OUT });
+  assert.equal(limits[0] - start, 3 * MIN, 'three minutes, from a verify that had plenty left');
+  assert.equal(limits.at(-1), Infinity);
+
+  const late = verifyIo();
+  const lateLimits = [];
+  late.limitTime = at => lateLimits.push(at);
+  const lateStart = late.now();
+  const slowWait = () => { late.sleep(141 * MIN); return finished(); };
+  gate.verify(late, verifyEnv(), { waitForCi: slowWait, verdict: () => passing(), selection: () => SHADOW_OUT });
+  assert.equal(lateLimits[0] - lateStart, 143 * MIN, 'never past the point the job would time out');
+});
+
+test('limitTime: bounds every child and sleep on the gate io, and an unlimited io is unchanged', () => {
+  const cwd = tempDir();
+  const io = gate.createGateIO({ cwd, env: { PATH: process.env.PATH } });
+  const started = Date.now();
+  io.limitTime(Date.now() + 200);
+  assert.throws(() => io.exec('sleep', ['30']));
+  assert.ok(Date.now() - started < 10_000, 'the limit bounded the child');
+  io.limitTime(Date.now() - 1);
+  assert.throws(() => io.git(['--version']), error => error.code === 'selection_time_limit');
+  assert.throws(() => io.runIsolated('true', []), error => error.code === 'selection_time_limit');
+  const beforeSleep = Date.now();
+  io.sleep(30_000);
+  assert.ok(Date.now() - beforeSleep < 5_000, 'sleep is bounded too');
+  io.limitTime(Infinity);
+  assert.match(io.git(['--version']), /git version/);
+  assert.equal(io.runIsolated('true', []), '');
+});
+
+// One PR head H on base B, one queue entry E squashed from it, all real commits.
+function queueEntryRig({ headFiles = { 'docs/guide.md': '# x\n' }, baseFiles } = {}) {
+  const r = trustRig({ baseFiles: baseFiles ?? { ...realPolicyFiles(), ...selectionPolicyFiles() }, headFiles });
+  const entry = r.inOrigin('commit-tree', `${r.headSha}^{tree}`, '-p', r.baseSha, '-m', 'squash');
+  r.inOrigin('update-ref', 'refs/pull/7/head', r.headSha);
+  r.inOrigin('update-ref', 'refs/queue/entry', entry);
+  r.entry = entry;
+  r.lines.length = 0;
+  const trustGh = r.io.gh;
+  r.io.gh = args => {
+    const endpoint = args.find(arg => arg.startsWith('repos/')) ?? '';
+    if (endpoint.includes('actions/workflows/ci.yml/runs')) return JSON.stringify({ workflow_runs: [ciRun({ head_sha: entry, status: 'completed', conclusion: 'success' })] });
+    if (/\/runs\/77\/jobs/.test(endpoint)) return JSON.stringify([{ jobs: [...docsOnlyJobs(), ciSuccessJob('completed', 'success')] }]);
+    if (/\/runs\/77\/artifacts/.test(endpoint)) return JSON.stringify([{ artifacts: [] }]);
+    return trustGh(args);
+  };
+  r.verifyEnv = over => verifyEnv({ GITHUB_WORKFLOW_SHA: r.workflowSha, BASE_SHA: r.baseSha, HEAD_SHA: entry, HEAD_REF: `refs/heads/gh-readonly-queue/main/pr-7-${r.baseSha}`, GITHUB_STEP_SUMMARY: '', ...over });
+  return r;
+}
+const selectionPolicyFiles = () => {
+  const files = {};
+  for (const path of ['apps/api/vitest.integration.config.ts', 'e2e-tests/playwright.config.ts', ...[...realCi.matchAll(/--config=([\w.-]+)/g)].map(match => `e2e-tests/${match[1]}`)]) {
+    try { files[path] = readFileSync(join(REPO_ROOT, path), 'utf8'); } catch { /* not a config this ci.yml uses */ }
+  }
+  return files;
+};
+const fieldOf = (line, key) => JSON.parse(line.match(new RegExp(` ${key}=(.*?)(?= \\w+=|$)`))[1]);
+
+test('verify: end to end, real commits and a pinned anchor give a thin selection in shadow', () => {
+  const r = queueEntryRig();
+  const digest = queueSelection.policyDigest(gate.createGateIO({ cwd: r.origin, env: { PATH: process.env.PATH } }), r.baseSha);
+  r.addAnchor({ anchor: { files: ['docs/guide.md'], policy_digest: digest } });
+  r.addCi({ attempts: [docsOnlyJobs()] });
+  assert.equal(gate.verify(r.io, r.verifyEnv()), 0, r.lines.join('\n'));
+  assert.match(lineOf(r)[0], /verdict=pass reason=required_jobs_passed/);
+  const lines = r.lines.filter(line => /^ci-gate-selection:/.test(line));
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^ci-gate-selection: mode=shadow reason= /, lines[0]);
+  assert.equal(fieldOf(lines[0], 'head'), r.headSha);
+  assert.equal(fieldOf(lines[0], 'B'), r.baseSha);
+  assert.deepEqual(fieldOf(lines[0], 'p'), ['docs/guide.md']);
+});
+
+test('verify: end to end, the reads are the base revision\'s, though the checkout is the gate\'s own', () => {
+  const r = queueEntryRig();
+  const digest = queueSelection.policyDigest(gate.createGateIO({ cwd: r.origin, env: { PATH: process.env.PATH } }), r.baseSha);
+  r.addAnchor({ anchor: { files: ['docs/guide.md'], policy_digest: digest } });
+  r.addCi({ attempts: [docsOnlyJobs()] });
+  // The clone is checked out at the pinned workflow sha, with no policy files at all.
+  assert.throws(() => readFileSync(join(r.clone, CI_PATH)));
+  gate.verify(r.io, r.verifyEnv());
+  assert.match(r.lines.find(line => /^ci-gate-selection:/.test(line)), /mode=shadow/);
+});
+
+for (const [reason, setup] of [
+  ['no_anchor', r => r.addCi({ attempts: [docsOnlyJobs()] })],
+  ['anchor_not_pinned', r => { r.addAnchor({ run: { workflow_id: LISTED_GATE_ID } }); r.addCi({ attempts: [docsOnlyJobs()] }); }],
+  ['anchor_policy_in_p', r => { r.addAnchor({ anchor: { policy_in_files: true, policy_digest: null, files: [CI_PATH] } }); r.addCi({ attempts: [docsOnlyJobs()] }); }],
+  ['no_verified_pr_run', r => r.addAnchor({ anchor: { files: ['docs/guide.md'] } })],
+]) {
+  test(`verify: end to end, ${reason} is mode=full, thin equals full, and the verdict stands`, () => {
+    const r = queueEntryRig();
+    setup(r);
+    assert.equal(gate.verify(r.io, r.verifyEnv()), 0, r.lines.join('\n'));
+    const line = r.lines.find(text => /^ci-gate-selection:/.test(text));
+    assert.match(line, new RegExp(`^ci-gate-selection: mode=full reason=${reason} `));
+    assert.deepEqual(fieldOf(line, 'thin_jobs'), fieldOf(line, 'full_jobs'));
+    assert.match(lineOf(r)[0], /verdict=pass reason=required_jobs_passed/);
+  });
+}
+
+test('verify: end to end, the Actions API failing in the selection leaves the verdict, and logs error', () => {
+  const r = queueEntryRig();
+  r.io.sleep = () => {};
+  const gh = r.io.gh;
+  r.io.gh = args => { if (args.some(arg => /\/actions\/workflows\?/.test(arg))) throw Error('HTTP 502'); return gh(args); };
+  assert.equal(gate.verify(r.io, r.verifyEnv()), 0, r.lines.join('\n'));
+  assert.match(r.lines.find(text => /^ci-gate-selection:/.test(text)), /mode=full reason=error /);
+});
+
+// ── The candidate-side shadow is untouched ───────────────────────────────
+
+test('queue_shadow in ci.yml is byte-identical', () => {
+  const start = realCi.indexOf('      - name: Queue selection shadow\n');
+  const end = realCi.indexOf('\n  # ─── Docs check', start);
+  assert.ok(start > 0 && end > start);
+  assert.equal(realCi.slice(start, end), `      - name: Queue selection shadow
+        id: queue_shadow
+        if: github.event_name == 'merge_group'
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          node .github/scripts/queue-selection.mjs shadow
+        env:
+          GH_TOKEN: \${{ github.token }}
+          EVENT_NAME: \${{ github.event_name }}
+          HEAD_REF: \${{ github.event.merge_group.head_ref }}
+          BASE_SHA: \${{ github.event.merge_group.base_sha }}
+          HEAD_SHA: \${{ github.event.merge_group.head_sha }}
+          FULL_SELECTION: \${{ toJSON(steps.classify.outputs) }}
+`);
+});
+
+test('verify: no trust code runs in the candidate-side shadow CLI', () => {
+  const source = readFileSync(join(REPO_ROOT, '.github/scripts/queue-selection.mjs'), 'utf8');
+  assert.ok(!/recordSource\s*[:=]/.test(source), 'queue-selection.mjs never sets a source; only the gate injects one');
+  assert.ok(!/ci-gate/.test(source), 'and it does not import the gate');
+});
+
+test('docs: the runbook explains the selection line and that it never changes a verdict', () => {
+  const merge = readFileSync(join(REPO_ROOT, 'docs/agents/merge-and-deploy.md'), 'utf8');
+  assert.match(merge, /`ci-gate-selection: /);
+  assert.match(merge, /never changes? a verdict/);
+  for (const reason of ['no_anchor', 'anchor_not_pinned', 'anchor_policy_in_p', 'no_verified_pr_run', 'no_base_flags']) {
+    assert.ok(merge.includes(`\`${reason}\``), `${reason} is not in the runbook`);
+  }
 });

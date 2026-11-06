@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { isPolicyPath } from './ci-policy.mjs';
-import { createIO, policyDigest, workflowJobs } from './queue-selection.mjs';
+import { CLASSIFIER_KEYS, SHADOW_FIELDS, createIO, nonGatingJobs, policyDigest, shadowCore, workflowJobs } from './queue-selection.mjs';
 
 const CLASSIFIER = '.github/scripts/classify-pr-paths.sh';
 const CLASSIFIER_SIDECARS = ['qemu-gate-paths.txt', 'integration-floor-paths.txt', 'path-reader-map.txt'];
@@ -43,33 +43,48 @@ export function createGateIO(options = {}) {
   const io = createIO(options);
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
+  io.repository = env.GITHUB_REPOSITORY;
+  // A deadline for what follows, so the shadow selection cannot outlast the job
+  // and turn a decided verdict into a timeout. Infinity leaves every timeout as written.
+  let endsAt = Infinity;
+  io.limitTime = at => { endsAt = at; };
+  const within = ceiling => {
+    const left = endsAt - Date.now();
+    if (left <= 0) throw new GateError('selection_time_limit');
+    return Math.min(ceiling, left);
+  };
   // git and gh reach the network here (lazy blobs, paginated jobs), so they get
   // more than createIO's 30 s. io.git and io.gh both go through io.exec.
   io.exec = (command, args, input, childEnv = {}) => execFileSync(command, args, {
     cwd, env: { ...env, ...childEnv }, input, encoding: 'utf8',
-    timeout: 180_000, maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] });
+    timeout: within(180_000), maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] });
   // Real path: on macOS tmpdir() is a symlink, and a script's own main-module
   // check compares argv[1] with its resolved URL.
   io.temp = () => realpathSync(mkdtempSync(join(tmpdir(), 'ci-gate-')));
-  io.sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  io.sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, Math.min(ms, endsAt - Date.now())));
   // Base-revision code runs with exactly this environment. The token never reaches it.
   io.runIsolated = (command, args, { input, childEnv = {}, dir } = {}) => execFileSync(command, args, {
     cwd: dir ?? cwd, env: { PATH: env.PATH, ...childEnv }, input, encoding: 'utf8',
-    timeout: 60_000, maxBuffer: 16 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] });
+    timeout: within(60_000), maxBuffer: 16 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'] });
   return io;
 }
 
 const showAt = (io, revision, path) => io.git(['show', `${revision}:${path}`]);
 
-function classifyAtBase(io, baseSha, changed) {
+// A temp copy of the base's classifier and sidecars, run with no token in its environment.
+function runBaseClassifier(io, dir, baseSha, input, args) {
+  io.write(join(dir, 'classify-pr-paths.sh'), showAt(io, baseSha, CLASSIFIER));
+  for (const name of CLASSIFIER_SIDECARS) {
+    // An absent sidecar is the classifier's own fail-closed case.
+    try { io.write(join(dir, name), showAt(io, baseSha, `.github/scripts/${name}`)); } catch { /* absent at this base */ }
+  }
+  return io.runIsolated('bash', [join(dir, 'classify-pr-paths.sh'), ...args], { input, dir });
+}
+
+function classifyAtBase(io, baseSha, changed, args = []) {
   const dir = io.temp();
   try {
-    io.write(join(dir, 'classify-pr-paths.sh'), showAt(io, baseSha, CLASSIFIER));
-    for (const name of CLASSIFIER_SIDECARS) {
-      // An absent sidecar is the classifier's own fail-closed case.
-      try { io.write(join(dir, name), showAt(io, baseSha, `.github/scripts/${name}`)); } catch { /* absent at this base */ }
-    }
-    const stdout = io.runIsolated('bash', [join(dir, 'classify-pr-paths.sh')], { input: `${changed.join('\n')}\n`, dir });
+    const stdout = runBaseClassifier(io, dir, baseSha, `${changed.join('\n')}\n`, args);
     const flags = Object.fromEntries(nonEmptyLines(stdout).map(line => {
       const at = line.indexOf('=');
       return [line.slice(0, at), line.slice(at + 1)];
@@ -675,6 +690,230 @@ function logIdentity(io, env) {
     `gate_run=${env.GITHUB_RUN_ID ?? 'none'} gate_attempt=${env.GITHUB_RUN_ATTEMPT ?? 'none'}`);
 }
 
+// ── Trusted PR evidence for W05, in shadow (W02d) ────────────────────────
+//
+// What thin selection will need from a PR, read only from sources the candidate
+// cannot write: anchors from pinned gate runs, and CI job results from the
+// Actions API judged by the base revision. Nothing here reaches a verdict.
+
+export const GATE_WORKFLOW = '.github/workflows/ci-gate.yml';
+const ANCHOR_ARTIFACT = /^ci-gate-anchor-attempt-([1-9]\d*)$/;
+// A PR event starts its CI and gate runs within moments of each other.
+const SAME_EVENT_SKEW_MS = 10 * MINUTE;
+
+// The trust decision, in one place. Returns why a run is not the pinned gate, or
+// null when it is.
+//
+// `workflow_id` is what the candidate cannot choose. A run started by the org
+// ruleset carries an id GitHub does not list for this repository; a copy of the
+// file a PR enabled for itself is an ordinary run, under an id it does list. The
+// identity line is corroboration, not proof: once the id shows main's gate wrote
+// the log, the line says which ref the ruleset ran. On its own a candidate copy
+// could print anything, so it is never enough without the id.
+export function pinnedRunFailure(run, { repository, head, attempt, workflows, identity, workflowOnMain }) {
+  if (run.path !== GATE_WORKFLOW) return `path ${run.path}`;
+  if (run.event !== 'pull_request') return `event ${run.event}`;
+  if (run.head_sha !== head) return `head ${run.head_sha}`;
+  if (!Number.isSafeInteger(run.workflow_id)) return 'no workflow_id';
+  // With no listed entry to tell it from, an unlisted id proves nothing.
+  if (!workflows.some(workflow => workflow.path === GATE_WORKFLOW)) return `no listed workflow at ${GATE_WORKFLOW}`;
+  if (workflows.some(workflow => workflow.id === run.workflow_id)) return `workflow_id ${run.workflow_id} is listed for this repository`;
+  if (!identity) return 'no identity line';
+  if (identity.workflow_ref !== `${repository}/${GATE_WORKFLOW}@refs/heads/main`) return `workflow_ref ${identity.workflow_ref}`;
+  if (identity.gate_run !== run.id) return `gate_run ${identity.gate_run}`;
+  if (identity.gate_attempt !== attempt) return `gate_attempt ${identity.gate_attempt}`;
+  if (!workflowOnMain) return `workflow_sha ${identity.workflow_sha} is not on main`;
+  return null;
+}
+
+// The line logIdentity writes, as the job log endpoint returns it: one timestamp, then the line.
+export function parseIdentity(log) {
+  const lines = [...log.matchAll(/^\S+ ci-gate-identity: workflow_ref=(\S+) workflow_sha=([a-f\d]{40}) gate_run=(\d+) gate_attempt=(\d+)$/gm)];
+  if (lines.length !== 1) return null;
+  const [, workflow_ref, workflow_sha, gateRun, gateAttempt] = lines[0];
+  return { workflow_ref, workflow_sha, gate_run: Number(gateRun), gate_attempt: Number(gateAttempt) };
+}
+
+function listAll(io, endpoint, key) {
+  const pages = ghJson(io, ['api', endpoint, '--paginate', '--slurp']);
+  if (!Array.isArray(pages) || !pages.every(page => Array.isArray(page?.[key]))) throw new GateError('api_error', `${endpoint}: no ${key} list`);
+  return pages;
+}
+
+// gh 2.103 refuses to print a log's colour codes without this flag, and an older
+// gh does not know it. The text is only ever parsed, never echoed.
+function jobLog(io, repository, jobId) {
+  const endpoint = `repos/${repository}/actions/jobs/${jobId}/logs`;
+  try { return io.gh(['api', '--allow-escape-sequences', endpoint]); } catch { /* an older gh, or the real failure below */ }
+  try { return io.gh(['api', endpoint]); } catch (error) { throw new GateError('api_error', `${endpoint}: ${failureText(error)}`); }
+}
+
+function runIdentity(io, repository, run, attempt) {
+  const pages = listAll(io, `repos/${repository}/actions/runs/${run.id}/attempts/${attempt}/jobs?per_page=100`, 'jobs');
+  const job = pages.flatMap(page => page.jobs).find(({ name }) => name === 'CI Gate');
+  return job ? parseIdentity(jobLog(io, repository, job.id)) : null;
+}
+
+function isOnMain(io, sha) {
+  try { io.git(['merge-base', '--is-ancestor', sha, 'origin/main']); return true; } catch { return false; }
+}
+
+function anchorFailure(value, { head, pr, run, attempt }) {
+  if (value === null || typeof value !== 'object') return 'not an object';
+  if (value.schema !== 1) return 'schema';
+  if (value.head_sha !== head) return 'head_sha';
+  if (value.pr_number !== pr) return 'pr_number';
+  if (value.run_id !== run.id) return 'run_id';
+  if (value.run_attempt !== attempt) return 'run_attempt';
+  if (!isSha(value.base_sha)) return 'base_sha';
+  if (!isSha(value.merge_sha)) return 'merge_sha';
+  if (value.files_source !== 'merge-commit') return 'files_source';
+  if (!Array.isArray(value.files) || !value.files.every(file => typeof file === 'string')) return 'files';
+  if (typeof value.policy_in_files !== 'boolean') return 'policy_in_files';
+  if (!value.policy_in_files && typeof value.policy_digest !== 'string') return 'policy_digest';
+  return null;
+}
+
+function readAnchor(io, repository, run, name) {
+  const dir = io.temp();
+  try {
+    io.gh(['run', 'download', String(run.id), '--repo', repository, '--name', name, '--dir', dir]);
+    return JSON.parse(io.read(join(dir, ANCHOR_FILE)));
+  } catch (error) {
+    if (error instanceof SyntaxError) return null;
+    throw error;
+  } finally { io.remove(dir); }
+}
+
+// Pinned anchors for this head, oldest first. Ignoring the rest is safe: fewer
+// anchors can only mean less evidence, and no anchor means run everything.
+function pinnedAnchors(io, repository, { head, pr, runs, stats }) {
+  const workflows = listAll(io, `repos/${repository}/actions/workflows?per_page=100`, 'workflows').flatMap(page => page.workflows);
+  const anchors = [];
+  for (const run of runs.filter(({ path }) => path === GATE_WORKFLOW)) {
+    const artifacts = listAll(io, `repos/${repository}/actions/runs/${run.id}/artifacts?per_page=100`, 'artifacts').flatMap(page => page.artifacts);
+    for (const artifact of artifacts) {
+      const attempt = Number(artifact.name?.match(ANCHOR_ARTIFACT)?.[1]);
+      if (!attempt || artifact.expired) continue;
+      const identity = runIdentity(io, repository, run, attempt);
+      const why = pinnedRunFailure(run, { repository, head, attempt, workflows, identity, workflowOnMain: !!identity && isOnMain(io, identity.workflow_sha) });
+      if (why) { stats.not_pinned.push({ run: run.id, attempt, why }); continue; }
+      const value = readAnchor(io, repository, run, artifact.name);
+      const bad = value === null ? 'not json' : anchorFailure(value, { head, pr, run, attempt });
+      if (bad) { stats.rejected.push({ run: run.id, attempt, why: bad }); continue; }
+      anchors.push({ ...value, run_created_at: run.created_at });
+    }
+  }
+  return anchors.sort((a, b) => a.run_id - b.run_id || a.run_attempt - b.run_attempt);
+}
+
+// The newest pull_request CI run for this head, judged the way the PR event was:
+// the base's script, IS_PR=true, the base's classifier with --pull-request.
+// Returns { ci, flags } when it counts, or { why } when it does not.
+function verifiedPrRun(io, repository, { head, pr, runs, oldest, newest, files }) {
+  const ci = runs.filter(run => run.path === CI_YML && run.event === 'pull_request' && run.head_sha === head &&
+    (!run.pull_requests?.length || run.pull_requests.some(({ number }) => number === pr))).sort((a, b) => b.id - a.id)[0];
+  if (!ci) return { why: 'no pull_request CI run for this head' };
+  if (ci.status !== 'completed') return { why: `CI run ${ci.id} is ${ci.status}` };
+  // "The oldest base errs old" only holds if some anchor is as old as what this run tested.
+  if (Date.parse(oldest.run_created_at) > Date.parse(ci.created_at) + SAME_EVENT_SKEW_MS) return { why: `oldest anchor is newer than CI run ${ci.id}` };
+  for (const sha of new Set([oldest.base_sha, oldest.merge_sha, newest.merge_sha])) {
+    const cause = fetchFailure(io, sha);
+    if (cause) return { why: `cannot fetch ${sha}: ${cause}` };
+  }
+  let aggregator, headCi;
+  try {
+    aggregator = extractAggregator(showAt(io, oldest.base_sha, CI_YML));
+    // A pull_request run uses the merge commit's workflow, so that names its jobs.
+    headCi = showAt(io, newest.merge_sha, CI_YML);
+  } catch (error) { return { why: failureText(error) }; }
+  const flags = classifyAtBase(io, oldest.base_sha, files, ['--pull-request']);
+  const out = judge(io, { flags, aggregator, headCi, event: 'pull_request',
+    mobile: deriveMobileRequired(io, oldest.base_sha, oldest.merge_sha, files) }, runJobs(io, repository, ci.id));
+  return out.verdict === 'pass' ? { ci, flags } : { why: `CI run ${ci.id}: ${out.reason}` };
+}
+
+// A record in W4's schema, or { reason } when the evidence does not hold. Never
+// reads a candidate artifact: provenance.json has no way in.
+export function trustedRecord(io, { head, pr }, stats = {}) {
+  const repository = io.repository;
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repository ?? '')) throw new GateError('invalid_repository', String(repository));
+  if (!isSha(head) || !Number.isSafeInteger(pr) || pr <= 0) throw new GateError('invalid_repository', 'invalid head or PR');
+  Object.assign(stats, { not_pinned: [], rejected: [] });
+  const pages = listAll(io, `repos/${repository}/actions/runs?event=pull_request&head_sha=${head}&per_page=100`, 'workflow_runs');
+  // The API lists at most 1,000; a shorter list could be missing the newest run.
+  if (pages.some(page => page.total_count > 1000)) throw new GateError('api_error', 'workflow run search truncated');
+  const runs = pages.flatMap(page => page.workflow_runs).filter(run => run.head_sha === head);
+
+  const anchors = pinnedAnchors(io, repository, { head, pr, runs, stats });
+  stats.anchors = anchors.length;
+  if (!anchors.length) return { reason: stats.not_pinned.length ? 'anchor_not_pinned' : 'no_anchor' };
+  if (anchors.some(({ policy_in_files }) => policy_in_files)) return { reason: 'anchor_policy_in_p' };
+
+  // Two anchors mean a close and reopen. The oldest base and every file only
+  // make Δ larger, so an error here thickens the selection and never thins it.
+  const oldest = anchors[0], newest = anchors.at(-1);
+  const files = [...new Set(anchors.flatMap(anchor => anchor.files))];
+  const verified = verifiedPrRun(io, repository, { head, pr, runs, oldest, newest, files });
+  if (verified.why) { stats.verification = verified.why; return { reason: 'no_verified_pr_run' }; }
+  stats.ci_run = verified.ci.id;
+  return { schema: 1, head_sha: head, merge_sha: oldest.merge_sha, base_sha: oldest.base_sha, pr_number: pr,
+    run_id: verified.ci.id, run_attempt: verified.ci.run_attempt, created_at: oldest.created_at, files, files_source: 'merge-commit',
+    policy_digest: oldest.policy_digest, policy_in_files: false,
+    selection: Object.fromEntries(CLASSIFIER_KEYS.map(key => [key, verified.flags[key]])),
+    non_gating_jobs: nonGatingJobs(showAt(io, oldest.base_sha, CI_YML)), suites_passed: true };
+}
+
+// shadowCore reads policy through this, so everything it reads is the entry's
+// base revision, whatever is checked out. policyAtBase is true by construction,
+// and only the base's classifier can be executed, with no token.
+export function baseRevisionIO(io, baseSha) {
+  return { ...io,
+    read: path => showAt(io, baseSha, path),
+    exists: path => io.git(['ls-tree', baseSha, '--', path]).trim() !== '',
+    blob: path => io.git(['rev-parse', `${baseSha}:${path}`]).trim(),
+    exec(command, args, input) {
+      if (command !== 'bash' || args[0] !== CLASSIFIER) throw new GateError('base_io_refused', `base-revision io refuses to run ${command} ${args[0] ?? ''}`);
+      const dir = io.temp();
+      try { return runBaseClassifier(io, dir, baseSha, input, args.slice(1)); } finally { io.remove(dir); }
+    },
+    // A ref rather than the pulls API, which this workflow has no permission for.
+    prHead(pr) {
+      if (!Number.isSafeInteger(pr) || pr <= 0) throw new GateError('invalid_repository', 'invalid PR');
+      return io.git(['ls-remote', 'origin', `refs/pull/${pr}/head`]).match(/^([a-f\d]{40})\t/)?.[1] ?? '';
+    },
+    recordSource(head, pr) {
+      const stats = {};
+      const out = trustedRecord(io, { head, pr }, stats);
+      return out.reason ? { records: [], stats, reason: out.reason } : { records: [out], stats };
+    },
+  };
+}
+
+export function queueSelection(io, env, flags) {
+  return shadowCore(baseRevisionIO(io, env.BASE_SHA), { event: env.GITHUB_EVENT_NAME, headRef: env.HEAD_REF, headSha: env.HEAD_SHA, baseSha: env.BASE_SHA, full: flags });
+}
+
+const SELECTION_MS = 3 * MINUTE;
+const SELECTION_ENDS_BY_MS = 143 * MINUTE; // from the start of verify; the job allows 145
+
+// One line, the verdict already decided. It gets neither `line` nor the exit code,
+// and whatever goes wrong in here, including running long, stays in here.
+function logSelection(io, env, flags, select, started) {
+  let out;
+  try {
+    if (!flags) out = { mode: 'full', reason: 'no_base_flags' };
+    else {
+      io.limitTime?.(Math.min(io.now() + SELECTION_MS, started + SELECTION_ENDS_BY_MS));
+      out = select(io, env, flags);
+    }
+  } catch (error) { out = { mode: 'full', reason: 'error', error: failureText(error) }; }
+  try {
+    io.limitTime?.(Infinity);
+    io.stdout(`ci-gate-selection: mode=${out.mode} reason=${out.reason} ${SHADOW_FIELDS.map(key => `${key}=${logValue(out[key] ?? null)}`).join(' ')}`);
+  } catch { /* the verdict is unaffected, and is already logged */ }
+}
+
 // ── verify: the verdict for one queue entry ──────────────────────────────
 
 // The checkout is of workflow_sha, so candidate commits are not guaranteed local.
@@ -756,6 +995,7 @@ function judgeEntry(io, env, { waitForCi: wait, verdict: decide }, line) {
 // Exit 0 only on verdict=pass. Everything else, a thrown exception included, is
 // a fail with exactly one ci-gate line. The token reaches git and gh only.
 export function verify(io, env, deps = {}) {
+  const started = io.now();
   const line = { verdict: 'fail', reason: 'error', event: env.GITHUB_EVENT_NAME, base: env.BASE_SHA, head: env.HEAD_SHA };
   try {
     logIdentity(io, env);
@@ -770,6 +1010,7 @@ export function verify(io, env, deps = {}) {
     io.stderr(`ci-gate-detail: ${logValue(failureText(error))}`);
   }
   io.stdout(gateLine(line));
+  logSelection(io, env, line.flags, deps.selection ?? queueSelection, started);
   return line.verdict === 'pass' ? 0 : 1;
 }
 
