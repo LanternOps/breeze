@@ -117,6 +117,25 @@ describe('emitDeviceNotReturnedAlert', () => {
     expect(createAlert).not.toHaveBeenCalled();
   });
 
+  it('reads the maintenance window inside the system context: a worker has none of its own', async () => {
+    const { withSystemDbAccessContext, getCurrentDbAccessContext } = await import('../../db');
+    let inSystem = false;
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue(null as never);
+    vi.mocked(withSystemDbAccessContext).mockImplementationOnce((async (fn: () => Promise<unknown>) => {
+      inSystem = true;
+      try { return await fn(); } finally { inSystem = false; }
+    }) as never);
+    let seenInSystem: boolean | null = null;
+    vi.mocked(checkDeviceMaintenanceWindow).mockImplementationOnce((async () => {
+      seenInSystem = inSystem;
+      return { active: true, suppressAlerts: true };
+    }) as never);
+
+    await emitDeviceNotReturnedAlert({ deviceId: 'd1', orgId: 'o1', commandId: 'c1', startedAt });
+
+    expect(seenInSystem).toBe(true);
+  });
+
   it('propagates a failure so the monitor retries on the next tick', async () => {
     dbState.selects = [[{ hostname: 'host-1' }], [{ id: 'rule-1' }]];
     vi.mocked(createAlert).mockRejectedValue(new Error('boom'));

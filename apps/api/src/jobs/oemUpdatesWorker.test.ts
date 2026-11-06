@@ -58,6 +58,7 @@ vi.mock('../services/oemUpdates/candidates', () => ({
 vi.mock('../services/oemUpdates/dispatch', () => ({ dispatchOemUpdateRun: vi.fn() }));
 vi.mock('../services/oemUpdates/resolver', () => ({ resolveOemUpdatesLinkForDevice: vi.fn() }));
 vi.mock('../services/oemUpdates/rebootSweep', () => ({ runOemRebootSweep: vi.fn(async () => undefined) }));
+vi.mock('../services/oemUpdates/overdueSweep', () => ({ runOemOverdueSweep: vi.fn(async () => undefined) }));
 vi.mock('../services/oemUpdates/releaseSweep', () => ({ runOemReleaseSweep: vi.fn(async () => undefined) }));
 
 import { captureException } from '../services/sentry';

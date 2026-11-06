@@ -43,7 +43,7 @@ import { envInt } from '../../utils/envInt';
 import { captureException } from '../sentry';
 import { notParkedDeviceCondition } from '../unassignedPool/selectorPredicate';
 import { normalizeTimezone } from '../zonedTime';
-import { OEM_FLASH_CATEGORIES, resolveApplicability, stillNotSupported } from './applicability';
+import { resolveApplicability, stillNotSupported } from './applicability';
 import { FINISHED_OUTCOMES } from './displayState';
 import { laneDisabledByKillSwitch, oemUpdatesEnabled, oemUpdatesFlagOn } from './flags';
 import {
@@ -53,8 +53,9 @@ import {
   stableOffsetMinutes,
   type OemOccurrence,
 } from './occurrence';
+import { hasSendableCategory } from './policySide';
 import { resolveOemUpdatesLinksForDevices, type ResolvedOemUpdatesLink } from './resolver';
-import { getLaneManifest, isLaneOpen, openCategoriesForLane, SHIPPED_OEM_LANES } from './toolManifest';
+import { getLaneManifest, isLaneOpen, SHIPPED_OEM_LANES } from './toolManifest';
 
 const MINUTE_MS = 60_000;
 const PAGE_SIZE = 500;
@@ -144,11 +145,7 @@ export function decideScheduledRun(
 
   const requestedCategories = OEM_CATEGORIES.filter((category) => vendor.categories[category] === true);
   const rebootControlled = settings.reboot === 'overnight';
-  const open = new Set(openCategoriesForLane(lane, { deviceId }));
-  const sendable = requestedCategories.some(
-    (category) => open.has(category) && (rebootControlled || !OEM_FLASH_CATEGORIES.has(category)),
-  );
-  if (!sendable) return refused('no_open_categories');
+  if (!hasSendableCategory(settings, lane, deviceId)) return refused('no_open_categories');
 
   const occurrence = occurrenceOf(link);
   if (!occurrence.inWindow) return refused('not_in_window');
@@ -245,7 +242,7 @@ export type DueDevice = ScheduledRunPlan & {
 };
 
 /** The orgs and partners an armed active policy can reach, flag-allowed. Null when none. */
-async function armedScope(): Promise<SQL | null> {
+export async function armedScope(): Promise<SQL | null> {
   const rows = await db
     .select({
       orgId: configurationPolicies.orgId,

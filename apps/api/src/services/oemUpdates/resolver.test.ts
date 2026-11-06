@@ -175,6 +175,7 @@ describe('resolveOemUpdatesLinkForDevice', () => {
       assignedPolicyId: 'assigned-o',
       settings: org,
       invalidStoredSettings: false,
+      armedAt: expect.any(Date),
     });
     // Nothing from the partner link leaks in: application stays off, catch-up stays 7.
     expect(result!.settings.vendors.dell!.categories.application).toBeUndefined();

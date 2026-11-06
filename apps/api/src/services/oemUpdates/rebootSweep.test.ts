@@ -106,6 +106,7 @@ function link(over: Record<string, unknown> = {}): ResolvedOemUpdatesLink {
     configPolicyId: 'policy-1',
     assignedPolicyId: 'policy-1',
     invalidStoredSettings: false,
+    armedAt: null,
     settings: {
       version: 1,
       enabled: true,
