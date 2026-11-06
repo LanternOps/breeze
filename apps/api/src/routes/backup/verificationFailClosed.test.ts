@@ -11,6 +11,7 @@ vi.mock('../../db', async (importOriginal) => {
     ...actual,
     db: { ...actual.db, select: (...args: unknown[]) => selectMock(...args) },
     withSystemDbAccessContext: async (fn: () => unknown) => fn(),
+    withSystemDbAccessContextIsolated: async (fn: () => unknown) => fn(),
   };
 });
 

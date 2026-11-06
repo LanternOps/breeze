@@ -50,7 +50,9 @@ const WRITES = new Set(['insert', 'update', 'delete', 'execute']);
 /** Each opens its own transaction, or a savepoint, so a catch outside the call survives. */
 const ISOLATING_CALLS = new Set([
   'withDbTransaction',
+  'withDbTransactionIfHeld',
   'withSystemDbAccessContext',
+  'withSystemDbAccessContextIsolated',
   'withAuthDbAccessContext',
   'runOutsideDbContext',
 ]);

@@ -1200,6 +1200,32 @@ export async function withDbTransaction<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
+ * `withDbTransaction` for code that may run with no context held, such as a
+ * helper shared by routes and workers. With none held, statements autocommit on
+ * the bare pool, so a caught failure poisons nothing and `fn` just runs. It never
+ * opens a context, so contextless code keeps its RLS scope: use
+ * `withSystemDbAccessContextIsolated` where the caller wants system scope then.
+ */
+export async function withDbTransactionIfHeld<T>(fn: () => Promise<T>): Promise<T> {
+  return hasDbAccessContext() ? withDbTransaction(fn) : fn();
+}
+
+/**
+ * `withSystemDbAccessContext` for a statement whose failure the caller catches.
+ * The scope is the same in both cases: with none held it opens a system context
+ * (its own transaction, so the catch already worked); with one held it stays in
+ * that context's scope and never escalates. The difference is that with one held
+ * `fn` runs in a savepoint, so the failure stops there instead of rethrowing when
+ * the held transaction ends (#11203, #11225).
+ *
+ * Catch outside this call. The `withDbTransaction` rules apply: do not start it
+ * beside sibling statements in a Promise.all.
+ */
+export async function withSystemDbAccessContextIsolated<T>(fn: () => Promise<T>): Promise<T> {
+  return hasDbAccessContext() ? withDbTransaction(fn) : withSystemDbAccessContext(fn);
+}
+
+/**
  * The DbAccessContext metadata (scope + org/partner allowlists) of the active
  * request transaction, or undefined when no context is established. Use this to
  * decide whether the ambient context already grants RLS visibility to a specific

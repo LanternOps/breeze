@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, lte, or, sql } from 'drizzle-orm';
-import * as dbModule from '../../db';
+import { db, withSystemDbAccessContext, withSystemDbAccessContextIsolated } from '../../db';
 import {
   backupJobs as backupJobsTable,
   deviceCommands,
@@ -35,11 +35,6 @@ import { backupVerificationStructuredResultSchema } from '../../services/agentCo
 import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const { db } = dbModule;
-const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
-  const withSystem = dbModule.withSystemDbAccessContext;
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
-};
 
 function toEpoch(value?: string | Date | null): number {
   if (!value) return 0;
@@ -85,7 +80,7 @@ async function listCompletedJobsFromDb(orgId?: string): Promise<Array<BackupJob 
   try {
     const conditions = [inArray(backupJobsTable.status, RESTORABLE_BACKUP_JOB_STATUSES)];
     if (orgId) conditions.push(eq(backupJobsTable.orgId, orgId));
-    const rows = await runWithSystemDbAccess(() => db
+    const rows = await withSystemDbAccessContextIsolated(() => db
       .select()
       .from(backupJobsTable)
       .where(and(...conditions))
@@ -117,7 +112,7 @@ async function listCompletedJobsFromDb(orgId?: string): Promise<Array<BackupJob 
 
 async function listTimedOutVerificationsFromDb(cutoff: Date): Promise<typeof backupVerifications> {
   try {
-    const rows = await runWithSystemDbAccess(() => db
+    const rows = await withSystemDbAccessContextIsolated(() => db
       .select()
       .from(backupVerificationsTable)
       .where(and(
@@ -176,7 +171,7 @@ async function markVerificationCommandTimedOut(commandId: string | null | undefi
   if (!commandId || !isUuid(commandId)) return false;
 
   const completedAt = new Date();
-  const updated = await runWithSystemDbAccess(() => db
+  const updated = await withSystemDbAccessContext(() => db
     .update(deviceCommands)
     .set({
       status: 'failed',
@@ -201,7 +196,7 @@ async function findTimedOutVerificationByCommandId(commandId: string): Promise<B
   if (!isUuid(commandId)) return null;
 
   try {
-    const [row] = await runWithSystemDbAccess(() => db
+    const [row] = await withSystemDbAccessContextIsolated(() => db
       .select()
       .from(backupVerificationsTable)
       .where(and(
@@ -238,7 +233,7 @@ async function findPendingVerificationByCommandId(commandId: string): Promise<Ba
   if (!isUuid(commandId)) return null;
 
   try {
-    const [row] = await runWithSystemDbAccess(() => db
+    const [row] = await withSystemDbAccessContextIsolated(() => db
       .select()
       .from(backupVerificationsTable)
       .where(and(
@@ -272,22 +267,25 @@ async function collectDevicesToRecompute(orgId?: string, allowedSiteIds?: readon
   if (orgId && !isUuid(orgId)) return null;
   if (allowedSiteIds?.length === 0) return new Map();
   try {
-    const [jobRows, verificationRows] = await Promise.all([
-      runWithSystemDbAccess(() => db
+    // One savepoint with the reads in sequence: one catch covers both, and
+    // savepoints beside each other on one connection fail together (#11203).
+    const [jobRows, verificationRows] = await withSystemDbAccessContextIsolated(async () => {
+      const jobs = await db
         .select({ orgId: backupJobsTable.orgId, deviceId: backupJobsTable.deviceId })
         .from(backupJobsTable)
         .where(and(
           orgId ? eq(backupJobsTable.orgId, orgId) : undefined,
           allowedSiteIds ? sql`exists (select 1 from ${devices} where ${devices.id} = ${backupJobsTable.deviceId} and ${devices.orgId} = ${backupJobsTable.orgId} and ${inArray(devices.siteId, [...allowedSiteIds])})` : undefined,
-        ))),
-      runWithSystemDbAccess(() => db
+        ));
+      const verifications = await db
         .select({ orgId: backupVerificationsTable.orgId, deviceId: backupVerificationsTable.deviceId })
         .from(backupVerificationsTable)
         .where(and(
           orgId ? eq(backupVerificationsTable.orgId, orgId) : undefined,
           allowedSiteIds ? sql`exists (select 1 from ${devices} where ${devices.id} = ${backupVerificationsTable.deviceId} and ${devices.orgId} = ${backupVerificationsTable.orgId} and ${inArray(devices.siteId, [...allowedSiteIds])})` : undefined,
-        ))),
-    ]);
+        ));
+      return [jobs, verifications] as const;
+    });
 
     const map = new Map<string, string>();
     for (const row of [...jobRows, ...verificationRows]) {
@@ -592,13 +590,11 @@ export async function runWeeklyTestRestore(orgId?: string): Promise<number> {
     const targetOrg = (job as BackupJob & { orgId?: string }).orgId ?? orgId ?? jobOrgById.get(job.id);
     return !!targetOrg && (!orgId || targetOrg === orgId);
   });
-  const criticalFlags = await Promise.all(
-    criticalCandidates.map((job) => {
-      const targetOrg = (job as BackupJob & { orgId?: string }).orgId ?? orgId ?? jobOrgById.get(job.id);
-      return targetOrg ? isCriticalBackupDevice(targetOrg, job.deviceId) : Promise.resolve(false);
-    })
-  );
-  const prioritizedCritical = criticalCandidates.filter((_job, index) => criticalFlags[index]);
+  const prioritizedCritical: typeof criticalCandidates = [];
+  for (const job of criticalCandidates) {
+    const targetOrg = (job as BackupJob & { orgId?: string }).orgId ?? orgId ?? jobOrgById.get(job.id);
+    if (targetOrg && await isCriticalBackupDevice(targetOrg, job.deviceId)) prioritizedCritical.push(job);
+  }
   const rotationBucket = Math.floor(now / (7 * DAY_MS));
   const candidates = prioritizedCritical.length > 0
     ? prioritizedCritical
