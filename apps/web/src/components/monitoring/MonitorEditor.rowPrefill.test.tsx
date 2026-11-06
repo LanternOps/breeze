@@ -1,7 +1,7 @@
 import '@/lib/i18n';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import MonitorEditor from './MonitorEditor';
+import MonitorEditor, { editorHashForTab } from './MonitorEditor';
 import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
@@ -53,5 +53,17 @@ describe('MonitorEditor "Monitor this" prefill (#10927)', () => {
     window.history.replaceState(null, '', '/alerts/monitors/new#kind=service');
     render(<MonitorEditor />);
     await waitFor(() => expect(screen.getByTestId('condition-field-serviceName')).toHaveValue('MyService'));
+  });
+
+  it('round-trips special characters through the hash', async () => {
+    window.history.replaceState(null, '', `/alerts/monitors/new#kind=process&processName=${encodeURIComponent('a b&c+d.exe')}`);
+    render(<MonitorEditor />);
+    await waitFor(() => expect(screen.getByTestId('condition-field-processName')).toHaveValue('a b&c+d.exe'));
+  });
+
+  it('keeps the name params when the tab hash is rewritten', () => {
+    const next = new URLSearchParams(editorHashForTab('#kind=service&serviceName=Spooler', 'settings').slice(1));
+    expect(next.get('serviceName')).toBe('Spooler');
+    expect(next.get('kind')).toBe('service');
   });
 });

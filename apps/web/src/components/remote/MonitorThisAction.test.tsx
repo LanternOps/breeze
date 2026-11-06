@@ -1,5 +1,5 @@
 import '@/lib/i18n';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import ServicesManager, { type WindowsService } from './ServicesManager';
 import ProcessManager, { type Process } from './ProcessManager';
@@ -29,5 +29,13 @@ describe('Monitor this row action (#10927)', () => {
     expect(links).toHaveLength(2);
     expect(links[0].getAttribute('href')).toBe('/alerts/monitors/new#kind=process&processName=chrome.exe');
     expect(links[1].getAttribute('href')).toBe('/alerts/monitors/new#kind=process&processName=a%20b%26c.exe');
+  });
+
+  it('clicking the link does not expand the row', () => {
+    render(<ServicesManager deviceId="d1" services={services} />);
+    const link = screen.getAllByTestId('monitor-this-service')[0];
+    link.addEventListener('click', e => e.preventDefault());
+    fireEvent.click(link);
+    expect(screen.queryByText(/dependencies/i)).toBeNull();
   });
 });
