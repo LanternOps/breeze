@@ -140,6 +140,7 @@ vi.mock('drizzle-orm', () => ({
 }));
 
 vi.mock('../db', () => ({
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
