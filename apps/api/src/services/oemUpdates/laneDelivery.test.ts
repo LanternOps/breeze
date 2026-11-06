@@ -300,7 +300,10 @@ describe('getVendorManagedClasses: what makes a device have no lane delivering',
   });
 
   it('a device whose manufacturer no longer matches the lane that ran', async () => {
-    givenDevice({ manufacturer: 'HP Inc.' });
+    // A new board: the policy arms the new maker too, but that lane has not run here.
+    givenDevice({ manufacturer: 'HP Inc.' }, link({
+      vendors: { hp: { enabled: true, categories: { bios: true, firmware: true, driver: true }, blockedUpdateIds: [] } },
+    }));
     expect(await classes()).toEqual(new Set());
   });
 
