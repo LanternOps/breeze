@@ -55,7 +55,7 @@ vi.mock('../db', () => {
       shared.txDepth -= 1;
     }
   };
-  return { db, withSystemDbAccessContext };
+  return { db, withSystemDbAccessContext, withSystemDbAccessContextIsolated: withSystemDbAccessContext };
 });
 
 vi.mock('../db/schema', () => ({

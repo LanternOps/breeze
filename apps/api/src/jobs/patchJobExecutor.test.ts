@@ -55,7 +55,7 @@ vi.mock('../db', () => {
       shared.txDepth -= 1;
     }
   };
-  return { db, withSystemDbAccessContext };
+  return { db, withSystemDbAccessContext, withSystemDbAccessContextIsolated: withSystemDbAccessContext };
 });
 
 vi.mock('../db/schema', () => ({
@@ -443,6 +443,7 @@ describe('patch job executor queueing', () => {
   it.each([
     [true, 'all_managed_by_vendor_updates'],
     [false, 'no_approved_patches'],
+    ['throws', 'no_approved_patches'],
   ])('records the skip reason when nothing is approved (all lane-managed=%s → %s)', async (allManaged, expectedReason) => {
     vi.mocked(db.select)
       .mockImplementationOnce(() => createSelectChain([{
@@ -458,7 +459,11 @@ describe('patch job executor queueing', () => {
       set: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
     }) as any);
     vi.mocked(resolveApprovedPatchesForDevice).mockResolvedValueOnce([]);
-    vi.mocked(areAllPendingPatchesManagedByVendorLane).mockResolvedValueOnce(allManaged);
+    if (typeof allManaged === 'boolean') {
+      vi.mocked(areAllPendingPatchesManagedByVendorLane).mockResolvedValueOnce(allManaged);
+    } else {
+      vi.mocked(areAllPendingPatchesManagedByVendorLane).mockRejectedValueOnce(new Error('db down'));
+    }
 
     createPatchJobDeviceWorker();
     const result = await shared.processorRefs['patch-job-devices']({

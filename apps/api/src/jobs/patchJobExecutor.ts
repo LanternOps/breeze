@@ -1337,10 +1337,14 @@ async function prepareDeviceExecution(
     // #11243: every pending update left to a vendor lane is not "nothing approved".
     let allVendorManaged = false;
     try {
-      allVendorManaged = await areAllPendingPatchesManagedByVendorLane(deviceId, orgId, ringConfig);
+      // Isolated: this runs inside the device transaction, so the read needs its
+      // own savepoint for the catch below to contain a failure (CLAUDE.md).
+      allVendorManaged = await dbModule.withSystemDbAccessContextIsolated(() =>
+        areAllPendingPatchesManagedByVendorLane(deviceId, orgId, ringConfig));
     } catch (err) {
       // Reason refinement only: fall back to the generic reason, never fail the device.
       console.warn(`[PatchJobExecutor] vendor-lane skip classification failed for device ${deviceId}:`, err instanceof Error ? err.message : err);
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, { patchJobId, deviceId });
     }
     if (allVendorManaged) {
       await markDeviceSkipped(patchJobId, deviceId, ALL_MANAGED_BY_VENDOR_SKIP_REASON);
