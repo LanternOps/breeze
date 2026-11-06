@@ -27,6 +27,7 @@ export const OEM_NOT_RETURNED_RULE_NAME = NOT_RETURNED_RULE_NAME;
 export const OEM_OVERDUE_RULE_NAME = 'Vendor update: device overdue';
 export const OEM_REBOOT_OVERDUE_RULE_NAME = 'Vendor update: restart overdue';
 export const OEM_SCHEDULE_NOT_HANDED_BACK_RULE_NAME = 'Vendor update: schedule not handed back';
+export const OEM_RUN_FAILING_RULE_NAME = 'Vendor update: run failing';
 
 type TemplateConfig = {
   name: string;
@@ -78,6 +79,15 @@ const SCHEDULE_NOT_HANDED_BACK_TEMPLATE: TemplateConfig = {
   titleTemplate: "Breeze could not hand the vendor tool's schedule back on {{hostname}}",
   messageTemplate:
     "No policy runs vendor updates on {{hostname}} any more, and handing the vendor tool's own schedule back failed 3 times, so Breeze stopped trying. Check the tool's settings on the device.",
+};
+
+const RUN_FAILING_TEMPLATE: TemplateConfig = {
+  name: OEM_RUN_FAILING_RULE_NAME,
+  severity: 'medium',
+  cooldownMinutes: 1440,
+  titleTemplate: '{{hostname}} is still failing vendor updates',
+  messageTemplate:
+    "The last scheduled vendor update run on {{hostname}} failed, and this month's schedule has no nights left to retry. Check its run history, then use Run vendor updates to run it now.",
 };
 
 /**
@@ -245,12 +255,35 @@ export function emitScheduleNotHandedBackAlert(input: {
   }));
 }
 
-export type OpenOemAlert = { alertId: string; deviceId: string; orgId: string; createdAt: Date };
+export function emitRunFailingAlert(input: {
+  deviceId: string;
+  orgId: string;
+  occurrenceKey: string;
+  lastOutcome: string | null;
+  commandId: string | null;
+}): Promise<string | null> {
+  const { occurrenceKey, lastOutcome, commandId } = input;
+  return raiseDeviceAlert(RUN_FAILING_TEMPLATE, input, (label) => ({
+    title: `${label} is still failing vendor updates`,
+    message:
+      `The last scheduled vendor update run on ${label} for the ${occurrenceKey} schedule ended as ${lastOutcome ?? 'failed'}, `
+      + 'and that schedule has no nights left to retry. Check its run history, then use Run vendor updates to run it now.',
+    context: { occurrenceKey, dedupeKey: occurrenceKey, lastOutcome, commandId },
+  }));
+}
+
+export type OpenOemAlert = { alertId: string; deviceId: string; orgId: string; dedupeKey: string | null; createdAt: Date };
 
 /** Open alerts of one rule, by id. Same status rule as a resolve: "Forever" stays. */
 export function listOpenOemAlerts(ruleName: string, afterId: string | null, limit: number): Promise<OpenOemAlert[]> {
   return runWithSystemDbAccess(() => db
-    .select({ alertId: alerts.id, deviceId: alerts.deviceId, orgId: alerts.orgId, createdAt: alerts.createdAt })
+    .select({
+      alertId: alerts.id,
+      deviceId: alerts.deviceId,
+      orgId: alerts.orgId,
+      dedupeKey: sql<string | null>`${alerts.context}->>'dedupeKey'`,
+      createdAt: alerts.createdAt,
+    })
     .from(alerts)
     .innerJoin(alertRules, eq(alertRules.id, alerts.ruleId))
     .where(and(

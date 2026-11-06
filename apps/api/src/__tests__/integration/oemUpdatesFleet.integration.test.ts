@@ -20,6 +20,7 @@ import {
   configPolicyAssignments,
   configPolicyFeatureLinks,
   configurationPolicies,
+  deviceCommands,
   deviceHardware,
   deviceOemUpdateStatus,
   devices,
@@ -27,6 +28,8 @@ import {
 } from '../../db/schema';
 import { authMiddleware } from '../../middleware/auth';
 import { fleetRowsQuery, fleetScopeCondition, oemUpdatesFleetRoutes } from '../../routes/oemUpdates/fleet';
+import { clearDeviceCooldowns } from '../../services/alertCooldown';
+import { CommandTypes } from '../../services/commandTypes';
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
 import { runOemOverdueSweep } from '../../services/oemUpdates/overdueSweep';
 import { clearPermissionCache } from '../../services/permissions';
@@ -500,5 +503,123 @@ describe('#11074 overdue alerts, through the real createAlert', () => {
     await runOemOverdueSweep(new Date());
 
     expect(await openAlerts(device.id)).toEqual([]);
+  });
+
+  describe('#11247 run failing', () => {
+    // Fixed clocks on the policy defaults: February's last night is the 24th, March's first the 17th.
+    const FEBRUARY_NIGHT_ONE = new Date('2027-02-18T12:00:00.000Z');
+    const PAST_FEBRUARY = new Date('2027-03-01T12:00:00.000Z');
+    const MARCH_NIGHT_ONE = new Date('2027-03-18T12:00:00.000Z');
+    const PAST_MARCH = new Date('2027-04-01T12:00:00.000Z');
+    const RUN_FAILING = 'Vendor update: run failing';
+    const SCHEDULE = {
+      schedule: { weekOfMonth: 'third', dayOfWeek: 'wed', windowStart: '01:00', windowHours: 4 },
+      catchUpNights: 7,
+    };
+
+    async function failedRun(env: TestEnvironment, options: { trigger?: 'scheduled' | 'on_demand'; attempts?: number } = {}) {
+      const { trigger = 'scheduled', attempts = 1 } = options;
+      const device = await seedDevice(env.organization.id, env.site.id);
+      openGatesFor(device.id);
+      await armPolicy({ orgId: env.organization.id }, { level: 'organization', id: env.organization.id }, {
+        settings: armedSettings(SCHEDULE),
+      });
+      const [command] = await getTestDb().insert(deviceCommands).values({
+        deviceId: device.id,
+        submittedOrgId: env.organization.id,
+        type: CommandTypes.OEM_UPDATE_RUN,
+        status: 'completed',
+        payload: { lane: 'dell', trigger, occurrenceKey: trigger === 'scheduled' ? '2027-02' : null },
+      }).returning({ id: deviceCommands.id });
+      await getTestDb().insert(deviceOemUpdateStatus).values({
+        deviceId: device.id,
+        orgId: env.organization.id,
+        applicability: 'applicable',
+        lane: 'dell',
+        lastOutcome: 'failed',
+        occurrenceKey: '2027-02',
+        attempts,
+        lastCommandId: command!.id,
+        lastSuccessAt: LONG_AGO,
+      });
+      return { device, commandId: command!.id };
+    }
+
+    const named = async (deviceId: string) => (await openAlerts(deviceId)).filter((alert) => alert.name === RUN_FAILING);
+
+    runDb('reads the trigger from the real command: nothing on night 1, once past the last night, once after a tech closes it', async () => {
+      const env = await setupTestEnvironment({ scope: 'organization' });
+      const { device, commandId } = await failedRun(env);
+
+      await runOemOverdueSweep(FEBRUARY_NIGHT_ONE);
+      expect(await openAlerts(device.id)).toEqual([]);
+
+      await runOemOverdueSweep(PAST_FEBRUARY);
+      const raised = await openAlerts(device.id);
+      expect(raised.map((alert) => alert.name)).toEqual([RUN_FAILING]);
+      expect(raised[0]!.status).toBe('active');
+      expect(raised[0]!.context).toMatchObject({
+        source: 'oem-updates',
+        dedupeKey: '2027-02',
+        occurrenceKey: '2027-02',
+        lastOutcome: 'failed',
+        commandId,
+      });
+
+      await withSystemDbAccessContext(() => db.update(alerts)
+        .set({ status: 'resolved', resolvedAt: new Date() })
+        .where(eq(alerts.id, raised[0]!.id)));
+      await runOemOverdueSweep(PAST_FEBRUARY);
+      expect(await named(device.id)).toHaveLength(1);
+    });
+
+    runDb('a good run resolves it', async () => {
+      const env = await setupTestEnvironment({ scope: 'organization' });
+      const { device } = await failedRun(env);
+      await runOemOverdueSweep(PAST_FEBRUARY);
+      expect((await named(device.id))[0]!.status).toBe('active');
+
+      await getTestDb().update(deviceOemUpdateStatus)
+        .set({ lastOutcome: 'success', lastSuccessAt: new Date(Date.now() + 60_000) })
+        .where(eq(deviceOemUpdateStatus.deviceId, device.id));
+      await runOemOverdueSweep(PAST_FEBRUARY);
+      expect((await named(device.id))[0]!.status).toBe('resolved');
+    });
+
+    runDb('the next occurrence resolves it, and a failure in that occurrence raises its own', async () => {
+      const env = await setupTestEnvironment({ scope: 'organization' });
+      const { device } = await failedRun(env);
+      await runOemOverdueSweep(PAST_FEBRUARY);
+      expect((await named(device.id))[0]!.status).toBe('active');
+
+      await runOemOverdueSweep(MARCH_NIGHT_ONE);
+      expect((await named(device.id)).map((alert) => alert.status)).toEqual(['resolved']);
+
+      await getTestDb().update(deviceOemUpdateStatus)
+        .set({ occurrenceKey: '2027-03' })
+        .where(eq(deviceOemUpdateStatus.deviceId, device.id));
+      // The sweep's clock moved a month and createAlert's cooldown runs on the real one.
+      // A cooldown holds the alert back without spending it, so a later tick still raises.
+      await runOemOverdueSweep(PAST_MARCH);
+      expect(await named(device.id)).toHaveLength(1);
+      await clearDeviceCooldowns(device.id);
+      await runOemOverdueSweep(PAST_MARCH);
+      const both = await named(device.id);
+      expect(both.map((alert) => (alert.context as { dedupeKey: string }).dedupeKey).sort()).toEqual(['2027-02', '2027-03']);
+    });
+
+    runDb('a Run Now failure raises nothing', async () => {
+      const env = await setupTestEnvironment({ scope: 'organization' });
+      const { device } = await failedRun(env, { trigger: 'on_demand' });
+      await runOemOverdueSweep(PAST_FEBRUARY);
+      expect(await openAlerts(device.id)).toEqual([]);
+    });
+
+    runDb('attempts used up raises the overdue rule and not this one', async () => {
+      const env = await setupTestEnvironment({ scope: 'organization' });
+      const { device } = await failedRun(env, { attempts: 3 });
+      await runOemOverdueSweep(PAST_FEBRUARY);
+      expect((await openAlerts(device.id)).map((alert) => alert.name)).toEqual(['Vendor update: device overdue']);
+    });
   });
 });
