@@ -49,7 +49,11 @@ export class ThreadPostConcernError extends Error {
   }
 }
 
-/** A grant older than this never gets a first-look post of either variant, and shows no first-look progress (#10402). */
+/**
+ * A grant older than this gets no couldn't-look post and shows no progress
+ * (#10402). It gets the real first look only if it was already told "I couldn't
+ * look yet" (#11145).
+ */
 export const FIRST_LOOK_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 const COULDNT_LOOK_KEY_PREFIX = 'wisp.first_look_failed:';

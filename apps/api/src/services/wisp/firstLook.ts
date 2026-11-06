@@ -20,10 +20,10 @@
  * `first_look` with the couldn't-look key: "I've had a first look" would be
  * false, and without it the user keeps reading "I'm looking around" while every
  * run fails. It says what was attempted, why by category, and when Wisp retries.
- * The retry is a floor tick (the reconciler only re-checks this post; it runs no
- * assessment), or the budget reset when the tick would be skipped for budget. A
- * look on a later tick still gets the real first look, even past the first day,
- * because the user was told one was coming.
+ * The retry is the floor tick, one org per tick (the reconciler only re-checks
+ * this post; it runs no assessment), which a spent budget holds off until the UTC
+ * day rolls. A look on a later tick still gets the real first look, even past the
+ * first day, because the user was told one was coming.
  *
  * Exactly one post of each per grant: the dedupe key is the post's (thread_id,
  * dedupe_key) unique key, so concurrent runs and the sweep land on one row. The
@@ -35,7 +35,7 @@
  * A grant that should not post returns `{ posted: false, reason }`; a real
  * failure (DB, notifyUser) throws and the callers report it.
  */
-import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, or, sql } from 'drizzle-orm';
 import { CONCERN_SEVERITIES, type ConcernSeverity, type WatchKind } from '@breeze/shared';
 import { wispEnabled } from '../../config/env';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -181,6 +181,9 @@ const FAILURE_CODE_CATEGORY: ReadonlyMap<string, FirstLookFailureCategory> = new
   ['llm_unavailable', 'model_unavailable'],
   ['sdk_error', 'model_unavailable'],
   ['sdk_output_error', 'model_unavailable'],
+  // Out of time or turns with nothing produced: "couldn't finish" is what happened.
+  ['wall_clock_exceeded', 'model_unavailable'],
+  ['max_turns_exceeded', 'model_unavailable'],
   ['model_unavailable', 'model_unavailable'],
   ['model_refused', 'model_unavailable'],
   ['org_budget_exceeded', 'budget'],
@@ -226,9 +229,11 @@ export type FirstLookRetry = { kind: 'next_check' | 'budget_reset'; at: Date };
 
 /**
  * When Wisp next tries. A spent budget suspends the floor tick until the UTC day
- * rolls (wispWakeScheduler). Otherwise it is the next floor tick, which the
- * scheduler picks up on its own 5-minute tick, so a tick already due is that far
- * away at most, never a time in the past.
+ * rolls (wispWakeScheduler), and the first tick after that can be up to a cadence
+ * later, so `at` is the reset rather than a promise of the retry itself. Otherwise
+ * it is the next floor tick, which assesses one org and which the scheduler picks
+ * up on its own 5-minute tick, so a tick already due is that far away at most,
+ * never a time in the past.
  */
 export function firstLookRetry(input: {
   grantBudgetExhausted: boolean;
@@ -277,7 +282,7 @@ export function renderCouldntLookPost(input: {
   const scope = attemptedOrgs === totalOrgs ? `your ${orgs(totalOrgs)}` : `${attemptedOrgs} of your ${orgs(totalOrgs)}`;
   const at = formatRetryAt(retry.at, timezone);
   const when = retry.kind === 'budget_reset'
-    ? `I'll try again after the daily budget resets, around ${at}.`
+    ? `I'll try again on my regular checks once the daily budget resets at ${at}.`
     : `I'll try again around ${at} on my regular checks, one organization at a time, and post what I find.`;
   return {
     title: `I couldn't look yet: 0 of ${orgs(totalOrgs)}`,
@@ -485,11 +490,13 @@ export type FirstLookResweepResult = {
 };
 
 /**
- * The grant reconciler's sweep: active grants in their first day with no first
- * look yet. Per-grant failures are reported, never thrown. A grant still inside
- * its grace period is a normal skip; it comes back on a later tick, as does one
- * that was told it couldn't be looked at (a look still owes it the real post).
- * Skips are tallied for the tick's log.
+ * The grant reconciler's sweep: active grants with no first look yet, either in
+ * their first day or later if they were told they couldn't be looked at and a look
+ * has since landed (finishRun posts that, and this covers it failing). A grant with
+ * no look stays out past the first day, so one with no agent is not rescanned for
+ * good. Per-grant failures are reported, never thrown. A grant still inside its
+ * grace period is a normal skip; it comes back on a later tick, as does one told it
+ * couldn't be looked at. Skips are tallied for the tick's log.
  */
 export async function resweepFirstLookPosts(now: Date): Promise<FirstLookResweepResult> {
   const out: FirstLookResweepResult = { scanned: 0, posted: 0, couldntLook: 0, failed: 0, skipped: {} };
@@ -499,7 +506,22 @@ export async function resweepFirstLookPosts(now: Date): Promise<FirstLookResweep
     .from(wispGrants)
     .where(and(
       eq(wispGrants.status, 'active'),
-      gte(wispGrants.createdAt, new Date(now.getTime() - FIRST_LOOK_WINDOW_MS)),
+      or(
+        gte(wispGrants.createdAt, new Date(now.getTime() - FIRST_LOOK_WINDOW_MS)),
+        and(
+          sql`EXISTS (
+            SELECT 1 FROM ${wispThreadPosts}
+            WHERE ${wispThreadPosts.grantId} = ${wispGrants.id}
+              AND ${wispThreadPosts.dedupeKey} = 'wisp.first_look_failed:' || ${wispGrants.id}::text
+          )`,
+          sql`EXISTS (
+            SELECT 1 FROM ${aiAgentRuns}
+            WHERE ${aiAgentRuns.grantId} = ${wispGrants.id}
+              AND ${aiAgentRuns.profile} = 'assessment'
+              AND ${inArray(aiAgentRuns.status, [...ASSESSED_STATUSES])}
+          )`,
+        ),
+      ),
       sql`NOT EXISTS (
         SELECT 1 FROM ${wispThreadPosts}
         WHERE ${wispThreadPosts.grantId} = ${wispGrants.id}

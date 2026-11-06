@@ -4,12 +4,18 @@ import { findActiveWispGrant } from '@/lib/wispSession';
 import WispWelcome from './WispWelcome';
 
 const POLL_MS = 30_000;
+/**
+ * 40 minutes of re-reads: a batch settles within its 30-minute grace plus a sweep.
+ * A grant past its first day with no post never changes, so this must not run for
+ * good. The next new conversation reads again.
+ */
+const POLL_LIMIT = 80;
 
 /**
  * The welcome on a chat surface (side panel, /ai/chat tab; #11145). These have
  * no thread timeline and no home poll, and what they were given when Wisp mode
  * opened goes stale, so while a new conversation is on screen they ask the grant
- * themselves. `done` is final and stops the asking.
+ * themselves, for a while. `done` is final and stops the asking.
  *
  * Until something has answered there is no state (a /ai/chat tab starts with
  * none) and the intro stays off: saying "I'm looking around" without knowing
@@ -30,7 +36,12 @@ function useWispFirstLookState(grantId: string, orgId: string | null, initial: W
       if (found.grant.firstLookState) setState(found.grant.firstLookState);
     };
     void read();
-    const timer = setInterval(() => { void read(); }, POLL_MS);
+    let polls = 0;
+    const timer = setInterval(() => {
+      polls += 1;
+      if (polls >= POLL_LIMIT) clearInterval(timer);
+      void read();
+    }, POLL_MS);
     return () => {
       stopped = true;
       clearInterval(timer);

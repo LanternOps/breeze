@@ -81,6 +81,17 @@ describe('WispChatWelcome (#11145: the side panel and the /ai/chat tab)', () => 
     expect(h.findActiveWispGrant).toHaveBeenCalledTimes(3);
   });
 
+  it('stops re-reading after the batch has had time to settle: an old grant that never posts must not poll for good', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    h.findActiveWispGrant.mockResolvedValue(lookup('looking'));
+    render(welcome({ initialState: 'looking' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(40 * 60_000); });
+    const reads = h.findActiveWispGrant.mock.calls.length;
+    expect(reads).toBeGreaterThan(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60 * 60_000); });
+    expect(h.findActiveWispGrant).toHaveBeenCalledTimes(reads);
+  });
+
   it('a grant already known to be done never polls', async () => {
     h.findActiveWispGrant.mockResolvedValue(lookup('done'));
     render(welcome({ initialState: 'done' }));

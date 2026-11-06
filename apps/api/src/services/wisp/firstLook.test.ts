@@ -127,8 +127,8 @@ describe('firstLookFailureCategory (#11145)', () => {
     ['failed', 'stalled', 'internal'],
     ['failed', 'enqueue_failed', 'internal'],
     ['failed', 'run_failed', 'internal'],
-    ['failed', 'wall_clock_exceeded', 'internal'],
-    ['failed', 'max_turns_exceeded', 'internal'],
+    ['failed', 'wall_clock_exceeded', 'model_unavailable'],
+    ['failed', 'max_turns_exceeded', 'model_unavailable'],
     ['expired', null, 'internal'],
     // Unknown and hostile-looking codes fall through: a code is a label to classify, never text to show.
     ['failed', 'provider said: 401 sk-ant-secret', 'internal'],
@@ -222,7 +222,7 @@ describe('renderCouldntLookPost (#11145)', () => {
       timezone: 'America/Denver',
     });
     expect(body).toContain('An AI budget limit stopped me for 10 organizations.');
-    expect(body).toContain("I'll try again after the daily budget resets, around Jan 22, 17:00 America/Denver.");
+    expect(body).toContain("I'll try again on my regular checks once the daily budget resets at Jan 22, 17:00 America/Denver.");
   });
 
   it('a missing Triage agent says where to fix it', () => {
