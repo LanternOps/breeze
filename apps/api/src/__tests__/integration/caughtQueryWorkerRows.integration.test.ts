@@ -395,34 +395,39 @@ describe('fleetFindings.dispatchRunChunk: one failing target does not stop the c
   });
 });
 
-describe('playbookActExecutor: the execution ledger row is best-effort', () => {
+describe('playbookActExecutor: the execution ledger insert fails closed, the finalize is best-effort', () => {
   async function playbookFixture() {
     const t = await tenant();
-    const steps: never[] = [];
+    const executeToolFn = vi.fn(async () => JSON.stringify({ ok: true }));
+    const steps = [{ name: 'read', description: '', type: 'diagnose' as const, tool: 'analyze_disk_usage', toolInput: {} }];
     const [definition] = await getTestDb().insert(playbookDefinitions).values({
       name: `Rows playbook ${randomUUID()}`, description: 'rows', steps, isBuiltIn: true, isActive: true,
-    }).returning({ id: playbookDefinitions.id });
+    }).returning({ id: playbookDefinitions.id, steps: playbookDefinitions.steps });
+    // jsonb reorders object keys, so pin the digest of the stored shape, as pinPlaybook does.
     const args = {
       run: { id: randomUUID(), orgId: t.orgId, agentId: randomUUID(), agentKind: 'helpdesk', deviceId: t.deviceId, deviceSiteId: t.siteId },
       agentAuth: { user: { id: randomUUID() } },
       playbookId: definition!.id,
-      expectedDigest: createHash('sha256').update(JSON.stringify(steps)).digest('hex'),
+      expectedDigest: createHash('sha256').update(JSON.stringify(definition!.steps)).digest('hex'),
       variables: {},
       reserved: {},
       deadlineMs: Date.now() + 60_000,
+      deps: { executeToolFn },
     };
-    return { t, args: args as never, definitionId: definition!.id };
+    return { t, args: args as never, executeToolFn, definitionId: definition!.id };
   }
   const executions = (orgId: string) => getTestDb().select({ status: playbookExecutions.status }).from(playbookExecutions)
     .where(eq(playbookExecutions.orgId, orgId));
 
-  runDb('a failed ledger insert is logged, the playbook still runs and no id is reported', async () => {
-    const { t, args } = await playbookFixture();
+  runDb('a failed ledger insert propagates and no step is dispatched', async () => {
+    const { t, args, executeToolFn } = await playbookFixture();
     await failWritesOn('playbook_executions', { ops: 'INSERT' });
-    const logged = errorLog();
-    const out = await inHeldSystemContext(t, () => executeBuiltInPlaybookForRun(args));
-    expectLogged(logged, 'failed to insert the playbook_executions row');
-    expect(out).toMatchObject({ execution: 'succeeded', playbookExecutionId: null });
+    await expect(inHeldSystemContext(t, () => executeBuiltInPlaybookForRun(args)))
+      .rejects.toSatisfy((err: unknown) => {
+        const e = err as { message?: unknown; cause?: { message?: unknown } };
+        return String(e.cause?.message ?? e.message).includes('forced statement failure on playbook_executions');
+      });
+    expect(executeToolFn).not.toHaveBeenCalled();
     expect(await executions(t.orgId)).toHaveLength(0);
   });
 
@@ -432,7 +437,7 @@ describe('playbookActExecutor: the execution ledger row is best-effort', () => {
     const logged = errorLog();
     const out = await inHeldSystemContext(t, () => executeBuiltInPlaybookForRun(args));
     expectLogged(logged, 'failed to finalize the playbook_executions row');
-    expect(out).toMatchObject({ execution: 'succeeded' });
+    expect(out).toMatchObject({ execution: 'unknown' });
     expect(out.playbookExecutionId).toBeTruthy();
     expect(await executions(t.orgId)).toEqual([{ status: 'running' }]);
   });

@@ -242,39 +242,28 @@ async function insertPlaybookExecutionRow(
   playbookRowId: string,
   variables: Record<string, unknown>,
 ): Promise<string | null> {
-  // The catch sits outside the context: inside it, the failure rethrows when the
-  // context's transaction ends, and the savepoint covers joining a held system
-  // context (#11225).
-  try {
-    return await inSystemDbContext(() => withDbTransaction(async () => {
-      const triggeredByUserId = await resolveTriggeredByUserId(agentUserId);
-      const [execution] = await db
-        .insert(playbookExecutions)
-        .values({
-          orgId: run.orgId,
-          deviceId: run.deviceId,
-          playbookId: playbookRowId,
-          status: 'running',
-          currentStepIndex: 0,
-          steps: [],
-          context: { variables },
-          triggeredBy: 'ai',
-          triggeredByUserId,
-          startedAt: new Date(),
-        })
-        .returning({ id: playbookExecutions.id });
-      return execution?.id ?? null;
-    }));
-  } catch (error) {
-    // Best-effort, same philosophy as `startToolExecution` in runLoop.ts:
-    // a ledger/audit write failing must never block a mutation that has
-    // already been individually revalidated per-step below. The playbook
-    // still runs for real; only the audit row is missing.
-    console.error('[playbookActExecutor] failed to insert the playbook_executions row (non-fatal — execution proceeds)', {
-      runId: run.id, playbookRowId, error,
-    });
-    return null;
-  }
+  // Fail-closed on purpose (#11225): this row is the record that an AI action
+  // ran on a device, so a failed insert propagates and the playbook does not
+  // start. No catch, and no savepoint that would let the failure be survived.
+  return inSystemDbContext(async () => {
+    const triggeredByUserId = await resolveTriggeredByUserId(agentUserId);
+    const [execution] = await db
+      .insert(playbookExecutions)
+      .values({
+        orgId: run.orgId,
+        deviceId: run.deviceId,
+        playbookId: playbookRowId,
+        status: 'running',
+        currentStepIndex: 0,
+        steps: [],
+        context: { variables },
+        triggeredBy: 'ai',
+        triggeredByUserId,
+        startedAt: new Date(),
+      })
+      .returning({ id: playbookExecutions.id });
+    return execution?.id ?? null;
+  });
 }
 
 async function finalizePlaybookExecutionRow(
