@@ -148,10 +148,17 @@ vi.mock('../../services/workloads/imageCompliance', () => ({
   containerImageComplianceTerms: vi.fn(async () => new Map())
 }));
 
+// #11073: a lane that delivers everything, which a tech's install must not ask about.
+vi.mock('../../services/oemUpdates/laneDelivery', () => ({
+  getVendorManagedClasses: vi.fn(async () => new Set(['driver', 'firmware'])),
+  getVendorManagedClassesForDevices: vi.fn(async () => new Map()),
+}));
+
 import { db } from '../../db';
 import { devicePatches, patches } from '../../db/schema';
 import { getDeviceWithOrgAndSiteCheck } from './helpers';
 import { queueCommandForExecution } from '../../services/commandQueue';
+import { getVendorManagedClasses, getVendorManagedClassesForDevices } from '../../services/oemUpdates/laneDelivery';
 import { resolvePartnerIdForOrg } from '../patches/helpers';
 import { loadDevicePatchApprovalView } from '../../services/devicePatchApprovalView';
 import { captureException } from '../../services/sentry';
@@ -892,6 +899,38 @@ describe('device patch routes', () => {
       },
       { userId: USER_ID, preferHeartbeat: false }
     );
+  });
+
+  // Spec 4.6: an explicit action wins. Vendor updates narrow patch jobs only.
+  it('a tech\'s manual install is unaffected by a vendor lane delivering that class', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereResult([
+        { id: PATCH_ID, source: 'custom', externalId: 'wu-driver-1', packageId: null, title: 'Dell Inc. - Display', reportedUpdateType: 'driver', category: 'driver' }
+      ]) as any)
+      .mockReturnValueOnce(selectWhereResult([
+        { patchId: PATCH_ID, status: 'approved', ringId: null, updatedAt: null }
+      ]) as any);
+    vi.mocked(queueCommandForExecution).mockResolvedValue({
+      command: { id: 'cmd-install-1', status: 'sent' }
+    } as any);
+
+    const res = await app.request(`/devices/${DEVICE_ID}/patches/install`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patchIds: [PATCH_ID] })
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).patchCount).toBe(1);
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      DEVICE_ID,
+      'install_patches',
+      expect.objectContaining({ patchIds: [PATCH_ID] }),
+      expect.anything()
+    );
+    expect(getVendorManagedClasses).not.toHaveBeenCalled();
+    expect(getVendorManagedClassesForDevices).not.toHaveBeenCalled();
   });
 
   it('uses the device-observed KB selector instead of a global first-writer WUA UpdateID', async () => {

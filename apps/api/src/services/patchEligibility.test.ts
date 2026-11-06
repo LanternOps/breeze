@@ -43,8 +43,10 @@ vi.mock('./configPolicyPatching', () => ({
   loadPolicyLocalPatchConfig: vi.fn(),
 }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+vi.mock('./oemUpdates/laneDelivery', () => ({ getVendorManagedClasses: vi.fn() }));
 
 import { db } from '../db';
+import { getVendorManagedClasses } from './oemUpdates/laneDelivery';
 import { resolvePatchConfigPolicyForDevice } from './featureConfigResolver';
 import { loadPolicyLocalPatchConfig } from './configPolicyPatching';
 import { captureException } from './sentry';
@@ -71,6 +73,7 @@ type Row = {
   requiresReboot: boolean; source: string; packageId: string | null; version: string | null;
   firstSeenAt: Date | null; status: string; supersededBy: string | null;
   scope: string | null;
+  reportedUpdateType?: string | null;
 };
 const row = (o: Partial<Row>): Row => ({
   devicePatchId: `dp-${o.patchId ?? P1}`, patchId: P1, externalId: 'KB1', title: 'A patch',
@@ -111,6 +114,153 @@ beforeEach(() => {
   vi.mocked(db.select).mockReset();
   vi.mocked(resolvePatchConfigPolicyForDevice).mockReset();
   vi.mocked(loadPolicyLocalPatchConfig).mockReset();
+  vi.mocked(getVendorManagedClasses).mockReset();
+  vi.mocked(getVendorManagedClasses).mockResolvedValue(new Set());
+});
+
+// Spec 4.6: Breeze patch jobs leave a class to a vendor lane only while the lane
+// really delivers it. Whether it does is laneDelivery's question, tested there.
+describe('evaluatePatchInstallEligibility — one owner per update class (#11073)', () => {
+  const approved = (...ids: string[]) => ids.map((patchId) => ({ patchId, status: 'approved', ringId: RING }));
+  const evaluate = (patchIds?: string[]) => evaluatePatchInstallEligibility({ deviceId: DEV, orgId: ORG, config: ringConfig(), patchIds });
+
+  it('driver excluded only when the lane delivers', async () => {
+    vi.mocked(getVendorManagedClasses).mockResolvedValue(new Set(['driver']));
+    mockEvaluatorReads([row({ patchId: P1, category: 'driver', reportedUpdateType: 'driver' })], []);
+    const res = await evaluate();
+    expect(res.eligible).toEqual([]);
+    expect(res.ineligible).toEqual([{ patchId: P1, reason: 'managed_by_vendor_updates' }]);
+    expect(getVendorManagedClasses).toHaveBeenCalledWith(DEV);
+
+    // Nothing left to approve, so the first run never read its approvals.
+    vi.mocked(db.select).mockReset();
+    vi.mocked(getVendorManagedClasses).mockResolvedValue(new Set());
+    mockEvaluatorReads([row({ patchId: P1, category: 'driver', reportedUpdateType: 'driver' })], approved(P1));
+    const delivering = await evaluate();
+    expect(delivering.eligible.map((e) => e.patchId)).toEqual([P1]);
+    expect(delivering.ineligible).toEqual([]);
+  });
+
+  it('firmware likewise', async () => {
+    vi.mocked(getVendorManagedClasses).mockResolvedValue(new Set(['firmware']));
+    mockEvaluatorReads([row({ patchId: P1, category: 'firmware', reportedUpdateType: 'firmware' })], []);
+    expect((await evaluate()).ineligible).toEqual([{ patchId: P1, reason: 'managed_by_vendor_updates' }]);
+
+    vi.mocked(db.select).mockReset();
+    vi.mocked(getVendorManagedClasses).mockResolvedValue(new Set());
+    mockEvaluatorReads([row({ patchId: P1, category: 'firmware', reportedUpdateType: 'firmware' })], approved(P1));
+    expect((await evaluate()).eligible.map((e) => e.patchId)).toEqual([P1]);
+  });
+
+  it('each class answers for itself: a lane delivering drivers leaves firmware with Windows Update', async () => {
+    vi.mocked(getVendorManagedClasses).mockResolvedValue(new Set(['driver']));
+    mockEvaluatorReads([
+      row({ patchId: P1, category: 'driver', reportedUpdateType: 'driver' }),
+      row({ patchId: P2, category: 'driver', reportedUpdateType: 'firmware' }),
+    ], approved(P1, P2));
+    const res = await evaluate();
+    expect(res.eligible.map((e) => e.patchId)).toEqual([P2]);
+    expect(res.ineligible).toEqual([{ patchId: P1, reason: 'managed_by_vendor_updates' }]);
+  });
+
+  it('reported_update_type null is not excluded, whatever the category says', async () => {
+    vi.mocked(getVendorManagedClasses).mockResolvedValue(new Set(['driver', 'firmware']));
+    mockEvaluatorReads([row({ patchId: P1, category: 'driver', reportedUpdateType: null })], approved(P1));
+    const res = await evaluate();
+    expect(res.eligible.map((e) => e.patchId)).toEqual([P1]);
+    expect(res.ineligible).toEqual([]);
+  });
+
+  it.each([['driver'], ['firmware']])('a security classification on a %s-type update is not excluded', async (reportedUpdateType) => {
+    vi.mocked(getVendorManagedClasses).mockResolvedValue(new Set(['driver', 'firmware']));
+    mockEvaluatorReads([row({ patchId: P1, category: 'security', reportedUpdateType })], approved(P1));
+    const res = await evaluate();
+    expect(res.eligible.map((e) => e.patchId)).toEqual([P1]);
+    expect(res.ineligible).toEqual([]);
+  });
+
+  it('a security classification is found whatever its casing', async () => {
+    vi.mocked(getVendorManagedClasses).mockResolvedValue(new Set(['driver']));
+    mockEvaluatorReads([row({ patchId: P1, category: 'Security', reportedUpdateType: 'driver' })], approved(P1));
+    expect((await evaluate()).eligible.map((e) => e.patchId)).toEqual([P1]);
+  });
+
+  it.each([['quality'], ['feature'], ['definition'], ['other']])('%s updates untouched', async (reportedUpdateType) => {
+    vi.mocked(getVendorManagedClasses).mockResolvedValue(new Set(['driver', 'firmware']));
+    mockEvaluatorReads([row({ patchId: P1, category: 'system', reportedUpdateType })], approved(P1));
+    const res = await evaluate();
+    expect(res.eligible.map((e) => e.patchId)).toEqual([P1]);
+    expect(res.ineligible).toEqual([]);
+  });
+
+  it('a device with no lane unchanged', async () => {
+    mockEvaluatorReads([row({ patchId: P1, category: 'driver', reportedUpdateType: 'driver' })], approved(P1));
+    const res = await evaluate();
+    expect(res.eligible.map((e) => e.patchId)).toEqual([P1]);
+    expect(res.ineligible).toEqual([]);
+  });
+
+  it('only a Windows Update row can be left to a lane', async () => {
+    vi.mocked(getVendorManagedClasses).mockResolvedValue(new Set(['driver']));
+    mockEvaluatorReads([
+      row({ patchId: P1, category: 'driver', reportedUpdateType: 'driver', source: 'third_party', packageId: 'Vendor.Tool' }),
+    ], approved(P1));
+    const res = await evaluatePatchInstallEligibility({
+      deviceId: DEV, orgId: ORG, config: ringConfig({ sources: ['os', 'third_party'] }),
+    });
+    expect(res.eligible.map((e) => e.patchId)).toEqual([P1]);
+  });
+
+  it('lane Overdue at execution means installs again: read fresh on every evaluation of the same snapshot', async () => {
+    const config = ringConfig();
+    const candidates = [row({ patchId: P1, category: 'driver', reportedUpdateType: 'driver' })];
+
+    vi.mocked(getVendorManagedClasses).mockResolvedValueOnce(new Set(['driver']));
+    mockEvaluatorReads(candidates, []);
+    expect(await resolveApprovedPatchesForDevice(DEV, ORG, config)).toEqual([]);
+
+    // The next job, with the same frozen config: the lane has gone Overdue.
+    vi.mocked(db.select).mockReset();
+    vi.mocked(getVendorManagedClasses).mockResolvedValueOnce(new Set());
+    mockEvaluatorReads(candidates, approved(P1));
+    expect((await resolveApprovedPatchesForDevice(DEV, ORG, config)).map((p) => p.patchId)).toEqual([P1]);
+
+    expect(getVendorManagedClasses).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(config)).not.toContain('managed');
+  });
+
+  it('a manual approval does not win over the lane on the job path, as with every other narrowing gate', async () => {
+    vi.mocked(getVendorManagedClasses).mockResolvedValue(new Set(['driver']));
+    mockEvaluatorReads([row({ patchId: P1, category: 'driver', reportedUpdateType: 'driver' })], approved(P1));
+    expect(await resolveApprovedPatchesForDevice(DEV, ORG, ringConfig())).toEqual([]);
+  });
+
+  it('a gate that already blocks the patch keeps its own reason', async () => {
+    vi.mocked(getVendorManagedClasses).mockResolvedValue(new Set(['driver']));
+    mockEvaluatorReads([row({ patchId: P1, category: 'driver', reportedUpdateType: 'driver' })], []);
+    const res = await evaluatePatchInstallEligibility({
+      deviceId: DEV, orgId: ORG, config: ringConfig({ excludeCategories: ['driver'] }),
+    });
+    expect(res.ineligible).toEqual([{ patchId: P1, reason: 'blocked_by_category' }]);
+  });
+
+  it('asks no lane question when no candidate could be left to one', async () => {
+    mockEvaluatorReads([row({ patchId: P1, category: 'security', reportedUpdateType: 'quality' })], approved(P1));
+    await evaluate();
+    expect(getVendorManagedClasses).not.toHaveBeenCalled();
+  });
+
+  it('a read that fails is not swallowed into either answer', async () => {
+    vi.mocked(getVendorManagedClasses).mockRejectedValue(new Error('connection lost'));
+    mockEvaluatorReads([row({ patchId: P1, category: 'driver', reportedUpdateType: 'driver' })], approved(P1));
+    await expect(evaluate()).rejects.toThrow('connection lost');
+  });
+
+  it('names the reason for a requested patch on the AI path too', async () => {
+    vi.mocked(getVendorManagedClasses).mockResolvedValue(new Set(['driver']));
+    mockEvaluatorReads([row({ patchId: P1, category: 'driver', reportedUpdateType: 'driver' })], []);
+    expect((await evaluate([P1])).ineligible).toEqual([{ patchId: P1, reason: 'managed_by_vendor_updates' }]);
+  });
 });
 
 describe('evaluatePatchInstallEligibility — the decision, with a reason for every exclusion', () => {

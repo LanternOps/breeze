@@ -43,6 +43,7 @@ import {
 } from '../db/schema';
 import { loadPolicyLocalPatchConfig } from './configPolicyPatching';
 import { resolvePatchConfigPolicyForDevice } from './featureConfigResolver';
+import { getVendorManagedClasses, type VendorManagedClass } from './oemUpdates/laneDelivery';
 import { captureException } from './sentry';
 import { resolveLatestManualDecisions, selectManualDecisionRows } from './patchManualDecisions';
 import { EFFECTIVE_PATCH_CATEGORY_SQL, EFFECTIVE_PATCH_SEVERITY_SQL } from './patchSeverityOverlay';
@@ -97,6 +98,23 @@ export interface PatchInstallEligibility {
 // every unit suite that mocks '../db/schema' without this export would
 // otherwise fail at import time.
 const isOutstanding = (status: string): boolean => (OUTSTANDING_DEVICE_PATCH_STATUSES as readonly string[]).includes(status);
+
+/**
+ * The update class a vendor lane could own this patch under, or null when it stays
+ * with Windows Update whatever a lane does (spec 4.6). Goes by what this device says
+ * the update is, so a NULL from an older agent is never left to a lane. A security
+ * classification beats the type: such an update is not the lane's to withhold.
+ */
+function vendorManagedClassOf(patch: {
+  source: string;
+  category: string | null;
+  reportedUpdateType: string | null;
+}): VendorManagedClass | null {
+  if (patch.source !== 'microsoft') return null;
+  if (patch.reportedUpdateType !== 'driver' && patch.reportedUpdateType !== 'firmware') return null;
+  if (patch.category && canonicalizePatchCategory(patch.category) === 'security') return null;
+  return patch.reportedUpdateType;
+}
 
 /** The core: config injected, three reads, a reason for every exclusion. */
 export async function evaluatePatchInstallEligibility(args: {
@@ -170,6 +188,8 @@ export async function evaluatePatchInstallEligibility(args: {
       firstSeenAt: devicePatches.createdAt,
       // 'machine' | 'user' | NULL (#2727). A 'user' row is detection-only.
       scope: devicePatches.scope,
+      // This device's own report (#11073), never the shared row's.
+      reportedUpdateType: devicePatches.reportedUpdateType,
     })
     .from(devicePatches)
     .innerJoin(patches, eq(devicePatches.patchId, patches.id))
@@ -282,7 +302,7 @@ export async function evaluatePatchInstallEligibility(args: {
   // is still enforced, with the stricter verdict winning.
   const appRuleMaps = [buildAppRuleMap(ringConfig.ringAppRules), buildAppRuleMap(ringConfig.apps)]
     .filter((m) => m.size > 0);
-  const finalCandidates = appRuleMaps.length > 0
+  const appRuleFiltered = appRuleMaps.length > 0
     ? featureFiltered.filter((p) => {
       if (!p.packageId && isThirdPartyPatchSource(p.source)) {
         // Deliberate allow-with-warn: holding every unidentified third-party
@@ -304,6 +324,25 @@ export async function evaluatePatchInstallEligibility(args: {
       return true;
     })
     : featureFiltered;
+
+  if (appRuleFiltered.length === 0) return { eligible, ineligible, ringId: ringConfig.ringId, resolvedAt };
+
+  // One owner per update class (spec 4.6): a driver or firmware update a vendor lane
+  // is really delivering here is left to it. Read now and never frozen in a job's
+  // snapshot, so a lane that goes Overdue hands the class back on the next job. Like
+  // the gates above it only narrows, so it also beats a manual approval; a tech's
+  // install on the device (routes/devices/patches.ts) bypasses this evaluator. Only
+  // a device with such a candidate pays for the read, and a failed read throws as
+  // the reads above do, rather than guessing either way.
+  const vendorManaged = appRuleFiltered.some((p) => vendorManagedClassOf(p) !== null)
+    ? await getVendorManagedClasses(deviceId)
+    : new Set<VendorManagedClass>();
+  const finalCandidates = appRuleFiltered.filter((p) => {
+    const vendorClass = vendorManagedClassOf(p);
+    if (!vendorClass || !vendorManaged.has(vendorClass)) return true;
+    deny(p.patchId, 'managed_by_vendor_updates');
+    return false;
+  });
 
   if (finalCandidates.length === 0) return { eligible, ineligible, ringId: ringConfig.ringId, resolvedAt };
 
