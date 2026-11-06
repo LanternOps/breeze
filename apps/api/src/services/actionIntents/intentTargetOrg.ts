@@ -12,26 +12,35 @@
  *    reach covers it, and is refused when it does not. It is never filed somewhere else.
  *    Refusing reveals nothing: `canAccessOrg` is a membership test and answers the same
  *    for a foreign org and one that does not exist.
- *  - a call that names its org through a ROW (the design tools, `aiDesignIntentTarget.ts`)
- *    is filed in the row's org when reach covers it. A row outside reach stays in the
- *    session org with nothing about it on the card, so a foreign id reveals nothing; the
+ *  - a call that names its target by ROW ID (#11222, `intentRowTarget.ts`) is filed in the
+ *    row's org when reach covers it, and is refused when it does not, or when no such row
+ *    exists. The refusal is the same words for both, so a foreign id reveals nothing. A read
+ *    that fails refuses too: filing it in the session org is the defect this module exists
+ *    to prevent.
+ *  - the design tools (`aiDesignIntentTarget.ts`, #11208) keep their own row rule: a row
+ *    outside reach stays in the session org with nothing about it on the card, and the
  *    handler answers not found.
- *  - a partner-wide effect (no org argument, `ownerScope: 'partner'`, a partner baseline)
- *    stays in the session org. Who may approve it is `partnerWideEffect.ts`'s business,
- *    not this module's.
+ *  - a partner-wide effect (no org argument, `ownerScope: 'partner'`, a partner baseline, an
+ *    org-less row of the caller's own partner) stays in the session org. Who may approve it
+ *    is `partnerWideEffect.ts`'s business, not this module's.
  *
  * Which arguments name the changed org is a per-action fact of each handler, not a
  * property of the argument's name: many tools take `orgId` only to create or list, and
- * identify the row they change by id (the inventory in the #11181 PR). So the registry
- * below is explicit, and `intentTargetOrg.contract.test.ts` requires every Tier-3 tool
- * with an org argument to be either in it or in `ORG_ARGUMENT_NOT_TARGET` with a reason.
+ * identify the row they change by id (the inventory in the #11181 and #11222 PRs). So the
+ * registries are explicit, and `intentTargetOrg.contract.test.ts` requires every Tier-3 tool
+ * with an org argument, and every Tier-3 action taking an id, to be classified.
  *
  * Nothing here is an access check of its own. Handlers keep theirs.
  */
+import { captureException } from '../sentry';
 import { AI_DESIGN_INTENT_TOOLS, resolveAiDesignIntentTarget } from './aiDesignIntentTarget';
+import { resolveIntentRowTarget } from './intentRowTarget';
 
 /** The refusal for a named org outside reach: `resolveWritableToolOrgId`'s own wording. */
 export const INTENT_ORG_OUT_OF_REACH = 'Access denied to this organization';
+
+/** The refusal when the named row could not be read, so its org is unknown. */
+export const INTENT_ROW_UNREADABLE = 'The target of this action could not be read, so it was not filed.';
 
 type ArgumentTarget = {
   /** The input key that names the org the action changes. */
@@ -57,6 +66,8 @@ export const INTENT_ORG_ARGUMENT: Readonly<Record<string, ArgumentTarget>> = {
   // W18 PR B (#6789): the four-eyes sensitive-access write and its supervised sibling.
   manage_org_portal_settings: { arg: 'orgId', actions: ['update', 'set_sensitive_access'] },
   configure_network_baseline: { arg: 'org_id', actions: 'all', when: (input) => input.baseline_id === undefined },
+  // An AI sweep runs inside one org, resolved from this argument (`parseSingleOrgRequest`).
+  ioc_hunt: { arg: 'orgId', actions: ['sweep'] },
   manage_audit_baselines: { arg: 'orgId', actions: ['create'] },
   manage_backup_verification: { arg: 'orgId', actions: ['run'] },
   manage_billing_catalog: { arg: 'orgId', actions: ['set_org_price', 'remove_org_price'] },
@@ -70,11 +81,12 @@ export const INTENT_ORG_ARGUMENT: Readonly<Record<string, ArgumentTarget>> = {
   manage_deployments: { arg: 'orgId', actions: ['create'] },
   manage_groups: { arg: 'orgId', actions: ['create'] },
   manage_notification_channels: { arg: 'orgId', actions: ['create'] },
-  manage_organizations: { arg: 'orgId', actions: ['create_site', 'add_contact'] },
+  manage_organizations: { arg: 'orgId', actions: ['update_org', 'create_site', 'add_contact'] },
   manage_pam_rules: { arg: 'orgId', actions: ['create_rule', 'set_config', 'create_signer_group'] },
   manage_patches: { arg: 'orgId', actions: ['install'] },
   manage_peripheral_policies: { arg: 'orgId', actions: ['create'] },
   manage_peripheral_policy: { arg: 'org_id', actions: ['create'] },
+  manage_security_policies: { arg: 'orgId', actions: ['create'], when: notPartnerOwned },
   // orgId must equal the item's org or the handler refuses, so naming it names the target.
   manage_software_catalog: {
     arg: 'orgId',
@@ -95,7 +107,8 @@ export const INTENT_ORG_ARGUMENT: Readonly<Record<string, ArgumentTarget>> = {
 
 /**
  * Tier-3 tools that take an org argument which does NOT name the org their approval-class
- * actions change (the actions not listed above). Their intent stays where it is filed today.
+ * actions change (the actions not listed above). Most name a row instead, and are resolved
+ * from it (`INTENT_ROW_TARGET`); the rest stay where they are filed today.
  */
 export const ORG_ARGUMENT_NOT_TARGET: Readonly<Record<string, string>> = {
   configure_network_baseline: 'an update names its baseline by `baseline_id`; `org_id` is ignored',
@@ -158,12 +171,17 @@ export type IntentTarget = {
   fromArgument: boolean;
   /** Appended to the approval headline, once the target is known to be in reach. */
   cardDetail?: string;
+  /** The org came from a row named by id (#11222): out of reach and no row both refuse. */
+  fromRow?: true;
+  /** The named row could not be read (#11222). */
+  unreadable?: true;
 };
 
 /**
- * The target a call names, or null when it names none. Reads a row only for the design
- * tools (as system: the row may be in an org the session is not bound to); throws when
- * that read fails, and the caller decides.
+ * The target a call names, or null when it names none. Reads a row for the design tools
+ * and the row-identified writes (as system: the row may be in an org the session is not
+ * bound to). A design tool's failed read throws, and the caller decides. A row-identified
+ * write's is reported here and refused by `decideIntentOrg`.
  */
 export async function resolveIntentTarget(toolName: string, input: Record<string, unknown>): Promise<IntentTarget | null> {
   if (AI_DESIGN_INTENT_TOOLS.has(toolName)) {
@@ -171,7 +189,15 @@ export async function resolveIntentTarget(toolName: string, input: Record<string
     return target ? { fromArgument: false, ...target } : null;
   }
   const orgId = argumentTargetOrg(toolName, input);
-  return orgId ? { orgId, partnerId: null, fromArgument: true } : null;
+  if (orgId) return { orgId, partnerId: null, fromArgument: true };
+  try {
+    const row = await resolveIntentRowTarget(toolName, input);
+    return row ? { ...row, fromArgument: false, fromRow: true } : null;
+  } catch (err) {
+    console.error('[AI-intents] Failed to read the row an action names:', toolName, err);
+    captureException(err);
+    return { orgId: null, partnerId: null, fromArgument: false, fromRow: true, unreadable: true };
+  }
 }
 
 export type IntentOrgDecision =
@@ -179,16 +205,23 @@ export type IntentOrgDecision =
   | { kind: 'session'; cardDetail?: string }
   | { kind: 'refuse'; error: string };
 
-export type IntentReach = { canAccessOrg: (orgId: string) => boolean; partnerId?: string | null };
+export type IntentReach = { canAccessOrg: (orgId: string) => boolean; partnerId?: string | null; scope?: string };
 
 /** Where the intent goes, given the call's reach (the session's tool auth, cut to a Wisp ceiling). */
 export function decideIntentOrg(target: IntentTarget | null, reach: IntentReach): IntentOrgDecision {
   if (!target) return { kind: 'session' };
+  if (target.unreadable) return { kind: 'refuse', error: INTENT_ROW_UNREADABLE };
   if (target.orgId) {
     if (reach.canAccessOrg(target.orgId)) {
       return target.cardDetail ? { kind: 'target', orgId: target.orgId, cardDetail: target.cardDetail } : { kind: 'target', orgId: target.orgId };
     }
-    return target.fromArgument ? { kind: 'refuse', error: INTENT_ORG_OUT_OF_REACH } : { kind: 'session' };
+    return target.fromArgument || target.fromRow ? { kind: 'refuse', error: INTENT_ORG_OUT_OF_REACH } : { kind: 'session' };
+  }
+  // A row-identified write's org-less row is partner-wide only for the partner that owns it.
+  // A row of another partner, and no row at all, get the same refusal as a foreign org.
+  if (target.fromRow) {
+    const ownPartner = target.partnerId !== null && (reach.scope === 'system' || target.partnerId === (reach.partnerId ?? null));
+    return ownPartner ? { kind: 'session' } : { kind: 'refuse', error: INTENT_ORG_OUT_OF_REACH };
   }
   // An org-less row is partner-wide: the session org keeps it, and its card detail is shown
   // only to a caller of the partner that owns it.

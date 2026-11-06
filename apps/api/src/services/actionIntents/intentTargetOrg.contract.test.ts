@@ -5,10 +5,12 @@
  * `ORG_ARGUMENT_NOT_TARGET` with the reason it does not, or be a row-resolved design tool.
  * Otherwise its intent silently lands in the session org while it changes another.
  */
+import { getTableColumns } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { aiTools } from '../aiTools';
-import { TIER3_ACTIONS, TIER3_FOUR_EYES_ACTIONS, TIER3_INPUT_AWARE_ACTIONS, TIER3_SUPERVISED_ACTIONS } from '../aiGuardrails';
+import { TIER3_ACTIONS, TIER3_FOUR_EYES_ACTIONS, TIER3_INPUT_AWARE_ACTIONS, TIER3_INPUT_AWARE_TOOLS, TIER3_SUPERVISED_ACTIONS } from '../aiGuardrails';
 import { AI_DESIGN_INTENT_TOOLS } from './aiDesignIntentTarget';
+import { INTENT_ROW_LEFT, INTENT_ROW_PARTNER_WIDE, INTENT_ROW_TARGET } from './intentRowTarget';
 import { INTENT_ORG_ARGUMENT, ORG_ARGUMENT_NOT_TARGET } from './intentTargetOrg';
 
 const ORG_ARGS = ['orgId', 'org_id'] as const;
@@ -18,14 +20,20 @@ function schemaProps(toolName: string): Record<string, unknown> {
   return schema?.properties ?? {};
 }
 
+/** Input-aware pairs are `tool:action`: Tier 3 on some inputs (a public comment), so they file intents too. */
+function inputAwareActions(toolName: string): string[] {
+  return [...TIER3_INPUT_AWARE_ACTIONS].filter((pair) => pair.startsWith(`${toolName}:`)).map((pair) => pair.slice(toolName.length + 1));
+}
+
 function tier3Actions(toolName: string): Set<string> {
   return new Set([
     ...(TIER3_ACTIONS[toolName] ?? []), ...(TIER3_SUPERVISED_ACTIONS[toolName] ?? []), ...(TIER3_FOUR_EYES_ACTIONS[toolName] ?? []),
+    ...inputAwareActions(toolName),
   ]);
 }
 
 function hasTier3(toolName: string): boolean {
-  return aiTools.get(toolName)?.tier === 3 || tier3Actions(toolName).size > 0 || TIER3_INPUT_AWARE_ACTIONS.has(toolName);
+  return aiTools.get(toolName)?.tier === 3 || tier3Actions(toolName).size > 0 || TIER3_INPUT_AWARE_TOOLS.has(toolName);
 }
 
 describe('intent target org contract (#11181)', () => {
@@ -56,5 +64,105 @@ describe('intent target org contract (#11181)', () => {
 
   it('the design tools are row-resolved, not argument-resolved', () => {
     for (const name of AI_DESIGN_INTENT_TOOLS) expect(INTENT_ORG_ARGUMENT).not.toHaveProperty(name);
+  });
+});
+
+/**
+ * #11222 contract: every approval-class action of a Tier-3 tool that takes an id says where
+ * its intent goes: its row (`INTENT_ROW_TARGET`), its org argument (`INTENT_ORG_ARGUMENT`), a
+ * design tool's row, a row with no org (`INTENT_ROW_PARTNER_WIDE`), or a stated reason it
+ * stays (`INTENT_ROW_LEFT`). A new action that is none of these would file in the session org
+ * while it changes a row of another.
+ */
+const ID_ARG = /(^id$|^ids$|Id$|_id$|Ids$|_ids$)/;
+
+function approvalActions(toolName: string): string[] {
+  const listed = [...tier3Actions(toolName)];
+  if (listed.length > 0) return listed;
+  const action = schemaProps(toolName).action as { enum?: string[] } | undefined;
+  return action?.enum ?? ['*'];
+}
+
+const matchesAction = (actions: readonly string[] | 'all', action: string): boolean => actions === 'all' || actions.includes(action);
+
+function classifications(toolName: string, action: string): string[] {
+  const argument = INTENT_ORG_ARGUMENT[toolName];
+  return [
+    ...(argument && matchesAction(argument.actions, action) ? ['argument'] : []),
+    ...((INTENT_ROW_TARGET[toolName] ?? []).some((entry) => matchesAction(entry.actions, action)) ? ['row'] : []),
+    ...(AI_DESIGN_INTENT_TOOLS.has(toolName) ? ['design'] : []),
+    ...(toolName in INTENT_ROW_PARTNER_WIDE || `${toolName}:${action}` in INTENT_ROW_PARTNER_WIDE ? ['partner-wide'] : []),
+    ...(toolName in INTENT_ROW_LEFT || `${toolName}:${action}` in INTENT_ROW_LEFT ? ['left'] : []),
+  ];
+}
+
+describe('intent target row contract (#11222)', () => {
+  const idTaking = [...aiTools.keys()].filter((name) => hasTier3(name) && Object.keys(schemaProps(name)).some((arg) => ID_ARG.test(arg)));
+
+  it('finds the id-taking Tier-3 tools (a broken filter would pass everything below)', () => {
+    expect(idTaking.length).toBeGreaterThan(100);
+    expect(idTaking).toEqual(expect.arrayContaining(['manage_invoices', 'manage_tickets', 'execute_command']));
+  });
+
+  it('every approval-class action of an id-taking Tier-3 tool is classified', () => {
+    const unclassified = idTaking.flatMap((name) => approvalActions(name)
+      .filter((action) => classifications(name, action).length === 0)
+      .map((action) => `${name}:${action}`));
+    expect(unclassified).toEqual([]);
+  });
+
+  it('a row target is never also partner-wide or left, so no action has two answers', () => {
+    const both = idTaking.flatMap((name) => approvalActions(name)
+      .filter((action) => {
+        const classes = classifications(name, action);
+        return classes.includes('row') && (classes.includes('partner-wide') || classes.includes('left') || classes.includes('design'));
+      })
+      .map((action) => `${name}:${action}`));
+    expect(both).toEqual([]);
+  });
+
+  it('a row target and an argument target never claim the same action of a tool, except a `when` split', () => {
+    const overlap = Object.entries(INTENT_ROW_TARGET).flatMap(([name, entries]) => {
+      const argument = INTENT_ORG_ARGUMENT[name];
+      if (!argument || argument.when) return [];
+      return entries.flatMap((entry) => (entry.actions === 'all' ? ['all'] : entry.actions).filter((action) => matchesAction(argument.actions, action)));
+    });
+    expect(overlap).toEqual([]);
+  });
+
+  describe.each(Object.entries(INTENT_ROW_TARGET))('%s', (toolName, entries) => {
+    it.each(entries.map((entry) => [entry.arg, entry] as const))('%s names a uuid row with an org column, for Tier-3 actions only', (arg, entry) => {
+      expect(aiTools.has(toolName)).toBe(true);
+      expect(schemaProps(toolName)).toHaveProperty(arg);
+      if (entry.actions !== 'all' && aiTools.get(toolName)?.tier !== 3) {
+        const tier3 = tier3Actions(toolName);
+        expect(entry.actions.filter((action) => !tier3.has(action))).toEqual([]);
+      }
+      const { table, id, org, partner } = entry.row();
+      const columns = Object.values(getTableColumns(table));
+      // resolveIntentRowTarget treats a non-uuid id as no row, so a text key would always refuse.
+      expect(id.columnType).toBe('PgUUID');
+      expect(id.primary).toBe(true);
+      expect(columns).toContain(org);
+      if (partner) expect(columns).toContain(partner);
+    });
+  });
+
+  it('a table with no partner column cannot hold an org-less row, so its row always has an org', () => {
+    const noPartnerNullableOrg = Object.entries(INTENT_ROW_TARGET).flatMap(([name, entries]) => entries.flatMap((entry) => {
+      const { partner, org } = entry.row();
+      return !partner && !org.notNull ? [`${name}:${entry.arg}`] : [];
+    }));
+    expect(noPartnerNullableOrg).toEqual([]);
+  });
+
+  it('a device-targeted entry really names a device, and every reason says something', () => {
+    for (const [key, reason] of Object.entries({ ...INTENT_ROW_PARTNER_WIDE, ...INTENT_ROW_LEFT })) {
+      const toolName = key.split(':')[0]!;
+      expect(aiTools.has(toolName), key).toBe(true);
+      expect(hasTier3(toolName), key).toBe(true);
+      expect(reason.length, key).toBeGreaterThan(5);
+      if (reason.startsWith('names a device')) expect(aiTools.get(toolName)?.deviceArgs?.length ?? 0, key).toBeGreaterThan(0);
+    }
   });
 });

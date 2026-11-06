@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/canonicalize';
 
 const mocks = vi.hoisted(() => ({
@@ -14,12 +14,15 @@ const mocks = vi.hoisted(() => ({
   loadRow: vi.fn(),
   approverRows: [] as Array<{ userId: string }>,
   resolveTarget: vi.fn(),
+  resolveRowTarget: vi.fn(),
 }));
 
 vi.mock('./actionIntents/aiDesignIntentTarget', () => ({
   AI_DESIGN_INTENT_TOOLS: new Set(['manage_ai_agent_schedules', 'manage_fleet_designs']),
   resolveAiDesignIntentTarget: mocks.resolveTarget,
 }));
+
+vi.mock('./actionIntents/intentRowTarget', () => ({ resolveIntentRowTarget: mocks.resolveRowTarget }));
 
 vi.mock('./actionIntents/intentService', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./actionIntents/intentService')>();
@@ -349,6 +352,88 @@ describe('createMcpActionIntent', () => {
     it('a call with no org argument keeps the execution org', async () => {
       await createMcpActionIntent(partnerInput({ toolName: 'manage_billing_settings', toolInput: { action: 'update_partner' }, executionOrgId: ORG }));
       expect(filedOrg()).toBe(ORG);
+    });
+  });
+
+  // #11222: a write that names its target by row id is filed in the row's org. The execution
+  // org honours any reachable orgId, so without this an argument the handler ignores picks it.
+  describe('a write that names its target by row id (#11222)', () => {
+    const ORG_B = '66666666-6666-4666-8666-666666666666';
+    const FOREIGN = '88888888-8888-4888-8888-888888888888';
+    const PARTNER = '77777777-7777-4777-8777-777777777777';
+    const ROW = '55555555-5555-4555-8555-555555555555';
+    const partnerAuth = (reach: string[]) => ({
+      principal: { kind: 'api_key', apiKeyId: 'key-A' }, user: { id: USER }, orgId: null, partnerId: PARTNER, scope: 'partner', canAccessOrg: (id: string) => reach.includes(id),
+    }) as never;
+    const voidInvoice = { action: 'void', invoiceId: ROW };
+    const rowInput = (over: Partial<CreateMcpActionIntentInput> = {}) => input({
+      auth: partnerAuth([ORG, ORG_B]),
+      apiKey: { id: 'key-A', orgId: null, name: 'ci key', mcpDomains: null } as never,
+      toolName: 'manage_invoices',
+      toolInput: voidInvoice,
+      ...over,
+    });
+    const filedOrg = () => (mocks.createActionIntent.mock.calls[0] as unknown as [unknown, { orgId: string }])[1].orgId;
+
+    afterEach(() => {
+      mocks.resolveRowTarget.mockReset();
+    });
+
+    it('is filed in the row\'s org when the caller reaches it', async () => {
+      mocks.resolveRowTarget.mockResolvedValue({ orgId: ORG_B, partnerId: null });
+      await createMcpActionIntent(rowInput());
+      expect(mocks.resolveRowTarget).toHaveBeenCalledWith('manage_invoices', voidInvoice);
+      expect(filedOrg()).toBe(ORG_B);
+    });
+
+    it('an orgId the handler ignores does not pick the org: the execution org it set loses to the row', async () => {
+      mocks.resolveRowTarget.mockResolvedValue({ orgId: ORG, partnerId: null });
+      await createMcpActionIntent(rowInput({ toolInput: { ...voidInvoice, orgId: ORG_B }, executionOrgId: ORG_B }));
+      expect(filedOrg()).toBe(ORG);
+    });
+
+    it('a row out of reach refuses with invalid_params and files nothing', async () => {
+      mocks.resolveRowTarget.mockResolvedValue({ orgId: FOREIGN, partnerId: null });
+      expect(await createMcpActionIntent(rowInput())).toMatchObject({ kind: 'refused', code: 'invalid_params' });
+      expect(mocks.createActionIntent).not.toHaveBeenCalled();
+    });
+
+    it('a missing row refuses with the same code', async () => {
+      mocks.resolveRowTarget.mockResolvedValue({ orgId: null, partnerId: null });
+      expect(await createMcpActionIntent(rowInput())).toMatchObject({ kind: 'refused', code: 'invalid_params' });
+      expect(mocks.createActionIntent).not.toHaveBeenCalled();
+    });
+
+    it('an org-pinned key reaches only its own org, whatever the auth reaches', async () => {
+      mocks.resolveRowTarget.mockResolvedValue({ orgId: ORG_B, partnerId: null });
+      const pinned = rowInput({ apiKey: { id: 'key-A', orgId: ORG, name: 'ci key', mcpDomains: null } as never });
+      expect(await createMcpActionIntent(pinned)).toMatchObject({ kind: 'refused', code: 'invalid_params' });
+      expect(mocks.createActionIntent).not.toHaveBeenCalled();
+    });
+
+    it('an org-pinned key files a row of its own org there', async () => {
+      mocks.resolveRowTarget.mockResolvedValue({ orgId: ORG, partnerId: null });
+      await createMcpActionIntent(rowInput({ apiKey: { id: 'key-A', orgId: ORG, name: 'ci key', mcpDomains: null } as never }));
+      expect(filedOrg()).toBe(ORG);
+    });
+
+    it('a partner-wide row of the caller\'s partner keeps the execution org', async () => {
+      mocks.resolveRowTarget.mockResolvedValue({ orgId: null, partnerId: PARTNER });
+      await createMcpActionIntent(rowInput({ toolName: 'manage_configuration_policy', toolInput: { action: 'delete', policyId: ROW } }));
+      expect(filedOrg()).toBe(ORG);
+    });
+
+    it('a partner-wide row of another partner refuses like a missing row', async () => {
+      mocks.resolveRowTarget.mockResolvedValue({ orgId: null, partnerId: FOREIGN });
+      expect(await createMcpActionIntent(rowInput())).toMatchObject({ kind: 'refused', code: 'invalid_params' });
+      expect(mocks.createActionIntent).not.toHaveBeenCalled();
+    });
+
+    it('a read that fails refuses as unresolvable and is reported, never filed in the execution org', async () => {
+      mocks.resolveRowTarget.mockRejectedValue(new Error('connection reset'));
+      expect(await createMcpActionIntent(rowInput())).toMatchObject({ kind: 'refused', code: 'effect_digest_unresolvable' });
+      expect(mocks.createActionIntent).not.toHaveBeenCalled();
+      expect(mocks.captureException).toHaveBeenCalled();
     });
   });
 
