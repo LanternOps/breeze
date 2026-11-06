@@ -167,5 +167,5 @@ describe('no savepoint is started beside its siblings', () => {
     const hits = sourceFiles(src).flatMap((path) =>
       findSavepointsInPromiseAll(relative(join(src, '..'), path), readFileSync(path, 'utf8')));
     expect(hits, 'run these in sequence: see docs/agents/tenancy-rls.md').toEqual([]);
-  });
+  }, 30_000); // parses every API source file; ~10 s on a loaded CI runner
 });
