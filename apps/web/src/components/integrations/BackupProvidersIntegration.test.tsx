@@ -375,6 +375,20 @@ describe("Axcient connections", () => {
     expect(JSON.parse(raw).credentials).toEqual({ apiKey: "test-axcient-key-0000" });
   });
 
+  it("does not post a Dropsuite base URL after switching to a provider without one", async () => {
+    render(<BackupProvidersIntegration />);
+    await screen.findByTestId("backup-connection-conn-1");
+    fireEvent.click(screen.getByTestId("backup-providers-add"));
+    fireEvent.change(screen.getByTestId("backup-add-name"), { target: { value: "Switched" } });
+    fireEvent.change(screen.getByTestId("backup-add-provider"), { target: { value: "dropsuite" } });
+    fireEvent.change(screen.getByTestId("backup-add-base-url"), { target: { value: "https://dropsuite.us/api/" } });
+    fireEvent.change(screen.getByTestId("backup-add-provider"), { target: { value: "axcient" } });
+    fireEvent.change(screen.getByTestId("backup-add-api-key"), { target: { value: "test-axcient-key-0000" } });
+    fireEvent.click(screen.getByTestId("backup-add-submit"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/backup/providers/connections", expect.objectContaining({ method: "POST" })));
+    expect(JSON.parse(postedBody())).not.toHaveProperty("baseUrl");
+  });
+
   it("clears typed credentials when the provider changes, so going back shows an empty secret", async () => {
     render(<BackupProvidersIntegration />);
     await screen.findByTestId("backup-connection-conn-1");

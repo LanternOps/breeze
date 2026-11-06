@@ -232,7 +232,15 @@ function statusColor(C: PdfChrome['C'], status: ExternalBackupStatus): RGB {
   }
 }
 
-function cellText(row: BackupHealthRow, key: string): string {
+/** A result carries its date: an old "Passed" must not read as a current one. */
+function verifiedBootableText(row: BackupHealthRow, timezone: string | undefined): string {
+  const state = verifiedBootableState(row);
+  const label = VERIFIED_BOOTABLE_LABEL[state];
+  if ((state !== 'passed' && state !== 'failed') || !row.verifiedBootableAt) return label;
+  return `${label}\n${formatSnapshotDate(row.verifiedBootableAt, timezone)}`;
+}
+
+function cellText(row: BackupHealthRow, key: string, timezone: string | undefined): string {
   switch (key) {
     case 'device': return row.name;
     case 'computerName': return row.computerName ?? '-';
@@ -246,7 +254,7 @@ function cellText(row: BackupHealthRow, key: string): string {
     case 'used': return formatBytes(row.usedBytes);
     case 'errors': return String(row.errorsCount);
     case 'status': return STATUS_LABEL[row.status];
-    case 'verifiedBootable': return VERIFIED_BOOTABLE_LABEL[verifiedBootableState(row)];
+    case 'verifiedBootable': return verifiedBootableText(row, timezone);
     // Drawn by hand in didDrawCell (a 28-cell colour strip); text stays empty
     // so autoTable never prints a stray label under the drawing.
     case 'history':
@@ -279,6 +287,17 @@ function formatSnapshotTime(iso: string, timezone: string | undefined): string {
   } catch {
     // Unknown zone string: fall back to UTC rather than failing the render.
     return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'short' }).format(d);
+  }
+}
+
+/** The date alone, same zone handling as {@link formatSnapshotTime}. */
+function formatSnapshotDate(iso: string, timezone: string | undefined): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone: timezone || 'UTC', dateStyle: 'medium' }).format(d);
+  } catch {
+    return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', dateStyle: 'medium' }).format(d);
   }
 }
 
@@ -339,7 +358,7 @@ export function renderBackupStatusReport(
     startY: y + 1,
     margin: { top: continuationTop, left: PAGE.mx, right: PAGE.mx, bottom: 16 },
     head: [COLUMNS.map((c) => ({ content: saasCount > 0 && c.key === 'device' ? 'Resource' : c.label, styles: { halign: c.halign } }))],
-    body: rows.map((r) => COLUMNS.map((c) => cellText(r, c.key))),
+    body: rows.map((r) => COLUMNS.map((c) => cellText(r, c.key, opts.timezone))),
     theme: 'grid',
     rowPageBreak: 'avoid',
     styles: { fontSize: BODY_FONT, cellPadding: { top: 1.2, bottom: 1.2, left: 1.6, right: 1.6 }, minCellHeight: ROW_MIN_H, lineColor: C.rule, lineWidth: 0.1, textColor: C.ink, valign: 'middle' },

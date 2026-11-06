@@ -162,6 +162,17 @@ describe("rotationCredentials", () => {
   });
 });
 
+describe("BACKUP_PROVIDER_FORMS invariants", () => {
+  // An empty or mistyped `requires` would either post blank credentials over a
+  // working secret or never rotate at all.
+  it.each(BACKUP_PROVIDER_FORMS.map((form) => [form.provider, form] as const))("%s rotation requires real fields", (_provider, form) => {
+    const keys = form.fields.map((field) => field.key);
+    expect(form.rotation.requires.length).toBeGreaterThan(0);
+    for (const key of form.rotation.requires) expect(keys).toContain(key);
+    expect(rotationCredentials(form, {})).toBeNull();
+  });
+});
+
 describe("valuesAfterRotation", () => {
   it("clears secrets and keeps plain text, as the old card did", () => {
     expect(valuesAfterRotation(cove, { partnerName: "n", username: "u", password: "p" })).toEqual({ partnerName: "n", username: "u" });

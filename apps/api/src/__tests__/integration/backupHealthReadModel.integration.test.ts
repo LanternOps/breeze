@@ -220,6 +220,30 @@ describe('backupHealthReadModel against real policies', () => {
       }),
     );
 
+    const insertAxcient = (name: string, evidence: Partial<typeof backupProviderDevices.$inferInsert>) =>
+      withSystemDbAccessContext(() =>
+        db.insert(backupProviderDevices).values({
+          connectionId: template!.connectionId,
+          partnerId: fx.partner.id,
+          orgId: fx.org.id,
+          customerId: template!.customerId,
+          provider: 'axcient',
+          vendorDeviceId: `vd-${name}-${unique}`,
+          vendorDeviceName: name,
+          breezeDeviceId: null,
+          status: 'completed',
+          lastSuccessAt: new Date(),
+          lastSessionAt: new Date(),
+          ...evidence,
+        }),
+      );
+    await insertAxcient('BH-RM-AXCIENT-FAILED', {
+      verifiedBootableAt: at,
+      verifiedBootable: false,
+      verifiedBootableFailedChecks: ['system_boot', 'check_disk'],
+    });
+    await insertAxcient('BH-RM-AXCIENT-NEVER', {});
+
     await withDbAccessContext(fx.partnerContext, async () => {
       const { rows } = await listBackupHealthRows({ orgIds: [fx.org.id] }, { page: { limit: 50 } });
       const axcient = rows.find((r) => r.name === 'BH-RM-AXCIENT');
@@ -230,6 +254,14 @@ describe('backupHealthReadModel against real policies', () => {
         verifiedBootableFailedChecks: [],
       });
       expect(verifiedBootableState(axcient!)).toBe('passed');
+
+      const failed = rows.find((r) => r.name === 'BH-RM-AXCIENT-FAILED');
+      expect(failed).toMatchObject({ verifiedBootable: false, verifiedBootableFailedChecks: ['system_boot', 'check_disk'] });
+      expect(verifiedBootableState(failed!)).toBe('failed');
+
+      const never = rows.find((r) => r.name === 'BH-RM-AXCIENT-NEVER');
+      expect(never).toMatchObject({ verifiedBootable: null, verifiedBootableAt: null, verifiedBootableFailedChecks: null });
+      expect(verifiedBootableState(never!)).toBe('never_run');
 
       const cove = rows.find((r) => r.name === 'BH-RM-UNLINKED');
       expect(cove).toMatchObject({

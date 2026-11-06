@@ -79,9 +79,9 @@ A NinjaOne SaaS Backup connection card and its customer mapping table count **wo
 
 If the check fails, the form says why. If Axcient does not accept the key, the message is *Axcient rejected the API key.* Check that you copied the whole key and that it has not been deleted in x360Portal. If the key lacks a product scope, the message is *This key is missing a product scope. Edit it in x360Portal → Settings → API Keys and enable x360Recover and Billing.* Edit the key in x360Portal, tick both boxes, and try again.
 
-The key is stored encrypted. To replace it, use **Re-enter credentials** and enter the new key; leave the field blank to keep the stored key.
+The key is stored encrypted. If Axcient later rejects it, the connection card offers **Re-enter credentials**: enter a new key, or leave the field blank to keep the stored one.
 
-Each Axcient client is a customer to map to a Breeze organization, as described below. Axcient client codes are not Breeze organization IDs, so Axcient customers are never mapped automatically: map each one yourself, with name suggestions to help. Clients that Axcient marks inactive are still listed and their devices are still fetched, so an inactive client stays visible rather than looking like a sync problem. You can map or unmap them like any other.
+Each Axcient client is a customer to map to a Breeze organization, as described below. Axcient client codes are short codes rather than Breeze organization IDs, so these customers do not map automatically: map each one yourself, with name suggestions to help. Clients that Axcient marks inactive are still listed and their devices are still fetched, so an inactive client stays visible rather than looking like a sync problem. You can map or unmap them like any other.
 
 ### Paused devices
 
@@ -92,7 +92,7 @@ A device that has been parked in Axcient shows as **Paused**. Paused is its own 
 When Axcient has run a boot check on a device, Breeze shows the result in two places:
 
 - **Last boot check** on the external backup card of the device's **Backup** tab, with the time of the check and whether it passed or failed.
-- A **Verified bootable** column on the **Backup** page and in the backup status report, with **Passed**, **Failed** or **Never run**.
+- A **Verified bootable** column on the **Backup** page and in the backup status report, with **Passed** or **Failed** and the date of the check, or **Never run**.
 
 The column shows **n/a** for providers that do not supply boot checks (Cove and NinjaOne SaaS Backup), and for backup status reports saved before the column existed.
 
@@ -124,7 +124,7 @@ Decommissioned devices are never matched, and Microsoft 365 backup accounts are 
 
 ## Sync, History and Alerts
 
-Cove connections sync **every 30 minutes**; NinjaOne SaaS Backup connections sync **every 60 minutes**. A connection whose login the provider rejects is marked **Credentials rejected** and stops syncing until you use **Re-enter credentials** with a working login. If a connection has not synced for more than two sync intervals, its devices show as **Unknown** health and the backup health view shows a banner that provider data is out of date.
+Cove and Axcient connections sync **every 30 minutes**; NinjaOne SaaS Backup connections sync **every 60 minutes**. A connection whose login the provider rejects is marked **Credentials rejected** and stops syncing until you use **Re-enter credentials** with a working login. If a connection has not synced for more than two sync intervals, its devices show as **Unknown** health and the backup health view shows a banner that provider data is out of date.
 
 Breeze keeps a **daily history** for each provider device (the worst status seen that day), shown as the *Last 28 days* strip. History older than 60 days is pruned.
 

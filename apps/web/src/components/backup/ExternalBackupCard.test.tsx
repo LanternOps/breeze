@@ -148,7 +148,14 @@ describe('ExternalBackupCard', () => {
     it('shows Never run for an Axcient row without evidence', async () => {
       load({ provider: 'axcient' });
       const line = await screen.findByTestId('external-backup-boot-check');
-      expect(line.textContent).toContain('Never run');
+      expect(line.querySelector('dd')?.textContent).toBe('Never run');
+    });
+
+    it('names failed checks only on a failed result', async () => {
+      load({ provider: 'axcient', verifiedBootable: true, verifiedBootableAt: AT, verifiedBootableFailedChecks: ['system_boot'] });
+      const line = await screen.findByTestId('external-backup-boot-check');
+      expect(line.textContent).toContain('Passed');
+      expect(line.textContent).not.toContain('system_boot');
     });
 
     it('omits the boot-check row for a Cove device', async () => {

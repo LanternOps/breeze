@@ -59,6 +59,7 @@ export default function BackupHealthDeviceTable({ rows }: { rows: BackupHealthRo
         <tbody>
           {rows.map((row) => {
             const isSaas = row.accountType === 'm365' || row.accountType === 'gws';
+            const verifiedBootable = verifiedBootableState(row);
             const dataSources = row.dataSources
               .map((source) => t(/* i18n-dynamic */ `backupHealth.dataSource.${source}`, { defaultValue: source }))
               .join(', ');
@@ -110,7 +111,12 @@ export default function BackupHealthDeviceTable({ rows }: { rows: BackupHealthRo
                 </td>
                 <td className="py-2 pr-3 text-muted-foreground">{row.errorsCount}</td>
                 <td data-testid={`backup-health-verified-${row.key}`} className="py-2 pr-3 text-muted-foreground">
-                  {t(/* i18n-dynamic */ `backupHealth.verifiedBootable.${verifiedBootableState(row)}`)}
+                  {t(/* i18n-dynamic */ `backupHealth.verifiedBootable.${verifiedBootable}`)}
+                  {(verifiedBootable === 'passed' || verifiedBootable === 'failed') && row.verifiedBootableAt && (
+                    <div className="text-xs">
+                      {formatDateTime(row.verifiedBootableAt, { fallback: '', month: 'short', day: 'numeric', year: 'numeric' })}
+                    </div>
+                  )}
                 </td>
                 <td className="py-2 text-muted-foreground">
                   {row.agentOnline == null

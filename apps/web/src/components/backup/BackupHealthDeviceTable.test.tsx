@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { BackupHealthRow } from '@breeze/shared';
 
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import BackupHealthDeviceTable from './BackupHealthDeviceTable';
 
 function makeRow(overrides: Partial<BackupHealthRow> = {}): BackupHealthRow {
@@ -101,5 +102,17 @@ describe('BackupHealthDeviceTable — Verified bootable column', () => {
     ]} />);
     expect(screen.getByTestId('backup-health-verified-provider:bad')).toHaveTextContent('Failed');
     expect(screen.getByTestId('backup-health-verified-provider:new')).toHaveTextContent('Never run');
+  });
+
+  it('dates a passed or failed result so an old check cannot read as current', () => {
+    const at = '2026-11-05T03:12:00.000Z';
+    render(<BackupHealthDeviceTable rows={[
+      makeRow({ key: 'provider:ok', source: 'provider', providerKey: 'axcient', verifiedBootable: true, verifiedBootableAt: at }),
+      makeRow({ key: 'provider:new', source: 'provider', providerKey: 'axcient' }),
+    ]} />);
+    expect(screen.getByTestId('backup-health-verified-provider:ok')).toHaveTextContent(
+      formatDateTime(at, { fallback: '', month: 'short', day: 'numeric', year: 'numeric' }),
+    );
+    expect(screen.getByTestId('backup-health-verified-provider:new').textContent).toBe('Never run');
   });
 });

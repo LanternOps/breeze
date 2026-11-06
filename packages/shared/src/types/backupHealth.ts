@@ -113,9 +113,11 @@ export interface BackupHealthRow {
   agentOnline: boolean | null;
   /**
    * The vendor's own boot check, when the provider supplies one (Axcient
-   * AutoVerify). All three are null for a first-party row, a provider without
-   * the signal, and a device with no result yet; `verifiedBootableState` tells
-   * those apart. Rows saved in a report before these fields existed omit them.
+   * AutoVerify). `verifiedBootable` alone decides the state, through
+   * `verifiedBootableState`: it is null for a first-party row, a provider
+   * without the signal, and a device with no result yet. The date can be null
+   * beside a result when the vendor did not give one. Rows saved in a report
+   * before these fields existed omit all three.
    */
   verifiedBootableAt: string | null;
   verifiedBootable: boolean | null;

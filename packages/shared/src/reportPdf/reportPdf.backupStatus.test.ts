@@ -228,6 +228,17 @@ describe('backup status report PDF', () => {
       expect(text).toContain('Never run');
     });
 
+    it('dates a passed or failed result, in the report timezone', () => {
+      const text = pdfText(buildReportPdf([], {
+        ...opts,
+        timezone: 'America/Los_Angeles',
+        summary: { ...data, rows: [axcient({ verifiedBootable: true, verifiedBootableAt: '2026-11-05T03:12:00.000Z' })] },
+      }));
+      expect(text).toContain('Passed');
+      // 03:12 UTC on the 5th is still the 4th in Los Angeles.
+      expect(text).toMatch(/Nov 4,/);
+    });
+
     it('renders n/a for rows persisted before verified-bootable existed', () => {
       const legacy = (r: BackupHealthRow) => {
         const { verifiedBootable: _v, verifiedBootableAt: _a, verifiedBootableFailedChecks: _f, ...rest } = r;

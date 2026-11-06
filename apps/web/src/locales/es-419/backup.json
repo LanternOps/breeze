@@ -1140,7 +1140,7 @@
     "verifiedBootable": {
       "passed": "Aprobado",
       "failed": "Fallido",
-      "never_run": "Nunca ejecutada",
+      "never_run": "Nunca ejecutado",
       "not_applicable": "n/d"
     },
     "dataSource": {
