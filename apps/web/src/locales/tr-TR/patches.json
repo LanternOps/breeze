@@ -488,7 +488,8 @@
     "skipReasons": {
       "ring_deleted": "Gönderimden önce iptal edildi: güncelleme halkası silindi.",
       "ring_disabled": "Gönderimden önce iptal edildi: güncelleme halkası devre dışı bırakıldı.",
-      "ring_unavailable": "Atlandı: güncelleme halkası bu cihaza gönderilmeden önce silindi veya devre dışı bırakıldı."
+      "ring_unavailable": "Atlandı: güncelleme halkası bu cihaza gönderilmeden önce silindi veya devre dışı bırakıldı.",
+      "all_managed_by_vendor_updates": "Atlandı: bu cihazdaki bekleyen tüm güncellemeler Üretici güncellemeleri tarafından yönetiliyor, onay gerekmiyor."
     },
     "errors": {
       "load": "Yama işi yüklenemedi"
