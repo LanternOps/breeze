@@ -80,6 +80,13 @@ patchPlanRoutes.post(
       audit({ skipped: result.skipped }, result.agentId, false);
       return c.json({ success: false, skipped: result.skipped }, 200);
     }
+    // The run row exists but BullMQ never took it (it is already marked
+    // failed/enqueue_failed). Not a 202, and no runId: the queue holds nothing
+    // the caller could poll. Same outcome the `run_patch_plan` tool reports.
+    if (result.enqueueFailed) {
+      audit({ skipped: 'enqueue_failed', runId: result.runId }, result.agentId, false);
+      return c.json({ error: 'The patch run could not be queued. Try again shortly.', code: 'enqueue_failed' }, 503);
+    }
     audit({ runId: result.runId }, result.agentId, true);
     return c.json({ runId: result.runId }, 202);
   },
