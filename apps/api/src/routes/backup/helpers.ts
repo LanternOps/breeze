@@ -1,4 +1,34 @@
+import { and, eq, inArray, isNotNull, max } from 'drizzle-orm';
+import { db } from '../../db';
+import { backupStorageSessions } from '../../db/schema';
 import type { BackupPolicySchedule } from './types';
+
+/**
+ * When each job's write session last resumed an interrupted snapshot (#11027).
+ * A job that never resumed has no entry. Runs inside the request's
+ * withDbAccessContext, so RLS scopes it to the caller's orgs.
+ */
+export async function loadJobResumedAt(jobIds: string[]): Promise<Map<string, Date>> {
+  const resumedByJob = new Map<string, Date>();
+  if (jobIds.length === 0) return resumedByJob;
+
+  const rows = await db
+    .select({ jobId: backupStorageSessions.jobId, resumedAt: max(backupStorageSessions.resumedAt) })
+    .from(backupStorageSessions)
+    .where(
+      and(
+        inArray(backupStorageSessions.jobId, jobIds),
+        eq(backupStorageSessions.scope, 'snapshot_write'),
+        isNotNull(backupStorageSessions.resumedAt),
+      ),
+    )
+    .groupBy(backupStorageSessions.jobId);
+
+  for (const row of rows) {
+    if (row.jobId && row.resumedAt) resumedByJob.set(row.jobId, new Date(row.resumedAt));
+  }
+  return resumedByJob;
+}
 
 export function toDateOrNull(value?: string) {
   if (!value) return null;

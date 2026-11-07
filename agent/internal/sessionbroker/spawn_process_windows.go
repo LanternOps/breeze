@@ -13,11 +13,9 @@ import (
 )
 
 // SpawnProcessInSession launches an arbitrary binary in the specified
-// Windows session as the logged-in user. Tries three strategies in order:
-//  1. WTSQueryUserToken — standard API, fails on Azure AD cloud-only sessions
-//  2. Explorer.exe token theft — find explorer.exe in the session and duplicate
-//     its token; works for any login type including Azure AD
-//  3. SYSTEM fallback — last resort, process runs as SYSTEM with session override
+// Windows session as the signed-in user, using the user token strategies of
+// AcquireInteractiveUserToken. It never falls back to SYSTEM: with nobody
+// signed in it returns ErrNoInteractiveUser and launches nothing (#10379).
 //
 // Uses cmd.exe as a wrapper because CreateProcessAsUser returns
 // "Access is denied" for Tauri binaries — likely SmartScreen/WDAC.
@@ -38,7 +36,10 @@ func SpawnProcessInSessionWithArgs(binaryPath string, args []string, sessionID u
 		return fmt.Errorf("stat spawn target %s: %w", binaryPath, statErr)
 	}
 
-	dupToken, envBlock, identity, err := acquireUserToken(sessionID)
+	// #10379: a user token or nothing. The SYSTEM fallback launched Breeze
+	// Assist into the logon-screen session, where it exits 101 and the
+	// watcher crash-looped.
+	dupToken, envBlock, identity, err := AcquireInteractiveUserToken(sessionID)
 	if err != nil {
 		return err
 	}
@@ -160,30 +161,65 @@ func quoteWindowsArgs(args []string) []string {
 	return quoted
 }
 
-// acquireUserToken tries to get a user-identity token for the session.
+// userTokenStrategy is one way to obtain the signed-in user's primary token
+// for a session. name is the identity description logged at spawn.
+type userTokenStrategy struct {
+	name    string
+	acquire func(sessionID uint32) (windows.Token, *uint16, error)
+}
+
+// interactiveUserTokenStrategies are tried in order. A var so tests can
+// stand in for the Win32 calls.
+var interactiveUserTokenStrategies = []userTokenStrategy{
+	// WTSQueryUserToken: fast, works for local and domain accounts.
+	{name: "user (WTS)", acquire: func(sessionID uint32) (windows.Token, *uint16, error) {
+		token, envBlock, _, err := getUserTokenViaWTS(sessionID)
+		return token, envBlock, err
+	}},
+	// explorer.exe's token: works for Azure AD sessions, where
+	// WTSQueryUserToken can fail.
+	{name: "user (explorer)", acquire: getUserTokenViaExplorer},
+}
+
+// systemTokenForSession is the SYSTEM fallback of acquireUserToken. A var so
+// tests can prove the user-only path never reaches it.
+var systemTokenForSession = getSystemTokenForSession
+
+// AcquireInteractiveUserToken returns a primary token and environment block
+// for the user signed in to sessionID, and the identity description of the
+// strategy that produced it. It never returns a SYSTEM token: when no strategy
+// yields a user token (nobody is signed in to the session, or the user's
+// shell has not started yet) it fails with ErrNoInteractiveUser, which callers
+// treat as "wait for a user" (#10379). The caller closes the token and
+// destroys a non-nil environment block.
+func AcquireInteractiveUserToken(sessionID uint32) (windows.Token, *uint16, string, error) {
+	var failures []string
+	for _, s := range interactiveUserTokenStrategies {
+		token, envBlock, err := s.acquire(sessionID)
+		if err == nil {
+			return token, envBlock, s.name, nil
+		}
+		log.Debug("user token strategy failed", "sessionId", sessionID, "strategy", s.name, "error", err.Error())
+		failures = append(failures, s.name+": "+err.Error())
+	}
+	return 0, nil, "", fmt.Errorf("session %d: %w (%s)", sessionID, ErrNoInteractiveUser, strings.Join(failures, "; "))
+}
+
+// acquireUserToken tries to get a user-identity token for the session and
+// falls back to the agent's SYSTEM token with the session overridden. Only
+// the desktop helper spawner (spawner_windows.go) uses it; launches that must
+// run as the user use AcquireInteractiveUserToken.
 // Returns token, environment block, identity description, error.
 func acquireUserToken(sessionID uint32) (windows.Token, *uint16, string, error) {
-	// Strategy 1: WTSQueryUserToken (fast, works for local accounts)
-	token, envBlock, _, err := getUserTokenViaWTS(sessionID)
+	token, envBlock, identity, err := AcquireInteractiveUserToken(sessionID)
 	if err == nil {
-		return token, envBlock, "user (WTS)", nil
-	}
-	wtsErr := err
-	log.Debug("WTSQueryUserToken failed, trying explorer.exe token",
-		"sessionId", sessionID, "error", err.Error())
-
-	// Strategy 2: steal token from explorer.exe in the session
-	token, envBlock, err = getUserTokenViaExplorer(sessionID)
-	if err == nil {
-		return token, envBlock, "user (explorer)", nil
+		return token, envBlock, identity, nil
 	}
 	log.Warn("all user token strategies failed, falling back to SYSTEM",
 		"sessionId", sessionID,
-		"wtsError", wtsErr.Error(),
-		"explorerError", err.Error())
+		"error", err.Error())
 
-	// Strategy 3: SYSTEM fallback
-	token, _, err = getSystemTokenForSession(sessionID)
+	token, _, err = systemTokenForSession(sessionID)
 	if err != nil {
 		return 0, nil, "", err
 	}

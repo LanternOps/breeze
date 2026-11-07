@@ -143,6 +143,10 @@ export const GATED_COMMAND_TYPES = [
   'network_ping',
   'network_tcp_check',
   'notify_user',
+  // Vendor updates (#11065): operator-directed, can flash firmware and require a reboot.
+  'oem_update_run',
+  // Vendor updates (#11065): operator-directed; runs the vendor binary as SYSTEM to hand its schedule back.
+  'oem_update_release',
   'pam_apply_v2',
   'pam_reconcile_v2',
   // #8928: carries the technician's deny reason to the end user's screen.

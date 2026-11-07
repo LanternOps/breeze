@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // ErrNotSupported is returned when platform-specific operations are unavailable.
@@ -40,6 +41,9 @@ type AVProduct struct {
 // failed, so the API stores "unknown" instead of a fabricated false that fires
 // the antivirus not_protected/realtime_disabled checks (#7965). A genuine false
 // is still sent.
+//
+// FirewallStatus is "enabled", "disabled" or "unsupported", and is omitted when
+// the read failed. FirewallStatusReason says why a host is unsupported (#10909).
 type SecurityStatus struct {
 	DeviceID                       string      `json:"deviceId"`
 	DeviceName                     string      `json:"deviceName"`
@@ -54,6 +58,8 @@ type SecurityStatus struct {
 	RealTimeProtection             *bool       `json:"realTimeProtection,omitempty"`
 	ThreatCount                    int         `json:"threatCount"`
 	FirewallEnabled                *bool       `json:"firewallEnabled,omitempty"`
+	FirewallStatus                 string      `json:"firewallStatus,omitempty"`
+	FirewallStatusReason           string      `json:"firewallStatusReason,omitempty"`
 	EncryptionStatus               string      `json:"encryptionStatus"`
 	EncryptionDetails              any         `json:"encryptionDetails,omitempty"`
 	LocalAdminSummary              any         `json:"localAdminSummary,omitempty"`
@@ -231,6 +237,9 @@ func latestScanTime(defenderStatus DefenderStatus) string {
 }
 
 func encryptionString(enabled bool, detectErr error) string {
+	if errors.Is(detectErr, ErrBitLockerUnavailable) {
+		return "unsupported"
+	}
 	if detectErr != nil {
 		return "unknown"
 	}
@@ -238,6 +247,20 @@ func encryptionString(enabled bool, detectErr error) string {
 		return "encrypted"
 	}
 	return "unencrypted"
+}
+
+// applyEncryptionPosture records the encryption read on status and returns
+// the error CollectStatus should report, if any. No BitLocker on this host is
+// a state ("unsupported"), not a collection failure (#10902).
+func applyEncryptionPosture(status *SecurityStatus, enabled bool, details map[string]any, detectErr error) error {
+	status.EncryptionStatus = encryptionString(enabled, detectErr)
+	if details != nil {
+		status.EncryptionDetails = details
+	}
+	if detectErr == nil || errors.Is(detectErr, ErrBitLockerUnavailable) {
+		return nil
+	}
+	return detectErr
 }
 
 func boolPtr(value bool) *bool {
@@ -667,14 +690,10 @@ func bitLockerEnumName(value any, names map[int]string) string {
 const bitLockerVolumesPS = `Get-BitLockerVolume | Select-Object MountPoint,@{n='ProtectionStatus';e={[string]$_.ProtectionStatus}},@{n='EncryptionMethod';e={[string]$_.EncryptionMethod}},@{n='VolumeStatus';e={[string]$_.VolumeStatus}},EncryptionPercentage | ConvertTo-Json -Compress`
 
 func collectEncryptionDetailsWindows() (map[string]any, error) {
-	output, err := runCommand(
-		10*time.Second,
-		"powershell",
-		"-NoProfile",
-		"-NonInteractive",
-		"-Command",
-		bitLockerVolumesPS,
-	)
+	if bitLockerNotInstalled() {
+		return nil, ErrBitLockerUnavailable
+	}
+	output, err := runBitLockerPowerShell(10*time.Second, bitLockerVolumesPS)
 	if err != nil {
 		return nil, err
 	}
@@ -767,54 +786,6 @@ func collectEncryptionDetails() (map[string]any, error) {
 	default:
 		return nil, ErrNotSupported
 	}
-}
-
-func collectLocalAdminSummaryWindows() (map[string]any, error) {
-	output, err := runCommand(
-		10*time.Second,
-		"powershell",
-		"-NoProfile",
-		"-NonInteractive",
-		"-Command",
-		"Get-LocalGroupMember -Group 'Administrators' | Select-Object Name,ObjectClass,SID,PrincipalSource | ConvertTo-Json -Compress",
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	parsed, err := parseJSONValue(output)
-	if err != nil {
-		return nil, err
-	}
-
-	members := toObjectSlice(parsed)
-	accounts := make([]map[string]any, 0, len(members))
-	for _, member := range members {
-		username, _ := stringFromAny(member["Name"])
-		if username == "" {
-			continue
-		}
-		sid, _ := stringFromAny(member["SID"])
-		isBuiltIn := strings.HasSuffix(strings.TrimSpace(sid), "-500") ||
-			strings.EqualFold(username, "Administrator")
-		entry := map[string]any{
-			"username":   username,
-			"isBuiltIn":  isBuiltIn,
-			"enabled":    true,
-			"objectType": member["ObjectClass"],
-		}
-		if isBuiltIn {
-			entry["defaultAccount"] = true
-		}
-		accounts = append(accounts, entry)
-	}
-
-	return map[string]any{
-		"source":            "windows_local_group",
-		"adminCount":        len(accounts),
-		"localAccountCount": len(accounts),
-		"accounts":          accounts,
-	}, nil
 }
 
 func collectLocalAdminSummaryDarwin() (map[string]any, error) {
@@ -1214,18 +1185,13 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 	status.RealTimeProtection = avRealTimeProtectionState(realTime, avCollected, avFailed)
 
 	firewallEnabled, fwErr := GetFirewallStatus()
-	if fwErr != nil {
-		errs = append(errs, fwErr)
+	if err := applyFirewallPosture(&status, firewallEnabled, fwErr); err != nil {
+		errs = append(errs, err)
 	}
-	status.FirewallEnabled = firewallState(firewallEnabled, fwErr)
 
 	encryptionEnabled, encDetails, encErr := collectEncryptionPosture()
-	if encErr != nil {
-		errs = append(errs, encErr)
-	}
-	status.EncryptionStatus = encryptionString(encryptionEnabled, encErr)
-	if encDetails != nil {
-		status.EncryptionDetails = encDetails
+	if err := applyEncryptionPosture(&status, encryptionEnabled, encDetails, encErr); err != nil {
+		errs = append(errs, err)
 	}
 
 	if localAdmins, err := collectLocalAdminSummary(); err == nil {
@@ -1297,28 +1263,29 @@ func getFirewallStatusWindows() (bool, error) {
 	return false, nil
 }
 
+// runFirewallCommand is a seam so the darwin firewall order is testable off-macOS.
+var runFirewallCommand = runCommand
+
 func getFirewallStatusDarwin() (bool, error) {
-	// Prefer locale-invariant numeric check via defaults read.
-	// globalstate: 0=off, 1=on, 2=on (essential services only).
-	output, err := runCommand(5*time.Second, "defaults", "read", "/Library/Preferences/com.apple.alf", "globalstate")
-	if err == nil {
-		switch strings.TrimSpace(output) {
-		case "1", "2":
-			return true, nil
-		case "0":
-			return false, nil
+	// macOS 15+ dropped the com.apple.alf defaults domain, so spawning
+	// defaults there only fails (#10911).
+	if major, known := macOSMajorVersion(); !known || major < 15 {
+		// Locale-invariant numeric check: 0=off, 1=on, 2=on (essential services only).
+		output, err := runFirewallCommand(5*time.Second, "defaults", "read", "/Library/Preferences/com.apple.alf", "globalstate")
+		if err == nil {
+			switch strings.TrimSpace(output) {
+			case "1", "2":
+				return true, nil
+			case "0":
+				return false, nil
+			}
 		}
 	}
 
-	// Fallback: socketfilterfw text output (locale-dependent, English-only match).
-	output, err = runCommand(5*time.Second, "/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate")
+	output, err := runFirewallCommand(5*time.Second, "/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate")
 	if err == nil {
-		lower := strings.ToLower(output)
-		if strings.Contains(lower, "enabled") {
-			return true, nil
-		}
-		if strings.Contains(lower, "disabled") {
-			return false, nil
+		if enabled, ok := parseSocketfilterfwState(output); ok {
+			return enabled, nil
 		}
 	}
 
@@ -1341,7 +1308,7 @@ func firewallStatusFromCommand(timeout time.Duration, name string, args ...strin
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procspawn.CommandContext(ctx, name, args...)
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return "", false, false
@@ -1386,44 +1353,6 @@ func interpretFirewallState(tool, state string) (enabled bool, known bool) {
 		}
 	}
 	return false, false
-}
-
-func getFirewallStatusLinux() (bool, error) {
-	if hasCommand("ufw") {
-		output, err := runCommand(5*time.Second, "ufw", "status")
-		if err == nil {
-			if enabled, known := interpretFirewallState("ufw", output); known {
-				return enabled, nil
-			}
-		}
-	}
-
-	// firewall-cmd / systemctl probe a different daemon (firewalld) than ufw.
-	// On a host where ufw is the ACTIVE firewall but firewalld is installed
-	// + masked (a common Ubuntu/Debian shape), `firewall-cmd --state` exits
-	// non-zero and prints "not running" or a D-Bus failure on stdout. The
-	// previous version trusted that text regardless of exit code, which
-	// silently reported the host as firewall=disabled — strictly worse than
-	// the WARN it replaced because FirewallEnabled feeds security posture
-	// (status.go's posture computation). We now only trust a recognized state
-	// when the tool ALSO exited 0; non-zero exit → unknown → fall through.
-	if hasCommand("firewall-cmd") {
-		if stdout, zeroExit, ok := firewallStatusFromCommand(5*time.Second, "firewall-cmd", "--state"); ok && zeroExit {
-			if enabled, known := interpretFirewallState("firewall-cmd", stdout); known {
-				return enabled, nil
-			}
-		}
-	}
-
-	if hasCommand("systemctl") {
-		if stdout, zeroExit, ok := firewallStatusFromCommand(5*time.Second, "systemctl", "is-active", "firewalld"); ok && zeroExit {
-			if enabled, known := interpretFirewallState("systemctl", stdout); known {
-				return enabled, nil
-			}
-		}
-	}
-
-	return false, fmt.Errorf("unable to determine firewall status")
 }
 
 // collectEncryptionPosture returns the headline encryption state and the
@@ -1474,8 +1403,13 @@ func getEncryptionStatusFor(goos string) (bool, error) {
 	}
 }
 
+const bitLockerSystemDriveStatusPS = "Get-BitLockerVolume -MountPoint $env:SystemDrive | Select-Object -ExpandProperty ProtectionStatus"
+
 func getEncryptionStatusWindows() (bool, error) {
-	output, err := runCommand(8*time.Second, "powershell", "-NoProfile", "-NonInteractive", "-Command", "Get-BitLockerVolume -MountPoint $env:SystemDrive | Select-Object -ExpandProperty ProtectionStatus")
+	if bitLockerNotInstalled() {
+		return false, ErrBitLockerUnavailable
+	}
+	output, err := runBitLockerPowerShell(8*time.Second, bitLockerSystemDriveStatusPS)
 	if err != nil {
 		return false, err
 	}
@@ -1543,7 +1477,7 @@ func runCommand(timeout time.Duration, name string, args ...string) (string, err
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := procspawn.CommandContext(ctx, name, args...)
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return "", fmt.Errorf("command timed out: %s", name)

@@ -422,6 +422,20 @@ describe('org merge routes', () => {
       expect(enqueueOrgMergeMock).not.toHaveBeenCalled();
     });
 
+    it('refuses an unresolved isolation with 409 and never enqueues', async () => {
+      previewOrgMergeMock.mockResolvedValueOnce({
+        ...PREVIEW_RESULT, verdict: 'blocked',
+        blockers: ['Release network isolation first. Payment collection is still in flight.', 'Merge lineage depth exceeded.'],
+        blockerCodes: ['isolation_unresolved'],
+      });
+      const res = await postJson(buildApp(), `/orgs/organizations/${LOSER_ID}/merge`, {
+        survivorId: SURVIVOR_ID, confirmName: 'Acme Loser',
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'isolation_unresolved', message: 'Release network isolation first. Payment collection is still in flight. Merge lineage depth exceeded.' });
+      expect(enqueueOrgMergeMock).not.toHaveBeenCalled();
+    });
+
     it('refuses a blocked merge with 422 ORG_MERGE_BLOCKED and never enqueues', async () => {
       previewOrgMergeMock.mockResolvedValueOnce({
         ...PREVIEW_RESULT,

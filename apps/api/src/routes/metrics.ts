@@ -362,6 +362,13 @@ const backupAttestationsTotal = new Counter({
   registers: [register]
 });
 
+const backupSnapshotFileIndexTotal = new Counter({
+  name: 'breeze_backup_snapshot_file_index_total',
+  help: 'Snapshot file index events: inline_dropped (a result arrived without its file list because it did not fit) and hydration (a run building the index from the manifest ended), by outcome (dropped, complete, skipped, or a failure code)',
+  labelNames: ['event', 'outcome'] as const,
+  registers: [register]
+});
+
 const backupRestoreIntegrityTotal = new Counter({
   name: 'breeze_backup_restore_integrity_total',
   help: 'Integrity expectations delivered with restore-shaped commands and recovery bootstraps, by command type, status (attested, unattested, absent, override, refused) and reason',
@@ -1007,6 +1014,14 @@ function recordBackupAttestationMetric(outcome: string, count = 1): void {
   backupAttestationsTotal.labels(normalizeMetricLabel(outcome, 'unknown')).inc(safeCount);
 }
 
+function recordSnapshotFileIndexMetric(event: string, outcome: string, count = 1): void {
+  const safeCount = safeMetricCount(count);
+  if (safeCount === 0) return;
+  backupSnapshotFileIndexTotal
+    .labels(normalizeMetricLabel(event, 'unknown'), normalizeMetricLabel(outcome, 'unknown'))
+    .inc(safeCount);
+}
+
 function recordRestoreIntegrityMetric(commandType: string, status: string, reason: string, count = 1): void {
   const safeCount = safeMetricCount(count);
   if (safeCount === 0) return;
@@ -1237,6 +1252,7 @@ function bindMetricsRecorders(): void {
     onConditionalWriteProbe: recordConditionalWriteProbeMetric,
     onSnapshotPublishRefused: recordSnapshotPublishRefusedMetric,
     onRestoreIntegrity: recordRestoreIntegrityMetric,
+    onSnapshotFileIndex: recordSnapshotFileIndexMetric,
   });
 
   setAnomalyMetricsRecorder({

@@ -26,6 +26,8 @@ vi.mock('../../services/configurationPolicy', async (importOriginal) => {
     ...original,
     createConfigPolicy: createConfigPolicyMock,
     parentPolicyEnablesHpCmslCollection: parentPolicyEnablesHpCmslCollectionMock,
+    // #11070's vendor updates door runs on the same create; crud.oemUpdates.test.ts covers it.
+    parentPolicyArmsOemUpdates: vi.fn(async () => false),
   };
 });
 vi.mock('../../db', () => ({

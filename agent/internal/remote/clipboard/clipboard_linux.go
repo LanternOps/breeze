@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"errors"
 	"os/exec"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 type SystemClipboard struct{}
@@ -67,7 +69,7 @@ func (s *SystemClipboard) SetContent(content Content) error {
 
 func readClipboardTarget(target string) ([]byte, error) {
 	if path, err := exec.LookPath("xclip"); err == nil {
-		cmd := exec.Command(path, "-selection", "clipboard", "-t", target, "-o")
+		cmd := procspawn.Command(path, "-selection", "clipboard", "-t", target, "-o")
 		out, err := cmd.Output()
 		if err != nil {
 			return nil, xclipReadError(err)
@@ -75,7 +77,7 @@ func readClipboardTarget(target string) ([]byte, error) {
 		return out, nil
 	}
 	if path, err := exec.LookPath("xsel"); err == nil {
-		cmd := exec.Command(path, "-b", "-o", "-t", target)
+		cmd := procspawn.Command(path, "-b", "-o", "-t", target)
 		return cmd.Output()
 	}
 	return nil, errors.New("clipboard: xclip or xsel required for X11 clipboard access")
@@ -101,12 +103,12 @@ func writeClipboardTarget(target string, data []byte) error {
 		return errors.New("clipboard: empty data")
 	}
 	if path, err := exec.LookPath("xclip"); err == nil {
-		cmd := exec.Command(path, "-selection", "clipboard", "-t", target, "-i")
+		cmd := procspawn.Command(path, "-selection", "clipboard", "-t", target, "-i")
 		cmd.Stdin = bytes.NewReader(data)
 		return cmd.Run()
 	}
 	if path, err := exec.LookPath("xsel"); err == nil {
-		cmd := exec.Command(path, "-b", "-i", "-t", target)
+		cmd := procspawn.Command(path, "-b", "-i", "-t", target)
 		cmd.Stdin = bytes.NewReader(data)
 		return cmd.Run()
 	}

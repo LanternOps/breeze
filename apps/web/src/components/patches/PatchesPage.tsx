@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import { usePermissions } from '../../lib/permissions';
-import { Layers, FileCog, BarChart3, Plus, Loader2, RefreshCw, ClipboardList } from 'lucide-react';
+import { Layers, FileCog, BarChart3, Plus, Loader2, RefreshCw, ClipboardList, Factory } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import PatchList, {
   type Patch,
@@ -9,6 +9,7 @@ import PatchList, {
 import PatchDetailsDrawer from './PatchDetailsDrawer';
 import PatchApprovalModal, { type PatchApprovalAction } from './PatchApprovalModal';
 import PatchComplianceView from './PatchComplianceView';
+import VendorUpdatesView from './VendorUpdatesView';
 import PatchJobsList from './PatchJobsList';
 import PatchJobDetail from './PatchJobDetail';
 import UpdateRingList, { type UpdateRingItem } from './UpdateRingList';
@@ -265,6 +266,7 @@ export default function PatchesPage() {
     () => [
       { id: 'compliance' as TabKey, label: t('patchesPage.tabs.compliance'), icon: <BarChart3 className="h-4 w-4" /> },
       { id: 'patches' as TabKey, label: t('patchesPage.tabs.patches'), icon: <FileCog className="h-4 w-4" /> },
+      { id: 'vendor-updates' as TabKey, label: t('patchesPage.tabs.vendorUpdates'), icon: <Factory className="h-4 w-4" /> },
       { id: 'jobs' as TabKey, label: t('patchesPage.tabs.jobs'), icon: <ClipboardList className="h-4 w-4" /> },
       ...(mounted && canManageRings ? [{ id: 'rings' as TabKey, label: t('patchesPage.tabs.updateRings'), icon: <Layers className="h-4 w-4" /> }] : [])
     ],
@@ -1049,6 +1051,9 @@ export default function PatchesPage() {
 
       {/* Compliance tab — merged device view with summary */}
       {activeTab === 'compliance' && <PatchComplianceView ringId={selectedRingId} />}
+
+      {/* Vendor updates tab: the fleet view of each maker's own update tool (#11074) */}
+      {activeTab === 'vendor-updates' && <VendorUpdatesView />}
 
       {/* Jobs tab — read-only list of patch_jobs (policy/ring/AI/API-created), #2606 */}
       {activeTab === 'jobs' && <PatchJobsList onSelectJob={setSelectedJobId} />}

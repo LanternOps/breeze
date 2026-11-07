@@ -1,6 +1,9 @@
 import { and, eq, sql } from 'drizzle-orm';
 import type { db } from '../db';
 import { deviceCommands } from '../db/schema';
+import { isNetworkIsolationCommand } from './networkIsolation/bypass';
+import { isolationDeliveryRefusal } from './networkIsolation/deliveryBinding';
+import { isolationUpgradeFloorRefusal } from './networkIsolation/upgradeFloor';
 import {
   propagateCancelledDeviceCommands,
   type DeviceCommandCancelSubject,
@@ -35,6 +38,8 @@ export type ClaimCancelReason =
   | 'submitter_org_erased'
   /** A per-type revalidation found the authority the row was issued under gone. */
   | 'scope_changed'
+  | 'isolation_episode_mismatch'
+  | 'network-isolation-version-floor'
   /** The row carries its own absolute expiry and it has passed. */
   | 'expired'
   /** A type that REQUIRES revalidation had none registered — fail closed. */
@@ -260,6 +265,10 @@ export const REVALIDATION_REQUIRED_TYPES: ReadonlySet<string> = new Set([
   // collector, credential revision and actor epochs are unchanged.
   'topology_interface_poll',
   'script',
+  // Vendor updates (#11065): a queued run must not outlive its gates. Registered by
+  // services/oemUpdates/revalidation.ts: a kill switch, a closed gate or the flag going
+  // off cancels the row while it is still unclaimed. A running one is never touched.
+  'oem_update_run',
 ]);
 
 export function registerCommandRevalidation(
@@ -277,6 +286,18 @@ export function __resetCommandRevalidationsForTests(): void {
   for (const key of Object.keys(commandRevalidations)) delete commandRevalidations[key];
 }
 
+function updatesAgentBinary(row: CommandRevalidationRow): boolean {
+  if (row.type === 'update' || row.type === 'update_agent' || row.type === 'agent_rollback_v1') return true;
+  if (row.type !== 'dev_update') return false;
+  const payload = row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+    ? row.payload as Record<string, unknown> : {};
+  return typeof payload.component !== 'string' || !payload.component || payload.component === 'agent';
+}
+
+function needsIsolationRevalidation(row: CommandRevalidationRow): boolean {
+  return updatesAgentBinary(row) || isNetworkIsolationCommand(row.type, row.payload);
+}
+
 /**
  * Runs the registered revalidation for one row, fail-closed for every type in
  * {@link REVALIDATION_REQUIRED_TYPES}. Shared by both delivery legs.
@@ -285,6 +306,18 @@ export async function revalidateCommandForDelivery(
   reader: CommandRevalidationReader,
   row: CommandRevalidationRow,
 ): Promise<ClaimCancelReason | null> {
+  // Built in rather than side-effect registered: HTTP and WebSocket delivery must
+  // always re-derive the episode authority, including for legacy queued commands.
+  // Both isolate and release are bound to the row the service issued (#10919).
+  if (isNetworkIsolationCommand(row.type, row.payload)) {
+    const refusal = await isolationDeliveryRefusal(reader, row);
+    if (refusal) return refusal;
+  }
+  if (updatesAgentBinary(row)) {
+    // Judged by the binary the payload selects, not its version label (#10919).
+    const refusal = await isolationUpgradeFloorRefusal(reader, row);
+    if (refusal) return refusal;
+  }
   const revalidate = commandRevalidations[row.type];
   if (!revalidate) {
     return REVALIDATION_REQUIRED_TYPES.has(row.type) ? 'authority_unavailable' : null;
@@ -545,7 +578,7 @@ export async function partitionClaimable(
     // another type's reads) rolls back to that savepoint instead of aborting
     // the claim transaction, so only this row is held and the rest of the
     // batch — and the cancel writes below — still run. Types with no
-    // registered revalidation touch no SQL and skip the savepoint.
+    // registered or built-in isolation revalidation touch no SQL and skip the savepoint.
     const revalidationFacts: CommandRevalidationRow = {
       id: row.id,
       type: row.type,
@@ -555,7 +588,7 @@ export async function partitionClaimable(
     };
     let revalidation: ClaimCancelReason | null;
     try {
-      revalidation = commandRevalidations[row.type]
+      revalidation = commandRevalidations[row.type] || needsIsolationRevalidation(revalidationFacts)
         ? await tx.transaction((sp) => revalidateCommandForDelivery(sp, revalidationFacts))
         : await revalidateCommandForDelivery(tx, revalidationFacts);
     } catch (e) {

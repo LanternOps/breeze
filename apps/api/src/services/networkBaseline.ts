@@ -637,9 +637,10 @@ export async function createNetworkChangeAlert(
     : eventMessageFallback(normalizedEventType, context);
   const severity = template?.severity ?? EVENT_SEVERITY_FALLBACK[normalizedEventType];
 
-  // Routed through createSourcedAlert so the row is rolled back if the
-  // alert.triggered publish fails — a committed-but-unpublished alert would be
-  // linked to the change event yet never notify anyone (#5325).
+  // Routed through createSourcedAlert so alert.triggered is staged on the row
+  // and published by the alert outbox after COMMIT, retried until it goes out:
+  // an alert linked to the change event is never left unannounced (#5325,
+  // #10926).
   const alertId = await createSourcedAlert({
     deviceId: alertDeviceId,
     orgId: changeEvent.orgId,

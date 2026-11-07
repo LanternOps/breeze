@@ -255,6 +255,30 @@ describe('replaceSoftwareInventoryProjection', () => {
     ]);
   });
 
+  it('writes a large inventory in bounded insert statements, preserving row order (#10859)', async () => {
+    const { tx } = projectionTx([], []);
+    const batches: Array<Array<Record<string, unknown>>> = [];
+    tx.insert = vi.fn().mockReturnValue({
+      values: vi.fn((values: Array<Record<string, unknown>>) => {
+        batches.push(values);
+        return Promise.resolve(undefined);
+      }),
+    });
+    const items = Array.from({ length: 1201 }, (_, i) => ({ name: `App ${i}`, version: '1.0' }));
+
+    await replaceSoftwareInventoryProjection(tx as never, {
+      device: { id: 'device-1', orgId: 'org-1', agentVersion: '0.105.1' },
+      items,
+      observationId: '11111111-1111-4111-8111-111111111111',
+      receivedAt,
+    });
+
+    // 12 bound columns per row: one 2,500-item statement was ~30k params and
+    // blocked the event loop while drizzle built it. 500 rows = 6,000 params.
+    expect(batches.map((batch) => batch.length)).toEqual([500, 500, 201]);
+    expect(batches.flat().map((row) => row.name)).toEqual(items.map((item) => item.name));
+  });
+
   it('does not replace a reported agent version with the provisioning sentinel', async () => {
     const { tx, inserted } = projectionTx([], []);
     await replaceSoftwareInventoryProjection(tx as never, {

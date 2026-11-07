@@ -289,6 +289,18 @@ describe('CorrelatedAlertGroups', () => {
     expect(screen.getByText('Queue backlog on SRV-01')).toBeInTheDocument();
   });
 
+  it('labels a persisted group with status "open" instead of leaking the raw i18n key', async () => {
+    // alert_correlation_groups.status defaults to 'open' (the other values are
+    // 'acknowledged' / 'resolved'); the badge reads t(`...status.${status}`).
+    mockGroupsResponse({ group: { ...groupPayload, status: 'open' } });
+
+    render(<CorrelatedAlertGroups />);
+
+    await screen.findAllByText('High CPU on SRV-01');
+    expect(screen.queryByText(/correlatedAlertGroups\.status\./)).not.toBeInTheDocument();
+    expect(screen.getByText('Open')).toBeInTheDocument();
+  });
+
   it('acknowledges the group through runAction feedback', async () => {
     mockGroupsResponse();
 

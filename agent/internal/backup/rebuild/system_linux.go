@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 type realSystem struct{}
@@ -20,7 +22,7 @@ type realSystem struct{}
 func NewSystem() System { return realSystem{} }
 
 func (realSystem) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	return procspawn.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
 func (s realSystem) Chroot(root string) func(context.Context, string, ...string) ([]byte, error) {

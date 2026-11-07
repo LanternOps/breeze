@@ -19,10 +19,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func init() {
-	rootCmd.AddCommand(newRebuildCommand())
-}
-
 // rebuildSystemForTest is a seam over rebuild.Options.System: nil in every
 // real build (rebuild.Run then constructs the real Linux system), set by
 // rebuild_cmd_test.go to a fake so the token-mode wiring below can be

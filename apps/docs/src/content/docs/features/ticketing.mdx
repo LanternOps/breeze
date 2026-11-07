@@ -300,7 +300,7 @@ Edit the acknowledgement under **Settings → Partner → Email templates** (Tic
 
 ### Review queue
 
-Emails that Breeze can't automatically turn into a ticket land in a **review queue** instead -- so unsolicited or unprocessable mail doesn't flood the ticket queue. From there you can convert a message into a ticket (assigning it to the right organization) or dismiss it. Two kinds of mail land here:
+Emails that Breeze can't automatically turn into a ticket land in a **review queue** instead -- so unsolicited or unprocessable mail doesn't flood the ticket queue. From there you can convert a message into a ticket (assigning it to the right organization) or dismiss it. Working the queue needs the `tickets:email_review` permission (full admins already have it), so you can give a triage role or service account access to the queue without making it a full admin. The permission alone is enough to read the queue and to convert a message into a ticket in any of the partner's organizations, so grant it deliberately. Two kinds of mail land here:
 
 - Any email that **failed to process** -- for example, one with no usable sender address.
 - Emails from **unknown senders**, if your **Unknown senders** setting is left on its default. See [Unknown sender handling](#unknown-sender-handling) below to change that behavior.
@@ -380,7 +380,7 @@ Instead of forwarding to your Breeze inbound address, you can connect a Microsof
 
 </Steps>
 
-Once connected, Breeze polls the mailbox every minute or two, turns new messages into tickets (threading and the review queue work exactly as above), and marks each handled message as read so your team can see what's been picked up. Only mail that arrives after you connect is ticketed -- existing inbox history is not imported. Public replies go out **from the support address** and thread natively in the customer's mailbox; internal notes and technician notifications are unaffected. You can connect more than one mailbox (for example `support@` and `billing@`). **Disconnect** stops polling immediately; to fully remove access, also revoke the app's consent in your Microsoft Entra admin center.
+Once connected, Breeze polls the mailbox every minute or two, turns new messages into tickets (threading and the review queue work exactly as above), and marks each handled message as read so your team can see what's been picked up. Only mail that arrives after you connect is ticketed -- existing inbox history is not imported, and Breeze neither marks it read nor sends it an autoresponse. The first poll reads through the inbox to set its starting point, which can take several minutes on a large mailbox; the card then shows how many messages, if any, were already there and will not be imported. Older mail that someone later reads, flags or moves back into the inbox stays out too. Reconnecting a mailbox that lost its consent picks up the mail that arrived while it was down, but connecting one again after you **Disconnect** it starts over from that moment, so mail received in between is not ticketed. Public replies go out **from the support address** and thread natively in the customer's mailbox; internal notes and technician notifications are unaffected. You can connect more than one mailbox (for example `support@` and `billing@`). **Disconnect** stops polling immediately; to fully remove access, also revoke the app's consent in your Microsoft Entra admin center.
 
 A temporary Microsoft Graph problem -- throttling, a Microsoft server error, a network failure or a request that times out -- does not stop the mailbox: it stays **Connected** and Breeze retries on the next poll. Only an authorization failure asks you to reconnect.
 
@@ -393,6 +393,19 @@ If a connection does not complete:
 
 <Aside>
   Connecting or managing a mailbox requires **partner scope and MFA**. The Microsoft 365 mailbox card only appears once your operator has configured the Breeze Ticketing Azure app -- see [Ticket Mailbox environment variables](/deploy/environment/#ticket-mailbox-m365-email-to-ticket).
+</Aside>
+
+#### How external mail is verified on a connected mailbox
+
+Unverified external mail goes to the review queue (or is dropped, if you turned that on), so a forged From address from outside your tenant can't open a ticket under your customer's name. On a Microsoft 365 mailbox Breeze verifies external mail with:
+
+- **Exchange Online's own check.** Mail counts as verified when Exchange marks it as external mail not attributed to a connector, it carries exactly one `Authentication-Results` header with Exchange's authserv-id (`mx.microsoft.com` or a `*.mail.protection.outlook.com` host), and that header says `dmarc=pass` for the From domain. Mail from a domain with no DMARC record (`dmarc=none`) stays in review. A second `Authentication-Results` header also sends a message to review, since Breeze can't tell which one Exchange wrote. Mail Exchange attributes to a partner connector isn't verified from this header.
+- **A trusted mail gateway, if you list one.** With an inline gateway that adds an ARC seal, Exchange checks the gateway instead of the sender and may fail legitimate mail. Under **Mail gateway** on the mailbox, list the gateway's ARC sealing domain: the `d=` value in the gateway's `ARC-Seal` header on a message it delivered (not `microsoft.com`, which is Exchange's own seal). Breeze then verifies the seal and the gateway's signature over the From header, and uses the gateway's verdict, which must be for the From domain. A seal more than 6 hours older than the message's arrival isn't used. The list is empty by default. If the gateway's key can't be fetched, Breeze retries for up to an hour before the message goes to review. A gateway that doesn't add an ARC seal isn't used; Breeze falls back to Exchange's own check, and never reads `Authentication-Results-Original`, because a sender can write that header.
+
+The review queue shows which of these Breeze checked and why the message didn't pass, for example `unverified sender (SPF/DKIM/DMARC): Exchange Online stamp: dmarc=fail`.
+
+<Aside type="caution">
+  Only list a gateway that all of the tenant's inbound mail is forced through: first restrict inbound delivery in Exchange to the gateway with a connector. Without that restriction, Breeze can't tell a message the gateway delivered from one sent directly to Exchange.
 </Aside>
 
 ### Connecting a Google Workspace support mailbox

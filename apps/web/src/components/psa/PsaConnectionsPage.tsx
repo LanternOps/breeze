@@ -430,7 +430,7 @@ export default function PsaConnectionsPage({ embedded = false }: PsaConnectionsP
           <PsaAlertTicketingCard key={c.id} connectionId={c.id} connectionName={c.name} />
         ))}
 
-      <PsaTicketList tickets={tickets} />
+      <PsaTicketList tickets={tickets} connections={connections} />
 
       {(modalMode === 'add' || modalMode === 'edit') && (
         // PsaConnectionForm draws its own card, so the dialog panel stays

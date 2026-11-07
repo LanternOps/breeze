@@ -13,6 +13,7 @@ export * from './scriptAdmission';
 export * from './softwareInventoryObservation';
 export * from './scriptProposals';
 export * from './backupHealth';
+export * from './backupActiveJob';
 export * from './edr';
 export * from './aiModelRegistry';
 export * from './aiModelQuality';
@@ -269,6 +270,8 @@ export interface DeviceHardware {
   diskTotalGb: number | null;
   gpuModel: string | null;
   serialNumber: string | null;
+  /** SMBIOS system SKU (the HP product number); null until reported. */
+  productSku: string | null;
   manufacturer: string | null;
   model: string | null;
   motherboardManufacturer: string | null;
@@ -1024,6 +1027,7 @@ export * from './metricAnomalyEpisodes';
 
 // Business reports (#3198 W02)
 export * from './businessReports';
+export * from './ticketSlaPerformance';
 
 // ============================================
 // Backup Status Report (Backup Provider Integration W05)
@@ -1041,4 +1045,5 @@ export * from './wispMemory';
 export * from './wispConcerns';
 export * from './wispActivity';
 export * from './wispTimeline';
+export * from './wispCheckIns';
 export * from './wisp';

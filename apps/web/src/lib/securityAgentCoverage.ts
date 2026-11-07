@@ -64,6 +64,7 @@ const VENDOR_LABELS: Record<string, string> = {
   sentinelone: "SentinelOne",
   controld: "Control D",
   nextdns: "NextDNS",
+  bitdefender: "Bitdefender GravityZone",
 };
 
 export function vendorLabel(vendor: string): string {
@@ -146,6 +147,8 @@ const REASON_KEYS: Record<string, string> = {
   awaiting_vendor_report: "awaitingVendorReport",
   awaiting_evaluation: "awaitingEvaluation",
   vendor_org_mismatch: "vendorOrgMismatch",
+  tenant_ambiguous: "tenantAmbiguous",
+  installer_link_missing: "installerLinkMissing",
 };
 
 type TFn = (key: string) => string;
@@ -165,6 +168,8 @@ export function coverageReasonLabel(t: TFn, code: string | null): string {
 /** Setup-link labels per reason; any other reason with a setup path reads the default. */
 const SETUP_LINK_KEYS: Record<string, string> = {
   installer_missing: "installerMissing",
+  tenant_ambiguous: "tenantAmbiguous",
+  installer_link_missing: "installerLinkMissing",
 };
 
 /** Translated label for a row's setup link (`setupPath`). */

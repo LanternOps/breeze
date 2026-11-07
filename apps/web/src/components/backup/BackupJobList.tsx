@@ -19,11 +19,15 @@ import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { formatNumber } from '@/lib/i18n/format';
 import { formatBytes } from './backupDashboardHelpers';
+import BackupJobDataSummary from './BackupJobDataSummary';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
 import { asList } from '@/lib/asList';
 import ReparseSkipNotice from './ReparseSkipNotice';
-import { splitReparseSkipNotice } from '@breeze/shared';
+import BackupFailureCategoryBadge from './BackupFailureCategoryBadge';
+import { stripInternalTagPrefix, truncateErrorSummary } from './backupErrorText';
+import { estimateRemainingMs, formatEta, nextSpeedSample, stallState } from './backupJobProgress';
+import { splitReparseSkipNotice, stripInlineIndexDropNote, type BackupFailureCategory, type BackupJobDataAccounting } from '@breeze/shared';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -57,6 +61,11 @@ type BackupJobRaw = {
   lastKeepaliveAt?: string | null;
   errorCount?: number | null;
   errorLog?: string | null;
+  failureCategory?: BackupFailureCategory | null;
+  // Absent on an older API during a rolling deploy.
+  dataAccounting?: BackupJobDataAccounting | null;
+  // GET /jobs/:id only.
+  resumedAt?: string | null;
   policyId?: string | null;
   featureLinkId?: string | null;
   snapshotId?: string | null;
@@ -78,6 +87,8 @@ type BackupJob = {
   // Full cleaned error text for the Errors cell tooltip; errorSummary is cut
   // to 60 characters for the table, so the whole reason has to live here.
   errorDetail: string | null;
+  failureCategory: BackupFailureCategory | null;
+  dataAccounting: BackupJobDataAccounting | null;
   // Live-progress fields (running rows). null when the agent never reported
   // progress (legacy agent) — the UI falls back to an indeterminate bar.
   transferredSize: number | null;
@@ -90,11 +101,6 @@ type BackupJob = {
 
 // Poll the jobs list while any job is running so progress/speed stay live.
 const POLL_MS = 5000;
-// A running job whose agent has been silent for this long is flagged as
-// stalled. Keyed on liveness (lastKeepaliveAt), not lastProgressAt: since #2798
-// lastProgressAt moves only when bytes/files advance, and a single large file
-// legitimately holds it still for its whole upload.
-const STALL_MS = 2 * 60 * 1000;
 // Statuses a job can no longer leave — used to reconcile optimistic cancels
 // against a possibly-stale poll response.
 const TERMINAL_STATUSES: readonly JobStatus[] = ['completed', 'failed', 'cancelled', 'partial', 'completed_with_errors'];
@@ -173,17 +179,6 @@ function formatDuration(startedAt?: string | null, completedAt?: string | null):
   return `${hours}h ${remainingMinutes}m`;
 }
 
-// Reaper- and worker-generated error text is sometimes prefixed with an
-// internal routing tag, e.g. `[stale-backup-reaper] snapshot lease expired`.
-// That tag is implementation detail, not something a user should have to
-// decode, so strip it wherever an error message reaches the UI. Display-only
-// — the underlying errorLog data is never mutated.
-const INTERNAL_TAG_PREFIX = /^\[[a-z0-9]+(?:-[a-z0-9]+)*\]\s+/;
-
-function stripInternalTagPrefix(message: string): string {
-  return message.replace(INTERNAL_TAG_PREFIX, '');
-}
-
 function formatTime(iso?: string | null): string {
   return formatDateTime(iso, {
     fallback: '--',
@@ -194,12 +189,17 @@ function formatTime(iso?: string | null): string {
   });
 }
 
+// #11026: rows persisted before the server stopped storing it can still carry
+// the note that a snapshot's file list did not fit in the result. The list was
+// not lost, so it is not a job problem.
+function cleanedJobLog(errorLog: string | null | undefined): string | null {
+  return stripInlineIndexDropNote(errorLog ? stripInternalTagPrefix(errorLog) : null).warning;
+}
+
 function mapJob(raw: BackupJobRaw): BackupJob {
   // #9543: skipped reparse points are informational, not errors — keep them
   // out of the Errors column so the real failure text is what shows there.
-  const cleanedErrorLog = splitReparseSkipNotice(
-    raw.errorLog ? stripInternalTagPrefix(raw.errorLog) : null
-  ).diagnostic;
+  const cleanedErrorLog = splitReparseSkipNotice(cleanedJobLog(raw.errorLog)).diagnostic;
   return {
     id: raw.id,
     deviceName: raw.deviceName ?? raw.deviceId?.slice(0, 8) ?? '--',
@@ -218,8 +218,10 @@ function mapJob(raw: BackupJobRaw): BackupJob {
     lastKeepaliveAt: raw.lastKeepaliveAt ?? null,
     errorCount: raw.errorCount ?? 0,
     errorDetail: cleanedErrorLog,
+    failureCategory: raw.failureCategory ?? null,
+    dataAccounting: raw.dataAccounting ?? null,
     errorSummary: cleanedErrorLog
-      ? cleanedErrorLog.length > 60 ? `${cleanedErrorLog.slice(0, 57)}...` : cleanedErrorLog
+      ? truncateErrorSummary(cleanedErrorLog)
       : raw.errorCount
         ? i18n.t('backup:backupJobList.errorCount', { count: raw.errorCount })
         : '-'
@@ -299,23 +301,12 @@ export default function BackupJobList() {
       const samples = speedSamplesRef.current;
       const seen = new Set<string>();
       for (const job of nextJobs) {
-        if (job.status !== 'running' || job.transferredSize == null) continue;
+        if (job.status !== 'running') continue;
+        const { bps, sample } = nextSpeedSample(samples.get(job.id), job, now);
+        if (!sample) continue;
         seen.add(job.id);
-        const prev = samples.get(job.id);
-        let bps: number | undefined;
-        if (prev) {
-          if (now > prev.at && job.transferredSize > prev.bytes) {
-            bps = (job.transferredSize - prev.bytes) / ((now - prev.at) / 1000);
-          }
-          // prior sample but no forward progress -> stalled -> leave bps unset.
-        } else if (job.startedAt) {
-          const elapsedSec = (now - new Date(job.startedAt).getTime()) / 1000;
-          if (elapsedSec > 0) bps = job.transferredSize / elapsedSec;
-        }
-        if (bps != null && Number.isFinite(bps) && bps > 0) {
-          nextSpeeds[job.id] = bps;
-        }
-        samples.set(job.id, { bytes: job.transferredSize, at: now });
+        if (bps != null) nextSpeeds[job.id] = bps;
+        samples.set(job.id, sample);
       }
       // Drop samples for jobs no longer running so the map can't grow unbounded.
       for (const id of samples.keys()) {
@@ -567,18 +558,12 @@ export default function BackupJobList() {
                   : null;
                 const speedBps = isRunning ? speeds[job.id] : undefined;
                 const showFiles = isRunning && job.fileCount != null && job.totalFiles != null;
-                // Rows from a server predating #2798 carry no lastKeepaliveAt;
-                // their lastProgressAt was liveness then.
-                const livenessAt = job.lastKeepaliveAt ?? job.lastProgressAt;
-                const stalledMs = isRunning && livenessAt
-                  ? Date.now() - new Date(livenessAt).getTime()
-                  : 0;
-                const isStalled = isRunning && !!livenessAt && stalledMs > STALL_MS;
-                const stalledMinutes = Math.max(1, Math.floor(stalledMs / 60000));
+                const { stalled: isStalled, minutes: stalledMinutes } = stallState(job, Date.now());
+                const etaMs = isRunning && !isStalled
+                  ? estimateRemainingMs({ transferredSize: job.transferredSize, totalSize: job.totalSizeBytes }, speedBps)
+                  : null;
                 const details = jobDetails[job.id];
-                const detailNotes = splitReparseSkipNotice(
-                  details?.errorLog ? stripInternalTagPrefix(details.errorLog) : null
-                );
+                const detailNotes = splitReparseSkipNotice(cleanedJobLog(details?.errorLog));
                 const isExpanded = expandedJobId === job.id;
                 const isLoadingDetails = loadingDetailsId === job.id;
                 return (
@@ -654,22 +639,34 @@ export default function BackupJobList() {
                               {speedBps != null && (
                                 <span>{t('backupJobList.speedValue', { value: formatBytes(speedBps) })}</span>
                               )}
+                              {etaMs != null && (
+                                <span data-testid="backup-job-eta">
+                                  {t('backupJobList.etaValue', { value: formatEta(etaMs) })}
+                                </span>
+                              )}
                             </div>
                           </div>
+                        ) : job.dataAccounting && job.status !== 'queued' ? (
+                          <BackupJobDataSummary accounting={job.dataAccounting} variant="cell" />
                         ) : (
                           job.size
                         )}
                       </td>
                       <td className="px-4 py-3">
-                        {job.errorSummary !== '-' ? (
-                          <span
-                            data-testid="backup-job-error-summary"
-                            title={job.errorDetail ?? job.errorSummary}
-                            className="inline-flex items-center gap-1 text-xs font-medium text-destructive"
-                          >
-                            <AlertTriangle className="h-3.5 w-3.5" />
-                            {job.errorSummary}
-                          </span>
+                        {job.failureCategory || job.errorSummary !== '-' ? (
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <BackupFailureCategoryBadge category={job.failureCategory} />
+                            {job.errorSummary !== '-' && (
+                              <span
+                                data-testid="backup-job-error-summary"
+                                title={job.errorDetail ?? job.errorSummary}
+                                className="inline-flex items-center gap-1 text-xs font-medium text-destructive"
+                              >
+                                <AlertTriangle className="h-3.5 w-3.5" />
+                                {job.errorSummary}
+                              </span>
+                            )}
+                          </div>
                         ) : (
                           <span className="text-xs text-muted-foreground">-</span>
                         )}
@@ -737,19 +734,13 @@ export default function BackupJobList() {
                               <p className="mt-1 break-all text-foreground">{details.featureLinkId ?? '--'}</p>
                             </div>
                           </div>
-                          {/* A partial or completed_with_errors run still produced
-                              a restorable snapshot, so its dedup savings are as
-                              real as a completed run's. */}
-                          {(job.status === 'completed' || job.status === 'partial' || job.status === 'completed_with_errors') && details.referencedSize != null && (
-                            <p
-                              data-testid="backup-job-savings"
-                              className="mt-4 text-xs text-muted-foreground"
-                            >
-                              {t('backupJobList.savings', {
-                                protected: formatBytes(details.totalSize ?? 0),
-                                uploaded: formatBytes(Math.max(0, (details.totalSize ?? 0) - details.referencedSize)),
-                              })}
-                            </p>
+                          {details.dataAccounting && (
+                            <BackupJobDataSummary
+                              accounting={details.dataAccounting}
+                              variant="detail"
+                              resumedAt={details.resumedAt}
+                              inFlight={isRunning || job.status === 'queued'}
+                            />
                           )}
                           {detailNotes.reparseSkipped && (
                             <ReparseSkipNotice summary={detailNotes.reparseSkipped} className="mt-4" />
@@ -768,6 +759,11 @@ export default function BackupJobList() {
                                 <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
                                 {t('backupJobList.filesNotBackedUp', { count: job.errorCount })}
                               </p>
+                              {job.failureCategory && (
+                                <div className="mt-2">
+                                  <BackupFailureCategoryBadge category={job.failureCategory} showHint />
+                                </div>
+                              )}
                               <pre className="mt-2 whitespace-pre-wrap text-xs text-foreground">
                                 {detailNotes.diagnostic ?? 'No error log recorded.'}
                               </pre>
@@ -775,6 +771,11 @@ export default function BackupJobList() {
                           ) : (
                             <div className="mt-4">
                               <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('backupJobList.errorLog')}</p>
+                              {job.failureCategory && (
+                                <div className="mt-1">
+                                  <BackupFailureCategoryBadge category={job.failureCategory} showHint />
+                                </div>
+                              )}
                               <pre className="mt-1 whitespace-pre-wrap rounded-md border bg-background px-3 py-2 text-xs text-foreground">
                                 {detailNotes.diagnostic ?? 'No error log recorded.'}
                               </pre>

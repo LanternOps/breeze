@@ -35,6 +35,8 @@ go_dur() {
   echo "$out"
 }
 
+INJECT_ALLOW_NON2XX=20
+
 usage() { echo "usage: run-perf.sh --profile nightly-200|smoke --out-dir <dir> [--label clean|inject] | --storm <scenario> --out-dir <dir> [-- storm.sh flags...]" >&2; exit 64; }
 
 PROFILE=""; OUT=""; LABEL="clean"; STORM=""; STORM_ARGS=()
@@ -202,6 +204,13 @@ sim_rc=0
 SIM_PID=$!
 wait "$SIM_PID" || sim_rc=$?
 SIM_PID=""
+# The simulator exits exactly at the window end, and kpi.mjs needs a counter
+# sample on both sides of each window edge. Keep sampling one more interval
+# (plus margin) so a row lands after window.end. The start edge needs nothing:
+# the sampler starts before the simulator, and the window opens only after
+# ramp + warmup, so the first row already precedes it.
+sleep "${TAIL_SECONDS:-$(( ${INTERVAL:-10} + 10 ))}" &
+wait $!
 stop_sampler
 if [ "$sim_rc" -ne 0 ]; then
   echo "run-perf: simulator exited $sim_rc" >&2
@@ -209,7 +218,11 @@ if [ "$sim_rc" -ne 0 ]; then
 fi
 
 # --- 6. Acceptance: a failing report means the run measured something else.
-if ! "$SIM/check-acceptance.sh" report "$OUT/agentsim.json"; then
+# Only the inject self-test gets a non-2xx allowance: its deliberate event-loop
+# block makes the proxy answer a few 502s. Clean, nightly and storm runs keep zero.
+ACCEPT_ARGS=()
+[ "$LABEL" = inject ] && ACCEPT_ARGS=(--allow-non2xx "$INJECT_ALLOW_NON2XX")
+if ! "$SIM/check-acceptance.sh" report ${ACCEPT_ARGS[@]+"${ACCEPT_ARGS[@]}"} "$OUT/agentsim.json"; then
   echo "run-perf: check-acceptance.sh report failed; run is invalid" >&2
   exit 2
 fi

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/flashguard"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/updater"
 )
@@ -531,6 +532,12 @@ func (h *Heartbeat) applyIdentityAssertion(a *IdentityAssertion) bool {
 			"the next heartbeat re-evaluates it")
 		return false
 	}
+	// Same reasoning: nothing is persisted, and the next beat applies it.
+	if _, active := flashguard.Default().Active(); active {
+		h.logIdentitySyncFailure("warn", "deferring the server-assigned identity while a firmware update is in progress",
+			"the next heartbeat re-evaluates it")
+		return false
+	}
 	markerPath := identityRestartMarkerPath()
 	now := identitySyncNow()
 	attempts := 1
@@ -607,8 +614,13 @@ func (h *Heartbeat) restartForIdentity(previousMarker *identityRestartMarker) {
 	h.restartWhenIdle(identityRestartJitter(),
 		// #8382 — a rollback can start during the wait (its command may have
 		// come in the response that carried the assertion). It owns the restart.
-		h.rollbackInProgress,
-		func() { h.yieldIdentityRestart(previousMarker) },
+		func() string {
+			if h.rollbackInProgress() {
+				return "an agent rollback started"
+			}
+			return ""
+		},
+		func(reason string) { h.yieldIdentityRestart(previousMarker, reason) },
 		func(err error) {
 			// Release the gate: the upgrades, credential rotation and mTLS cert
 			// renewal it holds back must not wait for a restart that will not
@@ -624,10 +636,11 @@ func (h *Heartbeat) restartForIdentity(previousMarker *identityRestartMarker) {
 // reattach (#8318). The caller has persisted the identity and taken the
 // restart gate (restartRequested, intakePausedUntil). It waits jitter, then
 // for the commands already running (at most identityRestartMaxWait); yields
-// when ownedElsewhere reports a restart another flow owns (a rollback; an
-// upgrade), which loads the identity on disk all the same; otherwise restarts
-// the service through restartForIdentityFn (updater.RestartSelf).
-func (h *Heartbeat) restartWhenIdle(jitter time.Duration, ownedElsewhere func() bool, onYield func(), onFailure func(error)) {
+// when ownedElsewhere names a restart another flow owns (a rollback; an
+// upgrade), which loads the identity on disk all the same, or when a firmware
+// section holds power actions; otherwise restarts the service through
+// restartForIdentityFn (updater.RestartSelf).
+func (h *Heartbeat) restartWhenIdle(jitter time.Duration, ownedElsewhere func() string, onYield func(reason string), onFailure func(error)) {
 	if jitter > 0 {
 		time.Sleep(jitter)
 	}
@@ -639,12 +652,22 @@ func (h *Heartbeat) restartWhenIdle(jitter time.Duration, ownedElsewhere func() 
 		}
 		time.Sleep(identityRestartPollInterval)
 	}
-	if ownedElsewhere() {
-		onYield()
+	if reason := ownedElsewhere(); reason != "" {
+		onYield(reason)
 		return
 	}
-	if err := restartForIdentityFn(); err != nil {
-		onFailure(err)
+	// A firmware section can open during the wait too. Admission is held through
+	// the restart request and for a while after it, because on Windows the restart
+	// itself is done a few seconds later by a detached helper.
+	done, err := flashguard.Default().AdmitPowerAction("identity_restart")
+	if err != nil {
+		onYield("a firmware update started")
+		return
+	}
+	restartErr := restartForIdentityFn()
+	flashguard.ReleaseAfterHandoff(done, restartErr == nil)
+	if restartErr != nil {
+		onFailure(restartErr)
 	}
 }
 
@@ -688,7 +711,7 @@ func (h *Heartbeat) releaseIdentityRestart() {
 // goes back to what it was, and the next beat's assertion is evaluated afresh
 // instead of waiting out a cooldown (or giving up) for a restart that never
 // was. The identity stays persisted; whichever restart comes next applies it.
-func (h *Heartbeat) yieldIdentityRestart(previousMarker *identityRestartMarker) {
+func (h *Heartbeat) yieldIdentityRestart(previousMarker *identityRestartMarker, reason string) {
 	path := identityRestartMarkerPath()
 	var err error
 	if previousMarker == nil {
@@ -699,10 +722,10 @@ func (h *Heartbeat) yieldIdentityRestart(previousMarker *identityRestartMarker) 
 		err = writeIdentityRestartMarker(path, *previousMarker)
 	}
 	if err != nil {
-		log.Warn("failed to restore the identity restart marker after yielding to a rollback", "error", err.Error())
+		log.Warn("failed to restore the identity restart marker after yielding", "reason", reason, "error", err.Error())
 	}
 	h.releaseIdentityRestart()
-	log.Warn("an agent rollback started while the restart for the server-assigned identity was pending; not restarting, the next heartbeat re-evaluates it")
+	log.Warn(reason + " while the restart for the server-assigned identity was pending; not restarting, the next heartbeat re-evaluates it")
 }
 
 func (h *Heartbeat) rollbackInProgress() bool {

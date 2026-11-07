@@ -295,6 +295,32 @@ describe('backup provider — cross-tenant isolation as breeze_app', () => {
     expect(own).toHaveLength(1);
   });
 
+  runDb('isolates an axcient row and its verified_bootable columns across orgs', async () => {
+    const fx = await seedFixture();
+    const at = new Date('2026-11-05T03:12:00.000Z');
+    const inserted = await withSystemDbAccessContext(() => insertProviderDevice(fx.a, {
+      provider: 'axcient',
+      status: 'paused',
+      verifiedBootableAt: at,
+      verifiedBootable: true,
+      verifiedBootableFailedChecks: ['system_boot'],
+    }));
+    const select = () => db.select({
+      id: backupProviderDevices.id,
+      status: backupProviderDevices.status,
+      verifiedBootableAt: backupProviderDevices.verifiedBootableAt,
+      verifiedBootable: backupProviderDevices.verifiedBootable,
+      verifiedBootableFailedChecks: backupProviderDevices.verifiedBootableFailedChecks,
+    }).from(backupProviderDevices).where(sql`${backupProviderDevices.provider} = 'axcient'`);
+
+    const own = await withDbAccessContext(fx.a.orgContext, select);
+    expect(own).toEqual([{
+      id: inserted.id, status: 'paused', verifiedBootableAt: at, verifiedBootable: true, verifiedBootableFailedChecks: ['system_boot'],
+    }]);
+    const foreign = await withDbAccessContext(fx.b.orgContext, select);
+    expect(foreign).toEqual([]);
+  });
+
   runDb('refuses a device row whose customer belongs to another org with 23503', async () => {
     const fx = await seedFixture();
     await expect(withSystemDbAccessContext(() =>

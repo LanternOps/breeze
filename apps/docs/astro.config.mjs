@@ -74,6 +74,7 @@ export default defineConfig({
               items: [
                 { slug: 'features/patch-management' },
                 { slug: 'features/update-rings' },
+                { slug: 'features/vendor-updates' },
                 { slug: 'features/software-inventory' },
                 { slug: 'features/software-policies' },
               ],
@@ -91,6 +92,7 @@ export default defineConfig({
                 { slug: 'features/edr-integrations' },
                 { slug: 'features/edr-provider-framework' },
                 { slug: 'features/incident-response' },
+                { slug: 'features/network-isolation' },
                 { slug: 'features/sensitive-data' },
                 { slug: 'features/peripheral-control' },
                 { slug: 'features/user-risk' },

@@ -478,7 +478,15 @@ export default function AiChatMessages({
               </p>
             )}
             {unit.runs.map((run) => (
-              <AiRunCard key={run.key} runId={run.runId} initialStatus="queued" run={chatRuns[run.runId]} />
+              <AiRunCard
+                key={run.key}
+                runId={run.runId}
+                initialStatus="queued"
+                run={chatRuns[run.runId]}
+                onContinue={onSendQuickAction
+                  ? (id) => onSendQuickAction(t("aiRunCard.continueMessage", { runId: id }))
+                  : undefined}
+              />
             ))}
           </div>
         );

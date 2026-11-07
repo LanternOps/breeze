@@ -58,6 +58,8 @@ const EXPECTED_WORKER_NAMES = [
   'filesystemCleanupRunRetention',
   // #8581 — daily prune of device_restore_point_attempts.
   'restorePointAttemptRetention',
+  'wakeAttemptSweep',
+  'wakeAttemptRetention',
   // #9128 — daily prune of terminal webhook_deliveries rows.
   'webhookDeliveryRetention',
   // #10019/#10020 — DNS events/aggregations retention + background integration delete.
@@ -67,6 +69,8 @@ const EXPECTED_WORKER_NAMES = [
   'quoteSendWorker', 'enrollmentKeyCleanup',
   // Ticket migration windows (#8313) — the per-minute window sweep.
   'migrationWindowSweep',
+  // Ticket import framework (#8313 W4) — self-continuing import slices.
+  'ticketImportWorker',
   // Partner API tickets wave 3 — daily reaper for X-Idempotency-Key claims.
   'partnerApiIdempotencyRetention',
   'quickSupportReaper', 'wispGrantReconciler', 'softwareUploadSessionCleanup',
@@ -86,7 +90,7 @@ const EXPECTED_WORKER_NAMES = [
   'securityAgentCoverageWorker',
   'm365SyncWorker', 'pax8SyncWorker',
   'tdSynnexSftpSyncWorker', 'logForwardingWorker', 'patchJobWorker', 'patchSchedulerWorker',
-  'maintenanceRebootWorker', 'backupWorker', 'backupSnapshotFileIndexWorker', 'backupSnapshotAttestationWorker', 'backupWriteSessionJanitor', 'sensitiveDataWorker',
+  'oemUpdatesWorker', 'maintenanceRebootWorker', 'backupWorker', 'backupSnapshotFileIndexWorker', 'backupSnapshotAttestationWorker', 'backupWriteSessionJanitor', 'sensitiveDataWorker',
   // YARA/IOC scanning W01 (#6263) — dispatches security.scan agent commands.
   'securityScanWorker',
   'peripheralJobs',
@@ -95,7 +99,7 @@ const EXPECTED_WORKER_NAMES = [
   'browserSecurityWorker', 'c2cBackupWorker', 'backupSlaWorker', 'drExecutionWorker',
   'recoveryMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker',
   'incidentCorrelationWorker', 'incidentTimelineEnricher', 'incidentSlaMonitor', 'staleCommandReaper',
-  'softwareDeploymentScheduler', 'pamJobs', 'approvalExpiryReaper', 'workspaceReaper', 'offboardingDrainReaper',
+  'softwareDeploymentScheduler', 'pamJobs', 'networkIsolationSweeper', 'approvalExpiryReaper', 'workspaceReaper', 'offboardingDrainReaper',
   'intentOutboxPublisher', 'aiOperatorTaskOutboxPublisher', 'aiOperatorTaskWorker',
   'pamActuationWorker', 'intentExpiryReaper', 'intentReleaseWorker', 'stripeReconcileSweep', 'stripeSessionRevocationSweep',
   'ticketAttachmentReaper', 'quoteExpiryReaper', 'agreementRequestExpiryReaper', 'agreementRequestAutoReminder', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',

@@ -203,6 +203,9 @@ orgMergeRoutes.post(
     }
 
     if (preview.verdict === 'blocked') {
+      if (preview.blockerCodes?.includes('isolation_unresolved')) {
+        return c.json({ error: 'isolation_unresolved', message: preview.blockers.join(' ') }, 409);
+      }
       return c.json(
         {
           error: preview.blockers[0] ?? 'merge blocked by durable evidence',

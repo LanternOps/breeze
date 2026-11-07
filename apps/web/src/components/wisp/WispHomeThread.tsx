@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode, type Dispatch, ty
 import { useTranslation } from 'react-i18next';
 import { Plus } from 'lucide-react';
 import { isPinnedLink } from '@/lib/wispLinksApi';
-import { WISP_THREAD_LINK_LIMIT, type WispThreadLink } from '@breeze/shared';
+import { WISP_THREAD_LINK_LIMIT, type WispBriefSchedule, type WispFirstLookProgress, type WispFirstLookState, type WispThreadLink, type WispTimelinePost } from '@breeze/shared';
 import { useAiStore, type WispState } from '@/stores/aiStore';
 import { fetchWithAuth } from '@/stores/auth';
 import AiChatMessages from '../ai/AiChatMessages';
@@ -70,6 +70,17 @@ function boundTo(wisp: Wisp): boolean {
   return bound.wisp?.threadId === wisp.threadId && bound.sessionId !== null;
 }
 
+/**
+ * What the welcome says about the first look (#11145). The grant's state covers a
+ * post that is not on this page of the timeline; the timeline covers a post newer
+ * than the last poll. A real first look outranks the couldn't-look post it follows.
+ */
+function welcomeFirstLookState(posts: WispTimelinePost[], known: WispFirstLookState | undefined): WispFirstLookState {
+  const firstLooks = posts.filter((p) => p.kind === 'first_look');
+  if (known === 'done' || firstLooks.some((p) => p.variant !== 'couldnt_look')) return 'done';
+  return known === 'couldnt_look' || firstLooks.length > 0 ? 'couldnt_look' : 'looking';
+}
+
 /** The column's reading width, shared by the message list (AiChatMessages `layout="page"`) and everything under it. */
 const COLUMN = 'mx-auto w-full max-w-3xl';
 
@@ -103,6 +114,8 @@ export default function WispHomeThread({
   links,
   onLinksChange,
   refreshKey = 0,
+  briefSchedule = null,
+  firstLookProgress = null,
 }: {
   wisp: Wisp;
   lastSessionId: string | null;
@@ -111,6 +124,10 @@ export default function WispHomeThread({
   links: WispThreadLink[] | null;
   onLinksChange: Dispatch<SetStateAction<WispThreadLink[]>>;
   refreshKey?: number;
+  /** The home's brief time and resolved zone, for the welcome; the thread page has none. */
+  briefSchedule?: WispBriefSchedule | null;
+  /** The home's live "N of M orgs looked at" (#11146); the thread page has none. */
+  firstLookProgress?: WispFirstLookProgress | null;
 }) {
   const { t } = useTranslation('ai');
   const active = wisp.status === 'active';
@@ -169,6 +186,7 @@ export default function WispHomeThread({
     [timeline.posts],
   );
   const hasBrief = timeline.posts.some((p) => p.kind === 'brief');
+  const firstLookState = welcomeFirstLookState(timeline.posts, wisp.firstLookState);
   const historyNotice = timeline.failed ? (
     <div className="flex flex-wrap items-center gap-2 text-xs" data-testid="wisp-home-thread-history-failed" role="status">
       <span className="text-destructive">
@@ -283,7 +301,7 @@ export default function WispHomeThread({
             showTimeDividers
             leading={threadLeading}
             emptyState={timeline.settled
-              ? <WispWelcome scopeLabel={scopeLabel} onSuggest={sendMessage} intro={!leading && !hasBrief} />
+              ? <WispWelcome scopeLabel={scopeLabel} onSuggest={sendMessage} intro={!leading && !hasBrief} firstLookState={firstLookState} firstLookProgress={firstLookProgress} briefSchedule={briefSchedule} />
               : <div data-testid="wisp-home-thread-history-loading" aria-busy="true" />}
           />
           <div className={COLUMN}>

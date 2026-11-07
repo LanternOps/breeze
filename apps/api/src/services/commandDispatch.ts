@@ -28,6 +28,8 @@ import './topology/telemetryPollDelivery';
 // the requester's live RBAC — role/org-access/site — at claim time, same
 // rationale as the diagnostic import above).
 import './scriptCommandRevalidation';
+// Side-effect import: registers the vendor update revalidation (#11065).
+import './oemUpdates/revalidation';
 
 type DeviceCommandRow = typeof deviceCommands.$inferSelect;
 

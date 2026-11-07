@@ -13,7 +13,7 @@ import { db } from '../../db';
 import { aiMessages, aiSessions } from '../../db/schema';
 import { sanitizeUserMessage } from '../aiInputSanitizer';
 import { maxOutputTokensForAiBudget } from '../aiBudgetReservations';
-import { attemptsOf, createMessage, type MessageAttempt } from './connectionFactory';
+import { attemptsOf, createMessage, type MessageAttempt, type MessageRequestOptions } from './connectionFactory';
 import type { ResolvedModel } from './resolveModel';
 import type { SessionModelChoice } from './sessionModel';
 import { costEstimator } from './settleInvocation';
@@ -129,14 +129,20 @@ export async function summarizeForContinuation(input: {
   transcript: string;
   /** The finite amount reserved for the whole operation (ticket-draft precedent). */
   budgetCents?: number;
+  /** Another summary's instructions (Wisp's session close, #10390). Default: the continuation hand-over. */
+  systemPrompt?: string;
+  maxOutputTokens?: number;
+  requestOptions?: MessageRequestOptions;
 }): Promise<{ summary: string; attempts: MessageAttempt[] }> {
+  const system = input.systemPrompt ?? SUMMARY_SYSTEM_PROMPT;
+  const requestedMaxTokens = input.maxOutputTokens ?? CONTINUATION_SUMMARY_MAX_TOKENS;
   // Codex review finding 7: never spend past the reservation. Half each, as a
   // catalog connection may make a second (refusal-fallback) attempt.
   const maxTokens = input.budgetCents === undefined
-    ? CONTINUATION_SUMMARY_MAX_TOKENS
+    ? requestedMaxTokens
     : maxOutputTokensForAiBudget({
-        prompt: `${SUMMARY_SYSTEM_PROMPT}\n${input.transcript}`,
-        requestedMaxOutputTokens: CONTINUATION_SUMMARY_MAX_TOKENS,
+        prompt: `${system}\n${input.transcript}`,
+        requestedMaxOutputTokens: requestedMaxTokens,
         budgetCents: input.budgetCents / 2,
         calculateCostCents: costEstimator(input.resolved),   // registry rate, never a model-id table
       });
@@ -147,9 +153,9 @@ export async function summarizeForContinuation(input: {
   try {
     outcome = await createMessage(input.client, input.resolved, {
       max_tokens: maxTokens,
-      system: SUMMARY_SYSTEM_PROMPT,
+      system,
       messages: [{ role: 'user', content: input.transcript }],
-    });
+    }, input.requestOptions);
   } catch (error) {
     // A refused attempt that completed before its fallback threw is billed
     // by the provider: keep it for settlement (ticket-draft parity).

@@ -296,6 +296,11 @@ describe('createGmailConnection (#6593 production connect path)', () => {
         provider: 'm365',
         mailboxAddress: 'help@client.example',
         status: 'pending_consent',
+        // An m365 row can carry a floor and baseline state (#10863); neither may
+        // follow it onto a gmail row.
+        eligibleAfter: new Date('2026-01-01T00:00:00.000Z'),
+        baselineSkippedCount: 42,
+        baselineCompletedAt: new Date('2026-01-01T00:10:00.000Z'),
       }),
     );
     gmailMock.probeMailboxForConnect.mockResolvedValue({ historyId: '55555', sub: 'goog-sub-default', email: 'help@client.example' });
@@ -314,6 +319,9 @@ describe('createGmailConnection (#6593 production connect path)', () => {
     expect(row.historyId).toBe('55555');
     expect(row.googleAccountSub).toBe('goog-sub-default');
     expect(row.eligibleAfter).not.toBeNull();
+    expect(new Date(row.eligibleAfter).getTime()).toBeGreaterThan(new Date('2026-01-01T00:00:00.000Z').getTime());
+    expect(row.baselineSkippedCount).toBe(0);
+    expect(row.baselineCompletedAt).toBeNull();
   });
 
   it('merge then reconnect under the survivor RESUMES from the preserved cursor (no mail lost across a merge)', async () => {

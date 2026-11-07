@@ -11,8 +11,8 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
-	"os"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -58,6 +58,8 @@ var (
 // real ones.
 type ManagerDeps struct {
 	Isolator Isolator
+	// BinaryPaths returns the currently installed protected binaries.
+	BinaryPaths func() []string
 	// Scheduler arms the recovery tasks; Scheduler.Ready reports recovery
 	// readiness (self-test passed, tasks registered and read back).
 	Scheduler RecoveryScheduler
@@ -82,6 +84,10 @@ type Manager struct {
 	deps ManagerDeps
 
 	opMu sync.Mutex
+	// prevBins and handoffBins live until this process exits. Kernel rules and
+	// their journalled digest carry the handoff across restart; no new schema.
+	prevBins    []string
+	handoffBins []string
 
 	snapMu sync.RWMutex
 	snap   *journal.Journal
@@ -96,6 +102,10 @@ type Manager struct {
 	// expiryUnarmed is true after an ArmExpiry failure on a committed episode;
 	// the next Tick retries it. Guarded by opMu.
 	expiryUnarmed bool
+
+	// policyRejections are the rejections journalled since a policy was last
+	// adopted, for dedupe (bounded by maxPolicyRejections). Guarded by opMu.
+	policyRejections map[string]struct{}
 
 	// Test seams.
 	beforeEffect func(Effect) error
@@ -222,6 +232,12 @@ type attemptCtx struct {
 	digest     Digest
 	serverTime time.Time
 	drift      bool
+	// policy is adopted when the attempt commits. Nil keeps the journalled one
+	// (a re-verify or drift refresh reinstalls the same allowlist).
+	policy *policyStamp
+	// notes are event types an isolator reported about an apply that still
+	// succeeded (e.g. conntrack_unavailable); journalled with the commit.
+	notes []string
 }
 
 // op is one locked operation.
@@ -277,8 +293,9 @@ func (o *op) end() {
 func (o *op) now() time.Time { return o.m.deps.Clock.Now() }
 
 // load reads the journal into the op. A missing journal is an empty one; a
-// corrupt or unknown-schema journal is set aside and replaced by an empty
-// one whose rules must all be deleted.
+// corrupt or unknown-schema journal is represented by an empty one whose
+// rules must all be deleted. Keep the unreadable file until a replacement is
+// durably persisted: a failed cleanup must never look like a missing journal.
 func (o *op) load() error {
 	j, err := journal.Load(o.m.path())
 	switch {
@@ -290,9 +307,6 @@ func (o *op) load() error {
 		o.state = stateFromJournal(o.j)
 	case errors.Is(err, journal.ErrCorrupt) || errors.Is(err, journal.ErrUnknownSchema):
 		log.Warn("isolation journal unreadable; deleting every Breeze-owned rule", "error", err.Error())
-		if rerr := os.Rename(o.m.path(), o.m.path()+".corrupt"); rerr != nil {
-			log.Warn("could not set the unreadable isolation journal aside; it will be overwritten", "error", rerr.Error())
-		}
 		o.j, o.missing = journal.New(), false
 		o.j.Append(o.now(), "journal_reset", "", 0, truncate(err.Error(), 300))
 		o.state = stateFromJournal(o.j)
@@ -315,9 +329,9 @@ func (o *op) load() error {
 // accounts for: after a corrupt journal, or (checkOwned) when the journal is
 // missing or terminal but the isolator still owns rules.
 func (o *op) cleanupOrphans(checkOwned bool) {
-	if checkOwned && !o.state.RulesMayExist && !activePhase(o.state.Phase) && o.cap.Version >= 1 {
+	if checkOwned && !o.state.RulesMayExist && !activePhase(o.state.Phase) {
 		owned, err := o.m.deps.Isolator.Owned(o.ctx)
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrUnsupported) {
 			log.Warn("could not check for Breeze-owned isolation rules", "error", err.Error())
 		}
 		if err == nil && owned {
@@ -383,6 +397,28 @@ func (o *op) attemptFailed(attemptID, code, detail string) Event {
 	return Event{Kind: EvAttemptFailed, AttemptID: attemptID, Code: code, Err: detail}
 }
 
+// eventTypePattern is isolationJournalEventSchema's `type`: a report carrying
+// any other event type would be rejected by the server as a whole.
+var eventTypePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+// takeApplyNotes collects an isolator's notes on its last Apply, if it keeps
+// any (an optional interface; most isolators have none).
+func takeApplyNotes(iso Isolator) []string {
+	noter, ok := iso.(interface{ TakeApplyNotes() []string })
+	if !ok {
+		return nil
+	}
+	var notes []string
+	for _, note := range noter.TakeApplyNotes() {
+		if !eventTypePattern.MatchString(note) {
+			log.Warn("isolation: dropping an apply note that is not a valid event type", "note", truncate(note, 80))
+			continue
+		}
+		notes = append(notes, note)
+	}
+	return notes
+}
+
 func (o *op) noteError(msg string) {
 	log.Warn("isolation: " + msg)
 	if o.j.Episode != nil {
@@ -435,9 +471,16 @@ func (o *op) exec(e Effect) Event {
 		}
 		d, err := iso.Apply(o.ctx, a.spec)
 		if err != nil {
-			return o.attemptFailed(e.AttemptID, FailApplyError, "apply: "+err.Error())
+			code := FailApplyError
+			// The host cannot safely host the rules (pf compatibility, OD13):
+			// nothing was installed, and the console shows why.
+			if errors.As(err, new(ErrIncompatible)) {
+				code = FailMechanismUnavailable
+			}
+			return o.attemptFailed(e.AttemptID, code, "apply: "+err.Error())
 		}
 		a.digest = d
+		a.notes = append(a.notes, takeApplyNotes(iso)...)
 	case EffRunProbes:
 		return o.runProbes(e.AttemptID)
 	case EffCommit:
@@ -457,6 +500,7 @@ func (o *op) exec(e Effect) Event {
 		if e.Prior {
 			prior, err := priorSpec(o.j)
 			if err == nil {
+				prior.BinaryPaths = o.m.binaryPaths()
 				_, err = iso.Apply(o.ctx, prior)
 			}
 			if err != nil {
@@ -752,8 +796,14 @@ func (o *op) persist(next LocalState, ev Event, effects []Effect) error {
 		if a.kind == AttemptApply {
 			ep.AppliedAt = now
 		}
+		if a.policy != nil {
+			a.policy.adopt(j, now)
+		}
+		for _, note := range a.notes {
+			j.Append(now, note, next.IsolationID, next.Generation, "")
+		}
 	}
-	if terminalSeq > 0 && (next.Phase == journal.PhaseReleased || next.Phase == journal.PhaseRolledBack) {
+	if terminalSeq > 0 && (next.Phase == journal.PhaseReleased || next.Phase == journal.PhaseRolledBack || (next.Phase == journal.PhaseNone && next.ReleaseKind == ReleaseSystem)) {
 		j.PendingReport = &journal.TerminalReceipt{
 			IsolationID: next.IsolationID, Generation: next.Generation, State: next.State,
 			Kind: next.ReleaseKind, FailureCode: next.FailureCode, At: now, JournalSeq: terminalSeq,
@@ -765,6 +815,9 @@ func (o *op) persist(next LocalState, ev Event, effects []Effect) error {
 	o.j, o.state, o.missing, o.dirty = j, next, false, false
 	if commitOf {
 		o.m.lastReverify = now
+		if a.policy != nil {
+			o.m.policyRejections = nil
+		}
 	}
 	o.m.setSnapshot(j)
 	if o.m.onPersist != nil {
@@ -927,6 +980,7 @@ func (o *op) resolveAttempt(id string, gen int, relay bool, allow []AllowEntry) 
 		}
 		resolved[host] = strs
 	}
+	spec.BinaryPaths = o.m.binaryPaths()
 	return &attemptCtx{id: newAttemptID(), allow: append([]AllowEntry(nil), allow...), proxy: proxy, spec: spec, resolved: resolved}, nil
 }
 
@@ -980,7 +1034,7 @@ func validateSpec(s *Spec, now time.Time) error {
 			return fmt.Errorf("allow[%d]: %w", i, err)
 		}
 	}
-	return nil
+	return validatePolicyRevision(s)
 }
 
 func validateEntry(e *AllowEntry) error {
@@ -1185,6 +1239,7 @@ func (m *Manager) HandleIsolate(ctx context.Context, payload map[string]any) Com
 //  8. retake the lock, re-check attempt, deadline and digest;
 //  9. journal committed + fsync, disarm, report verified.
 func (m *Manager) isolate(ctx context.Context, spec Spec) CommandOutcome {
+	RefreshReadiness(ctx, m.deps.Isolator)
 	c := m.deps.Isolator.Capability()
 	if c.Version < 1 {
 		return unsupportedOutcome(spec.IsolationID, spec.Generation, c)
@@ -1215,6 +1270,14 @@ func (o *op) isolateLocked(spec Spec) {
 		}
 	}
 
+	// A block that fails the policy rule changes no rules. Its secret, handled
+	// above, belongs to the episode and is the offline way out, so it is kept.
+	if reason := o.policyRefusal(spec); reason != "" {
+		o.rejectPolicy(spec.IsolationID, spec.Generation, reason)
+		o.report = policyRefusalEffect(reason)
+		return
+	}
+
 	// The desired episode differs from the journalled one: release it first.
 	if o.state.IsolationID != "" && o.state.IsolationID != spec.IsolationID && activePhase(o.state.Phase) {
 		o.run(Event{Kind: EvRelease, ReleaseKind: ReleaseSystem})
@@ -1241,11 +1304,24 @@ func (o *op) isolateLocked(spec Spec) {
 		if o.crashed || o.lockLost || o.report == nil || o.report.Refusal != "" {
 			return
 		}
-		if o.j.Episode != nil && !allowEqual(o.j.Episode.Allow, spec.Allow) {
+		if o.j.Episode == nil {
+			return
+		}
+		// Rules change only through a verified refresh, which keeps the episode
+		// and restores the last verified rules if it fails. The policy is adopted
+		// when that refresh commits; with no rule change, it is adopted now.
+		if !allowEqual(o.j.Episode.Allow, spec.Allow) {
 			saved := o.report
-			o.refresh(spec.Allow, false)
+			o.refreshTo(spec.Allow, false, stampOf(spec))
 			if o.report == nil || o.report.Refusal == "" {
 				o.report = saved
+			}
+		} else if ep := o.j.Episode; string(spec.PolicyRevision) != ep.PolicyRevision || spec.Generation > ep.PolicyGeneration {
+			stampOf(spec).adopt(o.j, o.now())
+			if err := o.save(); err != nil {
+				o.noteError("record the containment policy: " + err.Error())
+			} else {
+				o.m.policyRejections = nil
 			}
 		}
 		return
@@ -1270,6 +1346,7 @@ func (o *op) isolateLocked(spec Spec) {
 		return
 	}
 	a.kind = AttemptApply
+	a.policy = stampOf(spec)
 	ev.AttemptID = a.id
 	o.attempt = a
 	o.newEpisode = &journal.EpisodeRecord{
@@ -1295,6 +1372,11 @@ func (o *op) refuse(failureCode, detail string) {
 // (and, when allow is given, a new allowlist). Failure restores the last
 // verified rules.
 func (o *op) refresh(allow []AllowEntry, drift bool) {
+	o.refreshTo(allow, drift, nil)
+}
+
+// refreshTo is refresh for a desired allowlist: policy is adopted on commit.
+func (o *op) refreshTo(allow []AllowEntry, drift bool, policy *policyStamp) {
 	ep := o.j.Episode
 	if ep == nil || o.state.Phase != journal.PhaseCommitted {
 		return
@@ -1307,7 +1389,7 @@ func (o *op) refresh(allow []AllowEntry, drift bool) {
 		o.noteError("refresh: " + err.Error())
 		return
 	}
-	a.kind, a.drift = AttemptRefresh, drift
+	a.kind, a.drift, a.policy = AttemptRefresh, drift, policy
 	o.attempt = a
 	o.run(Event{Kind: EvRefresh, AttemptID: a.id})
 }
@@ -1325,6 +1407,7 @@ func (o *op) reverify() {
 		o.noteError("rebuild the journalled rules: " + err.Error())
 		return
 	}
+	stored.BinaryPaths = o.m.binaryPaths()
 	d, verr := o.m.deps.Isolator.Verify(o.ctx, stored)
 	if verr != nil || string(d) != ep.RuleDigest {
 		log.Warn("isolation rules drifted; re-applying", "isolationId", ep.IsolationID)
@@ -1402,11 +1485,18 @@ func (m *Manager) Reconcile(ctx context.Context, desired *DesiredBlock) {
 		}
 		if snap := m.snapshot(); snap != nil && snap.Episode != nil && snap.Episode.IsolationID == spec.IsolationID {
 			ep := snap.Episode
-			if spec.Generation < ep.Generation || snap.Phase == journal.PhaseReleased || snap.Phase == journal.PhaseRolledBack {
-				return // older generation, or ended locally: nothing to do
+			if snap.Phase == journal.PhaseReleased || snap.Phase == journal.PhaseRolledBack {
+				return // ended locally: nothing to do
+			}
+			if spec.Generation < ep.Generation {
+				if policyBearing(spec) && string(spec.PolicyRevision) != ep.PolicyRevision {
+					m.NotePolicyRejected(ctx, spec.IsolationID, spec.Generation, PolicyRejectRevisionRegressed)
+				}
+				return // older generation: nothing to do
 			}
 			if snap.Phase == journal.PhaseCommitted && spec.Generation == ep.Generation &&
-				allowEqual(ep.Allow, spec.Allow) && (len(ep.BreakGlassSecret) > 0 || len(spec.BreakGlassSecret) == 0) {
+				allowEqual(ep.Allow, spec.Allow) && string(spec.PolicyRevision) == ep.PolicyRevision &&
+				(len(ep.BreakGlassSecret) > 0 || len(spec.BreakGlassSecret) == 0) {
 				return // already applied as desired
 			}
 		}
@@ -1446,7 +1536,11 @@ func (m *Manager) Tick(ctx context.Context) {
 }
 
 func (o *op) tick() {
-	o.cleanupOrphans(o.missing)
+	// Startup inspects the engine for orphans at any capability. The periodic
+	// tick does so only once this build can isolate: at capability 0 a
+	// never-isolated device would otherwise open a WFP session (Windows) or log
+	// ErrUnsupported (Linux/macOS) every minute, fleet-wide.
+	o.cleanupOrphans(o.missing && o.cap.Version >= 1)
 	if o.crashed || o.lockLost {
 		return
 	}
@@ -1509,6 +1603,11 @@ func (m *Manager) Startup(ctx context.Context) {
 	}
 	o.m.forceReverify.Store(true)
 	o.tick()
+	// Rebuild with this process's protected paths only after re-reading and
+	// re-verifying the inherited kernel rules. Recovery never prunes permits.
+	if !o.crashed && !o.lockLost && o.state.Phase == journal.PhaseCommitted && len(m.binaryPaths()) > 0 {
+		o.refresh(nil, false)
+	}
 }
 
 // LocalRelease is `breeze-agent containment release --code <c> | --force`,

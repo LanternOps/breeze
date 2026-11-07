@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -85,10 +84,10 @@ func snapshotVolume(volume string) (map[string]string, func(), error) {
 // assert on the serialized shape: if a future edit ever drops the
 // RequiredSteps assignment here, that test fails immediately instead of only
 // a duplicated/inlined assertion elsewhere silently going stale.
-func newWindowsManifestSkeleton(hostname string) *SystemStateManifest {
+func newWindowsManifestSkeleton(ctx context.Context, hostname string) *SystemStateManifest {
 	return &SystemStateManifest{
 		Platform:      runtime.GOOS,
-		OSVersion:     windowsVersion(),
+		OSVersion:     osVersion(ctx, "windows", windowsVersion),
 		Hostname:      hostname,
 		CollectedAt:   time.Now().UTC(),
 		RequiredSteps: sortedRequiredSteps(windowsRequiredSteps),
@@ -97,9 +96,9 @@ func newWindowsManifestSkeleton(hostname string) *SystemStateManifest {
 
 // CollectState gathers all Windows system state artifacts into stagingDir.
 // Individual collection steps log errors but do not abort the entire run.
-func (c *WindowsCollector) CollectState(stagingDir string) (*SystemStateManifest, error) {
+func (c *WindowsCollector) CollectState(ctx context.Context, stagingDir string) (*SystemStateManifest, error) {
 	hostname, _ := os.Hostname()
-	manifest := newWindowsManifestSkeleton(hostname)
+	manifest := newWindowsManifestSkeleton(ctx, hostname)
 
 	steps := []collectionStep{
 		{"registry", c.collectRegistry},
@@ -119,17 +118,12 @@ func (c *WindowsCollector) CollectState(stagingDir string) (*SystemStateManifest
 	// iis, firewall, ...) are best-effort and only warn (see IncompleteSteps).
 	// The returned error carries each failed required step's own reason (e.g.
 	// which registry hives failed), not just the step name (#6505).
-	if err := runCollectionSteps(manifest, steps, stagingDir, windowsRequiredSteps); err != nil {
+	if err := runCollectionSteps(ctx, manifest, steps, stagingDir, windowsRequiredSteps); err != nil {
 		return manifest, err
 	}
 
 	// Attach hardware profile (best-effort).
-	hw, err := c.CollectHardwareProfile()
-	if err != nil {
-		slog.Warn("systemstate: hardware profile failed", "error", err.Error())
-	} else {
-		manifest.HardwareProfile = hw
-	}
+	attachHardwareProfile(ctx, manifest, c.CollectHardwareProfile)
 
 	return manifest, nil
 }
@@ -146,13 +140,13 @@ func (c *WindowsCollector) CollectState(stagingDir string) (*SystemStateManifest
 // events 1116/1117). Either way any missing hive fails this required step and
 // is named in the error that reaches errorLog - see windowsRequiredSteps and
 // collectRegistryHivesForRun.
-func (c *WindowsCollector) collectRegistry(stagingDir string) ([]Artifact, error) {
+func (c *WindowsCollector) collectRegistry(ctx context.Context, stagingDir string) ([]Artifact, error) {
 	dir := filepath.Join(stagingDir, "registry")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 
-	return collectRegistryHivesForRun(dir, stagingDir, windowsSystemRoot(), c.opts)
+	return collectRegistryHivesForRun(ctx, dir, stagingDir, windowsSystemRoot(), c.opts)
 }
 
 // windowsSystemRoot is %SystemRoot% as the OS reports it (GetSystemWindowsDirectory,
@@ -168,14 +162,14 @@ var windowsSystemRoot = func() string {
 // Boot configuration
 // ---------------------------------------------------------------------------
 
-func (c *WindowsCollector) collectBootConfig(stagingDir string) ([]Artifact, error) {
+func (c *WindowsCollector) collectBootConfig(ctx context.Context, stagingDir string) ([]Artifact, error) {
 	dir := filepath.Join(stagingDir, "boot")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 
 	outPath := filepath.Join(dir, "bcd_export")
-	cmd := exec.Command("bcdedit", "/export", outPath)
+	cmd := collectorCommand(ctx, "bcdedit", "/export", outPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("bcdedit export: %s: %w", string(out), err)
 	}
@@ -186,14 +180,14 @@ func (c *WindowsCollector) collectBootConfig(stagingDir string) ([]Artifact, err
 // Driver inventory
 // ---------------------------------------------------------------------------
 
-func (c *WindowsCollector) collectDrivers(stagingDir string) ([]Artifact, error) {
+func (c *WindowsCollector) collectDrivers(ctx context.Context, stagingDir string) ([]Artifact, error) {
 	dir := filepath.Join(stagingDir, "drivers")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 
 	outPath := filepath.Join(dir, "inventory.csv")
-	cmd := exec.Command("driverquery", "/v", "/fo", "csv")
+	cmd := collectorCommand(ctx, "driverquery", "/v", "/fo", "csv")
 	data, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("driverquery: %w", err)
@@ -208,7 +202,7 @@ func (c *WindowsCollector) collectDrivers(stagingDir string) ([]Artifact, error)
 // Certificate stores
 // ---------------------------------------------------------------------------
 
-func (c *WindowsCollector) collectCertificates(stagingDir string) ([]Artifact, error) {
+func (c *WindowsCollector) collectCertificates(ctx context.Context, stagingDir string) ([]Artifact, error) {
 	// AD CS (Certificate Services) is an optional role; most machines don't
 	// have it, and certutil -backupDB fails loudly (0x80070002) when it's
 	// absent. Mirror collectIIS's appcmd.exe-absent pattern below: check
@@ -223,25 +217,25 @@ func (c *WindowsCollector) collectCertificates(stagingDir string) ([]Artifact, e
 		return nil, err
 	}
 
-	cmd := exec.Command("certutil", "-backupDB", dir)
+	cmd := collectorCommand(ctx, "certutil", "-backupDB", dir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("certutil backupDB: %s: %w", string(out), err)
 	}
-	return collectArtifactsInDir("certs", dir, stagingDir)
+	return collectArtifactsInDir(ctx, "certs", dir, stagingDir)
 }
 
 // ---------------------------------------------------------------------------
 // Service configurations
 // ---------------------------------------------------------------------------
 
-func (c *WindowsCollector) collectServices(stagingDir string) ([]Artifact, error) {
+func (c *WindowsCollector) collectServices(ctx context.Context, stagingDir string) ([]Artifact, error) {
 	dir := filepath.Join(stagingDir, "services")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 
 	outPath := filepath.Join(dir, "services.txt")
-	cmd := exec.Command("sc", "query", "type=service", "state=all")
+	cmd := collectorCommand(ctx, "sc", "query", "type=service", "state=all")
 	data, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("sc query: %w", err)
@@ -256,14 +250,14 @@ func (c *WindowsCollector) collectServices(stagingDir string) ([]Artifact, error
 // Scheduled tasks
 // ---------------------------------------------------------------------------
 
-func (c *WindowsCollector) collectScheduledTasks(stagingDir string) ([]Artifact, error) {
+func (c *WindowsCollector) collectScheduledTasks(ctx context.Context, stagingDir string) ([]Artifact, error) {
 	dir := filepath.Join(stagingDir, "tasks")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 
 	outPath := filepath.Join(dir, "tasks.csv")
-	cmd := exec.Command("schtasks", "/query", "/fo", "csv", "/v")
+	cmd := collectorCommand(ctx, "schtasks", "/query", "/fo", "csv", "/v")
 	data, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("schtasks: %w", err)
@@ -278,14 +272,14 @@ func (c *WindowsCollector) collectScheduledTasks(stagingDir string) ([]Artifact,
 // Firewall rules
 // ---------------------------------------------------------------------------
 
-func (c *WindowsCollector) collectFirewall(stagingDir string) ([]Artifact, error) {
+func (c *WindowsCollector) collectFirewall(ctx context.Context, stagingDir string) ([]Artifact, error) {
 	dir := filepath.Join(stagingDir, "firewall")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 
 	outPath := filepath.Join(dir, "rules.wfw")
-	cmd := exec.Command("netsh", "advfirewall", "export", outPath)
+	cmd := collectorCommand(ctx, "netsh", "advfirewall", "export", outPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("netsh advfirewall export: %s: %w", string(out), err)
 	}
@@ -296,14 +290,14 @@ func (c *WindowsCollector) collectFirewall(stagingDir string) ([]Artifact, error
 // Windows features
 // ---------------------------------------------------------------------------
 
-func (c *WindowsCollector) collectFeatures(stagingDir string) ([]Artifact, error) {
+func (c *WindowsCollector) collectFeatures(ctx context.Context, stagingDir string) ([]Artifact, error) {
 	dir := filepath.Join(stagingDir, "features")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 
 	outPath := filepath.Join(dir, "features.txt")
-	cmd := exec.Command("dism", "/online", "/get-features", "/format:table")
+	cmd := collectorCommand(ctx, "dism", "/online", "/get-features", "/format:table")
 	data, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("dism get-features: %w", err)
@@ -318,7 +312,7 @@ func (c *WindowsCollector) collectFeatures(stagingDir string) ([]Artifact, error
 // IIS configuration (optional - skip if appcmd not found)
 // ---------------------------------------------------------------------------
 
-func (c *WindowsCollector) collectIIS(stagingDir string) ([]Artifact, error) {
+func (c *WindowsCollector) collectIIS(ctx context.Context, stagingDir string) ([]Artifact, error) {
 	appcmd := filepath.Join(os.Getenv("WINDIR"), "system32", "inetsrv", "appcmd.exe")
 	if _, err := os.Stat(appcmd); err != nil {
 		slog.Info("systemstate: IIS not installed, skipping")
@@ -331,7 +325,7 @@ func (c *WindowsCollector) collectIIS(stagingDir string) ([]Artifact, error) {
 	}
 
 	outPath := filepath.Join(dir, "config.xml")
-	cmd := exec.Command(appcmd, "list", "config", "/xml")
+	cmd := collectorCommand(ctx, appcmd, "list", "config", "/xml")
 	data, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("appcmd list config: %w", err)
@@ -346,8 +340,8 @@ func (c *WindowsCollector) collectIIS(stagingDir string) ([]Artifact, error) {
 // Windows version helper
 // ---------------------------------------------------------------------------
 
-func windowsVersion() string {
-	out, err := exec.Command("cmd", "/c", "ver").Output()
+func windowsVersion(ctx context.Context) string {
+	out, err := collectorCommand(ctx, "cmd", "/c", "ver").Output()
 	if err != nil {
 		return "windows"
 	}

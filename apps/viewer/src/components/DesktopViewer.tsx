@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { type ConnectionParams } from '../lib/protocol';
 import { exchangeDesktopConnectCode, exchangeVncConnectCode } from '../lib/api';
-import { scaleVideoCoords, isWebRTCSupported, AgentSessionError, SessionEndedError, SESSION_ENDED_DEFAULT_MESSAGE, type AuthenticatedConnectionParams } from '../lib/webrtc';
+import { scaleVideoCoords, isWebRTCSupported, announceViewerReconnect, AgentSessionError, RelayRequiredError, SessionEndedError, SESSION_ENDED_DEFAULT_MESSAGE, type AuthenticatedConnectionParams } from '../lib/webrtc';
 import { errorCardFor, parseSessionEndingMessage, serverEndReasonText, sessionEndedCardMessage, sessionEndingText, type ErrorCardKind } from '../lib/sessionEnd';
 import {
   startRevocationLeaseRenewal,
@@ -1015,9 +1015,20 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     wsCleanupRef.current = null;
     const oldRtc = webrtcRef.current;
     webrtcRef.current = null;
-    oldRtc?.close();
 
     reconnectInFlightRef.current = true;
+    if (oldRtc) {
+      // #10542: mark the reconnect with the API before closing the old peer.
+      // The close makes the agent report a peer drop at once; with the mark in
+      // place the API holds that report for this reconnect's offer instead of
+      // ending the session under it. Bounded and best effort.
+      await announceViewerReconnect(auth);
+    }
+    oldRtc?.close();
+    if (cancelledRef.current || userDisconnectRef.current) {
+      reconnectInFlightRef.current = false;
+      return;
+    }
     const recordedTransport = transportRef.current;
     // No transport recorded — the drop beat the first successful connect. Default
     // to WebRTC, except on a WebView that has none: there WebSocket is the only
@@ -2551,6 +2562,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       if (!ok) throw new Error('WebRTC connection failed');
       setActiveSessionId(sessionId);
     } catch (err) {
+      if (err instanceof RelayRequiredError) {
+        setStatus('error');
+        setConnectedAt(null);
+        setErrorMessage(err.message);
+        onError(err.message);
+        return;
+      }
       // Try to reconnect to the previous session so the viewer isn't dead
       const prevId = activeSessionId ?? undefined;
       try {
@@ -2561,7 +2579,14 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           setErrorMessage(`Failed to switch to ${label} and could not restore previous session`);
           startReconnectRef.current();
         }
-      } catch {
+      } catch (err) {
+        if (err instanceof RelayRequiredError) {
+          setStatus('error');
+          setConnectedAt(null);
+          setErrorMessage(err.message);
+          onError(err.message);
+          return;
+        }
         setErrorMessage(`Failed to switch to ${label} and could not restore previous session`);
         startReconnectRef.current();
       }

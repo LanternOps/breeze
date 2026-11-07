@@ -62,6 +62,13 @@ const ALLOW_IN_MEMORY_PORTAL_STATE = !PORTAL_USE_REDIS;
  *  below and apps/portal/src/lib/accountStatus.ts, which mirrors this string. */
 export const PORTAL_ACCOUNT_INACTIVE_CODE = 'PORTAL_ACCOUNT_INACTIVE';
 
+/** Login-time refusal for a portal user whose organization is no longer active
+ *  (churned, archived, suspended, merging, or owning partner inactive — #10934).
+ *  The login form renders `error` verbatim. */
+export const PORTAL_ORG_UNAVAILABLE_CODE = 'PORTAL_ORG_UNAVAILABLE';
+const PORTAL_ORG_UNAVAILABLE_MESSAGE =
+  'This portal is no longer active. Contact your IT provider if you think this is a mistake.';
+
 /**
  * Paths a disabled portal user is still permitted to hit despite failing the
  * account-status gate. Kept intentionally tight — pure session teardown only.
@@ -486,6 +493,16 @@ authRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
   const validPassword = await verifyPassword(user.passwordHash, password);
   if (!validPassword) {
     return c.json({ error: 'Invalid email or password' }, 401);
+  }
+
+  // Refuse a churned/archived/suspended org here, with a reason, instead of
+  // minting a session the very next request would 403 and purge (#10934: the
+  // customer was silently bounced back to /login). Placed AFTER the password
+  // check on purpose: only someone holding valid credentials can see this
+  // message, so it never reveals whether an email exists.
+  const activeOrg = await getActiveOrgTenant(user.orgId);
+  if (!activeOrg) {
+    return c.json({ error: PORTAL_ORG_UNAVAILABLE_MESSAGE, code: PORTAL_ORG_UNAVAILABLE_CODE }, 403);
   }
 
   if (user.status !== 'active') {

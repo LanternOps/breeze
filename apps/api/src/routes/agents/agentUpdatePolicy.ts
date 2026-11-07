@@ -32,7 +32,7 @@
  * database. The DB read lives in `getOrgAgentUpdatePolicy` (helpers.ts).
  */
 
-import { parseMaintenanceWindow } from '@breeze/shared';
+import { NETWORK_ISOLATION_MIN_AGENT_VERSION, parseMaintenanceWindow, semverCompare } from '@breeze/shared';
 
 export type AgentUpdatePolicy = 'auto' | 'staged' | 'manual';
 
@@ -101,6 +101,19 @@ export function shouldSendAgentUpgrade(settings: AgentUpdateSettings, now: Date)
   }
   if (!isWithinMaintenanceWindow(settings.maintenanceWindow, now)) {
     return { allow: false, reason: 'outside-maintenance-window' };
+  }
+  return { allow: true, reason: 'allowed' };
+}
+
+
+/** An unresolved episode must keep an agent capable of releasing its firewall rules. */
+export function isolationAgentUpgradeGate(
+  targetVersion: string,
+  hasUnresolvedIsolation: boolean,
+): { allow: boolean; reason: 'allowed' | 'network-isolation-version-floor' } {
+  if (hasUnresolvedIsolation) {
+    const comparison = semverCompare(targetVersion.trim(), NETWORK_ISOLATION_MIN_AGENT_VERSION);
+    if (comparison === null || comparison < 0) return { allow: false, reason: 'network-isolation-version-floor' };
   }
   return { allow: true, reason: 'allowed' };
 }

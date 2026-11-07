@@ -62,7 +62,7 @@ export async function renderCustomerQuotePdf(quote: QuoteRow): Promise<Buffer> {
       settings: partners.settings,
     }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1)
   ));
-  const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, footerText: portalBranding.footerText }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
+  const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, secondaryColor: portalBranding.secondaryColor, footerText: portalBranding.footerText }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
   const loadImage = async (imageId: string) => { const img = await readQuoteImage(imageId, id); return img ? { data: img.data } : null; };
   const { renderQuotePdf } = await import('./quotePdf');
   // Legacy docs have no frozen snapshot; synthesize from the live partner so

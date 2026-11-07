@@ -42,6 +42,7 @@ vi.mock('../../config/env', () => ({
 vi.mock('../../db', () => ({
   getCurrentDbAccessContext: vi.fn(() => undefined),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: { select: dbSelectMock, insert: dbInsertMock, delete: dbDeleteMock },
 }));

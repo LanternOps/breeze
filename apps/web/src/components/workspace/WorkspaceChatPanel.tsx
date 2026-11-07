@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Sparkles } from "lucide-react";
-import WispWelcome from "../wisp/WispWelcome";
+import WispChatWelcome from "../wisp/WispChatWelcome";
 import { useWispScopeLabel } from "../wisp/useWispScopeLabel";
 
 import AiChatMessages from "../ai/AiChatMessages";
@@ -41,6 +41,7 @@ export default function WorkspaceChatPanel({ tab, onContinueInPanel }: Workspace
     saveTicketFromChat,
     setComposerDraft,
     recheckPendingApprovals,
+    wispGrantAvailable,
   } = useWorkspaceStore();
   // #9431: an approval card may have been decided in another window meanwhile.
   useOnWindowReturn(() => recheckPendingApprovals?.());
@@ -53,6 +54,8 @@ export default function WorkspaceChatPanel({ tab, onContinueInPanel }: Workspace
   // its empty state and its composer — not only in the mode label above.
   const tabWisp = tab.wisp?.kind === "wisp" ? tab.wisp : null;
   const wispScopeLabel = useWispScopeLabel(tabWisp?.orgId ?? null);
+  // #10289: beside an active grant "Breeze AI" alone reads as Wisp, so say it isn't.
+  const plainLabel = tab.plainChosen || wispGrantAvailable ? t("wisp.plainChat.label") : t("aiChatSidebar.title");
 
   const hasAssistantMsg = tab.messages.some((m) => m.role === "assistant");
   const canCreateTicket = !!tab.sessionId && hasAssistantMsg;
@@ -109,7 +112,7 @@ export default function WorkspaceChatPanel({ tab, onContinueInPanel }: Workspace
               }`}
             >
               {tab.wisp.kind === "wisp" && <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />}
-              {tab.wisp.kind === "wisp" ? t("wisp.title") : t("aiChatSidebar.title")}
+              {tab.wisp.kind === "wisp" ? t("wisp.title") : plainLabel}
             </span>
           )}
           <WorkspaceSessionChips
@@ -207,10 +210,12 @@ export default function WorkspaceChatPanel({ tab, onContinueInPanel }: Workspace
         assistantLabel={tabWisp ? t("wisp.title") : undefined}
         emptyState={
           tabWisp ? (
-            <WispWelcome
+            <WispChatWelcome
+              key={tabWisp.grantId}
+              grantId={tabWisp.grantId}
+              orgId={tabWisp.orgId}
               scopeLabel={wispScopeLabel}
               onSuggest={(prompt) => sendMessage(tab.id, prompt)}
-              briefNote={false}
             />
           ) : undefined
         }

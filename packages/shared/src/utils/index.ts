@@ -53,6 +53,9 @@ export {
 export * from './hardwareLifecycle';
 export * from './backupHealth';
 export * from './backupReparseSkips';
+export * from './backupFailureCategory';
+export * from './backupJobAccounting';
+export * from './backupFileIndexNote';
 export * from './identityAccess';
 export * from './threatDetection';
 export * from './endpointManagement';
@@ -68,4 +71,7 @@ export * from './networkProxyOptIn';
 export * from './forceReboot';
 export * from './networkIsolation';
 export * from './businessTime';
+export * from './evidenceCursor';
 export * from './alertSubject';
+export * from './oemUpdates';
+export * from './alertLifecycle';

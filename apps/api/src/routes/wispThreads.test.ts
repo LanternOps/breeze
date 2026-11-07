@@ -24,6 +24,7 @@ const h = vi.hoisted(() => {
     hasEntitlement: vi.fn(async () => true),
     getActiveGrantForUser: vi.fn(),
     wideningAvailable: vi.fn(async () => false),
+    firstLookPostTimes: vi.fn(async (): Promise<{ firstLookAt: string | null; couldntLookAt: string | null }> => ({ firstLookAt: null, couldntLookAt: null })),
     spendSummary: vi.fn(),
     getOrCreateThread: vi.fn(),
     setThreadFocus: vi.fn(),
@@ -115,6 +116,10 @@ vi.mock('../services/wisp/activity', async (importOriginal) => ({
 vi.mock('../services/wisp/threadTimeline', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/wisp/threadTimeline')>()),
   listThreadTimeline: h.listThreadTimeline,
+}));
+vi.mock('../services/wisp/threadPosts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/wisp/threadPosts')>()),
+  firstLookPostTimes: h.firstLookPostTimes,
 }));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: h.writeRouteAudit }));
 vi.mock('../services/sentry', () => ({ captureException: h.captureException }));
@@ -273,10 +278,23 @@ describe('GET /wisp/thread', () => {
         id: GRANT_ID, status: 'active', orgId: null, expiresAt: '2027-04-01T00:00:00.000Z',
         currentRevisionId: REV, budgetCentsPerDay: 200, floorTickMinutes: 30,
         // w00 A32 spend meter — field names are the cross-wave contract.
-        spentTodayCents: 42, budgetResetsAt: '2026-10-25T00:00:00.000Z', pausedReason: null,
+        spentTodayCents: 42, budgetResetsAt: '2026-10-25T00:00:00.000Z', pausedReason: null, unattendedReads: false, unattendedReadsPinned: false, summaryRefine: false,
       },
       wideningAvailable: widening,
+      firstLookState: 'looking',
     });
+  });
+
+  it.each([
+    [{ firstLookAt: null, couldntLookAt: null }, 'looking'],
+    [{ firstLookAt: null, couldntLookAt: '2027-01-22T10:00:00.000Z' }, 'couldnt_look'],
+    [{ firstLookAt: '2027-01-22T11:00:00.000Z', couldntLookAt: '2027-01-22T10:00:00.000Z' }, 'done'],
+  ])('#11145: carries the first-look state for the chat surfaces (%o → %s)', async (times, state) => {
+    h.getActiveGrantForUser.mockResolvedValue(grant());
+    h.getOrCreateThread.mockResolvedValue(thread());
+    h.firstLookPostTimes.mockResolvedValueOnce(times);
+    const res = await buildApp().request('/wisp/thread');
+    expect((await res.json() as { data: { firstLookState: string } }).data.firstLookState).toBe(state);
   });
 
   it('returns thread.focusOrgId and focusOrgName (no org read when unfocused)', async () => {
@@ -661,12 +679,35 @@ describe('GET /wisp/thread/:id (W06 Task 6)', () => {
           id: GRANT_ID, status: 'active', orgId: null, expiresAt: '2027-04-01T00:00:00.000Z', currentRevisionId: REV,
           budgetCentsPerDay: 200, floorTickMinutes: 30, spentTodayCents: 42, budgetResetsAt: '2026-10-25T00:00:00.000Z',
           pausedReason: null,
+          unattendedReads: false, unattendedReadsPinned: false, summaryRefine: false,
         },
         wideningAvailable: false,
+        firstLookState: 'looking',
       },
     });
     expectOwnershipWhere(h.whereArgs[0]);
     expect(h.spendSummary).toHaveBeenCalledWith(GRANT_ID);
+  });
+
+  it('#10973: the switch reads pinned AND live; a live column over an unpinned revision is off', async () => {
+    h.dbResults.push([ownRow({ grantUnattendedReads: true, grantUnattendedReadsPinned: true })]);
+    let body = await (await buildApp().request(`/wisp/thread/${THREAD_ID}`)).json();
+    expect(body.data.grant).toMatchObject({ unattendedReads: true, unattendedReadsPinned: true });
+    h.dbResults.push([ownRow({ grantUnattendedReads: true, grantUnattendedReadsPinned: false })]);
+    body = await (await buildApp().request(`/wisp/thread/${THREAD_ID}`)).json();
+    expect(body.data.grant).toMatchObject({ unattendedReads: false, unattendedReadsPinned: false });
+    h.dbResults.push([ownRow({ grantUnattendedReads: false, grantUnattendedReadsPinned: true })]);
+    body = await (await buildApp().request(`/wisp/thread/${THREAD_ID}`)).json();
+    expect(body.data.grant).toMatchObject({ unattendedReads: false, unattendedReadsPinned: true });
+  });
+
+  it('#10390: carries the session-notes switch, false unless the column is literally true', async () => {
+    h.dbResults.push([ownRow({ grantSummaryRefine: true })]);
+    let body = await (await buildApp().request(`/wisp/thread/${THREAD_ID}`)).json();
+    expect(body.data.grant).toMatchObject({ summaryRefine: true });
+    h.dbResults.push([ownRow({ grantSummaryRefine: false })]);
+    body = await (await buildApp().request(`/wisp/thread/${THREAD_ID}`)).json();
+    expect(body.data.grant).toMatchObject({ summaryRefine: false });
   });
 
   it('carries pausedReason so a paused thread can say why', async () => {

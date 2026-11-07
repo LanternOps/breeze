@@ -239,10 +239,40 @@ describe('backup verification service', () => {
   it('reports zero coverage when assigned-device resolution fails', async () => {
     const orgId = `org-assignment-failure-${Date.now()}`;
 
-    resolveAllBackupAssignedDevicesMock.mockRejectedValueOnce(new Error('feature config unavailable'));
+    // Twice: the readiness listing resolves assigned devices too, in sequence
+    // before the summary's own call.
+    resolveAllBackupAssignedDevicesMock
+      .mockRejectedValueOnce(new Error('feature config unavailable'))
+      .mockRejectedValueOnce(new Error('feature config unavailable'));
 
     const summary = await getBackupHealthSummary(orgId);
     expect(summary.verification.coveragePercent).toBe(0);
+  });
+
+  it('stamps the AI origin on the command when an AI surface decided it (W17, #6788)', async () => {
+    vi.mocked(queueCommandForExecution).mockResolvedValueOnce({
+      command: { id: 'cmd-verify-ai', status: 'sent' } as any,
+    });
+    const aiOrigin = { kind: 'chat', sessionId: 's1' } as never;
+
+    const { verification } = await runBackupVerification({
+      orgId: 'org-123',
+      deviceId: 'dev-001',
+      backupJobId: 'job-001',
+      verificationType: 'integrity',
+      source: 'ai.verify',
+      aiOrigin,
+    });
+
+    expect(queueCommandForExecution).toHaveBeenCalledWith(
+      'dev-001',
+      'backup_verify',
+      expect.anything(),
+      expect.objectContaining({ expectedOrgId: 'org-123', aiOrigin }),
+    );
+
+    const idx = backupVerifications.findIndex((v) => v.id === verification.id);
+    if (idx >= 0) backupVerifications.splice(idx, 1);
   });
 
   it('dispatches the verification command with a destination reference, never the stored credential', async () => {

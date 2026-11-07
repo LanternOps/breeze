@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // this record, so the terminal return of a won release is asserted against it.
 const RELEASED_INTENT_DECISION = { approvalScope: 'four_eyes', decidedVia: 'session_tap' } as const;
 const RELEASED_CONTEXT = { releaseDecision: RELEASED_INTENT_DECISION };
-import { createSessionPostToolUse, createSessionPreToolUse, runPreFlightChecks, safeParseJson } from './aiAgentSdk';
+import { WORK_TURN_LIMIT_REFUSAL, createSessionPostToolUse, createSessionPreToolUse, runPreFlightChecks, safeParseJson } from './aiAgentSdk';
 import { db } from '../db';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements } from './aiGuardrails';
 import { checkTenantToolRateLimit } from './toolSources/guardrails';
@@ -429,6 +429,15 @@ describe('topology investigation tool gate (M4 Task 3)', () => {
     // The late call ran, so it is no longer pending: a late SDK echo of its
     // result must not reach the dropped-call fallback, which would persist it (#7931).
     expect(session.toolUseIdQueue).toEqual([]);
+  });
+
+  it('a turn stopped at its work-turn limit refuses further tool calls before any gate or approval (#10400)', async () => {
+    const values = mockInsertValues();
+    const session = makeActiveSession({ workTurnLimitStopped: true, pendingTurnToolExecutionCount: 0, toolUseNames: new Map() });
+    expect(await createSessionPreToolUse(session)('get_topology', { site_id: 's' }))
+      .toEqual({ allowed: false, error: WORK_TURN_LIMIT_REFUSAL });
+    expect(checkGuardrails).not.toHaveBeenCalled();
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'refused', errorMessage: WORK_TURN_LIMIT_REFUSAL }));
   });
 
   it('claims the call by its SDK id when the result beats its stream event (#7931)', async () => {

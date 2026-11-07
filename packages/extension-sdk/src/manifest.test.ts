@@ -307,6 +307,7 @@ describe('parseExtensionManifestV1', () => {
     'partner-api',
     'billing',
     'support',
+    'service-catalog',
     'ticket-forms',
     'ticket-response-templates',
     'ticketing',

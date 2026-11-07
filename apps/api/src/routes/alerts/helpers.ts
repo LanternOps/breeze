@@ -1,8 +1,10 @@
+import { DEFAULT_ALERT_COOLDOWN_MINUTES } from '@breeze/shared';
 import { ensureOrgAccess } from '../../services/delivery/railContracts';
 export { ensureOrgAccess, resolveWriteOrgId, getEscalationPolicyWithOrgCheck } from '../../services/delivery/railContracts';
 import { and, eq, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import type { NotificationChannelType } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { legacyLifecycleValues } from '../../services/alertLifecycle/resolve';
 import {
   alertRules,
   alertTemplates,
@@ -34,7 +36,6 @@ export type AlertRuleOverrides = {
   severity?: string;
   conditions?: unknown;
   cooldownMinutes?: number;
-  cooldown?: number;
   autoResolve?: boolean;
   notificationChannelIds?: string[];
   notificationChannels?: string[];
@@ -513,8 +514,10 @@ export function formatAlertRuleResponse(rule: AlertRuleRow, template?: AlertTemp
 
   const notificationChannelIds = getNotificationChannelIds(overrides);
   const severity = overrides.severity ?? template?.severity ?? 'medium';
-  const cooldownMinutes = overrides.cooldownMinutes ?? overrides.cooldown ?? template?.cooldownMinutes ?? 15;
-  const autoResolve = overrides.autoResolve ?? template?.autoResolve ?? false;
+  // The rule/template values the engine uses for a legacy rule (one reader:
+  // services/alertLifecycle/resolve.ts). A monitor-managed rule's effective
+  // values resolve per device org at evaluation and are shown on the monitor.
+  const { cooldownMinutes, autoResolve } = legacyLifecycleValues(rule, template);
 
   return {
     id: rule.id,
@@ -576,7 +579,7 @@ export async function resolveAlertTemplate(params: {
   const templateName = params.name?.trim() || 'Custom Alert Template';
   const templateSeverity = (params.severity ?? 'medium') as AlertTemplateRow['severity'];
   const templateConditions = params.conditions ?? {};
-  const templateCooldownMinutes = params.cooldownMinutes ?? 15;
+  const templateCooldownMinutes = params.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES;
   const templateAutoResolve = params.autoResolve ?? false;
 
   if (params.templateId) {

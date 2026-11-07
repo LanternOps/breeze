@@ -105,6 +105,9 @@ vi.mock('../../services/edrProviders/mapping', () => {
   };
 });
 
+const clearMaterial = vi.hoisted(() => vi.fn(async (_tx: unknown, _where: unknown) => 1));
+vi.mock('../../services/edrProviders/installerMaterial', () => ({ clearTenantInstallerMaterial: clearMaterial }));
+
 const enqueueMock = vi.fn(async (_id: string, _s: string) => 'job-1');
 vi.mock('../../jobs/edrProviderSync', () => ({
   enqueueEdrSync: (id: string, s: string) => enqueueMock(id, s),
@@ -236,6 +239,32 @@ describe('EDR tenant routes', () => {
       remapState.result = { ...remapState.result, orgId: null };
       expect((await put(app, { orgId: null })).status).toBe(200);
       expect(vi.mocked(writeRouteAudit).mock.calls[0]![1]).toMatchObject({ action: 'edr.tenant.unmap', orgId: ORG_A });
+    });
+
+    describe('installer material (#8170)', () => {
+      beforeEach(() => clearMaterial.mockClear());
+
+      it('unmapping clears that tenant inside the remap transaction, after the remap', async () => {
+        const order: string[] = [];
+        vi.mocked(remapEdrTenant).mockImplementationOnce(async () => { order.push('remap'); return remapState.result as never; });
+        clearMaterial.mockImplementationOnce(async () => { order.push(`clear:inTx=${ctxState.inTx}`); return 1; });
+        const res = await put(app, { orgId: null });
+        expect(res.status).toBe(200);
+        expect(clearMaterial).toHaveBeenCalledWith(expect.anything(), { tenantId: TENANT_ID });
+        expect(order).toEqual(['remap', 'clear:inTx=true']);
+      });
+
+      it('remapping to another org keeps the material: the vendor company is unchanged', async () => {
+        const res = await put(app, { orgId: ORG_B });
+        expect(res.status).toBe(200);
+        expect(clearMaterial).not.toHaveBeenCalled();
+      });
+
+      it('a refused unmap clears nothing', async () => {
+        remapState.error = { code: 'NOT_FOUND', message: 'EDR tenant not found' };
+        await put(app, { orgId: null });
+        expect(clearMaterial).not.toHaveBeenCalled();
+      });
     });
 
     it('holding org -> 422 and nothing audited or enqueued', async () => {

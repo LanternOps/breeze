@@ -27,7 +27,7 @@ import type { AiStreamEvent, AiApprovalMode, AiPendingCardEvent } from '@breeze/
 import type { PendingRunResult } from './workspace/chatRunBridge';
 import { AsyncEventQueue } from '../utils/asyncQueue';
 import { prepareSdkChild, sdkModelOptions } from './aiModels/connectionFactory';
-import { takeGatewayFailureNote } from './aiModels/gateway/failureNotes';
+import { takeGatewayFailure, takeGatewayFailureNote } from './aiModels/gateway/failureNotes';
 import { PROVIDER_FAILURE_GENERIC_MESSAGE, providerFailureMessage } from './aiModels/providerFailureMessage';
 import { classifySdkAssistantError } from './aiModels/failover';
 import { catalogEndpointOf } from './aiModels/sdkChildEnv';
@@ -70,7 +70,15 @@ import type { FlowToolDescriptor } from './flows/flowTools';
 import { flowsEnabled } from '../config/env';
 import { buildFlowSdkTools, chatFlowToolRunStarter, flowMcpToolNames } from './flows/sdkFlowTools';
 import { sessionMayStartFlows } from './flows/flowToolGate';
-import { isSdkBuiltinToolUse, resolveToolSearchPolicy } from './aiToolSearchPolicy';
+import {
+  isSdkBuiltinToolUse,
+  newRoundTripTally,
+  noteAssistantRoundTrip,
+  resolveToolSearchPolicy,
+  sdkMaxTurns,
+  workTurns,
+  type RoundTripTally,
+} from './aiToolSearchPolicy';
 import { noteStreamedToolUse, resetToolUseCorrelationMarkers, takeDroppedToolUse } from './aiToolUseCorrelation';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
@@ -172,21 +180,27 @@ export function turnTimeoutMsFor(approvalWaitBudgetMs: number): number {
 const MCP_PREFIX = 'mcp__breeze__';
 // Use the directly-imported runOutsideDbContext (see commandQueue.ts for explanation).
 const runOutsideDbContextSafe = runOutsideDbContext;
+const WISP_SUMMARY_FINALIZE_CONCURRENCY = 4;
 
 /**
  * Wisp W04 Task 5: recompute the thread summary of each session just retired.
  * Lazy import keeps wisp code out of this hot module's eager graph (as for
  * chatCeiling). Never rejects: failures go to Sentry only.
+ *
+ * #10390: finalizing can include a model call of up to a minute, so sessions run
+ * a few at a time rather than one by one: one session's slow call must not hold
+ * back the digest another thread's next chat is seeded with.
  */
 async function finalizeWispSummaries(sessionIds: string[]): Promise<void> {
   if (sessionIds.length === 0) return;
   try {
     const { finalizeWispSessionSummary } = await import('./wisp/threadSummary');
-    for (const id of sessionIds) {
-      await finalizeWispSessionSummary(id).catch((err) => {
-        console.error(`[StreamingSessionManager] Wisp thread summary finalize failed for expired session ${id}:`, err);
-        captureException(err);
-      });
+    for (let i = 0; i < sessionIds.length; i += WISP_SUMMARY_FINALIZE_CONCURRENCY) {
+      await Promise.all(sessionIds.slice(i, i + WISP_SUMMARY_FINALIZE_CONCURRENCY).map((id) =>
+        finalizeWispSessionSummary(id).catch((err) => {
+          console.error(`[StreamingSessionManager] Wisp thread summary finalize failed for expired session ${id}:`, err);
+          captureException(err);
+        })));
     }
   } catch (err) {
     console.error(`[StreamingSessionManager] Wisp thread summary finalize failed for ${sessionIds.length} session(s) (${sessionIds.join(', ')}):`, err);
@@ -542,6 +556,21 @@ export interface ActiveSession {
    * after every flush (normal `result` or the abandoned-turn fallback below).
    */
   pendingTurnToolExecutionCount: number;
+  /**
+   * #10400: this turn's model round-trips, split into work and ToolSearch-only
+   * retrieval, so settlement charges the session's turn budget for work only.
+   * Shares pendingTurnUsage's reset-at-settlement lifecycle. Optional so
+   * fixtures that build ActiveSession literals compile unchanged.
+   */
+  pendingTurnRoundTrips?: RoundTripTally;
+  /**
+   * #10400: the work turns this query may spend, set only when it can search.
+   * Its SDK `maxTurns` carries search headroom, so the SDK no longer stops real
+   * work at the session's limit and the background processor has to.
+   */
+  workTurnLimit?: number;
+  /** Set when workTurnLimit stopped the turn; cleared at settlement. */
+  workTurnLimitStopped?: boolean;
   /** Synchronously reserved focal auto-link slots; shares the tool-count reset lifecycle. */
   pendingTurnAutoLinkCount: number;
   /**
@@ -800,6 +829,13 @@ async function loadApprovalMode(orgId: string): Promise<AiApprovalMode> {
   return 'per_step';
 }
 
+/** Coded so a client can act on it: the next send would be refused too (preflight). */
+const TURN_LIMIT_ERROR = {
+  type: 'error',
+  message: 'Maximum conversation turns reached.',
+  code: 'turn_limit_reached',
+} as const;
+
 export class StreamingSessionManager {
   private sessions = new Map<string, ActiveSession>();
   private evictionTimer: ReturnType<typeof setInterval> | null = null;
@@ -874,6 +910,8 @@ export class StreamingSessionManager {
       session.turnDisplay = turn.turnDisplay;
     }
     session.refusalObservation = newSdkTurnObservation();
+    // A note left by an earlier turn that ended with no result must not name this turn's failure.
+    takeGatewayFailureNote(session.breezeSessionId);
     // The state and its staleness clock move together: eviction reads
     // lastActivityAt to tell a live turn from a wedged one, and before this the
     // stamp was refreshed only in getOrCreate() — so a session that had been
@@ -1175,6 +1213,7 @@ export class StreamingSessionManager {
       toolUseIdQueue: [],
       pendingTurnUsage: emptyPendingTurnUsage(),
       pendingTurnToolExecutionCount: 0,
+      pendingTurnRoundTrips: newRoundTripTally(),
       pendingTurnAutoLinkCount: 0,
       toolUseNames: new Map(),
       resultedToolUseIds: new Set(),
@@ -1242,6 +1281,9 @@ export class StreamingSessionManager {
     session.mcpServer = mcpServer;
     session.mcpPrefix = `mcp__${mcpServerName}__`;
 
+    // The session's remaining WORK turns (#10400: ToolSearch round-trips are
+    // not charged to turn_count). The SDK's own ceiling counts every
+    // round-trip, so a searching query gets headroom on top (sdkMaxTurns).
     const maxTurns = Math.max(1, dbSession.maxTurns - dbSession.turnCount);
 
     // Inject approval mode instructions into system prompt
@@ -1341,6 +1383,7 @@ export class StreamingSessionManager {
           childEnv,
           remainingTurns: maxTurns,
         });
+        session.workTurnLimit = toolSearchPolicy.enabled ? maxTurns : undefined;
         const sdkQuery = query({
           prompt: inputController.getInputStream(),
           options: {
@@ -1349,7 +1392,7 @@ export class StreamingSessionManager {
             // fallbackModel (the refusal fallback) and thinking/effort: all
             // from the resolved model, nothing derived here.
             ...sdkModelOptions(resolved),
-            maxTurns,
+            maxTurns: sdkMaxTurns(maxTurns, toolSearchPolicy.enabled),
             maxBudgetUsd,
             tools: toolSearchPolicy.tools,
             allowedTools: allowedTools ?? [...BREEZE_MCP_TOOL_NAMES, ...tenantMcpToolNames(tenantDescriptors), ...flowMcpToolNames(flowDescriptors)],
@@ -1534,7 +1577,7 @@ export class StreamingSessionManager {
         this.stopThinking(session);
         // #7794: a model-gateway failure behind the timeout (the CLI keeps
         // retrying it) is the actionable part; say it.
-        const gatewayNote = takeGatewayFailureNote(session.breezeSessionId);
+        const gatewayNote = this.takeTurnGatewayNote(session);
         session.eventBus.publish({
           type: 'error',
           message: gatewayNote ? `AI request timed out. ${gatewayNote}` : 'AI request timed out. Please try again.',
@@ -1624,6 +1667,7 @@ export class StreamingSessionManager {
     // ("...last night.Here's a summary"). Reset at message_start, alongside
     // `messageStarted` above.
     let sawTextBlockThisMessage = false;
+    let workTurnLimitReported = false;
 
     try {
       for await (const message of session.query) {
@@ -1786,6 +1830,28 @@ export class StreamingSessionManager {
               cache_read_input_tokens?: number | null;
               cache_creation_input_tokens?: number | null;
             } | undefined;
+            // #10400: which round-trips did work, for the turn budget.
+            const roundTrips = session.pendingTurnRoundTrips ??= newRoundTripTally();
+            noteAssistantRoundTrip(roundTrips, message.message);
+            // Mirrors the SDK's own ceiling: the limit's last round-trip runs,
+            // and the next real call stops the turn. That call may already be
+            // dispatching (through the normal tool gates) when the interrupt
+            // lands, and its round-trip is charged, so a turn can end one over.
+            if (
+              session.workTurnLimit !== undefined
+              && !session.workTurnLimitStopped
+              && roundTrips.workCalls.size > session.workTurnLimit
+            ) {
+              session.workTurnLimitStopped = true;
+              // As in interrupt(): an approval wait would otherwise block it
+              // (#3089). Settling only acts on a wait already in flight; the
+              // over-limit call's preToolUse may be past its stop check and not
+              // yet waiting, so spend the cycle's wait budget too: its wait then
+              // returns at once (the hook refuses any later call outright).
+              settleApprovalWaits(session);
+              session.approvalWaitDeadline = Date.now();
+              void Promise.resolve().then(() => session.query.interrupt()).catch(() => undefined);
+            }
             if (apiUsage) {
               session.pendingTurnUsage.inputTokens += apiUsage.input_tokens ?? 0;
               session.pendingTurnUsage.outputTokens += apiUsage.output_tokens ?? 0;
@@ -1961,7 +2027,7 @@ export class StreamingSessionManager {
             // #7794: the model gateway's reason for this turn's failure, if it
             // had one. Always taken here, so a note from a retry that later
             // recovered never surfaces on a later turn.
-            const gatewayNote = takeGatewayFailureNote(session.breezeSessionId);
+            const gatewayNote = this.takeTurnGatewayNote(session);
             // #3095: use the session's canonical org id (from the aiSessions DB
             // row — always set), NOT `auth.orgId`, which is null for partner-
             // and system-scoped users. The old guard on `auth.orgId` silently
@@ -1988,7 +2054,10 @@ export class StreamingSessionManager {
               : null;
             let isErrorSuccessMessage: string | null = null;
 
-            if (resultMsg.subtype !== 'success') {
+            if (session.workTurnLimitStopped) {
+              // Whatever the interrupted query reported, the reason is the limit.
+              session.eventBus.publish(TURN_LIMIT_ERROR);
+            } else if (resultMsg.subtype !== 'success') {
               const errors = 'errors' in resultMsg ? resultMsg.errors : [];
               const errorMsg = errors.length > 0 ? errors[0] : `AI query ended: ${resultMsg.subtype}`;
 
@@ -2001,7 +2070,7 @@ export class StreamingSessionManager {
                 // next send would be refused too (preflight). Wisp rolls to a
                 // fresh session on this code; the user re-sends by hand (work
                 // may have run partway, so never automatically).
-                session.eventBus.publish({ type: 'error', message: 'Maximum conversation turns reached.', code: 'turn_limit_reached' });
+                session.eventBus.publish(TURN_LIMIT_ERROR);
               } else {
                 session.eventBus.publish({
                   type: 'error',
@@ -2071,8 +2140,9 @@ export class StreamingSessionManager {
       // this the only topology transport).
       const topologyTurn = Boolean(session.topologyInvestigation);
       await this.abortTopologyTurn(session);
-      const gatewayNote = takeGatewayFailureNote(session.breezeSessionId);
-      session.eventBus.publish({
+      const gatewayNote = this.takeTurnGatewayNote(session);
+      workTurnLimitReported = session.workTurnLimitStopped === true;
+      session.eventBus.publish(workTurnLimitReported ? TURN_LIMIT_ERROR : {
         type: 'error',
         message: topologyTurn ? 'The topology explanation could not be completed.' : gatewayNote ?? sanitizeErrorForClient(err),
       });
@@ -2081,6 +2151,11 @@ export class StreamingSessionManager {
       // W05: a turn that ended without a `result` mid-thought (teardown,
       // crash) still closes the indicator.
       this.stopThinking(session);
+      // A work-limit stop whose query ended without a `result` still says why.
+      if (session.workTurnLimitStopped && !workTurnLimitReported) {
+        session.eventBus.publish(TURN_LIMIT_ERROR);
+        session.eventBus.publish({ type: 'done' });
+      }
       // A turn that ended without a `result` (teardown, crash) discards any
       // unvalidated topology output and releases its lease.
       await this.abortTopologyTurn(session);
@@ -2146,6 +2221,10 @@ export class StreamingSessionManager {
   ): Promise<{ inputTokens: number; outputTokens: number; costCents: number; outcome: TurnOutcome }> {
     const toolExecutionCount = session.pendingTurnToolExecutionCount;
     session.pendingTurnToolExecutionCount = 0;
+    const roundTrips = session.pendingTurnRoundTrips ?? newRoundTripTally();
+    session.pendingTurnRoundTrips = newRoundTripTally();
+    const stoppedAtWorkLimit = session.workTurnLimitStopped === true;
+    session.workTurnLimitStopped = false;
     session.pendingTurnAutoLinkCount = 0;
     session.pendingTurnUsage = emptyPendingTurnUsage();
     const observation = session.refusalObservation;
@@ -2220,7 +2299,13 @@ export class StreamingSessionManager {
         // reused query keeps the system prompt it was created with).
         prompt: session.promptProvenance,
         toolExecutionCount,
-        turnCount: result ? (result.num_turns ?? 0) : 1,
+        // #10400: work round-trips only — a ToolSearch-only round-trip loads
+        // tool definitions and is not charged to the session's turn budget.
+        // A work-limit stop with no `result` still spent its real round-trips:
+        // charged as 1, the next send would pass preflight and run again.
+        turnCount: result
+          ? workTurns(result.num_turns ?? 0, roundTrips)
+          : stoppedAtWorkLimit ? roundTrips.workCalls.size : 1,
         sdkUsage: {
           sessionId: session.breezeSessionId,
           nextSnapshot: turn.nextSnapshot,
@@ -2265,6 +2350,17 @@ export class StreamingSessionManager {
    * turn end — result, error, timeout, teardown — calls this, so a client is
    * never left showing "Thinking…" over a finished turn.
    */
+  /**
+   * The gateway's reason for this turn's failure, removed as it is read. A
+   * context-window refusal also marks the turn's observation, so that
+   * settlement records it by name (#10577).
+   */
+  private takeTurnGatewayNote(session: ActiveSession): string | null {
+    const failure = takeGatewayFailure(session.breezeSessionId);
+    if (failure?.code === 'context_window_exceeded') session.refusalObservation.contextWindowExceeded = true;
+    return failure?.message ?? null;
+  }
+
   private stopThinking(session: ActiveSession): void {
     if (session.thinkingBlockIndex == null) return;
     session.thinkingBlockIndex = null;

@@ -64,6 +64,19 @@ describe('deviceCsvExport (#9726)', () => {
     ]);
   });
 
+  it('exports the product number for agent rows only (#9593)', () => {
+    const agent = dev({ hardware: { productSku: '5S3F8EA#ABB' } });
+    const manual = dev({ deviceClass: 'manual', hardware: { productSku: 'leak' } });
+    const network = dev({ deviceClass: 'network', hardware: { productSku: 'leak' } });
+    const csv = build([agent, manual, network], ['productSku']);
+    expect(rows(csv)).toEqual([
+      csvRow(['Device', 'Product Number']),
+      csvRow(['web-01', '5S3F8EA#ABB']),
+      csvRow(['web-01', '']),
+      csvRow(['web-01', '']),
+    ]);
+  });
+
   it('exports dates as ISO and blanks missing or unparsable ones', () => {
     const csv = build(
       [dev({ lastSeen: '2026-10-01T12:00:00Z', enrolledAt: undefined }), dev({ lastSeen: 'garbage', enrolledAt: '2026-01-02T03:04:05Z' })],
@@ -72,6 +85,25 @@ describe('deviceCsvExport (#9726)', () => {
     expect(rows(csv).slice(1)).toEqual([
       csvRow(['web-01', '2026-10-01T12:00:00.000Z', '']),
       csvRow(['web-01', '', '2026-01-02T03:04:05.000Z']),
+    ]);
+  });
+
+  it('exports the warranty end date as a bare ISO date for agents, blank without a record or for non-agents (#10780)', () => {
+    const csv = build(
+      [
+        dev({ warrantyEndDate: '2027-12-08', warrantyStatus: 'active' }),
+        dev({ warrantyEndDate: null, warrantyStatus: null }),
+        dev({}),
+        dev({ deviceClass: 'manual', warrantyEndDate: '2027-12-08' }),
+      ],
+      ['warranty'],
+    );
+    expect(rows(csv)[0]).toBe(csvRow(['Device', 'Warranty Ends']));
+    expect(rows(csv).slice(1)).toEqual([
+      csvRow(['web-01', '2027-12-08']),
+      csvRow(['web-01', '']),
+      csvRow(['web-01', '']),
+      csvRow(['web-01', '']),
     ]);
   });
 

@@ -776,6 +776,31 @@ function mergedInBreeze(
   };
 }
 
+const IMPORT_ERROR_TICKET_ID = Symbol.for('breeze.ticketImport.errorTicketId');
+
+function tagImportErrorTicketId(error: unknown, ticketId: string): void {
+  if (error === null || typeof error !== 'object' || IMPORT_ERROR_TICKET_ID in error) return;
+  try {
+    Object.defineProperty(error, IMPORT_ERROR_TICKET_ID, { value: ticketId, enumerable: false });
+  } catch {
+    // A frozen error keeps no tag; the run then records no ticket id for it.
+  }
+}
+
+/**
+ * The Breeze ticket an `importTicket` failure happened on, when the writer
+ * had one: a ticket this principal imported that it was resuming, or the one
+ * its header transaction created before a later transaction failed (a 503 on
+ * a file, a 429, a window that closed). Null when it failed before any
+ * ticket existed. The tag is non-enumerable, so codes and details are
+ * unchanged.
+ */
+export function importErrorTicketId(error: unknown): string | null {
+  if (error === null || typeof error !== 'object') return null;
+  const value = (error as Record<symbol, unknown>)[IMPORT_ERROR_TICKET_ID];
+  return typeof value === 'string' ? value : null;
+}
+
 /**
  * Imports one ticket through the window `windowId` (spec §4.6). `input` is
  * validated first (`parseImportedTicket`); nothing is written for an invalid
@@ -863,190 +888,199 @@ export async function importTicket(
     });
   }
 
-  // Attachments (§4.1): object storage only, refused before anything is
-  // written. A module that sends files must say how to read them.
-  if (hasAttachments(plan.missing)) {
-    if (selectBackend() !== 's3') {
+  // From here on an error names the ticket once one exists (W4 review #2):
+  // the resumed ticket, or the one the header transaction created. The run
+  // records it on its ledger, so a ticket a technician deletes after a
+  // partial import is never recreated.
+  let ticketId = plan.kind === 'create' ? '' : plan.stored.id;
+  try {
+    // Attachments (§4.1): object storage only, refused before anything is
+    // written. A module that sends files must say how to read them.
+    if (hasAttachments(plan.missing)) {
+      if (selectBackend() !== 's3') {
+        throw new MigrationWindowError(
+          'TICKET_IMPORT_OBJECT_STORAGE_REQUIRED',
+          'Importing attachments needs object storage (S3)',
+          409,
+          { sourceId: t.sourceId },
+        );
+      }
+      if (!options.fetchAttachment) {
+        throw new MigrationWindowError('MIGRATION_IMPORT_INVALID', 'Comments with attachments need fetchAttachment', 400, { sourceId: t.sourceId });
+      }
+    }
+
+    if (plan.kind === 'create' && !descriptor.orgIds.includes(t.orgId)) {
       throw new MigrationWindowError(
-        'TICKET_IMPORT_OBJECT_STORAGE_REQUIRED',
-        'Importing attachments needs object storage (S3)',
-        409,
-        { sourceId: t.sourceId },
+        'MIGRATION_WINDOW_ORG_NOT_ALLOWED',
+        'The organization is not part of this migration window',
+        403,
+        { orgIds: [t.orgId] },
       );
     }
-    if (!options.fetchAttachment) {
-      throw new MigrationWindowError('MIGRATION_IMPORT_INVALID', 'Comments with attachments need fetchAttachment', 400, { sourceId: t.sourceId });
-    }
-  }
 
-  if (plan.kind === 'create' && !descriptor.orgIds.includes(t.orgId)) {
-    throw new MigrationWindowError(
-      'MIGRATION_WINDOW_ORG_NOT_ALLOWED',
-      'The organization is not part of this migration window',
-      403,
-      { orgIds: [t.orgId] },
-    );
-  }
+    const orgId = plan.kind === 'create' ? t.orgId : plan.stored.orgId;
+    const chunks = chunkComments(plan.missing, chunkSize, chunkBytes);
+    const statusCost = plan.kind === 'create'
+      ? finalStatusSteps(t.assigneeUserId ? 'open' : 'new', t).length
+      : plan.statusCost;
+    const counts: RunCounts = {
+      commentsWritten: 0,
+      commentsSkipped: plan.present,
+      fieldsUpdated: 0,
+      attachmentsWritten: 0,
+      attachmentsSkipped: [],
+      attachmentBytes: 0,
+    };
+    // Which answer is reported (#8884 review, finding 4). When a transaction
+    // runs, the last one decides the status again under the lock, and its
+    // answer is reported; a transaction that fails throws, so a rolled-back
+    // answer is never returned. When there is nothing to write, no transaction
+    // opens, and the reported skip is the plan's answer, read without the lock.
+    // Only another run of this principal can turn that skip into an apply, and
+    // that run applies the status itself.
+    let statusSkip: StatusSkip | null = plan.kind === 'resume' ? plan.statusSkip : null;
+    const finalStatus = async (scope: WriteScope, id: string) => {
+      statusSkip = await applyFinalStatus(scope, id, t);
+    };
 
-  const orgId = plan.kind === 'create' ? t.orgId : plan.stored.orgId;
-  const chunks = chunkComments(plan.missing, chunkSize, chunkBytes);
-  const statusCost = plan.kind === 'create'
-    ? finalStatusSteps(t.assigneeUserId ? 'open' : 'new', t).length
-    : plan.statusCost;
-  let ticketId = plan.kind === 'create' ? '' : plan.stored.id;
-  const counts: RunCounts = {
-    commentsWritten: 0,
-    commentsSkipped: plan.present,
-    fieldsUpdated: 0,
-    attachmentsWritten: 0,
-    attachmentsSkipped: [],
-    attachmentBytes: 0,
-  };
-  // Which answer is reported (#8884 review, finding 4). When a transaction
-  // runs, the last one decides the status again under the lock, and its
-  // answer is reported; a transaction that fails throws, so a rolled-back
-  // answer is never returned. When there is nothing to write, no transaction
-  // opens, and the reported skip is the plan's answer, read without the lock.
-  // Only another run of this principal can turn that skip into an apply, and
-  // that run applies the status itself.
-  let statusSkip: StatusSkip | null = plan.kind === 'resume' ? plan.statusSkip : null;
-  const finalStatus = async (scope: WriteScope, id: string) => {
-    statusSkip = await applyFinalStatus(scope, id, t);
-  };
-
-  // The header: a create (create + ref + assign), or a resume's re-applied
-  // fields. The final status rides on the last transaction.
-  const headerRuns = plan.kind === 'create' || plan.headerCost > 0;
-  const lastIsHeader = headerRuns && chunks.length === 0;
-  if (plan.kind === 'create') {
-    const cost = 2 + (t.assigneeUserId ? 1 : 0) + (lastIsHeader ? statusCost : 0);
-    ticketId = await inImportTransaction(descriptor, context, orgId, cost, async (scope) => {
-      const created = await createTicket(toCreateInput(t), scope.actor, scope.at(t.createdAt));
-      try {
-        await upsertTicketExternalRef({
-          principalId,
-          partnerId: descriptor.partnerId,
-          ticketId: created.id,
-          externalId: t.sourceId,
-          externalUrl: t.sourceUrl ?? null,
-          externalNumber: t.sourceNumber ?? null,
-        });
-      } catch (err) {
-        // Held by a ticket this window cannot see (moved out of its orgs), or
-        // won by a concurrent import of the same source id.
-        if (err instanceof TicketExternalRefConflictError) throw inUse(t.sourceId, { reason: 'held_elsewhere' });
-        throw err;
+    // The header: a create (create + ref + assign), or a resume's re-applied
+    // fields. The final status rides on the last transaction.
+    const headerRuns = plan.kind === 'create' || plan.headerCost > 0;
+    const lastIsHeader = headerRuns && chunks.length === 0;
+    if (plan.kind === 'create') {
+      const cost = 2 + (t.assigneeUserId ? 1 : 0) + (lastIsHeader ? statusCost : 0);
+      ticketId = await inImportTransaction(descriptor, context, orgId, cost, async (scope) => {
+        const created = await createTicket(toCreateInput(t), scope.actor, scope.at(t.createdAt));
+        try {
+          await upsertTicketExternalRef({
+            principalId,
+            partnerId: descriptor.partnerId,
+            ticketId: created.id,
+            externalId: t.sourceId,
+            externalUrl: t.sourceUrl ?? null,
+            externalNumber: t.sourceNumber ?? null,
+          });
+        } catch (err) {
+          // Held by a ticket this window cannot see (moved out of its orgs), or
+          // won by a concurrent import of the same source id.
+          if (err instanceof TicketExternalRefConflictError) throw inUse(t.sourceId, { reason: 'held_elsewhere' });
+          throw err;
+        }
+        if (t.assigneeUserId) await assignTicket(created.id, t.assigneeUserId, scope.actor, scope.at(t.createdAt));
+        if (lastIsHeader) await finalStatus(scope, created.id);
+        return created.id;
+      });
+    } else if (headerRuns) {
+      const cost = plan.headerCost + (lastIsHeader ? plan.statusCost : 0);
+      const header = await inImportTransaction(descriptor, context, orgId, cost, async (scope) => {
+        const merged = await lockImportedTicket(ticketId, t.sourceId);
+        if (merged) return { fieldsUpdated: 0, merged };
+        // Recomputed under the lock, so a user edit since the plan still wins.
+        const stored = await readHeaderRow(ticketId);
+        const ref = await readRef(principalId, t.sourceId);
+        if (!stored || ref?.ticketId !== ticketId) throw inUse(t.sourceId, { reason: 'changed', ticketId });
+        const changes = headerChanges(stored, ref, await lastFeedRowBy(ticketId, 'assignment'), t, principalId);
+        const at = scope.at(t.updatedAt);
+        if (changes.fieldNames.length > 0) await updateTicketFields(ticketId, changes.fields, scope.actor, at);
+        if (changes.assign) await assignTicket(ticketId, changes.assign.to, scope.actor, at);
+        if (changes.refreshRef) {
+          await upsertTicketExternalRef({
+            principalId,
+            partnerId: descriptor.partnerId,
+            ticketId,
+            externalId: t.sourceId,
+            externalUrl: t.sourceUrl ?? ref.externalUrl,
+            externalNumber: t.sourceNumber ?? ref.externalNumber,
+          });
+        }
+        if (lastIsHeader) await finalStatus(scope, ticketId);
+        return { fieldsUpdated: changes.fieldNames.length + (changes.assign ? 1 : 0), merged: null };
+      });
+      if (header.merged) {
+        return mergedInBreeze(ticketId, header.merged.mergedIntoTicketId, counts);
       }
-      if (t.assigneeUserId) await assignTicket(created.id, t.assigneeUserId, scope.actor, scope.at(t.createdAt));
-      if (lastIsHeader) await finalStatus(scope, created.id);
-      return created.id;
-    });
-  } else if (headerRuns) {
-    const cost = plan.headerCost + (lastIsHeader ? plan.statusCost : 0);
-    const header = await inImportTransaction(descriptor, context, orgId, cost, async (scope) => {
-      const merged = await lockImportedTicket(ticketId, t.sourceId);
-      if (merged) return { fieldsUpdated: 0, merged };
-      // Recomputed under the lock, so a user edit since the plan still wins.
-      const stored = await readHeaderRow(ticketId);
-      const ref = await readRef(principalId, t.sourceId);
-      if (!stored || ref?.ticketId !== ticketId) throw inUse(t.sourceId, { reason: 'changed', ticketId });
-      const changes = headerChanges(stored, ref, await lastFeedRowBy(ticketId, 'assignment'), t, principalId);
-      const at = scope.at(t.updatedAt);
-      if (changes.fieldNames.length > 0) await updateTicketFields(ticketId, changes.fields, scope.actor, at);
-      if (changes.assign) await assignTicket(ticketId, changes.assign.to, scope.actor, at);
-      if (changes.refreshRef) {
-        await upsertTicketExternalRef({
-          principalId,
-          partnerId: descriptor.partnerId,
-          ticketId,
-          externalId: t.sourceId,
-          externalUrl: t.sourceUrl ?? ref.externalUrl,
-          externalNumber: t.sourceNumber ?? ref.externalNumber,
-        });
+      counts.fieldsUpdated = header.fieldsUpdated;
+    }
+
+    for (const [index, chunk] of chunks.entries()) {
+      const last = index === chunks.length - 1;
+      // §4.3 steps 1 and 2: reserve the chunk's files (each reservation
+      // transaction locks the ticket first and charges one unit per new file),
+      // then fetch and store them with no DB context, marking each stored in a
+      // short transaction of its own (no unit: an update of the same row).
+      const prepared = hasAttachments(chunk)
+        ? await prepareChunkAttachments({
+          chunk,
+          readStates: (sourceIds) => withDbAccessContext(context, () => importAttachmentStates(principalId, sourceIds)),
+          reserve: (files, cost) => inImportTransaction(descriptor, context, orgId, cost, async (scope) => {
+            const merged = await lockImportedTicket(ticketId, t.sourceId);
+            if (merged) return { merged };
+            const reserved = await reserveImportAttachments({ ticketId, windowId: scope.window.id, principalId: scope.window.principalId, files });
+            return { merged: null, reserved };
+          }),
+          markStored: (claim) => inImportTransaction(descriptor, context, orgId, 0, async (scope) => {
+            // A merge since the reservation: the chunk transaction answers it.
+            if (await lockImportedTicket(ticketId, t.sourceId)) return false;
+            return markReservationStored(ticketId, scope.window.principalId, claim);
+          }),
+          stillPending: (id) => withDbAccessContext(context, () => isReservationPending(id, principalId)),
+          reservationExists: (id) => reservationRowExists(id),
+          fetchAttachment: options.fetchAttachment!,
+          chargeBytes: (bytes) => chargeWindowBytes(descriptor, bytes),
+          refundBytes: (bytes) => refundWindowBytes(descriptor, bytes),
+        })
+        : { merged: null, files: NO_CHUNK_FILES };
+      if (prepared.merged) return mergedInBreeze(ticketId, prepared.merged.mergedIntoTicketId, counts);
+      const files = prepared.files;
+
+      // Step 3: the comments claim their stored files; the reservations of
+      // files skipped after they were reserved go, rows first, in this
+      // transaction (only those still unstored: a run that stored one meanwhile
+      // keeps it). Their objects go after the commit, with no DB context, and
+      // only for the rows deleted: an earlier pass may have put one and died
+      // before marking it stored (deleteSkippedReservations has the ordering).
+      const cost = chunk.length + (last ? statusCost : 0);
+      const result = await inImportTransaction(descriptor, context, orgId, cost, async (scope) => {
+        const merged = await lockImportedTicket(ticketId, t.sourceId);
+        if (merged) return { merged };
+        const deletedSkips = await deleteSkippedReservations(ticketId, principalId, files.skippedReservations);
+        const written = await writeComments(scope, ticketId, chunk, files);
+        if (last) await finalStatus(scope, ticketId);
+        return { ...written, deletedSkips, merged: null };
+      });
+      if (result.merged) {
+        return mergedInBreeze(ticketId, result.merged.mergedIntoTicketId, counts);
       }
-      if (lastIsHeader) await finalStatus(scope, ticketId);
-      return { fieldsUpdated: changes.fieldNames.length + (changes.assign ? 1 : 0), merged: null };
-    });
-    if (header.merged) {
-      return mergedInBreeze(ticketId, header.merged.mergedIntoTicketId, counts);
+      await deleteObjectsOfDeletedReservations(result.deletedSkips);
+      counts.commentsWritten += result.written;
+      counts.commentsSkipped += result.skipped;
+      counts.attachmentsWritten += result.attachmentsWritten;
+      counts.attachmentBytes += result.attachmentBytes;
+      counts.attachmentsSkipped.push(...result.attachmentsSkipped);
     }
-    counts.fieldsUpdated = header.fieldsUpdated;
-  }
 
-  for (const [index, chunk] of chunks.entries()) {
-    const last = index === chunks.length - 1;
-    // §4.3 steps 1 and 2: reserve the chunk's files (each reservation
-    // transaction locks the ticket first and charges one unit per new file),
-    // then fetch and store them with no DB context, marking each stored in a
-    // short transaction of its own (no unit: an update of the same row).
-    const prepared = hasAttachments(chunk)
-      ? await prepareChunkAttachments({
-        chunk,
-        readStates: (sourceIds) => withDbAccessContext(context, () => importAttachmentStates(principalId, sourceIds)),
-        reserve: (files, cost) => inImportTransaction(descriptor, context, orgId, cost, async (scope) => {
-          const merged = await lockImportedTicket(ticketId, t.sourceId);
-          if (merged) return { merged };
-          const reserved = await reserveImportAttachments({ ticketId, windowId: scope.window.id, principalId: scope.window.principalId, files });
-          return { merged: null, reserved };
-        }),
-        markStored: (claim) => inImportTransaction(descriptor, context, orgId, 0, async (scope) => {
-          // A merge since the reservation: the chunk transaction answers it.
-          if (await lockImportedTicket(ticketId, t.sourceId)) return false;
-          return markReservationStored(ticketId, scope.window.principalId, claim);
-        }),
-        stillPending: (id) => withDbAccessContext(context, () => isReservationPending(id, principalId)),
-        reservationExists: (id) => reservationRowExists(id),
-        fetchAttachment: options.fetchAttachment!,
-        chargeBytes: (bytes) => chargeWindowBytes(descriptor, bytes),
-        refundBytes: (bytes) => refundWindowBytes(descriptor, bytes),
-      })
-      : { merged: null, files: NO_CHUNK_FILES };
-    if (prepared.merged) return mergedInBreeze(ticketId, prepared.merged.mergedIntoTicketId, counts);
-    const files = prepared.files;
-
-    // Step 3: the comments claim their stored files; the reservations of
-    // files skipped after they were reserved go, rows first, in this
-    // transaction (only those still unstored: a run that stored one meanwhile
-    // keeps it). Their objects go after the commit, with no DB context, and
-    // only for the rows deleted: an earlier pass may have put one and died
-    // before marking it stored (deleteSkippedReservations has the ordering).
-    const cost = chunk.length + (last ? statusCost : 0);
-    const result = await inImportTransaction(descriptor, context, orgId, cost, async (scope) => {
-      const merged = await lockImportedTicket(ticketId, t.sourceId);
-      if (merged) return { merged };
-      const deletedSkips = await deleteSkippedReservations(ticketId, principalId, files.skippedReservations);
-      const written = await writeComments(scope, ticketId, chunk, files);
-      if (last) await finalStatus(scope, ticketId);
-      return { ...written, deletedSkips, merged: null };
-    });
-    if (result.merged) {
-      return mergedInBreeze(ticketId, result.merged.mergedIntoTicketId, counts);
+    // A resume with nothing but a status change still needs its transaction. A
+    // predicted skip with nothing else to write opens none (see above).
+    if (!headerRuns && chunks.length === 0 && plan.kind === 'resume' && plan.statusApplies) {
+      const merged = await inImportTransaction(descriptor, context, orgId, statusCost, async (scope) => {
+        const tombstone = await lockImportedTicket(ticketId, t.sourceId);
+        if (!tombstone) await finalStatus(scope, ticketId);
+        return tombstone;
+      });
+      if (merged) return mergedInBreeze(ticketId, merged.mergedIntoTicketId, counts);
     }
-    await deleteObjectsOfDeletedReservations(result.deletedSkips);
-    counts.commentsWritten += result.written;
-    counts.commentsSkipped += result.skipped;
-    counts.attachmentsWritten += result.attachmentsWritten;
-    counts.attachmentBytes += result.attachmentBytes;
-    counts.attachmentsSkipped.push(...result.attachmentsSkipped);
-  }
 
-  // A resume with nothing but a status change still needs its transaction. A
-  // predicted skip with nothing else to write opens none (see above).
-  if (!headerRuns && chunks.length === 0 && plan.kind === 'resume' && plan.statusApplies) {
-    const merged = await inImportTransaction(descriptor, context, orgId, statusCost, async (scope) => {
-      const tombstone = await lockImportedTicket(ticketId, t.sourceId);
-      if (!tombstone) await finalStatus(scope, ticketId);
-      return tombstone;
-    });
-    if (merged) return mergedInBreeze(ticketId, merged.mergedIntoTicketId, counts);
+    return {
+      ticketId,
+      outcome: plan.kind === 'create' ? 'created' : 'resumed',
+      ...counts,
+      statusSkipped: statusSkip !== null,
+      ...(statusSkip ? { statusSkip } : {}),
+      ...(plan.kind === 'resume' ? plan.sourceChanges : noSourceChanges()),
+    };
+  } catch (error) {
+    if (ticketId) tagImportErrorTicketId(error, ticketId);
+    throw error;
   }
-
-  return {
-    ticketId,
-    outcome: plan.kind === 'create' ? 'created' : 'resumed',
-    ...counts,
-    statusSkipped: statusSkip !== null,
-    ...(statusSkip ? { statusSkip } : {}),
-    ...(plan.kind === 'resume' ? plan.sourceChanges : noSourceChanges()),
-  };
 }

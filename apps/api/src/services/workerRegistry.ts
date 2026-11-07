@@ -682,6 +682,22 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'wakeAttemptSweep',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/wakeAttemptSweep');
+      return { init: m.initializeWakeAttemptSweep, shutdown: m.shutdownWakeAttemptSweep };
+    },
+  },
+  {
+    name: 'wakeAttemptRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/wakeAttemptRetention');
+      return { init: m.initializeWakeAttemptRetention, shutdown: m.shutdownWakeAttemptRetention };
+    },
+  },
+  {
     // #9128 — daily prune of terminal webhook_deliveries rows.
     name: 'webhookDeliveryRetention',
     placement: 'global',
@@ -787,6 +803,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/migrationWindowSweep');
       return { init: m.initializeMigrationWindowSweepWorker, shutdown: m.shutdownMigrationWindowSweepWorker };
+    },
+  },
+  {
+    // Ticket import framework (#8313 W4): one slice of an import run per job,
+    // self-continuing, under the per-partner + global lease. 'global': no
+    // socket-local dispatch (verified by workerEntrypointClosure.contract.test.ts).
+    name: 'ticketImportWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/ticketImportWorker');
+      return { init: m.initializeTicketImportWorker, shutdown: m.shutdownTicketImportWorker };
     },
   },
   {
@@ -1211,6 +1238,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Vendor updates (#11065): the not-returned monitor, scheduled runs, nightly
+    // reboots and schedule releases. socket-owner: it dispatches device commands.
+    name: 'oemUpdatesWorker',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/oemUpdatesWorker');
+      return { init: m.initializeOemUpdatesWorker, shutdown: m.shutdownOemUpdatesWorker };
+    },
+  },
+  {
     name: 'maintenanceRebootWorker',
     placement: 'socket-owner',
     load: async () => {
@@ -1410,6 +1447,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/pamJobs');
       return { init: m.initializePamJobs, shutdown: m.shutdownPamJobs };
+    },
+  },
+  {
+    name: 'networkIsolationSweeper',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/networkIsolationSweeper');
+      return { init: m.initializeNetworkIsolationSweeper, shutdown: m.shutdownNetworkIsolationSweeper };
     },
   },
   {

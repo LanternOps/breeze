@@ -11,6 +11,7 @@
 // every locale.
 import { toCsv } from '../../lib/csvExport';
 import { dropdownChoiceLabel } from '../../lib/customFieldChoice';
+import { isDateOnly } from '../../lib/dateOnly';
 import { getDeviceRoleLabel } from '../../lib/deviceRoles';
 import { getVpnProviderLabel, vpnList } from '../../lib/vpnProviders';
 import type { DeviceAttention } from './deviceAttentionCounts';
@@ -51,6 +52,14 @@ function serverHost(raw: string | null | undefined): string {
   } catch {
     return '';
   }
+}
+
+// device_warranty.end_date is a bare calendar date (YYYY-MM-DD). It exports as
+// is: round-tripping it through Date would pin it to a UTC instant and invent a
+// time of day. Anything else falls back to the timestamp form.
+function dateOnlyOrEmpty(raw: string | null | undefined): string {
+  if (!raw) return '';
+  return isDateOnly(raw) ? raw : isoOrEmpty(raw);
 }
 
 function isoOrEmpty(raw: string | null | undefined): string {
@@ -111,12 +120,14 @@ function columnCell(id: ColumnId, d: Device, input: DevicesCsvInput): Cell {
     case 'lastUser': return d.lastUser;
     case 'uptime': return d.status === 'online' ? d.uptimeSeconds : '';
     case 'enrolled': return isoOrEmpty(d.enrolledAt);
+    case 'warranty': return isAgent(d) ? dateOnlyOrEmpty(d.warrantyEndDate) : '';
     case 'desktopAccess': return d.desktopAccess?.mode;
     case 'reliability': return typeof d.reliabilityScore === 'number' ? d.reliabilityScore : '';
     case 'hardwareHealth': return d.hardwareHealth;
     case 'vpn': return vpnList(d.activeVpns).map((v) => getVpnProviderLabel(v.provider)).join(', ');
     case 'serial':
       return cls === 'manual' ? d.serialNumber : cls === 'agent' ? d.hardware?.serialNumber : '';
+    case 'productSku': return isAgent(d) ? d.hardware?.productSku : '';
     case 'assetTag': return cls === 'manual' ? d.assetTag : '';
     case 'location': return cls === 'manual' ? d.location : '';
     case 'source': return cls === 'network' ? d.source : '';

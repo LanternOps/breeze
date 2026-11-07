@@ -305,8 +305,8 @@ func (h *Heartbeat) rebindSwap(s *config.RebindStagedSet) {
 		return
 	}
 	now := rebindNow()
-	if h.rebindRestartOwnedElsewhere() {
-		h.logRebindOnce("warn", "a rollback or an upgrade is in progress; the reattached identity is swapped in after it", "intent "+s.IntentID)
+	if reason := h.rebindRestartOwnedElsewhere(); reason != "" {
+		h.logRebindOnce("warn", reason+"; the reattached identity is swapped in after it", "intent "+s.IntentID)
 		h.rebindRetryLater(now, 0)
 		return
 	}
@@ -338,10 +338,16 @@ func (h *Heartbeat) rebindSwap(s *config.RebindStagedSet) {
 	h.requestRebindRestart()
 }
 
-// rebindRestartOwnedElsewhere reports a restart another flow owns: a rollback
+// rebindRestartOwnedElsewhere names a restart another flow owns: a rollback
 // (it restarts through its own helper) or a self-update in progress.
-func (h *Heartbeat) rebindRestartOwnedElsewhere() bool {
-	return h.rollbackInProgress() || h.upgradeInProgress.Load()
+func (h *Heartbeat) rebindRestartOwnedElsewhere() string {
+	switch {
+	case h.rollbackInProgress():
+		return "an agent rollback started"
+	case h.upgradeInProgress.Load():
+		return "an agent upgrade started"
+	}
+	return ""
 }
 
 // requestRebindRestart takes the #8320 restart gate (no beat, no new
@@ -358,9 +364,9 @@ func (h *Heartbeat) requestRebindRestart() {
 	pausedUntil := now.Add(identityIntakePauseMax)
 	h.identitySync.intakePausedUntil.Store(&pausedUntil)
 	go h.restartWhenIdle(0, h.rebindRestartOwnedElsewhere,
-		func() {
+		func(reason string) {
 			h.releaseIdentityRestart()
-			log.Warn("a rollback or an upgrade started before the restart into the reattached identity; it owns the restart, which loads that identity")
+			log.Warn(reason + " before the restart into the reattached identity; not restarting now, the identity on disk applies on the next restart")
 		},
 		func(err error) {
 			h.releaseIdentityRestart()

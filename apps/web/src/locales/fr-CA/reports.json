@@ -380,6 +380,7 @@
         "mrr_renewals": "MRR et renouvellements",
         "quote_win_rate": "Taux de réussite des soumissions",
         "client_profitability": "Rentabilité client",
+        "ticket_sla_performance": "Performance des SLA",
         "backup_status": "État des sauvegardes"
       },
       "threatDetection": {
@@ -409,6 +410,29 @@
         "noncompliant": "Non conformes",
         "notMeasured": "S. O.",
         "staleEnrolments": "Inscriptions périmées"
+      },
+      "slaPerformance": {
+        "priority": "Priorité",
+        "ticketsOpened": "Billets ouverts",
+        "firstResponse": "Première réponse",
+        "resolution": "Résolution",
+        "target": "Cible",
+        "measured": "Mesurés",
+        "withinSla": "% dans le SLA",
+        "median": "Médiane",
+        "mean": "Moyenne",
+        "varies": "variable",
+        "breaches": "Manquements",
+        "breachCount_one": "{{count}} manquement",
+        "breachCount_other": "{{count}} manquements",
+        "unavailable": "Le résumé SLA de cette exécution est illisible et ne peut pas être affiché ici. Générez le rapport de nouveau.",
+        "notes": "Ce qui est mesuré",
+        "priorities": {
+          "urgent": "Urgente",
+          "high": "Élevée",
+          "normal": "Normale",
+          "low": "Faible"
+        }
       },
       "identityAccess": {
         "notMeasured": "S. O.",
@@ -486,6 +510,7 @@
         "mrr_renewals": "MRR et renouvellements",
         "quote_win_rate": "Taux de réussite des soumissions",
         "client_profitability": "Rentabilité client",
+        "ticket_sla_performance": "Performance des SLA",
         "backup_status": "État des sauvegardes"
       },
       "runsTable": {
@@ -812,6 +837,7 @@
           "os": "OS",
           "owner": "Propriétaire",
           "patch_level": "Niveau de patch",
+          "product_number": "Numéro de produit",
           "serial": "Feuilleton",
           "site": "Site",
           "status": "Statut"
@@ -1038,6 +1064,7 @@
         "mrr_renewals": "MRR et renouvellements",
         "quote_win_rate": "Taux de réussite des soumissions",
         "client_profitability": "Rentabilité client",
+        "ticket_sla_performance": "Performance des SLA",
         "backup_status": "État des sauvegardes"
       },
       "schedules": {
@@ -1118,6 +1145,10 @@
         "quote_win_rate": {
           "name": "Taux de réussite des soumissions",
           "description": "La proportion des soumissions envoyées qui ont été gagnées, comptée par occasion d'affaires, de sorte qu'une soumission révisée et renvoyée ne compte qu'une fois. Le taux principal ne couvre que les occasions réglées, avec le nombre de celles encore ouvertes à côté. Les valeurs sont avant taxes, un ensemble par devise, sans conversion."
+        },
+        "ticket_sla_performance": {
+          "name": "Performance des SLA",
+          "description": "Délais de réponse et de résolution par rapport au SLA, prêts pour le client, par priorité, avec les manquements."
         },
         "client_profitability": {
           "name": "Rentabilité client",
@@ -1270,6 +1301,12 @@
         "currency": "Devise"
       },
       "periodNote": "La période s'applique à la date du premier envoi de la soumission. Une soumission révisée et renvoyée ne compte qu'une fois, comme une seule occasion d'affaires.",
+      "cancel": "Annuler",
+      "createReport": "Créer le rapport"
+    },
+    "ticketSlaPerformanceOptions": {
+      "includeSubjects": "Inclure les objets des billets",
+      "includeSubjectsHelp": "Les rapports remis sont visibles par tous les utilisateurs du portail de cette organisation. Laissez désactivé, sauf si chaque utilisateur peut voir l’objet de chaque billet.",
       "cancel": "Annuler",
       "createReport": "Créer le rapport"
     },

@@ -37,6 +37,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/etwlua"
 	"github.com/breeze-rmm/agent/internal/executor"
+	"github.com/breeze-rmm/agent/internal/flashguard"
 	"github.com/breeze-rmm/agent/internal/health"
 	"github.com/breeze-rmm/agent/internal/helper"
 	"github.com/breeze-rmm/agent/internal/hostpolicy"
@@ -425,6 +426,9 @@ type HelperSettings struct {
 	// ("auto" | "always-on" | "on-demand"); empty means auto. Applied to the
 	// sessionbroker lifecycle, NOT to the Tauri Assist manager.
 	LifecycleMode string `json:"lifecycleMode,omitempty"`
+	// Branding is the partner/organization runtime branding decision (OD3);
+	// nil = not sent (older server), the Agent keeps its last-known branding.
+	Branding *helper.BrandingDecision `json:"branding,omitempty"`
 }
 
 type Command struct {
@@ -878,6 +882,9 @@ type Heartbeat struct {
 	// renewCert to resume.
 	pendingMTLSCertOnDisk atomic.Bool
 	upgradeInProgress     atomic.Bool
+	// flashHoldUpgradeLogged keeps a skipped upgrade to one log line per section:
+	// the server re-sends upgradeTo on every heartbeat.
+	flashHoldUpgradeLogged atomic.Bool
 
 	// Set when PinManifestKeys returns ErrManifestTrustRotationRejected.
 	// Suspends auto-update until the rotation conflict is resolved (server
@@ -993,6 +1000,21 @@ type Heartbeat struct {
 	// (checksum or manifest) on the agent, backup, user-helper and watchdog
 	// download paths. See artifact_backoff.go. Issue #7516.
 	artifactBackoff updater.TargetBackoff
+
+	// Persisted per-version latch for a self-update that restarted on the
+	// previous binary (the swap did not take). Survives the restart that
+	// every Windows attempt costs. See update_outcome.go. Issue #9751.
+	// updateHelperLogDir is where the Windows helper's failure logs are read
+	// from; "" means os.TempDir(). Both are test seams.
+	updateLatch        *updater.FailureLatch
+	updateLatchOnce    sync.Once
+	updateHelperLogDir string
+	// Episode state for upgrades deferred by an in-progress backup job, so a
+	// deferral that persists is logged above Info (update_outcome.go, #9751).
+	upgradeBackupDeferral backupDeferralState
+	// Last latch notice logged at warn by this process (update_outcome.go).
+	updateLatchNoticeMu  sync.Mutex
+	updateLatchNoticeKey string
 
 	// Path to the agent state file, set by main after startup.
 	statePath                   string
@@ -1326,6 +1348,9 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// a failed result for every command the previous process died running
 	// (#8296).
 	h.commandJournal.Recover(h.backupOutbox)
+	// After Recover has read the vendor update run marker for its synthetic
+	// result, and before any command can start a new run (#11065).
+	recoverOemRuns()
 	h.hwContext, h.hwCancel = context.WithCancel(context.Background())
 	h.initTimeSync()
 	h.initWorkloads()
@@ -1526,6 +1551,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		),
 		cfg.PatchRebootMaxPerDay,
 	)
+	flashguard.Default().SetCountdownProbe(h.rebootMgr.OSCountdownArmed)
 	// The restart card (#10190 W05): each rung is offered to the prompt host
 	// first; a rung no session can draw goes out as above, unchanged.
 	if card := h.newRestartCard(); card != nil {
@@ -2234,25 +2260,6 @@ func (h *Heartbeat) SCMSessionCh() chan<- sessionbroker.SCMSessionEvent {
 	return h.scmSessionCh
 }
 
-// checkUpdateMarker looks for the transient .update-restart file written
-// by the updater before restart. If found, deletes it and returns true
-// so the caller can skip the startup jitter and heartbeat immediately.
-func checkUpdateMarker() bool {
-	markerPath := filepath.Join(config.ConfigDir(), ".update-restart")
-	_, err := os.Stat(markerPath)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			log.Warn("failed to check update marker", "path", markerPath, "error", err.Error())
-		}
-		return false
-	}
-	if removeErr := os.Remove(markerPath); removeErr != nil {
-		log.Warn("failed to remove update marker", "path", markerPath, "error", removeErr.Error())
-	}
-	log.Info("update marker found, skipping startup jitter for immediate heartbeat")
-	return true
-}
-
 func bootstrapThenListen(bootstrap func() error, listen func()) error {
 	if bootstrap != nil {
 		if err := bootstrap(); err != nil {
@@ -2336,6 +2343,10 @@ func (h *Heartbeat) Start() {
 	// its state was primed above.
 	go h.resumeRebind()
 
+	// #11065 — after a firmware update's reboot, report BitLocker and the BIOS
+	// version once. A no-op when nothing is pending.
+	go h.verifyOemUpdates()
+
 	// Proactively spawn helpers into user sessions so remote desktop works
 	// instantly after reboot (Windows service only). The SCM session event
 	// channel (created in constructor) is fed by the service handler
@@ -2375,8 +2386,12 @@ func (h *Heartbeat) Start() {
 	// after mass restart of agents. Skip jitter if restarting after self-update
 	// so the new version is reported immediately.
 	interval := time.Duration(h.config.HeartbeatIntervalSeconds) * time.Second
-	if checkUpdateMarker() {
-		log.Info("post-update restart: sending immediate heartbeat (jitter skipped)")
+	// Before the first heartbeat: that heartbeat re-offers the target, and a
+	// version whose swap did not take must already be latched by then (#9751).
+	marker, restartedForUpdate := h.startupUpdateReconcile(defaultUpdateMarkerPath())
+	if restartedForUpdate {
+		log.Info("post-update restart: sending immediate heartbeat (jitter skipped)",
+			"markerVersion", marker.Version, "runningVersion", h.agentVersion)
 		// On macOS, the agent self-update recreates the IPC socket. The
 		// desktop helpers lose their connection and may be waiting on
 		// backoff. Kickstart them so remote desktop recovers immediately.
@@ -4417,6 +4432,14 @@ func (h *Heartbeat) availablePatchesToMaps(patches []patching.AvailablePatch) []
 		if p.SeveritySource != "" && severity != "unknown" {
 			item["severitySource"] = p.SeveritySource
 		}
+		// Omitted, never defaulted: an absent type means the API leaves the patch
+		// with Windows Update. An API that predates the field ignores it (#11073).
+		if p.ReportedUpdateType != "" {
+			item["reportedUpdateType"] = p.ReportedUpdateType
+		}
+		if p.ReportedUpdateOwner != "" {
+			item["reportedUpdateOwner"] = p.ReportedUpdateOwner
+		}
 		items[i] = item
 	}
 	return items
@@ -4721,6 +4744,12 @@ func (h *Heartbeat) sendRecoveryKeys() {
 	}
 
 	keys, err := collectRecoveryKeys()
+	if errors.Is(err, security.ErrBitLockerUnavailable) {
+		// No BitLocker on this host (#10902): nothing to escrow, and not a
+		// failure. The security package logged it at debug and re-detects on
+		// its own TTL; keep the full interval and stay quiet.
+		return
+	}
 	if err != nil {
 		// Retry sooner than the full interval: the common transient cause is a
 		// PowerShell cold start after boot hitting its timeout, and a newly
@@ -8905,11 +8934,45 @@ func (h *Heartbeat) noteCodeSignatureFailure(targetVersion string) {
 	h.badSignatureAt = time.Now()
 }
 
+// flashHoldUpgradeLog is logged once per firmware section by a skipped upgrade.
+const flashHoldUpgradeLog = "upgrade skipped: a firmware update is in progress"
+
+// flashSectionBlocksUpgrade reports an open firmware section, logging once per
+// section however many heartbeats re-offer the upgrade during it.
+func (h *Heartbeat) flashSectionBlocksUpgrade(targetVersion string) bool {
+	if _, active := flashguard.Default().Active(); !active {
+		h.flashHoldUpgradeLogged.Store(false)
+		return false
+	}
+	if h.flashHoldUpgradeLogged.CompareAndSwap(false, true) {
+		log.Info(flashHoldUpgradeLog, "targetVersion", targetVersion)
+	}
+	return true
+}
+
 // doUpgrade contains the actual upgrade logic, called by handleUpgrade.
 func (h *Heartbeat) doUpgrade(targetVersion string) {
+	if h.upgradeHeldBeforeAttempt(targetVersion) {
+		return
+	}
+
+	log.Info("upgrade requested", "targetVersion", targetVersion)
+	h.doUpgradeAttempt(targetVersion)
+}
+
+// upgradeHeldBeforeAttempt runs every gate that must hold an offer back
+// BEFORE doUpgrade announces the attempt (update_status) or downloads
+// anything. Returns true when the offer is skipped this heartbeat.
+func (h *Heartbeat) upgradeHeldBeforeAttempt(targetVersion string) bool {
 	if h.containmentBlocksUpgrade() {
 		log.Info("upgrade skipped: network isolation is active", "targetVersion", targetVersion)
-		return
+		return true
+	}
+	// Before sendUpdateStatus and any download, for the reason the checks below
+	// give. Admission is taken again around the swap: this one only saves the
+	// work, and a section can open during the prefetch.
+	if h.flashSectionBlocksUpgrade(targetVersion) {
+		return true
 	}
 	// Checked before sendUpdateStatus and before any download work: the server
 	// re-sends the same upgradeTo on every heartbeat, so without this the
@@ -8919,7 +8982,7 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	if h.untrustedReleaseBackoffActive(targetVersion) {
 		log.Debug("upgrade skipped: server recently refused this version as untrusted; backing off",
 			"targetVersion", targetVersion)
-		return
+		return true
 	}
 	// Same reason as above: the server re-sends the same upgradeTo every
 	// heartbeat, so without this gate a version whose binary cannot pass
@@ -8927,17 +8990,25 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	if h.codeSignatureBackoffActive(targetVersion) {
 		log.Debug("upgrade skipped: this version's binary recently failed macOS code signature verification; backing off",
 			"targetVersion", targetVersion)
-		return
+		return true
 	}
 	// #7516: same reason again, for an agent (or blocking backup) artifact
 	// that failed checksum/manifest verification. Exponential per target, so
 	// an unsatisfiable offer costs a handful of downloads, not one a minute,
 	// while a NEW offer is attempted on the very next heartbeat.
 	if h.upgradeDeferredByArtifactBackoff(targetVersion) {
-		return
+		return true
 	}
+	// #9751: an earlier attempt at this version came back on the previous
+	// binary (on Windows, the detached swap helper failed). That outcome is
+	// only visible after the restart, so in-memory backoffs never see it;
+	// this latch is persisted and doubles per failure up to a daily retry.
+	return h.upgradeDeferredByFailureLatch(targetVersion)
+}
 
-	log.Info("upgrade requested", "targetVersion", targetVersion)
+// doUpgradeAttempt announces and runs one upgrade attempt. Only doUpgrade
+// calls it, after upgradeHeldBeforeAttempt.
+func (h *Heartbeat) doUpgradeAttempt(targetVersion string) {
 
 	h.sendUpdateStatus(targetVersion)
 	// Give the WebSocket write goroutine time to flush the update_status
@@ -9010,12 +9081,26 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 	// backup job says nothing about whether the artifact itself is fetchable.
 	if backupPair != nil && !h.backupHelperIdle() {
 		removeStagedUpgradeTemps(userHelperPair, backupPair)
-		log.Info("agent upgrade deferred: backup job in progress; retrying next cycle", "targetVersion", targetVersion)
+		// Was a bare Info line every heartbeat, invisible at the default warn
+		// shipping level while the attempt count climbed (#9751).
+		h.noteUpgradeDeferredByBackup(targetVersion, time.Now())
+		return
+	}
+	h.clearUpgradeBackupDeferral()
+
+	done, err := flashguard.Default().AdmitPowerAction("agent_upgrade")
+	if err != nil {
+		removeStagedUpgradeTemps(userHelperPair, backupPair)
+		log.Info("agent upgrade deferred: a firmware update started during the prefetch; retrying next cycle", "targetVersion", targetVersion)
 		return
 	}
 
 	u := updater.New(updaterCfg)
-	if err := u.UpdateToWithOptions(targetVersion, updater.UpdateOptions{UserHelper: userHelperPair, Backup: backupPair}); err != nil {
+	updateErr := u.UpdateToWithOptions(targetVersion, updater.UpdateOptions{UserHelper: userHelperPair, Backup: backupPair})
+	// A successful update has started a restart that may finish after this
+	// returns (on Windows a detached helper does it), so the admission outlives it.
+	flashguard.ReleaseAfterHandoff(done, updateErr == nil)
+	if err := updateErr; err != nil {
 		// If the filesystem is read-only, stop retrying — this is permanent
 		// until the service unit is fixed or the filesystem is remounted.
 		// Intentionally NOT persisted to disk (unlike dev_push in handlers_devupdate.go)

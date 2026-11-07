@@ -856,6 +856,91 @@ describe('reapStaleBackupJobs', () => {
     );
   });
 
+  describe('pending missed-schedule catch-ups (#11013)', () => {
+    const MISSED = 'Missed: device was offline for the whole catch-up window';
+    const deferredRow = (catchUpUntil: Date, overrides: Record<string, unknown> = {}) => ({
+      id: 'job-catch-up',
+      deviceId: 'device-off',
+      errorLog: null,
+      createdAt: minutesAgo(600),
+      catchUpUntil,
+      deviceStatus: 'offline',
+      deviceLastSeenAt: minutesAgo(600),
+      ...overrides,
+    });
+    const wireSet = (id = 'job-catch-up') => {
+      const setMock = vi.fn(() => ({
+        where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id }]) })),
+      }));
+      updateMock.mockImplementation(() => ({ set: setMock }));
+      return setMock;
+    };
+
+    it('leaves a job alone before catch_up_until, however old it is', async () => {
+      selectMock
+        .mockReturnValueOnce(selectChain([]))
+        .mockReturnValueOnce(selectChain([deferredRow(new Date(Date.now() + 60_000))]));
+      const setMock = wireSet();
+
+      const reaped = await reapStaleBackupJobs();
+
+      expect(reaped).toBe(0);
+      expect(setMock).not.toHaveBeenCalled();
+    });
+
+    it('settles a lapsed one with the Missed reason, unmarked, and sends the device no stop', async () => {
+      selectMock
+        .mockReturnValueOnce(selectChain([]))
+        .mockReturnValueOnce(selectChain([deferredRow(new Date(Date.now() - 60_000))]));
+      const setMock = wireSet();
+
+      const reaped = await reapStaleBackupJobs();
+
+      expect(reaped).toBe(1);
+      expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', errorLog: MISSED }));
+      // Nothing was ever sent: no stop, and no reaper marker for a late result.
+      expect(queueBackupStopCommandMock).not.toHaveBeenCalled();
+    });
+
+    it('does not call it Missed when the device was seen after the schedule', async () => {
+      selectMock
+        .mockReturnValueOnce(selectChain([]))
+        .mockReturnValueOnce(selectChain([deferredRow(new Date(Date.now() - 60_000), {
+          deviceStatus: 'online',
+          deviceLastSeenAt: minutesAgo(1),
+          deviceBackupVersion: '0.200.0',
+        })]));
+      const setMock = wireSet();
+
+      await reapStaleBackupJobs();
+
+      expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'failed',
+        errorLog: expect.stringMatching(/^Catch-up did not start:/),
+      }));
+      expect(queueBackupStopCommandMock).not.toHaveBeenCalled();
+    });
+
+    it('measures a claimed catch-up from its dispatch, not from the schedule', async () => {
+      selectMock
+        .mockReturnValueOnce(selectChain([]))
+        .mockReturnValueOnce(selectChain([{
+          id: 'job-claimed',
+          deviceId: 'device-on',
+          errorLog: null,
+          createdAt: minutesAgo(600),
+          startedAt: minutesAgo(1),
+          catchUpUntil: null,
+        }]));
+      const setMock = wireSet('job-claimed');
+
+      const reaped = await reapStaleBackupJobs();
+
+      expect(reaped).toBe(0);
+      expect(setMock).not.toHaveBeenCalled();
+    });
+  });
+
   it('does not reap a pending job under an hour old', async () => {
     selectMock
       .mockReturnValueOnce(selectChain([]))
@@ -1304,7 +1389,7 @@ describe('reapStaleBackupJobs — liveness vs progress (#2798)', () => {
     expect(await reapStaleBackupJobs()).toBe(1);
     expect(setMock).toHaveBeenCalledWith(expect.objectContaining({
       status: 'failed',
-      errorLog: '[stale-backup-reaper] Backup stalled: no data transferred for 2h while the agent was still responding (limit 2h)',
+      errorLog: '[stale-backup-reaper] Backup stalled: no data transferred or verified for 2h while the agent was still responding (limit 2h)',
     }));
     // The agent is alive, so it must be told to stop the wedged upload.
     expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-live', { jobId: 'job-live' });
@@ -1331,6 +1416,24 @@ describe('reapStaleBackupJobs — liveness vs progress (#2798)', () => {
       .mockReturnValueOnce(selectChain([liveRow(5 * 60 * MIN, { totalSize: 100 * GiB, transferredSize: 10 * GiB })]))
       .mockReturnValueOnce(selectChain([]));
     expect(await reapStaleBackupJobs()).toBe(0);
+  });
+
+  // #11014: a resume pass reports verified counters while transferred_size
+  // stays 0; applyBackupProgress turns their movement into last_progress_at
+  // (real-PG proof in staleBackupReaper.integration.test.ts). Here: the rule
+  // keys on that clock, not on transferred bytes, in both directions.
+  it.each([
+    { name: 'verified counters moved a minute ago: spared at 30h', progressAgeMs: 60 * 1000, want: 0 },
+    { name: 'verified counters frozen for 25h: reaped', progressAgeMs: 25 * 60 * MIN, want: 1 },
+  ])('resume pass with 0 bytes transferred — $name', async ({ progressAgeMs, want }) => {
+    captureSet();
+    selectMock
+      .mockReturnValueOnce(selectChain([liveRow(progressAgeMs, {
+        totalSize: 2400 * GiB, transferredSize: 0,
+        startedAt: new Date(T - 30 * 60 * MIN), createdAt: new Date(T - 31 * 60 * MIN),
+      })]))
+      .mockReturnValueOnce(selectChain([]));
+    expect(await reapStaleBackupJobs()).toBe(want);
   });
 
   it('a silent agent (keepalive stale) is still reaped on the 15-minute liveness rule', async () => {

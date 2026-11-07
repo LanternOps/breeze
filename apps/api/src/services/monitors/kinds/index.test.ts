@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { MONITOR_KINDS } from '@breeze/shared';
+import { MONITOR_KINDS, RECOVERY_CONDITION_KINDS } from '@breeze/shared';
 import { validateConditions } from '../../alertConditions';
 import { MONITOR_KIND_SPECS, applyOverrides, getMonitorKindSpec } from './index';
 
@@ -52,6 +52,11 @@ describe('monitor kind registry (#5289)', () => {
       const compiled = spec.toAlertCondition(condition, { monitorId: 'm0000000-0000-4000-8000-000000000001' });
       expect(validateConditions(compiled), `${kind}: ${JSON.stringify(compiled)}`).toEqual([]);
     }
+  });
+
+  it('recoverySupported is set on exactly the kinds the shared validator accepts a recovery condition for', () => {
+    const supported = MONITOR_KINDS.filter((kind) => MONITOR_KIND_SPECS[kind].recoverySupported === true);
+    expect(supported).toEqual([...RECOVERY_CONDITION_KINDS]);
   });
 
   it('cpu compiles to a threshold on cpuPercent', () => {

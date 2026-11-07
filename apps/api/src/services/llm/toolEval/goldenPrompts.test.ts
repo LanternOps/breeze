@@ -23,7 +23,7 @@ const PENDING_DECLARATION = new Set<string>([]); // search_documentation was dec
 const BASELINE_UNDECLARED_TOOLS = new Set<string>([]);
 
 describe('GOLDEN_CASES', () => {
-  it('has 117 unique ids', () => {
+  it('has 135 unique ids', () => {
     // g68 (#8167 W03): EDR-framework containment. g69 (#8167 W03 PR-B): EDR "sync now".
     // g70-g75 (full-control W02, #6756; the plan's g73-g78): PSA/billing writes.
     // g76-g78 (full-control W03, #6757): backup restore, DR rehearsal, Hyper-V power.
@@ -39,8 +39,33 @@ describe('GOLDEN_CASES', () => {
     // g106-g108 (full-control W13, #6783 PR B): live event-log query (supervised), tenant variables, end a support session (supervised).
     // g109-g111 (full-control W14, #6784 PR A): an org's rate card, publish a template version (supervised), device billing.
     // g112-g113 (full-control W14, #6784 PR B): generate a contract invoice (preview, then four-eyes), push to Xero (four-eyes).
-    expect(GOLDEN_CASES).toHaveLength(117);
-    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(117);
+    // g118-g119 (network-isolation W13, #10101): release an isolation (four-eyes); un-quarantining a file is never a release.
+    // g120-g126 (full-control W17, #6788): backup verification, VSS, C2C configs, bare-metal recovery and backup health.
+    // g127-g132 (full-control W18, #6789 PR A): org summary, readiness, audit retention, portal users, Breeze logins, roles.
+    // g133-g135 (full-control W18, #6789 PR B): portal settings update, the four-eyes sensitive access, a recipient add.
+    // g136-g137 (full-control W16, #6786 PR A): run the patch agent, delegate a service recovery, from ordinary chat.
+    // g138-g142 (full-control W16, #6786 PR B): schedule writes and Fleet Designs.
+    expect(GOLDEN_CASES).toHaveLength(142);
+    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(142);
+    expect(GOLDEN_CASES.find((c) => c.id === 'g136')?.expect[0]).toEqual({ tool: 'run_patch_plan' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g137')?.expect[0]).toEqual({ tool: 'create_operator_task' });
+    for (const id of ['g136', 'g137']) {
+      expect(GOLDEN_CASES.find((c) => c.id === id)?.expect.map((e) => e.tool), id).not.toContain('launch_specialist');
+    }
+    expect(GOLDEN_CASES.find((c) => c.id === 'g138')?.expect[0]).toEqual({ tool: 'manage_ai_agent_schedules', action: 'create' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g139')?.expect.map((e) => e.action)).toEqual(['update', 'create']);
+    expect(GOLDEN_CASES.find((c) => c.id === 'g140')?.expect[0]).toEqual({ tool: 'manage_fleet_designs', action: 'run' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g141')?.expect.map((e) => e.tool)).toEqual(['list_fleet_designs', 'manage_fleet_designs', 'manage_fleet_designs']);
+    expect(GOLDEN_CASES.find((c) => c.id === 'g142')?.expect.map((e) => e.action)).toEqual(['applied', 'rollback']);
+    expect(GOLDEN_CASES.find((c) => c.id === 'g133')?.expect[0]).toEqual({ tool: 'manage_org_portal_settings', action: 'update' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g134')?.expect[0]).toEqual({ tool: 'manage_org_portal_settings', action: 'set_sensitive_access' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g135')?.expect[0]).toEqual({ tool: 'manage_report_recipients', action: 'add' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g122')?.expect[0]).toEqual({ tool: 'manage_backup_verification', action: 'run' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g126')?.expect[0]).toEqual({ tool: 'get_backup_health' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g131')?.expect.map((e) => e.tool)).toEqual(['list_users']);
+    expect(GOLDEN_CASES.find((c) => c.id === 'g132')?.expect[0]).toEqual({ tool: 'list_roles', action: 'effective_permissions' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g118')?.expect[0]).toEqual({ tool: 'release_containment' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g119')?.expect.map((e) => e.tool)).not.toContain('release_containment');
     expect(GOLDEN_CASES.find((c) => c.id === 'g116')?.expect).toEqual([{ tool: 'manage_pax8_orders', action: 'preview' }, { tool: 'manage_pax8_orders', action: 'submit' }]);
     expect(GOLDEN_CASES.find((c) => c.id === 'g114')?.expect[0]).toEqual({ tool: 'manage_pax8_subscriptions', action: 'drift' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g115')?.expect).toEqual([{ tool: 'search_pax8_products', action: 'search' }, { tool: 'manage_pax8_orders', action: 'create_draft' }, { tool: 'manage_pax8_orders', action: 'add_line' }]);

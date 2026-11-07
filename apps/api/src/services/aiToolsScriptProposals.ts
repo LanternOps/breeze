@@ -18,8 +18,11 @@ import type { AuthContext } from '../middleware/auth';
 import { dbAccessContextFromAuth } from '../middleware/auth';
 import { isFlowPrincipal } from '../middleware/principalKind';
 import {
-  getCurrentDbAccessContext, hasDbAccessContext, runOutsideDbContext, withDbAccessContext,
+  db, getCurrentDbAccessContext, hasDbAccessContext, runOutsideDbContext, withDbAccessContext,
+  withDbTransaction,
 } from '../db';
+import { organizations } from '../db/schema';
+import { inArray } from 'drizzle-orm';
 import { captureException } from './sentry';
 import {
   createScriptProposal, enqueueScriptReview, getScriptProposalForPrincipal, selectLatestModelReview,
@@ -30,6 +33,37 @@ import type { ScriptProposalReviewRow } from '../db/schema/scriptProposals';
 
 /** Spec §4.2: the inline wait before propose_script returns `pending`. */
 const INLINE_REVIEW_WAIT_MS = 45_000;
+
+/** Structured refusal telling the model to call the tool once per org (#10431). */
+interface SplitByOrg {
+  error: 'split_by_org';
+  groups: Array<{ orgId: string; orgName: string | null; deviceIds: string[] }>;
+  hint: string;
+}
+
+async function splitByOrg(byOrg: Map<string, string[]>): Promise<SplitByOrg> {
+  // Names are a convenience for the model; the org ids are what it needs. The
+  // orgs were already resolved through the caller's own scope, so this read
+  // runs under the same context and cannot widen reach.
+  const names = new Map<string, string>();
+  try {
+    // Own savepoint, catch outside it: a bare failing query would poison the
+    // enclosing transaction and turn this degraded answer into a commit error.
+    const rows = await withDbTransaction(() => db.select({ id: organizations.id, name: organizations.name })
+      .from(organizations).where(inArray(organizations.id, [...byOrg.keys()])));
+    for (const row of rows) names.set(row.id, row.name);
+  } catch (err) {
+    console.warn('[propose_script] could not read org names for split_by_org', err);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      service: 'propose_script',
+    });
+  }
+  return {
+    error: 'split_by_org',
+    groups: [...byOrg].map(([orgId, deviceIds]) => ({ orgId, orgName: names.get(orgId) ?? null, deviceIds })),
+    hint: 'A proposal belongs to one organization. Call propose_script once per group.',
+  };
+}
 
 /**
  * The proposal's org comes from the TARGET DEVICE, never from `auth.orgId`
@@ -46,19 +80,19 @@ const INLINE_REVIEW_WAIT_MS = 45_000;
 async function resolveProposalOrgId(
   deviceIds: string[],
   auth: AuthContext,
-): Promise<{ orgId: string } | { error: string }> {
-  const orgIds = new Set<string>();
+): Promise<{ orgId: string } | { error: string } | SplitByOrg> {
+  // Insertion-ordered: the first device's org is listed first.
+  const byOrg = new Map<string, string[]>();
   for (const deviceId of deviceIds) {
     const access = await verifyDeviceAccess(deviceId, auth);
     if ('error' in access) return { error: access.error };
-    orgIds.add(access.device.orgId);
+    const group = byOrg.get(access.device.orgId);
+    if (group) group.push(deviceId); else byOrg.set(access.device.orgId, [deviceId]);
   }
-  if (orgIds.size > 1) {
-    return { error: 'invalid_input: all target devices must belong to one organization' };
-  }
+  if (byOrg.size > 1) return splitByOrg(byOrg);
   // Fall back to the caller's own org only if a device somehow resolved
   // without one — the page-context org, exactly as routes/ai.ts resolves it.
-  const [orgId] = [...orgIds];
+  const [orgId] = [...byOrg.keys()];
   const resolved = orgId ?? auth.orgId;
   if (!resolved) return { error: 'invalid_input: could not resolve the organization for these devices' };
   return { orgId: resolved };
@@ -180,7 +214,9 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
         if ('error' in resolvedOrg) return resolvedOrg;
         return createScriptProposal(auth, parsed.data, author, resolvedOrg.orgId);
       });
-      if ('error' in created) return JSON.stringify({ error: created.error });
+      if ('error' in created) {
+        return JSON.stringify(created.error === 'split_by_org' ? created : { error: created.error });
+      }
       const { proposal, scan } = created;
       const staticScan = {
         basicHits: scan.basicHits, strictHits: scan.strictHits, touchClasses: scan.touchClasses,

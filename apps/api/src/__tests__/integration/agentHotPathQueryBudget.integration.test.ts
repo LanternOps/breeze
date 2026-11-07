@@ -518,7 +518,9 @@ const HOT_ROUTE_BUDGETS: Record<string, Budget> = {
   // Self-managed. getDeviceEventLogSettings is Redis-cached for 120 s, but the
   // agent sends every ~15 min, so steady state is the cache miss: device,
   // org-partner and group reads outside the heartbeat's hierarchy pass-through.
-  'PUT /agents/:id/eventlogs': { transactions: 4, statements: 20 },
+  // #11225: 20 -> 22 for the savepoints around the settings read and the insert
+  // batch, whose catches could not otherwise survive a statement failure.
+  'PUT /agents/:id/eventlogs': { transactions: 4, statements: 22 },
   [COMMAND_RESULT_KEY]: { transactions: 4, statements: 18 },
   [WS_COMMAND_RESULT_KEY]: { transactions: 4, statements: 17 },
   // The per-frame credential re-check (one system-context device read): a pong

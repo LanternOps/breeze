@@ -28,6 +28,10 @@ interface SelfManagedRoute {
 }
 
 const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
+  // Human override of a failed script review (#10954). The proposal claim, the
+  // audit row and the execution rows must all COMMIT before any command is sent
+  // (#7103: an agent can otherwise answer a row the result path cannot see).
+  { method: 'POST', pattern: /^\/api\/v1\/ai\/script-proposals\/[0-9a-f-]{36}\/override-run\/?$/i },
   // YARA rule test upload (#6263 W04-2): the sandboxed `breeze-yarac match`
   // child runs up to 30 s; inside the request transaction it would pin a
   // pooled connection idle-in-transaction (#1105). The handler reads the set
@@ -46,6 +50,11 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // so the service owns its caller-scoped transaction; the cancel does the
   // same so its CAS and the command-cancel propagation are one short unit.
   { method: 'POST', pattern: /^\/api\/v1\/security\/scan\/[0-9a-f-]{36}\/?$/i },
+  // Run vendor updates (#11065 W04): the dispatch seam commits the run on its own
+  // connection and only then pushes it to the socket. Under a request transaction
+  // the handler would hold one pooled connection while waiting for a second
+  // (#1105). The handler reads the device in a short caller-scoped context.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[0-9a-f-]{36}\/oem-updates\/run\/?$/i },
   { method: 'POST', pattern: /^\/api\/v1\/security\/scans\/[0-9a-f-]{36}\/cancel\/?$/i },
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/[^/]+\/autopay\/charge-now\/?$/ },
   // Autopay routes own short authorized contexts; no outer request transaction.
@@ -253,6 +262,14 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // enqueues, so it keeps the ambient transaction (same call as
   // `quotes/bulk-send`).
   { method: 'POST', pattern: /^\/api\/v1\/devices\/bulk\/restore\/?$/ },
+  // Wake prepares each attempt + relay command in runBulkIsolated, then sends
+  // after that device commits (#7103/#7109). An ambient batch transaction
+  // would hide the rows from a fast relay result. Non-wake commands retain
+  // one explicit withAuthDbAccessContext around the whole branch.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/bulk\/commands\/?$/ },
+  // Same reasoning for a single wake. The other command types run in one
+  // explicit withAuthDbAccessContext, as they did under the request transaction.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/[^/]+\/commands\/?$/ },
   // #9796 bulk site move — same connection-hold reason as bulk restore. `runBulkIsolated` moves
   // each device (row lock + guarded UPDATE + denormalized rewrite) in its own short RLS
   // transaction, up to BULK_SITE_MOVE_CAP. Under the ambient request transaction every row lock
@@ -408,6 +425,17 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // blocks (see withAuthDbAccessContext in middleware/auth.ts) and runs the HTTP call
   // between them.
   { method: 'POST', pattern: /^\/api\/v1\/psa\/connections\/[^/]+\/test\/?$/ },
+  // Ticket import sources and runs (#8313 W4, spec 2026-10-19 §5.6–§5.7).
+  // Create, edit and preflight call the module's connect (and catalog)
+  // against a TENANT-CONTROLLED base URL through safeFetch, which refuses to
+  // run inside a held DB context; each handler reads and writes in short
+  // withAuthDbAccessContext blocks around the call. Starting a run commits
+  // the run row before enqueueing its first slice, or the worker could take
+  // the job before the row is visible.
+  { method: 'POST', pattern: /^\/api\/v1\/ticket-imports\/sources\/?$/ },
+  { method: 'PATCH', pattern: /^\/api\/v1\/ticket-imports\/sources\/[^/]+\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/ticket-imports\/sources\/[^/]+\/preflight\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/ticket-imports\/sources\/[^/]+\/runs\/?$/ },
   // PSA company import (#3246), both halves.
   //
   // PREVIEW walks the PSA's own pagination — up to PSA_COMPANY_LIST_CAP/100

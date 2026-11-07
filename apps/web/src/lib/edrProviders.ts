@@ -117,6 +117,10 @@ export interface EdrTenant {
   lastDetectionSyncStatus: EdrSyncStatus | null;
   lastDetectionSyncError: string | null;
   hasInstallerSecret: boolean;
+  installerFetchedAt: string | null;
+  installerExpiresAt: string | null;
+  /** A code from EDR_INSTALLER_FETCH_ERROR_CODES; an unknown one falls back to generic copy. */
+  installerFetchError: string | null;
 }
 
 /** Name-match suggestion: shown as a badge, NEVER applied automatically (spec §4.5). */

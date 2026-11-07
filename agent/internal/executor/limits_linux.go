@@ -5,6 +5,8 @@ package executor
 import (
 	"os/exec"
 	"syscall"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // setProcessGroup configures the command to run in its own process group and
@@ -15,6 +17,7 @@ func setProcessGroup(cmd *exec.Cmd) {
 		Pgid:      0,
 		Pdeathsig: syscall.SIGKILL,
 	}
+	procspawn.Prepare(cmd)
 }
 
 // hideWindow is a no-op on Linux.

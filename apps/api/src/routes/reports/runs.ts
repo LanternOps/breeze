@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { reportRunOwnerColumns } from '../../services/reportRunOwner';
 import { zValidator } from '../../lib/validation';
 import { and, eq, or, sql, desc, inArray, type SQL } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { organizations, reports, reportRuns, reportSeries } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -245,29 +245,34 @@ runsRoutes.post(
       // context (runInReportScope, ruling P6). A mismatch between the owner
       // axis and the authority throws ReportScopeMismatchError — recorded on
       // the run below like any other failure.
-      const scope = await reportScopeFromAuthority(owner, executionAuthority);
-      const result = await generateReport(
-        report.type,
-        scope,
-        config,
-        executionAuthority,
-      );
-      const previous = await previousBaselineFor(
-        report.id,
-        executionAuthority.fingerprint,
-      );
-      if (previous) result.previous = previous;
-      const rowCount = result.rowCount ?? (Array.isArray(result.rows) ? result.rows.length : 0);
-      await db
-        .update(reportRuns)
-        .set({
-          status: 'completed',
-          completedAt: new Date(),
-          outputUrl: `/api/reports/runs/${run.id}/download`,
-          result,
-          rowCount
-        })
-        .where(eq(reportRuns.id, run.id));
+      // One savepoint around generation and the completed update: if report SQL
+      // fails, it rolls back so the mark-failed update in the catch can still run
+      // in a live transaction (#11203).
+      await withDbTransaction(async () => {
+        const scope = await reportScopeFromAuthority(owner, executionAuthority);
+        const result = await generateReport(
+          report.type,
+          scope,
+          config,
+          executionAuthority,
+        );
+        const previous = await previousBaselineFor(
+          report.id,
+          executionAuthority.fingerprint,
+        );
+        if (previous) result.previous = previous;
+        const rowCount = result.rowCount ?? (Array.isArray(result.rows) ? result.rows.length : 0);
+        await db
+          .update(reportRuns)
+          .set({
+            status: 'completed',
+            completedAt: new Date(),
+            outputUrl: `/api/reports/runs/${run.id}/download`,
+            result,
+            rowCount
+          })
+          .where(eq(reportRuns.id, run.id));
+      });
       return c.json({ message: 'Report generated', runId: run.id, status: 'completed' });
     } catch (err) {
       await db

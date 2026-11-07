@@ -198,6 +198,8 @@ export * from './softwareInstallTimeouts';
 // AI model registry W01 (#7599): AI surfaces and roles. Leaf module.
 export * from './aiSurfaces';
 
+// Alert lifecycle cooldown fallback
+export * from './alertLifecycle';
 // OAuth authorization-server error page reasons (#9938), shared by the API
 // renderError hook and the web /oauth/consent/error page. Leaf module, no imports.
 export * from './oauthErrorPage';

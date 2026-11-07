@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/isolation"
+	"github.com/breeze-rmm/agent/internal/isolation/journal"
 	"github.com/spf13/cobra"
 )
 
@@ -15,16 +17,10 @@ import (
 type containmentCommandManager interface {
 	Report() *isolation.Report
 	LocalRelease(context.Context, string, bool) error
-	Startup(context.Context)
-	Tick(context.Context)
+	ReleaseAll(context.Context, string) error
+	BootApply(context.Context) error
+	RecoveryExpireCheck(context.Context) error
 }
-
-// errContainmentMaintenanceUnavailable: Startup/Tick report no outcome, and a
-// local process has no authenticated verifier, so a drift re-apply would fail
-// its positive probe and roll the rules back. Until W1g adds confirmable
-// recovery operations these subcommands refuse rather than claim success; the
-// running agent performs both on its own schedule.
-var errContainmentMaintenanceUnavailable = errors.New("not implemented on this platform yet (W1g); the running agent performs this automatically")
 
 func newContainmentCommand(dataDir func() string) *cobra.Command {
 	return newContainmentCommandWithFactory(func() containmentCommandManager {
@@ -41,6 +37,13 @@ func newContainmentCommand(dataDir func() string) *cobra.Command {
 
 func newContainmentCommandWithFactory(manager func() containmentCommandManager) *cobra.Command {
 	group := &cobra.Command{Use: "containment", Short: "Inspect or release local network containment", SilenceUsage: true}
+	group.AddCommand(&cobra.Command{
+		Use: "journal-schema", Short: "Print the supported isolation journal schema", Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			_, err := fmt.Fprintln(cmd.OutOrStdout(), journal.SchemaVersion)
+			return err
+		},
+	})
 	group.AddCommand(&cobra.Command{
 		Use: "status", Short: "Print the local network isolation report as JSON", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -63,13 +66,25 @@ func newContainmentCommandWithFactory(manager func() containmentCommandManager) 
 	release.Flags().StringVar(&code, "code", "", "Offline break-glass code")
 	release.Flags().BoolVar(&force, "force", false, "Force release as a local administrator")
 	group.AddCommand(release)
+	var reason string
+	releaseAll := &cobra.Command{
+		Use: "release-all", Short: "Confirm removal of all Breeze-owned isolation rules", Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if reason != "uninstall" && reason != "system" {
+				return errors.New("--reason must be uninstall or system")
+			}
+			return manager().ReleaseAll(cmd.Context(), reason)
+		},
+	}
+	releaseAll.Flags().StringVar(&reason, "reason", "", "Release kind: uninstall or system")
+	group.AddCommand(releaseAll)
 	group.AddCommand(&cobra.Command{
 		Use: "boot-apply", Short: "Reconcile isolation state after startup", Args: cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error { return errContainmentMaintenanceUnavailable },
+		RunE: func(cmd *cobra.Command, _ []string) error { return manager().BootApply(cmd.Context()) },
 	})
 	group.AddCommand(&cobra.Command{
 		Use: "expire-check", Short: "Evaluate isolation expiry and pending recovery", Args: cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error { return errContainmentMaintenanceUnavailable },
+		RunE: func(cmd *cobra.Command, _ []string) error { return manager().RecoveryExpireCheck(cmd.Context()) },
 	})
 	return group
 }

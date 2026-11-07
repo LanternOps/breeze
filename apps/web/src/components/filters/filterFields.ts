@@ -10,6 +10,7 @@
 // shared ValueInput renders `between` as a date-range picker only, so exposing
 // it on a number field would render the wrong widget. Every operator listed
 // here is both backend-valid and renderable by ValueInput/OperatorSelector.
+import i18next from 'i18next';
 import type { FilterFieldDefinition, FilterOperator } from '@breeze/shared';
 import { DEVICE_FUNCTION_KEYS, WORKLOAD_RUNTIMES } from '@breeze/shared';
 
@@ -48,6 +49,8 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   // Device-state predicates — backend models these as booleans (EXISTS against
   // device_patches / alerts / patch_job_results); operators equals/notEquals so
   // the negative case ("is not") is expressible.
+  { key: 'networkIsolation.active', category: 'core', type: 'boolean', operators: B,
+    get label() { return i18next.t('devices:networkIsolation.filterLabel', { defaultValue: 'Isolated' }); } },
   { key: 'patches.pending', label: 'Needs Patches', category: 'core', type: 'boolean', operators: B },
   { key: 'alerts.critical', label: 'Critical Alert Active', category: 'core', type: 'boolean', operators: B },
   { key: 'system.rebootRequired', label: 'Reboot Required', category: 'core', type: 'boolean', operators: B },

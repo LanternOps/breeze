@@ -343,6 +343,79 @@ describe('sdkTurnUsage — cumulative modelUsage is billed as per-key deltas aga
     expect(out.nextSnapshot).toEqual(snap({ [SONNET]: add(T, tok(3, 4)) }));
   });
 
+  describe('a turn the gateway stopped at the context window (#10577)', () => {
+    const windowExceeded = () => ({ ...newSdkTurnObservation(), contextWindowExceeded: true });
+
+    it('with zero usage: recorded as context_window_exceeded and confirmed, not no_result', () => {
+      const prev = snap({ [SONNET]: T });
+      const out = sdkTurnUsage({ binding: B, observation: windowExceeded(), previousSnapshot: prev,
+        result: { subtype: 'success', is_error: true, modelUsage: {} } });
+      expect(out.usage).toEqual([]);
+      expect(out.usageNote).toBe('context_window_exceeded');
+      expect(out.usageConfirmed).toBe(true);
+      expect(out.outcome.stopReason).toBe('context_window_exceeded');
+      expect(out.nextSnapshot).toBe(prev);
+    });
+
+    it('with no modelUsage at all: the same', () => {
+      const out = sdkTurnUsage({ binding: B, observation: windowExceeded(), previousSnapshot: null,
+        result: { subtype: 'error_during_execution', is_error: true } });
+      expect(out.usageNote).toBe('context_window_exceeded');
+      expect(out.usageConfirmed).toBe(true);
+    });
+
+    it('a later turn of a session (unchanged cumulative usage): the same, not an unconfirmed delta', () => {
+      const prev = snap({ [SONNET]: T });
+      const out = sdkTurnUsage({ binding: B, observation: windowExceeded(), previousSnapshot: prev,
+        result: { subtype: 'success', is_error: true, modelUsage: { [SONNET]: mu(T) } } });
+      expect(out.usage).toEqual([]);
+      expect(out.usageNote).toBe('context_window_exceeded');
+      expect(out.usageConfirmed).toBe(true);
+    });
+
+    it('earlier model calls in the turn are still billed, with the specific stop reason', () => {
+      const out = sdkTurnUsage({ binding: B, observation: windowExceeded(), previousSnapshot: snap({ [SONNET]: T }),
+        result: { subtype: 'success', is_error: true, modelUsage: { [SONNET]: mu(add(T, tok(3, 4))) } } });
+      expect(out.usage).toEqual([std(SONNET, tok(3, 4))]);
+      expect(out.usageNote).toBe('delta');
+      expect(out.usageConfirmed).toBe(false);
+      expect(out.outcome.stopReason).toBe('context_window_exceeded');
+    });
+
+    it('a turn whose query died with no result after the refusal: the same', () => {
+      const out = sdkTurnUsage({ binding: B, observation: windowExceeded(), previousSnapshot: null, result: null });
+      expect(out.usage).toEqual([]);
+      expect(out.usageNote).toBe('context_window_exceeded');
+      expect(out.usageConfirmed).toBe(true);
+    });
+
+    it.each([
+      ['an empty modelUsage', { subtype: 'success', is_error: true, modelUsage: {} }],
+      ['no modelUsage', { subtype: 'error_during_execution', is_error: true }],
+      ['no result', null],
+    ])('with output already served this turn, %s is not a confirmed zero: it stays no_result', (_name, result) => {
+      const out = sdkTurnUsage({ binding: B, observation: { ...windowExceeded(), sawOutput: true }, previousSnapshot: null, result: result as SdkResultLike | null });
+      expect(out.usageNote).toBe('no_result');
+      expect(out.usageConfirmed).toBe(false);
+    });
+
+    it('a stale flag on a turn that succeeded changes nothing (the capped retry path)', () => {
+      const out = sdkTurnUsage({ binding: B, observation: windowExceeded(), previousSnapshot: null,
+        result: success({ usage: ru(tok(5, 6)), modelUsage: { [SONNET]: mu(tok(5, 6)) } }) });
+      expect(out.usageNote).toBe('first_result');
+      expect(out.usageConfirmed).toBe(true);
+      expect(out.outcome.stopReason).not.toBe('context_window_exceeded');
+    });
+
+    it('without the flag a zero-usage error is still no_result', () => {
+      const out = sdkTurnUsage({ binding: B, observation: newSdkTurnObservation(), previousSnapshot: null,
+        result: { subtype: 'success', is_error: true, modelUsage: {} } });
+      expect(out.usageNote).toBe('no_result');
+      expect(out.usageConfirmed).toBe(false);
+      expect(out.outcome.stopReason).toBe('error');
+    });
+  });
+
   it('a success turn that made no model call: nothing billed, snapshot kept', () => {
     const prev = snap({ [SONNET]: T });
     const out = sdkTurnUsage({ binding: B, observation: newSdkTurnObservation(), previousSnapshot: prev,

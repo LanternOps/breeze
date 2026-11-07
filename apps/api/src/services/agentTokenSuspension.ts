@@ -19,3 +19,14 @@ export const AGENT_TOKEN_SUSPEND_REASON = {
 
 export type AgentTokenSuspendReason =
   (typeof AGENT_TOKEN_SUSPEND_REASON)[keyof typeof AGENT_TOKEN_SUSPEND_REASON];
+
+/** Security and tenant enforcement cannot be vetoed by extendable isolation episodes. */
+export const ISOLATION_FORCED_SUSPEND_REASONS: ReadonlySet<string> = new Set([
+  AGENT_TOKEN_SUSPEND_REASON.tenantSuspended,
+  AGENT_TOKEN_SUSPEND_REASON.crossTenantProbe,
+]);
+
+/** Future device-level suspension reasons preserve recovery access by default. */
+export function isolationBlocksTokenSuspension(reason: AgentTokenSuspendReason): boolean {
+  return !ISOLATION_FORCED_SUSPEND_REASONS.has(reason);
+}

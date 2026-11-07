@@ -253,6 +253,11 @@ export async function persistVendorSnapshot(
       errorsCount: device.errorsCount,
       vendorCreatedAt: device.vendorCreatedAt,
       vendorExpiresAt: device.vendorExpiresAt,
+      // Explicit NULLs when the provider has no evidence, so the upsert below
+      // clears a result that has since expired.
+      verifiedBootableAt: device.verifiedBootable?.at ?? null,
+      verifiedBootable: device.verifiedBootable?.healthy ?? null,
+      verifiedBootableFailedChecks: device.verifiedBootable?.failedChecks ?? null,
       lastSeenAt: now,
       vendorRaw: device.raw,
       updatedAt: now,
@@ -303,6 +308,9 @@ export async function persistVendorSnapshot(
           errorsCount: sql`excluded.errors_count`,
           vendorCreatedAt: sql`excluded.vendor_created_at`,
           vendorExpiresAt: sql`excluded.vendor_expires_at`,
+          verifiedBootableAt: sql`excluded.verified_bootable_at`,
+          verifiedBootable: sql`excluded.verified_bootable`,
+          verifiedBootableFailedChecks: sql`excluded.verified_bootable_failed_checks`,
           lastSeenAt: sql`excluded.last_seen_at`,
           vendorRaw: sql`excluded.vendor_raw`,
           updatedAt: sql`excluded.updated_at`,

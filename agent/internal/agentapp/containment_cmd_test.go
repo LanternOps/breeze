@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -130,20 +131,73 @@ func TestContainmentReleasePropagatesError(t *testing.T) {
 	}
 }
 
+func (f *containmentCommandFake) BootApply(context.Context) error           { f.startup++; return f.err }
+func (f *containmentCommandFake) RecoveryExpireCheck(context.Context) error { f.tick++; return f.err }
+
 func TestContainmentMaintenanceCommands(t *testing.T) {
 	for _, name := range []string{"boot-apply", "expire-check"} {
-		t.Run(name, func(t *testing.T) {
-			fake := &containmentCommandFake{}
+		for _, failure := range []error{nil, errors.New("cleanup unconfirmed")} {
+			fake := &containmentCommandFake{err: failure}
 			cmd := newContainmentCommandWithFactory(func() containmentCommandManager { return fake })
 			cmd.SetArgs([]string{name})
 			cmd.SetErr(&bytes.Buffer{})
-			// Until W1g gives Startup/Tick a confirmable outcome (and a verifier),
-			// these must exit nonzero and must not touch local state.
-			if err := cmd.Execute(); err == nil {
-				t.Fatal("maintenance command claimed success")
+			err := cmd.Execute()
+			if !errors.Is(err, failure) || fake.startup+fake.tick != 1 {
+				t.Fatalf("%s: err=%v startup=%d tick=%d", name, err, fake.startup, fake.tick)
 			}
-			if fake.startup != 0 || fake.tick != 0 {
-				t.Fatal("maintenance command ran the manager")
+			if (name == "boot-apply" && fake.startup != 1) || (name == "expire-check" && fake.tick != 1) {
+				t.Fatal("wrong recovery operation")
+			}
+		}
+	}
+}
+
+func TestContainmentJournalSchemaWithoutManager(t *testing.T) {
+	cmd := newContainmentCommandWithFactory(func() containmentCommandManager { t.Fatal("schema query constructed manager"); return nil })
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"journal-schema"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != fmt.Sprintf("%d\n", journal.SchemaVersion) {
+		t.Fatalf("schema=%q", out.String())
+	}
+}
+
+func (f *containmentCommandFake) ReleaseAll(_ context.Context, kind string) error {
+	f.release++
+	f.code = kind
+	return f.err
+}
+
+func TestContainmentReleaseAll(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		managerErr error
+		calls      int
+		wantErr    bool
+	}{
+		{"uninstall", []string{"release-all", "--reason", "uninstall"}, nil, 1, false},
+		{"cleanup failure", []string{"release-all", "--reason", "uninstall"}, errors.New("absence unconfirmed"), 1, true},
+		{"missing reason", []string{"release-all"}, nil, 0, true},
+		{"unknown reason", []string{"release-all", "--reason", "garbage"}, nil, 0, true},
+		{"extra argument", []string{"release-all", "--reason", "uninstall", "extra"}, nil, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &containmentCommandFake{err: tc.managerErr}
+			constructed := 0
+			cmd := newContainmentCommandWithFactory(func() containmentCommandManager { constructed++; return fake })
+			cmd.SetArgs(tc.args)
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			err := cmd.Execute()
+			if (err != nil) != tc.wantErr || fake.release != tc.calls || constructed != tc.calls {
+				t.Fatalf("err=%v calls=%d constructions=%d", err, fake.release, constructed)
+			}
+			if tc.calls > 0 && fake.code != "uninstall" {
+				t.Fatalf("reason=%q", fake.code)
 			}
 		})
 	}

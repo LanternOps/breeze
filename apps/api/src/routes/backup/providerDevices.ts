@@ -97,6 +97,9 @@ backupProviderDeviceRoutes.get(
         errorsCount: backupProviderDevices.errorsCount,
         breezeDeviceId: backupProviderDevices.breezeDeviceId,
         deviceMatchSource: backupProviderDevices.deviceMatchSource,
+        verifiedBootableAt: backupProviderDevices.verifiedBootableAt,
+        verifiedBootable: backupProviderDevices.verifiedBootable,
+        verifiedBootableFailedChecks: backupProviderDevices.verifiedBootableFailedChecks,
       })
       .from(backupProviderDevices)
       .leftJoin(backupProviderCustomers, eq(backupProviderDevices.customerId, backupProviderCustomers.id))

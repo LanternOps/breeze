@@ -159,7 +159,14 @@ export type McpExemptReason =
    * plain reboot stays reachable through the existing device-command tools.
    */
   | 'human_only_force_reboot'
-  | 'human_only_network_isolation'
+  /**
+   * "Run vendor updates" (#11065): runs the device maker's update tool, which can
+   * flash a BIOS or firmware and restart the machine. Interactive user session,
+   * devices:execute and MFA, with the reboot choice made by a person. v1 adds no
+   * AI tool by design (spec, Decision 9); an agent-reachable path would remove the
+   * human from a firmware flash.
+   */
+  | 'human_only_oem_updates'
   /**
    * The chat / script-builder session transport itself (sessions, messages,
    * interrupt, approve-plan). This is the plumbing the AI features run over,
@@ -255,6 +262,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'agents/bootPerformance.ts': { exempt: 'agent_transport' },
   'agents/changes.ts': { exempt: 'agent_transport' },
   'agents/commands.ts': { exempt: 'agent_transport' },
+  'agents/oemUpdates.ts': { exempt: 'agent_transport' },
   'agents/connections.ts': { exempt: 'agent_transport' },
   'agents/download.ts': { exempt: 'agent_transport' },
   'agents/elevationRequests.ts': { exempt: 'agent_transport' },
@@ -296,7 +304,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'ai/scriptPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Unattended script-lane grant plus lane reset (approvals:decide + step-up) -- the AI must not widen its own authority.' },
   'ai/scriptProposals.ts': { tools: ['propose_script', 'get_script_proposal'] },
   'aiAttach.ts': { exempt: 'ai_transport', note: 'Chat session transport (#9427): a read-only SSE attach to the caller\'s own running chat turn; a browser surface, not an agent action.' },
-  'aiAgentSchedules.ts': { tools: ['list_ai_agent_schedules'] }, // W10 (#6780): the read; schedule CRUD is W16 (#6786)
+  'aiAgentSchedules.ts': { tools: ['list_ai_agent_schedules', 'manage_ai_agent_schedules'] }, // W10 (#6780) read; W16 PR B (#6786): create, update, four-eyes delete. Left human (Decision 3): arming act mode (actMode: true) stays on the AI Agents page
   'aiAgents.ts': { tools: ['list_ai_agents', 'list_ai_agent_runs', 'get_ai_agent_run', 'manage_ai_agents'] },
   'aiArtifacts.ts': { tools: ['read_artifact'] },
   'aiModels/assignments.ts': { exempt: 'human_only_ai_governance', note: 'Per-feature model defaults and permitted sets -- the AI must not choose its own model policy.' },
@@ -308,11 +316,12 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'aiModels/residency.ts':{ exempt: 'human_only_ai_governance', note: 'Data-residency requirement for AI calls -- a compliance control the AI must not change.' },
   'aiModels/shared.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'aiModels/usage.ts': { exempt: 'human_only_ai_governance', note: 'AI spend and refusal reporting by model / feature / tech -- admin showback, not an agent workflow.' },
-  'aiOperatorTasks.ts': { tools: ['list_operator_tasks', 'get_operator_task'] }, // W10 (#6780): the task list + detail reads; create / workflows / drafts are W16 (#6786)
+  'aiOperatorTasks.ts': { tools: ['list_operator_tasks', 'get_operator_task', 'create_operator_task'] }, // W10 (#6780) reads; W16 PR A (#6786): create_operator_task for service_recovery only. Left human (Decision 4): the identity_offboarding / identity_onboarding admissions, the task drafts, the workflow Library read and the account-reservation release
   'alertTemplates/correlations.ts': { tools: ['get_alert_correlations'] }, // W07 (#6777): links (list) and analyze; the legacy /groups twin is superseded by alerts/correlations.ts groups
   'alertTemplates/rules.ts': { tools: ['manage_alert_rules'] },
   'alertTemplates/templates.ts': { tools: ['manage_alert_rules'] },
   'alerts/alerts.ts': { tools: ['manage_alerts'] },
+  'alerts/lifecycleDefaults.ts': { exempt: 'tool_in_later_wave', note: 'Alert lifecycle defaults (partner default / org override, #10765 W02). No MCP tool is scheduled in #10765 yet (same shape as connectionHealthSettings.ts); whether the AI may read or set them is an open decision on the W02 PR.' },
   'alerts/alertExternalTickets.ts': { tools: ['manage_alerts'] },
   'alerts/alertPsaTicket.ts': { exempt: 'vendor_console_admin', note: 'Manual alert -> PSA ticket admission (#10499 W2-C); a human decision to raise a ticket in the external PSA, like psaAlertTicketing.ts.' },
   'alerts/channels.ts': { tools: ['manage_notification_channels'] },
@@ -346,16 +355,14 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'authenticator.ts': { exempt: 'identity' },
   'automations.ts': { tools: ['manage_automations'] },
   'backup/bmr.ts': { exempt: 'human_only_trust_material', note: "BMR tokens, signing keys and boot media are finished by a human at the physical machine; recover/* is recovery-environment transport. From #6792." },
-  'backup/bmrRecoveries.ts': { gap: '#6788' },
+  // W17 (#6788): reads only. Create, cancel and reissue stay human: the one-time code goes to a person at the machine.
+  'backup/bmrRecoveries.ts': { tools: ['list_bmr_recoveries'] },
   'backup/configs.ts': { tools: ['manage_backup_configs'] },
   'backup/dashboard.ts': { tools: ['query_backups', 'get_backup_status'] },
   'backup/encryption.ts': { exempt: 'human_only_trust_material', note: "Key rotate/delete can orphan every snapshot; key metadata alone is low AI value. From #6793." },
-  // #6008 W03 — unified breeze+provider backup-health read model for the
-  // Integrations tab (GET /backup/health/devices). No MCP tool queries this
-  // read model yet; `get_backup_status` (backup/dashboard.ts) reads
-  // Breeze-native backup_jobs directly and does not cover provider-sourced
-  // rows, so it is not real coverage for this surface.
-  'backup/health.ts': { gap: '#6141' },
+  // #6008 W03 unified breeze+provider backup-health read model (GET /backup/health/devices). W17 (#6788).
+  // `get_backup_status` (backup/dashboard.ts) reads Breeze-native backup_jobs and does not cover provider-sourced rows.
+  'backup/health.ts': { tools: ['get_backup_health'] },
   'backup/hyperv.ts': { tools: ['query_hyperv_vms', 'get_hyperv_vm_details', 'manage_hyperv_vm', 'trigger_hyperv_backup', 'restore_hyperv_vm', 'manage_hyperv_checkpoints'] },
   'backup/jobs.ts': { tools: ['query_backups', 'trigger_backup'] },
   'backup/mssql.ts': { tools: ['query_mssql_instances', 'get_mssql_backup_status', 'trigger_mssql_backup', 'restore_mssql_database', 'verify_mssql_backup'] },
@@ -385,9 +392,9 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'backup/sla.ts': { tools: ['query_backup_sla', 'get_sla_breaches', 'get_sla_compliance_report', 'configure_backup_sla'] },
   'backup/snapshots.ts': { tools: ['browse_snapshots', 'query_backups'] },
   'backup/vault.ts': { tools: ['query_vaults', 'get_vault_status', 'configure_vault', 'trigger_vault_sync'] },
-  'backup/verification.ts': { gap: '#6788' },
+  'backup/verification.ts': { tools: ['manage_backup_verification'] }, // W17 (#6788)
   'backup/vmrestore.ts': { tools: ['get_vm_restore_estimate', 'restore_as_vm', 'instant_boot_vm'] },
-  'backup/vss.ts': { gap: '#6788' },
+  'backup/vss.ts': { tools: ['get_vss_status'] }, // W17 (#6788)
   'autopay/index.ts': { exempt: 'human_only_autopay', note: 'MSP enrollment administration; AI/MCP money-movement writes are excluded by the autopay v1 design (§3).' },
   'autopay/public.ts': { exempt: 'portal', note: 'Customer token-authorized enrollment and stop flow; not an MCP surface.' },
   'portal/paymentMethods.ts': { exempt: 'portal', note: 'Customer portal payment-method and autopay controls; not an MCP surface.' },
@@ -397,7 +404,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'browserSecurity.ts': { tools: ['get_browser_security', 'manage_browser_policy'] },
   // #8973 W4 business-hours calendars: read-only list_business_calendars; writes are human-only in v1 (spec §5.7).
   'businessCalendars.ts': { tools: ['list_business_calendars'] },
-  'c2c/configs.ts': { gap: '#6788' },
+  'c2c/configs.ts': { tools: ['manage_c2c_configs'] }, // W17 (#6788): human-only, agents never reach it
   'c2c/connections.ts': { tools: ['query_c2c_connections'] },
   'c2c/items.ts': { tools: ['search_c2c_items', 'restore_c2c_items'] },
   'c2c/jobs.ts': { tools: ['query_c2c_jobs', 'trigger_c2c_sync'] },
@@ -488,9 +495,15 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // GET /devices/:id/monitors (#6371 W05c2): the same per-device monitor state
   // is agent-reachable per monitor via get_monitor_activity's deviceId filter.
   'devices/monitors.ts': { tools: ['list_monitors', 'get_monitor_activity', 'reset_monitor_escalation'] },
-  'devices/networkIsolation.ts': { exempt: 'human_only_network_isolation', note: 'Interactive session and MFA only in W1; AI release is W4b #10101. Unattended MCP stays denied.' },
+  // W13 (#10101): start is execute_containment with actionType network_isolation, and release
+  // is the four-eyes release_containment, both through the isolation service. Extend, acknowledge
+  // and the break-glass code stay human-only. The external MCP refuses release_containment by
+  // name and execute_containment when actionType is network_isolation.
+  'devices/networkIsolation.ts': { tools: ['execute_containment', 'release_containment'] },
   'agents/isolationVerify.ts': { exempt: 'agent_transport' },
   'devices/forceReboot.ts': { exempt: 'human_only_force_reboot', note: 'Force reboot now: closes running apps; step-up bound to one device.' },
+  'devices/oemUpdates.ts': { exempt: 'human_only_oem_updates', note: 'Run vendor updates (BIOS, firmware, drivers through the maker\'s tool) plus its status and history reads; no AI tool in v1 (#11065 Decision 9).' },
+  'oemUpdates/fleet.ts': { exempt: 'human_only_oem_updates', note: 'Vendor updates fleet read: counts and the device list behind the Patches tab. Read-only; no AI tool in v1 (#11065 Decision 9).' },
   'devices/moveOrg.ts': { exempt: 'human_only_tenant_restructure', note: 'Cross-tenant device move -- rewrites which tenant owns the device.' },
   'devices/network.ts': { tools: ['list_network_assets'] },
   'devices/options.ts': { exempt: 'internal_plumbing' },
@@ -536,7 +549,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'externalServices.ts': { exempt: 'breeze_account', note: 'The partner\'s Breeze billing portal and support forward.' },
   'filters.ts': { tools: ['manage_saved_filters'] },
   'fixMemory.ts': { tools: ['find_proven_fixes'] },
-  'fleetDesign.ts': { tools: ['list_fleet_designs', 'get_fleet_design'] }, // W10 (#6780): list + detail reads; run / apply / rollback / document are W16 (#6786)
+  'fleetDesign.ts': { tools: ['list_fleet_designs', 'get_fleet_design', 'manage_fleet_designs'] }, // W10 (#6780) reads; W16 PR B (#6786): run, preview, applied, four-eyes apply and rollback, document. Left human: POST /designer/enable creates or enables an autonomous agent (manage_ai_agents territory), and GET /designer is its setup probe
   'fleetFindings.ts': { tools: ['get_fleet_findings', 'manage_fleet_findings'] }, // W12 (#6782): acknowledge / dismiss / reopen; remediate stays UI-only
   'google.ts': { exempt: 'vendor_console_admin' },
   'groups.ts': { tools: ['manage_groups'] },
@@ -586,9 +599,9 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'officeAddin/tickets.ts': { exempt: 'addin_surface' },
   'officeAddin/time.ts': { exempt: 'addin_surface' },
   'onedrive.ts': { exempt: 'ui_file_transfer', note: "OneDrive helper library picker; niche browser file-selection surface. From #6800." },
-  'orgAccountReadiness.ts': { gap: '#6789' },
+  'orgAccountReadiness.ts': { tools: ['get_account_readiness'] }, // W18 (#6789)
   'orgArchive.ts': { exempt: 'human_only_tenant_restructure', note: 'Archive/restore an organization -- tenant-restructure decision.' },
-  'orgAuditRetentionSettings.ts': { gap: '#6789' },
+  'orgAuditRetentionSettings.ts': { tools: ['get_audit_retention'] }, // W18 (#6789): PUT stays human (retention is evidence)
   // Per-org billing profile read/write/delete; no AI tool surfaces it yet.
   'orgBillingProfile.ts': { tools: ['manage_billing_profiles'] }, // W14 (#6784): get / set / clear_org_profile
   'orgContacts.ts': { tools: ['list_org_contacts', 'manage_organizations'] },
@@ -596,10 +609,10 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'orgDocuments.ts': { tools: ['list_org_documents', 'manage_org_documents'] },
   'orgKeyDates.ts': { tools: ['manage_key_dates'] },
   'orgMerge.ts': { exempt: 'human_only_tenant_restructure', note: 'Org merge preview/merge/run status -- rewrites which tenant owns the data.' },
-  'orgPortalPreview.ts': { exempt: 'tool_in_later_wave', note: 'Staff read-only Customer view of the portal read models (#9350). No AI tool yet; tracked with the org-settings tool gap #6789 (the frozen-gap list takes no new entries).' },
-  'orgPortalSettings.ts': { gap: '#6789' },
-  'orgPortalUsers.ts': { gap: '#6789' },
-  'orgSummary.ts': { gap: '#6789' },
+  'orgPortalPreview.ts': { exempt: 'tool_in_later_wave', note: 'Staff read-only Customer view of the portal read models (#9350). No AI tool yet; tracked in #11129 (org portal preview tool gap) (the frozen-gap list takes no new entries).' },
+  'orgPortalSettings.ts': { tools: ['manage_org_portal_settings'] }, // W18 PR B (#6789): get, update, four-eyes set_sensitive_access; customCss stays human
+  'orgPortalUsers.ts': { tools: ['list_portal_users'] }, // W18 (#6789): invite / disable / delete stay identity, no tool action (W18-1)
+  'orgSummary.ts': { tools: ['get_org_summary'] }, // W18 (#6789)
   'orgTicketSettings.ts': { tools: ['manage_ticket_config'] }, // W06 (#6776): get_org_settings / update_org_settings
   'orgs.ts': { tools: ['list_sites', 'get_site', 'list_organizations', 'manage_organizations'] },
   'siteLocation.ts': { exempt: 'mobile_surface', note: 'Technician pin of a site coordinate from the phone\'s current fix (#4186), deliberately without MFA step-up. An agent has no position to pin; the same fields are editable through PATCH /orgs/sites/:id.' },
@@ -621,6 +634,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'partnerApi/devices.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/inventory.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'migrationWindows.ts': { exempt: 'human_only_tenant_restructure', note: 'Ticket migration windows (#8313): opening one widens a keyless partner service principal into import mode and needs the owner, an interactive session and a step-up grant; closing is a full-partner-admin action. No AI tool.' },
+  'ticketImports/runs.ts': { exempt: 'human_only_migration', note: 'Ticket import runs (#8313 W4): a dry run or an import into a migration window that only the principal owner can open, started and read by a partner-wide admin from the import wizard. Spec 2026-10-19 §5.7 gives the import no AI tool.' },
+  'ticketImports/sources.ts': { exempt: 'human_only_migration', note: 'Ticket import sources (#8313 W4): connecting a foreign helpdesk with a stored credential, mapping its orgs and groups, and the preflight. Owner-only and MFA-gated partner-admin actions with no AI tool (spec 2026-10-19 §5.7).' },
   'partnerApi/organizations.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/provisioning.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/relationships.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
@@ -629,7 +644,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'partnerSendingDomains.ts': { exempt: 'human_only_trust_material', note: "DNS verification is completed by a human at the registrar; test-send leaves the tenant. From #6803." },
   'partnerServicePrincipals.ts': { exempt: 'identity' },
   'partnerTrust.ts': { exempt: 'breeze_account', note: 'Trust review request to Breeze -- the partner-Breeze relationship itself.' },
-  'patchPlan.ts': { gap: '#6786' },
+  'patchPlan.ts': { tools: ['run_patch_plan'] }, // W16 PR A (#6786): "Run now" for the org's patch agent
   'patchPolicies.ts': { exempt: 'internal_plumbing', note: "Read-only kind='legacy' surface superseded by config-policy patch features; retire rather than build a tool. From #6804." },
   'patches/appOptions.ts': { exempt: 'internal_plumbing' },
   'patches/approvals.ts': { tools: ['manage_patches'] },
@@ -691,13 +706,13 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'reports/core.ts': { tools: ['generate_report'] },
   'reports/data.ts': { tools: ['generate_report'] },
   'reports/generate.ts': { tools: ['generate_report'] },
-  'reports/recipients.ts': { gap: '#6789' },
+  'reports/recipients.ts': { tools: ['manage_report_recipients'] }, // W18 PR B (#6789): list, add, remove, convert
   'reports/runs.ts': { tools: ['generate_report'] },
   // Multi-org report series (W02): generate_report lists and runs series
   // children like any org report; a series-management tool is a follow-up.
   'reports/series.ts': { tools: ['generate_report'] },
   'reports/seriesCombine.ts': { exempt: 'human_only_migration', note: 'Multi-org report series W04 Combine: an opt-in, one-shot consolidation of existing per-org reports that a human reviews in a dialog (candidate groups, CC resolution) before confirming; spec §3.8 gives it no AI tool and D4 forbids automatic consolidation.' },
-  'roles.ts': { gap: '#6789' },
+  'roles.ts': { tools: ['list_roles'] }, // W18 (#6789): every role write stays identity, no tool action (W18-1)
   'scriptAi.ts': { exempt: 'ai_transport' },
   'scriptBundle.ts': { exempt: 'ui_file_transfer', note: "Bundle export/import; import is bulk content ingestion, low frequency. From #6806." },
   'scriptLibrary.ts': { tools: ['search_script_library'] },
@@ -773,6 +788,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // #8883 W5 (spec §5.7): reads and the dry run are tier 1; create/update/
   // reorder/delete are the tier-3 manage tool, partner-wide gate in the service.
   'tickets/routingRules.ts': { tools: ['list_ticket_routing_rules', 'test_ticket_routing_rule', 'manage_ticket_routing_rules'] },
+  'tickets/serviceCatalog.ts': { exempt: 'tool_in_later_wave', note: 'Service catalog management routes (#8325 wave A1); no MCP tool planned yet (#8325).' },
   'tickets/ticketResponseTemplates.ts': { tools: ['manage_ticket_response_templates'] }, // W06 (#6776)
   'tickets/tickets.ts': { tools: ['manage_tickets'] },
   'timeEntries/index.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
@@ -845,7 +861,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'unifi/index.ts': { gap: '#6779' },
   'updateRings.ts': { tools: ['manage_update_rings'] },
   'userRisk.ts': { tools: ['get_fleet_health', 'get_user_risk_scores', 'get_user_risk_detail', 'assign_security_training'] },
-  'users.ts': { gap: '#6789' },
+  'users.ts': { tools: ['list_users', 'get_user'] }, // W18 (#6789): every user write stays identity (W18-1); /me/* self-service has no tool
   'viewers/download.ts': { exempt: 'internal_plumbing' },
   'vulnerabilities.ts': { tools: ['get_vulnerability_report', 'get_device_vulnerabilities', 'remediate_vulnerability'] },
   'webhooks.ts': { tools: ['query_webhooks', 'test_webhook'] },

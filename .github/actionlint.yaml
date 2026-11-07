@@ -2,3 +2,6 @@ self-hosted-runner:
   # Scaling W07 (#8146): the dedicated perf runner (.github/workflows/perf.yml).
   labels:
     - breeze-perf
+    # GitHub-hosted, but newer than the label table in the pinned actionlint
+    # (security.yml). Remove on the next actionlint bump that knows it.
+    - ubuntu-26.04

@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sys/windows"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/securefs"
 )
 
@@ -47,7 +48,7 @@ func collectPasswordPolicySecedit() (map[string]any, error) {
 	logPath := filepath.Join(dir, "secedit.log")
 	ctx, cancel := context.WithTimeout(context.Background(), seceditTimeout)
 	defer cancel()
-	output, runErr := exec.CommandContext(ctx, filepath.Join(sysDir, "secedit.exe"),
+	output, runErr := procspawn.CommandContext(ctx, filepath.Join(sysDir, "secedit.exe"),
 		"/export", "/areas", "SECURITYPOLICY",
 		"/cfg", cfgPath,
 		"/log", logPath,

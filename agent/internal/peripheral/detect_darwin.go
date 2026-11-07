@@ -4,8 +4,9 @@ package peripheral
 
 import (
 	"encoding/json"
-	"os/exec"
 	"strings"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // spUSBDataType is the top-level JSON wrapper from system_profiler SPUSBDataType.
@@ -29,7 +30,7 @@ type spMedia struct {
 
 // DetectPeripherals enumerates USB devices via system_profiler on macOS.
 func DetectPeripherals() ([]DetectedPeripheral, error) {
-	cmd := exec.Command("system_profiler", "SPUSBDataType", "-json")
+	cmd := procspawn.Command("system_profiler", "SPUSBDataType", "-json")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err

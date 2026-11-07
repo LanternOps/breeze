@@ -41,6 +41,10 @@ const ALLOW = new Set<string>([
   'settings:gmailMailbox.handling.archiveField',
   'settings:gmailMailbox.handling.error.not_queued',
   'settings:gmailMailbox.handling.error.failed',
+  // The M365 connect baseline note describes the mailbox's own inbox (#10863):
+  'settings:m365Mailbox.baselineRunning',
+  'settings:m365Mailbox.baselineSkipped_one',
+  'settings:m365Mailbox.baselineSkipped_other',
 ]);
 
 describe('AI decisions vocabulary (#10134)', () => {

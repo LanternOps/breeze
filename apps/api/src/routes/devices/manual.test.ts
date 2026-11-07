@@ -7,6 +7,8 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 // network.test.ts's mock shape (the network arm is the closest sibling).
 
 vi.mock('../../db', () => ({
+  hasDbAccessContext: () => false,
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),

@@ -9,8 +9,9 @@ import type { PostureSummary, ExecutiveSummary, OrgNarrativeReportSummary, Fleet
   MrrRenewalsSummary,
   QuoteWinRateSummary,
   ClientProfitabilitySummary,
+  TicketSlaPerformanceSummary,
 } from '@breeze/shared';
-import { rowsToXlsx, XLSX_MIME_TYPE } from '@breeze/shared';
+import { isTicketSlaPerformanceSummary, rowsToXlsx, sheetsToXlsx, XLSX_MIME_TYPE } from '@breeze/shared';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula, rowsToCsv } from '@/lib/csvExport';
 import { downloadBlob } from '@/lib/downloadBlob';
@@ -64,7 +65,7 @@ export async function exportReport(
     // reportExport.business.test.tsx.
     summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | EndpointManagementSummary | VulnerabilityManagementSummary | IdentityAccessSummary
       | TicketSlaSummary | TechnicianTimeSummary | ArAgingSummary | AiUsageByClientSummary | MrrRenewalsSummary | QuoteWinRateSummary
-      | ClientProfitabilitySummary;
+      | ClientProfitabilitySummary | TicketSlaPerformanceSummary;
     /** Slim baseline from the previous completed run (report_runs.result.previous),
      * used to draw the scorecard trend chip; ignored by non-cover report types. */
     previous?: { generatedAt?: string | null; summary?: unknown };
@@ -87,7 +88,16 @@ export async function exportReport(
     if (rows.length === 0) throw new Error('No data to export');
     // #9956: a real workbook (was TSV text saved as .xls). Throws
     // XlsxLimitError past Excel's worksheet limits; callers surface the message.
-    const workbook = rowsToXlsx(rows);
+    let workbook: Uint8Array<ArrayBuffer>;
+    if (reportType === 'ticket_sla_performance') {
+      // A priorities-only workbook would read as complete while every breach is missing.
+      if (!isTicketSlaPerformanceSummary(summary)) {
+        throw new Error('This SLA performance run has no readable summary, so its breaches cannot be exported.');
+      }
+      workbook = slaPerformanceWorkbook(rows, summary);
+    } else {
+      workbook = rowsToXlsx(rows);
+    }
     downloadBlob(new Blob([workbook], { type: XLSX_MIME_TYPE }), `${baseFilename}.xlsx`);
     return;
   }
@@ -107,6 +117,24 @@ export async function exportReport(
   const branding = opts.branding ?? (await loadPartnerBranding());
   const doc = buildReportPdf(rows, { reportType, generatedAt, timezone, summary, previous, branding });
   downloadBlob(doc.output('blob'), `${baseFilename}.pdf`);
+}
+
+/** The priority rows, the breach list, then the report's notes, led by the
+ *  truncation disclosure the PDF also prints. A report without subjects has no
+ *  subject column at all, not an empty one. */
+function slaPerformanceWorkbook(rows: unknown[], summary: TicketSlaPerformanceSummary): Uint8Array<ArrayBuffer> {
+  const { breaches } = summary;
+  const breachRows = summary.includeSubjects
+    ? breaches.rows
+    : breaches.rows.map(({ subject: _subject, ...row }) => row);
+  const truncation = breaches.truncated
+    ? [`Breaches: showing ${breaches.rows.length} of ${breaches.available}. The stored report keeps at most ${breaches.cap}; totals count all of them.`]
+    : [];
+  return sheetsToXlsx([
+    { name: 'Priorities', rows },
+    { name: 'Breaches', rows: breachRows },
+    { name: 'Notes', rows: [...truncation, ...summary.notes].map((note) => ({ note })) },
+  ]);
 }
 
 /**

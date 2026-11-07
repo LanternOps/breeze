@@ -366,11 +366,13 @@ export type Device = {
     ramTotalMb?: number;
     diskTotalGb?: number;
     /**
-     * device_hardware.serial_number, when the API sends it. Read by the
+     * device_hardware.serial_number from the list API. Read by the
      * opt-in Serial column (#4622 W04) so an agent row's serial can sit
      * beside a manual asset's `serialNumber` in the same column.
      */
     serialNumber?: string;
+    /** device_hardware.product_sku (#9593); the opt-in Product Number column. */
+    productSku?: string;
   };
   /**
    * Headline device reliability score (0-100) from the existing
@@ -508,6 +510,7 @@ const AGENT_ONLY_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>([
   "hardwareHealth",
   // #9863 — the list joins device_warranty on the device subject only.
   "warranty",
+  "productSku",
   "vpn",
   // #9038 — alerts/tickets hang off the device record, which non-agent rows lack.
   "attention",
@@ -890,6 +893,7 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
     const cls = d.deviceClass ?? "agent";
     return (cls === "manual" ? d.serialNumber : cls === "agent" ? d.hardware?.serialNumber : null) || null;
   },
+  productSku: (d) => ((d.deviceClass ?? "agent") === "agent" ? d.hardware?.productSku || null : null),
   assetTag: (d) => ((d.deviceClass ?? "agent") === "manual" ? d.assetTag || null : null),
   location: (d) => ((d.deviceClass ?? "agent") === "manual" ? d.location || null : null),
   // #5213 — network-only, like class/type above; agent rows sort blanks-last.
@@ -2859,7 +2863,7 @@ export default function DeviceList({
       },
     },
     // Manual-asset inventory columns (#4622 W04). `serial` is shared with
-    // agent rows (device_hardware.serial_number, once the API sends it);
+    // agent rows (device_hardware.serial_number);
     // `assetTag`/`location` exist only for a manual asset.
     serial: {
       header: () => sortHeader("serial", t("deviceList.tableColumns.serial"), t("deviceList.sortBy.serial")),
@@ -2868,6 +2872,17 @@ export default function DeviceList({
         const value = cls === "manual" ? device.serialNumber : cls === "agent" ? device.hardware?.serialNumber : null;
         return (
           <td key="serial" className="px-3 py-3 text-sm text-muted-foreground" data-testid={`device-${device.id}-serial`}>
+            {value ? <span className="truncate" title={value}>{value}</span> : dash}
+          </td>
+        );
+      },
+    },
+    productSku: {
+      header: () => sortHeader("productSku", t("deviceList.tableColumns.productSku"), t("deviceList.sortBy.productSku")),
+      cell: (device) => {
+        const value = (device.deviceClass ?? "agent") === "agent" ? device.hardware?.productSku : null;
+        return (
+          <td key="productSku" className="px-3 py-3 text-sm text-muted-foreground" data-testid={`device-${device.id}-product-sku`}>
             {value ? <span className="truncate" title={value}>{value}</span> : dash}
           </td>
         );
