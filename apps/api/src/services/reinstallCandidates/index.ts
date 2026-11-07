@@ -27,6 +27,7 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { deviceHardware, deviceReattachments, devices, organizations } from '../../db/schema';
 import { updateOwnDeviceRow } from '../agentOwnDeviceRow';
 import { captureException } from '../sentry';
+import { Semaphore } from '../../utils/semaphore';
 import { isUnassignedPoolOrgType } from '../unassignedPool/orgType';
 import { isHiddenOrgType, notHiddenOrgType } from '../unassignedPool/visibility';
 import { serialManufacturerKey } from './hardwareIdentity';
@@ -352,13 +353,27 @@ async function notify(s: ReinstallSuspicion): Promise<void> {
 }
 
 /**
+ * Detections running at once in this process. Each holds up to two short
+ * system transactions; an enrollment storm (a fleet re-imaged at once, a
+ * partner onboarding) must queue here instead of draining the pool
+ * (review of wave 2-1). Waiters are served first in, first out.
+ */
+export const DETECTION_CONCURRENCY = 4;
+const detectionSlots = new Semaphore(DETECTION_CONCURRENCY);
+
+/**
  * Search, flag and notify. Call with no DB context held (after the caller's
  * transaction committed: enrollment calls it after its context resolved, the
- * hardware report through runAfterDbContextCommit). Never throws.
+ * hardware report through runAfterDbContextCommit). Never throws. At most
+ * DETECTION_CONCURRENCY run at once; the rest wait their turn.
  */
 export async function detectReinstallCandidates(
   input: DetectReinstallCandidatesInput,
 ): Promise<DetectReinstallCandidatesResult> {
+  return detectionSlots.run(() => detectNow(input));
+}
+
+async function detectNow(input: DetectReinstallCandidatesInput): Promise<DetectReinstallCandidatesResult> {
   try {
     const outcome = await planAndWriteWithOneReplan<Plan, Date>(
       () => withSystemDbAccessContext(() => plan(input.sourceDeviceId), 'reinstall-candidates:read'),
