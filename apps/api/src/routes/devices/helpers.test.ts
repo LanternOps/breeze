@@ -417,11 +417,22 @@ describe('reinstall link visibility (#8318 §7.3: a link may name another org\'s
     scope: 'partner' as const, orgId: null, accessibleOrgIds: orgIds,
     canAccessOrg: (id: string) => orgIds.includes(id),
   });
-  function mockTargets(rows: Array<{ id: string; orgId: string }>) {
+  const SITE_A1 = '00000000-0000-4000-8000-0000000000c1';
+  const SITE_A2 = '00000000-0000-4000-8000-0000000000c2';
+  function mockTargets(rows: Array<{ id: string; orgId: string; siteId?: string | null }>) {
     vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(rows) }),
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(rows.map((row) => ({ siteId: SITE_A1, ...row }))),
+      }),
     } as never);
   }
+  /** An organization-scope user restricted to `siteIds`, the way the auth middleware builds it. */
+  const siteRestricted = (siteIds: string[]) => ({
+    scope: 'organization' as const, orgId: ORG_A, accessibleOrgIds: [ORG_A],
+    canAccessOrg: (id: string) => id === ORG_A,
+    allowedSiteIds: siteIds,
+    canAccessSite: (id: string | null | undefined) => typeof id === 'string' && siteIds.includes(id),
+  });
 
   beforeEach(() => vi.mocked(db.select).mockReset());
 
@@ -443,6 +454,29 @@ describe('reinstall link visibility (#8318 §7.3: a link may name another org\'s
     expect(out).toMatchObject({
       possibleReplacementOfDeviceId: null, possibleReplacementReason: null, possibleReplacementDetectedAt: null,
     });
+  });
+
+  it('nulls the link when the target sits in a site the caller cannot reach (Strix LOW)', async () => {
+    mockTargets([{ id: TARGET_A, orgId: ORG_A, siteId: SITE_A2 }]);
+    const out = await projectPublicDeviceForCaller(linked(TARGET_A), siteRestricted([SITE_A1]));
+    expect(out).toMatchObject({
+      possibleReplacementOfDeviceId: null, possibleReplacementReason: null, possibleReplacementDetectedAt: null,
+    });
+  });
+
+  it('keeps the link when the target sits in one of the caller\'s sites', async () => {
+    mockTargets([{ id: TARGET_A, orgId: ORG_A, siteId: SITE_A1 }]);
+    const out = await projectPublicDeviceForCaller(linked(TARGET_A), siteRestricted([SITE_A1]));
+    expect(out).toMatchObject({ possibleReplacementOfDeviceId: TARGET_A });
+  });
+
+  it('a device-bound AI run sees the link only when the target is one of its devices', async () => {
+    mockTargets([{ id: TARGET_A, orgId: ORG_A }]);
+    const [hidden] = await redactReplacementLinksForCaller([linked(TARGET_A)], { ...auth([ORG_A]), allowedDeviceIds: ['src'] });
+    expect(hidden!.possibleReplacementOfDeviceId).toBeNull();
+    mockTargets([{ id: TARGET_A, orgId: ORG_A }]);
+    const [kept] = await redactReplacementLinksForCaller([linked(TARGET_A)], { ...auth([ORG_A]), allowedDeviceIds: ['src', TARGET_A] });
+    expect(kept!.possibleReplacementOfDeviceId).toBe(TARGET_A);
   });
 
   it('nulls the link when the target is not visible at all (RLS hid it)', async () => {

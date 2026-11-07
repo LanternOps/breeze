@@ -65,6 +65,7 @@ export type DetectReinstallCandidatesResult =
 
 interface SourceSnapshot extends CandidateSource {
   orgId: string;
+  siteId: string;
   hostname: string;
   agentId: string;
   installIncarnation: number;
@@ -99,6 +100,7 @@ async function readSource(sourceDeviceId: string): Promise<SourceSnapshot | null
     .select({
       id: devices.id,
       orgId: devices.orgId,
+      siteId: devices.siteId,
       hostname: devices.hostname,
       osType: devices.osType,
       agentId: devices.agentId,
@@ -373,6 +375,7 @@ export async function detectReinstallCandidates(
       source: {
         id: source.id,
         orgId: source.orgId,
+        siteId: source.siteId,
         hostname: source.hostname,
         parked: isUnassignedPoolOrgType(source.orgType),
       },

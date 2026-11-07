@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   OTHER_ORG_SOURCE_LABEL,
+  OTHER_SITE_SOURCE_LABEL,
   PARKED_SOURCE_LABEL,
   buildReinstallSuspectedAlertContext,
   buildReinstallSuspectedAuditDetails,
@@ -12,11 +13,12 @@ import {
 const SOURCE_ID = '00000000-0000-4000-8000-0000000000b1';
 const SOURCE_HOST = 'PARKED-SECRET-HOST';
 const TARGET_ORG = '00000000-0000-4000-8000-0000000000f1';
+const TARGET_SITE = '00000000-0000-4000-8000-0000000000e1';
 
 function suspicion(source: Partial<ReinstallSuspicion['source']>): ReinstallSuspicion {
   return {
-    source: { id: SOURCE_ID, orgId: TARGET_ORG, hostname: SOURCE_HOST, parked: false, ...source },
-    target: { id: '00000000-0000-4000-8000-0000000000a1', orgId: TARGET_ORG, siteId: '00000000-0000-4000-8000-0000000000e1', hostname: 'PC-01' },
+    source: { id: SOURCE_ID, orgId: TARGET_ORG, siteId: TARGET_SITE, hostname: SOURCE_HOST, parked: false, ...source },
+    target: { id: '00000000-0000-4000-8000-0000000000a1', orgId: TARGET_ORG, siteId: TARGET_SITE, hostname: 'PC-01' },
     reason: 'hardware',
     evidence: 'system_uuid',
     detectedAt: new Date('2027-01-10T00:00:00Z'),
@@ -55,7 +57,15 @@ describe('reinstall-suspected payloads never leak a parked or cross-org source',
     expect(reinstallSourceLabel(s)).toBe(OTHER_ORG_SOURCE_LABEL);
   });
 
-  it('a source in the same org is named', () => {
+  it('a source in another site of the same org: no id, no hostname (a site-restricted user sees the alert)', () => {
+    const s = suspicion({ siteId: '00000000-0000-4000-8000-0000000000e2' });
+    expect(leaks(buildReinstallSuspectedEventPayload(s))).toBe(false);
+    expect(leaks(buildReinstallSuspectedAlertContext(s))).toBe(false);
+    expect(leaks(buildReinstallSuspectedAuditDetails(s))).toBe(false);
+    expect(reinstallSourceLabel(s)).toBe(OTHER_SITE_SOURCE_LABEL);
+  });
+
+  it('a source in the same site is named', () => {
     const s = suspicion({});
     expect(buildReinstallSuspectedEventPayload(s)).toMatchObject({ sourceDeviceId: SOURCE_ID, sourceHostname: SOURCE_HOST, sourceParked: false });
     expect(buildReinstallSuspectedAlertContext(s)).toMatchObject({ sourceDeviceId: SOURCE_ID, sourceHostname: SOURCE_HOST });

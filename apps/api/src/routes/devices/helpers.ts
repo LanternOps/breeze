@@ -64,7 +64,7 @@ export function buildPublicDeviceProjection() {
  * ANOTHER org of the partner (hardware evidence is searched partner-wide), so
  * these fields leave the API only through {@link redactReplacementLinksForCaller}
  * / {@link projectPublicDeviceForCaller}, which keep them only when the caller
- * can access the target's org. {@link projectPublicDevice} on its own nulls
+ * can access the target's org and site. {@link projectPublicDevice} on its own nulls
  * them (fail closed).
  */
 export const REPLACEMENT_LINK_FIELDS = [
@@ -73,7 +73,27 @@ export const REPLACEMENT_LINK_FIELDS = [
   'possibleReplacementDetectedAt',
 ] as const;
 
-type ReplacementLinkAuth = Pick<AuthContext, 'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>;
+type ReplacementLinkAuth = Pick<
+  AuthContext,
+  'scope' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg' | 'allowedSiteIds' | 'canAccessSite' | 'allowedDeviceIds'
+>;
+
+/**
+ * Whether the caller may see a link's target: its org, its site (a
+ * site-restricted user must not learn a device in a site they cannot reach,
+ * review of wave 2-1) and, for a device-bound AI run, the device itself.
+ */
+async function replacementTargetVisible(
+  target: { id: string; orgId: string; siteId: string | null },
+  auth: ReplacementLinkAuth,
+): Promise<boolean> {
+  if (!(await ensureOrgAccess(target.orgId, auth))) return false;
+  const siteVisible = auth.canAccessSite
+    ? auth.canAccessSite(target.siteId)
+    : !auth.allowedSiteIds || (target.siteId !== null && auth.allowedSiteIds.includes(target.siteId));
+  if (!siteVisible) return false;
+  return !auth.allowedDeviceIds || auth.allowedDeviceIds.includes(target.id);
+}
 
 function nullReplacementLink(row: Record<string, unknown>): void {
   for (const field of REPLACEMENT_LINK_FIELDS) {
@@ -101,7 +121,7 @@ export function projectPublicDevice<T extends Record<string, unknown>>(
 
 /**
  * Null the reinstall link on every row whose target device is not in an org
- * the caller can access (or not visible to it at all). One query for the whole
+ * and a site the caller can access (or not visible to it at all). One query for the whole
  * page, run in the caller's own DB context, so RLS also applies. Rows without
  * a link are returned untouched. Mutates and returns `rows`.
  */
@@ -114,12 +134,12 @@ export async function redactReplacementLinksForCaller<T extends { possibleReplac
     .filter((id): id is string => typeof id === 'string' && id.length > 0))];
   if (targetIds.length === 0) return rows;
   const targets = await db
-    .select({ id: devices.id, orgId: devices.orgId })
+    .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
     .from(devices)
     .where(inArray(devices.id, targetIds));
   const visible = new Set<string>();
   for (const target of targets) {
-    if (await ensureOrgAccess(target.orgId, auth)) visible.add(target.id);
+    if (await replacementTargetVisible(target, auth)) visible.add(target.id);
   }
   for (const row of rows) {
     const link = row.possibleReplacementOfDeviceId;

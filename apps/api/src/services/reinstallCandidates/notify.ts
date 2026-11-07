@@ -31,9 +31,10 @@ export const DEVICE_REINSTALL_SUSPECTED_EVENT_TYPE = 'device.reinstall_suspected
 /** The neutral label used whenever the source must not be named. */
 export const PARKED_SOURCE_LABEL = 'A device awaiting partner review';
 export const OTHER_ORG_SOURCE_LABEL = 'A newly enrolled device in another organization';
+export const OTHER_SITE_SOURCE_LABEL = 'A newly enrolled device in another site';
 
 export interface ReinstallSuspicion {
-  source: { id: string; orgId: string; hostname: string; parked: boolean };
+  source: { id: string; orgId: string; siteId: string; hostname: string; parked: boolean };
   target: { id: string; orgId: string; siteId: string; hostname: string };
   reason: PossibleReplacementReason;
   evidence: ReinstallEvidence;
@@ -42,9 +43,15 @@ export interface ReinstallSuspicion {
   trigger: 'enroll' | 'hardware_report';
 }
 
-/** Whether the target's org may see the source's id and hostname. */
+/**
+ * Whether everyone who sees the target's event, alert and audit row may see
+ * the source's id and hostname: only when the source sits in the target's own
+ * site. The alert is visible to any user who can reach the target's site, and
+ * a site-restricted user of the same org must not learn a device in a site
+ * they cannot reach (review of wave 2-1).
+ */
 export function sourceIdentityDisclosable(s: ReinstallSuspicion): boolean {
-  return !s.source.parked && s.source.orgId === s.target.orgId;
+  return !s.source.parked && s.source.orgId === s.target.orgId && s.source.siteId === s.target.siteId;
 }
 
 export interface ReinstallSuspectedEventPayload {
@@ -76,7 +83,8 @@ const EVIDENCE_LABEL: Record<ReinstallEvidence, string> = {
 /** `{{sourceLabel}}` for the alert message. Pure. */
 export function reinstallSourceLabel(s: ReinstallSuspicion): string {
   if (s.source.parked) return PARKED_SOURCE_LABEL;
-  if (!sourceIdentityDisclosable(s)) return OTHER_ORG_SOURCE_LABEL;
+  if (s.source.orgId !== s.target.orgId) return OTHER_ORG_SOURCE_LABEL;
+  if (!sourceIdentityDisclosable(s)) return OTHER_SITE_SOURCE_LABEL;
   return `The newly enrolled device ${s.source.hostname}`;
 }
 
