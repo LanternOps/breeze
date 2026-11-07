@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { Readable } from 'node:stream';
+import { tmpdir } from 'node:os';
+import path, { join } from 'node:path';
 
 // A REAL agent manifest shape (KIT lab, PR #6491): content-less dir/symlink
 // entries with backupPath "", systemd unit names with a literal backslash,
@@ -44,9 +46,16 @@ function chainMock(resolvedValue: unknown = []) {
   return Object.assign(Promise.resolve(resolvedValue), chain);
 }
 
-const { selectMock, insertMock, updateMock, deleteMock, transactionMock, resolveSnapshotProviderConfigMock, fence } = vi.hoisted(() => ({
+/** The file rows of one batch statement: its one JSON parameter (#11026). */
+function batchRows(statement: unknown): Array<{ source_path: string; backup_path: string; size: number | null; modified_at: string | null }> {
+  const json = (statement as { queryChunks: unknown[] }).queryChunks.find((c): c is string => typeof c === 'string' && c.startsWith('['));
+  return json ? JSON.parse(json) : [];
+}
+
+const { selectMock, insertMock, executeMock, updateMock, deleteMock, transactionMock, resolveSnapshotProviderConfigMock, fence } = vi.hoisted(() => ({
   selectMock: vi.fn<(...args: unknown[]) => any>(),
   insertMock: vi.fn<(...args: unknown[]) => any>(),
+  executeMock: vi.fn<(...args: unknown[]) => any>(),
   updateMock: vi.fn<(...args: unknown[]) => any>(),
   deleteMock: vi.fn<(...args: unknown[]) => any>(),
   transactionMock: vi.fn<(cb: (tx: unknown) => unknown) => unknown>(),
@@ -89,6 +98,7 @@ vi.mock('../db', () => {
   const tx = {
     select: (...args: unknown[]) => routeSelect(...args),
     insert: (...args: unknown[]) => insertMock(...(args as [])),
+    execute: (...args: unknown[]) => executeMock(...(args as [])),
     update: (...args: unknown[]) => updateMock(...(args as [])),
     delete: (...args: unknown[]) => deleteMock(...(args as [])),
   };
@@ -123,17 +133,35 @@ function manifestBytes(entries: Array<{ sourcePath: string; backupPath: string; 
   return Buffer.from(JSON.stringify({ id: 'snap-current', files: entries }), 'utf8');
 }
 
+// Wraps a bytes-returning stub as the stream-returning openManifest seam.
+const openOf = (bytes: Uint8Array | Buffer) => vi.fn(async () => Readable.from([Buffer.from(bytes)]));
+
+// Keep spool files out of the repo's apps/api/data: the default spool dir derives from PATCH_REPORT_STORAGE_PATH.
+let spoolTmp: string;
+const prevPatchReportPath = process.env.PATCH_REPORT_STORAGE_PATH;
+beforeEach(() => {
+  spoolTmp = mkdtempSync(join(tmpdir(), 'breeze-spool-test-'));
+  process.env.PATCH_REPORT_STORAGE_PATH = join(spoolTmp, 'patch-reports');
+});
+afterEach(() => {
+  if (prevPatchReportPath === undefined) delete process.env.PATCH_REPORT_STORAGE_PATH;
+  else process.env.PATCH_REPORT_STORAGE_PATH = prevPatchReportPath;
+  rmSync(spoolTmp, { recursive: true, force: true });
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   selectMock.mockImplementation(() => chainMock([]));
   insertMock.mockImplementation(() => chainMock([]));
+  // As postgres-js answers: an array-like result carrying the row count.
+  executeMock.mockImplementation(async (statement: unknown) => Object.assign([], { count: batchRows(statement).length }));
   // The claim's RETURNING (#6488) echoes the row the test's first select
   // loaded, as the real UPDATE would; a test that simulates a concurrent move
   // overrides the claim result explicitly.
   updateMock.mockImplementation(() => chainMock([{ id: SNAPSHOT_DB_ID }]));
   deleteMock.mockImplementation(() => chainMock([]));
   transactionMock.mockImplementation(async (cb: any) => cb({
-    select: routeSelect, insert: insertMock, update: updateMock, delete: deleteMock,
+    select: routeSelect, insert: insertMock, execute: executeMock, update: updateMock, delete: deleteMock,
   }));
   fence.override = {};
   fence.reads = [];
@@ -189,7 +217,7 @@ describe('hydrateSnapshotFileIndex', () => {
   it('fails retryable when the manifest object is missing', async () => {
     selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
     selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
-    const deps = { fetchManifestBytes: vi.fn().mockRejectedValue(Object.assign(new Error('nope'), { code: 'ENOENT' })) };
+    const deps = { openManifest: vi.fn().mockRejectedValue(Object.assign(new Error('nope'), { code: 'ENOENT' })) };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'failed', failure: 'manifest_missing', retryable: true });
   });
@@ -198,7 +226,7 @@ describe('hydrateSnapshotFileIndex', () => {
     selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
     selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
     const tooLarge = new BackupObjectTooLargeError('snapshots/snap-current/manifest.json', 999999999, 1000);
-    const deps = { fetchManifestBytes: vi.fn().mockRejectedValue(tooLarge) };
+    const deps = { openManifest: vi.fn().mockRejectedValue(tooLarge) };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'failed', failure: 'manifest_too_large', retryable: false });
   });
@@ -207,7 +235,7 @@ describe('hydrateSnapshotFileIndex', () => {
     selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
     selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
     const deps = {
-      fetchManifestBytes: vi.fn().mockResolvedValue(
+      openManifest: openOf(
         manifestBytes([{ sourcePath: '/a', backupPath: 'snapshots/snap-current/../x' }]),
       ),
     };
@@ -232,7 +260,7 @@ describe('hydrateSnapshotFileIndex', () => {
       .mockReturnValueOnce(chainMock([snapshotRow({ snapshotId: REAL_MANIFEST_ID })]))
       .mockReturnValueOnce(chainMock([{ referencedFiles: external.length }]))
       .mockReturnValueOnce(chainMock([{ id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, keyLayout: 'legacy_flat', keyPrefix: null, metadata: {} }]));
-    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(new Uint8Array(bytes)) };
+    const deps = { openManifest: openOf(new Uint8Array(bytes)) };
 
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
 
@@ -243,10 +271,8 @@ describe('hydrateSnapshotFileIndex', () => {
       originSnapshotIds: [REAL_MANIFEST_BASE_ID],
     });
     // Every content entry — backslash and colon keys included — is written verbatim as a file row.
-    const insertedRows = insertMock.mock.results
-      .map((r) => r.value)
-      .flatMap((chain) => (chain?.values?.mock?.calls ?? []).flatMap((c: unknown[]) => c[0] as Array<{ backupPath: string }>));
-    const insertedKeys = new Set(insertedRows.map((r) => r.backupPath));
+    const insertedRows = executeMock.mock.calls.flatMap((c) => batchRows(c[0]));
+    const insertedKeys = new Set(insertedRows.map((r) => r.backup_path));
     for (const f of [...external, ...own]) expect(insertedKeys.has(f.backupPath)).toBe(true);
     for (const f of contentless) expect(insertedKeys.has('')).toBe(false);
   });
@@ -255,7 +281,7 @@ describe('hydrateSnapshotFileIndex', () => {
     selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
     selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
     const entries = Array.from({ length: 3000 }, (_, i) => ({ sourcePath: `/bad${i}`, backupPath: '' }));
-    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(manifestBytes(entries)) };
+    const deps = { openManifest: openOf(manifestBytes(entries)) };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'failed', failure: 'manifest_invalid', retryable: false });
     const reason = (outcome as { reason: string }).reason;
@@ -270,7 +296,7 @@ describe('hydrateSnapshotFileIndex', () => {
     selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
     selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
     const deps = {
-      fetchManifestBytes: vi.fn().mockResolvedValue(
+      openManifest: openOf(
         manifestBytes([{ sourcePath: '/a', backupPath: 'snapshots/snap-current/files/a.gz', kind: 'hardlink' } as never]),
       ),
     };
@@ -287,7 +313,7 @@ describe('hydrateSnapshotFileIndex', () => {
         metadata: { storagePrefix: null },
       }]));
     const deps = {
-      fetchManifestBytes: vi.fn().mockResolvedValue(
+      openManifest: openOf(
         manifestBytes([
           { sourcePath: '/a', backupPath: 'snapshots/snap-older/files/a.gz', size: 10 },
           { sourcePath: '/b', backupPath: 'snapshots/snap-current/files/b.gz', size: 20 },
@@ -314,7 +340,7 @@ describe('hydrateSnapshotFileIndex', () => {
     // ...and the row still holds that claim, in the moved org, at publish.
     fence.override = { orgId: MOVED_ORG_ID };
     const deps = {
-      fetchManifestBytes: vi.fn().mockResolvedValue(
+      openManifest: openOf(
         manifestBytes([{ sourcePath: '/a', backupPath: 'snapshots/snap-older/files/a.gz', size: 10 }]),
       ),
     };
@@ -337,7 +363,7 @@ describe('hydrateSnapshotFileIndex', () => {
         orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, snapshotId: 'snap-older', keyLayout: 'legacy_flat', keyPrefix: null,
       }]));
     const deps = {
-      fetchManifestBytes: vi.fn().mockResolvedValue(
+      openManifest: openOf(
         manifestBytes([{ sourcePath: '/a', backupPath: 'snapshots/snap-older/files/a.gz', size: 10 }]),
       ),
     };
@@ -352,7 +378,7 @@ describe('hydrateSnapshotFileIndex', () => {
       .mockReturnValueOnce(chainMock([{ id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: null, metadata: {} }]))
       .mockReturnValueOnce(chainMock([])); // and no retirement either
     const deps = {
-      fetchManifestBytes: vi.fn().mockResolvedValue(
+      openManifest: openOf(
         manifestBytes([{ sourcePath: '/a', backupPath: 'snapshots/snap-older/files/a.gz', size: 10 }]),
       ),
     };
@@ -367,7 +393,7 @@ describe('hydrateSnapshotFileIndex', () => {
       .mockReturnValueOnce(chainMock([])) // the org/device-scoped live-row query returns nothing for THIS org
       .mockReturnValueOnce(chainMock([])); // and no retirement scoped to this org/device either
     const deps = {
-      fetchManifestBytes: vi.fn().mockResolvedValue(
+      openManifest: openOf(
         manifestBytes([{ sourcePath: '/a', backupPath: 'snapshots/snap-older/files/a.gz', size: 10 }]),
       ),
     };
@@ -375,28 +401,25 @@ describe('hydrateSnapshotFileIndex', () => {
     expect(outcome).toMatchObject({ status: 'failed', failure: 'origin_unverifiable', retryable: false });
   });
 
-  it('writes rows in 1,000-row batches then publishes sha/counts/metadata in one final transaction', async () => {
+  it('writes rows in 250-row batches then publishes sha/counts/metadata in one final transaction', async () => {
     selectMock
       .mockReturnValueOnce(chainMock([snapshotRow()]))
       .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]))
       .mockReturnValueOnce(chainMock([{ id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, keyLayout: 'legacy_flat', keyPrefix: null, metadata: {} }]));
-    const entries = Array.from({ length: 1500 }, (_, i) => ({
+    const entries = Array.from({ length: 300 }, (_, i) => ({
       sourcePath: `/f${i}`, backupPath: `snapshots/snap-older/files/f${i}.gz`, size: 1,
     }));
     const bytes = manifestBytes(entries);
-    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(bytes) };
+    const deps = { openManifest: openOf(bytes) };
 
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
 
-    expect(outcome).toMatchObject({ status: 'complete', entryCount: 1500, externalCount: 1500 });
+    expect(outcome).toMatchObject({ status: 'complete', entryCount: 300, externalCount: 300 });
     expect((outcome as { manifestSha256: string }).manifestSha256).toBe(createHash('sha256').update(bytes).digest('hex'));
-    // 2 batches of file rows (1000 + 500), written in the ONE publish
+    // 2 batches of file rows (250 + 50), written in the ONE publish
     // transaction so a reader never sees a partial index (#11026 D4).
     expect(transactionMock).toHaveBeenCalledTimes(1);
-    const fileBatches = insertMock.mock.results
-      .map((r) => (r.value as { values: ReturnType<typeof vi.fn> }).values.mock.calls[0]?.[0] as Array<Record<string, unknown>> | undefined)
-      .filter((v) => Array.isArray(v) && v.some((row) => 'sourcePath' in row));
-    expect(fileBatches.map((b) => b!.length)).toEqual([1000, 500]);
+    expect(executeMock.mock.calls.map((c) => batchRows(c[0]).length)).toEqual([250, 50]);
   });
 
   it('reclaims a stale hydrating row (>30min) — the CAS predicate itself expresses staleness', async () => {
@@ -407,7 +430,7 @@ describe('hydrateSnapshotFileIndex', () => {
     selectMock.mockReturnValueOnce(chainMock([{ id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, keyLayout: 'legacy_flat', keyPrefix: null, metadata: {} }]));
     const deps = {
       now: () => now,
-      fetchManifestBytes: vi.fn().mockResolvedValue(
+      openManifest: openOf(
         manifestBytes([{ sourcePath: '/a', backupPath: 'snapshots/snap-older/files/a.gz', size: 10 }]),
       ),
     };
@@ -439,7 +462,7 @@ describe('hydrateSnapshotFileIndex', () => {
     const hydratedAt = new Date(now.getTime() - 5 * 60 * 1000);
     selectMock.mockReturnValueOnce(chainMock([snapshotRow({ fileIndexStatus: 'hydrating', fileIndexHydratedAt: hydratedAt })]));
     selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
-    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { now: () => now, fetchManifestBytes: vi.fn() } });
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { now: () => now, openManifest: vi.fn() } });
     expect(outcome).toEqual({ status: 'skipped', reason: 'in_progress' });
   });
 
@@ -448,11 +471,11 @@ describe('hydrateSnapshotFileIndex', () => {
     selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
     selectMock.mockReturnValueOnce(chainMock([{ id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, keyLayout: 'legacy_flat', keyPrefix: null, metadata: {} }]));
     // insert during the file-row batch write throws an unclassified error
-    insertMock.mockImplementationOnce(() => {
+    executeMock.mockImplementationOnce(() => {
       throw new Error('boom: insert failed');
     });
     const deps = {
-      fetchManifestBytes: vi.fn().mockResolvedValue(
+      openManifest: openOf(
         manifestBytes([{ sourcePath: '/a', backupPath: 'snapshots/snap-older/files/a.gz', size: 10 }]),
       ),
     };
@@ -465,10 +488,43 @@ describe('hydrateSnapshotFileIndex', () => {
     );
   });
 
+  it('records a neutral provider_error reason when the claim phase throws after the CAS (#11179), then rethrows', async () => {
+    selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
+    selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
+    // The CAS has stamped 'hydrating'; resolving the provider then throws.
+    resolveSnapshotProviderConfigMock.mockRejectedValueOnce(new Error('kms unreachable at 10.0.0.9'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await expect(hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { openManifest: vi.fn() } }))
+      .rejects.toThrow(/kms unreachable/);
+
+    const sets = updateMock.mock.results
+      .flatMap((r) => (r.value as { set: ReturnType<typeof vi.fn> }).set.mock.calls.map((c) => c[0]));
+    const failed = sets.find((v) => v?.fileIndexStatus === 'failed');
+    expect(failed).toBeDefined();
+    expect(failed.fileIndexError).toMatch(/^provider_error: /);
+    // Neutral and bounded: the raw error text (which can name hosts) is not stored.
+    expect(failed.fileIndexError).not.toMatch(/kms|10\.0\.0\.9/);
+    expect(failed.fileIndexError.length).toBeLessThan(200);
+    consoleError.mockRestore();
+  });
+
+  it('still rethrows the original claim-phase error when recording the reason also fails (#11179)', async () => {
+    selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
+    selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
+    resolveSnapshotProviderConfigMock.mockRejectedValueOnce(new Error('kms down'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    updateMock
+      .mockImplementationOnce(() => chainMock([{ id: SNAPSHOT_DB_ID }]))
+      .mockImplementationOnce(() => { throw new Error('db gone'); });
+    await expect(hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { openManifest: vi.fn() } })).rejects.toThrow('kms down');
+    consoleError.mockRestore();
+  });
+
   it('on any hydration failure sets status failed with the reason, leaving whatever rows already wrote untouched', async () => {
     selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
     selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
-    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(Buffer.from('not json')) };
+    const deps = { openManifest: openOf(Buffer.from('not json')) };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'failed', failure: 'manifest_invalid' });
     // `db.update(table)` is called with the table; the payload goes to `.set()`.
@@ -485,7 +541,7 @@ describe('file index bound to the snapshot attestation', () => {
   const bytes = manifestBytes([{ sourcePath: '/b', backupPath: 'snapshots/snap-current/files/b.gz', size: 20 }]);
   const digest = createHash('sha256').update(bytes).digest('hex');
   const other = 'f'.repeat(64);
-  const fileRowInserts = () => insertMock.mock.calls.length;
+  const fileRowInserts = () => executeMock.mock.calls.length + insertMock.mock.calls.length;
 
   it('skips a complete index built from the attested manifest', async () => {
     selectMock.mockReturnValueOnce(chainMock([snapshotRow({
@@ -500,7 +556,7 @@ describe('file index bound to the snapshot attestation', () => {
       fileIndexStatus: 'complete', fileIndexManifestSha256: other, attestation: { status: 'pending', manifestSha256: digest },
     })]));
     selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
-    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(bytes) };
+    const deps = { openManifest: openOf(bytes) };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'complete', manifestSha256: digest });
   });
@@ -508,7 +564,7 @@ describe('file index bound to the snapshot attestation', () => {
   it('refuses manifest bytes that differ from the attestation before writing any row', async () => {
     selectMock.mockReturnValueOnce(chainMock([snapshotRow({ attestation: { status: 'verified', manifestSha256: other } })]));
     selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
-    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(bytes) };
+    const deps = { openManifest: openOf(bytes) };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'failed', failure: 'manifest_differs_from_attestation', retryable: false });
     expect(fileRowInserts()).toBe(0);
@@ -519,19 +575,19 @@ describe('file index bound to the snapshot attestation', () => {
   it('refuses to build an index for a snapshot whose attestation did not match, without reading storage', async () => {
     selectMock.mockReturnValueOnce(chainMock([snapshotRow({ attestation: { status: 'mismatch', manifestSha256: digest } })]));
     selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
-    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(bytes) };
+    const deps = { openManifest: openOf(bytes) };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'failed', failure: 'attestation_failed', retryable: false });
-    expect(deps.fetchManifestBytes).not.toHaveBeenCalled();
+    expect(deps.openManifest).not.toHaveBeenCalled();
   });
 
   it('refuses to build an index for a snapshot whose statement was refused when it was reported (no attestation row)', async () => {
     selectMock.mockReturnValueOnce(chainMock([snapshotRow({ integrityStatus: 'attestation_failed' })]));
     selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
-    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(bytes) };
+    const deps = { openManifest: openOf(bytes) };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'failed', failure: 'attestation_failed', retryable: false });
-    expect(deps.fetchManifestBytes).not.toHaveBeenCalled();
+    expect(deps.openManifest).not.toHaveBeenCalled();
   });
 
   it('a statement refused meanwhile (projection only) also keeps the index unpublished', async () => {
@@ -540,7 +596,7 @@ describe('file index bound to the snapshot attestation', () => {
       .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]))
       .mockReturnValueOnce(chainMock([]));
     fence.override = { integrityStatus: 'attestation_failed' };
-    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(bytes) };
+    const deps = { openManifest: openOf(bytes) };
     expect(await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps })).toMatchObject({ status: 'failed', failure: 'attestation_failed' });
     expect(fileRowInserts()).toBe(0);
   });
@@ -553,7 +609,7 @@ describe('file index bound to the snapshot attestation', () => {
     // Final transaction: the snapshot row lock, then (a later statement, so a
     // fresh snapshot under READ COMMITTED) the attestation.
     selectMock.mockReturnValueOnce(attestationRead);
-    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(bytes) };
+    const deps = { openManifest: openOf(bytes) };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'failed', failure: 'manifest_differs_from_attestation', retryable: false });
     expect(fence.reads).toHaveLength(1);
@@ -571,7 +627,7 @@ describe('file index bound to the snapshot attestation', () => {
       .mockReturnValueOnce(chainMock([snapshotRow()]))
       .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]))
       .mockReturnValueOnce(chainMock([{ status: 'mismatch', manifestSha256: digest }]));
-    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(bytes) };
+    const deps = { openManifest: openOf(bytes) };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'failed', failure: 'attestation_failed' });
   });
@@ -581,7 +637,7 @@ describe('file index bound to the snapshot attestation', () => {
       .mockReturnValueOnce(chainMock([snapshotRow()]))
       .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]))
       .mockReturnValueOnce(chainMock([{ status: 'pending', manifestSha256: digest }]));
-    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(bytes) };
+    const deps = { openManifest: openOf(bytes) };
     expect(await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps })).toMatchObject({ status: 'complete', manifestSha256: digest });
   });
 
@@ -664,10 +720,10 @@ describe('hydrateSnapshotFileIndex key root (#7081)', () => {
     selectMock
       .mockReturnValueOnce(chainMock([prefixedRow()]))
       .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
-    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(manifestBytes([{ sourcePath: '/b', backupPath: 'snapshots/snap-current/files/b.gz' }])) };
+    const deps = { openManifest: openOf(manifestBytes([{ sourcePath: '/b', backupPath: 'snapshots/snap-current/files/b.gz' }])) };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'complete', entryCount: 1 });
-    expect(deps.fetchManifestBytes).toHaveBeenCalledWith(expect.objectContaining({ key: `${PREFIX}/snapshots/snap-current/manifest.json` }));
+    expect(deps.openManifest).toHaveBeenCalledWith(expect.objectContaining({ key: `${PREFIX}/snapshots/snap-current/manifest.json` }));
   });
 
   it('accepts a live origin under the same root', async () => {
@@ -675,7 +731,7 @@ describe('hydrateSnapshotFileIndex key root (#7081)', () => {
       .mockReturnValueOnce(chainMock([prefixedRow()]))
       .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]))
       .mockReturnValueOnce(chainMock([liveOrigin({ keyLayout: 'prefixed_flat', keyPrefix: PREFIX })]));
-    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(externalManifest()) };
+    const deps = { openManifest: openOf(externalManifest()) };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'complete', originSnapshotIds: ['snap-older'] });
   });
@@ -689,10 +745,11 @@ describe('hydrateSnapshotFileIndex key root (#7081)', () => {
       .mockReturnValueOnce(chainMock([own]))
       .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]))
       .mockReturnValueOnce(chainMock([liveOrigin(originRoot)]));
-    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(externalManifest()) };
+    const deps = { openManifest: openOf(externalManifest()) };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'failed', failure: 'origin_key_root_mismatch', retryable: false });
     expect(insertMock).not.toHaveBeenCalled();
+    expect(executeMock).not.toHaveBeenCalled();
   });
 
   it('fails origin_key_root_mismatch for a retired origin under another root', async () => {
@@ -703,7 +760,7 @@ describe('hydrateSnapshotFileIndex key root (#7081)', () => {
       .mockReturnValueOnce(chainMock([{
         orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, snapshotId: 'snap-older', keyLayout: 'legacy_flat', keyPrefix: null,
       }]));
-    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(externalManifest()) };
+    const deps = { openManifest: openOf(externalManifest()) };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'failed', failure: 'origin_key_root_mismatch', retryable: false });
   });
@@ -712,10 +769,10 @@ describe('hydrateSnapshotFileIndex key root (#7081)', () => {
     selectMock
       .mockReturnValueOnce(chainMock([prefixedRow({ keyPrefix: 'x/snapshots' })]))
       .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
-    const deps = { fetchManifestBytes: vi.fn() };
+    const deps = { openManifest: vi.fn() };
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(outcome).toMatchObject({ status: 'failed', failure: 'key_root_invalid', retryable: false });
-    expect(deps.fetchManifestBytes).not.toHaveBeenCalled();
+    expect(deps.openManifest).not.toHaveBeenCalled();
   });
 });
 
@@ -735,14 +792,14 @@ describe('hydration telemetry (#11026)', () => {
   it('counts a complete run by status', async () => {
     arrange();
     const bytes = manifestBytes([{ sourcePath: '/b', backupPath: 'snapshots/snap-current/files/b.gz', size: 20 }]);
-    await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { fetchManifestBytes: vi.fn().mockResolvedValue(bytes) } });
+    await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { openManifest: openOf(bytes) } });
     expect(onSnapshotFileIndex).toHaveBeenCalledTimes(1);
     expect(onSnapshotFileIndex).toHaveBeenCalledWith('hydration', 'complete', 1);
   });
 
   it('counts a failure by its code, never its reason text', async () => {
     arrange();
-    const deps = { fetchManifestBytes: vi.fn().mockRejectedValue(Object.assign(new Error('secret-bucket'), { code: 'ENOENT' })) };
+    const deps = { openManifest: vi.fn().mockRejectedValue(Object.assign(new Error('secret-bucket'), { code: 'ENOENT' })) };
     await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
     expect(onSnapshotFileIndex).toHaveBeenCalledWith('hydration', 'manifest_missing', 1);
   });
@@ -758,28 +815,28 @@ describe('hydration telemetry (#11026)', () => {
     arrange();
     fence.override = { fileIndexStatus: 'none' };
     const bytes = manifestBytes([{ sourcePath: '/b', backupPath: 'snapshots/snap-current/files/b.gz', size: 20 }]);
-    await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { fetchManifestBytes: vi.fn().mockResolvedValue(bytes) } });
+    await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { openManifest: openOf(bytes) } });
     expect(onSnapshotFileIndex).toHaveBeenCalledWith('hydration', 'superseded', 1);
   });
 
   it('counts a run that threw as error, and still throws', async () => {
     arrange();
-    insertMock.mockImplementationOnce(() => { throw new Error('boom'); });
+    executeMock.mockImplementationOnce(() => { throw new Error('boom'); });
     const bytes = manifestBytes([{ sourcePath: '/b', backupPath: 'snapshots/snap-current/files/b.gz', size: 20 }]);
-    await expect(hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { fetchManifestBytes: vi.fn().mockResolvedValue(bytes) } })).rejects.toThrow('boom');
+    await expect(hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { openManifest: openOf(bytes) } })).rejects.toThrow('boom');
     expect(onSnapshotFileIndex).toHaveBeenCalledWith('hydration', 'error', 1);
   });
 
   it('rethrows the original error when recording the failure also fails', async () => {
     arrange();
-    insertMock.mockImplementationOnce(() => { throw new Error('boom'); });
+    executeMock.mockImplementationOnce(() => { throw new Error('boom'); });
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     // Claim succeeds; the outer catch's failure write then fails too.
     updateMock
       .mockImplementationOnce(() => chainMock([{ id: SNAPSHOT_DB_ID }]))
       .mockImplementationOnce(() => { throw new Error('db gone'); });
     const bytes = manifestBytes([{ sourcePath: '/b', backupPath: 'snapshots/snap-current/files/b.gz', size: 20 }]);
-    await expect(hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { fetchManifestBytes: vi.fn().mockResolvedValue(bytes) } })).rejects.toThrow('boom');
+    await expect(hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { openManifest: openOf(bytes) } })).rejects.toThrow('boom');
     consoleError.mockRestore();
   });
 });
@@ -792,7 +849,7 @@ describe('publish fence (#11026 D5): a superseded hydration never publishes', ()
     selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
     selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
   };
-  const fetching = () => ({ fetchManifestBytes: vi.fn().mockResolvedValue(bytes) });
+  const fetching = () => ({ openManifest: openOf(bytes) });
 
   it('a claim whose file_index_hydrated_at changed before the write phase is superseded and writes nothing', async () => {
     arrange();
@@ -801,6 +858,7 @@ describe('publish fence (#11026 D5): a superseded hydration never publishes', ()
     expect(outcome).toEqual({ status: 'skipped', reason: 'superseded' });
     expect(deleteMock).not.toHaveBeenCalled();
     expect(insertMock).not.toHaveBeenCalled();
+    expect(executeMock).not.toHaveBeenCalled();
     expect(setsCarrying('complete')).toHaveLength(0);
     expect(setsCarrying('failed')).toHaveLength(0);
     expect(fence.reads[0]!.for).toHaveBeenCalledWith('update');
@@ -813,6 +871,7 @@ describe('publish fence (#11026 D5): a superseded hydration never publishes', ()
     expect(outcome).toEqual({ status: 'skipped', reason: 'superseded' });
     expect(setsCarrying('complete')).toHaveLength(0);
     expect(insertMock).not.toHaveBeenCalled();
+    expect(executeMock).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -823,6 +882,7 @@ describe('publish fence (#11026 D5): a superseded hydration never publishes', ()
     fence.override = override;
     expect(await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: fetching() })).toEqual({ status: 'skipped', reason: 'superseded' });
     expect(insertMock).not.toHaveBeenCalled();
+    expect(executeMock).not.toHaveBeenCalled();
   });
 
   it('a snapshot row gone at publish is superseded', async () => {
@@ -832,6 +892,7 @@ describe('publish fence (#11026 D5): a superseded hydration never publishes', ()
     }));
     expect(await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: fetching() })).toEqual({ status: 'skipped', reason: 'superseded' });
     expect(insertMock).not.toHaveBeenCalled();
+    expect(executeMock).not.toHaveBeenCalled();
   });
 
   it('a failure from a superseded run does not overwrite the newer state: it is scoped by the claim and reports superseded', async () => {
@@ -840,7 +901,7 @@ describe('publish fence (#11026 D5): a superseded hydration never publishes', ()
     updateMock
       .mockImplementationOnce(() => chainMock([{ id: SNAPSHOT_DB_ID }]))
       .mockImplementationOnce(() => chainMock([]));
-    const deps = { fetchManifestBytes: vi.fn().mockRejectedValue(Object.assign(new Error('nope'), { code: 'ENOENT' })) };
+    const deps = { openManifest: vi.fn().mockRejectedValue(Object.assign(new Error('nope'), { code: 'ENOENT' })) };
     expect(await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps })).toEqual({ status: 'skipped', reason: 'superseded' });
     const failWrite = updateMock.mock.results[1]!.value as { set: ReturnType<typeof vi.fn>; where: ReturnType<typeof vi.fn> };
     expect(failWrite.set).toHaveBeenCalledWith(expect.objectContaining({ fileIndexStatus: 'failed' }));
@@ -851,7 +912,7 @@ describe('publish fence (#11026 D5): a superseded hydration never publishes', ()
 
   it('a failure from the run that still holds its claim is recorded as before', async () => {
     arrange();
-    const deps = { fetchManifestBytes: vi.fn().mockRejectedValue(Object.assign(new Error('nope'), { code: 'ENOENT' })) };
+    const deps = { openManifest: vi.fn().mockRejectedValue(Object.assign(new Error('nope'), { code: 'ENOENT' })) };
     expect(await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps })).toMatchObject({ status: 'failed', failure: 'manifest_missing', retryable: true });
   });
 

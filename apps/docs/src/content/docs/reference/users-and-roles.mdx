@@ -372,7 +372,7 @@ Permissions are stored as `resource:action` pairs in the `permissions` table. Ro
 | `scripts` | Script library and execution |
 | `variables` | Tenant script variable definitions |
 | `alerts` | Alert rules and acknowledgement |
-| `tickets` | Ticketing. `record_approval` (v0.122.1) is reserved for recording a customer's approval or denial of held ticket work on their behalf; it is granted on upgrade to every role that holds `tickets:manage`, and no workflow checks it yet in this release |
+| `tickets` | Ticketing. `record_approval` (v0.122.1) is reserved for recording a customer's approval or denial of held ticket work on their behalf; it is granted on upgrade to every role that holds `tickets:manage`, and no workflow checks it yet in this release. `email_review` lets a role list, convert and dismiss the inbound-email review queue without a full admin grant; it is not granted to any role by default beyond full-admin (`*:*`) roles such as Partner Admin, so grant it to a custom role (the queue is partner-wide, so the role also needs full partner organization access) |
 | `ticket_mailbox` | Microsoft 365 partner-wide ticket mailbox administration |
 | `catalog` | Billing product catalog |
 | `invoices` | Invoices |
@@ -423,6 +423,7 @@ The authoritative list of assignable permissions is also available at runtime vi
 | `decide` | Approve or deny a pending action-intent approval |
 | `set_location` | Pin a site's coordinate and geofence radius (`sites` only) |
 | `record_approval` | Record a customer's approval or denial of held ticket work on their behalf (`tickets` only) |
+| `email_review` | Review the inbound-email queue: list, convert to a ticket, dismiss (`tickets` only) |
 
 There is no `view` or `update` action -- read access is `read`, and a write/create/update is `write` (or `create` for the one resource, `agent_rollback`, that uses it). Additionally, the wildcard permission `*:*` grants full administrative access.
 
@@ -472,6 +473,7 @@ The following named permission constants (`packages/shared/src/constants/permiss
 | `TICKETS_WRITE` | `tickets` | `write` |
 | `TICKETS_MANAGE` | `tickets` | `manage` |
 | `TICKETS_RECORD_APPROVAL` | `tickets` | `record_approval` |
+| `TICKETS_EMAIL_REVIEW` | `tickets` | `email_review` |
 | `TICKET_MAILBOX_READ` | `ticket_mailbox` | `read` |
 | `TICKET_MAILBOX_ADMIN` | `ticket_mailbox` | `admin` |
 | `CATALOG_READ` | `catalog` | `read` |

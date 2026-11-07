@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import {
   OEM_UPDATES_POLICY_DEFAULTS,
   oemUpdatesInlineSettingsSchema,
@@ -56,6 +56,8 @@ export type ResolvedOemUpdatesLink = {
   settings: OemUpdatesInlineSettings;
   /** True when the stored settings did not parse and `settings` are the disabled defaults. */
   invalidStoredSettings: boolean;
+  /** The later of the link's last change and the winning assignment. Null if neither was read. */
+  armedAt: Date | null;
 };
 
 const warnedUnparseableLinks = new Set<string>();
@@ -65,6 +67,8 @@ function toResolved(winner: {
   sourcePolicyId: string;
   assignedPolicyId: string;
   inlineSettings: unknown;
+  linkUpdatedAt?: Date | null;
+  assignmentCreatedAt?: Date | null;
 }): ResolvedOemUpdatesLink {
   const parsed = oemUpdatesInlineSettingsSchema.safeParse(winner.inlineSettings);
   if (!parsed.success && !warnedUnparseableLinks.has(winner.linkId)) {
@@ -81,7 +85,11 @@ function toResolved(winner: {
     // schema change: make it reach someone, not only the process log.
     captureException(new Error(`oem_updates link ${winner.linkId} has unparseable settings; resolving as disabled`));
   }
+  const armedAt = [winner.linkUpdatedAt, winner.assignmentCreatedAt]
+    .filter((at): at is Date => at instanceof Date)
+    .reduce<Date | null>((latest, at) => (!latest || at > latest ? at : latest), null);
   return {
+    armedAt,
     linkId: winner.linkId,
     configPolicyId: winner.sourcePolicyId,
     assignedPolicyId: winner.assignedPolicyId,
@@ -102,6 +110,7 @@ export async function resolveOemUpdatesLinkForDevice(deviceId: string): Promise<
       linkId: configPolicyEffectiveFeatureLinks.id,
       sourcePolicyId: configPolicyEffectiveFeatureLinks.sourcePolicyId,
       inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
+      linkUpdatedAt: configPolicyEffectiveFeatureLinks.updatedAt,
       assignedPolicyId: configurationPolicies.id,
       assignmentLevel: configPolicyAssignments.level,
       assignmentPriority: configPolicyAssignments.priority,
@@ -191,11 +200,43 @@ async function resolveChunk(deviceIds: string[]): Promise<Map<string, ResolvedOe
     )
     : inArray(configurationPolicies.orgId, orgIds);
 
-  const candidates = await db
+  const candidates = await loadOemLinkCandidates(ownership);
+
+  for (const device of deviceRows) {
+    const link = pickOemLink(candidates, device, partnerByOrg.get(device.orgId) ?? null, groupsByDevice.get(device.id) ?? []);
+    if (link) result.set(device.id, link);
+  }
+  return result;
+}
+
+export type OemLinkCandidate = {
+  linkId: string;
+  sourcePolicyId: string;
+  inlineSettings: unknown;
+  linkUpdatedAt: Date | null;
+  assignedPolicyId: string;
+  policyOrgId: string | null;
+  policyPartnerId: string | null;
+  assignmentLevel: 'partner' | 'organization' | 'site' | 'device_group' | 'device';
+  assignmentTargetId: string;
+  assignmentPriority: number;
+  assignmentCreatedAt: Date;
+  roleFilter: string[] | null;
+  osFilter: string[] | null;
+};
+
+/**
+ * Every assignment carrying an active policy's `oem_updates` link, in the caller's
+ * RLS context, narrowed by `ownership` when given. {@link pickOemLink} decides among
+ * them for one device, so a caller with many devices reads this once.
+ */
+export async function loadOemLinkCandidates(ownership?: SQL): Promise<OemLinkCandidate[]> {
+  return db
     .select({
       linkId: configPolicyEffectiveFeatureLinks.id,
       sourcePolicyId: configPolicyEffectiveFeatureLinks.sourcePolicyId,
       inlineSettings: configPolicyEffectiveFeatureLinks.inlineSettings,
+      linkUpdatedAt: configPolicyEffectiveFeatureLinks.updatedAt,
       assignedPolicyId: configurationPolicies.id,
       policyOrgId: configurationPolicies.orgId,
       policyPartnerId: configurationPolicies.partnerId,
@@ -223,25 +264,45 @@ async function resolveChunk(deviceIds: string[]): Promise<Map<string, ResolvedOe
       ),
     )
     // Same ORDER BY as the per-device walk, so a full tie breaks the same way.
-    .orderBy(configPolicyAssignments.level, configPolicyAssignments.priority, configPolicyAssignments.createdAt);
+    .orderBy(configPolicyAssignments.level, configPolicyAssignments.priority, configPolicyAssignments.createdAt) as Promise<OemLinkCandidate[]>;
+}
 
-  for (const device of deviceRows) {
-    const partnerId = partnerByOrg.get(device.orgId) ?? null;
-    const groups = groupsByDevice.get(device.id) ?? [];
-    const applicable = candidates.filter((row) => {
-      const owned = row.policyOrgId === device.orgId
-        || (row.policyOrgId === null && partnerId !== null && row.policyPartnerId === partnerId);
-      if (!owned) return false;
-      const targeted =
-        (row.assignmentLevel === 'device' && row.assignmentTargetId === device.id)
-        || (row.assignmentLevel === 'device_group' && groups.includes(row.assignmentTargetId))
-        || (row.assignmentLevel === 'site' && row.assignmentTargetId === device.siteId)
-        || (row.assignmentLevel === 'organization' && row.assignmentTargetId === device.orgId)
-        || (row.assignmentLevel === 'partner' && partnerId !== null && row.assignmentTargetId === partnerId);
-      return targeted && matchesRoleOsFilter(row, device);
-    });
-    if (applicable.length === 0) continue;
-    result.set(device.id, toResolved(sortByHierarchy([...applicable])[0]!));
+/**
+ * One parse per candidate per read, not per device: a partner-wide link can win for a
+ * whole fleet, and it is the settings parse that would add up across one.
+ */
+const resolvedByCandidate = new WeakMap<OemLinkCandidate, ResolvedOemUpdatesLink>();
+
+/**
+ * The winning link for one device among already-loaded candidates, in memory: the
+ * same decision as {@link resolveOemUpdatesLinkForDevice}, rule for rule. Ownership
+ * (the device's org, or partner-wide for its partner), targets, role/OS filters,
+ * closest wins. `partnerId` is null for a parked device, which gets nothing partner-wide.
+ */
+export function pickOemLink(
+  candidates: readonly OemLinkCandidate[],
+  device: { id: string; orgId: string; siteId: string | null; deviceRole: string; osType: string },
+  partnerId: string | null,
+  groups: readonly string[],
+): ResolvedOemUpdatesLink | null {
+  const applicable = candidates.filter((row) => {
+    const owned = row.policyOrgId === device.orgId
+      || (row.policyOrgId === null && partnerId !== null && row.policyPartnerId === partnerId);
+    if (!owned) return false;
+    const targeted =
+      (row.assignmentLevel === 'device' && row.assignmentTargetId === device.id)
+      || (row.assignmentLevel === 'device_group' && groups.includes(row.assignmentTargetId))
+      || (row.assignmentLevel === 'site' && row.assignmentTargetId === device.siteId)
+      || (row.assignmentLevel === 'organization' && row.assignmentTargetId === device.orgId)
+      || (row.assignmentLevel === 'partner' && partnerId !== null && row.assignmentTargetId === partnerId);
+    return targeted && matchesRoleOsFilter(row, device);
+  });
+  if (applicable.length === 0) return null;
+  const winner = sortByHierarchy([...applicable])[0]!;
+  let resolved = resolvedByCandidate.get(winner);
+  if (!resolved) {
+    resolved = toResolved(winner);
+    resolvedByCandidate.set(winner, resolved);
   }
-  return result;
+  return resolved;
 }

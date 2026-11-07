@@ -36,8 +36,9 @@ import {
 import { CommandTypes } from '../commandTypes';
 import { dispatchDeviceCommand, type DispatchDeviceCommandResult } from '../dispatchDeviceCommand';
 import { assertDeviceExecuteAllowed } from '../partnerTrust.commands';
+import { terminalPayloadErasureSet } from '../sensitiveCommandPayload';
 import { isUnassignedPoolOrgType } from '../unassignedPool/orgType';
-import { resolveApplicability } from './applicability';
+import { OEM_FLASH_CATEGORIES, resolveApplicability, stillNotSupported } from './applicability';
 import { laneDisabledByKillSwitch, oemUpdatesEnabled } from './flags';
 import {
   getLaneManifest,
@@ -91,7 +92,6 @@ export function oemRunCommandFilter(): SQL {
 /** A BIOS or firmware run that has not shown the device came back within this raises an alert. */
 export const OEM_RETURN_DEADLINE_MS = 24 * 60 * 60 * 1000;
 
-const FLASH_CATEGORIES: ReadonlySet<OemCategory> = new Set(['bios', 'firmware']);
 const MAX_ESCROWED_PROTECTORS = 16;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -100,17 +100,6 @@ function protectorUuid(raw: string | null): string | null {
   if (!raw) return null;
   const value = raw.trim().replace(/^\{/, '').replace(/\}$/, '').toLowerCase();
   return UUID.test(value) ? value : null;
-}
-
-/** Sticky until the tool version or the model changes: each is a new question (spec 4.3). */
-function stillNotSupported(
-  status: { applicability: string; notSupportedToolVersion: string | null; notSupportedModel: string | null } | undefined,
-  lane: OemLane,
-  model: string | null,
-): boolean {
-  if (status?.applicability !== 'not_supported') return false;
-  const currentTool = getLaneManifest(lane).tool?.version ?? null;
-  return status.notSupportedToolVersion === currentTool && status.notSupportedModel === model;
 }
 
 function refusalForEnqueueCode(code: Extract<DispatchDeviceCommandResult, { ok: false }>['code']): OemDispatchRefusal {
@@ -198,11 +187,13 @@ async function prepareRun(input: OemDispatchInput): Promise<Prepared> {
     .from(deviceOemUpdateStatus)
     .where(eq(deviceOemUpdateStatus.deviceId, device.id))
     .limit(1);
-  if (stillNotSupported(status, lane, device.model ?? null)) return { ok: false, refusal: 'not_supported' };
+  if (stillNotSupported(status, getLaneManifest(lane).tool?.version ?? null, device.model ?? null)) {
+    return { ok: false, refusal: 'not_supported' };
+  }
 
   const open = new Set(openCategoriesForLane(lane, gateScope));
   const requestedOpen = [...new Set(input.requestedCategories)].filter((category) => open.has(category));
-  const categories = requestedOpen.filter((category) => input.rebootControlled || !FLASH_CATEGORIES.has(category));
+  const categories = requestedOpen.filter((category) => input.rebootControlled || !OEM_FLASH_CATEGORIES.has(category));
   const skippedCategories = requestedOpen.filter((category) => !categories.includes(category));
   if (categories.length === 0) return { ok: false, refusal: 'no_open_categories' };
 
@@ -268,7 +259,7 @@ async function prepareRun(input: OemDispatchInput): Promise<Prepared> {
   // A BIOS or firmware run arms the not-returned monitor. A driver-only run leaves
   // an armed monitor from an earlier flash alone.
   const now = new Date();
-  const armed = categories.some((category) => FLASH_CATEGORIES.has(category))
+  const armed = categories.some((category) => OEM_FLASH_CATEGORIES.has(category))
     ? {
         biosVersionBefore: device.biosVersion ?? null,
         runStartedAt: now,
@@ -291,9 +282,50 @@ async function prepareRun(input: OemDispatchInput): Promise<Prepared> {
   await db
     .insert(deviceOemUpdateStatus)
     .values({ deviceId: device.id, orgId: device.orgId, ...run })
-    .onConflictDoUpdate({ target: deviceOemUpdateStatus.deviceId, set: run });
+    .onConflictDoUpdate({
+      target: deviceOemUpdateStatus.deviceId,
+      set: {
+        ...run,
+        // Attempts count per occurrence. Compared here, in the statement that moves
+        // the key, because a read outside it could be stale by the time this runs.
+        ...(input.occurrenceKey
+          ? {
+              attempts: sql`CASE WHEN ${deviceOemUpdateStatus.occurrenceKey} IS DISTINCT FROM ${input.occurrenceKey} THEN 0 ELSE ${deviceOemUpdateStatus.attempts} END`,
+            }
+          : {}),
+      },
+    });
 
   return { ok: true, commandId: dispatched.command.id, categories, skippedCategories, dispatched };
+}
+
+/** Selects release rows for a read. A condition, not the type: it cannot be handed to a queue. */
+export function oemReleaseCommandFilter(): SQL {
+  return eq(deviceCommands.type, CommandTypes.OEM_UPDATE_RELEASE);
+}
+
+/**
+ * Cancels a release still waiting to be delivered, when the policy that went away
+ * has come back. False when there was none: compare-and-set on `pending`, because a
+ * row claimed in between is on its way to the agent and only its ack can say what
+ * happened. Runs on the caller's context.
+ */
+export async function cancelPendingOemUpdateRelease(deviceId: string, now: Date): Promise<boolean> {
+  const cancelled = await db
+    .update(deviceCommands)
+    .set({
+      status: 'cancelled',
+      completedAt: now,
+      result: { status: 'cancelled', reason: 'lane_enabled_again', cancelledBy: 'oem_updates_scheduler' },
+      ...terminalPayloadErasureSet(),
+    })
+    .where(and(
+      eq(deviceCommands.deviceId, deviceId),
+      oemReleaseCommandFilter(),
+      eq(deviceCommands.status, 'pending'),
+    ))
+    .returning({ id: deviceCommands.id });
+  return cancelled.length > 0;
 }
 
 export type OemReleaseRefusal = Extract<

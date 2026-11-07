@@ -39,6 +39,7 @@ vi.mock('../db', () => ({
   db: { select: (...a: unknown[]) => selectMock(...(a as [])) },
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContextIsolated: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   getCurrentDbAccessContext: vi.fn(),
 }));
 vi.mock('../db/schema', () => ({ devices: { id: 'devices.id' } }));

@@ -503,6 +503,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'agents/isolationVerify.ts': { exempt: 'agent_transport' },
   'devices/forceReboot.ts': { exempt: 'human_only_force_reboot', note: 'Force reboot now: closes running apps; step-up bound to one device.' },
   'devices/oemUpdates.ts': { exempt: 'human_only_oem_updates', note: 'Run vendor updates (BIOS, firmware, drivers through the maker\'s tool) plus its status and history reads; no AI tool in v1 (#11065 Decision 9).' },
+  'oemUpdates/fleet.ts': { exempt: 'human_only_oem_updates', note: 'Vendor updates fleet read: counts and the device list behind the Patches tab. Read-only; no AI tool in v1 (#11065 Decision 9).' },
   'devices/moveOrg.ts': { exempt: 'human_only_tenant_restructure', note: 'Cross-tenant device move -- rewrites which tenant owns the device.' },
   'devices/network.ts': { tools: ['list_network_assets'] },
   'devices/options.ts': { exempt: 'internal_plumbing' },

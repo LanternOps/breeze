@@ -46,6 +46,10 @@ x-api-env: &api-env
   # #8839 — agent request bodies are received before the org DB context opens.
   AGENT_BODY_RECEIVE_TIMEOUT_MS: ${AGENT_BODY_RECEIVE_TIMEOUT_MS:-}
   AGENT_BODY_RECEIVE_TOTAL_TIMEOUT_MS: ${AGENT_BODY_RECEIVE_TOTAL_TIMEOUT_MS:-}
+  # Alert worker / agent ingest tuning (optional; empty reads as unset and the code applies its own defaults).
+  ALERT_WORKER_CONCURRENCY: ${ALERT_WORKER_CONCURRENCY:-}
+  ALERT_WORKER_STAGGER_WINDOW_MS: ${ALERT_WORKER_STAGGER_WINDOW_MS:-}
+  AGENT_CONNECTIONS_MAX_PER_DEVICE: ${AGENT_CONNECTIONS_MAX_PER_DEVICE:-}
   DB_WEDGED_BACKEND_SCAN_DISABLED: ${DB_WEDGED_BACKEND_SCAN_DISABLED:-}
   DB_WEDGED_BACKEND_SCAN_INTERVAL_MS: ${DB_WEDGED_BACKEND_SCAN_INTERVAL_MS:-}
   DB_WEDGED_BACKEND_MIN_AGE_MS: ${DB_WEDGED_BACKEND_MIN_AGE_MS:-}
@@ -415,6 +419,7 @@ x-api-env: &api-env
   BREEZE_OEM_UPDATES_ENABLED: ${BREEZE_OEM_UPDATES_ENABLED:-false}
   BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: ${BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST:-}
   BREEZE_OEM_UPDATES_DISABLED_LANES: ${BREEZE_OEM_UPDATES_DISABLED_LANES:-}
+  OEM_UPDATES_MAX_DISPATCH_PER_TICK: ${OEM_UPDATES_MAX_DISPATCH_PER_TICK:-}
   # EDR response actions (#8167): server-wide kill switch, default on. Each
   # EDR connection must still opt in (off by default).
   BREEZE_EDR_ACTIONS_ENABLED: ${BREEZE_EDR_ACTIONS_ENABLED:-}
@@ -924,6 +929,8 @@ services:
     environment:
       <<: *api-env
       BREEZE_ROLE: worker        # hardcoded — never variable-driven
+      # 1 GB V8 heap cap, worker only (#11237); override with WORKER_NODE_OPTIONS.
+      NODE_OPTIONS: ${WORKER_NODE_OPTIONS:---max-old-space-size=1024}
     volumes:
       - api_data:/data
       - binaries:/data/binaries:ro

@@ -13,6 +13,7 @@
 import { Job, Queue, UnrecoverableError, Worker } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
 import { hydrateSnapshotFileIndex } from '../services/backupSnapshotFileIndex';
+import { cleanStaleManifestSpools } from '../services/backupManifestSpool';
 import { attachWorkerObservability } from './workerObservability';
 import { isReusableState } from '../services/bullmqUtils';
 import { captureException } from '../services/sentry';
@@ -157,6 +158,11 @@ function createWorker(): Worker<HydrationJobData> {
 }
 
 export async function initializeBackupSnapshotFileIndexWorker(): Promise<void> {
+  // A run killed mid-hydration leaves its manifest spool behind (#11026).
+  // Not awaited: a slow or failing sweep must never hold the worker back.
+  void cleanStaleManifestSpools().catch((error) => {
+    console.warn('[BackupSnapshotFileIndexWorker] Could not sweep stale manifest spools:', error);
+  });
   worker = createWorker();
   attachWorkerObservability(worker, 'backupSnapshotFileIndexWorker');
   worker.on('error', (error) => {

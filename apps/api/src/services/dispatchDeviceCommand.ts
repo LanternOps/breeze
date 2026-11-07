@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { db, getCurrentDbAccessContext, withSystemDbAccessContext } from '../db';
+import { db, getCurrentDbAccessContext, withSystemDbAccessContext, withSystemDbAccessContextIsolated } from '../db';
 import { devices } from '../db/schema';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { refreshPayloadForDelivery } from './commandDelivery';
@@ -330,7 +330,9 @@ async function deliverPreparedDeviceCommand(
   // recoverable; throwing here would 500 a request whose write already
   // committed.
   try {
-    await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
+    // A savepoint when a context is held: the caller's transaction also holds
+    // the queued command, so a failed release must not fail its commit (#11225).
+    await withSystemDbAccessContextIsolated(() => releaseClaimedCommandDelivery(command.id, claimed.executedAt));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(

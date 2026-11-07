@@ -329,7 +329,8 @@
     "title": "Süreç Yöneticisi",
     "totalCpu": "Toplam CPU",
     "pid": "PID",
-    "cpu": "CPU"
+    "cpu": "CPU",
+    "monitorThis": "Bunu izle"
   },
   "proxyTunnelPage": {
     "errors": {
@@ -654,9 +655,10 @@
     },
     "stopService": "Hizmeti Durdur\n__BREEZE_TOKEN_2__ üzerindeki __BREEZE_TOKEN_1__ hizmetlerinden ",
     "summary": "{{device}} üzerindeki {{total}} hizmetten {{shown}} tanesi",
-    "title": "Başlık",
+    "title": "Hizmetler",
     "windowsOnlyDescription": "Hizmetler Yöneticisi yalnızca Windows cihazlar için kullanılabilir. {{device}}, {{os}} çalıştırıyor.",
-    "windowsOnlyTitle": "Windows Yalnızca Başlık"
+    "windowsOnlyTitle": "Yalnızca Windows",
+    "monitorThis": "Bunu izle"
   },
   "sessionHistory": {
     "columns": {

@@ -216,7 +216,7 @@ function exemptByPattern(file: string): boolean {
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
   'services/oemUpdates/revalidation.ts': 'vendor update claim recheck (#11065): reads the partner of the one device being claimed; selects no targets. A parked device is cancelled by partitionClaimable first',
-  'services/oemUpdates/alerts.ts': 'vendor update alerts (#11065): reads the hostname of one device the monitor or a result already named; selects no targets',
+  'services/oemUpdates/alerts.ts': 'vendor update alerts (#11065): reads the hostname of one device the monitor, a sweep or a result already named; selects no targets',
   'services/oemUpdates/results.ts': 'vendor update results (#11065): applies an agent report to the one device that sent it; selects no targets',
   'services/networkIsolation/lifecycle.ts': 'lifecycle: locks explicitly scoped devices to block destructive operations while isolation is unresolved; no background target selection',
   'jobs/networkIsolationSweeper.ts': 'lifecycle: recovery and expiry warnings for existing isolation episodes must survive parked/disabled devices; device lookup only resolves the episode notification site, never selects new isolation targets',

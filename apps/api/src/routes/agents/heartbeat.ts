@@ -903,7 +903,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     try {
       // #8318 §6.4: bound to the authenticated id + agent_id, so a watchdog
       // beat of a superseded install matches 0 rows after a reattach confirm.
-      watchdogRowsUpdated = (await updateOwnDeviceRow(db, agent, watchdogUpdates)).length;
+      watchdogRowsUpdated = (await withDbTransaction(() => updateOwnDeviceRow(db, agent, watchdogUpdates))).length;
     } catch (err) {
       console.error('Failed to update watchdog status:', err);
     }
@@ -951,7 +951,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       shouldLogWatchdogRestartActivity(device.id, restartSignature, now.getTime())
     ) {
       try {
-        await db.insert(agentLogs).values({
+        await withDbTransaction(() => db.insert(agentLogs).values({
           deviceId: device.id,
           orgId: device.orgId,
           timestamp: new Date(),
@@ -967,7 +967,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
             watchdogState: data.watchdogState ?? null,
           },
           agentVersion: data.agentVersion,
-        });
+        }));
         // Commit to the dedupe cache only after the row landed — a failed
         // insert must stay retryable on the next heartbeat.
         markWatchdogRestartActivityLogged(device.id, restartSignature, now.getTime());
@@ -1964,7 +1964,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   if (data.onedriveDeviceState) {
     const s = data.onedriveDeviceState;
     try {
-      await db.insert(onedriveDeviceState).values({
+      await withDbTransaction(() => db.insert(onedriveDeviceState).values({
         deviceId: device.id,
         orgId: device.orgId,
         signedIn: s.signedIn,
@@ -1991,7 +1991,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           lastReportedAt: new Date(),
           updatedAt: new Date(),
         },
-      });
+      }));
     } catch (err) {
       // Drizzle query errors serialize the bound params — including the
       // signedInUpns jsonb (end-user PII) — into their message. Log/report

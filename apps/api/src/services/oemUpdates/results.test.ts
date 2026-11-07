@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 const state = vi.hoisted(() => ({
   command: null as Record<string, unknown> | null,
@@ -79,7 +81,7 @@ import {
   resolveProtectionRestoredAlerts,
   resolveReturnedDeviceAlerts,
 } from './alerts';
-import { applyOemUpdateResult, applyOemUpdateVerification } from './results';
+import { applyOemUpdateRelease, applyOemUpdateResult, applyOemUpdateVerification } from './results';
 import { executeReboot, resolveRebootPlan } from '../patchRebootHandler';
 import { runAfterDbContextCommit } from '../../db';
 import { getLaneManifest } from './toolManifest';
@@ -131,6 +133,7 @@ beforeEach(() => {
   state.inserts = [];
   state.failReads = false;
   state.afterCommit = [];
+  vi.mocked(runAfterDbContextCommit).mockClear();
   vi.mocked(executeReboot).mockClear();
   vi.mocked(executeReboot).mockResolvedValue({ success: true, delayMinutes: 30 });
   vi.mocked(resolveRebootPlan).mockClear();
@@ -566,6 +569,199 @@ describe('reboot when finished (#11065 W04)', () => {
     whenFinished();
     vi.mocked(executeReboot).mockRejectedValue(new Error('pool'));
     await expect(applied(needsReboot())).resolves.toBeUndefined();
+    expect(captureException).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('applyOemUpdateResult: attempts (#11065 W07)', () => {
+  const OCCURRENCE = '2027-01';
+
+  function scheduledRun(status: Record<string, unknown> = {}) {
+    state.command = {
+      id: COMMAND_ID,
+      deviceId: DEVICE_ID,
+      type: 'oem_update_run',
+      payload: { categories: ['driver'], trigger: 'scheduled', occurrenceKey: OCCURRENCE },
+    };
+    state.status = statusRow({ occurrenceKey: OCCURRENCE, lastOutcome: null, attempts: 0, ...status });
+  }
+
+  function consumed(): boolean {
+    const attempts = state.updates[0]!.attempts;
+    if (attempts === undefined) return false;
+    const { sql } = new PgDialect().sqlToQuery(attempts as SQL);
+    expect(sql).toContain('"attempts"');
+    expect(sql).toContain('+ 1');
+    return true;
+  }
+
+  it.each([
+    ['failed', null],
+    ['partial', null],
+    ['interrupted', null],
+    ['tool_unavailable', null],
+    ['blocked_no_recovery_key', null],
+    ['success', null],
+    ['no_updates', null],
+    ['retry_later', null],
+    ['retry_later', 'wu_search_failed'],
+  ])('%s (%s) consumes one', async (outcome, errorCode) => {
+    scheduledRun();
+    await apply(goodResult({ outcome, errorCode, items: [] }));
+    expect(consumed()).toBe(true);
+  });
+
+  it.each([
+    ['blocked_on_battery', null],
+    ['blocked_reboot_pending', null],
+    ['retry_later', 'not_after_passed'],
+    ['retry_later', 'run_in_flight'],
+    ['retry_later', 'preflight_failed'],
+    ['retry_later', 'flash_in_progress'],
+  ])('%s (%s) consumes none', async (outcome, errorCode) => {
+    scheduledRun();
+    await apply(goodResult({ outcome, errorCode, items: [] }));
+    expect(consumed()).toBe(false);
+  });
+
+  it('a malformed result is recorded as failed and consumes one', async () => {
+    scheduledRun();
+    await apply('not json');
+    expect(state.updates[0]).toMatchObject({ lastOutcome: 'failed' });
+    expect(consumed()).toBe(true);
+  });
+
+  it('Run Now consumes none', async () => {
+    state.command = { id: COMMAND_ID, deviceId: DEVICE_ID, type: 'oem_update_run', payload: { categories: ['driver'], trigger: 'on_demand', occurrenceKey: null } };
+    state.status = statusRow({ occurrenceKey: OCCURRENCE, lastOutcome: null, attempts: 1 });
+    await apply(goodResult({ outcome: 'failed', items: [] }));
+    expect(consumed()).toBe(false);
+  });
+
+  it('a result delivered twice consumes one: the first wrote an outcome', async () => {
+    scheduledRun({ lastOutcome: 'failed', attempts: 1 });
+    await apply(goodResult({ outcome: 'failed', items: [] }));
+    expect(consumed()).toBe(false);
+  });
+
+  it('an unreadable payload consumes none', async () => {
+    state.command = { id: COMMAND_ID, deviceId: DEVICE_ID, type: 'oem_update_run', payload: null };
+    state.status = statusRow({ occurrenceKey: OCCURRENCE, lastOutcome: null, attempts: 0 });
+    await apply(goodResult({ outcome: 'failed', items: [] }));
+    expect(consumed()).toBe(false);
+  });
+
+  it('a run of an occurrence the row has moved on from consumes none', async () => {
+    scheduledRun({ occurrenceKey: '2027-02' });
+    await apply(goodResult({ outcome: 'failed', items: [] }));
+    expect(consumed()).toBe(false);
+  });
+});
+
+describe('applyOemUpdateResult: a run that applied nothing leaves an owed reboot alone (#11065 W07)', () => {
+  const owed = new Date('2027-01-19T02:00:00.000Z');
+  const armed = new Date('2027-01-20T02:00:00.000Z');
+
+  it.each([
+    ['blocked_on_battery', null],
+    ['blocked_no_recovery_key', null],
+    ['tool_unavailable', null],
+    ['retry_later', 'not_after_passed'],
+    ['retry_later', 'flash_in_progress'],
+    ['interrupted', null],
+    ['failed', 'not_elevated'],
+  ])('%s (%s) keeps the clock, the flag and the monitor', async (outcome, errorCode) => {
+    state.status = statusRow({ rebootPendingSince: owed, returnDeadlineAt: armed });
+    await apply(goodResult({ outcome, errorCode, rebootRequired: false, items: [] }));
+    expect(state.updates[0]).not.toHaveProperty('rebootPendingSince');
+    expect(state.updates[0]).not.toHaveProperty('rebootRequired');
+    expect(state.updates[0]).not.toHaveProperty('returnDeadlineAt');
+    expect(resolveReturnedDeviceAlerts).not.toHaveBeenCalled();
+  });
+
+  it('a clean run that applied something still clears them', async () => {
+    state.status = statusRow({ rebootPendingSince: owed, returnDeadlineAt: armed });
+    await apply(goodResult({ outcome: 'no_updates', rebootRequired: false, items: [] }));
+    expect(state.updates[0]).toMatchObject({ rebootPendingSince: null, rebootRequired: false, returnDeadlineAt: null });
+  });
+});
+
+describe('applyOemUpdateResult: reboot owed (#11065 W07)', () => {
+  it('a shutdown request is not a reboot: no pending clock', async () => {
+    await apply(goodResult({ outcome: 'success', rebootRequired: false, shutdownRequired: true }));
+    expect(state.updates[0]).toMatchObject({ rebootRequired: false, rebootPendingSince: null });
+  });
+
+  it('a scheduled run that needs a restart queues none here: the sweep owns the window', async () => {
+    state.command = {
+      id: COMMAND_ID,
+      deviceId: DEVICE_ID,
+      type: 'oem_update_run',
+      submittedOrgId: ORG_ID,
+      payload: { categories: ['driver'], trigger: 'scheduled', occurrenceKey: '2027-01', rebootControlled: true },
+    };
+    await apply(goodResult({ outcome: 'success_reboot_required', rebootRequired: true }));
+    expect(state.updates[0]!.rebootPendingSince).toBeInstanceOf(Date);
+    expect(runAfterDbContextCommit).not.toHaveBeenCalled();
+    expect(executeReboot).not.toHaveBeenCalled();
+  });
+});
+
+describe('applyOemUpdateResult: takeover state (#11065 W07)', () => {
+  it('ok records the takeover', async () => {
+    await apply(goodResult({ takeover: 'ok' }));
+    expect(state.updates[0]).toMatchObject({ takeoverState: 'taken_over' });
+  });
+
+  it('policy_locked records that nothing was changed', async () => {
+    await apply(goodResult({ takeover: 'policy_locked' }));
+    expect(state.updates[0]).toMatchObject({ takeoverState: 'policy_locked' });
+  });
+
+  it('not_attempted leaves an earlier takeover alone', async () => {
+    state.status = statusRow({ takeoverState: 'taken_over' });
+    await apply(goodResult({ takeover: 'not_attempted' }));
+    expect(state.updates[0]).not.toHaveProperty('takeoverState');
+  });
+
+  it('a malformed result leaves it alone too', async () => {
+    state.status = statusRow({ takeoverState: 'taken_over' });
+    await apply('not json');
+    expect(state.updates[0]).not.toHaveProperty('takeoverState');
+  });
+});
+
+describe('applyOemUpdateRelease (#11065 W07)', () => {
+  const release = (result: unknown, deviceId = DEVICE_ID) => applyOemUpdateRelease({ commandId: COMMAND_ID, deviceId, result });
+
+  beforeEach(() => {
+    state.command = { id: COMMAND_ID, deviceId: DEVICE_ID, type: 'oem_update_release', payload: { lane: 'dell' } };
+  });
+
+  it.each(['restored', 'nothing_to_restore'])('%s clears the state', async (outcome) => {
+    await release({ lane: 'dell', outcome, errorCode: null });
+    expect(state.updates).toHaveLength(1);
+    expect(state.updates[0]).toMatchObject({ takeoverState: 'none', reason: null });
+  });
+
+  it('failed leaves the state for the sweep to retry', async () => {
+    await release({ lane: 'dell', outcome: 'failed', errorCode: 'settings_import_failed' });
+    expect(state.updates).toEqual([]);
+  });
+
+  it('a malformed ack leaves the state, and does not throw', async () => {
+    await expect(release('not json')).resolves.toBeUndefined();
+    expect(state.updates).toEqual([]);
+  });
+
+  it('an ack for another device command is ignored', async () => {
+    await release({ lane: 'dell', outcome: 'restored', errorCode: null }, OTHER_DEVICE_ID);
+    expect(state.updates).toEqual([]);
+  });
+
+  it('a failure to write reaches Sentry and does not throw', async () => {
+    state.failReads = true;
+    await expect(release({ lane: 'dell', outcome: 'restored', errorCode: null })).resolves.toBeUndefined();
     expect(captureException).toHaveBeenCalledTimes(1);
   });
 });

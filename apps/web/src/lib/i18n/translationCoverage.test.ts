@@ -119,7 +119,8 @@ const namespaceDuplicateBaselines = {
     // match English exactly, as vendor names should.
     // +2 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
     // +1 W02 #10600: backupProviders.dropsuite is a product name.
-    'integrations.json': 36, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
+    // +1 W02 #11271: backupProviders.axcient is a product name.
+    'integrations.json': 37, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
     // #5289 (monitors W02 web): +7 on top of the pre-existing +1 —
     // "Name", "Monitor" (list/policy-tab column + label), "Hardware",
     // "System" (event-log categories), "CPU" (resource select) are identical
@@ -315,7 +316,8 @@ const namespaceDuplicateBaselines = {
     // +1 (integrations critique 10-20): integrationsPage.tdSYNNEXPricing / tdSYNNEXPriceFile
     // are now the connector product names ("TD SYNNEX EC Express", "TD SYNNEX SFTP").
     // +1 W02 #10600: backupProviders.dropsuite is a product name.
-    'integrations.json': 40, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
+    // +1 W02 #11271: backupProviders.axcient is a product name.
+    'integrations.json': 41, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
     // #5289 (monitors W02 web): +5 on top of the pre-existing +1 —
     // "Monitor" (label), "Hardware" (event-log category), "Error" (event-log
     // level), "CPU" (resource select), "Total" (direction select) are
@@ -505,7 +507,8 @@ const namespaceDuplicateBaselines = {
     // +1 (integrations critique 10-20): integrationsPage.tdSYNNEXPricing / tdSYNNEXPriceFile
     // are now the connector product names ("TD SYNNEX EC Express", "TD SYNNEX SFTP").
     // +1 W02 #10600: backupProviders.dropsuite is a product name.
-    'integrations.json': 43, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
+    // +1 W02 #11271: backupProviders.axcient is a product name.
+    'integrations.json': 44, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
     // #5289 (monitors W02 web): "Description" (field label), "Occurrences"
     // (event-log count field), "Direction" (bandwidth/disk-I/O field),
     // "Application" (event-log category), "CPU" (resource select), "Total"
@@ -518,7 +521,7 @@ const namespaceDuplicateBaselines = {
     // scripts.json made titles.scripts an intentional cognate ("Script" is the
     // standard fr-FR loanword) on top of the pre-existing ones.
     'pages.json': 16, // +2 W01 #10132: titles.wispChat and titles.aiForOffice "Breeze AI" brand names; // +1 W08 #9921 titles.wisp "Wisp" (product name); +1 titles.adminWisp "Wisp" (product name); Cognates: CIS Benchmarks, Extension, Incidents, Webhooks (x2), OneDrive, EDR, Variables, Ticket(s) (x2), Scripts, and one settings-card title (Sites).
-    'patches.json': 26, // +3 ring feature-update control: updateRingForm.featureUpdates.productWindows11/productWindows10 are product names and releasePlaceholder "25H2" is a Windows release token — identical in every locale
+    'patches.json': 27, // +1 #11074 vendorUpdates.columns.site "Site" is the fr-CA word; +3 ring feature-update control: updateRingForm.featureUpdates.productWindows11/productWindows10 are product names and releasePlaceholder "25H2" is a Windows release token — identical in every locale
     'peripherals.json': 9,
     'policies.json': 204,
     'portal.json': 4,
@@ -713,7 +716,8 @@ const namespaceDuplicateBaselines = {
     // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
     // byte-identical by localeParity.
     // +1 W02 #10600: backupProviders.dropsuite is a product name.
-    'integrations.json': 43, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
+    // +1 W02 #11271: backupProviders.axcient is a product name.
+    'integrations.json': 44, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
     // #5289 (monitors W02 web): "Description" (field label), "Occurrences"
     // (event-log count field), "Direction" (bandwidth/disk-I/O field),
     // "Application" (event-log category), "CPU" (resource select), "Total"
@@ -726,14 +730,14 @@ const namespaceDuplicateBaselines = {
     // here) made titles.scripts an intentional cognate ("Script" is the
     // standard loanword) on top of the pre-existing ones.
     'pages.json': 16, // +2 W01 #10132: titles.wispChat and titles.aiForOffice "Breeze AI" brand names; // +1 W08 #9921 titles.wisp "Wisp" (product name); +1 titles.adminWisp "Wisp" (product name); Cognates: CIS Benchmarks, Extension, Incidents, Webhooks (x2), OneDrive, EDR, Variables, Ticket(s) (x2), Scripts, and one settings-card title (Sites).
-    'patches.json': 26, // +3 ring feature-update control: updateRingForm.featureUpdates.productWindows11/productWindows10 are product names and releasePlaceholder "25H2" is a Windows release token — identical in every locale
+    'patches.json': 27, // +1 #11074 vendorUpdates.columns.site "Site" is the fr-FR word; +3 ring feature-update control: updateRingForm.featureUpdates.productWindows11/productWindows10 are product names and releasePlaceholder "25H2" is a Windows release token — identical in every locale
     'peripherals.json': 9,
     'policies.json': 204,
     'portal.json': 4,
     // +1: the input placeholder "XXX-XXX-XXX" is a code-shape mask, not
     // wording — it is intentionally identical in every catalog.
     'quick.json': 1,
-    'remote.json': 17,
+    'remote.json': 18, // +1: servicesManager.title "Services" is the French word too
     'reports.json': 48, // +5: reports.series ccPlaceholder + drilldown.columns.actions, drilldown.states.active, child.summary.type, child.summary.format (identical French cognates)
     'restorePoints.json': 0,
     // +2: automationRunHistory.scriptOutput — "stderr" is a stream name, not
@@ -941,7 +945,8 @@ const namespaceDuplicateBaselines = {
     // byte-identical by localeParity.
     // +1 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
     // +1 W02 #10600: backupProviders.dropsuite is a product name.
-    'integrations.json': 50, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
+    // +1 W02 #11271: backupProviders.axcient is a product name.
+    'integrations.json': 51, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
     // #5289 (monitors W02 web): +7 on top of the pre-existing +1 —
     // "Name" (list/legacy column + field label), "Monitor" (policy-tab
     // column), "Hardware"/"System" (event-log categories), "CPU" (resource
@@ -1266,7 +1271,8 @@ const namespaceDuplicateBaselines = {
     // +2 (W03 #6011): backupProviders.cove and backupProviders.namePlaceholder
     // are protected proper nouns pinned byte-identical by localeParity.
     // +1 W02 #10600: backupProviders.dropsuite is a product name.
-    'integrations.json': 28, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
+    // +1 W02 #11271: backupProviders.axcient is a product name.
+    'integrations.json': 29, // +W3 (#7690) Deep telemetry labels identical in this locale (CPU, Uplink RX and TX, Online, Offline, Uptime are loanwords or acronyms)
     // #5289 (monitors W02 web): "CPU" (resource select) is the identical
     // acronym in tr-TR.
     'monitoring.json': 1,
@@ -1473,8 +1479,23 @@ describe('SaaS backup locale labels', () => {
     for (const key of ['resellerTokenLabel', 'authTokenLabel', 'baseUrlLabel', 'baseUrlHelp', 'dropsuiteCredentialsHelp', 'dropsuiteReentryHelp', 'workloads', 'unmappedWorkloads', 'unmappedWorkloadsSummary', 'workloadMappingHelp', 'deleteWorkloadsConfirm']) {
       expect(strings.get(`integrations.json:backupProviders.${key}`), key).toBeTruthy();
     }
-    for (const key of ['saasAccounts', 'saasAccountsSubtitle', 'saas', 'workloadBackup', 'sourceProvider', 'dataSource.m365_mail', 'dataSource.gws_mail', 'dataSource.gws_drive', 'dataSource.gws_shared_drive']) {
+    for (const key of ['saasAccounts', 'saasAccountsSubtitle', 'saas', 'workloadBackup', 'sourceProvider', 'dataSource.m365_mail', 'dataSource.gws_mail', 'dataSource.gws_drive', 'dataSource.gws_shared_drive', 'status.paused']) {
       expect(strings.get(`backup.json:backupHealth.${key}`), key).toBeTruthy();
+    }
+  });
+
+  it.each(['en', ...translatedLocales])('%s includes verified-bootable labels', (locale) => {
+    const strings = readLocale(locale);
+    for (const key of ['dataSource.image', 'external.bootCheck', 'table.verifiedBootable', 'verifiedBootable.passed', 'verifiedBootable.failed', 'verifiedBootable.never_run', 'verifiedBootable.not_applicable']) {
+      expect(strings.get(`backup.json:backupHealth.${key}`), key).toBeTruthy();
+    }
+  });
+
+  it.each(['en', ...translatedLocales])('%s includes Axcient setup labels', (locale) => {
+    const strings = readLocale(locale);
+    expect(strings.get('integrations.json:backupProviders.axcient')).toBe('Axcient x360Recover');
+    for (const key of ['namePlaceholderAxcient', 'apiKeyLabel', 'axcientCredentialsHelp', 'axcientReentryHelp']) {
+      expect(strings.get(`integrations.json:backupProviders.${key}`), key).toBeTruthy();
     }
   });
 });

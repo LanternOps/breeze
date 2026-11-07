@@ -2713,6 +2713,61 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         },
       },
     },
+    '/oem-updates/fleet': {
+      get: {
+        operationId: 'getVendorUpdatesFleet',
+        tags: ['Devices'],
+        summary: 'Vendor update state across a fleet',
+        description: 'Counts per display state, and one page of devices, for every device the caller can reach, site restrictions included. Quick Support, parked and decommissioned devices are left out. Counts follow orgId and lane but not state; total is the filtered list before paging. A system-scope caller must pass orgId. Requires devices:read.',
+        parameters: [
+          { name: 'state', in: 'query', schema: { type: 'string', enum: ['up_to_date', 'overdue', 'failing', 'not_supported', 'not_managed', 'waiting_for_reboot', 'reboot_overdue'] } },
+          { name: 'orgId', in: 'query', schema: { type: 'string', format: 'uuid' } },
+          { name: 'lane', in: 'query', schema: { type: 'string', enum: ['dell', 'surface', 'hp', 'lenovo'] } },
+          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 200, default: 50 } },
+          { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, default: 0 } },
+        ],
+        responses: {
+          '200': {
+            description: 'Counts and one page of devices',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    counts: { type: 'object', additionalProperties: { type: 'integer' }, description: 'Devices per display state' },
+                    total: { type: 'integer' },
+                    devices: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          deviceId: { type: 'string', format: 'uuid' },
+                          hostname: { type: 'string' },
+                          orgId: { type: 'string', format: 'uuid' },
+                          orgName: { type: 'string' },
+                          siteId: { type: 'string', format: 'uuid' },
+                          siteName: { type: 'string', nullable: true },
+                          deviceStatus: { type: 'string' },
+                          lane: { type: 'string', enum: ['dell', 'surface', 'hp', 'lenovo'], nullable: true },
+                          displayState: { type: 'string', enum: ['up_to_date', 'overdue', 'failing', 'not_supported', 'not_managed', 'waiting_for_reboot', 'reboot_overdue'] },
+                          lastOutcome: { type: 'string', nullable: true },
+                          lastAttemptAt: { type: 'string', format: 'date-time', nullable: true },
+                          lastSuccessAt: { type: 'string', format: 'date-time', nullable: true },
+                          rebootPendingSince: { type: 'string', format: 'date-time', nullable: true },
+                          scheduleNotHandedBack: { type: 'boolean', description: "True when Breeze gave up returning the vendor tool's own schedule to it" },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Invalid filter, or a system-scope caller without orgId' },
+          '403': { description: 'Missing devices:read, or the organization is out of reach' },
+        },
+      },
+    },
     '/devices/{id}/oem-updates/history': {
       get: {
         operationId: 'listDeviceVendorUpdateRuns',

@@ -9,7 +9,7 @@ import {
   type OemLane,
 } from '@breeze/shared';
 import { db } from '../../db';
-import { deviceHardware, deviceOemUpdateStatus, organizations } from '../../db/schema';
+import { deviceHardware, deviceOemUpdateStatus, devices, organizations, partners, sites } from '../../db/schema';
 import { zValidator } from '../../lib/validation';
 import {
   authMiddleware,
@@ -30,7 +30,10 @@ import {
 } from '../../services/oemUpdates/dispatch';
 import { deriveOemDisplayState } from '../../services/oemUpdates/displayState';
 import { oemUpdatesEnabled } from '../../services/oemUpdates/flags';
+import { effectiveTimezoneFrom } from '../../services/oemUpdates/candidates';
 import { listOemRuns } from '../../services/oemUpdates/history';
+import { oemPolicySide } from '../../services/oemUpdates/policySide';
+import { resolveOemUpdatesLinkForDevice } from '../../services/oemUpdates/resolver';
 import { isCategoryOpen, SHIPPED_OEM_LANES, type GateState } from '../../services/oemUpdates/toolManifest';
 import { trustDenyBody } from '../../services/partnerTrust';
 import { TrustDeniedError } from '../../services/partnerTrust.commands';
@@ -228,6 +231,42 @@ async function offeredLane(device: {
   return applicability.state === 'applicable' ? applicability.lane : null;
 }
 
+/**
+ * What the device's policy says, for the display state: whether a schedule manages
+ * this lane, and where that schedule is. No lane (the flag off, a parked device) means
+ * nothing is scheduled, so there is no policy to read. Run Now does not read this:
+ * it works with or without a policy, and whether a policy's blocked IDs bind it is
+ * still open (its `blockedUpdateIds: []` above).
+ *
+ * The zone is read on the request's own connection, with the scheduler's rule
+ * (`effectiveTimezoneFrom`). An org-scoped caller cannot see the partner row, so a
+ * zone set only on the partner falls through to UTC here: a display edge of at most a
+ * few hours around a window, accepted so a page load never takes a second pooled
+ * connection for the partner read.
+ */
+async function policySide(device: { id: string; enrolledAt: Date | null }, lane: OemLane | null, now: Date) {
+  const deviceId = device.id;
+  const unmanaged = { linkEnabled: false, occurrence: null };
+  if (!lane) return unmanaged;
+  const link = await resolveOemUpdatesLinkForDevice(deviceId);
+  if (!link?.settings.enabled || !link.settings.vendors[lane]?.enabled) return unmanaged;
+  const [zone] = await db
+    .select({
+      siteTimezone: sites.timezone,
+      orgSettings: organizations.settings,
+      partnerTimezone: partners.timezone,
+      partnerSettings: partners.settings,
+    })
+    .from(devices)
+    .innerJoin(organizations, eq(organizations.id, devices.orgId))
+    .leftJoin(partners, eq(partners.id, organizations.partnerId))
+    .leftJoin(sites, eq(sites.id, devices.siteId))
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+  const timezone = effectiveTimezoneFrom(zone ?? { siteTimezone: null, orgSettings: null, partnerTimezone: null, partnerSettings: null });
+  return oemPolicySide({ deviceId, lane, link, timezone, now, enrolledAt: device.enrolledAt });
+}
+
 /** GET /devices/:id/oem-updates/status — the device section and whether to offer the action. */
 oemUpdatesRoutes.get(
   '/:id/oem-updates/status',
@@ -257,6 +296,7 @@ oemUpdatesRoutes.get(
         rebootRequired: deviceOemUpdateStatus.rebootRequired,
         rebootPendingSince: deviceOemUpdateStatus.rebootPendingSince,
         occurrenceKey: deviceOemUpdateStatus.occurrenceKey,
+        attempts: deviceOemUpdateStatus.attempts,
         biosVersionBefore: deviceOemUpdateStatus.biosVersionBefore,
         biosVersionAfter: deviceOemUpdateStatus.biosVersionAfter,
         bitlockerAfter: deviceOemUpdateStatus.bitlockerAfter,
@@ -274,17 +314,15 @@ oemUpdatesRoutes.get(
         ])) as Record<OemCategory, GateState>
       : NO_GATES;
 
-    // No policy link until W05 and no occurrence until W07, so only the reboot and
-    // not-supported states can read as anything other than not_managed yet.
+    const now = new Date();
     const displayState = deriveOemDisplayState({
       status: row ?? null,
-      linkEnabled: false,
-      occurrence: null,
-      now: new Date(),
+      ...(await policySide(device, lane, now)),
+      now,
     });
 
-    // The occurrence key only feeds the state above.
-    const { occurrenceKey: _occurrenceKey, ...status } = row ?? { occurrenceKey: null };
+    // The occurrence key and the attempt count only feed the state above.
+    const { occurrenceKey: _occurrenceKey, attempts: _attempts, ...status } = row ?? { occurrenceKey: null, attempts: 0 };
     return c.json({ displayState, lane, status: row ? status : null, gates });
   },
 );

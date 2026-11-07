@@ -509,6 +509,74 @@ describe('BackupDashboard usage history chart', () => {
     expect(screen.queryByText('Warning')).toBeNull();
   });
 
+  it('renders a pending catch-up recent job as "Queued", not the generic Warning bucket (#11036)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/backup/dashboard') {
+        return makeJsonResponse({
+          data: {
+            stats: [],
+            recentJobs: [
+              { id: 'job-pending', device: 'edge-03', config: 'Primary S3', status: 'pending', started: '1m ago', duration: '-', size: '-' },
+            ],
+            storageProviders: [],
+            attentionItems: [],
+          },
+        });
+      }
+
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BackupDashboard />);
+
+    await screen.findByText('edge-03');
+    expect(screen.getByText('Queued')).toBeTruthy();
+    expect(screen.queryByText('Warning')).toBeNull();
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('Unmapped backup job status'));
+    warn.mockRestore();
+  });
+
+  it('renders a cancelled recent job as "Cancelled", not the generic Warning bucket (#11036)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/backup/dashboard') {
+        return makeJsonResponse({
+          data: {
+            stats: [],
+            recentJobs: [
+              { id: 'job-cancelled', device: 'edge-03', config: 'Primary S3', status: 'cancelled', started: '1m ago', duration: '-', size: '-' },
+            ],
+            storageProviders: [],
+            attentionItems: [],
+          },
+        });
+      }
+
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BackupDashboard />);
+
+    await screen.findByText('edge-03');
+    expect(screen.getByText('Cancelled')).toBeTruthy();
+    expect(screen.queryByText('Warning')).toBeNull();
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('Unmapped backup job status'));
+    warn.mockRestore();
+  });
+
   it('keeps skipped reparse points out of a recent job\'s red error line (#9543)', async () => {
     const reparseNote =
       '1 reparse point(s) were not backed up (junctions and mount points are skipped, not followed; 1 other): ' +

@@ -3165,6 +3165,7 @@
           "blocked_by_source": "Escluso dalle origini di aggiornamento della policy",
           "held_by_deferral": "Trattenuto dalla finestra di differimento",
           "blocked_by_category": "Escluso dalle regole di categoria dell'anello",
+          "managed_by_vendor_updates": "Gestita dagli aggiornamenti del produttore",
           "blocked_by_app_rule": "Bloccato da una regola dell'app",
           "blocked_by_feature_update_policy": "Escluso dal criterio dell'anello per gli aggiornamenti delle funzionalità di Windows",
           "awaiting_manual_approval": "In attesa di approvazione manuale",

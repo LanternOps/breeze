@@ -676,6 +676,14 @@
     "fileIndexIntegrityFailed": "This snapshot failed its integrity check, so its files can't be listed.",
     "fileIndexDeviceLocal": "This snapshot is stored on the device, and Breeze can't read its file list from there yet.",
     "fileIndexRetry": "Try again",
+    "searchPlaceholder": "Search files in this snapshot",
+    "searchEmpty": "No files match",
+    "searchTimeout": "Searching took too long. Try again.",
+    "browseTimeout": "Listing this folder took too long. Try again.",
+    "searchLoadMore": "Load more",
+    "searchRestoreFile": "Restore this file",
+    "searchMinLength": "Type at least 2 characters",
+    "searchLoading": "Searching…",
     "path": "Path:",
     "useTheRestoreWorkflowToRecoverOrExport": "Use the restore workflow to recover or export files from this snapshot.",
     "select": "Select",
@@ -1092,7 +1100,8 @@
       "over_quota": "Over quota",
       "no_selection": "Nothing selected",
       "not_started": "Not started",
-      "unknown": "Unknown"
+      "unknown": "Unknown",
+      "paused": "Paused"
     },
     "recency": {
       "never": "Never",
@@ -1125,7 +1134,14 @@
       "used": "Used",
       "history": "Last 28 days",
       "errors": "Errors",
+      "verifiedBootable": "Verified bootable",
       "agent": "Agent"
+    },
+    "verifiedBootable": {
+      "passed": "Passed",
+      "failed": "Failed",
+      "never_run": "Never run",
+      "not_applicable": "n/a"
     },
     "dataSource": {
       "files": "Files & folders",
@@ -1134,6 +1150,7 @@
       "hyperv": "Hyper-V",
       "vmware": "VMware",
       "bare_metal": "Bare metal",
+      "image": "Disk image",
       "m365_mail": "Microsoft 365 mail",
       "m365_sharepoint": "SharePoint",
       "m365_exchange": "Exchange",
@@ -1154,6 +1171,7 @@
       "customer": "Provider customer",
       "lastSuccess": "Last successful backup",
       "lastSession": "Last session",
+      "bootCheck": "Last boot check",
       "unlink": "Unlink",
       "unlinkConfirm": "Unlink this provider device from the Breeze device? It stays in the backup product and can be linked again.",
       "unlinkedToast": "Provider device unlinked",

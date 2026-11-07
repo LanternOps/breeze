@@ -49,6 +49,17 @@ vi.mock('../services/oemUpdates/alerts', () => ({
   emitDeviceNotReturnedAlert: vi.fn(async () => 'alert-1'),
   resolveReturnedDeviceAlerts: vi.fn(async () => 0),
 }));
+// The monitor alone: the other stages have oemUpdatesWorker.dispatch.test.ts.
+vi.mock('../services/oemUpdates/candidates', () => ({
+  decideScheduledRun: vi.fn(),
+  maxDispatchPerTick: vi.fn(() => 200),
+  selectDueDevices: vi.fn(async () => []),
+}));
+vi.mock('../services/oemUpdates/dispatch', () => ({ dispatchOemUpdateRun: vi.fn() }));
+vi.mock('../services/oemUpdates/resolver', () => ({ resolveOemUpdatesLinkForDevice: vi.fn() }));
+vi.mock('../services/oemUpdates/rebootSweep', () => ({ runOemRebootSweep: vi.fn(async () => undefined) }));
+vi.mock('../services/oemUpdates/overdueSweep', () => ({ runOemOverdueSweep: vi.fn(async () => undefined) }));
+vi.mock('../services/oemUpdates/releaseSweep', () => ({ runOemReleaseSweep: vi.fn(async () => undefined) }));
 
 import { captureException } from '../services/sentry';
 import { emitDeviceNotReturnedAlert, resolveReturnedDeviceAlerts } from '../services/oemUpdates/alerts';
@@ -172,6 +183,21 @@ describe('runOemUpdatesTick: the not-returned monitor', () => {
     await runOemUpdatesTick(now);
     expect(emitDeviceNotReturnedAlert).not.toHaveBeenCalled();
     expect(state.updates).toEqual([expect.objectContaining({ returnDeadlineAt: null })]);
+  });
+
+  it('online with the flash restart still owed keeps watching: the held restart is what applies it', async () => {
+    state.rows = [row({ deviceStatus: 'online', rebootRequired: true })];
+    await runOemUpdatesTick(now);
+    expect(emitDeviceNotReturnedAlert).not.toHaveBeenCalled();
+    expect(resolveReturnedDeviceAlerts).not.toHaveBeenCalled();
+    expect(state.updates).toEqual([]);
+  });
+
+  it('leaves out decommissioned devices and pages by device', async () => {
+    await runOemUpdatesTick(now);
+    const query = new PgDialect().sqlToQuery(state.where as SQL);
+    expect(query.sql).toContain('"devices"."status" <>');
+    expect(query.params).toContain('decommissioned');
   });
 
   it('a reboot still owed and offline at the deadline raises, whatever it reported before', async () => {

@@ -405,6 +405,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   OAUTH_DEBUG: 'debug logging flag',
   // OFFBOARDING_*
   OFFBOARDING_DRAIN_WINDOW_HOURS: 'timing knob',
+  // OEM_UPDATES_*
+  OEM_UPDATES_MAX_DISPATCH_PER_TICK: 'worker throughput knob (vendor update dispatch cap per tick, default 200)',
   // OFFLINE_*
   OFFLINE_DETECTOR_CHUNK_SIZE: 'worker throughput knob',
   OFFLINE_DETECTOR_MAX_DEVICES_PER_RUN: 'worker throughput knob',

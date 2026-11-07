@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { oemUpdateRunPayloadSchema, type OemCategory } from '@breeze/shared';
 
 const state = vi.hoisted(() => ({
@@ -531,5 +533,24 @@ describe('dispatchOemUpdateRelease', () => {
     const deliver = vi.fn().mockResolvedValue({ ok: true, delivery: 'cancelled' });
     vi.mocked(dispatchDeviceCommand).mockResolvedValue(queued({ deliver }));
     await expect(release()).resolves.toEqual({ ok: false, refusal: 'cancelled_at_claim' });
+  });
+});
+
+describe('dispatchOemUpdateRun: attempts per occurrence (#11065 W07)', () => {
+  it('a new occurrence resets the count, by comparing inside the upsert', async () => {
+    const outcome = await dispatchOemUpdateRun(input({ trigger: 'scheduled', occurrenceKey: '2027-02' }));
+    expect(outcome.ok).toBe(true);
+    const { sql, params } = new PgDialect().sqlToQuery(state.upsertSet!.attempts as SQL);
+    expect(sql).toContain('IS DISTINCT FROM');
+    expect(sql).toContain('"occurrence_key"');
+    expect(params).toContain('2027-02');
+    // A first row takes the column default, and a value can only be in the set.
+    expect(state.upserts[0]).not.toHaveProperty('attempts');
+  });
+
+  it('Run Now leaves the count alone', async () => {
+    const outcome = await dispatchOemUpdateRun(input({ trigger: 'on_demand', occurrenceKey: null }));
+    expect(outcome.ok).toBe(true);
+    expect(state.upsertSet).not.toHaveProperty('attempts');
   });
 });

@@ -329,7 +329,8 @@
     "title": "Gestione processi",
     "totalCpu": "CPU totale",
     "pid": "PID",
-    "cpu": "CPU"
+    "cpu": "CPU",
+    "monitorThis": "Monitora questo"
   },
   "proxyTunnelPage": {
     "errors": {
@@ -654,9 +655,10 @@
     },
     "stopService": "Arresta servizio",
     "summary": "{{shown}} servizi su {{total}} in {{device}}",
-    "title": "Titolo",
+    "title": "Servizi",
     "windowsOnlyDescription": "Gestione servizi è disponibile solo per i dispositivi Windows. {{device}} esegue {{os}}.",
-    "windowsOnlyTitle": "Titolo solo Windows"
+    "windowsOnlyTitle": "Solo Windows",
+    "monitorThis": "Monitora questo"
   },
   "sessionHistory": {
     "columns": {

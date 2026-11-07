@@ -287,6 +287,12 @@ importers:
       ssh2-sftp-client:
         specifier: ^12.1.1
         version: 12.1.1
+      stream-chain:
+        specifier: 4.2.6
+        version: 4.2.6
+      stream-json:
+        specifier: 3.7.0
+        version: 3.7.0
       stripe:
         specifier: ^22.6.2
         version: 22.6.2(@types/node@26.6.6)
@@ -11053,8 +11059,14 @@ packages:
     resolution: {integrity: sha512-uyQK/mx5QjHun80FLJTfaWE7JtwfRMKBLkMne6udYOmvH0CawotVa7TfgYHzAnpphn4+TweIx1QKMnRIbipmUg==}
     engines: {node: '>= 0.10.0'}
 
+  stream-chain@4.2.6:
+    resolution: {integrity: sha512-1zeJ8CrtJfmiba26ui8jXkq/xLRFvhzkdH02D5QLO9Cnovgeb28IJxg88DdraWnjnkbOol/++uIAybJbJhk7ig==}
+
   stream-events@1.0.5:
     resolution: {integrity: sha512-E1GUzBSgvct8Jsb3v2X15pjzN1tYebtbLaMg+eBOUOAxgbLoSbT2NS91ckc5lJD1KfLjId+jXJRgo0qnV5Nerg==}
+
+  stream-json@3.7.0:
+    resolution: {integrity: sha512-rCSBdcBP/bPk6T8QFcxAj1MSzAuc5i49cYW6IE7sYObNEPccBJIUiL6fU9c9BWt40aJK0siVynLX7lWaW8alXw==}
 
   stream-shift@1.0.3:
     resolution: {integrity: sha512-76ORR0DO1o1hlKwTbi/DM3EXWGf3ZJYO8cXX5RJwnul2DEg2oyoZyjLNoQM8WsvZiFKCRfC1O0J7iCvie3RZmQ==}
@@ -23468,10 +23480,16 @@ snapshots:
 
   stream-buffers@2.2.0: {}
 
+  stream-chain@4.2.6: {}
+
   stream-events@1.0.5:
     dependencies:
       stubs: 3.0.0
     optional: true
+
+  stream-json@3.7.0:
+    dependencies:
+      stream-chain: 4.2.6
 
   stream-shift@1.0.3:
     optional: true
