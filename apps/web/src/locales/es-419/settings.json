@@ -7566,6 +7566,35 @@
       "create": "No se pudo agregar el contacto.",
       "update": "No se pudo guardar el contacto.",
       "delete": "No se pudo eliminar el contacto."
+    },
+    "responsibilities": {
+      "heading": "Responsabilidades",
+      "help": "De qué es responsable esta persona y dónde. Organización aplica en todas partes; Sitio y Grupo de dispositivos lo acotan.",
+      "empty": "No hay responsabilidades asignadas.",
+      "loadError": "No se pudieron cargar las responsabilidades de este contacto.",
+      "role": "Rol",
+      "scope": "Alcance",
+      "scopes": {
+        "organization": "Organización",
+        "site": "Sitio",
+        "deviceGroup": "Grupo de dispositivos"
+      },
+      "selectSite": "Selecciona un sitio",
+      "selectGroup": "Selecciona un grupo de dispositivos",
+      "groupsLoading": "Cargando grupos…",
+      "groupsError": "No se pudieron cargar los grupos de dispositivos de esta organización.",
+      "unknownGroup": "Grupo no disponible",
+      "siteRequired": "Elige un sitio.",
+      "groupRequired": "Elige un grupo de dispositivos.",
+      "duplicate": "Duplicado de otra fila.",
+      "add": "Agregar responsabilidad",
+      "remove": "Quitar",
+      "toasts": {
+        "saved": "Responsabilidades guardadas"
+      },
+      "errors": {
+        "save": "No se pudieron guardar las responsabilidades."
+      }
     }
   },
   "bulkContactImport": {

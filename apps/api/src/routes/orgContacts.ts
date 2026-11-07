@@ -20,6 +20,7 @@ import {
 } from '../services/contacts/crud';
 import { getPagination } from '../utils/pagination';
 import { commitContactImport, previewContactImport } from '../services/contacts/import';
+import { ResponsibilityValidationError } from '../services/contacts/responsibilities';
 import { contactCreateAuditEvent, writeContactAudit, writeContactImportAudits } from '../services/contacts/audit';
 import {
   commitContactImportRowSchema,
@@ -119,7 +120,7 @@ export function canReachContactSite(auth: AuthContext, siteId: string | null | u
  * "not visible", "not yours" and "pinned to a site you cannot reach" all
  * collapse to 404, so the response is never an existence oracle.
  */
-async function resolveContactOrg(c: any): Promise<{ contactId: string; orgId: string; siteId: string | null } | Response> {
+export async function resolveContactOrg(c: any): Promise<{ contactId: string; orgId: string; siteId: string | null } | Response> {
   const auth = c.get('auth') as AuthContext;
   const contactId = c.req.param('contactId')!;
   if (!PG_UUID_REGEX.test(contactId)) return c.json({ error: 'Contact not found' }, 404);
@@ -170,8 +171,8 @@ function actorFrom(c: any): ContactActor {
 }
 
 /** A service refusal is the caller's fault, so it is a 400 rather than a 500. */
-function validationResponse(c: any, err: unknown): Response | null {
-  if (!(err instanceof ContactValidationError)) return null;
+export function validationResponse(c: any, err: unknown): Response | null {
+  if (!(err instanceof ContactValidationError) && !(err instanceof ResponsibilityValidationError)) return null;
   return c.json({ error: err.message, code: err.code }, 400);
 }
 
