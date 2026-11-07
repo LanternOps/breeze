@@ -26,6 +26,8 @@ vi.mock('../db', () => ({
   },
 }));
 
+vi.mock('./networkIsolation/service', () => ({ startNetworkIsolation: vi.fn() }));
+
 vi.mock('./aiDispatch', () => ({
   aiQueueCommandForExecution: vi.fn(),
 }));
@@ -53,6 +55,8 @@ import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
 import { aiQueueCommandForExecution } from './aiDispatch';
 import { registerIncidentTools } from './aiToolsIncident';
+import { startNetworkIsolation } from './networkIsolation/service';
+import { toolInputSchemas } from './aiToolSchemas';
 import { checkScreenAccessConsentGate } from '../routes/remote/screenAccessConsentGate';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
@@ -330,5 +334,77 @@ describe('collect_evidence screenshot honours the screen-access consent gate (W0
 
     expect(checkScreenAccessConsentGate).not.toHaveBeenCalled();
     expect(out.success).toBe(true);
+  });
+});
+
+
+describe('network isolation AI service ownership', () => {
+  const isolationIncidentId = '22222222-2222-4222-8222-222222222222';
+  const input = {
+    incidentId: isolationIncidentId, deviceId: OWN_DEVICE_ID, actionType: 'network_isolation',
+    approvalRef: 'appr-1', ttlHours: 24, reason: 'Contain incident',
+    parameters: { allow: [{ scope: 'any', cidr: '192.0.2.0/24' }], generation: 99 },
+  };
+  beforeEach(() => {
+    vi.mocked(verifyDeviceAccess).mockResolvedValue({ device: { id: OWN_DEVICE_ID, orgId: ORG_ID } } as any);
+    vi.mocked(startNetworkIsolation).mockResolvedValue({ episode: { id: 'episode-1' }, commandId: 'isolation-command' } as any);
+  });
+  it('ignores caller parameters and delegates solely to the isolation service', async () => {
+    const auth = makeAuth();
+    const out = JSON.parse(await buildToolMap().get('execute_containment')!.handler(input, auth));
+    expect(startNetworkIsolation).toHaveBeenCalledWith(auth, OWN_DEVICE_ID,
+      { incidentId: isolationIncidentId, ttlHours: 24, reason: 'Contain incident' },
+      { requestedByKind: 'brain', approvalRef: 'appr-1' });
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ success: true, commandId: 'isolation-command' });
+  });
+  it.each([undefined, '', '   '])('asks for a reason when omitted or blank (%s)', async reason => {
+    const out = JSON.parse(await buildToolMap().get('execute_containment')!.handler({ ...input, reason }, makeAuth()));
+    expect(out.error).toMatch(/reason is required/i);
+    expect(startNetworkIsolation).not.toHaveBeenCalled();
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+  });
+  it.each(['feature_disabled', 'agent_below_gate', 'incident_mismatch', 'site_forbidden'] as const)(
+    'returns the service refusal %s as a tool error', async error => {
+      vi.mocked(startNetworkIsolation).mockResolvedValue({ error } as any);
+      const out = JSON.parse(await buildToolMap().get('execute_containment')!.handler(input, makeAuth()));
+      expect(out).toMatchObject({ error });
+      expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+    });
+  it.each([0, 721, 1.5, '24'])('rejects invalid isolation TTL %s before starting', async ttlHours => {
+    const out = JSON.parse(await buildToolMap().get('execute_containment')!.handler({ ...input, ttlHours }, makeAuth()));
+    expect(out.error).toBe('Invalid isolation input: ttlHours');
+    expect(startNetworkIsolation).not.toHaveBeenCalled();
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+  });
+  it('lists all invalid field paths without exposing raw Zod diagnostics', async () => {
+    const out = JSON.parse(await buildToolMap().get('execute_containment')!.handler({
+      ...input, incidentId: 'invalid', ttlHours: 0,
+    }, makeAuth()));
+    expect(out.error).toBe('Invalid isolation input: incidentId, ttlHours');
+    expect(startNetworkIsolation).not.toHaveBeenCalled();
+  });
+  it('preserves the typed unsupported-agent refusal detail', async () => {
+    vi.mocked(startNetworkIsolation).mockResolvedValue({ error: 'agent_not_ready', networkIsolationUnsupportedReason: 'mechanism_unavailable' });
+    const out = JSON.parse(await buildToolMap().get('execute_containment')!.handler(input, makeAuth()));
+    expect(out).toEqual({ error: 'agent_not_ready', networkIsolationUnsupportedReason: 'mechanism_unavailable' });
+  });
+  it('still requires approval and device access before the isolation service', async () => {
+    const handler = buildToolMap().get('execute_containment')!.handler;
+    expect(JSON.parse(await handler({ ...input, approvalRef: undefined }, makeAuth())).error).toMatch(/approvalRef/);
+    expect(startNetworkIsolation).not.toHaveBeenCalled();
+    vi.mocked(verifyDeviceAccess).mockResolvedValue({ error: 'Device not found or access denied' });
+    expect(JSON.parse(await handler(input, makeAuth())).error).toMatch(/access denied/);
+    expect(startNetworkIsolation).not.toHaveBeenCalled();
+  });
+  it('validates ttlHours and reason in the tool schema and advertises them', () => {
+    const parsed = toolInputSchemas.execute_containment!.parse(input);
+    expect(parsed).toMatchObject({ ttlHours: 24, reason: 'Contain incident' });
+    expect(toolInputSchemas.execute_containment!.safeParse({ ...input, ttlHours: 721 }).success).toBe(false);
+    expect(toolInputSchemas.execute_containment!.safeParse({ ...input, ttlHours: 0 }).success).toBe(false);
+    const properties = buildToolMap().get('execute_containment')!.definition.input_schema.properties;
+    expect(properties).toHaveProperty('ttlHours');
+    expect(properties).toHaveProperty('reason');
   });
 });

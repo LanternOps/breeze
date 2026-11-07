@@ -366,7 +366,7 @@ export type Device = {
     ramTotalMb?: number;
     diskTotalGb?: number;
     /**
-     * device_hardware.serial_number, when the API sends it. Read by the
+     * device_hardware.serial_number from the list API. Read by the
      * opt-in Serial column (#4622 W04) so an agent row's serial can sit
      * beside a manual asset's `serialNumber` in the same column.
      */
@@ -2859,7 +2859,7 @@ export default function DeviceList({
       },
     },
     // Manual-asset inventory columns (#4622 W04). `serial` is shared with
-    // agent rows (device_hardware.serial_number, once the API sends it);
+    // agent rows (device_hardware.serial_number);
     // `assetTag`/`location` exist only for a manual asset.
     serial: {
       header: () => sortHeader("serial", t("deviceList.tableColumns.serial"), t("deviceList.sortBy.serial")),

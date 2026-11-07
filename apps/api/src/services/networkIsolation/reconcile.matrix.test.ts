@@ -4,7 +4,10 @@ import type { DeviceNetworkIsolation } from '../../db/schema';
 import type { EpisodeTx } from './episodeStore';
 import { captureException } from '../sentry';
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
-const store = vi.hoisted(() => ({ row: null as DeviceNetworkIsolation | null, writes: [] as Record<string, unknown>[] }));
+const store = vi.hoisted(() => ({ row: null as DeviceNetworkIsolation | null, writes: [] as Record<string, unknown>[], afterCommit: [] as Array<() => Promise<void>>, published: vi.fn() }));
+vi.mock('../../db', () => ({ runAfterDbContextCommit: (_label: string, fn: () => Promise<void>) => { store.afterCommit.push(fn); } }));
+vi.mock('../deviceSiteResolver', () => ({ resolveDeviceSiteId: vi.fn(async () => 'site') }));
+vi.mock('../eventBus', () => ({ publishEvent: (...args: unknown[]) => store.published(...args) }));
 vi.mock('./episodeStore', async (original) => ({
   ...(await original<typeof import('./episodeStore')>()),
   findHeartbeatEpisode: vi.fn(async () => store.row && !(store.row.desiredState === 'released' && store.row.releaseConfirmedAt) ? store.row : null),
@@ -21,7 +24,7 @@ const now = new Date('2026-10-31T12:00:00Z');
 const allow = [{ kind: 'host', host: 'control.example.test', ports: [443], proto: 'tcp', scope: 'breeze' }];
 const tx = {
   update: vi.fn(() => ({ set: vi.fn((v) => { store.writes.push(v); if ('lastAgentReport' in v) Object.assign(store.row!, v); return { where: vi.fn(async () => undefined) }; }) })),
-  insert: vi.fn(() => ({ values: vi.fn(async (v) => { store.writes.push(v); }) })),
+  insert: vi.fn(() => ({ values: vi.fn((v) => { store.writes.push(v); return { returning: async () => [{ id: 'alert-id' }] }; }) })),
 } as unknown as EpisodeTx;
 function row(desired = 'isolated'): DeviceNetworkIsolation {
   return { id, deviceId: device.id, orgId: device.orgId, generation: 2, lastJournalSeq: 5,
@@ -31,7 +34,7 @@ function row(desired = 'isolated'): DeviceNetworkIsolation {
     releaseConfirmedAt: null, failureCode: null, releaseKind: null, lastAgentReport: null,
   } as unknown as DeviceNetworkIsolation;
 }
-beforeEach(() => { __resetIsolationLogThrottleForTests?.(); store.row = row(); store.writes = []; vi.clearAllMocks(); });
+beforeEach(() => { __resetIsolationLogThrottleForTests?.(); store.row = row(); store.writes = []; store.afterCommit = []; vi.clearAllMocks(); });
 // Every same-generation/non-stale cell has a complete explicit outcome.
 const EXPECTED = {
   isolated: {
@@ -44,7 +47,7 @@ const EXPECTED = {
     expired: { state: 'expired', confirmed: true, seq: 6, alerts: 0, journals: 0 },
     released_locally: { state: 'released_locally', confirmed: true, seq: 6, alerts: 1, journals: 1 },
     self_released: { state: 'self_released', confirmed: true, seq: 6, alerts: 1, journals: 1 },
-    failed: { state: 'failed', confirmed: true, seq: 6, alerts: 0, journals: 0 },
+    failed: { state: 'failed', confirmed: true, seq: 6, alerts: 1, journals: 0 },
   },
   released: {
     missing: { state: 'release_requested', confirmed: false, seq: 5, alerts: 0, journals: 0 },
@@ -75,6 +78,18 @@ describe('heartbeat reconcile matrix', () => {
         expect(store.row).toMatchObject({ state: expected.state, releaseConfirmedAt: expected.confirmed ? now : null, lastJournalSeq: expected.seq });
         expect(store.writes.filter(v => 'title' in v)).toHaveLength(expected.alerts);
         expect(store.writes.filter(v => 'timeline' in v)).toHaveLength(expected.journals);
+        expect(store.published).not.toHaveBeenCalled();
+        for (const callback of store.afterCommit) await callback();
+        const transitioned = expected.state !== (desired === 'isolated' ? 'applied' : 'release_requested');
+        const events: Record<string, string> = {
+          verified: 'device.isolated', failed: 'device.isolation_failed', self_released: 'device.isolation_self_released',
+          released_locally: 'device.isolation_released', released: 'device.isolation_released', expired: 'device.isolation_released',
+        };
+        const event = events[expected.state];
+        expect(store.published.mock.calls.filter(([type]) => type !== 'alert.triggered')).toHaveLength(transitioned && event ? 1 : 0);
+        expect(store.published.mock.calls.filter(([type]) => type === 'alert.triggered')).toHaveLength(expected.alerts);
+        if (transitioned && event) expect(store.published).toHaveBeenCalledWith(event, device.orgId,
+          expect.objectContaining({ isolationId: id, deviceId: device.id, generation: 2, state: expected.state }), 'network-isolation-result');
       });
     }
   it('classifies heartbeat failure from a typed journal event, never lastError prose', async () => {

@@ -1150,6 +1150,8 @@
       "ticket_customer_email_domain": "Domínio de cliente do chamado",
       "ticket_email_inbound": "E-mail de chamado recebido",
       "ticket_form": "Formulário de chamado",
+      "ticket_import_run": "Execução de importação de chamados",
+      "ticket_import_source": "Origem de importação de chamados",
       "ticket_mailbox_connection": "Caixa de correio de chamados",
       "ticket_priority_settings": "Configurações de prioridade de chamados",
       "ticket_response_template": "Modelo de resposta de chamado",

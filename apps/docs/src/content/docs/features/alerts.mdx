@@ -24,6 +24,39 @@ Huntress or SentinelOne agent is missing and the vendor does not report it) or
 when the vendor reports the device under a different organization; both resolve
 on their own once coverage is restored.
 
+### Alerts that are not about a device
+
+From v0.126.0 an alert can belong to something other than a device:
+
+- **Backup workload**: a Microsoft 365 or Google Workspace backup workload from a
+  [backup provider](/backup/backup-providers/#sync-history-and-alerts). The chip
+  links to backup health.
+- **Topology site**: a network topology problem for a site. The chip links to
+  that site on the topology map. Deleting the device that first reported it no
+  longer deletes the alert; it stays as site history.
+
+In the inbox, alert detail, correlated groups and the organization overview,
+these alerts show a **Backup workload** or **Topology site** chip naming the
+subject instead of a device, and device-only actions are hidden. Notifications
+name the subject where they would name the device. Users limited to selected
+sites see topology site alerts only for their sites, and do not see backup
+workload alerts. Monitor responses and **Jobs → Alert workflows** do not run for
+these alerts, but delivery routing still notifies your channels.
+
+### When alerts close on their own
+
+From v0.126.0:
+
+- An alert that resolves automatically when its condition clears does so even
+  after it has been **acknowledged** or **suppressed**.
+- Alerts that need a person, such as the recurrence escalation alert a monitor
+  raises when it keeps breaching, never close automatically. Resolve them
+  yourself.
+- A device with no current data (**unknown**) never resolves an alert.
+- An event-log condition does not re-open a closed alert for events it already
+  alerted on. A new alert needs at least one matching event newer than those,
+  and a recovery event clears the alert only if it is newer than the trigger.
+
 ## Monitors
 
 Open **Alerts → Monitors** to create a condition, choose its severity and noise

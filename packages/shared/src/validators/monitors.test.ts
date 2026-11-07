@@ -107,6 +107,45 @@ describe('monitor definition validators (#5289)', () => {
     expect(r.success && 'ownerScope' in r.data).toBe(false);
   });
 
+  it('update leaves an omitted key omitted, so a partial PATCH cannot reset stored config', () => {
+    expect(updateMonitorDefinitionSchema.parse({ description: 'x' })).toStrictEqual({ description: 'x' });
+    expect(updateMonitorDefinitionSchema.parse({})).toStrictEqual({});
+    expect(updateMonitorDefinitionSchema.parse({ enabled: false })).toStrictEqual({ enabled: false });
+  });
+
+  it('create still fills its defaults', () => {
+    const data = createMonitorDefinitionSchema.parse({
+      name: 'x',
+      kind: 'offline',
+      severity: 'high',
+      condition: { durationMinutes: 15 },
+    });
+    expect(data).toMatchObject({
+      ownerScope: 'organization',
+      enabled: true,
+      cooldownMinutes: 5,
+      autoResolve: false,
+      responses: [],
+      deliveryMode: 'inherit',
+      deliveryChannelIds: [],
+      recurrenceActions: [],
+      pauseResponsesOnEscalation: true,
+    });
+  });
+
+  // The service re-checks the merged definition, and only it can see the stored
+  // channels this PATCH keeps.
+  it('update accepts deliveryMode channels when deliveryChannelIds is omitted', () => {
+    expect(updateMonitorDefinitionSchema.parse({ deliveryMode: 'channels' })).toStrictEqual({
+      deliveryMode: 'channels',
+    });
+  });
+
+  it('update still rejects deliveryMode channels with an explicitly empty channel list', () => {
+    const r = updateMonitorDefinitionSchema.safeParse({ deliveryMode: 'channels', deliveryChannelIds: [] });
+    expect(r.success).toBe(false);
+  });
+
   it('inline settings carry attachment items', () => {
     const r = monitorsInlineSettingsSchema.safeParse({
       items: [

@@ -36,6 +36,8 @@ export const CONFIG_FEATURE_TYPES = [
   // #6960 — third-party security agents (Huntress, SentinelOne, DNS filters),
   // inline-only desired state; the install policy is generated from the link.
   'security_agents',
+  // #10100 — network-isolation containment tuning, inline-only, partner-wide
+  'containment',
 ] as const;
 
 export type ConfigFeatureType = typeof CONFIG_FEATURE_TYPES[number];
@@ -125,6 +127,9 @@ export const CONFIG_POLICY_FEATURE_TRUST_TIER: Record<ConfigFeatureType, 'protec
   onedrive_helper: 'execution_gated', // delivers OneDrive helper library-mapping/credential config
   helper: 'execution_gated', // Breeze Assist technician/AI-chat capability grants on the device
   security_agents: 'execution_gated', // arms installation of third-party security agents (with per-customer keys substituted at dispatch)
+  // extraAllow grants an isolated device network permits it would not otherwise have. A device
+  // self-selecting into a group must fall back to "no grant": the fixed W1 defaults (strictest containment).
+  containment: 'execution_gated',
   maintenance: 'execution_gated', // grants suppression of alerting/monitoring for the window — capability to evade detection, not merely a restriction
 
   // protective — restricts the device or only detects/reports; never grants a

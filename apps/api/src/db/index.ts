@@ -41,21 +41,13 @@ import {
   type PoolSlot,
 } from './poolAdmission';
 import { createAbandonedSlotReclaimScheduler } from './abandonedSlotReclaim';
+import { getDbPoolMax } from './poolSize';
 
 const requestDatabaseConfig = resolveRequestDatabaseConfig();
 logRequestDatabaseConfigSource(requestDatabaseConfig);
 
-// Pool sizing: postgres-js defaults to max=10, which causes cascading 504s
-// under heartbeat storms (e.g. a 1000-agent fleet reconnecting at once).
-// Default to 30 and allow tuning via DB_POOL_MAX.
-function getDbPoolMax(): number {
-  const raw = Number.parseInt(process.env.DB_POOL_MAX ?? '', 10);
-  if (!Number.isFinite(raw) || raw <= 0) {
-    return 30;
-  }
-  return raw;
-}
-
+// Pool sizing (default 30, DB_POOL_MAX to tune) lives in ./poolSize so the
+// alert worker can size its concurrency against it (#10859).
 const requestPoolMax = getDbPoolMax();
 
 const client = postgres(requestDatabaseConfig.url, {

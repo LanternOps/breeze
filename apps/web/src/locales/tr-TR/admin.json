@@ -1150,6 +1150,8 @@
       "ticket_customer_email_domain": "Talep müşteri alan adı",
       "ticket_email_inbound": "Gelen talep e-postası",
       "ticket_form": "Talep formu",
+      "ticket_import_run": "Talep içe aktarma çalıştırması",
+      "ticket_import_source": "Talep içe aktarma kaynağı",
       "ticket_mailbox_connection": "Talep posta kutusu",
       "ticket_priority_settings": "Talep öncelik ayarları",
       "ticket_response_template": "Talep yanıt şablonu",

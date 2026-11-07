@@ -279,3 +279,32 @@ func TestContainmentDesiredValidation(t *testing.T) {
 		t.Fatal("unexpected secret in fixture parameters")
 	}
 }
+
+// Capability reads must reuse the initialized platform instance; they must not
+// invoke scheduler/self-test work on the heartbeat request path.
+func TestContainmentCapabilitiesUsesCachedPlatform(t *testing.T) {
+	previous := currentContainmentPlatform.Load()
+	t.Cleanup(func() { currentContainmentPlatform.Store(previous) })
+	iso := &cachedCapabilityIsolator{}
+	currentContainmentPlatform.Store(&containmentPlatform{isolator: iso})
+	for n := 0; n < 3; n++ {
+		var capabilities SecurityCapabilities
+		containmentCapabilities(&capabilities)
+		if capabilities.NetworkIsolationVersion != 1 || !capabilities.NetworkIsolationReady || capabilities.NetworkIsolationMechanism != "wfp" {
+			t.Fatalf("capability=%+v", capabilities)
+		}
+	}
+	if iso.reads != 3 {
+		t.Fatalf("reads=%d", iso.reads)
+	}
+}
+
+type cachedCapabilityIsolator struct {
+	isolation.Isolator
+	reads int
+}
+
+func (i *cachedCapabilityIsolator) Capability() isolation.Capability {
+	i.reads++
+	return isolation.Capability{Version: 1, Mechanism: "wfp", Ready: true}
+}

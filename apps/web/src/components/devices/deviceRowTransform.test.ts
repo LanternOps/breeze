@@ -31,6 +31,16 @@ describe('toDeviceListRow', () => {
     expect(row.tags).toEqual(['vip']);
   });
 
+  it('carries the hardware serial number through', () => {
+    const row = toDeviceListRow({ ...RAW, hardware: { serialNumber: 'TEST-SERIAL-01' } });
+    expect(row.hardware?.serialNumber).toBe('TEST-SERIAL-01');
+  });
+
+  it.each([undefined, null, 42, false, {}])('ignores invalid hardware serial number %j', serialNumber => {
+    const row = toDeviceListRow({ ...RAW, hardware: { serialNumber } });
+    expect(row.hardware?.serialNumber).toBeUndefined();
+  });
+
   it('prefers nested metrics and clamps to 0–100', () => {
     expect(toDeviceListRow({ ...RAW, metrics: { cpuPercent: 250 }, cpuPercent: 5 }).cpuPercent).toBe(100);
   });

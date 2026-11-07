@@ -5,6 +5,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
+import { parseDateOnly } from '@/lib/dateOnly';
 import { loginPathWithNext } from '../../lib/authScope';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
@@ -54,7 +55,9 @@ export const WARRANTY_STATUS_BADGE: Record<string, { label: string; color: strin
 
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return '\u2014';
-  const d = new Date(dateStr);
+  // A bare YYYY-MM-DD is a calendar date: parseDateOnly keeps it on its own day
+  // west of UTC (new Date() would read it as UTC midnight and render the day before).
+  const d = parseDateOnly(dateStr);
   if (isNaN(d.getTime())) return dateStr;
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }

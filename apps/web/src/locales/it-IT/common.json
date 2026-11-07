@@ -1350,13 +1350,6 @@
           "updated": "Aggiornato"
         },
         "searchPlaceholder": "Cerca ticket",
-        "status": {
-          "closed": "Chiuso",
-          "inProgress": "In corso",
-          "open": "Aperto",
-          "resolved": "Risolto",
-          "waiting": "In attesa"
-        },
         "ticketCount": "{{filtered}} di {{total}} ticket",
         "title": "Ticket degli avvisi",
         "unlinked": "Scollegato"

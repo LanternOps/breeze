@@ -226,5 +226,4 @@ export interface TicketImportModule<Options = unknown, Cursor = unknown> {
   dispose?(sourceId: string): void;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AnyTicketImportModule = TicketImportModule<any, any>;

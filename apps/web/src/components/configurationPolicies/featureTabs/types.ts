@@ -13,7 +13,9 @@ import { i18n } from '@/lib/i18n';
 //
 // FeatureType is sourced FROM this tuple (not a parallel literal) so the runtime
 // exclusion list and the compile-time Exclude can't drift from each other.
-export const EDITOR_EXCLUDED_FEATURE_TYPES = [] as const;
+export const EDITOR_EXCLUDED_FEATURE_TYPES = [
+  'containment', // #10100 part 2 adds the Containment tab
+] as const;
 export type FeatureType = Exclude<ConfigFeatureType, typeof EDITOR_EXCLUDED_FEATURE_TYPES[number]>;
 
 export type FeatureLink = {

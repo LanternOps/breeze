@@ -11,6 +11,7 @@
  */
 
 import { db } from '../db';
+import { startNetworkIsolationSchema } from '@breeze/shared';
 import { devices, incidents, incidentEvidence, incidentActions } from '../db/schema';
 import { randomUUID } from 'node:crypto';
 import { eq, and, desc, gte, ilike, inArray, lte, count, sql, SQL } from 'drizzle-orm';
@@ -258,6 +259,8 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
             type: 'object',
             description: 'Action-specific parameters (e.g., { pid: 1234 } for process_kill)',
           },
+          ttlHours: { type: 'integer', minimum: 1, maximum: 720, description: 'Isolation TTL in hours' },
+          reason: { type: 'string', maxLength: 2000, description: 'Required for network isolation' },
           approvalRef: {
             type: 'string',
             description: 'Approval reference (required for high-risk containment actions)',
@@ -292,6 +295,29 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
       // the device must belong to the incident's organization (#9662).
       if (deviceAccess.device.orgId !== incident.orgId) {
         return JSON.stringify({ error: 'The device must belong to the same organization as the incident' });
+      }
+
+      if (input.actionType === 'network_isolation') {
+        if (typeof input.reason !== 'string' || !input.reason.trim()) {
+          return JSON.stringify({ error: 'reason is required for network isolation' });
+        }
+        const parsed = startNetworkIsolationSchema.safeParse({
+          incidentId: input.incidentId, ttlHours: input.ttlHours, reason: input.reason,
+        });
+        if (!parsed.success) {
+          const invalidPaths = [...new Set(parsed.error.issues.map(issue => issue.path.join('.') || 'input'))];
+          return JSON.stringify({ error: `Invalid isolation input: ${invalidPaths.join(', ')}` });
+        }
+        try {
+          // The service alone builds the allowlist and owns the action/command lifecycle.
+          const { startNetworkIsolation } = await import('./networkIsolation/service');
+          const result = await startNetworkIsolation(auth, input.deviceId as string, parsed.data,
+            { requestedByKind: 'brain', approvalRef: input.approvalRef as string });
+          if ('error' in result) return JSON.stringify(result);
+          return JSON.stringify({ success: true, ...result });
+        } catch (error) {
+          return JSON.stringify({ error: `Failed to start network isolation: ${sanitizeThrownToolError('incident', error)}` });
+        }
       }
 
       const payload = {

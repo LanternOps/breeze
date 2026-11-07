@@ -1150,6 +1150,8 @@
       "ticket_customer_email_domain": "Domaine client de billet",
       "ticket_email_inbound": "Courriel de billet entrant",
       "ticket_form": "Formulaire de billet",
+      "ticket_import_run": "Exécution d'importation de billets",
+      "ticket_import_source": "Source d'importation de billets",
       "ticket_mailbox_connection": "Boîte courriel de billets",
       "ticket_priority_settings": "Paramètres de priorité des billets",
       "ticket_response_template": "Modèle de réponse de billet",

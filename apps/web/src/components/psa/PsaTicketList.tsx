@@ -1,78 +1,98 @@
 import { useMemo, useState } from 'react';
-import { providerMeta, type PsaProvider } from './PsaConnectionList';
+import { ExternalLink } from 'lucide-react';
+import { providerMeta, type PsaConnection } from './PsaConnectionList';
 import { useTranslation } from 'react-i18next';
 import { FilterSelect } from '../shared/FilterSelect';
+import { secureExternalTicketUrl } from '../../lib/secureExternalTicketUrl';
 
-export type PsaTicketStatus = 'open' | 'in_progress' | 'waiting' | 'resolved' | 'closed';
-
+/**
+ * A row of GET /psa/tickets (mapTicketRow in apps/api/src/routes/psa.ts): the
+ * alert-ticket ledger. It has no synced PSA status (`status` is null until a
+ * worker writes one, #9655) and no provider, alert title or device name, so
+ * none of those are read here. Fields are loose because the API's states are
+ * open-ended strings; an unrecognized value renders as itself.
+ */
 export type PsaTicket = {
   id: string;
-  provider: PsaProvider;
-  externalId: string;
-  status: PsaTicketStatus;
-  alertTitle?: string;
-  deviceName?: string;
-  updatedAt: string | null;
+  title?: string | null;
+  connectionId?: string | null;
+  alertId?: string | null;
+  createState?: string | null;
+  externalTicketNumber?: string | null;
+  externalTicketUrl?: string | null;
+  syncedAt?: string | null;
+  raw?: { externalTicketId?: string | null } | null;
 };
 
 type PsaTicketListProps = {
   tickets: PsaTicket[];
+  /** Resolves each ticket's `connectionId` to its provider. */
+  connections?: Pick<PsaConnection, 'id' | 'provider'>[];
   timezone?: string;
 };
 
-const statusConfig: Record<PsaTicketStatus, { labelKey: string; className: string }> = {
-  open: {
-    labelKey: 'longTail.psa.PsaTicketList.status.open',
-    className: 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-400'
-  },
-  in_progress: {
-    labelKey: 'longTail.psa.PsaTicketList.status.inProgress',
-    className: 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-400'
-  },
-  waiting: {
-    labelKey: 'longTail.psa.PsaTicketList.status.waiting',
-    className: 'border-gray-200 bg-gray-50 text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400'
-  },
-  resolved: {
-    labelKey: 'longTail.psa.PsaTicketList.status.resolved',
-    className: 'border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-400'
-  },
-  closed: {
-    labelKey: 'longTail.psa.PsaTicketList.status.closed',
-    className: 'border-muted bg-muted text-muted-foreground'
+const SUCCESS_CLASS = 'border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-400';
+const WARNING_CLASS = 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-400';
+const ERROR_CLASS = 'border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-400';
+const NEUTRAL_CLASS = 'border-muted bg-muted text-muted-foreground';
+
+const createStateClass = (state: string | null | undefined): string => {
+  switch (state) {
+    case 'created':
+      return SUCCESS_CLASS;
+    case 'failed':
+    case 'rejected':
+      return ERROR_CLASS;
+    case 'needs_attention':
+    case 'create_outcome_unknown':
+      return WARNING_CLASS;
+    default:
+      return NEUTRAL_CLASS;
   }
 };
 
-export default function PsaTicketList({ tickets, timezone }: PsaTicketListProps) {
+export default function PsaTicketList({ tickets, connections = [], timezone }: PsaTicketListProps) {
   const { t } = useTranslation('common');
   const [query, setQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<PsaTicketStatus | 'all'>('all');
+  const [stateFilter, setStateFilter] = useState('all');
 
-  const formatDate = (value: string | null) => {
+  const formatDate = (value: string | null | undefined) => {
     if (!value) return t('common:states.unknown');
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString([], { timeZone: timezone });
   };
 
-  const statusOptions = useMemo(() => {
-    const uniqueStatuses = Array.from(new Set(tickets.map(ticket => ticket.status)));
-    return ['all', ...uniqueStatuses] as const;
-  }, [tickets]);
+  const createStateLabel = (state: string) =>
+    t(/* i18n-dynamic */ `longTail.psa.PsaAlertTicketingActivity.states.${state}`, { defaultValue: state });
+
+  const providerLabelByConnection = useMemo(
+    () => new Map(connections.map(connection => [connection.id, providerMeta[connection.provider]?.label ?? connection.provider])),
+    [connections]
+  );
+
+  const stateOptions = useMemo(
+    () => Array.from(new Set(tickets.flatMap(ticket => (ticket.createState ? [ticket.createState] : [])))),
+    [tickets]
+  );
 
   const filteredTickets = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
     return tickets.filter(ticket => {
+      const searchable = [
+        ticket.externalTicketNumber,
+        ticket.raw?.externalTicketId,
+        ticket.title,
+        ticket.connectionId ? providerLabelByConnection.get(ticket.connectionId) : undefined
+      ];
       const matchesQuery = normalizedQuery.length === 0
         ? true
-        : ticket.externalId.toLowerCase().includes(normalizedQuery) ||
-          (ticket.alertTitle ?? '').toLowerCase().includes(normalizedQuery) ||
-          (ticket.deviceName ?? '').toLowerCase().includes(normalizedQuery);
-      const matchesStatus = statusFilter === 'all' ? true : ticket.status === statusFilter;
+        : searchable.some(value => value?.toLowerCase().includes(normalizedQuery));
+      const matchesState = stateFilter === 'all' ? true : ticket.createState === stateFilter;
 
-      return matchesQuery && matchesStatus;
+      return matchesQuery && matchesState;
     });
-  }, [tickets, query, statusFilter]);
+  }, [tickets, query, stateFilter, providerLabelByConnection]);
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-xs">
@@ -93,13 +113,14 @@ export default function PsaTicketList({ tickets, timezone }: PsaTicketListProps)
           />
           <FilterSelect
             label={t('longTail.psa.PsaTicketList.filters.statusFilterLabel')}
-            value={statusFilter}
-            onChange={event => setStatusFilter(event.target.value as PsaTicketStatus | 'all')}
+            value={stateFilter}
+            onChange={event => setStateFilter(event.target.value)}
             className="w-full sm:w-40"
           >
-            {statusOptions.map(status => (
-              <option key={status} value={status}>
-                {status === 'all' ? t('longTail.psa.PsaTicketList.filters.allStatuses') : t(/* i18n-dynamic */ statusConfig[status as PsaTicketStatus].labelKey)}
+            <option value="all">{t('longTail.psa.PsaTicketList.filters.allStatuses')}</option>
+            {stateOptions.map(state => (
+              <option key={state} value={state}>
+                {createStateLabel(state)}
               </option>
             ))}
           </FilterSelect>
@@ -111,9 +132,9 @@ export default function PsaTicketList({ tickets, timezone }: PsaTicketListProps)
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <th className="px-4 py-3">{t('longTail.psa.PsaTicketList.headers.ticket')}</th>
+              <th className="px-4 py-3">{t('longTail.psa.PsaConnectionList.headers.provider')}</th>
               <th className="px-4 py-3">{t('common:labels.status')}</th>
               <th className="px-4 py-3">{t('longTail.psa.PsaTicketList.headers.linkedAlert')}</th>
-              <th className="px-4 py-3">{t('common:labels.device')}</th>
               <th className="px-4 py-3">{t('longTail.psa.PsaTicketList.headers.updated')}</th>
             </tr>
           </thead>
@@ -143,30 +164,52 @@ export default function PsaTicketList({ tickets, timezone }: PsaTicketListProps)
               </tr>
             ) : (
               filteredTickets.map(ticket => {
-                const statusStyle = statusConfig[ticket.status];
+                // A row whose create never reached the PSA has no external
+                // identity yet; its title is then the only name it has.
+                const ticketLabel = ticket.externalTicketNumber || ticket.raw?.externalTicketId;
+                const href = secureExternalTicketUrl(ticket.externalTicketUrl);
+                const providerLabel = ticket.connectionId ? providerLabelByConnection.get(ticket.connectionId) : undefined;
                 return (
                   <tr key={ticket.id} className="transition hover:bg-muted/40">
                     <td className="px-4 py-3 text-sm font-medium">
                       <div className="flex flex-col">
-                        <span>{ticket.externalId}</span>
-                        <span className="text-xs text-muted-foreground">
-                          {providerMeta[ticket.provider].label}
-                        </span>
+                        {ticketLabel && href ? (
+                          <a
+                            href={href}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                          >
+                            <span className="break-all">{ticketLabel}</span>
+                            <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                          </a>
+                        ) : (
+                          <span className="break-all">{ticketLabel || ticket.title || t('common:states.unknown')}</span>
+                        )}
+                        {ticketLabel && ticket.title && (
+                          <span className="text-xs font-normal text-muted-foreground">{ticket.title}</span>
+                        )}
                       </div>
                     </td>
+                    <td className="px-4 py-3 text-sm text-muted-foreground">
+                      {providerLabel ?? t('common:states.unknown')}
+                    </td>
                     <td className="px-4 py-3 text-sm">
-                      <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusStyle.className}`}>
-                        {t(/* i18n-dynamic */ statusStyle.labelKey)}
+                      <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${createStateClass(ticket.createState)}`}>
+                        {ticket.createState ? createStateLabel(ticket.createState) : t('common:states.unknown')}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
-                      {ticket.alertTitle || t('longTail.psa.PsaTicketList.unlinked')}
+                      {ticket.alertId ? (
+                        <a href={`/alerts/${ticket.alertId}`} className="text-primary underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-ring">
+                          {t('longTail.psa.PsaAlertTicketingActivity.viewAlert')}
+                        </a>
+                      ) : (
+                        t('longTail.psa.PsaTicketList.unlinked')
+                      )}
                     </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
-                      {ticket.deviceName || t('longTail.psa.PsaTicketList.unlinked')}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-muted-foreground">
-                      {formatDate(ticket.updatedAt)}
+                      {formatDate(ticket.syncedAt)}
                     </td>
                   </tr>
                 );

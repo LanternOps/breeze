@@ -65,6 +65,8 @@ The tab is backed by a single read endpoint:
 
 Connections are stored per device in the `device_connections` table (protocol, local/remote address and port, state, PID, process name) and are populated from data the agent collects on the endpoint.
 
+From v0.126.0, Breeze stores up to 2,000 connections from each device report. A busy server can report thousands of short-lived sockets; when a report is over the limit, listening sockets are kept first, then established connections, then the rest. A self-hosted server can change the limit with `AGENT_CONNECTIONS_MAX_PER_DEVICE` (up to 10,000, which stores everything). See [Environment Variables](/deploy/environment/).
+
 ---
 
 ## Troubleshooting

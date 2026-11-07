@@ -208,6 +208,17 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
     .limit(1);
 
   if (!alert) {
+    // Nothing is sent, and a return is not a throw, so BullMQ will not retry
+    // and `removeOnComplete` deletes the job. Before #10926 every rule, monitor
+    // and sourced alert landed here because `alert.triggered` was published
+    // inside the inserting transaction. That is fixed (the publish now waits
+    // for COMMIT via the alert outbox), but a row that is not visible must
+    // never go quiet again: the only legitimate cause left is an alert deleted
+    // before this job ran.
+    console.warn(
+      '[NotificationDispatcher] process-alert found no alert row; nothing was sent',
+      JSON.stringify({ errorId: 'PROCESS_ALERT_ROW_NOT_FOUND', alertId: data.alertId }),
+    );
     return { queued: 0, inAppSent: false, durationMs: Date.now() - startTime };
   }
 

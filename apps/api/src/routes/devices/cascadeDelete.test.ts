@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { getTableName } from 'drizzle-orm';
 import { PgDialect, PgTable } from 'drizzle-orm/pg-core';
+import { NetworkIsolationUnresolvedError } from '../../services/networkIsolation/lifecycle';
 
 // ---------------------------------------------------------------------------
 // Mocks for the behavior suite (hoisted above all imports). The static
@@ -743,6 +744,17 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     });
     return statements;
   }
+
+  it('maps unresolved isolation to 409 before permanent deletion', async () => {
+    rigDeviceLookup(DEVICE);
+    vi.mocked(db.transaction).mockRejectedValueOnce(new NetworkIsolationUnresolvedError('delete', [
+      { deviceId: DEVICE.id, isolationId: '22222222-2222-4222-8222-222222222222' },
+    ]));
+    const res = await app.request(`/devices/${DEVICE.id}/permanent`, { method: 'DELETE' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'isolation_unresolved', message: 'Release network isolation first' });
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
 
   it('audits site-owned alert history as detached on permanent delete', async () => {
     rigDeviceLookup(DEVICE);

@@ -314,20 +314,20 @@ const monitorDefinitionFields = {
   name: z.string().min(1).max(200),
   description: z.string().max(2000).optional(),
   kind: monitorKindSchema,
-  enabled: z.boolean().default(true),
+  enabled: z.boolean(),
   condition: z.record(z.string(), z.unknown()),
   severity: monitorSeveritySchema,
-  cooldownMinutes: z.number().int().min(0).max(1440).default(5),
-  autoResolve: z.boolean().default(false),
+  cooldownMinutes: z.number().int().min(0).max(1440),
+  autoResolve: z.boolean(),
   autoResolveConditions: z.record(z.string(), z.unknown()).nullable().optional(),
-  responses: monitorResponsesSchema.default([]),
-  deliveryMode: monitorDeliveryModeSchema.default('inherit'),
-  deliveryChannelIds: z.array(z.string().uuid()).max(20).default([]),
+  responses: monitorResponsesSchema,
+  deliveryMode: monitorDeliveryModeSchema,
+  deliveryChannelIds: z.array(z.string().uuid()).max(20),
   escalationPolicyId: z.string().uuid().nullable().optional(),
   recurrenceThreshold: z.number().int().min(2).max(100).nullable().optional(),
   recurrenceWindowHours: z.number().int().min(1).max(8760).nullable().optional(),
-  recurrenceActions: monitorResponsesSchema.default([]),
-  pauseResponsesOnEscalation: z.boolean().default(true),
+  recurrenceActions: monitorResponsesSchema,
+  pauseResponsesOnEscalation: z.boolean(),
   aiAgentId: z.string().uuid().nullable().optional(),
   // Alert → PSA ticket (#10528): the PSA board this monitor's tickets go to,
   // overriding the bound connection's board. Partner-level config: the API
@@ -336,6 +336,22 @@ const monitorDefinitionFields = {
 };
 
 const baseDefinition = z.object(monitorDefinitionFields);
+
+/**
+ * Defaults belong to CREATE only. Zod's `.partial()` still applies a field's
+ * `.default()` to an omitted key, so a default in `monitorDefinitionFields`
+ * would make every PATCH overwrite that stored setting.
+ */
+const createOnlyDefaults = {
+  enabled: monitorDefinitionFields.enabled.default(true),
+  cooldownMinutes: monitorDefinitionFields.cooldownMinutes.default(5),
+  autoResolve: monitorDefinitionFields.autoResolve.default(false),
+  responses: monitorDefinitionFields.responses.default([]),
+  deliveryMode: monitorDefinitionFields.deliveryMode.default('inherit'),
+  deliveryChannelIds: monitorDefinitionFields.deliveryChannelIds.default([]),
+  recurrenceActions: monitorDefinitionFields.recurrenceActions.default([]),
+  pauseResponsesOnEscalation: monitorDefinitionFields.pauseResponsesOnEscalation.default(true),
+};
 
 interface MonitorDefinitionShape {
   kind?: MonitorKind;
@@ -354,7 +370,9 @@ interface MonitorDefinitionShape {
  * The condition check is skipped when `kind` is absent, which only happens on a
  * PATCH that does not change the kind — the service re-validates the MERGED
  * definition against the stored kind, so a partial update can never persist a
- * condition that does not match.
+ * condition that does not match. The delivery check skips an absent
+ * `deliveryChannelIds` for the same reason: create always has it from its
+ * default, and an absent list on a PATCH means the stored channels stay.
  */
 function refineDefinition<T extends z.ZodType<MonitorDefinitionShape>>(schema: T) {
   return schema
@@ -370,7 +388,7 @@ function refineDefinition<T extends z.ZodType<MonitorDefinitionShape>>(schema: T
       message: 'recurrenceThreshold and recurrenceWindowHours must be set together',
       path: ['recurrenceThreshold'],
     })
-    .refine((v) => v.deliveryMode !== 'channels' || (v.deliveryChannelIds?.length ?? 0) > 0, {
+    .refine((v) => v.deliveryMode !== 'channels' || v.deliveryChannelIds === undefined || v.deliveryChannelIds.length > 0, {
       message: 'deliveryChannelIds required when deliveryMode is channels',
       path: ['deliveryChannelIds'],
     })
@@ -387,6 +405,7 @@ function refineDefinition<T extends z.ZodType<MonitorDefinitionShape>>(schema: T
  */
 export const createMonitorDefinitionSchema = refineDefinition(
   baseDefinition.extend({
+    ...createOnlyDefaults,
     ownerScope: z.enum(['organization', 'partner']).default('organization'),
     orgId: z.string().uuid().optional(),
   }),

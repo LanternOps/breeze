@@ -1350,13 +1350,6 @@
           "updated": "Güncellendi"
         },
         "searchPlaceholder": "Bilet arayın",
-        "status": {
-          "closed": "Kapalı",
-          "inProgress": "Devam Ediyor",
-          "open": "Aç",
-          "resolved": "Çözüldü",
-          "waiting": "Bekleniyor"
-        },
         "ticketCount": "{{filtered}} / {{total}} bilet",
         "title": "Uyarı biletleri",
         "unlinked": "Bağlantı kaldırıldı"

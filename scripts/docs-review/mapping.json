@@ -5167,6 +5167,33 @@
       "docs": [
         "features/ai.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/alertWorker.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "features/alerts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/agents/connections.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "features/network-connections.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/promptHostConfig.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/networkIsolation/**",
+      "docs": [
+        "features/network-isolation.mdx",
+        "deploy/environment.mdx"
+      ]
     }
   ]
 }

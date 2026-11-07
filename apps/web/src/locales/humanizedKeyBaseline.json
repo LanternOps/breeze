@@ -1076,7 +1076,6 @@
   "common.longTail.psa.PsaConnectionsPage.errors.testFailed",
   "common.longTail.psa.PsaTicketList.filters.allStatuses",
   "common.longTail.psa.PsaTicketList.headers.linkedAlert",
-  "common.longTail.psa.PsaTicketList.status.inProgress",
   "common.longTail.remediation.RemediationSuggestionsPanel.approvalPending",
   "common.longTail.remediation.RemediationSuggestionsPanel.executionPreview",
   "common.longTail.remediation.RemediationSuggestionsPanel.fields.expectedAction",

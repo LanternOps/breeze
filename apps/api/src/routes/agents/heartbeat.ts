@@ -23,7 +23,7 @@ import {
 import { ownDeviceRowChangedHands, selectOwnDeviceRowForUpdate, updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 import type { BatteryStatus, ContainmentDesiredBlock, DesktopAccessState, TCCPermissions } from '@breeze/shared';
-import { ERROR_CODES } from '@breeze/shared';
+import { ERROR_CODES, isResolvedTerminalIsolationState } from '@breeze/shared';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { refreshReadinessAfterRecovery } from '../../services/bareMetalReadinessRefresh';
 import { recordBackupCapabilityRegressed, type BackupHelperCapability } from '../../services/backupMetrics';
@@ -74,7 +74,7 @@ import {
 } from './helpers';
 import { buildFeatureUpdateConfigUpdate, toFeatureUpdateSettingsWire } from './featureUpdateConfig';
 import type { RingFeatureUpdates } from '@breeze/shared/validators';
-import { shouldSendAgentUpgrade } from './agentUpdatePolicy';
+import { isolationAgentUpgradeGate, shouldSendAgentUpgrade } from './agentUpdatePolicy';
 import { DeferredCacheFills } from '../../services/hotPathCache';
 import {
   buildSettingsDecisionFields,
@@ -1117,7 +1117,22 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         });
 
         if (targetAgent && compareAgentVersions(targetAgent, device.agentVersion) > 0) {
-          agentUpgradeTo = targetAgent;
+          // Supported recovery targets need no episode read. Below-floor targets
+          // require absence of an unresolved episode; isolate lookup faults in a savepoint.
+          if (isolationAgentUpgradeGate(targetAgent, true).allow) {
+            agentUpgradeTo = targetAgent;
+          } else {
+            try {
+              const { findUnresolvedEpisode } = await import('../../services/networkIsolation/episodeStore');
+              const unresolved = await withDbTransaction(() => findUnresolvedEpisode(
+                db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, device.id,
+              ));
+              if (isolationAgentUpgradeGate(targetAgent, unresolved !== null).allow) agentUpgradeTo = targetAgent;
+            } catch (err) {
+              console.error('[heartbeat] watchdog recovery isolation lookup failed', { deviceId: device.id, orgId: device.orgId });
+              captureException(err, undefined, { phase: 'isolation_watchdog_upgrade_lookup', deviceId: device.id, orgId: device.orgId });
+            }
+          }
         }
       } catch (err) {
         console.error(`[agents] failed to evaluate watchdog-branch agent recovery target for ${agentId}:`, err);
@@ -2083,95 +2098,6 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }
   }
 
-  if (normalizedArch && !acceptsServedEdition) {
-    warnEditionOfferWithheld({
-      deviceId: device.id,
-      role: 'agent',
-      reportedEdition: data.agentEdition,
-      agentVersion: data.agentVersion,
-    });
-    // #4072 follow-up — automatic recovery for the stranded device behind the
-    // withhold above (default-off env flag; every precondition and the
-    // once-per-device claim live in the service). Fire-and-forget: the beat's
-    // response must not wait on script dispatch, and a dispatch failure must
-    // never fail the heartbeat. The service resolves the pin-honouring target
-    // with the SAME resolver as the offer path, so a holdback pin holds
-    // auto-migration too.
-    // The cheap non-DB gate runs FIRST so a flag-off deployment (or a
-    // non-candidate device) costs this hot path nothing beyond a few
-    // comparisons — no ALS exit, no system context, no second transaction.
-    if (
-      shouldConsiderEditionMigration({ device, normalizedArch, updateGateAllows })
-    ) {
-      // runOutsideDbContext is load-bearing, not defensive: this promise is
-      // detached, and the surrounding org-scoped withDbAccessContext
-      // TRANSACTION commits when the handler returns — a detached query on the
-      // ambient context would run against the dead tx handle (same reason as
-      // the manifest-trust keyset at the top of this handler, #1105). The
-      // service opens its OWN system context for the claim and the command
-      // rows and sends only after it commits (#7103) — wrapping it in one here
-      // would make the send precede that commit again. System context is safe:
-      // everything dispatched was validated in the org-scoped block, the claim
-      // re-binds to the device's org and liveness, and dispatchScriptToDevice's
-      // org-equality invariant still applies.
-      runOutsideDbContext(() =>
-        maybeDispatchEditionMigration({
-          device,
-          reportedAgentVersion: data.agentVersion,
-          normalizedArch,
-          updateGateAllows,
-          pin: versionPins.agent,
-          resolveTarget: () =>
-            resolvePinnedUpgradeTarget({
-              component: 'agent',
-              platform: device.osType,
-              architecture: normalizedArch,
-              pin: versionPins.agent,
-              agentId,
-            }),
-        }),
-        // The service catches everything itself; this catch only exists so a
-        // future regression there can never surface as an unhandled rejection
-        // on the heartbeat hot path.
-      ).catch((err) => {
-        console.error(`[agents] auto edition migration hook failed for ${agentId}:`, err);
-      });
-    }
-  } else if (acceptsServedEdition) {
-    // Re-arm THIS branch's withhold warn: if the device later regresses to an
-    // incompatible build (same process), that is a fresh episode and must log
-    // again. Only the agent-role key — the watchdog branch owns its own.
-    warnedEditionWithheldDevices.delete(`${device.id}:agent`);
-  }
-
-  if (normalizedArch && acceptsServedEdition) {
-    try {
-      // Resolve the effective target: the tenant's agent pin (issue #2124) when
-      // set, else the globally promoted latest. Fails closed if the pinned
-      // version has no build for this platform/arch (returns null → no upgrade).
-      const targetVersion = upgradeTargets?.get('agent') ?? null;
-
-      if (targetVersion) {
-        // Dev builds (dev-*) are local dev-push binaries — never auto-upgrade
-        // them back to a release version. The dev-push flow disables auto_update
-        // on the agent side; the server also refrains from sending upgradeTo.
-        if (data.agentVersion.startsWith('dev-')) {
-          // no-op: leave upgradeTo null so agent stays on the dev build
-        } else if (updateGateAllows) {
-          // Upgrade-only: a pin names the target but never triggers an auto
-          // DOWNGRADE through this channel (cmp > 0). Holdback works by keeping
-          // devices already on/below the pin from jumping to a newer latest.
-          const cmp = compareAgentVersions(targetVersion, data.agentVersion);
-          if (cmp > 0) {
-            upgradeTo = targetVersion;
-          }
-        }
-      }
-    } catch (err) {
-      console.error(`[agents] failed to evaluate upgrade target for ${agentId}:`, err);
-    }
-  }
-
   let helperUpgradeTo: string | null = null;
   // Check for helper upgrade even if agent doesn't report a version yet
   // (bootstraps the first install or recovers from a broken helper that never
@@ -2441,6 +2367,104 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       console.error('[heartbeat] isolation block failed', { deviceId: device.id, isolationId: isolationContext.row?.id });
       captureException(err, undefined, { phase: 'isolation_heartbeat_block', deviceId: device.id, isolationId: isolationContext.row?.id ?? 'unknown' });
       containment = storedContainmentHeartbeatBlock(isolationContext.row);
+    }
+  }
+
+  // Reuse reconciliation's indexed lookup rather than querying again for an upgrade.
+  // Unknown evidence withholds a below-floor target; it never changes release delivery.
+  const isolationEpisode = isolationContext.row;
+  const isolationLookupResolved = isolationEpisode !== undefined;
+  const hasUnresolvedIsolation = isolationEpisode === undefined
+    || (isolationEpisode !== null && !isResolvedTerminalIsolationState(isolationEpisode.state));
+
+  if (normalizedArch && !acceptsServedEdition) {
+    warnEditionOfferWithheld({
+      deviceId: device.id,
+      role: 'agent',
+      reportedEdition: data.agentEdition,
+      agentVersion: data.agentVersion,
+    });
+    // #4072 follow-up — automatic recovery for the stranded device behind the
+    // withhold above (default-off env flag; every precondition and the
+    // once-per-device claim live in the service). Fire-and-forget: the beat's
+    // response must not wait on script dispatch, and a dispatch failure must
+    // never fail the heartbeat. The service resolves the pin-honouring target
+    // with the SAME resolver as the offer path, so a holdback pin holds
+    // auto-migration too.
+    // The cheap non-DB gate runs FIRST so a flag-off deployment (or a
+    // non-candidate device) costs this hot path nothing beyond a few
+    // comparisons — no ALS exit, no system context, no second transaction.
+    if (
+      // A migration reinstalls the agent via MSI; defer it until isolation is resolved.
+      isolationLookupResolved && !hasUnresolvedIsolation
+      && shouldConsiderEditionMigration({ device, normalizedArch, updateGateAllows })
+    ) {
+      // runOutsideDbContext is load-bearing, not defensive: this promise is
+      // detached, and the surrounding org-scoped withDbAccessContext
+      // TRANSACTION commits when the handler returns — a detached query on the
+      // ambient context would run against the dead tx handle (same reason as
+      // the manifest-trust keyset at the top of this handler, #1105). The
+      // service opens its OWN system context for the claim and the command
+      // rows and sends only after it commits (#7103) — wrapping it in one here
+      // would make the send precede that commit again. System context is safe:
+      // everything dispatched was validated in the org-scoped block, the claim
+      // re-binds to the device's org and liveness, and dispatchScriptToDevice's
+      // org-equality invariant still applies.
+      runOutsideDbContext(() =>
+        maybeDispatchEditionMigration({
+          device,
+          reportedAgentVersion: data.agentVersion,
+          normalizedArch,
+          updateGateAllows,
+          pin: versionPins.agent,
+          resolveTarget: () =>
+            resolvePinnedUpgradeTarget({
+              component: 'agent',
+              platform: device.osType,
+              architecture: normalizedArch,
+              pin: versionPins.agent,
+              agentId,
+            }),
+        }),
+        // The service catches everything itself; this catch only exists so a
+        // future regression there can never surface as an unhandled rejection
+        // on the heartbeat hot path.
+      ).catch((err) => {
+        console.error(`[agents] auto edition migration hook failed for ${agentId}:`, err);
+      });
+    }
+  } else if (acceptsServedEdition) {
+    // Re-arm THIS branch's withhold warn: if the device later regresses to an
+    // incompatible build (same process), that is a fresh episode and must log
+    // again. Only the agent-role key — the watchdog branch owns its own.
+    warnedEditionWithheldDevices.delete(`${device.id}:agent`);
+  }
+
+  if (normalizedArch && acceptsServedEdition) {
+    try {
+      // Resolve the effective target: the tenant's agent pin (issue #2124) when
+      // set, else the globally promoted latest. Fails closed if the pinned
+      // version has no build for this platform/arch (returns null → no upgrade).
+      const targetVersion = upgradeTargets?.get('agent') ?? null;
+
+      if (targetVersion) {
+        // Dev builds (dev-*) are local dev-push binaries — never auto-upgrade
+        // them back to a release version. The dev-push flow disables auto_update
+        // on the agent side; the server also refrains from sending upgradeTo.
+        if (data.agentVersion.startsWith('dev-')) {
+          // no-op: leave upgradeTo null so agent stays on the dev build
+        } else if (updateGateAllows) {
+          // Upgrade-only: a pin names the target but never triggers an auto
+          // DOWNGRADE through this channel (cmp > 0). Holdback works by keeping
+          // devices already on/below the pin from jumping to a newer latest.
+          const cmp = compareAgentVersions(targetVersion, data.agentVersion);
+          if (cmp > 0 && isolationAgentUpgradeGate(targetVersion, hasUnresolvedIsolation).allow) {
+            upgradeTo = targetVersion;
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`[agents] failed to evaluate upgrade target for ${agentId}:`, err);
     }
   }
 

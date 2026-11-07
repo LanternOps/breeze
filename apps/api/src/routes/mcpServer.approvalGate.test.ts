@@ -210,7 +210,7 @@ vi.mock('../services/permissions', async (importOriginal) => {
   };
 });
 
-import { mcpServerRoutes } from './mcpServer';
+import { mcpServerRoutes, __isMcpApprovalRequiredForTests } from './mcpServer';
 import { checkGuardrails, isReadOnlyResolution, TIER2_ACTIONS, TIER3_ACTIONS } from '../services/aiGuardrails';
 
 // Real JSON schemas for the multiplexed tools these tests target, trimmed to
@@ -1446,5 +1446,85 @@ describe('MFA-gated config-policy actions in tools/list (#8340)', () => {
     const payload = JSON.parse(body.result.content[0].text);
     expect(payload.code).toBe('MFA_REQUIRED');
     expect(payload.error).toContain('web app');
+  });
+});
+
+// Network isolation must use its episode service, never an MCP principal lift or intent.
+describe('network isolation bypass refusal', () => {
+  const principal = 'api_key:11111111-1111-4111-8111-111111111111';
+  const isolationArgs = {
+    deviceId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    incidentId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+    actionType: 'network_isolation',
+  };
+
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+    testState.mfaSatisfied = true;
+    mocks.getToolTier.mockImplementation((name: string) =>
+      ['execute_containment', 'release_containment', 'execute_command'].includes(name) ? 3 : undefined);
+    intentMocks.createMcpActionIntent.mockReset().mockImplementation(async (input: { toolName: string }) => pendingOutcome(input.toolName));
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each(['execute_containment', 'release_containment'])('direct approval guard refuses %s even for an unattended principal', name => {
+    expect(__isMcpApprovalRequiredForTests(name, 3, {
+      unattendedPrincipal: true, toolInput: isolationArgs,
+    })).toBe(true);
+    expect(__isMcpApprovalRequiredForTests('execute_command', 3, {
+      unattendedPrincipal: true, toolInput: { command: 'hostname' },
+    })).toBe(false);
+  });
+
+  it.each([
+    ['execute_containment', false, false],
+    ['execute_containment', false, true],
+    ['execute_containment', true, false],
+    ['execute_containment', true, true],
+    ['release_containment', false, false],
+    ['release_containment', false, true],
+    ['release_containment', true, false],
+    ['release_containment', true, true],
+  ] as const)('refuses %s with intents=%s unattended=%s before execution or intent creation', async (name, intents, unattended) => {
+    vi.stubEnv('MCP_TIER3_INTENTS_ENABLED', String(intents));
+    vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', unattended ? principal : '');
+    const body = await (await callTool(name, isolationArgs)).json();
+    expect(body.result.isError).toBe(true);
+    expect(JSON.parse(body.result.content[0].text)).toMatchObject({ code: 'MCP_APPROVAL_REQUIRED' });
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+    expect(mocks.ledgerBegin).not.toHaveBeenCalled();
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('refuses release_containment by name before it is registered', async () => {
+    mocks.getToolTier.mockReturnValue(undefined);
+    const body = await (await callTool('release_containment', {})).json();
+    expect(body.result?.isError).toBe(true);
+    expect(JSON.parse(body.result.content[0].text)).toMatchObject({ code: 'MCP_APPROVAL_REQUIRED' });
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('preserves unattended process_kill and another Tier 3 tool', async () => {
+    vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', principal);
+    for (const [name, args] of [
+      ['execute_containment', { ...isolationArgs, actionType: 'process_kill', parameters: { pid: 123 } }],
+      ['execute_command', { deviceId: isolationArgs.deviceId, commandType: 'list_processes' }],
+    ] as const) {
+      const body = await (await callTool(name, args)).json();
+      expect(body.result.isError).toBeFalsy();
+    }
+    expect(mocks.executeTool).toHaveBeenCalledTimes(2);
+    expect(mocks.ledgerBegin).toHaveBeenCalledTimes(2);
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('preserves intent eligibility for process_kill', async () => {
+    vi.stubEnv('MCP_TIER3_INTENTS_ENABLED', 'true');
+    vi.stubEnv('MCP_UNATTENDED_TIER3_PRINCIPALS', '');
+    const body = await (await callTool('execute_containment', { ...isolationArgs, actionType: 'process_kill' })).json();
+    expect(body.result.structuredContent).toMatchObject({ status: 'pending_approval' });
+    expect(intentMocks.createMcpActionIntent).toHaveBeenCalledTimes(1);
+    expect(mocks.executeTool).not.toHaveBeenCalled();
   });
 });

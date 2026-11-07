@@ -1150,6 +1150,8 @@
       "ticket_customer_email_domain": "Domaine client de ticket",
       "ticket_email_inbound": "E-mail de ticket entrant",
       "ticket_form": "Formulaire de ticket",
+      "ticket_import_run": "Exécution d'importation de tickets",
+      "ticket_import_source": "Source d'importation de tickets",
       "ticket_mailbox_connection": "Boîte mail de tickets",
       "ticket_priority_settings": "Paramètres de priorité des tickets",
       "ticket_response_template": "Modèle de réponse de ticket",

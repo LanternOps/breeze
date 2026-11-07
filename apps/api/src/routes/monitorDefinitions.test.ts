@@ -465,6 +465,16 @@ describe('event_log collection warnings at save (#8174)', () => {
 });
 
 describe('PATCH /monitor-definitions/:id', () => {
+  it('passes only the sent keys to the service, so a description-only PATCH resets nothing', async () => {
+    updateMonitorDefinitionMock.mockResolvedValue({ id: MONITOR_ID, orgId: 'org-1', name: 'Monitor', kind: 'offline' });
+
+    const res = await jsonRequest(buildApp(), 'PATCH', `/${MONITOR_ID}`, { description: 'x' });
+
+    expect(res.status).toBe(200);
+    expect(updateMonitorDefinitionMock).toHaveBeenCalledTimes(1);
+    expect(updateMonitorDefinitionMock.mock.calls[0]?.[1]).toStrictEqual({ description: 'x' });
+  });
+
   it('maps a MonitorValidationError to 400 { error: INVALID_MONITOR, details }', async () => {
     updateMonitorDefinitionMock.mockRejectedValue(
       new MonitorValidationError('deliveryChannelIds required when deliveryMode is channels'),

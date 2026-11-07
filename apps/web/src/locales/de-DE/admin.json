@@ -1150,6 +1150,8 @@
       "ticket_customer_email_domain": "Ticket-Kundendomain",
       "ticket_email_inbound": "Eingehende Ticket-E-Mail",
       "ticket_form": "Ticketformular",
+      "ticket_import_run": "Ticketimport-Lauf",
+      "ticket_import_source": "Ticketimport-Quelle",
       "ticket_mailbox_connection": "Ticket-Postfach",
       "ticket_priority_settings": "Ticketprioritätseinstellungen",
       "ticket_response_template": "Ticket-Antwortvorlage",

@@ -55,7 +55,12 @@ const setCooldown = vi.fn((..._args: unknown[]) => Promise.resolve());
 const publishEvent = vi.fn((..._args: unknown[]) => Promise.resolve('evt'));
 
 vi.mock('../db', () => ({ db: dbMock }));
+vi.mock('./alertLifecycle/cursor', async () => ({
+  ...await vi.importActual<typeof import('./alertLifecycle/cursor')>('./alertLifecycle/cursor'),
+  readOpenCursors: vi.fn(async () => ({})),
+}));
 vi.mock('./alertConditions', () => ({
+  evidenceLeafPaths: () => [],
   evaluateConditions: (...args: unknown[]) => evaluateConditions(...args),
   evaluateAutoResolveConditions: (...args: unknown[]) => evaluateAutoResolveConditions(...args),
   interpolateTemplate: (t: string) => t,
@@ -90,8 +95,8 @@ beforeEach(() => {
   updateReturns.length = 0;
   updateCount.current = 0;
   vi.clearAllMocks();
-  evaluateConditions.mockResolvedValue({ triggered: false });
-  evaluateAutoResolveConditions.mockResolvedValue({ shouldResolve: true, reason: 'cleared' });
+  evaluateConditions.mockResolvedValue({ triggered: false, dataState: 'ok', evidenceWatermarks: {} });
+  evaluateAutoResolveConditions.mockResolvedValue({ shouldResolve: true, reason: 'cleared', dataState: 'ok', evidenceWatermarks: {} });
   setCooldown.mockResolvedValue(undefined);
   publishEvent.mockResolvedValue('evt');
 });

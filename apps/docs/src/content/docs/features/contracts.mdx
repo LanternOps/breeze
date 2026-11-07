@@ -92,6 +92,13 @@ A recurring quote line that bills a device set becomes a contract line of the ma
 
 Any one-time charges on the same quote become an invoice instead, not a contract.
 
+A draft created this way stays linked to its quote, so it is easy to find and activate:
+
+- **Contracts list:** the draft's row shows a **From Q-… · ready to activate** chip that opens the quote. Drafts you started by hand, and contracts that are already active, show no chip.
+- **Quote detail:** an accepted quote lists the contracts it created, marks each draft **Ready to activate**, and says how many drafts still bill nothing.
+- **Contract header:** the **From quote** pill links back to the quote.
+- **Acceptance email:** the email to the quote's creator when the customer accepts says how many recurring contracts were created as drafts and still need activating.
+
 ### If a site is deleted
 
 A contract line scoped to a site records the site's name as well as its id. If that site is deleted, the line **stops billing and says so**. The contract detail shows "site deleted," and generating an invoice refuses instead of quietly falling back to billing every device in the organization. Nothing is written — the whole generation run stops, so you never get a partial invoice. Re-scope the line to another site, or remove it, and generation resumes.

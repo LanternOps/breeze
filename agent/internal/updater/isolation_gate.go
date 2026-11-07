@@ -167,5 +167,15 @@ func (u *Updater) checkIsolationInstall(path string, manifest *updateManifest, o
 	if err := verifyIsolationSize(path, manifest.Size); err != nil {
 		return err
 	}
-	return u.verifyChecksum(path, manifest.Checksum)
+	if err := u.verifyChecksum(path, manifest.Checksum); err != nil {
+		return err
+	}
+	hook := currentIsolationInstallHook.Load()
+	if hook == nil {
+		return fmt.Errorf("%w: isolation upgrade handoff is unavailable", ErrUpdateBlockedByIsolation)
+	}
+	if err := hook.prepare(path, u.config.BinaryPath); err != nil {
+		return fmt.Errorf("%w: %v", ErrUpdateBlockedByIsolation, err)
+	}
+	return nil
 }

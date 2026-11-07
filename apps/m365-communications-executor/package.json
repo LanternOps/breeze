@@ -17,7 +17,7 @@
     "@azure/msal-node": "^7.1.0",
     "@breeze/shared": "workspace:*",
     "@hono/node-server": "^2.1.5",
-    "hono": "^4.13.13",
+    "hono": "^4.13.14",
     "jose": "^6.2.12",
     "postgres": "^3.4.9",
     "zod": "^4.6.7"

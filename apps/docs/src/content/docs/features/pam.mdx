@@ -60,7 +60,7 @@ On a brand-new instance the tab shows a short "Getting started" checklist instea
 
 ### Requests
 
-The Requests tab is the working queue. It opens filtered to **Pending** -- the requests waiting on you -- and you can re-filter by status (Pending, Approved, Auto-approved, Denied, Expired, Revoked, Actuating) and by flow type (UAC intercept, Tech JIT admin, AI tool action). Each row shows when the request came in, the device, the requesting user, the target (the executable being elevated, or the AI tool being called), and the current status. AI tool actions also carry a **risk-tier** badge (T2 / T3).
+The Requests tab is the working queue. It opens filtered to **Pending** -- the requests waiting on you -- and you can re-filter by status (Pending, Approved, Auto-approved, Denied, Expired, Revoked, Actuating, Withdrawn) and by flow type (UAC intercept, Tech JIT admin, AI tool action). Each row shows when the request came in, the device, the requesting user, the target (the executable being elevated, or the AI tool being called), and the current status. AI tool actions also carry a **risk-tier** badge (T2 / T3).
 
 To decide a request:
 
@@ -72,7 +72,7 @@ To decide a request:
 
 3. For an approval, set the **approval window** in minutes (1 to 1440 -- a 24-hour maximum). This is how long the granted access stays live before it revokes itself.
 
-4. Add a **reason**. It's optional on an approval and recommended on a denial; either way it's recorded in the audit trail.
+4. Add a **reason**. It's optional on an approval and recommended on a denial; either way it's recorded in the audit trail. When you deny a UAC request, the end user also sees the reason in their notification (first 500 characters).
 
 5. Submit. The decision is recorded immediately and the requester's elevation proceeds or is blocked.
 
@@ -171,6 +171,25 @@ The flagship PAM flow turns a standard Windows UAC consent prompt into a governe
 <Aside type="caution">
   The approver is always a separate identity from the requester. A user can't approve their own elevation, and an AI agent or Helper session can't sign off on the action it proposed -- approval requires a human holding `pam:approve` (see [Who Can Approve and Manage PAM](#who-can-approve-and-manage-pam)), confirmed with MFA.
 </Aside>
+
+### Withdrawn requests
+
+From v0.126.0 (agent 0.126.0 or later), if the end user answers **Deny** on the device's own UAC dialog, lets it time out, or the dialog fails, the agent records that decision and reports it. The pending request moves to **Withdrawn** and can no longer be approved, so a later technician approval can never launch a program the user declined. The agent refuses to run a declined elevation even before the server has heard about it.
+
+- Withdrawn rows show a grey **Withdrawn** badge with the reason underneath: **Declined by the user**, **No answer on the device** or **Prompt failed on the device**. Filter for them with the **Withdrawn** status on the Requests and Audit tabs; the audit CSV export includes when and why each request was withdrawn.
+- If you open **Respond** on a request the user has just withdrawn, the dialog says *The user withdrew this request on the device.* and won't submit.
+- An approved or auto-approved row the device refused for the same reason shows **Declined on the device** or **No answer on the device**.
+
+### What the end user sees
+
+From v0.126.0, a Windows standard user who hands an elevation request to IT gets a notification when it ends (agent 0.126.0 or later):
+
+- **Approved**: the program is starting, naming your support team (or the approving technician). If it then fails to start, the user is told the program couldn't start.
+- **Denied**: includes your deny reason.
+- **Expired**: the request ran out before IT answered.
+- **Offline**: the device couldn't reach your support team to submit the request.
+
+Notices use the same wording and language as the elevation prompt, in the user's Windows display language where it is supported.
 
 ---
 

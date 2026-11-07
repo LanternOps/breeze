@@ -417,6 +417,12 @@ describe('tier-3 approval scope classification', () => {
     expect(resolveApprovalScope('manage_policy_feature_link', 'remove', {})).toBe('supervised');
   });
 
+  it('manage_policy_feature_link resolves supervised for containment on add and update (#10100)', () => {
+    expect(resolveApprovalScope('manage_policy_feature_link', 'add', { featureType: 'containment' })).toBe('supervised');
+    expect(resolveApprovalScope('manage_policy_feature_link', 'update', { featureType: 'containment' })).toBe('supervised');
+    expect(checkGuardrails('manage_policy_feature_link', { action: 'add', featureType: 'containment' }).tier).toBe(3);
+  });
+
   it('checkGuardrails surfaces the input-aware escalation on both branches', () => {
     const maintenance = checkGuardrails('manage_policy_feature_link', { action: 'add', featureType: 'maintenance' });
     expect(maintenance.tier).toBe(3);

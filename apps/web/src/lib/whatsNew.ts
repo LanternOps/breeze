@@ -18,6 +18,19 @@ export interface WhatsNewEntry {
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
+    version: '0.126.0',
+    date: '2026-11-03',
+    title: 'Alerts that reach your PSA, device groups across every organization, and Jobs moving to Flows',
+    highlights: [
+      'Partner administrators can create All organizations webhooks with a richer alert payload and retries for about 21 hours. A ConnectWise Manage connection can now open, update and close a ticket for each qualifying alert (opt-in per connection), and alert pages show the linked tickets.',
+      'Create dynamic device groups that span every organization and assign them from partner configuration policies. Group rules can match software version and vendor, and the Devices list adds CSV export, a warranty column and filter, and bulk Add to group / Remove from group.',
+      'Microsoft 365 and Google Workspace backups from NinjaOne SaaS Backup (Dropsuite) now appear next to Cove in backup health, the portal and reports. SaaS backup failures raise organization-level alerts that flow through notifications and automations.',
+      'Flows are now on by default and new jobs open there. The Jobs page shows how each existing job would convert, compares the draft flow against the running job before you switch, and keeps the job’s webhook URL working afterwards.',
+      'Breeze AI can now deploy software, generate contract invoices and sync them to QuickBooks or Xero, and manage Pax8 subscriptions and orders. Invoices, accounting pushes and Pax8 orders need a second person’s approval.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
     version: '0.125.0',
     date: '2026-10-27',
     title: 'Agreements clients sign without a quote, ticket merge and routing, and update rings that decide Windows feature updates',

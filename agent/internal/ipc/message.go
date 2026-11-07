@@ -508,8 +508,13 @@ type DesktopStartRequest struct {
 	StartGeneration string          `json:"startGeneration,omitempty"`
 	Offer           string          `json:"offer"`
 	ICEServers      json.RawMessage `json:"iceServers,omitempty"`
-	DisplayIndex    int             `json:"displayIndex"`
-	GPUVendor       string          `json:"gpuVendor,omitempty"`
+	// RelayOnly is set by the server while the device is network-isolated
+	// (OD9): the helper must use ICETransportPolicyRelay with TURN servers
+	// only. Additive and omitempty — an older helper ignores it, an older
+	// service never sends it (false), so non-isolated sessions are unchanged.
+	RelayOnly    bool   `json:"relayOnly,omitempty"`
+	DisplayIndex int    `json:"displayIndex"`
+	GPUVendor    string `json:"gpuVendor,omitempty"`
 	// Agent-enforced session policy (findings #2, #7). Clipboard direction gates
 	// are pointers so an older service that doesn't set them leaves the helper at
 	// permissive defaults (preserve existing behavior). Timeouts of 0 = disabled.

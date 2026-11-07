@@ -201,6 +201,10 @@ describe('agent-binary update command types are only named at known sites (#4093
     // EDR send path is adapter.performAction.
     'apps/api/src/services/edrProviders/types.ts',
     'apps/api/src/services/edrProviders/actions.ts',
+    // #10091 (network-isolation W1c): claim-time revalidation only READS queued
+    // update/update_agent rows to refuse a below-floor agent target while an
+    // isolation episode is unresolved. It never builds or dispatches one.
+    'apps/api/src/services/commandClaimEligibility.ts',
   ]);
 
   function walk(dir: string, out: string[] = []): string[] {

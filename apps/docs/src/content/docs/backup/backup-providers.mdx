@@ -1,19 +1,22 @@
 ---
 title: Third-Party Backup Providers
-description: Connect N-able Cove Data Protection to Breeze so third-party backup status appears in backup health, device pages, attention items and alerts.
+description: Connect N-able Cove Data Protection or NinjaOne SaaS Backup (Dropsuite) to Breeze so third-party backup status appears in backup health, device pages, the client portal, reports and alerts.
 sidebar:
   order: 17
-  label: "Backup Providers (Cove)"
+  label: "Backup Providers (Cove, Dropsuite)"
 ---
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
 If some of your customers are protected by a third-party backup product, Breeze can read that product's status and show it alongside Breeze's own backups. A device protected by the provider counts as covered, so it no longer shows up as "no backup" just because Breeze did not run the job.
 
-**N-able Cove Data Protection** is the supported provider today.
+Two providers are supported:
+
+- **N-able Cove Data Protection**: endpoint backups, plus Cove's Microsoft 365 backup accounts.
+- **NinjaOne SaaS Backup (Dropsuite)** (v0.126.0): Microsoft 365 and Google Workspace backups. Each customer's workloads appear as their own rows: Microsoft 365 mail, OneDrive, SharePoint and Teams, and Google Workspace mail, Google Drive and Google shared drives.
 
 <Aside type="note">
-The integration is **read-only**. Breeze reads backup status from Cove; it never changes settings, starts backups, or restores data in Cove. Restores are still done in the Cove console.
+The integration is **read-only**. Breeze reads backup status from the provider; it never changes settings, starts backups, or restores data there. Restores are still done in the provider's own console.
 </Aside>
 
 ---
@@ -22,7 +25,8 @@ The integration is **read-only**. Breeze reads backup status from Cove; it never
 
 - **Partner accounts only.** Connections belong to your MSP (partner) account and cover every organization under it. Organization-scoped users cannot see or manage them.
 - **Who can manage a connection.** Adding, editing, testing, syncing, deleting and mapping customers requires a partner user with organization write permission, access to *all* organizations, and MFA. Partner users with access to only selected organizations can view the connection but not change it.
-- **A Cove API user.** In the Cove Management Console, go to **Management → Users → API Users**, select your **top-level customer** in the Customer list, and click **Add API User**. Give it a login name (for example, `breeze-sync`) and the most restrictive role that can still read customers and backup statistics. Copy the token when it is shown — Cove displays it only once; if you lose it, delete the API user and create a new one. An API user cannot sign in to the console, so two-factor authentication does not apply to it.
+- **For NinjaOne SaaS Backup:** the **Reseller token**, the **Authentication token** and the **API URL** shown on your NinjaOne SaaS Backup partner portal under **Settings → API Settings**. Read-only reseller access is enough.
+- **For Cove, a Cove API user.** In the Cove Management Console, go to **Management → Users → API Users**, select your **top-level customer** in the Customer list, and click **Add API User**. Give it a login name (for example, `breeze-sync`) and the most restrictive role that can still read customers and backup statistics. Copy the token when it is shown — Cove displays it only once; if you lose it, delete the API user and create a new one. An API user cannot sign in to the console, so two-factor authentication does not apply to it.
 
 ## Connecting Cove
 
@@ -46,6 +50,20 @@ The token is stored encrypted and is never shown again. To change it, use **Re-e
 | **Delete** | Removes the connection and its synced devices and history from Breeze. Cove itself is untouched. Open alerts from the connection are resolved. |
 
 The card also shows the last sync time, customer and device counts, how many devices are linked or ambiguous, and how many devices sit under unmapped customers.
+
+## Connecting NinjaOne SaaS Backup (Dropsuite)
+
+<Steps>
+1. Go to **Integrations**, open the **Backup** tab, click **Add connection** and choose **NinjaOne SaaS Backup (Dropsuite)** as the **Provider**.
+2. Enter a **Connection name** (for example, *Main NinjaOne SaaS Backup account*).
+3. Enter the **Reseller token**, the **Authentication token** and the **API URL** (for example, `https://dropsuite.us/api/`). All three are required.
+4. Optionally turn on **Show the provider name in the client portal**, as for Cove.
+5. Save. As with Cove, Breeze checks the credentials before anything is created.
+</Steps>
+
+If the check fails, the form says what to fix: the reseller token or the authentication token was rejected, the API URL was not found, or the service is unavailable or rate limiting requests. Both tokens are stored encrypted. To replace them, use **Re-enter credentials** and enter both tokens; leave both blank to keep the stored ones. New tokens must belong to the same NinjaOne SaaS Backup account (at least one already-synced customer must still be visible); tokens for a different account are rejected.
+
+A NinjaOne SaaS Backup connection card and its customer mapping table count **workloads** instead of devices.
 
 ## Mapping Customers to Organizations
 
@@ -71,7 +89,7 @@ Decommissioned devices are never matched, and Microsoft 365 backup accounts are 
 
 ## Sync, History and Alerts
 
-Each connection syncs **every 30 minutes**. A connection whose login Cove rejects is marked **Credentials rejected** and stops syncing until you use **Re-enter credentials** with a working login. If a connection has not synced for more than two sync intervals, its devices show as **Unknown** health and the backup health view shows a banner that provider data is out of date.
+Cove connections sync **every 30 minutes**; NinjaOne SaaS Backup connections sync **every 60 minutes**. A connection whose login the provider rejects is marked **Credentials rejected** and stops syncing until you use **Re-enter credentials** with a working login. If a connection has not synced for more than two sync intervals, its devices show as **Unknown** health and the backup health view shows a banner that provider data is out of date.
 
 Breeze keeps a **daily history** for each provider device (the worst status seen that day), shown as the *Last 28 days* strip. History older than 60 days is pruned.
 
@@ -90,14 +108,17 @@ To avoid noise from one bad poll, an alert is raised only when the **same condit
 
 ## Where Provider Data Appears
 
-- **Backup overview → Backup health.** One table of every managed device plus every device the provider reports, with status, last successful backup, data sources, selected and used size, errors and the 28-day history. Filter by health, by source (Breeze or provider), or search by device or organization. Summary counts show coverage, provider-only endpoints and Microsoft 365 accounts. Partner users in **all-organizations** mode see this health view across every organization.
+- **Backup overview → Backup health.** One table of every managed device plus every device the provider reports, with status, last successful backup, data sources, selected and used size, errors and the 28-day history. Filter by health, by source (Breeze or provider), or search by device or organization. Summary counts show coverage, provider-only endpoints and SaaS accounts (Microsoft 365 / Google Workspace). Partner users in **all-organizations** mode see this health view across every organization.
 - **Device → Backup tab.** An **External backup** card sits above Breeze's own backup sections, showing the Cove device name, status, last successful backup, last session, provider customer, data sources, sizes, errors and the 28-day history.
 - **Attention items.** A device covered by a recent provider backup is no longer listed as overdue.
+- **Microsoft 365 and Google Workspace workloads.** In backup health, these rows are labelled by workload (for example, *OneDrive backup*) and counted under **SaaS accounts**, never as devices or endpoints. They cannot be linked to a device.
+- **Client portal.** The portal's backup page has a **Microsoft 365 / Google Workspace backup** section with each workload's health and last successful backup. The vendor name appears only when **Show the provider name in the client portal** is on, and failing-item details are never shown to customers.
+- **Reports.** The backup status report (and its PDF) shows the workload for these rows.
 
 ## Limitations
 
 - Status only: no restores, backup runs, or configuration changes through Breeze.
-- Cove Data Protection is the only supported provider.
+- Cove Data Protection and NinjaOne SaaS Backup (Dropsuite) are the only supported providers.
 - Cove users with two-factor authentication cannot be used for the connection.
 - Unlinked endpoints and unmapped customers raise no alerts. Microsoft 365 and Google Workspace workloads raise organization-level alerts rather than device alerts.
 

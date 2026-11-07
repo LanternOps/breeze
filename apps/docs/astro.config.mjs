@@ -91,6 +91,7 @@ export default defineConfig({
                 { slug: 'features/edr-integrations' },
                 { slug: 'features/edr-provider-framework' },
                 { slug: 'features/incident-response' },
+                { slug: 'features/network-isolation' },
                 { slug: 'features/sensitive-data' },
                 { slug: 'features/peripheral-control' },
                 { slug: 'features/user-risk' },

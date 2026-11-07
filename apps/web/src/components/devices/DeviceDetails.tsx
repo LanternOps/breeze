@@ -49,6 +49,7 @@ import { formatTimeAgo } from "@/lib/formatTime";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import RebootScheduledBadge from "./RebootScheduledBadge";
 import UninstallStateBadge from "./UninstallStateBadge";
+import { DeviceIsolationBadge } from "./networkIsolation/IsolationBadge";
 import DeviceActions from "./DeviceActions";
 import DeviceInfoTab from "./DeviceInfoTab";
 import DeviceHardwareInventory from "./DeviceHardwareInventory";
@@ -944,6 +945,7 @@ export default function DeviceDetails({
                   uninstall={device.uninstall}
                   status={device.status}
                 />
+                <DeviceIsolationBadge deviceId={device.id} />
                 {device.pendingReboot && (
                   <span
                     data-testid="device-pending-reboot-badge"

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   dbMock,
@@ -6,6 +6,7 @@ const {
   deleteCalls,
   captureExceptionMock,
   enqueueAlertCorrelationMock,
+  scheduleStagedAlertDispatchMock,
   alertsTable,
   alertCorrelationsTable,
 } = vi.hoisted(() => {
@@ -49,6 +50,7 @@ const {
     deleteCalls: dbMock.delete,
     captureExceptionMock: vi.fn(),
     enqueueAlertCorrelationMock: vi.fn(() => Promise.resolve('correlation-job-1')),
+    scheduleStagedAlertDispatchMock: vi.fn(),
   };
 });
 
@@ -114,11 +116,65 @@ vi.mock('./eventBus', () => ({ publishEvent: vi.fn(() => Promise.resolve()) }));
 vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('./deviceSiteResolver', () => ({ resolveDeviceSiteId: vi.fn(() => Promise.resolve('site-1')) }));
 vi.mock('../jobs/alertCorrelation', () => ({ enqueueAlertCorrelation: enqueueAlertCorrelationMock }));
+// #10926 — create stages `alert.triggered` on the row and hands the id to the
+// outbox; the after-commit publish and its follow-ups are covered by
+// alertPublishAfterCommit.integration.test.ts.
+vi.mock('./subjectAlertOutbox', () => ({ scheduleStagedAlertDispatch: scheduleStagedAlertDispatchMock }));
 
 import { publishEvent } from './eventBus';
 import { setCooldown } from './alertCooldown';
 import { resolveDeviceSiteId } from './deviceSiteResolver';
 import { createAlert, createSourcedAlert, checkAutoResolve, resolveAlert } from './alertService';
+
+// create never publishes now, so the `mockRejectedValueOnce` the no-inline-publish
+// tests queue is never consumed; clearAllMocks would leave it queued for the
+// next test. Reset it so it cannot leak.
+afterEach(() => {
+  vi.mocked(publishEvent).mockReset();
+});
+
+type StagedTrigger = {
+  eventId: string;
+  eventType: string;
+  publisher: string;
+  siteId: string | null;
+  cooldownMinutes: number;
+  payload: Record<string, unknown>;
+  occurredAt: string;
+  retryOnPublishFailure: boolean;
+};
+
+/** The `_subjectDispatch` envelope `createAlert` wrote into its raw INSERT's context param. */
+function legacyInsert(): { envelope: StagedTrigger; id: unknown } {
+  const calls = dbMock.execute.mock.calls as unknown as Array<[{ values: unknown[] }]>;
+  expect(calls).toHaveLength(1);
+  const { values } = calls[0]![0];
+  const context = values.find((value) => typeof value === 'string' && value.includes('_subjectDispatch'));
+  expect(context, 'the INSERT context param carries the outbox envelope').toBeDefined();
+  // The `id` param is appended LAST, after `'active', now()`.
+  return { envelope: JSON.parse(context as string)._subjectDispatch, id: values[values.length - 1] };
+}
+
+/** The `_subjectDispatch` envelope `createSourcedAlert` passed to `.values({ context })`. */
+function sourcedInsert(): { envelope: StagedTrigger; id: unknown } {
+  expect(insertCalls).toHaveBeenCalledTimes(1);
+  const valuesFn = insertCalls.mock.results[0]!.value.values as ReturnType<typeof vi.fn>;
+  const row = valuesFn.mock.calls[0]![0] as { id: unknown; context: { _subjectDispatch: StagedTrigger } };
+  return { envelope: row.context._subjectDispatch, id: row.id };
+}
+
+/** create no longer publishes inline: anything announced goes through the outbox. */
+function inlineTriggerPublishes() {
+  return vi.mocked(publishEvent).mock.calls.filter((call) => call[0] === 'alert.triggered');
+}
+
+/** The staged envelope names the same alert the row was inserted with. */
+function expectEnvelopeNamesRow(envelope: StagedTrigger, id: unknown) {
+  expect(typeof id).toBe('string');
+  expect(envelope.eventId).toBe(id);
+  expect(envelope.payload.alertId).toBe(id);
+  expect(envelope.occurredAt).toEqual(expect.any(String));
+}
 
 describe('createAlert correlation enqueue boundary', () => {
   beforeEach(() => {
@@ -133,7 +189,7 @@ describe('createAlert correlation enqueue boundary', () => {
     dbMock._insertReturnResults.push([{ id: 'alert-1' }]);
   });
 
-  it('enqueues device correlation instead of inserting correlation links inline', async () => {
+  it('stages alert.triggered for the outbox and leaves correlation to it, with no inline links', async () => {
     const alertId = await createAlert({
       ruleId: 'rule-1',
       deviceId: 'device-1',
@@ -144,11 +200,20 @@ describe('createAlert correlation enqueue boundary', () => {
     });
 
     expect(alertId).toBe('alert-1');
-    expect(publishEvent).toHaveBeenCalledWith('alert.triggered', 'org-1', expect.objectContaining({
-      owner: null, ownerKey: 'device:device-1',
-    }), 'alert-service', { siteId: 'site-1' });
-    expect(enqueueAlertCorrelationMock).toHaveBeenCalledWith({ orgId: 'org-1', deviceId: 'device-1' });
-    expect(dbMock.execute).toHaveBeenCalledTimes(1);
+    expect(inlineTriggerPublishes()).toEqual([]);
+    const { envelope, id } = legacyInsert();
+    expectEnvelopeNamesRow(envelope, id);
+    expect(envelope).toMatchObject({
+      eventType: 'alert.triggered',
+      publisher: 'alert-service',
+      siteId: 'site-1',
+      cooldownMinutes: 5,
+      retryOnPublishFailure: true,
+      payload: expect.objectContaining({ owner: null, ownerKey: 'device:device-1' }),
+    });
+    expect(scheduleStagedAlertDispatchMock).toHaveBeenCalledExactlyOnceWith('alert-1');
+    // Correlation is enqueued by the outbox after the publish, never inline.
+    expect(enqueueAlertCorrelationMock).not.toHaveBeenCalled();
     expect(insertCalls).not.toHaveBeenCalledWith(alertCorrelationsTable);
   });
 });
@@ -182,6 +247,7 @@ describe('createAlert honours alert_rules.is_active (#7626)', () => {
     expect(alertId).toBeNull();
     expect(dbMock.execute).not.toHaveBeenCalled();
     expect(vi.mocked(publishEvent)).not.toHaveBeenCalled();
+    expect(scheduleStagedAlertDispatchMock).not.toHaveBeenCalled();
     expect(vi.mocked(setCooldown)).not.toHaveBeenCalled();
   });
 
@@ -194,10 +260,11 @@ describe('createAlert honours alert_rules.is_active (#7626)', () => {
 
     expect(await createAlert(input)).toBe('alert-1');
     expect(dbMock.execute).toHaveBeenCalledTimes(1);
+    expect(scheduleStagedAlertDispatchMock).toHaveBeenCalledExactlyOnceWith('alert-1');
   });
 });
 
-describe('createSourcedAlert (#5241 — rule-less alert sources publish alert.triggered)', () => {
+describe('createSourcedAlert (#5241 — rule-less alert sources announce alert.triggered)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     dbMock._selectResults.length = 0;
@@ -205,7 +272,7 @@ describe('createSourcedAlert (#5241 — rule-less alert sources publish alert.tr
     dbMock._insertReturnResults.push([{ id: 'alert-9' }]);
   });
 
-  it('inserts a rule-less alert and publishes exactly one alert.triggered carrying the source', async () => {
+  it('inserts a rule-less alert and stages exactly one alert.triggered envelope carrying the source', async () => {
     const triggeredAt = new Date('2026-01-02T03:04:05.000Z');
 
     const alertId = await createSourcedAlert({
@@ -224,12 +291,17 @@ describe('createSourcedAlert (#5241 — rule-less alert sources publish alert.tr
     expect(insertCalls).toHaveBeenCalledTimes(1);
     expect(insertCalls).toHaveBeenCalledWith(alertsTable);
 
-    expect(vi.mocked(publishEvent)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(publishEvent)).toHaveBeenCalledWith(
-      'alert.triggered',
-      'org-1',
-      expect.objectContaining({
-        alertId: 'alert-9',
+    expect(inlineTriggerPublishes()).toEqual([]);
+    const { envelope, id } = sourcedInsert();
+    expectEnvelopeNamesRow(envelope, id);
+    expect(envelope).toMatchObject({
+      eventType: 'alert.triggered',
+      publisher: 'monitor-worker',
+      siteId: 'site-1',
+      // A sourced alert's cooldown belongs to its caller; the outbox sets none.
+      cooldownMinutes: 0,
+      retryOnPublishFailure: true,
+      payload: expect.objectContaining({
         ruleId: null,
         deviceId: 'device-1',
         severity: 'high',
@@ -239,11 +311,10 @@ describe('createSourcedAlert (#5241 — rule-less alert sources publish alert.tr
         monitorId: null,
         kind: null,
       }),
-      'monitor-worker',
-      { siteId: 'site-1' },
-    );
-
-    expect(enqueueAlertCorrelationMock).toHaveBeenCalledWith({ orgId: 'org-1', deviceId: 'device-1' });
+    });
+    expect(scheduleStagedAlertDispatchMock).toHaveBeenCalledExactlyOnceWith('alert-9');
+    // Device correlation is enqueued by the outbox after the publish.
+    expect(enqueueAlertCorrelationMock).not.toHaveBeenCalled();
   });
 
   it('returns null and publishes nothing when the insert yields no row', async () => {
@@ -262,12 +333,13 @@ describe('createSourcedAlert (#5241 — rule-less alert sources publish alert.tr
 
     expect(alertId).toBeNull();
     expect(vi.mocked(publishEvent)).not.toHaveBeenCalled();
-    // The null-check must short-circuit BEFORE the correlation enqueue too —
-    // there is no alert to correlate.
+    // The null-check must short-circuit BEFORE the outbox hand-off — there is
+    // no row to announce.
+    expect(scheduleStagedAlertDispatchMock).not.toHaveBeenCalled();
     expect(enqueueAlertCorrelationMock).not.toHaveBeenCalled();
   });
 
-  it('rolls back the alert row and reports when publishing alert.triggered throws', async () => {
+  it('never publishes inline, so a publishEvent rejection cannot roll the alert back (#10926)', async () => {
     dbMock._insertReturnResults.length = 0;
     dbMock._insertReturnResults.push([{ id: 'alert-9' }]);
     vi.mocked(publishEvent).mockRejectedValueOnce(new Error('redis down'));
@@ -282,17 +354,18 @@ describe('createSourcedAlert (#5241 — rule-less alert sources publish alert.tr
       publisher: 'monitor-worker',
     });
 
-    // An `active` row nobody was ever notified about is exactly the silent
-    // inbox-only alert #5241 exists to remove: it must not survive, or the
-    // caller's dedupe would skip re-creating it forever.
-    expect(alertId).toBeNull();
-    expect(deleteCalls).toHaveBeenCalledWith(alertsTable);
-    expect(captureExceptionMock).toHaveBeenCalled();
-    expect(enqueueAlertCorrelationMock).not.toHaveBeenCalled();
+    // The publish moved to the outbox: the staged envelope is durable on the
+    // row and a failed publish is retried there with the row kept. Create has
+    // nothing to roll back, delete or report.
+    expect(alertId).toBe('alert-9');
+    expect(vi.mocked(publishEvent)).not.toHaveBeenCalled();
+    expect(deleteCalls).not.toHaveBeenCalled();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expect(scheduleStagedAlertDispatchMock).toHaveBeenCalledExactlyOnceWith('alert-9');
   });
 });
 
-describe('createAlert publish rollback (#5325)', () => {
+describe('createAlert never publishes inline (#5325, #10926)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     dbMock._selectResults.length = 0;
@@ -305,7 +378,7 @@ describe('createAlert publish rollback (#5325)', () => {
     dbMock._insertReturnResults.push([{ id: 'alert-1' }]);
   });
 
-  it('rolls the alert row back, skips the cooldown and reports when publishing throws', async () => {
+  it('a publishEvent rejection cannot roll the alert back, because create never publishes', async () => {
     vi.mocked(publishEvent).mockRejectedValueOnce(new Error('redis down'));
 
     const alertId = await createAlert({
@@ -317,18 +390,17 @@ describe('createAlert publish rollback (#5325)', () => {
       message: 'CPU high on device',
     });
 
-    // An `active` row nobody was notified about would be found by this path's
-    // own dedupe query forever, so it must not survive the failed publish.
-    expect(alertId).toBeNull();
-    expect(deleteCalls).toHaveBeenCalledWith(alertsTable);
-    expect(captureExceptionMock).toHaveBeenCalled();
-    // Burning the cooldown would stop the next evaluation from retrying the
-    // whole create+publish.
-    expect(vi.mocked(setCooldown)).not.toHaveBeenCalled();
-    expect(enqueueAlertCorrelationMock).not.toHaveBeenCalled();
+    // The publish moved to the outbox: the staged envelope is durable on the
+    // row and a failed publish is retried there with the row kept. Create has
+    // nothing to roll back, delete or report.
+    expect(alertId).toBe('alert-1');
+    expect(vi.mocked(publishEvent)).not.toHaveBeenCalled();
+    expect(deleteCalls).not.toHaveBeenCalled();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expect(scheduleStagedAlertDispatchMock).toHaveBeenCalledExactlyOnceWith('alert-1');
   });
 
-  it('sets the cooldown and enqueues correlation once the publish succeeds', async () => {
+  it('leaves the cooldown and correlation to the outbox drain, carrying the cooldown in the envelope', async () => {
     const alertId = await createAlert({
       ruleId: 'rule-1',
       deviceId: 'device-1',
@@ -340,8 +412,11 @@ describe('createAlert publish rollback (#5325)', () => {
 
     expect(alertId).toBe('alert-1');
     expect(deleteCalls).not.toHaveBeenCalled();
-    expect(vi.mocked(setCooldown)).toHaveBeenCalledWith('rule-1', 'device-1', 5, undefined);
-    expect(enqueueAlertCorrelationMock).toHaveBeenCalledWith({ orgId: 'org-1', deviceId: 'device-1' });
+    // They run after a successful publish, in the outbox; the drain reads the
+    // cooldown from the envelope.
+    expect(vi.mocked(setCooldown)).not.toHaveBeenCalled();
+    expect(enqueueAlertCorrelationMock).not.toHaveBeenCalled();
+    expect(legacyInsert().envelope.cooldownMinutes).toBe(5);
   });
 });
 
@@ -359,31 +434,39 @@ describe('alert.triggered monitor identity and kind', () => {
       [{ cooldownMinutes: 5 }], [],
     );
     await createAlert({ ...input, ruleId: 'rule-1', monitorId: 'monitor-1', kind: 'cpu' });
-    expect(publishEvent).toHaveBeenCalledWith('alert.triggered', 'org-1',
-      expect.objectContaining({ ruleId: 'rule-1', monitorId: 'monitor-1', kind: 'cpu' }),
-      'alert-service', { siteId: 'site-1' });
+    expect(inlineTriggerPublishes()).toEqual([]);
+    expect(legacyInsert().envelope).toMatchObject({
+      eventType: 'alert.triggered', publisher: 'alert-service', siteId: 'site-1', retryOnPublishFailure: true,
+      payload: expect.objectContaining({ ruleId: 'rule-1', monitorId: 'monitor-1', kind: 'cpu' }),
+    });
   });
   it('resolves a sourced monitor kind when the recurrence producer only knows its id', async () => {
     dbMock._selectResults.push([{ kind: 'disk' }]);
     await createSourcedAlert({ ...input, monitorId: 'monitor-1', context: { source: 'monitor_recurrence' }, publisher: 'monitor-escalation' });
-    expect(publishEvent).toHaveBeenCalledWith('alert.triggered', 'org-1',
-      expect.objectContaining({ ruleId: null, monitorId: 'monitor-1', kind: 'disk' }),
-      'monitor-escalation', { siteId: 'site-1' });
+    expect(inlineTriggerPublishes()).toEqual([]);
+    expect(sourcedInsert().envelope).toMatchObject({
+      eventType: 'alert.triggered', publisher: 'monitor-escalation', siteId: 'site-1', retryOnPublishFailure: true,
+      payload: expect.objectContaining({ ruleId: null, monitorId: 'monitor-1', kind: 'disk' }),
+    });
   });
   it('sourced payload extras cannot replace canonical monitor identity', async () => {
     await createSourcedAlert({ ...input, monitorId: 'monitor-1', kind: 'memory',
       context: { source: 'monitor_recurrence' }, publisher: 'monitor-escalation',
       eventPayload: { monitorId: 'wrong', kind: 'cpu' } });
-    expect(publishEvent).toHaveBeenCalledWith('alert.triggered', 'org-1',
-      expect.objectContaining({ monitorId: 'monitor-1', kind: 'memory' }),
-      'monitor-escalation', { siteId: 'site-1' });
+    expect(inlineTriggerPublishes()).toEqual([]);
+    expect(sourcedInsert().envelope).toMatchObject({
+      eventType: 'alert.triggered', publisher: 'monitor-escalation', siteId: 'site-1', retryOnPublishFailure: true,
+      payload: expect.objectContaining({ monitorId: 'monitor-1', kind: 'memory' }),
+    });
   });
   it('feature-sourced alerts have explicit nulls and retain source-specific context', async () => {
     await createSourcedAlert({ ...input, context: { source: 'network_monitor', monitorId: 'legacy-check' },
       publisher: 'monitor-worker', eventPayload: { monitorId: 'legacy-check' } });
-    expect(publishEvent).toHaveBeenCalledWith('alert.triggered', 'org-1',
-      expect.objectContaining({ monitorId: null, kind: null, source: 'network_monitor' }),
-      'monitor-worker', { siteId: 'site-1' });
+    expect(inlineTriggerPublishes()).toEqual([]);
+    expect(sourcedInsert().envelope).toMatchObject({
+      eventType: 'alert.triggered', publisher: 'monitor-worker', siteId: 'site-1', retryOnPublishFailure: true,
+      payload: expect.objectContaining({ monitorId: null, kind: null, source: 'network_monitor' }),
+    });
     expect(dbMock.select).not.toHaveBeenCalled();
   });
 });
@@ -407,17 +490,23 @@ describe('createSourcedAlert workload ownership', () => {
       ownerKind: 'backup_workload', ownerRef: 'workload-1', deviceId: null,
     }));
   });
-  it('publishes authoritative owner identity with null device and site', async () => {
+  it('stages authoritative owner identity with null device and site', async () => {
     await createSourcedAlert({ ...input, siteId: 'wrong-site',
       eventPayload: { deviceId: 'wrong-device', owner: null, ownerKey: 'wrong-key' } });
-    expect(publishEvent).toHaveBeenCalledWith('alert.triggered', 'org-1', expect.objectContaining({
-      deviceId: null, owner: input.owner, ownerKey: 'backup_workload:workload-1',
-    }), 'backup-sync', { siteId: null });
+    expect(inlineTriggerPublishes()).toEqual([]);
+    expect(sourcedInsert().envelope).toMatchObject({
+      eventType: 'alert.triggered', publisher: 'backup-sync', siteId: null, retryOnPublishFailure: true,
+      payload: expect.objectContaining({
+        deviceId: null, owner: input.owner, ownerKey: 'backup_workload:workload-1',
+      }),
+    });
   });
   it('never resolves a device site or enqueues correlation for a workload', async () => {
     await createSourcedAlert(input);
     expect(resolveDeviceSiteId).not.toHaveBeenCalled();
     expect(enqueueAlertCorrelationMock).not.toHaveBeenCalled();
+    // The row is still announced, by the outbox.
+    expect(scheduleStagedAlertDispatchMock).toHaveBeenCalledExactlyOnceWith('alert-workload');
   });
   it('logs a dedupe with owner identity without publishing or reporting an error', async () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
@@ -425,6 +514,7 @@ describe('createSourcedAlert workload ownership', () => {
     dbMock._insertReturnResults.push([]);
     expect(await createSourcedAlert(input)).toBeNull();
     expect(publishEvent).not.toHaveBeenCalled();
+    expect(scheduleStagedAlertDispatchMock).not.toHaveBeenCalled();
     expect(captureExceptionMock).not.toHaveBeenCalled();
     expect(enqueueAlertCorrelationMock).not.toHaveBeenCalled();
     expect(info).toHaveBeenCalledWith(expect.any(String), { orgId: 'org-1', ownerKind: 'backup_workload', ownerRef: 'workload-1' });
@@ -447,22 +537,16 @@ describe('createSourcedAlert workload ownership', () => {
       orgId: 'org-1', ownerKind: 'backup_workload', ownerRef: 'workload-1',
     }));
     expect(publishEvent).not.toHaveBeenCalled();
+    expect(scheduleStagedAlertDispatchMock).not.toHaveBeenCalled();
   });
-  it('keeps device owner identity and device correlation', async () => {
+  it('keeps device owner identity in the staged payload and leaves correlation to the outbox', async () => {
     await createSourcedAlert({ ...input, deviceId: 'device-1', owner: undefined });
-    expect(publishEvent).toHaveBeenCalledWith('alert.triggered', 'org-1', expect.objectContaining({
-      owner: null, ownerKey: 'device:device-1', deviceId: 'device-1',
-    }), 'backup-sync', { siteId: 'site-1' });
-    expect(enqueueAlertCorrelationMock).toHaveBeenCalledWith({ orgId: 'org-1', deviceId: 'device-1' });
-  });
-  it('rolls back a workload alert when publish fails', async () => {
-    vi.mocked(publishEvent).mockRejectedValueOnce(new Error('redis down'));
-    expect(await createSourcedAlert(input)).toBeNull();
-    expect(deleteCalls).toHaveBeenCalledWith(alertsTable);
-    expect(captureExceptionMock).toHaveBeenCalledWith(expect.any(Error), undefined, {
-      errorId: 'alert-triggered-publish-failed', alertId: 'alert-workload',
-      alertSource: 'backup_provider', orgId: 'org-1', ownerKind: 'backup_workload', ownerRef: 'workload-1',
+    expect(inlineTriggerPublishes()).toEqual([]);
+    expect(sourcedInsert().envelope).toMatchObject({
+      eventType: 'alert.triggered', publisher: 'backup-sync', siteId: 'site-1', retryOnPublishFailure: true,
+      payload: expect.objectContaining({ owner: null, ownerKey: 'device:device-1', deviceId: 'device-1' }),
     });
+    // Enqueued by the outbox after the publish, not inline.
     expect(enqueueAlertCorrelationMock).not.toHaveBeenCalled();
   });
 });

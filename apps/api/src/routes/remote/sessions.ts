@@ -29,7 +29,6 @@ import {
 } from './schemas';
 import {
   getPagination,
-  getIceServers,
   getDeviceWithOrgCheck,
   getSessionWithOrgCheck,
   hasSessionOwnership,
@@ -63,6 +62,7 @@ import { revokeViewerSession } from '../../services/viewerTokenRevocation';
 import { captureException, captureMessage } from '../../services/sentry';
 import { ACTIVE_REMOTE_SESSION_STATUSES, teardownDisconnectedSessions } from '../../services/remoteSessionTeardown';
 import { normalizeRecordingUrl } from './recordingUrl';
+import { resolveDesktopIcePlan } from './desktopRelayPolicy';
 import { createRemoteSession, RemoteSessionDeniedError } from '../../services/remoteSessionCreate';
 import {
   AGENT_UPGRADE_REQUIRED_CODE,
@@ -938,12 +938,15 @@ sessionRoutes.get(
       return jsonError(c, 429, ERROR_CODES.RATE_LIMITED, 'Too many ICE server requests. Please try again later.');
     }
 
+    const icePlan = await resolveDesktopIcePlan(device.id, {
+      sessionId: session.id,
+      userId: session.userId,
+      deviceId: session.deviceId,
+    });
+    if (!icePlan.ok) return c.json({ error: icePlan.error, code: icePlan.code }, 409);
     return c.json({
-      iceServers: getIceServers({
-        sessionId: session.id,
-        userId: session.userId,
-        deviceId: session.deviceId,
-      })
+      iceServers: icePlan.iceServers,
+      ...(icePlan.relayOnly ? { relayOnly: true } : {}),
     });
   }
 );
@@ -1088,6 +1091,15 @@ sessionRoutes.post(
         code: CONSENT_UPGRADE_REQUIRED_CODE,
       }, 409);
     }
+    // Refuse an isolated session before committing a start intent or minting a lease.
+    // This route already runs inside the request's DB access context.
+    const icePlan = await resolveDesktopIcePlan(device.id, {
+      sessionId,
+      userId: session.userId,
+      deviceId: session.deviceId,
+    });
+    if (!icePlan.ok) return c.json({ error: icePlan.error, code: icePlan.code }, 409);
+
     const promptMode = prompt?.mode === 'consent' || prompt?.mode === 'notify' ? prompt.mode : 'off';
     const startCommandId = createDesktopStartCommandId(sessionId);
 
@@ -1185,7 +1197,8 @@ sessionRoutes.post(
           sessionId,
           startGeneration: formatDesktopGeneration(startGeneration),
           offer: data.offer,
-          iceServers: getIceServers({ sessionId, userId: session.userId, deviceId: session.deviceId }),
+          iceServers: icePlan.iceServers,
+          ...(icePlan.relayOnly ? { relayOnly: true } : {}),
           clipboard: desktopPolicy.clipboard,
           idleTimeoutMinutes: desktopPolicy.idleTimeoutMinutes,
           maxSessionDurationHours: desktopPolicy.maxSessionDurationHours,

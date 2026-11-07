@@ -26,6 +26,7 @@ import type { Device, DeviceStatus } from "./DeviceList";
 import ConnectDesktopButton from "../remote/ConnectDesktopButton";
 import { ConfirmDialog } from "../shared/ConfirmDialog";
 import RemoveDeviceDialog from "./RemoveDeviceDialog";
+import { useIsolationMenu } from "./networkIsolation/useIsolationMenu";
 import ForceRebootDialog from "./ForceRebootDialog";
 import { showToast } from "../shared/Toast";
 import { agentSupportsForceReboot, FORCE_REBOOT_MIN_AGENT_VERSION } from "@breeze/shared";
@@ -461,6 +462,8 @@ export default function DeviceActions({
     setPowerMenuOpen(false);
   };
 
+  const isolationMenu = useIsolationMenu(device, can("devices", "execute"), menuOpen, closeMenus);
+
   const handleAction = async (action: string) => {
     // #8729: owned here, not by the page: the dialog collects the typed
     // hostname and the step-up itself.
@@ -646,6 +649,7 @@ export default function DeviceActions({
             <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
           </button>
           <DropdownPopup>
+              {isolationMenu.item}
               <button
                 type="button"
                 onClick={() => handleAction("run-script")}
@@ -801,6 +805,7 @@ export default function DeviceActions({
         </DropdownRoot>
 
         {forceRebootDialog}
+        {isolationMenu.dialog}
         {modalType === "decommission" ? (
           <RemoveDeviceDialog
             open
@@ -954,6 +959,7 @@ export default function DeviceActions({
             label={t("common:labels.actions")}
             sheetClassName="fixed inset-x-0 bottom-0 z-50 max-h-[75vh] overflow-y-auto rounded-t-xl border-t bg-card pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] shadow-lg"
           >
+            {isolationMenu.item}
             {showWake &&
               sheetItem({
                 action: "run-script",
@@ -1274,6 +1280,7 @@ export default function DeviceActions({
             <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
           </button>
           <DropdownPopup>
+              {isolationMenu.item}
               <button
                 type="button"
                 onClick={() => handleAction("refresh")}
@@ -1374,6 +1381,7 @@ export default function DeviceActions({
       )}
 
       {forceRebootDialog}
+      {isolationMenu.dialog}
       {modalType === "decommission" ? (
         <RemoveDeviceDialog
           open

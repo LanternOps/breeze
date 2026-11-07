@@ -231,6 +231,9 @@ func latestScanTime(defenderStatus DefenderStatus) string {
 }
 
 func encryptionString(enabled bool, detectErr error) string {
+	if errors.Is(detectErr, ErrBitLockerUnavailable) {
+		return "unsupported"
+	}
 	if detectErr != nil {
 		return "unknown"
 	}
@@ -238,6 +241,20 @@ func encryptionString(enabled bool, detectErr error) string {
 		return "encrypted"
 	}
 	return "unencrypted"
+}
+
+// applyEncryptionPosture records the encryption read on status and returns
+// the error CollectStatus should report, if any. No BitLocker on this host is
+// a state ("unsupported"), not a collection failure (#10902).
+func applyEncryptionPosture(status *SecurityStatus, enabled bool, details map[string]any, detectErr error) error {
+	status.EncryptionStatus = encryptionString(enabled, detectErr)
+	if details != nil {
+		status.EncryptionDetails = details
+	}
+	if detectErr == nil || errors.Is(detectErr, ErrBitLockerUnavailable) {
+		return nil
+	}
+	return detectErr
 }
 
 func boolPtr(value bool) *bool {
@@ -667,14 +684,10 @@ func bitLockerEnumName(value any, names map[int]string) string {
 const bitLockerVolumesPS = `Get-BitLockerVolume | Select-Object MountPoint,@{n='ProtectionStatus';e={[string]$_.ProtectionStatus}},@{n='EncryptionMethod';e={[string]$_.EncryptionMethod}},@{n='VolumeStatus';e={[string]$_.VolumeStatus}},EncryptionPercentage | ConvertTo-Json -Compress`
 
 func collectEncryptionDetailsWindows() (map[string]any, error) {
-	output, err := runCommand(
-		10*time.Second,
-		"powershell",
-		"-NoProfile",
-		"-NonInteractive",
-		"-Command",
-		bitLockerVolumesPS,
-	)
+	if bitLockerNotInstalled() {
+		return nil, ErrBitLockerUnavailable
+	}
+	output, err := runBitLockerPowerShell(10*time.Second, bitLockerVolumesPS)
 	if err != nil {
 		return nil, err
 	}
@@ -1220,12 +1233,8 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 	status.FirewallEnabled = firewallState(firewallEnabled, fwErr)
 
 	encryptionEnabled, encDetails, encErr := collectEncryptionPosture()
-	if encErr != nil {
-		errs = append(errs, encErr)
-	}
-	status.EncryptionStatus = encryptionString(encryptionEnabled, encErr)
-	if encDetails != nil {
-		status.EncryptionDetails = encDetails
+	if err := applyEncryptionPosture(&status, encryptionEnabled, encDetails, encErr); err != nil {
+		errs = append(errs, err)
 	}
 
 	if localAdmins, err := collectLocalAdminSummary(); err == nil {
@@ -1474,8 +1483,13 @@ func getEncryptionStatusFor(goos string) (bool, error) {
 	}
 }
 
+const bitLockerSystemDriveStatusPS = "Get-BitLockerVolume -MountPoint $env:SystemDrive | Select-Object -ExpandProperty ProtectionStatus"
+
 func getEncryptionStatusWindows() (bool, error) {
-	output, err := runCommand(8*time.Second, "powershell", "-NoProfile", "-NonInteractive", "-Command", "Get-BitLockerVolume -MountPoint $env:SystemDrive | Select-Object -ExpandProperty ProtectionStatus")
+	if bitLockerNotInstalled() {
+		return false, ErrBitLockerUnavailable
+	}
+	output, err := runBitLockerPowerShell(8*time.Second, bitLockerSystemDriveStatusPS)
 	if err != nil {
 		return false, err
 	}

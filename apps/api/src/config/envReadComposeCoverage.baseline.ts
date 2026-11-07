@@ -8,6 +8,19 @@
 
 export type ComposeFileKey = 'root' | 'prod';
 
+// Mapped as `${VAR:-}` in #10949, then taken back out so v0.126.1 can ship as a
+// server-only release: the server-only guard refuses any compose change since
+// the v0.126.0 base. Delete this block and restore the three passthrough lines
+// in both compose files at the next full release.
+const SERVER_ONLY_0_126_1_UNMAPPED: Readonly<Record<string, string>> = {
+  AGENT_CONNECTIONS_MAX_PER_DEVICE:
+    'optional tuning knob; mapping deferred to the next full release so v0.126.1 stays server-only (compose files must match v0.126.0)',
+  ALERT_WORKER_CONCURRENCY:
+    'optional tuning knob; mapping deferred to the next full release so v0.126.1 stays server-only (compose files must match v0.126.0)',
+  ALERT_WORKER_STAGGER_WINDOW_MS:
+    'optional tuning knob; mapping deferred to the next full release so v0.126.1 stays server-only (compose files must match v0.126.0)',
+};
+
 /** Unmapped on purpose. Each needs a reason that would survive review. */
 export const COMPOSE_INTENTIONALLY_UNMAPPED: Readonly<Record<ComposeFileKey, Readonly<Record<string, string>>>> = {
   root: {
@@ -20,6 +33,7 @@ export const COMPOSE_INTENTIONALLY_UNMAPPED: Readonly<Record<ComposeFileKey, Rea
       'local-development escape hatch that is ignored when NODE_ENV=production, which the x-api-env anchor pins',
     DEV_PUSH_WORK_DIR:
       'dev-push staging dir; dev-push is off on a compose stack (NODE_ENV=production pinned, DEV_PUSH_ENABLED not mapped)',
+    ...SERVER_ONLY_0_126_1_UNMAPPED,
   },
   prod: {
     REDIS_PASSWORD:
@@ -29,6 +43,7 @@ export const COMPOSE_INTENTIONALLY_UNMAPPED: Readonly<Record<ComposeFileKey, Rea
       'local-development escape hatch that is ignored when NODE_ENV=production, which the x-api-env anchor pins',
     DEV_PUSH_WORK_DIR:
       'dev-push staging dir; dev-push is off on a compose stack (NODE_ENV=production pinned, DEV_PUSH_ENABLED not mapped)',
+    ...SERVER_ONLY_0_126_1_UNMAPPED,
   },
 };
 

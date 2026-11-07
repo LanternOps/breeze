@@ -9,7 +9,7 @@ import { users } from './users';
 /**
  * The ticket import framework (#8313 W4; spec
  * docs/superpowers/specs/api-platform/2026-10-19-ticket-import-modules-design.md
- * §5.5; migration 2027-01-18-100000). Six partner-axis tables (shape 3): RLS
+ * §5.5; migration 2027-01-20-100000). Six partner-axis tables (shape 3): RLS
  * is `system OR breeze_has_partner_access(partner_id)`, each is in
  * PARTNER_TENANT_TABLES and is erased with its partner. Partner-wide first:
  * an import spans orgs and is a partner-admin action (#8313 answer 2), so

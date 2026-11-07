@@ -138,6 +138,7 @@ import {
   registerConfigPolicyTools,
   MAINTENANCE_LINK_MACHINE_PRINCIPAL_DENIED,
   MAINTENANCE_LINK_FEATURE_TYPE_REQUIRED,
+  CONTAINMENT_LINK_FEATURE_TYPE_REQUIRED,
 } from './aiToolsConfigPolicy';
 import {
   addFeatureLink,
@@ -1522,6 +1523,55 @@ describe('manage_policy_feature_link maintenance inlineSettings validation (#631
     expect(parsed.error).toMatch(/recurrence/i);
     // Armed above, so an ungated tool would have completed the write.
     expect(vi.mocked(addFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it.each(['add', 'update'])('containment %s validates inline settings before mutation', async action => {
+    const tools = toolsWithPolicy();
+    if (action === 'update') mockSelectRows([{ featureType: 'containment' }]);
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'containment' } as any);
+    vi.mocked(updateFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'containment' } as any);
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action, configPolicyId: POLICY_ID, featureLinkId: 'link-1', featureType: 'containment',
+      inlineSettings: { version: 1, defaultTtlHours: 0 },
+    }, makeAuth());
+    expect(JSON.parse(output).error).toMatch(/defaultTtlHours/);
+    expect(addFeatureLink).not.toHaveBeenCalled();
+    expect(updateFeatureLink).not.toHaveBeenCalled();
+  });
+
+  it.each(['add', 'update'])('containment %s refuses a standalone reference', async action => {
+    const tools = toolsWithPolicy();
+    if (action === 'update') mockSelectRows([{ featureType: 'containment' }]);
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'containment' } as any);
+    vi.mocked(updateFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'containment' } as any);
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action, configPolicyId: POLICY_ID, featureLinkId: 'link-1', featureType: 'containment',
+      featurePolicyId: POLICY_ID, inlineSettings: { version: 1 },
+    }, makeAuth());
+    expect(JSON.parse(output).error).toMatch(/featurePolicyId/);
+    expect(addFeatureLink).not.toHaveBeenCalled();
+    expect(updateFeatureLink).not.toHaveBeenCalled();
+  });
+
+  it('anti-bypass (#10100): a containment update WITHOUT featureType is refused so the tier-3 escalation cannot be skipped', async () => {
+    const tools = toolsWithPolicy();
+    mockSelectRows([{ featureType: 'containment' }]);
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action: 'update', configPolicyId: POLICY_ID, featureLinkId: 'link-1',
+      inlineSettings: { version: 1, extraAllow: [{ cidr: '198.51.100.0/24', proto: 'tcp', ports: [443], label: 'x' }] },
+    }, makeUserAuth());
+    expect(JSON.parse(output).error).toBe(CONTAINMENT_LINK_FEATURE_TYPE_REQUIRED);
+    expect(vi.mocked(updateFeatureLink)).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, null])('containment add with inlineSettings %s returns a field-level version error', async inlineSettings => {
+    const tools = toolsWithPolicy();
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'containment' } as any);
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action: 'add', configPolicyId: POLICY_ID, featureType: 'containment', inlineSettings,
+    }, makeAuth());
+    expect(JSON.parse(output).error).toMatch(/containment/i);
+    expect(addFeatureLink).not.toHaveBeenCalled();
   });
 
   it('system_protection (#4754): returns a field-level error for an unknown key, not the generic tool error', async () => {

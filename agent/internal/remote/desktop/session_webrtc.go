@@ -1,8 +1,10 @@
 package desktop
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +23,8 @@ import (
 // DefaultSessionPolicy() (see session_policy.go) so clipboard defaults are
 // permissive and the IPC/map decoders can't drift on what "default" means.
 type SessionPolicy struct {
+	// RelayOnly is server-decided while the device is isolated (OD9).
+	RelayOnly             bool
 	ClipboardHostToViewer bool
 	ClipboardViewerToHost bool
 	IdleTimeout           time.Duration // 0 = disabled
@@ -35,7 +39,7 @@ type SessionPolicy struct {
 }
 
 // StartSession creates and starts a new remote desktop session.
-// iceServers is optional; if nil, falls back to Google STUN.
+// iceServers is optional outside relay-only mode; if nil, falls back to Google STUN.
 func (m *SessionManager) StartSession(sessionID string, offer string, iceServers []ICEServerConfig, displayIndex int, policy SessionPolicy) (answer string, err error) {
 	// Serialize concurrent StartSession calls. Without this, two retries
 	// with the same sessionID (e.g. heartbeat-poll + WS fast path delivering
@@ -46,6 +50,13 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	// made this race reachable.
 	m.startMu.Lock()
 	defer m.startMu.Unlock()
+
+	// Validate the ICE configuration before tearing anything down: a relay-only
+	// start with no TURN server must fail without ending the current session.
+	config, err := buildICEConfiguration(iceServers, policy.RelayOnly)
+	if err != nil {
+		return "", err
+	}
 
 	sessionStart := time.Now()
 	// Desktop Duplication and GPU pipelines get unstable with multiple concurrent
@@ -66,14 +77,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		slog.Info("StartSession: stop existing sessions took long", "session", sessionID, "elapsed", elapsed)
 	}
 
-	// Create WebRTC configuration
-	parsedICE := parseICEServers(iceServers)
-	for _, s := range parsedICE {
+	// Create WebRTC configuration (validated above, before any teardown)
+	for _, s := range config.ICEServers {
 		hasCreds := s.Username != ""
 		slog.Info("ICE server configured", "session", sessionID, "urls", s.URLs, "hasCreds", hasCreds)
-	}
-	config := webrtc.Configuration{
-		ICEServers: parsedICE,
 	}
 
 	// Register playout-delay RTP header extension for low-latency screen sharing.
@@ -776,4 +783,32 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	}
 	slog.Info("StartSession: complete", "session", sessionID, "totalElapsed", time.Since(sessionStart))
 	return ld.SDP, nil
+}
+
+// buildICEConfiguration preserves the normal ICE defaults and confines isolated
+// sessions to TURN, without allowing parseICEServers' STUN fallback to escape.
+func buildICEConfiguration(iceServers []ICEServerConfig, relayOnly bool) (webrtc.Configuration, error) {
+	config := webrtc.Configuration{ICEServers: parseICEServers(iceServers)}
+	if !relayOnly {
+		return config, nil
+	}
+	config.ICETransportPolicy = webrtc.ICETransportPolicyRelay
+	relayServers := make([]webrtc.ICEServer, 0, len(config.ICEServers))
+	for _, server := range config.ICEServers {
+		urls := make([]string, 0, len(server.URLs))
+		for _, url := range server.URLs {
+			if strings.HasPrefix(url, "turn:") || strings.HasPrefix(url, "turns:") {
+				urls = append(urls, url)
+			}
+		}
+		if len(urls) > 0 {
+			server.URLs = urls
+			relayServers = append(relayServers, server)
+		}
+	}
+	if len(relayServers) == 0 {
+		return webrtc.Configuration{}, errors.New("remote desktop needs the TURN relay while this device is isolated: no TURN server in the session offer")
+	}
+	config.ICEServers = relayServers
+	return config, nil
 }

@@ -24,6 +24,7 @@ import AlertDeviceInfo from './AlertDeviceInfo';
 import { isDeviceAlert, type AlertSubjectFields } from './AlertSubjectChip';
 import { DelegateToOperatorButton } from '../aiOperator/DelegateToOperatorButton';
 import { extractServiceNameFromAlert } from '../aiOperator/alertServiceName';
+import { secureExternalTicketUrl } from '../../lib/secureExternalTicketUrl';
 import {
   anomalyDeepLinkHash,
   formatAnomalyConfidence,
@@ -83,11 +84,6 @@ type ExternalTicket = {
   externalNumber: string | null;
   state?: string | null;
 };
-
-function secureExternalTicketUrl(value: string | null): string | undefined {
-  if (!value) return undefined;
-  try { return new URL(value).protocol === 'https:' ? value : undefined; } catch { return undefined; }
-}
 
 type LinkedTicket = {
   id: string;
