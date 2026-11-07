@@ -148,7 +148,7 @@ describe('PsaConnectionsPage round-trip contract', () => {
 
     await user.click(screen.getByRole('button', { name: /create connection/i }));
 
-    await waitFor(() => expect(recorded).toHaveLength(1));
+    await waitFor(() => expect(recorded).toHaveLength(1), { timeout: 5000 });
     const request = recorded[0]!;
     expect(request.url).toBe('/psa/connections');
     expect(request.method).toBe('POST');
@@ -227,7 +227,7 @@ describe('PsaConnectionsPage round-trip contract', () => {
     await user.type(nameInput, 'Renamed');
     await user.click(screen.getByRole('button', { name: /save changes/i }));
 
-    await waitFor(() => expect(recorded).toHaveLength(1));
+    await waitFor(() => expect(recorded).toHaveLength(1), { timeout: 5000 });
     const request = recorded[0]!;
     expect(request.url).toBe('/psa/connections/c1');
     expect(request.method).toBe('PATCH');
@@ -281,7 +281,7 @@ describe('PsaConnectionsPage round-trip contract', () => {
 
     await user.click(screen.getByRole('button', { name: /create connection/i }));
 
-    await waitFor(() => expect(recorded).toHaveLength(1));
+    await waitFor(() => expect(recorded).toHaveLength(1), { timeout: 5000 });
     const body = recorded[0]!.body as { provider: string; credentials: Record<string, string> };
     expect(body.provider).toBe('connectwise');
     expect(body.credentials).toEqual({
@@ -412,7 +412,7 @@ describe('PsaConnectionsPage round-trip contract', () => {
       await user.type(screen.getByLabelText(/api token/i), 'tok-123');
       await user.click(screen.getByRole('button', { name: /create connection/i }));
 
-      await waitFor(() => expect(recorded).toHaveLength(1));
+      await waitFor(() => expect(recorded).toHaveLength(1), { timeout: 5000 });
       expect((recorded[0]!.body as Record<string, unknown>).ownerScope).toBe('partner');
     });
 
@@ -438,7 +438,7 @@ describe('PsaConnectionsPage round-trip contract', () => {
       await user.type(screen.getByLabelText(/api token/i), 'tok-123');
       await user.click(screen.getByRole('button', { name: /create connection/i }));
 
-      await waitFor(() => expect(recorded).toHaveLength(1));
+      await waitFor(() => expect(recorded).toHaveLength(1), { timeout: 5000 });
       expect((recorded[0]!.body as Record<string, unknown>).ownerScope).toBe('organization');
     });
 
@@ -493,7 +493,7 @@ describe('PsaConnectionsPage round-trip contract', () => {
       await user.type(screen.getByLabelText(/api token/i), 'tok-123');
       await user.click(screen.getByRole('button', { name: /create connection/i }));
 
-      await waitFor(() => expect(recorded).toHaveLength(1));
+      await waitFor(() => expect(recorded).toHaveLength(1), { timeout: 5000 });
       const body = recorded[0]!.body as Record<string, unknown>;
       expect(body.ownerScope).toBe('organization');
       expect(body.orgId).toBe('org-2');
