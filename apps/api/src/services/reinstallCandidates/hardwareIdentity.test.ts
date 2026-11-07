@@ -9,6 +9,10 @@ describe('serial + manufacturer match key', () => {
   it.each([
     ['To Be Filled By O.E.M.', 'ASUS'],
     ['System Serial Number', 'Dell'],
+    ['Chassis Serial Number', 'Dell'],
+    ['0123456789', 'Dell'],
+    ['1234567890', 'Dell'],
+    ['XXXXXXXX', 'Dell'],
     ['SN1', 'System manufacturer'],
     ['SN1', 'O.E.M.'],
     ['Default string', 'Default string'],

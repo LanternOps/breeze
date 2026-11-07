@@ -17,7 +17,10 @@ const PLACEHOLDER_IDENTITY_VALUES: ReadonlySet<string> = new Set([
   '0',
   '00000000',
   '000000000000000',
+  '0123456789',
   '123456789',
+  '1234567890',
+  'chassis serial number',
   'default string',
   'none',
   'null',
@@ -33,6 +36,7 @@ const PLACEHOLDER_IDENTITY_VALUES: ReadonlySet<string> = new Set([
   'system product name',
   'system serial number',
   'unknown',
+  'xxxxxxxx',
 ]);
 
 /** True when the value is empty or a firmware placeholder (the Go cleaner's rules). */

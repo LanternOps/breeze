@@ -172,7 +172,10 @@ func cleanHardwareIdentityValue(value string) string {
 	case "0",
 		"00000000",
 		"000000000000000",
+		"0123456789",
 		"123456789",
+		"1234567890",
+		"chassis serial number",
 		"default string",
 		"none",
 		"null",
@@ -187,7 +190,8 @@ func cleanHardwareIdentityValue(value string) string {
 		"system manufacturer",
 		"system product name",
 		"system serial number",
-		"unknown":
+		"unknown",
+		"xxxxxxxx":
 		return ""
 	}
 	if strings.Contains(normalized, "to be filled by") {
