@@ -121,6 +121,36 @@ Each collector shows a status badge reflecting reachability: `pending`, `connect
   Self-hosted controllers use this same telemetry pipeline: once a controller is registered and its sites are mapped, its devices and clients are collected with the same per-port PoE, throughput, uptime, and connected-client detail.
 </Aside>
 
+## Wi-Fi monitoring
+
+For access points, the **Deep telemetry** card shows per-AP Wi-Fi detail next to the existing device table. It is available on cloud connections with a collector and on self-hosted controllers, because both use the same agent collector.
+
+**What appears for each access point**
+
+- Online or offline state, the raw controller state, and uptime.
+- **Wireless clients** -- the number of clients currently attached to the AP over Wi-Fi. Wired, VPN, and other client types are not counted. This is not a per-radio count.
+- One line per radio: band (2.4, 5, or 6 GHz), **Channel**, **Width**, **WLAN standard**, and **TX retries**.
+- CPU and memory use.
+- **Uplink RX** and **Uplink TX** rates.
+
+**Freshness**
+
+- Breeze does not poll every AP on every cycle. Wi-Fi statistics use a limited, rotating request budget, so each AP is refreshed in turn and its values can lag behind the latest poll. When an AP's values are older than the current poll, the card shows **As of** with the time they were last refreshed.
+- If an AP is **Offline** but the controller still reports a non-zero uplink rate, the card labels the rate **Last reported / stale** with its timestamp. Treat it as the last value seen, not current traffic.
+- A value shown as `—` was not measured, was unsupported, or was not collected in the current rotation. A value shown as `0` was measured and is zero. For example, `0%` TX retries means the controller reported no retries.
+
+**How it is collected**
+
+- The agent polls the local UniFi controller.
+- Only access points receive statistics collection. Switches and gateways keep their existing telemetry.
+- This feature shows measured facts only. It does not raise AP alerts, keep radio history, or add a customer-facing Wi-Fi view, and it does not change the existing UniFi data.
+
+<Aside type="caution">
+  **Upgrade order.** Update the Breeze API first, then the agents. Wi-Fi collection needs agent **v0.125.0 or later**. An agent only sends Wi-Fi data when the API tells it that it is accepted for that collector, so an older agent keeps working and simply sends no Wi-Fi detail.
+</Aside>
+
+**Rollback.** Wi-Fi collection is gated by the topology feature flag `interfaceHealth`, shown as **Interface health** in the partner **Modules** settings. Turning it off makes the API stop accepting Wi-Fi data from agents; they fall back to the previous payload and the existing UniFi telemetry is unchanged. The same flag also controls SNMP interface health on topology links, so turning it off affects both.
+
 ## What Breeze pulls from UniFi
 
 | Data | Source | Detail |
