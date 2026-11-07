@@ -12,6 +12,7 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+import type { RearmMode } from '@breeze/shared';
 import { organizations, partners } from './orgs';
 import { users } from './users';
 import { alertSeverityEnum, escalationPolicies } from './alerts';
@@ -76,8 +77,15 @@ export const monitorDefinitions = pgTable(
     enabled: boolean('enabled').notNull().default(true),
     condition: jsonb('condition').notNull().$type<Record<string, unknown>>(),
     severity: alertSeverityEnum('severity').notNull(),
-    cooldownMinutes: integer('cooldown_minutes').notNull().default(5),
-    autoResolve: boolean('auto_resolve').notNull().default(false),
+    // Alert re-arm lifecycle W2 (#10765): the MONITOR override. NULL = inherit
+    // the device's org override, then its partner default (no column default:
+    // a new monitor inherits). Read ONLY via services/alertLifecycle/resolve.ts;
+    // the compiler copies `?? BUILTIN` into the NOT NULL template columns.
+    // CHECK: rearm_delay_minutes (1–1440) set iff rearm_mode = 'after_delay'.
+    cooldownMinutes: integer('cooldown_minutes'),
+    autoResolve: boolean('auto_resolve'),
+    rearmMode: text('rearm_mode').$type<RearmMode>(),
+    rearmDelayMinutes: integer('rearm_delay_minutes'),
     autoResolveConditions: jsonb('auto_resolve_conditions').$type<Record<string, unknown> | null>(),
     responses: jsonb('responses').notNull().default([]).$type<Array<Record<string, unknown>>>(),
     deliveryMode: varchar('delivery_mode', { length: 16 }).notNull().default('inherit'),

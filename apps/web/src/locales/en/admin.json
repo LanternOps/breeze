@@ -1129,6 +1129,8 @@
       "sensitive_data_finding": "Sensitive data finding",
       "sensitive_data_policy": "Sensitive data policy",
       "sensitive_data_scan": "Sensitive data scan",
+      "service_catalog": "Service catalog",
+      "service_catalog_item": "Service catalog item",
       "service_principal": "Service principal",
       "site": "Site",
       "sla_definition": "SLA definition",

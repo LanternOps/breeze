@@ -54,6 +54,15 @@ RestartSec=30
 TimeoutStopSec=30
 KillMode=mixed
 
+# Delegate=yes hands this unit's cgroup subtree to the agent. Network
+# isolation (#10088, OD14) splits it into `agent` (the agent process, which
+# alone gets the management-plane permit) and `children` (every terminal,
+# script and helper the agent spawns, placed there before exec). Like
+# RuntimeDirectory, Delegate is NOT a sandbox directive: it restricts nothing
+# in the children, so it does not violate the unsandboxed invariant below.
+# KillMode=mixed still reaches every process in the subtree on stop.
+Delegate=yes
+
 # INTENTIONALLY UNSANDBOXED. The remote terminal and remote script execution
 # features spawn child processes that must behave like a root SSH session:
 #   - package managers drop privileges to unprivileged users (needs CAP_SETUID/SETGID/CHOWN)

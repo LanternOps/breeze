@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // macPattern matches MAC addresses in common formats: aa:bb:cc:dd:ee:ff or aa-bb-cc-dd-ee-ff
@@ -22,11 +24,11 @@ func ReadARPCache() map[string]string {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("arp", "-a")
+		cmd = procspawn.Command("arp", "-a")
 	case "linux":
-		cmd = exec.Command("arp", "-an")
+		cmd = procspawn.Command("arp", "-an")
 	case "windows":
-		cmd = exec.Command("arp", "-a")
+		cmd = procspawn.Command("arp", "-a")
 	default:
 		slog.Debug("ARP cache reading not supported on this OS", "os", runtime.GOOS)
 		return results

@@ -111,6 +111,8 @@ describe('cascadeDeletePartner', () => {
     expect(unwireIdx).toBeLessThan(firstSweepIdx);
     expect(calls[unwireIdx]).toContain('service_management_mode');
     expect(calls[unwireIdx]).toContain('service_management_psa_connection_id');
+    // The forced un-wire must NOT touch the billing master switch (spec §3.12/§9.2).
+    expect(calls[unwireIdx]).not.toContain('billing_enabled');
 
     // exactly one partners delete, and it is the LAST execute() call
     expect(calls.filter((c) => c.includes('DELETE FROM partners')).length).toBe(1);

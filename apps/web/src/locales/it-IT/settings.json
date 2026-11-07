@@ -264,7 +264,17 @@
     }
   },
   "partnerAiBudgets": {
-    "enable": "Abilita l'applicazione dei budget IA",
+    "aiAccess": "IA per tutte le organizzazioni",
+    "aiAccessOptions": {
+      "notSet": "Non impostato, decide ogni organizzazione",
+      "on": "Attivata per ogni organizzazione",
+      "off": "Disattivata per ogni organizzazione"
+    },
+    "aiAccessHelp": "Questo è l'interruttore IA dei tuoi clienti, non un'impostazione di budget. Se impostato, sostituisce l'interruttore IA di ogni organizzazione. I campi di budget qui sotto si applicano in ogni caso.",
+    "offWarning": "L'IA è disattivata per ogni organizzazione di questo partner. Chat, helper, componenti aggiuntivi di Office, agenti IA e arricchimento vengono rifiutati finché non modifichi questa impostazione.",
+    "offConfirmTitle": "Disattivare l'IA per ogni organizzazione?",
+    "offConfirmMessage": "Ogni organizzazione di questo partner perde l'IA: chat, helper, componenti aggiuntivi di Office, agenti IA e arricchimento vengono rifiutati e le organizzazioni non possono riattivarla da sole. Non cambia nulla finché non salvi.",
+    "offConfirmAction": "Disattiva IA",
     "monthlyBudget": "Budget mensile ($)",
     "dailyBudget": "Budget giornaliero ($)",
     "approvalMode": "Modalità di approvazione",
@@ -1730,7 +1740,20 @@
     "scopeMailbox": "Limita l'ambito di questa cassetta postale (Application Access Policy)",
     "reauthRequired": "È richiesto un nuovo consenso dell'amministratore prima che il polling e le risposte Microsoft 365 riprendano.",
     "pollFailing": "Gli ultimi {{failures}} controlli di questa casella di posta non sono riusciti per un errore temporaneo di Microsoft 365. Breeze continua a riprovare; i nuovi messaggi verranno recuperati quando Microsoft 365 tornerà a rispondere.",
+    "baselineRunning": "Lettura di questa casella di posta per stabilire un punto di partenza. La posta già presente non verrà importata; solo la posta ricevuta dopo la connessione diventerà ticket.",
+    "baselineSkipped_one": "{{count}} messaggio già presente in questa casella di posta non verrà importato. Solo la posta ricevuta dopo la connessione diventerà ticket.",
+    "baselineSkipped_other": "{{count}} messaggi già presenti in questa casella di posta non verranno importati. Solo la posta ricevuta dopo la connessione diventerà ticket.",
     "retest": "Riesegui test",
+    "gatewayTitle": "Gateway di posta (facoltativo)",
+    "gatewayHint": "Se la posta raggiunge questa casella tramite un gateway in linea come Avanan, Mimecast, Proofpoint o Barracuda, il controllo di Microsoft respinge posta legittima. Indica il dominio di sigillatura ARC del gateway, cioè il valore d= nell'intestazione ARC-Seal di un messaggio che ha recapitato, e Breeze userà il suo verdetto. Lascia vuoto se non hai un gateway.",
+    "gatewayWarning": "Aggiungi solo un gateway attraverso cui deve passare tutta la posta in arrivo di questo tenant: prima limita il recapito in ingresso in Exchange al gateway con un connettore. Altrimenti Breeze non può distinguere la posta recapitata dal gateway da quella inviata direttamente a Exchange.",
+    "gatewayLabel": "Domini di sigillatura ARC attendibili",
+    "gatewayPlaceholder": "gateway.esempio.com",
+    "gatewaySave": "Salva elenco gateway",
+    "gatewaySaved": "Elenco dei gateway di posta salvato",
+    "gatewaySaveFailed": "Impossibile salvare l'elenco dei gateway di posta.",
+    "gatewayInvalid": "\"{{value}}\" non è un nome di dominio.",
+    "gatewayTooMany": "Inserisci al massimo {{max}} domini.",
     "reconnect": "Riconnetti",
     "disconnect": "Disconnetti",
     "empty": "Nessuna cassetta postale ancora connessa.",
@@ -1854,16 +1877,21 @@
   },
   "orgBrandingEditor": {
     "title": "Branding",
-    "description": "Personalizza l'esperienza del portale per {{organization}}.",
+    "description": "Logo, colori e CSS personalizzato per il portale clienti e i documenti di {{organization}}.",
     "save": "Salva branding",
     "saved": "Impostazioni di branding salvate.",
+    "saveError": "Impossibile salvare il branding.",
     "managedByPartner": "Gestito dal partner",
     "logo": {
       "title": "Logo",
       "previewAlt": "Anteprima logo organizzazione",
       "uploadNew": "Carica un nuovo logo",
-      "recommendation": "SVG o PNG, consigliato 512x512",
-      "selected": "Selezionato: {{name}}"
+      "selected": "Selezionato: {{name}}",
+      "help": "Viene mostrato nel portale clienti di questa organizzazione e su preventivi, fatture e report. Lascia vuoto per usare il logo del partner.",
+      "inheritedSource": "Logo del partner",
+      "remove": "Rimuovi",
+      "loadError": "Impossibile caricare il logo salvato. Il caricamento è disabilitato finché non viene caricato.",
+      "legacyNotice": "Questo logo è stato salvato in precedenza, ma non è mai stato mostrato ai clienti. Salva per iniziare a usarlo oppure rimuovilo."
     },
     "colors": {
       "primary": "Colore primario",
@@ -1871,42 +1899,16 @@
       "primaryInheritedSource": "Colore del brand del partner",
       "primaryHelp": "Colore di accento su preventivi, fatture e altri documenti per i clienti di questa organizzazione. Lascia vuoto per usare il colore del brand del partner.",
       "primaryInvalid": "Inserisci un colore esadecimale, ad esempio #2563eb.",
-      "primaryLoadError": "Impossibile caricare il colore primario salvato. La modifica è disabilitata finché non viene caricato."
-    },
-    "theme": {
-      "title": "Tema",
-      "description": "Sistema rispetta la preferenza del sistema operativo dell'utente quando disponibile.",
-      "options": {
-        "light": "Chiaro",
-        "dark": "Scuro",
-        "system": "Sistema"
-      }
-    },
-    "subdomain": {
-      "title": "Sottodominio portale",
-      "previewUrl": "URL di anteprima disponibile: {{url}}"
+      "primaryLoadError": "Impossibile caricare il colore primario salvato. La modifica è disabilitata finché non viene caricato.",
+      "secondaryInheritedSource": "Colore secondario del partner",
+      "secondaryHelp": "Colore dei titoli nei PDF dei preventivi di questa organizzazione, se abbastanza scuro da essere leggibile, e colore di accento nei PDF dei report. Lascia vuoto per usare il colore secondario del partner.",
+      "secondaryLoadError": "Impossibile caricare il colore secondario salvato. La modifica è disabilitata finché non viene caricato."
     },
     "customCss": {
       "title": "CSS personalizzato (avanzato)",
       "description": "Usa stili personalizzati per rifinire spaziatura, tipografia o layout.",
-      "saveError": "Impossibile salvare il CSS personalizzato.",
       "loadError": "Impossibile caricare il CSS personalizzato attualmente salvato. La modifica è disabilitata finché non viene caricato.",
       "saveBlockedByLoadError": "Il CSS personalizzato non è stato salvato: impossibile verificare il valore attuale. Ricarica la pagina e riprova."
-    },
-    "preview": {
-      "action": "Anteprima",
-      "title": "Anteprima portale",
-      "description": "Bozza in tempo reale basata sugli input di branding attuali",
-      "close": "Chiudi anteprima",
-      "logoAlt": "Logo anteprima",
-      "portalName": "Portale {{organization}}",
-      "welcome": "Bentornato",
-      "body": "Questa anteprima riflette la bozza attuale del branding del portale, inclusi colori e scelte del logo.",
-      "openTicket": "Apri ticket di assistenza",
-      "viewDevices": "Visualizza elenco dispositivi",
-      "urlLabel": "URL anteprima",
-      "cssPayload": "Payload CSS personalizzato",
-      "noCustomCss": "/* Nessun CSS personalizzato */"
     }
   },
   "orgDefaultsEditor": {
@@ -2745,6 +2747,7 @@
       "helpdesk": "Prende in carico i ticket e propone risposte e prossimi passi.",
       "designer": "Legge l'intera flotta e scrive una progettazione di monitoraggio motivata da approvare da parte di un tecnico.",
       "research": "Integrato. Analizza un problema su un dispositivo su richiesta di un tecnico e suggerisce correzioni sicure. Non esegue mai nulla.",
+      "troubleshoot": "Integrato. Lavora in background su un singolo dispositivo quando Wisp glielo affida. Ogni modifica che desidera è una richiesta che una persona approva.",
       "researchLink": "Apri la memoria delle correzioni",
       "designerLink": "Apri la progettazione flotta"
     },
@@ -2893,7 +2896,8 @@
       "patch": "Gestione delle patch",
       "helpdesk": "Assistenza",
       "designer": "Progettista della flotta",
-      "research": "Ricerca correzioni"
+      "research": "Ricerca correzioni",
+      "troubleshoot": "Risoluzione dei problemi del dispositivo"
     },
     "modes": {
       "off": "Disattivato",
@@ -3161,6 +3165,7 @@
           "blocked_by_source": "Escluso dalle origini di aggiornamento della policy",
           "held_by_deferral": "Trattenuto dalla finestra di differimento",
           "blocked_by_category": "Escluso dalle regole di categoria dell'anello",
+          "managed_by_vendor_updates": "Gestita dagli aggiornamenti del produttore",
           "blocked_by_app_rule": "Bloccato da una regola dell'app",
           "blocked_by_feature_update_policy": "Escluso dal criterio dell'anello per gli aggiornamenti delle funzionalità di Windows",
           "awaiting_manual_approval": "In attesa di approvazione manuale",
@@ -3698,6 +3703,7 @@
         "assign_security_training": "Assegnare una formazione sulla sicurezza",
         "browse_device_event_log": "Sfogliare il registro eventi di un dispositivo",
         "browse_snapshots": "Snapshot di backup",
+        "cancel_check_in": "Annullare un controllo di Wisp",
         "cancel_script_execution": "Annullare un'esecuzione di script",
         "capture_agent_pprof": "Acquisire la diagnostica dell'agente",
         "collect_evidence": "Raccogliere le prove dell'incidente",
@@ -3726,6 +3732,8 @@
         "get_active_users": "Utenti attivi",
         "get_ai_agent_run": "Dettagli dell'esecuzione dell'agente IA",
         "get_alert_correlations": "Correlazioni degli avvisi",
+        "get_audit_retention": "Leggere la conservazione del registro di audit",
+        "get_backup_health": "Stato dei backup",
         "get_backup_status": "Stato dei backup",
         "get_browser_security": "Sicurezza del browser",
         "get_catalog_item": "Ricerca di un articolo del catalogo",
@@ -3808,13 +3816,16 @@
         "get_user_experience_metrics": "Metriche di esperienza utente",
         "get_vault_status": "Stato del vault",
         "get_vm_restore_estimate": "Stima del ripristino della VM",
+        "get_vss_status": "Stato dei writer VSS",
         "get_vulnerability_report": "Report delle vulnerabilità",
         "instant_boot_vm": "Avviare un backup come VM in modo istantaneo",
         "link_entity": "Collegare un elemento a una conversazione Wisp",
         "list_ai_agent_runs": "Esecuzioni degli agenti IA",
         "list_ai_agent_schedules": "Pianificazioni degli agenti IA",
         "list_ai_agents": "Elenco degli agenti IA",
+        "list_bmr_recoveries": "Ripristini bare-metal",
         "list_business_calendars": "Calendari dell'orario lavorativo",
+        "list_check_ins": "Controlli di Wisp",
         "list_concerns": "Segnalazioni di Wisp",
         "list_configuration_policies": "Elenco delle policy di configurazione",
         "list_contracts": "Elenco dei contratti",
@@ -3857,6 +3868,7 @@
         "manage_automations": "Gestire le automazioni",
         "manage_backup_configs": "Gestire le configurazioni di backup",
         "manage_backup_profiles": "Gestire i profili di backup",
+        "manage_backup_verification": "Verifica dei backup",
         "manage_billing_catalog": "Gestire il listino di fatturazione",
         "manage_billing_profiles": "Gestire i tariffari di fatturazione",
         "manage_billing_settings": "Gestire le impostazioni di fatturazione",
@@ -3970,6 +3982,7 @@
         "run_script": "Eseguire uno script",
         "s1_isolate_device": "SentinelOne: isolare un dispositivo",
         "s1_threat_action": "Azioni sulle minacce di SentinelOne",
+        "schedule_check_in": "Pianificare un controllo di Wisp",
         "search_agent_logs": "Cercare nei log dell'agente",
         "search_catalog": "Cercare nel catalogo prodotti",
         "search_documentation": "Cercare nella documentazione",
@@ -4104,6 +4117,10 @@
           "dashboard": "Dashboard SNMP",
           "history": "Cronologia delle metriche SNMP"
         },
+        "list_bmr_recoveries": {
+          "get": "Dettagli del ripristino bare-metal",
+          "list": "Elencare i ripristini bare-metal"
+        },
         "manage_accounting_sync": {
           "customers": "Elencare i clienti contabili",
           "income_accounts": "Elencare i conti di ricavo",
@@ -4158,6 +4175,12 @@
           "get": "Dettagli del profilo di backup",
           "list": "Elencare i profili di backup",
           "update": "Aggiornare un profilo di backup"
+        },
+        "manage_backup_verification": {
+          "health": "Stato delle verifiche",
+          "list": "Elencare le verifiche dei backup",
+          "readiness": "Prontezza al ripristino",
+          "run": "Eseguire una verifica del backup"
         },
         "manage_billing_catalog": {
           "archive_item": "Archiviare una voce del listino",
@@ -5501,15 +5524,17 @@
     "recoveryCode": "Codice di recupero",
     "useRecoveryCode": "Non puoi usare la passkey? Usa un codice di recupero",
     "usePasskeyVerification": "Usa invece la verifica con passkey",
-    "nameMustBeAtLeast2Characters": "Il nome deve contenere almeno 2 caratteri",
+    "nameIsRequired": "Il nome è obbligatorio.",
+    "nameMustBeAtMost255Characters": "Il nome non può superare i 255 caratteri",
     "loadingProfile": "Caricamento profilo...",
     "profileSettings": "Impostazioni profilo",
     "manageYourAccountSettingsAndSecurityPreferences": "Gestisci le impostazioni dell'account e le preferenze di sicurezza.",
     "profileInformation": "Informazioni profilo",
     "updateYourPersonalDetails": "Aggiorna i tuoi dati personali.",
     "avatar": "Avatar",
-    "uploadNewPicture": "Carica nuova immagine",
-    "pNGJPGOrWebPMax5MBDragAndDropOntoTheCircleOrClickUpload": "PNG, JPG o WebP. Max 5 MB. Trascina e rilascia sul cerchio oppure fai clic su Carica.",
+    "changePicture": "Cambia immagine",
+    "undoAvatarChange": "Annulla",
+    "pictureRemovalPending": "Rimozione dell’immagine in attesa",
     "cancel": "Annulla",
     "name": "Nome",
     "yourName": "Il tuo nome",
@@ -5532,8 +5557,7 @@
     "failedToFetchUserData": "Recupero dati utente non riuscito",
     "failedToLoadProfileData": "Caricamento dati profilo non riuscito",
     "profileUpdatedSuccessfully": "Profilo aggiornato correttamente",
-    "avatarUpdated": "Avatar aggiornato.",
-    "avatarRemoved": "Avatar rimosso.",
+    "avatarSavedButNameUpdateFailed": "La modifica dell'immagine è stata salvata, ma il nome non è stato aggiornato: {{error}}",
     "passwordChangedSuccessfully": "Password modificata correttamente",
     "multiFactorAuthenticationEnabledSuccessfully": "Autenticazione a più fattori abilitata correttamente",
     "multiFactorAuthenticationDisabled": "Autenticazione a più fattori disabilitata",
@@ -5564,10 +5588,7 @@
     "fileIsEmpty": "Il file è vuoto.",
     "failedToRenamePasskeyHttp": "Rinomina passkey non riuscita (HTTP {{status}})",
     "failedToDeletePasskeyHttp": "Eliminazione passkey non riuscita (HTTP {{status}})",
-    "removing": "Rimozione in corso...",
     "remove": "Rimuovi",
-    "uploading": "Caricamento in corso...",
-    "upload": "Carica",
     "saving": "Salvataggio in corso...",
     "saveChanges": "Salva modifiche",
     "passkey": "Passkey",
@@ -6379,7 +6400,7 @@
       "extensionsDescription": "Sezioni estensioni di terze parti",
       "portalBranding": "Portale e branding",
       "branding": "Branding",
-      "brandingDescription": "Tema e elementi visivi del portale",
+      "brandingDescription": "Logo, colori e CSS personalizzato",
       "portal": "Portale clienti",
       "portalDescription": "Funzionalità e assistenza",
       "securityAccess": "Sicurezza e accesso",

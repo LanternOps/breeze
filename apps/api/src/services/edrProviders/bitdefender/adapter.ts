@@ -8,6 +8,10 @@ import {
   type EdrActionTargetFacts,
   type EdrAdapterContext,
   type EdrDetectionPage,
+  type EdrInstallerBuildError,
+  type EdrInstallerFetchResult,
+  type EdrInstallerPlatform,
+  type EdrInstallerSpec,
   type EdrProviderAdapter,
   type EdrReconcileVerdict,
   type EdrTestResult,
@@ -15,7 +19,14 @@ import {
   type VendorEdrEndpointDetail,
   type VendorEdrTenant,
 } from '../types';
-import { GravityZoneClient, GZ_HOST_ALLOWLIST, type GzIncident, type GzQuarantineItem } from './client';
+import { validateVendorUrl } from '../guardedFetch';
+import {
+  GravityZoneClient,
+  GZ_HOST_ALLOWLIST,
+  GZ_INSTALLER_HOST_ALLOWLIST,
+  type GzIncident,
+  type GzQuarantineItem,
+} from './client';
 import { toEndpointDetail, toIncidentDetection, toQuarantineDetection, toVendorEndpoint } from './normalize';
 import { verifyGravityZoneWebhook } from './push';
 
@@ -77,6 +88,50 @@ function memo<T>(ctx: EdrAdapterContext, key: string, load: () => Promise<T>): P
   return p;
 }
 
+// ---- installer --------------------------------------------------------------
+
+/** Sealed on the tenant row by the sync job and read back at dispatch. */
+const installerDataSchema = z.object({
+  v: z.literal(1),
+  packageName: z.string().max(255).nullable(),
+  windowsUrl: z.string().min(1).max(2048),
+}).strict();
+
+/** [U] until the owner lab (W06.3). */
+const GZ_SILENT_INSTALL_ARGS = '/bdparams /silent';
+/** The longest name NTFS accepts for one path component. */
+const MAX_INSTALLER_FILE_NAME = 255;
+
+/**
+ * The downloader reads its configuration from its own file name [U], so the
+ * agent must save it under exactly that name. The name comes from a URL, so it
+ * must stay one path component whatever the percent-encoding decodes to.
+ */
+function installerFileName(url: string): string | null {
+  let name: string;
+  try {
+    name = decodeURIComponent(new URL(url).pathname.split('/').pop() ?? '');
+  } catch {
+    return null;
+  }
+  if (!name.toLowerCase().endsWith('.exe') || name.length > MAX_INSTALLER_FILE_NAME) return null;
+  // eslint-disable-next-line no-control-regex
+  return /[/\\\x00-\x1f]/.test(name) ? null : name;
+}
+
+function buildGravityZoneInstaller(data: unknown, platform: EdrInstallerPlatform): EdrInstallerSpec | EdrInstallerBuildError {
+  // Windows only: macOS needs MDM-granted permissions and the Linux link is a shell installer.
+  if (platform !== 'windows') return { error: 'platform_unsupported' };
+  const parsed = installerDataSchema.safeParse(data);
+  if (!parsed.success) return { error: 'material_invalid' };
+  const downloadUrl = parsed.data.windowsUrl;
+  // A `{{` would be read as a deploy-time template variable by the dispatch fan-out.
+  if (downloadUrl.includes('{{')) return { error: 'material_invalid' };
+  const fileName = installerFileName(downloadUrl);
+  if (!fileName) return { error: 'material_invalid' };
+  return { downloadUrl, fileName, fileType: 'exe', silentInstallArgs: GZ_SILENT_INSTALL_ARGS, checksum: null };
+}
+
 // ---- adapter ----------------------------------------------------------------
 
 export const bitdefenderAdapter: EdrProviderAdapter = {
@@ -86,6 +141,7 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
   credentialFields: [{ name: 'apiKey', label: 'API key', secret: true, required: true }],
   baseUrlPolicy: { required: true, pathPrefix: '/api' },
   hostAllowlist: GZ_HOST_ALLOWLIST,
+  installerHostAllowlist: GZ_INSTALLER_HOST_ALLOWLIST,
   capabilities: {
     tenantModel: 'partner',
     perTenantHost: false,
@@ -94,7 +150,7 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
     detectionStatusModel: 'delta_with_updates',
     actions: ['isolate', 'unisolate', 'scan'],
     endpointIdentifiers: ['hostname', 'fqdn', 'mac', 'ip'],
-    installer: 'none', // W06
+    installer: 'api_generated_link',
     requestBudget: { perSecond: 10 },
     // incidents: the vendor allows 3 requests / 60 s per key; 2/min leaves headroom.
     operationBudgets: { inventory: { perSecond: 5 }, companies: { perSecond: 5 }, incidents: { perMinute: 2 },
@@ -102,6 +158,8 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
       actions: { perMinute: 30 },
       // Vendor push-settings API: 5 requests / min.
       push: { perMinute: 5 },
+      // Our own ceiling, not a published vendor limit: installer links refresh daily at most.
+      packages: { perMinute: 10 },
     },
     defaultIntervals: { detectionsMinutes: 10, inventoryMinutes: 60 },
     maxActionTargets: 1000,
@@ -127,6 +185,7 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
         if (!enabled.has('network') || !enabled.has('companies')) return { ok: false, error: keyFail, reauth: true };
         if (!enabled.has('incidents')) notes.push('incidents: API not enabled on key');
         if (!enabled.has('quarantine')) notes.push('quarantine: API not enabled on key');
+        if (!enabled.has('packages')) notes.push('packages: API not enabled on key');
       }
 
       let root: { id: string; name: string; type: number };
@@ -256,6 +315,44 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
       }
     }
     return out;
+  },
+
+  async fetchInstallerMaterial(ctx, tenant): Promise<EdrInstallerFetchResult> {
+    let links;
+    try {
+      links = await clientFor(ctx).listInstallationLinks(tenant.vendorTenantId);
+    } catch (e) {
+      if (!isReq(e)) throw e;
+      if (e.code === 'api_not_enabled') return { ok: false, code: 'packages_api_disabled' };
+      if (e.code === 'malformed_response') return { ok: false, code: 'malformed_response' };
+      throw e;
+    }
+    if (links.length === 0) return { ok: false, code: 'no_package' };
+    // Decision 6: which package to install is the MSP's call, made in the console. Never guess.
+    if (links.length > 1) return { ok: false, code: 'multiple_packages' };
+    const link = links[0];
+    if (!link || typeof link !== 'object' || Array.isArray(link)) return { ok: false, code: 'malformed_response' };
+    // Installing another company's link would enrol the device under the wrong customer, so the
+    // entry must name this company. [U] the lab (W06.3) confirms the vendor always returns it.
+    if (link.companyId !== tenant.vendorTenantId) return { ok: false, code: 'malformed_response' };
+    if (typeof link.installLinkWindows !== 'string' || !link.installLinkWindows) {
+      return { ok: false, code: 'malformed_response' };
+    }
+    if (!validateVendorUrl(link.installLinkWindows, GZ_INSTALLER_HOST_ALLOWLIST).ok) {
+      return { ok: false, code: 'url_rejected' };
+    }
+    const data = {
+      v: 1 as const,
+      packageName: typeof link.packageName === 'string' ? link.packageName : null,
+      windowsUrl: link.installLinkWindows,
+    };
+    // Report a link dispatch could not use now, on the tenant row, rather than at install time.
+    if ('error' in buildGravityZoneInstaller(data, 'windows')) return { ok: false, code: 'malformed_response' };
+    return { ok: true, data, expiresAt: null };
+  },
+
+  buildInstaller(data, platform) {
+    return buildGravityZoneInstaller(data, platform);
   },
 
   supportsAction(facts: EdrActionTargetFacts, action: EdrActionKey): EdrActionSupport {

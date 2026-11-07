@@ -112,12 +112,13 @@ function rowXml(rowNumber: number, values: readonly unknown[]): string {
 
 const XML_DECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
 
-const CONTENT_TYPES = XML_DECL
+const contentTypes = (sheetCount: number) => XML_DECL
   + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
   + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
   + '<Default Extension="xml" ContentType="application/xml"/>'
   + '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
-  + '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+  + Array.from({ length: sheetCount }, (_, i) =>
+    `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')
   + '</Types>';
 
 const ROOT_RELS = XML_DECL
@@ -125,24 +126,19 @@ const ROOT_RELS = XML_DECL
   + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
   + '</Relationships>';
 
-const WORKBOOK = XML_DECL
+const workbookXml = (names: readonly string[]) => XML_DECL
   + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
   + 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-  + `<sheets><sheet name="${SHEET_NAME}" sheetId="1" r:id="rId1"/></sheets>`
+  + `<sheets>${names.map((name, i) => `<sheet name="${escapeXml(name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets>`
   + '</workbook>';
 
-const WORKBOOK_RELS = XML_DECL
+const workbookRels = (sheetCount: number) => XML_DECL
   + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-  + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+  + Array.from({ length: sheetCount }, (_, i) =>
+    `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')
   + '</Relationships>';
 
-/**
- * Serialize report rows to a single-sheet .xlsx workbook. Header row = the
- * first row's keys (same columns as `rowsToCsv`). Empty input yields a valid
- * workbook with an empty sheet. Throws `XlsxLimitError` when the rows or
- * columns exceed what an Excel worksheet can hold.
- */
-export function rowsToXlsx(rows: readonly unknown[]): Uint8Array<ArrayBuffer> {
+function worksheetXml(rows: readonly unknown[]): string {
   const headers = rows.length > 0 ? Object.keys(rows[0] as Record<string, unknown>) : [];
   if (rows.length + 1 > XLSX_MAX_ROWS) {
     throw new XlsxLimitError(`Report has ${rows.length} rows; an Excel worksheet holds at most ${XLSX_MAX_ROWS - 1} plus a header row`);
@@ -160,7 +156,7 @@ export function rowsToXlsx(rows: readonly unknown[]): Uint8Array<ArrayBuffer> {
     });
   }
 
-  const sheetXml = XML_DECL
+  return XML_DECL
     + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
     + (headers.length > 0
       ? '<sheetViews><sheetView workbookViewId="0">'
@@ -169,15 +165,36 @@ export function rowsToXlsx(rows: readonly unknown[]): Uint8Array<ArrayBuffer> {
       : '')
     + `<sheetData>${sheetRows.join('')}</sheetData>`
     + '</worksheet>';
+}
 
+export type XlsxSheet = { name: string; rows: readonly unknown[] };
+
+/**
+ * Serialize named sheets to one .xlsx workbook. Each sheet's header row is its
+ * first row's keys. Throws `XlsxLimitError` when any sheet exceeds what an Excel
+ * worksheet can hold.
+ */
+export function sheetsToXlsx(sheets: readonly XlsxSheet[]): Uint8Array<ArrayBuffer> {
   const files: Zippable = {
-    '[Content_Types].xml': strToU8(CONTENT_TYPES),
+    '[Content_Types].xml': strToU8(contentTypes(sheets.length)),
     '_rels/.rels': strToU8(ROOT_RELS),
-    'xl/workbook.xml': strToU8(WORKBOOK),
-    'xl/_rels/workbook.xml.rels': strToU8(WORKBOOK_RELS),
-    'xl/worksheets/sheet1.xml': strToU8(sheetXml),
+    'xl/workbook.xml': strToU8(workbookXml(sheets.map((sheet) => sheet.name))),
+    'xl/_rels/workbook.xml.rels': strToU8(workbookRels(sheets.length)),
   };
+  sheets.forEach((sheet, i) => {
+    files[`xl/worksheets/sheet${i + 1}.xml`] = strToU8(worksheetXml(sheet.rows));
+  });
   // fflate allocates a plain (non-shared) ArrayBuffer; narrowing the type lets
   // callers hand it straight to `new Blob([...])` and Hono's `c.body()`.
   return zipSync(files) as Uint8Array<ArrayBuffer>;
+}
+
+/**
+ * Serialize report rows to a single-sheet .xlsx workbook. Header row = the
+ * first row's keys (same columns as `rowsToCsv`). Empty input yields a valid
+ * workbook with an empty sheet. Throws `XlsxLimitError` when the rows or
+ * columns exceed what an Excel worksheet can hold.
+ */
+export function rowsToXlsx(rows: readonly unknown[]): Uint8Array<ArrayBuffer> {
+  return sheetsToXlsx([{ name: SHEET_NAME, rows }]);
 }

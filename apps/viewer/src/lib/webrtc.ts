@@ -346,13 +346,19 @@ export async function createWebRTCSession(
       } else if (relayOnly) {
         throw new RelayRequiredError();
       }
+    } else if (isSessionEndedResponse(iceResp.status)) {
+      // #10542: the session was ended/revoked server-side. The offer would
+      // 401 too, so end now instead of building a peer, gathering candidates
+      // and posting an offer that cannot succeed.
+      const reason = await fetchSessionEndedReason(params);
+      throw new SessionEndedError(reason ?? undefined);
     } else if (iceResp.status === 409) {
       const iceData = await iceResp.json();
       const relayError = relayRequiredErrorFromResponse(iceData);
       if (relayError) throw relayError;
     }
   } catch (error) {
-    if (error instanceof RelayRequiredError) throw error;
+    if (error instanceof RelayRequiredError || error instanceof SessionEndedError) throw error;
     console.warn('Failed to fetch ICE servers, falling back to STUN-only:', error);
   }
 
@@ -491,6 +497,37 @@ function waitForIceGathering(pc: RTCPeerConnection, timeoutMs: number): Promise<
  * disconnect with no recorded reason, so a null return here is the normal,
  * silent case, not an error condition worth logging.
  */
+/**
+ * #10542: tell the API a reconnect is starting, before the old peer is closed.
+ *
+ * Closing the old peer makes the agent report a peer drop at once. The API
+ * holds that report for a short grace instead of ending the session (and
+ * revoking this viewer's token) only when the viewer fetched ICE servers for
+ * the still-active session first. createWebRTCSession fetches them too, but
+ * only after the old peer is gone, which can lose the race to the agent's
+ * report. Best effort: any failure, or no answer within `timeoutMs`, lets the
+ * reconnect go ahead exactly as before.
+ */
+export async function announceViewerReconnect(
+  params: AuthenticatedConnectionParams,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    await apiFetch(
+      params.apiUrl,
+      `/api/v1/desktop-ws/${params.sessionId}/viewer/ice-servers`,
+      params.accessToken,
+      { signal: controller.signal },
+    );
+  } catch {
+    // Best effort; the reconnect itself reports any real failure.
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fetchSessionEndedReason(params: AuthenticatedConnectionParams): Promise<string | null> {
   try {
     const resp = await apiFetch(

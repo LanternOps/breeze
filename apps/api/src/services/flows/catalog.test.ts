@@ -76,6 +76,13 @@ describe('loadFlowCatalog', () => {
     expect(cat.has('recall')).toBe(false);
   });
 
+  it('excludes the Wisp check-in chat tools (#10991 W03: grant-required, never in a flow)', () => {
+    for (const name of ['schedule_check_in', 'list_check_ins', 'cancel_check_in']) {
+      expect(FLOW_EXCLUDED_CORE_TOOLS.has(name), name).toBe(true);
+      expect(listFlowEligibleCoreTools(), name).not.toContain(name);
+    }
+  });
+
   it('excludes the Wisp W05a concern chat tools for the same reason (grant-required, never in a flow)', () => {
     // Registered by W05a (#9911); listed here so the exclusion is in place
     // whichever of the two PRs lands first.

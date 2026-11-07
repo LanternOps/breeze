@@ -273,9 +273,18 @@ describe('classifyTerminal with run profile (P2-1)', () => {
 // new profile that is not explicitly handled fails here instead of silently
 // inheriting `full`'s reset behaviour.
 describe('classifyTerminal per profile (AI patch agent W01)', () => {
-  it.each(AI_AGENT_RUN_PROFILES)('%s completion is streak-neutral unless it is full', (profile) => {
-    expect(classifyTerminal('completed', null, 'no_action', profile)).toBe(profile === 'full' ? 'reset' : 'neutral');
-    expect(classifyTerminal('awaiting_approval', null, null, profile)).toBe(profile === 'full' ? 'reset' : 'neutral');
+  // Profiles deliberately NOT streak-neutral: their clean finish resets the streak.
+  const RESETS_STREAK: ReadonlySet<string> = new Set(['full', 'device_troubleshooting']);
+  it.each(AI_AGENT_RUN_PROFILES)('%s completion is streak-neutral unless it resets by decision', (profile) => {
+    const expected = RESETS_STREAK.has(profile) ? 'reset' : 'neutral';
+    expect(classifyTerminal('completed', null, 'no_action', profile)).toBe(expected);
+    expect(classifyTerminal('awaiting_approval', null, null, profile)).toBe(expected);
+  });
+
+  it('device_troubleshooting (#11084): a clean finish resets, a genuine failure still increments', () => {
+    expect(classifyTerminal('completed', null, 'no_action', 'device_troubleshooting')).toBe('reset');
+    expect(classifyTerminal('awaiting_approval', null, null, 'device_troubleshooting')).toBe('reset');
+    expect(classifyTerminal('failed', 'llm_unavailable', null, 'device_troubleshooting')).toBe('increment');
   });
 
   it('a patch plan is advice a human must accept, so even needs_attention is neutral', () => {

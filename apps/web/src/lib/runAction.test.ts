@@ -110,6 +110,17 @@ describe('runAction', () => {
     expect(showToast).toHaveBeenCalledWith({ message: 'Network error', type: 'error' });
   });
 
+  it('suppresses the network toast when the caller renders inline feedback', async () => {
+    const suppressErrorToast = vi.fn((status: number) => status === 0);
+    await expect(runAction({
+      request: async () => { throw new Error('network down'); },
+      errorFallback: 'Network error',
+      suppressErrorToast,
+    })).rejects.toMatchObject({ message: 'Network error', status: 0 });
+    expect(suppressErrorToast).toHaveBeenCalledWith(0, undefined);
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
   it('successMessage as function receives result and toasts formatted string', async () => {
     const out = await runAction<{ id: string }>({
       request: async () => res({ id: '7' }),
@@ -263,6 +274,16 @@ describe('runAction', () => {
       parseSuccess: () => { throw new Error('bad shape'); },
     })).rejects.toMatchObject({ message: 'Parse failed', status: 200 });
     expect(showToast).toHaveBeenCalledWith({ message: 'Parse failed', type: 'error' });
+  });
+
+  it('suppresses parseSuccess failure toast when the caller renders inline feedback', async () => {
+    await expect(runAction({
+      request: async () => res({ val: 1 }, 200),
+      errorFallback: 'Parse failed',
+      parseSuccess: () => { throw new Error('bad shape'); },
+      suppressErrorToast: () => true,
+    })).rejects.toMatchObject({ message: 'Parse failed', status: 200 });
+    expect(showToast).not.toHaveBeenCalled();
   });
 
   it('successMessage function throws -> generic success toast, value returned, error logged', async () => {

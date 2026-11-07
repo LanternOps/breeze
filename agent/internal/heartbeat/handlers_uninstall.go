@@ -5,15 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/flashguard"
 	"github.com/breeze-rmm/agent/internal/isolation"
 	"github.com/breeze-rmm/agent/internal/macosuninstall"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/psscript"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/securefs"
@@ -70,6 +71,14 @@ func handleSelfUninstall(h *Heartbeat, cmd Command) tools.CommandResult {
 		)
 	}
 
+	// Refused rather than waited out, before anything is touched: the operator
+	// can send it again. On success the admission is kept through the hand-off,
+	// because this process is on its way out and a flash must not start meanwhile.
+	admissionDone, err := flashguard.Default().AdmitPowerAction("self_uninstall")
+	if err != nil {
+		return tools.NewErrorResult(fmt.Errorf("self_uninstall refused: %w; nothing was removed", err), time.Since(start).Milliseconds())
+	}
+
 	removeConfig := tools.GetPayloadBool(cmd.Payload, "removeConfig", true)
 
 	log.Warn("self_uninstall command received — uninstalling agent",
@@ -77,10 +86,12 @@ func handleSelfUninstall(h *Heartbeat, cmd Command) tools.CommandResult {
 	)
 
 	if err := releaseIsolationForUninstallFn(h); err != nil {
+		admissionDone()
 		return tools.NewErrorResult(fmt.Errorf("self-uninstall refused: isolation release could not be confirmed; agent service remains installed: %w", err), time.Since(start).Milliseconds())
 	}
 
 	if err := prepareSelfUninstallFn(removeConfig); err != nil {
+		admissionDone()
 		log.Error("self-uninstall preparation failed — teardown NOT handed off, agent service remains installed",
 			"error", err.Error(),
 		)
@@ -90,6 +101,7 @@ func handleSelfUninstall(h *Heartbeat, cmd Command) tools.CommandResult {
 		)
 	}
 
+	flashguard.HoldFor(admissionDone, flashguard.RestartHandoffHold)
 	scheduleSelfUninstallShutdownFn(h)
 
 	return tools.NewSuccessResult(map[string]string{
@@ -200,21 +212,46 @@ type darwinUninstallScriptOptions struct {
 	DelaySeconds    int
 }
 
+// darwinUninstallIsolationLog records a teardown aborted by an unconfirmed
+// isolation release: by then the command result has already been sent.
+const darwinUninstallIsolationLog = "/Library/Logs/Breeze/uninstall-isolation-release-error.txt"
+
 // buildDarwinUninstallScript renders the detached teardown script for macOS.
-// Phase 1 already neutralized the watchdog in-process; the script re-asserts
-// it (bootout + pkill) BEFORE stopping the agent daemon as a backstop, so a
-// watchdog that survived phase 1 cannot respawn the agent mid-teardown.
-// Config removal happens here — after the agent process is dead — so the
+// It first re-confirms that network isolation is released (the handler did so
+// in-process, but the device can be isolated again before this runs); if that
+// fails it undoes phase 1's disable of the agent daemon and stops, so the
+// device keeps its agent and its recovery jobs. The watchdog phase 1 removed
+// is not restored here (ensureMissingWatchdog handles a missing one). Phase 1
+// already neutralized the watchdog in-process; the script re-asserts it (bootout + pkill) BEFORE
+// stopping the agent daemon as a backstop, so a watchdog that survived phase 1
+// cannot respawn the agent mid-teardown. The release is confirmed again once
+// the agent has stopped, because until then it could isolate the device again,
+// and only then do the recovery jobs go; if that fails the agent is loaded
+// again. Config removal happens here — after the agent process is dead — so the
 // still-running agent cannot resurrect files (logs, sockets, state) under a
 // freshly-deleted directory.
 func buildDarwinUninstallScript(opts darwinUninstallScriptOptions) string {
+	abortLog := func(reason string) string {
+		return fmt.Sprintf("  { date; echo 'self-uninstall aborted: %s'; } >> %s 2>/dev/null", reason, shQuote(darwinUninstallIsolationLog))
+	}
 	lines := []string{
 		macosuninstall.Functions,
+		macosuninstall.IsolationFunctions,
+		"if ! breeze_release_isolation; then",
+		abortLog("isolation release could not be confirmed; agent daemon re-enabled"),
+		fmt.Sprintf("  launchctl enable system/%s", shQuote(opts.Label)),
+		"  exit 1",
+		"fi",
 		fmt.Sprintf("sleep %d", opts.DelaySeconds),
 		fmt.Sprintf("breeze_bootout system/%s || exit 1", shQuote(opts.WatchdogLabel)),
 		fmt.Sprintf("pkill -x %s", shQuote(opts.WatchdogProcess)),
 		"breeze_stop_helpers || exit 1",
 		fmt.Sprintf("breeze_bootout system/%s || exit 1", shQuote(opts.Label)),
+		"if ! breeze_release_isolation || ! breeze_remove_isolation; then",
+		abortLog("after the agent stopped, the isolation release could not be confirmed or its recovery jobs could not be removed; agent daemon loaded again"),
+		fmt.Sprintf("  breeze_restart_agent %s %s", shQuote(opts.Label), shQuote(opts.PlistPath)),
+		"  exit 1",
+		"fi",
 		fmt.Sprintf("rm -f %s || exit 1", shQuote(opts.PlistPath)),
 		fmt.Sprintf("rm -f %s || exit 1", shQuote(opts.BinaryPath)),
 		"breeze_remove_auxiliary || exit 1",
@@ -261,15 +298,15 @@ func prepareSelfUninstallDarwin(removeConfig bool) error {
 
 	// Watchdog FIRST — it must be gone before anything stops the agent, or it
 	// may respawn/reinstall the agent mid-teardown.
-	if err := exec.Command("launchctl", "bootout", "system/"+watchdogLabel).Run(); err != nil {
+	if err := procspawn.Command("launchctl", "bootout", "system/"+watchdogLabel).Run(); err != nil {
 		log.Warn("launchctl bootout watchdog failed, trying legacy unload", "error", err.Error())
-		_ = exec.Command("launchctl", "unload", watchdogPlistDst).Run()
+		_ = procspawn.Command("launchctl", "unload", watchdogPlistDst).Run()
 	}
 
 	// Disable our own daemon (safe while running) so that if the detached
 	// helper never runs — blocked, reboot inside the window — the host comes
 	// back with the agent NOT auto-starting into permanent 401s (#2796).
-	if err := exec.Command("launchctl", "disable", "system/"+label).Run(); err != nil {
+	if err := procspawn.Command("launchctl", "disable", "system/"+label).Run(); err != nil {
 		log.Warn("launchctl disable agent failed", "error", err.Error())
 	}
 
@@ -308,24 +345,44 @@ type linuxUninstallScriptOptions struct {
 	WatchdogProcess string // watchdog process name for the pkill re-assert
 	UnitPath        string
 	BinaryPath      string
-	ConfigDir       string // empty = skip config removal regardless of RemoveConfig
-	RemoveConfig    bool
-	DelaySeconds    int
+	// IsolationUnits and RecoveryDir are the network-isolation boot hook, poll
+	// timer and recovery binaries; they go only after a confirmed release.
+	IsolationUnits []string
+	RecoveryDir    string
+	ConfigDir      string // empty = skip config removal regardless of RemoveConfig
+	RemoveConfig   bool
+	DelaySeconds   int
 }
 
 // buildLinuxUninstallScript renders the detached teardown script for Linux.
+// Isolation is released first: if that cannot be confirmed the script stops,
+// because removing the agent or the recovery timers would leave the host cut
+// off with nothing left to undo it. It then re-enables the service phase 1
+// disabled and, once the command result has had time to go out, restarts it:
+// the handler's shutdown goroutine exits the agent cleanly, which
+// Restart=on-failure would not undo.
 // The watchdog re-assert (stop + pkill) comes BEFORE the agent stop so a
 // watchdog that survived phase 1 cannot respawn the agent mid-teardown, and
 // config removal comes after the agent is dead (see the darwin builder).
 func buildLinuxUninstallScript(opts linuxUninstallScriptOptions) string {
 	lines := []string{
+		fmt.Sprintf("%s containment release-all --reason uninstall || { echo 'self-uninstall aborted: isolation release could not be confirmed' >&2; systemctl enable %s; sleep %d; systemctl restart %s; exit 1; }",
+			shQuote(opts.BinaryPath), shQuote(opts.ServiceName), opts.DelaySeconds, shQuote(opts.ServiceName)),
 		fmt.Sprintf("sleep %d", opts.DelaySeconds),
 		fmt.Sprintf("systemctl stop %s", shQuote(opts.WatchdogService)),
 		fmt.Sprintf("pkill -x %s", shQuote(opts.WatchdogProcess)),
 		fmt.Sprintf("systemctl stop %s", shQuote(opts.ServiceName)),
 		fmt.Sprintf("rm -f %s", shQuote(opts.UnitPath)),
+	}
+	for _, unit := range opts.IsolationUnits {
+		lines = append(lines, fmt.Sprintf("rm -f %s", shQuote(unit)))
+	}
+	lines = append(lines,
 		"systemctl daemon-reload",
 		fmt.Sprintf("rm -f %s", shQuote(opts.BinaryPath)),
+	)
+	if opts.RecoveryDir != "" {
+		lines = append(lines, fmt.Sprintf("rm -rf %s", shQuote(opts.RecoveryDir)))
 	}
 	if opts.RemoveConfig && opts.ConfigDir != "" {
 		lines = append(lines, fmt.Sprintf("rm -rf %s", shQuote(opts.ConfigDir)))
@@ -349,15 +406,15 @@ func prepareSelfUninstallLinux(removeConfig bool) error {
 	)
 
 	// Watchdog FIRST (see prepareSelfUninstallDarwin).
-	if err := exec.Command("systemctl", "stop", watchdogService).Run(); err != nil {
+	if err := procspawn.Command("systemctl", "stop", watchdogService).Run(); err != nil {
 		log.Warn("systemctl stop watchdog failed", "error", err.Error())
 	}
-	if err := exec.Command("systemctl", "disable", watchdogService).Run(); err != nil {
+	if err := procspawn.Command("systemctl", "disable", watchdogService).Run(); err != nil {
 		log.Warn("systemctl disable watchdog failed", "error", err.Error())
 	}
 	// Disabling (not stopping!) our own service is safe while running and
 	// prevents an auto-start if the host reboots mid-teardown.
-	if err := exec.Command("systemctl", "disable", serviceName).Run(); err != nil {
+	if err := procspawn.Command("systemctl", "disable", serviceName).Run(); err != nil {
 		log.Warn("systemctl disable agent failed", "error", err.Error())
 	}
 
@@ -385,9 +442,15 @@ func prepareSelfUninstallLinux(removeConfig bool) error {
 		WatchdogProcess: "breeze-watchdog",
 		UnitPath:        unitDst,
 		BinaryPath:      binaryPath,
-		ConfigDir:       configDir,
-		RemoveConfig:    removeConfig,
-		DelaySeconds:    uninstallHelperDelaySeconds,
+		IsolationUnits: []string{
+			"/etc/systemd/system/breeze-isolation.service",
+			"/etc/systemd/system/breeze-isolation-poll.service",
+			"/etc/systemd/system/breeze-isolation-poll.timer",
+		},
+		RecoveryDir:  "/usr/local/lib/breeze/isolation-recovery",
+		ConfigDir:    configDir,
+		RemoveConfig: removeConfig,
+		DelaySeconds: uninstallHelperDelaySeconds,
 	})
 	if err := startDetachedProcess("systemd-run", "--quiet", "--collect", "--", "/bin/sh", "-c", script); err != nil {
 		return fmt.Errorf("spawn detached teardown helper (systemd-run transient unit): %w", err)
@@ -501,10 +564,10 @@ func prepareSelfUninstallWindows(removeConfig bool) error {
 	// stops the agent service. sc.exe delete on a STOP_PENDING service marks it
 	// delete-pending, which completes when it stops; the helper re-asserts both
 	// steps anyway.
-	if err := exec.Command("sc.exe", "stop", watchdogServiceName).Run(); err != nil {
+	if err := procspawn.Command("sc.exe", "stop", watchdogServiceName).Run(); err != nil {
 		log.Warn("sc.exe stop watchdog failed", "error", err.Error())
 	}
-	if err := exec.Command("sc.exe", "delete", watchdogServiceName).Run(); err != nil {
+	if err := procspawn.Command("sc.exe", "delete", watchdogServiceName).Run(); err != nil {
 		log.Warn("sc.exe delete watchdog failed", "error", err.Error())
 	}
 
@@ -515,10 +578,10 @@ func prepareSelfUninstallWindows(removeConfig bool) error {
 	// and restarted, and the host doesn't reboot back into permanent 401
 	// hammering (#2796). Worst case degrades to "stopped + disabled, binary
 	// on disk" instead of "alive and stranded".
-	if err := exec.Command("sc.exe", "config", serviceName, "start=", "disabled").Run(); err != nil {
+	if err := procspawn.Command("sc.exe", "config", serviceName, "start=", "disabled").Run(); err != nil {
 		log.Warn("sc.exe config start=disabled failed", "error", err.Error())
 	}
-	if err := exec.Command("sc.exe", "failure", serviceName, "reset=", "0", "actions=", "").Run(); err != nil {
+	if err := procspawn.Command("sc.exe", "failure", serviceName, "reset=", "0", "actions=", "").Run(); err != nil {
 		log.Warn("sc.exe failure reset failed", "error", err.Error())
 	}
 

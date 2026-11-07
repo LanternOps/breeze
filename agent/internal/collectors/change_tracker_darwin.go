@@ -6,9 +6,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 )
 
 func (c *ChangeTrackerCollector) collectStartupItems(_ context.Context) ([]TrackedStartupItem, error) {
@@ -48,13 +51,37 @@ func (c *ChangeTrackerCollector) collectStartupItems(_ context.Context) ([]Track
 	return items, nil
 }
 
+type darwinCrontabRunner func(ctx context.Context) ([]byte, error)
+
+func runDarwinCrontabListDefault(ctx context.Context) ([]byte, error) {
+	return runCollectorOutputWithContext(ctx, collectorShortCommandTimeout, "crontab", "-l")
+}
+
+// darwinCrontabListOverride, when non-nil, replaces `crontab -l` so tests can
+// drive real subprocess exit codes, stderr and timeouts. Atomic because
+// collector goroutines may outlive the test that set it.
+var darwinCrontabListOverride atomic.Pointer[darwinCrontabRunner]
+
+func runDarwinCrontabList(ctx context.Context) ([]byte, error) {
+	if override := darwinCrontabListOverride.Load(); override != nil {
+		return (*override)(ctx)
+	}
+	return runDarwinCrontabListDefault(ctx)
+}
+
 func (c *ChangeTrackerCollector) collectScheduledTasks(ctx context.Context) ([]TrackedScheduledTask, error) {
 	tasks := make([]TrackedScheduledTask, 0)
 
-	output, err := runCollectorOutputWithContext(ctx, collectorShortCommandTimeout, "crontab", "-l")
+	output, err := runDarwinCrontabList(ctx)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "no crontab") {
+		if isDarwinNoCrontab(output, err) {
 			return tasks, nil
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			if msg := strings.TrimSpace(string(exitErr.Stderr)); msg != "" {
+				return nil, fmt.Errorf("crontab -l failed: %w (stderr: %s)", err, truncateCollectorString(msg))
+			}
 		}
 		return nil, fmt.Errorf("crontab -l failed: %w", err)
 	}
@@ -63,6 +90,24 @@ func (c *ChangeTrackerCollector) collectScheduledTasks(ctx context.Context) ([]T
 	}
 
 	return tasks, nil
+}
+
+// isDarwinNoCrontab reports whether a failed `crontab -l` only means the user
+// has no crontab. crontab exits 1 and prints "crontab: no crontab for <user>"
+// to stderr; that text is in ExitError.Stderr, never in err.Error() ("exit
+// status 1"), so matching the error string never fired (#10910). A silent
+// exit 1 (no stdout, no stderr) is treated the same way. Timeouts are not
+// ExitErrors and any other exit code or stderr still surfaces as a failure.
+func isDarwinNoCrontab(output []byte, err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		return false
+	}
+	stderr := strings.TrimSpace(string(exitErr.Stderr))
+	if strings.Contains(strings.ToLower(stderr), "no crontab") {
+		return true
+	}
+	return stderr == "" && len(bytes.TrimSpace(output)) == 0
 }
 
 func (c *ChangeTrackerCollector) collectUserAccounts(ctx context.Context) ([]TrackedUserAccount, error) {

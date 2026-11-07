@@ -1,19 +1,20 @@
 ---
 title: Third-Party Backup Providers
-description: Connect N-able Cove Data Protection or NinjaOne SaaS Backup (Dropsuite) to Breeze so third-party backup status appears in backup health, device pages, the client portal, reports and alerts.
+description: Connect N-able Cove Data Protection, NinjaOne SaaS Backup (Dropsuite) or Axcient x360Recover to Breeze so third-party backup status appears in backup health, device pages, the client portal, reports and alerts.
 sidebar:
   order: 17
-  label: "Backup Providers (Cove, Dropsuite)"
+  label: "Backup Providers (Cove, Dropsuite, Axcient)"
 ---
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
 If some of your customers are protected by a third-party backup product, Breeze can read that product's status and show it alongside Breeze's own backups. A device protected by the provider counts as covered, so it no longer shows up as "no backup" just because Breeze did not run the job.
 
-Two providers are supported:
+Three providers are supported:
 
 - **N-able Cove Data Protection**: endpoint backups, plus Cove's Microsoft 365 backup accounts.
 - **NinjaOne SaaS Backup (Dropsuite)** (v0.126.0): Microsoft 365 and Google Workspace backups. Each customer's workloads appear as their own rows: Microsoft 365 mail, OneDrive, SharePoint and Teams, and Google Workspace mail, Google Drive and Google shared drives.
+- **Axcient x360Recover**: per-device backup status for the clients under your Axcient account, plus a "Verified bootable" result when Axcient has run a boot check on the device.
 
 <Aside type="note">
 The integration is **read-only**. Breeze reads backup status from the provider; it never changes settings, starts backups, or restores data there. Restores are still done in the provider's own console.
@@ -26,6 +27,7 @@ The integration is **read-only**. Breeze reads backup status from the provider; 
 - **Partner accounts only.** Connections belong to your MSP (partner) account and cover every organization under it. Organization-scoped users cannot see or manage them.
 - **Who can manage a connection.** Adding, editing, testing, syncing, deleting and mapping customers requires a partner user with organization write permission, access to *all* organizations, and MFA. Partner users with access to only selected organizations can view the connection but not change it.
 - **For NinjaOne SaaS Backup:** the **Reseller token**, the **Authentication token** and the **API URL** shown on your NinjaOne SaaS Backup partner portal under **Settings → API Settings**. Read-only reseller access is enough.
+- **For Axcient x360Recover:** an API key created in x360Portal under **Settings → API Keys** (see [Connecting Axcient x360Recover](#connecting-axcient-x360recover)).
 - **For Cove, a Cove API user.** In the Cove Management Console, go to **Management → Users → API Users**, select your **top-level customer** in the Customer list, and click **Add API User**. Give it a login name (for example, `breeze-sync`) and the most restrictive role that can still read customers and backup statistics. Copy the token when it is shown — Cove displays it only once; if you lose it, delete the API user and create a new one. An API user cannot sign in to the console, so two-factor authentication does not apply to it.
 
 ## Connecting Cove
@@ -65,6 +67,39 @@ If the check fails, the form says what to fix: the reseller token or the authent
 
 A NinjaOne SaaS Backup connection card and its customer mapping table count **workloads** instead of devices.
 
+## Connecting Axcient x360Recover
+
+<Steps>
+1. In x360Portal, go to **Settings → API Keys** and create an API key with both **x360Recover** and **Billing** ticked. The key is shown once, so copy it.
+2. In Breeze, go to **Integrations**, open the **Backup** tab, click **Add connection** and choose **Axcient x360Recover** as the **Provider**.
+3. Enter a **Connection name** (for example, *Main Axcient account*) and paste the key into **API key**. There is no base URL field.
+4. Optionally turn on **Show the provider name in the client portal**, as for Cove.
+5. Save. As with Cove, Breeze checks the key before anything is created.
+</Steps>
+
+If the check fails, the form says why. If Axcient does not accept the key, the message is *Axcient rejected the API key.* Check that you copied the whole key and that it has not been deleted in x360Portal. If the key lacks a product scope, the message is *This key is missing a product scope. Edit it in x360Portal → Settings → API Keys and enable x360Recover and Billing.* Edit the key in x360Portal, tick both boxes, and try again.
+
+The key is stored encrypted. If Axcient later rejects it, the connection card offers **Re-enter credentials**: enter a new key, or leave the field blank to keep the stored one.
+
+Each Axcient client is a customer to map to a Breeze organization, as described below. Axcient client codes are short codes rather than Breeze organization IDs, so these customers do not map automatically: map each one yourself, with name suggestions to help. Clients that Axcient marks inactive are still listed and their devices are still fetched, so an inactive client stays visible rather than looking like a sync problem. You can map or unmap them like any other.
+
+### Paused devices
+
+A device that has been parked in Axcient shows as **Paused**. Paused is its own status, separate from *Not started*. A paused device counts as **uncovered**, so it still shows that way in backup health and the client portal, but it raises **no alert**, because someone stopped protecting it on purpose. Cove and NinjaOne SaaS Backup behaviour is unchanged.
+
+### Verified bootable
+
+When Axcient has run a boot check on a device, Breeze shows the result in two places:
+
+- **Last boot check** on the external backup card of the device's **Backup** tab, with the time of the check and whether it passed or failed.
+- A **Verified bootable** column on the **Backup** page and in the backup status report, with **Passed** or **Failed** and the date of the check, or **Never run**.
+
+The column shows **n/a** for providers that do not supply boot checks (Cove and NinjaOne SaaS Backup), and for backup status reports saved before the column existed.
+
+A failed boot check does not change the backup status. A device whose backups ran but whose last boot check failed still shows as completed; the failed check is shown as extra evidence, not as a backup failure, and raises no alert.
+
+Breeze only reads status from Axcient. It never changes anything there.
+
 ## Mapping Customers to Organizations
 
 Each Cove customer must be mapped to a Breeze organization before its devices appear anywhere in Breeze. Devices under an unmapped customer are counted on the connection card but never stored.
@@ -89,7 +124,7 @@ Decommissioned devices are never matched, and Microsoft 365 backup accounts are 
 
 ## Sync, History and Alerts
 
-Cove connections sync **every 30 minutes**; NinjaOne SaaS Backup connections sync **every 60 minutes**. A connection whose login the provider rejects is marked **Credentials rejected** and stops syncing until you use **Re-enter credentials** with a working login. If a connection has not synced for more than two sync intervals, its devices show as **Unknown** health and the backup health view shows a banner that provider data is out of date.
+Cove and Axcient connections sync **every 30 minutes**; NinjaOne SaaS Backup connections sync **every 60 minutes**. A connection whose login the provider rejects is marked **Credentials rejected** and stops syncing until you use **Re-enter credentials** with a working login. If a connection has not synced for more than two sync intervals, its devices show as **Unknown** health and the backup health view shows a banner that provider data is out of date.
 
 Breeze keeps a **daily history** for each provider device (the worst status seen that day), shown as the *Last 28 days* strip. History older than 60 days is pruned.
 
@@ -118,7 +153,7 @@ To avoid noise from one bad poll, an alert is raised only when the **same condit
 ## Limitations
 
 - Status only: no restores, backup runs, or configuration changes through Breeze.
-- Cove Data Protection and NinjaOne SaaS Backup (Dropsuite) are the only supported providers.
+- Cove Data Protection, NinjaOne SaaS Backup (Dropsuite) and Axcient x360Recover are the only supported providers.
 - Cove users with two-factor authentication cannot be used for the connection.
 - Unlinked endpoints and unmapped customers raise no alerts. Microsoft 365 and Google Workspace workloads raise organization-level alerts rather than device alerts.
 

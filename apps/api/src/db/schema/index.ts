@@ -103,6 +103,7 @@ export * from './cisHardening';
 export * from './sentinelOne';
 export * from './huntress';
 export * from './securityAgents';
+export * from './oemUpdates';
 export * from './sensitiveData';
 export * from './peripheralControl';
 export * from './browserSecurity';
@@ -250,4 +251,7 @@ export * from './wispThreads';
 export * from './wispConcerns';
 export * from './wispThreadLinks';
 export * from './wispThreadPosts';
+export * from './wispCheckIns';
 export * from './aiMemoryBlocks';
+
+export * from './deviceWake';

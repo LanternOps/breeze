@@ -27,22 +27,8 @@ function walk(dir: string, out: string[] = []): string[] {
 
 /** Gap entries as of this wave. This list only SHRINKS. Adding a route module with no tool means writing the tool or a real exemption. */
 const FROZEN_GAPS: ReadonlySet<string> = new Set([
-  'backup/bmrRecoveries.ts',
-  'backup/health.ts',
-  'backup/verification.ts',
-  'backup/vss.ts',
-  'c2c/configs.ts',
-  'orgAccountReadiness.ts',
-  'orgAuditRetentionSettings.ts',
-  'orgPortalSettings.ts',
-  'orgPortalUsers.ts',
-  'orgSummary.ts',
-  'patchPlan.ts',
-  'reports/recipients.ts',
-  'roles.ts',
   'tickets/export.ts',
   'unifi/index.ts',
-  'users.ts',
 ]);
 
 describe('MCP_COVERAGE (route module → tool surface)', () => {

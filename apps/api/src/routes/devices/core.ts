@@ -4,7 +4,7 @@ import { optionalJsonValidator, zValidator } from '../../lib/validation';
 import { and, asc, eq, gte, ne, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { deviceSearchCondition } from './searchFilter';
 import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
-import { createHash, randomBytes } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import { getRedis } from '../../services/redis';
 import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
 import { CLEARED_AGENT_CREDENTIALS } from '../../services/agentCredentialHashes';
@@ -39,7 +39,7 @@ import {
   SITE_ACCESS_DENIED,
   projectPublicDevice,
 } from './helpers';
-import { listDevicesSchema, updateDeviceSchema, decommissionDeviceSchema } from './schemas';
+import { listDevicesSchema, updateDeviceSchema, decommissionDeviceSchema, permanentDeleteDeviceSchema } from './schemas';
 import {
   DEVICES_LIST_DEFAULT_LIMIT,
   DEVICES_LIST_HARD_MAX,
@@ -58,6 +58,7 @@ import {
   purgeRemovedDevice,
   restoreRemovedDevice,
   DeviceLifecycleError,
+  type PurgeResult,
 } from '../../services/deviceLifecycle';
 import { listDeviceScreenshotStorageKeys } from '../../services/screenshotStorage';
 import { removeScreenshotFiles } from '../../services/screenshotFiles';
@@ -355,6 +356,9 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_ip_history', 'device_memory_modules',
   'device_metrics', 'device_mtls_certificates', 'device_network', 'device_patches',
   'device_process_samples', 'device_recovery_keys', 'device_registry_state',
+  // #11068 — vendor update status; restamped by its composite FK's ON UPDATE
+  // CASCADE (also in DEVICE_ORG_FK_CASCADE_TABLES below).
+  'device_oem_update_status',
   // #4755 — restore-checkpoint attempt ledger; restamped by its composite FK's
   // ON UPDATE CASCADE (also in DEVICE_ORG_FK_CASCADE_TABLES below).
   'device_restore_point_attempts',
@@ -362,6 +366,8 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_reliability', 'device_reliability_baselines', 'device_reliability_history', 'device_sessions', 'device_software_inventory_state',
   'device_time_daily',
   'device_time_status',
+  'device_wake_attempts',
+  'device_wake_status',
   'device_vulnerabilities', 'device_warranty',
   'device_workload_runtimes', 'device_workloads',
   'dns_event_aggregations', 'dns_security_events',
@@ -461,6 +467,10 @@ export const DEVICE_ORG_FK_CASCADE_TABLES: readonly string[] = [
   'device_restore_point_attempts',
   // #6960 W03 — composite (device_id, org_id) FK ON UPDATE CASCADE.
   'security_agent_device_status',
+  // #11068 — composite (device_id, org_id) FK ON UPDATE CASCADE.
+  'device_oem_update_status',
+  'device_wake_attempts',
+  'device_wake_status',
 ];
 
 export function getDeviceOrgDenormalizedTables(): readonly string[] {
@@ -708,12 +718,17 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'device_hardware_health',
   'device_time_daily',
   'device_time_status',
+  'device_wake_attempts',
+  'device_wake_status',
   'device_network', 'device_ip_history', 'device_disks', 'device_memory_modules',
   'device_metrics', 'device_software', 'device_registry_state', 'device_config_state',
   // Restore-checkpoint attempt ledger (#4755) — FK (device_id, org_id) ->
   // devices(id, org_id) ON DELETE CASCADE; leaf table, no children. Default
   // device_id predicate (no DEVICE_CASCADE_DELETE_PREDICATES entry).
   'device_restore_point_attempts',
+  // Vendor update status (#11068) — FK (device_id, org_id) -> devices(id, org_id)
+  // ON DELETE CASCADE; leaf table, no children.
+  'device_oem_update_status',
   // Network-isolation episodes (#10089) — FK (device_id, org_id) -> devices(id, org_id) ON DELETE CASCADE;
   // leaf table, no children. Device delete with an unresolved episode is refused upstream (W1c).
   'device_network_isolations',
@@ -1073,8 +1088,12 @@ coreRoutes.post(
     const key = `enroll_${randomBytes(24).toString('hex')}`;
     const keyHash = hashEnrollmentKey(key);
     const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
+    // #11116: chosen here, not by the column default, so the response can name
+    // the stored row without a RETURNING round trip.
+    const childKeyId = randomUUID();
 
     await db.insert(enrollmentKeys).values({
+      id: childKeyId,
       orgId,
       siteId,
       name: `Onboarding token (${new Date().toISOString().slice(0, 10)})`,
@@ -1090,6 +1109,9 @@ coreRoutes.post(
 
     return c.json({
       token: key,
+      // #11116: the minted key's row id (never the secret), so a client that
+      // remembers the token can check GET /enrollment-keys/:id before reusing it.
+      childKeyId,
       maxUsage,
       // #7035: echo the bound site so the UI can say where devices will land.
       siteId,
@@ -1367,6 +1389,7 @@ coreRoutes.get(
         ramTotalMb: deviceHardware.ramTotalMb,
         diskTotalGb: deviceHardware.diskTotalGb,
         serialNumber: deviceHardware.serialNumber,
+        productSku: deviceHardware.productSku,
         // Reliability headline score (#1720) — surfaced as a sortable list
         // column. device_reliability is org-scoped (RLS shape #1), so the
         // leftJoin stays tenant-safe; null when no score computed yet.
@@ -1605,7 +1628,8 @@ coreRoutes.get(
           cpuCores: d.cpuCores,
           ramTotalMb: d.ramTotalMb,
           diskTotalGb: d.diskTotalGb,
-          serialNumber: d.serialNumber
+          serialNumber: d.serialNumber,
+          productSku: d.productSku
         },
         // Reliability column (#1720): null when the device has no computed
         // score yet (no device_reliability row) — the list renders a dash.
@@ -2592,9 +2616,15 @@ coreRoutes.delete(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_DELETE.resource, PERMISSIONS.DEVICES_DELETE.action),
   requireMfa(),
+  // #11153 — optional body: `{ force: true }` is the operator's explicit
+  // "delete anyway" after a 409 UNINSTALL_NOT_CONFIRMED. A bodyless call (every
+  // existing client) is `force: false`, so it is refused rather than silently
+  // orphaning an agent that never confirmed it came off.
+  optionalJsonValidator(permanentDeleteDeviceSchema),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;
+    const { force } = c.req.valid('json');
 
     const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
     if (device === SITE_ACCESS_DENIED) {
@@ -2621,6 +2651,8 @@ coreRoutes.delete(
     let linkGroupDissolved = false;
     let detachedTopologyAlerts = 0;
     let screenshotStorageKeys: string[] = [];
+    let uninstallState: PurgeResult['uninstallState'] = 'none';
+    let forced = false;
 
     // Delegated to `purgeRemovedDevice` (services/deviceLifecycle.ts) since
     // #2787 — one implementation shared with POST /devices/bulk/permanent-delete
@@ -2679,7 +2711,7 @@ coreRoutes.delete(
           () => db.transaction(async (tx) => ({
             // #8117 — read in the purge transaction; files go after it commits.
             screenshotStorageKeys: await listDeviceScreenshotStorageKeys(tx, deviceId),
-            ...(await purgeRemovedDevice(tx, deviceId, auth.allowedSiteIds)),
+            ...(await purgeRemovedDevice(tx, deviceId, auth.allowedSiteIds, { force })),
           })),
           'devices.permanentDelete',
         ),
@@ -2688,12 +2720,16 @@ coreRoutes.delete(
       linkGroupId = purge.linkGroupId;
       linkGroupDissolved = purge.linkGroupDissolved;
       detachedTopologyAlerts = purge.detachedTopologyAlerts;
+      uninstallState = purge.uninstallState;
+      forced = purge.forced;
     } catch (err: unknown) {
       if (err instanceof NetworkIsolationUnresolvedError) {
         return c.json({ error: err.code, message: err.message }, 409);
       }
       if (err instanceof DeviceLifecycleError) {
-        return c.json({ error: err.message, code: err.code }, err.status);
+        // UNINSTALL_NOT_CONFIRMED carries `uninstallState`, which the web's
+        // "delete anyway?" dialog explains to the operator.
+        return c.json({ error: err.message, code: err.code, ...err.details }, err.status);
       }
       // MUST unwrap. Drizzle wraps the postgres-js PostgresError in a
       // DrizzleQueryError whose own `.code` is undefined — the SQLSTATE lives on
@@ -2770,6 +2806,13 @@ coreRoutes.delete(
         // Site-owned topology alerts this device originated (M3-D6) — after a
         // move-org they belong to ANOTHER org; record the detached provenance.
         ...(detachedTopologyAlerts > 0 ? { detachedTopologyAlerts } : {}),
+        // #11153 — always present: whether the operator sent force, whether
+        // force is what let the device through (`forced`), and what the
+        // agent's uninstall looked like under the lock. `forced: true` is the
+        // record of a deliberate "delete anyway".
+        force,
+        forced,
+        uninstallState,
       }
     });
 

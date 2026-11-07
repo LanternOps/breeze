@@ -163,6 +163,10 @@ const LIVE: readonly string[] = [
   // already passed; the arm simply mints the next one when the collector is
   // back, so an offline collector is a rejection, never a queued row.
   C.TOPOLOGY_INTERFACE_POLL,
+  // Vendor updates (#11065): refused for an offline device. The seam
+  // (services/oemUpdates/dispatch.ts) stamps deliver_by from the run's notAfter,
+  // so a device that drops offline after dispatch cannot start past its window.
+  C.OEM_UPDATE_RUN,
   // Non-CommandTypes literals whose only dispatch path is `executeCommand`,
   // which waits for the result synchronously (`waitForCommandResult`) — the one
   // combination the design forbids pairing with `queue` (#5128 §A). The two
@@ -328,6 +332,9 @@ const STANDARD_REVIEWED: readonly string[] = [
   C.EXECUTE_CONTAINMENT,
   C.RELEASE_CONTAINMENT,
   C.SYSTEM_STATE_COLLECT,
+  // Vendor updates (#11065): a policy removal must hand the vendor tool's
+  // schedule back even if the device is offline right now, so it queues.
+  C.OEM_UPDATE_RELEASE,
 ];
 
 const TIME_SYNC: readonly string[] = [

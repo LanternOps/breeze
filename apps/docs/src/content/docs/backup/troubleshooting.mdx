@@ -10,6 +10,27 @@ import { Aside } from '@astrojs/starlight/components';
 
 ---
 
+## Reading a failed backup's category
+
+Failed, partial, completed-with-errors and cancelled backup jobs show a category badge next to their error text in the job list and in the device **Backup** tab's job history. The backup overview shows the badge on a recent job that has error text. When the device's last backup failed, the banner on its **Backup** tab names the category and explains it.
+
+Breeze works out the category from the job's error message each time the job is shown, so older jobs get one too. When the error log has several lines, the last line that Breeze recognises decides, because the final reason is written last. If no line is recognised, the job's status decides. The message is shown next to the badge, shortened in tables. Hover over it, or open the job's details, to read the full text.
+
+A run that the agent stopped on purpose shows **Cancelled**, even when its status is **Failed**.
+
+| Category | What it means | First thing to check |
+|----------|---------------|----------------------|
+| **Device offline** | The device lost its connection to Breeze, or was not connected when the backup was due. | Keep the device powered on and online through the backup window. See [Job stuck in Queued status](#job-stuck-in-queued-status). |
+| **Stalled or timed out** | The backup stopped making progress, ran past its time limit, or never finished starting. | The device's load and the size of the selection. See [Multi-terabyte selection does not finish in one run](#multi-terabyte-selection-does-not-finish-in-one-run). |
+| **Storage problem** | Breeze or the agent could not write to the backup destination (including a local or network path the agent cannot write to), or the storage session for the upload expired. | Test the storage configuration, then check its credentials and free space. See [Job fails immediately](#job-fails-immediately). |
+| **Agent problem** | The backup component on the device stopped unexpectedly, or has not reported what it supports. | Update the agent and run the backup again. See [Backup job fails with "backup helper exited unexpectedly"](#backup-job-fails-with-backup-helper-exited-unexpectedly) and [Backup waits for the backup component to report](#backup-waits-for-the-backup-component-to-report). |
+| **Configuration problem** | There was nothing valid to back up, or the backup policy, profile, destination or device's organization changed while the job was starting. | Review the device's backup profile and policy, then run the backup again. See [No backup configuration available](#no-backup-configuration-available). |
+| **Files could not be read** | Some files were locked, in use, or not readable by the agent, or the VSS shadow copy could not be created. A partial or completed-with-errors run gets this category unless its message points to another one. | The files listed in the job details, and the VSS status. See [VSS writers in Failed state](#vss-writers-in-failed-state). |
+| **Cancelled** | A user, or Breeze, stopped the backup before it finished. | Nothing, unless you did not expect the stop. |
+| **Other error** | Breeze does not recognise the message yet. | Read the full message shown next to the badge. |
+
+---
+
 ## No backup configuration available
 
 **Symptom:** Manual backup fails with "No backup config available."
@@ -60,6 +81,16 @@ A backup is also stopped and marked failed if the device moves to another organi
 **Cause:** Under sustained load, the agent's internal health check can time out and trigger an agent restart, which also stops any backup helper process that was in progress.
 
 **Fix:** Re-run the backup — Breeze resumes from where it left off using its checkpoint journal instead of starting over. If this happens repeatedly on the same device, reduce load on it during the backup window or narrow the backup scope.
+
+---
+
+## Multi-terabyte selection does not finish in one run
+
+**Symptom:** A file backup of a very large selection ends before all of it is uploaded, its job carries a warning that the selection "is unlikely to finish in this run", or a resumed run shows no transferred bytes for a long time.
+
+**Cause:** One backup run is limited to 24 hours, and transfer time alone can use all of it: 2.4 TB over a 30 MB/s uplink needs about 22 hours. On a destination that uses a storage session, the agent compares its observed upload rate with the time left once it has been uploading for 15 minutes, and adds the warning if the rest will not fit. A run that resumes an interrupted snapshot first re-reads every file the earlier run uploaded (and, when a new job continues the snapshot, reads the stored copy back too) to confirm it is still good. That check reports its own progress rather than transferred bytes, and it counts against the same 24 hours.
+
+**Fix:** The warning is not a failure. Let the next run continue: it picks up from the checkpoint journal, which is kept for 7 days from when the first of these runs started. A selection that needs more than 7 days of runs in total starts over. If runs keep ending before they get through the selection, split it into smaller selections or schedule the largest folders separately, so that each one can finish inside a single run.
 
 ---
 

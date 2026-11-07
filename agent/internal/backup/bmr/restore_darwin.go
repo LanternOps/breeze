@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // darwinRestorer applies macOS-specific system state during BMR.
@@ -136,7 +137,7 @@ func (r *darwinRestorer) restoreNetworkConfig(stagingDir string) error {
 	}
 
 	// Poke configd to reload.
-	cmd := exec.Command("killall", "configd")
+	cmd := procspawn.Command("killall", "configd")
 	if output, runErr := cmd.CombinedOutput(); runErr != nil {
 		slog.Warn("bmr: configd reload failed", "error", runErr.Error(), "output", string(output))
 	}

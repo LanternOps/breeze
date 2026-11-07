@@ -76,6 +76,7 @@ import { businessCalendarRoutes } from './routes/businessCalendars';
 import { ticketRoutingRuleRoutes } from './routes/tickets/routingRules';
 import { ticketResponseTemplateRoutes } from './routes/tickets/ticketResponseTemplates';
 import { ticketFormRoutes } from './routes/tickets/forms';
+import { serviceCatalogRoutes } from './routes/tickets/serviceCatalog';
 import { tenantVariableRoutes } from './routes/tenantVariables';
 import { orgRoutes } from './routes/orgs';
 import { orgMergeRoutes } from './routes/orgMerge';
@@ -135,6 +136,7 @@ import { policyRoutes } from './routes/policyManagement';
 import { configPolicyRoutes } from './routes/configurationPolicies';
 import { psaRoutes } from './routes/psa';
 import { patchRoutes } from './routes/patches/index';
+import { oemUpdatesFleetRoutes } from './routes/oemUpdates/fleet';
 import { thirdPartyCatalogRoutes } from './routes/thirdPartyCatalog';
 import { patchPolicyRoutes } from './routes/patchPolicies';
 import { updateRingRoutes } from './routes/updateRings';
@@ -379,6 +381,7 @@ import {
 } from './services/readiness';
 import { createReadinessHandler } from './routes/readiness';
 import { dbSaturationResponse } from './middleware/dbSaturationResponse';
+import { httpExceptionResponse } from './middleware/httpExceptionResponse';
 import { resolveReadinessTiming } from './config/readinessConfig';
 
 const { db } = dbModule;
@@ -897,6 +900,7 @@ api.route('/business-calendars', businessCalendarRoutes);
 api.route('/ticket-routing-rules', ticketRoutingRuleRoutes);
 api.route('/', ticketResponseTemplateRoutes);
 api.route('/', ticketFormRoutes);
+api.route('/', serviceCatalogRoutes);
 api.route('/', tenantVariableRoutes);
 // Self-contained autopay auth must run before the broad org/portal routers.
 api.route('/autopay/public', publicAutopayRoutes);
@@ -1017,6 +1021,7 @@ api.route('/policies', policyRoutes);
 api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);
 api.route('/patches', patchRoutes);
+api.route('/oem-updates', oemUpdatesFleetRoutes);
 api.route('/third-party-catalog', thirdPartyCatalogRoutes);
 api.route('/patch-policies', patchPolicyRoutes);
 api.route('/update-rings', updateRingRoutes);
@@ -1234,19 +1239,7 @@ app.notFound((c) => {
 app.onError((err, c) => {
   // Handle HTTPException properly (e.g., 401, 403, etc.)
   if (err instanceof HTTPException) {
-    // A typed HTTPException may carry a machine-readable `code` (e.g.
-    // `lease_unavailable`) that callers switch on. This handler builds the body
-    // itself instead of delegating to `err.getResponse()`, so the code has to
-    // be copied across explicitly or it is silently dropped.
-    const typedCode = (err as { code?: unknown }).code;
-    return c.json(
-      {
-        error: err.message || 'Request failed',
-        message: err.message,
-        ...(typeof typedCode === 'string' && typedCode ? { code: typedCode } : {})
-      },
-      err.status
-    );
+    return httpExceptionResponse(err, c);
   }
 
   // W08 (#8147): a pool-acquire timeout (#8229/#8243) or an RLS prologue

@@ -266,26 +266,38 @@ func buildPreviousIndex(prev *Snapshot) map[string]SnapshotFile {
 // entry itself after the upload actually completes, exactly as before
 // incremental backups existed.
 func decideFile(f backupFile, prev map[string]SnapshotFile) (referenceDecision, SnapshotFile) {
+	decision, entry, _ := decideFileHashed(f, prev)
+	return decision, entry
+}
+
+// decideFileHashed is decideFile, also reporting whether the decision read
+// and hashed the file (the size-equal, ModTime-differs row) — false when that
+// read failed. The snapshot loop counts those reads as verified progress
+// (#11014).
+func decideFileHashed(f backupFile, prev map[string]SnapshotFile) (referenceDecision, SnapshotFile, bool) {
 	if f.kind != "" {
 		// Content-less entries (symlinks/directories) are rebuilt from the
 		// live filesystem on every run — see contentlessEntry (snapshot.go).
 		// They never carry uploaded content, so "reference the old bytes"
 		// is meaningless for them regardless of what the previous manifest
 		// says about this key.
-		return decideUpload, SnapshotFile{}
+		return decideUpload, SnapshotFile{}, false
 	}
 	entry, ok := prev[journalLookupKey(f)]
 	if !ok || entry.Size != f.size {
-		return decideUpload, SnapshotFile{}
+		return decideUpload, SnapshotFile{}, false
 	}
 	if entry.ModTime.Equal(f.modTime) {
-		return decideReference, referenceEntry(f, entry)
+		return decideReference, referenceEntry(f, entry), false
 	}
 	sum, err := sha256File(f.sourcePath)
-	if err != nil || sum != entry.Checksum {
-		return decideUpload, SnapshotFile{}
+	if err != nil {
+		return decideUpload, SnapshotFile{}, false
 	}
-	return decideReference, referenceEntry(f, entry)
+	if sum != entry.Checksum {
+		return decideUpload, SnapshotFile{}, true
+	}
+	return decideReference, referenceEntry(f, entry), true
 }
 
 // referenceEntry builds the manifest entry for a file decideFile decided to

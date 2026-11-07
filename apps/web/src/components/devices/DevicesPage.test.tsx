@@ -53,7 +53,8 @@ vi.mock('../../hooks/useEventStream', () => ({
   useEventStream: () => ({ subscribe: vi.fn() }),
 }));
 
-vi.mock('../../services/deviceActions', () => ({
+vi.mock('../../services/deviceActions', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../services/deviceActions')>(),
   sendDeviceCommand: vi.fn(),
   sendBulkCommand: vi.fn(),
   executeScript: vi.fn(),
@@ -62,10 +63,8 @@ vi.mock('../../services/deviceActions', () => ({
   bulkEnterMaintenanceMode: vi.fn(),
   decommissionDevice: vi.fn(),
   bulkDecommissionDevices: vi.fn(),
-  permanentDeleteDevice: vi.fn(),
   sendWakeCommand: vi.fn(),
-  sendBulkWakeCommand: vi.fn(),
-  summarizeBulkWakeFailures: vi.fn(() => ''),
+  requestBulkWakeCommand: vi.fn(),
   summarizeBulkCommandFailures: vi.fn(() => ''),
   watchWakeOutcome: vi.fn(),
   WakeCommandError: class WakeCommandError extends Error { code = 'x'; },
@@ -291,6 +290,9 @@ vi.mock('./DeviceList', () => ({
           two are mutually exclusive on screen. That conditional belongs to
           DeviceList/DeviceCard's own suites. */}
       {devices.map(d => (
+        <button key={`row-wake-${d.id}`} data-testid={`row-wake-${d.id}`} onClick={() => onAction?.('wake', d)} />
+      ))}
+      {devices.map(d => (
         <button
           key={`row-reboot-${d.id}`}
           type="button"
@@ -368,8 +370,8 @@ function rawDevice(id: string, hostname: string) {
   };
 }
 
-function jsonResponse(payload: unknown) {
-  return { ok: true, json: async () => payload } as unknown as Response;
+function jsonResponse(payload: unknown, status = 200) {
+  return { ok: status < 400, status, json: async () => payload } as unknown as Response;
 }
 
 /** Device ids the page POSTed to the single-device restore route. */
@@ -1616,9 +1618,9 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
   // by online/queued, and the org(s) it will hit.
   describe('bulk command confirm (#9032)', () => {
     async function selectFleet() {
-      const { sendBulkCommand, sendBulkWakeCommand } = await import('../../services/deviceActions');
+      const { sendBulkCommand, requestBulkWakeCommand } = await import('../../services/deviceActions');
       vi.mocked(sendBulkCommand).mockResolvedValue({ commands: [{}, {}], failed: [], skipped: [] } as never);
-      vi.mocked(sendBulkWakeCommand).mockResolvedValue({ succeeded: [], failed: [] } as never);
+      vi.mocked(requestBulkWakeCommand).mockResolvedValue(jsonResponse({ succeeded: [], failed: [] }));
       vi.mocked(fetchAllDevices).mockResolvedValue({
         data: [
           rawDevice(DEV_1, 'host-alpha'),
@@ -1626,7 +1628,7 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
         ],
       } as never);
       await renderMixedFleet([DEV_1, DEV_2]);
-      return { sendBulkCommand, sendBulkWakeCommand };
+      return { sendBulkCommand, requestBulkWakeCommand };
     }
 
     it('reboot asks first, names verb + online/queued split, and sends nothing until confirmed', async () => {
@@ -1692,12 +1694,12 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     });
 
     it('wake asks first', async () => {
-      const { sendBulkWakeCommand } = await selectFleet();
+      const { requestBulkWakeCommand } = await selectFleet();
       fireEvent.click(screen.getByTestId('bulk-wake'));
       const confirm = await screen.findByTestId('confirm-bulk-command');
-      expect(vi.mocked(sendBulkWakeCommand)).not.toHaveBeenCalled();
+      expect(vi.mocked(requestBulkWakeCommand)).not.toHaveBeenCalled();
       fireEvent.click(confirm);
-      await waitFor(() => expect(vi.mocked(sendBulkWakeCommand)).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(vi.mocked(requestBulkWakeCommand)).toHaveBeenCalledTimes(1));
     });
 
     it('maintenance-off asks first', async () => {
@@ -2028,17 +2030,17 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
   );
 
   it('does not skip or gate bulk Wake on device status — it exists precisely to reach devices that are not running (confirm only, #9032)', async () => {
-    const { sendBulkWakeCommand } = await import('../../services/deviceActions');
-    vi.mocked(sendBulkWakeCommand).mockResolvedValue({ sent: [], failed: [] } as never);
+    const { requestBulkWakeCommand } = await import('../../services/deviceActions');
+    vi.mocked(requestBulkWakeCommand).mockResolvedValue(jsonResponse({ succeeded: [], failed: [] }));
 
     boundaryFleet();
     await renderMixedFleet();
     fireEvent.click(screen.getByTestId('bulk-wake'));
     fireEvent.click(await screen.findByTestId('confirm-bulk-command')); // #9032
 
-    await waitFor(() => expect(vi.mocked(sendBulkWakeCommand)).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(vi.mocked(requestBulkWakeCommand)).toHaveBeenCalledTimes(1));
     expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
-    expect([...(vi.mocked(sendBulkWakeCommand).mock.calls[0][0] as string[])].sort()).toEqual(
+    expect([...(vi.mocked(requestBulkWakeCommand).mock.calls[0][0] as string[])].sort()).toEqual(
       [DEV_1, DEV_2, DEV_3].sort(),
     );
   });
@@ -2085,9 +2087,9 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
   // carrying detail === 2, because the platform click counter comes from the
   // time and distance between presses, never from the hit-test target.
   it('a double-click on confirm cannot fire an unrelated action underneath', async () => {
-    const { sendDeviceCommand, sendBulkWakeCommand } = await import('../../services/deviceActions');
+    const { sendDeviceCommand, requestBulkWakeCommand } = await import('../../services/deviceActions');
     vi.mocked(sendDeviceCommand).mockResolvedValue({ command: {} } as never);
-    vi.mocked(sendBulkWakeCommand).mockResolvedValue({ sent: [], failed: [] } as never);
+    vi.mocked(requestBulkWakeCommand).mockResolvedValue(jsonResponse({ succeeded: [], failed: [] }));
     vi.mocked(fetchAllDevices).mockResolvedValue({
       data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'online' }],
     } as never);
@@ -2109,7 +2111,7 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     fireEvent.mouseUp(wake, { detail: 2 });
     fireEvent.click(wake, { detail: 2 });
 
-    expect(vi.mocked(sendBulkWakeCommand)).not.toHaveBeenCalled();
+    expect(vi.mocked(requestBulkWakeCommand)).not.toHaveBeenCalled();
     expect(vi.mocked(sendDeviceCommand)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(sendDeviceCommand)).toHaveBeenCalledWith(DEV_1, 'reboot');
   });
@@ -2687,6 +2689,22 @@ describe('DevicesPage — compare bulk action navigates with selected ids', () =
 // warning to surface any more, and the toast is unconditionally the success
 // one. What is pinned here is that the branch really is gone — not that it
 // happens not to fire for the bodies the API sends today.
+// #11153: single permanent delete goes through runAction -> fetchWithAuth now.
+const deleteCalls = () =>
+  vi.mocked(fetchWithAuth).mock.calls.filter(
+    ([url, init]) => String(url).endsWith('/permanent') && (init as RequestInit | undefined)?.method === 'DELETE',
+  );
+function mockPermanentDelete(...responses: Response[]) {
+  const base = vi.mocked(fetchWithAuth).getMockImplementation();
+  const queue = [...responses];
+  vi.mocked(fetchWithAuth).mockImplementation(async (url: string, init?: RequestInit) => {
+    if (String(url).endsWith('/permanent') && init?.method === 'DELETE') {
+      return queue.shift() ?? jsonResponse({ success: true });
+    }
+    return base!(url, init);
+  });
+}
+
 describe('DevicesPage — permanent delete toasts success, with no warning branch (#2787, was #4368)', () => {
   beforeEach(() => {
     vi.mocked(fetchAllDevices).mockResolvedValue({
@@ -2717,9 +2735,8 @@ describe('DevicesPage — permanent delete toasts success, with no warning branc
   }
 
   it('shows a success toast for the plain { success: true } body the API now returns', async () => {
-    const { permanentDeleteDevice } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
-    vi.mocked(permanentDeleteDevice).mockResolvedValue({ success: true });
+    mockPermanentDelete(jsonResponse({ success: true }));
 
     await runPermanentDelete();
 
@@ -2737,12 +2754,11 @@ describe('DevicesPage — permanent delete toasts success, with no warning branc
    * warning toast here and claim an uninstall attempt that no longer exists.
    */
   it('ignores a stray legacy `warning` field instead of resurrecting the old toast', async () => {
-    const { permanentDeleteDevice } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
-    vi.mocked(permanentDeleteDevice).mockResolvedValue({
+    mockPermanentDelete(jsonResponse({
       success: true,
       warning: 'The agent could not be reached for remote uninstall.',
-    } as never);
+    }));
 
     await runPermanentDelete();
 
@@ -3033,6 +3049,100 @@ describe('DevicesPage — bulk restore and bulk permanent delete (#2787)', () =>
     );
   });
 
+  async function runPurgeToCompletion(result: { purged: string[]; skipped: Array<{ deviceId: string; code: string }> }) {
+    const { startBulkPurge, fetchPurgeRun } = await import('../../services/deviceActions');
+    vi.mocked(startBulkPurge).mockResolvedValue({ jobId: 'job-1', accepted: 2, rejected: [] });
+    vi.mocked(fetchPurgeRun).mockResolvedValue({
+      state: 'completed',
+      progress: { done: 2, total: 2 },
+      result,
+      failedReason: null,
+    });
+    await renderWithRemovedFleet();
+    fireEvent.click(screen.getByTestId('bulk-permanent-delete'));
+    fireEvent.change(await screen.findByTestId('bulk-purge-count'), { target: { value: '2' } });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(screen.getByTestId('confirm-bulk-purge'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it('words a partial bulk purge without repeating "skipped" or nesting parentheses', async () => {
+    const { showToast } = await import('../shared/Toast');
+    await runPurgeToCompletion({
+      purged: [DEV_1],
+      skipped: [{ deviceId: DEV_2, code: 'UNINSTALL_NOT_CONFIRMED' }],
+    });
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith({
+        type: 'warning',
+        message:
+          '1 device permanently deleted; 1 skipped because its agent never confirmed the uninstall. Delete it on its own from the device page.',
+      }),
+    );
+  });
+
+  it('words a bulk purge that deleted nothing with the same reason text', async () => {
+    const { showToast } = await import('../shared/Toast');
+    await runPurgeToCompletion({
+      purged: [],
+      skipped: [
+        { deviceId: DEV_1, code: 'UNINSTALL_NOT_CONFIRMED' },
+        { deviceId: DEV_2, code: 'UNINSTALL_NOT_CONFIRMED' },
+      ],
+    });
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith({
+        type: 'warning',
+        message:
+          'No device was deleted. 2 skipped because their agents never confirmed the uninstall. Delete them one at a time from the device page.',
+      }),
+    );
+  });
+
+  it('names devices left out at start without claiming anything is already deleted', async () => {
+    const { startBulkPurge, fetchPurgeRun } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(startBulkPurge).mockResolvedValue({
+      jobId: 'job-3',
+      accepted: 1,
+      rejected: [
+        { deviceId: DEV_1, code: 'UNINSTALL_NOT_CONFIRMED' },
+        { deviceId: DEV_2, code: 'SOME_OTHER_CODE' },
+      ],
+    } as Awaited<ReturnType<typeof startBulkPurge>>);
+    vi.mocked(fetchPurgeRun).mockResolvedValue({
+      state: 'waiting',
+      progress: { done: 0, total: 1 },
+      result: null,
+      failedReason: null,
+    });
+
+    await renderWithRemovedFleet();
+    fireEvent.click(screen.getByTestId('bulk-permanent-delete'));
+    fireEvent.change(await screen.findByTestId('bulk-purge-count'), { target: { value: '2' } });
+    fireEvent.click(screen.getByTestId('confirm-bulk-purge'));
+
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith({
+        type: 'warning',
+        message:
+          '1 skipped because its agent never confirmed the uninstall. Delete it on its own from the device page. 1 skipped with reason SOME_OTHER_CODE.',
+      }),
+    );
+    expect(vi.mocked(showToast)).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('permanently deleted') }),
+    );
+  });
+
   it('surfaces a whole-selection rejection and never starts polling', async () => {
     const { startBulkPurge, fetchPurgeRun } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
@@ -3241,7 +3351,6 @@ describe('DevicesPage — single permanent delete asks first (#5023)', () => {
   });
 
   it('opens a purge-framed confirm dialog instead of deleting immediately', async () => {
-    const { permanentDeleteDevice } = await import('../../services/deviceActions');
     const { showToast } = await import('../shared/Toast');
 
     render(<DevicesPage />);
@@ -3261,13 +3370,11 @@ describe('DevicesPage — single permanent delete asks first (#5023)', () => {
 
     // Nothing has been queued — not even the undo toast, which is the point:
     // the gate must precede the timer, not race it.
-    expect(vi.mocked(permanentDeleteDevice)).not.toHaveBeenCalled();
+    expect(deleteCalls()).toHaveLength(0);
     expect(vi.mocked(showToast).mock.calls.some(([toast]) => toast.type === 'undo')).toBe(false);
   });
 
   it('cancelling deletes nothing', async () => {
-    const { permanentDeleteDevice } = await import('../../services/deviceActions');
-
     render(<DevicesPage />);
     fireEvent.click(await screen.findByTestId(`row-permanent-delete-${DEV_1}`));
     await screen.findByTestId('confirm-device-action');
@@ -3275,12 +3382,11 @@ describe('DevicesPage — single permanent delete asks first (#5023)', () => {
     fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
 
     await waitFor(() => expect(screen.queryByTestId('confirm-device-action')).toBeNull());
-    expect(vi.mocked(permanentDeleteDevice)).not.toHaveBeenCalled();
+    expect(deleteCalls()).toHaveLength(0);
   });
 
   it('confirming still deletes, undo window and all', async () => {
-    const { permanentDeleteDevice } = await import('../../services/deviceActions');
-    vi.mocked(permanentDeleteDevice).mockResolvedValue({ success: true });
+    mockPermanentDelete(jsonResponse({ success: true }));
 
     render(<DevicesPage />);
     fireEvent.click(await screen.findByTestId(`row-permanent-delete-${DEV_1}`));
@@ -3291,7 +3397,7 @@ describe('DevicesPage — single permanent delete asks first (#5023)', () => {
       fireEvent.click(confirmBtn);
       // The confirm replaces the click as the trigger; the undo window it
       // starts is kept, so a mis-confirm is still recoverable for 5s.
-      expect(vi.mocked(permanentDeleteDevice)).not.toHaveBeenCalled();
+      expect(deleteCalls()).toHaveLength(0);
       await act(async () => {
         await vi.advanceTimersByTimeAsync(5000);
       });
@@ -3299,7 +3405,138 @@ describe('DevicesPage — single permanent delete asks first (#5023)', () => {
       vi.useRealTimers();
     }
 
-    expect(vi.mocked(permanentDeleteDevice)).toHaveBeenCalledWith(DEV_1);
+    expect(deleteCalls()).toHaveLength(1);
+    expect(String(deleteCalls()[0][0])).toBe(`/devices/${DEV_1}/permanent`);
+    // First request never forces (#11153): bodyless.
+    expect((deleteCalls()[0][1] as RequestInit).body).toBeUndefined();
+  });
+});
+
+// #11153: the API refuses a permanent delete whose agent never confirmed its
+// uninstall (409 UNINSTALL_NOT_CONFIRMED); the explicit dialog choice re-sends
+// with { force: true }.
+describe('DevicesPage — permanent delete of an unconfirmed uninstall (#11153)', () => {
+  beforeEach(() => {
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'decommissioned' }],
+    } as never);
+  });
+
+  const notConfirmed = (uninstallState: string) =>
+    jsonResponse({ error: 'Agent uninstall was not confirmed', code: 'UNINSTALL_NOT_CONFIRMED', uninstallState }, 409);
+
+  async function confirmFirstDialog() {
+    render(<DevicesPage />);
+    fireEvent.click(await screen.findByTestId(`row-permanent-delete-${DEV_1}`));
+    const confirmBtn = await screen.findByTestId('confirm-device-action');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(confirmBtn);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it('shows the force dialog with the state copy and no error toast, and does not force the first request', async () => {
+    const { showToast } = await import('../shared/Toast');
+    mockPermanentDelete(notConfirmed('expired'));
+
+    await confirmFirstDialog();
+
+    expect(await screen.findByTestId('permanent-delete-force-confirm')).toBeTruthy();
+    expect(screen.getByText('The agent did not confirm removal')).toBeTruthy();
+    expect(screen.getByText(/never came back to collect the uninstall/i)).toBeTruthy();
+    expect(screen.getByText(/installed and running/i)).toBeTruthy();
+    expect(deleteCalls()).toHaveLength(1);
+    expect((deleteCalls()[0][1] as RequestInit).body).toBeUndefined();
+    expect(vi.mocked(showToast).mock.calls.some(([t]) => t.type === 'error')).toBe(false);
+  });
+
+  it('Delete anyway re-sends the DELETE with { force: true } and toasts success', async () => {
+    const { showToast } = await import('../shared/Toast');
+    mockPermanentDelete(notConfirmed('failed'), jsonResponse({ success: true }));
+
+    await confirmFirstDialog();
+    expect(await screen.findByText(/reported a failure/i)).toBeTruthy();
+    fireEvent.click(await screen.findByTestId('permanent-delete-force-confirm'));
+
+    await waitFor(() => expect(deleteCalls()).toHaveLength(2));
+    expect((deleteCalls()[1][1] as RequestInit).body).toBe(JSON.stringify({ force: true }));
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'success', message: expect.stringContaining('host-alpha') }),
+      ),
+    );
+    await waitFor(() => expect(screen.queryByTestId('permanent-delete-force-confirm')).toBeNull());
+  });
+
+  it('cancelling the force dialog sends no second request', async () => {
+    mockPermanentDelete(notConfirmed('none'));
+
+    await confirmFirstDialog();
+    await screen.findByTestId('permanent-delete-force-confirm');
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+
+    await waitFor(() => expect(screen.queryByTestId('permanent-delete-force-confirm')).toBeNull());
+    expect(deleteCalls()).toHaveLength(1);
+  });
+
+  it('a different 409 still toasts an error and shows no force dialog', async () => {
+    const { showToast } = await import('../shared/Toast');
+    mockPermanentDelete(jsonResponse({ error: 'Uninstall still pending', code: 'UNINSTALL_PENDING' }, 409));
+
+    await confirmFirstDialog();
+
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: expect.stringContaining('Uninstall still pending') }),
+      ),
+    );
+    expect(screen.queryByTestId('permanent-delete-force-confirm')).toBeNull();
+    expect(deleteCalls()).toHaveLength(1);
+  });
+
+  it('labels UNINSTALL_NOT_CONFIRMED skips in a completed bulk purge', async () => {
+    const { startBulkPurge, fetchPurgeRun } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null);
+    vi.mocked(startBulkPurge).mockResolvedValue({ jobId: 'job-9', accepted: 2, rejected: [] });
+    vi.mocked(fetchPurgeRun).mockResolvedValue({
+      state: 'completed',
+      progress: { done: 2, total: 2 },
+      result: { purged: [], skipped: [{ deviceId: DEV_1, code: 'UNINSTALL_NOT_CONFIRMED' }, { deviceId: DEV_2, code: 'UNINSTALL_NOT_CONFIRMED' }] },
+      failedReason: null,
+    });
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [
+        { ...rawDevice(DEV_1, 'host-alpha'), status: 'decommissioned' },
+        { ...rawDevice(DEV_2, 'host-beta'), status: 'decommissioned' },
+      ],
+    } as never);
+
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    await waitFor(() => expect(list.getAttribute('data-device-count')).toBe('2'));
+    fireEvent.click(screen.getByTestId('bulk-permanent-delete'));
+    fireEvent.change(await screen.findByTestId('bulk-purge-count'), { target: { value: '2' } });
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(screen.getByTestId('confirm-bulk-purge'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await waitFor(() => {
+      const msgs = vi.mocked(showToast).mock.calls.map(c => String(c[0].message));
+      expect(msgs.some(m => /2/.test(m) && /never confirmed/i.test(m) && !m.includes('UNINSTALL_NOT_CONFIRMED'))).toBe(true);
+    });
   });
 });
 
@@ -3719,5 +3956,100 @@ describe('DevicesPage — empty states (#9036)', () => {
     await waitFor(() => expect(list.getAttribute('data-filter-ids')).not.toBe(''));
     fireEvent.click(screen.getByTestId('stub-clear-filters'));
     await waitFor(() => expect(screen.getByTestId('device-list').getAttribute('data-filter-ids')).toBe(''));
+  });
+});
+
+
+describe('DevicesPage wake refusals', () => {
+  beforeEach(async () => {
+    history.replaceState(null, '', '/devices');
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null);
+    const actual = await vi.importActual<typeof import('../../services/deviceActions')>('../../services/deviceActions');
+    const mocked = await import('../../services/deviceActions');
+    vi.mocked(mocked.requestBulkWakeCommand).mockImplementation(actual.requestBulkWakeCommand);
+  });
+  it('single wake on TARGET_ONLINE names the device and shows the server message', async () => {
+    const { showToast } = await import('../shared/Toast');
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse({ code: 'TARGET_ONLINE', error: 'Target device is already online.' }, 412));
+    fireEvent.click(screen.getByTestId(`row-wake-${DEV_1}`));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'host-alpha: Target device is already online.' }));
+    expect(showToast).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [412, { code: 'TARGET_ONLINE', error: 'Target device is already online.' }],
+    [200, { success: false, code: 'TARGET_ONLINE', error: 'Target device is already online.' }],
+  ])('bulk refusal at HTTP %s toasts once', async (status, body) => {
+    const { showToast } = await import('../shared/Toast');
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse(body, status));
+    fireEvent.click(screen.getByTestId('bulk-wake'));
+    fireEvent.click(await screen.findByTestId('confirm-bulk-command'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'Target device is already online.' }));
+    expect(showToast).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [{ succeeded: [{ deviceId: DEV_1 }], failed: [] }, 'success', 'Sent to 1, skipped 0'],
+    [{ succeeded: [], failed: [{ deviceId: DEV_1, code: 'TARGET_ONLINE' }] }, 'success', 'Sent to 0, skipped 1: 1 already online'],
+    [{ succeeded: [{ deviceId: DEV_1 }], failed: [{ deviceId: DEV_2, code: 'NO_RELAY' }] }, 'warning', 'Sent to 1, skipped 1: 1 with no online peer at their site'],
+    [{ succeeded: [], failed: [{ deviceId: DEV_1, code: 'NEW_CODE', message: 'Blocked by wake policy' }] }, 'error', 'Sent to 0, skipped 1: 1 Blocked by wake policy'],
+  ])('reports bulk outcomes without an extra toast', async (body, type, message) => {
+    const { showToast } = await import('../shared/Toast');
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse(body));
+    fireEvent.click(screen.getByTestId('bulk-wake'));
+    fireEvent.click(await screen.findByTestId('confirm-bulk-command'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type, message }));
+    expect(showToast).toHaveBeenCalledTimes(1);
+  });
+
+  it('single wake success toasts and starts the outcome watcher', async () => {
+    const { showToast } = await import('../shared/Toast');
+    const { watchWakeOutcome } = await import('../../services/deviceActions');
+    vi.mocked(watchWakeOutcome).mockResolvedValue('aborted');
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse({
+      commandId: 'command-1', wakeAttemptId: 'attempt-1', type: 'wake_on_lan',
+      relay: { hostname: 'relay-example' }, broadcast: '192.0.2.255',
+    }, 202));
+    fireEvent.click(screen.getByTestId(`row-wake-${DEV_1}`));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Wake Sent Watching' }));
+    expect(watchWakeOutcome).toHaveBeenCalledWith(DEV_1, { signal: expect.any(AbortSignal) });
+    expect(showToast).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the auth redirect without an error toast on a single wake 401', async () => {
+    const { showToast } = await import('../shared/Toast');
+    const { handleSessionExpired } = await import('../../stores/auth');
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse({ error: 'Unauthorized' }, 401));
+    fireEvent.click(screen.getByTestId(`row-wake-${DEV_1}`));
+    await waitFor(() => expect(handleSessionExpired).toHaveBeenCalledTimes(1));
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it('bulk wake reports "Sent to N, skipped M" with skips grouped by code', async () => {
+    const { showToast } = await import('../shared/Toast');
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse({
+      succeeded: [{ deviceId: DEV_1 }],
+      failed: [
+        { deviceId: DEV_2, code: 'TARGET_ONLINE', message: 'Already online' },
+        { deviceId: DEV_3, code: 'TARGET_ONLINE', message: 'Already online' },
+      ],
+    }));
+    fireEvent.click(screen.getByTestId('bulk-wake'));
+    fireEvent.click(await screen.findByTestId('confirm-bulk-command'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Sent to 1, skipped 2: 2 already online' }));
+    expect(showToast).toHaveBeenCalledTimes(1);
   });
 });

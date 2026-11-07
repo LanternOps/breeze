@@ -96,6 +96,8 @@ import { oneShotUnavailableAnswer } from '../services/aiModels/oneShotUnavailabl
 import { settleInvocation } from '../services/aiModels/settleInvocation';
 import { resolveSessionTurn } from '../services/aiModels/sessionModel';
 import { loadContinuationSummary, withContinuationContext } from '../services/aiModels/continuation';
+// A leaf module (db + sanitizer): it does not load the Wisp graph.
+import { loadFiredCheckIns, markCheckInsConsumed, renderCheckInBlock, type FiredCheckIn } from '../services/wisp/checkInTurn';
 import { AI_NOT_CONFIGURED_BODY, LlmNotConfiguredError } from '../services/llm/llmAvailability';
 import type { ResolvedModel } from '../services/aiModels/resolveModel';
 import { liveQueryKey, turnBindingFrom, withCarriedRates } from '../services/aiModels/turnBinding';
@@ -885,6 +887,29 @@ aiRoutes.post(
       captureException(new Error('continuation summary missing on first turn'), undefined, { org_id: dbSession.orgId });
     }
 
+    // Wisp check-in timers W04 (#10995; spec §4): check-ins this grant's
+    // timers fired since the last turn ride on THIS turn as delimited,
+    // sanitised, untrusted background (services/wisp/checkInTurn.ts) — never
+    // the system prompt. Read here, before anything is reserved or claimed;
+    // consumed only once the turn is dispatched (below), so a refused turn
+    // leaves them for the next one. A failed read never blocks the turn.
+    // Only the rows actually rendered into the block are consumed later.
+    let firedCheckIns: FiredCheckIn[] = [];
+    let checkInBlock: string | null = null;
+    const wispGrantId = !topology ? dbSession.wispGrantId : null;
+    if (wispGrantId) {
+      try {
+        const rows = await inRequestDb(() => loadFiredCheckIns(wispGrantId, auth.user.id));
+        checkInBlock = renderCheckInBlock(rows);
+        firedCheckIns = rows;
+      } catch (err) {
+        console.warn('[AI] failed to read fired Wisp check-ins; sending the turn without them', {
+          orgId: dbSession.orgId, sessionId, grantId: wispGrantId, error: err instanceof Error ? err.message : String(err),
+        });
+        captureException(err, c, { wisp_check_in_phase: 'read' }, { fingerprint: ['wisp-check-in-turn', 'read'] });
+      }
+    }
+
     // A Claude SDK query's maxBudgetUsd is immutable after creation. Finish any
     // approval-only prior turn, then rotate the idle query so this turn is
     // created with the exact durable reservation ceiling.
@@ -1114,9 +1139,12 @@ aiRoutes.post(
       // above) as delimited, sanitised, untrusted background — never the
       // system prompt. The persisted user row above keeps the plain text, so
       // the prefix reaches only the model.
-      const turnContent = topology
+      const baseTurn = topology
         ? topology.prompt
         : continuationSummary ? withContinuationContext(continuationSummary, sanitizedContent) : sanitizedContent;
+      // W04 (#10995): fired check-ins go between any analysis results
+      // (outermost) and the user's own text, which stays last.
+      const turnContent = checkInBlock ? `${checkInBlock}\n\n${baseTurn}` : baseTurn;
       // Subscribe BEFORE the turn is pushed: the session event bus has no
       // replay, and a fast transport can publish the turn's events (even its
       // error and done) before the SSE callback below would run.
@@ -1149,6 +1177,26 @@ aiRoutes.post(
       return dispatch.response;
     }
     const { activeSession, events } = dispatch;
+
+    // W04 (#10995): the turn carrying the check-ins is dispatched, so they are
+    // consumed now (fired → consumed; a row cancelled meanwhile stays
+    // cancelled). A failure only means they are prepended again next turn.
+    if (wispGrantId && firedCheckIns.length > 0) {
+      const ids = firedCheckIns.map((row) => row.id);
+      try {
+        const consumed = await inRequestDb(() => markCheckInsConsumed({ grantId: wispGrantId, ids }));
+        if (consumed === 0) {
+          // Every row was cancelled since the read — or the UPDATE matched
+          // nothing under RLS, which would re-prepend them every turn.
+          console.warn('[AI] no Wisp check-in was marked consumed', { orgId: dbSession.orgId, sessionId, grantId: wispGrantId, ids });
+        }
+      } catch (err) {
+        console.warn('[AI] failed to mark Wisp check-ins consumed; they will be prepended again next turn', {
+          orgId: dbSession.orgId, sessionId, grantId: wispGrantId, ids, error: err instanceof Error ? err.message : String(err),
+        });
+        captureException(err, c, { wisp_check_in_phase: 'consume' }, { fingerprint: ['wisp-check-in-turn', 'consume'] });
+      }
+    }
 
     return streamSSE(c, async (stream) => {
       // #9427: a client that goes away stops listening at once; the turn is

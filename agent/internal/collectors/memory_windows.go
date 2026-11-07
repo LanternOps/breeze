@@ -24,15 +24,22 @@ const firmwareProviderRSMB = 0x52534D42
 // GetSystemFirmwareTable('RSMB', 0, …): one call to size the buffer, one to
 // fill it. No WMI or PowerShell.
 func collectPlatformMemory() (*MemoryInfo, error) {
+	table, err := readRawSMBIOSTable()
+	if err != nil {
+		return nil, err
+	}
+	return memoryInfoFromSMBIOSTable(table)
+}
+
+// readRawSMBIOSTable returns the SMBIOS structure table with the RawSMBIOSData
+// header stripped.
+func readRawSMBIOSTable() ([]byte, error) {
 	buf, n, err := getRSMBTable()
 	if err != nil {
 		return nil, err
 	}
 	table, _, _, err := parseRawSMBIOSData(buf, n)
-	if err != nil {
-		return nil, err
-	}
-	return memoryInfoFromSMBIOSTable(table)
+	return table, err
 }
 
 func getRSMBTable() ([]byte, uint32, error) {

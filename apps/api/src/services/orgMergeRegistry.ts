@@ -1037,6 +1037,7 @@ const REPOINT_TABLES: readonly string[] = [
   // SET CONSTRAINTS ALL DEFERRED lets parents and this row repoint in separate
   // statements; breeze_network_isolation_device_moved skips a merging org.
   "device_network_isolations",
+  "device_oem_update_status",
   "device_patches",
   "device_process_samples",
   "device_recovery_keys",
@@ -1050,6 +1051,8 @@ const REPOINT_TABLES: readonly string[] = [
   "device_time_daily",
   "device_time_status",
   "device_vulnerabilities",
+  "device_wake_attempts",
+  "device_wake_status",
   "device_warranty",
   // device_workloads / device_workload_runtimes (#3834): plain repoint — the
   // only unique keys are (device_id, runtime, workload_id) and (device_id,
@@ -1418,6 +1421,10 @@ const REPOINT_TABLES: readonly string[] = [
   // stays behind (leave-for-erasure): the survivor is outside that grant's
   // ceiling, so the wake path skips it, and erasing the loser shell deletes
   // the grant and, by ON DELETE CASCADE, those rows.
+  // Wisp check-in timers W01 (#10992). Partner-level check-ins (org_id NULL)
+  // never match the repoint, and the only unique key is the PK, so a repoint
+  // cannot collide. The thread and grant are partner-axis and stay put.
+  "wisp_check_ins",
   "wisp_concern_recipients",
   "wisp_concerns",
   // Wisp W08a (#9914). Partner-level links (org_id NULL) never match the

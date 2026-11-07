@@ -5,6 +5,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
@@ -20,6 +21,7 @@ type HardwareInfo struct {
 	DiskTotalGB             uint64 `json:"diskTotalGb"`
 	GPUModel                string `json:"gpuModel,omitempty"`
 	SerialNumber            string `json:"serialNumber,omitempty"`
+	ProductSKU              string `json:"productSku,omitempty"`
 	Manufacturer            string `json:"manufacturer,omitempty"`
 	Model                   string `json:"model,omitempty"`
 	MotherboardManufacturer string `json:"motherboardManufacturer,omitempty"`
@@ -197,6 +199,26 @@ func firstCleanHardwareIdentityValue(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// productSKUMaxChars matches device_hardware.product_sku (varchar(100)).
+const productSKUMaxChars = 100
+
+// cleanProductSKU normalizes the SMBIOS system SKU (HP's product number, e.g.
+// 5S3F8EA#ABB; Lenovo's machine type; Dell's system ID). On top of the shared
+// identity placeholders it drops the SKU-specific ones firmware ships unfilled.
+// A value too long for the column is dropped rather than truncated: a cut-off
+// product number would misdirect a warranty or parts lookup.
+func cleanProductSKU(value string) string {
+	cleaned := cleanHardwareIdentityValue(value)
+	switch strings.ToLower(strings.Trim(strings.Join(strings.Fields(cleaned), " "), ".")) {
+	case "sku", "sku number", "system sku", "systemsku", "systemskunumber", "system sku number", "type1sku0":
+		return ""
+	}
+	if utf8.RuneCountInString(cleaned) > productSKUMaxChars {
+		return ""
+	}
+	return cleaned
 }
 
 func (c *HardwareCollector) CollectHardware() (*HardwareInfo, error) {

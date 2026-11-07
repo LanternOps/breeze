@@ -28,6 +28,7 @@ import {
 
 import type { UserPermissions } from '../../services/permissions';
 import { checkHpCmslWriteAllowed, warrantyLinkEnablesCollection } from './hpCmslGate';
+import { checkOemUpdatesArmAllowed, policyArmsOemUpdates } from './oemUpdatesGate';
 
 export const assignmentRoutes = new Hono();
 const requireConfigPolicyRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -153,6 +154,14 @@ assignmentRoutes.post(
       : parentUnresolved || warrantyLinkEnablesCollection(policy.parentPolicy?.featureLinks);
     if (assignmentStartsHpCmslCollection) {
       const gate = checkHpCmslWriteAllowed(auth, c.get('permissions') as UserPermissions | undefined);
+      if (!gate.allowed) return c.json(gate.body, 403);
+    }
+
+    // #11070: same door for vendor updates. An assignment is how an armed
+    // oem_updates link (own, else inherited whole) reaches devices, so assigning
+    // one needs devices.execute + MFA. Unresolvable parent fails closed.
+    if (policyArmsOemUpdates(policy)) {
+      const gate = checkOemUpdatesArmAllowed(auth, c.get('permissions') as UserPermissions | undefined);
       if (!gate.allowed) return c.json(gate.body, 403);
     }
 

@@ -52,6 +52,9 @@ function expectPinnedActions(text: string, where: string): void {
   const uses = [...text.matchAll(/^\s*(?:-\s+)?uses:\s*(.*)$/gm)].map((m) => m[1]!.trim());
   expect(uses.length, `${where} uses at least one action`).toBeGreaterThan(0);
   for (const u of uses) {
+    // Repo-local composites (./.github/actions/*) have no SHA to pin; check-workflow-security.mjs
+    // and ci-cache-policy.test.mjs make the same exception, and the composite's own `uses:` are pinned.
+    if (u.startsWith('./')) continue;
     expect(u, `${where}: "${u}" must be pinned to a 40-hex SHA with a # vX comment`).toMatch(
       /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+@[0-9a-f]{40} # v\S+$/,
     );
@@ -131,6 +134,24 @@ describe('perf.yml — self-hosted perf gate (#8146)', () => {
       const cond = s.match(/^ {8}if:\s*(.*)$/m)?.[1] ?? '';
       expect(cond, 'patch step if:').toContain("inputs.inject == 'slow-heartbeat'");
       expect(cond, 'patch step if:').toContain("github.event_name == 'workflow_dispatch'");
+    }
+  });
+
+  it('returns workspace ownership to the runner as the last step of each self-hosted job, on always()', () => {
+    // wt-stack bind-mounts the checkout into root containers; without this the next run's
+    // actions/checkout cannot clean the workspace and leaves a directory with no repository.
+    const selfHosted = Object.entries(all).filter(([, j]) => /self-hosted/.test(jobField(j, 'runs-on') ?? ''));
+    expect(selfHosted.map(([id]) => id).sort()).toEqual(['gate', 'storm']);
+    for (const [id, j] of selfHosted) {
+      const last = steps(j).at(-1)!;
+      expect(last, `${id} last step`).toMatch(/^name: Return workspace ownership to the runner$/m);
+      expect(last, `${id} last step`).toMatch(/^ {8}if: always\(\)$/m);
+      expect(last, `${id} last step`).toContain('chown -R');
+      expect(last, `${id} last step`).toContain('-v "$GITHUB_WORKSPACE:/w"');
+      expect(last, `${id} last step`).toContain('chown -R "$U:$G" /w');
+      expect(last, `${id} last step`).toMatch(/^ {8}continue-on-error: true$/m);
+      expect(last, `${id} last step`).toMatch(/docker run --rm [\s\S]*alpine:\d+\.\d+@sha256:[0-9a-f]{64}/);
+      expect(last, `${id} last step`).not.toMatch(/sudo/);
     }
   });
 

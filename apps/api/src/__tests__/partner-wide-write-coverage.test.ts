@@ -73,6 +73,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/wisp/nudgePreferences.ts': 'Wisp W06a: user-scoped row, RLS pins breeze_current_user_id — writes only wisp_nudge_preferences (user_id PK, the caller\'s own row inside their own partner; the policy ANDs breeze_current_user_id() with breeze_has_partner_access) and the worker digest/brief stamps in system context. The partner-wide urgent-capable writer lives in services/wisp/partnerNudgeSettings.ts and is gated on canManagePartnerWidePolicies',
   // --- business calendars (#8973 W4) ------------------------------------------
   'services/ticketRouting/repository.ts': 'data access only; every caller-facing write (routes/tickets/routingRules.ts and the manage_ticket_routing_rules AI tool) goes through services/ticketRouting/service.ts, which gates partner-wide rows on canManagePartnerWidePolicies (selected-access denial pinned in service.test.ts)',
+  'services/serviceCatalogService.ts': 'data access only; every caller-facing write goes through routes/tickets/serviceCatalog.ts, which gates partner-wide rows on canManagePartnerWidePolicies via resolveWritePartner (denial pinned in serviceCatalog.test.ts)',
   'services/businessCalendars/repository.ts': 'data access only; every caller-facing write goes through services/businessCalendars/service.ts, which gates partner-wide rows on canManagePartnerWidePolicies (selected-access denial pinned in service.test.ts)',
   // Worker pauses only tighten operational state after an auth failure. Resume
   // follows a successful test in routes/psa.ts, behind partnerWideWriteBlocked
@@ -84,6 +85,8 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/wisp/grantLifecycle.ts': 'worker/system path: only ever TIGHTENS a grant (pause/expire) or restores a pause it caused itself; the caller-facing create/refresh/revoke gates live in services/wisp/grants.ts',
   // Wisp W04 (#9910): a wisp_threads row is the conversation state of ONE
   // grant, not partner-wide configuration pushed into every org.
+  'services/wisp/checkIns.ts': 'Wisp check-in timers (#10991) (wisp_check_ins): one grant\'s own reminders on its own thread, not partner-wide config; createCheckIn runs assertWithinCeiling and takes partner, grant and grantor from the ceiling after checking the thread is that grant\'s, cancelCheckIn is keyed by the grant, and the fire / reconcile functions run in system context on the row\'s own ids',
+  'services/wisp/checkInTurn.ts': 'Wisp check-in timers W04 (#10995) (wisp_check_ins): marks the caller\'s own fired check-ins consumed in the chat request context; the only caller is POST /ai/sessions/:id/messages (routes/ai.ts) under the requesting user\'s RLS context, and the UPDATE is keyed on the session\'s own grant and status = fired, so it only flips one grant\'s reminders, never partner-wide config',
   'services/wisp/concerns.ts': 'Wisp W05a triage facts (wisp_concerns / wisp_concern_recipients): per-subject concerns and per-grant recipient state, not partner-wide config; every write runs in system context on ids the caller already authorised (grant-owner routes, chat tools under auth.wispGrant after assertWithinCeiling, the assessment finalizer)',
   'services/wisp/threadLinks.ts': 'Wisp W08 (#9914) thread links (wisp_thread_links): one grant\'s own thread context, not partner-wide config; every add resolves the entity first (caller permission, live ceiling, token scope — services/wisp/entityRefs.ts) and every query is pinned to (partner_id, thread_id) of a thread the caller owns (loadOwnThread / the chat tool\'s own grant)',
   'services/wisp/threadPosts.ts': 'Wisp companion W02a (#10212) thread posts (wisp_thread_posts): one grant\'s own proactive output (brief / nudge / digest), not partner-wide config; the only caller is notifyUser, a worker path in system context that cross-checks thread, grant and grantor before it writes, and every row takes the thread\'s own partner and grant',
@@ -221,7 +224,8 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'routes/alerts/rules.ts': 'the only write left (#7626, PATCH /alerts/rules/:id/active) switches a built-in system anchor rule on/off; it refuses an org_id NULL rule with 410 before writing and scopes the UPDATE `alertRules.orgId = <rule org>`, which can never match a partner-wide row',
   'services/patchAlerts.ts': 'patch-job finalizer / reboot sweep creating derived alert artifacts (global built-in templates, org-owned rules) in system context — no tenant caller, same class as policyAlertBridge',
   'services/policyAlertBridge.ts': 'startup event subscriber creating derived alert artifacts in system context',
-  'services/builtInAlertRules.ts': 'shared insert-or-return-existing for the built-in anchor rules (#7650), called only by patchAlerts / policyAlertBridge / configComplianceAlertBridge in system context; always writes an ORG-owned row (org_id = the caller-supplied device org, partner_id never set) — no tenant caller, no request-supplied owner axis',
+  'services/oemUpdates/alerts.ts': 'vendor update not-returned monitor and agent result ingest (#11065) creating derived alert artifacts in system context: a global built-in template (both owners NULL) and an org-owned rule for the device org; no tenant caller, no request-supplied owner axis',
+  'services/builtInAlertRules.ts': 'shared insert-or-return-existing for the built-in anchor rules (#7650), called only by patchAlerts / policyAlertBridge / configComplianceAlertBridge / oemUpdates/alerts in system context; always writes an ORG-owned row (org_id = the caller-supplied device org, partner_id never set) — no tenant caller, no request-supplied owner axis',
   'services/configComplianceAlertBridge.ts': 'policy.violation/policy.compliant event subscriber (routed from policyAlertBridge, #6669) creating derived alert artifacts in system context: the one global built-in template (org_id AND partner_id NULL, never partner-owned) and org-owned alert_rules rows stamped with the DEVICE event org_id — no tenant caller, no request-supplied owner axis, same class as policyAlertBridge/patchAlerts',
   'services/stripeConnectService.ts': 'Stripe-signed webhook records provider-side disconnect status; no tenant caller',
   'services/autopay/setupReconciliation.ts': 'system setup reconciliation worker persists provider events; no tenant caller',
@@ -324,6 +328,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // --- caller-facing, gated at the route layer (verify the gate when editing
   //     these services or adding ANY new route caller) -----------------------
   'services/aiAgents/researchProvisioning.ts': 'system provisioner: inserts the one built-in research baseline per partner (kind research, no caller-chosen fields) the first time research is admitted; every caller-facing edit goes through agentService, which gates partner rows',
+  'services/aiAgents/troubleshootProvisioning.ts': 'system provisioner: its only write is one INSERT, inside inSystemDbContext, of the built-in troubleshoot agent with no caller-chosen fields; the partner id comes from the wisp_grants row (ceiling.partnerId), never from a request, and a user PATCH goes through agentService, which gates partner rows. Pinned by the "stays a system-only provisioner" test below',
   'services/aiAgents/agentService.ts': 'gated centrally in services/aiAgents/access.ts (assertAgentWriteAllowed), called before every write',
   // P2-5 (#4192). The promote executor writes the ORG axis ONLY, by
   // construction: the clone it may insert pins `partnerId: null` +
@@ -386,6 +391,8 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // #8165 W01b. Mirrors the backup entries: the EDR mapping service is reached only through the gated route; the persist writers run only in the sync worker.
   'services/edrProviders/mapping.ts': 'remapEdrTenant has one caller, PUT /edr/tenants/:id/mapping, which passes requireEdrPartnerAdmin (→ canManagePartnerWidePolicies) before it is reached; autoMapEdrTenants runs only inside the edr-provider-sync worker under system context',
   'services/edrProviders/persist.ts': 'upsertTenants/persistInventory/persistDetections run only inside the edr-provider-sync worker under system context, invoked from a job payload with no caller to gate; every row they write takes the syncing connection\'s own partner_id',
+  // #8170 W06.1: the installer-material door. Same shape as persist.ts and mapping.ts.
+  'services/edrProviders/installerMaterial.ts': 'persistInstallerOutcomes runs only in the edr-provider-sync worker under system context (job payload, no caller), and writes only the installer_* columns of tenants that run loaded; clearTenantInstallerMaterial is called only from PATCH /edr/connections/:id and PUT /edr/tenants/:id/mapping, both after requireEdrPartnerAdmin (→ canManagePartnerWidePolicies), inside that request\'s transaction',
   // W01a (#5612). cutScriptVersion's only write to `scripts` is
   // `.set({ version, updatedAt })` on a row it just located by id and locked
   // FOR UPDATE — it never reads or writes org_id/partner_id, so it can neither
@@ -588,6 +595,40 @@ describe('partner-wide write coverage (security review 2026-08-16 §1.1)', () =>
 
     const stale = Object.keys(ALLOWED_WITHOUT_CAPABILITY_CHECK).filter((rel) => !stillMutating.has(rel));
     expect(stale, `Remove these from ALLOWED_WITHOUT_CAPABILITY_CHECK: ${stale.join(', ')}`).toEqual([]);
+  }, 30_000);
+
+  // The exemption above holds only while these stay true, so they are asserted
+  // rather than left to the reason string (#11084).
+  it('services/aiAgents/troubleshootProvisioning.ts stays a system-only provisioner', () => {
+    const rel = 'services/aiAgents/troubleshootProvisioning.ts';
+    const source = readFileSync(join(API_SRC, rel), 'utf8');
+
+    // One write, an INSERT, and it sits inside the system-scope callback.
+    expect(source.match(/\.(insert|update|delete)\(\s*\w+/g)).toEqual(['.insert(aiAgents']);
+    const systemScope = source.indexOf('return inSystemDbContext(');
+    expect(systemScope).toBeGreaterThan(-1);
+    const insertAt = source.indexOf('.insert(aiAgents');
+    expect(insertAt).toBeGreaterThan(systemScope);
+    expect(insertAt).toBeLessThan(source.indexOf("'troubleshootProvisioning.ensure'"));
+
+    // The pattern above sees only builder calls. Raw SQL or an upsert would be a
+    // second write, and an upsert could overwrite a partner's existing row.
+    expect(source).not.toMatch(/\.execute\(|onConflictDoUpdate|\.set\(/);
+
+    // No request-derived values reach this file: it never sees an auth context.
+    expect(source).not.toMatch(/\bAuthContext\b|\bauth\.|from 'hono'/);
+
+    // The only caller is the Wisp launcher, not a route, and it passes the
+    // context's partner id, which the coordinator takes from the grant row.
+    const callers = collectSourceFiles()
+      .filter((file) => readFileSync(file, 'utf8').includes('ensureTroubleshootAgent('))
+      .map((file) => relative(API_SRC, file));
+    expect(callers.sort()).toEqual(['services/aiAgents/troubleshootProvisioning.ts', 'services/wisp/specialistLaunchers.ts']);
+    expect(readFileSync(join(API_SRC, 'services/wisp/specialistLaunchers.ts'), 'utf8'))
+      .toContain('ensureTroubleshootAgent(ctx.partnerId)');
+    const coordinator = readFileSync(join(API_SRC, 'services/wisp/coordinator.ts'), 'utf8');
+    expect(coordinator.match(/SPECIALIST_LAUNCHERS\[/g)).toHaveLength(1);
+    expect(coordinator).toMatch(/SPECIALIST_LAUNCHERS\[input\.kind\]\(\{[^}]*partnerId: ceiling\.partnerId,/);
   }, 30_000);
 
   it('every allowlist entry documents why it is exempt', () => {

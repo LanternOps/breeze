@@ -273,7 +273,7 @@ From v0.122.1, Ctrl/Cmd+Shift+V and Ctrl/Cmd+Shift+F are no longer viewer shortc
 The **Keyboard mode** control in the Breeze Viewer toolbar (v0.123.0+) sets how your keystrokes reach the remote:
 
 - **Type what I see** (default). The remote resolves each key through its own keyboard layout, so the characters you see on your keys are what gets typed. IME composition (Chinese, Japanese, Korean input) and dead keys (for example ´ then E for É) are sent as finished text once you commit them. The remote sees nothing until the composition is committed.
-- **Physical keys**. The viewer sends the physical key position, which keeps distinctions such as the numpad and the right-hand modifier keys. It needs a WebRTC session and an agent from v0.123.0 or later; on an older agent or a WebSocket session the option is disabled and its tooltip says why.
+- **Physical keys**. The viewer sends the physical key position and the remote's own layout decides what it types, which keeps distinctions such as the numpad and the right-hand modifier keys. Use it when your keyboard and the remote machine share a non-US layout (French or Belgian AZERTY, Spanish, German): punctuation keys such as `ù`, `^`, `$`, `)`, `;`, `:`, `!` and `<>` then type exactly what is printed on them. It needs a WebRTC session and an agent from v0.123.0 or later (v0.126.0 or later for the punctuation and letter keys on Windows); on an older agent or a WebSocket session the option is disabled and its tooltip says why.
 
 The mode is remembered for each device, and the last mode you chose becomes the default for devices that have no choice of their own. Keyboard mode does not apply to VNC sessions.
 

@@ -58,6 +58,8 @@ const EXPECTED_WORKER_NAMES = [
   'filesystemCleanupRunRetention',
   // #8581 — daily prune of device_restore_point_attempts.
   'restorePointAttemptRetention',
+  'wakeAttemptSweep',
+  'wakeAttemptRetention',
   // #9128 — daily prune of terminal webhook_deliveries rows.
   'webhookDeliveryRetention',
   // #10019/#10020 — DNS events/aggregations retention + background integration delete.
@@ -88,7 +90,7 @@ const EXPECTED_WORKER_NAMES = [
   'securityAgentCoverageWorker',
   'm365SyncWorker', 'pax8SyncWorker',
   'tdSynnexSftpSyncWorker', 'logForwardingWorker', 'patchJobWorker', 'patchSchedulerWorker',
-  'maintenanceRebootWorker', 'backupWorker', 'backupSnapshotFileIndexWorker', 'backupSnapshotAttestationWorker', 'backupWriteSessionJanitor', 'sensitiveDataWorker',
+  'oemUpdatesWorker', 'maintenanceRebootWorker', 'backupWorker', 'backupSnapshotFileIndexWorker', 'backupSnapshotAttestationWorker', 'backupWriteSessionJanitor', 'sensitiveDataWorker',
   // YARA/IOC scanning W01 (#6263) — dispatches security.scan agent commands.
   'securityScanWorker',
   'peripheralJobs',

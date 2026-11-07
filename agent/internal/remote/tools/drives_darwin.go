@@ -3,17 +3,18 @@
 package tools
 
 import (
-	"os/exec"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 func listDrivesOS(startTime time.Time) CommandResult {
 	var drives []DriveInfo
 
 	// Use mount(8) to list mounted filesystems — works on all macOS versions.
-	out, err := exec.Command("mount").Output()
+	out, err := procspawn.Command("mount").Output()
 	if err != nil {
 		// Fallback: just report root filesystem
 		return fallbackRoot(startTime)

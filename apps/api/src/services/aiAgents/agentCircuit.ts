@@ -123,6 +123,11 @@ export type TerminalClassification = 'increment' | 'reset' | 'neutral';
  * Typed `ReadonlySet<AiAgentRunProfile>` so a misspelled member is a compile
  * error. Membership is still a DECISION, not a derivation — see the "fifth
  * profile" note on `classifyTerminal`.
+ *
+ * `device_troubleshooting` (#11084) is deliberately absent: the run works live
+ * on a device, so a clean finish is real evidence that this agent is healthy
+ * and resets its streak. It executes nothing itself (forced shadow), so its
+ * verdict stays `no_action` and finding a problem never increments.
  */
 const STREAK_NEUTRAL_PROFILES: ReadonlySet<AiAgentRunProfile> = new Set([
   'verdict', 'sweep', 'narrative', 'triage', 'design',

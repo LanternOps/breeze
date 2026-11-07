@@ -98,7 +98,7 @@ jobs:
           BREEZE_BINARIES_IMAGE_REF=ghcr.io/lanternops/breeze/binaries:latest
           CADDY_IMAGE_REF=caddy:2-alpine
           POSTGRES_IMAGE_REF=pgvector/pgvector:pg16
-          REDIS_IMAGE_REF=redis:7-alpine
+          REDIS_IMAGE_REF=redis:8-alpine
           COTURN_IMAGE_REF=coturn/coturn:latest
           ENVEOF
 

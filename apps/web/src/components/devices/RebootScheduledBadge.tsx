@@ -56,6 +56,9 @@ export default function RebootScheduledBadge({
     case "maintenance_window":
       sourceLabel = t("deviceDetails.restartSourceMaintenanceWindow");
       break;
+    case "oem_updates":
+      sourceLabel = t("deviceDetails.restartSourceOemUpdates");
+      break;
     case "manual":
       sourceLabel = t("deviceDetails.restartSourceManual");
       break;

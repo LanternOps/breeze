@@ -1,0 +1,16 @@
+### pfctl -sn
+nat-anchor "com.apple/*" all
+rdr-anchor "com.apple/*" all
+### pfctl -sr
+scrub-anchor "com.apple/*" all fragment reassemble
+anchor "com.apple/*" all
+anchor "com.breeze/isolation" all
+### pfctl -sA
+  com.apple
+  com.breeze
+### pfctl -sI -v
+all
+en
+en0
+lo
+lo0

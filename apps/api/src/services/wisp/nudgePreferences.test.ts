@@ -41,10 +41,12 @@ vi.mock('./grantAuthority', () => ({ inSystemContext: h.inSystemContext }));
 
 import { wispNudgePreferences } from '../../db/schema/wispNudgePreferences';
 import {
+  loadBriefSchedule,
   loadNudgeBookkeeping,
   loadNudgePrefs,
   markBriefSent,
   markDigestSent,
+  saveBrowserTimezone,
   upsertNudgePrefs,
 } from './nudgePreferences';
 
@@ -117,5 +119,58 @@ describe('bookkeeping (workers)', () => {
     h.results.push([storedRow({ lastBriefAt: last })]);
     const m = await loadNudgeBookkeeping([USER]);
     expect(m.get(USER)).toEqual(expect.objectContaining({ lastBriefAt: last, lastDigestAt: null, prefs: expect.objectContaining({ proactivity: 'chatty' }) }));
+  });
+
+  it('loadNudgeBookkeeping carries the browser zone beside the preferences (#10402)', async () => {
+    h.results.push([storedRow({ browserTimezone: 'America/Denver' })]);
+    const m = await loadNudgeBookkeeping([USER]);
+    expect(m.get(USER)?.browserTimezone).toBe('America/Denver');
+    expect(m.get(USER)?.prefs).not.toHaveProperty('browserTimezone');
+  });
+});
+
+describe('saveBrowserTimezone (#10402)', () => {
+  it('writes only the browser zone, in system context, with the caller ids', async () => {
+    await expect(saveBrowserTimezone(USER, PARTNER, 'America/Denver')).resolves.toBe(true);
+    expect(h.inSystemContext).toHaveBeenCalledTimes(1);
+    const [ins] = h.inserts;
+    expect(ins!.table).toBe(wispNudgePreferences);
+    expect(ins!.values).toEqual({ userId: USER, partnerId: PARTNER, browserTimezone: 'America/Denver' });
+    expect(ins!.conflict!.target).toBe(wispNudgePreferences.userId);
+    expect(Object.keys(ins!.conflict!.set).sort()).toEqual(['browserTimezone', 'updatedAt']);
+  });
+
+  it('ignores a zone this server cannot resolve: nothing written, and it leaves a trace', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await expect(saveBrowserTimezone(USER, PARTNER, 'Mars/Olympus')).resolves.toBe(false);
+    expect(h.inserts).toHaveLength(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('browser time zone'), expect.objectContaining({ timezone: 'Mars/Olympus' }));
+    warn.mockRestore();
+  });
+});
+
+describe('loadBriefSchedule (#10402)', () => {
+  const phone = { userId: USER, timezone: 'America/Los_Angeles' };
+  const partner = { id: PARTNER, timezone: 'America/New_York' };
+
+  it('phone beats browser beats partner', async () => {
+    h.results.push([storedRow({ briefTimezone: null, briefTimeLocal: '07:30', browserTimezone: 'America/Denver' })], [phone], [partner]);
+    await expect(loadBriefSchedule(USER, PARTNER)).resolves.toEqual({
+      timeLocal: '07:30', timezone: 'America/Los_Angeles', browserTimezone: 'America/Denver',
+    });
+  });
+
+  it('no phone and no row: the partner zone, the default time, no browser zone yet', async () => {
+    h.results.push([], [], [partner]);
+    await expect(loadBriefSchedule(USER, PARTNER)).resolves.toEqual({
+      timeLocal: '08:00', timezone: 'America/New_York', browserTimezone: null,
+    });
+  });
+
+  it('a chosen zone wins and the brief being off is kept', async () => {
+    h.results.push([storedRow({ briefTimeLocal: null, browserTimezone: 'America/Denver' })], [phone], [partner]);
+    await expect(loadBriefSchedule(USER, PARTNER)).resolves.toEqual({
+      timeLocal: null, timezone: 'Europe/Berlin', browserTimezone: 'America/Denver',
+    });
   });
 });

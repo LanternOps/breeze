@@ -337,8 +337,13 @@ describe('processCheckSchedules — backup profile fan-out', () => {
 
     expect(result).toEqual({ enqueued: 1 });
     expect(enqueueBackupDispatchMock).toHaveBeenCalledTimes(2);
-    expect(enqueueBackupDispatchMock).toHaveBeenLastCalledWith('job-2', CONFIG_ID, ORG_ID, DEVICE_ID);
-    expect(updateSetMock).toHaveBeenCalledTimes(1);
+    expect(enqueueBackupDispatchMock).toHaveBeenLastCalledWith(
+      'job-2', CONFIG_ID, ORG_ID, DEVICE_ID, undefined,
+      { catchUpUntil: new Date(Date.now() + 20 * 3_600_000).toISOString() },
+    );
+    // The one failed enqueue settles its own row. (The other update is the
+    // scheduler expiring catch-ups the new jobs superseded, #11013.)
+    expect(updateSetMock.mock.calls.filter(([values]) => String((values as { errorLog?: string }).errorLog).startsWith('Failed to enqueue'))).toHaveLength(1);
     errorSpy.mockRestore();
   });
 });
@@ -376,5 +381,77 @@ describe('processCheckSchedules — reads effective feature links', () => {
     const { configPolicyEffectiveFeatureLinks, configPolicyFeatureLinks } = await import('../db/schema');
     expect(joined).toContain(configPolicyEffectiveFeatureLinks);
     expect(joined).not.toContain(configPolicyFeatureLinks);
+  });
+});
+
+describe('missed-schedule catch-up (#11013)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-13T01:00:30Z'));
+    createScheduledBackupJobIfAbsentMock.mockResolvedValue({
+      created: true,
+      job: { id: 'job-1', configId: CONFIG_ID },
+    });
+    enqueueBackupDispatchMock.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const entry = (schedule: Record<string, unknown>) => ({
+    deviceId: DEVICE_ID,
+    featureLinkId: LINK_ID,
+    configId: CONFIG_ID,
+    settings: { schedule },
+    selectionSpecs: null,
+    resolvedTimezone: 'UTC',
+  });
+
+  it('gives a scheduled job a window of 20 h from the schedule', async () => {
+    primeOrgLookup();
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([entry(SCHEDULE)]);
+
+    await __testOnly.processCheckSchedules();
+
+    expect(enqueueBackupDispatchMock).toHaveBeenCalledWith(
+      'job-1', CONFIG_ID, ORG_ID, DEVICE_ID, undefined,
+      { catchUpUntil: '2026-07-13T21:00:30.000Z' },
+    );
+  });
+
+  it('gives no window when the policy turned runMissedBackupsOnConnect off', async () => {
+    primeOrgLookup();
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([
+      entry({ ...SCHEDULE, runMissedBackupsOnConnect: false }),
+    ]);
+
+    await __testOnly.processCheckSchedules();
+
+    expect(enqueueBackupDispatchMock).toHaveBeenCalledWith('job-1', CONFIG_ID, ORG_ID, DEVICE_ID);
+  });
+
+  it('expires still-pending catch-ups of the same link when the next job is created', async () => {
+    primeOrgLookup();
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([entry(SCHEDULE)]);
+
+    await __testOnly.processCheckSchedules();
+
+    // The text is chosen in SQL (device seen since or not); the integration
+    // suite pins it.
+    expect(updateSetMock).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed', completedAt: expect.any(Date), errorLog: expect.anything() }),
+    );
+  });
+
+  it('expires nothing when the occurrence created no new job', async () => {
+    primeOrgLookup();
+    resolveAllBackupAssignedDevicesMock.mockResolvedValueOnce([entry(SCHEDULE)]);
+    createScheduledBackupJobIfAbsentMock.mockResolvedValue({ created: false, job: { id: 'job-1', configId: CONFIG_ID } });
+
+    await __testOnly.processCheckSchedules();
+
+    expect(updateSetMock).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
   });
 });

@@ -155,6 +155,10 @@ vi.mock('./pamToolActionGovernance', () => ({
 const mockCreateActionIntent = vi.fn();
 const mockWaitForIntentDecision = vi.fn();
 const mockTransitionIntent = vi.fn();
+// #11222: which org the intent is filed in is pinned in intentRowTarget.test.ts. The gate under
+// test here is the tier, so the row these calls name is the session org's (no row read).
+vi.mock('./actionIntents/intentRowTarget', () => ({ resolveIntentRowTarget: async () => null }));
+
 vi.mock('./actionIntents/intentService', () => ({
   createActionIntent: (...args: unknown[]) => mockCreateActionIntent(...args),
   waitForIntentDecision: (...args: unknown[]) => mockWaitForIntentDecision(...args),

@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const selectMock = vi.fn();
-vi.mock('../../db', () => ({ db: { select: (...a: unknown[]) => selectMock(...a) } }));
+vi.mock('../../db', () => ({
+  db: { select: (...a: unknown[]) => selectMock(...a) },
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
+}));
 vi.mock('../../db/schema', () => ({
   devices: { id: 'devices.id', orgId: 'devices.org_id', displayName: 'devices.display_name', hostname: 'devices.hostname' },
 }));

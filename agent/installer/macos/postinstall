@@ -45,6 +45,14 @@ install_binary "$STAGING_DIR/breeze-backup" "$BIN_DIR/breeze-backup"
 if [ -f "$STAGING_DIR/breeze-watchdog" ]; then
     install_binary "$STAGING_DIR/breeze-watchdog" "$WATCHDOG_BINARY"
 fi
+# Network-isolation recovery (#10099): copy a bundled recovery binary out of
+# staging before staging is deleted. Does nothing unless the pkg staged one.
+# Never fatal: this is also the self-update path.
+ISOLATION_RECOVERY=""
+if ! ISOLATION_RECOVERY="$(install_isolation_recovery "$STAGING_DIR/isolation-recovery" /Library/Breeze/isolation-recovery)"; then
+    echo "Warning: the isolation recovery binary was not installed; network isolation stays unavailable on this Mac" >&2
+    ISOLATION_RECOVERY=""
+fi
 rm -rf "$STAGING_DIR"
 
 # The shipped daemon plists name /usr/local/bin. Repoint them when the
@@ -160,6 +168,14 @@ fi
 # login and it ran a second TCC check loop beside the desktop helper (#8058).
 # The desktop helper replaced it; nothing in this package ships it.
 rm -f "$LEGACY_AGENT_USER_PLIST"
+
+# Network-isolation recovery daemon (#10099), a system-domain LaunchDaemon
+# separate from the agent's own. Loaded only when this pkg installed a
+# recovery binary above, and only if none is installed yet. Never fatal: the
+# agent is already running.
+if ! load_isolation_recovery_daemon "$ISOLATION_RECOVERY" "$(dirname "$0")/com.breeze.isolation.plist" /Library/LaunchDaemons/com.breeze.isolation.plist "$CONFIG_DIR/data"; then
+    echo "Warning: the isolation recovery daemon did not load; network isolation stays unavailable until the agent installs it" >&2
+fi
 
 # Load the user helper LaunchAgent for all currently logged-in GUI users.
 # The plist lives in /Library/LaunchAgents/ so launchd will auto-load it

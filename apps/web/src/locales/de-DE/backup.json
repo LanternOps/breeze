@@ -41,6 +41,7 @@
     "stalledTooltip": "Seit {{minutes}} Min. keine Daten empfangen",
     "filesProgress": "{{done}} / {{total}} Dateien",
     "speedValue": "{{value}}/s",
+    "etaValue": "noch etwa {{value}}",
     "created": "Erstellt",
     "updated": "Aktualisiert",
     "files": "Dateien",
@@ -48,7 +49,6 @@
     "policyId": "Richtlinien-ID",
     "featureLinkId": "Feature-Link-ID",
     "errorLog": "Fehlerprotokoll",
-    "savings": "{{protected}} gesichert — {{uploaded}} hochgeladen",
     "errorCount_one": "{{count}} Fehler",
     "errorCount_other": "{{count}} Fehler",
     "failedCount_one": "{{count}} fehlgeschlagen",
@@ -179,6 +179,7 @@
     "oneOrMoreVssWritersAreNotStable": "Einer oder mehrere VSS-Writer sind nicht stabil. Überprüfen Sie vor der nächsten Ausführung die neuesten Writer-Zustände.",
     "vssUnprotectedVolumes": "Vom Live-Volume gelesen, nicht von einer VSS-Schattenkopie: {{volumes}}. Auf diesen Volumes verwendete Dateien wurden möglicherweise übersprungen oder in einem inkonsistenten Zustand erfasst.",
     "lastBackupFailed": "Letzte Sicherung fehlgeschlagen",
+    "lastBackupFailedWithCategory": "Letzte Sicherung fehlgeschlagen: {{category}}",
     "lastBackupCompletedWithWarnings": "Letzte Sicherung mit Warnungen abgeschlossen",
     "lastBackupCompletedWithErrors": "Letzte Sicherung mit Fehlern abgeschlossen",
     "writer": "VSS-Writer",
@@ -223,7 +224,26 @@
     "hold": "Aufbewahrungssperre",
     "standard": "Standard",
     "restorePointCount_one": "{{count}} Wiederherstellungspunkt",
-    "restorePointCount_other": "{{count}} Wiederherstellungspunkte"
+    "restorePointCount_other": "{{count}} Wiederherstellungspunkte",
+    "activePhase": {
+      "waiting_for_device": "An das Gerät gesendet, wartet auf den Start",
+      "queued_on_device": "Wartet, bis eine andere Sicherung auf diesem Gerät abgeschlossen ist",
+      "resuming": "Unterbrochene Sicherung wird fortgesetzt",
+      "scanning": "Dateien werden durchsucht",
+      "backing_up": "Wird gesichert"
+    },
+    "activeJobs": {
+      "title": "Laufende Sicherung",
+      "processedOfTotal": "{{done}} von {{total}} verarbeitet",
+      "processed": "{{done}} verarbeitet",
+      "lastHeard": "Letzte Meldung des Geräts: {{relative}}",
+      "mode": {
+        "file": "Dateisicherung",
+        "system_image": "System-Image-Sicherung",
+        "mssql": "SQL Server-Sicherung",
+        "hyperv": "Hyper-V-Sicherung"
+      }
+    }
   },
   "deviceVaultStatus": {
     "loadingVaultStatus": "Tresorstatus wird geladen...",
@@ -651,7 +671,19 @@
     "providerEnforcedImmutabilityCannotBeReleasedFromBreeze": "Vom Speicheranbieter erzwungene Unveränderlichkeit kann nicht in Breeze aufgehoben werden.",
     "fileTree": "Dateibaum",
     "noFileTreeAvailable": "Kein Dateibaum verfügbar.",
-    "fileIndexUnavailable": "Dieser Snapshot enthält Dateien, aber sein Dateiindex ist nicht verfügbar, daher können sie hier nicht aufgelistet werden.",
+    "fileIndexBuilding": "Die Dateiliste dieses Snapshots wird vorbereitet. Bei großen Backups kann das einige Minuten dauern.",
+    "fileIndexUnavailable": "Die Dateiliste dieses Snapshots ist derzeit nicht verfügbar. Sie können trotzdem den gesamten Snapshot wiederherstellen.",
+    "fileIndexIntegrityFailed": "Dieser Snapshot hat die Integritätsprüfung nicht bestanden, daher können seine Dateien nicht aufgelistet werden.",
+    "fileIndexDeviceLocal": "Dieser Snapshot ist auf dem Gerät gespeichert, und Breeze kann seine Dateiliste dort noch nicht lesen.",
+    "fileIndexRetry": "Erneut versuchen",
+    "searchPlaceholder": "Dateien in diesem Snapshot suchen",
+    "searchEmpty": "Keine Dateien gefunden",
+    "searchTimeout": "Die Suche hat zu lange gedauert. Versuchen Sie es erneut.",
+    "browseTimeout": "Das Auflisten dieses Ordners hat zu lange gedauert. Versuchen Sie es erneut.",
+    "searchLoadMore": "Mehr laden",
+    "searchRestoreFile": "Diese Datei wiederherstellen",
+    "searchMinLength": "Geben Sie mindestens 2 Zeichen ein",
+    "searchLoading": "Suche läuft…",
     "path": "Pfad:",
     "useTheRestoreWorkflowToRecoverOrExport": "Verwenden Sie den Wiederherstellungsworkflow, um Dateien aus diesem Snapshot wiederherzustellen oder zu exportieren.",
     "select": "Auswählen",
@@ -1068,7 +1100,8 @@
       "over_quota": "Kontingent überschritten",
       "no_selection": "Nichts ausgewählt",
       "not_started": "Nicht gestartet",
-      "unknown": "Unbekannt"
+      "unknown": "Unbekannt",
+      "paused": "Pausiert"
     },
     "recency": {
       "never": "Nie",
@@ -1101,7 +1134,14 @@
       "used": "Belegt",
       "history": "Letzte 28 Tage",
       "errors": "Fehler",
+      "verifiedBootable": "Startfähigkeit geprüft",
       "agent": "Agent"
+    },
+    "verifiedBootable": {
+      "passed": "Bestanden",
+      "failed": "Fehlgeschlagen",
+      "never_run": "Nie ausgeführt",
+      "not_applicable": "k. A."
     },
     "dataSource": {
       "files": "Dateien & Ordner",
@@ -1110,6 +1150,7 @@
       "hyperv": "Hyper-V",
       "vmware": "VMware",
       "bare_metal": "Bare Metal",
+      "image": "Datenträgerabbild",
       "m365_mail": "Microsoft 365-E-Mail",
       "m365_sharepoint": "SharePoint",
       "m365_exchange": "Exchange",
@@ -1130,6 +1171,7 @@
       "customer": "Anbieterkunde",
       "lastSuccess": "Letzte erfolgreiche Sicherung",
       "lastSession": "Letzte Sitzung",
+      "bootCheck": "Letzte Startprüfung",
       "unlink": "Verknüpfung lösen",
       "unlinkConfirm": "Verknüpfung dieses Anbietergeräts mit dem Breeze-Gerät lösen? Es bleibt im Backup-Produkt und kann erneut verknüpft werden.",
       "unlinkedToast": "Verknüpfung des Anbietergeräts gelöst",
@@ -1184,5 +1226,71 @@
     "summary_one": "{{count}} Analysepunkt übersprungen: Junctions und Bereitstellungspunkte werden nicht verfolgt und nicht wiederhergestellt. Das ist erwartet, kein Fehler.",
     "summary_other": "{{count}} Analysepunkte übersprungen: Junctions und Bereitstellungspunkte werden nicht verfolgt und nicht wiederhergestellt. Das ist erwartet, kein Fehler.",
     "showDetails": "Übersprungene Pfade anzeigen"
+  },
+  "failureCategory": {
+    "device_offline": {
+      "label": "Gerät offline",
+      "hint": "Das Gerät hat während der Sicherung die Verbindung zu Breeze verloren. Lassen Sie es während des gesamten Sicherungsfensters eingeschaltet und online."
+    },
+    "timeout": {
+      "label": "Hängt oder Zeitlimit überschritten",
+      "hint": "Die Sicherung hat keinen Fortschritt mehr gemacht oder ihr Zeitlimit überschritten. Sehr große Sicherungen können mehr als ein Fenster benötigen. Prüfen Sie die Auslastung des Geräts und den Umfang der Sicherungsauswahl."
+    },
+    "storage": {
+      "label": "Speicherproblem",
+      "hint": "Breeze konnte nicht in das Sicherungsziel schreiben, oder die Upload-Berechtigung ist abgelaufen. Testen Sie die Speicherkonfiguration und prüfen Sie deren Anmeldedaten und freien Speicherplatz."
+    },
+    "agent": {
+      "label": "Agent-Problem",
+      "hint": "Die Sicherungskomponente auf dem Gerät wurde unerwartet beendet. Aktualisieren Sie den Agent und führen Sie die Sicherung erneut aus. Wenn das wiederholt auftritt, prüfen Sie die Agent-Protokolle des Geräts."
+    },
+    "configuration": {
+      "label": "Konfigurationsproblem",
+      "hint": "Es gab nichts Gültiges zu sichern, oder die Sicherungskonfiguration wurde geändert, während der Auftrag startete. Überprüfen Sie das Sicherungsprofil des Geräts."
+    },
+    "source_access": {
+      "label": "Dateien konnten nicht gelesen werden",
+      "hint": "Einige Dateien waren gesperrt, in Verwendung oder für den Agent nicht lesbar. Prüfen Sie die unten aufgeführten Dateien und den VSS-Status."
+    },
+    "cancelled": {
+      "label": "Abgebrochen",
+      "hint": "Von einem Benutzer oder von Breeze beendet, bevor die Sicherung abgeschlossen war."
+    },
+    "unknown": {
+      "label": "Anderer Fehler",
+      "hint": "Breeze erkennt diesen Fehler noch nicht. Die vollständige Meldung wird unten angezeigt."
+    },
+    "troubleshootingLink": "Leitfaden zur Fehlerbehebung"
+  },
+  "fullRunReason": {
+    "no_prior_snapshot": "Erste Sicherung für dieses Gerät und Ziel",
+    "base_expired": "Die vorherige Sicherung war durch die Aufbewahrung abgelaufen",
+    "storage_identity_changed": "Das Sicherungsziel wurde geändert",
+    "backup_type_mismatch": "Die vorherige Sicherung hatte einen anderen Typ",
+    "base_job_not_completed": "Keine frühere Sicherung wurde erfolgreich abgeschlossen",
+    "base_retired": "Die vorherige Sicherung wurde durch die Aufbewahrung entfernt",
+    "base_retired_race": "Die vorherige Sicherung wurde durch die Aufbewahrung entfernt",
+    "base_deleted_race": "Die vorherige Sicherung wurde durch die Aufbewahrung entfernt",
+    "no_verified_base": "Keine frühere Sicherung hat die Integritätsprüfung bestanden",
+    "key_root_changed": "Der Zielordner (Präfix) wurde geändert",
+    "base_key_root_unreadable": "Der Speicherort der vorherigen Sicherung konnte nicht gelesen werden",
+    "invalid_destination_prefix": "Das Zielpräfix ist ungültig",
+    "nothing_reused": "Eine frühere Sicherung war vorhanden, aber es konnten keine unveränderten Dateien wiederverwendet werden",
+    "unrecorded": "Grund nicht erfasst (diese Sicherung lief, bevor Breeze ihn aufgezeichnet hat)"
+  },
+  "jobDataSummary": {
+    "uploadedAndReused": "{{uploaded}} hochgeladen · {{reused}} wiederverwendet",
+    "processedBeforeStopped": "{{processed}} verarbeitet, bevor der Lauf endete",
+    "full": "Voll",
+    "heading": "Was dieser Lauf gespeichert hat",
+    "protected": "Gesichert",
+    "uploadedThisRun": "In diesem Lauf hochgeladen",
+    "reusedFromEarlier": "Aus früheren Sicherungen wiederverwendet",
+    "backupType": "Sicherungstyp",
+    "incremental": "Inkrementell",
+    "fullWithReason": "Voll — {{reason}}",
+    "explainer": "Nur neue oder geänderte Dateien werden hochgeladen. Unveränderte Dateien werden aus früheren Sicherungen dieses Geräts am selben Ziel wiederverwendet.",
+    "learnMore": "So funktionieren inkrementelle Sicherungen",
+    "resumedAt": "Dieser Lauf hat am {{time}} eine unterbrochene Sicherung fortgesetzt."
   }
 }

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, like, sql, asc } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { softwareInventory, patches, devicePatches } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
@@ -71,8 +71,10 @@ softwareRoutes.get(
     let data: Array<Record<string, unknown>> = software;
     let thirdPartyUpdatesManaged = false;
     try {
-      const [updateRows, patchPolicy] = await Promise.all([
-        db
+      // Sequential inside one savepoint: a failed read rolls back and the request
+      // transaction survives, and no sibling statement shares the connection (#11203).
+      const { updateRows, patchPolicy } = await withDbTransaction(async () => {
+        const updateRows = await db
           .select({
             title: patches.title,
             packageId: patches.packageId,
@@ -93,9 +95,10 @@ softwareRoutes.get(
               eq(devicePatches.status, 'pending'),
               eq(patches.source, 'third_party')
             )
-          ),
-        resolvePatchConfigForDevice(deviceId),
-      ]);
+          );
+        const patchPolicy = await resolvePatchConfigForDevice(deviceId);
+        return { updateRows, patchPolicy };
+      });
 
       const updateIndex = buildUpdateIndex(updateRows);
       data = software.map((row) => ({

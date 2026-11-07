@@ -9,6 +9,7 @@ import { resolveLatestManualDecisions, selectManualDecisionRows } from '../../se
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
+import { deviceCommandsInCurrentOrg } from './commandOrgScope';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { resolvePartnerIdForOrg } from '../patches/helpers';
@@ -270,6 +271,7 @@ patchesRoutes.get(
 
     const conditions = [
       eq(deviceCommands.deviceId, deviceId),
+      await deviceCommandsInCurrentOrg(device),
       inArray(deviceCommands.type, commandTypes)
     ];
     if (status !== 'all') {
@@ -383,6 +385,7 @@ patchesRoutes.get(
       .where(
         and(
           eq(deviceCommands.deviceId, deviceId),
+          await deviceCommandsInCurrentOrg(device),
           eq(deviceCommands.type, 'patch_scan'),
           inArray(deviceCommands.status, ['completed', 'failed', 'timeout'])
         )

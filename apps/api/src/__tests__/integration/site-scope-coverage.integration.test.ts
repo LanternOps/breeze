@@ -280,6 +280,11 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // apply site scope directly (RMM-QA-221), as do the earlier metrics fixes.
   'routes/huntress.ts:GET /status',
   'routes/updateRings.ts:GET /:id/compliance',
+  // Same posture (#11039): requireScope('partner', 'system') at partner.ts:154
+  // refuses organization scope, the only scope that carries allowedSiteIds
+  // (auth.ts:859), and the rollups read only orgs that scope may already see.
+  // partner.test.ts pins the 403 for a site-restricted organization-scope caller.
+  'routes/partner.ts:GET /dashboard',
   // Compliance list, identical posture to its sibling routes (/firewall,
   // /password-policy) which resolve rows through the same listStatusRows
   // helper — org-scoped and narrowed in SQL to the caller's allowed sites.
@@ -297,14 +302,6 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // supplies no device selector. Its device access sits past the old byte
   // window.
   'routes/backup/bmr.ts:POST /bmr/recover/authenticate',
-  // Org record-page overview: partner/system scope only, gated on ORGS_READ +
-  // auth.canAccessOrg(id), and the `devices` read is a pure aggregate
-  // (count(*) FILTER …) over `eq(devices.orgId, id)` — no per-device rows are
-  // returned, so no cross-site device is disclosed. Same posture as the
-  // org-wide aggregates above; site-scoping the totals themselves remains the
-  // same separate product call. Its `devices` block sits past the old window
-  // (the handler is a long chain of per-permission aggregate blocks).
-  'routes/orgSummary.ts:GET /organizations/:id/summary',
 ]);
 
 // SITE_SCOPE_INPUT_EXEMPT entries that ARE reached via the user `authMiddleware`
@@ -340,12 +337,12 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
   // Partner/system-only aggregates use user auth but cannot be reached by
   // organization site-restricted roles; see SITE_SCOPE_INPUT_EXEMPT above.
   'routes/huntress.ts:GET /status',
-  // Newly visible to the widened detector (#4019). Neither references a
-  // non-user auth guard token in its file (orgSummary uses plain authMiddleware;
-  // bmr's public router has no auth middleware at all), so both are recorded
-  // here as deliberate exceptions; reasons in SITE_SCOPE_INPUT_EXEMPT above.
+  'routes/partner.ts:GET /dashboard',
+  // Newly visible to the widened detector (#4019). bmr's public router has no
+  // auth middleware at all, so it is recorded here as a deliberate exception;
+  // reasons in SITE_SCOPE_INPUT_EXEMPT above. (orgSummary left this list when
+  // W18 PR A rewrote the handler — #6789.)
   'routes/backup/bmr.ts:POST /bmr/recover/authenticate',
-  'routes/orgSummary.ts:GET /organizations/:id/summary',
   'routes/updateRings.ts:GET /:id/compliance',
   // Compliance list (see note in SITE_SCOPE_INPUT_EXEMPT). Reached via user
   // auth (requireScope) but exempt because the escrow enrichment is constrained

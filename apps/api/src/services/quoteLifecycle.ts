@@ -948,7 +948,7 @@ async function deliverQuoteEmail(
     let pdf: Buffer | null = null;
     if (includePdf) {
       const built = await withDbAccessContext(deliveryContext, async () => {
-        const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, footerText: portalBranding.footerText }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
+        const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, secondaryColor: portalBranding.secondaryColor, footerText: portalBranding.footerText }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
         // Real image loader: pull bytes from quote_images, scoped to BOTH the image id
         // AND this quote (RLS blocks cross-tenant; the quote_id match closes the
         // same-org cross-quote case). Same loader the PDF route uses. It is called

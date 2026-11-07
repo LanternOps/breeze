@@ -55,7 +55,7 @@ services:
 
   # Redis for Tests
   redis-test:
-    image: redis:7-alpine
+    image: redis:8-alpine
     container_name: ${BREEZE_TEST_REDIS_CONTAINER:-breeze-redis-test}
     command: redis-server --appendonly no --save ""  # No persistence for speed
     ports:

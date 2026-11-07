@@ -631,6 +631,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // slot already precedes all three parents. Erasure while an episode is
   // unresolved is refused upstream (W1c, spec §3.6 item 6).
   'device_network_isolations',
+  // Vendor update status (#11068): composite FK onto devices, leaf table.
+  'device_oem_update_status',
   // PAM ownership-epoch lineage (#8203). Closures FK -> epochs
   // (device_id, org_id, epoch) ON DELETE CASCADE, so closures sort (and
   // delete) first. Epochs carry no FK to devices (spec §4.4).
@@ -649,6 +651,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'device_time_daily',
   'device_time_status',
   'device_vulnerabilities',
+  'device_wake_attempts',
+  'device_wake_status',
   'device_warranty',
   // #3834 — workload host inventory. Composite FK (device_id, org_id) ->
   // devices(id, org_id) ON DELETE CASCADE; leaf tables, no children.
@@ -1206,6 +1210,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // reference wisp_concerns ON DELETE CASCADE, and recipients + watches
   // reference wisp_grants ON DELETE CASCADE; topologicalCascadeOrder() puts
   // them before their parents.
+  // Wisp check-in timers W01 (#10992). wisp_check_ins is the same
+  // partner-anchored / org-optional shape (DUAL_AXIS_TENANT_TABLES): this pass
+  // deletes its org rows only; a check-in on a partner-level thread (org_id
+  // NULL) leaves with its thread / grant / partner. It references
+  // wisp_threads, wisp_grants, users and organizations ON DELETE CASCADE;
+  // topologicalCascadeOrder() puts it before its parents.
+  'wisp_check_ins',
   'wisp_concern_recipients',
   'wisp_concerns',
   'wisp_thread_attachments',

@@ -41,6 +41,8 @@ export function getErrorMessage(error: unknown): string {
     // so we don't tell a validly-signed-in user to "sign in again."
     if (status === 403) return "You don't have permission to view this.";
     if (status === 401) return 'Your session has expired. Please sign in again.';
+    // A 429 clears on its own — a wait, not a failure (#11195).
+    if (status === 429) return 'Too many requests right now. Please try again in a moment.';
     if (status >= 500) return "Something went wrong on our end. We're looking into it.";
   }
   const msg = error instanceof Error ? error.message : String(error);
@@ -65,6 +67,7 @@ export function getErrorTitle(error: unknown): string {
   if (status !== undefined) {
     if (status === 403) return 'Access denied';
     if (status === 401) return 'Session expired';
+    if (status === 429) return 'Please wait';
     if (status >= 500) return 'Server error';
   }
   const msg = error instanceof Error ? error.message : String(error);

@@ -245,6 +245,11 @@ vi.mock('./intentApprovers', () => ({
       .includes(toolName),
 }));
 
+const partnerAxisState = vi.hoisted(() => ({ required: vi.fn(async (): Promise<boolean> => true) }));
+vi.mock('./partnerAxisApprover', () => ({
+  intentRequiresPartnerAxisApprover: partnerAxisState.required,
+}));
+
 vi.mock('../../middleware/auth', () => ({
   dbAccessContextFromAuth: authMock.dbAccessContextFromAuth,
 }));
@@ -639,6 +644,64 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 // Audit §1.1: org-wide governance fan-out excludes site-restricted approvers
 // ---------------------------------------------------------------------------
+
+describe('createActionIntent: partner-axis approvers for a partner-wide intent', () => {
+  const SCHEDULE_ID = '00000000-0000-4000-8000-0000000000b1';
+  const scheduleDelete = () => baseInput({
+    toolName: 'manage_ai_agent_schedules',
+    input: { action: 'delete', scheduleId: SCHEDULE_ID },
+    idempotencyKey: 'key-schedule-delete',
+  });
+
+  beforeEach(() => {
+    partnerAxisState.required.mockReset();
+    partnerAxisState.required.mockResolvedValue(true);
+    // A schedule delete carries a mandatory digest; without one the raise refuses before the insert.
+    effectDigestState.computeEffectDigestOutcome.mockResolvedValue({ kind: 'pinned', digest: 'f'.repeat(64) });
+    dbState.insertActionIntentsResults.push([makeIntentRow()]);
+  });
+
+  it('asks the resolver for the partner axis, and the stored summary says so', async () => {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-baseline' }]);
+
+    await createActionIntent(makeAuth(), scheduleDelete()).catch(() => undefined);
+
+    expect(partnerAxisState.required).toHaveBeenCalledWith({
+      actionName: 'manage_ai_agent_schedules',
+      arguments: { action: 'delete', scheduleId: SCHEDULE_ID },
+      orgId: ORG_ID,
+    });
+    expect(intentApproversState.resolveIntentApprovers).toHaveBeenCalledWith(
+      ORG_ID, expect.objectContaining({ requirePartnerAxis: true }),
+    );
+    expect(dbState.insertedActionIntentValues.at(-1)?.impactSummary).toContain('This needs a partner-level approver.');
+  });
+
+  it("an override delete keeps today's approver set and summary", async () => {
+    partnerAxisState.required.mockResolvedValue(false);
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-override' }]);
+
+    await createActionIntent(makeAuth(), scheduleDelete()).catch(() => undefined);
+
+    expect(intentApproversState.resolveIntentApprovers.mock.lastCall?.[1]).not.toHaveProperty('requirePartnerAxis');
+    expect(dbState.insertedActionIntentValues.at(-1)?.impactSummary).not.toContain('partner-level');
+  });
+
+  it('never consults the predicate for an action outside the registry', async () => {
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-ord' }]);
+
+    await createActionIntent(
+      makeAuth(),
+      baseInput({ toolName: 'manage_ai_agents', input: { action: 'list', orgId: ORG_ID }, idempotencyKey: 'key-other' }),
+    ).catch(() => undefined);
+
+    expect(partnerAxisState.required).not.toHaveBeenCalled();
+    expect(intentApproversState.resolveIntentApprovers.mock.lastCall?.[1]).not.toHaveProperty('requirePartnerAxis');
+  });
+});
 
 describe('createActionIntent — org-wide governance fan-out filter', () => {
   const govInput = () => baseInput({
@@ -2199,6 +2262,77 @@ describe('createActionIntent — supervised/four_eyes scope', () => {
     );
   });
 
+  // Network-isolation W13 (#10101, ai.mdx "Approving your own request when you
+  // are the only approver"): the AI release of a containment is four-eyes, and
+  // a sole operator keeps the WebAuthn self-approval fallback — one
+  // requester-owned row carrying the pinned episode digest. (Real
+  // selfApprovalPolicy and pinnedEffectPolicy; the decide-time assurance gate is
+  // tool-agnostic.)
+  describe('release_containment (W13 #10101)', () => {
+    const releaseInput = {
+      deviceId: '11111111-1111-4111-8111-111111111111',
+      isolationId: '33333333-3333-4333-8333-333333333333',
+      reason: 'Incident contained and cleaned',
+    };
+    const fourEyes = {
+      tier: 3, allowed: true, requiresApproval: true,
+      description: 'Release network isolation', approvalScope: 'four_eyes',
+    } as const;
+
+    it('a sole operator gets one requester-owned row carrying the pinned episode digest', async () => {
+      guardrailMock.checkGuardrails.mockReturnValue(fourEyes);
+      effectDigestState.computeEffectDigestOutcome.mockResolvedValueOnce({ kind: 'pinned', digest: 'f'.repeat(64) });
+      intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID]);
+      dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-release-solo', actionName: 'release_containment' }));
+      dbState.insertApprovalRequestsResults.push([{ id: 'approval-release-solo' }]);
+
+      const snapshot = await createActionIntent(makeAuth(), baseInput({
+        toolName: 'release_containment', input: releaseInput, idempotencyKey: 'key-release-solo',
+      }));
+
+      expect(snapshot.status).toBe('pending_approval');
+      expect(snapshot.requesterApprovalRequestId).toBe('approval-release-solo');
+      expect(snapshot.fanOutUserIds).toEqual([REQUESTER_ID]);
+      expect(dbState.insertedActionIntentValues[0]).toMatchObject({
+        actionName: 'release_containment', approvalScope: 'four_eyes', effectDigest: 'f'.repeat(64),
+      });
+      expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ details: expect.objectContaining({ soleOperator: true }) }),
+      );
+    });
+
+    it('with another eligible approver, the requester cannot self-approve: the row goes to the second person', async () => {
+      guardrailMock.checkGuardrails.mockReturnValue(fourEyes);
+      effectDigestState.computeEffectDigestOutcome.mockResolvedValueOnce({ kind: 'pinned', digest: 'f'.repeat(64) });
+      intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID, APPROVER_1]);
+      dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-release-pair', actionName: 'release_containment' }));
+      dbState.insertApprovalRequestsResults.push([{ id: 'approval-release-pair' }]);
+
+      const snapshot = await createActionIntent(makeAuth(), baseInput({
+        toolName: 'release_containment', input: releaseInput, idempotencyKey: 'key-release-pair',
+      }));
+
+      expect(snapshot.requesterApprovalRequestId).toBeNull();
+      const inserted = dbState.insertedApprovalRequestsValues[0] as Array<{ userId: string }>;
+      expect(inserted.map((r) => r.userId)).toEqual([APPROVER_1]);
+    });
+
+    it.each(['missing_arg', 'target_absent'] as const)(
+      'refuses to create the approval when the episode cannot be pinned (%s)', async (reason) => {
+        guardrailMock.checkGuardrails.mockReturnValue(fourEyes);
+        effectDigestState.computeEffectDigestOutcome.mockResolvedValueOnce({ kind: 'unresolved', reason });
+        // Everything else would succeed: the refusal is the mandatory pin alone.
+        intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+        dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: `intent-release-${reason}`, actionName: 'release_containment' }));
+        dbState.insertApprovalRequestsResults.push([{ id: `approval-release-${reason}` }]);
+
+        await expect(createActionIntent(makeAuth(), baseInput({
+          toolName: 'release_containment', input: releaseInput, idempotencyKey: `key-release-${reason}`,
+        }))).rejects.toMatchObject({ code: 'effect_digest_unresolvable' });
+        expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
+      });
+  });
+
   it('persists approvalScope and classificationVersion on the inserted row', async () => {
     guardrailMock.checkGuardrails.mockReturnValue({
       tier: 3,
@@ -2275,6 +2409,7 @@ describe('createActionIntent — effect-digest pinning wiring', () => {
       'run_script',
       { scriptId: 'script-1', deviceIds: ['device-1'] },
       db,
+      { intentOrgId: ORG_ID },
     );
     expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBe('d'.repeat(64));
   });
@@ -2299,6 +2434,7 @@ describe('createActionIntent — effect-digest pinning wiring', () => {
       'run_script',
       { scriptId: 'script-1', deviceIds: ['device-1'] },
       db,
+      { intentOrgId: ORG_ID },
     );
     expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBe('e'.repeat(64));
   });
@@ -2315,7 +2451,7 @@ describe('createActionIntent — effect-digest pinning wiring', () => {
       baseInput({ toolName: 'm365_send_mail', input: { to: ['a@example.com'] }, idempotencyKey: 'key-fe-unpinnable' }),
     );
 
-    expect(computeEffectDigestOutcome).toHaveBeenCalledWith('m365_send_mail', { to: ['a@example.com'] }, db);
+    expect(computeEffectDigestOutcome).toHaveBeenCalledWith('m365_send_mail', { to: ['a@example.com'] }, db, { intentOrgId: ORG_ID });
     expect(dbState.insertedActionIntentValues[0]?.effectDigest).toBeNull();
     // `not_applicable` is the expected, correct case — it must NOT pollute the
     // unpinned signal.

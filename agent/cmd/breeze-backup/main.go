@@ -31,23 +31,44 @@ import (
 	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/spf13/cobra"
 )
 
 var version = "dev"
 
-var rootCmd = &cobra.Command{
-	Use:   "breeze-backup",
-	Short: "Breeze RMM Backup Helper",
-	Long:  "Backup helper binary spawned by the Breeze agent for backup operations.",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if protocolInfo {
-			return printProtocolInfo(cmd.OutOrStdout())
-		}
-		runBackupHelper()
-		return nil
-	},
+// newRootCmd builds a fresh command tree. main uses one per process; tests
+// build their own so cobra flag state (--version, --protocol-info) cannot leak
+// between runs on a shared package-level command (#11122).
+func newRootCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "breeze-backup",
+		Short: "Breeze RMM Backup Helper",
+		Long:  "Backup helper binary spawned by the Breeze agent for backup operations.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if protocolInfo {
+				return printProtocolInfo(cmd.OutOrStdout())
+			}
+			runBackupHelper()
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&socketPath, "socket", "", "IPC socket path to connect to the main agent")
+	cmd.Flags().BoolVar(&protocolInfo, backupipc.ProtocolInfoFlag, false, "print the storage protocol versions this helper implements as JSON and exit")
+
+	// Stable, parseable `breeze-backup --version` output, mirroring the
+	// watchdog's "Watchdog Version:" line (cmd/breeze-watchdog). The heartbeat's
+	// installedBackupVersion() execs this binary and parses the same prefix.
+	cmd.Version = version
+	cmd.SetVersionTemplate("Breeze Backup Version: {{.Version}}\n")
+
+	cmd.AddCommand(newBMRRecoverCommand())
+	cmd.AddCommand(newRecoveryConsoleCommand())
+	cmd.AddCommand(newRebuildCommand())
+	cmd.AddCommand(newSnapshotDirCommand())
+	return cmd
 }
 
 var socketPath string
@@ -169,19 +190,8 @@ func (c *activeCommandCanceller) cancelAll() bool {
 	return true
 }
 
-func init() {
-	rootCmd.Flags().StringVar(&socketPath, "socket", "", "IPC socket path to connect to the main agent")
-	rootCmd.Flags().BoolVar(&protocolInfo, backupipc.ProtocolInfoFlag, false, "print the storage protocol versions this helper implements as JSON and exit")
-
-	// Stable, parseable `breeze-backup --version` output, mirroring the
-	// watchdog's "Watchdog Version:" line (cmd/breeze-watchdog). The heartbeat's
-	// installedBackupVersion() execs this binary and parses the same prefix.
-	rootCmd.Version = version
-	rootCmd.SetVersionTemplate("Breeze Backup Version: {{.Version}}\n")
-}
-
 func main() {
-	if err := rootCmd.Execute(); err != nil {
+	if err := newRootCmd().Execute(); err != nil {
 		os.Exit(1)
 	}
 }
@@ -275,6 +285,12 @@ func runBackupHelper() {
 	log := logging.L("backup-helper")
 	if cfgErr != nil {
 		log.Warn("failed to load config, using defaults", "error", cfgErr.Error())
+	}
+	// On an isolated Linux host the agent starts this helper in its own
+	// cgroup, which carries the management-plane permit (backup server, log
+	// shipping). The helper's own children must not share it.
+	if err := procspawn.EnableInAgentCgroup(); err != nil {
+		log.Error("cannot place backup child processes outside the agent cgroup", "error", err.Error())
 	}
 	helperStagingDir = resolveBackupStagingDir(cfg.BackupStagingDir)
 	// #5460: a helper killed mid-export never ran its deferred cleanup; reclaim
@@ -1043,15 +1059,8 @@ func runBackupRunCommand(ctx context.Context, req backupipc.BackupCommandRequest
 	// mgr here may be the ephemeral payload-built manager resolved above
 	// (not the long-lived agent.yaml manager), so the progress fn is set
 	// on it directly, right before the run that actually uses it.
-	mgr.SetProgressFn(func(filesDone, filesTotal int, bytesDone, bytesTotal int64, snapshotID string) {
-		sendBackupRunProgress(conn, req.CommandID, backupipc.BackupProgress{
-			CommandID: req.CommandID, Phase: "uploading",
-			Current: bytesDone, Total: bytesTotal,
-			FilesDone: filesDone, FilesTotal: filesTotal,
-			// Forwarded so the server records backup_jobs.snapshot_id
-			// mid-run (#3006). Empty on pre-snapshot keepalives.
-			SnapshotID: snapshotID,
-		})
+	mgr.SetProgressFn(func(p backup.RunProgress) {
+		sendBackupRunProgress(conn, req.CommandID, backupRunProgressFrame(req.CommandID, p))
 	})
 	result := marshalBackupRunResult(mgr.RunBackupContext(ctx, excludes))
 	// Auto-sync to vault after successful backup (async — don't block command response)
@@ -1059,6 +1068,21 @@ func runBackupRunCommand(ctx context.Context, req backupipc.BackupCommandRequest
 		go autoSyncToVault(result.Stdout, vaultState, conn, mgr.GetProvider())
 	}
 	return result
+}
+
+// backupRunProgressFrame is the wire frame for one backup_run progress report.
+func backupRunProgressFrame(commandID string, p backup.RunProgress) backupipc.BackupProgress {
+	return backupipc.BackupProgress{
+		CommandID: commandID, Phase: "uploading",
+		Current: p.BytesDone, Total: p.BytesTotal,
+		FilesDone: p.FilesDone, FilesTotal: p.FilesTotal,
+		// The resume/dedupe check counters (#11014): the server counts their
+		// movement as progress, so a long check pass is not reaped as wedged.
+		VerifiedFiles: p.VerifiedFiles, VerifiedBytes: p.VerifiedBytes,
+		// Forwarded so the server records backup_jobs.snapshot_id mid-run
+		// (#3006). Empty on pre-snapshot keepalives.
+		SnapshotID: p.SnapshotID,
+	}
 }
 
 // --- helpers ---

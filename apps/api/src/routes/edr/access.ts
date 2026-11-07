@@ -123,5 +123,8 @@ export const EDR_TENANT_PUBLIC_SELECT = {
   lastDetectionSyncAt: edrTenants.lastDetectionSyncAt,
   lastDetectionSyncStatus: edrTenants.lastDetectionSyncStatus,
   lastDetectionSyncError: edrTenants.lastDetectionSyncError,
+  installerFetchedAt: edrTenants.installerFetchedAt,
+  installerExpiresAt: edrTenants.installerExpiresAt,
+  installerFetchError: edrTenants.installerFetchError,
   hasInstallerSecret: sql<boolean>`(${edrTenants.installerSecretEncrypted} IS NOT NULL AND ${edrTenants.installerSecretEncrypted} <> '')`,
 } as const;

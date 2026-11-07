@@ -772,6 +772,11 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // digest, org-less concern), no breeze_current_partner_id() read branch.
   // Functional forge proof: wispThreadPostsRls.integration.test.ts.
   'wisp_thread_posts',
+  // Wisp check-in timers W01 (#10992): wisp_check_ins is the same shape —
+  // partner_id always set, org_id NULL for a check-in on a partner-level
+  // thread, no breeze_current_partner_id() read branch.
+  // Functional forge proof: wispCheckInsRls.integration.test.ts.
+  'wisp_check_ins',
   'deployment_invites',
   'access_reviews',
   // ai_agents (AI operator wave 1): an agent is org-scoped (org_id set) OR

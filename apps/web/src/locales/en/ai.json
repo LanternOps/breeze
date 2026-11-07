@@ -35,6 +35,7 @@
     "expired": "This request expired before it could be decided.",
     "notSoleApprover": "Another approver is now required — you can no longer approve your own request.",
     "siteCeiling": "This approval grants organization-wide authority. Your access is limited to specific sites, so another approver needs to decide it.",
+    "approverScopeRequired": "This approval affects every organization under the partner, so it needs a partner-level approver with access to all organizations.",
     "noApproverDevice": "Approving your own request requires Touch ID / Windows Hello.",
     "freshFactorRequired": "This check needs a fresh passkey confirmation (Touch ID, Windows Hello or a hardware key) made for this approval. Try again.",
     "registerDevice": "Register this device",
@@ -544,7 +545,25 @@
     "promoteDescription": "Description (optional)",
     "ownerScopeOrganization": "This organization only",
     "ownerScopePartner": "All organizations under this partner",
-    "nameRequired": "A name is required."
+    "nameRequired": "A name is required.",
+    "reviewFailedTitle": "AI review failed",
+    "reviewFailureUnknown": "No reason was recorded.",
+    "overrideApproved": "Approved without a passing AI review",
+    "overrideExplain": "The reviewer reached no verdict, so nothing has checked this script. You can read it above and sign it off yourself.",
+    "overrideRun": "Run without AI review",
+    "overrideRunNotice": "You are approving this script to run on its devices without a passing AI review. The audit log records this under your name.",
+    "overrideRunConfirm": "Approve and run",
+    "overrideRunSuccess": "Script sent to its devices",
+    "overrideRunUndelivered": "Devices that did not take the script: {{count}}",
+    "overrideSave": "Save to library without AI review",
+    "overrideSaveNotice": "You are saving this script without a verified run or a passing AI review. The audit log records this under your name.",
+    "overrideErrorExpired": "This proposal has expired. Ask for a new one.",
+    "overrideErrorState": "This proposal has changed. Check its current state.",
+    "overrideErrorNotSoleApprover": "This script needs someone other than the person who requested it to sign it off.",
+    "overrideErrorStepUp": "Your partner requires a stronger approval than this screen can provide.",
+    "overrideErrorNoDevice": "No target device took the script, so nothing ran. You can try again.",
+    "overrideErrorPolicy": "The AI data policy does not allow this script because it reads a user profile path.",
+    "overrideErrorStrict": "Acknowledging these danger patterns needs script write permission and MFA, and every pattern must be ticked."
   },
   "aiRunCard": {
     "title": "Analysis run",
@@ -557,8 +576,24 @@
       "failed": "failed",
       "cancelled": "cancelled",
       "expired": "expired",
-      "skipped": "skipped"
-    }
+      "skipped": "skipped",
+      "awaiting_approval": "awaiting approval"
+    },
+    "approvals": {
+      "pending_one": "{{count}} step is waiting for your approval",
+      "pending_other": "{{count}} steps are waiting for your approval",
+      "waiting": "Steps are waiting for your approval",
+      "review": "Review in Approvals"
+    },
+    "stepApprovals": {
+      "title": "Waiting for your approval",
+      "wispFor": "Wisp for {{name}}",
+      "approve": "Approve",
+      "deny": "Deny",
+      "waitingForApprover": "Waiting for an approver"
+    },
+    "continue": "Continue",
+    "continueMessage": "Continue troubleshooting run {{runId}}."
   },
   "aiModelPicker": {
     "chooseModel": "Choose a model",
@@ -634,7 +669,8 @@
       "alreadyOnPartner": "Wisp is already on for all organizations.",
       "open": "Open",
       "opening": "Opening…",
-      "grantEnded": "Wisp is no longer on for this scope. Confirm it is you to turn it on again."
+      "grantEnded": "Wisp is no longer on for this scope. Confirm it is you to turn it on again.",
+      "unattendedReadsTitle": "Turn on unattended reads"
     },
     "header": {
       "scopeAll": "All organizations",
@@ -658,7 +694,20 @@
       "title": "Budget and check-in",
       "budget": "Daily budget",
       "tick": "Check-in every (minutes)",
-      "save": "Save"
+      "save": "Save",
+      "unattendedReads": {
+        "title": "Unattended reads",
+        "description": "When on, Wisp and its background runs do these without asking:",
+        "registryKey": "Read a registry key",
+        "registryValue": "Read a registry value",
+        "securityLog": "Search the Security event log",
+        "deviceNote": "Save a note about a device",
+        "applies": "Applies to new conversations and new background runs."
+      },
+      "summaryRefine": {
+        "title": "Model-written session notes",
+        "description": "When a conversation ends, the model writes what was concluded and what is still open. Each note is one model call and counts against Wisp's daily budget. When off, Wisp keeps a plain digest instead."
+      }
     },
     "focus": {
       "label": "Working on",
@@ -699,7 +748,14 @@
       "paused": "Wisp paused",
       "resumed": "Wisp resumed",
       "pauseFailed": "Could not pause Wisp",
-      "resumeFailed": "Could not resume Wisp"
+      "resumeFailed": "Could not resume Wisp",
+      "unattendedReadsOn": "Unattended reads turned on",
+      "unattendedReadsOnFailed": "Couldn't turn on unattended reads",
+      "unattendedReadsOff": "Unattended reads turned off",
+      "unattendedReadsOffFailed": "Couldn't turn off unattended reads",
+      "summaryRefineOn": "Session notes turned on",
+      "summaryRefineOff": "Session notes turned off",
+      "summaryRefineFailed": "Couldn't change session notes"
     },
     "spend": {
       "meter": "{{spent}} of {{budget}} today",
@@ -840,13 +896,27 @@
       "brief": "Morning brief",
       "nudge": "Nudge",
       "digest": "Digest",
+      "checkIn": "Check-in",
       "summary": "Summary",
       "open": "Open",
-      "unread": "Unread"
+      "unread": "Unread",
+      "specialistResult": "Specialist report",
+      "firstLook": "First look",
+      "couldntLook": "Couldn't look yet"
     },
     "welcome": {
       "title": "I'm looking around {{scope}}.",
       "body": "Your first brief arrives each morning once I have had a look. Ask me anything in the meantime.",
+      "firstLookTitle": "I've had a first look at {{scope}}.",
+      "firstLookBody": "What I found is in the post above. Ask me anything about it.",
+      "couldntLookTitle": "I couldn't look at {{scope}} yet.",
+      "couldntLookBody": "The post above says why and when I'll try again. Ask me anything in the meantime.",
+      "couldntLookChat": "The Wisp home says why and when I'll try again.",
+      "progress_one": "{{lookedAt}} of {{count}} organization looked at",
+      "progress_other": "{{lookedAt}} of {{count}} organizations looked at",
+      "progressQueued": "{{count}} queued",
+      "progressFailed": "{{count}} failed",
+      "briefAt": "Your morning brief goes out at {{time}} ({{timezone}}).",
       "suggestions": {
         "needsMe": {
           "label": "What needs me today?",
@@ -871,7 +941,14 @@
       "workersEmpty": "No specialists running.",
       "allRuns": "All runs",
       "details": "Details",
-      "ended": "This delegation has ended, so its concerns, workers and activity are no longer shown."
+      "ended": "This delegation has ended, so its concerns, workers and activity are no longer shown.",
+      "workerStatus": {
+        "queued": "Queued",
+        "running": "Running",
+        "awaiting_approval": "Awaiting approval",
+        "completed": "Completed",
+        "failed": "Failed"
+      }
     },
     "composer": {
       "placeholder": "Message Wisp",
@@ -883,6 +960,12 @@
       "buttonPlain": "Ask AI about this",
       "draft": "About {{label}}: ",
       "switchFocus": "Wisp is focused on {{from}}. Switch to {{to}}?"
+    },
+    "plainChat": {
+      "new": "New plain chat",
+      "newDescription": "Breeze AI with every tool you have access to. Not Wisp.",
+      "wispDescription": "Wisp, under your grant",
+      "label": "Breeze AI · not Wisp"
     }
   },
   "wispConcerns": {

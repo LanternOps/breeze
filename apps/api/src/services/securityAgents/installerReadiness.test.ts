@@ -49,6 +49,25 @@ vi.mock('../tenantVariableResolution', () => ({
 const captureException = vi.fn();
 vi.mock('../sentry', () => ({ captureException: (...args: unknown[]) => captureException(...args) }));
 
+// Framework vendors: the shared selection is what readiness consumes (its own
+// rules are pinned by installerTenant.test.ts and edrInstallerTenant.integration.test.ts).
+const loadInstallerTenantSelections = vi.fn();
+vi.mock('../edrProviders/installerTenant', () => ({
+  loadInstallerTenantSelections: (...args: unknown[]) => loadInstallerTenantSelections(...args),
+}));
+// null = the real definition, whose `released` is the dormancy gate.
+let releasedOverride: boolean | null = null;
+vi.mock('../builtinDeploymentPackages', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../builtinDeploymentPackages')>();
+  return {
+    ...actual,
+    getBuiltinPackage: (provider: Parameters<typeof actual.getBuiltinPackage>[0]) => ({
+      ...actual.getBuiltinPackage(provider),
+      ...(releasedOverride === null ? {} : { released: releasedOverride }),
+    }),
+  };
+});
+
 import { checkInstallerReadiness, evaluatePlatformReadiness, loadOrgInstallerReadiness } from './installerReadiness';
 
 const ORG = '00000000-0000-4000-8000-0000000000a1';
@@ -86,6 +105,8 @@ beforeEach(() => {
   unreadableByOrg.clear();
   loadTenantVariableScope.mockClear();
   captureException.mockReset();
+  loadInstallerTenantSelections.mockReset();
+  releasedOverride = null;
 });
 
 describe('evaluatePlatformReadiness', () => {
@@ -110,6 +131,79 @@ describe('evaluatePlatformReadiness', () => {
       ok: false,
       reason: 'platform_not_selected',
     });
+  });
+});
+
+describe('framework vendors (#8170)', () => {
+  // A dispatch-shaped selection whose material throws if anything touches it.
+  const selection = (kind: string) => new Map([[ORG, Object.defineProperty(
+    { kind, count: 2, tenantId: 't', connectionId: 'c', expiresAt: null },
+    'sealedMaterial',
+    { enumerable: false, get: () => { throw new Error('readiness read the sealed material'); } },
+  )]]);
+
+  it.each([
+    ['ok', { ok: true }],
+    ['not_mapped', { ok: false, reason: 'org_not_mapped' }],
+    ['ambiguous', { ok: false, reason: 'tenant_ambiguous' }],
+    ['inactive', { ok: false, reason: 'integration_inactive' }],
+    ['material_missing', { ok: false, reason: 'installer_link_missing' }],
+    ['material_expired', { ok: false, reason: 'installer_link_missing' }],
+  ])('selection %s reads as %j', async (kind, expected) => {
+    releasedOverride = true;
+    loadInstallerTenantSelections.mockResolvedValue(selection(kind));
+    const result = await loadOrgInstallerReadiness('bitdefender', [ORG]);
+    expect(result.get(ORG)).toEqual(expected);
+    expect(decryptForColumn).not.toHaveBeenCalled();
+  });
+
+  it('an unreleased package is vendor_unavailable for every org, without reading a tenant', async () => {
+    const result = await loadOrgInstallerReadiness('bitdefender', [ORG, ORG_B]);
+    expect(result.get(ORG)).toEqual({ ok: false, reason: 'vendor_unavailable' });
+    expect(result.get(ORG_B)).toEqual({ ok: false, reason: 'vendor_unavailable' });
+    expect(loadInstallerTenantSelections).not.toHaveBeenCalled();
+    expect(selectCalls).toHaveLength(0);
+  });
+
+  it('many orgs cost one batched read, deduplicated, and no query of its own', async () => {
+    releasedOverride = true;
+    loadInstallerTenantSelections.mockResolvedValue(new Map([[ORG, { kind: 'ok' }], [ORG_B, { kind: 'not_mapped' }]]));
+    const result = await loadOrgInstallerReadiness('bitdefender', [ORG, ORG_B, ORG]);
+    expect(loadInstallerTenantSelections).toHaveBeenCalledTimes(1);
+    expect(loadInstallerTenantSelections).toHaveBeenCalledWith('bitdefender', [ORG, ORG_B]);
+    expect(selectCalls).toHaveLength(0);
+    expect(result.get(ORG)).toEqual({ ok: true });
+    expect(result.get(ORG_B)).toEqual({ ok: false, reason: 'org_not_mapped' });
+  });
+
+  it('an org the selection did not answer is not mapped, never ready', async () => {
+    releasedOverride = true;
+    loadInstallerTenantSelections.mockResolvedValue(new Map());
+    const result = await loadOrgInstallerReadiness('bitdefender', [ORG]);
+    expect(result.get(ORG)).toEqual({ ok: false, reason: 'org_not_mapped' });
+  });
+
+  it('a selection kind this code does not know is never ready', async () => {
+    releasedOverride = true;
+    loadInstallerTenantSelections.mockResolvedValue(selection('brand_new_kind'));
+    const result = await loadOrgInstallerReadiness('bitdefender', [ORG]);
+    expect(result.get(ORG)).toEqual({ ok: false, reason: 'vendor_unavailable' });
+  });
+
+  it('the result never carries tenant ids', async () => {
+    releasedOverride = true;
+    loadInstallerTenantSelections.mockResolvedValue(selection('ok'));
+    const result = await loadOrgInstallerReadiness('bitdefender', [ORG]);
+    expect(Array.from(result.values())).toEqual([{ ok: true }]);
+  });
+
+  it('platform half: Windows ready, macOS needs MDM approval, Linux unsupported, and a platform comes before any org read', async () => {
+    expect(evaluatePlatformReadiness('bitdefender', 'windows')).toEqual({ ok: true });
+    expect(evaluatePlatformReadiness('bitdefender', 'macos')).toEqual({ ok: false, reason: 'requires_mdm_approval' });
+    expect(evaluatePlatformReadiness('bitdefender', 'linux')).toEqual({ ok: false, reason: 'platform_unsupported' });
+    await expect(checkInstallerReadiness({ vendor: 'bitdefender', deviceId: DEVICE, orgId: ORG, platform: 'macos' }))
+      .resolves.toEqual({ ok: false, reason: 'requires_mdm_approval' });
+    expect(loadInstallerTenantSelections).not.toHaveBeenCalled();
   });
 });
 

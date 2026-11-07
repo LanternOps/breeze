@@ -682,6 +682,22 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'wakeAttemptSweep',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/wakeAttemptSweep');
+      return { init: m.initializeWakeAttemptSweep, shutdown: m.shutdownWakeAttemptSweep };
+    },
+  },
+  {
+    name: 'wakeAttemptRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/wakeAttemptRetention');
+      return { init: m.initializeWakeAttemptRetention, shutdown: m.shutdownWakeAttemptRetention };
+    },
+  },
+  {
     // #9128 — daily prune of terminal webhook_deliveries rows.
     name: 'webhookDeliveryRetention',
     placement: 'global',
@@ -1219,6 +1235,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/patchSchedulerWorker');
       return { init: m.initializePatchSchedulerWorker, shutdown: m.shutdownPatchSchedulerWorker };
+    },
+  },
+  {
+    // Vendor updates (#11065): the not-returned monitor, scheduled runs, nightly
+    // reboots and schedule releases. socket-owner: it dispatches device commands.
+    name: 'oemUpdatesWorker',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/oemUpdatesWorker');
+      return { init: m.initializeOemUpdatesWorker, shutdown: m.shutdownOemUpdatesWorker };
     },
   },
   {

@@ -57,6 +57,11 @@ vi.mock('../../db/schema', () => ({
     id: 'backupConfigs.id',
     name: 'backupConfigs.name',
   },
+  backupStorageSessions: {
+    jobId: 'backup_storage_sessions.job_id',
+    scope: 'backup_storage_sessions.scope',
+    resumedAt: 'backup_storage_sessions.resumed_at',
+  },
   devices: {
     id: 'devices.id',
     orgId: 'devices.orgId',
@@ -82,6 +87,8 @@ vi.mock('drizzle-orm', () => ({
   gte: (column: unknown, value: unknown) => ({ op: 'gte', column, value }),
   lte: (column: unknown, value: unknown) => ({ op: 'lte', column, value }),
   inArray: (column: unknown, values: unknown[]) => ({ op: 'inArray', column, values }),
+  isNotNull: (column: unknown) => ({ op: 'isNotNull', column }),
+  max: (column: unknown) => ({ op: 'max', column }),
   sql: Object.assign(
     (strings: TemplateStringsArray, ...values: unknown[]) => ({ op: 'sql', strings, values }),
     { join: (values: unknown[]) => values }
@@ -122,6 +129,20 @@ vi.mock('../../services/featureConfigResolver', () => ({
 
 vi.mock('../../jobs/backupWorker', () => ({
   enqueueBackupDispatch: (...args: unknown[]) => enqueueBackupDispatchMock(...(args as [])),
+}));
+
+const { removeQueuedBackupDispatchMock, queueBackupStopCommandMock } = vi.hoisted(() => ({
+  removeQueuedBackupDispatchMock: vi.fn(),
+  queueBackupStopCommandMock: vi.fn(),
+}));
+
+vi.mock('../../jobs/backupEnqueue', () => ({
+  removeQueuedBackupDispatch: removeQueuedBackupDispatchMock,
+}));
+
+vi.mock('../../services/commandQueue', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/commandQueue')>()),
+  queueBackupStopCommand: queueBackupStopCommandMock,
 }));
 
 vi.mock('../../services/backupMetrics', () => ({
@@ -165,6 +186,59 @@ describe('backup jobs routes', () => {
       await next();
     });
     app.route('/', jobsRoutes);
+  });
+
+  describe('POST /jobs/:id/cancel of a job waiting for its device (#11013)', () => {
+    const JOB_ID = '33333333-3333-4333-8333-333333333333';
+    const pendingJob = (catchUpUntil: Date | null) => ({
+      id: JOB_ID,
+      orgId: 'org-a',
+      deviceId: 'device-1',
+      status: 'pending',
+      catchUpUntil,
+      createdAt: new Date('2026-11-04T05:00:00Z'),
+      updatedAt: new Date('2026-11-04T05:00:00Z'),
+    });
+    const wireCancel = (current: Record<string, unknown>, settled: Record<string, unknown> = {}) => {
+      selectMock.mockReturnValueOnce(makeSelectChain([current]));
+      updateMock.mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ ...current, status: 'cancelled', ...settled }]),
+          }),
+        }),
+      } as any);
+      removeQueuedBackupDispatchMock.mockResolvedValue(false);
+      queueBackupStopCommandMock.mockResolvedValue({});
+    };
+
+    it('queues no stop: nothing was sent, and a pre-queue helper would stop the whole device', async () => {
+      wireCancel(pendingJob(new Date(Date.now() + 3_600_000)));
+
+      const res = await app.request(`/jobs/${JOB_ID}/cancel`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      expect(queueBackupStopCommandMock).not.toHaveBeenCalled();
+    });
+
+    it('queues the stop when a catch-up claimed the job between the read and the cancel', async () => {
+      // `current` still shows the window; the row the cancel settled does not.
+      wireCancel(pendingJob(new Date(Date.now() + 3_600_000)), { catchUpUntil: null });
+
+      const res = await app.request(`/jobs/${JOB_ID}/cancel`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-1', expect.objectContaining({ jobId: JOB_ID }));
+    });
+
+    it('still queues a stop for an ordinary pending job whose dispatch had already left the queue', async () => {
+      wireCancel(pendingJob(null));
+
+      const res = await app.request(`/jobs/${JOB_ID}/cancel`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      expect(queueBackupStopCommandMock).toHaveBeenCalledWith('device-1', expect.objectContaining({ jobId: JOB_ID }));
+    });
   });
 
   it('denies an explicit out-of-scope device filter for site-restricted users', async () => {
@@ -237,6 +311,129 @@ describe('backup jobs routes', () => {
         expect.objectContaining({ op: 'inArray', column: 'backupJobs.deviceId' }),
       ]),
     }));
+  });
+
+  it('GET /jobs returns failureCategory per row', async () => {
+    selectMock.mockReturnValueOnce(makeSelectChain([
+      {
+        job: makeJob({ id: 'job-failed', status: 'failed', errorLog: '[stale-backup-reaper] Device went offline during backup' }),
+        deviceName: 'Device',
+        deviceHostname: 'host',
+        configName: 'Primary Backup',
+      },
+      {
+        job: makeJob({ id: 'job-ok', status: 'completed', errorLog: null }),
+        deviceName: 'Device',
+        deviceHostname: 'host',
+        configName: 'Primary Backup',
+      },
+    ]));
+
+    const res = await app.request('/jobs');
+
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data[0].failureCategory).toBe('device_offline');
+    // Explicit null, not a dropped key: "nothing failed" is an answer.
+    expect(data[1]).toHaveProperty('failureCategory', null);
+  });
+
+  it('GET /jobs/:id returns failureCategory', async () => {
+    selectMock.mockReturnValueOnce(makeSelectChain([
+      {
+        job: makeJob({ status: 'failed', errorLog: 'backup helper exited unexpectedly' }),
+        deviceName: 'Device',
+        deviceHostname: 'host',
+        siteId: null,
+        configName: 'Primary Backup',
+      },
+    ]));
+
+    const res = await app.request('/jobs/job-1');
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).failureCategory).toBe('agent');
+  });
+
+  it('GET /jobs/:id returns dataAccounting and resumedAt', async () => {
+    selectMock
+      .mockReturnValueOnce(makeSelectChain([
+        {
+          job: makeJob({
+            status: 'completed',
+            backupMode: 'file',
+            backupType: 'file',
+            totalSize: 1000,
+            transferredSize: 100,
+            referencedSize: 900,
+            baseSnapshotId: 'snap-base',
+          }),
+          deviceName: 'Device',
+          deviceHostname: 'host',
+          siteId: null,
+          configName: 'Primary Backup',
+        },
+      ]))
+      .mockReturnValueOnce(makeSelectChain([
+        { jobId: 'job-1', resumedAt: new Date('2026-11-05T10:02:00.000Z') },
+      ]));
+
+    const res = await app.request('/jobs/job-1');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.dataAccounting).toEqual({
+      protectedBytes: 1000,
+      uploadedBytes: 100,
+      reusedBytes: 900,
+      processedBytes: null,
+      runKind: 'incremental',
+      fullRunReason: null,
+    });
+    expect(body.resumedAt).toBe('2026-11-05T10:02:00.000Z');
+  });
+
+  it('GET /jobs/:id returns a null resumedAt for a run that never resumed', async () => {
+    selectMock.mockReturnValueOnce(makeSelectChain([
+      {
+        job: makeJob({ status: 'running' }),
+        deviceName: 'Device',
+        deviceHostname: 'host',
+        siteId: null,
+        configName: 'Primary Backup',
+      },
+    ]));
+
+    const res = await app.request('/jobs/job-1');
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).resumedAt).toBeNull();
+  });
+
+  it('GET /jobs returns dataAccounting per row, a stored full-run reason included, and looks up no sessions', async () => {
+    selectMock.mockReturnValueOnce(makeSelectChain([
+      {
+        job: makeJob({
+          status: 'completed',
+          backupMode: 'file',
+          totalSize: 500,
+          baseSnapshotId: null,
+          fullBackupReason: 'no_prior_snapshot',
+        }),
+        deviceName: 'Device',
+        deviceHostname: 'host',
+        siteId: null,
+        configName: 'Primary Backup',
+      },
+    ]));
+
+    const res = await app.request('/jobs');
+
+    expect(res.status).toBe(200);
+    const [row] = (await res.json()).data;
+    expect(row.dataAccounting).toMatchObject({ runKind: 'full', fullRunReason: 'no_prior_snapshot', uploadedBytes: 500 });
+    expect(row).not.toHaveProperty('resumedAt');
+    expect(selectMock).toHaveBeenCalledTimes(1);
   });
 
   it('exposes live-progress fields (transferredSize, totalFiles, lastProgressAt) in the job response', async () => {

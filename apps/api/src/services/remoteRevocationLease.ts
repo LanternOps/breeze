@@ -233,7 +233,11 @@ export function clampHardDeadline(startMs: number, maxSessionDurationHours: numb
   return startMs + Math.min(requested, REVOCATION_LEASE_HARD_CAP_MS);
 }
 
-/** When a session's clock starts: the answer time if it has one, else creation. */
+/**
+ * When a session's clock starts: its original start (the first answer, or the
+ * first WebSocket-fallback start) if it has one, else creation. A reconnect
+ * does not move it (#11113).
+ */
 export function sessionStartMs(session: { startedAt: Date | null; createdAt: Date }): number {
   return (session.startedAt ?? session.createdAt).getTime();
 }

@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { wispGrantResourceDigest } from '../mfaStepUpGrant';
 
 const shared = vi.hoisted(() => ({
   selectMock: vi.fn(),
@@ -621,5 +623,61 @@ describe('computeLiveHumanTerm / resolveGrantCeiling — org memberships', () =>
     const c = await resolveGrantCeiling('g1', 'r1');
     expect([...c.orgTerms.get('o1')!.permissionKeys]).toEqual(['devices:read']);
     expect([...c.orgTerms.get('o1')!.siteIds!]).toEqual(['s1']);
+  });
+});
+
+describe('unattended reads: pinned + live (#10973, Decision 7)', () => {
+  const SNAPSHOT: WispCeilingSnapshot = {
+    version: 1, permissionKeys: ['devices:read'], orgIds: ['o1'], siteIds: null, toolAllowlist: null, deniedTools: [],
+  };
+  const grantRow = (o: Record<string, unknown> = {}) => ({
+    id: 'g1', partnerId: PARTNER, orgId: null, grantorUserId: USER, status: 'active', expiresAt: new Date(Date.now() + 86_400_000), unattendedReads: false, ...o,
+  });
+  const liveOk = () => {
+    queueSelect([{ status: 'active', partnerId: PARTNER }]);
+    shared.getUserPermissions.mockResolvedValueOnce(livePerms([
+      { resource: 'ai_sessions', action: 'use' }, { resource: 'devices', action: 'read' },
+    ]));
+    shared.computeAccessibleOrgIds.mockResolvedValueOnce({ orgIds: ['o1'], partnerOrgAccess: 'selected' });
+    queueSelect([{ id: 'o1' }]);
+    queueSelect([]); // organization_users
+  };
+  const resolveWith = async (live: unknown, pinned: unknown) => {
+    queueSelect([grantRow({ unattendedReads: live })]);
+    queueSelect([{ id: 'r1', grantId: 'g1', ceilingSnapshot: pinned === undefined ? SNAPSHOT : { ...SNAPSHOT, unattendedReads: pinned } }]);
+    liveOk();
+    return (await resolveGrantCeiling('g1', 'r1')).unattendedReads;
+  };
+
+  it.each([
+    ['live on, snapshot silent (a session pinned to an older revision)', true, undefined, false],
+    ['live on, snapshot false', true, false, false],
+    ['live off, snapshot on (turned off after the pin)', false, true, false],
+    ['both off', false, false, false],
+    ['both silent', false, undefined, false],
+    ['both on', true, true, true],
+  ])('%s', async (_label, live, pinned, expected) => {
+    await expect(resolveWith(live, pinned)).resolves.toBe(expected);
+  });
+
+  it('a snapshot flag that is not a boolean is a corrupt pin, never "on"', async () => {
+    queueSelect([grantRow({ unattendedReads: true })]);
+    queueSelect([{ id: 'r1', grantId: 'g1', ceilingSnapshot: { ...SNAPSHOT, unattendedReads: 'true' } }]);
+    await expect(resolveGrantCeiling('g1', 'r1')).rejects.toBeInstanceOf(GrantInactiveError);
+  });
+
+  it('the ceiling hash, and so the step-up digest, differs with the flag', () => {
+    const off = ceilingSnapshotHash(SNAPSHOT);
+    const on = ceilingSnapshotHash({ ...SNAPSHOT, unattendedReads: true });
+    expect(on).not.toBe(off);
+    expect(ceilingSnapshotHash({ ...SNAPSHOT, unattendedReads: false })).toBe(off);
+    const digest = (requestedCeilingHash: string) => wispGrantResourceDigest({ grantorUserId: USER, partnerId: PARTNER, orgId: null, requestedCeilingHash });
+    expect(digest(on)).not.toBe(digest(off));
+  });
+
+  it('adding the flag leaves the hash of every existing unflagged snapshot unchanged', () => {
+    expect(ceilingSnapshotHash(SNAPSHOT)).toBe(createHash('sha256').update(JSON.stringify({
+      deniedTools: [], orgIds: ['o1'], permissionKeys: ['devices:read'], siteIds: null, toolAllowlist: null, version: 1, partnerWide: false,
+    })).digest('hex'));
   });
 });

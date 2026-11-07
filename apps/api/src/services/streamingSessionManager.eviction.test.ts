@@ -138,6 +138,8 @@ vi.mock('./aiToolOutput', () => ({
   redactSensitiveToolInput: (i: unknown) => i,
 }));
 vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined }));
+// Keeps the lazy real ./flows/flowTools graph (~5 s cold) out of whichever test reaches it first (#11011).
+vi.mock('./flows/flowTools', () => ({ resolveFlowTools: async () => [] }));
 
 import {
   StreamingSessionManager,
@@ -588,6 +590,21 @@ describe('StreamingSessionManager eviction (#4514)', () => {
       expect(finalizeMock.mock.calls.map((c) => c[0])).toEqual(['kept']);
       // Outside the org-scoped write context.
       expect(ctxAtFinalize).toBeUndefined();
+    });
+
+    it("a session's slow model summary does not hold back the digest of the next one (#10390)", async () => {
+      mockState.nextRows = [{ id: 'slow' }, { id: 'next' }];
+      let releaseSlow: (v: { updated: boolean }) => void = () => undefined;
+      finalizeMock.mockImplementationOnce(() => new Promise((resolve) => { releaseSlow = resolve; }));
+      seed(manager, 'slow', 'org-a', { idleFor: 3 * HOUR, state: 'idle' });
+      seed(manager, 'next', 'org-a', { idleFor: 3 * HOUR, state: 'idle' });
+
+      internals(manager).evictStaleSessions();
+      await settle();
+      await settle();
+
+      expect(finalizeMock.mock.calls.map((c) => c[0])).toEqual(['slow', 'next']);
+      releaseSlow({ updated: false });
     });
 
     it('does not finalize when the write itself failed', async () => {

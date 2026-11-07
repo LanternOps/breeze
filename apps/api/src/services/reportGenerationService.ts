@@ -28,6 +28,7 @@ import {
   emptyMrrRenewalsSummary,
   emptyQuoteWinRateSummary,
   emptyClientProfitabilitySummary,
+  emptyTicketSlaPerformanceSummary,
 } from '@breeze/shared';
 import {
   systemReportAuthorityFor,
@@ -390,6 +391,7 @@ type DeviceInventoryRow = {
   ramTotalMb: number | null;
   diskTotalGb: number | null;
   serialNumber: string | null;
+  productSku: string | null;
 };
 
 /** Shared row query; callers retain their own authority checks and narrowing. */
@@ -408,7 +410,8 @@ export async function readDeviceInventoryRows(orgId: string, conditions: SQL[]) 
       cpuModel: deviceHardware.cpuModel,
       ramTotalMb: deviceHardware.ramTotalMb,
       diskTotalGb: deviceHardware.diskTotalGb,
-      serialNumber: deviceHardware.serialNumber
+      serialNumber: deviceHardware.serialNumber,
+      productSku: deviceHardware.productSku
     })
     .from(devices)
     .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
@@ -511,6 +514,7 @@ export async function generateDeviceInventoryReport(
         ramTotalMb: null,
         diskTotalGb: null,
         serialNumber: asset.serialNumber,
+        productSku: null,
       });
     }
 
@@ -1109,6 +1113,9 @@ function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
     // Business reports phase 2 W3 (#9828): invoices and time entries have no site column.
     case 'client_profitability':
       return { rows: [], rowCount: 0, summary: emptyClientProfitabilitySummary(SITE_RESTRICTED_NOTE) as unknown as Record<string, unknown> };
+    // #11018: tickets have no site axis either, and this one reaches customers.
+    case 'ticket_sla_performance':
+      return { rows: [], rowCount: 0, summary: emptyTicketSlaPerformanceSummary(SITE_RESTRICTED_NOTE) as unknown as Record<string, unknown> };
     default: {
       const exhaustive: never = type;
       throw new Error(`Invalid report type: ${String(exhaustive)}`);

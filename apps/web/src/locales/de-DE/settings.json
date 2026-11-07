@@ -264,7 +264,17 @@
     }
   },
   "partnerAiBudgets": {
-    "enable": "Aktivieren Sie die Durchsetzung von KI-Budgets",
+    "aiAccess": "KI für alle Organisationen",
+    "aiAccessOptions": {
+      "notSet": "Nicht festgelegt, jede Organisation entscheidet",
+      "on": "Für jede Organisation an",
+      "off": "Für jede Organisation aus"
+    },
+    "aiAccessHelp": "Dies ist der KI-Ein/Aus-Schalter für Ihre Kunden, keine Budgeteinstellung. Wenn er festgelegt ist, ersetzt er den eigenen KI-Schalter jeder Organisation. Die Budgetfelder unten gelten in jedem Fall.",
+    "offWarning": "KI ist für jede Organisation dieses Partners ausgeschaltet. Chat, Helper, Office-Add-ins, KI-Agenten und Anreicherung werden abgelehnt, bis Sie dies ändern.",
+    "offConfirmTitle": "KI für jede Organisation ausschalten?",
+    "offConfirmMessage": "Jede Organisation dieses Partners verliert die KI: Chat, Helper, Office-Add-ins, KI-Agenten und Anreicherung werden abgelehnt, und Organisationen können sie nicht selbst wieder einschalten. Erst beim Speichern ändert sich etwas.",
+    "offConfirmAction": "KI ausschalten",
     "monthlyBudget": "Monatsbudget ($)",
     "dailyBudget": "Tagesbudget ($)",
     "approvalMode": "Genehmigungsmodus",
@@ -1730,7 +1740,20 @@
     "scopeMailbox": "Umfang dieses Postfachs (Anwendungszugriffsrichtlinie)",
     "reauthRequired": "Bevor die Microsoft 365-Abfragen und -Antworten wieder aufgenommen werden, ist eine erneute Zustimmung des Administrators erforderlich.",
     "pollFailing": "Die letzten {{failures}} Abrufe dieses Postfachs sind mit einem vorübergehenden Microsoft 365-Fehler fehlgeschlagen. Breeze versucht es weiter; neue E-Mails werden abgerufen, sobald Microsoft 365 wieder antwortet.",
+    "baselineRunning": "Dieses Postfach wird gelesen, um einen Ausgangspunkt festzulegen. Bereits vorhandene E-Mails werden nicht importiert; nur E-Mails, die nach dem Verbinden eingehen, werden zu Tickets.",
+    "baselineSkipped_one": "{{count}} Nachricht, die sich bereits in diesem Postfach befindet, wird nicht importiert. Nur E-Mails, die nach dem Verbinden eingehen, werden zu Tickets.",
+    "baselineSkipped_other": "{{count}} Nachrichten, die sich bereits in diesem Postfach befinden, werden nicht importiert. Nur E-Mails, die nach dem Verbinden eingehen, werden zu Tickets.",
     "retest": "Erneut testen",
+    "gatewayTitle": "E-Mail-Gateway (optional)",
+    "gatewayHint": "Wenn E-Mails dieses Postfach über ein Inline-Gateway wie Avanan, Mimecast, Proofpoint oder Barracuda erreichen, lehnt die Prüfung von Microsoft legitime E-Mails ab. Tragen Sie die ARC-Signaturdomäne des Gateways ein, also den Wert d= im ARC-Seal-Header einer von ihm zugestellten Nachricht. Breeze verwendet dann das Ergebnis des Gateways. Lassen Sie das Feld leer, wenn Sie kein Gateway verwenden.",
+    "gatewayWarning": "Fügen Sie nur ein Gateway hinzu, über das alle eingehenden E-Mails dieses Mandanten zwingend laufen: Beschränken Sie die eingehende Zustellung in Exchange zuerst mit einem Connector auf das Gateway. Andernfalls kann Breeze vom Gateway zugestellte E-Mails nicht von solchen unterscheiden, die direkt an Exchange gesendet wurden.",
+    "gatewayLabel": "Vertrauenswürdige ARC-Signaturdomänen",
+    "gatewayPlaceholder": "gateway.beispiel.de",
+    "gatewaySave": "Gateway-Liste speichern",
+    "gatewaySaved": "Liste der E-Mail-Gateways gespeichert",
+    "gatewaySaveFailed": "Die Liste der E-Mail-Gateways konnte nicht gespeichert werden.",
+    "gatewayInvalid": "„{{value}}“ ist kein Domänenname.",
+    "gatewayTooMany": "Geben Sie höchstens {{max}} Domänen ein.",
     "reconnect": "Wieder verbinden",
     "disconnect": "Trennen",
     "empty": "Noch kein Postfach verbunden.",
@@ -1854,16 +1877,21 @@
   },
   "orgBrandingEditor": {
     "title": "Branding",
-    "description": "Passen Sie das Portalerlebnis für {{organization}} an.",
+    "description": "Logo, Farben und benutzerdefiniertes CSS für das Kundenportal und die Dokumente von {{organization}}.",
     "save": "Branding speichern",
     "saved": "Branding-Einstellungen gespeichert.",
+    "saveError": "Das Branding konnte nicht gespeichert werden.",
     "managedByPartner": "Verwaltet durch Partner",
     "logo": {
       "title": "Logo",
       "previewAlt": "Vorschau des Organisationslogos",
       "uploadNew": "Laden Sie ein neues Logo hoch",
-      "recommendation": "SVG oder PNG, empfohlen 512x512",
-      "selected": "Ausgewählt: {{name}}"
+      "selected": "Ausgewählt: {{name}}",
+      "help": "Wird im Kundenportal dieser Organisation sowie auf ihren Angeboten, Rechnungen und Berichten angezeigt. Leer lassen, um das Logo des Partners zu verwenden.",
+      "inheritedSource": "Logo des Partners",
+      "remove": "Entfernen",
+      "loadError": "Das gespeicherte Logo konnte nicht geladen werden. Das Hochladen ist deaktiviert, bis es geladen ist.",
+      "legacyNotice": "Dieses Logo wurde früher gespeichert, Kunden aber nie angezeigt. Speichern Sie, um es zu verwenden, oder entfernen Sie es."
     },
     "colors": {
       "primary": "Primärfarbe",
@@ -1871,42 +1899,16 @@
       "primaryInheritedSource": "Markenfarbe des Partners",
       "primaryHelp": "Akzentfarbe auf Angeboten, Rechnungen und anderen Kundendokumenten dieser Organisation. Leer lassen, um die Markenfarbe des Partners zu verwenden.",
       "primaryInvalid": "Geben Sie eine Hex-Farbe wie #2563eb ein.",
-      "primaryLoadError": "Die gespeicherte Primärfarbe konnte nicht geladen werden. Die Bearbeitung ist deaktiviert, bis sie geladen ist."
-    },
-    "theme": {
-      "title": "Thema",
-      "description": "Das System respektiert die Betriebssystempräferenzen des Benutzers, sofern verfügbar.",
-      "options": {
-        "light": "Licht",
-        "dark": "Dunkel",
-        "system": "System"
-      }
-    },
-    "subdomain": {
-      "title": "Portal-Subdomain",
-      "previewUrl": "Verfügbare Vorschau URL: {{url}}"
+      "primaryLoadError": "Die gespeicherte Primärfarbe konnte nicht geladen werden. Die Bearbeitung ist deaktiviert, bis sie geladen ist.",
+      "secondaryInheritedSource": "Sekundärfarbe des Partners",
+      "secondaryHelp": "Überschriftenfarbe in den Angebots-PDFs dieser Organisation, sofern dunkel genug zum Lesen, und Akzentfarbe in ihren Berichts-PDFs. Leer lassen, um die Sekundärfarbe des Partners zu verwenden.",
+      "secondaryLoadError": "Die gespeicherte Sekundärfarbe konnte nicht geladen werden. Die Bearbeitung ist deaktiviert, bis sie geladen ist."
     },
     "customCss": {
       "title": "Benutzerdefiniertes CSS (erweitert)",
       "description": "Verwenden Sie benutzerdefinierte Stile, um Abstände, Typografie oder Layout zu optimieren.",
-      "saveError": "Benutzerdefiniertes CSS konnte nicht gespeichert werden.",
       "loadError": "Das aktuell gespeicherte benutzerdefinierte CSS konnte nicht geladen werden. Die Bearbeitung ist deaktiviert, bis dies geladen ist.",
       "saveBlockedByLoadError": "Benutzerdefiniertes CSS wurde nicht gespeichert: Der aktuelle Wert konnte nicht überprüft werden. Laden Sie die Seite neu und versuchen Sie es erneut."
-    },
-    "preview": {
-      "action": "Vorschau",
-      "title": "Portalvorschau",
-      "description": "Live-Entwurf basierend auf aktuellen Branding-Inputs",
-      "close": "Vorschau schließen",
-      "logoAlt": "Vorschau-Logo",
-      "portalName": "{{organization}} Portal",
-      "welcome": "Willkommen zurück",
-      "body": "Diese Vorschau spiegelt Ihren aktuellen Portal-Branding-Entwurf wider, einschließlich Farben und Logo-Auswahl.",
-      "openTicket": "Support-Ticket öffnen",
-      "viewDevices": "Geräteliste anzeigen",
-      "urlLabel": "Vorschau URL",
-      "cssPayload": "Benutzerdefinierter CSS-Payload",
-      "noCustomCss": "/* Kein benutzerdefiniertes CSS */"
     }
   },
   "orgDefaultsEditor": {
@@ -2745,6 +2747,7 @@
       "helpdesk": "Nimmt Tickets auf und schlägt Antworten und nächste Schritte vor.",
       "designer": "Liest die gesamte Flotte und erstellt ein begründetes Überwachungsdesign zur Freigabe durch einen Techniker.",
       "research": "Integriert. Recherchiert auf Anfrage ein Problem auf einem Gerät und schlägt sichere Lösungen vor. Führt nie etwas aus.",
+      "troubleshoot": "Integriert. Bearbeitet im Hintergrund ein einzelnes Gerät, wenn Wisp es übergibt. Jede gewünschte Änderung ist eine Anfrage, die eine Person genehmigt.",
       "researchLink": "Fix-Gedächtnis öffnen",
       "designerLink": "Flottendesign öffnen"
     },
@@ -2893,7 +2896,8 @@
       "patch": "Patch-Verwaltung",
       "helpdesk": "Helpdesk",
       "designer": "Flottendesigner",
-      "research": "Fehlerbehebungs-Recherche"
+      "research": "Fehlerbehebungs-Recherche",
+      "troubleshoot": "Geräte-Fehlerbehebung"
     },
     "modes": {
       "off": "Aus",
@@ -3161,6 +3165,7 @@
           "blocked_by_source": "Durch die Update-Quellen der Richtlinie ausgeschlossen",
           "held_by_deferral": "Durch das Aufschubfenster zurückgehalten",
           "blocked_by_category": "Durch die Kategorieregeln des Rings ausgeschlossen",
+          "managed_by_vendor_updates": "Von Hersteller-Updates verwaltet",
           "blocked_by_app_rule": "Durch eine App-Regel blockiert",
           "blocked_by_feature_update_policy": "Durch die Richtlinie des Rings für Windows-Funktionsupdates ausgeschlossen",
           "awaiting_manual_approval": "Wartet auf manuelle Genehmigung",
@@ -3698,6 +3703,7 @@
         "assign_security_training": "Sicherheitsschulung zuweisen",
         "browse_device_event_log": "Ereignisprotokoll eines Geräts durchsuchen",
         "browse_snapshots": "Backup-Snapshots",
+        "cancel_check_in": "Einen Wisp-Check-in abbrechen",
         "cancel_script_execution": "Skriptausführung abbrechen",
         "capture_agent_pprof": "Agent-Diagnosedaten erfassen",
         "collect_evidence": "Vorfallsbeweise sammeln",
@@ -3726,6 +3732,8 @@
         "get_active_users": "Aktive Benutzer",
         "get_ai_agent_run": "Details zum KI-Agent-Lauf",
         "get_alert_correlations": "Warnungskorrelationen",
+        "get_audit_retention": "Aufbewahrung des Audit-Protokolls lesen",
+        "get_backup_health": "Backup-Zustand",
         "get_backup_status": "Backup-Status",
         "get_browser_security": "Browsersicherheit",
         "get_catalog_item": "Katalogeintrag nachschlagen",
@@ -3808,13 +3816,16 @@
         "get_user_experience_metrics": "Nutzererfahrungsmetriken",
         "get_vault_status": "Tresorstatus",
         "get_vm_restore_estimate": "VM-Wiederherstellungsschätzung",
+        "get_vss_status": "VSS-Writer-Status",
         "get_vulnerability_report": "Schwachstellenbericht",
         "instant_boot_vm": "Ein Backup als VM sofort starten",
         "link_entity": "Ein Element mit einem Wisp-Thread verknüpfen",
         "list_ai_agent_runs": "KI-Agent-Läufe",
         "list_ai_agent_schedules": "KI-Agent-Zeitpläne",
         "list_ai_agents": "KI-Agent-Liste",
+        "list_bmr_recoveries": "Bare-Metal-Wiederherstellungen",
         "list_business_calendars": "Geschäftszeitenkalender",
+        "list_check_ins": "Wisp-Check-ins",
         "list_concerns": "Wisp-Anliegen",
         "list_configuration_policies": "Liste der Konfigurationsrichtlinien",
         "list_contracts": "Vertragsliste",
@@ -3857,6 +3868,7 @@
         "manage_automations": "Automatisierungen verwalten",
         "manage_backup_configs": "Backup-Konfigurationen verwalten",
         "manage_backup_profiles": "Backup-Profile verwalten",
+        "manage_backup_verification": "Backup-Überprüfung",
         "manage_billing_catalog": "Abrechnungspreisliste verwalten",
         "manage_billing_profiles": "Abrechnungs-Preismodelle verwalten",
         "manage_billing_settings": "Abrechnungseinstellungen verwalten",
@@ -3970,6 +3982,7 @@
         "run_script": "Skript ausführen",
         "s1_isolate_device": "SentinelOne: Gerät isolieren",
         "s1_threat_action": "SentinelOne-Bedrohungsaktionen",
+        "schedule_check_in": "Einen Wisp-Check-in planen",
         "search_agent_logs": "Agent-Protokolle durchsuchen",
         "search_catalog": "Produktkatalog durchsuchen",
         "search_documentation": "Dokumentation durchsuchen",
@@ -4104,6 +4117,10 @@
           "dashboard": "SNMP-Dashboard",
           "history": "SNMP-Metrikverlauf"
         },
+        "list_bmr_recoveries": {
+          "get": "Details der Bare-Metal-Wiederherstellung",
+          "list": "Bare-Metal-Wiederherstellungen auflisten"
+        },
         "manage_accounting_sync": {
           "customers": "Buchhaltungskunden auflisten",
           "income_accounts": "Ertragskonten auflisten",
@@ -4158,6 +4175,12 @@
           "get": "Details zum Backup-Profil",
           "list": "Backup-Profile auflisten",
           "update": "Ein Backup-Profil aktualisieren"
+        },
+        "manage_backup_verification": {
+          "health": "Überprüfungsstatus",
+          "list": "Backup-Überprüfungen auflisten",
+          "readiness": "Wiederherstellungsbereitschaft",
+          "run": "Backup-Überprüfung ausführen"
         },
         "manage_billing_catalog": {
           "archive_item": "Einen Preislisteneintrag archivieren",
@@ -5506,15 +5529,17 @@
     "recoveryCode": "Wiederherstellungscode",
     "useRecoveryCode": "Kein Zugriff auf Ihren Passkey? Wiederherstellungscode verwenden",
     "usePasskeyVerification": "Stattdessen mit Passkey bestätigen",
-    "nameMustBeAtLeast2Characters": "Der Name muss mindestens 2 Zeichen lang sein",
+    "nameIsRequired": "Name ist erforderlich.",
+    "nameMustBeAtMost255Characters": "Der Name darf höchstens 255 Zeichen lang sein",
     "loadingProfile": "Profil wird geladen...",
     "profileSettings": "Profileinstellungen",
     "manageYourAccountSettingsAndSecurityPreferences": "Verwalten Sie Ihre Kontoeinstellungen und Sicherheitseinstellungen.",
     "profileInformation": "Profilinformationen",
     "updateYourPersonalDetails": "Aktualisieren Sie Ihre persönlichen Daten.",
     "avatar": "Avatar",
-    "uploadNewPicture": "Neues Bild hochladen",
-    "pNGJPGOrWebPMax5MBDragAndDropOntoTheCircleOrClickUpload": "PNG, JPG oder WebP. Maximal 5 MB. Ziehen Sie es per Drag-and-Drop auf den Kreis oder klicken Sie auf „Hochladen“.",
+    "changePicture": "Bild ändern",
+    "undoAvatarChange": "Rückgängig",
+    "pictureRemovalPending": "Entfernung des Profilbilds ausstehend",
     "cancel": "Abbrechen",
     "name": "Name",
     "yourName": "Ihr Name",
@@ -5537,8 +5562,7 @@
     "failedToFetchUserData": "Benutzerdaten konnten nicht abgerufen werden",
     "failedToLoadProfileData": "Profildaten konnten nicht geladen werden",
     "profileUpdatedSuccessfully": "Profil erfolgreich aktualisiert",
-    "avatarUpdated": "Avatar aktualisiert.",
-    "avatarRemoved": "Avatar entfernt.",
+    "avatarSavedButNameUpdateFailed": "Bildänderung gespeichert, aber dein Name konnte nicht aktualisiert werden: {{error}}",
     "passwordChangedSuccessfully": "Passwort erfolgreich geändert",
     "multiFactorAuthenticationEnabledSuccessfully": "Multi-Faktor-Authentifizierung erfolgreich aktiviert",
     "multiFactorAuthenticationDisabled": "Multi-Faktor-Authentifizierung deaktiviert",
@@ -5569,10 +5593,7 @@
     "fileIsEmpty": "Die Datei ist leer.",
     "failedToRenamePasskeyHttp": "Der Passkey konnte nicht umbenannt werden (HTTP {{status}})",
     "failedToDeletePasskeyHttp": "Passkey konnte nicht gelöscht werden (HTTP {{status}})",
-    "removing": "Entfernen...",
     "remove": "Entfernen",
-    "uploading": "Hochladen...",
-    "upload": "Hochladen",
     "saving": "Speichern...",
     "saveChanges": "Änderungen speichern",
     "passkey": "Passkey",
@@ -6331,7 +6352,7 @@
       "extensionsDescription": "Abschnitte von Drittanbieter-Erweiterungen",
       "portalBranding": "Portal & Branding",
       "branding": "Branding",
-      "brandingDescription": "Portalthema und Visuals",
+      "brandingDescription": "Logo, Farben und benutzerdefiniertes CSS",
       "portal": "Kundenportal",
       "portalDescription": "Funktionen und Support",
       "securityAccess": "Sicherheit und Zugang",

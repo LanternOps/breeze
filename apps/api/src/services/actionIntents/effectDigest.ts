@@ -7,8 +7,10 @@ import {
   tickets, drPlans, partners, aiAgents, configPolicyFeatureLinks, devices,
   notificationChannels, ticketForms, ticketResponseTemplates,
   ticketChecklistTemplates, ticketChecklistTemplateItems,
-  softwareCatalog, softwareVersions, softwareInstallMethods,
+  softwareCatalog, softwareVersions, softwareInstallMethods, deviceNetworkIsolations, portalBranding,
 } from '../../db/schema';
+import { PORTAL_TOOL_SENSITIVE_KEYS } from '../portal/portalSensitiveParents';
+import type { ApprovalBinding } from '../networkIsolation/service';
 import {
   fingerprintSoftwareInstallMethodDependency, fingerprintSoftwareVersionDependency,
 } from '../softwareDependencyIdentity';
@@ -111,6 +113,10 @@ type ResolverResult =
       verified?: VerifiedRunScript;
       /** Topology M4-D3: the pinned diagnostic effect (digest attached by resolveEffectDigest). */
       verifiedTopologyDiagnostic?: Omit<VerifiedTopologyDiagnostic, 'effectDigest'>;
+      /** Network-isolation W13 (#10101): the episode binding `release_containment` pinned. */
+      verifiedIsolationRelease?: ApprovalBinding;
+      /** Full-control W16 PR B (#6786): the handler re-derives under its lock (digest attached by resolveEffectDigest). */
+      bindsFleetDesign?: true;
     }
   | { kind: 'missing_arg' }
   | { kind: 'target_absent' };
@@ -170,9 +176,17 @@ export type EffectDigestOutcome =
   | { kind: 'unresolved'; reason: 'missing_arg' | 'target_absent' }
   | { kind: 'pinned'; digest: string };
 
+/**
+ * The intent a digest is for. Most resolvers ignore it: their row is named by the
+ * arguments and checked by the handler. A resolver whose target names its own org
+ * reads it to refuse a target outside the intent's org, so nothing is pinned for an
+ * approver of the wrong org. With no org given, that resolver pins nothing.
+ */
+export type EffectDigestScope = { intentOrgId?: string };
+
 const EFFECT_DIGEST_RESOLVERS: Record<
   string,
-  (args: Record<string, unknown>, database: Database) => Promise<ResolverResult>
+  (args: Record<string, unknown>, database: Database, scope: EffectDigestScope) => Promise<ResolverResult>
 > = {
   // run_script (Tier 3, SUPERVISED — see the scope-independence note in the
   // header; this resolver was unreachable until pinning stopped being gated
@@ -505,6 +519,65 @@ const EFFECT_DIGEST_RESOLVERS: Record<
       if (err instanceof ContractInvoicePreviewNotFound) return TARGET_ABSENT;
       throw err;
     }
+  },
+
+  // manage_org_portal_settings:set_sensitive_access (full-control W18 PR B, #6789; four-eyes, Decision 2). Pins the
+  // org, the requested flags and the row's CURRENT value of every sensitive, permission and parent flag (a missing row
+  // pins as the defaults, all off; a missing or deleted org does not pin). A flag changed after approval, including a child that a requested parent would now
+  // activate, gives another digest and the release refuses. Mandatory per action (pinnedEffectPolicy.ts).
+  'manage_org_portal_settings:set_sensitive_access': async (args, database) => {
+    const orgId = typeof args.orgId === 'string' ? args.orgId.toLowerCase() : null;
+    const flags = args.flags && typeof args.flags === 'object' && !Array.isArray(args.flags) ? args.flags as Record<string, unknown> : null;
+    if (!orgId || !flags) return MISSING_ARG;
+    const keys = PORTAL_TOOL_SENSITIVE_KEYS as readonly string[];
+    const requested = Object.entries(flags);
+    if (requested.length === 0 || requested.some(([key, value]) => !keys.includes(key) || typeof value !== 'boolean')) return MISSING_ARG;
+    if (!UUID_RE.test(orgId)) return TARGET_ABSENT;
+    // A missing or deleted org has nothing to approve (its stale portal row must not pin).
+    const [org] = await database
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(and(eq(organizations.id, orgId), isNull(organizations.deletedAt)))
+      .limit(1);
+    if (!org) return TARGET_ABSENT;
+    const [row] = await database
+      .select(Object.fromEntries(PORTAL_TOOL_SENSITIVE_KEYS.map((key) => [key, portalBranding[key]])))
+      .from(portalBranding)
+      .where(eq(portalBranding.orgId, orgId))
+      .limit(1);
+    const current = Object.fromEntries(PORTAL_TOOL_SENSITIVE_KEYS.map((key) => [key, row?.[key] === true]));
+    return material(canonicalJson({ v: 1, orgId, requested: Object.fromEntries(requested), current }));
+  },
+
+  // manage_ai_agent_schedules:delete (full-control W16 PR B, #6786; four-eyes). Pins the row and every override's
+  // contents: a baseline delete cascades them and cannot be undone (scheduleDeleteDigest.ts). Mandatory per action.
+  'manage_ai_agent_schedules:delete': async (args, database) => {
+    const scheduleId = typeof args.scheduleId === 'string' ? args.scheduleId.toLowerCase() : null;
+    if (!scheduleId) return MISSING_ARG;
+    if (!UUID_RE.test(scheduleId)) return TARGET_ABSENT;
+    const { scheduleDeleteDigestMaterial } = await import('./scheduleDeleteDigest');
+    const pinned = await scheduleDeleteDigestMaterial(scheduleId, database);
+    return pinned ? material(canonicalJson(pinned)) : TARGET_ABSENT;
+  },
+
+  // manage_fleet_designs:apply / :rollback (full-control W16 PR B, #6786; four-eyes, Decision 5). The state apply and
+  // rollback resolve against, read with no auth (fleetDesign/applyTargets.ts). Both release paths verify in an earlier
+  // transaction than the one that writes, so a match also carries the digest to the handler, which re-derives it under
+  // the report-run lock (`verifiedFleetDesignBinding`). Mandatory per action. A design
+  // outside the intent's org pins nothing, so no approver of another org can pass it.
+  'manage_fleet_designs:apply': async (args, database, { intentOrgId }) => {
+    if (typeof args.reportRunId !== 'string' || !args.approval) return MISSING_ARG;
+    if (!intentOrgId) return TARGET_ABSENT;
+    const { fleetDesignApplyDigestMaterial } = await import('./fleetDesignDigest');
+    const pinned = await fleetDesignApplyDigestMaterial(args, intentOrgId, database);
+    return pinned ? { kind: 'material', material: canonicalJson(pinned), bindsFleetDesign: true } : TARGET_ABSENT;
+  },
+  'manage_fleet_designs:rollback': async (args, database, { intentOrgId }) => {
+    if (typeof args.reportRunId !== 'string') return MISSING_ARG;
+    if (!intentOrgId) return TARGET_ABSENT;
+    const { fleetDesignRollbackDigestMaterial } = await import('./fleetDesignDigest');
+    const pinned = await fleetDesignRollbackDigestMaterial(args, intentOrgId, database);
+    return pinned ? { kind: 'material', material: canonicalJson(pinned), bindsFleetDesign: true } : TARGET_ABSENT;
   },
 
   // W15: one real Pax8 order, with local destination / billing inputs pinned. Vendor rates are
@@ -895,6 +968,44 @@ const EFFECT_DIGEST_RESOLVERS: Record<
       iocDigest,
     }));
   },
+
+  // release_containment (Tier 3, four-eyes) — network-isolation W13 (#10101,
+  // spec §3.8 "Approval binding"). It pins the episode's binding
+  // `{orgId, deviceId, isolationId, generation}` and nothing else.
+  // - An extend or a release by someone else makes a new generation, and an
+  //   org move changes orgId. Either one before release is `content_changed`.
+  // - Agent progress at the same generation (applied → verified, a journal
+  //   tick) leaves the approval valid.
+  // - The secret, expiry and reason are not pinned. The argument digest
+  //   already pins the reason.
+  // The pin is required (pinnedEffectPolicy.ts): creation refuses an episode
+  // it cannot pin, and release refuses a missing digest. On a match the
+  // release path hands the handler this binding (`verifiedIsolationRelease`).
+  // `releaseNetworkIsolation` re-checks it under the episode lock, which
+  // closes the window between this read and the release.
+  //
+  // The release paths read under a system context, so the query names the
+  // device as well as the id, and the row is checked again here. A wrong or
+  // RLS-blind read can never pin another device's episode.
+  release_containment: async (args, database) => {
+    if (typeof args.isolationId !== 'string' || typeof args.deviceId !== 'string') return MISSING_ARG;
+    if (!UUID_RE.test(args.isolationId) || !UUID_RE.test(args.deviceId)) return TARGET_ABSENT;
+    const isolationId = args.isolationId.toLowerCase();
+    const deviceId = args.deviceId.toLowerCase();
+    const [row] = await database
+      .select({
+        id: deviceNetworkIsolations.id,
+        orgId: deviceNetworkIsolations.orgId,
+        deviceId: deviceNetworkIsolations.deviceId,
+        generation: deviceNetworkIsolations.generation,
+      })
+      .from(deviceNetworkIsolations)
+      .where(and(eq(deviceNetworkIsolations.id, isolationId), eq(deviceNetworkIsolations.deviceId, deviceId)))
+      .limit(1);
+    if (!row || row.id.toLowerCase() !== isolationId || row.deviceId.toLowerCase() !== deviceId) return TARGET_ABSENT;
+    const binding: ApprovalBinding = { orgId: row.orgId, deviceId: row.deviceId, isolationId: row.id, generation: row.generation };
+    return { kind: 'material', material: canonicalJson({ v: 1, ...binding }), verifiedIsolationRelease: binding };
+  },
 };
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -1018,8 +1129,9 @@ export async function computeEffectDigestOutcome(
   toolName: string,
   args: Record<string, unknown>,
   database: Database,
+  scope: EffectDigestScope = {},
 ): Promise<EffectDigestOutcome> {
-  const resolved = await resolveEffectDigest(toolName, args, database);
+  const resolved = await resolveEffectDigest(toolName, args, database, scope);
   // Project `verified` back off. The creation path has no dispatch to feed and
   // no business holding decrypted tenant plaintext one property access away —
   // narrowing the declared return type alone would leave the object carrying
@@ -1037,12 +1149,19 @@ async function resolveEffectDigest(
   toolName: string,
   args: Record<string, unknown>,
   database: Database,
-): Promise<{ outcome: EffectDigestOutcome; verified?: VerifiedRunScript; verifiedTopologyDiagnostic?: VerifiedTopologyDiagnostic }> {
+  scope: EffectDigestScope,
+): Promise<{
+  outcome: EffectDigestOutcome;
+  verified?: VerifiedRunScript;
+  verifiedTopologyDiagnostic?: VerifiedTopologyDiagnostic;
+  verifiedIsolationRelease?: ApprovalBinding;
+  verifiedFleetDesignBinding?: { digest: string };
+}> {
   const action = typeof args.action === 'string' ? args.action : undefined;
   const key = effectDigestResolverKey(toolName, action);
   if (!key) return { outcome: { kind: 'not_applicable' } };
 
-  const result = await EFFECT_DIGEST_RESOLVERS[key]!(args, database);
+  const result = await EFFECT_DIGEST_RESOLVERS[key]!(args, database, scope);
   if (result.kind !== 'material') return { outcome: { kind: 'unresolved', reason: result.kind } };
 
   const digest = createHash('sha256').update(result.material).digest('hex');
@@ -1052,6 +1171,8 @@ async function resolveEffectDigest(
     ...(result.verifiedTopologyDiagnostic
       ? { verifiedTopologyDiagnostic: { ...result.verifiedTopologyDiagnostic, effectDigest: digest } }
       : {}),
+    ...(result.verifiedIsolationRelease ? { verifiedIsolationRelease: result.verifiedIsolationRelease } : {}),
+    ...(result.bindsFleetDesign ? { verifiedFleetDesignBinding: { digest } } : {}),
   };
 }
 
@@ -1096,12 +1217,19 @@ export async function computeEffectDigestForRelease(
   toolName: string,
   args: Record<string, unknown>,
   database: Database,
+  scope: EffectDigestScope = {},
 ): Promise<EffectDigestReleaseResult> {
-  const resolved = await resolveEffectDigest(toolName, args, database);
+  const resolved = await resolveEffectDigest(toolName, args, database, scope);
   const digest = resolved.outcome.kind === 'pinned' ? resolved.outcome.digest : null;
   if (resolved.verified) return { digest, context: { verifiedRunScript: resolved.verified } };
   if (resolved.verifiedTopologyDiagnostic) {
     return { digest, context: { verifiedTopologyDiagnostic: resolved.verifiedTopologyDiagnostic } };
+  }
+  if (resolved.verifiedIsolationRelease) {
+    return { digest, context: { verifiedIsolationRelease: resolved.verifiedIsolationRelease } };
+  }
+  if (resolved.verifiedFleetDesignBinding) {
+    return { digest, context: { verifiedFleetDesignBinding: resolved.verifiedFleetDesignBinding } };
   }
   return { digest };
 }

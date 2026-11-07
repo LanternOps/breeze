@@ -509,6 +509,74 @@ describe('BackupDashboard usage history chart', () => {
     expect(screen.queryByText('Warning')).toBeNull();
   });
 
+  it('renders a pending catch-up recent job as "Queued", not the generic Warning bucket (#11036)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/backup/dashboard') {
+        return makeJsonResponse({
+          data: {
+            stats: [],
+            recentJobs: [
+              { id: 'job-pending', device: 'edge-03', config: 'Primary S3', status: 'pending', started: '1m ago', duration: '-', size: '-' },
+            ],
+            storageProviders: [],
+            attentionItems: [],
+          },
+        });
+      }
+
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BackupDashboard />);
+
+    await screen.findByText('edge-03');
+    expect(screen.getByText('Queued')).toBeTruthy();
+    expect(screen.queryByText('Warning')).toBeNull();
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('Unmapped backup job status'));
+    warn.mockRestore();
+  });
+
+  it('renders a cancelled recent job as "Cancelled", not the generic Warning bucket (#11036)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/backup/dashboard') {
+        return makeJsonResponse({
+          data: {
+            stats: [],
+            recentJobs: [
+              { id: 'job-cancelled', device: 'edge-03', config: 'Primary S3', status: 'cancelled', started: '1m ago', duration: '-', size: '-' },
+            ],
+            storageProviders: [],
+            attentionItems: [],
+          },
+        });
+      }
+
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BackupDashboard />);
+
+    await screen.findByText('edge-03');
+    expect(screen.getByText('Cancelled')).toBeTruthy();
+    expect(screen.queryByText('Warning')).toBeNull();
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('Unmapped backup job status'));
+    warn.mockRestore();
+  });
+
   it('keeps skipped reparse points out of a recent job\'s red error line (#9543)', async () => {
     const reparseNote =
       '1 reparse point(s) were not backed up (junctions and mount points are skipped, not followed; 1 other): ' +
@@ -542,6 +610,71 @@ describe('BackupDashboard usage history chart', () => {
     await screen.findByText('edge-04');
     expect(screen.getByText('backup stopped')).toBeTruthy();
     expect(screen.queryByText(/reparse point/i)).toBeNull();
+  });
+
+  it('labels a recent job diagnostic with its failure category (#11027)', async () => {
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/backup/dashboard') {
+        return makeJsonResponse({
+          data: {
+            stats: [],
+            // The key the API actually sends (GET /backup/dashboard → latestJobs).
+            latestJobs: [
+              { id: 'job-bad', device: 'edge-05', config: 'Primary S3', status: 'failed', started: '5m ago', duration: '3m', size: '85 B', errorLog: 'Agent not connected', failureCategory: 'device_offline' },
+              { id: 'job-ok', device: 'edge-06', config: 'Primary S3', status: 'completed', started: '6m ago', duration: '3m', size: '85 B', errorLog: null, failureCategory: null },
+            ],
+            storageProviders: [],
+            attentionItems: [],
+          },
+        });
+      }
+
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BackupDashboard />);
+
+    await screen.findByText('edge-06');
+    const badges = screen.getAllByTestId('backup-failure-category');
+    expect(badges).toHaveLength(1);
+    expect(badges[0]?.getAttribute('data-category')).toBe('device_offline');
+    expect(screen.getByText('Agent not connected')).toBeTruthy();
+  });
+
+  it('keeps the recoverable index drop note out of a recent job\'s red error line (#11026)', async () => {
+    const indexNote = 'snapshot file index omitted (17950 entries): the result exceeded the 4934464 byte server result budget, so per-file restore browsing is unavailable for this snapshot';
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/dashboard') {
+        return makeJsonResponse({
+          data: {
+            stats: [],
+            recentJobs: [
+              { id: 'job-stopped', device: 'edge-03', config: 'Primary S3', status: 'failed', started: '5m ago', duration: '3m', size: '85 B', errorLog: `backup stopped || bounded: ${indexNote}` },
+              { id: 'job-clean', device: 'edge-04', config: 'Primary S3', status: 'completed', started: '6m ago', duration: '3m', size: '85 B', errorLog: `bounded: ${indexNote}` },
+            ],
+            storageProviders: [],
+            attentionItems: [],
+          },
+        });
+      }
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BackupDashboard />);
+
+    await screen.findByText('edge-04');
+    expect(screen.getByText('backup stopped')).toBeTruthy();
+    expect(screen.queryByText(/snapshot file index/i)).toBeNull();
   });
 
   it('counts completed_with_errors jobs as successful restore points in the 24h success rate (#5396)', async () => {

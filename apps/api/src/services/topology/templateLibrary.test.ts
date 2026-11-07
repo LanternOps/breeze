@@ -5,7 +5,7 @@ const { mfaRef, dbMocks } = vi.hoisted(() => ({
   mfaRef: { current: true },
   dbMocks: { select: vi.fn(), update: vi.fn() },
 }));
-vi.mock('../../db', () => ({ db: dbMocks, withDbTransaction: vi.fn() }));
+vi.mock('../../db', () => ({ db: dbMocks, withDbTransaction: (fn: () => Promise<unknown>) => fn() }));
 vi.mock('../auditService', () => ({ createAuditLog: vi.fn() }));
 vi.mock('../../middleware/auth', () => ({
   hasSatisfiedMfa: vi.fn(() => mfaRef.current),

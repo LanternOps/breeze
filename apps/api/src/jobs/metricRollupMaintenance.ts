@@ -8,7 +8,7 @@ import {
   type MetricRollupMaintenanceResult,
 } from '../services/metricRollupMaintenance';
 import { getBullMQConnection } from '../services/redis';
-import { recordRetentionRun } from '../services/retentionMetrics';
+import { recordMetricRollupCompactionStalled, recordRetentionRun } from '../services/retentionMetrics';
 import { attachWorkerObservability } from './workerObservability';
 import { cronFromEnv } from './scheduleRegistry';
 
@@ -69,18 +69,27 @@ export function createMetricRollupMaintenanceWorker(): Worker<MetricRollupMainte
           ` droppedBucketLeaves=${result.droppedBucketPartitions.length} compacted=${result.compactedPartitions.length}` +
           ` defaultRowsDeleted=${result.defaultPartitionRowsDeleted} defaultRowsMoved=${result.defaultPartitionDrain.rowsMoved}` +
           ` defaultBlockedMonths=${result.defaultPartitionDrain.blockedMonths.length}` +
+          ` deferredCompactions=${result.deferredCompactions.length}` +
           ` failures=${result.failures.length} durationMs=${result.durationMs}`,
       );
       if (result.skipped) {
         console.warn(`[MetricRollupMaintenance] Run skipped: ${result.reason ?? 'unknown reason'}`);
+      }
+      for (const deferred of result.deferredCompactions) {
+        console.warn(
+          `[MetricRollupMaintenance] Deferred compaction of ${deferred.partition} after ${deferred.attempts} attempts` +
+            ` (${deferred.step}, ${deferred.overdueDays} days overdue, stalled=${deferred.stalled}): ${deferred.error}`,
+        );
       }
       // A lock-contended run returns `skipped` with empty arrays — recording it
       // would claim "ran, backlog clear" for work that never happened.
       if (!result.skipped) {
         recordRetentionRun('metric_rollup_maintenance', {
           rowsDeleted: result.defaultPartitionRowsDeleted,
-          incomplete: result.failures.length > 0,
+          // A deferred month is not a failure, but it is still uncompacted.
+          incomplete: result.failures.length > 0 || result.deferredCompactions.length > 0,
         });
+        recordMetricRollupCompactionStalled(result.deferredCompactions.filter((deferred) => deferred.stalled).length);
       }
       if (result.failures.length > 0) {
         // Every other step still ran; fail the job so the stuck step is seen

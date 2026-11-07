@@ -47,6 +47,7 @@ The file `monitoring/rules/breeze-rules.yml` ships with these rules:
 |---|---|---|
 | `NoAgentHeartbeats` | critical | Zero heartbeats received for 5 minutes |
 | `AlertProcessingBacklog` | warning | Alert queue depth > 100 for 10 minutes |
+| `MetricRollupCompactionStalled` | warning | A legacy `metric_rollups` month is at least 7 days overdue for compaction and the last maintenance run still could not get its locks, so its disk space isn't being reclaimed. The failed `metric-rollup-maintenance` job names the month. |
 | `BackupDispatchFailuresDetected` | warning | Backup, restore, or verification start failures in the last 15 minutes |
 | `RestoreTimeoutsDetected` | critical | Restore command timeouts in the last 15 minutes |
 | `ScheduledVerificationSkipsDetected` | warning | Scheduled backup verification runs skipped in the last hour |

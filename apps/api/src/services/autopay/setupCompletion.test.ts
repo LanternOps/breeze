@@ -1,4 +1,13 @@
 import {beforeEach,describe,expect,it,vi} from 'vitest';
+// Partner billing master switch: tests flip billingSwitch.enabled to simulate billing_enabled=false.
+const billingSwitch = vi.hoisted(() => ({ enabled: true }));
+vi.mock('../billingEnabled', () => {
+  const assertOn = async (_id: unknown, make: (m: string, s: 404, c: 'BILLING_DISABLED') => Error) => {
+    if (!billingSwitch.enabled) throw make('Not found', 404, 'BILLING_DISABLED');
+  };
+  return { assertBillingEnabledForOrg: assertOn, assertBillingEnabledForPartner: assertOn };
+});
+beforeEach(() => { billingSwitch.enabled = true; });
 const m=vi.hoisted(()=>({rows:[] as unknown[][],writes:[] as Record<string,unknown>[],client:vi.fn(),
  session:vi.fn(),intent:vi.fn(),method:vi.fn(),mandate:vi.fn(),enqueue:vi.fn(),mint:vi.fn()}));
 vi.mock('../../db',()=>{
@@ -300,6 +309,16 @@ it('uses the verified debit fee in enrollment mail without rewriting accepted co
   ]);
   expect(JSON.stringify(accepted)).toBe(before);expect(m.enqueue).toHaveBeenCalledOnce();
   expect(m.client).not.toHaveBeenCalled();expect(m.rows).toHaveLength(0);
+});
+
+it('billing off: the owned setup return answers 404 BILLING_DISABLED before any lookup or completion',async()=>{
+ billingSwitch.enabled=false;
+ const value=attempt({consentSnapshot:snapshot});
+ m.rows.push([value]);
+ const {completeOwnedAutopaySetup}=await import('./customerViews');
+ await expect(completeOwnedAutopaySetup({orgId:value.orgId,partnerId:value.partnerId},'cs_one'))
+  .rejects.toMatchObject({status:404,code:'BILLING_DISABLED',message:'Not found'});
+ expect(m.writes).toEqual([]);
 });
 
 it('uses live credit evidence for enrollment and owned return under nonzero fees',async()=>{

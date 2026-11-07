@@ -704,7 +704,7 @@ Schedule, cancel, and check the status of managed reboots (separate from the imm
 |---|---|---|---|---|
 | `delayMinutes` | int | No | 1-10080 (minutes, up to 7 days) | Defaults to `60` |
 | `reason` | string | No | any string | Defaults to `"Scheduled by administrator"` |
-| `source` | string | No | `patch_job` (patch installs) or `maintenance_window` (maintenance sweeps) are the values Breeze itself sends | Defaults to `"manual"`. Echoed back on the heartbeat as `rebootStatus.source`, so a value outside `^[a-z0-9_]{1,32}$` is dropped by the server rather than stored |
+| `source` | string | No | `patch_job` (patch installs), `maintenance_window` (maintenance sweeps) or `oem_updates` (the overnight restart after a [vendor update](/features/vendor-updates/)) are the values Breeze itself sends | Defaults to `"manual"`. Echoed back on the heartbeat as `rebootStatus.source`, so a value outside `^[a-z0-9_]{1,32}$` is dropped by the server rather than stored |
 | `deadline` | string (RFC 3339) | No | must parse as RFC 3339 | Defaults to `now + delayMinutes`. A non-empty but malformed value **fails the command** rather than falling back |
 | `allowDeferral` | bool | No | `true` / `false` | **Absent means OFF.** A restart is never postponable unless this key is explicitly `true` |
 | `maxDeferrals` | int | Only when `allowDeferral` is `true` | 1-10 | Ignored when `allowDeferral` is absent or `false`. When `allowDeferral` is `true`, an absent or out-of-range value **fails the command** |
@@ -759,6 +759,37 @@ claiming a cancellation that did not happen.
 No payload parameters. Returns the full `RebootState` object with schedule
 details, including `notificationsPlanned` — how many user warnings the current
 schedule will emit.
+
+## Vendor Updates
+
+Run a hardware maker's own update tool, or hand its schedule back. Windows only, agent 0.127.0 or later. Sent by the API for [Vendor Updates](/features/vendor-updates/); the API refuses to queue them when the feature is off or the lane is closed.
+
+| Action | Description | Key Payload Fields |
+|---|---|---|
+| `oem_update_run` | Run the maker's update tool for one lane | `lane`, `trigger`, `occurrenceKey`, `categories`, `blockedUpdateIds`, `rebootControlled`, `notAfter`, `escrowedProtectorIds`, `tool` |
+| `oem_update_release` | Hand the vendor tool's own update schedule back after Breeze stops managing the device | `lane` |
+
+### `oem_update_run`
+
+| Param | Type | Description |
+|---|---|---|
+| `lane` | string | `dell`, `surface`, `hp` or `lenovo` |
+| `trigger` | string | `scheduled` or `on_demand` |
+| `occurrenceKey` | string or null | The monthly occurrence a scheduled run counts toward |
+| `categories` | string[] | 1-4 unique values from `bios`, `firmware`, `driver`, `application` |
+| `blockedUpdateIds` | string[] | Up to 200 update IDs the tool must skip |
+| `rebootControlled` | bool | Whether Breeze will schedule the restart. BIOS and firmware are skipped when `false` |
+| `notAfter` | string (RFC 3339) | Latest time the run may start |
+| `escrowedProtectorIds` | string[] | BitLocker protector IDs whose recovery keys Breeze holds (up to 16) |
+| `tool` | object or null | Expected vendor tool version and checksum. The agent still enforces its own compiled publisher and host allowlist |
+
+The result carries an `outcome` (`success`, `success_reboot_required`, `no_updates`, `partial`, `failed`, `not_supported`, `tool_unavailable`, `blocked_on_battery`, `blocked_reboot_pending`, `blocked_no_recovery_key`, `retry_later` or `interrupted`), the items installed, and any skipped categories with a reason. A BIOS or firmware install holds the flash guard, so the agent refuses reboots and shutdowns until it ends.
+
+### `oem_update_release`
+
+Takes only `lane`. Returns `restored`, `nothing_to_restore` or `failed`. The API queues it when no policy runs vendor updates on the device any more, and raises an alert after 3 failures.
+
+When a run needs a restart, the API sends an ordinary `schedule_reboot` with `source: "oem_updates"` and `deadlineAction: "hold"` (agent 0.127.0 or later). With `hold`, a restart that cannot begin before the window closes is dropped instead of forced.
 
 ---
 
@@ -1158,7 +1189,7 @@ object":
 |---|---|---|---|
 | `scheduledAt` | string (RFC 3339, with offset) | Yes | When the restart will fire. The only required member -- a malformed value makes the server drop the whole `rebootStatus` object (treated the same as absent) rather than reject the heartbeat |
 | `deadline` | string (RFC 3339, with offset) | No | Absolute cutoff past which the restart happens regardless of remaining deferral budget |
-| `source` | string | No | What requested the restart, echoed back from the `schedule_reboot` command that scheduled it: `patch_job`, `maintenance_window`, or the agent's own `manual` default |
+| `source` | string | No | What requested the restart, echoed back from the `schedule_reboot` command that scheduled it: `patch_job`, `maintenance_window`, `oem_updates`, or the agent's own `manual` default |
 | `deferralsUsed` | int (0-10) | No | How many times the signed-in user has postponed this restart |
 | `maxDeferrals` | int (0-10) | No | How many postponements this restart allows |
 

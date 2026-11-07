@@ -39,6 +39,7 @@ import {
   configurationPolicies,
   devices,
 } from '../../db/schema';
+import { BUILT_IN_ALERT_RULE_SOURCES } from '../../services/builtInAlertRules';
 import { ensurePatchJobFailureRule, ensureRebootPendingRule } from '../../services/patchAlerts';
 import { ensureRule as ensurePolicyRule } from '../../services/policyAlertBridge';
 import {
@@ -50,6 +51,9 @@ import { createOrganization, createPartner, createSite } from './db-utils';
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 const MIGRATION = '2026-12-03-120000-builtin-alert-rule-unique-index.sql';
+// Recreates the index with the sources added after the collapse migration. The
+// tests below replay the older file, so each replay must end with this one.
+const LATEST_INDEX_MIGRATION = '2027-01-22-150000-builtin-alert-rule-oem-updates.sql';
 const INDEX_NAME = 'alert_rules_builtin_anchor_uidx';
 const RACERS = 8;
 
@@ -152,12 +156,19 @@ describe(`migration ${MIGRATION}`, () => {
   const adminSql = postgres(process.env.DATABASE_URL ?? '', { max: 1, onnotice: () => {} });
   afterAll(async () => {
     // Leave the database the way autoMigrate left it, whatever the test did.
-    if (process.env.DATABASE_URL) await adminSql.unsafe(migrationSql());
+    if (process.env.DATABASE_URL) {
+      await adminSql.unsafe(migrationSql());
+      await adminSql.unsafe(latestIndexMigrationSql());
+    }
     await adminSql.end({ timeout: 5 });
   });
 
   function migrationSql() {
     return readFileSync(join(__dirname, '../../../migrations', MIGRATION), 'utf8');
+  }
+
+  function latestIndexMigrationSql() {
+    return readFileSync(join(__dirname, '../../../migrations', LATEST_INDEX_MIGRATION), 'utf8');
   }
 
   async function builtInTemplate() {
@@ -373,12 +384,15 @@ describe(`migration ${MIGRATION}`, () => {
   });
 
   runDb('the index covers exactly the built-in sources the creators write', async () => {
+    // The replays above leave the older predicate behind.
+    await adminSql.unsafe(latestIndexMigrationSql());
     const [row] = await adminSql<{ indexdef: string }[]>`
       SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = ${INDEX_NAME}`;
     expect(row?.indexdef).toBeDefined();
-    for (const source of ['patch-job-finalizer', 'maintenance-reboot-sweep', 'policy-evaluation', 'config-policy-compliance']) {
-      expect(row!.indexdef).toContain(`'${source}'`);
-    }
+    // Past the ->> key: only the source list carries quoted values after ANY (ARRAY[...]).
+    const sourceList = row!.indexdef.slice(row!.indexdef.indexOf('ANY'));
+    const indexed = [...sourceList.matchAll(/'([a-z-]+)'/g)].map((m) => m[1]);
+    expect(indexed.sort()).toEqual([...BUILT_IN_ALERT_RULE_SOURCES].sort());
     expect(row!.indexdef).toMatch(/UNIQUE INDEX/);
     expect(row!.indexdef).toContain('(org_id, name)');
   });
