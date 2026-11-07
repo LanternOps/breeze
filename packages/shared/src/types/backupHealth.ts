@@ -111,6 +111,17 @@ export interface BackupHealthRow {
   history28d: Array<{ day: string; status: ExternalBackupStatus | null }>;
   /** `devices.status` when linked — "backup stale but the device is offline" context. */
   agentOnline: boolean | null;
+  /**
+   * The vendor's own boot check, when the provider supplies one (Axcient
+   * AutoVerify). `verifiedBootable` alone decides the state, through
+   * `verifiedBootableState`: it is null for a first-party row, a provider
+   * without the signal, and a device with no result yet. The date can be null
+   * beside a result when the vendor did not give one. Rows saved in a report
+   * before these fields existed omit all three.
+   */
+  verifiedBootableAt: string | null;
+  verifiedBootable: boolean | null;
+  verifiedBootableFailedChecks: string[] | null;
 }
 
 /**

@@ -254,6 +254,28 @@ export function deriveBackupHealth(input: {
 /** Re-exported so consumers can iterate the enum without a second import. */
 export { EXTERNAL_BACKUP_STATUSES };
 
+/** Providers whose devices carry verified-bootable evidence. */
+export const VERIFIED_BOOTABLE_PROVIDER_KEYS: readonly string[] = ['axcient'];
+
+export type VerifiedBootableState = 'passed' | 'failed' | 'never_run' | 'not_applicable';
+
+/**
+ * One reading of the verified-bootable fields for every surface.
+ *
+ * `undefined` is distinct from `null`: null is a device the provider has no
+ * result for ("never run"), while an absent field is a row saved in a report
+ * before the evidence existed, which says nothing about the device ("n/a").
+ */
+export function verifiedBootableState(row: {
+  providerKey: string | null;
+  verifiedBootable?: boolean | null;
+}): VerifiedBootableState {
+  if (!row.providerKey || !VERIFIED_BOOTABLE_PROVIDER_KEYS.includes(row.providerKey)) return 'not_applicable';
+  if (row.verifiedBootable === undefined) return 'not_applicable';
+  if (row.verifiedBootable === null) return 'never_run';
+  return row.verifiedBootable ? 'passed' : 'failed';
+}
+
 const SAAS_WORKLOAD_LABELS: Readonly<Record<string, string>> = {
   m365_mail: 'Microsoft 365 mail',
   m365_onedrive: 'Microsoft 365 OneDrive',
