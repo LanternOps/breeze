@@ -154,4 +154,38 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g116', prompt: "Submit Contoso's Pax8 order.", expect: [{ tool: 'manage_pax8_orders', action: 'preview' }, { tool: 'manage_pax8_orders', action: 'submit' }] },
   // #10161: ticket merge reaches the chat SDK shape (preview first, then the supervised merge).
   { id: 'g117', prompt: 'Ticket 1043 is a duplicate of 1042, merge it in.', expect: [{ tool: 'manage_tickets', action: 'merge_preview' }, { tool: 'manage_tickets', action: 'merge' }] },
+  // Network-isolation W13 (#10101): lifting a Breeze network isolation (four-eyes), and a
+  // negative — un-quarantining a FILE is a threat action, never release_containment.
+  { id: 'g118', prompt: 'Release the network isolation on FIN-LAPTOP-07, the incident is resolved.', expect: [{ tool: 'release_containment' }, { tool: 'resolve_device_context' }, { tool: 'get_incident_timeline' }, { tool: 'list_incidents' }] },
+  { id: 'g119', prompt: 'Un-quarantine the file Defender flagged on WS-01, it was a false positive.', expect: [{ tool: 'security_scan', action: 'restore' }, { tool: 'security_scan', action: 'status' }, { tool: 'resolve_device_context' }] },
+  // Full-control W17 (#6788): backup verification, VSS, C2C configs, bare-metal recovery and backup health.
+  { id: 'g120', prompt: 'Did the last backup verification on FIN-LAPTOP-07 pass?', expect: [{ tool: 'manage_backup_verification', action: 'list' }, { tool: 'resolve_device_context' }] },
+  { id: 'g121', prompt: 'Which devices are we least confident we could recover?', expect: [{ tool: 'manage_backup_verification', action: 'readiness' }] },
+  { id: 'g122', prompt: "Run an integrity check on WS-01's latest backup.", expect: [{ tool: 'manage_backup_verification', action: 'run' }] },
+  { id: 'g123', prompt: 'Are the VSS writers healthy on SQL-02?', expect: [{ tool: 'get_vss_status' }, { tool: 'resolve_device_context' }] },
+  { id: 'g124', prompt: 'Set up a daily cloud-to-cloud mailbox backup for the finance team.', expect: [{ tool: 'manage_c2c_configs', action: 'create' }, { tool: 'query_c2c_connections' }] },
+  { id: 'g125', prompt: 'Where did the bare-metal recovery of DC-01 get to?', expect: [{ tool: 'list_bmr_recoveries', action: 'list' }] },
+  { id: 'g126', prompt: 'Which devices have failing backups across all customers, including Cove?', expect: [{ tool: 'get_backup_health' }] },
+  // Full-control W18 PR A (#6789): org admin reads and the read-only identity directory. g131 names Breeze logins, not
+  // Microsoft 365 identities or device sessions (Decision 6: the descriptions carry that distinction).
+  { id: 'g127', prompt: 'Give me a quick overview of Contoso.', expect: [{ tool: 'get_org_summary' }, { tool: 'list_organizations' }] },
+  { id: 'g128', prompt: "Which of our customers aren't fully set up?", expect: [{ tool: 'get_account_readiness' }] },
+  { id: 'g129', prompt: "How long do we keep Contoso's audit logs?", expect: [{ tool: 'get_audit_retention' }, { tool: 'list_organizations' }] },
+  { id: 'g130', prompt: 'Who has portal access at Contoso?', expect: [{ tool: 'list_portal_users' }, { tool: 'list_organizations' }] },
+  { id: 'g131', prompt: "Which of our technicians don't have MFA turned on?", expect: [{ tool: 'list_users' }] },
+  { id: 'g132', prompt: 'What can someone with the Technician role actually do?', expect: [{ tool: 'list_roles', action: 'effective_permissions' }, { tool: 'list_roles', action: 'list' }] },
+  // Full-control W18 PR B (#6789): the two org-admin writers. g134 is the four-eyes action, not the supervised update.
+  { id: 'g133', prompt: "Turn on the reports section of Contoso's portal.", expect: [{ tool: 'manage_org_portal_settings', action: 'update' }, { tool: 'list_organizations' }] },
+  { id: 'g134', prompt: 'Show Contoso per-host vulnerability detail in their portal.', expect: [{ tool: 'manage_org_portal_settings', action: 'set_sensitive_access' }, { tool: 'list_organizations' }] },
+  { id: 'g135', prompt: "Add Dana to Contoso's monthly report.", expect: [{ tool: 'manage_report_recipients', action: 'add' }, { tool: 'list_org_contacts' }] },
+  // Full-control W16 PR A (#6786): ordinary chat (no Wisp grant) picks the W16 launch tool, not launch_specialist
+  // and not manage_patches / manage_services.
+  { id: 'g136', prompt: 'Run the patch agent for Contoso now.', expect: [{ tool: 'run_patch_plan' }, { tool: 'list_organizations' }] },
+  { id: 'g137', prompt: 'Have the AI get the Print Spooler on WS-01 running again.', expect: [{ tool: 'create_operator_task' }, { tool: 'resolve_device_context' }] },
+  // Full-control W16 PR B (#6786): schedule writes and Fleet Designs.
+  { id: 'g138', prompt: 'Schedule a health sweep every night at 2am for all our customers.', expect: [{ tool: 'manage_ai_agent_schedules', action: 'create' }] },
+  { id: 'g139', prompt: 'Stop the nightly sweep for Contoso.', expect: [{ tool: 'manage_ai_agent_schedules', action: 'update' }, { tool: 'manage_ai_agent_schedules', action: 'create' }] },
+  { id: 'g140', prompt: 'Run a Fleet Design for Contoso.', expect: [{ tool: 'manage_fleet_designs', action: 'run' }] },
+  { id: 'g141', prompt: "Apply the functions and monitoring from Contoso's latest Fleet Design.", expect: [{ tool: 'list_fleet_designs' }, { tool: 'manage_fleet_designs', action: 'preview' }, { tool: 'manage_fleet_designs', action: 'apply' }] },
+  { id: 'g142', prompt: 'Undo the Fleet Design we applied at Contoso last week.', expect: [{ tool: 'manage_fleet_designs', action: 'applied' }, { tool: 'manage_fleet_designs', action: 'rollback' }] },
 ];

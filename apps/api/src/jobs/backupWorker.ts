@@ -9,6 +9,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { Worker, Job } from 'bullmq';
+import type { BackupFullRunReason } from '@breeze/shared';
 import * as dbModule from '../db';
 import {
   backupJobs,
@@ -26,8 +27,8 @@ import {
 } from '../db/schema';
 import { recoveryTokens } from '../db/schema/recoveryTokens';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
-import { eq, ne, and, or, desc, gt, gte, sql, isNull, lt, inArray } from 'drizzle-orm';
-import { resolveAllBackupAssignedDevices } from '../services/featureConfigResolver';
+import { eq, ne, and, or, desc, gt, gte, sql, isNotNull, isNull, lt, inArray } from 'drizzle-orm';
+import { resolveAllBackupAssignedDevices, resolveBackupConfigForDevice } from '../services/featureConfigResolver';
 import { getBullMQConnection } from '../services/redis';
 import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
 import type { AgentCommand } from '../routes/agentWs';
@@ -67,6 +68,13 @@ import {
 import { jobSchedule } from './scheduleRegistry';
 import { isParkedDevice, PARKED_DEVICE_CANCEL_REASON } from '../services/unassignedPool/deliveryEligibility';
 import { notHoldingOrgCondition } from '../services/unassignedPool/selectorPredicate';
+import {
+  BACKUP_MISSED_ERROR,
+  computeBackupCatchUpUntil,
+  dispatchCatchUpsForConnectedDevices,
+  expireSupersededBackupCatchUps,
+  isBackupCatchUpEnabled,
+} from './backupCatchUp';
 
 // Re-export enqueue functions for backward compatibility
 export const getBackupQueue = backupEnqueue.getBackupQueue;
@@ -172,6 +180,7 @@ type PolicySchedule = {
   timezone?: string;
   dayOfWeek?: number;
   dayOfMonth?: number;
+  runMissedBackupsOnConnect?: boolean;
 };
 
 const SCHEDULE_LOOKBACK_MINUTES = 5;
@@ -248,6 +257,8 @@ interface ScheduledBackupJobToDispatch {
   jobId: string;
   configId: string;
   deviceId: string;
+  /** #11013: how long the job may wait for an offline device; absent = it may not. */
+  catchUpUntil?: string;
 }
 
 /**
@@ -309,6 +320,10 @@ async function createDueScheduledBackupJobs(
     // (no profile) create a single job with NULL mode, exactly as before.
     const specs = entry.selectionSpecs ?? [undefined];
     const helperQueues = await deviceHelperQueues(entry.deviceId);
+    const catchUpUntil = isBackupCatchUpEnabled(schedule)
+      ? computeBackupCatchUpUntil(schedule, now, entry.resolvedTimezone)
+      : undefined;
+    let createdAny = false;
     for (const spec of specs) {
       const result = await createScheduledBackupJobIfAbsent({
         orgId,
@@ -325,8 +340,26 @@ async function createDueScheduledBackupJobs(
       });
 
       if (result?.created) {
-        due.push({ jobId: result.job.id, configId: result.job.configId, deviceId: entry.deviceId });
+        createdAny = true;
+        due.push({
+          jobId: result.job.id,
+          configId: result.job.configId,
+          deviceId: entry.deviceId,
+          ...(catchUpUntil ? { catchUpUntil } : {}),
+        });
       }
+    }
+    if (createdAny && entry.featureLinkId) {
+      // Matches the dedupe window createScheduledBackupJobIfAbsent uses, floored
+      // to the minute like it, so a job of this same occurrence is never counted
+      // as an earlier one.
+      const occurrenceStart = new Date(now.getTime() - SCHEDULE_LOOKBACK_MINUTES * 60_000);
+      occurrenceStart.setSeconds(0, 0);
+      await expireSupersededBackupCatchUps({
+        deviceId: entry.deviceId,
+        featureLinkId: entry.featureLinkId,
+        occurrenceStart,
+      });
     }
   }
   return due;
@@ -372,8 +405,9 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
         // enqueueBackupDispatch reads the config's approval generation, so it
         // needs a context of its own — a fresh one, after the creation above
         // has committed.
-        await runWithSystemDbAccess(() =>
-          enqueueBackupDispatch(job.jobId, job.configId, orgId, job.deviceId)
+        await runWithSystemDbAccess(() => (job.catchUpUntil
+          ? enqueueBackupDispatch(job.jobId, job.configId, orgId, job.deviceId, undefined, { catchUpUntil: job.catchUpUntil })
+          : enqueueBackupDispatch(job.jobId, job.configId, orgId, job.deviceId))
         );
         enqueued++;
       } catch (err) {
@@ -398,6 +432,14 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
     console.log(
       `[BackupWorker] Scheduled ${enqueued} backup job(s) from config policies`
     );
+  }
+
+  try {
+    await dispatchCatchUpsForConnectedDevices();
+  } catch (err) {
+    // Next tick retries; the schedules above already went out.
+    console.error('[BackupWorker] Failed to sweep deferred backup catch-ups:', err);
+    captureException(err, undefined, { backup_dispatch_issue: 'catch-up-sweep-failed' });
   }
 
   return { enqueued };
@@ -813,6 +855,12 @@ async function loadBackupDispatchPrecheck(
     return { status: 'done', result: { dispatched: false } };
   }
 
+  // A job that waited for its device runs only if it is still waiting and the
+  // reason it was scheduled still holds: the wait can outlast the policy.
+  if (data.catchUpDispatch && !(await catchUpStillApplies(data.jobId))) {
+    return { status: 'done', result: { dispatched: false } };
+  }
+
   // Load config for command payload
   const [config] = await db
     .select()
@@ -870,7 +918,7 @@ async function loadBackupDispatchPrecheck(
 
   const agentId = device?.agentId;
   if (!agentId) {
-    await markJobFailed(data.jobId, 'Agent not connected');
+    await deferUntilAgentConnectsOrFail(data);
     return { status: 'done', result: { dispatched: false } };
   }
 
@@ -890,6 +938,72 @@ async function loadBackupDispatchPrecheck(
   }
 
   return { status: 'ok', config, agentId, helperProtocolsUnreported: backupHelperProtocolsUnreported(device!) };
+}
+
+/**
+ * The agent is not connected. A scheduled job with a catch-up window stays
+ * `pending` for the next connect; a job without one (manual, or the policy
+ * turned runMissedBackupsOnConnect off) fails as it always has, and one whose
+ * window has closed fails as missed. Returns whether the job is now waiting.
+ */
+async function deferUntilAgentConnectsOrFail(data: DispatchBackupJobData): Promise<boolean> {
+  if (!data.catchUpUntil) {
+    await markJobFailed(data.jobId, 'Agent not connected');
+    return false;
+  }
+  const catchUpUntil = new Date(data.catchUpUntil);
+  if (catchUpUntil.getTime() <= Date.now()) {
+    await markJobFailed(data.jobId, BACKUP_MISSED_ERROR);
+    return false;
+  }
+  const waiting = await db
+    .update(backupJobs)
+    .set({
+      catchUpUntil,
+      // Site-ceiling gate contract §3: the generation this job was queued
+      // against travels with it, so an edit made while it waits still fails it
+      // closed (`backup_config_changed`) instead of running the new config.
+      catchUpConfigGeneration: data.configGeneration ?? null,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(backupJobs.id, data.jobId), eq(backupJobs.status, 'pending')))
+    .returning({ id: backupJobs.id });
+  return waiting.length > 0;
+}
+
+/**
+ * A catch-up dispatch re-checks its row: cancelled, reaped or superseded jobs
+ * have nothing to run, and a job whose policy link is gone or that turned the
+ * toggle off fails here rather than back up a device nobody asked it to.
+ */
+async function catchUpStillApplies(jobId: string): Promise<boolean> {
+  const [job] = await db
+    .select({
+      status: backupJobs.status,
+      catchUpUntil: backupJobs.catchUpUntil,
+      featureLinkId: backupJobs.featureLinkId,
+      configId: backupJobs.configId,
+      deviceId: backupJobs.deviceId,
+    })
+    .from(backupJobs)
+    .where(eq(backupJobs.id, jobId))
+    .limit(1);
+
+  if (!job || job.status !== 'pending' || !job.catchUpUntil) return false;
+  // The device's effective backup policy NOW: the policy may have been
+  // deactivated, unassigned, outranked by another one or pointed at another
+  // destination while the job waited. Only the same link and destination the
+  // scheduler chose may still run.
+  const current = job.featureLinkId ? await resolveBackupConfigForDevice(job.deviceId) : null;
+  if (!current?.settings || current.featureLinkId !== job.featureLinkId || current.configId !== job.configId) {
+    await markJobFailed(jobId, 'Catch-up cancelled: the backup policy no longer applies to this device.');
+    return false;
+  }
+  if (!isBackupCatchUpEnabled(current.settings.schedule)) {
+    await markJobFailed(jobId, 'Catch-up cancelled: running missed backups was turned off on the backup policy.');
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -989,26 +1103,7 @@ type BackupDispatchPrepare =
  * condition is visible in the API log rather than only by counting objects in
  * the bucket.
  */
-export type FullBackupFallbackReason =
-  | 'no_prior_snapshot'
-  | 'base_expired'
-  | 'storage_identity_changed'
-  | 'backup_type_mismatch'
-  | 'base_job_not_completed'
-  | 'base_retired'
-  | 'base_deleted_race'
-  | 'base_retired_race'
-  // The helper verifies its base and no candidate carries a verified
-  // snapshot attestation.
-  | 'no_verified_base'
-  // #7081 (I4): no candidate is recorded under the key root this run writes
-  // (the destination prefix changed); chains never span roots.
-  | 'key_root_changed'
-  // #7081: the newest snapshot records a key root this server cannot read.
-  | 'base_key_root_unreadable'
-  // #7081: the destination's key prefix is invalid, so this run has no key
-  // root to match a base against (mint refuses the write itself).
-  | 'invalid_destination_prefix';
+export type FullBackupFallbackReason = BackupFullRunReason;
 
 /**
  * The newest snapshot for this device+config ignoring EVERY eligibility
@@ -1190,7 +1285,13 @@ async function stampDispatchPinAndIdentity(params: {
   // full-copy dispatch into a failed backup (and in Postgres a statement
   // error aborts the surrounding transaction outright, so catching it inside
   // would not help).
-  let pendingFallback: FullBackupFallbackReason | 'diagnose' | null = null;
+  // 'diagnose' explains a missing base from the probe below. 'diagnose_attested'
+  // does the same for a helper that verifies its base: the transaction already
+  // stamped 'no_verified_base', which the probe replaces with the first mirrored
+  // filter a snapshot fails, or 'no_prior_snapshot' when there is none at all
+  // (#11027: otherwise every new device's first backup reads as a verification
+  // failure).
+  let pendingFallback: FullBackupFallbackReason | 'diagnose' | 'diagnose_attested' | null = null;
 
   const outcome = await db.transaction(async (tx) => {
     // Review fix (spec §3.1 selection criteria): "no retirement row" is part
@@ -1225,7 +1326,7 @@ async function stampDispatchPinAndIdentity(params: {
       // No root to match: no base. Mint refuses the write itself.
       await tx
         .update(backupJobs)
-        .set({ storageIdentity, publishLeaseExpiresAt, baseSnapshotId: null })
+        .set({ storageIdentity, publishLeaseExpiresAt, baseSnapshotId: null, fullBackupReason: 'invalid_destination_prefix' })
         .where(eq(backupJobs.id, params.jobId));
       pendingFallback = 'invalid_destination_prefix';
       return { baseSnapshotId: '', publishLeaseExpiresAt, baseAttestation: null };
@@ -1341,11 +1442,14 @@ async function stampDispatchPinAndIdentity(params: {
         storageIdentity,
         publishLeaseExpiresAt,
         baseSnapshotId: candidate?.snapshotId ?? null,
+        // #11027: NULL when a base was found. A diagnosed fallback fills this
+        // in after commit, and a redispatch must not keep an earlier reason.
+        fullBackupReason: !candidate && requireAttestedBase ? 'no_verified_base' : null,
       })
       .where(eq(backupJobs.id, params.jobId));
 
     if (!candidate) {
-      pendingFallback = requireAttestedBase ? 'no_verified_base' : 'diagnose';
+      pendingFallback = requireAttestedBase ? 'diagnose_attested' : 'diagnose';
       return { baseSnapshotId: '', publishLeaseExpiresAt, baseAttestation: null };
     }
 
@@ -1359,7 +1463,7 @@ async function stampDispatchPinAndIdentity(params: {
 
     if (!locked) {
       // Row already gone — a concurrent retention delete won the race.
-      await tx.update(backupJobs).set({ baseSnapshotId: null }).where(eq(backupJobs.id, params.jobId));
+      await tx.update(backupJobs).set({ baseSnapshotId: null, fullBackupReason: 'base_deleted_race' }).where(eq(backupJobs.id, params.jobId));
       pendingFallback = 'base_deleted_race';
       return { baseSnapshotId: '', publishLeaseExpiresAt, baseAttestation: null };
     }
@@ -1376,7 +1480,7 @@ async function stampDispatchPinAndIdentity(params: {
       .limit(1);
 
     if (retirement) {
-      await tx.update(backupJobs).set({ baseSnapshotId: null }).where(eq(backupJobs.id, params.jobId));
+      await tx.update(backupJobs).set({ baseSnapshotId: null, fullBackupReason: 'base_retired_race' }).where(eq(backupJobs.id, params.jobId));
       pendingFallback = 'base_retired_race';
       return { baseSnapshotId: '', publishLeaseExpiresAt, baseAttestation: null };
     }
@@ -1391,25 +1495,40 @@ async function stampDispatchPinAndIdentity(params: {
       configId: params.configId,
       storageIdentity,
     };
-    if (pendingFallback !== 'diagnose') {
+    if (pendingFallback !== 'diagnose' && pendingFallback !== 'diagnose_attested') {
       logFullBackupFallback(pendingFallback, logParams);
     } else {
       try {
         const probe = await readBaseCandidateProbe(params.deviceId, params.configId);
-        logFullBackupFallback(
-          classifyMissingBaseReason(probe, {
-            storageIdentity,
-            mode,
-            now: dispatchedAt,
-            keyRoot: mintRoot.ok ? mintRoot.root : LEGACY_FLAT_ROOT,
-          }),
-          logParams,
-        );
+        const attested = pendingFallback === 'diagnose_attested';
+        const classified = classifyMissingBaseReason(probe, {
+          storageIdentity,
+          mode,
+          now: dispatchedAt,
+          keyRoot: mintRoot.ok ? mintRoot.root : LEGACY_FLAT_ROOT,
+        });
+        // A snapshot that passes every mirrored filter was refused for its
+        // attestation, which the probe does not see.
+        const reason = attested && probe !== null && classified === 'no_prior_snapshot'
+          ? 'no_verified_base'
+          : classified;
+        logFullBackupFallback(reason, logParams);
+        // #11027: stored for the job's detail view. Same rule as the probe: a
+        // failure here never fails a dispatch that already committed, and only
+        // the value this dispatch stamped is replaced.
+        await db
+          .update(backupJobs)
+          .set({ fullBackupReason: reason })
+          .where(and(
+            eq(backupJobs.id, params.jobId),
+            attested ? eq(backupJobs.fullBackupReason, 'no_verified_base') : isNull(backupJobs.fullBackupReason),
+          ));
       } catch (err) {
         // Diagnosis only — the dispatch itself already committed.
         console.warn(
-          `[BackupWorker] Job ${params.jobId} has no incremental base and will upload a FULL copy; ` +
-            `the reason probe failed: ${err instanceof Error ? err.message : String(err)}`,
+          `[BackupWorker] Job ${params.jobId} (device ${params.deviceId}, config ${params.configId}) has no ` +
+            `incremental base and will upload a FULL copy; diagnosing or recording the reason failed: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
@@ -1430,6 +1549,29 @@ async function prepareBackupDispatchTargets(
 ): Promise<BackupDispatchPrepare> {
   if (await isBackupJobCancelled(data.jobId)) {
     return { status: 'done', result: { dispatched: false } };
+  }
+
+  // #11013: claim a job that waited for its device. Clearing the window takes it
+  // out of the reconnect sweep, and stamping started_at restarts the reaper's
+  // pending clock, which would otherwise read the time since the schedule. In
+  // this transaction, so a rollback of the build below leaves the job waiting.
+  if (data.catchUpDispatch) {
+    const now = new Date();
+    const claimed = await db
+      .update(backupJobs)
+      .set({ catchUpUntil: null, startedAt: now, updatedAt: now })
+      .where(and(
+        eq(backupJobs.id, data.jobId),
+        eq(backupJobs.status, 'pending'),
+        isNotNull(backupJobs.catchUpUntil),
+        // Past the window the row is the reaper's to settle; a claim then could
+        // send a backup the reaper is failing at the same moment.
+        gt(backupJobs.catchUpUntil, now),
+      ))
+      .returning({ id: backupJobs.id });
+    if (claimed.length === 0) {
+      return { status: 'done', result: { dispatched: false } };
+    }
   }
 
   // Resolve backup mode: fan-out jobs carry their own selection (profile
@@ -1773,9 +1915,10 @@ async function settleUndeliveredDispatchTargets(
 }
 
 async function processDispatchBackup(
-  data: DispatchBackupJobData,
+  initialData: DispatchBackupJobData,
   opts: { redelivered?: boolean } = {},
 ): Promise<{ dispatched: boolean }> {
+  let data = initialData;
   // #4137 — refuse a re-delivery outright. Phase 3 below INSERTs a fresh
   // `backup_jobs` child row per extra target and commits it before the Phase-4
   // sends, so re-running it duplicates the child set (stranding the previous
@@ -1807,14 +1950,25 @@ async function processDispatchBackup(
 
   // Phase 2 — connectivity check with NO DB context open (#1105).
   if (!(await isAgentConnectedAnywhere(agentId))) {
-    await runWithSystemDbAccess(() => markJobFailed(data.jobId, 'Agent not connected'));
-    return { dispatched: false };
+    const waiting = await runWithSystemDbAccess(() => deferUntilAgentConnectsOrFail(data));
+    if (!waiting) return { dispatched: false };
+    // #11013: an agent that connected before the row was stamped had a sweep
+    // that found nothing to run, and no later connect is coming. Checking again
+    // AFTER the stamp means every connect is seen by this check or by the sweep.
+    if (!(await isAgentConnectedAnywhere(agentId))) return { dispatched: false };
+    data = { ...data, catchUpDispatch: true };
   }
 
   // Unknown is not "older helper": wait for the device's first report
   // instead of building a payload for a helper it may not have. Redis I/O,
-  // so also with no DB context open.
+  // so also with no DB context open. A job that waited for its device is
+  // retried by the check-schedules sweep instead: a queued wait alongside that
+  // sweep could dispatch it twice.
   if (precheck.helperProtocolsUnreported) {
+    if (data.catchUpDispatch) {
+      console.log(`[BackupWorker] Job ${data.jobId} waits for device ${data.deviceId} to report its backup helper; the catch-up sweep tries again`);
+      return { dispatched: false };
+    }
     return holdForHelperReport(data);
   }
 
@@ -1827,6 +1981,7 @@ async function processDispatchBackup(
   } catch (err) {
     if (!(err instanceof TransientWriteSessionError)) throw err;
     // Nothing was committed and nothing was sent: try the dispatch again.
+    if (data.catchUpDispatch) return { dispatched: false }; // the rollback left it waiting
     return holdForHelperReport(data, {
       message: backupWriteRefusalMessage('mint_failed'),
       log: 'could not be issued a write session in time',

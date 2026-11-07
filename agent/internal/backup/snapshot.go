@@ -57,29 +57,23 @@ type plannedDecision struct {
 }
 
 // plannedOrDecide returns the planned decision for files[i], or decides now.
-func plannedOrDecide(planned []plannedDecision, i int, file backupFile, prevIndex map[string]SnapshotFile) (referenceDecision, SnapshotFile) {
+// hashed reports whether deciding now had to hash the file; a planned
+// decision was already counted when it was planned.
+func plannedOrDecide(planned []plannedDecision, i int, file backupFile, prevIndex map[string]SnapshotFile) (decision referenceDecision, ref SnapshotFile, hashed bool) {
 	if i < len(planned) && planned[i].decided {
-		return planned[i].decision, planned[i].ref
+		return planned[i].decision, planned[i].ref, false
 	}
-	return decideFile(file, prevIndex)
+	return decideFileHashed(file, prevIndex)
 }
 
-func checksumMatches(path, want string) bool {
+// checksumMatches reports whether the file at path hashes to want. err is set
+// when the file could not be read, in which case match is false.
+func checksumMatches(path, want string) (match bool, err error) {
 	got, err := sha256File(path)
-	return err == nil && got == want
-}
-
-// storedEntryMatches reports whether a journaled entry's object, stored under
-// this snapshot's own prefix, still holds exactly the recorded bytes. Only a
-// literal entry (never a reference into another snapshot) with a recorded
-// digest can match, and only through a provider that can read the stored
-// object back.
-func storedEntryMatches(ctx context.Context, digester providers.StoredObjectDigester, canVerify bool, entry SnapshotFile, snapshotID string) bool {
-	if !canVerify || entry.Checksum == "" || isReferenceEntry(entry, snapshotID) {
-		return false
+	if err != nil {
+		return false, err
 	}
-	stored, err := digester.StoredObjectDigest(ctx, entry.BackupPath)
-	return err == nil && stored.SHA256 == entry.Checksum && stored.Size == entry.Size
+	return got == want, nil
 }
 
 const (
@@ -492,20 +486,42 @@ type contextUploader interface {
 	UploadContext(ctx context.Context, localPath, remotePath string) error
 }
 
-// ProgressFn reports snapshot upload progress: files/bytes completed so far
-// out of the known totals. Called from the snapshot upload loop, throttled
-// (see progressThrottle) except for a final unconditional call after the
-// last file.
-//
-// snapshotID is the ID of the snapshot currently being written, or "" for
-// emissions that happen before a snapshot exists (the pre-scan whole-run
-// keepalive and the "scanning done" totals notice, both in backup.go). It is
-// carried on every progress emission so the SERVER learns the snapshot ID
-// while the run is still in flight, instead of only from the terminal result
-// (#3006): a dropped terminal result then still leaves backup_jobs.snapshot_id
-// pointing at the objects that were actually uploaded, so the snapshot can be
-// adopted into a restore point rather than orphaned in the bucket forever.
-type ProgressFn func(filesDone, filesTotal int, bytesDone, bytesTotal int64, snapshotID string)
+// RunProgress is one backup_run progress report. Every counter is cumulative
+// for the run and never decreases.
+type RunProgress struct {
+	// FilesDone/BytesDone are files and bytes completed so far (uploaded,
+	// resumed from the checkpoint journal, or referenced from the dedupe
+	// base) out of the known FilesTotal/BytesTotal. Their meaning is
+	// unchanged by the Verified counters below (#5410 accounting).
+	FilesDone, FilesTotal int
+	BytesDone, BytesTotal int64
+	// VerifiedFiles/VerifiedBytes count files, and their source sizes, that
+	// the run has finished CHECKING before deciding whether to upload them:
+	// the resume pass that re-reads every journaled file (and, for a
+	// snapshot continued from another job, the stored object) and the
+	// dedupe pre-pass that hashes a file whose modification time moved.
+	// Counted whether or not the check matched. These phases can read
+	// terabytes without completing a single upload, so without this counter
+	// a healthy resume looked wedged to the server's no-progress reaper
+	// (#11014).
+	VerifiedFiles int
+	VerifiedBytes int64
+	// SnapshotID is the ID of the snapshot currently being written, or ""
+	// for emissions that happen before a snapshot exists (the pre-scan
+	// whole-run keepalive and the "scanning done" totals notice, both in
+	// backup.go). It is carried on every progress emission so the SERVER
+	// learns the snapshot ID while the run is still in flight, instead of
+	// only from the terminal result (#3006): a dropped terminal result then
+	// still leaves backup_jobs.snapshot_id pointing at the objects that were
+	// actually uploaded, so the snapshot can be adopted into a restore point
+	// rather than orphaned in the bucket forever.
+	SnapshotID string
+}
+
+// ProgressFn reports snapshot progress (see RunProgress). Called from the
+// snapshot loop, throttled (see progressThrottle) except for a final
+// unconditional call after the last file.
+type ProgressFn func(RunProgress)
 
 // progressThrottle is the minimum interval between ProgressFn invocations
 // from the snapshot loop (the final call after the loop always fires
@@ -528,8 +544,10 @@ func setProgressThrottleForTest(d time.Duration) (restore func()) {
 // each COMPLETED file, so a single file whose upload (or 30s retry backoff)
 // takes longer than the server's stale-progress reaper window would look
 // dead server-side and get killed mid-upload — then resume from byte 0 next
-// run and get killed again, never completing. The keepalive keeps
-// last_progress_at fresh with unchanged counters instead.
+// run and get killed again, never completing. The keepalive re-sends the
+// counters, which keeps the job's liveness (last_keepalive_at) fresh; since
+// #2798 the server advances last_progress_at only when a counter (bytes,
+// files, or the #11014 verified counters) has actually grown.
 var progressKeepaliveInterval = 30 * time.Second
 
 // setProgressKeepaliveIntervalForTest overrides progressKeepaliveInterval so
@@ -668,6 +686,15 @@ type createSnapshotOptions struct {
 	systemStateManifest   *systemstate.SystemStateManifest
 	layoutManifest        *layout.Manifest
 	junctions             []SnapshotJunction
+	onWarning             func(string)
+}
+
+// withRunWarning receives non-fatal run warnings raised mid-pass (the window
+// forecast, #11014), called from the caller's goroutine. RunBackupContext
+// folds them into the job's Warning; they are delivered as they happen, so
+// a run that later fails still carries them.
+func withRunWarning(fn func(string)) createSnapshotOption {
+	return func(o *createSnapshotOptions) { o.onWarning = fn }
 }
 
 // withRunIdentity stamps identity onto the new snapshot's BackupIdentity —
@@ -725,9 +752,13 @@ func withLayout(manifest *layout.Manifest) createSnapshotOption {
 //   - Each walked file matching a journal entry on (sourcePath, size,
 //     modTime) is treated as already uploaded — skipped, but still carried
 //     into this run's manifest — with filesDone/bytesDone pre-seeded from
-//     the matched set before the loop starts, so the very first progress
-//     emission reflects the resume instead of a slow trickle of
-//     skip-iterations.
+//     the matched set before the loop starts, so the first emission that
+//     reports done work reflects the whole resume instead of a slow
+//     trickle of skip-iterations. Building the set re-reads each match
+//     (see the resume pass); emissions during it report verified progress
+//     only. A source hash or stored-object check an earlier pass recorded
+//     as passing, and still fresh, is not repeated, and that entry still
+//     counts as verified (see journal_verification.go).
 //   - Every freshly uploaded file is appended to the journal as it lands.
 //   - On a full success (manifest uploaded), the journal is completed
 //     (closed + removed) — the checkpoint is no longer needed. On every
@@ -910,6 +941,9 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	var progressMu sync.Mutex
 	var filesDone int
 	var bytesDone int64
+	// verifiedFiles/verifiedBytes: see RunProgress.VerifiedFiles.
+	var verifiedFiles int
+	var verifiedBytes int64
 	lastProgressAt := time.Now()
 	// inFlight adds the bytes read so far of the file being uploaded, so one
 	// large file advances the bar instead of freezing it (#5417). Reported
@@ -930,13 +964,28 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		}
 		lastProgressAt = time.Now()
 		reportedBytes = max(reportedBytes, bytesDone+inFlight.load())
-		onProgress(filesDone, filesTotal, reportedBytes, bytesTotal, snapshot.ID)
+		onProgress(RunProgress{
+			FilesDone: filesDone, FilesTotal: filesTotal,
+			BytesDone: reportedBytes, BytesTotal: bytesTotal,
+			VerifiedFiles: verifiedFiles, VerifiedBytes: verifiedBytes,
+			SnapshotID: snapshot.ID,
+		})
 	}
 	markDone := func(fileCount int, byteCount int64) {
 		progressMu.Lock()
 		filesDone += fileCount
 		bytesDone += byteCount
 		progressMu.Unlock()
+	}
+	// markVerified counts one file the run finished checking before deciding
+	// whether to upload it, and emits (throttled) so a long check pass is
+	// visibly moving server-side.
+	markVerified := func(byteCount int64) {
+		progressMu.Lock()
+		verifiedFiles++
+		verifiedBytes += max(byteCount, 0)
+		progressMu.Unlock()
+		emitProgress(false)
 	}
 	// markUploaded counts one uploaded file and drops its in-flight bytes
 	// under the same lock, so no emission sees the file counted twice (its
@@ -953,7 +1002,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// is in flight, the loop emits nothing — but the server-side stale reaper
 	// treats a silent running job as dead and cancels it. Re-emit the current
 	// counters every progressKeepaliveInterval so a long in-flight upload
-	// keeps the job's last_progress_at fresh. The same goroutine also emits
+	// keeps the job's liveness fresh. The same goroutine also emits
 	// (throttled) when inFlight signals that the current file's upload has
 	// read further, so provider read paths never block on onProgress. The
 	// goroutine is joined on
@@ -1030,72 +1079,65 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 	// Resume matching: build the full matched set up front (rather than
 	// deciding file-by-file inside the loop below) so filesDone/bytesDone
 	// can be pre-seeded with the resumed totals and reported in one jump
-	// before any real upload work happens.
+	// before any real upload work happens. Building it re-reads every
+	// journaled file (and, for a continued snapshot, every stored object)
+	// that no earlier pass recorded as checked: on a large resume that is
+	// hours of work, reported as it goes through the verified counters and
+	// stoppable between files (#11014).
 	resumedFiles := make(map[string]SnapshotFile)
+	// resumeChecked holds every file the resume pass examined, so a later
+	// dedupe hash of the same file is not counted as verified a second time.
+	resumeChecked := make(map[string]struct{})
 	// keyClaims holds the folded form of every object key this snapshot has
 	// assigned so far (#5582 — see objectkey_casefold.go). Resumed entries'
 	// keys are claimed up front, before any new upload picks a key: their
 	// objects already exist in the store, and a not-yet-uploaded twin that
 	// walks earlier must not land on them.
 	keyClaims := objectKeyClaims{}
+	// verifier is nil without a journal.
+	var verifier *resumeVerifier
 	if journal != nil {
 		var resumedBytes int64
-		tainted := journal.foldCollidingKeys()
-		// A snapshot continued from another job also needs the stored
-		// object to still hold the recorded bytes (see ContinueRun).
-		verifyStored := journal.VerifyStoredEntries()
-		digester, canVerifyStored := storedObjectDigesterOf(provider)
-		if verifyStored && canVerifyStored {
-			// Each check reads the stored object back; let a batching
-			// provider authorize those reads in batches.
-			var keys []string
-			for _, file := range files {
-				if entry, ok := journal.Lookup(journalLookupKey(file), file.size, file.modTime); ok && entry.BackupPath != "" {
-					keys = append(keys, entry.BackupPath)
-				}
-			}
-			providers.PrepareDownloads(unwrapProvider(provider), keys)
-		}
+		// Every check an earlier job's pass already recorded is skipped, and
+		// every new result is recorded as it lands, so a pass longer than a
+		// job's session still ends: the next job carries on from where this
+		// one stopped (#11043, see journal_verification.go).
+		verifier = newResumeVerifier(journal, provider, snapshot.ID)
+		verifier.prepareReadBacks(provider, files)
 		for _, file := range files {
-			if entry, ok := journal.Lookup(journalLookupKey(file), file.size, file.modTime); ok {
-				// Size and modification time can match a file whose content
-				// changed. Reuse the entry only when the source still hashes
-				// to the recorded digest (the digest of the uploaded source
-				// bytes — the same quantity sha256File computes). This costs
-				// one full read of every resumable file, still far cheaper
-				// than uploading it again; a mismatch or read error uploads
-				// the file afresh and the recorded digest is never replaced
-				// by anything but a new upload's.
-				if entry.Checksum == "" || !checksumMatches(file.sourcePath, entry.Checksum) {
-					log.Info("journaled file changed since it was uploaded; uploading it again",
-						"path", file.sourcePath,
-						"snapshotId", snapshot.ID,
-					)
-					continue
-				}
-				if tainted[entry.BackupPath] {
-					// A pre-#5582 journal stored this file and a case twin at
-					// keys one object answers to; re-upload rather than
-					// resume a possibly-overwritten object.
-					log.Warn("not resuming journaled file whose object key collides with a case twin; re-uploading",
-						"path", file.sourcePath,
-						"backupPath", entry.BackupPath,
-						"snapshotId", snapshot.ID,
-					)
-					continue
-				}
-				if verifyStored && !storedEntryMatches(ctx, digester, canVerifyStored, entry, snapshot.ID) {
-					log.Info("journaled object from an earlier job does not match its record; uploading it again",
-						"path", file.sourcePath,
-						"backupPath", entry.BackupPath,
-						"snapshotId", snapshot.ID,
-					)
-					continue
-				}
-				resumedFiles[journalLookupKey(file)] = entry
-				resumedBytes += entry.Size
-				keyClaims.claim(entry.BackupPath)
+			key := journalLookupKey(file)
+			entry, ok := journal.Lookup(key, file.size, file.modTime)
+			if !ok {
+				// New, or changed since its upload. If changed, the upload
+				// ahead overwrites the object its record vouches for.
+				journal.clearVerification(key)
+				continue
 			}
+			// This pass can read every journaled source file back (and, for a
+			// continued snapshot, every stored object), which for a multi-TB
+			// resume takes hours before the first upload: honour a stop
+			// between files, like the upload loop does. Nothing has been
+			// uploaded by this run yet and the journal is kept, along with the
+			// records this pass wrote, so the next job carries on from here.
+			if ctx.Err() != nil {
+				return nil, errBackupStopped
+			}
+			reuse, checked := verifier.reusable(ctx, file, entry)
+			resumeChecked[key] = struct{}{}
+			// A completed check counts whether or not it matched: the read is
+			// the work (#11014), and an entry an earlier pass already proved
+			// counts too, or a resume made of those would report no progress.
+			// A failed read does not, so a broken read path cannot pass for
+			// steady progress while everything is re-uploaded.
+			if checked {
+				markVerified(file.size)
+			}
+			if !reuse {
+				continue
+			}
+			resumedFiles[key] = entry
+			resumedBytes += entry.Size
+			keyClaims.claim(entry.BackupPath)
 		}
 		if len(resumedFiles) > 0 {
 			markDone(len(resumedFiles), resumedBytes)
@@ -1109,44 +1151,76 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		}
 	}
 
+	// markDedupeHashed counts a dedupe decision that read and hashed file,
+	// unless the resume pass above already counted that file.
+	markDedupeHashed := func(file backupFile, hashed bool) {
+		if !hashed {
+			return
+		}
+		if _, done := resumeChecked[journalLookupKey(file)]; done {
+			return
+		}
+		markVerified(file.size)
+	}
+
 	// Register the snapshot ID with the server BEFORE the first byte is
-	// uploaded (#3006). Every later emission carries it too, but this forced
-	// one guarantees it is sent even if the run dies during the very first
-	// file — and it is the only emission not subject to the throttle window,
-	// so the server learns the ID immediately rather than up to
-	// progressThrottle later.
+	// uploaded (#3006). Every later emission carries it too (the resume
+	// pass's throttled verified-progress emissions included), but this
+	// forced one guarantees it is sent before the first upload even when
+	// nothing was emitted yet — and it is the only emission not subject to
+	// the throttle window, so the server learns the ID immediately rather
+	// than up to progressThrottle later.
 	//
-	// Placed AFTER the resume pre-seed on purpose: emitting first would report
-	// filesDone/bytesDone as 0 on a resumed run and then jump up, and progress
-	// that appears to go backwards is precisely what the counters are not
-	// allowed to do (see startRunKeepalive in backup.go).
+	// Placed AFTER the resume pre-seed on purpose: the done counters jump
+	// straight from 0 to the resumed totals and never report a partial
+	// resume. Emissions during the resume pass carry only verified progress,
+	// with filesDone/bytesDone still 0 (#11014); no counter ever goes
+	// backwards (see startRunKeepalive in backup.go).
 	emitProgress(true)
 
 	// A provider that authorizes uploads in batches (a brokered writer)
 	// learns the uploads ahead, in order, with the keys the loop below will
 	// assign. The dedupe decisions are made once, here, and reused below.
 	var plannedDecisions []plannedDecision
+	// plannedBytes is what the file pass plans to upload, known only when the
+	// decisions are made up front; it feeds the window forecast (#11014).
+	var plannedBytes int64
 	if planner, ok := unwrapProvider(provider).(providers.UploadPlanner); ok {
 		plannedDecisions = make([]plannedDecision, len(files))
 		claims := keyClaims.clone()
 		var entries []providers.PlannedUpload
 		for i, file := range files {
+			if ctx.Err() != nil {
+				// Stopped mid-plan (this pass can hash for hours): stop
+				// planning; the file pass below sees the stop before it
+				// admits anything and takes the normal stop exit.
+				break
+			}
 			if file.kind != "" {
 				continue
 			}
 			if _, resumed := resumedFiles[journalLookupKey(file)]; resumed {
 				continue
 			}
-			decision, refEntry := decideFile(file, prevIndex)
+			decision, refEntry, hashed := decideFileHashed(file, prevIndex)
+			markDedupeHashed(file, hashed)
 			plannedDecisions[i] = plannedDecision{decided: true, decision: decision, ref: refEntry}
 			if decision == decideReference {
 				continue
 			}
 			naturalKey := ensureGzipExtension(path.Join(prefix, snapshotFilesDir, file.snapshotPath))
 			entries = append(entries, providers.PlannedUpload{LocalPath: file.sourcePath, Key: claims.assign(prefix, file.snapshotPath, naturalKey)})
+			plannedBytes += max(file.size, 0)
 		}
-		planner.PrepareUploads(entries)
+		if ctx.Err() == nil {
+			planner.PrepareUploads(entries)
+		}
 	}
+	forecast := newWindowForecast(provider, journal != nil)
+	forecast.begin(plannedBytes)
+	// uploadedBytes/failedBytes: source bytes of files this pass uploaded or
+	// gave up on, for the forecast.
+	var uploadedBytes, failedBytes int64
 
 	// The upload pool's state (#8381; the loop below documents the split
 	// between the workers and this goroutine). workerCtx is cancelled only
@@ -1324,13 +1398,17 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 				s.kind = slotContentless
 			} else if entry, ok := resumedFiles[journalLookupKey(file)]; ok {
 				s.kind, s.entry = slotResumed, entry
-			} else if decision, refEntry := plannedOrDecide(plannedDecisions, i, file, prevIndex); decision == decideReference {
+			} else if decision, refEntry, hashed := plannedOrDecide(plannedDecisions, i, file, prevIndex); decision == decideReference {
+				markDedupeHashed(file, hashed)
 				s.kind, s.entry = slotReference, refEntry
 			} else {
 				charge := max(file.size, 0)
 				if stagedBytes > 0 && stagedBytes+charge > uploadStagedBytesBudget {
+					// Not admitted: the file is decided again on a later pass,
+					// so it is counted when it is admitted, not here.
 					break
 				}
+				markDedupeHashed(file, hashed)
 				naturalKey := ensureGzipExtension(path.Join(prefix, snapshotFilesDir, file.snapshotPath))
 				backupPath := keyClaims.assign(prefix, file.snapshotPath, naturalKey)
 				if backupPath != naturalKey {
@@ -1461,6 +1539,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			inFlight.release(s.progress)
 			errs = append(errs, fmt.Errorf("failed to upload %s: %w", file.sourcePath, out.err))
 			failedSources = append(failedSources, file.sourcePath)
+			failedBytes += max(file.size, 0)
 			if out.reconcileFailed {
 				log.Warn("re-upload of a file that changed during its upload failed, skipping file",
 					"path", file.sourcePath,
@@ -1502,6 +1581,19 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 		snapshot.Size += entry.Size
 		markUploaded(file.size, s.progress)
 		emitProgress(false)
+		uploadedBytes += max(file.size, 0)
+		// Bytes the other uploads in flight have already read count as moved:
+		// with several workers on large files, completed files alone would
+		// understate the rate.
+		if warning := forecast.check(uploadedBytes+inFlight.load(), failedBytes); warning != "" {
+			log.Warn("backup selection is unlikely to finish within its storage session",
+				"snapshotId", snapshot.ID,
+				"warning", warning,
+			)
+			if options.onWarning != nil {
+				options.onWarning(warning)
+			}
+		}
 		if journal != nil {
 			// Record logs and swallows its own write failures — a dead
 			// journal degrades resume for next time, it never fails this
@@ -1530,6 +1622,11 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 
 	if err := ctx.Err(); err != nil {
 		return abortStopped()
+	}
+
+	// Nothing has been published yet, and nothing is if a reused object is gone.
+	if err := verifier.confirmStoredBeforePublish(provider, snapshot); err != nil {
+		return nil, err
 	}
 
 	// A resumed snapshot id may already hold a layout or system-state
@@ -2142,7 +2239,7 @@ func listSnapshotPrefixItems(provider providers.BackupProvider, snapshotID strin
 // ".gz" key, and only LocalProvider gzips on it (and gunzips on Download).
 // That layout is a cross-module contract — the BMR recovery client, API
 // presigned downloads, older agents and the stored-digest checks
-// (storedEntryMatches) all read cloud objects as raw bytes — so never add
+// (readBackStoredObject) all read cloud objects as raw bytes — so never add
 // or strip ".gz", and never start compressing cloud writes, without a
 // versioned per-entry encoding field shipped to every reader first (#7621).
 //

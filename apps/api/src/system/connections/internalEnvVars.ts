@@ -18,6 +18,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AGENT_CHANGES_MAX_BYTES_PER_ORG_PER_DAY: 'agent ingest quota knob',
   AGENT_CHANGES_MAX_ROWS_PER_DEVICE_PER_DAY: 'agent ingest quota knob',
   AGENT_CHANGES_MAX_ROWS_PER_ORG_PER_DAY: 'agent ingest quota knob',
+  AGENT_CONNECTIONS_MAX_PER_DEVICE: 'agent ingest cap (stored connections per device)',
   AGENT_EDITION_AUTO_MIGRATE_ENABLED: 'agent edition migration toggle',
   AGENT_ENROLL_RATE_LIMIT: 'rate limit knob',
   AGENT_ENROLL_RATE_WINDOW_SECONDS: 'rate limit knob',
@@ -61,7 +62,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AI_TOOL_INDEX: 'AI chat system-prompt tool index (lazy/full)',
   // ALERT_*
   ALERT_WORKER_CHUNK_SIZE: 'worker throughput knob',
+  ALERT_WORKER_CONCURRENCY: 'worker concurrency knob (default DB_POOL_MAX/4; DB_POOL_MAX/2 when BREEZE_ROLE=worker)',
   ALERT_WORKER_MAX_DEVICES_PER_RUN: 'worker throughput knob',
+  ALERT_WORKER_STAGGER_WINDOW_MS: 'evaluate-device stagger window',
   // API_*
   API_KEY_PRELOOKUP_RATE_LIMIT: 'rate limit knob',
   API_KEY_PRELOOKUP_RATE_WINDOW_SECONDS: 'rate limit knob',
@@ -85,6 +88,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AUTH_LEGACY_INVITE_PREVIEW_PATH: 'legacy route toggle',
   AUTH_REFRESH_RATE_LIMIT: 'rate limit knob',
   AUTH_REFRESH_RATE_WINDOW_SECONDS: 'rate limit knob',
+  USER_RATE_LIMIT_PER_MINUTE: 'rate limit knob',
   AUTH_TRANSITION_TEST_CONTROL_SECRET: 'test-only barrier secret',
   // AUTOMATION_*
   AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET: 'legacy compatibility toggle',
@@ -127,6 +131,10 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BREEZE_INTEGRATION_ALLOW_LEDGER_DRIFT: 'test harness (testUtils)',
   BREEZE_INTEGRATION_LOCK_NOWAIT: 'test harness (testUtils)',
   BREEZE_LEGACY_ALERTING_SWEEP: 'boot sweep opt-out (legacy alerting retirement)',
+  BREEZE_OEM_UPDATES_DISABLED_LANES: 'vendor update per-lane kill switch (#11065)',
+  BREEZE_OEM_UPDATES_ENABLED: 'vendor update rollout flag (#11065, dark by default)',
+  BREEZE_OEM_UPDATES_LAB_DEVICE_IDS: 'vendor update lab-device gate override (refused in production)',
+  BREEZE_OEM_UPDATES_PARTNER_ALLOWLIST: 'vendor update rollout allowlist (#11065)',
   BREEZE_PLATFORM_ADMINS: 'platform-admin bootstrap list',
   BREEZE_REGION: 'hosted topology label',
   BREEZE_ROLE: 'process role (api/worker)',
@@ -397,6 +405,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   OAUTH_DEBUG: 'debug logging flag',
   // OFFBOARDING_*
   OFFBOARDING_DRAIN_WINDOW_HOURS: 'timing knob',
+  // OEM_UPDATES_*
+  OEM_UPDATES_MAX_DISPATCH_PER_TICK: 'worker throughput knob (vendor update dispatch cap per tick, default 200)',
   // OFFLINE_*
   OFFLINE_DETECTOR_CHUNK_SIZE: 'worker throughput knob',
   OFFLINE_DETECTOR_MAX_DEVICES_PER_RUN: 'worker throughput knob',
@@ -487,6 +497,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   RESTORE_POINT_ATTEMPT_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   RESTORE_POINT_ATTEMPT_RETENTION_DAYS: 'data retention window',
   RESTORE_POINT_ATTEMPT_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
+  WAKE_ATTEMPT_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
+  WAKE_ATTEMPT_RETENTION_DAYS: 'data retention window',
+  WAKE_ATTEMPT_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   WEBHOOK_DELIVERY_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   WEBHOOK_DELIVERY_RETENTION_DAYS: 'data retention window',
   WEBHOOK_DELIVERY_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
@@ -568,7 +581,16 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   TERMINAL_INPUT_MAX_BYTES_PER_MIN: 'rate limit knob',
   TERMINAL_INPUT_MAX_MESSAGES_PER_MIN: 'rate limit knob',
   // TICKET_*
+  TICKET_IMPORT_GLOBAL_CONCURRENCY: 'worker concurrency knob',
+  TICKET_IMPORT_LEASE_MS: 'timing knob',
   TICKET_IMPORT_MAX_BYTES_PER_HOUR: 'rate limit knob',
+  TICKET_IMPORT_MAX_CLOCK_SKEW_MS: 'timing knob',
+  TICKET_IMPORT_MAX_ISSUES_PER_RUN: 'report size cap',
+  TICKET_IMPORT_MAX_TICKET_BYTES: 'size cap',
+  TICKET_IMPORT_SLICE_MS: 'timing knob',
+  TICKET_IMPORT_SOURCE_CONCURRENCY: 'outbound concurrency knob',
+  TICKET_IMPORT_SOURCE_TIMEOUT_MS: 'timing knob',
+  TICKET_IMPORT_WORKER_CONCURRENCY: 'worker concurrency knob',
   TICKET_OUTBOX_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   TICKET_OUTBOX_RETENTION_DAYS: 'data retention window',
   TICKET_OUTBOX_RETENTION_MAX_BATCHES: 'retention sweep batch knob',

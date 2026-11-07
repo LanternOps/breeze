@@ -22,6 +22,13 @@ import { requireOrgWideIntegrationAccess } from '../middleware/integrationConnec
 import { scheduleDnsEventSync, schedulePolicySync } from '../jobs/dnsSyncJob';
 import { DNS_INTEGRATION_DELETING_STATUS, enqueueDnsIntegrationDelete } from '../jobs/dnsSecurityRetention';
 import { writeRouteAudit } from '../services/auditEvents';
+import {
+  decodeDnsEventsCursor,
+  dnsEventsActionCondition,
+  listDnsSecurityEventsPage,
+  resolveDnsEventsWindow,
+  type DnsEventsCursor
+} from '../services/dnsSecurityEventsPage';
 import { captureException } from '../services/sentry';
 import { encryptSecret } from '../services/secretCrypto';
 import {
@@ -169,6 +176,35 @@ function resolveOrgId(
   return { error: 'orgId is required for this scope', status: 400 };
 }
 
+type OrgConditionFor = (column: PgColumn) => SQL | undefined;
+
+/**
+ * #10931 — the org filter for a list or aggregate read. /dns-security is an
+ * org-or-all page: fetchWithAuth adds the switcher's `?orgId=` to every call
+ * when an org is selected, and nothing in the All-organizations view.
+ *
+ * - No `orgId`: every org the caller can reach, as before.
+ * - An `orgId` the caller can reach: that org only. The caller's own reach is
+ *   still ANDed in, so a selection can only narrow the read.
+ * - Any other `orgId` (a foreign partner's org, or another org for an
+ *   org-scope token): 403, before any query runs.
+ *
+ * Mutation routes address one row by id and check the row's own org, so they
+ * do not take `?orgId=`.
+ */
+function resolveReadOrgScope(
+  auth: Pick<AuthContext, 'orgCondition' | 'canAccessOrg'>,
+  requestedOrgId: string | undefined
+): { orgCondition: OrgConditionFor } | { error: string; status: 403 } {
+  if (!requestedOrgId) {
+    return { orgCondition: (column) => auth.orgCondition(column) };
+  }
+  if (!auth.canAccessOrg(requestedOrgId)) {
+    return { error: 'Access to this organization denied', status: 403 };
+  }
+  return { orgCondition: (column) => and(eq(column, requestedOrgId), auth.orgCondition(column)) };
+}
+
 /**
  * #10054 — whether the active integrations behind a stats read store allowed
  * traffic, so the response can say "not stored" instead of reporting zero.
@@ -176,11 +212,11 @@ function resolveOrgId(
  * from it, so a site-restricted caller learns nothing site-specific.
  */
 async function loadAllowedTrafficCoverage(
-  auth: AuthContext,
+  orgCondition: OrgConditionFor,
   integrationId: string | undefined
 ): Promise<AllowedTrafficCoverage> {
   const conditions: SQL[] = [eq(dnsFilterIntegrations.isActive, true)];
-  withOrgCondition(conditions, auth.orgCondition(dnsFilterIntegrations.orgId));
+  withOrgCondition(conditions, orgCondition(dnsFilterIntegrations.orgId));
   if (integrationId) conditions.push(eq(dnsFilterIntegrations.id, integrationId));
   const rows = await db
     .select({ config: dnsFilterIntegrations.config })
@@ -294,7 +330,15 @@ const createIntegrationSchema = z.object({
   }
 });
 
+// #10931 — the org selected in the switcher; see resolveReadOrgScope.
+const readOrgIdSchema = z.string().guid().optional();
+
+const orgOnlyQuerySchema = z.object({
+  orgId: readOrgIdSchema
+});
+
 const listEventsQuerySchema = z.object({
+  orgId: readOrgIdSchema,
   start: z.string().optional(),
   end: z.string().optional(),
   action: z.enum(dnsActionEnum.enumValues).optional(),
@@ -303,10 +347,13 @@ const listEventsQuerySchema = z.object({
   deviceId: z.string().guid().optional(),
   integrationId: z.string().guid().optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
-  offset: z.coerce.number().int().min(0).optional()
+  offset: z.coerce.number().int().min(0).optional(),
+  // Opaque keyset cursor from a previous page's `pagination.nextCursor` (#10054).
+  cursor: z.string().min(1).max(512).optional()
 });
 
 const statsQuerySchema = z.object({
+  orgId: readOrgIdSchema,
   start: z.string().optional(),
   end: z.string().optional(),
   integrationId: z.string().guid().optional(),
@@ -317,6 +364,7 @@ const statsQuerySchema = z.object({
 });
 
 const topBlockedQuerySchema = z.object({
+  orgId: readOrgIdSchema,
   start: z.string().optional(),
   end: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).optional()
@@ -360,11 +408,16 @@ dnsSecurityRoutes.get(
   // event/stat routes and the web/AI entry points instead of allowing every
   // authenticated tenant member to enumerate provider and sync metadata.
   requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  zValidator('query', orgOnlyQuerySchema),
   async (c) => {
     const auth = c.get('auth');
+    const scope = resolveReadOrgScope(auth, c.req.valid('query').orgId);
+    if ('error' in scope) {
+      return c.json({ error: scope.error }, scope.status);
+    }
 
     const conditions: SQL[] = [];
-    withOrgCondition(conditions, auth.orgCondition(dnsFilterIntegrations.orgId));
+    withOrgCondition(conditions, scope.orgCondition(dnsFilterIntegrations.orgId));
 
     const integrations = await db
       .select({
@@ -682,6 +735,10 @@ dnsSecurityRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
+    const scope = resolveReadOrgScope(auth, query.orgId);
+    if ('error' in scope) {
+      return c.json({ error: scope.error }, scope.status);
+    }
 
     const start = parseDateOrNull(query.start);
     if (query.start && !start) {
@@ -693,16 +750,30 @@ dnsSecurityRoutes.get(
       return c.json({ error: 'Invalid end date' }, 400);
     }
 
-    const windowError = validateTimeWindow(start, end);
-    if (windowError) {
-      return c.json({ error: windowError }, 400);
+    // #10054: a request with no `start` reads the last 7 days, not the org's
+    // whole history, and the 90-day ceiling covers an open-ended `start` too.
+    const window = resolveDnsEventsWindow(start, end);
+    if (!window.ok) {
+      return c.json({ error: window.error }, 400);
+    }
+
+    let cursor: DnsEventsCursor | null = null;
+    if (query.cursor !== undefined) {
+      if (query.offset !== undefined) {
+        return c.json({ error: 'cursor and offset cannot be combined' }, 400);
+      }
+      cursor = decodeDnsEventsCursor(query.cursor);
+      if (!cursor) {
+        return c.json({ error: 'Invalid cursor' }, 400);
+      }
     }
 
     const conditions: SQL[] = [];
-    withOrgCondition(conditions, auth.orgCondition(dnsSecurityEvents.orgId));
-    if (start) conditions.push(gte(dnsSecurityEvents.timestamp, start));
-    if (end) conditions.push(lte(dnsSecurityEvents.timestamp, end));
-    if (query.action) conditions.push(eq(dnsSecurityEvents.action, query.action));
+    withOrgCondition(conditions, scope.orgCondition(dnsSecurityEvents.orgId));
+    conditions.push(gte(dnsSecurityEvents.timestamp, window.start));
+    if (window.end) conditions.push(lte(dnsSecurityEvents.timestamp, window.end));
+    // Literal, so the blocked-only list can use the partial index under a cached plan.
+    if (query.action) conditions.push(dnsEventsActionCondition(query.action));
     if (query.category) conditions.push(eq(dnsSecurityEvents.category, query.category));
     if (query.deviceId) conditions.push(eq(dnsSecurityEvents.deviceId, query.deviceId));
     if (query.integrationId) conditions.push(eq(dnsSecurityEvents.integrationId, query.integrationId));
@@ -722,46 +793,27 @@ dnsSecurityRoutes.get(
 
     const limit = query.limit ?? 100;
     const offset = query.offset ?? 0;
-    const where = whereOrUndefined(conditions);
 
-    const [events, totalRows] = await Promise.all([
-      db
-        .select({
-          id: dnsSecurityEvents.id,
-          orgId: dnsSecurityEvents.orgId,
-          integrationId: dnsSecurityEvents.integrationId,
-          deviceId: dnsSecurityEvents.deviceId,
-          timestamp: dnsSecurityEvents.timestamp,
-          domain: dnsSecurityEvents.domain,
-          queryType: dnsSecurityEvents.queryType,
-          action: dnsSecurityEvents.action,
-          category: dnsSecurityEvents.category,
-          threatType: dnsSecurityEvents.threatType,
-          sourceIp: dnsSecurityEvents.sourceIp,
-          sourceHostname: dnsSecurityEvents.sourceHostname,
-          providerEventId: dnsSecurityEvents.providerEventId,
-          metadata: dnsSecurityEvents.metadata,
-          deviceHostname: devices.hostname
-        })
-        .from(dnsSecurityEvents)
-        .leftJoin(devices, eq(dnsSecurityEvents.deviceId, devices.id))
-        .where(where)
-        .orderBy(desc(dnsSecurityEvents.timestamp), desc(dnsSecurityEvents.id))
-        .limit(limit)
-        .offset(offset),
-      db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(dnsSecurityEvents)
-        .where(where)
-    ]);
+    const page = await listDnsSecurityEventsPage({
+      where: whereOrUndefined(conditions),
+      limit,
+      cursor,
+      offset,
+    });
 
     return c.json({
-      data: events,
+      data: page.rows,
       pagination: {
         limit,
         offset,
-        total: Number(totalRows[0]?.count ?? 0)
-      }
+        total: page.total,
+        totalCapped: page.totalCapped,
+        nextCursor: page.nextCursor,
+      },
+      window: {
+        start: window.start.toISOString(),
+        end: window.end ? window.end.toISOString() : null,
+      },
     });
   }
 );
@@ -776,6 +828,10 @@ dnsSecurityRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
+    const scope = resolveReadOrgScope(auth, query.orgId);
+    if ('error' in scope) {
+      return c.json({ error: scope.error }, scope.status);
+    }
 
     const start = parseDateOrNull(query.start);
     if (query.start && !start) {
@@ -793,7 +849,7 @@ dnsSecurityRoutes.get(
     }
 
     const conditions: SQL[] = [];
-    withOrgCondition(conditions, auth.orgCondition(dnsSecurityEvents.orgId));
+    withOrgCondition(conditions, scope.orgCondition(dnsSecurityEvents.orgId));
     if (start) conditions.push(gte(dnsSecurityEvents.timestamp, start));
     if (end) conditions.push(lte(dnsSecurityEvents.timestamp, end));
     if (query.integrationId) conditions.push(eq(dnsSecurityEvents.integrationId, query.integrationId));
@@ -819,7 +875,7 @@ dnsSecurityRoutes.get(
 
     if (shouldUseAggregations(start, end)) {
       const aggConditions: SQL[] = [];
-      withOrgCondition(aggConditions, auth.orgCondition(dnsEventAggregations.orgId));
+      withOrgCondition(aggConditions, scope.orgCondition(dnsEventAggregations.orgId));
       if (start) aggConditions.push(gte(dnsEventAggregations.date, toDateKey(start)));
       if (end) aggConditions.push(lte(dnsEventAggregations.date, toDateKey(end)));
       if (query.integrationId) aggConditions.push(eq(dnsEventAggregations.integrationId, query.integrationId));
@@ -942,7 +998,7 @@ dnsSecurityRoutes.get(
         const blockedRate = summaryRow.totalQueries > 0
           ? Number(((summaryRow.blockedQueries / summaryRow.totalQueries) * 100).toFixed(2))
           : 0;
-        const allowedTraffic = await loadAllowedTrafficCoverage(auth, query.integrationId);
+        const allowedTraffic = await loadAllowedTrafficCoverage(scope.orgCondition, query.integrationId);
 
         return c.json({
           summary: applyAllowedTrafficCoverage({ ...summaryRow, blockedRate }, allowedTraffic, query.action),
@@ -1013,7 +1069,7 @@ dnsSecurityRoutes.get(
     const blockedRate = summaryRow.totalQueries > 0
       ? Number(((summaryRow.blockedQueries / summaryRow.totalQueries) * 100).toFixed(2))
       : 0;
-    const allowedTraffic = await loadAllowedTrafficCoverage(auth, query.integrationId);
+    const allowedTraffic = await loadAllowedTrafficCoverage(scope.orgCondition, query.integrationId);
 
     return c.json({
       summary: applyAllowedTrafficCoverage({ ...summaryRow, blockedRate }, allowedTraffic, query.action),
@@ -1038,6 +1094,10 @@ dnsSecurityRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
+    const scope = resolveReadOrgScope(auth, query.orgId);
+    if ('error' in scope) {
+      return c.json({ error: scope.error }, scope.status);
+    }
 
     const start = parseDateOrNull(query.start);
     if (query.start && !start) {
@@ -1064,7 +1124,7 @@ dnsSecurityRoutes.get(
     }
 
     const conditions: SQL[] = [eq(dnsSecurityEvents.action, 'blocked')];
-    withOrgCondition(conditions, auth.orgCondition(dnsSecurityEvents.orgId));
+    withOrgCondition(conditions, scope.orgCondition(dnsSecurityEvents.orgId));
     if (start) conditions.push(gte(dnsSecurityEvents.timestamp, start));
     if (end) conditions.push(lte(dnsSecurityEvents.timestamp, end));
     if (allowedDeviceIds !== null) {
@@ -1073,7 +1133,7 @@ dnsSecurityRoutes.get(
 
     if (shouldUseAggregations(start, end)) {
       const aggConditions: SQL[] = [];
-      withOrgCondition(aggConditions, auth.orgCondition(dnsEventAggregations.orgId));
+      withOrgCondition(aggConditions, scope.orgCondition(dnsEventAggregations.orgId));
       if (start) aggConditions.push(gte(dnsEventAggregations.date, toDateKey(start)));
       if (end) aggConditions.push(lte(dnsEventAggregations.date, toDateKey(end)));
       if (allowedDeviceIds !== null) {
@@ -1130,10 +1190,15 @@ dnsSecurityRoutes.get(
   '/policies',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  zValidator('query', orgOnlyQuerySchema),
   async (c) => {
     const auth = c.get('auth');
+    const scope = resolveReadOrgScope(auth, c.req.valid('query').orgId);
+    if ('error' in scope) {
+      return c.json({ error: scope.error }, scope.status);
+    }
     const conditions: SQL[] = [];
-    withOrgCondition(conditions, auth.orgCondition(dnsPolicies.orgId));
+    withOrgCondition(conditions, scope.orgCondition(dnsPolicies.orgId));
 
     const policies = await db
       .select({

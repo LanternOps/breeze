@@ -78,15 +78,18 @@ export async function listTicketFormsForOrg(org: OrgRef, opts?: { portalOnly?: b
  *
  * Two EXISTS probes (any-links / link-for-this-org) in one query — mirrors
  * the NOT EXISTS/EXISTS shape in listTicketFormsForOrg's WHERE — rather than
- * fetching up to 500 link rows and doing the membership check in JS.
+ * fetching up to 500 link rows and doing the membership check in JS. The
+ * correlation goes through eq(), not bare ${column} chunks: a single-table
+ * select strips qualifiers from direct chunks, which bound `form_id = id` to the
+ * link table and read every form as having no allowlist (#9692).
  */
 async function isOrgAllowedForPartnerWideForm(formId: string, orgId: string): Promise<boolean> {
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db
         .select({
-          anyLinks: sql<boolean>`EXISTS (SELECT 1 FROM ${ticketFormOrgLinks} WHERE ${ticketFormOrgLinks.formId} = ${ticketForms.id})`,
-          linkForOrg: sql<boolean>`EXISTS (SELECT 1 FROM ${ticketFormOrgLinks} WHERE ${ticketFormOrgLinks.formId} = ${ticketForms.id} AND ${ticketFormOrgLinks.orgId} = ${orgId})`
+          anyLinks: sql<boolean>`EXISTS (SELECT 1 FROM ${ticketFormOrgLinks} WHERE ${eq(ticketFormOrgLinks.formId, ticketForms.id)})`,
+          linkForOrg: sql<boolean>`EXISTS (SELECT 1 FROM ${ticketFormOrgLinks} WHERE ${and(eq(ticketFormOrgLinks.formId, ticketForms.id), eq(ticketFormOrgLinks.orgId, orgId))})`
         })
         .from(ticketForms)
         .where(eq(ticketForms.id, formId))

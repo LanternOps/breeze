@@ -41,6 +41,7 @@
     "stalledTooltip": "Aucune donnée reçue depuis {{minutes}} min",
     "filesProgress": "{{done}} / {{total}} fichiers",
     "speedValue": "{{value}}/s",
+    "etaValue": "encore environ {{value}}",
     "created": "Création",
     "updated": "Mise à jour",
     "files": "Dossiers",
@@ -48,7 +49,6 @@
     "policyId": "Politique ID",
     "featureLinkId": "Lien de fonctionnalité ID",
     "errorLog": "Journal d’erreurs",
-    "savings": "{{protected}} protégés — {{uploaded}} téléversés",
     "errorCount_one": "{{count}} erreur",
     "errorCount_other": "{{count}} erreurs",
     "failedCount_one": "{{count}} en échec",
@@ -179,6 +179,7 @@
     "oneOrMoreVssWritersAreNotStable": "Un ou plusieurs rédacteurs VSS ne sont pas stables. Consultez les derniers écrits des auteurs avant la prochaine édition.",
     "vssUnprotectedVolumes": "Lu à partir du volume actif, et non d’une copie fantôme VSS : {{volumes}}. Les fichiers en cours d’utilisation sur ces volumes peuvent avoir été ignorés ou capturés dans un état incohérent.",
     "lastBackupFailed": "Échec de la dernière sauvegarde",
+    "lastBackupFailedWithCategory": "Échec de la dernière sauvegarde : {{category}}",
     "lastBackupCompletedWithWarnings": "Dernière sauvegarde terminée avec des avertissements",
     "lastBackupCompletedWithErrors": "Dernière sauvegarde terminée avec des erreurs",
     "writer": "Écrivain",
@@ -223,7 +224,26 @@
     "hold": "Tiens",
     "standard": "Standard",
     "restorePointCount_one": "{{count}} point de restauration",
-    "restorePointCount_other": "{{count}} points de restauration"
+    "restorePointCount_other": "{{count}} points de restauration",
+    "activePhase": {
+      "waiting_for_device": "Envoyée à l'appareil, en attente de démarrage",
+      "queued_on_device": "En attente de la fin d'une autre sauvegarde sur cet appareil",
+      "resuming": "Reprise d’une sauvegarde interrompue",
+      "scanning": "Analyse des fichiers",
+      "backing_up": "Sauvegarde en cours"
+    },
+    "activeJobs": {
+      "title": "Sauvegarde en cours d’exécution",
+      "processedOfTotal": "{{done}} sur {{total}} traités",
+      "processed": "{{done}} traités",
+      "lastHeard": "Dernier signal de l'appareil : {{relative}}",
+      "mode": {
+        "file": "Sauvegarde de fichiers",
+        "system_image": "Sauvegarde d’image système",
+        "mssql": "Sauvegarde SQL Server",
+        "hyperv": "Sauvegarde Hyper-V"
+      }
+    }
   },
   "deviceVaultStatus": {
     "loadingVaultStatus": "Chargement de l’état du coffre...",
@@ -651,7 +671,19 @@
     "providerEnforcedImmutabilityCannotBeReleasedFromBreeze": "L’immutabilité imposée par le fournisseur ne peut pas être libérée de Breeze.",
     "fileTree": "Arbre de fichiers",
     "noFileTreeAvailable": "Aucun arbre de fichiers disponible.",
-    "fileIndexUnavailable": "Cet instantané contient des fichiers, mais son index de fichiers n’est pas disponible ; ils ne peuvent donc pas être affichés ici.",
+    "fileIndexBuilding": "Préparation de la liste des fichiers de cet instantané. Cela peut prendre quelques minutes pour les sauvegardes volumineuses.",
+    "fileIndexUnavailable": "La liste des fichiers de cet instantané n’est pas disponible pour le moment. Vous pouvez tout de même restaurer l’instantané complet.",
+    "fileIndexIntegrityFailed": "Cet instantané a échoué à la vérification d’intégrité ; ses fichiers ne peuvent donc pas être affichés.",
+    "fileIndexDeviceLocal": "Cet instantané est stocké sur l’appareil et Breeze ne peut pas encore y lire sa liste de fichiers.",
+    "fileIndexRetry": "Réessayer",
+    "searchPlaceholder": "Rechercher des fichiers dans cet instantané",
+    "searchEmpty": "Aucun fichier ne correspond",
+    "searchTimeout": "La recherche a pris trop de temps. Réessayez.",
+    "browseTimeout": "L'affichage de ce dossier a pris trop de temps. Réessayez.",
+    "searchLoadMore": "Charger plus",
+    "searchRestoreFile": "Restaurer ce fichier",
+    "searchMinLength": "Saisissez au moins 2 caractères",
+    "searchLoading": "Recherche en cours…",
     "path": "Chemin :",
     "useTheRestoreWorkflowToRecoverOrExport": "Utilisez le flux de restauration pour récupérer ou exporter des fichiers à partir de cet instantané.",
     "select": "Sélectionner",
@@ -1068,7 +1100,8 @@
       "over_quota": "Quota dépassé",
       "no_selection": "Aucune sélection",
       "not_started": "Non démarrée",
-      "unknown": "Inconnu"
+      "unknown": "Inconnu",
+      "paused": "En pause"
     },
     "recency": {
       "never": "Jamais",
@@ -1101,7 +1134,14 @@
       "used": "Utilisé",
       "history": "28 derniers jours",
       "errors": "Erreurs",
+      "verifiedBootable": "Démarrage vérifié",
       "agent": "Agent"
+    },
+    "verifiedBootable": {
+      "passed": "Réussi",
+      "failed": "Échec",
+      "never_run": "Jamais exécuté",
+      "not_applicable": "s.o."
     },
     "dataSource": {
       "files": "Fichiers et dossiers",
@@ -1110,6 +1150,7 @@
       "hyperv": "Hyper-V",
       "vmware": "VMware",
       "bare_metal": "Bare metal",
+      "image": "Image disque",
       "m365_mail": "Messagerie Microsoft 365",
       "m365_sharepoint": "SharePoint",
       "m365_exchange": "Exchange",
@@ -1130,6 +1171,7 @@
       "customer": "Client du fournisseur",
       "lastSuccess": "Dernière sauvegarde réussie",
       "lastSession": "Dernière session",
+      "bootCheck": "Dernier test de démarrage",
       "unlink": "Dissocier",
       "unlinkConfirm": "Dissocier cet appareil du fournisseur de l'appareil Breeze ? Il reste dans le produit de sauvegarde et peut être réassocié.",
       "unlinkedToast": "Appareil du fournisseur dissocié",
@@ -1184,5 +1226,71 @@
     "summary_one": "{{count}} point d'analyse ignoré : les jonctions et les points de montage ne sont ni suivis ni restaurés. C'est normal, ce n'est pas une erreur.",
     "summary_other": "{{count}} points d'analyse ignorés : les jonctions et les points de montage ne sont ni suivis ni restaurés. C'est normal, ce n'est pas une erreur.",
     "showDetails": "Afficher les chemins ignorés"
+  },
+  "failureCategory": {
+    "device_offline": {
+      "label": "Appareil hors ligne",
+      "hint": "L’appareil a perdu sa connexion à Breeze pendant la sauvegarde. Laissez-le allumé et en ligne pendant toute la fenêtre de sauvegarde."
+    },
+    "timeout": {
+      "label": "Bloquée ou délai dépassé",
+      "hint": "La sauvegarde a cessé de progresser ou a dépassé sa limite de temps. Les très grandes sauvegardes peuvent nécessiter plus d’une fenêtre. Vérifiez la charge de l’appareil et la taille de la sélection de sauvegarde."
+    },
+    "storage": {
+      "label": "Problème de stockage",
+      "hint": "Breeze n’a pas pu écrire dans la destination de sauvegarde, ou l’autorisation de téléversement a expiré. Testez la configuration du stockage et vérifiez ses identifiants et l’espace libre."
+    },
+    "agent": {
+      "label": "Problème d’agent",
+      "hint": "Le composant de sauvegarde de l’appareil s’est arrêté de façon inattendue. Mettez à jour l’agent et relancez la sauvegarde. Si le problème persiste, consultez les journaux de l’agent sur l’appareil."
+    },
+    "configuration": {
+      "label": "Problème de configuration",
+      "hint": "Il n’y avait rien de valide à sauvegarder, ou la configuration de sauvegarde a changé pendant le démarrage de la tâche. Vérifiez le profil de sauvegarde de l’appareil."
+    },
+    "source_access": {
+      "label": "Fichiers illisibles",
+      "hint": "Certains fichiers étaient verrouillés, en cours d’utilisation ou illisibles par l’agent. Vérifiez les fichiers listés ci-dessous et l’état de VSS."
+    },
+    "cancelled": {
+      "label": "Annulée",
+      "hint": "Arrêtée par un utilisateur, ou par Breeze, avant la fin."
+    },
+    "unknown": {
+      "label": "Autre erreur",
+      "hint": "Breeze ne reconnaît pas encore cette erreur. Le message complet est affiché ci-dessous."
+    },
+    "troubleshootingLink": "Guide de dépannage"
+  },
+  "fullRunReason": {
+    "no_prior_snapshot": "Première sauvegarde pour cet appareil et cette destination",
+    "base_expired": "La sauvegarde précédente avait expiré selon la rétention",
+    "storage_identity_changed": "La destination de sauvegarde a changé",
+    "backup_type_mismatch": "La sauvegarde précédente était d'un autre type",
+    "base_job_not_completed": "Aucune sauvegarde antérieure ne s'est terminée avec succès",
+    "base_retired": "La sauvegarde précédente a été supprimée par la rétention",
+    "base_retired_race": "La sauvegarde précédente a été supprimée par la rétention",
+    "base_deleted_race": "La sauvegarde précédente a été supprimée par la rétention",
+    "no_verified_base": "Aucune sauvegarde antérieure n'a réussi la vérification d'intégrité",
+    "key_root_changed": "Le dossier de destination (préfixe) a changé",
+    "base_key_root_unreadable": "L'emplacement de stockage de la sauvegarde précédente n'a pas pu être lu",
+    "invalid_destination_prefix": "Le préfixe de destination n'est pas valide",
+    "nothing_reused": "Une sauvegarde antérieure était disponible, mais aucun fichier inchangé n'a pu être réutilisé",
+    "unrecorded": "Raison non enregistrée (cette sauvegarde a eu lieu avant que Breeze ne la consigne)"
+  },
+  "jobDataSummary": {
+    "uploadedAndReused": "{{uploaded}} téléversés · {{reused}} réutilisés",
+    "processedBeforeStopped": "{{processed}} traités avant l'arrêt",
+    "full": "Complète",
+    "heading": "Ce que cette exécution a stocké",
+    "protected": "Protégés",
+    "uploadedThisRun": "Téléversés pendant cette exécution",
+    "reusedFromEarlier": "Réutilisés à partir de sauvegardes antérieures",
+    "backupType": "Type de sauvegarde",
+    "incremental": "Incrémentielle",
+    "fullWithReason": "Complète : {{reason}}",
+    "explainer": "Seuls les fichiers nouveaux ou modifiés sont téléversés. Les fichiers inchangés sont réutilisés à partir des sauvegardes antérieures de cet appareil vers la même destination.",
+    "learnMore": "Fonctionnement des sauvegardes incrémentielles",
+    "resumedAt": "Cette exécution a repris une sauvegarde interrompue le {{time}}."
   }
 }

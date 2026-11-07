@@ -3,6 +3,7 @@ import { eq, sql } from 'drizzle-orm';
 import { captureMessage } from './sentry';
 import { tightenLockTimeout, lockTimeoutWasChanged } from '../db/lockTimeout';
 import { devices } from '../db/schema';
+import { assertNoUnresolvedIsolation } from './networkIsolation/lifecycle';
 // Shared postgres-js/drizzle row-count reader. Imported rather than re-derived:
 // this repo already has several copies of the same three-shape check, and
 // getting it wrong here reports the opposite of the truth (see the lock check
@@ -229,6 +230,8 @@ export async function deleteDeviceCascade(
       tags: { device_deletion_warning: 'parent-lock-missing' },
     });
   }
+
+  await assertNoUnresolvedIsolation(tx, { deviceId }, 'delete', { lockDevices: false });
 
   // Keep the device's backup storage objects (#7982), exactly as org erasure
   // keeps an erased org's (#7980). The cascade below deletes the device's

@@ -11,6 +11,7 @@ vi.mock('../../db', async (importOriginal) => {
     ...actual,
     db: { ...actual.db, select: (...args: unknown[]) => selectMock(...args) },
     withSystemDbAccessContext: async (fn: () => unknown) => fn(),
+    withSystemDbAccessContextIsolated: async (fn: () => unknown) => fn(),
   };
 });
 
@@ -103,6 +104,7 @@ describe('backup verification selected-site database failure', () => {
     const health = await getBackupHealthSummary(orgId, [siteId]);
 
     expect(health).toEqual({
+      readFailed: true,
       verification: {
         total: 0,
         passedLast24h: 0,

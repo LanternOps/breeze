@@ -21,6 +21,7 @@ const {
   fireEscalationLatchMock,
   isCooldownActiveMock,
   isFlappingMock,
+  scheduleStagedAlertDispatchMock,
   callOrder,
 } = vi.hoisted(() => {
   const resultsQueue: unknown[][] = [];
@@ -75,9 +76,12 @@ const {
     fireEscalationLatchMock: vi.fn(),
     isCooldownActiveMock: vi.fn(),
     isFlappingMock: vi.fn(),
+    scheduleStagedAlertDispatchMock: vi.fn(),
   };
 });
 
+vi.mock('./alertLifecycle/resolve', async (importOriginal) =>
+  (await import('../testUtils/alertLifecycleMock')).legacyLifecycleModule(await importOriginal()));
 vi.mock('drizzle-orm', () => ({
   eq: (col: unknown, val: unknown) => ({ op: 'eq', col, val }),
   and: (...args: unknown[]) => ({ op: 'and', args }),
@@ -93,7 +97,12 @@ vi.mock('drizzle-orm', () => ({
   desc: (col: unknown) => ({ op: 'desc', col }),
 }));
 
-vi.mock('../db', () => ({ db: dbMock }));
+vi.mock('../db', () => ({
+  db: dbMock,
+  // #10859 — the evaluator scopes its own contexts; their boundaries are
+  // asserted in alertService.contextScoping.test.ts.
+  withSystemDbAccessContext: async (fn: () => Promise<unknown>) => fn(),
+}));
 
 vi.mock('../db/schema', () => ({
   alerts: { id: 'alerts.id', ruleId: 'alerts.ruleId', deviceId: 'alerts.deviceId', status: 'alerts.status' },
@@ -140,9 +149,11 @@ vi.mock('./monitors/escalationLatch', () => ({
 }));
 
 vi.mock('./alertConditions', () => ({
+  evidenceLeafPaths: vi.fn(() => []),
   evaluateConditions: evaluateConditionsMock,
   evaluateAutoResolveConditions: vi.fn(),
   interpolateTemplate: vi.fn((template: string) => template),
+  withMetConditionDescriptions: vi.fn((context: Record<string, unknown>) => context),
 }));
 
 vi.mock('./alertCooldown', () => ({
@@ -161,6 +172,10 @@ vi.mock('./eventBus', () => ({ publishEvent: vi.fn(() => Promise.resolve()) }));
 vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('./deviceSiteResolver', () => ({ resolveDeviceSiteId: vi.fn(() => Promise.resolve('site-1')) }));
 vi.mock('../jobs/alertCorrelation', () => ({ enqueueAlertCorrelation: vi.fn(() => Promise.resolve('job-1')) }));
+// #10926 — create stages `alert.triggered` on the row and hands the id to the
+// outbox; the after-commit publish and its follow-ups are covered by
+// alertPublishAfterCommit.integration.test.ts.
+vi.mock('./subjectAlertOutbox', () => ({ scheduleStagedAlertDispatch: scheduleStagedAlertDispatchMock }));
 
 import { resolveMaintenanceConfigForDevice, isInMaintenanceWindow } from './featureConfigResolver';
 
@@ -308,6 +323,11 @@ describe('#6353 — network_check rules are evaluated once per check, not once p
     expect(created).toHaveLength(1);
     expect(insertedAlerts).toHaveLength(1);
     expect(insertedAlerts[0]).toMatchObject({ deviceId: 'device-offline', orgId: DEVICE_ORG, monitorId: MONITOR_ID });
+    // The alert is announced through the outbox, once, from the one row.
+    expect(insertedAlerts[0]!.context).toMatchObject({
+      _subjectDispatch: { eventType: 'alert.triggered', retryOnPublishFailure: true },
+    });
+    expect(scheduleStagedAlertDispatchMock).toHaveBeenCalledExactlyOnceWith('alert-1');
     expect(evaluateConditionsMock).toHaveBeenCalledTimes(1);
     expect(evaluateConditionsMock).toHaveBeenCalledWith(NETWORK_CONDITIONS, 'device-offline');
     expect(recordMonitorEvaluationMock).toHaveBeenCalledWith(

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
 import { clientAiOrgPolicies, clientAiTenantMappings } from '../../db/schema/clientAi';
 import { partners } from '../../db/schema/orgs';
@@ -121,20 +121,24 @@ clientAiAdminRoutes.put(
 
     let row: typeof clientAiTenantMappings.$inferSelect | undefined;
     try {
-      [row] = await db
-        .insert(clientAiTenantMappings)
-        .values({
-          orgId,
-          entraTenantId: entraTenantId.toLowerCase(),
-          createdBy: auth.user?.id ?? null,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .onConflictDoUpdate({
-          target: clientAiTenantMappings.orgId,
-          set: { entraTenantId: entraTenantId.toLowerCase(), updatedAt: now },
-        })
-        .returning();
+      // Savepoint so the caught unique violation cannot poison the request
+      // transaction and turn the 409 into a 500 at commit (#11203).
+      [row] = await withDbTransaction(async () =>
+        db
+          .insert(clientAiTenantMappings)
+          .values({
+            orgId,
+            entraTenantId: entraTenantId.toLowerCase(),
+            createdBy: auth.user?.id ?? null,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .onConflictDoUpdate({
+            target: clientAiTenantMappings.orgId,
+            set: { entraTenantId: entraTenantId.toLowerCase(), updatedAt: now },
+          })
+          .returning()
+      );
     } catch (err) {
       // client_ai_tenant_mappings_tenant_uniq: the tenant is already mapped to
       // a DIFFERENT org. Deliberately opaque — do not reveal which org.

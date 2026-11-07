@@ -445,3 +445,13 @@ describe('POST /pre-assignment/deploy-keys/:deployKeyId/expire-devices', () => {
     expect(expireDevicesParkedByDeployKey).not.toHaveBeenCalled();
   });
 });
+
+
+it('maps an unresolved network isolation to the lifecycle 409 response', async () => {
+  vi.mocked(assignParkedDevice).mockResolvedValueOnce({
+    ok: false, deviceId: DEVICE, code: 'isolation_unresolved' as any, message: 'Release network isolation first',
+  });
+  const response = await post(`/pre-assignment/devices/${DEVICE}/assign`, assignBody);
+  expect(response.status).toBe(409);
+  expect(await response.json()).toEqual({ error: 'isolation_unresolved', message: 'Release network isolation first' });
+});

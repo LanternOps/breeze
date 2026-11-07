@@ -223,7 +223,7 @@ describe('GET /ai/script-proposals/:id live authorisation', () => {
     expect(dto.proposal.strictHits).toEqual(strictHits);
     expect(dto.review.findings).toEqual([{ severity: 'warning', text: 'HKLM write' }]);
     expect(dto.devices.map((d: { id: string }) => d.id)).toEqual([s.deviceId]);
-    expect(dto.viewer).toEqual({ canDecide: true, canAcknowledge: true, canPromote: false });
+    expect(dto.viewer).toEqual({ canDecide: true, canAcknowledge: true, canPromote: false, canOverrideRun: false, canOverrideSave: false });
 
     const theirs = await get(`/ai/script-proposals/${proposalId}`, await tokenFor(s, s.stranger, s.strangerRoleId, true));
     expect(theirs.status).toBe(403);

@@ -163,12 +163,14 @@ func TestHyperVRestores_RunBcdbootOnlyByAbsolutePath(t *testing.T) {
 func TestHyperVRestores_StartProcessesOnlyFromHostSystem32(t *testing.T) {
 	fset, files := parsePackage(t)
 	processStart := map[[2]string]int{ // pkg.Func -> index of the program argument
-		{"exec", "Command"}:          0,
-		{"exec", "CommandContext"}:   1,
-		{"os", "StartProcess"}:       0,
-		{"syscall", "StartProcess"}:  0,
-		{"windows", "CreateProcess"}: 1,
-		{"windows", "ShellExecute"}:  2,
+		{"exec", "Command"}:             0,
+		{"exec", "CommandContext"}:      1,
+		{"procspawn", "Command"}:        0,
+		{"procspawn", "CommandContext"}: 1,
+		{"os", "StartProcess"}:          0,
+		{"syscall", "StartProcess"}:     0,
+		{"windows", "CreateProcess"}:    1,
+		{"windows", "ShellExecute"}:     2,
 	}
 	sites := 0
 	for name, f := range files {

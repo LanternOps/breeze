@@ -1,7 +1,7 @@
 import { RESTORE_POINT_PAYLOAD_KEY, SOFTWARE_INSTALL_SERVER_TIMEOUT_MS } from '@breeze/shared';
 import { REMOTE_SESSION_ACTIVE_MAX_AGE_MS } from '../services/remoteSessionStaleness';
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq, lt, sql, inArray, isNotNull, isNull, or } from 'drizzle-orm';
+import { and, eq, lt, lte, sql, inArray, isNotNull, isNull, or } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { db, hasDbAccessContext, withDbTransaction } from '../db';
 import {
@@ -38,6 +38,7 @@ import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/ba
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { terminalIntentSet } from '../services/remoteDesktopTerminalIntent';
 import { backupHelperSupportsQueue } from '../services/backupHelperCapabilities';
+import { catchUpExpiryReason } from './backupCatchUp';
 import { queueBackupStopCommand, CommandTypes } from '../services/commandQueue';
 import { envInt } from '../utils/envInt';
 
@@ -113,7 +114,9 @@ const BACKUP_ABSOLUTE_TIMEOUT_MS = BACKUP_JOB_ABSOLUTE_TIMEOUT_MS; // legacy age
 const BACKUP_PENDING_TIMEOUT_MS = 60 * 60 * 1000;    // dispatch enqueued but never flipped/failed
 
 // #2798 no-transfer rule: the agent is alive (keepalive fresh) but neither
-// bytes nor files have advanced. Helpers before v0.118.0 report counters only
+// bytes nor files have advanced — nor, since #11014, the verified counters a
+// resume or dedupe check pass reports (applyBackupProgress folds all of them
+// into last_progress_at). Helpers before v0.118.0 report counters only
 // when a whole FILE completes, so a single large file legitimately shows zero
 // advance for its entire upload. The window is therefore sized from the bytes
 // still to go, not a flat timer: the file in flight is at most
@@ -134,8 +137,8 @@ export const BACKUP_NO_TRANSFER_MAX_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const BACKUP_NO_TRANSFER_FLOOR_RATE_BYTES_PER_SEC = 512 * 1024; // ~4 Mbit/s
 
 /**
- * How long a live backup may go without any byte/file advance before the
- * reaper treats it as wedged. See BACKUP_NO_TRANSFER_MIN_WINDOW_MS.
+ * How long a live backup may go without any byte/file/verified advance before
+ * the reaper treats it as wedged. See BACKUP_NO_TRANSFER_MIN_WINDOW_MS.
  */
 export function backupNoTransferWindowMs(
   totalSize: number | null | undefined,
@@ -1432,7 +1435,9 @@ async function reapStaleRemoteSessions(): Promise<number> {
   const pendingCutoff = new Date(Date.now() - REMOTE_SESSION_PENDING_TIMEOUT_MS);
   const activeCutoff = new Date(Date.now() - REMOTE_SESSION_ACTIVE_TIMEOUT_MS);
 
-  // Pending/connecting sessions older than 10 minutes
+  // Pending/connecting sessions with no start attempt in 10 minutes. Not keyed on
+  // created_at: a live session re-offering is `connecting` on its original row
+  // (#11149).
   const pendingResult = await db
     .update(remoteSessions)
     .set(terminalIntentSet({
@@ -1443,7 +1448,7 @@ async function reapStaleRemoteSessions(): Promise<number> {
     .where(
       and(
         inArray(remoteSessions.status, ['pending', 'connecting']),
-        lt(remoteSessions.createdAt, pendingCutoff),
+        lt(remoteSessions.lastStartAttemptAt, pendingCutoff),
       ),
     )
     .returning({ id: remoteSessions.id });
@@ -1591,7 +1596,10 @@ async function failBackupJobForTimedOutCommand(
  *
  * Two clocks (#2798): liveness = lastKeepaliveAt (any agent signal; falls
  * back to lastProgressAt for rows written before the column existed), and
- * progress = lastProgressAt (bytes or files actually advanced).
+ * progress = lastProgressAt (bytes or files actually advanced, or — #11014 —
+ * the agent's verified counters: files/bytes it finished checking during a
+ * resume or dedupe pass, which can run for hours before the first upload;
+ * see applyBackupProgress).
  *
  * A `running` job is reaped when ANY of:
  *  A (silent):   liveness is set and stale past BACKUP_STALL_TIMEOUT_MS
@@ -1673,7 +1681,7 @@ export async function reapStaleBackupJobs(): Promise<number> {
     } else if (deviceOffline && now - livenessRef.getTime() > BACKUP_OFFLINE_GRACE_MS) {
       errorMsg = 'Device went offline during backup';
     } else if (liveness && now - transferRef.getTime() > noTransferWindowMs) {
-      errorMsg = `Backup stalled: no data transferred for ${formatWindow(now - transferRef.getTime())} while the agent was still responding (limit ${formatWindow(noTransferWindowMs)})`;
+      errorMsg = `Backup stalled: no data transferred or verified for ${formatWindow(now - transferRef.getTime())} while the agent was still responding (limit ${formatWindow(noTransferWindowMs)})`;
     } else if (!liveness && now - livenessRef.getTime() > BACKUP_ABSOLUTE_TIMEOUT_MS) {
       // No progress signal ever (legacy agent) OR a zombie with no started_at —
       // reap on the absolute cap against progressRef (started_at ?? createdAt).
@@ -1710,6 +1718,8 @@ export async function reapStaleBackupJobs(): Promise<number> {
       createdAt: backupJobs.createdAt,
       lastProgressAt: backupJobs.lastProgressAt,
       lastKeepaliveAt: backupJobs.lastKeepaliveAt,
+      startedAt: backupJobs.startedAt,
+      catchUpUntil: backupJobs.catchUpUntil,
       deviceStatus: devices.status,
       deviceLastSeenAt: devices.lastSeenAt,
       deviceBackupVersion: devices.backupVersion,
@@ -1719,7 +1729,12 @@ export async function reapStaleBackupJobs(): Promise<number> {
     .where(
       and(
         eq(backupJobs.status, 'pending'),
-        lt(backupJobs.createdAt, pendingCutoff),
+        // #11013: a pending job's started_at is set only by the claim of a job
+        // that waited for its device, whose clock starts there, not at the
+        // schedule. A job still waiting is left out until its window lapses, so
+        // waiting rows cannot use up this run's MAX_REAP_PER_RUN.
+        sql`COALESCE(${backupJobs.startedAt}, ${backupJobs.createdAt}) < ${pendingCutoff.toISOString()}`,
+        sql`(${backupJobs.catchUpUntil} IS NULL OR ${backupJobs.catchUpUntil} <= ${new Date(now).toISOString()})`,
         sql`(COALESCE(${backupJobs.lastKeepaliveAt}, ${backupJobs.lastProgressAt}) IS NULL OR COALESCE(${backupJobs.lastKeepaliveAt}, ${backupJobs.lastProgressAt}) < ${pendingProgressCutoff.toISOString()})`,
       ),
     )
@@ -1727,7 +1742,33 @@ export async function reapStaleBackupJobs(): Promise<number> {
 
   for (const job of pendingCandidates) {
     if (reaped >= MAX_REAP_PER_RUN) break;
-    if (now - job.createdAt.getTime() < BACKUP_PENDING_TIMEOUT_MS) continue;
+    if (now - (job.startedAt ?? job.createdAt).getTime() < BACKUP_PENDING_TIMEOUT_MS) continue;
+
+    // #11013: never sent, so there is no late result to recognise and nothing on
+    // the helper to stop. Settled with the exact reason reporting keys on.
+    if (job.catchUpUntil) {
+      if (job.catchUpUntil.getTime() > now) continue;
+      const failedAt = new Date();
+      const expired = await db
+        .update(backupJobs)
+        .set({
+          status: 'failed',
+          completedAt: failedAt,
+          updatedAt: failedAt,
+          errorLog: catchUpExpiryReason(job.deviceLastSeenAt, job.createdAt),
+        })
+        .where(and(
+          eq(backupJobs.id, job.id),
+          eq(backupJobs.status, 'pending'),
+          // Still waiting and still lapsed: never a row a catch-up claimed.
+          isNotNull(backupJobs.catchUpUntil),
+          lte(backupJobs.catchUpUntil, new Date(now)),
+        ))
+        .returning({ id: backupJobs.id });
+      if (expired.length > 0) reaped++;
+      continue;
+    }
+
     // A pending job still being kept alive by recent pings is not dead.
     const pendingLiveness = job.lastKeepaliveAt ?? job.lastProgressAt ?? null;
     if (pendingLiveness && now - pendingLiveness.getTime() < BACKUP_STALL_TIMEOUT_MS) continue;

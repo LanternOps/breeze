@@ -29,6 +29,7 @@ import { partnerServicePrincipalMcpAuthMiddleware } from '../middleware/partnerS
 import { bearerTokenAuthMiddleware } from '../middleware/bearerTokenAuth';
 import { getToolDefinitions, executeTool, getToolTier, getToolDomain, aiTools, toolManagesDbContext } from '../services/aiTools';
 import { isTopologyAiToolName } from '../services/topology/aiToolGate';
+import { isNetworkIsolationCommand } from '../services/networkIsolation/bypass';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, checkPermissionRequirements, isReadOnlyResolution, TIER1_ACTIONS, TIER2_ACTIONS, TIER3_ACTIONS, TOOL_ACTION_INPUT_KEYS } from '../services/aiGuardrails';
 import { isTenantToolName } from '@breeze/shared/validators';
 import type { TenantToolDescriptor } from '../services/toolSources/resolver';
@@ -72,6 +73,7 @@ import { callMcpFlowTool, listMcpFlowTools } from '../services/flows/mcpFlowTool
 import { buildWhoamiResult, MCP_WHOAMI_TOOL_LIST_ENTRY } from '../services/mcpWhoami';
 import { applyInsufficientScopeChallenge, buildBearerChallenge } from '../services/mcpAuthChallenge';
 import { isMfaGatedToolAction, isToolWhollyMfaGated, mfaGateRefusesCaller, mfaGatedActionsForTool } from '../services/aiToolMfaGate';
+import { canManagePartnerWidePolicies, partnerWideGateRefusesTool, PARTNER_WIDE_UNAVAILABLE_OVER_MCP_MESSAGE } from '../services/partnerWideAccess';
 import { mcpAppBaseUrl, mcpApprovalWaitMs, mcpApprovalWaitsPerPrincipal, mcpMessageRateLimitPerMinute, mcpTaskPendingPollIntervalMs, mcpTaskPollIntervalMs, mcpTaskTtlGraceMs, mcpTasksEffective, mcpTier3IntentsEnabled } from '../services/mcpIntentConfig';
 import { mcpAppsEnabled, mcpAppsServerExtensions } from '../services/mcpAppsConfig';
 import {
@@ -1539,8 +1541,10 @@ const BOOTSTRAP_TOOL_TIER = 3;
 function isMcpApprovalRequired(
   toolName: string,
   effectiveTier: number,
-  opts: { unattendedPrincipal: boolean } = { unattendedPrincipal: false },
+  opts: { unattendedPrincipal: boolean; toolInput?: unknown } = { unattendedPrincipal: false },
 ): boolean {
+  // Isolation always uses the dedicated service; an unattended opt-in cannot lift it.
+  if (isNetworkIsolationCommand(toolName, opts.toolInput)) return true;
   // Only Tier 3 is ever lifted (see MCP_UNATTENDED_TIER3_PRINCIPALS); Tier 4
   // has no approval path and stays denied for everyone.
   if (opts.unattendedPrincipal && effectiveTier === 3) return false;
@@ -1738,6 +1742,8 @@ type McpListingContext = {
   hasExecuteAdmin: boolean;
   hasWrite: boolean;
   callerFailsMfaGate: boolean;
+  /** #10930: true when the tool's handler refuses this caller on every call (partner-wide gate). */
+  partnerWideRefused: (toolName: string) => boolean;
   ownsIntents: boolean;
   canRunTier3Unattended: (toolName: string) => boolean;
   canFileTier3Intent: (toolName: string) => boolean;
@@ -1787,6 +1793,11 @@ function buildMcpListingContext(
     hasExecuteAdmin,
     hasWrite,
     callerFailsMfaGate,
+    // #10930: an MCP credential's context never carries partnerOrgAccess
+    // (buildAuthFromApiKey), so canManagePartnerWidePolicies is false for it and
+    // the PARTNER_WIDE_ONLY_TOOLS handlers refuse every call. The gate stays
+    // fail-closed; this only stops advertising what it refuses.
+    partnerWideRefused: (toolName: string) => partnerWideGateRefusesTool(toolName, auth),
     ownsIntents,
     canRunTier3Unattended,
     canFileTier3Intent,
@@ -1811,6 +1822,8 @@ function isToolListedForCaller(
   if (isToolWhollyGatedOverMcp(tool.name, tool.input_schema, getToolTier, canRunTier3Unattended(tool.name) || canFileTier3Intent(tool.name))) return false;
   // Same invariant for the MFA gate: every call would be refused by the handler.
   if (callerFailsMfaGate && isToolWhollyMfaGated(tool.name, extractActionEnum(tool.input_schema))) return false;
+  // And for the partner-wide gate (#10930).
+  if (ctx.partnerWideRefused(tool.name)) return false;
 
   const registryTier = getToolTier(tool.name);
   if (registryTier === undefined) return false;
@@ -2083,6 +2096,30 @@ function pureReturnedToolError(safeText: string): string | undefined {
   return object.error;
 }
 
+const MCP_PARTNER_WIDE_UNAVAILABLE_ERROR = {
+  error: PARTNER_WIDE_UNAVAILABLE_OVER_MCP_MESSAGE,
+  code: 'ACCESS_DENIED',
+} as const;
+
+// The partner-wide refusals handlers return, in their several per-tool
+// wordings ("orgAccess must be \"all\"", "Full partner organization access is
+// required", "Full partner scope is required ...").
+const PARTNER_WIDE_REFUSAL_PATTERN = /full partner (?:org(?:anization)? access|scope)|orgAccess must be "all"/i;
+
+/**
+ * #10930: a mixed tool (only some actions or rows are partner-wide) stays
+ * listed, and its handler refuses the partner-wide part. For a caller without
+ * full partner org access, which is every MCP credential, swap that refusal's
+ * text for the one MCP wording; the code and the handler's decision are kept.
+ * Only a pure returned error is touched, never data that mentions the phrase.
+ */
+function rewritePartnerWideRefusalForMcp(result: string, auth: AuthContext): string {
+  if (canManagePartnerWidePolicies(auth)) return result;
+  const error = pureReturnedToolError(result);
+  if (error === undefined || !PARTNER_WIDE_REFUSAL_PATTERN.test(error)) return result;
+  return JSON.stringify({ ...(JSON.parse(result) as Record<string, unknown>), error: PARTNER_WIDE_UNAVAILABLE_OVER_MCP_MESSAGE });
+}
+
 function structuredFromSafeText(safeText: string): Record<string, unknown> | undefined {
   try {
     const parsed: unknown = JSON.parse(safeText);
@@ -2222,10 +2259,30 @@ async function handleToolsCall(
     );
   }
 
+  // Isolation cannot become an MCP intent either. Check before registry lookup so
+  // release_containment stays denied by name even before its AI tool is registered.
+  if (isNetworkIsolationCommand(toolName, toolInput)) {
+    return jsonRpcResult(id, {
+      content: [{ type: 'text', text: JSON.stringify(MCP_APPROVAL_REQUIRED_ERROR) }],
+      isError: true,
+    });
+  }
+
   // Check scope-based access
   const baseTier = getToolTier(toolName);
   if (baseTier === undefined) {
     return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
+  }
+
+  // #10930: a tool whose handler refuses every call without full partner org
+  // access is not listed for this caller (isToolListedForCaller). Refuse it here
+  // with the one MCP wording, before any intent is filed: an mcp_api intent is
+  // released under buildAuthFromApiKey again, so it would be refused there too.
+  if (partnerWideGateRefusesTool(toolName, auth)) {
+    return jsonRpcResult(id, {
+      content: [{ type: 'text', text: JSON.stringify(MCP_PARTNER_WIDE_UNAVAILABLE_ERROR) }],
+      isError: true,
+    });
   }
 
   // Run guardrails BEFORE the scope gates so the EFFECTIVE tier (which a
@@ -2293,7 +2350,7 @@ async function handleToolsCall(
   const readBelowIntentTier = tier === 3
     && Math.max(guardrailCheck.tier, mcpTierFloor(toolName)) < 3
     && isReadOnlyResolution(toolName, guardrailCheck);
-  const approvalRequired = isMcpApprovalRequired(toolName, tier, { unattendedPrincipal })
+  const approvalRequired = isMcpApprovalRequired(toolName, tier, { unattendedPrincipal, toolInput })
     && !(readBelowIntentTier && mcpTier3IntentsEnabled());
   // B-W04 (#6158, D-B30): with MCP_TIER3_INTENTS_ENABLED OFF this gate is
   // exactly today's (same position, same body). ON, a call this credential
@@ -2450,9 +2507,9 @@ async function handleToolsCall(
       // is confined to the API key's OWN site restriction — exactly one site —
       // and refused for an org-wide or multi-site key. Name-gated so every
       // other tool keeps the three-argument call.
-      const result = isTopologyAiToolName(toolName)
+      const result = rewritePartnerWideRefusalForMcp(isTopologyAiToolName(toolName)
         ? await executeTool(toolName, toolInput, toolAuth, { topologyBinding: { kind: 'mcp_site_key' } })
-        : await executeTool(toolName, toolInput, toolAuth);
+        : await executeTool(toolName, toolInput, toolAuth), auth);
       const safeResult = compactToolResultForChat(toolName, result);
 
       // #6408: a pure returned `{error}` is a tool-execution error, not a
@@ -3230,6 +3287,7 @@ async function handleFlowToolCall(
  */
 export const __handleToolsListForTests = handleToolsList;
 export const __handleToolsCallForTests = handleToolsCall;
+export const __isMcpApprovalRequiredForTests = isMcpApprovalRequired;
 /**
  * Test-only direct access to the bootstrap authTool dispatcher. `tools/call`
  * now returns MCP_APPROVAL_REQUIRED before reaching it (bootstrap tools are

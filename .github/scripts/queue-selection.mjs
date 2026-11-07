@@ -5,12 +5,11 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
+import { POLICY_FILES, isPolicyPath } from './ci-policy.mjs';
+
 // W4: advisory only. These selections must never replace the classifier outputs.
-export const POLICY_FILES = [
-  '.github/scripts/classify-pr-paths.sh', '.github/scripts/integration-floor-paths.txt',
-  '.github/scripts/path-reader-map.txt', '.github/scripts/qemu-gate-paths.txt',
-  '.github/scripts/queue-selection.mjs', '.github/flaky-tests.json', '.github/workflows/ci.yml',
-];
+// The policy manifest lives in ci-policy.mjs (W02); re-exported for W4's callers.
+export { POLICY_FILES };
 export const MAX_BASE_AGE_HOURS = 12;
 export const MAX_DELTA_MERGES = 40;
 const CLASSIFIER_KEYS = ['code', 'docs', 'agent', 'app', 'api', 'web', 'portal', 'addins', 'm365', 'rust',
@@ -188,7 +187,7 @@ export function computeSelection({ P, delta, full, workflow, classify, floor, in
     would_add: thin_jobs.filter(j => !full_jobs.includes(j)) };
 }
 
-const policyPath = path => POLICY_FILES.includes(path) || /^\.github\/(?:workflows|scripts|actions)\//.test(path);
+const policyPath = isPolicyPath;
 export function fallbackReason(f) {
   if (f.error) return 'error';
   if (f.event !== 'merge_group') return 'not_merge_group';
@@ -228,7 +227,7 @@ function policyAtBase(io, tree) {
   }));
   return POLICY_FILES.every(path => io.exists(path) ? io.git(['hash-object', '--', path]).trim() === blobs[path] : !blobs[path]);
 }
-function selectionContext(io, workflow) {
+export function selectionContext(io, workflow) {
   const configs = unique([...workflow.matchAll(/--config=([\w.-]+)/g)].map(m => m[1]));
   return { workflow, floor: io.read('.github/scripts/integration-floor-paths.txt'),
     integrationConfig: io.read('apps/api/vitest.integration.config.ts'),

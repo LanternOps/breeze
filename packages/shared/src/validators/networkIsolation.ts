@@ -41,6 +41,14 @@ const cidrSchema = z
   // Isolation never carries a blanket permit (spec §3.4).
   .refine((cidr) => !cidr.endsWith('/0'), { message: 'a /0 permit is not allowed' });
 
+/** Building blocks reused by the containment policy's `extraAllow` (#10100); prefixed to keep the barrel unambiguous. */
+export {
+  portsSchema as isolationPortsSchema,
+  protoSchema as isolationProtoSchema,
+  hostNameSchema as isolationHostNameSchema,
+  cidrSchema as isolationCidrSchema,
+};
+
 export const isolationAllowEntrySchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('host'), host: hostNameSchema, proto: protoSchema, ports: portsSchema, scope: scopeSchema }),
   z.strictObject({ kind: z.literal('cidr'), cidr: cidrSchema, proto: protoSchema, ports: portsSchema, scope: scopeSchema }),
@@ -102,6 +110,9 @@ const desiredBase = {
  * - `isolated`: the permits to install (never empty: the control plane is always one). `breakGlassSecret`
  *   travels only until the agent acknowledges it (`break_glass_ack_seq`), only over the agent's TLS
  *   channel, and is never logged or audited (Gate B decision 4 vii).
+ *   `policyRevision` names the containment policy behind any `scope:"any"` permits, and is present
+ *   exactly when there are some: the agent rejects those permits without it, and a changed revision
+ *   always arrives under a new generation.
  * - `released`: the tombstone. No permits and never the secret (strict: the key is rejected).
  */
 export const networkIsolationDesiredSchema = z.discriminatedUnion('desired', [
@@ -110,6 +121,10 @@ export const networkIsolationDesiredSchema = z.discriminatedUnion('desired', [
     desired: z.literal('isolated'),
     allow: z.array(isolationAllowEntrySchema).min(1).max(NETWORK_ISOLATION_LIMITS.maxAllowEntries),
     breakGlassSecret: breakGlassSecretSchema.optional(),
+    policyRevision: z.string().min(1).max(128).regex(/^[\x21-\x7e]+$/).optional(),
+  }).refine((block) => block.allow.some((entry) => entry.scope === 'any') === (block.policyRevision !== undefined), {
+    message: 'policyRevision is present exactly when the list has a scope:"any" entry',
+    path: ['policyRevision'],
   }),
   z.strictObject({
     ...desiredBase,

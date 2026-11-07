@@ -144,6 +144,7 @@ export default function SettingsSectionNav({ groups, activeKey, onNavigate, sele
                 const isDirty = !isLink && !!item.dirty;
                 return (
                   <li key={item.key}>
+                    {/* bare-hash-anchor-exempt: onClick preventDefaults and routes via onNavigate; real hrefs navigate natively */}
                     <a
                       href={item.href ?? `#${item.hash}`}
                       data-testid={testIdPrefix ? `${testIdPrefix}-tab-${item.key}` : undefined}

@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../services/invoiceService', () => ({
   deleteDraftInvoice: vi.fn(), issueInvoice: vi.fn(), voidInvoice: vi.fn(),
 }));
+vi.mock('../../services/billingEnabled', () => ({ assertBillingEnabledForPartner: vi.fn() }));
 vi.mock('../../services/billingEvidence', () => ({
   listInvoiceLineDevices: vi.fn(),
   INVOICE_LINE_DEVICES_DEFAULT_LIMIT: 100,
@@ -34,6 +35,7 @@ vi.mock('../../services/auditEvents', async (importActual) => ({
 import { invoiceRoutes } from './index';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { deleteDraftInvoice, issueInvoice, voidInvoice } from '../../services/invoiceService';
+import { assertBillingEnabledForPartner } from '../../services/billingEnabled';
 
 const A = '11111111-1111-1111-1111-111111111111';
 const B = '22222222-2222-2222-2222-222222222222';
@@ -44,6 +46,20 @@ function post(path: string, body: unknown) {
 
 describe('invoice bulk routes', () => {
   beforeEach(() => { vi.clearAllMocks(); gate.permGate = async (_c: any, next: any) => next(); });
+
+  it.each([
+    ['/bulk-delete', { ids: [A] }],
+    ['/bulk-issue', { ids: [A] }],
+    ['/bulk-void', { ids: [A], reason: 'dup' }],
+  ])('%s answers 404 BILLING_DISABLED when billing is off, without touching any invoice', async (path, body) => {
+    (assertBillingEnabledForPartner as any).mockImplementationOnce(async (_p: unknown, make: any) => { throw make('Not found', 404, 'BILLING_DISABLED'); });
+    const res = await post(path, body);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found', code: 'BILLING_DISABLED' });
+    expect(deleteDraftInvoice).not.toHaveBeenCalled();
+    expect(issueInvoice).not.toHaveBeenCalled();
+    expect(voidInvoice).not.toHaveBeenCalled();
+  });
 
   it('bulk-delete deletes each draft', async () => {
     (deleteDraftInvoice as any).mockImplementation(async (id: string) => ({ id, orgId: ORG }));

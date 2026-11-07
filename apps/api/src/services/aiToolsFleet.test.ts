@@ -65,6 +65,8 @@ vi.mock('./siteScope', async (importOriginal) => {
 
 // Mock all DB and service dependencies so we can test registration without a database
 vi.mock('../db', () => ({
+  hasDbAccessContext: () => false,
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   getCurrentDbAccessContext: vi.fn(() => ({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' })),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),

@@ -5,10 +5,11 @@ package config
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 // breezeGroupDsclTimeout bounds every dscl invocation so a wedged
@@ -47,7 +48,7 @@ func lookupBreezeGroupIDDarwin(name string) (int, error) {
 func runBreezeGroupDscl(args []string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), breezeGroupDsclTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "dscl", args...).CombinedOutput()
+	out, err := procspawn.CommandContext(ctx, "dscl", args...).CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("dscl %s: %w: %s",
 			strings.Join(args, " "), err, strings.TrimSpace(string(out)))

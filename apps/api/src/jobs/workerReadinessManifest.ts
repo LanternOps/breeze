@@ -109,6 +109,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('filesystemCleanupRunRetention'),
   // #8581. Plain Redis-required consumer, no feature flag.
   consumers('restorePointAttemptRetention'),
+  consumers('wakeAttemptSweep'),
+  consumers('wakeAttemptRetention'),
   // #9128. Plain Redis-required consumer, no feature flag.
   consumers('webhookDeliveryRetention'),
   // #10019/#10020. Plain Redis-required consumer, no feature flag.
@@ -122,6 +124,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('quoteSendWorker'),
   consumers('enrollmentKeyCleanup'),
   consumers('migrationWindowSweep'),
+  consumers('ticketImportWorker'),
   consumers('partnerApiIdempotencyRetention'),
   consumers('quickSupportReaper'),
   consumers('wispGrantReconciler'),
@@ -180,6 +183,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('patchJobWorker', ['patchJobWorker', 'patchJobDeviceWorker']),
   consumers('patchSchedulerWorker'),
   consumers('maintenanceRebootWorker'),
+  consumers('oemUpdatesWorker'),
   consumers('backupWorker'),
   consumers('backupSnapshotFileIndexWorker'),
   consumers('backupSnapshotAttestationWorker'),
@@ -201,6 +205,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('softwareDeploymentScheduler'),
   consumers('pamJobs', ['pamExpiryEnforcerWorker', 'pamStaleRequestWorker']),
   consumers('approvalExpiryReaper'),
+  consumers('networkIsolationSweeper'),
   consumers('workspaceReaper'),
   consumers('offboardingDrainReaper'),
   consumers('intentOutboxPublisher'),

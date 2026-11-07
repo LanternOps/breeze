@@ -83,7 +83,8 @@ vi.mock('../../db', () => ({
     insert: vi.fn(() => ({
       values: vi.fn((values: Record<string, unknown>) => {
         dbState.inserted = values;
-        return { returning: vi.fn(async () => (dbState.insertReturning ? [dbState.insertReturning] : [])) };
+        const returning = vi.fn(async () => (dbState.insertReturning ? [dbState.insertReturning] : []));
+        return { returning, onConflictDoNothing: vi.fn(() => ({ returning })) };
       }),
     })),
     update: vi.fn(() => ({
@@ -112,6 +113,8 @@ vi.mock('../../db', () => ({
         return { returning: vi.fn(async () => dbState.deleteReturning) };
       }),
     })),
+    // The guarded writes (W16) run their statements on the ambient `db` proxy.
+    transaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   },
   // Named on purpose — partnerAxisRead.ts imports all three by name and fails
   // loudly if the factory omits one (see its comment / #2822).
@@ -1154,6 +1157,193 @@ describe('deleteSchedule', () => {
 
     await expect(deleteSchedule(orgAuth(), BASELINE_ID)).rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
     expect(dbState.deleteCount).toBe(0);
+  });
+});
+
+describe('refuseArmedWidening (W16 Decision 3)', () => {
+  const guard = { refuseArmedWidening: true } as const;
+  const armed = (over: Record<string, unknown> = {}) => baselineRow({ actMode: true, ...over });
+
+  describe('update of an armed baseline', () => {
+    it.each([
+      ['enabled: true on a disabled row', { enabled: false }, { enabled: true }],
+      ['a wider sweepKinds', { sweepKinds: ['disk_pressure'] }, { sweepKinds: ['disk_pressure', 'stale_agents'] }],
+      ['a new cron', {}, { cron: '0 7 * * *' }],
+      ['a new timezone', {}, { timezone: 'Asia/Tokyo' }],
+    ])('refuses %s', async (_label, row, input) => {
+      const current = armed(row);
+      dbState.scheduleRows = [[current], [current]];
+      await expect(updateSchedule(partnerAuth(), BASELINE_ID, input as never, guard))
+        .rejects.toMatchObject({ code: 'armed_widening_refused' });
+      expect(dbState.updates).toHaveLength(0);
+    });
+
+    it.each([
+      ['enabled: false', { enabled: false }],
+      ['actMode: false', { actMode: false }],
+      ['a narrower sweepKinds', { sweepKinds: ['disk_pressure'] }],
+      ['the same cron', { cron: CRON }],
+      ['the same timezone', { timezone: 'Europe/Berlin' }],
+    ])('allows %s', async (_label, input) => {
+      dbState.scheduleRows = [[armed()], [armed()]];
+      dbState.updateReturning = armed(input);
+      await expect(updateSchedule(partnerAuth(), BASELINE_ID, input as never, guard)).resolves.toBeTruthy();
+      expect(dbState.updatedValues).toMatchObject(input);
+    });
+
+    it('takes FOR UPDATE on the target row inside a savepoint', async () => {
+      dbState.scheduleRows = [[armed()], [armed()]];
+      dbState.updateReturning = armed({ enabled: false });
+      await updateSchedule(partnerAuth(), BASELINE_ID, { enabled: false }, guard);
+      const { db } = await import('../../db');
+      expect(db.transaction).toHaveBeenCalledTimes(1);
+      expect(dbState.reads.map((r) => r.lock)).toEqual([null, 'update']);
+    });
+
+    it('a concurrent REST disarm is not overwritten: the guard re-evaluates the row it locked', async () => {
+      // The pre-lock read saw it armed; the row the lock waited for was disarmed
+      // meanwhile, so a widening is now allowed and the patch never names actMode.
+      dbState.scheduleRows = [[armed({ enabled: false })], [baselineRow({ actMode: false, enabled: false })]];
+      dbState.updateReturning = baselineRow({ actMode: false, enabled: true });
+      await updateSchedule(partnerAuth(), BASELINE_ID, { enabled: true }, guard);
+      expect(dbState.updatedValues).toMatchObject({ enabled: true });
+      expect(dbState.updatedValues).not.toHaveProperty('actMode');
+    });
+
+    it('re-reads arming under the lock in the other direction too: a row armed meanwhile refuses', async () => {
+      dbState.scheduleRows = [[baselineRow({ actMode: false, enabled: false })], [armed({ enabled: false })]];
+      await expect(updateSchedule(partnerAuth(), BASELINE_ID, { enabled: true }, guard))
+        .rejects.toMatchObject({ code: 'armed_widening_refused' });
+    });
+
+    it('reads persisted arming: nothing here consults the deployment flag', async () => {
+      // A control for the case above: the same write on an unarmed row passes.
+      dbState.scheduleRows = [[baselineRow({ actMode: null, enabled: false })], [baselineRow({ actMode: null, enabled: false })]];
+      dbState.updateReturning = baselineRow({ enabled: true });
+      await expect(updateSchedule(partnerAuth(), BASELINE_ID, { enabled: true }, guard)).resolves.toBeTruthy();
+    });
+  });
+
+  describe('update of an override under an armed baseline', () => {
+    it.each([
+      ['enabled: true on a disabled override', { enabled: false }, { enabled: true }],
+      ['a wider sweepKinds', { sweepKinds: ['disk_pressure'] }, { sweepKinds: ['disk_pressure', 'stale_agents'] }],
+    ])('refuses %s', async (_label, row, input) => {
+      const current = overrideRow(row);
+      dbState.scheduleRows = [[current], [current], [armed()]];
+      await expect(updateSchedule(partnerAuth(), OVERRIDE_ID, input as never, guard))
+        .rejects.toMatchObject({ code: 'armed_widening_refused' });
+      expect(dbState.updates).toHaveLength(0);
+    });
+
+    it('a partner caller holds FOR SHARE on the baseline; an org caller reads it plain', async () => {
+      dbState.scheduleRows = [[overrideRow()], [overrideRow()], [armed()]];
+      dbState.updateReturning = overrideRow({ enabled: false });
+      await updateSchedule(partnerAuth(), OVERRIDE_ID, { enabled: false }, guard);
+      expect(dbState.reads.map((r) => r.lock)).toEqual([null, 'update', 'share']);
+
+      dbState.reads = [];
+      dbState.scheduleRows = [[overrideRow()], [overrideRow()], [armed()]];
+      await updateSchedule(orgAuth(), OVERRIDE_ID, { enabled: false }, guard);
+      expect(dbState.reads.map((r) => r.lock)).toEqual([null, 'update', null]);
+    });
+
+    it("a disabled armed baseline does not mask the override's own disable", async () => {
+      // The merge reads false either way while the baseline is off, but the write
+      // lands the moment someone re-enables that baseline.
+      const current = overrideRow({ enabled: false });
+      dbState.scheduleRows = [[current], [current], [armed({ enabled: false })]];
+      await expect(updateSchedule(partnerAuth(), OVERRIDE_ID, { enabled: true }, guard))
+        .rejects.toMatchObject({ code: 'armed_widening_refused' });
+      expect(dbState.updates).toHaveLength(0);
+    });
+
+    it('allows a widening under an unarmed baseline', async () => {
+      dbState.scheduleRows = [[overrideRow({ enabled: false })], [overrideRow({ enabled: false })], [baselineRow({ actMode: false })]];
+      dbState.updateReturning = overrideRow({ enabled: true });
+      await expect(updateSchedule(partnerAuth(), OVERRIDE_ID, { enabled: true }, guard)).resolves.toBeTruthy();
+    });
+
+    it('fails closed when the baseline cannot be read', async () => {
+      dbState.scheduleRows = [[overrideRow()], [overrideRow()], []];
+      await expect(updateSchedule(partnerAuth(), OVERRIDE_ID, { enabled: false }, guard))
+        .rejects.toMatchObject({ code: 'baseline_wrong_partner' });
+    });
+  });
+
+  describe('delete', () => {
+    it.each([
+      ['enabled: false', { enabled: false }],
+      ['narrowed kinds', { sweepKinds: ['disk_pressure'] }],
+      ['actMode: false', { actMode: false, sweepKinds: armed().sweepKinds }],
+    ])('refuses deleting an override with %s under an armed baseline', async (_label, row) => {
+      const current = overrideRow(row);
+      dbState.scheduleRows = [[current], [current], [armed()]];
+      await expect(deleteSchedule(partnerAuth(), OVERRIDE_ID, guard)).rejects.toMatchObject({ code: 'armed_widening_refused' });
+      expect(dbState.deleteCount).toBe(0);
+    });
+
+    it("a disabled armed baseline does not mask a disabled override's delete", async () => {
+      const current = overrideRow({ enabled: false, sweepKinds: armed().sweepKinds });
+      dbState.scheduleRows = [[current], [current], [armed({ enabled: false })]];
+      await expect(deleteSchedule(partnerAuth(), OVERRIDE_ID, guard)).rejects.toMatchObject({ code: 'armed_widening_refused' });
+      expect(dbState.deleteCount).toBe(0);
+    });
+
+    it('allows deleting a no-op override under an armed baseline', async () => {
+      const current = overrideRow({ sweepKinds: armed().sweepKinds, actMode: null, enabled: true });
+      dbState.scheduleRows = [[current], [current], [armed()]];
+      await deleteSchedule(partnerAuth(), OVERRIDE_ID, guard);
+      expect(dbState.deleteCount).toBe(1);
+    });
+
+    it('allows deleting a narrowing override under an unarmed baseline', async () => {
+      const current = overrideRow({ enabled: false });
+      dbState.scheduleRows = [[current], [current], [baselineRow({ actMode: null })]];
+      await deleteSchedule(partnerAuth(), OVERRIDE_ID, guard);
+      expect(dbState.deleteCount).toBe(1);
+    });
+
+    it('a baseline delete is exempt: it stops every run', async () => {
+      dbState.scheduleRows = [[armed()], [armed()]];
+      await deleteSchedule(partnerAuth(), BASELINE_ID, guard);
+      expect(dbState.deleteCount).toBe(1);
+    });
+
+    it('returns the row it deleted, for the audit', async () => {
+      const current = overrideRow({ sweepKinds: armed().sweepKinds });
+      dbState.scheduleRows = [[current], [current], [armed()]];
+      await expect(deleteSchedule(partnerAuth(), OVERRIDE_ID, guard)).resolves.toMatchObject({ id: OVERRIDE_ID, orgId: ORG_ID });
+    });
+  });
+
+  describe('refuseExistingOverride', () => {
+    const body = { ownerScope: 'organization' as const, orgId: ORG_ID, baselineScheduleId: BASELINE_ID, enabled: true, sweepKinds: [] as AiSweepKind[] };
+
+    it('a conflict is a coded refusal, never a raised unique violation', async () => {
+      dbState.scheduleRows = [[baselineRow()]];
+      dbState.insertReturning = null;
+      await expect(createSchedule(partnerAuth(), body, { refuseExistingOverride: true })).rejects.toMatchObject({ code: 'override_exists' });
+    });
+
+    it('a free slot creates the override', async () => {
+      dbState.scheduleRows = [[baselineRow()]];
+      dbState.insertReturning = overrideRow();
+      await expect(createSchedule(partnerAuth(), body, { refuseExistingOverride: true })).resolves.toMatchObject({ id: OVERRIDE_ID });
+    });
+  });
+
+  it('without the option REST behaviour is unchanged: an armed-row widening succeeds and takes no lock', async () => {
+    dbState.scheduleRows = [[armed({ enabled: false })]];
+    dbState.updateReturning = armed({ enabled: true });
+    await expect(updateSchedule(partnerAuth(), BASELINE_ID, { enabled: true })).resolves.toBeTruthy();
+    expect(dbState.reads.map((r) => r.lock)).toEqual([null]);
+    const { db } = await import('../../db');
+    expect(db.transaction).not.toHaveBeenCalled();
+
+    dbState.scheduleRows = [[overrideRow({ enabled: false })]];
+    await deleteSchedule(partnerAuth(), OVERRIDE_ID);
+    expect(dbState.deleteCount).toBe(1);
   });
 });
 

@@ -69,6 +69,54 @@ describe('WispPost', () => {
     expect(screen.getByTestId('wisp-post-open')).toBeTruthy();
   });
 
+  it('renders a check_in post with the Check-in eyebrow and no Open link', () => {
+    render(
+      <WispPost
+        post={post({
+          kind: 'check_in',
+          title: 'Check-in due: Verify no msiexec processes remain',
+          body: 'Verify no msiexec processes remain on FS-01.',
+          link: '/ai/wisp/thread/th-1#checkin=ci-1',
+          concernId: null,
+        })}
+      />,
+    );
+    const root = screen.getByTestId('wisp-post');
+    expect(root.getAttribute('data-kind')).toBe('check_in');
+    expect(screen.getByText('Check-in')).toBeTruthy();
+    expect(screen.getByTestId('wisp-post-title').textContent).toBe('Check-in due: Verify no msiexec processes remain');
+    expect(screen.getByTestId('wisp-post-body').textContent).toBe('Verify no msiexec processes remain on FS-01.');
+    // The link points at this same thread; an "Open" link would be a no-op.
+    expect(screen.queryByTestId('wisp-post-open')).toBeNull();
+  });
+
+  it("a couldn't-look post has its own eyebrow, and never reads as a first look (#11145)", () => {
+    render(<WispPost post={post({ kind: 'first_look', variant: 'couldnt_look', title: "I couldn't look yet: 0 of 2 organizations", body: 'Why.', link: '/ai/wisp/thread/th-1', concernId: null })} />);
+    const el = screen.getByTestId('wisp-post');
+    expect(el.getAttribute('data-kind')).toBe('first_look');
+    expect(el.getAttribute('data-variant')).toBe('couldnt_look');
+    expect(screen.getByText("Couldn't look yet")).toBeTruthy();
+    expect(screen.queryByText('First look')).toBeNull();
+    expect(screen.queryByTestId('wisp-post-open')).toBeNull();
+  });
+
+  it('renders a first_look post with the First look eyebrow and no Open link (#10402)', () => {
+    render(<WispPost post={post({ kind: 'first_look', title: 'First look done: 2 of 2 organizations', body: 'Open concerns: 1 high.', link: '/ai/wisp/thread/th-1', concernId: null })} />);
+    expect(screen.getByTestId('wisp-post').getAttribute('data-kind')).toBe('first_look');
+    expect(screen.getByText('First look')).toBeTruthy();
+    expect(screen.getByTestId('wisp-post-title').textContent).toBe('First look done: 2 of 2 organizations');
+    expect(screen.getByTestId('wisp-post-body').textContent).toBe('Open concerns: 1 high.');
+    // The link points at this same thread.
+    expect(screen.queryByTestId('wisp-post-open')).toBeNull();
+  });
+
+  it('renders a specialist_result post with the Specialist report heading', () => {
+    render(<WispPost post={post({ kind: 'specialist_result', title: 'FS-01 troubleshooting', body: 'Disk cleaned.', link: null, concernId: null })} />);
+    expect(screen.getByTestId('wisp-post').getAttribute('data-kind')).toBe('specialist_result');
+    expect(screen.getByText('Specialist report')).toBeTruthy();
+    expect(screen.getByTestId('wisp-post-title').textContent).toBe('FS-01 troubleshooting');
+  });
+
   it.each(['https://evil.example/x', '//evil', 'javascript:alert(1)', null])(
     'renders no link for unsafe link %s',
     (link) => {

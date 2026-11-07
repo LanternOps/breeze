@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import PsaConnectionsPage from './PsaConnectionsPage';
@@ -82,6 +82,44 @@ function installFetchRouter(routes: Record<string, unknown>, recorded: RecordedR
     throw new Error(`Unexpected fetchWithAuth call: ${key}`);
   });
 }
+
+describe('PsaConnectionsPage alert tickets', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('keeps the connection list up with a ledger ticket row and names its provider from the connection', async () => {
+    installFetchRouter(
+      {
+        'GET /psa/connections': {
+          data: [{ id: 'c-1', provider: 'connectwise', name: 'CW Prod', status: 'active' }],
+        },
+        'GET /psa/tickets?limit=25': {
+          data: [{
+            id: 'm-1',
+            psaId: 'c-1',
+            title: 'Ticket 8841',
+            status: null,
+            syncedAt: '2026-11-02T10:00:00.000Z',
+            connectionId: 'c-1',
+            alertId: 'alert-1',
+            createState: 'created',
+            externalTicketNumber: 'CW-8841',
+            externalTicketUrl: 'https://psa.example/tickets/8841',
+            raw: { externalTicketId: '8841' },
+          }],
+        },
+      },
+      []
+    );
+
+    render(<PsaConnectionsPage />);
+
+    const ticketLink = await screen.findByRole('link', { name: 'CW-8841' });
+    expect(screen.getByText('CW Prod')).toBeInTheDocument();
+    expect(within(ticketLink.closest('tr') as HTMLElement).getByText('ConnectWise')).toBeInTheDocument();
+  });
+});
 
 describe('PsaConnectionsPage round-trip contract', () => {
   beforeEach(() => {

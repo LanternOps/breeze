@@ -242,6 +242,15 @@ export const decommissionDeviceSchema = z.object({
   uninstallAgent: z.boolean().optional().default(false),
 }).strict();
 
+// DELETE /devices/:id/permanent — optional body (#11153). Without it the purge
+// refuses a device whose agent never confirmed it was uninstalled
+// (409 UNINSTALL_NOT_CONFIRMED). `force: true` is the operator's explicit
+// "delete anyway"; a strict boolean, so `"true"` or a stray key is a 400 rather
+// than a delete the client did not quite ask for.
+export const permanentDeleteDeviceSchema = z.object({
+  force: z.boolean().optional().default(false),
+}).strict();
+
 export const provisionDeviceSchema = z.object({
   orgId: z.string().guid(),
   siteId: z.string().guid(),

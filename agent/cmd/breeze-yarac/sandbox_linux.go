@@ -501,6 +501,7 @@ func runProbes(control bool) []probeResult {
 		{"exec /bin/sh", func() error {
 			// Raw ForkExec with inherited fds: os/exec would first open
 			// /dev/null (a Landlock denial), and this probe must reach execve.
+			//procspawn:exempt sandbox self-test inside breeze-yarac, never the agent process
 			pid, err := syscall.ForkExec("/bin/sh", []string{"/bin/sh", "-c", "exit 0"}, &syscall.ProcAttr{Files: []uintptr{2, 2, 2}})
 			if err == nil {
 				var ws syscall.WaitStatus

@@ -24,6 +24,7 @@ import AlertDeviceInfo from './AlertDeviceInfo';
 import { isDeviceAlert, type AlertSubjectFields } from './AlertSubjectChip';
 import { DelegateToOperatorButton } from '../aiOperator/DelegateToOperatorButton';
 import { extractServiceNameFromAlert } from '../aiOperator/alertServiceName';
+import { secureExternalTicketUrl } from '../../lib/secureExternalTicketUrl';
 import {
   anomalyDeepLinkHash,
   formatAnomalyConfidence,
@@ -34,6 +35,7 @@ import {
 } from './alertMlContext';
 import { fillDevicePlaceholders, type AlertAiVerdictSummaryDto } from '@breeze/shared';
 import AlertVerdictBadge, { submitVerdictFeedback } from './AlertVerdictBadge';
+import { alertLifecycleLine } from './alertLifecycleLine';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
 
@@ -83,11 +85,6 @@ type ExternalTicket = {
   externalNumber: string | null;
   state?: string | null;
 };
-
-function secureExternalTicketUrl(value: string | null): string | undefined {
-  if (!value) return undefined;
-  try { return new URL(value).protocol === 'https:' ? value : undefined; } catch { return undefined; }
-}
 
 type LinkedTicket = {
   id: string;
@@ -339,6 +336,7 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
   }
 
   const StatusIcon = statusIcons[alert.status];
+  const lifecycleLine = alertLifecycleLine(t, alert.contextData);
 
   return (
     <div className="space-y-6" data-testid="alert-detail-page">
@@ -387,6 +385,9 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                   />
                 )}
               </div>
+              {lifecycleLine && (
+                <p data-testid="alert-lifecycle-line" className="mt-2 text-sm text-muted-foreground">{lifecycleLine}</p>
+              )}
               {alert.aiVerdict && (
                 <p className="mt-2 max-w-2xl text-sm text-muted-foreground">{alert.aiVerdict.rationale}</p>
               )}

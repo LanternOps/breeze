@@ -132,6 +132,16 @@ import { registerTenantVariableTools } from './aiToolsTenantVariables';
 import { registerSupportSessionTools } from './aiToolsSupportSessions';
 import { registerPax8Tools } from './aiToolsPax8';
 import { registerPax8OrderTools } from './aiToolsPax8Orders';
+import { registerBackupVerificationTools } from './aiToolsBackupVerification';
+import { registerBackupRecoveryReadTools } from './aiToolsBackupRecoveryReads';
+import { registerC2CConfigTools } from './aiToolsC2CConfigs';
+import { registerOrgAdminReadTools } from './aiToolsOrgAdminReads';
+import { registerIdentityReadTools } from './aiToolsIdentityReads';
+import { registerOrgPortalSettingsTool } from './aiToolsOrgPortalSettings';
+import { registerReportRecipientsTool } from './aiToolsReportRecipients';
+import { registerAiAgentLaunchTools } from './aiToolsAiAgentLaunch';
+import { registerAiAgentScheduleTool } from './aiToolsAiAgentSchedules';
+import { registerFleetDesignTool } from './aiToolsFleetDesigns';
 import { registerBillingProfileTools } from './aiToolsBillingProfiles';
 import { registerBillingSettingsTools } from './aiToolsBillingSettings';
 import { registerContractTemplateTools } from './aiToolsContractTemplates';
@@ -163,6 +173,7 @@ import { registerTicketRoutingTools } from './aiToolsTicketRouting';
 import { registerWispMemoryTools } from './wisp/memoryTools';
 import { registerWispConcernTools } from './wisp/concernTools';
 import { registerWispLinkTools } from './wisp/linkTools';
+import { registerWispCheckInTools } from './wisp/checkInTools';
 import { registerWispTools } from './aiToolsWisp';
 // M365 helpdesk tools are session-aware (handler signature includes a sessionId)
 // so they are NOT registered in the `aiTools` execution registry — they run via
@@ -475,6 +486,23 @@ registerSupportSessionTools(aiTools);
 registerBillingProfileTools(aiTools);
 registerPax8Tools(aiTools);
 registerPax8OrderTools(aiTools);
+// Full-control W17 (#6788): backup verification, VSS, recovery reads and C2C configs.
+registerBackupVerificationTools(aiTools);
+registerBackupRecoveryReadTools(aiTools);
+registerC2CConfigTools(aiTools);
+// Full-control W18 PR A (#6789): org admin reads (summary, readiness, audit retention, portal users) and the
+// read-only identity directory (Breeze logins, roles). No identity write is a tool (W18-1).
+registerOrgAdminReadTools(aiTools);
+registerIdentityReadTools(aiTools);
+// Full-control W18 PR B (#6789): the two supervised org-admin writers (portal settings with a four-eyes sensitive
+// action, report recipients).
+registerOrgPortalSettingsTool(aiTools);
+registerReportRecipientsTool(aiTools);
+// Full-control W16 PR A (#6786): the two supervised launch tools (patch-plan run, service-recovery operator task).
+registerAiAgentLaunchTools(aiTools);
+// Full-control W16 PR B (#6786): the schedule and Fleet Design multiplexers, each with four-eyes actions.
+registerAiAgentScheduleTool(aiTools);
+registerFleetDesignTool(aiTools);
 registerBillingSettingsTools(aiTools);
 registerContractTemplateTools(aiTools);
 registerDeviceBillingTools(aiTools);
@@ -523,6 +551,8 @@ registerWispMemoryTools(aiTools);
 registerWispConcernTools(aiTools);
 // Wisp W08 thread links: same posture — inert without auth.wispGrant.
 registerWispLinkTools(aiTools);
+// Wisp check-in timers (#10991 W03): same posture — inert without auth.wispGrant.
+registerWispCheckInTools(aiTools);
 // Wisp W07 specialists: launch_specialist (inert without auth.wispGrant) and
 // the human-only approval carrier wisp_specialist_request.
 registerWispTools(aiTools);

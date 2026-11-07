@@ -66,7 +66,7 @@ describe('agent route admission classes', () => {
     for (const key of [
       'POST /:id/heartbeat', 'GET /:id/commands', 'POST /:id/commands/:commandId/result',
       'POST /:id/rotate-token', 'POST /:id/rotate-token/confirm', 'POST /:id/uninstall-intent',
-      'PUT /:id/eventlogs', 'POST /:id/elevation-requests',
+      'PUT /:id/eventlogs', 'POST /:id/elevation-requests', 'PUT /:id/oem-updates/verification',
     ]) {
       expect(AGENT_ROUTE_ADMISSION_CLASSES[key], key).toBe('protected');
     }

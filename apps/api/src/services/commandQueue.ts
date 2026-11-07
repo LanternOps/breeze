@@ -410,6 +410,10 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   'schedule_reboot',
   // Safe mode reboot
   CommandTypes.REBOOT_SAFE_MODE,
+  // Vendor updates (#11065): can flash firmware on a customer's machine.
+  CommandTypes.OEM_UPDATE_RUN,
+  // Vendor updates (#11065): hands the vendor tool's schedule back; runs its binary as SYSTEM.
+  CommandTypes.OEM_UPDATE_RELEASE,
   // (Wake-on-LAN audit is written by the wakeOnLan service against the target device,
   // not by the auto-audit path. The deviceCommands row is addressed to the relay agent
   // so the result handler in agentWs matches, but the user-visible action belongs to

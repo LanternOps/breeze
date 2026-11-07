@@ -1,5 +1,5 @@
 /**
- * Wisp W05b Task 9 (#9917) — the wake scheduler. Two job shapes on ONE queue
+ * Wisp W05b Task 9 (#9917) — the wake scheduler. Three job shapes on ONE queue
  * (`wisp-wake`, services/wisp/wake.ts):
  *
  *  - `tick` — a repeatable every 5 minutes. In order, each section separately
@@ -25,20 +25,27 @@
  *      4. due watches — claimDueWatches (which advances next_due_at in the
  *         same statement) → a `watch` request; a partner-wide watch (orgId
  *         null) takes its grant's round-robin org.
+ *      4b. reconcileCheckIns (#10991) — a `scheduled` check-in more than
+ *         2 minutes overdue with no live job is re-enqueued with delay 0
+ *         (services/wisp/checkIns.ts reconcileOrphanCheckIns).
  *      5. pollStaleTickets, 6. pollTicketClusters, 7. correlateIncidents.
  *  - `assess` — the debounced per-(grant, org) job requestAssessment adds;
  *    processAssessJob hands it to enqueueAssessment.
+ *  - `check-in` — the delayed job of one Wisp check-in timer (#10991);
+ *    processCheckInJob hands it to fireCheckIn.
  *
  * Gating mirrors aiAgentSweepScheduler.ts: the worker and the repeatable are
- * registered unconditionally (registry-driven); the tick and the assess job
- * return at once when `!wispEnabled()`, so flipping the flag needs no restart.
+ * registered unconditionally (registry-driven); the tick, the assess job and
+ * the check-in job return at once when `!wispEnabled()`, so flipping the flag
+ * needs no restart.
  *
- * One worker, concurrency 4, for both names (BullMQ workers cannot filter by
+ * One worker, concurrency 4, for every name (BullMQ workers cannot filter by
  * job name — see aiAgentSweepScheduler.ts). The tick's single-flight comes
  * from its repeatable jobId and the per-grant CAS, not from concurrency.
  *
  * DB access: every read/write runs in a FRESH system context; every
- * requestAssessment / enqueueAssessment call happens outside it (#1105).
+ * requestAssessment / enqueueAssessment / enqueueCheckIn / notifyUser call
+ * happens outside it (#1105).
  */
 import { Worker, type Job } from 'bullmq';
 import { sql, type SQL } from 'drizzle-orm';
@@ -57,8 +64,10 @@ import { setWispGrantsActive } from '../services/wispMetrics';
 import { correlateIncidents } from '../services/wisp/incidentCorrelator';
 import { pollStaleTickets, pollTicketClusters } from '../services/wisp/pollers';
 import { claimDueWatches, stopWatchesForInactiveGrants } from '../services/wisp/watches';
+import { fireCheckIn, reconcileOrphanCheckIns } from '../services/wisp/checkIns';
 import {
   ASSESS_JOB,
+  CHECK_IN_JOB,
   WISP_WAKE_QUEUE,
   closeWispWakeQueue,
   getWispWakeQueue,
@@ -67,6 +76,7 @@ import {
   roundRobinOrgForGrant,
   type WakeGrantPin,
   type WispAssessJobData,
+  type WispCheckInJobData,
 } from '../services/wisp/wake';
 import { attachWorkerObservability } from './workerObservability';
 
@@ -93,7 +103,10 @@ export type WakeTickResult = {
   grantsResumed: number;
   ticketClustersOpened: number;
   incidentsOpened: number;
+  checkInsRefired: number;
 };
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function sys<T>(fn: () => Promise<T>, label: string): Promise<T> {
   return runOutsideDbContext(() => withSystemDbAccessContext(fn, label));
@@ -340,6 +353,7 @@ export async function processWakeTick(now: Date = new Date()): Promise<WakeTickR
     grantsResumed: 0,
     ticketClustersOpened: 0,
     incidentsOpened: 0,
+    checkInsRefired: 0,
   };
   if (!wispEnabled()) return result;
 
@@ -363,6 +377,9 @@ export async function processWakeTick(now: Date = new Date()): Promise<WakeTickR
   });
   await section('dueWatches', async () => {
     result.watchesFired = await runDueWatches(now);
+  });
+  await section('reconcileCheckIns', async () => {
+    result.checkInsRefired = (await reconcileOrphanCheckIns(now)).refired;
   });
   await section('pollStaleTickets', async () => {
     result.staleTicketsPublished = (await pollStaleTickets(now)).published;
@@ -392,11 +409,32 @@ export async function processAssessJob(data: WispAssessJobData, occurrenceKey?: 
   }
 }
 
+/**
+ * The delayed job of one check-in timer (#10991). Dark while `!wispEnabled()`:
+ * the job completes without firing, the row stays `scheduled`, and the tick's
+ * reconcile fires it once Wisp is back on. A malformed payload is dropped
+ * (retrying cannot fix it). A fireCheckIn throw propagates so BullMQ retries
+ * (attempts 3, exponential 30 s); fireCheckIn's dedupe key and
+ * compare-and-set make a retry safe.
+ */
+export async function processCheckInJob(data: WispCheckInJobData): Promise<void> {
+  if (!wispEnabled()) return;
+  const checkInId = (data as { checkInId?: unknown } | null | undefined)?.checkInId;
+  if (typeof checkInId !== 'string' || !UUID_RE.test(checkInId)) {
+    console.warn('[wisp-wake] check-in job dropped: malformed checkInId', { checkInId });
+    // Only enqueueCheckIn produces these jobs, so this is a bug worth seeing.
+    report(new Error('check-in job with a malformed checkInId'), { op: 'check_in_malformed_payload' });
+    return;
+  }
+  const outcome = await fireCheckIn(checkInId);
+  if (outcome !== 'fired') console.info('[wisp-wake] check-in not fired', { checkInId, outcome });
+}
+
 // ---------------------------------------------------------------------------
 // Worker lifecycle
 // ---------------------------------------------------------------------------
 
-type WakeJobData = WispAssessJobData | Record<string, never>;
+type WakeJobData = WispAssessJobData | WispCheckInJobData | Record<string, never>;
 
 let wakeWorker: Worker<WakeJobData> | null = null;
 
@@ -409,6 +447,8 @@ function createWispWakeWorker(): Worker<WakeJobData> {
           return processWakeTick();
         case ASSESS_JOB:
           return processAssessJob(job.data as WispAssessJobData, `${job.id ?? ''}@${job.timestamp}`);
+        case CHECK_IN_JOB:
+          return processCheckInJob(job.data as WispCheckInJobData);
         default:
           throw new Error(`[wisp-wake] unknown job name: ${job.name}`);
       }

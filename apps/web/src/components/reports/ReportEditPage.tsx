@@ -45,6 +45,14 @@ import {
   type IdentityAccessOptions,
 } from './IdentityAccessOptionsForm';
 import {
+  DEFAULT_TICKET_SLA_PERFORMANCE_OPTIONS,
+  isTicketSlaPerformanceOptionsValid,
+  ticketSlaPerformanceConfigFromOptions,
+  TicketSlaPerformanceOptionsFields,
+  ticketSlaPerformanceOptionsFromConfig,
+  type TicketSlaPerformanceOptions,
+} from './TicketSlaPerformanceOptionsForm';
+import {
   DEFAULT_TICKET_SLA_OPTIONS,
   TicketSlaOptionsFields,
   isTicketSlaOptionsValid,
@@ -104,6 +112,7 @@ import { isBusinessReportType } from './businessReportAccess';
 import {
   BUSINESS_OPTION_CONFIG_KEYS,
   BUSINESS_REFUSED_CONFIG_KEYS,
+  isSelectorlessOrgReportType,
   omitConfigKeys,
 } from './businessReportConfig';
 import { useTranslation } from 'react-i18next';
@@ -132,6 +141,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const [endpointManagementOptions, setEndpointManagementOptions] = useState<EndpointManagementOptions>(DEFAULT_ENDPOINT_MANAGEMENT_OPTIONS);
   const [vulnerabilityOptions, setVulnerabilityOptions] = useState<VulnerabilityManagementOptions>(DEFAULT_VULNERABILITY_MANAGEMENT_OPTIONS);
   const [identityOptions, setIdentityOptions] = useState<IdentityAccessOptions>(DEFAULT_IDENTITY_ACCESS_OPTIONS);
+  const [slaPerformanceOptions, setSlaPerformanceOptions] = useState<TicketSlaPerformanceOptions>(DEFAULT_TICKET_SLA_PERFORMANCE_OPTIONS);
   const [ticketSlaOptions, setTicketSlaOptions] = useState<TicketSlaOptions>(DEFAULT_TICKET_SLA_OPTIONS);
   const [technicianTimeOptions, setTechnicianTimeOptions] = useState<TechnicianTimeOptions>(DEFAULT_TECHNICIAN_TIME_OPTIONS);
   const [arAgingOptions, setArAgingOptions] = useState<ArAgingOptions>(DEFAULT_AR_AGING_OPTIONS);
@@ -168,6 +178,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
       setEndpointManagementOptions(endpointManagementOptionsFromConfig(config));
       setVulnerabilityOptions(vulnerabilityManagementOptionsFromConfig(config));
       setIdentityOptions(identityAccessOptionsFromConfig(config));
+      setSlaPerformanceOptions(ticketSlaPerformanceOptionsFromConfig(config));
       setTicketSlaOptions(ticketSlaOptionsFromConfig(config));
       setTechnicianTimeOptions(technicianTimeOptionsFromConfig(config));
       setArAgingOptions(arAgingOptionsFromConfig(config));
@@ -277,6 +288,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const isEndpointManagement = report.type === 'endpoint_management_review';
   const isVulnerability = report.type === 'vulnerability_management';
   const isIdentityAccess = report.type === 'identity_access_review';
+  const isSlaPerformance = report.type === 'ticket_sla_performance';
   const isTicketSla = report.type === 'ticket_sla_attainment';
   const isTechnicianTime = report.type === 'technician_time_billability';
   const isArAging = report.type === 'ar_aging';
@@ -311,8 +323,9 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
     format: report.format,
     emailRecipients: storedEmailRecipients,
     // Business types select by their own period and owner scope; the server
-    // REFUSES a dateRange/filters on them, so none is defaulted here.
-    ...(isBusiness
+    // REFUSES a dateRange/filters on them, so none is defaulted here. A
+    // selectorless org type refuses them the same way.
+    ...(isBusiness || isSelectorlessOrgReportType(report.type)
       ? {}
       : {
           dateRange: (config.dateRange as ReportBuilderFormValues['dateRange']) || {
@@ -351,6 +364,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
     mrr_renewals: () => businessConfig(mrrRenewalsConfigFromOptions(mrrRenewalsOptions)),
     quote_win_rate: () => businessConfig(quoteWinRateConfigFromOptions(quoteWinRateOptions)),
     client_profitability: () => businessConfig(clientProfitabilityConfigFromOptions(clientProfitabilityOptions)),
+    ticket_sla_performance: () => businessConfig(ticketSlaPerformanceConfigFromOptions(slaPerformanceOptions)),
   };
   const baseConfig = curatedConfig[report.type]?.() ?? config;
   // The options panels render outside the builder, so their validity (custom
@@ -363,7 +377,8 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
     || (isAiUsage && !isAiUsageByClientOptionsValid(aiUsageOptions))
     || (isMrrRenewals && !isMrrRenewalsOptionsValid(mrrRenewalsOptions))
     || (isQuoteWinRate && !isQuoteWinRateOptionsValid(quoteWinRateOptions))
-    || (isClientProfitability && !isClientProfitabilityOptionsValid(clientProfitabilityOptions));
+    || (isClientProfitability && !isClientProfitabilityOptionsValid(clientProfitabilityOptions))
+    || (isSlaPerformance && !isTicketSlaPerformanceOptionsValid(slaPerformanceOptions));
 
   return (
     <div className="space-y-6">
@@ -434,6 +449,12 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
       {isIdentityAccess && (
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <IdentityAccessOptionsFields value={identityOptions} onChange={setIdentityOptions} />
+        </div>
+      )}
+
+      {isSlaPerformance && (
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
+          <TicketSlaPerformanceOptionsFields value={slaPerformanceOptions} onChange={setSlaPerformanceOptions} />
         </div>
       )}
 

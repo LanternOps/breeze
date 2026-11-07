@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { assertNoUnresolvedIsolation, NetworkIsolationUnresolvedError } from '../../services/networkIsolation/lifecycle';
 import { zValidator } from '../../lib/validation';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, runAfterDbContextCommit } from '../../db';
@@ -247,6 +248,9 @@ moveOrgRoutes.post(
     let moved: MoveDeviceOrgResult | undefined;
     try {
       await db.transaction(async (tx) => {
+        // Keep the engine's actor/org/device lock order. The existing W1a
+        // BEFORE org_id trigger fences a racing isolation under the device lock.
+        await assertNoUnresolvedIsolation(tx, { deviceId }, 'move_device_org', { lockDevices: false });
         moved = await moveDeviceOrgInTransaction(tx, {
           deviceId,
           sourceOrgId,
@@ -262,6 +266,11 @@ moveOrgRoutes.post(
       });
     } catch (err) {
       const pgNode = pgErrorNode(err);
+      if (err instanceof NetworkIsolationUnresolvedError
+        // eslint-disable-next-line breeze/no-direct-sqlstate -- Driver node unwrapped by the existing cause-chain mapper.
+        || (pgNode?.code === '55000' && typeof pgNode.message === 'string' && pgNode.message.startsWith('isolation_unresolved:'))) {
+        return c.json({ error: 'isolation_unresolved', message: 'Release network isolation first' }, 409);
+      }
       // PAM ownership epochs W6 (#8208): transfer on + a departing actuation
       // not closed yet (typed precondition, or the trigger's own constraint
       // when the race was lost) → wait-and-retry ACTIVE; transfer off + any

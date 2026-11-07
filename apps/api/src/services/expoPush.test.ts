@@ -565,6 +565,12 @@ describe('buildWispNudgePush', () => {
     expect(Buffer.byteLength(brief.collapseId!)).toBeLessThanOrEqual(64);
   });
 
+  it('a check_in collapses per thread under its own prefix, inside the 64-byte APNs limit', () => {
+    const checkIn = buildWispNudgePush({ ...base, concernId: null, kind: 'check_in' });
+    expect(checkIn.collapseId).toBe(`wisp:check_in:${threadId}`);
+    expect(Buffer.byteLength(checkIn.collapseId!, 'utf8')).toBe(50);
+  });
+
   it('builds the data payload with all ids and fixed routing fields', () => {
     const spec = buildWispNudgePush({ ...base, approvalIntentId: 'intent-1' });
     expect(spec.data).toEqual({

@@ -88,8 +88,8 @@ export type DesktopStreamStartActivation =
 export async function activateDesktopStreamStart(
   input: DesktopStreamStartActivationInput,
 ): Promise<DesktopStreamStartActivation> {
-  // startedAt is not written here: the start intent set it when the stream
-  // start was committed, and the lease hard deadline is measured from it.
+  // startedAt is not written here: the start intent set it when the session's
+  // first start was committed, and the lease hard deadline is measured from it.
   const [updated] = await db
     .update(remoteSessions)
     .set({ status: 'active' })

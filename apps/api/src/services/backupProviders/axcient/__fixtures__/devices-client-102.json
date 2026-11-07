@@ -1,0 +1,61 @@
+[
+  {
+    "id": 511,
+    "name": "SYN-NAS-01",
+    "client_id": 102,
+    "type": "NAS",
+    "os": { "os_type": "LINUX", "bits": 64, "os_name": "Synthetic NAS OS", "device_type": "NAS" },
+    "d2c": false,
+    "current_health_status": { "status": "TROUBLED", "reason": "OFFSITE_NEVER_RUN", "timestamp": "2026-11-05T06:00:00Z" },
+    "local_usage": 512,
+    "local_total": 4096,
+    "latest_local_rp": "2026-11-05T01:00:00Z",
+    "latest_vault_rp": null,
+    "latest_cloud_rp": null
+  },
+  {
+    "id": 512,
+    "name": "SYN-ARC-01",
+    "client_id": 102,
+    "type": "ARCHIVE",
+    "d2c": true,
+    "current_health_status": { "status": "TROUBLED", "reason": "SCHEDULE_DISABLED", "timestamp": "2026-11-05T06:00:00Z" },
+    "cloud_usage": 2048,
+    "latest_local_rp": null,
+    "latest_vault_rp": null,
+    "latest_cloud_rp": "2026-11-01T01:00:00Z"
+  },
+  {
+    "id": 513,
+    "name": "SYN-SRV-04",
+    "client_id": 102,
+    "type": "SERVER",
+    "d2c": false,
+    "current_health_status": { "status": "UNPROTECTED", "reason": "NO_JOBS", "timestamp": "2026-11-05T06:00:00Z" },
+    "latest_local_rp": null,
+    "latest_vault_rp": null,
+    "latest_cloud_rp": null
+  },
+  {
+    "id": 514,
+    "name": "SYN-SRV-05",
+    "client_id": 102,
+    "type": "SERVER",
+    "d2c": false,
+    "current_health_status": { "status": "SOMETHING_NEW", "reason": "NEVER_SEEN_BEFORE", "timestamp": "2026-11-05T06:00:00Z" },
+    "latest_local_rp": "2026-11-05T01:00:00Z",
+    "latest_vault_rp": null,
+    "latest_cloud_rp": null
+  },
+  {
+    "id": 515,
+    "name": "SYN-WKS-02",
+    "client_id": 102,
+    "type": "WORKSTATION",
+    "d2c": false,
+    "current_health_status": { "status": "TROUBLED", "reason": "APPLIANCE_OFFLINE", "timestamp": "2026-11-05T06:00:00Z" },
+    "latest_local_rp": null,
+    "latest_vault_rp": null,
+    "latest_cloud_rp": null
+  }
+]

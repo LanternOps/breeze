@@ -1,0 +1,15 @@
+### pfctl -sn
+nat-anchor "com.apple/*" all
+rdr-anchor "com.apple/*" all
+### pfctl -sr
+scrub-anchor "com.apple/*" all fragment reassemble
+pass in quick on en0 inet proto tcp from any to any port = 22 flags S/SA keep state
+anchor "com.apple/*" all
+### pfctl -sA
+  com.apple
+### pfctl -sI -v
+all
+en
+en0
+lo
+lo0

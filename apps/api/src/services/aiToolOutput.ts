@@ -1070,6 +1070,24 @@ function asCaptureEnvelope(value: unknown): { artifact: Record<string, unknown>;
  * external vendor feed, or portal/email submission.
  */
 export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string>>> = {
+  // Full-control W18 PR B (#6789): portal text is typed by MSP staff and shown to customers; recipient names and
+  // emails are contacts. None becomes instructions.
+  manage_org_portal_settings: new Set(['welcomeMessage', 'footerText', 'customCss', 'supportEmail', 'supportPhone', 'logoUrl', 'partnerInvoiceFooter', 'partnerLogoUrl']),
+  manage_report_recipients: new Set(['name', 'email']),
+  // Full-control W16 PR A (#6786): the service name is the model's (and so a prompt's) text, echoed back; an
+  // admission refusal's sentence, returned as `error`, can quote it.
+  create_operator_task: new Set(['serviceName', 'error']),
+  // Full-control W16 PR B (#6786): a design's labels, names and refs were written by a model from device evidence, and
+  // hostnames by devices; none becomes instructions, and neither does a stored ledger error.
+  manage_fleet_designs: new Set(['label', 'groupName', 'policyName', 'name', 'itemName', 'hostname', 'itemRef', 'functionKey', 'error']),
+  // Full-control W18 PR A (#6789): names and emails are typed by people (contacts, portal invitees, staff), role
+  // names and descriptions by tenant admins, external-link labels by integrations. None becomes instructions.
+  get_org_summary: new Set(['name', 'email', 'phone', 'siteName']),
+  get_account_readiness: new Set(['name', 'email', 'phone', 'mobile', 'label', 'provider']),
+  list_portal_users: new Set(['name', 'email']),
+  list_users: new Set(['name', 'email', 'roleName']),
+  get_user: new Set(['name', 'email', 'roleName']),
+  list_roles: new Set(['name', 'description', 'roleName', 'parentRoleName', 'sourceRoleName', 'email']),
   // W15: vendor/person text never becomes instructions (including provisioned field values).
   get_pax8_status: new Set(['commitmentTerm', 'billingTerm', 'catalogSku', 'name', 'pax8CompanyName', 'mappedOrgName', 'lastSyncError', 'error']),
   search_pax8_products: new Set(['commitmentTerm', 'billingTerm', 'catalogSku', 'productName', 'vendorName', 'catalogName', 'catalogDescription', 'label', 'description', 'possibleValues', 'error']),
@@ -1112,6 +1130,17 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   get_fleet_health: new Set(['label', 'detail']),
   // Anomaly rows carry metric names and free-form baseline/evidence JSON from the agent's collectors.
   manage_device_anomalies: new Set(['metricName', 'evidence', 'baselineSummary']),
+  // Full-control W17 (#6788): a verification reason and a VSS writer's name, state and error come from the machine;
+  // an unparseable agent reply is shown raw, and `error` can carry a hostname or a failed command's text. All are
+  // fenced as data, never instructions.
+  manage_backup_verification: new Set(['deviceName', 'reason', 'message', 'error']),
+  get_vss_status: new Set(['name', 'state', 'lastError', 'raw', 'error']),
+  // A C2C config's name and target addresses are typed by a person or filled from a mailbox directory.
+  manage_c2c_configs: new Set(['name', 'targetUsers']),
+  // A recovery console reports these, and the columns accept any JSON (`bmrProgressSchema`).
+  list_bmr_recoveries: new Set(['failureReason', 'warnings', 'error']),
+  // Device, computer and customer names, and a provider's label, come from agents and vendors.
+  get_backup_health: new Set(['name', 'computerName', 'orgName', 'providerLabel']),
   // Full-control W08 (#6778). Node labels, roles, vendor / model / OS strings and frontier labels are collected
   // from the network (LLDP / CDP / SNMP / controller strings) or typed by an operator; manual notes and
   // template / policy / target names are operator-authored. They pass sanitizeTopologyAiText where projected and

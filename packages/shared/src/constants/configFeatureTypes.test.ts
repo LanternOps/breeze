@@ -6,6 +6,7 @@ import {
   CONFIG_POLICY_FEATURE_TRUST_TIER,
   EXECUTION_GATED_FEATURE_TYPES,
   isExecutionGatedFeatureType,
+  ORG_SCOPED_ONLY_FEATURE_TYPES,
 } from './configFeatureTypes';
 
 describe('config feature types after the alerting consolidation', () => {
@@ -38,7 +39,7 @@ describe('CONFIG_POLICY_FEATURE_TRUST_TIER', () => {
   });
 
   it('classifies capability-granting/execution-bearing feature types as execution_gated', () => {
-    for (const ft of ['pam', 'software_policy', 'automation', 'remote_access', 'helper', 'onedrive_helper', 'maintenance', 'security_agents'] as const) {
+    for (const ft of ['pam', 'software_policy', 'automation', 'remote_access', 'helper', 'onedrive_helper', 'maintenance', 'security_agents', 'containment'] as const) {
       expect(CONFIG_POLICY_FEATURE_TRUST_TIER[ft]).toBe('execution_gated');
       expect(isExecutionGatedFeatureType(ft)).toBe(true);
       expect(EXECUTION_GATED_FEATURE_TYPES.has(ft)).toBe(true);
@@ -48,6 +49,21 @@ describe('CONFIG_POLICY_FEATURE_TRUST_TIER', () => {
   it('security_agents (#6960) is canonical and execution_gated: it arms installs of third-party agents', () => {
     expect(CONFIG_FEATURE_TYPES).toContain('security_agents');
     expect(CONFIG_POLICY_FEATURE_TRUST_TIER.security_agents).toBe('execution_gated');
+  });
+
+  it('containment is partner-wide and execution-gated because extraAllow grants network permits', () => {
+    expect(CONFIG_FEATURE_TYPES).toContain('containment');
+    expect(CONFIG_POLICY_FEATURE_TRUST_TIER.containment).toBe('execution_gated');
+    expect(ORG_SCOPED_ONLY_FEATURE_TYPES.has('containment')).toBe(false);
+  });
+
+  it('oem_updates is appended last, partner-wide, and protective (#11065, spec 4.1)', () => {
+    expect(CONFIG_FEATURE_TYPES.at(-1)).toBe('oem_updates');
+    // Protective, not execution_gated: dropping a group override that turns BIOS
+    // off could expose a broader policy that turns it on. Arming is gated at write.
+    expect(CONFIG_POLICY_FEATURE_TRUST_TIER.oem_updates).toBe('protective');
+    expect(EXECUTION_GATED_FEATURE_TYPES.has('oem_updates')).toBe(false);
+    expect(ORG_SCOPED_ONLY_FEATURE_TYPES.has('oem_updates')).toBe(false);
   });
 
   it('classifies protective/restrictive feature types as protective (never gated)', () => {

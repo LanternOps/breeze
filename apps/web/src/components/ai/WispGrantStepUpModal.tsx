@@ -5,7 +5,7 @@ import { showToast } from '@/components/shared/Toast';
 import { useJwtClaims } from '@/lib/authScope';
 import { StepUpMintError, type StepUpReauth } from '@/lib/mfaStepUp';
 import { ActionError, runAction } from '@/lib/runAction';
-import { discoverStepUpTier, fetchWispThread, isNoActiveGrant, mintWispGrantStepUp, WispPreviewError } from '@/lib/wispGrant';
+import { detectBrowserTimezone, discoverStepUpTier, fetchWispThread, isNoActiveGrant, mintWispGrantStepUp, WispPreviewError } from '@/lib/wispGrant';
 import { fetchWithAuth } from '@/stores/auth';
 import type { WispState } from '@/stores/aiStore';
 import type { ReauthTier } from '@/components/settings/StepUpPrompt';
@@ -16,11 +16,21 @@ export type WispGrantStepUpModalProps = {
   defaultOrgId: string | null;
   onClose(): void;
   onGranted(w: NonNullable<WispState>): void;
-  /** Refresh an existing grant (same handshake, its own scope) instead of creating one. */
-  refresh?: { grantId: string; orgId: string | null };
+  /**
+   * A refresh committed, before the thread read `onGranted` depends on. The caller
+   * merges the switch here, so a failed thread read cannot leave it showing off
+   * for a grant that is on, with no way to turn it off (#10973).
+   */
+  onRefreshed?(grant: { unattendedReads?: boolean }): void;
+  /**
+   * Refresh an existing grant (same handshake, its own scope) instead of
+   * creating one. `unattendedReads` turns that switch on in the same refresh
+   * (#10973); without it the server keeps the switch as the grant has it.
+   */
+  refresh?: { grantId: string; orgId: string | null; unattendedReads?: true };
 };
 
-type GrantDto = { id: string; orgId: string | null };
+type GrantDto = { id: string; orgId: string | null; unattendedReads?: boolean };
 
 const isStepUpRequired = (err: unknown): boolean =>
   err instanceof ActionError && err.status === 403 && err.code === 'STEP_UP_REQUIRED';
@@ -31,7 +41,7 @@ const isStepUpRequired = (err: unknown): boolean =>
  * `403 STEP_UP_REQUIRED` means the reach changed between preview and submit;
  * the handshake is re-run once with a fresh preview, then reported.
  */
-export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGranted, refresh }: WispGrantStepUpModalProps) {
+export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGranted, onRefreshed, refresh }: WispGrantStepUpModalProps) {
   const { t } = useTranslation('ai');
   const claims = useJwtClaims();
   const partnerToken = claims.status === 'resolved' && claims.claims.scope === 'partner';
@@ -77,6 +87,10 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
   }, [open, initialScope]);
 
   const orgId = refresh ? refresh.orgId : scope === 'org' ? defaultOrgId : null;
+  const enablingUnattendedReads = refresh?.unattendedReads === true;
+  const title = enablingUnattendedReads
+    ? t('wisp.modal.unattendedReadsTitle')
+    : refresh ? t('wisp.modal.refreshTitle') : t('wisp.modal.title');
   const missingOrg = !refresh && scope === 'org' && !defaultOrgId;
   const scopeKey = orgId ?? '*';
   // Only "turn on" can re-enter a grant; a refresh always takes a new proof.
@@ -166,21 +180,40 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
     setBusy(true);
     setError(null);
     const reauth: StepUpReauth = tier === 'passkey' ? { method: 'passkey' } : { method: 'totp', code };
-    const errorFallback = refresh ? t('wisp.toast.refreshFailed') : t('wisp.toast.onFailed');
-    const successMessage = refresh ? t('wisp.toast.refreshed') : t('wisp.toast.on');
+    const errorFallback = enablingUnattendedReads
+      ? t('wisp.toast.unattendedReadsOnFailed')
+      : refresh ? t('wisp.toast.refreshFailed') : t('wisp.toast.onFailed');
+    const successMessage = enablingUnattendedReads
+      ? t('wisp.toast.unattendedReadsOn')
+      : refresh ? t('wisp.toast.refreshed') : t('wisp.toast.on');
     const attempt = async (): Promise<GrantDto> => {
-      const stepUpGrantId = await mintWispGrantStepUp({ partnerId, orgId, reauth });
-      return runAction<GrantDto>({
+      const stepUpGrantId = await mintWispGrantStepUp({
+        partnerId,
+        orgId,
+        reauth,
+        ...(refresh ? { refreshGrantId: refresh.grantId } : {}),
+        ...(enablingUnattendedReads ? { unattendedReads: true } : {}),
+      });
+      const browserTimezone = detectBrowserTimezone();
+      const dto = await runAction<GrantDto>({
         request: () =>
           refresh
-            ? fetchWithAuth(`/wisp/grants/${refresh.grantId}/refresh`, { method: 'POST', body: JSON.stringify({ stepUpGrantId }) })
-            : fetchWithAuth('/wisp/grants', { method: 'POST', body: JSON.stringify({ orgId, stepUpGrantId }) }),
+            ? fetchWithAuth(`/wisp/grants/${refresh.grantId}/refresh`, {
+              method: 'POST',
+              body: JSON.stringify({ stepUpGrantId, ...(enablingUnattendedReads ? { unattendedReads: true } : {}) }),
+            })
+            : fetchWithAuth('/wisp/grants', {
+              method: 'POST',
+              body: JSON.stringify({ orgId, stepUpGrantId, ...(browserTimezone ? { browserTimezone } : {}) }),
+            }),
         errorFallback,
         // Handled below rather than toasted: a stale proof (re-verify) and an
         // already-live grant for this scope (reopen it).
         suppressErrorToast: (status, errorCode) =>
           (status === 403 && errorCode === 'STEP_UP_REQUIRED') || (status === 409 && errorCode === 'ALREADY_ACTIVE'),
       });
+      if (refresh) onRefreshed?.(dto);
+      return dto;
     };
     try {
       try {
@@ -213,6 +246,8 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
       } else if (err instanceof WispPreviewError) setError(err.message);
       else if (err instanceof ActionError) {
         // runAction already toasted it (401 is the auth redirect's job); the modal stays open.
+        // A refresh that lost a race has spent its proof, and a TOTP code is single-use.
+        if (err.status === 409 && err.code === 'NOT_ACTIVE') setCode('');
       } else {
         console.error('[wisp] grant step-up failed', err);
         setError(t('wisp.modal.stepUpUnavailable'));
@@ -223,10 +258,13 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
   };
 
   return (
-    <Dialog open={open} onClose={busy ? () => {} : onClose} title={refresh ? t('wisp.modal.refreshTitle') : t('wisp.modal.title')} maxWidth="md" className="p-5">
+    <Dialog open={open} onClose={busy ? () => {} : onClose} title={title} maxWidth="md" className="p-5">
       <div data-testid="wisp-grant-modal" className="space-y-4">
-        <h2 className="text-base font-semibold">{refresh ? t('wisp.modal.refreshTitle') : t('wisp.modal.title')}</h2>
+        <h2 className="text-base font-semibold">{title}</h2>
         {!reenter && <p className="text-sm text-muted-foreground">{t('wisp.modal.explain')}</p>}
+        {enablingUnattendedReads && (
+          <p className="text-sm text-muted-foreground">{t('wisp.settings.unattendedReads.applies')}</p>
+        )}
 
         {!refresh && (
           <fieldset className="space-y-2" disabled={busy}>

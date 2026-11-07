@@ -75,7 +75,8 @@ func enrichOSInfo(info *SystemInfo) {
 }
 
 // collectPlatformHardware queries Win32_BIOS, Win32_BaseBoard,
-// Win32_ComputerSystem, and Win32_VideoController in a single PowerShell
+// Win32_ComputerSystem, Win32_ComputerSystemProduct, and Win32_VideoController
+// in a single PowerShell
 // invocation (one process spawn instead of ~9) and populates hw with the
 // results. Graceful degradation: a failed or unparseable response leaves the
 // affected fields empty.
@@ -115,6 +116,8 @@ $gpus  = @(@(Get-WmiSafe 'Win32_VideoController') |
   BoardVersion      = if ($board) { ([string]$board.Version).Trim() }          else { '' }
   SysManufacturer   = if ($sys)   { ([string]$sys.Manufacturer).Trim() }       else { '' }
   SysModel          = if ($sys)   { ([string]$sys.Model).Trim() }              else { '' }
+  SysSKU            = if ($sys)   { ([string]$sys.SystemSKUNumber).Trim() }    else { '' }
+  ProductSKU        = if ($csp)   { ([string]$csp.SKUNumber).Trim() }          else { '' }
   SysUUID           = if ($csp)   { ([string]$csp.UUID).Trim() }               else { '' }
   GPUNames          = $gpus
 } | ConvertTo-Json -Compress
@@ -136,6 +139,7 @@ $gpus  = @(@(Get-WmiSafe 'Win32_VideoController') |
 	}
 
 	hw.SerialNumber = firstCleanHardwareIdentityValue(parsed.BiosSerial, parsed.BoardSerial)
+	hw.ProductSKU = windowsProductSKU(parsed)
 	hw.Manufacturer = cleanHardwareIdentityValue(parsed.SysManufacturer)
 	hw.Model = cleanHardwareIdentityValue(parsed.SysModel)
 	hw.MotherboardManufacturer = cleanHardwareIdentityValue(parsed.BoardManufacturer)

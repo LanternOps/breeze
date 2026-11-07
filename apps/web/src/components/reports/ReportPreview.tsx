@@ -12,6 +12,7 @@ import {
 import { cn, widthPercentClass } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import type { ReportType } from './ReportsList';
+import { TicketSlaPerformancePreview } from './TicketSlaPerformancePreview';
 import { useTranslation } from 'react-i18next';
 
 type PreviewMode = 'table' | 'chart';
@@ -549,8 +550,12 @@ export default function ReportPreview({
         );
       })()}
 
+      {data.type === 'ticket_sla_performance' && previewMode === 'table' && (
+        <TicketSlaPerformancePreview summary={data.data.summary} />
+      )}
+
       {/* Summary Cards */}
-      {data.type !== 'hardware_lifecycle' && data.type !== 'backup_status' && data.type !== 'threat_detection_review' && data.type !== 'endpoint_management_review' && data.type !== 'vulnerability_management' && data.type !== 'identity_access_review' && data.data.summary && previewMode === 'table' && (
+      {data.type !== 'ticket_sla_performance' && data.type !== 'hardware_lifecycle' && data.type !== 'backup_status' && data.type !== 'threat_detection_review' && data.type !== 'endpoint_management_review' && data.type !== 'vulnerability_management' && data.type !== 'identity_access_review' && data.data.summary && previewMode === 'table' && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {Object.entries(data.data.summary).map(([key, value]) => (
             <div key={key} className="rounded-lg border bg-card p-4">
@@ -566,7 +571,7 @@ export default function ReportPreview({
       )}
 
       {/* Table View */}
-      {previewMode === 'table' && rows.length > 0 && (
+      {previewMode === 'table' && data.type !== 'ticket_sla_performance' && rows.length > 0 && (
         <>
           <div className="rounded-lg border bg-card shadow-xs overflow-hidden">
             <div className="overflow-x-auto">

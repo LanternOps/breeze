@@ -1,6 +1,7 @@
 package systemstate
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -21,7 +22,7 @@ func forbidRegSave(t *testing.T) {
 	t.Helper()
 	orig := runRegSave
 	t.Cleanup(func() { runRegSave = orig })
-	runRegSave = func(hive, _ string) ([]byte, error) {
+	runRegSave = func(_ context.Context, hive, _ string) ([]byte, error) {
 		t.Errorf("reg save %s was spawned although the run has a shadow copy of the system volume", hive)
 		return nil, errors.New("reg.exe must not run under VSS")
 	}
@@ -112,7 +113,7 @@ func TestCollectRegistryHivesForRun_UnderVSSCopiesFromShadowWithoutRegExe(t *tes
 			return func() { released++ }, nil
 		},
 	}
-	arts, err := collectRegistryHivesForRun(dir, staging, `C:\Windows`, opts)
+	arts, err := collectRegistryHivesForRun(context.Background(), dir, staging, `C:\Windows`, opts)
 	if err != nil {
 		t.Fatalf("collectRegistryHivesForRun: %v", err)
 	}
@@ -163,7 +164,7 @@ func TestCollectRegistryHivesFromShadow_MissingLogsAreNotAFailure(t *testing.T) 
 	dir := filepath.Join(staging, "registry")
 	_ = os.MkdirAll(dir, 0o700)
 
-	arts, err := collectRegistryHivesFromShadow(dir, staging, filepath.Join(root, "Windows", "System32", "config"), shadowRegistryHives)
+	arts, err := collectRegistryHivesFromShadow(context.Background(), dir, staging, filepath.Join(root, "Windows", "System32", "config"), shadowRegistryHives)
 	if err != nil {
 		t.Fatalf("missing optional logs must not fail the step: %v", err)
 	}
@@ -182,7 +183,7 @@ func TestCollectRegistryHivesForRun_MissingShadowHiveFailsAndIsNamed(t *testing.
 	dir := filepath.Join(staging, "registry")
 	_ = os.MkdirAll(dir, 0o700)
 
-	arts, err := collectRegistryHivesForRun(dir, staging, `C:\Windows`, CollectOptions{ShadowPaths: map[string]string{"C:": root}})
+	arts, err := collectRegistryHivesForRun(context.Background(), dir, staging, `C:\Windows`, CollectOptions{ShadowPaths: map[string]string{"C:": root}})
 	if err == nil {
 		t.Fatal("a hive missing from the shadow copy must fail the registry step")
 	}
@@ -214,7 +215,7 @@ func TestCollectRegistryHivesFromShadow_UnreadableLogFailsTheWholeHive(t *testin
 	dir := filepath.Join(staging, "registry")
 	_ = os.MkdirAll(dir, 0o700)
 
-	arts, err := collectRegistryHivesFromShadow(dir, staging, cfg, shadowRegistryHives)
+	arts, err := collectRegistryHivesFromShadow(context.Background(), dir, staging, cfg, shadowRegistryHives)
 	var rsErr *registrySaveError
 	if !errors.As(err, &rsErr) || !reflect.DeepEqual(rsErr.FailedHives, []string{"SAM"}) {
 		t.Fatalf("err = %v, want SAM named as failed", err)
@@ -237,7 +238,7 @@ func TestCollectRegistryHivesForRun_WithoutShadowUsesRegSave(t *testing.T) {
 	orig := runRegSave
 	t.Cleanup(func() { runRegSave = orig })
 	var saved []string
-	runRegSave = func(hive, outPath string) ([]byte, error) {
+	runRegSave = func(_ context.Context, hive, outPath string) ([]byte, error) {
 		saved = append(saved, hive)
 		return nil, os.WriteFile(outPath, []byte("hive-"+hive), 0o600)
 	}
@@ -247,7 +248,7 @@ func TestCollectRegistryHivesForRun_WithoutShadowUsesRegSave(t *testing.T) {
 
 	// D: is shadowed, the system volume is not.
 	opts := CollectOptions{ShadowPaths: map[string]string{"D:": t.TempDir()}}
-	if _, err := collectRegistryHivesForRun(dir, staging, `C:\Windows`, opts); err != nil {
+	if _, err := collectRegistryHivesForRun(context.Background(), dir, staging, `C:\Windows`, opts); err != nil {
 		t.Fatalf("collectRegistryHivesForRun: %v", err)
 	}
 	if want := []string{"SYSTEM", "SOFTWARE", "SAM", "SECURITY"}; !reflect.DeepEqual(saved, want) {
@@ -267,7 +268,7 @@ func TestCollectRegistryHivesForRun_PrivilegeFailureIsNotFatal(t *testing.T) {
 		ShadowPaths:            map[string]string{"C:": root},
 		AcquireBackupPrivilege: func() (func(), error) { return nil, errors.New("privilege not held") },
 	}
-	if _, err := collectRegistryHivesForRun(dir, staging, `C:\Windows`, opts); err != nil {
+	if _, err := collectRegistryHivesForRun(context.Background(), dir, staging, `C:\Windows`, opts); err != nil {
 		t.Fatalf("collectRegistryHivesForRun: %v", err)
 	}
 }
@@ -307,7 +308,7 @@ func TestCollectRegistryHivesForRun_NoRunShadowTakesOwnSystemVolumeSnapshot(t *t
 	_ = os.MkdirAll(dir, 0o700)
 	snap := &fakeSnapshot{root: root}
 
-	arts, err := collectRegistryHivesForRun(dir, staging, `C:\Windows`, CollectOptions{SnapshotVolume: snap.snapshot})
+	arts, err := collectRegistryHivesForRun(context.Background(), dir, staging, `C:\Windows`, CollectOptions{SnapshotVolume: snap.snapshot})
 	if err != nil {
 		t.Fatalf("collectRegistryHivesForRun: %v", err)
 	}
@@ -333,7 +334,7 @@ func TestCollectRegistryHivesForRun_RunShadowCoveringSystemVolumeTakesNoSnapshot
 	snap := &fakeSnapshot{root: root}
 
 	opts := CollectOptions{ShadowPaths: map[string]string{"C:": root}, SnapshotVolume: snap.snapshot}
-	if _, err := collectRegistryHivesForRun(dir, staging, `C:\Windows`, opts); err != nil {
+	if _, err := collectRegistryHivesForRun(context.Background(), dir, staging, `C:\Windows`, opts); err != nil {
 		t.Fatalf("collectRegistryHivesForRun: %v", err)
 	}
 	if snap.calls != 0 {
@@ -346,7 +347,7 @@ func TestCollectRegistryHivesForRun_OwnSnapshotFailureFallsBackToRegSave(t *test
 	orig := runRegSave
 	t.Cleanup(func() { runRegSave = orig })
 	var saved []string
-	runRegSave = func(hive, outPath string) ([]byte, error) {
+	runRegSave = func(_ context.Context, hive, outPath string) ([]byte, error) {
 		saved = append(saved, hive)
 		return nil, os.WriteFile(outPath, []byte("hive-"+hive), 0o600)
 	}
@@ -355,7 +356,7 @@ func TestCollectRegistryHivesForRun_OwnSnapshotFailureFallsBackToRegSave(t *test
 	_ = os.MkdirAll(dir, 0o700)
 	snap := &fakeSnapshot{err: errors.New("VSS_E_UNEXPECTED")}
 
-	if _, err := collectRegistryHivesForRun(dir, staging, `C:\Windows`, CollectOptions{SnapshotVolume: snap.snapshot}); err != nil {
+	if _, err := collectRegistryHivesForRun(context.Background(), dir, staging, `C:\Windows`, CollectOptions{SnapshotVolume: snap.snapshot}); err != nil {
 		t.Fatalf("collectRegistryHivesForRun: %v", err)
 	}
 	if snap.calls != 1 {
@@ -371,7 +372,7 @@ func TestCollectRegistryHivesForRun_OwnSnapshotFailureFallsBackToRegSave(t *test
 func TestCollectRegistryHivesForRun_OwnSnapshotMissingSystemVolumeIsReleased(t *testing.T) {
 	orig := runRegSave
 	t.Cleanup(func() { runRegSave = orig })
-	runRegSave = func(hive, outPath string) ([]byte, error) {
+	runRegSave = func(_ context.Context, hive, outPath string) ([]byte, error) {
 		return nil, os.WriteFile(outPath, []byte("hive-"+hive), 0o600)
 	}
 	staging := t.TempDir()
@@ -379,7 +380,7 @@ func TestCollectRegistryHivesForRun_OwnSnapshotMissingSystemVolumeIsReleased(t *
 	_ = os.MkdirAll(dir, 0o700)
 	snap := &fakeSnapshot{root: t.TempDir(), omitVolume: true}
 
-	if _, err := collectRegistryHivesForRun(dir, staging, `C:\Windows`, CollectOptions{SnapshotVolume: snap.snapshot}); err != nil {
+	if _, err := collectRegistryHivesForRun(context.Background(), dir, staging, `C:\Windows`, CollectOptions{SnapshotVolume: snap.snapshot}); err != nil {
 		t.Fatalf("collectRegistryHivesForRun: %v", err)
 	}
 	if snap.released != 1 {
@@ -392,7 +393,7 @@ func TestCollectRegistryHivesForRun_OwnSnapshotMissingSystemVolumeIsReleased(t *
 func TestCollectRegistryHivesForRun_SkipSystemVolumeSnapshot(t *testing.T) {
 	orig := runRegSave
 	t.Cleanup(func() { runRegSave = orig })
-	runRegSave = func(hive, outPath string) ([]byte, error) {
+	runRegSave = func(_ context.Context, hive, outPath string) ([]byte, error) {
 		return nil, os.WriteFile(outPath, []byte("hive-"+hive), 0o600)
 	}
 	staging := t.TempDir()
@@ -401,7 +402,7 @@ func TestCollectRegistryHivesForRun_SkipSystemVolumeSnapshot(t *testing.T) {
 	snap := &fakeSnapshot{root: t.TempDir()}
 
 	opts := CollectOptions{SnapshotVolume: snap.snapshot, SkipSystemVolumeSnapshot: true}
-	if _, err := collectRegistryHivesForRun(dir, staging, `C:\Windows`, opts); err != nil {
+	if _, err := collectRegistryHivesForRun(context.Background(), dir, staging, `C:\Windows`, opts); err != nil {
 		t.Fatalf("collectRegistryHivesForRun: %v", err)
 	}
 	if snap.calls != 0 {
@@ -418,7 +419,7 @@ func TestCollectRegistryHivesFromShadow_MissingDefaultIsBestEffort(t *testing.T)
 	dir := filepath.Join(staging, "registry")
 	_ = os.MkdirAll(dir, 0o700)
 
-	arts, err := collectRegistryHivesFromShadow(dir, staging, filepath.Join(root, "Windows", "System32", "config"), shadowRegistryHives)
+	arts, err := collectRegistryHivesFromShadow(context.Background(), dir, staging, filepath.Join(root, "Windows", "System32", "config"), shadowRegistryHives)
 	if err != nil {
 		t.Fatalf("a missing DEFAULT hive must not fail the registry step: %v", err)
 	}

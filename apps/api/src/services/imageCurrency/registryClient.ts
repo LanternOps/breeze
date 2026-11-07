@@ -26,6 +26,7 @@ import {
   safeFetchFollowingRedirects,
   type SafeFetchInit,
 } from '../urlSafety';
+import { Semaphore } from '../../utils/semaphore';
 
 /** Allowlist v1 (spec §9.2). Request hosts, not the agent's canonical names. */
 export const REGISTRY_HOST_ALLOWLIST: ReadonlySet<string> = new Set([
@@ -163,25 +164,6 @@ const allowOutboundHost = (u: URL): boolean =>
 
 const defaultFetch: FetchFn = (url, init, options) =>
   safeFetchFollowingRedirects(url, init, MAX_REDIRECTS, { allowHost: options.allowHost });
-
-class Semaphore {
-  private active = 0;
-  private readonly waiters: Array<() => void> = [];
-  constructor(private readonly limit: number) {}
-  async run<T>(fn: () => Promise<T>): Promise<T> {
-    // A released slot is handed straight to the next waiter (active is not
-    // decremented), so a newcomer can never slip in between and overshoot.
-    if (this.active >= this.limit) await new Promise<void>((resolve) => this.waiters.push(resolve));
-    else this.active++;
-    try {
-      return await fn();
-    } finally {
-      const next = this.waiters.shift();
-      if (next) next();
-      else this.active--;
-    }
-  }
-}
 
 /** Parse `Bearer realm="…",service="…",scope="…"`. Null for any other scheme. */
 export function parseBearerChallenge(header: string | null): Record<string, string> | null {

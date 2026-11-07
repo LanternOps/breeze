@@ -95,6 +95,9 @@ export interface ProviderLegRow {
   connectionIsActive: boolean | null;
   connectionLastSyncAt: Date | string | null;
   connectionSyncIntervalMinutes: number | null;
+  verifiedBootableAt: Date | string | null;
+  verifiedBootable: boolean | null;
+  verifiedBootableFailedChecks: string[] | null;
 }
 
 export interface ConnectionFreshness {
@@ -255,6 +258,9 @@ export function toBreezeHealthRow(row: BreezeLegRow, opts: { now: Date }): Backu
     dataSources: [],
     history28d: [],
     agentOnline: row.deviceStatus === 'online',
+    verifiedBootableAt: null,
+    verifiedBootable: null,
+    verifiedBootableFailedChecks: null,
   };
 }
 
@@ -310,6 +316,9 @@ export function toProviderHealthRow(
     dataSources: row.dataSources ?? [],
     history28d: [],
     agentOnline: row.breezeDeviceId ? row.deviceStatus === 'online' : null,
+    verifiedBootableAt: toIso(row.verifiedBootableAt),
+    verifiedBootable: row.verifiedBootable,
+    verifiedBootableFailedChecks: row.verifiedBootableFailedChecks,
   };
 }
 

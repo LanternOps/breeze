@@ -209,6 +209,7 @@
       "copy": "Copiar",
       "delete": "Excluir",
       "download": "Baixar",
+      "mkdir": "Nova pasta",
       "move": "Mover",
       "purge": "Excluir permanentemente",
       "restore": "Restaurar",
@@ -250,6 +251,7 @@
     "emptyDirectory": "Esta pasta está vazia",
     "errors": {
       "copy": "Falha ao copiar",
+      "createFolder": "Falha ao criar a pasta",
       "delete": "Falha ao excluir",
       "download": "Falha ao baixar",
       "downloadTooLarge": "Muito grande para baixar ({{size}}). O navegador de arquivos transfere arquivos de até {{max}}.",
@@ -264,6 +266,15 @@
     "home": "Início",
     "modified": "Modificado",
     "moveTo": "Mover para...",
+    "newFolder": {
+      "action": "Nova pasta",
+      "title": "Nova pasta",
+      "nameLabel": "Nome da pasta",
+      "location": "Será criada em {{path}}",
+      "created": "Pasta {{name}} criada",
+      "invalidName": "O nome da pasta não pode conter separadores de caminho nem caracteres não permitidos pelo sistema de arquivos deste dispositivo.",
+      "nameExists": "Já existe um arquivo ou uma pasta com este nome aqui."
+    },
     "selectedCount": "Quantidade selecionada",
     "size": "Tamanho",
     "title": "Gerenciador de Arquivos",
@@ -318,7 +329,8 @@
     "title": "Gerenciador de Processos",
     "totalCpu": "CPU total",
     "pid": "PID",
-    "cpu": "CPU"
+    "cpu": "CPU",
+    "monitorThis": "Monitorar isto"
   },
   "proxyTunnelPage": {
     "errors": {
@@ -645,7 +657,8 @@
     "summary": "{{shown}} de {{total}} serviços em {{device}}",
     "title": "Gerenciador de Serviços",
     "windowsOnlyDescription": "O Gerenciador de Serviços está disponível apenas para dispositivos Windows. {{device}} executa {{os}}.",
-    "windowsOnlyTitle": "Disponível apenas no Windows"
+    "windowsOnlyTitle": "Disponível apenas no Windows",
+    "monitorThis": "Monitorar isto"
   },
   "sessionHistory": {
     "columns": {

@@ -41,6 +41,23 @@ describe('fetchWispActivity', () => {
     await expect(fetchWispActivity('t1', null)).rejects.toThrow();
   });
 
+  it('keeps a valid runStatus, omits an invalid one, and leaves non-specialist items without the key', async () => {
+    mockFetch.mockResolvedValue(res(true, {
+      data: {
+        items: [
+          item({ id: 'a', kind: 'specialist', runStatus: 'awaiting_approval' }),
+          item({ id: 'b', kind: 'specialist', runStatus: 'bogus' }),
+          item({ id: 'c' }),
+        ],
+        nextCursor: null,
+      },
+    }));
+    const out = await fetchWispActivity('t1', null);
+    expect(out.items.find((i) => i.id === 'a')!.runStatus).toBe('awaiting_approval');
+    expect('runStatus' in out.items.find((i) => i.id === 'b')!).toBe(false);
+    expect('runStatus' in out.items.find((i) => i.id === 'c')!).toBe(false);
+  });
+
   it('drops unknown kinds and malformed rows', async () => {
     mockFetch.mockResolvedValue(res(true, {
       data: { items: [item({ kind: 'future' }), item({ title: 3 }), item({ at: null }), item({ id: 7 }), item({ kind: 'brief' })], nextCursor: null },

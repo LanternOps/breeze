@@ -1,14 +1,27 @@
 import type { Context, MiddlewareHandler, Next } from 'hono';
-import { getRedis } from '../services/redis';
-import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
+import { verifyToken } from '../services/jwt';
+import {
+  markUserRateBudgetOwed,
+  spendFromBucket,
+  TOO_MANY_REQUESTS,
+  userRateBudgetPerMinute,
+} from './rateLimitBudget';
 // Side-effect import: brings the `tunnelSurface` ContextVariableMap augmentation into scope.
 import './tunnelHostDispatch';
 
+export { __resetInMemoryCountersForTests } from './rateLimitBudget';
+
 /**
- * Global per-IP rate limiter middleware.
+ * Global per-IP rate limiter middleware: the front door, ahead of any auth.
  *
- * Applies a blanket request cap per client IP across all API routes.
+ * Every metered request spends exactly one per-IP bucket, chosen in this order:
+ *   1. a tunnel host or an isolated path prefix spends that bucket;
+ *   2. a verified session spends the raised session ceiling, and owes the
+ *      per-user budget authMiddleware charges (#10962);
+ *   3. everything else, anonymous and API-key traffic included, spends the
+ *      shared bucket.
+ *
  * Individual routes can still have their own stricter limits (login, register, etc.).
  *
  * Skips health/readiness probes so load balancers and monitoring aren't affected.
@@ -25,7 +38,17 @@ const SKIP_PATHS = new Set(['/health', '/ready']);
 // problematic in development where everything originates from localhost.
 const BUILT_IN_SKIP_PREFIXES = ['/api/v1/agents/', '/api/v1/helper/'];
 const skipPrefixes: string[] = [...BUILT_IN_SKIP_PREFIXES];
-const MAX_IN_MEMORY_ENTRIES = 100_000;
+
+/**
+ * The per-IP ceiling for verified sessions, as a multiple of the per-user
+ * budget: ten users on one IP can each spend their whole budget before they
+ * share a limit. It stays a ceiling, not an exemption, because the front door
+ * cannot see whether a route authenticates: on a route with no authMiddleware
+ * no per-user budget is ever charged, and a token that passes the signature
+ * check here may still be rejected by authMiddleware's revocation and epoch
+ * checks. Both remain bounded by this bucket.
+ */
+const SESSION_IP_CEILING_USERS = 10;
 
 /**
  * A path prefix metered in its own per-IP bucket rather than the shared one.
@@ -46,9 +69,8 @@ export interface IsolatedBucket {
 /**
  * Tunnel-host requests (Network Proxy host mode) carry arbitrary device paths,
  * so the path-prefix buckets below can't isolate them: one device admin page
- * loading 100 subresources would otherwise drain the shared dashboard budget
- * of every user behind the same IP (plan G7). The per-user/tunnel/agent
- * budgets that sit on top of this per-IP bucket land in W02.
+ * loading 100 subresources would otherwise drain a budget shared by everyone
+ * behind the same IP (plan G7).
  */
 export const TUNNEL_HOST_BUCKET: IsolatedBucket = { prefix: '', name: 'tunnelhost', limit: 1200 };
 
@@ -79,7 +101,7 @@ export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
   // Public invoice view-and-pay links (2026-08-21 spec §6): unauthenticated,
   // bearer-URL surface. Isolated so a scanner hammering a leaked/expired link
   // can't burn the shared budget of everything else behind the same NAT, and
-  // capped well below the global 300 — a human paying an invoice makes a
+  // capped well below the global 600 — a human paying an invoice makes a
   // handful of requests. The Stripe-backed mutations (/pay, /settle-return)
   // carry an additional per-token limiter inside the route.
   { prefix: '/api/v1/invoices/public/', name: 'invoicepublic', limit: 60 },
@@ -91,7 +113,7 @@ export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
   { prefix: '/api/v1/agreements/public/', name: 'agreementpublic', limit: 60 },
   // Bare-metal recovery (2026-09-09 assurance campaign, D13): the recovery
   // helper fetches ONE object per file through /backup/bmr/recover/download,
-  // so a 10k-file server would be capped at 300 files/min by the shared
+  // so a 10k-file server would be capped at 600 files/min by the shared
   // bucket. Only the download route is isolated: it is token-authenticated,
   // path-scoped to a single snapshot and carries its own per-token limiter,
   // so the bucket only needs to stay below "runaway client" territory.
@@ -100,14 +122,14 @@ export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
   { prefix: '/api/v1/backup/bmr/recover/download', name: 'bmrrecover', limit: 12_000 },
   // Partner sending-domain delivery events (W06). One provider egress IP
   // delivers every partner's bounces, complaints and deliveries, so on the
-  // shared 300/min per-IP budget a busy partner lane would throttle dashboard
-  // traffic that happens to share an egress address — and vice versa. The
+  // shared 600/min per-IP budget a busy partner lane would throttle anonymous
+  // and API-key traffic that happens to share an egress address — and vice versa. The
   // route carries its own 600/min limiter and rejects anything unsigned, so
   // this bucket only needs to stay out of runaway territory.
   { prefix: '/api/v1/webhooks/email-provider/', name: 'emaildomainswebhook', limit: 1200 },
   // EDR vendor push hints (W03 PR-B). One vendor egress IP delivers every
   // partner's console events, so the shared per-IP budget would couple partners
-  // to each other and to dashboard traffic. The route carries its own
+  // to each other and to anything else on it. The route carries its own
   // per-connection 60/min limiter (checked before any DB read) and rejects
   // anything without the connection's secret.
   { prefix: '/api/v1/webhooks/edr/', name: 'edrwebhook', limit: 1200 },
@@ -121,6 +143,12 @@ export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
   // fetches one page at a time. Isolated from 'trustpublic' so a verifier polling attestations cannot starve a
   // human reading the page, and vice versa.
   { prefix: '/api/v1/trust/attestation/', name: 'trustattest', limit: 60 },
+  // Agent WebSocket upgrades (W08 D11, #10962). A fleet behind one NAT must not
+  // spend the budget of the operators behind that NAT. One upgrade is one
+  // request, so 3000/min lets 3000 agents on one address reconnect inside a
+  // minute; a larger fleet catches up through the agent's jittered backoff. The
+  // route carries its own per-agent connection limiter.
+  { prefix: '/api/v1/agent-ws/', name: 'agentws', limit: 3000 },
 ];
 
 export function registerGlobalRateLimitSkipPrefix(prefix: string): void {
@@ -134,35 +162,29 @@ export function __resetSkipPrefixesForTests(): void {
 }
 
 /**
- * Clear the in-memory fallback counters so each test starts from a clean
- * budget. Only meaningful when Redis is stubbed out.
+ * Whether the request carries a valid session: a signed, unexpired access token
+ * for this API. A bearer header alone is not enough, or `Bearer x` would leave
+ * the anonymous bucket for free. HS256 verification is local CPU with no I/O.
+ * API keys and other bearer formats fail this and stay in the shared bucket.
  */
-export function __resetInMemoryCountersForTests(): void {
-  inMemoryCounters.clear();
-}
-
-// ---------------------------------------------------------------------------
-// In-memory fallback rate limiter (used when Redis is unavailable)
-// ---------------------------------------------------------------------------
-const inMemoryCounters = new Map<string, { count: number; resetAt: number }>();
-let lastCleanup = Date.now();
-let inMemoryFallbackLogged = false;
-const CLEANUP_INTERVAL_MS = 60_000; // prune expired entries every 60s
-
-function cleanupExpiredEntries(): void {
-  const now = Date.now();
-  if (now - lastCleanup < CLEANUP_INTERVAL_MS) return;
-  lastCleanup = now;
-  for (const [key, entry] of inMemoryCounters) {
-    if (entry.resetAt <= now) {
-      inMemoryCounters.delete(key);
-    }
-  }
+async function carriesValidSession(c: Context): Promise<boolean> {
+  const authHeader = c.req.header('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) return false;
+  const payload = await verifyToken(authHeader.slice(7));
+  return payload?.type === 'access' && Boolean(payload.sub);
 }
 
 interface GlobalRateLimitOptions {
-  /** Max requests per window for the shared bucket. Default: 300 */
+  /**
+   * Max requests per window for the shared bucket, the ceiling for anonymous
+   * and API-key traffic. Default: 600, which caps a runaway client at ~10 req/s.
+   */
   limit?: number;
+  /**
+   * Max requests per window per IP across all verified sessions.
+   * Default: {@link SESSION_IP_CEILING_USERS} times the per-user budget.
+   */
+  sessionIpLimit?: number;
   /** Window size in seconds. Default: 60 */
   windowSeconds?: number;
   /**
@@ -174,10 +196,9 @@ interface GlobalRateLimitOptions {
 }
 
 export function globalRateLimit(options?: GlobalRateLimitOptions): MiddlewareHandler {
-  const limit = options?.limit ?? 300;
+  const limit = options?.limit ?? 600;
   const windowSeconds = options?.windowSeconds ?? 60;
   const isolatedBuckets = options?.isolatedBuckets ?? ISOLATED_BUCKETS;
-  const windowMs = windowSeconds * 1000;
   const e2eMode = process.env.E2E_MODE === '1' || process.env.E2E_MODE === 'true';
 
   return async (c: Context, next: Next) => {
@@ -200,11 +221,9 @@ export function globalRateLimit(options?: GlobalRateLimitOptions): MiddlewareHan
       return next();
     }
 
-    const redis = getRedis();
     // Bucket identity, not the client's address: rateLimitIpKey folds IPv6 to
     // its /64 so a subscriber holding 2^64 addresses gets one bucket rather
     // than an unlimited supply. IPv4 and the 'unknown' sentinel pass through.
-    // Used for both the Redis key and the in-memory fallback Map below.
     const clientIp = rateLimitIpKey(getTrustedClientIp(c, 'unknown'));
 
     // Route into a dedicated bucket when the path has one, so high-volume
@@ -212,53 +231,20 @@ export function globalRateLimit(options?: GlobalRateLimitOptions): MiddlewareHan
     const bucket = tunnelSurface
       ? TUNNEL_HOST_BUCKET
       : isolatedBuckets.find(b => c.req.path.startsWith(b.prefix));
-    const bucketLimit = bucket?.limit ?? limit;
-    const bucketKey = bucket ? `global:${bucket.name}:${clientIp}` : `global:${clientIp}`;
 
-    if (!redis) {
-      // Redis unavailable — use in-memory fallback so requests are still metered.
-      if (!inMemoryFallbackLogged) {
-        console.warn('[RateLimit] Redis unavailable, using in-memory fallback');
-        inMemoryFallbackLogged = true;
-      }
-      cleanupExpiredEntries();
+    let bucketLimit = bucket?.limit ?? limit;
+    let bucketKey = bucket ? `global:${bucket.name}:${clientIp}` : `global:${clientIp}`;
 
-      const now = Date.now();
-      const entry = inMemoryCounters.get(bucketKey);
-
-      if (entry && entry.resetAt > now) {
-        if (entry.count >= bucketLimit) {
-          c.header('X-RateLimit-Limit', String(bucketLimit));
-          c.header('X-RateLimit-Remaining', '0');
-          c.header('X-RateLimit-Reset', String(Math.ceil(entry.resetAt / 1000)));
-          c.header('Retry-After', String(windowSeconds));
-          return c.json({ error: 'Too many requests' }, 429);
-        }
-        entry.count++;
-      } else {
-        if (inMemoryCounters.size >= MAX_IN_MEMORY_ENTRIES) {
-          // Map full — reject to prevent OOM. Still advertise Retry-After:
-          // clients that honour it (the remote-desktop viewer poll does) would
-          // otherwise have no signal and keep retrying at full rate.
-          c.header('Retry-After', String(windowSeconds));
-          return c.json({ error: 'Too many requests' }, 429);
-        }
-        inMemoryCounters.set(bucketKey, { count: 1, resetAt: now + windowMs });
-      }
-
-      return next();
+    if (!bucket && await carriesValidSession(c)) {
+      bucketLimit = options?.sessionIpLimit ?? userRateBudgetPerMinute() * SESSION_IP_CEILING_USERS;
+      bucketKey = `global:session:${clientIp}`;
+      markUserRateBudgetOwed(c);
     }
 
-    const result = await rateLimiter(redis, bucketKey, bucketLimit, windowSeconds);
-
-    // Always set rate limit headers so clients can self-throttle
-    c.header('X-RateLimit-Limit', String(bucketLimit));
-    c.header('X-RateLimit-Remaining', String(result.remaining));
-    c.header('X-RateLimit-Reset', String(Math.ceil(result.resetAt.getTime() / 1000)));
-
-    if (!result.allowed) {
-      c.header('Retry-After', String(windowSeconds));
-      return c.json({ error: 'Too many requests' }, 429);
+    const allowed = await spendFromBucket(c, bucketKey, bucketLimit, windowSeconds);
+    if (!allowed) {
+      c.set('rejectReason', 'global_rate_limit');
+      return c.json({ error: TOO_MANY_REQUESTS }, 429);
     }
 
     return next();

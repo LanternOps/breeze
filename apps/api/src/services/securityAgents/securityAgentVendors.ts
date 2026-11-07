@@ -3,7 +3,8 @@ import type { SecurityAgentPlatform, SecurityAgentVendorKey } from '@breeze/shar
 // runtime key → vendor table below is pinned equal to BUILTIN_TENANT_VAR_PACKAGES
 // by securityAgentVendors.test.ts, and the Record type makes a new key a
 // compile error here.
-import type { BuiltinPackageKey, TenantVarVendorKey } from '../builtinDeploymentPackages';
+import type { BuiltinPackageKey, BuiltinProvider, TenantVarVendorKey } from '../builtinDeploymentPackages';
+import { EDR_PROVIDER_LABELS } from '../edrProviders/providerKeys';
 
 /**
  * Code-level registry of the third-party security agents the `security_agents`
@@ -11,16 +12,21 @@ import type { BuiltinPackageKey, TenantVarVendorKey } from '../builtinDeployment
  *
  * It holds only what the EDR provider framework (`services/edrProviders`) does
  * not: DNS-filter vendors that key on a tenant variable, per-platform support,
- * and presence descriptors. Credentials are NOT here and never will be: they
- * stay in the integration/mapping tables (EDR vendors) or tenant variables (DNS
- * vendors) and are substituted at dispatch.
+ * and presence descriptors. A framework vendor (`orgSource: 'edr_framework'`)
+ * takes its key and label from the framework's registry; the set of them is
+ * pinned equal to `EDR_INSTALLER_PROVIDER_KEYS` by test. Credentials are NOT
+ * here and never will be: they stay in the integration/mapping tables (EDR
+ * vendors) or tenant variables (DNS vendors) and are substituted at dispatch.
  *
  * `enableable` gates the link-write path: a link may list a vendor with
  * `enabled: true` only when the vendor's install path is wired end to end.
  * Huntress (W02), SentinelOne (W04) and the DNS vendors (W05) are wired. The
  * DNS vendors stay `enableable: false` until the #6958 owner lab gates L1–L5
  * are recorded (W05 shipped code-only); until then they are refused with
- * `vendor_not_enableable`.
+ * `vendor_not_enableable`. Bitdefender (#8170) is off until the W06.3 owner lab
+ * is recorded. Flipping any vendor on also needs that vendor admitted by the
+ * `security_agent_device_status` vendor CHECK (a migration): the registry test
+ * fails until it is.
  *
  * `enableable` is static. Per-partner prerequisites are enforced by the
  * generator at write time, not here: the partner's built-in catalog package
@@ -38,14 +44,14 @@ export interface SecurityAgentVendor {
   /** Built-in catalog package (EDR vendors) or catalog slug (DNS vendors) the generated policy installs. */
   catalogRef: string;
   /** Where the per-org install keys come from. */
-  orgSource: 'edr_mapping' | 'tenant_var';
+  orgSource: 'edr_mapping' | 'tenant_var' | 'edr_framework';
   /**
    * `software_catalog.integration_provider` of the built-in package (EDR
    * vendors), or null. This is how a generated rule's `catalogId` is mapped
    * back to its vendor: rule JSON cannot carry the vendor (the normalizer drops
    * unknown keys).
    */
-  integrationProvider: 'huntress' | 'sentinelone' | null;
+  integrationProvider: BuiltinProvider | null;
   /**
    * EDR vendors: the software-policy rule name the generated policy matches
    * against inventory (a case-insensitive glob over the Add/Remove Programs
@@ -145,6 +151,22 @@ const VENDORS: Readonly<Record<VendorKey, SecurityAgentVendor>> = Object.freeze(
     platforms: { windows: 'supported', macos: 'unsupported', linux: 'unsupported' },
     presence: { windowsService: 'nextdns' },
     // W05: wired as Control D. Off until the #6958 lab gates L1–L5 are recorded.
+    enableable: false,
+  }),
+  bitdefender: freezeVendor({
+    key: 'bitdefender',
+    label: EDR_PROVIDER_LABELS.bitdefender,
+    catalogRef: 'builtin:bitdefender',
+    orgSource: 'edr_framework',
+    integrationProvider: 'bitdefender',
+    // Unconfirmed until the W06.3 lab sees the Add/Remove Programs name. A glob
+    // that misses reads as `missing`, so it is checked there before the flip.
+    detectionRuleName: 'Bitdefender Endpoint Security Tools*',
+    setupPath: '/integrations#edr',
+    platforms: { windows: 'supported', macos: 'requires_mdm', linux: 'unsupported' },
+    presence: {},
+    // #8170 W06.2: readiness, generator and the edr_endpoints coverage source are
+    // wired. Off until the W06.3 owner lab is recorded, which also releases the package.
     enableable: false,
   }),
 });

@@ -1,13 +1,14 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq, and, sql, gte, lte, inArray } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { requirePermission } from '../../middleware/auth';
 import {
   backupConfigs,
   backupJobs,
   backupSnapshots,
   devices,
+  IN_FLIGHT_BACKUP_JOB_STATUSES,
   RESTORABLE_BACKUP_JOB_STATUSES,
 } from '../../db/schema';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
@@ -18,8 +19,14 @@ import {
   latestBackupRunOrderBy,
   latestBackupRunWindowOrder,
 } from '../../services/backupJobOrdering';
-import { splitReparseSkipNotice } from '@breeze/shared';
-import { getNextRun, resolveScopedOrgId } from './helpers';
+import {
+  classifyBackupFailure,
+  deriveBackupJobDataAccounting,
+  splitReparseSkipNotice,
+  stripInlineIndexDropNote,
+  type ActiveBackupJob,
+} from '@breeze/shared';
+import { getNextRun, loadJobResumedAt, resolveScopedOrgId } from './helpers';
 import { usageHistoryQuerySchema } from './schemas';
 import {
   getFirstPartyCoverageForDevices,
@@ -96,7 +103,9 @@ async function resolveAttentionItems(
       .where(and(eq(backupJobs.orgId, orgId), jobDeviceScope))
       .as('ranked_backup_jobs_for_attention');
 
-    const rows = await db
+    // The savepoint is what lets the catch below work: a failure of this read
+    // would otherwise be rethrown when the request transaction ends (#11203).
+    const rows = await withDbTransaction(async () => db
       .select({
         deviceId: rankedJobs.deviceId,
         status: rankedJobs.status,
@@ -110,7 +119,7 @@ async function resolveAttentionItems(
       .from(rankedJobs)
       .leftJoin(devices, eq(rankedJobs.deviceId, devices.id))
       .where(lte(rankedJobs.rn, ATTENTION_LOOKBACK_JOBS))
-      .orderBy(rankedJobs.deviceId, rankedJobs.rn);
+      .orderBy(rankedJobs.deviceId, rankedJobs.rn));
 
     const scopedRows = allowedDeviceIds
       ? rows.filter((row) => allowedDeviceIds.includes(row.deviceId))
@@ -142,7 +151,7 @@ async function resolveAttentionItems(
         items.push({
           id: `backup-failing-${deviceId}`,
           title: `${deviceName}: latest backup completed with file errors`,
-          description: [latest.errorLog, `Completed ${lastFailureAt}`].filter(Boolean).join(' · '),
+          description: [stripInlineIndexDropNote(latest.errorLog).warning, `Completed ${lastFailureAt}`].filter(Boolean).join(' · '),
           severity: 'warning',
           lastFailureAt,
         });
@@ -162,7 +171,9 @@ async function resolveAttentionItems(
         if (job.status === 'partial') sawPartial = true;
         // #9543: the agent's skipped-reparse-point note is informational, so
         // it is never the reason a device needs attention.
-        if (!reason && job.errorLog) reason = splitReparseSkipNotice(job.errorLog).diagnostic;
+        // #11026: nor is a historic note that a file list did not fit in the
+        // result: the list was not lost.
+        if (!reason && job.errorLog) reason = splitReparseSkipNotice(stripInlineIndexDropNote(job.errorLog).warning).diagnostic;
       }
 
       const deviceName = latest.deviceName ?? latest.deviceHostname ?? deviceId.slice(0, 8);
@@ -221,10 +232,8 @@ async function resolveOverdueDevices(
   nameByDeviceId: ReadonlyMap<string, string>,
 ): Promise<Array<{ id: string; name: string; lastBackup: string | null }>> {
   if (assignedDeviceIds.length === 0) return [];
-  const [firstParty, provider] = await Promise.all([
-    getFirstPartyCoverageForDevices(orgId, assignedDeviceIds),
-    getProviderCoverageForDevices(orgId, assignedDeviceIds),
-  ]);
+  const firstParty = await getFirstPartyCoverageForDevices(orgId, assignedDeviceIds);
+  const provider = await getProviderCoverageForDevices(orgId, assignedDeviceIds);
   const overdue: Array<{ id: string; name: string; lastBackup: string | null }> = [];
   for (const deviceId of assignedDeviceIds) {
     if (firstParty.get(deviceId)?.covered) continue;
@@ -360,8 +369,9 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
     ? inArray(backupSnapshots.deviceId, allowedDeviceIds)
     : undefined;
 
-  // Run aggregation queries in parallel
-  const [configCount, jobCount, snapshotCount, last24hStats, storageStats, assignedDevicesRaw, recentJobsRaw, attention, storageProviders] =
+  // Run the required aggregation queries in parallel. A failure in any of them
+  // is a 500. The optional reads that degrade instead run after this block.
+  const [configCount, jobCount, snapshotCount, last24hStats, storageStats, recentJobsRaw, storageProviders] =
     await Promise.all([
       db
         .select({ count: sql<number>`count(*)::int` })
@@ -405,10 +415,6 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
       noSiteAllowedDevices
         ? Promise.resolve({ totalBytes: 0, count: 0 })
         : sumStoredSnapshotBytes(and(eq(backupSnapshots.orgId, orgId), snapshotDeviceScope)),
-      resolveAllBackupAssignedDevices(orgId).catch((err) => {
-        console.error(`[BackupDashboard] Failed to resolve assigned devices:`, err instanceof Error ? err.message : err);
-        return [];
-      }),
       noSiteAllowedDevices ? Promise.resolve([]) : db
         .select({
           job: backupJobs,
@@ -425,9 +431,21 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
         // same-transaction fan-out reshuffles the top 5 between refreshes.
         .orderBy(...backupJobHistoryOrderBy)
         .limit(5),
-      resolveAttentionItems(orgId, jobDeviceScope, allowedDeviceIds, noSiteAllowedDevices),
       getStorageByProvider(orgId, allowedDeviceIds),
     ]);
+
+  // Optional reads, each in a savepoint so a failure degrades the panel rather
+  // than ending the request in a 500 (#11203). They must not join the
+  // Promise.all above: every statement here shares one connection, so while a
+  // failed savepoint waits for its rollback, a sibling's next statement lands
+  // in the aborted transaction and fails on the outer scope.
+  let assignedError = false;
+  const assignedDevicesRaw = await withDbTransaction(() => resolveAllBackupAssignedDevices(orgId)).catch((err) => {
+    console.error(`[BackupDashboard] Failed to resolve assigned devices:`, err instanceof Error ? err.message : err);
+    assignedError = true;
+    return [];
+  });
+  const attention = await resolveAttentionItems(orgId, jobDeviceScope, allowedDeviceIds, noSiteAllowedDevices);
 
   const assignedDevices = allowedDeviceIds
     ? assignedDevicesRaw.filter((a) => allowedDeviceIds.includes(a.deviceId))
@@ -441,24 +459,28 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
     recentJobs.map((r) => [r.job.deviceId, r.deviceName ?? r.deviceHostname ?? r.job.deviceId]),
   );
 
-  // One try/catch for the whole provider block: a transient failure here must
-  // degrade the panel, not 500 the dashboard — and must SAY it degraded, so the
-  // UI never renders "no devices need backup" it cannot vouch for.
+  // One try/catch and one savepoint for the whole provider block, all or
+  // nothing: a transient failure here must degrade the panel, not 500 the
+  // dashboard — and must SAY it degraded, so the UI never renders "no devices
+  // need backup" it cannot vouch for. There is one flag for the three reads, so
+  // partial results have nothing to report them with.
   let overdueDevices: Array<{ id: string; name: string; lastBackup: string | null }> = [];
   let providerCoverage = new Map<string, { covered: boolean; health: string }>();
   let providerAttention: AttentionItem[] = [];
   let providerError = false;
   try {
-    [overdueDevices, providerCoverage, providerAttention] = await Promise.all([
-      resolveOverdueDevices(orgId, assignedDeviceIds, nameByDeviceId),
-      getProviderCoverageForDevices(orgId, assignedDeviceIds),
+    // In sequence, not Promise.all: a read still running when a sibling fails
+    // would carry on after the savepoint has rolled back.
+    [overdueDevices, providerCoverage, providerAttention] = await withDbTransaction(async () => [
+      await resolveOverdueDevices(orgId, assignedDeviceIds, nameByDeviceId),
+      await getProviderCoverageForDevices(orgId, assignedDeviceIds),
       noSiteAllowedDevices
-        ? Promise.resolve([] as AttentionItem[])
-        : (getProviderAttentionItems(orgId, {
+        ? ([] as AttentionItem[])
+        : ((await getProviderAttentionItems(orgId, {
             allowedDeviceIds,
             limit: ATTENTION_MAX_ITEMS,
-          }) as Promise<AttentionItem[]>),
-    ]);
+          })) as AttentionItem[]),
+    ] as const);
   } catch (err) {
     console.error('[BackupDashboard] provider coverage failed:', err instanceof Error ? err.message : err);
     providerError = true;
@@ -485,6 +507,8 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
     totalSize: r.job.totalSize ?? null,
     errorCount: r.job.errorCount ?? null,
     errorLog: r.job.errorLog ?? null,
+    failureCategory: classifyBackupFailure({ status: r.job.status, errorLog: r.job.errorLog }),
+    dataAccounting: deriveBackupJobDataAccounting(r.job),
   }));
 
   return c.json({
@@ -526,11 +550,62 @@ dashboardRoutes.get('/dashboard', requirePermission(PERMISSIONS.ORGS_READ.resour
       attentionItems: [...attention.items, ...providerAttention].slice(0, ATTENTION_MAX_ITEMS),
       // Additive, backward-compatible degraded signal: true when the
       // attention-items sub-query failed and the list could not be computed.
-      // The UI must treat this as "unknown", not "all clear".
-      attentionError: attention.error || providerError,
+      // The UI must treat this as "unknown", not "all clear". A failed assigned-
+      // devices read counts: with none known, the overdue list is empty too.
+      attentionError: attention.error || providerError || assignedError,
     },
   });
 });
+
+type BackupJobRow = typeof backupJobs.$inferSelect;
+
+function isInFlight(status: string): status is ActiveBackupJob['status'] {
+  return (IN_FLIGHT_BACKUP_JOB_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * Running before pending (a pending job behind a running one is waiting its
+ * turn on the device), then startedAt ascending (never-started last), then
+ * createdAt ascending: the order the device works them in.
+ */
+function compareActiveJobs(a: BackupJobRow, b: BackupJobRow): number {
+  if (a.status !== b.status) return a.status === 'running' ? -1 : 1;
+  if (a.startedAt && b.startedAt) {
+    const started = a.startedAt.getTime() - b.startedAt.getTime();
+    if (started !== 0) return started;
+  } else if (a.startedAt || b.startedAt) {
+    return a.startedAt ? -1 : 1;
+  }
+  return a.createdAt.getTime() - b.createdAt.getTime();
+}
+
+/**
+ * In-flight backups for the device page (#11027): what is running or queued
+ * right now, with enough progress fields for the web to derive a phase, speed,
+ * ETA and stall state.
+ */
+async function loadActiveBackupJobs(jobs: BackupJobRow[]): Promise<ActiveBackupJob[]> {
+  const active = jobs.filter((j) => isInFlight(j.status)).sort(compareActiveJobs);
+  if (active.length === 0) return [];
+
+  const resumedByJob = await loadJobResumedAt(active.map((j) => j.id));
+
+  return active.map((j) => ({
+    id: j.id,
+    status: j.status as ActiveBackupJob['status'],
+    backupMode: j.backupMode ?? null,
+    backupType: j.backupType ?? null,
+    createdAt: j.createdAt.toISOString(),
+    startedAt: j.startedAt?.toISOString() ?? null,
+    totalSize: j.totalSize ?? null,
+    transferredSize: j.transferredSize ?? null,
+    fileCount: j.fileCount ?? null,
+    totalFiles: j.totalFiles ?? null,
+    lastProgressAt: j.lastProgressAt?.toISOString() ?? null,
+    lastKeepaliveAt: j.lastKeepaliveAt?.toISOString() ?? null,
+    resumedAt: resumedByJob.get(j.id)?.toISOString() ?? null,
+  }));
+}
 
 dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
   const auth = c.get('auth');
@@ -593,6 +668,8 @@ dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ
   const lastFailure =
     jobs.find((j) => j.status === 'failed') ?? null;
 
+  const activeJobs = await loadActiveBackupJobs(jobs);
+
   return c.json({
     data: {
       deviceId,
@@ -619,11 +696,16 @@ dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ
             // tab showed a clean, green backup for a run that read every file
             // off the live volume. Already secret-redacted at write time.
             errorLog: lastJob.errorLog ?? null,
+            failureCategory: classifyBackupFailure({ status: lastJob.status, errorLog: lastJob.errorLog }),
+            dataAccounting: deriveBackupJobDataAccounting(lastJob),
           }
         : null,
       lastSuccessAt: lastSuccess?.completedAt?.toISOString() ?? null,
       lastFailureAt: lastFailure?.completedAt?.toISOString() ?? null,
       lastFailureError: lastFailure?.errorLog ?? null,
+      lastFailureCategory: lastFailure
+        ? classifyBackupFailure({ status: lastFailure.status, errorLog: lastFailure.errorLog })
+        : null,
       nextScheduledAt: (() => {
         // Prefer normalized settings; fall back to inline_settings on the feature link
         const schedule = (resolved?.settings?.schedule ?? resolved?.inlineSettings) as Record<string, unknown> | null;
@@ -634,6 +716,7 @@ dashboardRoutes.get('/status/:deviceId', requirePermission(PERMISSIONS.ORGS_READ
         if (typeof frequency !== 'string' || typeof time !== 'string') return null;
         return getNextRun({ ...schedule, frequency, time } as any, resolved?.resolvedTimezone);
       })(),
+      activeJobs,
     },
   });
 });

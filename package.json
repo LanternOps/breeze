@@ -19,7 +19,7 @@
     "pin:github-actions": "node scripts/security/pin-github-actions.mjs",
     "test:override-floors": "node --test scripts/security/check-override-floors.test.mjs",
     "check:override-floors": "node scripts/security/check-override-floors.mjs",
-    "test:npm-audit-exceptions": "node --test scripts/security/check-npm-audit.test.mjs",
+    "test:npm-audit-exceptions": "node --test scripts/security/check-npm-audit.test.mjs scripts/security/lockfile-scope.test.mjs",
     "test:security-guards": "node --test scripts/security/check-security-guards.test.mjs",
     "test:release-trust-allowlist": "node --test scripts/security/check-release-trust-allowlist.test.mjs",
     "test:release-lineage": "node --test scripts/release/check-release-lineage.test.mjs scripts/release/release-image-manifest.test.mjs scripts/release/verify-release-images.test.mjs scripts/release/release-image-consumers.test.mjs scripts/release/notarize-submit.test.mjs scripts/check-migration-immutability.test.mjs scripts/release/release-path-policy.test.mjs scripts/release/server-only-ledger.test.mjs scripts/release/check-server-only-eligibility.test.mjs scripts/release/check-server-only-eligibility.refusals.test.mjs scripts/release/check-server-only-eligibility.acceptance.test.mjs scripts/release/release-workflow-server-only.test.mjs scripts/release/binary-affecting-paths.coverage.test.mjs",
@@ -41,7 +41,7 @@
   },
   "devDependencies": {
     "@typescript-eslint/parser": "^8.65.0",
-    "eslint": "^10.13.0",
+    "eslint": "^10.14.0",
     "tsx": "^4.23.15",
     "turbo": "^2.11.7",
     "typescript": "^5.7.2"

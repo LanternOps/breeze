@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { db } from '../db';
 
 // The engine's DB-touching phases are proven by the Task-7 integration
 // gauntlet against real Postgres. This file covers the pure logic
@@ -21,6 +23,7 @@ const mockState = vi.hoisted(() => ({
   /** id returned by the mocked `db.insert(...).values(...).returning(...)`. */
   insertedId: 'merge-event-1',
   ticketCandidates: [] as Array<{ id: string }>,
+  isolationRows: [] as Array<{ isolationId: string; deviceId: string }>,
   revalidateTicketAssignee: vi.fn(),
   /** >0 while a mocked withSystemDbAccessContext callback runs. */
   txDepth: 0,
@@ -106,6 +109,10 @@ vi.mock('../db', () => ({
       const text = sqlToText(q);
       mockState.executedSql.push(text);
       mockState.executedParams.push(sqlToParams(q));
+      const compiled = new PgDialect().sqlToQuery(q as never);
+      if (/^\s*select/i.test(compiled.sql) && compiled.sql.includes('device_network_isolations')) {
+        return Promise.resolve(mockState.isolationRows);
+      }
       if (mockState.failExecuteMatching?.test(text)) {
         return Promise.reject(new Error('stamp write exploded'));
       }
@@ -973,6 +980,41 @@ describe('blocks-merge refusal', () => {
     };
   }
 
+  it('rechecks isolation after locking devices without upgrading the existing compatible org lock', async () => {
+    mockState.executeResponses = [];
+    mockState.executedSql = [];
+    mockState.isolationRows = [];
+    const { unfence, stamp } = stubPhaseBUpToHold();
+    vi.mocked(orgMergeModule.collectMergeBlockers).mockRestore();
+    vi.spyOn(orgMergeModule, 'assertMergeLineageDepth').mockResolvedValue(undefined);
+    const execute = vi.mocked(db.execute).getMockImplementation()!;
+    const statements: string[] = [];
+    vi.mocked(db.execute).mockImplementation(((query: unknown) => {
+      const sql = new PgDialect().sqlToQuery(query as never).sql;
+      statements.push(sql);
+      if (/SELECT id FROM devices.*ORDER BY id FOR NO KEY UPDATE/is.test(sql)) {
+        mockState.isolationRows = [{ isolationId: '22222222-2222-4222-8222-222222222222', deviceId: '33333333-3333-4333-8333-333333333333' }];
+      }
+      return execute(query as never);
+    }) as typeof execute);
+    try {
+      const error = await orgMergeModule.executeOrgMerge(blockedInput).then(() => null, err => err);
+      expect(error).toMatchObject({ blockerCodes: ['isolation_unresolved'] });
+      expect(orgMergeModule.runPolicy).not.toHaveBeenCalled();
+      expect(stamp).not.toHaveBeenCalled();
+      expect(unfence).toHaveBeenCalledTimes(1);
+      const orgLock = statements.findIndex(sql => /SELECT id FROM organizations.*FOR UPDATE/is.test(sql));
+      const deviceLock = statements.findIndex(sql => /SELECT id FROM devices.*FOR NO KEY UPDATE/is.test(sql));
+      const finalRead = statements.reduce((last, sql, index) => /FROM device_network_isolations/.test(sql) ? index : last, -1);
+      expect(orgLock).toBe(-1);
+      expect(deviceLock).toBeGreaterThan(-1);
+      expect(finalRead).toBeGreaterThan(deviceLock);
+    } finally {
+      mockState.isolationRows = [];
+      vi.mocked(db.execute).mockImplementation(execute);
+    }
+  });
+
   it('a lineage_depth refusal inside Phase B unfences, audits the reason, and writes no hold or stamp', async () => {
     const { unfence, stamp, audit } = stubPhaseBUpToHold();
     // Pre-fence check passes; the in-transaction re-check (a held lineage deepened meanwhile) refuses.
@@ -1103,5 +1145,50 @@ describe('typedPamMergeRefusal (W6 #8208): devices trigger backstop -> typed ref
     expect(orgMergeModule.typedPamMergeRefusal(pgErr('23514', 'some_other_check'))).toBeNull();
     expect(orgMergeModule.typedPamMergeRefusal(pgErr('23503', 'devices_pam_open_actuation_move_guard'))).toBeNull();
     expect(orgMergeModule.typedPamMergeRefusal(new Error('boom'))).toBeNull();
+  });
+});
+
+
+describe('network isolation org-merge blockers', () => {
+  beforeEach(() => {
+    mockState.executeResponses = [];
+    mockState.executedSql = [];
+    mockState.failExecuteMatching = null;
+    mockState.isolationRows = [];
+  });
+  afterEach(() => { mockState.isolationRows = []; vi.restoreAllMocks(); });
+
+  it.each(['requested', 'dispatched', 'applying', 'applied', 'verified', 'release_requested', 'released_locally', 'self_released'])(
+    'blocks the merge while an episode is %s', async () => {
+      mockState.isolationRows = [{ isolationId: '22222222-2222-4222-8222-222222222222', deviceId: '33333333-3333-4333-8333-333333333333' }];
+      const blockers = await orgMergeModule.collectMergeBlockers('11111111-1111-4111-8111-111111111111', false);
+      expect(blockers).toContainEqual({ table: 'device_network_isolations', loserRows: 1 });
+      expect(orgMergeModule.mergeBlockerCodes(blockers, false)).toContain('isolation_unresolved');
+      expect(orgMergeModule.buildMergeBlockedMessage(blockers)).toBe('Release network isolation first');
+    },
+  );
+
+  it('reports the isolation blocker in previews and refuses execution before fencing agents', async () => {
+    mockState.isolationRows = [{ isolationId: '22222222-2222-4222-8222-222222222222', deviceId: '33333333-3333-4333-8333-333333333333' }];
+    vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue({
+      loser: org({ id: '11111111-1111-4111-8111-111111111111' }),
+      survivor: org({ id: '44444444-4444-4444-8444-444444444444' }),
+    });
+    vi.spyOn(orgMergeModule, 'collectDuplicates').mockResolvedValue({ duplicatePortalEmails: [], duplicateExternalLinkSystems: [] });
+    vi.spyOn(orgMergeModule, 'assertMergeLineageDepth').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'resolveMergePamTransfer').mockResolvedValue(false);
+    vi.spyOn(orgMergeModule, 'writeMergeAudit').mockResolvedValue(undefined);
+    const fence = vi.spyOn(orgMergeModule, 'fenceLoser').mockResolvedValue(undefined);
+    const preview = await orgMergeModule.previewOrgMerge('11111111-1111-4111-8111-111111111111', '44444444-4444-4444-8444-444444444444', 'partner-1');
+    expect(preview).toMatchObject({ verdict: 'blocked', blockers: ['Release network isolation first'], blockerCodes: ['isolation_unresolved'] });
+    await expect(orgMergeModule.executeOrgMerge({
+      loserOrgId: '11111111-1111-4111-8111-111111111111', survivorOrgId: '44444444-4444-4444-8444-444444444444',
+      partnerId: 'partner-1', performedBy: 'user-1',
+    })).rejects.toMatchObject({ blockerCodes: ['isolation_unresolved'], message: 'Release network isolation first' });
+    expect(fence).not.toHaveBeenCalled();
+  });
+
+  it.each(['released', 'expired', 'failed', 'uninstalled', 'acknowledged'])('allows the merge after isolation is %s', async () => {
+    expect(await orgMergeModule.collectMergeBlockers('11111111-1111-4111-8111-111111111111', false)).toEqual([]);
   });
 });

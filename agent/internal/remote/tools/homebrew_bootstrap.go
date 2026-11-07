@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/patching"
+	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
 const (
@@ -301,10 +302,10 @@ func runHomebrewInstaller(scriptPath string, account *user.User) (string, int, e
 		// command-line assignment: the latter needs SETENV in sudoers and
 		// would fail closed on a hardened Mac, leaving the installer waiting
 		// on a RETURN prompt nobody is watching until the 20-minute timeout.
-		cmd = exec.CommandContext(ctx, "/usr/bin/sudo", "-n", "-H", "-u", account.Username,
+		cmd = procspawn.CommandContext(ctx, "/usr/bin/sudo", "-n", "-H", "-u", account.Username,
 			"/usr/bin/env", "NONINTERACTIVE=1", "/bin/bash", scriptPath)
 	} else {
-		cmd = exec.CommandContext(ctx, "/bin/bash", scriptPath)
+		cmd = procspawn.CommandContext(ctx, "/bin/bash", scriptPath)
 	}
 	env := append(os.Environ(), "NONINTERACTIVE=1")
 	if account.HomeDir != "" {

@@ -26,7 +26,7 @@ At the top of the dashboard, summary cards show:
 | **Snapshots** | Total point-in-time snapshots stored |
 | **Success Rate (24h)** | Percentage of jobs in the last 24 hours that produced a restore point (**Completed** or **Completed with errors**). Color-coded: green (90%+), yellow (70–89%), red (below 70%) |
 | **Devices Protected** | Devices assigned to at least one backup policy |
-| **Storage Used** | Bytes stored across all providers. For each device's backup chain, the oldest retained snapshot counts at its full size and each later incremental counts only the data it uploaded — unchanged files an incremental references from an earlier snapshot are not counted again. It is an estimate from backup results, not a figure reported by the storage provider |
+| **Storage Used** | Bytes stored across all providers. For each device's backup chain, the oldest retained snapshot counts at its full size and each later incremental counts only the data it uploaded — unchanged files an incremental references from an earlier snapshot are not counted again. It is an estimate from backup results, not a figure reported by the storage provider. See [How Incremental Backups Work](/backup/incremental-backups/#why-storage-in-the-bucket-can-be-larger-than-you-expect) |
 
 ### Recent Jobs
 
@@ -84,6 +84,23 @@ Each device's detail page includes a **Backup** tab showing:
 | **Next scheduled backup** | Computed from the policy schedule |
 | **Recent jobs** | List of recent backup/restore jobs for this device |
 | **VSS writer status** (Windows) | Health of Volume Shadow Copy writers — Stable, Failed, or Waiting |
+| **Backup in progress** | One card for each backup that is running or waiting on this device, shown above the job history. Each card shows what the backup is doing, how much it has processed out of the total, files done, transfer speed, an estimate of the time left, when the device last checked in, and a **Stop** button. |
+
+### Backup in progress
+
+While a backup is running or waiting, the card states its phase in plain words:
+
+| Phase | Meaning |
+|-------|---------|
+| **Sent to the device, waiting for it to start** | Breeze has dispatched the backup, but the device has not picked it up yet. |
+| **Waiting for another backup on this device to finish** | The device has the backup queued behind another one. A device runs its backup modes (for example a file backup and a system image) one at a time, so the second one starts when the first finishes. |
+| **Resuming an interrupted backup** | The run picked up an earlier, interrupted snapshot. It can stay at zero bytes processed for a long time. No time estimate is shown during this phase. |
+| **Scanning files** | The device is working out what to back up. The progress bar moves without a percentage until the total size is known. |
+| **Backing up** | Data is being read and uploaded. The percentage, speed and estimated time left update every few seconds. |
+
+If the device sends nothing for more than two minutes, the card shows a **Stalled** chip and drops the time estimate. Check that the device is powered on and connected.
+
+If a backup is already running when you open the device page, the device header also shows a **Backup running** badge on every tab. Select it to jump to the **Backup** tab. A backup that starts while the page is open shows the badge after you reload the page.
 
 ---
 
@@ -100,6 +117,8 @@ Backup and restore jobs move through these statuses:
 | **Partial** | A snapshot was created and can be restored from, but a disproportionate share of the run failed — more than 10% of the scanned bytes, or more than 10% of the attempted files. Check the error log for which files were skipped. |
 | **Failed** | Encountered an error (check the error details) |
 | **Canceled** | Explicitly stopped by a user before completion |
+
+Failed, partial, completed-with-errors and cancelled jobs also show a category badge, such as **Device offline** or **Storage problem**, next to their error text. See [Reading a failed backup's category](/backup/troubleshooting/#reading-a-failed-backups-category) for what each one means and what to check first.
 
 Jobs are triggered either **automatically** by a policy schedule, **manually** via the Run Backup button, or as part of a **restore** operation.
 

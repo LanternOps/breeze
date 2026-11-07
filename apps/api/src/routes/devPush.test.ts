@@ -20,6 +20,11 @@ vi.mock('../services/unassignedPool/deliveryEligibility', async () => ({
   isParkedDevice: vi.fn(async (_reader: unknown, deviceId: string) => parkedDeviceIds.has(deviceId)),
 }));
 
+// Devices with an unresolved network-isolation episode, by id (#10919).
+const isolatedDeviceIds = vi.hoisted(() => new Set<string>());
+const findUnresolvedIsolations = vi.hoisted(() => vi.fn());
+vi.mock('../services/networkIsolation/lifecycle', () => ({ findUnresolvedIsolations }));
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
@@ -159,6 +164,9 @@ describe('devPush routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     parkedDeviceIds.clear();
+    isolatedDeviceIds.clear();
+    findUnresolvedIsolations.mockImplementation(async (_tx: unknown, scope: { deviceId: string }) =>
+      isolatedDeviceIds.has(scope.deviceId) ? [{ isolationId: 'episode', deviceId: scope.deviceId }] : []);
     process.env.NODE_ENV = 'development';
     process.env.PUBLIC_API_URL = 'https://api.breeze.local';
 
@@ -489,6 +497,52 @@ describe('devPush routes', () => {
   // ------------------------------------------------------------------
   // GET /push/download/:token
   // ------------------------------------------------------------------
+
+  describe('devices with an unresolved network isolation (#10919)', () => {
+    async function pushAs(component?: string) {
+      mockGetDeviceWithOrgCheck.mockResolvedValue({ id: DEVICE_ID, agentId: AGENT_ID, orgId: ORG_ID });
+      mockSendCommandToAgent.mockReturnValue(true);
+      const formData = new FormData();
+      formData.append('agentId', AGENT_ID);
+      formData.append('version', '999.0.0');
+      if (component) formData.append('component', component);
+      formData.append('binary', new File(['test-binary-content'], 'agent.bin'));
+      return app.request('/dev/push', { method: 'POST', body: formData, headers: { Authorization: 'Bearer token' } });
+    }
+
+    it('refuses an agent binary before staging or dispatching, whatever version it claims', async () => {
+      isolatedDeviceIds.add(DEVICE_ID);
+      for (const component of [undefined, 'agent']) {
+        const res = await pushAs(component);
+        expect(res.status).toBe(409);
+        await expect(res.json()).resolves.toEqual({ error: 'Release network isolation first', code: 'isolation_unresolved' });
+      }
+      expect(findUnresolvedIsolations).toHaveBeenCalledWith(db, { deviceId: DEVICE_ID });
+      expect(createWriteStream).not.toHaveBeenCalled();
+      expect(mockSendCommandToAgent).not.toHaveBeenCalled();
+    });
+    it.each(['desktop-helper', 'user-helper'])('still pushes a %s binary, which cannot replace the agent', async (component) => {
+      isolatedDeviceIds.add(DEVICE_ID);
+      expect((await pushAs(component)).status).toBe(200);
+      expect(mockSendCommandToAgent).toHaveBeenCalledTimes(1);
+    });
+    it('pushes an agent binary to a device with no unresolved isolation (positive control)', async () => {
+      expect((await pushAs('agent')).status).toBe(200);
+      expect(mockSendCommandToAgent).toHaveBeenCalledTimes(1);
+    });
+    it('re-checks just before the send and drops the staged binary', async () => {
+      findUnresolvedIsolations.mockResolvedValueOnce([]).mockResolvedValueOnce([{ isolationId: 'episode', deviceId: DEVICE_ID }]);
+      const res = await pushAs('agent');
+      expect(res.status).toBe(409);
+      expect(findUnresolvedIsolations).toHaveBeenCalledTimes(2);
+      expect(mockSendCommandToAgent).not.toHaveBeenCalled();
+    });
+    it('fails closed when the isolation read fails', async () => {
+      findUnresolvedIsolations.mockRejectedValueOnce(new Error('database unavailable'));
+      expect((await pushAs('agent')).status).toBe(500);
+      expect(mockSendCommandToAgent).not.toHaveBeenCalled();
+    });
+  });
 
   describe('devices parked in a holding org', () => {
     async function pushTo(device: { id: string; agentId: string; orgId: string }) {

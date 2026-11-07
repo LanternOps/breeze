@@ -117,6 +117,32 @@ export function joinRemotePath(basePath: string, name: string): string {
   return `${normalized}/${name}`;
 }
 
+/**
+ * Why a new folder name cannot be used in `parentPath`, or null when it can.
+ *
+ * The clash check is not cosmetic: the agent runs MkdirAll, so creating a folder
+ * that already exists reports success and creates nothing. Windows refuses its
+ * reserved characters and silently drops a trailing dot, so those rules apply
+ * only under a Windows path. Windows and macOS volumes ignore case by default,
+ * so a case-only difference counts as a clash there (a rare case-sensitive macOS
+ * volume is refused a legal name, which is the cheaper mistake).
+ */
+export function validateFolderName(
+  name: string,
+  parentPath: string,
+  existingNames: readonly string[],
+  osType?: string,
+): 'invalid' | 'exists' | null {
+  const windows = isWindowsPath(parentPath);
+  if (name === '.' || name === '..' || /[\u0000-\u001f/\\]/.test(name)) return 'invalid';
+  if (windows && /[<>:"|?*]|\.$/.test(name)) return 'invalid';
+
+  const ignoreCase = windows || osType === 'macos' || osType === 'darwin';
+  const comparable = (value: string) => (ignoreCase ? value.toLowerCase() : value);
+  const taken = existingNames.some((existing) => comparable(existing) === comparable(name));
+  return taken ? 'exists' : null;
+}
+
 export function buildBreadcrumbs(path: string): PathBreadcrumbModel {
   if (isWindowsPath(path)) {
     const normalized = normalizeWindowsPath(path);

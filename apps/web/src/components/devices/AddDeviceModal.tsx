@@ -11,6 +11,14 @@ import {
 } from "@/lib/downloadFilename";
 import { buildInstallCommands } from "@/lib/installCommands";
 import { navigateTo } from "@/lib/navigation";
+import {
+  currentRememberEpoch,
+  forgetEnrollmentArtifact,
+  forgetSiteEnrollmentArtifacts,
+  readRememberedEnrollmentArtifacts,
+  rememberCliToken,
+  rememberInstallerLink,
+} from "@/lib/rememberedEnrollmentArtifacts";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 import {
@@ -97,6 +105,73 @@ function formatTokenExpiry(iso: string): string {
   return `on ${formatDateTime(expiresMs)}`;
 }
 
+// setTimeout overflows above 2^31-1 ms (about 24.8 days) and fires at once, and
+// a CLI token can live for a year. Nobody holds this modal open that long, so an
+// expiry further out than this simply gets no timer.
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
+/** Runs `onExpire` when `expiresAt` passes. Null means nothing is on screen. */
+function useExpiryTimer(expiresAt: string | null, onExpire: () => void) {
+  const latestOnExpire = useRef(onExpire);
+  latestOnExpire.current = onExpire;
+  useEffect(() => {
+    if (!expiresAt) return;
+    const delay = Date.parse(expiresAt) - Date.now();
+    if (!Number.isFinite(delay) || delay > MAX_TIMEOUT_MS) return;
+    const timer = setTimeout(() => latestOnExpire.current(), Math.max(delay, 0));
+    return () => clearTimeout(timer);
+  }, [expiresAt]);
+}
+
+/**
+ * Asks the server whether a remembered link's or CLI token's child key can still be used
+ * (#10923). Mirrors two of the public download route's 410 rules: past its
+ * expiry, or usage_count at max_usage. Not the third: a key inside
+ * INSTALLER_PARENT_MIN_REMAINING_SECONDS of expiry reads as usable here and
+ * still 410s. "unknown" means the check itself failed, which says nothing about
+ * the key.
+ */
+async function checkRememberedChildKey(
+  childKeyId: string,
+): Promise<
+  | { status: "usable"; remainingUses: number | null }
+  | { status: "unusable" }
+  | { status: "unknown" }
+> {
+  try {
+    const res = await fetchWithAuth(`/enrollment-keys/${childKeyId}`);
+    if (res.status === 404) return { status: "unusable" };
+    if (!res.ok) {
+      console.warn("[AddDeviceModal] could not check a remembered child key", {
+        childKeyId,
+        status: res.status,
+      });
+      return { status: "unknown" };
+    }
+    const key = (await res.json()) as {
+      expiresAt?: string | null;
+      maxUsage?: number | null;
+      usageCount?: number;
+    };
+    if (key.expiresAt && Date.parse(key.expiresAt) <= Date.now()) {
+      return { status: "unusable" };
+    }
+    if (typeof key.maxUsage !== "number") {
+      return { status: "usable", remainingUses: null };
+    }
+    const remainingUses = key.maxUsage - (key.usageCount ?? 0);
+    return remainingUses > 0
+      ? { status: "usable", remainingUses }
+      : { status: "unusable" };
+  } catch (err) {
+    console.warn("[AddDeviceModal] could not check a remembered child key", {
+      childKeyId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return { status: "unknown" };
+  }
+}
+
 interface AddDeviceModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -119,6 +194,7 @@ export default function AddDeviceModal({
   // session persisted before the field existed), and unknown must keep the
   // original copy rather than assume passwordless.
   const isSsoOnlyAccount = useAuthStore((s) => s.user?.hasPassword) === false;
+  const userId = useAuthStore((s) => s.user?.id);
   // Sites are fetched lazily now (the switcher no longer preloads them), so the
   // modal has to distinguish "still loading", "load failed", and "genuinely no
   // sites" — otherwise a failed fetch looks identical to an unconfigured org and
@@ -213,6 +289,14 @@ export default function AddDeviceModal({
   const [linkLoading, setLinkLoading] = useState(false);
   const [linkError, setLinkError] = useState<string>();
   const [linkCopied, setLinkCopied] = useState(false);
+  // What the server reported about the link on screen. `restored` marks one
+  // read back from storage rather than minted by this click (#10923).
+  const [linkDetails, setLinkDetails] = useState<{
+    expiresAt: string | null;
+    maxUsage: number | null;
+    platform: "windows" | "macos";
+    restored: boolean;
+  } | null>(null);
 
   // CLI tab state. The token is minted only when the operator clicks
   // Generate (#7035) — never on tab open — because every mint is a live,
@@ -227,6 +311,10 @@ export default function AddDeviceModal({
   const [tokenLoading, setTokenLoading] = useState(false);
   const [tokenError, setTokenError] = useState<string>();
   const [tokenCopied, setTokenCopied] = useState(false);
+  // True when the token on screen was read back from storage (#10923).
+  const [tokenRestored, setTokenRestored] = useState(false);
+  // True when a restored token's key was checked against the server (#11116).
+  const [tokenVerified, setTokenVerified] = useState(false);
   // #1108: how many machines this CLI token may enroll, and its real expiry,
   // both reported by the server so the UI never advertises a stale single-use
   // token as good for the whole fleet.
@@ -282,7 +370,12 @@ export default function AddDeviceModal({
 
   // Initialize site selection
   useEffect(() => {
-    if (!isOpen) return;
+    // Cleared on close so a reopen never reads the last site's remembered
+    // entries for the one commit before this picks the first site (#10923).
+    if (!isOpen) {
+      setSelectedSiteId("");
+      return;
+    }
     if (orgSites.length > 0) {
       setSelectedSiteId(orgSites[0].id);
     }
@@ -295,15 +388,8 @@ export default function AddDeviceModal({
       setDownloadSuccess(false);
       // deviceCount / ttlMinutes / cliDeviceCount / cliTtlMinutes are reset by
       // the seeding effect below instead — they come from the resolved
-      // partner/org defaults, which may still be in flight when this runs.
-      setOnboardingToken("");
-      setTokenSiteId(null);
-      setTokenError(undefined);
-      setTokenMaxUsage(null);
-      setTokenExpiresAt(null);
-      setGeneratedLink("");
-      setLinkError(undefined);
-      setLinkCopied(false);
+      // partner/org defaults, which may still be in flight when this runs. The
+      // token and link are reset by the remembered-artifacts effect below.
     }
   }, [isOpen]);
 
@@ -357,6 +443,122 @@ export default function AddDeviceModal({
     [],
   );
 
+  // Bumped whenever what the modal shows is replaced: a reopen, a site change,
+  // or a new Generate. A request that resolves under an older value belongs to
+  // a screen that is gone, so it neither displays nor stores anything (#10923).
+  const cliDisplayGeneration = useRef(0);
+  const linkDisplayGeneration = useRef(0);
+  // An unmounted modal (sign-out navigates away) shows nothing: anything still
+  // in flight resolves into a screen that is gone.
+  useEffect(
+    () => () => {
+      cliDisplayGeneration.current += 1;
+      linkDisplayGeneration.current += 1;
+    },
+    [],
+  );
+
+  const clearCliToken = useCallback(() => {
+    setOnboardingToken("");
+    setTokenSiteId(null);
+    setEnrollmentSecret("");
+    setTokenServerUrl("");
+    setTokenMaxUsage(null);
+    setTokenExpiresAt(null);
+    setTokenRestored(false);
+    setTokenVerified(false);
+    setTokenCopied(false);
+  }, []);
+
+  const clearLink = useCallback(() => {
+    setGeneratedLink("");
+    setLinkDetails(null);
+    setLinkCopied(false);
+  }, []);
+
+  // #10923: on every open and site change, show what this site already has
+  // instead of an empty Generate state. A link is checked with the server before
+  // it is shown, and so is a CLI token whose mint returned a key id (#11116). A
+  // token from an API that predates the id stands on its stored expiry and its
+  // copy says it may be used up.
+  useEffect(() => {
+    const cliGeneration = ++cliDisplayGeneration.current;
+    const linkGeneration = ++linkDisplayGeneration.current;
+    if (!isOpen) return;
+
+    setTokenError(undefined);
+    setLinkError(undefined);
+    clearCliToken();
+    clearLink();
+    if (!userId || !selectedSiteId) return;
+
+    const { cli, link } = readRememberedEnrollmentArtifacts(userId, selectedSiteId);
+    if (cli) {
+      const showCli = (verified: boolean, remainingUses: number | null) => {
+        setOnboardingToken(cli.value);
+        setTokenSiteId(selectedSiteId);
+        setEnrollmentSecret(cli.enrollmentSecret ?? "");
+        setTokenServerUrl(cli.serverUrl ?? "");
+        setTokenMaxUsage(remainingUses ?? cli.maxUsage);
+        setTokenExpiresAt(cli.expiresAt);
+        setTokenRestored(true);
+        setTokenVerified(verified);
+      };
+      if (cli.childKeyId) {
+        // #11116: hidden until the key check answers, like a remembered link.
+        // A token minted by an API that predates the key id has none and falls
+        // back to the stored expiry, with copy that says it may be used up.
+        void checkRememberedChildKey(cli.childKeyId).then((check) => {
+          if (cliGeneration !== cliDisplayGeneration.current) return;
+          if (check.status === "unusable") {
+            forgetEnrollmentArtifact(userId, selectedSiteId, "cli");
+            return;
+          }
+          if (check.status === "unknown") return;
+          showCli(true, check.remainingUses);
+        });
+      } else {
+        showCli(false, null);
+      }
+    }
+    if (!link) return;
+
+    void checkRememberedChildKey(link.childKeyId).then((check) => {
+      if (linkGeneration !== linkDisplayGeneration.current) return;
+      if (check.status === "unusable") {
+        forgetEnrollmentArtifact(userId, selectedSiteId, "link");
+        return;
+      }
+      // A failed check proves nothing about the key: keep it for the next open,
+      // but do not present a link nobody could vouch for.
+      if (check.status === "unknown") return;
+      setGeneratedLink(link.value);
+      setLinkDetails({
+        expiresAt: link.expiresAt,
+        maxUsage: check.remainingUses ?? link.maxUsage,
+        platform: link.platform,
+        restored: true,
+      });
+    });
+  }, [isOpen, selectedSiteId, userId, clearCliToken, clearLink]);
+
+  useExpiryTimer(isOpen && onboardingToken ? tokenExpiresAt : null, () => {
+    if (userId && tokenSiteId) {
+      forgetEnrollmentArtifact(userId, tokenSiteId, "cli");
+    }
+    clearCliToken();
+  });
+
+  useExpiryTimer(
+    isOpen && generatedLink ? (linkDetails?.expiresAt ?? null) : null,
+    () => {
+      if (userId && selectedSiteId) {
+        forgetEnrollmentArtifact(userId, selectedSiteId, "link");
+      }
+      clearLink();
+    },
+  );
+
   // Mint a CLI onboarding token for `count` machines (#1108) on `siteId`
   // (#7035). Only ever called from an explicit operator click (Generate /
   // Generate new token / Retry), so it self-guards against concurrent runs
@@ -365,14 +567,17 @@ export default function AddDeviceModal({
   const initializeCli = useCallback(async (count: number, ttlMinutes: number, siteId: string) => {
     if (!siteId || cliFetchInFlight.current) return;
     cliFetchInFlight.current = true;
+    const generation = ++cliDisplayGeneration.current;
+    const epoch = currentRememberEpoch();
+    const showTokenError = (message: string) => {
+      if (generation === cliDisplayGeneration.current) setTokenError(message);
+    };
     setTokenLoading(true);
-    setOnboardingToken("");
-    setTokenSiteId(null);
-    setEnrollmentSecret("");
-    setTokenServerUrl("");
+    clearCliToken();
     setTokenError(undefined);
-    setTokenMaxUsage(null);
-    setTokenExpiresAt(null);
+    // The operator asked to replace it, so it goes now, whether or not the new
+    // mint succeeds (#10923).
+    if (userId) forgetEnrollmentArtifact(userId, siteId, "cli");
 
     try {
       const response = await fetchWithAuth("/devices/onboarding-token", {
@@ -409,33 +614,52 @@ export default function AddDeviceModal({
             errorMessage = "Server error. Please try again later.";
           }
         }
-        setTokenError(errorMessage);
+        showTokenError(errorMessage);
         return;
       }
 
       const data = await response.json();
       if (!data.token) {
-        setTokenError(
+        showTokenError(
           "Server returned an unexpected response. Please try again.",
         );
         return;
       }
+      if (generation !== cliDisplayGeneration.current) return;
+      const boundSiteId = typeof data.siteId === "string" ? data.siteId : siteId;
+      const maxUsage = typeof data.maxUsage === "number" ? data.maxUsage : null;
+      const expiresAt = typeof data.expiresAt === "string" ? data.expiresAt : null;
+      const serverUrl =
+        typeof data.serverUrl === "string" && data.serverUrl ? data.serverUrl : null;
       setOnboardingToken(data.token);
-      setTokenSiteId(typeof data.siteId === "string" ? data.siteId : siteId);
-      if (typeof data.maxUsage === "number") {
-        setTokenMaxUsage(data.maxUsage);
-      }
-      if (typeof data.expiresAt === "string") {
-        setTokenExpiresAt(data.expiresAt);
-      }
+      setTokenSiteId(boundSiteId);
+      setTokenMaxUsage(maxUsage);
+      setTokenExpiresAt(expiresAt);
       if (data.enrollmentSecret) {
         setEnrollmentSecret(data.enrollmentSecret);
       }
-      if (typeof data.serverUrl === "string" && data.serverUrl) {
-        setTokenServerUrl(data.serverUrl);
+      if (serverUrl) {
+        setTokenServerUrl(serverUrl);
+      }
+      if (userId && expiresAt) {
+        rememberCliToken(
+          userId,
+          boundSiteId,
+          {
+            value: data.token,
+            expiresAt,
+            maxUsage,
+            serverUrl,
+            childKeyId: typeof data.childKeyId === "string" ? data.childKeyId : null,
+            epoch,
+          },
+          data.enrollmentSecret || undefined,
+        );
+      } else if (userId) {
+        console.warn("[AddDeviceModal] the token response had no expiresAt, so it is not remembered");
       }
     } catch (err) {
-      setTokenError(
+      showTokenError(
         err instanceof Error
           ? err.message
           : t("addDeviceModal.networkErrorPleaseCheckYourConnection"),
@@ -444,7 +668,7 @@ export default function AddDeviceModal({
       setTokenLoading(false);
       cliFetchInFlight.current = false;
     }
-  }, []);
+  }, [userId, clearCliToken]);
 
   // Re-mint the CLI token, e.g. after the operator bumps the device count or
   // wants a fresh one mid-session (#1108).
@@ -569,6 +793,20 @@ export default function AddDeviceModal({
       </div>
     ) : null;
 
+  // A restored link reports the uses it has left, not today's device count.
+  const linkUses =
+    (linkDetails?.restored ? linkDetails.maxUsage : null) ?? deviceCount;
+
+  // The operator moving off a site discards what was remembered for it (#10923).
+  // Only this handler does that: the first-site selection on open must not cost
+  // a site its entry.
+  const handleSiteChange = (siteId: string) => {
+    if (userId && selectedSiteId && siteId !== selectedSiteId) {
+      forgetSiteEnrollmentArtifacts(userId, selectedSiteId);
+    }
+    setSelectedSiteId(siteId);
+  };
+
   const renderSiteSelect = (id: string) => (
     <div>
       <label
@@ -581,7 +819,7 @@ export default function AddDeviceModal({
         id={id}
         data-testid={id}
         value={selectedSiteId}
-        onChange={(e) => setSelectedSiteId(e.target.value)}
+        onChange={(e) => handleSiteChange(e.target.value)}
         className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
       >
         {orgSites.map((site) => (
@@ -682,9 +920,17 @@ export default function AddDeviceModal({
   // --- Generate public link ---
   const handleGenerateLink = async () => {
     if (linkLoading || !selectedSiteId) return;
+    const generation = ++linkDisplayGeneration.current;
+    const epoch = currentRememberEpoch();
+    const showLinkError = (message: string) => {
+      if (generation === linkDisplayGeneration.current) setLinkError(message);
+    };
     setLinkLoading(true);
     setLinkError(undefined);
-    setGeneratedLink("");
+    clearLink();
+    // The operator asked to replace it, so it goes now, whether or not the new
+    // mint succeeds (#10923).
+    if (userId) forgetEnrollmentArtifact(userId, selectedSiteId, "link");
 
     let freshParentKeyId: string | undefined;
     let linkAnswered = false;
@@ -693,7 +939,7 @@ export default function AddDeviceModal({
       // child row; the parent is shared with Download (#7345).
       const parent = await getAddDeviceParent();
       if ("error" in parent) {
-        setLinkError(parent.error);
+        showLinkError(parent.error);
         return;
       }
       if (!parent.reused) freshParentKeyId = parent.id;
@@ -717,7 +963,7 @@ export default function AddDeviceModal({
         const body = await linkRes
           .json()
           .catch(() => ({ error: t("addDeviceModal.failedToGenerateLink") }));
-        setLinkError(
+        showLinkError(
           extractApiError(body) ||
             `Failed to generate link (${linkRes.status})`,
         );
@@ -725,12 +971,46 @@ export default function AddDeviceModal({
       }
 
       const linkData = await linkRes.json();
+      if (generation !== linkDisplayGeneration.current) return;
+      const expiresAt =
+        typeof linkData.expiresAt === "string" ? linkData.expiresAt : null;
+      const maxUsage =
+        typeof linkData.maxUsage === "number" ? linkData.maxUsage : null;
       setGeneratedLink(linkData.shortUrl ?? linkData.url);
+      setLinkDetails({
+        expiresAt,
+        maxUsage,
+        platform: selectedPlatform,
+        restored: false,
+      });
+      // Only the short URL lasts. The fallback `url` carries a single-use
+      // download handle that dies within minutes, so it is not worth keeping.
+      if (
+        userId &&
+        expiresAt &&
+        typeof linkData.shortUrl === "string" &&
+        typeof linkData.childKeyId === "string"
+      ) {
+        rememberInstallerLink(userId, selectedSiteId, {
+          value: linkData.shortUrl,
+          expiresAt,
+          maxUsage,
+          childKeyId: linkData.childKeyId,
+          platform: selectedPlatform,
+          epoch,
+        });
+      } else if (userId) {
+        console.warn("[AddDeviceModal] the link response lacks a field it needs to be remembered", {
+          hasShortUrl: typeof linkData.shortUrl === "string",
+          hasChildKeyId: typeof linkData.childKeyId === "string",
+          hasExpiresAt: Boolean(expiresAt),
+        });
+      }
     } catch (err) {
       if (freshParentKeyId && !linkAnswered) void discardMintedKey(freshParentKeyId);
       const message =
         err instanceof Error ? err.message : t("addDeviceModal.unknownError");
-      setLinkError(`Failed to generate link: ${message}`);
+      showLinkError(`Failed to generate link: ${message}`);
     } finally {
       setLinkLoading(false);
     }
@@ -956,6 +1236,7 @@ export default function AddDeviceModal({
                 {/* Generate Link button */}
                 <button
                   type="button"
+                  data-testid="generate-link"
                   onClick={handleGenerateLink}
                   disabled={linkLoading || !selectedSiteId}
                   className="w-full h-10 rounded-md border border-primary text-sm font-medium text-primary hover:bg-primary/5 disabled:opacity-50 flex items-center justify-center gap-2"
@@ -968,7 +1249,9 @@ export default function AddDeviceModal({
                   ) : (
                     <>
                       <Link className="h-4 w-4" />
-                      {t("addDeviceModal.generateLink")}{" "}
+                      {generatedLink
+                        ? t("addDeviceModal.generateNewLink")
+                        : t("addDeviceModal.generateLink")}{" "}
                     </>
                   )}
                 </button>
@@ -1004,11 +1287,23 @@ export default function AddDeviceModal({
                     </div>
                     <p className="text-xs text-muted-foreground">
                       {t("addDeviceModal.validFor")}{" "}
-                      {deviceCount > 1
-                        ? `${deviceCount} downloads`
+                      {linkUses > 1
+                        ? `${linkUses} downloads`
                         : t("addDeviceModal.n1Download")}
                       {t("addDeviceModal.noLoginRequired")}{" "}
                     </p>
+                    {linkDetails?.restored && linkDetails.expiresAt && (
+                      <p
+                        className="text-xs text-muted-foreground"
+                        data-testid="link-reuse"
+                      >
+                        {t("addDeviceModal.linkReuse", {
+                          platform:
+                            linkDetails.platform === "macos" ? "macOS" : "Windows",
+                          date: formatDateTime(linkDetails.expiresAt),
+                        })}
+                      </p>
+                    )}
                   </div>
                 )}
 
@@ -1272,6 +1567,17 @@ export default function AddDeviceModal({
                             {t("addDeviceModal.cliTokenSite", {
                               site: tokenSiteName,
                             })}
+                          </p>
+                        )}
+                        {tokenRestored && tokenExpiresAt && (
+                          <p data-testid="cli-token-reuse">
+                            {tokenVerified
+                              ? t("addDeviceModal.cliTokenReuseVerified", {
+                                  date: formatDateTime(tokenExpiresAt),
+                                })
+                              : t("addDeviceModal.cliTokenReuse", {
+                                  date: formatDateTime(tokenExpiresAt),
+                                })}
                           </p>
                         )}
                       </div>

@@ -20,6 +20,28 @@ export class AgentSessionError extends Error {
   }
 }
 
+export const RELAY_REQUIRED_MESSAGE = 'Remote desktop needs the TURN relay while this device is isolated';
+
+/**
+ * A server-decided isolation restriction is terminal for this WebRTC attempt.
+ * Reuse AgentSessionError's transport/UI propagation so the operator sees the
+ * specific refusal instead of a generic connection failure or automatic retry.
+ */
+export class RelayRequiredError extends AgentSessionError {
+  constructor(message = RELAY_REQUIRED_MESSAGE) {
+    super(message);
+    this.name = 'RelayRequiredError';
+  }
+}
+
+function relayRequiredErrorFromResponse(data: unknown): RelayRequiredError | undefined {
+  if (typeof data !== 'object' || data === null || !('code' in data)) return;
+  if (data.code !== 'isolation_relay_unavailable' && data.code !== 'isolation_relay_not_permitted') return;
+  return new RelayRequiredError(
+    'error' in data && typeof data.error === 'string' && data.error.length > 0 ? data.error : undefined,
+  );
+}
+
 /**
  * The bare fallback text SessionEndedError carries when no server-provided
  * reason is available. Exported so a caller (DesktopViewer) can tell a real
@@ -192,14 +214,14 @@ export function nextAnswerPollInterval(currentMs: number): number {
  * One attempt at a peer connection plus its two data channels, propagating any
  * failure as-is. Callers classify; this only guarantees it leaves nothing open.
  */
-function buildPeerConnection(iceServers: RTCIceServer[]): {
+function buildPeerConnection(iceServers: RTCIceServer[], relayOnly: boolean): {
   pc: RTCPeerConnection;
   inputChannel: RTCDataChannel;
   controlChannel: RTCDataChannel;
 } {
   let pc: RTCPeerConnection | undefined;
   try {
-    pc = new RTCPeerConnection({ iceServers });
+    pc = new RTCPeerConnection(relayOnly ? { iceServers, iceTransportPolicy: 'relay' } : { iceServers });
 
     // Receive-only video transceiver (agent sends H264 video track)
     pc.addTransceiver('video', { direction: 'recvonly' });
@@ -231,14 +253,22 @@ function buildPeerConnection(iceServers: RTCIceServer[]): {
  * as a generic "WebRTC connection failed" — retryable-looking, and it suppressed
  * the notice that tells the operator why quality dropped (issue #3410).
  */
-function createPeerConnection(iceServers: RTCIceServer[]): {
+function createPeerConnection(iceServers: RTCIceServer[], relayOnly: boolean): {
   pc: RTCPeerConnection;
   inputChannel: RTCDataChannel;
   controlChannel: RTCDataChannel;
 } {
   try {
-    return buildPeerConnection(iceServers);
+    return buildPeerConnection(iceServers, relayOnly);
   } catch (firstErr) {
+    if (relayOnly) {
+      // Never retry STUN-only while isolated. Keep the constructor's reason:
+      // a malformed TURN entry is a server-config fault, not missing TURN.
+      console.warn('Relay-only ICE servers from the API were rejected by RTCPeerConnection:', firstErr);
+      const cause = firstErr instanceof Error ? firstErr.message : String(firstErr);
+      throw new RelayRequiredError(`${RELAY_REQUIRED_MESSAGE} (relay configuration rejected: ${cause})`);
+    }
+
     // The ICE list comes from the API and is only checked for being a non-empty
     // array — a malformed `urls` or a TURN entry without credentials makes the
     // constructor throw per spec. That is a server-config fault, not a missing
@@ -260,7 +290,7 @@ function createPeerConnection(iceServers: RTCIceServer[]): {
       firstErr,
     );
     try {
-      return buildPeerConnection([...DEFAULT_ICE_SERVERS]);
+      return buildPeerConnection([...DEFAULT_ICE_SERVERS], false);
     } catch (retryErr) {
       const cause = retryErr instanceof Error ? retryErr.message : String(retryErr);
       throw new WebRTCUnsupportedError(
@@ -301,6 +331,7 @@ export async function createWebRTCSession(
 
   // Fetch ICE servers (includes TURN credentials if configured)
   let iceServers: RTCIceServer[] = [...DEFAULT_ICE_SERVERS];
+  let relayOnly = false;
   try {
     const iceResp = await apiFetch(
       params.apiUrl,
@@ -309,15 +340,29 @@ export async function createWebRTCSession(
     );
     if (iceResp.ok) {
       const iceData = await iceResp.json();
+      relayOnly = iceData.relayOnly === true;
       if (Array.isArray(iceData.iceServers) && iceData.iceServers.length > 0) {
         iceServers = iceData.iceServers;
+      } else if (relayOnly) {
+        throw new RelayRequiredError();
       }
+    } else if (isSessionEndedResponse(iceResp.status)) {
+      // #10542: the session was ended/revoked server-side. The offer would
+      // 401 too, so end now instead of building a peer, gathering candidates
+      // and posting an offer that cannot succeed.
+      const reason = await fetchSessionEndedReason(params);
+      throw new SessionEndedError(reason ?? undefined);
+    } else if (iceResp.status === 409) {
+      const iceData = await iceResp.json();
+      const relayError = relayRequiredErrorFromResponse(iceData);
+      if (relayError) throw relayError;
     }
   } catch (error) {
+    if (error instanceof RelayRequiredError || error instanceof SessionEndedError) throw error;
     console.warn('Failed to fetch ICE servers, falling back to STUN-only:', error);
   }
 
-  const { pc, inputChannel, controlChannel } = createPeerConnection(iceServers);
+  const { pc, inputChannel, controlChannel } = createPeerConnection(iceServers, relayOnly);
   // Trickle ICE (#9182): listens from before setLocalDescription so no late
   // local candidate is missed.
   const trickle = createIceTrickle(pc, params);
@@ -385,6 +430,14 @@ export async function createWebRTCSession(
         throw new SessionEndedError(reason ?? undefined);
       }
       const msg = await offerResp.text().catch(() => 'unknown error');
+      if (offerResp.status === 409) {
+        // Isolation can change after the ICE fetch. Preserve the server's
+        // refusal here too, so the transport caller does not hide it.
+        let data: unknown;
+        try { data = JSON.parse(msg); } catch { /* keep the existing generic error */ }
+        const relayError = relayRequiredErrorFromResponse(data);
+        if (relayError) throw relayError;
+      }
       throw new Error(`Failed to submit WebRTC offer: ${msg}`);
     }
 
@@ -444,6 +497,37 @@ function waitForIceGathering(pc: RTCPeerConnection, timeoutMs: number): Promise<
  * disconnect with no recorded reason, so a null return here is the normal,
  * silent case, not an error condition worth logging.
  */
+/**
+ * #10542: tell the API a reconnect is starting, before the old peer is closed.
+ *
+ * Closing the old peer makes the agent report a peer drop at once. The API
+ * holds that report for a short grace instead of ending the session (and
+ * revoking this viewer's token) only when the viewer fetched ICE servers for
+ * the still-active session first. createWebRTCSession fetches them too, but
+ * only after the old peer is gone, which can lose the race to the agent's
+ * report. Best effort: any failure, or no answer within `timeoutMs`, lets the
+ * reconnect go ahead exactly as before.
+ */
+export async function announceViewerReconnect(
+  params: AuthenticatedConnectionParams,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    await apiFetch(
+      params.apiUrl,
+      `/api/v1/desktop-ws/${params.sessionId}/viewer/ice-servers`,
+      params.accessToken,
+      { signal: controller.signal },
+    );
+  } catch {
+    // Best effort; the reconnect itself reports any real failure.
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fetchSessionEndedReason(params: AuthenticatedConnectionParams): Promise<string | null> {
   try {
     const resp = await apiFetch(

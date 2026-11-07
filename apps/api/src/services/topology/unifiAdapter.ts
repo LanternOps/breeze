@@ -48,7 +48,7 @@ import {
   canonicalizeUnifiResource, canonicalizeUnifiResourceV2, UNIFI_TOPOLOGY_NORMALIZED_V2_CONTRACT, unifiEndpointKey,
   type TopologyScope, type UnifiDigestIdentity, type UnifiResource, type UnifiResourceV2, type UnifiTopologyV1, type UnifiTopologyV2,
 } from '@breeze/shared';
-import { assertInTransaction, db } from '../../db';
+import { assertInTransaction, db, withDbTransaction } from '../../db';
 import { pgErrorCode } from '../../utils/pgErrors';
 import { topologyCollectionSources, unifiControllerSites } from '../../db/schema';
 import { canonicalMac } from '../unifi/unifiMac';
@@ -183,7 +183,7 @@ export async function adaptUnifiTopology(deviceId: string, collector: UnifiColle
   let lockFailure: string | null = null;
   if (targets.length) {
     try {
-      await db.transaction(() => lockTopologyPhysicalIngest(deviceId, collector.orgId, targets));
+      await withDbTransaction(() => lockTopologyPhysicalIngest(deviceId, collector.orgId, targets));
     } catch (error) {
       lockFailure = unifiAdapterRejection(error);
       if (!lockFailure) throw error;
@@ -204,7 +204,7 @@ export async function adaptUnifiTopology(deviceId: string, collector: UnifiColle
     if (!coverage.has(resource.controllerSiteId)) coverage.set(resource.controllerSiteId, null);
     if (lockFailure) { reject(lockFailure); continue; }
     try {
-      const receipt = await db.transaction(async () => {
+      const receipt = await withDbTransaction(async () => {
         const producer = await resolveTopologyPhysicalProducer({ producerKind: 'unifi', deviceId, scope, authorityKey, collectorId: collector.id });
         const section = normalizeUnifiResource({ hostKey, authorityKey, resource, bindings: await bindingsFor(scope, resource) });
         const contentDigest = unifiNormalizedDigest(producer, section, report.version);

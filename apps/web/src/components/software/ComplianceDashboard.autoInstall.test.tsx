@@ -33,6 +33,7 @@ vi.mock("../../stores/orgStore", () => ({
 }));
 
 import ComplianceDashboard from "./ComplianceDashboard";
+import SoftwarePage from "./SoftwarePage";
 import { fetchWithAuth } from "../../stores/auth";
 
 const fetchMock = vi.mocked(fetchWithAuth);
@@ -48,6 +49,16 @@ const OVERVIEW = { total: 0, compliant: 0, violations: 0, unknown: 0 };
 
 function mockEndpoints() {
   fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+    if (url.startsWith("/software-inventory?"))
+      return Promise.resolve(json({
+        data: [{
+          name: "Zoom",
+          vendor: "Zoom Communications",
+          deviceCount: 1,
+          versions: [],
+          policyStatus: "no_policy",
+        }],
+      }));
     if (url.startsWith("/software-policies/compliance/overview"))
       return Promise.resolve(json(OVERVIEW));
     if (url.startsWith("/software-policies/violations"))
@@ -105,6 +116,29 @@ describe("ComplianceDashboard — autoInstall arming (#5509)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockEndpoints();
+  });
+
+  it("opens and saves a prefilled policy from the inventory Actions menu", async () => {
+    window.history.replaceState(null, "", "/software-inventory");
+    try {
+      render(<SoftwarePage />);
+      fireEvent.click(await screen.findByRole("button", { name: "Actions" }));
+      fireEvent.click(screen.getByRole("button", { name: "Create Policy" }));
+
+      expect(await screen.findByPlaceholderText("Name *")).toHaveValue("Zoom");
+      expect(screen.getByPlaceholderText("Vendor")).toHaveValue("Zoom Communications");
+      expect(screen.getByLabelText("Mode")).toHaveValue("blocklist");
+      expect(window.location.hash).toBe("#policies");
+
+      fireEvent.click(screen.getByText("Create Policy", { selector: 'button[type="submit"]' }));
+      await waitFor(() => expect(postBody()).toMatchObject({
+        name: "Zoom Policy",
+        mode: "blocklist",
+        rules: { software: [{ name: "Zoom", vendor: "Zoom Communications" }] },
+      }));
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
   });
 
   it("sends remediationOptions.autoInstall when armed on an allowlist enforce policy", async () => {

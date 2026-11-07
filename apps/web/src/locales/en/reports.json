@@ -380,6 +380,7 @@
         "mrr_renewals": "MRR & renewals",
         "quote_win_rate": "Quote win rate",
         "client_profitability": "Client profitability",
+        "ticket_sla_performance": "SLA performance",
         "backup_status": "Backup Status"
       },
       "threatDetection": {
@@ -409,6 +410,29 @@
         "noncompliant": "Not compliant",
         "notMeasured": "N/A",
         "staleEnrolments": "Stale enrolments"
+      },
+      "slaPerformance": {
+        "priority": "Priority",
+        "ticketsOpened": "Tickets opened",
+        "firstResponse": "First response",
+        "resolution": "Resolution",
+        "target": "Target",
+        "measured": "Measured",
+        "withinSla": "% within SLA",
+        "median": "Median",
+        "mean": "Mean",
+        "varies": "varies",
+        "breaches": "Breaches",
+        "breachCount_one": "{{count}} breach",
+        "breachCount_other": "{{count}} breaches",
+        "unavailable": "This run’s SLA summary could not be read, so it cannot be shown here. Generate the report again.",
+        "notes": "What this measures",
+        "priorities": {
+          "urgent": "Urgent",
+          "high": "High",
+          "normal": "Normal",
+          "low": "Low"
+        }
       },
       "identityAccess": {
         "notMeasured": "N/A",
@@ -486,6 +510,7 @@
         "mrr_renewals": "MRR & renewals",
         "quote_win_rate": "Quote win rate",
         "client_profitability": "Client profitability",
+        "ticket_sla_performance": "SLA performance",
         "backup_status": "Backup Status"
       },
       "runsTable": {
@@ -812,6 +837,7 @@
           "os": "OS",
           "owner": "Owner",
           "patch_level": "Patch level",
+          "product_number": "Product Number",
           "serial": "Serial",
           "site": "Site",
           "status": "Status"
@@ -1038,6 +1064,7 @@
         "mrr_renewals": "MRR & renewals",
         "quote_win_rate": "Quote win rate",
         "client_profitability": "Client profitability",
+        "ticket_sla_performance": "SLA performance",
         "backup_status": "Backup Status"
       },
       "schedules": {
@@ -1118,6 +1145,10 @@
         "quote_win_rate": {
           "name": "Quote win rate",
           "description": "The share of sent quotes that were won, counted per opportunity so a revised and re-sent quote counts once. The headline rate covers decided opportunities only, with the still-open count beside it. Values are pre-tax, one set per currency, never converted."
+        },
+        "ticket_sla_performance": {
+          "name": "SLA performance",
+          "description": "Customer-ready response and resolution times against SLA, by priority, with breaches."
         },
         "client_profitability": {
           "name": "Client profitability",
@@ -1270,6 +1301,12 @@
         "currency": "Currency"
       },
       "periodNote": "The period applies to the date each quote was first sent. A quote that is revised and re-sent counts once, as one opportunity.",
+      "cancel": "Cancel",
+      "createReport": "Create report"
+    },
+    "ticketSlaPerformanceOptions": {
+      "includeSubjects": "Include ticket subjects",
+      "includeSubjectsHelp": "Delivered reports are visible to every portal user of this organization. Leave off unless every user may see every ticket subject.",
       "cancel": "Cancel",
       "createReport": "Create report"
     },

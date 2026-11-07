@@ -277,6 +277,19 @@ describe('helpers', () => {
     expect(shared.resolveGrantCeiling).not.toHaveBeenCalled();
   });
 
+  it("passes the turn's model through so the seed names it (#10391), alone or beside the viewing entity", async () => {
+    const live = ceiling();
+    shared.seedContextForSession.mockResolvedValueOnce('seed');
+    await wispSeedForSession(grant, null, live, undefined, 'claude-sonnet-5-5');
+    expect(shared.seedContextForSession).toHaveBeenLastCalledWith('t-1', live, null, { model: 'claude-sonnet-5-5' });
+
+    const viewing = { ref: { kind: 'device', id: ORG_C, orgId: ORG_A }, orgId: ORG_A, label: 'x', status: null, href: '/' };
+    shared.resolveEntityRef.mockResolvedValueOnce(viewing);
+    shared.seedContextForSession.mockResolvedValueOnce('seed');
+    await wispSeedForSession(grant, null, live, { type: 'device', id: ORG_C, hostname: 'h' }, 'claude-sonnet-5-5');
+    expect(shared.seedContextForSession).toHaveBeenLastCalledWith('t-1', live, null, { viewing, model: 'claude-sonnet-5-5' });
+  });
+
   it.each(['record', 'device', 'alert'] as const)('a %s page context resolves viewing with the caller and live ceiling', async (type) => {
     const live = ceiling(), caller = auth();
     const id = '00000000-0000-4000-8000-000000000123';

@@ -11,6 +11,7 @@ import { buildMappingHostList } from '../../services/unifi/unifiMappingHosts';
 import { getConnection, getDecryptedApiKey, upsertConnection, deleteConnection, createSelfHostedIntegration } from '../../services/unifi/unifiConnectionService';
 import { listControllerSitesForIntegration } from '../../services/unifi/unifiControllerSiteService';
 import { listCollectors, upsertCollector, deleteCollector, upsertSelfHostedController } from '../../services/unifi/unifiCollectorService';
+import { toUnifiTelemetryDevice } from './telemetryReadModel';
 import { enqueueUnifiSync } from '../../jobs/unifiWorker';
 import { canManagePartnerWidePolicies } from '../../services/partnerWideAccess';
 import { revokeUnifiCollectorDrift, revokeUnifiMappingDrift, snapshotUnifiCollectors, snapshotUnifiMappings } from '../../services/topology/unifiAuthority';
@@ -457,9 +458,9 @@ unifiRoutes.get('/telemetry', partnerScopes, readPerm, async (c) => {
   // site outside their allowlist even within an org they can access. Unrestricted
   // (partner-wide) callers have canAccessSite undefined → no-op.
   if (auth.canAccessSite && !auth.canAccessSite(siteId)) return c.json({ error: 'Access to this site denied' }, 403);
-  const devicesOut = await db.select().from(unifiDeviceTelemetry).where(eq(unifiDeviceTelemetry.siteId, siteId));
-  const clientsOut = await db.select().from(unifiClients).where(eq(unifiClients.siteId, siteId));
-  return c.json({ devices: devicesOut, clients: clientsOut });
+  const devicesOut = await db.select().from(unifiDeviceTelemetry).where(and(eq(unifiDeviceTelemetry.siteId, siteId), eq(unifiDeviceTelemetry.orgId, site.orgId)));
+  const clientsOut = await db.select().from(unifiClients).where(and(eq(unifiClients.siteId, siteId), eq(unifiClients.orgId, site.orgId)));
+  return c.json({ devices: devicesOut.map(toUnifiTelemetryDevice), clients: clientsOut });
 });
 
 // POST /unifi/sync — manual sync trigger

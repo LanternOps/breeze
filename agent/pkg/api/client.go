@@ -61,6 +61,7 @@ type HardwareInfo struct {
 	DiskTotalGB             uint64 `json:"diskTotalGb,omitempty"`
 	GPUModel                string `json:"gpuModel,omitempty"`
 	SerialNumber            string `json:"serialNumber,omitempty"`
+	ProductSKU              string `json:"productSku,omitempty"`
 	Manufacturer            string `json:"manufacturer,omitempty"`
 	Model                   string `json:"model,omitempty"`
 	MotherboardManufacturer string `json:"motherboardManufacturer,omitempty"`

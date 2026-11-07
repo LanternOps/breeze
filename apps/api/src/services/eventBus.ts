@@ -17,6 +17,13 @@ export type EventType =
   | 'device.updated'
   | 'device.main_agent_silent' // #800: watchdog OK, main agent silent
   | 'device.reinstalled' // #8318: a reinstalled machine reattached to its existing record
+  // Network isolation: payload carries isolationId, generation, deviceId and incidentId;
+  // release events also carry releaseKind. No secrets or allowlist addresses.
+  | 'device.isolated'
+  | 'device.isolation_released'
+  | 'device.isolation_failed'
+  | 'device.isolation_self_released'
+  | 'device.isolation_expiring'
   | 'device.reinstall_suspected' // #8318 §7.3: a new device looks like a reinstall of this (silent) record
   // Alert events
   | 'alert.triggered'
@@ -683,6 +690,11 @@ export const EVENT_TYPES = {
   DEVICE_MAIN_AGENT_SILENT: 'device.main_agent_silent' as const,
   // #8318: a reattach confirm handed an existing record to a new install
   DEVICE_REINSTALLED: 'device.reinstalled' as const,
+  DEVICE_ISOLATED: 'device.isolated' as const,
+  DEVICE_ISOLATION_RELEASED: 'device.isolation_released' as const,
+  DEVICE_ISOLATION_FAILED: 'device.isolation_failed' as const,
+  DEVICE_ISOLATION_SELF_RELEASED: 'device.isolation_self_released' as const,
+  DEVICE_ISOLATION_EXPIRING: 'device.isolation_expiring' as const,
   // #8318 §7.3: hardware or hostname hints flagged a newer device as a probable reinstall of this one
   DEVICE_REINSTALL_SUSPECTED: 'device.reinstall_suspected' as const,
   // Alert

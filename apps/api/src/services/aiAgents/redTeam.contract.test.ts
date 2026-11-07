@@ -271,6 +271,9 @@ const _agentGuardrailCheckFields: Record<keyof ReturnType<typeof checkAgentGuard
   // #7906: the payload a chat read-only event_logs_query dispatches with.
   // Never set for an agent run (checkAgentGuardrails strips the chat opt-in).
   pinnedEventLogsQuery: true,
+  // #10973: a chat-only Security query under the grant switch. Never set for an
+  // agent run (checkAgentGuardrails strips the flag).
+  wispUnattendedRead: true,
   // Human-readable approval blurb only — see TOOLS_ECHOING_PROSE_INTO_APPROVAL_TEXT.
   description: false,
 };

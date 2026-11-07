@@ -34,6 +34,7 @@ import {
 import { applyBackupCommandResultToJob } from '../../services/backupResultPersistence';
 import { recordSnapshotAttestation, type RecordSnapshotAttestationInput } from '../../services/backupAttestation';
 import { defaultVerifyDeps, verifySnapshotAttestation } from '../../services/backupAttestationVerify';
+import { verifyDepsFromBytes } from '../helpers/verifyDepsFromBytes';
 import { normalizeStorageIdentity } from '../../jobs/backupRetention';
 import { setBackupMetricsRecorder } from '../../services/backupMetrics';
 import { createOrganization, createPartner } from './db-utils';
@@ -348,15 +349,13 @@ describe('storage reconciliation and late results', () => {
 
 describe('server-side verification', () => {
   function storage(objects: Record<string, Uint8Array>, fail = false) {
-    return {
-      ...defaultVerifyDeps,
-      fetchObject: vi.fn(async ({ key }: { key: string }) => {
-        if (fail) throw new Error('connect ETIMEDOUT');
-        const bytes = objects[key];
-        if (!bytes) throw new Error('NoSuchKey');
-        return bytes;
-      }),
-    };
+    const fetchObject = vi.fn(async ({ key }: { key: string }) => {
+      if (fail) throw new Error('connect ETIMEDOUT');
+      const bytes = objects[key];
+      if (!bytes) throw new Error('NoSuchKey');
+      return bytes;
+    });
+    return { ...verifyDepsFromBytes(fetchObject), fetchObject };
   }
 
   runDb('matching bytes verify the attestation and attest the snapshot', async () => {
@@ -497,15 +496,13 @@ describe('server-side verification', () => {
 
 describe('job reuse and verification retries', () => {
   function storage(objects: Record<string, Uint8Array>, error?: Error) {
-    return {
-      ...defaultVerifyDeps,
-      fetchObject: vi.fn(async ({ key }: { key: string }) => {
-        if (error) throw error;
-        const bytes = objects[key];
-        if (!bytes) throw Object.assign(new Error('missing'), { name: 'NoSuchKey' });
-        return bytes;
-      }),
-    };
+    const fetchObject = vi.fn(async ({ key }: { key: string }) => {
+      if (error) throw error;
+      const bytes = objects[key];
+      if (!bytes) throw Object.assign(new Error('missing'), { name: 'NoSuchKey' });
+      return bytes;
+    });
+    return { ...verifyDepsFromBytes(fetchObject), fetchObject };
   }
 
   runDb('a result from another job never rewrites an attested snapshot row', async () => {

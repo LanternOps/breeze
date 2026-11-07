@@ -40,7 +40,7 @@ import { useTranslation } from 'react-i18next';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { isBusinessReportType } from './businessReportAccess';
 import { hasTemplateOptionsForm } from './templateReportTypes';
-import { BUSINESS_REFUSED_CONFIG_KEYS, omitConfigKeys } from './businessReportConfig';
+import { BUSINESS_REFUSED_CONFIG_KEYS, isSelectorlessOrgReportType, omitConfigKeys } from './businessReportConfig';
 import { CoversControl } from './series/CoversControl';
 import { SeriesRecipientsSection } from './series/SeriesRecipientsSection';
 import { ORG_SPECIFIC_CONDITION_FIELDS, availableCoversModes, coversFromSeries, firstCoveredOrgId, isSeriesEligibleReportType, sameTargets, stripSeriesConfig } from './series/seriesConfig';
@@ -265,6 +265,9 @@ const legacyToBuilderType: Record<LegacyReportType, BuilderReportType> = {
   quote_win_rate: 'activity',
   // client_profitability: curated, own options form (period, group-by, labor rate).
   client_profitability: 'activity',
+  // ticket_sla_performance: curated, own options form (period, subjects). No
+  // builder data source is tickets; mapped only to keep this Record exhaustive.
+  ticket_sla_performance: 'activity',
   // Backup Status Report (#6013 W05) — same reasoning as Hardware Lifecycle:
   // delivered only via its own curated template and options form
   // (BackupStatusOptionsForm.tsx). Mapping to the devices source keeps this
@@ -561,6 +564,7 @@ const fieldDefinitionsByType: Record<BuilderReportType, FieldDefinition[]> = {
     { id: 'site', label: 'Site', dataType: 'string' },
     { id: 'owner', label: 'Owner', dataType: 'string' },
     { id: 'serial', label: 'Serial', dataType: 'string' },
+    { id: 'product_number', label: 'Product Number', dataType: 'string' },
     { id: 'last_seen', label: 'Last seen', dataType: 'date' },
     { id: 'cpu', label: 'CPU usage', dataType: 'number' },
     { id: 'memory', label: 'Memory usage', dataType: 'number' },
@@ -645,7 +649,7 @@ const toNumber = (value: unknown): number | null => {
   return null;
 };
 
-const normalizePreviewRow = (type: BuilderReportType, row: PreviewRow): PreviewRow => {
+export const normalizePreviewRow = (type: BuilderReportType, row: PreviewRow): PreviewRow => {
   const normalized: PreviewRow = { ...row };
 
   if (type === 'devices') {
@@ -653,6 +657,7 @@ const normalizePreviewRow = (type: BuilderReportType, row: PreviewRow): PreviewR
     const osVersion = typeof row.osVersion === 'string' ? row.osVersion : '';
     normalized.os = [osType, osVersion].filter(Boolean).join(' ').trim();
     normalized.serial = row.serial ?? row.serialNumber ?? null;
+    normalized.product_number = row.product_number ?? row.productSku ?? null;
     normalized.last_seen = row.last_seen ?? row.lastSeenAt ?? null;
     normalized.memory = row.memory ?? row.ramTotalMb ?? null;
     normalized.disk_usage = row.disk_usage ?? row.diskTotalGb ?? null;
@@ -1670,7 +1675,12 @@ export default function ReportBuilder({
             // device-builder state (builderType/dataSource/columns/aggregation…).
             // Stale builder keys already persisted in baseConfig are dropped so
             // previously polluted configs heal on the next save.
-            ...omitConfigKeys(baseConfig, TEMPLATE_BUILDER_STATE_KEYS),
+            ...omitConfigKeys(
+              baseConfig,
+              isSelectorlessOrgReportType(defaultValues?.type)
+                ? [...TEMPLATE_BUILDER_STATE_KEYS, ...BUSINESS_REFUSED_CONFIG_KEYS]
+                : TEMPLATE_BUILDER_STATE_KEYS,
+            ),
             schedule: scheduleDetail,
             exportFormats,
             emailRecipients

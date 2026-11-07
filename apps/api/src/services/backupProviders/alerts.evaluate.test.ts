@@ -72,7 +72,7 @@ vi.mock('../eventBus', () => ({
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./registry', () => ({ getBackupProvider: () => ({ key: 'cove', label: 'Cove Data Protection' }) }));
 
-import { evaluateProviderAlerts } from './alerts';
+import { evaluateProviderAlerts, PROVIDER_ALERT_PARKED_NOTE } from './alerts';
 import { captureException } from '../sentry';
 import { db } from '../../db';
 
@@ -351,6 +351,52 @@ describe('evaluateProviderAlerts', () => {
     expect(publishEvent).toHaveBeenCalledWith(
       'backup.provider_device_recovered', ORG, expect.objectContaining({ condition: 'failed' }), 'backup-provider-sync',
     );
+  });
+
+  it('a device parked in the vendor console resolves as retired, never as a recovery', async () => {
+    // Parking stops protection on purpose. That is not the condition clearing:
+    // `condition_cleared` would let the fix-memory outcome watcher count it as
+    // objective recovery, and `recovered` would tell subscribers the backup works.
+    providerRows = [row({ status: 'paused', lastSuccessAt: new Date(), errorsCount: 1, pendingCondition: 'raised:failed' })];
+    openAlerts = [{ id: 'a1', status: 'active', suppressedUntil: null, providerDeviceId: 'p1', condition: 'failed' }];
+    const out = await evaluateProviderAlerts(CONNECTION);
+    expect(resolveAlert).toHaveBeenCalledExactlyOnceWith('a1', PROVIDER_ALERT_PARKED_NOTE, undefined, false, 'source_retired');
+    expect(out.resolved).toBe(1);
+    expect(publishEvent).not.toHaveBeenCalled();
+    expect(createSourcedAlert).not.toHaveBeenCalled();
+  });
+
+  it('retires only the parked row\'s alert; a recovered sibling still resolves as condition_cleared', async () => {
+    providerRows = [
+      row({ id: 'p1', status: 'paused', lastSuccessAt: new Date(), errorsCount: 1, pendingCondition: 'raised:failed' }),
+      row({ id: 'p2', vendorDeviceId: 'v2', status: 'completed', lastSuccessAt: new Date(), errorsCount: 0, pendingCondition: 'raised:failed' }),
+    ];
+    openAlerts = [
+      { id: 'a1', status: 'active', suppressedUntil: null, providerDeviceId: 'p1', condition: 'failed' },
+      { id: 'a2', status: 'active', suppressedUntil: null, providerDeviceId: 'p2', condition: 'failed' },
+    ];
+    const out = await evaluateProviderAlerts(CONNECTION);
+    expect(out.resolved).toBe(2);
+    expect(resolveAlert).toHaveBeenCalledWith('a1', PROVIDER_ALERT_PARKED_NOTE, undefined, false, 'source_retired');
+    expect(resolveAlert).toHaveBeenCalledWith('a2', 'Condition cleared by provider sync', undefined, false, 'condition_cleared');
+    expect(publishEvent).toHaveBeenCalledExactlyOnceWith(
+      'backup.provider_device_recovered', ORG, expect.objectContaining({ providerDeviceId: 'p2' }), 'backup-provider-sync',
+    );
+  });
+
+  it('a parked row with a raised condition but no open alert announces nothing', async () => {
+    providerRows = [row({ status: 'paused', lastSuccessAt: null, errorsCount: 1, pendingCondition: 'raised:failed' })];
+    openAlerts = [];
+    await evaluateProviderAlerts(CONNECTION);
+    expect(publishEvent).not.toHaveBeenCalled();
+    expect(resolveAlert).not.toHaveBeenCalled();
+  });
+
+  it('leaves an INDEFINITELY suppressed alert on a parked device alone', async () => {
+    providerRows = [row({ status: 'paused', lastSuccessAt: null, errorsCount: 1, pendingCondition: 'raised:failed' })];
+    openAlerts = [{ id: 'a1', status: 'suppressed', suppressedUntil: null, providerDeviceId: 'p1', condition: 'failed' }];
+    await evaluateProviderAlerts(CONNECTION);
+    expect(resolveAlert).not.toHaveBeenCalled();
   });
 
   it('leaves an INDEFINITELY suppressed alert alone when the condition clears', async () => {

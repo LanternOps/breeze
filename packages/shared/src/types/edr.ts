@@ -42,6 +42,15 @@ export const EDR_DETECTION_ACTIONS = [
   'rollback', 'resolve_detection', 'mark_false_positive', 'quarantine_restore', 'quarantine_delete',
 ] as const;
 
+/**
+ * Why the last installer-material fetch for a tenant failed. Stored in
+ * `edr_tenants.installer_fetch_error` and shown on the mapping table: a closed
+ * vocabulary so vendor text can never reach that exported column.
+ */
+export const EDR_INSTALLER_FETCH_ERROR_CODES = [
+  'packages_api_disabled', 'no_package', 'multiple_packages', 'malformed_response', 'url_rejected', 'vendor_error',
+] as const;
+
 export type EdrSeverity =(typeof EDR_SEVERITIES)[number];
 export type EdrDetectionStatus = (typeof EDR_DETECTION_STATUSES)[number];
 export type EdrOpenDetectionStatus = (typeof EDR_OPEN_DETECTION_STATUSES)[number];
@@ -53,6 +62,7 @@ export type EdrMappingSource = (typeof EDR_MAPPING_SOURCES)[number];
 export type EdrDeviceMatchSource = (typeof EDR_DEVICE_MATCH_SOURCES)[number];
 export type EdrConnectionStatus = (typeof EDR_CONNECTION_STATUSES)[number];
 export type EdrSyncStatus = (typeof EDR_SYNC_STATUSES)[number];
+export type EdrInstallerFetchErrorCode = (typeof EDR_INSTALLER_FETCH_ERROR_CODES)[number];
 export type EdrActionStatus = (typeof EDR_ACTION_STATUSES)[number];
 export type EdrActionRequestedVia = (typeof EDR_ACTION_REQUESTED_VIA)[number];
 export type EdrVendorKind = (typeof EDR_VENDOR_KINDS)[number];

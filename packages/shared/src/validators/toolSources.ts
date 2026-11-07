@@ -31,7 +31,7 @@ const sourceCore = z.object({
   // W2: the OpenAPI document URL. Only read; the credential travels with it
   // only when it shares `endpointUrl`'s origin.
   specUrl: httpsUrl.optional(),
-  rateLimitPerMinute: z.number().int().min(1).max(6000).default(120),
+  rateLimitPerMinute: z.number().int().min(1).max(6000),
   ownerScope: z.enum(['organization', 'partner']).optional(),
   orgId: z.string().uuid().optional(),
 });
@@ -52,8 +52,11 @@ function kindSpecUrlRule(v: { kind?: string; specUrl?: string }, ctx: z.Refineme
 // 200 that changed nothing. (`.strict()` cannot be used here: the auth union
 // on the other side of the intersection owns `authKind`/`authConfig`.)
 const updateOnly = { kind: z.never({ message: 'kind cannot be changed after creation' }).optional() };
+// The default belongs to create only: zod's `.partial()` still applies a
+// `.default()` to an omitted key, so a PATCH without the field would reset it.
+const createOnlyDefaults = { rateLimitPerMinute: sourceCore.shape.rateLimitPerMinute.default(120) };
 
-export const createToolSourceSchema = z.intersection(sourceCore, toolSourceAuthConfigSchema).superRefine(kindSpecUrlRule);
+export const createToolSourceSchema = z.intersection(sourceCore.extend(createOnlyDefaults), toolSourceAuthConfigSchema).superRefine(kindSpecUrlRule);
 export const updateToolSourceSchema = z.intersection(
   sourceCore.omit({ slug: true, kind: true, ownerScope: true, orgId: true }).partial().extend(updateOnly),
   z.union([toolSourceAuthConfigSchema, z.object({})]),
@@ -68,7 +71,7 @@ const sourceCoreWithHttp = sourceCore.extend({
   specUrl: httpOrHttpsUrl.optional(),
 });
 export const createToolSourceSchemaWithHttp = z
-  .intersection(sourceCoreWithHttp, toolSourceAuthConfigSchema)
+  .intersection(sourceCoreWithHttp.extend(createOnlyDefaults), toolSourceAuthConfigSchema)
   .superRefine(kindSpecUrlRule);
 export const updateToolSourceSchemaWithHttp = z.intersection(
   sourceCoreWithHttp.omit({ slug: true, kind: true, ownerScope: true, orgId: true }).partial().extend(updateOnly),
