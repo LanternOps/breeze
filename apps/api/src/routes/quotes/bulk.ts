@@ -9,15 +9,22 @@ import { sendQuote } from '../../services/quoteLifecycle';
 import { writeRouteAudit, type AuthContext as AuditAuthContext } from '../../services/auditEvents';
 import { supersededAuditEvent } from '../../services/quoteSupersedeAudit';
 import { auditBillingDocument } from '../../services/billingDocumentAudit';
+import { assertBillingEnabledForPartner } from '../../services/billingEnabled';
+import { QuoteServiceError, type QuoteServiceErrorCode } from '../../services/quoteTypes';
 import { quoteActorFrom, handleServiceError } from './quotes';
 
 export const quoteBulkRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
 const writePerm = requirePermission(PERMISSIONS.QUOTES_WRITE.resource, PERMISSIONS.QUOTES_WRITE.action);
 const sendPerm = requirePermission(PERMISSIONS.QUOTES_SEND.resource, PERMISSIONS.QUOTES_SEND.action);
+// Per-item errors would be tallied as 'skipped'; the master switch answers 404 for the whole call.
+const assertBulkBillingEnabled = (c: { get: (k: string) => unknown }) =>
+  assertBillingEnabledForPartner((c.get('auth') as AuthContext).partnerId,
+    (m, s, code) => new QuoteServiceError(m, s, code as QuoteServiceErrorCode));
 
 quoteBulkRoutes.post('/bulk-delete', scopes, writePerm, zValidator('json', bulkQuoteIdsSchema), async (c) => {
   try {
+    await assertBulkBillingEnabled(c);
     const ctx = dbAccessContextFromAuth(c.get('auth') as AuthContext);
     const actor = quoteActorFrom(c);
     const { ids } = c.req.valid('json');
@@ -29,6 +36,7 @@ quoteBulkRoutes.post('/bulk-delete', scopes, writePerm, zValidator('json', bulkQ
 
 quoteBulkRoutes.post('/bulk-send', scopes, sendPerm, zValidator('json', bulkQuoteIdsSchema), async (c) => {
   try {
+    await assertBulkBillingEnabled(c);
     const ctx = dbAccessContextFromAuth(c.get('auth') as AuthContext);
     const actor = quoteActorFrom(c);
     const { ids } = c.req.valid('json');

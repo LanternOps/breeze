@@ -6,6 +6,7 @@ const { results, capturedValues } = vi.hoisted(() => ({
   capturedValues: [] as unknown[],
 }));
 
+vi.mock('./quoteBillingGate', () => ({ assertQuoteBillingEnabled: vi.fn() }));
 vi.mock('../db', () => {
   const chain: Record<string, unknown> = {};
   const passthrough = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'leftJoin'];

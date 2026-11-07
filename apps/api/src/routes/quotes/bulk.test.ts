@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../services/quoteService', () => ({ deleteDraftQuote: vi.fn() }));
 vi.mock('../../services/quoteLifecycle', () => ({ sendQuote: vi.fn() }));
+vi.mock('../../services/billingEnabled', () => ({ assertBillingEnabledForPartner: vi.fn() }));
 vi.mock('../../services/quoteTypes', () => ({
   QuoteServiceError: class QuoteServiceError extends Error {
     constructor(msg: string, public status = 400, public code?: string) { super(msg); }
@@ -42,6 +43,7 @@ import { quoteRoutes } from './index';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { deleteDraftQuote } from '../../services/quoteService';
 import { sendQuote } from '../../services/quoteLifecycle';
+import { assertBillingEnabledForPartner } from '../../services/billingEnabled';
 import { QuoteServiceError } from '../../services/quoteTypes';
 
 const A = '11111111-1111-1111-1111-111111111111';
@@ -58,6 +60,25 @@ function post(path: string, body: unknown) {
 
 describe('quote bulk routes', () => {
   beforeEach(() => { vi.clearAllMocks(); gate.permGate = async (_c: any, next: any) => next(); });
+
+  it.each([
+    ['/bulk-delete'],
+    ['/bulk-send'],
+  ])('%s answers 404 BILLING_DISABLED when billing is off, without touching any quote', async (path) => {
+    (assertBillingEnabledForPartner as any).mockImplementationOnce(async (_p: unknown, make: any) => { throw make('Not found', 404, 'BILLING_DISABLED'); });
+    const res = await post(path, { ids: [A] });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ error: 'Not found', code: 'BILLING_DISABLED' });
+    expect(deleteDraftQuote).not.toHaveBeenCalled();
+    expect(sendQuote).not.toHaveBeenCalled();
+  });
+
+  it('checks the partner flag ONCE per bulk call, before the loop', async () => {
+    (deleteDraftQuote as any).mockImplementation(async (id: string) => ({ id, orgId: ORG }));
+    await post('/bulk-delete', { ids: [A, B] });
+    expect(assertBillingEnabledForPartner).toHaveBeenCalledTimes(1);
+    expect(assertBillingEnabledForPartner).toHaveBeenCalledWith('p1', expect.any(Function));
+  });
 
   it('bulk-delete deletes each id and reports counts', async () => {
     (deleteDraftQuote as any).mockImplementation(async (id: string) => ({ id, orgId: ORG }));

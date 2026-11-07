@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+// Partner billing master switch is covered by quoteBillingGate.test.ts; pass-through here.
+vi.mock('./quoteBillingGate', () => ({ assertQuoteBillingEnabled: vi.fn() }));
+
 
 // Controllable Drizzle chain mock (same pattern as invoiceService.test.ts): every
 // builder method returns the same chain; a query resolves when awaited (the

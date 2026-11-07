@@ -47,6 +47,8 @@ export interface Period {
 }
 
 export type ContractServiceErrorCode =
+  // Partner billing master switch is off (services/billingEnabled.ts).
+  | 'BILLING_DISABLED'
   | 'ORG_DENIED'
   // Site-axis (sub-org) denial, mirroring InvoiceServiceError/QuoteServiceError
   // 'SITE_DENIED'. Raised when a site-restricted actor reaches a contract line

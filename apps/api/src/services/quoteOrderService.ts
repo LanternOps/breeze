@@ -7,6 +7,7 @@ import { quotes, quoteLines, quoteOrders, quoteOrderLines } from '../db/schema/q
 // quoteService.getQuote calls listQuoteOrders (below) to build its response, so
 // importing assertQuoteAccess from quoteService here would create a module
 // cycle (quoteOrderService -> quoteService -> quoteOrderService).
+import { assertQuoteBillingEnabled } from './quoteBillingGate';
 import { QuoteServiceError, assertQuoteAccess, type QuoteActor } from './quoteTypes';
 import { toCents, type CreateQuoteOrderInput, type UpdateQuoteOrderInput, type UpdateQuoteOrderLineInput } from '@breeze/shared';
 
@@ -48,6 +49,7 @@ export async function createQuoteOrder(
     const [q] = await tx.select().from(quotes).where(eq(quotes.id, quoteId)).limit(1);
     if (!q) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
     assertQuoteAccess(actor, q);
+    await assertQuoteBillingEnabled(q.orgId);
     if (!FULFILLABLE_STATUSES.includes(q.status as (typeof FULFILLABLE_STATUSES)[number])) {
       throw new QuoteServiceError('Only accepted or converted quotes can be fulfilled', 409, 'QUOTE_NOT_FULFILLABLE');
     }
@@ -115,6 +117,7 @@ async function loadAccessibleQuote(quoteId: string, actor: QuoteActor) {
   const [q] = await db.select().from(quotes).where(eq(quotes.id, quoteId)).limit(1);
   if (!q) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
   assertQuoteAccess(actor, q);
+  await assertQuoteBillingEnabled(q.orgId);
   return q;
 }
 

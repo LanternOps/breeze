@@ -6,6 +6,7 @@ import { quoteAcceptances } from '../db/schema/quotes';
 import { BlobStorageError, deleteBlob, getBlobStream, putBlob, type BlobBackend } from './blobStorage';
 import { sniffAttachmentMime } from './attachmentSniff';
 import { sanitizeAttachmentFilename } from './attachmentFilename';
+import { assertQuoteBillingEnabled } from './quoteBillingGate';
 
 /**
  * Evidence file on an accept-on-behalf acceptance (#6633; spec
@@ -137,6 +138,8 @@ export async function attachAcceptanceEvidence(args: {
   actorUserId: string | null;
   file: { buffer: Buffer; filename: string };
 }): Promise<AttachEvidenceResult> {
+  // Partner billing master switch, before the blob write. Thrown as a QuoteServiceError (handleEvidenceError falls through to handleServiceError).
+  await assertQuoteBillingEnabled(args.orgId);
   const latest = await loadLatestAcceptance(args.quoteId, args.orgId);
   if (!latest) {
     throw new AcceptanceEvidenceError('This quote has no recorded acceptance', 409, 'QUOTE_NOT_ACCEPTED');
