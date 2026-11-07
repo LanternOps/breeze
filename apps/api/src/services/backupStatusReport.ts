@@ -21,6 +21,7 @@ import {
   BACKUP_STATUS_BUCKET_IDS,
   bucketForBackupStatus,
   saasWorkloadLabel,
+  verifiedBootableState,
   EXTERNAL_BACKUP_STATUS_SEVERITY,
   type BackupHealth,
   type BackupHealthRow,
@@ -149,6 +150,9 @@ function toCsvRow(row: BackupHealthRow): Record<string, string | number | boolea
     errorsCount: row.errorsCount,
     dataSources: row.dataSources.join('; '),
     agentOnline: row.agentOnline,
+    verifiedBootable: verifiedBootableState(row),
+    verifiedBootableAt: row.verifiedBootableAt,
+    verifiedBootableFailedChecks: (row.verifiedBootableFailedChecks ?? []).join('; '),
   };
 }
 

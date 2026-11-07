@@ -14,7 +14,6 @@ Last release: **v0.126.0** (2026-11-03).
 
 ## Release to-do (pre-cut gates — see `/release` Step 0.2)
 
-- **Next full release (v0.127.0): restore three compose passthroughs.** They were taken back out so v0.126.1 could ship server-only. Re-add `ALERT_WORKER_CONCURRENCY`, `ALERT_WORKER_STAGGER_WINDOW_MS` and `AGENT_CONNECTIONS_MAX_PER_DEVICE` as `${VAR:-}` to the `x-api-env` block of `docker-compose.yml` and `deploy/docker-compose.prod.yml`, and delete `SERVER_ONLY_0_126_1_UNMAPPED` from `apps/api/src/config/envReadComposeCoverage.baseline.ts`.
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 

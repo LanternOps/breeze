@@ -72,6 +72,7 @@
     "descriptionOrg": "Remplace la valeur par défaut du partenaire pour cette organisation. Laissez un champ vide pour en hériter. Le réglage propre à un moniteur l’emporte sur cette valeur.",
     "readOnly": "Vous n’avez pas l’autorisation de modifier la valeur par défaut du partenaire.",
     "saved": "Valeurs par défaut du cycle de vie enregistrées",
+    "saveAction": "Enregistrer les valeurs par défaut",
     "overrideCount_one": "{{count}} moniteur remplace cette valeur",
     "overrideCount_other": "{{count}} moniteurs remplacent cette valeur",
     "errors": {

@@ -235,14 +235,18 @@ vi.mock('../../services/permissions', () => ({
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 
 vi.mock('../../services/backupProviders/registry', () => ({
-  BACKUP_PROVIDER_KEYS: ['cove', 'dropsuite'],
+  BACKUP_PROVIDER_KEYS: ['cove', 'dropsuite', 'axcient'],
   getBackupProvider: vi.fn((key: string) => {
-    if (key !== 'cove' && key !== 'dropsuite') throw new Error(`Unknown backup provider "${key}" (registered: cove)`);
+    if (key !== 'cove' && key !== 'dropsuite' && key !== 'axcient') throw new Error(`Unknown backup provider "${key}" (registered: cove)`);
     return {
       key,
-      label: key === 'cove' ? 'Cove Data Protection' : 'NinjaOne SaaS Backup (Dropsuite)',
-      defaultBaseUrl: key === 'cove' ? 'https://api.backup.management/jsonapi' : undefined,
-      defaultSyncIntervalMinutes: key === 'cove' ? 30 : 60,
+      label: key === 'cove' ? 'Cove Data Protection'
+        : key === 'axcient' ? 'Axcient x360Recover'
+        : 'NinjaOne SaaS Backup (Dropsuite)',
+      defaultBaseUrl: key === 'cove' ? 'https://api.backup.management/jsonapi'
+        : key === 'axcient' ? 'https://axapi.axcient.com/x360recover'
+        : undefined,
+      defaultSyncIntervalMinutes: key === 'dropsuite' ? 60 : 30,
       rootContinuity: key === 'dropsuite' ? 'customer_overlap' : undefined,
       validateBaseUrl: key === 'dropsuite'
         ? (url: string) => new URL(url).hostname === 'backup.dropsuite.com' ? null : 'Host is not allowed'
@@ -251,9 +255,11 @@ vi.mock('../../services/backupProviders/registry', () => ({
         safeParse: (v: unknown) => {
           const ok = !!v && typeof v === 'object' && (key === 'dropsuite'
             ? typeof (v as any).resellerToken === 'string' && typeof (v as any).authToken === 'string'
-            : typeof (v as any).partnerName === 'string'
-              && typeof (v as any).username === 'string'
-              && typeof (v as any).password === 'string');
+            : key === 'axcient'
+              ? typeof (v as any).apiKey === 'string'
+              : typeof (v as any).partnerName === 'string'
+                && typeof (v as any).username === 'string'
+                && typeof (v as any).password === 'string');
           return ok ? { success: true, data: v } : { success: false, error: { message: 'bad creds' } };
         },
       },
@@ -300,6 +306,7 @@ vi.mock('../../services/backupProviders/mapping', () => ({
 import { authMiddleware } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { backupProviderRoutes } from './providers';
+import { AXCIENT_DEFAULT_BASE_URL } from '../../services/backupProviders/axcient/adapter';
 
 const CONNECTION_ID = '33333333-3333-4333-8333-333333333333';
 const PARTNER_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -431,6 +438,18 @@ describe('backup provider connection routes', () => {
       expect(dbState.inserted[0]).toMatchObject({
         provider: 'dropsuite', baseUrl: dropsuiteBody.baseUrl, syncIntervalMinutes: 60,
       });
+    });
+
+    it('creates an Axcient connection with the default base URL when none is posted', async () => {
+      const res = await app.request('/backup/providers/connections', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ provider: 'axcient', name: 'Example Axcient', credentials: { apiKey: 'test-axcient-key-0000' } }),
+      });
+      expect(res.status).toBe(201);
+      expect(dbState.inserted[0]).toMatchObject({
+        provider: 'axcient', baseUrl: AXCIENT_DEFAULT_BASE_URL, syncIntervalMinutes: 30,
+      });
+      expect(JSON.stringify(await res.json())).not.toContain('test-axcient-key-0000');
     });
 
     it('preserves an explicit Dropsuite sync interval', async () => {

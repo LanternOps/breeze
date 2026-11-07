@@ -1100,7 +1100,8 @@
       "over_quota": "Kota aşıldı",
       "no_selection": "Seçim yok",
       "not_started": "Başlamadı",
-      "unknown": "Bilinmiyor"
+      "unknown": "Bilinmiyor",
+      "paused": "Duraklatıldı"
     },
     "recency": {
       "never": "Hiç",
@@ -1133,7 +1134,14 @@
       "used": "Kullanılan",
       "history": "Son 28 gün",
       "errors": "Hatalar",
+      "verifiedBootable": "Önyükleme doğrulandı",
       "agent": "Aracı"
+    },
+    "verifiedBootable": {
+      "passed": "Başarılı",
+      "failed": "Başarısız",
+      "never_run": "Hiç çalıştırılmadı",
+      "not_applicable": "Yok"
     },
     "dataSource": {
       "files": "Dosyalar ve klasörler",
@@ -1142,6 +1150,7 @@
       "hyperv": "Hyper-V",
       "vmware": "VMware",
       "bare_metal": "Bare metal",
+      "image": "Disk görüntüsü",
       "m365_mail": "Microsoft 365 e-postası",
       "m365_sharepoint": "SharePoint",
       "m365_exchange": "Exchange",
@@ -1162,6 +1171,7 @@
       "customer": "Sağlayıcı müşterisi",
       "lastSuccess": "Son başarılı yedekleme",
       "lastSession": "Son oturum",
+      "bootCheck": "Son önyükleme denetimi",
       "unlink": "Bağlantıyı kaldır",
       "unlinkConfirm": "Bu sağlayıcı cihazının Breeze cihazıyla bağlantısı kaldırılsın mı? Yedekleme ürününde kalır ve yeniden bağlanabilir.",
       "unlinkedToast": "Sağlayıcı cihazının bağlantısı kaldırıldı",

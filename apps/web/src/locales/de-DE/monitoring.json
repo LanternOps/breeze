@@ -72,6 +72,7 @@
     "descriptionOrg": "Überschreibt den Partnerstandard für diese Organisation. Lassen Sie ein Feld leer, um ihn zu erben. Die eigene Einstellung eines Monitors hat Vorrang.",
     "readOnly": "Sie haben keine Berechtigung, den Partnerstandard zu ändern.",
     "saved": "Lebenszyklus-Standards gespeichert",
+    "saveAction": "Standards speichern",
     "overrideCount_one": "{{count}} Monitor überschreibt dies",
     "overrideCount_other": "{{count}} Monitore überschreiben dies",
     "errors": {

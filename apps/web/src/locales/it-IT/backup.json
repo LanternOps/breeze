@@ -1100,7 +1100,8 @@
       "over_quota": "Quota superata",
       "no_selection": "Nessuna selezione",
       "not_started": "Non avviato",
-      "unknown": "Sconosciuto"
+      "unknown": "Sconosciuto",
+      "paused": "In pausa"
     },
     "recency": {
       "never": "Mai",
@@ -1133,7 +1134,14 @@
       "used": "Utilizzato",
       "history": "Ultimi 28 giorni",
       "errors": "Errori",
+      "verifiedBootable": "Avviabilità verificata",
       "agent": "Agente"
+    },
+    "verifiedBootable": {
+      "passed": "Superato",
+      "failed": "Non riuscito",
+      "never_run": "Mai eseguito",
+      "not_applicable": "n.d."
     },
     "dataSource": {
       "files": "File e cartelle",
@@ -1142,6 +1150,7 @@
       "hyperv": "Hyper-V",
       "vmware": "VMware",
       "bare_metal": "Bare metal",
+      "image": "Immagine disco",
       "m365_mail": "Posta di Microsoft 365",
       "m365_sharepoint": "SharePoint",
       "m365_exchange": "Exchange",
@@ -1162,6 +1171,7 @@
       "customer": "Cliente del provider",
       "lastSuccess": "Ultimo backup riuscito",
       "lastSession": "Ultima sessione",
+      "bootCheck": "Ultima verifica di avvio",
       "unlink": "Scollega",
       "unlinkConfirm": "Scollegare questo dispositivo del provider dal dispositivo Breeze? Rimane nel prodotto di backup e può essere ricollegato.",
       "unlinkedToast": "Dispositivo del provider scollegato",

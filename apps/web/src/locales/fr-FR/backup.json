@@ -1100,7 +1100,8 @@
       "over_quota": "Quota dépassé",
       "no_selection": "Aucune sélection",
       "not_started": "Non démarrée",
-      "unknown": "Inconnu"
+      "unknown": "Inconnu",
+      "paused": "En pause"
     },
     "recency": {
       "never": "Jamais",
@@ -1133,7 +1134,14 @@
       "used": "Utilisé",
       "history": "28 derniers jours",
       "errors": "Erreurs",
+      "verifiedBootable": "Démarrage vérifié",
       "agent": "Agent"
+    },
+    "verifiedBootable": {
+      "passed": "Réussi",
+      "failed": "Échec",
+      "never_run": "Jamais exécuté",
+      "not_applicable": "s.o."
     },
     "dataSource": {
       "files": "Fichiers et dossiers",
@@ -1142,6 +1150,7 @@
       "hyperv": "Hyper-V",
       "vmware": "VMware",
       "bare_metal": "Bare metal",
+      "image": "Image disque",
       "m365_mail": "Messagerie Microsoft 365",
       "m365_sharepoint": "SharePoint",
       "m365_exchange": "Exchange",
@@ -1162,6 +1171,7 @@
       "customer": "Client du fournisseur",
       "lastSuccess": "Dernière sauvegarde réussie",
       "lastSession": "Dernière session",
+      "bootCheck": "Dernier test de démarrage",
       "unlink": "Dissocier",
       "unlinkConfirm": "Dissocier cet appareil du fournisseur de l'appareil Breeze ? Il reste dans le produit de sauvegarde et peut être réassocié.",
       "unlinkedToast": "Appareil du fournisseur dissocié",

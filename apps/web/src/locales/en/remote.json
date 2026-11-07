@@ -655,9 +655,9 @@
     },
     "stopService": "Stop Service",
     "summary": "{{shown}} of {{total}} services on {{device}}",
-    "title": "Title",
+    "title": "Services",
     "windowsOnlyDescription": "The Services Manager is only available for Windows devices. {{device}} is running {{os}}.",
-    "windowsOnlyTitle": "Windows Only Title",
+    "windowsOnlyTitle": "Windows only",
     "monitorThis": "Monitor this"
   },
   "sessionHistory": {

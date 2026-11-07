@@ -1100,7 +1100,8 @@
       "over_quota": "Kontingent überschritten",
       "no_selection": "Nichts ausgewählt",
       "not_started": "Nicht gestartet",
-      "unknown": "Unbekannt"
+      "unknown": "Unbekannt",
+      "paused": "Pausiert"
     },
     "recency": {
       "never": "Nie",
@@ -1133,7 +1134,14 @@
       "used": "Belegt",
       "history": "Letzte 28 Tage",
       "errors": "Fehler",
+      "verifiedBootable": "Startfähigkeit geprüft",
       "agent": "Agent"
+    },
+    "verifiedBootable": {
+      "passed": "Bestanden",
+      "failed": "Fehlgeschlagen",
+      "never_run": "Nie ausgeführt",
+      "not_applicable": "k. A."
     },
     "dataSource": {
       "files": "Dateien & Ordner",
@@ -1142,6 +1150,7 @@
       "hyperv": "Hyper-V",
       "vmware": "VMware",
       "bare_metal": "Bare Metal",
+      "image": "Datenträgerabbild",
       "m365_mail": "Microsoft 365-E-Mail",
       "m365_sharepoint": "SharePoint",
       "m365_exchange": "Exchange",
@@ -1162,6 +1171,7 @@
       "customer": "Anbieterkunde",
       "lastSuccess": "Letzte erfolgreiche Sicherung",
       "lastSession": "Letzte Sitzung",
+      "bootCheck": "Letzte Startprüfung",
       "unlink": "Verknüpfung lösen",
       "unlinkConfirm": "Verknüpfung dieses Anbietergeräts mit dem Breeze-Gerät lösen? Es bleibt im Backup-Produkt und kann erneut verknüpft werden.",
       "unlinkedToast": "Verknüpfung des Anbietergeräts gelöst",

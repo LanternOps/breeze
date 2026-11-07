@@ -1100,7 +1100,8 @@
       "over_quota": "Cuota superada",
       "no_selection": "Nada seleccionado",
       "not_started": "No iniciado",
-      "unknown": "Desconocido"
+      "unknown": "Desconocido",
+      "paused": "En pausa"
     },
     "recency": {
       "never": "Nunca",
@@ -1133,7 +1134,14 @@
       "used": "Usado",
       "history": "Últimos 28 días",
       "errors": "Errores",
+      "verifiedBootable": "Arranque verificado",
       "agent": "Agente"
+    },
+    "verifiedBootable": {
+      "passed": "Aprobado",
+      "failed": "Fallido",
+      "never_run": "Nunca ejecutado",
+      "not_applicable": "n/d"
     },
     "dataSource": {
       "files": "Archivos y carpetas",
@@ -1142,6 +1150,7 @@
       "hyperv": "Hyper-V",
       "vmware": "VMware",
       "bare_metal": "Bare metal",
+      "image": "Imagen de disco",
       "m365_mail": "Correo de Microsoft 365",
       "m365_sharepoint": "SharePoint",
       "m365_exchange": "Exchange",
@@ -1162,6 +1171,7 @@
       "customer": "Cliente del proveedor",
       "lastSuccess": "Última copia de seguridad correcta",
       "lastSession": "Última sesión",
+      "bootCheck": "Última comprobación de arranque",
       "unlink": "Desvincular",
       "unlinkConfirm": "¿Desvincular este dispositivo del proveedor del dispositivo de Breeze? Permanece en el producto de copia de seguridad y se puede volver a vincular.",
       "unlinkedToast": "Dispositivo del proveedor desvinculado",
