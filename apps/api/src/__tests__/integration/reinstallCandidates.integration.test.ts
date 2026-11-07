@@ -29,6 +29,8 @@ import {
   enrollmentKeys,
 } from '../../db/schema';
 import { processReapUninstallIntent } from '../../jobs/offlineDetector';
+import { deleteDeviceCascade, type DeviceDeletionTx } from '../../services/deviceDeletion';
+import { cascadeDeleteOrg } from '../../services/tenantCascade';
 import { enrollmentRoutes } from '../../routes/agents/enrollment';
 import { inventoryRoutes } from '../../routes/agents/inventory';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
@@ -788,6 +790,56 @@ describe('reinstall candidates — partner-wide clears and stale flags (finding 
     expect(await detect(source.id)).toEqual({ written: false, why: 'kept_same_org' });
     expect(await flagOf(source.id)).toMatchObject({ target: sameOrg.id, reason: 'hardware' });
   });
+});
+
+describe('reinstall candidates — hard-deleting a cross-org target (review of wave 2-1)', () => {
+  /**
+   * The two orgs of one partner, named by how their uuids sort. Deleting the
+   * target takes its org's partner-export lock (its children's export
+   * triggers), and the FK's ON DELETE SET NULL then updates the source row in
+   * the other org. That update must not request the source org's lock, which
+   * the helpers refuse below the highest org held: it does not today, because
+   * no devices export trigger watches possible_replacement_*. Each case runs
+   * in both orders, so a trigger that starts watching those columns fails
+   * here instead of failing half of all cross-org deletes in production.
+   */
+  async function orderedOrgs() {
+    const tenant = await seedReattachTenant();
+    const [low, high] = [tenant.orgA, tenant.orgB].sort((a, b) => (a.orgId < b.orgId ? -1 : 1));
+    return { tenant, low: low!, high: high! };
+  }
+
+  async function crossOrgLink(targetPlace: Place, sourcePlace: Place) {
+    const target = await oldTarget(targetPlace, { systemUuid: UUID });
+    const source = await newSource(sourcePlace, { systemUuid: UUID });
+    expect(await detect(source.id)).toMatchObject({ written: true, targetDeviceId: target.id });
+    return { target, source };
+  }
+
+  for (const order of ['source org sorts lower', 'source org sorts higher'] as const) {
+    it(`deleteDeviceCascade removes the target and clears the link (${order})`, async () => {
+      const { low, high } = await orderedOrgs();
+      const [sourcePlace, targetPlace] = order === 'source org sorts lower' ? [low, high] : [high, low];
+      const { target, source } = await crossOrgLink(targetPlace, sourcePlace);
+
+      await withSystemDbAccessContext(() =>
+        db.transaction((tx) => deleteDeviceCascade(tx as unknown as DeviceDeletionTx, target.id)));
+
+      expect(await readDevice(target.id)).toBeUndefined();
+      expect(await flagOf(source.id)).toEqual({ target: null, reason: null, detectedAt: null });
+    });
+
+    it(`erasing the target's org clears the link from the other org (${order})`, async () => {
+      const { low, high } = await orderedOrgs();
+      const [sourcePlace, targetPlace] = order === 'source org sorts lower' ? [low, high] : [high, low];
+      const { target, source } = await crossOrgLink(targetPlace, sourcePlace);
+
+      await cascadeDeleteOrg(targetPlace.orgId, '00000000-0000-0000-0000-0000000000aa', 'platform-admin@breeze.test');
+
+      expect(await readDevice(target.id)).toBeUndefined();
+      expect(await flagOf(source.id)).toEqual({ target: null, reason: null, detectedAt: null });
+    });
+  }
 });
 
 describe('reinstall candidates — SQL qualifiers and order (finding 5)', () => {
