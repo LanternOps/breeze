@@ -383,10 +383,13 @@ describe('report run sensitive-read audit', () => {
       reportFormat: 'excel',
     }]);
 
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const res = await app().request(`/reports/runs/${RUN_ID}/download?format=excel`);
 
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: expect.stringMatching(/breach/i) });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('unreadable summary'), expect.objectContaining({ runId: RUN_ID }));
+    warn.mockRestore();
     expect(rowsToXlsxMock).not.toHaveBeenCalled();
     expect(auditSensitiveReadMock).not.toHaveBeenCalled();
   });

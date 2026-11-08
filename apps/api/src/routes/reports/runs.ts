@@ -576,6 +576,12 @@ runsRoutes.get(
       if (row.reportType === 'ticket_sla_performance') {
         const summary = result?.summary;
         if (!isTicketSlaPerformanceSummary(summary)) {
+          // A completed run whose stored summary fails the shape guard is a
+          // data anomaly (shape drift or a corrupt row); leave a trace of it.
+          console.warn('[reports] SLA performance run has an unreadable summary; Excel download refused', {
+            runId,
+            reportId: row.reportId,
+          });
           return c.json({ error: 'This SLA performance run has no readable summary, so its breaches cannot be exported' }, 409);
         }
         sheets = ticketSlaPerformanceSheets(rows, summary);
