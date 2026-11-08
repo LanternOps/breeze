@@ -36,7 +36,8 @@ var ErrNoSupportedFormat = errors.New("clipboard: no supported format")
 // ErrNoSupportedFormat (errors.Is holds), so the baseline rule treats both
 // alike; the change watcher tells them apart, because a remote clipboard that
 // holds a file is newer than the viewer's and an empty one has nothing to
-// protect. Only providers that can count formats return it.
+// protect. Only providers that can reliably see every format return it
+// (macOS); the Windows SYSTEM helper cannot, so Windows never does.
 var ErrClipboardEmpty = fmt.Errorf("%w: clipboard is empty", ErrNoSupportedFormat)
 
 // noContentError is what a provider returns when no format yielded content.

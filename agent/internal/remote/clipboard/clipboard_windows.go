@@ -22,7 +22,6 @@ var (
 	procSetClipboardData         = user32.NewProc("SetClipboardData")
 	procRegisterClipboardFormatW = user32.NewProc("RegisterClipboardFormatW")
 	procGetClipboardSequenceNum  = user32.NewProc("GetClipboardSequenceNumber")
-	procCountClipboardFormats    = user32.NewProc("CountClipboardFormats")
 	procGlobalAlloc              = kernel32.NewProc("GlobalAlloc")
 	procGlobalLock               = kernel32.NewProc("GlobalLock")
 	procGlobalUnlock             = kernel32.NewProc("GlobalUnlock")
@@ -180,19 +179,15 @@ func (s *SystemClipboard) GetContent() (Content, error) {
 		return Content{Type: ContentTypeText, Text: text}, nil
 	}
 
-	if failure == nil && countClipboardFormats() == 0 {
-		return Content{}, ErrClipboardEmpty
-	}
+	// No format the agent can carry. This is reported as unsupported content,
+	// never as an empty clipboard: the watcher runs in the SYSTEM helper, and
+	// there a file copy (Explorer, SetFileDropList) shows no formats at all, so
+	// CountClipboardFormats cannot tell it from a cleared clipboard (#11325
+	// lab, row 6). Taking a file copy for "empty" let the viewer paste its own
+	// clipboard over the file; a genuine clear held as unsupported only costs
+	// one paste that keeps the remote's (empty) clipboard, and the next local
+	// copy wins again.
 	return Content{}, noContentError(failure)
-}
-
-// countClipboardFormats is the number of formats on the open clipboard. It
-// fails only when the clipboard is not open, which the caller rules out, so
-// 0 means empty. (GetLastError is not reliable for telling the two apart:
-// it is undefined after a successful call that returns 0.)
-func countClipboardFormats() int {
-	r, _, _ := procCountClipboardFormats.Call()
-	return int(r)
 }
 
 func (s *SystemClipboard) SetContent(content Content) error {
