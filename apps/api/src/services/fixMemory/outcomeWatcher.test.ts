@@ -41,6 +41,19 @@ describe('decidePending', () => {
   it('waits while the script is still running before the deadline', () => {
     expect(decidePending({ script: { status: 'running', exitCode: null }, deadlineAt: at(24), now: at(1) })).toBeNull();
   });
+  it('measures the recovery deadline from when the script completed, not from the sweep (#7279)', () => {
+    // The sweeper only ran 3h after the script finished.
+    const t = decidePending({ script: { status: 'completed', exitCode: 0, completedAt: at(1) }, deadlineAt: at(24), now: at(4) });
+    expect(t).toMatchObject({ to: 'awaiting_recovery', deadlineAt: at(25) });
+  });
+  it('never dates the recovery deadline from a completion time in the future (clock skew)', () => {
+    const t = decidePending({ script: { status: 'completed', exitCode: 0, completedAt: at(9) }, deadlineAt: at(24), now: at(4) });
+    expect(t).toMatchObject({ to: 'awaiting_recovery', deadlineAt: at(28) });
+  });
+  it('falls back to the sweep time when the completion time is unknown', () => {
+    const t = decidePending({ script: { status: 'completed', exitCode: 0 }, deadlineAt: at(24), now: at(4) });
+    expect(t).toMatchObject({ to: 'awaiting_recovery', deadlineAt: at(28) });
+  });
   it.each(['failed', 'timeout'] as const)('a %s execution that was never delivered is inconclusive, not a failed attempt (I2)', (status) => {
     expect(decidePending({ script: { status, exitCode: null, neverDelivered: true }, deadlineAt: at(24), now: at(1) }))
       .toEqual({ to: 'inconclusive', reason: 'script_never_delivered' });
@@ -67,6 +80,19 @@ describe('advanceOutcome pending → the sweeper tells an undelivered script fro
     expect(await advanceOutcome('o-p', { now: at(1) })).toBe('failed');
     expect(transitionMock.mock.calls[0]![1]).toEqual({ to: 'failed', reason: 'script_failed' });
     expect(rows).toHaveLength(1); // the command row was never read
+  });
+
+  it('a completed run read by the sweeper gets its recovery deadline from the execution completion time (#7279)', async () => {
+    rows.push([pending], [{ orgId: 'org-1' }], [{ status: 'completed', exitCode: 0, startedAt: at(0), completedAt: at(1) }]);
+    expect(await advanceOutcome('o-p', { now: at(3) })).toBe('awaiting_recovery');
+    expect(transitionMock.mock.calls[0]![1]).toEqual({ to: 'awaiting_recovery', reason: 'script_succeeded', deadlineAt: at(25) });
+  });
+
+  it('a completed built-in command gets its recovery deadline from the command completion time (#7279)', async () => {
+    const builtin = { ...pending, scriptExecutionId: null, actionCommandId: 'c-9', actionCleanupRunId: null };
+    rows.push([builtin], [{ orgId: 'org-1' }], [{ status: 'completed', result: null, executedAt: at(0), completedAt: at(2) }]);
+    expect(await advanceOutcome('o-p', { now: at(3) })).toBe('awaiting_recovery');
+    expect(transitionMock.mock.calls[0]![1]).toEqual({ to: 'awaiting_recovery', reason: 'script_succeeded', deadlineAt: at(26) });
   });
 
   it('failed with no started_at but no delivery-clock expiry (polling agent reported a failure) stays failed', async () => {

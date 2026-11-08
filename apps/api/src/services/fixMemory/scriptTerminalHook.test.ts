@@ -47,6 +47,13 @@ describe('advanceOutcomesForTerminalExecution', () => {
     expect(h.savepoints).toBe(1);
   });
 
+  it('dates the recovery deadline from the script completion time the caller passes (#7279)', async () => {
+    h.returning.push([{ id: 'o-1' }]);
+    const completedAt = new Date(Date.now() - 2 * 3_600_000);
+    await advanceOutcomesForTerminalExecution({ executionId: 'e-1', status: 'completed', completedAt });
+    expect((h.sets[0]!.deadlineAt as Date).getTime()).toBe(completedAt.getTime() + 24 * 3_600_000);
+  });
+
   it('a failed run is terminal + counted and requests a deferred aggregate recount (no fix_memory write here)', async () => {
     h.returning.push([{ id: 'o-1' }]);
     await advanceOutcomesForTerminalExecution({ executionId: 'e-1', status: 'timeout' });

@@ -25,6 +25,17 @@ export type OutcomeUpdateExecutor = Pick<typeof db, 'update' | 'transaction'>;
 type OutcomeWriter = Pick<typeof db, 'update'>;
 
 /**
+ * The recovery window opens when the fix finished, not when a writer or sweep
+ * noticed (#7279): a sweeper running behind must not hand the condition extra
+ * time to clear. A completion time later than `now` (clock skew) or unknown
+ * falls back to `now`. Shared with the sweeper's decidePending.
+ */
+export function recoveryDeadlineFrom(completedAt: Date | null | undefined, now: Date): Date {
+  const from = completedAt && completedAt.getTime() < now.getTime() ? completedAt : now;
+  return new Date(from.getTime() + FIX_OUTCOME_WINDOWS.recoveryTimeoutHours * 3_600_000);
+}
+
+/**
  * `neverDelivered`: the caller KNOWS the script never reached the device (the
  * reaper's delivery clock expired it — staleCommandReaper
  * propagateTimedOutDeviceCommand, kind 'expired'). That says nothing about
@@ -46,15 +57,18 @@ export function terminalVerdict(
   }
 }
 
+/**
+ * `completedAt` is the execution's completion time as the caller wrote it; the
+ * recovery window is measured from it (#7279), clamped to now.
+ */
 export async function advanceOutcomesForTerminalExecution(
-  input: { executionId: string; status: ScriptTerminalStatus; neverDelivered?: boolean },
+  input: { executionId: string; status: ScriptTerminalStatus; neverDelivered?: boolean; completedAt?: Date | null },
   executor?: OutcomeUpdateExecutor,
 ): Promise<number> {
   const verdict = terminalVerdict(input.status, { neverDelivered: input.neverDelivered });
   const now = new Date();
   const set: Partial<typeof fixOutcomes.$inferInsert> = verdict.state === 'awaiting_recovery'
-    ? { state: verdict.state, stateReason: verdict.reason, updatedAt: now,
-        deadlineAt: new Date(now.getTime() + FIX_OUTCOME_WINDOWS.recoveryTimeoutHours * 3_600_000) }
+    ? { state: verdict.state, stateReason: verdict.reason, updatedAt: now, deadlineAt: recoveryDeadlineFrom(input.completedAt, now) }
     : { state: verdict.state, stateReason: verdict.reason, updatedAt: now, terminalAt: now, countedAt: now, recountRequestedAt: now };
   const write = async (ex: OutcomeWriter) => {
     const rows = await ex.update(fixOutcomes).set(set).where(and(

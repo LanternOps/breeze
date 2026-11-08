@@ -32,6 +32,7 @@ import {
   inSystemDbContext, probeTelemetryFreshness, readAlertRecovery, telemetryProbeFor,
   type AlertRecoveryReading, type TelemetryFreshness,
 } from '../outcomeProbes';
+import { recoveryDeadlineFrom } from './scriptTerminalHook';
 import { alertSignature } from './signatureLoader';
 import { fillOutcomeSignature, transitionOutcome, type OutcomeTransition } from './store';
 
@@ -43,8 +44,10 @@ const RECURRENCE_MAX_PAGES = 20;
 /**
  * `neverDelivered`: the execution failed because its command expired on the
  * reaper's DELIVERY clock (it never reached the device). Not evidence about the fix.
+ * `completedAt`: when the script (or built-in command) finished, when known;
+ * the recovery window is measured from it (#7279).
  */
-export interface ScriptReading { status: string; exitCode: number | null; neverDelivered?: boolean }
+export interface ScriptReading { status: string; exitCode: number | null; neverDelivered?: boolean; completedAt?: Date | null }
 export interface EpisodeReading { status: string; closeReason: string | null; resolvedByUserId: string | null; resolvedAt: Date | null }
 export type RecoveryReading =
   | { kind: 'still_active' }
@@ -60,10 +63,7 @@ export function decidePending(i: { script: ScriptReading | null; deadlineAt: Dat
   if (!i.script) return deadlinePassed ? { to: 'inconclusive', reason: 'script_execution_missing' } : null;
   switch (i.script.status) {
     case 'completed':
-      return {
-        to: 'awaiting_recovery', reason: 'script_succeeded',
-        deadlineAt: new Date(i.now.getTime() + FIX_OUTCOME_WINDOWS.recoveryTimeoutHours * HOUR_MS),
-      };
+      return { to: 'awaiting_recovery', reason: 'script_succeeded', deadlineAt: recoveryDeadlineFrom(i.script.completedAt, i.now) };
     case 'failed':
     case 'timeout':
       if (i.script.neverDelivered) return { to: 'inconclusive', reason: 'script_never_delivered' };
@@ -159,10 +159,12 @@ async function deviceLeftOrg(row: FixOutcomeRow): Promise<boolean> {
  */
 async function readScript(executionId: string | null, deviceId: string): Promise<ScriptReading | null> {
   if (!executionId) return null;
-  const [s] = await db.select({ status: scriptExecutions.status, exitCode: scriptExecutions.exitCode, startedAt: scriptExecutions.startedAt })
-    .from(scriptExecutions).where(eq(scriptExecutions.id, executionId)).limit(1);
+  const [s] = await db.select({
+    status: scriptExecutions.status, exitCode: scriptExecutions.exitCode,
+    startedAt: scriptExecutions.startedAt, completedAt: scriptExecutions.completedAt,
+  }).from(scriptExecutions).where(eq(scriptExecutions.id, executionId)).limit(1);
   if (!s) return null;
-  const reading: ScriptReading = { status: s.status, exitCode: s.exitCode ?? null };
+  const reading: ScriptReading = { status: s.status, exitCode: s.exitCode ?? null, completedAt: s.completedAt ?? null };
   if ((s.status === 'failed' || s.status === 'timeout') && !s.startedAt) {
     const [expired] = await db.select({ id: deviceCommands.id }).from(deviceCommands).where(and(
       eq(deviceCommands.deviceId, deviceId),
@@ -183,10 +185,12 @@ async function readScript(executionId: string | null, deviceId: string): Promise
  */
 export function readingFromCommand(
   status: string | null,
-  detail?: { result: unknown; executedAt: Date | null },
+  detail?: { result: unknown; executedAt: Date | null; completedAt?: Date | null },
 ): ScriptReading | null {
   if (!status) return null;
-  if (status === 'completed') return { status: 'completed', exitCode: 0 };
+  if (status === 'completed') {
+    return detail?.completedAt ? { status: 'completed', exitCode: 0, completedAt: detail.completedAt } : { status: 'completed', exitCode: 0 };
+  }
   if (status === 'failed' || status === 'timeout') {
     const clock = detail?.result && typeof detail.result === 'object'
       ? (detail.result as Record<string, unknown>).clock : undefined;
@@ -221,10 +225,11 @@ async function readActionReading(row: FixOutcomeRow): Promise<ScriptReading | nu
       .limit(1);
     return readingFromCleanupRun(run?.status ?? null, run?.error ?? null);
   }
-  const [cmd] = await db.select({ status: deviceCommands.status, result: deviceCommands.result, executedAt: deviceCommands.executedAt })
-    .from(deviceCommands)
+  const [cmd] = await db.select({
+    status: deviceCommands.status, result: deviceCommands.result, executedAt: deviceCommands.executedAt, completedAt: deviceCommands.completedAt,
+  }).from(deviceCommands)
     .where(and(eq(deviceCommands.id, row.actionCommandId!), eq(deviceCommands.deviceId, row.deviceId))).limit(1);
-  return cmd ? readingFromCommand(cmd.status, { result: cmd.result, executedAt: cmd.executedAt }) : null;
+  return cmd ? readingFromCommand(cmd.status, { result: cmd.result, executedAt: cmd.executedAt, completedAt: cmd.completedAt }) : null;
 }
 
 /**

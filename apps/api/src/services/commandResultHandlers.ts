@@ -825,6 +825,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
         await advanceOutcomesForTerminalExecution({
           executionId: effectiveExecution.id,
           status: cancelConfirmed ? 'cancelled' : scriptStatus,
+          completedAt: executionValues.completedAt,
         });
 
         if (effectiveExecution.proposalId) {
