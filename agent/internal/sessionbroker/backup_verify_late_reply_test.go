@@ -100,7 +100,7 @@ func TestBackupVerificationTimeoutLeavesNoLateReplyWaiter(t *testing.T) {
 			}()
 
 			commandID := "verify-wedged-" + commandType
-			if _, err := broker.ForwardBackupCommand(commandID, commandType, nil, 25*time.Millisecond, false); !errors.Is(err, ErrCommandTimeout) {
+			if _, err := broker.ForwardBackupCommand(commandID, commandType, nil, 100*time.Millisecond, false); !errors.Is(err, ErrCommandTimeout) {
 				t.Fatalf("ForwardBackupCommand error = %v, want ErrCommandTimeout", err)
 			}
 			var originalEnv *ipc.Envelope
@@ -242,5 +242,89 @@ func TestAbandoningSendPrefersDeliveredReplyOverTimeout(t *testing.T) {
 		if _, ok := pendingEntry(s, "cmd-race"); ok {
 			t.Fatalf("iteration %d: registration left behind after a delivered reply", i)
 		}
+	}
+}
+
+// A reply racing the timeout either comes back as the result or is consumed
+// through the tombstone. It must never land in the abandoned channel after
+// the swap, where it is lost unlogged and strands the tombstone (and its
+// reserved id) until the session closes.
+func TestAbandonSwapRaceNeverStrandsTheTombstone(t *testing.T) {
+	for i := 0; i < 3000; i++ {
+		id := fmt.Sprintf("cmd-swap-%d", i)
+		replied := make(chan struct{})
+		s := newAbandonTestSession(t, func(s *Session) {
+			go func() {
+				defer close(replied)
+				s.HandleResponse(&ipc.Envelope{ID: id, Type: backupipc.TypeBackupResult})
+			}()
+		})
+		resp, err := s.sendCommandAbandoningLateReply(id, backupipc.TypeBackupCommand, nil, time.Nanosecond)
+		<-replied
+		if err != nil && !errors.Is(err, ErrCommandTimeout) {
+			t.Fatalf("iteration %d: unexpected error %v", i, err)
+		}
+		if err == nil && (resp == nil || resp.ID != id) {
+			t.Fatalf("iteration %d: got %+v, want the reply", i, resp)
+		}
+		if entry, ok := pendingEntry(s, id); ok {
+			t.Fatalf("iteration %d (err=%v): reply lost in the swap window, registration %+v stranded", i, err, entry)
+		}
+	}
+}
+
+type failingWriteConn struct{ net.Conn }
+
+func (c *failingWriteConn) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
+func (c *failingWriteConn) Close() error              { return nil }
+
+// A failed send leaves delivery uncertain (part of the frame may have reached
+// the helper), so the id is tombstoned like a timeout and a reply that does
+// arrive is still consumed.
+func TestAbandoningSendTombstonesOnSendError(t *testing.T) {
+	brokerSide, peer := net.Pipe()
+	t.Cleanup(func() {
+		_ = brokerSide.Close()
+		_ = peer.Close()
+	})
+	s := &Session{
+		SessionID: "abandon-send-error",
+		conn:      ipc.NewConn(&failingWriteConn{Conn: brokerSide}),
+		pending:   make(map[string]pendingResponse),
+		done:      make(chan struct{}),
+	}
+	_, err := s.sendCommandAbandoningLateReply("cmd-send-fail", backupipc.TypeBackupCommand, nil, time.Second)
+	if err == nil || errors.Is(err, ErrCommandTimeout) {
+		t.Fatalf("error = %v, want the send error", err)
+	}
+	if entry, ok := pendingEntry(s, "cmd-send-fail"); !ok || !entry.discard {
+		t.Fatalf("registration after a failed send = %+v (present=%v), want a tombstone", entry, ok)
+	}
+	if !s.HandleResponse(&ipc.Envelope{ID: "cmd-send-fail", Type: backupipc.TypeBackupResult}) {
+		t.Fatal("reply after a failed send was not consumed; it would be forwarded as unsolicited")
+	}
+	if _, ok := pendingEntry(s, "cmd-send-fail"); ok {
+		t.Fatal("tombstone not released by its reply")
+	}
+}
+
+// A reply of the wrong type must not release a tombstone: the expected reply
+// may still follow, and without the tombstone it would escape as unsolicited.
+func TestTombstoneSurvivesWrongTypeReply(t *testing.T) {
+	s := newAbandonTestSession(t, nil)
+	if _, err := s.sendCommandAbandoningLateReply("cmd-wrong-type", backupipc.TypeBackupCommand, nil, time.Millisecond); !errors.Is(err, ErrCommandTimeout) {
+		t.Fatalf("error = %v, want ErrCommandTimeout", err)
+	}
+	if !s.HandleResponse(&ipc.Envelope{ID: "cmd-wrong-type", Type: "not_a_backup_result"}) {
+		t.Fatal("wrong-type reply to a tombstoned id was not matched")
+	}
+	if entry, ok := pendingEntry(s, "cmd-wrong-type"); !ok || !entry.discard {
+		t.Fatalf("tombstone after a wrong-type reply = %+v (present=%v), want it kept", entry, ok)
+	}
+	if !s.HandleResponse(&ipc.Envelope{ID: "cmd-wrong-type", Type: backupipc.TypeBackupResult}) {
+		t.Fatal("expected reply after a wrong-type one was not consumed")
+	}
+	if _, ok := pendingEntry(s, "cmd-wrong-type"); ok {
+		t.Fatal("tombstone not released by the expected reply")
 	}
 }

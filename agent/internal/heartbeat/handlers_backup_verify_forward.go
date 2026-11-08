@@ -55,7 +55,8 @@ func (h *Heartbeat) commandPoolFor(cmdType string) *workerpool.Pool {
 
 // dispatchPolledCommand submits a command delivered in a heartbeat response
 // to its pool and reports whether the pool accepted it. A rejected command is
-// only logged, as it was before the lane existed.
+// logged and dropped without a result, like any polled command the shared
+// pool rejects.
 func (h *Heartbeat) dispatchPolledCommand(cmd Command) bool {
 	if !h.commandPoolFor(cmd.Type).Submit(func() { h.processCommand(cmd) }) {
 		log.Warn("command rejected, worker pool full", logging.KeyCommandID, cmd.ID, "type", cmd.Type)

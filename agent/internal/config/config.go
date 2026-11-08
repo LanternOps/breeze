@@ -168,8 +168,7 @@ type Config struct {
 	PAMActuatorStrategy string `mapstructure:"pam_actuator_strategy"`
 
 	// Concurrency limits. Both size the shared command pool and, separately,
-	// the lane that backup_verify and backup_test_restore run on (#6106), so
-	// a long verification never holds a shared slot.
+	// the backup verification lane (Heartbeat.verificationPool).
 	MaxConcurrentCommands int `mapstructure:"max_concurrent_commands"`
 	CommandQueueSize      int `mapstructure:"command_queue_size"`
 

@@ -427,13 +427,7 @@ func (s *Session) HandleResponse(env *ipc.Envelope) bool {
 			return true
 		}
 		if pending.discard {
-			s.releaseTombstone(env.ID)
-			log.Warn("discarded late reply to an abandoned command",
-				"id", env.ID,
-				"type", env.Type,
-				"lateBy", time.Since(pending.abandonedAt).Round(time.Second).String(),
-				"sessionId", s.SessionID,
-			)
+			s.discardLateReply(env, pending.abandonedAt)
 			return true
 		}
 		if pending.validate != nil && env.Error == "" {
@@ -447,11 +441,22 @@ func (s *Session) HandleResponse(env *ipc.Envelope) bool {
 				return true
 			}
 		}
+		// Deliver under s.mu, re-reading the registration: abandonPending may
+		// have swapped in a tombstone since the read above, and a reply sent to
+		// the abandoned channel after its last check would be lost unlogged and
+		// strand the tombstone. The send never blocks, so holding s.mu is cheap.
+		s.mu.Lock()
+		if current, still := s.pending[env.ID]; still && current.discard {
+			s.mu.Unlock()
+			s.discardLateReply(env, current.abandonedAt)
+			return true
+		}
 		select {
 		case pending.ch <- env:
 		default:
 			log.Warn("response channel full, dropping", "id", env.ID)
 		}
+		s.mu.Unlock()
 		return true
 	}
 	return false

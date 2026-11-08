@@ -821,13 +821,14 @@ type Heartbeat struct {
 	authMon     *authstate.Monitor
 
 	// verificationPool is the lane for backup_verify and backup_test_restore
-	// (#6106). Each waits up to two hours on the backup helper; on the shared
-	// pool that wait held a slot, so a few verifications could starve scripts
-	// and monitors. It is sized like pool, so verification concurrency and
-	// queueing are what they were, and the agent's total pooled capacity is
-	// twice MaxConcurrentCommands. Agent-side a verification is only an IPC
-	// wait; the work runs in the helper. Nil in fixtures that never set it,
-	// which keeps those commands on pool (commandPoolFor).
+	// (#6106). Each waits up to backupVerificationTimeout on the backup
+	// helper; on the shared pool that wait held a slot, so a few
+	// verifications could starve scripts and monitors. It has pool's worker
+	// and queue sizes, so verifications get the concurrency they had, now in
+	// their own queue, and total pooled capacity is twice
+	// MaxConcurrentCommands. Agent-side a verification is only an IPC wait;
+	// the work runs in the helper. Nil in fixtures that never set it: the
+	// dispatch, stop and drain paths then use pool alone.
 	verificationPool *workerpool.Pool
 
 	// Command deduplication: prevents the same commandId from being

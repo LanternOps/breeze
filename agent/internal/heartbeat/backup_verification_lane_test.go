@@ -179,6 +179,98 @@ func TestVerificationRunsWhileSharedPoolIsSaturated_Poll(t *testing.T) {
 	}
 }
 
+// The production poll loop, not just the helper it calls, must route
+// verifications onto the lane.
+func TestHeartbeatResponseDispatchesVerificationOnTheLane(t *testing.T) {
+	cmdID := "poll-response-verify"
+	submitted := make(chan string, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		submitted <- r.URL.Path
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer srv.Close()
+
+	h := newResultSubmitHeartbeat(srv.URL)
+	h.pool = workerpool.New(1, 1)
+	h.verificationPool = workerpool.New(1, 1)
+	h.seenCommands = make(map[string]time.Time)
+	h.accepting.Store(true)
+	shutdownPoolsOnCleanup(t, h.pool, h.verificationPool)
+	saturateOnePool(t, h.pool)
+
+	h.processHeartbeatResponse(&HeartbeatResponse{Commands: []Command{{ID: cmdID, Type: tools.CmdBackupVerify}}})
+
+	select {
+	case got := <-submitted:
+		if !strings.Contains(got, "/commands/"+cmdID+"/result") {
+			t.Fatalf("submitted %q, want the result for %s", got, cmdID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("backup_verify from a heartbeat response never ran while the shared pool was full")
+	}
+}
+
+// The WebSocket wait must watch the context of the pool the command was
+// submitted to. Watching the shared pool's instead would leave a caller
+// parked on a verification that the lane's shutdown has already given up on.
+//
+// MUST NOT call t.Parallel(): mutates handlerRegistry.
+func TestWSWaitObservesVerificationLaneShutdown(t *testing.T) {
+	orig, hadOrig := handlerRegistry[tools.CmdBackupVerify]
+	running := make(chan struct{})
+	unblock := make(chan struct{})
+	var unblockOnce sync.Once
+	release := func() { unblockOnce.Do(func() { close(unblock) }) }
+	// Before the pools' cleanup Shutdown, which would otherwise wait out its
+	// deadline on the still-blocked handler.
+	defer release()
+	handlerRegistry[tools.CmdBackupVerify] = func(*Heartbeat, Command) tools.CommandResult {
+		close(running)
+		<-unblock
+		return tools.CommandResult{Status: "completed"}
+	}
+	t.Cleanup(func() {
+		release()
+		if hadOrig {
+			handlerRegistry[tools.CmdBackupVerify] = orig
+		} else {
+			delete(handlerRegistry, tools.CmdBackupVerify)
+		}
+	})
+
+	h := newLaneTestHeartbeat(t)
+	type outcome struct {
+		result   tools.CommandResult
+		executed bool
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		r, executed := h.executeCommandViaPoolReportingDelivery(Command{ID: "ws-lane-shutdown", Type: tools.CmdBackupVerify})
+		done <- outcome{r, executed}
+	}()
+	select {
+	case <-running:
+	case <-time.After(5 * time.Second):
+		t.Fatal("verification never started on the lane")
+	}
+
+	// Drain with an expired deadline: the lane gives up on its in-flight task
+	// and cancels its context, exactly as a shutdown that ran out of time does.
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.verificationPool.Drain(expired)
+
+	select {
+	case got := <-done:
+		if got.executed || got.result.Error != "command execution interrupted during shutdown" {
+			t.Fatalf("wait returned executed=%v result=%+v, want the shutdown interruption", got.executed, got.result)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("WebSocket wait did not observe the verification lane's shutdown")
+	}
+}
+
 func TestStopAcceptingCommandsClosesTheVerificationLane(t *testing.T) {
 	h := newLaneTestHeartbeat(t)
 	h.StopAcceptingCommands()
