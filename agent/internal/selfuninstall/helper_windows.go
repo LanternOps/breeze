@@ -36,12 +36,28 @@ func RunWindowsHelper(args HelperArgs, loadClient LoadClient) int {
 	if err == nil {
 		logging.Init("text", "info", logFile)
 	}
-	keepLog := false
+	// Where the log ends up (decided once the outcome is known):
+	//   - config dir still in place (a failure, or removeConfig=false): copied
+	//     next to the agent's logs, a folder the installed agent owns;
+	//   - config dir removed by this run and the outcome reported: dropped,
+	//     the reported result is the record;
+	//   - config dir removed and the outcome NOT reported: kept in this
+	//     helper's private SYSTEM/Administrators-only folder, which is then
+	//     left in place. ProgramData\Breeze is never recreated for it: a
+	//     folder made there inherits ProgramData's ACL, which lets any user
+	//     plant a junction and redirect a SYSTEM write.
+	configRemoved, keepPrivateLog := false, false
 	defer func() {
-		persistLog(logPath, args.ConfigDir, keepLog)
+		if !configRemoved {
+			persistLog(logPath, args.ConfigDir)
+		}
 		logging.DiscardOutput()
 		if logFile != nil {
 			_ = logFile.Close()
+		}
+		if keepPrivateLog {
+			keepHelperDirForLog(helperDir)
+			return
 		}
 		removeHelperDir(helperDir)
 	}()
@@ -88,7 +104,11 @@ func RunWindowsHelper(args HelperArgs, loadClient LoadClient) int {
 	logOutcome(out, reportErr)
 	// An outcome the server never heard of must leave evidence on the device,
 	// even after a completed uninstall removed the config dir.
-	keepLog = reportErr != nil
+	configRemoved, _ = out.Details[detailConfigRemoved].(bool)
+	keepPrivateLog = configRemoved && reportErr != nil
+	if keepPrivateLog {
+		log.Error("self-uninstall outcome not reported; this log is kept in the helper's folder", "path", logPath)
+	}
 	return HelperExitCode(out, reportErr)
 }
 
@@ -109,19 +129,17 @@ func logOutcome(out Outcome, reportErr error) {
 	log.Info("self-uninstall finished; result reported", attrs...)
 }
 
-// persistLog copies the helper's log next to the agent's logs when the config
-// dir still exists (a failure, or removeConfig=false). After a completed
-// uninstall that removed it, the reported result is the record — unless it
-// could not be reported (force), when the logs folder is recreated for it.
-func persistLog(logPath, configDir string, force bool) {
+// persistLog copies the helper's log next to the agent's logs. Called only when
+// this run did not remove the config dir, so the folder is the installed
+// agent's own (the agent writes its logs there as SYSTEM too); it is never
+// created here.
+func persistLog(logPath, configDir string) {
 	if configDir == "" {
 		return
 	}
 	logsDir := filepath.Join(configDir, "logs")
-	if _, err := os.Stat(logsDir); err != nil {
-		if !force || os.MkdirAll(logsDir, 0o700) != nil {
-			return
-		}
+	if fi, err := os.Lstat(logsDir); err != nil || !fi.IsDir() {
+		return // absent, or a link: not the agent's folder
 	}
 	src, err := os.Open(logPath)
 	if err != nil {
@@ -148,6 +166,18 @@ func removeHelperDir(dir string) {
 	cmd.Env = append(os.Environ(), helperDirEnv+"="+dir)
 	if err := cmd.Start(); err == nil {
 		_ = cmd.Process.Release()
+	}
+}
+
+// keepHelperDirForLog leaves the helper's private folder (and its log) in
+// place and queues only the helper's executable for removal at the next boot,
+// the one file a running image cannot delete.
+func keepHelperDirForLog(dir string) {
+	if dir == "" || !strings.HasPrefix(strings.ToLower(filepath.Base(dir)), HelperDirPrefix) {
+		return
+	}
+	if exe, err := windows.UTF16PtrFromString(filepath.Join(dir, HelperExeName)); err == nil {
+		_ = windows.MoveFileEx(exe, nil, windows.MOVEFILE_DELAY_UNTIL_REBOOT)
 	}
 }
 
