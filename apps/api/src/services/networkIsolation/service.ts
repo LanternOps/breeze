@@ -30,13 +30,16 @@ export type IsolationRefusalCode = IsolationStartRefusal
   | 'isolation_conflict' | 'isolation_secret_unavailable' | 'approval_mismatch'
   | 'device_offline' | 'device_decommissioned' | 'device_pending_assignment' | 'backup_helper_update_required';
 /** Why the management-plane allowlist could not be built. Fixed vocabulary: never echoes a configured value. */
-export type AllowlistReason = 'server_url_missing' | 'server_url_invalid' | 'backup_url_invalid' | 'relay_config_invalid' | 'policy_invalid';
+export type AllowlistReason = 'server_url_missing' | 'server_url_invalid' | 'backup_url_invalid' | 'relay_config_invalid' | 'policy_invalid' | 'allowlist_invalid';
 export function allowlistReasonOf(error: IsolationAllowlistError, serverUrl: string): AllowlistReason {
   if (!serverUrl.trim()) return 'server_url_missing';
-  if (error.source === 'serverUrl') return 'server_url_invalid';
-  if (error.source === 'AGENT_BACKUP_SERVER_URL') return 'backup_url_invalid';
-  if (error.source.startsWith('TURN_')) return 'relay_config_invalid';
-  return 'policy_invalid';
+  // A merged-destination failure joins its sources ("serverUrl, TURN_HOST"); the first one an admin can fix wins.
+  const sources = error.source.split(', ');
+  if (sources.includes('serverUrl')) return 'server_url_invalid';
+  if (sources.includes('AGENT_BACKUP_SERVER_URL')) return 'backup_url_invalid';
+  if (sources.some(s => s.startsWith('TURN_'))) return 'relay_config_invalid';
+  if (sources.some(s => s.startsWith('policyExtras'))) return 'policy_invalid';
+  return 'allowlist_invalid';
 }
 class IsolationRefusal extends Error { constructor(readonly code: IsolationRefusalCode, readonly networkIsolationUnsupportedReason?: string, readonly allowlistReason?: AllowlistReason) { super(code); } }
 function refuse(code: IsolationRefusalCode, reason?: string, allowlistReason?: AllowlistReason): never { throw new IsolationRefusal(code, reason, allowlistReason); }
@@ -113,7 +116,14 @@ export async function startNetworkIsolation(auth: AuthContext, deviceId: string,
     let allow;
     const serverUrl = device.agentServerUrl ?? process.env.AGENT_SERVER_URL ?? '';
     try { allow = buildIsolationAllowlist({ serverUrl, remoteRelay, policyExtras: policy.extras }); }
-    catch (error) { if (error instanceof IsolationAllowlistError) return refuse('invalid_allowlist', undefined, allowlistReasonOf(error, serverUrl)); throw error; }
+    catch (error) {
+      if (error instanceof IsolationAllowlistError) {
+        // Sources are config names, never values.
+        console.warn('[isolation] allowlist invalid', { deviceId: device.id, source: error.source });
+        return refuse('invalid_allowlist', undefined, allowlistReasonOf(error, serverUrl));
+      }
+      throw error;
+    }
     const now = new Date();
     let incidentId = input.incidentId;
     if (input.createIncident) {

@@ -50,7 +50,8 @@ vi.mock('./episodeStore', async original => ({
   withEpisodeLock: async (_tx: unknown, id: string, fn: (row: any) => Promise<unknown>) => h.row?.id === id ? { found: true, value: await fn(h.row) } : { found: false },
   writeEpisodeSnapshot: async (_tx: unknown, _id: string, _prev: unknown, next: any) => { h.row = { ...h.row, ...next }; return true; },
 }));
-import { startNetworkIsolation, releaseNetworkIsolation, extendNetworkIsolation, acknowledgeNetworkIsolation, getBreakGlassCodes, listDeviceIsolations } from './service';
+import { IsolationAllowlistError } from './allowlist';
+import { allowlistReasonOf, startNetworkIsolation, releaseNetworkIsolation, extendNetworkIsolation, acknowledgeNetworkIsolation, getBreakGlassCodes, listDeviceIsolations } from './service';
 import { TrustDeniedError } from '../partnerTrust.commands';
 import type { AuthContext } from '../../middleware/auth';
 const deviceId = '11111111-1111-4111-8111-111111111111';
@@ -127,6 +128,19 @@ describe('startNetworkIsolation', () => {
     expect(await startNetworkIsolation(auth, deviceId, { ...input, remoteRelay: true }, { requestedByKind: 'user' })).toEqual({ error: 'relay_unavailable' });
     h.device.agentServerUrl = 'bad';
     expect(await startNetworkIsolation(auth, deviceId, input, { requestedByKind: 'user' })).toEqual({ error: 'invalid_allowlist', allowlistReason: 'server_url_invalid' });
+  });
+  it.each([
+    ['serverUrl', 'https://a.example', 'server_url_invalid'],
+    ['serverUrl, TURN_HOST', 'https://a.example', 'server_url_invalid'],
+    ['AGENT_BACKUP_SERVER_URL', 'https://a.example', 'backup_url_invalid'],
+    ['TURN_PORT', 'https://a.example', 'relay_config_invalid'],
+    ['TURN_HOST, TURN_TLS_HOST', 'https://a.example', 'relay_config_invalid'],
+    ['policyExtras[2]', 'https://a.example', 'policy_invalid'],
+    ['policyExtras', 'https://a.example', 'policy_invalid'],
+    ['ECH_DOH_ENDPOINT_URLS', 'https://a.example', 'allowlist_invalid'],
+    ['AGENT_BACKUP_SERVER_URL', '', 'server_url_missing'],
+  ])('maps allowlist error source %s (server url %j) to %s', (source, serverUrl, reason) => {
+    expect(allowlistReasonOf(new IsolationAllowlistError(source, 'x'), serverUrl)).toBe(reason);
   });
   it('says why the allowlist is invalid when no server URL is known', async () => {
     const saved = process.env.AGENT_SERVER_URL;

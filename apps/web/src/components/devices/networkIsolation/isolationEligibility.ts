@@ -33,7 +33,7 @@ export function refusalKey(reason: string): string {
     : 'networkIsolation.unavailable';
 }
 /** Server refusal copy for a mutation error; undefined lets runAction fall back to the generic/`errors:<CODE>` copy. */
-export const ALLOWLIST_REASONS = ['server_url_missing', 'server_url_invalid', 'backup_url_invalid', 'relay_config_invalid', 'policy_invalid'] as const;
+export const ALLOWLIST_REASONS = ['server_url_missing', 'server_url_invalid', 'backup_url_invalid', 'relay_config_invalid', 'policy_invalid'] as const; // 'allowlist_invalid' (internal source) deliberately falls back to the generic copy
 export function isolationRefusalCopy(code: string, t: (key: string) => string, body?: unknown): string | undefined {
   if (!Object.hasOwn(START_REFUSAL_KEYS, code)) return undefined;
   if (code === 'invalid_allowlist') {
