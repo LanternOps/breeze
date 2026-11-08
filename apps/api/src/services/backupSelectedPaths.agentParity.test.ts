@@ -28,20 +28,45 @@ function resolve(selected: readonly string[], stored: readonly string[]): Select
   return resolver.finish();
 }
 
-/** What the agent restores for a selection: filterFiles in restore.go. */
+/**
+ * What the agent restores for a selection: restoreSelected in restore.go, applied
+ * to each manifest entry as it is decoded (#11234; filterFiles is the same rule
+ * over a decoded list).
+ */
 const agentSelects = (stored: readonly string[], selected: readonly string[]) =>
   new Set(stored.filter((f) => selected.some((s) => pathSelectionMatches(f, s))));
+
+/** The body of the Go function `signature` opens, through its closing brace. */
+function goFunc(source: string, signature: string): string {
+  const start = source.indexOf(signature);
+  expect(start, `${signature} not found in restore.go`).toBeGreaterThanOrEqual(0);
+  const body = source.slice(start);
+  return body.slice(0, body.indexOf('\n}\n') + 2);
+}
 
 describe('pathSelectionMatches mirrors the agent', () => {
   it('restore.go still implements the rule this mirrors', () => {
     const source = readFileSync(path.join(AGENT_DIR, 'restore.go'), 'utf8');
-    const body = source.slice(source.indexOf('func pathSelectionMatches('));
-    const fn = body.slice(0, body.indexOf('\n}\n') + 2);
+    const fn = goFunc(source, 'func pathSelectionMatches(');
     expect(fn).toContain('trimmed := strings.TrimRight(selected, `/\\`)');
     expect(fn).toContain('if sourcePath == trimmed {');
     expect(fn).toContain('return strings.HasPrefix(sourcePath, trimmed+"/") || strings.HasPrefix(sourcePath, trimmed+`\\`)');
-    // And it is what filterFiles matches restoreSourcePath (the indexed path) with.
-    expect(source).toContain('if pathSelectionMatches(restoreSourcePath(f), selected) {');
+    // And it is what a restore matches restoreSourcePath (the indexed path) with:
+    // restoreSelected, against every selected path ...
+    const selectedFn = goFunc(source, 'func restoreSelected(');
+    expect(selectedFn).toContain('sourcePath := restoreSourcePath(*f)');
+    expect(selectedFn).toContain('for _, selected := range selectedPaths {');
+    expect(selectedFn).toContain('if pathSelectionMatches(sourcePath, selected) {');
+    // ... applied to the manifest's entries as the restore decodes it (#11234).
+    expect(goFunc(source, 'func restoreSelection(')).toContain(
+      'return func(f *SnapshotFile) bool { return restoreSelected(f, selectedPaths) }',
+    );
+    expect(goFunc(source, 'func downloadVerifiedManifest(')).toContain(
+      'decodeSnapshotManifestFile(tmpPath, restoreSelection(selectedPaths))',
+    );
+    expect(goFunc(source, 'func RestoreFromSnapshotContext(')).toContain(
+      'downloadVerifiedManifest(ctx, provider, cfg.SnapshotID, workRoot, cfg.Integrity, cfg.SelectedPaths)',
+    );
   });
 
   it.each([

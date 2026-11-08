@@ -7,11 +7,12 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { queryMock, capturedMcpArgs, capturedTenantSdkToolArgs, lookupWispGrantMock } = vi.hoisted(() => ({
+const { queryMock, capturedMcpArgs, capturedTenantSdkToolArgs, lookupWispGrantMock, wispSessionToolFilterMock } = vi.hoisted(() => ({
   queryMock: vi.fn(),
-  capturedMcpArgs: [] as Array<{ getAuth: () => unknown }>,
+  capturedMcpArgs: [] as Array<{ getAuth: () => unknown; options?: { admitTool?: (name: string) => boolean } }>,
   capturedTenantSdkToolArgs: [] as Array<{ getOrgId: () => string }>,
   lookupWispGrantMock: vi.fn(),
+  wispSessionToolFilterMock: vi.fn(),
 }));
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
@@ -21,6 +22,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
 // Here: the lookup is controllable and the fallback auth is marked.
 vi.mock('./wisp/chatCeiling', () => ({
   lookupWispGrant: lookupWispGrantMock,
+  wispSessionToolFilter: wispSessionToolFilterMock,
   unreachableWispAuth: (auth: Record<string, unknown>) => ({ ...auth, accessibleOrgIds: [], __unreachable: true }),
   WispSessionUnavailableError: class WispSessionUnavailableError extends Error {
     readonly code = 'wisp_session_unavailable';
@@ -65,8 +67,8 @@ vi.mock('./aiModels/settleInvocation', async (orig) => ({
 vi.mock('./aiAgent', () => ({ sanitizeErrorForClient: (e: unknown) => String(e) }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./aiAgentSdkTools', () => ({
-  createBreezeMcpServer: vi.fn((getAuth: () => unknown) => {
-    capturedMcpArgs.push({ getAuth });
+  createBreezeMcpServer: vi.fn((getAuth: () => unknown, _pre: unknown, _post: unknown, _session: unknown, _extra: unknown, options?: { admitTool?: (name: string) => boolean }) => {
+    capturedMcpArgs.push({ getAuth, options });
     return { type: 'sdk' };
   }),
   BREEZE_MCP_TOOL_NAMES: ['mcp__breeze__query_devices'],
@@ -130,6 +132,8 @@ describe('getOrCreate — a Wisp session always carries its grant', () => {
     vi.clearAllMocks();
     capturedMcpArgs.length = 0;
     capturedTenantSdkToolArgs.length = 0;
+    wispSessionToolFilterMock.mockReset();
+    wispSessionToolFilterMock.mockResolvedValue((name: string) => name !== 'list_operator_tasks');
     queryMock.mockImplementation(() => ({
       async *[Symbol.asyncIterator]() {
         await new Promise(() => undefined);
@@ -161,6 +165,24 @@ describe('getOrCreate — a Wisp session always carries its grant', () => {
     expect(second).toBe(first);
     expect(second.wispGrant).toEqual(GRANT);
     expect(lookupWispGrantMock).toHaveBeenCalledTimes(1);
+    expect(wispSessionToolFilterMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("registers a Wisp session's tools through its grant's tool filter (#10430)", async () => {
+    lookupWispGrantMock.mockResolvedValue(GRANT);
+    await create('sess-wisp-index');
+    expect(wispSessionToolFilterMock).toHaveBeenCalledWith(GRANT);
+    const admitTool = capturedMcpArgs[0]!.options?.admitTool;
+    expect(admitTool?.('list_operator_tasks')).toBe(false);
+    expect(admitTool?.('query_devices')).toBe(true);
+  });
+
+  it('fails closed when the tool filter cannot be read (DB down): no session, no SDK query', async () => {
+    lookupWispGrantMock.mockResolvedValue(GRANT);
+    wispSessionToolFilterMock.mockRejectedValue(new Error('connection refused'));
+    await expect(create('sess-filter-down')).rejects.toThrow('connection refused');
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(manager.get('sess-filter-down')).toBeUndefined();
   });
 
   it('an ordinary session carries wispGrant null and its handlers keep the session tool auth', async () => {
@@ -168,6 +190,8 @@ describe('getOrCreate — a Wisp session always carries its grant', () => {
     const session = await create('sess-plain');
     expect(session.wispGrant).toBeNull();
     expect((capturedMcpArgs[0]!.getAuth() as AuthContext).accessibleOrgIds).toEqual([ORG_A, ORG_B]);
+    expect(wispSessionToolFilterMock).not.toHaveBeenCalled();
+    expect(capturedMcpArgs[0]!.options).toBeUndefined();
   });
 
   it("a Wisp session's shared handler auth reaches no org (handlers run under the gate's per-call auth)", async () => {

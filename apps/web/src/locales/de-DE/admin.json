@@ -994,6 +994,7 @@
       "client_ai_usage": "Client-AI-Nutzung",
       "config_policy_alert_rules": "Richtlinien-Warnungsregel",
       "config_policy_automations": "Richtlinien-Automatisierung",
+      "config_policy_feature_link": "Richtlinien-Funktionsverknüpfung",
       "config_policy_monitoring_watches": "Richtlinien-Überwachung",
       "configuration_policy": "Konfigurationsrichtlinie",
       "contact": "Kontakt",

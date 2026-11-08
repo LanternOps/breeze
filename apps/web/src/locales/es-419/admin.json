@@ -994,6 +994,7 @@
       "client_ai_usage": "Uso de AI de cliente",
       "config_policy_alert_rules": "Regla de alerta de directiva",
       "config_policy_automations": "Automatización de directiva",
+      "config_policy_feature_link": "Vínculo de función de directiva",
       "config_policy_monitoring_watches": "Vigilancia de monitoreo de directiva",
       "configuration_policy": "Política de configuración",
       "contact": "Contacto",

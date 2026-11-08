@@ -563,7 +563,8 @@
     "overrideErrorStepUp": "Tu socio exige una aprobación más sólida de la que esta pantalla puede ofrecer.",
     "overrideErrorNoDevice": "Ningún dispositivo de destino aceptó el script, así que no se ejecutó nada. Puedes volver a intentarlo.",
     "overrideErrorPolicy": "La política de datos de IA rechaza este script porque lee una ruta de perfil de usuario.",
-    "overrideErrorStrict": "Reconocer estos patrones de riesgo requiere permiso de escritura de scripts y MFA, y hay que marcar todos los patrones."
+    "overrideErrorStrict": "Reconocer estos patrones de riesgo requiere permiso de escritura de scripts y MFA, y hay que marcar todos los patrones.",
+    "savedToLibrary": "Guardado en la biblioteca de scripts"
   },
   "aiRunCard": {
     "title": "Ejecución de análisis",

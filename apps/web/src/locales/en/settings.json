@@ -1851,7 +1851,8 @@
       "load": "Failed to load approval-security policy.",
       "save": "Could not save the approval-security policy.",
       "unavailable": "No policy available."
-    }
+    },
+    "scopeNote": "These settings apply to every organization under your partner account."
   },
   "orgAuditRetentionSettings": {
     "title": "Audit Log Retention",
@@ -2968,7 +2969,8 @@
       "enabledHint": "Enabled and the mode are separate switches and a run needs both: with this off nothing runs whatever the mode says, and in Off mode nothing runs even while this is on.",
       "enabledCreateHint": "New agents are created switched off. Review the tool allowlist and the limits below, then turn this on when you want the agent to start running.",
       "actKeysCleared": "Act-mode permissions are kept but won't be saved unless this agent returns to Act mode.",
-      "recipientRoleNoMembers": "no active members"
+      "recipientRoleNoMembers": "no active members",
+      "enabledHintNoMode": "When this is off, the agent does not run."
     },
     "policyKeys": {
       "tools": {

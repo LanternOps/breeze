@@ -1795,6 +1795,33 @@ describe('command queue service', () => {
       expect(insertValues).toHaveBeenCalled();
     });
 
+    it("gates on the WATCHDOG's own reported edition, read by the device SELECT (#4297)", async () => {
+      // Main agent silent inside the check band — the agent_edition proxy
+      // alone would refuse — but the watchdog, the binary that downloads,
+      // reported its own edition.
+      const insertValues = mockDevice({
+        ...strandedDevice,
+        agentEdition: null,
+        agentVersion: '0.105.1',
+        watchdogVersion: '0.108.0',
+        watchdogEdition: 'self-host',
+      });
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'update_agent',
+        { version: '0.109.0' },
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      expect(result.status).toBe('completed');
+      expect(insertValues).toHaveBeenCalled();
+      // The real SELECT must project the column, or the gate silently reads
+      // undefined and drops back to the proxy on every dispatch.
+      const projection = vi.mocked(db.select).mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+      expect(projection).toHaveProperty('watchdogEdition');
+    });
+
     it('allows update_agent for a pre-check build (< 0.105.0) with no reported edition', async () => {
       const insertValues = mockDevice({ ...strandedDevice, agentVersion: '0.104.0', watchdogVersion: '0.104.0' });
 

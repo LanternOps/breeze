@@ -3,15 +3,82 @@
    Dark theme, compact, frameless, 380x600 popup
    ============================================================ */
 
-/* Workspace design tokens + Tailwind layers. This is the only stylesheet
-   index.html actually loads (<link rel="stylesheet" href="/src/styles.css">),
-   so the --ws-* custom properties and Tailwind's generated utility CSS must
+/* Workspace design tokens + Tailwind. This is the only stylesheet index.html
+   actually loads (<link rel="stylesheet" href="/src/styles.css">), so the
+   --ws-* custom properties and Tailwind (compiled by @tailwindcss/vite) must
    be pulled in here. */
 @import './styles/tokens.css';
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* Scan only index.html and the JS/TS under src/, as Tailwind 3 did. Automatic
+   source detection would also read src-tauri/ (Rust, generated schemas) and
+   the package root, generating utilities nothing uses. */
+@import "tailwindcss" source(none);
+@source "../index.html";
+@source "./**/*.{js,ts,jsx,tsx}";
+
+/*
+ * Theme tokens (ported from the Tailwind 3 config's theme.extend). `inline`
+ * makes the utilities emit the --ws-* reference directly (`bg-ws-surface` →
+ * `background-color: var(--ws-surface)`), exactly as v3 did, so the light/dark
+ * swap in tokens.css keeps driving them.
+ */
+@theme inline {
+  /* Preflight's code/kbd/samp/pre font. v4 resolves it through --font-mono by
+     default, but the legacy :root block below redefines --font-mono for the
+     helper's own rules, so pin v3's default mono stack here. */
+  --default-mono-font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    'Liberation Mono', 'Courier New', monospace;
+
+  --color-ws-canvas: var(--ws-canvas);
+  --color-ws-surface: var(--ws-surface);
+  --color-ws-raised: var(--ws-raised);
+  --color-ws-ink: var(--ws-ink);
+  --color-ws-secondary: var(--ws-text-secondary);
+  --color-ws-tertiary: var(--ws-text-tertiary);
+  --color-ws-accent: var(--ws-accent);
+  --color-ws-accent-soft: var(--ws-accent-soft);
+  --color-ws-border: var(--ws-border);
+  --color-ws-border-subtle: var(--ws-border-subtle);
+
+  --font-sans: 'Inter Variable', -apple-system, 'Segoe UI', system-ui, sans-serif;
+
+  --radius-control: var(--ws-radius-control);
+  --radius-surface: var(--ws-radius-surface);
+}
+
+/*
+ * v3 Preflight defaults that v4 dropped or changed, restored so the helper
+ * renders as it did on v3. Kept in @layer base so utilities still override them.
+ * - border color: v4 defaults to currentColor; v3 used gray-200 (#e5e7eb,
+ *   the sRGB value, not v4's oklch gray-200).
+ * - placeholder color: v4 uses currentColor at 50%; v3 used gray-400 (#9ca3af).
+ * - buttons: v4 uses the default cursor; v3 used a pointer (default when
+ *   :disabled).
+ */
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: #e5e7eb;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    opacity: 1;
+    color: #9ca3af;
+  }
+
+  button,
+  [role='button'] {
+    cursor: pointer;
+  }
+
+  :disabled {
+    cursor: default;
+  }
+}
 
 /* ----------------------------------------------------------
    CSS Variables

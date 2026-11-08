@@ -994,6 +994,7 @@
       "client_ai_usage": "Utilisation AI client",
       "config_policy_alert_rules": "Règle d'alerte de stratégie",
       "config_policy_automations": "Automatisation de stratégie",
+      "config_policy_feature_link": "Lien de fonctionnalité de stratégie",
       "config_policy_monitoring_watches": "Surveillance de stratégie",
       "configuration_policy": "Politique de configuration",
       "contact": "Contact",

@@ -11,7 +11,9 @@
  * it empties the model's tool list.
  */
 import { z } from 'zod';
-import { AI_AGENT_SCHEDULE_KINDS, AI_SWEEP_KINDS } from '@breeze/shared';
+import {
+  AI_AGENT_SCHEDULE_KINDS, AI_SWEEP_KINDS, createAiAgentScheduleSchema, updateAiAgentScheduleSchema,
+} from '@breeze/shared';
 
 const uuid = z.string().guid();
 
@@ -34,5 +36,28 @@ export const aiAgentScheduleToolSchemas = {
     enabled: z.boolean().optional().describe('create, update: false stops future runs'),
     actMode: z.literal(false).optional()
       .describe('update only: false stops unattended actions, including ones already waiting. Arming is not available here'),
-  }).strict(),
+  }).strict().superRefine((value, ctx) => {
+    // #11287: validateToolInput runs this before MCP or chat files an approval
+    // card. Check a create or update against the route schema the handler
+    // applies, so a call it would refuse after a person approved it (e.g. a
+    // create without `enabled`) is refused here instead. The handler keeps its
+    // own check. Refinements do not appear in the generated JSON schema.
+    // The same field split as the handler's create() and update().
+    const { action, ...rest } = value;
+    if (action === 'delete') return;
+    let parsed;
+    if (action === 'create') {
+      const { actMode, ...fields } = rest;
+      if (actMode !== undefined) {
+        ctx.addIssue({ code: 'custom', path: ['actMode'], message: 'create takes no actMode; arming is on the AI Agents page' });
+        return;
+      }
+      parsed = createAiAgentScheduleSchema.safeParse(fields);
+    } else {
+      const { scheduleId: _scheduleId, ...fields } = rest;
+      parsed = updateAiAgentScheduleSchema.safeParse(fields);
+    }
+    if (parsed.success) return;
+    for (const issue of parsed.error.issues) ctx.addIssue({ code: 'custom', path: issue.path, message: issue.message });
+  }),
 } as const;

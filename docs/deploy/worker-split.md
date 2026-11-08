@@ -110,15 +110,15 @@ zero, they were ABSENT, and `up` for it did not exist at all.
    change what runs where.
 3. **Verify presence and readiness before touching `api`:**
    ```bash
-   docker ps --format '{{.Names}}' | grep -q breeze-worker && echo "worker container present"
+   docker compose ps --status running --services | grep -qx worker && echo "worker container present"
    # The image has no curl and the worker container publishes no port — exec
    # BusyBox wget (what the container's own healthcheck uses) inside it instead.
-   docker exec breeze-worker wget -qO- http://127.0.0.1:3001/health/ready
+   docker compose exec worker wget -qO- http://127.0.0.1:3001/health/ready
    ```
    The presence check matters on its own: the hand-maintained droplet
    deploy line does not start `worker` by default (see the deploy-line
    warning below), so a rollout can silently skip this step entirely and
-   `docker ps` is the only thing that would have caught it — the same
+   `docker compose ps` (run from the Compose project directory) is the only thing that would have caught it — the same
    failure shape that left `portal` unrolled for 11 days. Confirm
    `/health/ready` returns 200 with `{"ready": true, ...}` before proceeding;
    a `migrations-pending` or `redis`/`db` reason means do not proceed.
@@ -129,7 +129,7 @@ zero, they were ABSENT, and `up` for it did not exist at all.
    `unavailable`, `optionalRunning`, `optionalDisabled`). A `workers-pending`
    reason that persists past the worker's `start_period` (60 s) means a
    required consumer failed to initialize or lost Redis — check
-   `docker logs breeze-worker` for `[CRITICAL][worker] Failed to initialize
+   `docker compose logs worker` for `[CRITICAL][worker] Failed to initialize
    <name>` before proceeding. Feature-gated consumers (`EVENT_DISPATCH_MODE`,
    `BREEZE_AI_AGENTS_ENABLED`, `AUDIT_CHAIN_VERIFY_ENABLED`) are declared optional
    when their flag is off. The abuse-signals consumer is required when either
@@ -152,8 +152,8 @@ zero, they were ABSENT, and `up` for it did not exist at all.
    - A representative *global* scheduled job actually ran from the `worker`
      container, not `api` — pick one with an observable side effect (e.g. a
      retention job's log line, or `metricRollupsWorker`'s output) and check
-     `docker logs breeze-worker` for it, and confirm it does NOT appear in
-     `docker logs breeze-api` after the flip.
+     `docker compose logs worker` for it, and confirm it does NOT appear in
+     `docker compose logs api` after the flip.
    - Durable event dispatch consumers (if `EVENT_DISPATCH_MODE` is enabled)
      are being consumed from `worker`, not `api`.
 6. **Soak.** Watch both containers' logs and `/health/ready` (the worker's
@@ -193,7 +193,10 @@ ssh root@<droplet> "cd /opt/breeze && docker compose stop worker"
   exactly the failure mode that stranded `portal` on `0.94.0` for 11 days
   while `/health` reported a newer version. Always verify version parity
   after deploying with the enumerate-running-containers loop in
-  `CLAUDE.md`, which now should include a `breeze-worker` line.
+  `CLAUDE.md`, which now should include a `worker` line. The service has no fixed
+  `container_name` (so `--scale worker=N` is not blocked by a name clash, #4144);
+  Compose names the container `<project>-worker-1`, so match on the service
+  name, not `breeze-worker`.
 - **Watchtower must never manage `worker`, same as `api`.** Per the
   Watchtower policy (#603), repo-tracked compose files never include
   Watchtower at all, and on droplets where it runs as a sidecar for other
