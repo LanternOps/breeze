@@ -8,7 +8,7 @@ set -euo pipefail
 # it, and only then install. Never pipe a remote binary straight into a shell
 # or an install target.
 
-OSV_SCANNER_VERSION="${OSV_SCANNER_VERSION:-2.4.0}"
+OSV_SCANNER_VERSION="${OSV_SCANNER_VERSION:-2.6.0}"
 asset="osv-scanner_linux_amd64"
 checksums="osv-scanner_SHA256SUMS"
 base_url="https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}"
