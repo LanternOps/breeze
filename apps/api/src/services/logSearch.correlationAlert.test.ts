@@ -71,9 +71,7 @@ function rule(overrides: Record<string, unknown> = {}) {
     alertOnMatch: true,
     isActive: true,
     lastMatchedAt: null,
-    createdBy: null,
     createdAt: new Date('2026-11-01T00:00:00Z'),
-    updatedAt: new Date('2026-11-01T00:00:00Z'),
     ...overrides,
   } as Parameters<typeof persistCorrelationForRule>[0];
 }
