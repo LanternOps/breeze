@@ -291,9 +291,11 @@ export type RestoreIntegrityMetricStatus = 'attested' | 'unattested' | 'absent' 
  * A snapshot's file index (#11026). `inline_dropped`: a result arrived without
  * its file list because the list did not fit (outcome `dropped`). `hydration`:
  * a run building the index from the manifest ended, by `complete`, `skipped`
- * or a HydrationFailure code. The outcome is a closed set, never free text.
+ * or a HydrationFailure code. `statistics` (#11209): a large publish refreshed
+ * the table's planner statistics, by `analyzed`, `busy` or `error`. The outcome
+ * is a closed set, never free text.
  */
-export function recordSnapshotFileIndex(event: 'inline_dropped' | 'hydration', outcome: string, count = 1): void {
+export function recordSnapshotFileIndex(event: 'inline_dropped' | 'hydration' | 'statistics', outcome: string, count = 1): void {
   recorder.onSnapshotFileIndex(event, outcome, count);
 }
 

@@ -1809,7 +1809,7 @@
       "auditOnly": "Audit Only",
       "describeThePurposeOfThisPolicy": "Describe the purpose of this policy...",
       "softwareRules": "Software Rules",
-      "name": "Name *",
+      "name": "Software name *",
       "vendor": "Vendor",
       "minVer": "Min ver",
       "maxVer": "Max ver",

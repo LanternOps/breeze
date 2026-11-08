@@ -108,6 +108,12 @@ vi.mock('../db', () => {
     withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
   };
 });
+const { refreshStatisticsMock } = vi.hoisted(() => ({
+  refreshStatisticsMock: vi.fn<(rows: number, opts?: { minRows?: number }) => Promise<string>>(),
+}));
+vi.mock('./backupSnapshotFileIndexStatistics', () => ({
+  refreshSnapshotFileIndexStatistics: (...args: [number, { minRows?: number }?]) => refreshStatisticsMock(...args),
+}));
 vi.mock('./recoveryBootstrap', () => ({
   resolveSnapshotProviderConfig: (...args: unknown[]) => resolveSnapshotProviderConfigMock(...args),
   getStringValue: (record: Record<string, unknown> | null, key: string) =>
@@ -165,6 +171,7 @@ beforeEach(() => {
   }));
   fence.override = {};
   fence.reads = [];
+  refreshStatisticsMock.mockResolvedValue('below_threshold');
   resolveSnapshotProviderConfigMock.mockResolvedValue({
     snapshot: snapshotRow(),
     config: null,
@@ -420,6 +427,67 @@ describe('hydrateSnapshotFileIndex', () => {
     // transaction so a reader never sees a partial index (#11026 D4).
     expect(transactionMock).toHaveBeenCalledTimes(1);
     expect(executeMock.mock.calls.map((c) => batchRows(c[0]).length)).toEqual([250, 50]);
+  });
+
+  describe('statistics refresh after the publish (#11209)', () => {
+    const publishable = () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([snapshotRow()]))
+        .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]))
+        .mockReturnValueOnce(chainMock([{ id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, keyLayout: 'legacy_flat', keyPrefix: null, metadata: {} }]));
+      return manifestBytes(Array.from({ length: 300 }, (_, i) => ({
+        sourcePath: `/f${i}`, backupPath: `snapshots/snap-older/files/f${i}.gz`, size: 1,
+      })));
+    };
+
+    it('asks for a refresh once the publish transaction has finished, with the rows it wrote and the threshold seam', async () => {
+      const deps = { openManifest: openOf(publishable()), statisticsRefreshMinRows: 123 };
+
+      const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
+
+      expect(outcome).toMatchObject({ status: 'complete', entryCount: 300 });
+      expect(refreshStatisticsMock).toHaveBeenCalledTimes(1);
+      expect(refreshStatisticsMock).toHaveBeenCalledWith(300, { minRows: 123 });
+      const publishEnded = transactionMock.mock.results[0]!.value as Promise<unknown>;
+      await publishEnded;
+      expect(refreshStatisticsMock.mock.invocationCallOrder[0]!).toBeGreaterThan(transactionMock.mock.invocationCallOrder[0]!);
+    });
+
+    it('keeps the run complete, and the snapshot unfailed, when the refresh reports an error', async () => {
+      refreshStatisticsMock.mockResolvedValue('error');
+      const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { openManifest: openOf(publishable()) } });
+
+      expect(outcome).toMatchObject({ status: 'complete', entryCount: 300 });
+      const statusWrites = updateMock.mock.results
+        .flatMap((r) => ((r.value as { set?: ReturnType<typeof vi.fn> }).set?.mock.calls ?? []).map((c) => c[0]?.fileIndexStatus));
+      expect(statusWrites).not.toContain('failed');
+    });
+
+    it('does not refresh after a run that published nothing', async () => {
+      selectMock.mockReturnValueOnce(chainMock([snapshotRow({ referencedFiles: null })]));
+      selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: null }]));
+      expect(await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID)).toMatchObject({ status: 'skipped' });
+
+      selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
+      selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
+      const missing = { openManifest: vi.fn().mockRejectedValue(Object.assign(new Error('nope'), { code: 'ENOENT' })) };
+      expect(await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: missing })).toMatchObject({ status: 'failed' });
+
+      // Refused inside the publish transaction itself, so it reaches the code
+      // after it.
+      selectMock
+        .mockReturnValueOnce(chainMock([snapshotRow()]))
+        .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]))
+        .mockReturnValueOnce(chainMock([]))
+        .mockReturnValueOnce(chainMock([]));
+      const unverifiable = {
+        openManifest: openOf(manifestBytes([{ sourcePath: '/a', backupPath: 'snapshots/snap-older/files/a.gz', size: 10 }])),
+        statisticsRefreshMinRows: 0,
+      };
+      expect(await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: unverifiable })).toMatchObject({ status: 'failed', failure: 'origin_unverifiable' });
+
+      expect(refreshStatisticsMock).not.toHaveBeenCalled();
+    });
   });
 
   it('reclaims a stale hydrating row (>30min) — the CAS predicate itself expresses staleness', async () => {
