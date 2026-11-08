@@ -260,13 +260,22 @@ export type ContactPortalInviteOutcome = (typeof CONTACT_PORTAL_INVITE_OUTCOMES)
 /** Why a contact counts as `already_has_access` (or why a single invite was refused). */
 export type AlreadyHasAccessReason = 'active' | 'disabled' | 'external_identity' | 'login_email_differs';
 
-export type ContactPortalInviteResult = {
-  contactId: string;
-  outcome: ContactPortalInviteOutcome;
-  portalUserId?: string;
-  /** Set on `invited`: false means the login exists but the email did not go out (use Resend). */
-  emailSent?: boolean;
-  reason?: AlreadyHasAccessReason;
+/** One contact's result, keyed on `outcome` so impossible combinations do not type-check. */
+export type ContactPortalInviteResult =
+  | {
+      contactId: string;
+      outcome: 'invited';
+      portalUserId: string;
+      /** false: the login exists but the email did not go out (use Resend). */
+      emailSent: boolean;
+    }
+  | { contactId: string; outcome: 'already_has_access'; portalUserId: string; reason: AlreadyHasAccessReason }
+  | { contactId: string; outcome: 'email_bound_to_other_contact'; portalUserId: string }
+  | { contactId: string; outcome: 'no_email' | 'duplicate_email_in_batch' };
+
+/** `POST …/portal-users/invite-contacts` response body. */
+export type ContactPortalInviteResponse = {
+  data: { results: ContactPortalInviteResult[]; counts: Record<ContactPortalInviteOutcome, number> };
 };
 
 /** Stable `code` values on invite refusals (`{ error, code }` bodies). */

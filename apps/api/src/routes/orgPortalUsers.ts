@@ -19,8 +19,10 @@ import {
   inviteContactsToPortalSchema,
   CONTACT_PORTAL_INVITE_OUTCOMES,
   PORTAL_INVITE_ERROR_CODES,
+  type AlreadyHasAccessReason,
   type ContactPortalInviteOutcome,
   type ContactPortalInviteResult,
+  type PortalInviteErrorCode,
 } from '@breeze/shared';
 import { listPortalUsersForOrg } from '../services/portalUserDirectory';
 import { normalizeContactEmail } from '../services/contacts/crud';
@@ -76,10 +78,17 @@ async function hasPortalUserReferences(userId: string): Promise<boolean> {
 
 async function issueAndSendInvite(c: any, orgId: string, user: { id: string; email: string }, orgName: string | null, inviterName: string | null | undefined, message?: string): Promise<boolean> {
   const rawToken = await storePortalInviteToken(user.id);
-  if (!rawToken) return false; // redis unavailable — do not email a dead invite link
+  if (!rawToken) {
+    // redis unavailable — do not email a dead invite link
+    console.warn(`[orgPortalUsers] invite not sent (no invite token store) portalUserId=${user.id} orgId=${orgId}`);
+    return false;
+  }
   const inviteUrl = buildPortalUrl(`/accept-invite?token=${encodeURIComponent(rawToken)}`);
   const emailService = getEmailService();
-  if (!emailService) return false;
+  if (!emailService) {
+    console.warn(`[orgPortalUsers] invite not sent (no email service configured) portalUserId=${user.id} orgId=${orgId}`);
+    return false;
+  }
   // Partner from the VERIFIED auth context, never request input (spec §8.1).
   // These routes are requireScope('partner', 'system'); a system-scope caller
   // has partnerId === null, which resolves to the platform sender.
@@ -151,25 +160,28 @@ function contactNotFound(c: any): Response {
   return c.json({ error: MSG_CONTACT_NOT_FOUND, code: CODES.PORTAL_INVITE_CONTACT_NOT_FOUND }, 404);
 }
 
-/** The 409 a refused contact invite returns, or null when the decision is an invite. */
-function inviteDecisionRefusal(decision: ContactInviteDecision): { code: string; error: string } | null {
-  if (decision.kind === 'invite') return null;
+type InviteRefusal = { code: PortalInviteErrorCode; error: string };
+
+// A Record, not a switch: a new reason fails the build until it has a code.
+const REFUSAL_BY_REASON: Record<AlreadyHasAccessReason, InviteRefusal> = {
+  active: { code: CODES.PORTAL_INVITE_ALREADY_ACTIVE, error: MSG_ALREADY_ACTIVE },
+  disabled: { code: CODES.PORTAL_INVITE_USER_DISABLED, error: MSG_USER_DISABLED },
+  external_identity: { code: CODES.PORTAL_INVITE_EXTERNAL_IDENTITY, error: MSG_EXTERNAL_IDENTITY },
+  login_email_differs: {
+    code: CODES.PORTAL_INVITE_LOGIN_EMAIL_DIFFERS,
+    error: "This contact's portal login uses a different email than the contact. Update or remove that login first.",
+  },
+};
+
+/** The 409 body for a refused contact invite. */
+function inviteDecisionRefusal(decision: Exclude<ContactInviteDecision, { kind: 'invite' }>): InviteRefusal {
   if (decision.kind === 'email_bound_to_other_contact') {
     return {
       code: CODES.PORTAL_INVITE_CONTACT_CONFLICT,
       error: 'This email already has a portal login bound to a different contact. Unbind it first.',
     };
   }
-  switch (decision.reason) {
-    case 'active': return { code: CODES.PORTAL_INVITE_ALREADY_ACTIVE, error: MSG_ALREADY_ACTIVE };
-    case 'disabled': return { code: CODES.PORTAL_INVITE_USER_DISABLED, error: MSG_USER_DISABLED };
-    case 'external_identity': return { code: CODES.PORTAL_INVITE_EXTERNAL_IDENTITY, error: MSG_EXTERNAL_IDENTITY };
-    case 'login_email_differs':
-      return {
-        code: CODES.PORTAL_INVITE_LOGIN_EMAIL_DIFFERS,
-        error: "This contact's portal login uses a different email than the contact. Update or remove that login first.",
-      };
-  }
+  return REFUSAL_BY_REASON[decision.reason];
 }
 
 /**
@@ -273,8 +285,7 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
       } catch (err) {
         return bindFailureResponse(c, err);
       }
-      const refusal = inviteDecisionRefusal(decision);
-      if (refusal || decision.kind !== 'invite') return c.json(refusal, 409);
+      if (decision.kind !== 'invite') return c.json(inviteDecisionRefusal(decision), 409);
 
       if (!decision.created) await purgeLoginSessions(decision.portalUserId);
       const emailSent = await issueAndSendInvite(c, org.id, { id: decision.portalUserId, email: decision.email }, await readOrgName(org.id), auth.user.name, message);
@@ -480,10 +491,23 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
         results.set(contact.id, { contactId: contact.id, outcome: 'email_bound_to_other_contact', portalUserId: decision.portalUserId });
         continue;
       }
-      if (!decision.created) await purgeLoginSessions(decision.portalUserId);
       // A failed send keeps the login and reports emailSent:false; the UI
       // tells the MSP to use Resend rather than claiming a clean success.
-      const emailSent = await issueAndSendInvite(c, org.id, { id: decision.portalUserId, email: decision.email }, orgName, auth.user.name);
+      //
+      // The catch is load-bearing: earlier contacts may already have been
+      // mailed links to their logins, and a throw here would 500 the request
+      // and roll those logins back under the links. Only Redis calls can throw
+      // here (the branding read inside issueAndSendInvite is already in its
+      // own savepoint), so catching does not poison the request transaction.
+      // A purge failure is safe to continue past: the bind bumped auth_epoch,
+      // which is what live sessions are checked against.
+      let emailSent = false;
+      try {
+        if (!decision.created) await purgeLoginSessions(decision.portalUserId);
+        emailSent = await issueAndSendInvite(c, org.id, { id: decision.portalUserId, email: decision.email }, orgName, auth.user.name);
+      } catch (err) {
+        console.error(`[orgPortalUsers] invite-contacts side effect failed portalUserId=${decision.portalUserId} orgId=${org.id}:`, err);
+      }
       results.set(contact.id, { contactId: contact.id, outcome: 'invited', portalUserId: decision.portalUserId, emailSent });
       writeRouteAudit(c, {
         orgId: org.id,

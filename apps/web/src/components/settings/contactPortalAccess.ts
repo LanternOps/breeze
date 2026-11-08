@@ -3,6 +3,7 @@ import type { TFunction } from 'i18next';
 import {
   CONTACT_PORTAL_INVITE_OUTCOMES,
   type ContactPortalInviteOutcome,
+  type ContactPortalInviteResponse,
   type ContactPortalInviteResult,
 } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
@@ -166,12 +167,7 @@ export async function giveContactsPortalAccess(
   contactIds: string[],
   t: TFunction,
 ): Promise<ContactPortalInviteResult[]> {
-  const body = await runAction<{
-    data: {
-      results: ContactPortalInviteResult[];
-      counts: Record<ContactPortalInviteOutcome, number>;
-    };
-  }>({
+  const body = await runAction<ContactPortalInviteResponse>({
     request: () => fetchWithAuth(`${base(orgId)}/invite-contacts`, {
       method: 'POST',
       body: JSON.stringify({ contactIds }),
@@ -179,14 +175,13 @@ export async function giveContactsPortalAccess(
     errorFallback: t('settings:contactsCard.portal.errors.bulkInvite'),
     onUnauthorized: unauthorized,
   });
-  const { results = [], counts } = body.data;
+  const { results, counts } = body.data;
   const details = CONTACT_PORTAL_INVITE_OUTCOMES
-    .filter((o) => (counts?.[o] ?? 0) > 0)
+    .filter((o) => counts[o] > 0)
     .map((o) => t(/* i18n-dynamic */ OUTCOME_LABEL_KEYS[o], { count: counts[o] }))
     .join(' · ');
-  const clean = CONTACT_PORTAL_INVITE_OUTCOMES.every(
-    (o) => o === 'invited' || (counts?.[o] ?? 0) === 0,
-  ) && !results.some((r) => r.emailSent === false);
+  const clean = CONTACT_PORTAL_INVITE_OUTCOMES.every((o) => o === 'invited' || counts[o] === 0)
+    && !results.some((r) => r.outcome === 'invited' && !r.emailSent);
   showToast({
     type: clean ? 'success' : 'warning',
     message: t('settings:contactsCard.portal.toasts.bulkSummary', { details }),

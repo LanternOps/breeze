@@ -242,6 +242,13 @@ export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardP
       }
       setContacts(rows);
       setTotal(count);
+      // A reload (e.g. after a row delete) can drop rows the operator had
+      // ticked; posting a vanished id would 404 the whole bulk batch.
+      setSelected((prev) => {
+        const ids = new Set(rows.map((r) => r.id));
+        const next = new Set([...prev].filter((id) => ids.has(id)));
+        return next.size === prev.size ? prev : next;
+      });
     } catch (err) {
       if (superseded()) return;
       console.warn('[ContactsCard] contacts load failed', err);

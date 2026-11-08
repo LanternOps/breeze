@@ -400,6 +400,59 @@ describe('POST …/invite-contacts', () => {
     expect(h.sendInvite).not.toHaveBeenCalled();
   });
 
+  it('a Redis failure storing one invite token does not 500 the batch after others were mailed', async () => {
+    // Phase 2 runs after the binds; a throw there would roll back logins whose
+    // invite links already went out. The failed contact reports emailSent:false.
+    h.loadMock.mockResolvedValueOnce([contactRow(C1, 'one@acme.test'), contactRow(C2, 'two@acme.test')]);
+    h.bindMock
+      .mockResolvedValueOnce(invited('pu-1', 'one@acme.test'))
+      .mockResolvedValueOnce(invited('pu-2', 'two@acme.test'));
+    h.storeToken.mockResolvedValueOnce('raw-1').mockRejectedValueOnce(new Error('redis down'));
+
+    const res = await post('invite-contacts', { contactIds: [C1, C2] });
+
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.results).toEqual([
+      { contactId: C1, outcome: 'invited', portalUserId: 'pu-1', emailSent: true },
+      { contactId: C2, outcome: 'invited', portalUserId: 'pu-2', emailSent: false },
+    ]);
+    expect(h.sendInvite).toHaveBeenCalledTimes(1);
+  });
+
+  it('a session-purge failure on a re-invited login still reports the contact (emailSent:false) and continues', async () => {
+    h.loadMock.mockResolvedValueOnce([contactRow(C1, 'one@acme.test'), contactRow(C2, 'two@acme.test')]);
+    h.bindMock
+      .mockResolvedValueOnce(invited('pu-1', 'one@acme.test', { created: false, contactLink: 'kept' }))
+      .mockResolvedValueOnce(invited('pu-2', 'two@acme.test'));
+    h.purgeAi.mockRejectedValueOnce(new Error('redis down'));
+
+    const res = await post('invite-contacts', { contactIds: [C1, C2] });
+
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.results.map((r: any) => [r.contactId, r.outcome, r.emailSent])).toEqual([
+      [C1, 'invited', false],
+      [C2, 'invited', true],
+    ]);
+  });
+
+  it('locks every eligible address BEFORE the first bind, inside the same savepoint', async () => {
+    let depth = 0;
+    let lockDepth = -1;
+    h.withTx.mockImplementation(async (fn: () => Promise<unknown>) => { depth += 1; try { return await fn(); } finally { depth -= 1; } });
+    h.lockMock.mockImplementationOnce(async () => { lockDepth = depth; });
+    h.loadMock.mockResolvedValueOnce([contactRow(C1, 'b@acme.test'), contactRow(C2, 'a@acme.test'), contactRow(C3, null)]);
+    h.bindMock.mockResolvedValue(invited('pu-1', 'x@acme.test'));
+
+    await post('invite-contacts', { contactIds: [C1, C2, C3] });
+
+    expect(h.lockMock).toHaveBeenCalledTimes(1);
+    expect(h.lockMock.mock.calls[0]![2]).toEqual(['b@acme.test', 'a@acme.test']);
+    expect(h.lockMock.mock.invocationCallOrder[0]!).toBeLessThan(h.bindMock.mock.invocationCallOrder[0]!);
+    expect(lockDepth).toBe(1);
+  });
+
   it('purges sessions only for re-invited (not newly created) logins', async () => {
     h.loadMock.mockResolvedValueOnce([contactRow(C1, 'one@acme.test'), contactRow(C2, 'two@acme.test')]);
     h.bindMock

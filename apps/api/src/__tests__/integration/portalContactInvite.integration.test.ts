@@ -13,10 +13,11 @@ import './setup';
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import { contacts, portalUsers } from '../../db/schema';
 import { authMiddleware } from '../../middleware/auth';
 import { registerOrgPortalUsersRoutes } from '../../routes/orgPortalUsers';
+import { bindContactLoginForInvite, ContactGoneError } from '../../services/contacts/portalInvite';
 import { createAccessToken } from '../../services/jwt';
 import { createOrganization, setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
@@ -253,6 +254,97 @@ describe('invite from contacts — real Postgres / RLS', () => {
     expect((await res.json()).code).toBe('PORTAL_INVITE_CONTACT_NOT_FOUND');
     expect(await loginsIn(env.organization.id)).toEqual([]);
     expect(await loginsIn(orgA2.id)).toEqual([]);
+  });
+
+  it('an organization-scope caller is refused (403) on both routes, even with MFA, and nothing is written', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const orgId = env.organization.id;
+    const contactId = await seedContact(orgId, 'ada@acme.example');
+    const orgToken = await createAccessToken({
+      sub: env.user.id,
+      email: env.user.email,
+      roleId: env.role.id,
+      orgId,
+      partnerId: env.partner.id,
+      scope: 'organization',
+      mfa: true,
+      aep: 1,
+      mep: 1,
+      sid: 'it-session-org',
+    });
+    const send = (path: string, body: unknown) => buildMspApp().request(`/organizations/${orgId}/portal-users/${path}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${orgToken}`, ...JSON_HEADERS },
+      body: JSON.stringify(body),
+    });
+
+    expect((await send('invite', { email: 'ada@acme.example', contactId })).status).toBe(403);
+    expect((await send('invite-contacts', { contactIds: [contactId] })).status).toBe(403);
+    expect(await loginsIn(orgId)).toEqual([]);
+    expect(await contactRoles(contactId)).toEqual([]);
+  });
+
+  it('binds an existing unbound pending login to the contact (reuse/direct) and bumps auth_epoch', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const orgId = env.organization.id;
+    const contactId = await seedContact(orgId, 'ada@acme.example');
+    const loginId = await seedLogin({ orgId, email: 'ada@acme.example', status: 'invited' });
+
+    const res = await post(env, orgId, 'invite', { email: 'ada@acme.example', contactId });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ id: loginId, contactLink: 'direct' });
+    const [row] = await withSystemDbAccessContext(() =>
+      db.select({ contactId: portalUsers.contactId, authEpoch: portalUsers.authEpoch }).from(portalUsers).where(eq(portalUsers.id, loginId)),
+    );
+    expect(row).toEqual({ contactId, authEpoch: 2 });
+    expect(await loginsIn(orgId)).toHaveLength(1);
+  });
+
+  it('an unbound ACTIVE login on the address is refused (409) and is not bound', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const orgId = env.organization.id;
+    const contactId = await seedContact(orgId, 'ada@acme.example');
+    const loginId = await seedLogin({ orgId, email: 'ada@acme.example', status: 'active', passwordHash: 'hash' });
+
+    const res = await post(env, orgId, 'invite', { email: 'ada@acme.example', contactId });
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('PORTAL_INVITE_ALREADY_ACTIVE');
+    expect(await loginsIn(orgId)).toEqual([expect.objectContaining({ id: loginId, contactId: null, status: 'active' })]);
+    expect(await contactRoles(contactId)).toEqual([]);
+  });
+
+  it('a ContactGoneError mid-batch rolls back the earlier bind in the same savepoint (real Postgres)', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const orgId = env.organization.id;
+    const contactA = await seedContact(orgId, 'a@acme.example', 'A');
+    const now = new Date();
+    const actor = { userId: env.user.id };
+
+    let caught: unknown;
+    await withSystemDbAccessContext(async () => {
+      try {
+        await withDbTransaction(async () => {
+          const first = await bindContactLoginForInvite(db, {
+            orgId, contact: { id: contactA, orgId, siteId: null, name: 'A', email: 'a@acme.example' },
+            normalizedEmail: 'a@acme.example', name: null, actor, now,
+          });
+          expect(first).toMatchObject({ kind: 'invite', created: true });
+          // A contact that no longer exists: the locked re-read finds nothing.
+          await bindContactLoginForInvite(db, {
+            orgId, contact: { id: crypto.randomUUID(), orgId, siteId: null, name: 'B', email: 'b@acme.example' },
+            normalizedEmail: 'b@acme.example', name: null, actor, now,
+          });
+        });
+      } catch (err) {
+        caught = err;
+      }
+    });
+
+    expect(caught).toBeInstanceOf(ContactGoneError);
+    expect(await loginsIn(orgId)).toEqual([]);
+    expect(await contactRoles(contactA)).toEqual([]);
   });
 
   it('the composite FK still rejects a cross-org contact_id written directly', async () => {

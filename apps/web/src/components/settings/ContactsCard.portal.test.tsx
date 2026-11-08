@@ -216,6 +216,27 @@ describe('ContactsCard portal access', () => {
       expect(screen.queryByTestId('org-contacts-portal-bulk-give')).not.toBeInTheDocument());
   });
 
+  it('prunes selected ids that vanish from a reload so a stale id is never posted', async () => {
+    const rows = [...CONTACTS];
+    mockApi({ contacts: rows });
+    await renderCard();
+    fireEvent.click(await screen.findByTestId('org-contacts-select-c-none'));
+    fireEvent.click(screen.getByTestId('org-contacts-select-c-act'));
+    expect(screen.getByTestId('org-contacts-portal-bulk-give')).toHaveTextContent('Give portal access (2)');
+    // c-act disappears server-side; the next contacts load (triggered here by a
+    // create, same path as a row delete) returns the page without it.
+    rows.splice(rows.findIndex((r) => (r as { id: string }).id === 'c-act'), 1);
+    fireEvent.click(screen.getByTestId('org-contacts-add-button'));
+    fireEvent.change(screen.getByTestId('contact-form-name-input'), { target: { value: 'Newbie' } });
+    fireEvent.click(screen.getByTestId('contact-form-submit'));
+    await waitFor(() => expect(screen.queryByTestId('org-contacts-select-c-act')).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByTestId('org-contacts-portal-bulk-give')).toHaveTextContent('Give portal access (1)'));
+    fireEvent.click(screen.getByTestId('org-contacts-portal-bulk-give'));
+    await waitFor(() => expect(postsTo('/invite-contacts')).toHaveLength(1));
+    expect(postsTo('/invite-contacts')[0].body).toEqual({ contactIds: ['c-none'] });
+  });
+
   it('select-all selects every row on the page', async () => {
     mockApi();
     await renderCard();
