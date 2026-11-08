@@ -114,6 +114,7 @@ import {
 import { ingestRollbackObservation } from '../../services/agentRollbackResult';
 import {
   editionWithheldDetail,
+  effectiveWatchdogEdition,
   type EditionWithheldContext as SharedEditionWithheldContext,
 } from '../../services/agentEditionCompat';
 import { recordAgentHealthObservation } from '../../services/agentHealthObservations';
@@ -893,6 +894,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       watchdogStatus: data.watchdogState === 'FAILOVER' ? 'failover' : 'connected',
       watchdogLastSeen: now,
       watchdogVersion: data.agentVersion,
+      // #4297 — the watchdog's own edition, written WITH its version so the
+      // pair always describes the same binary. Unconditional: a silent beat
+      // clears a value an earlier build reported (a rollback or reinstall to a
+      // pre-reporting build must not inherit it); readers then fall back to
+      // agentEdition (effectiveWatchdogEdition).
+      watchdogEdition: data.agentEdition ?? null,
       updatedAt: now,
     };
     if (transitioningIntoSilent) {
@@ -1000,25 +1007,34 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // failover beat.
     //
     // A SILENT watchdog is NOT evidence of a self-host build the way a silent
-    // main agent is: watchdog edition reporting first ships alongside this
-    // gate, so every watchdog in the field today is silent — including the
-    // hosted fleet's, whose recovery path (#1104) must not be withheld. Fall
-    // back to the device row's agentEdition, written unconditionally from
-    // every MAIN-agent beat: agent and watchdog install and upgrade from the
-    // same lane, so the main agent's build edition identifies the watchdog's.
-    // If both are silent (the stranded pre-telemetry band), the version-band
-    // inference inside the predicate takes over. Known imprecision: a device
-    // whose main agent already reports 'self-host' (transition-capable) but
-    // whose watchdog is still an older self-host build gets a hosted offer
+    // main agent is: watchdog edition reporting first shipped alongside this
+    // gate, so every older watchdog build is silent — including the hosted
+    // fleet's, whose recovery path (#1104) must not be withheld.
+    //
+    // #4297 — this beat's payload IS the watchdog's own report, and it is what
+    // watchdogUpdates just wrote to devices.watchdog_edition, so it goes in as
+    // the watchdog edition. The stored column is deliberately NOT consulted
+    // for a silent beat: it describes an earlier build, and this beat
+    // supersedes it. effectiveWatchdogEdition then falls back to the device
+    // row's agentEdition, written unconditionally from every MAIN-agent beat
+    // — a stated degradation that assumes agent and watchdog install and
+    // upgrade from the same lane. If both are silent (the stranded
+    // pre-telemetry band), the version-band inference inside the predicate
+    // takes over. Known imprecision of the fallback: a device whose main
+    // agent already reports 'self-host' (transition-capable) but whose
+    // watchdog is still an older silent self-host build gets a hosted offer
     // its watchdog refuses — failover-only, self-heals once the watchdog
     // catches up via the main branch.
     // Hoisted so the warn calls below print the value that actually DECIDED
     // (the fallback included) — logging the silent payload as "none" when the
     // stored edition drove the withhold would steer the operator to the wrong
     // remediation.
-    const effectiveWatchdogEdition = data.agentEdition ?? device.agentEdition;
+    const watchdogEditionForGate = effectiveWatchdogEdition({
+      watchdogEdition: data.agentEdition,
+      agentEdition: device.agentEdition,
+    });
     const watchdogAcceptsServedEdition = agentAcceptsServedEdition({
-      reportedEdition: effectiveWatchdogEdition,
+      reportedEdition: watchdogEditionForGate,
       agentVersion: data.agentVersion,
     });
 
@@ -1051,7 +1067,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           warnEditionOfferWithheld({
             deviceId: device.id,
             role: 'watchdog',
-            reportedEdition: effectiveWatchdogEdition,
+            reportedEdition: watchdogEditionForGate,
             agentVersion: data.agentVersion,
           });
         }
@@ -1084,7 +1100,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // when no watchdog target resolves).
       warnEditionRecoveryWithheld({
         deviceId: device.id,
-        reportedEdition: effectiveWatchdogEdition,
+        reportedEdition: watchdogEditionForGate,
         agentVersion: data.agentVersion,
       });
     } else if (watchdogAcceptsServedEdition) {
@@ -1368,6 +1384,16 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // — leave the stored value untouched in that case.
   if (data.watchdogVersion) {
     deviceUpdates.watchdogVersion = data.watchdogVersion;
+    // #4297 — devices.watchdog_edition is the watchdog's own report about the
+    // build at watchdog_version. A different installed version (an upgrade,
+    // rollback or reinstall through the main agent) means that report no
+    // longer describes the binary on disk, so drop it and let readers fall
+    // back to agentEdition until the watchdog next reports. A racing watchdog
+    // beat can only make this clear a fresh value, never keep a stale one —
+    // the conservative direction.
+    if (data.watchdogVersion !== device.watchdogVersion) {
+      deviceUpdates.watchdogEdition = null;
+    }
   }
 
   // Keep devices.backup_version fresh from the agent's heartbeat, mirroring

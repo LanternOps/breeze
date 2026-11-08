@@ -1227,8 +1227,9 @@ async function precheckCommandExecution(
   // 1. Verify device inside the caller's transaction (RLS-protected ONLY when
   // the caller holds a tenant-scoped context — see the header note on #5264
   // and the explicit `expectedOrgId` gate immediately after this SELECT).
-  // agentEdition/agentVersion/watchdogVersion feed the artifact-edition gate
-  // below (#4093) — cheap here because this SELECT already runs.
+  // agentEdition/watchdogEdition/agentVersion/watchdogVersion feed the
+  // artifact-edition gate below (#4093, #4297) — cheap here because this
+  // SELECT already runs.
   const [device] = await db
     .select({
       id: devices.id,
@@ -1240,6 +1241,7 @@ async function precheckCommandExecution(
       agentEdition: devices.agentEdition,
       agentVersion: devices.agentVersion,
       watchdogVersion: devices.watchdogVersion,
+      watchdogEdition: devices.watchdogEdition,
       backupReadProtocolVersion: devices.backupReadProtocolVersion,
       backupWriteProtocolVersion: devices.backupWriteProtocolVersion,
       backupIntegrityProtocolVersion: devices.backupIntegrityProtocolVersion,
