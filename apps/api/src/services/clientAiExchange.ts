@@ -10,6 +10,7 @@ import { linkLoginToContact, type LoginContactOutcome } from './contacts/loginLi
 import { resolveLinkableEntraAddress } from './clientAiEntraAddress';
 import { captureException } from './sentry';
 import { ensureEntraIdentity, insertEntraIdentity } from './portalUserIdentities';
+import { initialPortalAccountState } from './portalAccountState';
 import type { ClientAiEntraClaims } from './clientAiEntraJwt';
 import {
   CLIENT_AI_REDIS_KEYS,
@@ -365,9 +366,9 @@ export async function resolveAndMintClientSession(
               entraOid: claims.oid,
               entraTenantId: claims.tid,
               authMethod: 'entra',
-              // An add-in login never grants the browser portal (spec §6 inv. 9).
-              status: 'active',
-              browserAccess: 'none',
+              // active + browser_access none: an add-in login never grants the
+              // browser portal (spec §6 invariant 9).
+              ...initialPortalAccountState('addin_jit'),
               lastLoginAt: now,
             })
             .returning(USER_COLUMNS);
