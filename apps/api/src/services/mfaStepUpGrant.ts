@@ -35,6 +35,10 @@ export type StepUpOperation =
   | 'add_factor'
   | 'rotate_recovery_codes'
   | 'delete_passkey'
+  // #10650: removing the authenticator app on its own (POST
+  // /auth/mfa/totp/remove) without switching MFA off. Proven by a passkey or
+  // the authenticator itself; /mfa/step-up refuses SMS for it.
+  | 'remove_totp'
   | 'register_approver_device'
   | 'agent_rollback'
   | 'enroll_first_factor'

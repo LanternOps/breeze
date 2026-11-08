@@ -11,7 +11,8 @@ import { users } from '../../db/schema';
 /** The `users` columns that decide whether an authenticator app is enrolled. */
 export interface TotpFactorRow {
   mfaEnabled: boolean | null;
-  mfaMethod: 'totp' | 'sms' | 'passkey' | null;
+  /** The `mfa_method` enum ('totp' | 'sms' | 'passkey'), typed loosely so rows read through other projections fit. */
+  mfaMethod: string | null;
   mfaSecret: string | null;
 }
 

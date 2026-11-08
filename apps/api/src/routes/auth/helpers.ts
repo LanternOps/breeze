@@ -518,7 +518,7 @@ export async function enforceExistingFactorStepUp(
   grantId: string | undefined,
   opts: {
     consume: boolean;
-    operation?: 'add_factor' | 'rotate_recovery_codes' | 'delete_passkey';
+    operation?: 'add_factor' | 'rotate_recovery_codes' | 'delete_passkey' | 'remove_totp';
     resourceDigest?: string;
   },
 ): Promise<Response | null> {
