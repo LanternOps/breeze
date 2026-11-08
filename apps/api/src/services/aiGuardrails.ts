@@ -1692,11 +1692,10 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     list: { resource: 'tickets', action: 'read' },
     get: { resource: 'tickets', action: 'read' },
     // #11431: read-only (id + name of active partner work types, Tier-1 read);
-    // the action was implemented and listed in the schema enum but unmapped, so
-    // it was refused as an unknown action. Resource choice (tickets vs the
-    // billing_profiles:read the sibling manage_billing_profiles.list_work_types
-    // uses) is left at the tool's own read grant — see PR follow-up.
-    list_work_types: { resource: 'tickets', action: 'read' },
+    // implemented and in the schema enum but unmapped, so it was refused as an
+    // unknown action. Gated like GET /work-types and the sibling
+    // manage_billing_profiles.list_work_types: billing_profiles:read.
+    list_work_types: { resource: 'billing_profiles', action: 'read' },
     create: { resource: 'tickets', action: 'write' },
     comment: { resource: 'tickets', action: 'write' },
     assign: { resource: 'tickets', action: 'write' },

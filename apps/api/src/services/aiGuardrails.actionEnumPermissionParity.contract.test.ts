@@ -18,9 +18,6 @@ function actionEnum(tool: Descriptor): string[] {
   return Array.isArray(p) ? p.filter((v): v is string => typeof v === 'string') : [];
 }
 
-/** tool -> reason. Only tools whose permission is intentionally not per-action. */
-const ALLOWLIST: Record<string, string> = {};
-
 function collectDescriptors(): Descriptor[] {
   const descriptors: Descriptor[] = [...aiTools.values()].map((t) => t.definition);
   for (const config of [
@@ -44,15 +41,26 @@ describe('AI tool action enum ⊆ TOOL_PERMISSIONS', () => {
       .toEqual({ ok: true, requirements: [{ resource: 'alerts', action: 'read' }] });
   });
 
+  it('manage_tickets list_work_types resolves to billing_profiles:read (matches GET /work-types) (#11431)', () => {
+    expect(resolveToolPermissionRequirements('manage_tickets', { action: 'list_work_types' }))
+      .toEqual({ ok: true, requirements: [{ resource: 'billing_profiles', action: 'read' }] });
+  });
+
   it('every schema action enum value resolves (no "Unknown action" denial)', () => {
     const offenders = new Set<string>();
+    const visited = new Set<string>();
     for (const tool of collectDescriptors()) {
-      if (ALLOWLIST[tool.name]) continue;
       for (const action of actionEnum(tool)) {
+        visited.add(`${tool.name}.${action}`);
         const r = resolveToolPermissionRequirements(tool.name, { action });
         if (!r.ok && r.denial.startsWith('Unknown action')) offenders.add(`${tool.name}.${action}`);
       }
     }
+    // Floor: the walk must really see the multiplexed tool surface, or an empty
+    // collection would pass vacuously.
+    expect(visited.size).toBeGreaterThan(300);
+    expect(visited).toContain('manage_monitor_definitions.describe');
+    expect(visited).toContain('manage_tickets.list_work_types');
     expect([...offenders].sort()).toEqual([]);
   });
 });
