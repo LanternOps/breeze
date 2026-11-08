@@ -166,7 +166,7 @@ func AllSignatures() []Signature {
 		},
 
 		// =====================================================================
-		// Remote Access (12 tools)
+		// Remote Access (18 tools)
 		// =====================================================================
 
 		// TeamViewer
@@ -322,6 +322,88 @@ func AllSignatures() []Signature {
 				{Type: CheckProcessRunning, Value: "winvnc.exe", OS: "windows"},
 				{Type: CheckFileExists, Value: `C:\Program Files\uvnc bvba\UltraVNC\winvnc.exe`, OS: "windows"},
 				{Type: CheckFileExists, Value: `C:\Program Files (x86)\uvnc bvba\UltraVNC\winvnc.exe`, OS: "windows"},
+			},
+		},
+
+		// Remote support tools common in tech-support scams (#11306). The API
+		// alerts partners when one first appears on a managed device.
+		// Quick Assist is left out on purpose: it ships with Windows 11.
+
+		// UltraViewer (32-bit installer, so Program Files (x86) only)
+		{
+			Name: "UltraViewer", Category: CategoryRemoteAccess,
+			OS: []string{"windows"},
+			Checks: []Check{
+				{Type: CheckServiceRunning, Value: "UltraViewService", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "UltraViewer_Service.exe", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "UltraViewer_Desktop.exe", OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files (x86)\UltraViewer\UltraViewer_Service.exe`, OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files (x86)\UltraViewer\UltraViewer_Desktop.exe`, OS: "windows"},
+			},
+		},
+
+		// Zoho Assist: the unattended agent (ZohoURS*) and the on-demand
+		// session applet (ZA_Access). The registry key is the one Zoho
+		// documents for install detection; both registry views are probed.
+		{
+			Name: "Zoho Assist", Category: CategoryRemoteAccess,
+			OS: []string{"windows"},
+			Checks: []Check{
+				{Type: CheckProcessRunning, Value: "ZohoURSService.exe", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "ZohoURS.exe", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "ZA_Access.exe", OS: "windows"},
+				{Type: CheckRegistryValue, Value: `HKLM\SOFTWARE\Zoho Assist\Unattended Remote Support`, OS: "windows"},
+				{Type: CheckRegistryValue, Value: `HKLM\SOFTWARE\WOW6432Node\Zoho Assist\Unattended Remote Support`, OS: "windows"},
+			},
+		},
+
+		// DWService (DWAgent), at its default service name and install path.
+		{
+			Name: "DWService", Category: CategoryRemoteAccess,
+			OS: []string{"windows"},
+			Checks: []Check{
+				{Type: CheckServiceRunning, Value: "DWAgent", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "dwagent.exe", OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files\DWAgent`, OS: "windows"},
+			},
+		},
+
+		// Supremo
+		{
+			Name: "Supremo", Category: CategoryRemoteAccess,
+			OS: []string{"windows"},
+			Checks: []Check{
+				{Type: CheckProcessRunning, Value: "SupremoService.exe", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "Supremo.exe", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "SupremoSystem.exe", OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\ProgramData\SupremoRemoteDesktop`, OS: "windows"},
+			},
+		},
+
+		// Ammyy Admin: usually run portable, so processes lead; ProgramData
+		// holds its config and access log once it has run as a service.
+		{
+			Name: "Ammyy Admin", Category: CategoryRemoteAccess,
+			OS: []string{"windows"},
+			Checks: []Check{
+				{Type: CheckProcessRunning, Value: "AA_v3.exe", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "AMMYY_Admin.exe", OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\ProgramData\AMMYY`, OS: "windows"},
+			},
+		},
+
+		// Chrome Remote Desktop host (not the browser extension alone). The
+		// Windows host installs into a versioned folder, so the folder is probed.
+		{
+			Name: "Chrome Remote Desktop", Category: CategoryRemoteAccess,
+			OS: []string{"windows", "darwin"},
+			Checks: []Check{
+				{Type: CheckServiceRunning, Value: "chromoting", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "remoting_host.exe", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "remoting_me2me_host", OS: "darwin"},
+				{Type: CheckFileExists, Value: `C:\Program Files (x86)\Google\Chrome Remote Desktop`, OS: "windows"},
+				{Type: CheckFileExists, Value: "/Library/PrivilegedHelperTools/ChromeRemoteDesktopHost.app", OS: "darwin"},
+				{Type: CheckLaunchDaemon, Value: "org.chromium.chromoting", OS: "darwin"},
 			},
 		},
 
