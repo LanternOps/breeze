@@ -96,6 +96,7 @@ vi.mock('../../services/tenantStatus', () => ({
 }));
 
 vi.mock('../../services/password', () => ({
+  getDummyPasswordHash: vi.fn(async () => 'dummy-hash'),
   verifyPassword: verifyPasswordMock,
   hashPassword: hashPasswordMock,
 }));

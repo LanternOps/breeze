@@ -6,7 +6,7 @@ import { nanoid } from 'nanoid';
 import { createHash } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { organizations, partners, portalBranding, portalUsers } from '../../db/schema';
-import { hashPassword, isPasswordStrong, verifyPassword } from '../../services/password';
+import { getDummyPasswordHash, hashPassword, isPasswordStrong, verifyPassword } from '../../services/password';
 import { getEmailService } from '../../services/email';
 import { getRedis } from '../../services/redis';
 import { getActiveOrgTenant } from '../../services/tenantStatus';
@@ -50,6 +50,7 @@ import {
   validatePortalCapability,
 } from './capabilityTokens';
 import { PortalAccountTransitionError, planPortalAccountTransition } from '../../services/portalAccountState';
+import { PORTAL_LOGIN_CANDIDATE_CAP, resolveLoginCandidate } from './loginCandidates';
 import { isSelfManagedDbContextRoute } from '../../middleware/selfManagedDbContextRoutes';
 import { portalOrgDbAccessContext } from './portalDbContext';
 import { purgeClientAiSessionsForUsers } from '../../services/clientAiSessionStore';
@@ -461,6 +462,12 @@ authRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
   // Pre-auth credential lookup resolves a portal user by email (optionally
   // scoped by orgId) before any tenant context exists — run under system scope
   // so org-forced RLS doesn't hide the row under the breeze_app pool.
+  //
+  // An address may hold a password account in several orgs. Every candidate
+  // is verified and the login succeeds only when exactly ONE verifies; any
+  // other outcome is the ordinary 401 below (W2, spec §6 invariant 8 — the
+  // response never reveals that an address has more than one account). Only
+  // password logins WITH browser access are candidates.
   const userRows = await withSystemDbAccessContext(() =>
     db
       .select({
@@ -476,30 +483,24 @@ authRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
         orgName: portalOrgNameSql(),
       })
       .from(portalUsers)
-      .where(
-        orgId
-          ? and(eq(portalUsers.orgId, orgId), eq(portalUsers.email, normalizedEmail), eq(portalUsers.authMethod, 'password'))
-          : and(eq(portalUsers.email, normalizedEmail), eq(portalUsers.authMethod, 'password'))
-      )
-      .limit(orgId ? 1 : 2)
+      .where(and(
+        ...(orgId ? [eq(portalUsers.orgId, orgId)] : []),
+        eq(portalUsers.email, normalizedEmail),
+        eq(portalUsers.authMethod, 'password'),
+        eq(portalUsers.browserAccess, 'granted'),
+      ))
+      .limit(PORTAL_LOGIN_CANDIDATE_CAP + 1)
   );
 
-  if (!orgId && userRows.length > 1) {
-    return c.json({ error: 'Multiple portal accounts found for this email. Please provide organization context.' }, 400);
-  }
+  // Attribute the attempt to an account only when the address names exactly
+  // one; several candidates with no winner audit like an unknown address.
+  if (userRows.length === 1) setPortalAuthAuditIdentity(c, userRows[0]!);
 
-  const user = userRows[0];
-
-  if (user) setPortalAuthAuditIdentity(c, user);
-
-  if (!user || !user.passwordHash) {
+  const user = await resolveLoginCandidate(userRows, password, verifyPassword, getDummyPasswordHash);
+  if (!user) {
     return c.json({ error: 'Invalid email or password' }, 401);
   }
-
-  const validPassword = await verifyPassword(user.passwordHash, password);
-  if (!validPassword) {
-    return c.json({ error: 'Invalid email or password' }, 401);
-  }
+  setPortalAuthAuditIdentity(c, user);
 
   // Refuse a churned/archived/suspended org here, with a reason, instead of
   // minting a session the very next request would 403 and purge (#10934: the

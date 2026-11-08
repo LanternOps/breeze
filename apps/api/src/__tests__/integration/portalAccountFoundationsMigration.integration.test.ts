@@ -241,8 +241,8 @@ describe('2027-01-22-210500-portal-account-foundations.sql', () => {
       const half = await seedRow(tx, orgId, { authMethod: 'entra', entraOid: randomUUID(), entraTenantId: null });
       const halfTid = await seedRow(tx, orgId, { authMethod: 'entra', entraOid: null, entraTenantId: randomUUID() });
       await replay(tx);
-      const [{ n }] = await tx`SELECT count(*)::int AS n FROM portal_user_identities WHERE portal_user_id IN (${half}, ${halfTid})`;
-      expect(n).toBe(0);
+      const [counted] = await tx`SELECT count(*)::int AS n FROM portal_user_identities WHERE portal_user_id IN (${half}, ${halfTid})`;
+      expect(counted!.n).toBe(0);
       expect(notices).toContain('WARNING: portal_users: 2 row(s) have only one of entra_oid/entra_tenant_id — not backfilled');
     });
   });

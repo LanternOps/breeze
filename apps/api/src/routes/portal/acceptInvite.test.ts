@@ -117,7 +117,7 @@ describe('portal authentication lifecycle audit', () => {
   });
 
   it('records an attributable handler exception as failure and rethrows it', async () => {
-    userRow.current = { id: USER_ID, orgId: ORG_ID, email: 'cust@acme.example', name: null, passwordHash: null, authMethod: 'password', authEpoch: 1, receiveNotifications: true, status: 'invited', authEpoch: 1, browserAccess: 'granted', entraOid: null };
+    userRow.current = { id: USER_ID, orgId: ORG_ID, email: 'cust@acme.example', name: null, passwordHash: null, authMethod: 'password', authEpoch: 1, receiveNotifications: true, status: 'invited', browserAccess: 'granted', entraOid: null };
     const token = await mintInvite();
     updateSpy.mockImplementationOnce(() => { throw new Error('synthetic update failure'); });
     expect((await post({ token, password: 'Str0ngPass!' })).status).toBe(500);

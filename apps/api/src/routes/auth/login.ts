@@ -7,7 +7,6 @@ import { users } from '../../db/schema';
 import {
   verifyToken,
   verifyPassword,
-  hashPassword,
   rateLimiter,
   loginLimiter,
   getRefreshRateLimit,
@@ -86,22 +85,13 @@ import { getBoundMobileDeviceBlock, mobileDeviceBlockedResponse } from '../../mi
 import { dbWriteExpectingRows } from '../../db/dbWriteExpectingRows';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { waitForAuthTransitionFinalizationTestBarrier } from './authTransitionTestControl';
+import { getDummyPasswordHash } from '../../services/password';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
-// Lazily-computed dummy argon2id hash used to constant-time the
-// user-not-found branch of the login handler. The first miss after
-// startup computes and caches it; every miss after that reuses the same
-// hash. Without this, response timing reveals whether an email exists
-// in the users table (hit runs verifyPassword → ~100-500ms argon2; miss
-// returns immediately → ~1ms), trivially enabling email enumeration.
-let dummyPasswordHashPromise: Promise<string> | null = null;
-function getDummyPasswordHash(): Promise<string> {
-  if (!dummyPasswordHashPromise) {
-    dummyPasswordHashPromise = hashPassword('__login-timing-dummy-never-matches__');
-  }
-  return dummyPasswordHashPromise;
-}
+// The user-not-found branch verifies against a dummy argon2id hash
+// (getDummyPasswordHash, services/password.ts — shared with the portal login)
+// so response timing does not reveal whether an email exists.
 
 // Task 11: floor-the-clock timing equalizer for /login (audit finding H-4).
 //
