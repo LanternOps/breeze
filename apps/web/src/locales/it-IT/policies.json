@@ -1809,7 +1809,7 @@
       "auditOnly": "Solo audit",
       "describeThePurposeOfThisPolicy": "Descrivi lo scopo di questo criterio...",
       "softwareRules": "Regole software",
-      "name": "Nome *",
+      "name": "Nome del software *",
       "vendor": "Vendor",
       "minVer": "Versione min",
       "maxVer": "Versione max",

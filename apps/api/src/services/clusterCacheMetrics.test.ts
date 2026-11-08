@@ -14,6 +14,7 @@ describe('clusterCacheMetrics (#8144)', () => {
   it('registers every series on the shared registry', async () => {
     recordCacheLookup('org-topology-flags', 'hit');
     recordInvalidationPublished('org-topology-flags', 'published');
+    recordInvalidationPublished('org-topology-flags', 'timeout');
     recordInvalidationReceived('org-topology-flags', 'applied');
     recordInvalidationLag('org-topology-flags', 0.02);
     setSubscriberUp(true);

@@ -260,6 +260,23 @@ describe('validateFolderName', () => {
     },
   );
 
+  // Mirrors isReservedWindowsName in agent/internal/remote/tools/software_install_archive.go.
+  it.each([
+    'con', 'CON', 'Prn', 'aux', 'nul', 'com1', 'COM9', 'lpt1', 'LPT9', 'com0', 'lpt0',
+    'con.txt', 'nul.tar.gz', 'conin$', 'CONOUT$', 'com\u00b9', 'lpt\u00b3', 'con ',
+    'trailing ',
+  ])('refuses the Windows reserved/trailing-space name %j on Windows, allows it on POSIX', (name) => {
+    expect(validateFolderName(name, WINDOWS, [])).toBe('invalid');
+    expect(validateFolderName(name, POSIX, [])).toBeNull();
+  });
+
+  it.each(['console', 'com10', 'lpt', 'com', 'auxiliary', 'nulled', 'my con'])(
+    'allows the look-alike %j on Windows',
+    (name) => {
+      expect(validateFolderName(name, WINDOWS, [])).toBeNull();
+    },
+  );
+
   it('treats a name that differs only by case as taken on Windows, not on POSIX', () => {
     expect(validateFolderName('reports', WINDOWS, ['Reports'])).toBe('exists');
     expect(validateFolderName('reports', POSIX, ['Reports'])).toBeNull();

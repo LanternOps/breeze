@@ -18,12 +18,10 @@ import type { AuthContext } from '../middleware/auth';
 import { dbAccessContextFromAuth } from '../middleware/auth';
 import { isFlowPrincipal } from '../middleware/principalKind';
 import {
-  db, getCurrentDbAccessContext, hasDbAccessContext, runOutsideDbContext, withDbAccessContext,
-  withDbTransaction,
+  getCurrentDbAccessContext, hasDbAccessContext, runOutsideDbContext, withDbAccessContext,
 } from '../db';
-import { organizations } from '../db/schema';
-import { inArray } from 'drizzle-orm';
 import { captureException } from './sentry';
+import { splitByOrg, type SplitByOrg } from './aiToolSplitByOrg';
 import {
   createScriptProposal, enqueueScriptReview, getScriptProposalForPrincipal, selectLatestModelReview,
   selectProposalExecutions, waitForReviewCompletion,
@@ -33,37 +31,6 @@ import type { ScriptProposalReviewRow } from '../db/schema/scriptProposals';
 
 /** Spec §4.2: the inline wait before propose_script returns `pending`. */
 const INLINE_REVIEW_WAIT_MS = 45_000;
-
-/** Structured refusal telling the model to call the tool once per org (#10431). */
-interface SplitByOrg {
-  error: 'split_by_org';
-  groups: Array<{ orgId: string; orgName: string | null; deviceIds: string[] }>;
-  hint: string;
-}
-
-async function splitByOrg(byOrg: Map<string, string[]>): Promise<SplitByOrg> {
-  // Names are a convenience for the model; the org ids are what it needs. The
-  // orgs were already resolved through the caller's own scope, so this read
-  // runs under the same context and cannot widen reach.
-  const names = new Map<string, string>();
-  try {
-    // Own savepoint, catch outside it: a bare failing query would poison the
-    // enclosing transaction and turn this degraded answer into a commit error.
-    const rows = await withDbTransaction(() => db.select({ id: organizations.id, name: organizations.name })
-      .from(organizations).where(inArray(organizations.id, [...byOrg.keys()])));
-    for (const row of rows) names.set(row.id, row.name);
-  } catch (err) {
-    console.warn('[propose_script] could not read org names for split_by_org', err);
-    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-      service: 'propose_script',
-    });
-  }
-  return {
-    error: 'split_by_org',
-    groups: [...byOrg].map(([orgId, deviceIds]) => ({ orgId, orgName: names.get(orgId) ?? null, deviceIds })),
-    hint: 'A proposal belongs to one organization. Call propose_script once per group.',
-  };
-}
 
 /**
  * The proposal's org comes from the TARGET DEVICE, never from `auth.orgId`
@@ -89,7 +56,12 @@ async function resolveProposalOrgId(
     const group = byOrg.get(access.device.orgId);
     if (group) group.push(deviceId); else byOrg.set(access.device.orgId, [deviceId]);
   }
-  if (byOrg.size > 1) return splitByOrg(byOrg);
+  if (byOrg.size > 1) {
+    return splitByOrg(byOrg, {
+      tool: 'propose_script',
+      hint: 'A proposal belongs to one organization. Call propose_script once per group.',
+    });
+  }
   // Fall back to the caller's own org only if a device somehow resolved
   // without one — the page-context org, exactly as routes/ai.ts resolves it.
   const [orgId] = [...byOrg.keys()];

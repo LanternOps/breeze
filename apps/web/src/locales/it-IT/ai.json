@@ -904,6 +904,14 @@
       "firstLook": "Prima occhiata",
       "couldntLook": "Nessuna occhiata ancora"
     },
+    "checkIn": {
+      "runNow": "Esegui ora",
+      "runNowMessage": "Procedi con il controllo programmato",
+      "scheduledAt": "Wisp ricontrollerà alle {{time}}",
+      "cancel": "Annulla controllo programmato",
+      "cancelled": "Controllo programmato annullato",
+      "cancelFailed": "Impossibile annullare il controllo programmato."
+    },
     "welcome": {
       "title": "Sto dando un’occhiata a {{scope}}.",
       "body": "Il tuo primo riepilogo arriva ogni mattina, appena ho dato un’occhiata. Nel frattempo, chiedimi pure qualsiasi cosa.",

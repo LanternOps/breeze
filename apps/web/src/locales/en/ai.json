@@ -904,6 +904,14 @@
       "firstLook": "First look",
       "couldntLook": "Couldn't look yet"
     },
+    "checkIn": {
+      "runNow": "Run now",
+      "runNowMessage": "Go ahead with the check-in",
+      "scheduledAt": "Wisp will check back at {{time}}",
+      "cancel": "Cancel check-in",
+      "cancelled": "Check-in cancelled",
+      "cancelFailed": "Could not cancel the check-in."
+    },
     "welcome": {
       "title": "I'm looking around {{scope}}.",
       "body": "Your first brief arrives each morning once I have had a look. Ask me anything in the meantime.",
