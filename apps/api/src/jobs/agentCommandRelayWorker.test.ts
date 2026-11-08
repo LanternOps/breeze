@@ -13,7 +13,7 @@ vi.mock('../services/agentPresence', () => ({
 }));
 
 vi.mock('../services/agentCommandRelay', () => ({
-  AGENT_COMMAND_RELAY_QUEUE: 'agent-command-relay',
+  agentCommandRelayQueueName: (id: string) => `agent-command-relay-${id}`,
   claimRelaySend: vi.fn(),
   markRelaySendComplete: vi.fn(),
   openRelayCommand: vi.fn(),
