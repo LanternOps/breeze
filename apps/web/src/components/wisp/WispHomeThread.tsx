@@ -18,7 +18,12 @@ import { linkKey } from './wispEntitySources';
 import { useWispThreadTimeline, type TimelineTarget } from './useWispThreadTimeline';
 
 type Wisp = NonNullable<WispState>;
-type Binding = 'binding' | 'live' | 'failed';
+/**
+ * `not_configured`: the server has no model provider (503 `ai_not_configured`,
+ * #11287). No retry can succeed until an administrator adds a key, so the
+ * column says that and shows the thread so far read-only, as for a paused grant.
+ */
+type Binding = 'binding' | 'live' | 'failed' | 'not_configured';
 
 /**
  * `thread.lastSessionId` is the last session stamped on the thread, not the
@@ -154,7 +159,11 @@ export default function WispHomeThread({
     const token = ++attempt.current;
     setBinding('binding');
     void bind()
-      .then((ok) => { if (token === attempt.current) setBinding(ok ? 'live' : 'failed'); })
+      .then((ok) => {
+        if (token !== attempt.current) return;
+        // Read the refusal now: the shared store's error is cleared by other surfaces (Dismiss in the panel).
+        setBinding(ok ? 'live' : useAiStore.getState().errorCode === 'ai_not_configured' ? 'not_configured' : 'failed');
+      })
       .catch((err: unknown) => {
         console.error('[WispHomeThread] opening the Wisp session failed', err);
         if (token === attempt.current) setBinding('failed');
@@ -170,12 +179,14 @@ export default function WispHomeThread({
   // The panel (or another tab of the store) moved the chat to another conversation: say so rather than show it here.
   const showingThisThread = storeThreadId === wisp.threadId;
 
-  // Live: everything but the store's session. Paused: the whole history, read-only. Ended or not bound: nothing.
+  // Live: everything but the store's session. Paused or no model provider: the whole history, read-only.
+  // Ended or not bound: nothing.
   const live = active && binding === 'live' && showingThisThread;
+  const readOnly = wisp.status === 'paused' || (active && binding === 'not_configured');
   const target = useMemo<TimelineTarget>(() => {
-    if (wisp.status === 'paused') return { threadId: wisp.threadId, excludeSessionId: null };
+    if (readOnly) return { threadId: wisp.threadId, excludeSessionId: null };
     return live ? { threadId: wisp.threadId, excludeSessionId: storeSessionId ?? null } : null;
-  }, [wisp.status, wisp.threadId, live, storeSessionId]);
+  }, [readOnly, wisp.threadId, live, storeSessionId]);
   const timeline = useWispThreadTimeline(target, refreshKey);
   const threadMessages = useMemo(
     () => (timeline.messages.length === 0 ? messages : [...timeline.messages, ...messages]),
@@ -227,7 +238,7 @@ export default function WispHomeThread({
     </>
   );
 
-  /** A paused grant: the thread so far, read-only, with the notice where the composer would be. */
+  /** A paused grant (or no model provider): the thread so far, read-only, with the notice where the composer would be. */
   const historyOnly = (footer: ReactNode) => (
     <>
       <AiChatMessages
@@ -255,6 +266,12 @@ export default function WispHomeThread({
         (wisp.status === 'paused' ? historyOnly : withoutChat)(
           <p className="rounded-2xl border px-4 py-3 text-sm text-muted-foreground" data-testid="wisp-home-thread-inactive">
             {wisp.status === 'paused' ? t('wisp.home.threadPaused') : t('wisp.home.threadEnded')}
+          </p>,
+        )
+      ) : binding === 'not_configured' ? (
+        historyOnly(
+          <p className="rounded-2xl border px-4 py-3 text-sm text-muted-foreground" data-testid="wisp-home-thread-not-configured" role="status">
+            {t('errors:ai_not_configured')}
           </p>,
         )
       ) : binding === 'binding' ? (
