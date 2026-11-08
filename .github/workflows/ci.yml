@@ -374,6 +374,11 @@ jobs:
       - name: Test flaky-test ledger
         run: node --test .github/scripts/flaky-ledger.test.mjs
 
+      # The merge-queue shepherd (W06, #10750). One glob: a suite under
+      # scripts/ci-shepherd/ runs only through this step.
+      - name: Test CI shepherd
+        run: node --test scripts/ci-shepherd/*.test.mjs
+
       # security-audit's base/head advisory comparison (W1, #10744).
       - name: Test dependency audit comparison
         run: node --test .github/scripts/new-findings.test.mjs .github/scripts/security-audit-compare.test.mjs
