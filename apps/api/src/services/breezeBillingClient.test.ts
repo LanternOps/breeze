@@ -150,6 +150,97 @@ describe('breezeBillingClient', () => {
     });
   });
 
+  describe('closeOpenCheckouts', () => {
+    const originalKey = process.env.BREEZE_BILLING_API_KEY;
+    let warn: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined) as never;
+    });
+    afterEach(() => {
+      warn.mockRestore();
+      if (originalKey === undefined) delete process.env.BREEZE_BILLING_API_KEY;
+      else process.env.BREEZE_BILLING_API_KEY = originalKey;
+    });
+
+    it('POSTs the restriction reason to the internal endpoint with S2S auth and a timeout', async () => {
+      process.env.BREEZE_BILLING_API_KEY = 's2s-secret-token';
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ expiredCheckoutSessionIds: ['cs_1'], canceledSubscriptionIds: ['sub_1'] }),
+      });
+      const client = createBreezeBillingClient({ baseUrl: 'http://billing.local', fetch: fetchMock as any });
+
+      await expect(client.closeOpenCheckouts({ partnerId: 'p/1', reason: 'auto:card_testing' })).resolves.toEqual({
+        status: 'closed',
+        expiredCheckoutSessionIds: ['cs_1'],
+        canceledSubscriptionIds: ['sub_1'],
+      });
+      expect(fetchMock.mock.calls[0]?.[0]).toBe('http://billing.local/internal/partners/p%2F1/close-open-checkouts');
+      const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+      expect(init.method).toBe('POST');
+      expect(JSON.parse(init.body as string)).toEqual({ reason: 'auto:card_testing' });
+      expect((init.headers as Record<string, string>).Authorization).toBe('Bearer s2s-secret-token');
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('reports closed with empty lists when nothing was open (idempotent)', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ expiredCheckoutSessionIds: [], canceledSubscriptionIds: [] }),
+      });
+      const client = createBreezeBillingClient({ baseUrl: 'http://billing.local', fetch: fetchMock as any });
+
+      await expect(client.closeOpenCheckouts({ partnerId: 'p1', reason: 'auto:tor_signup' })).resolves.toEqual({
+        status: 'closed', expiredCheckoutSessionIds: [], canceledSubscriptionIds: [],
+      });
+    });
+
+    it('reports unavailable on a 404 (endpoint not deployed) and never throws', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 404, text: async () => 'Not Found' });
+      const client = createBreezeBillingClient({ baseUrl: 'http://billing.local', fetch: fetchMock as any });
+
+      await expect(client.closeOpenCheckouts({ partnerId: 'p1', reason: 'auto:card_testing' })).resolves.toEqual({
+        status: 'unavailable', detail: 'Billing service returned 404: Not Found',
+      });
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports failed on a non-2xx response', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 502, text: async () => 'bad gateway' });
+      const client = createBreezeBillingClient({ baseUrl: 'http://billing.local', fetch: fetchMock as any });
+
+      await expect(client.closeOpenCheckouts({ partnerId: 'p1', reason: 'auto:card_testing' })).resolves.toEqual({
+        status: 'failed', detail: 'Billing service returned 502: bad gateway',
+      });
+    });
+
+    it('reports failed when the request itself fails (network error or timeout)', async () => {
+      const fetchMock = vi.fn().mockRejectedValue(new Error('The operation was aborted due to timeout'));
+      const client = createBreezeBillingClient({ baseUrl: 'http://billing.local', fetch: fetchMock as any });
+
+      await expect(client.closeOpenCheckouts({ partnerId: 'p1', reason: 'auto:card_testing' })).resolves.toEqual({
+        status: 'failed', detail: 'The operation was aborted due to timeout',
+      });
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['a non-object body', null],
+      ['missing session ids', { canceledSubscriptionIds: [] }],
+      ['missing subscription ids', { expiredCheckoutSessionIds: [] }],
+      ['a non-string id', { expiredCheckoutSessionIds: [42], canceledSubscriptionIds: [] }],
+    ])('reports failed on %s rather than claiming checkouts were closed', async (_name, body) => {
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => body });
+      const client = createBreezeBillingClient({ baseUrl: 'http://billing.local', fetch: fetchMock as any });
+
+      await expect(client.closeOpenCheckouts({ partnerId: 'p1', reason: 'auto:card_testing' })).resolves.toEqual({
+        status: 'failed', detail: 'malformed response from billing service',
+      });
+    });
+  });
+
   describe('promotion facts', () => {
     it('GETs and maps a settled card charge', async () => {
       const fetchMock = vi.fn().mockResolvedValue({
