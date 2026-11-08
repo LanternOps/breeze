@@ -481,13 +481,30 @@ describe('brief overnight assessment counts (real Postgres, #11428)', () => {
     await seedRun(t, t.orgs[0]!, 'skipped', 'no_changes');
     await seedRun(t, t.orgs[1]!, 'skipped', 'no_changes');
     await seedRun(t, t.orgs[0]!, 'queued'); // no finished_at: placed by its queued_at
-    // Before the last brief: not overnight.
-    await sys(() => db.insert(aiAgentRuns).values({
+    const run = (o: Record<string, unknown>) => sys(() => db.insert(aiAgentRuns).values({
       agentId: t.agentId, orgId: t.orgs[0]!, triggerKind: 'schedule', dedupeKey: `seed:${randomUUID()}`, modeAtStart: 'shadow',
-      policySnapshot: {} as never, profile: 'assessment', status: 'skipped', errorCode: 'no_changes',
-      queuedAt: new Date(since.getTime() - 120_000), finishedAt: new Date(since.getTime() - 60_000),
-      grantId: t.grantId, grantRevisionId: t.revisionId,
+      policySnapshot: {} as never, profile: 'assessment', status: 'skipped', errorCode: 'no_changes', finishedAt: new Date(),
+      grantId: t.grantId, grantRevisionId: t.revisionId, ...o,
     } as never));
+    // None of these counts: before the last brief, not an assessment, an org outside the ceiling, another grant's run.
+    await run({ queuedAt: new Date(since.getTime() - 120_000), finishedAt: new Date(since.getTime() - 60_000) });
+    await run({ profile: 'full' });
+    const outside = await createOrganization({ partnerId: t.partnerId });
+    await run({ orgId: outside.id });
+    const otherGrantor = await createUser({ partnerId: t.partnerId, email: `wisp-brief-other-${randomUUID()}@wisp.test` });
+    const other = await sys(async () => {
+      const [g] = await db.insert(wispGrants).values({
+        partnerId: t.partnerId, orgId: null, grantorUserId: otherGrantor.id, status: 'active', expiresAt: new Date(Date.now() + 86_400_000),
+      }).returning({ id: wispGrants.id });
+      const [r] = await db.insert(wispGrantRevisions).values({
+        grantId: g!.id, partnerId: t.partnerId, revision: 1,
+        ceilingSnapshot: { version: 1, permissionKeys: ['ai_sessions:use'], orgIds: t.orgs, siteIds: null, toolAllowlist: null, deniedTools: [] },
+        factorProof: { method: 'step_up', verifiedAt: new Date().toISOString() },
+      }).returning({ id: wispGrantRevisions.id });
+      return { grantId: g!.id, revisionId: r!.id };
+    });
+    await run({ grantId: other.grantId, grantRevisionId: other.revisionId });
+    await run({ grantId: other.grantId, grantRevisionId: other.revisionId, status: 'completed', errorCode: null });
 
     const brief = await buildBrief(t.grantId, new Date(), { since });
     expect(brief.sections.find((s) => s.heading === 'Overnight')?.lines).toEqual([

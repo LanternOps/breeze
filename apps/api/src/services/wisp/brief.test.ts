@@ -352,6 +352,60 @@ describe('buildBrief', () => {
       expect((await buildBrief(GRANT, NOW)).body).toBe(`${head}…`);
     });
 
+    it('the body fits the 120-character push clip with whole items, most urgent first', async () => {
+      // 75 + " · " + 71 = 149: the second item would be cut mid-word by the push clip, so it is left out.
+      const a = 'Backups on the file server have failed three nights in a row with one error';
+      live([
+        concern({ severity: 'high', summary: a, updatedAt: '2026-10-23T03:00:00.000Z' }),
+        concern({ severity: 'high', summary: 'The print spooler on the front desk PC keeps crashing every morning now', updatedAt: '2026-10-23T02:00:00.000Z' }),
+        concern({ severity: 'medium', summary: 'Disk C: on the accounting laptop is ninety-seven percent full' }),
+      ]);
+      expect((await buildBrief(GRANT, NOW)).body).toBe(a);
+
+      h.selectQueue.wisp_grants = [[{ currentRevisionId: REVISION, status: 'active' }]];
+      // 34 + 3 + 39 = 76 fits; adding 3 + 28 makes 107, which fits too.
+      live([
+        concern({ severity: 'high', summary: 'Patch window missed on six devices', updatedAt: '2026-10-23T03:00:00.000Z' }),
+        concern({ severity: 'high', summary: 'Antivirus definitions are four days old', updatedAt: '2026-10-23T02:00:00.000Z' }),
+        concern({ severity: 'high', summary: 'Two admins share one account', updatedAt: '2026-10-23T01:00:00.000Z' }),
+      ]);
+      expect((await buildBrief(GRANT, NOW)).body)
+        .toBe('Patch window missed on six devices · Antivirus definitions are four days old · Two admins share one account');
+    });
+
+    it('a first item too long for the push on its own is cut at a word to fit it', async () => {
+      const label = 'SYNTHETIC-DAIRY-RECEPTION-PC-00012345';
+      live([concern({ severity: 'high', subject: { kind: 'device', id: ORG }, summary: 'Backups on the accounting server have failed every night since the first of July and nobody has looked at them since now' })]);
+      h.resolveEntity.mockResolvedValue(resolved(label));
+      const { body } = await buildBrief(GRANT, NOW);
+      expect(body).toBe(`${label}: Backups on the accounting server have failed every night since the first of July…`);
+      expect([...body].length).toBeLessThanOrEqual(120);
+    });
+
+    it('a single word longer than half the room is cut where it falls', async () => {
+      live([concern({ severity: 'high', summary: `Path ${'x'.repeat(100)} is unreadable` })]);
+      expect((await buildBrief(GRANT, NOW)).body).toBe(`Path ${'x'.repeat(84)}…`);
+    });
+
+    it('a cut that lands after a comma drops the comma before the ellipsis', async () => {
+      live([concern({ severity: 'high', summary: 'Backups on the accounting server have failed every night since the first of July, unbelievablyunrecoverable errors since' })]);
+      expect((await buildBrief(GRANT, NOW)).body).toBe('Backups on the accounting server have failed every night since the first of July…');
+    });
+
+    it('a subject name longer than 40 characters is cut to 40', async () => {
+      live([concern({ severity: 'high', subject: { kind: 'device', id: ORG }, summary: 'Disk full.' })]);
+      h.resolveEntity.mockResolvedValue(resolved('SYNTHETIC-WORKSTATION-WITH-A-VERY-LONG-NAME-0001'));
+      expect((await buildBrief(GRANT, NOW)).body).toBe('SYNTHETIC-WORKSTATION-WITH-A-VERY-LONG…: Disk full');
+    });
+
+    it('a "?" or "!" ends the first sentence, and line breaks read as spaces', async () => {
+      live([
+        concern({ severity: 'high', summary: 'Is the backup\nvault still mounted? It went quiet.', updatedAt: '2026-10-23T02:00:00.000Z' }),
+        concern({ severity: 'high', summary: 'Ransomware canary tripped! Isolate now.', updatedAt: '2026-10-23T01:00:00.000Z' }),
+      ]);
+      expect((await buildBrief(GRANT, NOW)).body).toBe('Is the backup vault still mounted? · Ransomware canary tripped!');
+    });
+
     it('takes the first sentence of the summary only', async () => {
       live([concern({ severity: 'high', summary: 'Cove backup has not succeeded since 2026-07-01. The last 41 jobs failed.' })]);
       expect((await buildBrief(GRANT, NOW)).body).toBe('Cove backup has not succeeded since 2026-07-01');
@@ -388,6 +442,21 @@ describe('buildBrief', () => {
       live([concern({ severity: 'high', subject: { kind: 'device', id: ORG }, summary: 'front-desk-01 has had no successful backup since July 1.' })]);
       h.resolveEntity.mockResolvedValue(resolved('FRONT-DESK-01'));
       expect((await buildBrief(GRANT, NOW)).body).toBe('front-desk-01 has had no successful backup since July 1');
+    });
+
+    it('a summary that opens with a longer name (web-10) still gets the subject name (web-1)', async () => {
+      live([concern({ severity: 'high', subject: { kind: 'device', id: ORG }, summary: 'web-10 answers for web-1 while it reboots.' })]);
+      h.resolveEntity.mockResolvedValue(resolved('web-1'));
+      expect((await buildBrief(GRANT, NOW)).body).toBe('web-1: web-10 answers for web-1 while it reboots');
+    });
+
+    it('resolves names for the body items only, not every open concern', async () => {
+      live([1, 2, 3, 4, 5].map((n) => concern({
+        severity: 'high', subject: { kind: 'device', id: ORG }, summary: `Device problem ${n}.`, updatedAt: `2026-10-23T0${n}:00:00.000Z`,
+      })));
+      h.resolveEntity.mockResolvedValue(resolved('PC'));
+      await buildBrief(GRANT, NOW);
+      expect(h.resolveEntity).toHaveBeenCalledTimes(3);
     });
 
     it('never resolves a free-text subject (a ticket title stays off the lock screen)', async () => {
@@ -477,6 +546,15 @@ describe('buildBrief', () => {
       h.selectQueue.wisp_grants = [[{ currentRevisionId: REVISION, status: 'active' }]];
       h.selectQueue.ai_agent_runs = [[]];
       expect((await buildBrief(GRANT, NOW)).sections.map((s) => s.heading)).toEqual(['Spend']);
+    });
+
+    it('orgs each restricted to sites by their own term read no runs either', async () => {
+      const sites = { siteIds: new Set(['00000000-0000-4000-8000-000000000f01']) };
+      h.resolveGrantCeiling.mockResolvedValue({ ...CEILING, orgTerms: new Map([[ORG, sites], [ORG2, sites]]) });
+      h.selectQueue.ai_agent_runs = [[{ ran: 9, skipped: 9 }]];
+      const brief = await buildBrief(GRANT, NOW);
+      expect(h.selects.some((s) => s.table === 'ai_agent_runs')).toBe(false);
+      expect(brief.sections.find((s) => s.heading === 'Overnight')).toBeUndefined();
     });
 
     it('a site-restricted ceiling (no org-level reach) reads no runs', async () => {

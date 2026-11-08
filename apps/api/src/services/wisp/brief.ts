@@ -52,6 +52,12 @@ const BODY_ITEM_MAX = 90;
 /** The subject name that may lead a body item. */
 const BODY_LABEL_MAX = 40;
 const BODY_ITEMS = 3;
+/**
+ * The whole body: `buildWispNudgePush` clips a push body at 120 code points
+ * (W06: a lock-screen body is ≤ 120), so the body is built to fit it rather
+ * than be cut mid-word there.
+ */
+const BODY_MAX = 120;
 const SECTION_LINES_MAX = 10;
 const ACTIVITY_LIMIT = 100;
 const DEFAULT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
@@ -153,11 +159,29 @@ function firstSentence(summary: string): string {
   return sentence.replace(/\.$/, '');
 }
 
+/** Whether the summary opens with the name as a whole word (`web-10 …` does not open with `web-1`). */
+function leadsWith(summary: string, name: string): boolean {
+  const s = flatten(summary).toLocaleLowerCase();
+  const n = name.toLocaleLowerCase();
+  return s.startsWith(n) && !/^[\p{L}\p{N}_-]/u.test(s.slice(n.length));
+}
+
 /** One lock-screen body item: `<subject name>: <problem>`, or the problem alone when the summary already leads with the name. */
 function bodyItem(c: Concern, label: string | undefined): string {
   const problem = cutAtWord(firstSentence(c.summary), BODY_ITEM_MAX);
-  if (!label || flatten(c.summary).toLocaleLowerCase().startsWith(label.toLocaleLowerCase())) return problem;
+  if (!label || leadsWith(c.summary, label)) return problem;
   return `${cutAtWord(label, BODY_LABEL_MAX)}: ${problem}`;
+}
+
+/** As many whole items as fit `BODY_MAX`, most urgent first; a first item too long on its own is cut at a word. */
+function joinBodyItems(items: [string, ...string[]]): string {
+  let body = '';
+  for (const item of items) {
+    const next = body ? `${body} · ${item}` : item;
+    if ([...next].length > BODY_MAX) break;
+    body = next;
+  }
+  return body || cutAtWord(items[0], BODY_MAX);
 }
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
@@ -294,8 +318,9 @@ export async function buildBrief(
     : `Good morning — ${needing.length} need you, ${open.length} open`;
   const items = open.slice(0, BODY_ITEMS);
   const names = await subjectNames(ceiling, items);
-  const body = items.length > 0
-    ? items.map((c) => bodyItem(c, names.get(c.id))).join(' · ')
+  const bodyItems = items.map((c) => bodyItem(c, names.get(c.id)));
+  const body = bodyItems.length > 0
+    ? joinBodyItems(bodyItems as [string, ...string[]])
     // Only snoozed concerns with an approval card waiting: the title already counts them.
     : needing.length > 0 ? 'Open Wisp to review.' : 'Nothing needs you right now.';
 
