@@ -20,10 +20,16 @@ import (
 // allowed at all is enforced in the helper, which never polls when it is not.
 // Blocks for up to the proxy's timeout; the caller runs it on its own goroutine.
 func (h *Heartbeat) handleDesktopClipboardRead(session *sessionbroker.Session, env *ipc.Envelope) {
-	res := h.desktopClipboardReadResult(session, env)
+	sendDesktopClipboardReadResult(session, env, h.desktopClipboardReadResult(session, env))
+}
+
+// sendDesktopClipboardReadResult answers one read. A failed send leaves the
+// helper to time out, which it reports as "no answer from the service"; this
+// log is where the cause is.
+func sendDesktopClipboardReadResult(session *sessionbroker.Session, env *ipc.Envelope, res ipc.DesktopClipboardReadResult) {
 	if err := session.SendNotify(env.ID, ipc.TypeDesktopClipboardReadResult, res); err != nil {
 		log.Warn("failed to send desktop clipboard read result to helper",
-			"helperSession", session.SessionID, "error", err.Error())
+			"requestId", env.ID, "helperSession", session.SessionID, "error", err.Error())
 	}
 }
 

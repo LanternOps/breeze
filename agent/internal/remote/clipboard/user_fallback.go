@@ -22,14 +22,19 @@ const (
 // userClipboardFallback is the clipboard of a desktop session hosted by the
 // Windows system helper (#8393). That helper runs as SYSTEM in the user's
 // session: it reads CF_UNICODETEXT, but registered formats the logged-on user
-// copied (PNG, JFIF, Rich Text Format) are listed and yet unreadable to it, so
-// a copied image never reached the viewer.
+// copied (PNG, JFIF, Rich Text Format) are unreadable to it. In the lab,
+// EnumClipboardFormats lists PNG while IsClipboardFormatAvailable says it is
+// absent, so SYSTEM's read ends in ErrNoSupportedFormat and a copied image
+// never reached the viewer.
 //
 // Reads go to SYSTEM's own clipboard first, so everything that worked before
-// takes the same path. Only when SYSTEM finds no format it can read is the
-// user-role helper asked, through the service, once per clipboard change (the
-// window station's sequence number): the watcher polls every 500 ms, and an
-// image left on the clipboard must not cross two IPC hops on every poll.
+// takes the same path. Only when SYSTEM finds no format it can read, or fails
+// to read one it sees listed (ErrFormatUnreadable), is the user-role helper
+// asked, through the service. A settled answer (content, or nothing readable)
+// is kept until the window station's sequence number moves; the watcher polls
+// every 500 ms, and an image left on the clipboard must not cross two IPC hops
+// on every poll. Other answers, and every answer when the sequence number is
+// unavailable, are re-asked on a backoff (fallbackRetryMin..fallbackRetryMax).
 // Writes stay on SYSTEM's clipboard; the user reads those back.
 type userClipboardFallback struct {
 	local    Provider
@@ -70,7 +75,7 @@ func (p *userClipboardFallback) GetContent() (Content, error) {
 	// number on the next poll.
 	seq, seqOK := p.seq()
 	content, err := p.local.GetContent()
-	if !errors.Is(err, ErrNoSupportedFormat) {
+	if !errors.Is(err, ErrNoSupportedFormat) && !errors.Is(err, ErrFormatUnreadable) {
 		// SYSTEM read it, or failed to open the clipboard (which a read through
 		// the user helper would not explain). Either way the cached image, if
 		// any, describes an older state.
@@ -104,7 +109,13 @@ func (p *userClipboardFallback) readThroughUser(seq uint64, seqOK bool, localErr
 			answer.settled = true
 		}
 	case errors.Is(err, ErrNoSupportedFormat):
+		// Nothing readable as the user either. If SYSTEM saw a format it
+		// failed to read, its failure stands: the clipboard stays unknown
+		// rather than becoming empty.
 		answer.err = err
+		if !errors.Is(localErr, ErrNoSupportedFormat) {
+			answer.err = localErr
+		}
 		answer.settled = true
 	case errors.Is(err, ErrUserClipboardUnavailable):
 		// Nobody else to ask: what SYSTEM saw stands, as before #8393.
@@ -152,12 +163,17 @@ func (p *userClipboardFallback) logOutcomeLocked(err error) {
 		return
 	}
 	p.lastErr = msg
-	if msg == "" {
+	switch {
+	case msg == "":
 		fallbackLog.Info("clipboard read through user helper recovered")
-		return
+	case errors.Is(err, ErrUserClipboardUnavailable):
+		// Expected at the sign-in screen, where no user helper runs.
+		fallbackLog.Info("no user helper to read the clipboard through; only what SYSTEM can read reaches the viewer",
+			"retryIn", p.retryDelayLocked().String())
+	default:
+		fallbackLog.Warn("clipboard read through user helper failed; images the user copies may not reach the viewer",
+			"error", msg, "retryIn", p.retryDelayLocked().String())
 	}
-	fallbackLog.Warn("clipboard read through user helper failed; images the user copies may not reach the viewer",
-		"error", msg, "retryIn", p.retryDelayLocked().String())
 }
 
 func (p *userClipboardFallback) SetContent(content Content) error {

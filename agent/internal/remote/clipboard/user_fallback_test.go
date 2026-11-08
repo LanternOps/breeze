@@ -159,6 +159,54 @@ func TestUserFallbackPassesThroughLocalOpenFailure(t *testing.T) {
 	}
 }
 
+// A format SYSTEM sees listed but fails to read is what the user helper is
+// for too. The error is the real noContentError output, as the Windows
+// provider returns it.
+func TestUserFallbackReadsFormatSystemFailsToRead(t *testing.T) {
+	p, local, user, _, _ := newFallbackForTest()
+	local.answer(Content{}, noContentError(errors.New("GetClipboardData: Invalid clipboard format")))
+	user.answer(Content{Type: ContentTypeImage, Image: pngBytes, ImageFormat: "png"}, nil)
+
+	got, err := p.GetContent()
+	if err != nil || !bytes.Equal(got.Image, pngBytes) {
+		t.Fatalf("got %+v, %v; want the user helper's PNG", got, err)
+	}
+}
+
+// When the user helper cannot settle it either, SYSTEM's read failure stands:
+// the clipboard stays unknown rather than becoming "empty".
+func TestUserFallbackKeepsSystemReadFailureWhenUserCannotHelp(t *testing.T) {
+	for name, userErr := range map[string]error{
+		"no user helper":    ErrUserClipboardUnavailable,
+		"user sees nothing": ErrNoSupportedFormat,
+		"user read failed":  errors.New("timed out"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			p, local, user, _, _ := newFallbackForTest()
+			local.answer(Content{}, noContentError(errors.New("GetClipboardData failed")))
+			user.answer(Content{}, userErr)
+
+			_, err := p.GetContent()
+			if err == nil || errors.Is(err, ErrNoSupportedFormat) {
+				t.Fatalf("err = %v, want a read failure that is not ErrNoSupportedFormat", err)
+			}
+		})
+	}
+}
+
+// noContentError keeps its message and stays out of ErrNoSupportedFormat,
+// while marking itself as a listed-but-unreadable format.
+func TestNoContentErrorMarksUnreadableFormat(t *testing.T) {
+	cause := errors.New("GetClipboardData failed")
+	err := noContentError(cause)
+	if !errors.Is(err, ErrFormatUnreadable) || !errors.Is(err, cause) || errors.Is(err, ErrNoSupportedFormat) {
+		t.Fatalf("errors.Is: unreadable=%v cause=%v noFormat=%v", errors.Is(err, ErrFormatUnreadable), errors.Is(err, cause), errors.Is(err, ErrNoSupportedFormat))
+	}
+	if err.Error() != "clipboard: read failed: GetClipboardData failed" {
+		t.Fatalf("message = %q", err.Error())
+	}
+}
+
 // The watcher polls every 500 ms. An image that stays on the clipboard must
 // cross the IPC relay once per clipboard change, not once per poll.
 func TestUserFallbackAsksOncePerClipboardChange(t *testing.T) {

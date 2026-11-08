@@ -48,8 +48,12 @@ func (c *Client) readClipboardViaService(sessionID string) (clipboard.Content, e
 	// delivering, so this finds nothing to close.
 	defer c.unregisterPendingResponse(reqID)
 
+	conn := c.currentConn()
+	if conn == nil {
+		return clipboard.Content{}, errors.New("clipboard read: not connected to the service")
+	}
 	req := ipc.DesktopClipboardReadRequest{SessionID: sessionID}
-	if err := c.conn.SendTyped(reqID, ipc.TypeDesktopClipboardRead, req); err != nil {
+	if err := conn.SendTyped(reqID, ipc.TypeDesktopClipboardRead, req); err != nil {
 		return clipboard.Content{}, fmt.Errorf("clipboard read request: %w", err)
 	}
 

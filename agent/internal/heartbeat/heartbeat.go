@@ -1991,6 +1991,9 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 			defer func() {
 				if r := recover(); r != nil {
 					log.Error("panic in handleDesktopClipboardRead", "error", fmt.Sprint(r))
+					// Answer anyway, so the helper reports the failure now
+					// instead of waiting out its timeout.
+					sendDesktopClipboardReadResult(session, env, ipc.DesktopClipboardReadResult{Error: "internal error"})
 				}
 			}()
 			h.handleDesktopClipboardRead(session, env)

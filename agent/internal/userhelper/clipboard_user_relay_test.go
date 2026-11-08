@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,6 +128,61 @@ func TestReadClipboardViaServiceTimeout(t *testing.T) {
 	_, err := client.readClipboardViaService("desk-1")
 	if err == nil || errors.Is(err, clipboard.ErrNoSupportedFormat) {
 		t.Fatalf("err = %v, want a timeout that is not ErrNoSupportedFormat", err)
+	}
+}
+
+// Through the real receive loop: the result message must reach the waiting
+// read. Without its case in commandLoop every read would time out and the
+// relay would quietly degrade to SYSTEM-only reads.
+func TestCommandLoopDeliversClipboardReadResult(t *testing.T) {
+	client, peer, cleanup := createClientPipe(t)
+	defer cleanup()
+	loopDone := make(chan error, 1)
+	go func() { loopDone <- client.commandLoop() }()
+
+	png := []byte("\x89PNG\r\n\x1a\nimg")
+	go func() {
+		_ = peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+		env, err := peer.Recv()
+		if err != nil || env.Type != ipc.TypeDesktopClipboardRead {
+			return
+		}
+		payload, _ := json.Marshal(ipc.DesktopClipboardReadResult{Type: "image", Image: png, ImageFormat: "png"})
+		_ = peer.Send(&ipc.Envelope{ID: env.ID, Type: ipc.TypeDesktopClipboardReadResult, Payload: payload})
+	}()
+
+	old := clipboardReadTimeout
+	clipboardReadTimeout = 2 * time.Second
+	t.Cleanup(func() { clipboardReadTimeout = old })
+	got, err := client.readClipboardViaService("desk-1")
+	if err != nil || !bytes.Equal(got.Image, png) {
+		t.Fatalf("got %+v, %v; want the PNG delivered by commandLoop", got, err)
+	}
+
+	cleanup()
+	select {
+	case <-loopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("commandLoop did not exit after the connection closed")
+	}
+}
+
+// Run is not unit-testable (it dials the service), so this guards that it
+// still wires the clipboard: without the call the Windows system helper keeps
+// SYSTEM-only reads and #8393 returns with every other test green.
+func TestRunWiresDesktopClipboard(t *testing.T) {
+	src, err := os.ReadFile("client.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	start := strings.Index(body, "func (c *Client) Run() error {")
+	if start < 0 {
+		t.Fatal("Run not found in client.go")
+	}
+	end := strings.Index(body[start:], "\n}\n")
+	if end < 0 || !strings.Contains(body[start:start+end], "c.wireDesktopClipboard(runtime.GOOS)") {
+		t.Fatal("Run no longer calls c.wireDesktopClipboard(runtime.GOOS)")
 	}
 }
 
