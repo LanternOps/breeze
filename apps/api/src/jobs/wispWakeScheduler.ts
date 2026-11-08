@@ -25,10 +25,11 @@
  *      4. due watches — claimDueWatches (which advances next_due_at in the
  *         same statement), then each watch is evaluated in code (#11424,
  *         services/wisp/watchHits.ts): a `watch` request only when its
- *         hit-set changed since the last recorded one (or none is recorded,
- *         or the kind is not evaluated); a partner-wide watch (orgId null)
- *         takes its grant's round-robin org, for the evaluation and the
- *         request alike.
+ *         hit-set changed since the last recorded one, none is recorded, the
+ *         kind is not evaluated, or the evaluation failed (fail-open). The
+ *         new hit-set is recorded by processAssessJob once a run is
+ *         admitted. A partner-wide watch (orgId null) takes its grant's
+ *         round-robin org, for the evaluation and the request alike.
  *      4b. reconcileCheckIns (#10991) — a `scheduled` check-in more than
  *         2 minutes overdue with no live job is re-enqueued with delay 0
  *         (services/wisp/checkIns.ts reconcileOrphanCheckIns).
@@ -68,7 +69,7 @@ import { setWispGrantsActive } from '../services/wispMetrics';
 import { correlateIncidents } from '../services/wisp/incidentCorrelator';
 import { pollStaleTickets, pollTicketClusters } from '../services/wisp/pollers';
 import { claimDueWatches, recordWatchHits, stopWatchesForInactiveGrants } from '../services/wisp/watches';
-import { evaluateWatchHits, watchHitChange, type WatchHitSet } from '../services/wisp/watchHits';
+import { evaluateWatchHits, parseWatchHitRecord, watchHitChange, type WatchHitSet } from '../services/wisp/watchHits';
 import type { AssessmentReason } from '../services/wisp/assessmentTypes';
 import { fireCheckIn, reconcileOrphanCheckIns } from '../services/wisp/checkIns';
 import {
@@ -310,16 +311,6 @@ async function runDueWatches(now: Date): Promise<{ fired: number; unchanged: num
     return p;
   };
   const picks = new Map<string, Promise<string | null>>();
-  // One budget read per grant per tick (#11424, see below).
-  const budgets = new Map<string, Promise<boolean>>();
-  const chargeable = (grantId: string): Promise<boolean> => {
-    let p = budgets.get(grantId);
-    if (!p) {
-      p = chargeableUnderGrant(grantId, ASSESSMENT_BUDGET_CENTS_PER_RUN).then((b) => b.ok);
-      budgets.set(grantId, p);
-    }
-    return p;
-  };
 
   let fired = 0;
   let unchanged = 0;
@@ -360,34 +351,22 @@ async function runDueWatches(now: Date): Promise<{ fired: number; unchanged: num
         unchanged += 1;
         continue;
       }
-      // Spec §9, as for floor ticks: an exhausted UTC-day budget suspends the
-      // request (the grantor is told once per window). Checked here, not left
-      // to enqueueAssessment, because a request that is queued and then skipped
-      // for budget would still record the hit-set below and lose the change.
-      if (!(await chargeable(w.grantId))) {
-        await notifyBudgetExhaustedOnce(w.grantId, now);
-        continue;
-      }
       const reason: AssessmentReason = change
         ? { kind: 'watch', watchId: w.id, hits: change }
         : { kind: 'watch', watchId: w.id };
-      const outcome = await requestAssessment({ grantId: w.grantId, orgId, reason });
+      // The new hit-set rides on the job and is recorded by processAssessJob
+      // only once a run is ADMITTED for it. A coalesced request (another
+      // assess job for the org is live and keeps its own data), a failed
+      // request, or an admission skip (budget, no Triage agent, …) leaves the
+      // stored hit-set alone, so the next cadence asks again rather than
+      // losing the change.
+      await requestAssessment({
+        grantId: w.grantId,
+        orgId,
+        reason,
+        ...(hits ? { watchRecord: { watchId: w.id, previousHash: w.hitHash, hash: hits.hash, count: hits.count } } : {}),
+      });
       fired += 1;
-      // Recorded only once a run is queued FOR this request: a coalesced
-      // request (another assess job for the org is live and keeps its own
-      // reason) or a failed one leaves the stored hit-set alone, so the next
-      // cadence asks again rather than losing the change.
-      if (hits && outcome === 'queued') {
-        try {
-          const written = await recordWatchHits(w.id, w.hitHash, hits, now);
-          if (!written) console.info('[wisp-wake] dueWatches: hit-set already moved on; left as stored', { watchId: w.id });
-        } catch (err) {
-          // The run is queued; the next cadence sees the old hash and asks
-          // once more (a duplicate run, never a lost change).
-          console.error('[wisp-wake] dueWatches: could not record the hit-set', { watchId: w.id, grantId: w.grantId, error: errMessage(err) });
-          report(err, { op: 'watch_record' });
-        }
-      }
     } catch (err) {
       console.error('[wisp-wake] dueWatches: watch failed', { watchId: w.id, grantId: w.grantId, error: errMessage(err) });
       report(err, { op: 'due_watch' });
@@ -476,6 +455,34 @@ export async function processAssessJob(data: WispAssessJobData, occurrenceKey?: 
   const result = await enqueueAssessment(occurrenceKey ? { ...data, occurrenceKey } : data);
   if ('skipped' in result) {
     console.info('[wisp-wake] assessment skipped', { grantId: data.grantId, orgId: data.orgId, reason: data.reason.kind, skipped: result.skipped });
+    return;
+  }
+  if (data.watchRecord !== undefined) await recordAdmittedWatchHits(data.watchRecord);
+}
+
+/**
+ * #11424: a run was admitted for this watch's hit-set — store it, so the next
+ * cadence launches nothing unless the hit-set changes again. Never throws: a
+ * BullMQ retry would only hit the run's dedupe key, so a failure is reported
+ * and the next cadence, still seeing the old hash, asks once more (a
+ * duplicate run, never a lost change).
+ */
+async function recordAdmittedWatchHits(raw: unknown): Promise<void> {
+  const rec = parseWatchHitRecord(raw);
+  if (!rec) {
+    console.warn('[wisp-wake] assess job carried a malformed watchRecord; not recorded');
+    report(new Error('assess job with a malformed watchRecord'), { op: 'watch_record_malformed' });
+    return;
+  }
+  try {
+    const written = await recordWatchHits(rec.watchId, rec.previousHash, { hash: rec.hash, count: rec.count });
+    if (!written) {
+      // Another writer recorded first, or the watch was deleted: left as stored.
+      console.warn('[wisp-wake] watch hit-set not recorded: the stored hash moved on or the watch is gone', { watchId: rec.watchId });
+    }
+  } catch (err) {
+    console.error('[wisp-wake] could not record a watch hit-set', { watchId: rec.watchId, error: errMessage(err) });
+    report(err, { op: 'watch_record' });
   }
 }
 

@@ -4,10 +4,11 @@
  * cadence, whether or not anything had changed.
  *
  * `evaluateWatchHits` reads the watch's current hits in ONE org and returns
- * their count, up to WATCH_HIT_SAMPLE_MAX ids (newest first) and a sha256 of
- * the sorted hit-set. The scheduler compares the hash with the one stored on
- * the watch (`wisp_watches.hit_hash`) and launches a run only when it differs,
- * or when nothing is stored yet (`watchHitChange`).
+ * their count, up to WATCH_HIT_SAMPLE_MAX ids (newest first where the kind
+ * has a timestamp) and a sha256 of the sorted hit-set. The scheduler compares
+ * the hash with the one stored on the watch (`wisp_watches.hit_hash`) and
+ * launches a run only when it differs, or when nothing is stored yet
+ * (`watchHitChange`); the new hash is stored once that run is admitted.
  *
  * The rule for every evaluator: it may over-include, never under-include. A
  * hit-set that is too wide costs an extra run when an unrelated row changes; a
@@ -23,14 +24,19 @@
  *                        alertId(s), ruleId(s) / alertRuleId(s), deviceId(s)
  *                        (uuids), and severity / severities / minSeverity
  *                        read as a FLOOR ("medium" = medium or worse) because
- *                        "exactly medium" would miss a critical one.
+ *                        "exactly medium" would miss a critical one. An
+ *                        alert that fires and resolves between two
+ *                        evaluations is not a hit: watches cover standing
+ *                        state, and the alert's own events already wake Wisp
+ *                        (services/wisp/wake.ts event fan-out).
  *   - security_findings  open device vulnerabilities (`status = 'open'`) and
  *                        live, open EDR detections (EDR_OPEN_DETECTION_STATUSES,
  *                        not tombstoned) in the org; deviceId(s) filter.
  *                        No other params are read.
  *   - patch_compliance   devices whose latest posture snapshot from the last
  *                        24 h scores below the watch's threshold (a
- *                        `threshold`-like param, 0–100, or a fraction ≤ 1),
+ *                        `threshold`-like param in (0, 100]; a value in
+ *                        (0, 1] is read as a fraction, so 1 means 100%),
  *                        skipping snapshots marked as a telemetry data gap —
  *                        the rules the patch_compliance monitor applies
  *                        (alertConditions/handlers/patchCompliance.ts). Only
@@ -51,7 +57,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { EDR_OPEN_DETECTION_STATUSES, type WatchKind } from '@breeze/shared';
 import { db } from '../../db';
-import type { WatchHitChange, WatchHitSubject, WatchHitSummary } from './assessmentTypes';
+import type { WatchHitChange, WatchHitRecord, WatchHitSubject, WatchHitSummary } from './assessmentTypes';
 import { inSystemContext } from './grantAuthority';
 
 /** Hit ids a run is shown; the hash always covers the whole hit-set. */
@@ -190,7 +196,7 @@ function patchComplianceQuery(params: Record<string, unknown>, orgId: string, no
              AND s.captured_at > (${since}::timestamptz AT TIME ZONE 'UTC')
            ORDER BY s.device_id, s.captured_at DESC
         ) l
-       WHERE l.patch_compliance_score < ${threshold}
+       WHERE l.patch_compliance_score < ${threshold}::numeric
          AND NOT coalesce(
            jsonb_typeof(l.factor_details #> '{patch_compliance,dataGap}') = 'string'
              AND length(l.factor_details #>> '{patch_compliance,dataGap}') > 0,
@@ -309,4 +315,21 @@ export function parseWatchHitSummary(v: unknown): WatchHitSummary | null {
     previousCount,
     ids: r.ids.filter(isUuid).slice(0, WATCH_HIT_SAMPLE_MAX),
   };
+}
+
+const HASH_RE = /^[0-9a-f]{64}$/;
+
+/**
+ * The assess job's `watchRecord` (read back from Redis) -> WatchHitRecord, or
+ * null when malformed. `hash` / `previousHash` are sha256 hex as the
+ * aggregate produces them.
+ */
+export function parseWatchHitRecord(v: unknown): WatchHitRecord | null {
+  if (typeof v !== 'object' || v === null) return null;
+  const r = v as Record<string, unknown>;
+  if (!isUuid(r.watchId)) return null;
+  if (typeof r.hash !== 'string' || !HASH_RE.test(r.hash)) return null;
+  if (r.previousHash !== null && (typeof r.previousHash !== 'string' || !HASH_RE.test(r.previousHash))) return null;
+  if (typeof r.count !== 'number' || !Number.isInteger(r.count) || r.count < 0) return null;
+  return { watchId: r.watchId, previousHash: r.previousHash, hash: r.hash, count: r.count };
 }

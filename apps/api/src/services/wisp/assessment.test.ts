@@ -276,6 +276,20 @@ describe('enqueueAssessment', () => {
     expect(h.pauseGrant).not.toHaveBeenCalled();
   });
 
+  // #11424: the watch hit summary is written into trigger_ref as the scheduler
+  // sent it, and parseWispTriggerRef reads the same summary back.
+  it('a watch reason\'s hit summary round-trips through trigger_ref', async () => {
+    h.results.push([grantRow()]);
+    h.results.push([]); // no watermark
+    const hits = { change: 'cleared' as const, subject: 'alert' as const, orgId: ORG, partnerWide: false, count: 0, previousCount: 2, ids: [] };
+    const res = await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'watch', watchId: WATCH, hits } });
+    expect(res).toEqual({ runId: RUN });
+    const input = h.createAndEnqueueAgentRun.mock.calls[0]![0] as { triggerRef: Record<string, unknown> };
+    expect(input.triggerRef).toEqual({ wisp: { grantId: GRANT, grantRevisionId: REV, reason: { kind: 'watch', watchId: WATCH, hits }, watermark: null } });
+    // As stored (JSON) and read back.
+    expect(parseWispTriggerRef(JSON.parse(JSON.stringify(input.triggerRef)))?.reason).toEqual({ kind: 'watch', watchId: WATCH, hits });
+  });
+
   it('happy path passes grant, profile assessment, kind triage, triggerKind schedule and the watermark in triggerRef', async () => {
     const finished = new Date('2026-10-24T08:00:00.000Z');
     h.results.push([grantRow()]);

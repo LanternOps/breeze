@@ -39,6 +39,7 @@ vi.mock('./grantAuthority', () => ({
 import {
   WATCH_HIT_SAMPLE_MAX,
   evaluateWatchHits,
+  parseWatchHitRecord,
   parseWatchHitSummary,
   patchThresholdParam,
   severityFloorParam,
@@ -150,7 +151,8 @@ describe('evaluateWatchHits', () => {
     const [q] = h.executes;
     expect(q!.text).toContain('SELECT DISTINCT ON (s.device_id)');
     expect(q!.text).toContain('FROM security_posture_snapshots s WHERE s.org_id = $1');
-    expect(q!.text).toContain('l.patch_compliance_score < $3');
+    // ::numeric — the column is integer, and a fractional threshold must not fail the cast.
+    expect(q!.text).toContain('l.patch_compliance_score < $3::numeric');
     expect(q!.text).toContain("'{patch_compliance,dataGap}'");
     expect(q!.params).toEqual([ORG, '2026-11-07T12:00:00.000Z', 80]);
   });
@@ -221,5 +223,24 @@ describe('parseWatchHitSummary', () => {
     expect(parseWatchHitSummary({ ...ok, previousCount: '1' })).toBeNull();
     expect(parseWatchHitSummary({ ...ok, partnerWide: 'no' })).toBeNull();
     expect(parseWatchHitSummary({ ...ok, ids: 'x' })).toBeNull();
+  });
+});
+
+describe('parseWatchHitRecord', () => {
+  const ok = { watchId: A1, previousHash: null, hash: HASH, count: 3 };
+
+  it('accepts a well-formed record, with or without a previous hash', () => {
+    expect(parseWatchHitRecord(ok)).toEqual(ok);
+    expect(parseWatchHitRecord({ ...ok, previousHash: 'b'.repeat(64) })).toEqual({ ...ok, previousHash: 'b'.repeat(64) });
+  });
+
+  it('rejects anything malformed', () => {
+    expect(parseWatchHitRecord(null)).toBeNull();
+    expect(parseWatchHitRecord({ ...ok, watchId: 'w-1' })).toBeNull();
+    expect(parseWatchHitRecord({ ...ok, hash: 'hash-a' })).toBeNull();
+    expect(parseWatchHitRecord({ ...ok, previousHash: 'x' })).toBeNull();
+    expect(parseWatchHitRecord({ ...ok, previousHash: undefined })).toBeNull();
+    expect(parseWatchHitRecord({ ...ok, count: -1 })).toBeNull();
+    expect(parseWatchHitRecord({ ...ok, count: '3' })).toBeNull();
   });
 });

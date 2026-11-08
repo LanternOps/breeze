@@ -280,6 +280,16 @@ describe('buildAssessmentTaskPrompt (Wisp W05b)', () => {
       expect(p).toContain('partner-wide watch: evaluated in this org only');
     });
 
+    it('patch devices are listed without a "newest first" claim (they carry no timestamp)', () => {
+      const p = buildAssessmentTaskPrompt(ctx(assessment({
+        reason: { kind: 'watch', watchId: 'w-1', hits: hits({ subject: 'device' }) },
+        watchLines,
+      })));
+      expect(p).toContain('device(s) below the threshold');
+      expect(p).toContain(`hit ids: ${ALERT_ID}`);
+      expect(p).not.toContain('newest first');
+    });
+
     it('a watch reason without hits (an unevaluated kind) renders the watch lines alone', () => {
       const p = buildAssessmentTaskPrompt(ctx(assessment({ reason: { kind: 'watch', watchId: 'w-1' }, watchLines })));
       expect(p).toContain('watch w-1: alert_pattern');

@@ -218,6 +218,10 @@ describe('wisp watch hit-sets (real Postgres, #11424)', () => {
     ]);
     const hits = await evaluateWatchHits({ kind: 'patch_compliance', params: { threshold: 80 } }, f.orgId, now);
     expect(hits).toMatchObject({ subject: 'device', count: 1, ids: [below.id] });
+    // Fractional thresholds against the integer column (a fraction, and a non-integer percent).
+    expect(await evaluateWatchHits({ kind: 'patch_compliance', params: { minCompliance: 0.605 } }, f.orgId, now)).toMatchObject({ count: 1, ids: [below.id] });
+    expect(await evaluateWatchHits({ kind: 'patch_compliance', params: { threshold: 60.5 } }, f.orgId, now)).toMatchObject({ count: 1, ids: [below.id] });
+    expect(await evaluateWatchHits({ kind: 'patch_compliance', params: { threshold: 59.5 } }, f.orgId, now)).toMatchObject({ count: 0 });
     // A day later every snapshot is stale: nothing is current evidence.
     const later = await evaluateWatchHits({ kind: 'patch_compliance', params: { threshold: 80 } }, f.orgId, new Date(now.getTime() + 26 * 3_600_000));
     expect(later).toMatchObject({ count: 0, hash: EMPTY_HASH });

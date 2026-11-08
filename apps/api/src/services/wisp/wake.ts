@@ -33,6 +33,7 @@ import type { BreezeEvent } from '../eventBus';
 import { GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
 import { assessableOrgIds, ONBOARDING_ORG_LIMIT } from './assessableOrgs';
 import type { AssessmentReason, DeterministicDigestHint } from './assessment';
+import type { WatchHitRecord } from './assessmentTypes';
 
 export { ONBOARDING_ORG_LIMIT };
 
@@ -47,7 +48,13 @@ export const ASSESS_JOB = 'assess';
 const ASSESS_JOB_ATTEMPTS = 3;
 const ASSESS_JOB_BACKOFF_MS = 30_000;
 
-export type WispAssessJobData = { grantId: string; orgId: string; reason: AssessmentReason } & DeterministicDigestHint;
+export type WispAssessJobData = {
+  grantId: string;
+  orgId: string;
+  reason: AssessmentReason;
+  /** #11424: set on a watch request whose hit-set was evaluated; recorded at admission. */
+  watchRecord?: WatchHitRecord;
+} & DeterministicDigestHint;
 
 /** The delayed job that fires one `wisp_check_ins` row (jobs/wispWakeScheduler.ts processCheckInJob). */
 export const CHECK_IN_JOB = 'check-in';
@@ -141,6 +148,7 @@ export async function requestAssessment(input: WispAssessJobData): Promise<'queu
   const data: WispAssessJobData = { grantId: input.grantId, orgId: input.orgId, reason: input.reason };
   if (input.subject) data.subject = input.subject;
   if (input.failed !== undefined) data.failed = input.failed;
+  if (input.watchRecord) data.watchRecord = input.watchRecord;
   await queue.add(ASSESS_JOB, data, {
     jobId,
     delay: WISP_WAKE_DEBOUNCE_MS,

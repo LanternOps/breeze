@@ -23,9 +23,10 @@ export type AssessmentReason =
 
 /**
  * #11424 — what the wake scheduler's in-code evaluation of a watch found, sent
- * with the `watch` reason so the run does not re-query it. Present only for a
- * kind the scheduler evaluates (services/wisp/watchHits.ts) and only when the
- * hit-set changed; a run for an unevaluated kind carries no `hits`.
+ * with the `watch` reason so the run does not re-query it. Present only when
+ * the scheduler evaluated the watch (services/wisp/watchHits.ts) and the
+ * hit-set changed; absent for a kind it does not evaluate and when the
+ * evaluation failed (the watch then runs anyway, as before #11424).
  *
  *   - `first`   — no earlier evaluation is stored for the watch.
  *   - `new`     — the previous evaluation found nothing; every hit is new.
@@ -33,7 +34,8 @@ export type AssessmentReason =
  *   - `changed` — the hit-set differs (hits added, removed or changed state).
  *
  * `ids` = up to 25 hit ids (uuids, `WATCH_HIT_SAMPLE_MAX` in watchHits.ts),
- * newest first; `subject` names what they are. `orgId` = the org evaluated: a
+ * newest first where the kind has a timestamp (alerts, findings; patch
+ * devices come in id order); `subject` names what they are. `orgId` = the org evaluated: a
  * partner-wide watch (`partnerWide`) is evaluated in its grant's round-robin
  * org only, so its previous evaluation may have covered another org and its
  * change is only ever `first` or `changed`.
@@ -49,6 +51,14 @@ export type WatchHitSummary = {
   previousCount: number | null;
   ids: string[];
 };
+
+/**
+ * #11424: the hit-set a watch request was made for, carried on the assess job
+ * (not in the model-facing reason) so `processAssessJob` records it on the
+ * watch row only once `enqueueAssessment` has admitted a run. `previousHash`
+ * is the hash the claim returned, for the compare-and-set.
+ */
+export type WatchHitRecord = { watchId: string; previousHash: string | null; hash: string; count: number };
 
 /**
  * `ai_agent_runs.trigger_ref.wisp` of an assessment run, written by

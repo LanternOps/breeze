@@ -92,7 +92,9 @@ export function watchHitLines(hits: WatchHitSummary): string[] {
   ];
   if (hits.ids.length > 0) {
     const more = hits.count > hits.ids.length ? ` (${hits.count - hits.ids.length} more not listed)` : '';
-    lines.push(`hit ids, newest first: ${hits.ids.join(', ')}${more}`);
+    // Patch devices carry no timestamp, so they come in id order.
+    const order = hits.subject === 'device' ? '' : ', newest first';
+    lines.push(`hit ids${order}: ${hits.ids.join(', ')}${more}`);
   }
   if (hits.partnerWide) {
     lines.push('partner-wide watch: evaluated in this org only; the previous evaluation may have covered another org.');

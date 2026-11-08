@@ -246,6 +246,15 @@ describe('requestAssessment', () => {
     expect(h.jobs.size).toBe(3);
   });
 
+  it('a watch request carries its watchRecord onto the job (#11424); a coalesced one adds nothing', async () => {
+    const watchRecord = { watchId: '00000000-0000-4000-8000-0000000000d1', previousHash: null, hash: 'a'.repeat(64), count: 1 };
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: { kind: 'watch', watchId: watchRecord.watchId }, watchRecord })).toBe('queued');
+    expect(assessAdds()).toHaveLength(1);
+    expect(assessAdds()[0]!.data).toEqual({ grantId: G1, orgId: O1, reason: { kind: 'watch', watchId: watchRecord.watchId }, watchRecord });
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: { kind: 'watch', watchId: watchRecord.watchId }, watchRecord })).toBe('coalesced');
+    expect(assessAdds()).toHaveLength(1);
+  });
+
   it('a new request after the job completed creates a new job', async () => {
     expect(await requestAssessment({ grantId: G1, orgId: O1, reason: { kind: 'tick' } })).toBe('queued');
     // removeOnComplete drops the record ...
