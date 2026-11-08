@@ -1012,7 +1012,88 @@ describe('BackupTab', () => {
       expect(screen.getByDisplayValue('14')).toBeTruthy();
     });
 
-    it('writes a preset the user picks, and only the fields that preset sets', async () => {
+    it('saves a stored empty retention as empty, shown as Custom with every field unset', async () => {
+      renderWithRetention({});
+
+      await screen.findByText('Primary S3');
+      expect((screen.getByRole('radio', { name: /^Custom/ }) as HTMLInputElement).checked).toBe(true);
+      const retentionInputs = screen.getAllByPlaceholderText('Not set') as HTMLInputElement[];
+      expect(retentionInputs.map((input) => input.value)).toEqual(['', '', '', '', '', '']);
+
+      fireEvent.change(screen.getByDisplayValue('03:00'), { target: { value: '05:00' } });
+      fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+      await waitFor(() => expect(saveMock).toHaveBeenCalled());
+      expect(saveMock.mock.calls[0]![1].inlineSettings.retention).toEqual({});
+    });
+
+    it('shows a preset label whose numbers match as that preset, and adds no GFS fields on save', async () => {
+      renderWithRetention({ preset: 'extended', retentionDays: 90, maxVersions: 10 });
+
+      await screen.findByText('Primary S3');
+      expect((screen.getByRole('radio', { name: /^Extended/ }) as HTMLInputElement).checked).toBe(true);
+      fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+      await waitFor(() => expect(saveMock).toHaveBeenCalled());
+      expect(saveMock.mock.calls[0]![1].inlineSettings.retention).toEqual({
+        preset: 'extended',
+        retentionDays: 90,
+        maxVersions: 10,
+      });
+    });
+
+    it('does not warn about the retention floor when keepDaily is unset', async () => {
+      renderWithRetention({ preset: 'custom', retentionDays: 14 });
+
+      await screen.findByText('Primary S3');
+      // Unset GFS tiers auto-open the advanced disclosure.
+      expect(screen.getByText('GFS Retention')).toBeTruthy();
+      expect(screen.queryByText(/retention floor/i)).toBeNull();
+    });
+
+    it('re-reads the retention when the link changes after mount', async () => {
+      const { rerender } = renderWithRetention({ keepDaily: 7 });
+      await screen.findByText('Primary S3');
+
+      rerender(
+        <BackupTab
+          policyId="policy-1"
+          existingLink={linkWithRetention({ retentionDays: 14, maxVersions: 5 })}
+          linkedPolicyId={null}
+          onLinkChanged={vi.fn()}
+        />
+      );
+      await screen.findByDisplayValue('14');
+      fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+      await waitFor(() => expect(saveMock).toHaveBeenCalled());
+      expect(saveMock.mock.calls[0]![1].inlineSettings.retention).toEqual({
+        retentionDays: 14,
+        maxVersions: 5,
+      });
+    });
+
+    it('overriding an inherited link copies its retention unchanged', async () => {
+      render(
+        <BackupTab
+          policyId="policy-1"
+          existingLink={undefined}
+          parentLink={linkWithRetention({ keepDaily: 7 })}
+          linkedPolicyId={null}
+          onLinkChanged={vi.fn()}
+        />
+      );
+
+      await screen.findByText('Primary S3');
+      fireEvent.click(screen.getByRole('button', { name: /^Override$/i }));
+
+      await waitFor(() => expect(saveMock).toHaveBeenCalled());
+      const [linkId, payload] = saveMock.mock.calls[0]!;
+      expect(linkId).toBeNull();
+      expect(payload.inlineSettings.retention).toEqual({ keepDaily: 7 });
+    });
+
+    it("writes the picked preset's days and versions, keeps the stored GFS values, and adds none", async () => {
       renderWithRetention({ keepDaily: 7 });
 
       await screen.findByText('Primary S3');

@@ -58,8 +58,8 @@ type BackupScheduleSettings = {
   // retention keeps its stored label, or the lack of one (#11278).
   retentionPresetLabel: RetentionPreset | null;
   // For the retention numbers below, null means the field is absent from the
-  // stored retention. In the API, an absent field means no constraint: no
-  // retentionDays floor, no maxVersions cap, no GFS tier
+  // stored retention. In the API, an absent field (or 0) means no constraint:
+  // no retentionDays floor, no maxVersions cap, no GFS tier
   // (apps/api/src/jobs/backupRetention.ts). It shows as "Not set" and is left
   // out on save, never replaced with a preset default (#11278).
   retentionDays: number | null;
@@ -443,6 +443,8 @@ export function inflateSettings(
 
 // True when settings deviate from defaults in the advanced (GFS / window)
 // controls — used to auto-open the disclosure so saved values are never hidden.
+// An unset GFS tier (null) counts: it differs from what a new link gets and
+// the operator should see it as "Not set" (#11278).
 function hasAdvancedValues(s: BackupScheduleSettings): boolean {
   return (
     s.gfsDailyRetention !== scheduleDefaults.gfsDailyRetention ||
@@ -832,9 +834,8 @@ export default function BackupTab({
     }));
   };
 
-  // The custom fields only render on the Custom card, so editing one makes the
-  // saved label "custom" even if the stored label named a preset whose numbers
-  // no longer matched.
+  // These inputs only render on the Custom card, so any edit saves
+  // preset: "custom".
   const updateCustomRetention = (
     key: "retentionDays" | "retentionVersions",
     value: number,
@@ -2422,8 +2423,9 @@ export default function BackupTab({
                         )}
                       </label>
                       <select
-                        // Unset means Sunday: computeGfsTags in
-                        // apps/api/src/jobs/backupRetention.ts defaults to 0.
+                        // Unset shows Sunday, which is what computeGfsTags in
+                        // apps/api/src/jobs/backupRetention.ts uses. The
+                        // display is all: it stays unset on save until changed.
                         value={settings.gfsWeeklyDayOfWeek ?? 0}
                         onChange={(e) =>
                           update("gfsWeeklyDayOfWeek", Number(e.target.value))
