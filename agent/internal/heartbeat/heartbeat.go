@@ -820,6 +820,16 @@ type Heartbeat struct {
 	stopOnce    sync.Once
 	authMon     *authstate.Monitor
 
+	// verificationPool is the lane for backup_verify and backup_test_restore
+	// (#6106). Each waits up to two hours on the backup helper; on the shared
+	// pool that wait held a slot, so a few verifications could starve scripts
+	// and monitors. It is sized like pool, so verification concurrency and
+	// queueing are what they were, and the agent's total pooled capacity is
+	// twice MaxConcurrentCommands. Agent-side a verification is only an IPC
+	// wait; the work runs in the helper. Nil in fixtures that never set it,
+	// which keeps those commands on pool (commandPoolFor).
+	verificationPool *workerpool.Pool
+
 	// Command deduplication: prevents the same commandId from being
 	// executed twice when delivered via both WebSocket and heartbeat.
 	seenCommands   map[string]time.Time
@@ -1319,6 +1329,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		tunnelMgr:                      tunnel.NewManager(false),
 		securityScanner:                &security.SecurityScanner{Config: cfg},
 		pool:                           workerpool.New(cfg.MaxConcurrentCommands, cfg.CommandQueueSize),
+		verificationPool:               workerpool.New(cfg.MaxConcurrentCommands, cfg.CommandQueueSize),
 		healthMon:                      health.NewMonitor(),
 		retryCfg:                       httputil.DefaultRetryConfig(),
 		seenCommands:                   make(map[string]time.Time),
@@ -2625,6 +2636,9 @@ func (h *Heartbeat) Start() {
 func (h *Heartbeat) StopAcceptingCommands() {
 	h.accepting.Store(false)
 	h.pool.StopAccepting()
+	if h.verificationPool != nil {
+		h.verificationPool.StopAccepting()
+	}
 }
 
 // DrainAndWait waits for all in-flight commands and inventory goroutines to complete,
@@ -2634,7 +2648,12 @@ func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 	h.stopTimeSync()
 	h.stopWorkloads()
 	log.Info("draining in-flight commands and inventory goroutines")
+	// Both pools share ctx's deadline: their tasks run concurrently, so
+	// draining them in turn still bounds the whole wait by that deadline.
 	h.pool.Drain(ctx)
+	if h.verificationPool != nil {
+		h.verificationPool.Drain(ctx)
+	}
 	h.wg.Wait()
 
 	// Wait for inventory goroutines with deadline
@@ -6055,9 +6074,7 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 			go h.processCommand(c)
 			continue
 		}
-		if !h.pool.Submit(func() { h.processCommand(c) }) {
-			log.Warn("command rejected, worker pool full", logging.KeyCommandID, cmd.ID)
-		}
+		h.dispatchPolledCommand(c)
 	}
 
 	// Handle upgrade if requested and auto-update is enabled
@@ -7618,12 +7635,13 @@ func (h *Heartbeat) executeCommandViaPoolReportingDelivery(cmd Command) (result 
 		return h.runTrackedCommand(cmd), true
 	}
 
-	if h.pool == nil {
+	pool := h.commandPoolFor(cmd.Type)
+	if pool == nil {
 		return h.executeCommand(cmd), true
 	}
 
 	resultCh := make(chan tools.CommandResult, 1)
-	if !h.pool.Submit(func() {
+	if !pool.Submit(func() {
 		resultCh <- h.runTrackedCommand(cmd)
 	}) {
 		return tools.CommandResult{
@@ -7666,7 +7684,7 @@ func (h *Heartbeat) executeCommandViaPoolReportingDelivery(cmd Command) (result 
 				ExitCode: 1, // synthetic: no exit code observed (shutdown)
 				Error:    "agent is shutting down",
 			}, false
-		case <-h.pool.Context().Done():
+		case <-pool.Context().Done():
 			return tools.CommandResult{
 				Status:   "failed",
 				ExitCode: 1, // synthetic: no exit code observed (shutdown)

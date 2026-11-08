@@ -18,6 +18,12 @@ type pendingResponse struct {
 	ch           chan *ipc.Envelope
 	expectedType string
 	validate     func(*ipc.Envelope) error
+	// discard marks a tombstone left by sendCommandAbandoningLateReply: the
+	// sender stopped waiting at abandonedAt, so HandleResponse consumes a
+	// late reply (keeping it from being forwarded as unsolicited) and drops
+	// the entry. A tombstone has no ch.
+	discard     bool
+	abandonedAt time.Time
 }
 
 // Session represents a connected user helper with verified identity.
@@ -416,6 +422,16 @@ func (s *Session) HandleResponse(env *ipc.Envelope) bool {
 				"id", env.ID,
 				"expectedType", pending.expectedType,
 				"actualType", env.Type,
+				"sessionId", s.SessionID,
+			)
+			return true
+		}
+		if pending.discard {
+			s.releaseTombstone(env.ID)
+			log.Warn("discarded late reply to an abandoned command",
+				"id", env.ID,
+				"type", env.Type,
+				"lateBy", time.Since(pending.abandonedAt).Round(time.Second).String(),
 				"sessionId", s.SessionID,
 			)
 			return true
