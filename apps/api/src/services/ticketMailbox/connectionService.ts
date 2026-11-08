@@ -87,7 +87,8 @@ export interface GmailHandlingSettings {
   errorAt: Date | null;
 }
 
-export const MAILBOX_VERIFICATION_FAILED = 'Mailbox verification failed';
+import { MAILBOX_VERIFICATION_FAILED } from './mailboxErrors';
+export { MAILBOX_VERIFICATION_FAILED };
 
 export type MailboxConnectionSnapshot = Pick<
   MailboxConnection,

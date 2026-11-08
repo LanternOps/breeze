@@ -57,4 +57,31 @@ describe('ScriptProposalDetail', () => {
     await waitFor(() => expect(screen.getByText(/couldn't load/i)).toBeTruthy());
     expect(screen.queryByTestId('script-proposal-evidence-erased')).toBeNull();
   });
+
+  // #11287: raw status strings are not for humans, and the override actions
+  // live on the approvals page.
+  it('shows a human status label and links a review_failed proposal to Approvals', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      jsonResponse({
+        proposal: { status: 'review_failed', goal: 'Clear temp files', riskTier: 'low' },
+        review: { summary: 'The reviewer could not finish.' },
+      }),
+    );
+    render(<ScriptProposalDetail proposalId="proposal-9" />);
+    await waitFor(() => expect(screen.getByText('Clear temp files')).toBeTruthy());
+    expect(screen.queryByText('review_failed')).toBeNull();
+    expect(screen.getByText('AI review failed')).toBeTruthy();
+    const link = screen.getByRole('link', { name: 'Review in Approvals' });
+    expect(link.getAttribute('href')).toBe('/approvals#proposal-proposal-9');
+  });
+
+  it('offers no Approvals link once a proposal is past review (executed)', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      jsonResponse({ proposal: { status: 'executed', goal: 'g', riskTier: 'low' }, review: null }),
+    );
+    render(<ScriptProposalDetail proposalId="proposal-10" />);
+    await waitFor(() => expect(screen.getByText('g')).toBeTruthy());
+    expect(screen.getByText('Executed')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'Review in Approvals' })).toBeNull();
+  });
 });

@@ -219,6 +219,7 @@ const EXEMPT: Record<string, string> = {
   'services/oemUpdates/revalidation.ts': 'vendor update claim recheck (#11065): reads the partner of the one device being claimed; selects no targets. A parked device is cancelled by partitionClaimable first',
   'services/oemUpdates/alerts.ts': 'vendor update alerts (#11065): reads the hostname of one device the monitor, a sweep or a result already named; selects no targets',
   'services/oemUpdates/results.ts': 'vendor update results (#11065): applies an agent report to the one device that sent it; selects no targets',
+  'services/remoteToolAlerts/alerts.ts': 'new remote tool alerts (#11306): reads the hostname of the one device whose posture submit found the tool; selects no targets. The posture route denies parked devices (parkedRouteClassification.test.ts)',
   'services/networkIsolation/lifecycle.ts': 'lifecycle: locks explicitly scoped devices to block destructive operations while isolation is unresolved; no background target selection',
   'jobs/networkIsolationSweeper.ts': 'lifecycle: recovery and expiry warnings for existing isolation episodes must survive parked/disabled devices; device lookup only resolves the episode notification site, never selects new isolation targets',
   'services/networkIsolation/service.ts': 'Single-device service under caller RLS and site access; selects no fan-out targets. dispatchDeviceCommand refuses parked devices; heartbeat tombstones retain recovery intent.',

@@ -128,7 +128,8 @@ function Detail({
           })}
         </p>
       )}
-      {runKind !== null && (
+      {/* A failed run stored nothing, so the incremental explainer does not apply. */}
+      {runKind !== null && (restorable || inFlight) && (
         <p className="text-xs text-muted-foreground">
           {t('jobDataSummary.explainer')}{' '}
           <a href={INCREMENTAL_DOCS_URL} target="_blank" rel="noopener noreferrer" className="underline">

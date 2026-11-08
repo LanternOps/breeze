@@ -487,6 +487,7 @@
     "rebootDone": "Concluída",
     "rebootNotRequired": "—",
     "skipReasons": {
+      "no_approved_patches": "Ignorado: nenhuma das atualizações pendentes neste dispositivo está aprovada.",
       "ring_deleted": "Cancelado antes do envio: o anel de atualização foi excluído.",
       "ring_disabled": "Cancelado antes do envio: o anel de atualização foi desativado.",
       "ring_unavailable": "Ignorado: o anel de atualização foi excluído ou desativado antes do envio para este dispositivo.",

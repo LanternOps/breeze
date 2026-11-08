@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode, type Dispatch, type SetStateAction } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type Dispatch, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus } from 'lucide-react';
 import { isPinnedLink } from '@/lib/wispLinksApi';
-import { WISP_THREAD_LINK_LIMIT, type WispBriefSchedule, type WispFirstLookProgress, type WispFirstLookState, type WispThreadLink, type WispTimelinePost } from '@breeze/shared';
+import { cancelWispCheckIn, listWispCheckIns } from '@/lib/wispCheckInsApi';
+import { ActionError } from '@/lib/runAction';
+import { showToast } from '@/components/shared/Toast';
+import { WISP_THREAD_LINK_LIMIT, type WispBriefSchedule, type WispCheckIn, type WispFirstLookProgress, type WispFirstLookState, type WispThreadLink, type WispTimelinePost } from '@breeze/shared';
 import { useAiStore, type WispState } from '@/stores/aiStore';
 import { fetchWithAuth } from '@/stores/auth';
 import AiChatMessages from '../ai/AiChatMessages';
@@ -11,14 +14,21 @@ import AiThinkingIndicator from '../ai/AiThinkingIndicator';
 import AiContinuationPrompt from '../ai/AiContinuationPrompt';
 import AiModelPicker from '../ai/AiModelPicker';
 import BuyCreditsLink from '../ai/BuyCreditsLink';
+import WispCheckInChip from './WispCheckInChip';
 import WispEntityPicker from './WispEntityPicker';
 import WispPost from './WispPost';
 import WispWelcome from './WispWelcome';
 import { linkKey } from './wispEntitySources';
+import { checkInIdFromHash, checkInIdFromLink } from './wispThreadHash';
 import { useWispThreadTimeline, type TimelineTarget } from './useWispThreadTimeline';
 
 type Wisp = NonNullable<WispState>;
-type Binding = 'binding' | 'live' | 'failed';
+/**
+ * `not_configured`: the server has no model provider (503 `ai_not_configured`).
+ * The column says that instead of the generic open failure and shows the thread
+ * so far read-only, as for a paused grant; Try again rebinds once a key is added.
+ */
+type Binding = 'binding' | 'live' | 'failed' | 'not_configured';
 
 /**
  * `thread.lastSessionId` is the last session stamped on the thread, not the
@@ -105,6 +115,16 @@ const noop = () => {};
  * shows Wisp's welcome and suggestion chips above the composer; a paused or
  * ended grant shows its notice where the composer would be. `links` null
  * hides the composer's Link an item button (the thread page lists no links).
+ *
+ * Check-in timers (W05 #10996, spec §5), live thread only: the thread's
+ * pending check-ins load on bind, on every `refreshKey` and when a turn
+ * finishes streaming (so the chip appears as soon as the reply that scheduled
+ * it ends). Scheduled ones show as a chip above the composer with cancel; a
+ * `check_in` post whose row is still `fired` gets **Run now**, which sends the
+ * check-in message. The server prepends every fired check-in of the grant
+ * (oldest first, at most 5) to that turn and consumes them, so the button runs
+ * all that are due, not only the one clicked. A paused grant shows its check-in posts read-only. A bell
+ * deep link (`#checkin=<id>`) scrolls its post into view once.
  */
 export default function WispHomeThread({
   wisp,
@@ -148,13 +168,19 @@ export default function WispHomeThread({
     wisp: storeWisp, sessionId: storeSessionId,
   } = useAiStore();
   const storeThreadId = storeWisp?.threadId ?? null;
+  const [checkIns, setCheckIns] = useState<WispCheckIn[]>([]);
+  const checkInsToken = useRef(0);
 
   /** Run one (re)bind; only the latest attempt may set the outcome. */
   const rebind = (bind: () => Promise<boolean>) => {
     const token = ++attempt.current;
     setBinding('binding');
     void bind()
-      .then((ok) => { if (token === attempt.current) setBinding(ok ? 'live' : 'failed'); })
+      .then((ok) => {
+        if (token !== attempt.current) return;
+        // Read the refusal now: the shared store's error is cleared by other surfaces (Dismiss in the panel).
+        setBinding(ok ? 'live' : useAiStore.getState().errorCode === 'ai_not_configured' ? 'not_configured' : 'failed');
+      })
       .catch((err: unknown) => {
         console.error('[WispHomeThread] opening the Wisp session failed', err);
         if (token === attempt.current) setBinding('failed');
@@ -170,21 +196,118 @@ export default function WispHomeThread({
   // The panel (or another tab of the store) moved the chat to another conversation: say so rather than show it here.
   const showingThisThread = storeThreadId === wisp.threadId;
 
-  // Live: everything but the store's session. Paused: the whole history, read-only. Ended or not bound: nothing.
+  // Live: everything but the store's session. Paused or no model provider: the whole history, read-only.
+  // Ended or not bound: nothing.
   const live = active && binding === 'live' && showingThisThread;
+  const readOnly = wisp.status === 'paused' || (active && binding === 'not_configured');
   const target = useMemo<TimelineTarget>(() => {
-    if (wisp.status === 'paused') return { threadId: wisp.threadId, excludeSessionId: null };
+    if (readOnly) return { threadId: wisp.threadId, excludeSessionId: null };
     return live ? { threadId: wisp.threadId, excludeSessionId: storeSessionId ?? null } : null;
-  }, [wisp.status, wisp.threadId, live, storeSessionId]);
+  }, [readOnly, wisp.threadId, live, storeSessionId]);
   const timeline = useWispThreadTimeline(target, refreshKey);
   const threadMessages = useMemo(
     () => (timeline.messages.length === 0 ? messages : [...timeline.messages, ...messages]),
     [timeline.messages, messages],
   );
-  const extras = useMemo(
-    () => timeline.posts.map((post) => ({ id: post.id, at: new Date(post.createdAt), render: () => <WispPost post={post} /> })),
-    [timeline.posts],
+
+  /** Only the latest read may land; a failed one keeps what is shown. */
+  const loadCheckIns = useCallback(() => {
+    const token = ++checkInsToken.current;
+    listWispCheckIns(wisp.threadId)
+      .then((list) => { if (token === checkInsToken.current) setCheckIns(list); })
+      .catch((err: unknown) => console.warn('[WispHomeThread] reading the thread\'s check-ins failed', err));
+  }, [wisp.threadId]);
+
+  // Another thread's check-ins never show here, not even until the first read lands.
+  useEffect(() => {
+    checkInsToken.current++;
+    setCheckIns([]);
+  }, [wisp.threadId]);
+
+  useEffect(() => {
+    if (!live) {
+      checkInsToken.current++;
+      setCheckIns([]);
+      return;
+    }
+    loadCheckIns();
+  }, [live, loadCheckIns, refreshKey]);
+
+  // A turn that just ended may have scheduled (or consumed) a check-in.
+  const wasStreaming = useRef(isStreaming);
+  useEffect(() => {
+    if (wasStreaming.current && !isStreaming && live) loadCheckIns();
+    wasStreaming.current = isStreaming;
+  }, [isStreaming, live, loadCheckIns]);
+
+  const dropCheckIn = (checkInId: string) => setCheckIns((prev) => prev.filter((c) => c.id !== checkInId));
+  const onCancelCheckIn = async (checkInId: string) => {
+    try {
+      await cancelWispCheckIn(wisp.threadId, checkInId);
+      // Gone now, even if the reload below fails: the toast already said so.
+      dropCheckIn(checkInId);
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      if (!(err instanceof ActionError)) {
+        console.error('[WispHomeThread] cancelling a check-in failed', err);
+        showToast({ type: 'error', message: t('wisp.checkIn.cancelFailed') });
+      } else if (err.status === 404) {
+        // Already consumed or cancelled (toasted by runAction): it is not pending any more.
+        dropCheckIn(checkInId);
+      }
+    }
+    loadCheckIns();
+  };
+
+  const firedIds = useMemo(
+    () => new Set(checkIns.filter((c) => c.status === 'fired').map((c) => c.id)),
+    [checkIns],
   );
+  const runNowMessage = t('wisp.checkIn.runNowMessage');
+  const extras = useMemo(
+    () => timeline.posts.map((post) => {
+      const checkInId = post.kind === 'check_in' && live ? checkInIdFromLink(post.link) : null;
+      const runnable = checkInId !== null && firedIds.has(checkInId);
+      return {
+        id: post.id,
+        at: new Date(post.createdAt),
+        render: () => (
+          <WispPost
+            post={post}
+            onRunNow={runnable ? () => sendMessage(runNowMessage) : undefined}
+            runNowDisabled={isStreaming || isLoading}
+          />
+        ),
+      };
+    }),
+    [timeline.posts, live, firedIds, sendMessage, runNowMessage, isStreaming, isLoading],
+  );
+
+  // The bell's deep link (`#checkin=<id>`): bring its post into view once, the
+  // first time it is on screen. After AiChatMessages' own bottom anchor, which
+  // also runs in an animation frame, so this one wins.
+  // A bell clicked while this page is open only changes the hash.
+  const [hashCheckIn, setHashCheckIn] = useState<string | null>(null);
+  useEffect(() => {
+    const read = () => setHashCheckIn(checkInIdFromHash(window.location.hash));
+    read();
+    window.addEventListener('hashchange', read);
+    return () => window.removeEventListener('hashchange', read);
+  }, []);
+  const scrolledToCheckIn = useRef<string | null>(null);
+  useEffect(() => {
+    const wanted = hashCheckIn;
+    if (!wanted || scrolledToCheckIn.current === wanted) return;
+    if (!timeline.posts.some((p) => p.kind === 'check_in' && checkInIdFromLink(p.link) === wanted)) return;
+    const frame = requestAnimationFrame(() => {
+      const el = Array.from(document.querySelectorAll<HTMLElement>('[data-check-in-id]'))
+        .find((node) => node.dataset.checkInId === wanted && node.dataset.testid === 'wisp-post');
+      if (!el) return;
+      scrolledToCheckIn.current = wanted;
+      el.scrollIntoView({ block: 'center' });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [timeline.posts, hashCheckIn]);
   const hasBrief = timeline.posts.some((p) => p.kind === 'brief');
   const firstLookState = welcomeFirstLookState(timeline.posts, wisp.firstLookState);
   const historyNotice = timeline.failed ? (
@@ -227,7 +350,7 @@ export default function WispHomeThread({
     </>
   );
 
-  /** A paused grant: the thread so far, read-only, with the notice where the composer would be. */
+  /** A paused grant (or no model provider): the thread so far, read-only, with the notice where the composer would be. */
   const historyOnly = (footer: ReactNode) => (
     <>
       <AiChatMessages
@@ -256,6 +379,20 @@ export default function WispHomeThread({
           <p className="rounded-2xl border px-4 py-3 text-sm text-muted-foreground" data-testid="wisp-home-thread-inactive">
             {wisp.status === 'paused' ? t('wisp.home.threadPaused') : t('wisp.home.threadEnded')}
           </p>,
+        )
+      ) : binding === 'not_configured' ? (
+        historyOnly(
+          <div className="space-y-2 rounded-2xl border px-4 py-3 text-sm" data-testid="wisp-home-thread-not-configured" role="status">
+            <p className="text-muted-foreground">{t('errors:ai_not_configured')}</p>
+            <button
+              type="button"
+              data-testid="wisp-home-thread-not-configured-retry"
+              onClick={() => rebind(() => bindWispSession(wisp, null))}
+              className="rounded border px-3 py-1 hover:bg-muted"
+            >
+              {t('wisp.thread.retry')}
+            </button>
+          </div>,
         )
       ) : binding === 'binding' ? (
         withoutChat(
@@ -316,6 +453,7 @@ export default function WispHomeThread({
             <AiThinkingIndicator thinking={isStreaming && !!thinking} />
             {/* The docked panel's model menu (registry W05): the store loads it for the bound session. */}
             <AiModelPicker disabled={isStreaming} />
+            <WispCheckInChip checkIns={checkIns} onCancel={(id) => void onCancelCheckIn(id)} />
             <AiChatInput
               onSend={sendMessage}
               value={composerDraft}

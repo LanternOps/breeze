@@ -41,12 +41,16 @@ import { wispThreadSessions } from '../../db/schema/wispThreads';
 import { buildOrgAccessClosures, siteAccessCheck, type AuthContext } from '../../middleware/auth';
 import { resolveToolPermissionRequirements } from '../aiGuardrails';
 import { captureException } from '../sentry';
+import { wispGrantRevisions } from '../../db/schema/wisp';
 import {
   CeilingViolationError,
   GrantInactiveError,
   assertWithinCeiling,
+  ceilingAdmitsTool,
+  ceilingToolTermOf,
   inSystemContext,
   resolveGrantCeiling,
+  wispCeilingSnapshotSchema,
   type CeilingViolationCode,
   type GrantCeiling,
 } from './grantAuthority';
@@ -338,4 +342,38 @@ export async function lookupWispGrant(sessionId: string): Promise<WispSessionGra
   if (row.revisionId === null) throw new WispSessionUnavailableError('grant_unpinned', sessionId);
   if (row.threadId === null) throw new WispSessionUnavailableError('thread_unlinked', sessionId);
   return { grantId: row.grantId, revisionId: row.revisionId, threadId: row.threadId };
+}
+
+/**
+ * #10430: which tools a Wisp chat session is OFFERED — its MCP server, and so
+ * the ToolSearch index built from it. A tool the ceiling's tool term refuses
+ * (`deniedTools`, the agent deny floor, an allowlist) is left out, so the model
+ * never finds one the gate would refuse. Built from the pinned revision's
+ * snapshot, not the live ceiling: the tool term does not depend on the live
+ * grantor or the grant's status, and a paused grant must still open a session
+ * whose calls refuse with the "turn Wisp back on" message. Every call still
+ * passes `enforceWispCeiling`.
+ *
+ * A missing revision row or a malformed snapshot is a corrupt pin: the filter
+ * falls back to the agent deny floor (logged and captured), and every call
+ * then fails closed at the gate. A DB error propagates, as in
+ * `lookupWispGrant`.
+ */
+export async function wispSessionToolFilter(grant: WispSessionGrant): Promise<(toolName: string) => boolean> {
+  const [row] = await inSystemContext(() =>
+    db
+      .select({ ceilingSnapshot: wispGrantRevisions.ceilingSnapshot })
+      .from(wispGrantRevisions)
+      .where(and(eq(wispGrantRevisions.id, grant.revisionId), eq(wispGrantRevisions.grantId, grant.grantId)))
+      .limit(1),
+  );
+  const parsed = row ? wispCeilingSnapshotSchema.safeParse(row.ceilingSnapshot) : null;
+  if (!parsed?.success) {
+    const reason = row ? 'malformed ceiling snapshot' : 'revision not found';
+    const err = new Error(`[Wisp] grant ${grant.grantId} revision ${grant.revisionId}: ${reason}; offering the agent deny floor only`);
+    console.error(err.message);
+    captureException(err, undefined, { grantId: grant.grantId, op: 'wisp.session_tool_filter' });
+  }
+  const term = ceilingToolTermOf(parsed?.success ? parsed.data : { deniedTools: [], toolAllowlist: null });
+  return (toolName) => ceilingAdmitsTool(term, toolName);
 }

@@ -1478,7 +1478,8 @@
     "status": {
       "connected": "Bağlı",
       "error": "Hata",
-      "reauth_required": "Yeniden kimlik doğrulama gerekli"
+      "reauth_required": "Yeniden kimlik doğrulama gerekli",
+      "inactive": "Etkin değil"
     },
     "syncStatus": {
       "running": "Çalışıyor",

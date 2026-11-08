@@ -284,7 +284,7 @@
     "alertThresholds": "Uyar (bütçenin %'si)",
     "alertThresholdsHelp": "Faturalama erişimine sahip partner yöneticileri her eşikte uygulama içi bir uyarı ve aylık ile limit aşımı uyarıları için e-posta alır. 50, 80, 95 değerlerini devralmak için boş bırakın.",
     "notSet": "Ayarlanmadı, kuruluşlar ayrı ayrı yapılandırılır",
-    "description": "Bütçe değerleri tüm alt kuruluşlarda uygulanır. Dolar tutarları dahili olarak sent cinsinden saklanır.",
+    "description": "Burada ayarlanan değerler her alt kuruluşa uygulanır ve ilgili kuruluş alanını kilitler. Kuruluşların yapılandırması için bir alanı boş bırakın.",
     "modes": {
       "perStep": "Adım Başına",
       "actionPlan": "Eylem Planı",
@@ -1095,8 +1095,8 @@
         "description": "E-postaları kendi alan adınızdan gönderin"
       },
       "aiBudgets": {
-        "label": "Yapay Zeka Bütçeleri",
-        "description": "AI harcama sınırları"
+        "label": "Yapay Zeka bütçeleri ve sınırları",
+        "description": "Yapay Zeka harcama sınırları, uyarılar ve hız sınırları"
       },
       "aiProvider": {
         "label": "Yapay Zeka Sağlayıcıları ve Modelleri",
@@ -1119,8 +1119,8 @@
         "description": "Servis masası, faturalandırma ve topoloji açık/kapalı"
       },
       "aiApprovals": {
-        "label": "Yapay Zeka Onay Zaman Aşımı",
-        "description": "Breeze AI'ın kısıtlı bir eylemin onaylanmasını ne kadar bekleyeceği"
+        "label": "Yapay Zeka onayları",
+        "description": "Onay modu ve Breeze AI'ın onay için ne kadar beklediği"
       },
       "callerVerification": {
         "label": "Arayan doğrulama",
@@ -1851,7 +1851,8 @@
       "load": "Onay güvenliği politikası yüklenemedi.",
       "save": "Onay güvenliği politikası kaydedilemedi.",
       "unavailable": "Politika mevcut değil."
-    }
+    },
+    "scopeNote": "Bu ayarlar, iş ortağı hesabınızdaki tüm kuruluşlar için geçerlidir."
   },
   "orgAuditRetentionSettings": {
     "title": "Denetim Günlüğü Saklama",
@@ -2968,7 +2969,8 @@
       "enabledHint": "«Etkin» ve mod ayrı anahtarlardır ve bir çalıştırma ikisini de gerektirir: bu kapalıyken mod ne olursa olsun hiçbir şey çalışmaz, Kapalı modda ise bu açık olsa bile hiçbir şey çalışmaz.",
       "enabledCreateHint": "Yeni aracılar kapalı olarak oluşturulur. Aşağıdaki araç izin listesini ve sınırları gözden geçirin, ardından aracının çalışmaya başlamasını istediğinizde bunu açın.",
       "actKeysCleared": "Eylem modu izinleri saklanır, ancak bu araç yeniden Eylem moduna dönmedikçe kaydedilmez.",
-      "recipientRoleNoMembers": "etkin üye yok"
+      "recipientRoleNoMembers": "etkin üye yok",
+      "enabledHintNoMode": "Bu kapalıyken aracı çalışmaz."
     },
     "policyKeys": {
       "tools": {
@@ -6364,8 +6366,8 @@
     }
   },
   "orgAiBudgetSettings": {
-    "title": "Yapay zeka bütçesi",
-    "description": "Bu kuruluşta Breeze AI için harcama sınırları, hız sınırları ve onay modu. İş ortağınızın belirlediği alanlar burada gösterilir ancak yalnızca iş ortağı sekmesinden değiştirilebilir.",
+    "title": "Yapay Zeka bütçesi ve sınırları",
+    "description": "Bu kuruluşta Breeze AI için harcama sınırları, uyarılar ve hız sınırları. İş ortağınızın ayarladığı alanlar burada gösterilir ancak yalnızca iş ortağı sekmesinden değiştirilebilir.",
     "selectOrganization": "Yapay zeka bütçesini yapılandırmak için bir kuruluş seçin."
   },
   "orgSettingsPage": {
@@ -7566,6 +7568,42 @@
       "create": "Kişi eklenemedi.",
       "update": "Kişi kaydedilemedi.",
       "delete": "Kişi silinemedi."
+    },
+    "portal": {
+      "column": "Portal",
+      "status": {
+        "none": "Erişim yok",
+        "invited": "Davet edildi",
+        "active": "Etkin",
+        "disabled": "Devre dışı"
+      },
+      "actions": {
+        "give": "Portal erişimi ver",
+        "resend": "Daveti yeniden gönder",
+        "bulkGive": "Portal erişimi ver ({{count}})",
+        "selectAll": "Bu sayfadaki tüm kişileri seç",
+        "selectRow": "{{name}} kişisini seç"
+      },
+      "form": {
+        "giveAccess": "Portal erişimi ver (bu e-posta adresine davet gönderir)",
+        "needsEmail": "Portal erişimi vermek için bir e-posta adresi ekleyin."
+      },
+      "toasts": {
+        "invited": "Portal daveti gönderildi",
+        "inviteEmailFailed": "Portal girişi oluşturuldu ancak davet e-postası gönderilemedi. Daveti yeniden gönder seçeneğini kullanın.",
+        "bulkSummary": "Portal erişimi: {{details}}"
+      },
+      "outcomes": {
+        "invited": "Davet edilen: {{count}}",
+        "already_has_access": "Zaten erişimi olan: {{count}}",
+        "no_email": "E-posta adresi olmayan: {{count}}",
+        "email_bound_to_other_contact": "E-postası başka bir kişide kullanılan: {{count}}",
+        "duplicate_email_in_batch": "Seçimde yinelenen e-posta: {{count}}"
+      },
+      "errors": {
+        "invite": "Portal erişimi verilemedi.",
+        "bulkInvite": "Seçilen kişilere portal erişimi verilemedi."
+      }
     }
   },
   "bulkContactImport": {
@@ -7835,7 +7873,8 @@
     "productDefault": "Ürün varsayılanı ({{minutes}} dakika)",
     "range": "{{min}}-{{max}} dakika arasında seçin.",
     "description": "Canlı bir Breeze AI turunun, kısıtlı (Katman 2/3) bir eylemi birinin onaylamasını vazgeçmeden önce ne kadar bekleyeceği.",
-    "notForUnattendedNote": "Bu, gece boyu veya gözetimsiz çalışmalar için değildir — uzun süreli çalışmalar kendi son kullanma tarihine sahip Onaylar kuyruğundan geçer."
+    "notForUnattendedNote": "Bu, gece boyu veya gözetimsiz çalışmalar için değildir — uzun süreli çalışmalar kendi son kullanma tarihine sahip Onaylar kuyruğundan geçer.",
+    "modeDescription": "Breeze AI sohbetinin korumalı eylemleri çalıştırmadan önce nasıl onay istediği. Harcama sınırı ayarlanmış olsun ya da olmasın uygulanır."
   },
   "orgAiApprovalTimeout": {
     "title": "Yapay Zeka Onay Zaman Aşımı",
@@ -8221,5 +8260,10 @@
     "hideContent": "İçeriği gizle",
     "conversationUnavailable": "Bu konuşma artık kullanılamıyor.",
     "usersLoadFailed": "Teknisyenler yüklenemedi."
+  },
+  "orgAiApprovalMode": {
+    "title": "Yapay Zeka onay modu",
+    "description": "Breeze AI sohbetinin bu kuruluşta korumalı (Tier 2/3) eylemleri çalıştırmadan önce nasıl onay istediği. Harcama sınırı ayarlanmış olsun ya da olmasın uygulanır.",
+    "save": "Kaydet"
   }
 }

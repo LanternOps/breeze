@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { canonicalizeScriptParameters, hasVariableTokens } from '@breeze/shared';
 
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransactionIfHeld } from '../db';
 import {
   buildRestorePointRequest,
   discardRestorePointRequest,
@@ -688,10 +688,10 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   const discardPendingExecution = async (reason: string) => {
     if (!executionId) return;
     try {
-      const deleted = await db
+      const deleted = await withDbTransactionIfHeld(() => db
         .delete(scriptExecutions)
         .where(and(eq(scriptExecutions.id, executionId), eq(scriptExecutions.status, 'pending')))
-        .returning({ id: scriptExecutions.id });
+        .returning({ id: scriptExecutions.id }));
       if (deleted.length === 0) {
         console.warn(
           '[scriptDispatch] execution row was not pending at discard time; leaving it alone',

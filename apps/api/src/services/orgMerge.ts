@@ -1122,7 +1122,7 @@ export async function runPostPassFixups(
   // What this DOES need to guard is a mapping row that has gone orphaned —
   // its invoice or payment deleted through some other path (not by this
   // merge; nothing in the merge engine deletes invoices — see voidPayment in
-  // invoiceService.ts and the full-refund branch in stripeReconcile.ts for
+  // invoiceService.ts and the full-refund arm in stripeReversalState.ts for
   // where a payment mapping COULD orphan once Phase D writes 'payment' rows).
   // A stale orphan would sit invisible in the UI forever, so sweep both
   // entity types the same defensive way.

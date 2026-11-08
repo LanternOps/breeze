@@ -1,7 +1,7 @@
 import { i18n } from '@/lib/i18n';
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Loader2, Lock, Save, Wallet } from 'lucide-react';
+import { Loader2, Lock, Save, ShieldCheck, Wallet } from 'lucide-react';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
 import { runAction, ActionError } from '@/lib/runAction';
@@ -21,8 +21,23 @@ import {
 import AiBudgetThresholdsInput from './AiBudgetThresholdsInput';
 import { useStableT } from '@/lib/i18n/useStableT';
 
-/** Where the partner-wide copies of these fields are edited. */
-const PARTNER_AI_BUDGETS_HREF = '/settings/partner#ai-budgets';
+/** Where the partner-wide copies of these fields are edited, per section. */
+const PARTNER_HREF = {
+  budget: '/settings/partner#ai-budgets',
+  approvals: '/settings/partner#ai-approvals',
+} as const;
+
+/**
+ * Approval mode is stored with the budget fields (`ai_budgets`, PUT
+ * /ai/budget, one resolver) but is not a budget and applies whether or not
+ * any cap is set, so it renders as its own card next to the approval timeout.
+ */
+const SECTION_FIELDS: Record<Section, readonly AiBudgetField[]> = {
+  budget: AI_BUDGET_FIELDS.filter((f) => f !== 'approvalMode'),
+  approvals: ['approvalMode'],
+};
+
+type Section = 'budget' | 'approvals';
 
 /**
  * Pulls the per-field zod messages out of a PUT /ai/budget 400 body (the
@@ -51,6 +66,8 @@ function extractFieldErrors(body: unknown): Partial<Record<AiBudgetField, string
 type Props = {
   /** The organization being edited. `null` while the page has no org context. */
   orgId: string | null;
+  /** Which card to render. Both share the same load, lock model and save path. */
+  section?: Section;
 };
 
 /** Draft text per field. `''` always means "leave as inherited". */
@@ -93,6 +110,10 @@ const centsToDollars = (cents: number | null): string => (cents == null ? '' : (
  * never render a form it has no org to save (the "Organization context
  * required" 400).
  *
+ * `section="approvals"` renders the approval-mode field as its own card (it is
+ * stored with the budget fields but is not a budget); each card loads, locks
+ * and saves only its own section's fields.
+ *
  * Two contracts this file exists to hold:
  *
  * 1. **Only touched fields are sent.** The payload can only tell us the MERGED
@@ -106,7 +127,8 @@ const centsToDollars = (cents: number | null): string => (cents == null ? '' : (
  *    partner-enforced field; the control is disabled and excluded from the
  *    payload, and the amber note points at where the value actually lives.
  */
-export default function OrgAiBudgetSettings({ orgId }: Props) {
+export default function OrgAiBudgetSettings({ orgId, section = 'budget' }: Props) {
+  const sectionFields = SECTION_FIELDS[section];
   const { t } = useTranslation('settings');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { isPartnerScope } = useDefaultOwnerScope();
@@ -176,7 +198,7 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
   useEffect(() => { void load(); }, [load]);
 
   const isLocked = (field: AiBudgetField) => isAiBudgetFieldLocked(locked, field);
-  const allFieldsLocked = AI_BUDGET_FIELDS.every(isLocked);
+  const allFieldsLocked = sectionFields.every(isLocked);
 
   const markTouched = (field: AiBudgetField) =>
     setTouched((prev) => (prev.includes(field) ? prev : [...prev, field]));
@@ -235,7 +257,7 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
     setFieldErrors(null);
     try {
       const payload: Record<string, unknown> = {};
-      for (const field of AI_BUDGET_FIELDS) {
+      for (const field of sectionFields) {
         if (isLocked(field) || !touched.includes(field)) continue;
         const value = serialize(field);
         if (value !== undefined) payload[field] = value;
@@ -299,7 +321,7 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
       >
         <Lock className="h-3 w-3" /> {t('aiUsagePage.managedByPartner')}
         {showPartnerLink && (
-          <a href={PARTNER_AI_BUDGETS_HREF} className="font-medium text-primary hover:underline not-italic">
+          <a href={PARTNER_HREF[section]} className="font-medium text-primary hover:underline not-italic">
             {t('aiUsagePage.viewPartnerWideBudgets')}
           </a>
         )}
@@ -353,6 +375,68 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
   );
   const selectedApprovalMode = (draft.approvalMode || AI_BUDGET_DEFAULTS.approvalMode) as keyof typeof APPROVAL_MODE_HELP_KEYS;
 
+  if (section === 'approvals') {
+    // PUT /ai/budget has no null for approvalMode, so once the org has its own
+    // mode "Default" cannot be saved (serialize drops it): offering it would
+    // toast "saved" and snap back on reload.
+    const approvalModeIsOrgSet = aiBudgetSource('approvalMode', effective, locked) === 'organization';
+    return (
+      <section className="rounded-lg border bg-card p-6 shadow-xs" data-testid="org-ai-approval-mode-settings">
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="h-5 w-5" />
+          <h2 className="text-lg font-semibold">{t('orgAiApprovalMode.title')}</h2>
+        </div>
+        <p className="mt-1 mb-4 text-sm text-muted-foreground">{t('orgAiApprovalMode.description')}</p>
+
+        {error && (
+          <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+            {error}
+          </div>
+        )}
+
+        <div className="max-w-md">
+          <label className="block">
+            <span className="text-sm text-muted-foreground">{t('aiUsagePage.approvalMode')}</span>
+            <select
+              data-testid="org-ai-approval-mode"
+              value={draft.approvalMode}
+              onChange={(e) => setField('approvalMode', e.target.value)}
+              disabled={isLocked('approvalMode')}
+              aria-invalid={fieldErrors?.approvalMode ? true : undefined}
+              className={inputClass('approvalMode')}
+            >
+              <option value="" disabled={approvalModeIsOrgSet}>
+                {t('aiUsagePage.defaultValue', { value: approvalModeDefaultLabel })}
+              </option>
+              <option value="per_step">{t('aiUsagePage.perStepDefault')}</option>
+              <option value="action_plan">{t('aiUsagePage.actionPlan')}</option>
+              <option value="auto_approve">{t('aiUsagePage.autoApprove')}</option>
+              <option value="hybrid_plan">{t('aiUsagePage.hybridPlanAbort')}</option>
+            </select>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t(/* i18n-dynamic */ APPROVAL_MODE_HELP_KEYS[selectedApprovalMode])}
+            </p>
+            {fieldErrorNote('approvalMode')}
+            {lockedNote('approvalMode')}
+          </label>
+        </div>
+
+        <div className="mt-4">
+          <button
+            type="button"
+            data-testid="org-ai-approval-mode-save"
+            onClick={handleSave}
+            disabled={saving || allFieldsLocked}
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            {t('orgAiApprovalMode.save')}
+          </button>
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section className="rounded-lg border bg-card p-6 shadow-xs" data-testid="org-ai-budget-settings">
       <div className="flex items-center gap-2">
@@ -386,27 +470,6 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
             <option value="false">{t('aiUsagePage.disabled')}</option>
           </select>
           {lockedNote('enabled')}
-        </label>
-
-        <label className="block">
-          <span className="text-sm text-muted-foreground">{t('aiUsagePage.approvalMode')}</span>
-          <select
-            data-testid="org-ai-budget-approval-mode"
-            value={draft.approvalMode}
-            onChange={(e) => setField('approvalMode', e.target.value)}
-            disabled={isLocked('approvalMode')}
-            className={inputClass('approvalMode')}
-          >
-            <option value="">{t('aiUsagePage.defaultValue', { value: approvalModeDefaultLabel })}</option>
-            <option value="per_step">{t('aiUsagePage.perStepDefault')}</option>
-            <option value="action_plan">{t('aiUsagePage.actionPlan')}</option>
-            <option value="auto_approve">{t('aiUsagePage.autoApprove')}</option>
-            <option value="hybrid_plan">{t('aiUsagePage.hybridPlanAbort')}</option>
-          </select>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {t(/* i18n-dynamic */ APPROVAL_MODE_HELP_KEYS[selectedApprovalMode])}
-          </p>
-          {lockedNote('approvalMode')}
         </label>
 
         <label className="block">

@@ -563,7 +563,8 @@
     "overrideErrorStepUp": "Ihr Partner verlangt eine stärkere Genehmigung, als diese Ansicht bieten kann.",
     "overrideErrorNoDevice": "Kein Zielgerät hat das Skript angenommen, es wurde also nichts ausgeführt. Sie können es erneut versuchen.",
     "overrideErrorPolicy": "Die KI-Datenrichtlinie lehnt dieses Skript ab, weil es einen Benutzerprofilpfad liest.",
-    "overrideErrorStrict": "Das Bestätigen dieser Gefahrenmuster erfordert Skript-Schreibrechte und MFA, und jedes Muster muss angekreuzt sein."
+    "overrideErrorStrict": "Das Bestätigen dieser Gefahrenmuster erfordert Skript-Schreibrechte und MFA, und jedes Muster muss angekreuzt sein.",
+    "savedToLibrary": "In der Skriptbibliothek gespeichert"
   },
   "aiRunCard": {
     "title": "Analyselauf",
@@ -903,6 +904,14 @@
       "specialistResult": "Spezialistenbericht",
       "firstLook": "Erster Überblick",
       "couldntLook": "Noch kein Überblick"
+    },
+    "checkIn": {
+      "runNow": "Jetzt ausführen",
+      "runNowMessage": "Führe die Nachkontrolle jetzt durch",
+      "scheduledAt": "Wisp prüft um {{time}} erneut",
+      "cancel": "Nachkontrolle abbrechen",
+      "cancelled": "Nachkontrolle abgebrochen",
+      "cancelFailed": "Die Nachkontrolle konnte nicht abgebrochen werden."
     },
     "welcome": {
       "title": "Ich sehe mich in {{scope}} um.",

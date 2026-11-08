@@ -34,8 +34,9 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('./aiAgentSystemPrompt', () => ({ AI_SYSTEM_PROMPT_BASE: 'base', AI_SYSTEM_PROMPT_TAIL: 'tail' }));
-vi.mock('./aiToolIndex', () => ({ composeStaticSystemPrompt: () => 'base\nindex\ntail', renderPageContextToolBlocks: vi.fn(() => '### Tools for this page'), resolveToolIndexMode: () => 'lazy' }));
-vi.mock('./aiAgentSdkTools', () => ({ listChatSurfaceToolNames: () => [] }));
+vi.mock('./aiToolIndex', () => ({ composeStaticSystemPrompt: vi.fn(() => 'base\nindex\ntail'), renderPageContextToolBlocks: vi.fn(() => '### Tools for this page'), resolveToolIndexMode: () => 'lazy' }));
+// list_operator_tasks is agent-denied: a Wisp prompt must not name it (#10430).
+vi.mock('./aiAgentSdkTools', () => ({ listChatSurfaceToolNames: () => ['list_operator_tasks', 'query_devices'] }));
 vi.mock('./brainDeviceContext', () => ({ getActiveDeviceContext: vi.fn().mockResolvedValue([]) }));
 vi.mock('./llm/llmConfigResolver', () => ({
   LlmUnavailableError: class LlmUnavailableError extends Error {},
@@ -66,7 +67,7 @@ import { resolveEntityForCaller, resolveEntityRef } from './wisp/entityRefs';
 import { wrapUntrustedData } from './aiInputSanitizer';
 import { pageContextWriteDefaultOrgId } from './aiSessionOrgAnchor';
 import { chooseSessionModel } from './aiModels/sessionModel';
-import { renderPageContextToolBlocks } from './aiToolIndex';
+import { composeStaticSystemPrompt, renderPageContextToolBlocks } from './aiToolIndex';
 import { resolveGrantCeiling } from './wisp/grantAuthority';
 
 vi.mock('./wisp/grantAuthority', async (importOriginal) => ({
@@ -290,5 +291,18 @@ describe('Wisp record page context ceiling', () => {
     expect(stored.systemPrompt).toContain(RECORD_ID);
     expect(stored.systemPrompt).toContain('### Tools for this page');
     expect(stored.systemPrompt).not.toContain(page.label);
+  });
+
+  it('a Wisp session\'s stored prompt indexes only the tools its ceiling admits (#10430)', async () => {
+    expectInsert();
+    await createSession(auth, { pageContext: page, wispGrantId: 'grant-1' });
+    expect(composeStaticSystemPrompt).toHaveBeenCalledWith(['query_devices'], 'lazy');
+    expect(renderPageContextToolBlocks).toHaveBeenCalledWith(page, ['query_devices']);
+  });
+
+  it('an ordinary session\'s prompt indexes every chat tool', async () => {
+    expectInsert();
+    await createSession(auth, { pageContext: page });
+    expect(composeStaticSystemPrompt).toHaveBeenCalledWith(['list_operator_tasks', 'query_devices'], 'lazy');
   });
 });

@@ -75,7 +75,7 @@ export function paymentMappingRemoteId(remotePaymentId: string, remoteInvoiceId:
 
 /**
  * The ONE divergence string both refund paths write into `last_error` — the
- * Stripe webhook (`stripeReconcile.reflectStripeRefund`, partial-refund arm) and
+ * Stripe webhook (`stripeReversalState.applyStripeFinancialEvent`, partial-refund arm) and
  * this module's own mid-flight `diverged` branch. Sharing it is not tidiness:
  * two texts quoting two different quantities is how a bookkeeper enters the
  * wrong refund.

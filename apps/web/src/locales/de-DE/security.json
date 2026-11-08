@@ -2429,7 +2429,7 @@
       "awaitingVendorReport": "Warten auf Herstellerbericht",
       "awaitingEvaluation": "Warten auf Auswertung",
       "vendorOrgMismatch": "Hersteller meldet eine andere Organisation",
-      "tenantAmbiguous": "Die Organisation ist mehr als einem Bitdefender GravityZone-Unternehmen zugeordnet",
+      "tenantAmbiguous": "Die Organisation ist mehr als einem {{vendor}}-Unternehmen zugeordnet",
       "installerLinkMissing": "Der Bitdefender GravityZone-Installationslink ist noch nicht verfügbar — Synchronisierung unter Integrationen ausführen"
     },
     "setupLink": {

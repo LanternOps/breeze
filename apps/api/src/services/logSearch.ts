@@ -30,6 +30,7 @@ import {
 } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
+import { createSourcedAlert } from './alertService';
 import {
   resolveVisibleCategories,
   SENSITIVE_EVENT_LOG_CATEGORY,
@@ -1150,27 +1151,37 @@ export async function persistCorrelationForRule(
     alertId = inserted.alertId;
   }
 
+  // The active correlation's `alertId` is this producer's dedupe: once linked,
+  // later runs of the same correlation never raise (or publish) again.
   if (rule.alertOnMatch && !alertId) {
     const primaryDevice = detection.affectedDevices[0];
     if (primaryDevice?.deviceId) {
-      const [createdAlert] = await db
-        .insert(alerts)
-        .values({
-          ownerKind: 'device',
-          orgId: rule.orgId,
-          deviceId: primaryDevice.deviceId,
-          severity: mapCorrelationSeverityToAlertSeverity(rule.severity),
-          status: 'active',
-          title: `Log correlation detected: ${rule.name}`,
-          message: `Pattern "${detection.pattern}" found on ${detection.affectedDevices.length} devices (${detection.occurrences} occurrences).`
-        })
-        .returning({ id: alerts.id });
+      // #11328 — through the shared create path so `alert.triggered` publishes
+      // (after COMMIT). The raw insert this replaced never reached
+      // notification channels, routing rules or escalation.
+      const createdAlertId = await createSourcedAlert({
+        deviceId: primaryDevice.deviceId,
+        orgId: rule.orgId,
+        severity: mapCorrelationSeverityToAlertSeverity(rule.severity),
+        title: `Log correlation detected: ${rule.name}`,
+        message: `Pattern "${detection.pattern}" found on ${detection.affectedDevices.length} devices (${detection.occurrences} occurrences).`,
+        context: {
+          source: 'log_correlation',
+          correlationRuleId: rule.id,
+          correlationId,
+          pattern: detection.pattern,
+          occurrences: detection.occurrences,
+          affectedDeviceCount: detection.affectedDevices.length,
+        },
+        publisher: 'log-correlation',
+        eventPayload: { correlationRuleId: rule.id, correlationId },
+      });
 
-      if (createdAlert?.id) {
-        alertId = createdAlert.id;
+      if (createdAlertId) {
+        alertId = createdAlertId;
         await db
           .update(logCorrelations)
-          .set({ alertId: createdAlert.id })
+          .set({ alertId: createdAlertId })
           .where(eq(logCorrelations.id, correlationId));
       }
     }

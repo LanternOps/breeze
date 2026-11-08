@@ -327,6 +327,7 @@ import { reconcileDecommissionedDynamicMemberships } from './jobs/decommissioned
 import { registerAllEventSubscribers } from './services/eventSubscribers';
 import { registerTopologyPhysicalAuthorities } from './services/topology/physicalAuthorities';
 import { initializeDeviceEventHandlers } from './events/deviceEvents';
+import { warmBreezeToolSurface } from './services/aiAgentSdkTools';
 import { buildWebhookFanoutDeps } from './services/webhookFanoutDeps';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
 import { getClusterCacheBus } from './services/clusterCacheBus';
@@ -335,9 +336,12 @@ import { shutdownChatRunBridge } from './services/workspace/chatRunBridge';
 import { initializeEventDispatchWorker, shutdownEventDispatchWorker } from './jobs/eventDispatchWorker';
 import { shutdownEventDispatchQueue } from './services/eventDispatchQueue';
 import {
+  claimAgentCommandRelayShard,
   initializeAgentCommandRelayWorker,
+  releaseAgentCommandRelayClaim,
   shutdownAgentCommandRelayWorker,
 } from './jobs/agentCommandRelayWorker';
+import { shutdownAgentCommandRelayQueue } from './services/agentCommandRelay';
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
 import { wispEnabled } from './config/env';
 import { installWispGrantHooks } from './services/wisp/grantLifecycle';
@@ -1323,6 +1327,9 @@ async function initializeWorkers(): Promise<void> {
         captureException(error instanceof Error ? error : new Error(String(error)));
       },
     });
+    // #4134: no relay consumer starts, so give up the shard claimed before
+    // serving; producers then answer `offline` instead of enqueuing unread.
+    await releaseAgentCommandRelayClaim();
     return;
   }
 
@@ -1577,6 +1584,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
         shutdownEventDispatchWorker,
         shutdownEventDispatchQueue,
         shutdownAgentCommandRelayWorker,
+        // #4134: per-instance producer handles (shared connection; hygiene).
+        shutdownAgentCommandRelayQueue,
       ],
     },
     // 3b. W05: the cluster cache subscriber owns its own duplicate connection.
@@ -2053,6 +2062,11 @@ async function bootstrap(): Promise<void> {
   if (clusterCacheOutcome === 'subscribed') console.log('[clusterCache] subscriber subscribed');
   else console.warn(`[clusterCache] subscriber ${clusterCacheOutcome}: hot-path caches on this instance are TTL-only until it subscribes`);
 
+  // #4134: take this instance's relay shard before any agent socket can name
+  // it in a presence lease (producers answer `offline` for a shard without an
+  // owner). The consumer itself starts in initializeWorkers(). Never throws.
+  if (breezeRole() !== 'worker' && startupChecks.redisOk) await claimAgentCommandRelayShard();
+
   // W08: start sampling only after migrations and boot work, so their stalls
   // never enter the controller's history. Admission never affects /ready.
   startAdmissionControl();
@@ -2265,6 +2279,21 @@ async function bootstrap(): Promise<void> {
   initializeDeviceEventHandlers();
 
   await initializeWorkers();
+
+  // #11004: build the static AI tool surface (~340 Zod tool declarations, their
+  // registry metadata and one throwaway SDK MCP server) now, so the first AI
+  // chat message after a restart does not pay for it on the request path. CPU
+  // only, no I/O.
+  try {
+    const warmed = warmBreezeToolSurface();
+    console.log(`[startup] AI tool surface warmed: ${warmed.tools} chat tools in ${warmed.ms}ms`);
+  } catch (error) {
+    // The template is not cached on failure, so every AI session retries the
+    // same build — and a deterministic failure (e.g. a tool with no registry
+    // description) fails each one until it is fixed.
+    console.error('[startup] AI tool surface warm-up failed; AI chat sessions will retry the build and fail the same way until this is fixed:', error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
+  }
 
   // Periodically retry failed audit writes. The in-process queue is bounded
   // (10k entries) and per-entry attempts are capped (3) with exponential

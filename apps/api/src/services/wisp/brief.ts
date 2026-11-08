@@ -88,17 +88,31 @@ function localParts(d: Date, tz: string): { date: string; minutes: number } {
 /** A brief time is `HH:MM` (24 h); anything else means no brief. */
 const BRIEF_TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
+/**
+ * Whether the brief is due now: past today's brief time in the brief's zone and
+ * not yet sent today.
+ *
+ * @param grantCreatedAt a grant created at or after today's brief time first
+ *   becomes due at the next one, not on the next sweep (#11287).
+ */
 export function briefDue(
   prefs: { briefTimeLocal: string | null; briefTimezone: string | null },
   lastBriefAt: Date | null,
   now: Date,
   fallbackTz: string,
+  grantCreatedAt: Date | null = null,
 ): { due: boolean; localDate: string } {
   const tz = safeTimeZone(prefs.briefTimezone ?? fallbackTz);
   const today = localParts(now, tz);
   const m = prefs.briefTimeLocal === null ? null : BRIEF_TIME_RE.exec(prefs.briefTimeLocal);
   if (!m) return { due: false, localDate: today.date };
-  if (today.minutes < Number(m[1]) * 60 + Number(m[2])) return { due: false, localDate: today.date };
+  const briefMinutes = Number(m[1]) * 60 + Number(m[2]);
+  if (today.minutes < briefMinutes) return { due: false, localDate: today.date };
+  if (grantCreatedAt) {
+    const created = localParts(grantCreatedAt, tz);
+    // Today's brief time came before the grant existed: the first brief is the next one.
+    if (created.date === today.date && created.minutes >= briefMinutes) return { due: false, localDate: today.date };
+  }
   // YYYY-MM-DD compares correctly as a string.
   const due = lastBriefAt === null || localParts(lastBriefAt, tz).date < today.date;
   return { due, localDate: today.date };
@@ -202,7 +216,10 @@ export async function buildBrief(
 // runMorningBriefs (the sweep)
 // ---------------------------------------------------------------------------
 
-type SweepGrant = { id: string; partnerId: string; grantorUserId: string; status: string; pausedReason: string | null };
+type SweepGrant = {
+  id: string; partnerId: string; grantorUserId: string; status: string; pausedReason: string | null;
+  createdAt: Date;
+};
 
 /**
  * #10391: when this user's brief fires, resolved exactly as the sweep resolves it
@@ -246,6 +263,7 @@ export async function runMorningBriefs(now: Date = new Date()): Promise<{ due: n
         grantorUserId: wispGrants.grantorUserId,
         status: wispGrants.status,
         pausedReason: wispGrants.pausedReason,
+        createdAt: wispGrants.createdAt,
       })
       .from(wispGrants)
       .where(and(
@@ -277,7 +295,7 @@ export async function runMorningBriefs(now: Date = new Date()): Promise<{ due: n
         browser: book?.browserTimezone,
         partner: partnerTz.get(grant.partnerId),
       });
-      const { due, localDate } = briefDue({ ...prefs, briefTimezone: zone }, lastBriefAt, now, 'UTC');
+      const { due, localDate } = briefDue({ ...prefs, briefTimezone: zone }, lastBriefAt, now, 'UTC', grant.createdAt);
       if (!due) continue;
       result.due += 1;
 

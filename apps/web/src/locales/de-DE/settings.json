@@ -284,7 +284,7 @@
     "alertThresholds": "Warnen bei (% des Budgets)",
     "alertThresholdsHelp": "Partner-Admins mit Abrechnungszugriff erhalten bei jeder Stufe eine In-App-Benachrichtigung und eine E-Mail für monatliche und Obergrenzen-Warnungen. Leer lassen, um 50, 80, 95 zu übernehmen.",
     "notSet": "Nicht festgelegt, Organisationen werden individuell konfiguriert",
-    "description": "Budgetwerte werden in allen untergeordneten Organisationen durchgesetzt. Dollarbeträge werden intern in Cent gespeichert.",
+    "description": "Hier gesetzte Werte gelten für jede untergeordnete Organisation und sperren das entsprechende Organisationsfeld. Lassen Sie ein Feld leer, damit Organisationen es selbst konfigurieren.",
     "modes": {
       "perStep": "Pro Schritt",
       "actionPlan": "Aktionsplan",
@@ -1095,8 +1095,8 @@
         "description": "E-Mails von Ihrer eigenen Domain senden"
       },
       "aiBudgets": {
-        "label": "KI-Budgets",
-        "description": "KI-Ausgabenlimits"
+        "label": "KI-Budgets & Limits",
+        "description": "KI-Ausgabenlimits, Warnungen und Ratenlimits"
       },
       "aiProvider": {
         "label": "KI-Anbieter und Modelle",
@@ -1119,8 +1119,8 @@
         "description": "Service Desk, Abrechnung und Topologie ein/aus"
       },
       "aiApprovals": {
-        "label": "KI-Genehmigungs-Timeout",
-        "description": "Wie lange Breeze AI auf die Genehmigung einer geschützten Aktion wartet"
+        "label": "KI-Genehmigungen",
+        "description": "Genehmigungsmodus und wie lange Breeze AI auf eine Genehmigung wartet"
       },
       "callerVerification": {
         "label": "Anruferverifizierung",
@@ -1851,7 +1851,8 @@
       "load": "Die Genehmigungssicherheitsrichtlinie konnte nicht geladen werden.",
       "save": "Die Genehmigungssicherheitsrichtlinie konnte nicht gespeichert werden.",
       "unavailable": "Keine Richtlinie verfügbar."
-    }
+    },
+    "scopeNote": "Diese Einstellungen gelten für alle Organisationen unter Ihrem Partnerkonto."
   },
   "orgAuditRetentionSettings": {
     "title": "Audit-Protokoll-Aufbewahrung",
@@ -2968,7 +2969,8 @@
       "enabledHint": "„Aktiviert“ und der Modus sind getrennte Schalter, und ein Lauf braucht beide: Ist dies aus, läuft unabhängig vom Modus nichts, und im Modus „Aus“ läuft auch dann nichts, wenn dies eingeschaltet ist.",
       "enabledCreateHint": "Neue Agenten werden ausgeschaltet erstellt. Prüfen Sie unten die Tool-Zulassungsliste und die Limits und schalten Sie dies dann ein, wenn der Agent starten soll.",
       "actKeysCleared": "Die Berechtigungen des Aktionsmodus bleiben erhalten, werden aber erst gespeichert, wenn dieser Agent wieder in den Aktionsmodus wechselt.",
-      "recipientRoleNoMembers": "keine aktiven Mitglieder"
+      "recipientRoleNoMembers": "keine aktiven Mitglieder",
+      "enabledHintNoMode": "Wenn diese Option aus ist, läuft der Agent nicht."
     },
     "policyKeys": {
       "tools": {
@@ -6311,8 +6313,8 @@
     }
   },
   "orgAiBudgetSettings": {
-    "title": "KI-Budget",
-    "description": "Ausgabenobergrenzen, Ratenlimits und Genehmigungsmodus für Breeze AI in dieser Organisation. Von Ihrem Partner festgelegte Felder werden hier angezeigt, können aber nur auf dem Partner-Tab geändert werden.",
+    "title": "KI-Budget & Limits",
+    "description": "Ausgabenlimits, Warnungen und Ratenlimits für Breeze AI in dieser Organisation. Felder, die Ihr Partner festgelegt hat, werden hier angezeigt, können aber nur im Partner-Tab geändert werden.",
     "selectOrganization": "Wählen Sie eine Organisation aus, um ihr KI-Budget zu konfigurieren."
   },
   "orgSettingsPage": {
@@ -7566,6 +7568,42 @@
       "create": "Der Kontakt konnte nicht hinzugefügt werden.",
       "update": "Der Kontakt konnte nicht gespeichert werden.",
       "delete": "Der Kontakt konnte nicht gelöscht werden."
+    },
+    "portal": {
+      "column": "Portal",
+      "status": {
+        "none": "Kein Zugang",
+        "invited": "Eingeladen",
+        "active": "Aktiv",
+        "disabled": "Deaktiviert"
+      },
+      "actions": {
+        "give": "Portalzugang geben",
+        "resend": "Einladung erneut senden",
+        "bulkGive": "Portalzugang geben ({{count}})",
+        "selectAll": "Alle Kontakte auf dieser Seite auswählen",
+        "selectRow": "{{name}} auswählen"
+      },
+      "form": {
+        "giveAccess": "Portalzugang geben (sendet eine Einladung an diese E-Mail-Adresse)",
+        "needsEmail": "Fügen Sie eine E-Mail-Adresse hinzu, um Portalzugang zu geben."
+      },
+      "toasts": {
+        "invited": "Portaleinladung gesendet",
+        "inviteEmailFailed": "Portal-Login erstellt, aber die Einladungs-E-Mail konnte nicht gesendet werden. Verwenden Sie „Einladung erneut senden“.",
+        "bulkSummary": "Portalzugang: {{details}}"
+      },
+      "outcomes": {
+        "invited": "Eingeladen: {{count}}",
+        "already_has_access": "Hat bereits Zugang: {{count}}",
+        "no_email": "Keine E-Mail-Adresse: {{count}}",
+        "email_bound_to_other_contact": "E-Mail von anderem Kontakt verwendet: {{count}}",
+        "duplicate_email_in_batch": "Doppelte E-Mail in der Auswahl: {{count}}"
+      },
+      "errors": {
+        "invite": "Portalzugang konnte nicht gegeben werden.",
+        "bulkInvite": "Portalzugang konnte für die ausgewählten Kontakte nicht gegeben werden."
+      }
     }
   },
   "bulkContactImport": {
@@ -7835,7 +7873,8 @@
     "productDefault": "Produktstandard ({{minutes}} Minuten)",
     "range": "Wählen Sie {{min}}-{{max}} Minuten.",
     "description": "Wie lange eine laufende Breeze AI-Runde auf die Genehmigung einer geschützten Aktion (Tier 2/3) wartet, bevor sie aufgegeben wird.",
-    "notForUnattendedNote": "Dies ist nicht für nächtliche oder unbeaufsichtigte Arbeiten gedacht — langlaufende Arbeiten durchlaufen die Genehmigungswarteschlange mit eigener Ablaufzeit."
+    "notForUnattendedNote": "Dies ist nicht für nächtliche oder unbeaufsichtigte Arbeiten gedacht — langlaufende Arbeiten durchlaufen die Genehmigungswarteschlange mit eigener Ablaufzeit.",
+    "modeDescription": "Wie der Breeze AI-Chat vor geschützten Aktionen nachfragt. Gilt unabhängig davon, ob ein Ausgabenlimit gesetzt ist."
   },
   "orgAiApprovalTimeout": {
     "title": "KI-Genehmigungs-Timeout",
@@ -8221,5 +8260,10 @@
     "hideContent": "Inhalt ausblenden",
     "conversationUnavailable": "Diese Unterhaltung ist nicht mehr verfügbar.",
     "usersLoadFailed": "Techniker konnten nicht geladen werden."
+  },
+  "orgAiApprovalMode": {
+    "title": "KI-Genehmigungsmodus",
+    "description": "Wie der Breeze AI-Chat in dieser Organisation vor geschützten (Tier 2/3) Aktionen nachfragt. Gilt unabhängig davon, ob ein Ausgabenlimit gesetzt ist.",
+    "save": "Speichern"
   }
 }

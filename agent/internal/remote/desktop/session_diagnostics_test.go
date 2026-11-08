@@ -92,3 +92,53 @@ func TestViewerWebRTCStatsLineCarriesShipAlways(t *testing.T) {
 		t.Fatalf("rttMs = %d, want 12", got)
 	}
 }
+
+// warningCapturer implements the optional captureWarningReporter.
+type warningCapturer struct {
+	stubCapturer
+	warning error
+}
+
+func (w *warningCapturer) CaptureWarning() error { return w.warning }
+
+// Frames the GDI capturer delivered without confirming the input desktop may
+// be black or show the wrong desktop (#8434 review). They are not a capture
+// failure, so they stay out of LastCaptureError (the no-video stop reason and
+// the startup probe read that), and are reported on the periodic metrics line
+// instead, which ships at the default log level while the session runs.
+func TestDesktopWebRTCMetricsLineCarriesCaptureWarning(t *testing.T) {
+	warning := &unverifiedInputDesktopError{frames: 3, cause: gdiCallError("OpenInputDesktop", errnoForTest(5))}
+	h := installRecordingLogger(t)
+	s := &Session{id: "sess-1", metrics: newStreamMetrics(), capturer: &warningCapturer{warning: warning}}
+
+	s.logMetricsSnapshot()
+
+	r, ok := h.find("Desktop WebRTC metrics")
+	if !ok {
+		t.Fatal("expected Desktop WebRTC metrics line")
+	}
+	v, ok := attrKeys(r)["captureWarning"]
+	if !ok {
+		t.Fatalf("metrics line has no captureWarning while the capturer reports one; attrs %v", attrKeys(r))
+	}
+	if got := v.String(); got != warning.Error() {
+		t.Fatalf("captureWarning = %q, want %q", got, warning.Error())
+	}
+
+	for name, capturer := range map[string]ScreenCapturer{
+		"nil capturer":         nil,
+		"capturer without one": &stubCapturer{},
+		"no current warning":   &warningCapturer{},
+	} {
+		h := installRecordingLogger(t)
+		s := &Session{id: "sess-1", metrics: newStreamMetrics(), capturer: capturer}
+		s.logMetricsSnapshot()
+		r, ok := h.find("Desktop WebRTC metrics")
+		if !ok {
+			t.Fatalf("%s: expected Desktop WebRTC metrics line", name)
+		}
+		if _, ok := attrKeys(r)["captureWarning"]; ok {
+			t.Errorf("%s: metrics line carries captureWarning with nothing to report", name)
+		}
+	}
+}

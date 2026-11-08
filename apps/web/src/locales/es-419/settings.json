@@ -284,7 +284,7 @@
     "alertThresholds": "Avisar al (% del presupuesto)",
     "alertThresholdsHelp": "Los administradores del partner con acceso a facturación reciben una alerta en la aplicación en cada nivel y un correo para las alertas mensuales y de límite alcanzado. Deja vacío para heredar 50, 80, 95.",
     "notSet": "No configurado: las organizaciones se configuran individualmente",
-    "description": "Los valores presupuestarios se aplican en todas las organizaciones secundarias. Los montos en dólares se almacenan internamente en centavos.",
+    "description": "Los valores definidos aquí se aplican a todas las organizaciones hijas y bloquean el campo correspondiente de la organización. Deje un campo vacío para que las organizaciones lo configuren.",
     "modes": {
       "perStep": "Por paso",
       "actionPlan": "Plan de acción",
@@ -1095,8 +1095,8 @@
         "description": "Envía correos desde tu propio dominio"
       },
       "aiBudgets": {
-        "label": "AI Presupuestos",
-        "description": "límites de gasto AI"
+        "label": "Presupuestos y límites de IA",
+        "description": "Límites de gasto, alertas y límites de frecuencia de IA"
       },
       "aiProvider": {
         "label": "Proveedores y modelos de IA",
@@ -1119,8 +1119,8 @@
         "description": "Mesa de servicio, facturación y topología activadas/desactivadas"
       },
       "aiApprovals": {
-        "label": "Tiempo de espera de aprobación de IA",
-        "description": "Cuánto tiempo espera Breeze AI a que se apruebe una acción restringida"
+        "label": "Aprobaciones de IA",
+        "description": "Modo de aprobación y cuánto espera Breeze AI una aprobación"
       },
       "callerVerification": {
         "label": "Verificación de llamadas",
@@ -1851,7 +1851,8 @@
       "load": "No se pudo cargar la política de seguridad de aprobación.",
       "save": "No se pudo guardar la política de seguridad de aprobación.",
       "unavailable": "No hay política disponible."
-    }
+    },
+    "scopeNote": "Esta configuración se aplica a todas las organizaciones de tu cuenta de partner."
   },
   "orgAuditRetentionSettings": {
     "title": "Retención de Registros de Auditoría",
@@ -2968,7 +2969,8 @@
       "enabledHint": "«Habilitado» y el modo son interruptores distintos y una ejecución necesita los dos: con esto apagado no se ejecuta nada sin importar el modo, y en modo Apagado no se ejecuta nada aunque esto esté encendido.",
       "enabledCreateHint": "Los agentes nuevos se crean apagados. Revise la lista de herramientas permitidas y los límites de abajo, y encienda esto cuando quiera que el agente empiece a ejecutarse.",
       "actKeysCleared": "Los permisos del modo de actuación se conservan, pero no se guardarán a menos que este agente vuelva al modo de actuación.",
-      "recipientRoleNoMembers": "sin miembros activos"
+      "recipientRoleNoMembers": "sin miembros activos",
+      "enabledHintNoMode": "Si esto está desactivado, el agente no se ejecuta."
     },
     "policyKeys": {
       "tools": {
@@ -6311,8 +6313,8 @@
     }
   },
   "orgAiBudgetSettings": {
-    "title": "Presupuesto de IA",
-    "description": "Límites de gasto, límites de frecuencia y modo de aprobación de Breeze AI en esta organización. Los campos que tu partner ha definido se muestran aquí, pero solo se pueden cambiar en la pestaña del partner.",
+    "title": "Presupuesto y límites de IA",
+    "description": "Límites de gasto, alertas y límites de frecuencia de Breeze AI en esta organización. Los campos que definió su partner se muestran aquí, pero solo se pueden cambiar en la pestaña del partner.",
     "selectOrganization": "Seleccione una organización para configurar su presupuesto de IA."
   },
   "orgSettingsPage": {
@@ -7566,6 +7568,42 @@
       "create": "No se pudo agregar el contacto.",
       "update": "No se pudo guardar el contacto.",
       "delete": "No se pudo eliminar el contacto."
+    },
+    "portal": {
+      "column": "Portal",
+      "status": {
+        "none": "Sin acceso",
+        "invited": "Invitado",
+        "active": "Activo",
+        "disabled": "Deshabilitado"
+      },
+      "actions": {
+        "give": "Dar acceso al portal",
+        "resend": "Reenviar invitación",
+        "bulkGive": "Dar acceso al portal ({{count}})",
+        "selectAll": "Seleccionar todos los contactos de esta página",
+        "selectRow": "Seleccionar a {{name}}"
+      },
+      "form": {
+        "giveAccess": "Dar acceso al portal (envía una invitación a este correo electrónico)",
+        "needsEmail": "Agrega un correo electrónico para dar acceso al portal."
+      },
+      "toasts": {
+        "invited": "Invitación al portal enviada",
+        "inviteEmailFailed": "Se creó el acceso al portal, pero no se pudo enviar el correo de invitación. Usa Reenviar invitación.",
+        "bulkSummary": "Acceso al portal: {{details}}"
+      },
+      "outcomes": {
+        "invited": "Invitados: {{count}}",
+        "already_has_access": "Ya tienen acceso: {{count}}",
+        "no_email": "Sin correo electrónico: {{count}}",
+        "email_bound_to_other_contact": "Correo usado por otro contacto: {{count}}",
+        "duplicate_email_in_batch": "Correo duplicado en la selección: {{count}}"
+      },
+      "errors": {
+        "invite": "No se pudo dar acceso al portal.",
+        "bulkInvite": "No se pudo dar acceso al portal a los contactos seleccionados."
+      }
     }
   },
   "bulkContactImport": {
@@ -7835,7 +7873,8 @@
     "productDefault": "Predeterminado del producto ({{minutes}} minutos)",
     "range": "Elija entre {{min}} y {{max}} minutos.",
     "description": "Cuánto tiempo espera un turno activo de Breeze AI a que alguien apruebe una acción restringida (Tier 2/3) antes de desistir.",
-    "notForUnattendedNote": "Esto no es para trabajo nocturno o desatendido: el trabajo de larga duración pasa por la cola de aprobaciones, que tiene su propio vencimiento."
+    "notForUnattendedNote": "Esto no es para trabajo nocturno o desatendido: el trabajo de larga duración pasa por la cola de aprobaciones, que tiene su propio vencimiento.",
+    "modeDescription": "Cómo el chat de Breeze AI pide confirmación antes de ejecutar acciones protegidas. Se aplica haya o no un límite de gasto."
   },
   "orgAiApprovalTimeout": {
     "title": "Tiempo de espera de aprobación de IA",
@@ -8221,5 +8260,10 @@
     "hideContent": "Ocultar contenido",
     "conversationUnavailable": "Esta conversación ya no está disponible.",
     "usersLoadFailed": "No se pudieron cargar los técnicos."
+  },
+  "orgAiApprovalMode": {
+    "title": "Modo de aprobación de IA",
+    "description": "Cómo el chat de Breeze AI pide confirmación antes de ejecutar acciones protegidas (Tier 2/3) en esta organización. Se aplica haya o no un límite de gasto.",
+    "save": "Guardar"
   }
 }

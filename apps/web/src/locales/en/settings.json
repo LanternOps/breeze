@@ -284,7 +284,7 @@
     "alertThresholds": "Warn at (% of budget)",
     "alertThresholdsHelp": "Partner admins with billing access get an in-app alert at each rung and an email for monthly and cap-reached alerts. Leave empty to inherit 50, 80, 95.",
     "notSet": "Not set, orgs configure individually",
-    "description": "Budget values are enforced across all child organizations. Dollar amounts are stored in cents internally.",
+    "description": "Values set here apply to every child organization and lock the matching organization field. Leave a field empty to let organizations configure it.",
     "modes": {
       "perStep": "Per Step",
       "actionPlan": "Action Plan",
@@ -1095,8 +1095,8 @@
         "description": "Send email from your own domain"
       },
       "aiBudgets": {
-        "label": "AI Budgets",
-        "description": "AI spending limits"
+        "label": "AI Budgets & Limits",
+        "description": "AI spending caps, alerts and rate limits"
       },
       "aiProvider": {
         "label": "AI Providers & Models",
@@ -1119,8 +1119,8 @@
         "description": "Service desk, billing and topology on/off"
       },
       "aiApprovals": {
-        "label": "AI Approval Timeout",
-        "description": "How long Breeze AI waits for a gated action to be approved"
+        "label": "AI Approvals",
+        "description": "Approval mode and how long Breeze AI waits for approval"
       },
       "callerVerification": {
         "label": "Caller verification",
@@ -1851,7 +1851,8 @@
       "load": "Failed to load approval-security policy.",
       "save": "Could not save the approval-security policy.",
       "unavailable": "No policy available."
-    }
+    },
+    "scopeNote": "These settings apply to every organization under your partner account."
   },
   "orgAuditRetentionSettings": {
     "title": "Audit Log Retention",
@@ -2968,7 +2969,8 @@
       "enabledHint": "Enabled and the mode are separate switches and a run needs both: with this off nothing runs whatever the mode says, and in Off mode nothing runs even while this is on.",
       "enabledCreateHint": "New agents are created switched off. Review the tool allowlist and the limits below, then turn this on when you want the agent to start running.",
       "actKeysCleared": "Act-mode permissions are kept but won't be saved unless this agent returns to Act mode.",
-      "recipientRoleNoMembers": "no active members"
+      "recipientRoleNoMembers": "no active members",
+      "enabledHintNoMode": "When this is off, the agent does not run."
     },
     "policyKeys": {
       "tools": {
@@ -7657,6 +7659,42 @@
       "create": "Could not add the contact.",
       "update": "Could not save the contact.",
       "delete": "Could not delete the contact."
+    },
+    "portal": {
+      "column": "Portal",
+      "status": {
+        "none": "No access",
+        "invited": "Invited",
+        "active": "Active",
+        "disabled": "Disabled"
+      },
+      "actions": {
+        "give": "Give portal access",
+        "resend": "Resend invite",
+        "bulkGive": "Give portal access ({{count}})",
+        "selectAll": "Select all contacts on this page",
+        "selectRow": "Select {{name}}"
+      },
+      "form": {
+        "giveAccess": "Give portal access (sends an invite to this email address)",
+        "needsEmail": "Add an email address to give portal access."
+      },
+      "toasts": {
+        "invited": "Portal invite sent",
+        "inviteEmailFailed": "Portal login created, but the invite email could not be sent. Use Resend invite.",
+        "bulkSummary": "Portal access: {{details}}"
+      },
+      "outcomes": {
+        "invited": "Invited: {{count}}",
+        "already_has_access": "Already has access: {{count}}",
+        "no_email": "No email address: {{count}}",
+        "email_bound_to_other_contact": "Email used by another contact: {{count}}",
+        "duplicate_email_in_batch": "Duplicate email in selection: {{count}}"
+      },
+      "errors": {
+        "invite": "Could not give portal access.",
+        "bulkInvite": "Could not give portal access to the selected contacts."
+      }
     }
   },
   "scriptAuthoringPage": {
@@ -7739,8 +7777,8 @@
     "loadFailed": "Script authoring settings could not be loaded."
   },
   "orgAiBudgetSettings": {
-    "title": "AI budget",
-    "description": "Spending caps, rate limits and approval mode for Breeze AI in this organization. Fields your partner has set are shown here but can only be changed on the partner tab.",
+    "title": "AI budget & limits",
+    "description": "Spending caps, alerts and rate limits for Breeze AI in this organization. Fields your partner has set are shown here but can only be changed on the partner tab.",
     "selectOrganization": "Select an organization to configure its AI budget."
   },
   "ticketingHubPage": {
@@ -7835,7 +7873,8 @@
     "productDefault": "Product default ({{minutes}} minutes)",
     "range": "Choose {{min}}-{{max}} minutes.",
     "description": "How long a live Breeze AI turn waits for someone to approve a gated (Tier 2/3) action before giving up on it.",
-    "notForUnattendedNote": "This is not for overnight or unattended work — long-running work goes through the Approvals queue, which has its own expiry."
+    "notForUnattendedNote": "This is not for overnight or unattended work — long-running work goes through the Approvals queue, which has its own expiry.",
+    "modeDescription": "How Breeze AI asks before running gated actions in a conversation. Applies whether or not any spending cap is set."
   },
   "orgAiApprovalTimeout": {
     "title": "AI Approval Timeout",
@@ -8221,5 +8260,10 @@
     "hideContent": "Hide content",
     "conversationUnavailable": "This conversation is no longer available.",
     "usersLoadFailed": "Couldn't load technicians."
+  },
+  "orgAiApprovalMode": {
+    "title": "AI approval mode",
+    "description": "How Breeze AI asks before running gated (Tier 2/3) actions in this organization. Applies whether or not any spending cap is set.",
+    "save": "Save"
   }
 }

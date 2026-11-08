@@ -225,7 +225,15 @@ export type McpExemptReason =
    * wave lands. First use: tickets/links.ts (#8592 W02 routes), flipped to
    * manage_tickets list_links/link_ticket/unlink_ticket by W04 (#8596).
    */
-  | 'tool_in_later_wave';
+  | 'tool_in_later_wave'
+  /**
+   * A staff-facing rendering of data the AI already reaches through the
+   * per-domain read tools: the "Customer view" preview of what the portal
+   * shows (#9350). It aggregates every portal read model into one payload for a
+   * human to look at; an AI tool would only re-emit that data in bulk, past the
+   * tool-output limits, without adding a capability. Decided in #11129.
+   */
+  | 'staff_ui_render';
 
 export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'accessReviews.ts': { tools: ['manage_access_reviews'] }, // W11 (#6781): list/get/create/decide items; completing a review (revokes members) stays human-only
@@ -609,7 +617,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'orgDocuments.ts': { tools: ['list_org_documents', 'manage_org_documents'] },
   'orgKeyDates.ts': { tools: ['manage_key_dates'] },
   'orgMerge.ts': { exempt: 'human_only_tenant_restructure', note: 'Org merge preview/merge/run status -- rewrites which tenant owns the data.' },
-  'orgPortalPreview.ts': { exempt: 'tool_in_later_wave', note: 'Staff read-only Customer view of the portal read models (#9350). No AI tool yet; tracked in #11129 (org portal preview tool gap) (the frozen-gap list takes no new entries).' },
+  'orgPortalPreview.ts': { exempt: 'staff_ui_render', note: 'Staff read-only Customer view of the portal read models (#9350). Permanently no AI action (#11129): it is a human-facing render that adds no capability over the per-domain read tools (it shows the customer-flag-filtered view of the same data); manage_org_portal_settings stays get/update/set_sensitive_access. Revisit if an agent workflow needs the customer-as-seen view.' },
   'orgPortalSettings.ts': { tools: ['manage_org_portal_settings'] }, // W18 PR B (#6789): get, update, four-eyes set_sensitive_access; customCss stays human
   'orgPortalUsers.ts': { tools: ['list_portal_users'] }, // W18 (#6789): invite / disable / delete stay identity, no tool action (W18-1)
   'orgSummary.ts': { tools: ['get_org_summary'] }, // W18 (#6789)
@@ -876,6 +884,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'wispWatches.ts': { tools: ['create_watch'] },
   'wispNudgePreferences.ts': { exempt: 'human_only_ai_governance', note: 'Wisp nudge preferences (W06): how and when Wisp may reach the person (channels, quiet-hour override, brief time, proactivity) and the partner urgent-capable severities that break quiet hours; the AI must never set its own reach.' },
   'wispHome.ts': { exempt: 'human_only_ai_governance', note: 'Wisp home (W08): the human\'s first-paint aggregate of their own grant (brief, concerns, activity, links); the model already reads each part through list_concerns, list_links and its session seed.' },
+  'wispCheckIns.ts': { tools: ['list_check_ins', 'cancel_check_in'] },
   'wispThreadLinks.ts': { tools: ['link_entity', 'list_links'] },
   'wispPartnerSettings.ts': { exempt: 'human_only_ai_governance', note: 'Wisp partner enable switch (W08, w00 A35): a partner administrator turns Wisp on or off for the whole partner (governance, spec §17.2); the AI must never switch itself on.' },
   'wispThreads.ts': { exempt: 'human_only_ai_governance', note: 'Wisp thread surface (W04): the human reads their grant\'s thread, picks its customer focus and attaches context; focus and attachments decide what Wisp sees, so the AI never sets them. The model reads attachments through read_artifact.' },

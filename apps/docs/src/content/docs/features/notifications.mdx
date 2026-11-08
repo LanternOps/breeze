@@ -518,6 +518,14 @@ An automation's `send_notification` action targets its configured channel explic
 
 Use `manage_delivery` to resolve delivery, list/create/update/delete ordinary routing rows, edit the default with `set_default`, remove an optional org default with `delete_routing` to inherit again (the partner default is permanent), and list/create/update/delete escalation policies using the same bounded schemas and caller-aware user validation as the web/API. Reads require `alerts:read`; mutations require `alerts:write` and the applicable ownership and MFA/agent guards. Use `manage_notification_channels` for channel CRUD and test sends.
 
+### Upgrade note: v0.127.0 sends notifications for every alert
+
+<Aside type="caution" title="Expect more notifications after upgrading to v0.127.0">
+Before v0.127.0, most monitor, rule and system alerts (patch jobs, maintenance reboots, policy and configuration compliance, backup, EDR, warranty, network monitors, script exit codes and others) appeared on the Alerts page, but their notifications were not sent on any channel: in-app, email, SMS, Slack, Teams, PagerDuty, Pushover or webhooks, and their escalation policies did not run. From v0.127.0 every alert follows the routing on this page.
+
+Before or right after you upgrade, review your routing rows, each monitor's **Notify** setting and your escalation policies. SMS costs money, and on-call staff can be paged for alerts that were quiet before. Only alerts raised after the upgrade send notifications; earlier alerts are not replayed.
+</Aside>
+
 ### Upgrade note: explicit defaults
 
 <Aside type="caution" title="New channels are opt-in">

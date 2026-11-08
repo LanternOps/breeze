@@ -34,5 +34,13 @@
   "PARTNER_GROUP_TARGET_UNSUPPORTED": "İş ortağı çapındaki cihaz grupları yalnızca iş ortağı yapılandırma ilkeleri tarafından hedeflenebilir",
   "PARTNER_GROUP_READ_ONLY": "İş ortağı çapındaki bu cihaz grubu burada değiştirilemez",
   "PARTNER_GROUP_FILTER_UNSUPPORTED": "İş ortağı genelindeki cihaz grupları grup filtrelerinde kullanılamaz ve bu grupların filtreleri gruplara veya kuruluşlara başvuramaz",
-  "SCAN_ALREADY_QUEUED": "Bu cihaz için zaten kuyrukta bekleyen bir tarama var."
+  "SCAN_ALREADY_QUEUED": "Bu cihaz için zaten kuyrukta bekleyen bir tarama var.",
+  "PORTAL_INVITE_CONTACT_NOT_FOUND": "Bu kişi artık yok veya size açık değil.",
+  "PORTAL_INVITE_CONTACT_NO_EMAIL": "Bu kişinin e-posta adresi yok. Önce bir adres ekleyin.",
+  "PORTAL_INVITE_EMAIL_MISMATCH": "Davet e-postası, kişinin e-posta adresiyle eşleşmelidir.",
+  "PORTAL_INVITE_CONTACT_CONFLICT": "Bu e-posta adresinin başka bir kişiye bağlı bir portal girişi zaten var. Önce bu bağlantıyı kaldırın.",
+  "PORTAL_INVITE_LOGIN_EMAIL_DIFFERS": "Bu kişinin portal girişi farklı bir e-posta adresi kullanıyor. Önce kişinin e-postasını güncelleyin veya girişin bağlantısını kaldırın.",
+  "PORTAL_INVITE_ALREADY_ACTIVE": "Bu kişinin zaten etkin bir portal girişi var.",
+  "PORTAL_INVITE_USER_DISABLED": "Bu kişinin portal girişi devre dışı. Yeniden davet etmek yerine girişi yeniden etkinleştirin.",
+  "PORTAL_INVITE_EXTERNAL_IDENTITY": "Bu e-posta yalnızca bir Microsoft Entra oturumuna ait. Bunun için web portal daveti gönderilemez."
 }

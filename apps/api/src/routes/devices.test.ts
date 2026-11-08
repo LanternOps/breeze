@@ -97,7 +97,10 @@ vi.mock('../services/permissions', () => ({
       const parts = prop.toLowerCase().split('_');
       return { resource: parts[0], action: parts.slice(1).join('_') };
     }
-  })
+  }),
+  // GET /devices/:id lists the Connect menu's tools only for a remote:access
+  // holder (#10922). Not the subject of this suite, so the menu stays empty.
+  hasPermission: vi.fn(() => false),
 }));
 
 vi.mock('drizzle-orm', () => {

@@ -12,7 +12,7 @@ import { POLICY_FILES, isPolicyPath } from './ci-policy.mjs';
 export { POLICY_FILES };
 export const MAX_BASE_AGE_HOURS = 12;
 export const MAX_DELTA_MERGES = 40;
-const CLASSIFIER_KEYS = ['code', 'docs', 'agent', 'app', 'api', 'web', 'portal', 'addins', 'm365', 'rust',
+export const CLASSIFIER_KEYS = ['code', 'docs', 'agent', 'app', 'api', 'web', 'portal', 'addins', 'm365', 'rust',
   'topology_browser', 'agent_code', 'integration', 'path_readers', 'reader_tests'];
 const AREAS = ['api', 'web', 'portal', 'addins', 'm365', 'rust', 'agent_code'];
 const PATH_AREAS = { viewer: 'apps/viewer/', mobile: 'apps/mobile/', shared: 'packages/shared/', document_ui: 'packages/document-ui/' };
@@ -225,7 +225,9 @@ function policyAtBase(io, tree) {
     if (!match) throw Error('Unsupported policy tree entry');
     return [match[2], match[1]];
   }));
-  return POLICY_FILES.every(path => io.exists(path) ? io.git(['hash-object', '--', path]).trim() === blobs[path] : !blobs[path]);
+  // The gate's base-revision io answers from the revision; the default hashes the working tree.
+  const blobOf = io.blob ?? (path => io.git(['hash-object', '--', path]).trim());
+  return POLICY_FILES.every(path => io.exists(path) ? blobOf(path) === blobs[path] : !blobs[path]);
 }
 export function selectionContext(io, workflow) {
   const configs = unique([...workflow.matchAll(/--config=([\w.-]+)/g)].map(m => m[1]));
@@ -254,8 +256,11 @@ export function shadowCore(io, input) {
     // entry diff is checked against the record's P below (entry_outside_p).
     out.head = String(io.prHead(out.pr)).trim();
     if (!sha(out.head)) return stop('no_head_sha');
-    const { records, stats } = io.records(out.head, out.pr);
+    // The pinned gate injects a source of trusted records (W02d). A source may
+    // say why it has none, and that reason is the fallback.
+    const { records, stats, reason: noRecord } = (io.recordSource ?? io.records)(out.head, out.pr);
     out.record_stats = stats;
+    if (noRecord) return stop(noRecord);
     out.invalid_records = records.filter(r => !validateRecord(r, out.head)).length;
     const record = pickRecord(records, out.head);
     if (!record) return stop('no_valid_record');
@@ -403,12 +408,12 @@ export function readRecords(io, { repository, head, pr }) {
   }
   return { records, stats };
 }
+export const SHADOW_FIELDS = ['pr', 'head', 'B', 'parent', 'age_h', 'merges', 'p', 'delta', 'overlap', 'thin_jobs', 'full_jobs',
+  'would_skip', 'would_add', 'invalid_records', 'unrun_own_tests', 'policy_digest', 'reader_tests', 'error', 'record_stats'];
 export function shadow(io, input, { output, summary } = {}) {
   const out = shadowCore(io, input);
-  const fields = ['pr', 'head', 'B', 'parent', 'age_h', 'merges', 'p', 'delta', 'overlap', 'thin_jobs', 'full_jobs',
-    'would_skip', 'would_add', 'invalid_records', 'unrun_own_tests', 'policy_digest', 'reader_tests', 'error', 'record_stats'];
   const log = `queue-selection: mode=${out.mode} reason=${out.reason} ` +
-    fields.map(key => `${key}=${JSON.stringify(out[key] ?? null)}`).join(' ');
+    SHADOW_FIELDS.map(key => `${key}=${JSON.stringify(out[key] ?? null)}`).join(' ');
   io.stdout(log);
   if (out.error) io.stderr(`queue-selection error: ${JSON.stringify(out.error)}`);
   if (out.reason === 'error' || out.reason === 'no_valid_record') {

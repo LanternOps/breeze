@@ -994,6 +994,7 @@
       "client_ai_usage": "İstemci AI kullanımı",
       "config_policy_alert_rules": "İlke uyarı kuralı",
       "config_policy_automations": "İlke otomasyonu",
+      "config_policy_feature_link": "İlke özellik bağlantısı",
       "config_policy_monitoring_watches": "İlke izleme gözlemi",
       "configuration_policy": "Yapılandırma ilkesi",
       "contact": "Kişi",

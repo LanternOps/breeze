@@ -207,6 +207,13 @@ export const devices = pgTable('devices', {
   watchdogStatus: watchdogStatusEnum('watchdog_status'),
   watchdogLastSeen: timestamp('watchdog_last_seen'),
   watchdogVersion: varchar('watchdog_version', { length: 50 }),
+  // The watchdog's OWN reported build edition (#4297), written together with
+  // watchdogVersion on every watchdog beat. NULL when the build at
+  // watchdogVersion has not reported one (never beaten, a pre-reporting build,
+  // or the main agent has since reported a different installed watchdog
+  // version). Read via effectiveWatchdogEdition (services/agentEditionCompat),
+  // which falls back to agentEdition when this is NULL.
+  watchdogEdition: varchar('watchdog_edition', { length: 20 }),
   // Installed breeze-backup version, reported by the agent's heartbeat.
   // Nullable: old agents and devices without the backup binary installed
   // never report one.

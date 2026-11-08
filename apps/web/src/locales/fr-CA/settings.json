@@ -284,7 +284,7 @@
     "alertThresholds": "Avertir à (% du budget)",
     "alertThresholdsHelp": "Les administrateurs partenaires ayant accès à la facturation reçoivent une alerte dans l'application à chaque palier et un courriel pour les alertes mensuelles et de plafond atteint. Laissez vide pour hériter de 50, 80, 95.",
     "notSet": "Non défini, les organisations se configurent individuellement",
-    "description": "Les valeurs budgétaires sont appliquées dans toutes les organisations d’enfants. Les montants en dollars sont stockés en centimes en interne.",
+    "description": "Les valeurs définies ici s'appliquent à chaque organisation enfant et verrouillent le champ correspondant de l'organisation. Laissez un champ vide pour que les organisations le configurent.",
     "modes": {
       "perStep": "Par étape",
       "actionPlan": "Plan d’action",
@@ -1095,8 +1095,8 @@
         "description": "Envoyez vos courriels à partir de votre propre domaine"
       },
       "aiBudgets": {
-        "label": "Budgets IA",
-        "description": "Limites de dépenses en IA"
+        "label": "Budgets et limites IA",
+        "description": "Plafonds de dépenses, alertes et limites de débit IA"
       },
       "aiProvider": {
         "label": "Fournisseurs et modèles d'IA",
@@ -1119,8 +1119,8 @@
         "description": "Bureau de service, facturation et topologie activés/désactivés"
       },
       "aiApprovals": {
-        "label": "Délai d'approbation IA",
-        "description": "Durée d'attente de Breeze AI pour l'approbation d'une action contrôlée"
+        "label": "Approbations IA",
+        "description": "Mode d'approbation et délai d'attente de Breeze AI pour une approbation"
       },
       "callerVerification": {
         "label": "Vérification de l’appelant",
@@ -1851,7 +1851,8 @@
       "load": "Impossible de charger la politique d’approbation-sécurité.",
       "save": "Impossible d’enregistrer la politique d’approbation-sécurité.",
       "unavailable": "Aucune politique disponible."
-    }
+    },
+    "scopeNote": "Ces paramètres s’appliquent à toutes les organisations de votre compte partenaire."
   },
   "orgAuditRetentionSettings": {
     "title": "Conservation des journaux d'audit",
@@ -2968,7 +2969,8 @@
       "enabledHint": "« Activé » et le mode sont deux interrupteurs distincts et une exécution a besoin des deux : si ceci est désactivé, rien ne s’exécute quel que soit le mode, et en mode Désactivé rien ne s’exécute même si ceci est activé.",
       "enabledCreateHint": "Les nouveaux agents sont créés éteints. Vérifiez la liste des outils autorisés et les limites ci-dessous, puis activez ceci lorsque vous voulez que l’agent commence à s’exécuter.",
       "actKeysCleared": "Les autorisations du mode action sont conservées, mais ne seront pas enregistrées tant que cet agent ne repasse pas en mode Action.",
-      "recipientRoleNoMembers": "aucun membre actif"
+      "recipientRoleNoMembers": "aucun membre actif",
+      "enabledHintNoMode": "Lorsque cette option est désactivée, l’agent ne s’exécute pas."
     },
     "policyKeys": {
       "tools": {
@@ -6359,8 +6361,8 @@
     }
   },
   "orgAiBudgetSettings": {
-    "title": "Budget IA",
-    "description": "Plafonds de dépenses, limites de fréquence et mode d’approbation de Breeze AI dans cette organisation. Les champs définis par votre partenaire sont affichés ici, mais ne peuvent être modifiés que dans l’onglet du partenaire.",
+    "title": "Budget et limites IA",
+    "description": "Plafonds de dépenses, alertes et limites de débit de Breeze AI dans cette organisation. Les champs définis par votre partenaire sont affichés ici, mais ne peuvent être modifiés que dans l'onglet partenaire.",
     "selectOrganization": "Sélectionnez une organisation pour configurer son budget IA."
   },
   "orgSettingsPage": {
@@ -7566,6 +7568,42 @@
       "create": "Impossible d’ajouter le contact.",
       "update": "Impossible d’enregistrer le contact.",
       "delete": "Impossible de supprimer le contact."
+    },
+    "portal": {
+      "column": "Portail",
+      "status": {
+        "none": "Aucun accès",
+        "invited": "Invité",
+        "active": "Actif",
+        "disabled": "Désactivé"
+      },
+      "actions": {
+        "give": "Donner accès au portail",
+        "resend": "Renvoyer l’invitation",
+        "bulkGive": "Donner accès au portail ({{count}})",
+        "selectAll": "Sélectionner tous les contacts de cette page",
+        "selectRow": "Sélectionner {{name}}"
+      },
+      "form": {
+        "giveAccess": "Donner accès au portail (envoie une invitation à cette adresse courriel)",
+        "needsEmail": "Ajoutez une adresse courriel pour donner accès au portail."
+      },
+      "toasts": {
+        "invited": "Invitation au portail envoyée",
+        "inviteEmailFailed": "Identifiant de portail créé, mais le courriel d’invitation n’a pas pu être envoyé. Utilisez Renvoyer l’invitation.",
+        "bulkSummary": "Accès au portail : {{details}}"
+      },
+      "outcomes": {
+        "invited": "Invités : {{count}}",
+        "already_has_access": "Ont déjà accès : {{count}}",
+        "no_email": "Sans adresse courriel : {{count}}",
+        "email_bound_to_other_contact": "Courriel utilisé par un autre contact : {{count}}",
+        "duplicate_email_in_batch": "Courriel en double dans la sélection : {{count}}"
+      },
+      "errors": {
+        "invite": "Impossible de donner accès au portail.",
+        "bulkInvite": "Impossible de donner accès au portail aux contacts sélectionnés."
+      }
     }
   },
   "bulkContactImport": {
@@ -7835,7 +7873,8 @@
     "productDefault": "Valeur par défaut du produit ({{minutes}} minutes)",
     "range": "Choisissez {{min}}-{{max}} minutes.",
     "description": "Durée pendant laquelle un tour Breeze AI en cours attend qu'une personne approuve une action contrôlée (Tier 2/3) avant d'abandonner.",
-    "notForUnattendedNote": "Ceci n'est pas destiné au travail de nuit ou sans surveillance — le travail de longue durée passe par la file d'approbations, qui a son propre délai d'expiration."
+    "notForUnattendedNote": "Ceci n'est pas destiné au travail de nuit ou sans surveillance — le travail de longue durée passe par la file d'approbations, qui a son propre délai d'expiration.",
+    "modeDescription": "Comment le clavardage Breeze AI demande une confirmation avant d'exécuter des actions protégées. S'applique qu'un plafond de dépenses soit défini ou non."
   },
   "orgAiApprovalTimeout": {
     "title": "Délai d'approbation IA",
@@ -8221,5 +8260,10 @@
     "hideContent": "Masquer le contenu",
     "conversationUnavailable": "Cette conversation n'est plus disponible.",
     "usersLoadFailed": "Impossible de charger les techniciens."
+  },
+  "orgAiApprovalMode": {
+    "title": "Mode d'approbation IA",
+    "description": "Comment le clavardage Breeze AI demande une confirmation avant d'exécuter des actions protégées (Tier 2/3) dans cette organisation. S'applique qu'un plafond de dépenses soit défini ou non.",
+    "save": "Enregistrer"
   }
 }

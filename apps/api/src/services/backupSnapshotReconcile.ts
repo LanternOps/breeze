@@ -1,3 +1,4 @@
+import { Readable } from 'node:stream';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -7,13 +8,15 @@ import type { ParsedBackupCommandResult } from '../routes/backup/resultSchemas';
 import { applyBackupCommandResultToJob, LATE_RESULT_FENCE_REASON_PATTERN } from './backupResultPersistence';
 import { loadSnapshotIdClaims } from './backupSnapshotIdReservations';
 import { captureException, captureMessage } from './sentry';
+import { recordSnapshotFileIndex } from './backupMetrics';
 import {
   BACKUP_SNAPSHOT_MANIFEST_KEY,
   BACKUP_SNAPSHOT_ROOT_DIR,
   backupSnapshotManifestKey,
   backupSnapshotRootPrefix,
-  MANIFEST_FETCH_MAX_BYTES,
+  MANIFEST_STREAM_MAX_BYTES,
 } from './backupSnapshotStorage';
+import { scanManifest } from './backupManifestScanner';
 import {
   keyRootForNewSnapshot,
   keyRootId,
@@ -22,7 +25,7 @@ import {
   snapshotKeyRootOf,
   type SnapshotKeyRoot,
 } from './backupKeyLayout';
-import { fetchRootedObjectText, iterateRootedObjects } from './backupRootedStorage';
+import { iterateRootedObjects, openRootedObjectStream } from './backupRootedStorage';
 
 /**
  * Orphaned-snapshot reconciliation (#3006).
@@ -285,46 +288,57 @@ type AdoptableJob = {
 
 /**
  * The agent's snapshot manifest (agent/internal/backup/snapshot.go's
- * `Snapshot`, encoded verbatim). Deliberately permissive: an unmodelled or
- * malformed field must never fail the whole parse and strand the snapshot
- * again — the same lesson as the agent result schemas (F13). `modTime` is NOT
- * validated as a datetime here; it is sanitized per-file below, because a
- * single bad OS mtime among 100k files must not cost the restore point.
+ * `Snapshot`, encoded verbatim), read as a stream (#11233): the top-level
+ * fields below, the `id`, and one `files[]` entry at a time. Deliberately
+ * permissive: an unmodelled or malformed field must never fail the whole parse
+ * and strand the snapshot again — the same lesson as the agent result schemas
+ * (F13). `modTime` is NOT validated as a datetime here; it is sanitized
+ * per-file below, because a single bad OS mtime among 100k files must not cost
+ * the restore point.
  */
-const reconcileManifestSchema = z
+const RECONCILE_MANIFEST_FIELDS = ['timestamp', 'size', 'formatVersion', 'baseSnapshotId'] as const;
+
+const reconcileManifestFieldsSchema = z.object({
+  timestamp: z.string().optional(),
+  size: z.number().nonnegative().optional(),
+  formatVersion: z.number().optional(),
+  baseSnapshotId: z.string().optional(),
+});
+
+const reconcileManifestFileSchema = z
   .object({
-    id: z.string().min(1),
-    timestamp: z.string().optional(),
+    sourcePath: z.string().min(1),
+    // Stable pre-VSS path (D12): must survive re-adoption or the
+    // index falls back to the shadow-copy device path.
+    originalPath: z.string().min(1).optional(),
+    // Empty ONLY on a content-less entry — see the refine below and
+    // backupSnapshotFileIndex.ts's twin (D-W09-1, #6491): every
+    // dir/symlink entry a real agent writes carries backupPath "",
+    // so a blanket .min(1) made every real Linux manifest
+    // 'manifest-unreadable' and un-adoptable.
+    backupPath: z.string(),
+    kind: z.string().optional(),
     size: z.number().nonnegative().optional(),
-    formatVersion: z.number().optional(),
-    baseSnapshotId: z.string().optional(),
-    files: z
-      .array(
-        z
-          .object({
-            sourcePath: z.string().min(1),
-            // Stable pre-VSS path (D12): must survive re-adoption or the
-            // index falls back to the shadow-copy device path.
-            originalPath: z.string().min(1).optional(),
-            // Empty ONLY on a content-less entry — see the refine below and
-            // backupSnapshotFileIndex.ts's twin (D-W09-1, #6491): every
-            // dir/symlink entry a real agent writes carries backupPath "",
-            // so a blanket .min(1) made every real Linux manifest
-            // 'manifest-unreadable' and un-adoptable.
-            backupPath: z.string(),
-            kind: z.string().optional(),
-            size: z.number().nonnegative().optional(),
-            modTime: z.string().optional(),
-          })
-          .passthrough()
-          .refine((f) => f.backupPath.length > 0 || f.kind === 'symlink' || f.kind === 'dir', {
-            message: 'backupPath must be non-empty on a content entry (kind "" / omitted)',
-            path: ['backupPath'],
-          })
-      )
-      .optional(),
+    modTime: z.string().optional(),
   })
-  .passthrough();
+  .passthrough()
+  .refine((f) => f.backupPath.length > 0 || f.kind === 'symlink' || f.kind === 'dir', {
+    message: 'backupPath must be non-empty on a content entry (kind "" / omitted)',
+    path: ['backupPath'],
+  });
+
+/**
+ * The most file-list text an adoption carries inline, about what an agent's
+ * own result can deliver (the 5 MB command-result cap, MAX_COMMAND_RESULT_BYTES
+ * in routes/agents/schemas.ts). A larger list is left out of the adopted
+ * result, exactly as an agent leaves out one that does not fit (#11026): the
+ * snapshot is persisted with its counts and sizes, and its file index is built
+ * from the manifest. A million-entry manifest is therefore never held here as
+ * objects (#11233).
+ */
+export const RECONCILE_INLINE_INDEX_MAX_CHARS = 5_000_000;
+/** Charged per inline entry on top of its strings: its keys and punctuation in the agent's JSON. */
+const RECONCILE_INLINE_ENTRY_OVERHEAD_CHARS = 64;
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -633,40 +647,21 @@ function jobCoversWriteTime(job: AdoptableJob, writtenAt: Date, now: Date): bool
  * file indexing, legal-hold/immutability application and GFS/expiry
  * computation — the last of which is what finally makes the snapshot visible
  * to retention.
+ *
+ * The manifest is scanned one entry at a time (#11233), so its size is bounded
+ * only by the stream cap: every entry is validated and counted, and the file
+ * list is carried inline only while it fits RECONCILE_INLINE_INDEX_MAX_CHARS.
+ * Throws on any read, scan or validation failure, the dropped connection a
+ * stream reports included.
  */
-export function manifestToCommandResult(params: {
+export async function manifestToCommandResult(params: {
   snapshotId: string;
-  manifestText: string;
+  /** The manifest as a stream of its bytes, or as its whole text. */
+  manifest: NodeJS.ReadableStream | string;
   matchedBy: 'job-snapshot-id' | 'time-window';
   /** The key root the manifest was found under (#7081); legacy when omitted. */
   root?: SnapshotKeyRoot;
-}): ParsedBackupCommandResult {
-  const parsed = reconcileManifestSchema.parse(JSON.parse(params.manifestText));
-
-  if (parsed.id !== params.snapshotId) {
-    throw new Error(
-      `manifest declares snapshot ${parsed.id} but is stored under ${params.snapshotId}`
-    );
-  }
-
-  const files = (parsed.files ?? []).map((file) => {
-    // Drop an unparseable mtime rather than letting `new Date(...)` reach
-    // Postgres as an Invalid Date and abort the whole adoption.
-    const modTime =
-      file.modTime && Number.isFinite(Date.parse(file.modTime)) ? file.modTime : undefined;
-    return {
-      sourcePath: file.sourcePath,
-      originalPath: file.originalPath,
-      backupPath: file.backupPath,
-      size: file.size !== undefined ? Math.trunc(file.size) : undefined,
-      modTime,
-    };
-  });
-
-  const declaredSize = parsed.size !== undefined ? Math.trunc(parsed.size) : undefined;
-  const summedSize = files.reduce((total, file) => total + (file.size ?? 0), 0);
-  const size = declaredSize ?? summedSize;
-
+}): Promise<ParsedBackupCommandResult> {
   // #5410: the manifest is enough to recover the dedup split the agent would
   // have reported. Same rule as the agent's isReferenceEntry
   // (agent/internal/backup/incremental.go): an entry whose object lives
@@ -675,7 +670,7 @@ export function manifestToCommandResult(params: {
   // entries (dir/symlink, backupPath "") are skipped exactly as the agent's
   // isReferenceEntry skips them — "" never starts with ownPrefix, so
   // without the guard every directory would count as a reference. Without
-  // the loop at all, every adopted incremental would finalize as "uploaded
+  // the count at all, every adopted incremental would finalize as "uploaded
   // the whole corpus".
   //
   // Reported the way the agent reports it (`omitempty`): a run with no
@@ -685,34 +680,85 @@ export function manifestToCommandResult(params: {
   // reference entry — the agent's referenceEntry always copies it — so the
   // schema's optional size cannot undercount a real manifest.
   const ownPrefix = `${BACKUP_SNAPSHOT_ROOT_DIR}/${params.snapshotId}/`;
+  type InlineFile = NonNullable<NonNullable<ParsedBackupCommandResult['snapshot']>['files']>[number];
+  let inline: InlineFile[] | null = [];
+  let inlineChars = 0;
+  let summedSize = 0;
   let referencedFiles = 0;
   let referencedBytes = 0;
-  for (const file of files) {
-    if (!file.backupPath) continue;
-    if (!file.backupPath.startsWith(ownPrefix)) {
-      referencedFiles += 1;
-      referencedBytes += file.size ?? 0;
-    }
+
+  const source = typeof params.manifest === 'string' ? Readable.from([params.manifest]) : params.manifest;
+  const scanned = await scanManifest(
+    source,
+    {
+      onEntry(raw, index) {
+        const checked = reconcileManifestFileSchema.safeParse(raw);
+        if (!checked.success) {
+          throw new Error(`manifest entry ${index} is invalid: ${checked.error.message}`);
+        }
+        const file = checked.data;
+        // Drop an unparseable mtime rather than letting `new Date(...)` reach
+        // Postgres as an Invalid Date and abort the whole adoption.
+        const modTime = file.modTime && Number.isFinite(Date.parse(file.modTime)) ? file.modTime : undefined;
+        const size = file.size !== undefined ? Math.trunc(file.size) : undefined;
+        summedSize += size ?? 0;
+        if (file.backupPath && !file.backupPath.startsWith(ownPrefix)) {
+          referencedFiles += 1;
+          referencedBytes += size ?? 0;
+        }
+        if (inline === null) return;
+        inlineChars += RECONCILE_INLINE_ENTRY_OVERHEAD_CHARS + file.sourcePath.length +
+          (file.originalPath?.length ?? 0) + file.backupPath.length + (modTime?.length ?? 0);
+        if (inlineChars > RECONCILE_INLINE_INDEX_MAX_CHARS) {
+          inline = null;
+          return;
+        }
+        inline.push({ sourcePath: file.sourcePath, originalPath: file.originalPath, backupPath: file.backupPath, size, modTime });
+      },
+    },
+    { fields: RECONCILE_MANIFEST_FIELDS },
+  );
+
+  if (!scanned.id) {
+    throw new Error('manifest has no snapshot id');
   }
+  if (scanned.id !== params.snapshotId) {
+    throw new Error(
+      `manifest declares snapshot ${scanned.id} but is stored under ${params.snapshotId}`
+    );
+  }
+  const checkedFields = reconcileManifestFieldsSchema.safeParse(scanned.fields ?? {});
+  if (!checkedFields.success) {
+    const issues = checkedFields.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ');
+    throw new Error(`manifest fields are invalid: ${issues}`);
+  }
+  const fields = checkedFields.data;
+
+  const declaredSize = fields.size !== undefined ? Math.trunc(fields.size) : undefined;
+  const size = declaredSize ?? summedSize;
   const dedup = referencedFiles > 0 ? { referencedFiles, referencedBytes } : {};
+  // Left out, the list is still in the manifest: the index is built from
+  // there. Omitted rather than [] so persistence leaves any index rows alone.
+  const files: InlineFile[] | null = inline;
+  const inlineDroppedEntries = files === null ? scanned.entries : null;
 
   const timestamp =
-    parsed.timestamp && Number.isFinite(Date.parse(parsed.timestamp)) ? parsed.timestamp : undefined;
+    fields.timestamp && Number.isFinite(Date.parse(fields.timestamp)) ? fields.timestamp : undefined;
 
   return {
     snapshotId: params.snapshotId,
-    filesBackedUp: files.length,
+    filesBackedUp: scanned.entries,
     bytesBackedUp: size,
     ...dedup,
     snapshot: {
       id: params.snapshotId,
       timestamp,
       size,
-      files,
+      ...(files !== null ? { files } : {}),
       // D18 (#5429/§3.1): forwarded so applyBackupCommandResultToJob can
       // record lineage on an adopted (not directly-reported) snapshot too.
-      baseSnapshotId: parsed.baseSnapshotId,
-      formatVersion: parsed.formatVersion,
+      baseSnapshotId: fields.baseSnapshotId,
+      formatVersion: fields.formatVersion,
     },
     metadata: {
       // Consumed by backupResultPersistence to set backup_snapshots.location.
@@ -722,6 +768,10 @@ export function manifestToCommandResult(params: {
       ...((params.root ?? LEGACY_FLAT_ROOT).layout === 'legacy_flat'
         ? { storagePrefix: `${BACKUP_SNAPSHOT_ROOT_DIR}/${params.snapshotId}` }
         : {}),
+      // The same record an agent result that left its list out produces
+      // (backupResultPersistence, #11026); the inline_dropped metric is
+      // recorded once the adoption is written.
+      ...(inlineDroppedEntries !== null ? { fileIndexInlineDroppedEntries: inlineDroppedEntries } : {}),
       reconciledFromStorage: true,
       reconciledAt: new Date().toISOString(),
       reconcileMatchedBy: params.matchedBy,
@@ -1103,20 +1153,24 @@ export async function reconcileOrphanedBackupSnapshots(params: {
     // to look at a bucket that is perfectly fine.
     let result: ParsedBackupCommandResult;
     try {
-      const manifestText = await fetchRootedObjectText(
+      const manifest = await openRootedObjectStream(
         { provider: config.provider, providerConfig: config.providerConfig, root: entry.root },
         backupSnapshotManifestKey(entry.snapshotId),
-        MANIFEST_FETCH_MAX_BYTES,
+        MANIFEST_STREAM_MAX_BYTES,
       );
-      result = manifestToCommandResult({
+      result = await manifestToCommandResult({
         snapshotId: entry.snapshotId,
-        manifestText,
+        manifest,
         matchedBy: entry.matchedBy,
         root: entry.root,
       });
     } catch (error) {
       candidate.skipReason = 'manifest-unreadable';
       candidate.error = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `[BackupReconcile] manifest of snapshot ${entry.snapshotId} (config ${params.configId}, key root ` +
+        `${keyRootId(entry.root)}) could not be read (${error instanceof Error ? error.name : 'non-Error'}): ${candidate.error}`,
+      );
       candidates.push(candidate);
       continue;
     }
@@ -1204,6 +1258,9 @@ export async function reconcileOrphanedBackupSnapshots(params: {
       } else {
         candidate.adopted = true;
         adopted += 1;
+        if (result.metadata?.fileIndexInlineDroppedEntries !== undefined) {
+          recordSnapshotFileIndex('inline_dropped', 'dropped');
+        }
       }
     } catch (error) {
       // applyBackupCommandResultToJob commits the job UPDATE before inserting

@@ -34,6 +34,8 @@ import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 import { i18n } from "../../lib/i18n";
 import EffectiveContainmentSummary from "./EffectiveContainmentSummary";
+import { OEM_VENDOR_NAMES } from "./vendorUpdatesApi";
+import type { OemLane } from "@breeze/shared";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -262,11 +264,42 @@ const PATCH_UNUSED_APPROVAL_KEYS = new Set([
   "apps",
 ]);
 
+// #11281: the generic dump showed the schema "version" and no schedule or vendors.
+// State what the policy does: whether it is on, when it runs, and for which vendors.
+function summarizeOemUpdates(settings: Record<string, unknown> | null): SettingsSummaryItem[] {
+  if (!settings) return [];
+  const items: SettingsSummaryItem[] = [];
+  if (typeof settings.enabled === "boolean") {
+    items.push({ label: "enabled", value: settings.enabled ? "yes" : "no" });
+  }
+  const schedule = settings.schedule;
+  if (schedule && typeof schedule === "object") {
+    const { weekOfMonth, dayOfWeek, windowStart, windowHours } = schedule as Record<string, unknown>;
+    if (typeof weekOfMonth === "string" && typeof dayOfWeek === "string") {
+      const when = `${weekOfMonth} ${dayOfWeek}`;
+      const window =
+        typeof windowStart === "string" && typeof windowHours === "number"
+          ? `, ${windowStart}, ${windowHours} h window`
+          : "";
+      items.push({ label: "schedule", value: `${when}${window}` });
+    }
+  }
+  const vendors = settings.vendors;
+  if (vendors && typeof vendors === "object") {
+    const enabled = Object.entries(vendors as Record<string, unknown>)
+      .filter(([, v]) => !!v && typeof v === "object" && (v as { enabled?: unknown }).enabled === true)
+      .map(([lane]) => OEM_VENDOR_NAMES[lane as OemLane] ?? lane);
+    items.push({ label: "vendors", value: enabled.length > 0 ? enabled.join(", ") : "none enabled" });
+  }
+  return items;
+}
+
 function summarizeFeatureSettings(
   featureType: FeatureType,
   feature: ResolvedFeature,
   approvalItem: (ringLinked: boolean) => SettingsSummaryItem,
 ): SettingsSummaryItem[] {
+  if (featureType === "oem_updates") return summarizeOemUpdates(feature.inlineSettings);
   const pickedKeys = FEATURE_SUMMARY_KEYS[featureType];
   if (featureType !== "patch") return summarizeSettings(feature.inlineSettings, pickedKeys);
   const settings = feature.inlineSettings;

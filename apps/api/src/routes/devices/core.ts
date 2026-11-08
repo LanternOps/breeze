@@ -26,13 +26,14 @@ import {
 } from '../../db/schema';
 import {
   authMiddleware,
+  hasSatisfiedMfa,
   isInteractiveUserSession,
   requireMfa,
   requireScope,
   requirePermission,
   type AuthContext,
 } from '../../middleware/auth';
-import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
 import {
   getPagination,
   getDeviceWithOrgAndSiteCheck,
@@ -40,7 +41,13 @@ import {
   projectPublicDeviceForCaller,
   redactReplacementLinksForCaller,
 } from './helpers';
-import { listDevicesSchema, updateDeviceSchema, decommissionDeviceSchema, permanentDeleteDeviceSchema } from './schemas';
+import {
+  listDevicesSchema,
+  updateDeviceSchema,
+  decommissionDeviceSchema,
+  permanentDeleteDeviceSchema,
+  remoteAccessLaunchSchema,
+} from './schemas';
 import {
   DEVICES_LIST_DEFAULT_LIMIT,
   DEVICES_LIST_HARD_MAX,
@@ -67,6 +74,8 @@ import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy'
 import {
   resolveRemoteAccessLaunch,
   checkRemoteAccessLaunchAvailability,
+  listRemoteAccessProviderOptions,
+  type RemoteAccessProviderOption,
   type RemoteAccessLaunchResult,
   type RemoteAccessLaunchAvailability,
   type RemoteAccessLaunchSkipReason,
@@ -1846,8 +1855,15 @@ coreRoutes.get(
 
     let hasRemoteAccessLauncher = false;
     let remoteAccessLaunchSkipReason: RemoteAccessLaunchSkipReason | 'config_error' | null = null;
+    // #10922: the tools the Connect menu may offer for this device, and the one
+    // its primary click would launch. This route only needs devices:read, so the
+    // list follows the stricter gate GET /remote/providers already has
+    // (remote:access + MFA): reading a device must not widen who can see which
+    // remote tools the tenant uses. Without it the button simply has no menu.
+    let remoteAccessProviders: RemoteAccessProviderOption[] = [];
+    let remoteAccessDefaultProviderId: string | null = null;
     try {
-      const availability = await checkRemoteAccessLauncherAvailabilityForDevice(
+      const { availability, providerOptions } = await loadRemoteAccessLauncherViewForDevice(
         device.orgId,
         device.customFields as Record<string, unknown> | null,
         auth,
@@ -1856,6 +1872,16 @@ coreRoutes.get(
         hasRemoteAccessLauncher = true;
       } else {
         remoteAccessLaunchSkipReason = availability.skipReason;
+      }
+      // Inside the try so a failure here degrades to "no menu", never a 500
+      // for the whole device page.
+      const callerPermissions = c.get('permissions') as UserPermissions | undefined;
+      const mayChooseRemoteTool = !!callerPermissions
+        && hasPermission(callerPermissions, PERMISSIONS.REMOTE_ACCESS.resource, PERMISSIONS.REMOTE_ACCESS.action)
+        && hasSatisfiedMfa(auth);
+      if (mayChooseRemoteTool) {
+        remoteAccessProviders = providerOptions;
+        remoteAccessDefaultProviderId = availability.available ? availability.providerId : null;
       }
     } catch (err) {
       captureException(err, c);
@@ -1889,6 +1915,8 @@ coreRoutes.get(
       remoteAccessPolicy,
       hasRemoteAccessLauncher,
       remoteAccessLaunchSkipReason,
+      remoteAccessProviders,
+      remoteAccessDefaultProviderId,
       uninstall,
     });
   }
@@ -1973,8 +2001,24 @@ export async function checkRemoteAccessLauncherAvailabilityForDevice(
   customFields: Record<string, unknown> | null,
   auth?: AuthContext,
 ): Promise<RemoteAccessLaunchAvailability> {
+  return (await loadRemoteAccessLauncherViewForDevice(orgId, customFields, auth)).availability;
+}
+
+/**
+ * Everything GET /devices/:id shows about launchers, from ONE partner read:
+ * the primary click's availability and the Connect menu's options (#10922).
+ * Same no-decrypt guarantee as the availability check above.
+ */
+async function loadRemoteAccessLauncherViewForDevice(
+  orgId: string,
+  customFields: Record<string, unknown> | null,
+  auth?: AuthContext,
+): Promise<{ availability: RemoteAccessLaunchAvailability; providerOptions: RemoteAccessProviderOption[] }> {
   const { providers, preferredProviderId } = await loadRemoteAccessLauncherContext(orgId, auth);
-  return checkRemoteAccessLaunchAvailability({ customFields }, providers, preferredProviderId);
+  return {
+    availability: checkRemoteAccessLaunchAvailability({ customFields }, providers, preferredProviderId),
+    providerOptions: listRemoteAccessProviderOptions({ customFields }, providers),
+  };
 }
 
 /** Thrown by the launcher issuance for a device parked in a holding org. */
@@ -1999,12 +2043,40 @@ export async function resolveRemoteAccessLauncherForDevice(
   orgId: string,
   customFields: Record<string, unknown> | null,
   auth?: AuthContext,
+  explicitProviderId?: string | null,
 ): Promise<RemoteAccessLaunchResult> {
   if (await isParkedDevice(db, deviceId)) {
     throw new RemoteAccessLaunchParkedDeviceError(deviceId);
   }
   const { providers, preferredProviderId } = await loadRemoteAccessLauncherContext(orgId, auth);
-  return resolveRemoteAccessLaunch({ customFields }, providers, preferredProviderId);
+  return resolveRemoteAccessLaunch({ customFields }, providers, preferredProviderId, explicitProviderId);
+}
+
+/**
+ * Reads the launch POST's optional `{ providerId }` (#10922).
+ *
+ * Parsed by hand rather than with zValidator('json') for two reasons. The
+ * existing callers send no body, and fetchWithAuth forces a JSON content-type
+ * on every request, so the JSON validator would answer 400 to every one of
+ * them. And the validator skips a body whose content-type is not JSON, which
+ * here would quietly launch the DEFAULT tool for a request that named another
+ * one. So: a blank body is "no choice"; anything else must parse and validate
+ * whatever its content-type, or the request is refused. Never "fall back".
+ */
+async function readRemoteAccessLaunchChoice(
+  c: Context,
+): Promise<{ ok: true; providerId: string | null } | { ok: false }> {
+  const raw = await c.req.text();
+  if (raw.trim().length === 0) return { ok: true, providerId: null };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false };
+  }
+  const result = remoteAccessLaunchSchema.safeParse(parsed);
+  if (!result.success) return { ok: false };
+  return { ok: true, providerId: result.data.providerId ?? null };
 }
 
 // POST /devices/:id/remote-access-launch - Issue a one-shot remote-access
@@ -2036,6 +2108,17 @@ coreRoutes.post(
       return c.json({ error: 'Device not found' }, 404);
     }
 
+    // After the device lookup on purpose: a device the caller cannot see is a
+    // 404 whatever the body says.
+    const choice = await readRemoteAccessLaunchChoice(c);
+    if (!choice.ok) {
+      return c.json(
+        { error: 'Invalid request body: expected an empty body or { "providerId": "<id>" }', code: 'invalid_request' },
+        400,
+      );
+    }
+    const explicitProvider = choice.providerId !== null;
+
     let launcher: RemoteAccessLaunchResult;
     try {
       launcher = await resolveRemoteAccessLauncherForDevice(
@@ -2043,6 +2126,7 @@ coreRoutes.post(
         device.orgId,
         device.customFields as Record<string, unknown> | null,
         auth,
+        choice.providerId,
       );
     } catch (err) {
       if (err instanceof RemoteAccessLaunchParkedDeviceError) {
@@ -2067,6 +2151,7 @@ coreRoutes.post(
         details: {
           deviceId,
           providerId: launcher.providerId,
+          explicitProvider,
         },
         result: 'denied',
       });
@@ -2084,7 +2169,9 @@ coreRoutes.post(
       // Match GET /devices/:id 404 convention used elsewhere for missing
       // sub-resources; the UI uses `hasRemoteAccessLauncher` on the detail
       // response to know whether to surface the button at all, so this
-      // path is only reachable from race conditions or out-of-date UI.
+      // path is only reachable from race conditions or out-of-date UI. An
+      // explicit choice that is not an enabled tool of this tenant lands here
+      // too, as code `provider_not_available` (#10922).
       return c.json(
         { error: 'No remote-access launcher available for this device', code: launcher.skipReason ?? 'unavailable' },
         404,
@@ -2092,7 +2179,8 @@ coreRoutes.post(
     }
 
     // Success: record the issuance. NEVER write the launch URL or password
-    // into the audit row. Only deviceId, providerId, and the scheme.
+    // into the audit row. Only deviceId, providerId, the scheme, and whether
+    // the technician picked the tool (#10922) or got the default.
     writeRouteAudit(c, {
       orgId: device.orgId,
       action: 'device.remote_access_launch_url.issued',
@@ -2103,6 +2191,7 @@ coreRoutes.post(
         deviceId,
         providerId: launcher.providerId,
         scheme: launcher.scheme,
+        explicitProvider,
       },
     });
 

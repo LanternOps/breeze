@@ -59,6 +59,15 @@ beforeEach(() => {
 });
 
 describe('OrgApprovalSecurityTab', () => {
+  // #11287: the policy is the partner's, whichever org page the tab sits on.
+  it('says the settings apply to every organization under the partner', async () => {
+    render(<OrgApprovalSecurityTab />);
+    await waitFor(() => screen.getByTestId('approval-security-tab'));
+    expect(screen.getByTestId('approval-security-scope-note').textContent).toMatch(
+      /every organization under your partner account/i,
+    );
+  });
+
   it('loads the policy and renders a per-tier control for all four tiers', async () => {
     render(<OrgApprovalSecurityTab />);
     await waitFor(() => expect(screen.getByTestId('approval-security-tab')).toBeTruthy());

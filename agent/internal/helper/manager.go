@@ -792,13 +792,8 @@ func (m *Manager) writeSessionConfig(state *sessionState, cfg *Config, si Sessio
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	tmp := state.configPath + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		return fmt.Errorf("write temp config: %w", err)
-	}
-	if err := os.Rename(tmp, state.configPath); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename config: %w", err)
+	if err := writeHelperConfigFile(state.configPath, data, 0600); err != nil {
+		return err
 	}
 
 	copied := *cfg

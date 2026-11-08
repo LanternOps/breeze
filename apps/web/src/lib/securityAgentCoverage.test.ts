@@ -7,11 +7,11 @@ const LOCALES = ['en', 'de-DE', 'es-419', 'fr-CA', 'fr-FR', 'it-IT', 'pt-BR', 't
 
 function tFor(locale: string) {
   const security = JSON.parse(readFileSync(join(__dirname, '..', 'locales', locale, 'security.json'), 'utf8'));
-  return (key: string) => {
+  return (key: string, opts?: Record<string, string>) => {
     const path = key.replace(/^security:/, '').split('.');
     let node: unknown = security;
     for (const part of path) node = (node as Record<string, unknown> | undefined)?.[part];
-    return typeof node === 'string' ? node : key;
+    return typeof node === 'string' ? node.replace(/\{\{(\w+)\}\}/g, (_m, name: string) => opts?.[name] ?? '') : key;
   };
 }
 
@@ -68,7 +68,7 @@ describe('Bitdefender GravityZone (#8170)', () => {
     ['tenant_ambiguous', 'tenantAmbiguous'],
     ['installer_link_missing', 'installerLinkMissing'],
   ])('%s maps to the %s reason and setup-link keys', (code, key) => {
-    const echo = (k: string) => k;
+    const echo = (k: string, _opts?: Record<string, string>) => k;
     expect(coverageReasonLabel(echo, code)).toBe(`security:securityAgentCoverage.reasons.${key}`);
     expect(coverageSetupLinkLabel(echo, code)).toBe(`security:securityAgentCoverage.setupLink.${key}`);
   });
@@ -82,5 +82,14 @@ describe('Bitdefender GravityZone (#8170)', () => {
       }
     }
     expect(coverageReasonLabel(t, 'installer_link_missing')).toContain('Bitdefender GravityZone');
+  });
+
+  it.each(LOCALES)('%s: tenant_ambiguous names the row vendor, not a fixed one', (locale) => {
+    const t = tFor(locale);
+    const label = coverageReasonLabel(t, 'tenant_ambiguous', 'huntress');
+    expect(label).toContain('Huntress');
+    expect(label).not.toContain('GravityZone');
+    expect(label).not.toContain('{{');
+    expect(coverageReasonLabel(t, 'tenant_ambiguous', 'bitdefender')).toContain('Bitdefender GravityZone');
   });
 });

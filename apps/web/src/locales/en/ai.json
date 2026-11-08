@@ -563,7 +563,8 @@
     "overrideErrorStepUp": "Your partner requires a stronger approval than this screen can provide.",
     "overrideErrorNoDevice": "No target device took the script, so nothing ran. You can try again.",
     "overrideErrorPolicy": "The AI data policy does not allow this script because it reads a user profile path.",
-    "overrideErrorStrict": "Acknowledging these danger patterns needs script write permission and MFA, and every pattern must be ticked."
+    "overrideErrorStrict": "Acknowledging these danger patterns needs script write permission and MFA, and every pattern must be ticked.",
+    "savedToLibrary": "Saved to the script library"
   },
   "aiRunCard": {
     "title": "Analysis run",
@@ -903,6 +904,14 @@
       "specialistResult": "Specialist report",
       "firstLook": "First look",
       "couldntLook": "Couldn't look yet"
+    },
+    "checkIn": {
+      "runNow": "Run now",
+      "runNowMessage": "Go ahead with the check-in",
+      "scheduledAt": "Wisp will check back at {{time}}",
+      "cancel": "Cancel check-in",
+      "cancelled": "Check-in cancelled",
+      "cancelFailed": "Could not cancel the check-in."
     },
     "welcome": {
       "title": "I'm looking around {{scope}}.",

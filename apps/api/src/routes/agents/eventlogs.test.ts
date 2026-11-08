@@ -292,6 +292,20 @@ describe('agent event log routes', () => {
       expect(await res.json()).toMatchObject({ success: true, count: 1, invalidDropped: 1 });
     });
 
+    it('truncates an over-long source to the varchar(255) column width instead of losing the batch (#11279)', async () => {
+      mockDeviceLookup();
+      const values = mockInsertSuccess();
+      const events = Array.from({ length: 150 }, (_, i) =>
+        makeEvent({ eventId: String(i), source: i === 119 ? 'S'.repeat(300) : 'Security' }));
+      const res = await submit(events);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ success: true, count: 150, invalidDropped: 0 });
+      const stored = values.mock.calls.flatMap(([batch]) => batch as Array<{ source: string }>);
+      expect(stored).toHaveLength(150);
+      expect(stored[119]!.source).toBe('S'.repeat(255));
+      expect(Math.max(...stored.map((r) => Array.from(r.source).length))).toBeLessThanOrEqual(255);
+    });
+
     it('drops non-object rows inside a valid envelope without failing the batch', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       mockDeviceLookup();

@@ -142,6 +142,11 @@ function dbWithBlindAssetLookups(db: any) {
     insert: db.insert.bind(db),
     update: db.update.bind(db),
     delete: db.delete.bind(db),
+    // applySyncData saves each site inside a savepoint (#11225). `transaction`
+    // lives on the drizzle prototype, so the spread above drops it; the
+    // savepoint's tx gets the same blind lookups, or the race is not simulated.
+    transaction: (fn: (tx: any) => Promise<unknown>, config?: unknown) =>
+      db.transaction((tx: any) => fn(dbWithBlindAssetLookups(tx)), config),
   };
 }
 

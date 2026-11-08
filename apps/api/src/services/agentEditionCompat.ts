@@ -127,6 +127,37 @@ export function agentAcceptsServedEdition(args: {
 }
 
 // ============================================
+// Watchdog edition (#4297)
+// ============================================
+
+/**
+ * The edition to gate a WATCHDOG download on (#4297).
+ *
+ * `devices.watchdog_edition` holds what the watchdog reported about ITSELF,
+ * written together with `watchdog_version` on every watchdog beat
+ * (routes/agents/heartbeat.ts, heartbeatParked.ts). It is NULL when the
+ * watchdog build at `watchdog_version` has not reported an edition: it has
+ * never beaten (watchdogs beat only in failover), it is a build that predates
+ * watchdog edition reporting, or the main agent has since reported a
+ * different installed watchdog version (an upgrade, rollback or reinstall the
+ * stored report no longer describes).
+ *
+ * In those cases this falls back to `agent_edition`, written from every
+ * MAIN-agent beat. That fallback is a stated degradation, not a fact: it
+ * assumes agent and watchdog install and upgrade from the same lane, so the
+ * main agent's build edition identifies the watchdog's. It holds today but is
+ * not enforced anywhere, which is why the watchdog's own report wins whenever
+ * one exists. If both are silent the caller's version-band inference
+ * (`agentAcceptsServedEdition`) takes over.
+ */
+export function effectiveWatchdogEdition(device: {
+  watchdogEdition?: string | null;
+  agentEdition?: string | null;
+}): string | null {
+  return device.watchdogEdition ?? device.agentEdition ?? null;
+}
+
+// ============================================
 // Dispatch gate (#4093)
 // ============================================
 
@@ -196,17 +227,19 @@ export function editionWithheldDetail(args: EditionWithheldContext): string {
  * `watchdogVersion` — written together with `watchdogLastSeen` on every
  * watchdog beat (routes/agents/heartbeat.ts), so a device fresh enough to
  * receive a watchdog command always has one. The `agentVersion` fallback
- * covers the pre-watchdog-telemetry rows only; agent and watchdog install and
- * upgrade from the same lane, so the main agent's version identifies the
- * watchdog's build era.
+ * covers the pre-watchdog-telemetry rows only, on the same stated (not
+ * enforced) assumption as the edition fallback below: agent and watchdog
+ * install and upgrade from the same lane, so the main agent's version
+ * identifies the watchdog's build era.
  *
- * EDITION. There is no `watchdogEdition` column; `agentEdition` (written from
- * every MAIN-agent beat) stands in for it, exactly as the heartbeat's failover
- * branch does. Same known imprecision, documented there: a device whose main
- * agent already reports an edition but whose watchdog is an older build can
- * still get a dispatch its watchdog refuses. That is a one-shot command
+ * EDITION. Read through `effectiveWatchdogEdition` (#4297): the watchdog's
+ * own reported edition when it has one for its installed build, else the main
+ * agent's edition as a stated fallback. The fallback carries a known
+ * imprecision (also noted at the heartbeat failover branch): a device whose
+ * main agent reports an edition but whose watchdog is an older silent build
+ * can still get a dispatch its watchdog refuses. That is a one-shot command
  * failure, not the permanent retry loop #4072 describes, and it self-heals
- * once the watchdog catches up.
+ * once the watchdog reports.
  */
 export function agentBinaryUpdateDispatchRefusal(args: {
   commandType: string;
@@ -215,6 +248,7 @@ export function agentBinaryUpdateDispatchRefusal(args: {
     agentEdition?: string | null;
     agentVersion?: string | null;
     watchdogVersion?: string | null;
+    watchdogEdition?: string | null;
   };
 }): string | null {
   if (!AGENT_BINARY_UPDATE_COMMAND_TYPES.has(args.commandType)) return null;
@@ -229,7 +263,7 @@ export function agentBinaryUpdateDispatchRefusal(args: {
 
   const downloaderVersion = args.device.watchdogVersion ?? args.device.agentVersion ?? null;
   const context: EditionWithheldContext = {
-    reportedEdition: args.device.agentEdition ?? null,
+    reportedEdition: effectiveWatchdogEdition(args.device),
     agentVersion: downloaderVersion,
   };
   if (agentAcceptsServedEdition(context)) return null;
