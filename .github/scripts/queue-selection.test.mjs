@@ -740,3 +740,70 @@ test('T7: self-gated migrations/docs and shared path-area units remain selected'
   assert.equal(classify(DISJOINT_DELTA).api, 'false');
   assert.ok(select(DISJOINT_DELTA, ['apps/api/src/routes/x.ts']).thin_jobs.includes('build-api'), 'a build area present only in delta');
 });
+
+// ── W02d (#10746): an injected record source; the default is unchanged ───
+
+test('shadowCore: without io.recordSource it reads io.records, as the candidate-side shadow always has', () => {
+  const { io, input } = shadowIO();
+  let read = 0;
+  const records = io.records;
+  io.records = (...args) => { read++; return records(...args); };
+  assert.equal(queue.shadowCore(io, input).mode, 'shadow');
+  assert.equal(read, 1);
+  assert.equal(queue.createIO().recordSource, undefined, 'the candidate side never gets a source by default');
+});
+
+test('shadowCore: io.recordSource replaces io.records and its record goes through the same checks', () => {
+  const { io, input, r } = shadowIO();
+  io.records = () => assert.fail('io.records must not be read when a source is injected');
+  const asked = [];
+  io.recordSource = (head, pr) => { asked.push([head, pr]); return { records: [r], stats: { source: 'injected' } }; };
+  const out = queue.shadowCore(io, input);
+  assert.equal(out.mode, 'shadow');
+  assert.deepEqual(asked, [[H, 12]]);
+  assert.deepEqual(out.record_stats, { source: 'injected' });
+  // The source supplies evidence only: a record it vouches for still has to pass.
+  io.recordSource = () => ({ records: [{ ...r, files: ['apps/web/src/other.ts'] }], stats: {} });
+  assert.equal(queue.shadowCore(io, input).reason, 'entry_outside_p');
+});
+
+for (const reason of ['no_anchor', 'anchor_not_pinned', 'anchor_policy_in_p', 'no_verified_pr_run']) {
+  test(`shadowCore: a source that reports ${reason} means full, under that reason`, () => {
+    const { io, input } = shadowIO();
+    io.recordSource = () => ({ records: [], stats: { runs: 2 }, reason });
+    const out = queue.shadowCore(io, input);
+    assert.equal(out.mode, 'full');
+    assert.equal(out.reason, reason);
+    assert.deepEqual(out.thin_jobs, out.full_jobs);
+    assert.deepEqual(out.record_stats, { runs: 2 });
+    assert.deepEqual(out.would_skip, []);
+  });
+}
+
+test('shadowCore: a source that throws is reason=error, and full', () => {
+  const { io, input } = shadowIO();
+  io.recordSource = () => { throw Error('actions api down'); };
+  const out = queue.shadowCore(io, input);
+  assert.deepEqual([out.mode, out.reason, out.error], ['full', 'error', 'actions api down']);
+});
+
+test('policyAtBase: io.blob answers for the policy files; the default hashes the working tree', () => {
+  const { io, input } = shadowIO();
+  const git = io.git;
+  io.git = args => { if (args[0] === 'hash-object') assert.fail('hash-object reads the working tree'); return git(args); };
+  const asked = [];
+  io.blob = path => { asked.push(path); return 'e'.repeat(40); };
+  assert.equal(queue.shadowCore(io, input).mode, 'shadow');
+  assert.deepEqual(asked, ['.github/workflows/ci.yml']);
+  io.blob = () => 'a'.repeat(40);
+  assert.equal(queue.shadowCore(io, input).reason, 'policy_not_at_base');
+});
+
+test('SHADOW_FIELDS and CLASSIFIER_KEYS are what the shadow line and a record carry', () => {
+  const { io, input } = shadowIO();
+  const out = queue.shadow(io, input);
+  const logged = [...io.logs[0].matchAll(/ (\w+)=/g)].map(match => match[1]).filter(key => !['mode', 'reason'].includes(key));
+  assert.deepEqual(logged, queue.SHADOW_FIELDS);
+  assert.equal(out.mode, 'shadow');
+  assert.deepEqual(queue.CLASSIFIER_KEYS, Object.keys(classify(['apps/web/src/x.ts'])));
+});
