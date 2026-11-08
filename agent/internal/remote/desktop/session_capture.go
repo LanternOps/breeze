@@ -1329,6 +1329,23 @@ func (s *Session) restoreHardwareEncoder(tp TextureProvider) {
 		"dimensions", fmt.Sprintf("%dx%d", w, h))
 }
 
+// newSoftwareSwapCandidate builds swapToSoftwareEncoder's replacement
+// encoder; a var so tests can stand in a placeholder (OpenH264 missing).
+var newSoftwareSwapCandidate = NewVideoEncoder
+
+// softwareSwapRetryBackoff is how long swapToSoftwareEncoder waits after
+// finding no usable software encoder before it builds another candidate.
+const softwareSwapRetryBackoff = 30 * time.Second
+
+// backOffSoftwareSwap records that no usable software encoder exists right
+// now: it logs the cause once and suppresses swap attempts for the backoff.
+func (s *Session) backOffSoftwareSwap(cur *VideoEncoder, reason error) {
+	s.softwareSwapRetryAt.Store(time.Now().Add(softwareSwapRetryBackoff).UnixNano())
+	slog.Error("No software encoder to swap to; keeping the current encoder",
+		"session", s.id, "backend", cur.BackendName(),
+		"retryIn", softwareSwapRetryBackoff, "error", reason.Error())
+}
+
 // swapToSoftwareEncoder replaces the current hardware encoder with a software
 // encoder (OpenH264) mid-session. Called when the hardware encoder stalls
 // (e.g., VideoToolbox on older Intel Macs).
@@ -1336,6 +1353,11 @@ func (s *Session) restoreHardwareEncoder(tp TextureProvider) {
 func (s *Session) swapToSoftwareEncoder() {
 	enc := s.encoder.Load()
 	if enc == nil {
+		return
+	}
+	// A recent attempt found no usable software encoder. The stall checks call
+	// this on every frame, so back off instead of rebuilding one per frame.
+	if retryAt := s.softwareSwapRetryAt.Load(); retryAt != 0 && time.Now().UnixNano() < retryAt {
 		return
 	}
 	fromHardware := enc.BackendIsHardware()
@@ -1360,7 +1382,7 @@ func (s *Session) swapToSoftwareEncoder() {
 	if fps <= 0 {
 		fps = 30
 	}
-	newEnc, err := NewVideoEncoder(EncoderConfig{
+	newEnc, err := newSoftwareSwapCandidate(EncoderConfig{
 		Codec:          CodecH264,
 		Quality:        QualityAuto,
 		Bitrate:        2_500_000,
@@ -1373,11 +1395,16 @@ func (s *Session) swapToSoftwareEncoder() {
 		return
 	}
 
+	// OpenH264 is unavailable: try the placeholder fallback (Windows: Microsoft's
+	// software H264 MFT first, since PreferHardware is false — #11392).
+	usedPlaceholderFallback := false
 	if newEnc.BackendIsPlaceholder() {
-		slog.Error("Software encoder fallback is placeholder — OpenH264 not available",
-			"session", s.id, "openh264Error", openH264LoadErrorText())
-		newEnc.Close()
-		return
+		if err := newEnc.ReplacePlaceholderBackend(); err != nil {
+			newEnc.Close()
+			s.backOffSoftwareSwap(enc, err)
+			return
+		}
+		usedPlaceholderFallback = true
 	}
 
 	if w > 0 && h > 0 {
@@ -1385,6 +1412,27 @@ func (s *Session) swapToSoftwareEncoder() {
 			slog.Error("Failed to set dimensions on software encoder",
 				"session", s.id, "error", err.Error())
 			newEnc.Close()
+			return
+		}
+	}
+
+	if usedPlaceholderFallback {
+		// The fallback activates in SetDimensions (only logging a failure). Its
+		// last resort is a hardware MFT, which may be the encoder that just
+		// stalled, and a software MFT replacing a stalled software MFT gains
+		// nothing — keep the current encoder in all three cases.
+		reason := newEnc.FallbackActivationError()
+		if reason == nil && newEnc.BackendIsHardware() {
+			reason = fmt.Errorf("%w: %s; the fallback found only a hardware encoder (%s)",
+				ErrNoH264Encoder, openH264Cause(), newEnc.BackendName())
+		}
+		if reason == nil && newEnc.BackendName() == enc.BackendName() {
+			reason = fmt.Errorf("%w: %s; the fallback is the same encoder as the stalled one (%s)",
+				ErrNoH264Encoder, openH264Cause(), newEnc.BackendName())
+		}
+		if reason != nil {
+			newEnc.Close()
+			s.backOffSoftwareSwap(enc, reason)
 			return
 		}
 	}

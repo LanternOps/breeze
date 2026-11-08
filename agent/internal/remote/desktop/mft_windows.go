@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -36,11 +37,14 @@ type mftEncoder struct {
 	height int
 	stride int
 
-	// allowSoftware lets findEncoder settle on Microsoft's software H264 MFT
-	// when no hardware MFT activates. Only the placeholder fallback sets it
+	// allowSoftware lets findEncoder use Microsoft's software H264 MFT, in
+	// the order mftSearchOrder gives. Only the placeholder fallback sets it
 	// (OpenH264 failed to load, #11392); the regular factory stays
 	// hardware-only so OpenH264 keeps precedence over the software MFT.
 	allowSoftware bool
+	// initErr is the last activation failure that SetDimensions' eager
+	// initialize swallowed (it retries on Encode); cleared on success.
+	initErr error
 
 	// COM handles (persistent across frames)
 	transform       uintptr // IMFTransform
@@ -107,7 +111,7 @@ type mftEncoder struct {
 
 func init() {
 	registerHardwareFactory(newMFTEncoder)
-	registerPlaceholderFallbackFactory(newMFTPlaceholderFallbackEncoder)
+	registerPlaceholderFallbackFactory("Media Foundation", newMFTPlaceholderFallbackEncoder)
 }
 
 func newMFTEncoder(cfg EncoderConfig) (encoderBackend, error) {
@@ -128,9 +132,11 @@ func newMFTEncoder(cfg EncoderConfig) (encoderBackend, error) {
 
 // newMFTPlaceholderFallbackEncoder is the placeholder fallback: when OpenH264
 // cannot load, a session would otherwise get the passthrough placeholder and be
-// refused (#11392). It returns an MFT encoder that uses a hardware MFT when one
-// exists and otherwise Microsoft's software H264 MFT. Both accept CPU frames,
-// so this also serves GDI capture on a secure desktop (Winlogon/UAC).
+// refused (#11392). It returns an MFT encoder that may use a hardware MFT or
+// Microsoft's software H264 MFT, in mftSearchOrder's order for
+// cfg.PreferHardware. Both accept CPU frames, so this also serves GDI capture
+// on a secure desktop (Winlogon/UAC). It only probes; activation happens at
+// SetDimensions and a failure there is reported by InitError.
 func newMFTPlaceholderFallbackEncoder(cfg EncoderConfig) (encoderBackend, error) {
 	if cfg.Codec != CodecH264 {
 		return nil, fmt.Errorf("MFT encoder only supports H264, got %s", cfg.Codec)
@@ -477,7 +483,8 @@ func (m *mftEncoder) initialize(width, height, stride int) error {
 	return nil
 }
 
-// findEncoder enumerates MFT encoders, trying hardware first.
+// findEncoder enumerates MFT encoders in mftSearchOrder's order and activates
+// the first one that works. The bool result reports a hardware MFT.
 func (m *mftEncoder) findEncoder(width, height int) (uintptr, bool, error) {
 	inputType := mftRegisterTypeInfo{
 		guidMajorType: mfMediaTypeVideo,
@@ -488,35 +495,33 @@ func (m *mftEncoder) findEncoder(width, height int) (uintptr, bool, error) {
 		guidSubtype:   mfVideoFormatH264,
 	}
 
-	// Hardware first — software H264 encoding is normally handled by OpenH264,
-	// which provides deterministic 1-in-1-out encoding. The Windows software
-	// MFT stalls for 20-60 frames on Server editions and is not officially
-	// supported (Microsoft docs: "Minimum supported server: None supported"),
-	// so it is used only when allowSoftware is set (OpenH264 failed to load).
-	transform, err := m.enumAndActivate(
-		mftEnumFlagHardware|mftEnumFlagSortAndFilter,
-		&inputType, &outputType,
-	)
-	if err == nil {
-		return transform, true, nil
-	}
-
-	// Placeholder fallback only (OpenH264 failed to load, #11392): a stalling
-	// software MFT beats refusing the session outright.
-	if m.allowSoftware {
-		swTransform, swErr := m.enumAndActivate(
-			mftEnumFlagSyncMFT|mftEnumFlagSortAndFilter,
-			&inputType, &outputType,
-		)
-		if swErr == nil {
-			slog.Warn("No hardware H264 MFT activated, using Microsoft's software H264 MFT (OpenH264 unavailable)",
-				"hardwareError", err.Error())
-			return swTransform, false, nil
+	// Hardware only unless allowSoftware: software H264 encoding is normally
+	// handled by OpenH264, which provides deterministic 1-in-1-out encoding.
+	// The Windows software MFT stalls for 20-60 frames on Server editions and
+	// is not officially supported (Microsoft docs: "Minimum supported server:
+	// None supported"), so it is used only by the placeholder fallback
+	// (OpenH264 failed to load), where it beats refusing the session.
+	var failures []string
+	for _, kind := range mftSearchOrder(m.allowSoftware, m.cfg.PreferHardware) {
+		flags := uint32(mftEnumFlagHardware | mftEnumFlagSortAndFilter)
+		if kind == mftKindSoftware {
+			flags = mftEnumFlagSyncMFT | mftEnumFlagSortAndFilter
 		}
-		return 0, false, fmt.Errorf("no hardware H264 MFT (%v) and no software H264 MFT (%v)", err, swErr)
+		transform, err := m.enumAndActivate(flags, &inputType, &outputType)
+		if err == nil {
+			if kind == mftKindSoftware {
+				slog.Warn("Using Microsoft's software H264 MFT (OpenH264 unavailable)",
+					"preferHardware", m.cfg.PreferHardware, "earlierFailures", strings.Join(failures, "; "))
+			}
+			return transform, kind == mftKindHardware, nil
+		}
+		failures = append(failures, fmt.Sprintf("%s H264 MFT: %v", kind, err))
 	}
 
-	return 0, false, fmt.Errorf("no hardware H264 encoder available (software encoding handled by OpenH264)")
+	if !m.allowSoftware {
+		return 0, false, fmt.Errorf("no hardware H264 encoder available (software encoding handled by OpenH264)")
+	}
+	return 0, false, fmt.Errorf("no usable H264 MFT (%s)", strings.Join(failures, "; "))
 }
 
 func (m *mftEncoder) enumAndActivate(flags uint32, inputType, outputType *mftRegisterTypeInfo) (uintptr, error) {
@@ -866,7 +871,11 @@ func (m *mftEncoder) SetDimensions(w, h int) error {
 		if err := m.initialize(m.width, m.height, m.stride); err != nil {
 			slog.Warn("Eager MFT initialization failed, will retry on first encode",
 				"error", err.Error(), "width", m.width, "height", m.height)
-			// Non-fatal: lazy init on first Encode() will retry
+			// Non-fatal: lazy init on first Encode() will retry. Recorded so
+			// a placeholder-fallback start can fail with the cause (#11392).
+			m.initErr = err
+		} else {
+			m.initErr = nil
 		}
 	}
 	return nil
@@ -949,6 +958,17 @@ func (m *mftEncoder) IsHardware() bool {
 
 func (m *mftEncoder) IsPlaceholder() bool {
 	return false
+}
+
+// InitError reports the activation failure SetDimensions swallowed, or nil
+// once the MFT is initialized (optionalInitErrorReporter).
+func (m *mftEncoder) InitError() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.inited {
+		return nil
+	}
+	return m.initErr
 }
 
 func (m *mftEncoder) IsPermanentlyStalled() bool {

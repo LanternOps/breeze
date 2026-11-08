@@ -35,17 +35,20 @@ const (
 
 // Session represents a remote desktop WebRTC session with H264 encoding.
 type Session struct {
-	id            string
-	peerConn      *webrtc.PeerConnection
-	videoTrack    *webrtc.TrackLocalStaticSample
-	dataChannel   *webrtc.DataChannel
-	inputHandler  InputHandler
-	capturer      ScreenCapturer
-	encoder       atomic.Pointer[VideoEncoder]
-	encoderPF     PixelFormat // cached encoder input format for CPU Encode() path
-	clipboardSync *clipboard.ClipboardSync
-	cursorDC      *webrtc.DataChannel
-	controlDC     *webrtc.DataChannel
+	id           string
+	peerConn     *webrtc.PeerConnection
+	videoTrack   *webrtc.TrackLocalStaticSample
+	dataChannel  *webrtc.DataChannel
+	inputHandler InputHandler
+	capturer     ScreenCapturer
+	encoder      atomic.Pointer[VideoEncoder]
+	// softwareSwapRetryAt (unix nanos) suppresses swapToSoftwareEncoder until
+	// then, after it found no usable software encoder (#11392).
+	softwareSwapRetryAt atomic.Int64
+	encoderPF           PixelFormat // cached encoder input format for CPU Encode() path
+	clipboardSync       *clipboard.ClipboardSync
+	cursorDC            *webrtc.DataChannel
+	controlDC           *webrtc.DataChannel
 
 	// displayWake keeps the display on for the session (#10874). Set in
 	// StartSession before the capture loop starts; released in doCleanup.
