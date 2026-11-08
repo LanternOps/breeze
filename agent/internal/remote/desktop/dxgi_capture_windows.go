@@ -73,7 +73,7 @@ func (c *dxgiCapturer) captureFromGDIFallbackLocked() (*image.RGBA, error) {
 		c.closeGDIFallbackLocked()
 		replacement := &gdiCapturer{config: c.config}
 		replacement.book.adoptRepairCarry(carry)
-		c.gdiFallback = replacement
+		c.setGDIFallbackLocked(replacement)
 		c.gdiFollowsDesktop, c.gdiFollowsSince = follows, followsSince
 		slog.Info("Recreated GDI fallback after repeated no-frame samples",
 			"count", c.gdiNoFrameCount)
@@ -103,10 +103,12 @@ func (c *dxgiCapturer) LastCaptureError() error {
 // CaptureWarning implements captureWarningReporter by delegating to the GDI
 // fallback, the only capturer here that can deliver a frame without confirming
 // it was taken on the input desktop.
+//
+// It reads the fallback through gdiFallbackView rather than under c.mu, and
+// gdiCapturer.CaptureWarning takes no lock either, so a wedged capture does
+// not block the metrics line that calls this.
 func (c *dxgiCapturer) CaptureWarning() error {
-	c.mu.Lock()
-	fallback := c.gdiFallback
-	c.mu.Unlock()
+	fallback := c.gdiFallbackView.Load()
 	if fallback == nil {
 		return nil
 	}
@@ -188,7 +190,7 @@ func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
 			// the full composed output including dialog content.
 			slog.Info("On Secure Desktop after DXGI error, using GDI capture",
 				"desktop", dname)
-			c.gdiFallback = &gdiCapturer{config: c.config}
+			c.setGDIFallbackLocked(&gdiCapturer{config: c.config})
 			c.gdiNoFrameCount = 0
 			return c.captureFromGDIFallbackLocked()
 		}
@@ -491,7 +493,7 @@ func (c *dxgiCapturer) CaptureTexture() (uintptr, error) {
 			c.secureDesktopFlag.Store(true)
 			slog.Info("On Secure Desktop after DXGI error (GPU), using GDI capture",
 				"desktop", dname)
-			c.gdiFallback = &gdiCapturer{config: c.config}
+			c.setGDIFallbackLocked(&gdiCapturer{config: c.config})
 			return 0, nil // Caller falls through to CPU Capture() path
 		}
 

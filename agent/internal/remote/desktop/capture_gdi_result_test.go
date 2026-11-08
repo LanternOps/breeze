@@ -126,3 +126,47 @@ func TestGDICaptureBookResetClearsStreakAndWarning(t *testing.T) {
 		t.Fatalf("captureWarning = %v after reset, want nil", w)
 	}
 }
+
+// The periodic "Desktop WebRTC metrics" line reads CaptureWarning. It must not
+// wait on the capture lock: a wedged BitBlt or SetThreadDesktop holds that
+// lock, and silencing the metrics line would hide the one clue that capture
+// is stuck (#8434 review). captureWarning is read with no lock while the
+// capture path updates the book; run with -race.
+func TestCaptureWarningIsReadWithoutTheCaptureLock(t *testing.T) {
+	var b gdiCaptureBook
+	t0 := time.Unix(1_000_000, 0)
+	cause := gdiCallError("OpenInputDesktop", syscall.Errno(errAccessDenied))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 2000; i++ {
+			var follow error
+			if i%3 != 0 {
+				follow = cause
+			}
+			b.onCaptureResult(testFrame(), nil, follow, t0.Add(time.Duration(i)*time.Millisecond))
+		}
+		b.reset()
+	}()
+	seen := false
+	for {
+		select {
+		case <-done:
+			if w := b.captureWarning(); w != nil {
+				t.Fatalf("captureWarning = %v after reset, want nil", w)
+			}
+			if !seen {
+				t.Log("reader never observed a warning; the race check still ran")
+			}
+			return
+		default:
+			if w := b.captureWarning(); w != nil {
+				seen = true
+				if !strings.Contains(w.Error(), "OpenInputDesktop") {
+					t.Fatalf("captureWarning = %q, want the follow issue", w)
+				}
+			}
+		}
+	}
+}

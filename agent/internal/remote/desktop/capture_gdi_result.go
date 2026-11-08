@@ -4,6 +4,7 @@ import (
 	"errors"
 	"image"
 	"log/slog"
+	"sync/atomic"
 	"time"
 )
 
@@ -11,7 +12,8 @@ import (
 // capturer itself is Windows-only, but what one capture attempt does to its
 // bookkeeping is pure Go, and keeping it here is what lets the rules run on
 // every OS's CI (#8434 review). gdiCapturer (capture_windows_nocgo.go) owns
-// one gdiCaptureBook and touches it only under its own mutex.
+// one gdiCaptureBook and touches it only under its own mutex, except warning,
+// which is read without it.
 
 // errGDICaptureNoImage is the frame error for an attempt that returned
 // neither an image nor an error.
@@ -38,6 +40,13 @@ type gdiCaptureBook struct {
 	// here is what lets StartSession tell the technician WHY the startup probe
 	// found no frame (see describeCaptureFailure).
 	lastCaptureErr error
+
+	// warning is unverified.err() as of the last change, published for
+	// captureWarning to read without the capturer's lock: the periodic
+	// metrics line reads it, and a wedged BitBlt or SetThreadDesktop holds
+	// that lock (#8434 review). Written only where unverified changes, which
+	// is under the lock; the value is never modified after it is stored.
+	warning atomic.Pointer[unverifiedInputDesktopError]
 }
 
 // onCaptureResult applies one capture attempt. img and capErr are what the
@@ -96,6 +105,7 @@ func (b *gdiCaptureBook) decideRecycle(cause error, now time.Time) bool {
 // end.
 func (b *gdiCaptureBook) noteFrameDelivered(followIssue error, now time.Time) {
 	kind, frames := b.unverified.frameDelivered(followIssue, now)
+	b.publishWarning()
 	switch kind {
 	case unverifiedFrameLogWarn:
 		attrs := []any{"frames", frames, "error", followIssue.Error()}
@@ -129,10 +139,23 @@ func (b *gdiCaptureBook) recordCaptureFailure(err error, now time.Time) {
 	}
 }
 
+// publishWarning stores the current unverified.err() for captureWarning.
+func (b *gdiCaptureBook) publishWarning() {
+	if w, ok := b.unverified.err().(*unverifiedInputDesktopError); ok {
+		b.warning.Store(w)
+		return
+	}
+	b.warning.Store(nil)
+}
+
 // captureWarning is the CaptureWarning value: while frames are being delivered
-// without the input desktop confirmed, why it could not be; else nil.
+// without the input desktop confirmed, why it could not be; else nil. Safe to
+// call without the capturer's lock.
 func (b *gdiCaptureBook) captureWarning() error {
-	return b.unverified.err()
+	if w := b.warning.Load(); w != nil {
+		return w
+	}
+	return nil
 }
 
 // reset is Close's half: a later capture starts over, with no recycle streak
@@ -140,4 +163,5 @@ func (b *gdiCaptureBook) captureWarning() error {
 func (b *gdiCaptureBook) reset() {
 	b.recycler.reset()
 	b.unverified = unverifiedDesktopFrames{}
+	b.publishWarning()
 }

@@ -156,9 +156,10 @@ func (c *gdiCapturer) repairCarry() gdiRepairCarry {
 
 // CaptureWarning implements captureWarningReporter: while frames are being
 // delivered without the input desktop confirmed, why it could not be.
+//
+// It does not take c.mu: the metrics line calls it, and a wedged capture holds
+// c.mu (gdiCaptureBook.warning).
 func (c *gdiCapturer) CaptureWarning() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	return c.book.captureWarning()
 }
 
