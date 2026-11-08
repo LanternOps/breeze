@@ -407,7 +407,9 @@ export default function AiAgentForm({
               <span className="font-medium">{t('aiAgentsPage.fields.enabled')}</span>
             </label>
             <p className="pl-6 text-xs text-muted-foreground" data-testid="ai-agent-enabled-hint">
-              {t('aiAgentsPage.fields.enabledHint')}
+              {t(isResearch || isTroubleshoot
+                ? 'aiAgentsPage.fields.enabledHintNoMode'
+                : 'aiAgentsPage.fields.enabledHint')}
             </p>
           </div>
 

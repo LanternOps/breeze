@@ -1851,7 +1851,8 @@
       "load": "Impossible de charger la politique d’approbation-sécurité.",
       "save": "Impossible d’enregistrer la politique d’approbation-sécurité.",
       "unavailable": "Aucune politique disponible."
-    }
+    },
+    "scopeNote": "Ces paramètres s’appliquent à toutes les organisations de votre compte partenaire."
   },
   "orgAuditRetentionSettings": {
     "title": "Conservation des journaux d'audit",
@@ -2968,7 +2969,8 @@
       "enabledHint": "« Activé » et le mode sont deux interrupteurs distincts et une exécution a besoin des deux : si ceci est désactivé, rien ne s’exécute quel que soit le mode, et en mode Désactivé rien ne s’exécute même si ceci est activé.",
       "enabledCreateHint": "Les nouveaux agents sont créés éteints. Vérifiez la liste des outils autorisés et les limites ci-dessous, puis activez ceci lorsque vous voulez que l’agent commence à s’exécuter.",
       "actKeysCleared": "Les autorisations du mode action sont conservées, mais ne seront pas enregistrées tant que cet agent ne repasse pas en mode Action.",
-      "recipientRoleNoMembers": "aucun membre actif"
+      "recipientRoleNoMembers": "aucun membre actif",
+      "enabledHintNoMode": "Lorsque cette option est désactivée, l’agent ne s’exécute pas."
     },
     "policyKeys": {
       "tools": {

@@ -1851,7 +1851,8 @@
       "load": "Caricamento criterio di sicurezza approvazioni non riuscito.",
       "save": "Impossibile salvare il criterio di sicurezza approvazioni.",
       "unavailable": "Nessun criterio disponibile."
-    }
+    },
+    "scopeNote": "Queste impostazioni si applicano a tutte le organizzazioni del tuo account partner."
   },
   "orgAuditRetentionSettings": {
     "title": "Conservazione dei log di audit",
@@ -2968,7 +2969,8 @@
       "enabledHint": "«Attivo» e la modalità sono due interruttori distinti e un’esecuzione ha bisogno di entrambi: con questo spento non viene eseguito nulla qualunque sia la modalità, e in modalità Disattivo non viene eseguito nulla nemmeno se questo è acceso.",
       "enabledCreateHint": "I nuovi agenti vengono creati spenti. Controlla l’elenco degli strumenti consentiti e i limiti qui sotto, poi accendi questo quando vuoi che l’agente inizi a essere eseguito.",
       "actKeysCleared": "Le autorizzazioni della modalità azione vengono mantenute, ma non verranno salvate finché questo agente non torna alla modalità Azione.",
-      "recipientRoleNoMembers": "nessun membro attivo"
+      "recipientRoleNoMembers": "nessun membro attivo",
+      "enabledHintNoMode": "Quando è disattivato, l’agente non viene eseguito."
     },
     "policyKeys": {
       "tools": {
