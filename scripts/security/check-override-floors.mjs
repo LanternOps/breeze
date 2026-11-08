@@ -87,11 +87,33 @@ export const INTENTIONAL_DOWNGRADES = {};
  * nowhere — preemptive pins that must survive a future reintroduction.
  * Anything else that resolves nowhere is a fossil and fails DEAD.
  *
- * Currently empty: the one fossil found when this guard was introduced
+ * The one fossil found when this guard was introduced
  * (`is-generator-function@>=1.1.0`, left over from #507 after the package left
  * the tree entirely) was deleted rather than waived.
+ *
+ * The entries below still resolve today, but only through optional peers that
+ * the lockfile kept from earlier resolutions. A from-scratch resolution (delete
+ * pnpm-lock.yaml, no node_modules) drops those peers, and these pins then match
+ * nothing (#3690). They stay armed because installing the optional peer brings
+ * the vulnerable range straight back.
  */
-export const ALLOWED_DEAD_OVERRIDES = {};
+export const ALLOWED_DEAD_OVERRIDES = {
+  'ip@<=2.0.1': {
+    reason:
+      'ip arrives via @react-native-community/cli@12 (cli-doctor, cli-hermes), an optional peer of ' +
+      'react-native and @react-native/community-cli-plugin; installing the RN community CLI reintroduces it',
+  },
+  'joi@<17.13.9': {
+    reason:
+      'joi is an optional peer of @hookform/resolvers and a dependency of ' +
+      '@react-native-community/cli@12 (cli-config, cli-types); either reintroduces it',
+  },
+  'js-cookie@<3.0.7': {
+    reason:
+      'js-cookie arrives via js-beautify, a dependency of @react-email/render, which is an optional ' +
+      'peer of resend; installing @react-email/render reintroduces it',
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Minimal semver

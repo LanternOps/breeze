@@ -294,7 +294,7 @@ importers:
         specifier: 3.7.0
         version: 3.7.0
       stripe:
-        specifier: ^22.6.2
+        specifier: 22.6.2
         version: 22.6.2(@types/node@26.6.6)
       tldts:
         specifier: ^7.4.19
