@@ -186,16 +186,12 @@ func (s *SystemClipboard) GetContent() (Content, error) {
 	return Content{}, noContentError(failure)
 }
 
-// countClipboardFormats is the number of formats on the open clipboard. 0
-// with an error is a failure, not an empty clipboard, and is reported as
-// non-empty so the caller does not take it for one.
+// countClipboardFormats is the number of formats on the open clipboard. It
+// fails only when the clipboard is not open, which the caller rules out, so
+// 0 means empty. (GetLastError is not reliable for telling the two apart:
+// it is undefined after a successful call that returns 0.)
 func countClipboardFormats() int {
-	r, _, err := procCountClipboardFormats.Call()
-	if r == 0 {
-		if errno, ok := err.(syscall.Errno); ok && errno != 0 {
-			return -1
-		}
-	}
+	r, _, _ := procCountClipboardFormats.Call()
 	return int(r)
 }
 

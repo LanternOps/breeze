@@ -9,7 +9,7 @@ import (
 
 const defaultPollInterval = 500 * time.Millisecond
 
-const (
+var (
 	// After an injected copy chord the watcher reads at once, then again
 	// every copyChordRetryInterval until the clipboard changes or
 	// copyChordBurst has passed. The app copies when it processes the
@@ -17,9 +17,15 @@ const (
 	// poll would report it up to defaultPollInterval later, after a quick
 	// paste may already have pushed the viewer's older clipboard (#11310
 	// row 4).
+	// Variables so tests on a loaded host can widen the burst.
 	copyChordRetryInterval = 25 * time.Millisecond
 	copyChordBurst         = 400 * time.Millisecond
+	// Without a change counter every read is a full read (on Linux, an xclip
+	// process per format), so the burst reads less often.
+	copyChordRetryIntervalNoCounter = 100 * time.Millisecond
+)
 
+const (
 	// selfWriteEchoWindow: a change whose content is the viewer write just
 	// applied is taken as that write, not a new copy, for this long. It covers
 	// a change counter that moves again after the write (a clipboard history
@@ -101,6 +107,9 @@ func (c *ClipboardSync) burstStep(st *watchState, end time.Time) <-chan time.Tim
 	if c.pollOnce(st) || !time.Now().Before(end) {
 		return nil
 	}
+	if _, counts := c.provider.(ChangeCounter); !counts {
+		return time.After(copyChordRetryIntervalNoCounter)
+	}
 	return time.After(copyChordRetryInterval)
 }
 
@@ -119,6 +128,15 @@ func (c *ClipboardSync) changeCount() (uint64, bool) {
 		return cc.ChangeCount()
 	}
 	return 0, false
+}
+
+// beginSelfWrite marks a viewer write about to be applied, so a poll that
+// reads it before noteSelfWrite records its count still takes it as the
+// viewer's write (by hash, within selfWriteEchoWindow).
+func (c *ClipboardSync) beginSelfWrite(fp [32]byte) {
+	c.mu.Lock()
+	c.self = selfWrite{hash: fp, at: time.Now()}
+	c.mu.Unlock()
 }
 
 // noteSelfWrite records a viewer write just applied to the host clipboard, so
@@ -156,8 +174,9 @@ func (c *ClipboardSync) isEcho(count uint64, hash [32]byte) bool {
 // pollOnce reads the host clipboard once if it may have changed, and reports
 // whether it told the viewer about a change (content or notice).
 //
-// With a change counter, every change is reported: a re-copy of identical
-// content as content, and content the agent cannot carry (a file, an image
+// With a change counter, every change is reported (except a copy of the
+// viewer's own write within selfWriteEchoWindow of it): a re-copy of
+// identical content as content, and content the agent cannot carry (a file, an image
 // format it cannot read, more than the size cap) as an "unsupported" notice,
 // so the viewer knows the remote clipboard is now newer than its own. Without
 // one (Linux, macOS built without cgo), a change is new content by hash, as
@@ -172,6 +191,13 @@ func (c *ClipboardSync) pollOnce(st *watchState) bool {
 		return false
 	}
 	prevCounted := st.baselined && st.haveCount
+	// A change that could not be reported is not consumed: restoring the
+	// previous count makes the next poll try again.
+	prevCount := st.lastCount
+	retryLater := func() bool {
+		st.lastCount = prevCount
+		return false
+	}
 
 	content, err := c.provider.GetContent()
 	if err != nil {
@@ -193,7 +219,10 @@ func (c *ClipboardSync) pollOnce(st *watchState) bool {
 		if !wasBaselined || !counted || !prevCounted {
 			return false
 		}
-		return c.sendChangeNotice(errors.Is(err, ErrClipboardEmpty))
+		if !c.sendChangeNotice(errors.Is(err, ErrClipboardEmpty)) && c.peerChangeNotices.Load() {
+			return retryLater()
+		}
+		return true
 	}
 	st.lastErrMsg = ""
 	hash := fingerprint(content)
@@ -221,11 +250,14 @@ func (c *ClipboardSync) pollOnce(st *watchState) bool {
 		}
 		if ValidateContent(content) != nil {
 			// Too large to carry: the viewer still learns the remote changed.
-			return c.sendChangeNotice(false)
+			if !c.sendChangeNotice(false) && c.peerChangeNotices.Load() {
+				return retryLater()
+			}
+			return true
 		}
 		if err := c.Send(content); err != nil {
 			log.Printf("[clipboard] failed to send content: %v", err)
-			return false
+			return retryLater()
 		}
 		return true
 	}

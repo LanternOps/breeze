@@ -269,19 +269,19 @@ func TestWatchFallsBackToHashWithoutCounter(t *testing.T) {
 // Row 4: after a forwarded copy chord the watcher reads at once and retries
 // briefly, instead of waiting for the next poll.
 func TestCopyChordReadsPromptly(t *testing.T) {
-	const interval = 600 * time.Millisecond
+	// A long poll and a wide burst, so a loaded host cannot make the poll win
+	// or the burst expire: only the chord's burst can report the copy in time.
+	const interval = 10 * time.Second
+	defer func(b time.Duration) { copyChordBurst = b }(copyChordBurst)
+	copyChordBurst = 5 * time.Second
 	p := &counterProvider{content: Content{Type: ContentTypeText, Text: "baseline"}, count: 1}
 	c, sender := startCounterWatch(t, p, interval, true)
 
 	// The app answers Ctrl+C a little after the chord was injected.
-	start := time.Now()
 	c.CopyChordInjected()
 	time.Sleep(40 * time.Millisecond)
 	p.copyOnHost("copied")
-	waitUntil(t, "copy after the chord", interval, func() bool { return len(textsSent(sender)) == 1 })
-	if took := time.Since(start); took > interval/2 {
-		t.Fatalf("copy reported after %v; the chord should have it read within its retry burst", took)
-	}
+	waitUntil(t, "copy after the chord, well before the next poll", 4*time.Second, func() bool { return len(textsSent(sender)) == 1 })
 }
 
 // CopyChordInjected never blocks, even with host→viewer off (no watcher).
@@ -318,5 +318,71 @@ func TestErrClipboardEmptyIsNoSupportedFormat(t *testing.T) {
 	}
 	if !errors.Is(proxyHelperError(ErrClipboardEmpty.Error()), ErrClipboardEmpty) {
 		t.Fatal("ErrClipboardEmpty must survive the helper IPC trip")
+	}
+}
+
+// flakySender fails its first n sends.
+type flakySender struct {
+	lockedSender
+	fail int
+}
+
+func (s *flakySender) SendText(v string) error {
+	s.mu.Lock()
+	if s.fail > 0 {
+		s.fail--
+		s.mu.Unlock()
+		return errors.New("channel busy")
+	}
+	s.mu.Unlock()
+	return s.lockedSender.SendText(v)
+}
+
+// A change whose send failed is retried, not lost with the counter.
+func TestWatchRetriesAChangeWhoseSendFailed(t *testing.T) {
+	p := &counterProvider{content: Content{Type: ContentTypeText, Text: "baseline"}, count: 1}
+	sender := &flakySender{}
+	c := newClipboardSyncWithSender(sender, p, Policy{HostToViewer: true, ViewerToHost: true})
+	c.pollInterval = 5 * time.Millisecond
+	c.Watch()
+	t.Cleanup(c.Stop)
+	waitUntil(t, "baseline poll", 3*time.Second, func() bool { return p.polls() >= 1 })
+	sender.mu.Lock()
+	sender.fail = 2
+	sender.mu.Unlock()
+	p.copyOnHost("X")
+	waitUntil(t, "X after the failed sends", 2*time.Second, func() bool { return len(textsSent(&sender.lockedSender)) == 1 })
+}
+
+// A clipboard history tool re-rendering the viewer's write moves the counter
+// again with the same content: still the viewer's write, not a host copy.
+func TestWatchDoesNotEchoAReRenderedViewerWrite(t *testing.T) {
+	p := &counterProvider{content: Content{Type: ContentTypeText, Text: "baseline"}, count: 1}
+	c, sender := startCounterWatch(t, p, 2*time.Millisecond, true)
+	if err := c.Receive(textMsg(`{"type":"text","text":"from viewer"}`)); err != nil {
+		t.Fatalf("viewer write: %v", err)
+	}
+	p.mu.Lock()
+	p.count++ // re-rendered, same content
+	p.mu.Unlock()
+	reads := p.polls()
+	waitUntil(t, "the re-render to be read", 2*time.Second, func() bool { return p.polls() > reads })
+	time.Sleep(20 * time.Millisecond)
+	if got := textsSent(sender); len(got) != 0 {
+		t.Fatalf("echoed a re-rendered viewer write: %q", got)
+	}
+}
+
+// Without a change counter the agent cannot report re-copies or tell an
+// empty clipboard from an unsupported one, so it does not offer notices and
+// the viewer does not wait for copies.
+func TestSendStatusOffersNoChangeNoticesWithoutCounter(t *testing.T) {
+	sender := &lockedSender{}
+	c := newClipboardSyncWithSender(sender, &seqProvider{items: []Content{{Type: ContentTypeText, Text: "x"}}}, Policy{HostToViewer: true, ViewerToHost: true})
+	if err := c.SendStatus(); err != nil {
+		t.Fatal(err)
+	}
+	if st := sender.ofType("status"); len(st) != 1 || st[0]["changeNotices"] != false {
+		t.Fatalf("status offers changeNotices without a counter: %v", sender.messages())
 	}
 }

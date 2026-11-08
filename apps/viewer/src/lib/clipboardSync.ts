@@ -236,6 +236,14 @@ export class ClipboardSync {
   private held: { kind: 'item' | 'unsupported'; localAtChange: Set<string> } | null = null;
   /** When the latest remote change (content or notice) arrived. */
   private lastRemoteChangeAt: number | null = null;
+  /** Numbers remote changes in arrival order. */
+  private remoteChangeSeq = 0;
+  /**
+   * Remote changes up to this number are older than a push the agent has
+   * since acked (the channel is ordered), so the remote holds our write and
+   * they must not be held or applied when their bookkeeping finishes late.
+   */
+  private supersededThrough = 0;
   private readonly remoteChangeWaiters = new Set<() => void>();
   private lastTransfer: ClipboardTransfer | null = null;
   private readonly ackWaiters = new Map<string, Array<(o: AckOutcome) => void>>();
@@ -356,14 +364,15 @@ export class ClipboardSync {
       pushesSeen,
       suppressesBaseline: this.status?.suppressesBaseline ?? false,
     });
-    if (decision !== 'skip-baseline') this.noteRemoteChange();
+    const gen = decision === 'skip-baseline' ? 0 : this.noteRemoteChange();
     this.inbound = this.inbound.then(async () => {
+      if (gen !== 0 && gen <= this.supersededThrough) return;
       if (!item) {
         // A format this viewer cannot hold (RTF, an unknown image format,
         // over the cap): nothing to write, but the remote is now newer.
         if (decision === 'skip-baseline') return;
         this.remoteItem = null;
-        await this.holdRemoteChange('unsupported');
+        await this.holdRemoteChange(gen, 'unsupported');
         return;
       }
       const fp = await fingerprintItem(item);
@@ -382,15 +391,16 @@ export class ClipboardSync {
       } else {
         console.debug('[clipboard] remote clipboard held:', decision);
       }
-      await this.holdRemoteChange('item');
+      await this.holdRemoteChange(gen, 'item', fp);
     });
   }
 
   /** {type:"unsupported"}: the remote clipboard changed to something the agent does not send, or was emptied. */
   private handleChangeNotice(empty: boolean): void {
     this.pushesSeen++;
-    this.noteRemoteChange();
+    const gen = this.noteRemoteChange();
     this.inbound = this.inbound.then(async () => {
+      if (gen <= this.supersededThrough) return;
       this.remoteItem = null;
       if (empty) {
         // Nothing on the remote to protect: the next paste sends the local clipboard.
@@ -399,13 +409,21 @@ export class ClipboardSync {
         this.emit();
         return;
       }
-      await this.holdRemoteChange('unsupported');
+      await this.holdRemoteChange(gen, 'unsupported');
     });
   }
 
-  private noteRemoteChange(): void {
+  private noteRemoteChange(): number {
     this.lastRemoteChangeAt = this.now();
     this.wakeRemoteChangeWaiters();
+    return ++this.remoteChangeSeq;
+  }
+
+  /** Our push is on the remote now, after every remote change received so far. */
+  private notePushApplied(fp: string): void {
+    this.markSynced(fp);
+    this.held = null;
+    this.supersededThrough = this.remoteChangeSeq;
   }
 
   private wakeRemoteChangeWaiters(): void {
@@ -414,10 +432,27 @@ export class ClipboardSync {
     for (const w of waiters) w();
   }
 
-  /** Records a remote change that was not written locally, and what the local clipboard held when it arrived. */
-  private async holdRemoteChange(kind: 'item' | 'unsupported'): Promise<void> {
+  /**
+   * Records a remote change that was not written locally, and what the local
+   * clipboard held when it arrived. A remote item the local clipboard already
+   * holds is no change at all for the operator: nothing is held.
+   *
+   * A local read that fails here leaves the set empty, so any readable local
+   * clipboard at paste time counts as newer. That is right for the common case
+   * (a file on the local clipboard, then a copy) and wrong only for a
+   * transient read failure.
+   */
+  private async holdRemoteChange(gen: number, kind: 'item' | 'unsupported', remoteFp?: string): Promise<void> {
     const local = await this.readLocal();
-    this.held = { kind, localAtChange: local ? new Set([await fingerprintItem(local)]) : new Set() };
+    const localFp = local ? await fingerprintItem(local) : null;
+    // A push acked while the local clipboard was being read is newer.
+    if (gen <= this.supersededThrough) return;
+    if (remoteFp !== undefined && localFp === remoteFp) {
+      this.held = null;
+      this.markSynced(remoteFp);
+    } else {
+      this.held = { kind, localAtChange: localFp ? new Set([localFp]) : new Set() };
+    }
     this.emit();
   }
 
@@ -582,8 +617,7 @@ export class ClipboardSync {
     if (!status) {
       // Agents that predate the ack exist: cache on send and go ahead after a
       // short wait whatever happens (W1 behaviour).
-      this.markSynced(fp);
-      this.held = null;
+      this.notePushApplied(fp);
       this.lastTransfer = { direction: 'to-remote', type: item.type, bytes, at: this.now() };
       this.emit();
       await ack.wait(this.timings.legacyAckMs);
@@ -599,8 +633,7 @@ export class ClipboardSync {
     }
     const outcome = await ack.wait(this.timings.ackMs);
     if (outcome !== 'ack' || this.closed) return outcome === 'timeout' ? 'no-ack' : 'closed';
-    this.markSynced(fp);
-    this.held = null;
+    this.notePushApplied(fp);
     this.lastTransfer = { direction: 'to-remote', type: item.type, bytes, at: this.now() };
     this.emit();
     return 'ok';
@@ -643,7 +676,18 @@ export class ClipboardSync {
       await this.inbound;
       if (status && this.closed) return { result: 'failed', reason: 'closed' } as const;
       const item = await this.readLocal();
-      if (!item) return { result: 'failed', reason: 'unreadable' } as const;
+      if (!item) {
+        // Nothing readable here. If the remote changed while the local
+        // clipboard was already unreadable, the remote's is the newer one
+        // (a file on both sides, say): paste it. Otherwise the remote holds
+        // older content than what the operator copied, so refuse. A change
+        // from one unreadable item to another cannot be seen.
+        if (this.held && this.held.localAtChange.size === 0) {
+          dispatch();
+          return { result: 'pasted' } as const;
+        }
+        return { result: 'failed', reason: 'unreadable' } as const;
+      }
       const fp = await fingerprintItem(item);
       if (!this.localIsNewer(fp, status)) {
         dispatch();

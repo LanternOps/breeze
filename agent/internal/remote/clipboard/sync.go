@@ -224,17 +224,19 @@ func (c *ClipboardSync) SendStatus() error {
 	if c.sender == nil {
 		return errClipboardSyncUnconfigured
 	}
+	_, counts := c.provider.(ChangeCounter)
 	raw, err := json.Marshal(map[string]any{
 		"type":               "status",
 		"hostToViewer":       c.policy.HostToViewer,
 		"viewerToHost":       c.policy.ViewerToHost,
 		"chunked":            true,
 		"suppressesBaseline": true,
-		// changeNotices: this agent reports a host clipboard change it cannot
-		// carry as {type:"unsupported"} (to a viewer whose hello asks for it),
-		// reports a re-copy of identical content where the platform counts
-		// changes, and reads promptly after an injected copy chord (#11310).
-		"changeNotices": true,
+		// changeNotices: this agent reports every host clipboard change: a
+		// re-copy of identical content, and a change it cannot carry as
+		// {type:"unsupported"} (to a viewer whose hello asks for it). It also
+		// reads promptly after an injected copy chord (#11310). Only providers
+		// with a change counter (Windows, macOS with cgo) can do this.
+		"changeNotices": counts,
 		"maxTextBytes":  MaxTextBytes,
 		"maxImageBytes": MaxImageBytes,
 	})
@@ -397,6 +399,8 @@ func (c *ClipboardSync) applyInbound(raw []byte, transferID string) error {
 		return err
 	}
 
+	fp := fingerprint(content)
+	c.beginSelfWrite(fp)
 	if err := c.provider.SetContent(content); err != nil {
 		return err
 	}
@@ -410,7 +414,6 @@ func (c *ClipboardSync) applyInbound(raw []byte, transferID string) error {
 		"bytes", contentBytes(content))
 	c.count("viewer_to_host", content)
 
-	fp := fingerprint(content)
 	c.noteSelfWrite(fp)
 
 	if c.sender != nil {
@@ -438,10 +441,12 @@ func (c *ClipboardSync) SetContent(content Content) error {
 	if c.provider == nil {
 		return errClipboardSyncUnconfigured
 	}
+	fp := fingerprint(content)
+	c.beginSelfWrite(fp)
 	if err := c.provider.SetContent(content); err != nil {
 		return err
 	}
-	c.noteSelfWrite(fingerprint(content))
+	c.noteSelfWrite(fp)
 	return nil
 }
 
