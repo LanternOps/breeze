@@ -364,7 +364,7 @@ const backupAttestationsTotal = new Counter({
 
 const backupSnapshotFileIndexTotal = new Counter({
   name: 'breeze_backup_snapshot_file_index_total',
-  help: 'Snapshot file index events: inline_dropped (a result arrived without its file list because it did not fit) and hydration (a run building the index from the manifest ended), by outcome (dropped, complete, skipped, or a failure code)',
+  help: 'Snapshot file index events: inline_dropped (a result arrived without its file list because it did not fit), hydration (a run building the index from the manifest ended) and statistics (a large publish refreshed the table\'s planner statistics), by outcome (dropped, complete, skipped, a failure code, or analyzed/busy/error)',
   labelNames: ['event', 'outcome'] as const,
   registers: [register]
 });
