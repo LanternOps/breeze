@@ -31,8 +31,8 @@ export type InvoiceServiceErrorCode =
   | 'STRIPE_REVOCATION_PENDING'
   /** 409 — #3803 item 8: a Checkout producer refused a balance the invoice
    *  currency cannot express (legacy zero-decimal rows such as JPY '1000.50').
-   *  Any Stripe amount would over-charge or strand a residue; only an exact
-   *  manual payoff can settle it. */
+   *  Any Stripe amount would over-charge or strand a residue; recordPayment
+   *  accepts only the exact payoff against it. */
   | 'BALANCE_NOT_REPRESENTABLE'
   | 'PARTNER_UNRESOLVABLE'
   // Partner billing master switch is off (services/billingEnabled.ts).

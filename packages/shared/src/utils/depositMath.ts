@@ -36,7 +36,7 @@ export type CheckoutCharge =
   /** The balance has digits the currency cannot express (a legacy zero-decimal
    *  row such as JPY '1000.50'). No Checkout amount is correct: rounding up
    *  over-charges, rounding down strands a residue no later Checkout can collect.
-   *  Only an exact manual payoff (recordPayment) can settle it. */
+   *  recordPayment accepts only the exact payoff against it. */
   | { kind: 'not_representable'; balance: string };
 
 /**

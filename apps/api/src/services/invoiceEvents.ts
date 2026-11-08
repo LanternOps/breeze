@@ -53,10 +53,12 @@ function getInvoiceEventsQueue(): Queue {
  * Publish an invoice lifecycle event once the caller's transaction COMMITS
  * (#3803 item 9). The enqueue is registered with runAfterDbContextCommit:
  *
- * - On the request path every payment/void/issue writer runs inside the
- *   request-wide transaction and holds the invoice row lock until it commits.
- *   Enqueueing inline kept that lock (and the pooled connection) waiting on
- *   Redis; deferred, the transaction ends first.
+ * - On the request path recordPayment / voidPayment run inside the request-wide
+ *   transaction and hold the invoice row lock until it commits. Enqueueing
+ *   inline kept that lock (and the pooled connection) waiting on Redis;
+ *   deferred, the transaction ends first. Emitters whose own top-level
+ *   transaction has already committed (issue, overdue sweep) wait only for any
+ *   enclosing request context to end.
  * - A rolled-back transaction publishes nothing, so no subscriber is told about
  *   a payment, void or issue that never happened.
  * - With no DB context held (e.g. recordStripePayment after its own system

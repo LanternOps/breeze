@@ -321,6 +321,24 @@ describe('recordStripePayment', () => {
     expect(insertValues.calls).toContainEqual(expect.objectContaining({ amount: '1001.00', method: 'card' }));
   });
 
+  // Deliberate: a capture BELOW a fractional legacy balance is recorded. The
+  // customer has already been charged; refusing it here would leave real money
+  // unrecorded, while the 0.50 residue stays payable by an exact manual payoff.
+  // The producers refuse to mint such a session, so only a pre-deploy one gets here.
+  it('a zero-decimal capture below a fractional legacy balance is recorded as a partial payment', async () => {
+    const mapping = { id: 'm11', invoiceId: 'inv11', invoicePaymentId: null, stripeAccountId: 'acct_1', stripeObjectType: 'checkout_session', status: 'pending', feeAmount: '0.00', amount: '1000.00', currency: 'JPY', stripePaymentIntentId: 'pi_11' };
+    queueResult([mapping]);
+    queueResult([{ id: 'inv11', orgId: 'org1', partnerId: 'p1', status: 'sent', balance: '1000.50', currencyCode: 'JPY' }]);
+    queueResult([mapping]);
+    queueResult([{ id: 'pay11' }]); queueResult([{ id: 'm11' }]); queueResult([{ status: 'partially_paid' }]);
+
+    await recordStripePayment({ stripeObjectId: 'cs_11', stripePaymentIntentId: 'pi_11', stripeAccountId: 'acct_1', amount: '1000', currency: 'JPY' });
+
+    expect(insertValues.calls).toContainEqual(expect.objectContaining({ amount: '1000.00', method: 'card' }));
+    expect(recompute).toHaveBeenCalledWith('inv11');
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'payment.failed' }));
+  });
+
   it('void invoice is TERMINAL: marks failed + emits payment.failed, no throw', async () => {
     queueResult([{ id: 'm3', invoiceId: 'inv3', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // mapping discovery
     queueResult([{ id: 'inv3', orgId: 'org1', partnerId: 'p1', status: 'void', balance: '100.00', currencyCode: 'USD', stripeAccountId: 'acct_1' }]); // invoice (locked)
