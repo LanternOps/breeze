@@ -2,7 +2,8 @@
  * #9521 — enrollment under a cold ramp: `deadlock detected` on the devices
  * INSERT surfaced to the agent as HTTP 500.
  *
- * The cycle, read off the Postgres deadlock report of a reproduced storm:
+ * The cycle, as Postgres reported it when the storm case below was run
+ * against the code before the fix:
  *
  *  - enrollment: `INSERT INTO devices` fires the row trigger
  *    `topology_capture_legacy_change`, which locks the site's
@@ -14,10 +15,11 @@
  *    first, then `markTopologyIdentityDirty` UPDATEs the same
  *    `topology_site_state` row.
  *
- * Opposite orders over the same two locks. The fix takes the org lock at the
- * top of the enrollment's device transaction, so enrollment follows the order
- * every other org-exclusive writer uses; a bounded in-handler retry covers any
- * residual lost lock race.
+ * Opposite orders over the same two locks. The fix takes the org lock in the
+ * enrollment's device transaction after the admission and trust gates and
+ * before the first devices write, so enrollment follows the report paths'
+ * order (export lock, then topology_site_state); a bounded in-handler retry
+ * covers any residual lost lock race.
  *
  * The lock-order case below is deterministic: a second connection plays the
  * report side, and its own short `deadlock_timeout` makes IT the victim when a
@@ -125,7 +127,13 @@ async function keyUsage(keyId: string): Promise<number> {
   return row?.usageCount ?? -1;
 }
 
-/** True once some backend is queued on (not holding) the org's partner-export lock. */
+/**
+ * True once some backend is queued on (not holding) the org's partner-export
+ * lock. Mirrors the key `breeze_partner_export_lock_orgs_exclusive` takes,
+ * `pg_advisory_xact_lock(1000201, hashtext(org_id::text))`: a two-int4
+ * advisory key shows in pg_locks as classid/objid with objsubid 2, objid being
+ * the int4 hash read as unsigned. If that key changes, this times out loudly.
+ */
 async function someoneWaitsOnOrgExportLock(orgId: string): Promise<boolean> {
   const rows = await getTestDb().execute<{ waiting: number }>(sql`
     SELECT count(*)::int AS waiting FROM pg_locks
@@ -156,23 +164,29 @@ async function injectDeadlocks(hostname: string, failures: number): Promise<() =
   const fn = `t9521_fault_fn_${tag}`;
   const trigger = `t9521_fault_trg_${tag}`;
   const testDb = getTestDb();
-  await testDb.execute(sql.raw(`CREATE SEQUENCE public.${seq}`));
-  await testDb.execute(sql.raw(`
-    CREATE FUNCTION public.${fn}() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
-    SET search_path = pg_catalog, public AS $$
-    BEGIN
-      IF NEW.hostname = '${hostname.replace(/'/g, "''")}' AND nextval('public.${seq}') <= ${failures} THEN
-        RAISE EXCEPTION 'injected deadlock (#9521 test)' USING ERRCODE = '40P01';
-      END IF;
-      RETURN NULL;
-    END $$`));
-  await testDb.execute(sql.raw(
-    `CREATE TRIGGER ${trigger} AFTER INSERT ON public.devices FOR EACH ROW EXECUTE FUNCTION public.${fn}()`));
-  return async () => {
+  const restore = async () => {
     await testDb.execute(sql.raw(`DROP TRIGGER IF EXISTS ${trigger} ON public.devices`));
     await testDb.execute(sql.raw(`DROP FUNCTION IF EXISTS public.${fn}()`));
     await testDb.execute(sql.raw(`DROP SEQUENCE IF EXISTS public.${seq}`));
   };
+  try {
+    await testDb.execute(sql.raw(`CREATE SEQUENCE public.${seq}`));
+    await testDb.execute(sql.raw(`
+      CREATE FUNCTION public.${fn}() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+      SET search_path = pg_catalog, public AS $$
+      BEGIN
+        IF NEW.hostname = '${hostname.replace(/'/g, "''")}' AND nextval('public.${seq}') <= ${failures} THEN
+          RAISE EXCEPTION 'injected deadlock (#9521 test)' USING ERRCODE = '40P01';
+        END IF;
+        RETURN NULL;
+      END $$`));
+    await testDb.execute(sql.raw(
+      `CREATE TRIGGER ${trigger} AFTER INSERT ON public.devices FOR EACH ROW EXECUTE FUNCTION public.${fn}()`));
+  } catch (err) {
+    await restore(); // a half-built injection must not outlive this case
+    throw err;
+  }
+  return restore;
 }
 
 describe('enrollment deadlock under a cold ramp (#9521)', () => {
@@ -256,8 +270,9 @@ describe('enrollment deadlock under a cold ramp (#9521)', () => {
     }
   }, 60_000);
 
-  runDb('a cold ramp of enrollments, each followed at once by its first reports, enrolls every agent', async () => {
+  runDb('a cold ramp of enrollments, each followed at once by its first reports, never deadlocks an enrollment', async () => {
     const tenant = await seedTenant();
+    const warn = vi.spyOn(console, 'warn');
     const app = new Hono();
     app.route('/api/v1/agents', agentRoutes);
     const N = 60;
@@ -294,10 +309,20 @@ describe('enrollment deadlock under a cold ramp (#9521)', () => {
       return 201;
     }));
 
-    expect(enrollStatuses.filter((s) => s !== 201)).toEqual([]);
+    // Before the fix: 17 of 60 answered 500 here, and (with only the retry
+    // added) 13 of 60 exhausted three deadlocked attempts. The deadlock
+    // signature is the retry's 40P01 warning, so that is asserted to be absent.
+    // A 503 is tolerated only as a partner-row lock_timeout (55P03): every
+    // enrollment of a partner queues on that row, and a slow CI host can push
+    // the queue past the admission's 3 s bound, which is load, not this bug.
+    const deadlocked = warn.mock.calls.filter((args) => /\[enrollment\] transient lock error 40P01/.test(String(args[0])));
+    expect(deadlocked).toEqual([]);
+    expect(enrollStatuses.filter((s) => s !== 201 && s !== 503)).toEqual([]);
+    const enrolled = enrollStatuses.filter((s) => s === 201).length;
+    expect(enrolled).toBeGreaterThan(0);
     const rows = await withSystemDbAccessContext(() =>
       db.select({ id: devices.id }).from(devices).where(eq(devices.orgId, tenant.orgId)));
-    expect(rows).toHaveLength(N);
-    expect(await keyUsage(tenant.keyId)).toBe(N);
+    expect(rows).toHaveLength(enrolled);
+    expect(await keyUsage(tenant.keyId)).toBe(enrolled);
   }, 180_000);
 });

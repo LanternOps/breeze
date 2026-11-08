@@ -3746,7 +3746,18 @@ describe('POST /agents/enroll — lock order and lost lock races (#9521)', () =>
     expect(await resp.json()).toMatchObject({ reason: 'enrollment_contended' });
     expect(db.transaction).toHaveBeenCalledTimes(3);
     expect(lostRaceWarnings(warn as unknown as Mock, '3/3')).toHaveLength(1);
-    expect(captureException).toHaveBeenCalledWith(expect.objectContaining({ code: '40P01' }));
+    expect(captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ code: '40P01' }),
+      expect.anything(),
+      expect.objectContaining({ route: 'agent_enroll', reason: 'enrollment_contended', org_id: 'org-9521' }),
+      { fingerprint: ['agent-enroll', 'enrollment_contended', '40P01'] },
+    );
+    expect(writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: 'org-9521',
+      action: 'agent.enroll',
+      result: 'failure',
+      details: expect.objectContaining({ reason: 'enrollment_contended', enrollmentKeyId: 'key-9521', sqlState: '40P01' }),
+    }));
     expect(recordAgentEnrollment).toHaveBeenCalledWith('error', 'partner-9521');
     warn.mockRestore();
   });
