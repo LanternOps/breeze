@@ -16,6 +16,7 @@ import {
   deleteBackupObjectKeys,
   fetchBackupObjectText,
   iterateBackupObjectsUnderPrefix,
+  openBackupObjectStream,
   type BackupObjectDeleteResult,
   type BackupObjectListing,
 } from './backupSnapshotStorage';
@@ -69,6 +70,24 @@ export async function* iterateRootedObjects(
     }
     yield mapped;
   }
+}
+
+/**
+ * One object under this root as a stream, for a manifest too large to hold in
+ * memory (#11232). Refuses past `maxBytes` the way openBackupObjectStream does.
+ */
+export async function openRootedObjectStream(
+  storage: RootedStorage,
+  logicalKey: string,
+  maxBytes: number,
+): Promise<NodeJS.ReadableStream> {
+  assertRootUsable(storage);
+  return openBackupObjectStream({
+    provider: storage.provider,
+    providerConfig: storage.providerConfig,
+    key: physicalKeyFor(storage.root, logicalKey),
+    maxBytes,
+  });
 }
 
 export async function fetchRootedObjectText(

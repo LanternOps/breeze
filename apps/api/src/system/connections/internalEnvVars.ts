@@ -100,6 +100,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BACKUP_BINARY_DIR: 'filesystem path',
   BACKUP_CRITICAL_DEVICE_TAGS: 'backup criticality tuning',
   BACKUP_GC_GRACE_MS: 'timing knob',
+  BACKUP_GC_LIVE_SET_MAX_BYTES: 'worker memory knob',
   BACKUP_GC_MANIFESTLESS_PREFIX_MAX_AGE_MS: 'timing knob',
   BACKUP_GC_MAX_DELETES_PER_RUN: 'worker throughput knob',
   BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS: 'timing knob',
