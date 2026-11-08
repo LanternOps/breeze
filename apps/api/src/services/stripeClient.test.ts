@@ -2,12 +2,11 @@ import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 describe('stripe SDK version pin (#3690)', () => {
-  // The `apiVersion` literals in stripeClient.ts, partnerStripeClient.ts,
-  // stripeCredentialArchive.ts and stripeSessionRevocation.ts are typed against
-  // the SDK's own latest version. A caret range lets any lockfile re-resolution
+  // Every `apiVersion` literal passed to `new Stripe(...)` is typed against the
+  // SDK's own `LatestApiVersion`. A caret range lets any lockfile re-resolution
   // move the SDK, and the "fix" for the resulting type error is to edit the
   // literal, which changes the live Stripe API version inside a dependency diff.
-  // An exact pin makes every SDK move a deliberate PR.
+  // With an exact pin, the SDK only moves when the manifest itself is edited.
   it('pins the stripe dependency to an exact version', () => {
     const manifest = JSON.parse(
       readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),

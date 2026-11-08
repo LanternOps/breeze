@@ -91,17 +91,19 @@ export const INTENTIONAL_DOWNGRADES = {};
  * (`is-generator-function@>=1.1.0`, left over from #507 after the package left
  * the tree entirely) was deleted rather than waived.
  *
- * The entries below still resolve today, but only through optional peers that
- * the lockfile kept from earlier resolutions. A from-scratch resolution (delete
- * pnpm-lock.yaml, no node_modules) drops those peers, and these pins then match
- * nothing (#3690). They stay armed because installing the optional peer brings
- * the vulnerable range straight back.
+ * The entries below are pre-emptive. Their targets resolve today only through
+ * optional peers that the lockfile kept from earlier resolutions. A from-scratch
+ * resolution (pnpm-lock.yaml deleted, no node_modules; observed in #3690) drops
+ * those peers, after which the targets resolve nowhere and would fail DEAD.
+ * They stay armed because installing the optional peer brings the vulnerable
+ * range straight back. While a target still resolves, its entry is not read.
  */
 export const ALLOWED_DEAD_OVERRIDES = {
   'ip@<=2.0.1': {
     reason:
-      'ip arrives via @react-native-community/cli@12 (cli-doctor, cli-hermes), an optional peer of ' +
-      'react-native and @react-native/community-cli-plugin; installing the RN community CLI reintroduces it',
+      'ip (aliased to neoip) arrives via @react-native-community/cli@12 (cli-doctor, cli-hermes), an ' +
+      'optional peer of @react-native/community-cli-plugin (a react-native dependency); installing the ' +
+      'RN community CLI reintroduces it',
   },
   'joi@<17.13.9': {
     reason:
