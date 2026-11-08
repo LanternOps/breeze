@@ -17,10 +17,12 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 
-import { db, withDbAccessContext, type DbAccessContext } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { portalUserIdentities, portalUsers } from '../../db/schema/portal';
 import * as orgMergeModule from '../../services/orgMerge';
+import { ensureEntraIdentity, reconcilePortalUserIdentities } from '../../services/portalUserIdentities';
 import { createOrganization, createPartner } from './db-utils';
+import { replayMigration } from './replayMigration';
 import { getTestDb } from './setup';
 
 const admin = () => getTestDb() as any;
@@ -213,5 +215,104 @@ describe('org merge re-tenants portal_user_identities', () => {
 
     expect(loginRow.orgId).toBe(survivorId);
     expect(identityRow).toEqual({ orgId: survivorId, portalUserId: login.id });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 3: identity writes + drift report (services/portalUserIdentities.ts)
+// ---------------------------------------------------------------------------
+
+describe('ensureEntraIdentity (real Postgres, breeze_app, system context)', () => {
+  it('inserts once, then reports present and bumps last_used_at', async () => {
+    const login = await seedEntraLogin(fx.orgId);
+    const first = new Date('2026-11-01T00:00:00Z');
+    const second = new Date('2026-11-02T00:00:00Z');
+    const input = { orgId: fx.orgId, portalUserId: login.id, tid: login.tid, oid: login.oid };
+
+    await expect(withSystemDbAccessContext(() => ensureEntraIdentity(db, { ...input, usedAt: first }))).resolves.toBe('inserted');
+    await expect(withSystemDbAccessContext(() => ensureEntraIdentity(db, { ...input, usedAt: second }))).resolves.toBe('present');
+
+    const rows = await admin().select().from(portalUserIdentities).where(eq(portalUserIdentities.portalUserId, login.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ linkedVia: 'jit', issuer: entraIss(login.tid), subject: login.oid });
+    expect((rows[0].lastUsedAt as Date).toISOString()).toBe(second.toISOString());
+  });
+
+  it('reports conflict (no throw, transaction still usable) when the subject belongs to another user', async () => {
+    const owner = await seedEntraLogin(fx.orgId);
+    const other = await seedEntraLogin(fx.orgId);
+    await seedIdentity(fx.orgId, owner.id, owner.tid, owner.oid);
+
+    const outcome = await withSystemDbAccessContext(async () => {
+      const r = await ensureEntraIdentity(db, { orgId: fx.orgId, portalUserId: other.id, tid: owner.tid, oid: owner.oid, usedAt: new Date() });
+      // Same transaction: a 23505 here would have aborted it (25P02).
+      const [probe] = await db.execute<{ one: number }>(sql`SELECT 1 AS one`);
+      return { r, probe };
+    });
+    expect(outcome.r).toBe('conflict');
+    expect(outcome.probe).toEqual({ one: 1 });
+  });
+
+  it('reports conflict when the user already holds a different entra subject', async () => {
+    const login = await seedEntraLogin(fx.orgId);
+    await seedIdentity(fx.orgId, login.id, login.tid, login.oid);
+    const outcome = await withSystemDbAccessContext(() =>
+      ensureEntraIdentity(db, { orgId: fx.orgId, portalUserId: login.id, tid: login.tid, oid: randomUUID(), usedAt: new Date() }),
+    );
+    expect(outcome).toBe('conflict');
+  });
+});
+
+describe('reconcilePortalUserIdentities (drift report, read-only)', () => {
+  it('drift report is clean right after the migration backfill', async () => {
+    await seedEntraLogin(fx.orgId);
+    await seedEntraLogin(await otherOrg());
+    // Replaying the (idempotent) migration runs the release-A backfill over the rows above.
+    await replayMigration('2027-01-22-210500-portal-account-foundations.sql');
+
+    const report = await reconcilePortalUserIdentities();
+    expect(report.counts).toEqual({ missingIdentity: 0, orphanIdentity: 0, mismatched: 0, halfPopulated: 0 });
+    const [{ n }] = await admin().execute(sql`SELECT count(*)::int AS n FROM portal_user_identities`);
+    expect(n).toBe(2);
+  });
+
+  it('drift report counts a missing identity, an orphan identity, a mismatched subject and a half-populated row', async () => {
+    const missing = await seedEntraLogin(fx.orgId);
+
+    const orphanUser = await seedEntraLogin(fx.orgId);
+    const orphanIdentity = await seedIdentity(fx.orgId, orphanUser.id, orphanUser.tid, orphanUser.oid);
+    await admin().update(portalUsers).set({ entraOid: null, entraTenantId: null }).where(eq(portalUsers.id, orphanUser.id));
+
+    const mismatchedUser = await seedEntraLogin(fx.orgId);
+    const mismatchedIdentity = await seedIdentity(fx.orgId, mismatchedUser.id, mismatchedUser.tid, randomUUID());
+
+    const half = await seedEntraLogin(fx.orgId);
+    await admin().update(portalUsers).set({ entraTenantId: null }).where(eq(portalUsers.id, half.id));
+
+    const report = await reconcilePortalUserIdentities();
+    expect(report.counts).toEqual({ missingIdentity: 1, orphanIdentity: 1, mismatched: 1, halfPopulated: 1 });
+    expect(report.samples.missingIdentity).toEqual([{ portalUserId: missing.id, orgId: fx.orgId }]);
+    expect(report.samples.orphanIdentity).toEqual([{ identityId: orphanIdentity, portalUserId: orphanUser.id }]);
+    expect(report.samples.mismatched).toEqual([{ portalUserId: mismatchedUser.id, identityId: mismatchedIdentity, field: 'subject' }]);
+    expect(report.samples.halfPopulated).toEqual([{ portalUserId: half.id }]);
+    expect(typeof report.checkedAt).toBe('string');
+  });
+
+  it('drift report scoped by orgId ignores other orgs', async () => {
+    const elsewhere = await otherOrg();
+    await seedEntraLogin(elsewhere); // missing identity in another org
+    const scoped = await reconcilePortalUserIdentities({ orgId: fx.orgId });
+    expect(scoped.counts).toEqual({ missingIdentity: 0, orphanIdentity: 0, mismatched: 0, halfPopulated: 0 });
+    const all = await reconcilePortalUserIdentities();
+    expect(all.counts.missingIdentity).toBe(1);
+  });
+
+  it('caps samples at sampleLimit but still reports the full count', async () => {
+    await seedEntraLogin(fx.orgId);
+    await seedEntraLogin(fx.orgId);
+    await seedEntraLogin(fx.orgId);
+    const report = await reconcilePortalUserIdentities({ sampleLimit: 2 });
+    expect(report.counts.missingIdentity).toBe(3);
+    expect(report.samples.missingIdentity).toHaveLength(2);
   });
 });
