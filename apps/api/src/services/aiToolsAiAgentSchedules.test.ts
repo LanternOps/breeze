@@ -28,6 +28,7 @@ import { AgentAccessDeniedError, AgentSiteCeilingDeniedError } from './aiAgents/
 import { PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { registerAiAgentScheduleTool } from './aiToolsAiAgentSchedules';
 import { aiAgentScheduleToolSchemas } from './aiToolSchemasAiAgentSchedules';
+import { validateToolInput } from './aiToolSchemas';
 
 const tools = new Map<string, AiTool>();
 registerAiAgentScheduleTool(tools);
@@ -93,6 +94,41 @@ describe('schema', () => {
     expect(schema.safeParse({ action: 'update', scheduleId: BASELINE, createdBy: 'x' }).success).toBe(false);
     expect(schema.safeParse({ action: 'arm', scheduleId: BASELINE }).success).toBe(false);
     expect(schema.shape.action.options).toEqual(['create', 'update', 'delete']);
+  });
+
+  // #11287: validateToolInput (the check MCP and chat run before filing an
+  // approval card) refuses a create/update the handler would refuse after a
+  // person approved it, using the route's own schema.
+  describe('validated before an approval card is filed (#11287)', () => {
+    const { enabled: _enabled, ...baselineWithoutEnabled } = createBaseline;
+    const { enabled: _off, ...overrideWithoutEnabled } = createOverride;
+
+    it.each([
+      ['a partner baseline', baselineWithoutEnabled],
+      ['an organization override', overrideWithoutEnabled],
+    ])('refuses %s create without enabled, naming the field', (_label, input) => {
+      const result = validateToolInput('manage_ai_agent_schedules', input);
+      expect(result.success).toBe(false);
+      expect(!result.success && result.error).toMatch(/enabled/);
+    });
+
+    it('refuses a create the route schema refuses for another reason (baseline without cron)', () => {
+      const { cron: _cron, ...noCron } = createBaseline;
+      const result = validateToolInput('manage_ai_agent_schedules', noCron);
+      expect(result.success).toBe(false);
+      expect(!result.success && result.error).toMatch(/cron/);
+    });
+
+    it('refuses an update the route schema refuses', () => {
+      expect(validateToolInput('manage_ai_agent_schedules', { action: 'update', scheduleId: BASELINE, sweepKinds: ['not_a_kind'] }).success).toBe(false);
+    });
+
+    it('admits the valid calls unchanged', () => {
+      expect(validateToolInput('manage_ai_agent_schedules', createBaseline)).toEqual({ success: true });
+      expect(validateToolInput('manage_ai_agent_schedules', createOverride)).toEqual({ success: true });
+      expect(validateToolInput('manage_ai_agent_schedules', { action: 'update', scheduleId: BASELINE, enabled: false })).toEqual({ success: true });
+      expect(validateToolInput('manage_ai_agent_schedules', { action: 'delete', scheduleId: BASELINE })).toEqual({ success: true });
+    });
   });
 
   it('declares no z.undefined and renders a JSON schema with const false for actMode', () => {
