@@ -4,7 +4,7 @@
 # and apps/api/Dockerfile, so dev and wt-stacks can publish rule sets. Without
 # it every rule save answers `precheckUnavailable` (services/yaraPrecheck.ts).
 # Tag must equal agent/go.mod's `go` directive (check-go-version-pins.sh).
-FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b292c88e7f6bdf7ca AS yarac
+FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS yarac
 ARG TARGETOS
 ARG TARGETARCH
 ENV GOTOOLCHAIN=local GOFLAGS=-mod=readonly CGO_ENABLED=0
