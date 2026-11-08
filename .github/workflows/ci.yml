@@ -370,10 +370,8 @@ jobs:
       - name: Test shard retry wrapper
         run: node --test .github/scripts/retry-shard.test.mjs
 
-      # Timing-based integration sharding and its committed table (W07a, #10751).
-      - name: Test integration shard partition
-        run: node --test .github/scripts/shard-partition.test.mjs
-
+      # Timing-based integration sharding: the refresh script (W07a, #10751).
+      # The partition suite runs after `pnpm install` (it drives vitest).
       - name: Test integration timing refresh
         run: node --test .github/scripts/test-timings.test.mjs
 
@@ -413,6 +411,12 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # Timing-based integration sharding and its committed table (W07a,
+      # #10751). After the install: one case drives the real TimingSequencer
+      # through apps/api's vitest, offline.
+      - name: Test integration shard partition
+        run: node --test .github/scripts/shard-partition.test.mjs
 
       - name: Run ESLint
         run: pnpm lint

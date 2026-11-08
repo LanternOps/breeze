@@ -135,13 +135,18 @@ export function assertPartition(plan, files) {
 
 // The sequencer core. `specs` are vitest TestSpecifications (only `moduleId`
 // is read); returns this shard's specs, or `fallback()` without a usable table.
-export function timingShard(specs, { index, count, repoRoot = REPO_ROOT, timingsText, fallback, log = console.log, writePlan } = {}) {
+// `timingsError`: why the table could not be read, when it could not.
+// `writePlan` is diagnostics only: a failure to write it warns, never fails.
+export function timingShard(specs, {
+  index, count, repoRoot = REPO_ROOT, timingsText, timingsError, fallback, log = console.log, writePlan,
+} = {}) {
   if (!Number.isInteger(count) || count < 1 || !Number.isInteger(index) || index < 1 || index > count) {
     throw new ShardPlanError(`invalid shard ${index}/${count}`);
   }
   const table = loadTimings(timingsText);
   if (!table) {
-    log(`::warning title=Shard timing unavailable::${TIMINGS_PATH} is missing or invalid, so shard ${index}/${count} uses vitest's file-count sharding.`);
+    const why = typeof timingsText === 'string' ? 'is not a valid schema-1 table' : `could not be read (${timingsError ?? 'missing'})`;
+    log(`::warning title=Shard timing unavailable::${TIMINGS_PATH} ${why}, so shard ${index}/${count} uses vitest's file-count sharding.`);
     return fallback();
   }
   const byKey = new Map();
@@ -162,7 +167,11 @@ export function timingShard(specs, { index, count, repoRoot = REPO_ROOT, timings
   if (keys.length && known / keys.length < STALE_BELOW) {
     log(`::warning title=Shard timing stale::Only ${known}/${keys.length} integration files have a recorded timing; run \`node .github/scripts/test-timings.mjs refresh\`.`);
   }
-  writePlan?.({ index, count, total: keys.length, files: mine, projectedSeconds: loads[index - 1], planDigest: digest });
+  try {
+    writePlan?.({ index, count, total: keys.length, files: mine, projectedSeconds: loads[index - 1], planDigest: digest });
+  } catch (error) {
+    log(`::warning title=Shard plan not written::${error.message}`);
+  }
   return mine.map(key => byKey.get(key));
 }
 

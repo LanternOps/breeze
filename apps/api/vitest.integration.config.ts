@@ -23,16 +23,19 @@ class TimingSequencer extends BaseSequencer {
     const shard = this.ctx.config.shard;
     if (!shard) return super.shard(files);
     let timingsText: string | null = null;
+    let timingsError: string | undefined;
     try {
       timingsText = readFileSync(path.join(REPO_ROOT, TIMINGS_PATH), 'utf8');
-    } catch {
-      // Absent or unreadable: timingShard warns and falls back.
+    } catch (error) {
+      // Absent or unreadable: timingShard warns with this reason and falls back.
+      timingsError = (error as NodeJS.ErrnoException).code ?? String(error);
     }
     return timingShard(files, {
       index: shard.index,
       count: shard.count,
       repoRoot: REPO_ROOT,
       timingsText,
+      timingsError,
       fallback: () => super.shard(files),
       writePlan: process.env.CI
         ? (plan: { index: number }) => writeFileSync(

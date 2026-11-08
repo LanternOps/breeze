@@ -140,10 +140,12 @@ test('direct imports: literal static, re-export, side-effect and dynamic imports
       "// a commented import('../../services/g') still counts: over-approximation is safe",
       "import { missing } from '../../services/missing';",
     ].join('\n'));
-    assert.deepEqual(directApiImports(dir, 'apps/api/src/__tests__/integration/x.integration.test.ts'), [
+    const unresolved = [];
+    assert.deepEqual(directApiImports(dir, 'apps/api/src/__tests__/integration/x.integration.test.ts', { unresolved }), [
       'apps/api/src/db/index.ts', 'apps/api/src/services/a.ts', 'apps/api/src/services/b.ts', 'apps/api/src/services/c/index.ts',
       'apps/api/src/services/d.ts', 'apps/api/src/services/e.ts', 'apps/api/src/services/g.ts',
     ]);
+    assert.deepEqual(unresolved, ['apps/api/src/__tests__/integration/x.integration.test.ts → ../../services/missing']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -176,10 +178,11 @@ test('core stays at or under 48% of integration files', () => {
 
 test('imports match ownership: a suite\'s tests import only its own or unowned sources', () => {
   const problems = [];
+  const unresolved = [];
   for (const t of tests) {
     const suite = suiteOfTest(map, t);
     if (suite === CORE) continue;
-    for (const f of directApiImports(REPO_ROOT, t)) {
+    for (const f of directApiImports(REPO_ROOT, t, { unresolved })) {
       const owners = sourceOwners(map, f);
       if (owners.length && !owners.includes(suite)) problems.push(`${t} (suite ${suite}) → ${f} → owned by ${owners.join(', ')}`);
     }
@@ -187,6 +190,8 @@ test('imports match ownership: a suite\'s tests import only its own or unowned s
   assert.deepEqual(problems, [], `A change to these imports would not select the importing test's suite. For each, add `
     + `"suite <suite> sources <import>" to ${SUITE_MAP_PATH}, or move the test to core with "suite core tests <test>" above `
     + 'the suite\'s own tests glob.');
+  // An import the resolver cannot place would be invisible to the check above.
+  assert.deepEqual(unresolved, [], 'teach resolveImport in integration-suites.mjs this specifier form');
 });
 
 function walk(dir, rel, out = []) {

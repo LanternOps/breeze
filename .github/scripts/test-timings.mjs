@@ -28,7 +28,7 @@ import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { REPO_ROOT, TIMINGS_PATH, integrationTestFiles, loadTimings, partition, planLoads, quantile } from './shard-partition.mjs';
+import { REPO_ROOT, STALE_BELOW, TIMINGS_PATH, integrationTestFiles, loadTimings, partition, planLoads, quantile } from './shard-partition.mjs';
 
 export class TimingLogError extends Error {
   constructor(message) {
@@ -183,7 +183,12 @@ function sampleRun(gh, repo, { id, createdAt }, log) {
   if (failures * 2 > shards.length) {
     throw new TimingLogError(`run ${id}: ${failures} of ${shards.length} shard logs did not parse; the reporter format may have changed`);
   }
-  return { sample: { id, createdAt, files, overhead: shardOverhead(shards) } };
+  // A partial run would leave some files with fewer samples than the table
+  // implies, so it is not a sample at all.
+  if (failures) return { skip: `${failures} of ${shards.length} shard logs did not parse` };
+  const overhead = shardOverhead(shards);
+  if (!Object.keys(overhead).length) log(`run ${id}: no shard-only steps found, so this run adds no overhead sample`);
+  return { sample: { id, createdAt, files, overhead } };
 }
 
 // The new table (an object). `present`: the integration files at HEAD.
@@ -231,20 +236,33 @@ function parseArgs(argv) {
   return opts;
 }
 
+// Checks a refreshed table before it replaces the committed one: it must be a
+// table the sequencer accepts and cover at least STALE_BELOW of the suite.
+// Returns the summary lines; throws (writing nothing) otherwise.
+export function writeTable(table, { present, out, count = 16, write = writeFileSync }) {
+  const text = serializeTable(table);
+  const loaded = loadTimings(text);
+  if (!loaded) throw new TimingLogError('the refreshed table is empty or invalid; nothing written');
+  const known = present.filter(f => Object.hasOwn(loaded.timings, f)).length;
+  if (known / present.length < STALE_BELOW) {
+    throw new TimingLogError(`the refreshed table covers only ${known}/${present.length} integration files; nothing written`);
+  }
+  write(out, text);
+  const loads = planLoads(partition(present, { count, ...loaded }), loaded);
+  const mean = loads.reduce((s, x) => s + x, 0) / loads.length;
+  return [
+    `wrote ${out}: ${Object.keys(table.files).length} files from runs ${table.runs.join(', ')}`,
+    `coverage ${known}/${present.length}; projected ${count}-shard max/mean ${(Math.max(...loads) / mean).toFixed(3)}`
+      + ` (max ${Math.round(Math.max(...loads))}s, mean ${Math.round(mean)}s); overhead ${JSON.stringify(table.overhead)}`,
+  ];
+}
+
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   const gh = args => execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 512 * 1024 * 1024 });
   const present = integrationTestFiles(REPO_ROOT);
   const table = refresh({ gh, repo: opts.repo, runs: opts.runs, runIds: opts.runIds, present: new Set(present) });
-  const text = serializeTable(table);
-  writeFileSync(opts.out, text);
-  const loaded = loadTimings(text);
-  const loads = planLoads(partition(present, { count: 16, ...loaded }), loaded);
-  const mean = loads.reduce((s, x) => s + x, 0) / loads.length;
-  const known = present.filter(f => Object.hasOwn(loaded.timings, f)).length;
-  console.log(`wrote ${opts.out}: ${Object.keys(table.files).length} files from runs ${table.runs.join(', ')}`);
-  console.log(`coverage ${known}/${present.length}; projected 16-shard max/mean ${(Math.max(...loads) / mean).toFixed(3)}`
-    + ` (max ${Math.round(Math.max(...loads))}s, mean ${Math.round(mean)}s); overhead ${JSON.stringify(table.overhead)}`);
+  for (const line of writeTable(table, { present, out: opts.out })) console.log(line);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {

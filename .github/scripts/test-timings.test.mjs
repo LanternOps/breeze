@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
-import { TimingLogError, buildTable, parseJobLog, refresh, shardOverhead, serializeTable } from './test-timings.mjs';
+import { TimingLogError, buildTable, parseJobLog, refresh, shardOverhead, serializeTable, writeTable } from './test-timings.mjs';
 import { loadTimings } from './shard-partition.mjs';
 
 const REPO_ROOT = normalize(join(dirname(fileURLToPath(import.meta.url)), '../..'));
@@ -67,8 +67,24 @@ test('a log that does not reconcile with its own summary is rejected', () => {
   assert.throws(() => parseJobLog(plain.replace('Test Files  4 passed (4)', 'Test Files  5 passed (5)')),
     e => e instanceof TimingLogError && /4 file results but the summary counts 5/.test(e.message));
   assert.throws(() => parseJobLog(plain.replace(/ RUN {2}v/, ' XXX  v')), e => e instanceof TimingLogError && /RUN banner/.test(e.message));
-  assert.throws(() => parseJobLog(plain.replace(/✓ src\/services\/autopay/, '✓ src/__tests__/integration/wispGrantsRls.integration.test.ts (1 test) 5ms\n2026-11-08T20:25:40.0112832Z  ✓ src/services/autopay')),
-    e => e instanceof TimingLogError);
+  const twice = plain.replace(/(Z  ✓ src\/services\/autopay\/enrollmentService[^\n]*)/, '$1\n2026-11-08T20:25:41.0000000Z  ✓ src/__tests__/integration/wispGrantsRls.integration.test.ts (1 test) 5ms')
+    .replace('Test Files  4 passed (4)', 'Test Files  5 passed (5)');
+  assert.throws(() => parseJobLog(twice), e => e instanceof TimingLogError && /a file reported twice/.test(e.message));
+  const backwards = plain.replace('2026-11-08T20:25:40.0112832Z  ✓ src/services/autopay', '2026-11-08T20:25:00.0000000Z  ✓ src/services/autopay');
+  assert.throws(() => parseJobLog(backwards), e => e instanceof TimingLogError && /timestamps go backwards at src\/services\/autopay/.test(e.message));
+});
+
+const synth = lines => lines.map(([at, body]) => `2026-11-08T20:${at}Z ${body}`).join('\n');
+
+test('a one-file shard weighs its reported duration; a skipped file weighs its wall span', () => {
+  assert.deepEqual(parseJobLog(synth([['00:00.000', ' RUN  v4.1.12 /r/apps/api'], ['01:00.000', ' ✓ src/a.integration.test.ts (2 tests) 12345ms'],
+    ['01:01.000', ' Test Files  1 passed (1)']])), { files: { 'apps/api/src/a.integration.test.ts': 12.3 }, count: 1 });
+  assert.deepEqual(parseJobLog(synth([['00:00.000', ' RUN  v4.1.12 /r/apps/api'], ['00:30.000', ' ✓ src/a.integration.test.ts (2 tests) 20000ms'],
+    ['00:34.500', ' ↓ src/b.integration.test.ts (3 tests | 3 skipped)'], ['00:40.000', ' ✓ src/c.integration.test.ts (1 test) 5000ms'],
+    ['00:41.000', ' Test Files  2 passed | 1 skipped (3)']])).files, {
+    // overheads: b 4.5 − 0, c 5.5 − 5 → median (nearest rank, lower) 0.5
+    'apps/api/src/a.integration.test.ts': 20.5, 'apps/api/src/b.integration.test.ts': 4.5, 'apps/api/src/c.integration.test.ts': 5.5,
+  });
 });
 
 const step = (name, conclusion, start, end) => ({ name, conclusion, started_at: start, completed_at: end });
@@ -157,18 +173,44 @@ test('refresh: picks fully-green runs, skips a run missing shards, builds the ta
   assert.match(messages.join('\n'), /run 30: skipped, integration shards 1,2 of 3/);
 });
 
-test('refresh: one unparseable shard log is skipped, a majority is fatal', () => {
+test('refresh: a run with any unparseable shard log is not a sample; a majority is fatal', () => {
   const present = new Set(Object.keys(REAL));
-  const jobs = [1, 2, 3, 4].map(s => ({ ...job(s, s === 1), id: 100 + s, name: `Integration Tests (shard ${s}/4)` }));
-  const runs = [{ id: 10, createdAt: '2026-11-08T01:00:00Z', jobs }];
-  const okLogs = { 101: realLog, 102: realLog, 103: realLog, 104: 'garbage' };
+  const jobsFor = base => [1, 2, 3, 4].map(s => ({ ...job(s, s === 1), id: base + s, name: `Integration Tests (shard ${s}/4)` }));
+  const runs = [
+    { id: 20, createdAt: '2026-11-08T02:00:00Z', jobs: jobsFor(200) },
+    { id: 10, createdAt: '2026-11-08T01:00:00Z', jobs: jobsFor(100) },
+  ];
+  // Run 20 has one retried (two-summary) shard; run 10 is clean.
+  const logs = { 201: realLog, 202: realLog, 203: realLog, 204: `${realLog}\n${realLog}`, 101: realLog, 102: realLog, 103: realLog, 104: realLog };
   const messages = [];
-  const table = refresh({ gh: fakeGh({ runs, logs: okLogs }).gh, repo: 'o/r', runIds: [10], present, log: m => messages.push(m) });
+  const table = refresh({ gh: fakeGh({ runs, logs }).gh, repo: 'o/r', runs: 1, present, log: m => messages.push(m) });
+  assert.deepEqual(table.runs, [10], 'the partial run is skipped, the next clean one used');
   assert.deepEqual(table.files, REAL);
-  assert.match(messages.join('\n'), /run 10 job 104 \(Integration Tests \(shard 4\/4\)\): skipped: /);
-  const badLogs = { 101: realLog, 102: 'garbage', 103: 'garbage', 104: 'garbage' };
+  assert.match(messages.join('\n'), /run 20 job 204 \(Integration Tests \(shard 4\/4\)\): skipped: 2 vitest summaries/);
+  assert.match(messages.join('\n'), /run 20: skipped, 1 of 4 shard logs did not parse/);
+  // Named explicitly, a partial run is an error, not a silent gap.
+  assert.throws(() => refresh({ gh: fakeGh({ runs, logs }).gh, repo: 'o/r', runIds: [20], present, log: () => {} }),
+    e => e instanceof TimingLogError && /run 20: 1 of 4 shard logs did not parse/.test(e.message));
+  const badLogs = { ...logs, 102: 'garbage', 103: 'garbage', 104: 'garbage' };
   assert.throws(() => refresh({ gh: fakeGh({ runs, logs: badLogs }).gh, repo: 'o/r', runIds: [10], present, log: () => {} }),
-    e => e instanceof TimingLogError && /3 of 4 shard logs did not parse/.test(e.message));
+    e => e instanceof TimingLogError && /3 of 4 shard logs did not parse; the reporter format may have changed/.test(e.message));
+});
+
+test('writeTable validates before it overwrites the committed table', () => {
+  const present = Object.keys(REAL);
+  const writes = [];
+  const write = (path, text) => writes.push([path, text]);
+  const table = buildTable([runOf(1, '2026-11-08T01:00:00Z', REAL)], { present: new Set(present) });
+  // Nothing matched the suite: an empty table.
+  const empty = buildTable([runOf(1, '2026-11-08T01:00:00Z', { 'apps/api/src/other.test.ts': 1 })], { present: new Set(present) });
+  assert.throws(() => writeTable(empty, { present, out: 'x.json', write }), /empty or invalid; nothing written/);
+  // Below STALE_BELOW (0.9): 4 of 5.
+  assert.throws(() => writeTable(table, { present: [...present, 'apps/api/src/new.integration.test.ts'], out: 'x.json', write }),
+    /covers only 4\/5 integration files; nothing written/);
+  assert.equal(writes.length, 0);
+  const lines = writeTable(table, { present, out: 'x.json', write, count: 2 });
+  assert.deepEqual(writes, [['x.json', serializeTable(table)]]);
+  assert.match(lines.join('\n'), /coverage 4\/4; projected 2-shard max\/mean/);
 });
 
 test('refresh: an explicit run without every shard green is an error', () => {

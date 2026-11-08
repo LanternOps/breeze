@@ -1,8 +1,9 @@
 // W07a (#10751): integration shards partitioned by recorded file timing.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join, normalize } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import {
   ShardPlanError, TIMINGS_PATH, assertPartition, integrationTestFiles, loadTimings, partition, planDigest,
@@ -161,6 +162,44 @@ test('the sequencer core returns this shard, and every shard computes one plan',
   assert.deepEqual(seen.sort(), specs.map(s => s.moduleId).sort(), 'the shards together run every file once');
 });
 
+test('the sequencer core rejects an invalid shard index and a spec handed over twice', () => {
+  const specs = specsOf(['apps/api/src/a.test.ts']);
+  const timingsText = JSON.stringify({ schema: 1, files: { 'apps/api/src/a.test.ts': 1 } });
+  for (const [index, count] of [[0, 2], [3, 2], [1, 0], [1.5, 2]]) {
+    assert.throws(() => timingShard(specs, { index, count, repoRoot: ROOT, timingsText, fallback: () => [] }),
+      e => e instanceof ShardPlanError && /invalid shard/.test(e.message), `${index}/${count}`);
+  }
+  assert.throws(() => timingShard([...specs, ...specsOf(['apps/api/src/a.test.ts'])], { index: 1, count: 2, repoRoot: ROOT, timingsText, fallback: () => [] }),
+    e => e instanceof ShardPlanError && /handed to the sequencer twice/.test(e.message));
+});
+
+test('the fallback warning says why; a stale table warns; a failed plan write only warns', () => {
+  const specs = specsOf(['apps/api/src/a.test.ts', 'apps/api/src/b.test.ts']);
+  const run = opts => {
+    const logs = [];
+    const out = timingShard(specs, { index: 1, count: 2, repoRoot: ROOT, fallback: () => 'fallback', log: l => logs.push(l), ...opts });
+    return { out, logs: logs.join('\n') };
+  };
+  assert.match(run({ timingsText: null, timingsError: 'EACCES' }).logs, /could not be read \(EACCES\)/);
+  assert.match(run({ timingsText: null }).logs, /could not be read \(missing\)/);
+  assert.match(run({ timingsText: '{"schema":2}' }).logs, /is not a valid schema-1 table/);
+  const half = JSON.stringify({ schema: 1, files: { 'apps/api/src/a.test.ts': 1 } });
+  assert.match(run({ timingsText: half }).logs, /^::warning title=Shard timing stale::Only 1\/2 integration files/m);
+  const full = JSON.stringify({ schema: 1, files: { 'apps/api/src/a.test.ts': 1, 'apps/api/src/b.test.ts': 2 } });
+  assert.doesNotMatch(run({ timingsText: full }).logs, /::warning/);
+  const failed = run({ timingsText: full, writePlan: () => { throw new Error('ENOSPC: no space left'); } });
+  assert.equal(failed.out.length, 1, 'the shard still runs its files');
+  assert.match(failed.logs, /^::warning title=Shard plan not written::ENOSPC/m);
+});
+
+test('pinned edges: overhead past the shard count is ignored; fewer files than shards leaves empty shards', () => {
+  const timings = { a: 5, b: 3 };
+  assert.deepEqual(partition(['a', 'b'], { count: 2, timings, overhead: { 5: 100 } }), [['a'], ['b']]);
+  assert.deepEqual(partition(['a', 'b'], { count: 4, timings }), [['a'], ['b'], [], []]);
+  assert.deepEqual(partition([], { count: 3, timings }), [[], [], []]);
+  assert.equal(loadTimings('{"schema":1,"files":{"a":1},"overhead":{"1":1e999}}'), null, 'a non-finite overhead is invalid');
+});
+
 test('the sequencer core fails loudly on a spec outside the repository', () => {
   const specs = [...specsOf(['apps/api/src/a.test.ts']), { moduleId: '/tmp/stray.test.ts' }];
   const timingsText = JSON.stringify({ schema: 1, files: { 'apps/api/src/a.test.ts': 1 } });
@@ -208,6 +247,46 @@ test('the committed table balances the suite it was recorded from', () => {
   const mean = loads.reduce((s, x) => s + x, 0) / loads.length;
   // A ratchet; lower it as the data improves.
   assert.ok(Math.max(...loads) / mean <= 1.10, `max/mean ${(Math.max(...loads) / mean).toFixed(3)}`);
+});
+
+// The real adapter, through vitest's own config loader and spec resolution.
+// Offline: no globalSetup runs and no test executes. Needs apps/api's
+// dependencies, so lint runs this suite after `pnpm install`.
+test('the real TimingSequencer shards every spec vitest resolves exactly once, with one plan', async () => {
+  const apiRequire = createRequire(join(REPO_ROOT, 'apps/api/package.json'));
+  const { createVitest } = await import(pathToFileURL(apiRequire.resolve('vitest/node')).href);
+  const savedCI = process.env.CI;
+  delete process.env.CI; // no shard-plan files from a test
+  const savedLog = console.log;
+  const logs = [];
+  let vitest;
+  try {
+    vitest = await createVitest('test', {
+      root: join(REPO_ROOT, 'apps/api'), config: join(REPO_ROOT, 'apps/api/vitest.integration.config.ts'), watch: false, shard: '1/16',
+    });
+    const specs = await vitest.globTestSpecifications();
+    // The node-side enumeration the tests above rely on agrees with vitest's.
+    assert.deepEqual(specs.map(s => toRepoKey(s.moduleId, REPO_ROOT)).sort(), integrationTestFiles(REPO_ROOT));
+    const Sequencer = vitest.config.sequence.sequencer;
+    assert.equal(Sequencer.name, 'TimingSequencer');
+    console.log = (...args) => logs.push(args.join(' '));
+    const seen = [];
+    for (let index = 1; index <= 16; index++) {
+      vitest.config.shard = { index, count: 16 };
+      const out = await new Sequencer(vitest).shard(specs);
+      for (const spec of out) assert.ok(specs.includes(spec));
+      seen.push(...out.map(s => s.moduleId));
+    }
+    console.log = savedLog;
+    assert.equal(seen.length, specs.length);
+    assert.equal(new Set(seen).size, specs.length);
+    assert.equal(new Set(logs.map(l => l.match(/planDigest=(\w+)/)?.[1]).filter(Boolean)).size, 1, logs.slice(0, 3).join('\n'));
+    assert.equal(logs.filter(l => l.startsWith('::warning')).length, 0, logs.join('\n'));
+  } finally {
+    console.log = savedLog;
+    if (savedCI === undefined) delete process.env.CI; else process.env.CI = savedCI;
+    await vitest?.close();
+  }
 });
 
 // ── Wiring ──────────────────────────────────────────────────────────────────

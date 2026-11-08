@@ -298,8 +298,10 @@ while IFS= read -r path; do
     .github/scripts/tauri-apt.sh) app=true ;;
     .github/scripts/mobile-native-ci.test.mjs) app=true ;;
     .github/scripts/qemu-gate-paths.txt) app=true ;;
-    # Imported by apps/api/vitest.integration.config.ts to shard integration-test (W07a).
+    # Imported by apps/api/vitest.integration.config.ts to shard integration-test,
+    # and its types are checked by typecheck through that config (W07a).
     .github/scripts/shard-partition.mjs) app=true ;;
+    .github/scripts/shard-partition.d.mts) app=true ;;
     .github/scripts/*) : ;;
     scripts/security/check-agent-binary-signatures.sh) app=true ;;
     scripts/security/*) : ;;

@@ -128,23 +128,28 @@ function resolveImport(repoRoot, fromFile, spec) {
   if (spec.startsWith('@/')) base = `apps/api/src/${spec.slice(2)}`;
   else if (spec.startsWith('.')) base = posix.normalize(posix.join(posix.dirname(fromFile), spec));
   else return null;
-  for (const candidate of [base, base.replace(/\.js$/, '.ts'), `${base}.ts`, `${base}.tsx`, `${base}/index.ts`]) {
+  for (const candidate of [base, base.replace(/\.js$/, '.ts'), base.replace(/\.js$/, '.tsx'), `${base}.ts`, `${base}.tsx`, `${base}.mjs`,
+    `${base}.js`, `${base}/index.ts`, `${base}/index.tsx`, `${base}/index.js`]) {
     const abs = join(repoRoot, candidate);
     if (existsSync(abs) && statSync(abs).isFile()) return candidate;
   }
-  return null;
+  return undefined;
 }
 
 // The repo paths under apps/api/src a file imports by string literal (static,
 // re-export, side-effect, and literal dynamic `import('…')`). Direct imports
 // only: the API's import graph is one component through db/index.ts, so a
 // transitive closure would put every test in core.
-export function directApiImports(repoRoot, file) {
+// A relative or `@/` specifier that resolves to no file is pushed onto
+// `unresolved` (when given) rather than silently dropped.
+export function directApiImports(repoRoot, file, { unresolved } = {}) {
   const source = readFileSync(join(repoRoot, file), 'utf8');
   const out = new Set();
   for (const m of source.matchAll(IMPORT)) {
-    const resolved = resolveImport(repoRoot, file, m[1] ?? m[2] ?? m[3]);
-    if (resolved?.startsWith('apps/api/src/')) out.add(resolved);
+    const spec = m[1] ?? m[2] ?? m[3];
+    const resolved = resolveImport(repoRoot, file, spec);
+    if (resolved === undefined) unresolved?.push(`${file} → ${spec}`);
+    else if (resolved?.startsWith('apps/api/src/')) out.add(resolved);
   }
   return [...out].sort();
 }

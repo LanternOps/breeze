@@ -694,6 +694,8 @@ for (const path of [
   '.github/scripts/qemu-gate-paths.txt',
   // apps/api/vitest.integration.config.ts imports it: it shards integration-test (W07a, #10751).
   '.github/scripts/shard-partition.mjs',
+  // ...and typecheck (tsconfig.tests.json) checks that import against these types.
+  '.github/scripts/shard-partition.d.mts',
 ]) {
   test(`classifier: ${path} is executed by a heavy job, so it is an app change`, () => {
     const r = classify([path]);
@@ -714,6 +716,7 @@ test('every explicit app=true carve-out in the classifier is still referenced by
     '.github/scripts/mobile-native-ci.test.mjs',
     '.github/scripts/qemu-gate-paths.txt',
     '.github/scripts/shard-partition.mjs',
+    '.github/scripts/shard-partition.d.mts',
     'scripts/security/check-agent-binary-signatures.sh',
     'scripts/release/verify-release-images.sh',
   ]) {
