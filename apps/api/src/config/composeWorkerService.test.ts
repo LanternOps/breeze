@@ -46,7 +46,7 @@ describe('worker-split compose service (#4144)', () => {
   it.each(['docker-compose.yml', 'deploy/docker-compose.prod.yml'])(
     '%s worker has no fixed container_name (scale-out) and stays opt-in',
     (rel) => {
-      const worker = services(rel).worker;
+      const worker = services(rel).worker!;
       expect(worker).toBeDefined();
       expect(worker).not.toHaveProperty('container_name');
       expect(worker.profiles).toEqual(['worker-split']);
@@ -68,13 +68,13 @@ describe('worker-split compose service (#4144)', () => {
   });
 
   it('local-build override runs the local image for worker', () => {
-    const worker = services('docker-compose.override.yml.local-build').worker;
+    const worker = services('docker-compose.override.yml.local-build').worker!;
     expect(worker).toBeDefined();
     expect(worker.image).toBe('breeze-api:local');
   });
 
   it('dev override runs the source-mounted image for worker', () => {
-    const worker = services('docker-compose.override.yml.dev').worker;
+    const worker = services('docker-compose.override.yml.dev').worker!;
     expect(worker).toBeDefined();
     expect(worker.image).toBe('breeze-api:dev');
     expect(JSON.stringify(worker.command)).toContain('src/worker.ts');
