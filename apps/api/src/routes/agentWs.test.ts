@@ -7672,6 +7672,118 @@ describe('orphaned SNMP poll outcomes (#6021)', () => {
   });
 });
 
+// #4135: the dispatch record that authorizes an orphaned result lives in
+// Redis, so a result that reaches a replica other than the one that sent the
+// command (the agent reconnected elsewhere) is still honored.
+describe('orphaned result expectations are shared across replicas (#4135)', () => {
+  const agentId = 'agent-replica-hop';
+  const snmpDeviceId = '44444444-4444-4444-8444-444444444444';
+  const deviceId = '55555555-5555-4555-8555-555555555555';
+  const orgId = '66666666-6666-4666-8666-666666666666';
+
+  /** One Redis that several replicas would share: a TTL-aware key/value map. */
+  function sharedRedis(entries: Map<string, { value: string; expiresAt: number }> = new Map()) {
+    const live = (key: string): string | null => {
+      const entry = entries.get(key);
+      if (!entry) return null;
+      if (entry.expiresAt <= Date.now()) {
+        entries.delete(key);
+        return null;
+      }
+      return entry.value;
+    };
+    return {
+      entries,
+      status: 'ready',
+      get: vi.fn(async (key: string) => live(key)),
+      set: vi.fn(async (key: string, value: string, _px: 'PX', ttlMs: number) => {
+        entries.set(key, { value, expiresAt: Date.now() + ttlMs });
+        return 'OK';
+      }),
+      getdel: vi.fn(async (key: string) => {
+        const value = live(key);
+        entries.delete(key);
+        return value;
+      }),
+    };
+  }
+
+  async function dispatchSnmpPoll(commandId: string, redis: ReturnType<typeof sharedRedis>) {
+    await connectedAgent(agentId, { deviceId, orgId, partnerId: 'partner-123' });
+    vi.mocked(getRedis).mockReturnValue(redis as never);
+    expect(sendCommandToAgent(agentId, {
+      id: commandId, type: 'snmp_poll', payload: { deviceId: snmpDeviceId },
+    })).toBe(true);
+    await vi.waitFor(() => expect(redis.set).toHaveBeenCalledTimes(1));
+  }
+
+  function failedPoll(commandId: string) {
+    return { type: 'command_result' as const, commandId, status: 'failed' as const, error: 'walk timeout' };
+  }
+
+  function captureSnmpWrites() {
+    const set = vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ orgId }]) })) }));
+    vi.mocked(db.update).mockClear().mockReturnValue({ set } as any);
+    return set;
+  }
+
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.mocked(getRedis).mockReturnValue(null));
+
+  it('records the dispatch in Redis with the 30-minute expectation TTL', async () => {
+    const redis = sharedRedis();
+    await dispatchSnmpPoll('snmp-replica-record', redis);
+
+    const [key, value, mode, ttlMs] = redis.set.mock.calls[0]!;
+    expect(key).toContain(agentId);
+    expect(key).toContain('snmp-replica-record');
+    expect(mode).toBe('PX');
+    expect(ttlMs).toBeGreaterThan(29 * 60 * 1000);
+    expect(ttlMs).toBeLessThanOrEqual(30 * 60 * 1000);
+    expect(JSON.parse(value)).toMatchObject({ agentId, kind: 'snmp', targetId: snmpDeviceId });
+  });
+
+  it('honors a result whose dispatch record exists only in Redis, exactly once', async () => {
+    const dispatcher = sharedRedis();
+    await dispatchSnmpPoll('snmp-replica-consume', dispatcher);
+    // The replica that receives the result sees the same Redis contents.
+    const receiver = sharedRedis(new Map(dispatcher.entries));
+    vi.mocked(getRedis).mockReturnValue(receiver as never);
+    const set = captureSnmpWrites();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await processOrphanedCommandResult(agentId, deviceId, failedPoll('snmp-replica-consume'));
+      expect(set).toHaveBeenCalledWith({ lastError: 'walk timeout', lastErrorAt: expect.any(Date), lastStatus: 'warning' });
+      expect(receiver.getdel).toHaveBeenCalledWith(dispatchedKey(dispatcher));
+      expect(receiver.entries.size).toBe(0);
+
+      await processOrphanedCommandResult(agentId, deviceId, failedPoll('snmp-replica-consume'));
+      expect(set).toHaveBeenCalledTimes(1);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it('keeps no in-process copy while Redis is reachable', async () => {
+    await dispatchSnmpPoll('snmp-replica-no-shadow', sharedRedis());
+    // Redis no longer holds the record (another replica consumed it, or it
+    // expired): this process must not resurrect it from memory.
+    vi.mocked(getRedis).mockReturnValue(sharedRedis() as never);
+    const set = captureSnmpWrites();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await processOrphanedCommandResult(agentId, deviceId, failedPoll('snmp-replica-no-shadow'));
+      expect(set).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  function dispatchedKey(redis: ReturnType<typeof sharedRedis>): string {
+    return redis.set.mock.calls[0]![0];
+  }
+});
+
 
 describe('cleanup supplemental command results', () => {
   beforeEach(() => { vi.resetAllMocks(); });

@@ -24,10 +24,11 @@ import { isAgentConnected, sendCommandToAgent } from '../routes/agentWs';
  * lease/target-instance checks below re-verify the routing decision wasn't
  * made against a since-superseded lease.
  *
- * The local send path also records `orphanedResultExpectations` HERE — on the
- * process that will receive the eventual `command_result` — which is why this
- * consumer calls `sendCommandToAgent` directly and never re-implements the
- * socket write itself.
+ * The local send path also records the orphaned-result expectation (the
+ * dispatch record that authorizes the eventual `command_result`), which is why
+ * this consumer calls `sendCommandToAgent` directly and never re-implements the
+ * socket write itself. That record lives in Redis (#4135), so the result is
+ * honored on whichever replica the agent is connected to when it replies.
  */
 export async function processAgentCommandRelayJob(job: Job<RelayJobData>): Promise<void> {
   const d = job.data;
