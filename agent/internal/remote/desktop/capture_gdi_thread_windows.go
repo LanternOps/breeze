@@ -41,11 +41,12 @@ type gdiThreadState struct {
 
 	// followIssue is why the last followInputDesktop could not tell whether
 	// the thread was on the input desktop (OpenInputDesktop failed, or a
-	// desktop name was unreadable). Capture goes on with the current desktop
-	// in that case, so this is not an error by itself, but when the frame
-	// then fails it is the likely cause and is attached to the frame error.
-	followIssue        error
-	lastFollowIssueLog time.Time
+	// desktop name was unreadable), or nil when it could. Capture goes on with
+	// the current desktop in that case, so this is not a frame error by
+	// itself. When the frame fails it is attached to the frame error; when the
+	// frame is delivered the capturer reports it (unverifiedDesktopFrames), so
+	// a black or wrong-desktop picture is explained either way.
+	followIssue error
 
 	// Throttling for GDI handles Win32 refused to free. Separate from the
 	// capture-failure counters because a leak is a different problem with a
@@ -90,7 +91,13 @@ func (s *gdiThreadState) capture() (*image.RGBA, error) {
 		err = fmt.Errorf("%w (retry with rebuilt handles: %v)", errs[0], errs[1])
 	}
 	if s.followIssue != nil {
-		err = fmt.Errorf("%w; capture thread may not be on the input desktop: %v", err, s.followIssue)
+		// Both wrapped, frame error first: when the frame error carries a
+		// Win32 code, that is the one win32ErrorCode reports. When it carries
+		// none (GetSystemMetrics returning zero, say), win32ErrorCode reports
+		// the follow issue's code instead, so a win32Error field on this
+		// error may belong to OpenInputDesktop or the desktop-name read
+		// rather than to the frame.
+		err = fmt.Errorf("%w; capture thread may not be on the input desktop: %w", err, s.followIssue)
 	}
 	return nil, err
 }
@@ -117,14 +124,17 @@ func (s *gdiThreadState) followInputDesktop() error {
 		s.noteFollowIssue(gdiCallError("OpenInputDesktop", openErrno))
 		return nil
 	}
-	inputName := desktopName(inputDesk)
+	inputName, nameErr := desktopNameErr(inputDesk)
 	tid := currentThreadID()
 	current, _, _ := procGetThreadDesktop.Call(uintptr(tid))
 	currentName := desktopName(current)
 	if inputName == "" {
 		procCloseDesktop.Call(inputDesk)
-		s.noteFollowIssue(fmt.Errorf("input desktop name is unreadable (GetUserObjectInformationW); thread desktop is %s",
-			quoteDesktopName(currentName)))
+		if nameErr == nil {
+			nameErr = fmt.Errorf("GetUserObjectInformationW returned an empty name")
+		}
+		s.noteFollowIssue(fmt.Errorf("input desktop name is unreadable (thread desktop is %s): %w",
+			quoteDesktopName(currentName), nameErr))
 		return nil
 	}
 	if strings.EqualFold(inputName, currentName) {
@@ -155,20 +165,11 @@ func (s *gdiThreadState) followInputDesktop() error {
 	return nil
 }
 
-// noteFollowIssue records why the input desktop could not be checked and logs
-// it, throttled, with its Win32 code.
+// noteFollowIssue records why the input desktop could not be checked. It is
+// logged by the capturer, which knows whether the frame was then delivered
+// (gdiCapturer.noteFrameDeliveredLocked) or failed (the frame error).
 func (s *gdiThreadState) noteFollowIssue(err error) {
 	s.followIssue = err
-	now := time.Now()
-	if now.Sub(s.lastFollowIssueLog) < 5*time.Second {
-		return
-	}
-	s.lastFollowIssueLog = now
-	attrs := []any{"error", err.Error()}
-	if code, ok := win32ErrorCode(err); ok {
-		attrs = append(attrs, "win32Error", code)
-	}
-	slog.Warn("GDI capture thread could not check the input desktop; capturing on its current desktop", attrs...)
 }
 
 func (s *gdiThreadState) logAttachFailure(err error, from, to string, tid uint32) {

@@ -243,7 +243,10 @@ func (s *Session) metricsLogger() {
 // capturer isn't blamed on the encoder.
 func (s *Session) logMetricsSnapshot() {
 	snap := s.metrics.Snapshot()
-	slog.Info("Desktop WebRTC metrics",
+	s.mu.RLock()
+	capturer := s.capturer
+	s.mu.RUnlock()
+	attrs := []any{
 		"session", s.id,
 		"captured", snap.FramesCaptured,
 		"encoded", snap.FramesEncoded,
@@ -257,7 +260,13 @@ func (s *Session) logMetricsSnapshot() {
 		"bandwidthKBps", fmt.Sprintf("%.1f", snap.BandwidthKBps),
 		"uptime", snap.Uptime.Round(time.Second),
 		logging.ShipAlways(),
-	)
+	}
+	// Frames the capturer delivered but cannot vouch for (#8434): the reason a
+	// picture is black or shows the wrong desktop while video still flows.
+	if warning := captureWarningText(capturer); warning != "" {
+		attrs = append(attrs, "captureWarning", warning)
+	}
+	slog.Info("Desktop WebRTC metrics", attrs...)
 }
 
 func (s *Session) adaptiveLoop() {

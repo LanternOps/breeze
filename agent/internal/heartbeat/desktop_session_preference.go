@@ -1,6 +1,9 @@
 package heartbeat
 
 import (
+	"errors"
+	"syscall"
+
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
@@ -17,7 +20,9 @@ import (
 // switcher still offers the console.
 //
 // It applies only when exactly one active, signed-in RDP session exists, and
-// that session has a capture-capable helper. With several, which user's desktop
+// that session has a capture-capable helper. An active RDP session whose
+// username could not be read counts against that, as it might be a second
+// signed-in user. With several, which user's desktop
 // the technician meant is a guess — on a terminal server the console sits at
 // the sign-in screen almost permanently — so the console is kept and the
 // viewer's session switcher is the way to reach a specific user.
@@ -34,7 +39,18 @@ func activeRemoteSessionOverSignInConsole(consoleID string, detected []sessionbr
 	}
 	candidate := ""
 	for _, ds := range detected {
-		if ds.Session == consoleID || ds.Type != "rdp" || ds.State != "active" || ds.Username == "" {
+		if ds.Session == consoleID || ds.Type != "rdp" || ds.State != "active" {
+			continue
+		}
+		if ds.UsernameUnknown {
+			// Could not tell whether someone is signed in here, so whether this
+			// is a second RDP user is unknown too: keep the console rather than
+			// guess — and say so, or nothing records why the RDP desktop was
+			// passed over.
+			logUnreadableRDPUsername(consoleID, ds)
+			return ""
+		}
+		if ds.Username == "" {
 			continue
 		}
 		if candidate != "" {
@@ -46,6 +62,21 @@ func activeRemoteSessionOverSignInConsole(consoleID string, detected []sessionbr
 		return ""
 	}
 	return candidate
+}
+
+// logUnreadableRDPUsername explains a console kept because an active RDP
+// session's username could not be read, with the WTS query's Win32 code when
+// one was recorded.
+func logUnreadableRDPUsername(consoleID string, ds sessionbroker.DetectedSession) {
+	attrs := []any{"winSession", ds.Session, "consoleID", consoleID}
+	if ds.UsernameErr != nil {
+		attrs = append(attrs, "error", ds.UsernameErr.Error())
+		var errno syscall.Errno
+		if errors.As(ds.UsernameErr, &errno) && errno != 0 {
+			attrs = append(attrs, "win32Error", uint32(errno))
+		}
+	}
+	log.Warn("findActiveHelper: active RDP session username unreadable; keeping the sign-in console", attrs...)
 }
 
 // activeRemoteHelperOverSignInConsole is the live wiring of

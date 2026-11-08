@@ -99,11 +99,19 @@ func getCurrentInputDesktopName() string {
 }
 
 // desktopName returns the name of the given desktop handle using
-// GetUserObjectInformationW(UOI_NAME). Returns "" on failure.
+// GetUserObjectInformationW(UOI_NAME). Returns "" on failure; desktopNameErr
+// also says why.
 func desktopName(hDesk uintptr) string {
+	name, _ := desktopNameErr(hDesk)
+	return name
+}
+
+// desktopNameErr is desktopName keeping the GetUserObjectInformationW error,
+// with its Win32 code, when the name cannot be read.
+func desktopNameErr(hDesk uintptr) (string, error) {
 	var buf [128]uint16
 	var needed uint32
-	ret, _, _ := procGetUserObjectInformationW.Call(
+	ret, _, errno := procGetUserObjectInformationW.Call(
 		hDesk,
 		uoiName,
 		uintptr(unsafe.Pointer(&buf[0])),
@@ -111,7 +119,7 @@ func desktopName(hDesk uintptr) string {
 		uintptr(unsafe.Pointer(&needed)),
 	)
 	if ret == 0 {
-		return ""
+		return "", gdiCallError("GetUserObjectInformationW(UOI_NAME)", errno)
 	}
 	// Find null terminator
 	n := int(needed / 2)
@@ -124,7 +132,7 @@ func desktopName(hDesk uintptr) string {
 			break
 		}
 	}
-	return syscall.UTF16ToString(buf[:n])
+	return syscall.UTF16ToString(buf[:n]), nil
 }
 
 // checkDesktopSwitch detects UAC/lock screen transitions that don't trigger
@@ -211,7 +219,7 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 				}
 				slog.Warn("SetThreadDesktop failed during secure-desktop startup", attrs...)
 			}
-			c.gdiFallback = &gdiCapturer{config: c.config}
+			c.setGDIFallbackLocked(&gdiCapturer{config: c.config})
 			c.desktopSwitchFlag.Store(true)
 			slog.Info("Secure desktop active without transition event, using GDI capture",
 				"desktop", inputName)
@@ -265,7 +273,7 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 		c.desktopSwitchFlag.Store(true)
 		c.secureDesktopFlag.Store(isSecureDesktop(inputName))
 		c.gdiNoFrameCount = 0
-		c.gdiFallback = &gdiCapturer{config: c.config}
+		c.setGDIFallbackLocked(&gdiCapturer{config: c.config})
 		c.gdiFollowsDesktop = inputName
 		c.gdiFollowsSince = time.Now()
 
@@ -301,7 +309,7 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 		c.secureDesktopFlag.Store(true)
 		slog.Info("Switched to Secure Desktop, using GDI capture",
 			"desktop", inputName)
-		c.gdiFallback = &gdiCapturer{config: c.config}
+		c.setGDIFallbackLocked(&gdiCapturer{config: c.config})
 		c.gdiNoFrameCount = 0
 	}
 	return true
@@ -310,7 +318,7 @@ func (c *dxgiCapturer) checkDesktopSwitch() bool {
 func (c *dxgiCapturer) switchToGDI() {
 	c.releaseDXGI()
 	c.closeGDIFallbackLocked()
-	c.gdiFallback = &gdiCapturer{config: c.config}
+	c.setGDIFallbackLocked(&gdiCapturer{config: c.config})
 	c.gdiNoFrameCount = 0
 	slog.Info("Switched to GDI screen capture fallback")
 }
@@ -392,7 +400,7 @@ func (c *dxgiCapturer) ForceReattach() {
 	c.desktopSwitchFlag.Store(true)
 
 	if onSecure {
-		c.gdiFallback = &gdiCapturer{config: c.config}
+		c.setGDIFallbackLocked(&gdiCapturer{config: c.config})
 		slog.Warn("ForceReattach: on secure desktop, using GDI",
 			"desktop", currentName)
 		return
@@ -407,6 +415,14 @@ func (c *dxgiCapturer) ForceReattach() {
 	slog.Info("ForceReattach: re-initialized DXGI", "desktop", currentName)
 }
 
+// setGDIFallbackLocked is the one way gdiFallback is assigned: it also
+// publishes the capturer for CaptureWarning's lock-free read. Caller holds
+// c.mu (or is the constructor).
+func (c *dxgiCapturer) setGDIFallbackLocked(g *gdiCapturer) {
+	c.gdiFallback = g
+	c.gdiFallbackView.Store(g)
+}
+
 // closeGDIFallbackLocked stops and drops the GDI fallback, if any. It must be
 // Close, not just a handle release: the fallback owns a locked OS thread
 // (lockedThread), and dropping it without Close strands that thread until the
@@ -414,7 +430,7 @@ func (c *dxgiCapturer) ForceReattach() {
 func (c *dxgiCapturer) closeGDIFallbackLocked() {
 	if c.gdiFallback != nil {
 		_ = c.gdiFallback.Close()
-		c.gdiFallback = nil
+		c.setGDIFallbackLocked(nil)
 	}
 	c.gdiFollowsDesktop = ""
 }
