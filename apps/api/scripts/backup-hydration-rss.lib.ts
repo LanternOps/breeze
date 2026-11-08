@@ -15,7 +15,8 @@ export function largestFolderEntries(totalEntries: number): number {
 /**
  * One in this many entries outside the largest folder is a directory entry, and
  * as many again a symlink: about 5.6% of the manifest is content-less, near the
- * 7.6% a stock Ubuntu host's carried (8,220 of 107,636, D-W09-1). They upload
+ * 7.6% a stock Ubuntu host's carried (8,220 of 107,636: D-W09-1, recorded at
+ * hydrationEntrySchema in services/backupSnapshotFileIndex.ts). They upload
  * nothing and are index rows all the same (#11235).
  */
 const CONTENTLESS_EVERY = 26;
@@ -24,8 +25,9 @@ export type ManifestEntryKind = 'file' | 'dir' | 'symlink';
 
 /**
  * What entry `i` is. Entry 0 is the largest folder's own directory entry, as
- * Windows records a folder with a non-default ACL: selecting that folder must
- * still resolve to one prefix (#11235).
+ * the Windows agent records a folder whose security descriptor it captured or
+ * whose Hidden/System attributes it preserves: selecting that folder must still
+ * resolve to one prefix (#11235).
  */
 export function manifestEntryKind(i: number, largestFolder: number): ManifestEntryKind {
   if (i === 0) return 'dir';

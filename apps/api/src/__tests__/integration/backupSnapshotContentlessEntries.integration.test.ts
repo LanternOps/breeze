@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 import { db, runOutsideDbContext, withDbAccessContext } from '../../db';
 import { hydrateSnapshotFileIndex } from '../../services/backupSnapshotFileIndex';
 import {
+  decodeBrowseCursor,
   dirSegments,
   listSnapshotDirectory,
   resolveSelectedSnapshotPathsInDb,
@@ -53,7 +54,7 @@ async function hydratedSnapshot() {
     deps: { openManifest: async () => Readable.from([manifestOf(snapshotId)]) },
   }));
   const read = <T,>(fn: () => Promise<T>) => runOutsideDbContext(() => withDbAccessContext(orgContext(t.orgId), fn));
-  return { snapshotDbId, outcome, read };
+  return { snapshotId, snapshotDbId, outcome, read };
 }
 
 const shape = (entries: Array<{ name: string; type: string; path: string; fileCount?: number }>) =>
@@ -99,6 +100,45 @@ describe('hydrated index with content-less entries (#11235)', () => {
       ['current', 'file', '/srv/current', undefined],
     ]);
     expect((await list('/C:/Data/Empty')).entries).toEqual([]);
+    // Inside a folder with its own entry: what is beneath it, never the folder.
+    expect(shape((await list('/C:/Data/Shared')).entries)).toEqual([
+      ['a.txt', 'file', 'C:/Data/Shared/a.txt', undefined],
+      ['b.txt', 'file', 'C:/Data/Shared/b.txt', undefined],
+    ]);
+  });
+
+  runDb('browse pages one entry at a time across folders made only of their own entry', async () => {
+    const { snapshotDbId, read } = await hydratedSnapshot();
+    const names: string[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 10; page += 1) {
+      const result = await read(() => listSnapshotDirectory({
+        snapshotDbId, segments: dirSegments('/C:/Data'), limit: 1, cursor: cursor ? decodeBrowseCursor(cursor) : null,
+      }));
+      names.push(...result.entries.map((e) => `${e.type}:${e.name}`));
+      cursor = result.nextCursor;
+      if (!cursor) break;
+    }
+    expect(names).toEqual(['directory:Empty', 'directory:Shared', 'file:link-to-a']);
+  });
+
+  runDb('a content-less row of unknown kind, written before kinds were recorded, still lists as a file', async () => {
+    const { snapshotDbId, read } = await hydratedSnapshot();
+    await getTestDb().execute(sql`
+      INSERT INTO backup_snapshot_files (snapshot_db_id, source_path, backup_path) VALUES (${snapshotDbId}, '/srv/legacy-entry', '')
+    `);
+
+    const srv = await read(() => listSnapshotDirectory({ snapshotDbId, segments: dirSegments('/srv'), limit: 50 }));
+    expect(shape(srv.entries)).toEqual([
+      ['empty', 'directory', '/srv/empty', 0],
+      ['releases', 'directory', '/srv/releases', 1],
+      ['current', 'file', '/srv/current', undefined],
+      ['legacy-entry', 'file', '/srv/legacy-entry', undefined],
+    ]);
+    const root = await read(() => listSnapshotDirectory({ snapshotDbId, segments: [], limit: 50 }));
+    expect(shape(root.entries)).toContainEqual(['srv', 'directory', '/srv', 3]);
+    // Still no storage key.
+    expect(await read(() => drizzleBrokeredReadStore.countIndexedFiles(snapshotDbId))).toBe(3);
   });
 
   runDb('search finds a directory entry as a folder at its browse path', async () => {
@@ -114,6 +154,17 @@ describe('hydrated index with content-less entries (#11235)', () => {
     expect((await search('link-to')).entries.map((e) => [e.name, e.type, e.path])).toEqual([
       ['link-to-a', 'file', 'C:/Data/link-to-a'],
     ]);
+  });
+
+  runDb('a folder found by search selects as the entry the agent restores', async () => {
+    const { snapshotDbId, read } = await hydratedSnapshot();
+    const hits = (await read(() => searchSnapshotFiles({ snapshotDbId, query: 'empty', limit: 50, after: null }))).entries;
+    const resolved = await Promise.all(hits.map((hit) =>
+      read(() => resolveSelectedSnapshotPathsInDb(snapshotDbId, [hit.path])).then((r) => [hit.path, r] as const)));
+    expect(Object.fromEntries(resolved)).toEqual({
+      '/C:/Data/Empty': { ok: true, paths: ['C:\\Data\\Empty'] },
+      '/srv/empty': { ok: true, paths: ['/srv/empty'] },
+    });
   });
 
   runDb('selection resolves an empty folder and a symlink to the paths the agent restores', async () => {
@@ -137,5 +188,14 @@ describe('hydrated index with content-less entries (#11235)', () => {
     const { snapshotDbId, read } = await hydratedSnapshot();
 
     expect(await read(() => drizzleBrokeredReadStore.countIndexedFiles(snapshotDbId))).toBe(3);
+  });
+
+  runDb('a content-less row never makes the empty key a member of the index', async () => {
+    const { snapshotId, snapshotDbId, outcome, read } = await hydratedSnapshot();
+    const sha = (outcome as { manifestSha256: string }).manifestSha256;
+    const fileKey = `snapshots/${snapshotId}/files/a`;
+
+    const members = await read(() => drizzleBrokeredReadStore.filterIndexedKeys(snapshotDbId, ['', fileKey], sha));
+    expect([...members]).toEqual([fileKey]);
   });
 });

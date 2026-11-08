@@ -6,7 +6,8 @@ export type { SnapshotEntryKind };
  * The `backup_snapshot_files.kind` for a manifest or result entry (#11235):
  * 'dir' or 'symlink' for a content-less entry (agent/internal/backup/snapshot.go
  * SnapshotFile.Kind, which uploads nothing and carries backupPath ''), null for
- * anything that names an object. Both index writers, hydration and the agent's
+ * an entry that names an object and for a content-less one of a kind this
+ * server does not know. Both index writers, hydration and the agent's
  * inline rows, store it through this so one snapshot lists one tree.
  *
  * An entry with a backupPath is a file whatever its kind says: storage access

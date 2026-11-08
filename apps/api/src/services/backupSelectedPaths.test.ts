@@ -387,6 +387,23 @@ describe('resolve — directory and symlink entries (#11235)', () => {
     expect(resolveRows(['/srv/current'], rows)).toEqual({ ok: true, paths: ['/srv/current'] });
   });
 
+  it('a mixed folder too large to expand counts its own entry with its files in too_many', () => {
+    const rows = [
+      { path: 'C:\\mix', kind: 'dir' as const },
+      ...Array.from({ length: 50_000 }, (_, i) => ({ path: i % 2 === 0 ? `C:\\mix\\f${i}.txt` : `C:/mix/f${i}.txt` })),
+    ];
+    expect(resolveRows(['/C:/mix'], rows)).toEqual({
+      ok: false, invalidPath: '/C:/mix', reason: 'too_many', count: 50_001, limit: MAX_SELECTED_RESTORE_FILES,
+    });
+  });
+
+  it('a folder recorded under more spellings than are kept is ambiguous, not silently cut short', () => {
+    // 17 spellings of the same segments: C:\x, C:\x\, C:\x\\, ...
+    const rows = Array.from({ length: 17 }, (_, i) => ({ path: `C:\\x${'\\'.repeat(i)}`, kind: 'dir' as const }));
+    expect(resolveRows(['/C:/x'], rows)).toEqual({ ok: false, invalidPath: '/C:/x', reason: 'ambiguous' });
+    expect(resolveRows(['/C:/x'], rows.slice(0, 16))).toEqual({ ok: true, paths: rows.slice(0, 16).map((r) => r.path) });
+  });
+
   it('a content-less row of unknown kind (written before kinds were recorded) is not a folder by its browse path', () => {
     expect(resolveRows(['/C:/Data/Empty'], [{ path: 'C:\\Data\\Empty' }]))
       .toEqual({ ok: false, invalidPath: '/C:/Data/Empty', reason: 'not_found' });

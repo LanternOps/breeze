@@ -1,8 +1,9 @@
 -- backup_snapshot_files.kind: what a content-less index row is (#11235).
 --
 -- A manifest entry that uploads nothing (backup_path '') is a directory the
--- agent recorded (empty, non-default mode/owner, or a pattern-excluded
--- placeholder) or a symlink: agent/internal/backup/snapshot.go
+-- agent recorded (empty, non-default mode/owner, a Windows folder with
+-- preserved attributes or a captured security descriptor, or a
+-- pattern-excluded placeholder) or a symlink: agent/internal/backup/snapshot.go
 -- SnapshotFile.Kind. The server-built (hydrated) index used to drop them while
 -- the agent's inline rows kept them, so one snapshot listed two trees. Both
 -- writers now keep them and record which they are here, so browse can show a
@@ -15,9 +16,9 @@
 --
 -- ADD COLUMN without a default is metadata-only. The CHECK is NOT VALID and
 -- left that way: every existing row is NULL, which it allows, and validating
--- would scan a table holding up to millions of rows per snapshot during API
--- boot. New and updated rows are checked either way. No RLS change: the table
--- keeps its snapshot-keyed policies, and the new column is covered by them.
+-- would scan a table that can hold millions of rows during API boot. New and
+-- updated rows are checked either way. No RLS change: the table keeps its
+-- snapshot-keyed policies, and the new column is covered by them.
 --
 -- Idempotent. Writes no rows.
 

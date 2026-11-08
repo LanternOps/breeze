@@ -210,6 +210,8 @@ export const drizzleBrokeredReadStore: BrokeredReadStore = {
       .where(and(
         eq(backupSnapshotFiles.snapshotDbId, snapshotDbId),
         inArray(backupSnapshotFiles.backupPath, keys),
+        // A content-less row (#11235) names no object, whatever key is asked.
+        ne(backupSnapshotFiles.backupPath, ''),
         boundIndexCondition(boundManifestSha256),
       ));
     return new Set(rows.map((r) => r.backupPath));

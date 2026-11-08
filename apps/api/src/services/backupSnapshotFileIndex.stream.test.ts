@@ -438,6 +438,23 @@ describe('hydrateSnapshotFileIndex over a stream', () => {
     ]);
   });
 
+  it('a manifest of nothing but directory and symlink entries publishes them all, with no origins (#11235)', async () => {
+    loadSnapshot();
+    const files = [
+      { sourcePath: '/srv', backupPath: '', kind: 'dir' },
+      { sourcePath: '/srv/empty', backupPath: '', kind: 'dir' },
+      { sourcePath: '/srv/current', backupPath: '', kind: 'symlink', linkTarget: 'releases/1' },
+    ];
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: deps(async () => stream(manifest(files))) });
+    expect(outcome).toMatchObject({ status: 'complete', entryCount: 3, externalCount: 0, originSnapshotIds: [] });
+    expect(committed.rows.map((r) => [r.source_path, r.kind])).toEqual([
+      ['/srv', 'dir'],
+      ['/srv/empty', 'dir'],
+      ['/srv/current', 'symlink'],
+    ]);
+    expect(committed.statuses).toContain('complete');
+  });
+
   it('indexes the original path of a VSS entry', async () => {
     loadSnapshot();
     const files = [{ sourcePath: '\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\x', originalPath: 'C:\\x', backupPath: ownKey(1) }];
