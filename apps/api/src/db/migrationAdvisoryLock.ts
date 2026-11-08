@@ -100,7 +100,11 @@ export interface MigrationLockWaitOptions {
   /** Minimum gap between repeated "still waiting" lines. Default 30s. */
   progressLogIntervalMs?: number;
   logger?: Pick<Console, 'log' | 'warn'>;
-  /** Test seams: a fake clock instead of real time. */
+  /**
+   * Test seams: a fake clock instead of real time. The default clock is
+   * monotonic (`performance.now`), so a wall-clock step during the wait can
+   * neither cut the deadline short nor stretch it.
+   */
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -230,7 +234,7 @@ export async function acquireMigrationAdvisoryLock(
   const progressLogIntervalMs = options.progressLogIntervalMs ?? DEFAULT_PROGRESS_LOG_INTERVAL_MS;
   assertPositiveMs(progressLogIntervalMs, 'progressLogIntervalMs');
   const logger = options.logger ?? console;
-  const now = options.now ?? Date.now;
+  const now = options.now ?? (() => performance.now());
   const sleep = options.sleep ?? realSleep;
   const { label } = options;
 

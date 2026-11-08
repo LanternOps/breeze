@@ -15,7 +15,7 @@ import {
 import { MigrationLockTimeoutError } from '../../db/migrationAdvisoryLock';
 
 /**
- * Real-Postgres proof of the two guarantees the unit runner cannot express:
+ * Real-Postgres proof of the guarantees the unit runner cannot express:
  *   1. atomic rollback — a migration file that fails mid-way leaves NO table and
  *      NO ledger row (the INSERT into breeze_migrations shares the file's tx).
  *   2. advisory-lock serialization — two callers contend for the SAME extension
@@ -180,7 +180,7 @@ describe('reconcileExtensionMigrations against real Postgres', () => {
       // in each reconciler's log rather than as a server-side lock wait.
       const waitedOnHolder = (logger: typeof firstLogger) =>
         logger.warn.mock.calls.some((c) => String(c[0]).includes(`held by backend pid ${holderPid}`));
-      for (let attempt = 0; attempt < 200; attempt++) {
+      for (let attempt = 0; attempt < 600; attempt++) {
         if (waitedOnHolder(firstLogger) && waitedOnHolder(secondLogger)) { bothWaited = true; break; }
         await new Promise((r) => setTimeout(r, 25));
       }

@@ -235,7 +235,9 @@ describe('acquireMigrationAdvisoryLock', () => {
       }),
     ).rejects.toBeInstanceOf(MigrationLockTimeoutError);
 
-    expect(tryCount()).toBeLessThanOrEqual(2);
+    // t=0 try (→3s), progress lookup (→6s), deadline already passed so the
+    // sleep is 0, t=6s try (→9s) → over the deadline → throw. Exactly two.
+    expect(tryCount()).toBe(2);
   });
 
   it('still times out — with "holder unknown" — when the holder lookup itself fails', async () => {

@@ -57,6 +57,21 @@ async function holdersOf(key: string): Promise<number[]> {
   return rows.map((r) => Number(r.pid));
 }
 
+/**
+ * Backend pids QUEUED on the advisory lock for `key` (an ungranted pg_locks
+ * row) — what a blocking `pg_advisory_lock` waiter looks like. A polling
+ * waiter never appears here.
+ */
+async function queuedOn(key: string): Promise<number[]> {
+  const rows = await observer<{ pid: number }[]>`
+    WITH k AS (SELECT hashtextextended(${key}, 0) AS v)
+    SELECT l.pid FROM k, pg_locks l
+    WHERE l.locktype = 'advisory' AND NOT l.granted AND l.objsubid = 1
+      AND l.classid = ((k.v >> 32) & 4294967295)::oid
+      AND l.objid = (k.v & 4294967295)::oid`;
+  return rows.map((r) => Number(r.pid));
+}
+
 function captureLogger() {
   return { log: vi.fn(), warn: vi.fn() };
 }
@@ -84,7 +99,10 @@ describe('bounded migration advisory lock against real Postgres (#4144)', () => 
     // lookup found it in pg_locks.
     await vi.waitFor(() => expect(secondLogger.warn).toHaveBeenCalled(), { timeout: 10_000, interval: 25 });
     expect(String(secondLogger.warn.mock.calls[0]![0])).toContain(`held by backend pid ${firstPid}`);
-    // Waiting is polling, not a server-side lock wait that pins the backend.
+    // Waiting is polling, not a server-side lock wait that pins the backend:
+    // the second session is never queued on the lock (a blocking
+    // pg_advisory_lock would show here as an ungranted row).
+    expect(await queuedOn(TEST_KEY)).toEqual([]);
     expect(await holdersOf(TEST_KEY)).toEqual([firstPid]);
 
     await releaseMigrationAdvisoryLock(first, TEST_KEY);
@@ -104,14 +122,15 @@ describe('bounded migration advisory lock against real Postgres (#4144)', () => 
       logger: captureLogger(),
     });
 
-    const startedAt = Date.now();
+    // Same monotonic clock the helper measures its deadline with.
+    const startedAt = performance.now();
     const error = await acquireMigrationAdvisoryLock(second, TEST_KEY, {
       label: '[second]',
       timeoutMs: 600,
       pollIntervalMs: 50,
       logger: captureLogger(),
     }).catch((e: unknown) => e);
-    const waitedMs = Date.now() - startedAt;
+    const waitedMs = performance.now() - startedAt;
 
     expect(error).toBeInstanceOf(MigrationLockTimeoutError);
     expect((error as MigrationLockTimeoutError).holderPid).toBe(firstPid);
