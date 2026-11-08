@@ -1,6 +1,8 @@
 -- device_oem_policy_side (#11242, follow-up to #11065 W09): what a device's
 -- vendor updates policy contributes to its display state, materialised per
--- device by the worker so the fleet view can count and page in SQL.
+-- device by the policy-side refresh (services/oemUpdates/policySideStore.ts: the
+-- worker tick, a targeted job after a policy write, and the fleet request for a
+-- bounded number of pending devices) so the fleet view can count and page in SQL.
 --
 -- The time-stable half only: the lane the hardware offers, the winning link,
 -- its reboot mode, the current occurrence's last night and rollover instant,
@@ -12,13 +14,14 @@
 -- Derived per-device state, not config, so `org_id NOT NULL` is the DEVICE's
 -- org and the partner-wide-first shape does not apply. RLS shape 1.
 --
--- Every row is a device the worker has computed: `offered_lane` NULL means "no
+-- Every row is a device the refresh has computed: `offered_lane` NULL means "no
 -- lane", and a missing row means "not computed yet", which the route treats as
 -- pending. `link_id` is a bare uuid: a derived pointer, recomputed on every
 -- refresh, not a reference to keep alive.
 --
--- No json/jsonb/bytea column: every column classifies `included` in
--- CORE_TENANT_EXPORT_POLICY. No rows are written here, so no system-scope
+-- No json/jsonb/bytea column: every column is included in
+-- CORE_TENANT_EXPORT_POLICY (refresh_after as reviewed, for the name heuristic).
+-- No rows are written here, so no system-scope
 -- election is needed.
 
 CREATE TABLE IF NOT EXISTS device_oem_policy_side (

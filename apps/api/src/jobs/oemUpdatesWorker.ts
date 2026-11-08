@@ -22,7 +22,9 @@
  *     again at the seam, so with them closed nothing reaches a device.
  *  5. Overdue alerts (`overdueSweep.ts`), last: a page never holds up a run.
  *
- * With nothing armed and nothing owed, a tick is a few small reads.
+ * With the flag off, nothing armed and nothing owed, a tick is a few small reads. With
+ * the flag on, the policy-side stage also reads every fleet device, 500 a page, and
+ * writes only the rows that changed.
  */
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, gt, isNotNull, lte, ne } from 'drizzle-orm';
@@ -270,8 +272,9 @@ async function runScheduledDispatch(now: Date): Promise<void> {
  * no policy write announces show within one tick. Unchanged rows are not rewritten.
  */
 async function runPolicySideRefresh(now: Date): Promise<void> {
-  const due = await refreshOemPolicySide({ now, dueOnly: true });
-  const all = await refreshOemPolicySide({ now });
+  // A failed page is reported by the refresh itself; the next tick computes it again.
+  const due = await refreshOemPolicySide({ now, dueOnly: true, source: 'tick' });
+  const all = await refreshOemPolicySide({ now, source: 'tick' });
   if (due.upserted + all.upserted > 0 || due.failedPages + all.failedPages > 0) {
     console.log('[OemUpdates] policy side', { due: due.upserted, refreshed: all.upserted, failedPages: due.failedPages + all.failedPages });
   }
@@ -334,15 +337,22 @@ export async function requestOemPolicySideRefresh(scope: OemPolicySideRefreshSco
     });
   } catch (error) {
     console.error(`[OemUpdates] could not queue a policy side refresh for ${key}; the next tick covers it:`, error);
-    captureException(error instanceof Error ? error : new Error(String(error)), undefined, { worker: 'oemUpdatesWorker' });
+    captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+      worker: 'oemUpdatesWorker',
+      stage: 'policy side enqueue',
+    });
   }
 }
 
+/** Fails the job when a page failed, so the queue records it rather than a clean completion. */
 async function runPolicySideRefreshJob(data: PolicySideRefreshJobData): Promise<void> {
   const { type: _type, ...target } = data;
   const scope = await resolveOemPolicySideRefreshScope(target as OemPolicySideRefreshTarget);
   if (!scope) return;
-  await refreshOemPolicySide({ now: new Date(), scope });
+  const result = await refreshOemPolicySide({ now: new Date(), scope, source: 'policy-write' });
+  if (result.failedPages > 0) {
+    throw new Error(`policy side refresh: ${result.failedPages} page(s) failed; the next tick covers them`);
+  }
 }
 
 async function processJob(job: Job<OemUpdatesJobData>): Promise<void> {

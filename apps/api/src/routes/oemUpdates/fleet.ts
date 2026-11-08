@@ -229,21 +229,24 @@ function refreshScopeFor(auth: AuthContext, orgId: string | undefined): OemPolic
  * `counts` covers the org and lane filters and not `state`, so the tab can show every
  * state while its list shows one. `total` is the list's length before paging.
  *
- * Two statements per request, whatever the size of the fleet (#11242): one pass over
- * the scope for the counts and the page's ids, then the page's rows (none for an empty
- * page). Nothing about the scope is shipped to or classified in this process.
- * A state is derived, not stored: it depends on the policy's
- * schedule in the device's zone, and that rule must stay the one
- * `deriveOemDisplayState` holds. The worker materialises the part of it that is stable
- * between known instants (`device_oem_policy_side`) and the rest is evaluated in SQL
- * against this request's clock (`oemDisplayStateSql`, pinned to the TS rule by a parity
- * test). Zones resolve in system scope there, so an org-scoped caller sees a zone set
- * only on its partner the same way a partner caller and the overdue alerts do.
+ * With no device pending, two statements per request whatever the size of the fleet
+ * (#11242): one pass over the scope for the counts and the page's ids, then the page's
+ * rows (none for an empty page). The scope is never shipped to or classified in this
+ * process.
+ *
+ * A state is derived, not stored: it depends on the policy's schedule in the device's
+ * zone, and that rule must stay the one `deriveOemDisplayState` holds. The policy-side
+ * refresh materialises the part of it that is stable between known instants
+ * (`device_oem_policy_side`) and the rest is evaluated in SQL against this request's
+ * clock (`oemDisplayStateSql`, pinned to the TS rule by a parity test). Zones resolve in
+ * system scope there, so an org-scoped caller sees a zone set only on its partner the
+ * same way a partner caller and the overdue alerts do.
  *
  * A device with no trusted policy side (new, past its occurrence's rollover, or
- * computed under other gates) is pending: up to 500 are refreshed here and the counts
- * read again; above that the worker is asked and the answer carries `pendingRefresh`,
- * with those devices read as not managed until it lands.
+ * computed under other gates) is pending. Up to 500 are refreshed here (computed in
+ * this process, a bounded set) and the first statement runs again. Above that, or for
+ * any the refresh could not compute, the worker is asked; the answer carries
+ * `pendingRefresh` and those devices read as not managed until it lands.
  *
  * A system caller names an org, because the scope would otherwise be the platform.
  */
@@ -281,11 +284,19 @@ oemUpdatesFleetRoutes.get(
 
     const filter: FleetFilter = { lane, state, limit, offset };
     let summary = await readSummary(read, filter);
-    if (summary.pending > 0 && summary.pending <= OEM_FLEET_PENDING_REFRESH_LIMIT) {
+    let handToWorker = summary.pending > OEM_FLEET_PENDING_REFRESH_LIMIT;
+    if (summary.pending > 0 && !handToWorker) {
       // Ids the caller's own RLS-scoped statement returned: the refresh never widens past them.
-      await refreshOemPolicySide({ now: read.now, scope: { deviceIds: await pendingDeviceIds(read) } });
+      const refreshed = await refreshOemPolicySide({
+        now: read.now,
+        scope: { deviceIds: await pendingDeviceIds(read) },
+        source: 'fleet-request',
+      });
       summary = await readSummary(read, filter);
-    } else if (summary.pending > 0) {
+      // What this request could not compute goes to the worker rather than waiting for the tick.
+      handToWorker = refreshed.failedPages > 0 && summary.pending > 0;
+    }
+    if (handToWorker) {
       const scope = refreshScopeFor(auth, orgId);
       if (scope) scheduleOemPolicySideRefresh(scope, 'fleet-pending');
     }

@@ -102,6 +102,6 @@ describe('scheduleOemPolicySideRefresh', () => {
     const boom = new Error('redis down');
     h.requestMock.mockRejectedValueOnce(boom);
     await expect(run({ partnerId: 'p-1' })).resolves.toBeUndefined();
-    expect(h.captureMock).toHaveBeenCalledWith(boom);
+    expect(h.captureMock).toHaveBeenCalledWith(boom, undefined, { stage: 'policy side trigger', trigger: 'test' });
   });
 });

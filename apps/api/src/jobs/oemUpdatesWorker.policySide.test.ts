@@ -75,7 +75,7 @@ describe('runOemUpdatesTick: the policy side stage', () => {
     await runOemUpdatesTick(NOW);
 
     const calls = vi.mocked(refreshOemPolicySide).mock.calls.map(([opts]) => opts);
-    expect(calls).toEqual([{ now: NOW, dueOnly: true }, { now: NOW }]);
+    expect(calls).toEqual([{ now: NOW, dueOnly: true, source: 'tick' }, { now: NOW, source: 'tick' }]);
     const order = vi.mocked(refreshOemPolicySide).mock.invocationCallOrder;
     expect(order[1]!).toBeLessThan(vi.mocked(runOemReleaseSweep).mock.invocationCallOrder[0]!);
     expect(order[1]!).toBeLessThan(vi.mocked(runOemOverdueSweep).mock.invocationCallOrder[0]!);
@@ -127,6 +127,15 @@ describe('the worker processor', () => {
 
     await h.processor!({ name: 'tick', data: { type: 'tick' } });
     expect(runOemOverdueSweep).toHaveBeenCalledTimes(1);
+  });
+
+  it('a refresh job with a failed page fails, so the queue records it', async () => {
+    await initializeOemUpdatesWorker();
+    vi.mocked(refreshOemPolicySide).mockResolvedValueOnce({ upserted: 10, pages: 3, failedPages: 1 });
+
+    await expect(h.processor!({ name: 'policy-side-refresh', data: { type: 'policy-side-refresh', orgId: 'o1' } }))
+      .rejects.toThrow(/1 page\(s\) failed/);
+    expect(vi.mocked(refreshOemPolicySide).mock.calls[0]![0]).toMatchObject({ scope: { orgId: 'o1' }, source: 'policy-write' });
   });
 
   it('a policy id resolving to nothing refreshes nothing', async () => {

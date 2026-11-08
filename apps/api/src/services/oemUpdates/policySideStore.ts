@@ -12,15 +12,17 @@
  *  - for one partner or org within seconds of a write to its vendor updates policy
  *    links or assignments (`policySideRefreshTrigger.ts`);
  *  - in the fleet request itself, for a bounded number of devices it found pending.
- * A row is *pending* (not trusted, never silently "not managed") when it is missing,
+ * A row is *pending* (not trusted: the fleet view does not join it, refreshes it in the
+ * request when it can, and otherwise says how many are pending) when it is missing,
  * its `refresh_after` has passed, or its `gates_fingerprint` differs from this
  * process's: env flags, kill switches and the manifest are fixed per deploy, so a kill
  * switch flipped at deploy is authoritative before the first tick. Device-side changes
  * outside those paths (hardware model, role, site or group membership, zone settings)
  * show within one tick.
  *
- * With the flag off nothing is written: the fleet view leaves the policy side out of
- * its query then, and no device can be offered a lane anyway.
+ * With the flag off nothing is written (rows already stored stay, unused): the fleet
+ * view leaves the policy side out of its query then, and no device can be offered a
+ * lane anyway.
  */
 import { createHash } from 'node:crypto';
 import { and, eq, gt, inArray, isNull, ne, not, or, sql, type SQL } from 'drizzle-orm';
@@ -84,11 +86,11 @@ export type OemPolicySideScope = { partnerId: string } | { orgId: string } | { d
  * Which devices the fleet view lists, and so which ones need a row.
  *
  * The parked check is `notParkedDeviceCondition`'s rule written as `NOT IN` over the
- * holding orgs, which Postgres runs once as a hashed subplan: the correlated
- * `NOT EXISTS` form re-reads `organizations` (and re-evaluates its RLS) for every
- * device, the largest single cost of a 10,000-device count under a tenant context.
- * Same answer: `organizations.id` is a NOT NULL key, and a caller who can read a
- * device can read its org.
+ * holding orgs, which Postgres can run once as a hashed subplan (the 10,000-device
+ * fleet test's plans do): the correlated `NOT EXISTS` form re-reads `organizations`,
+ * and re-evaluates its RLS, for every device, about a quarter of a 10,000-device count
+ * under a partner context when measured for #11242. Same answer: `organizations.id`
+ * and `devices.org_id` are NOT NULL, and a caller who can read a device can read its org.
  */
 export function oemFleetDeviceCondition(): SQL {
   return and(
@@ -112,7 +114,8 @@ let fingerprintMemo: { key: string; value: string } | null = null;
 /**
  * Everything outside the database that can change a device's policy side, hashed:
  * the master flag, the partner allowlist, the kill switches, the lab override, and
- * the manifest's gates and shipped lanes. Recomputed only when the env changes.
+ * the manifest's gates and shipped lanes. The canonical form is rebuilt on each call
+ * (it is small); the hash is recomputed only when that form changes.
  */
 export function oemGatesFingerprint(): string {
   const canonical = JSON.stringify({
@@ -302,6 +305,9 @@ async function upsertRows(rows: OemPolicySideRow[], now: Date): Promise<number> 
 
 export type OemPolicySideRefreshResult = { upserted: number; pages: number; failedPages: number };
 
+/** Who asked for a refresh, for the error report. */
+export type OemPolicySideRefreshSource = 'tick' | 'policy-write' | 'fleet-request';
+
 /**
  * Recomputes and stores the policy side for the scope's fleet devices, in keyset pages
  * of 500, each page in its own short system context (#1105): the zone chain and
@@ -311,13 +317,19 @@ export type OemPolicySideRefreshResult = { upserted: number; pages: number; fail
  *
  * `dueOnly` takes just the pending rows (missing, past `refresh_after`, or another
  * fingerprint). The links are re-read per page, so a policy edited during a long run
- * reaches every page written after it. A failed page is reported and skipped: the
- * next tick computes it again.
+ * reaches every page written after it.
+ *
+ * A page that fails after it was read is skipped and the run goes on; a page that
+ * cannot be read ends the run, having no cursor to move past it. Either way the
+ * result counts it in `failedPages`, the first failure of the run is reported (one
+ * event per run, not per page, so a database fault cannot burst), and the next tick
+ * computes what was missed.
  */
 export async function refreshOemPolicySide(opts: {
   now: Date;
   scope?: OemPolicySideScope;
   dueOnly?: boolean;
+  source?: OemPolicySideRefreshSource;
 }): Promise<OemPolicySideRefreshResult> {
   const result: OemPolicySideRefreshResult = { upserted: 0, pages: 0, failedPages: 0 };
   if (!oemUpdatesFlagOn()) return result;
@@ -360,11 +372,17 @@ export async function refreshOemPolicySide(opts: {
       }));
     } catch (error) {
       result.failedPages += 1;
-      console.error('[OemUpdates] policy side refresh: a page failed', error);
-      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
-        worker: 'oemUpdatesWorker',
-        stage: 'policy side',
-      });
+      const scopeKind = !opts.scope ? 'fleet' : 'deviceIds' in opts.scope ? 'devices' : 'orgId' in opts.scope ? 'org' : 'partner';
+      console.error(`[OemUpdates] policy side refresh (${opts.source ?? 'tick'}, ${scopeKind}): a page failed`, error);
+      if (result.failedPages === 1) {
+        captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+          worker: 'oemUpdatesWorker',
+          stage: 'policy side',
+          source: opts.source ?? 'tick',
+          scope: scopeKind,
+          dueOnly: String(opts.dueOnly === true),
+        }, { fingerprint: ['oem-policy-side-refresh-page'] });
+      }
       // Without the page's ids there is no cursor to move past it.
       if (lastId === null) return result;
     }

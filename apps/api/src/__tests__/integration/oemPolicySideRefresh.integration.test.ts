@@ -12,6 +12,7 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { eq, inArray, sql } from 'drizzle-orm';
+import { PostgresJsSession } from 'drizzle-orm/postgres-js/session';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
   configPolicyAssignments,
@@ -228,6 +229,90 @@ describe('#11242 refreshOemPolicySide', () => {
     await refreshOemPolicySide({ now: new Date(), scope: { partnerId: partner.id } });
 
     expect((await rowsFor([kept.id, ephemeral.id, decommissioned.id, parkedId])).map((row) => row.deviceId)).toEqual([kept.id]);
+  });
+});
+
+describe('#11242 refreshOemPolicySide paging', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  /** Many fleet devices in one org, through the owner connection with triggers off. */
+  async function seedMany(orgId: string, siteId: string, count: number): Promise<void> {
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL session_replication_role = replica`);
+      await tx.execute(sql`
+        INSERT INTO devices (org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version, status, enrolled_at)
+        SELECT ${orgId}::uuid, ${siteId}::uuid, 'side-bulk-' || ${orgId} || '-' || n, 'side-bulk-' || lpad(n::text, 5, '0'),
+               'windows', '11', 'amd64', '0.127.0', 'online', ${LONG_AGO.toISOString()}::timestamp
+        FROM generate_series(1, ${count}::int) AS n
+      `);
+      await tx.execute(sql`
+        INSERT INTO device_hardware (device_id, org_id, manufacturer, model)
+        SELECT d.id, d.org_id, 'Dell Inc.', 'Latitude 7420' FROM devices d WHERE d.org_id = ${orgId}::uuid
+      `);
+    });
+  }
+
+  const storedCount = async (orgId: string) => (await getTestDb().execute(
+    sql`SELECT count(*)::int AS n FROM device_oem_policy_side WHERE org_id = ${orgId}::uuid`,
+  ) as unknown as Array<{ n: number }>)[0]!.n;
+
+  /** Makes the `nth` statement whose text matches `pattern` fail, through any session. */
+  function failNth(pattern: RegExp, nth: number) {
+    const prepare = PostgresJsSession.prototype.prepareQuery;
+    let seen = 0;
+    vi.spyOn(PostgresJsSession.prototype, 'prepareQuery').mockImplementation(function (
+      this: PostgresJsSession<never, never, never>,
+      ...args: Parameters<typeof prepare>
+    ) {
+      if (pattern.test(args[0].sql)) {
+        seen += 1;
+        if (seen === nth) throw new Error('injected failure');
+      }
+      return prepare.apply(this, args);
+    });
+  }
+
+  runDb('pages through more than 500 devices, and a full last page ends on an empty one', async () => {
+    const { org, site } = await fixture();
+    await seedMany(org.id, site.id, 1_000);
+    vi.stubEnv('BREEZE_OEM_UPDATES_ENABLED', 'true');
+    const now = new Date();
+
+    expect(await refreshOemPolicySide({ now, scope: { orgId: org.id } })).toEqual({ upserted: 1_000, pages: 3, failedPages: 0 });
+    expect(await storedCount(org.id)).toBe(1_000);
+
+    // One row lost: the due pass finds just that one.
+    await getTestDb().execute(sql`
+      DELETE FROM device_oem_policy_side
+      WHERE device_id = (SELECT device_id FROM device_oem_policy_side WHERE org_id = ${org.id}::uuid ORDER BY device_id DESC LIMIT 1)
+    `);
+    expect(await refreshOemPolicySide({ now, scope: { orgId: org.id }, dueOnly: true })).toEqual({ upserted: 1, pages: 1, failedPages: 0 });
+    expect(await storedCount(org.id)).toBe(1_000);
+  });
+
+  runDb('a page that fails to write is skipped, and the pages after it are still written', async () => {
+    const { org, site } = await fixture();
+    await seedMany(org.id, site.id, 1_001);
+    vi.stubEnv('BREEZE_OEM_UPDATES_ENABLED', 'true');
+    failNth(/^insert into "device_oem_policy_side"/i, 2);
+
+    const result = await refreshOemPolicySide({ now: new Date(), scope: { orgId: org.id } });
+
+    expect(result).toEqual({ upserted: 501, pages: 3, failedPages: 1 });
+    expect(await storedCount(org.id)).toBe(501);
+  });
+
+  runDb('a page that cannot be read ends the run', async () => {
+    const { org, site } = await fixture();
+    await seedMany(org.id, site.id, 10);
+    vi.stubEnv('BREEZE_OEM_UPDATES_ENABLED', 'true');
+    failNth(/"device_hardware"[\s\S]*"device_oem_policy_side"/, 1);
+
+    expect(await refreshOemPolicySide({ now: new Date(), scope: { orgId: org.id } })).toEqual({ upserted: 0, pages: 0, failedPages: 1 });
+    expect(await storedCount(org.id)).toBe(0);
   });
 });
 

@@ -207,8 +207,8 @@ async function sqlStates(rows: Row[], now: Date, timeZone: string): Promise<Map<
     },
   }, now);
   const result = await withSystemDbAccessContext(async () => {
-    // A zone that observes the DST change in the window under test, so calendar
-    // interval arithmetic would be an hour off against the 72 h rule.
+    // The caller's session zone. Under America/New_York the window under test crosses
+    // a DST change, so calendar interval arithmetic would be an hour off the 72 h rule.
     await db.execute(sql`SELECT set_config('TimeZone', ${timeZone}, true)`);
     return db.execute(sql`
       SELECT r.idx, ${state} AS state
@@ -252,7 +252,7 @@ describe('#11242 oemDisplayStateSql', () => {
     ]));
   });
 
-  runDb('a 72 h hold reads reboot overdue exactly at 72 h in any session zone', async () => {
+  runDb('a 72 h hold reads reboot overdue exactly at 72 h, whatever the session zone', async () => {
     const held = { ...NO_STATUS, applicability: 'applicable' as const, reboot_pending_since: iso(new Date(NOW.getTime() - 72 * HOUR)) };
     const rows: Row[] = [{ idx: 0, ...held, ...policy(true, PAST_AT[3]!, null) }];
     for (const zone of ['UTC', 'America/New_York', 'Australia/Lord_Howe']) {
@@ -261,7 +261,7 @@ describe('#11242 oemDisplayStateSql', () => {
   });
 
   runDb('a policy row whose refresh_after has passed still yields a state', async () => {
-    // The occurrence below rolled over a week ago: its values are the previous month's, and
+    // The occurrence below has rolled over: its values are an earlier month's, and
     // the rule still classifies them rather than failing on them.
     const stale: Row = {
       idx: 0,

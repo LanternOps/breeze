@@ -182,6 +182,7 @@ beforeEach(() => {
   h.joins = [];
   h.executed = [];
   h.refresh.mockReset();
+  h.refresh.mockResolvedValue({ upserted: 0, pages: 1, failedPages: 0 });
   h.schedule.mockReset();
   vi.mocked(db.execute).mockClear();
   vi.mocked(db.select).mockClear();
@@ -446,7 +447,7 @@ describe('GET /oem-updates/fleet: the policy side', () => {
     expect(Object.keys(h.selects[0]!)).toEqual(['id']);
     expect('hostname' in h.selects[1]!).toBe(true);
     expect(h.refresh).toHaveBeenCalledTimes(1);
-    expect(h.refresh).toHaveBeenCalledWith({ now: NOW, scope: { deviceIds: ['p-1', 'p-2', 'p-3'] } });
+    expect(h.refresh).toHaveBeenCalledWith({ now: NOW, scope: { deviceIds: ['p-1', 'p-2', 'p-3'] }, source: 'fleet-request' });
     expect(db.execute).toHaveBeenCalledTimes(2);
     expect(h.schedule).not.toHaveBeenCalled();
     expect(body).not.toHaveProperty('pendingRefresh');
@@ -462,6 +463,7 @@ describe('GET /oem-updates/fleet: the policy side', () => {
     expect(h.schedule).not.toHaveBeenCalled();
 
     h.refresh.mockReset();
+    h.refresh.mockResolvedValue({ upserted: 0, pages: 1, failedPages: 0 });
     h.summaries = [summary({ counts: { not_managed: 501 }, pending: 501 })];
     const { body } = await getFleet();
     expect(h.refresh).not.toHaveBeenCalled();
@@ -510,6 +512,36 @@ describe('GET /oem-updates/fleet: the policy side', () => {
     expect(body.pendingRefresh).toBe(2);
     // One refresh per request: a device that stays pending does not loop it.
     expect(h.schedule).not.toHaveBeenCalled();
+  });
+
+  it('devices the in-request refresh failed on go to the worker', async () => {
+    h.summaries = [
+      summary({ counts: { not_managed: 2 }, pending: 2 }),
+      summary({ counts: { not_managed: 2 }, pending: 2 }),
+    ];
+    h.pendingIds = [{ id: 'p-1' }, { id: 'p-2' }];
+    h.refresh.mockResolvedValue({ upserted: 0, pages: 1, failedPages: 1 });
+
+    const { body } = await getFleet();
+
+    expect(h.refresh).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(h.refresh).mock.calls[0]![0]).toMatchObject({ source: 'fleet-request' });
+    expect(h.schedule).toHaveBeenCalledWith({ partnerId: 'partner-1' }, 'fleet-pending');
+    expect(body.pendingRefresh).toBe(2);
+  });
+
+  it('a failed refresh that still left nothing pending asks the worker for nothing', async () => {
+    h.summaries = [
+      summary({ counts: { not_managed: 2 }, pending: 2 }),
+      summary({ counts: { up_to_date: 2 }, pending: 0 }),
+    ];
+    h.pendingIds = [{ id: 'p-1' }, { id: 'p-2' }];
+    h.refresh.mockResolvedValue({ upserted: 2, pages: 2, failedPages: 1 });
+
+    const { body } = await getFleet();
+
+    expect(h.schedule).not.toHaveBeenCalled();
+    expect(body.pendingRefresh).toBeUndefined();
   });
 
   it('a row with a stale gates fingerprint counts as pending', async () => {

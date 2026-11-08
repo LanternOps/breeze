@@ -102,7 +102,7 @@ export type OemPolicyRebootMode = (typeof OEM_POLICY_REBOOT_MODES)[number];
 
 /**
  * What a device's vendor updates policy contributes to its display state (#11242),
- * kept per device by the worker (`policySideStore.ts`) so the fleet view counts and
+ * kept per device by the policy-side refresh (`policySideStore.ts`) so the fleet view counts and
  * pages in SQL. Only the half that is stable between known instants: the query
  * compares `now` against these boundaries itself (`displayStateSql.ts`).
  *

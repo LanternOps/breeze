@@ -5,8 +5,8 @@
  * switched on or off, or deleted. The fleet view then shows the new state within
  * seconds instead of at the next worker tick.
  *
- * Kept apart from the store and the worker so configurationPolicy.ts pulls in nothing
- * but the DB helpers; the queue module is imported only once the write has committed.
+ * Kept apart from the store and the worker so configurationPolicy.ts pulls in no queue
+ * or worker code: the worker module is imported only once the write has committed.
  */
 import { and, eq } from 'drizzle-orm';
 import { runAfterDbContextCommit, withSystemDbAccessContext, db } from '../../db';
@@ -69,10 +69,17 @@ export function scheduleOemPolicySideRefresh(target: OemPolicySideRefreshTarget,
         await requestOemPolicySideRefresh(scope);
       } catch (error) {
         console.error(`[OemUpdates] policy side refresh after ${trigger} not requested; the next tick covers it:`, error);
-        captureException(error instanceof Error ? error : new Error(String(error)));
+        captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+          stage: 'policy side trigger',
+          trigger,
+        });
       }
     });
   } catch (error) {
     console.error(`[OemUpdates] could not schedule a policy side refresh after ${trigger}; the next tick covers it:`, error);
+    captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+      stage: 'policy side trigger',
+      trigger,
+    });
   }
 }

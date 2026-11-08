@@ -13,7 +13,9 @@
  *
  * Rules for keeping it faithful:
  *  - Branch order is exactly the TS function's.
- *  - Every constant is bound from its TS value, never written as a literal.
+ *  - Every threshold and outcome set is imported from the TS rule and bound as a
+ *    parameter. The status, mode and state strings are bound parameters too, and must
+ *    match the TS literals (the parity test fails if one drifts).
  *  - Every `IN (…)` test is wrapped in `COALESCE(…, false)`: `NULL IN (…)` is NULL, and
  *    `NOT NULL` is NULL too, which would silently skip a branch the TS takes.
  *  - A missing status row or policy side reads as all-NULL columns (a LEFT JOIN), the
