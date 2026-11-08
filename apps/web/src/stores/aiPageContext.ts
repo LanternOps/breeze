@@ -29,3 +29,12 @@ export function pageContextAnchorsOrg(
 export function wispPageHoldsChat(s: { wisp: WispState; wispPageThreadId: string | null }): boolean {
   return !!s.wispPageThreadId && s.wisp?.threadId === s.wispPageThreadId;
 }
+
+/**
+ * The docked pane defers to the page: it renders one line pointing at the
+ * page's composer instead of the conversation (its History list is still a
+ * real pane). The companion shell treats a handed-off pane as closed.
+ */
+export function wispPaneHandedOff(s: { wisp: WispState; wispPageThreadId: string | null; showHistory: boolean }): boolean {
+  return !s.showHistory && wispPageHoldsChat(s);
+}

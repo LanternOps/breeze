@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import { Paperclip } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { WispState } from '@/stores/aiStore';
@@ -8,23 +9,25 @@ import { useWispThreadAttachmentList, wispAttachmentsNeedFocus } from './useWisp
 /**
  * The docked pane's attachments (#critique): a paperclip in the composer with
  * a count, opening the thread's attachments above it. A partner-wide thread
- * with no customer focus cannot attach, and says so on the button rather than
- * after it opens.
+ * with no customer focus cannot attach, but it still opens: the attachments
+ * already on the thread stay readable, and the reason sits inline above the
+ * disabled inputs as the dialog's description.
  */
 export default function WispAttachmentsButton({ wisp }: { wisp: NonNullable<WispState> }) {
   const { t } = useTranslation('ai');
   const list = useWispThreadAttachmentList(wisp.threadId);
   const count = list.items.length;
   const title = t('wisp.attachments.title');
+  const reasonId = useId();
 
   return (
     <WispPopover
       label={title}
       triggerLabel={count > 0 ? `${title} (${count})` : title}
-      disabledReason={wispAttachmentsNeedFocus(wisp) ? t('wisp.attachments.focusRequired') : null}
+      describedBy={wispAttachmentsNeedFocus(wisp) ? reasonId : null}
       testId="wisp-attachments-toggle"
       panelTestId="wisp-attachments-popover"
-      triggerClassName="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground aria-disabled:cursor-not-allowed aria-disabled:opacity-50 aria-disabled:hover:bg-transparent"
+      triggerClassName="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
       panelClassName="bottom-full left-0 mb-2 max-h-[60vh] w-[22rem] max-w-[calc(100vw-2rem)] overflow-y-auto p-3"
       trigger={(
         <>
@@ -41,7 +44,7 @@ export default function WispAttachmentsButton({ wisp }: { wisp: NonNullable<Wisp
         </>
       )}
     >
-      <WispThreadAttachments wisp={wisp} list={list} showTitle={false} />
+      <WispThreadAttachments wisp={wisp} list={list} showTitle={false} reasonId={reasonId} />
     </WispPopover>
   );
 }

@@ -83,9 +83,9 @@ export type UseWispGrantControlsArgs = {
 
 /**
  * The Wisp grant header's state and mutations (W04 Task 8, W06, #10142,
- * #10390, #10973), shared by the full header (the Wisp rail) and the docked
- * pane's compact one: focus, refresh, turn-off, operational settings, and the
- * refresh-keeps-terms note. Layout lives with the callers.
+ * #10390, #10973), shared by the docked pane's header and the Wisp rail:
+ * focus, refresh, turn-off, operational settings, and the refresh-keeps-terms
+ * note. Layout lives with the callers.
  */
 export function useWispGrantControls({ wisp, orgName, onWispChange, onRevoked }: UseWispGrantControlsArgs): WispGrantControls {
   const { t } = useTranslation('ai');

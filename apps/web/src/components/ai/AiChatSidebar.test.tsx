@@ -217,7 +217,7 @@ vi.mock('./WispThreadHeader', () => ({
   default: (p: Record<string, unknown> & { wideningAvailable: boolean; orgName: string | null }) => {
     wispStub.header = p;
     return (
-      <div data-testid="wisp-header-stub" data-variant={String(p.variant)} data-widening={String(p.wideningAvailable)} data-org={p.orgName ?? ''}>
+      <div data-testid="wisp-header-stub" data-widening={String(p.wideningAvailable)} data-org={p.orgName ?? ''}>
         {p.paneActions as React.ReactNode}
         {p.closeAction as React.ReactNode}
       </div>
@@ -251,7 +251,6 @@ describe('AiChatSidebar Wisp mode (W04)', () => {
     vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp });
     render(<AiChatSidebar />);
     const header = screen.getByTestId('wisp-header-stub');
-    expect(header).toHaveAttribute('data-variant', 'compact');
     expect(header).toHaveAttribute('data-widening', 'true');
     expect(header).toContainElement(screen.getByTestId('ai-chat-history-toggle'));
     expect(header).toContainElement(screen.getByTestId('ai-chat-close'));

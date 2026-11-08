@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Sparkles } from 'lucide-react';
 import type { CurrentActivity } from '@breeze/shared';
@@ -39,7 +39,8 @@ export default function WispRailStrip({
   /**
    * Also shown from `lg` up: the shell collapses the rail to the strip there
    * while the docked AI pane is open. Off, `lg:hidden` keeps the strip out of
-   * a wide layout before the media query has answered.
+   * a wide layout before the media query has answered. On, a rail hash
+   * already in the URL at mount does not open the drawer (the aside showed it).
    */
   visibleWhenWide?: boolean;
 }) {
@@ -47,10 +48,13 @@ export default function WispRailStrip({
   // Closed on the first render (the server never sees the hash, #2421); the
   // effect adopts a rail hash on mount and on every later hash change.
   const [open, setOpen] = useState(false);
+  // Mounted at a wide width (the docked pane just opened), the aside already
+  // showed the rail for the hash: only a later hash change opens the drawer.
+  const adoptHashOnMount = useRef(!visibleWhenWide);
 
   useEffect(() => {
     const onHash = () => { if (railHash()) setOpen(true); };
-    onHash();
+    if (adoptHashOnMount.current) onHash();
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);

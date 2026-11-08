@@ -14,9 +14,16 @@ const showToast = vi.fn();
 vi.mock('@/components/shared/Toast', () => ({ showToast: (...a: unknown[]) => showToast(...a) }));
 
 import WispThreadAttachments from './WispThreadAttachments';
+import { useWispThreadAttachmentList } from './useWispThreadAttachmentList';
 import type { WispState } from '@/stores/aiStore';
 
 type Wisp = NonNullable<WispState>;
+
+/** As the composer paperclip mounts it: the list loaded by the hook, passed in. */
+function Attachments({ wisp: w, showTitle }: { wisp: Wisp; showTitle?: boolean }) {
+  const list = useWispThreadAttachmentList(w.threadId);
+  return <WispThreadAttachments wisp={w} list={list} showTitle={showTitle} />;
+}
 const wisp = { threadId: 't1', scopeOrgId: 'o1', focusOrgId: 'o1' } as unknown as Wisp;
 const item = (id: string, label: string) => ({
   id, threadId: 't1', orgId: 'o1', artifactId: 'a' + id, label, addedByUserId: null,
@@ -34,18 +41,18 @@ beforeEach(() => {
 describe('WispThreadAttachments', () => {
   it('lists attachments and shows the empty state when none', async () => {
     fetchWithAuth.mockResolvedValueOnce(listRes([item('1', 'Invoice mail'), { bogus: true }]));
-    const { unmount } = render(<WispThreadAttachments wisp={wisp} />);
+    const { unmount } = render(<Attachments wisp={wisp} />);
     const rows = await screen.findAllByTestId('wisp-attachment-item');
     expect(rows).toHaveLength(1);
     expect(rows[0]!.textContent).toContain('Invoice mail');
     expect(fetchWithAuth).toHaveBeenCalledWith('/wisp/thread/t1/attachments');
     unmount();
-    render(<WispThreadAttachments wisp={wisp} />);
+    render(<Attachments wisp={wisp} />);
     expect(await screen.findByTestId('wisp-attachments-empty')).toBeTruthy();
   });
 
   it('dropping a text file POSTs multipart through runAction and reloads', async () => {
-    render(<WispThreadAttachments wisp={wisp} />);
+    render(<Attachments wisp={wisp} />);
     await screen.findByTestId('wisp-attachments-empty');
     const file = new File(['hello'], 'a.txt', { type: 'text/plain' });
     fireEvent.drop(screen.getByTestId('wisp-attachment-drop'), { dataTransfer: { files: [file] } });
@@ -59,7 +66,7 @@ describe('WispThreadAttachments', () => {
   });
 
   it('pasted text POSTs JSON { text, label } through runAction', async () => {
-    render(<WispThreadAttachments wisp={wisp} />);
+    render(<Attachments wisp={wisp} />);
     await screen.findByTestId('wisp-attachments-empty');
     const add = screen.getByTestId('wisp-attachment-add') as HTMLButtonElement;
     expect(add.disabled).toBe(true);
@@ -73,7 +80,7 @@ describe('WispThreadAttachments', () => {
   });
 
   it('refuses a 6 MB file client-side with the too-large toast and no request', async () => {
-    render(<WispThreadAttachments wisp={wisp} />);
+    render(<Attachments wisp={wisp} />);
     await screen.findByTestId('wisp-attachments-empty');
     const big = new File([new Uint8Array(6 * 1024 * 1024)], 'big.csv', { type: 'text/csv' });
     fireEvent.change(screen.getByTestId('wisp-attachment-file'), { target: { files: [big] } });
@@ -84,9 +91,12 @@ describe('WispThreadAttachments', () => {
 
   it('is disabled with focus-required copy for a partner-wide thread with no focus', async () => {
     const w = { ...wisp, scopeOrgId: null, focusOrgId: null } as unknown as Wisp;
-    render(<WispThreadAttachments wisp={w} />);
+    const list = { items: [], loaded: true, loadFailed: false, reload: vi.fn(async () => {}) };
+    render(<WispThreadAttachments wisp={w} list={list} reasonId="reason-1" />);
     await screen.findByTestId('wisp-attachments-empty');
     expect(screen.getByTestId('wisp-attachments-focus-required').textContent).toBe('Pick a customer focus before attaching');
+    // The paperclip's popover names this line as its description.
+    expect(screen.getByTestId('wisp-attachments-focus-required').id).toBe('reason-1');
     expect((screen.getByTestId('wisp-attachment-paste') as HTMLTextAreaElement).disabled).toBe(true);
     expect((screen.getByTestId('wisp-attachment-add') as HTMLButtonElement).disabled).toBe(true);
     fireEvent.drop(screen.getByTestId('wisp-attachment-drop'), { dataTransfer: { files: [new File(['x'], 'a.txt')] } });
@@ -95,7 +105,7 @@ describe('WispThreadAttachments', () => {
 
   it('a failed list load shows the load-error line, not the empty state', async () => {
     fetchWithAuth.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) });
-    render(<WispThreadAttachments wisp={wisp} />);
+    render(<Attachments wisp={wisp} />);
     expect((await screen.findByTestId('wisp-attachments-load-error')).textContent).toBe('Could not load attachments');
     expect(screen.queryByTestId('wisp-attachments-empty')).toBeNull();
   });
@@ -108,7 +118,7 @@ describe('WispThreadAttachments', () => {
     runAction.mockImplementation((o: unknown) => real.runAction!(o));
     fetchWithAuth.mockImplementation(async (_url: string, init?: { method?: string }) =>
       init?.method === 'POST' ? { ok: false, status, json: async () => ({ error: 'server prose', code }) } : listRes([]));
-    render(<WispThreadAttachments wisp={wisp} />);
+    render(<Attachments wisp={wisp} />);
     await screen.findByTestId('wisp-attachments-empty');
     fireEvent.change(screen.getByTestId('wisp-attachment-paste'), { target: { value: 'From: a@b.c' } });
     fireEvent.click(screen.getByTestId('wisp-attachment-add'));
@@ -117,12 +127,12 @@ describe('WispThreadAttachments', () => {
   });
 
   it('showTitle=false drops its own title (the composer popover is already labelled)', async () => {
-    render(<WispThreadAttachments wisp={wisp} showTitle={false} />);
+    render(<Attachments wisp={wisp} showTitle={false} />);
     await screen.findByTestId('wisp-attachments-empty');
     expect(screen.queryByText('Attached to this thread')).toBeNull();
   });
 
-  it('a list passed in is rendered as is and not fetched again; an attach reloads through it', async () => {
+  it('renders the list it is given without fetching it again; an attach reloads through it', async () => {
     const reload = vi.fn(async () => {});
     const list = { items: [{ id: '1', label: 'Invoice mail', bytes: 2048, expiresAt: '2026-12-01T00:00:00Z' }], loaded: true, loadFailed: false, reload };
     render(<WispThreadAttachments wisp={wisp} list={list} />);

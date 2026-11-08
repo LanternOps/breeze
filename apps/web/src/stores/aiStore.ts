@@ -4,7 +4,7 @@ import type { AiAttachState, AiPageContext, AiStreamEvent, AiApprovalMode, AiTop
 import { fetchWithAuth } from './auth';
 import { registerLogoutHook } from './logoutHooks';
 import { noSessionOrgId, useAiModelPickerStore } from './aiModelPickerStore';
-import { pageContextAnchorsOrg, wispPageHoldsChat } from './aiPageContext';
+import { pageContextAnchorsOrg, wispPageHoldsChat, wispPaneHandedOff } from './aiPageContext';
 import { classifySendRefusal } from './aiSendRefusal';
 import { isChatSessionType } from './aiSessionOpen';
 import { attachAiSession, attachBackoffMs, shouldReattach, trackAttach, type AttachOutcome } from './aiSessionAttach';
@@ -163,8 +163,9 @@ interface AiState {
    * The Wisp thread whose live composer the page shows (the Wisp home, a
    * thread page), or null; set by that composer's column while it is on
    * screen. While the chat is on that thread the page is the conversation:
-   * `toggle` (the AI shortcut and header button) focuses the page's composer
-   * instead of opening the pane, and an open pane hands off to it. Not persisted.
+   * `toggle` and `open` (the AI shortcut, header button, command palette)
+   * focus the page's composer instead of opening the pane, a claim closes a
+   * pane open on that thread, and a pane still open hands off. Not persisted.
    */
   wispPageThreadId: string | null;
   /** Asks the page's Wisp composer for focus (the composerFocusRequest pattern). */
@@ -180,6 +181,7 @@ interface AiState {
   resolveWispTalkFocus: (accepted: boolean) => void;
   /** Open or close the pane; on a page whose composer holds the chat's Wisp thread, focus that composer instead. */
   toggle: () => void;
+  /** Open the pane; on a page whose composer holds the chat's Wisp thread, focus that composer instead. */
   open: () => void;
   close: () => void;
   setWispPageThreadId: (threadId: string | null) => void;
@@ -797,11 +799,24 @@ export const useAiStore = create<AiState>()(
     set({ isOpen: opening });
   },
   open: () => {
+    // As toggle: the command palette, "Open session" links and the talk flows
+    // must not open a pane that would only hand off to the page.
+    if (wispPageHoldsChat(get())) {
+      get().focusWispPageComposer();
+      return;
+    }
     import('./helpStore').then(({ useHelpStore }) => useHelpStore.getState().close()).catch((err) => console.warn('[AiStore] Failed to close help panel:', err));
     set({ isOpen: true });
   },
   close: () => set({ isOpen: false }),
-  setWispPageThreadId: (threadId) => set({ wispPageThreadId: threadId }),
+  // A claim on the thread an open pane shows hands off to the page (a client
+  // navigation to /wisp carries the pane in open, or History picks that
+  // thread): a pane left open would be a dead end, and closing it makes it
+  // inert, so focus moves to the page's composer as focusWispPageComposer does.
+  setWispPageThreadId: (threadId) =>
+    set((s) => (s.isOpen && wispPaneHandedOff({ ...s, wispPageThreadId: threadId })
+      ? { wispPageThreadId: threadId, isOpen: false, wispPageComposerFocusRequest: s.wispPageComposerFocusRequest + 1 }
+      : { wispPageThreadId: threadId })),
   focusWispPageComposer: () =>
     set((s) => ({ isOpen: false, wispPageComposerFocusRequest: s.wispPageComposerFocusRequest + 1 })),
   clearError: () => set({ error: null, errorCode: null, errorStatus: null }),
@@ -968,7 +983,9 @@ export const useAiStore = create<AiState>()(
     const ownsSession = claimSessionOwnership();
     // Another chat's pick must never ride on this chat's next message.
     if (get().sessionId !== sessionId) useAiModelPickerStore.getState().clearSelection();
-    set({ isLoading: true, error: null });
+    // The code (and status) go with the banner: a refused send's credits_exhausted must not
+    // outlive it into another conversation (the Wisp header suppresses its notice on it).
+    set({ isLoading: true, error: null, errorCode: null, errorStatus: null });
     try {
       const res = await fetchWithAuth(`/ai/sessions/${sessionId}`);
       if (!ownsSession()) return;
@@ -1428,7 +1445,8 @@ export const useAiStore = create<AiState>()(
     const ownsSession = claimSessionOwnership();
     // Another chat's pick must never ride on this chat's next message.
     if (get().sessionId !== sessionId) useAiModelPickerStore.getState().clearSelection();
-    set({ showHistory: false, isLoading: true, error: null });
+    // As loadSession: the code (and status) go with the banner.
+    set({ showHistory: false, isLoading: true, error: null, errorCode: null, errorStatus: null });
     try {
       const res = await fetchWithAuth(`/ai/sessions/${sessionId}`);
       if (!res.ok) throw new Error('Failed to load session');

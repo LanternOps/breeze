@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { CurrentActivity } from '@breeze/shared';
 import { useAiStore, type WispState } from '@/stores/aiStore';
+import { wispPaneHandedOff } from '@/stores/aiPageContext';
 import { useMediaQuery } from '@/lib/useMediaQuery';
 import WispRailStrip from './WispRailStrip';
 
@@ -22,7 +23,9 @@ export const WISP_RAIL_WIDE_QUERY = '(min-width: 1024px)';
  * While the docked AI pane is open the rail collapses to the strip at every
  * width: the pane already carries the grant, spend and pause controls, and a
  * third column would repeat them and crush the conversation. The content
- * keeps clear of the fixed pane only while it is open.
+ * keeps clear of the fixed pane only while it is open. A pane handed off to
+ * the page's composer (AiChatSidebar) counts as closed: it carries none of
+ * those controls, so the rail keeps them.
  *
  * Height: `data-wisp-shell` turns the dashboard `<main>` into a flex column
  * (globals.css), so `flex-1` takes exactly the space left under the accent
@@ -51,7 +54,8 @@ export default function WispCompanionShell({
   const { t } = useTranslation('ai');
   const wide = useMediaQuery(WISP_RAIL_WIDE_QUERY);
   // The docked panel is fixed over the right 400 px on lg+: keep the content clear of it (as /ai/chat does).
-  const panelOpen = useAiStore((s) => s.isOpen);
+  // Handed off to this page's composer it counts as closed: the rail keeps the grant controls.
+  const panelOpen = useAiStore((s) => s.isOpen && !wispPaneHandedOff(s));
   const showAside = wide && !panelOpen;
 
   return (

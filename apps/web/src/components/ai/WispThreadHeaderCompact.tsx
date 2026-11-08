@@ -37,7 +37,6 @@ const ICON_BUTTON = 'rounded p-1.5 text-muted-foreground transition-colors hover
 export type WispThreadHeaderCompactProps = {
   wisp: Wisp;
   wideningAvailable: boolean;
-  showFocus: boolean;
   controls: WispGrantControls;
   paneActions?: ReactNode;
   paneMenuItems?: ActionMenuItem[];
@@ -55,7 +54,6 @@ export type WispThreadHeaderCompactProps = {
 export default function WispThreadHeaderCompact({
   wisp,
   wideningAvailable,
-  showFocus,
   controls,
   paneActions,
   paneMenuItems = [],
@@ -64,6 +62,7 @@ export default function WispThreadHeaderCompact({
 }: WispThreadHeaderCompactProps) {
   const { t } = useTranslation('ai');
   const isStreaming = useAiStore((s) => s.isStreaming);
+  const error = useAiStore((s) => s.error);
   const errorCode = useAiStore((s) => s.errorCode);
   // Account-wide AI usage (the cost indicator row's numbers) for the spend popover and the credits notice.
   const usage = useAiUsage({ enabled: usageEnabled, isStreaming });
@@ -86,7 +85,7 @@ export default function WispThreadHeaderCompact({
   ];
 
   return (
-    <div className="relative border-b" data-testid="wisp-thread-header" data-variant="compact">
+    <div className="relative border-b" data-testid="wisp-thread-header">
       {/* Row A: identity and actions */}
       <div className="flex items-center justify-between gap-2 px-4 py-2">
         <div className="flex min-w-0 items-center gap-2">
@@ -116,25 +115,23 @@ export default function WispThreadHeaderCompact({
 
       {/* Row B: what Wisp is working on, and what it has spent */}
       <div className="flex items-center justify-between gap-2 px-4 pb-2 text-xs">
-        {showFocus ? (
-          <label className="flex h-6 min-w-0 items-center gap-1 rounded-full border px-2 hover:bg-muted focus-within:ring-1 focus-within:ring-primary">
-            <span className="shrink-0 text-muted-foreground">{t('wisp.focus.label')}</span>
-            <select
-              data-testid="wisp-focus"
-              aria-label={t('wisp.focus.label')}
-              value={wisp.focusOrgId ?? ''}
-              disabled={focusPending}
-              onChange={(e) => void changeFocus(e.target.value || null)}
-              className="min-w-0 max-w-[11rem] cursor-pointer appearance-none truncate bg-transparent font-medium text-foreground focus:outline-hidden disabled:cursor-wait disabled:opacity-50"
-            >
-              <option value="">{t('wisp.focus.none')}</option>
-              {focusOptions.map((o) => (
-                <option key={o.id} value={o.id}>{o.name}</option>
-              ))}
-            </select>
-            <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden="true" />
-          </label>
-        ) : <span />}
+        <label className="flex h-6 min-w-0 items-center gap-1 rounded-full border px-2 hover:bg-muted focus-within:ring-1 focus-within:ring-primary">
+          <span className="shrink-0 text-muted-foreground">{t('wisp.focus.label')}</span>
+          <select
+            data-testid="wisp-focus"
+            aria-label={t('wisp.focus.label')}
+            value={wisp.focusOrgId ?? ''}
+            disabled={focusPending}
+            onChange={(e) => void changeFocus(e.target.value || null)}
+            className="min-w-0 max-w-[11rem] cursor-pointer appearance-none truncate bg-transparent font-medium text-foreground focus:outline-hidden disabled:cursor-wait disabled:opacity-50"
+          >
+            <option value="">{t('wisp.focus.none')}</option>
+            {focusOptions.map((o) => (
+              <option key={o.id} value={o.id}>{o.name}</option>
+            ))}
+          </select>
+          <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden="true" />
+        </label>
         <WispSpendPopover
           wisp={wisp}
           budgetMax={settings.budgetMax}
@@ -148,8 +145,9 @@ export default function WispThreadHeaderCompact({
         wisp={wisp}
         wideningAvailable={wideningAvailable}
         showRefreshHint={showRefreshHint}
-        // The error banner already offers Buy credits after a refused send; say it once.
-        creditsExhausted={aiCreditsExhausted(usage) && errorCode !== 'credits_exhausted'}
+        // The error banner already offers Buy credits after a refused send; say it once, but only
+        // while that banner shows (a code left behind without it must not hide the notice).
+        creditsExhausted={aiCreditsExhausted(usage) && !(error && errorCode === 'credits_exhausted')}
         budgetMax={settings.budgetMax}
         onRaise={onRaise}
         onRefresh={() => openRefresh(false)}

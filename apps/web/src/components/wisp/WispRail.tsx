@@ -67,10 +67,10 @@ export default function WispRail({
   // concerns, activity and links routes answer 409 grant_inactive. Say so once
   // instead of mounting panes that can only fail.
   const ended = wisp.status === 'revoked' || wisp.status === 'expired';
-  // The card states scope and status itself, so the grant header is laid out
-  // in parts: its actions end the card's title row (no icon-only row under
-  // it), its meter, pause and notices follow. Customer focus is a chat-session
-  // setting (spec §6.1), and the live line is the card's.
+  // The card states scope and status itself, so the grant controls are laid
+  // out in parts: the actions end the card's title row (no icon-only row under
+  // it), the meter, pause and notices follow. Customer focus is a chat-session
+  // setting (spec §6.1) the details do not offer, and the live line is the card's.
   const controls = useWispGrantControls({ wisp, orgName, onWispChange, onRevoked });
 
   return (
@@ -82,7 +82,7 @@ export default function WispRail({
           currentActivity={current}
           actions={<WispGrantActions controls={controls} wideningAvailable={wisp.wideningAvailable} />}
         >
-          <WispGrantDetails wisp={wisp} wideningAvailable={wisp.wideningAvailable} controls={controls} showFocus={false} />
+          <WispGrantDetails wisp={wisp} wideningAvailable={wisp.wideningAvailable} controls={controls} />
           {!ended && briefSchedule?.timeLocal && (
             <p data-testid="wisp-rail-brief-at" className="text-xs text-muted-foreground">
               {t('ai:wisp.welcome.briefAt', { time: briefSchedule.timeLocal, timezone: briefSchedule.timezone })}

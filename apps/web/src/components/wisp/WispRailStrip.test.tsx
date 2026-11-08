@@ -96,6 +96,19 @@ describe('WispRailStrip', () => {
       expect(html).toContain('wisp-rail-details');
     });
 
+    // Mounted because the docked pane opened at a wide width, the strip takes
+    // over from the aside, which already showed the rail for that hash.
+    it('mounted at a wide width (visibleWhenWide) it does not adopt the hash on mount, but a later hash change opens it', () => {
+      window.history.replaceState(null, '', '/wisp#links');
+      render(<WispRailStrip wisp={mkWisp()} current={null} needsYouCount={0} rail={rail} visibleWhenWide />);
+      expect(screen.queryByTestId('wisp-rail-drawer')).toBeNull();
+      act(() => {
+        window.history.replaceState(null, '', '/wisp#concern=c-3');
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+      });
+      expect(screen.getByTestId('wisp-rail-drawer')).toBeInTheDocument();
+    });
+
     it('#thread does not, and a later hash change to a rail section does', () => {
       window.history.replaceState(null, '', '/wisp#thread');
       render(<WispRailStrip wisp={mkWisp()} current={null} needsYouCount={0} rail={rail} />);

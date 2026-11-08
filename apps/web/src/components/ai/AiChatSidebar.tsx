@@ -11,7 +11,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { isActiveGrant, useAiStore, type WispState } from "@/stores/aiStore";
-import { wispPageHoldsChat } from "@/stores/aiPageContext";
+import { wispPaneHandedOff } from "@/stores/aiPageContext";
 import { useJwtClaims } from "@/lib/authScope";
 import { useWispEnabled } from "@/lib/wispVisibility";
 import { fetchWispThread, isNoActiveGrant } from "@/lib/wispGrant";
@@ -315,7 +315,8 @@ export default function AiChatSidebar() {
   // The page (the Wisp home, a thread page) shows this same conversation with
   // its own composer: the pane hands off to it instead of repeating the header
   // and transcript. Any other conversation keeps working here.
-  const handedOff = !showHistory && wispPageHoldsChat({ wisp, wispPageThreadId });
+  // The store closes a pane on the page's claim; this render is the fallback.
+  const handedOff = wispPaneHandedOff({ wisp, wispPageThreadId, showHistory });
 
   // Shared by the plain header and the compact Wisp header's Row A.
   const historyButton = !showHistory && (
@@ -417,7 +418,6 @@ export default function AiChatSidebar() {
           </div>
         ) : wisp && !showHistory ? (
           <WispThreadHeader
-            variant="compact"
             wisp={wisp}
             orgName={wispScopeOrgName}
             wideningAvailable={wisp.wideningAvailable}

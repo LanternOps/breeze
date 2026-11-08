@@ -1,10 +1,17 @@
 import { render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const h = vi.hoisted(() => ({ wide: false, panelOpen: false }));
+const h = vi.hoisted(() => ({
+  wide: false,
+  panelOpen: false,
+  /** The page's composer claims the store's thread (`wispPageThreadId`, th-1 = this thread). */
+  pageThreadId: null as string | null,
+  showHistory: false,
+}));
 vi.mock('@/lib/useMediaQuery', () => ({ useMediaQuery: () => h.wide }));
 vi.mock('@/stores/aiStore', () => ({
-  useAiStore: (sel: (s: { isOpen: boolean }) => unknown) => sel({ isOpen: h.panelOpen }),
+  useAiStore: (sel: (s: Record<string, unknown>) => unknown) =>
+    sel({ isOpen: h.panelOpen, wisp: { threadId: 'th-1' }, wispPageThreadId: h.pageThreadId, showHistory: h.showHistory }),
 }));
 vi.mock('./WispRailStrip', () => ({
   default: (p: { needsYouCount: number; rail: React.ReactNode; visibleWhenWide?: boolean }) => (
@@ -30,7 +37,7 @@ const renderShell = () =>
   );
 
 describe('WispCompanionShell', () => {
-  beforeEach(() => { h.wide = false; h.panelOpen = false; });
+  beforeEach(() => { h.wide = false; h.panelOpen = false; h.pageThreadId = null; h.showHistory = false; });
   afterEach(() => vi.clearAllMocks());
 
   it('wide: the rail sits in the aside and no strip renders', () => {
@@ -74,6 +81,29 @@ describe('WispCompanionShell', () => {
     expect(screen.queryByTestId('wisp-rail-aside')).toBeNull();
     expect(screen.getByTestId('strip-stub')).toHaveAttribute('data-visible-when-wide', 'true');
     expect(screen.getAllByTestId('rail')).toHaveLength(1);
+  });
+
+  // Handed off, the pane shows one line and the page's composer is the
+  // conversation: collapsing the rail there would leave no grant controls on screen.
+  it('wide with the pane open but handed off to the page composer: the aside stays and the content is not padded', () => {
+    h.wide = true;
+    h.panelOpen = true;
+    h.pageThreadId = 'th-1';
+    renderShell();
+    expect(screen.getByTestId('wisp-rail-aside')).toContainElement(screen.getByTestId('rail'));
+    expect(screen.queryByTestId('strip-stub')).toBeNull();
+    expect(screen.getByTestId('wisp-home').className).not.toContain('lg:pr-[400px]');
+  });
+
+  it('a pane showing History beside the page is a real pane: the strip stands in and the content keeps clear', () => {
+    h.wide = true;
+    h.panelOpen = true;
+    h.pageThreadId = 'th-1';
+    h.showHistory = true;
+    renderShell();
+    expect(screen.queryByTestId('wisp-rail-aside')).toBeNull();
+    expect(screen.getByTestId('strip-stub')).toBeInTheDocument();
+    expect(screen.getByTestId('wisp-home').className).toContain('lg:pr-[400px]');
   });
 
   it('narrow: the strip keeps its lg:hidden fallback (visibleWhenWide off)', () => {

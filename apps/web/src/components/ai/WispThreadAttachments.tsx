@@ -6,7 +6,7 @@ import type { WispState } from '@/stores/aiStore';
 import { ActionError, runAction } from '@/lib/runAction';
 import { showToast } from '@/components/shared/Toast';
 import { formatBytes, formatSafeDate } from '@/lib/utils';
-import { useWispThreadAttachmentList, wispAttachmentsNeedFocus, type WispThreadAttachmentList } from './useWispThreadAttachmentList';
+import { wispAttachmentsNeedFocus, type WispThreadAttachmentList } from './useWispThreadAttachmentList';
 
 const MAX_BYTES = 5 * 1024 * 1024;
 const ACCEPT = '.txt,.csv,.tsv,.eml,.json,text/plain,text/csv,message/rfc822,application/json';
@@ -15,16 +15,18 @@ export default function WispThreadAttachments({
   wisp,
   list,
   showTitle = true,
+  reasonId,
 }: {
   wisp: NonNullable<WispState>;
-  /** A list the parent already loaded (the composer paperclip counts it); omitted, the panel loads its own. */
-  list?: WispThreadAttachmentList;
+  /** The thread's list, loaded by the parent (the composer paperclip counts it). */
+  list: WispThreadAttachmentList;
   /** False inside a popover that already carries the title as its label. */
   showTitle?: boolean;
+  /** Id for the focus-required line, so the popover can name it as its description. */
+  reasonId?: string;
 }) {
   const { t } = useTranslation('ai');
-  const own = useWispThreadAttachmentList(list ? null : wisp.threadId);
-  const { items, loaded, loadFailed, reload: load } = list ?? own;
+  const { items, loaded, loadFailed, reload: load } = list;
   const [busy, setBusy] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [text, setText] = useState('');
@@ -95,7 +97,7 @@ export default function WispThreadAttachments({
         </ul>
       )}
       {disabled && (
-        <p className="text-muted-foreground" data-testid="wisp-attachments-focus-required">{t('wisp.attachments.focusRequired')}</p>
+        <p id={reasonId} className="text-muted-foreground" data-testid="wisp-attachments-focus-required">{t('wisp.attachments.focusRequired')}</p>
       )}
       <div
         data-testid="wisp-attachment-drop"

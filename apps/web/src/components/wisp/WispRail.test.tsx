@@ -140,8 +140,7 @@ describe('WispRail', () => {
       wisp: props.wisp, orgName: 'Acme', onWispChange: props.onWispChange, onRevoked: props.onRevoked,
     });
     // The rail keeps the full controls (spend meter, pause); no focus picker, no live line of its own.
-    expect(h.headerProps).toMatchObject({ wisp: props.wisp, wideningAvailable: true, showFocus: false, controls: h.controls });
-    expect(h.headerProps?.currentActivity ?? null).toBeNull();
+    expect(h.headerProps).toEqual({ wisp: props.wisp, wideningAvailable: true, controls: h.controls });
 
     expect(h.needsYouProps).toMatchObject({ grantId: 'g1', threadId: 't1', initial: [concern], refreshKey: 3 });
     expect(h.workersProps).toMatchObject({ threadId: 't1', refreshKey: 3 });

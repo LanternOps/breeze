@@ -895,7 +895,6 @@
       "close": "Fechar"
     },
     "sidebar": {
-      "openHome": "Abrir no Wisp",
       "meetWisp": "Conheça o Wisp",
       "handedOff": "Esta conversa está aberta na página.",
       "handedOffAction": "Continuar na página"

@@ -895,7 +895,6 @@
       "close": "Close"
     },
     "sidebar": {
-      "openHome": "Open in Wisp",
       "meetWisp": "Meet Wisp",
       "handedOff": "This conversation is open on the page.",
       "handedOffAction": "Continue on the page"

@@ -46,13 +46,29 @@ describe('WispAttachmentsButton (composer paperclip)', () => {
     expect(fetchWithAuth).toHaveBeenCalledTimes(1);
   });
 
-  it('on a partner-wide grant with no focus it is disabled and says why, before anything opens', () => {
+  // The badge can say "2" before a focus is picked: the list must stay
+  // reachable, with the reason on screen (not a hover-only title).
+  it('on a partner-wide grant with no focus it still opens: the existing attachments, and the reason inline as the dialog\'s description', async () => {
+    fetchWithAuth.mockResolvedValueOnce(listRes([item('1', 'Invoice mail'), item('2', 'CSV')]));
     render(<WispAttachmentsButton wisp={wisp({ scopeOrgId: null, focusOrgId: null })} />);
+    expect(await screen.findByTestId('wisp-attachments-count')).toHaveTextContent('2');
     const toggle = screen.getByTestId('wisp-attachments-toggle');
-    expect(toggle).toHaveAttribute('aria-disabled', 'true');
-    expect(toggle).toHaveAttribute('title', 'Pick a customer focus before attaching');
+    expect(toggle).not.toHaveAttribute('aria-disabled');
+    expect(toggle).not.toHaveAttribute('title', 'Pick a customer focus before attaching');
     fireEvent.click(toggle);
-    expect(screen.queryByTestId('wisp-attachments-popover')).toBeNull();
+    const pop = screen.getByTestId('wisp-attachments-popover');
+    expect(within(pop).getAllByTestId('wisp-attachment-item').map((li) => li.textContent)).toEqual([
+      expect.stringContaining('Invoice mail'),
+      expect.stringContaining('CSV'),
+    ]);
+    const reason = within(pop).getByTestId('wisp-attachments-focus-required');
+    expect(reason).toHaveTextContent('Pick a customer focus before attaching');
+    expect(reason.id).not.toBe('');
+    expect(pop).toHaveAttribute('aria-describedby', reason.id);
+    expect(toggle).toHaveAttribute('aria-describedby', reason.id);
+    // Nothing in it can attach, so focus lands on the dialog, which announces the reason.
+    expect(within(pop).getByTestId('wisp-attachment-paste')).toBeDisabled();
+    expect(pop).toHaveFocus();
   });
 
   it('a partner-wide grant with a customer focus can attach', () => {
@@ -60,6 +76,8 @@ describe('WispAttachmentsButton (composer paperclip)', () => {
     const toggle = screen.getByTestId('wisp-attachments-toggle');
     expect(toggle).not.toHaveAttribute('aria-disabled', 'true');
     fireEvent.click(toggle);
-    expect(screen.getByTestId('wisp-attachments-popover')).toBeInTheDocument();
+    const pop = screen.getByTestId('wisp-attachments-popover');
+    expect(screen.queryByTestId('wisp-attachments-focus-required')).toBeNull();
+    expect(pop).not.toHaveAttribute('aria-describedby');
   });
 });

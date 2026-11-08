@@ -18,6 +18,8 @@ type PanelProps = {
   /** Where Escape returns focus. Defaults to whatever had focus when the panel opened. */
   returnFocusRef?: RefObject<HTMLElement | null>;
   id?: string;
+  /** Id of an element inside the panel that describes it (announced when focus lands on the dialog). */
+  describedBy?: string | null;
   children: ReactNode;
 };
 
@@ -28,7 +30,7 @@ type PanelProps = {
  * dialog opened from it (the step-up modal, a confirm), which owns the
  * interaction. Positioning is the caller's (`className`).
  */
-export function WispPopoverPanel({ open, onClose, label, testId, className = '', containerRef, returnFocusRef, id, children }: PanelProps) {
+export function WispPopoverPanel({ open, onClose, label, testId, className = '', containerRef, returnFocusRef, id, describedBy = null, children }: PanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const restoreRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
@@ -67,6 +69,7 @@ export function WispPopoverPanel({ open, onClose, label, testId, className = '',
       role="dialog"
       aria-modal="false"
       aria-label={label}
+      aria-describedby={describedBy ?? undefined}
       tabIndex={-1}
       data-testid={testId}
       onKeyDown={onKeyDown}
@@ -87,19 +90,21 @@ type PopoverProps = {
   testId?: string;
   panelTestId?: string;
   panelClassName: string;
-  /** Shown and announced (`aria-disabled`, the reason as the tooltip) but never opens. */
-  disabledReason?: string | null;
+  /**
+   * Id of an element inside the panel that describes it, e.g. why its inputs are
+   * disabled. The dialog carries it, and the trigger while the panel is open.
+   */
+  describedBy?: string | null;
   /** A function child gets `close`, which also returns focus to the trigger. */
   children: ReactNode | ((close: () => void) => ReactNode);
 };
 
 /** A trigger button plus its {@link WispPopoverPanel}; a second click on the trigger closes it. */
-export function WispPopover({ label, triggerLabel, trigger, triggerClassName, testId, panelTestId, panelClassName, disabledReason = null, children }: PopoverProps) {
+export function WispPopover({ label, triggerLabel, trigger, triggerClassName, testId, panelTestId, panelClassName, describedBy = null, children }: PopoverProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelId = useId();
-  const disabled = disabledReason !== null;
 
   const dismiss = useCallback(() => setOpen(false), []);
   const close = useCallback(() => {
@@ -116,10 +121,11 @@ export function WispPopover({ label, triggerLabel, trigger, triggerClassName, te
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
+        // Only while open: the described element lives in the panel.
+        aria-describedby={open && describedBy ? describedBy : undefined}
         aria-label={triggerLabel}
-        aria-disabled={disabled ? 'true' : undefined}
-        title={disabledReason ?? triggerLabel ?? label}
-        onClick={() => { if (!disabled) setOpen((v) => !v); }}
+        title={triggerLabel ?? label}
+        onClick={() => setOpen((v) => !v)}
         onKeyDown={(event) => {
           if (event.key === 'Escape' && open) {
             event.preventDefault();
@@ -131,11 +137,12 @@ export function WispPopover({ label, triggerLabel, trigger, triggerClassName, te
         {trigger}
       </button>
       <WispPopoverPanel
-        open={open && !disabled}
+        open={open}
         onClose={dismiss}
         label={label}
         testId={panelTestId}
         id={panelId}
+        describedBy={describedBy}
         containerRef={rootRef}
         returnFocusRef={triggerRef}
         className={`absolute ${panelClassName}`}

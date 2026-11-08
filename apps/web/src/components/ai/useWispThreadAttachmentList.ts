@@ -26,17 +26,15 @@ export type WispThreadAttachmentList = {
 
 /**
  * The thread's attachments (`GET /wisp/thread/:id/attachments`), loaded once
- * per thread. Null loads nothing (a parent already holds the list). Only the
- * newest load may commit: a slow response for a previous thread (or one that
- * lands after unmount) must not overwrite the current list.
+ * per thread. Only the newest load may commit: a slow response for a previous
+ * thread (or one that lands after unmount) must not overwrite the current list.
  */
-export function useWispThreadAttachmentList(threadId: string | null): WispThreadAttachmentList {
+export function useWispThreadAttachmentList(threadId: string): WispThreadAttachmentList {
   const [items, setItems] = useState<ThreadAttachment[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const loadToken = useRef(0);
   const reload = useCallback(async () => {
-    if (threadId === null) return;
     const token = ++loadToken.current;
     try {
       const res = await fetchWithAuth(`/wisp/thread/${threadId}/attachments`);
@@ -53,7 +51,6 @@ export function useWispThreadAttachmentList(threadId: string | null): WispThread
   }, [threadId]);
 
   useEffect(() => {
-    if (threadId === null) return undefined;
     setLoaded(false);
     void reload();
     return () => { loadToken.current++; };
