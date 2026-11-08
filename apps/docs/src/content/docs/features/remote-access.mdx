@@ -384,6 +384,13 @@ Wake-on-LAN powers on an offline device from the Breeze dashboard without visiti
 
 If a wake cannot be sent, Breeze returns a specific reason rather than failing silently — the most common are: the target has no recorded MAC address, no known IPv4 subnet (only IPv6), or no online agent is available at its site and subnet to relay the packet. Every wake attempt — successful or not — is recorded in the audit log with the actor, target, relay device, MACs attempted, and result.
 
+**Outcomes (v0.127.0+):**
+
+- **Online devices are skipped.** Waking a device that is already online sends nothing and reports that the device is already online (`TARGET_ONLINE`).
+- **Bulk wake reports what it did.** Waking several devices from the Devices list ends with a summary such as "Sent to 3, skipped 2", with the skipped devices grouped by reason (already online, no online peer at their site, and so on).
+- **Every wake that is sent is followed up.** Breeze records the attempt and, within about 12 minutes, resolves it as **came online** (the device has checked in since the wake), **timed out** (the relay sent the packet but the device did not check in within 10 minutes), **send failed** (the relay never confirmed sending it) or **unknown** (the outcome could not be established, for example because the attempt was checked too late to tell when the device came back, or the agent was reinstalled meanwhile). Closed attempts are kept for 90 days by default (`WAKE_ATTEMPT_RETENTION_DAYS`).
+- **Docked laptops are reachable.** A wake targets the MAC addresses the device reports now plus those it reported in the last 30 days (up to eight), so a laptop's dock or USB network adapter is still tried after it is unplugged. A historical MAC that another device in the organization reported more recently is left out.
+
 ### Pluggable Remote-Desktop Launcher
 
 By default, **Connect → Desktop** opens the built-in Breeze WebRTC desktop session. MSPs that standardise on a third-party tool (RustDesk, ScreenConnect, TeamViewer, AnyDesk, and similar) can configure Breeze to hand off to that tool instead, per partner.

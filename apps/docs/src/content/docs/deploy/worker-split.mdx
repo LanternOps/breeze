@@ -159,6 +159,19 @@ container running your heaviest jobs is invisible.
   lifting. It does not report HTTP or fleet metrics, because it serves no
   requests. Do not alert on their absence here.
 
+## Worker memory
+
+From v0.127.0 the shipped Compose files start the worker with a 1 GB Node
+heap (`--max-old-space-size=1024`), which keeps the worker's memory in check
+while it builds the file list for a very large backup snapshot (see
+[The snapshot file list](/backup/restoring/#the-snapshot-file-list)). To give it more,
+set `WORKER_NODE_OPTIONS` in `.env`, for example
+`WORKER_NODE_OPTIONS=--max-old-space-size=2048`, and recreate the worker. The
+setting replaces the whole `NODE_OPTIONS` value for the worker only; the `api`
+container is unchanged, including on an unsplit install where it runs every
+job. If you maintain your own Compose file, copy the worker's `NODE_OPTIONS`
+line across.
+
 ## Keeping the worker upgraded
 
 If your deploy process names services explicitly rather than running a bare
