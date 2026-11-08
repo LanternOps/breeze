@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import v8 from 'node:v8';
 import { createHash } from 'node:crypto';
 import vm from 'node:vm';
+import { Readable } from 'node:stream';
 import { backupSnapshots } from '../db/schema';
 
 // ── Chainable Drizzle mock ────────────────────────────────────────────────
@@ -107,10 +108,20 @@ function notFoundError(): Error {
 // DO care about system-state behavior override this per-call via
 // `mockImplementation`/explicit `.Once` queuing, same as any other vi.fn().
 const fetchBackupObjectTextMock = vi.fn<
-  (input: { provider: string | null | undefined; providerConfig: unknown; key: string }) => Promise<string>
+  (input: { provider: string | null | undefined; providerConfig: unknown; key: string; maxBytes?: number }) => Promise<string>
 >(async () => {
   throw notFoundError();
 });
+// #11232: GC reads a snapshot manifest as a stream. By default the stream
+// carries whatever fetchBackupObjectTextMock answers for the key, so the
+// queued `.mockResolvedValueOnce(manifestJson(...))` convention above keeps
+// working, consumed in the same call order (the manifest, then its system
+// state manifest, which is still fetched whole).
+type ObjectStreamInput = { provider: string | null | undefined; providerConfig: unknown; key: string; maxBytes: number };
+async function defaultOpenBackupObjectStream(input: ObjectStreamInput): Promise<NodeJS.ReadableStream> {
+  return Readable.from([Buffer.from(await fetchBackupObjectTextMock(input))]);
+}
+const openBackupObjectStreamMock = vi.fn(defaultOpenBackupObjectStream);
 // #6834: GC now STREAMS listings via iterateBackupObjectsUnderPrefix — one
 // pass over the whole `snapshots` root, then one re-list per snapshot-id
 // prefix it acts on. `rootListingMock` stays the per-test data source (one
@@ -145,6 +156,7 @@ vi.mock('../services/backupSnapshotStorage', async (importOriginal) => {
   return {
     ...actual,
     fetchBackupObjectText: fetchBackupObjectTextMock,
+    openBackupObjectStream: openBackupObjectStreamMock,
     listBackupObjectsUnderPrefix: rootListingMock,
     iterateBackupObjectsUnderPrefix: iterateBackupObjectsMock,
     deleteBackupObjectKeys: deleteBackupObjectKeysMock,
@@ -225,6 +237,7 @@ const {
   fingerprintLiveKeysBySnapshotId,
   listedKeysProvablyAllLive,
 } = await import('./backupRetention');
+const { BackupObjectTooLargeError, MANIFEST_FETCH_MAX_BYTES, MANIFEST_STREAM_MAX_BYTES } = await import('../services/backupSnapshotStorage');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const AGENT_JOURNAL_MAX_AGE_MS = 7 * DAY_MS;
@@ -767,6 +780,8 @@ describe('sweepUnreferencedBackupObjects', () => {
     fetchBackupObjectTextMock.mockImplementation(async () => {
       throw notFoundError();
     });
+    openBackupObjectStreamMock.mockReset();
+    openBackupObjectStreamMock.mockImplementation(defaultOpenBackupObjectStream);
     rootListingMock.mockReset();
     iterateBackupObjectsMock.mockReset();
     iterateBackupObjectsMock.mockImplementation(defaultIterateBackupObjects);
@@ -2807,6 +2822,136 @@ describe('sweepUnreferencedBackupObjects', () => {
       expect(result.skippedIdentities).toBe(1);
       expect(result.blockedIdentities).toBe(1);
       expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('manifest larger than the whole-object fetch cap (#11232)', () => {
+    const MiB = 1024 * 1024;
+    const MANIFEST_KEY = 'snapshots/B/manifest.json';
+
+    // Serves MANIFEST_KEY as an object of `size` bytes with each storage entry
+    // point's real size check: the whole-object text fetch refuses it over
+    // its maxBytes (it never materializes the body here), the stream refuses
+    // it over its own cap and otherwise yields `chunks`, lazily, so the test
+    // never holds the manifest either.
+    function serveManifest(size: number, chunks: () => Iterable<Buffer>) {
+      fetchBackupObjectTextMock.mockImplementation(async (input) => {
+        if (input.key === MANIFEST_KEY) throw new BackupObjectTooLargeError(input.key, size, input.maxBytes ?? 0);
+        throw notFoundError();
+      });
+      openBackupObjectStreamMock.mockImplementation(async (input) => {
+        if (input.key !== MANIFEST_KEY) return defaultOpenBackupObjectStream(input);
+        if (size > input.maxBytes) throw new BackupObjectTooLargeError(input.key, size, input.maxBytes);
+        return Readable.from(chunks());
+      });
+    }
+
+    // A manifest of exactly `size` bytes: `head`, then whitespace, then `tail`.
+    function* padded(size: number, head: string, tail: string): Generator<Buffer> {
+      let left = size - Buffer.byteLength(head) - Buffer.byteLength(tail);
+      yield Buffer.from(head);
+      const block = Buffer.alloc(MiB, ' ');
+      while (left > 0) {
+        const piece = left >= MiB ? block : block.subarray(0, left);
+        left -= piece.length;
+        yield piece;
+      }
+      yield Buffer.from(tail);
+    }
+
+    function listing() {
+      const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+      rootListingMock.mockResolvedValueOnce([
+        { key: MANIFEST_KEY, lastModified: old },
+        { key: 'snapshots/A/files/first.dat', lastModified: old },
+        { key: 'snapshots/A/files/last.dat', lastModified: old },
+        { key: 'snapshots/A/files/orphan.dat', lastModified: old },
+      ]);
+    }
+
+    it('marks every file of a retained manifest over 200 MiB, the last one listed past the old cap, and sweeps the rest', async () => {
+      const size = MANIFEST_FETCH_MAX_BYTES + MiB;
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
+      serveManifest(size, () => padded(
+        size,
+        '{"id":"B","files":[{"sourcePath":"/first","backupPath":"snapshots/A/files/first.dat"}',
+        ',{"sourcePath":"/last","backupPath":"snapshots/A/files/last.dat"}]}',
+      ));
+      listing();
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/A/files/orphan.dat'], failedKeys: [] });
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(result.skippedIdentities).toBe(0);
+      expect(result.blockedIdentities).toBe(0);
+      expect(deleteBackupObjectKeysMock).toHaveBeenCalledTimes(1);
+      expect((deleteBackupObjectKeysMock.mock.calls[0]![0] as { keys: string[] }).keys).toEqual(['snapshots/A/files/orphan.dat']);
+      expect(result.deleted).toBe(1);
+      expect(openBackupObjectStreamMock).toHaveBeenCalledWith(expect.objectContaining({ key: MANIFEST_KEY, maxBytes: MANIFEST_STREAM_MAX_BYTES }));
+    }, 60_000);
+
+    it('deletes nothing when the manifest stream drops partway, after some entries were read', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
+      serveManifest(MANIFEST_FETCH_MAX_BYTES + MiB, function* () {
+        yield Buffer.from('{"id":"B","files":[{"sourcePath":"/first","backupPath":"snapshots/A/files/first.dat"}');
+        throw new Error('connection reset');
+      });
+      listing();
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.deleted).toBe(0);
+      expect(result.skippedIdentities).toBe(1);
+      expect(result.blockedIdentities).toBe(1);
+    });
+
+    it('deletes nothing when the manifest ends before its document does', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
+      serveManifest(MANIFEST_FETCH_MAX_BYTES + MiB, function* () {
+        yield Buffer.from('{"id":"B","files":[{"sourcePath":"/first","backupPath":"snapshots/A/files/first.dat"}');
+      });
+      listing();
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.skippedIdentities).toBe(1);
+      expect(result.blockedIdentities).toBe(1);
+    });
+
+    it('deletes nothing when one entry is over the per-entry limit', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
+      const huge = 'x'.repeat(MiB + 1);
+      serveManifest(MANIFEST_FETCH_MAX_BYTES + MiB, function* () {
+        yield Buffer.from('{"id":"B","files":[{"sourcePath":"/first","backupPath":"snapshots/A/files/first.dat"},');
+        yield Buffer.from(JSON.stringify({ sourcePath: huge, backupPath: 'snapshots/A/files/last.dat' }));
+        yield Buffer.from(']}');
+      });
+      listing();
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.skippedIdentities).toBe(1);
+      expect(result.blockedIdentities).toBe(1);
+    });
+
+    it('deletes nothing when the manifest is over the stream cap too', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
+      serveManifest(MANIFEST_STREAM_MAX_BYTES + 1, () => []);
+      listing();
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.skippedIdentities).toBe(1);
+      expect(result.blockedIdentities).toBe(1);
     });
   });
 

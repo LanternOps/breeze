@@ -46,8 +46,10 @@ import {
   deleteRootedObjectKeys,
   fetchRootedObjectText,
   iterateRootedObjects,
+  openRootedObjectStream,
   type RootedStorage,
 } from '../services/backupRootedStorage';
+import { scanManifest } from '../services/backupManifestScanner';
 import {
   BACKUP_SNAPSHOT_ROOT_DIR,
   BACKUP_SNAPSHOT_MANIFEST_KEY,
@@ -58,6 +60,7 @@ import {
   backupSystemStateManifestKey,
   isBackupObjectNotFound,
   MANIFEST_FETCH_MAX_BYTES,
+  MANIFEST_STREAM_MAX_BYTES,
   type BackupObjectListing,
 } from '../services/backupSnapshotStorage';
 import { asRecord, getStringValue } from '../services/recoveryBootstrap';
@@ -865,8 +868,6 @@ export type BackupGcResult = {
   unreachableIdentities: number;
 };
 
-type BackupGcManifest = { files?: Array<{ backupPath?: unknown }> };
-
 // D15 bare-metal-recovery contract (Option A): a system_image snapshot
 // publishes a SEPARATE manifest under system-state/manifest.json, describing
 // artifacts under system-state/<artifact.path> — never inside the ordinary
@@ -902,18 +903,6 @@ export function resolveBackupGcMaxDeletesPerRun(): number {
   if (Number.isFinite(raw) && raw > 0) return raw;
   if (raw === 0) return Number.MAX_SAFE_INTEGER;
   return 2000;
-}
-
-function parseBackupGcManifest(raw: string): BackupGcManifest {
-  const parsed: unknown = JSON.parse(raw);
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('manifest is not a JSON object');
-  }
-  const files = (parsed as { files?: unknown }).files;
-  if (files !== undefined && !Array.isArray(files)) {
-    throw new Error('manifest.files is not an array');
-  }
-  return parsed as BackupGcManifest;
 }
 
 // ── Storage identity grouping ────────────────────────────────────────────────
@@ -1402,6 +1391,25 @@ function originGuardFor(root: SnapshotKeyRoot, keyRoots: Pick<IdentityKeyRoots, 
   };
 }
 
+/** A manifest entry's object key, or null for an entry that names none (dir/symlink, or not an object). */
+function entryBackupPath(entry: unknown): string | null {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  const backupPath = (entry as { backupPath?: unknown }).backupPath;
+  return typeof backupPath === 'string' && backupPath.length > 0 ? backupPath : null;
+}
+
+/**
+ * A copy of a key that holds only its own characters. A string the manifest
+ * scanner builds can share storage with the text it was cut from, and the live
+ * set keeps every key for the whole sweep: measured on a 200,000-entry
+ * manifest with 132-character keys, the set held 365 bytes per key as the
+ * scanner returned them and 180 once copied (#11232). The JSON round trip is
+ * exact for every UTF-16 code unit; a UTF-8 one would rewrite a lone surrogate.
+ */
+function ownedKeyCopy(key: string): string {
+  return JSON.parse(JSON.stringify(key)) as string;
+}
+
 /**
  * Mark phase for one storage identity under one key root. Returns null
  * (never throws) on any fetch/parse failure so the caller can fail-closed and
@@ -1420,34 +1428,39 @@ async function markLiveBackupObjects(
     const manifestKey = backupSnapshotManifestKey(snapshotId);
     live.add(manifestKey);
 
-    let raw: string;
+    // Streamed (#11232): the manifest is never held, so a manifest past the
+    // whole-object fetch cap no longer stops the sweep, and its references are
+    // all this pass keeps. Any read or scan failure, a connection dropped
+    // partway included, fails the mark phase: a partial live set must never
+    // reach the sweep. A cross-root reference is raised only once the whole
+    // manifest has read cleanly, the same order as the whole-document parse
+    // this replaces.
+    let crossRoot: BackupGcCrossRootReferenceError | null = null;
     try {
-      raw = await fetchRootedObjectText(storage, manifestKey, MANIFEST_FETCH_MAX_BYTES);
+      const source = await openRootedObjectStream(storage, manifestKey, MANIFEST_STREAM_MAX_BYTES);
+      await scanManifest(source, {
+        onEntry(entry) {
+          const backupPath = entryBackupPath(entry);
+          if (backupPath === null) return;
+          if (originGuard && !crossRoot) {
+            try {
+              originGuard(snapshotId, backupPath);
+            } catch (error) {
+              if (!(error instanceof BackupGcCrossRootReferenceError)) throw error;
+              crossRoot = error;
+            }
+          }
+          live.add(ownedKeyCopy(backupPath));
+        },
+      });
     } catch (error) {
       console.error(
-        `[BackupGC] Manifest fetch failed for snapshot ${snapshotId} (key ${manifestKey}) — aborting sweep for this identity:`,
+        `[BackupGC] Manifest read failed for snapshot ${snapshotId} (key ${manifestKey}) — aborting sweep for this identity:`,
         error,
       );
       return null;
     }
-
-    let manifest: BackupGcManifest;
-    try {
-      manifest = parseBackupGcManifest(raw);
-    } catch (error) {
-      console.error(
-        `[BackupGC] Manifest parse failed for snapshot ${snapshotId} (key ${manifestKey}) — aborting sweep for this identity:`,
-        error,
-      );
-      return null;
-    }
-
-    for (const file of manifest.files ?? []) {
-      if (typeof file.backupPath === 'string' && file.backupPath.length > 0) {
-        originGuard?.(snapshotId, file.backupPath);
-        live.add(file.backupPath);
-      }
-    }
+    if (crossRoot) throw crossRoot;
 
     // D15 bare-metal-recovery contract (Option A): system-state artifacts
     // live under their own manifest/prefix, never inside manifest.files[]

@@ -30,6 +30,8 @@ const jsonParser = (streamJsonParser as unknown as {
 export const MANIFEST_ENTRY_MAX_CHARS = 1024 * 1024;
 const MANIFEST_ENTRY_MAX_DEPTH = 32;
 const MANIFEST_ID_MAX_CHARS = 4096;
+/** Largest requested top-level value (ManifestScanOptions.fields), in characters. */
+const MANIFEST_FIELD_MAX_CHARS = 4096;
 /** Longer than any key the scanner looks for: the rest of a long key is dropped. */
 const TOP_LEVEL_KEY_MAX_CHARS = 16;
 const TOKEN_CHARGE = 8;
@@ -48,10 +50,32 @@ export class ManifestScanError extends Error {
   }
 }
 
-export type ManifestScanResult = { id: string | null; entries: number; hasFilesKey: boolean };
+export type ManifestScalar = string | number | boolean | null;
+
+export type ManifestScanResult = {
+  id: string | null;
+  entries: number;
+  hasFilesKey: boolean;
+  /**
+   * Present when ManifestScanOptions.fields was given: each requested key the
+   * manifest has, with its value as JSON.parse reads it.
+   */
+  fields?: Record<string, ManifestScalar>;
+};
 
 export type ManifestScanHandlers = {
   onEntry: (entry: unknown, index: number) => void | Promise<void>;
+};
+
+export type ManifestScanOptions = {
+  /**
+   * Top-level keys, besides `id` and `files`, whose values the caller needs
+   * (#11233: the reconcile path reads `timestamp`, `size` and the like). Each
+   * must hold a string, number, boolean or null of at most 4096 characters; a
+   * container value or a repeated key is refused as malformed, so a caller
+   * never reads a value its own schema would not have accepted from JSON.parse.
+   */
+  fields?: readonly string[];
 };
 
 type Token = { name: string; value?: unknown };
@@ -149,12 +173,20 @@ class EntryBuilder {
  * then call finish(). Throws ManifestScanError; a handler's error passes through
  * untouched.
  */
-export function createManifestScanner(handlers: ManifestScanHandlers): {
+export function createManifestScanner(handlers: ManifestScanHandlers, options: ManifestScanOptions = {}): {
   write(chunk: Uint8Array | string): Promise<void>;
   finish(): ManifestScanResult;
 } {
   const parse = jsonParser({ packValues: false, streamValues: true });
   const decoder = new StringDecoder('utf8');
+
+  const wanted = new Set(options.fields ?? []);
+  for (const name of wanted) {
+    if (name === 'id' || name === 'files' || name === '__proto__' || name.length === 0 || name.length > TOP_LEVEL_KEY_MAX_CHARS) {
+      throw new Error(`manifest scanner cannot capture the top-level key ${JSON.stringify(name)}`);
+    }
+  }
+  const fields: Record<string, ManifestScalar> | null = options.fields ? {} : null;
 
   let id: string | null = null;
   let seenId = false;
@@ -162,13 +194,15 @@ export function createManifestScanner(handlers: ManifestScanHandlers): {
   let entries = 0;
 
   // Where the document is. `depth` counts open containers while skipping.
-  type Mode = 'root' | 'top' | 'key' | 'value' | 'id' | 'skip-scalar' | 'skip' | 'files' | 'entry' | 'end';
+  type Mode = 'root' | 'top' | 'key' | 'value' | 'id' | 'field' | 'skip-scalar' | 'skip' | 'files' | 'entry' | 'end';
   let mode: Mode = 'root';
   let key = '';
   let keyTooLong = false;
   let skipDepth = 0;
   let idChars: string[] = [];
   let idLength = 0;
+  let fieldChars: string[] = [];
+  let fieldLength = 0;
   let builder: EntryBuilder | null = null;
 
   /** Returns a finished entry for the caller to hand over. */
@@ -200,6 +234,9 @@ export function createManifestScanner(handlers: ManifestScanHandlers): {
         } else if (token.name === 'endKey') {
           if (key === 'files' && hasFilesKey) throw new ManifestScanError('malformed', 'manifest has more than one files key');
           if (key === 'id' && seenId) throw new ManifestScanError('malformed', 'manifest has more than one id key');
+          if (fields && wanted.has(key) && Object.hasOwn(fields, key)) {
+            throw new ManifestScanError('malformed', `manifest has more than one ${key} key`);
+          }
           mode = 'value';
         }
         return null;
@@ -225,6 +262,19 @@ export function createManifestScanner(handlers: ManifestScanHandlers): {
             return null;
           }
         }
+        if (fields && wanted.has(key)) {
+          if (token.name === 'startString' || token.name === 'startNumber') {
+            fieldChars = [];
+            fieldLength = 0;
+            mode = 'field';
+          } else if (token.name === 'nullValue' || token.name === 'trueValue' || token.name === 'falseValue') {
+            fields[key] = token.value as ManifestScalar;
+            mode = 'top';
+          } else {
+            throw new ManifestScanError('malformed', `manifest ${key} is not a string, number, boolean or null`);
+          }
+          return null;
+        }
         // Any other value, or an id that is not a string (left null).
         if (token.name === 'startObject' || token.name === 'startArray') {
           skipDepth = 1;
@@ -246,6 +296,21 @@ export function createManifestScanner(handlers: ManifestScanHandlers): {
           idChars.push(chunk);
         } else if (token.name === 'endString') {
           id = idChars.join('');
+          mode = 'top';
+        }
+        return null;
+
+      case 'field':
+        if (token.name === 'stringChunk' || token.name === 'numberChunk') {
+          const chunk = token.value as string;
+          fieldLength += chunk.length;
+          if (fieldLength > MANIFEST_FIELD_MAX_CHARS) {
+            throw new ManifestScanError('limit', `manifest ${key} is longer than ${MANIFEST_FIELD_MAX_CHARS} characters`);
+          }
+          fieldChars.push(chunk);
+        } else if (token.name === 'endString' || token.name === 'endNumber') {
+          const text = fieldChars.join('');
+          (fields as Record<string, ManifestScalar>)[key] = token.name === 'endString' ? text : Number(text);
           mode = 'top';
         }
         return null;
@@ -326,7 +391,7 @@ export function createManifestScanner(handlers: ManifestScanHandlers): {
       // tokens the scanner needs once the root has closed.
       tokenize(none);
       if (mode !== 'end') throw new ManifestScanError('malformed', 'manifest ended early');
-      return { id, entries, hasFilesKey };
+      return fields ? { id, entries, hasFilesKey, fields } : { id, entries, hasFilesKey };
     },
   };
 }
@@ -341,8 +406,9 @@ export function createManifestScanner(handlers: ManifestScanHandlers): {
 export async function scanManifest(
   source: NodeJS.ReadableStream | AsyncIterable<Uint8Array | string>,
   handlers: ManifestScanHandlers,
+  options?: ManifestScanOptions,
 ): Promise<ManifestScanResult> {
-  const scanner = createManifestScanner(handlers);
+  const scanner = createManifestScanner(handlers, options);
   for await (const chunk of source as AsyncIterable<Uint8Array | string>) {
     await scanner.write(chunk);
   }
