@@ -4,8 +4,10 @@ import { deviceCommands, devices, organizations, peripheralPolicyDeviceStates } 
 import {
   partitionClaimable,
   POWER_STATE_BARRIER_TYPES,
+  prepareCommandRevalidations,
   type ClaimCancelReason,
   type ClaimHoldReason,
+  type CommandRevalidationPreparation,
 } from './commandClaimEligibility';
 import { isTransientLockError, pgErrorCode } from '../utils/pgErrors';
 import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
@@ -81,8 +83,11 @@ export async function claimPendingCommandForDelivery(
   // `held` so the next heartbeat re-evaluates it, instead of failing the
   // caller's request.
   return withSystemDbAccessContext(async () => {
+    // #7268: revalidation inputs that live outside Postgres (Redis) are read
+    // here, on this connection, BEFORE the savepoint locks the command row.
+    const prepared = await prepareCommandRevalidations(db, { commandId });
     try {
-      return await claimInSavepoint(commandId, executedAt);
+      return await claimInSavepoint(commandId, executedAt, prepared);
     } catch (err) {
       if (!isTransientLockError(err)) throw err;
       console.warn('[commandDispatch] push claim lost a lock race; leaving the command pending', {
@@ -94,7 +99,11 @@ export async function claimPendingCommandForDelivery(
   });
 }
 
-async function claimInSavepoint(commandId: string, executedAt: Date): Promise<PushClaimOutcome> {
+async function claimInSavepoint(
+  commandId: string,
+  executedAt: Date,
+  prepared: CommandRevalidationPreparation,
+): Promise<PushClaimOutcome> {
   return db.transaction(async (tx): Promise<PushClaimOutcome> => {
     // The WebSocket push applies EXACTLY the claim-time eligibility the
     // heartbeat claim applies (`partitionClaimable`): parked-org, org drift
@@ -183,7 +192,7 @@ async function claimInSavepoint(commandId: string, executedAt: Date): Promise<Pu
           payload: candidate.payload,
         },
       ],
-      { inFlight },
+      { inFlight, prepared },
     );
     const cancel = cancelled.find((c) => c.id === candidate.id);
     if (cancel) return { status: 'cancelled', id: commandId, reason: cancel.reason };
@@ -391,6 +400,10 @@ export async function claimPendingCommandsForDevice(
   // connect-time/heartbeat_ack claims — no agent version ever consumed them),
   // so the per-frame payload budget that #2399 added here is gone with it.
   const deviceId = caller.deviceId;
+  // #7268: revalidation inputs that live outside Postgres (Redis) are read
+  // here, on the caller's connection, BEFORE the claim takes its first
+  // `device_commands` lock (the peripheral cancel below, then the scan).
+  const prepared = await prepareCommandRevalidations(db, { deviceId, targetRole, typeAllowlist });
   return db.transaction(async (tx) => {
     const peripheralV2IsClaimable =
       typeAllowlist === undefined || typeAllowlist.includes('peripheral_policy_sync_v2');
@@ -552,6 +565,7 @@ export async function claimPendingCommandsForDevice(
       // whichever install's beat finds it — a device fact, not a caller fact.
       const { claimable } = await partitionClaimable(tx, dev, pendingCommands, {
         inFlight: inFlightRow?.inFlight ?? 0,
+        prepared,
       });
       const claimableIds = new Set(claimable.map((c) => c.id));
       // #8318 §6.4: delivery is a CALLER fact. A row stamped for an
