@@ -47,6 +47,7 @@ import {
   ensureRule as ensureConfigComplianceRule,
   type ResolvedComplianceRule,
 } from '../../services/configComplianceAlertBridge';
+import { ensureRemoteToolRule } from '../../services/remoteToolAlerts/alerts';
 import { createOrganization, createPartner, createSite } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -54,7 +55,7 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 const MIGRATION = '2026-12-03-120000-builtin-alert-rule-unique-index.sql';
 // Recreates the index with the sources added after the collapse migration. The
 // tests below replay the older file, so each replay must end with this one.
-const LATEST_INDEX_MIGRATION = '2027-01-22-150000-builtin-alert-rule-oem-updates.sql';
+const LATEST_INDEX_MIGRATION = '2027-01-22-210100-builtin-alert-rule-management-posture.sql';
 const INDEX_NAME = 'alert_rules_builtin_anchor_uidx';
 const RACERS = 8;
 
@@ -160,6 +161,18 @@ describe('built-in alert rules: concurrent first fire (#7650)', () => {
       .where(and(eq(alertRules.orgId, orgId), eq(alertRules.name, 'Vendor update: run failing'), isNull(alertRules.retiredAt))));
     expect(rows).toHaveLength(1);
     expect(BUILT_IN_ALERT_RULE_SOURCES).toContain((rows[0]!.overrideSettings as { source: string }).source);
+  });
+
+  runDb('the new remote access tool rule (#11306) is created once per tool under a concurrent first fire', async () => {
+    const { orgId } = await seedOrg();
+    const tool = { name: 'UltraViewer', category: 'remoteAccess' as const };
+    const ids = await race(() => ensureRemoteToolRule(orgId, tool));
+    const rows = await liveRules(orgId, 'New remote access tool: UltraViewer');
+    expect(rows).toHaveLength(1);
+    expect(new Set(ids)).toEqual(new Set([rows[0]!.id]));
+    // A second tool is its own rule, so its Active switch is its own too.
+    const other = await withSystemDbAccessContext(() => ensureRemoteToolRule(orgId, { name: 'AnyDesk', category: 'remoteAccess' }));
+    expect(other).not.toBe(rows[0]!.id);
   });
 
   runDb('an existing inactive rule is returned, not re-created ("off" stays off)', async () => {
