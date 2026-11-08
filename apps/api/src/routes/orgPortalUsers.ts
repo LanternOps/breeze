@@ -81,9 +81,10 @@ async function getOrgScopedPortalUser(orgId: string, userId: string) {
 // ---------------------------------------------------------------------------
 // Account state (portal registration W2): every status / browser_access write
 // in this file is a target computed by services/portalAccountState.ts, applied
-// with an `auth_epoch = <the epoch we read>` guard. Every state transition
-// bumps the epoch, so a concurrent disable, re-invite or password change makes
-// a stale plan match zero rows instead of overwriting the newer state.
+// with an `auth_epoch = <the epoch we read>` guard. Every transition that
+// changes the row's state bumps the epoch, so a concurrent disable, re-invite,
+// accept or password change makes a stale plan match zero rows instead of
+// overwriting the newer state.
 // ---------------------------------------------------------------------------
 
 type AccountRow = { status: string; browserAccess: string; authMethod: string; passwordHash: string | null; entraOid: string | null };
@@ -511,13 +512,15 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     const targets = userIds && userIds.length > 0 ? eligible.filter((u) => userIds.includes(u.id)) : eligible;
     const [orgRow] = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, org.id)).limit(1);
     const now = new Date();
-    const results: Array<{ id: string; emailSent: boolean }> = [];
+    // `skipped` tells the caller (and the audit) a row was NOT invited, as
+    // distinct from an invite whose email failed (`emailSent: false` alone).
+    const results: Array<{ id: string; emailSent: boolean; skipped?: 'refused' | 'concurrent_change' }> = [];
     for (const t of targets) {
       let plan: PortalAccountTarget;
       try {
         plan = planPortalAccountTransition(accountFacts(t), 'msp_bulk_invite');
       } catch (error) {
-        if (error instanceof PortalAccountTransitionError) { results.push({ id: t.id, emailSent: false }); continue; }
+        if (error instanceof PortalAccountTransitionError) { results.push({ id: t.id, emailSent: false, skipped: 'refused' }); continue; }
         throw error;
       }
       const [moved] = await db.update(portalUsers)
@@ -525,14 +528,14 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
         .where(and(eq(portalUsers.id, t.id), eq(portalUsers.orgId, org.id), eq(portalUsers.authEpoch, t.authEpoch)))
         .returning({ authEpoch: portalUsers.authEpoch });
       // Changed since the candidate read (disabled, accepted, re-invited): skip it.
-      if (!moved) { results.push({ id: t.id, emailSent: false }); continue; }
+      if (!moved) { results.push({ id: t.id, emailSent: false, skipped: 'concurrent_change' }); continue; }
       await purgePortalSessionsForUsers([t.id]);
       const redis = getRedis();
       if (redis) await purgeClientAiSessionsForUsers(redis, [t.id]);
       const emailSent = await issueAndSendInvite(c, org.id, { id: t.id, email: t.email, authEpoch: moved.authEpoch }, orgRow?.name ?? null, auth.user.name);
       results.push({ id: t.id, emailSent });
     }
-    writeRouteAudit(c, { orgId: org.id, action: 'organization.portal_user.bulk_invite', resourceType: 'organization', resourceId: org.id, details: { invited: results.length } });
+    writeRouteAudit(c, { orgId: org.id, action: 'organization.portal_user.bulk_invite', resourceType: 'organization', resourceId: org.id, details: { invited: results.filter((r) => !r.skipped).length, skipped: results.filter((r) => r.skipped).length } });
     return c.json({ data: results });
   });
 

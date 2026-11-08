@@ -10,8 +10,13 @@ import { describe, expect, it } from 'vitest';
  * This census finds every non-test source file under apps/api/src and ee/
  * that INSERTs or UPDATEs `portal_users` (Drizzle or raw SQL, comments
  * stripped) and requires it to be classified:
- *   - 'state-module' — it writes state, so it must import portalAccountState;
- *   - 'no-state'     — it never writes `status` or `browserAccess` (checked).
+ *   - 'state-module' — it writes state, so it must import portalAccountState
+ *     AND call one of its planners (planPortalAccountTransition /
+ *     initialPortalAccountState);
+ *   - 'no-state'     — it never writes `status` or `browserAccess`: no
+ *     `status:` / `browserAccess:` key may appear in any `.set({…})` or
+ *     `.values({…})` block, whatever its value (a heuristic over the source,
+ *     not a per-write-site proof).
  *
  * A new writer fails here until it is classified. A writer that stops writing
  * fails as stale. Generic SQL that never names the table (org merge repoint,
@@ -37,7 +42,33 @@ const WRITE_PATTERNS = [
   /UPDATE\s+(?:public\.)?portal_users\b/i,
 ];
 const STATE_IMPORT = /from\s+['"][./]*(?:services\/)?portalAccountState['"]/;
-const STATE_FIELD_WRITE = /\b(status|browserAccess)\s*:\s*['"`]/;
+const STATE_PLANNER_CALL = /\b(planPortalAccountTransition|initialPortalAccountState)\s*\(/;
+
+/**
+ * The argument text of every `.set(…)` / `.values(…)` call (balanced-paren
+ * scan; good enough for a census over our own source).
+ */
+function writeBlocks(code: string): string[] {
+  const blocks: string[] = [];
+  const opener = /\.(?:set|values)\s*\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = opener.exec(code)) !== null) {
+    let depth = 1;
+    let i = m.index + m[0].length;
+    const start = i;
+    for (; i < code.length && depth > 0; i++) {
+      if (code[i] === '(') depth++;
+      else if (code[i] === ')') depth--;
+    }
+    blocks.push(code.slice(start, i - 1));
+  }
+  return blocks;
+}
+
+/** A `status` / `browserAccess` key in a write block — literal, variable or shorthand. */
+export function writesStateKey(code: string): boolean {
+  return writeBlocks(code).some((block) => /(?:^|[{,\s])(status|browserAccess)\s*[:,}]/.test(block));
+}
 
 function walk(dir: string, out: string[]): void {
   let entries: string[];
@@ -88,14 +119,24 @@ describe('portal_users writers are classified against the account state machine 
     ).toEqual([]);
 
     const missingImport = Object.entries(PORTAL_USER_WRITERS)
-      .filter(([file, c]) => c.kind === 'state-module' && writers.has(file) && !STATE_IMPORT.test(writers.get(file)!))
+      .filter(([file, c]) => c.kind === 'state-module' && writers.has(file)
+        && !(STATE_IMPORT.test(writers.get(file)!) && STATE_PLANNER_CALL.test(writers.get(file)!)))
       .map(([file]) => file);
-    expect(missingImport, 'these write portal_users state but do not import services/portalAccountState').toEqual([]);
+    expect(missingImport, 'these write portal_users state but do not import AND call services/portalAccountState').toEqual([]);
 
     const noStateViolations = Object.entries(PORTAL_USER_WRITERS)
-      .filter(([file, c]) => c.kind === 'no-state' && writers.has(file) && STATE_FIELD_WRITE.test(writers.get(file)!))
+      .filter(([file, c]) => c.kind === 'no-state' && writers.has(file) && writesStateKey(writers.get(file)!))
       .map(([file]) => file);
-    expect(noStateViolations, 'these are classified no-state but write a status/browserAccess literal').toEqual([]);
+    expect(noStateViolations, 'these are classified no-state but write a status/browserAccess key').toEqual([]);
+  });
+
+  it('the no-state detector catches literal, variable and shorthand state writes (not vacuous)', () => {
+    expect(writesStateKey(`db.update(portalUsers).set({ name, status: 'active' })`)).toBe(true);
+    expect(writesStateKey(`db.update(portalUsers).set({ status: next, updatedAt })`)).toBe(true);
+    expect(writesStateKey(`db.update(portalUsers).set({ status })`)).toBe(true);
+    expect(writesStateKey(`db.insert(portalUsers).values({ orgId, browserAccess: grant })`)).toBe(true);
+    expect(writesStateKey(`db.update(portalUsers).set({ passwordHash, authEpoch: sql\`x + 1\` })`)).toBe(false);
+    expect(writesStateKey(`return c.json({ status: 'ok' })`)).toBe(false);
   });
 
   it('the classification map has no stale entries', () => {

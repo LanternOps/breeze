@@ -77,6 +77,8 @@ vi.mock('../db', () => {
   };
   return {
     withSystemDbAccessContext: (fn: () => Promise<unknown>) => fn(),
+    // A savepoint in production; a pass-through here.
+    withDbTransaction: (fn: () => Promise<unknown>) => fn(),
     db: dbMock,
   };
 });
@@ -540,6 +542,48 @@ describe('resolveAndMintClientSession — portal_user_identities dual-write (W2 
       expect(errSpy).toHaveBeenCalled();
     } finally {
       errSpy.mockRestore();
+    }
+  });
+
+  it('a failing identity self-heal never costs the user their sign-in, and is reported', async () => {
+    seedSelects([activeUser({ contactId: 'ct-1' })]);
+    ensureIdentityMock.mockRejectedValueOnce(new Error('lock timeout on portal_user_identities'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const outcome = await resolveAndMintClientSession(claims(), redis);
+      expect(outcome.kind).toBe('resolved');
+      expect(captureExceptionMock).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.objectContaining({ eventCode: 'client_ai_identity_write_failed' }),
+      );
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('a JIT identity collision with another login fails closed as provisioning_failed and is reported as drift', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ orgId: ORG_ID, partnerId: PARTNER_ID, partnerEnabled: true }])
+      .mockResolvedValueOnce([]) // no login yet
+      .mockResolvedValueOnce([]); // re-select after the savepoint rolled back: nothing
+    insertReturning.mockResolvedValueOnce([activeUser()]);
+    // The identity insert (2nd values() call) is the one that collides.
+    valuesSpy.mockImplementation((v: Record<string, unknown>) => {
+      if (v.provider === 'entra') {
+        throw Object.assign(new Error('dup'), { cause: { code: '23505', constraint_name: 'portal_user_identities_issuer_subject_uq' } });
+      }
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const outcome = await resolveAndMintClientSession(claims(), redis);
+      expect(outcome).toMatchObject({ kind: 'denied', status: 403, body: { error: 'provisioning_failed' } });
+      expect(captureExceptionMock).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.objectContaining({ eventCode: 'client_ai_identity_drift' }),
+      );
+    } finally {
+      errSpy.mockRestore();
+      valuesSpy.mockReset();
     }
   });
 

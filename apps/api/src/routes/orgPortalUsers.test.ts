@@ -610,6 +610,24 @@ describe('portal account state machine on the MSP routes (W2)', () => {
     expect(issueTokenMock).toHaveBeenCalledWith(expect.objectContaining({ portalUserId: 'pu-1', authEpoch: 5 }));
   });
 
+  it('bulk invite reports a row that changed under it as skipped, and audits only the rows it invited', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([row({ id: 'pu-ok' }), row({ id: 'pu-raced' })])
+      .mockResolvedValueOnce([{ name: 'Acme Co' }]);
+    insertReturning
+      .mockResolvedValueOnce([{ authEpoch: 6 }]) // pu-ok moved
+      .mockResolvedValueOnce([]);                // pu-raced: epoch guard matched nothing
+    const res = await makeApp().request(`/organizations/${ORG_ID}/portal-users/bulk-invite`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toEqual([
+      { id: 'pu-ok', emailSent: true },
+      { id: 'pu-raced', emailSent: false, skipped: 'concurrent_change' },
+    ]);
+    expect(sendInvite).toHaveBeenCalledTimes(1);
+    expect(auditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ details: { invited: 1, skipped: 1 } }));
+  });
+
   it('bulk invite never selects entra/identity, disabled, or passworded rows', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }])

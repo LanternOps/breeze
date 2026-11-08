@@ -50,8 +50,9 @@ END $$;
 --    column (an older API binary during a rolling deploy), then NOT NULL + CHECK.
 --    Deliberately NO column default: DEFAULT 'granted' would grant browser
 --    access to add-in JIT rows written by an old binary, DEFAULT 'none' would
---    break invites written by one. The trigger is dropped together with the
---    portal_users.entra_* columns in identities release C.
+--    break invites written by one. The trigger exists only for API binaries
+--    older than this release; drop it in a follow-up migration once none can
+--    run (scheduled with identities release C, which drops portal_users.entra_*).
 ALTER TABLE public.portal_users ADD COLUMN IF NOT EXISTS browser_access text;
 
 DO $$

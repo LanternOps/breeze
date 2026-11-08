@@ -1,7 +1,7 @@
 import { and, eq } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import type Redis from 'ioredis';
-import { db, withSystemDbAccessContext } from '../db';
+import { db, withDbTransaction, withSystemDbAccessContext } from '../db';
 import { portalUsers } from '../db/schema';
 import { clientAiTenantMappings } from '../db/schema/clientAi';
 import { organizations, partners } from '../db/schema/orgs';
@@ -390,7 +390,20 @@ export async function resolveAndMintClientSession(
         // Concurrent first-exchange race: portal_users_entra_identity_uniq
         // makes the loser 23505 — re-select the winner's row.
         // eslint-disable-next-line breeze/no-direct-sqlstate -- Existing guard explicitly reads the Drizzle driver cause.
-        if ((err as { cause?: { code?: string } }).cause?.code !== '23505') throw err;
+        const cause = (err as { cause?: { code?: string; constraint_name?: string } }).cause;
+        if (cause?.code !== '23505') throw err;
+        // A 23505 on portal_user_identities (not the login's own unique index)
+        // is drift: this Entra subject already belongs to ANOTHER login. The
+        // savepoint rolled back both inserts, the re-select below finds
+        // nothing, and the exchange fails closed as provisioning_failed —
+        // report it so the denial is explainable.
+        if (cause.constraint_name?.startsWith('portal_user_identities_')) {
+          console.error('[client-ai] portal identity drift: JIT identity collides with another login', {
+            orgId: mapping.orgId,
+            constraint: cause.constraint_name,
+          });
+          captureException(err, { eventCode: 'client_ai_identity_drift' } as never);
+        }
         [user] = await db
           .select(USER_COLUMNS)
           .from(portalUsers)
@@ -436,17 +449,30 @@ export async function resolveAndMintClientSession(
 
       // Release A self-heal: a login inserted by an older binary during the
       // deploy window has no identity row yet — give it one, and record the
-      // use otherwise. ON CONFLICT DO NOTHING inside, so this never poisons
-      // the surrounding transaction. A conflict is drift (the subject belongs
-      // to another login, or this login holds a different one): reported,
-      // NOT denied, because authorization still reads the entra_* columns.
-      const identity = await ensureEntraIdentity(db, {
-        orgId: user.orgId,
-        portalUserId: user.id,
-        tid: claims.tid,
-        oid: claims.oid,
-        usedAt: now,
-      });
+      // use otherwise. A conflict is drift (the subject belongs to another
+      // login, or this login holds a different one): reported, NOT denied,
+      // because authorization still reads the entra_* columns. For the same
+      // reason any other failure of this write must not cost the user their
+      // sign-in: it runs in a savepoint (withDbTransaction) with the catch
+      // outside, so it cannot poison the exchange transaction.
+      let identity: 'inserted' | 'present' | 'conflict' | 'failed';
+      try {
+        identity = await withDbTransaction(() => ensureEntraIdentity(db, {
+          orgId: user!.orgId,
+          portalUserId: user!.id,
+          tid: claims.tid,
+          oid: claims.oid,
+          usedAt: now,
+        }));
+      } catch (err) {
+        identity = 'failed';
+        console.error('[client-ai] portal identity self-heal failed:', {
+          portalUserId: user.id,
+          orgId: user.orgId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        captureException(err, { eventCode: 'client_ai_identity_write_failed' } as never);
+      }
       if (identity === 'conflict') {
         console.error('[client-ai] portal identity drift: Entra subject does not resolve to this login', {
           portalUserId: user.id,

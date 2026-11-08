@@ -1,6 +1,6 @@
 /**
  * External identities of portal accounts (`portal_user_identities`, portal
- * registration W2 / spec §5.2). This module owns every identity write and the
+ * registration W2 / spec §5.2). This module owns every runtime identity write and the
  * drift report between the table and the legacy `portal_users.entra_*`
  * columns.
  *

@@ -27,8 +27,11 @@ export type LoginCandidate = { id: string; passwordHash: string | null } & Recor
 async function verifies(verify: (hash: string, pw: string) => Promise<boolean>, hash: string, password: string): Promise<boolean> {
   try {
     return await verify(hash, password);
-  } catch {
-    return false; // a corrupt stored hash is a non-match, never a 500 that differs from a miss
+  } catch (error) {
+    // A corrupt stored hash is a non-match, never a 500 that differs from a
+    // miss. Logged by error class only (never the hash or the password).
+    console.error('[portal] password verify threw:', error instanceof Error ? error.name : typeof error);
+    return false;
   }
 }
 
@@ -45,8 +48,10 @@ export async function resolveLoginCandidate<T extends LoginCandidate>(
   if (hashed.length === 0) {
     try {
       await verifies(verify, await dummyHash(), password);
-    } catch {
-      // Timing equalization only: the answer is "no match" either way.
+    } catch (error) {
+      // Timing equalization only: the answer is "no match" either way. But a
+      // miss now returns fast, which re-opens the enumeration timing channel.
+      console.error('[portal] dummy password hash unavailable; login miss timing is not equalized:', error instanceof Error ? error.message : error);
     }
     return null;
   }

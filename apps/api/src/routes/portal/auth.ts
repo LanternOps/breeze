@@ -257,8 +257,8 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
   // separate Client-AI session and must never inherit browser access merely
   // because a historical recovery/invite path populated password_hash.
   // `browser_access` (W2) is the explicit grant: an account without it never
-  // holds a browser session, whatever its method. No logout exemption — the
-  // session is purged here, which is the sign-out.
+  // holds a browser session, whatever its method. A session that fails this
+  // check is purged right here, so logout needs no separate path for it.
   if (!user || user.authMethod !== 'password' || user.browserAccess !== 'granted') {
     if (PORTAL_USE_REDIS) {
       const redis = getRedis();
@@ -651,9 +651,15 @@ authRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema
 
   if (user) setPortalAuthAuditIdentity(c, user);
 
-  const resetToken = user?.authMethod === 'password' && await isPortalPasswordResetEnabled(user.orgId)
+  const resetEligible = user?.authMethod === 'password' && await isPortalPasswordResetEnabled(user.orgId);
+  const resetToken = user && resetEligible
     ? await issuePortalCapabilityToken({ purpose: 'reset', portalUserId: user.id, orgId: user.orgId, email: user.email, authEpoch: user.authEpoch })
     : null;
+  if (user && resetEligible && !resetToken) {
+    // Redis went away after the pre-check. The response stays the uniform
+    // success (no enumeration), so record that no email went out.
+    console.error('[portal] password reset token not issued (state backend unavailable)', { orgId: user.orgId });
+  }
   if (user && resetToken) {
     const orgQuery = orgId ? `&orgId=${encodeURIComponent(orgId)}` : '';
     const resetUrl = buildPortalUrl(`/reset-password?token=${encodeURIComponent(resetToken)}${orgQuery}`);

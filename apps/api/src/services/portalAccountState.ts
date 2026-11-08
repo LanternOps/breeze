@@ -83,7 +83,8 @@ export function initialPortalAccountState(
 /**
  * Rows bulk invite may touch: password-method, no password, no identity, and
  * `invited` or a legacy credential-less `active` row (pre-#3258 inbound email
- * created those; the MSP UI shows them as "pending setup"). Plan D2.
+ * created those; the MSP UI shows them as "pending setup"), so bulk invite can
+ * never touch an add-in or identity-only account (W2 plan decision D2).
  */
 export function isBulkInviteEligible(facts: PortalAccountFacts): boolean {
   return isPasswordEligible(facts)
@@ -154,7 +155,9 @@ export function planPortalAccountTransition(facts: PortalAccountFacts, writer: P
           'This user has not accepted their invite yet. Resend the invite instead.',
         );
       }
-      // disabled: back to active only with a credential; otherwise to invited (plan D4).
+      // disabled: back to active only with a credential; otherwise to invited,
+      // so an account can never be active with no way to sign in (W2 plan D4).
+      // The MSP then resends the invite.
       const hasCredential = facts.hasPasswordHash || facts.hasExternalIdentity;
       return { status: hasCredential ? 'active' : 'invited', browserAccess, bumpEpoch: true };
     }

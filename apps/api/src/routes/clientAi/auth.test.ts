@@ -61,7 +61,11 @@ vi.mock('../../db', () => {
     insert: dbInsertMock,
     update: dbUpdateMock,
   };
-  return { db: dbMock, withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()) };
+  return {
+    db: dbMock,
+    withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
+    withDbTransaction: vi.fn((fn: () => unknown) => fn()),
+  };
 });
 
 // #3258: the exchange resolves the login's CONTACT. The resolver's own rules

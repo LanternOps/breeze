@@ -58,6 +58,7 @@ import { authMiddleware } from '../../middleware/auth';
 import { registerOrgPortalUsersRoutes } from '../../routes/orgPortalUsers';
 import { portalRoutes } from '../../routes/portal';
 import { issuePortalCapabilityToken } from '../../routes/portal/capabilityTokens';
+import { portalSessions } from '../../routes/portal/helpers';
 import { createAccessToken } from '../../services/jwt';
 import { createPartner, createOrganization, setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
@@ -383,6 +384,20 @@ describe('portal account foundations (W2) — real Postgres, breeze_app', () => 
       body: JSON.stringify({ email: 'e2e@acme.example', password: NEW_PORTAL_PASSWORD, orgId: envA.organization.id }),
     });
     expect(loginRes.status).toBe(200);
+  });
+
+  // Review Focus 4: the invite link double-clicked / opened in two tabs.
+  it('two concurrent accepts of one invite link: exactly one activation and one session', async () => {
+    const envA = await setupTestEnvironment({ scope: 'partner' });
+    const portalUserId = await inviteAs(envA, 'double@acme.example');
+    const token = tokenFromLastInvite('double@acme.example');
+    const sessionsBefore = [...portalSessions.values()].filter((s) => s.portalUserId === portalUserId).length;
+
+    const [a, b] = await Promise.all([accept(token), accept(token)]);
+    expect([a.status, b.status].sort()).toEqual([200, 400]);
+    expect([...portalSessions.values()].filter((s) => s.portalUserId === portalUserId)).toHaveLength(sessionsBefore + 1);
+    const row = await fetchPortalUser(portalUserId);
+    expect(row!.status).toBe('active');
   });
 
   it('a re-invite invalidates the earlier link (the token is bound to the epoch it was issued at)', async () => {

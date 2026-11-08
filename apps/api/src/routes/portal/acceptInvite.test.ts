@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { userRow, updateSpy, sendPasswordResetSpy, updateRows } = vi.hoisted(() => ({
+const { userRow, updateSpy, updateWhereSpy, sendPasswordResetSpy, updateRows } = vi.hoisted(() => ({
   userRow: { current: null as any },
   updateSpy: vi.fn(),
+  updateWhereSpy: vi.fn(),
   sendPasswordResetSpy: vi.fn(),
   updateRows: { current: null as Array<{ authEpoch: number; id?: string }> | null },
 }));
@@ -20,8 +21,9 @@ vi.mock('../../db', () => ({
     // W04: forgot-password inner-joins organizations for the partner that owns
     // the portal user's org (spec §8.2), so the chain must accept innerJoin.
     select: () => { const chain: any = { innerJoin: () => chain, leftJoin: () => chain, where: () => chain, limit: () => Promise.resolve(userRow.current ? [userRow.current] : []) }; return { from: () => chain }; },
-    update: () => ({ set: (v: any) => ({ where: () => {
+    update: () => ({ set: (v: any) => ({ where: (w: unknown) => {
       updateSpy(v);
+      updateWhereSpy(w);
       return { returning: () => Promise.resolve(updateRows.current ?? [{ id: '11111111-2222-4333-8444-555566667777', authEpoch: (userRow.current?.authEpoch ?? 1) + 1 }]) };
     } }) })
   },
@@ -304,6 +306,19 @@ describe('POST /auth/reset-password (W2)', () => {
     const token = await mintReset();
     expect((await reset({ token, password: 'Str0ngPass!' })).status).toBe(400);
     expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it('reset-password: a concurrent change after validation (epoch-guarded update matches nothing) → 400, no session purge', async () => {
+    userRow.current = invited({ status: 'active', passwordHash: 'old-hash', authEpoch: 7 });
+    updateRows.current = [];
+    const token = await mintReset();
+    const res = await reset({ token, password: 'Str0ngPass!' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid or expired reset token' });
+    // The UPDATE is guarded by id, auth_method AND the validated epoch.
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const where = new PgDialect().sqlToQuery(updateWhereSpy.mock.calls[0]![0] as never);
+    expect(where.params).toEqual(expect.arrayContaining([USER_ID, 'authMethod', 'password', 'authEpoch', 7]));
   });
 
   it('reset-password: the token is single-use', async () => {

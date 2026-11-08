@@ -113,8 +113,8 @@ export const portalBranding = pgTable('portal_branding', {
 
 /**
  * Portal account lifecycle (`portal_users.status`, SQL CHECK
- * `portal_users_status_chk`). Every writer goes through
- * services/portalAccountState.ts. The column itself stays `varchar` so the
+ * `portal_users_status_chk`). Every writer of `status` / `browser_access` goes
+ * through services/portalAccountState.ts. The column itself stays `varchar` so the
  * many fixture files that write plain strings keep compiling.
  */
 export type PortalAccountStatus = 'invited' | 'active' | 'disabled';

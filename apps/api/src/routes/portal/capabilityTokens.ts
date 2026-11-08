@@ -10,16 +10,22 @@
  *     synchronous tick in memory, so a double-click or a second tab gets
  *     nothing (exactly one activation);
  *   - re-validated against the row at consume (`validatePortalCapability`):
- *     the same org, the same address, the same durable `auth_epoch` (any
- *     disable, re-invite or password change since issue invalidates it), the
- *     right lifecycle state, and an active org.
+ *     the same org, the same address, the same durable `auth_epoch`, the right
+ *     lifecycle state, and an active org. A disable, a password change, an
+ *     accepted invite, or a re-invite that changes the row's state bumps the
+ *     epoch and so invalidates every earlier token; resending to an
+ *     already-invited row does not (both links stay valid until one is used).
  *
  * Storage keys and TTLs are unchanged (`PORTAL_REDIS_KEYS.inviteToken /
  * resetToken`, 7 d / 1 h), so a token issued by the previous release is still
- * found. Legacy handling (plan D3): a legacy `{portalUserId}` invite is
- * accepted once for an `invited`, password-eligible, browser-granted row; a
- * legacy `{userId}` reset is always refused (the user just asks again). The
- * legacy-invite branch is deleted in W3, at least 7 days after this ships.
+ * found. Legacy handling (W2 plan decision D3, docs/superpowers/plans/portal/
+ * 2026-11-08-portal-registration-options-w02-account-foundations.md): a legacy
+ * `{portalUserId}` invite is accepted once for an `invited`, password-eligible,
+ * browser-granted row in an active org, because invites live 7 days and
+ * rejecting them would break every in-flight invite on deploy; a legacy
+ * `{userId}` reset is always refused (1 h TTL, the user just asks again).
+ * TODO(W3): remove the legacy-invite branch once every pre-W2 invite has
+ * expired (7-day TTL after this deploys).
  *
  * The backend is Redis when `PORTAL_USE_REDIS`, otherwise the in-memory maps
  * in ./helpers — the same mutually exclusive switch as sessions.
@@ -138,18 +144,25 @@ export async function issuePortalCapabilityToken(p: Omit<PortalCapabilityPayload
   return rawToken;
 }
 
+/** A stored payload that was found but refused. Logged (never the token) so a version skew is visible. */
+function rejectPayload(purpose: PortalCapabilityPurpose, reason: 'parse' | 'version' | 'purpose' | 'shape'): null {
+  console.warn('[portal] capability token payload rejected', { purpose, reason });
+  return null;
+}
+
 function parseCapability(purpose: PortalCapabilityPurpose, raw: string | null): ConsumedCapability | null {
   if (!raw) return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return null;
+    return rejectPayload(purpose, 'parse');
   }
-  if (!parsed || typeof parsed !== 'object') return null;
+  if (!parsed || typeof parsed !== 'object') return rejectPayload(purpose, 'shape');
   const p = parsed as Record<string, unknown>;
   if ('v' in p) {
-    if (p.v !== 2 || p.purpose !== purpose) return null;
+    if (p.v !== 2) return rejectPayload(purpose, 'version');
+    if (p.purpose !== purpose) return rejectPayload(purpose, 'purpose');
     if (
       typeof p.portalUserId !== 'string'
       || typeof p.orgId !== 'string'
@@ -157,7 +170,7 @@ function parseCapability(purpose: PortalCapabilityPurpose, raw: string | null): 
       || !Number.isSafeInteger(p.authEpoch)
       || (p.authEpoch as number) <= 0
     ) {
-      return null;
+      return rejectPayload(purpose, 'shape');
     }
     return {
       format: 'v2',
@@ -165,13 +178,14 @@ function parseCapability(purpose: PortalCapabilityPurpose, raw: string | null): 
     };
   }
   const legacyId = purpose === 'invite' ? p.portalUserId : p.userId;
-  return typeof legacyId === 'string' && legacyId.length > 0 ? { format: 'legacy', portalUserId: legacyId } : null;
+  return typeof legacyId === 'string' && legacyId.length > 0 ? { format: 'legacy', portalUserId: legacyId } : rejectPayload(purpose, 'shape');
 }
 
 /**
  * Consume (burn) the token for `purpose` and parse it. Returns null for an
- * unknown, expired, already-used or malformed token, and for a payload whose
- * purpose differs from the one requested (still burned).
+ * unknown, expired, already-used or malformed token, for a payload whose
+ * purpose differs from the one requested (still burned), and when Redis is
+ * required but unavailable (nothing is consumed; the routes answer 503 first).
  */
 export async function consumePortalCapabilityToken(
   purpose: PortalCapabilityPurpose,
