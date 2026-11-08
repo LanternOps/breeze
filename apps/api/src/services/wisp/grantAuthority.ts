@@ -208,17 +208,47 @@ export function assertReadWithinCeiling(ceiling: GrantCeiling, check: { orgId: s
   assertTermsWithinCeiling(ceiling, check);
 }
 
+/**
+ * The tool term of a ceiling: which tools a call may name at all, whatever its
+ * org, site or permission. It comes from the pinned revision alone (snapshot
+ * denies and allowlist) plus the code's agent deny floor, so within one
+ * running process it does not change for a session pinned to that revision
+ * (a deploy can change the floor).
+ */
+export type CeilingToolTerm = Pick<GrantCeiling, 'deniedTools' | 'toolAllowlist'>;
+
+/** The tool term of a pinned snapshot, as `resolveGrantCeiling` builds it. */
+export function ceilingToolTermOf(snapshot: Pick<WispCeilingSnapshot, 'deniedTools' | 'toolAllowlist'>): CeilingToolTerm {
+  return {
+    toolAllowlist: snapshot.toolAllowlist === null ? null : new Set(snapshot.toolAllowlist),
+    deniedTools: new Set([...snapshot.deniedTools, ...agentDeniedToolNames()]),
+  };
+}
+
+/** Why `toolName` fails the tool term, or null when it passes. */
+function toolTermViolation(term: CeilingToolTerm, toolName: string): string | null {
+  // The two agent deny registries are checked directly too, so the
+  // never-delegable floor does not depend on how the term was built.
+  if (term.deniedTools.has(toolName) || isNeverDelegableTool(toolName)) return `tool ${toolName} is never delegable`;
+  if (term.toolAllowlist !== null && !term.toolAllowlist.has(toolName)) return `tool ${toolName} is outside the grant's tool allowlist`;
+  return null;
+}
+
+/**
+ * True when `toolName` passes the tool term, the check `assertWithinCeiling`
+ * applies to `{ toolName }`. It has no status, org, site or permission term,
+ * so it can only narrow what a Wisp session is OFFERED (its MCP server and
+ * prompt index, #10430); every call still passes `enforceWispCeiling`.
+ */
+export function ceilingAdmitsTool(term: CeilingToolTerm, toolName: string): boolean {
+  return toolTermViolation(term, toolName) === null;
+}
+
 /** The tool / org / site / permission terms of a check; the caller has applied (or, for a read, deliberately skipped) the status gate. */
 function assertTermsWithinCeiling(ceiling: GrantCeiling, check: CeilingCheck): void {
   if (check.toolName !== undefined) {
-    // The two agent deny registries are checked directly too, so the
-    // never-delegable floor does not depend on how the ceiling was built.
-    if (ceiling.deniedTools.has(check.toolName) || isNeverDelegableTool(check.toolName)) {
-      throw new CeilingViolationError('tool', `tool ${check.toolName} is never delegable`);
-    }
-    if (ceiling.toolAllowlist !== null && !ceiling.toolAllowlist.has(check.toolName)) {
-      throw new CeilingViolationError('tool', `tool ${check.toolName} is outside the grant's tool allowlist`);
-    }
+    const violation = toolTermViolation(ceiling, check.toolName);
+    if (violation !== null) throw new CeilingViolationError('tool', violation);
   }
 
   if (check.orgId !== undefined) {
@@ -644,8 +674,7 @@ export async function resolveGrantCeiling(
     partnerWide: scopeOrgId === null && snapshot.partnerWide === true && live.partnerOrgAccess === 'all',
     ...reach,
     orgIds,
-    toolAllowlist: snapshot.toolAllowlist === null ? null : new Set(snapshot.toolAllowlist),
-    deniedTools: new Set([...snapshot.deniedTools, ...agentDeniedToolNames()]),
+    ...ceilingToolTermOf(snapshot),
     orgTerms: buildOrgTerms({ ...reach, orgIds }, live.orgMemberships),
     // 'paused' only for an allowPaused read; assertWithinCeiling refuses it.
     status: readablePause ? 'paused' : 'active',

@@ -49,6 +49,7 @@ import {
   targetOrgIdFor,
   unreachableWispAuth,
   wispSeedForSession,
+  wispSessionToolFilter,
 } from './chatCeiling';
 
 const ORG_A = '00000000-0000-4000-8000-00000000000a';
@@ -391,5 +392,49 @@ describe('lookupWispGrant', () => {
     shared.selectError = new Error('db down');
     await expect(lookupWispGrant('s-1')).rejects.toThrow('db down');
     expect(WispSessionUnavailableError).toBeDefined();
+  });
+});
+
+describe('wispSessionToolFilter (#10430)', () => {
+  const snapshot = (o: Record<string, unknown> = {}) => ({
+    version: 1, permissionKeys: ['*:*'], orgIds: [ORG_A], siteIds: null, toolAllowlist: null, deniedTools: [], ...o,
+  });
+
+  it('refuses a tool in the pinned revision\'s deniedTools and admits the rest', async () => {
+    shared.selectRows = [{ ceilingSnapshot: snapshot({ deniedTools: ['list_alerts'] }) }];
+    const admit = await wispSessionToolFilter(grant);
+    expect(admit('list_alerts')).toBe(false);
+    expect(admit('query_devices')).toBe(true);
+    expect(shared.captureException).not.toHaveBeenCalled();
+  });
+
+  it('refuses the agent deny floor even when the snapshot predates a registry entry', async () => {
+    shared.selectRows = [{ ceilingSnapshot: snapshot() }];
+    const admit = await wispSessionToolFilter(grant);
+    expect(admit('list_operator_tasks')).toBe(false);
+    expect(admit('launch_specialist')).toBe(true);
+  });
+
+  it('applies the pinned allowlist', async () => {
+    shared.selectRows = [{ ceilingSnapshot: snapshot({ toolAllowlist: ['query_devices'] }) }];
+    const admit = await wispSessionToolFilter(grant);
+    expect(admit('query_devices')).toBe(true);
+    expect(admit('list_alerts')).toBe(false);
+  });
+
+  it.each([
+    ['a missing revision row', []],
+    ['a malformed snapshot', [{ ceilingSnapshot: { version: 2 } }]],
+  ])('falls back to the agent deny floor and reports %s', async (_label, rows) => {
+    shared.selectRows = rows;
+    const admit = await wispSessionToolFilter(grant);
+    expect(admit('list_operator_tasks')).toBe(false);
+    expect(admit('query_devices')).toBe(true);
+    expect(shared.captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('propagates a DB error', async () => {
+    shared.selectError = new Error('db down');
+    await expect(wispSessionToolFilter(grant)).rejects.toThrow('db down');
   });
 });

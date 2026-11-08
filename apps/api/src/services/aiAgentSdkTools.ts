@@ -6042,7 +6042,18 @@ export function createBreezeMcpServer(
   onPostToolUse?: PostToolUseCallback,
   getActiveSession?: () => ActiveSession,
   extraTools: SdkTool[] = [],
-  options?: { onlyTools?: ReadonlySet<string> },
+  options?: {
+    onlyTools?: ReadonlySet<string>;
+    /**
+     * #10430: a tool this rejects is not registered at all, registry or extra.
+     * Set for a Wisp chat session from its grant ceiling's tool term
+     * (`wispSessionToolFilter`), so neither the inline tool list nor the
+     * ToolSearch index (the deferred MCP tools, see aiToolSearchPolicy.ts)
+     * offers a tool the ceiling gate refuses. It narrows what is offered;
+     * the per-call gate is unchanged.
+     */
+    admitTool?: (toolName: string) => boolean;
+  },
 ) {
   // #11004: the static declarations come from the per-process template; only
   // the tools actually registered below get this session's handlers.
@@ -6101,14 +6112,17 @@ export function createBreezeMcpServer(
     }
   }
 
+  const admit = options?.admitTool ?? (() => true);
   const boundTools = bindBreezeSdkTools(
-    registeredTools.map((declaration) => templateWithRegistryMeta(template, declaration)),
+    registeredTools
+      .filter((t) => admit(t.name))
+      .map((declaration) => templateWithRegistryMeta(template, declaration)),
     { getAuth, getActiveSession, onPreToolUse, onPostToolUse },
   );
 
   return createSdkMcpServer({
     name: 'breeze',
     version: '1.0.0',
-    tools: [...boundTools, ...wrappedExtraTools],
+    tools: [...boundTools, ...wrappedExtraTools.filter((t) => admit(t.name))],
   });
 }

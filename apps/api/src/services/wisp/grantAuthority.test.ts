@@ -38,7 +38,9 @@ import {
   assertReadWithinCeiling,
   assertToolCallWithinCeiling,
   assertWithinCeiling,
+  ceilingAdmitsTool,
   ceilingSnapshotHash,
+  ceilingToolTermOf,
   computeLiveHumanTerm,
   intersectSnapshotWithLive,
   resolveGrantCeiling,
@@ -110,6 +112,40 @@ describe('assertWithinCeiling', () => {
   it('an org-scoped ceiling refuses any other org even if its org set were wider', () => {
     expect(() => assertWithinCeiling(ceiling({ scopeOrgId: 'org-a', partnerWide: false, orgIds: new Set(['org-a', 'org-b']) }), { orgId: 'org-b' }))
       .toThrow(expect.objectContaining({ code: 'org' }));
+  });
+});
+
+describe('ceilingAdmitsTool / ceilingToolTermOf (#10430: a Wisp session\'s tool index)', () => {
+  it('admits exactly the tools that pass assertWithinCeiling\'s tool term', () => {
+    const term = ceiling({ deniedTools: new Set(['list_alerts']), toolAllowlist: null });
+    const names = ['list_alerts', 'query_devices', 'launch_specialist', ...AGENT_HUMAN_ONLY_TOOLS, ...AGENT_DENIED_READ_TOOLS.keys()];
+    for (const name of names) {
+      let passes = true;
+      try { assertWithinCeiling(term, { toolName: name }); } catch { passes = false; }
+      expect(ceilingAdmitsTool(term, name), name).toBe(passes);
+    }
+  });
+  it('refuses a tool in deniedTools', () => {
+    expect(ceilingAdmitsTool(ceiling(), 'list_operator_tasks')).toBe(false);
+    expect(ceilingAdmitsTool(ceiling({ deniedTools: new Set(['query_devices']) }), 'query_devices')).toBe(false);
+  });
+  it('refuses the agent deny floor even when deniedTools leaves it out', () => {
+    expect(ceilingAdmitsTool(ceiling({ deniedTools: new Set() }), 'list_operator_tasks')).toBe(false);
+  });
+  it('admits a tool a human may call under a grant, unless the snapshot denies it', () => {
+    expect(ceilingAdmitsTool(ceiling({ deniedTools: new Set() }), 'launch_specialist')).toBe(true);
+    expect(ceilingAdmitsTool(ceiling({ deniedTools: new Set(['launch_specialist']) }), 'launch_specialist')).toBe(false);
+  });
+  it('applies the allowlist', () => {
+    const term = ceiling({ toolAllowlist: new Set(['query_devices']) });
+    expect(ceilingAdmitsTool(term, 'query_devices')).toBe(true);
+    expect(ceilingAdmitsTool(term, 'list_alerts')).toBe(false);
+  });
+  it('builds the term resolveGrantCeiling uses: the snapshot denies plus the agent deny floor', () => {
+    const term = ceilingToolTermOf({ deniedTools: ['query_devices'], toolAllowlist: null });
+    expect(term.toolAllowlist).toBeNull();
+    expect(term.deniedTools).toEqual(new Set(['query_devices', ...agentDeniedToolNames()]));
+    expect(ceilingToolTermOf({ deniedTools: [], toolAllowlist: ['a', 'b'] }).toolAllowlist).toEqual(new Set(['a', 'b']));
   });
 });
 
