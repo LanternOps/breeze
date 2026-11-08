@@ -1,27 +1,29 @@
 import { Hono } from 'hono';
-import { and, eq, inArray, ne, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
-import { OEM_LANES, type OemLane } from '@breeze/shared';
+import { OEM_LANES, type OemLane, type OemOutcome } from '@breeze/shared';
 import { db } from '../../db';
 import {
-  deviceGroupMemberships,
-  deviceHardware,
+  deviceOemPolicySide,
   deviceOemUpdateStatus,
   devices,
   organizations,
-  partners,
   sites,
 } from '../../db/schema';
 import { zValidator } from '../../lib/validation';
 import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
-import { effectiveTimezoneFrom } from '../../services/oemUpdates/candidates';
 import { OEM_DISPLAY_STATES, type OemDisplayState } from '../../services/oemUpdates/displayState';
+import { oemDisplayStateSql } from '../../services/oemUpdates/displayStateSql';
 import { oemUpdatesFlagOn } from '../../services/oemUpdates/flags';
-import { classifyOemDevice, oemOccurrenceMemo, oemOfferedLane, type OemDeviceFacts } from '../../services/oemUpdates/policySide';
+import { scheduleOemPolicySideRefresh, type OemPolicySideRefreshScope } from '../../services/oemUpdates/policySideRefreshTrigger';
+import {
+  oemFleetDeviceCondition,
+  oemGatesFingerprint,
+  oemPolicySideTrustedCondition,
+  refreshOemPolicySide,
+} from '../../services/oemUpdates/policySideStore';
 import { OEM_RELEASE_GAVE_UP } from '../../services/oemUpdates/releaseSweep';
-import { loadOemLinkCandidates, pickOemLink, type OemLinkCandidate } from '../../services/oemUpdates/resolver';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
-import { notParkedDeviceCondition } from '../../services/unassignedPool/selectorPredicate';
 
 export const oemUpdatesFleetRoutes = new Hono();
 
@@ -35,82 +37,11 @@ const fleetQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
-type FleetRow = OemDeviceFacts & {
-  hostname: string;
-  orgId: string;
-  orgName: string;
-  siteId: string;
-  siteName: string | null;
-  deviceStatus: string;
-  siteTimezone: string | null;
-  orgTimezone: string | null;
-  partnerTimezone: string | null;
-  partnerSettingsTimezone: string | null;
-  groupIds?: string[] | null;
-  reason: string | null;
-  lastAttemptAt: Date | null;
-};
-
 /**
- * One row per device with everything a state needs, so the pass below never goes
- * back to the database. The org and partner zones are read out of their settings
- * rather than carrying a whole settings blob per device. Memberships are inline, off
- * the membership primary key, and only when a group assignment could use them.
- *
- * An org-scoped caller cannot see the partner row, so a zone set only on the partner
- * reads as UTC for them: at most a few hours' difference around a window's edge against
- * a partner caller and the alert sweep, the same edge the device section accepts.
- *
- * Exported for the integration test, which asks Postgres to plan this very statement.
+ * Pending devices (no trusted policy side yet) a request refreshes itself before
+ * answering. Above it, the refresh goes to the worker and the answer says so.
  */
-export function fleetRowsQuery(where: SQL | undefined, withGroups: boolean) {
-  return db
-    .select({
-      deviceId: devices.id,
-      hostname: devices.hostname,
-      orgId: devices.orgId,
-      orgName: organizations.name,
-      partnerId: organizations.partnerId,
-      siteId: devices.siteId,
-      siteName: sites.name,
-      deviceStatus: devices.status,
-      osType: devices.osType,
-      isVirtual: devices.isVirtual,
-      deviceRole: devices.deviceRole,
-      enrolledAt: devices.enrolledAt,
-      manufacturer: deviceHardware.manufacturer,
-      model: deviceHardware.model,
-      siteTimezone: sites.timezone,
-      orgTimezone: sql<string | null>`${organizations.settings} ->> 'timezone'`,
-      partnerTimezone: partners.timezone,
-      partnerSettingsTimezone: sql<string | null>`${partners.settings} ->> 'timezone'`,
-      ...(withGroups
-        ? {
-            groupIds: sql<string[] | null>`(
-              SELECT json_agg(${deviceGroupMemberships.groupId}) FROM ${deviceGroupMemberships}
-              WHERE ${deviceGroupMemberships.deviceId} = ${devices.id}
-            )`,
-          }
-        : {}),
-      statusLane: deviceOemUpdateStatus.lane,
-      applicability: deviceOemUpdateStatus.applicability,
-      reason: deviceOemUpdateStatus.reason,
-      lastOutcome: deviceOemUpdateStatus.lastOutcome,
-      occurrenceKey: deviceOemUpdateStatus.occurrenceKey,
-      attempts: deviceOemUpdateStatus.attempts,
-      lastAttemptAt: deviceOemUpdateStatus.lastAttemptAt,
-      lastSuccessAt: deviceOemUpdateStatus.lastSuccessAt,
-      rebootPendingSince: deviceOemUpdateStatus.rebootPendingSince,
-    })
-    .from(devices)
-    .innerJoin(organizations, eq(organizations.id, devices.orgId))
-    .leftJoin(partners, eq(partners.id, organizations.partnerId))
-    .leftJoin(sites, eq(sites.id, devices.siteId))
-    .leftJoin(deviceHardware, eq(deviceHardware.deviceId, devices.id))
-    .leftJoin(deviceOemUpdateStatus, eq(deviceOemUpdateStatus.deviceId, devices.id))
-    .where(where)
-    .orderBy(sql`lower(${devices.hostname})`, devices.id);
-}
+export const OEM_FLEET_PENDING_REFRESH_LIMIT = 500;
 
 /** Who may see which devices: what bounds the fleet read, in the list and the counts alike. */
 export function fleetScopeCondition(scope: {
@@ -120,10 +51,7 @@ export function fleetScopeCondition(scope: {
 }): SQL | undefined {
   const { orgCondition, orgId, allowedSiteIds } = scope;
   return and(
-    // Quick Support devices sit in an org the caller can reach; nothing else drops them.
-    eq(devices.isEphemeral, false),
-    notParkedDeviceCondition(),
-    ne(devices.status, 'decommissioned'),
+    oemFleetDeviceCondition(),
     orgCondition,
     orgId ? eq(devices.orgId, orgId) : undefined,
     allowedSiteIds
@@ -132,41 +60,167 @@ export function fleetScopeCondition(scope: {
   );
 }
 
-type Classified = { row: FleetRow; lane: OemLane | null; state: OemDisplayState };
+/** One request's read: the same scope, clock and gates for every statement it runs. */
+export type FleetRead = {
+  where: SQL | undefined;
+  now: Date;
+  /** With the flag off, the policy side is left out: no lane is offered, nothing is managed. */
+  flagOn: boolean;
+  fingerprint: string;
+};
 
-/** One pass over the rows, in memory, with the rules the device section uses. */
-function classify(rows: FleetRow[], candidates: OemLinkCandidate[], now: Date): Classified[] {
-  const zones = new Map<string, string>();
-  const occurrenceOf = oemOccurrenceMemo(now);
+/**
+ * The device's policy side, only when it can be trusted at `now`: computed under this
+ * process's gates and not past its rollover. Anything else does not join, so it reads
+ * exactly like a device with no row (not managed) and counts as pending.
+ */
+function policySideJoin(read: FleetRead): SQL {
+  return and(
+    eq(deviceOemPolicySide.deviceId, devices.id),
+    read.flagOn ? oemPolicySideTrustedCondition(read.now, read.fingerprint) : sql`false`,
+  )!;
+}
 
-  return rows.map((row) => {
-    const offered = oemOfferedLane(row);
-    const link = offered && candidates.length > 0
-      ? pickOemLink(
-          candidates,
-          { id: row.deviceId, orgId: row.orgId, siteId: row.siteId, deviceRole: row.deviceRole, osType: row.osType },
-          row.partnerId,
-          row.groupIds ?? [],
-        )
-      : null;
+function stateOf(read: FleetRead): SQL<OemDisplayState> {
+  return oemDisplayStateSql({
+    applicability: deviceOemUpdateStatus.applicability,
+    rebootPendingSince: deviceOemUpdateStatus.rebootPendingSince,
+    lastOutcome: deviceOemUpdateStatus.lastOutcome,
+    occurrenceKey: deviceOemUpdateStatus.occurrenceKey,
+    attempts: deviceOemUpdateStatus.attempts,
+    lastSuccessAt: deviceOemUpdateStatus.lastSuccessAt,
+    policy: {
+      linkEnabled: deviceOemPolicySide.linkEnabled,
+      rebootMode: deviceOemPolicySide.rebootMode,
+      occurrenceKey: deviceOemPolicySide.occurrenceKey,
+      lastNightStart: deviceOemPolicySide.lastNightStart,
+      pastLastNightAt: deviceOemPolicySide.pastLastNightAt,
+      managedSince: deviceOemPolicySide.managedSince,
+    },
+  }, read.now);
+}
 
-    const zoneKey = `${row.siteTimezone}|${row.orgTimezone}|${row.partnerTimezone}|${row.partnerSettingsTimezone}`;
-    let timezone = zones.get(zoneKey);
-    if (!timezone) {
-      timezone = effectiveTimezoneFrom({
-        siteTimezone: row.siteTimezone,
-        orgSettings: { timezone: row.orgTimezone },
-        partnerTimezone: row.partnerTimezone,
-        partnerSettings: { timezone: row.partnerSettingsTimezone },
-      });
-      zones.set(zoneKey, timezone);
+/**
+ * The lane the hardware offers, else a past run's: a device owing a reboot with the
+ * flag since turned off still shows under its vendor.
+ */
+const laneOf = sql<OemLane | null>`COALESCE(${deviceOemPolicySide.offeredLane}, ${deviceOemUpdateStatus.lane})`;
+
+export type FleetFilter = { lane?: OemLane; state?: OemDisplayState; limit: number; offset: number };
+
+/**
+ * Statement 1, one pass over the scope: per state, the devices in scope (and in the
+ * lane, when one is asked for); how many have no trusted policy side, across the
+ * whole scope; and which devices make up the requested page, by position in hostname
+ * order. Exported for the integration test.
+ *
+ * One pass because every joined table costs an RLS check per row it reads under a
+ * tenant context, and that, not the state rule, is what a large scope pays for: the
+ * counts and the page (filtered by state or lane or not) share it.
+ */
+export function fleetSummaryStatement(read: FleetRead, filter: FleetFilter): SQL {
+  const laneMatches = filter.lane ? sql`fleet.lane = ${filter.lane}` : sql`true`;
+  const stateMatches = filter.state ? sql`fleet.state = ${filter.state}` : sql`true`;
+  return sql`
+    WITH fleet AS (
+      SELECT ${devices.id} AS id,
+             lower(${devices.hostname}) AS host_key,
+             ${stateOf(read)} AS state,
+             ${laneOf} AS lane,
+             ${deviceOemPolicySide.deviceId} IS NULL AS pending
+      FROM ${devices}
+      LEFT JOIN ${deviceOemUpdateStatus} ON ${eq(deviceOemUpdateStatus.deviceId, devices.id)}
+      LEFT JOIN ${deviceOemPolicySide} ON ${policySideJoin(read)}
+      WHERE ${read.where ?? sql`true`}
+    )
+    SELECT fleet.state AS state,
+           (count(*) FILTER (WHERE ${laneMatches}))::int AS count,
+           (count(*) FILTER (WHERE fleet.pending))::int AS pending,
+           NULL::uuid AS device_id,
+           NULL::bigint AS position
+    FROM fleet
+    GROUP BY fleet.state
+    UNION ALL
+    SELECT NULL, NULL, NULL, page.id, page.position
+    FROM (
+      SELECT fleet.id, row_number() OVER (ORDER BY fleet.host_key, fleet.id) AS position
+      FROM fleet
+      WHERE ${laneMatches} AND ${stateMatches}
+      ORDER BY fleet.host_key, fleet.id
+      LIMIT ${filter.limit} OFFSET ${filter.offset}
+    ) page`;
+}
+
+/** Statement 2: what the list shows for the page's devices. Exported for the integration test. */
+export function fleetPageQuery(read: FleetRead, deviceIds: string[]) {
+  return db
+    .select({
+      deviceId: devices.id,
+      hostname: devices.hostname,
+      orgId: devices.orgId,
+      orgName: organizations.name,
+      siteId: devices.siteId,
+      siteName: sites.name,
+      deviceStatus: devices.status,
+      lane: laneOf,
+      displayState: stateOf(read),
+      lastOutcome: deviceOemUpdateStatus.lastOutcome,
+      lastAttemptAt: deviceOemUpdateStatus.lastAttemptAt,
+      lastSuccessAt: deviceOemUpdateStatus.lastSuccessAt,
+      rebootPendingSince: deviceOemUpdateStatus.rebootPendingSince,
+      reason: deviceOemUpdateStatus.reason,
+    })
+    .from(devices)
+    .innerJoin(organizations, eq(organizations.id, devices.orgId))
+    .leftJoin(sites, eq(sites.id, devices.siteId))
+    .leftJoin(deviceOemUpdateStatus, eq(deviceOemUpdateStatus.deviceId, devices.id))
+    .leftJoin(deviceOemPolicySide, policySideJoin(read))
+    .where(inArray(devices.id, deviceIds));
+}
+
+type SummaryRow = {
+  state: OemDisplayState | null;
+  count: number | null;
+  pending: number | null;
+  device_id: string | null;
+  position: number | string | null;
+};
+
+type Summary = { counts: Record<OemDisplayState, number>; pending: number; pageIds: string[] };
+
+async function readSummary(read: FleetRead, filter: FleetFilter): Promise<Summary> {
+  const counts = Object.fromEntries(OEM_DISPLAY_STATES.map((name) => [name, 0])) as Record<OemDisplayState, number>;
+  let pending = 0;
+  const page: Array<{ id: string; position: number }> = [];
+  for (const row of await db.execute(fleetSummaryStatement(read, filter)) as unknown as SummaryRow[]) {
+    if (row.device_id !== null) {
+      page.push({ id: row.device_id, position: Number(row.position) });
+    } else if (row.state !== null) {
+      counts[row.state] += row.count ?? 0;
+      pending += row.pending ?? 0;
     }
+  }
+  page.sort((a, b) => a.position - b.position);
+  return { counts, pending: read.flagOn ? pending : 0, pageIds: page.map((entry) => entry.id) };
+}
 
-    const { state } = classifyOemDevice({ facts: row, lane: offered, link, timezone, now, occurrenceOf });
-    // A past run's lane still says something once the hardware no longer offers one:
-    // a device owing a reboot with the flag since turned off, say.
-    return { row, lane: offered ?? row.statusLane, state };
-  });
+/** The devices in scope with no trusted policy side, up to the in-request limit. */
+async function pendingDeviceIds(read: FleetRead): Promise<string[]> {
+  const rows = await db
+    .select({ id: devices.id })
+    .from(devices)
+    .leftJoin(deviceOemPolicySide, policySideJoin(read))
+    .where(and(read.where, isNull(deviceOemPolicySide.deviceId)))
+    .limit(OEM_FLEET_PENDING_REFRESH_LIMIT);
+  return rows.map((row) => row.id);
+}
+
+/** Who the worker refreshes for a caller whose scope has too many pending devices. */
+function refreshScopeFor(auth: AuthContext, orgId: string | undefined): OemPolicySideRefreshScope | null {
+  if (orgId) return { orgId };
+  if (auth.scope === 'organization' && auth.orgId) return { orgId: auth.orgId };
+  if (auth.scope === 'partner' && auth.partnerId) return { partnerId: auth.partnerId };
+  return null;
 }
 
 /**
@@ -175,12 +229,23 @@ function classify(rows: FleetRow[], candidates: OemLinkCandidate[], now: Date): 
  * `counts` covers the org and lane filters and not `state`, so the tab can show every
  * state while its list shows one. `total` is the list's length before paging.
  *
- * A state is derived, not stored: it depends on the policy's schedule in the device's
- * zone, and that rule must stay the one `deriveOemDisplayState` holds. So a request
- * reads the caller's whole scope once and classifies it in one pass: at most two
- * queries whatever the size of the fleet (the links, then the devices, whose plan
- * starts from the org scope), and one with the flag off. A system caller names an org,
- * because the scope would otherwise be the platform.
+ * Two statements per request, whatever the size of the fleet (#11242): one pass over
+ * the scope for the counts and the page's ids, then the page's rows (none for an empty
+ * page). Nothing about the scope is shipped to or classified in this process.
+ * A state is derived, not stored: it depends on the policy's
+ * schedule in the device's zone, and that rule must stay the one
+ * `deriveOemDisplayState` holds. The worker materialises the part of it that is stable
+ * between known instants (`device_oem_policy_side`) and the rest is evaluated in SQL
+ * against this request's clock (`oemDisplayStateSql`, pinned to the TS rule by a parity
+ * test). Zones resolve in system scope there, so an org-scoped caller sees a zone set
+ * only on its partner the same way a partner caller and the overdue alerts do.
+ *
+ * A device with no trusted policy side (new, past its occurrence's rollover, or
+ * computed under other gates) is pending: up to 500 are refreshed here and the counts
+ * read again; above that the worker is asked and the answer carries `pendingRefresh`,
+ * with those devices read as not managed until it lands.
+ *
+ * A system caller names an org, because the scope would otherwise be the platform.
  */
 oemUpdatesFleetRoutes.get(
   '/fleet',
@@ -202,29 +267,43 @@ oemUpdatesFleetRoutes.get(
       return c.json({ error: 'orgId is required' }, 400);
     }
 
-    const where = fleetScopeCondition({
-      orgCondition: auth.orgCondition(devices.orgId),
-      orgId,
-      allowedSiteIds: permissions.allowedSiteIds,
-    });
+    const flagOn = oemUpdatesFlagOn();
+    const read: FleetRead = {
+      where: fleetScopeCondition({
+        orgCondition: auth.orgCondition(devices.orgId),
+        orgId,
+        allowedSiteIds: permissions.allowedSiteIds,
+      }),
+      now: new Date(),
+      flagOn,
+      fingerprint: flagOn ? oemGatesFingerprint() : '',
+    };
 
-    // No flag, no lane, so no policy is ever consulted.
-    const candidates = oemUpdatesFlagOn() ? await loadOemLinkCandidates() : [];
-    const withGroups = candidates.some((candidate) => candidate.assignmentLevel === 'device_group');
-    const rows = await (fleetRowsQuery(where, withGroups) as unknown as Promise<FleetRow[]>);
+    const filter: FleetFilter = { lane, state, limit, offset };
+    let summary = await readSummary(read, filter);
+    if (summary.pending > 0 && summary.pending <= OEM_FLEET_PENDING_REFRESH_LIMIT) {
+      // Ids the caller's own RLS-scoped statement returned: the refresh never widens past them.
+      await refreshOemPolicySide({ now: read.now, scope: { deviceIds: await pendingDeviceIds(read) } });
+      summary = await readSummary(read, filter);
+    } else if (summary.pending > 0) {
+      const scope = refreshScopeFor(auth, orgId);
+      if (scope) scheduleOemPolicySideRefresh(scope, 'fleet-pending');
+    }
 
-    const classified = classify(rows, candidates, new Date());
-    const inLane = lane ? classified.filter((entry) => entry.lane === lane) : classified;
-
-    const counts = Object.fromEntries(OEM_DISPLAY_STATES.map((name) => [name, 0])) as Record<OemDisplayState, number>;
-    for (const entry of inLane) counts[entry.state] += 1;
-
-    const listed = state ? inLane.filter((entry) => entry.state === state) : inLane;
+    const { counts, pending, pageIds } = summary;
+    const total = state
+      ? counts[state]
+      : OEM_DISPLAY_STATES.reduce((sum, name) => sum + counts[name], 0);
+    const position = new Map(pageIds.map((id, index) => [id, index]));
+    const rows = pageIds.length > 0
+      ? (await fleetPageQuery(read, pageIds)).sort((a, b) => position.get(a.deviceId)! - position.get(b.deviceId)!)
+      : [];
 
     return c.json({
       counts,
-      total: listed.length,
-      devices: listed.slice(offset, offset + limit).map(({ row, lane: rowLane, state: displayState }) => ({
+      total,
+      ...(pending > 0 ? { pendingRefresh: pending } : {}),
+      devices: rows.map((row) => ({
         deviceId: row.deviceId,
         hostname: row.hostname,
         orgId: row.orgId,
@@ -232,9 +311,9 @@ oemUpdatesFleetRoutes.get(
         siteId: row.siteId,
         siteName: row.siteName,
         deviceStatus: row.deviceStatus,
-        lane: rowLane,
-        displayState,
-        lastOutcome: row.lastOutcome,
+        lane: row.lane,
+        displayState: row.displayState,
+        lastOutcome: row.lastOutcome as OemOutcome | null,
         lastAttemptAt: row.lastAttemptAt,
         lastSuccessAt: row.lastSuccessAt,
         rebootPendingSince: row.rebootPendingSince,
