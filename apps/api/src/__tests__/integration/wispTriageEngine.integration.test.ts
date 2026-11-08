@@ -40,6 +40,8 @@ import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
   aiAgentRuns,
   aiAgents,
+  alerts,
+  connectionHealthIncidents,
   organizationUsers,
   tickets,
   userNotifications,
@@ -71,6 +73,7 @@ import {
   assignUserToPartner,
   createOrganization,
   createPartner,
+  createDevice,
   createRole,
   createSite,
   createUser,
@@ -506,10 +509,88 @@ describe('real admission (flag on)', () => {
 // clean assessment records a skipped run and makes no model call.
 describe('no-changes gate (#11423)', () => {
   const MIN = 60_000;
-  // runs (ai_agents:read) and alerts are probed only when the grantor may read them.
-  const READ_ALL = [{ resource: 'ai_agents', action: 'read' }, { resource: 'alerts', action: 'read' }];
-  const READ_ALL_KEYS = ['ai_sessions:use', 'tickets:read', 'ai_agents:read', 'alerts:read'];
+  // Each section is probed only when the grantor may read it (the digest's rule).
+  const READ_ALL = [
+    { resource: 'ai_agents', action: 'read' }, { resource: 'alerts', action: 'read' }, { resource: 'organizations', action: 'read' },
+  ];
+  const READ_ALL_KEYS = ['ai_sessions:use', 'tickets:read', 'ai_agents:read', 'alerts:read', 'organizations:read'];
   const tick = { kind: 'tick' } as const;
+
+  /** A grant on org A whose last clean assessment finished 60 min ago. */
+  async function gateFixture() {
+    const t = await seedTenant(READ_ALL);
+    const agentId = await seedTriageAgent(t);
+    const g = await seedGrant(t, { orgIds: [t.orgA], permissionKeys: READ_ALL_KEYS });
+    const lastRunId = await seedSpentRun(agentId, t.orgA, g, 5, new Date(Date.now() - 61 * MIN));
+    let n = 0;
+    const look = () => enqueueAssessment({ grantId: g.grantId, orgId: t.orgA, reason: tick, occurrenceKey: `look-${n++}` });
+    return { t, agentId, g, lastRunId, look };
+  }
+
+  async function seedAlert(orgId: string, at: { triggeredAt: Date; acknowledgedAt?: Date }): Promise<string> {
+    const site = await createSite({ orgId });
+    const device = await createDevice({ orgId, siteId: site.id });
+    const [row] = await asSystem(() => db.insert(alerts).values({
+      orgId, deviceId: device.id, severity: 'high', title: 'Disk almost full', status: 'active', ...at,
+    }).returning({ id: alerts.id }));
+    return row!.id;
+  }
+
+  /** A non-Wisp run of the org's agent (profile full), or a specialist child with depth 1. */
+  async function seedOtherRun(agentId: string, orgId: string, at: { queuedAt: Date; finishedAt: Date }, depth = 0) {
+    await asSystem(() => db.insert(aiAgentRuns).values({
+      agentId, orgId, triggerKind: 'schedule', dedupeKey: `other:${randomUUID()}`, modeAtStart: 'shadow',
+      policySnapshot: {} as never, profile: 'full', status: 'completed', depth,
+      queuedAt: at.queuedAt, startedAt: at.queuedAt, finishedAt: at.finishedAt,
+    } as never));
+  }
+
+  async function seedIncident(t: Tenant, viewPermission: string, openedAt: Date) {
+    await asSystem(() => db.insert(connectionHealthIncidents).values({
+      partnerId: t.partnerId, orgId: t.orgA, sourceKind: 'oauth_grant', sourceId: `grant-${randomUUID()}`,
+      condition: 'reauth_required', severity: 'permanent', displayName: 'Accounting app', fixHref: '/settings/connected-apps',
+      viewPermission, repairPermission: 'connected_apps:manage', firstFailedAt: openedAt, openedAt, lastObservedAt: openedAt,
+    }));
+  }
+
+  it('alerts on real Postgres: one triggered before the last run is not a change; acknowledging it, or a new one, is', async () => {
+    const f = await gateFixture();
+    const alertId = await seedAlert(f.t.orgA, { triggeredAt: new Date(Date.now() - 90 * MIN) });
+    expect(await f.look()).toEqual({ skipped: 'no_changes' });
+    await asSystem(() => db.update(alerts).set({ status: 'acknowledged', acknowledgedAt: new Date() }).where(eq(alerts.id, alertId)));
+    expect(await f.look()).toHaveProperty('runId');
+
+    const g = await gateFixture();
+    expect(await g.look()).toEqual({ skipped: 'no_changes' });
+    await seedAlert(g.t.orgA, { triggeredAt: new Date() }); // timestamp without time zone, set by the app
+    expect(await g.look()).toHaveProperty('runId');
+  });
+
+  it('runs on real Postgres: an older run that FINISHED since is a change; a specialist child (depth 1) is not', async () => {
+    const f = await gateFixture();
+    const now = Date.now();
+    await seedOtherRun(f.agentId, f.t.orgA, { queuedAt: new Date(now - 30 * MIN), finishedAt: new Date(now - 25 * MIN) }, 1);
+    await seedOtherRun(f.agentId, f.t.orgA, { queuedAt: new Date(now - 120 * MIN), finishedAt: new Date(now - 100 * MIN) });
+    expect(await f.look()).toEqual({ skipped: 'no_changes' });
+    await seedOtherRun(f.agentId, f.t.orgA, { queuedAt: new Date(now - 120 * MIN), finishedAt: new Date(now - 5 * MIN) });
+    expect(await f.look()).toHaveProperty('runId');
+  });
+
+  it('incidents on real Postgres: one the grantor may not view is not a change; one it may view is', async () => {
+    const f = await gateFixture();
+    await seedIncident(f.t, 'billing:read', new Date());
+    expect(await f.look()).toEqual({ skipped: 'no_changes' });
+    await seedIncident(f.t, 'organizations:read', new Date());
+    expect(await f.look()).toHaveProperty('runId');
+  });
+
+  it('a watch of a kind the digest cannot judge (backup_health) always runs', async () => {
+    const f = await gateFixture();
+    const ceiling = await resolveGrantCeiling(f.g.grantId, f.g.revisionId);
+    const w = await createWatch(ceiling, { orgId: f.t.orgA, kind: 'backup_health', params: {}, cadenceMinutes: 60 });
+    expect(await enqueueAssessment({ grantId: f.g.grantId, orgId: f.t.orgA, reason: { kind: 'watch', watchId: w.id } }))
+      .toHaveProperty('runId');
+  });
 
   it('nothing new since the last completed run: a skipped no_changes row, nothing enqueued; a new ticket then admits a model run', async () => {
     const t = await seedTenant(READ_ALL);
@@ -520,9 +601,11 @@ describe('no-changes gate (#11423)', () => {
 
     expect(await enqueueAssessment({ grantId: g.grantId, orgId: t.orgA, reason: tick, occurrenceKey: 'k1' }))
       .toEqual({ skipped: 'no_changes' });
-    // The gate's own skip is not a change: the next look (a watch here) skips too.
+    // The gate's own skip is not a change: the next look (an alert_pattern watch) skips too.
+    const ceiling = await resolveGrantCeiling(g.grantId, g.revisionId);
+    const alertWatch = await createWatch(ceiling, { orgId: t.orgA, kind: 'alert_pattern', params: {}, cadenceMinutes: 60 });
     expect(await enqueueAssessment({
-      grantId: g.grantId, orgId: t.orgA, reason: { kind: 'watch', watchId: randomUUID() }, occurrenceKey: 'k2',
+      grantId: g.grantId, orgId: t.orgA, reason: { kind: 'watch', watchId: alertWatch.id }, occurrenceKey: 'k2',
     })).toEqual({ skipped: 'no_changes' });
     expect(enqueuedRunIds).toEqual([]);
 

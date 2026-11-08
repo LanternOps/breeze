@@ -34,7 +34,7 @@
  */
 import { createHash } from 'node:crypto';
 import { and, asc, desc, eq, gt, gte, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
-import type { Concern, ConcernSeverity, ConcernSubject, ConcernSubjectKind } from '@breeze/shared';
+import type { Concern, ConcernSeverity, ConcernSubject, ConcernSubjectKind, WatchKind } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
@@ -261,14 +261,11 @@ export async function enqueueAssessment(
     grant: { grantId, grantRevisionId: ceiling.revisionId },
   };
 
-  // #11423: a tick or watch for an org where nothing changed since its last
-  // clean assessment makes no model call (the model was the gate before, and
-  // ~5¢ a run bought "Nothing changed").
-  if (noChangesGateApplies(triggerRef.reason, watermark)) {
-    const since = await lastCleanAssessmentFinish(grantId, orgId);
-    if (since !== null && (await firstChangedDigestSource(ceiling, grantId, orgId, since)) === null) {
-      return recordNoChangesSkip(admission, grantId, ceiling.partnerId, orgId);
-    }
+  // #11423: a tick (or alert_pattern watch) for an org where nothing changed
+  // since its last clean assessment makes no model call. The model was the
+  // gate before: a Sonnet call to answer "Nothing changed" (issue #11423).
+  if (await nothingChangedSinceLastLook(ceiling, triggerRef.reason, watermark, orgId)) {
+    return recordNoChangesSkip(admission, grantId, ceiling.partnerId, orgId);
   }
 
   // #1105: admission opens its own context and enqueues after commit, so it
@@ -303,17 +300,59 @@ async function settleAdmission(
 export const NO_CHANGES_ERROR_CODE = 'no_changes';
 const NO_CHANGES_SUMMARY = 'Nothing changed since the last assessment, so Wisp made no model call.';
 
-/** Only these reasons can be skipped. `event` and `onboarding` always run. */
-const NO_CHANGES_GATED_REASONS: ReadonlySet<AssessmentReason['kind']> = new Set(['tick', 'watch']);
+/**
+ * Watch kinds whose hits are rows the probe reads, so "no change" means "no
+ * new or cleared hit": an alert_pattern watch's hits are alerts. Every other
+ * kind always runs:
+ *   ticket_waiting       fires BECAUSE a ticket did not change;
+ *   backup_health, patch_compliance, security_findings, custom_query
+ *                        are judged through tools, on state the digest does
+ *                        not read;
+ *   ticket_cluster       has its own deterministic poller.
+ * #11424 makes watches stateful (a stored hit-set), which supersedes this.
+ */
+const DIGEST_EVALUATED_WATCH_KINDS: ReadonlySet<WatchKind> = new Set<WatchKind>(['alert_pattern']);
 
 /**
- * Pure. True when this request may be skipped because nothing changed: a tick
- * or a watch (`reason` as recorded, so a first-look tick is already
- * `onboarding`) with an earlier clean assessment to compare against. A first
- * look (no watermark) always runs.
+ * Pure. True when this request may be skipped because nothing changed. It
+ * needs an earlier clean assessment to compare against (a watermark; `reason`
+ * as recorded, so a first-look tick is already `onboarding`), and a tick, or
+ * a watch of a DIGEST_EVALUATED_WATCH_KINDS kind. An `event` names something
+ * to look at and `onboarding` is a first look: both always run, as does a
+ * watch whose kind is unknown (`watchKind` null: the watch is gone).
  */
-export function noChangesGateApplies(reason: AssessmentReason, watermark: Date | null): boolean {
-  return watermark !== null && NO_CHANGES_GATED_REASONS.has(reason.kind);
+export function noChangesGateApplies(reason: AssessmentReason, watermark: Date | null, watchKind: WatchKind | null = null): boolean {
+  if (watermark === null) return false;
+  if (reason.kind === 'tick') return true;
+  return reason.kind === 'watch' && watchKind !== null && DIGEST_EVALUATED_WATCH_KINDS.has(watchKind);
+}
+
+/**
+ * The gate's reads. Fails open: the gate only saves money, so if any read
+ * throws, the assessment runs as it did before the gate, and the error is
+ * reported rather than blocking every tick and watch until it is fixed.
+ */
+async function nothingChangedSinceLastLook(
+  ceiling: GrantCeiling,
+  reason: AssessmentReason,
+  watermark: Date | null,
+  orgId: string,
+): Promise<boolean> {
+  if (watermark === null || (reason.kind !== 'tick' && reason.kind !== 'watch')) return false;
+  try {
+    const watchKind = reason.kind === 'watch'
+      ? (await listWatches(ceiling)).find((w) => w.id === reason.watchId)?.kind ?? null
+      : null;
+    if (!noChangesGateApplies(reason, watermark, watchKind)) return false;
+    const since = await lastCleanAssessmentFinish(ceiling.grantId, orgId);
+    return since !== null && (await firstChangedDigestSource(ceiling, ceiling.grantId, orgId, since)) === null;
+  } catch (err) {
+    console.error('[wisp.assessment] no-changes probe failed; running the assessment', {
+      grantId: ceiling.grantId, orgId, reason: reason.kind, error: err instanceof Error ? err.message : String(err),
+    });
+    captureException(err, undefined, { component: 'wisp', op: 'wisp.assessment.noChangesProbe', grantId: ceiling.grantId, orgId });
+    return false;
+  }
 }
 
 /** What the gate probes, in probe order. */
@@ -350,34 +389,37 @@ function notNoChangesSkip(): SQL {
 
 /**
  * The first digest source with a change since `since` (the last clean
- * assessment's FINISH), or null when there is none. Each probe uses the
- * digest's own predicate for its table (loadDigest) and is gated on the same
- * grantor permission, so a section that would render empty is not probed:
+ * assessment's FINISH), or null when there is none. Each probe starts from
+ * the digest's predicate for its table (loadDigest), widened where the digest
+ * would miss a change of state, and is gated on the same grantor permission,
+ * so a section that would render empty is not probed:
  *
- *   alerts     triggered or resolved since
+ *   alerts     triggered, acknowledged, dismissed or resolved since (an
+ *              acknowledgement clears an "unacknowledged alert" watch hit)
  *   tickets    updated since
  *   incidents  opened since, with a view permission inside the ceiling
  *   runs       queued or finished since — not a no_changes skip, not another
  *              grant's assessment, not a specialist (depth > 0). Wisp's own
  *              bookkeeping is not news: counting another grant's runs would
  *              have two grants on one org wake each other for ever, and a
- *              specialist's finish is its own `ai.agent.run.completed` event.
+ *              specialist's finish (or failure) is its own
+ *              `ai.agent.run.completed` / `.failed` event, which always runs.
  *   intents    created, or changed status, since
  *   concerns   (no permission: the run always reads them) updated since,
  *              unless the last write was an assessment finalizer's — its
  *              `last_assessed_run_id` names a run that finished at or after
- *              the write. That is the touch loop that bumps every open
- *              concern on every run, and the other writes of the run.
- *              Raises, updates and resolves by people, chat or the
- *              budget-exhausted path still count.
+ *              the write. That covers the touch loop (assessmentFinalizer
+ *              stamps every open concern the run read, before finishRun sets
+ *              finished_at) and the run's other concern writes. Writes by
+ *              people, chat or the budget-exhausted path still count.
  *
  * Measuring from the FINISH, not the watermark (the start), keeps the last
  * run's own writes out. The cost: a change that landed while that run was in
- * flight, after it read its digest, waits for the next change or event. It is
- * not lost, because a skip never moves the watermark.
+ * flight, after it read its digest, waits for the next change or event; the
+ * next model run still reads it, because a skip never moves the watermark.
  *
- * HOOK(#11425): when the digest reads metric anomalies (PR #11470), add the
- * same predicate here as an `anomalies` source.
+ * HOOK(#11425): when the digest reads metric anomalies, add the same
+ * predicate here as an `anomalies` source.
  */
 async function firstChangedDigestSource(
   ceiling: GrantCeiling,
@@ -390,7 +432,9 @@ async function firstChangedDigestSource(
   const any = async (rows: Promise<unknown[]>) => (await rows).length > 0;
   return sys(async () => {
     if (may('alerts') && await any(db.select({ id: alerts.id }).from(alerts)
-      .where(and(eq(alerts.orgId, orgId), or(gte(alerts.triggeredAt, since), gte(alerts.resolvedAt, since))))
+      .where(and(eq(alerts.orgId, orgId), or(
+        gte(alerts.triggeredAt, since), gte(alerts.acknowledgedAt, since), gte(alerts.dismissedAt, since), gte(alerts.resolvedAt, since),
+      )))
       .limit(1))) return 'alerts';
     if (may('tickets') && await any(db.select({ id: tickets.id }).from(tickets)
       .where(and(eq(tickets.orgId, orgId), gte(tickets.updatedAt, since)))

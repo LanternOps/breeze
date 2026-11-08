@@ -281,6 +281,8 @@ export async function loadLivePartnerOrgs(partnerId: string): Promise<{ id: stri
  * assessment.ts) looked at the org too. Without it here the unchanged org
  * would stay the oldest, and every floor tick would pick it and skip it.
  * The watermark still ignores those rows (assessment.ts lastAssessmentWatermark).
+ * 'no_changes' is assessment.ts NO_CHANGES_ERROR_CODE (this module imports
+ * assessment types only); keep the two spellings equal.
  */
 export async function loadLastAssessedByOrg(grantId: string): Promise<Map<string, Date>> {
   const result = await sys(() => rows<{ org_id: string; last_assessed_at: unknown }>(sql`

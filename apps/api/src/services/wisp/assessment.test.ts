@@ -25,7 +25,8 @@ const h = vi.hoisted(() => {
     p.from = vi.fn((t: unknown) => { q.table = t; return p; });
     p.where = vi.fn((cond: unknown) => { q.where.push(cond); return p; });
     p.then = (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) =>
-      Promise.resolve(results.shift() ?? []).then(res, rej);
+      // A queued Error rejects that query (the read failed).
+      ((r: unknown) => (r instanceof Error ? Promise.reject(r) : Promise.resolve(r)))(results.shift() ?? []).then(res, rej);
     return p;
   };
   class GrantInactiveError extends Error {
@@ -131,6 +132,7 @@ import {
   enqueueAssessment,
   lastAssessmentWatermark,
   loadAssessmentContext,
+  noChangesGateApplies,
   parseWispTriggerRef,
   recordDeterministicDigest,
 } from './assessment';
@@ -412,9 +414,10 @@ describe('no-changes gate (#11423)', () => {
     h.transitionRunStatus.mockResolvedValue(true);
     h.enqueue.mockResolvedValue({ created: true, run: { id: RUN } });
     h.resolveConcernBySignature.mockResolvedValue({ resolved: false });
+    h.listWatches.mockResolvedValue([{ id: WATCH, kind: 'alert_pattern' }]);
   });
 
-  it.each([['tick', tick], ['watch', watch]] as const)(
+  it.each([['tick', tick], ['alert_pattern watch', watch]] as const)(
     'a %s with an unchanged digest records a skipped no_changes run and enqueues no model run',
     async (_label, reason) => {
       queueGated();
@@ -471,6 +474,61 @@ describe('no-changes gate (#11423)', () => {
     expect(probeQueries()).toEqual([]);
     expect(deferredCalls()).toHaveLength(0);
     expect(h.transitionRunStatus).not.toHaveBeenCalled();
+  });
+
+  // A ticket_waiting watch fires BECAUSE nothing changed; the tool-judged
+  // kinds read state the digest never sees. Gating them would mute them.
+  it.each(['ticket_waiting', 'backup_health', 'patch_compliance', 'security_findings', 'custom_query', 'ticket_cluster'])(
+    'a %s watch always runs (its hits are not digest rows)',
+    async (kind) => {
+      h.listWatches.mockResolvedValue([{ id: WATCH, kind }]);
+      queueGated();
+      await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: watch })).resolves.toEqual({ runId: RUN });
+      expect(probeQueries()).toEqual([]);
+      expect(deferredCalls()).toHaveLength(0);
+    },
+  );
+
+  it('a watch that no longer exists is not gated', async () => {
+    h.listWatches.mockResolvedValue([{ id: 'another-watch', kind: 'alert_pattern' }]);
+    queueGated();
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: watch })).resolves.toEqual({ runId: RUN });
+    expect(deferredCalls()).toHaveLength(0);
+  });
+
+  it.each([
+    ['the anchor read', () => { h.results.push([grantRow()], [{ at: WATERMARK }], new Error('db blip') as never); }],
+    ['a probe', () => { h.results.push([grantRow()], [{ at: WATERMARK }], [{ at: ANCHOR }], [], new Error('column missing') as never); }],
+  ])('fails open when %s throws: the assessment runs as before and the error is reported', async (_label, arrange) => {
+    arrange();
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: tick })).resolves.toEqual({ runId: RUN });
+    expect(deferredCalls()).toHaveLength(0);
+    expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ op: 'wisp.assessment.noChangesProbe' }));
+  });
+
+  it('fails open when the watch lookup throws', async () => {
+    h.listWatches.mockRejectedValue(new Error('db blip'));
+    h.results.push([grantRow()], [{ at: WATERMARK }]);
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: watch })).resolves.toEqual({ runId: RUN });
+    expect(deferredCalls()).toHaveLength(0);
+  });
+
+  it('noChangesGateApplies is pure: tick or alert_pattern watch, with a watermark', () => {
+    const wm0 = new Date(0);
+    expect(noChangesGateApplies(tick, wm0)).toBe(true);
+    expect(noChangesGateApplies(tick, null)).toBe(false);
+    expect(noChangesGateApplies(watch, wm0, 'alert_pattern')).toBe(true);
+    expect(noChangesGateApplies(watch, wm0, 'backup_health')).toBe(false);
+    expect(noChangesGateApplies(watch, wm0, null)).toBe(false);
+    expect(noChangesGateApplies(alertReason, wm0)).toBe(false);
+    expect(noChangesGateApplies({ kind: 'onboarding' }, wm0)).toBe(false);
+  });
+
+  it('the alerts probe counts an acknowledge or dismiss as a change (it clears an "unacknowledged" watch hit)', async () => {
+    queueGated();
+    await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: tick });
+    const { sql: text } = compile(h.queries.find((x) => x.table === alerts)!.where[0]);
+    for (const col of ['triggered_at', 'acknowledged_at', 'dismissed_at', 'resolved_at']) expect(text).toContain(`"${col}" >= $`);
   });
 
   it('a watermark without a finished run to compare against is not gated', async () => {
