@@ -242,11 +242,16 @@ function claimPredicate(claim: HydrationClaim) {
 
 const MAX_STORED_REASON_LENGTH = 200;
 
+/** Last labels that mean a file name, not a host, in a dotted token. */
+const FILE_EXTENSIONS = new Set([
+  'json', 'txt', 'gz', 'tgz', 'zip', 'log', 'js', 'ts', 'yaml', 'yml', 'xml', 'csv', 'db', 'bin', 'dat', 'tmp', 'bak', 'sql', 'pem', 'crt', 'key', 'enc', 'zst', 'xz', 'tar',
+]);
+
 /**
  * Provider and network errors name the host they could not reach
  * (`connect ECONNREFUSED 127.0.0.1:9`). The stored text keeps the error code
  * and wording but not URLs, IP addresses, host:port tokens, or the host after a
- * network error code (#11280). Dotted names elsewhere (file names) are kept.
+ * network error code (#11280). Dotted hostnames are redacted unless the last label is a file extension.
  */
 export function redactIndexFailureReason(reason: string): string {
   return reason
@@ -255,6 +260,8 @@ export function redactIndexFailureReason(reason: string): string {
     .replace(/(?:[0-9a-f]{1,4}:){1,7}:(?:[0-9a-f]{1,4})?|::1\b/gi, '[redacted]')
     .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/g, '[redacted]')
     .replace(/\b[a-z0-9][a-z0-9.-]*:\d{2,5}\b/gi, '[redacted]')
+    .replace(/\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+([a-z]{2,})\b/gi, (match, last: string) =>
+      FILE_EXTENSIONS.has(last.toLowerCase()) ? match : '[redacted]')
     // The token after a network error code is the host it names.
     .replace(/\b(ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)\s+\S+/g, '$1 [redacted]')
     .slice(0, MAX_STORED_REASON_LENGTH);

@@ -497,6 +497,9 @@ describe('hydrateSnapshotFileIndex', () => {
     expect(redactIndexFailureReason('connect ECONNREFUSED ::1:9000')).toBe('connect ECONNREFUSED [redacted]');
     expect(redactIndexFailureReason('2001:db8::1 unreachable')).toBe('[redacted] unreachable');
     expect(redactIndexFailureReason('manifest has no files key')).toBe('manifest has no files key');
+    expect(redactIndexFailureReason("Hostname/IP does not match certificate's altnames: Host: bucket.example.net")).toBe("Hostname/IP does not match certificate's altnames: Host: [redacted]");
+    expect(redactIndexFailureReason('The bucket is in another region; use endpoint bucket.s3.eu-west-1.amazonaws.com')).toBe('The bucket is in another region; use endpoint [redacted]');
+    expect(redactIndexFailureReason('file.tar.gz missing')).toBe('file.tar.gz missing');
     expect(redactIndexFailureReason('manifest.json is not valid')).toBe('manifest.json is not valid');
     expect(redactIndexFailureReason('x'.repeat(500)).length).toBeLessThanOrEqual(200);
   });
