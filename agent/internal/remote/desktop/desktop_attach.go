@@ -135,7 +135,7 @@ type captureThreadRecycler struct {
 // decide reports whether to retire the thread now, and whether to log it: the
 // first recycle of a streak is logged, then at most one per log interval.
 func (r *captureThreadRecycler) decide(now time.Time) (recycle, logIt bool) {
-	if r.streak > 0 && now.Sub(r.last) < captureThreadRecycleDelay(r.streak) {
+	if r.backingOff(now) {
 		return false, false
 	}
 	r.streak++
@@ -145,6 +145,12 @@ func (r *captureThreadRecycler) decide(now time.Time) (recycle, logIt bool) {
 		return true, true
 	}
 	return true, false
+}
+
+// backingOff reports whether a recycle at now would fall inside the wait after
+// the streak's last recycle.
+func (r captureThreadRecycler) backingOff(now time.Time) bool {
+	return r.streak > 0 && now.Sub(r.last) < captureThreadRecycleDelay(r.streak)
 }
 
 // reset ends the streak; called when a frame is delivered.

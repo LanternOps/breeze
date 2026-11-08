@@ -146,6 +146,14 @@ func (c *gdiCapturer) LastCaptureError() error {
 	return c.book.lastCaptureErr
 }
 
+// repairCarry is what DXGI's no-frame repair hands from this fallback to its
+// replacement (gdiRepairCarry), read under the fallback's lock.
+func (c *gdiCapturer) repairCarry() gdiRepairCarry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.book.repairCarry()
+}
+
 // CaptureWarning implements captureWarningReporter: while frames are being
 // delivered without the input desktop confirmed, why it could not be.
 func (c *gdiCapturer) CaptureWarning() error {
