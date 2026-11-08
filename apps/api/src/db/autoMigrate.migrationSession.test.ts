@@ -17,7 +17,10 @@ const { postgresFactory, clientMock, callLog, migrationFiles, failOn } = vi.hois
 
   const clientMock = Object.assign(
     vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
-      callLog.push(`${strings.join('?').replace(/\s+/g, ' ').trim()} | values=${JSON.stringify(values)}`);
+      const text = strings.join('?').replace(/\s+/g, ' ').trim();
+      callLog.push(`${text} | values=${JSON.stringify(values)}`);
+      // The bounded core-lock acquire (#4144) reads `locked`; uncontended here.
+      if (text.includes('pg_try_advisory_lock(')) return [{ locked: true }];
       return [];
     }),
     {

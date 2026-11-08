@@ -770,6 +770,7 @@ x-api-env: &api-env
   REDIS_MEMORY_CAPTURE_THROTTLE_MS: ${REDIS_MEMORY_CAPTURE_THROTTLE_MS:-}
   # Startup + agent-fleet behaviour
   AUTO_MIGRATE: ${AUTO_MIGRATE:-}
+  MIGRATION_LOCK_TIMEOUT_MS: ${MIGRATION_LOCK_TIMEOUT_MS:-}
   AGENT_AUTO_PROMOTE: ${AGENT_AUTO_PROMOTE:-}
   AGENT_EDITION_AUTO_MIGRATE_ENABLED: ${AGENT_EDITION_AUTO_MIGRATE_ENABLED:-}
   # Caller verification (#6354): exact true only, default ON (link tier). Workstation tier is dark (default off).
