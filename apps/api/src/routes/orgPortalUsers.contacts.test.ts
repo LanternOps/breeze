@@ -75,8 +75,10 @@ vi.mock('../services/contacts/portalInvite', async () => {
   };
 });
 vi.mock('../services/contacts/loginLink', () => ({ linkLoginToContact: h.linkMock }));
+// W2 (#11379): invite links are purpose-bound capability tokens, bound to the
+// row's auth_epoch at issue time.
+vi.mock('./portal/capabilityTokens', () => ({ issuePortalCapabilityToken: h.storeToken }));
 vi.mock('./portal/helpers', () => ({
-  storePortalInviteToken: h.storeToken,
   buildPortalUrl: (p: string) => `https://x/portal${p}`,
   purgePortalSessionsForUsers: vi.fn(async () => 0),
 }));
@@ -87,7 +89,7 @@ vi.mock('../services/clientAiSessionStore', () => ({ purgeClientAiSessionsForUse
 import { authMiddleware } from '../middleware/auth';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
 import { purgePortalSessionsForUsers } from './portal/helpers';
-import { ContactGoneError, ContactEmailChangedError } from '../services/contacts/portalInvite';
+import { ContactGoneError, ContactEmailChangedError, PortalLoginChangedError } from '../services/contacts/portalInvite';
 
 const ORG_ID = '7c0a1f7e-1111-4222-8333-444455556666';
 const C1 = '11111111-1111-4111-8111-111111111111';
@@ -103,7 +105,7 @@ const post = (path: string, body: unknown) => makeApp().request(`/organizations/
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
 });
 const contactRow = (id: string, email: string | null, over: Record<string, unknown> = {}) => ({ id, orgId: ORG_ID, siteId: null, name: `Name ${id.slice(0, 2)}`, email, ...over });
-const invited = (portalUserId: string, email: string, over: Record<string, unknown> = {}) => ({ kind: 'invite', portalUserId, email, created: true, contactLink: 'direct', ...over });
+const invited = (portalUserId: string, email: string, over: Record<string, unknown> = {}) => ({ kind: 'invite', portalUserId, email, authEpoch: 4, created: true, contactLink: 'direct', ...over });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -141,6 +143,19 @@ describe('POST …/invite with contactId', () => {
     expect(bindDepth).toBe(1);
     expect(h.linkMock).not.toHaveBeenCalled();
     expect(h.sendInvite).toHaveBeenCalledWith(expect.objectContaining({ to: 'ada@acme.test' }));
+    // The invite token is bound to the epoch the bind's write returned.
+    expect(h.storeToken).toHaveBeenCalledWith({ purpose: 'invite', portalUserId: 'pu-1', orgId: ORG_ID, email: 'ada@acme.test', authEpoch: 4 });
+  });
+
+  it('409s PORTAL_ACCOUNT_TRANSITION_REFUSED when the login changed between read and write (epoch guard), sending nothing', async () => {
+    h.loadMock.mockResolvedValueOnce([contactRow(C1, 'ada@acme.test')]);
+    h.bindMock.mockRejectedValueOnce(new PortalLoginChangedError());
+    const res = await post('invite', { email: 'ada@acme.test', contactId: C1 });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'This portal user changed while the request was in progress. Reload and try again.', code: 'PORTAL_ACCOUNT_TRANSITION_REFUSED' });
+    expect(h.storeToken).not.toHaveBeenCalled();
+    expect(h.sendInvite).not.toHaveBeenCalled();
+    expect(h.auditMock).not.toHaveBeenCalled();
   });
 
   it('accepts a case-different invite email (Ada@Acme.TEST vs ada@acme.test)', async () => {
@@ -272,15 +287,18 @@ describe('POST …/invite with contactId', () => {
 });
 
 describe('POST …/invite without contactId (stable codes on the existing 409s)', () => {
+  // The refusal itself comes from the W2 state module; the invite route keeps
+  // W1's stable PORTAL_INVITE_* codes on it.
   it.each([
-    [{ authMethod: 'entra', status: 'active', passwordHash: null }, 'PORTAL_INVITE_EXTERNAL_IDENTITY', 'This identity is managed by an external sign-in provider.'],
-    [{ authMethod: 'password', status: 'disabled', passwordHash: null }, 'PORTAL_INVITE_USER_DISABLED', 'This user is disabled. Reactivate them before inviting.'],
-    [{ authMethod: 'password', status: 'active', passwordHash: 'h' }, 'PORTAL_INVITE_ALREADY_ACTIVE', 'This email already has an active portal account.'],
+    [{ authMethod: 'entra', status: 'active', passwordHash: null, browserAccess: 'none', entraOid: 'oid-1' }, 'PORTAL_INVITE_EXTERNAL_IDENTITY', 'This identity is managed by an external sign-in provider.'],
+    [{ authMethod: 'password', status: 'invited', passwordHash: null, browserAccess: 'granted', entraOid: 'oid-1' }, 'PORTAL_INVITE_EXTERNAL_IDENTITY', 'This identity is managed by an external sign-in provider.'],
+    [{ authMethod: 'password', status: 'disabled', passwordHash: null, browserAccess: 'granted', entraOid: null }, 'PORTAL_INVITE_USER_DISABLED', 'This user is disabled. Reactivate them before inviting.'],
+    [{ authMethod: 'password', status: 'active', passwordHash: 'h', browserAccess: 'granted', entraOid: null }, 'PORTAL_INVITE_ALREADY_ACTIVE', 'This email already has an active portal account.'],
   ])('existing row %o → 409 %s with the old message', async (row, code, error) => {
     h.selectResult.mockReset();
     h.selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }])
-      .mockResolvedValueOnce([{ id: 'pu-1', email: 'ada@acme.test', contactId: null, ...row }])
+      .mockResolvedValueOnce([{ id: 'pu-1', email: 'ada@acme.test', contactId: null, authEpoch: 1, ...row }])
       .mockResolvedValue([]);
     const res = await post('invite', { email: 'ada@acme.test' });
     expect(res.status).toBe(409);
@@ -374,6 +392,32 @@ describe('POST …/invite-contacts', () => {
     expect(h.storeToken).not.toHaveBeenCalled();
     expect(h.sendInvite).not.toHaveBeenCalled();
     expect(h.auditMock).not.toHaveBeenCalled();
+  });
+
+  it('409s and sends nothing when a login changes mid-batch (epoch guard): the savepoint rolls back every bind', async () => {
+    h.loadMock.mockResolvedValueOnce([contactRow(C1, 'one@acme.test'), contactRow(C2, 'two@acme.test')]);
+    h.bindMock
+      .mockResolvedValueOnce(invited('pu-1', 'one@acme.test'))
+      .mockRejectedValueOnce(new PortalLoginChangedError());
+    const res = await post('invite-contacts', { contactIds: [C1, C2] });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('PORTAL_ACCOUNT_TRANSITION_REFUSED');
+    expect(h.withTx).toHaveBeenCalledTimes(1);
+    expect(h.storeToken).not.toHaveBeenCalled();
+    expect(h.sendInvite).not.toHaveBeenCalled();
+    expect(h.auditMock).not.toHaveBeenCalled();
+  });
+
+  it('binds each emailed invite token to that login\'s own post-write epoch', async () => {
+    h.loadMock.mockResolvedValueOnce([contactRow(C1, 'one@acme.test'), contactRow(C2, 'two@acme.test')]);
+    h.bindMock
+      .mockResolvedValueOnce(invited('pu-1', 'one@acme.test', { authEpoch: 1 }))
+      .mockResolvedValueOnce(invited('pu-2', 'two@acme.test', { authEpoch: 9, created: false, contactLink: 'kept' }));
+    await post('invite-contacts', { contactIds: [C1, C2] });
+    expect(h.storeToken.mock.calls.map((call) => call[0])).toEqual([
+      { purpose: 'invite', portalUserId: 'pu-1', orgId: ORG_ID, email: 'one@acme.test', authEpoch: 1 },
+      { purpose: 'invite', portalUserId: 'pu-2', orgId: ORG_ID, email: 'two@acme.test', authEpoch: 9 },
+    ]);
   });
 
   it('reports invited with emailSent:false when the email service fails', async () => {

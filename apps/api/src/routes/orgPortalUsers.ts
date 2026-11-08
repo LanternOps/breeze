@@ -43,6 +43,8 @@ import {
   lockPortalInviteAddresses,
   ContactGoneError,
   ContactEmailChangedError,
+  PortalLoginChangedError,
+  inviteRefusalReason,
   type ContactInviteDecision,
   type InviteableContact,
 } from '../services/contacts/portalInvite';
@@ -247,15 +249,36 @@ function inviteDecisionRefusal(decision: Exclude<ContactInviteDecision, { kind: 
 }
 
 /**
- * The binder's two in-flight failures, as responses. Anything else is
- * rethrown. Callers wrap the bind in `withDbTransaction` and catch OUTSIDE it,
- * so the savepoint has already rolled back every write when this runs (#11203).
+ * `msp_invite` through the state module for the address (no-`contactId`)
+ * invite. The invite route keeps W1's stable PORTAL_INVITE_* codes (#11378) on
+ * the module's refusals, as the contact path does; a fail-closed refusal
+ * (unknown stored state) keeps the module's own code.
+ */
+function planInviteOrRefuse(c: any, row: AccountRow): PortalAccountTarget | Response {
+  try {
+    return planPortalAccountTransition(accountFacts(row), 'msp_invite');
+  } catch (error) {
+    if (!(error instanceof PortalAccountTransitionError)) throw error;
+    const reason = inviteRefusalReason(error);
+    if (reason) return c.json(REFUSAL_BY_REASON[reason], 409);
+    return c.json({ error: error.message, code: error.code }, error.httpStatus);
+  }
+}
+
+/**
+ * The binder's in-flight failures, as responses. Anything else is rethrown.
+ * Callers wrap the bind in `withDbTransaction` and catch OUTSIDE it, so the
+ * savepoint has already rolled back every write when this runs (#11203).
  */
 function bindFailureResponse(c: any, err: unknown): Response {
   if (err instanceof ContactGoneError) return contactNotFound(c);
   if (err instanceof ContactEmailChangedError) {
     return c.json({ error: "A contact's email changed while inviting. Reload and try again.", code: CODES.PORTAL_INVITE_EMAIL_MISMATCH }, 400);
   }
+  // The reused login's epoch moved under the bind (W2 epoch guard).
+  if (err instanceof PortalLoginChangedError) return concurrentChange(c);
+  // Fail closed on an unknown stored status / browser_access (W2 state module).
+  if (err instanceof PortalAccountTransitionError) return c.json({ error: err.message, code: err.code }, err.httpStatus);
   throw err;
 }
 
@@ -350,7 +373,7 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
       if (decision.kind !== 'invite') return c.json(inviteDecisionRefusal(decision), 409);
 
       if (!decision.created) await purgeLoginSessions(decision.portalUserId);
-      const emailSent = await issueAndSendInvite(c, org.id, { id: decision.portalUserId, email: decision.email }, await readOrgName(org.id), auth.user.name, message);
+      const emailSent = await issueAndSendInvite(c, org.id, { id: decision.portalUserId, email: decision.email, authEpoch: decision.authEpoch }, await readOrgName(org.id), auth.user.name, message);
       const contactLink: InviteContactLink = decision.contactLink;
       writeRouteAudit(c, {
         orgId: org.id,
@@ -367,7 +390,7 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
 
     // Refusals (identity-managed, disabled, already active with a password)
     // come from the state module, BEFORE any contact is read or written.
-    const target = existing ? planOrRefuse(c, existing, 'msp_invite') : null;
+    const target = existing ? planInviteOrRefuse(c, existing) : null;
     if (target instanceof Response) return target;
 
     const now = new Date();
@@ -621,7 +644,7 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
       let emailSent = false;
       try {
         if (!decision.created) await purgeLoginSessions(decision.portalUserId);
-        emailSent = await issueAndSendInvite(c, org.id, { id: decision.portalUserId, email: decision.email }, orgName, auth.user.name);
+        emailSent = await issueAndSendInvite(c, org.id, { id: decision.portalUserId, email: decision.email, authEpoch: decision.authEpoch }, orgName, auth.user.name);
       } catch (err) {
         console.error(`[orgPortalUsers] invite-contacts side effect failed portalUserId=${decision.portalUserId} orgId=${org.id}:`, err);
       }

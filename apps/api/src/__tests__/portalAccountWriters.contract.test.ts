@@ -30,6 +30,9 @@ const PORTAL_USER_WRITERS: Record<string, Classification> = {
   'apps/api/src/routes/orgPortalUsers.ts': { kind: 'state-module' },
   'apps/api/src/routes/portal/auth.ts': { kind: 'state-module' },
   'apps/api/src/services/clientAiExchange.ts': { kind: 'state-module' },
+  // Portal registration W1 (#11378) contact invite: create + reuse, both
+  // planned by the state module and epoch-guarded like orgPortalUsers.ts.
+  'apps/api/src/services/contacts/portalInvite.ts': { kind: 'state-module' },
   'apps/api/src/routes/portal/profile.ts': { kind: 'no-state', reason: 'name / receiveNotifications / passwordHash only' },
 };
 

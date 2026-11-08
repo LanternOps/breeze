@@ -15,16 +15,29 @@
  *    only for create/reuse.
  *
  * Callers run it inside `withDbTransaction` (a savepoint) with their catch
- * outside, so a `ContactGoneError` rolls back every bind in a batch.
+ * outside, so a `ContactGoneError` or `PortalLoginChangedError` rolls back
+ * every bind in a batch.
  *
- * W2 (#11379) routes every `status` writer through a state module. The two
- * writes here (`status: 'invited'`) are on that census.
+ * Account state (W2, #11379): both writes here are on the
+ * `portalAccountWriters` census. The `status` / `browser_access` written is
+ * the state module's `msp_invite` target (`initialPortalAccountState` for a
+ * new row, `planPortalAccountTransition` for a reused one), and the reuse
+ * write is guarded by the `auth_epoch` that was read — exactly as the MSP
+ * writers in routes/orgPortalUsers.ts. The address lock serialises creators of
+ * the address; it does not stop a concurrent disable, accept or password
+ * change, which is what the epoch guard is for.
  */
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import type { AlreadyHasAccessReason } from '@breeze/shared';
 import { contacts } from '../../db/schema/contacts';
 import { portalUsers } from '../../db/schema';
 import { INBOUND_CONTACT_LOCK_NAMESPACE } from '../inboundEmail/resolveOrg';
+import {
+  PortalAccountTransitionError,
+  initialPortalAccountState,
+  planPortalAccountTransition,
+  type PortalAccountTarget,
+} from '../portalAccountState';
 import { normalizeContactEmail, updateContact, type ContactExecutor } from './crud';
 
 export interface InviteableContact {
@@ -60,6 +73,11 @@ export interface InviteLoginCandidate {
   status: string;
   passwordHash: string | null;
   createdAt: Date;
+  /** Read for the optimistic-concurrency guard on the reuse write. */
+  authEpoch: number;
+  browserAccess: string;
+  /** W2 reads external identity from the legacy column (W3: portal_user_identities). */
+  entraOid: string | null;
 }
 
 export type InvitePlan =
@@ -131,7 +149,8 @@ export function planContactInvite(
 }
 
 export type ContactInviteDecision =
-  | { kind: 'invite'; portalUserId: string; email: string; created: boolean; contactLink: 'kept' | 'direct' }
+  /** `authEpoch` is the row's epoch AFTER the write: the invite token binds to it. */
+  | { kind: 'invite'; portalUserId: string; email: string; authEpoch: number; created: boolean; contactLink: 'kept' | 'direct' }
   | { kind: 'already_has_access'; portalUserId: string; reason: AlreadyHasAccessReason }
   | { kind: 'email_bound_to_other_contact'; portalUserId: string };
 
@@ -152,6 +171,38 @@ export class ContactEmailChangedError extends Error {
   constructor() {
     super('Contact email changed');
     this.name = 'ContactEmailChangedError';
+  }
+}
+
+/**
+ * The login's `auth_epoch` moved between the candidate read and the reuse
+ * write (a concurrent disable, accept or password change). Nothing is written
+ * for it, and the caller's savepoint rolls back the rest of the batch.
+ */
+export class PortalLoginChangedError extends Error {
+  constructor() {
+    super('Portal login changed while inviting');
+    this.name = 'PortalLoginChangedError';
+  }
+}
+
+/**
+ * A state-module `msp_invite` refusal as the invite API's reason. The module
+ * refuses the same three cases `planContactInvite` reports (and additionally a
+ * password row that carries an external identity, which the planner cannot
+ * see). Null for a fail-closed refusal (unknown stored state): the caller
+ * rethrows it rather than inventing a reason.
+ */
+export function inviteRefusalReason(error: PortalAccountTransitionError): AlreadyHasAccessReason | null {
+  switch (error.rule) {
+    case 'identity_managed':
+      return 'external_identity';
+    case 'disabled':
+      return 'disabled';
+    case 'active_with_password':
+      return 'active';
+    default:
+      return null;
   }
 }
 
@@ -217,6 +268,9 @@ export async function bindContactLoginForInvite(
       status: portalUsers.status,
       passwordHash: portalUsers.passwordHash,
       createdAt: portalUsers.createdAt,
+      authEpoch: portalUsers.authEpoch,
+      browserAccess: portalUsers.browserAccess,
+      entraOid: portalUsers.entraOid,
     })
     .from(portalUsers)
     .where(and(
@@ -234,20 +288,37 @@ export async function bindContactLoginForInvite(
 
   let decision: ContactInviteDecision;
   if (plan.action === 'reuse') {
-    await exec
+    const { login } = plan;
+    let target: PortalAccountTarget;
+    try {
+      target = planPortalAccountTransition({
+        status: login.status,
+        browserAccess: login.browserAccess,
+        authMethod: login.authMethod,
+        hasPasswordHash: Boolean(login.passwordHash),
+        hasExternalIdentity: login.entraOid !== null,
+      }, 'msp_invite');
+    } catch (error) {
+      const reason = error instanceof PortalAccountTransitionError ? inviteRefusalReason(error) : null;
+      if (reason) return { kind: 'already_has_access', portalUserId: login.id, reason };
+      throw error;
+    }
+    const [moved] = await exec
       .update(portalUsers)
       .set({
         name: input.name ?? undefined,
-        status: 'invited',
-        authEpoch: sql`${portalUsers.authEpoch} + 1`,
+        status: target.status,
+        browserAccess: target.browserAccess,
+        ...(target.bumpEpoch ? { authEpoch: sql`${portalUsers.authEpoch} + 1` } : {}),
         invitedBy: actor.userId,
         invitedAt: now,
         updatedAt: now,
         contactId: contact.id,
       })
-      .where(and(eq(portalUsers.id, plan.login.id), eq(portalUsers.orgId, orgId)))
-      .returning({ id: portalUsers.id });
-    decision = { kind: 'invite', portalUserId: plan.login.id, email: plan.login.email, created: false, contactLink: plan.contactLink };
+      .where(and(eq(portalUsers.id, login.id), eq(portalUsers.orgId, orgId), eq(portalUsers.authEpoch, login.authEpoch)))
+      .returning({ id: portalUsers.id, authEpoch: portalUsers.authEpoch });
+    if (!moved) throw new PortalLoginChangedError();
+    decision = { kind: 'invite', portalUserId: login.id, email: login.email, authEpoch: moved.authEpoch, created: false, contactLink: plan.contactLink };
   } else {
     const [created] = await exec
       .insert(portalUsers)
@@ -257,13 +328,13 @@ export async function bindContactLoginForInvite(
         name: input.name ?? contact.name,
         passwordHash: null,
         authMethod: 'password',
-        status: 'invited',
+        ...initialPortalAccountState('msp_invite'),
         invitedBy: actor.userId,
         invitedAt: now,
         contactId: contact.id,
       })
-      .returning({ id: portalUsers.id });
-    decision = { kind: 'invite', portalUserId: created!.id, email: normalizedEmail, created: true, contactLink: 'direct' };
+      .returning({ id: portalUsers.id, authEpoch: portalUsers.authEpoch });
+    decision = { kind: 'invite', portalUserId: created!.id, email: normalizedEmail, authEpoch: created!.authEpoch, created: true, contactLink: 'direct' };
   }
 
   // A UNION, never a replace, and only when missing: `updateContact` locks the

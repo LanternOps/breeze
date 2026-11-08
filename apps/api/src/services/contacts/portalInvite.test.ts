@@ -24,9 +24,11 @@ import {
   lockPortalInviteAddresses,
   ContactGoneError,
   ContactEmailChangedError,
+  PortalLoginChangedError,
   type InviteLoginCandidate,
   type InviteableContact,
 } from './portalInvite';
+import { PortalAccountTransitionError } from '../portalAccountState';
 import { INBOUND_CONTACT_LOCK_NAMESPACE } from '../inboundEmail/resolveOrg';
 import type { ContactExecutor } from './crud';
 
@@ -47,6 +49,9 @@ function login(over: Partial<InviteLoginCandidate> = {}): InviteLoginCandidate {
     status: 'invited',
     passwordHash: null,
     createdAt: new Date(2026, 0, seq),
+    authEpoch: 1,
+    browserAccess: 'granted',
+    entraOid: null,
     ...over,
   };
 }
@@ -165,7 +170,10 @@ interface Recorder {
  * A drizzle-shaped executor. Each select consumes the next queued result, in
  * order; insert/update record what they were given.
  */
-function recorder(selects: Array<Array<Record<string, unknown>>>): Recorder {
+function recorder(
+  selects: Array<Array<Record<string, unknown>>>,
+  updateReturning: Array<Record<string, unknown>> = [{ id: 'updated', authEpoch: 8 }],
+): Recorder {
   const queue = [...selects];
   const rec: Recorder = { exec: null as never, executes: [], wheres: [], forStrengths: [], inserts: [], updates: [], order: [] };
   rec.exec = {
@@ -200,7 +208,7 @@ function recorder(selects: Array<Array<Record<string, unknown>>>): Recorder {
       values: (values: Record<string, unknown>) => {
         rec.inserts.push(values);
         rec.order.push('insert');
-        return { returning: () => Promise.resolve([{ id: 'pu-new' }]) };
+        return { returning: () => Promise.resolve([{ id: 'pu-new', authEpoch: 1 }]) };
       },
     }),
     update: () => ({
@@ -208,7 +216,7 @@ function recorder(selects: Array<Array<Record<string, unknown>>>): Recorder {
         where: (where: SQL) => {
           rec.updates.push({ set, where });
           rec.order.push('update');
-          return { returning: () => Promise.resolve([{ id: 'updated' }]) };
+          return { returning: () => Promise.resolve(updateReturning) };
         },
       }),
     }),
@@ -277,11 +285,11 @@ describe('bindContactLoginForInvite', () => {
     expect(params).toEqual([ORG, C, 'ada@x.test']);
   });
 
-  it('create inserts a password-method invited row bound to the contact', async () => {
+  it('create inserts the state module\'s initial msp_invite state (invited + browser access) bound to the contact, and returns the epoch', async () => {
     const r = recorder([[contactRow()], []]);
     const decision = await bindContactLoginForInvite(r.exec, bindInput());
 
-    expect(decision).toEqual({ kind: 'invite', portalUserId: 'pu-new', email: 'ada@x.test', created: true, contactLink: 'direct' });
+    expect(decision).toEqual({ kind: 'invite', portalUserId: 'pu-new', email: 'ada@x.test', authEpoch: 1, created: true, contactLink: 'direct' });
     expect(r.inserts).toEqual([{
       orgId: ORG,
       email: 'ada@x.test',
@@ -289,6 +297,7 @@ describe('bindContactLoginForInvite', () => {
       passwordHash: null,
       authMethod: 'password',
       status: 'invited',
+      browserAccess: 'granted',
       invitedBy: 'tech-1',
       invitedAt: NOW,
       contactId: C,
@@ -302,25 +311,49 @@ describe('bindContactLoginForInvite', () => {
     expect(r.inserts[0]!.name).toBe('Ada L.');
   });
 
-  it('reuse/direct writes contactId and bumps authEpoch, scoped to the login AND the org', async () => {
-    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: null, authMethod: 'password', status: 'invited', passwordHash: null, createdAt: NOW };
+  it('reuse/direct writes the state module target and contactId, guarded by the epoch it read, and returns the new epoch', async () => {
+    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: null, authMethod: 'password', status: 'invited', passwordHash: null, createdAt: NOW, authEpoch: 7, browserAccess: 'granted', entraOid: null };
     const r = recorder([[contactRow()], [existing]]);
     const decision = await bindContactLoginForInvite(r.exec, bindInput());
 
-    expect(decision).toEqual({ kind: 'invite', portalUserId: 'pu-1', email: 'ada@x.test', created: false, contactLink: 'direct' });
+    expect(decision).toEqual({ kind: 'invite', portalUserId: 'pu-1', email: 'ada@x.test', authEpoch: 8, created: false, contactLink: 'direct' });
     expect(r.inserts).toHaveLength(0);
     expect(r.updates).toHaveLength(1);
     const { set, where } = r.updates[0]!;
-    expect(set).toMatchObject({ status: 'invited', invitedBy: 'tech-1', invitedAt: NOW, updatedAt: NOW, contactId: C });
+    expect(set).toMatchObject({ status: 'invited', browserAccess: 'granted', invitedBy: 'tech-1', invitedAt: NOW, updatedAt: NOW, contactId: C });
     expect(compile(set.authEpoch as SQL).sql).toMatch(/"auth_epoch"\s*\+\s*1/);
     const compiled = compile(where);
     expect(compiled.sql).toMatch(/"portal_users"\."id"\s*=\s*\$\d/);
     expect(compiled.sql).toMatch(/"portal_users"\."org_id"\s*=\s*\$\d/);
-    expect(compiled.params).toEqual(['pu-1', ORG]);
+    // Optimistic concurrency, as every other MSP writer: the epoch that was read.
+    expect(compiled.sql).toMatch(/"portal_users"\."auth_epoch"\s*=\s*\$\d/);
+    expect(compiled.params).toEqual(['pu-1', ORG, 7]);
+  });
+
+  it('a legacy credential-less ACTIVE row is moved to invited (the msp_invite target), not left active', async () => {
+    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: C, authMethod: 'password', status: 'active', passwordHash: null, createdAt: NOW, authEpoch: 3, browserAccess: 'granted', entraOid: null };
+    const r = recorder([[contactRow()], [existing]]);
+    await bindContactLoginForInvite(r.exec, bindInput());
+    expect(r.updates[0]!.set).toMatchObject({ status: 'invited', browserAccess: 'granted' });
+  });
+
+  it('throws PortalLoginChangedError when the epoch guard matches nothing (changed since the read), before any contact write', async () => {
+    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: null, authMethod: 'password', status: 'invited', passwordHash: null, createdAt: NOW, authEpoch: 7, browserAccess: 'granted', entraOid: null };
+    const r = recorder([[contactRow()], [existing]], []);
+    await expect(bindContactLoginForInvite(r.exec, bindInput())).rejects.toBeInstanceOf(PortalLoginChangedError);
+    expect(updateContactMock).not.toHaveBeenCalled();
+  });
+
+  it('an unknown stored browser_access fails closed (the state module refuses), writing nothing', async () => {
+    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: C, authMethod: 'password', status: 'invited', passwordHash: null, createdAt: NOW, authEpoch: 7, browserAccess: 'maybe', entraOid: null };
+    const r = recorder([[contactRow()], [existing]]);
+    await expect(bindContactLoginForInvite(r.exec, bindInput())).rejects.toBeInstanceOf(PortalAccountTransitionError);
+    expect(r.updates).toHaveLength(0);
+    expect(updateContactMock).not.toHaveBeenCalled();
   });
 
   it('reuse/kept leaves the existing binding as it is', async () => {
-    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: C, authMethod: 'password', status: 'invited', passwordHash: null, createdAt: NOW };
+    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: C, authMethod: 'password', status: 'invited', passwordHash: null, createdAt: NOW, authEpoch: 2, browserAccess: 'granted', entraOid: null };
     const r = recorder([[contactRow()], [existing]]);
     const decision = await bindContactLoginForInvite(r.exec, bindInput());
 
@@ -334,8 +367,11 @@ describe('bindContactLoginForInvite', () => {
     ['external identity', { authMethod: 'entra', status: 'active' }, { kind: 'already_has_access', reason: 'external_identity' }],
     ['login email differs', { contactId: C, email: 'old@x.test' }, { kind: 'already_has_access', reason: 'login_email_differs' }],
     ['conflict', { contactId: D }, { kind: 'email_bound_to_other_contact' }],
+    // The planner picks this password row; the state module refuses it as
+    // identity-managed (W2), which the invite API reports as external_identity.
+    ['password row carrying an Entra identity', { contactId: C, entraOid: 'oid-1' }, { kind: 'already_has_access', reason: 'external_identity' }],
   ])('%s performs no insert, update, or contact write', async (_label, over, expected) => {
-    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: null, authMethod: 'password', status: 'invited', passwordHash: null, createdAt: NOW, ...over };
+    const existing = { id: 'pu-1', email: 'ada@x.test', contactId: null, authMethod: 'password', status: 'invited', passwordHash: null, createdAt: NOW, authEpoch: 1, browserAccess: 'granted', entraOid: null, ...over };
     const r = recorder([[contactRow()], [existing]]);
     const decision = await bindContactLoginForInvite(r.exec, bindInput());
 

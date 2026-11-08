@@ -470,13 +470,15 @@ describe('portal account state machine on the MSP routes (W2)', () => {
   const patch = (body: unknown) => makeApp().request(`/organizations/${ORG_ID}/portal-users/pu-1`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const resend = () => makeApp().request(`/organizations/${ORG_ID}/portal-users/pu-1/resend-invite`, { method: 'POST' });
 
-  it('invite of an identity-only (entra) account → 409 PORTAL_USER_IDENTITY_MANAGED, no write, no email', async () => {
+  // The invite route keeps W1's (#11378) stable PORTAL_INVITE_* codes on the
+  // state module's msp_invite refusals; resend/PATCH carry the module's codes.
+  it('invite of an identity-only (entra) account → 409 PORTAL_INVITE_EXTERNAL_IDENTITY, no write, no email', async () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }])
       .mockResolvedValueOnce([row({ authMethod: 'entra', status: 'active', browserAccess: 'none', entraOid: 'oid-1' })]);
     const res = await invite({ email: 'cust@acme.example' });
     expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'This identity is managed by an external sign-in provider.', code: 'PORTAL_USER_IDENTITY_MANAGED' });
+    expect(await res.json()).toEqual({ error: 'This identity is managed by an external sign-in provider.', code: 'PORTAL_INVITE_EXTERNAL_IDENTITY' });
     expect(setSpy).not.toHaveBeenCalled();
     expect(sendInvite).not.toHaveBeenCalled();
   });
@@ -487,7 +489,7 @@ describe('portal account state machine on the MSP routes (W2)', () => {
       .mockResolvedValueOnce([row({ entraOid: 'oid-1' })]);
     const res = await invite({ email: 'cust@acme.example' });
     expect(res.status).toBe(409);
-    expect((await res.json()).code).toBe('PORTAL_USER_IDENTITY_MANAGED');
+    expect((await res.json()).code).toBe('PORTAL_INVITE_EXTERNAL_IDENTITY');
   });
 
   it('new invite inserts status invited + browser_access granted and issues an invite token bound to the returned epoch', async () => {
