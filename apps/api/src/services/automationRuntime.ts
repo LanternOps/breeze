@@ -2126,8 +2126,10 @@ async function executeCreateAlertAction(
   );
   const message = interpolateAlertTemplate(action.alertMessage, templateContext);
 
-  // Tool Catalog W06 (#5221): the row + event writer is shared with the flow
-  // `create_alert` built-in (services/alertCreation.ts), moved verbatim.
+  // Tool Catalog W06 (#5221): the row writer is shared with the flow
+  // `create_alert` built-in (services/alertCreation.ts). It stages
+  // `alert.triggered`, which the outbox publishes after this action's
+  // transaction commits (#11348).
   const createdAlert = await createAutomationStyleAlert({
     orgId: context.device.orgId,
     deviceId: context.device.id,

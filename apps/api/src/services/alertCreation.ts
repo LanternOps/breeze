@@ -1,7 +1,7 @@
 /**
  * Tool Catalog W06 (#5221) Task A4 — the automation-style alert writer: one
  * alert row on a device under the org's synthetic "Automation Action Alerts"
- * rule, plus its `alert.triggered` event. Moved verbatim out of
+ * rule, with its `alert.triggered` event staged on the row. Moved out of
  * automationRuntime's `executeCreateAlertAction` so the legacy action and the
  * flow `create_alert` built-in write identical rows.
  *

@@ -61,9 +61,9 @@ export type PromoteMetricAnomalyToAlertOptions = {
   deviceId: string;
   anomalyId: string;
   /**
-   * Who promoted it. Not on the `alert.triggered` event since #11348: the
-   * outbox publishes after COMMIT with no user attribution, like every staged
-   * alert, and no consumer read the event's `metadata.userId`.
+   * Who promoted it. The `alert.triggered` event carries no actor: the outbox
+   * publishes it after COMMIT without a `userId`, as for every staged alert,
+   * so `metadata.userId` is absent on it.
    */
   actorUserId?: string | null;
   requireCreateAlertsFlag?: boolean;
@@ -294,7 +294,7 @@ export async function promoteMetricAnomalyToAlert(
   });
 
   if (!alertId) {
-    throw new Error('Failed to create alert for metric anomaly');
+    throw new Error(`Failed to create alert for metric anomaly ${canonical.id} (org=${canonical.orgId} device=${canonical.deviceId})`);
   }
 
   const [updated] = await db

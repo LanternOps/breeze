@@ -162,7 +162,7 @@ describe('createAutomationStyleAlert', () => {
       orgId: ORG, deviceId: DEVICE, severity: 'medium', title: 't', message: 'm',
       provenance: { kind: 'flow', flowRunId: FLOW_RUN },
     }));
-    expect(stagedEnvelope()).toMatchObject({ flowRunId: FLOW_RUN, flowChainDepth: 2 });
+    expect(stagedEnvelope()).toMatchObject({ flow: { runId: FLOW_RUN, chainDepth: 2 } });
   });
 
   it('outside a flow step the envelope carries no ancestry', async () => {
@@ -171,8 +171,7 @@ describe('createAutomationStyleAlert', () => {
       orgId: ORG, deviceId: DEVICE, severity: 'low', title: 't', message: 'm',
       provenance: { kind: 'automation', automationId: 'a', runId: 'r' },
     });
-    expect(stagedEnvelope()).not.toHaveProperty('flowRunId');
-    expect(stagedEnvelope()).not.toHaveProperty('flowChainDepth');
+    expect(stagedEnvelope()).not.toHaveProperty('flow');
   });
 
   it('returns null and publishes nothing when the insert returns no row', async () => {

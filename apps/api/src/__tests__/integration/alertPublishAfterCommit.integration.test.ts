@@ -644,7 +644,7 @@ runDb('#11348 — create_alert and metric anomaly alerts reach process-alert onl
 
     const alertId = await withFlowExecutionContext({ runId: flowRunId, chainDepth: 2 }, () =>
       createWithDispatchLost(() => automationStyleAlert(f, { kind: 'flow', flowRunId })));
-    expect(pendingDispatch(await readAlert(alertId))).toMatchObject({ flowRunId, flowChainDepth: 2 });
+    expect(pendingDispatch(await readAlert(alertId))).toMatchObject({ flow: { runId: flowRunId, chainDepth: 2 } });
 
     // Crash recovery runs outside any flow step: the ancestry must come from
     // the envelope, or the flow event trigger would read depth 0.

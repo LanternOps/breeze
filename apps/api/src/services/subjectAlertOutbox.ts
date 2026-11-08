@@ -171,8 +171,8 @@ export async function dispatchStagedAlerts(
           {
             siteId: row.pending.siteId, eventId: row.pending.eventId,
             ...(row.pending.occurredAt ? { occurredAt: row.pending.occurredAt } : {}),
-            ...(row.pending.flowRunId !== undefined
-              ? { flowRunId: row.pending.flowRunId, flowChainDepth: row.pending.flowChainDepth }
+            ...(row.pending.flow
+              ? { flowRunId: row.pending.flow.runId, flowChainDepth: row.pending.flow.chainDepth }
               : {}),
           },
         ));

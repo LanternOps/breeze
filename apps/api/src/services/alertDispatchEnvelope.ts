@@ -36,14 +36,14 @@ export interface SubjectAlertDispatch {
   leaseToken?: string;
   leaseUntil?: string;
   /**
-   * #11348 — the flow step that staged this alert (Decision 14). An inline
-   * publish took this from the step's flow execution frame; the outbox
-   * publishes after COMMIT, outside that frame, so it sends these as publish
+   * #11348 — the flow step that staged this alert (Decision 14): its run id
+   * and chain depth, always together. An inline publish took them from the
+   * step's flow execution frame; the outbox publishes after COMMIT, outside
+   * that frame, so it sends them as the `flowRunId` / `flowChainDepth` publish
    * options instead. The flow event trigger reads them to stop loops. Absent
    * when no flow step raised the alert.
    */
-  flowRunId?: string;
-  flowChainDepth?: number;
+  flow?: { runId: string; chainDepth: number };
   /**
    * #11348 — `false` when the creator applies no rule noise controls (cooldown,
    * flap state) to this alert, so the outbox records none after publishing.
@@ -88,7 +88,7 @@ export function stagedTriggerDispatch(opts: {
     payload: opts.payload,
     occurredAt: new Date().toISOString(),
     retryOnPublishFailure: true,
-    ...(frame ? { flowRunId: frame.runId, flowChainDepth: frame.chainDepth } : {}),
+    ...(frame ? { flow: { runId: frame.runId, chainDepth: frame.chainDepth } } : {}),
     ...(opts.noiseControls === false ? { noiseControls: false as const } : {}),
   };
 }
