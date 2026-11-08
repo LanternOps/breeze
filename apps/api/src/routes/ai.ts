@@ -76,6 +76,7 @@ import { aiActionPlans } from '../db/schema';
 import { captureException } from '../services/sentry';
 import { safeErrorMessage } from '../services/aiModels/safeDbError';
 import { persistAutoSessionTitle } from '../services/aiSessionTitle';
+import { expireIfStale, isExpirableChatSession } from '../services/aiSessionExpiry';
 import {
   draftTicketFromTranscript,
   ThinTranscriptError,
@@ -347,12 +348,20 @@ aiRoutes.get(
       return c.json({ error: 'Session not found' }, 404);
     }
 
+    // #11430: a client resumes from this read, so it must not call a session
+    // 'active' that the next send refuses with 410. A chat session past the
+    // send's own age/idle rule is stamped 'expired' here (Wisp summary
+    // finalized after commit) and reported as such.
+    const session = isExpirableChatSession(result.session) && (await expireIfStale(result.session))
+      ? { ...result.session, status: 'expired' as const }
+      : result.session;
+
     // W05: what ran the last turn, persisted on the (owner-bound) session row
     // — no extra query, and never a guess from ledger rows (D13). Parsed, so
     // an unrecognised stored value reads as absent; the web store reads it
     // off `session`, the plan's contract names the top-level field.
-    const lastTurnModel = lastTurnModelOf(result.session);
-    return c.json({ ...result, session: { ...result.session, lastTurnModel }, lastTurnModel });
+    const lastTurnModel = lastTurnModelOf(session);
+    return c.json({ ...result, session: { ...session, lastTurnModel }, lastTurnModel });
   }
 );
 

@@ -31,10 +31,25 @@ type Wisp = NonNullable<WispState>;
 type Binding = 'binding' | 'live' | 'failed' | 'not_configured';
 
 /**
+ * The server's chat-session lifetime (apps/api aiAgentSessionLimits.ts): a send
+ * to a session older than 24 h or idle for 2 h is refused with 410.
+ */
+const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+
+/** Past the server's age or idle limit by its own timestamps; an unreadable one is left to the status. */
+function pastSessionLifetime(session: { createdAt?: unknown; lastActivityAt?: unknown }, now = Date.now()): boolean {
+  const ageOf = (value: unknown) => (typeof value === 'string' ? now - Date.parse(value) : Number.NaN);
+  return ageOf(session.createdAt) > SESSION_MAX_AGE_MS || ageOf(session.lastActivityAt) > SESSION_IDLE_TIMEOUT_MS;
+}
+
+/**
  * `thread.lastSessionId` is the last session stamped on the thread, not the
  * last live one: an idled-out (`expired`) or closed session would load its
  * transcript and then refuse the first send. Resume only an active session
- * that still runs under this grant. A failed read is "not resumable".
+ * that still runs under this grant and is within the server's lifetime: the
+ * read reports a stale session as expired (#11430), and this check covers an
+ * older API or a read that raced the expiry. A failed read is "not resumable".
  */
 async function resumable(sessionId: string, grantId: string): Promise<boolean> {
   try {
@@ -46,8 +61,8 @@ async function resumable(sessionId: string, grantId: string): Promise<boolean> {
     const body = (await res.json().catch((err: unknown) => {
       console.warn('[WispHomeThread] the last Wisp session read was not JSON; starting a new one', err);
       return null;
-    })) as { session?: { status?: unknown; wispGrantId?: unknown } } | null;
-    return body?.session?.status === 'active' && body.session.wispGrantId === grantId;
+    })) as { session?: { status?: unknown; wispGrantId?: unknown; createdAt?: unknown; lastActivityAt?: unknown } } | null;
+    return body?.session?.status === 'active' && body.session.wispGrantId === grantId && !pastSessionLifetime(body.session);
   } catch (err) {
     console.warn('[WispHomeThread] could not check the last Wisp session; starting a new one', err);
     return false;

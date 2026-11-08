@@ -81,9 +81,9 @@ import {
   type RoundTripTally,
 } from './aiToolSearchPolicy';
 import { noteStreamedToolUse, resetToolUseCorrelationMarkers, takeDroppedToolUse } from './aiToolUseCorrelation';
+import { finalizeWispSummaries, sessionExpiryReason } from './aiSessionExpiry';
 
-const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
-const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
+// Idle / age limits: aiAgentSessionLimits.ts, applied through sessionExpiryReason (#11430).
 const EVICTION_INTERVAL_MS = 60 * 1000; // Check every 60s
 const MAX_ACTIVE_SESSIONS = 200;
 /**
@@ -181,33 +181,6 @@ export function turnTimeoutMsFor(approvalWaitBudgetMs: number): number {
 const MCP_PREFIX = 'mcp__breeze__';
 // Use the directly-imported runOutsideDbContext (see commandQueue.ts for explanation).
 const runOutsideDbContextSafe = runOutsideDbContext;
-const WISP_SUMMARY_FINALIZE_CONCURRENCY = 4;
-
-/**
- * Wisp W04 Task 5: recompute the thread summary of each session just retired.
- * Lazy import keeps wisp code out of this hot module's eager graph (as for
- * chatCeiling). Never rejects: failures go to Sentry only.
- *
- * #10390: finalizing can include a model call of up to a minute, so sessions run
- * a few at a time rather than one by one: one session's slow call must not hold
- * back the digest another thread's next chat is seeded with.
- */
-async function finalizeWispSummaries(sessionIds: string[]): Promise<void> {
-  if (sessionIds.length === 0) return;
-  try {
-    const { finalizeWispSessionSummary } = await import('./wisp/threadSummary');
-    for (let i = 0; i < sessionIds.length; i += WISP_SUMMARY_FINALIZE_CONCURRENCY) {
-      await Promise.all(sessionIds.slice(i, i + WISP_SUMMARY_FINALIZE_CONCURRENCY).map((id) =>
-        finalizeWispSessionSummary(id).catch((err) => {
-          console.error(`[StreamingSessionManager] Wisp thread summary finalize failed for expired session ${id}:`, err);
-          captureException(err);
-        })));
-    }
-  } catch (err) {
-    console.error(`[StreamingSessionManager] Wisp thread summary finalize failed for ${sessionIds.length} session(s) (${sessionIds.join(', ')}):`, err);
-    captureException(err);
-  }
-}
 
 // The SDK child env builders moved to aiModels/sdkChildEnv.ts (W06 Task 9);
 // re-exported so existing importers (scripts, tests) keep working.
@@ -1534,7 +1507,13 @@ export class StreamingSessionManager {
     }
   }
 
-  /** Shutdown: clean up all sessions and stop eviction timer */
+  /**
+   * Shutdown: clean up all sessions and stop eviction timer. The rows stay
+   * 'active' on purpose (#11430): a live conversation resumes after a restart
+   * from its stored sdkSessionId (the LRU path keeps rows resumable for the
+   * same reason), and one that then idles out is retired by the idle sweep
+   * (jobs/aiChatSessionExpirySweep.ts), summary included.
+   */
   shutdown(): void {
     if (this.evictionTimer) {
       clearInterval(this.evictionTimer);
@@ -2677,7 +2656,10 @@ export class StreamingSessionManager {
         const idle = now - session.lastActivityAt;
         const age = now - session.createdAt;
 
-        if (idle <= SESSION_IDLE_TIMEOUT_MS && age <= SESSION_MAX_AGE_MS) continue;
+        // #11430: the one expiry rule (24h cap, then 2h idle), shared with the
+        // send pre-flight, the session read and the idle sweep.
+        const reason = sessionExpiryReason(session, now);
+        if (!reason) continue;
 
         // Applies to the 24h hard cap too: a session that reaches it mid-stream
         // is evicted on the first tick after its turn ends (bounded by
@@ -2692,7 +2674,7 @@ export class StreamingSessionManager {
         // Notify connected SSE clients before removing
         session.eventBus.publish({
           type: 'error',
-          message: age > SESSION_MAX_AGE_MS
+          message: reason === 'max_age'
             ? 'Session expired (24h limit). Please start a new session.'
             : 'Session expired due to inactivity. Please start a new session.',
         });

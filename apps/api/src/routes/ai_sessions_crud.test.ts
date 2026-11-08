@@ -27,7 +27,12 @@ vi.mock('../services/llm/llmConfigResolver', () => ({
   },
 }));
 
+// #11430: the session read finalizes the Wisp thread summary of a session it expires.
+const finalizeMock = vi.hoisted(() => vi.fn(async (_id: string) => ({ updated: false })));
+vi.mock('../services/wisp/threadSummary', () => ({ finalizeWispSessionSummary: finalizeMock }));
+
 vi.mock('../db', () => ({
+  runAfterDbContextCommit: vi.fn((_label: string, work: () => unknown) => { void work(); }),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -42,6 +47,7 @@ vi.mock('../db/schema', () => ({
   aiSessions: {
     id: 'aiSessions.id',
     orgId: 'aiSessions.orgId',
+    status: 'aiSessions.status',
     flaggedAt: 'aiSessions.flaggedAt',
     flaggedBy: 'aiSessions.flaggedBy',
     flagReason: 'aiSessions.flagReason',
@@ -485,6 +491,65 @@ describe('AI routes', () => {
       expect(res.status).toBe(404);
       const body = await res.json();
       expect(body.error).toBe('Session not found');
+    });
+
+    // #11430: the Wisp column resumed a 3-day-old session the read still called
+    // 'active', and the first two sends were refused with 410. The read applies
+    // the send's own expiry rule, persists it and finalizes the thread summary.
+    it('#11430: reports — and persists — a chat session idle for 3 days as expired, finalizing its summary', async () => {
+      const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+      vi.mocked(getSessionMessages).mockResolvedValueOnce({
+        session: { id: SESSION_ID, type: 'general', userId: 'user-1', status: 'active', createdAt: threeDaysAgo, lastActivityAt: threeDaysAgo },
+        messages: [],
+      } as any);
+      const where = vi.fn().mockResolvedValue(undefined);
+      const set = vi.fn().mockReturnValue({ where });
+      vi.mocked(db.update).mockReturnValue({ set } as any);
+
+      const res = await app.request(`/ai/sessions/${SESSION_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.session.status).toBe('expired');
+      expect(db.update).toHaveBeenCalledTimes(1);
+      expect(set).toHaveBeenCalledWith(expect.objectContaining({ status: 'expired' }));
+      await vi.waitFor(() => expect(finalizeMock).toHaveBeenCalledWith(SESSION_ID));
+    });
+
+    it('#11430: leaves a recently active chat session alone', async () => {
+      const now = new Date();
+      vi.mocked(getSessionMessages).mockResolvedValueOnce({
+        session: { id: SESSION_ID, type: 'general', userId: 'user-1', status: 'active', createdAt: now, lastActivityAt: now },
+        messages: [],
+      } as any);
+
+      const res = await app.request(`/ai/sessions/${SESSION_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect((await res.json()).session.status).toBe('active');
+      expect(db.update).not.toHaveBeenCalled();
+      expect(finalizeMock).not.toHaveBeenCalled();
+    });
+
+    it('#11430: never re-stamps a non-chat session (an MCP ledger row) from the read', async () => {
+      const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+      vi.mocked(getSessionMessages).mockResolvedValueOnce({
+        session: { id: SESSION_ID, type: 'mcp', userId: 'user-1', status: 'active', createdAt: threeDaysAgo, lastActivityAt: threeDaysAgo },
+        messages: [],
+      } as any);
+
+      const res = await app.request(`/ai/sessions/${SESSION_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect((await res.json()).session.status).toBe('active');
+      expect(db.update).not.toHaveBeenCalled();
     });
   });
 
