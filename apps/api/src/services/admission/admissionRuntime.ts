@@ -212,9 +212,10 @@ export class AdmissionRuntime implements AdmissionGate {
    * Enforce only: at level 1+ every write is deferred (W08 D13); at level 0 at
    * most ADMISSION_OFFLINE_WRITES_MAX_IN_FLIGHT run at once (#9520). A mass
    * close, such as a planned drain, then costs a few transactions instead of
-   * two pool permits per socket, so the burst cannot raise the level that would
-   * refuse the redials it just scheduled. The level signals are untouched:
-   * real overload still escalates.
+   * two pool permits per socket, so its own offline writes no longer raise the
+   * level that would refuse the redials it just scheduled. The level signals
+   * are untouched: real overload, including the redials' own load, still
+   * escalates.
    */
   beginOfflineTransition(event: OfflineDeferEvent): (() => void) | null {
     if (this.mode !== 'enforce') return () => {};

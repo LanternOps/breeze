@@ -110,10 +110,11 @@ export const ADMISSION_WS_LEVEL_SCALE = [1, 0.5, 0.2, 0.05] as const;
  *
  * Each write holds two pool permits: the agent's own context, and
  * transitionDeviceOffline's system context nested inside it. Without a cap a
- * planned drain of 400 sockets queued 800 permit requests on a 30-permit pool
- * at level 0. The oldest waiter passed emergencyMs and the level jumped to 3,
- * refusing the redials the drain had just spread out. Ordinary churn never has
- * more than one or two writes in flight, so 4 (8 permits) only bites on a burst.
+ * planned drain of 400 sockets at level 0 needed 800 permits in all, and left
+ * about 370 contexts queued behind a 30-permit pool. The oldest waiter passed
+ * emergencyMs and the level jumped to 3, refusing the redials the drain had
+ * just spread out. Ordinary churn spreads closes out over time and each write
+ * takes milliseconds, so 4 (8 permits) only bites on a burst.
  */
 export const ADMISSION_OFFLINE_WRITES_MAX_IN_FLIGHT = 4;
 

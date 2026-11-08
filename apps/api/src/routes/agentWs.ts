@@ -4684,7 +4684,7 @@ onClose: async (_event: unknown, ws: WSContext) => {
         // offline detector — lastSeenAt still ages out within 5 min — instead
         // of two pool permits per socket at the moment hundreds drop at once:
         // always at level 1+, and past a small in-flight cap at level 0, so a
-        // planned drain cannot escalate the level itself (#9520). Presence was
+        // planned drain's own writes cannot escalate the level (#9520). Presence was
         // cleared above, so command routing already treats the agent as gone.
         const releaseOfflineWrite = agentDb ? beginOfflineTransition('close') : null;
         if (releaseOfflineWrite) {

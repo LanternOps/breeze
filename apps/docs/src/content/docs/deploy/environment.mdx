@@ -525,8 +525,8 @@ In `enforce` mode, a disconnecting agent's device is normally marked offline at
 once. At level 1 and above, and while 4 of those writes are already running at
 level 0 (a mass disconnect, such as every agent of a restarting instance
 dropping together), the offline detector marks the device instead, within 5
-minutes if it has not reconnected. A mass disconnect therefore cannot raise the
-level and refuse the reconnects that follow it.
+minutes if it has not reconnected. A mass disconnect therefore no longer raises
+the level through its own offline writes.
 `breeze_admission_offline_deferred_total` counts these, by `reason` (`level` or
 `in_flight`).
 

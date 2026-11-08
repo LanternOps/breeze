@@ -7828,6 +7828,10 @@ describe('#6836 — onClose survives a markOffline context-prologue failure', ()
 
     // The failure is reported, not swallowed.
     expect(captureException).toHaveBeenCalledWith(markOfflineFailure);
+
+    // #9520: the admission write slot is returned even though the context never opened.
+    expect(beginOfflineTransitionMock).toHaveBeenCalledWith('close');
+    expect(releaseOfflineWriteMock).toHaveBeenCalledTimes(1);
   });
 });
 
