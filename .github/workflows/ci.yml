@@ -1657,6 +1657,7 @@ jobs:
         uses: ./.github/actions/restore-osv-scanner
 
       - name: Install osv-scanner
+        timeout-minutes: 25
         run: bash scripts/security/install-osv-scanner.sh
 
       # The exceptions logic is tested first, deliberately: a regression in it

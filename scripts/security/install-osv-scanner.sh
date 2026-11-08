@@ -19,7 +19,10 @@ set -euo pipefail
 #      served separately and kept working while the release-download URL
 #      returned 504 on 2026-11-08. Any curl failure is retried: HTTP 5xx/4xx
 #      (curl exit 22), connection resets (52/56), timeouts (28). A download
-#      whose digest does not match is discarded and logged.
+#      whose digest does not match is discarded and logged. Each request is
+#      capped at 90 s, so the worst case is 12 x 90 + 124 s, about 20 min.
+#      That is under the step timeouts in ci.yml and security.yml and the
+#      seed job's timeout; install-osv-scanner.test.mjs checks this.
 #   3. Nothing verified: one ::error:: line, then exit 1. The audit never runs
 #      without the scanner, so the job fails closed.
 #
@@ -55,57 +58,81 @@ workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 candidate="$workdir/osv-scanner"
 
-sha256_of() {
-  sha256sum "$1" | cut -d' ' -f1
+die() {
+  echo "::error title=osv-scanner install failed::$*"
+  exit 1
 }
 
-install_verified() {
-  if [[ -w "$install_dir" ]]; then
-    install -m 0755 "$candidate" "$install_dir/osv-scanner"
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
   else
-    sudo install -m 0755 "$candidate" "$install_dir/osv-scanner"
+    shasum -a 256 "$1" | cut -d' ' -f1
   fi
-  "$install_dir/osv-scanner" --version
+}
+
+# Every step checks its own status, rather than relying on errexit, so a failed
+# install can never fall through to a stale osv-scanner already on PATH.
+install_verified() {
+  local target="$install_dir/osv-scanner"
+  if [[ -w "$install_dir" ]]; then
+    install -m 0755 "$candidate" "$target" || die "could not install the verified osv-scanner to ${target}"
+  else
+    sudo install -m 0755 "$candidate" "$target" || die "could not install the verified osv-scanner to ${target} (sudo)"
+  fi
+  "$target" --version || die "the installed ${target} did not run (--version failed)"
 }
 
 # 1. Cache. Hash a private copy, so the file installed is the file checked.
 cache_state="no cached copy was restored"
 if [[ -f "$cache_dir/osv-scanner" ]]; then
-  cp "$cache_dir/osv-scanner" "$candidate"
-  cached_sha="$(sha256_of "$candidate")"
-  if [[ "$cached_sha" == "$OSV_SCANNER_SHA256" ]]; then
-    echo "Using the cached osv-scanner v${OSV_SCANNER_VERSION} (SHA-256 verified)."
-    install_verified
-    exit 0
+  if cp "$cache_dir/osv-scanner" "$candidate"; then
+    cached_sha="$(sha256_of "$candidate")" || die "could not compute the SHA-256 of the cached osv-scanner"
+    if [[ "$cached_sha" == "$OSV_SCANNER_SHA256" ]]; then
+      echo "Using the cached osv-scanner v${OSV_SCANNER_VERSION} (SHA-256 verified)."
+      install_verified
+      exit 0
+    fi
+    echo "::warning title=osv-scanner cache rejected::cached osv-scanner does not match the pinned SHA-256 (got ${cached_sha}); downloading instead"
+    rm -f "$candidate"
+    cache_state="the cached copy was rejected (SHA-256 mismatch: delete the osv-scanner-* Actions cache entry)"
+  else
+    echo "::warning title=osv-scanner cache unreadable::could not read ${cache_dir}/osv-scanner; downloading instead"
+    cache_state="the cached copy could not be read"
   fi
-  echo "::warning title=osv-scanner cache rejected::cached osv-scanner does not match the pinned SHA-256 (got ${cached_sha}); downloading instead"
-  rm -f "$candidate"
-  cache_state="the cached copy was rejected (SHA-256 mismatch)"
 fi
 
 # 2. Download.
-last_error="none"
+round_errors=() # this round's failures, one per source
+download_mismatch=0
 # Returns 0 only for a downloaded file whose digest matches the pin.
 fetch_verified() {
-  local label="$1" url="$2" accept="$3" code rc=0 got
+  local label="$1" url="$2" accept="$3" code rc=0 got err
   rm -f "$candidate"
-  code="$(curl -sS -L --fail --connect-timeout 15 --max-time 180 --speed-limit 10240 --speed-time 30 \
+  code="$(curl -sS -L --fail --connect-timeout 15 --max-time 90 --speed-limit 10240 --speed-time 30 \
     -H "Accept: ${accept}" -o "$candidate" -w '%{http_code}' "$url")" || rc=$?
   if ((rc != 0)); then
     # With --fail, an HTTP error is usually curl exit 22, but some curl builds
     # report it as 56 over HTTP/2. Report the status whenever one came back.
     if [[ "$code" =~ ^[45][0-9][0-9]$ ]]; then
-      last_error="HTTP ${code} from ${label} (curl exit ${rc})"
+      err="HTTP ${code} from ${label} (curl exit ${rc})"
     else
-      last_error="curl exit ${rc} from ${label}"
+      err="curl exit ${rc} from ${label}"
     fi
-    echo "osv-scanner download failed: ${last_error}" >&2
+    round_errors+=("$err")
+    echo "osv-scanner download failed: ${err}" >&2
     return 1
   fi
-  got="$(sha256_of "$candidate")"
+  if ! got="$(sha256_of "$candidate")"; then
+    round_errors+=("could not compute the SHA-256 of the download from ${label}")
+    rm -f "$candidate"
+    return 1
+  fi
   if [[ "$got" != "$OSV_SCANNER_SHA256" ]]; then
-    last_error="SHA-256 mismatch from ${label} (got ${got})"
-    echo "::warning title=osv-scanner digest mismatch::${last_error}; discarded"
+    download_mismatch=1
+    err="SHA-256 mismatch from ${label} (got ${got})"
+    round_errors+=("$err")
+    echo "::warning title=osv-scanner digest mismatch::${err}; discarded"
     rm -f "$candidate"
     return 1
   fi
@@ -113,7 +140,9 @@ fetch_verified() {
 }
 
 delay="$backoff_base"
+summary=""
 for ((round = 1; round <= attempts; round++)); do
+  round_errors=()
   if fetch_verified "the release download" "$release_url" "*/*" \
     || fetch_verified "the REST asset endpoint" "$api_url" "application/octet-stream"; then
     echo "Downloaded osv-scanner v${OSV_SCANNER_VERSION} (SHA-256 verified)."
@@ -128,15 +157,23 @@ for ((round = 1; round <= attempts; round++)); do
     install_verified
     exit 0
   fi
+  # Both sources failed, so round_errors holds two entries.
+  summary="$(printf '%s; ' "${round_errors[@]}")"
+  summary="${summary%; }"
   if ((round < attempts)); then
-    echo "osv-scanner download round ${round}/${attempts} failed (${last_error}); retrying in ${delay}s" >&2
+    echo "osv-scanner download round ${round}/${attempts} failed (${summary}); retrying in ${delay}s" >&2
     sleep "$delay"
     delay=$((delay * 2))
   else
-    echo "osv-scanner download round ${round}/${attempts} failed (${last_error})" >&2
+    echo "osv-scanner download round ${round}/${attempts} failed (${summary})" >&2
   fi
 done
 
 # 3. Fail closed.
-echo "::error title=osv-scanner unavailable::Could not get a verified osv-scanner v${OSV_SCANNER_VERSION}: ${cache_state}, and ${attempts} download rounds from GitHub failed (last: ${last_error}). The dependency audit cannot run without it, so this job fails closed. Re-run it once GitHub release downloads recover."
+if ((download_mismatch)); then
+  advice="A download did not match the pinned SHA-256. Check the pin and the release before re-running."
+else
+  advice="Re-run it once GitHub release downloads recover."
+fi
+echo "::error title=osv-scanner unavailable::Could not get a verified osv-scanner v${OSV_SCANNER_VERSION}: ${cache_state}, and ${attempts} download rounds from GitHub failed (last round: ${summary}). The dependency audit cannot run without it, so this job fails closed. ${advice}"
 exit 1
