@@ -186,8 +186,17 @@ describe('cluster caches are never invalidated with a plain .invalidate() (#8640
 
   it('detects the cluster caches (the scan is not vacuous)', () => {
     const found = sourceFiles().flatMap((file) => clusterCacheIdentifiers(readFileSync(file, 'utf8')));
-    expect(found).toContain('orgAgentUpdateConfigCache');
-    expect(found).toContain('agentCollectorAbsenceCache');
+    for (const identifier of [
+      'orgAgentUpdateConfigCache',
+      'orgTopologyFlagsCache',
+      'orgPolicyProbeCache',
+      'orgHelperSettingsCache',
+      'orgPamFallbackCache',
+      'trustKeysetCache',
+      'delegationRowsCache',
+      'agentCollectorAbsenceCache',
+      'keysetCache',
+    ]) expect(found).toContain(identifier);
   });
 
   it('the matcher flags a plain invalidate and ignores invalidateAroundCommit', () => {

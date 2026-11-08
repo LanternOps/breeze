@@ -152,6 +152,8 @@ describe('ClusterCacheBus.publish (#8144)', () => {
     const pending = bus.publish('c1', 'org-1');
     await vi.advanceTimersByTimeAsync(1_000);
     await expect(pending).resolves.toBe('timeout');
+    const text = await metricsRegistry.getSingleMetricAsString('breeze_cluster_cache_invalidations_published_total');
+    expect(text).toContain('cache="c1",outcome="timeout"} 1');
   });
 
   it('counts each outcome on the published series', async () => {
