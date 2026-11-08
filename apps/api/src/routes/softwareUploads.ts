@@ -34,7 +34,9 @@
  * the partner's own cap bucket, and store one object at
  * software/partner/<partnerId>/<catalogId>/<versionId>/<fileName>. The four
  * session routes load the session by (id, catalog_id) under RLS, then
- * authorize against its owner (services/softwareUploadOwner.ts).
+ * authorize against its owner (services/softwareUploadOwner.ts). "Plan D<n>"
+ * below refers to the design decisions in
+ * docs/superpowers/plans/integrations/2026-11-08-partner-wide-package-upload.md.
  *
  * Mounted from routes/software.ts (softwareRoutes.route('/', ...)) AFTER its
  * `use('*', authMiddleware)`, so every handler runs behind auth. This module
@@ -168,6 +170,8 @@ export const MAX_CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB — bodyLimit carve-out i
 // up to MAX_UPLOAD_SIZE (500MB) of API-host temp disk, so concurrency must be
 // bounded per tenant AND per user. Checked at create, before the row insert;
 // each limit answers 429 with its own error string so the cause is diagnosable.
+// The _PER_ORG limits apply per upload owner: a partner-wide package's
+// sessions get their own bucket of the same size (#9246), never a child org's.
 export const MAX_ACTIVE_UPLOAD_SESSIONS_PER_ORG = 5;
 export const MAX_ACTIVE_UPLOAD_SESSIONS_PER_USER = 2;
 export const MAX_ACTIVE_UPLOAD_BYTES_PER_ORG = 2.5 * 1024 * 1024 * 1024; // 2.5 GB declared file_size, summed
@@ -342,14 +346,15 @@ softwareUploadRoutes.post(
     // MAX_ACTIVE_UPLOAD_SESSIONS_PER_USER, defeating the local-disk-exhaustion
     // guard for exactly the tokens least likely to be a human clicking
     // "cancel". `IS NOT DISTINCT FROM` treats NULL = NULL as true, so all
-    // null-user sessions in an org share one bucket and are still capped.
+    // null-user sessions under the same owner (org or partner) share one
+    // bucket and are still capped.
     //
     // Staleness filter (#2951 final review Finding 1): a session whose
     // last_activity_at is already past the reaper's idle TTL is about to be
     // deleted by softwareUploadSessionCleanup — it must not count against
     // ANY of the three cap dimensions below, or a couple of cancelled/failed
     // uploads (whose rows sit idle until the next hourly reap) lock a user or
-    // org out of the feature for up to (idle TTL + cron latency) hours.
+    // owner out of the feature for up to (idle TTL + cron latency) hours.
     // `getIdleTtlHours()` is imported from the reaper job itself so the two
     // can never drift apart into independently-tuned copies of the same knob.
     const idleCutoff = new Date(Date.now() - getIdleTtlHours() * 3_600_000);

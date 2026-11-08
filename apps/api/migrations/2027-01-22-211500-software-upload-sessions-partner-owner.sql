@@ -5,7 +5,10 @@
 -- partner-wide package (org_id NULL, partner_id set — e.g. the built-in
 -- SentinelOne package) books a partner session. Booking a partner upload under
 -- a nominal child org would leak it into that customer's quota, export and
--- erasure, so the session carries the partner itself.
+-- erasure, so the session carries the partner itself. The route layer
+-- enforces the mirroring (create copies the owner from the catalog row,
+-- /complete re-reads the catalog under the session's owner); the schema only
+-- enforces org XOR partner — no composite FK for a row that lives <= 24 h.
 --
 -- Tenancy: dual-axis org XOR partner (software_upload_sessions_one_owner_chk),
 -- RLS enabled AND forced. Deliberately NO partner-wide SELECT branch: an

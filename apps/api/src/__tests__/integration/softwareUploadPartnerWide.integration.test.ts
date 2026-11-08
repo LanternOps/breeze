@@ -1,7 +1,8 @@
 /**
  * Partner-wide package upload, end to end through the real software router on
  * real Postgres as `breeze_app` (#11412 W01, origin #9246). Object storage is
- * mocked; auth, RBAC, MFA, RLS and the session/catalog/version writes are real.
+ * mocked; auth, RBAC, RLS and the session/catalog/version writes are real (MFA
+ * is satisfied by the token claim, not exercised).
  *
  * Pins the plan's review focus:
  *   1. a full-partner admin with a child org selected in the switcher

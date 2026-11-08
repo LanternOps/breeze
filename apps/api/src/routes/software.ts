@@ -656,7 +656,7 @@ softwareRoutes.post(
       return c.json({ error: 'S3 storage is not configured' }, 503);
     }
 
-    // Dual-axis fetch + write authorization (#2135, #11413): partner-wide
+    // Dual-axis fetch + write authorization (#2135, #9246): partner-wide
     // packages (org_id NULL) take uploads from system scope or a full-partner
     // admin of the owning partner; an org-owned row must belong to the org this
     // request resolves to. A partner-owned row ignores `?orgId` entirely.
@@ -669,7 +669,8 @@ softwareRoutes.post(
     if (catalogItem.orgId !== null) {
       // Org-owned uploads keep their historical ?orgId resolution exactly: the
       // request must resolve to the package's org (no All-organizations
-      // fallback, unlike the read-style check above).
+      // fallback, unlike authorizeCatalogItemWrite above, whose org-row branch
+      // delegates to the read check's canAccessOrg fallback).
       const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
       if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
       if (orgResult.orgId !== catalogItem.orgId) return c.json({ error: 'Catalog item not found' }, 404);

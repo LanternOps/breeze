@@ -7,6 +7,9 @@
  * owner is always taken from the catalog row (at create) or the session row
  * (afterwards), never from the request's `?orgId`, which the dashboard
  * injects for whatever org is selected in the switcher.
+ *
+ * "Plan D<n>" refers to the design decisions in
+ * docs/superpowers/plans/integrations/2026-11-08-partner-wide-package-upload.md.
  */
 import { and, eq, isNull, type SQL } from 'drizzle-orm';
 import { softwareUploadSessions } from '../db/schema';

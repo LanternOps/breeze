@@ -15,8 +15,8 @@
  *     removes it (the partner sweep discovers the table from
  *     information_schema, not a static list).
  *
- * The SQL builders name the new column directly so the red run reaches
- * Postgres instead of failing on a not-yet-added Drizzle property.
+ * Raw SQL is used so each test pins the database contract (RLS, CHECK, FK)
+ * independent of the Drizzle schema.
  */
 import { getTestDb } from './setup';
 import { randomUUID } from 'node:crypto';
