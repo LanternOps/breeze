@@ -331,6 +331,11 @@ describe('eventLogRowSchema — source is truncated to the varchar(255) column (
     expect(parsed.source).toBe('😀'.repeat(255));
   });
 
+  it('leaves an astral source untouched when it is over 255 UTF-16 units but within 255 code points', () => {
+    const source = '😀'.repeat(200);
+    expect(eventLogRowSchema.parse(withSource(source)).source).toBe(source);
+  });
+
   it('still rejects an empty source', () => {
     expect(eventLogRowSchema.safeParse(withSource('')).success).toBe(false);
   });
