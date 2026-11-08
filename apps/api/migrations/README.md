@@ -247,6 +247,29 @@ exactly the punctuation these filenames are full of — a guard that ordered
 differently from the runner would bless files that then replay in a different
 order than it checked.
 
+### Known out-of-order files (accepted, do not rename)
+
+Two files from #9760 were committed while newer migrations were already on
+`main`, so they sort before files that were applied earlier:
+
+- `2026-12-18-110000-partner-purchase-selection.sql`
+- `2026-12-18-120000-partner-billing-admission.sql`
+
+Both only `ALTER TABLE partners …`, a table that exists from the earliest
+migrations, so a fresh database applies them cleanly out of order. Both shipped
+in release v0.125.0, so they are content-hash immutable and keyed on filename in
+`breeze_migrations`; renaming either would re-apply it on every migrated
+database. They stay as they are.
+
+Why CI did not flag them at the time: the `--against-ref` step in the
+`Check Migrations` job did not exist yet (it landed with #10015, after #9760
+merged), and the whole-directory pass cannot enforce ordering because the
+shipped set violates it by construction. Today both CI and the pre-push hook
+judge only files a branch **adds**, so these two are never reported, including
+on merge commits that bring `main` in. Nothing needs an allowlist; a *new* file
+that sorts before the newest one on the base still fails. Do not add to this
+list: a new out-of-order file is renamed before merge, not recorded here.
+
 ### Preferred format for new migrations
 
 `YYYY-MM-DD-HHMMSS-<slug>.sql`. The time component orders same-day migrations
