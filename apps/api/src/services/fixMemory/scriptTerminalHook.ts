@@ -14,7 +14,7 @@
  * NEVER throws, and NEVER aborts the caller's transaction: every write runs in
  * a savepoint (see advanceOutcomesForTerminalExecution).
  */
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { FIX_OUTCOME_WINDOWS } from '@breeze/shared';
 import { db, hasDbAccessContext, withDbTransaction } from '../../db';
 import { fixOutcomes } from '../../db/schema';
@@ -58,11 +58,58 @@ export function terminalVerdict(
 }
 
 /**
+ * Pending verdicts a SERVER sweep writes without the agent's result: the
+ * reaper's "no response" (failed / timeout) and its delivery-clock expiry
+ * (never delivered). Only these can be contradicted by a late agent result.
+ */
+export const SERVER_SWEEP_VERDICT_REASONS = ['script_failed', 'script_timeout', 'script_never_delivered'] as const;
+export const LATE_SUCCESS_REASON = 'script_succeeded_late';
+
+/**
+ * #7279 — the agent's REAL result for an execution a server sweep already
+ * terminalised (handleScriptResult's #3607 recovery, the only caller passing
+ * `lateResult`). The attempt was decided on the sweep's guess, so it is
+ * reconciled with what actually happened:
+ *  - the script succeeded → re-open it to awaiting_recovery (uncounted again;
+ *    the recovery window opens at the late completion);
+ *  - it failed → an inconclusive "never delivered" becomes a counted failure.
+ *    A counted failure stays as it is (same count, original terminal_at).
+ * Both set recount_requested_at: the sweeper's recount (recomputeForOutcome,
+ * which also takes uncounted rows) recomputes the identity, so a failure that
+ * was counted is dropped and a new one is added. The CAS is the sweep verdict
+ * itself (state + reason + counted_at IS NOT NULL), so a duplicate frame, or an
+ * attempt something else already moved on, matches nothing.
+ */
+function lateResultWrites(
+  status: ScriptTerminalStatus, completedAt: Date | null | undefined, now: Date,
+): Array<{ set: Partial<typeof fixOutcomes.$inferInsert>; from: { states: Array<'failed' | 'inconclusive'>; reasons: string[] } }> {
+  const real = terminalVerdict(status);
+  if (real.state === 'awaiting_recovery') {
+    return [{
+      set: {
+        state: 'awaiting_recovery', stateReason: LATE_SUCCESS_REASON, terminalAt: null, countedAt: null,
+        deadlineAt: recoveryDeadlineFrom(completedAt, now), recountRequestedAt: now, updatedAt: now,
+      },
+      from: { states: ['failed', 'inconclusive'], reasons: [...SERVER_SWEEP_VERDICT_REASONS] },
+    }];
+  }
+  if (real.state === 'failed') {
+    return [{
+      set: { state: 'failed', stateReason: real.reason, terminalAt: now, recountRequestedAt: now, updatedAt: now },
+      from: { states: ['inconclusive'], reasons: ['script_never_delivered'] },
+    }];
+  }
+  return [];
+}
+
+/**
  * `completedAt` is the execution's completion time as the caller wrote it; the
- * recovery window is measured from it (#7279), clamped to now.
+ * recovery window is measured from it (#7279), clamped to now. `lateResult`:
+ * the caller is recording the agent's real result onto an execution a server
+ * sweep already terminalised (see lateResultWrites).
  */
 export async function advanceOutcomesForTerminalExecution(
-  input: { executionId: string; status: ScriptTerminalStatus; neverDelivered?: boolean; completedAt?: Date | null },
+  input: { executionId: string; status: ScriptTerminalStatus; neverDelivered?: boolean; completedAt?: Date | null; lateResult?: boolean },
   executor?: OutcomeUpdateExecutor,
 ): Promise<number> {
   const verdict = terminalVerdict(input.status, { neverDelivered: input.neverDelivered });
@@ -70,13 +117,24 @@ export async function advanceOutcomesForTerminalExecution(
   const set: Partial<typeof fixOutcomes.$inferInsert> = verdict.state === 'awaiting_recovery'
     ? { state: verdict.state, stateReason: verdict.reason, updatedAt: now, deadlineAt: recoveryDeadlineFrom(input.completedAt, now) }
     : { state: verdict.state, stateReason: verdict.reason, updatedAt: now, terminalAt: now, countedAt: now, recountRequestedAt: now };
+  const late = input.lateResult ? lateResultWrites(input.status, input.completedAt, now) : [];
   const write = async (ex: OutcomeWriter) => {
     const rows = await ex.update(fixOutcomes).set(set).where(and(
       eq(fixOutcomes.scriptExecutionId, input.executionId),
       eq(fixOutcomes.state, 'pending'),
       isNull(fixOutcomes.countedAt),
     )).returning({ id: fixOutcomes.id });
-    return rows.length;
+    let advanced = rows.length;
+    for (const w of late) {
+      const reconciled = await ex.update(fixOutcomes).set(w.set).where(and(
+        eq(fixOutcomes.scriptExecutionId, input.executionId),
+        inArray(fixOutcomes.state, w.from.states),
+        inArray(fixOutcomes.stateReason, w.from.reasons),
+        isNotNull(fixOutcomes.countedAt),
+      )).returning({ id: fixOutcomes.id });
+      advanced += reconciled.length;
+    }
+    return advanced;
   };
   // The catch is OUTSIDE the savepoint on purpose. A PostgreSQL error aborts the
   // whole enclosing transaction even when the JS error is caught (25P02 on every

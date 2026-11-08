@@ -623,6 +623,9 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
       }
 
       let updatedExecutions: TerminalExecution[] = [];
+      // #7279: set when the #3607 recovery below records this result onto an
+      // execution a server sweep already terminalised.
+      let recoveredLateResult = false;
       let effectiveExecution = cancelClosed[0] ?? null;
 
       if (cancelClosed.length === 0) {
@@ -685,6 +688,7 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
 
           if (recovered.length > 0) {
             effectiveExecution = recovered[0] ?? null;
+            recoveredLateResult = true;
             console.warn(
               `[AgentWs] #3607 recovered late script result onto swept execution ${executionId} (command ${command.id})`
             );
@@ -822,10 +826,13 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
 
         // AI Suggested Fixes W1 (D-a) — advance any fix attempt riding on this
         // execution. Inline, own savepoint, never throws; NOT a public event.
+        // A late result also reconciles an attempt the sweep's verdict already
+        // closed (#7279, scriptTerminalHook lateResultWrites).
         await advanceOutcomesForTerminalExecution({
           executionId: effectiveExecution.id,
           status: cancelConfirmed ? 'cancelled' : scriptStatus,
           completedAt: executionValues.completedAt,
+          lateResult: recoveredLateResult,
         });
 
         if (effectiveExecution.proposalId) {
