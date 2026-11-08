@@ -12,16 +12,29 @@ import WispRail, { type WispRailProps } from './WispRail';
 
 const h = vi.hoisted(() => ({
   headerProps: null as null | Record<string, unknown>,
+  controlsArgs: null as null | Record<string, unknown>,
+  controls: {
+    openRefresh: () => {}, openSettings: () => {}, askRevoke: () => {}, settings: { open: false },
+  } as Record<string, unknown>,
   needsYouProps: null as null | Record<string, unknown>,
   workersProps: null as null | Record<string, unknown>,
   linksProps: null as null | Record<string, unknown>,
   activityProps: null as null | Record<string, unknown>,
 }));
 
-vi.mock('../ai/WispThreadHeader', () => ({
-  default: (props: Record<string, unknown>) => {
+// The rail owns the grant controls' state so the action buttons can sit in the
+// identity card's title row; the buttons are real, the rest of the controls a stub.
+vi.mock('../ai/useWispGrantControls', () => ({
+  useWispGrantControls: (args: Record<string, unknown>) => {
+    h.controlsArgs = args;
+    return h.controls;
+  },
+}));
+vi.mock('../ai/WispThreadHeader', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../ai/WispThreadHeader')>()),
+  WispGrantDetails: (props: Record<string, unknown>) => {
     h.headerProps = props;
-    return <div data-testid="wisp-thread-header" />;
+    return <div data-testid="wisp-grant-details" />;
   },
 }));
 // The real component owns `id="needs-you"`; the stub carries it the same way.
@@ -78,6 +91,7 @@ const ORDER = ['wisp-identity', 'wisp-needs-you', 'wisp-workers', 'wisp-links-pa
 describe('WispRail', () => {
   beforeEach(() => {
     h.headerProps = null;
+    h.controlsArgs = null;
     h.needsYouProps = null;
     h.workersProps = null;
     h.linksProps = null;
@@ -120,14 +134,14 @@ describe('WispRail', () => {
 
     // The grant controls sit inside the identity card; the live line is the card's, not the header's.
     const identity = screen.getByTestId('wisp-identity');
-    expect(within(identity).getByTestId('wisp-thread-header')).toBeTruthy();
+    expect(within(identity).getByTestId('wisp-grant-details')).toBeTruthy();
     expect(screen.getByTestId('wisp-state-line').textContent).toContain('Greenwood');
-    expect(h.headerProps).toMatchObject({
-      wisp: props.wisp, orgName: 'Acme', wideningAvailable: true, showFocus: false, showIdentity: false, currentActivity: null,
-      onWispChange: props.onWispChange, onRevoked: props.onRevoked,
+    expect(h.controlsArgs).toMatchObject({
+      wisp: props.wisp, orgName: 'Acme', onWispChange: props.onWispChange, onRevoked: props.onRevoked,
     });
-    // The rail keeps the full header; only the docked pane passes 'compact'.
-    expect(h.headerProps?.variant ?? 'full').toBe('full');
+    // The rail keeps the full controls (spend meter, pause); no focus picker, no live line of its own.
+    expect(h.headerProps).toMatchObject({ wisp: props.wisp, wideningAvailable: true, showFocus: false, controls: h.controls });
+    expect(h.headerProps?.currentActivity ?? null).toBeNull();
 
     expect(h.needsYouProps).toMatchObject({ grantId: 'g1', threadId: 't1', initial: [concern], refreshKey: 3 });
     expect(h.workersProps).toMatchObject({ threadId: 't1', refreshKey: 3 });
@@ -141,6 +155,21 @@ describe('WispRail', () => {
     expect(memory.getAttribute('href')).toBe('/settings/wisp-memory');
     expect(memory.textContent).toContain('Memory');
     expect(screen.getByTestId('wisp-rail-nav').tagName).toBe('NAV');
+  });
+
+  // The full header's top row held only the three icons once the identity card
+  // took its scope and status: an icon-only row under the card's title.
+  it('the grant actions sit in the identity card’s title row, once, with no icon-only row under it', () => {
+    render(<WispRail {...mkProps()} />);
+    const identity = screen.getByTestId('wisp-identity');
+    const title = within(identity).getByTestId('wisp-identity-title');
+    expect(title).toContainElement(within(identity).getByRole('heading', { level: 2 }));
+    for (const id of ['wisp-refresh-grant', 'wisp-settings', 'wisp-revoke']) {
+      expect(within(identity).getAllByTestId(id)).toHaveLength(1);
+      expect(title).toContainElement(within(identity).getByTestId(id));
+    }
+    // Widening available: Refresh stays the primary, labelled button.
+    expect(within(title).getByTestId('wisp-refresh-grant')).toHaveAttribute('data-variant', 'primary');
   });
 
   it('needsYou null hides the section', () => {
@@ -178,7 +207,8 @@ describe('WispRail', () => {
     expect(h.activityProps).toBeNull();
     for (const id of ['needs-you', 'links']) expect(container.querySelector(`#${id}`)).toBeNull();
     // The grant controls and the way out stay.
-    expect(within(screen.getByTestId('wisp-identity')).getByTestId('wisp-thread-header')).toBeTruthy();
+    expect(within(screen.getByTestId('wisp-identity')).getByTestId('wisp-grant-details')).toBeTruthy();
+    expect(within(screen.getByTestId('wisp-identity-title')).getByTestId('wisp-revoke')).toBeTruthy();
     expect(screen.getByTestId('wisp-rail-nav')).toBeTruthy();
   });
 

@@ -896,7 +896,9 @@
     },
     "sidebar": {
       "openHome": "Ouvrir dans Wisp",
-      "meetWisp": "Découvrir Wisp"
+      "meetWisp": "Découvrir Wisp",
+      "handedOff": "Cette conversation est ouverte sur la page.",
+      "handedOffAction": "Continuer sur la page"
     },
     "partnerSwitch": {
       "description": "Permettre aux techniciens de déléguer du travail à Wisp. La désactivation met en pause chaque autorisation en cours à sa prochaine vérification et bloque les nouvelles; rien n’est supprimé, et la réactivation reprend ce qui avait été mis en pause.",

@@ -896,7 +896,9 @@
     },
     "sidebar": {
       "openHome": "Open in Wisp",
-      "meetWisp": "Meet Wisp"
+      "meetWisp": "Meet Wisp",
+      "handedOff": "This conversation is open on the page.",
+      "handedOffAction": "Continue on the page"
     },
     "partnerSwitch": {
       "description": "Let technicians delegate work to Wisp. Turning it off pauses every running delegation at its next check and blocks new ones; nothing is deleted, and turning it back on resumes what it paused.",

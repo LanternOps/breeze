@@ -30,11 +30,18 @@ export default function WispRailStrip({
   current,
   needsYouCount,
   rail,
+  visibleWhenWide = false,
 }: {
   wisp: NonNullable<WispState>;
   current: CurrentActivity;
   needsYouCount: number;
   rail: ReactNode;
+  /**
+   * Also shown from `lg` up: the shell collapses the rail to the strip there
+   * while the docked AI pane is open. Off, `lg:hidden` keeps the strip out of
+   * a wide layout before the media query has answered.
+   */
+  visibleWhenWide?: boolean;
 }) {
   const { t } = useTranslation('ai');
   // Closed on the first render (the server never sees the hash, #2421); the
@@ -49,7 +56,7 @@ export default function WispRailStrip({
   }, []);
 
   return (
-    <div className="lg:hidden" data-testid="wisp-rail-strip">
+    <div className={visibleWhenWide ? undefined : 'lg:hidden'} data-testid="wisp-rail-strip">
       <div className="flex items-center gap-2 rounded-lg border bg-card py-1.5 pl-3 pr-1.5">
         <Sparkles className="h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
         <span className="shrink-0 text-sm font-semibold">{t('wisp.title')}</span>

@@ -7,8 +7,8 @@ vi.mock('@/stores/aiStore', () => ({
   useAiStore: (sel: (s: { isOpen: boolean }) => unknown) => sel({ isOpen: h.panelOpen }),
 }));
 vi.mock('./WispRailStrip', () => ({
-  default: (p: { needsYouCount: number; rail: React.ReactNode }) => (
-    <div data-testid="strip-stub" data-count={p.needsYouCount}>{p.rail}</div>
+  default: (p: { needsYouCount: number; rail: React.ReactNode; visibleWhenWide?: boolean }) => (
+    <div data-testid="strip-stub" data-count={p.needsYouCount} data-visible-when-wide={String(!!p.visibleWhenWide)}>{p.rail}</div>
   ),
 }));
 
@@ -54,10 +54,30 @@ describe('WispCompanionShell', () => {
     expect(banner.compareDocumentPosition(screen.getByTestId('column')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('keeps the rail clear of the docked panel while it is open', () => {
+  it('keeps the content clear of the docked panel while it is open, and only then', () => {
+    h.wide = true;
+    h.panelOpen = true;
+    const { unmount } = renderShell();
+    expect(screen.getByTestId('wisp-home').className).toContain('lg:pr-[400px]');
+    unmount();
+    h.panelOpen = false;
+    renderShell();
+    expect(screen.getByTestId('wisp-home').className).not.toContain('lg:pr-[400px]');
+  });
+
+  // The open pane already carries the grant, spend and pause controls: a third
+  // column would repeat the identity card and crush the conversation.
+  it('wide with the pane open: the strip stands in for the rail (shown at lg too) and no aside renders', () => {
     h.wide = true;
     h.panelOpen = true;
     renderShell();
-    expect(screen.getByTestId('wisp-home').className).toContain('lg:pr-[400px]');
+    expect(screen.queryByTestId('wisp-rail-aside')).toBeNull();
+    expect(screen.getByTestId('strip-stub')).toHaveAttribute('data-visible-when-wide', 'true');
+    expect(screen.getAllByTestId('rail')).toHaveLength(1);
+  });
+
+  it('narrow: the strip keeps its lg:hidden fallback (visibleWhenWide off)', () => {
+    renderShell();
+    expect(screen.getByTestId('strip-stub')).toHaveAttribute('data-visible-when-wide', 'false');
   });
 });

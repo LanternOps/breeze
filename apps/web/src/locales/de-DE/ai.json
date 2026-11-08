@@ -896,7 +896,9 @@
     },
     "sidebar": {
       "openHome": "In Wisp öffnen",
-      "meetWisp": "Wisp kennenlernen"
+      "meetWisp": "Wisp kennenlernen",
+      "handedOff": "Diese Unterhaltung ist auf der Seite geöffnet.",
+      "handedOffAction": "Auf der Seite fortfahren"
     },
     "partnerSwitch": {
       "description": "Technikern erlauben, Arbeit an Wisp zu delegieren. Beim Ausschalten wird jede laufende Berechtigung bei der nächsten Prüfung pausiert und neue werden blockiert; nichts wird gelöscht, und beim erneuten Einschalten wird Pausiertes fortgesetzt.",

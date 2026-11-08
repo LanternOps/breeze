@@ -896,7 +896,9 @@
     },
     "sidebar": {
       "openHome": "Abrir en Wisp",
-      "meetWisp": "Conoce a Wisp"
+      "meetWisp": "Conoce a Wisp",
+      "handedOff": "Esta conversación está abierta en la página.",
+      "handedOffAction": "Continuar en la página"
     },
     "partnerSwitch": {
       "description": "Permite que los técnicos deleguen trabajo a Wisp. Al desactivarlo, cada permiso en curso se pone en pausa en su próxima revisión y se bloquean los nuevos; no se elimina nada, y al reactivarlo se reanuda lo que se pausó.",

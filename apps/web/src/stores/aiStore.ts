@@ -4,7 +4,7 @@ import type { AiAttachState, AiPageContext, AiStreamEvent, AiApprovalMode, AiTop
 import { fetchWithAuth } from './auth';
 import { registerLogoutHook } from './logoutHooks';
 import { noSessionOrgId, useAiModelPickerStore } from './aiModelPickerStore';
-import { pageContextAnchorsOrg } from './aiPageContext';
+import { pageContextAnchorsOrg, wispPageHoldsChat } from './aiPageContext';
 import { classifySendRefusal } from './aiSendRefusal';
 import { isChatSessionType } from './aiSessionOpen';
 import { attachAiSession, attachBackoffMs, shouldReattach, trackAttach, type AttachOutcome } from './aiSessionAttach';
@@ -159,6 +159,16 @@ interface AiState {
   composerDraft: string;
   /** An explicit header action asks the mounted sidebar composer for focus. */
   composerFocusRequest: number;
+  /**
+   * The Wisp thread whose live composer the page shows (the Wisp home, a
+   * thread page), or null; set by that composer's column while it is on
+   * screen. While the chat is on that thread the page is the conversation:
+   * `toggle` (the AI shortcut and header button) focuses the page's composer
+   * instead of opening the pane, and an open pane hands off to it. Not persisted.
+   */
+  wispPageThreadId: string | null;
+  /** Asks the page's Wisp composer for focus (the composerFocusRequest pattern). */
+  wispPageComposerFocusRequest: number;
   /** Transient inline confirmation, owned by the invoking header button. */
   wispTalkFocusRequest: WispTalkFocusRequest | null;
   /** Wisp mode (W04); null = ordinary chat. Not persisted. */
@@ -168,9 +178,13 @@ interface AiState {
   talkToWispAbout: (target: WispTalkTarget) => Promise<'opened' | 'declined_focus' | 'no_grant' | 'superseded' | 'failed'>;
   openPlainChatAbout: (target: WispTalkTarget) => Promise<'opened' | 'superseded'>;
   resolveWispTalkFocus: (accepted: boolean) => void;
+  /** Open or close the pane; on a page whose composer holds the chat's Wisp thread, focus that composer instead. */
   toggle: () => void;
   open: () => void;
   close: () => void;
+  setWispPageThreadId: (threadId: string | null) => void;
+  /** Close the pane and focus the page's Wisp composer. */
+  focusWispPageComposer: () => void;
   setPageContext: (ctx: AiPageContext | null) => void;
   /**
    * `pageContext` overrides the store's current page context for THIS session
@@ -766,10 +780,16 @@ export const useAiStore = create<AiState>()(
   joinedMidResponse: false,
   composerDraft: '',
   composerFocusRequest: 0,
+  wispPageThreadId: null,
+  wispPageComposerFocusRequest: 0,
   wispTalkFocusRequest: null,
   wisp: null,
 
   toggle: () => {
+    if (wispPageHoldsChat(get())) {
+      get().focusWispPageComposer();
+      return;
+    }
     const opening = !get().isOpen;
     if (opening) {
       import('./helpStore').then(({ useHelpStore }) => useHelpStore.getState().close()).catch((err) => console.warn('[AiStore] Failed to close help panel:', err));
@@ -781,6 +801,9 @@ export const useAiStore = create<AiState>()(
     set({ isOpen: true });
   },
   close: () => set({ isOpen: false }),
+  setWispPageThreadId: (threadId) => set({ wispPageThreadId: threadId }),
+  focusWispPageComposer: () =>
+    set((s) => ({ isOpen: false, wispPageComposerFocusRequest: s.wispPageComposerFocusRequest + 1 })),
   clearError: () => set({ error: null, errorCode: null, errorStatus: null }),
 
   setPageContext: (ctx) =>

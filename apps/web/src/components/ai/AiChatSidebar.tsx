@@ -11,6 +11,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { isActiveGrant, useAiStore, type WispState } from "@/stores/aiStore";
+import { wispPageHoldsChat } from "@/stores/aiPageContext";
 import { useJwtClaims } from "@/lib/authScope";
 import { useWispEnabled } from "@/lib/wispVisibility";
 import { fetchWispThread, isNoActiveGrant } from "@/lib/wispGrant";
@@ -125,6 +126,8 @@ export default function AiChatSidebar() {
     composerDraft,
     composerFocusRequest,
     setComposerDraft,
+    wispPageThreadId,
+    focusWispPageComposer,
     wisp,
     enterWispMode,
     startPlainChat,
@@ -146,7 +149,9 @@ export default function AiChatSidebar() {
   const restoredSessionIdRef = useRef<string | null>(null);
 
   // Keyboard shortcut: Cmd+Shift+A to toggle. With Shift held, `e.key` is "A"
-  // (capital), so compare case-insensitively (#9613).
+  // (capital), so compare case-insensitively (#9613). On a page whose own
+  // composer holds the chat's Wisp thread, the store's toggle focuses that
+  // composer instead of opening the pane.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "a") {
@@ -307,6 +312,11 @@ export default function AiChatSidebar() {
 
   if (!canUseAi) return null;
 
+  // The page (the Wisp home, a thread page) shows this same conversation with
+  // its own composer: the pane hands off to it instead of repeating the header
+  // and transcript. Any other conversation keeps working here.
+  const handedOff = !showHistory && wispPageHoldsChat({ wisp, wispPageThreadId });
+
   // Shared by the plain header and the compact Wisp header's Row A.
   const historyButton = !showHistory && (
     <button
@@ -392,8 +402,20 @@ export default function AiChatSidebar() {
             backgrounds); the bottom border alone separates it. Under a Wisp
             grant the compact Wisp header is the whole header (#critique): its
             Row A carries the pane's History, New and Close beside Wisp's own
-            overflow menu, which holds Flag too. */}
-        {wisp && !showHistory ? (
+            overflow menu, which holds Flag too. Handed off to the page's
+            composer, it is a plain title row with History and Close. */}
+        {handedOff ? (
+          <div className="flex items-center justify-between border-b px-4 py-2">
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-primary" aria-hidden="true" />
+              <span className="text-sm font-semibold text-foreground">{t("wisp.title")}</span>
+            </div>
+            <div className="flex items-center gap-1">
+              {historyButton}
+              {closeButton}
+            </div>
+          </div>
+        ) : wisp && !showHistory ? (
           <WispThreadHeader
             variant="compact"
             wisp={wisp}
@@ -469,6 +491,21 @@ export default function AiChatSidebar() {
         {showHistory ? (
           /* History panel — mounted only while open, so its query resets on close. */
           <AiChatHistory currentSessionId={sessionId} onSwitch={switchSession} />
+        ) : handedOff ? (
+          <div
+            data-testid="ai-chat-handed-off"
+            className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center"
+          >
+            <p className="text-sm text-muted-foreground">{t("wisp.sidebar.handedOff")}</p>
+            <button
+              type="button"
+              onClick={focusWispPageComposer}
+              data-testid="ai-chat-handed-off-focus"
+              className="rounded-md border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+            >
+              {t("wisp.sidebar.handedOffAction")}
+            </button>
+          </div>
         ) : (
           /* Chat panel */
           <>

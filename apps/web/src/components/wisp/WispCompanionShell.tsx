@@ -19,6 +19,11 @@ export const WISP_RAIL_WIDE_QUERY = '(min-width: 1024px)';
  * mounting both would fetch every rail panel twice and put the `#needs-you`,
  * `#links` and `#activity` ids on the page twice.
  *
+ * While the docked AI pane is open the rail collapses to the strip at every
+ * width: the pane already carries the grant, spend and pause controls, and a
+ * third column would repeat them and crush the conversation. The content
+ * keeps clear of the fixed pane only while it is open.
+ *
  * Height: `data-wisp-shell` turns the dashboard `<main>` into a flex column
  * (globals.css), so `flex-1` takes exactly the space left under the accent
  * strip and any banner (MFA, trust) instead of a fixed height they would push
@@ -45,8 +50,9 @@ export default function WispCompanionShell({
 }) {
   const { t } = useTranslation('ai');
   const wide = useMediaQuery(WISP_RAIL_WIDE_QUERY);
-  // The docked panel is fixed over the right 400 px on lg+: keep the rail clear of it (as /ai/chat does).
+  // The docked panel is fixed over the right 400 px on lg+: keep the content clear of it (as /ai/chat does).
   const panelOpen = useAiStore((s) => s.isOpen);
+  const showAside = wide && !panelOpen;
 
   return (
     <div
@@ -56,10 +62,12 @@ export default function WispCompanionShell({
     >
       <div className="mx-auto flex min-w-0 max-w-[60rem] flex-1 flex-col gap-3">
         {banners}
-        {!wide && <WispRailStrip wisp={wisp} current={current} needsYouCount={needsYouCount} rail={rail} />}
+        {!showAside && (
+          <WispRailStrip wisp={wisp} current={current} needsYouCount={needsYouCount} rail={rail} visibleWhenWide={wide} />
+        )}
         {column}
       </div>
-      {wide && (
+      {showAside && (
         <aside
           aria-label={t('wisp.title')}
           data-testid="wisp-rail-aside"

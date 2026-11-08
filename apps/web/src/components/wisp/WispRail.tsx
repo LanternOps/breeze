@@ -3,7 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { Brain, MessagesSquare } from 'lucide-react';
 import type { Concern, CurrentActivity, WispBriefSchedule, WispThreadLink } from '@breeze/shared';
 import type { WispState } from '@/stores/aiStore';
-import WispThreadHeader from '../ai/WispThreadHeader';
+import { WispGrantActions, WispGrantDetails } from '../ai/WispThreadHeader';
+import { useWispGrantControls } from '../ai/useWispGrantControls';
 import WispActivityPanel from './WispActivityPanel';
 import WispIdentityCard from './WispIdentityCard';
 import WispLinksPanel from './WispLinksPanel';
@@ -32,13 +33,6 @@ export type WispRailProps = {
 const CHATS_HREF = '/ai/chat';
 const MEMORY_HREF = '/settings/wisp-memory';
 const BOX = 'overflow-hidden rounded-lg border bg-card';
-
-/**
- * The header renders its own chrome (`border-b px-4 py-2`) for the docked chat
- * panel. Inside the identity card that reads as a second box, so it is dropped
- * from here rather than by changing the header the panel still uses.
- */
-const HEADER_FLUSH = '[&>[data-testid=wisp-thread-header]]:border-b-0 [&>[data-testid=wisp-thread-header]]:p-0';
 
 /**
  * `WispNeedsYou` is its own bordered section, so it is not boxed again. Its
@@ -73,23 +67,22 @@ export default function WispRail({
   // concerns, activity and links routes answer 409 grant_inactive. Say so once
   // instead of mounting panes that can only fail.
   const ended = wisp.status === 'revoked' || wisp.status === 'expired';
+  // The card states scope and status itself, so the grant header is laid out
+  // in parts: its actions end the card's title row (no icon-only row under
+  // it), its meter, pause and notices follow. Customer focus is a chat-session
+  // setting (spec §6.1), and the live line is the card's.
+  const controls = useWispGrantControls({ wisp, orgName, onWispChange, onRevoked });
 
   return (
     <div className="space-y-4" data-testid="wisp-rail">
       <div className={BOX}>
-        <WispIdentityCard wisp={wisp} orgName={orgName} currentActivity={current}>
-          <div className={HEADER_FLUSH}>
-            <WispThreadHeader
-              wisp={wisp}
-              orgName={orgName}
-              wideningAvailable={wisp.wideningAvailable}
-              showFocus={false}
-              showIdentity={false}
-              currentActivity={null}
-              onWispChange={onWispChange}
-              onRevoked={onRevoked}
-            />
-          </div>
+        <WispIdentityCard
+          wisp={wisp}
+          orgName={orgName}
+          currentActivity={current}
+          actions={<WispGrantActions controls={controls} wideningAvailable={wisp.wideningAvailable} />}
+        >
+          <WispGrantDetails wisp={wisp} wideningAvailable={wisp.wideningAvailable} controls={controls} showFocus={false} />
           {!ended && briefSchedule?.timeLocal && (
             <p data-testid="wisp-rail-brief-at" className="text-xs text-muted-foreground">
               {t('ai:wisp.welcome.briefAt', { time: briefSchedule.timeLocal, timezone: briefSchedule.timezone })}

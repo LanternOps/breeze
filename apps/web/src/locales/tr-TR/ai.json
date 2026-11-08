@@ -896,7 +896,9 @@
     },
     "sidebar": {
       "openHome": "Wisp’te aç",
-      "meetWisp": "Wisp ile tanışın"
+      "meetWisp": "Wisp ile tanışın",
+      "handedOff": "Bu konuşma sayfada açık.",
+      "handedOffAction": "Sayfada devam et"
     },
     "partnerSwitch": {
       "description": "Teknisyenlerin işleri Wisp’e devretmesine izin verin. Kapatmak, çalışan her yetkiyi bir sonraki kontrolde duraklatır ve yenilerini engeller; hiçbir şey silinmez, yeniden açmak duraklatılanları sürdürür.",

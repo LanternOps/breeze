@@ -896,7 +896,9 @@
     },
     "sidebar": {
       "openHome": "Abrir no Wisp",
-      "meetWisp": "Conheça o Wisp"
+      "meetWisp": "Conheça o Wisp",
+      "handedOff": "Esta conversa está aberta na página.",
+      "handedOffAction": "Continuar na página"
     },
     "partnerSwitch": {
       "description": "Permita que os técnicos deleguem trabalho ao Wisp. Ao desativar, cada permissão em andamento é pausada na próxima verificação e novas são bloqueadas; nada é excluído, e ao reativar o que foi pausado é retomado.",

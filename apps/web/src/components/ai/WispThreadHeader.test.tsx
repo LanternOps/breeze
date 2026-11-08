@@ -43,7 +43,8 @@ vi.mock('./WispGrantStepUpModal', () => ({
   },
 }));
 
-import WispThreadHeader from './WispThreadHeader';
+import WispThreadHeader, { WispGrantActions, WispGrantDetails } from './WispThreadHeader';
+import { useWispGrantControls } from './useWispGrantControls';
 
 function wisp(overrides: Partial<NonNullable<WispState>> = {}): NonNullable<WispState> {
   return {
@@ -73,13 +74,30 @@ describe('WispThreadHeader (W04 Task 8)', () => {
     expect(screen.getByTestId('wisp-scope').textContent).toBe('Alpha');
   });
 
-  it('showIdentity=false drops the scope and status (the Wisp rail identity card carries them) and keeps the controls', () => {
-    render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} showIdentity={false} />);
-    expect(screen.queryByTestId('wisp-scope')).toBeNull();
-    expect(screen.queryByTestId('wisp-grant-status')).toBeNull();
-    expect(screen.getByTestId('wisp-refresh-grant')).toBeInTheDocument();
-    expect(screen.getByTestId('wisp-settings')).toBeInTheDocument();
-    expect(screen.getByTestId('wisp-revoke')).toBeInTheDocument();
+  // The Wisp rail places the parts itself: the actions in its identity card's
+  // title row (which already states scope and status), the details under it.
+  it('the rail\'s parts: the details carry no scope, status or action buttons (no icon-only row); the actions drive the shared controls', () => {
+    function RailParts() {
+      const controls = useWispGrantControls({ wisp: wisp(), orgName: null });
+      return (
+        <>
+          <div data-testid="actions-slot"><WispGrantActions controls={controls} wideningAvailable={false} /></div>
+          <WispGrantDetails wisp={wisp({ spentTodayCents: 50, budgetResetsAt: '2027-01-01T00:00:00.000Z' })} wideningAvailable={false} controls={controls} showFocus={false} />
+        </>
+      );
+    }
+    render(<RailParts />);
+    const details = screen.getByTestId('wisp-grant-details');
+    for (const id of ['wisp-scope', 'wisp-grant-status', 'wisp-refresh-grant', 'wisp-settings', 'wisp-revoke', 'wisp-focus']) {
+      expect(within(details).queryByTestId(id)).toBeNull();
+    }
+    const actions = screen.getByTestId('actions-slot');
+    for (const id of ['wisp-refresh-grant', 'wisp-settings', 'wisp-revoke']) expect(within(actions).getByTestId(id)).toBeInTheDocument();
+    // Settings toggled from the title row opens the panel in the details.
+    expect(within(details).queryByTestId('wisp-settings-budget')).toBeNull();
+    fireEvent.click(within(actions).getByTestId('wisp-settings'));
+    expect(within(actions).getByTestId('wisp-settings')).toHaveAttribute('aria-expanded', 'true');
+    expect(within(details).getByTestId('wisp-settings-budget')).toBeInTheDocument();
   });
 
   it.each([
