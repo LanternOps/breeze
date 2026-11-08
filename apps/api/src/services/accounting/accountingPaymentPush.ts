@@ -464,7 +464,8 @@ function toCurrencyPushError(err: unknown, conn: AccountingConnection): Accounti
 
 /**
  * The payment's mapping row, looked up the way its DESTROYERS know it: by the
- * `invoice_payments` id alone. `voidPayment`/`reflectStripeRefund` hold no
+ * `invoice_payments` id alone. `voidPayment` and the Stripe reversal state machine
+ * (`stripeReversalState.applyStripeFinancialEvent`) hold no
  * partner id, and `(breeze_entity_type, breeze_entity_id)` is already unique per
  * connection; RLS scopes the read to the caller's partner.
  */
