@@ -47,6 +47,7 @@ vi.mock('../db/schema', () => ({
     targetRole: 'dc.targetRole',
     createdBy: 'dc.createdBy',
     createdAt: 'dc.createdAt',
+    deliverBy: 'dc.deliverBy',
     status: 'dc.status',
     completedAt: 'dc.completedAt',
     result: 'dc.result',
@@ -796,6 +797,13 @@ describe('revalidation preparation (#7268)', () => {
     await prepareCommandRevalidations(beat.reader, { deviceId: 'd1', targetRole: 'watchdog' });
     const beatQuery = dialect.sqlToQuery(beat.where.mock.calls[0]![0] as never);
     expect(beatQuery.params).toEqual(expect.arrayContaining(['d1', 'watchdog', 'pending', 'topology_interface_poll']));
+
+    // Same deadline predicate as the claim scan: a row past deliver_by is the
+    // reaper's, and must not crowd live rows out of the prepare window.
+    for (const query of [pushQuery, beatQuery]) {
+      expect(query.sql).toMatch(/is null or /i);
+      expect(query.params).toEqual(expect.arrayContaining(['dc.deliverBy', expect.any(Date)]));
+    }
   });
 
   it('a failed preparer leaves its type unprepared (its rows are held) instead of failing the claim', async () => {

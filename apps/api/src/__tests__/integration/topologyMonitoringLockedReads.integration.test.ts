@@ -10,7 +10,9 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
  * permission authority version) — postgres-js has no acquire timeout, so a
  * pool full of same-org work queued on the lock wedges the holder.
  */
-const trace = vi.hoisted(() => ({ depth: 0, systemDepth: 0, watchContext: false, watchCommandLocks: false, versionReads: 0, violations: [] as string[] }));
+const trace = vi.hoisted(() => ({
+  depth: 0, systemDepth: 0, watchContext: false, watchCommandLocks: false, versionReads: 0, failVersionReadWithSqlError: false, violations: [] as string[],
+}));
 
 vi.mock('../../db', async () => {
   const actual = await vi.importActual<typeof import('../../db')>('../../db');
@@ -40,8 +42,9 @@ vi.mock('../../services/permissions', async () => {
       if (trace.watchContext && getCurrentDbAccessContext()) trace.violations.push('getPermissionAuthorityVersion (Redis) inside the sink transaction');
       if (trace.watchCommandLocks && getCurrentDbAccessContext()) {
         // #7268: ask Postgres, on the claim's own connection, whether this
-        // transaction already holds a row-level lock mode on device_commands
-        // (FOR UPDATE → RowShareLock, UPDATE → RowExclusiveLock).
+        // transaction holds a table-level lock on device_commands in a mode
+        // only a row-locking statement takes (FOR UPDATE → RowShareLock,
+        // UPDATE → RowExclusiveLock; a plain SELECT takes AccessShareLock).
         trace.versionReads++;
         const { sql: rawSql } = await vi.importActual<typeof import('drizzle-orm')>('drizzle-orm');
         const [held] = await liveDb.execute<{ n: number }>(rawSql`SELECT count(*)::int AS n FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
@@ -49,6 +52,24 @@ vi.mock('../../services/permissions', async () => {
         if (held!.n > 0) trace.violations.push('getPermissionAuthorityVersion (Redis) while holding device_commands row locks');
       }
       return actual.getPermissionAuthorityVersion(userId);
+    },
+  };
+});
+
+vi.mock('../../services/topology/telemetryArmFence', async () => {
+  const actual = await vi.importActual<typeof import('../../services/topology/telemetryArmFence')>('../../services/topology/telemetryArmFence');
+  return {
+    ...actual,
+    resolveTopologyPollPermissionVersions: async (...args: Parameters<typeof actual.resolveTopologyPollPermissionVersions>) => {
+      if (trace.failVersionReadWithSqlError) {
+        // #7268: a real statement error inside the prepare half, issued through
+        // the reader it is handed (the prepare savepoint on the claim's own
+        // connection). Unless that savepoint absorbs it with the catch outside,
+        // the claim's transaction is aborted / rethrows when it ends.
+        const { sql: rawSql } = await vi.importActual<typeof import('drizzle-orm')>('drizzle-orm');
+        await (args[0] as unknown as { execute: (q: unknown) => Promise<unknown> }).execute(rawSql`SELECT 1 / 0`);
+      }
+      return actual.resolveTopologyPollPermissionVersions(...args);
     },
   };
 });
@@ -67,6 +88,7 @@ import { seedScheduledMonitoringFixture, seedTopologyMonitoringFixture, system }
 afterAll(() => closeDb());
 beforeEach(() => {
   trace.violations.length = 0; trace.depth = 0; trace.systemDepth = 0; trace.watchContext = false; trace.watchCommandLocks = false; trace.versionReads = 0;
+  trace.failVersionReadWithSqlError = false;
 });
 
 describe('policy scheduler claim window (T4)', () => {
@@ -168,6 +190,35 @@ describe('command claim window (#7268)', () => {
       // The probe ran: the version WAS read inside the claim's DB context, just not under the row locks.
       expect(trace.versionReads).toBeGreaterThan(0);
       expect(trace.violations).toEqual([]);
+    });
+
+    it(`a failing prepare half over ${transport} holds the poll and leaves the claim transaction usable`, async () => {
+      const f = await seedTopologyMonitoringFixture();
+      await f.inOrg(() => armTopologyTelemetry(f.ctx, {
+        targetNodeId: f.switchNodeId, collectorDeviceId: f.deviceId, credentialProfileId: f.profileId, interfaceIds: [f.ifaceA], intervalSeconds: 60, ttlDays: 30,
+      }));
+      expect(await dispatchDueTopologyTelemetryArms({ now: new Date(Date.now() + 1000) })).toMatchObject({ dispatched: 1 });
+      const [command] = await system(() => db.execute<{ id: string }>(
+        sql`SELECT id FROM device_commands WHERE device_id = ${f.deviceId}::uuid AND type = 'topology_interface_poll' AND status = 'pending'`));
+      const agentId = await deviceAgentId(f.deviceId);
+      const claim = () => (transport === 'http'
+        ? system(() => claimPendingCommandsForDevice({ deviceId: f.deviceId, agentId, installIncarnation: 1 }, 10, 'agent')).then((rows) => rows.map((row) => row.id))
+        : claimPendingCommandForDelivery(command!.id).then((outcome) => (outcome.status === 'claimed' ? [outcome.id] : [])));
+      const status = async () => (await system(() => db.execute<{ status: string }>(
+        sql`SELECT status FROM device_commands WHERE id = ${command!.id}::uuid`)))[0]!.status;
+
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      trace.failVersionReadWithSqlError = true;
+      try {
+        expect(await claim()).not.toContain(command!.id);
+      } finally {
+        trace.failVersionReadWithSqlError = false;
+        errorSpy.mockRestore();
+      }
+      // Held, not cancelled: the next claim prepares it and delivers it.
+      expect(await status()).toBe('pending');
+      expect(await claim()).toContain(command!.id);
+      expect(await status()).toBe('sent');
     });
   }
 });

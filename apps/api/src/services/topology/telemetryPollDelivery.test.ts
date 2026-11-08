@@ -113,6 +113,21 @@ describe('topology_interface_poll delivery revalidation (#7268)', () => {
     expect(permissionVersionMock).toHaveBeenCalledWith(USER);
   });
 
+  it('resolves one version per distinct actor across several arms', async () => {
+    const OTHER_USER = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const OTHER_ARM = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const otherActor = { ...authorityActor, actor: { ...authorityActor.actor, user: { ...authorityActor.actor.user, id: OTHER_USER } } };
+    const otherPayload = { ...structuredClone(payload), binding: { ...payload.binding, armId: OTHER_ARM } };
+    permissionVersionMock.mockImplementation(async (userId) => (userId === USER ? STAMPED : null));
+    // Three arms: two frozen to USER, one to OTHER_USER whose version is unavailable.
+    const reader = readerReturning([[{ authorityActor }, { authorityActor }, { authorityActor: otherActor }]]);
+
+    const versions = await resolveTopologyPollPermissionVersions(reader as never, [payload, otherPayload]);
+
+    expect(versions).toEqual(new Map([[USER, STAMPED], [OTHER_USER, null]]));
+    expect(permissionVersionMock).toHaveBeenCalledTimes(2);
+  });
+
   it('reads nothing for payloads that are not polls', async () => {
     const reader = readerReturning([]);
     expect(await resolveTopologyPollPermissionVersions(reader as never, [{ not: 'a poll' }])).toEqual(new Map());

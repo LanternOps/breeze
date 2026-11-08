@@ -401,8 +401,9 @@ export async function claimPendingCommandsForDevice(
   // so the per-frame payload budget that #2399 added here is gone with it.
   const deviceId = caller.deviceId;
   // #7268: revalidation inputs that live outside Postgres (Redis) are read
-  // here, on the caller's connection, BEFORE the claim takes its first
-  // `device_commands` lock (the peripheral cancel below, then the scan).
+  // here, on the caller's connection, BEFORE the claim transaction takes its
+  // first `device_commands` row lock (the peripheral cancel or the parked-org
+  // refused-row cancel when they apply, otherwise the scan).
   const prepared = await prepareCommandRevalidations(db, { deviceId, targetRole, typeAllowlist });
   return db.transaction(async (tx) => {
     const peripheralV2IsClaimable =

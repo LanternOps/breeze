@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { db } from '../db';
 import { deviceCommands } from '../db/schema';
 import { isNetworkIsolationCommand } from './networkIsolation/bypass';
@@ -67,8 +67,8 @@ export type ClaimHoldReason =
   /**
    * #7268: the type's revalidation needs an input resolved before the claim
    * locked any row (`prepareCommandRevalidations`), and this row was not covered
-   * (it arrived after that read, its arm changed hands, or the read failed).
-   * Not a fault: the next claim prepares it.
+   * (it arrived after that read, its arm changed hands, or the type's preparer
+   * threw — logged there). The next claim prepares it.
    */
   | 'revalidation_unprepared';
 
@@ -243,8 +243,14 @@ export type CommandRevalidationRow = {
   createdBy?: string | null;
 };
 
+/**
+ * The holds a revalidation may answer with. Deliberately narrower than
+ * `ClaimHoldReason`: the barrier, suppression and feature-gate holds are the
+ * partitioner's own and carry semantics a revalidation must not borrow.
+ */
+export type RevalidationHoldReason = Extract<ClaimHoldReason, 'revalidation_unprepared'>;
 /** A revalidation's answer that leaves the row `pending` for the next claim instead of cancelling it. */
-export type CommandRevalidationHold = { readonly hold: ClaimHoldReason };
+export type CommandRevalidationHold = { readonly hold: RevalidationHoldReason };
 export type CommandRevalidationResult = ClaimCancelReason | CommandRevalidationHold | null;
 
 /**
@@ -276,11 +282,14 @@ export const commandRevalidations: Record<string, CommandRevalidation> = {};
  * Redis while holding those locks lets every writer of the rows queue behind
  * the wait, each on its own pooled connection — the #6671 pool-wedge shape.
  *
- * Gets the pending rows of its type the claim may pick (read through the
- * claim's own connection, in a savepoint) and returns whatever its in-lock half
- * expects as `prepared`. The in-lock half must treat a row it cannot answer
- * from that value as a hold (`revalidation_unprepared`), never as a reason to
- * read live: rows can arrive between this read and the claim's lock.
+ * Gets the pending rows of its type the claim may pick (read on the claim's own
+ * connection), runs in a savepoint on that connection, and returns whatever its
+ * in-lock half expects as `prepared`. The in-lock half must treat a row it
+ * cannot answer from that value as a hold (`revalidation_unprepared`), never as
+ * a reason to read live: rows can arrive between this read and the claim's
+ * lock. An input that is merely unavailable (Redis down) is the preparer's to
+ * encode in its result; the topology poll encodes it as `null`, which its
+ * in-lock half cancels on, exactly as the live read did.
  */
 export type CommandRevalidationPrepareReader = Pick<Tx, 'select'>;
 export type CommandRevalidationPrepare<P = unknown> = (
@@ -312,23 +321,36 @@ export const REVALIDATION_REQUIRED_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Register a type's delivery revalidation, optionally with a lock-free
- * `prepare` half whose result reaches `revalidate` as `prepared` (undefined when
- * the claim did not prepare this row's type).
+ * Register a type's delivery revalidation. With a lock-free `prepare` half, its
+ * result reaches `revalidate` as `prepared` — undefined when the claim did not
+ * prepare this row's type, which the revalidation must answer with a hold.
+ * `P` excludes undefined/null so "prepared as nothing" cannot read as "not prepared".
  */
-export function registerCommandRevalidation<P = never>(
+export function registerCommandRevalidation(
+  type: string,
+  revalidate: (reader: CommandRevalidationReader, row: CommandRevalidationRow) => Promise<CommandRevalidationResult>,
+): void;
+export function registerCommandRevalidation<P extends {}>(
   type: string,
   revalidate: (
     reader: CommandRevalidationReader,
     row: CommandRevalidationRow,
     prepared: P | undefined,
   ) => Promise<CommandRevalidationResult>,
-  prepare?: CommandRevalidationPrepare<P>,
+  prepare: CommandRevalidationPrepare<P>,
+): void;
+export function registerCommandRevalidation(
+  type: string,
+  revalidate: CommandRevalidation,
+  prepare?: CommandRevalidationPrepare,
 ): void {
   if (commandRevalidations[type]) {
     throw new Error(`A delivery revalidation is already registered for "${type}"`);
   }
-  commandRevalidations[type] = revalidate as CommandRevalidation;
+  // `prepared` reaching `revalidate` is only ever this type's own preparer
+  // result (`revalidateCommandForDelivery` looks it up by `row.type`), which is
+  // what the overloads above tie together.
+  commandRevalidations[type] = revalidate;
   if (prepare) commandRevalidationPreparers[type] = prepare;
 }
 
@@ -338,7 +360,11 @@ export function __resetCommandRevalidationsForTests(): void {
   for (const key of Object.keys(commandRevalidationPreparers)) delete commandRevalidationPreparers[key];
 }
 
-/** Pending rows a single prepare read covers; the claim takes at most 10 per beat. */
+/**
+ * Pending rows of the prepared types one read covers. Every caller claims 10
+ * rows per beat (`limit`), oldest first, so 100 leaves headroom; a row beyond it
+ * is held as unprepared until older ones drain.
+ */
 const PREPARE_ROW_LIMIT = 100;
 const NO_PREPARATION: CommandRevalidationPreparation = new Map();
 
@@ -353,12 +379,13 @@ export type CommandRevalidationPrepareScope =
  * its first `device_commands` lock (both legs in commandDispatch.ts), and pass
  * the result to `partitionClaimable` as `prepared`.
  *
- * The pending-row read is uncaught on purpose: it is the same table and index
- * the claim's own scan reads next, so a fault there would fail the claim
- * anyway. A preparer runs in a savepoint with the catch outside it, so its
- * failure leaves the claim's transaction usable; its type is then simply
- * unprepared and its rows are held (`revalidation_unprepared`) — never
- * delivered on an unchecked authority, never cancelled over a fault.
+ * The pending-row read is uncaught and runs outside any savepoint on purpose:
+ * it reads the same table and index as the claim's own scan, with the same
+ * `pending` and deadline predicates, so a fault there would fail the claim
+ * anyway. A preparer that THROWS (a DB error in its reads) runs in a savepoint
+ * with the catch outside it, so the claim's transaction stays usable; its type
+ * is then unprepared and its rows are held (`revalidation_unprepared`) — never
+ * delivered on an unchecked authority, never cancelled over that fault.
  */
 export async function prepareCommandRevalidations(
   reader: Pick<typeof db, 'select' | 'transaction'>,
@@ -383,6 +410,9 @@ export async function prepareCommandRevalidations(
           ? eq(deviceCommands.id, scope.commandId)
           : and(eq(deviceCommands.deviceId, scope.deviceId), eq(deviceCommands.targetRole, scope.targetRole)),
         eq(deviceCommands.status, 'pending'),
+        // The claim never takes a row past its deadline (the reaper's), so
+        // neither may such rows crowd live ones out of PREPARE_ROW_LIMIT.
+        or(isNull(deviceCommands.deliverBy), gt(deviceCommands.deliverBy, new Date())),
         inArray(deviceCommands.type, types),
       ),
     )

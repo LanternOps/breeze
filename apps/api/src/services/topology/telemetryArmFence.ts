@@ -74,7 +74,9 @@ export async function currentArmInterfaces(reader: Reader, scope: TopologyScope,
 // row must still be active at the same epochs, and the arm/credential/interface
 // state must be exactly what was armed. The permission SET is re-derived at
 // enqueue, where no lock is held; delivery and acceptance additionally require
-// the version it was verified at to be current (`armPermissionsStillWitnessed`).
+// the version it was verified at to be current (`permissionVersionStillWitnessed`:
+// delivery against versions resolved before the claim locks, #7268; acceptance
+// via `armPermissionsStillWitnessed`).
 // ---------------------------------------------------------------------------
 async function actorStillCurrent(reader: Reader, record: unknown): Promise<boolean> {
   const parsed = topologyArmAuthorityRecordSchema.safeParse(record);
@@ -145,8 +147,9 @@ export async function armPermissionsStillWitnessed(arm: Pick<ArmRow, 'authorityA
  * The in-lock half then compares against this map and never waits on Redis.
  * Same read the in-lock check used to make, moved earlier: Redis is not
  * transactional with Postgres, so a bump landing just after it was never
- * fenced by this claim either way. A `null` value (Redis unavailable) still
- * fails closed. Reads arms by id only; the in-lock fence re-reads each arm with
+ * fenced by this claim either way. A `null` value (Redis unavailable) is kept,
+ * and the in-lock half cancels on it (`scope_changed`), exactly as it did when
+ * it read live. Reads arms by id only; the in-lock fence re-reads each arm with
  * its full scope, and an actor resolved here for an arm it then refuses is unused.
  */
 export async function resolveTopologyPollPermissionVersions(reader: Reader, payloads: ReadonlyArray<unknown>): Promise<ReadonlyMap<string, string | null>> {
