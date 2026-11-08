@@ -306,8 +306,9 @@ func downloadVerifyManifest(ctx, runCtx context.Context, provider providers.Back
 	if err := ctx.Err(); err != nil {
 		return nil, nil, "", "", err
 	}
-	// Streamed rather than read whole (#11234). Verify checks every entry,
-	// so all of them are kept; what is saved is the encoded copy.
+	// Streamed rather than read whole (#11234). Every entry is kept because
+	// verify checks each one, so the saving is the second, encoded copy of
+	// the manifest.
 	decoded, decodeErr := decodeSnapshotManifestFile(tempManifestPath, nil)
 	if decodeErr != nil {
 		return nil, nil, fmt.Sprintf("invalid manifest JSON: %v", decodeErr), "", nil

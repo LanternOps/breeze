@@ -500,9 +500,10 @@ func downloadVerifiedManifest(ctx context.Context, provider providers.BackupProv
 	}
 	defer func() { _ = os.Remove(tmpPath) }()
 
-	// Decoded only now, after the bytes passed the check above, and streamed
-	// with the selection applied per entry: memory follows what the restore
-	// selected, not the size of the snapshot (#11234).
+	// Decoded only now, after the attested-mode check above (none outside
+	// attested mode), and streamed with the selection applied per entry:
+	// memory follows what the restore selected, not the size of the snapshot
+	// (#11234).
 	snapshot, err := decodeSnapshotManifestFile(tmpPath, restoreSelection(selectedPaths))
 	if err != nil {
 		return nil, nil, fmt.Errorf("decode manifest: %w", err)

@@ -10,8 +10,8 @@ import (
 )
 
 // decodeSnapshotManifestFile decodes the manifest at path with
-// decodeSnapshotManifest. The caller verifies the file (attested size and
-// SHA-256) before calling this; nothing here re-checks it.
+// decodeSnapshotManifest. In attested mode the caller has already checked the
+// file against its attested size and SHA-256; nothing here re-checks it.
 func decodeSnapshotManifestFile(path string, keep func(*SnapshotFile) bool) (*Snapshot, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -22,15 +22,20 @@ func decodeSnapshotManifestFile(path string, keep func(*SnapshotFile) bool) (*Sn
 }
 
 // decodeSnapshotManifest decodes a snapshot manifest from r without holding
-// its encoded form in memory (#11234): the "files" array is read one entry at
-// a time, and when keep is non-nil only the entries it accepts are retained,
-// so a restore of a few selected paths from a million-entry snapshot holds
-// those few entries, not the whole list. A nil keep retains every entry.
+// the encoded file list in memory (#11234): the "files" array is read one
+// entry at a time, and when keep is non-nil only the entries it accepts are
+// retained, so a restore of a few selected paths from a million-entry
+// snapshot holds those few entries, not the whole list. A nil keep retains
+// every entry.
 //
-// The result is what json.Unmarshal into a Snapshot produces for the same
-// bytes (filtered by keep), and it fails on the same inputs; the parity test
-// pins this. A json.Decoder's Decode of the whole object would not help: it
-// buffers a complete top-level value before decoding it.
+// The result matches json.Unmarshal into a Snapshot for the same bytes
+// (filtered by keep), and it fails on the same inputs, with one exception: a
+// repeated "files" key restarts the list with fresh entries, where
+// json.Unmarshal decodes the repeat into the earlier entries in place and
+// keeps their fields (see decodeManifestFiles; the agent never writes one).
+// The parity test pins the inputs it lists. A json.Decoder's Decode of the
+// whole object would not help: it buffers a complete top-level value before
+// decoding it.
 func decodeSnapshotManifest(r io.Reader, keep func(*SnapshotFile) bool) (*Snapshot, error) {
 	dec := json.NewDecoder(r)
 	var snapshot Snapshot
@@ -94,8 +99,8 @@ func decodeManifestObject(dec *json.Decoder, snapshot *Snapshot, keep func(*Snap
 // snapshot. The value is re-wrapped as a one-member object and handed to
 // json.Unmarshal, so every other Snapshot field — present or added later —
 // decodes exactly as it always has (tags, case folding, unknown keys ignored)
-// without this file listing them. These members are small: the manifest's
-// size is in its file list.
+// without this file listing them. Each member is buffered whole; they are
+// small next to the file list.
 func decodeManifestMember(dec *json.Decoder, snapshot *Snapshot, key string) error {
 	var value json.RawMessage
 	if err := dec.Decode(&value); err != nil {
@@ -115,9 +120,10 @@ func decodeManifestMember(dec *json.Decoder, snapshot *Snapshot, key string) err
 }
 
 // decodeManifestFiles decodes the "files" value one entry at a time,
-// retaining the entries keep accepts. Like json.Unmarshal it replaces any
-// earlier "files" value, leaves Files nil for null, and empty (not nil) for
-// an empty array.
+// retaining the entries keep accepts. A repeated "files" key restarts the
+// list with fresh entries; unlike json.Unmarshal it does not decode the
+// repeat into the earlier entries in place. As with json.Unmarshal, null
+// leaves Files nil and an empty array leaves it empty (not nil).
 func decodeManifestFiles(dec *json.Decoder, snapshot *Snapshot, keep func(*SnapshotFile) bool) error {
 	tok, err := dec.Token()
 	if err != nil {
@@ -147,11 +153,11 @@ func decodeManifestFiles(dec *json.Decoder, snapshot *Snapshot, keep func(*Snaps
 }
 
 // manifestTokenError maps a decoder hitting the end of the input inside the
-// manifest to io.ErrUnexpectedEOF: a bare io.EOF there would read as a clean
-// end of stream.
+// manifest to a truncation error wrapping io.ErrUnexpectedEOF: a bare io.EOF
+// there would read as a clean end of stream.
 func manifestTokenError(err error) error {
 	if errors.Is(err, io.EOF) {
-		return io.ErrUnexpectedEOF
+		return fmt.Errorf("manifest truncated: %w", io.ErrUnexpectedEOF)
 	}
 	return err
 }
