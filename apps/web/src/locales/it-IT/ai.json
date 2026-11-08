@@ -896,6 +896,7 @@
     "post": {
       "brief": "Riepilogo del mattino",
       "nudge": "Promemoria",
+      "nudgeResolved": "Risolto",
       "digest": "Riepilogo periodico",
       "checkIn": "Controllo programmato",
       "summary": "Sintesi",

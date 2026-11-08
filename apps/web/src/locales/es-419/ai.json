@@ -896,6 +896,7 @@
     "post": {
       "brief": "Resumen matutino",
       "nudge": "Aviso",
+      "nudgeResolved": "Resuelto",
       "digest": "Compendio",
       "checkIn": "Revisión programada",
       "summary": "Resumen",
