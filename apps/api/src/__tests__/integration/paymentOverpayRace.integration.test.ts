@@ -15,6 +15,7 @@ import { invoiceStripePayments } from '../../db/schema/stripePayments';
 import * as svc from '../../services/invoiceService';
 import { recordStripePayment } from '../../services/stripeReconcile';
 import type { InvoiceActor } from '../../services/invoiceTypes';
+import { emitInvoiceEvent } from '../../services/invoiceEvents';
 import { getTestDb } from './setup';
 
 const RUN = !!process.env.DATABASE_URL;
@@ -381,17 +382,17 @@ describe.runIf(RUN)('manual payment idempotency (#3803)', () => {
     const key = newKey();
     await recordKeyed(f, invoiceId, '40.00', key, { reference: 'CHK-1001' });
 
-    for (const changed of [
-      { amount: '45.00' },
-      { method: 'ach' },
-      { receivedAt: '2026-08-22' },
-      { reference: 'CHK-1002' },
-      { reference: undefined },
-      { note: 'second try' },
-    ]) {
+    for (const [changed, field] of [
+      [{ amount: '45.00' }, 'amount'],
+      [{ method: 'ach' }, 'method'],
+      [{ receivedAt: '2026-08-22' }, 'receivedAt'],
+      [{ reference: 'CHK-1002' }, 'reference'],
+      [{ reference: undefined }, 'reference'],
+      [{ note: 'second try' }, 'note'],
+    ] as const) {
       const { amount = '40.00', ...extra } = changed as { amount?: string };
       await expect(recordKeyed(f, invoiceId, amount, key, { reference: 'CHK-1001', ...extra }))
-        .rejects.toMatchObject({ status: 409, code: 'IDEMPOTENCY_KEY_REUSED' });
+        .rejects.toMatchObject({ status: 409, code: 'IDEMPOTENCY_KEY_REUSED', details: { differingFields: [field] } });
     }
 
     // The identical request is still a clean replay.
@@ -412,6 +413,65 @@ describe.runIf(RUN)('manual payment idempotency (#3803)', () => {
     expect((await recordKeyed(f, second, '40.00', key)).replayed).toBe(false);
     expect((await readInvoice(first)).pays).toHaveLength(1);
     expect((await readInvoice(second)).pays).toHaveLength(1);
+  }, 30_000);
+
+  it('retries of a full payoff are replays, not OVERPAYMENT against the zero balance it left', async () => {
+    // The lookup must run before the amount checks on both paths: the
+    // concurrent retry reaches the in-lock lookup, the later one the pre-check.
+    const f = await seedFixture('USD');
+    const invoiceId = await forgeSentInvoice(f, 'USD', '100.00');
+    const key = newKey();
+
+    const settled = await raceUnderHeldLock(
+      async (tx) => { await tx`SELECT id FROM public.invoices WHERE id = ${invoiceId} FOR UPDATE`; },
+      [
+        () => recordKeyed(f, invoiceId, '100.00', key),
+        () => recordKeyed(f, invoiceId, '100.00', key),
+      ],
+    );
+    expect(settled.map(fulfilledValue).map((r) => r.replayed).sort()).toEqual([false, true]);
+    expect((await recordKeyed(f, invoiceId, '100.00', key)).replayed).toBe(true);
+
+    const { inv, pays } = await readInvoice(invoiceId);
+    expect(pays).toHaveLength(1);
+    expect(inv.balance).toBe('0.00');
+    expect(inv.status).toBe('paid');
+  }, 30_000);
+
+  it('a replay emits no second payment.recorded event', async () => {
+    const f = await seedFixture('USD');
+    const invoiceId = await forgeSentInvoice(f, 'USD', '100.00');
+    const key = newKey();
+    const recordedEvents = () => vi.mocked(emitInvoiceEvent).mock.calls
+      .filter(([e]) => e.type === 'payment.recorded' && e.invoiceId === invoiceId);
+
+    await recordKeyed(f, invoiceId, '40.00', key);
+    await recordKeyed(f, invoiceId, '40.00', key);
+    expect(recordedEvents()).toHaveLength(1);
+  }, 30_000);
+
+  it('a replay is refused to an actor without access to the invoice, on both lookup paths', async () => {
+    // RLS lets this partner-scope context read the invoice; the app-layer site
+    // allowlist does not. A replay returns the invoice and the payment, so it
+    // must answer SITE_DENIED exactly as a first recording would.
+    const f = await seedFixture('USD');
+    const invoiceId = await forgeSentInvoice(f, 'USD', '100.00');
+    const key = newKey();
+    const restricted: InvoiceActor = { ...actor(f), allowedSiteIds: [crypto.randomUUID()] };
+    const recordAsRestricted = () => withDbAccessContext(ctx(f), () =>
+      svc.recordPayment(invoiceId, { amount: '40.00', method: 'check', receivedAt: '2026-08-21', idempotencyKey: key } as never, restricted));
+
+    // In-lock path: both retries pass the pre-check before either commits.
+    const settled = await raceUnderHeldLock(
+      async (tx) => { await tx`SELECT id FROM public.invoices WHERE id = ${invoiceId} FOR UPDATE`; },
+      [() => recordKeyed(f, invoiceId, '40.00', key), recordAsRestricted],
+    );
+    expect(settled[0]!.status).toBe('fulfilled');
+    expect(errorCode(settled[1]!)).toBe('SITE_DENIED');
+
+    // Pre-check path: the payment is committed, so the unlocked lookup finds it.
+    await expect(recordAsRestricted()).rejects.toMatchObject({ status: 403, code: 'SITE_DENIED' });
+    expect((await readInvoice(invoiceId)).pays).toHaveLength(1);
   }, 30_000);
 
   it('a late replay does not revoke a pay link minted after the original payment', async () => {
@@ -445,12 +505,11 @@ describe.runIf(RUN)('manual payment idempotency (#3803)', () => {
     expect((await readInvoice(invoiceId)).pays).toHaveLength(1);
   }, 30_000);
 
-  it('a keyed row from a writer that skips the explicit invoice lock is still seen by the in-lock lookup', async () => {
-    // Why recordPayment needs no unique-violation handling: any insert into
-    // invoice_payments takes FOR KEY SHARE on its invoice through the FK, which
-    // conflicts with recordPayment's FOR UPDATE. So even a writer that never
-    // locks the invoice explicitly cannot slip a same-key row between the
-    // lookup and the insert: recordPayment waits for it, then sees it.
+  it('a keyed row already inserted when recordPayment takes the lock is seen by the in-lock lookup', async () => {
+    // The holder's insert has finished (its FK check holds FOR KEY SHARE on the
+    // invoice) but not committed. recordPayment's unlocked pre-check cannot see
+    // it, so the replay must come from the lookup it runs once FOR UPDATE is
+    // granted, after the holder commits.
     const f = await seedFixture('USD');
     const invoiceId = await forgeSentInvoice(f, 'USD', '100.00');
     const key = newKey();

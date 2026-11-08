@@ -38,7 +38,8 @@ invoicePaymentRoutes.post('/:id/payments', scopes, sendPerm, zValidator('param',
   }
   try {
     const { invoice, audit, replayed } = await recordPayment(c.req.valid('param').id, { ...body, idempotencyKey }, invoiceActorFrom(c));
-    // A replay recorded nothing: the original request already wrote its audit entry.
+    // A replay recorded nothing, so it writes no audit entry: the request that
+    // recorded the payment wrote that one.
     if (replayed) {
       c.header('Idempotent-Replayed', 'true');
       return c.json({ data: invoice });

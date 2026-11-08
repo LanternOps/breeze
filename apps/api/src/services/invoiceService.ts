@@ -2099,10 +2099,9 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
     // Authoritative idempotency lookup (#3803), under the lock and before any
     // check that the original payment itself changed (a full payoff makes the
     // balance 0, so a retry must not reach OVERPAYMENT). A retry that raced the
-    // original waited on this lock and now sees its committed row. No writer
-    // can slip a same-key row in between this read and the insert: an insert
-    // takes FOR KEY SHARE on the invoice through the FK, which waits on our
-    // FOR UPDATE, so the unique index is a backstop this path never trips.
+    // original waited on this lock and now sees its committed row. recordPayment
+    // is the only writer of keyed rows and holds this lock across the lookup and
+    // the insert, so the unique index is a backstop this path should never trip.
     if (idempotencyKey) {
       const prior = await findPaymentByIdempotencyKey(tx, invoiceId, idempotencyKey);
       if (prior) {

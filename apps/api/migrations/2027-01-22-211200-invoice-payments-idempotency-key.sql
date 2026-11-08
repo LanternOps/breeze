@@ -10,10 +10,9 @@
 -- recorded instead of inserting another.
 --
 -- Nullable, no backfill: existing rows and callers that send no key keep the
--- current behaviour. The partial unique index is the integrity backstop. It is
--- not reachable from a concurrent writer in practice: any insert here takes
--- FOR KEY SHARE on the invoice through the FK, which waits on recordPayment's
--- FOR UPDATE, so the in-lock lookup always sees a same-key row.
+-- current behaviour. The partial unique index is the integrity backstop:
+-- recordPayment is the only writer of keyed rows and holds the invoice lock
+-- across its lookup and insert, so it should never trip.
 --
 -- No rows are written, so no system-scope election is needed. The table is
 -- small (one row per recorded payment), so a plain CREATE INDEX inside the
