@@ -332,14 +332,16 @@ describe("Task 2 — key-ID-aware verification rejects an official-ID row not ac
 });
 
 // Fix-round-1 controller correction (#3836): an earlier version of
-// canonicalReleaseAssetName returned a non-null (WRONG) name for
-// component="helper"/platform="macos", which would have WON over the
-// correct URL-basename fallback and 409'd every real, currently-working
-// BINARY_SOURCE=github helper row. This suite exercises the REAL
-// syncFromGitHub helper registration path (HELPER_TARGETS,
-// services/binarySync.ts ~line 59) exactly the way it registers a helper row
-// in production, then feeds that row into the REAL validateReleaseManifest —
-// pinning that GitHub-mode helper rows keep working byte-for-byte.
+// canonicalReleaseAssetName returned the WRONG name
+// ("breeze-desktop-helper-darwin-<arch>") for component="helper"/
+// platform="macos", which won over the correct URL-basename fallback and
+// would have 409'd every real BINARY_SOURCE=github helper row. Since #11298
+// it resolves helper through HELPER_TARGETS (services/helperInstallerAssets.ts)
+// — the same table this GitHub path registers by, so the name equals the URL
+// basename here. This suite exercises the REAL syncFromGitHub helper
+// registration path exactly the way it registers a helper row in production,
+// then feeds that row into the REAL validateReleaseManifest — pinning that
+// GitHub-mode helper rows keep working byte-for-byte.
 describe("D1 fix-round-1 — GitHub-mode helper registration stays byte-for-byte unchanged (#3836)", () => {
   const originalEnv = process.env;
 
@@ -624,6 +626,13 @@ describe("#11297 / #11298 — local-mode backup and helper rows survive validate
         new RegExp(`/api/v1/agents/download/helper/[a-z]+/${arch}$`),
       );
       await expect(validateRow(row!)).resolves.toEqual({ ok: true });
+
+      // Resolving the name by table must not weaken verification: the same
+      // row with a checksum the manifest does not vouch for is still refused.
+      await expect(validateRow({ ...row!, checksum: "d".repeat(64) })).resolves.toEqual({
+        ok: false,
+        reason: "release_manifest_metadata_mismatch",
+      });
     },
   );
 });

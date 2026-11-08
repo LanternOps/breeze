@@ -1510,9 +1510,23 @@ export async function syncBinaries(): Promise<void> {
               `${serverUrl}/api/v1/agents/download/backup/${osParam}/${arch}`,
           });
         }
-        console.log(
-          `[binarySync] Registered ${backupBinaries.length} backup binaries (version: ${version})`,
-        );
+        // Report what was actually registered, per tier — a manifest-refused
+        // backup asset is dropped from both, so the scanned count can overstate.
+        if (coveredBackupFilenames.size > 0) {
+          console.log(
+            `[binarySync] Registered ${coveredBackupFilenames.size} backup binaries from the official release manifest (version: ${version})`,
+          );
+        }
+        if (remainingBackupBinaries.length > 0) {
+          console.log(
+            `[binarySync] Registered ${remainingBackupBinaries.length} backup binaries via per-deployment re-signing (version: ${version})`,
+          );
+        }
+        if (coveredBackupFilenames.size === 0 && remainingBackupBinaries.length === 0) {
+          console.warn(
+            "[binarySync] Every local backup binary was refused by the official release manifest — breeze-backup auto-update unavailable on this deploy",
+          );
+        }
       } catch (err) {
         console.error(
           `[binarySync] Failed to register local backup binaries — breeze-backup auto-update unavailable: ${err instanceof Error ? err.message : err}`,

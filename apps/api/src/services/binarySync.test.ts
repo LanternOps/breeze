@@ -2088,6 +2088,34 @@ describe("binarySync", () => {
         expect(manifestSigningMocks.signManifest).toHaveBeenCalledTimes(1);
       });
 
+      it("splits a mixed backup set: the covered arch registers officially, the uncovered arch is re-signed, each exactly once", async () => {
+        setLocalScanEnv();
+        fsMocks.readdir.mockResolvedValue([
+          "breeze-agent-linux-amd64",
+          "breeze-backup-linux-amd64",
+          "breeze-backup-linux-arm64",
+        ] as any);
+        const checksum = localAssetChecksum();
+        const official = makeOfficialLocalManifest([
+          { name: "breeze-agent-linux-amd64", sha256: checksum, size: 18, edition: "self-host" },
+          { name: "breeze-backup-linux-amd64", sha256: checksum, size: 18, edition: "self-host" },
+        ]);
+        process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = official.publicKey;
+        mockReadFileWithOfficialManifest("0.65.9", official.manifest, official.signature);
+
+        await syncBinaries();
+
+        const rows = backupRows();
+        expect(rows).toHaveLength(2);
+        expect(rows.find((r) => r.architecture === "amd64")).toMatchObject({
+          signingKeyId: "release-artifact-manifest-ed25519",
+        });
+        expect(rows.find((r) => r.architecture === "arm64")).toMatchObject({
+          signingKeyId: "deploy-test-aaaaaaaa",
+        });
+        expect(manifestSigningMocks.signManifest).toHaveBeenCalledTimes(1);
+      });
+
       it("excludes a backup binary the manifest refused from BOTH tiers (fail closed, D4 #3836)", async () => {
         setLocalScanEnv();
         scanAgentAndBackup();
@@ -2100,11 +2128,19 @@ describe("binarySync", () => {
         process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = official.publicKey;
         mockReadFileWithOfficialManifest("0.65.9", official.manifest, official.signature);
         const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+        const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
         try {
           await syncBinaries();
 
           expect(backupRows()).toHaveLength(0);
+          // The operator is told backup auto-update is unavailable, not that
+          // the scanned binary "registered".
+          expect(
+            warnSpy.mock.calls.some((args) =>
+              String(args[0] ?? "").includes("Every local backup binary was refused"),
+            ),
+          ).toBe(true);
           expect(manifestSigningMocks.signManifest).not.toHaveBeenCalled();
           expect(
             errorSpy.mock.calls.some((args) =>
@@ -2114,6 +2150,7 @@ describe("binarySync", () => {
           ).toBe(true);
         } finally {
           errorSpy.mockRestore();
+          warnSpy.mockRestore();
         }
       });
     });
