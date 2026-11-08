@@ -26,7 +26,8 @@ vi.mock('./redis', () => ({ getRedis: () => null, getRedisConnection: () => null
 
 import { aiTools } from './aiTools';
 import {
-  canManagePartnerWidePolicies, PARTNER_SCOPE_ONLY_TOOLS, PARTNER_WIDE_ONLY_TOOLS, partnerScopeGateRefusesTool, partnerWideGateRefusesTool,
+  canManagePartnerWidePolicies, PARTNER_SCOPE_ONLY_TOOLS, PARTNER_WIDE_ONLY_TOOLS, partnerScopeGateRefusesTool,
+  partnerWideGateRefusesCall, partnerWideGateRefusesTool,
 } from './partnerWideAccess';
 import type { AuthContext } from '../middleware/auth';
 
@@ -181,5 +182,20 @@ describe('PARTNER_SCOPE_ONLY_TOOLS matches the handlers (#11287)', () => {
     expect(partnerScopeGateRefusesTool(name, auth('partner'))).toBe(false);
     expect(partnerScopeGateRefusesTool(name, { ...auth('partner'), scope: 'system' } as AuthContext)).toBe(false);
     expect(partnerScopeGateRefusesTool('list_sites', auth('organization'))).toBe(false);
+  });
+});
+
+// #11287: a mixed tool's partner-wide action named by its input (a partner
+// baseline create) is refused at MCP filing; its other actions are not.
+describe('partnerWideGateRefusesCall (#11287)', () => {
+  const baseline = { action: 'create', ownerScope: 'partner' };
+  it('refuses a partner baseline create without full partner access, and nothing else', () => {
+    expect(partnerWideGateRefusesCall('manage_ai_agent_schedules', baseline, auth('partner'))).toBe(true);
+    expect(partnerWideGateRefusesCall('manage_ai_agent_schedules', baseline, auth('organization'))).toBe(true);
+    expect(partnerWideGateRefusesCall('manage_ai_agent_schedules', baseline, auth('partner', { partnerOrgAccess: 'all' }))).toBe(false);
+    expect(partnerWideGateRefusesCall('manage_ai_agent_schedules', baseline, { ...auth('partner'), scope: 'system' } as AuthContext)).toBe(false);
+    expect(partnerWideGateRefusesCall('manage_ai_agent_schedules', { action: 'create', ownerScope: 'organization' }, auth('partner'))).toBe(false);
+    expect(partnerWideGateRefusesCall('manage_ai_agent_schedules', { action: 'delete', scheduleId: ID }, auth('partner'))).toBe(false);
+    expect(partnerWideGateRefusesCall('list_sites', baseline, auth('partner'))).toBe(false);
   });
 });

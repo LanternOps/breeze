@@ -68,6 +68,8 @@ const TEST_TOOLS = [
   { name: 'list_portal_users', tier: 1, schema: { type: 'object', properties: {} } },
   { name: 'get_account_readiness', tier: 1, schema: { type: 'object', properties: {} } },
   { name: 'manage_org_portal_settings', tier: 3, schema: { type: 'object', properties: { action: { type: 'string', enum: ['get', 'update'] } } } },
+  // #11287: a mixed tool whose partner-wide action is visible in the input.
+  { name: 'manage_ai_agent_schedules', tier: 3, schema: { type: 'object', properties: { action: { type: 'string', enum: ['create', 'update', 'delete'] }, ownerScope: { type: 'string', enum: ['partner', 'organization'] } } } },
 ];
 const intentMocks = vi.hoisted(() => ({ createMcpActionIntent: vi.fn() }));
 vi.mock('../services/mcpIntentCreation', () => ({
@@ -337,5 +339,40 @@ describe('#11287 partner-scope tools over MCP for an org-scoped key', () => {
     expect(parsed.code).toBe('PARTNER_SCOPE_REQUIRED');
     expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
     expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+});
+
+// #11287: a partner baseline create (manage_ai_agent_schedules, ownerScope
+// partner) is refused before an approval card is filed: its release runs under
+// the same MCP credential, which never carries full partner org access, so it
+// could only end PARTNER_WIDE_WRITE_DENIED. The tool's other actions still file.
+describe('#11287 partner-wide action of a mixed tool over MCP', () => {
+  beforeEach(() => {
+    vi.stubEnv('MCP_TIER3_INTENTS_ENABLED', 'true');
+    testState.apiKey!.scopes = ['ai:read', 'ai:write', 'ai:execute'];
+    intentMocks.createMcpActionIntent.mockRejectedValue(new Error('stop after filing'));
+    // An MFA-satisfied principal (the issue's OAuth token), so the MFA gate on create does not refuse first.
+    testState.authPatch = { token: { mfa: true } };
+  });
+
+  it('control: an organization override create reaches intent filing', async () => {
+    await rpc('tools/call', { name: 'manage_ai_agent_schedules', arguments: { action: 'create', ownerScope: 'organization' } });
+    expect(intentMocks.createMcpActionIntent).toHaveBeenCalledTimes(1);
+  });
+
+  it('a partner baseline create is refused before an intent is filed, with the one MCP wording', async () => {
+    const { result, parsed } = await callText('manage_ai_agent_schedules', { action: 'create', ownerScope: 'partner' });
+    expect(result.isError).toBe(true);
+    expect(parsed).toEqual({ error: PARTNER_WIDE_UNAVAILABLE_OVER_MCP_MESSAGE, code: 'ACCESS_DENIED' });
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+    // The tool stays listed: its organization actions work.
+    expect(await listNames()).toContain('manage_ai_agent_schedules');
+  });
+
+  it('a principal carrying partnerOrgAccess "all" still files it', async () => {
+    testState.authPatch = { token: { mfa: true }, partnerOrgAccess: 'all' };
+    await rpc('tools/call', { name: 'manage_ai_agent_schedules', arguments: { action: 'create', ownerScope: 'partner' } });
+    expect(intentMocks.createMcpActionIntent).toHaveBeenCalledTimes(1);
   });
 });

@@ -77,6 +77,7 @@ import {
   canManagePartnerWidePolicies,
   PARTNER_SCOPE_REQUIRED_OVER_MCP_MESSAGE,
   partnerScopeGateRefusesTool,
+  partnerWideGateRefusesCall,
   partnerWideGateRefusesTool,
   PARTNER_WIDE_UNAVAILABLE_OVER_MCP_MESSAGE,
 } from '../services/partnerWideAccess';
@@ -2293,7 +2294,9 @@ async function handleToolsCall(
   // access is not listed for this caller (isToolListedForCaller). Refuse it here
   // with the one MCP wording, before any intent is filed: an mcp_api intent is
   // released under buildAuthFromApiKey again, so it would be refused there too.
-  if (partnerWideGateRefusesTool(toolName, auth)) {
+  // #11287: and a mixed tool's call whose partner-wide target is in its input
+  // (a partner baseline create), before its approval card is filed.
+  if (partnerWideGateRefusesTool(toolName, auth) || partnerWideGateRefusesCall(toolName, toolInput, auth)) {
     return jsonRpcResult(id, {
       content: [{ type: 'text', text: JSON.stringify(MCP_PARTNER_WIDE_UNAVAILABLE_ERROR) }],
       isError: true,

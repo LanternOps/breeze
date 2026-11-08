@@ -91,6 +91,30 @@ export function partnerWideGateRefusesTool(
 }
 
 /**
+ * Actions of mixed tools (some actions work without full partner org access)
+ * whose partner-wide target is visible in the call's own input (#11287). Over
+ * MCP such a call is refused before an approval card is filed: the intent is
+ * released under the same credential, which never carries partnerOrgAccess, so
+ * the handler's partner-wide gate would refuse it after a person approved it.
+ * An action that names an existing row (update or delete by id) needs a lookup
+ * and is left to the handler; its refusal is rewritten to the MCP wording.
+ */
+const PARTNER_WIDE_INPUT_ACTIONS: ReadonlyMap<string, (input: Record<string, unknown>) => boolean> = new Map([
+  // createSchedule → assertAgentWriteAllowed refuses a baseline without canManagePartnerWidePolicies.
+  ['manage_ai_agent_schedules', (input) => input.action === 'create' && input.ownerScope === 'partner'],
+]);
+
+/** True when this call targets partner-wide state (see {@link PARTNER_WIDE_INPUT_ACTIONS}) and the caller can never get past that gate. */
+export function partnerWideGateRefusesCall(
+  toolName: string,
+  input: Record<string, unknown>,
+  auth: Pick<AuthContext, 'scope' | 'partnerOrgAccess'>,
+): boolean {
+  const targetsPartnerWide = PARTNER_WIDE_INPUT_ACTIONS.get(toolName);
+  return !!targetsPartnerWide && targetsPartnerWide(input) && !canManagePartnerWidePolicies(auth);
+}
+
+/**
  * Tools whose handler refuses an organization-scoped caller on every action
  * with `PARTNER_SCOPE_REQUIRED`, mirroring REST `requireScope('partner',
  * 'system')` (#11287). MCP tools/list does not offer them to an org-scoped
