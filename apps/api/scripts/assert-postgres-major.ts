@@ -7,48 +7,27 @@
  *
  *   DATABASE_URL=postgresql://... pnpm --filter @breeze/api exec tsx scripts/assert-postgres-major.ts 18
  *
- * Uses the API's own driver, so it needs no host psql. Prints the server
- * version only — never the connection string.
- *
- * Exit codes: 0 match; 1 a different major; 2 bad usage or no connection.
+ * Uses the API's own driver, so it needs no host psql. Exit codes and output
+ * rules: runAssertPostgresMajor in ./assert-postgres-major.lib.ts.
  */
 import postgres from 'postgres';
-import { checkPostgresMajor, parseExpectedMajor } from './assert-postgres-major.lib';
+import { runAssertPostgresMajor, type VersionRow } from './assert-postgres-major.lib';
 
-const LOG = '[assert-postgres-major]';
-
-async function main(): Promise<number> {
-  let expected: number;
-  try {
-    expected = parseExpectedMajor(process.argv.slice(2));
-  } catch (err) {
-    console.error(`${LOG} ${(err as Error).message}`);
-    return 2;
-  }
-  const url = process.env.DATABASE_URL;
-  if (!url) {
-    console.error(`${LOG} DATABASE_URL is not set`);
-    return 2;
-  }
+async function readVersion(url: string): Promise<VersionRow | undefined> {
   const sql = postgres(url, { max: 1, onnotice: () => {} });
   try {
-    const [row] = await sql<{ server_version_num: string; server_version: string }[]>`
+    const [row] = await sql<VersionRow[]>`
       SELECT current_setting('server_version_num') AS server_version_num,
              current_setting('server_version') AS server_version`;
-    if (!row) throw new Error('version query returned no row');
-    const result = checkPostgresMajor({ expected, versionNum: row.server_version_num, version: row.server_version });
-    console[result.ok ? 'log' : 'error'](`${LOG} ${result.message}`);
-    return result.ok ? 0 : 1;
-  } catch (err) {
-    // A driver or socket error (it has a code) can carry connection details, so
-    // print its class and code only; our own parse errors are safe to print.
-    const e = err as { name?: string; code?: string; message?: string };
-    const detail = e.code ? `${e.name ?? 'Error'} (${e.code})` : (e.message ?? String(err));
-    console.error(`${LOG} could not read the server version: ${detail}`);
-    return 2;
+    return row;
   } finally {
-    await sql.end({ timeout: 5 });
+    await sql.end({ timeout: 5 }).catch(() => {});
   }
 }
 
-main().then((code) => process.exit(code));
+runAssertPostgresMajor({
+  argv: process.argv.slice(2),
+  env: process.env,
+  readVersion,
+  out: { log: (m) => console.log(m), error: (m) => console.error(m) },
+}).then((code) => process.exit(code));

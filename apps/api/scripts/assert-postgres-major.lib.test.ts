@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { checkPostgresMajor, parseExpectedMajor, serverMajorFromVersionNum } from './assert-postgres-major.lib';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  checkPostgresMajor,
+  parseExpectedMajor,
+  runAssertPostgresMajor,
+  serverMajorFromVersionNum,
+} from './assert-postgres-major.lib';
 
 describe('serverMajorFromVersionNum', () => {
   it('reads the major from server_version_num (10+ numbering: MMmmpp)', () => {
@@ -39,5 +44,44 @@ describe('checkPostgresMajor', () => {
     const r = checkPostgresMajor({ expected: 18, versionNum: '160013', version: '16.13' });
     expect(r.ok).toBe(false);
     expect(r.message).toMatch(/expected major 18.*16\.13.*major 16/);
+  });
+});
+
+describe('runAssertPostgresMajor (the exit code CI acts on)', () => {
+  const URL = 'postgresql://user:secret-pw@db.example.invalid:5434/breeze';
+  const capture = () => {
+    const lines: string[] = [];
+    return { lines, out: { log: (m: string) => lines.push(m), error: (m: string) => lines.push(m) } };
+  };
+  const version = (num: string, text: string) => async () => ({ server_version_num: num, server_version: text });
+
+  it('exits 0 only when the server major matches', async () => {
+    const c = capture();
+    expect(await runAssertPostgresMajor({ argv: ['18'], env: { DATABASE_URL: URL }, readVersion: version('180006', '18.6'), out: c.out })).toBe(0);
+    expect(c.lines.join('\n')).toMatch(/18\.6 \(major 18\), as expected/);
+  });
+
+  it('exits 1 when the leg reached another major', async () => {
+    const c = capture();
+    expect(await runAssertPostgresMajor({ argv: ['18'], env: { DATABASE_URL: URL }, readVersion: version('160013', '16.13'), out: c.out })).toBe(1);
+  });
+
+  it('exits 2 on bad usage or a missing DATABASE_URL, without connecting', async () => {
+    const readVersion = vi.fn();
+    const cases: Array<[string[], Record<string, string>]> = [[[], { DATABASE_URL: URL }], [['eighteen'], { DATABASE_URL: URL }], [['18'], {}]];
+    for (const [argv, env] of cases) {
+      expect(await runAssertPostgresMajor({ argv, env, readVersion, out: capture().out })).toBe(2);
+    }
+    expect(readVersion).not.toHaveBeenCalled();
+  });
+
+  it('exits 2 on a driver error or an unparseable version, and never prints the URL or its password', async () => {
+    const driverErr = Object.assign(new Error(`connect ECONNREFUSED ${URL}`), { code: 'ECONNREFUSED' });
+    const readers = [async () => { throw driverErr; }, version('garbage', '??')];
+    for (const readVersion of readers) {
+      const c = capture();
+      expect(await runAssertPostgresMajor({ argv: ['18'], env: { DATABASE_URL: URL }, readVersion, out: c.out })).toBe(2);
+      expect(c.lines.join('\n')).not.toMatch(/secret-pw|db\.example\.invalid/);
+    }
   });
 });

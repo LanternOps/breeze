@@ -6,14 +6,18 @@
 //     → `versions=["18"]` on $GITHUB_OUTPUT, from postgres-versions.json.
 //
 //   node .github/scripts/postgres-compat.mjs notify
-//     GH_REPO, RUN_ID, RUN_ATTEMPT, RUN_URL, VERSIONS, PLAN_RESULT (+ GH_TOKEN)
+//     GH_REPO, RUN_ID, RUN_URL, VERSIONS, PLAN_RESULT (+ GH_TOKEN)
 //     → one rolling issue per major, labelled postgres-compat: opened or
 //       commented on while that major is red, closed by its next green run.
 //
-// The notifier follows ci.yml main-red-alert's discipline: it is a reporter,
-// not a gate, so it exits 0 on GitHub API trouble; reads retry, writes get
-// exactly one attempt (a retried create whose response was lost opens a
-// duplicate); and a failed read is never mistaken for "no issue is open".
+// The notifier borrows ci.yml main-red-alert's discipline: reads retry,
+// writes get exactly one attempt (a retried create whose response was lost
+// opens a duplicate), and a failed read is never mistaken for "no issue is
+// open". Unlike main-red-alert it is not inside a gate-judged workflow, so a
+// failed read or write exits 1: the scheduled run goes red for it as well.
+// A major is green only when EVERY job it should have run succeeded: a job
+// that never reported (renamed, never expanded, skipped) is a failure, so a
+// broken nightly can neither go quiet nor close a real issue.
 // Tested by .github/scripts/postgres-compat.test.mjs. Built-ins only.
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync } from 'node:fs';
@@ -26,9 +30,17 @@ export const issueTitle = (major) => `Postgres ${major} compatibility run failin
 const VERSIONS_URL = new URL('./postgres-versions.json', import.meta.url);
 // A job timeout reports as `cancelled`, so it is a failure here too.
 const FAILED = new Set(['failure', 'timed_out', 'cancelled', 'startup_failure']);
-// Job names carry their major: `Migrations (Postgres 18)`,
-// `Integration (Postgres 18, shard 3/16)`.
-const MAJOR_IN_NAME = /\(Postgres (\d+)[,)]/;
+const SHARDS = 16;
+
+/** Every job one major runs in postgres-compat.yml, by its expanded name
+ *  (the contract test derives the same list from the workflow's templates). */
+export function expectedJobNames(major) {
+  return [
+    `Migrations (Postgres ${major})`,
+    `Migrations, non-superuser (Postgres ${major})`,
+    ...Array.from({ length: SHARDS }, (_, i) => `Integration (Postgres ${major}, shard ${i + 1}/${SHARDS})`),
+  ];
+}
 
 const byMajor = (a, b) => Number(a) - Number(b);
 
@@ -56,13 +68,17 @@ export function planVersions({ eventName, schedule = '', input = '', config }) {
 }
 
 export function summarizeRun(jobs, versions) {
+  const conclusionOf = new Map(jobs.map((j) => [j.name, j.conclusion]));
   return versions.map((version) => {
-    const mine = jobs.filter((j) => MAJOR_IN_NAME.exec(j.name)?.[1] === version);
-    const failed = mine.filter((j) => FAILED.has(j.conclusion)).map((j) => j.name);
-    let state = 'no-signal';
-    if (failed.length > 0) state = 'failing';
-    else if (mine.length > 0 && mine.every((j) => j.conclusion === 'success')) state = 'green';
-    return { version, state, failed, total: mine.length };
+    const failed = [];
+    const missing = []; // absent, skipped, neutral or still running
+    for (const name of expectedJobNames(version)) {
+      const c = conclusionOf.get(name);
+      if (FAILED.has(c)) failed.push(name);
+      else if (c !== 'success') missing.push(name);
+    }
+    const state = failed.length || missing.length ? 'failing' : 'green';
+    return { version, state, failed, missing };
   });
 }
 
@@ -71,9 +87,10 @@ const jobList = (names) => names.map((n) => `- ${n}`).join('\n');
 export function planIssueActions({ summary, planFailed = false, openIssues, runUrl }) {
   const openNumber = (title) => openIssues.find((i) => i.title === title)?.number;
   const actions = [];
-  const failing = (title, what, failedJobs) => {
+  const failing = (title, what, failedJobs, missingJobs = []) => {
     const n = openNumber(title);
-    const jobs = failedJobs.length ? `\n\nFailed jobs:\n${jobList(failedJobs)}` : '';
+    const jobs = (failedJobs.length ? `\n\nFailed jobs:\n${jobList(failedJobs)}` : '')
+      + (missingJobs.length ? `\n\nJobs that did not report a result:\n${jobList(missingJobs)}` : '');
     if (n) {
       actions.push({ kind: 'comment', number: n, body: `Still failing (${what}): ${runUrl}${jobs}` });
     } else {
@@ -86,9 +103,14 @@ export function planIssueActions({ summary, planFailed = false, openIssues, runU
       });
     }
   };
-  if (planFailed) failing(WORKFLOW_ISSUE_TITLE, 'the plan job did not succeed, so no major was tested', []);
+  if (planFailed) {
+    failing(WORKFLOW_ISSUE_TITLE, 'the plan job did not succeed, so no major was tested', []);
+  } else {
+    const n = openNumber(WORKFLOW_ISSUE_TITLE);
+    if (n) actions.push({ kind: 'close', number: n, body: `The plan job succeeded again: ${runUrl}` });
+  }
   for (const s of summary) {
-    if (s.state === 'failing') failing(issueTitle(s.version), `Postgres ${s.version}`, s.failed);
+    if (s.state === 'failing') failing(issueTitle(s.version), `Postgres ${s.version}`, s.failed, s.missing);
     if (s.state === 'green') {
       const n = openNumber(issueTitle(s.version));
       if (n) actions.push({ kind: 'close', number: n, body: `Postgres ${s.version} is green again: ${runUrl}` });
@@ -117,13 +139,19 @@ export async function notify({ env = process.env, runGh = defaultGh, sleep = def
   const versions = JSON.parse(env.VERSIONS || '[]');
   const planFailed = env.PLAN_RESULT !== 'success';
 
+  // gh's own complaint (stderr) is the useful part; execFileSync's message
+  // is mostly the command line.
+  const cause = (err) => String(err?.stderr || err?.message || err).trim().split('\n')[0].slice(0, 300);
+  let lastReadError = '';
+
   // Reads only. Progress goes to `out`, never into the returned value.
   const readRetry = async (what, args) => {
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
         return runGh(args);
       } catch (err) {
-        out.log(`gh read failed (${what}, attempt ${attempt}/3): ${err.message}`);
+        lastReadError = cause(err);
+        out.log(`gh read failed (${what}, attempt ${attempt}/3): ${lastReadError}`);
         if (attempt < 3) await sleep(attempt * 5000);
       }
     }
@@ -132,21 +160,25 @@ export async function notify({ env = process.env, runGh = defaultGh, sleep = def
 
   let summary = [];
   if (versions.length > 0) {
+    // filter=latest: each job's most recent attempt, so a "re-run failed
+    // jobs" attempt is judged together with the successes it carried over.
     const raw = await readRetry('run jobs', [
       'api', '--paginate',
-      `repos/${repo}/actions/runs/${env.RUN_ID}/attempts/${env.RUN_ATTEMPT}/jobs`,
+      `repos/${repo}/actions/runs/${env.RUN_ID}/jobs?filter=latest&per_page=100`,
       '--jq', '.jobs[] | [.name, (.conclusion // "")] | @tsv',
     ]);
     if (raw === null) {
-      out.error('::error::Could not read this run\'s jobs after 3 attempts; postgres-compat issues are unchanged. Re-run this job to reconcile.');
-      return 0;
+      out.error(`::error::Could not read this run's jobs after 3 attempts (${lastReadError}); postgres-compat issues are unchanged. Re-run this job to reconcile.`);
+      return 1;
     }
     const jobs = raw.split('\n').filter(Boolean).map((line) => {
       const [name, conclusion] = line.split('\t');
       return { name, conclusion: conclusion || null };
     });
     summary = summarizeRun(jobs, versions);
-    for (const s of summary) out.log(`Postgres ${s.version}: ${s.state} (${s.failed.length} failed of ${s.total} jobs)`);
+    for (const s of summary) {
+      out.log(`Postgres ${s.version}: ${s.state} (${s.failed.length} failed, ${s.missing.length} without a result, of ${expectedJobNames(s.version).length} jobs)`);
+    }
   }
 
   const listed = await readRetry('open issues', [
@@ -154,12 +186,13 @@ export async function notify({ env = process.env, runGh = defaultGh, sleep = def
   ]);
   if (listed === null) {
     // Treating this as "none open" would open a duplicate issue every red night.
-    out.error('::error::Could not read open postgres-compat issues after 3 attempts; nothing was filed or closed. Re-run this job to reconcile.');
-    return 0;
+    out.error(`::error::Could not read open postgres-compat issues after 3 attempts (${lastReadError}); nothing was filed or closed. Re-run this job to reconcile.`);
+    return 1;
   }
   const actions = planIssueActions({ summary, planFailed, openIssues: JSON.parse(listed || '[]'), runUrl });
 
   let labelReady = false;
+  let writeFailed = false;
   for (const a of actions) {
     try {
       if (a.kind === 'create') {
@@ -167,7 +200,11 @@ export async function notify({ env = process.env, runGh = defaultGh, sleep = def
           labelReady = true;
           try {
             runGh(['label', 'create', LABEL, '--repo', repo, '--color', 'B60205', '--description', 'Scheduled Postgres 17/18 compatibility run failed']);
-          } catch { /* already exists — the common case */ }
+          } catch (err) {
+            // "already exists" is the common case; anything else will surface
+            // as the create below failing on the missing label.
+            if (!/already exists/i.test(cause(err))) out.log(`label create: ${cause(err)}`);
+          }
         }
         runGh(['issue', 'create', '--repo', repo, '--label', LABEL, '--title', a.title, '--body', a.body]);
         out.log(`opened: ${a.title}`);
@@ -179,13 +216,14 @@ export async function notify({ env = process.env, runGh = defaultGh, sleep = def
         out.log(`closed #${a.number}`);
       }
     } catch (err) {
+      writeFailed = true;
       const verb = { create: 'open', comment: 'comment on', close: 'close' }[a.kind];
       const target = a.title ?? `#${a.number}`;
-      out.error(`::error::Failed to ${verb} ${target} (${err.message}); not retried. Re-run this job to reconcile.`);
+      out.error(`::error::Failed to ${verb} ${target} (${cause(err)}); not retried. Re-run this job to reconcile.`);
       out.summary(`### postgres-compat notifier: failed to ${verb} ${target}\nRun: ${runUrl}`);
     }
   }
-  return 0;
+  return writeFailed ? 1 : 0;
 }
 
 function planCli() {
