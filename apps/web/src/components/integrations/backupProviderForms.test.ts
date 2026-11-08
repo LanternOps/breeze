@@ -96,10 +96,11 @@ describe("createCredentials", () => {
 });
 
 describe("canSubmitCreate", () => {
-  it("canSubmitCreate: cove needs only password; dropsuite needs both tokens; axcient needs apiKey", () => {
+  it("canSubmitCreate: cove needs partner, login and token; dropsuite needs both tokens; axcient needs apiKey", () => {
     expect(canSubmitCreate(cove, {})).toBe(false);
     expect(canSubmitCreate(cove, { partnerName: "n", username: "u" })).toBe(false);
-    expect(canSubmitCreate(cove, { password: "p" })).toBe(true);
+    expect(canSubmitCreate(cove, { password: "p" })).toBe(false);
+    expect(canSubmitCreate(cove, { partnerName: "n", username: "u", password: "p" })).toBe(true);
 
     expect(canSubmitCreate(dropsuite, {})).toBe(false);
     expect(canSubmitCreate(dropsuite, { resellerToken: "r" })).toBe(false);
@@ -110,10 +111,9 @@ describe("canSubmitCreate", () => {
     expect(canSubmitCreate(axcient, { apiKey: "k" })).toBe(true);
   });
 
-  it("judges a whitespace-only value by the field's own trim flag", () => {
-    // The old Cove button tested `!form.password`, untrimmed.
-    expect(canSubmitCreate(cove, { password: " " })).toBe(true);
-    // The old Dropsuite button tested `.trim()`.
+  it("treats a whitespace-only value as blank for every provider", () => {
+    // coveCredentialsSchema rejects a blank/whitespace-only token, so the form must too.
+    expect(canSubmitCreate(cove, { partnerName: "n", username: "u", password: " " })).toBe(false);
     expect(canSubmitCreate(dropsuite, { resellerToken: " ", authToken: "a" })).toBe(false);
     expect(canSubmitCreate(axcient, { apiKey: "  " })).toBe(false);
   });
@@ -139,27 +139,27 @@ describe("rotationCredentials", () => {
     expect(rotationCredentials(axcient, { apiKey: "new", partnerName: "n", username: "u", password: "p" })).toEqual({ credentials: { apiKey: "new" } });
   });
 
-  it("treats a whitespace-only Cove password as blank on rotation, unlike create", () => {
-    // The old card tested `password.trim()` here while the create button tested
-    // `!form.password`. The difference is deliberate to preserve.
-    expect(rotationCredentials(cove, { password: "   " })).toBeNull();
-    expect(canSubmitCreate(cove, { password: "   " })).toBe(true);
-  });
-
   it("posts the Cove password untrimmed once it is not blank", () => {
     expect(rotationCredentials(cove, { partnerName: " n ", username: " u ", password: " p " })).toEqual({
       credentials: { partnerName: "n", username: "u", password: " p " },
     });
   });
 
-  it("keeps the stored Cove credential when the identity fields are filled but the password is blank", () => {
-    expect(rotationCredentials(cove, { partnerName: "n", username: "u" })).toBeNull();
-    expect(rotationCredentials(cove, { username: "u", password: "" })).toBeNull();
+  it("flags a Cove rotation with any identity/token field filled but not all three as incomplete", () => {
+    // The API replaces the whole credential set (partnerName + username + password
+    // are all required), so a username with a blank password must be blocked, not
+    // silently dropped as a "keep stored" success.
+    expect(rotationCredentials(cove, { partnerName: "n", username: "u" })).toEqual({ incomplete: true });
+    expect(rotationCredentials(cove, { username: "u", password: "" })).toEqual({ incomplete: true });
+    expect(rotationCredentials(cove, { password: "p" })).toEqual({ incomplete: true });
+    expect(rotationCredentials(cove, { partnerName: "n", username: "u", password: "   " })).toEqual({ incomplete: true });
   });
 
-  it("rotates Cove on a password alone, with blank identity fields, as the old card did", () => {
-    expect(rotationCredentials(cove, { password: "p" })).toEqual({ credentials: { partnerName: "", username: "", password: "p" } });
+  it("keeps the stored Cove credential when every field is blank", () => {
+    expect(rotationCredentials(cove, {})).toBeNull();
+    expect(rotationCredentials(cove, { partnerName: " ", username: "", password: "  " })).toBeNull();
   });
+
 });
 
 describe("BACKUP_PROVIDER_FORMS invariants", () => {

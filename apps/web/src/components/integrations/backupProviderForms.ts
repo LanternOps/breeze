@@ -34,8 +34,8 @@ const COVE_FORM: BackupProviderForm = {
   namePlaceholderKey: "backupProviders.namePlaceholder",
   inventory: "endpoint",
   fields: [
-    { key: "partnerName", labelKey: "backupProviders.partnerNameLabel", testIdSuffix: "partner-name", input: "text", trim: true, requiredOnCreate: false },
-    { key: "username", labelKey: "backupProviders.usernameLabel", testIdSuffix: "username", input: "text", trim: true, requiredOnCreate: false, autoComplete: "off" },
+    { key: "partnerName", labelKey: "backupProviders.partnerNameLabel", testIdSuffix: "partner-name", input: "text", trim: true, requiredOnCreate: true },
+    { key: "username", labelKey: "backupProviders.usernameLabel", testIdSuffix: "username", input: "text", trim: true, requiredOnCreate: true, autoComplete: "off" },
     // Never trimmed: a Cove token may legitimately end in whitespace, and the
     // API schema keeps it verbatim for the same reason.
     { key: "password", labelKey: "backupProviders.passwordLabel", testIdSuffix: "password", input: "revealable_secret", trim: false, requiredOnCreate: true },
@@ -43,7 +43,9 @@ const COVE_FORM: BackupProviderForm = {
   baseUrl: null,
   helpKey: "backupProviders.credentialsHelp",
   reentryHelpKey: null,
-  rotation: { requires: ["password"], partialIsIncomplete: false },
+  // Mirrors coveCredentialsSchema: the API replaces the whole set, so a partial
+  // rotation is blocked rather than silently dropped.
+  rotation: { requires: ["partnerName", "username", "password"], partialIsIncomplete: true },
 };
 
 const DROPSUITE_FORM: BackupProviderForm = {
@@ -97,7 +99,9 @@ export function createCredentials(form: BackupProviderForm, values: Record<strin
 
 /** Credential fields only. The caller still gates on the name and any base URL. */
 export function canSubmitCreate(form: BackupProviderForm, values: Record<string, string>): boolean {
-  return form.fields.every((field) => !field.requiredOnCreate || fieldValue(field, values) !== "");
+  // Blankness is judged on the trimmed value: the API rejects a whitespace-only
+  // secret even for fields it keeps verbatim (`trim: false`).
+  return form.fields.every((field) => !field.requiredOnCreate || (values[field.key] ?? "").trim() !== "");
 }
 
 /**
@@ -105,8 +109,7 @@ export function canSubmitCreate(form: BackupProviderForm, values: Record<string,
  * `incomplete` to block the save, or `null` to keep what is stored.
  *
  * Blankness is always judged on the trimmed value, whatever the field's `trim`
- * flag. So a whitespace-only Cove password keeps the stored credential here,
- * even though `canSubmitCreate` accepts one. `trim` only decides what is posted.
+ * flag; `trim` only decides what is posted.
  */
 export function rotationCredentials(
   form: BackupProviderForm,
