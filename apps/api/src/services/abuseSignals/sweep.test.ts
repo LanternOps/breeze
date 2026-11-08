@@ -24,7 +24,9 @@ const {
   recordAbuseSignalFired,
   restrictOnHardDeny,
   partnerTrustMode,
+  captureException,
 } = vi.hoisted(() => ({
+  captureException: vi.fn(),
   computeInvariantSignals: vi.fn(),
   loadPartnerAggregates: vi.fn(),
   computeHeuristicSignals: vi.fn(),
@@ -84,6 +86,7 @@ vi.mock('../partnerTrustPromotion', () => ({
   AUTO_RESTRICT_SIGNAL_KEYS: ['billing.card_testing', 'rmm.recidivist_endpoint'],
 }));
 vi.mock('../../config/partnerTrustMode', () => ({ partnerTrustMode }));
+vi.mock('../sentry', () => ({ captureException }));
 
 import { runAbuseSweep } from './index';
 
@@ -528,6 +531,25 @@ describe('runAbuseSweep — immediate hard-deny evaluation for auto-restrict sig
     expect(restrictOnHardDeny).toHaveBeenCalledTimes(2);
     expect(result.notified).toBe(1);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('p-a'), expect.any(Error));
+    expect(captureException).toHaveBeenCalledTimes(1);
     warn.mockRestore();
+  });
+
+  it('restricts before delivering ops alerts', async () => {
+    computeBillingIdentitySignals.mockReturnValue([signal('p-card', 'billing.card_testing', 100)]);
+    persistSignals.mockResolvedValue({ toNotify: [notifiable('r1', 'p-card')] });
+    sendOpsAlert.mockResolvedValue(true);
+
+    await runAbuseSweep();
+
+    expect(restrictOnHardDeny.mock.invocationCallOrder[0]!).toBeLessThan(sendOpsAlert.mock.invocationCallOrder[0]!);
+  });
+
+  it('evaluates a signal exactly at the alert score', async () => {
+    computeBillingIdentitySignals.mockReturnValue([signal('p-card', 'billing.card_testing', 70)]);
+
+    await runAbuseSweep();
+
+    expect(restrictOnHardDeny).toHaveBeenCalledWith('p-card');
   });
 });

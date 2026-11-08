@@ -10,9 +10,10 @@
  * (detectors → persistSignals → hard-deny evaluation → setTrustState → audit
  * rows) and the real restrictOnHardDeny against a real database.
  *
- * Only the network boundaries are mocked: the billing-service client (which is
- * the only thing that talks to the payment provider), the ops-alert sender and
- * the evidence card.
+ * Mocked: the breeze-billing client (so no HTTP; the billing service is what
+ * talks to the payment provider), the ops-alert sender and the evidence-card
+ * sender. Everything else, including the SQL, setTrustState and the audit
+ * writes, runs against real Postgres.
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
@@ -131,10 +132,10 @@ async function seedCardTestingBurst(partnerId: string, opts: { methods: number; 
   }).where(eq(partners.id, partnerId)));
 }
 
-async function markSuspendedForAbuse(partnerId: string) {
+async function markSuspendedForAbuse(partnerId: string, timestamp: Date = new Date()) {
   await withSystemDbAccessContext(() => db.insert(auditLogs).values({
     orgId: null,
-    timestamp: new Date(),
+    timestamp,
     actorType: 'system',
     actorId: randomUUID(),
     actorEmail: null,
@@ -256,6 +257,31 @@ describe('auto-restrict on billing.card_testing (#11307) — real Postgres', () 
     expect(closeOpenCheckouts).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [70, true],
+    [69, false],
+  ] as const)('treats a score of %i as %s at the default alert score of 70', async (score, restricts) => {
+    const partner = await createPartner();
+    await setTrust(partner.id, 'probation');
+    await insertCardTestingSignal(partner.id, score);
+
+    await expect(restrictOnHardDeny(partner.id)).resolves.toBe(restricts);
+    expect((await readPartner(partner.id)).trustState).toBe(restricts ? 'restricted' : 'probation');
+  });
+
+  it('restricts in shadow mode but does not close checkouts', async () => {
+    process.env.PARTNER_TRUST_MODE = 'shadow';
+    const partner = await createPartner();
+    await setTrust(partner.id, 'probation');
+    await insertCardTestingSignal(partner.id, 100);
+
+    await expect(restrictOnHardDeny(partner.id)).resolves.toBe(true);
+
+    expect((await readPartner(partner.id)).trustState).toBe('restricted');
+    expect(closeOpenCheckouts).not.toHaveBeenCalled();
+    expect(await auditRows(partner.id, 'partner.trust.checkouts_closed')).toEqual([]);
+  });
+
   it('honours an overridden alert score', async () => {
     process.env.ABUSE_SIGNAL_OVERRIDES = JSON.stringify({ 'severity.alert_score': 90 });
     const partner = await createPartner();
@@ -358,6 +384,42 @@ describe('auto-restrict on rmm.recidivist_endpoint (#10123) — real Postgres', 
     expect(closeOpenCheckouts).not.toHaveBeenCalled();
   });
 
+  it('does not restrict on a match with a partner suspended for abuse more than 90 days ago', async () => {
+    const suspended = await seedPartnerWithDevice({
+      status: 'suspended', hostname: uniqueHost('SUSP'), ip: '10.10.0.4', screenConnectGuid: GUID,
+    });
+    await markSuspendedForAbuse(suspended.id, new Date(Date.now() - 91 * 24 * 60 * 60 * 1_000));
+    const target = await seedPartnerWithDevice({
+      status: 'active', hostname: uniqueHost('TGT'), ip: '10.20.0.4', screenConnectGuid: GUID,
+    });
+    await setTrust(target.id, 'probation');
+
+    await runAbuseSweep();
+
+    expect(await openSignal(target.id, 'rmm.recidivist_endpoint')).toMatchObject({ score: 100 });
+    expect((await readPartner(target.id)).trustState).toBe('probation');
+    expect(closeOpenCheckouts).not.toHaveBeenCalled();
+  });
+
+  it('ignores an instance-id match once the recidivist signal is resolved', async () => {
+    const suspended = await seedPartnerWithDevice({
+      status: 'suspended', hostname: uniqueHost('SUSP'), ip: '10.10.0.5', screenConnectGuid: GUID,
+    });
+    await markSuspendedForAbuse(suspended.id);
+    const target = await seedPartnerWithDevice({
+      status: 'active', hostname: uniqueHost('TGT'), ip: '10.20.0.5', screenConnectGuid: GUID,
+    });
+    await setTrust(target.id, 'trusted');
+    await runAbuseSweep(); // opens the signal without restricting (trusted)
+    await withSystemDbAccessContext(() => db.update(partnerAbuseSignals)
+      .set({ resolvedAt: new Date() })
+      .where(eq(partnerAbuseSignals.partnerId, target.id)));
+    await setTrust(target.id, 'probation');
+
+    await expect(restrictOnHardDeny(target.id)).resolves.toBe(false);
+    expect((await readPartner(target.id)).trustState).toBe('probation');
+  });
+
   it('leaves a trusted partner with the same instance-id match untouched', async () => {
     const suspended = await seedPartnerWithDevice({
       status: 'suspended', hostname: uniqueHost('SUSP'), ip: '10.10.0.3', screenConnectGuid: GUID,
@@ -370,6 +432,7 @@ describe('auto-restrict on rmm.recidivist_endpoint (#10123) — real Postgres', 
 
     await runAbuseSweep();
 
+    expect(await openSignal(target.id, 'rmm.recidivist_endpoint')).toMatchObject({ score: 100 });
     expect((await readPartner(target.id)).trustState).toBe('trusted');
     expect(closeOpenCheckouts).not.toHaveBeenCalled();
   });

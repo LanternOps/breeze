@@ -8,8 +8,9 @@ export interface CancelSubscriptionResult {
 /**
  * Outcome of asking breeze-billing to close a restricted partner's open
  * checkouts: expire every open Checkout Session for the partner's customer,
- * then cancel any `incomplete` subscription (the provider refuses to delete a
- * subscription while a session for it is still open, hence the order).
+ * then cancel any `incomplete` subscription. Sessions first: deleting a
+ * subscription is refused while a session for it is still open (seen in the
+ * manual abuse sweeps that did this by hand; see #11307).
  *
  * - `closed` — the billing service answered; the lists say what it closed and
  *   are empty when nothing was open (the call is idempotent).
@@ -18,14 +19,20 @@ export interface CancelSubscriptionResult {
  * - `failed` — any other error, including a timeout or a malformed body.
  *   Nothing is known to have been closed.
  *
- * Never a thrown error: the caller records the outcome on the restriction's
- * audit trail and a billing problem must never undo or block a restriction.
+ * The closeOpenCheckouts method never throws: the caller records the outcome
+ * on the restriction's audit trail, and a billing problem must never undo or
+ * block a restriction.
  */
 export type CloseOpenCheckoutsResult =
   | { status: 'closed'; expiredCheckoutSessionIds: string[]; canceledSubscriptionIds: string[] }
   | { status: 'unavailable' | 'failed'; detail: string };
 
-/** Bound on the close-checkouts call: it runs inside the trust jobs' per-partner loop. */
+/**
+ * Bound on the close-checkouts call. It runs synchronously inside
+ * restrictOnHardDeny, whose callers (the trust promote loop, the ip-classify
+ * job, the abuse sweep) process partners one at a time, so a hung billing
+ * service would otherwise stall a whole batch.
+ */
 const CLOSE_CHECKOUTS_TIMEOUT_MS = 10_000;
 
 const isStringArray = (value: unknown): value is string[] =>

@@ -1,15 +1,18 @@
 import { and, eq, isNull, sql } from 'drizzle-orm';
 
+import { partnerTrustMode } from '../config/partnerTrustMode';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, organizations, partnerAbuseSignals, partners } from '../db/schema';
 import type { IpClass, PartnerTrustState } from '../db/schema/orgs';
 import { loadSignalConfig } from './abuseSignals/config';
 import { ANONYMOUS_ACTOR_ID } from './auditEvents';
-import { createAuditLog } from './auditService';
+import { createAuditLogAsync } from './auditService';
 import { getBreezeBillingClient, type CloseOpenCheckoutsResult } from './breezeBillingClient';
+import { sendOpsAlert } from './opsAlerts';
 import { readTrust } from './partnerTrust.repo';
 import { setTrustState } from './partnerTrust';
 import { sendEvidenceCard } from './partnerTrustEvidenceCard';
+import { captureException } from './sentry';
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
@@ -53,6 +56,11 @@ export const FREE_MAIL_DOMAINS: ReadonlySet<string> = new Set([
  * evaluates hard denies for these partners as soon as it persists the signal,
  * so a restriction lands within the sweep tick instead of waiting for the next
  * promotion run.
+ *
+ * "Open" means unresolved. An acknowledged signal still counts: acknowledging
+ * only silences re-notification and the digest (routes/admin/abuse.ts), it is
+ * not a dismissal, which is the same reading promotionDecision's
+ * unresolved_alert blocker already uses. The appeal is promote-with-override.
  */
 export const AUTO_RESTRICT_SIGNAL_KEYS = ['billing.card_testing', 'rmm.recidivist_endpoint'] as const;
 
@@ -283,10 +291,14 @@ export async function evaluateHardDenies(partnerId: string): Promise<HardDenyDec
       -- alert-score rmm.recidivist_endpoint signal for it. Only the stable
       -- instance id counts: a hostname or a product name can coincide between
       -- unrelated MSPs (both running the same remote tool is normal), an
-      -- instance id cannot.
+      -- instance id cannot. Bounded to suspensions in the last 90 days, like
+      -- the network axis: the residual false positive is a legitimate MSP
+      -- enrolling an endpoint that still carries an old operator's client, and
+      -- that gets likelier the older the suspension. The signal itself still
+      -- fires for review past the window.
       LEFT JOIN LATERAL (
         SELECT s.id AS partner_id
-        FROM suspended_abuse s
+        FROM recent_suspended_abuse s
         JOIN abuse_endpoint_fingerprints sf
           ON sf.partner_id = s.id AND sf.kind = 'remote_tool_guid'
         JOIN abuse_endpoint_fingerprints tf
@@ -488,37 +500,66 @@ export async function gatherPromotionFacts(partnerId: string): Promise<Promotion
  * restriction's. A separate row rather than more evidence on the restriction
  * row: the restriction is written first and must never wait on, or be undone
  * by, the billing service. Best effort throughout — never throws.
+ *
+ * Only in `enforce` mode. In `shadow` the restriction is recorded but no gate
+ * acts on it, and expiring a checkout or canceling a subscription is a real,
+ * external effect that promote-with-override does not undo.
+ *
+ * Nothing retries a close that did not happen (the partner is no longer on
+ * probation, so it is never evaluated again), so a non-`closed` outcome is
+ * sent to the ops channel for a human to finish by hand.
  */
 async function closeOpenCheckoutsAfterRestrict(partnerId: string, reason: string): Promise<void> {
+  if (partnerTrustMode() !== 'enforce') {
+    console.info(
+      `[partnerTrustPromotion] Not closing checkouts for restricted partner ${partnerId}: partner trust is not enforcing`,
+    );
+    return;
+  }
   let outcome: CloseOpenCheckoutsResult;
   try {
     outcome = await getBreezeBillingClient().closeOpenCheckouts({ partnerId, reason });
   } catch (error) {
-    // getBreezeBillingClient throws when billing is not configured; the client
-    // method itself never throws.
+    // getBreezeBillingClient throws when billing is not configured; the
+    // closeOpenCheckouts method itself never throws.
     outcome = { status: 'failed', detail: error instanceof Error ? error.message : String(error) };
   }
-  if (outcome.status !== 'closed') {
-    console.warn(
-      `[partnerTrustPromotion] Could not close open checkouts for restricted partner ${partnerId}: ${outcome.status} (${outcome.detail})`,
-    );
+  // createAuditLogAsync never throws: a failed first write goes to the audit
+  // retry queue, which reports to Sentry if the entry is finally dropped.
+  await createAuditLogAsync({
+    orgId: null,
+    actorType: 'system',
+    actorId: ANONYMOUS_ACTOR_ID,
+    action: 'partner.trust.checkouts_closed',
+    resourceType: 'partner',
+    resourceId: partnerId,
+    result: outcome.status === 'closed' ? 'success' : 'failure',
+    details: { trigger: reason, ...outcome },
+  });
+  if (outcome.status === 'closed') return;
+
+  console.warn(
+    `[partnerTrustPromotion] Could not close open checkouts for restricted partner ${partnerId}: ${outcome.status} (${outcome.detail})`,
+  );
+  // 'unavailable' is a deployment state (billing has no endpoint yet), not a
+  // fault, so only 'failed' becomes a Sentry event; both page the ops channel.
+  if (outcome.status === 'failed') {
+    captureException(new Error(
+      `[partnerTrustPromotion] close-open-checkouts failed for partner ${partnerId}: ${outcome.detail}`,
+    ));
   }
   try {
-    await createAuditLog({
-      orgId: null,
-      actorType: 'system',
-      actorId: ANONYMOUS_ACTOR_ID,
-      action: 'partner.trust.checkouts_closed',
-      resourceType: 'partner',
-      resourceId: partnerId,
-      result: outcome.status === 'closed' ? 'success' : 'failure',
-      details: { trigger: reason, ...outcome },
+    await sendOpsAlert({
+      title: 'Auto-restricted partner: open checkouts not closed',
+      body: [
+        `Partner id: ${partnerId}`,
+        `Restriction: ${reason}`,
+        `Billing outcome: ${outcome.status} (${outcome.detail})`,
+        'The partner is restricted, but its open checkout sessions and any incomplete subscription were NOT closed and nothing will retry. Close them by hand.',
+      ].join('\n'),
     });
   } catch (error) {
-    console.warn(
-      `[partnerTrustPromotion] Failed to record checkout-close outcome for restricted partner ${partnerId}`,
-      error,
-    );
+    console.warn(`[partnerTrustPromotion] Failed to send checkout-close alert for partner ${partnerId}`, error);
   }
 }
 
@@ -530,9 +571,10 @@ async function closeOpenCheckoutsAfterRestrict(partnerId: string, reason: string
  *
  * Checkouts are closed only when this call's CAS won, so they are closed once
  * per probation → restricted transition and never for a partner an admin (or a
- * concurrent evaluation) already moved. Undoing a restriction is the existing
- * admin promote-with-override, which moves the partner to `trusted` and out of
- * every hard-deny evaluation; nothing here reopens a checkout.
+ * concurrent evaluation) already moved. An admin lifts a restriction with the
+ * existing promote-with-override (to `trusted`, which no hard-deny axis
+ * evaluates); that does not restore anything closed here, so the partner
+ * starts a new checkout.
  *
  * Lives here rather than in the job so that EVERY promotion path goes through
  * it — `tryAutoPromote` calls it first, so no caller can promote a partner
@@ -552,7 +594,8 @@ export async function restrictOnHardDeny(partnerId: string): Promise<boolean> {
   );
   if (restricted) {
     // Before the evidence card: an open checkout is where a card tester keeps
-    // trying cards, so closing it is the time-critical effect.
+    // trying cards, so closing it is the time-critical effect (bounded by the
+    // billing client's timeout).
     await closeOpenCheckoutsAfterRestrict(partnerId, decision.reason);
     try {
       await sendEvidenceCard(partnerId, 'restricted');
