@@ -1,8 +1,12 @@
 package heartbeat
 
 import (
+	"bytes"
+	"strings"
+	"syscall"
 	"testing"
 
+	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
@@ -71,5 +75,37 @@ func TestActiveRemoteSessionOverSignInConsole(t *testing.T) {
 				t.Fatalf("got %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// An active RDP session whose username could not be read keeps the console,
+// and that has to be explained in the log: otherwise a technician who expected
+// the RDP desktop has no record of why it was passed over (#8434 review). The
+// Warn names the session and carries the WTS query's Win32 code.
+func TestActiveRemoteSessionOverSignInConsoleLogsUnreadableUsername(t *testing.T) {
+	var buf bytes.Buffer
+	logging.Init("text", "debug", &buf)
+	t.Cleanup(func() { logging.Init("text", "info", nil) })
+
+	signInConsole := sessionbroker.DetectedSession{Session: "1", State: "connected", Type: "console"}
+	unreadable := sessionbroker.DetectedSession{Session: "3", State: "active", Type: "rdp",
+		UsernameUnknown: true, UsernameErr: syscall.Errno(5)}
+	if got := activeRemoteSessionOverSignInConsole("1", []sessionbroker.DetectedSession{signInConsole, unreadable},
+		func(string) bool { return true }); got != "" {
+		t.Fatalf("got %q, want the console kept", got)
+	}
+	out := buf.String()
+	for _, want := range []string{"level=WARN", "username unreadable; keeping the sign-in console", "winSession=3", "consoleID=1", "win32Error=5"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log missing %q:\n%s", want, out)
+		}
+	}
+
+	// No unreadable RDP session: nothing to explain.
+	buf.Reset()
+	activeRemoteSessionOverSignInConsole("1", []sessionbroker.DetectedSession{signInConsole,
+		{Session: "2", State: "active", Type: "rdp", Username: "Administrator"}}, func(string) bool { return true })
+	if strings.Contains(buf.String(), "username unreadable") {
+		t.Errorf("logged an unreadable username with none present:\n%s", buf.String())
 	}
 }

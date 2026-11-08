@@ -1,6 +1,9 @@
 package heartbeat
 
 import (
+	"errors"
+	"syscall"
+
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
@@ -42,7 +45,9 @@ func activeRemoteSessionOverSignInConsole(consoleID string, detected []sessionbr
 		if ds.UsernameUnknown {
 			// Could not tell whether someone is signed in here, so whether this
 			// is a second RDP user is unknown too: keep the console rather than
-			// guess.
+			// guess — and say so, or nothing records why the RDP desktop was
+			// passed over.
+			logUnreadableRDPUsername(consoleID, ds)
 			return ""
 		}
 		if ds.Username == "" {
@@ -57,6 +62,21 @@ func activeRemoteSessionOverSignInConsole(consoleID string, detected []sessionbr
 		return ""
 	}
 	return candidate
+}
+
+// logUnreadableRDPUsername explains a console kept because an active RDP
+// session's username could not be read, with the WTS query's Win32 code when
+// one was recorded.
+func logUnreadableRDPUsername(consoleID string, ds sessionbroker.DetectedSession) {
+	attrs := []any{"winSession", ds.Session, "consoleID", consoleID}
+	if ds.UsernameErr != nil {
+		attrs = append(attrs, "error", ds.UsernameErr.Error())
+		var errno syscall.Errno
+		if errors.As(ds.UsernameErr, &errno) && errno != 0 {
+			attrs = append(attrs, "win32Error", uint32(errno))
+		}
+	}
+	log.Warn("findActiveHelper: active RDP session username unreadable; keeping the sign-in console", attrs...)
 }
 
 // activeRemoteHelperOverSignInConsole is the live wiring of
