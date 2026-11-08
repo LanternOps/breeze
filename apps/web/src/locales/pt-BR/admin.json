@@ -994,6 +994,7 @@
       "client_ai_usage": "Uso de AI do cliente",
       "config_policy_alert_rules": "Regra de alerta da política",
       "config_policy_automations": "Automação da política",
+      "config_policy_feature_link": "Vínculo de recurso da política",
       "config_policy_monitoring_watches": "Vigilância de monitoramento da política",
       "configuration_policy": "Política de configuração",
       "contact": "Contato",
