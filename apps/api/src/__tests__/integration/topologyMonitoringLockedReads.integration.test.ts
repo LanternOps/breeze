@@ -77,6 +77,7 @@ vi.mock('../../services/topology/telemetryArmFence', async () => {
 import { sql } from 'drizzle-orm';
 import { closeDb, db } from '../../db';
 import { claimPendingCommandForDelivery, claimPendingCommandsForDevice } from '../../services/commandDispatch';
+import { clearPermissionCache } from '../../services/permissions';
 import { deviceAgentId } from './db-utils';
 import { dispatchTopologyDiagnosticRun } from '../../services/topology/diagnosticDispatch';
 import { dispatchDueTopologyPolicies } from '../../services/topology/monitoringScheduler';
@@ -219,6 +220,64 @@ describe('command claim window (#7268)', () => {
       expect(await status()).toBe('pending');
       expect(await claim()).toContain(command!.id);
       expect(await status()).toBe('sent');
+    });
+  }
+});
+
+/**
+ * #11358: a `network_diagnostic` run that carries a frozen requester authority
+ * (a routed trace, a policy occurrence, an approved proposal) re-derives the
+ * requester's CURRENT permission version (Redis) at delivery. Both claim legs
+ * must read it before they lock `device_commands` rows. A scheduled policy
+ * occurrence is used here. Its permission-version step is the same one a
+ * routed trace goes through. The two paths differ only in the policy-armed
+ * check (policy runs only) and the trace-capability check (`trace_route` only).
+ */
+describe('network_diagnostic claim window (#11358)', () => {
+  async function queuedPolicyDiagnostic() {
+    const f = await seedScheduledMonitoringFixture();
+    await f.makeDue();
+    expect(await dispatchDueTopologyPolicies({ repository: f.repository })).toMatchObject({ scheduled: 1 });
+    const [run] = await f.runs();
+    expect(run!.requesterAuthority).toMatchObject({ userId: f.env.user.id });
+    await dispatchTopologyDiagnosticRun(f.ctx.scope, run!.id, { deliver: async () => true });
+    const commandId = (await f.runs())[0]!.commandId;
+    expect(commandId).toBeTruthy();
+    const agentId = await deviceAgentId(f.deviceId);
+    const claim = (transport: 'http' | 'websocket') => (transport === 'http'
+      ? system(() => claimPendingCommandsForDevice({ deviceId: f.deviceId, agentId, installIncarnation: 1 }, 10, 'agent')).then((rows) => rows.map((row) => row.id))
+      : claimPendingCommandForDelivery(commandId!).then((outcome) => (outcome.status === 'claimed' ? [outcome.id] : [])));
+    const status = async () => (await system(() => db.execute<{ status: string }>(
+      sql`SELECT status FROM device_commands WHERE id = ${commandId!}::uuid`)))[0]!.status;
+    return { f, commandId: commandId!, claim, status };
+  }
+
+  for (const transport of ['http', 'websocket'] as const) {
+    it(`delivers a policy diagnostic over ${transport} without a Redis read while holding device_commands row locks`, async () => {
+      const { commandId, claim } = await queuedPolicyDiagnostic();
+
+      trace.violations.length = 0;
+      trace.watchCommandLocks = true;
+      const delivered = await claim(transport);
+      trace.watchCommandLocks = false;
+
+      expect(delivered).toContain(commandId);
+      // The probe ran: the version WAS read inside the claim's DB context, just not under the row locks.
+      expect(trace.versionReads).toBeGreaterThan(0);
+      expect(trace.violations).toEqual([]);
+    });
+
+    it(`still cancels a policy diagnostic over ${transport} once the requester's permissions changed`, async () => {
+      const { f, commandId, claim, status } = await queuedPolicyDiagnostic();
+      await clearPermissionCache(f.env.user.id);
+
+      trace.violations.length = 0;
+      trace.watchCommandLocks = true;
+      expect(await claim(transport)).not.toContain(commandId);
+      trace.watchCommandLocks = false;
+
+      expect(await status()).toBe('cancelled');
+      expect(trace.violations).toEqual([]);
     });
   }
 });
