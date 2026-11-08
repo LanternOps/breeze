@@ -916,7 +916,6 @@ services:
   worker:
     image: ghcr.io/lanternops/breeze/api@${BREEZE_API_IMAGE_DIGEST:?Set BREEZE_API_IMAGE_DIGEST to the release image digest}
     platform: linux/amd64
-    container_name: breeze-worker
     restart: unless-stopped
     profiles: ["worker-split"]
     command: ["node", "dist/worker.cjs"]

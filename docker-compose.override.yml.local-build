@@ -28,6 +28,12 @@ services:
       TURN_PORT: ${TURN_PORT:-3478}
       TURN_SECRET: ${TURN_SECRET:-}
 
+  # `--profile worker-split` must run the locally built image, not the
+  # registry ref the base file requires (#4144). Reuses the image `api` builds.
+  worker:
+    image: breeze-api:local
+    platform: linux/arm64
+
   web:
     image: breeze-web:local
     platform: linux/arm64

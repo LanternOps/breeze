@@ -90,8 +90,8 @@ Do this one server at a time, and never on two regions simultaneously.
 3. **Check it is actually running and ready.**
 
    ```bash
-   docker ps --format '{{.Names}}' | grep breeze-worker
-   docker exec breeze-worker wget -qO- http://127.0.0.1:3001/health/ready
+   docker compose ps --status running --services | grep -x worker
+   docker compose exec worker wget -qO- http://127.0.0.1:3001/health/ready
    ```
 
    Wait until this reports ready before going on. If it reports that migrations
@@ -99,7 +99,7 @@ Do this one server at a time, and never on two regions simultaneously.
    that first.
 
    <Aside type="caution">
-     Do not skip the `docker ps` check. If your deploy process names services
+     Do not skip the `docker compose ps` check. If your deploy process names services
      explicitly, it is easy for the worker to never start at all — and the API's
      own health endpoint cannot tell you that, because the API is still healthy.
    </Aside>
@@ -120,7 +120,7 @@ Do this one server at a time, and never on two regions simultaneously.
    - Send a command to a connected device — it should still work, because the
      API still owns the agent connection.
    - Pick a scheduled job with a visible result and confirm it now appears in
-     `docker logs breeze-worker` and no longer in `docker logs breeze-api`.
+     `docker compose logs worker` and no longer in `docker compose logs api`.
 
 6. **Soak before repeating.**
 
