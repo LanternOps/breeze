@@ -91,6 +91,61 @@ export function partnerWideGateRefusesTool(
 }
 
 /**
+ * Tools whose handler refuses an organization-scoped caller on every action
+ * with `PARTNER_SCOPE_REQUIRED`, mirroring REST `requireScope('partner',
+ * 'system')` (#11287). MCP tools/list does not offer them to an org-scoped
+ * credential and tools/call refuses them before the handler or any intent, so
+ * an org-scoped API key is not shown tools that can only fail. The handlers'
+ * own scope checks stay the authority. Tools already hidden at org scope by
+ * {@link PARTNER_WIDE_ONLY_TOOLS} (`any_scope`) are not repeated here.
+ * partnerWideOnlyTools.contract.test.ts runs every registered handler and fails
+ * when this set and the handlers disagree, in either direction.
+ */
+export const PARTNER_SCOPE_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  'get_account_readiness',
+  'get_catalog_item',
+  'get_contract',
+  'get_device_billing',
+  'get_invoice',
+  'get_org_summary',
+  'get_quote',
+  'get_running_timer',
+  'get_ticket_approval_status',
+  'get_timesheet',
+  'list_contracts',
+  'list_deliverable_templates',
+  'list_deliverables',
+  'list_invoices',
+  'list_portal_users',
+  'list_quotes',
+  'list_time_entries',
+  'manage_billing_catalog',
+  'manage_billing_profiles',
+  'manage_billing_settings',
+  'manage_contracts',
+  'manage_deliverables',
+  'manage_invoices',
+  'manage_key_dates',
+  'manage_org_portal_settings',
+  'manage_pax8_orders',
+  'manage_quotes',
+  'manage_ticket_checklist_templates',
+  'manage_time_suggestions',
+  'search_catalog',
+  'search_pax8_products',
+]);
+
+/** True when an organization-scoped caller can never get past `toolName`'s scope check (see {@link PARTNER_SCOPE_ONLY_TOOLS}). */
+export function partnerScopeGateRefusesTool(toolName: string, auth: Pick<AuthContext, 'scope'>): boolean {
+  return auth.scope === 'organization' && PARTNER_SCOPE_ONLY_TOOLS.has(toolName);
+}
+
+/** The pre-handler refusal an org-scoped MCP caller gets for a {@link PARTNER_SCOPE_ONLY_TOOLS} tool. */
+export const PARTNER_SCOPE_REQUIRED_OVER_MCP_MESSAGE =
+  'This tool needs a partner-scoped credential; an organization-scoped API key or token cannot use it. '
+  + 'Connect with a partner-scoped API key or sign in to the MCP connection as a partner user.';
+
+/**
  * The one refusal an MCP caller gets for partner-wide state (#10930): the
  * pre-handler refusal of a {@link PARTNER_WIDE_ONLY_TOOLS} tool, and the
  * rewrite of a mixed tool's partner-wide refusal. It names the connection as

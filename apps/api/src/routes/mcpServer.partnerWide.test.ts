@@ -63,6 +63,11 @@ const TEST_TOOLS = [
   // Tier 3 here (not in the registry) so the intent-filing path is exercised.
   { name: 'sync_edr_data', tier: 3, schema: { type: 'object', properties: {} } },
   { name: 'run_script', tier: 3, schema: { type: 'object', properties: {} } },
+  // #11287: PARTNER_SCOPE_ONLY_TOOLS entries; the last one Tier 3 for the intent-filing path.
+  { name: 'get_org_summary', tier: 1, schema: { type: 'object', properties: {} } },
+  { name: 'list_portal_users', tier: 1, schema: { type: 'object', properties: {} } },
+  { name: 'get_account_readiness', tier: 1, schema: { type: 'object', properties: {} } },
+  { name: 'manage_org_portal_settings', tier: 3, schema: { type: 'object', properties: { action: { type: 'string', enum: ['get', 'update'] } } } },
 ];
 const intentMocks = vi.hoisted(() => ({ createMcpActionIntent: vi.fn() }));
 vi.mock('../services/mcpIntentCreation', () => ({
@@ -288,5 +293,49 @@ describe('#10930 partner-wide tools over MCP — tools/call', () => {
     testState.authPatch = { partnerOrgAccess: 'all' };
     mocks.executeTool.mockResolvedValueOnce(JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }));
     expect((await callText('manage_patches', { action: 'approve' })).parsed).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+  });
+});
+
+// #11287: a tool whose handler refuses every organization-scoped caller
+// (PARTNER_SCOPE_ONLY_TOOLS, pinned to the handlers by
+// partnerWideOnlyTools.contract.test.ts) is not offered to an org-scoped key,
+// and a direct call is refused before the handler or any intent.
+describe('#11287 partner-scope tools over MCP for an org-scoped key', () => {
+  const ISSUE_TOOLS = ['get_org_summary', 'list_portal_users', 'get_account_readiness', 'manage_org_portal_settings'];
+
+  it('an org-scoped key is not offered them; ordinary tools stay listed', async () => {
+    setOrgKey();
+    const names = await listNames();
+    for (const name of ISSUE_TOOLS) expect(names, name).not.toContain(name);
+    expect(names).toContain('list_sites');
+  });
+
+  it('a partner-scoped key is still offered them', async () => {
+    // The Tier-3 one is listed only where the key could file it.
+    vi.stubEnv('MCP_TIER3_INTENTS_ENABLED', 'true');
+    testState.apiKey!.scopes = ['ai:read', 'ai:write', 'ai:execute'];
+    const names = await listNames();
+    for (const name of ISSUE_TOOLS) expect(names, name).toContain(name);
+  });
+
+  it('a direct call from an org-scoped key is refused before the handler with PARTNER_SCOPE_REQUIRED', async () => {
+    setOrgKey();
+    const { result, parsed } = await callText('get_org_summary', { orgId: 'org-1' });
+    expect(result.isError).toBe(true);
+    expect(parsed.code).toBe('PARTNER_SCOPE_REQUIRED');
+    expect(parsed.error).toMatch(/partner-scoped/);
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  it('with MCP intents on, an org-scoped key\'s Tier-3 call to one is refused before an intent is filed', async () => {
+    vi.stubEnv('MCP_TIER3_INTENTS_ENABLED', 'true');
+    setOrgKey();
+    testState.apiKey!.scopes = ['ai:read', 'ai:write', 'ai:execute'];
+    intentMocks.createMcpActionIntent.mockRejectedValue(new Error('stop after filing'));
+    const { result, parsed } = await callText('manage_org_portal_settings', { action: 'update', orgId: 'org-1' });
+    expect(result.isError).toBe(true);
+    expect(parsed.code).toBe('PARTNER_SCOPE_REQUIRED');
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+    expect(mocks.executeTool).not.toHaveBeenCalled();
   });
 });

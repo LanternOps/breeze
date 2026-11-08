@@ -25,7 +25,9 @@ vi.mock('../db', async (importOriginal) => {
 vi.mock('./redis', () => ({ getRedis: () => null, getRedisConnection: () => null }));
 
 import { aiTools } from './aiTools';
-import { canManagePartnerWidePolicies, PARTNER_WIDE_ONLY_TOOLS, partnerWideGateRefusesTool } from './partnerWideAccess';
+import {
+  canManagePartnerWidePolicies, PARTNER_SCOPE_ONLY_TOOLS, PARTNER_WIDE_ONLY_TOOLS, partnerScopeGateRefusesTool, partnerWideGateRefusesTool,
+} from './partnerWideAccess';
 import type { AuthContext } from '../middleware/auth';
 
 const ID = '11111111-1111-4111-8111-111111111111';
@@ -68,9 +70,21 @@ const isRefusal = (out: string): boolean => {
   try { return typeof JSON.parse(out)?.error === 'string'; } catch { return false; }
 };
 
+const codeOf = (out: string): unknown => {
+  try { return JSON.parse(out)?.code; } catch { return undefined; }
+};
+
 type Row = { action: string | undefined; a: string; b: string; o: string };
 
-async function probe(name: string): Promise<Row[]> {
+// Every tool is probed by more than one describe below; run each once.
+const probed = new Map<string, Promise<Row[]>>();
+function probe(name: string): Promise<Row[]> {
+  let rows = probed.get(name);
+  if (!rows) probed.set(name, (rows = probeOnce(name)));
+  return rows;
+}
+
+async function probeOnce(name: string): Promise<Row[]> {
   const tool = aiTools.get(name)!;
   const schema = (tool.definition.input_schema ?? {}) as any;
   const actions: Array<string | undefined> = schema.properties?.action?.enum ?? [undefined];
@@ -136,5 +150,36 @@ describe('PARTNER_WIDE_ONLY_TOOLS matches the handlers (#10930)', () => {
   it.each([...PARTNER_WIDE_ONLY_TOOLS.keys()])('%s: an orgAccess "all" context (a released intent) gets past the gate', async (name) => {
     const rows = await probe(name);
     for (const r of rows) expect(r.b, `${name}:${r.action}`).not.toBe(r.a);
+  });
+});
+
+// #11287: a tool whose handler answers PARTNER_SCOPE_REQUIRED to an
+// organization-scoped caller on every action is not listed for an org-scoped
+// MCP credential, and tools/call refuses it before any intent is filed. A
+// partner-scope caller (B) must get past that refusal on some action, or the
+// tool is dead for everyone and belongs elsewhere. Fails in both directions.
+describe('PARTNER_SCOPE_ONLY_TOOLS matches the handlers (#11287)', () => {
+  it('lists exactly the tools whose handler refuses an org-scope caller with PARTNER_SCOPE_REQUIRED on every action', async () => {
+    const detected: string[] = [];
+    for (const name of aiTools.keys()) {
+      // Already hidden from an org-scope caller by the partner-wide gate.
+      if (PARTNER_WIDE_ONLY_TOOLS.get(name) === 'any_scope') continue;
+      const rows = await probe(name);
+      if (rows.every((r) => codeOf(r.o) === 'PARTNER_SCOPE_REQUIRED')
+        && rows.some((r) => codeOf(r.b) !== 'PARTNER_SCOPE_REQUIRED')) detected.push(name);
+    }
+    expect(detected.sort()).toEqual([...PARTNER_SCOPE_ONLY_TOOLS].sort());
+  }, 120_000);
+
+  it('every entry names a registered tool', () => {
+    for (const name of PARTNER_SCOPE_ONLY_TOOLS) expect(aiTools.has(name), name).toBe(true);
+  });
+
+  it('the predicate refuses only an organization-scope caller', () => {
+    const name = [...PARTNER_SCOPE_ONLY_TOOLS][0]!;
+    expect(partnerScopeGateRefusesTool(name, auth('organization'))).toBe(true);
+    expect(partnerScopeGateRefusesTool(name, auth('partner'))).toBe(false);
+    expect(partnerScopeGateRefusesTool(name, { ...auth('partner'), scope: 'system' } as AuthContext)).toBe(false);
+    expect(partnerScopeGateRefusesTool('list_sites', auth('organization'))).toBe(false);
   });
 });
