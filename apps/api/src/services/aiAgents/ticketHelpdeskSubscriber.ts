@@ -65,6 +65,7 @@
  *     key — all via the shared `admitTriageRun` helper.
  */
 import { and, desc, eq, isNotNull, isNull, ne, or } from 'drizzle-orm';
+import { captureException } from '../sentry';
 import * as dbModule from '../../db';
 import { aiAgentRuns, ticketComments, ticketDrafts, tickets } from '../../db/schema';
 import type { BreezeEvent } from '../eventBus';
@@ -132,7 +133,7 @@ async function humanCommentIsNewerThanAgentActivity(
 ): Promise<boolean> {
   const { db } = dbModule;
   try {
-    const [newestAgent] = await db
+    const [newestAgent] = await dbModule.withDbTransactionIfHeld(() => db
       .select({ createdAt: ticketComments.createdAt })
       .from(ticketComments)
       .where(
@@ -142,11 +143,12 @@ async function humanCommentIsNewerThanAgentActivity(
         ),
       )
       .orderBy(desc(ticketComments.createdAt))
-      .limit(1);
+      .limit(1));
     if (!newestAgent) return true;
     return humanCommentCreatedAt.getTime() > newestAgent.createdAt.getTime();
   } catch (err) {
     console.error('[ticketHelpdesk] loop-guard read failed — denying admission:', { ticketId, err });
+    captureException(err);
     return false;
   }
 }
@@ -305,14 +307,15 @@ export const MAX_TRIAGE_RUNS_PER_TICKET = 5;
 async function triageRunCeilingReached(ticketId: string): Promise<boolean> {
   const { db } = dbModule;
   try {
-    const rows = await db
+    const rows = await dbModule.withDbTransactionIfHeld(() => db
       .select({ id: aiAgentRuns.id })
       .from(aiAgentRuns)
       .where(and(eq(aiAgentRuns.ticketId, ticketId), eq(aiAgentRuns.profile, 'triage')))
-      .limit(MAX_TRIAGE_RUNS_PER_TICKET);
+      .limit(MAX_TRIAGE_RUNS_PER_TICKET));
     return rows.length >= MAX_TRIAGE_RUNS_PER_TICKET;
   } catch (err) {
     console.error('[ticketHelpdesk] triage-run ceiling read failed — denying admission:', { ticketId, err });
+    captureException(err);
     return true;
   }
 }

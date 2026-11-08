@@ -27,7 +27,7 @@
  */
 
 import { eq, and } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withDbTransactionIfHeld } from '../../db';
 import { devices, monitorDeviceState } from '../../db/schema';
 import type { MonitorDefinitionRow } from '../../db/schema';
 import { createSourcedAlert } from '../alertService';
@@ -81,17 +81,17 @@ export async function fireEscalationLatch(
   const recurrenceActionsPending = recurrenceActions.length;
 
   try {
-    const [device] = await db
+    const [device] = await withDbTransactionIfHeld(() => db
       .select({ displayName: devices.displayName, hostname: devices.hostname })
       .from(devices)
       .where(eq(devices.id, deviceId))
-      .limit(1);
+      .limit(1));
     const deviceName = device?.displayName || device?.hostname || deviceId;
 
     const occurrences = `${episodesInWindow} ${episodesInWindow === 1 ? 'time' : 'times'}`;
     const title = `${monitor.name} recurred ${occurrences} in ${windowPhrase(monitor.recurrenceWindowHours)} on ${deviceName}`;
 
-    const escalationAlertId = await createSourcedAlert({
+    const escalationAlertId = await withDbTransactionIfHeld(() => createSourcedAlert({
       deviceId,
       orgId,
       severity: escalationSeverityFor(monitor.severity as AlertSeverity),
@@ -116,14 +116,14 @@ export async function fireEscalationLatch(
       monitorId: monitor.id,
       episodeId,
       requiresHuman: true,
-    });
+    }));
 
     if (escalationAlertId) {
       // Its own catch: the alert EXISTS now, so a failed write-back must not be
       // reported as "no alert was raised" — the next sweep would then see
       // escalation_alert_id still null and raise a second one.
       try {
-        await db
+        await withDbTransactionIfHeld(() => db
           .update(monitorDeviceState)
           .set({ escalationAlertId, updatedAt: new Date() })
           .where(
@@ -131,7 +131,7 @@ export async function fireEscalationLatch(
               eq(monitorDeviceState.monitorId, monitor.id),
               eq(monitorDeviceState.deviceId, deviceId),
             ),
-          );
+          ));
       } catch (error) {
         captureException(error, undefined, {
           errorId: 'monitor-escalation-alert-link-failed',

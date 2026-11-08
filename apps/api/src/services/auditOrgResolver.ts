@@ -1,5 +1,5 @@
 import { and, eq, isNull } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withDbTransactionIfHeld } from '../db';
 import { organizations } from '../db/schema';
 
 import { notHiddenOrgType } from './unassignedPool/visibility';
@@ -16,7 +16,7 @@ export async function resolveAuditOrgIdForPartner(partnerId: string | null): Pro
   }
 
   try {
-    const [org] = await db
+    const [org] = await withDbTransactionIfHeld(() => db
       .select({ id: organizations.id })
       .from(organizations)
       // The hidden Quick Support and holding orgs are real rows under the
@@ -27,7 +27,7 @@ export async function resolveAuditOrgIdForPartner(partnerId: string | null): Pro
         isNull(organizations.deletedAt),
       ))
       .orderBy(organizations.createdAt)
-      .limit(1);
+      .limit(1));
 
     return org?.id ?? null;
   } catch (err) {

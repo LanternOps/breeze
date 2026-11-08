@@ -59,7 +59,7 @@ async function markRestoreJobFailed(restoreJobId: string, error: string): Promis
       status: 'failed',
       completedAt: now,
       updatedAt: now,
-      targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object('error', ${error})`,
+      targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object('error', ${error}::text)`,
     })
     .where(eq(restoreJobs.id, restoreJobId));
 }

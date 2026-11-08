@@ -732,10 +732,10 @@ agentVersionRoutes.get(
 
     // The pin batch is per-org; the promoted fallback is edition-wide, so it
     // is resolved ONCE for the whole request regardless of org count.
-    const [pinsByOrg, promoted] = await Promise.all([
-      getOrgAgentVersionPinsBatch(allowed),
-      getPromotedAgentVersionForDisplay(),
-    ]);
+    // In sequence: the promoted read opens a savepoint, which is unsafe beside a
+    // sibling on this connection (#11225).
+    const pinsByOrg = await getOrgAgentVersionPinsBatch(allowed);
+    const promoted = await getPromotedAgentVersionForDisplay();
 
     const data: Record<string, string | null> = {};
     for (const orgId of allowed) {

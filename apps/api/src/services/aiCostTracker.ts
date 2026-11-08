@@ -6,7 +6,7 @@
  * priced and written by aiModels/settleInvocation.ts (W03 #7601).
  */
 
-import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext, withDbTransactionIfHeld } from '../db';
 import { aiSessions, aiCostUsage, aiBudgets, organizations } from '../db/schema';
 import { aiAgentRuns } from '../db/schema/aiAgents';
 import { eq, and, sql, desc, isNotNull, isNull, inArray } from 'drizzle-orm';
@@ -888,11 +888,11 @@ async function getRecentCatalogEntryIdForOrg(orgId: string): Promise<string | nu
  */
 async function readPartnerCreditsForUsage(orgId: string): Promise<CachedPartnerCredits | null> {
   try {
-    const [org] = await db
+    const [org] = await withDbTransactionIfHeld(() => db
       .select({ partnerId: organizations.partnerId })
       .from(organizations)
       .where(eq(organizations.id, orgId))
-      .limit(1);
+      .limit(1));
     if (!org?.partnerId) return null;
 
     const redis = getRedis();
@@ -905,7 +905,8 @@ async function readPartnerCreditsForUsage(orgId: string): Promise<CachedPartnerC
 
     const fetched = await fetchAndCachePartnerCredits(org.partnerId);
     return fetched.ok ? fetched.credits : null;
-  } catch {
+  } catch (err) {
+    console.error('[aiCostTracker] partner credits read failed; /ai/usage shows no credits', { orgId, err });
     return null;
   }
 }
