@@ -6,6 +6,8 @@ vi.mock('../db', () => ({
   db: {
     select: (...args: unknown[]) => selectMock(...(args as [])),
   },
+  withDbTransaction: (fn: () => unknown) => fn(),
+  withDbTransactionIfHeld: (fn: () => unknown) => fn(),
 }));
 
 vi.mock('../db/schema', () => ({

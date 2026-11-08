@@ -46,7 +46,7 @@ import {
   matchesMergedListFilters,
   sortByDisplayName,
 } from "./mergedListFilter";
-import ConnectDesktopButton from "../remote/ConnectDesktopButton";
+import ConnectDesktopButton, { type RemoteToolOption } from "../remote/ConnectDesktopButton";
 // Single source of truth for "can this device still accept a queued command?".
 // Hoisted out of this file (#2465): the bulk bar in DevicesPage needs the SAME
 // rule, and re-deriving it per surface is exactly how the false "must be online"
@@ -339,6 +339,13 @@ export type Device = {
   } | null;
   desktopAccess?: DesktopAccessState | null;
   remoteAccessPolicy?: RemoteAccessPolicy | null;
+  /**
+   * #10922 — detail endpoint only: the third-party tools this device can be
+   * opened with, and which one the Connect button's primary click launches.
+   * Empty unless the caller holds remote:access.
+   */
+  remoteAccessProviders?: RemoteToolOption[];
+  remoteAccessDefaultProviderId?: string | null;
   /**
    * Server-detected asymmetry: timestamp at which the API stopped
    * receiving main-agent heartbeats while the watchdog is still

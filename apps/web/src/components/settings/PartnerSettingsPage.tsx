@@ -400,7 +400,14 @@ export default function PartnerSettingsPage() {
                 onThresholdsTextChange={me.setThresholdsRaw}
               />
             )}
-            {activeTab === 'aiApprovals' && card(<PartnerAiApprovalsTab data={state.aiApprovals} onChange={v => update('aiApprovals', v)} />)}
+            {activeTab === 'aiApprovals' && card(
+              <PartnerAiApprovalsTab
+                data={state.aiApprovals}
+                onChange={v => update('aiApprovals', v)}
+                budgets={state.aiBudgets}
+                onBudgetsChange={v => update('aiBudgets', v)}
+              />
+            )}
 
             {/* AI Providers & Models: connection and model rows are list items; the
                 feature-defaults card inside is the tab's form card. */}

@@ -129,8 +129,10 @@ describe('PatchJobDetail', () => {
     expect(screen.getByTestId('patch-job-result-skip-reason-e')).toHaveTextContent(
       'every pending update on this device is managed by Vendor updates',
     );
-    // Other skip codes keep their existing (silent) rendering.
-    expect(screen.queryByTestId('patch-job-result-skip-reason-d')).not.toBeInTheDocument();
+    // #11281: no_approved_patches gets a sentence too, not a bare "skipped".
+    expect(screen.getByTestId('patch-job-result-skip-reason-d')).toHaveTextContent(
+      'Skipped: none of the pending updates on this device are approved.',
+    );
   });
 
   it('shows an empty-results message when the job has no per-device results', async () => {

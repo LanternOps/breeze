@@ -31,18 +31,18 @@ type SnapshotStorageInput = {
 export const BACKUP_SNAPSHOT_ROOT_DIR = 'snapshots';
 export const BACKUP_SNAPSHOT_MANIFEST_KEY = 'manifest.json';
 
-// A legitimate manifest is one JSON entry per backed-up file; 200MB comfortably
-// covers very large fleets while still bounding the heap buffer a manifest
-// fetch holds. Every manifest-shaped object this API reads (file-index
-// hydration, GC mark-phase liveness checks, orphan reconcile) is written
-// directly by the reporting agent at a predictable key, so its size is not
-// otherwise bounded — shared here (rather than in backupSnapshotFileIndex.ts,
-// its original home) because backupRetention.ts and backupSnapshotReconcile.ts
-// both need it too and both already sit upstream of that module.
+// Largest manifest-shaped object read WHOLE into memory. Every such object is
+// written directly by the reporting agent at a predictable key, so its size is
+// not otherwise bounded. The snapshot manifest itself is no longer read this
+// way anywhere (file-index hydration, GC marking and orphan reconcile all
+// stream it, under MANIFEST_STREAM_MAX_BYTES); the GC still reads the much
+// smaller system-state manifest whole, under this cap.
 export const MANIFEST_FETCH_MAX_BYTES = 200 * 1024 * 1024;
 
-// Largest manifest read as a stream (#11026): about 4M entries. Bounds the
-// spool's disk use in file-index hydration; nothing holds these bytes in memory.
+// Largest snapshot manifest read as a stream (#11026, #11232, #11233): about
+// 4M entries. Bounds the spool's disk use in file-index hydration; GC marking
+// and orphan reconcile read it straight from storage. Nothing holds these
+// bytes in memory.
 export const MANIFEST_STREAM_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 
 export type BackupObjectListing = { key: string; lastModified: Date | null };
@@ -587,9 +587,9 @@ export async function openBackupObjectStream(input: {
 }
 
 /**
- * Fetches one object's contents as text (used by GC to fetch/parse retained
- * snapshot manifests, and by snapshot reconcile to read an adopted
- * snapshot's manifest). Throws on any failure — callers must treat a throw
+ * Fetches one object's contents as text (used by GC to fetch/parse a retained
+ * snapshot's system-state manifest; snapshot manifests themselves are
+ * streamed, see openBackupObjectStream). Throws on any failure — callers must treat a throw
  * as "mark phase failed, no sweep this run" per the fail-closed GC contract.
  *
  * `maxBytes`, when passed, rejects (via `BackupObjectTooLargeError`, checked

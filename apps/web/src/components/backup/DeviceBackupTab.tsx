@@ -672,8 +672,11 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
                       <td className="py-2 pr-4 text-muted-foreground">
                         {formatDuration(job.startedAt, job.completedAt)}
                       </td>
-                      <td className="py-2 pr-4 text-muted-foreground">
-                        {job.dataAccounting && job.status !== 'running' && job.status !== 'pending' ? (
+                      <td data-testid="backup-job-size" className="py-2 pr-4 text-muted-foreground">
+                        {job.status === 'running' || job.status === 'pending' ? (
+                          // The total is the whole job's size; live progress is on the active card above.
+                          '-'
+                        ) : job.dataAccounting ? (
                           <BackupJobDataSummary accounting={job.dataAccounting} variant="cell" />
                         ) : (
                           formatBytes(job.totalSize, '-')

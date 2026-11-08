@@ -1,8 +1,10 @@
 import { useTranslation } from 'react-i18next';
+import { Clock } from 'lucide-react';
 import type { WispTimelinePost } from '@breeze/shared';
 import { formatRelativeTime } from '@/lib/utils';
 import WispBriefPost from './WispBriefPost';
 import { safeActivityHref } from './wispActivity';
+import { checkInIdFromLink } from './wispThreadHash';
 
 /**
  * One durable proactive Wisp post (morning brief, nudge, digest, check-in, first look or
@@ -12,8 +14,23 @@ import { safeActivityHref } from './wispActivity';
  * link. Nudge actions live in the rail's concern row (that row component is
  * not exported from WispConcernsPanel), so a nudge links to it via `post.link`.
  * All server text renders as literal React text.
+ *
+ * A check-in post (W05 #10996) carries a clock icon and `data-check-in-id`
+ * (read from its `#checkin=<id>` link) so the thread can scroll the bell's
+ * deep link to it. **Run now** renders only when `onRunNow` is set: the thread
+ * passes it for a check-in that is still `fired` (not yet consumed).
  */
-export default function WispPost({ post, now }: { post: WispTimelinePost; now?: number }) {
+export default function WispPost({
+  post,
+  now,
+  onRunNow,
+  runNowDisabled = false,
+}: {
+  post: WispTimelinePost;
+  now?: number;
+  onRunNow?: () => void;
+  runNowDisabled?: boolean;
+}) {
   const { t } = useTranslation('ai');
   const unread = post.read === false;
 
@@ -44,11 +61,22 @@ export default function WispPost({ post, now }: { post: WispTimelinePost; now?: 
               : t('wisp.post.brief');
   // A check-in's and a first look's link is this same thread, so an "Open" link
   // would go nowhere.
-  const href = post.kind === 'check_in' || post.kind === 'first_look' ? null : safeActivityHref(post.link);
+  const isCheckIn = post.kind === 'check_in';
+  const href = isCheckIn || post.kind === 'first_look' ? null : safeActivityHref(post.link);
+  const checkInId = isCheckIn ? checkInIdFromLink(post.link) : null;
 
   return (
-    <article data-testid="wisp-post" data-kind={post.kind} data-variant={post.variant} className="space-y-1">
+    <article
+      data-testid="wisp-post"
+      data-kind={post.kind}
+      data-variant={post.variant}
+      data-check-in-id={checkInId ?? undefined}
+      className="space-y-1"
+    >
       <p className="text-xs font-medium text-muted-foreground">
+        {isCheckIn && (
+          <Clock data-testid="wisp-post-check-in-icon" className="mr-1 inline-block h-3 w-3 align-[-2px]" aria-hidden="true" />
+        )}
         {unread && (
           <span
             data-testid="wisp-post-unread"
@@ -79,6 +107,17 @@ export default function WispPost({ post, now }: { post: WispTimelinePost; now?: 
         >
           {t('wisp.post.open')}
         </a>
+      )}
+      {isCheckIn && onRunNow && (
+        <button
+          type="button"
+          data-testid="wisp-post-run-now"
+          onClick={onRunNow}
+          disabled={runNowDisabled}
+          className="mt-1 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {t('wisp.checkIn.runNow')}
+        </button>
       )}
     </article>
   );

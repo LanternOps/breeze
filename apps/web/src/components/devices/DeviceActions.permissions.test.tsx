@@ -111,14 +111,14 @@ describe('DeviceActions Remote Tools is permission-gated (live device inspection
 // off it shows nowhere. The server's refusals stay the real check.
 describe('DeviceActions — Run vendor updates (#11065)', () => {
   const dell: Device = { ...offlineDevice, status: 'online', agentVersion: OEM_UPDATE_MIN_AGENT_VERSION };
-  const statusBody = (lane: string | null) => ({
+  const statusBody = (lane: string | null, bios: 'open' | 'closed' = 'open') => ({
     displayState: 'not_managed',
     lane,
     status: null,
-    gates: { bios: 'closed', firmware: 'closed', driver: 'closed', application: 'closed' },
+    gates: { bios, firmware: 'closed', driver: 'closed', application: 'closed' },
   });
-  const answerStatus = (lane: string | null) =>
-    vi.mocked(fetchWithAuth).mockResolvedValue({ ok: true, status: 200, json: async () => statusBody(lane) } as Response);
+  const answerStatus = (lane: string | null, bios: 'open' | 'closed' = 'open') =>
+    vi.mocked(fetchWithAuth).mockResolvedValue({ ok: true, status: 200, json: async () => statusBody(lane, bios) } as Response);
   const item = () => screen.queryByTestId('device-action-run-vendor-updates');
 
   beforeEach(() => {
@@ -187,6 +187,18 @@ describe('DeviceActions — Run vendor updates (#11065)', () => {
     const action = await screen.findByTestId('device-action-run-vendor-updates');
     expect(action.getAttribute('aria-disabled')).toBe('true');
     expect(action.getAttribute('title')).toContain(OEM_UPDATE_MIN_AGENT_VERSION);
+    await userEvent.click(action);
+    expect(screen.queryByTestId('run-vendor-updates-dialog')).toBeNull();
+  });
+
+  it('disabled with the lane-closed reason when every category gate is closed (#11281)', async () => {
+    h.granted.add('devices:execute');
+    answerStatus('dell', 'closed');
+    render(<DeviceActions device={dell} compact />);
+    await openMore();
+    const action = await screen.findByTestId('device-action-run-vendor-updates');
+    expect(action.getAttribute('aria-disabled')).toBe('true');
+    expect(action.getAttribute('title')).toBe("Vendor updates are not available yet for this device's manufacturer.");
     await userEvent.click(action);
     expect(screen.queryByTestId('run-vendor-updates-dialog')).toBeNull();
   });

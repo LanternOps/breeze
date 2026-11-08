@@ -487,6 +487,7 @@
     "rebootDone": "Tamamlandı",
     "rebootNotRequired": "—",
     "skipReasons": {
+      "no_approved_patches": "Atlandı: bu cihazdaki bekleyen güncellemelerin hiçbiri onaylanmadı.",
       "ring_deleted": "Gönderimden önce iptal edildi: güncelleme halkası silindi.",
       "ring_disabled": "Gönderimden önce iptal edildi: güncelleme halkası devre dışı bırakıldı.",
       "ring_unavailable": "Atlandı: güncelleme halkası bu cihaza gönderilmeden önce silindi veya devre dışı bırakıldı.",

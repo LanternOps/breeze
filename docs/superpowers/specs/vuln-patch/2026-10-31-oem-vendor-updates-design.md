@@ -246,6 +246,10 @@ Windows Update includes drivers by default (`feature_update_policy.go:167-181`).
 
 Otherwise Windows Update keeps delivering it. A consumer Dell the tool refuses, or a Surface whose firmware gate is closed, must not lose its only update path. Excluded patches are shown as "managed by Vendor updates". Devices without a lane are unchanged, and security and quality updates aren't affected.
 
+**The exclusion is per vendor as well as per update class.** A lane delivers only its own manufacturer's updates, so a class being delivered is not enough. An update is left to a lane only when its own manufacturer names that lane; off Surface, its `DriverClass` must also be on an allowlist of a PC's own hardware (so a Surface lane leaves an Intel driver, and a Dell, HP or Lenovo lane leaves a printer driver, with Windows Update). Firmware additionally requires a reboot Breeze controls (`reboot` is not `never`) and, on Dell, HP and Lenovo, where BIOS is its own category, BIOS delivered too (Surface has no separate BIOS). An update that fails any of these stays with Windows Update.
+
+*Amended 2026-11-06 (W08, #11240).*
+
 **What this doesn't cover, on purpose:**
 - **Native Windows Update isn't touched.** It's a separate channel (`winupdate.go`), and suppressing drivers there could also starve the Surface lane. If the lab shows real version conflicts, that's a later change.
 - **A tech's manual install on a device still works** (`routes/devices/patches.ts:227`). An explicit action wins.

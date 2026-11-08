@@ -19,13 +19,21 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export const FINISHED_OUTCOMES: ReadonlySet<OemOutcome> = new Set(['success', 'success_reboot_required', 'no_updates']);
 
 /** A tech has to look. `blocked_on_battery` and `retry_later` retry by themselves, so they are not here. */
-const FAILING_OUTCOMES: ReadonlySet<OemOutcome> = new Set([
+export const FAILING_OUTCOMES: ReadonlySet<OemOutcome> = new Set([
   'failed',
   'partial',
   'tool_unavailable',
   'interrupted',
   'blocked_no_recovery_key',
 ]);
+
+/** See `managedSince` below. Once past the last night, `windowStart` is that night's. */
+export function hadAChanceAtLastNight(
+  managedSince: Date | null | undefined,
+  occurrence: { windowStart?: Date } | null | undefined,
+): boolean {
+  return !(managedSince && occurrence?.windowStart && managedSince >= occurrence.windowStart);
+}
 
 /**
  * What one device shows, from its status row, whether a policy link applies, and
@@ -79,7 +87,6 @@ export function deriveOemDisplayState(input: {
     inThisOccurrence && status?.lastOutcome && FINISHED_OUTCOMES.has(status.lastOutcome),
   );
   if (finishedThisOccurrence) return 'up_to_date';
-  const hadAChance = !(managedSince && occurrence?.windowStart && managedSince >= occurrence.windowStart);
-  if (occurrence?.isPastLastNight && hadAChance) return 'overdue';
+  if (occurrence?.isPastLastNight && hadAChanceAtLastNight(managedSince, occurrence)) return 'overdue';
   return status?.lastSuccessAt ? 'up_to_date' : 'not_managed';
 }

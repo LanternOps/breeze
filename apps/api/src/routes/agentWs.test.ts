@@ -33,6 +33,7 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn((fn: any) => fn()),
   withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
   withDbTransaction: vi.fn((fn: any) => fn()),
+  withDbTransactionIfHeld: vi.fn((fn: any) => fn()),
 }));
 
 // #6354 W02: the late caller-rejection branch imports the caller leaf module.
@@ -66,15 +67,15 @@ vi.mock('../jobs/offlineDetector', () => ({
   transitionDeviceOffline: transitionDeviceOfflineMock,
 }));
 
-const { shouldDeferOfflineTransitionMock, recordOfflineDeferredMock } = vi.hoisted(() => ({
-  shouldDeferOfflineTransitionMock: vi.fn(() => false),
-  recordOfflineDeferredMock: vi.fn(),
-}));
+const { beginOfflineTransitionMock, releaseOfflineWriteMock } = vi.hoisted(() => {
+  const releaseOfflineWriteMock = vi.fn();
+  return {
+    releaseOfflineWriteMock,
+    beginOfflineTransitionMock: vi.fn((_event: 'close' | 'error'): (() => void) | null => releaseOfflineWriteMock),
+  };
+});
 vi.mock('../services/admission/admissionRuntime', () => ({
-  shouldDeferOfflineTransition: shouldDeferOfflineTransitionMock,
-}));
-vi.mock('../services/admission/admissionMetrics', () => ({
-  recordOfflineDeferred: recordOfflineDeferredMock,
+  beginOfflineTransition: beginOfflineTransitionMock,
 }));
 
 const { recordDesktopClipboardSummaryMock } = vi.hoisted(() => ({
@@ -7828,6 +7829,10 @@ describe('#6836 — onClose survives a markOffline context-prologue failure', ()
 
     // The failure is reported, not swallowed.
     expect(captureException).toHaveBeenCalledWith(markOfflineFailure);
+
+    // #9520: the admission write slot is returned even though the context never opened.
+    expect(beginOfflineTransitionMock).toHaveBeenCalledWith('close');
+    expect(releaseOfflineWriteMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -8559,8 +8564,8 @@ describe('W08 admission integration', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
-    // resetAllMocks drops the hoisted default; re-arm the not-shedding state.
-    shouldDeferOfflineTransitionMock.mockReturnValue(false);
+    // resetAllMocks drops the hoisted default; re-arm "write now".
+    beginOfflineTransitionMock.mockReturnValue(releaseOfflineWriteMock);
   });
 
   async function openThenClose(handlers: ReturnType<typeof createAgentWsHandlers>, ws: ReturnType<typeof wsMock>) {
@@ -8574,18 +8579,31 @@ describe('W08 admission integration', () => {
     await handlers.onClose({}, ws as any);
   }
 
-  it('leaves the offline flip to the offline detector while admission is shedding', async () => {
-    shouldDeferOfflineTransitionMock.mockReturnValue(true);
+  it('leaves the offline flip to the offline detector when admission defers the write', async () => {
+    beginOfflineTransitionMock.mockReturnValue(null);
     await openThenClose(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
+    expect(beginOfflineTransitionMock).toHaveBeenCalledWith('close');
     expect(transitionDeviceOfflineMock).not.toHaveBeenCalled();
-    expect(recordOfflineDeferredMock).toHaveBeenCalledWith('close');
     expect(vi.mocked(clearAgentPresence)).toHaveBeenCalled(); // presence still cleared at once
   });
 
-  it('still flips offline at once when admission is not shedding', async () => {
+  it('flips offline at once when admission admits the write, and returns the write slot after it', async () => {
+    transitionDeviceOfflineMock.mockImplementation(async () => {
+      expect(releaseOfflineWriteMock).not.toHaveBeenCalled();         // held for the whole write
+      return { transitioned: true };
+    });
     await openThenClose(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
     expect(transitionDeviceOfflineMock).toHaveBeenCalledWith('agent-123', ['online']);
-    expect(recordOfflineDeferredMock).not.toHaveBeenCalled();
+    expect(releaseOfflineWriteMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the write slot when the offline write fails (#9520)', async () => {
+    transitionDeviceOfflineMock.mockRejectedValue(new Error('pool timeout'));
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await openThenClose(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
+    spy.mockRestore();
+    expect(transitionDeviceOfflineMock).toHaveBeenCalled();
+    expect(releaseOfflineWriteMock).toHaveBeenCalledTimes(1);
   });
 
   async function openThenError(handlers: ReturnType<typeof createAgentWsHandlers>, ws: ReturnType<typeof wsMock>) {
@@ -8600,18 +8618,25 @@ describe('W08 admission integration', () => {
     spy.mockRestore();
   }
 
-  it('onError leaves the offline flip to the offline detector while admission is shedding', async () => {
-    shouldDeferOfflineTransitionMock.mockReturnValue(true);
+  it('onError leaves the offline flip to the offline detector when admission defers the write', async () => {
+    beginOfflineTransitionMock.mockReturnValue(null);
     await openThenError(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
+    expect(beginOfflineTransitionMock).toHaveBeenCalledWith('error');
     expect(transitionDeviceOfflineMock).not.toHaveBeenCalled();
-    expect(recordOfflineDeferredMock).toHaveBeenCalledWith('error');
     expect(vi.mocked(clearAgentPresence)).toHaveBeenCalled();
   });
 
-  it('onError still flips offline at once when admission is not shedding', async () => {
+  it('onError flips offline at once when admission admits the write, and returns the write slot after it', async () => {
     await openThenError(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
     expect(transitionDeviceOfflineMock).toHaveBeenCalledWith('agent-123', ['online']);
-    expect(recordOfflineDeferredMock).not.toHaveBeenCalled();
+    expect(releaseOfflineWriteMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('onError returns the write slot when the offline write fails (#9520)', async () => {
+    transitionDeviceOfflineMock.mockRejectedValue(new Error('pool timeout'));
+    await openThenError(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
+    expect(transitionDeviceOfflineMock).toHaveBeenCalled();
+    expect(releaseOfflineWriteMock).toHaveBeenCalledTimes(1);
   });
 
   it('returns the admission setup slot even when onOpen throws', async () => {

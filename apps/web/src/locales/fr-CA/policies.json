@@ -384,6 +384,7 @@
         "retentionPolicy": "Politique de rétention",
         "retentionDays": "Jours de rétention",
         "maxVersions": "Nombre maximal de versions",
+        "retentionNotSet": "Non défini",
         "gFSRetention": "Rétention GFS",
         "keepLongerRunningRestorePointsForGrandfather": "Conservez des points de restauration plus longs pour la rétention grand-père-fils.",
         "dailyRetentionBelowFloor": "La rétention quotidienne est définie sur {{gfsDays}} jours, ce qui est inférieur au plancher de rétention de {{effectiveDays}} jours. L'expiration de cet instantané est fixée à {{effectiveDays}} jours, et non {{gfsDays}} -- l'expiration ne descend jamais sous le plancher. Une limite distincte de nombre maximal de versions peut néanmoins supprimer des instantanés plus anciens plus tôt.",

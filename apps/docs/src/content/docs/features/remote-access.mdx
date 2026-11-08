@@ -265,7 +265,7 @@ From v0.122.1, Ctrl/Cmd+Shift+V and Ctrl/Cmd+Shift+F are no longer viewer shortc
 
 ### Keyboard and Mouse Input
 
-- **Nothing stays held down.** When the viewer window loses focus or the session drops, the viewer and agent release every key and mouse button they pressed on the remote. If a key still seems stuck, use **Release stuck keys**.
+- **Nothing stays held down.** When the viewer window loses focus or the session drops, the viewer and agent release every key and mouse button they pressed on the remote. If a key still seems stuck, use **Release stuck keys**. With a current agent it also releases any Shift, Ctrl, Alt/Option, or Win/Command key the remote computer still reports as held. This includes one held by the person at that computer.
 - **German and French keyboards** (QWERTZ and AZERTY) type the right letters on Windows and Linux remotes.
 
 ### Keyboard Mode
@@ -273,7 +273,7 @@ From v0.122.1, Ctrl/Cmd+Shift+V and Ctrl/Cmd+Shift+F are no longer viewer shortc
 The **Keyboard mode** control in the Breeze Viewer toolbar (v0.123.0+) sets how your keystrokes reach the remote:
 
 - **Type what I see** (default). The remote resolves each key through its own keyboard layout, so the characters you see on your keys are what gets typed. IME composition (Chinese, Japanese, Korean input) and dead keys (for example ´ then E for É) are sent as finished text once you commit them. The remote sees nothing until the composition is committed.
-- **Physical keys**. The viewer sends the physical key position and the remote's own layout decides what it types, which keeps distinctions such as the numpad and the right-hand modifier keys. Use it when your keyboard and the remote machine share a non-US layout (French or Belgian AZERTY, Spanish, German): punctuation keys such as `ù`, `^`, `$`, `)`, `;`, `:`, `!` and `<>` then type exactly what is printed on them. It needs a WebRTC session and an agent from v0.123.0 or later (v0.126.0 or later for the punctuation and letter keys on Windows); on an older agent or a WebSocket session the option is disabled and its tooltip says why.
+- **Physical keys**. The viewer sends the physical key position and the remote's own layout decides what it types, which keeps distinctions such as the numpad and the right-hand modifier keys. Use it when your keyboard and the remote machine share a non-US layout (French or Belgian AZERTY, Spanish, German): punctuation keys such as `ù`, `^`, `$`, `)`, `;`, `:`, `!` and `<>` then type exactly what is printed on them. It needs a WebRTC session and an agent from v0.123.0 or later (v0.127.0 or later for the punctuation and letter keys on Windows); on an older agent or a WebSocket session the option is disabled and its tooltip says why.
 
 The mode is remembered for each device, and the last mode you chose becomes the default for devices that have no choice of their own. Keyboard mode does not apply to VNC sessions.
 
@@ -422,6 +422,8 @@ Each device then needs that custom field populated with its identifier for the t
 - Preset passwords are stored server-side only and are never embedded in the web bundle or earlier API responses. The launch URL is issued one-shot in response to an explicit user click and each issuance is audit logged.
 
 **Per-technician preference.** Each technician can pick their own remote tool from the tenant's enabled providers under **Settings → Profile → Preferred remote tool**. The preference only selects among providers the partner has already configured — it can never add one — and only affects that user's own **Connect → Desktop** clicks. If the chosen provider is later disabled or deleted, launches fall back to the tenant default. The chooser is hidden from users without remote-access permission.
+
+**Choosing a tool per click.** When a device can be opened with more than one tool, the **Connect Desktop** button on the device page and on Remote Tools becomes a split button. The main part does what it always did: it launches your preferred tool, or the tenant default, or the built-in viewer when neither applies (hover it to see which). The arrow next to it lists the other tools this device can use plus **Built-in viewer**, so you can pick AnyDesk for one session and the built-in viewer for the next without changing any setting. A tool appears in the list only when it is enabled and the device has its identifier custom field filled in. As with the preference, a pick only selects among the tools the partner has configured. If the tool was disabled after the page loaded, Breeze tells you it is no longer available and does not launch a different tool instead. The list appears only for users with remote-access permission, and only on the full-size button, not in the compact device-menu entries.
 
 ---
 
@@ -619,7 +621,7 @@ To free session capacity, close active sessions from the Active Sessions list on
 |--------|------|-------------|
 | POST | `/devices/:id/commands` | Body `{ "type": "wake" }` — dispatch a Wake-on-LAN magic packet to the device via an automatically selected relay agent. Returns the relay device and MACs attempted, or a specific failure reason. |
 | POST | `/mobile/devices/:id/actions` | Body `{ "action": "wake" }` — equivalent quick-action wake used by the mobile app. |
-| POST | `/devices/:id/remote-access-launch` | Issue a one-shot remote-desktop launch URL for the device's configured provider. Returns the resolved `launchUrl` and scheme, or `422` if no provider applies or the scheme is disallowed. |
+| POST | `/devices/:id/remote-access-launch` | Issue a one-shot remote-desktop launch URL for the device's configured provider. Optional body `{ "providerId": "<id>" }` launches that provider instead of the default; it must be one of the tenant's enabled providers. Returns the resolved `launchUrl`, `scheme` and `providerId`. Returns `404` if no provider applies (`code` `provider_not_available` when the requested id is not an enabled provider), `400` for a body that is not empty or `{ "providerId": string }`, and `422` if the resolved URL fails the scheme check. |
 
 Remote-access providers are configured per partner under **Settings → Remote**; see [Pluggable Remote-Desktop Launcher](#pluggable-remote-desktop-launcher).
 

@@ -384,6 +384,7 @@
         "retentionPolicy": "Aufbewahrungsrichtlinie",
         "retentionDays": "Aufbewahrungstage",
         "maxVersions": "Max-Versionen",
+        "retentionNotSet": "Nicht festgelegt",
         "gFSRetention": "GFS-Aufbewahrung",
         "keepLongerRunningRestorePointsForGrandfather": "Wiederherstellungspunkte für die Großvater-Vater-Sohn-Aufbewahrung länger aufbewahren.",
         "dailyRetentionBelowFloor": "Die tägliche Aufbewahrung ist auf {{gfsDays}} Tage eingestellt, kürzer als die Aufbewahrungsuntergrenze von {{effectiveDays}} Tagen. Der Ablauf dieses Snapshots ist auf {{effectiveDays}} Tage festgelegt, nicht auf {{gfsDays}} -- der Ablauf unterschreitet nie die Untergrenze. Ein separates Versionslimit kann ältere Snapshots dennoch früher entfernen.",

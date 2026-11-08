@@ -247,7 +247,7 @@ publishes its state and every refusal.
 | `breeze_admission_ws_bucket_tokens` / `breeze_admission_ws_setups_in_flight` | Gauge | WebSocket pacing state |
 | `breeze_admission_bulk_in_flight` | Gauge | Inventory-type uploads being processed |
 | `breeze_admission_tick_failures_total` | Counter | Admission controller ticks that threw. Five in a row fail open: the level is forced to 0 so shedding cannot persist on a stuck controller |
-| `breeze_admission_offline_deferred_total{event}` | Counter | WebSocket disconnects whose offline flip was left to the offline detector while under load |
+| `breeze_admission_offline_deferred_total{event,reason}` | Counter | WebSocket disconnects whose offline flip was left to the offline detector: `reason` is `level` (admission at level 1+) or `in_flight` (too many offline writes already running, e.g. a mass disconnect) |
 | `breeze_nodejs_eventloop_utilization` | Gauge | Event-loop utilization over the last second |
 
 Alert on `breeze_admission_level == 3` for 5 minutes: the instance is down to

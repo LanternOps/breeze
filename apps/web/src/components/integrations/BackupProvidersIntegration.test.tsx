@@ -281,13 +281,19 @@ describe("posted bodies stay byte-identical (raw JSON, including key order)", ()
     expect(postedBody()).toBe('{"provider":"dropsuite","baseUrl":"https://dropsuite.us/api/","name":"SaaS","showProviderNameInPortal":false,"credentials":{"resellerToken":"r","authToken":"a"}}');
   });
 
-  it("keeps the Cove password submit gate untrimmed and without a required attribute", async () => {
+  it("requires partner name, login and token for Cove before submit, and rejects a blank token", async () => {
     render(<BackupProvidersIntegration />);
     fireEvent.click(await screen.findByTestId("backup-providers-add"));
     fireEvent.change(screen.getByTestId("backup-add-name"), { target: { value: "Cove" } });
     expect(screen.getByTestId("backup-add-submit")).toBeDisabled();
-    fireEvent.change(screen.getByTestId("backup-add-password"), { target: { value: " " } });
+    fireEvent.change(screen.getByTestId("backup-add-password"), { target: { value: "p" } });
+    expect(screen.getByTestId("backup-add-submit")).toBeDisabled();
+    fireEvent.change(screen.getByTestId("backup-add-username"), { target: { value: "u" } });
+    expect(screen.getByTestId("backup-add-submit")).toBeDisabled();
+    fireEvent.change(screen.getByTestId("backup-add-partner-name"), { target: { value: "n" } });
     expect(screen.getByTestId("backup-add-submit")).not.toBeDisabled();
+    fireEvent.change(screen.getByTestId("backup-add-password"), { target: { value: " " } });
+    expect(screen.getByTestId("backup-add-submit")).toBeDisabled();
     expect(screen.getByTestId("backup-add-password")).not.toBeRequired();
     expect(screen.getByTestId("backup-add-username")).not.toBeRequired();
     expect(screen.getByTestId("backup-add-partner-name")).not.toHaveAttribute("autoComplete");

@@ -49,7 +49,8 @@
       "securityCheckToast": "Remote-Start nicht verfügbar: Sicherheitsprüfung fehlgeschlagen. Bitte wenden Sie sich an Ihren Administrator.",
       "securityPolicy": "Remote-Start durch Sicherheitsrichtlinie blockiert",
       "server": "Remote-Start fehlgeschlagen: Serverfehler. Bitte wenden Sie sich an Ihren Administrator.",
-      "vncTunnelFailed": "VNC-Tunnel konnte nicht geöffnet werden"
+      "vncTunnelFailed": "VNC-Tunnel konnte nicht geöffnet werden",
+      "providerUnavailable": "Dieses Fernwartungstool ist für dieses Gerät nicht mehr verfügbar. Aktualisieren Sie die Seite und versuchen Sie es erneut."
     },
     "fallback": {
       "linuxFirstRun": "Machen Sie die heruntergeladene Datei unter Linux ausführbar (chmod +x) und starten Sie sie einmal. Damit wird der Viewer registriert und Sitzungen öffnen sich danach automatisch.",
@@ -110,7 +111,14 @@
       "x11AuthFailed": "Authentifizierung am Anzeigeserver (X-Authority) nicht möglich",
       "x11ConnectFailed": "Verbindung zum Anzeigeserver auf diesem Gerät nicht möglich"
     },
-    "opensNewWindow": "(öffnet ein neues Fenster)"
+    "opensNewWindow": "(öffnet ein neues Fenster)",
+    "split": {
+      "builtInViewer": "Integrierter Viewer",
+      "connectWith": "Mit {{name}} verbinden",
+      "connectWithBuiltIn": "Mit dem integrierten Viewer verbinden",
+      "menuLabel": "Verbindungsart wählen",
+      "opensInBrowser": "Öffnet sich in einem neuen Browser-Tab"
+    }
   },
   "connectVncButton": {
     "creatingTunnel": "Tunnel erstellen...",

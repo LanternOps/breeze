@@ -63,7 +63,9 @@ The browser and the selective-restore tree read a per-snapshot **file list** tha
 </Aside>
 
 <Aside type="note" title="Large snapshots: current bound">
-  Browsing, search and folder restore are tested to the 1.1-million-entry shape above. That is not a claim that Breeze fully supports snapshots of that size yet: storage cleanup and the reconcile job still skip manifests over 200 MiB, and the agent parses a whole manifest in memory on restore. Those are tracked as follow-ups.
+  Browsing, search and folder restore are tested to the 1.1-million-entry shape above. That is not a claim that Breeze fully supports snapshots of that size yet: the agent still parses a whole manifest in memory on restore, which is tracked as a follow-up.
+
+  Storage cleanup and the reconcile job read a manifest as a stream, up to the same 2 GiB limit as browsing. Storage cleanup keeps every object key that a retained snapshot still references in memory while it runs. In a lab measurement with 132-character keys, that was 170 to 180 bytes per key, or about 165 MiB for one million keys on one destination. When reconcile adopts a snapshot whose file list is larger than an agent's own result can carry (about 5 MB), it leaves the list out and the file index is built from the manifest, the same as for an agent result.
 </Aside>
 
 ---
