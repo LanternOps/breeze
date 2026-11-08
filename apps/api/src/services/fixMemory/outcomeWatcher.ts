@@ -153,8 +153,9 @@ async function deviceLeftOrg(row: FixOutcomeRow): Promise<boolean> {
  * A failed/timed-out execution that never started is checked against its
  * command row: only a DELIVERY-clock expiry (staleCommandReaper,
  * result.clock = 'delivery') means it never reached the device. A missing
- * started_at alone is not enough: agents on the HTTP polling path never get
- * one, and their reported failures are real.
+ * started_at alone is not enough: rows delivered before the HTTP claim began
+ * stamping it (#7279, commandDelivery.ts) never got one, and their reported
+ * failures are real.
  */
 async function readScript(executionId: string | null, deviceId: string): Promise<ScriptReading | null> {
   if (!executionId) return null;
