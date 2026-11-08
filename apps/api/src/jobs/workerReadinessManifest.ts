@@ -313,8 +313,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // Wisp W05b (#9917): daily concern retention — same shape (one Worker, no
   // flag gate before construction, attached under its registry-key name).
   consumers('wispConcernRetention'),
-  // #11430: 15-minute chat session expiry sweep — same shape (one Worker,
-  // constructed and attached unconditionally under its registry-key name).
+  // #11430: 15-minute chat session expiry sweep — one Worker, no flag gate,
+  // constructed and attached unconditionally under its registry-key name.
   consumers('aiChatSessionExpirySweep'),
   // Wisp W06a (#9912): 15-minute nudge digest + morning brief — same shape
   // (one Worker constructed and attached unconditionally; flag read per run).

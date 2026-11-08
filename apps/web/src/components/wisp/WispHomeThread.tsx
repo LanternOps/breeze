@@ -5,7 +5,7 @@ import { isPinnedLink } from '@/lib/wispLinksApi';
 import { cancelWispCheckIn, listWispCheckIns } from '@/lib/wispCheckInsApi';
 import { ActionError } from '@/lib/runAction';
 import { showToast } from '@/components/shared/Toast';
-import { WISP_THREAD_LINK_LIMIT, type WispBriefSchedule, type WispCheckIn, type WispFirstLookProgress, type WispFirstLookState, type WispThreadLink, type WispTimelinePost } from '@breeze/shared';
+import { AI_SESSION_IDLE_TIMEOUT_MS, AI_SESSION_MAX_AGE_MS, WISP_THREAD_LINK_LIMIT, type WispBriefSchedule, type WispCheckIn, type WispFirstLookProgress, type WispFirstLookState, type WispThreadLink, type WispTimelinePost } from '@breeze/shared';
 import { useAiStore, type WispState } from '@/stores/aiStore';
 import { fetchWithAuth } from '@/stores/auth';
 import AiChatMessages from '../ai/AiChatMessages';
@@ -31,16 +31,13 @@ type Wisp = NonNullable<WispState>;
 type Binding = 'binding' | 'live' | 'failed' | 'not_configured';
 
 /**
- * The server's chat-session lifetime (apps/api aiAgentSessionLimits.ts): a send
- * to a session older than 24 h or idle for 2 h is refused with 410.
+ * Past the server's chat-session lifetime (the shared AI_SESSION_* limits; a
+ * send past either is refused with 410) by the session's own timestamps. An
+ * unreadable timestamp is left to the status.
  */
-const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000;
-
-/** Past the server's age or idle limit by its own timestamps; an unreadable one is left to the status. */
 function pastSessionLifetime(session: { createdAt?: unknown; lastActivityAt?: unknown }, now = Date.now()): boolean {
   const ageOf = (value: unknown) => (typeof value === 'string' ? now - Date.parse(value) : Number.NaN);
-  return ageOf(session.createdAt) > SESSION_MAX_AGE_MS || ageOf(session.lastActivityAt) > SESSION_IDLE_TIMEOUT_MS;
+  return ageOf(session.createdAt) > AI_SESSION_MAX_AGE_MS || ageOf(session.lastActivityAt) > AI_SESSION_IDLE_TIMEOUT_MS;
 }
 
 /**

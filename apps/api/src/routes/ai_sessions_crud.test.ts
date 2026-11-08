@@ -36,6 +36,7 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
     select: vi.fn(),
     insert: vi.fn(),
@@ -55,6 +56,11 @@ vi.mock('../db/schema', () => ({
   aiMessages: {
     id: 'aiMessages.id',
     sessionId: 'aiMessages.sessionId',
+  },
+  aiBudgetReservations: {
+    sessionId: 'aiBudgetReservations.sessionId',
+    status: 'aiBudgetReservations.status',
+    expiresAt: 'aiBudgetReservations.expiresAt',
   },
   aiToolExecutions: {
     id: 'aiToolExecutions.id',
@@ -168,7 +174,8 @@ vi.mock('../services/sentry', () => ({
 }));
 
 import { aiRoutes } from './ai';
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
+import { captureException } from '../services/sentry';
 import {
   createSession,
   getSession,
@@ -186,6 +193,13 @@ import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
 import { LlmNotConfiguredError } from '../services/llm/llmAvailability';
 
 const ORG_ID = 'org-111';
+
+/** #11430: the read's guarded stamp — UPDATE … RETURNING the rows it flipped. */
+function mockStampReturning(rows: Array<{ id: string }>) {
+  const set = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(rows) }) });
+  vi.mocked(db.update).mockReturnValue({ set } as any);
+  return set;
+}
 const SESSION_ID = '11111111-1111-1111-1111-111111111111';
 
 
@@ -502,9 +516,7 @@ describe('AI routes', () => {
         session: { id: SESSION_ID, type: 'general', userId: 'user-1', status: 'active', createdAt: threeDaysAgo, lastActivityAt: threeDaysAgo },
         messages: [],
       } as any);
-      const where = vi.fn().mockResolvedValue(undefined);
-      const set = vi.fn().mockReturnValue({ where });
-      vi.mocked(db.update).mockReturnValue({ set } as any);
+      const set = mockStampReturning([{ id: SESSION_ID }]);
 
       const res = await app.request(`/ai/sessions/${SESSION_ID}`, {
         method: 'GET',
@@ -517,6 +529,67 @@ describe('AI routes', () => {
       expect(db.update).toHaveBeenCalledTimes(1);
       expect(set).toHaveBeenCalledWith(expect.objectContaining({ status: 'expired' }));
       await vi.waitFor(() => expect(finalizeMock).toHaveBeenCalledWith(SESSION_ID));
+    });
+
+    it('#11430: a stale session with a turn still running (the guarded stamp matched no row) reads as active, unfinalized', async () => {
+      const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
+      vi.mocked(getSessionMessages).mockResolvedValueOnce({
+        session: { id: SESSION_ID, type: 'general', userId: 'user-1', status: 'active', createdAt: threeHoursAgo, lastActivityAt: threeHoursAgo },
+        messages: [],
+      } as any);
+      mockStampReturning([]);
+
+      const res = await app.request(`/ai/sessions/${SESSION_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect((await res.json()).session.status).toBe('active');
+      expect(db.update).toHaveBeenCalledTimes(1);
+      expect(finalizeMock).not.toHaveBeenCalled();
+    });
+
+    it('#11430: a failed stamp never fails the read: 200 with the stored status, reported to Sentry', async () => {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+      vi.mocked(getSessionMessages).mockResolvedValueOnce({
+        session: { id: SESSION_ID, type: 'general', userId: 'user-1', status: 'active', createdAt: threeDaysAgo, lastActivityAt: threeDaysAgo },
+        messages: [{ role: 'user', content: 'hello' }],
+      } as any);
+      const boom = new Error('lock timeout');
+      vi.mocked(db.update).mockReturnValue({
+        set: () => ({ where: () => ({ returning: () => Promise.reject(boom) }) }),
+      } as any);
+
+      const res = await app.request(`/ai/sessions/${SESSION_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.session.status).toBe('active');
+      expect(body.messages).toHaveLength(1);
+      expect(vi.mocked(withDbTransaction)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(captureException)).toHaveBeenCalledWith(boom);
+      expect(finalizeMock).not.toHaveBeenCalled();
+      errSpy.mockRestore();
+    });
+
+    it('#11430: a closed session keeps its status however old', async () => {
+      const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+      vi.mocked(getSessionMessages).mockResolvedValueOnce({
+        session: { id: SESSION_ID, type: 'general', userId: 'user-1', status: 'closed', createdAt: threeDaysAgo, lastActivityAt: threeDaysAgo },
+        messages: [],
+      } as any);
+
+      const res = await app.request(`/ai/sessions/${SESSION_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect((await res.json()).session.status).toBe('closed');
+      expect(db.update).not.toHaveBeenCalled();
     });
 
     it('#11430: leaves a recently active chat session alone', async () => {
@@ -536,10 +609,13 @@ describe('AI routes', () => {
       expect(finalizeMock).not.toHaveBeenCalled();
     });
 
-    it('#11430: never re-stamps a non-chat session (an MCP ledger row) from the read', async () => {
+    it.each([
+      ['an MCP ledger row', 'mcp', 'user-1'],
+      ['a Helper session (no user, its own lifecycle)', 'general', null],
+    ])('#11430: never re-stamps %s from the read', async (_label, type, userId) => {
       const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
       vi.mocked(getSessionMessages).mockResolvedValueOnce({
-        session: { id: SESSION_ID, type: 'mcp', userId: 'user-1', status: 'active', createdAt: threeDaysAgo, lastActivityAt: threeDaysAgo },
+        session: { id: SESSION_ID, type, userId, status: 'active', createdAt: threeDaysAgo, lastActivityAt: threeDaysAgo },
         messages: [],
       } as any);
 
@@ -616,6 +692,20 @@ describe('AI routes', () => {
 
       expect(res.status).toBe(503);
       expect(await res.json()).toEqual({ error: expect.stringMatching(/not configured/i), code: 'ai_not_configured' });
+      expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
+    });
+
+    it('#11430: an expired session is a coded 410 (session_expired) the client can roll on, before touching the SDK manager', async () => {
+      vi.mocked(runPreFlightChecks).mockResolvedValueOnce({ ok: false, error: 'Session has expired due to inactivity. Please start a new session.' });
+
+      const res = await app.request(`/ai/sessions/${SESSION_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ content: 'hello there' }),
+      });
+
+      expect(res.status).toBe(410);
+      expect(await res.json()).toEqual({ error: expect.stringContaining('expired'), code: 'session_expired' });
       expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
     });
 

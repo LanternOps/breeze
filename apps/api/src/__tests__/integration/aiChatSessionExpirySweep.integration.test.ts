@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { inArray } from 'drizzle-orm';
 
 import { sweepIdleChatSessions } from '../../jobs/aiChatSessionExpirySweep';
-import { aiSessions } from '../../db/schema';
+import { aiBudgetReservations, aiSessions } from '../../db/schema';
 import { setupTestEnvironment, type TestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -11,8 +11,10 @@ import { getTestDb } from './setup';
  * #11430 against real Postgres: the 15-minute sweep retires exactly the chat
  * sessions the send would refuse — idle past the eviction window or past the
  * 24 h cap — and nothing else: not a fresh chat, not a Helper session (no user,
- * its own lifecycle), not an MCP ledger row, not a session already closed. A
- * second run finds nothing (idempotent).
+ * its own lifecycle), not an MCP ledger row, not a session already closed, and
+ * not a session whose turn is still running (a live budget reservation) — a
+ * reservation stranded past its `expires_at` stops protecting it. A second run
+ * finds nothing (idempotent).
  */
 const HOUR = 60 * 60 * 1000;
 
@@ -35,6 +37,21 @@ async function insertSession(values: {
     lastActivityAt: new Date(now - values.idleHoursAgo * HOUR),
   }).returning({ id: aiSessions.id });
   return row!.id;
+}
+
+/** A turn's budget hold: `active` from admission until it settles, bounded by `expires_at`. */
+async function holdTurn(orgId: string, sessionId: string, expiresInMinutes: number): Promise<void> {
+  await getTestDb().insert(aiBudgetReservations).values({
+    orgId,
+    sessionId,
+    idempotencyKey: `turn-${sessionId}`,
+    billingSource: 'platform',
+    dailyPeriodKey: '2026-11-08',
+    monthlyPeriodKey: '2026-11',
+    reservedCostCents: '0',
+    uncapped: true,
+    expiresAt: new Date(Date.now() + expiresInMinutes * 60_000),
+  });
 }
 
 async function statuses(ids: Record<string, string>): Promise<Record<string, string>> {
@@ -64,7 +81,13 @@ describe('aiChatSessionExpirySweep (#11430, real DB)', () => {
       helper: await insertSession({ orgId: org, userId: null, createdHoursAgo: 72, idleHoursAgo: 72 }),
       mcp: await insertSession({ orgId: org, userId: user, type: 'mcp', createdHoursAgo: 72, idleHoursAgo: 72 }),
       closed: await insertSession({ orgId: org, userId: user, status: 'closed', createdHoursAgo: 72, idleHoursAgo: 72 }),
+      // last_activity_at only moves when a turn settles: a turn admitted just
+      // inside the window is still running past it.
+      turnRunning: await insertSession({ orgId: org, userId: user, createdHoursAgo: 3, idleHoursAgo: 2.05 }),
+      turnStranded: await insertSession({ orgId: org, userId: user, createdHoursAgo: 3, idleHoursAgo: 2.05 }),
     };
+    await holdTurn(org, ids.turnRunning, 25);
+    await holdTurn(org, ids.turnStranded, -5);
 
     const first = await sweepIdleChatSessions();
 
@@ -76,8 +99,10 @@ describe('aiChatSessionExpirySweep (#11430, real DB)', () => {
       helper: 'active',
       mcp: 'active',
       closed: 'closed',
+      turnRunning: 'active',
+      turnStranded: 'expired',
     });
-    expect(first).toMatchObject({ expired: 3, capped: false });
+    expect(first).toMatchObject({ expired: 4, capped: false });
 
     await expect(sweepIdleChatSessions()).resolves.toEqual({ scanned: 0, expired: 0, capped: false });
   });

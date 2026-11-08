@@ -473,7 +473,7 @@ describe('aiStore — Wisp rolls to a fresh session when the bound one expired (
   const messagePosts = () => fetchMock.mock.calls
     .filter(([url, init]) => String(url).endsWith('/messages') && (init as RequestInit | undefined)?.method === 'POST')
     .map(([url, init]) => ({ url: String(url), body: JSON.parse(String((init as RequestInit).body)) as Record<string, unknown> }));
-  const expired410 = () => response({ error: 'Session has expired due to inactivity. Please start a new session.' }, 410);
+  const expired410 = () => response({ error: 'Session has expired due to inactivity. Please start a new session.', code: 'session_expired' }, 410);
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -521,6 +521,52 @@ describe('aiStore — Wisp rolls to a fresh session when the bound one expired (
     expect(s.error).toContain('expired');
     expect(s.composerDraft).toBe('hello');
     expect(s.messages.filter((m) => m.role === 'user')).toHaveLength(0);
+  });
+
+  it('the model picked for the refused message rides the roll onto the fresh session', async () => {
+    useAiModelPickerStore.setState({
+      choices: { surface: 'chat', allowUserChoice: true, defaultOfferingId: 'def', choices: [], current: { offeringId: 'def', options: null } },
+      selection: { offeringId: 'haiku', options: { budgetThinking: 'on' } },
+      loading: false,
+    });
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/ai/sessions/sess-old/messages') return expired410();
+      if (url === '/ai/sessions/sess-new/messages') return sse([{ type: 'done' }]);
+      if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+      return response({ data: [] });
+    });
+    await useAiStore.getState().sendMessage('what changed overnight?');
+
+    expect(createBodies()[0]).toMatchObject({ wispGrantId: 'grant-1', offeringId: 'haiku', options: { budgetThinking: 'on' } });
+    expect(messagePosts().map((p) => p.url)).toEqual(['/ai/sessions/sess-old/messages', '/ai/sessions/sess-new/messages']);
+  });
+
+  it('a roll whose session create fails keeps the create\'s own error, re-sends nothing, and gives the text back', async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/messages')) return expired410();
+      if (url === '/ai/sessions' && init?.method === 'POST') return response({ error: 'Wisp is paused for this organization' }, 403);
+      return response({ data: [] });
+    });
+    await useAiStore.getState().sendMessage('hello');
+
+    expect(messagePosts()).toHaveLength(1);
+    expect(createBodies()).toHaveLength(1);
+    const s = useAiStore.getState();
+    expect(s.error).toBeTruthy();
+    expect(s.error).not.toContain('expired');
+    expect(s.composerDraft).toBe('hello');
+    expect(s.messages.filter((m) => m.role === 'user')).toHaveLength(0);
+  });
+
+  it('an uncoded 410 is not taken for an expired session: shown, no roll', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/messages')) return response({ error: 'Gone' }, 410);
+      return response({ data: [] });
+    });
+    await useAiStore.getState().sendMessage('hello');
+
+    expect(createBodies()).toHaveLength(0);
+    expect(useAiStore.getState()).toMatchObject({ sessionId: 'sess-old', composerDraft: 'hello', error: 'Gone' });
   });
 
   it('a plain chat (no Wisp) keeps the 410 as an error; no session is created', async () => {

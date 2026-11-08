@@ -13,22 +13,26 @@
  * exactly as the eviction path does, after the write has committed.
  *
  * Idempotent: the UPDATE re-applies the whole predicate, so an overlapping run,
- * a retry, or a send that refreshed the session between the SELECT and the
- * UPDATE sweeps nothing twice and expires nothing live. Not gated on Wisp: chat
- * sessions exist without it.
+ * a retry, or a turn admitted between the SELECT and the UPDATE sweeps nothing
+ * twice and expires nothing live. Not gated on Wisp: chat sessions exist
+ * without it.
+ *
+ * The finalize is awaited so a graceful worker close covers it. A summary can
+ * include a model call (opt-in per grant), so a large first-run backlog may
+ * hold the job past the interval; the next run just starts later.
  */
 import { Job, Queue, Worker } from 'bullmq';
 import { and, asc, eq, inArray, isNotNull, lt, or } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { aiSessions } from '../db/schema';
 import { CHAT_SESSION_TYPES } from '../services/aiChatSessionTypes';
-import { finalizeWispSummaries, sessionExpiryCutoffs } from '../services/aiSessionExpiry';
+import { finalizeWispSummaries, noTurnInFlight, sessionExpiryCutoffs } from '../services/aiSessionExpiry';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'ai-chat-session-expiry-sweep';
 const JOB_NAME = 'expire-idle-chat-sessions';
-// Sub-hourly: `every:` per scheduleRegistry.ts, not a cron pattern.
+// Sub-hourly: `every:` per jobs/scheduleRegistry.ts, not a cron pattern.
 const SWEEP_INTERVAL_MS = 15 * 60 * 1000;
 export const AI_CHAT_SESSION_EXPIRY_MAX_PER_RUN = 200;
 
@@ -46,12 +50,14 @@ export async function sweepIdleChatSessions(now: Date = new Date()): Promise<{ s
   const { createdBefore, idleBefore } = sessionExpiryCutoffs(now.getTime());
   // The SQL form of isExpirableChatSession + sessionExpiryReason: an active
   // technician chat session (Helper sessions have no user and their own rule)
-  // past the 24 h cap or idle past the eviction window.
+  // past the 24 h cap or idle past the eviction window, with no turn running
+  // (a turn admitted just inside the window is never cut off mid-answer).
   const stale = and(
     eq(aiSessions.status, 'active'),
     inArray(aiSessions.type, [...CHAT_SESSION_TYPES]),
     isNotNull(aiSessions.userId),
     or(lt(aiSessions.lastActivityAt, idleBefore), lt(aiSessions.createdAt, createdBefore)),
+    noTurnInFlight(),
   );
 
   const { scanned, expiredIds } = await withSystemDbAccessContext(async () => {

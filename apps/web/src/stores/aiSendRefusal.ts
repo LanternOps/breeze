@@ -17,7 +17,8 @@ export function classifySendRefusal(status: number, code: string | null): SendRe
   }
   if (status === 402 && code !== null) return 'credits';
   // #11430: the session expired (24 h cap or idle) before this turn ran, so
-  // nothing ran and a fresh session can carry the same message.
-  if (status === 410) return 'expired';
+  // nothing ran and a fresh session can carry the same message. Coded, so no
+  // other refusal ever reads as one.
+  if (status === 410 && code === 'session_expired') return 'expired';
   return 'error';
 }

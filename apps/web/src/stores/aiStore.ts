@@ -419,14 +419,14 @@ const claimSessionOwnership = (): (() => boolean) => {
 let resendingAfterRoll = false;
 
 /**
- * A Wisp thread is one conversation; its sessions are chunks with a turn
- * budget (`ai_sessions.max_turns`). When a chunk is spent, close it (its
- * summary lands on the thread) and open the next one under the same grant
- * and focus — what setWispFocus does for a focus change. True when the
- * store is bound to the new session.
+ * A Wisp thread is one conversation; its sessions are chunks. Open the next
+ * one under the same grant and focus — what setWispFocus does for a focus
+ * change. True when the store is bound to the new session.
  *
- * `closeOld: false` (#11430) is for a session the server already expired: it
- * is retired and summarised there, and a close would re-stamp it 'closed'.
+ * At the turn limit (`ai_sessions.max_turns`) the spent chunk is closed first
+ * (its summary lands on the thread). `closeOld: false` (#11430) is for a
+ * session the server already expired: it is retired there, and a close would
+ * re-stamp it 'closed'.
  */
 async function rollWispSession(get: AiGet, model?: AiModelChoice, opts: { closeOld?: boolean } = {}): Promise<boolean> {
   const w = get().wisp;
@@ -1157,7 +1157,8 @@ export const useAiStore = create<AiState>()(
           // restart left the row behind) before the turn ran. One thread per
           // grant, so the user never chose this session: open the next one and
           // carry the message over, as at the turn limit — no banner, no toast.
-          // The old session is not closed: it is already expired and summarised.
+          // The old session is not closed: the server already retired it (and
+          // finalizes its thread summary, best effort).
           set((s) => ({ messages: s.messages.filter((m) => m.id !== userMsgId), isStreaming: false }));
           if (!ownsStream()) return;
           if (await rollWispSession(get, model, { closeOld: false })) {
@@ -1170,7 +1171,10 @@ export const useAiStore = create<AiState>()(
             }
             return;
           }
-          set({ composerDraft: trimmedContent, error: extractApiError(data, 'Failed to send message'), errorCode: code });
+          // The failed create already said why (keep it); otherwise the 410's own text.
+          set(get().error
+            ? { composerDraft: trimmedContent }
+            : { composerDraft: trimmedContent, error: extractApiError(data, 'Failed to send message'), errorCode: code });
           return;
         }
 

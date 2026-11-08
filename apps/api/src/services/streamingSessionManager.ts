@@ -2684,7 +2684,8 @@ export class StreamingSessionManager {
 
         // BOTH staleness paths retire the row, not just the 24h one. An
         // idle-evicted session is as dead to the client as an aged-out one, and
-        // preflight would have stamped it 'expired' on the next request anyway.
+        // preflight, the session read or the idle sweep would have stamped it
+        // 'expired' anyway.
         const forOrg = expiredByOrg.get(session.orgId);
         if (forOrg) forOrg.push(sessionId);
         else expiredByOrg.set(session.orgId, [sessionId]);
@@ -2749,8 +2750,9 @@ export class StreamingSessionManager {
     // careful not to expire. Stamping 'expired' here would turn a transient
     // server condition into a hard 410 for a conversation minutes old, since
     // runPreFlightChecks rejects on status before getOrCreate ever runs. The
-    // row stays truthful: 'active' means resumable, and preflight still expires
-    // it lazily once it genuinely goes idle or ages out.
+    // row stays truthful: 'active' means resumable, and the shared rule
+    // (aiSessionExpiry.ts: preflight, the session read, the idle sweep) still
+    // expires it once it genuinely goes idle or ages out.
   }
 }
 

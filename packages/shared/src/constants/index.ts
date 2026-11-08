@@ -38,6 +38,10 @@ export * from './backupReadiness';
 // partner settings catalog all import. Leaf module, no imports.
 export * from './aiBudgetDefaults';
 
+// AI chat session lifetime (#11430): the API's expiry rule and the web's resume
+// check both import it. Leaf module, no imports.
+export * from './aiSessionLimits';
+
 // OS Types
 export const OS_TYPES = ['windows', 'macos', 'linux'] as const;
 

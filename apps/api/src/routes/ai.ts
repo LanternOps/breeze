@@ -58,7 +58,7 @@ import {
   toolRateLimitMultiplierSchema,
 } from '../services/aiToolRateLimits';
 import { normalizeAlertThresholds, evaluateAiBudgetThresholds } from '../services/aiBudgetAlerts';
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions, auditLogs, organizations, devices, actionIntents, scriptProposals, scriptExecutions, aiScriptLaneState } from '../db/schema';
 import { eq, and, desc, gte, lte, count, avg, isNotNull, isNull, ne, notExists, notInArray, or, sql as drizzleSql, type SQL } from 'drizzle-orm';
 import { REVEAL_WINDOW_DAYS } from '../services/actionIntents/resultSecrets';
@@ -350,11 +350,21 @@ aiRoutes.get(
 
     // #11430: a client resumes from this read, so it must not call a session
     // 'active' that the next send refuses with 410. A chat session past the
-    // send's own age/idle rule is stamped 'expired' here (Wisp summary
-    // finalized after commit) and reported as such.
-    const session = isExpirableChatSession(result.session) && (await expireIfStale(result.session))
-      ? { ...result.session, status: 'expired' as const }
-      : result.session;
+    // send's own age/idle rule, with no turn running, is stamped 'expired' here
+    // (Wisp summary finalized after commit) and reported as such. The stamp is
+    // housekeeping: if it fails, the read still answers (savepoint, so the
+    // request transaction survives) and the idle sweep retires the row later.
+    let session = result.session;
+    if (isExpirableChatSession(session)) {
+      try {
+        if (await withDbTransaction(() => expireIfStale(result.session, Date.now(), { unlessTurnInFlight: true }))) {
+          session = { ...session, status: 'expired' as const };
+        }
+      } catch (err) {
+        console.error(`[AI] Could not stamp stale session ${sessionId} expired on read; the idle sweep will retire it:`, err);
+        captureException(err);
+      }
+    }
 
     // W05: what ran the last turn, persisted on the (owner-bound) session row
     // — no extra query, and never a guess from ledger rows (D13). Parsed, so
@@ -835,7 +845,8 @@ aiRoutes.post(
       if (err === 'Session not found') return c.json({ error: err }, 404);
       if (err.includes('rate limit') || err.includes('Rate limit')) return c.json({ error: err }, 429);
       if (err.includes('budget') || err.includes('Budget')) return c.json({ error: err }, 402);
-      if (err.includes('expired')) return c.json({ error: err }, 410);
+      // #11430: coded so a client can tell a retired session (nothing ran; a fresh one can carry the message) from any other refusal.
+      if (err.includes('expired')) return c.json({ error: err, code: 'session_expired' }, 410);
       return c.json({ error: err }, 400);
     }
 

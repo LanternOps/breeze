@@ -17,6 +17,8 @@ const h = vi.hoisted(() => ({
   update: vi.fn(),
   set: vi.fn(),
   limit: vi.fn(),
+  selectWhere: vi.fn(),
+  updateWhere: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -28,14 +30,17 @@ vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
       from: () => ({
-        where: () => ({
-          orderBy: () => ({
-            limit: (n: number) => {
-              h.limit(n);
-              return Promise.resolve(h.candidates);
-            },
-          }),
-        }),
+        where: (cond: unknown) => {
+          h.selectWhere(cond);
+          return {
+            orderBy: () => ({
+              limit: (n: number) => {
+                h.limit(n);
+                return Promise.resolve(h.candidates);
+              },
+            }),
+          };
+        },
       }),
     })),
     update: (...args: unknown[]) => {
@@ -43,7 +48,7 @@ vi.mock('../db', () => ({
       return {
         set: (values: unknown) => {
           h.set(values);
-          return { where: () => ({ returning: () => Promise.resolve(h.updated) }) };
+          return { where: (cond: unknown) => { h.updateWhere(cond); return { returning: () => Promise.resolve(h.updated) }; } };
         },
       };
     },
@@ -55,7 +60,11 @@ vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }))
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 vi.mock('bullmq', () => ({ Queue: vi.fn(), Worker: vi.fn() }));
 
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { AI_CHAT_SESSION_EXPIRY_MAX_PER_RUN, sweepIdleChatSessions } from './aiChatSessionExpirySweep';
+
+const render = (cond: unknown) => new PgDialect().sqlToQuery(cond as SQL);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -76,6 +85,40 @@ describe('sweepIdleChatSessions (#11430)', () => {
     expect(h.set).toHaveBeenCalledWith(expect.objectContaining({ status: 'expired' }));
     expect(h.limit).toHaveBeenCalledWith(AI_CHAT_SESSION_EXPIRY_MAX_PER_RUN);
     expect(h.finalize.mock.calls.map(([id]) => id).sort()).toEqual(['s-stale-1', 's-stale-2']);
+  });
+
+  it('selects only active technician chat sessions past a limit with no turn running, and the UPDATE re-applies all of it', async () => {
+    h.candidates = [{ id: 's-stale' }];
+    h.updated = [{ id: 's-stale' }];
+    const now = new Date('2026-11-08T12:00:00.000Z');
+
+    await sweepIdleChatSessions(now);
+
+    const select = render(h.selectWhere.mock.calls[0]![0]);
+    for (const clause of [
+      '"ai_sessions"."status" = $',
+      '"ai_sessions"."type" in (',
+      '"ai_sessions"."user_id" is not null',
+      '"ai_sessions"."last_activity_at" < $',
+      '"ai_sessions"."created_at" < $',
+      'NOT EXISTS (',
+      '"ai_budget_reservations"."session_id" = "ai_sessions"."id"',
+      '"ai_budget_reservations"."status" = \'active\'',
+      '"ai_budget_reservations"."expires_at" > now()',
+    ]) {
+      expect(select.sql).toContain(clause);
+    }
+    expect(select.params).toEqual(expect.arrayContaining([
+      'active', 'general', 'topology',
+      '2026-11-08T10:00:00.000Z', // idle window: 2 h
+      '2026-11-07T12:00:00.000Z', // age cap: 24 h
+    ]));
+    // A turn admitted, or a close, between the SELECT and the UPDATE must win.
+    const update = render(h.updateWhere.mock.calls[0]![0]);
+    const placeholders = (s: string) => s.replace(/\$\d+/g, '$?');
+    expect(update.sql).toContain('"ai_sessions"."id" in (');
+    expect(placeholders(update.sql)).toContain(placeholders(select.sql));
+    expect(update.params).toEqual(['s-stale', ...select.params]);
   });
 
   it('finalizes only the rows the guarded UPDATE returned (a send that raced the sweep keeps its session)', async () => {

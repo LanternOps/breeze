@@ -9,9 +9,9 @@
  * so a session the user closed is never re-stamped) and recomputes its Wisp
  * thread summary once the write has committed.
  */
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql, type SQL } from 'drizzle-orm';
 import { db, runAfterDbContextCommit } from '../db';
-import { aiSessions } from '../db/schema';
+import { aiBudgetReservations, aiSessions } from '../db/schema';
 import { isChatSessionType } from './aiChatSessionTypes';
 import { SESSION_IDLE_TIMEOUT_MS, SESSION_MAX_AGE_MS } from './aiAgentSessionLimits';
 import { captureException } from './sentry';
@@ -81,20 +81,53 @@ export function scheduleWispSummaryFinalize(sessionId: string): void {
 }
 
 /**
+ * SQL: no turn of this `ai_sessions` row is running. `last_activity_at` only
+ * moves when a turn settles, so a turn admitted just inside the idle window (or
+ * the 24 h cap) can cross it mid-stream. Every turn holds an `active` budget
+ * reservation from admission until it settles, bounded by `expires_at`, so a
+ * live one is the cross-process "turn in flight" signal: the out-of-band paths
+ * (the session read, the idle sweep) never retire a session mid-answer, and a
+ * reservation stranded by a crash stops protecting it once it lapses.
+ */
+export function noTurnInFlight(): SQL {
+  return sql`NOT EXISTS (
+    SELECT 1 FROM ${aiBudgetReservations}
+    WHERE ${aiBudgetReservations.sessionId} = ${aiSessions.id}
+      AND ${aiBudgetReservations.status} = 'active'
+      AND ${aiBudgetReservations.expiresAt} > now()
+  )`;
+}
+
+/**
  * Lazy expiry in the caller's DB context: when an active session is over, stamp
  * it 'expired' and schedule its summary finalize. Returns why, or null when the
  * session is live (or not active: nothing to retire).
+ *
+ * `unlessTurnInFlight` is for the out-of-band callers (the session read): the
+ * stamp also requires `noTurnInFlight()`, and the result is null unless this
+ * call is the one that flipped the row. The send pre-flight omits it — a new
+ * send past the limits is refused either way, exactly as before #11430.
  */
 export async function expireIfStale(
   session: { id: string; status: string; createdAt: Instant; lastActivityAt: Instant },
   now: number = Date.now(),
+  opts: { unlessTurnInFlight?: boolean } = {},
 ): Promise<SessionExpiryReason | null> {
   if (session.status !== 'active') return null;
   const reason = sessionExpiryReason(session, now);
   if (!reason) return null;
-  await db.update(aiSessions)
-    .set({ status: 'expired', updatedAt: new Date(now) })
-    .where(and(eq(aiSessions.id, session.id), eq(aiSessions.status, 'active')));
+  const guard = and(eq(aiSessions.id, session.id), eq(aiSessions.status, 'active'));
+  if (opts.unlessTurnInFlight) {
+    const flipped = await db.update(aiSessions)
+      .set({ status: 'expired', updatedAt: new Date(now) })
+      .where(and(guard, noTurnInFlight()))
+      .returning({ id: aiSessions.id });
+    if (flipped.length === 0) return null;
+  } else {
+    await db.update(aiSessions)
+      .set({ status: 'expired', updatedAt: new Date(now) })
+      .where(guard);
+  }
   scheduleWispSummaryFinalize(session.id);
   return reason;
 }
