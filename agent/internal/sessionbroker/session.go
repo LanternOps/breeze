@@ -451,12 +451,16 @@ func (s *Session) HandleResponse(env *ipc.Envelope) bool {
 			s.discardLateReply(env, current.abandonedAt)
 			return true
 		}
+		dropped := false
 		select {
 		case pending.ch <- env:
 		default:
-			log.Warn("response channel full, dropping", "id", env.ID)
+			dropped = true
 		}
 		s.mu.Unlock()
+		if dropped {
+			log.Warn("response channel full, dropping", "id", env.ID)
+		}
 		return true
 	}
 	return false

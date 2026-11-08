@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -142,7 +143,11 @@ func truncateForLog(s string) string {
 	if len(s) <= lateReplyLogMax {
 		return s
 	}
-	return s[:lateReplyLogMax] + "…"
+	cut := lateReplyLogMax
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }
 
 // releasePending drops id's registration if it is still the one that owns ch.

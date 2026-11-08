@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -326,5 +327,20 @@ func TestTombstoneSurvivesWrongTypeReply(t *testing.T) {
 	}
 	if _, ok := pendingEntry(s, "cmd-wrong-type"); ok {
 		t.Fatal("tombstone not released by the expected reply")
+	}
+}
+
+func TestTruncateForLogKeepsValidUTF8(t *testing.T) {
+	// One ASCII byte, then 2-byte runes: the byte limit falls mid-rune.
+	long := "a" + strings.Repeat("é", lateReplyLogMax)
+	got := truncateForLog(long)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncated text is not valid UTF-8: %q", got[len(got)-8:])
+	}
+	if len(got) > lateReplyLogMax+len("…") {
+		t.Fatalf("truncated to %d bytes, want at most %d", len(got), lateReplyLogMax+len("…"))
+	}
+	if short := "context canceled"; truncateForLog(short) != short {
+		t.Fatalf("short text altered: %q", truncateForLog(short))
 	}
 }
