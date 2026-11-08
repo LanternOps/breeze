@@ -35,6 +35,7 @@ import { alertOwnerKey, isDeviceOwned } from './alertOwner';
 import { resolveDeviceSiteId } from './deviceSiteResolver';
 import { captureException } from './sentry';
 import { scheduleStagedAlertDispatch } from './subjectAlertOutbox';
+import { stagedTriggerDispatch, type SubjectAlertDispatch } from './alertDispatchEnvelope';
 import { resolveMonitorsForDevice } from './monitors/monitorResolver';
 import { applyOverrides, getMonitorKindSpec } from './monitors/kinds';
 import {
@@ -106,33 +107,6 @@ export interface CreateAlertParams {
   allocateSubjectEpisode?: () => Promise<string>;
 }
 
-/**
- * The transactional outbox envelope staged on an alert's own row (W03 for
- * subject alerts; every `createAlert` / `createSourcedAlert` alert since
- * #10926). `alerts.context._subjectDispatch` (or `_subjectResolutionDispatch`
- * for a subject recovery) IS the outbox: no separate table, no in-memory
- * callback list. `subjectAlertOutbox.ts` reads it back only after the writing
- * transaction has committed.
- */
-export interface SubjectAlertDispatch {
-  eventId: string;
-  eventType: 'alert.triggered' | 'alert.resolved';
-  publisher?: string;
-  siteId: string | null | undefined;
-  cooldownMinutes: number;
-  payload: Record<string, unknown>;
-  /** Fixed at staging so a republished event keeps its original time. */
-  occurredAt?: string;
-  /**
-   * #10926 — on a failed publish keep the row and retry later, instead of the
-   * W03 subject compensation (delete the row and let the next sweep re-raise).
-   */
-  retryOnPublishFailure?: boolean;
-  failedAttempts?: number;
-  leaseToken?: string;
-  leaseUntil?: string;
-}
-
 // Rule with template info for evaluation
 export interface RuleWithTemplate {
   rule: typeof alertRules.$inferSelect;
@@ -154,39 +128,6 @@ export interface RuleWithTemplate {
    * Null for an ordinary standalone rule.
    */
   monitor: typeof monitorDefinitions.$inferSelect | null;
-}
-
-/**
- * #10926 — the `alert.triggered` outbox envelope for a legacy or sourced alert.
- * The creator writes it in the SAME insert as the row, then calls
- * `scheduleStagedAlertDispatch`; the event goes out only after the outermost
- * transaction commits (`subjectAlertOutbox.ts`).
- *
- * Publishing inline, as these paths used to, ran the `notification-dispatcher`
- * subscriber before COMMIT: `process-alert` read the row on another connection,
- * found nothing and returned without sending, so rule, monitor and sourced
- * alerts never notified anyone. The envelope is durable, so a crash after
- * COMMIT or a failed publish is retried by the next drain instead of leaving an
- * active alert that is never announced (the row every creator's dedupe would
- * skip forever, #5241 / #5325).
- */
-function stagedTriggerDispatch(opts: {
-  alertId: string;
-  payload: Record<string, unknown>;
-  publisher: string;
-  siteId: string | null | undefined;
-  cooldownMinutes: number;
-}): SubjectAlertDispatch {
-  return {
-    eventId: opts.alertId,
-    eventType: 'alert.triggered',
-    publisher: opts.publisher,
-    siteId: opts.siteId,
-    cooldownMinutes: opts.cooldownMinutes,
-    payload: opts.payload,
-    occurredAt: new Date().toISOString(),
-    retryOnPublishFailure: true,
-  };
 }
 
 async function monitorEventFields(monitorId: string | null | undefined, kind?: MonitorKind | null): Promise<{ monitorId: string | null; kind: MonitorKind | null }> {
