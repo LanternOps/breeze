@@ -388,6 +388,12 @@ function digestHintFor(event: BreezeEvent): DeterministicDigestHint {
  * onto a live job keeps the FIRST event's reason (requestAssessment), so a
  * later event's subject can be lost here; the changes digest (alerts
  * triggered OR resolved since the watermark) is what covers it.
+ *
+ * #11425: `anomaly.incident_opened` sends ids only (`{ incidentId, deviceId }`,
+ * metricAnomalyIncidentPublisher.ts). Its `incidentId` is carried as
+ * `anomalyIncidentId` so the assessment can load that anomaly incident.
+ * Only this event's `incidentId` is read that way: `integration.health_opened`
+ * also sends an `incidentId`, but it names a connection-health incident.
  */
 function eventReason(event: BreezeEvent): AssessmentReason {
   const p = (event.payload ?? {}) as Record<string, unknown>;
@@ -397,6 +403,7 @@ function eventReason(event: BreezeEvent): AssessmentReason {
     eventId: event.id,
     ...(isUuid(p.alertId) ? { alertId: p.alertId } : {}),
     ...(isUuid(p.deviceId) ? { deviceId: p.deviceId } : {}),
+    ...(event.type === 'anomaly.incident_opened' && isUuid(p.incidentId) ? { anomalyIncidentId: p.incidentId } : {}),
   };
 }
 

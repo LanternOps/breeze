@@ -445,6 +445,34 @@ describe('handleWispWakeEvent', () => {
     });
   });
 
+  // #11425: the anomaly publisher sends ids only ({ incidentId, deviceId }).
+  // Dropping incidentId left the run with "event anomaly.incident_opened for
+  // device X" and nothing that names the anomaly, so the model went looking in
+  // list_incidents (security/IR) and raised a "can't verify" concern.
+  it('anomaly.incident_opened carries the anomaly incident id in the reason; a non-uuid is dropped', async () => {
+    useFixtures({ eventGrants: [{ grant_id: G1 }] });
+    await handleWispWakeEvent(event('anomaly.incident_opened', O1, { incidentId: ALERT, deviceId: TASK }));
+    const data = assessAdds()[0]!.data as { reason: Record<string, unknown> };
+    expect(data.reason).toEqual({
+      kind: 'event', eventType: 'anomaly.incident_opened', eventId: 'evt-anomaly.incident_opened',
+      anomalyIncidentId: ALERT, deviceId: TASK,
+    });
+    // Not a budget-path digest event: no concern hint.
+    expect(data).not.toHaveProperty('subject');
+    h.jobs.clear();
+    h.adds = [];
+    await handleWispWakeEvent(event('anomaly.incident_opened', O1, { incidentId: 'nope', deviceId: TASK }));
+    expect((assessAdds()[0]!.data as { reason: Record<string, unknown> }).reason).not.toHaveProperty('anomalyIncidentId');
+  });
+
+  it('only anomaly.incident_opened reads payload.incidentId as an anomaly incident', async () => {
+    // integration.health_opened also sends `incidentId` — a connection-health
+    // incident. It must not be labelled a metric anomaly in the reason.
+    useFixtures({ eventGrants: [{ grant_id: G1 }] });
+    await handleWispWakeEvent(event('integration.health_opened', O1, { incidentId: ALERT }));
+    expect((assessAdds()[0]!.data as { reason: Record<string, unknown> }).reason).not.toHaveProperty('anomalyIncidentId');
+  });
+
   it('alert.triggered carries the alert id in the reason as well as the digest hint', async () => {
     useFixtures({ eventGrants: [{ grant_id: G1 }] });
     await handleWispWakeEvent(event('alert.triggered', O1, { alertId: ALERT }));

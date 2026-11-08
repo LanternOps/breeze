@@ -14,11 +14,12 @@
  *                          run, also without a model call (#11423).
  *   loadAssessmentContext  the run's bounded context: thread seed, the org's
  *                          live concerns with this grant's recipient state, a
- *                          five-table digest since the watermark (each read
+ *                          six-section digest since the watermark (each read
  *                          pinned to the run's org, gated on the grantor's
  *                          permission for it, ≤ 25 rows, sanitised; on a
  *                          first look the alerts are the org's open ones,
- *                          #10389), the
+ *                          #10389; metric anomalies are the open ones plus
+ *                          the reason's trigger, #11425), the
  *                          reason's watch, the org's readiness inventory, and
  *                          the grantor's nudge feedback. null = the grant is no
  *                          longer usable (the run finishes without a model call).
@@ -33,13 +34,16 @@
  * seam as metricAnomalySubscriber.ts).
  */
 import { createHash } from 'node:crypto';
-import { and, asc, desc, eq, gt, gte, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import type { Concern, ConcernSeverity, ConcernSubject, ConcernSubjectKind, WatchKind } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { alerts } from '../../db/schema/alerts';
 import { connectionHealthIncidents } from '../../db/schema/connectionHealth';
+import { devices } from '../../db/schema/devices';
+import { metricAnomalyEpisodes } from '../../db/schema/metricAnomalyEpisodes';
+import { metricAnomalyIncidents } from '../../db/schema/metricAnomalyIncidents';
 import { organizations } from '../../db/schema/orgs';
 import { tickets } from '../../db/schema/portal';
 import { wispGrants } from '../../db/schema/wisp';
@@ -691,6 +695,7 @@ function parseReason(v: unknown): AssessmentReason | null {
           eventId: r.eventId,
           ...(isUuid(r.alertId) ? { alertId: r.alertId } : {}),
           ...(isUuid(r.deviceId) ? { deviceId: r.deviceId } : {}),
+          ...(isUuid(r.anomalyIncidentId) ? { anomalyIncidentId: r.anomalyIncidentId } : {}),
         }
         : null;
     case 'tick':
@@ -735,6 +740,8 @@ export function parseWispTriggerRef(triggerRef: Record<string, unknown> | null |
  *              are read on its detail (routes/aiAgents.ts GET /runs/:runId),
  *              so they follow the runs section. approvals:decide is a DECIDE
  *              right, not a read one.
+ *   anomalies  devices:read (routes/devices/anomalies.ts GET list and the
+ *              episode reads; the `manage_device_anomalies` list action)
  */
 const DIGEST_SECTION_PERMISSION = {
   alerts: 'alerts:read',
@@ -742,6 +749,7 @@ const DIGEST_SECTION_PERMISSION = {
   incidents: 'organizations:read',
   runs: 'ai_agents:read',
   intents: 'ai_agents:read',
+  anomalies: 'devices:read',
 } as const;
 
 /** The grantor may read `permission` in `orgId` under this ceiling (org term included). */
@@ -756,11 +764,12 @@ function ceilingAllows(ceiling: GrantCeiling, orgId: string, permission: string)
 }
 
 /**
- * Five bounded reads, each pinned to `orgId` (the ceiling admitted the org;
+ * Six bounded reads, each pinned to `orgId` (the ceiling admitted the org;
  * the pin is the second lock) and each gated on the grantor's permission for
  * it (DIGEST_SECTION_PERMISSION): a section the grantor may not read renders
  * empty and issues no query. On a first look the alerts section is the org's
- * open alerts (loadOpenAlertRows); the other four keep the `since` window.
+ * open alerts (loadOpenAlertRows). Metric anomalies are always current state
+ * (loadDigestAnomalies). The other four keep the `since` window.
  */
 async function loadDigest(
   ceiling: GrantCeiling,
@@ -768,6 +777,7 @@ async function loadDigest(
   currentRunId: string,
   since: Date,
   firstLook: boolean,
+  anomalyIncidentId: string | null,
 ): Promise<AssessmentDigest> {
   const may = (section: keyof typeof DIGEST_SECTION_PERMISSION) =>
     ceilingAllows(ceiling, orgId, DIGEST_SECTION_PERMISSION[section]);
@@ -805,6 +815,7 @@ async function loadDigest(
       .where(and(eq(actionIntents.orgId, orgId), gte(actionIntents.createdAt, since)))
       .orderBy(desc(actionIntents.createdAt))
       .limit(DIGEST_ROW_LIMIT);
+    const anomalyRows = !may('anomalies') ? [] : await loadDigestAnomalies(orgId, anomalyIncidentId);
 
     return {
       alerts: alertRows.map((r) => ({
@@ -840,8 +851,78 @@ async function loadDigest(
         toolName: sanitizeSweepText(r.toolName, 100),
         status: sanitizeSweepText(String(r.status), 30),
       })),
+      anomalies: anomalyRows.map((r) => ({
+        id: r.id,
+        deviceId: r.deviceId,
+        deviceName: r.deviceName ? sanitizeSweepText(r.deviceName, 120) : null,
+        anomalyType: sanitizeSweepText(r.anomalyType, 40),
+        metricNames: (r.metricNames ?? []).slice(0, DIGEST_ANOMALY_METRIC_NAME_LIMIT).map((m) => sanitizeSweepText(m, 120)),
+        // `numeric` arrives from the driver as a string.
+        peakScore: Number(r.peakScore),
+        openedAt: toIso(r.openedAt),
+        status: sanitizeSweepText(String(r.status), 20),
+      })),
     };
   }, 'wisp.assessment.digest');
+}
+
+/** Metric names kept per anomaly incident (the detector's distinct metric names in the bucket). */
+const DIGEST_ANOMALY_METRIC_NAME_LIMIT = 10;
+
+/**
+ * #11425: the metric anomaly incidents section. These are the org's open
+ * incidents plus the run's trigger (`reason.anomalyIncidentId`), whatever its
+ * status. ≤ 25 rows, the trigger first, then newest `last_seen_at` (the
+ * metric_anomaly_incidents_org_last_seen_idx order).
+ *
+ * "Open" has three parts:
+ *   - announced: `dispatched_at` set by the publisher;
+ *   - not suppressed: the publisher dispatches one incident per episode and
+ *     marks the rest `suppressed_by_episode`, so this keeps about one row per
+ *     anomaly episode instead of one per 5-minute bucket;
+ *   - the episode is still open. Every incident has an episode: the incident
+ *     upsert only takes rows that passed the persistence gate
+ *     (`ma.episode_id IS NOT NULL`, metricAnomalies.ts). The episode is the
+ *     lifecycle a technician resolves or dismisses.
+ *
+ * `episode_id` has no FK (the cascade-cycle note in metricAnomalyIncidents.ts),
+ * so the joins are LEFT and org-pinned. An incident whose episode is gone
+ * shows only as the trigger, with status 'unknown'.
+ *
+ * Runs inside loadDigest's system context.
+ */
+function loadDigestAnomalies(orgId: string, triggerId: string | null) {
+  const openIncident = and(
+    isNotNull(metricAnomalyIncidents.dispatchedAt),
+    eq(metricAnomalyIncidents.suppressedByEpisode, false),
+    eq(metricAnomalyEpisodes.status, 'open'),
+  );
+  return db
+    .select({
+      id: metricAnomalyIncidents.id,
+      deviceId: metricAnomalyIncidents.deviceId,
+      deviceName: sql<string | null>`COALESCE(${devices.displayName}, ${devices.hostname})`,
+      anomalyType: metricAnomalyIncidents.anomalyType,
+      metricNames: metricAnomalyIncidents.metricNames,
+      peakScore: metricAnomalyIncidents.peakScore,
+      openedAt: metricAnomalyIncidents.firstSeenAt,
+      status: sql<string>`COALESCE(${metricAnomalyEpisodes.status}, 'unknown')`,
+    })
+    .from(metricAnomalyIncidents)
+    .leftJoin(metricAnomalyEpisodes, and(
+      eq(metricAnomalyEpisodes.id, metricAnomalyIncidents.episodeId),
+      eq(metricAnomalyEpisodes.orgId, metricAnomalyIncidents.orgId),
+    ))
+    .leftJoin(devices, and(eq(devices.id, metricAnomalyIncidents.deviceId), eq(devices.orgId, metricAnomalyIncidents.orgId)))
+    .where(and(
+      eq(metricAnomalyIncidents.orgId, orgId),
+      triggerId ? or(eq(metricAnomalyIncidents.id, triggerId), openIncident) : openIncident,
+    ))
+    .orderBy(
+      ...(triggerId ? [sql`(${metricAnomalyIncidents.id} = ${triggerId}) desc`] : []),
+      desc(metricAnomalyIncidents.lastSeenAt),
+    )
+    .limit(DIGEST_ROW_LIMIT);
 }
 
 /** Alert statuses that are still open: what a first look reports as the org's current state. */
@@ -973,9 +1054,10 @@ export async function loadAssessmentContext(run: {
   // #10389: nothing earlier to diff against, so the alerts are the org's
   // current open ones rather than the 24 h fallback window.
   const firstLook = ref.watermark === null || ref.reason.kind === 'onboarding';
-  const digest = await loadDigest(ceiling, run.orgId, run.id, since, firstLook);
-
   const reason = ref.reason;
+  const anomalyIncidentId = reason.kind === 'event' ? reason.anomalyIncidentId ?? null : null;
+  const digest = await loadDigest(ceiling, run.orgId, run.id, since, firstLook, anomalyIncidentId);
+
   const watchId = reason.kind === 'watch' ? reason.watchId : null;
   const watch = watchId !== null
     ? (await listWatches(ceiling)).find((w) => w.id === watchId) ?? null
