@@ -243,6 +243,14 @@ export function jobIdentity(ciYml, name) {
   return none;
 }
 
+// The ci.yml job ids `CI Success` needs: only their failures can fail it.
+export function requiredJobIds(ciYml) {
+  const body = workflowJobsOf(ciYml)['ci-success']?.body ?? '';
+  const needs = /^ {4}needs: \[([^\]]+)\]/m.exec(body);
+  if (!needs) throw new Error('ci.yml: cannot read the needs of ci-success');
+  return new Set(needs[1].split(',').map((s) => s.trim()).filter(Boolean));
+}
+
 // ── Logs ─────────────────────────────────────────────────────────────────
 
 const TIMESTAMP = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?/;
@@ -450,7 +458,8 @@ async function gateFor(gh, repo, headSha) {
 
 // RunFacts = { run, jobs: JobFact[], ciSuccess: 'present'|'missing', gate }.
 // Only failed or cancelled jobs (never the CI Success aggregate) get their
-// annotations, log and flake report fetched.
+// annotations and log fetched; any retry-shard job's flake report is read when
+// the job failed or uploaded one.
 export async function runFacts(gh, { repo, runId, ciYml }) {
   const r = await getJson(gh, `repos/${repo}/actions/runs/${runId}`);
   const queuePr = QUEUE_BRANCH_PR.exec(r.head_branch ?? '');
@@ -491,17 +500,22 @@ export async function runFacts(gh, { repo, runId, ciYml }) {
       reportError: null,
       errors: [],
     };
-    if ((j.conclusion === 'failure' || j.conclusion === 'cancelled') && j.name !== CI_SUCCESS) {
+    const failed = (j.conclusion === 'failure' || j.conclusion === 'cancelled') && j.name !== CI_SUCCESS;
+    if (failed) {
       const ann = await annotationsOf(gh, repo, j.id);
       fact.annotations = ann.annotations;
       if (ann.error) fact.errors.push(ann.error);
       const log = await gh.raw(`repos/${repo}/actions/jobs/${j.id}/logs`);
       fact.logStatus = log.status;
       if (log.text !== null) Object.assign(fact, processLog(log.text, ident.runner));
-      if (ident.label) {
-        artifacts ??= await listArtifacts(gh, repo, runId);
-        Object.assign(fact, await flakeReport(gh, repo, artifacts, ident.label));
-      }
+    }
+    // A job that failed then passed on the retry succeeded, and its report is
+    // the only record of that flake, so a passed job's report is read too when
+    // one was uploaded (retry-shard writes one only after a failed attempt 1).
+    if (ident.label) {
+      artifacts ??= await listArtifacts(gh, repo, runId);
+      const uploaded = artifacts.list.some((a) => a.name === `flake-report-${ident.label}`);
+      if (failed || uploaded) Object.assign(fact, await flakeReport(gh, repo, artifacts, ident.label));
     }
     jobs.push(fact);
   }

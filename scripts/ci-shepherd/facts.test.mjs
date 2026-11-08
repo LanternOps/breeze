@@ -246,6 +246,20 @@ test('oversized or invalid flake report is rejected', async () => {
   assert.deepEqual(old.jobs[0].report, v1);
 });
 
+test('a passed job that failed then passed on the retry keeps its flake report (and only that)', async () => {
+  const v1 = { label: 'web-3', attempts: 2, flaky: ['src/a.test.tsx > A > flaky'], quarantined: [], exitCode: 0 };
+  const zip = zipOf('flake-report-web-3.json', JSON.stringify(v1));
+  const routes = reportRun({ artifactSize: zip.length, zipBytes: zip });
+  const jobsKey = `GET ${R}/actions/runs/9/jobs?filter=latest&per_page=100&page=1`;
+  routes[jobsKey].body.jobs[0].conclusion = 'success';
+  routes[jobsKey].body.jobs[0].steps[0].conclusion = 'success';
+  const { gh: api, fake } = gh(routes);
+  const facts = await runFacts(api, { repo: REPO, runId: 9, ciYml });
+  assert.deepEqual(facts.jobs[0].report, v1);
+  assert.equal(facts.jobs[0].logStatus, null);
+  assert.ok(!fake.calls.some((c) => c.key.includes('/annotations') || c.key.includes('/logs')));
+});
+
 test('budget stops further calls', async () => {
   const { gh: api, fake } = gh({ [`GET ${R}/x`]: { status: 200, body: {} } }, { budget: 3 });
   for (let i = 0; i < 3; i++) await api.rest('GET', `repos/${REPO}/x`);
