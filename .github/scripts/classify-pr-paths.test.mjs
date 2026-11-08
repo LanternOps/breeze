@@ -692,6 +692,8 @@ for (const path of [
   '.github/scripts/mobile-native-ci.test.mjs',
   // its drift test (agent/cmd/breeze-backup/ci_gate_test.go) runs in test-agent.
   '.github/scripts/qemu-gate-paths.txt',
+  // apps/api/vitest.integration.config.ts imports it: it shards integration-test (W07a, #10751).
+  '.github/scripts/shard-partition.mjs',
 ]) {
   test(`classifier: ${path} is executed by a heavy job, so it is an app change`, () => {
     const r = classify([path]);
@@ -711,6 +713,7 @@ test('every explicit app=true carve-out in the classifier is still referenced by
     '.github/scripts/tauri-apt.sh',
     '.github/scripts/mobile-native-ci.test.mjs',
     '.github/scripts/qemu-gate-paths.txt',
+    '.github/scripts/shard-partition.mjs',
     'scripts/security/check-agent-binary-signatures.sh',
     'scripts/release/verify-release-images.sh',
   ]) {
@@ -718,6 +721,8 @@ test('every explicit app=true carve-out in the classifier is still referenced by
   }
   const smoke = readFileSync(new URL('../../scripts/smoke-guided-setup.sh', import.meta.url), 'utf8');
   assert.ok(smoke.includes('scripts/release/verify-release-images.sh'));
+  const integrationConfig = readFileSync(new URL('../../apps/api/vitest.integration.config.ts', import.meta.url), 'utf8');
+  assert.ok(integrationConfig.includes("from '../../.github/scripts/shard-partition.mjs'"));
 });
 
 test('the tooling-only path still validates workflow files: lint runs the workflow-security suite', () => {
