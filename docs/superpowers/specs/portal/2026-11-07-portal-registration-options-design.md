@@ -136,11 +136,16 @@ Three things that are mixed together today get separated:
   This keeps an add-in user's account untouched while they wait for browser access, and keeps a
   denial history.
 - **State machine: every writer is enumerated and tested.** Allowed transitions:
-  - `invited → active` via accept-invite, or an invitation-bound SSO sign-in (§5.6)
-  - `active ↔ disabled` (MSP, deprovisioning, SCIM)
-  - `browser_access none → granted` only via MSP grant, approval of a request, an instant-mode policy, or SCIM
-  - Bulk invite is narrowed to `status='invited'` rows that have no identity, so it can no longer
-    touch identity-only or add-in accounts.
+  - `invited → active` via accept-invite, or an invitation-bound SSO sign-in (§5.6). **Never** via an MSP
+    PATCH. Today's PATCH allows it (`orgPortalUsers.ts:235-239`), and W2 refuses it with 409.
+  - `active ↔ disabled` (MSP, deprovisioning, SCIM). `invited → disabled` (MSP).
+  - Reactivating a disabled account that has no password and no identity returns it to `invited`, not `active`.
+  - `active → invited` and `invited → invited` (re-invite / resend; existing behaviour, `orgPortalUsers.ts:204`).
+  - `browser_access none → granted` only via MSP grant, approval of a request, an instant-mode policy, or SCIM.
+  - Bulk invite is narrowed to password-method rows with no password and no identity, in `status IN ('invited','active')`.
+    `active` is included because pre-#3258 inbound email created active passwordless rows that the UI shows as
+    "pending setup". Bulk invite can no longer touch identity-only or add-in accounts.
+  - Accept-invite also checks that the org is active, and reset refuses disabled accounts (W2 closes both at token consume).
 
 ### 5.2 `portal_user_identities` (single source of truth for external identity)
 
@@ -167,7 +172,7 @@ portal_user_identities
   2. Release B: reads switch to identities, a reconciliation job reports and repairs drift, and the `authMethod === 'entra'` gate, admin counts and pickers (`adminOrgs.ts:108`) switch over.
   3. Release C: the old columns are dropped.
 
-  A grep on main found the only production readers and writers in `clientAiExchange`, plus the dynamic export registry (`tenantExportPolicyRegistry.ts:780`).
+  A grep on main found the only production readers and writers in `clientAiExchange`, plus the fixed `portal_users` entry in the export registry (`tenantExportPolicyRegistry.ts:780`).
 - Registration: `CORE_ORG_CASCADE_DELETE_ORDER`, `orgMergeRegistry` (repoint, plus a defined
   rule for tenant preservation, §5.4), and `CORE_TENANT_EXPORT_POLICY` (every column classified).
   The same applies to `portal_access_requests` and `portal_access_policies`.
