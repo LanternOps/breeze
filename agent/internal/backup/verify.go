@@ -2,7 +2,6 @@ package backup
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -307,15 +306,14 @@ func downloadVerifyManifest(ctx, runCtx context.Context, provider providers.Back
 	if err := ctx.Err(); err != nil {
 		return nil, nil, "", "", err
 	}
-	manifestData, readErr := os.ReadFile(tempManifestPath)
-	if readErr != nil {
-		return nil, nil, fmt.Sprintf("failed to read manifest: %v", readErr), "", nil
+	// Streamed rather than read whole (#11234). Every entry is kept because
+	// verify checks each one, so the saving is the second, encoded copy of
+	// the manifest.
+	decoded, decodeErr := decodeSnapshotManifestFile(tempManifestPath, nil)
+	if decodeErr != nil {
+		return nil, nil, fmt.Sprintf("invalid manifest JSON: %v", decodeErr), "", nil
 	}
-	var decoded Snapshot
-	if err := json.Unmarshal(manifestData, &decoded); err != nil {
-		return nil, nil, fmt.Sprintf("invalid manifest JSON: %v", err), "", nil
-	}
-	return &decoded, warnings, "", "", nil
+	return decoded, warnings, "", "", nil
 }
 
 // maxVerifyIncompletePathsReported caps how many missing source paths the

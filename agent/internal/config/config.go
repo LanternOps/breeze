@@ -167,7 +167,8 @@ type Config struct {
 	// via agent.yaml. Managed PAM v2 uses its own launch path.
 	PAMActuatorStrategy string `mapstructure:"pam_actuator_strategy"`
 
-	// Concurrency limits
+	// Concurrency limits. Both size the shared command pool and, separately,
+	// the backup verification lane (Heartbeat.verificationPool).
 	MaxConcurrentCommands int `mapstructure:"max_concurrent_commands"`
 	CommandQueueSize      int `mapstructure:"command_queue_size"`
 

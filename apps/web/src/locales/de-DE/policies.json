@@ -1809,7 +1809,7 @@
       "auditOnly": "Nur Audit",
       "describeThePurposeOfThisPolicy": "Beschreiben Sie den Zweck dieser Richtlinie ...",
       "softwareRules": "Softwareregeln",
-      "name": "Name *",
+      "name": "Softwarename *",
       "vendor": "Anbieter",
       "minVer": "Min. Ver",
       "maxVer": "Max ver",

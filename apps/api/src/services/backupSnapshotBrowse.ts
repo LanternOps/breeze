@@ -166,10 +166,12 @@ function afterSourcePath(after: string | null) {
  * One keyset page of the stored source paths a selective restore may resolve
  * against: the same rows the listing would show (#11026), decided in the
  * statement that reads them. Ordered by source_path, the second column of
- * backup_snapshot_files_snapshot_source_idx, so each page is an index range.
+ * backup_snapshot_files_snapshot_source_idx, so each page is an index range
+ * once the table's statistics know the snapshot's rows (#11209). Exported,
+ * unexecuted, so a test can EXPLAIN this exact statement.
  */
-async function readableSourcePathPage(snapshotDbId: string, after: string | null): Promise<string[]> {
-  const rows = await db
+export function readableSourcePathPageQuery(snapshotDbId: string, after: string | null) {
+  return db
     .select({ sourcePath: backupSnapshotFiles.sourcePath })
     .from(backupSnapshotFiles)
     .where(and(
@@ -179,6 +181,10 @@ async function readableSourcePathPage(snapshotDbId: string, after: string | null
     ))
     .orderBy(asc(backupSnapshotFiles.sourcePath))
     .limit(SELECTION_PAGE_SIZE);
+}
+
+async function readableSourcePathPage(snapshotDbId: string, after: string | null): Promise<string[]> {
+  const rows = await readableSourcePathPageQuery(snapshotDbId, after);
   return rows.map((row) => row.sourcePath);
 }
 
