@@ -27,7 +27,16 @@ import {
   REPORT_TYPE_PERMISSION_DENIED,
 } from '../../services/reportTypePermissions';
 import type { UserPermissions } from '../../services/permissions';
-import { rowsToCsv, rowsToXlsx, XLSX_MIME_TYPE, XlsxLimitError } from '@breeze/shared';
+import {
+  isTicketSlaPerformanceSummary,
+  rowsToCsv,
+  rowsToXlsx,
+  sheetsToXlsx,
+  ticketSlaPerformanceSheets,
+  XLSX_MIME_TYPE,
+  XlsxLimitError,
+  type XlsxSheet,
+} from '@breeze/shared';
 import {
   getPagination, getReportWithOrgCheck, getReportRunWithOrgCheck, isPortalSelfServiceLocked,
   isSystemManagedReportDefinition, PARTNER_OWNED_REPORT, partnerOwnedReportVisibility,
@@ -560,9 +569,20 @@ runsRoutes.get(
     if (format === 'excel') {
       // #9956: a real .xlsx workbook (was TSV text saved as .xls, which Excel
       // opened only after a format-mismatch warning).
+      // #11277: the SLA performance workbook carries the breaches and notes
+      // sheets too; a priorities-only sheet would read as complete while every
+      // breach is missing, so refuse rather than fall back to it.
+      let sheets: XlsxSheet[] | null = null;
+      if (row.reportType === 'ticket_sla_performance') {
+        const summary = result?.summary;
+        if (!isTicketSlaPerformanceSummary(summary)) {
+          return c.json({ error: 'This SLA performance run has no readable summary, so its breaches cannot be exported' }, 409);
+        }
+        sheets = ticketSlaPerformanceSheets(rows, summary);
+      }
       let body: Uint8Array<ArrayBuffer>;
       try {
-        body = rowsToXlsx(rows);
+        body = sheets ? sheetsToXlsx(sheets) : rowsToXlsx(rows);
       } catch (err) {
         // Only the worksheet row/column limits are expected; anything else is a bug.
         if (!(err instanceof XlsxLimitError)) throw err;
