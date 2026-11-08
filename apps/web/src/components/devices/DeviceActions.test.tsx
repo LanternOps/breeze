@@ -82,6 +82,35 @@ it.each(['power', 'menu'])('labels an active lease as exit in the %s menu after 
   expect(screen.getByRole('heading', { name: 'Exit Maintenance Mode' })).toBeInTheDocument();
 });
 
+// #10922 — the device header forwards the detail endpoint's tool list to the
+// real Connect Desktop button, which turns it into a split button.
+describe('DeviceActions — Connect Desktop tool menu (#10922)', () => {
+  it('forwards the device\'s remote tools so Connect Desktop offers the menu', async () => {
+    render(
+      <DeviceActions
+        device={{
+          ...onlineDevice,
+          remoteAccessProviders: [
+            { id: 'rustdesk', label: 'RustDesk', kind: 'protocol' },
+            { id: 'anydesk', label: 'AnyDesk', kind: 'protocol' },
+          ],
+          remoteAccessDefaultProviderId: 'rustdesk',
+        }}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: /choose how to connect/i }));
+    expect(screen.getByRole('menuitem', { name: 'AnyDesk' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Built-in viewer' })).toBeInTheDocument();
+  });
+
+  it('shows the plain button when the device has no remote tools', () => {
+    render(<DeviceActions device={onlineDevice} />);
+
+    expect(screen.queryByRole('button', { name: /choose how to connect/i })).not.toBeInTheDocument();
+  });
+});
+
 describe('DeviceActions — offline gating (issue #2013)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

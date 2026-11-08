@@ -34,6 +34,12 @@ vi.mock('../../services/partnerTrust', () => ({ evaluateCapability, requireCapab
 // Hold a configurable partner-settings value the mocked select chain returns.
 // Each test mutates this before calling app.request().
 let mockPartnerSettings: unknown = {};
+// The acting technician's users.preferences, for the preference-vs-explicit cases.
+let mockUserPreferences: unknown = null;
+// What requirePermission stores in context: GET /devices/:id only lists the
+// tenant's tools for a caller who also holds remote:access (#10922).
+let mockPermissions: unknown = undefined;
+let mockMfaSatisfied = true;
 
 // A fully chainable, table-aware query-builder stub. Every chain method
 // (from/innerJoin/where/orderBy/limit) returns the same node so any call
@@ -47,8 +53,11 @@ let mockPartnerSettings: unknown = {};
 function makeSelectMock() {
   return vi.fn(() => {
     let fromTableName: string | null = null;
-    const resolveRows = (): unknown[] =>
-      fromTableName === 'partners' ? [{ settings: mockPartnerSettings }] : [];
+    const resolveRows = (): unknown[] => {
+      if (fromTableName === 'partners') return [{ settings: mockPartnerSettings }];
+      if (fromTableName === 'users' && mockUserPreferences) return [{ preferences: mockUserPreferences }];
+      return [];
+    };
     const node: any = {
       from: vi.fn((table: unknown) => {
         try {
@@ -117,8 +126,12 @@ vi.mock('../../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn(() => async (c: any, next: any) => {
+    if (mockPermissions) c.set('permissions', mockPermissions);
+    return next();
+  }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
+  hasSatisfiedMfa: vi.fn(() => mockMfaSatisfied),
   // Mirrors the real allowlist-of-one rather than stubbing a constant, so this
   // suite still exercises the gate it depends on.
   isInteractiveUserSession: vi.fn((a: any) => a?.principal?.kind === 'user_session'),
@@ -195,6 +208,9 @@ describe('POST /devices/:id/remote-access-launch', () => {
     vi.clearAllMocks();
     evaluateCapability.mockResolvedValue({ allow: true });
     mockPartnerSettings = {};
+    mockUserPreferences = null;
+    mockPermissions = undefined;
+    mockMfaSatisfied = true;
     app = new Hono();
     app.route('/devices', coreRoutes);
   });
@@ -319,7 +335,8 @@ describe('POST /devices/:id/remote-access-launch', () => {
     expect(auditCall.details).toEqual({
       deviceId,
       providerId: 'rustdesk',
-      scheme: 'rustdesk'
+      scheme: 'rustdesk',
+      explicitProvider: false,
     });
 
     // CRITICAL: ensure the URL and password are NOT in the audit details
@@ -408,7 +425,8 @@ describe('POST /devices/:id/remote-access-launch', () => {
     expect(auditCall.result).toBe('denied');
     expect(auditCall.details).toEqual({
       deviceId,
-      providerId: 'sneaky'
+      providerId: 'sneaky',
+      explicitProvider: false,
     });
     // No URL or substituted value should appear anywhere in the audit row.
     const detailsStr = JSON.stringify(auditCall.details ?? {});
@@ -586,6 +604,348 @@ describe('POST /devices/:id/remote-access-launch', () => {
       expect(postRes.status).toBe(404);
       const postBody = await postRes.json() as { code?: string };
       expect(postBody.code).toBe('no_provider_configured');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // #10922: choosing a tool at click time. `providerId` selects from the
+  // tenant's enabled set and supplies nothing, so everything a launch URL is
+  // built from still comes from the partner record.
+  // -----------------------------------------------------------------------
+  describe('#10922 — explicit provider choice', () => {
+    const rustdesk = {
+      id: 'rustdesk',
+      name: 'RustDesk',
+      urlTemplate: 'rustdesk://{id}?password={password}',
+      customFieldKey: 'rustdesk_id',
+      password: 'rust-secret',
+      enabled: true,
+    };
+    const anydesk = {
+      id: 'anydesk',
+      name: 'AnyDesk',
+      urlTemplate: 'anydesk:{id}?pw={password}',
+      customFieldKey: 'anydesk_id',
+      password: 'any-secret',
+      enabled: true,
+    };
+    const screenconnect = {
+      id: 'sc',
+      name: 'ScreenConnect',
+      urlTemplate: 'https://acme.screenconnect.com/Host#Access///{id}/Join',
+      customFieldKey: 'sc_id',
+      enabled: true,
+    };
+    const retired = {
+      id: 'retired',
+      name: 'Retired',
+      urlTemplate: 'retired://{id}',
+      customFieldKey: 'retired_id',
+      enabled: false,
+    };
+    const customFields = { rustdesk_id: '111', anydesk_id: '7300418', sc_id: '333', retired_id: '444' };
+    const remoteAccessGrant = {
+      permissions: [{ resource: 'devices', action: 'read' }, { resource: 'remote', action: 'access' }],
+    };
+
+    const stageDevice = (fields: Record<string, unknown> = customFields) => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
+        id: deviceId,
+        orgId: 'org-123',
+        hostname: 'host-1',
+        siteId: 'site-1',
+        customFields: fields,
+      } as never);
+    };
+    const stageProviders = () => {
+      setPartnerSettings({
+        remoteAccessProviders: {
+          defaultProviderId: 'rustdesk',
+          providers: [rustdesk, anydesk, screenconnect, retired],
+        },
+      });
+    };
+    // Sent the way fetchWithAuth sends it: a JSON content-type is forced on
+    // every non-FormData request, including one with no body at all.
+    const launch = (body?: string, contentType: string | null = 'application/json') =>
+      app.request(`/devices/${deviceId}/remote-access-launch`, {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer token',
+          ...(contentType ? { 'Content-Type': contentType } : {}),
+        },
+        ...(body !== undefined ? { body } : {}),
+      });
+
+    describe('POST', () => {
+      it('honours an explicit providerId and audits it as explicit', async () => {
+        stageDevice();
+        stageProviders();
+
+        const res = await launch(JSON.stringify({ providerId: 'anydesk' }));
+
+        expect(res.status).toBe(200);
+        const body = await res.json() as { launchUrl?: string; providerId?: string; scheme?: string };
+        expect(body.providerId).toBe('anydesk');
+        expect(body.launchUrl).toBe('anydesk:7300418?pw=any-secret');
+        expect(body.scheme).toBe('anydesk');
+
+        expect(writeRouteAudit).toHaveBeenCalledOnce();
+        const auditCall = vi.mocked(writeRouteAudit).mock.calls[0]![1];
+        expect(auditCall.action).toBe('device.remote_access_launch_url.issued');
+        expect(auditCall.details).toEqual({
+          deviceId,
+          providerId: 'anydesk',
+          scheme: 'anydesk',
+          explicitProvider: true,
+        });
+        const detailsStr = JSON.stringify(auditCall.details);
+        expect(detailsStr).not.toContain('any-secret');
+        expect(detailsStr).not.toContain('7300418');
+      });
+
+      it('an explicit choice beats the technician preference', async () => {
+        stageDevice();
+        stageProviders();
+        mockUserPreferences = { remoteAccessProviderId: 'sc' };
+
+        const res = await launch(JSON.stringify({ providerId: 'anydesk' }));
+
+        expect(res.status).toBe(200);
+        expect((await res.json() as { providerId?: string }).providerId).toBe('anydesk');
+      });
+
+      it.each([
+        ['no body and no content-type', undefined, null],
+        ['no body with the JSON content-type fetchWithAuth forces', undefined, 'application/json'],
+        ['an empty JSON object', '{}', 'application/json'],
+      ])('%s still launches the default, audited as not explicit', async (_label, body, contentType) => {
+        stageDevice();
+        stageProviders();
+
+        const res = await launch(body, contentType);
+
+        expect(res.status).toBe(200);
+        expect((await res.json() as { providerId?: string }).providerId).toBe('rustdesk');
+        const auditCall = vi.mocked(writeRouteAudit).mock.calls[0]![1];
+        expect(auditCall.details).toEqual(expect.objectContaining({ providerId: 'rustdesk', explicitProvider: false }));
+      });
+
+      it('no explicit id still resolves the technician preference', async () => {
+        stageDevice();
+        stageProviders();
+        mockUserPreferences = { remoteAccessProviderId: 'anydesk' };
+
+        const res = await launch();
+
+        expect(res.status).toBe(200);
+        expect((await res.json() as { providerId?: string }).providerId).toBe('anydesk');
+      });
+
+      it.each([
+        ['an id from another tenant', 'someone-elses-tool'],
+        ['a disabled provider', 'retired'],
+      ])('rejects %s with 404, no URL, no decrypt and no fallback', async (_label, providerId) => {
+        stageDevice();
+        stageProviders();
+
+        const res = await launch(JSON.stringify({ providerId }));
+
+        expect(res.status).toBe(404);
+        const body = await res.json() as { code?: string; launchUrl?: string };
+        expect(body.code).toBe('provider_not_available');
+        expect(body.launchUrl).toBeUndefined();
+        expect(decryptForColumn).not.toHaveBeenCalled();
+        expect(writeRouteAudit).not.toHaveBeenCalled();
+        expect(captureException).not.toHaveBeenCalled();
+      });
+
+      it('rejects a provider this device has no identifier for with 404', async () => {
+        stageDevice({ rustdesk_id: '111' });
+        stageProviders();
+
+        const res = await launch(JSON.stringify({ providerId: 'anydesk' }));
+
+        expect(res.status).toBe(404);
+        expect((await res.json() as { code?: string }).code).toBe('missing_device_identifier');
+        expect(decryptForColumn).not.toHaveBeenCalled();
+      });
+
+      // A body the server cannot read as a selection must never launch the
+      // default instead: that would hand back a credential for a tool the
+      // technician did not pick.
+      it.each([
+        ['malformed JSON', '{"providerId":'],
+        ['a non-string id', JSON.stringify({ providerId: 42 })],
+        ['a null id', JSON.stringify({ providerId: null })],
+        ['an empty id', JSON.stringify({ providerId: '' })],
+        ['an over-long id', JSON.stringify({ providerId: 'x'.repeat(101) })],
+        ['an unrecognised field', JSON.stringify({ provider: 'anydesk' })],
+        ['a non-object body', JSON.stringify(['anydesk'])],
+      ])('rejects %s with 400 before any launcher work', async (_label, body) => {
+        stageDevice();
+        stageProviders();
+
+        const res = await launch(body);
+
+        expect(res.status).toBe(400);
+        expect(await res.json()).not.toHaveProperty('launchUrl');
+        expect(decryptForColumn).not.toHaveBeenCalled();
+        expect(writeRouteAudit).not.toHaveBeenCalled();
+      });
+
+      it('reads a JSON selection regardless of content-type rather than launching the default', async () => {
+        stageDevice();
+        stageProviders();
+
+        const res = await launch(JSON.stringify({ providerId: 'anydesk' }), 'text/plain');
+
+        expect(res.status).toBe(200);
+        expect((await res.json() as { providerId?: string }).providerId).toBe('anydesk');
+      });
+
+      it('a device outside the caller scope is still a 404, even with a valid choice', async () => {
+        vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(null as never);
+        stageProviders();
+
+        const res = await launch(JSON.stringify({ providerId: 'anydesk' }));
+
+        expect(res.status).toBe(404);
+        expect((await res.json() as { error?: string }).error).toBe('Device not found');
+        expect(decryptForColumn).not.toHaveBeenCalled();
+      });
+
+      it('a device outside the caller scope is a 404 even with an unreadable body', async () => {
+        vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(null as never);
+
+        const res = await launch('{"providerId":');
+
+        expect(res.status).toBe(404);
+      });
+
+      it('a parked device is refused before an explicit choice is resolved', async () => {
+        stageDevice();
+        stageProviders();
+        vi.mocked(isParkedDevice).mockResolvedValueOnce(true);
+
+        const res = await launch(JSON.stringify({ providerId: 'anydesk' }));
+
+        expect(res.status).toBe(403);
+        expect(decryptForColumn).not.toHaveBeenCalled();
+      });
+
+      it('audits a scheme rejection of an explicit choice as explicit', async () => {
+        stageDevice({ k: 'avas' });
+        setPartnerSettings({
+          remoteAccessProviders: {
+            defaultProviderId: 'rustdesk',
+            providers: [rustdesk, { id: 'sneaky', name: 'Sneaky', urlTemplate: 'j{id}cript:alert(1)', customFieldKey: 'k', enabled: true }],
+          },
+        });
+
+        const res = await launch(JSON.stringify({ providerId: 'sneaky' }));
+
+        expect(res.status).toBe(422);
+        const auditCall = vi.mocked(writeRouteAudit).mock.calls[0]![1];
+        expect(auditCall.action).toBe('device.remote_access_launch_url.scheme_rejected');
+        expect(auditCall.details).toEqual({ deviceId, providerId: 'sneaky', explicitProvider: true });
+      });
+    });
+
+    describe('GET /devices/:id', () => {
+      const getDevice = async () => {
+        const res = await app.request(`/devices/${deviceId}`, {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' },
+        });
+        expect(res.status).toBe(200);
+        return res;
+      };
+
+      it('lists the usable providers and the default, with no credential and no decrypt', async () => {
+        stageDevice();
+        stageProviders();
+        mockPermissions = remoteAccessGrant;
+
+        const res = await getDevice();
+        const raw = await res.text();
+        const body = JSON.parse(raw) as Record<string, unknown>;
+
+        expect(body.remoteAccessProviders).toEqual([
+          { id: 'rustdesk', label: 'RustDesk', kind: 'protocol' },
+          { id: 'anydesk', label: 'AnyDesk', kind: 'protocol' },
+          { id: 'sc', label: 'ScreenConnect', kind: 'web' },
+        ]);
+        expect(body.remoteAccessDefaultProviderId).toBe('rustdesk');
+        expect(body.hasRemoteAccessLauncher).toBe(true);
+        expect(decryptForColumn).not.toHaveBeenCalled();
+        for (const secret of ['rust-secret', 'any-secret', 'password', 'screenconnect.com', '{id}', 'customFieldKey', 'urlTemplate']) {
+          expect(raw).not.toContain(secret);
+        }
+      });
+
+      it('reports the technician preference as the default the primary click would use', async () => {
+        stageDevice();
+        stageProviders();
+        mockPermissions = remoteAccessGrant;
+        mockUserPreferences = { remoteAccessProviderId: 'anydesk' };
+
+        const body = await (await getDevice()).json() as { remoteAccessDefaultProviderId?: unknown };
+
+        expect(body.remoteAccessDefaultProviderId).toBe('anydesk');
+      });
+
+      it('reports no default, and still lists the others, when the default cannot fire on this device', async () => {
+        stageDevice({ anydesk_id: '7300418' });
+        stageProviders();
+        mockPermissions = remoteAccessGrant;
+
+        const body = await (await getDevice()).json() as Record<string, unknown>;
+
+        expect(body.remoteAccessDefaultProviderId).toBeNull();
+        expect(body.hasRemoteAccessLauncher).toBe(false);
+        expect(body.remoteAccessLaunchSkipReason).toBe('missing_device_identifier');
+        expect(body.remoteAccessProviders).toEqual([{ id: 'anydesk', label: 'AnyDesk', kind: 'protocol' }]);
+      });
+
+      // GET /devices/:id only needs devices:read. The tool list follows the
+      // gate GET /remote/providers already has, so reading a device does not
+      // widen who can see which remote tools a tenant uses.
+      it('lists nothing for a caller without remote:access', async () => {
+        stageDevice();
+        stageProviders();
+        mockPermissions = { permissions: [{ resource: 'devices', action: 'read' }] };
+
+        const body = await (await getDevice()).json() as Record<string, unknown>;
+
+        expect(body.remoteAccessProviders).toEqual([]);
+        expect(body.remoteAccessDefaultProviderId).toBeNull();
+        // The pre-existing availability flag is unchanged.
+        expect(body.hasRemoteAccessLauncher).toBe(true);
+      });
+
+      it('lists nothing for a session that has not satisfied MFA', async () => {
+        stageDevice();
+        stageProviders();
+        mockPermissions = remoteAccessGrant;
+        mockMfaSatisfied = false;
+
+        const body = await (await getDevice()).json() as Record<string, unknown>;
+
+        expect(body.remoteAccessProviders).toEqual([]);
+        expect(body.remoteAccessDefaultProviderId).toBeNull();
+      });
+
+      it('lists nothing when no provider is configured', async () => {
+        stageDevice();
+        setPartnerSettings({});
+        mockPermissions = remoteAccessGrant;
+
+        const body = await (await getDevice()).json() as Record<string, unknown>;
+
+        expect(body.remoteAccessProviders).toEqual([]);
+        expect(body.remoteAccessDefaultProviderId).toBeNull();
+      });
     });
   });
 });
