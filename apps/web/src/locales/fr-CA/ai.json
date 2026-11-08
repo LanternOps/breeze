@@ -689,7 +689,14 @@
       "widening": "Vous pouvez faire plus que ce que cette autorisation permet; renouvelez-la pour que Wisp suive.",
       "refreshKeepsTerms": "Cette conversation conserve les conditions précédentes de l’autorisation. Démarrez une nouvelle conversation pour utiliser l’autorisation renouvelée.",
       "startNewConversation": "Démarrer une nouvelle conversation",
-      "dismissNote": "Fermer"
+      "dismissNote": "Fermer",
+      "menu": {
+        "label": "Plus d'actions",
+        "openHome": "Ouvrir l'accueil de Wisp",
+        "settings": "Budget et suivis…",
+        "refresh": "Renouveler l’autorisation…",
+        "revoke": "Désactiver Wisp…"
+      }
     },
     "settings": {
       "title": "Budget et suivi",
@@ -764,7 +771,14 @@
       "raise": "Augmenter le budget du jour",
       "atCeiling": "Le budget du jour est à la limite de votre forfait.",
       "seePlans": "Voir les forfaits",
-      "label": "Dépenses de Wisp aujourd'hui"
+      "label": "Dépenses de Wisp aujourd'hui",
+      "allAiMonth": "Toute l'IA ce mois-ci : {{amount}}",
+      "allAiMessages": "{{formatted}} messages",
+      "allAiMessages_one": "{{formatted}} message",
+      "allAiMessages_other": "{{formatted}} messages"
+    },
+    "notice": {
+      "creditsExhausted": "Vous n'avez plus de crédits d'IA."
     },
     "pause": "Mettre Wisp en pause",
     "resume": "Reprendre",

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WispState } from '@/stores/aiStore';
 
@@ -22,7 +22,10 @@ vi.mock('@/lib/runAction', () => ({
   runAction: (o: unknown) => h.runAction(o),
   ActionError: class ActionError extends Error { status = 0; },
 }));
-vi.mock('@/stores/auth', () => ({ fetchWithAuth: h.fetchWithAuth }));
+vi.mock('@/stores/auth', () => ({
+  fetchWithAuth: h.fetchWithAuth,
+  useAuthStore: (sel: (s: { isAuthenticated: boolean }) => unknown) => sel({ isAuthenticated: true }),
+}));
 vi.mock('@/components/shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('@/hooks/useEntitlement', () => ({ useEntitlement: () => ({ state: 'enabled', limits: h.limits }) }));
 vi.mock('@/stores/orgStore', () => ({ useOrgStore: (sel: (s: unknown) => unknown) => sel({ organizations: h.orgs }) }));
@@ -554,5 +557,239 @@ describe('WispThreadHeader — unattended reads switch (#10973)', () => {
     await act(async () => { fireEvent.click(screen.getByTestId('wisp-unattended-reads-switch')); });
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: "Couldn't turn off unattended reads" }));
     expect(h.updateWisp).not.toHaveBeenCalled();
+  });
+});
+
+// Critique: the docked pane's Wisp header collapses ~7 stacked rows into two —
+// Row A (identity + one overflow menu) and Row B (focus chip + spend chip) —
+// plus at most one escalation notice. The rail keeps the full layout.
+describe('WispThreadHeader compact variant (docked pane)', () => {
+  const RESETS = '2099-01-01T00:00:00.000Z';
+  const usage = (over: Record<string, unknown> = {}) => ({
+    daily: { totalCostCents: 0, messageCount: 0 },
+    monthly: { totalCostCents: 1002, messageCount: 153 },
+    budget: null,
+    credits: { remaining: 8570, includedBalance: 0, purchasedBalance: 8570, fetchedAt: '2026-11-08T00:00:00.000Z' },
+    ...over,
+  });
+  let usageBody: unknown = usage();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.modalProps = null;
+    h.chat = { sessionId: null, wisp: null };
+    h.limits = { maxGrants: 25, budgetCentsPerDayCeiling: 1000, minFloorTickMinutes: 20 };
+    usageBody = usage();
+    h.runAction.mockImplementation(async (o: { request: () => Promise<Response> }) => (await o.request()).json());
+    h.fetchWithAuth.mockImplementation(async (url: string) => (url === '/ai/usage'
+      ? { ok: true, status: 200, json: async () => usageBody }
+      : { ok: true, status: 200, json: async () => ({ success: true, status: 'paused', pausedReason: 'user_paused' }) }));
+  });
+
+  const compact = (w = wisp(), extra: Record<string, unknown> = {}) =>
+    render(<WispThreadHeader variant="compact" wisp={w} orgName={null} wideningAvailable={w.wideningAvailable} {...extra} />);
+  const openMenu = () => {
+    fireEvent.click(screen.getByTestId('wisp-header-menu'));
+    return screen.getByRole('menu');
+  };
+
+  it('Row A: the Wisp title, a status dot and the scope share one line; pane actions and Close flank the overflow menu', () => {
+    compact(wisp(), {
+      paneActions: <button type="button" data-testid="pane-history">h</button>,
+      closeAction: <button type="button" data-testid="pane-close">x</button>,
+    });
+    const header = screen.getByTestId('wisp-thread-header');
+    expect(header).toHaveAttribute('data-variant', 'compact');
+    expect(within(header).getByText('Wisp')).toBeInTheDocument();
+    expect(screen.getByTestId('wisp-scope').textContent).toBe('All organizations');
+    const dot = screen.getByTestId('wisp-grant-status');
+    expect(dot).toHaveAttribute('aria-label', 'Active');
+    expect(dot).toHaveAttribute('data-status', 'active');
+    // The 10px badge is gone: an active grant shows the dot only.
+    expect(within(header).queryByText('Active')).toBeNull();
+    const order = [screen.getByTestId('pane-history'), screen.getByTestId('wisp-header-menu'), screen.getByTestId('pane-close')];
+    expect(order[0]!.compareDocumentPosition(order[1]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(order[1]!.compareDocumentPosition(order[2]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The old inline rows are gone from the default view.
+    expect(screen.queryByTestId('wisp-pause-control')).toBeNull();
+    expect(screen.queryByTestId('wisp-settings-panel')).toBeNull();
+  });
+
+  it('a paused grant names its status in text beside the dot (at least 12px)', () => {
+    compact(wisp({ status: 'paused', pausedReason: 'user_paused' }));
+    const dot = screen.getByTestId('wisp-grant-status');
+    expect(dot).toHaveAttribute('data-status', 'paused');
+    const text = screen.getByTestId('wisp-grant-status-text');
+    expect(text.textContent).toBe('Paused');
+    expect(text.closest('.text-xs')).not.toBeNull();
+    expect(text.className).not.toContain('text-[10px]');
+  });
+
+  it('the overflow menu holds Open Wisp home, the pane items, Budget & check-ins, Refresh grant, then a destructive Turn off Wisp', () => {
+    const onFlag = vi.fn();
+    compact(wisp(), { paneMenuItems: [{ id: 'flag', label: 'Flag conversation for review', testId: 'ai-chat-flag', onSelect: onFlag }] });
+    const menu = openMenu();
+    const items = within(menu).getAllByRole('menuitem');
+    expect(items.map((i) => i.textContent)).toEqual([
+      'Open Wisp home',
+      'Flag conversation for review',
+      'Budget & check-ins…',
+      'Refresh grant…',
+      'Turn off Wisp…',
+    ]);
+    const home = screen.getByTestId('wisp-sidebar-open-home');
+    expect(home).toHaveAttribute('href', '/wisp');
+    expect(home).not.toHaveAttribute('target');
+    expect(home.querySelector('svg')).toBeNull();
+    const off = screen.getByTestId('wisp-revoke');
+    expect(off.className).toContain('text-destructive');
+    expect(off.previousElementSibling).toHaveAttribute('role', 'separator');
+    fireEvent.click(screen.getByTestId('ai-chat-flag'));
+    expect(onFlag).toHaveBeenCalledTimes(1);
+  });
+
+  it('Budget & check-ins opens the settings as an overlay dialog, not inline; it still saves, and Escape closes it', async () => {
+    h.fetchWithAuth.mockImplementation(async (url: string) => (url === '/ai/usage'
+      ? { ok: true, status: 200, json: async () => usageBody }
+      : { ok: true, status: 200, json: async () => ({ id: 'g-1', budgetCentsPerDay: 250, floorTickMinutes: 30 }) }));
+    compact();
+    openMenu();
+    fireEvent.click(screen.getByTestId('wisp-settings'));
+    const dialog = screen.getByRole('dialog', { name: 'Budget and check-in' });
+    expect(dialog).toContainElement(screen.getByTestId('wisp-settings-panel'));
+    expect(dialog.className).toContain('absolute');
+    expect(screen.getByTestId('wisp-settings-budget')).toHaveFocus();
+    fireEvent.change(screen.getByTestId('wisp-settings-budget'), { target: { value: '2.50' } });
+    fireEvent.click(screen.getByTestId('wisp-settings-save'));
+    await waitFor(() => expect(h.updateWisp).toHaveBeenCalledWith({ budgetCentsPerDay: 250, floorTickMinutes: 30 }));
+    openMenu();
+    fireEvent.click(screen.getByTestId('wisp-settings'));
+    fireEvent.keyDown(screen.getByRole('dialog', { name: 'Budget and check-in' }), { key: 'Escape' });
+    expect(screen.queryByTestId('wisp-settings-panel')).toBeNull();
+  });
+
+  it('Refresh grant opens the step-up modal and Turn off Wisp still asks before revoking', async () => {
+    compact(wisp({ scopeOrgId: 'org-a' }), { orgName: 'Alpha' });
+    openMenu();
+    fireEvent.click(screen.getByTestId('wisp-refresh-grant'));
+    expect(screen.getByTestId('wisp-refresh-modal-mock')).toBeInTheDocument();
+    expect(h.modalProps?.refresh).toEqual({ grantId: 'g-1', orgId: 'org-a' });
+    act(() => { (h.modalProps!.onClose as () => void)(); });
+
+    h.fetchWithAuth.mockResolvedValue({ ok: true, status: 200, json: async () => ({ success: true }) });
+    openMenu();
+    fireEvent.click(screen.getByTestId('wisp-revoke'));
+    expect(h.runAction).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('wisp-revoke-confirm'));
+    await waitFor(() => expect(h.exitWispMode).toHaveBeenCalledTimes(1));
+  });
+
+  it('renders only one notice when several conditions hold: a paused grant over budget shows the pause, not the budget', () => {
+    compact(wisp({ status: 'paused', pausedReason: 'user_paused', spentTodayCents: 300, budgetResetsAt: RESETS, wideningAvailable: true }));
+    const notices = screen.getAllByTestId('wisp-header-notice');
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toHaveAttribute('data-kind', 'userPaused');
+    expect(notices[0]).toHaveTextContent("You paused Wisp. It won't check in or nudge you until you resume.");
+    expect(within(notices[0]!).getByTestId('wisp-resume')).toBeEnabled();
+    expect(screen.queryByTestId('wisp-spend-raise')).toBeNull();
+    expect(screen.queryByTestId('wisp-widening')).toBeNull();
+  });
+
+  it('a partner-disabled grant names the reason in the notice, with no Resume', () => {
+    compact(wisp({ status: 'paused', pausedReason: 'partner_disabled' }));
+    const notice = screen.getByTestId('wisp-header-notice');
+    expect(notice).toHaveAttribute('data-kind', 'systemPaused');
+    expect(notice).toHaveTextContent('Wisp is turned off for your partner. An administrator can turn it back on.');
+    expect(screen.queryByTestId('wisp-resume')).toBeNull();
+  });
+
+  it('an active grant over budget shows the budget notice, whose Raise opens the settings overlay', () => {
+    compact(wisp({ spentTodayCents: 200, budgetResetsAt: RESETS }));
+    const notice = screen.getByTestId('wisp-header-notice');
+    expect(notice).toHaveAttribute('data-kind', 'budget');
+    expect(notice).toHaveTextContent('Budget reached');
+    fireEvent.click(within(notice).getByTestId('wisp-spend-raise'));
+    expect(screen.getByRole('dialog', { name: 'Budget and check-in' })).toBeInTheDocument();
+  });
+
+  it('widening puts a primary Refresh grant in the notice strip; the menu keeps its own Refresh grant', () => {
+    compact(wisp({ wideningAvailable: true }));
+    const notice = screen.getByTestId('wisp-header-notice');
+    expect(notice).toHaveAttribute('data-kind', 'widening');
+    expect(within(notice).getByTestId('wisp-widening')).toHaveTextContent('You can do more than this grant allows');
+    const primary = within(notice).getByTestId('wisp-widening-refresh');
+    expect(primary.className).toContain('bg-primary');
+    fireEvent.click(primary);
+    expect(screen.getByTestId('wisp-refresh-modal-mock')).toBeInTheDocument();
+    act(() => { (h.modalProps!.onClose as () => void)(); });
+    openMenu();
+    expect(screen.getByTestId('wisp-refresh-grant')).toBeInTheDocument();
+  });
+
+  it('no notice at all for a healthy grant', async () => {
+    compact(wisp({ spentTodayCents: 10, budgetResetsAt: RESETS }));
+    await waitFor(() => expect(h.fetchWithAuth).toHaveBeenCalledWith('/ai/usage'));
+    expect(screen.queryByTestId('wisp-header-notice')).toBeNull();
+  });
+
+  it('out of AI credits shows the credits notice', async () => {
+    usageBody = usage({ credits: { remaining: 0, includedBalance: 0, purchasedBalance: 0, fetchedAt: '2026-11-08T00:00:00.000Z' } });
+    compact();
+    const notice = await screen.findByTestId('wisp-header-notice');
+    expect(notice).toHaveAttribute('data-kind', 'credits');
+    expect(notice).toHaveTextContent("You're out of AI credits.");
+  });
+
+  it('the spend chip reads "$0.42 / $2" and opens a popover with the meter, all-AI usage, credits and the Pause control', async () => {
+    compact(wisp({ spentTodayCents: 42, budgetResetsAt: RESETS }));
+    const chip = screen.getByTestId('wisp-spend-chip');
+    expect(chip.textContent).toMatch(/\$0\.42 \/ \$2(?!\.)/);
+    expect(chip).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(chip).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(chip);
+    expect(chip).toHaveAttribute('aria-expanded', 'true');
+    const pop = screen.getByTestId('wisp-spend-popover');
+    expect(pop).toHaveAttribute('role', 'dialog');
+    expect(within(pop).getByTestId('wisp-spend-meter')).toHaveTextContent('$0.42 of $2.00 today');
+    await waitFor(() => expect(pop).toHaveTextContent('All AI this month: $10.02'));
+    expect(pop).toHaveTextContent('153 msgs');
+    expect(pop).toHaveTextContent('8,570 credits');
+    fireEvent.click(within(pop).getByTestId('wisp-pause'));
+    await waitFor(() => expect(h.updateWisp).toHaveBeenCalledWith({ status: 'paused', pausedReason: 'user_paused' }));
+    fireEvent.keyDown(pop, { key: 'Escape' });
+    expect(screen.queryByTestId('wisp-spend-popover')).toBeNull();
+    expect(chip).toHaveFocus();
+  });
+
+  it('the popover closes on an outside click', () => {
+    compact(wisp({ spentTodayCents: 42, budgetResetsAt: RESETS }));
+    fireEvent.click(screen.getByTestId('wisp-spend-chip'));
+    expect(screen.getByTestId('wisp-spend-popover')).toBeInTheDocument();
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByTestId('wisp-spend-popover')).toBeNull();
+  });
+
+  it('Row B keeps the native focus select as a compact chip, with its in-flight lock', async () => {
+    let release!: () => void;
+    h.setWispFocus.mockImplementationOnce(() => new Promise<void>((r) => { release = r; }));
+    compact();
+    const select = screen.getByTestId('wisp-focus') as HTMLSelectElement;
+    expect(select.tagName).toBe('SELECT');
+    expect(select.className).not.toContain('flex-1');
+    expect(select.selectedOptions[0]!.textContent).toBe('No customer focus');
+    fireEvent.change(select, { target: { value: 'org-b' } });
+    expect(h.setWispFocus).toHaveBeenCalledWith('org-b', 'Bravo');
+    expect(select).toBeDisabled();
+    await act(async () => { release(); });
+    expect(select).toBeEnabled();
+  });
+
+  it('the default (full) variant keeps the rail layout: icon buttons, inline pause, no overflow menu', () => {
+    render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    expect(screen.getByTestId('wisp-thread-header')).not.toHaveAttribute('data-variant', 'compact');
+    expect(screen.queryByTestId('wisp-header-menu')).toBeNull();
+    expect(screen.getByTestId('wisp-refresh-grant').tagName).toBe('BUTTON');
+    expect(screen.getByTestId('wisp-pause')).toBeInTheDocument();
+    expect(screen.queryByTestId('wisp-spend-chip')).toBeNull();
   });
 });

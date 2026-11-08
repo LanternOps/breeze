@@ -773,6 +773,16 @@ describe('chat kit units (Wisp companion W01)', () => {
     expect(queryByText('Check server health')).toBeNull();
   });
 
+  it('the panel empty state anchors at the top (no void under the header); the page layout keeps it at the bottom', () => {
+    const panel = view([], { emptyState: <div data-testid="custom-empty">hello</div> });
+    const wrap = panel.getByTestId('custom-empty').parentElement!.parentElement as HTMLElement;
+    expect(wrap.className).toContain('justify-start');
+    expect(wrap.className).not.toContain('justify-end');
+    panel.unmount();
+    const page = view([], { emptyState: <div data-testid="custom-empty">hello</div>, layout: 'page' });
+    expect((page.getByTestId('custom-empty').parentElement!.parentElement as HTMLElement).className).toContain('justify-end');
+  });
+
   it('without emptyState the quick actions still render', () => {
     const { getByText } = view([]);
     expect(getByText('Check server health')).toBeTruthy();

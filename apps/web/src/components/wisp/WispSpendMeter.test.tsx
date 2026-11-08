@@ -63,4 +63,27 @@ describe('WispSpendMeter (W06 T15, w00 A32)', () => {
     render(<WispSpendMeter spentCents={100} budgetCents={2500} budgetMax={2500} resetsAt={RESETS} onRaise={vi.fn()} />);
     expect(screen.queryByTestId('wisp-spend-at-ceiling')).toBeNull();
   });
+
+  describe('variant="compact" (the docked pane chip)', () => {
+    it('reads "$5.26 / $10" beside a short bar', () => {
+      render(<WispSpendMeter variant="compact" spentCents={526} budgetCents={1000} resetsAt={RESETS} onRaise={vi.fn()} />);
+      const chip = screen.getByTestId('wisp-spend-meter-compact');
+      expect(chip.textContent).toMatch(/\$5\.26 \/ \$10(?!\.)/);
+      expect(chip.getAttribute('data-state')).toBe('ok');
+      expect(chip.querySelector('.w-8')).not.toBeNull();
+      expect(screen.queryByTestId('wisp-spend-meter')).toBeNull();
+    });
+
+    it('keeps cents on a budget that is not whole dollars', () => {
+      render(<WispSpendMeter variant="compact" spentCents={42} budgetCents={250} resetsAt={RESETS} />);
+      expect(screen.getByTestId('wisp-spend-meter-compact').textContent).toContain('$0.42 / $2.50');
+    });
+
+    it('carries no raise or plan link even when exhausted: the notice strip and the popover own those', () => {
+      render(<WispSpendMeter variant="compact" spentCents={200} budgetCents={200} budgetMax={200} resetsAt={RESETS} onRaise={vi.fn()} />);
+      expect(screen.getByTestId('wisp-spend-meter-compact').getAttribute('data-state')).toBe('exhausted');
+      expect(screen.queryByTestId('wisp-spend-raise')).toBeNull();
+      expect(screen.queryByTestId('wisp-spend-at-ceiling')).toBeNull();
+    });
+  });
 });

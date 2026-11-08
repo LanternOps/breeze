@@ -689,7 +689,14 @@
       "widening": "Puedes hacer más de lo que permite este permiso; renuévalo para que Wisp se mantenga al día.",
       "refreshKeepsTerms": "Esta conversación conserva las condiciones anteriores del permiso. Inicia una conversación nueva para usar el permiso renovado.",
       "startNewConversation": "Iniciar una conversación nueva",
-      "dismissNote": "Descartar"
+      "dismissNote": "Descartar",
+      "menu": {
+        "label": "Más acciones",
+        "openHome": "Abrir el inicio de Wisp",
+        "settings": "Presupuesto y revisiones…",
+        "refresh": "Renovar permiso…",
+        "revoke": "Desactivar Wisp…"
+      }
     },
     "settings": {
       "title": "Presupuesto y revisión periódica",
@@ -764,7 +771,14 @@
       "raise": "Aumentar el presupuesto de hoy",
       "atCeiling": "El presupuesto de hoy está en el límite de su plan.",
       "seePlans": "Ver planes",
-      "label": "Gasto de Wisp hoy"
+      "label": "Gasto de Wisp hoy",
+      "allAiMonth": "Toda la IA este mes: {{amount}}",
+      "allAiMessages": "{{formatted}} mensajes",
+      "allAiMessages_one": "{{formatted}} mensaje",
+      "allAiMessages_other": "{{formatted}} mensajes"
+    },
+    "notice": {
+      "creditsExhausted": "Te quedaste sin créditos de IA."
     },
     "pause": "Pausar Wisp",
     "resume": "Reanudar",

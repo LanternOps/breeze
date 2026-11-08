@@ -73,4 +73,21 @@ describe('AiModelPicker (spec §11)', () => {
     render(<AiModelPicker disabled />);
     expect(screen.getByTestId('ai-model-picker-button')).toBeDisabled();
   });
+
+  it('variant="inline": one muted line inside the composer, no bordered row; effort is named for assistive tech', () => {
+    setChoices(base);
+    render(<AiModelPicker variant="inline" />);
+    const row = screen.getByTestId('ai-model-picker');
+    expect(row.className).not.toMatch(/(^|\s)border-t(\s|$)/);
+    expect(row.className).toContain('text-muted-foreground');
+    expect(row.className).not.toContain('flex-wrap');
+    expect(screen.getByTestId('ai-model-picker-button').textContent).toContain('Sonnet 5.5');
+    const effort = screen.getByTestId('ai-model-effort');
+    expect(effort).toHaveAttribute('aria-label', 'Effort');
+    expect(row.textContent).not.toContain('Effort');
+    // The store behaviour is unchanged: picking still selects.
+    fireEvent.click(screen.getByTestId('ai-model-picker-button'));
+    fireEvent.click(screen.getByTestId('ai-model-option-haiku'));
+    expect(useAiModelPickerStore.getState().effective().offeringId).toBe('haiku');
+  });
 });

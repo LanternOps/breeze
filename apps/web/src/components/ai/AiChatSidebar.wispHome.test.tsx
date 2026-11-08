@@ -66,7 +66,14 @@ vi.mock('./AiContextBadge', () => ({ default: () => null }));
 vi.mock('./AiCostIndicator', () => ({ default: () => null }));
 vi.mock('./AiModelPicker', () => ({ default: () => null }));
 vi.mock('./AiContinuationPrompt', () => ({ default: () => null }));
-vi.mock('./WispThreadHeader', () => ({ default: () => <div data-testid="wisp-thread-header-mock" /> }));
+// The compact header is the pane's whole header in Wisp mode: it renders the
+// pane's History / New / Close it is handed (its own title and menu are
+// WispThreadHeader.test's).
+vi.mock('./WispThreadHeader', () => ({
+  default: (p: { variant?: string; paneActions?: React.ReactNode; closeAction?: React.ReactNode }) => (
+    <div data-testid="wisp-thread-header-mock" data-variant={String(p.variant)}>{p.paneActions}{p.closeAction}</div>
+  ),
+}));
 vi.mock('./WispThreadAttachments', () => ({ default: () => null }));
 vi.mock('./WispConcernsPanel', () => ({ WispConcernsPanel: () => <div data-testid="wisp-concerns-mock" /> }));
 
@@ -109,13 +116,11 @@ describe('AiChatSidebar in Wisp mode defers to the home (W08 Task 10)', () => {
     useAiStore.setState(BASE);
   });
 
-  it('Wisp mode: "Open in Wisp" links to /wisp and the concern list is gone (the header stays)', () => {
+  it('Wisp mode: the compact header (whose menu opens the Wisp home) stays and the concern list is gone', () => {
     useAiStore.setState({ wisp: wisp() });
     render(<AiChatSidebar />);
-    expect(screen.getByTestId('wisp-thread-header-mock')).toBeInTheDocument();
-    const link = screen.getByTestId('wisp-sidebar-open-home');
-    expect(link).toHaveAttribute('href', '/wisp');
-    expect(link).toHaveTextContent('Open in Wisp');
+    expect(screen.getByTestId('wisp-thread-header-mock')).toHaveAttribute('data-variant', 'compact');
+    // "Open Wisp home" is an item in the header's overflow menu now (WispThreadHeader.test).
     expect(screen.queryByTestId('wisp-concerns-mock')).toBeNull();
   });
 
@@ -162,7 +167,9 @@ describe('AiChatSidebar voice is decided by the grant (W05 #10136)', () => {
     render(<AiChatSidebar />);
     await waitFor(() => expect(enterWispMode).toHaveBeenCalledTimes(1));
     expect(enterWispMode.mock.calls[0][0]).toMatchObject({ grantId: 'grant-pw', threadId: 'thread-of-grant-pw', status: 'active' });
-    await waitFor(() => expect(screen.getByText('Wisp')).toBeInTheDocument());
+    // The panel speaks as Wisp: the compact Wisp header (titled "Wisp") replaces the Breeze AI one.
+    await waitFor(() => expect(screen.getByTestId('wisp-thread-header-mock')).toHaveAttribute('data-variant', 'compact'));
+    expect(screen.queryByText('Breeze AI')).toBeNull();
     expect(screen.queryByTestId('wisp-sidebar-meet')).toBeNull();
     // No toggle anywhere: the grant decides (spec §11 decision 4).
     expect(screen.queryByTestId('wisp-toggle')).toBeNull();

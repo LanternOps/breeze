@@ -8,8 +8,12 @@ import { formatCentsPerM, formatContextTokens } from './modelPickerFormat';
 
 const NO_ALTERNATIVES: string[] = [];
 
-/** Spec §11 "Chat composer": model menu + the options the chosen model supports. */
-export default function AiModelPicker({ disabled }: { disabled?: boolean }) {
+/**
+ * Spec §11 "Chat composer": model menu + the options the chosen model supports.
+ * `row` (default) is its own bordered row above the composer; `inline` is one
+ * muted line inside the composer box, under the text (the docked pane, #critique).
+ */
+export default function AiModelPicker({ disabled, variant = 'row' }: { disabled?: boolean; variant?: 'row' | 'inline' }) {
   const { t } = useTranslation('ai');
   const [open, setOpen] = useState(false);
   const { choices, select, setOption, effective } = useAiModelPickerStore();
@@ -19,8 +23,16 @@ export default function AiModelPicker({ disabled }: { disabled?: boolean }) {
   const { offeringId, options } = effective();
   const chosen = choices.choices.find((c) => c.offeringId === offeringId) ?? null;
 
+  const inline = variant === 'inline';
+  const effortLabel = t('aiModelPicker.effort');
+
   return (
-    <div className="flex flex-wrap items-center gap-2 border-t px-3 pt-2 text-xs" data-testid="ai-model-picker">
+    <div
+      className={inline
+        ? 'flex items-center gap-1 pt-1 text-xs text-muted-foreground'
+        : 'flex flex-wrap items-center gap-2 border-t px-3 pt-2 text-xs'}
+      data-testid="ai-model-picker"
+    >
       <div className="relative">
         <button
           type="button"
@@ -29,7 +41,9 @@ export default function AiModelPicker({ disabled }: { disabled?: boolean }) {
           aria-haspopup="listbox"
           aria-expanded={open}
           data-testid="ai-model-picker-button"
-          className="flex items-center gap-1 rounded border px-2 py-1 hover:bg-muted disabled:opacity-50"
+          className={inline
+            ? 'flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground disabled:opacity-50'
+            : 'flex items-center gap-1 rounded border px-2 py-1 hover:bg-muted disabled:opacity-50'}
         >
           {chosen?.displayName ?? t('aiModelPicker.chooseModel')}
           <ChevronDown className="h-3 w-3" />
@@ -82,13 +96,17 @@ export default function AiModelPicker({ disabled }: { disabled?: boolean }) {
 
       {chosen && chosen.options.effort.length > 0 && (
         <label className="flex items-center gap-1">
-          {t('aiModelPicker.effort')}
+          {inline ? <span aria-hidden="true">·</span> : effortLabel}
           <select
             disabled={disabled}
             value={options.effort ?? ''}
             onChange={(e) => setOption('effort', (e.target.value || undefined) as EffortLevel | undefined)}
             data-testid="ai-model-effort"
-            className="rounded border bg-background px-1 py-0.5"
+            aria-label={inline ? effortLabel : undefined}
+            title={inline ? effortLabel : undefined}
+            className={inline
+              ? 'cursor-pointer rounded bg-transparent px-1 py-0.5 hover:bg-muted hover:text-foreground disabled:opacity-50'
+              : 'rounded border bg-background px-1 py-0.5'}
           >
             <option value="">{t('aiModelPicker.effortDefault')}</option>
             {EFFORT_LEVELS.filter((e) => chosen.options.effort.includes(e)).map((e) => (

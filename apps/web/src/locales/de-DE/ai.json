@@ -689,7 +689,14 @@
       "widening": "Sie dürfen mehr, als diese Berechtigung erlaubt – erneuern Sie sie, damit Wisp Schritt halten kann.",
       "refreshKeepsTerms": "Diese Unterhaltung behält die bisherigen Bedingungen der Berechtigung. Starten Sie eine neue Unterhaltung, um die erneuerte Berechtigung zu nutzen.",
       "startNewConversation": "Neue Unterhaltung starten",
-      "dismissNote": "Schließen"
+      "dismissNote": "Schließen",
+      "menu": {
+        "label": "Weitere Aktionen",
+        "openHome": "Wisp-Startseite öffnen",
+        "settings": "Budget & Check-ins…",
+        "refresh": "Berechtigung erneuern…",
+        "revoke": "Wisp deaktivieren…"
+      }
     },
     "settings": {
       "title": "Budget und Check-in",
@@ -764,7 +771,14 @@
       "raise": "Heutiges Budget erhöhen",
       "atCeiling": "Das heutige Budget hat das Limit Ihres Tarifs erreicht.",
       "seePlans": "Tarife ansehen",
-      "label": "Wisp-Ausgaben heute"
+      "label": "Wisp-Ausgaben heute",
+      "allAiMonth": "Gesamte KI diesen Monat: {{amount}}",
+      "allAiMessages": "{{formatted}} Nachrichten",
+      "allAiMessages_one": "{{formatted}} Nachricht",
+      "allAiMessages_other": "{{formatted}} Nachrichten"
+    },
+    "notice": {
+      "creditsExhausted": "Ihre KI-Credits sind aufgebraucht."
     },
     "pause": "Wisp pausieren",
     "resume": "Fortsetzen",

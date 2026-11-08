@@ -32,10 +32,10 @@ import AiConversationList from "./AiConversationList";
 import { useAiConversationSource, type ConversationRow } from "./useAiConversationSource";
 import { useContinueInPanel } from "../workspace/useContinueInPanel";
 import { showToast } from "../shared/Toast";
-import { ActionMenu } from "../shared/ActionMenu";
+import { ActionMenu, type ActionMenuItem } from "../shared/ActionMenu";
 import BuyCreditsLink from "./BuyCreditsLink";
 import WispThreadHeader from "./WispThreadHeader";
-import WispThreadAttachments from "./WispThreadAttachments";
+import WispAttachmentsButton from "./WispAttachmentsButton";
 import WispChatWelcome from "../wisp/WispChatWelcome";
 import { useWispScopeLabel } from "../wisp/useWispScopeLabel";
 import { wispSessionOrgId } from "@/lib/wispSession";
@@ -45,6 +45,8 @@ import { RIGHT_DOCK_BACKDROP_CLASS, RIGHT_DOCK_PANEL_CLASS } from "../layout/rig
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+
+const HEADER_ICON_BUTTON = "rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground";
 
 type GrantLookup =
   | { kind: "idle" }
@@ -132,7 +134,6 @@ export default function AiChatSidebar() {
   } = useAiStore();
   // #9431: an approval card may have been decided in another window meanwhile.
   useOnWindowReturn(() => recheckPendingApproval?.());
-  const [wispAttachmentsOpen, setWispAttachmentsOpen] = useState(false);
   const wispScopeOrgName = useOrgStore((s) =>
     wisp?.scopeOrgId ? (s.organizations ?? []).find((o) => o.id === wisp.scopeOrgId)?.name ?? null : null,
   );
@@ -306,6 +307,70 @@ export default function AiChatSidebar() {
 
   if (!canUseAi) return null;
 
+  // Shared by the plain header and the compact Wisp header's Row A.
+  const historyButton = !showHistory && (
+    <button
+      onClick={toggleHistory}
+      className={HEADER_ICON_BUTTON}
+      title={t("aiChatSidebar.conversationHistory")}
+      data-testid="ai-chat-history-toggle"
+    >
+      <History className="h-4 w-4" />
+    </button>
+  );
+  const newConversationControl = !showHistory && sessionId && (offerPlainChat ? (
+    <ActionMenu
+      label={t("aiChatSidebar.newConversation")}
+      testId="ai-chat-new-menu"
+      triggerClassName={HEADER_ICON_BUTTON}
+      trigger={<Plus className="h-4 w-4" aria-hidden="true" />}
+      items={[
+        {
+          id: "new-chat",
+          label: t("aiConversationMove.newChat"),
+          description: t("wisp.plainChat.wispDescription"),
+          onSelect: () => void handleNewConversation(),
+          testId: "ai-chat-new-conversation",
+        },
+        {
+          id: "new-plain-chat",
+          label: t("wisp.plainChat.new"),
+          description: t("wisp.plainChat.newDescription"),
+          onSelect: () => void startPlainChat(),
+          testId: "ai-chat-new-plain",
+        },
+      ]}
+    />
+  ) : (
+    <button
+      onClick={handleNewConversation}
+      className={HEADER_ICON_BUTTON}
+      title={t("aiChatSidebar.newConversation")}
+      data-testid="ai-chat-new-conversation"
+    >
+      <Plus className="h-4 w-4" />
+    </button>
+  ));
+  const closeButton = (
+    <button
+      onClick={close}
+      className={HEADER_ICON_BUTTON}
+      title={t("aiChatSidebar.closeShortcut")}
+      data-testid="ai-chat-close"
+    >
+      <X className="h-4 w-4" />
+    </button>
+  );
+  // Under a Wisp header, Flag is an item in Wisp's overflow menu.
+  const wispPaneMenuItems: ActionMenuItem[] = sessionId
+    ? [{
+        id: "flag",
+        label: isFlagged ? t("aiChatSidebar.unflagConversation") : t("aiChatSidebar.flagConversation"),
+        onSelect: () => void (isFlagged ? unflagSession() : flagSession()),
+        testId: "ai-chat-flag",
+      }]
+    : [];
+
   return (
     <>
       {/* Sidebar panel */}
@@ -324,117 +389,82 @@ export default function AiChatSidebar() {
         }`}
       >
         {/* Header — one flat surface with the panel (no stacked card-on-card
-            backgrounds); the bottom border alone separates it. */}
-        <div className="flex items-center justify-between border-b px-4 py-3">
-          <div className="flex items-center gap-2">
-            {showHistory ? (
-              <button
-                onClick={toggleHistory}
-                className="rounded p-0.5 text-muted-foreground hover:text-foreground"
-              >
-                <ArrowLeft className="h-4 w-4" />
-              </button>
-            ) : (
-              <MessageSquare className="h-4 w-4 text-primary" />
-            )}
-            <span className="text-sm font-semibold text-foreground">
-              {showHistory
-                ? t("aiChatSidebar.history")
-                : wisp
-                  ? t("wisp.title")
+            backgrounds); the bottom border alone separates it. Under a Wisp
+            grant the compact Wisp header is the whole header (#critique): its
+            Row A carries the pane's History, New and Close beside Wisp's own
+            overflow menu, which holds Flag too. */}
+        {wisp && !showHistory ? (
+          <WispThreadHeader
+            variant="compact"
+            wisp={wisp}
+            orgName={wispScopeOrgName}
+            wideningAvailable={wisp.wideningAvailable}
+            paneActions={<>{historyButton}{newConversationControl}</>}
+            paneMenuItems={wispPaneMenuItems}
+            closeAction={closeButton}
+            usageEnabled={isOpen}
+          />
+        ) : (
+          <div className="flex items-center justify-between border-b px-4 py-2">
+            <div className="flex items-center gap-2">
+              {showHistory ? (
+                <button
+                  onClick={toggleHistory}
+                  className="rounded p-0.5 text-muted-foreground hover:text-foreground"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                </button>
+              ) : (
+                <MessageSquare className="h-4 w-4 text-primary" />
+              )}
+              <span className="text-sm font-semibold text-foreground">
+                {showHistory
+                  ? t("aiChatSidebar.history")
                   : plainBesideGrant
                     ? <span data-testid="ai-chat-mode-plain">{t("wisp.plainChat.label")}</span>
                     : t("aiChatSidebar.title")}
-            </span>
-          </div>
+              </span>
+            </div>
 
-          <div className="flex items-center gap-1">
-            {!showHistory && (
-              <button
-                onClick={toggleHistory}
-                className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                title={t("aiChatSidebar.conversationHistory")}
-                data-testid="ai-chat-history-toggle"
-              >
-                <History className="h-4 w-4" />
-              </button>
-            )}
-            {/* #9427 W3: hidden for topology investigations (D4) and Wisp threads (the workspace has no Wisp controls). */}
-            {!showHistory && sessionId && topologySiteId === null && !wisp && (
-              <button
-                onClick={() => void moveToAssistant(sessionId, { draft: composerDraft })}
-                className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                title={t("aiConversationMove.openInAssistant")}
-                aria-label={t("aiConversationMove.openInAssistant")}
-                data-testid="ai-open-in-assistant"
-              >
-                <ExternalLink className="h-4 w-4" />
-              </button>
-            )}
-            {!showHistory && sessionId && offerPlainChat && (
-              <ActionMenu
-                label={t("aiChatSidebar.newConversation")}
-                testId="ai-chat-new-menu"
-                triggerClassName="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                trigger={<Plus className="h-4 w-4" aria-hidden="true" />}
-                items={[
-                  {
-                    id: "new-chat",
-                    label: t("aiConversationMove.newChat"),
-                    description: t("wisp.plainChat.wispDescription"),
-                    onSelect: () => void handleNewConversation(),
-                    testId: "ai-chat-new-conversation",
-                  },
-                  {
-                    id: "new-plain-chat",
-                    label: t("wisp.plainChat.new"),
-                    description: t("wisp.plainChat.newDescription"),
-                    onSelect: () => void startPlainChat(),
-                    testId: "ai-chat-new-plain",
-                  },
-                ]}
-              />
-            )}
-            {!showHistory && sessionId && !offerPlainChat && (
-              <button
-                onClick={handleNewConversation}
-                className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                title={t("aiChatSidebar.newConversation")}
-                data-testid="ai-chat-new-conversation"
-              >
-                <Plus className="h-4 w-4" />
-              </button>
-            )}
-            {!showHistory && sessionId && (
-              <button
-                onClick={() => (isFlagged ? unflagSession() : flagSession())}
-                className={`rounded p-1.5 transition-colors ${
-                  isFlagged
-                    ? "text-amber-400 hover:bg-muted hover:text-amber-300"
-                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                }`}
-                title={
-                  isFlagged
-                    ? t("aiChatSidebar.unflagConversation")
-                    : t("aiChatSidebar.flagConversation")
-                }
-              >
-                <Flag
-                  className="h-4 w-4"
-                  fill={isFlagged ? "currentColor" : "none"}
-                />
-              </button>
-            )}
-            <button
-              onClick={close}
-              className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              title={t("aiChatSidebar.closeShortcut")}
-              data-testid="ai-chat-close"
-            >
-              <X className="h-4 w-4" />
-            </button>
+            <div className="flex items-center gap-1">
+              {historyButton}
+              {/* #9427 W3: hidden for topology investigations (D4) and Wisp threads (the workspace has no Wisp controls). */}
+              {!showHistory && sessionId && topologySiteId === null && !wisp && (
+                <button
+                  onClick={() => void moveToAssistant(sessionId, { draft: composerDraft })}
+                  className={HEADER_ICON_BUTTON}
+                  title={t("aiConversationMove.openInAssistant")}
+                  aria-label={t("aiConversationMove.openInAssistant")}
+                  data-testid="ai-open-in-assistant"
+                >
+                  <ExternalLink className="h-4 w-4" />
+                </button>
+              )}
+              {newConversationControl}
+              {!showHistory && sessionId && (
+                <button
+                  onClick={() => (isFlagged ? unflagSession() : flagSession())}
+                  className={`rounded p-1.5 transition-colors ${
+                    isFlagged
+                      ? "text-amber-400 hover:bg-muted hover:text-amber-300"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                  }`}
+                  title={
+                    isFlagged
+                      ? t("aiChatSidebar.unflagConversation")
+                      : t("aiChatSidebar.flagConversation")
+                  }
+                >
+                  <Flag
+                    className="h-4 w-4"
+                    fill={isFlagged ? "currentColor" : "none"}
+                  />
+                </button>
+              )}
+              {closeButton}
+            </div>
           </div>
-        </div>
+        )}
 
         {showHistory ? (
           /* History panel — mounted only while open, so its query resets on close. */
@@ -442,8 +472,8 @@ export default function AiChatSidebar() {
         ) : (
           /* Chat panel */
           <>
-            {/* Cost indicator */}
-            <AiCostIndicator enabled={isOpen} isStreaming={isStreaming} />
+            {/* Cost indicator — under a Wisp header its numbers live in the spend chip's popover. */}
+            {!wisp && <AiCostIndicator enabled={isOpen} isStreaming={isStreaming} />}
 
             {/* M365 customer selector — only when starting a new session */}
             {!sessionId && m365Connections.length > 0 && (
@@ -477,42 +507,6 @@ export default function AiChatSidebar() {
               </div>
             )}
 
-            {/* Wisp thread: scope, focus, grant controls; attachments behind a disclosure.
-                The brief, what needs you and the links live on the Wisp home (W08 #9921). */}
-            {wisp && (
-              <>
-                <WispThreadHeader
-                  wisp={wisp}
-                  orgName={wispScopeOrgName}
-                  wideningAvailable={wisp.wideningAvailable}
-                />
-                <div className="flex items-center justify-between gap-2 border-b px-4 py-1.5">
-                  <button
-                    type="button"
-                    data-testid="wisp-attachments-toggle"
-                    aria-expanded={wispAttachmentsOpen}
-                    onClick={() => setWispAttachmentsOpen((open) => !open)}
-                    className="text-xs font-medium text-muted-foreground hover:text-foreground"
-                  >
-                    {t("wisp.attachments.title")}
-                  </button>
-                  <a
-                    href="/wisp"
-                    data-testid="wisp-sidebar-open-home"
-                    className="flex items-center gap-1 text-xs font-medium text-primary hover:underline"
-                  >
-                    {t("wisp.sidebar.openHome")}
-                    <ExternalLink className="h-3 w-3" aria-hidden="true" />
-                  </a>
-                </div>
-                {wispAttachmentsOpen && (
-                  <div className="border-b px-4 py-2">
-                    <WispThreadAttachments key={wisp.threadId} wisp={wisp} />
-                  </div>
-                )}
-              </>
-            )}
-
             {/* Context badge */}
             {pageContext && (
               <div className="border-b px-4 py-2">
@@ -522,14 +516,14 @@ export default function AiChatSidebar() {
 
             {/* Error banner */}
             {error && (
-              <div className="flex items-center justify-between border-b border-red-800/50 bg-red-900/20 px-4 py-2">
-                <span className="text-xs text-red-400">{error}</span>
+              <div className="flex items-center justify-between gap-2 border-b border-red-200 bg-red-50 px-4 py-2 dark:border-red-800/50 dark:bg-red-900/20">
+                <span className="text-xs text-red-700 dark:text-red-400">{error}</span>
                 {errorCode === "credits_exhausted" && (
-                  <BuyCreditsLink className="ml-2 shrink-0 text-xs font-medium text-red-300 underline underline-offset-2 hover:text-red-200" />
+                  <BuyCreditsLink className="ml-2 shrink-0 text-xs font-medium text-red-800 underline underline-offset-2 hover:text-red-900 dark:text-red-300 dark:hover:text-red-200" />
                 )}
                 <button
                   onClick={clearError}
-                  className="text-xs text-red-400 hover:text-red-300"
+                  className="shrink-0 text-xs text-red-700 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300"
                 >
                   {t("aiChatSidebar.dismiss")}
                 </button>
@@ -569,18 +563,18 @@ export default function AiChatSidebar() {
                     initialState={wisp.firstLookState}
                     scopeLabel={wispScopeLabel}
                     onSuggest={sendMessage}
+                    showTitle={false}
                   />
                 ) : undefined
               }
             />
 
-            {/* Continuation prompt, what ran, thinking, model menu (W05) */}
+            {/* Continuation prompt, what ran, thinking */}
             <AiContinuationPrompt />
             <AiTurnModelBadge turnModel={turnModel} />
             <AiThinkingIndicator thinking={isStreaming && !!thinking} />
-            <AiModelPicker disabled={isStreaming} />
 
-            {/* Input */}
+            {/* Input: attachments (Wisp) left of the text, the model chip row under it (#critique) */}
             <AiChatInput
               onSend={sendMessage}
               value={composerDraft}
@@ -591,6 +585,8 @@ export default function AiChatSidebar() {
               isStreaming={isStreaming}
               isInterrupting={isInterrupting}
               placeholder={wisp ? t("wisp.composer.placeholder") : undefined}
+              leftSlot={wisp ? <WispAttachmentsButton key={wisp.threadId} wisp={wisp} /> : undefined}
+              bottomSlot={<AiModelPicker variant="inline" disabled={isStreaming} />}
             />
 
             {showMeetWisp && (

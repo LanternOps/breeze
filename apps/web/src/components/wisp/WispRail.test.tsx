@@ -126,6 +126,8 @@ describe('WispRail', () => {
       wisp: props.wisp, orgName: 'Acme', wideningAvailable: true, showFocus: false, showIdentity: false, currentActivity: null,
       onWispChange: props.onWispChange, onRevoked: props.onRevoked,
     });
+    // The rail keeps the full header; only the docked pane passes 'compact'.
+    expect(h.headerProps?.variant ?? 'full').toBe('full');
 
     expect(h.needsYouProps).toMatchObject({ grantId: 'g1', threadId: 't1', initial: [concern], refreshKey: 3 });
     expect(h.workersProps).toMatchObject({ threadId: 't1', refreshKey: 3 });

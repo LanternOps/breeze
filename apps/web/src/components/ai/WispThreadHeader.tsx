@@ -1,17 +1,13 @@
-import { useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
 import { RefreshCw, Power, SlidersHorizontal, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
-import { showToast } from '@/components/shared/Toast';
-import { useEntitlement } from '@/hooks/useEntitlement';
-import { ActionError, runAction } from '@/lib/runAction';
-import { fetchWithAuth } from '@/stores/auth';
-import { useAiStore, type WispState } from '@/stores/aiStore';
-import { useOrgStore } from '@/stores/orgStore';
-import WispGrantStepUpModal from './WispGrantStepUpModal';
+import type { ActionMenuItem } from '@/components/shared/ActionMenu';
+import type { WispState } from '@/stores/aiStore';
 import WispGrantPauseControl from '../wisp/WispGrantPauseControl';
 import WispSpendMeter from '../wisp/WispSpendMeter';
-import { spendMeterState } from '../wisp/wispSpend';
+import WispGrantSettingsPanel from './WispGrantSettingsPanel';
+import WispThreadHeaderCompact from './WispThreadHeaderCompact';
+import { useWispGrantControls } from './useWispGrantControls';
 import type { CurrentActivity } from '@breeze/shared';
 
 export type WispThreadHeaderProps = {
@@ -35,6 +31,20 @@ export type WispThreadHeaderProps = {
    * its identity card already states both, so the header keeps only the controls.
    */
   showIdentity?: boolean;
+  /**
+   * `full` (default): the Wisp rail's stacked controls. `compact`: the docked
+   * pane's whole header in two rows — identity plus one overflow menu, then
+   * the focus and spend chips — and at most one escalation notice (#critique).
+   */
+  variant?: 'full' | 'compact';
+  /** Compact only: the pane's own buttons left of the overflow menu (History, New). */
+  paneActions?: ReactNode;
+  /** Compact only: the pane's items in the overflow menu, after "Open Wisp home" (Flag). */
+  paneMenuItems?: ActionMenuItem[];
+  /** Compact only: the pane's Close, right of the overflow menu. */
+  closeAction?: ReactNode;
+  /** Compact only: poll the account's AI usage for the spend popover (the pane passes whether it is open). */
+  usageEnabled?: boolean;
 };
 
 const STATUS_TONE: Record<NonNullable<WispState>['status'], string> = {
@@ -44,223 +54,48 @@ const STATUS_TONE: Record<NonNullable<WispState>['status'], string> = {
   expired: 'bg-muted text-muted-foreground',
 };
 
-/** Floor/ceiling from W01 `wispLimitsSchema`; the server stays the authority (w00 A6). */
-const TICK_MIN = 15;
-const TICK_MAX = 240;
-
-function readLimits(raw: unknown): { budgetMax: number | null; tickMin: number } {
-  const l = (raw ?? {}) as { budgetCentsPerDayCeiling?: unknown; minFloorTickMinutes?: unknown };
-  const budgetMax = typeof l.budgetCentsPerDayCeiling === 'number' ? l.budgetCentsPerDayCeiling : null;
-  const minTick = typeof l.minFloorTickMinutes === 'number' ? l.minFloorTickMinutes : TICK_MIN;
-  return { budgetMax, tickMin: Math.min(TICK_MAX, Math.max(TICK_MIN, minTick)) };
-}
-
-/** Daily budget is stored in cents; the input shows dollars with two decimals. */
-const centsToDollars = (cents: number) => (cents / 100).toFixed(2);
-
-const clamp = (n: number, lo: number, hi: number | null) => Math.min(hi ?? Number.POSITIVE_INFINITY, Math.max(lo, Math.round(n)));
-
-function handleMutationError(err: unknown, fallback: string) {
-  if (err instanceof ActionError && err.status === 401) return;
-  if (!(err instanceof ActionError)) showToast({ type: 'error', message: fallback });
-}
-
 /**
- * The Wisp thread's header in the chat panel (W04 Task 8, spec §4.4/§6.1/§9):
- * scope, customer focus, grant status, refresh (primary when the user's live
- * reach has outgrown the grant), operational settings, and turn-off.
+ * The Wisp thread's header (W04 Task 8, spec §4.4/§6.1/§9): scope, customer
+ * focus, grant status, refresh (primary when the user's live reach has
+ * outgrown the grant), operational settings, and turn-off. The rail renders
+ * it full; the docked pane renders it compact.
  */
-export default function WispThreadHeader({
-  wisp,
-  orgName,
-  wideningAvailable,
-  onWispChange,
-  onRevoked,
-  showFocus = true,
-  currentActivity = null,
-  showIdentity = true,
-}: WispThreadHeaderProps) {
+export default function WispThreadHeader(props: WispThreadHeaderProps) {
+  const {
+    wisp,
+    orgName,
+    wideningAvailable,
+    onWispChange,
+    onRevoked,
+    showFocus = true,
+    currentActivity = null,
+    showIdentity = true,
+    variant = 'full',
+  } = props;
   const { t } = useTranslation('ai');
-  const exitWispMode = useAiStore((s) => s.exitWispMode);
-  const setWispFocus = useAiStore((s) => s.setWispFocus);
-  const storeUpdateWisp = useAiStore((s) => s.updateWisp);
-  const updateWisp = onWispChange ?? storeUpdateWisp;
-  const chatSessionId = useAiStore((s) => s.sessionId);
-  const chatGrantId = useAiStore((s) => s.wisp?.grantId ?? null);
-  const closeSession = useAiStore((s) => s.closeSession);
-  const enterWispMode = useAiStore((s) => s.enterWispMode);
-  const organizations = useOrgStore((s) => s.organizations);
-  const { limits } = useEntitlement('wisp');
-  const { budgetMax, tickMin } = readLimits(limits);
+  const controls = useWispGrantControls({ wisp, orgName, onWispChange, onRevoked });
 
-  const [confirmRevoke, setConfirmRevoke] = useState(false);
-  const [revoking, setRevoking] = useState(false);
-  const [refreshOpen, setRefreshOpen] = useState(false);
-  const [refreshEnables, setRefreshEnables] = useState(false);
-  const [unattendedReadsSaving, setUnattendedReadsSaving] = useState(false);
-  const [summaryRefineSaving, setSummaryRefineSaving] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [budget, setBudget] = useState(centsToDollars(wisp.budgetCentsPerDay));
-  const [tick, setTick] = useState(String(wisp.floorTickMinutes));
-  const [saving, setSaving] = useState(false);
-  const [focusPending, setFocusPending] = useState(false);
-  /**
-   * #10142: set by a refresh while a chat was open under this grant. A
-   * session's grant revision is immutable (the server refuses to move it), so
-   * that conversation keeps the previous terms; the note offers a fresh one.
-   */
-  const [refreshedUnder, setRefreshedUnder] = useState<{ sessionId: string; fresh: NonNullable<WispState> } | null>(null);
-  const showRefreshHint = refreshedUnder !== null && refreshedUnder.sessionId === chatSessionId;
+  if (variant === 'compact') {
+    return (
+      <WispThreadHeaderCompact
+        wisp={wisp}
+        wideningAvailable={wideningAvailable}
+        showFocus={showFocus}
+        controls={controls}
+        paneActions={props.paneActions}
+        paneMenuItems={props.paneMenuItems}
+        closeAction={props.closeAction}
+        usageEnabled={props.usageEnabled}
+      />
+    );
+  }
 
-  const startNewConversation = async () => {
-    const fresh = refreshedUnder?.fresh ?? wisp;
-    setRefreshedUnder(null);
-    try {
-      // As the side panel's "New conversation": the old session's summary
-      // lands on the thread, then the new one runs on the refreshed grant.
-      if (chatSessionId) await closeSession();
-      await enterWispMode(fresh);
-    } catch (err) {
-      console.error('[wisp] starting a new conversation after a refresh failed', err);
-      showToast({ type: 'error', message: t('wisp.home.threadOpenFailed') });
-    }
-  };
-
-  // One focus change at a time: two racing PATCHes could leave the header
-  // showing a focus the server no longer holds.
-  const changeFocus = async (id: string | null) => {
-    setFocusPending(true);
-    try {
-      await setWispFocus(id, id ? (focusOptions.find((o) => o.id === id)?.name ?? null) : null);
-    } finally {
-      setFocusPending(false);
-    }
-  };
-
-  // An org grant can only focus its own org; a partner-wide grant offers the
-  // orgs this token reaches (the ceiling re-check is the server's, w00 A24).
-  const focusOptions = useMemo(() => {
-    const all = (organizations ?? []).map((o) => ({ id: o.id, name: o.name }));
-    const scoped = wisp.scopeOrgId ? all.filter((o) => o.id === wisp.scopeOrgId) : all;
-    if (wisp.scopeOrgId && scoped.length === 0) scoped.push({ id: wisp.scopeOrgId, name: orgName ?? wisp.scopeOrgId });
-    if (wisp.focusOrgId && !scoped.some((o) => o.id === wisp.focusOrgId)) {
-      scoped.push({ id: wisp.focusOrgId, name: wisp.focusOrgName ?? wisp.focusOrgId });
-    }
-    return scoped.sort((a, b) => a.name.localeCompare(b.name));
-  }, [organizations, wisp.scopeOrgId, wisp.focusOrgId, wisp.focusOrgName, orgName]);
-
-  const revoke = async () => {
-    setRevoking(true);
-    const errorFallback = t('wisp.toast.offFailed');
-    try {
-      await runAction({
-        request: () => fetchWithAuth(`/wisp/grants/${wisp.grantId}/revoke`, { method: 'POST' }),
-        errorFallback,
-        successMessage: t('wisp.toast.off'),
-      });
-      setConfirmRevoke(false);
-      await (onRevoked ?? exitWispMode)();
-    } catch (err) {
-      handleMutationError(err, errorFallback);
-    } finally {
-      setRevoking(false);
-    }
-  };
-
-  /** `enableUnattendedReads`: the same refresh, also turning the switch on (#10973). */
-  const openRefresh = (enableUnattendedReads: boolean) => {
-    setRefreshEnables(enableUnattendedReads);
-    setRefreshOpen(true);
-  };
-
-  // #10973: on widens what Wisp may do without asking, so it is a step-up
-  // refresh (the modal); off never widens, so it autosaves here.
-  const unattendedReadsOn = wisp.unattendedReads === true;
-  const toggleUnattendedReads = async () => {
-    if (!unattendedReadsOn) {
-      openRefresh(true);
-      return;
-    }
-    setUnattendedReadsSaving(true);
-    const errorFallback = t('wisp.toast.unattendedReadsOffFailed');
-    try {
-      await runAction({
-        request: () => fetchWithAuth(`/wisp/grants/${wisp.grantId}/settings`, { method: 'PATCH', body: JSON.stringify({ unattendedReads: false }) }),
-        errorFallback,
-        successMessage: t('wisp.toast.unattendedReadsOff'),
-      });
-      updateWisp({ unattendedReads: false });
-    } catch (err) {
-      handleMutationError(err, errorFallback);
-    } finally {
-      setUnattendedReadsSaving(false);
-    }
-  };
-
-  // #10390: spend, not authority, so both directions autosave with no step-up.
-  const summaryRefineOn = wisp.summaryRefine === true;
-  const toggleSummaryRefine = async () => {
-    const next = !summaryRefineOn;
-    setSummaryRefineSaving(true);
-    const errorFallback = t('wisp.toast.summaryRefineFailed');
-    try {
-      await runAction({
-        request: () => fetchWithAuth(`/wisp/grants/${wisp.grantId}/settings`, { method: 'PATCH', body: JSON.stringify({ summaryRefine: next }) }),
-        errorFallback,
-        successMessage: next ? t('wisp.toast.summaryRefineOn') : t('wisp.toast.summaryRefineOff'),
-      });
-      updateWisp({ summaryRefine: next });
-    } catch (err) {
-      handleMutationError(err, errorFallback);
-    } finally {
-      setSummaryRefineSaving(false);
-    }
-  };
-
-  const openSettings = (force = false) => {
-    setBudget(centsToDollars(wisp.budgetCentsPerDay));
-    setTick(String(wisp.floorTickMinutes));
-    setSettingsOpen((v) => force || !v);
-  };
-
-  const saveSettings = async () => {
-    // An emptied or non-numeric field means "leave as is" — never a budget of 0.
-    const typed = (raw: string, current: number) => (raw.trim() === '' || !Number.isFinite(Number(raw)) ? current : Number(raw));
-    // The field shows dollars; the API stays in cents.
-    const typedBudgetCents = budget.trim() === '' || !Number.isFinite(Number(budget)) ? wisp.budgetCentsPerDay : Math.round(Number(budget) * 100);
-    const nextBudget = clamp(typedBudgetCents, 0, budgetMax);
-    const nextTick = clamp(typed(tick, wisp.floorTickMinutes), tickMin, TICK_MAX);
-    const patch: { budgetCentsPerDay?: number; floorTickMinutes?: number } = {};
-    if (nextBudget !== wisp.budgetCentsPerDay) patch.budgetCentsPerDay = nextBudget;
-    if (nextTick !== wisp.floorTickMinutes) patch.floorTickMinutes = nextTick;
-    if (Object.keys(patch).length === 0) {
-      setSettingsOpen(false);
-      return;
-    }
-    setSaving(true);
-    const errorFallback = t('wisp.toast.settingsFailed');
-    try {
-      const dto = await runAction<{ budgetCentsPerDay?: number; floorTickMinutes?: number }>({
-        request: () => fetchWithAuth(`/wisp/grants/${wisp.grantId}/settings`, { method: 'PATCH', body: JSON.stringify(patch) }),
-        errorFallback,
-        successMessage: t('wisp.toast.settingsSaved'),
-      });
-      updateWisp({
-        budgetCentsPerDay: typeof dto?.budgetCentsPerDay === 'number' ? dto.budgetCentsPerDay : nextBudget,
-        floorTickMinutes: typeof dto?.floorTickMinutes === 'number' ? dto.floorTickMinutes : nextTick,
-      });
-      setSettingsOpen(false);
-    } catch (err) {
-      handleMutationError(err, errorFallback);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  // The grant stays active when the day's budget is spent (w00: the digest keeps running), so say so here.
-  const budgetReached =
-    wisp.status === 'active' && typeof wisp.spentTodayCents === 'number' && spendMeterState(wisp.spentTodayCents, wisp.budgetCentsPerDay) === 'exhausted';
-  const scopeLabel = wisp.scopeOrgId === null ? t('wisp.header.scopeAll') : (orgName ?? '');
+  const {
+    updateWisp, focusOptions, focusPending, changeFocus, openRefresh, askRevoke, openSettings, settings,
+    showRefreshHint, startNewConversation, dismissRefreshHint, budgetReached, scopeLabel, dialogs,
+  } = controls;
+  const { budgetMax } = settings;
+  const settingsOpen = settings.open;
   const iconButton = 'rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground';
 
   return (
@@ -293,7 +128,7 @@ export default function WispThreadHeader({
           <button type="button" data-testid="wisp-settings" onClick={() => openSettings()} title={t('wisp.settings.title')} className={iconButton} aria-expanded={settingsOpen}>
             <SlidersHorizontal className="h-3.5 w-3.5" />
           </button>
-          <button type="button" data-testid="wisp-revoke" onClick={() => setConfirmRevoke(true)} title={t('wisp.header.revoke')} className={iconButton}>
+          <button type="button" data-testid="wisp-revoke" onClick={askRevoke} title={t('wisp.header.revoke')} className={iconButton}>
             <Power className="h-3.5 w-3.5" />
           </button>
         </div>
@@ -317,7 +152,7 @@ export default function WispThreadHeader({
           <button
             type="button"
             data-testid="wisp-refresh-hint-dismiss"
-            onClick={() => setRefreshedUnder(null)}
+            onClick={dismissRefreshHint}
             title={t('wisp.header.dismissNote')}
             aria-label={t('wisp.header.dismissNote')}
             className={iconButton}
@@ -365,119 +200,9 @@ export default function WispThreadHeader({
         </select>
       </label>}
 
-      {settingsOpen && (
-        <div className="space-y-2 rounded border p-2" data-testid="wisp-settings-panel">
-          <p className="font-medium">{t('wisp.settings.title')}</p>
-          <label className="flex items-center justify-between gap-2">
-            {t('wisp.settings.budget')}
-            <input
-              type="number"
-              data-testid="wisp-settings-budget"
-              min={0}
-              step="0.01"
-              max={budgetMax === null ? undefined : centsToDollars(budgetMax)}
-              value={budget}
-              onChange={(e) => setBudget(e.target.value)}
-              className="w-24 rounded border bg-background px-2 py-1"
-            />
-          </label>
-          <label className="flex items-center justify-between gap-2">
-            {t('wisp.settings.tick')}
-            <input
-              type="number"
-              data-testid="wisp-settings-tick"
-              min={tickMin}
-              max={TICK_MAX}
-              value={tick}
-              onChange={(e) => setTick(e.target.value)}
-              className="w-24 rounded border bg-background px-2 py-1"
-            />
-          </label>
-          <div className="flex justify-end">
-            <button
-              type="button"
-              data-testid="wisp-settings-save"
-              disabled={saving}
-              onClick={() => void saveSettings()}
-              className="rounded bg-primary px-3 py-1 text-primary-foreground disabled:opacity-50"
-            >
-              {t('wisp.settings.save')}
-            </button>
-          </div>
-          {/* #10973, settings rule 7: its own section, outside the Save form. Off autosaves; on asks for a step-up. */}
-          <section className="space-y-1 border-t pt-2" data-testid="wisp-settings-unattended-reads" aria-labelledby="wisp-unattended-reads-title">
-            <div className="flex items-center justify-between gap-2">
-              <p id="wisp-unattended-reads-title" className="font-medium">{t('wisp.settings.unattendedReads.title')}</p>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={unattendedReadsOn}
-                aria-labelledby="wisp-unattended-reads-title"
-                data-testid="wisp-unattended-reads-switch"
-                disabled={unattendedReadsSaving}
-                onClick={() => void toggleUnattendedReads()}
-                className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${unattendedReadsOn ? 'bg-primary' : 'bg-muted'}`}
-              >
-                <span className={`inline-block h-3 w-3 rounded-full bg-background shadow transition-transform ${unattendedReadsOn ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
-              </button>
-            </div>
-            <p className="text-muted-foreground">{t('wisp.settings.unattendedReads.description')}</p>
-            <ul className="list-disc space-y-0.5 pl-4 text-muted-foreground">
-              <li>{t('wisp.settings.unattendedReads.registryKey')}</li>
-              <li>{t('wisp.settings.unattendedReads.registryValue')}</li>
-              <li>{t('wisp.settings.unattendedReads.securityLog')}</li>
-              <li>{t('wisp.settings.unattendedReads.deviceNote')}</li>
-            </ul>
-            <p className="text-muted-foreground">{t('wisp.settings.unattendedReads.applies')}</p>
-          </section>
-          {/* #10390, settings rule 7: its own section, outside the Save form. Autosaves both ways. */}
-          <section className="space-y-1 border-t pt-2" data-testid="wisp-settings-summary-refine" aria-labelledby="wisp-summary-refine-title">
-            <div className="flex items-center justify-between gap-2">
-              <p id="wisp-summary-refine-title" className="font-medium">{t('wisp.settings.summaryRefine.title')}</p>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={summaryRefineOn}
-                aria-labelledby="wisp-summary-refine-title"
-                data-testid="wisp-summary-refine-switch"
-                disabled={summaryRefineSaving}
-                onClick={() => void toggleSummaryRefine()}
-                className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${summaryRefineOn ? 'bg-primary' : 'bg-muted'}`}
-              >
-                <span className={`inline-block h-3 w-3 rounded-full bg-background shadow transition-transform ${summaryRefineOn ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
-              </button>
-            </div>
-            <p className="text-muted-foreground">{t('wisp.settings.summaryRefine.description')}</p>
-          </section>
-        </div>
-      )}
+      {settingsOpen && <WispGrantSettingsPanel settings={settings} className="space-y-2 rounded border p-2" />}
 
-      <ConfirmDialog
-        open={confirmRevoke}
-        onClose={() => setConfirmRevoke(false)}
-        onConfirm={() => void revoke()}
-        title={t('wisp.header.revoke')}
-        message={t('wisp.header.revokeConfirm')}
-        confirmLabel={t('wisp.header.revoke')}
-        variant="destructive"
-        isLoading={revoking}
-        confirmTestId="wisp-revoke-confirm"
-      />
-
-      <WispGrantStepUpModal
-        open={refreshOpen}
-        defaultOrgId={wisp.scopeOrgId}
-        refresh={{ grantId: wisp.grantId, orgId: wisp.scopeOrgId, ...(refreshEnables ? { unattendedReads: true as const } : {}) }}
-        onClose={() => setRefreshOpen(false)}
-        onRefreshed={(grant) => {
-          if (typeof grant?.unattendedReads === 'boolean') updateWisp({ unattendedReads: grant.unattendedReads });
-        }}
-        onGranted={(fresh) => {
-          setRefreshOpen(false);
-          updateWisp(fresh);
-          setRefreshedUnder(chatSessionId && chatGrantId === wisp.grantId ? { sessionId: chatSessionId, fresh } : null);
-        }}
-      />
+      {dialogs}
     </div>
   );
 }

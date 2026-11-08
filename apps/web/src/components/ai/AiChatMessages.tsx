@@ -498,7 +498,7 @@ export default function AiChatMessages({
   if (messages.length === 0 && !leading && extras.length === 0 && !showLoadEarlier) {
     if (emptyState) {
       return (
-        <div className={layout === "page" ? "flex flex-1 flex-col justify-end px-4 py-6" : "flex flex-1 flex-col justify-end p-3"}>
+        <div className={layout === "page" ? "flex flex-1 flex-col justify-end px-4 py-6" : "flex flex-1 flex-col justify-start overflow-y-auto p-3"}>
           <div className={layout === "page" ? "mx-auto w-full max-w-3xl" : undefined}>{emptyState}</div>
         </div>
       );

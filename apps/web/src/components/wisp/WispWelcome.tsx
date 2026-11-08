@@ -13,6 +13,7 @@ export default function WispWelcome({
   firstLookState = 'looking',
   firstLookProgress = null,
   briefSchedule = null,
+  showTitle = true,
 }: {
   scopeLabel: string;
   onSuggest: (prompt: string) => void;
@@ -34,6 +35,8 @@ export default function WispWelcome({
   firstLookProgress?: WispFirstLookProgress | null;
   /** When and where the brief goes out; null on surfaces with no home payload. */
   briefSchedule?: WispBriefSchedule | null;
+  /** False where a header right above already says "Wisp" (the docked pane). */
+  showTitle?: boolean;
 }) {
   const { t } = useTranslation('ai');
   const firstLook = firstLookState === 'done';
@@ -45,7 +48,7 @@ export default function WispWelcome({
     <div data-testid="wisp-welcome" className="space-y-2">
       {intro && (
         <div>
-          <p className="mb-1 text-xs font-medium text-muted-foreground">{t('wisp.title')}</p>
+          {showTitle && <p className="mb-1 text-xs font-medium text-muted-foreground">{t('wisp.title')}</p>}
           <p className="text-sm">{t(/* i18n-dynamic */ `wisp.welcome.${title}`, { scope: scopeLabel })}</p>
           {couldntLook ? (
             <p data-testid="wisp-welcome-couldnt-look" className="mt-1 text-sm">

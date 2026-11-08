@@ -115,4 +115,21 @@ describe('WispThreadAttachments', () => {
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message })));
     expect(showToast).toHaveBeenCalledTimes(1);
   });
+
+  it('showTitle=false drops its own title (the composer popover is already labelled)', async () => {
+    render(<WispThreadAttachments wisp={wisp} showTitle={false} />);
+    await screen.findByTestId('wisp-attachments-empty');
+    expect(screen.queryByText('Attached to this thread')).toBeNull();
+  });
+
+  it('a list passed in is rendered as is and not fetched again; an attach reloads through it', async () => {
+    const reload = vi.fn(async () => {});
+    const list = { items: [{ id: '1', label: 'Invoice mail', bytes: 2048, expiresAt: '2026-12-01T00:00:00Z' }], loaded: true, loadFailed: false, reload };
+    render(<WispThreadAttachments wisp={wisp} list={list} />);
+    expect(screen.getAllByTestId('wisp-attachment-item')[0]).toHaveTextContent('Invoice mail');
+    expect(fetchWithAuth).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByTestId('wisp-attachment-paste'), { target: { value: 'some text' } });
+    fireEvent.click(screen.getByTestId('wisp-attachment-add'));
+    await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
+  });
 });

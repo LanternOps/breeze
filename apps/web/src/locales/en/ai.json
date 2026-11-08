@@ -689,7 +689,14 @@
       "widening": "You can do more than this grant allows — refresh it to let Wisp keep up.",
       "refreshKeepsTerms": "This conversation keeps the previous grant terms. Start a new conversation to use the refreshed grant.",
       "startNewConversation": "Start a new conversation",
-      "dismissNote": "Dismiss"
+      "dismissNote": "Dismiss",
+      "menu": {
+        "label": "More actions",
+        "openHome": "Open Wisp home",
+        "settings": "Budget & check-ins…",
+        "refresh": "Refresh grant…",
+        "revoke": "Turn off Wisp…"
+      }
     },
     "settings": {
       "title": "Budget and check-in",
@@ -764,7 +771,14 @@
       "raise": "Raise today's budget",
       "atCeiling": "Today's budget is at your plan's limit.",
       "seePlans": "See plans",
-      "label": "Wisp spend today"
+      "label": "Wisp spend today",
+      "allAiMonth": "All AI this month: {{amount}}",
+      "allAiMessages": "{{formatted}} msgs",
+      "allAiMessages_one": "{{formatted}} msg",
+      "allAiMessages_other": "{{formatted}} msgs"
+    },
+    "notice": {
+      "creditsExhausted": "You're out of AI credits."
     },
     "pause": "Pause Wisp",
     "resume": "Resume",

@@ -140,6 +140,15 @@ describe('AiChatInput composer keys', () => {
     expect(slot.compareDocumentPosition(textbox()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it('bottomSlot renders inside the same rounded composer box, below the text field', () => {
+    render(<AiChatInput onSend={vi.fn()} bottomSlot={<div data-testid="bottom">model</div>} />);
+    const box = screen.getByTestId('ai-chat-composer-box');
+    expect(box.className).toContain('rounded-2xl');
+    expect(box).toContainElement(textbox());
+    expect(box).toContainElement(screen.getByTestId('bottom'));
+    expect(textbox().compareDocumentPosition(screen.getByTestId('bottom')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('the textarea draws no border of its own (the rounded field is the border)', () => {
     render(<AiChatInput onSend={vi.fn()} />);
     expect(textbox().className).toMatch(/(^|\s)border-0(\s|$)/);

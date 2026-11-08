@@ -57,6 +57,7 @@ export default function WispChatWelcome({
   initialState,
   scopeLabel,
   onSuggest,
+  showTitle = true,
 }: {
   grantId: string;
   /** The session's org, for the grant lookup; null on a partner-wide one. */
@@ -64,6 +65,8 @@ export default function WispChatWelcome({
   initialState?: WispFirstLookState;
   scopeLabel: string;
   onSuggest: (prompt: string) => void;
+  /** False in the docked pane, whose header already says "Wisp". */
+  showTitle?: boolean;
 }) {
   const state = useWispFirstLookState(grantId, orgId, initialState);
   return (
@@ -73,6 +76,7 @@ export default function WispChatWelcome({
       briefNote={false}
       intro={state !== undefined}
       firstLookState={state ?? 'looking'}
+      showTitle={showTitle}
     />
   );
 }
