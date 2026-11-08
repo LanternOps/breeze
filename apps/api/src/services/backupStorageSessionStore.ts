@@ -5,7 +5,7 @@
  * backup_snapshots, backup_snapshot_files and backup_configs applies in
  * addition to the explicit org filters below.
  */
-import { and, eq, inArray, isNull, max, sql, count } from 'drizzle-orm';
+import { and, eq, inArray, isNull, max, ne, sql, count } from 'drizzle-orm';
 import { assertInTransaction, db } from '../db';
 import {
   backupSnapshotFiles,
@@ -134,10 +134,12 @@ export const drizzleBrokeredReadStore: BrokeredReadStore = {
   },
 
   async countIndexedFiles(snapshotDbId) {
+    // Storage keys only: a content-less row (a directory or symlink entry,
+    // backup_path '', #11235) authorizes no object, so it sizes no budget.
     const [row] = await db
       .select({ n: count() })
       .from(backupSnapshotFiles)
-      .where(eq(backupSnapshotFiles.snapshotDbId, snapshotDbId));
+      .where(and(eq(backupSnapshotFiles.snapshotDbId, snapshotDbId), ne(backupSnapshotFiles.backupPath, '')));
     return Number(row?.n ?? 0);
   },
 

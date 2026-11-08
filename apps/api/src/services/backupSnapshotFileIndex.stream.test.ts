@@ -194,6 +194,7 @@ describe('hydrateSnapshotFileIndex over a stream', () => {
       backup_path: ownKey(4999),
       size: 4999,
       modified_at: '2026-11-01T10:11:12.123Z',
+      kind: null,
     });
     const batches = executeMock.mock.calls.map((c) => batchRows(c[0]).length);
     expect(batches).toEqual(Array.from({ length: 20 }, () => 250));
@@ -421,16 +422,20 @@ describe('hydrateSnapshotFileIndex over a stream', () => {
     expect(await spoolDirs()).toEqual([]);
   });
 
-  it('skips directory and symlink entries and does not count them', async () => {
+  it('writes directory and symlink entries as rows with their kind, and counts them (#11235)', async () => {
     loadSnapshot();
     const files = [
       { sourcePath: '/d', backupPath: '', kind: 'dir' },
-      { sourcePath: '/l', backupPath: '', kind: 'symlink' },
+      { sourcePath: '/l', backupPath: '', kind: 'symlink', linkTarget: '/f' },
       { sourcePath: '/f', backupPath: ownKey(1) },
     ];
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: deps(async () => stream(manifest(files))) });
-    expect(outcome).toMatchObject({ status: 'complete', entryCount: 1 });
-    expect(committed.rows.map((r) => r.source_path)).toEqual(['/f']);
+    expect(outcome).toMatchObject({ status: 'complete', entryCount: 3, externalCount: 0 });
+    expect(committed.rows.map((r) => [r.source_path, r.backup_path, r.kind])).toEqual([
+      ['/d', '', 'dir'],
+      ['/l', '', 'symlink'],
+      ['/f', ownKey(1), null],
+    ]);
   });
 
   it('indexes the original path of a VSS entry', async () => {

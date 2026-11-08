@@ -12,10 +12,62 @@ export function largestFolderEntries(totalEntries: number): number {
   return Math.floor((totalEntries * 3) / 11);
 }
 
+/**
+ * One in this many entries outside the largest folder is a directory entry, and
+ * as many again a symlink: about 5.6% of the manifest is content-less, near the
+ * 7.6% a stock Ubuntu host's carried (8,220 of 107,636, D-W09-1). They upload
+ * nothing and are index rows all the same (#11235).
+ */
+const CONTENTLESS_EVERY = 26;
+
+export type ManifestEntryKind = 'file' | 'dir' | 'symlink';
+
+/**
+ * What entry `i` is. Entry 0 is the largest folder's own directory entry, as
+ * Windows records a folder with a non-default ACL: selecting that folder must
+ * still resolve to one prefix (#11235).
+ */
+export function manifestEntryKind(i: number, largestFolder: number): ManifestEntryKind {
+  if (i === 0) return 'dir';
+  if (i < largestFolder) return 'file';
+  if (i % CONTENTLESS_EVERY === 0) return 'dir';
+  if (i % CONTENTLESS_EVERY === CONTENTLESS_EVERY / 2) return 'symlink';
+  return 'file';
+}
+
+/** How many entries of each kind a manifest of `totalEntries` carries. */
+export function manifestEntryKindCounts(totalEntries: number): Record<ManifestEntryKind, number> {
+  const largestFolder = largestFolderEntries(totalEntries);
+  const counts: Record<ManifestEntryKind, number> = { file: 0, dir: 0, symlink: 0 };
+  for (let i = 0; i < totalEntries; i += 1) counts[manifestEntryKind(i, largestFolder)] += 1;
+  return counts;
+}
+
 function entryFor(snapshotId: string, i: number, largestFolder: number): Record<string, unknown> {
+  const projectDir = `C:\\Users\\user-${i % 200}\\Documents\\Projects\\project-${i % 2000}`;
+  switch (manifestEntryKind(i, largestFolder)) {
+    case 'dir':
+      return {
+        sourcePath: i === 0 ? LARGEST_FOLDER : `${projectDir}\\empty-${i}`,
+        backupPath: '',
+        kind: 'dir',
+        modTime: '2026-11-01T10:11:12.123456789Z',
+        mode: 493,
+      };
+    case 'symlink':
+      return {
+        sourcePath: `${projectDir}\\shortcut-${i}`,
+        backupPath: '',
+        kind: 'symlink',
+        linkTarget: `workstream-${i % 50}`,
+        modTime: '2026-11-01T10:11:12.123456789Z',
+      };
+    case 'file':
+      break;
+  }
   const sourcePath = i < largestFolder
     ? `${LARGEST_FOLDER}\\export-record-${String(i).padStart(7, '0')}.dat`
-    : `C:\\Users\\user-${i % 200}\\Documents\\Projects\\project-${i % 2000}\\workstream-${i % 50}\\document-with-a-long-enough-name-${i}.docx`;
+    : `${projectDir}\\workstream-${i % 50}\\document-with-a-long-enough-name-${i}.docx`;
   return {
     sourcePath,
     backupPath: `snapshots/${snapshotId}/files/${sourcePath.replaceAll('\\', '/').replace('C:/', 'C/')}`,

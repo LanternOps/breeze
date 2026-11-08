@@ -329,3 +329,68 @@ describe('resolve — input order and duplicates', () => {
     expect(resolve(['/a'], [])).toEqual({ ok: false, invalidPath: '/a', reason: 'not_found' });
   });
 });
+
+/** As `resolve`, with the kind of each stored row (#11235). */
+function resolveRows(selected: readonly string[], rows: Iterable<{ path: string; kind?: 'dir' | 'symlink' }>) {
+  const resolver = createSelectionResolver(selected);
+  for (const row of rows) resolver.add(row.path, row.kind ?? null);
+  return resolver.finish();
+}
+
+describe('resolve — directory and symlink entries (#11235)', () => {
+  it('an empty folder selected by its browse path resolves to its own entry', () => {
+    expect(resolveRows(['/C:/Data/Empty'], [{ path: 'C:\\Data\\Empty', kind: 'dir' }]))
+      .toEqual({ ok: true, paths: ['C:\\Data\\Empty'] });
+    expect(resolveRows(['/fileserver/share/empty'], [{ path: '\\\\fileserver\\share\\empty', kind: 'dir' }]))
+      .toEqual({ ok: true, paths: ['\\\\fileserver\\share\\empty'] });
+    expect(resolveRows(['/srv/empty'], [{ path: '/srv/empty', kind: 'dir' }]))
+      .toEqual({ ok: true, paths: ['/srv/empty'] });
+  });
+
+  it('a folder whose own entry is recorded still resolves to one prefix, not to its files', () => {
+    const rows = [
+      { path: 'C:\\Data\\Shared', kind: 'dir' as const },
+      { path: 'C:\\Data\\Shared\\a.txt' },
+      { path: 'C:\\Data\\Shared\\sub\\b.txt' },
+    ];
+    expect(resolveRows(['/C:/Data/Shared'], rows)).toEqual({ ok: true, paths: ['C:\\Data\\Shared'] });
+    expect(resolveRows(['C:/Data/Shared/'], rows)).toEqual({ ok: true, paths: ['C:\\Data\\Shared'] });
+  });
+
+  it('the POSIX `docs\\` case: the folder\'s own entry is part of the folder, not a file beside it', () => {
+    const rows = [{ path: '/docs', kind: 'dir' as const }, { path: '/docs/a.txt' }, { path: '/docs/sub/b.txt' }];
+    expect(resolveRows(['docs\\'], rows)).toEqual({ ok: true, paths: ['/docs'] });
+  });
+
+  it('adds the folder\'s own entry when the prefix, in its members\' spelling, does not select it', () => {
+    const rows = [{ path: 'C:/Data/Shared', kind: 'dir' as const }, { path: 'C:\\Data\\Shared\\a.txt' }];
+    expect(resolveRows(['/C:/Data/Shared'], rows)).toEqual({ ok: true, paths: ['C:\\Data\\Shared', 'C:/Data/Shared'] });
+  });
+
+  it('a folder expanded to its files keeps its own entry', () => {
+    const rows = [
+      { path: 'C:\\dir', kind: 'dir' as const },
+      { path: 'C:\\dir/x.txt' },
+      { path: 'C:/dir\\y.txt' },
+    ];
+    expect(resolveRows(['/C:/dir'], rows)).toEqual({ ok: true, paths: ['C:\\dir', 'C:\\dir/x.txt', 'C:/dir\\y.txt'] });
+  });
+
+  it('a folder containing only empty folders resolves to its prefix', () => {
+    const rows = [{ path: 'C:\\Data\\a', kind: 'dir' as const }, { path: 'C:\\Data\\b', kind: 'dir' as const }];
+    expect(resolveRows(['/C:/Data'], rows)).toEqual({ ok: true, paths: ['C:\\Data'] });
+  });
+
+  it('a symlink is selected like a file, by its stored path', () => {
+    const rows = [{ path: 'C:\\Data\\link', kind: 'symlink' as const }, { path: '/srv/current', kind: 'symlink' as const }];
+    expect(resolveRows(['C:/Data/link'], rows)).toEqual({ ok: true, paths: ['C:\\Data\\link'] });
+    expect(resolveRows(['/srv/current'], rows)).toEqual({ ok: true, paths: ['/srv/current'] });
+  });
+
+  it('a content-less row of unknown kind (written before kinds were recorded) is not a folder by its browse path', () => {
+    expect(resolveRows(['/C:/Data/Empty'], [{ path: 'C:\\Data\\Empty' }]))
+      .toEqual({ ok: false, invalidPath: '/C:/Data/Empty', reason: 'not_found' });
+    expect(resolveRows(['C:/Data/Empty'], [{ path: 'C:\\Data\\Empty' }]))
+      .toEqual({ ok: true, paths: ['C:\\Data\\Empty'] });
+  });
+});
