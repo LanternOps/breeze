@@ -18,8 +18,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { partners } from '../../db/schema';
 import { portalUserIdentities, portalUsers } from '../../db/schema/portal';
+import { clientAiOrgPolicies, clientAiTenantMappings } from '../../db/schema/clientAi';
 import * as orgMergeModule from '../../services/orgMerge';
+import { resolveAndMintClientSession } from '../../services/clientAiExchange';
+import type { ClientAiEntraClaims } from '../../services/clientAiEntraJwt';
 import { ensureEntraIdentity, reconcilePortalUserIdentities } from '../../services/portalUserIdentities';
 import { createOrganization, createPartner } from './db-utils';
 import { replayMigration } from './replayMigration';
@@ -307,12 +311,106 @@ describe('reconcilePortalUserIdentities (drift report, read-only)', () => {
     expect(all.counts.missingIdentity).toBe(1);
   });
 
-  it('caps samples at sampleLimit but still reports the full count', async () => {
+  it('caps samples at sampleLimit (count stays the full total)', async () => {
     await seedEntraLogin(fx.orgId);
     await seedEntraLogin(fx.orgId);
     await seedEntraLogin(fx.orgId);
     const report = await reconcilePortalUserIdentities({ sampleLimit: 2 });
     expect(report.counts.missingIdentity).toBe(3);
     expect(report.samples.missingIdentity).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 4: AI for Office exchange dual-write (real Postgres, breeze_app)
+// ---------------------------------------------------------------------------
+
+/** The exchange mints a Redis session; nothing here asserts on it. */
+const fakeRedis = {
+  setex: async () => 'OK',
+  sadd: async () => 1,
+  expire: async () => 1,
+} as never;
+
+async function mapTenant(orgId: string, partnerId: string): Promise<string> {
+  await admin().update(partners).set({ aiForOfficeEnabled: true }).where(eq(partners.id, partnerId));
+  const tid = randomUUID();
+  await admin().insert(clientAiTenantMappings).values({ orgId, entraTenantId: tid });
+  await admin().insert(clientAiOrgPolicies).values({ orgId, enabled: true });
+  return tid;
+}
+
+const exchangeClaims = (tid: string, oid: string) =>
+  ({
+    tid,
+    oid,
+    upn: null,
+    emailClaim: null,
+    emailDomainOwnerVerified: false,
+    email: null,
+    name: 'Ada Addin',
+    aud: 'api://breeze',
+    iss: entraIss(tid),
+    exp: 0,
+    iat: 0,
+    scp: null,
+  }) as unknown as ClientAiEntraClaims;
+
+describe('resolveAndMintClientSession dual-writes portal_user_identities', () => {
+  it('first exchange creates login (browser_access none) + identity atomically; drift report stays clean', async () => {
+    const tid = await mapTenant(fx.orgId, fx.partnerId);
+    const oid = randomUUID();
+
+    const outcome = await resolveAndMintClientSession(exchangeClaims(tid, oid), fakeRedis);
+    expect(outcome.kind).toBe('resolved');
+
+    const [login] = await admin().select().from(portalUsers).where(eq(portalUsers.entraOid, oid));
+    expect(login).toMatchObject({ authMethod: 'entra', status: 'active', browserAccess: 'none', orgId: fx.orgId });
+    const identities = await admin().select().from(portalUserIdentities).where(eq(portalUserIdentities.portalUserId, login.id));
+    expect(identities).toHaveLength(1);
+    expect(identities[0]).toMatchObject({
+      orgId: fx.orgId, provider: 'entra', issuer: entraIss(tid), subject: oid, entraTenantId: tid, linkedVia: 'jit',
+    });
+    const report = await reconcilePortalUserIdentities();
+    expect(report.counts).toEqual({ missingIdentity: 0, orphanIdentity: 0, mismatched: 0, halfPopulated: 0 });
+  });
+
+  it('a forced identity-insert failure rolls back the login insert too (no half-provisioned row)', async () => {
+    const tid = await mapTenant(fx.orgId, fx.partnerId);
+    const oid = randomUUID();
+    // Drift: another login in the same org already holds this (issuer, subject).
+    const squatter = await seedEntraLogin(fx.orgId);
+    await seedIdentity(fx.orgId, squatter.id, tid, oid);
+    const [{ n: before }] = await admin().execute(sql`SELECT count(*)::int AS n FROM portal_users`);
+
+    const outcome = await resolveAndMintClientSession(exchangeClaims(tid, oid), fakeRedis);
+
+    expect(outcome.kind).toBe('denied');
+    expect(outcome).toMatchObject({ status: 403, body: { error: 'provisioning_failed' } });
+    const [{ n: after }] = await admin().execute(sql`SELECT count(*)::int AS n FROM portal_users`);
+    expect(after).toBe(before);
+    expect(await admin().select().from(portalUsers).where(eq(portalUsers.entraOid, oid))).toHaveLength(0);
+  });
+
+  it('a login created without an identity (old-binary shape) gains one on its next exchange', async () => {
+    const tid = await mapTenant(fx.orgId, fx.partnerId);
+    const oid = randomUUID();
+    // What a pre-W2 binary writes during a rolling deploy: no browser_access
+    // (the fill trigger supplies 'none'), no identity row.
+    const [legacy] = await admin().execute(sql`
+      INSERT INTO portal_users (org_id, email, auth_method, entra_tenant_id, entra_oid)
+      VALUES (${fx.orgId}, ${`${oid}@${tid}.entra.invalid`}, 'entra', ${tid}, ${oid})
+      RETURNING id, browser_access`);
+    expect(legacy.browser_access).toBe('none');
+    expect((await reconcilePortalUserIdentities()).counts.missingIdentity).toBe(1);
+
+    const outcome = await resolveAndMintClientSession(exchangeClaims(tid, oid), fakeRedis);
+    expect(outcome.kind).toBe('resolved');
+
+    const identities = await admin().select().from(portalUserIdentities).where(eq(portalUserIdentities.portalUserId, legacy.id));
+    expect(identities).toHaveLength(1);
+    expect(identities[0]).toMatchObject({ subject: oid, linkedVia: 'jit' });
+    expect(identities[0].lastUsedAt).not.toBeNull();
+    expect((await reconcilePortalUserIdentities()).counts.missingIdentity).toBe(0);
   });
 });

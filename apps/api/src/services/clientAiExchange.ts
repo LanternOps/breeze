@@ -9,6 +9,7 @@ import { getOrgPolicy, isClientUserPermitted } from './clientAiPolicy';
 import { linkLoginToContact, type LoginContactOutcome } from './contacts/loginLink';
 import { resolveLinkableEntraAddress } from './clientAiEntraAddress';
 import { captureException } from './sentry';
+import { ensureEntraIdentity, insertEntraIdentity } from './portalUserIdentities';
 import type { ClientAiEntraClaims } from './clientAiEntraJwt';
 import {
   CLIENT_AI_REDIS_KEYS,
@@ -347,8 +348,14 @@ export async function resolveAndMintClientSession(
         // recovery below therefore could not work without this. A nested
         // `db.transaction` issues a SAVEPOINT, so the duplicate rolls back just
         // the insert and leaves the transaction usable.
-        const inserted = await db.transaction((tx) =>
-          tx
+        //
+        // The external identity (portal_user_identities, W2 release A) is
+        // written in the SAME savepoint: a 23505 from either insert rolls back
+        // both, so there is never a login without its identity or vice versa.
+        // An identity collision with a DIFFERENT login (drift) leaves the
+        // re-select below empty and fails closed as provisioning_failed.
+        const inserted = await db.transaction(async (tx) => {
+          const rows = await tx
             .insert(portalUsers)
             .values({
               orgId: mapping.orgId,
@@ -358,10 +365,24 @@ export async function resolveAndMintClientSession(
               entraOid: claims.oid,
               entraTenantId: claims.tid,
               authMethod: 'entra',
+              // An add-in login never grants the browser portal (spec §6 inv. 9).
+              status: 'active',
+              browserAccess: 'none',
               lastLoginAt: now,
             })
-            .returning(USER_COLUMNS)
-        );
+            .returning(USER_COLUMNS);
+          if (rows[0]) {
+            await insertEntraIdentity(tx, {
+              orgId: mapping.orgId,
+              portalUserId: rows[0].id,
+              tid: claims.tid,
+              oid: claims.oid,
+              linkedVia: 'jit',
+              usedAt: now,
+            });
+          }
+          return rows;
+        });
         user = inserted[0];
         provisioned = true;
       } catch (err) {
@@ -411,6 +432,29 @@ export async function resolveAndMintClientSession(
         .update(portalUsers)
         .set({ lastLoginAt: now, updatedAt: now, ...(claims.name ? { name: claims.name } : {}) })
         .where(eq(portalUsers.id, user.id));
+
+      // Release A self-heal: a login inserted by an older binary during the
+      // deploy window has no identity row yet — give it one, and record the
+      // use otherwise. ON CONFLICT DO NOTHING inside, so this never poisons
+      // the surrounding transaction. A conflict is drift (the subject belongs
+      // to another login, or this login holds a different one): reported,
+      // NOT denied, because authorization still reads the entra_* columns.
+      const identity = await ensureEntraIdentity(db, {
+        orgId: user.orgId,
+        portalUserId: user.id,
+        tid: claims.tid,
+        oid: claims.oid,
+        usedAt: now,
+      });
+      if (identity === 'conflict') {
+        console.error('[client-ai] portal identity drift: Entra subject does not resolve to this login', {
+          portalUserId: user.id,
+          orgId: user.orgId,
+        });
+        captureException(new Error('portal_user_identities drift on the Entra exchange'), {
+          eventCode: 'client_ai_identity_drift',
+        } as never);
+      }
     }
 
     if (user.status !== 'active') {
