@@ -136,7 +136,7 @@ const cleanupPath = z.string().max(4096).refine(
 export const CONFIG_POLICY_OWNER_SCOPE_DESCRIPTION =
   'Create only. organization (default): one customer org owns it. partner: a partner-wide library policy; needs full partner org access.';
 export const CONFIG_POLICY_ORG_ID_DESCRIPTION =
-  'Create only. Customer org UUID that owns the policy; required if you reach several orgs. Never the partner id: use ownerScope "partner".';
+  'Create only. Customer org UUID that owns the policy; needed when you reach several orgs and the chat has no org. Never the partner id.';
 export const configPolicyOwnerShape = {
   ownerScope: z.enum(['organization', 'partner']).optional().describe(CONFIG_POLICY_OWNER_SCOPE_DESCRIPTION),
   orgId: uuid.optional().describe(CONFIG_POLICY_ORG_ID_DESCRIPTION),
@@ -144,8 +144,8 @@ export const configPolicyOwnerShape = {
 
 export const deliveryToolShape = {
   action: z.enum(['resolve','list_routing','create_routing','update_routing','delete_routing','set_default','list_escalation','create_escalation','update_escalation','delete_escalation']),
-  orgId: uuid.optional().describe('The customer org UUID; required when you reach more than one org, unless ownerScope is "partner". Never the partner id.'),
-  ownerScope: z.enum(['organization', 'partner']).optional().describe('partner: partner-wide rows (all orgs). Use it on a partner-wide grant instead of orgId.'),
+  orgId: uuid.optional().describe('Customer org UUID; needed when you reach several orgs and the chat has no org, unless ownerScope is "partner". Never the partner id.'),
+  ownerScope: z.enum(['organization', 'partner']).optional().describe('partner: partner-wide rows (all orgs), instead of orgId. Writes need full partner org access.'),
   id: uuid.optional(),
   severity: z.enum(['critical','high','medium','low','info']).optional(), kind: monitorKindSchema.optional(),
   siteId: uuid.optional(), monitorId: uuid.optional(), data: z.record(z.string(), z.unknown()).optional(),

@@ -1492,16 +1492,6 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     const inputRefusal = preApprovalInputRefusal(session, toolName, input, tenant !== undefined || flowTool !== undefined);
     if (inputRefusal) return { allowed: false, error: inputRefusal };
 
-    // #11432: the tool's own deterministic refusal (`validateBeforeFiling`),
-    // judged under the auth its handler will run with (this call's reach),
-    // before any guardrail, approval card or intent. A create with no orgId on
-    // a partner-wide session used to be filed, approved with step-up, and only
-    // then refused as ambiguous. The handler keeps the same check.
-    if (!flowTool && !tenant) {
-      const filingRefusal = preFilingToolRefusal(toolName, input, () => callReach(session, wispCall.current));
-      if (filingRefusal) return { allowed: false, error: filingRefusal };
-    }
-
     // Guardrails (tier check + action-based escalation). A proposal-backed
     // run_script needs the proposal's reviewed risk tier to pick supervised vs
     // four_eyes; every other tool call passes `undefined` and is unchanged. A
@@ -1651,6 +1641,17 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     } catch (err) {
       console.error('[AI-SDK] Tool rate limit check failed for:', toolName, err);
       return { allowed: false, error: 'Unable to verify rate limits. Please try again.' };
+    }
+
+    // #11432: the tool's own deterministic refusal (`validateBeforeFiling`),
+    // judged under the auth its handler will run with (this call's reach),
+    // after RBAC and the rate limit (their refusals win) and before any
+    // approval card or intent. A create with no orgId on a partner-wide
+    // session used to be filed, approved with step-up, and only then refused
+    // as ambiguous. The handler keeps the same check.
+    if (!flowTool && !tenant) {
+      const filingRefusal = preFilingToolRefusal(toolName, input, () => callReach(session, wispCall.current));
+      if (filingRefusal) return { allowed: false, error: filingRefusal };
     }
 
     // #10144: a launch_specialist call the coordinator would refuse

@@ -316,3 +316,42 @@ describe('owner resolution for a caller that reaches several orgs (#11432)', () 
     expect(properties.orgId!.description).toMatch(/never the partner id/i);
   });
 });
+
+describe('the pre-filing check agrees with the handler (#11432)', () => {
+  const PARTNER = '40000000-0000-4000-8000-000000000001';
+  const both = [ORG, OTHER];
+  const partnerWide = (patch: Partial<AuthContext> = {}) => auth({
+    scope: 'partner', orgId: null, partnerId: PARTNER, partnerOrgAccess: 'all',
+    accessibleOrgIds: both, canAccessOrg: (id: string) => both.includes(id), ...patch,
+  });
+  const validate = (input: Record<string, unknown>, identity: AuthContext) =>
+    registry.get('manage_delivery')!.validateBeforeFiling!(input, identity);
+  const writes = [
+    ['create_routing', { name: 'High', priority: 1, conditions: { severities: ['high'] }, channelIds: [CH] }],
+    ['set_default', { channelIds: [CH] }],
+    ['create_escalation', { name: 'On-call', steps: [{ delayMinutes: 15, channelIds: [CH] }] }],
+  ] as const;
+
+  it.each(writes)('%s: an owner-less write is refused by both, in the same words', async (action, data) => {
+    const verdict = validate({ action, data }, partnerWide());
+    expect(verdict).toEqual({ ok: false, error: WRITE_OWNER_AMBIGUOUS_ERROR });
+    expect(await call({ action, data }, partnerWide())).toEqual({ error: WRITE_OWNER_AMBIGUOUS_ERROR, status: 400 });
+    expect(db.insert).not.toHaveBeenCalled(); expect(upsertDefaultRow).not.toHaveBeenCalled();
+  });
+
+  it.each(writes)('%s: a write the check passes runs, in the write-default org', async (action, data) => {
+    expect(validate({ action, data }, partnerWide({ aiWriteDefaultOrgId: OTHER }))).toEqual({ ok: true });
+    channels([CH]); const values = insertReturning(row);
+    expect(await call({ action, data }, partnerWide({ aiWriteDefaultOrgId: OTHER }))).not.toHaveProperty('error');
+    if (action === 'set_default') expect(upsertDefaultRow).toHaveBeenCalledWith({ orgId: OTHER, partnerId: null }, expect.anything(), expect.anything());
+    else expect(values).toHaveBeenCalledWith(expect.objectContaining({ orgId: OTHER, partnerId: null }));
+  });
+
+  it('an org-scoped token writes in its own org and is refused another, before filing and in the handler', async () => {
+    const data = writes[0][1];
+    expect(validate({ action: 'create_routing', data }, auth())).toEqual({ ok: true });
+    expect(validate({ action: 'create_routing', orgId: OTHER, data }, auth())).toEqual({ ok: false, error: 'Cannot access another organization' });
+    expect(await call({ action: 'create_routing', orgId: OTHER, data })).toEqual({ error: 'Cannot access another organization', status: 403 });
+    expect(await call({ action: 'list_routing' }, auth({ orgId: null }))).toEqual({ error: 'Organization context required', status: 403 });
+  });
+});

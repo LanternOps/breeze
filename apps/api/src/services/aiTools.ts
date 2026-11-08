@@ -231,9 +231,10 @@ export interface AiTool {
    * #11432: the refusal this tool's handler would return for `input` under
    * `auth`, judged BEFORE an approval card or action intent is filed, so a
    * person is never asked to approve a call that can only fail (an approved
-   * create that then ended "orgId is required"). The chat gate
-   * (`createSessionPreToolUse`) calls it under the auth the handler will run
-   * with: the session's tool auth, cut to the Wisp ceiling under a grant.
+   * create that then ended "orgId is required"). The chat pre-tool gate
+   * (`createGatedSessionPreToolUse`, after RBAC and the rate limit) calls it
+   * under the auth the handler will run with: the session's tool auth, cut to
+   * the Wisp ceiling under a grant.
    *
    * Pure and synchronous: input and auth only, no I/O. Return `{ ok: true }`
    * for anything it cannot judge from those alone (a row named by id, an input

@@ -185,8 +185,8 @@ export function narrowAuthToCeiling(
  * #11432: the org an org-less write of this call may land in: the thread's
  * focus org, and only when it is also `sessionOrgId`, the org the call is
  * checked against and its approval filed in (the session org at the chat gate,
- * the intent org at release). A focused thread anchors its session there
- * (aiAgent.ts `anchorWispSession`); a focus moved after the session began, or
+ * the intent org at release). A focused thread normally anchors its session
+ * there (aiAgent.ts `anchorWispSession`); a focus moved after the session began, or
  * an unfocused partner-wide thread, gives null, and the write must name its
  * owner. No other org is ever picked for it (#6667). Read live from the
  * thread (system context: the row is partner-axis); a DB error propagates.
@@ -280,8 +280,12 @@ export async function enforceWispCeiling(args: {
     throw err;
   }
 
-  // A call that names its org needs no default; a tenant tool acts in its executor's org.
-  const writeDefaultOrgId = typeof args.input.orgId === 'string' || args.permissionRequirement
+  // Only an org-less call that needs more than read permission can use the
+  // default (reads never consult it), so only such a call reads the thread: a
+  // failed read then denies writes, never every query of the thread. A call
+  // that names its org needs none; a tenant tool acts in its executor's org.
+  const mayWrite = permissionKeys.some((key) => !key.endsWith(':read'));
+  const writeDefaultOrgId = !mayWrite || typeof args.input.orgId === 'string' || args.permissionRequirement
     ? null
     : await focusWriteDefaultOrgId(args.grant.threadId, ceiling.partnerId, args.sessionOrgId);
   const toolAuth = narrowAuthToCeiling(args.toolAuth, ceiling, args.sessionId, permissionKeys, writeDefaultOrgId);

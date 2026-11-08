@@ -2306,6 +2306,15 @@ describe('manage_configuration_policy create owner, checked before filing (#1143
       .toEqual({ ok: false, error: 'Partner-wide policies require partner scope' });
   });
 
+  it('refuses a site-restricted caller before filing, as the handler does first', async () => {
+    // A site ceiling is an org-scope principal's (siteCeilingAccess.ts hasSiteCeiling).
+    const restricted = { ...makeAuth(), allowedSiteIds: [] } as any;
+    const input = { action: 'create', name: 'x' };
+    const verdict = policyTool().validateBeforeFiling(input, restricted);
+    expect(verdict).toEqual({ ok: false, error: expect.stringContaining('Site-restricted users') });
+    expect(JSON.parse(await policyTool().handler(input, restricted)).error).toBe(verdict.error);
+  });
+
   it('judges only create: every other action is left to its handler', () => {
     const tool = policyTool();
     for (const action of ['update', 'activate', 'deactivate', 'delete']) {

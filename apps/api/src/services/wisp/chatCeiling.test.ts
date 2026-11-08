@@ -39,6 +39,7 @@ vi.mock('./threads', () => ({ seedContextForSession: shared.seedContextForSessio
 
 import { buildOrgAccessClosures, type AuthContext } from '../../middleware/auth';
 import { db } from '../../db';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { resolveWritableToolOrgId, WRITE_ORG_AMBIGUOUS_ERROR } from '../aiToolWriteOrg';
 import { canManagePartnerWidePolicies } from '../partnerWideAccess';
 import { CeilingViolationError, GrantInactiveError, type GrantCeiling } from './grantAuthority';
@@ -479,6 +480,22 @@ describe('the thread focus as the write default (#11432)', () => {
     expect(result.toolAuth.aiWriteDefaultOrgId).toBeUndefined();
   });
 
+  it('reads the focus of THIS grant\'s thread, keyed by thread and partner', async () => {
+    shared.resolveGrantCeiling.mockResolvedValue(writes);
+    shared.selectRows = [{ focusOrgId: ORG_A }];
+    await enforce('manage_configuration_policy', create);
+    const chain = vi.mocked(db.select).mock.results[0]!.value as { where: ReturnType<typeof vi.fn> };
+    const { sql, params } = new PgDialect().sqlToQuery(chain.where.mock.calls[0]![0]);
+    expect(sql).toMatch(/"wisp_threads"\."id" = \$\d+ and "wisp_threads"\."partner_id" = \$\d+/);
+    expect(params).toEqual(['t-1', 'p-1']);
+  });
+
+  it('a read-only call reads no thread: a failed lookup must never deny a query', async () => {
+    shared.selectError = new Error('connection refused');
+    await expect(enforce('get_device_details', { deviceId: 'd' })).resolves.toMatchObject({ ok: true, writeDefaultOrgId: null });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
   it('a call that names its org, and a tenant tool, read no thread', async () => {
     shared.resolveGrantCeiling.mockResolvedValue(writes);
     await expect(enforce('manage_configuration_policy', { ...create, orgId: ORG_B })).resolves.toMatchObject({ ok: true, writeDefaultOrgId: null });
@@ -530,10 +547,16 @@ describe('partner-owned writes under a partner-wide grant (#11432)', () => {
       orgTerms: new Map([[ORG_B, { permissionKeys: new Set(['devices:read']), siteIds: null }]]),
     }));
     const narrower = await enforce('manage_configuration_policy', partnerCreate);
-    expect(narrower.ok && canManagePartnerWidePolicies(narrower.toolAuth)).toBe(false);
+    expect(narrower.ok).toBe(true);
+    if (!narrower.ok) return;
+    expect(narrower.toolAuth.partnerOrgAccess).toBe('selected');
+    expect(canManagePartnerWidePolicies(narrower.toolAuth)).toBe(false);
 
     shared.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: new Set(['devices:write']), partnerWide: false, scopeOrgId: ORG_A }));
     const orgGrant = await enforce('manage_configuration_policy', partnerCreate);
-    expect(orgGrant.ok && canManagePartnerWidePolicies(orgGrant.toolAuth)).toBe(false);
+    expect(orgGrant.ok).toBe(true);
+    if (!orgGrant.ok) return;
+    expect(orgGrant.toolAuth.partnerOrgAccess).toBe('selected');
+    expect(canManagePartnerWidePolicies(orgGrant.toolAuth)).toBe(false);
   });
 });

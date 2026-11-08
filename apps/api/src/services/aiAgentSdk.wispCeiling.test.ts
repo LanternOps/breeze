@@ -906,10 +906,19 @@ describe('createSessionPreToolUse — a tool\'s pre-filing check (#11432)', () =
 
     expect(result).toEqual({ allowed: false, error: REFUSAL });
     expect(validateBeforeFiling).toHaveBeenCalledWith(CREATE, expect.objectContaining({ narrowedFrom: 'unmarked', narrowedFor: 'session-1' }));
-    expect(checkGuardrails).not.toHaveBeenCalled();
     expect(mockCreateActionIntent).not.toHaveBeenCalled();
     expect(session.eventBus.publish).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'approval_required' }));
     expectOnlyTheRefusalRow(REFUSAL);
+  });
+
+  it('runs after RBAC and the rate limit: their refusals win and the check is never asked', async () => {
+    validateBeforeFiling.mockReturnValue({ ok: false, error: REFUSAL });
+    vi.mocked(checkToolPermission).mockResolvedValueOnce('Permission denied: devices.write');
+    expect(await createSessionPreToolUse(wispSession())(TOOL, CREATE)).toEqual({ allowed: false, error: 'Permission denied: devices.write' });
+    vi.mocked(checkToolRateLimit).mockResolvedValueOnce('Rate limit exceeded');
+    expect(await createSessionPreToolUse(wispSession())(TOOL, CREATE)).toEqual({ allowed: false, error: 'Rate limit exceeded' });
+    expect(validateBeforeFiling).not.toHaveBeenCalled();
+    expect(mockCreateActionIntent).not.toHaveBeenCalled();
   });
 
   it('a call the check passes goes on to its approval as before', async () => {

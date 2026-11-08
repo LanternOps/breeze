@@ -3756,8 +3756,7 @@ function declareBreezeSdkToolTemplates(): SdkTool[] {
         name: z.string().max(255).optional(),
         description: z.string().max(2000).optional(),
         status: z.enum(['active', 'inactive', 'archived']).optional(),
-        // #11432: ownerScope was missing here, so a partner-owned create could
-        // not be made from chat at all (the SDK drops keys the shape lacks).
+        // Shared with toolInputSchemas (#11432): the SDK drops any key this shape lacks.
         ...configPolicyOwnerShape,
       },
       makeHandler('manage_configuration_policy')
