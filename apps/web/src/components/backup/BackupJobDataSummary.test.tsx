@@ -191,6 +191,14 @@ describe('BackupJobDataSummary detail', () => {
     expect(summary.textContent).not.toContain('How incremental backups work');
   });
 
+  it('an in-flight run keeps the incremental explainer', () => {
+    render(
+      <BackupJobDataSummary accounting={{ ...stopped, runKind: 'incremental' }} variant="detail" inFlight />,
+    );
+
+    expect(screen.getByText('How incremental backups work')).toBeTruthy();
+  });
+
   it('a finished run still shows the incremental explainer', () => {
     render(<BackupJobDataSummary accounting={accounting()} variant="detail" />);
 

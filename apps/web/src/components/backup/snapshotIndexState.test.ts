@@ -219,6 +219,17 @@ describe('useSnapshotIndexState', () => {
     }));
   });
 
+  it('a cooldown 429 without a usable reason falls back to the localized rate-limit copy (#11280)', async () => {
+    fetchMock.mockResolvedValueOnce(json({ code: 'RATE_LIMITED', error: '  ' }, 429));
+    const { result } = renderHook(() => useSnapshotIndexState({ snapshotId: 'snap-1', onReady: vi.fn() }));
+    act(() => result.current.reportView({ state: 'unavailable', failure: 'provider_error', retryable: true, deviceLocal: false }));
+
+    await act(async () => { await result.current.retry(); });
+
+    expect(showToast).toHaveBeenCalledTimes(1);
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'Too many requests — try again shortly' }));
+  });
+
   it('a retry the API refuses toasts through runAction and leaves the honest state in place', async () => {
     fetchMock.mockResolvedValueOnce(json({ error: "This snapshot failed its integrity check, so its file list can't be rebuilt.", code: 'attestation_failed' }, 409));
     const view = { state: 'unavailable', failure: 'provider_error', retryable: true, deviceLocal: false } as const;

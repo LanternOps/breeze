@@ -245,14 +245,18 @@ const MAX_STORED_REASON_LENGTH = 200;
 /**
  * Provider and network errors name the host they could not reach
  * (`connect ECONNREFUSED 127.0.0.1:9`). The stored text keeps the error code
- * and wording but not URLs, IP addresses, or host[:port] tokens (#11280).
+ * and wording but not URLs, IP addresses, host:port tokens, or the host after a
+ * network error code (#11280). Dotted names elsewhere (file names) are kept.
  */
 export function redactIndexFailureReason(reason: string): string {
   return reason
     .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, '[redacted]')
     .replace(/\[[0-9a-f:]*:[0-9a-f:]*\](?::\d+)?/gi, '[redacted]')
+    .replace(/(?:[0-9a-f]{1,4}:){1,7}:(?:[0-9a-f]{1,4})?|::1\b/gi, '[redacted]')
     .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/g, '[redacted]')
-    .replace(/\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?::\d+)?\b/gi, '[redacted]')
+    .replace(/\b[a-z0-9][a-z0-9.-]*:\d{2,5}\b/gi, '[redacted]')
+    // The token after a network error code is the host it names.
+    .replace(/\b(ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)\s+\S+/g, '$1 [redacted]')
     .slice(0, MAX_STORED_REASON_LENGTH);
 }
 

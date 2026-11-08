@@ -359,11 +359,11 @@ describe('DeviceBackupTab', () => {
       );
     });
 
-    it('job history Size cell shows a dash, not the job total, while a job is running (#11280)', async () => {
+    it.each(['running', 'pending'] as const)('job history Size cell shows a dash, not the job total, while a job is %s (#11280)', async (status) => {
       mockTab({
         jobs: [{
           ...baseJob,
-          status: 'running',
+          status,
           totalSize: 10_485_760,
           dataAccounting: { protectedBytes: null, uploadedBytes: null, reusedBytes: null, processedBytes: 1024, runKind: 'incremental', fullRunReason: null },
         }],

@@ -493,7 +493,11 @@ describe('hydrateSnapshotFileIndex', () => {
     expect(redactIndexFailureReason('getaddrinfo ENOTFOUND bucket.s3.example.net')).toBe('getaddrinfo ENOTFOUND [redacted]');
     expect(redactIndexFailureReason('request to https://s3.example.net/bucket/key failed')).toBe('request to [redacted] failed');
     expect(redactIndexFailureReason('connect ETIMEDOUT [2001:db8::1]:443')).toBe('connect ETIMEDOUT [redacted]');
+    expect(redactIndexFailureReason('connect ECONNREFUSED minio:9000')).toBe('connect ECONNREFUSED [redacted]');
+    expect(redactIndexFailureReason('connect ECONNREFUSED ::1:9000')).toBe('connect ECONNREFUSED [redacted]');
+    expect(redactIndexFailureReason('2001:db8::1 unreachable')).toBe('[redacted] unreachable');
     expect(redactIndexFailureReason('manifest has no files key')).toBe('manifest has no files key');
+    expect(redactIndexFailureReason('manifest.json is not valid')).toBe('manifest.json is not valid');
     expect(redactIndexFailureReason('x'.repeat(500)).length).toBeLessThanOrEqual(200);
   });
 
