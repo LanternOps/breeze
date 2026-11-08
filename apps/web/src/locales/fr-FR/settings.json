@@ -7568,6 +7568,42 @@
       "create": "Impossible d’ajouter le contact.",
       "update": "Impossible d’enregistrer le contact.",
       "delete": "Impossible de supprimer le contact."
+    },
+    "portal": {
+      "column": "Portail",
+      "status": {
+        "none": "Aucun accès",
+        "invited": "Invité",
+        "active": "Actif",
+        "disabled": "Désactivé"
+      },
+      "actions": {
+        "give": "Donner accès au portail",
+        "resend": "Renvoyer l’invitation",
+        "bulkGive": "Donner accès au portail ({{count}})",
+        "selectAll": "Sélectionner tous les contacts de cette page",
+        "selectRow": "Sélectionner {{name}}"
+      },
+      "form": {
+        "giveAccess": "Donner accès au portail (envoie une invitation à cette adresse e-mail)",
+        "needsEmail": "Ajoutez une adresse e-mail pour donner accès au portail."
+      },
+      "toasts": {
+        "invited": "Invitation au portail envoyée",
+        "inviteEmailFailed": "Identifiant de portail créé, mais l’e-mail d’invitation n’a pas pu être envoyé. Utilisez Renvoyer l’invitation.",
+        "bulkSummary": "Accès au portail : {{details}}"
+      },
+      "outcomes": {
+        "invited": "Invités : {{count}}",
+        "already_has_access": "Ont déjà accès : {{count}}",
+        "no_email": "Sans adresse e-mail : {{count}}",
+        "email_bound_to_other_contact": "E-mail utilisé par un autre contact : {{count}}",
+        "duplicate_email_in_batch": "E-mail en double dans la sélection : {{count}}"
+      },
+      "errors": {
+        "invite": "Impossible de donner accès au portail.",
+        "bulkInvite": "Impossible de donner accès au portail aux contacts sélectionnés."
+      }
     }
   },
   "bulkContactImport": {

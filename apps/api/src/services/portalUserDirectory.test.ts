@@ -35,6 +35,16 @@ describe('portalUserDirectory (W18, #6789)', () => {
     expect(list[0]).toMatchObject({ id: 'pu-1', effectiveStatus: 'active' });
   });
 
+  it('portal user list items carry contactId and authMethod but never passwordHash (portal registration W1)', async () => {
+    queue.push([row({ contactId: 'ct-1', authMethod: 'entra' })]);
+    const list = await listPortalUsersForOrg(ORG);
+    // The mock returns whatever is queued, so the SELECT itself must name the columns.
+    expect(Object.keys(selects[0] as Record<string, unknown>)).toEqual(expect.arrayContaining(['contactId', 'authMethod']));
+    expect(list[0]).toMatchObject({ contactId: 'ct-1', authMethod: 'entra' });
+    expect(JSON.stringify(list)).not.toContain(SENTINEL);
+    expect(list[0]).not.toHaveProperty('passwordHash');
+  });
+
   it('effectiveStatus is pending_setup without a password, disabled wins', () => {
     expect(effectivePortalStatus({ status: 'invited', passwordHash: null })).toBe('pending_setup');
     expect(effectivePortalStatus({ status: 'disabled', passwordHash: null })).toBe('disabled');

@@ -7568,6 +7568,42 @@
       "create": "Impossibile aggiungere il contatto.",
       "update": "Impossibile salvare il contatto.",
       "delete": "Impossibile eliminare il contatto."
+    },
+    "portal": {
+      "column": "Portale",
+      "status": {
+        "none": "Nessun accesso",
+        "invited": "Invitato",
+        "active": "Attivo",
+        "disabled": "Disattivato"
+      },
+      "actions": {
+        "give": "Concedi accesso al portale",
+        "resend": "Reinvia invito",
+        "bulkGive": "Concedi accesso al portale ({{count}})",
+        "selectAll": "Seleziona tutti i contatti di questa pagina",
+        "selectRow": "Seleziona {{name}}"
+      },
+      "form": {
+        "giveAccess": "Concedi accesso al portale (invia un invito a questo indirizzo e-mail)",
+        "needsEmail": "Aggiungi un indirizzo e-mail per concedere l’accesso al portale."
+      },
+      "toasts": {
+        "invited": "Invito al portale inviato",
+        "inviteEmailFailed": "Accesso al portale creato, ma non è stato possibile inviare l’e-mail di invito. Usa Reinvia invito.",
+        "bulkSummary": "Accesso al portale: {{details}}"
+      },
+      "outcomes": {
+        "invited": "Invitati: {{count}}",
+        "already_has_access": "Hanno già accesso: {{count}}",
+        "no_email": "Senza indirizzo e-mail: {{count}}",
+        "email_bound_to_other_contact": "E-mail usata da un altro contatto: {{count}}",
+        "duplicate_email_in_batch": "E-mail duplicata nella selezione: {{count}}"
+      },
+      "errors": {
+        "invite": "Impossibile concedere l’accesso al portale.",
+        "bulkInvite": "Impossibile concedere l’accesso al portale ai contatti selezionati."
+      }
     }
   },
   "bulkContactImport": {
