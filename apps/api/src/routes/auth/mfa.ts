@@ -69,6 +69,8 @@ import {
   MFA_CODE_INVALID,
   MFA_PROOF_INVALID,
   mintLoginRegisterGrant,
+  hasActiveTotpFactor,
+  canAddBackupTotp,
 } from './helpers';
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 
@@ -1362,7 +1364,10 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, mfaStepUpRateLimit, zValidator('j
       .from(users)
       .where(eq(users.id, auth.user.id))
       .limit(1);
-    if (!u?.mfaEnabled || u.mfaMethod !== 'totp') {
+    // #10650: the shared predicate — a TOTP primary, or the backup beside a
+    // primary passkey (how a user who lost the passkey proves themselves to
+    // repair it). A stale secret beside SMS stays the uniform rejection.
+    if (!u || !hasActiveTotpFactor(u)) {
       return rejectProof(c, 'Invalid credentials', MFA_PROOF_INVALID, MFA_PROOF_REJECTION_STATUS);
     }
     const secret = u?.mfaSecret ? decryptMfaSecret(u.mfaSecret) : null;

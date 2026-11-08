@@ -1637,7 +1637,26 @@ describe('auth routes', () => {
       expect(consumeMFAToken).not.toHaveBeenCalled();
     });
 
-    it('honors an explicitly authorized TOTP switch from an SMS primary', async () => {
+    // #10650: the switch a passkey-primary user makes when the passkey is not
+    // available — the backup authenticator app completes the login.
+    it('honors an explicitly authorized TOTP switch from a passkey primary holding the backup authenticator', async () => {
+      liveUserRow = { ...baseLiveUserRow, mfaMethod: 'passkey' };
+      getMock.mockResolvedValue(pendingRecord({ mfaMethod: 'passkey', passkeyAvailable: true }));
+
+      const res = await postMfaVerify({
+        tempToken: 'temp-token',
+        code: '123456',
+        method: 'totp',
+      });
+
+      expect(res.status).toBe(200);
+      expect(consumeMFAToken).toHaveBeenCalledWith('PLAINSECRET123', '123456', 'user-1');
+    });
+
+    // #10650: SMS enable clears the secret, so a secret beside an SMS primary
+    // is stale and is not a factor (the shared predicate). Refused with the
+    // uniform body, non-terminally, and no code is consumed.
+    it('refuses a stale TOTP secret beside an SMS primary without consuming a code or the challenge', async () => {
       const checkVerificationCode = vi.fn();
       vi.mocked(getTwilioService).mockReturnValue({
         sendVerificationCode: vi.fn(),
@@ -1656,9 +1675,11 @@ describe('auth routes', () => {
         method: 'totp',
       });
 
-      expect(res.status).toBe(200);
-      expect(consumeMFAToken).toHaveBeenCalledWith('PLAINSECRET123', '123456', 'user-1');
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'mfa_code_invalid' });
+      expect(consumeMFAToken).not.toHaveBeenCalled();
       expect(checkVerificationCode).not.toHaveBeenCalled();
+      expect(delMock).not.toHaveBeenCalled();
     });
 
     it('rejects recovery when the pending challenge did not authorize it without consuming the challenge or a code', async () => {
@@ -5710,6 +5731,35 @@ describe('auth routes', () => {
       expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({ action: 'auth.mfa.stepup.failed', details: expect.objectContaining({ reason: 'method_not_allowed' }) }));
 			expect(checkVerificationCode).not.toHaveBeenCalled();
 			expect(mintStepUpGrant).not.toHaveBeenCalled();
+		});
+
+		// #10650: a user who lost their passkey signs in with the backup
+		// authenticator and must be able to prove it here to delete the lost
+		// passkey, add a new one, or rotate recovery codes.
+		it('mints a grant for a valid code from the backup authenticator beside a primary passkey', async () => {
+			vi.mocked(consumeMFAToken).mockResolvedValueOnce(true);
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-backup-totp');
+			vi.mocked(db.select).mockReturnValue({
+				from: vi.fn().mockReturnValue({
+					where: vi.fn().mockReturnValue({
+						limit: vi.fn().mockResolvedValue([{
+							mfaEnabled: true,
+							mfaMethod: 'passkey',
+							mfaSecret: encryptMfaSecret('BACKUPSECRET'),
+						}]),
+					}),
+				}),
+			} as any);
+
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'totp', code: '123456', operation: 'add_factor' }),
+			});
+
+			expect(res.status).toBe(200);
+			expect(await res.json()).toEqual({ stepUpGrantId: 'grant-backup-totp' });
+			expect(consumeMFAToken).toHaveBeenCalledWith('BACKUPSECRET', '123456', 'user-123');
 		});
 
 		it('rejects a lingering TOTP secret when TOTP is not the active factor', async () => {

@@ -562,6 +562,30 @@ describe('POST /office-addin/auth/bind', () => {
     expect(createBindingMock).not.toHaveBeenCalled();
   });
 
+  // #10650 Decision 3A: the authenticator-app backup beside a primary passkey
+  // is the same factor at login, so it binds the add-in too.
+  it('passkey primary + backup authenticator app + valid TOTP → binding created', async () => {
+    findUserForBindMock.mockResolvedValue({ ...BIND_USER, mfaMethod: 'passkey' });
+
+    const res = await postBind(buildApp());
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ bound: true });
+    expect(consumeMFATokenMock).toHaveBeenCalled();
+    expect(createBindingMock).toHaveBeenCalled();
+  });
+
+  it('passkey primary without an authenticator app → 403 mfa_enrollment_required', async () => {
+    findUserForBindMock.mockResolvedValue({ ...BIND_USER, mfaMethod: 'passkey', mfaSecret: null });
+
+    const res = await postBind(buildApp());
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'mfa_enrollment_required' });
+    expect(consumeMFATokenMock).not.toHaveBeenCalled();
+    expect(createBindingMock).not.toHaveBeenCalled();
+  });
+
   it('MFA secret fails to decrypt → 401 invalid_mfa', async () => {
     decryptMfaSecretForMigrationMock.mockReturnValue({ plaintext: null, migratedSecret: null });
     const res = await postBind(buildApp());
