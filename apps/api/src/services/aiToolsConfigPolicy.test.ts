@@ -158,6 +158,7 @@ import { onedriveHelperInlineSettingsSchema } from '@breeze/shared/validators';
 import { GENERIC_TOOL_ERROR_MESSAGE } from './aiToolErrors';
 import { AI_AUTO_INSTALL_REFUSAL_MESSAGE } from './aiToolsSoftwarePolicyAudit';
 import { MFA_GATED_TOOL_ACTIONS, isMfaGatedToolAction, isToolWhollyMfaGated, mfaGatedActionsForTool } from './aiToolMfaGate';
+import { WRITE_OWNER_AMBIGUOUS_ERROR } from './aiToolWriteOrg';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const POLICY_ID = '22222222-2222-2222-2222-222222222222';
@@ -1882,7 +1883,8 @@ describe('manage_configuration_policy owner-org authority (#6667, #6668)', () =>
   it('refuses an org-scoped create with no orgId when the caller can reach several orgs', async () => {
     const output = await tool().handler({ action: 'create', name: 'Stray' }, makeMultiOrgPartnerAuth());
 
-    expect(JSON.parse(output).error).toBe('orgId is required: you have access to multiple organizations');
+    // #11432: still refused (#6667), and the refusal now names both owners.
+    expect(JSON.parse(output).error).toBe(WRITE_OWNER_AMBIGUOUS_ERROR);
     expect(createConfigPolicyMock).not.toHaveBeenCalled();
     expect(db.select).not.toHaveBeenCalled();
   });
@@ -1891,7 +1893,8 @@ describe('manage_configuration_policy owner-org authority (#6667, #6668)', () =>
     const auth = { ...makeMultiOrgPartnerAuth(), accessibleOrgIds: null, canAccessOrg: () => true } as any;
     const output = await tool().handler({ action: 'create', name: 'Stray' }, auth);
 
-    expect(JSON.parse(output).error).toBe('orgId is required: you have access to multiple organizations');
+    // #11432: still refused (#6667), and the refusal now names both owners.
+    expect(JSON.parse(output).error).toBe(WRITE_OWNER_AMBIGUOUS_ERROR);
     expect(createConfigPolicyMock).not.toHaveBeenCalled();
   });
 
@@ -2233,5 +2236,86 @@ describe('AI tools cannot arm vendor updates (#11070)', () => {
     const { POLICY_FEATURE_INLINE_SETTINGS_REFERENCE } = await import('./aiToolsConfigPolicy');
     expect(POLICY_FEATURE_INLINE_SETTINGS_REFERENCE.oem_updates).toMatch(/cannot turn vendor updates on/);
     expect(POLICY_FEATURE_INLINE_SETTINGS_REFERENCE.oem_updates).toContain('windowHours: 1..8');
+  });
+});
+
+// #11432: a partner-wide Wisp chat filed a create with no orgId, a person
+// approved it with step-up, and only then did the handler refuse it as
+// ambiguous. The tool now says, before any card is filed, which owner the call
+// must name, and the handler keeps the same refusal as its backstop.
+describe('manage_configuration_policy create owner, checked before filing (#11432)', () => {
+  const ORG_2 = '55555555-5555-4555-8555-555555555555';
+  const bothOrgs = [ORG_ID, ORG_2];
+  function partnerWideAuth(patch: Record<string, unknown> = {}) {
+    return {
+      ...makePartnerAuth(),
+      partnerOrgAccess: 'all',
+      accessibleOrgIds: bothOrgs,
+      canAccessOrg: (orgId: string) => bothOrgs.includes(orgId),
+      ...patch,
+    } as any;
+  }
+  function policyTool() {
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+    return tools.get('manage_configuration_policy')!;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    enable2faState.value = true;
+    canManagePartnerWidePoliciesMock.mockReturnValue(true);
+  });
+
+  it('refuses a create with no orgId from a caller that reaches several orgs, naming both owners', () => {
+    expect(policyTool().validateBeforeFiling({ action: 'create', name: 'Baseline Monitoring' }, partnerWideAuth()))
+      .toEqual({ ok: false, error: WRITE_OWNER_AMBIGUOUS_ERROR });
+  });
+
+  it('the handler answers the same refusal and writes nothing', async () => {
+    const output = await policyTool().handler({ action: 'create', name: 'Baseline Monitoring' }, partnerWideAuth());
+    expect(JSON.parse(output)).toEqual({ error: WRITE_OWNER_AMBIGUOUS_ERROR });
+    expect(db.select).not.toHaveBeenCalled();
+    expect(createConfigPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('passes every create the handler would accept', () => {
+    const tool = policyTool();
+    expect(tool.validateBeforeFiling({ action: 'create', name: 'x', orgId: ORG_2 }, partnerWideAuth())).toEqual({ ok: true });
+    expect(tool.validateBeforeFiling({ action: 'create', name: 'x' }, makePartnerAuth())).toEqual({ ok: true });
+    expect(tool.validateBeforeFiling({ action: 'create', name: 'x' }, partnerWideAuth({ aiWriteDefaultOrgId: ORG_2 }))).toEqual({ ok: true });
+    expect(tool.validateBeforeFiling({ action: 'create', name: 'x', ownerScope: 'partner' }, partnerWideAuth())).toEqual({ ok: true });
+  });
+
+  it('refuses an orgId the caller cannot reach (the partner id is not an organization)', () => {
+    expect(policyTool().validateBeforeFiling({ action: 'create', name: 'x', orgId: PARTNER_ID }, partnerWideAuth()))
+      .toEqual({ ok: false, error: 'Access denied to this organization' });
+  });
+
+  it('refuses a partner-owned create without full partner org access, in the handler\'s own words', async () => {
+    canManagePartnerWidePoliciesMock.mockReturnValue(false);
+    const tool = policyTool();
+    const input = { action: 'create', name: 'x', ownerScope: 'partner' };
+    const verdict = tool.validateBeforeFiling(input, partnerWideAuth());
+    expect(verdict).toEqual({ ok: false, error: expect.stringContaining('full partner org access') });
+    expect(JSON.parse(await tool.handler(input, partnerWideAuth())).error).toBe(verdict.error);
+  });
+
+  it('refuses a partner-owned create from a caller with no partner', () => {
+    expect(policyTool().validateBeforeFiling({ action: 'create', name: 'x', ownerScope: 'partner' }, makeAuth()))
+      .toEqual({ ok: false, error: 'Partner-wide policies require partner scope' });
+  });
+
+  it('judges only create: every other action is left to its handler', () => {
+    const tool = policyTool();
+    for (const action of ['update', 'activate', 'deactivate', 'delete']) {
+      expect(tool.validateBeforeFiling({ action, policyId: POLICY_ID }, partnerWideAuth())).toEqual({ ok: true });
+    }
+  });
+
+  it('describes orgId and ownerScope for the model, naming the partner-wide case', () => {
+    const properties = policyTool().definition.input_schema.properties;
+    expect(properties.ownerScope.description).toMatch(/partner-wide/i);
+    expect(properties.orgId.description).toMatch(/never the partner id/i);
   });
 });

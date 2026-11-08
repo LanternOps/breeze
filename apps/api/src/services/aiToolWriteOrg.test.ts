@@ -4,6 +4,8 @@ import {
   resolveReadableToolOrgScope,
   resolveWritableToolOrgId,
   WRITE_ORG_AMBIGUOUS_ERROR,
+  WRITE_OWNER_AMBIGUOUS_ERROR,
+  withOwnerScopeOption,
 } from './aiToolWriteOrg';
 import { resolveWritableToolOrgId as hubExport } from './aiTools';
 
@@ -189,5 +191,20 @@ describe('resolveReadableToolOrgScope (#10396)', () => {
       ok: false,
       error: 'No organization context available',
     });
+  });
+});
+
+describe('withOwnerScopeOption (#11432)', () => {
+  it('turns the ambiguous-org refusal into one naming both owners and warning off the partner id', () => {
+    expect(withOwnerScopeOption(WRITE_ORG_AMBIGUOUS_ERROR)).toBe(WRITE_OWNER_AMBIGUOUS_ERROR);
+    expect(WRITE_OWNER_AMBIGUOUS_ERROR).toContain('orgId');
+    expect(WRITE_OWNER_AMBIGUOUS_ERROR).toContain('ownerScope: "partner"');
+    expect(WRITE_OWNER_AMBIGUOUS_ERROR).toMatch(/never put the partner id in orgId/i);
+  });
+
+  it('leaves every other refusal as it is', () => {
+    for (const error of ['Access denied to this organization', 'Cannot access another organization', 'Organization context required']) {
+      expect(withOwnerScopeOption(error)).toBe(error);
+    }
   });
 });

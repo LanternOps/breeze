@@ -61,6 +61,7 @@ import { WISP_SELF_STATE_TOOLS } from './wisp/selfStateTools';
 import { classifyWispUnattendedRead } from './wisp/unattendedReads';
 import { compactToolResultForChat, redactSensitiveToolInput } from './aiToolOutput';
 import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
+import { aiTools as registeredAiTools } from './aiToolNames';
 import { applyHelperDeviceScope } from './helperToolFilter';
 import { dispatchApprovalPushToTokens, getUserPushTokens } from './expoPush';
 import { decideHelperToolAction } from './pamToolActionGovernance';
@@ -1045,6 +1046,19 @@ function preApprovalInputRefusal(
   return validation.success ? null : validation.error;
 }
 
+/**
+ * #11432: what `AiTool.validateBeforeFiling` refuses for this call, or null.
+ * Read from the shared registry map (`aiToolNames.ts`), which `aiTools.ts`
+ * fills, so this module never imports the registry hub itself. A tool without
+ * the hook is left to its handler, and its call's reach is never built here.
+ */
+function preFilingToolRefusal(toolName: string, input: Record<string, unknown>, auth: () => AuthContext): string | null {
+  const validate = registeredAiTools.get(toolName)?.validateBeforeFiling;
+  if (!validate) return null;
+  const verdict = validate(input, auth());
+  return verdict.ok ? null : verdict.error;
+}
+
 // ============================================
 // Wisp W04 Task 4 — the delegation ceiling on every chat tool call
 // ============================================
@@ -1053,6 +1067,8 @@ function preApprovalInputRefusal(
 type WispCallState = {
   ceiling: GrantCeiling;
   permissionKeys: string[];
+  /** #11432: the thread-focus write default the gate resolved; every narrowing of this call passes it. */
+  writeDefaultOrgId: string | null;
   narrow: typeof import('./wisp/chatCeiling').narrowAuthToCeiling;
 };
 
@@ -1113,7 +1129,15 @@ async function runWispCeilingGate(
       auditWispRefusal(session, toolName, result.refusal);
       return { ok: false, denial: { allowed: false, error: result.refusal.message } };
     }
-    return { ok: true, state: { ceiling: result.ceiling, permissionKeys: result.permissionKeys, narrow: narrowAuthToCeiling } };
+    return {
+      ok: true,
+      state: {
+        ceiling: result.ceiling,
+        permissionKeys: result.permissionKeys,
+        writeDefaultOrgId: result.writeDefaultOrgId ?? null,
+        narrow: narrowAuthToCeiling,
+      },
+    };
   } catch (err) {
     console.error(`[AI-SDK] Wisp ceiling gate failed for '${toolName}' (session ${session.breezeSessionId}); denying`, err);
     captureException(err, undefined, { service: 'aiAgentSdk', orgId: session.orgId });
@@ -1141,7 +1165,7 @@ function chatApprovalClientLabel(session: ActiveSession): string {
 function callReach(session: ActiveSession, wispState: WispCallState | null): AuthContext {
   const toolAuth = session.toolAuth ?? session.auth;
   return wispState
-    ? wispState.narrow(toolAuth, wispState.ceiling, session.breezeSessionId, wispState.permissionKeys)
+    ? wispState.narrow(toolAuth, wispState.ceiling, session.breezeSessionId, wispState.permissionKeys, wispState.writeDefaultOrgId)
     : toolAuth;
 }
 
@@ -1260,8 +1284,8 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       captureException(new Error(`Wisp session ${session.breezeSessionId} reached an allowed exit for '${toolName}' without the ceiling gate`));
       return { allowed: false, error: WISP_GATE_UNAVAILABLE_MESSAGE };
     }
-    const { ceiling, permissionKeys, narrow } = wispCall.current;
-    const toolAuth = narrow(session.toolAuth, ceiling, session.breezeSessionId, permissionKeys);
+    const { ceiling, permissionKeys, writeDefaultOrgId, narrow } = wispCall.current;
+    const toolAuth = narrow(session.toolAuth, ceiling, session.breezeSessionId, permissionKeys, writeDefaultOrgId);
     const autoLinkTags = {
       op: 'wisp.auto_link', toolName, threadId: session.wispGrant.threadId,
       grantId: ceiling.grantId, sessionId: session.breezeSessionId,
@@ -1467,6 +1491,16 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     // executeTool keeps its own check as the backstop.
     const inputRefusal = preApprovalInputRefusal(session, toolName, input, tenant !== undefined || flowTool !== undefined);
     if (inputRefusal) return { allowed: false, error: inputRefusal };
+
+    // #11432: the tool's own deterministic refusal (`validateBeforeFiling`),
+    // judged under the auth its handler will run with (this call's reach),
+    // before any guardrail, approval card or intent. A create with no orgId on
+    // a partner-wide session used to be filed, approved with step-up, and only
+    // then refused as ambiguous. The handler keeps the same check.
+    if (!flowTool && !tenant) {
+      const filingRefusal = preFilingToolRefusal(toolName, input, () => callReach(session, wispCall.current));
+      if (filingRefusal) return { allowed: false, error: filingRefusal };
+    }
 
     // Guardrails (tier check + action-based escalation). A proposal-backed
     // run_script needs the proposal's reviewed risk tier to pick supervised vs

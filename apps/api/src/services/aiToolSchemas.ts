@@ -126,9 +126,27 @@ const cleanupPath = z.string().max(4096).refine(
   { message: 'Path traversal (..) not allowed' }
 );
 
+/**
+ * #11432: the owner fields of `manage_configuration_policy` create, as the
+ * model reads them. On a partner-wide grant the model must name the owner
+ * itself, and the partner id is never an orgId. Shared by the input schema
+ * below, the chat tool shape (aiAgentSdkTools.ts) and the registry definition
+ * (aiToolsConfigPolicy.ts), so the three cannot drift.
+ */
+export const CONFIG_POLICY_OWNER_SCOPE_DESCRIPTION =
+  'Create only. organization (default): one customer org owns it. partner: a partner-wide library policy; needs full partner org access.';
+export const CONFIG_POLICY_ORG_ID_DESCRIPTION =
+  'Create only. Customer org UUID that owns the policy; required if you reach several orgs. Never the partner id: use ownerScope "partner".';
+export const configPolicyOwnerShape = {
+  ownerScope: z.enum(['organization', 'partner']).optional().describe(CONFIG_POLICY_OWNER_SCOPE_DESCRIPTION),
+  orgId: uuid.optional().describe(CONFIG_POLICY_ORG_ID_DESCRIPTION),
+};
+
 export const deliveryToolShape = {
   action: z.enum(['resolve','list_routing','create_routing','update_routing','delete_routing','set_default','list_escalation','create_escalation','update_escalation','delete_escalation']),
-  orgId: uuid.optional(), ownerScope: z.enum(['organization', 'partner']).optional(), id: uuid.optional(),
+  orgId: uuid.optional().describe('The customer org UUID; required when you reach more than one org, unless ownerScope is "partner". Never the partner id.'),
+  ownerScope: z.enum(['organization', 'partner']).optional().describe('partner: partner-wide rows (all orgs). Use it on a partner-wide grant instead of orgId.'),
+  id: uuid.optional(),
   severity: z.enum(['critical','high','medium','low','info']).optional(), kind: monitorKindSchema.optional(),
   siteId: uuid.optional(), monitorId: uuid.optional(), data: z.record(z.string(), z.unknown()).optional(),
 };
@@ -2242,7 +2260,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     name: z.string().min(1).max(255).optional(),
     description: z.string().optional(),
     status: z.enum(['active', 'inactive', 'archived']).optional(),
-    orgId: uuid.optional(),
+    ...configPolicyOwnerShape,
   }),
 
   get_configuration_policy: z.object({

@@ -37,7 +37,7 @@ import type { AiPageContext } from '@breeze/shared';
 import { isResolveFailure, resolveEntityRef, type ResolvedEntity } from './entityRefs';
 import { db } from '../../db';
 import { aiSessions } from '../../db/schema/ai';
-import { wispThreadSessions } from '../../db/schema/wispThreads';
+import { wispThreadSessions, wispThreads } from '../../db/schema/wispThreads';
 import { buildOrgAccessClosures, siteAccessCheck, type AuthContext } from '../../middleware/auth';
 import { resolveToolPermissionRequirements } from '../aiGuardrails';
 import { captureException } from '../sentry';
@@ -84,6 +84,16 @@ export const WISP_REFUSAL_MESSAGES: Record<CeilingViolationCode, string> = {
   inactive: 'Your Wisp grant is no longer active (it was paused, revoked, or has expired). Turn Wisp back on, then refresh this conversation to continue.',
 };
 
+/**
+ * #11432: the refusal for a call that put the grant's PARTNER id in `orgId`.
+ * The ceiling refuses it as an org outside the grant either way; this says why
+ * and what to pass instead, where "Wisp can't act on that organization" led the
+ * model to conclude the tool could not write at all.
+ */
+export const WISP_PARTNER_ID_AS_ORG_MESSAGE =
+  "That id is your partner, not one of its organizations, so it can't be an orgId. "
+  + 'Pass a customer organization\'s orgId, or ownerScope: "partner" for a partner-owned object where the tool supports it.';
+
 function refusal(detail: CeilingViolationCode, message?: string): WispCeilingCheckRefusal {
   const text = message ?? WISP_REFUSAL_MESSAGES[detail];
   return detail === 'inactive'
@@ -129,12 +139,18 @@ function withinCeiling(ceiling: GrantCeiling, orgId: string, permissionKeys: rea
  * such an org is already out of reach, see the file header). Stamps
  * `wispGrant` (w00 A2/A23) — how the memory tools learn the grant and the
  * source session on a chat turn.
+ *
+ * `writeDefaultOrgId` (#11432, from `enforceWispCeiling`) becomes
+ * `aiWriteDefaultOrgId` when it is inside the narrowed reach, so an org-less
+ * write resolves there (`resolveWritableToolOrgId` step 3). Null leaves the
+ * auth's own default, if any, as it was.
  */
 export function narrowAuthToCeiling(
   auth: AuthContext,
   ceiling: GrantCeiling,
   sessionId: string | undefined,
   permissionKeys: readonly string[],
+  writeDefaultOrgId: string | null = null,
 ): AuthContext {
   const base = auth.accessibleOrgIds ?? [...ceiling.orgIds];
   const accessibleOrgIds = base.filter((orgId) => ceiling.orgIds.has(orgId) && withinCeiling(ceiling, orgId, permissionKeys));
@@ -159,9 +175,31 @@ export function narrowAuthToCeiling(
     wispGrant: { grantId: ceiling.grantId, grantRevisionId: ceiling.revisionId, sessionId: sessionId ?? null },
   };
   if (partnerOrgAccess !== undefined) narrowed.partnerOrgAccess = partnerOrgAccess;
+  if (writeDefaultOrgId !== null && accessibleOrgIds.includes(writeDefaultOrgId)) narrowed.aiWriteDefaultOrgId = writeDefaultOrgId;
   // Out-of-service report history is a route-only capability; never under a grant.
   delete narrowed.reportHistory;
   return narrowed;
+}
+
+/**
+ * #11432: the org an org-less write of this call may land in: the thread's
+ * focus org, and only when it is also `sessionOrgId`, the org the call is
+ * checked against and its approval filed in (the session org at the chat gate,
+ * the intent org at release). A focused thread anchors its session there
+ * (aiAgent.ts `anchorWispSession`); a focus moved after the session began, or
+ * an unfocused partner-wide thread, gives null, and the write must name its
+ * owner. No other org is ever picked for it (#6667). Read live from the
+ * thread (system context: the row is partner-axis); a DB error propagates.
+ */
+async function focusWriteDefaultOrgId(threadId: string, partnerId: string, sessionOrgId: string): Promise<string | null> {
+  const [row] = await inSystemContext(() =>
+    db
+      .select({ focusOrgId: wispThreads.focusOrgId })
+      .from(wispThreads)
+      .where(and(eq(wispThreads.id, threadId), eq(wispThreads.partnerId, partnerId)))
+      .limit(1),
+  );
+  return row?.focusOrgId === sessionOrgId ? sessionOrgId : null;
 }
 
 /**
@@ -177,7 +215,14 @@ export function unreachableWispAuth(auth: AuthContext): AuthContext {
 }
 
 export type WispCeilingResult =
-  | { ok: true; toolAuth: AuthContext; ceiling: GrantCeiling; permissionKeys: string[] }
+  | {
+    ok: true;
+    toolAuth: AuthContext;
+    ceiling: GrantCeiling;
+    permissionKeys: string[];
+    /** #11432: the thread-focus write default `toolAuth` carries (null = none); pass it to every re-narrowing. */
+    writeDefaultOrgId: string | null;
+  }
   | { ok: false; refusal: WispCeilingCheckRefusal };
 
 /**
@@ -228,14 +273,21 @@ export async function enforceWispCeiling(args: {
     assertWithinCeiling(ceiling, { toolName: args.toolName, orgId: targetOrgId });
     for (const permission of permissionKeys) assertWithinCeiling(ceiling, { orgId: targetOrgId, permission });
   } catch (err) {
-    if (err instanceof CeilingViolationError) return { ok: false, refusal: refusal(err.code) };
+    if (err instanceof CeilingViolationError) {
+      const partnerIdAsOrg = err.code === 'org' && args.input.orgId === ceiling.partnerId;
+      return { ok: false, refusal: refusal(err.code, partnerIdAsOrg ? WISP_PARTNER_ID_AS_ORG_MESSAGE : undefined) };
+    }
     throw err;
   }
 
-  const toolAuth = narrowAuthToCeiling(args.toolAuth, ceiling, args.sessionId, permissionKeys);
+  // A call that names its org needs no default; a tenant tool acts in its executor's org.
+  const writeDefaultOrgId = typeof args.input.orgId === 'string' || args.permissionRequirement
+    ? null
+    : await focusWriteDefaultOrgId(args.grant.threadId, ceiling.partnerId, args.sessionOrgId);
+  const toolAuth = narrowAuthToCeiling(args.toolAuth, ceiling, args.sessionId, permissionKeys, writeDefaultOrgId);
   // The target passed the ceiling but the caller's own reach may not include it.
   if (!toolAuth.canAccessOrg(targetOrgId)) return { ok: false, refusal: refusal('org') };
-  return { ok: true, toolAuth, ceiling, permissionKeys };
+  return { ok: true, toolAuth, ceiling, permissionKeys, writeDefaultOrgId };
 }
 
 /**
