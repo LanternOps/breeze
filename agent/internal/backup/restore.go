@@ -142,7 +142,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 		result.Status = "failed"
 		return result, err
 	}
-	snapshot, manifestWarnings, err := downloadVerifiedManifest(ctx, provider, cfg.SnapshotID, workRoot, cfg.Integrity)
+	snapshot, manifestWarnings, err := downloadVerifiedManifest(ctx, provider, cfg.SnapshotID, workRoot, cfg.Integrity, cfg.SelectedPaths)
 	if err != nil {
 		result.Status = "failed"
 		result.Code = integrityResultCode(cfg.Integrity, err)
@@ -153,12 +153,13 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	}
 	result.Warnings = append(result.Warnings, manifestWarnings...)
 
-	// 2. Filter files by selected paths, then split into the three restore
-	// passes: regular files (today's download loop), symlinks, and
-	// directories — directories go last so their modes/owners are applied
-	// AFTER every child has been written (see the two passes appended below
-	// the main loop).
-	files := filterFiles(snapshot.Files, cfg.SelectedPaths)
+	// 2. Split the selected files (downloadVerifiedManifest kept only the
+	// entries cfg.SelectedPaths selects) into the three restore passes:
+	// regular files (today's download loop), symlinks, and directories —
+	// directories go last so their modes/owners are applied AFTER every
+	// child has been written (see the two passes appended below the main
+	// loop).
+	files := snapshot.Files
 	var contentFiles, links, dirs []SnapshotFile
 	for _, f := range files {
 		switch f.Kind {
@@ -468,7 +469,7 @@ func contentKeys(files []SnapshotFile) []string {
 // downloadManifest fetches and parses the manifest for a snapshot without
 // an integrity expectation.
 func downloadManifest(provider providers.BackupProvider, snapshotID, workRoot string) (*Snapshot, error) {
-	snapshot, _, err := downloadVerifiedManifest(context.Background(), provider, snapshotID, workRoot, nil)
+	snapshot, _, err := downloadVerifiedManifest(context.Background(), provider, snapshotID, workRoot, nil, nil)
 	return snapshot, err
 }
 
@@ -482,8 +483,10 @@ func plainDownload(_ context.Context, p providers.BackupProvider, key, dest stri
 // downloadVerifiedManifest fetches and parses the manifest for a snapshot.
 // In attested mode the bytes must match the attested manifest object before
 // they are decoded (a vault copy that does not is replaced by primary
-// storage's, with a warning); otherwise it is downloaded as before.
-func downloadVerifiedManifest(ctx context.Context, provider providers.BackupProvider, snapshotID, workRoot string, e *integrity.Expectation) (*Snapshot, []string, error) {
+// storage's, with a warning); otherwise it is downloaded as before. Only the
+// file entries selectedPaths selects are kept (see filterFiles; empty keeps
+// all); junctions and every other manifest field are returned whole.
+func downloadVerifiedManifest(ctx context.Context, provider providers.BackupProvider, snapshotID, workRoot string, e *integrity.Expectation, selectedPaths []string) (*Snapshot, []string, error) {
 	manifestKey := path.Join(snapshotRootDir, snapshotID, snapshotManifestKey)
 	if workRoot == "" {
 		workRoot = os.TempDir()
@@ -497,16 +500,15 @@ func downloadVerifiedManifest(ctx context.Context, provider providers.BackupProv
 	}
 	defer func() { _ = os.Remove(tmpPath) }()
 
-	data, err := os.ReadFile(tmpPath)
+	// Decoded only now, after the attested-mode check above (none outside
+	// attested mode), and streamed with the selection applied per entry:
+	// memory follows what the restore selected, not the size of the snapshot
+	// (#11234).
+	snapshot, err := decodeSnapshotManifestFile(tmpPath, restoreSelection(selectedPaths))
 	if err != nil {
-		return nil, nil, fmt.Errorf("read manifest: %w", err)
-	}
-
-	var snapshot Snapshot
-	if err := json.Unmarshal(data, &snapshot); err != nil {
 		return nil, nil, fmt.Errorf("decode manifest: %w", err)
 	}
-	return &snapshot, warnings, nil
+	return snapshot, warnings, nil
 }
 
 // integrityResultCode is the result code for err when the command carried an
@@ -587,15 +589,35 @@ func filterFiles(files []SnapshotFile, selectedPaths []string) []SnapshotFile {
 	}
 
 	var matched []SnapshotFile
-	for _, f := range files {
-		for _, selected := range selectedPaths {
-			if pathSelectionMatches(restoreSourcePath(f), selected) {
-				matched = append(matched, f)
-				break
-			}
+	for i := range files {
+		if restoreSelected(&files[i], selectedPaths) {
+			matched = append(matched, files[i])
 		}
 	}
 	return matched
+}
+
+// restoreSelected reports whether a restore with selectedPaths includes f:
+// its restoreSourcePath matches at least one selected path (see
+// pathSelectionMatches). Callers handle an empty selection (everything).
+func restoreSelected(f *SnapshotFile, selectedPaths []string) bool {
+	sourcePath := restoreSourcePath(*f)
+	for _, selected := range selectedPaths {
+		if pathSelectionMatches(sourcePath, selected) {
+			return true
+		}
+	}
+	return false
+}
+
+// restoreSelection is filterFiles as a per-entry predicate, for applying a
+// restore's selection while the manifest is decoded (#11234). An empty
+// selection restores everything and returns nil (keep every entry).
+func restoreSelection(selectedPaths []string) func(*SnapshotFile) bool {
+	if len(selectedPaths) == 0 {
+		return nil
+	}
+	return func(f *SnapshotFile) bool { return restoreSelected(f, selectedPaths) }
 }
 
 // pathSelectionMatches reports whether sourcePath was selected by selected:

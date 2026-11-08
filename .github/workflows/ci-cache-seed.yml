@@ -24,6 +24,7 @@ on:
       - .github/tauri-apt-packages.txt
       - .github/scripts/tauri-apt.sh
       - .github/scripts/ci-cache-prune.mjs
+      - scripts/security/install-osv-scanner.sh
       - docker/**
       - .github/actions/**
       - .github/workflows/ci-cache-seed.yml
@@ -258,6 +259,46 @@ jobs:
         with:
           path: ~/go/bin/golangci-lint
           key: golangci-lint-v2.12.2-${{ runner.os }}
+
+  # The binary ci.yml's security-audit and security.yml's npm-audit restore
+  # through the restore-osv-scanner composite. With it cached, an outage of the
+  # GitHub release download does not fail those jobs (#11367).
+  seed-osv-scanner:
+    name: Seed osv-scanner binary cache
+    # Not on the six-hourly Tauri-only schedule.
+    if: github.event.schedule != '17 11,17,23 * * *'
+    runs-on: ubuntu-latest
+    # Outlasts the installer's worst case (see its header).
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Restore osv-scanner binary
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/osv-scanner
+          key: osv-scanner-v2.4.0-${{ runner.os }}
+
+      # A hit installs from the cache after the SHA-256 check. A miss downloads,
+      # checks the pin, and writes the verified binary into the cache dir.
+      - name: Install osv-scanner
+        run: bash scripts/security/install-osv-scanner.sh
+
+      # Keys are immutable: never save a directory without the binary in it.
+      - name: Check the verified binary is in the cache dir
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: test -s ~/.cache/osv-scanner/osv-scanner
+
+      - name: Save osv-scanner binary
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/osv-scanner
+          key: osv-scanner-v2.4.0-${{ runner.os }}
 
   seed-tauri-apt:
     name: Seed Tauri apt cache
@@ -521,7 +562,7 @@ jobs:
   # are counted.
   enforce-cache-budget:
     name: Enforce the cache budget
-    needs: [seed-pnpm, seed-go, seed-golangci-lint, seed-tauri-apt, seed-trivy-db, seed-smoke-images, seed-workspace-runtime]
+    needs: [seed-pnpm, seed-go, seed-golangci-lint, seed-osv-scanner, seed-tauri-apt, seed-trivy-db, seed-smoke-images, seed-workspace-runtime]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
