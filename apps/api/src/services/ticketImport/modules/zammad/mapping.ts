@@ -165,12 +165,15 @@ export function senderName(article: Pick<ZammadArticle, 'sender' | 'sender_id'>)
   return (article.sender_id ? ZAMMAD_SENDER_BY_ID.get(article.sender_id) : undefined) ?? 'Customer';
 }
 
+/** `merged`, alone in its body, with any wrapping tags. Only tested, never rendered. */
+const MERGE_MARKER_BODY = /^(?:\s*<[^>]*>)*\s*merged\s*(?:<[^>]*>\s*)*$/;
+
 /** The marker Zammad adds to a merged ticket: a public note from Agent, body `merged` (Z9). */
 export function isMergeMarker(article: ZammadArticle, data: Pick<ZammadLoadedData, 'state'>): boolean {
   if (data.state.type !== 'merged') return false;
   return senderName(article) === 'Agent' && article.internal !== true
     && articleTypeName(article) === 'note'
-    && (article.body ?? '').replace(/<[^>]*>/g, '').trim() === 'merged';
+    && MERGE_MARKER_BODY.test(article.body ?? '');
 }
 
 /**

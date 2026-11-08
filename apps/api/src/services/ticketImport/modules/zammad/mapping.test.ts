@@ -4,6 +4,7 @@ import {
   articleHeaderLines,
   customAttributesWithValue,
   formatInstant,
+  isMergeMarker,
   mapOwner,
   mapPriority,
   mapRequester,
@@ -237,5 +238,22 @@ describe('article header lines (§6.3)', () => {
     expect(articleHeaderLines({ ...article(1008), type: null, type_id: 8 })).toEqual(['[facebook feed post]']);
     expect(articleHeaderLines(article(1003))).toEqual([]);
     expect(articleHeaderLines(article(1009))).toEqual([]);
+  });
+});
+
+describe('isMergeMarker', () => {
+  const merged = { state: { type: 'merged' } } as Parameters<typeof isMergeMarker>[1];
+  const note = (body: string | null) => ({ ...article(1001), sender: 'Agent', type: 'note', internal: false, body });
+
+  it('reads the body alone or wrapped in tags', () => {
+    expect(isMergeMarker(note('merged'), merged)).toBe(true);
+    expect(isMergeMarker(note('  <div><p>merged</p></div>\n'), merged)).toBe(true);
+  });
+
+  it('refuses any other text, an empty body and a ticket that is not merged', () => {
+    expect(isMergeMarker(note('merged by Dana'), merged)).toBe(false);
+    expect(isMergeMarker(note('<div>not merged</div>'), merged)).toBe(false);
+    expect(isMergeMarker(note(null), merged)).toBe(false);
+    expect(isMergeMarker(note('merged'), { state: { type: 'closed' } } as Parameters<typeof isMergeMarker>[1])).toBe(false);
   });
 });
