@@ -39,7 +39,7 @@ vi.mock('../../db', () => ({
                   email: 'customer@example.com',
                   name: 'Customer',
                   contactId: null,
-                  authMethod: 'password',
+                  authMethod: 'password', browserAccess: 'granted',
                   receiveNotifications: true,
                   status: 'active',
                   authEpoch: 1,
