@@ -886,12 +886,15 @@ const DIGEST_ANOMALY_METRIC_NAME_LIMIT = 10;
  *     lifecycle a technician resolves or dismisses.
  *
  * `episode_id` has no FK (the cascade-cycle note in metricAnomalyIncidents.ts),
- * so the joins are LEFT and org-pinned. An incident whose episode is gone
- * shows only as the trigger, with status 'unknown'.
+ * so the joins are LEFT and org-pinned. An incident with no episode row
+ * (`episode_id` NULL, which the publisher still dispatches, or an episode that
+ * is gone) is never listed as open; it shows only as the trigger, with status
+ * 'unknown'.
  *
- * Runs inside loadDigest's system context.
+ * Runs inside loadDigest's system context. Exported for the integration test
+ * (wispAssessmentAnomalies.integration.test.ts), which runs it on real SQL.
  */
-function loadDigestAnomalies(orgId: string, triggerId: string | null) {
+export function loadDigestAnomalies(orgId: string, triggerId: string | null) {
   const openIncident = and(
     isNotNull(metricAnomalyIncidents.dispatchedAt),
     eq(metricAnomalyIncidents.suppressedByEpisode, false),
