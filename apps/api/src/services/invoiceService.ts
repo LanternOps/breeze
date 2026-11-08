@@ -42,6 +42,7 @@ import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { hourBlockHoldWindows, isHeldForHourBlock } from './contractHourBlockHolds';
 import { planTimeLineRefresh, summarizeRefresh, type TimeLineRefreshOutcome, type TimeLineRefreshSummary } from './invoiceTimeLineRefresh';
 import { InvoiceServiceError } from './invoiceTypes';
+import { findPaymentByIdempotencyKey, assertSameRecordedPayment, type InvoicePaymentRow } from './invoicePaymentIdempotency';
 import {
   assertInvoiceSessionsRevoked,
   requestInvoiceSessionRevocation,
@@ -2015,7 +2016,25 @@ async function inSystemContext<T>(label: string, fn: (runner: DbContextRunner) =
   });
 }
 
+/** The answer to a retry whose key already names a recorded payment (#3803). */
+function replayedPaymentResult(invoice: Awaited<ReturnType<typeof getOwnedInvoiceOr404>>, prior: InvoicePaymentRow) {
+  return {
+    invoice,
+    audit: {
+      orgId: invoice.orgId,
+      paymentId: prior.id,
+      invoiceId: invoice.id,
+      amount: prior.amount,
+      method: prior.method,
+      reference: prior.reference,
+      recordedBy: prior.recordedBy,
+    },
+    replayed: true as const,
+  };
+}
+
 export async function recordPayment(invoiceId: string, input: RecordPaymentInput, actor: InvoiceActor) {
+  const idempotencyKey = input.idempotencyKey ?? null;
   // Status PRE-CHECK, before any revocation intent is written (#5611). The
   // revocation below is irreversible — it expires the invoice's live Stripe
   // pay links — and used to run before the draft/void validation inside the
@@ -2025,9 +2044,22 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
   // the transaction remains the authoritative one (an issued invoice never
   // returns to draft, and a void that lands in between has already revoked
   // its own sessions, so the in-tx 409 is the only thing that can change).
-  const [pre] = await db.select({ status: invoices.status }).from(invoices)
+  const [pre] = await db.select({ status: invoices.status, orgId: invoices.orgId, siteId: invoices.siteId }).from(invoices)
     .where(eq(invoices.id, invoiceId)).limit(1);
   if (!pre) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+  // Idempotent replay PRE-CHECK (#3803), ahead of the status checks and the
+  // revocation for the same reason as the status pre-check: a retry of a
+  // payment that already landed records nothing, so it must not expire a pay
+  // link minted since for the remaining balance. The in-lock lookup below stays
+  // authoritative for retries that race the original.
+  if (idempotencyKey) {
+    const prior = await findPaymentByIdempotencyKey(db, invoiceId, idempotencyKey);
+    if (prior) {
+      requireInvoiceAccess(actor, pre);
+      assertSameRecordedPayment(prior, input);
+      return replayedPaymentResult(await getOwnedInvoiceOr404(invoiceId), prior);
+    }
+  }
   if (pre.status === 'draft') throw new InvoiceServiceError('Cannot record payment on a draft', 409, 'INVALID_STATE');
   if (pre.status === 'void') throw new InvoiceServiceError('Cannot record payment on a void invoice', 409, 'INVALID_STATE');
 
@@ -2058,12 +2090,26 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
   // land. Every helper gets the `tx` handle — inside a request context this
   // transaction is a savepoint on the request tx, and a stray global-`db` call
   // would escape it.
-  const { inv, payment, updated, paymentPushMappingId } = await db.transaction(async (tx) => {
+  const outcome = await db.transaction(async (tx) => {
     const [inv] = await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1).for('update');
     if (!inv) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
     // Re-authorize against the locked row (it may have moved site/org since any
     // earlier unlocked read the caller made).
     requireInvoiceAccess(actor, inv);
+    // Authoritative idempotency lookup (#3803), under the lock and before any
+    // check that the original payment itself changed (a full payoff makes the
+    // balance 0, so a retry must not reach OVERPAYMENT). A retry that raced the
+    // original waited on this lock and now sees its committed row. No writer
+    // can slip a same-key row in between this read and the insert: an insert
+    // takes FOR KEY SHARE on the invoice through the FK, which waits on our
+    // FOR UPDATE, so the unique index is a backstop this path never trips.
+    if (idempotencyKey) {
+      const prior = await findPaymentByIdempotencyKey(tx, invoiceId, idempotencyKey);
+      if (prior) {
+        assertSameRecordedPayment(prior, input);
+        return { kind: 'replayed' as const, prior, updated: await getOwnedInvoiceOr404(invoiceId, tx) };
+      }
+    }
     if (inv.status === 'draft') throw new InvoiceServiceError('Cannot record payment on a draft', 409, 'INVALID_STATE');
     if (inv.status === 'void') throw new InvoiceServiceError('Cannot record payment on a void invoice', 409, 'INVALID_STATE');
     await assertCollectionAmountAvailable(tx, invoiceId, String(input.amount));
@@ -2109,7 +2155,8 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
 
     const [payment] = await tx.insert(invoicePayments).values({
       invoiceId, orgId: inv.orgId, amount: Number(input.amount).toFixed(2), method: input.method,
-      reference: input.reference ?? null, receivedAt: input.receivedAt, recordedBy: actor.userId, note: input.note ?? null
+      reference: input.reference ?? null, receivedAt: input.receivedAt, recordedBy: actor.userId, note: input.note ?? null,
+      idempotencyKey,
     }).returning();
     await recomputeInvoiceStatus(invoiceId, tx);
     // The mapping row is the OUTBOX and it is written HERE, in the same
@@ -2123,8 +2170,11 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
       invoicePaymentId: payment!.id, invoiceId, partnerId: inv.partnerId,
     });
     const updated = await getOwnedInvoiceOr404(invoiceId, tx);
-    return { inv, payment: payment!, updated, paymentPushMappingId };
+    return { kind: 'recorded' as const, inv, payment: payment!, updated, paymentPushMappingId };
   });
+  // A replay recorded nothing: no event, no QuickBooks push, no audit entry.
+  if (outcome.kind === 'replayed') return replayedPaymentResult(outcome.updated, outcome.prior);
+  const { inv, payment, updated, paymentPushMappingId } = outcome;
 
   // Event emission runs after db.transaction returns, but that does NOT mean
   // the invoice row lock is released: on the request path db.transaction is a
@@ -2180,6 +2230,7 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
       reference: payment.reference,
       recordedBy: payment.recordedBy,
     },
+    replayed: false as const,
   };
 }
 
