@@ -91,8 +91,12 @@ func (s *gdiThreadState) capture() (*image.RGBA, error) {
 		err = fmt.Errorf("%w (retry with rebuilt handles: %v)", errs[0], errs[1])
 	}
 	if s.followIssue != nil {
-		// Both wrapped: the frame's own Win32 code stays the one
-		// win32ErrorCode reports, and the follow issue's stays reachable.
+		// Both wrapped, frame error first: when the frame error carries a
+		// Win32 code, that is the one win32ErrorCode reports. When it carries
+		// none (GetSystemMetrics returning zero, say), win32ErrorCode reports
+		// the follow issue's code instead, so a win32Error field on this
+		// error may belong to OpenInputDesktop or the desktop-name read
+		// rather than to the frame.
 		err = fmt.Errorf("%w; capture thread may not be on the input desktop: %w", err, s.followIssue)
 	}
 	return nil, err
@@ -120,14 +124,17 @@ func (s *gdiThreadState) followInputDesktop() error {
 		s.noteFollowIssue(gdiCallError("OpenInputDesktop", openErrno))
 		return nil
 	}
-	inputName := desktopName(inputDesk)
+	inputName, nameErr := desktopNameErr(inputDesk)
 	tid := currentThreadID()
 	current, _, _ := procGetThreadDesktop.Call(uintptr(tid))
 	currentName := desktopName(current)
 	if inputName == "" {
 		procCloseDesktop.Call(inputDesk)
-		s.noteFollowIssue(fmt.Errorf("input desktop name is unreadable (GetUserObjectInformationW); thread desktop is %s",
-			quoteDesktopName(currentName)))
+		if nameErr == nil {
+			nameErr = fmt.Errorf("GetUserObjectInformationW returned an empty name")
+		}
+		s.noteFollowIssue(fmt.Errorf("input desktop name is unreadable (thread desktop is %s): %w",
+			quoteDesktopName(currentName), nameErr))
 		return nil
 	}
 	if strings.EqualFold(inputName, currentName) {

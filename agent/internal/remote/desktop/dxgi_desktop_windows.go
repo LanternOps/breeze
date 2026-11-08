@@ -99,11 +99,19 @@ func getCurrentInputDesktopName() string {
 }
 
 // desktopName returns the name of the given desktop handle using
-// GetUserObjectInformationW(UOI_NAME). Returns "" on failure.
+// GetUserObjectInformationW(UOI_NAME). Returns "" on failure; desktopNameErr
+// also says why.
 func desktopName(hDesk uintptr) string {
+	name, _ := desktopNameErr(hDesk)
+	return name
+}
+
+// desktopNameErr is desktopName keeping the GetUserObjectInformationW error,
+// with its Win32 code, when the name cannot be read.
+func desktopNameErr(hDesk uintptr) (string, error) {
 	var buf [128]uint16
 	var needed uint32
-	ret, _, _ := procGetUserObjectInformationW.Call(
+	ret, _, errno := procGetUserObjectInformationW.Call(
 		hDesk,
 		uoiName,
 		uintptr(unsafe.Pointer(&buf[0])),
@@ -111,7 +119,7 @@ func desktopName(hDesk uintptr) string {
 		uintptr(unsafe.Pointer(&needed)),
 	)
 	if ret == 0 {
-		return ""
+		return "", gdiCallError("GetUserObjectInformationW(UOI_NAME)", errno)
 	}
 	// Find null terminator
 	n := int(needed / 2)
@@ -124,7 +132,7 @@ func desktopName(hDesk uintptr) string {
 			break
 		}
 	}
-	return syscall.UTF16ToString(buf[:n])
+	return syscall.UTF16ToString(buf[:n]), nil
 }
 
 // checkDesktopSwitch detects UAC/lock screen transitions that don't trigger

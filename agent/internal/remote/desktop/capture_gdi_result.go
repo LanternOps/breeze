@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"sync/atomic"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/logging"
 )
 
 // No build tag, for the reason desktop_attach.go carries none: the GDI
@@ -114,7 +116,9 @@ func (b *gdiCaptureBook) noteFrameDelivered(followIssue error, now time.Time) {
 		}
 		slog.Warn("GDI capture is delivering frames without confirming the input desktop; they may be black or show the wrong desktop", attrs...)
 	case unverifiedFrameLogRecovered:
-		slog.Info("GDI capture thread confirmed the input desktop again", "unverifiedFrames", frames)
+		// Info, so it ships only with ShipAlways: the streak's Warn ships at
+		// the default level, and without this Agent Logs never show it ended.
+		slog.Info("GDI capture thread confirmed the input desktop again", "unverifiedFrames", frames, logging.ShipAlways())
 	}
 }
 

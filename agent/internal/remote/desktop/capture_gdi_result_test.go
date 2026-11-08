@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/logging"
 )
 
 // No build tag: gdiCapturer.Capture is Windows-only, but what one capture
@@ -168,5 +170,24 @@ func TestCaptureWarningIsReadWithoutTheCaptureLock(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// The end of an unconfirmed-desktop streak is logged at Info, which the
+// desktop helper does not ship by default; without ShipAlways, Agent Logs
+// show the streak's Warn but never that it ended (#8434 review).
+func TestUnconfirmedDesktopRecoveryLineShips(t *testing.T) {
+	h := installRecordingLogger(t)
+	var b gdiCaptureBook
+	t0 := time.Unix(1_000_000, 0)
+	b.onCaptureResult(testFrame(), nil, gdiCallError("OpenInputDesktop", syscall.Errno(errAccessDenied)), t0)
+	b.onCaptureResult(testFrame(), nil, nil, t0.Add(time.Second))
+
+	r, ok := h.find("GDI capture thread confirmed the input desktop again")
+	if !ok {
+		t.Fatal("no recovery line after an unconfirmed streak ended")
+	}
+	if v, ok := attrKeys(r)[logging.KeyShipAlways]; !ok || !v.Bool() {
+		t.Fatalf("recovery line does not carry ShipAlways; attrs %v", attrKeys(r))
 	}
 }
