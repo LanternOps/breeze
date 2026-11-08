@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -130,8 +131,17 @@ func TestLockedThreadStopAsyncDoesNotBlock(t *testing.T) {
 func TestLockedThreadRecoversFromPanickingWork(t *testing.T) {
 	lt := startLockedThread(nil)
 	defer lt.Stop()
-	if err := lt.Do(func() { panic("boom") }); err == nil {
+	err := lt.Do(func() { panic("boom") })
+	if err == nil {
 		t.Fatal("a panicking work item must be reported as an error")
+	}
+	// The capturer retires a thread whose work panicked (its handles may be
+	// half-built), so the panic has to be distinguishable from a capture error.
+	if !errors.Is(err, errCaptureThreadPanicked) {
+		t.Fatalf("panic error %v does not match errCaptureThreadPanicked", err)
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("panic error %q lost the panic value", err)
 	}
 	ok := false
 	if err := lt.Do(func() { ok = true }); err != nil || !ok {

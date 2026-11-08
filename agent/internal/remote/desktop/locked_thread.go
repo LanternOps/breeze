@@ -43,6 +43,11 @@ type lockedThreadWork struct {
 // errLockedThreadStopped is returned by Do once the thread has been stopped.
 var errLockedThreadStopped = errors.New("capture thread has stopped")
 
+// errCaptureThreadPanicked wraps the error Do returns for work that panicked.
+// The capturer retires a thread whose work panicked, since the state that
+// work left behind (handles half-built or half-released) cannot be trusted.
+var errCaptureThreadPanicked = errors.New("panic on capture thread")
+
 // startLockedThread starts the thread. onExit, if non-nil, runs on the thread
 // itself after the last work item and before Stop returns.
 func startLockedThread(onExit func()) *lockedThread {
@@ -83,7 +88,7 @@ func (t *lockedThread) run(onExit func(), ready chan<- struct{}) {
 func runLockedThreadWork(fn func()) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("panic on capture thread: %v", r)
+			err = fmt.Errorf("%w: %v", errCaptureThreadPanicked, r)
 			slog.Error("panic on capture thread", "panic", fmt.Sprint(r), "stack", string(debug.Stack()))
 		}
 	}()

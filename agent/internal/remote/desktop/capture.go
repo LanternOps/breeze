@@ -227,7 +227,10 @@ var ErrNoActiveSession = fmt.Errorf("no active desktop session")
 // failure visible only in the endpoint's own helper log.
 type lastCaptureErrorReporter interface {
 	// LastCaptureError returns the most recent error the capturer reported as a
-	// nil frame, or nil if it has not swallowed one.
+	// nil frame, or nil if it has not swallowed one. A capturer that is
+	// delivering frames it cannot vouch for may also report why here (the GDI
+	// capturer, for frames taken without confirming the input desktop, #8434),
+	// returning nil again once a frame is clean.
 	LastCaptureError() error
 }
 
