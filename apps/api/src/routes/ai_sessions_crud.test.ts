@@ -58,9 +58,12 @@ vi.mock('../db/schema', () => ({
     sessionId: 'aiMessages.sessionId',
   },
   aiBudgetReservations: {
+    orgId: 'aiBudgetReservations.orgId',
     sessionId: 'aiBudgetReservations.sessionId',
     status: 'aiBudgetReservations.status',
-    expiresAt: 'aiBudgetReservations.expiresAt',
+    createdAt: 'aiBudgetReservations.createdAt',
+    pendingSettlement: 'aiBudgetReservations.pendingSettlement',
+    expiryReason: 'aiBudgetReservations.expiryReason',
   },
   aiToolExecutions: {
     id: 'aiToolExecutions.id',

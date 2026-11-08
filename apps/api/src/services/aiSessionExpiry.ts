@@ -9,6 +9,7 @@
  * so a session the user closed is never re-stamped) and recomputes its Wisp
  * thread summary once the write has committed.
  */
+import { AI_APPROVAL_TIMEOUT_MAX_MINUTES } from '@breeze/shared/validators';
 import { and, eq, sql, type SQL } from 'drizzle-orm';
 import { db, runAfterDbContextCommit } from '../db';
 import { aiBudgetReservations, aiSessions } from '../db/schema';
@@ -81,20 +82,35 @@ export function scheduleWispSummaryFinalize(sessionId: string): void {
 }
 
 /**
- * SQL: no turn of this `ai_sessions` row is running. `last_activity_at` only
- * moves when a turn settles, so a turn admitted just inside the idle window (or
- * the 24 h cap) can cross it mid-stream. Every turn holds an `active` budget
- * reservation from admission until it settles, bounded by `expires_at`, so a
- * live one is the cross-process "turn in flight" signal: the out-of-band paths
- * (the session read, the idle sweep) never retire a session mid-answer, and a
- * reservation stranded by a crash stops protecting it once it lapses.
+ * The longest a chat turn can run: `turnTimeoutMsFor` (streamingSessionManager.ts)
+ * at the largest approval wait an org may configure. A drift test there pins it.
+ */
+export const LONGEST_TURN_MS = AI_APPROVAL_TIMEOUT_MAX_MINUTES * 60_000 + 60_000;
+
+/**
+ * SQL: no turn of this `ai_sessions` row may still be running.
+ * `last_activity_at` only moves when a turn settles, so a turn admitted just
+ * inside the idle window (or the 24 h cap) can cross it mid-stream.
+ *
+ * Every turn reserves budget at admission and settles the reservation at the
+ * end, so an unsettled reservation admitted within LONGEST_TURN_MS is the
+ * cross-process "turn in flight" signal. That covers one still `active`, and
+ * one the reservation sweep relabelled `expired` / `active_ttl` because a long
+ * approval wait outlived its 30-minute TTL. A deferred settlement
+ * (`pending_settlement`) belongs to a finished turn. Past LONGEST_TURN_MS no
+ * turn can still be running, so a reservation stranded by a crash stops
+ * protecting the row. Uses ai_budget_reservations_session_turn_idx
+ * (org_id, session_id, created_at).
  */
 export function noTurnInFlight(): SQL {
   return sql`NOT EXISTS (
     SELECT 1 FROM ${aiBudgetReservations}
-    WHERE ${aiBudgetReservations.sessionId} = ${aiSessions.id}
-      AND ${aiBudgetReservations.status} = 'active'
-      AND ${aiBudgetReservations.expiresAt} > now()
+    WHERE ${aiBudgetReservations.orgId} = ${aiSessions.orgId}
+      AND ${aiBudgetReservations.sessionId} = ${aiSessions.id}
+      AND ${aiBudgetReservations.createdAt} > now() - make_interval(secs => ${LONGEST_TURN_MS / 1000})
+      AND ${aiBudgetReservations.pendingSettlement} IS NULL
+      AND (${aiBudgetReservations.status} = 'active'
+        OR (${aiBudgetReservations.status} = 'expired' AND ${aiBudgetReservations.expiryReason} = 'active_ttl'))
   )`;
 }
 

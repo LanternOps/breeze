@@ -12,9 +12,10 @@ import { getTestDb } from './setup';
  * sessions the send would refuse — idle past the eviction window or past the
  * 24 h cap — and nothing else: not a fresh chat, not a Helper session (no user,
  * its own lifecycle), not an MCP ledger row, not a session already closed, and
- * not a session whose turn is still running (a live budget reservation) — a
- * reservation stranded past its `expires_at` stops protecting it. A second run
- * finds nothing (idempotent).
+ * not a session whose turn may still be running (an unsettled budget
+ * reservation admitted within the longest turn, even one whose TTL lapsed
+ * during a long approval wait). A settled turn, or a reservation stranded past
+ * the longest turn, protects nothing. A second run finds nothing (idempotent).
  */
 const HOUR = 60 * 60 * 1000;
 
@@ -39,18 +40,31 @@ async function insertSession(values: {
   return row!.id;
 }
 
-/** A turn's budget hold: `active` from admission until it settles, bounded by `expires_at`. */
-async function holdTurn(orgId: string, sessionId: string, expiresInMinutes: number): Promise<void> {
+/**
+ * A turn's budget hold, admitted `admittedMinutesAgo`: `active` until it
+ * settles; the reservation sweep relabels one whose 30-minute TTL lapsed
+ * mid-turn `expired` / `active_ttl`.
+ */
+async function holdTurn(
+  orgId: string,
+  sessionId: string,
+  admittedMinutesAgo: number,
+  state: 'active' | 'ttl_lapsed' | 'settled' = 'active',
+): Promise<void> {
+  const admittedAt = new Date(Date.now() - admittedMinutesAgo * 60_000);
   await getTestDb().insert(aiBudgetReservations).values({
     orgId,
     sessionId,
-    idempotencyKey: `turn-${sessionId}`,
+    idempotencyKey: `chat:turn-${sessionId}`,
     billingSource: 'platform',
     dailyPeriodKey: '2026-11-08',
     monthlyPeriodKey: '2026-11',
     reservedCostCents: '0',
     uncapped: true,
-    expiresAt: new Date(Date.now() + expiresInMinutes * 60_000),
+    createdAt: admittedAt,
+    expiresAt: new Date(admittedAt.getTime() + 30 * 60_000),
+    ...(state === 'ttl_lapsed' ? { status: 'expired' as const, expiryReason: 'active_ttl', expiredAt: new Date() } : {}),
+    ...(state === 'settled' ? { status: 'settled' as const, actualCostCents: '0', settledAt: new Date() } : {}),
   });
 }
 
@@ -84,10 +98,14 @@ describe('aiChatSessionExpirySweep (#11430, real DB)', () => {
       // last_activity_at only moves when a turn settles: a turn admitted just
       // inside the window is still running past it.
       turnRunning: await insertSession({ orgId: org, userId: user, createdHoursAgo: 3, idleHoursAgo: 2.05 }),
-      turnStranded: await insertSession({ orgId: org, userId: user, createdHoursAgo: 3, idleHoursAgo: 2.05 }),
+      turnInLongApprovalWait: await insertSession({ orgId: org, userId: user, createdHoursAgo: 3, idleHoursAgo: 2.7 }),
+      turnSettled: await insertSession({ orgId: org, userId: user, createdHoursAgo: 3, idleHoursAgo: 2.05 }),
+      turnStranded: await insertSession({ orgId: org, userId: user, createdHoursAgo: 4, idleHoursAgo: 3.5 }),
     };
-    await holdTurn(org, ids.turnRunning, 25);
-    await holdTurn(org, ids.turnStranded, -5);
+    await holdTurn(org, ids.turnRunning, 5);
+    await holdTurn(org, ids.turnInLongApprovalWait, 40, 'ttl_lapsed');
+    await holdTurn(org, ids.turnSettled, 10, 'settled');
+    await holdTurn(org, ids.turnStranded, 70);
 
     const first = await sweepIdleChatSessions();
 
@@ -100,9 +118,11 @@ describe('aiChatSessionExpirySweep (#11430, real DB)', () => {
       mcp: 'active',
       closed: 'closed',
       turnRunning: 'active',
+      turnInLongApprovalWait: 'active',
+      turnSettled: 'expired',
       turnStranded: 'expired',
     });
-    expect(first).toMatchObject({ expired: 4, capped: false });
+    expect(first).toMatchObject({ expired: 5, capped: false });
 
     await expect(sweepIdleChatSessions()).resolves.toEqual({ scanned: 0, expired: 0, capped: false });
   });

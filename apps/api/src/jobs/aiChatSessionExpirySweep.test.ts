@@ -102,9 +102,11 @@ describe('sweepIdleChatSessions (#11430)', () => {
       '"ai_sessions"."last_activity_at" < $',
       '"ai_sessions"."created_at" < $',
       'NOT EXISTS (',
+      '"ai_budget_reservations"."org_id" = "ai_sessions"."org_id"',
       '"ai_budget_reservations"."session_id" = "ai_sessions"."id"',
-      '"ai_budget_reservations"."status" = \'active\'',
-      '"ai_budget_reservations"."expires_at" > now()',
+      '"ai_budget_reservations"."created_at" > now() - make_interval(secs => ',
+      '"ai_budget_reservations"."pending_settlement" IS NULL',
+      '"ai_budget_reservations"."expiry_reason" = \'active_ttl\'',
     ]) {
       expect(select.sql).toContain(clause);
     }
@@ -112,6 +114,7 @@ describe('sweepIdleChatSessions (#11430)', () => {
       'active', 'general', 'topology',
       '2026-11-08T10:00:00.000Z', // idle window: 2 h
       '2026-11-07T12:00:00.000Z', // age cap: 24 h
+      3660, // the longest turn: a 60-min approval wait + 1 min
     ]));
     // A turn admitted, or a close, between the SELECT and the UPDATE must win.
     const update = render(h.updateWhere.mock.calls[0]![0]);

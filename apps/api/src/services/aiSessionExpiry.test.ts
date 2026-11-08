@@ -47,6 +47,16 @@ import {
 } from './aiSessionExpiry';
 
 const NOW = Date.parse('2026-11-08T12:00:00.000Z');
+
+/** noTurnInFlight(): an unsettled reservation of this session admitted within the longest turn. */
+const TURN_IN_FLIGHT_CLAUSES = [
+  '"ai_budget_reservations"."org_id" = "ai_sessions"."org_id"',
+  '"ai_budget_reservations"."session_id" = "ai_sessions"."id"',
+  '"ai_budget_reservations"."created_at" > now() - make_interval(secs => ',
+  '"ai_budget_reservations"."pending_settlement" IS NULL',
+  '"ai_budget_reservations"."status" = \'active\'',
+  '"ai_budget_reservations"."status" = \'expired\' AND "ai_budget_reservations"."expiry_reason" = \'active_ttl\'',
+];
 const ago = (ms: number) => new Date(NOW - ms);
 const dialect = new PgDialect();
 
@@ -143,9 +153,7 @@ describe('expireIfStale', () => {
       const { sql } = dialect.sqlToQuery(h.where.mock.calls[0]![0] as SQL);
       expect(sql).toContain('"ai_sessions"."id" = $1 and "ai_sessions"."status" = $2');
       expect(sql).toMatch(/NOT EXISTS \(\s*SELECT 1 FROM "ai_budget_reservations"/);
-      expect(sql).toContain('"ai_budget_reservations"."session_id" = "ai_sessions"."id"');
-      expect(sql).toContain('"ai_budget_reservations"."status" = \'active\'');
-      expect(sql).toContain('"ai_budget_reservations"."expires_at" > now()');
+      for (const clause of TURN_IN_FLIGHT_CLAUSES) expect(sql).toContain(clause);
       await vi.waitFor(() => expect(h.finalize).toHaveBeenCalledWith('s-1'));
     });
 
