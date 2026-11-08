@@ -45,6 +45,9 @@ const sentryIntegration = sentryDsn
 // in ./src/lib/csp.ts for the full rationale).
 // This config is plain ESM evaluated before the TS pipeline, so we can't reuse
 // resolveFrameSrcDirective from ./src/lib/csp.ts — keep the semantics in sync.
+// The Network Proxy tunnel origin (TUNNEL_ORIGIN_TEMPLATE) is deliberately NOT
+// here: the image is built once for every region, so src/middleware.ts adds it
+// to this directive at runtime (widenCspFrameSrc, #11300).
 const frameSrcDirective = (() => {
   const sources = new Set(["'self'", 'blob:', 'https://docs.breezermm.com']);
   try {

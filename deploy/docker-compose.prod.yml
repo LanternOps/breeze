@@ -970,6 +970,9 @@ services:
       PUBLIC_ABUSE_CONTACT: ${PUBLIC_ABUSE_CONTACT:-}
       PUBLIC_SECURITY_CONTACT: ${PUBLIC_SECURITY_CONTACT:-}
       PUBLIC_SECURITY_POLICY_URL: ${PUBLIC_SECURITY_POLICY_URL:-}
+      # Network Proxy host mode (#11300): the dashboard CSP frame-src must allow
+      # the tunnel origin, and the image is built without it.
+      TUNNEL_ORIGIN_TEMPLATE: ${TUNNEL_ORIGIN_TEMPLATE:-}
     depends_on:
       api:
         condition: service_healthy
