@@ -1809,7 +1809,7 @@
       "auditOnly": "Yalnızca Denetim",
       "describeThePurposeOfThisPolicy": "Bu politikanın amacını açıklayın...",
       "softwareRules": "Yazılım Kuralları",
-      "name": "İsim *",
+      "name": "Yazılım adı *",
       "vendor": "Satıcı",
       "minVer": "Min ver",
       "maxVer": "Maksimum sürüm",
