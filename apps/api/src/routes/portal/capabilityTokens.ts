@@ -27,9 +27,9 @@
 import { createHash } from 'crypto';
 import { nanoid } from 'nanoid';
 import type Redis from 'ioredis';
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { portalUsers } from '../../db/schema';
+import { organizations, portalUsers } from '../../db/schema';
 import { getRedis } from '../../services/redis';
 import { getActiveOrgTenant } from '../../services/tenantStatus';
 import { isPasswordEligible } from '../../services/portalAccountState';
@@ -218,9 +218,12 @@ export async function validatePortalCapability(
         authEpoch: portalUsers.authEpoch,
         browserAccess: portalUsers.browserAccess,
         entraOid: portalUsers.entraOid,
-        orgName: sql<string | null>`(select o.name from organizations o where o.id = ${portalUsers.orgId})`,
+        orgName: organizations.name,
       })
       .from(portalUsers)
+      // A join, not a correlated subquery: drizzle strips table qualifiers in
+      // single-table selections (#9692).
+      .leftJoin(organizations, eq(organizations.id, portalUsers.orgId))
       .where(eq(portalUsers.id, portalUserId))
       .limit(1),
   );

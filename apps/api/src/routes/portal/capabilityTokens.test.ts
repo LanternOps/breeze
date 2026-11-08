@@ -13,7 +13,7 @@ const { rowRef, activeOrgMock } = vi.hoisted(() => ({
 vi.mock('../../db', () => ({
   db: {
     select: () => {
-      const chain: any = { from: () => chain, where: () => chain, limit: () => Promise.resolve(rowRef.current ? [rowRef.current] : []) };
+      const chain: any = { from: () => chain, leftJoin: () => chain, where: () => chain, limit: () => Promise.resolve(rowRef.current ? [rowRef.current] : []) };
       return chain;
     },
   },
