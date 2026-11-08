@@ -126,6 +126,9 @@ services:
   # source-mounted image and mounts as `api`, but running the worker entrypoint
   # under tsx watch. Without this the profile would pull the base file's
   # registry image ref instead of the code being developed. Publishes no port.
+  # It reuses the `breeze-api:dev` tag that `api` builds, so build/start `api`
+  # first (`up --build api`). Unlike `api` it does not re-run `pnpm install` on
+  # start; after a lockfile change rebuild the image.
   # BREEZE_ROLE is hardcoded in the base service; the api's ROLE is untouched.
   worker:
     image: breeze-api:dev

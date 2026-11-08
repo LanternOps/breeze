@@ -44,13 +44,28 @@ function services(rel: string): Record<string, Service> {
 
 describe('worker-split compose service (#4144)', () => {
   it.each(['docker-compose.yml', 'deploy/docker-compose.prod.yml'])(
-    '%s worker has no fixed container_name (scale-out)',
+    '%s worker has no fixed container_name (scale-out) and stays opt-in',
     (rel) => {
       const worker = services(rel).worker;
       expect(worker).toBeDefined();
       expect(worker).not.toHaveProperty('container_name');
+      expect(worker.profiles).toEqual(['worker-split']);
     },
   );
+
+  it.each([
+    'docker-compose.override.yml.dev',
+    'docker-compose.override.yml.local-build',
+    'docker-compose.override.yml.ghcr',
+    'docker-compose.override.yml.ci',
+    'docker-compose.override.yml.worktree',
+    'docker-compose.override.yml.billing',
+    'docker-compose.override.yml.topology-ai-e2e',
+    'docker-compose.dev.yml',
+    'docker-compose.test.yml',
+  ])('%s does not re-pin a worker container_name', (rel) => {
+    expect(services(rel).worker ?? {}).not.toHaveProperty('container_name');
+  });
 
   it('local-build override runs the local image for worker', () => {
     const worker = services('docker-compose.override.yml.local-build').worker;

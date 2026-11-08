@@ -118,7 +118,7 @@ zero, they were ABSENT, and `up` for it did not exist at all.
    The presence check matters on its own: the hand-maintained droplet
    deploy line does not start `worker` by default (see the deploy-line
    warning below), so a rollout can silently skip this step entirely and
-   `docker ps` is the only thing that would have caught it — the same
+   `docker compose ps` (run from the Compose project directory) is the only thing that would have caught it — the same
    failure shape that left `portal` unrolled for 11 days. Confirm
    `/health/ready` returns 200 with `{"ready": true, ...}` before proceeding;
    a `migrations-pending` or `redis`/`db` reason means do not proceed.
