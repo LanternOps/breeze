@@ -601,21 +601,24 @@ export const LEGACY_CUTOFF = 65;
  *   are content-hash immutable and have already run on every existing install,
  *   so a fix-forward migration cannot reach a fresh install. The runner has to
  *   supply the scope. A superuser/BYPASSRLS run is unaffected by RLS either way.
- *   Every file written since #4518 already elects system scope before its first
- *   write.
+ *   Every file that sorts after that guard's `BASELINE_CUTOFF` is required to
+ *   elect system scope itself before its first write.
  * - `createrole_self_grant = 'set, inherit'` (PG16+). PG16 gives a CREATEROLE
  *   creator ADMIN on a role it creates but no membership, so a later
  *   `ALTER ... OWNER TO <that role>` fails with "must be able to SET ROLE"
  *   (`2026-07-16-td-synnex-sftp-price-file.sql`, `breeze_search`). With this
  *   setting, roles created inside a migration are granted back to the migrating
- *   role, which matches how DigitalOcean's `doadmin` behaves. A superuser
- *   ignores the setting. The GUC does not exist before PG16, hence the version
- *   guard.
+ *   role (SET + INHERIT membership), which matches how DigitalOcean's `doadmin`
+ *   behaves. A superuser ignores the setting. The GUC does not exist before
+ *   PG16, hence the version guard.
  *
  * `'transaction'` scopes both settings to the per-file transaction, which is
  * re-established on every file and so survives a postgres.js reconnect.
  * `'session'` is for `-- @no-transaction` files, where each statement commits
- * on its own; `MIGRATION_SESSION_RESET_SQL` undoes it after the file.
+ * on its own. It relies on the migration connection staying the same for the
+ * whole file, which is why `autoMigrate` disables postgres.js's connection
+ * recycling (`max_lifetime: 0`). `MIGRATION_SESSION_RESET_SQL` undoes it after
+ * the file.
  */
 export function migrationSessionSql(lifetime: 'transaction' | 'session'): string {
   const isLocal = lifetime === 'transaction' ? 'true' : 'false';
@@ -630,7 +633,9 @@ END $$;`;
 /**
  * Restores what `migrationSessionSql('session')` changed, back to the
  * role/database defaults. Without it, the settings would carry over to the
- * `afterMigration` hook and the ledger work that follow.
+ * `afterMigration` hook and the ledger work that follow. It runs only when the
+ * file succeeds. A failing statement aborts the whole run, and `autoMigrate`
+ * then closes the connection along with the settings.
  */
 export const MIGRATION_SESSION_RESET_SQL = `RESET "breeze.scope";
 DO $$ BEGIN
@@ -720,7 +725,13 @@ export async function autoMigrate(options: AutoMigrateOptions = {}): Promise<voi
   const connectionString =
     process.env.DATABASE_URL || 'postgresql://breeze:breeze@localhost:5432/breeze';
 
-  const client = postgres(connectionString, { max: 1 });
+  // `max_lifetime: 0` turns off postgres.js's connection recycling, which by
+  // default ends a connection after 30-60 minutes and silently opens a new one
+  // for the next query. A long run (an index build on a large install) would
+  // then lose the session advisory lock and, mid `-- @no-transaction` file, the
+  // session-level migration settings (#8991). The connection is meant to be
+  // pinned for the whole run, and this keeps it pinned.
+  const client = postgres(connectionString, { max: 1, max_lifetime: 0 });
 
   try {
     await acquireCoreMigrationLock(client);

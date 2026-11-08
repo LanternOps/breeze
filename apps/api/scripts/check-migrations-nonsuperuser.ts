@@ -7,8 +7,8 @@
 // Why this exists — this is the class-complete guard against superuser-only
 // DDL slipping into a migration. Superuser-only statements
 // (`ALTER FUNCTION ... OWNER TO`, `SET <custom.guc> = ...` as a function
-// attribute, `ALTER ROLE|DATABASE ... SET`, `ALTER SYSTEM`, `CREATE ROLE`,
-// `COPY ... FROM PROGRAM`, ...) all succeed when migrations are applied as the
+// attribute, `ALTER ROLE|DATABASE ... SET`, `ALTER SYSTEM`, writes that rely on
+// bypassing RLS, `COPY ... FROM PROGRAM`, ...) all succeed when migrations are applied as the
 // Postgres superuser — which is exactly what CI's `check-migrations` job and
 // every integration shard's autoMigrate do. Prod migrates as a non-superuser
 // and crash-loops on boot instead. This has shipped twice: v0.95.0
@@ -30,8 +30,8 @@ const MIGRATOR_PASSWORD = process.env.MIGRATOR_PASSWORD || 'migrator';
 const MIGRATOR_DB = process.env.MIGRATOR_DB || 'breeze';
 
 /**
- * As the superuser, create the doadmin-alike migration role and a database it
- * owns. Everything else — including the unprivileged `breeze_app` login — is
+ * As the superuser, create the least-privileged migration role (no more
+ * privileged than doadmin) and a database it owns. Everything else — including the unprivileged `breeze_app` login — is
  * created by autoMigrate()/ensureAppRole() running AS the migration role, so
  * those code paths are exercised under the same privilege constraints as prod.
  */
@@ -65,6 +65,14 @@ async function provisionMigratorRole(): Promise<void> {
         END IF;
       END $$;
     `);
+    // Re-assert the attributes when the role already existed. On a reused local
+    // cluster, a role left over from an older version of this script would still
+    // carry BYPASSRLS / REPLICATION / a role-level createrole_self_grant, and the
+    // run would pass while hiding exactly the regressions it exists to catch.
+    await admin.unsafe(
+      `ALTER ROLE ${MIGRATOR_ROLE} NOSUPERUSER NOBYPASSRLS NOREPLICATION CREATEDB CREATEROLE`,
+    );
+    await admin.unsafe(`ALTER ROLE ${MIGRATOR_ROLE} RESET createrole_self_grant`);
     const dbExists = await admin`SELECT 1 FROM pg_database WHERE datname = ${MIGRATOR_DB}`;
     if (dbExists.length === 0) {
       await admin.unsafe(`CREATE DATABASE ${MIGRATOR_DB} OWNER ${MIGRATOR_ROLE}`);
