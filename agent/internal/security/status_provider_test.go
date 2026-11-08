@@ -58,6 +58,25 @@ func TestProviderFromName(t *testing.T) {
 		{"cylance optics", "CylanceOPTICS", "cylance"},
 		// Locks the cylance-before-defender ordering.
 		{"cylance vs defender", "Cylance Defender Shield", "cylance"},
+		// Trend Micro Apex One / OfficeScan / Worry-Free / Vision One endpoint
+		// agents (#8171). The display names are vendor product strings not yet
+		// observed on a lab host; the lab leg adds the exact WSC names it sees.
+		{"trend apex one", "Trend Micro Apex One Security Agent", "trend_micro"},
+		{"trend security agent", "Trend Micro Security Agent", "trend_micro"},
+		{"trend officescan", "Trend Micro OfficeScan Client", "trend_micro"},
+		{"trend worry-free", "Trend Micro Worry-Free Business Security Agent", "trend_micro"},
+		{"trend no space", "TrendMicro Endpoint Sensor", "trend_micro"},
+		// Locks the trend-before-defender ordering.
+		{"trend vs defender", "Trend Micro Defender Suite", "trend_micro"},
+		// "trend" alone is not the vendor: the match needs "trend micro" or
+		// "trendmicro".
+		{"not trend: market trends", "Market Trends Agent", "other"},
+		{"not trend: trendy", "Trendy Shield", "other"},
+		// Huntress is deliberately not a provider (#8171, EDR framework index
+		// Decision 1). Huntress Managed AV manages Microsoft Defender, which
+		// reports as windows_defender; a "huntress" provider would relabel
+		// Defender-protected devices. mgmtdetect still lists Huntress.
+		{"huntress is not a WSC provider", "Huntress Managed AV", "other"},
 		{"malwarebytes", "Malwarebytes", "malwarebytes"},
 		// Regression guards for the broad matches the new cases sit beside.
 		{"microsoft defender antivirus", "Microsoft Defender Antivirus", "windows_defender"},

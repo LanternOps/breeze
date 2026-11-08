@@ -411,7 +411,7 @@ func AllSignatures() []Signature {
 		},
 
 		// =====================================================================
-		// Endpoint Security — AV/EDR (13 tools)
+		// Endpoint Security — AV/EDR (14 tools)
 		// =====================================================================
 
 		// CrowdStrike Falcon
@@ -546,6 +546,22 @@ func AllSignatures() []Signature {
 				{Type: CheckProcessRunning, Value: "fshoster64.exe", OS: "windows"},
 				{Type: CheckProcessRunning, Value: "fshoster32.exe", OS: "windows"},
 				{Type: CheckFileExists, Value: `C:\Program Files (x86)\F-Secure\PSB`, OS: "windows"},
+			},
+		},
+
+		// Trend Micro Apex One / Worry-Free / Vision One endpoint agents (#8171).
+		// The install folders differ by product: Apex One "Security Agent",
+		// Worry-Free "Client Server Security Agent", Vision One "Endpoint
+		// Basecamp". macOS omitted until verified on a lab host.
+		{
+			Name: "Trend Micro", Category: CategoryEndpointSecurity,
+			OS: []string{"windows"},
+			Checks: []Check{
+				{Type: CheckServiceRunning, Value: "ntrtscan", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "PccNTMon.exe", OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files (x86)\Trend Micro\Security Agent`, OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files (x86)\Trend Micro\Client Server Security Agent`, OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files\Trend Micro\Endpoint Basecamp`, OS: "windows"},
 			},
 		},
 
