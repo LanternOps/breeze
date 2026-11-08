@@ -115,7 +115,7 @@ vi.mock('./recoveryBootstrap', () => ({
   asRecord: (value: unknown) => (value && typeof value === 'object' && !Array.isArray(value) ? value : {}),
 }));
 
-import { hydrateSnapshotFileIndex, readSnapshotFileIndexState } from './backupSnapshotFileIndex';
+import { redactIndexFailureReason, hydrateSnapshotFileIndex, readSnapshotFileIndexState } from './backupSnapshotFileIndex';
 import { BackupObjectTooLargeError } from './backupSnapshotStorage';
 import { setBackupMetricsRecorder } from './backupMetrics';
 
@@ -486,6 +486,29 @@ describe('hydrateSnapshotFileIndex', () => {
     expect(lastUpdateChain.set).toHaveBeenCalledWith(
       expect.objectContaining({ fileIndexStatus: 'failed', fileIndexError: expect.stringMatching(/^provider_error: /) }),
     );
+  });
+
+  it('redactIndexFailureReason strips hosts, addresses and URLs but keeps the error code (#11280)', () => {
+    expect(redactIndexFailureReason('connect ECONNREFUSED 127.0.0.1:9')).toBe('connect ECONNREFUSED [redacted]');
+    expect(redactIndexFailureReason('getaddrinfo ENOTFOUND bucket.s3.example.net')).toBe('getaddrinfo ENOTFOUND [redacted]');
+    expect(redactIndexFailureReason('request to https://s3.example.net/bucket/key failed')).toBe('request to [redacted] failed');
+    expect(redactIndexFailureReason('connect ETIMEDOUT [2001:db8::1]:443')).toBe('connect ETIMEDOUT [redacted]');
+    expect(redactIndexFailureReason('manifest has no files key')).toBe('manifest has no files key');
+    expect(redactIndexFailureReason('x'.repeat(500)).length).toBeLessThanOrEqual(200);
+  });
+
+  it('stores a provider connection failure as its code with the host and port redacted (#11280)', async () => {
+    selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
+    selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
+    const openManifest = vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED 127.0.0.1:9'));
+
+    await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps: { openManifest } });
+
+    const sets = updateMock.mock.results
+      .flatMap((r) => (r.value as { set: ReturnType<typeof vi.fn> }).set.mock.calls.map((c) => c[0]));
+    const failed = sets.find((v) => v?.fileIndexStatus === 'failed');
+    expect(failed?.fileIndexError).toMatch(/^provider_error: .*ECONNREFUSED/);
+    expect(failed?.fileIndexError).not.toMatch(/127\.0\.0\.1|:9\b/);
   });
 
   it('records a neutral provider_error reason when the claim phase throws after the CAS (#11179), then rethrows', async () => {

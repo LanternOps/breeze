@@ -212,9 +212,11 @@ describe('useSnapshotIndexState', () => {
     expect(result.current.view).toEqual(view);
     expect(result.current.retrying).toBe(false);
     expect(showToast).toHaveBeenCalledTimes(1);
-    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: expect.stringMatching(/rebuilt recently|too many|\S{8,}/i) }));
-    // Whatever copy wins (the localized RATE_LIMITED string or the server text), it is not the generic fallback.
-    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ message: "Couldn't start rebuilding the file list" }));
+    // The server's reason, not the generic localized RATE_LIMITED headline (#11280).
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error',
+      message: "This snapshot's file list was rebuilt recently. Try again in a few minutes.",
+    }));
   });
 
   it('a retry the API refuses toasts through runAction and leaves the honest state in place', async () => {

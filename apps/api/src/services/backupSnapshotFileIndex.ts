@@ -240,6 +240,22 @@ function claimPredicate(claim: HydrationClaim) {
   );
 }
 
+const MAX_STORED_REASON_LENGTH = 200;
+
+/**
+ * Provider and network errors name the host they could not reach
+ * (`connect ECONNREFUSED 127.0.0.1:9`). The stored text keeps the error code
+ * and wording but not URLs, IP addresses, or host[:port] tokens (#11280).
+ */
+export function redactIndexFailureReason(reason: string): string {
+  return reason
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, '[redacted]')
+    .replace(/\[[0-9a-f:]*:[0-9a-f:]*\](?::\d+)?/gi, '[redacted]')
+    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/g, '[redacted]')
+    .replace(/\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?::\d+)?\b/gi, '[redacted]')
+    .slice(0, MAX_STORED_REASON_LENGTH);
+}
+
 async function fail(
   claim: HydrationClaim,
   failure: HydrationFailure,
@@ -247,7 +263,7 @@ async function fail(
 ): Promise<HydrationOutcome> {
   const [written] = await db
     .update(backupSnapshots)
-    .set({ fileIndexStatus: 'failed', fileIndexError: `${failure}: ${reason}` })
+    .set({ fileIndexStatus: 'failed', fileIndexError: `${failure}: ${redactIndexFailureReason(reason)}` })
     .where(claimPredicate(claim))
     .returning({ id: backupSnapshots.id });
   if (!written) return SUPERSEDED;
@@ -719,7 +735,7 @@ async function verifyOriginsAndWrite(
         // the reader gate keeps them from being listed.
         await tx
           .update(backupSnapshots)
-          .set({ fileIndexStatus: 'failed', fileIndexError: `${refusal.failure}: ${refusal.reason}` })
+          .set({ fileIndexStatus: 'failed', fileIndexError: `${refusal.failure}: ${redactIndexFailureReason(refusal.reason)}` })
           .where(claimPredicate(snapshot));
         return { status: 'failed', failure: refusal.failure, reason: refusal.reason, retryable: false };
       }
