@@ -5,6 +5,32 @@ export interface CancelSubscriptionResult {
   immediate: boolean;
 }
 
+/**
+ * Outcome of asking breeze-billing to close a restricted partner's open
+ * checkouts: expire every open Checkout Session for the partner's customer,
+ * then cancel any `incomplete` subscription (the provider refuses to delete a
+ * subscription while a session for it is still open, hence the order).
+ *
+ * - `closed` — the billing service answered; the lists say what it closed and
+ *   are empty when nothing was open (the call is idempotent).
+ * - `unavailable` — 404: the billing service does not expose the endpoint
+ *   (not deployed yet, or an older billing build). Nothing was closed.
+ * - `failed` — any other error, including a timeout or a malformed body.
+ *   Nothing is known to have been closed.
+ *
+ * Never a thrown error: the caller records the outcome on the restriction's
+ * audit trail and a billing problem must never undo or block a restriction.
+ */
+export type CloseOpenCheckoutsResult =
+  | { status: 'closed'; expiredCheckoutSessionIds: string[]; canceledSubscriptionIds: string[] }
+  | { status: 'unavailable' | 'failed'; detail: string };
+
+/** Bound on the close-checkouts call: it runs inside the trust jobs' per-partner loop. */
+const CLOSE_CHECKOUTS_TIMEOUT_MS = 10_000;
+
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((v) => typeof v === 'string');
+
 export interface SettledCardCharge {
   chargeId: string;
   settledAt: Date;
@@ -90,6 +116,14 @@ export interface BreezeBillingClient {
   getSettledCardCharge(partnerId: string): Promise<SettledCardCharge | null>;
   getSignupRiskHold(partnerId: string): Promise<SignupRiskHold | null>;
   hasFraudulentRefundMatch(partnerId: string): Promise<boolean>;
+
+  /**
+   * Expire a restricted partner's open Checkout Sessions and cancel its
+   * `incomplete` subscriptions, via breeze-billing's service-to-service
+   * `POST /internal/partners/:partnerId/close-open-checkouts`. Never throws;
+   * see CloseOpenCheckoutsResult.
+   */
+  closeOpenCheckouts(input: { partnerId: string; reason: string }): Promise<CloseOpenCheckoutsResult>;
 }
 
 export class BillingError extends Error {
@@ -236,6 +270,47 @@ export function createBreezeBillingClient(opts: {
           error,
         );
         return null;
+      }
+    },
+
+    async closeOpenCheckouts({ partnerId, reason }) {
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      const billingKey = process.env.BREEZE_BILLING_API_KEY;
+      if (billingKey) headers.Authorization = `Bearer ${billingKey}`;
+      const url = `${opts.baseUrl}/internal/partners/${encodeURIComponent(partnerId)}/close-open-checkouts`;
+      try {
+        const res = await doFetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ reason }),
+          signal: AbortSignal.timeout(CLOSE_CHECKOUTS_TIMEOUT_MS),
+        });
+        if (!res.ok) {
+          const body = await res.text().catch(() => '');
+          const detail = `Billing service returned ${res.status}: ${body.slice(0, 200)}`;
+          if (res.status === 404) {
+            console.warn(`[breezeBillingClient] close-open-checkouts unavailable for partner ${partnerId}: 404`);
+            return { status: 'unavailable', detail };
+          }
+          return { status: 'failed', detail };
+        }
+        const body = await res.json().catch(() => null) as
+          { expiredCheckoutSessionIds?: unknown; canceledSubscriptionIds?: unknown } | null;
+        if (
+          !body || typeof body !== 'object'
+          || !isStringArray(body.expiredCheckoutSessionIds)
+          || !isStringArray(body.canceledSubscriptionIds)
+        ) {
+          return { status: 'failed', detail: 'malformed response from billing service' };
+        }
+        return {
+          status: 'closed',
+          expiredCheckoutSessionIds: body.expiredCheckoutSessionIds,
+          canceledSubscriptionIds: body.canceledSubscriptionIds,
+        };
+      } catch (error) {
+        console.warn(`[breezeBillingClient] close-open-checkouts request failed for partner ${partnerId}`, error);
+        return { status: 'failed', detail: error instanceof Error ? error.message : String(error) };
       }
     },
 

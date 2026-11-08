@@ -3,7 +3,10 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, organizations, partnerAbuseSignals, partners } from '../db/schema';
 import type { IpClass, PartnerTrustState } from '../db/schema/orgs';
-import { getBreezeBillingClient } from './breezeBillingClient';
+import { loadSignalConfig } from './abuseSignals/config';
+import { ANONYMOUS_ACTOR_ID } from './auditEvents';
+import { createAuditLog } from './auditService';
+import { getBreezeBillingClient, type CloseOpenCheckoutsResult } from './breezeBillingClient';
 import { readTrust } from './partnerTrust.repo';
 import { setTrustState } from './partnerTrust';
 import { sendEvidenceCard } from './partnerTrustEvidenceCard';
@@ -43,6 +46,30 @@ export const FREE_MAIL_DOMAINS: ReadonlySet<string> = new Set([
   'yandex.ua',
   'yandex.com.tr',
 ]);
+
+/**
+ * Abuse signals that, once open at or above `severity.alert_score`, are an
+ * independently sufficient hard deny (see evaluateHardDenies). The abuse sweep
+ * evaluates hard denies for these partners as soon as it persists the signal,
+ * so a restriction lands within the sweep tick instead of waiting for the next
+ * promotion run.
+ */
+export const AUTO_RESTRICT_SIGNAL_KEYS = ['billing.card_testing', 'rmm.recidivist_endpoint'] as const;
+
+/**
+ * Keys copied from the open `billing.card_testing` signal's evidence into the
+ * restriction's evidence: the burst itself (how many cards, how many failures,
+ * over what span). An explicit allowlist, because the signal row also carries
+ * triage fields (partnerName, identitySyncedAt) that do not belong on the
+ * restriction audit row.
+ */
+const CARD_TESTING_EVIDENCE_KEYS = [
+  'distinctPaymentMethods',
+  'failedAttempts',
+  'spanMinutes',
+  'paymentMethodsFirstSeenAt',
+  'paymentMethodsLastSeenAt',
+] as const;
 
 export interface PromotionFacts {
   createdAt: Date;
@@ -88,6 +115,10 @@ interface HardDenyRow {
   prefix_length: number | null;
   corroboration_type: 'email_domain' | 'billing_card_fingerprint' | 'signup_user_agent_hostname_prefix' | null;
   corroboration_value: string | null;
+  recidivist_partner_id: string | null;
+  card_testing_signal_id: string | null;
+  card_testing_score: number | string | null;
+  card_testing_evidence: Record<string, unknown> | null;
 }
 
 /**
@@ -97,6 +128,10 @@ interface HardDenyRow {
  * already-restricted partners.
  */
 export async function evaluateHardDenies(partnerId: string): Promise<HardDenyDecision> {
+  // Read per evaluation (not module load) so ABUSE_SIGNAL_OVERRIDES applies,
+  // and so this gate always agrees with the threshold that made the signal an
+  // alert in the first place.
+  const alertScore = loadSignalConfig()['severity.alert_score'];
   const freeMailDomains = sql.join(
     [...FREE_MAIL_DOMAINS].map((domain) => sql`${domain}`),
     sql`, `,
@@ -225,7 +260,11 @@ export async function evaluateHardDenies(partnerId: string): Promise<HardDenyDec
         network_match.suspended_ip,
         network_match.prefix_length,
         network_match.corroboration_type,
-        network_match.corroboration_value
+        network_match.corroboration_value,
+        recidivist_match.partner_id AS recidivist_partner_id,
+        card_testing.id AS card_testing_signal_id,
+        card_testing.score AS card_testing_score,
+        card_testing.evidence AS card_testing_evidence
       FROM target t
       LEFT JOIN LATERAL (
         SELECT s.id AS partner_id
@@ -239,6 +278,43 @@ export async function evaluateHardDenies(partnerId: string): Promise<HardDenyDec
       LEFT JOIN LATERAL (
         SELECT * FROM network_matches
       ) network_match ON true
+      -- Recidivist endpoint: the partner holds the same remote-tool INSTANCE
+      -- identifier as a partner suspended for abuse, and the sweep has an open
+      -- alert-score rmm.recidivist_endpoint signal for it. Only the stable
+      -- instance id counts: a hostname or a product name can coincide between
+      -- unrelated MSPs (both running the same remote tool is normal), an
+      -- instance id cannot.
+      LEFT JOIN LATERAL (
+        SELECT s.id AS partner_id
+        FROM suspended_abuse s
+        JOIN abuse_endpoint_fingerprints sf
+          ON sf.partner_id = s.id AND sf.kind = 'remote_tool_guid'
+        JOIN abuse_endpoint_fingerprints tf
+          ON tf.partner_id = t.id AND tf.kind = 'remote_tool_guid' AND tf.value = sf.value
+        WHERE s.id <> t.id
+          AND EXISTS (
+            SELECT 1 FROM partner_abuse_signals pas
+            WHERE pas.partner_id = t.id
+              AND pas.signal_key = 'rmm.recidivist_endpoint'
+              AND pas.resolved_at IS NULL
+              AND pas.score >= ${alertScore}
+          )
+        ORDER BY s.id
+        LIMIT 1
+      ) recidivist_match ON true
+      -- Card testing: an open billing.card_testing signal at or above the
+      -- alert score. Unlike every other axis this is a behaviour, not a
+      -- correlation: many distinct cards tried in a short span. At most one
+      -- row: partner_abuse_signals_open_uq allows one open row per signal.
+      LEFT JOIN LATERAL (
+        SELECT pas.id, pas.score, pas.evidence
+        FROM partner_abuse_signals pas
+        WHERE pas.partner_id = t.id
+          AND pas.signal_key = 'billing.card_testing'
+          AND pas.resolved_at IS NULL
+          AND pas.score >= ${alertScore}
+        LIMIT 1
+      ) card_testing ON true
     `)) as unknown as HardDenyRow[];
     return rows[0] ?? null;
   }, 'partnerTrustPromotion.hardDenies'));
@@ -281,6 +357,36 @@ export async function evaluateHardDenies(partnerId: string): Promise<HardDenyDec
           type: row.corroboration_type,
           value: row.corroboration_value,
         },
+      },
+    };
+  }
+  if (row.recidivist_partner_id) {
+    return {
+      restrict: true,
+      reason: 'auto:recidivist_endpoint',
+      evidence: {
+        matchedAxes: ['remote_tool_guid', 'suspended_for_abuse'],
+        matchedSuspendedPartnerId: row.recidivist_partner_id,
+      },
+    };
+  }
+  if (row.card_testing_signal_id) {
+    const signalEvidence = row.card_testing_evidence && typeof row.card_testing_evidence === 'object'
+      ? row.card_testing_evidence
+      : {};
+    const copied: Record<string, unknown> = {};
+    for (const key of CARD_TESTING_EVIDENCE_KEYS) {
+      if (key in signalEvidence) copied[key] = signalEvidence[key];
+    }
+    return {
+      restrict: true,
+      reason: 'auto:card_testing',
+      evidence: {
+        matchedAxes: ['billing.card_testing'],
+        signalId: row.card_testing_signal_id,
+        score: Number(row.card_testing_score),
+        alertScore,
+        ...copied,
       },
     };
   }
@@ -376,9 +482,57 @@ export async function gatherPromotionFacts(partnerId: string): Promise<Promotion
 }
 
 /**
+ * Asks the billing service to expire the newly restricted partner's open
+ * checkouts and cancel any incomplete subscription, then records the outcome
+ * as its own audit row (`partner.trust.checkouts_closed`) next to the
+ * restriction's. A separate row rather than more evidence on the restriction
+ * row: the restriction is written first and must never wait on, or be undone
+ * by, the billing service. Best effort throughout — never throws.
+ */
+async function closeOpenCheckoutsAfterRestrict(partnerId: string, reason: string): Promise<void> {
+  let outcome: CloseOpenCheckoutsResult;
+  try {
+    outcome = await getBreezeBillingClient().closeOpenCheckouts({ partnerId, reason });
+  } catch (error) {
+    // getBreezeBillingClient throws when billing is not configured; the client
+    // method itself never throws.
+    outcome = { status: 'failed', detail: error instanceof Error ? error.message : String(error) };
+  }
+  if (outcome.status !== 'closed') {
+    console.warn(
+      `[partnerTrustPromotion] Could not close open checkouts for restricted partner ${partnerId}: ${outcome.status} (${outcome.detail})`,
+    );
+  }
+  try {
+    await createAuditLog({
+      orgId: null,
+      actorType: 'system',
+      actorId: ANONYMOUS_ACTOR_ID,
+      action: 'partner.trust.checkouts_closed',
+      resourceType: 'partner',
+      resourceId: partnerId,
+      result: outcome.status === 'closed' ? 'success' : 'failure',
+      details: { trigger: reason, ...outcome },
+    });
+  } catch (error) {
+    console.warn(
+      `[partnerTrustPromotion] Failed to record checkout-close outcome for restricted partner ${partnerId}`,
+      error,
+    );
+  }
+}
+
+/**
  * Evaluates hard-deny signals and, when one matches, moves the partner to
- * `restricted` (CAS from `probation`) and best-effort sends the evidence card.
- * Returns whether the restriction actually landed.
+ * `restricted` (CAS from `probation`), closes its open checkouts, and
+ * best-effort sends the evidence card. Returns whether the restriction
+ * actually landed.
+ *
+ * Checkouts are closed only when this call's CAS won, so they are closed once
+ * per probation → restricted transition and never for a partner an admin (or a
+ * concurrent evaluation) already moved. Undoing a restriction is the existing
+ * admin promote-with-override, which moves the partner to `trusted` and out of
+ * every hard-deny evaluation; nothing here reopens a checkout.
  *
  * Lives here rather than in the job so that EVERY promotion path goes through
  * it — `tryAutoPromote` calls it first, so no caller can promote a partner
@@ -397,6 +551,9 @@ export async function restrictOnHardDeny(partnerId: string): Promise<boolean> {
     { expectedFrom: 'probation' },
   );
   if (restricted) {
+    // Before the evidence card: an open checkout is where a card tester keeps
+    // trying cards, so closing it is the time-critical effect.
+    await closeOpenCheckoutsAfterRestrict(partnerId, decision.reason);
     try {
       await sendEvidenceCard(partnerId, 'restricted');
     } catch (error) {

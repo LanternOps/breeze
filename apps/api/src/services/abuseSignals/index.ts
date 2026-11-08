@@ -1,8 +1,10 @@
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../../db';
+import { partnerTrustMode } from '../../config/partnerTrustMode';
 import { sendOpsAlert, isOpsAlertingConfigured } from '../opsAlerts';
 import { recordAbuseSignalFired } from '../abuseMetrics';
-import { loadSignalConfig } from './config';
+import { AUTO_RESTRICT_SIGNAL_KEYS, restrictOnHardDeny } from '../partnerTrustPromotion';
+import { loadSignalConfig, type SignalConfig } from './config';
 import { computeInvariantSignals } from './invariants';
 import { loadPartnerAggregates, computeHeuristicSignals, loadHostnameIndicators } from './heuristics';
 import { loadScriptFindings, computeScriptSignals, loadScriptIndicators } from './scriptContent';
@@ -45,6 +47,33 @@ function formatSignalAlert(s: ComputedSignal & { rowId: string }): { title: stri
       `Evidence: ${JSON.stringify(s.evidence).slice(0, 800)}`,
     ].join('\n'),
   };
+}
+
+/**
+ * Evaluates hard denies right away for every partner this sweep scored at or
+ * above the alert threshold on an auto-restrict signal (card testing,
+ * recidivist endpoint), instead of leaving it to the next 15-minute promotion
+ * run. Runs after persistSignals so the open signal row the hard-deny query
+ * reads already exists. restrictOnHardDeny re-checks everything itself
+ * (probation only, signal open, score at alert) and opens its own system DB
+ * context, so this is only a prefilter. One partner's failure never stops the
+ * others or the sweep.
+ */
+async function restrictOnAutoRestrictSignals(computed: ComputedSignal[], cfg: SignalConfig): Promise<void> {
+  if (partnerTrustMode() === 'off') return;
+  const autoRestrictKeys: ReadonlySet<string> = new Set(AUTO_RESTRICT_SIGNAL_KEYS);
+  const partnerIds = new Set(
+    computed
+      .filter((s) => autoRestrictKeys.has(s.signalKey) && s.score >= cfg['severity.alert_score'])
+      .map((s) => s.partnerId),
+  );
+  for (const partnerId of partnerIds) {
+    try {
+      await restrictOnHardDeny(partnerId);
+    } catch (error) {
+      console.warn(`[AbuseSignals] hard-deny evaluation failed for partner ${partnerId}`, error);
+    }
+  }
 }
 
 export async function runAbuseSweep(): Promise<{ fired: number; notified: number }> {
@@ -117,6 +146,11 @@ export async function runAbuseSweep(): Promise<{ fired: number; notified: number
   const { toNotify } = await runSystemDbCompute(() => persistSignals(computed, now, evaluatedPartnerIds));
 
   for (const s of computed) recordAbuseSignalFired(s.severity);
+
+  // Outside the sweep's system DB context (restrictOnHardDeny opens its own)
+  // and before alert delivery, so a slow chat webhook never delays a
+  // restriction.
+  await restrictOnAutoRestrictSignals(computed, cfg);
 
   const deliveredIds: string[] = [];
   for (const n of toNotify) {
