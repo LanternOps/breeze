@@ -6048,7 +6048,7 @@ export function createBreezeMcpServer(
      * #10430: a tool this rejects is not registered at all, registry or extra.
      * Set for a Wisp chat session from its grant ceiling's tool term
      * (`wispSessionToolFilter`), so neither the inline tool list nor the
-     * ToolSearch index, which the SDK builds from the registered tools,
+     * ToolSearch index (the deferred MCP tools, see aiToolSearchPolicy.ts)
      * offers a tool the ceiling gate refuses. It narrows what is offered;
      * the per-call gate is unchanged.
      */

@@ -1100,7 +1100,7 @@ export class StreamingSessionManager {
     }
     // #10430: a Wisp session registers only the tools its grant ceiling's tool
     // term admits, so the ToolSearch index never offers one the gate refuses.
-    // The pinned revision fixes that term for the session's life.
+    // The pinned revision fixes that term for this in-memory session's life.
     const wispAdmitTool = wispGrant ? await wispCeiling.wispSessionToolFilter(wispGrant) : undefined;
 
     // Create new session components

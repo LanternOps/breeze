@@ -970,8 +970,9 @@ export async function buildSystemPrompt(
   // pre-expands the page's domains below; `full` ships the legacy whole index.
   // #11004: synchronous; the tool names come from the cached tool template.
   const toolIndexMode = resolveToolIndexMode();
-  // #10430: a Wisp session's index names only the tools its grant ceiling
-  // admits, the same set its MCP server registers (wispSessionToolFilter).
+  // #10430: a Wisp session's index names only the registry tools its grant
+  // ceiling admits, by the same tool term its MCP server is filtered with
+  // (wispSessionToolFilter).
   const { toolNames, staticPrompt } = timePreStreamPhase('systemPrompt.toolIndex', () => {
     const all = listChatSurfaceToolNames();
     const names = ceiling ? all.filter((name) => ceilingAdmitsTool(ceiling, name)) : all;

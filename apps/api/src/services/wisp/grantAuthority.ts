@@ -211,8 +211,9 @@ export function assertReadWithinCeiling(ceiling: GrantCeiling, check: { orgId: s
 /**
  * The tool term of a ceiling: which tools a call may name at all, whatever its
  * org, site or permission. It comes from the pinned revision alone (snapshot
- * denies and allowlist) plus the code's agent deny floor, so it is fixed for
- * the life of a session pinned to that revision.
+ * denies and allowlist) plus the code's agent deny floor, so within one
+ * running process it does not change for a session pinned to that revision
+ * (a deploy can change the floor).
  */
 export type CeilingToolTerm = Pick<GrantCeiling, 'deniedTools' | 'toolAllowlist'>;
 
