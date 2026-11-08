@@ -48,14 +48,23 @@ import {
  */
 export type TopologyCommandAuthorityDecision =
   | { allow: true; payload: TopologyDiagnosticCommand }
-  | { allow: false; reason: ClaimCancelReason }
+  | { allow: false; reason: ClaimCancelReason; hold?: never }
   /** Neither delivered nor cancelled: the requester's version was not prepared (#11358). */
-  | { allow: false; hold: RevalidationHoldReason };
+  | { allow: false; hold: RevalidationHoldReason; reason?: never };
 
 type Reader = Pick<typeof db, 'select'>;
 
 /** Requester user id → permission-authority version (`null`: unavailable), resolved before the claim locked rows. */
 export type TopologyRequesterPermissionVersions = ReadonlyMap<string, string | null>;
+
+/**
+ * Where the requester's permission version comes from (#11358). A claim passes
+ * the map its prepare half resolved, because it holds `device_commands` row
+ * locks and must not wait on Redis. `'live'` reads Redis, and only a caller
+ * outside a claim may pass it. Required, so an in-lock caller cannot fall back
+ * to a live read by leaving it out.
+ */
+export type TopologyRequesterPermissionSource = TopologyRequesterPermissionVersions | 'live';
 
 function deny(reason: ClaimCancelReason): TopologyCommandAuthorityDecision {
   return { allow: false, reason };
@@ -84,18 +93,19 @@ function preparedPermissionVersionLookup(versions: TopologyRequesterPermissionVe
  * Fails closed: an unknown run, a malformed payload, a moved device, a rotated
  * producer epoch or a changed site configuration all deny delivery.
  *
- * `permissionVersions` is the delivery claim's input (#11358). The claim runs
- * this while it holds `device_commands` row locks, so the requester's version
- * must come from {@link resolveTopologyRequesterPermissionVersions}, which runs
- * before the lock, and Redis is never read here. A requester missing from the
- * map answers `{ hold: 'revalidation_unprepared' }`: the row arrived after that
- * read, and the claim leaves it pending for the next claim. Without the map,
- * the version is read live. Only callers outside a claim use that path.
+ * `permissionVersions` (#11358): the delivery claim runs this while it holds
+ * `device_commands` row locks. It therefore passes the map from
+ * {@link resolveTopologyRequesterPermissionVersions}, which runs before the
+ * lock, and Redis is never read here. A requester missing from the map answers
+ * `{ hold: 'revalidation_unprepared' }`, and the claim leaves the row pending
+ * for the next claim. A requester is missing when the preparation did not
+ * cover the row: the row arrived after the read, fell past the prepare row
+ * limit, or the type's preparer failed.
  */
 export async function validateTopologyCommandAuthority(
   command: CommandRevalidationRow,
   rawPayload: unknown,
-  options: { now?: Date; reader?: Reader; permissionVersions?: TopologyRequesterPermissionVersions } = {},
+  options: { now?: Date; reader?: Reader; permissionVersions: TopologyRequesterPermissionSource },
 ): Promise<TopologyCommandAuthorityDecision> {
   const now = options.now ?? new Date();
   const reader = options.reader ?? db;
@@ -203,7 +213,7 @@ export async function validateTopologyCommandAuthority(
   if (runRequiresRequesterRevalidation(run)) {
     // The check order is unchanged: a malformed or changed requester still
     // denies before any version is needed.
-    const prepared = options.permissionVersions ? preparedPermissionVersionLookup(options.permissionVersions) : null;
+    const prepared = options.permissionVersions === 'live' ? null : preparedPermissionVersionLookup(options.permissionVersions);
     const denial = await revalidateTopologyRequesterAuthority({
       reader,
       run,
@@ -224,12 +234,14 @@ export async function validateTopologyCommandAuthority(
  * against this map and never waits on Redis.
  *
  * This is the read the in-lock check used to make, moved earlier. Redis is not
- * transactional with Postgres, so a version bump that lands just after this
- * read was never fenced by this claim either way. A `null` value (Redis
- * unavailable) is kept, and the in-lock half denies on it
- * (`authority_unavailable`), as it did when it read live. Runs are read by id
- * only. The in-lock half re-reads each run with its full fence, and a version
- * resolved here for a run it then refuses goes unused.
+ * transactional with Postgres, so no read fences a version bump that lands
+ * after it. The unfenced window now starts at this pre-lock read rather than
+ * at the in-lock check. Result publication re-checks the version live.
+ *
+ * A `null` value (Redis unavailable) is kept, and the in-lock half denies on
+ * it (`authority_unavailable`), as it did when it read live. Runs are read by
+ * id only. The in-lock half re-reads each run with its full fence, and a
+ * version resolved here for a run it then refuses goes unused.
  */
 export async function resolveTopologyRequesterPermissionVersions(
   reader: Reader,
@@ -313,7 +325,7 @@ registerCommandRevalidation(
       permissionVersions: versions ?? NO_VERSIONS,
     });
     if (decision.allow) return null;
-    return 'hold' in decision ? { hold: decision.hold } : decision.reason;
+    return decision.hold !== undefined ? { hold: decision.hold } : decision.reason;
   },
   (reader, rows) => resolveTopologyRequesterPermissionVersions(reader, rows.map((row) => row.payload)),
 );

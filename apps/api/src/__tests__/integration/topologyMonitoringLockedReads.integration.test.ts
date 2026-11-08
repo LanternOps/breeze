@@ -229,8 +229,9 @@ describe('command claim window (#7268)', () => {
  * (a routed trace, a policy occurrence, an approved proposal) re-derives the
  * requester's CURRENT permission version (Redis) at delivery. Both claim legs
  * must read it before they lock `device_commands` rows. A scheduled policy
- * occurrence is used here: it goes through the same requester revalidation as
- * a routed trace, minus the trace-capability check.
+ * occurrence is used here. Its permission-version step is the same one a
+ * routed trace goes through. The two paths differ only in the policy-armed
+ * check (policy runs only) and the trace-capability check (`trace_route` only).
  */
 describe('network_diagnostic claim window (#11358)', () => {
   async function queuedPolicyDiagnostic() {

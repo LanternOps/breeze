@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * that carries a frozen requester authority (a routed trace, a policy
  * occurrence, an approved proposal), the requester's permission-authority
  * version lives in Redis. The registration's lock-free PREPARE half resolves
- * it before the claim opens its transaction, and the in-lock half only
+ * it before the claim locks `device_commands` rows, and the in-lock half only
  * compares against that value. These tests check that the in-lock half never
  * reads Redis, and that the comparison gives the same verdicts as the live
  * read: an equal version delivers, a changed version cancels
@@ -118,7 +118,7 @@ function intactTraceReads(over: { run?: unknown; user?: unknown } = {}) {
 }
 
 const validate = (reader: unknown, versions?: ReadonlyMap<string, string | null>) =>
-  validateTopologyCommandAuthority(row, payload, { reader: reader as never, ...(versions && { permissionVersions: versions }) });
+  validateTopologyCommandAuthority(row, payload, { reader: reader as never, permissionVersions: versions ?? 'live' });
 
 beforeEach(() => {
   permissionVersionMock.mockReset();
@@ -191,13 +191,19 @@ describe('network_diagnostic delivery revalidation (#11358)', () => {
       expect(permissionVersionMock).not.toHaveBeenCalled();
     });
 
+    it('a frozen authority bound to another user still denies before any version is needed (never held)', async () => {
+      const reads = intactTraceReads({ run: { ...traceRun, requesterId: OTHER_USER } });
+      expect(await validate(reads, new Map())).toEqual({ allow: false, reason: 'authority_unavailable' });
+      expect(permissionVersionMock).not.toHaveBeenCalled();
+    });
+
     it('a run that needs no requester revalidation delivers with no preparation', async () => {
       const reads = intactTraceReads({ run: { ...traceRun, recipeId: 'gateway_basic', requesterAuthority: null } });
       expect(await validate(reads, new Map())).toMatchObject({ allow: true });
       expect(permissionVersionMock).not.toHaveBeenCalled();
     });
 
-    it('still reads the version live when called outside a claim (no prepared map)', async () => {
+    it('reads the version live only when a caller outside a claim asks for it explicitly', async () => {
       expect(await validate(intactTraceReads())).toMatchObject({ allow: true });
       expect(permissionVersionMock).toHaveBeenCalledWith(USER);
     });
