@@ -631,6 +631,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // slot already precedes all three parents. Erasure while an episode is
   // unresolved is refused upstream (W1c, spec §3.6 item 6).
   'device_network_isolations',
+  // Vendor update policy side (#11242): composite FK onto devices, leaf table.
+  'device_oem_policy_side',
   // Vendor update status (#11068): composite FK onto devices, leaf table.
   'device_oem_update_status',
   // PAM ownership-epoch lineage (#8203). Closures FK -> epochs

@@ -96,3 +96,54 @@ export const deviceOemUpdateStatus = pgTable('device_oem_update_status', {
 
 export type DeviceOemUpdateStatus = typeof deviceOemUpdateStatus.$inferSelect;
 export type NewDeviceOemUpdateStatus = typeof deviceOemUpdateStatus.$inferInsert;
+
+export const OEM_POLICY_REBOOT_MODES = ['overnight', 'never'] as const;
+export type OemPolicyRebootMode = (typeof OEM_POLICY_REBOOT_MODES)[number];
+
+/**
+ * What a device's vendor updates policy contributes to its display state (#11242),
+ * kept per device by the worker (`policySideStore.ts`) so the fleet view counts and
+ * pages in SQL. Only the half that is stable between known instants: the query
+ * compares `now` against these boundaries itself (`displayStateSql.ts`).
+ *
+ * Every computed device has a row, so a missing row means "not computed yet", not
+ * "no lane". Derived device state: `org_id` is the device's org, restamped by the
+ * composite FK when the device moves.
+ */
+export const deviceOemPolicySide = pgTable('device_oem_policy_side', {
+  deviceId: uuid('device_id').primaryKey(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  offeredLane: varchar('offered_lane', { length: 16 }).$type<OemLane>(),
+  gatesFingerprint: varchar('gates_fingerprint', { length: 64 }).notNull(),
+  // Bare uuid: a derived pointer, recomputed on every refresh.
+  linkId: uuid('link_id'),
+  linkEnabled: boolean('link_enabled').notNull().default(false),
+  rebootMode: varchar('reboot_mode', { length: 16 }).$type<OemPolicyRebootMode>(),
+  occurrenceKey: varchar('occurrence_key', { length: 64 }),
+  lastNightStart: timestamp('last_night_start', { withTimezone: true }),
+  pastLastNightAt: timestamp('past_last_night_at', { withTimezone: true }),
+  refreshAfter: timestamp('refresh_after', { withTimezone: true }),
+  managedSince: timestamp('managed_since', { withTimezone: true }),
+  computedAt: timestamp('computed_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  foreignKey({
+    columns: [table.deviceId, table.orgId],
+    foreignColumns: [devices.id, devices.orgId],
+    name: 'device_oem_policy_side_device_org_fk',
+  }).onUpdate('cascade').onDelete('cascade'),
+  index('device_oem_policy_side_org_idx').on(table.orgId),
+  index('device_oem_policy_side_refresh_idx')
+    .on(table.refreshAfter)
+    .where(sql`${table.refreshAfter} IS NOT NULL`),
+  check(
+    'device_oem_policy_side_lane_chk',
+    sql`${table.offeredLane} IS NULL OR ${table.offeredLane} IN ('dell', 'surface', 'hp', 'lenovo')`,
+  ),
+  check(
+    'device_oem_policy_side_reboot_mode_chk',
+    sql`${table.rebootMode} IS NULL OR ${table.rebootMode} IN ('overnight', 'never')`,
+  ),
+]);
+
+export type DeviceOemPolicySide = typeof deviceOemPolicySide.$inferSelect;
+export type NewDeviceOemPolicySide = typeof deviceOemPolicySide.$inferInsert;
