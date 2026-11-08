@@ -20,6 +20,11 @@ const h = vi.hoisted(() => {
 vi.mock('@/stores/aiStore', () => ({ useAiStore: h.store }));
 const fetchMock = vi.hoisted(() => vi.fn());
 vi.mock('@/stores/auth', () => ({ fetchWithAuth: fetchMock }));
+// W05 #10996: the check-in client is mocked (its own contract is wispCheckInsApi.test.ts).
+const checkInsApi = vi.hoisted(() => ({ listWispCheckIns: vi.fn(async () => [] as unknown[]), cancelWispCheckIn: vi.fn(async () => {}) }));
+vi.mock('@/lib/wispCheckInsApi', () => checkInsApi);
+const toast = vi.hoisted(() => ({ showToast: vi.fn() }));
+vi.mock('@/components/shared/Toast', () => toast);
 const sessionRes = (status: string, wispGrantId = 'g-1') =>
   ({ ok: true, status: 200, json: async () => ({ session: { id: 's-old', status, wispGrantId } }) }) as Response;
 const json = (body: unknown, status = 200) => ({ ok: status < 400, status, json: async () => body }) as Response;
@@ -76,6 +81,7 @@ vi.mock('../ai/AiContinuationPrompt', () => ({ default: () => null }));
 vi.mock('../ai/BuyCreditsLink', () => ({ default: () => null }));
 
 import WispHomeThread from './WispHomeThread';
+import { ActionError } from '@/lib/runAction';
 
 const onLinksChange = vi.fn();
 const extra = { scopeLabel: 'All organizations', links: [] as never[], onLinksChange };
@@ -736,4 +742,195 @@ it('composer picker preserves a poll that lands before the pending pick returns'
   act(() => poll([polled]));
   act(() => pendingPick(LINK as WispThreadLink));
   expect(screen.getByTestId('latest-link-ids')).toHaveTextContent('l-polled,l-1');
+});
+
+describe('WispHomeThread check-ins (W05 #10996)', () => {
+  const CHECK_IN_LINK = (id: string) => `/ai/wisp/thread/th-1#checkin=${id}`;
+  const checkInPost = (id: string) => ({
+    source: 'post', id: `p-${id}`, kind: 'check_in', title: `Check-in due: ${id}`, body: null, link: CHECK_IN_LINK(id),
+    sections: null, concernId: null, orgId: null, read: null, createdAt: new Date(Date.UTC(2026, 10, 5, 8, 0)).toISOString(),
+  });
+  const row = (id: string, status: string, dueAt = new Date(Date.now() + 10 * 60_000).toISOString()) => ({
+    id, threadId: 'th-1', status, dueAt, instruction: `do ${id}`, subject: null, firedAt: status === 'fired' ? dueAt : null, createdAt: dueAt,
+  });
+  const withPosts = (posts: unknown[]) => route({ timeline: () => json({ data: { items: posts, nextCursor: null } }) });
+  const scrollIntoView = vi.fn();
+
+  beforeEach(() => {
+    reset({ wisp, sessionId: 's-live' });
+    kit.messages.length = 0;
+    kit.input.length = 0;
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(route());
+    checkInsApi.listWispCheckIns.mockReset().mockResolvedValue([]);
+    checkInsApi.cancelWispCheckIn.mockReset().mockResolvedValue(undefined);
+    toast.showToast.mockReset();
+    scrollIntoView.mockReset();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    window.history.replaceState(null, '', window.location.pathname);
+  });
+
+  it('loads the thread\'s check-ins once bound', async () => {
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    await waitFor(() => expect(checkInsApi.listWispCheckIns).toHaveBeenCalledWith('th-1'));
+  });
+
+  it('refetches check-ins when a turn finishes streaming', async () => {
+    const view = render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    await waitFor(() => expect(checkInsApi.listWispCheckIns).toHaveBeenCalledTimes(1));
+    checkInsApi.listWispCheckIns.mockResolvedValue([row('ci-new', 'scheduled')]);
+    act(() => { Object.assign(h.state, { isStreaming: true }); });
+    view.rerender(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    expect(checkInsApi.listWispCheckIns).toHaveBeenCalledTimes(1);
+    act(() => { Object.assign(h.state, { isStreaming: false }); });
+    view.rerender(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    await waitFor(() => expect(checkInsApi.listWispCheckIns).toHaveBeenCalledTimes(2));
+    // The chip shows as soon as the reply that scheduled it ends, not on the next poll.
+    expect(await screen.findByTestId('wisp-check-in-chip')).toHaveAttribute('data-check-in-id', 'ci-new');
+  });
+
+  it('refetches check-ins on every refreshKey change (the page poll)', async () => {
+    const view = render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} refreshKey={0} />);
+    await waitFor(() => expect(checkInsApi.listWispCheckIns).toHaveBeenCalledTimes(1));
+    view.rerender(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} refreshKey={1} />);
+    await waitFor(() => expect(checkInsApi.listWispCheckIns).toHaveBeenCalledTimes(2));
+  });
+
+  it('a failed load is logged and keeps the previous list', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    checkInsApi.listWispCheckIns.mockResolvedValueOnce([row('ci-1', 'scheduled')]);
+    const view = render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} refreshKey={0} />);
+    expect(await screen.findByTestId('wisp-check-in-chip')).toBeInTheDocument();
+    checkInsApi.listWispCheckIns.mockRejectedValueOnce(new Error('503'));
+    view.rerender(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} refreshKey={1} />);
+    await waitFor(() => expect(warn).toHaveBeenCalledWith(expect.stringContaining('[WispHomeThread]'), expect.any(Error)));
+    expect(screen.getByTestId('wisp-check-in-chip')).toHaveAttribute('data-check-in-id', 'ci-1');
+    warn.mockRestore();
+  });
+
+  it('shows Run now on a fired check-in post and sends "Go ahead with the check-in"', async () => {
+    fetchMock.mockImplementation(withPosts([checkInPost('ci-1')]));
+    checkInsApi.listWispCheckIns.mockResolvedValue([row('ci-1', 'fired')]);
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    fireEvent.click(await screen.findByTestId('wisp-post-run-now'));
+    expect(h.state.sendMessage).toHaveBeenCalledWith('Go ahead with the check-in');
+  });
+
+  it('Run now is disabled while a turn streams', async () => {
+    fetchMock.mockImplementation(withPosts([checkInPost('ci-1')]));
+    checkInsApi.listWispCheckIns.mockResolvedValue([row('ci-1', 'fired')]);
+    reset({ wisp, sessionId: 's-live', isStreaming: true });
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    expect(await screen.findByTestId('wisp-post-run-now')).toBeDisabled();
+  });
+
+  it('hides Run now on a consumed or cancelled check-in post', async () => {
+    // Consumed and cancelled rows are not listed; a fired row for another check-in does not count.
+    fetchMock.mockImplementation(withPosts([checkInPost('ci-1')]));
+    checkInsApi.listWispCheckIns.mockResolvedValue([row('ci-other', 'fired')]);
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    expect(await screen.findByTestId('wisp-post')).toHaveAttribute('data-check-in-id', 'ci-1');
+    await waitFor(() => expect(checkInsApi.listWispCheckIns).toHaveBeenCalled());
+    expect(screen.queryByTestId('wisp-post-run-now')).toBeNull();
+  });
+
+  it('cancel calls the client and reloads the list', async () => {
+    checkInsApi.listWispCheckIns.mockResolvedValueOnce([row('ci-2', 'scheduled')]).mockResolvedValue([]);
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    fireEvent.click(await screen.findByTestId('wisp-check-in-cancel'));
+    await waitFor(() => expect(checkInsApi.cancelWispCheckIn).toHaveBeenCalledWith('th-1', 'ci-2'));
+    await waitFor(() => expect(checkInsApi.listWispCheckIns).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByTestId('wisp-check-in-chip')).toBeNull());
+  });
+
+  it('a refused cancel (ActionError, already toasted) reloads without a second toast; a 401 does nothing more', async () => {
+    checkInsApi.listWispCheckIns.mockResolvedValue([row('ci-2', 'scheduled')]);
+    checkInsApi.cancelWispCheckIn.mockRejectedValueOnce(new ActionError('gone', 404, 'not_found'));
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    fireEvent.click(await screen.findByTestId('wisp-check-in-cancel'));
+    await waitFor(() => expect(checkInsApi.listWispCheckIns).toHaveBeenCalledTimes(2));
+    expect(toast.showToast).not.toHaveBeenCalled();
+
+    checkInsApi.cancelWispCheckIn.mockRejectedValueOnce(new ActionError('auth', 401));
+    fireEvent.click(screen.getByTestId('wisp-check-in-cancel'));
+    await waitFor(() => expect(checkInsApi.cancelWispCheckIn).toHaveBeenCalledTimes(2));
+    await Promise.resolve();
+    expect(checkInsApi.listWispCheckIns).toHaveBeenCalledTimes(2);
+    expect(toast.showToast).not.toHaveBeenCalled();
+  });
+
+  it('a cancelled chip disappears at once, even when the reload after it fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    checkInsApi.listWispCheckIns.mockResolvedValueOnce([row('ci-2', 'scheduled'), row('ci-3', 'scheduled')]).mockRejectedValue(new Error('503'));
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    fireEvent.click((await screen.findAllByTestId('wisp-check-in-cancel'))[0]);
+    await waitFor(() => expect(screen.getAllByTestId('wisp-check-in-chip')).toHaveLength(1));
+    expect(screen.getByTestId('wisp-check-in-chip')).toHaveAttribute('data-check-in-id', 'ci-3');
+    warn.mockRestore();
+  });
+
+  it('a 404 cancel (already consumed or cancelled) drops the chip too', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    checkInsApi.listWispCheckIns.mockResolvedValueOnce([row('ci-2', 'scheduled')]).mockRejectedValue(new Error('503'));
+    checkInsApi.cancelWispCheckIn.mockRejectedValueOnce(new ActionError('gone', 404, 'not_found'));
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    fireEvent.click(await screen.findByTestId('wisp-check-in-cancel'));
+    await waitFor(() => expect(screen.queryByTestId('wisp-check-in-chip')).toBeNull());
+    warn.mockRestore();
+  });
+
+  it('Run now is disabled while the chat is loading', async () => {
+    fetchMock.mockImplementation(withPosts([checkInPost('ci-1')]));
+    checkInsApi.listWispCheckIns.mockResolvedValue([row('ci-1', 'fired')]);
+    reset({ wisp, sessionId: 's-live', isLoading: true });
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    expect(await screen.findByTestId('wisp-post-run-now')).toBeDisabled();
+  });
+
+  it('a cancel that throws outside runAction is toasted', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    checkInsApi.listWispCheckIns.mockResolvedValue([row('ci-2', 'scheduled')]);
+    checkInsApi.cancelWispCheckIn.mockRejectedValueOnce(new TypeError('network'));
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    fireEvent.click(await screen.findByTestId('wisp-check-in-cancel'));
+    await waitFor(() => expect(toast.showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'Could not cancel the check-in.' })));
+    error.mockRestore();
+  });
+
+  it('scrolls the hash-selected check-in post into view once', async () => {
+    window.history.replaceState(null, '', `${window.location.pathname}#checkin=ci-1`);
+    fetchMock.mockImplementation(withPosts([checkInPost('ci-0'), checkInPost('ci-1')]));
+    const view = render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} refreshKey={0} />);
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1));
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' });
+    expect(scrollIntoView.mock.contexts[0]).toHaveAttribute('data-check-in-id', 'ci-1');
+    view.rerender(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} refreshKey={1} />);
+    await waitFor(() => expect(timelineCalls().length).toBeGreaterThanOrEqual(2));
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+  });
+
+  it('a bell clicked while the page is open (hash change) scrolls to that post', async () => {
+    fetchMock.mockImplementation(withPosts([checkInPost('ci-0'), checkInPost('ci-1')]));
+    render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+    expect(await screen.findAllByTestId('wisp-post')).toHaveLength(2);
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    act(() => {
+      window.history.replaceState(null, '', `${window.location.pathname}#checkin=ci-0`);
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1));
+    expect(scrollIntoView.mock.contexts[0]).toHaveAttribute('data-check-in-id', 'ci-0');
+  });
+
+  it('a paused grant shows the post without Run now or chip', async () => {
+    fetchMock.mockImplementation(withPosts([checkInPost('ci-1')]));
+    checkInsApi.listWispCheckIns.mockResolvedValue([row('ci-1', 'fired'), row('ci-2', 'scheduled')]);
+    reset();
+    render(<WispHomeThread {...extra} wisp={{ ...wisp, status: 'paused' }} lastSessionId={null} />);
+    expect(await screen.findByTestId('wisp-post')).toHaveAttribute('data-kind', 'check_in');
+    expect(screen.queryByTestId('wisp-post-run-now')).toBeNull();
+    expect(screen.queryByTestId('wisp-check-in-chip')).toBeNull();
+    expect(checkInsApi.listWispCheckIns).not.toHaveBeenCalled();
+  });
 });

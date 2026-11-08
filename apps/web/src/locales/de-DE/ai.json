@@ -904,6 +904,14 @@
       "firstLook": "Erster Überblick",
       "couldntLook": "Noch kein Überblick"
     },
+    "checkIn": {
+      "runNow": "Jetzt ausführen",
+      "runNowMessage": "Führe die Nachkontrolle jetzt durch",
+      "scheduledAt": "Wisp prüft um {{time}} erneut",
+      "cancel": "Nachkontrolle abbrechen",
+      "cancelled": "Nachkontrolle abgebrochen",
+      "cancelFailed": "Die Nachkontrolle konnte nicht abgebrochen werden."
+    },
     "welcome": {
       "title": "Ich sehe mich in {{scope}} um.",
       "body": "Ihr erster Bericht kommt jeden Morgen, sobald ich mich umgesehen habe. Fragen Sie mich in der Zwischenzeit gern alles.",
