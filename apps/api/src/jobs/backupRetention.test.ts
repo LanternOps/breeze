@@ -1076,6 +1076,64 @@ describe('sweepUnreferencedBackupObjects', () => {
       }
     });
 
+    it('(f, streamed) the cross-root stop still applies when more entries follow the crossing one (#11232)', async () => {
+      rootsAre([LEGACY, P], { b1: ['prefixed:orgB'], a1: ['legacy'] });
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'b1' }] });
+      bucket([
+        { key: 'orgB/snapshots/b1/manifest.json', lastModified: old() },
+        { key: 'orgB/snapshots/b1/files/stale.dat', lastModified: old() },
+        { key: 'snapshots/a1/files/f.dat', lastModified: old() },
+      ]);
+      manifests({
+        'orgB/snapshots/b1/manifest.json': manifestJson([
+          { backupPath: 'snapshots/a1/files/f.dat' },
+          { backupPath: 'snapshots/b1/files/x.dat' },
+          { backupPath: 'snapshots/b1/files/y.dat' },
+        ]),
+      });
+      deletesSucceed();
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      try {
+        const result = await sweepUnreferencedBackupObjects();
+        expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+        expect(result.deleted).toBe(0);
+        expect(error.mock.calls.some(([msg]) => String(msg).includes('cross_root_reference'))).toBe(true);
+        expect(listedPrefixes()).not.toContain('snapshots');
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it('(f, streamed) a manifest that fails after a crossing entry is a read failure, not a cross-root stop (#11232)', async () => {
+      rootsAre([LEGACY, P], { b1: ['prefixed:orgB'], a1: ['legacy'] });
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'b1' }] });
+      bucket([
+        { key: 'orgB/snapshots/b1/manifest.json', lastModified: old() },
+        { key: 'orgB/snapshots/b1/files/stale.dat', lastModified: old() },
+      ]);
+      openBackupObjectStreamMock.mockImplementation(async (input) => {
+        if (input.key !== 'orgB/snapshots/b1/manifest.json') return defaultOpenBackupObjectStream(input);
+        return Readable.from((function* () {
+          yield Buffer.from('{"id":"b1","files":[{"backupPath":"snapshots/a1/files/f.dat"},{"backupPath":"snapshots/b1/files/x.dat"}');
+          throw new Error('connection reset');
+        })());
+      });
+      deletesSucceed();
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      try {
+        await sweepUnreferencedBackupObjects();
+        expect(deletedKeys().filter((key) => key.startsWith('orgB/'))).toEqual([]);
+        expect(error.mock.calls.some(([msg]) => String(msg).includes('could not be read or marked'))).toBe(true);
+        expect(error.mock.calls.some(([msg]) => String(msg).includes('cross_root_reference'))).toBe(false);
+      } finally {
+        error.mockRestore();
+      }
+    });
+
     it('an external ref into an origin with no recorded root is followed under the legacy root, as before', async () => {
       pushRunLevel([destination]);
       pushIdentity({ retained: [{ snapshotId: 'a2' }] });
@@ -2939,6 +2997,126 @@ describe('sweepUnreferencedBackupObjects', () => {
       expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
       expect(result.skippedIdentities).toBe(1);
       expect(result.blockedIdentities).toBe(1);
+    });
+
+    it('deletes nothing when a second retained manifest fails after the first one read cleanly', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'A' }, { snapshotId: 'B' }] });
+      openBackupObjectStreamMock.mockImplementation(async (input) => {
+        if (input.key === 'snapshots/A/manifest.json') {
+          return Readable.from([Buffer.from('{"id":"A","files":[{"backupPath":"snapshots/A/files/kept.dat"}]}')]);
+        }
+        if (input.key === MANIFEST_KEY) {
+          return Readable.from((function* () {
+            yield Buffer.from('{"id":"B","files":[{"sourcePath":"/first","backupPath":"snapshots/A/files/first.dat"}');
+            throw new Error('connection reset');
+          })());
+        }
+        return defaultOpenBackupObjectStream(input);
+      });
+      const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+      rootListingMock.mockResolvedValueOnce([
+        { key: 'snapshots/A/manifest.json', lastModified: old },
+        { key: 'snapshots/A/files/kept.dat', lastModified: old },
+        { key: MANIFEST_KEY, lastModified: old },
+        { key: 'snapshots/A/files/first.dat', lastModified: old },
+        { key: 'snapshots/A/files/orphan.dat', lastModified: old },
+      ]);
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.skippedIdentities).toBe(1);
+      expect(result.blockedIdentities).toBe(1);
+    });
+
+    it('keeps escaped and non-ASCII keys exactly, read one byte at a time', async () => {
+      const keys = [
+        'snapshots/A/files/zo\u00eb/\u65e5\u672c\u8a9e/\ud83d\ude00.dat',
+        'snapshots/A/files/quote"and\\back.dat',
+        'snapshots/A/files/caf\u00e9.dat',
+      ];
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
+      const body = Buffer.from(JSON.stringify({ id: 'B', files: keys.map((backupPath) => ({ backupPath })) }));
+      openBackupObjectStreamMock.mockImplementation(async (input) => {
+        if (input.key !== MANIFEST_KEY) return defaultOpenBackupObjectStream(input);
+        return Readable.from(Array.from(body, (byte) => Buffer.from([byte])));
+      });
+      const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+      rootListingMock.mockResolvedValueOnce([
+        { key: MANIFEST_KEY, lastModified: old },
+        ...keys.map((key) => ({ key, lastModified: old })),
+        { key: 'snapshots/A/files/orphan.dat', lastModified: old },
+      ]);
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/A/files/orphan.dat'], failedKeys: [] });
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(result.blockedIdentities).toBe(0);
+      expect(deleteBackupObjectKeysMock).toHaveBeenCalledTimes(1);
+      expect((deleteBackupObjectKeysMock.mock.calls[0]![0] as { keys: string[] }).keys).toEqual(['snapshots/A/files/orphan.dat']);
+    });
+
+    it('reads a null files key, which the agent writes for a snapshot with no files, as no references', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
+      fetchBackupObjectTextMock.mockResolvedValueOnce(JSON.stringify({ id: 'B', files: null }));
+      const old = JUST_PAST_MANIFESTLESS_THRESHOLD();
+      rootListingMock.mockResolvedValueOnce([
+        { key: MANIFEST_KEY, lastModified: old },
+        { key: 'snapshots/B/files/stale.dat', lastModified: old },
+      ]);
+      deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: ['snapshots/B/files/stale.dat'], failedKeys: [] });
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(result.blockedIdentities).toBe(0);
+      expect((deleteBackupObjectKeysMock.mock.calls[0]![0] as { keys: string[] }).keys).toEqual(['snapshots/B/files/stale.dat']);
+    });
+
+    it.each([
+      ['an entry that is not an object', JSON.stringify({ id: 'B', files: [{ backupPath: 'snapshots/A/files/first.dat' }, 7] })],
+      ['a null entry', JSON.stringify({ id: 'B', files: [{ backupPath: 'snapshots/A/files/first.dat' }, null] })],
+      ['no files key at all', JSON.stringify({ id: 'B' })],
+      ['an id naming another snapshot', JSON.stringify({ id: 'C', files: [{ backupPath: 'snapshots/A/files/first.dat' }] })],
+    ])('deletes nothing for a manifest with %s', async (_label, body) => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'B' }] });
+      fetchBackupObjectTextMock.mockResolvedValueOnce(body);
+      listing();
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+      expect(result.skippedIdentities).toBe(1);
+      expect(result.blockedIdentities).toBe(1);
+    });
+
+    it('deletes nothing when the live keys pass BACKUP_GC_LIVE_SET_MAX_BYTES, and sweeps once they fit', async () => {
+      const files = Array.from({ length: 50 }, (_, i) => ({ backupPath: `snapshots/A/files/${'k'.repeat(100)}-${i}.dat` }));
+      const run = async () => {
+        pushRunLevel([destination]);
+        pushIdentity({ retained: [{ snapshotId: 'B' }] });
+        fetchBackupObjectTextMock.mockResolvedValueOnce(JSON.stringify({ id: 'B', files }));
+        listing();
+        return sweepUnreferencedBackupObjects();
+      };
+      try {
+        // 50 keys of about 120 characters plus the per-key charge: well past 4,000 bytes.
+        process.env.BACKUP_GC_LIVE_SET_MAX_BYTES = '4000';
+        const over = await run();
+        expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+        expect(over.blockedIdentities).toBe(1);
+
+        process.env.BACKUP_GC_LIVE_SET_MAX_BYTES = String(1024 * 1024);
+        deleteBackupObjectKeysMock.mockResolvedValueOnce({ deletedKeys: [], failedKeys: [] });
+        const fits = await run();
+        expect(fits.blockedIdentities).toBe(0);
+        expect(deleteBackupObjectKeysMock).toHaveBeenCalledTimes(1);
+      } finally {
+        delete process.env.BACKUP_GC_LIVE_SET_MAX_BYTES;
+      }
     });
 
     it('deletes nothing when the manifest is over the stream cap too', async () => {

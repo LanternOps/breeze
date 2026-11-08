@@ -1391,17 +1391,60 @@ function originGuardFor(root: SnapshotKeyRoot, keyRoots: Pick<IdentityKeyRoots, 
   };
 }
 
-/** A manifest entry's object key, or null for an entry that names none (dir/symlink, or not an object). */
-function entryBackupPath(entry: unknown): string | null {
-  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+/**
+ * A manifest entry's object key, or null for an entry that names none (a
+ * dir/symlink entry's backupPath is ""). An entry that is not an object is not
+ * something an agent writes, so it fails the mark phase rather than being
+ * skipped.
+ */
+function entryBackupPath(entry: unknown, index: number): string | null {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    throw new Error(`manifest entry ${index} is not an object`);
+  }
   const backupPath = (entry as { backupPath?: unknown }).backupPath;
   return typeof backupPath === 'string' && backupPath.length > 0 ? backupPath : null;
 }
 
 /**
- * A copy of a key that holds only its own characters. A string the manifest
- * scanner builds can share storage with the text it was cut from, and the live
- * set keeps every key for the whole sweep: measured on a 200,000-entry
+ * Most memory one mark pass's live-key set may hold (#11232). Its keys come
+ * from device-written manifests, and a manifest may now be as large as the
+ * stream cap, so nothing else bounds their total: past this budget the mark
+ * phase fails closed and the identity is not swept this run. Each new key is
+ * charged its characters (two bytes each when it holds one above U+00FF, as V8
+ * stores it) plus LIVE_KEY_OVERHEAD_BYTES for its set entry and its share of
+ * the per-snapshot fingerprints. Measured live sets cost 170-180 bytes per
+ * 132-character key, so the default holds about 1.7 million keys of that shape
+ * and stays well inside the 1 GiB heap the split worker runs with. A positive
+ * integer in BACKUP_GC_LIVE_SET_MAX_BYTES replaces it; anything else keeps it.
+ */
+export const BACKUP_GC_LIVE_SET_DEFAULT_MAX_BYTES = 384 * 1024 * 1024;
+const LIVE_KEY_OVERHEAD_BYTES = 96;
+
+export function resolveBackupGcLiveSetMaxBytes(): number {
+  const trimmed = process.env.BACKUP_GC_LIVE_SET_MAX_BYTES?.trim();
+  if (!trimmed) return BACKUP_GC_LIVE_SET_DEFAULT_MAX_BYTES;
+  const raw = Number(trimmed);
+  return Number.isSafeInteger(raw) && raw > 0 ? raw : BACKUP_GC_LIVE_SET_DEFAULT_MAX_BYTES;
+}
+
+const ABOVE_LATIN1 = /[^\u0000-\u00ff]/;
+
+function liveKeyCostBytes(key: string): number {
+  return (ABOVE_LATIN1.test(key) ? 2 * key.length : key.length) + LIVE_KEY_OVERHEAD_BYTES;
+}
+
+class BackupGcLiveSetBudgetError extends Error {
+  constructor(maxBytes: number) {
+    super(`live-key set is over its ${maxBytes}-byte budget (BACKUP_GC_LIVE_SET_MAX_BYTES)`);
+    this.name = 'BackupGcLiveSetBudgetError';
+  }
+}
+
+/**
+ * A copy of a key that holds only its own characters. V8 may represent a
+ * string the manifest scanner builds as a slice of, or a rope over, the larger
+ * text it came from, which keeps that text alive, and the live set keeps every
+ * key for the whole sweep: measured on a 200,000-entry
  * manifest with 132-character keys, the set held 365 bytes per key as the
  * scanner returned them and 180 once copied (#11232). The JSON round trip is
  * exact for every UTF-16 code unit; a UTF-8 one would rewrite a lone surrogate.
@@ -1411,11 +1454,13 @@ function ownedKeyCopy(key: string): string {
 }
 
 /**
- * Mark phase for one storage identity under one key root. Returns null
- * (never throws) on any fetch/parse failure so the caller can fail-closed and
- * skip the sweep. Live keys are LOGICAL (what manifests reference); the
- * storage view maps them to the root's physical keys. `originGuard` throws on
- * a reference that crosses key roots.
+ * Mark phase for one storage identity under one key root. Returns null on any
+ * manifest read or scan failure, any system-state manifest fetch/parse
+ * failure, or a live set past its budget, so the caller can fail closed and
+ * skip the sweep. The one error it throws is BackupGcCrossRootReferenceError
+ * (from `originGuard`, for a reference that crosses key roots), raised only
+ * after that manifest has read in full. Live keys are LOGICAL (what manifests
+ * reference); the storage view maps them to the root's physical keys.
  */
 async function markLiveBackupObjects(
   storage: RootedStorage,
@@ -1423,10 +1468,18 @@ async function markLiveBackupObjects(
   originGuard?: BackupGcOriginGuard,
 ): Promise<Set<string> | null> {
   const live = new Set<string>();
+  const maxBytes = resolveBackupGcLiveSetMaxBytes();
+  let heldBytes = 0;
+  // Throws BackupGcLiveSetBudgetError rather than let the set grow past maxBytes.
+  const addLive = (key: string): void => {
+    if (live.has(key)) return;
+    heldBytes += liveKeyCostBytes(key);
+    if (heldBytes > maxBytes) throw new BackupGcLiveSetBudgetError(maxBytes);
+    live.add(ownedKeyCopy(key));
+  };
 
   for (const snapshotId of snapshotIds) {
     const manifestKey = backupSnapshotManifestKey(snapshotId);
-    live.add(manifestKey);
 
     // Streamed (#11232): the manifest is never held, so a manifest past the
     // whole-object fetch cap no longer stops the sweep, and its references are
@@ -1437,10 +1490,13 @@ async function markLiveBackupObjects(
     // this replaces.
     let crossRoot: BackupGcCrossRootReferenceError | null = null;
     try {
+      // The manifest and layout keys are marked live without being read; see below.
+      addLive(manifestKey);
+      addLive(backupLayoutManifestKey(snapshotId));
       const source = await openRootedObjectStream(storage, manifestKey, MANIFEST_STREAM_MAX_BYTES);
-      await scanManifest(source, {
-        onEntry(entry) {
-          const backupPath = entryBackupPath(entry);
+      const scanned = await scanManifest(source, {
+        onEntry(entry, index) {
+          const backupPath = entryBackupPath(entry, index);
           if (backupPath === null) return;
           if (originGuard && !crossRoot) {
             try {
@@ -1450,12 +1506,21 @@ async function markLiveBackupObjects(
               crossRoot = error;
             }
           }
-          live.add(ownedKeyCopy(backupPath));
+          addLive(backupPath);
         },
       });
+      // A document with no `files` key at all is not a manifest (the agent
+      // writes `files: null` for an empty one), and one naming another
+      // snapshot is not this snapshot's: either would mark nothing it holds.
+      if (!scanned.hasFilesKey) throw new Error('manifest has no files key');
+      if (scanned.id !== null && scanned.id !== snapshotId) {
+        throw new Error(`manifest declares snapshot ${scanned.id}`);
+      }
     } catch (error) {
+      const kind = error instanceof Error ? error.name : 'non-Error';
       console.error(
-        `[BackupGC] Manifest read failed for snapshot ${snapshotId} (key ${manifestKey}) — aborting sweep for this identity:`,
+        `[BackupGC] Manifest of snapshot ${snapshotId} (key ${manifestKey}) could not be read or marked (${kind}) — ` +
+        'aborting sweep for this identity:',
         error,
       );
       return null;
@@ -1484,8 +1549,8 @@ async function markLiveBackupObjects(
     // and every listed manifest under the deferred-identity algorithm) —
     // markLiveBackupObjects is the single call site all of them funnel
     // through. Marking a key that doesn't exist is harmless; fetching it
-    // would only add a round-trip and a new failure mode.
-    live.add(backupLayoutManifestKey(snapshotId));
+    // would only add a round-trip and a new failure mode. (It is added with
+    // the manifest key, above.)
 
     const stateManifestKey = backupSystemStateManifestKey(snapshotId);
     let stateRaw: string;
@@ -1513,11 +1578,19 @@ async function markLiveBackupObjects(
       return null;
     }
 
-    live.add(stateManifestKey);
-    for (const artifact of stateManifest.artifacts ?? []) {
-      if (typeof artifact.path === 'string' && artifact.path.length > 0) {
-        live.add(backupSystemStateArtifactKey(snapshotId, artifact.path));
+    try {
+      addLive(stateManifestKey);
+      for (const artifact of stateManifest.artifacts ?? []) {
+        if (typeof artifact.path === 'string' && artifact.path.length > 0) {
+          addLive(backupSystemStateArtifactKey(snapshotId, artifact.path));
+        }
       }
+    } catch (error) {
+      console.error(
+        `[BackupGC] Marking system state artifacts failed for snapshot ${snapshotId} — aborting sweep for this identity:`,
+        error,
+      );
+      return null;
     }
   }
 

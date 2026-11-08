@@ -72,8 +72,9 @@ export type ManifestScanOptions = {
    * Top-level keys, besides `id` and `files`, whose values the caller needs
    * (#11233: the reconcile path reads `timestamp`, `size` and the like). Each
    * must hold a string, number, boolean or null of at most 4096 characters; a
-   * container value or a repeated key is refused as malformed, so a caller
-   * never reads a value its own schema would not have accepted from JSON.parse.
+   * container value or a repeated key is refused as malformed and a longer
+   * value as a limit, so a caller never reads a value its own schema would not
+   * have accepted from JSON.parse.
    */
   fields?: readonly string[];
 };

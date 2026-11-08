@@ -8,6 +8,7 @@ import type { ParsedBackupCommandResult } from '../routes/backup/resultSchemas';
 import { applyBackupCommandResultToJob, LATE_RESULT_FENCE_REASON_PATTERN } from './backupResultPersistence';
 import { loadSnapshotIdClaims } from './backupSnapshotIdReservations';
 import { captureException, captureMessage } from './sentry';
+import { recordSnapshotFileIndex } from './backupMetrics';
 import {
   BACKUP_SNAPSHOT_MANIFEST_KEY,
   BACKUP_SNAPSHOT_ROOT_DIR,
@@ -726,14 +727,20 @@ export async function manifestToCommandResult(params: {
       `manifest declares snapshot ${scanned.id} but is stored under ${params.snapshotId}`
     );
   }
-  const fields = reconcileManifestFieldsSchema.parse(scanned.fields ?? {});
+  const checkedFields = reconcileManifestFieldsSchema.safeParse(scanned.fields ?? {});
+  if (!checkedFields.success) {
+    const issues = checkedFields.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ');
+    throw new Error(`manifest fields are invalid: ${issues}`);
+  }
+  const fields = checkedFields.data;
 
   const declaredSize = fields.size !== undefined ? Math.trunc(fields.size) : undefined;
   const size = declaredSize ?? summedSize;
   const dedup = referencedFiles > 0 ? { referencedFiles, referencedBytes } : {};
-  // Left out, the list is still in the manifest: the index is built from there.
-  const files = inline ?? [];
-  const inlineDroppedEntries = inline === null ? scanned.entries : null;
+  // Left out, the list is still in the manifest: the index is built from
+  // there. Omitted rather than [] so persistence leaves any index rows alone.
+  const files: InlineFile[] | null = inline;
+  const inlineDroppedEntries = files === null ? scanned.entries : null;
 
   const timestamp =
     fields.timestamp && Number.isFinite(Date.parse(fields.timestamp)) ? fields.timestamp : undefined;
@@ -747,7 +754,7 @@ export async function manifestToCommandResult(params: {
       id: params.snapshotId,
       timestamp,
       size,
-      files,
+      ...(files !== null ? { files } : {}),
       // D18 (#5429/§3.1): forwarded so applyBackupCommandResultToJob can
       // record lineage on an adopted (not directly-reported) snapshot too.
       baseSnapshotId: fields.baseSnapshotId,
@@ -762,7 +769,8 @@ export async function manifestToCommandResult(params: {
         ? { storagePrefix: `${BACKUP_SNAPSHOT_ROOT_DIR}/${params.snapshotId}` }
         : {}),
       // The same record an agent result that left its list out produces
-      // (backupResultPersistence, #11026).
+      // (backupResultPersistence, #11026); the inline_dropped metric is
+      // recorded once the adoption is written.
       ...(inlineDroppedEntries !== null ? { fileIndexInlineDroppedEntries: inlineDroppedEntries } : {}),
       reconciledFromStorage: true,
       reconciledAt: new Date().toISOString(),
@@ -1159,6 +1167,10 @@ export async function reconcileOrphanedBackupSnapshots(params: {
     } catch (error) {
       candidate.skipReason = 'manifest-unreadable';
       candidate.error = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `[BackupReconcile] manifest of snapshot ${entry.snapshotId} (config ${params.configId}, key root ` +
+        `${keyRootId(entry.root)}) could not be read (${error instanceof Error ? error.name : 'non-Error'}): ${candidate.error}`,
+      );
       candidates.push(candidate);
       continue;
     }
@@ -1246,6 +1258,9 @@ export async function reconcileOrphanedBackupSnapshots(params: {
       } else {
         candidate.adopted = true;
         adopted += 1;
+        if (result.metadata?.fileIndexInlineDroppedEntries !== undefined) {
+          recordSnapshotFileIndex('inline_dropped', 'dropped');
+        }
       }
     } catch (error) {
       // applyBackupCommandResultToJob commits the job UPDATE before inserting

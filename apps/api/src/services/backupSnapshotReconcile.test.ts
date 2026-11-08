@@ -161,6 +161,11 @@ vi.mock('./backupResultPersistence', () => ({
   LATE_RESULT_FENCE_REASON_PATTERN: /publish_lease_expired|base_retired/,
 }));
 
+const recordSnapshotFileIndexMock = vi.fn();
+vi.mock('./backupMetrics', () => ({
+  recordSnapshotFileIndex: (...args: unknown[]) => recordSnapshotFileIndexMock(...(args as [])),
+}));
+
 const captureExceptionMock = vi.fn();
 const captureMessageMock = vi.fn();
 vi.mock('./sentry', () => ({
@@ -421,6 +426,8 @@ describe('reconcileOrphanedBackupSnapshots', () => {
       expect(call.result).toMatchObject({ filesBackedUp: 2, bytesBackedUp: 300 });
       expect(call.result.snapshot).toMatchObject({ id: 'snap-1', timestamp: '2026-08-01T10:15:00Z', formatVersion: 2 });
       expect(call.result.snapshot.files.map((f: { sourcePath: string }) => f.sourcePath)).toEqual(['C:/data/file-0.txt', 'C:/data/file-1.txt']);
+      expect(call.result.metadata.fileIndexInlineDroppedEntries).toBeUndefined();
+      expect(recordSnapshotFileIndexMock).not.toHaveBeenCalled();
       expect(openBackupObjectStreamMock).toHaveBeenCalledWith(expect.objectContaining({ key: MANIFEST_KEY, maxBytes: 2 * 1024 * MiB }));
     }, 60_000);
 
@@ -462,8 +469,9 @@ describe('reconcileOrphanedBackupSnapshots', () => {
         referencedFiles: referenced,
         referencedBytes: referenced * 10,
       });
-      expect(call.result.snapshot.files).toEqual([]);
+      expect(call.result.snapshot.files).toBeUndefined();
       expect(call.result.metadata.fileIndexInlineDroppedEntries).toBe(files.length);
+      expect(recordSnapshotFileIndexMock).toHaveBeenCalledWith('inline_dropped', 'dropped');
     }, 60_000);
   });
 

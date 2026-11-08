@@ -587,9 +587,9 @@ export async function openBackupObjectStream(input: {
 }
 
 /**
- * Fetches one object's contents as text (used by GC to fetch/parse retained
- * snapshot manifests, and by snapshot reconcile to read an adopted
- * snapshot's manifest). Throws on any failure — callers must treat a throw
+ * Fetches one object's contents as text (used by GC to fetch/parse a retained
+ * snapshot's system-state manifest; snapshot manifests themselves are
+ * streamed, see openBackupObjectStream). Throws on any failure — callers must treat a throw
  * as "mark phase failed, no sweep this run" per the fail-closed GC contract.
  *
  * `maxBytes`, when passed, rejects (via `BackupObjectTooLargeError`, checked
