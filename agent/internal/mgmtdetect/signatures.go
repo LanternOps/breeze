@@ -550,8 +550,9 @@ func AllSignatures() []Signature {
 		},
 
 		// Trend Micro Apex One / Worry-Free / Vision One endpoint agents (#8171).
-		// The install folders differ by product: Apex One "Security Agent",
-		// Worry-Free "Client Server Security Agent", Vision One "Endpoint
+		// Probes come from vendor product naming and are not yet verified on a
+		// lab host. The install folders differ by product: Apex One "Security
+		// Agent", Worry-Free "Client Server Security Agent", Vision One "Endpoint
 		// Basecamp". macOS omitted until verified on a lab host.
 		{
 			Name: "Trend Micro", Category: CategoryEndpointSecurity,
