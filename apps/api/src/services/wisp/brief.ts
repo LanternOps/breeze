@@ -89,10 +89,11 @@ function localParts(d: Date, tz: string): { date: string; minutes: number } {
 const BRIEF_TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 /**
- * `grantCreatedAt`: a grant created after today's brief time waits for the next
- * one (#11287). Without it a new grant's first sweep found no brief sent today
- * and posted "Good morning" minutes after the grant, hours from the brief time
- * and before the first look the welcome promises the brief follows.
+ * Whether the brief is due now: past today's brief time in the brief's zone and
+ * not yet sent today.
+ *
+ * @param grantCreatedAt a grant created at or after today's brief time first
+ *   becomes due at the next one, not on the next sweep (#11287).
  */
 export function briefDue(
   prefs: { briefTimeLocal: string | null; briefTimezone: string | null },
@@ -217,7 +218,7 @@ export async function buildBrief(
 
 type SweepGrant = {
   id: string; partnerId: string; grantorUserId: string; status: string; pausedReason: string | null;
-  createdAt?: Date | null;
+  createdAt: Date;
 };
 
 /**
@@ -294,7 +295,7 @@ export async function runMorningBriefs(now: Date = new Date()): Promise<{ due: n
         browser: book?.browserTimezone,
         partner: partnerTz.get(grant.partnerId),
       });
-      const { due, localDate } = briefDue({ ...prefs, briefTimezone: zone }, lastBriefAt, now, 'UTC', grant.createdAt ?? null);
+      const { due, localDate } = briefDue({ ...prefs, briefTimezone: zone }, lastBriefAt, now, 'UTC', grant.createdAt);
       if (!due) continue;
       result.due += 1;
 

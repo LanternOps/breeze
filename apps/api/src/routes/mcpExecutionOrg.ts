@@ -211,9 +211,10 @@ export async function resolveMcpExecutionContext(
 
   // Exactly one distinct org — a mixed-org device array is rejected here, BEFORE
   // ledger creation / handler execution.
-  if (deviceOrgIds.size !== 1) {
+  if (deviceOrgIds.size > 1) {
     throw new McpExecutionOrgError('Devices span more than one organization', 'split_by_org');
   }
+  if (deviceOrgIds.size !== 1) throw new McpExecutionOrgError('No target device resolved to an organization');
   const deviceOrgId = deviceOrgIds.values().next().value as string;
 
   // An explicit orgId must agree with the devices' real org.

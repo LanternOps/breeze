@@ -91,8 +91,10 @@ export function partnerWideGateRefusesTool(
 }
 
 /**
- * Actions of mixed tools (some actions work without full partner org access)
- * whose partner-wide target is visible in the call's own input (#11287). Over
+ * Mixed tools (some actions work without full partner org access) whose
+ * partner-wide actions can be recognised from the call input alone (#11287);
+ * `manage_ai_agent_schedules` create with `ownerScope: 'partner'` is the only
+ * one so far. Over
  * MCP such a call is refused before an approval card is filed: the intent is
  * released under the same credential, which never carries partnerOrgAccess, so
  * the handler's partner-wide gate would refuse it after a person approved it.
@@ -100,7 +102,7 @@ export function partnerWideGateRefusesTool(
  * and is left to the handler; its refusal is rewritten to the MCP wording.
  */
 const PARTNER_WIDE_INPUT_ACTIONS: ReadonlyMap<string, (input: Record<string, unknown>) => boolean> = new Map([
-  // createSchedule → assertAgentWriteAllowed refuses a baseline without canManagePartnerWidePolicies.
+  // The handler's partner-wide write check refuses a baseline without canManagePartnerWidePolicies.
   ['manage_ai_agent_schedules', (input) => input.action === 'create' && input.ownerScope === 'partner'],
 ]);
 

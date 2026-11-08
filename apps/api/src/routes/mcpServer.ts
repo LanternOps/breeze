@@ -1751,6 +1751,7 @@ type McpListingContext = {
   callerFailsMfaGate: boolean;
   /** #10930: true when the tool's handler refuses this caller on every call (partner-wide gate). */
   partnerWideRefused: (toolName: string) => boolean;
+  /** True for a PARTNER_SCOPE_ONLY_TOOLS tool and an org-scoped caller (#11287). */
   partnerScopeRefused: (toolName: string) => boolean;
   ownsIntents: boolean;
   canRunTier3Unattended: (toolName: string) => boolean;
@@ -1806,7 +1807,7 @@ function buildMcpListingContext(
     // the PARTNER_WIDE_ONLY_TOOLS handlers refuse every call. The gate stays
     // fail-closed; this only stops advertising what it refuses.
     partnerWideRefused: (toolName: string) => partnerWideGateRefusesTool(toolName, auth),
-    // #11287: an org-scoped credential never gets past these handlers' scope check.
+    // #11287: PARTNER_SCOPE_ONLY_TOOLS handlers answer PARTNER_SCOPE_REQUIRED to every org-scoped caller.
     partnerScopeRefused: (toolName: string) => partnerScopeGateRefusesTool(toolName, auth),
     ownsIntents,
     canRunTier3Unattended,
@@ -2290,12 +2291,13 @@ async function handleToolsCall(
     return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
   }
 
-  // #10930: a tool whose handler refuses every call without full partner org
-  // access is not listed for this caller (isToolListedForCaller). Refuse it here
-  // with the one MCP wording, before any intent is filed: an mcp_api intent is
-  // released under buildAuthFromApiKey again, so it would be refused there too.
-  // #11287: and a mixed tool's call whose partner-wide target is in its input
-  // (a partner baseline create), before its approval card is filed.
+  // Refused here with the one MCP wording, before any intent is filed (an
+  // mcp_api intent is released under buildAuthFromApiKey again, so it would be
+  // refused there too):
+  // - #10930: a tool whose handler refuses every call without full partner org
+  //   access (not listed for this caller either, isToolListedForCaller);
+  // - #11287: a listed mixed tool's call whose partner-wide target is in its
+  //   input (a partner baseline create).
   if (partnerWideGateRefusesTool(toolName, auth) || partnerWideGateRefusesCall(toolName, toolInput, auth)) {
     return jsonRpcResult(id, {
       content: [{ type: 'text', text: JSON.stringify(MCP_PARTNER_WIDE_UNAVAILABLE_ERROR) }],

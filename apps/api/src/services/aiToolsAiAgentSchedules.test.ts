@@ -119,6 +119,12 @@ describe('schema', () => {
       expect(!result.success && result.error).toMatch(/cron/);
     });
 
+    it('refuses a create naming actMode, as the handler does', () => {
+      const result = validateToolInput('manage_ai_agent_schedules', { ...createBaseline, actMode: false });
+      expect(result.success).toBe(false);
+      expect(!result.success && result.error).toMatch(/actMode/);
+    });
+
     it('refuses an update the route schema refuses', () => {
       expect(validateToolInput('manage_ai_agent_schedules', { action: 'update', scheduleId: BASELINE, sweepKinds: ['not_a_kind'] }).success).toBe(false);
     });

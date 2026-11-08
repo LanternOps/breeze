@@ -39,9 +39,9 @@ export const aiAgentScheduleToolSchemas = {
   }).strict().superRefine((value, ctx) => {
     // #11287: validateToolInput runs this before MCP or chat files an approval
     // card. Check a create or update against the route schema the handler
-    // applies, so a call it would refuse after a person approved it (create
-    // without `enabled`) is refused here instead. The handler keeps its own
-    // check; the JSON schema the model sees is unchanged.
+    // applies, so a call it would refuse after a person approved it (e.g. a
+    // create without `enabled`) is refused here instead. The handler keeps its
+    // own check. Refinements do not appear in the generated JSON schema.
     // The same field split as the handler's create() and update().
     const { action, ...rest } = value;
     if (action === 'delete') return;

@@ -291,6 +291,17 @@ describe('MCP tools/call deprecated alias dispatch (#5362)', () => {
       expect(event.details.deprecatedToolAlias).toBe(true);
     });
 
+    it('an org-scoped key calling the alias is refused before dispatch, like the canonical name (#11287)', async () => {
+      testState.partnerKey = false;
+      for (const name of ['manage_catalog', 'manage_billing_catalog']) {
+        mocks.executeTool.mockClear();
+        const body = await (await callTool(name, { action: 'create_item', name: 'Managed Workstation', itemType: 'service' })).json();
+        expect(body.result?.isError, name).toBe(true);
+        expect(JSON.parse(body.result.content[0].text).code, name).toBe('PARTNER_SCOPE_REQUIRED');
+        expect(mocks.executeTool).not.toHaveBeenCalled();
+      }
+    });
+
     it('an aliased supervised action is still MCP-denied, exactly like the canonical name', async () => {
       for (const name of ['manage_catalog', 'manage_billing_catalog']) {
         mocks.executeTool.mockClear();

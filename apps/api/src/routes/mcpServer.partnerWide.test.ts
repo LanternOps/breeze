@@ -126,11 +126,17 @@ vi.mock('../services/tenantStatus', () => ({
 vi.mock('../services/recoveryBootstrap', () => ({
   resolveServerUrl: (requestUrl?: string) => (requestUrl ? new URL(requestUrl).origin : 'http://localhost:3001'),
 }));
-vi.mock('./mcpExecutionOrg', () => ({
-  resolveMcpExecutionOrgId: () => 'org-1',
-  resolveMcpExecutionContext: async () => ({ orgId: 'org-1' }),
-  McpExecutionOrgError: class McpExecutionOrgError extends Error {},
-}));
+const execOrg = vi.hoisted(() => ({ resolve: vi.fn() }));
+vi.mock('./mcpExecutionOrg', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./mcpExecutionOrg')>();
+  return {
+    // The real error class and its JSON-RPC mapping; the resolution is stubbed.
+    McpExecutionOrgError: actual.McpExecutionOrgError,
+    mcpExecutionOrgRpcError: actual.mcpExecutionOrgRpcError,
+    resolveMcpExecutionOrgId: () => 'org-1',
+    resolveMcpExecutionContext: (...args: unknown[]) => execOrg.resolve(...args),
+  };
+});
 vi.mock('../services/toolSources/resolver', () => ({
   resolveTenantTools: vi.fn(async () => []),
   resolveTenantToolByName: vi.fn(async () => null),
@@ -184,6 +190,7 @@ beforeEach(() => {
   testState.authPatch = null;
   setPartnerKey();
   mocks.executeTool.mockResolvedValue(JSON.stringify({ ok: true }));
+  execOrg.resolve.mockResolvedValue({ orgId: 'org-1' });
   mocks.checkToolPermission.mockResolvedValue(null);
   mocks.ledgerBegin.mockResolvedValue({ id: 'ledger-1' });
   mocks.ledgerComplete.mockResolvedValue(undefined);
@@ -374,5 +381,26 @@ describe('#11287 partner-wide action of a mixed tool over MCP', () => {
     testState.authPatch = { token: { mfa: true }, partnerOrgAccess: 'all' };
     await rpc('tools/call', { name: 'manage_ai_agent_schedules', arguments: { action: 'create', ownerScope: 'partner' } });
     expect(intentMocks.createMcpActionIntent).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #11287: the MCP dispatch's mixed-org refusal carries the split hint (the
+// chat path's split_by_org never reaches an MCP client); every other
+// execution-org refusal stays the generic invalid params.
+describe('#11287 execution-org refusals over MCP tools/call', () => {
+  it('a mixed-org device set answers -32602 telling the client to call once per organization', async () => {
+    const { McpExecutionOrgError } = await import('./mcpExecutionOrg');
+    execOrg.resolve.mockRejectedValue(new McpExecutionOrgError('Devices span more than one organization', 'split_by_org'));
+    const { body } = await rpc('tools/call', { name: 'list_sites', arguments: {} });
+    expect(body.error).toEqual({ code: -32602, message: expect.stringContaining('once per organization'), data: { reason: 'split_by_org' } });
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  it('any other execution-org refusal stays the generic invalid params, with no data', async () => {
+    const { McpExecutionOrgError } = await import('./mcpExecutionOrg');
+    execOrg.resolve.mockRejectedValue(new McpExecutionOrgError('Device not found or access denied'));
+    const { body } = await rpc('tools/call', { name: 'list_sites', arguments: {} });
+    expect(body.error).toEqual({ code: -32602, message: 'Invalid params' });
+    expect(mocks.executeTool).not.toHaveBeenCalled();
   });
 });

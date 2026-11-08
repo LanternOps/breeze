@@ -19,9 +19,9 @@ import { useWispThreadTimeline, type TimelineTarget } from './useWispThreadTimel
 
 type Wisp = NonNullable<WispState>;
 /**
- * `not_configured`: the server has no model provider (503 `ai_not_configured`,
- * #11287). No retry can succeed until an administrator adds a key, so the
- * column says that and shows the thread so far read-only, as for a paused grant.
+ * `not_configured`: the server has no model provider (503 `ai_not_configured`).
+ * The column says that instead of the generic open failure and shows the thread
+ * so far read-only, as for a paused grant; Try again rebinds once a key is added.
  */
 type Binding = 'binding' | 'live' | 'failed' | 'not_configured';
 
@@ -270,9 +270,17 @@ export default function WispHomeThread({
         )
       ) : binding === 'not_configured' ? (
         historyOnly(
-          <p className="rounded-2xl border px-4 py-3 text-sm text-muted-foreground" data-testid="wisp-home-thread-not-configured" role="status">
-            {t('errors:ai_not_configured')}
-          </p>,
+          <div className="space-y-2 rounded-2xl border px-4 py-3 text-sm" data-testid="wisp-home-thread-not-configured" role="status">
+            <p className="text-muted-foreground">{t('errors:ai_not_configured')}</p>
+            <button
+              type="button"
+              data-testid="wisp-home-thread-not-configured-retry"
+              onClick={() => rebind(() => bindWispSession(wisp, null))}
+              className="rounded border px-3 py-1 hover:bg-muted"
+            >
+              {t('wisp.thread.retry')}
+            </button>
+          </div>,
         )
       ) : binding === 'binding' ? (
         withoutChat(
