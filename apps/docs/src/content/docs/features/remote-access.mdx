@@ -308,8 +308,10 @@ Pressing the remote's paste shortcut sends your clipboard first. If it can't be 
 
 Clipboard v2 needs agent and Breeze Viewer v0.122.1 or later. With an older agent the chip reports that the agent did not report clipboard status: text only, policy unknown. On a VNC session the clipboard is text only.
 
-<Aside type="caution" title="Known gap: images copied on a Windows device">
-  An image copied on a Windows device does not reach the viewer yet. The desktop session runs as SYSTEM and cannot read the user's copied image formats. Text copies work in both directions, and images pasted *into* a Windows device are not affected. A fix is planned for a follow-up release.
+On Windows the desktop session runs as SYSTEM, which cannot read the image formats the signed-in user copies. When SYSTEM finds nothing it can read, the agent reads the clipboard through the agent's helper running as that user, in the same Windows session, once per clipboard change. An image the user copies (PNG or JFIF, for example from a browser or the Snipping Tool) then reaches the viewer. At the sign-in screen there is no user helper, and only text is read.
+
+<Aside type="caution" title="Known gap: bitmap-only copies on Windows">
+  A copy that holds only a bitmap (a classic Print Screen capture, older versions of Paint) does not reach the viewer. The agent reads PNG and JFIF images, not plain bitmaps. When a copy holds both text and an image, the viewer gets the text. Images pasted *into* a Windows device are not affected.
 </Aside>
 
 ### Login Screen (macOS)

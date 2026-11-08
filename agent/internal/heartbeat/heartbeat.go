@@ -1984,6 +1984,17 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 			}()
 			h.handleSASFromHelper(session, env)
 		}()
+	case ipc.TypeDesktopClipboardRead:
+		// Waits on the user helper for up to the clipboard proxy's timeout,
+		// so it runs off the dispatch goroutine, like SAS.
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("panic in handleDesktopClipboardRead", "error", fmt.Sprint(r))
+				}
+			}()
+			h.handleDesktopClipboardRead(session, env)
+		}()
 	case ipc.TypeDesktopLeaseRenew:
 		// A helper-hosted session's lease watchdog lives in the helper, which
 		// holds no command socket. This is the inbound half of the IPC lease
