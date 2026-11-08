@@ -67,7 +67,7 @@ import {
   writeAuthAudit,
   hashRecoveryCodes,
 } from './helpers';
-import { activeTotpFactorSql } from './mfaFactorPredicates';
+import { activeTotpFactorSql, hasActiveTotpFactor } from './mfaFactorPredicates';
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 
 const { db, withSystemDbAccessContext, runOutsideDbContext } = dbModule;
@@ -501,7 +501,9 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
         revokeReason: 'passkey-register',
         persistFactor: async (tx) => {
           await persistPasskey(tx);
-          const hasExistingFactor = Boolean(enrollmentState.mfaSecret) || enrollmentState.mfaMethod === 'sms';
+          // #10650: the shared predicate, so only a live authenticator app (or
+          // SMS) keeps its primary; a stale secret never does.
+          const hasExistingFactor = hasActiveTotpFactor(enrollmentState) || enrollmentState.mfaMethod === 'sms';
 
           const [state] = await tx
             .update(users)

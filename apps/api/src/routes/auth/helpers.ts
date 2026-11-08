@@ -423,7 +423,8 @@ export async function requireFreshMfaStepUp(
 
   // Only TOTP step-up is supported here; SMS/passkey L4 re-auth is out of scope.
   // The shared predicate is an allowlist on the method (not a denylist): a
-  // TOTP primary or a backup beside a passkey primary (#10650) qualifies, and
+  // TOTP primary, a backup beside a passkey primary (#10650), or a legacy
+  // enabled row whose mfa_method was never written qualifies, and
   // a stale secret beside an SMS primary or on an MFA-off row never does.
   if (!user || !hasActiveTotpFactor(user) || !user.mfaSecret) {
     return rejectProof(c, 'Invalid credentials', INVALID_CREDENTIALS_CODE, rejectionStatus);

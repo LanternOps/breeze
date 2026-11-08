@@ -377,6 +377,17 @@ describe('#10650 backup TOTP setup', () => {
     expect(consumeMFAToken).not.toHaveBeenCalled();
   });
 
+  it('/mfa/verify setup-confirm from a different session also answers expired and consumes no code', async () => {
+    const record = stageSetup();
+    state.auth.token.sid = 'another-session';
+    const res = await post('/mfa/verify', { code: '123456', stepUpGrantId: seedGrant('add_factor', { sid: 'another-session' }) });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: 'MFA setup expired. Please start setup again.' });
+    expect(state.redis.get(`mfa:setup:${USER_ID}`)).toBe(record);
+    expect(consumeMFAToken).not.toHaveBeenCalled();
+    expect(completeAdditionalMfaFactorEnrollment).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['no sid', { sid: undefined }],
     ['no role', { role: undefined }],
@@ -494,6 +505,10 @@ describe('#10650 backup TOTP confirm', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ code: 'factor_state_changed', stepUpGrantConsumed: true });
     expect(state.events).toContain('cancelAuthIssuance');
+    expect(vi.mocked(writeAuthAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'auth.mfa.totp.register.failed',
+      reason: 'factor_state_changed',
+    }));
   });
 
   it('answers 409 factor_state_changed without spending the grant when the live row no longer fits the staged role', async () => {
@@ -559,7 +574,7 @@ describe('#10650 POST /auth/mfa/disable', () => {
     expect(dbModule.runOutsideDbContext).toHaveBeenCalled();
   });
 
-  it('TOTP primary with no passkeys keeps today\'s path, and the write is guarded against a concurrent passkey', async () => {
+  it('TOTP primary with no passkeys keeps today\'s disable path', async () => {
     state.user = passkeyPrimary({ mfaMethod: 'totp', mfaSecret: 'enc:PRIMARY', passkeyCount: 0 });
     const res = await post('/mfa/disable', { code: '123456', currentPassword: 'pw' });
     expect(res.status).toBe(200);
@@ -572,7 +587,20 @@ describe('#10650 POST /auth/mfa/disable', () => {
     state.txUpdateRows = [];
     const res = await post('/mfa/disable', { code: '123456', currentPassword: 'pw' });
     expect(res.status).toBe(409);
-    expect(await res.json()).toMatchObject({ code: 'factor_removal_required' });
+    const body = await res.json() as Record<string, unknown>;
+    expect(body).toMatchObject({ code: 'factor_removal_required' });
+    // Password road: nothing single-use was spent.
+    expect(body).not.toHaveProperty('stepUpGrantConsumed');
+  });
+
+  it('on the passwordless SSO road, that 409 says the SSO grant was spent', async () => {
+    state.user = passkeyPrimary({ mfaMethod: 'totp', mfaSecret: 'enc:PRIMARY', passkeyCount: 0, passwordHash: null });
+    const ssoGrant = seedGrant('sso_reauth_manage_factor');
+    state.txUpdateRows = [];
+    const res = await post('/mfa/disable', { code: '123456', ssoReauthGrantId: ssoGrant });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'factor_removal_required', stepUpGrantConsumed: true });
+    expect(state.grants.has(ssoGrant)).toBe(false);
   });
 });
 

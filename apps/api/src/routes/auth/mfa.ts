@@ -742,8 +742,10 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
 
   // #10650 Decision 1: switching MFA off while passkeys remain would leave them
   // listed on an account whose password login skips MFA. Refuse before any code
-  // is checked or grant spent; the user removes the passkeys, or removes the
-  // authenticator app on its own (/mfa/totp/remove). Counted under system
+  // is checked or grant spent; the user removes the passkeys, or, if an
+  // authenticator app is enrolled, removes it on its own (/mfa/totp/remove).
+  // An SMS-primary account with passkeys deletes the passkeys first
+  // (Decision 1A). Counted under system
   // context, escaping the request context first, as passkey removal does.
   const [passkeyState] = await runOutsideDbContext(() => withSystemDbAccessContext(async () =>
     db
@@ -899,7 +901,12 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
   } catch (error) {
     await cancelAuthIssuance(capability).catch(() => undefined);
     if (error instanceof FactorRemovalRequiredError) {
-      return c.json(FACTOR_REMOVAL_REQUIRED_BODY, 409);
+      // The SSO re-auth grant (passwordless road) was spent just before the
+      // write; say so, so the client drops it instead of re-presenting it.
+      return c.json({
+        ...FACTOR_REMOVAL_REQUIRED_BODY,
+        ...(reauth.proof.road === 'sso' ? { stepUpGrantConsumed: true } : {}),
+      }, 409);
     }
     const response = authIssuanceAdmissionError(c, error);
     if (!response) throw error;
@@ -972,11 +979,11 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithSt
 // SR2-20: existing-factor step-up. Proves an EXISTING MFA factor (TOTP, SMS,
 // or passkey — a discriminated union on `method` so a passkey-only user is
 // never locked out) and mints a short-lived single-use grant scoped to the
-// requested operation (including add_factor, rotate_recovery_codes, and
-// register_approver_device), which the caller then presents as `stepUpGrantId`
-// to the corresponding protected mutation
-// (`/mfa/enable`, setup-confirm, `/mfa/sms/enable`, `/passkeys/register/*`)
-// on an already-protected account. The passkey branch expects the client to
+// requested operation (including add_factor, rotate_recovery_codes,
+// remove_totp and register_approver_device), which the caller then presents as
+// `stepUpGrantId` to the corresponding protected mutation
+// (`/mfa/enable`, setup-confirm, `/mfa/sms/enable`, `/passkeys/register/*`,
+// `/mfa/totp/remove`) on an already-protected account. The passkey branch expects the client to
 // have already called `POST /auth/mfa/step-up/options` (passkeys.ts) to get
 // a fresh WebAuthn challenge.
 /**

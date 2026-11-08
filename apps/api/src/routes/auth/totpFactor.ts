@@ -297,19 +297,23 @@ export async function confirmTotpEnrollment(
   // 5. Consuming verifier (SR2-24): the accepted time step cannot be replayed
   // at login. Fails closed when Redis is down.
   const valid = await consumeMFAToken(setup.secret, input.code, userId);
-  if (!valid) {
+  // Failures from here on have burned the TOTP time step, so each is audited.
+  const auditConfirmFailure = async (reason: string) => {
     const orgId = await resolveUserAuditOrgId(userId);
     writeAuthAudit(c, {
       orgId: orgId ?? undefined,
       action: setup.role === 'backup' ? 'auth.mfa.totp.register.failed' : 'auth.mfa.setup.failed',
       result: 'failure',
-      reason: 'invalid_mfa_code',
+      reason,
       userId,
       email: auth.user.email,
       details: setup.role === 'backup'
         ? { phase: 'setup_confirmation', role: 'backup' }
         : { phase: 'setup_confirmation' },
     });
+  };
+  if (!valid) {
+    await auditConfirmFailure('invalid_mfa_code');
     return rejectProof(c, 'Invalid MFA code', MFA_CODE_INVALID, TOTP_PROOF_REJECTION_STATUS);
   }
 
@@ -323,6 +327,7 @@ export async function confirmTotpEnrollment(
       .limit(1)
   );
   if (!live || totpSetupRoleFor(live) !== setup.role) {
+    await auditConfirmFailure('factor_state_changed');
     return factorStateChanged(c, false);
   }
   const role = setup.role;
@@ -365,6 +370,9 @@ export async function confirmTotpEnrollment(
     await cancelAuthIssuance(capability).catch(() => undefined);
     return grantSpent ? withGrantConsumed(enrollmentConsumeError) : enrollmentConsumeError;
   }
+  // Past this point the SSO enrollment grant is spent too, when one was sent
+  // (conservative for a password account, whose grant is simply not needed).
+  const anyGrantSpent = grantSpent || Boolean(input.ssoReauthGrantId);
 
   const encryptedSecret = encryptMfaSecret(setup.secret);
 
@@ -412,7 +420,8 @@ export async function confirmTotpEnrollment(
       });
     } catch (error) {
       await cancelAuthIssuance(capability).catch(() => undefined);
-      const response = authIssuanceAdmissionError(c, error, { stepUpGrantConsumed: grantSpent });
+      if (error instanceof AuthIssuanceConflictError) await auditConfirmFailure('factor_state_changed');
+      const response = authIssuanceAdmissionError(c, error, { stepUpGrantConsumed: anyGrantSpent });
       if (!response) throw error;
       return response;
     }
@@ -487,8 +496,11 @@ export async function confirmTotpEnrollment(
     });
   } catch (error) {
     await cancelAuthIssuance(capability).catch(() => undefined);
-    if (error instanceof AuthIssuanceConflictError) return factorStateChanged(c, grantSpent);
-    const response = authIssuanceAdmissionError(c, error, { stepUpGrantConsumed: grantSpent });
+    if (error instanceof AuthIssuanceConflictError) {
+      await auditConfirmFailure('factor_state_changed');
+      return factorStateChanged(c, anyGrantSpent);
+    }
+    const response = authIssuanceAdmissionError(c, error, { stepUpGrantConsumed: anyGrantSpent });
     if (!response) throw error;
     return response;
   }
@@ -594,7 +606,8 @@ totpFactorRoutes.post('/mfa/totp/remove', authMiddleware, zValidator('json', rem
   }
 
   // 2. "User at the keyboard": password, or a fresh IdP grant for a
-  // passwordless account. Validated here, spent at the terminal write.
+  // passwordless account. Validated here, spent in step 8 just before the
+  // factor write.
   const reauth = await resolveFactorManagementStepUp(
     c,
     auth,

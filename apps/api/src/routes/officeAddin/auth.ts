@@ -367,8 +367,9 @@ officeAddinAuthRoutes.post('/bind', zValidator('json', bindSchema), async (c) =>
     }
 
     if (ENABLE_2FA) {
-      // #10650 Decision 3A: a TOTP primary or the authenticator-app backup
-      // beside a primary passkey; never a stale secret beside SMS.
+      // #10650 Decision 3A: a TOTP primary, the authenticator-app backup beside
+      // a primary passkey, or a legacy enabled row with no mfa_method; never a
+      // stale secret beside SMS.
       if (!hasActiveTotpFactor(user) || !user.mfaSecret) {
         return { deny: 403, error: 'mfa_enrollment_required' };
       }

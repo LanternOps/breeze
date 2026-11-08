@@ -594,7 +594,8 @@ userRoutes.get('/me', async (c) => {
     // auth store carries this through so UI that today says "set up MFA and
     // sign in again" can offer the IdP road instead of a dead end.
     hasPassword: passwordHash != null,
-    // A NULL from the predicate (no row columns to compare) is "not enrolled".
+    // Strict boolean: the driver hands back the SQL predicate's value; anything
+    // but `true` reads as "not enrolled".
     totpEnrolled: totpEnrolled === true,
     partnerId: auth.partnerId,
     orgId: auth.orgId,

@@ -120,15 +120,20 @@ async function waitForBlockedBackends(monitor: Sql, blockerPid: number, expected
  *
  * The holder and the wait-chain monitor each get a dedicated connection: the
  * shared test pool is not used while a request is parked.
+ *
+ * `noKeyUpdate` holds `FOR NO KEY UPDATE` instead — what an UPDATE of the row
+ * takes — so the request still parks, but an FK insert referencing the row
+ * (which needs only `FOR KEY SHARE`) can commit while it waits.
  */
-async function userRowBarrier(userId: string) {
+async function userRowBarrier(userId: string, { noKeyUpdate = false }: { noKeyUpdate?: boolean } = {}) {
   const holderClient: Sql = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
   const monitor: Sql = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
   const locked = deferred();
   const released = deferred();
   let pid = 0;
   const holder = holderClient.begin(async (tx) => {
-    await tx`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`;
+    if (noKeyUpdate) await tx`SELECT id FROM users WHERE id = ${userId} FOR NO KEY UPDATE`;
+    else await tx`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`;
     const [row] = await tx<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`;
     pid = row!.pid;
     locked.resolve();
@@ -484,6 +489,36 @@ describe('#10650 authenticator app as a passkey backup (real PG + Redis)', () =>
       mfaEnabled: true, mfaMethod: 'totp', mfaSecret: before.mfaSecret, mfaEpoch: before.mfaEpoch,
     });
     expect(after.mfaRecoveryCodes).toEqual(before.mfaRecoveryCodes);
+  });
+
+  it('8b. a passkey registered after the /mfa/disable pre-check makes the write lose with 409 and changes nothing', async () => {
+    const fx = await passkeyPrimaryAccount();
+    const secret = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
+    // TOTP primary with NO passkey, so the pre-check passes.
+    await getTestDb().delete(userPasskeys).where(eq(userPasskeys.userId, fx.user.id));
+    await getTestDb().update(users).set({ mfaMethod: 'totp', mfaSecret: encryptMfaSecret(secret) }).where(eq(users.id, fx.user.id));
+    const before = await readUser(fx.user.id);
+    await forgetUsedTotpSteps(fx.user.id);
+    const token = await tokenFor(fx);
+    const code = await generate({ secret });
+    const cookie = await browserBindingCookie();
+
+    const barrier = await userRowBarrier(fx.user.id, { noKeyUpdate: true });
+    const disable = await barrier.start(() => post('/auth/mfa/disable', token, { code, currentPassword: PASSWORD }, cookie));
+    // The disable is parked at its write; a passkey lands now.
+    await getTestDb().insert(userPasskeys).values({
+      userId: fx.user.id, credentialId: `cred-late-${randomUUID()}`, publicKey: 'dGVzdC1wdWJsaWMta2V5', counter: 0,
+      deviceType: 'singleDevice', backedUp: false, name: 'late',
+    });
+    await barrier.release();
+    const res = await disable.response;
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'factor_removal_required' });
+    const after = await readUser(fx.user.id);
+    expect(after).toMatchObject({ mfaEnabled: true, mfaMethod: 'totp', mfaSecret: before.mfaSecret, mfaEpoch: before.mfaEpoch });
+    expect(after.mfaRecoveryCodes).toEqual(before.mfaRecoveryCodes);
+    expect(await activePasskeys(fx.user.id)).toHaveLength(1);
   });
 
   it('9. /mfa/totp/remove on the backup: primary stays passkey, secret cleared, codes untouched, epoch bumped', async () => {

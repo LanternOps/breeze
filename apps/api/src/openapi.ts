@@ -1582,7 +1582,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         operationId: 'enableMfa',
         tags: ['Auth'],
         summary: 'Enable MFA (confirm setup)',
-        description: 'Confirm TOTP MFA setup by providing the 6-digit code from the authenticator app. Requires a prior call to /auth/mfa/setup. When the account already has a primary passkey, this adds the authenticator app as a backup instead: the response carries `backup: true` and no recovery codes.',
+        description: 'Confirm TOTP MFA setup by providing the 6-digit code from the authenticator app. Requires a prior call to /auth/mfa/setup. When the account has a primary passkey and no authenticator app yet, this adds the authenticator app as a backup instead: the response carries `backup: true` and no recovery codes.',
         requestBody: {
           required: true,
           content: {
