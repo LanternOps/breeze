@@ -1095,8 +1095,8 @@
         "description": "E-postaları kendi alan adınızdan gönderin"
       },
       "aiBudgets": {
-        "label": "AI bütçeleri ve sınırları",
-        "description": "AI harcama sınırları, uyarılar ve hız sınırları"
+        "label": "Yapay Zeka bütçeleri ve sınırları",
+        "description": "Yapay Zeka harcama sınırları, uyarılar ve hız sınırları"
       },
       "aiProvider": {
         "label": "Yapay Zeka Sağlayıcıları ve Modelleri",
@@ -1119,7 +1119,7 @@
         "description": "Servis masası, faturalandırma ve topoloji açık/kapalı"
       },
       "aiApprovals": {
-        "label": "AI onayları",
+        "label": "Yapay Zeka onayları",
         "description": "Onay modu ve Breeze AI'ın onay için ne kadar beklediği"
       },
       "callerVerification": {
@@ -6364,7 +6364,7 @@
     }
   },
   "orgAiBudgetSettings": {
-    "title": "AI bütçesi ve sınırları",
+    "title": "Yapay Zeka bütçesi ve sınırları",
     "description": "Bu kuruluşta Breeze AI için harcama sınırları, uyarılar ve hız sınırları. İş ortağınızın ayarladığı alanlar burada gösterilir ancak yalnızca iş ortağı sekmesinden değiştirilebilir.",
     "selectOrganization": "Yapay zeka bütçesini yapılandırmak için bir kuruluş seçin."
   },
@@ -8224,7 +8224,7 @@
     "usersLoadFailed": "Teknisyenler yüklenemedi."
   },
   "orgAiApprovalMode": {
-    "title": "AI onay modu",
+    "title": "Yapay Zeka onay modu",
     "description": "Breeze AI sohbetinin bu kuruluşta korumalı (Tier 2/3) eylemleri çalıştırmadan önce nasıl onay istediği. Harcama sınırı ayarlanmış olsun ya da olmasın uygulanır.",
     "save": "Kaydet"
   }

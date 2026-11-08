@@ -719,14 +719,15 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
             {/* AI model registry W04 (#7602): org override of the partner's per-feature model defaults (tighten-only). */}
             <OrgModelDefaultsCard orgId={effectiveOrgId} />
             <OrgAiBudgetSettings orgId={effectiveOrgId} />
+            {/* Approval mode: stored with the budget fields (PUT /ai/budget)
+                but not a budget, so it renders as its own card ahead of the
+                approval timeout. */}
+            <OrgAiBudgetSettings orgId={effectiveOrgId} section="approvals" />
             {/* #6475 — a separate card, not folded into OrgAiBudgetSettings:
                 that one saves through PUT /ai/budget with different
                 semantics (touched-fields-only, its own lock model). This
                 goes through the page's wholesale settings PATCH instead, via
                 handleSave('aiApprovals', ...) below. */}
-            {/* Approval mode: stored with the budget fields (PUT /ai/budget)
-                but not a budget, so it sits beside the approval timeout. */}
-            <OrgAiBudgetSettings orgId={effectiveOrgId} section="approvals" />
             <OrgAiApprovalTimeoutCard
               initialData={orgDetails?.settings?.aiApprovals}
               effective={aiApprovalTimeout}

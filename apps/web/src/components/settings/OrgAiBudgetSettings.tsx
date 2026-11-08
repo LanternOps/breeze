@@ -110,6 +110,10 @@ const centsToDollars = (cents: number | null): string => (cents == null ? '' : (
  * never render a form it has no org to save (the "Organization context
  * required" 400).
  *
+ * `section="approvals"` renders the approval-mode field as its own card (it is
+ * stored with the budget fields but is not a budget); each card loads, locks
+ * and saves only its own section's fields.
+ *
  * Two contracts this file exists to hold:
  *
  * 1. **Only touched fields are sent.** The payload can only tell us the MERGED
@@ -372,6 +376,10 @@ export default function OrgAiBudgetSettings({ orgId, section = 'budget' }: Props
   const selectedApprovalMode = (draft.approvalMode || AI_BUDGET_DEFAULTS.approvalMode) as keyof typeof APPROVAL_MODE_HELP_KEYS;
 
   if (section === 'approvals') {
+    // PUT /ai/budget has no null for approvalMode, so once the org has its own
+    // mode "Default" cannot be saved (serialize drops it): offering it would
+    // toast "saved" and snap back on reload.
+    const approvalModeIsOrgSet = aiBudgetSource('approvalMode', effective, locked) === 'organization';
     return (
       <section className="rounded-lg border bg-card p-6 shadow-xs" data-testid="org-ai-approval-mode-settings">
         <div className="flex items-center gap-2">
@@ -387,26 +395,30 @@ export default function OrgAiBudgetSettings({ orgId, section = 'budget' }: Props
         )}
 
         <div className="max-w-md">
-            <label className="block">
-              <span className="text-sm text-muted-foreground">{t('aiUsagePage.approvalMode')}</span>
-              <select
-                data-testid="org-ai-approval-mode"
-                value={draft.approvalMode}
-                onChange={(e) => setField('approvalMode', e.target.value)}
-                disabled={isLocked('approvalMode')}
-                className={inputClass('approvalMode')}
-              >
-                <option value="">{t('aiUsagePage.defaultValue', { value: approvalModeDefaultLabel })}</option>
-                <option value="per_step">{t('aiUsagePage.perStepDefault')}</option>
-                <option value="action_plan">{t('aiUsagePage.actionPlan')}</option>
-                <option value="auto_approve">{t('aiUsagePage.autoApprove')}</option>
-                <option value="hybrid_plan">{t('aiUsagePage.hybridPlanAbort')}</option>
-              </select>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {t(/* i18n-dynamic */ APPROVAL_MODE_HELP_KEYS[selectedApprovalMode])}
-              </p>
-              {lockedNote('approvalMode')}
-            </label>
+          <label className="block">
+            <span className="text-sm text-muted-foreground">{t('aiUsagePage.approvalMode')}</span>
+            <select
+              data-testid="org-ai-approval-mode"
+              value={draft.approvalMode}
+              onChange={(e) => setField('approvalMode', e.target.value)}
+              disabled={isLocked('approvalMode')}
+              aria-invalid={fieldErrors?.approvalMode ? true : undefined}
+              className={inputClass('approvalMode')}
+            >
+              <option value="" disabled={approvalModeIsOrgSet}>
+                {t('aiUsagePage.defaultValue', { value: approvalModeDefaultLabel })}
+              </option>
+              <option value="per_step">{t('aiUsagePage.perStepDefault')}</option>
+              <option value="action_plan">{t('aiUsagePage.actionPlan')}</option>
+              <option value="auto_approve">{t('aiUsagePage.autoApprove')}</option>
+              <option value="hybrid_plan">{t('aiUsagePage.hybridPlanAbort')}</option>
+            </select>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t(/* i18n-dynamic */ APPROVAL_MODE_HELP_KEYS[selectedApprovalMode])}
+            </p>
+            {fieldErrorNote('approvalMode')}
+            {lockedNote('approvalMode')}
+          </label>
         </div>
 
         <div className="mt-4">

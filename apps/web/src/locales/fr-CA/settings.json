@@ -1095,8 +1095,8 @@
         "description": "Envoyez vos courriels à partir de votre propre domaine"
       },
       "aiBudgets": {
-        "label": "Budgets et limites AI",
-        "description": "Plafonds de dépenses, alertes et limites de débit AI"
+        "label": "Budgets et limites IA",
+        "description": "Plafonds de dépenses, alertes et limites de débit IA"
       },
       "aiProvider": {
         "label": "Fournisseurs et modèles d'IA",
@@ -1119,7 +1119,7 @@
         "description": "Bureau de service, facturation et topologie activés/désactivés"
       },
       "aiApprovals": {
-        "label": "Approbations AI",
+        "label": "Approbations IA",
         "description": "Mode d'approbation et délai d'attente de Breeze AI pour une approbation"
       },
       "callerVerification": {
@@ -6359,7 +6359,7 @@
     }
   },
   "orgAiBudgetSettings": {
-    "title": "Budget et limites AI",
+    "title": "Budget et limites IA",
     "description": "Plafonds de dépenses, alertes et limites de débit de Breeze AI dans cette organisation. Les champs définis par votre partenaire sont affichés ici, mais ne peuvent être modifiés que dans l'onglet partenaire.",
     "selectOrganization": "Sélectionnez une organisation pour configurer son budget IA."
   },
@@ -8224,7 +8224,7 @@
     "usersLoadFailed": "Impossible de charger les techniciens."
   },
   "orgAiApprovalMode": {
-    "title": "Mode d'approbation AI",
+    "title": "Mode d'approbation IA",
     "description": "Comment le clavardage Breeze AI demande une confirmation avant d'exécuter des actions protégées (Tier 2/3) dans cette organisation. S'applique qu'un plafond de dépenses soit défini ou non.",
     "save": "Enregistrer"
   }

@@ -397,4 +397,48 @@ describe('OrgAiBudgetSettings — approval mode has its own card, not the budget
     expect(within(note).getByRole('link').getAttribute('href')).toBe('/settings/partner#ai-approvals');
     expect((scoped.getByTestId('org-ai-approval-mode-save') as HTMLButtonElement).disabled).toBe(true);
   });
+
+  // PUT /ai/budget has no null for approvalMode, so "Default" cannot clear an
+  // org-set mode; offering it would toast "saved" and snap back.
+  it('an org-set approval mode does not offer the Default option it cannot save', async () => {
+    mockEffective({ ...DEFAULT_BUDGET, approvalMode: 'auto_approve' });
+    const { container } = render(<OrgAiBudgetSettings orgId="org-1" section="approvals" />);
+    const scoped = within(container);
+
+    const select = (await scoped.findByTestId('org-ai-approval-mode')) as HTMLSelectElement;
+    expect(select.value).toBe('auto_approve');
+    const defaultOption = Array.from(select.options).find((o) => o.value === '');
+    expect(defaultOption?.disabled).toBe(true);
+  });
+
+  it('an inherited approval mode shows Default selected and enabled', async () => {
+    mockEffective({ ...DEFAULT_BUDGET });
+    const { container } = render(<OrgAiBudgetSettings orgId="org-1" section="approvals" />);
+    const scoped = within(container);
+
+    const select = (await scoped.findByTestId('org-ai-approval-mode')) as HTMLSelectElement;
+    expect(select.value).toBe('');
+    expect(Array.from(select.options).find((o) => o.value === '')?.disabled).toBe(false);
+  });
+
+  it('shows the readable per-field message when the server rejects the approval mode', async () => {
+    fetchWithAuth.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/orgs/organizations/org-1/effective-settings' && !init) {
+        return Promise.resolve(jsonRes({ effective: { aiBudgets: { ...DEFAULT_BUDGET } }, locked: [] }));
+      }
+      return Promise.resolve(jsonRes({
+        error: 'approvalMode: Invalid option',
+        details: { formErrors: [], fieldErrors: { approvalMode: ['Invalid option'] } },
+      }, 400));
+    });
+    const { container } = render(<OrgAiBudgetSettings orgId="org-1" section="approvals" />);
+    const scoped = within(container);
+
+    const select = (await scoped.findByTestId('org-ai-approval-mode')) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'hybrid_plan' } });
+    fireEvent.click(scoped.getByTestId('org-ai-approval-mode-save'));
+
+    await waitFor(() => expect(select.getAttribute('aria-invalid')).toBe('true'));
+    expect(scoped.getByTestId('org-ai-budget-error-approvalMode').textContent).toBe('Invalid option');
+  });
 });

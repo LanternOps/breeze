@@ -1095,8 +1095,8 @@
         "description": "E-Mails von Ihrer eigenen Domain senden"
       },
       "aiBudgets": {
-        "label": "AI-Budgets & Limits",
-        "description": "AI-Ausgabenlimits, Warnungen und Ratenlimits"
+        "label": "KI-Budgets & Limits",
+        "description": "KI-Ausgabenlimits, Warnungen und Ratenlimits"
       },
       "aiProvider": {
         "label": "KI-Anbieter und Modelle",
@@ -1119,7 +1119,7 @@
         "description": "Service Desk, Abrechnung und Topologie ein/aus"
       },
       "aiApprovals": {
-        "label": "AI-Genehmigungen",
+        "label": "KI-Genehmigungen",
         "description": "Genehmigungsmodus und wie lange Breeze AI auf eine Genehmigung wartet"
       },
       "callerVerification": {
@@ -6311,7 +6311,7 @@
     }
   },
   "orgAiBudgetSettings": {
-    "title": "AI-Budget & Limits",
+    "title": "KI-Budget & Limits",
     "description": "Ausgabenlimits, Warnungen und Ratenlimits für Breeze AI in dieser Organisation. Felder, die Ihr Partner festgelegt hat, werden hier angezeigt, können aber nur im Partner-Tab geändert werden.",
     "selectOrganization": "Wählen Sie eine Organisation aus, um ihr KI-Budget zu konfigurieren."
   },
@@ -8224,7 +8224,7 @@
     "usersLoadFailed": "Techniker konnten nicht geladen werden."
   },
   "orgAiApprovalMode": {
-    "title": "AI-Genehmigungsmodus",
+    "title": "KI-Genehmigungsmodus",
     "description": "Wie der Breeze AI-Chat in dieser Organisation vor geschützten (Tier 2/3) Aktionen nachfragt. Gilt unabhängig davon, ob ein Ausgabenlimit gesetzt ist.",
     "save": "Speichern"
   }

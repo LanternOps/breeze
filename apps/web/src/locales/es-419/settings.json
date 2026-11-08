@@ -1095,8 +1095,8 @@
         "description": "Envía correos desde tu propio dominio"
       },
       "aiBudgets": {
-        "label": "Presupuestos y límites de AI",
-        "description": "Límites de gasto, alertas y límites de frecuencia de AI"
+        "label": "Presupuestos y límites de IA",
+        "description": "Límites de gasto, alertas y límites de frecuencia de IA"
       },
       "aiProvider": {
         "label": "Proveedores y modelos de IA",
@@ -1119,7 +1119,7 @@
         "description": "Mesa de servicio, facturación y topología activadas/desactivadas"
       },
       "aiApprovals": {
-        "label": "Aprobaciones de AI",
+        "label": "Aprobaciones de IA",
         "description": "Modo de aprobación y cuánto espera Breeze AI una aprobación"
       },
       "callerVerification": {
@@ -6311,7 +6311,7 @@
     }
   },
   "orgAiBudgetSettings": {
-    "title": "Presupuesto y límites de AI",
+    "title": "Presupuesto y límites de IA",
     "description": "Límites de gasto, alertas y límites de frecuencia de Breeze AI en esta organización. Los campos que definió su partner se muestran aquí, pero solo se pueden cambiar en la pestaña del partner.",
     "selectOrganization": "Seleccione una organización para configurar su presupuesto de IA."
   },
@@ -8224,7 +8224,7 @@
     "usersLoadFailed": "No se pudieron cargar los técnicos."
   },
   "orgAiApprovalMode": {
-    "title": "Modo de aprobación de AI",
+    "title": "Modo de aprobación de IA",
     "description": "Cómo el chat de Breeze AI pide confirmación antes de ejecutar acciones protegidas (Tier 2/3) en esta organización. Se aplica haya o no un límite de gasto.",
     "save": "Guardar"
   }
