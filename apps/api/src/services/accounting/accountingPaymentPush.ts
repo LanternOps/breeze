@@ -763,8 +763,8 @@ export async function requestPaymentPush(
  * accounting mapping. The single destroyer-side helper (it REPLACES Phase D's
  * `clearPaymentMappingForInvoicePayment`, which only ever deleted the row).
  *
- * Called by `invoiceService.voidPayment` and `stripeReconcile`'s full-refund
- * branch, BEFORE the `invoice_payments` delete, inside the transaction that
+ * Called by `invoiceService.voidPayment` and the full-refund arm of
+ * `stripeReversalState.applyStripeFinancialEvent`, BEFORE the `invoice_payments` delete, inside the transaction that
  * already holds the invoice lock. `breeze_entity_id` is polymorphic, so there is
  * no FK to cascade: without this call the mapping outlives its payment and a
  * later CDC delivery for the same QuickBooks Payment reads as "already applied"

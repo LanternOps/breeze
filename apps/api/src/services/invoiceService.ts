@@ -1969,7 +1969,8 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
  *  consistent with the write (B10) — a global-db call from a locked writer
  *  would escape the transaction and race the lock it holds. Stripe refunds and
  *  disputes reach this through applyStripeFinancialEvent (stripeReversalState.ts),
- *  which takes the invoice row FOR UPDATE first as well. */
+ *  which takes the invoice row FOR UPDATE first and calls this with the ambient
+ *  `db`, i.e. inside that same system-context transaction. */
 export async function recomputeInvoiceStatus(invoiceId: string, dbc: DbExecutor = db): Promise<void> {
   const inv = await getOwnedInvoiceOr404(invoiceId, dbc);
   const paidRows = await dbc.select({ amount: invoicePayments.amount }).from(invoicePayments).where(eq(invoicePayments.invoiceId, invoiceId));

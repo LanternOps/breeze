@@ -26,7 +26,7 @@ const DATABASE_URL = process.env.DATABASE_URL
 // concurrent writer's change (a payment that settles the invoice, a void, a
 // due-date push-out); the sweep is started against the app pool, and
 // pg_blocking_pids proves it is queued on that lock before the holder commits.
-// No sleeps.
+// No fixed sleeps: a bounded poll waits on pg_blocking_pids.
 // ---------------------------------------------------------------------------
 
 interface Deferred<T> {
@@ -108,7 +108,7 @@ async function readInvoice(id: string) {
 
 /**
  * Run the sweep while `concurrentWrite` holds the contended invoice's row lock
- * (taken FOR UPDATE first, exactly as every invoice writer does). The writer
+ * (taken FOR UPDATE first, as the locking invoice writers do). The writer
  * commits only once the sweep is demonstrably blocked behind it.
  */
 async function sweepRacingWriter(
