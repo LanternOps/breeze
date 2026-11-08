@@ -52,7 +52,14 @@ const HEAP_LIMITED_MAX_REPORTED_MB = 1100;
 const POST_GC_HEAP_DELTA_BOUND_MB = 25;
 const HEAP_LIMITED_PEAK_RSS_BOUND_MB = 300;
 const EVENT_LOOP_P99_BOUND_MS = 200;
-const SETTLED_BROWSE_ROOT_BOUND_MS = 5000;
+/**
+ * Reads are bounded right after the publish (#11209): the hydrator analyzes the
+ * table itself, so there is no slow period to wait out. The selection bound is
+ * loose (about 3 s measured) and exists to catch the stale-statistics plan,
+ * which took 39-44 s.
+ */
+const BROWSE_ROOT_BOUND_MS = 5000;
+const SELECT_LARGEST_FOLDER_BOUND_MS = 10_000;
 
 export type HydrationRunFigures = {
   peakRssDeltaMb: number;
@@ -83,15 +90,20 @@ export function hydrationRunBreaches(run: HydrationRunFigures, { heapLimited }: 
 export function acceptanceBreaches(figures: {
   defaultLimit: HydrationRunFigures;
   heapLimited: HydrationRunFigures;
-  analyzed: boolean;
-  settledBrowseRootMs: number;
+  /** The publish ANALYZEd backup_snapshot_files itself (#11209). */
+  statisticsRefreshed: boolean;
+  browseRootMs: number;
+  selectLargestFolderMs: number;
 }): string[] {
   return [
     ...hydrationRunBreaches(figures.defaultLimit, { heapLimited: false }).map((b) => `default heap limit: ${b}`),
     ...hydrationRunBreaches(figures.heapLimited, { heapLimited: true }).map((b) => `1 GB heap limit: ${b}`),
-    ...(figures.analyzed ? [] : ['autoanalyze never ran after the publish, so the browse reading is not settled']),
-    ...(figures.settledBrowseRootMs >= SETTLED_BROWSE_ROOT_BOUND_MS
-      ? [`settled browse root ${figures.settledBrowseRootMs} ms (bound < ${SETTLED_BROWSE_ROOT_BOUND_MS})`]
+    ...(figures.statisticsRefreshed ? [] : ['the publish did not ANALYZE backup_snapshot_files, so the readings ran on stale statistics']),
+    ...(figures.browseRootMs >= BROWSE_ROOT_BOUND_MS
+      ? [`browse root right after the publish ${figures.browseRootMs} ms (bound < ${BROWSE_ROOT_BOUND_MS})`]
+      : []),
+    ...(figures.selectLargestFolderMs >= SELECT_LARGEST_FOLDER_BOUND_MS
+      ? [`largest-folder selection right after the publish ${figures.selectLargestFolderMs} ms (bound < ${SELECT_LARGEST_FOLDER_BOUND_MS})`]
       : []),
   ];
 }

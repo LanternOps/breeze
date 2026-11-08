@@ -28,6 +28,7 @@ import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestati
 import { indexMatchesAttestation } from './backupRestoreIntegrity';
 import { physicalKeyFor, sameKeyRoot, snapshotKeyRootOf, type SnapshotKeyRoot } from './backupKeyLayout';
 import { recordSnapshotFileIndex } from './backupMetrics';
+import { refreshSnapshotFileIndexStatistics } from './backupSnapshotFileIndexStatistics';
 import { captureException } from './sentry';
 import {
   HYDRATING_STALE_MS,
@@ -58,6 +59,8 @@ export type HydrationDeps = {
   spoolBaseDir?: string;
   spoolMaxBytes?: number;
   openSpoolWriter?: (path: string) => Writable;
+  /** Test seam: rows a publish must write before it analyzes the table (#11209). */
+  statisticsRefreshMinRows?: number;
 };
 
 /**
@@ -853,12 +856,13 @@ async function runHydration(
     return spooled.outcome;
   }
 
+  let outcome: HydrationOutcome;
   try {
     const validated = await validateSpooledManifest(snapshot, spooled.spool);
     if ('outcome' in validated) {
       return validated.outcome;
     }
-    return await verifyOriginsAndWrite(snapshotDbId, snapshot, validated.manifest);
+    outcome = await verifyOriginsAndWrite(snapshotDbId, snapshot, validated.manifest);
   } catch (err) {
     try {
       await failOutsideContext(snapshot, 'provider_error', err instanceof Error ? err.message : String(err));
@@ -871,6 +875,15 @@ async function runHydration(
   } finally {
     await spooled.spool.remove();
   }
+
+  // After the publish has committed, and outside the catch above: the index is
+  // already complete and correct, so a failed refresh must not fail the run
+  // (it never throws). It is here, not left to autovacuum, because the person
+  // who waited for this index reads it straight away (#11209).
+  if (outcome.status === 'complete') {
+    await refreshSnapshotFileIndexStatistics(outcome.entryCount, { minRows: deps.statisticsRefreshMinRows });
+  }
+  return outcome;
 }
 
 /**
