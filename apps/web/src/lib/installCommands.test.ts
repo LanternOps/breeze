@@ -82,6 +82,13 @@ describe('buildInstallCommands', () => {
       expect(windows).not.toContain('Get-FileHash');
     });
 
+    it('ORs TLS 1.2 into SecurityProtocol before the first HTTPS request (#4586)', () => {
+      const windows = commandFor();
+      const tls = '[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12';
+      expect(windows).toContain(tls);
+      expect(windows.indexOf(tls)).toBeLessThan(windows.indexOf('iwr '));
+    });
+
     it('uses the server URL returned by onboarding for the Windows download', () => {
       const windows = commandFor({ ...base, apiUrl: 'http://agents.example.com:3001/breeze/' });
       expect(windows).toContain("iwr 'http://agents.example.com:3001/breeze/api/v1/agents/install.ps1'");

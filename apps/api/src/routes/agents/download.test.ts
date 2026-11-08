@@ -1383,6 +1383,20 @@ describe('GET /install.ps1 — generated Windows installer', () => {
       expect(script).toContain('[string]::IsNullOrWhiteSpace($version)');
       expect(script).toContain('Get-FileHash -Algorithm SHA256');
       expect(script).toContain('[uri]::EscapeDataString($version)');
+      // Order, not just presence: each safeguard must run before the step it guards.
+      const at = (code: string) => {
+        const index = script.indexOf(code);
+        expect(index, code).toBeGreaterThanOrEqual(0);
+        return index;
+      };
+      const download = at('Invoke-WebRequest -Uri $downloadUrl -OutFile $exe');
+      const runAgent = at('& $exe @enrollArgs');
+      expect(at('New-Item -ItemType Directory -Path $d')).toBeLessThan(at('icacls $d'));
+      expect(at('icacls $d')).toBeLessThan(download);
+      expect(download).toBeLessThan(at('        throw\n    }'));
+      expect(at('        throw\n    }')).toBeLessThan(at('[IO.File]::ReadAllBytes($exe)'));
+      expect(at('$b[0] -ne 0x4D -or $b[1] -ne 0x5A')).toBeLessThan(runAgent);
+      expect(at('Get-AuthenticodeSignature $exe')).toBeLessThan(runAgent);
       expect(script.indexOf('Get-FileHash')).toBeLessThan(script.indexOf('& $exe @enrollArgs'));
       expect(script.indexOf('& $exe @enrollArgs')).toBeLessThan(script.indexOf('& $exe service install'));
       expect(script.match(/if \(\$LASTEXITCODE\) \{\s+throw/g)).toHaveLength(2);
