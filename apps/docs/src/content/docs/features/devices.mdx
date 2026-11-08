@@ -26,6 +26,7 @@ The list shows a compact set of columns by default — hostname, class, organiza
 - **Desktop access** and **reliability score**
 - **Warranty Ends** (v0.126.0, in the chooser's Inventory group) — the warranty end date with the same status badge as the device's Warranty card. It sorts by end date, with devices that have no warranty record last (shown as a dash).
 - **Serial, asset tag, location** — inventory fields for manual assets (asset tag and location) and, where reported, serial number (manual assets and agent devices); see [Manual Assets](#manual-assets).
+- **Product Number** (v0.127.0, in the chooser's Inventory group) — the manufacturer's product or machine code reported by Windows and Linux agents 0.127.0 and later, such as an HP product number or a Lenovo or Dell machine type. macOS has no equivalent, so the cell stays empty. Like other columns, it is included in the CSV export when visible.
 
 Your column selection and order are remembered per browser, so each technician can tailor the list to their workflow. Most columns are sortable by clicking the header.
 
@@ -346,7 +347,7 @@ Opening a device and selecting **Info** shows the device's identity and inventor
 
 | Section | Contents |
 |---------|----------|
-| **System** | Hostname, display name (editable), serial number, manufacturer, model. |
+| **System** | Hostname, display name (editable), serial number, product number (v0.127.0, when the agent reports one), manufacturer, model. |
 | **Device Role** | The device's assigned role and how it was determined. |
 | **Function** | What the device is *for* (domain controller, kiosk, finance workstation, …), assessed by the AI Fleet designer or set by hand — see [Device function](#device-function) below. |
 | **Operating System** | OS type, version, build, and architecture. |

@@ -128,6 +128,8 @@ Approved actions execute immediately. Rejected actions are logged and the AI is 
 
 If what the request refers to changes while it waits — the script is edited, the quote or invoice is revised, the organization's state moves on — the approved action does **not** run against the drifted content. It fails with a content-changed error instead, and the AI has to raise a fresh request.
 
+**An approval goes to the organization the action changes** (v0.127.0). When a partner technician asks the assistant to change a customer organization other than the one their session is open on, the approval request is filed in that organization and goes to its approvers. A request that names an organization or record the technician cannot access is refused, not filed elsewhere.
+
 #### Approval timeout
 
 A chat turn that is waiting on an approval is held open, so the wait is bounded. The **approval timeout** is how long the chat waits for someone to approve a gated action before it gives up:

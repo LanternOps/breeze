@@ -332,14 +332,16 @@ describe("Task 2 — key-ID-aware verification rejects an official-ID row not ac
 });
 
 // Fix-round-1 controller correction (#3836): an earlier version of
-// canonicalReleaseAssetName returned a non-null (WRONG) name for
-// component="helper"/platform="macos", which would have WON over the
-// correct URL-basename fallback and 409'd every real, currently-working
-// BINARY_SOURCE=github helper row. This suite exercises the REAL
-// syncFromGitHub helper registration path (HELPER_TARGETS,
-// services/binarySync.ts ~line 59) exactly the way it registers a helper row
-// in production, then feeds that row into the REAL validateReleaseManifest —
-// pinning that GitHub-mode helper rows keep working byte-for-byte.
+// canonicalReleaseAssetName returned the WRONG name
+// ("breeze-desktop-helper-darwin-<arch>") for component="helper"/
+// platform="macos", which won over the correct URL-basename fallback and
+// would have 409'd every real BINARY_SOURCE=github helper row. Since #11298
+// it resolves helper through HELPER_TARGETS (services/helperInstallerAssets.ts)
+// — the same table this GitHub path registers by, so the name equals the URL
+// basename here. This suite exercises the REAL syncFromGitHub helper
+// registration path exactly the way it registers a helper row in production,
+// then feeds that row into the REAL validateReleaseManifest — pinning that
+// GitHub-mode helper rows keep working byte-for-byte.
 describe("D1 fix-round-1 — GitHub-mode helper registration stays byte-for-byte unchanged (#3836)", () => {
   const originalEnv = process.env;
 
@@ -479,4 +481,158 @@ describe("D1 fix-round-1 — GitHub-mode helper registration stays byte-for-byte
 
     expect(result).toEqual({ ok: true });
   });
+});
+
+// #11297 / #11298: the two remaining local-mode components that registered
+// from the staged official manifest pair but could not survive download-time
+// verification.
+//   - backup (#11297) skipped the manifest tier and was always re-signed with
+//     the per-deployment key, so an agent trusting only the official key
+//     refused it and the agent upgrade stalled on the missing backup artifact.
+//   - helper (#11298) registered from the manifest under its installer name
+//     (HELPER_TARGETS: breeze-helper-windows.msi / -macos.dmg /
+//     -linux.AppImage) with a server-route downloadUrl ending in the arch, but
+//     validateReleaseManifest resolved the asset name from that URL basename
+//     ("amd64") → release_manifest_asset_lookup_failed on every Assist update.
+// Each case below runs the REAL syncBinaries registration and feeds the
+// resulting row into the REAL validateReleaseManifest.
+describe("#11297 / #11298 — local-mode backup and helper rows survive validateReleaseManifest", () => {
+  const originalEnv = process.env;
+
+  function makeOfficialLocalManifestCovering(assetNames: string[]) {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+    const rawPublicKey = publicDer.subarray(publicDer.length - 32).toString("base64");
+    const manifest = Buffer.from(
+      JSON.stringify({
+        schemaVersion: 1,
+        repository: "LanternOps/breeze",
+        release: "v1.2.3",
+        assets: assetNames.map((name) => ({
+          name,
+          sha256: localAssetChecksum(),
+          size: 18, // Buffer.byteLength("local agent bytes")
+          platformTrust: requiredPlatformTrustFor(name) ?? "release-workflow-produced",
+          edition: "self-host",
+        })),
+      }),
+    );
+    const signature = Buffer.from(sign(null, manifest, privateKey).toString("base64"));
+    return { manifest, signature, publicKey: rawPublicKey };
+  }
+
+  type Row = {
+    version: string;
+    component: string;
+    platform: string;
+    architecture: string;
+    downloadUrl: string;
+    checksum: string;
+    fileSize: bigint;
+    releaseManifest: string;
+    manifestSignature: string;
+    signingKeyId: string;
+  };
+
+  function insertedRows(component: string): Row[] {
+    return (dbMocks.insertValues.mock.calls as unknown[][])
+      .map((call) => call[0] as Row)
+      .filter((row) => row.component === component);
+  }
+
+  function validateRow(row: Row) {
+    return validateReleaseManifest({
+      manifest: row.releaseManifest,
+      signature: row.manifestSignature,
+      version: row.version,
+      platform: row.platform,
+      arch: row.architecture,
+      component: row.component,
+      downloadUrl: row.downloadUrl,
+      checksum: row.checksum,
+      fileSize: row.fileSize,
+      signingKeyId: row.signingKeyId,
+    });
+  }
+
+  function stageDirs(agentFiles: string[], helperFiles: string[]) {
+    fsMocks.readdir.mockImplementation(async (dir: unknown) =>
+      (String(dir).includes("/data/binaries/helper") ? helperFiles : agentFiles) as never,
+    );
+  }
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    process.env.BINARY_SOURCE = "local";
+    process.env.AGENT_BINARY_DIR = "/data/binaries/agent";
+    process.env.HELPER_BINARY_DIR = "/data/binaries/helper";
+    process.env.BINARY_VERSION_FILE = "/fake/version";
+    delete process.env.BREEZE_VERSION;
+    delete process.env.PUBLIC_API_URL;
+    delete process.env.PUBLIC_APP_URL;
+    delete process.env.BREEZE_SERVER;
+    vi.clearAllMocks();
+    fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 18 } as never);
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it("a backup binary registered from the official manifest validates ok:true (#11297)", async () => {
+    const official = makeOfficialLocalManifestCovering([
+      "breeze-agent-linux-amd64",
+      "breeze-backup-linux-amd64",
+    ]);
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = official.publicKey;
+    stageDirs(["breeze-agent-linux-amd64", "breeze-backup-linux-amd64"], []);
+    mockReadFileWithOfficialManifest("1.2.3", official.manifest, official.signature);
+
+    await syncBinaries();
+
+    const [row] = insertedRows("backup");
+    expect(row).toBeDefined();
+    expect(row!.signingKeyId).toBe("release-artifact-manifest-ed25519");
+    expect(row!.downloadUrl).toMatch(/\/api\/v1\/agents\/download\/backup\/linux\/amd64$/);
+    await expect(validateRow(row!)).resolves.toEqual({ ok: true });
+  });
+
+  it.each([
+    ["breeze-helper-windows.msi", "windows", "amd64"],
+    ["breeze-helper-linux.AppImage", "linux", "amd64"],
+    ["breeze-helper-macos.dmg", "macos", "amd64"],
+    ["breeze-helper-macos.dmg", "macos", "arm64"],
+  ])(
+    "a helper installer (%s, %s/%s) registered from the official manifest validates ok:true (#11298)",
+    async (assetName, platform, arch) => {
+      const official = makeOfficialLocalManifestCovering([
+        "breeze-agent-windows-amd64.exe",
+        assetName,
+      ]);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = official.publicKey;
+      stageDirs(["breeze-agent-windows-amd64.exe"], [assetName]);
+      mockReadFileWithOfficialManifest("1.2.3", official.manifest, official.signature);
+
+      await syncBinaries();
+
+      const row = insertedRows("helper").find(
+        (r) => r.platform === platform && r.architecture === arch,
+      );
+      expect(row).toBeDefined();
+      expect(row!.signingKeyId).toBe("release-artifact-manifest-ed25519");
+      // The shape the bug depends on: a server route whose basename is the
+      // arch, never the installer name.
+      expect(row!.downloadUrl).toMatch(
+        new RegExp(`/api/v1/agents/download/helper/[a-z]+/${arch}$`),
+      );
+      await expect(validateRow(row!)).resolves.toEqual({ ok: true });
+
+      // Resolving the name by table must not weaken verification: the same
+      // row with a checksum the manifest does not vouch for is still refused.
+      await expect(validateRow({ ...row!, checksum: "d".repeat(64) })).resolves.toEqual({
+        ok: false,
+        reason: "release_manifest_metadata_mismatch",
+      });
+    },
+  );
 });
