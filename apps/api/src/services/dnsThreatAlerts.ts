@@ -167,7 +167,13 @@ export async function handleDnsThreatBlocked(
 export async function handleDnsThreatBlockedEvent(event: BreezeEvent): Promise<void> {
   const payload = event.payload as unknown as DnsThreatBlockedPayload;
   try {
-    await runWithSystemDbAccess(() => handleDnsThreatBlocked(event.orgId, payload));
+    const result = await runWithSystemDbAccess(() => handleDnsThreatBlocked(event.orgId, payload));
+    // No alert row means nothing was published: fail the delivery so queue
+    // mode retries it. The cooldown only counts rows that exist, so the
+    // retry raises the alert instead of being deduped away.
+    if (result.reason === 'create_failed') {
+      throw new Error('DNS threat alert insert produced no row; nothing was published');
+    }
   } catch (err) {
     // Structured log kept for ops to trace the DNS-alert path specifically,
     // then rethrown so the failure is visible to retry/observability layers

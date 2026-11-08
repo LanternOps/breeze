@@ -31,6 +31,7 @@ import {
 } from '../../db';
 import { alerts } from '../../db/schema/alerts';
 import { createSourcedAlert } from '../alertService';
+import { captureException } from '../sentry';
 import type { ActAssetPin } from './actRevalidation';
 import type { ActTarget } from './actManifest';
 import type { AiOriginRef } from '@breeze/shared';
@@ -507,5 +508,8 @@ export async function recordActVerifyFailureAlert(args: RecordActVerifyFailureAl
     console.error('[actVerify] failed to record the act-verify-failure alert (non-fatal)', {
       runId: run.id, opKey: op.key, error,
     });
+    // Non-fatal for the run, but a failed verification that pages nobody must
+    // still be visible: the dedupe probe's failures are not captured anywhere else.
+    captureException(error, undefined, { errorId: 'act-verify-alert-failed', runId: run.id, opKey: op.key });
   }
 }

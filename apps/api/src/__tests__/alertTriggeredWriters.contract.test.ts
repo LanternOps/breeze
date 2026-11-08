@@ -48,7 +48,8 @@ const DIRECT_ALERT_WRITERS: Record<string, string> = {
   'db/seedE2eFixtures.ts': 'E2E seed fixtures, not a producer',
 };
 
-const ALERT_WRITE = /\.insert\s*\(\s*alerts\s*\)|INSERT\s+INTO\s+(?:public\.)?alerts\b/i;
+// `insert(alerts)` and a namespaced `insert(schema.alerts)`, plus raw SQL.
+const ALERT_WRITE = /\.insert\s*\(\s*(?:\w+\.)?alerts\s*\)|INSERT\s+INTO\s+(?:public\.)?alerts\b/i;
 
 /** Line comments and block comments, so a comment that mentions a raw insert does not count. */
 function stripComments(source: string): string {
@@ -82,5 +83,7 @@ describe('alert.triggered writer contract', () => {
     expect(ALERT_WRITE.test(stripComments('// a raw `db.insert(alerts)` here never published\nconst x = 1;'))).toBe(false);
     expect(ALERT_WRITE.test(stripComments('/* INSERT INTO alerts (...) */ const x = 1;'))).toBe(false);
     expect(ALERT_WRITE.test(stripComments('await db.insert(alerts).values(row);'))).toBe(true);
+    expect(ALERT_WRITE.test(stripComments('await tx.insert(schema.alerts).values(row);'))).toBe(true);
+    expect(ALERT_WRITE.test(stripComments('await db.insert(alertRules).values(row);'))).toBe(false);
   });
 });

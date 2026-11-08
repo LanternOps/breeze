@@ -44,6 +44,8 @@ vi.mock('../commandQueue', () => ({ executeCommandWithSystemPrecheck }));
 // #11328 — the alert goes through the shared create + `alert.triggered` path.
 const createSourcedAlert = vi.hoisted(() => vi.fn<(params: Record<string, unknown>) => Promise<string | null>>());
 vi.mock('../alertService', () => ({ createSourcedAlert }));
+const captureException = vi.hoisted(() => vi.fn());
+vi.mock('../sentry', () => ({ captureException }));
 // The verify lane runs the remote-tools policy check itself.
 const checkAiRemoteToolsPolicy = vi.hoisted(() => vi.fn());
 vi.mock('../aiRemoteToolsPolicy', () => ({ checkAiRemoteToolsPolicy }));
@@ -411,16 +413,21 @@ describe('recordActVerifyFailureAlert', () => {
     expect(params).toEqual(expect.arrayContaining([
       RUN.orgId, RUN.deviceId, 'ai_agent_act_verify_manage_services.restart', RUN.id,
       JSON.stringify({ kind: 'service', serviceName: 'Spooler' }),
+      // Only an OPEN alert dedupes: a resolved one must not block a later real failure.
+      'active', 'acknowledged', 'suppressed',
     ]));
+    expect(params).not.toContain('resolved');
   });
 
-  it('is best-effort — a create failure is logged and swallowed, never thrown', async () => {
-    createSourcedAlert.mockRejectedValueOnce(new Error('alerts table unavailable'));
+  it('is best-effort — a create failure is logged, captured and swallowed, never thrown', async () => {
+    const failure = new Error('alerts table unavailable');
+    createSourcedAlert.mockRejectedValueOnce(failure);
     await expect(recordActVerifyFailureAlert({
       run: RUN,
       op: { key: 'manage_services.restart' },
       target: { kind: 'service', serviceName: 'Spooler' },
     })).resolves.toBeUndefined();
+    expect(captureException).toHaveBeenCalledWith(failure, undefined, expect.objectContaining({ runId: RUN.id }));
   });
 });
 

@@ -147,6 +147,12 @@ runDb('#11328 — built-in rule-less producers publish alert.triggered once', ()
     // The same failing action retried in the same run.
     await recordActVerifyFailureAlert(failure);
     await expectNoRepublish(f, 'ai_agent_act_verify');
+
+    // A different target in the same run is a different failure: its own
+    // alert, published once. The jsonb target match must not collapse it.
+    await recordActVerifyFailureAlert({ ...failure, target: { kind: 'service', serviceName: 'Other' } });
+    await expect.poll(() => triggeredCalls(f.orgId).length, { timeout: 10_000, interval: 50 }).toBe(2);
+    expect(await openAlertsFor(f, 'ai_agent_act_verify')).toHaveLength(2);
   });
 
   it('log correlation alert', async () => {

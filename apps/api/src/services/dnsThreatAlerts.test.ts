@@ -269,6 +269,24 @@ describe('handleDnsThreatBlockedEvent (durable registry contract)', () => {
     ).rejects.toThrow('db exploded');
   });
 
+  it('throws when no alert row was produced, so queue mode retries instead of acking an unpublished threat', async () => {
+    mockCooldownSelect(false);
+    mockDeviceSelect({ hostname: 'h', displayName: null });
+    vi.mocked(createSourcedAlert).mockResolvedValueOnce(null);
+
+    await expect(
+      handleDnsThreatBlockedEvent(
+        event('org-1', {
+          deviceId: 'dev-1',
+          domain: 'm.example.com',
+          category: 'malware',
+          integrationId: null,
+          timestamp: '2026-05-22T20:00:00.000Z',
+        })
+      )
+    ).rejects.toThrow('nothing was published');
+  });
+
   it('inserts an alert on the happy path', async () => {
     mockCooldownSelect(false);
     mockDeviceSelect({ hostname: 'h', displayName: null });
