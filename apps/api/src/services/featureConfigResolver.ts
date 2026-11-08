@@ -3,6 +3,7 @@ import { db } from '../db';
 import { hierarchyFor, type DeviceHierarchy as PassedDeviceHierarchy, type DeviceHierarchyOpts } from './deviceHierarchy';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { policyOwnershipCondition } from './configPolicyOwnership';
+import { reportInvalidStoredSettings } from './invalidStoredSettingsReport';
 import {
   candidatesWithLink,
   type ApplicabilityRule,
@@ -3302,15 +3303,14 @@ export async function resolveSystemProtectionForDevice(
   const policyRevision = winner.linkUpdatedAt ? new Date(winner.linkUpdatedAt).toISOString() : null;
   const parsed = systemProtectionInlineSettingsSchema.safeParse(winner.inlineSettings ?? {});
   if (!parsed.success) {
-    console.warn(
-      '[featureConfigResolver] Malformed system_protection settings; using platform defaults',
-      {
-        deviceId,
-        featureLinkId: winner.featureLinkId,
-        sourcePolicyId: winner.sourcePolicyId,
-        issues: parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`),
-      },
-    );
+    reportInvalidStoredSettings({
+      feature: 'system_protection',
+      orgId: hierarchy.orgId,
+      deviceId,
+      featureLinkId: winner.featureLinkId,
+      sourcePolicyId: winner.sourcePolicyId,
+      issues: parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`),
+    });
     return { settings: { ...SYSTEM_PROTECTION_DEFAULTS }, policyRevision, isPlatformDefault: false, invalidStoredSettings: true };
   }
 
@@ -3396,7 +3396,9 @@ export async function resolveContainmentPolicy(
   const winner = sortByHierarchy(rows)[0]!;
   const parsed = containmentInlineSettingsSchema.safeParse(winner.inlineSettings);
   if (!parsed.success) {
-    console.warn('[featureConfigResolver] Malformed containment settings; using platform defaults', {
+    reportInvalidStoredSettings({
+      feature: 'containment',
+      orgId: hierarchy.orgId,
       deviceId,
       featureLinkId: winner.featureLinkId,
       sourcePolicyId: winner.sourcePolicyId,
