@@ -181,6 +181,32 @@ describe('briefDue', () => {
     expect(briefDue(p('08:00', tz), at('2026-10-31T12:00:00Z'), at('2026-11-01T13:00:00Z'), 'UTC')).toEqual({ due: true, localDate: '2026-11-01' });
   });
 
+  // #11287: a grant created after today's brief time waits for the next one,
+  // not the next sweep ("Good morning" minutes after the grant, hours from 08:00).
+  describe('a new grant (#11287)', () => {
+    it('created after today\'s brief time: not due today, due at the next brief time', () => {
+      const created = at('2026-10-24T14:00:00Z');
+      expect(briefDue(p('08:00'), null, at('2026-10-24T14:05:00Z'), 'UTC', created)).toEqual({ due: false, localDate: '2026-10-24' });
+      expect(briefDue(p('08:00'), null, at('2026-10-25T07:59:00Z'), 'UTC', created).due).toBe(false);
+      expect(briefDue(p('08:00'), null, at('2026-10-25T08:00:00Z'), 'UTC', created)).toEqual({ due: true, localDate: '2026-10-25' });
+    });
+
+    it('created before today\'s brief time: due at it', () => {
+      expect(briefDue(p('08:00'), null, at('2026-10-24T08:00:00Z'), 'UTC', at('2026-10-24T07:00:00Z')).due).toBe(true);
+    });
+
+    it('a brief from an earlier grant does not make a grant created after the brief time due', () => {
+      expect(briefDue(p('08:00'), at('2026-10-20T08:00:00Z'), at('2026-10-24T14:05:00Z'), 'UTC', at('2026-10-24T14:00:00Z')).due).toBe(false);
+    });
+
+    it('judges "after the brief time" in the brief\'s zone', () => {
+      // 13:00Z = 09:00 EDT: created after 08:00 New York time, so not due that day there.
+      expect(briefDue(p('08:00', 'America/New_York'), null, at('2026-10-24T13:05:00Z'), 'UTC', at('2026-10-24T13:00:00Z')).due).toBe(false);
+      // 11:00Z = 07:00 EDT: created before it, so due at 08:00 EDT.
+      expect(briefDue(p('08:00', 'America/New_York'), null, at('2026-10-24T12:00:00Z'), 'UTC', at('2026-10-24T11:00:00Z')).due).toBe(true);
+    });
+  });
+
   it('follows the spring-forward DST boundary (America/New_York, 2026-03-08)', () => {
     const tz = 'America/New_York';
     // 08:00 EDT = 12:00Z after the jump (it was 13:00Z the day before)
@@ -355,6 +381,13 @@ describe('runMorningBriefs', () => {
     queueSweep([grantRow()]);
     await expect(runMorningBriefs(NOW)).resolves.toEqual({ due: 0, sent: 0, suppressed: 0 });
     expect(h.selects).toHaveLength(0);
+    expect(h.notifyUser).not.toHaveBeenCalled();
+  });
+
+  it('#11287: a grant created minutes ago, after today\'s brief time, gets no brief yet', async () => {
+    h.loadNudgeBookkeeping.mockResolvedValue(new Map([[USER, { prefs: prefs({ briefTimezone: 'America/New_York' }), lastDigestAt: null, lastBriefAt: null }]]));
+    queueSweep([grantRow({ createdAt: new Date('2026-10-24T12:25:00Z') })]); // 08:25 EDT, after 08:00
+    await expect(runMorningBriefs(NOW)).resolves.toEqual({ due: 0, sent: 0, suppressed: 0 });
     expect(h.notifyUser).not.toHaveBeenCalled();
   });
 

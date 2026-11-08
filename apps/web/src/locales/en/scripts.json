@@ -1552,6 +1552,22 @@
     "riskLow": "Low",
     "riskMedium": "Medium",
     "riskHigh": "High",
-    "riskCritical": "Critical"
+    "riskCritical": "Critical",
+    "reviewInApprovals": "Review in Approvals",
+    "status": {
+      "proposed": "Awaiting review",
+      "scan_rejected": "Rejected by the security scan",
+      "review_failed": "AI review failed",
+      "reviewed": "Reviewed",
+      "approved": "Approved",
+      "rejected": "Rejected",
+      "changes_requested": "Changes requested",
+      "expired": "Expired",
+      "superseded": "Superseded",
+      "executed": "Executed",
+      "verified": "Verified",
+      "verification_failed": "Verification failed",
+      "promoted": "Saved to library"
+    }
   }
 }

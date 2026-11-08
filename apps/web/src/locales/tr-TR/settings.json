@@ -1851,7 +1851,8 @@
       "load": "Onay güvenliği politikası yüklenemedi.",
       "save": "Onay güvenliği politikası kaydedilemedi.",
       "unavailable": "Politika mevcut değil."
-    }
+    },
+    "scopeNote": "Bu ayarlar, iş ortağı hesabınızdaki tüm kuruluşlar için geçerlidir."
   },
   "orgAuditRetentionSettings": {
     "title": "Denetim Günlüğü Saklama",
@@ -2968,7 +2969,8 @@
       "enabledHint": "«Etkin» ve mod ayrı anahtarlardır ve bir çalıştırma ikisini de gerektirir: bu kapalıyken mod ne olursa olsun hiçbir şey çalışmaz, Kapalı modda ise bu açık olsa bile hiçbir şey çalışmaz.",
       "enabledCreateHint": "Yeni aracılar kapalı olarak oluşturulur. Aşağıdaki araç izin listesini ve sınırları gözden geçirin, ardından aracının çalışmaya başlamasını istediğinizde bunu açın.",
       "actKeysCleared": "Eylem modu izinleri saklanır, ancak bu araç yeniden Eylem moduna dönmedikçe kaydedilmez.",
-      "recipientRoleNoMembers": "etkin üye yok"
+      "recipientRoleNoMembers": "etkin üye yok",
+      "enabledHintNoMode": "Bu kapalıyken aracı çalışmaz."
     },
     "policyKeys": {
       "tools": {

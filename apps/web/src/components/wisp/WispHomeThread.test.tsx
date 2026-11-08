@@ -704,6 +704,56 @@ describe('WispHomeThread reads the thread timeline (W02b #10213)', () => {
     expect(h.state.switchSession).not.toHaveBeenCalled();
   });
 
+  describe('#11287: no model provider on the server (503 ai_not_configured)', () => {
+    /** As createSession leaves the store after the refusal: no session, the server's code kept. */
+    const refused = () => vi.fn(async (w: typeof wisp) => {
+      Object.assign(h.state, { wisp: w, sessionId: null, error: 'AI is not configured on this server.', errorCode: 'ai_not_configured' });
+    });
+
+    it('says why instead of the generic retry, and shows the thread so far read-only', async () => {
+      reset({ enterWispMode: refused() });
+      fetchMock.mockImplementation(route({ timeline: () => page([post('p-1', 30)]) }));
+      render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+      expect(await screen.findByTestId('wisp-home-thread-not-configured'))
+        .toHaveTextContent("AI isn't configured on this server. An administrator needs to add a model provider key.");
+      expect(screen.queryByText('Could not open the conversation.')).toBeNull();
+      expect(screen.queryByTestId('wisp-home-thread-failed')).toBeNull();
+      await waitFor(() => expect(extraIds()).toEqual(['p-1']));
+      expect(paramsOf(timelineCalls()[0] as string).has('excludeSessionId')).toBe(false);
+      expect(screen.queryByTestId('ai-chat-input-mock')).toBeNull();
+    });
+
+    it('Try again binds the conversation once a key has been added', async () => {
+      reset({ enterWispMode: refused() });
+      fetchMock.mockImplementation(route());
+      render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+      await screen.findByTestId('wisp-home-thread-not-configured');
+      h.state.enterWispMode = vi.fn(async (w: typeof wisp) => { Object.assign(h.state, { wisp: w, sessionId: 's-new', error: null, errorCode: null }); });
+      fireEvent.click(screen.getByTestId('wisp-home-thread-not-configured-retry'));
+      expect(await screen.findByTestId('ai-chat-input-mock')).toBeInTheDocument();
+      expect(screen.queryByTestId('wisp-home-thread-not-configured')).toBeNull();
+    });
+
+    it('keeps the reason when another surface clears the shared store error', async () => {
+      reset({ enterWispMode: refused() });
+      fetchMock.mockImplementation(route());
+      const view = render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+      await screen.findByTestId('wisp-home-thread-not-configured');
+      act(() => { Object.assign(h.state, { error: null, errorCode: null }); });
+      view.rerender(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+      expect(screen.getByTestId('wisp-home-thread-not-configured')).toBeInTheDocument();
+    });
+
+    it('any other failed open keeps the generic retry', async () => {
+      reset({ enterWispMode: vi.fn(async (w: typeof wisp) => { Object.assign(h.state, { wisp: w, sessionId: null, errorCode: 'grant_inactive' }); }) });
+      fetchMock.mockImplementation(route());
+      render(<WispHomeThread {...extra} wisp={wisp} lastSessionId={null} />);
+      expect(await screen.findByTestId('wisp-home-thread-failed')).toHaveTextContent('Could not open the conversation.');
+      expect(screen.getByTestId('wisp-home-thread-retry')).toBeInTheDocument();
+      expect(screen.queryByTestId('wisp-home-thread-not-configured')).toBeNull();
+    });
+  });
+
   it('an ended grant reads no timeline', async () => {
     reset();
     render(<WispHomeThread {...extra} wisp={{ ...wisp, status: 'revoked' }} lastSessionId="s-old" />);

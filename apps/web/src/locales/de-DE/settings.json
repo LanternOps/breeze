@@ -1851,7 +1851,8 @@
       "load": "Die Genehmigungssicherheitsrichtlinie konnte nicht geladen werden.",
       "save": "Die Genehmigungssicherheitsrichtlinie konnte nicht gespeichert werden.",
       "unavailable": "Keine Richtlinie verfügbar."
-    }
+    },
+    "scopeNote": "Diese Einstellungen gelten für alle Organisationen unter Ihrem Partnerkonto."
   },
   "orgAuditRetentionSettings": {
     "title": "Audit-Protokoll-Aufbewahrung",
@@ -2968,7 +2969,8 @@
       "enabledHint": "„Aktiviert“ und der Modus sind getrennte Schalter, und ein Lauf braucht beide: Ist dies aus, läuft unabhängig vom Modus nichts, und im Modus „Aus“ läuft auch dann nichts, wenn dies eingeschaltet ist.",
       "enabledCreateHint": "Neue Agenten werden ausgeschaltet erstellt. Prüfen Sie unten die Tool-Zulassungsliste und die Limits und schalten Sie dies dann ein, wenn der Agent starten soll.",
       "actKeysCleared": "Die Berechtigungen des Aktionsmodus bleiben erhalten, werden aber erst gespeichert, wenn dieser Agent wieder in den Aktionsmodus wechselt.",
-      "recipientRoleNoMembers": "keine aktiven Mitglieder"
+      "recipientRoleNoMembers": "keine aktiven Mitglieder",
+      "enabledHintNoMode": "Wenn diese Option aus ist, läuft der Agent nicht."
     },
     "policyKeys": {
       "tools": {
