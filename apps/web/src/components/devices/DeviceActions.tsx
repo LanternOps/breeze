@@ -454,6 +454,8 @@ export default function DeviceActions({
   const canRunVendorUpdates = can("devices", "execute");
   const asksForVendorLane = canRunVendorUpdates && device.os === "windows";
   const [vendorLane, setVendorLane] = useState<OemLane | null>(null);
+  // #11281: every category gate closed means the run can only come back 409 lane_closed.
+  const [vendorLaneClosed, setVendorLaneClosed] = useState(false);
   const [vendorUpdatesOpen, setVendorUpdatesOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [powerMenuOpen, setPowerMenuOpen] = useState(false);
@@ -480,12 +482,16 @@ export default function DeviceActions({
 
   useEffect(() => {
     setVendorLane(null);
+    setVendorLaneClosed(false);
     setVendorUpdatesOpen(false);
     if (!asksForVendorLane) return;
     let current = true;
     void readOemStatus(device.id).then((read) => {
       if (!current) return;
-      if (read.kind === "ok") setVendorLane(read.view.lane);
+      if (read.kind === "ok") {
+        setVendorLane(read.view.lane);
+        setVendorLaneClosed(Object.values(read.view.gates).every((gate) => gate === "closed"));
+      }
       // Hidden is the safe answer, and the section on the Patches tab offers a retry.
       else if (read.kind === "error") console.warn(`[DeviceActions] could not read vendor update status for ${device.id}`);
     });
@@ -606,8 +612,11 @@ export default function DeviceActions({
     ? offlineTitle
     : !vendorUpdatesSupported
       ? t("deviceActions.runVendorUpdatesAgentUpgradeRequired", { version: OEM_UPDATE_MIN_AGENT_VERSION })
-      : undefined;
+      : vendorLaneClosed
+        ? t("runVendorUpdatesDialog.refusal.laneClosed")
+        : undefined;
   const openVendorUpdates = () => {
+    if (vendorUpdatesReason) return;
     if (menuOpen) moreTriggerRef.current?.focus();
     closeMenus();
     setVendorUpdatesOpen(true);
