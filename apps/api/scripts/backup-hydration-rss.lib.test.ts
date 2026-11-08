@@ -61,7 +61,13 @@ describe('hydrationRunBreaches', () => {
 });
 
 describe('acceptanceBreaches', () => {
-  const healthy = { defaultLimit: healthyDefaultLimit, heapLimited: healthyHeapLimited, analyzed: true, settledBrowseRootMs: 2800 };
+  const healthy = {
+    defaultLimit: healthyDefaultLimit,
+    heapLimited: healthyHeapLimited,
+    statisticsRefreshed: true,
+    browseRootMs: 2800,
+    selectLargestFolderMs: 3100,
+  };
 
   it('is empty when every bound holds', () => {
     expect(acceptanceBreaches(healthy)).toEqual([]);
@@ -71,19 +77,21 @@ describe('acceptanceBreaches', () => {
     expect(acceptanceBreaches({
       defaultLimit: { ...healthyDefaultLimit, postGcHeapDeltaMb: 400 },
       heapLimited: { ...healthyHeapLimited, postGcHeapDeltaMb: 400, peakRssDeltaMb: 500 },
-      analyzed: true,
-      settledBrowseRootMs: 5000,
+      statisticsRefreshed: true,
+      browseRootMs: 5000,
+      selectLargestFolderMs: 10_000,
     })).toEqual([
       'default heap limit: post-GC heap delta 400 MB (bound < 25)',
       '1 GB heap limit: post-GC heap delta 400 MB (bound < 25)',
       '1 GB heap limit: peak RSS delta 500 MB under the 1 GB heap limit (bound < 300)',
-      'settled browse root 5000 ms (bound < 5000)',
+      'browse root right after the publish 5000 ms (bound < 5000)',
+      'largest-folder selection right after the publish 10000 ms (bound < 10000)',
     ]);
   });
 
-  it('does not call a browse settled when autoanalyze never ran', () => {
-    expect(acceptanceBreaches({ ...healthy, analyzed: false })).toEqual([
-      'autoanalyze never ran after the publish, so the browse reading is not settled',
+  it('fails when the publish did not refresh the table statistics itself (#11209)', () => {
+    expect(acceptanceBreaches({ ...healthy, statisticsRefreshed: false })).toEqual([
+      'the publish did not ANALYZE backup_snapshot_files, so the readings ran on stale statistics',
     ]);
   });
 });

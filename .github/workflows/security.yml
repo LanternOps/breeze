@@ -56,7 +56,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Restore-only, like the pnpm cache above. The installer re-checks the
+      # restored binary against its pinned SHA-256 (#11367).
+      - name: Restore osv-scanner binary
+        uses: ./.github/actions/restore-osv-scanner
+
       - name: Install osv-scanner
+        timeout-minutes: 25
         run: bash scripts/security/install-osv-scanner.sh
 
       # Full gate, no base comparison: on main every blocking advisory counts.
