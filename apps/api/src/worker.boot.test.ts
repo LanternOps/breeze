@@ -87,6 +87,7 @@ const mocks = vi.hoisted(() => {
     shutdownEventDispatcher: vi.fn(async () => {}),
     shutdownEventDispatchQueue: vi.fn(async () => {}),
     getEventBus: vi.fn(() => ({ close: vi.fn(async () => {}) })),
+    getClusterCacheBus: vi.fn(() => ({ start: vi.fn(async () => 'subscribed'), stop: vi.fn(async () => {}) })),
     drainAuditRetryQueue: vi.fn(async () => {}),
     shutdownPhaseCalls: [] as string[][],
     runShutdownPhases: vi.fn(
@@ -196,6 +197,7 @@ vi.mock('./jobs/eventDispatchWorker', () => ({
 vi.mock('./services/eventDispatcher', () => ({ shutdownEventDispatcher: mocks.shutdownEventDispatcher }));
 vi.mock('./services/eventDispatchQueue', () => ({ shutdownEventDispatchQueue: mocks.shutdownEventDispatchQueue }));
 vi.mock('./services/eventBus', () => ({ getEventBus: mocks.getEventBus }));
+vi.mock('./services/clusterCacheBus', () => ({ getClusterCacheBus: mocks.getClusterCacheBus }));
 vi.mock('./services/auditService', () => ({ drainAuditRetryQueue: mocks.drainAuditRetryQueue }));
 // Stubbed rather than left real: real `runShutdownPhases` is already covered
 // by Part A's own tests, and stubbing it lets this suite assert exactly
@@ -347,6 +349,7 @@ beforeEach(() => {
   mocks.shutdownEventDispatcher.mockResolvedValue(undefined);
   mocks.shutdownEventDispatchQueue.mockResolvedValue(undefined);
   mocks.getEventBus.mockReturnValue({ close: vi.fn(async () => {}) });
+  mocks.getClusterCacheBus.mockReturnValue({ start: vi.fn(async () => 'subscribed'), stop: vi.fn(async () => {}) });
   mocks.drainAuditRetryQueue.mockResolvedValue(undefined);
 });
 
@@ -672,6 +675,7 @@ describe('worker.ts boot (#4086 Task 6)', () => {
       'drain',
       'workers',
       'queues',
+      'cluster-cache-bus',
       'eventbus',
       'redis',
       'db',
