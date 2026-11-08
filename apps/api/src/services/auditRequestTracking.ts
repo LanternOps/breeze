@@ -24,3 +24,12 @@ export function markRequestAuditWritten(): void {
   const state = requestAudit.getStore();
   if (state) state.written = true;
 }
+
+/**
+ * Run `fn` detached from the current request's audit tracking, so a
+ * background/system audit row it writes is not mistaken for the request's own
+ * semantic audit (which would suppress the generic fallback row).
+ */
+export function runOutsideAuditRequestTracking<T>(fn: () => T): T {
+  return requestAudit.exit(fn);
+}

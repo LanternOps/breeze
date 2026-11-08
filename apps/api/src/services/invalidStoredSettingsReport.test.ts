@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const audit = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('./auditService', () => ({ createAuditLogAsync: audit }));
 
+import { runWithAuditRequestTracking, markRequestAuditWritten } from './auditRequestTracking';
 import {
   reportInvalidStoredSettings,
   resetInvalidStoredSettingsReportsForTest,
@@ -43,6 +44,7 @@ describe('reportInvalidStoredSettings (#8585)', () => {
     expect(audit).toHaveBeenCalledWith(expect.objectContaining({
       orgId: 'org-1',
       actorType: 'system',
+      actorId: '00000000-0000-0000-0000-000000000000',
       action: 'config_policy.invalid_stored_settings',
       resourceType: 'config_policy_feature_link',
       resourceId: 'link-1',
@@ -57,9 +59,7 @@ describe('reportInvalidStoredSettings (#8585)', () => {
     reportInvalidStoredSettings({ ...base, orgId: 'org-2' });
     await flush();
     expect(warn).toHaveBeenCalledTimes(3);
-    await new Promise((r) => setTimeout(r, 50));
-    console.log('DBG', JSON.stringify(audit.mock.calls.map((c: any[]) => [c[0].resourceId, c[0].orgId])));
-    expect(audit).toHaveBeenCalledTimes(3);
+    await vi.waitFor(() => expect(audit).toHaveBeenCalledTimes(3));
   });
 
   it('reports again after the dedupe window elapses', async () => {
@@ -78,5 +78,15 @@ describe('reportInvalidStoredSettings (#8585)', () => {
     audit.mockRejectedValueOnce(new Error('db down'));
     expect(() => reportInvalidStoredSettings(base)).not.toThrow();
     await flush();
+  });
+
+  it('does not mark the surrounding request as having written its audit row', async () => {
+    audit.mockImplementationOnce(async () => { markRequestAuditWritten(); });
+    let written = true;
+    written = await runWithAuditRequestTracking(async () => {
+      reportInvalidStoredSettings(base);
+      await vi.waitFor(() => expect(audit).toHaveBeenCalledTimes(1));
+    });
+    expect(written).toBe(false);
   });
 });

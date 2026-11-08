@@ -3309,7 +3309,7 @@ export async function resolveSystemProtectionForDevice(
       deviceId,
       featureLinkId: winner.featureLinkId,
       sourcePolicyId: winner.sourcePolicyId,
-      issues: parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`),
+      issues: parsed.error.issues.map((i) => i.path.join('.') || '(root)'),
     });
     return { settings: { ...SYSTEM_PROTECTION_DEFAULTS }, policyRevision, isPlatformDefault: false, invalidStoredSettings: true };
   }

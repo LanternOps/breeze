@@ -10,6 +10,7 @@
  */
 
 import { createAuditLogAsync } from './auditService';
+import { runOutsideAuditRequestTracking } from './auditRequestTracking';
 
 const DEDUPE_WINDOW_MS = 60 * 60 * 1000;
 const MAX_TRACKED = 5_000;
@@ -23,7 +24,7 @@ export interface InvalidStoredSettingsReport {
   deviceId: string;
   featureLinkId: string;
   sourcePolicyId: string | null;
-  /** Paths (and optionally messages) of the schema issues; no stored values. */
+  /** Schema issue PATHS only: zod messages can echo rejected values or key names. */
   issues: string[];
 }
 
@@ -53,7 +54,7 @@ export function reportInvalidStoredSettings(report: InvalidStoredSettingsReport)
 
   void Promise.resolve()
     .then(() =>
-      createAuditLogAsync({
+      runOutsideAuditRequestTracking(() => createAuditLogAsync({
         orgId: report.orgId,
         actorType: 'system',
         actorId: '00000000-0000-0000-0000-000000000000',
@@ -67,7 +68,7 @@ export function reportInvalidStoredSettings(report: InvalidStoredSettingsReport)
           deviceId: report.deviceId,
           issues: report.issues,
         },
-      }),
+      })),
     )
     .catch((err) => {
       console.error('[featureConfigResolver] Failed to journal invalid stored settings', {
