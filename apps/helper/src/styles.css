@@ -9,9 +9,74 @@
    be pulled in here. */
 @import './styles/tokens.css';
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* Scan exactly what the v3 config's `content` globs scanned. Automatic source
+   detection would also read src-tauri/ and the package root. */
+@import "tailwindcss" source(none);
+@source "../index.html";
+@source "./**/*.{js,ts,jsx,tsx}";
+
+/*
+ * Theme tokens (ported from the v3 tailwind.config.js theme.extend). `inline`
+ * makes the utilities emit the --ws-* reference directly (`bg-ws-surface` →
+ * `background-color: var(--ws-surface)`), exactly as v3 did, so the light/dark
+ * swap in tokens.css keeps driving them.
+ */
+@theme inline {
+  /* Preflight's code/kbd/samp/pre font. v4 resolves it through --font-mono by
+     default, but the legacy :root block below redefines --font-mono for the
+     helper's own rules, so pin v3's default mono stack here. */
+  --default-mono-font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    'Liberation Mono', 'Courier New', monospace;
+
+  --color-ws-canvas: var(--ws-canvas);
+  --color-ws-surface: var(--ws-surface);
+  --color-ws-raised: var(--ws-raised);
+  --color-ws-ink: var(--ws-ink);
+  --color-ws-secondary: var(--ws-text-secondary);
+  --color-ws-tertiary: var(--ws-text-tertiary);
+  --color-ws-accent: var(--ws-accent);
+  --color-ws-accent-soft: var(--ws-accent-soft);
+  --color-ws-border: var(--ws-border);
+  --color-ws-border-subtle: var(--ws-border-subtle);
+
+  --font-sans: 'Inter Variable', -apple-system, 'Segoe UI', system-ui, sans-serif;
+
+  --radius-control: var(--ws-radius-control);
+  --radius-surface: var(--ws-radius-surface);
+}
+
+/*
+ * v3 Preflight defaults that v4 dropped or changed, restored so the helper
+ * renders as it did on v3:
+ * - border color: v4 defaults to currentColor; v3 used gray-200 (#e5e7eb,
+ *   the sRGB value, not v4's oklch gray-200).
+ * - placeholder color: v4 uses currentColor at 50%; v3 used gray-400 (#9ca3af).
+ * - buttons: v4 uses the default cursor; v3 used a pointer.
+ */
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: #e5e7eb;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    opacity: 1;
+    color: #9ca3af;
+  }
+
+  button,
+  [role='button'] {
+    cursor: pointer;
+  }
+
+  :disabled {
+    cursor: default;
+  }
+}
 
 /* ----------------------------------------------------------
    CSS Variables
