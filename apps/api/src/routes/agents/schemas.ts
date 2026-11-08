@@ -1339,11 +1339,28 @@ export const agentLogIngestSchema = z.object({
 
 export const EVENT_LOG_EMPTY_MESSAGE_PLACEHOLDER = '(no message text)';
 
+// device_event_logs.source column width (varchar(255)).
+const EVENT_LOG_SOURCE_MAX = 255;
+
+function truncateToCodePoints(max: number) {
+  return (value: string): string => {
+    // Cheap path: UTF-16 length <= max implies code points <= max.
+    if (value.length <= max) return value;
+    const points = Array.from(value);
+    return points.length <= max ? value : points.slice(0, max).join('');
+  };
+}
+
 export const eventLogRowSchema = z.object({
   timestamp: z.string().min(1),
   level: z.enum(['info', 'warning', 'error', 'critical']),
   category: z.enum(['security', 'hardware', 'application', 'system']),
-  source: z.string().min(1),
+  // device_event_logs.source is varchar(255). An over-long source passed
+  // validation and then failed the whole 100-row insert batch (Postgres
+  // 22001), losing ~99 neighbouring events. It is a display/grouping label, so
+  // truncate to the column width rather than drop the row. Cut by code point
+  // (Postgres counts characters) so a surrogate pair is never split.
+  source: z.string().min(1).transform(truncateToCodePoints(EVENT_LOG_SOURCE_MAX)),
   // device_event_logs.event_id is varchar(100). Without this bound an
   // over-long id passed validation and then failed the whole 100-row insert
   // batch; now only that row is dropped (counted in invalidDropped). The
