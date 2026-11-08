@@ -25,8 +25,8 @@
  *
  * The reads run straight after the publish and are bounded there: the hydrator
  * ANALYZEs backup_snapshot_files itself (#11209), so there is no slow period
- * waiting for autovacuum. Before that, browse root took 9.6-10.2 s and the
- * largest-folder selection 39-44 s at this point, against 3.2-3.4 s and about
+ * waiting for autovacuum. Before that, browse root took 9.6–10.2 s and the
+ * largest-folder selection 39–44 s at this point, against 3.2–3.4 s and about
  * 3 s once autovacuum had run.
  */
 import './setup';
@@ -151,8 +151,9 @@ describe('file index acceptance at 1.1M entries', () => {
       )) as unknown as Array<{ at: string }>;
       // Last, so the index the reads below see is the one this run published.
       const heapLimited = await hydrateInOwnProcess(dir, 'heap-limited', HEAP_LIMIT_FLAG);
-      // A manual ANALYZE (last_analyze; autovacuum sets last_autoanalyze) since
-      // that hydration began can only be its own (#11209).
+      // On this dedicated test database, a manual ANALYZE (last_analyze;
+      // autovacuum sets last_autoanalyze) since that hydration began can only
+      // be its own (#11209).
       const [stat] = (await withSystemDbAccessContext(() => db.execute(sql`
         SELECT last_analyze > ${heapLimitedStarted!.at}::timestamptz AS refreshed
         FROM pg_stat_all_tables WHERE relname = 'backup_snapshot_files'

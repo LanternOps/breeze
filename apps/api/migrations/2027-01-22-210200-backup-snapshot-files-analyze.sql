@@ -5,25 +5,28 @@
 -- ---
 -- A hydration publish writes every file row of a snapshot in one transaction.
 -- Until the table is next analyzed the planner still describes it as it was
--- before: at 1.1M new rows it estimated about 1,300 for a selection page and
--- 3,800 for the browse aggregate. Each selection page then bitmap-scanned and
--- sorted every remaining row of the snapshot instead of reading one range of
+-- before. Measured on a test stack at 1.1M new rows (#11209): it estimated
+-- about 1,300 rows for a selection page and 3,800 for the browse aggregate.
+-- Each selection page then bitmap-scanned and sorted every remaining row of
+-- the snapshot instead of reading one range of
 -- backup_snapshot_files_snapshot_source_idx (510 ms a page against 5.5 ms),
--- and a folder selection took 39-44 s until autovacuum analyzed the table.
+-- and a folder selection took 39–44 s until autovacuum analyzed the table.
 -- The API connects as breeze_app, which does not own the table: a plain
 -- ANALYZE from it is skipped with a warning.
 --
 -- WHAT
 -- ----
 -- public.breeze_analyze_backup_snapshot_files(): SECURITY DEFINER, owned by
--- the role that runs migrations (the table's owner), executable by breeze_app
--- only. It analyzes this one table and nothing else, so the grant cannot be
--- turned on any other relation. It takes the table's SHARE UPDATE EXCLUSIVE
--- lock with NOWAIT first and returns false if another ANALYZE or a VACUUM
--- holds it: the caller never queues behind (or cancels) autovacuum. It returns
--- true once the table has been analyzed. The lock does not block reads or
--- writes and is held until the caller's transaction ends. The caller bounds
--- the run with statement_timeout (backupSnapshotFileIndexStatistics.ts).
+-- the role that runs migrations (the table's owner). PUBLIC may not execute
+-- it; breeze_app may, when that role exists. It analyzes this one table and
+-- nothing else, so the grant cannot be turned on any other relation. It takes
+-- the table's SHARE UPDATE EXCLUSIVE lock with NOWAIT first and returns false
+-- if any conflicting lock is held (another ANALYZE or a VACUUM, autovacuum's
+-- included, or DDL): the caller never queues behind, or cancels, autovacuum.
+-- It returns true once the table has been analyzed. The lock does not block
+-- reads or writes and is held until the caller's transaction ends. The caller
+-- bounds the run with statement_timeout and retries a busy table a few times
+-- (backupSnapshotFileIndexStatistics.ts).
 --
 -- A table owned by some other role (a hand-built install) would make ANALYZE
 -- skip with only a warning; the function raises instead, so the hydrator logs

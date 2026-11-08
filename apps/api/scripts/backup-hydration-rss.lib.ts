@@ -53,10 +53,10 @@ const POST_GC_HEAP_DELTA_BOUND_MB = 25;
 const HEAP_LIMITED_PEAK_RSS_BOUND_MB = 300;
 const EVENT_LOOP_P99_BOUND_MS = 200;
 /**
- * Reads are bounded right after the publish (#11209): the hydrator analyzes the
+ * Both bounds apply right after the publish (#11209): the hydrator analyzes the
  * table itself, so there is no slow period to wait out. The selection bound is
- * loose (about 3 s measured) and exists to catch the stale-statistics plan,
- * which took 39-44 s.
+ * loose (about 3 s measured, see the acceptance test's header) and exists to
+ * catch the stale-statistics plan, which took 39–44 s.
  */
 const BROWSE_ROOT_BOUND_MS = 5000;
 const SELECT_LARGEST_FOLDER_BOUND_MS = 10_000;

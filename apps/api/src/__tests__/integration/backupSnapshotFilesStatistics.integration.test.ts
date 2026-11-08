@@ -18,7 +18,7 @@ import './setup';
 import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { sql } from 'drizzle-orm';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { hydrateSnapshotFileIndex } from '../../services/backupSnapshotFileIndex';
 import { readableSourcePathPageQuery } from '../../services/backupSnapshotBrowse';
@@ -30,6 +30,20 @@ import { insertSnapshotRow, orgContext, seedWriteTenant } from './backupWriteFix
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
+
+// Autovacuum may pick this table up after any of the bulk writes below, and an
+// autovacuum ANALYZE holds the lock the helper refuses to wait for, which would
+// turn an expected 'analyzed' into 'busy'. Turned off for this file only (files
+// in this suite run one at a time), and back on afterwards. Autovacuum writes
+// last_autoanalyze, never the last_analyze these tests read.
+beforeAll(async () => {
+  if (!process.env.DATABASE_URL) return;
+  await getTestDb().execute(sql`ALTER TABLE public.backup_snapshot_files SET (autovacuum_enabled = false)`);
+});
+afterAll(async () => {
+  if (!process.env.DATABASE_URL) return;
+  await getTestDb().execute(sql`ALTER TABLE public.backup_snapshot_files RESET (autovacuum_enabled)`);
+});
 
 function newId(): string {
   return `snapshot-20261112T120000Z-${randomBytes(12).toString('hex')}`;
@@ -118,7 +132,9 @@ describe('breeze_analyze_backup_snapshot_files (#11209)', () => {
       elapsedMs = Date.now() - started;
     });
     expect(result).toBe(false);
-    expect(elapsedMs).toBeLessThan(2_000);
+    // Waiting would deadlock against this test's own lock until the statement
+    // timeout: the bound only has to tell "at once" from that.
+    expect(elapsedMs).toBeLessThan(5_000);
     expect(await lastManualAnalyze()).toEqual(before);
   });
 });
@@ -208,11 +224,11 @@ describe('refreshSnapshotFileIndexStatistics (#11209)', () => {
     expect(await lastManualAnalyze()).toEqual(before);
   });
 
-  runDb('reports busy, and does not wait, while the table is being maintained elsewhere', async () => {
+  runDb('reports busy, after its bounded retries, while the table is being maintained elsewhere', async () => {
     let outcome: string | undefined;
     await getTestDb().transaction(async (tx) => {
       await tx.execute(sql`LOCK TABLE public.backup_snapshot_files IN SHARE UPDATE EXCLUSIVE MODE`);
-      outcome = await refreshSnapshotFileIndexStatistics(STATISTICS_REFRESH_MIN_ROWS);
+      outcome = await refreshSnapshotFileIndexStatistics(STATISTICS_REFRESH_MIN_ROWS, { retryDelayMs: 50 });
     });
     expect(outcome).toBe('busy');
   });
