@@ -715,8 +715,8 @@ Server-side only; ships with the next API release. No flag. After deploy, on eac
 2. With W07 hit-rate data, revisit the TTLs. With cross-instance invalidation, the 60 s TTLs on C1–C4 and C6–C7 are now a backstop for writers outside the ratchet, and could be longer.
 3. If production shows the subscriber failing (not timing out) at boot, retry `start()` when Redis recovers (the boot sequence's existing "Redis came back" hook, `index.ts` ~405-430). A timeout already recovers on its own (D9).
 4. #8257 (device-keyed Redis policy caches bound to org) stays open and separate.
-5. Check whether any `BREEZE_ROLE=worker` code path reads C1–C8 (for example via `manifestSigning`). If one does, start the subscriber from `worker.ts` too.
- *(Done 2026-11-08, #11375: it did; see D8 amendment.)*
+5. Check whether any `BREEZE_ROLE=worker` code path reads C1–C8 (for example via `manifestSigning`). If one does, start the subscriber from `worker.ts` too. *(Done 2026-11-08, #11375: it did; see D8 amendment.)*
+
 ## Self-review
 
 **Spec coverage (W1b).** In-process TTL: existing `HotPathTtlCache`. Redis pub/sub by key, ids only: Tasks 2–3. Trust keyset, delegations, per-org update config, topology flags: Tasks 11, 6, 7. A→B within 1 s: Task 4. KPI: D11. Program row: "migrate the #8128 hot-path caches": Tasks 6–11b. Dispatch asks: get/set with TTL, `invalidate(id)` publishing, subscriber dropping local entries, degradation, bounded size (Tasks 2–3); one task per cache with its trigger (Tasks 6–11b); cross-instance test and CI job (Task 4); metrics and logs (Task 1, "Metrics and logs"); no new settings (Global Constraints); Merge Danger and file ownership (above).
