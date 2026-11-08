@@ -93,9 +93,10 @@ export async function processAgentCommandRelayJob(job: Job<RelayJobData>): Promi
 }
 
 /**
- * Thrown when a consumer would share a shard with another one: at start, when
- * the shard's owner key is already held, and at runtime, when the refresh
- * finds the key taken by another consumer.
+ * Thrown by initializeAgentCommandRelayWorker when the shard's owner key is
+ * held by another consumer, or a consumer already runs (or lost its shard) in
+ * this process. Also the error reported, not thrown, when the refresh finds
+ * the key taken by another consumer at runtime.
  */
 export class RelayShardConflictError extends Error {
   constructor(message: string) {
@@ -114,41 +115,59 @@ export function createAgentCommandRelayWorker(): Worker<RelayJobData> {
   });
 }
 
-interface RelayConsumerState {
-  queueName: string;
-  /** Per-start token held in the shard owner key; fences refresh and release. */
-  token: string;
+interface RelayConsumer {
   worker: Worker<RelayJobData>;
-  /** Another consumer took the shard; this one has stopped for good. */
-  lost: boolean;
-  refreshTimer: ReturnType<typeof setInterval>;
   sweepTimer: ReturnType<typeof setInterval>;
-  refreshing: Promise<void> | null;
   sweeping: Promise<void> | null;
   /** Ownerless queues from the last sweep: removed if still ownerless on the next. */
-  suspects: Set<string>;
+  suspects: ReadonlySet<string>;
 }
 
-let consumer: RelayConsumerState | null = null;
+/**
+ * This process's hold on its shard: the owner key (taken before serving) and,
+ * once initialize runs, the consumer. Kept after `lost` until shutdown, so a
+ * second initialize in the same process is refused rather than retried.
+ */
+interface RelayShardState {
+  queueName: string;
+  /** Per-claim token held in the owner key; fences refresh and release. */
+  token: string;
+  /** Another consumer took the shard. Nothing here consumes or refreshes any more. */
+  lost: boolean;
+  /** Shutdown has begun. Background work stops at its next check. */
+  stopping: boolean;
+  refreshTimer: ReturnType<typeof setInterval>;
+  refreshing: Promise<void> | null;
+  consumer: RelayConsumer | null;
+}
+
+let shard: RelayShardState | null = null;
+let pendingClaim: Promise<RelayShardState> | null = null;
 let starting = false;
 
-async function stopOnLostShard(state: RelayConsumerState): Promise<void> {
+async function stopOnLostShard(state: RelayShardState): Promise<void> {
   state.lost = true;
   clearInterval(state.refreshTimer);
-  clearInterval(state.sweepTimer);
+  if (state.consumer) clearInterval(state.consumer.sweepTimer);
+  // Stop consuming before reporting, so a reporting failure can never leave
+  // two consumers on one shard.
+  await state.consumer?.worker.close().catch((closeErr: unknown) => {
+    console.error(`[AgentCommandRelayWorker] closing the consumer for ${state.queueName} failed:`, closeErr);
+  });
   const err = new RelayShardConflictError(
     `relay shard ${state.queueName} was taken by another consumer; this consumer stopped so two consumers never compete for one shard`,
   );
   console.error(`[AgentCommandRelayWorker] ${err.message}`);
-  captureException(err);
-  workerReadinessRegistry.recordInitializationFailure(READINESS_NAME, err);
-  await state.worker.close().catch((closeErr: unknown) => {
-    console.error(`[AgentCommandRelayWorker] closing the consumer for ${state.queueName} failed:`, closeErr);
-  });
+  try {
+    captureException(err);
+    workerReadinessRegistry.recordInitializationFailure(READINESS_NAME, err);
+  } catch (reportErr) {
+    console.error('[AgentCommandRelayWorker] reporting the lost relay shard failed:', reportErr);
+  }
 }
 
-function refreshShard(state: RelayConsumerState): void {
-  if (state.lost || state.refreshing) return;
+function refreshShard(state: RelayShardState): void {
+  if (state.lost || state.stopping || state.refreshing) return;
   state.refreshing = (async () => {
     const result = await refreshRelayShard(INSTANCE_ID, state.token);
     if (result === 'reacquired') {
@@ -156,71 +175,125 @@ function refreshShard(state: RelayConsumerState): void {
     } else if (result === 'lost') {
       await stopOnLostShard(state);
     }
-    // 'unavailable': keep consuming. The key's TTL outlives several missed
-    // refreshes, and a sweep needs two ownerless passes before it removes a shard.
-  })().finally(() => { state.refreshing = null; });
+    // 'unavailable' (logged, rate-limited, by refreshRelayShard): keep
+    // consuming. The 30 s TTL survives two missed 10 s refreshes. Past that,
+    // producers answer `offline` for this shard until a refresh takes it back.
+  })()
+    .catch((err: unknown) => {
+      console.error(`[AgentCommandRelayWorker] owner key refresh for relay shard ${state.queueName} failed:`, err);
+    })
+    .finally(() => { state.refreshing = null; });
 }
 
-function sweepShards(state: RelayConsumerState): void {
-  if (state.lost || state.sweeping) return;
-  state.sweeping = (async () => {
+function sweepShards(state: RelayShardState): void {
+  const consumer = state.consumer;
+  if (!consumer || state.lost || state.stopping || consumer.sweeping) return;
+  consumer.sweeping = (async () => {
     try {
-      const result = await sweepDeadRelayShards(INSTANCE_ID, state.suspects);
-      state.suspects = result.suspects;
+      const result = await sweepDeadRelayShards(INSTANCE_ID, consumer.suspects, () => state.stopping || state.lost);
+      consumer.suspects = result.suspects;
     } catch (err) {
       console.error('[AgentCommandRelayWorker] relay shard sweep failed; retrying next interval:', err);
     }
-  })().finally(() => { state.sweeping = null; });
+  })().finally(() => { consumer.sweeping = null; });
 }
 
-/**
- * Start this instance's relay consumer (#4134). Takes the shard owner key
- * first and refuses to start if another consumer holds it, then consumes the
- * shard, keeps the key fresh, and sweeps shards left by instances that are
- * gone. If Redis cannot answer at start it consumes anyway and the refresh
- * loop takes the key later.
- */
-export async function initializeAgentCommandRelayWorker(): Promise<void> {
-  const queueName = agentCommandRelayQueueName(INSTANCE_ID);
-  if (consumer || starting) {
-    throw new RelayShardConflictError(`a relay consumer for ${queueName} is already running in this process`);
-  }
-  starting = true;
-  const token = randomUUID();
-  let acquired = false;
-  let worker: Worker<RelayJobData> | null = null;
-  try {
+/** Take the owner key once per process; concurrent callers share one attempt. */
+function claimShard(): Promise<RelayShardState> {
+  if (shard) return Promise.resolve(shard);
+  pendingClaim ??= (async () => {
+    const queueName = agentCommandRelayQueueName(INSTANCE_ID);
+    const token = randomUUID();
     const result = await acquireRelayShard(INSTANCE_ID, token);
     if (result === 'held') {
       throw new RelayShardConflictError(
         `relay shard ${queueName} is already owned by another consumer; refusing to start a second consumer on it`,
       );
     }
-    acquired = result === 'acquired';
-    if (!acquired) {
-      console.warn(`[AgentCommandRelayWorker] could not take the owner key for relay shard ${queueName} (Redis unavailable); consuming anyway, the refresh loop takes it once Redis answers`);
+    if (result === 'unavailable') {
+      console.warn(`[AgentCommandRelayWorker] could not take the owner key for relay shard ${queueName} (Redis unavailable); the refresh loop takes it once Redis answers`);
     }
-    worker = createAgentCommandRelayWorker();
-    attachWorkerObservability(worker, READINESS_NAME);
-    const state: RelayConsumerState = {
+    const state: RelayShardState = {
       queueName,
       token,
-      worker,
       lost: false,
+      stopping: false,
       refreshTimer: setInterval(() => refreshShard(state), RELAY_SHARD_REFRESH_INTERVAL_MS),
-      sweepTimer: setInterval(() => sweepShards(state), RELAY_SHARD_SWEEP_INTERVAL_MS),
       refreshing: null,
+      consumer: null,
+    };
+    state.refreshTimer.unref?.();
+    shard = state;
+    return state;
+  })().finally(() => { pendingClaim = null; });
+  return pendingClaim;
+}
+
+async function releaseClaim(state: RelayShardState): Promise<void> {
+  clearInterval(state.refreshTimer);
+  if (shard === state) shard = null;
+  await releaseRelayShard(INSTANCE_ID, state.token).catch((err: unknown) => {
+    console.warn(`[AgentCommandRelayWorker] releasing the owner key for ${state.queueName} failed; it expires on its own:`, err);
+  });
+}
+
+/**
+ * Take this instance's relay shard before the API serves (#4134). An agent
+ * socket names this instance in its presence lease the moment it connects,
+ * and producers answer `offline` for a shard with no owner key, so the key
+ * must exist before the first socket does. Never throws: a shard held by
+ * another consumer is refused by initializeAgentCommandRelayWorker, which
+ * records the readiness failure.
+ */
+export async function claimAgentCommandRelayShard(): Promise<void> {
+  try {
+    await claimShard();
+  } catch (err) {
+    if (!(err instanceof RelayShardConflictError)) {
+      console.error('[AgentCommandRelayWorker] claiming the relay shard before serving failed; initialize retries:', err);
+    }
+  }
+}
+
+/**
+ * Start this instance's relay consumer (#4134). Takes the shard owner key
+ * (unless claimAgentCommandRelayShard already did) and refuses to start if
+ * another consumer holds it, then consumes the shard and sweeps the queues of
+ * instances that are gone. If Redis cannot answer, it consumes anyway and the
+ * refresh loop takes the key later.
+ */
+export async function initializeAgentCommandRelayWorker(): Promise<void> {
+  const queueName = agentCommandRelayQueueName(INSTANCE_ID);
+  if (starting || shard?.consumer || shard?.lost) {
+    throw new RelayShardConflictError(
+      shard?.lost
+        ? `relay shard ${queueName} was taken by another consumer; not starting a consumer on it`
+        : `a relay consumer for ${queueName} is already running in this process`,
+    );
+  }
+  starting = true;
+  let state: RelayShardState | null = null;
+  let worker: Worker<RelayJobData> | null = null;
+  try {
+    state = await claimShard();
+    worker = createAgentCommandRelayWorker();
+    attachWorkerObservability(worker, READINESS_NAME);
+    const owner = state;
+    const consumer: RelayConsumer = {
+      worker,
+      sweepTimer: setInterval(() => sweepShards(owner), RELAY_SHARD_SWEEP_INTERVAL_MS),
       sweeping: null,
       suspects: new Set(),
     };
-    state.refreshTimer.unref?.();
-    state.sweepTimer.unref?.();
-    consumer = state;
+    consumer.sweepTimer.unref?.();
+    state.consumer = consumer;
     sweepShards(state);
     console.log(`[AgentCommandRelayWorker] Initialized on ${queueName}`);
   } catch (error) {
     if (worker) await worker.close().catch(() => {});
-    if (acquired) await releaseRelayShard(INSTANCE_ID, token).catch(() => false);
+    // An owner key with no consumer would have producers enqueue on a queue
+    // nobody reads. Without the key they answer `offline` at once.
+    if (state && !state.consumer) await releaseClaim(state);
     console.error('[AgentCommandRelayWorker] Failed to initialize:', error);
     throw error;
   } finally {
@@ -229,32 +302,46 @@ export async function initializeAgentCommandRelayWorker(): Promise<void> {
 }
 
 /**
- * Drain path (#4134): stop consuming (in-flight sends finish), ack every job
- * still waiting on this shard `owner_mismatch` so its producer can re-route
- * instead of timing out, remove the shard's queue, then release the owner key.
- * A failed drain is logged, not thrown: another instance's sweep removes the
- * shard once its owner key is gone.
+ * Drain path (#4134). Release the owner key first, so producers answer
+ * `offline` for this shard at once instead of enqueuing on a queue about to
+ * close. Then stop consuming (in-flight sends finish), ack every job still
+ * waiting `owner_mismatch`, and remove the queue. A failed drain is logged,
+ * not thrown: another instance's sweep removes the queue later. A failed
+ * close is thrown after the drain has run.
  */
 export async function shutdownAgentCommandRelayWorker(): Promise<void> {
-  const state = consumer;
+  if (pendingClaim) await pendingClaim.catch(() => null);
+  const state = shard;
   if (!state) return;
-  consumer = null;
+  shard = null;
+  state.stopping = true;
   clearInterval(state.refreshTimer);
-  clearInterval(state.sweepTimer);
-  await Promise.allSettled([state.refreshing, state.sweeping]);
+  if (state.consumer) clearInterval(state.consumer.sweepTimer);
+  await Promise.allSettled([state.refreshing, state.consumer?.sweeping]);
   // A consumer that lost its shard already stopped, and the shard is not its to drain.
   if (state.lost) return;
 
-  await state.worker.close();
-  try {
-    const acked = await drainRelayQueue(state.queueName);
-    console.log(`[AgentCommandRelayWorker] drained ${state.queueName} on shutdown (${acked} waiting job(s) acked owner_mismatch)`);
-  } catch (err) {
-    console.error(`[AgentCommandRelayWorker] drain of ${state.queueName} on shutdown failed; a live instance's sweep removes it later:`, err);
-  }
   try {
     await releaseRelayShard(INSTANCE_ID, state.token);
   } catch (err) {
     console.warn(`[AgentCommandRelayWorker] releasing the owner key for ${state.queueName} failed; it expires on its own:`, err);
   }
+  let closeError: unknown = null;
+  if (state.consumer) {
+    try {
+      await state.consumer.worker.close();
+    } catch (err) {
+      closeError = err;
+      console.error(`[AgentCommandRelayWorker] closing the consumer for ${state.queueName} failed; draining anyway:`, err);
+    }
+  }
+  try {
+    const result = await drainRelayQueue(state.queueName);
+    if (result.removed) {
+      console.log(`[AgentCommandRelayWorker] drained ${state.queueName} on shutdown (${result.acked} waiting job(s) acked owner_mismatch)`);
+    }
+  } catch (err) {
+    console.error(`[AgentCommandRelayWorker] drain of ${state.queueName} on shutdown failed; a live instance's sweep removes it later:`, err);
+  }
+  if (closeError) throw closeError;
 }

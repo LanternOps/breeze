@@ -9,21 +9,29 @@
  *     it with SET NX before it starts and refreshes it while it runs. A second
  *     consumer for the same shard finds the key held and refuses to start. Two
  *     consumers on one shard would compete for jobs exactly as the old shared
- *     queue did. The key is also the shard's liveness record.
- *   - The drain: ack every job that never started `owner_mismatch` (the claim
- *     was never taken, so nothing was sent and the caller may re-route), then
- *     obliterate the queue so none of its keys outlive it.
+ *     queue did. Producers read the key too: no key, no consumer, so they
+ *     answer `offline` instead of enqueuing.
+ *   - The drain: pause the queue, ack every job that never started
+ *     `owner_mismatch` (its send claim was never taken, so nothing was sent),
+ *     then obliterate the queue, which removes its BullMQ keys.
  *   - The sweep: INSTANCE_ID changes on every boot, so every restart leaves a
  *     queue behind. A graceful shutdown drains its own; a crash cannot. Live
- *     consumers remove a shard whose owner key is absent on two consecutive
- *     sweeps, and the pre-#4134 shared queue the same way. Without this, each
- *     crash would leave a BullMQ event stream and its jobs in a `noeviction`
- *     Redis for good.
+ *     consumers remove a relay queue (a shard, or the pre-#4134 shared queue)
+ *     once it has had no owner key on two consecutive sweeps AND no BullMQ
+ *     Worker is connected to it. Without this, each crash would leave a BullMQ
+ *     event stream and its jobs in a `noeviction` Redis for good.
+ *
+ * Discovery relies on each queue's `meta` hash: every BullMQ job add writes
+ * it, so any queue holding jobs is found. A shard that never received a job
+ * holds only the Worker's own expiring keys.
  */
 import { getRedis } from './redis';
 import { createInstrumentedQueue } from './bullmqQueue';
 import {
-  relayInstanceIdFromQueueName,
+  isRelayShardLive,
+  logRelayRedisFailure,
+  relayQueueOwner,
+  relayShardOwnerKey,
   writeRelayAck,
   type RelayJobData,
 } from './agentCommandRelay';
@@ -39,10 +47,6 @@ const BULLMQ_PREFIX = 'bull';
 const RELAY_QUEUE_META_PATTERN = `${BULLMQ_PREFIX}:agent-command-relay*:meta`;
 const SCAN_COUNT = 500;
 
-export function relayShardOwnerKey(instanceId: string): string {
-  return `agent-relay-shard:${instanceId}`;
-}
-
 export type RelayShardAcquireResult = 'acquired' | 'held' | 'unavailable';
 
 /**
@@ -57,7 +61,8 @@ export async function acquireRelayShard(instanceId: string, token: string): Prom
   try {
     const res = await redis.set(relayShardOwnerKey(instanceId), token, 'PX', RELAY_SHARD_OWNER_TTL_MS, 'NX');
     return res === 'OK' ? 'acquired' : 'held';
-  } catch {
+  } catch (err) {
+    logRelayRedisFailure('relay shard owner key acquire', err);
     return 'unavailable';
   }
 }
@@ -86,7 +91,10 @@ export async function refreshRelayShard(instanceId: string, token: string): Prom
     if (res === 1) return 'refreshed';
     if (res === 2) return 'reacquired';
     return 'lost';
-  } catch {
+  } catch (err) {
+    // Logged here, rate-limited: a refresh that keeps failing lets the key
+    // lapse, and the producer then answers `offline` for this shard.
+    logRelayRedisFailure('relay shard owner key refresh', err);
     return 'unavailable';
   }
 }
@@ -98,51 +106,66 @@ end
 return 0
 `;
 
-/** Remove the owner key, only while it still holds `token`. */
+/** Remove the owner key, only while it still holds `token`. Throws on a Redis error. */
 export async function releaseRelayShard(instanceId: string, token: string): Promise<boolean> {
   const redis = getRedis();
   if (!redis) return false;
   return (await redis.eval(RELEASE_LUA, 1, relayShardOwnerKey(instanceId), token)) === 1;
 }
 
-/** Whether a consumer owns the shard. A failed read counts as live: never reap on doubt. */
-export async function isRelayShardLive(instanceId: string): Promise<boolean> {
-  const redis = getRedis();
-  if (!redis) return true;
-  try {
-    return (await redis.exists(relayShardOwnerKey(instanceId))) === 1;
-  } catch {
-    return true;
-  }
-}
+export type RelayQueueDrainResult =
+  | { removed: true; acked: number }
+  | { removed: false; reason: 'consumer_connected' | 'consumer_check_failed' };
 
 /**
- * Empty and remove one relay queue. Jobs that never started are acked
- * `owner_mismatch` first so a producer still waiting gets an answer instead
- * of timing out. Active jobs are not acked: one may be mid-send, and its own
- * consumer writes the true outcome. Returns the number of acks written.
- * Throws if the queue could not be removed.
+ * Empty and remove one relay queue. The queue is paused first so no consumer
+ * starts a job while it is read. Jobs that never started are then acked
+ * `owner_mismatch`, so a producer still waiting gets that answer instead of
+ * timing out; any retry is the producer's caller's decision. Active jobs are
+ * not acked: on shutdown none remain, and in a sweep they belonged to a
+ * consumer that is gone, so their producers have timed out already.
+ *
+ * `skipIfConsumerConnected` (the sweep) first asks Redis whether any BullMQ
+ * Worker is connected to the queue, and leaves the queue alone if one is, or
+ * if the answer cannot be had (a Redis that refuses CLIENT LIST never has its
+ * queues removed). Throws if the queue could not be removed.
  */
-export async function drainRelayQueue(queueName: string): Promise<number> {
+export async function drainRelayQueue(
+  queueName: string,
+  opts: { skipIfConsumerConnected?: boolean } = {},
+): Promise<RelayQueueDrainResult> {
   // skipMetasUpdate: this handle exists to remove the queue, so it must not
   // write the queue's meta hash back on construction.
   const queue = createInstrumentedQueue<RelayJobData>(queueName, { skipMetasUpdate: true });
   try {
-    let acked = 0;
-    const jobs = await queue.getJobs(['waiting', 'prioritized', 'paused', 'delayed'], 0, RELAY_DRAIN_MAX_ACKS - 1);
-    for (const job of jobs) {
-      const relayId = job?.data?.relayId;
-      if (typeof relayId !== 'string' || relayId.length === 0) continue;
+    if (opts.skipIfConsumerConnected) {
+      let workers: number;
       try {
-        await writeRelayAck(relayId, { status: 'owner_mismatch' });
-        acked += 1;
+        workers = await queue.getWorkersCount();
       } catch (err) {
-        // The producer times out to `indeterminate` instead; the queue must still go.
-        console.warn(`[AgentRelayShard] ack for relay ${relayId} on ${queueName} failed:`, err);
+        logRelayRedisFailure('relay queue consumer lookup', err);
+        return { removed: false, reason: 'consumer_check_failed' };
       }
+      if (workers > 0) return { removed: false, reason: 'consumer_connected' };
+    }
+    await queue.pause();
+    const jobs = await queue.getJobs(['waiting', 'prioritized', 'paused', 'delayed'], 0, RELAY_DRAIN_MAX_ACKS - 1);
+    const relayIds = jobs
+      .map((job) => job?.data?.relayId)
+      .filter((relayId): relayId is string => typeof relayId === 'string' && relayId.length > 0);
+    const acks = await Promise.allSettled(
+      relayIds.map((relayId) => writeRelayAck(relayId, { status: 'owner_mismatch' })),
+    );
+    const failed = acks.filter((ack) => ack.status === 'rejected');
+    if (failed.length > 0) {
+      // Those producers time out to `indeterminate` instead; the queue must still go.
+      console.warn(
+        `[AgentRelayShard] ${failed.length} of ${relayIds.length} owner_mismatch ack(s) on ${queueName} failed:`,
+        (failed[0] as PromiseRejectedResult).reason,
+      );
     }
     await queue.obliterate({ force: true });
-    return acked;
+    return { removed: true, acked: relayIds.length - failed.length };
   } finally {
     await queue.close().catch((err: unknown) => {
       console.warn(`[AgentRelayShard] closing drain handle for ${queueName} failed:`, err);
@@ -168,39 +191,51 @@ export async function listRelayQueueNames(): Promise<string[]> {
 
 export interface RelayShardSweepResult {
   /** Ownerless queues seen this sweep; removed if still ownerless on the next. */
-  suspects: Set<string>;
+  suspects: ReadonlySet<string>;
   /** Queues removed this sweep. */
   reaped: string[];
 }
 
 /**
- * One cleanup pass. A queue is removed only when it was ownerless on the
- * previous pass too, so a shard whose consumer is still starting (its owner
- * key not yet written) or briefly lost Redis is never touched. The caller's
- * own shard is always skipped. A queue that fails to drain stays a suspect.
+ * One cleanup pass. A queue is removed only when it had no owner key on the
+ * previous pass too, and no Worker is connected to it now. So a shard whose
+ * consumer is still starting, briefly lost Redis, or belongs to an older build
+ * that is still running is never touched. The caller's own shard is always
+ * skipped. A queue that is not removed stays a suspect. `shouldStop` is
+ * checked before each queue, so a shutdown never waits on more than one drain.
  */
 export async function sweepDeadRelayShards(
   selfInstanceId: string,
   previousSuspects: ReadonlySet<string>,
+  shouldStop: () => boolean = () => false,
 ): Promise<RelayShardSweepResult> {
   const suspects = new Set<string>();
   const reaped: string[] = [];
   for (const name of await listRelayQueueNames()) {
-    const owner = relayInstanceIdFromQueueName(name);
-    if (owner === undefined || owner === selfInstanceId) continue;
-    // The legacy shared queue has no owner key: nothing enqueues on it any more.
-    if (owner !== null && await isRelayShardLive(owner)) continue;
+    if (shouldStop()) break;
+    const owner = relayQueueOwner(name);
+    if (!owner) continue;
+    if (owner.kind === 'shard') {
+      if (owner.instanceId === selfInstanceId) continue;
+      if (await isRelayShardLive(owner.instanceId)) continue;
+    }
+    // The legacy shared queue never has an owner key: only the connected-
+    // Worker check below protects an older build still consuming it.
     if (!previousSuspects.has(name)) {
       suspects.add(name);
       continue;
     }
     try {
-      const acked = await drainRelayQueue(name);
-      reaped.push(name);
-      console.log(`[AgentRelayShard] removed relay queue ${name} with no live consumer (${acked} waiting job(s) acked owner_mismatch)`);
+      const result = await drainRelayQueue(name, { skipIfConsumerConnected: true });
+      if (result.removed) {
+        reaped.push(name);
+        console.log(`[AgentRelayShard] removed relay queue ${name}: no owner and no consumer (${result.acked} waiting job(s) acked owner_mismatch)`);
+      } else {
+        suspects.add(name);
+      }
     } catch (err) {
       suspects.add(name);
-      console.error(`[AgentRelayShard] removing relay queue ${name} with no live consumer failed; retrying next sweep:`, err);
+      console.error(`[AgentRelayShard] removing relay queue ${name} with no owner failed; retrying next sweep:`, err);
     }
   }
   return { suspects, reaped };

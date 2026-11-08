@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const redisMock = { set: vi.fn(), get: vi.fn(), eval: vi.fn() };
+const redisMock = { set: vi.fn(), get: vi.fn(), eval: vi.fn(), exists: vi.fn() };
 vi.mock('./redis', () => ({
   getRedis: vi.fn(() => redisMock),
   getRedisConnection: vi.fn(() => redisMock),
@@ -31,17 +31,22 @@ process.env.APP_ENCRYPTION_KEY_ID = 'current';
 process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({ current: 'current-key-material' });
 
 import {
+  __resetRelayRedisFailureLogForTests,
   agentCommandRelayQueueName,
   awaitRelayAck,
   claimRelaySend,
   dispatchCommandToAgent,
+  getAgentCommandRelayQueue,
   isAgentConnectedAnywhere,
+  isRelayShardLive,
   LEGACY_AGENT_COMMAND_RELAY_QUEUE,
+  logRelayRedisFailure,
   markRelaySendComplete,
   openRelayCommand,
   RELAY_DELIVERY_DEADLINE_MS,
   RELAY_QUEUE_EVENTS_MAX_LEN,
-  relayInstanceIdFromQueueName,
+  relayQueueOwner,
+  relayShardOwnerKey,
   sealRelayCommand,
   shutdownAgentCommandRelayQueue,
   writeRelayAck,
@@ -69,13 +74,54 @@ describe('relay shard queue names (#4134)', () => {
     expect(() => agentCommandRelayQueueName(id)).toThrow(/instance id/);
   });
 
-  it('parses a shard name back to its instance; the legacy shared queue parses to null; anything else to undefined', () => {
-    expect(relayInstanceIdFromQueueName('agent-command-relay-inst-1')).toBe('inst-1');
-    expect(relayInstanceIdFromQueueName('agent-command-relay')).toBeNull();
-    expect(relayInstanceIdFromQueueName('agent-command-relay-')).toBeUndefined();
-    expect(relayInstanceIdFromQueueName('agent-command-relay-a:b')).toBeUndefined();
-    expect(relayInstanceIdFromQueueName('agent-command-relayx')).toBeUndefined();
-    expect(relayInstanceIdFromQueueName('event-dispatch')).toBeUndefined();
+  it('parses a shard name back to its instance and the legacy queue to legacy; anything else is not a relay queue', () => {
+    expect(relayQueueOwner('agent-command-relay-inst-1')).toEqual({ kind: 'shard', instanceId: 'inst-1' });
+    expect(relayQueueOwner('agent-command-relay')).toEqual({ kind: 'legacy' });
+    expect(relayQueueOwner('agent-command-relay-')).toBeNull();
+    expect(relayQueueOwner('agent-command-relay-a:b')).toBeNull();
+    expect(relayQueueOwner('agent-command-relayx')).toBeNull();
+    expect(relayQueueOwner('event-dispatch')).toBeNull();
+  });
+});
+
+describe('shard liveness and failure logging (#4134)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetRelayRedisFailureLogForTests();
+  });
+
+  it('a shard is live while its owner key exists; a read error counts as live', async () => {
+    redisMock.exists.mockResolvedValueOnce(1).mockResolvedValueOnce(0).mockRejectedValueOnce(new Error('down'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(isRelayShardLive('inst-1')).resolves.toBe(true);
+    await expect(isRelayShardLive('inst-1')).resolves.toBe(false);
+    await expect(isRelayShardLive('inst-1')).resolves.toBe(true);
+
+    expect(redisMock.exists).toHaveBeenCalledWith('agent-relay-shard:inst-1');
+    expect(relayShardOwnerKey('inst-1')).toBe('agent-relay-shard:inst-1');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('relay shard liveness read failed'), 'down');
+    warn.mockRestore();
+  });
+
+  it('logs a failing operation at most once a minute, then reports how many were suppressed', () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      logRelayRedisFailure('op', new Error('e1'));
+      logRelayRedisFailure('op', new Error('e2'));
+      logRelayRedisFailure('op', new Error('e3'));
+      logRelayRedisFailure('other op', new Error('x'));
+      expect(warn).toHaveBeenCalledTimes(2);
+
+      vi.advanceTimersByTime(60_000);
+      logRelayRedisFailure('op', new Error('e4'));
+      expect(warn).toHaveBeenCalledTimes(3);
+      expect(warn.mock.calls[2]?.[0]).toContain('2 more since the last report');
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -153,9 +199,61 @@ describe('dispatchCommandToAgent facade', () => {
     vi.mocked(breezeRole).mockReturnValue('all');
     fakeQueue = { add: vi.fn().mockResolvedValue(undefined), close: vi.fn().mockResolvedValue(undefined) };
     vi.mocked(createInstrumentedQueue).mockReturnValue(fakeQueue as never);
-    // Singleton lives at module scope — force a fresh queue per test so
-    // fakeQueue is actually the one exercised.
+    // Every target shard has a consumer unless a test says otherwise.
+    redisMock.exists.mockResolvedValue(1);
+    // Handles live at module scope — force fresh ones per test so fakeQueue is
+    // actually the one exercised.
     await shutdownAgentCommandRelayQueue();
+  });
+
+  it('a lease naming an instance whose shard has no owner key → offline at once: no queue built, no enqueue', async () => {
+    vi.mocked(isAgentConnected).mockReturnValue(false);
+    vi.mocked(readAgentPresence).mockResolvedValue({ instanceId: 'inst-gone', connectionToken: 'tok-9' });
+    redisMock.exists.mockResolvedValue(0);
+
+    await expect(dispatchCommandToAgent('agent-1', command)).resolves.toEqual({ status: 'offline' });
+
+    expect(redisMock.exists).toHaveBeenCalledWith('agent-relay-shard:inst-gone');
+    expect(createInstrumentedQueue).not.toHaveBeenCalled();
+    expect(redisMock.get).not.toHaveBeenCalled();
+  });
+
+  it('a failed owner-key read does not block the relay: it enqueues as before', async () => {
+    vi.mocked(isAgentConnected).mockReturnValue(false);
+    vi.mocked(readAgentPresence).mockResolvedValue({ instanceId: 'inst-9', connectionToken: 'tok-9' });
+    redisMock.exists.mockRejectedValue(new Error('timeout'));
+    redisMock.get.mockResolvedValueOnce(JSON.stringify({ status: 'sent', via: 'relay' }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(dispatchCommandToAgent('agent-1', command)).resolves.toEqual({ status: 'sent', via: 'relay' });
+    expect(fakeQueue.add).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('keeps at most 32 producer handles, closing the least recently used one', async () => {
+    const handles = new Map<string, Array<{ add: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }>>();
+    vi.mocked(createInstrumentedQueue).mockImplementation(((name: string) => {
+      const q = { add: vi.fn(), close: vi.fn().mockResolvedValue(undefined) };
+      handles.set(name, [...(handles.get(name) ?? []), q]);
+      return q;
+    }) as never);
+    const name = (i: number) => `agent-command-relay-inst-${i}`;
+
+    for (let i = 0; i < 32; i += 1) getAgentCommandRelayQueue(`inst-${i}`);
+    getAgentCommandRelayQueue('inst-0'); // touched: now the most recently used
+    getAgentCommandRelayQueue('inst-32'); // 33rd handle evicts inst-1, not inst-0
+
+    expect(handles.get(name(1))?.[0]?.close).toHaveBeenCalledTimes(1);
+    expect(handles.get(name(0))?.[0]?.close).not.toHaveBeenCalled();
+    expect(createInstrumentedQueue).toHaveBeenCalledTimes(33);
+
+    getAgentCommandRelayQueue('inst-1'); // rebuilt after eviction
+    expect(handles.get(name(1))).toHaveLength(2);
+
+    await shutdownAgentCommandRelayQueue();
+    for (const [, built] of handles) expect(built[built.length - 1]?.close).toHaveBeenCalled();
+    getAgentCommandRelayQueue('inst-0'); // the map was emptied: a fresh handle
+    expect(handles.get(name(0))).toHaveLength(2);
   });
 
   it('local socket + send ok → sent/local, no presence read, no enqueue', async () => {

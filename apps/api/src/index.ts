@@ -336,9 +336,11 @@ import { shutdownChatRunBridge } from './services/workspace/chatRunBridge';
 import { initializeEventDispatchWorker, shutdownEventDispatchWorker } from './jobs/eventDispatchWorker';
 import { shutdownEventDispatchQueue } from './services/eventDispatchQueue';
 import {
+  claimAgentCommandRelayShard,
   initializeAgentCommandRelayWorker,
   shutdownAgentCommandRelayWorker,
 } from './jobs/agentCommandRelayWorker';
+import { shutdownAgentCommandRelayQueue } from './services/agentCommandRelay';
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
 import { wispEnabled } from './config/env';
 import { installWispGrantHooks } from './services/wisp/grantLifecycle';
@@ -1578,6 +1580,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
         shutdownEventDispatchWorker,
         shutdownEventDispatchQueue,
         shutdownAgentCommandRelayWorker,
+        // #4134: per-instance producer handles (shared connection; hygiene).
+        shutdownAgentCommandRelayQueue,
       ],
     },
     // 3b. W05: the cluster cache subscriber owns its own duplicate connection.
@@ -2053,6 +2057,11 @@ async function bootstrap(): Promise<void> {
   const clusterCacheOutcome = startupChecks.redisOk ? await getClusterCacheBus().start() : 'unavailable';
   if (clusterCacheOutcome === 'subscribed') console.log('[clusterCache] subscriber subscribed');
   else console.warn(`[clusterCache] subscriber ${clusterCacheOutcome}: hot-path caches on this instance are TTL-only until it subscribes`);
+
+  // #4134: take this instance's relay shard before any agent socket can name
+  // it in a presence lease (producers answer `offline` for a shard without an
+  // owner). The consumer itself starts in initializeWorkers(). Never throws.
+  if (breezeRole() !== 'worker' && startupChecks.redisOk) await claimAgentCommandRelayShard();
 
   // W08: start sampling only after migrations and boot work, so their stalls
   // never enter the controller's history. Admission never affects /ready.

@@ -68,6 +68,7 @@ import {
   type RelayEnvelopeBinding,
   type RelayJobData,
 } from '../../services/agentCommandRelay';
+import { acquireRelayShard } from '../../services/agentCommandRelayShard';
 import { createAgentCommandRelayWorker } from '../../jobs/agentCommandRelayWorker';
 import { __installAgentSocketForTest } from '../../routes/agentWs';
 import type { AgentCommand } from '../../routes/agentWs';
@@ -87,7 +88,11 @@ function installFakeSocket(id: string): string[] {
 }
 
 const activeWorkers: Worker<RelayJobData>[] = [];
-function startConsumer(): Worker<RelayJobData> {
+async function startConsumer(): Promise<Worker<RelayJobData>> {
+  // Producers enqueue only on a shard with an owner key (#4134); the bare
+  // Worker below skips initialize, so take the key the way it would.
+  // setup.ts flushes Redis before every test, so this is per test.
+  expect(await acquireRelayShard(INSTANCE_ID, `int-${RUN}`)).toBe('acquired');
   const worker = createAgentCommandRelayWorker();
   activeWorkers.push(worker);
   return worker;
@@ -147,7 +152,7 @@ describe('agent command relay — real Redis (wave 3.5b, #4084)', () => {
     const id = agentId('e2e-1');
     const frames = installFakeSocket(id);
     await setAgentPresence(id, { instanceId: INSTANCE_ID, connectionToken: 't-int' });
-    startConsumer();
+    await startConsumer();
 
     const command = makeCommand();
     const outcome = await dispatchCommandToAgent(id, command, { forceRelay: true });
@@ -185,7 +190,7 @@ describe('agent command relay — real Redis (wave 3.5b, #4084)', () => {
     // Presence exists (an admission hint) but no socket was ever installed —
     // the consumer's own activeConnections map is authoritative.
     await setAgentPresence(id, { instanceId: INSTANCE_ID, connectionToken: 't-stale' });
-    startConsumer();
+    await startConsumer();
 
     const outcome = await dispatchCommandToAgent(id, makeCommand(), { forceRelay: true });
     expect(outcome).toEqual({ status: 'offline' });
@@ -211,7 +216,7 @@ describe('agent command relay — real Redis (wave 3.5b, #4084)', () => {
     // A newer connection takes over the lease AFTER the job was built.
     await setAgentPresence(id, { instanceId: INSTANCE_ID, connectionToken: 'other-token' });
 
-    startConsumer();
+    await startConsumer();
     const outcome = await awaitRelayAck(relayId, 5_000);
 
     expect(outcome).toEqual({ status: 'owner_mismatch' });
@@ -233,7 +238,7 @@ describe('agent command relay — real Redis (wave 3.5b, #4084)', () => {
     };
     await getAgentCommandRelayQueue(INSTANCE_ID).add('relay-send', data, { jobId: `relay-${relayId}` });
 
-    startConsumer();
+    await startConsumer();
     const outcome = await awaitRelayAck(relayId, 5_000);
 
     expect(outcome).toEqual({ status: 'expired' });
@@ -246,7 +251,7 @@ describe('agent command relay — real Redis (wave 3.5b, #4084)', () => {
     await setAgentPresence(id, { instanceId: INSTANCE_ID, connectionToken: 't-once' });
     const command = makeCommand();
     await markRelaySendComplete(id, command.id);
-    startConsumer();
+    await startConsumer();
 
     const outcome = await dispatchCommandToAgent(id, command, { forceRelay: true });
 

@@ -50,23 +50,80 @@ async function socketLocal(): Promise<{
 }
 
 /**
- * The single shared queue every API consumer drained before #4134. Nothing
- * enqueues on it any more; the consumer's shard reaper removes what an older
- * build left there (see agentCommandRelayShard.ts).
+ * The single shared queue every API consumer drained before #4134. Builds
+ * from before then still use it while a deploy replaces them. Once none run,
+ * nothing enqueues on it, and the shard sweep removes what they left once no
+ * consumer is connected to it (see agentCommandRelayShard.ts).
  */
 export const LEGACY_AGENT_COMMAND_RELAY_QUEUE = 'agent-command-relay';
 const SHARD_QUEUE_PREFIX = `${LEGACY_AGENT_COMMAND_RELAY_QUEUE}-`;
 // INSTANCE_ID is a UUID. The bound keeps the name a plain token: BullMQ
-// rejects ':' in a queue name, and the shard reaper matches these names with a
+// rejects ':' in a queue name, and the shard sweep matches these names with a
 // Redis glob, so no glob metacharacter may appear in one either.
 const INSTANCE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 /**
  * Nobody reads the relay queues' BullMQ event streams (acks travel on their
- * own keys, never QueueEvents). The 10,000-entry default per queue is what
- * filled Redis in a past `maxmemory` incident, so cap it.
+ * own keys, never QueueEvents). BullMQ's 10,000-entry default per queue is
+ * what filled a `noeviction` Redis in a past `maxmemory` incident, so the
+ * producer handle caps it. The cap is stored in the queue's meta hash when a
+ * handle is built; a queue whose meta is first written by a job add (after an
+ * obliterate, say) gets BullMQ's default until the sweep removes it.
  */
 export const RELAY_QUEUE_EVENTS_MAX_LEN = 1_000;
+
+/**
+ * Shard owner key: held by the one consumer of `agent-command-relay-<id>`.
+ * It is the second-consumer guard (agentCommandRelayShard.ts) and the
+ * producer's test that a shard has a consumer at all.
+ */
+export function relayShardOwnerKey(instanceId: string): string {
+  return `agent-relay-shard:${instanceId}`;
+}
+
+const REDIS_FAILURE_LOG_INTERVAL_MS = 60_000;
+const redisFailureLog = new Map<string, { at: number; suppressed: number }>();
+
+/**
+ * Warn about a relay Redis call that failed and was answered by a fallback.
+ * At most one line per operation per minute, with a count of what was
+ * suppressed, so a refresh loop during an outage stays readable.
+ */
+export function logRelayRedisFailure(operation: string, err: unknown): void {
+  const now = Date.now();
+  const entry = redisFailureLog.get(operation);
+  if (entry && now - entry.at < REDIS_FAILURE_LOG_INTERVAL_MS) {
+    entry.suppressed += 1;
+    return;
+  }
+  const suppressed = entry?.suppressed ?? 0;
+  redisFailureLog.set(operation, { at: now, suppressed: 0 });
+  console.warn(
+    `[agentCommandRelay] ${operation} failed${suppressed > 0 ? ` (${suppressed} more since the last report)` : ''}:`,
+    err instanceof Error ? err.message : err,
+  );
+}
+
+/** TEST ONLY: forget the failure-log rate limit. */
+export function __resetRelayRedisFailureLogForTests(): void {
+  redisFailureLog.clear();
+}
+
+/**
+ * Whether a consumer owns the shard `instanceId`. A failed read counts as
+ * live: the producer then enqueues as it would have before the check, and a
+ * sweep never removes a shard on doubt.
+ */
+export async function isRelayShardLive(instanceId: string): Promise<boolean> {
+  const redis = getRedis();
+  if (!redis) return true;
+  try {
+    return (await redis.exists(relayShardOwnerKey(instanceId))) === 1;
+  } catch (err) {
+    logRelayRedisFailure('relay shard liveness read', err);
+    return true;
+  }
+}
 
 /** The relay queue consumed only by the instance `instanceId`. */
 export function agentCommandRelayQueueName(instanceId: string): string {
@@ -76,15 +133,19 @@ export function agentCommandRelayQueueName(instanceId: string): string {
   return `${SHARD_QUEUE_PREFIX}${instanceId}`;
 }
 
+export type RelayQueueOwner =
+  | { kind: 'shard'; instanceId: string }
+  | { kind: 'legacy' };
+
 /**
- * The instance a relay queue name belongs to: its id for a shard, `null` for
- * the legacy shared queue, `undefined` for any other name.
+ * Who a relay queue name belongs to: one instance's shard, or the legacy
+ * shared queue. `null` for any name that is not a relay queue.
  */
-export function relayInstanceIdFromQueueName(name: string): string | null | undefined {
-  if (name === LEGACY_AGENT_COMMAND_RELAY_QUEUE) return null;
-  if (!name.startsWith(SHARD_QUEUE_PREFIX)) return undefined;
+export function relayQueueOwner(name: string): RelayQueueOwner | null {
+  if (name === LEGACY_AGENT_COMMAND_RELAY_QUEUE) return { kind: 'legacy' };
+  if (!name.startsWith(SHARD_QUEUE_PREFIX)) return null;
   const instanceId = name.slice(SHARD_QUEUE_PREFIX.length);
-  return INSTANCE_ID_PATTERN.test(instanceId) ? instanceId : undefined;
+  return INSTANCE_ID_PATTERN.test(instanceId) ? { kind: 'shard', instanceId } : null;
 }
 
 export const RELAY_DELIVERY_DEADLINE_MS = 5_000;
@@ -219,7 +280,10 @@ export async function awaitRelayAck(relayId: string, deadlineMs: number): Promis
 
 // Producer handles, one per target instance. They share the BullMQ connection,
 // so a handle is cheap. Instance ids change on every API restart, so the map
-// is bounded: the oldest handle (a long-gone instance, in practice) is closed.
+// is bounded: the least recently used handle (a long-gone instance, in
+// practice) is closed. A handle in use is the most recently used, so only more
+// than 32 instances in use at once could close one under an in-flight add,
+// which would then fail as `infrastructure_error`.
 const MAX_CACHED_RELAY_QUEUES = 32;
 const relayQueues = new Map<string, Queue<RelayJobData>>();
 
@@ -284,6 +348,20 @@ export async function dispatchCommandToAgent(
 
   const lease = await readAgentPresence(agentId);
   if (!lease) return { status: 'offline' };
+
+  try {
+    agentCommandRelayQueueName(lease.instanceId);
+  } catch (err) {
+    return {
+      status: 'infrastructure_error',
+      message: `relay enqueue failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  // A lease can outlive its instance by up to its TTL: a crash, or a shutdown
+  // whose lease clears did not land. No consumer reads that instance's shard,
+  // so answer now rather than park a job nobody takes and time out. The shared
+  // queue answered the same case at once, through another instance's consumer.
+  if (!(await isRelayShardLive(lease.instanceId))) return { status: 'offline' };
 
   const relayId = randomUUID();
   const expiresAt = Date.now() + RELAY_DELIVERY_DEADLINE_MS;

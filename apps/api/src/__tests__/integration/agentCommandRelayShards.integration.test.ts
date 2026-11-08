@@ -11,7 +11,7 @@
  * its own Redis clients, against the same Redis. With the old single shared
  * queue, both consumers competed for every job, and a job taken by the
  * instance that does not hold the agent's socket was acked `offline` (the
- * first test below is red on that code).
+ * 40-send routing test fails on the shared-queue implementation).
  *
  * The readiness registry allows one attach per consumer name per module graph,
  * and these tests start and stop each instance's consumer per test (setup.ts
@@ -39,9 +39,12 @@ import * as workerA from '../../jobs/agentCommandRelayWorker';
 import { INSTANCE_ID } from '../../services/instanceIdentity';
 import {
   RELAY_SHARD_OWNER_TTL_MS,
-  relayShardOwnerKey,
+  acquireRelayShard,
+  refreshRelayShard,
+  releaseRelayShard,
   sweepDeadRelayShards,
 } from '../../services/agentCommandRelayShard';
+import { relayShardOwnerKey } from '../../services/agentCommandRelay';
 import type { AgentCommand } from '../../routes/agentWs';
 import type { DispatchOutcome, RelayJobData } from '../../services/agentCommandRelay';
 
@@ -200,6 +203,72 @@ describe('agent command relay shards — two API instances, real Redis (#4134)',
     await expect(A.relay.dispatchCommandToAgent(target, makeCommand(), { forceRelay: true }))
       .resolves.toEqual({ status: 'sent', via: 'relay' });
     expect(frames).toHaveLength(1);
+  }, 20_000);
+
+  it('owner-key scripts on real Redis: NX acquire, fenced refresh, reacquire after a lapse, lost to another token, fenced release', async () => {
+    const redis = redisA.getRedis()!;
+    const id = `lua-${RUN}`;
+    const key = relayShardOwnerKey(id);
+
+    await expect(acquireRelayShard(id, 'tok-1')).resolves.toBe('acquired');
+    await expect(acquireRelayShard(id, 'tok-2')).resolves.toBe('held');
+    expect(await redis.get(key)).toBe('tok-1');
+
+    // Shrink the TTL so the refresh has something to extend.
+    await redis.pexpire(key, 1_000);
+    await expect(refreshRelayShard(id, 'tok-1')).resolves.toBe('refreshed');
+    expect(await redis.pttl(key)).toBeGreaterThan(RELAY_SHARD_OWNER_TTL_MS - 5_000);
+
+    await redis.del(key);
+    await expect(refreshRelayShard(id, 'tok-1')).resolves.toBe('reacquired');
+    expect(await redis.get(key)).toBe('tok-1');
+    const pttl = await redis.pttl(key);
+    expect(pttl).toBeGreaterThan(0);
+    expect(pttl).toBeLessThanOrEqual(RELAY_SHARD_OWNER_TTL_MS);
+
+    await redis.set(key, 'tok-other');
+    await expect(refreshRelayShard(id, 'tok-1')).resolves.toBe('lost');
+    expect(await redis.get(key)).toBe('tok-other');
+
+    await expect(releaseRelayShard(id, 'tok-1')).resolves.toBe(false);
+    expect(await redis.get(key)).toBe('tok-other');
+    await expect(releaseRelayShard(id, 'tok-other')).resolves.toBe(true);
+    expect(await redis.exists(key)).toBe(0);
+  });
+
+  it('a lease naming an instance with no relay consumer is answered offline at once, and nothing is written for that shard', async () => {
+    const goneId = `gone-${RUN}`;
+    const target = agentId('gone');
+    await A.presence.setAgentPresence(target, { instanceId: goneId, connectionToken: 'tok-gone' });
+
+    const started = Date.now();
+    await expect(A.relay.dispatchCommandToAgent(target, makeCommand(), { forceRelay: true }))
+      .resolves.toEqual({ status: 'offline' });
+
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(await keysOf(relayA.agentCommandRelayQueueName(goneId))).toEqual([]);
+  });
+
+  it('the sweep never removes a queue a live Worker is connected to, even when its owner key is gone', async () => {
+    await B.worker.initializeAgentCommandRelayWorker();
+    const onB = agentId('lapsed-b');
+    installSocket(B, onB);
+    await A.presence.setAgentPresence(onB, { instanceId: B.id, connectionToken: 'tok-lapsed' });
+    await expect(A.relay.dispatchCommandToAgent(onB, makeCommand(), { forceRelay: true }))
+      .resolves.toEqual({ status: 'sent', via: 'relay' });
+    const shardB = relayA.agentCommandRelayQueueName(B.id);
+    const before = (await keysOf(shardB)).sort();
+    expect(before.length).toBeGreaterThan(0);
+
+    // B's key lapses (a Redis blip on B), while B's Worker stays connected.
+    await redisA.getRedis()!.del(relayShardOwnerKey(B.id));
+    const first = await sweepDeadRelayShards(A.id, new Set());
+    expect(first.suspects.has(shardB)).toBe(true);
+    const second = await sweepDeadRelayShards(A.id, first.suspects);
+
+    expect(second.reaped).toEqual([]);
+    expect(second.suspects.has(shardB)).toBe(true);
+    expect((await keysOf(shardB)).sort()).toEqual(before);
   }, 20_000);
 
   it('shutdown drains its shard: a waiting send is answered owner_mismatch at once, and no key of the shard is left', async () => {
