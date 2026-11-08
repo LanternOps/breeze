@@ -3,20 +3,21 @@
    Dark theme, compact, frameless, 380x600 popup
    ============================================================ */
 
-/* Workspace design tokens + Tailwind layers. This is the only stylesheet
-   index.html actually loads (<link rel="stylesheet" href="/src/styles.css">),
-   so the --ws-* custom properties and Tailwind's generated utility CSS must
+/* Workspace design tokens + Tailwind. This is the only stylesheet index.html
+   actually loads (<link rel="stylesheet" href="/src/styles.css">), so the
+   --ws-* custom properties and Tailwind (compiled by @tailwindcss/vite) must
    be pulled in here. */
 @import './styles/tokens.css';
 
-/* Scan exactly what the v3 config's `content` globs scanned. Automatic source
-   detection would also read src-tauri/ and the package root. */
+/* Scan only index.html and the JS/TS under src/, as Tailwind 3 did. Automatic
+   source detection would also read src-tauri/ (Rust, generated schemas) and
+   the package root, generating utilities nothing uses. */
 @import "tailwindcss" source(none);
 @source "../index.html";
 @source "./**/*.{js,ts,jsx,tsx}";
 
 /*
- * Theme tokens (ported from the v3 tailwind.config.js theme.extend). `inline`
+ * Theme tokens (ported from the Tailwind 3 config's theme.extend). `inline`
  * makes the utilities emit the --ws-* reference directly (`bg-ws-surface` →
  * `background-color: var(--ws-surface)`), exactly as v3 did, so the light/dark
  * swap in tokens.css keeps driving them.
@@ -47,11 +48,12 @@
 
 /*
  * v3 Preflight defaults that v4 dropped or changed, restored so the helper
- * renders as it did on v3:
+ * renders as it did on v3. Kept in @layer base so utilities still override them.
  * - border color: v4 defaults to currentColor; v3 used gray-200 (#e5e7eb,
  *   the sRGB value, not v4's oklch gray-200).
  * - placeholder color: v4 uses currentColor at 50%; v3 used gray-400 (#9ca3af).
- * - buttons: v4 uses the default cursor; v3 used a pointer.
+ * - buttons: v4 uses the default cursor; v3 used a pointer (default when
+ *   :disabled).
  */
 @layer base {
   *,
