@@ -154,7 +154,7 @@ func (r *captureThreadRecycler) reset() { *r = captureThreadRecycler{} }
 // the capture thread could not confirm it was on the input desktop.
 const unverifiedDesktopLogInterval = 30 * time.Second
 
-// unverifiedInputDesktopError is what LastCaptureError reports while a
+// unverifiedInputDesktopError is what CaptureWarning reports while a
 // capturer is delivering frames it took without confirming the capture thread
 // was on the input desktop. Those frames are sent, because the thread is most
 // likely still on the right desktop, but one taken on the wrong desktop is
@@ -228,7 +228,7 @@ func (u *unverifiedDesktopFrames) frameDelivered(cause error, now time.Time) (un
 	return unverifiedFrameNoLog, u.frames
 }
 
-// err is the error to report through LastCaptureError while the latest
+// err is the warning to report through CaptureWarning while the latest
 // frames are unverified, or nil once a frame is confirmed.
 func (u *unverifiedDesktopFrames) err() error {
 	if u.frames == 0 {

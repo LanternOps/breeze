@@ -83,7 +83,7 @@ type gdiCapturer struct {
 	recycler captureThreadRecycler
 
 	// unverified counts the frames delivered since the capture thread last
-	// confirmed it was on the input desktop; LastCaptureError reports it.
+	// confirmed it was on the input desktop; CaptureWarning reports it.
 	unverified unverifiedDesktopFrames
 
 	// Failure throttling for secure-desktop transient capture outages.
@@ -228,15 +228,18 @@ func (c *gdiCapturer) resetCaptureFailuresLocked() {
 	c.lastCaptureErr = nil
 }
 
-// LastCaptureError implements lastCaptureErrorReporter: the error behind the
-// last nil frame or, while frames are being delivered without the input
-// desktop confirmed, why they could not be confirmed.
+// LastCaptureError implements lastCaptureErrorReporter.
 func (c *gdiCapturer) LastCaptureError() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.lastCaptureErr != nil {
-		return c.lastCaptureErr
-	}
+	return c.lastCaptureErr
+}
+
+// CaptureWarning implements captureWarningReporter: while frames are being
+// delivered without the input desktop confirmed, why it could not be.
+func (c *gdiCapturer) CaptureWarning() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.unverified.err()
 }
 
@@ -287,8 +290,12 @@ func (c *gdiCapturer) Close() error {
 		c.thread = nil
 		c.state = nil
 	}
+	// A later Capture starts over: no recycle streak, no unconfirmed frames.
+	c.recycler.reset()
+	c.unverified = unverifiedDesktopFrames{}
 	return nil
 }
 
 var _ ScreenCapturer = (*gdiCapturer)(nil)
 var _ lastCaptureErrorReporter = (*gdiCapturer)(nil)
+var _ captureWarningReporter = (*gdiCapturer)(nil)

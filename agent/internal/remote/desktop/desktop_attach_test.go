@@ -185,7 +185,7 @@ func TestCaptureThreadRecycleDelay(t *testing.T) {
 
 // A frame taken when the capture thread could not confirm it was on the input
 // desktop is delivered (capture carries on), but it may be black or show the
-// wrong desktop. That must reach LastCaptureError and the log even though the
+// wrong desktop. That must reach CaptureWarning and the log even though the
 // frame itself succeeded (#8434 review).
 func TestUnverifiedDesktopFramesSurfaceOnSuccess(t *testing.T) {
 	var u unverifiedDesktopFrames

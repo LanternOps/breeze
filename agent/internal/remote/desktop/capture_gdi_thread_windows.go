@@ -91,7 +91,9 @@ func (s *gdiThreadState) capture() (*image.RGBA, error) {
 		err = fmt.Errorf("%w (retry with rebuilt handles: %v)", errs[0], errs[1])
 	}
 	if s.followIssue != nil {
-		err = fmt.Errorf("%w; capture thread may not be on the input desktop: %v", err, s.followIssue)
+		// Both wrapped: the frame's own Win32 code stays the one
+		// win32ErrorCode reports, and the follow issue's stays reachable.
+		err = fmt.Errorf("%w; capture thread may not be on the input desktop: %w", err, s.followIssue)
 	}
 	return nil, err
 }

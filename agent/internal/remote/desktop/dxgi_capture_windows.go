@@ -102,6 +102,19 @@ func (c *dxgiCapturer) LastCaptureError() error {
 	return fallback.LastCaptureError()
 }
 
+// CaptureWarning implements captureWarningReporter by delegating to the GDI
+// fallback, the only capturer here that can deliver a frame without confirming
+// it was taken on the input desktop.
+func (c *dxgiCapturer) CaptureWarning() error {
+	c.mu.Lock()
+	fallback := c.gdiFallback
+	c.mu.Unlock()
+	if fallback == nil {
+		return nil
+	}
+	return fallback.CaptureWarning()
+}
+
 // Capture acquires the next desktop frame via DXGI.
 // Returns nil, nil when no new frame is available (AccumulatedFrames==0).
 func (c *dxgiCapturer) Capture() (*image.RGBA, error) {
@@ -610,3 +623,4 @@ func (c *dxgiCapturer) GetD3D11Context() uintptr {
 }
 
 var _ lastCaptureErrorReporter = (*dxgiCapturer)(nil)
+var _ captureWarningReporter = (*dxgiCapturer)(nil)
