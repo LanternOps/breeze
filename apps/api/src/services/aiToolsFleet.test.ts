@@ -2118,6 +2118,10 @@ describe('write-org resolution for org-owning creates (#6667)', () => {
     }
 
     it('refuses with the ambiguous-org error and inserts nothing when orgId is omitted', async () => {
+      // #10431's split check reads the device's org; one org means no split.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ id: deviceId, siteId: null, orgId: 'org-2' }]) }),
+      } as never);
       const result = JSON.parse(await tool().handler(baseInput, multiOrgAuth));
       expect(result.error).toBe('orgId is required: you have access to multiple organizations');
       expect(db.insert).not.toHaveBeenCalled();
