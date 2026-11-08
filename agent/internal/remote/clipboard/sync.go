@@ -15,8 +15,6 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-const defaultPollInterval = 500 * time.Millisecond
-
 const (
 	maxClipboardMessageBytes = 2 * 1024 * 1024
 	maxClipboardTextBytes    = MaxTextBytes
@@ -46,6 +44,14 @@ type ClipboardSync struct {
 
 	mu           sync.Mutex
 	lastSentHash [32]byte
+	self         selfWrite // the last viewer write applied to the host clipboard
+
+	// nudge asks the watcher to read now: a copy chord was just injected.
+	nudge chan struct{}
+	// peerChangeNotices: the viewer's hello asked for "unsupported" notices.
+	peerChangeNotices atomic.Bool
+	// changeSeq numbers the changes reported by notice, for the viewer's log.
+	changeSeq atomic.Uint64
 
 	peerChunked       atomic.Bool   // the viewer said hello with chunked:true
 	bufferWaitTimeout time.Duration // how long a chunked send waits for the SCTP buffer
@@ -86,6 +92,7 @@ func NewClipboardSync(dc *webrtc.DataChannel, provider Provider, policy Policy) 
 		provider:          provider,
 		pollInterval:      defaultPollInterval,
 		stop:              make(chan struct{}),
+		nudge:             make(chan struct{}, 1),
 		policy:            policy,
 		bufferWaitTimeout: chunkTransferTimeout,
 	}
@@ -106,83 +113,10 @@ func newClipboardSyncWithSender(sender dcSender, provider Provider, policy Polic
 		provider:          provider,
 		pollInterval:      defaultPollInterval,
 		stop:              make(chan struct{}),
+		nudge:             make(chan struct{}, 1),
 		policy:            policy,
 		bufferWaitTimeout: chunkTransferTimeout,
 	}
-}
-
-func (c *ClipboardSync) Watch() {
-	if c.provider == nil {
-		return
-	}
-
-	// Host→viewer streaming disabled by policy: never poll or forward the host
-	// clipboard. This is the silent-exfiltration guard — without it, whatever
-	// the end user copies (passwords, MFA codes, secrets) streams to the
-	// operator within one defaultPollInterval. Finding #7.
-	if !c.policy.HostToViewer {
-		return
-	}
-
-	interval := c.pollInterval
-	if interval <= 0 {
-		interval = defaultPollInterval
-	}
-
-	ticker := time.NewTicker(interval)
-	go func() {
-		defer ticker.Stop()
-		var lastErrMsg string
-		baselined := false
-		for {
-			select {
-			case <-ticker.C:
-				content, err := c.provider.GetContent()
-				if err != nil && !baselined && errors.Is(err, ErrNoSupportedFormat) {
-					// Empty (or unreadable formats only) at session start: that
-					// is the baseline, so the first copy after it is sent. A
-					// failure to open the clipboard says nothing about what it
-					// holds; it leaves the baseline to the next readable poll.
-					baselined = true
-				}
-				if err != nil {
-					// Only log when the error message changes to avoid spam
-					msg := err.Error()
-					if msg != lastErrMsg {
-						log.Printf("[clipboard] failed to get content: %v", err)
-						lastErrMsg = msg
-					}
-					continue
-				}
-				lastErrMsg = ""
-				hash := fingerprint(content)
-				// The first readable clipboard is what the end user had before
-				// the session. Remember it instead of sending it: pushing it
-				// would overwrite the technician's clipboard just for connecting,
-				// with whatever the end user last copied. A viewer→host write
-				// that landed before this poll has already set the hash; keep it.
-				if !baselined {
-					baselined = true
-					c.mu.Lock()
-					if c.lastSentHash == ([32]byte{}) {
-						c.lastSentHash = hash
-					}
-					c.mu.Unlock()
-					continue
-				}
-				c.mu.Lock()
-				shouldSend := hash != c.lastSentHash
-				c.mu.Unlock()
-				if shouldSend {
-					if err := c.Send(content); err != nil {
-						log.Printf("[clipboard] failed to send content: %v", err)
-					}
-				}
-			case <-c.stop:
-				return
-			}
-		}
-	}()
 }
 
 func (c *ClipboardSync) Stop() {
@@ -296,8 +230,13 @@ func (c *ClipboardSync) SendStatus() error {
 		"viewerToHost":       c.policy.ViewerToHost,
 		"chunked":            true,
 		"suppressesBaseline": true,
-		"maxTextBytes":       MaxTextBytes,
-		"maxImageBytes":      MaxImageBytes,
+		// changeNotices: this agent reports a host clipboard change it cannot
+		// carry as {type:"unsupported"} (to a viewer whose hello asks for it),
+		// reports a re-copy of identical content where the platform counts
+		// changes, and reads promptly after an injected copy chord (#11310).
+		"changeNotices": true,
+		"maxTextBytes":  MaxTextBytes,
+		"maxImageBytes": MaxImageBytes,
 	})
 	if err != nil {
 		return err
@@ -364,8 +303,9 @@ func (c *ClipboardSync) Receive(msg webrtc.DataChannelMessage) error {
 		return fmt.Errorf("clipboard payload exceeds maximum %d bytes", maxClipboardMessageBytes)
 	}
 	var head struct {
-		Type    string `json:"type"`
-		Chunked bool   `json:"chunked"`
+		Type          string `json:"type"`
+		Chunked       bool   `json:"chunked"`
+		ChangeNotices bool   `json:"changeNotices"`
 	}
 	if err := json.Unmarshal(msg.Data, &head); err != nil {
 		return err
@@ -375,6 +315,7 @@ func (c *ClipboardSync) Receive(msg webrtc.DataChannelMessage) error {
 	// whatever the viewer→host policy says.
 	if head.Type == "hello" {
 		c.peerChunked.Store(head.Chunked)
+		c.peerChangeNotices.Store(head.ChangeNotices)
 		return nil
 	}
 
@@ -470,9 +411,7 @@ func (c *ClipboardSync) applyInbound(raw []byte, transferID string) error {
 	c.count("viewer_to_host", content)
 
 	fp := fingerprint(content)
-	c.mu.Lock()
-	c.lastSentHash = fp
-	c.mu.Unlock()
+	c.noteSelfWrite(fp)
 
 	if c.sender != nil {
 		ack, err := json.Marshal(struct {
@@ -502,11 +441,7 @@ func (c *ClipboardSync) SetContent(content Content) error {
 	if err := c.provider.SetContent(content); err != nil {
 		return err
 	}
-
-	c.mu.Lock()
-	c.lastSentHash = fingerprint(content)
-	c.mu.Unlock()
-
+	c.noteSelfWrite(fingerprint(content))
 	return nil
 }
 

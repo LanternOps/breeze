@@ -130,17 +130,19 @@ func (s *Session) onViewerChannelClosed(label string, ch any) {
 	}
 }
 
-// wireInputEpochHooks tells the viewer about agent-side resets. onReset runs on
-// the resetting goroutine and onResync on the input worker. Neither may wait on
-// Session, so both only spawn.
+// wireInputEpochHooks tells the viewer about agent-side resets, and the
+// clipboard watcher about injected copy chords. onReset runs on the resetting
+// goroutine, onResync and onCopyChord on the input worker. None may wait on
+// Session, so all only spawn.
 func (s *Session) wireInputEpochHooks() {
 	si := s.safeInput()
 	if si == nil {
 		return
 	}
 	si.SetHooks(safeInputHooks{
-		onReset:  func(reason string) { go s.announceInputEpoch(reason) },
-		onResync: func() { go s.announceInputEpoch("resync") },
+		onReset:     func(reason string) { go s.announceInputEpoch(reason) },
+		onResync:    func() { go s.announceInputEpoch("resync") },
+		onCopyChord: s.onCopyChordInjected,
 	})
 }
 

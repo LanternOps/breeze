@@ -32,6 +32,13 @@ type Content struct {
 // cannot read. Unlike a failure to open it, this is a lasting state.
 var ErrNoSupportedFormat = errors.New("clipboard: no supported format")
 
+// ErrClipboardEmpty: the clipboard holds nothing at all. It is a kind of
+// ErrNoSupportedFormat (errors.Is holds), so the baseline rule treats both
+// alike; the change watcher tells them apart, because a remote clipboard that
+// holds a file is newer than the viewer's and an empty one has nothing to
+// protect. Only providers that can count formats return it.
+var ErrClipboardEmpty = fmt.Errorf("%w: clipboard is empty", ErrNoSupportedFormat)
+
 // noContentError is what a provider returns when no format yielded content.
 // failure is the first read that failed for another reason than the format
 // being absent; it means the clipboard's contents are unknown, not empty.
@@ -45,6 +52,16 @@ func noContentError(failure error) error {
 type Provider interface {
 	GetContent() (Content, error)
 	SetContent(content Content) error
+}
+
+// ChangeCounter is a Provider that can tell, without reading the clipboard,
+// whether it changed: Windows GetClipboardSequenceNumber, macOS NSPasteboard
+// changeCount. The count moves on every change, including a copy of content
+// identical to what the clipboard already held, which a content hash cannot
+// see (#11310 row 3). ok is false when the count is unavailable right now;
+// the watcher then falls back to comparing content hashes.
+type ChangeCounter interface {
+	ChangeCount() (count uint64, ok bool)
 }
 
 func ValidateContent(content Content) error {

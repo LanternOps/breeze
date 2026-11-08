@@ -441,6 +441,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 				HostToViewer: policy.ClipboardHostToViewer,
 				ViewerToHost: policy.ClipboardViewerToHost,
 			})
+			session.clipboardNotifier = session.clipboardSync
 			hostToViewer := policy.ClipboardHostToViewer
 			clipboardDC.OnOpen(func() {
 				onClipboardChannelOpen(session.clipboardSync, hostToViewer)

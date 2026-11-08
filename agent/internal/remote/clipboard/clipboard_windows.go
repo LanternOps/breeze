@@ -21,6 +21,8 @@ var (
 	procGetClipboardData         = user32.NewProc("GetClipboardData")
 	procSetClipboardData         = user32.NewProc("SetClipboardData")
 	procRegisterClipboardFormatW = user32.NewProc("RegisterClipboardFormatW")
+	procGetClipboardSequenceNum  = user32.NewProc("GetClipboardSequenceNumber")
+	procCountClipboardFormats    = user32.NewProc("CountClipboardFormats")
 	procGlobalAlloc              = kernel32.NewProc("GlobalAlloc")
 	procGlobalLock               = kernel32.NewProc("GlobalLock")
 	procGlobalUnlock             = kernel32.NewProc("GlobalUnlock")
@@ -43,6 +45,20 @@ var (
 
 func NewSystemClipboard() *SystemClipboard {
 	return &SystemClipboard{}
+}
+
+var _ ChangeCounter = (*SystemClipboard)(nil)
+
+// ChangeCount is the window station's clipboard sequence number. Windows
+// bumps it on every change, a copy of identical content included, and reading
+// it does not open the clipboard. It is 0 when this process may not access
+// the clipboard; the watcher then compares content hashes instead.
+func (s *SystemClipboard) ChangeCount() (uint64, bool) {
+	r, _, _ := procGetClipboardSequenceNum.Call()
+	if r == 0 {
+		return 0, false
+	}
+	return uint64(uint32(r)), true
 }
 
 func openClipboard() error {
@@ -164,7 +180,23 @@ func (s *SystemClipboard) GetContent() (Content, error) {
 		return Content{Type: ContentTypeText, Text: text}, nil
 	}
 
+	if failure == nil && countClipboardFormats() == 0 {
+		return Content{}, ErrClipboardEmpty
+	}
 	return Content{}, noContentError(failure)
+}
+
+// countClipboardFormats is the number of formats on the open clipboard. 0
+// with an error is a failure, not an empty clipboard, and is reported as
+// non-empty so the caller does not take it for one.
+func countClipboardFormats() int {
+	r, _, err := procCountClipboardFormats.Call()
+	if r == 0 {
+		if errno, ok := err.(syscall.Errno); ok && errno != 0 {
+			return -1
+		}
+	}
+	return int(r)
 }
 
 func (s *SystemClipboard) SetContent(content Content) error {
