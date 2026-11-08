@@ -162,6 +162,49 @@ describe('manage_patches:install across organizations (#10431)', () => {
     expect(mockInsert).not.toHaveBeenCalled();
   });
 
+  it("orders groups by the caller's device list, not by the read's row order or org id", async () => {
+    nextSelect([
+      { id: DEV_A, siteId: null, orgId: 'org-one' },
+      { id: DEV_B, siteId: null, orgId: 'org-two' },
+      { id: DEV_C, siteId: null, orgId: 'org-one' },
+    ]);
+    nextSelect(ORG_NAMES);
+
+    const out = await install({ deviceIds: [DEV_B, DEV_A, DEV_C] });
+
+    expect(out.groups.map((g: { orgId: string; deviceIds: string[] }) => [g.orgId, g.deviceIds])).toEqual([
+      ['org-two', [DEV_B]], ['org-one', [DEV_A, DEV_C]],
+    ]);
+  });
+
+  it('lists a repeated device id once', async () => {
+    nextSelect([
+      { id: DEV_A, siteId: null, orgId: 'org-one' },
+      { id: DEV_B, siteId: null, orgId: 'org-two' },
+    ]);
+    nextSelect(ORG_NAMES);
+
+    const out = await install({ deviceIds: [DEV_A, DEV_A, DEV_B] });
+
+    expect(out.groups.map((g: { deviceIds: string[] }) => g.deviceIds)).toEqual([[DEV_A], [DEV_B]]);
+  });
+
+  it('keeps the original refusal when a device is outside an exact-device scope', async () => {
+    // The read returns DEV_B, but this caller is bound to DEV_A and DEV_C only.
+    nextSelect([
+      { id: DEV_A, siteId: null, orgId: 'org-one' },
+      { id: DEV_B, siteId: null, orgId: 'org-two' },
+      { id: DEV_C, siteId: null, orgId: 'org-one' },
+    ]);
+    const deviceAuth = { ...partnerAuth, allowedDeviceIds: [DEV_A, DEV_C] };
+
+    const out = JSON.parse(await tool.handler(
+      { action: 'install', patchIds: [PATCH], deviceIds: [DEV_A, DEV_B, DEV_C] }, deviceAuth));
+
+    expect(out).toEqual({ error: 'orgId is required: you have access to multiple organizations' });
+    expect(mockSelect).toHaveBeenCalledTimes(1); // no org-name read
+  });
+
   it('keeps the original refusal when the devices all sit in one org', async () => {
     nextSelect([
       { id: DEV_A, siteId: null, orgId: 'org-one' },
