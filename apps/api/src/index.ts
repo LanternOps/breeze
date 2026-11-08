@@ -338,6 +338,7 @@ import { shutdownEventDispatchQueue } from './services/eventDispatchQueue';
 import {
   claimAgentCommandRelayShard,
   initializeAgentCommandRelayWorker,
+  releaseAgentCommandRelayClaim,
   shutdownAgentCommandRelayWorker,
 } from './jobs/agentCommandRelayWorker';
 import { shutdownAgentCommandRelayQueue } from './services/agentCommandRelay';
@@ -1326,6 +1327,9 @@ async function initializeWorkers(): Promise<void> {
         captureException(error instanceof Error ? error : new Error(String(error)));
       },
     });
+    // #4134: no relay consumer starts, so give up the shard claimed before
+    // serving; producers then answer `offline` instead of enqueuing unread.
+    await releaseAgentCommandRelayClaim();
     return;
   }
 

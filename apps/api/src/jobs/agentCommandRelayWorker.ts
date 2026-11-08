@@ -230,11 +230,25 @@ function claimShard(): Promise<RelayShardState> {
 }
 
 async function releaseClaim(state: RelayShardState): Promise<void> {
+  state.stopping = true;
   clearInterval(state.refreshTimer);
   if (shard === state) shard = null;
+  // A refresh still in flight could take the key back after the release.
+  await state.refreshing?.catch(() => {});
   await releaseRelayShard(INSTANCE_ID, state.token).catch((err: unknown) => {
     console.warn(`[AgentCommandRelayWorker] releasing the owner key for ${state.queueName} failed; it expires on its own:`, err);
   });
+}
+
+/**
+ * Give up a shard claimed before serving when no consumer will start on it
+ * (index.ts skips every queue consumer when Redis is unavailable at worker
+ * start). Producers then answer `offline` for this instance rather than
+ * enqueuing on a queue nobody reads. No-op once a consumer runs.
+ */
+export async function releaseAgentCommandRelayClaim(): Promise<void> {
+  if (pendingClaim) await pendingClaim.catch(() => null);
+  if (shard && !shard.consumer && !shard.lost) await releaseClaim(shard);
 }
 
 /**

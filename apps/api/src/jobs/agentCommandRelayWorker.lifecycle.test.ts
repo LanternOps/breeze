@@ -57,6 +57,7 @@ import {
   claimAgentCommandRelayShard,
   initializeAgentCommandRelayWorker,
   RelayShardConflictError,
+  releaseAgentCommandRelayClaim,
   shutdownAgentCommandRelayWorker,
 } from './agentCommandRelayWorker';
 
@@ -219,6 +220,34 @@ describe('claimAgentCommandRelayShard (before serving)', () => {
     await expect(claimAgentCommandRelayShard()).resolves.toBeUndefined();
     await expect(initializeAgentCommandRelayWorker()).rejects.toBeInstanceOf(RelayShardConflictError);
     expect(Worker).not.toHaveBeenCalled();
+  });
+
+  it('releaseAgentCommandRelayClaim gives up a claim no consumer will use, after any refresh in flight', async () => {
+    let finishRefresh: (value: 'refreshed') => void = () => {};
+    vi.mocked(refreshRelayShard).mockImplementationOnce(() => new Promise((resolve) => { finishRefresh = resolve; }));
+    await claimAgentCommandRelayShard();
+    const token = vi.mocked(acquireRelayShard).mock.calls[0]?.[1];
+    await vi.advanceTimersByTimeAsync(10_000); // a refresh is now in flight
+
+    const released = releaseAgentCommandRelayClaim();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(releaseRelayShard).not.toHaveBeenCalled();
+    finishRefresh('refreshed');
+    await released;
+
+    expect(releaseRelayShard).toHaveBeenCalledWith('inst-1', token);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(refreshRelayShard).toHaveBeenCalledTimes(1);
+    // Nothing left to drain at shutdown.
+    await shutdownAgentCommandRelayWorker();
+    expect(drainRelayQueue).not.toHaveBeenCalled();
+  });
+
+  it('releaseAgentCommandRelayClaim is a no-op once a consumer runs', async () => {
+    await initializeAgentCommandRelayWorker();
+    await releaseAgentCommandRelayClaim();
+    expect(releaseRelayShard).not.toHaveBeenCalled();
+    expect(workers[0]?.close).not.toHaveBeenCalled();
   });
 
   it('a claim whose consumer never started is still released and drained at shutdown', async () => {
