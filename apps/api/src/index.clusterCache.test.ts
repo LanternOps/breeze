@@ -34,8 +34,11 @@ describe('cluster cache subscriber wiring (index.ts)', () => {
     expect(phase).toBeLessThan(redis);
   });
 
-  it('is not started by the worker entrypoint (D8: only the API subscribes)', () => {
+  it('is also started by the worker entrypoint (#8639: the worker loads cluster-invalidated caches)', () => {
+    // Reverses the original D8 ("only the API subscribes"): the worker's job
+    // graph reads hot-path caches, so it subscribes too. Behaviour is pinned in
+    // workerClusterCacheAudit.contract.test.ts and worker.boot.test.ts.
     const workerSource = readFileSync(new URL('./worker.ts', import.meta.url), 'utf8');
-    expect(workerSource).not.toMatch(/getClusterCacheBus\(\)\.start\(/);
+    expect(workerSource).toMatch(/^[ \t]*const clusterCacheOutcome = await getClusterCacheBus\(\)\.start\(\)/m);
   });
 });
