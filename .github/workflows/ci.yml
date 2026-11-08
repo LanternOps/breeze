@@ -377,6 +377,10 @@ jobs:
       - name: Test integration timing refresh
         run: node --test .github/scripts/test-timings.test.mjs
 
+      # Named integration suite map and its import evidence (W07b1, #10751).
+      - name: Test integration suite map
+        run: node --test .github/scripts/integration-suites.test.mjs
+
       # Also validates the committed .github/flaky-tests.json (W1, #10744).
       - name: Test flaky-test ledger
         run: node --test .github/scripts/flaky-ledger.test.mjs
