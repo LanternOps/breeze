@@ -289,6 +289,79 @@ test('date-bomb-1…3: the same untouched test failing both attempts in three PR
   assert.equal(classify(fixture('date-bomb-2'), historyOf('date-bomb-1', 'date-bomb-3')).class, 'unknown');
 });
 
+test('infra signatures: runner shutdown, apt, disk; free-text forms stand down when test output explains the failure', () => {
+  const sig = (job) => {
+    const v = classifyJob(job, jobCtx);
+    return `${v.class}/${v.signature}`;
+  };
+  const setup = { failedStep: 'Install system packages', logAttempts: [attempt([])] };
+  assert.equal(sig(vitestJob({ logTail: '##[error]The runner has received a shutdown signal.' })), 'infra/runner_shutdown');
+  assert.equal(sig(vitestJob({ ...setup, logTail: 'E: Failed to fetch http://archive.ubuntu.com/ubuntu/pool/x.deb  503' })), 'infra/apt_fetch');
+  assert.equal(sig(vitestJob({ annotations: ['System.IO.IOException: No space left on device'] })), 'infra/disk_full');
+  // An ENOSPC test failing prints the same words: its log form is not infra.
+  const enospc = ['src/services/backup.test.ts > backup > reports ENOSPC'];
+  assert.equal(sig(vitestJob({ logTail: 'Error: No space left on device', logAttempts: [attempt(enospc), attempt(enospc)] })), 'unknown/null');
+  // The app's own rate limiter is not a registry rate limit.
+  assert.equal(sig(vitestJob({ ...setup, logTail: '{"error":"Rate limit exceeded"}' })), 'unknown/null');
+  assert.equal(sig(vitestJob({ ...setup, logTail: 'Error: API rate limit exceeded for installation ID 1.' })), 'infra/registry_rate_limit');
+});
+
+test('free-text signatures stand down over unattributed output even when no test id parsed', () => {
+  const crash = vitestJob({ failedStep: 'Install deps then run tests', logTail: 'curl: (22) The requested URL returned error: 503', logAttempts: [attempt([], { unattributed: true })] });
+  assert.deepEqual([classifyJob(crash, jobCtx).class, classifyJob(crash, jobCtx).signature], ['unknown', null]);
+  const plain = vitestJob({ failedStep: 'Install deps then run tests', logTail: 'curl: (22) The requested URL returned error: 503', logAttempts: [attempt([])] });
+  assert.equal(classifyJob(plain, jobCtx).signature, 'download_5xx');
+});
+
+test('a killed or timed-out attempt is never half of a flake pair, nor known_flake evidence', () => {
+  const report = (second) => ({ schema: 2, label: 'api-2', runner: 'vitest', attempts: 2, exitCode: 1, flaky: [], quarantined: [], noRetry: null, first: { ...attempt(['src/a.test.ts > a']), code: 1 }, second });
+  assert.equal(classifyJob(vitestJob({ report: report({ ...attempt(['src/b.test.ts > b']), code: 1 }) }), jobCtx).class, 'suspected_flake');
+  assert.equal(classifyJob(vitestJob({ report: report({ ...attempt(['src/b.test.ts > b']), code: null }) }), jobCtx).class, 'unknown');
+  assert.equal(classifyJob(vitestJob({ report: report({ ...attempt(['src/b.test.ts > b'], { timedOut: true }), code: 1 }) }), jobCtx).class, 'unknown');
+  const history = History.fromSightings([
+    { runner: 'vitest-api', id: 'src/b.test.ts > b', file: null, kind: 'fail_pass', run: 7, attempt: 1, job: 'x', pr: 2, event: 'merge_group', sha: 'x', at: '2026-11-08T00:00:00Z' },
+  ]);
+  const killed = report({ ...attempt(['src/b.test.ts > b']), code: null });
+  killed.first = killed.second;
+  assert.equal(classifyJob(vitestJob({ report: killed }), { ...jobCtx, history }).class, 'unknown');
+});
+
+test('ci_success_missing needs finished jobs: an empty or partial job list is not infra', () => {
+  const fx = clone(fixture('synthetic-ci-success-missing'));
+  fx.facts.jobs = [];
+  assert.equal(classify(fx).class, 'unknown');
+  const partial = clone(fixture('synthetic-ci-success-missing'));
+  partial.facts.jobsComplete = false;
+  const v = classify(partial);
+  assert.equal(v.class, 'unknown');
+  assert.deepEqual(v.gaps, ['job list incomplete']);
+  const startup = clone(fixture('synthetic-ci-success-missing'));
+  startup.facts.run.conclusion = 'startup_failure';
+  assert.equal(classify(startup).class, 'unknown');
+});
+
+test('evidence that could not be read is named in the verdict', () => {
+  const blind = vitestJob({ logStatus: 502, logTail: null, logAttempts: null, errors: ['annotations 429'], reportError: 'artifact listing 500' });
+  const v = classifyJob(blind, jobCtx);
+  assert.equal(v.class, 'unknown');
+  assert.deepEqual(v.gaps, ['annotations 429', 'log 502', 'flake report: artifact listing 500']);
+  assert.match(v.evidence[0], /evidence unavailable: annotations 429, log 502/);
+  // A report that was simply never uploaded is not a gap.
+  assert.deepEqual(classifyJob(vitestJob({ reportError: 'not_uploaded', logStatus: 200 }), jobCtx).gaps, []);
+  const fx = clone(fixture('synthetic-aggregate-only'));
+  fx.facts.jobs.unshift(blind);
+  fx.facts.gate = { verdict: null, reason: 'gate_lookup_500' };
+  const run = classify(fx);
+  assert.deepEqual(run.gaps, ['CI Gate: gate_lookup_500', 'Test API (shard 2/8): annotations 429', 'Test API (shard 2/8): log 502', 'Test API (shard 2/8): flake report: artifact listing 500']);
+});
+
+test('a timed_out or startup_failure job counts as failed', () => {
+  const fx = clone(fixture('synthetic-aggregate-only'));
+  fx.facts.jobs.unshift(vitestJob({ conclusion: 'timed_out' }));
+  assert.equal(classify(fx).jobs.length, 1);
+  assert.notDeepEqual(classify(fx).evidence, ['aggregate_only']);
+});
+
 test('every deterministic job name exists in ci.yml', () => {
   for (const name of DETERMINISTIC_JOBS) assert.notEqual(jobIdentity(ciYml, name).jobId, null, name);
 });

@@ -1012,6 +1012,27 @@ test('failure ids cap at 200', () => {
   assert.equal(few.second, null);
 });
 
+test('report v2 carries each attempt\'s flags (the shepherd refuses a flake pair on them)', () => {
+  const ok = [{ id: 'src/a.test.ts > t', file: 'src/a.test.ts', pkg: null }];
+  const flags = { unattributed: true, buildFailed: true, raceDetected: true, timedOut: true };
+  const first = attempt(1, ok, flags);
+  const second = attempt(null, ok, flags);
+  const verdict = decide({ first, second: null });
+  const report = buildReport({ label: 'api-1', runner: 'vitest', attempts: 2, verdict, first, second, noRetry: null, env: {} });
+  for (const a of [report.first, report.second]) {
+    assert.deepEqual({ unattributed: a.unattributed, buildFailed: a.buildFailed, raceDetected: a.raceDetected, timedOut: a.timedOut }, flags);
+  }
+  assert.equal(report.second.code, null);
+  // End to end: vitest's Unhandled Errors section marks the attempt unattributed.
+  const cwd = mkdtempSync(join(tmpdir(), 'retry-shard-'));
+  const script = `console.log('⎯ Unhandled Errors ⎯\\nError: boom\\n⎯ Failed Tests 1 ⎯\\n FAIL  src/a.test.ts > t');process.exit(1)`;
+  const r = cli(['--runner', 'vitest', '--label', 'api-7', '--', process.execPath, '-e', script], { cwd });
+  assert.equal(r.status, 1);
+  const cliReport = JSON.parse(readFileSync(join(cwd, 'flake-report-api-7.json'), 'utf8'));
+  assert.equal(cliReport.first.unattributed, true);
+  assert.equal(cliReport.second.unattributed, true);
+});
+
 test('ledgerPaths is exported for the shepherd: vitest prefixes and the go module mapping', () => {
   assert.deepEqual(ledgerPaths('vitest-web', {}), { prefix: 'apps/web/' });
   assert.deepEqual(ledgerPaths('vitest-integration', {}), { prefix: 'apps/api/', sourceRoot: 'apps/api/src/' });

@@ -83,11 +83,14 @@ test('groupRunFor ignores runs created after the removal', async () => {
   const ref = await groupRunFor(api2, { repo: REPO, pr: 11312, removal: { ...removal, beforeCommit: null } });
   assert.deepEqual(fake.unrouted, []);
   assert.equal(ref.id, 1);
-  // No run at all → null, never a guess.
-  const { gh: api3 } = gh({
-    [`GET ${R}/actions/workflows/ci.yml/runs?event=merge_group&head_sha=${sha}&per_page=20`]: { status: 200, body: { total_count: 0, workflow_runs: [] } },
-  });
-  assert.equal(await groupRunFor(api3, { repo: REPO, pr: 11312, removal }), null);
+  // beforeCommit matches no run: the queue-branch search still finds it.
+  const windowKey = `GET ${R}/actions/workflows/ci.yml/runs?event=merge_group&created=2026-11-08T00%3A03%3A21Z..2026-11-08T06%3A03%3A21Z&per_page=100&page=1`;
+  const noSha = { [`GET ${R}/actions/workflows/ci.yml/runs?event=merge_group&head_sha=${sha}&per_page=20`]: { status: 200, body: { total_count: 0, workflow_runs: [] } } };
+  const { gh: api3 } = gh({ ...noSha, [windowKey]: { status: 200, body: window } });
+  assert.equal((await groupRunFor(api3, { repo: REPO, pr: 11312, removal })).id, 1);
+  // No run either way → null, never a guess.
+  const { gh: api4 } = gh({ ...noSha, [windowKey]: { status: 200, body: { total_count: 1, workflow_runs: [other] } } });
+  assert.equal(await groupRunFor(api4, { repo: REPO, pr: 11312, removal }), null);
 });
 
 const prGraph = (over = {}) => ({
@@ -187,7 +190,7 @@ function reportRun({ artifactSize, zipBytes }) {
         ],
       },
     },
-    [`GET ${R}/check-runs/91/annotations?per_page=50`]: { status: 200, body: [] },
+    [`GET ${R}/check-runs/91/annotations?per_page=100`]: { status: 200, body: [] },
     [`GET ${R}/actions/jobs/91/logs`]: { status: 302, location: 'https://blob.example.test/log?sig=1' },
     ['GET https://blob.example.test/log?sig=1']: { status: 200, text: '2026-11-08T05:01:00.0000000Z hello\n' },
     [`GET ${R}/actions/runs/9/artifacts?per_page=100&page=1`]: {
@@ -341,14 +344,156 @@ test('recentRemovals returns removals since the cutoff, oldest first, across pag
   assert.match(fake.calls[0].body.query, /REMOVED_FROM_MERGE_QUEUE_EVENT/);
 });
 
+// The job's own `timeout-minutes` line, read independently of jobIdentity so a
+// timeout retune in ci.yml does not break this test.
+const timeoutOf = (jobId) => {
+  const block = new RegExp(`^  ${jobId}:\\n([\\s\\S]*?)(?=^  [a-z][\\w-]*:\\n)`, 'm').exec(ciYml)[1];
+  return Number(/^ {4}timeout-minutes: (\d+)/m.exec(block)[1]);
+};
+
 test('jobIdentity maps a display name to its job, timeout and retry-shard label', () => {
-  assert.deepEqual(jobIdentity(ciYml, 'Integration Tests (shard 11/16)'), { jobId: 'integration-test', timeoutMinutes: 55, label: 'integration-11', runner: 'vitest' });
-  assert.deepEqual(jobIdentity(ciYml, 'Test Web (shard 3/4)'), { jobId: 'test-web', timeoutMinutes: 40, label: 'web-3', runner: 'vitest' });
-  assert.deepEqual(jobIdentity(ciYml, 'Test API (shard 8/8)'), { jobId: 'test-api', timeoutMinutes: 40, label: 'api-8', runner: 'vitest' });
-  assert.deepEqual(jobIdentity(ciYml, 'Test Agent (race)'), { jobId: 'test-agent-race', timeoutMinutes: 50, label: 'agent-race', runner: 'go' });
-  assert.deepEqual(jobIdentity(ciYml, 'Test Agent'), { jobId: 'test-agent', timeoutMinutes: 30, label: 'agent', runner: 'go' });
+  const rows = [
+    ['Integration Tests (shard 11/16)', 'integration-test', 'integration-11', 'vitest'],
+    ['Test Web (shard 3/4)', 'test-web', 'web-3', 'vitest'],
+    ['Test API (shard 8/8)', 'test-api', 'api-8', 'vitest'],
+    ['Test Agent (race)', 'test-agent-race', 'agent-race', 'go'],
+    ['Test Agent', 'test-agent', 'agent', 'go'],
+  ];
+  for (const [name, jobId, label, runner] of rows) {
+    assert.deepEqual(jobIdentity(ciYml, name), { jobId, timeoutMinutes: timeoutOf(jobId), label, runner }, name);
+  }
   assert.deepEqual(jobIdentity(ciYml, 'Lint'), { jobId: 'lint', timeoutMinutes: null, label: null, runner: null });
   assert.deepEqual(jobIdentity(ciYml, 'No Such Job'), { jobId: null, timeoutMinutes: null, label: null, runner: null });
+});
+
+test('the retry marker processLog splits on is the text retry-shard prints', () => {
+  const src = readFileSync(new URL('../../.github/scripts/retry-shard.mjs', import.meta.url), 'utf8');
+  assert.match(src, /re-running the whole shard once/);
+});
+
+test('processLog parses the whole log: a failure 1,000 lines before the end still counts', () => {
+  const filler = Array.from({ length: 1000 }, (_, i) => `  ✓ src/ok${i}.test.ts > passes`);
+  const lines = [
+    ' Failed Tests 1 ',
+    ' FAIL  src/a.test.ts > A > first',
+    ...filler,
+    '##[warning]api-2: attempt 1 failed with 1 failing test(s); re-running the whole shard once',
+    ...filler,
+    ' Failed Tests 1 ',
+    ' FAIL  src/b.test.ts > B > second',
+    ...filler,
+  ];
+  const { logTail, logAttempts } = processLog(lines.join('\n'), 'vitest');
+  assert.deepEqual(logAttempts.map((a) => a.failures), [['src/a.test.ts > A > first'], ['src/b.test.ts > B > second']]);
+  assert.doesNotMatch(logTail, /src\/[ab]\.test\.ts/);
+});
+
+test('prSnapshot pages through PR files', async () => {
+  const page = (n, start) => ({ status: 200, body: Array.from({ length: n }, (_, i) => ({ filename: `f${start + i}.ts` })) });
+  const graph = { status: 200, body: prGraph() };
+  const { gh: api, fake } = gh({
+    'POST /graphql': graph,
+    [`GET ${R}/pulls/7/files?per_page=100&page=1`]: page(100, 0),
+    [`GET ${R}/pulls/7/files?per_page=100&page=2`]: { status: 200, body: [{ filename: 'apps/api/src/x.test.ts' }] },
+  });
+  const snap = await prSnapshot(api, { repo: REPO, pr: 7 });
+  assert.equal(snap.files.length, 101);
+  assert.ok(snap.files.includes('apps/api/src/x.test.ts'));
+  assert.equal(fake.calls.filter((c) => c.key.includes('/files?')).length, 2);
+  // A full last page is followed by an empty one, then stops.
+  const { gh: api2, fake: fake2 } = gh({
+    'POST /graphql': graph,
+    [`GET ${R}/pulls/7/files?per_page=100&page=1`]: page(100, 0),
+    [`GET ${R}/pulls/7/files?per_page=100&page=2`]: { status: 200, body: [] },
+  });
+  assert.equal((await prSnapshot(api2, { repo: REPO, pr: 7 })).files.length, 100);
+  assert.equal(fake2.calls.filter((c) => c.key.includes('/files?')).length, 2);
+  // A failed page is loud, never a short file list.
+  const { gh: api3 } = gh({ 'POST /graphql': graph, [`GET ${R}/pulls/7/files?per_page=100&page=1`]: { status: 502, body: {} } });
+  await assert.rejects(prSnapshot(api3, { repo: REPO, pr: 7 }), (e) => e instanceof GitHubError && e.status === 502);
+});
+
+test('gate verdict: read from the newest CI Gate run; a failed lookup or missing line is recorded, not dropped', async () => {
+  const sha = 'd'.repeat(40);
+  const gateKey = `GET ${R}/actions/workflows/ci-gate.yml/runs?head_sha=${sha}&per_page=5`;
+  const zip = zipOf('flake-report-web-3.json', JSON.stringify({ label: 'web-3', attempts: 2, flaky: [], quarantined: [], exitCode: 1 }));
+  const base = () => reportRun({ artifactSize: zip.length, zipBytes: zip });
+  const line = '2026-11-08T05:40:00.0000000Z ci-gate: verdict=fail reason=not_pinned event=merge_group base=none head=none ci_run=none attempt=none policy_paths=[] flags=null oracle=none';
+  const withGate = (logText) => ({
+    ...base(),
+    [gateKey]: { status: 200, body: { total_count: 2, workflow_runs: [{ id: 70, created_at: '2026-11-08T05:00:00Z' }, { id: 71, created_at: '2026-11-08T05:30:00Z' }] } },
+    [`GET ${R}/actions/runs/71/jobs?filter=latest&per_page=100&page=1`]: { status: 200, body: { total_count: 1, jobs: [{ id: 710, name: 'CI Gate' }] } },
+    [`GET ${R}/actions/jobs/710/logs`]: { status: 200, text: logText },
+  });
+  const found = await runFacts(gh(withGate(`${line}\n`)).gh, { repo: REPO, runId: 9, ciYml });
+  assert.deepEqual(found.gate, { verdict: 'fail', reason: 'not_pinned', run: 71 });
+  const missing = await runFacts(gh(withGate('2026-11-08T05:40:00Z nothing here\n')).gh, { repo: REPO, runId: 9, ciYml });
+  assert.deepEqual(missing.gate, { verdict: null, reason: 'gate_line_missing', run: 71 });
+  const failed = await runFacts(gh({ ...base(), [gateKey]: { status: 500, body: {} } }).gh, { repo: REPO, runId: 9, ciYml });
+  assert.deepEqual(failed.gate, { verdict: null, reason: 'gate_lookup_500' });
+});
+
+test('a flake report from an earlier attempt is stale, never evidence for this one', async () => {
+  const v2 = (runAttempt) => ({
+    schema: 2,
+    label: 'web-3',
+    runner: 'vitest',
+    attempts: 2,
+    exitCode: 1,
+    flaky: [],
+    quarantined: [],
+    first: { failures: ['a'] },
+    second: { failures: ['b'] },
+    noRetry: null,
+    provenance: { runId: '9', runAttempt },
+  });
+  const jobsKey = `GET ${R}/actions/runs/9/jobs?filter=latest&per_page=100&page=1`;
+  const artKey = `GET ${R}/actions/runs/9/artifacts?per_page=100&page=1`;
+  const routesFor = (report, artifactPatch = {}) => {
+    const zip = zipOf('flake-report-web-3.json', JSON.stringify(report));
+    const routes = reportRun({ artifactSize: zip.length, zipBytes: zip });
+    routes[jobsKey].body.jobs[0].run_attempt = 2;
+    Object.assign(routes[artKey].body.artifacts[0], artifactPatch);
+    return routes;
+  };
+  const current = await runFacts(gh(routesFor(v2('2'))).gh, { repo: REPO, runId: 9, ciYml });
+  assert.equal(current.jobs[0].reportError, null);
+  assert.equal(current.jobs[0].attempt, 2);
+  const older = await runFacts(gh(routesFor(v2('1'))).gh, { repo: REPO, runId: 9, ciYml });
+  assert.equal(older.jobs[0].report, null);
+  assert.match(older.jobs[0].reportError, /^stale: report is from attempt 1/);
+  // A schema-1 report has no provenance: its upload time decides, before any download.
+  const { gh: api, fake } = gh(routesFor({ label: 'web-3', attempts: 2, flaky: [], quarantined: [], exitCode: 1 }, { updated_at: '2026-11-08T04:00:00Z' }));
+  const early = await runFacts(api, { repo: REPO, runId: 9, ciYml });
+  assert.match(early.jobs[0].reportError, /^stale: uploaded before this job attempt started/);
+  assert.ok(!fake.calls.some((c) => c.key.includes('/artifacts/501/zip')));
+});
+
+test('a failed artifact listing is recorded on every retry-shard job, passed ones included', async () => {
+  const routes = reportRun({ artifactSize: 1, zipBytes: Buffer.from('x') });
+  routes[`GET ${R}/actions/runs/9/jobs?filter=latest&per_page=100&page=1`].body.jobs[0].conclusion = 'success';
+  routes[`GET ${R}/actions/runs/9/artifacts?per_page=100&page=1`] = { status: 500, body: {} };
+  const facts = await runFacts(gh(routes).gh, { repo: REPO, runId: 9, ciYml });
+  assert.equal(facts.jobs[0].reportError, 'artifact listing 500');
+});
+
+test('a timed_out job is inspected like a failed one; jobsComplete reflects the listing', async () => {
+  const zip = zipOf('flake-report-web-3.json', JSON.stringify({ label: 'web-3', attempts: 1, flaky: [], quarantined: [], exitCode: 1 }));
+  const routes = reportRun({ artifactSize: zip.length, zipBytes: zip });
+  const jobsKey = `GET ${R}/actions/runs/9/jobs?filter=latest&per_page=100&page=1`;
+  routes[jobsKey].body.jobs[0].conclusion = 'timed_out';
+  const { gh: api, fake } = gh(routes);
+  const facts = await runFacts(api, { repo: REPO, runId: 9, ciYml });
+  assert.equal(facts.jobs[0].logStatus, 200);
+  assert.ok(fake.calls.some((c) => c.key.includes('/check-runs/91/annotations')));
+  assert.equal(facts.jobsComplete, true);
+  routes[jobsKey].body.total_count = 250;
+  routes[jobsKey].body.jobs = Array.from({ length: 100 }, (_, i) => ({ id: 1000 + i, name: `Job ${i}`, conclusion: 'success', steps: [] }));
+  routes[`GET ${R}/actions/runs/9/jobs?filter=latest&per_page=100&page=2`] = { status: 200, body: { total_count: 250, jobs: Array.from({ length: 100 }, (_, i) => ({ id: 2000 + i, name: `Job b${i}`, conclusion: 'success', steps: [] })) } };
+  routes[`GET ${R}/actions/runs/9/jobs?filter=latest&per_page=100&page=3`] = { status: 200, body: { total_count: 250, jobs: Array.from({ length: 40 }, (_, i) => ({ id: 3000 + i, name: `Job c${i}`, conclusion: 'success', steps: [] })) } };
+  const partial = await runFacts(gh(routes).gh, { repo: REPO, runId: 9, ciYml });
+  assert.equal(partial.jobs.length, 240);
+  assert.equal(partial.jobsComplete, false);
 });
 
 test('processLog strips timestamps and colour, keeps a tail, and splits attempts at the retry marker', () => {

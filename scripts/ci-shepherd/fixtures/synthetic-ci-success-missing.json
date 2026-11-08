@@ -17,7 +17,29 @@
       "updatedAt": "2026-11-08T10:30:00Z",
       "pr": 900004
     },
-    "jobs": [],
+    "jobs": [
+      {
+        "id": 900000401,
+        "name": "Lint",
+        "jobId": "lint",
+        "attempt": 1,
+        "conclusion": "success",
+        "startedAt": "2026-11-08T10:01:00Z",
+        "completedAt": "2026-11-08T10:06:00Z",
+        "timeoutMinutes": null,
+        "label": null,
+        "runner": null,
+        "failedStep": null,
+        "annotations": [],
+        "logStatus": null,
+        "logTail": null,
+        "logAttempts": null,
+        "report": null,
+        "reportError": null,
+        "errors": []
+      }
+    ],
+    "jobsComplete": true,
     "ciSuccess": "missing",
     "gate": null
   }

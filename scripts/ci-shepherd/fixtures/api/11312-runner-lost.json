@@ -450,7 +450,7 @@
         ]
       }
     },
-    "GET /repos/LanternOps/breeze/check-runs/128647076287/annotations?per_page=50": {
+    "GET /repos/LanternOps/breeze/check-runs/128647076287/annotations?per_page=100": {
       "status": 200,
       "body": [
         {

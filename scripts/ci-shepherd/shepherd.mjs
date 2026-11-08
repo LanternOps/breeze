@@ -4,8 +4,10 @@
 //
 //   shepherd.mjs classify --run <id> --pr <n> [--history <sightings.jsonl>]
 //       Prints the RunVerdict for one merge_group CI run as JSON.
-//   shepherd.mjs replay --since <YYYY-MM-DD> [--until <YYYY-MM-DD>] [--json]
+//   shepherd.mjs replay --since <YYYY-MM-DD> [--until <YYYY-MM-DD>] [--json] [--history <sightings.jsonl>]
 //       One row per `failed_checks` removal in the window, then counts per class.
+//       The touched-file check uses each PR's files as they are now, not as
+//       they were at the removal; sightings are cut at the removal time.
 //   shepherd.mjs record-fixture --run <id> --pr <n> --name <slug>
 //       Writes trimmed facts to fixtures/<slug>.json for the classifier tests.
 //
@@ -95,6 +97,9 @@ async function classifyOne(gh, opts) {
   const snapshot = await prSnapshot(gh, { repo: opts.repo, pr: opts.pr });
   const ciYml = readCiYml();
   const facts = await runFacts(gh, { repo: opts.repo, runId: opts.run, ciYml });
+  if (facts.run.pr !== null && facts.run.pr !== opts.pr) {
+    process.stderr.write(`shepherd: warning: run ${opts.run} tested PR #${facts.run.pr}, not #${opts.pr}; the touched-file check uses #${opts.pr}'s files\n`);
+  }
   const history = History.fromSightings(opts.history ? readSightings(opts.history) : []);
   const verdict = classifyRun(facts, { prFiles: new Set(snapshot.files), history, repoRoot: REPO_ROOT, pr: opts.pr, now: Date.now(), requiredJobs: requiredJobIds(ciYml) });
   process.stdout.write(`${JSON.stringify(verdict, null, 2)}\n`);
@@ -103,7 +108,8 @@ async function classifyOne(gh, opts) {
 // Every failed_checks removal in the window. Facts are gathered for all of
 // them first, so each verdict can see the other removals' sightings.
 export async function replay(gh, { repo, since, until = null, ciYml, repoRoot = REPO_ROOT, history = [] }) {
-  const removals = (await recentRemovals(gh, { repo, since, until, maxPages: 40 })).filter((r) => r.reason === 'failed_checks');
+  const stats = {};
+  const removals = (await recentRemovals(gh, { repo, since, until, maxPages: 40, stats })).filter((r) => r.reason === 'failed_checks');
   const rows = [];
   for (const removal of removals) {
     const row = { pr: removal.pr, removalAt: removal.at, removalId: removal.id, run: null, class: null, signature: null, testIds: [], error: null };
@@ -144,16 +150,18 @@ export async function replay(gh, { repo, since, until = null, ciYml, repoRoot = 
   }
   const counts = {};
   for (const row of rows) counts[row.class] = (counts[row.class] ?? 0) + 1;
-  return { rows, counts, calls: gh.calls };
+  // `complete: false`: the removal scan hit its page cap before `since`.
+  return { rows, counts, calls: gh.calls, complete: stats.complete };
 }
 
-export function renderReplay({ rows, counts }) {
+export function renderReplay({ rows, counts, complete = true }) {
   const lines = ['pr\tremoval_at\trun\tclass\tsignature\ttest_ids'];
   for (const r of rows) {
     const ids = r.testIds.length > 3 ? `${r.testIds.slice(0, 3).join(' | ')} (+${r.testIds.length - 3})` : r.testIds.join(' | ');
     lines.push([r.pr, r.removalAt, r.run ?? '-', r.class, r.signature ?? '-', ids || (r.error ? `error: ${r.error}` : '-')].join('\t'));
   }
   lines.push('', 'class\tcount', ...Object.entries(counts).sort().map(([k, v]) => `${k}\t${v}`), `total\t${rows.length}`);
+  if (!complete) lines.push('PARTIAL: the removal scan stopped at its page cap before --since');
   return `${lines.join('\n')}\n`;
 }
 
@@ -164,7 +172,8 @@ export async function main(argv, { makeGitHub = (budget) => createGitHub({ token
   try {
     opts = parseArgs(argv);
     if (!['classify', 'replay', 'record-fixture'].includes(opts.command)) throw new UsageError(`unknown command ${opts.command ?? ''}`);
-    if (opts.command === 'replay' && !/^\d{4}-\d{2}-\d{2}/.test(opts.since ?? '')) throw new UsageError('replay needs --since YYYY-MM-DD');
+    const badDate = (d) => d !== undefined && (!/^\d{4}-\d{2}-\d{2}/.test(d) || Number.isNaN(Date.parse(d)));
+    if (opts.command === 'replay' && (opts.since === undefined || badDate(opts.since) || badDate(opts.until))) throw new UsageError('replay needs --since YYYY-MM-DD (and --until, if given, a real date)');
     if (opts.command !== 'replay' && (!opts.run || !opts.pr)) throw new UsageError(`${opts.command} needs --run and --pr`);
     if (opts.command === 'record-fixture' && !SLUG.test(opts.name ?? '')) throw new UsageError('record-fixture needs --name <slug> ([a-z0-9-])');
   } catch (e) {
@@ -176,7 +185,8 @@ export async function main(argv, { makeGitHub = (budget) => createGitHub({ token
   if (opts.command === 'record-fixture') await recordFixture(gh, opts);
   else if (opts.command === 'classify') await classifyOne(gh, opts);
   else {
-    const result = await replay(gh, { repo: opts.repo, since: opts.since, until: opts.until ?? null, ciYml: readCiYml() });
+    const history = opts.history ? readSightings(opts.history) : [];
+    const result = await replay(gh, { repo: opts.repo, since: opts.since, until: opts.until ?? null, ciYml: readCiYml(), history });
     process.stdout.write(opts.json ? `${JSON.stringify(result, null, 2)}\n` : renderReplay(result));
   }
   return 0;

@@ -2,9 +2,10 @@
 //
 // Each signature must match positively: a failed setup step alone is never
 // infra. Signatures that read free log text (download_5xx, apt_fetch, dns,
-// registry_rate_limit) apply only when the job has no parsed test failures,
-// so a test whose own output mentions "rate limit exceeded" or "HTTP 500"
-// cannot hide behind them. GitHub's own runner annotations always apply.
+// registry_rate_limit, and disk_full's log form) apply only when the job has
+// no parsed test failures and no unattributed test output, so a test whose own
+// output mentions a rate limit, "HTTP 500" or ENOSPC cannot hide behind them.
+// GitHub's own runner messages (annotations, the shutdown line) always apply.
 //
 // `scope: 'job'` signatures test one JobFact; `scope: 'run'` ones test the
 // run when no required job failed (classify.mjs).
@@ -16,7 +17,9 @@ const DNS = /Could not resolve host|EAI_AGAIN|getaddrinfo ENOTFOUND/;
 const RUNNER_LOST = /The hosted runner lost communication with the server/;
 const RUNNER_SHUTDOWN = /The runner has received a shutdown signal/;
 const APT = /E: Failed to fetch|Temporary failure resolving/;
-const RATE_LIMIT = /toomanyrequests|rate limit exceeded/i;
+// Registry and GitHub API wording only: the app's own rate limiter (and its
+// tests) say "Rate limit exceeded" too.
+const RATE_LIMIT = /toomanyrequests|You have reached your pull rate limit|API rate limit exceeded/;
 const DISK = /No space left on device/;
 
 export const GATE_INFRA_REASONS = new Set(['api_error', 'ci_run_missing', 'deadline']);
@@ -24,8 +27,9 @@ export const GATE_INFRA_REASONS = new Set(['api_error', 'ci_run_missing', 'deadl
 const log = (job) => job.logTail ?? '';
 const anyText = (job, re) => job.annotations.some((a) => re.test(a)) || re.test(log(job));
 const fetchStep = (job) => FETCH_STEP.test(job.failedStep ?? '');
-// ctx.testFailures: the job's parsed failing ids (classify.mjs).
-const noTests = (ctx) => !ctx?.testFailures?.length;
+// ctx (classify.mjs): the job's parsed failing ids, and whether its last
+// attempt had output no test explains (vitest Unhandled Errors, a Go panic).
+const noTests = (ctx) => !ctx?.testFailures?.length && !ctx?.unattributed;
 
 export const INFRA_SIGNATURES = [
   { id: 'runner_lost', scope: 'job', test: (job) => job.annotations.some((a) => RUNNER_LOST.test(a)) },
@@ -38,7 +42,7 @@ export const INFRA_SIGNATURES = [
   { id: 'apt_fetch', scope: 'job', test: (job, ctx) => noTests(ctx) && APT.test(log(job)) },
   { id: 'dns', scope: 'job', test: (job, ctx) => noTests(ctx) && fetchStep(job) && DNS.test(log(job)) },
   { id: 'registry_rate_limit', scope: 'job', test: (job, ctx) => noTests(ctx) && RATE_LIMIT.test(log(job)) },
-  { id: 'disk_full', scope: 'job', test: (job) => anyText(job, DISK) },
+  { id: 'disk_full', scope: 'job', test: (job, ctx) => job.annotations.some((a) => DISK.test(a)) || (noTests(ctx) && DISK.test(log(job))) },
   {
     // A job that hit `timeout-minutes` reports `cancelled`; only the duration
     // tells it from a cancel.
@@ -52,9 +56,13 @@ export const INFRA_SIGNATURES = [
       Date.parse(job.completedAt) - Date.parse(job.startedAt) >= (job.timeoutMinutes - 1) * 60_000,
   },
   {
+    // Jobs ran and finished, yet no CI Success job exists. A run with no jobs
+    // at all (startup_failure: an invalid workflow) or a partial job list is
+    // not this: re-queueing a workflow that cannot start fails the same way.
     id: 'ci_success_missing',
     scope: 'run',
-    test: (_, facts) => facts.run.status === 'completed' && facts.ciSuccess === 'missing',
+    test: (_, facts) =>
+      facts.run.status === 'completed' && facts.ciSuccess === 'missing' && facts.jobs.length > 0 && facts.jobsComplete !== false && facts.run.conclusion !== 'startup_failure',
   },
   { id: 'gate_infra', scope: 'run', test: (_, facts) => GATE_INFRA_REASONS.has(facts.gate?.reason) },
 ];

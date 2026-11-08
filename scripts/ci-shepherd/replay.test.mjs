@@ -190,6 +190,9 @@ test('replay never mutates, and gives one row per failed_checks removal', async 
     { pr: 11312, run: 42453222760, class: 'infra', signature: 'runner_lost' },
   );
   assert.deepEqual(result.counts, { infra: 1 });
+  assert.equal(result.complete, true);
+  assert.doesNotMatch(renderReplay(result), /PARTIAL/);
+  assert.match(renderReplay({ ...result, complete: false }), /^PARTIAL: /m);
   const table = renderReplay(result);
   assert.match(table, /^pr\tremoval_at\trun\tclass\tsignature\ttest_ids$/m);
   assert.match(table, /^11312\t2026-11-08T07:08:59Z\t42453222760\tinfra\trunner_lost\t-$/m);
@@ -230,6 +233,8 @@ test('CLI: bad arguments exit 2 before any API call', async () => {
     ['record-fixture', '--run', '1', '--pr', '1'],
     ['record-fixture', '--run', '1', '--pr', '1', '--name', 'Bad Name'],
     ['replay', '--since', '2026-11-01', '--repo', 'not a repo'],
+    ['replay', '--since', '2026-99-99'],
+    ['replay', '--since', '2026-11-01', '--until', '2026-13-01'],
   ];
   for (const argv of bad) assert.equal(await main(argv, { makeGitHub }), 2, argv.join(' '));
   assert.equal(made, 0);

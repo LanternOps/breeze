@@ -75,13 +75,18 @@ const queueEvent = (ev) =>
 
 // Removal = { pr, id, at, reason, actor, beforeCommit }, oldest first. Pages
 // through PRs by most recent update until one page's oldest update predates
-// `since` (a removal updates its PR) or `maxPages` is reached.
-export async function recentRemovals(gh, { repo, since, until = null, maxPages = 1 }) {
+// `since` or `maxPages` is reached. Stopping there assumes a queue event bumps
+// the PR's updatedAt (not verified separately); only the last 20 queue events
+// of each PR are read. `stats.complete` is set false when `maxPages` ran out
+// before the cutoff, so a caller can say its list is partial.
+export async function recentRemovals(gh, { repo, since, until = null, maxPages = 1, stats = {} }) {
   const [owner, name] = repo.split('/');
   const from = ms(since);
   const to = until === null ? Infinity : ms(until);
+  if (Number.isNaN(from) || Number.isNaN(to)) throw new Error(`recentRemovals: bad window ${since}..${until}`);
   const out = [];
   let after = null;
+  stats.complete = false;
   for (let page = 0; page < maxPages; page++) {
     const conn = (await gh.graphql(REMOVALS_QUERY, { owner, name, after })).repository.pullRequests;
     for (const pr of conn.nodes) {
@@ -94,7 +99,10 @@ export async function recentRemovals(gh, { repo, since, until = null, maxPages =
       }
     }
     const oldest = conn.nodes.at(-1)?.updatedAt;
-    if (!conn.pageInfo.hasNextPage || !oldest || ms(oldest) < from) break;
+    if (!conn.pageInfo.hasNextPage || !oldest || ms(oldest) < from) {
+      stats.complete = true;
+      break;
+    }
     after = conn.pageInfo.endCursor;
   }
   return out.sort((a, b) => ms(a.at) - ms(b.at) || a.id.localeCompare(b.id));
@@ -144,7 +152,7 @@ export async function prSnapshot(gh, { repo, pr, withFiles = true }) {
     state: p.state,
     headSha: p.headRefOid,
     headRef: p.headRefName,
-    isFork: Boolean(p.isCrossRepository) || p.headRepository?.nameWithOwner !== repo,
+    isFork: Boolean(p.isCrossRepository) || p.headRepository?.nameWithOwner?.toLowerCase() !== repo.toLowerCase(),
     autoMerge: p.autoMergeRequest !== null && p.autoMergeRequest !== undefined,
     queue: p.mergeQueueEntry ? { state: p.mergeQueueEntry.state, position: p.mergeQueueEntry.position } : null,
     labels: p.labels.nodes.map((l) => l.name),
@@ -167,8 +175,9 @@ const runRef = (r) => ({
 const newest = (runs) => runs.sort((a, b) => ms(b.created_at) - ms(a.created_at) || b.id - a.id)[0] ?? null;
 
 // The merge_group CI run that tested the PR before this removal, or null.
-// By `beforeCommit` (the group commit) when present; otherwise the newest run
-// on the PR's queue branch created in the six hours before the removal.
+// By `beforeCommit` (the group commit) when present; otherwise, or when no run
+// has that head, the newest run on the PR's queue branch created in the six
+// hours before the removal.
 export async function groupRunFor(gh, { repo, pr, removal }) {
   const at = ms(removal.at);
   const eligible = (r) => r.path === CI_WORKFLOW && r.event === 'merge_group' && ms(r.created_at) <= at;
@@ -176,7 +185,7 @@ export async function groupRunFor(gh, { repo, pr, removal }) {
     const q = new URLSearchParams({ event: 'merge_group', head_sha: removal.beforeCommit, per_page: '20' });
     const body = await getJson(gh, `repos/${repo}/actions/workflows/ci.yml/runs?${q}`);
     const run = newest(body.workflow_runs.filter((r) => eligible(r) && r.head_sha === removal.beforeCommit));
-    return run && runRef(run);
+    if (run) return runRef(run);
   }
   const branch = new RegExp(`^gh-readonly-queue/.+/pr-${pr}-[0-9a-f]+$`);
   const found = [];
@@ -366,8 +375,8 @@ export function readReportZip(bytes) {
     let members;
     try {
       members = execFileSync('unzip', ['-Z1', zip], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30_000 }).split('\n').filter(Boolean);
-    } catch {
-      return fail('artifact is not a readable zip');
+    } catch (e) {
+      return fail(`artifact is not a readable zip (${e.code ?? e.status ?? e.message})`);
     }
     const reports = members.filter((m) => REPORT_NAME.test(m));
     if (reports.length !== 1) return fail(`expected one flake report in the artifact, found ${reports.length}`);
@@ -375,7 +384,7 @@ export function readReportZip(bytes) {
     try {
       text = execFileSync('unzip', ['-p', zip, reports[0]], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: MAX_REPORT_BYTES + 1, timeout: 30_000 });
     } catch (e) {
-      return fail(e.code === 'ENOBUFS' ? `too large: over ${MAX_REPORT_BYTES} bytes inflated` : 'cannot inflate the flake report');
+      return fail(e.code === 'ENOBUFS' ? `too large: over ${MAX_REPORT_BYTES} bytes inflated` : `cannot inflate the flake report (${e.code ?? e.status ?? e.message})`);
     }
     if (Buffer.byteLength(text) > MAX_REPORT_BYTES) return fail(`too large: over ${MAX_REPORT_BYTES} bytes inflated`);
     let report;
@@ -402,15 +411,35 @@ async function listArtifacts(gh, repo, runId) {
   return { list, error: null };
 }
 
-async function flakeReport(gh, repo, artifacts, label) {
+// A report belongs to this job attempt only if it was uploaded after the
+// attempt started and (schema 2) its provenance names this run and attempt.
+// The artifact name is reused across attempts with `overwrite: true`, so a
+// re-run that fails before retry-shard writes anything leaves the previous
+// attempt's report in place; reading it would classify a failure nobody saw.
+export function staleReason(report, artifact, { runId, jobAttempt, jobStartedAt }) {
+  const uploaded = artifact.updated_at ?? artifact.created_at;
+  if (uploaded && jobStartedAt && ms(uploaded) < ms(jobStartedAt)) return 'stale: uploaded before this job attempt started';
+  const p = report?.schema === 2 ? report.provenance : null;
+  if (p?.runId && String(p.runId) !== String(runId)) return `stale: report is from run ${p.runId}`;
+  if (p?.runAttempt && jobAttempt !== null && jobAttempt !== undefined && String(p.runAttempt) !== String(jobAttempt)) {
+    return `stale: report is from attempt ${p.runAttempt}`;
+  }
+  return null;
+}
+
+async function flakeReport(gh, repo, artifacts, label, ctx) {
   if (artifacts.error) return { report: null, reportError: artifacts.error };
   const a = artifacts.list.find((x) => x.name === `flake-report-${label}`);
   if (!a) return { report: null, reportError: 'not_uploaded' };
   if (a.expired) return { report: null, reportError: 'expired' };
   if (a.size_in_bytes > MAX_REPORT_BYTES) return { report: null, reportError: `too large: ${a.size_in_bytes} bytes zipped` };
+  const early = staleReason(null, a, ctx);
+  if (early) return { report: null, reportError: early };
   const zip = await gh.raw(`repos/${repo}/actions/artifacts/${a.id}/zip`, { binary: true });
   if (!zip.bytes) return { report: null, reportError: `artifact download ${zip.status}` };
-  return readReportZip(zip.bytes);
+  const read = readReportZip(zip.bytes);
+  const stale = read.report && staleReason(read.report, a, ctx);
+  return stale ? { report: null, reportError: stale } : read;
 }
 
 // ── Run facts ────────────────────────────────────────────────────────────
@@ -419,18 +448,27 @@ const QUEUE_BRANCH_PR = /^gh-readonly-queue\/.+\/pr-(\d+)-[0-9a-f]+$/;
 const failedStep = (steps = []) =>
   (steps.find((s) => s.conclusion === 'failure') ?? steps.find((s) => s.conclusion === 'cancelled') ?? steps.find((s) => s.status === 'in_progress'))?.name ?? null;
 
+// { jobs, complete }: `complete` is false when the listing stopped short of
+// `total_count` (three pages of 100).
 async function listJobs(gh, repo, runId) {
   const jobs = [];
+  let total = 0;
   for (let page = 1; page <= 3; page++) {
     const body = await getJson(gh, `repos/${repo}/actions/runs/${runId}/jobs?filter=latest&per_page=100&page=${page}`);
     jobs.push(...body.jobs);
-    if (body.jobs.length < 100 || jobs.length >= body.total_count) break;
+    total = body.total_count ?? jobs.length;
+    if (body.jobs.length < 100 || jobs.length >= total) break;
   }
-  return jobs;
+  return { jobs, complete: jobs.length >= total };
 }
 
+// A job that did not pass: anything but success, skipped or neutral (failure,
+// cancelled, timed_out, startup_failure, action_required…). Null = unfinished.
+export const isFailedConclusion = (c) => typeof c === 'string' && !['success', 'skipped', 'neutral'].includes(c);
+
 async function annotationsOf(gh, repo, jobId) {
-  const res = await gh.rest('GET', `repos/${repo}/check-runs/${jobId}/annotations?per_page=50`);
+  // GitHub keeps at most 50 annotations per job, so one page of 100 holds them all.
+  const res = await gh.rest('GET', `repos/${repo}/check-runs/${jobId}/annotations?per_page=100`);
   if (res.status !== 200 || !Array.isArray(res.body)) return { annotations: [], error: `annotations ${res.status}` };
   const annotations = res.body
     .filter((a) => a.annotation_level === 'failure' || a.annotation_level === 'warning')
@@ -447,7 +485,7 @@ async function gateFor(gh, repo, headSha) {
   if (res.status !== 200) return { verdict: null, reason: `gate_lookup_${res.status}` };
   const run = newest(res.body.workflow_runs ?? []);
   if (!run) return null;
-  const jobs = await listJobs(gh, repo, run.id);
+  const { jobs } = await listJobs(gh, repo, run.id);
   for (const job of jobs) {
     const log = await gh.raw(`repos/${repo}/actions/jobs/${job.id}/logs`);
     const m = log.text && GATE_LINE.exec(cleanLog(log.text).join('\n'));
@@ -456,10 +494,11 @@ async function gateFor(gh, repo, headSha) {
   return { verdict: null, reason: 'gate_line_missing', run: run.id };
 }
 
-// RunFacts = { run, jobs: JobFact[], ciSuccess: 'present'|'missing', gate }.
-// Only failed or cancelled jobs (never the CI Success aggregate) get their
+// RunFacts = { run, jobs: JobFact[], jobsComplete, ciSuccess: 'present'|'missing', gate }.
+// Only jobs that did not pass (never the CI Success aggregate) get their
 // annotations and log fetched; any retry-shard job's flake report is read when
-// the job failed or uploaded one.
+// the job failed or uploaded one. A fetch that fails is recorded on the fact
+// (`errors`, `logStatus`, `reportError`), never dropped.
 export async function runFacts(gh, { repo, runId, ciYml }) {
   const r = await getJson(gh, `repos/${repo}/actions/runs/${runId}`);
   const queuePr = QUEUE_BRANCH_PR.exec(r.head_branch ?? '');
@@ -476,7 +515,7 @@ export async function runFacts(gh, { repo, runId, ciYml }) {
     updatedAt: r.updated_at,
     pr: queuePr ? Number(queuePr[1]) : (r.pull_requests?.[0]?.number ?? null),
   };
-  const apiJobs = await listJobs(gh, repo, runId);
+  const { jobs: apiJobs, complete: jobsComplete } = await listJobs(gh, repo, runId);
   let artifacts = null;
   const jobs = [];
   for (const j of apiJobs) {
@@ -485,6 +524,7 @@ export async function runFacts(gh, { repo, runId, ciYml }) {
       id: j.id,
       name: j.name,
       jobId: ident.jobId,
+      attempt: j.run_attempt ?? null,
       conclusion: j.conclusion,
       startedAt: j.started_at,
       completedAt: j.completed_at,
@@ -500,7 +540,7 @@ export async function runFacts(gh, { repo, runId, ciYml }) {
       reportError: null,
       errors: [],
     };
-    const failed = (j.conclusion === 'failure' || j.conclusion === 'cancelled') && j.name !== CI_SUCCESS;
+    const failed = isFailedConclusion(j.conclusion) && j.name !== CI_SUCCESS;
     if (failed) {
       const ann = await annotationsOf(gh, repo, j.id);
       fact.annotations = ann.annotations;
@@ -515,13 +555,15 @@ export async function runFacts(gh, { repo, runId, ciYml }) {
     if (ident.label) {
       artifacts ??= await listArtifacts(gh, repo, runId);
       const uploaded = artifacts.list.some((a) => a.name === `flake-report-${ident.label}`);
-      if (failed || uploaded) Object.assign(fact, await flakeReport(gh, repo, artifacts, ident.label));
+      const ctx = { runId: r.id, jobAttempt: fact.attempt, jobStartedAt: j.started_at };
+      if (failed || uploaded || artifacts.error) Object.assign(fact, await flakeReport(gh, repo, artifacts, ident.label, ctx));
     }
     jobs.push(fact);
   }
   return {
     run,
     jobs,
+    jobsComplete,
     ciSuccess: apiJobs.some((j) => j.name === CI_SUCCESS) ? 'present' : 'missing',
     gate: await gateFor(gh, repo, run.headSha),
   };

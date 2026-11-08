@@ -22,6 +22,7 @@ import { join } from 'node:path';
 import { failureTouched } from '../../.github/scripts/flaky-ledger.mjs';
 import { ledgerPaths, ledgerRunner } from '../../.github/scripts/retry-shard.mjs';
 import { GO_DIR, attemptsOf, failureFromId } from './evidence.mjs';
+import { isFailedConclusion } from './facts.mjs';
 import { INFRA_SIGNATURES, signatureEvidence } from './signatures.mjs';
 
 // Most severe first.
@@ -36,7 +37,21 @@ export const isDeterministic = (name) => DETERMINISTIC_JOBS.has(name) || name.st
 const CI_SUCCESS = 'CI Success';
 const FLAKE_KINDS = new Set(['fail_pass', 'fail_other']);
 const severity = (cls) => CLASSES.indexOf(cls);
-const clean = (a) => a && !a.unattributed && !a.buildFailed && !a.raceDetected && !a.truncated;
+// An attempt whose failure ids explain it: it was not killed by a signal
+// (`code: null`, schema 2 only), timed out, raced, failed to build, or had
+// output no test explains, and its id list is complete.
+const clean = (a) => a && a.code !== null && !a.timedOut && !a.unattributed && !a.buildFailed && !a.raceDetected && !a.truncated;
+
+// Evidence the shepherd tried and failed to read. It never changes a class by
+// itself (missing evidence can only remove a match, never add one), but a
+// verdict reached without it says so, so "nothing to find" and "could not
+// look" are not the same line.
+export function evidenceGaps(job) {
+  const gaps = [...(job.errors ?? [])];
+  if (job.logStatus !== null && job.logStatus !== undefined && job.logStatus !== 200) gaps.push(`log ${job.logStatus}`);
+  if (job.reportError && job.reportError !== 'not_uploaded') gaps.push(`flake report: ${job.reportError}`);
+  return gaps;
+}
 
 // The ids that failed the job, and where they came from.
 function failingIds(job) {
@@ -60,12 +75,12 @@ function touchedPaths(job, repoRoot) {
   return { ledger, paths: { ...(paths ?? {}), sourceRoot: undefined } };
 }
 
-const verdict = (job, cls, signature, testIds, evidence) => ({ job: job.name, class: cls, signature, testIds, evidence });
-
 export function classifyJob(job, ctx) {
+  const gaps = evidenceGaps(job);
+  const verdict = (j, cls, signature, testIds, evidence) => ({ job: j.name, class: cls, signature, testIds, evidence, gaps });
   const { ids, last, attempts } = failingIds(job);
   for (const sig of INFRA_SIGNATURES) {
-    if (sig.scope !== 'job' || !sig.test(job, { testFailures: ids })) continue;
+    if (sig.scope !== 'job' || !sig.test(job, { testFailures: ids, unattributed: Boolean(last?.unattributed) })) continue;
     return verdict(job, sig.class ?? 'infra', sig.id, ids, [`signature ${sig.id}`, ...signatureEvidence(job)]);
   }
   const { ledger, paths } = touchedPaths(job, ctx.repoRoot);
@@ -94,26 +109,33 @@ export function classifyJob(job, ctx) {
   }
 
   if (isDeterministic(job.name)) return verdict(job, 'real', null, ids, ['deterministic job, no infra signature']);
-  return verdict(job, 'unknown', null, ids, [ids.length ? 'failing tests not corroborated as flaky' : 'no failing test ids and no signature']);
+  const why = ids.length ? 'failing tests not corroborated as flaky' : gaps.length ? `no failing test ids and no signature; evidence unavailable: ${gaps.join(', ')}` : 'no failing test ids and no signature';
+  return verdict(job, 'unknown', null, ids, [why]);
 }
 
 // ctx: { prFiles: Set, history, repoRoot, pr?, now?, requiredJobs? }.
 // `requiredJobs` (ci.yml job ids CI Success needs) drops failed jobs outside
 // the aggregate: they cannot have caused the removal, and jobs still running
 // at removal time are cancelled afterwards when GitHub deletes the queue ref.
+// RunVerdict = { class, signature, testIds, jobs, evidence, gaps }. `gaps`
+// lists evidence that could not be read (job logs, annotations, reports, the
+// gate lookup, a partial job list); W06b decides what a gap costs.
 export function classifyRun(facts, ctx) {
+  const runGaps = [];
+  if (facts.jobsComplete === false) runGaps.push('job list incomplete');
   const reason = facts.gate?.reason ?? null;
+  if (reason && /^gate_(?:lookup_|line_missing)/.test(reason)) runGaps.push(`CI Gate: ${reason}`);
   if (GATE_FAULT_REASONS.has(reason)) {
-    return { class: 'gate_fault', signature: null, testIds: [], jobs: [], evidence: [`CI Gate reason ${reason}`] };
+    return { class: 'gate_fault', signature: null, testIds: [], jobs: [], evidence: [`CI Gate reason ${reason}`], gaps: runGaps };
   }
   const failed = facts.jobs.filter(
-    (j) => (j.conclusion === 'failure' || j.conclusion === 'cancelled') && j.name !== CI_SUCCESS && (!ctx.requiredJobs || !j.jobId || ctx.requiredJobs.has(j.jobId)),
+    (j) => isFailedConclusion(j.conclusion) && j.name !== CI_SUCCESS && (!ctx.requiredJobs || !j.jobId || ctx.requiredJobs.has(j.jobId)),
   );
   if (!failed.length) {
     for (const sig of INFRA_SIGNATURES) {
-      if (sig.scope === 'run' && sig.test(null, facts)) return { class: 'infra', signature: sig.id, testIds: [], jobs: [], evidence: [`signature ${sig.id}`] };
+      if (sig.scope === 'run' && sig.test(null, facts)) return { class: 'infra', signature: sig.id, testIds: [], jobs: [], evidence: [`signature ${sig.id}`], gaps: runGaps };
     }
-    return { class: 'unknown', signature: null, testIds: [], jobs: [], evidence: ['aggregate_only'] };
+    return { class: 'unknown', signature: null, testIds: [], jobs: [], evidence: ['aggregate_only'], gaps: runGaps };
   }
   const jobs = failed.map((j) => classifyJob(j, { ...ctx, runId: facts.run.id }));
   const worst = jobs.reduce((a, b) => (severity(b.class) < severity(a.class) ? b : a));
@@ -123,5 +145,6 @@ export function classifyRun(facts, ctx) {
     testIds: [...new Set(jobs.flatMap((j) => j.testIds))],
     jobs,
     evidence: [`${worst.job}: ${worst.class}`],
+    gaps: [...runGaps, ...jobs.flatMap((j) => j.gaps.map((g) => `${j.job}: ${g}`))],
   };
 }

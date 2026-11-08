@@ -58,7 +58,7 @@ export function repoPathOf(ledger, failure, repoRoot) {
 }
 
 export function ingestRun(facts, { repo, repoRoot }) {
-  if (facts.run.headRepo !== repo) return [];
+  if (facts.run.headRepo?.toLowerCase() !== repo.toLowerCase()) return [];
   const out = [];
   for (const job of facts.jobs) {
     const ledger = job.runner && job.label ? ledgerRunner(job.runner, job.label) : null;
