@@ -1661,8 +1661,14 @@ function trendBucketToIso(bucket: unknown): string {
   if (bucket instanceof Date) return bucket.toISOString();
   const text = String(bucket);
   const hasZone = /(Z|[+-]\d{2}(:?\d{2})?)$/i.test(text.replace(/^\d{4}-\d{2}-\d{2}/, ''));
-  const parsed = new Date(`${text.replace(' ', 'T')}${hasZone ? '' : 'Z'}`);
-  return Number.isNaN(parsed.getTime()) ? text : parsed.toISOString();
+  // Postgres renders a whole-hour offset as "+00"; Date needs "+00:00".
+  const iso = text.replace(' ', 'T').replace(/([+-]\d{2})$/, '$1:00');
+  const parsed = new Date(`${iso}${hasZone ? '' : 'Z'}`);
+  if (Number.isNaN(parsed.getTime())) {
+    // Surfaces through the route's catch (500 + log) rather than shipping a non-ISO string.
+    throw new Error(`trendBucketToIso: unparseable bucket ${JSON.stringify(text)}`);
+  }
+  return parsed.toISOString();
 }
 
 metricsRoutes.get('/trends', authMiddleware, requireScope('organization', 'partner', 'system'), requireMetricsRead, async (c) => {

@@ -738,7 +738,7 @@ describe('metrics routes', () => {
     mockRollupTrendRows(selectMock, []);
     mockRawTrendRows(selectMock, [
       { bucket: '2026-06-18 00:00:00', cpu: 21.2, memory: 75.8 },
-      { bucket: new Date('2026-06-19T00:00:00.000Z'), cpu: 30, memory: 40 },
+      { bucket: '2026-06-19 00:00:00+00', cpu: 30, memory: 40 },
     ]);
 
     const res = await app.request('/trends?range=7d', {
