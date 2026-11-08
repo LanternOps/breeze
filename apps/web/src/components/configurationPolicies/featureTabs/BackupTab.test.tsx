@@ -955,4 +955,113 @@ describe('BackupTab', () => {
     // Still never the create-first-destination form.
     expect(screen.queryByText(/Editing storage configuration/i)).toBeNull();
   });
+
+  // #11278: a retention written through the API or the AI tools can match no
+  // UI preset and leave fields out. Server-side an absent field means "no
+  // constraint" (no retentionDays floor, no maxVersions cap, no GFS tier), so
+  // filling the gaps with the Standard preset on save silently changes how
+  // long snapshots are kept.
+  describe('retention that matches no preset (#11278)', () => {
+    const linkWithRetention = (retention: Record<string, unknown>) => ({
+      ...baseLink,
+      inlineSettings: { ...baseLink.inlineSettings, retention },
+    });
+
+    const renderWithRetention = (retention: Record<string, unknown>) =>
+      render(
+        <BackupTab
+          policyId="policy-1"
+          existingLink={linkWithRetention(retention)}
+          linkedPolicyId={null}
+          onLinkChanged={vi.fn()}
+        />
+      );
+
+    it('saves a schedule change without replacing the stored retention', async () => {
+      renderWithRetention({ keepDaily: 7 });
+
+      await screen.findByText('Primary S3');
+      fireEvent.change(screen.getByDisplayValue('03:00'), { target: { value: '05:00' } });
+      fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+      await waitFor(() => expect(saveMock).toHaveBeenCalled());
+      const [, payload] = saveMock.mock.calls[0]!;
+      expect(payload.inlineSettings.schedule.time).toBe('05:00');
+      expect(payload.inlineSettings.retention).toEqual({ keepDaily: 7 });
+    });
+
+    it('shows it as Custom with unset fields marked "Not set", not as the Standard preset', async () => {
+      renderWithRetention({ keepDaily: 7 });
+
+      await screen.findByText('Primary S3');
+      expect((screen.getByRole('radio', { name: /^Custom/ }) as HTMLInputElement).checked).toBe(true);
+      expect((screen.getByRole('radio', { name: /^Standard/ }) as HTMLInputElement).checked).toBe(false);
+      // Retention days, max versions, and the weekly/monthly/yearly GFS tiers
+      // are absent; the advanced disclosure auto-opens so none is hidden.
+      const retentionInputs = screen.getAllByPlaceholderText('Not set') as HTMLInputElement[];
+      expect(retentionInputs.map((input) => input.value)).toEqual(['', '', '7', '', '', '']);
+      // No retentionDays floor, so no "below the floor" warning either.
+      expect(screen.queryByText(/retention floor/i)).toBeNull();
+    });
+
+    it('shows a preset label whose numbers do not match as Custom with the stored numbers', async () => {
+      renderWithRetention({ preset: 'standard', retentionDays: 14, maxVersions: 5 });
+
+      await screen.findByText('Primary S3');
+      expect((screen.getByRole('radio', { name: /^Custom/ }) as HTMLInputElement).checked).toBe(true);
+      expect(screen.getByDisplayValue('14')).toBeTruthy();
+    });
+
+    it('writes a preset the user picks, and only the fields that preset sets', async () => {
+      renderWithRetention({ keepDaily: 7 });
+
+      await screen.findByText('Primary S3');
+      fireEvent.click(screen.getByRole('radio', { name: /^Extended/ }));
+      fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+      await waitFor(() => expect(saveMock).toHaveBeenCalled());
+      const [, payload] = saveMock.mock.calls[0]!;
+      expect(payload.inlineSettings.retention).toEqual({
+        preset: 'extended',
+        retentionDays: 90,
+        maxVersions: 10,
+        keepDaily: 7,
+      });
+    });
+
+    it('marks an edited custom value as a custom retention', async () => {
+      renderWithRetention({ preset: 'standard', retentionDays: 14, maxVersions: 5 });
+
+      await screen.findByText('Primary S3');
+      fireEvent.change(screen.getByDisplayValue('14'), { target: { value: '21' } });
+      fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+      await waitFor(() => expect(saveMock).toHaveBeenCalled());
+      const [, payload] = saveMock.mock.calls[0]!;
+      expect(payload.inlineSettings.retention).toEqual({
+        preset: 'custom',
+        retentionDays: 21,
+        maxVersions: 5,
+      });
+    });
+
+    it('round-trips a full UI-written retention unchanged', () => {
+      const retention = baseLink.inlineSettings.retention;
+      const inflated = inflateSettings(linkWithRetention(retention).inlineSettings);
+      expect(buildInlineSettings(inflated, 'file', {}).retention).toEqual(retention);
+    });
+
+    it('still starts a new link on the Standard preset with the GFS defaults', () => {
+      expect(buildInlineSettings(inflateSettings(undefined), 'file', {}).retention).toEqual({
+        preset: 'standard',
+        retentionDays: 30,
+        maxVersions: 5,
+        keepDaily: 7,
+        keepWeekly: 4,
+        keepMonthly: 12,
+        keepYearly: 3,
+        weeklyDay: 0,
+      });
+    });
+  });
 });

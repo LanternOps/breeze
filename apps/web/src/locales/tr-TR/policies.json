@@ -384,6 +384,7 @@
         "retentionPolicy": "Saklama Politikası",
         "retentionDays": "Saklama Günleri",
         "maxVersions": "Maksimum Sürümler",
+        "retentionNotSet": "Ayarlanmadı",
         "gFSRetention": "GFS'nin Saklanması",
         "keepLongerRunningRestorePointsForGrandfather": "Büyükbaba-baba-oğul saklama için daha uzun süre çalışan geri yükleme noktalarını koruyun.",
         "dailyRetentionBelowFloor": "Günlük saklama süresi {{gfsDays}} gün olarak ayarlandı, bu {{effectiveDays}} günlük saklama tabanından daha kısa. Bu anlık görüntünün son kullanma tarihi {{gfsDays}} değil {{effectiveDays}} gün olarak ayarlanır -- son kullanma tarihi hiçbir zaman tabanın altına inmez. Ayrı bir maksimum sürüm sınırı yine de eski anlık görüntüleri daha erken kaldırabilir.",
