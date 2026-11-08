@@ -180,7 +180,9 @@ The offline target can't execute its own wake, so the API selects an online peer
 | `RELAY_OVERRIDE_INVALID` | Caller-supplied relay isn't online or isn't at the target's site/subnet. |
 | `WS_SEND_FAILED` | Relay dropped its WebSocket between selection and dispatch — retry. |
 
-The agent's WoL handler sends three rounds of magic packets to UDP ports 7 and 9 spaced 500 ms apart, one per known MAC. Success measurement is left to the UI — wait for the target's next heartbeat to confirm the wake worked (typical resume time: 30 s to 5 min).
+A target that is already online returns `TARGET_ONLINE` and nothing is sent (v0.127.0+).
+
+The agent's WoL handler sends three rounds of magic packets to UDP ports 7 and 9 spaced 500 ms apart, one per known MAC. Typical resume time is 30 s to 5 min. From v0.127.0, Breeze records each sent wake and resolves it within about 12 minutes as `came_online`, `timed_out`, `send_failed` or `unknown`; see [Wake-on-LAN](/features/remote-access/#wake-on-lan).
 
 <Aside type="caution">
   The `shutdown` and `lock` actions visible in the mobile UI are dispatched through the core commands endpoint (`POST /devices/:id/commands`) rather than the mobile actions endpoint, as the mobile actions schema does not currently accept those command types.
