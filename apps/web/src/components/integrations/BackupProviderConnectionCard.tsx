@@ -338,6 +338,11 @@ export default function BackupProviderConnectionCard({
             {t("backupProviders.reenterCredentials")}
           </button>
         )}
+        {editingCredentials && connection.status !== "reauth_required" && (
+          <button type="button" data-testid="backup-connection-rotate-cancel" disabled={busy !== null} onClick={() => { setEditingCredentials(false); setValues({}); }} className="inline-flex items-center gap-2 rounded-md border bg-card px-3 py-1.5 text-sm font-medium disabled:opacity-50">
+            {t("common:actions.cancel")}
+          </button>
+        )}
         <button type="button" data-testid="backup-connection-save" disabled={busy !== null || incompleteCredentials} onClick={() => void handleSave()} className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50">
           <Save className="h-4 w-4" /> {t("common:actions.save")}
         </button>

@@ -160,6 +160,21 @@ describe("BackupProviderConnectionCard", () => {
     expect(screen.queryByTestId("backup-connection-rotate")).toBeNull();
   });
 
+  it("lets a healthy connection cancel a half-typed rotation, clearing the fields", () => {
+    render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
+    fireEvent.click(screen.getByTestId("backup-connection-rotate"));
+    fireEvent.change(screen.getByTestId("backup-connection-username"), { target: { value: "x" } });
+    fireEvent.click(screen.getByTestId("backup-connection-rotate-cancel"));
+    expect(screen.queryByTestId("backup-connection-username")).toBeNull();
+    fireEvent.click(screen.getByTestId("backup-connection-rotate"));
+    expect(screen.getByTestId("backup-connection-username")).toHaveValue("");
+  });
+
+  it("does not render the proactive rotate button on a reauth_required connection", () => {
+    render(<BackupProviderConnectionCard connection={connection({ status: "reauth_required" })} onChanged={onChanged} onTestResult={onTestResult} />);
+    expect(screen.queryByTestId("backup-connection-rotate")).toBeNull();
+  });
+
   it("blocks a Cove rotation that has a new username but a blank password, and never PATCHes it", () => {
     render(<BackupProviderConnectionCard connection={connection()} onChanged={onChanged} onTestResult={onTestResult} />);
     fireEvent.click(screen.getByTestId("backup-connection-rotate"));
