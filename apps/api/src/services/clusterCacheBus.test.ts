@@ -146,12 +146,12 @@ describe('ClusterCacheBus.publish (#8144)', () => {
     await expect(bus2.publish('c1', null)).resolves.toBe('failed');
   });
 
-  it('returns failed when publish never settles within publishTimeoutMs', async () => {
+  it('returns timeout (not failed) when publish never settles within publishTimeoutMs', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const { bus } = makeBus({ getPublisher: () => ({ publish: () => new Promise<number>(() => {}) }), publishTimeoutMs: 1_000 });
     const pending = bus.publish('c1', 'org-1');
     await vi.advanceTimersByTimeAsync(1_000);
-    await expect(pending).resolves.toBe('failed');
+    await expect(pending).resolves.toBe('timeout');
   });
 
   it('counts each outcome on the published series', async () => {
