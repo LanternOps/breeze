@@ -1500,11 +1500,26 @@ export async function processOrphanedCommandResult(
     success?: boolean;
   } | undefined;
 
+  const snmpByPayload = Boolean(snmpData?.deviceId && snmpData.metrics && snmpData.metrics.length > 0);
+  // Spec §5 — a manual "Check now" result is matched on its command id.
+  const probeAssetId = parseProbeCommandId(result.commandId);
+  // A network monitor result is matched on its payload.
+  const monitorData = result.result as {
+    monitorId?: string;
+    status?: string;
+    responseMs?: number;
+    statusCode?: number;
+    error?: string;
+  } | undefined;
+  const monitorByPayload = Boolean(monitorData?.monitorId && monitorData.status);
+
   // Failed polls carry no result payload. Recover their target from dispatch
   // evidence, without consuming expectations belonging to other command kinds.
-  const dispatched = await peekOrphanedResultExpectation(agentId, result.commandId);
-  const isSnmpDispatch = dispatched?.kind === 'snmp';
-  if (isSnmpDispatch || (snmpData?.deviceId && snmpData.metrics && snmpData.metrics.length > 0)) {
+  // That lookup is a Redis read inside the org-scoped transaction (#4135), so a
+  // result its own payload or command id already places skips it.
+  const isSnmpDispatch = !snmpByPayload && !probeAssetId && !monitorByPayload
+    && (await peekOrphanedResultExpectation(agentId, result.commandId))?.kind === 'snmp';
+  if (snmpByPayload || isSnmpDispatch) {
     const expectation = await consumeOrphanedResultExpectation(agentId, result.commandId);
     if (!expectation || expectation.kind !== 'snmp' || (snmpData?.deviceId && expectation.targetId !== snmpData.deviceId)) {
       console.warn(
@@ -1559,7 +1574,6 @@ export async function processOrphanedCommandResult(
   // Spec §5 — a manual "Check now" result. Matched on the command id (the agent
   // echoes an empty monitorId for a probe, so the monitor branch below would
   // fall through anyway; matching here first keeps the intent explicit).
-  const probeAssetId = parseProbeCommandId(result.commandId);
   if (probeAssetId) {
     const expectation = await consumeOrphanedResultExpectation(agentId, result.commandId);
     if (!expectation || expectation.kind !== 'probe' || expectation.targetId !== probeAssetId) {
@@ -1604,14 +1618,6 @@ export async function processOrphanedCommandResult(
   }
 
   // Check if this is a network monitor result
-  const monitorData = result.result as {
-    monitorId?: string;
-    status?: string;
-    responseMs?: number;
-    statusCode?: number;
-    error?: string;
-  } | undefined;
-
   if (monitorData?.monitorId && monitorData.status) {
     const expectation = await consumeOrphanedResultExpectation(agentId, result.commandId);
     if (!expectation || expectation.kind !== 'monitor' || expectation.targetId !== monitorData.monitorId) {

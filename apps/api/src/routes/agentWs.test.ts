@@ -494,6 +494,7 @@ import {
   reconcileSoftwareInstallResult,
 } from '../services/softwareDeploymentResult';
 import { getRedis, isRedisAvailable } from '../services/redis';
+import { orphanedResultExpectationKey } from '../services/orphanedResultExpectations';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import {
   evaluateCapability,
@@ -7728,15 +7729,17 @@ describe('orphaned result expectations are shared across replicas (#4135)', () =
   }
 
   beforeEach(() => vi.clearAllMocks());
-  afterEach(() => vi.mocked(getRedis).mockReturnValue(null));
+  afterEach(() => {
+    vi.mocked(getRedis).mockReturnValue(null);
+    vi.mocked(isRedisAvailable).mockReturnValue(false);
+  });
 
   it('records the dispatch in Redis with the 30-minute expectation TTL', async () => {
     const redis = sharedRedis();
     await dispatchSnmpPoll('snmp-replica-record', redis);
 
     const [key, value, mode, ttlMs] = redis.set.mock.calls[0]!;
-    expect(key).toContain(agentId);
-    expect(key).toContain('snmp-replica-record');
+    expect(key).toBe(orphanedResultExpectationKey(agentId, 'snmp-replica-record'));
     expect(mode).toBe('PX');
     expect(ttlMs).toBeGreaterThan(29 * 60 * 1000);
     expect(ttlMs).toBeLessThanOrEqual(30 * 60 * 1000);
@@ -7777,6 +7780,31 @@ describe('orphaned result expectations are shared across replicas (#4135)', () =
     } finally {
       warning.mockRestore();
     }
+  });
+
+  it('honors a monitor result from Redis with a single read (no dispatch peek)', async () => {
+    const redis = sharedRedis();
+    await connectedAgent(agentId, { deviceId, orgId, partnerId: 'partner-123' });
+    vi.mocked(getRedis).mockReturnValue(redis as never);
+    expect(sendCommandToAgent(agentId, {
+      id: 'mon-replica-1', type: 'network_ping', payload: { monitorId: 'monitor-replica' },
+    })).toBe(true);
+    await vi.waitFor(() => expect(redis.set).toHaveBeenCalledTimes(1));
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([{ id: deviceId, orgId }]) as any);
+    vi.mocked(isRedisAvailable).mockReturnValue(true);
+    vi.mocked(enqueueMonitorCheckResult).mockResolvedValue('job-1' as never);
+
+    await processOrphanedCommandResult(agentId, deviceId, {
+      type: 'command_result', commandId: 'mon-replica-1', status: 'completed',
+      result: { monitorId: 'monitor-replica', status: 'online', responseMs: 7 },
+    });
+
+    expect(enqueueMonitorCheckResult).toHaveBeenCalledWith(
+      'monitor-replica', expect.objectContaining({ status: 'online' }), expect.anything(), { orgId, deviceId },
+    );
+    expect(redis.get).not.toHaveBeenCalled();
+    expect(redis.getdel).toHaveBeenCalledTimes(1);
+    expect(redis.entries.size).toBe(0);
   });
 
   function dispatchedKey(redis: ReturnType<typeof sharedRedis>): string {

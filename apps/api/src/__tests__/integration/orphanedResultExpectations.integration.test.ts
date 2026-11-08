@@ -91,6 +91,22 @@ describe('orphaned result expectations across replicas — real Redis (#4135)', 
     await expect(peekOrphanedResultExpectation(probeAgent, probeCommand)).resolves.toBeNull();
   });
 
+  it('two replicas consuming the same record at once: exactly one gets it', async () => {
+    const id = agentId('race');
+    const commandIds = Array.from({ length: 20 }, () => `snmp-${randomUUID()}`);
+    const expiresAt = Date.now() + ORPHANED_RESULT_EXPECTATION_TTL_MS;
+    await Promise.all(commandIds.map((commandId) =>
+      recordOrphanedResultExpectation(commandId, { agentId: id, kind: 'snmp', targetId: 'snmp-device-2', expiresAt })));
+
+    for (const commandId of commandIds) {
+      const outcomes = await Promise.all([
+        consumeOrphanedResultExpectation(id, commandId),
+        replicaB.consumeOrphanedResultExpectation(id, commandId),
+      ]);
+      expect(outcomes.filter((outcome) => outcome !== null), commandId).toHaveLength(1);
+    }
+  });
+
   it('the agent socket send path records into Redis for the other replica to honor', async () => {
     const id = agentId('send');
     const frames: string[] = [];
@@ -103,7 +119,7 @@ describe('orphaned result expectations across replicas — real Redis (#4135)', 
     expect(frames).toHaveLength(1);
 
     const key = orphanedResultExpectationKey(id, commandId);
-    await vi.waitFor(async () => expect(await getRedis()!.exists(key)).toBe(1));
+    await vi.waitFor(async () => expect(await getRedis()!.exists(key)).toBe(1), { timeout: 5_000 });
 
     await expect(replicaB.consumeOrphanedResultExpectation(id, commandId))
       .resolves.toMatchObject({ agentId: id, kind: 'monitor', targetId: 'monitor-1' });

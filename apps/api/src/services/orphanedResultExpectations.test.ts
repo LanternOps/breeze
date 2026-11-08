@@ -4,6 +4,7 @@ const { getRedisMock } = vi.hoisted(() => ({ getRedisMock: vi.fn() }));
 vi.mock('./redis', () => ({ getRedis: getRedisMock }));
 
 import {
+  DEGRADED_LOG_INTERVAL_MS,
   ORPHANED_RESULT_EXPECTATION_REDIS_TIMEOUT_MS,
   ORPHANED_RESULT_EXPECTATION_TTL_MS,
   consumeOrphanedResultExpectation,
@@ -267,16 +268,60 @@ describe('orphanedResultExpectations (#4135)', () => {
       await expect(consumeOrphanedResultExpectation('agent-a', 'cmd-9')).resolves.toBeNull();
     });
 
-    it('logs again on a later outage once Redis has recovered in between', async () => {
+    it('rate-limits degraded logs and reports how many it suppressed', async () => {
+      vi.useFakeTimers();
       getRedisMock.mockReturnValue(null);
       await recordOrphanedResultExpectation('cmd-10', snmp('agent-a'));
-      getRedisMock.mockReturnValue(fakeRedis());
       await recordOrphanedResultExpectation('cmd-11', snmp('agent-a'));
-      getRedisMock.mockReturnValue(null);
+      await consumeOrphanedResultExpectation('agent-a', 'cmd-11');
+      expect(warn).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(Date.now() + DEGRADED_LOG_INTERVAL_MS);
       await recordOrphanedResultExpectation('cmd-12', snmp('agent-a'));
 
-      const fallbackWarnings = warn.mock.calls.filter((call: unknown[]) => String(call[0]).includes('in-process'));
-      expect(fallbackWarnings).toHaveLength(2);
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(warn.mock.calls[1]![0]).toContain('2 similar event(s) suppressed');
+    });
+
+    it('says so when a read cannot reach Redis at all', async () => {
+      const redis = fakeRedis();
+      redis.status = 'end';
+      getRedisMock.mockReturnValue(redis);
+
+      await expect(consumeOrphanedResultExpectation('agent-a', 'cmd-14')).resolves.toBeNull();
+
+      expect(redis.getdel).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('consume skipped Redis (Redis client is end)'));
+    });
+  });
+
+  describe('bounded reads', () => {
+    it.each([
+      ['consume', 'getdel', consumeOrphanedResultExpectation],
+      ['peek', 'get', peekOrphanedResultExpectation],
+    ] as const)('a %s that outlives the timeout fails closed and is logged', async (operation, command, read) => {
+      vi.useFakeTimers();
+      const redis = fakeRedis();
+      redis[command].mockImplementationOnce(() => new Promise<string | null>(() => {}));
+      getRedisMock.mockReturnValue(redis);
+
+      const outcome = read('agent-a', `cmd-stall-${operation}`);
+      await vi.advanceTimersByTimeAsync(ORPHANED_RESULT_EXPECTATION_REDIS_TIMEOUT_MS + 1);
+
+      await expect(outcome).resolves.toBeNull();
+      expect(error).toHaveBeenCalledWith(expect.stringContaining(`${operation} timed out`));
+    });
+
+    it('ignores a stored record whose expiry has passed', async () => {
+      const redis = fakeRedis();
+      getRedisMock.mockReturnValue(redis);
+      const stale = { ...snmp('agent-a'), expiresAt: Date.now() - 1 };
+      redis.entries.set(orphanedResultExpectationKey('agent-a', 'cmd-stale'), {
+        value: JSON.stringify(stale), expiresAt: Date.now() + 60_000,
+      });
+
+      await expect(peekOrphanedResultExpectation('agent-a', 'cmd-stale')).resolves.toBeNull();
+      await expect(consumeOrphanedResultExpectation('agent-a', 'cmd-stale')).resolves.toBeNull();
     });
   });
 });

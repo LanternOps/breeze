@@ -18,25 +18,37 @@
  * Redis is the only store while it is reachable; no replica keeps a local copy.
  * The in-process Map is a fallback for when Redis is not: no client, a client
  * that is connecting, reconnecting or closed, or a write that fails or times
- * out. That keeps a
- * single-replica deployment working as it did before. A record held locally can
- * only be honored by this process, so the first fallback in each outage is
- * logged (once, until a Redis write succeeds again).
+ * out. That keeps a single-replica deployment working as it did before. A
+ * record held locally can only be honored by this process.
  *
- * Reads always check both stores and consume from both. A write that timed out
- * may still land in Redis after its local copy was taken, and reading both is
- * what keeps that record single-use.
+ * Every degraded outcome is logged through one rate-limited logger (at most
+ * one line per DEGRADED_LOG_INTERVAL_MS): a record held locally, a read
+ * skipped because Redis is unusable, a read that failed or timed out. A read
+ * that cannot reach Redis treats the result as unexpected (fail-closed).
+ *
+ * A consume takes the local copy and, when Redis is usable, also GETDELs the
+ * Redis key. A write that timed out may still land in Redis after its local
+ * copy was taken, and consuming from both is what keeps that record
+ * single-use. A peek returns the local copy when there is one and otherwise
+ * reads Redis.
  */
 import { getRedis } from './redis';
 
 export const ORPHANED_RESULT_EXPECTATION_TTL_MS = 30 * 60 * 1000;
 
 /**
- * Upper bound on one Redis call. The read runs inside the short org-scoped
- * transaction that handles an orphaned result, so it holds a pooled DB
- * connection while it waits.
+ * Upper bound on a single Redis call, read or write. The reads run inside the
+ * short org-scoped transaction that handles an orphaned result, so each one
+ * holds a pooled DB connection while it waits; a peek followed by a consume can
+ * wait up to twice this.
  */
 export const ORPHANED_RESULT_EXPECTATION_REDIS_TIMEOUT_MS = 500;
+
+/** At most one degraded-mode log line per interval, so an outage cannot flood the log. */
+export const DEGRADED_LOG_INTERVAL_MS = 60_000;
+
+/** Expired local records are swept at most this often; reads check expiry themselves. */
+const LOCAL_PRUNE_INTERVAL_MS = 60_000;
 
 const KEY_PREFIX = 'agent-orphaned-result:';
 
@@ -58,15 +70,32 @@ type ReadyRedis = NonNullable<ReturnType<typeof getRedis>>;
 const localExpectations = new Map<string, OrphanedResultExpectation>();
 /** Writes still in flight, so a read on this process never overtakes its own record. */
 const pendingRecords = new Map<string, Promise<void>>();
-let fallbackLogged = false;
+let lastLocalPruneAt = Number.NEGATIVE_INFINITY;
+let lastDegradedLogAt = Number.NEGATIVE_INFINITY;
+let suppressedDegradedLogs = 0;
 
 const TIMED_OUT = Symbol('timed-out');
 
-/** Test hook: forget every record, in-flight write and the fallback log latch. */
+/** Test hook: forget every record, in-flight write and the log rate-limit window. */
 export function resetOrphanedResultExpectationsForTests(): void {
   localExpectations.clear();
   pendingRecords.clear();
-  fallbackLogged = false;
+  lastLocalPruneAt = Number.NEGATIVE_INFINITY;
+  lastDegradedLogAt = Number.NEGATIVE_INFINITY;
+  suppressedDegradedLogs = 0;
+}
+
+function logDegraded(level: 'warn' | 'error', message: string): void {
+  const now = Date.now();
+  if (now - lastDegradedLogAt < DEGRADED_LOG_INTERVAL_MS) {
+    suppressedDegradedLogs += 1;
+    return;
+  }
+  const suppressed = suppressedDegradedLogs;
+  lastDegradedLogAt = now;
+  suppressedDegradedLogs = 0;
+  const tail = suppressed > 0 ? ` (${suppressed} similar event(s) suppressed since the last report)` : '';
+  console[level](`[OrphanedResultExpectations] ${message}${tail}`);
 }
 
 function readyRedis(): { redis: ReadyRedis } | { reason: string } {
@@ -80,7 +109,8 @@ function readyRedis(): { redis: ReadyRedis } | { reason: string } {
   if (!redis) return { reason: 'no Redis client' };
   // `wait` is the lazy client before its first command, which connects it. A
   // client that is connecting, reconnecting or closed is skipped: its offline
-  // queue would hold every call for as long as the retry strategy runs.
+  // queue would hold each call until the per-request retry limit runs out
+  // (several seconds), far past the timeout above.
   if (redis.status !== 'ready' && redis.status !== 'wait') {
     return { reason: `Redis client is ${redis.status}` };
   }
@@ -105,7 +135,13 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function live(expectation: OrphanedResultExpectation | null | undefined): OrphanedResultExpectation | null {
+  return expectation && expectation.expiresAt > Date.now() ? expectation : null;
+}
+
 function pruneLocal(now = Date.now()): void {
+  if (now - lastLocalPruneAt < LOCAL_PRUNE_INTERVAL_MS) return;
+  lastLocalPruneAt = now;
   for (const [key, expectation] of localExpectations) {
     if (expectation.expiresAt <= now) localExpectations.delete(key);
   }
@@ -114,11 +150,10 @@ function pruneLocal(now = Date.now()): void {
 function holdLocally(key: string, expectation: OrphanedResultExpectation, reason: string): void {
   pruneLocal();
   localExpectations.set(key, expectation);
-  if (fallbackLogged) return;
-  fallbackLogged = true;
-  console.warn(
-    `[OrphanedResultExpectations] ${reason}; holding dispatch records in-process until a Redis write succeeds. `
-      + 'A result that reaches another API replica in that window is rejected as unexpected.',
+  logDegraded(
+    'warn',
+    `${reason}; holding dispatch records in-process. A result that reaches another API replica `
+      + 'for one of them is rejected as unexpected.',
   );
 }
 
@@ -133,9 +168,7 @@ async function writeExpectation(key: string, expectation: OrphanedResultExpectat
     const outcome = await withTimeout(ready.redis.set(key, JSON.stringify(expectation), 'PX', ttlMs));
     if (outcome === TIMED_OUT) {
       holdLocally(key, expectation, `Redis write timed out after ${ORPHANED_RESULT_EXPECTATION_REDIS_TIMEOUT_MS} ms`);
-      return;
     }
-    fallbackLogged = false;
   } catch (err) {
     holdLocally(key, expectation, `Redis write failed: ${errorMessage(err)}`);
   }
@@ -154,9 +187,11 @@ export function recordOrphanedResultExpectation(
   const key = orphanedResultExpectationKey(expectation.agentId, commandId);
   const write = writeExpectation(key, expectation);
   pendingRecords.set(key, write);
-  void write.finally(() => {
+  const settle = () => {
     if (pendingRecords.get(key) === write) pendingRecords.delete(key);
-  });
+  };
+  // Both handlers, so even a future rejection here could never go unhandled.
+  void write.then(settle, settle);
   return write;
 }
 
@@ -191,29 +226,26 @@ async function readRemote(
   key: string,
 ): Promise<OrphanedResultExpectation | null> {
   const ready = readyRedis();
-  // Nothing to report: whatever this process recorded during the outage is in
-  // the local store, and the caller's own rejection log covers a miss.
-  if ('reason' in ready) return null;
+  if ('reason' in ready) {
+    // A record another replica wrote (or this one wrote before the outage) may
+    // be sitting in Redis; this process cannot see it.
+    logDegraded('warn', `${operation} skipped Redis (${ready.reason}); results recorded there are treated as unexpected`);
+    return null;
+  }
   try {
     const raw = await withTimeout(operation === 'peek' ? ready.redis.get(key) : ready.redis.getdel(key));
     if (raw === TIMED_OUT) {
-      console.error(
-        `[OrphanedResultExpectations] ${operation} timed out after ${ORPHANED_RESULT_EXPECTATION_REDIS_TIMEOUT_MS} ms at ${key}; `
-          + 'treating the result as unexpected',
+      logDegraded(
+        'error',
+        `${operation} timed out after ${ORPHANED_RESULT_EXPECTATION_REDIS_TIMEOUT_MS} ms at ${key}; treating the result as unexpected`,
       );
       return null;
     }
     return typeof raw === 'string' ? parseStored(raw, agentId, key) : null;
   } catch (err) {
-    console.error(
-      `[OrphanedResultExpectations] ${operation} failed at ${key}: ${errorMessage(err)}; treating the result as unexpected`,
-    );
+    logDegraded('error', `${operation} failed at ${key}: ${errorMessage(err)}; treating the result as unexpected`);
     return null;
   }
-}
-
-function live(expectation: OrphanedResultExpectation | null | undefined): OrphanedResultExpectation | null {
-  return expectation && expectation.expiresAt > Date.now() ? expectation : null;
 }
 
 /** The record for `agentId` + `commandId`, left in place; null when there is none. */
@@ -223,8 +255,7 @@ export async function peekOrphanedResultExpectation(
 ): Promise<OrphanedResultExpectation | null> {
   const key = orphanedResultExpectationKey(agentId, commandId);
   await pendingRecords.get(key);
-  pruneLocal();
-  const local = localExpectations.get(key);
+  const local = live(localExpectations.get(key));
   if (local) return local;
   return live(await readRemote('peek', agentId, key));
 }
@@ -244,5 +275,5 @@ export async function consumeOrphanedResultExpectation(
   const local = localExpectations.get(key) ?? null;
   localExpectations.delete(key);
   const remote = await readRemote('consume', agentId, key);
-  return live(local ?? remote);
+  return live(local) ?? live(remote);
 }
