@@ -7,20 +7,24 @@
  * that a brief always pushes and ignores quiet hours. Runs in the W06
  * 15-minute nudge sweep lane beside the digest.
  *
- * Lock-screen safety: the title and body carry counts and concern summaries
- * Wisp itself wrote; this file never adds org or device names of its own.
+ * Lock-screen safety: the title and body carry counts, concern summaries Wisp
+ * itself wrote and, for a device or org subject only, that subject's own name
+ * as the grant's live ceiling resolves it (#11428). Free text that is not
+ * Wisp's (a ticket, quote or alert title) never reaches the body.
  */
-import { and, eq, gt, inArray, or } from 'drizzle-orm';
+import { and, eq, gt, inArray, or, sql } from 'drizzle-orm';
 import { CONCERN_SEVERITIES, resolveBriefTimezone, resolveWispNudgePrefs } from '@breeze/shared';
-import type { BriefSection, Concern, ConcernSeverity } from '@breeze/shared';
+import type { BriefSection, Concern, ConcernSeverity, ConcernSubjectKind, WispEntityKind } from '@breeze/shared';
 import { wispEnabled } from '../../config/env';
 import { db } from '../../db';
+import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { wispGrants } from '../../db/schema/wisp';
 import { captureException } from '../sentry';
 import { listActivity } from './activity';
 import { spendSummary } from './budget';
 import { listConcernsForCeiling } from './concerns';
-import { GrantInactiveError, inSystemContext, resolveGrantCeiling } from './grantAuthority';
+import { createEntityResolver, isResolveFailure } from './entityRefs';
+import { GrantInactiveError, inSystemContext, resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
 import type { SYSTEM_PAUSE_REASONS } from './grants';
 import { notifyUser } from './notifyUser';
 import { mobileDeepLink } from './nudgeLinks';
@@ -43,7 +47,10 @@ const PAUSE_REASON_COPY: Record<SystemPauseReason, string> = {
 };
 const SYSTEM_PAUSE_REASON_VALUES = Object.keys(PAUSE_REASON_COPY) as SystemPauseReason[];
 
-const BODY_ITEM_MAX = 40;
+/** One body item's problem text, in code points with the ellipsis (#11428; was 40). */
+const BODY_ITEM_MAX = 90;
+/** The subject name that may lead a body item. */
+const BODY_LABEL_MAX = 40;
 const BODY_ITEMS = 3;
 const SECTION_LINES_MAX = 10;
 const ACTIVITY_LIMIT = 100;
@@ -122,18 +129,128 @@ export function briefDue(
 // buildBrief (deterministic)
 // ---------------------------------------------------------------------------
 
-function truncate(s: string, max: number): string {
-  const chars = [...s.replace(/\s+/g, ' ').trim()];
-  return chars.length <= max ? chars.join('') : `${chars.slice(0, max - 1).join('')}…`;
+const flatten = (s: string): string => s.replace(/\s+/g, ' ').trim();
+
+/**
+ * At most `max` code points, the ellipsis included, cut back to the last whole
+ * word (a single word longer than half the room is cut where it falls).
+ */
+function cutAtWord(s: string, max: number): string {
+  const chars = [...s];
+  if (chars.length <= max) return s;
+  const head = chars.slice(0, max - 1).join('');
+  const space = head.lastIndexOf(' ');
+  const wordEndsAtCut = chars[max - 1] === ' ';
+  const cut = wordEndsAtCut || space < head.length / 2 ? head : head.slice(0, space);
+  return `${cut.replace(/[\s,;:–—-]+$/u, '')}…`;
+}
+
+/** The summary's first sentence, without its full stop. A `.` inside `v0.127.0` or `2.5` does not end one. */
+function firstSentence(summary: string): string {
+  const flat = flatten(summary);
+  const end = /[.!?](?=\s|$)/.exec(flat);
+  const sentence = end ? flat.slice(0, end.index + 1) : flat;
+  return sentence.replace(/\.$/, '');
+}
+
+/** One lock-screen body item: `<subject name>: <problem>`, or the problem alone when the summary already leads with the name. */
+function bodyItem(c: Concern, label: string | undefined): string {
+  const problem = cutAtWord(firstSentence(c.summary), BODY_ITEM_MAX);
+  if (!label || flatten(c.summary).toLocaleLowerCase().startsWith(label.toLocaleLowerCase())) return problem;
+  return `${cutAtWord(label, BODY_LABEL_MAX)}: ${problem}`;
 }
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 const rank = (c: Concern) => SEVERITY_DESC.indexOf(c.severity);
+/** HIGH first, then the most recently updated. */
+const byUrgency = (a: Concern, b: Concern) => rank(a) - rank(b) || Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
 const usd = (cents: number): string => `$${(cents / 100).toFixed(2)}`;
 
 /** A live readiness concern (assessmentFinalizer `applyReadiness`): readiness subject (#10386), `evidence.readiness`. */
 function isReadinessGap(c: Concern): boolean {
   return c.subject.kind === 'readiness' && typeof c.evidence?.readiness === 'object' && c.evidence.readiness !== null;
+}
+
+/** #11428: a concern needs you when an approval card waits on it, or when it is open and HIGH. */
+function needsYou(c: Concern): boolean {
+  return Boolean(c.approvalIntentId) || (c.status === 'open' && c.severity === 'high');
+}
+
+/** #11428: what "N open" counts and the body lists — open (not snoozed), and not Wisp's own readiness note. */
+function isOpenConcern(c: Concern): boolean {
+  return c.status === 'open' && c.subject.kind !== 'readiness';
+}
+
+/**
+ * Subjects whose own name may lead a body item: identifiers, never free text
+ * (a ticket subject stays off the lock screen, as in ticket push D11).
+ */
+const NAMED_SUBJECTS: Partial<Record<ConcernSubjectKind, WispEntityKind>> = { device: 'device', org: 'organization' };
+
+/**
+ * Each item's subject name, read through the ceiling-checked entity resolver.
+ * A refusal or a failed read leaves that item without a name, not the brief
+ * unsent.
+ */
+async function subjectNames(ceiling: GrantCeiling, items: Concern[]): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  const named = items.filter((c) => NAMED_SUBJECTS[c.subject.kind]);
+  if (named.length === 0) return names;
+  const resolve = createEntityResolver({ ceiling });
+  for (const c of named) {
+    try {
+      const entity = await resolve({ kind: NAMED_SUBJECTS[c.subject.kind]!, id: c.subject.id });
+      if (!isResolveFailure(entity)) names.set(c.id, entity.label);
+    } catch (error) {
+      console.warn('[wisp/brief] subject name read failed; the item goes without it', { grantId: ceiling.grantId, concernId: c.id, error });
+      captureException(error, undefined, { grantId: ceiling.grantId, concernId: c.id, area: 'wisp_brief' });
+    }
+  }
+  return names;
+}
+
+/** The `ai_agent_runs.profile` of an assessment (activity.ts reads the same literal). */
+const ASSESSMENT_PROFILE = 'assessment';
+/**
+ * The error code of a `skipped` assessment that #11423's deterministic
+ * "nothing changed" gate is to record. Until it ships no run carries it, and
+ * the skipped count is 0.
+ */
+const NO_CHANGES_ERROR_CODE = 'no_changes';
+
+/**
+ * Orgs whose runs this ceiling may read — the concerns.ts / activity.ts
+ * `readableOrgIds` rule: a site-restricted ceiling cannot be shown to cover an
+ * org-level row, so those orgs read nothing.
+ */
+function readableOrgIds(ceiling: GrantCeiling): string[] {
+  if (ceiling.siteIds !== null) return [];
+  return [...ceiling.orgIds].filter((id) => (ceiling.orgTerms.get(id)?.siteIds ?? null) === null);
+}
+
+/**
+ * The grant's assessment runs since `since`, split into those that ran and
+ * those #11423 skipped because nothing had changed. Counted in SQL, so the
+ * Overnight line is not capped by the activity feed's page.
+ */
+async function assessmentCounts(ceiling: GrantCeiling, since: Date): Promise<{ ran: number; skipped: number }> {
+  const readable = readableOrgIds(ceiling);
+  if (readable.length === 0) return { ran: 0, skipped: 0 };
+  // IS NOT DISTINCT FROM: a NULL error_code is "not skipped", never unknown (which FILTER would drop from both counts).
+  const skipped = sql`(${aiAgentRuns.status} = 'skipped' AND ${aiAgentRuns.errorCode} IS NOT DISTINCT FROM ${NO_CHANGES_ERROR_CODE})`;
+  const [row] = await inSystemContext(() => db
+    .select({
+      ran: sql<number>`count(*) FILTER (WHERE NOT ${skipped})::int`,
+      skipped: sql<number>`count(*) FILTER (WHERE ${skipped})::int`,
+    })
+    .from(aiAgentRuns)
+    .where(and(
+      eq(aiAgentRuns.grantId, ceiling.grantId),
+      eq(aiAgentRuns.profile, ASSESSMENT_PROFILE),
+      inArray(aiAgentRuns.orgId, readable),
+      sql`COALESCE(${aiAgentRuns.finishedAt}, ${aiAgentRuns.queuedAt}) >= ${since.toISOString()}::timestamptz`,
+    )));
+  return { ran: Number(row?.ran ?? 0), skipped: Number(row?.skipped ?? 0) };
 }
 
 /**
@@ -159,42 +276,46 @@ export async function buildBrief(
   const ceiling = await resolveGrantCeiling(grantId, grant.currentRevisionId);
   const since = opts.since ?? new Date(now.getTime() - DEFAULT_LOOKBACK_MS);
 
-  const [live, resolved, activity, spend, watches] = await Promise.all([
+  const [live, resolved, activity, spend, watches, runs] = await Promise.all([
     listConcernsForCeiling(ceiling, { status: ['open', 'snoozed'] }),
     listConcernsForCeiling(ceiling, { status: ['resolved'] }),
     listActivity(ceiling, { limit: ACTIVITY_LIMIT }),
     spendSummary(grantId, now),
     listWatches(ceiling),
+    assessmentCounts(ceiling, since),
   ]);
 
-  const sorted = [...live].sort((a, b) => rank(a) - rank(b));
-  const needsYou = sorted.filter((c) => c.approvalIntentId);
-  const openOnly = sorted.filter((c) => c.status === 'open');
+  const sorted = [...live].sort(byUrgency);
+  const needing = sorted.filter(needsYou);
+  const open = sorted.filter(isOpenConcern);
 
-  const title = live.length === 0
+  const title = needing.length === 0 && open.length === 0
     ? 'Good morning — nothing needs you'
-    : `Good morning — ${needsYou.length} need you, ${live.length} open`;
-  const body = openOnly.length === 0
-    ? 'Nothing needs you right now.'
-    : openOnly.slice(0, BODY_ITEMS).map((c) => truncate(c.summary, BODY_ITEM_MAX)).join(' · ');
+    : `Good morning — ${needing.length} need you, ${open.length} open`;
+  const items = open.slice(0, BODY_ITEMS);
+  const names = await subjectNames(ceiling, items);
+  const body = items.length > 0
+    ? items.map((c) => bodyItem(c, names.get(c.id))).join(' · ')
+    // Only snoozed concerns with an approval card waiting: the title already counts them.
+    : needing.length > 0 ? 'Open Wisp to review.' : 'Nothing needs you right now.';
 
   const sections: BriefSection[] = [];
   const push = (heading: string, lines: string[]) => {
     if (lines.length > 0) sections.push({ heading, lines: lines.slice(0, SECTION_LINES_MAX) });
   };
 
-  push('Needs you', needsYou.map((c) => c.summary));
+  push('Needs you', needing.map((c) => c.summary));
   push('Open concerns', SEVERITY_DESC.flatMap((sev) => {
-    const n = live.filter((c) => c.severity === sev).length;
+    const n = open.filter((c) => c.severity === sev).length;
     return n > 0 ? [`${sev}: ${n}`] : [];
   }));
 
   const recent = activity.items.filter((i) => new Date(i.at).getTime() >= since.getTime());
-  const assessments = recent.filter((i) => i.kind === 'assessment').length;
   const specialists = recent.filter((i) => i.kind === 'specialist').length;
   const resolvedCount = resolved.filter((c) => c.resolvedAt && new Date(c.resolvedAt).getTime() >= since.getTime()).length;
   push('Overnight', [
-    ...(assessments > 0 ? [plural(assessments, 'assessment run', 'assessments run')] : []),
+    ...(runs.ran > 0 ? [plural(runs.ran, 'assessment run', 'assessments run')] : []),
+    ...(runs.skipped > 0 ? [`${plural(runs.skipped, 'assessment skipped', 'assessments skipped')} — nothing had changed`] : []),
     ...(specialists > 0 ? [plural(specialists, 'specialist launched', 'specialists launched')] : []),
     ...(resolvedCount > 0 ? [plural(resolvedCount, 'concern resolved', 'concerns resolved')] : []),
   ]);

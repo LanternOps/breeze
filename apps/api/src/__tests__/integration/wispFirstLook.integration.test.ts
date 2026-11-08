@@ -9,7 +9,9 @@
  *   - a grant past its first day or a paused grant posts nothing;
  *   - #11145: a batch nothing finished posts one couldn't-look post, which a later
  *     look does not block;
- *   - the browser zone lands in its own column and the resolver reads it.
+ *   - the browser zone lands in its own column and the resolver reads it;
+ *   - #11428: the brief's Overnight counts split the grant's real runs into ran
+ *     and skipped-because-nothing-changed.
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
@@ -34,6 +36,7 @@ import {
   postFirstLookIfDone,
   resweepFirstLookPosts,
 } from '../../services/wisp/firstLook';
+import { buildBrief } from '../../services/wisp/brief';
 import { resolveGrantCeiling } from '../../services/wisp/grantAuthority';
 import { buildHomeSections } from '../../services/wisp/home';
 import { loadBriefSchedule, saveBrowserTimezone, upsertNudgePrefs } from '../../services/wisp/nudgePreferences';
@@ -464,5 +467,32 @@ describe('brief timezone (real Postgres)', () => {
     expect(schedule).toEqual({ timeLocal: '08:00', timezone: 'Asia/Tokyo', browserTimezone: 'Europe/Berlin' });
     const [row] = await sys(() => db.select().from(wispNudgePreferences).where(eq(wispNudgePreferences.userId, t.grantorId)));
     expect(row!.briefTimezone).toBe('Asia/Tokyo');
+  });
+});
+
+describe('brief overnight assessment counts (real Postgres, #11428)', () => {
+  it('splits the grant\'s runs since the last brief into ran and skipped-because-nothing-changed', async () => {
+    const t = await seedTenant(2);
+    const since = new Date(Date.now() - 60 * 60_000);
+    await seedRun(t, t.orgs[0]!, 'completed');
+    await seedRun(t, t.orgs[1]!, 'failed', 'model_error');
+    // A skip with no error code is not #11423's nothing-changed gate (FILTER must not drop the NULL).
+    await seedRun(t, t.orgs[0]!, 'skipped');
+    await seedRun(t, t.orgs[0]!, 'skipped', 'no_changes');
+    await seedRun(t, t.orgs[1]!, 'skipped', 'no_changes');
+    await seedRun(t, t.orgs[0]!, 'queued'); // no finished_at: placed by its queued_at
+    // Before the last brief: not overnight.
+    await sys(() => db.insert(aiAgentRuns).values({
+      agentId: t.agentId, orgId: t.orgs[0]!, triggerKind: 'schedule', dedupeKey: `seed:${randomUUID()}`, modeAtStart: 'shadow',
+      policySnapshot: {} as never, profile: 'assessment', status: 'skipped', errorCode: 'no_changes',
+      queuedAt: new Date(since.getTime() - 120_000), finishedAt: new Date(since.getTime() - 60_000),
+      grantId: t.grantId, grantRevisionId: t.revisionId,
+    } as never));
+
+    const brief = await buildBrief(t.grantId, new Date(), { since });
+    expect(brief.sections.find((s) => s.heading === 'Overnight')?.lines).toEqual([
+      '4 assessments run',
+      '2 assessments skipped — nothing had changed',
+    ]);
   });
 });
