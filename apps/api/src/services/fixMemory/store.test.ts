@@ -390,7 +390,7 @@ describe('deleteDeviceFixOutcomes — a device delete stale-marks the identities
   const tx = { execute: vi.fn() };
   const outcome = (over: Record<string, unknown> = {}) => ({
     partner_id: 'p-1', signature_version: 1, signature_key: 'a'.repeat(64), os_type: 'windows', fix_identity: 'script_version:v1',
-    counted_at: new Date('2026-12-01T00:00:00Z'), ...over,
+    counted_at: new Date('2026-12-01T00:00:00Z'), recount_requested_at: null, ...over,
   });
   beforeEach(() => { tx.execute.mockReset().mockResolvedValue([]); });
 
@@ -407,7 +407,7 @@ describe('deleteDeviceFixOutcomes — a device delete stale-marks the identities
     const stmts = tx.execute.mock.calls.map((c) => flatten(c[0]));
     // 1 DELETE ... RETURNING, 2 advisory locks, 2 marks.
     expect(stmts).toHaveLength(5);
-    expect(stmts[0]!.text.replace(/\s+/g, ' ').toLowerCase()).toMatch(/delete from fix_outcomes where device_id = returning partner_id, signature_version, signature_key, os_type, fix_identity, counted_at/);
+    expect(stmts[0]!.text.replace(/\s+/g, ' ').toLowerCase()).toMatch(/delete from fix_outcomes where device_id = returning partner_id, signature_version, signature_key, os_type, fix_identity, counted_at, recount_requested_at/);
     expect(stmts[0]!.params).toEqual(['dev-1']);
     const keyA = identityLockKey({ partnerId: 'p-1', signatureVersion: 1, signatureKey: 'a'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v1' });
     const keyB = identityLockKey({ partnerId: 'p-1', signatureVersion: 1, signatureKey: 'b'.repeat(64), osType: 'windows', fixIdentity: 'script_version:v1' });
@@ -425,6 +425,12 @@ describe('deleteDeviceFixOutcomes — a device delete stale-marks the identities
     }
     expect(stmts[3]!.params).toContain('a'.repeat(64));
     expect(stmts[4]!.params).toContain('b'.repeat(64));
+  });
+
+  it('marks the identity of an uncounted attempt that still has a recount pending (a late result re-opened it, #7279)', async () => {
+    // The aggregate still holds the re-opened attempt's old count until its recount runs.
+    tx.execute.mockResolvedValueOnce([outcome({ counted_at: null, recount_requested_at: new Date('2026-12-02T00:00:00Z') })]);
+    expect(await deleteDeviceFixOutcomes(tx, 'dev-1')).toEqual({ deleted: 1, identitiesMarked: 1 });
   });
 
   it('deletes and marks nothing else when the device has no counted outcomes', async () => {
