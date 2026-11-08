@@ -4,11 +4,14 @@
  * engine (W05)", A33, A34).
  *
  *   enqueueAssessment      flag → entitlement → ceiling → org in ceiling →
- *                          budget → createAndEnqueueAgentRun({ grant,
- *                          profile: 'assessment' }). An exhausted budget never
- *                          pauses the grant: the grantor is told once per UTC
- *                          day and the deterministic digest path records the
- *                          event as a low concern instead (no model call).
+ *                          budget → no-changes gate → createAndEnqueueAgentRun({
+ *                          grant, profile: 'assessment' }). An exhausted budget
+ *                          never pauses the grant: the grantor is told once per
+ *                          UTC day and the deterministic digest path records the
+ *                          event as a low concern instead (no model call). A
+ *                          tick or watch with nothing new since the last clean
+ *                          assessment is recorded as a `skipped / no_changes`
+ *                          run, also without a model call (#11423).
  *   loadAssessmentContext  the run's bounded context: thread seed, the org's
  *                          live concerns with this grant's recipient state, a
  *                          five-table digest since the watermark (each read
@@ -30,7 +33,7 @@
  * seam as metricAnomalySubscriber.ts).
  */
 import { createHash } from 'node:crypto';
-import { and, asc, desc, eq, gte, inArray, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import type { Concern, ConcernSeverity, ConcernSubject, ConcernSubjectKind } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { actionIntents } from '../../db/schema/actionIntents';
@@ -40,9 +43,16 @@ import { connectionHealthIncidents } from '../../db/schema/connectionHealth';
 import { organizations } from '../../db/schema/orgs';
 import { tickets } from '../../db/schema/portal';
 import { wispGrants } from '../../db/schema/wisp';
+import { wispConcerns } from '../../db/schema/wispConcerns';
 import { wispEnabled } from '../../config/env';
 import { ASSESSMENT_BUDGET_CENTS_PER_RUN } from '../aiAgents/assessmentProfile';
-import { createAndEnqueueAgentRun, type AgentRunSkipReason } from '../aiAgents/runService';
+import {
+  createAndEnqueueAgentRun,
+  transitionRunStatus,
+  type AgentRunSkipReason,
+  type CreateAgentRunInput,
+  type CreateAgentRunResult,
+} from '../aiAgents/runService';
 import { sanitizeSweepText } from '../aiAgents/runnerPrompt';
 import { hasEntitlement } from '../entitlements';
 import { captureException } from '../sentry';
@@ -238,9 +248,7 @@ export async function enqueueAssessment(
     reason: watermark === null && reason.kind === 'tick' ? { kind: 'onboarding' } : reason,
     watermark: watermark?.toISOString() ?? null,
   };
-  // #1105: admission opens its own context and enqueues after commit, so it
-  // must not run inside a caller's (request or system) context.
-  const result = await runOutsideDbContext(() => createAndEnqueueAgentRun({
+  const admission: CreateAgentRunInput = {
     orgId,
     kind: 'triage',
     triggerKind: 'schedule',
@@ -251,16 +259,220 @@ export async function enqueueAssessment(
       : `wisp-assess-${grantId}-${orgId}-${Date.now()}`,
     triggerRef: { wisp: triggerRef },
     grant: { grantId, grantRevisionId: ceiling.revisionId },
-  }));
+  };
+
+  // #11423: a tick or watch for an org where nothing changed since its last
+  // clean assessment makes no model call (the model was the gate before, and
+  // ~5¢ a run bought "Nothing changed").
+  if (noChangesGateApplies(triggerRef.reason, watermark)) {
+    const since = await lastCleanAssessmentFinish(grantId, orgId);
+    if (since !== null && (await firstChangedDigestSource(ceiling, grantId, orgId, since)) === null) {
+      return recordNoChangesSkip(admission, grantId, ceiling.partnerId, orgId);
+    }
+  }
+
+  // #1105: admission opens its own context and enqueues after commit, so it
+  // must not run inside a caller's (request or system) context.
+  const result = await runOutsideDbContext(() => createAndEnqueueAgentRun(admission));
+  return settleAdmission(result, grantId, ceiling.partnerId, orgId);
+}
+
+/** The admission result → enqueueAssessment's result, with the no-agent readiness bookkeeping. */
+async function settleAdmission(
+  result: CreateAgentRunResult,
+  grantId: string,
+  partnerId: string,
+  orgId: string,
+): Promise<{ runId: string } | { skipped: string }> {
   if (result.created) {
     incWispAssessment('admitted');
-    await clearNoAgentReadiness(ceiling.partnerId, orgId);
+    await clearNoAgentReadiness(partnerId, orgId);
     return { runId: result.run.id };
   }
   // An enabled Triage agent resolved (the skip is something else), so a stale "no agent" concern is false: close it.
-  if (NO_ENABLED_TRIAGE_AGENT_SKIPS.has(result.skipped)) await raiseNoAgentReadiness(grantId, ceiling.partnerId, orgId);
-  else await clearNoAgentReadiness(ceiling.partnerId, orgId);
+  if (NO_ENABLED_TRIAGE_AGENT_SKIPS.has(result.skipped)) await raiseNoAgentReadiness(grantId, partnerId, orgId);
+  else await clearNoAgentReadiness(partnerId, orgId);
   return skipAssessment(result.skipped, 'skipped_admission');
+}
+
+// ---------------------------------------------------------------------------
+// No-changes gate (#11423)
+// ---------------------------------------------------------------------------
+
+/** `ai_agent_runs.error_code` of an assessment skipped because nothing changed. */
+export const NO_CHANGES_ERROR_CODE = 'no_changes';
+const NO_CHANGES_SUMMARY = 'Nothing changed since the last assessment, so Wisp made no model call.';
+
+/** Only these reasons can be skipped. `event` and `onboarding` always run. */
+const NO_CHANGES_GATED_REASONS: ReadonlySet<AssessmentReason['kind']> = new Set(['tick', 'watch']);
+
+/**
+ * Pure. True when this request may be skipped because nothing changed: a tick
+ * or a watch (`reason` as recorded, so a first-look tick is already
+ * `onboarding`) with an earlier clean assessment to compare against. A first
+ * look (no watermark) always runs.
+ */
+export function noChangesGateApplies(reason: AssessmentReason, watermark: Date | null): boolean {
+  return watermark !== null && NO_CHANGES_GATED_REASONS.has(reason.kind);
+}
+
+/** What the gate probes, in probe order. */
+export type DigestChangeSource = 'alerts' | 'tickets' | 'incidents' | 'runs' | 'intents' | 'concerns';
+
+/**
+ * `finished_at` of the latest assessment of (grant, org) that finished
+ * cleanly: the same runs lastAssessmentWatermark reads, so it is the end of
+ * the run the next digest window starts at. null when there is none (or it
+ * has no finish time), and then the gate does not apply.
+ */
+async function lastCleanAssessmentFinish(grantId: string, orgId: string): Promise<Date | null> {
+  const [row] = await sys(() => db
+    .select({ at: sql<Date | string | null>`max(${aiAgentRuns.finishedAt})` })
+    .from(aiAgentRuns)
+    .where(and(
+      eq(aiAgentRuns.grantId, grantId),
+      eq(aiAgentRuns.orgId, orgId),
+      eq(aiAgentRuns.profile, 'assessment'),
+      inArray(aiAgentRuns.status, [...WATERMARK_RUN_STATUSES]),
+      or(isNull(aiAgentRuns.errorCode), ne(aiAgentRuns.errorCode, PARTIALLY_APPLIED_ERROR_CODE)),
+    )), 'wisp.assessment.noChangesAnchor');
+  return toDate(row?.at);
+}
+
+/** Not a row the no-changes gate wrote (null-safe: a null error_code is kept). */
+function notNoChangesSkip(): SQL {
+  return or(
+    ne(aiAgentRuns.status, 'skipped'),
+    isNull(aiAgentRuns.errorCode),
+    ne(aiAgentRuns.errorCode, NO_CHANGES_ERROR_CODE),
+  ) as SQL;
+}
+
+/**
+ * The first digest source with a change since `since` (the last clean
+ * assessment's FINISH), or null when there is none. Each probe uses the
+ * digest's own predicate for its table (loadDigest) and is gated on the same
+ * grantor permission, so a section that would render empty is not probed:
+ *
+ *   alerts     triggered or resolved since
+ *   tickets    updated since
+ *   incidents  opened since, with a view permission inside the ceiling
+ *   runs       queued or finished since — not a no_changes skip, not another
+ *              grant's assessment, not a specialist (depth > 0). Wisp's own
+ *              bookkeeping is not news: counting another grant's runs would
+ *              have two grants on one org wake each other for ever, and a
+ *              specialist's finish is its own `ai.agent.run.completed` event.
+ *   intents    created, or changed status, since
+ *   concerns   (no permission: the run always reads them) updated since,
+ *              unless the last write was an assessment finalizer's — its
+ *              `last_assessed_run_id` names a run that finished at or after
+ *              the write. That is the touch loop that bumps every open
+ *              concern on every run, and the other writes of the run.
+ *              Raises, updates and resolves by people, chat or the
+ *              budget-exhausted path still count.
+ *
+ * Measuring from the FINISH, not the watermark (the start), keeps the last
+ * run's own writes out. The cost: a change that landed while that run was in
+ * flight, after it read its digest, waits for the next change or event. It is
+ * not lost, because a skip never moves the watermark.
+ *
+ * HOOK(#11425): when the digest reads metric anomalies (PR #11470), add the
+ * same predicate here as an `anomalies` source.
+ */
+async function firstChangedDigestSource(
+  ceiling: GrantCeiling,
+  grantId: string,
+  orgId: string,
+  since: Date,
+): Promise<DigestChangeSource | null> {
+  const may = (section: keyof typeof DIGEST_SECTION_PERMISSION) =>
+    ceilingAllows(ceiling, orgId, DIGEST_SECTION_PERMISSION[section]);
+  const any = async (rows: Promise<unknown[]>) => (await rows).length > 0;
+  return sys(async () => {
+    if (may('alerts') && await any(db.select({ id: alerts.id }).from(alerts)
+      .where(and(eq(alerts.orgId, orgId), or(gte(alerts.triggeredAt, since), gte(alerts.resolvedAt, since))))
+      .limit(1))) return 'alerts';
+    if (may('tickets') && await any(db.select({ id: tickets.id }).from(tickets)
+      .where(and(eq(tickets.orgId, orgId), gte(tickets.updatedAt, since)))
+      .limit(1))) return 'tickets';
+    if (may('incidents')) {
+      const present = await db
+        .selectDistinct({ viewPermission: connectionHealthIncidents.viewPermission })
+        .from(connectionHealthIncidents)
+        .where(and(eq(connectionHealthIncidents.orgId, orgId), gte(connectionHealthIncidents.openedAt, since)));
+      if (present.some((p) => ceilingAllows(ceiling, orgId, p.viewPermission))) return 'incidents';
+    }
+    if (may('runs') && await any(db.select({ id: aiAgentRuns.id }).from(aiAgentRuns)
+      .where(and(
+        eq(aiAgentRuns.orgId, orgId),
+        or(gte(aiAgentRuns.queuedAt, since), gt(aiAgentRuns.finishedAt, since)),
+        eq(aiAgentRuns.depth, 0),
+        or(ne(aiAgentRuns.profile, 'assessment'), and(eq(aiAgentRuns.grantId, grantId), notNoChangesSkip())),
+      ))
+      .limit(1))) return 'runs';
+    if (may('intents') && await any(db.select({ id: actionIntents.id }).from(actionIntents)
+      .where(and(
+        eq(actionIntents.orgId, orgId),
+        or(gte(actionIntents.createdAt, since), gt(actionIntents.statusChangedAt, since)),
+      ))
+      .limit(1))) return 'intents';
+    if (await any(db.select({ id: wispConcerns.id }).from(wispConcerns)
+      .where(and(
+        eq(wispConcerns.orgId, orgId),
+        gte(wispConcerns.updatedAt, since),
+        sql`NOT EXISTS (SELECT 1 FROM ai_agent_runs r
+                         WHERE r.id = ${wispConcerns.lastAssessedRunId}
+                           AND r.profile = 'assessment'
+                           AND r.finished_at >= ${wispConcerns.updatedAt})`,
+      ))
+      .limit(1))) return 'concerns';
+    return null;
+  }, 'wisp.assessment.noChangesProbe');
+}
+
+/**
+ * Record the skip as an `ai_agent_runs` row — `skipped`, `no_changes`, zero
+ * cost, never started — so the brief can count what was saved (#11428) and
+ * the round-robin (wake.ts loadLastAssessedByOrg) moves on to the next org.
+ *
+ * The row goes through admission like any run (agent, policy snapshot, caps,
+ * dedupe, the no-agent readiness concern), with the enqueue deferred and
+ * never called; the queued → skipped transition is the one terminal write
+ * path (runService.terminalization contract). If that transition fails the
+ * admitted run is enqueued after all: an extra model call, never a row left
+ * `queued` with no job holding the org's concurrency slot.
+ */
+async function recordNoChangesSkip(
+  admission: CreateAgentRunInput,
+  grantId: string,
+  partnerId: string,
+  orgId: string,
+): Promise<{ runId: string } | { skipped: string }> {
+  const result = await runOutsideDbContext(() => createAndEnqueueAgentRun(admission, { deferEnqueue: true }));
+  if (!result.created) return settleAdmission(result, grantId, partnerId, orgId);
+  const runId = result.run.id;
+  let recorded = false;
+  try {
+    recorded = await runOutsideDbContext(() => transitionRunStatus(runId, 'queued', 'skipped', {
+      errorCode: NO_CHANGES_ERROR_CODE,
+      summary: NO_CHANGES_SUMMARY,
+      finishedAt: new Date(),
+    }));
+    if (!recorded) console.warn('[wisp.assessment] no_changes skip lost its queued → skipped CAS; enqueueing the run', { runId, grantId, orgId });
+  } catch (err) {
+    console.error('[wisp.assessment] could not record a no_changes skip; enqueueing the run', {
+      runId, grantId, orgId, error: err instanceof Error ? err.message : String(err),
+    });
+    captureException(err, undefined, { component: 'wisp', op: 'wisp.assessment.noChangesSkip', runId, orgId });
+  }
+  if (recorded) {
+    incWispAssessment('skipped_no_changes');
+    await clearNoAgentReadiness(partnerId, orgId);
+    return { skipped: NO_CHANGES_ERROR_CODE };
+  }
+  if (!result.enqueue) throw new Error(`createAndEnqueueAgentRun returned no deferred enqueue for run ${runId}`);
+  const enqueue = result.enqueue;
+  return settleAdmission(await runOutsideDbContext(() => enqueue()), grantId, partnerId, orgId);
 }
 
 /**
@@ -538,7 +750,9 @@ async function loadDigest(
     const runRows = !may('runs') ? [] : await db
       .select({ id: aiAgentRuns.id, profile: aiAgentRuns.profile, status: aiAgentRuns.status, summary: aiAgentRuns.summary })
       .from(aiAgentRuns)
-      .where(and(eq(aiAgentRuns.orgId, orgId), ne(aiAgentRuns.id, currentRunId), gte(aiAgentRuns.queuedAt, since)))
+      // #11423: a no_changes skip carries nothing to read, and skips do not
+      // move the watermark, so they would crowd out the real runs.
+      .where(and(eq(aiAgentRuns.orgId, orgId), ne(aiAgentRuns.id, currentRunId), gte(aiAgentRuns.queuedAt, since), notNoChangesSkip()))
       .orderBy(desc(aiAgentRuns.queuedAt))
       .limit(DIGEST_ROW_LIMIT);
     const intentRows = !may('intents') ? [] : await db
