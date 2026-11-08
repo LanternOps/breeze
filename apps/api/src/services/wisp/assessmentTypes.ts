@@ -66,8 +66,12 @@ export type AssessmentDigest = {
    * (announced, not suppressed by their episode, episode still open) plus the
    * one that triggered the run, whatever its status. The trigger comes first,
    * then the most recently seen. `openedAt` is the incident's `first_seen_at`.
-   * `status` is its episode's status (`open` | `resolved` | `dismissed`).
-   * `peakScore` is the detector's raw score: an unbounded magnitude, not 0–1.
+   * `status` is its episode's status (`open` | `resolved` | `dismissed`), or
+   * `unknown` when the incident has no episode row. `peakScore` is the
+   * detector's raw score: an unbounded magnitude, not 0–1.
+   *
+   * null = not read: the grantor lacks `devices:read`, or the read failed
+   * (reported to Sentry). That is distinct from `[]` (read, none open).
    */
   anomalies: {
     id: string;
@@ -78,7 +82,7 @@ export type AssessmentDigest = {
     peakScore: number;
     openedAt: string;
     status: string;
-  }[];
+  }[] | null;
 };
 
 /** One watch kind's serviceability for an org (Task 15, w00 A33). */

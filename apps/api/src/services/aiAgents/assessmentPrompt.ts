@@ -52,6 +52,9 @@ export interface AgentRunAssessmentPromptContext {
 
 export const ASSESSMENT_NO_CHANGES_LINE = 'No changes since the last assessment.';
 export const ASSESSMENT_NO_ANOMALIES_LINE = 'No open metric anomalies.';
+/** #11425: the section was not read (no devices:read, or the read failed) — never "none". */
+export const ASSESSMENT_ANOMALIES_NOT_READ_LINE =
+  'Metric anomalies were not read for this assessment, so this list says nothing about whether any are open.';
 
 /**
  * #11425: the model read "incident" (connection-health rows, then the
@@ -131,8 +134,8 @@ function digestLines(d: AssessmentDigest): string[] {
   return [
     ...d.alerts.map((a) => `alert ${a.id} | ${t(a.severity, 16)} | ${t(a.status, 32)} | ${t(a.title) || 'untitled'} | ${a.at}`),
     ...d.tickets.map((k) => `ticket ${t(k.number, 32) || k.id} | ${t(k.status, 32)} | ${t(k.title) || 'untitled'} | ${k.updatedAt}`),
-    // #11425: "integration", so a connection-health row is never read as a
-    // security incident (list_incidents).
+    // #11425: prefixed "integration" so a connection-health row is not read
+    // as a security incident (list_incidents).
     ...d.incidents.map((i) => `integration incident ${i.id} | ${t(i.sourceKind, 48)} | ${t(i.condition)} | ${i.openedAt}`),
     ...d.runs.map((r) => `run ${r.id} | ${t(r.profile, 32)} | ${t(r.status, 32)} | ${t(r.summary) || '(no summary)'}`),
     ...d.intents.map((x) => `approval ${x.id} | ${t(x.toolName, 64)} | ${t(x.status, 32)}`),
@@ -144,7 +147,7 @@ function formatScore(score: number): string {
   return Number.isFinite(score) ? String(Math.round(score * 100) / 100) : 'unknown';
 }
 
-function anomalyLines(anomalies: AssessmentDigest['anomalies']): string[] {
+function anomalyLines(anomalies: NonNullable<AssessmentDigest['anomalies']>): string[] {
   const t = (value: string | null | undefined, max = TITLE_MAX) => sanitizeSweepText(value ?? '', max);
   return anomalies.map((x) => [
     `anomaly incident ${x.id}`,
@@ -229,10 +232,11 @@ export function buildAssessmentTaskPrompt(ctx: AgentRunPromptContext): string {
       : a?.firstLook ? ASSESSMENT_FIRST_LOOK_EMPTY_LINE : ASSESSMENT_NO_CHANGES_LINE,
   ));
 
-  // (5b) Metric anomalies (#11425): current state, not a since-watermark
-  // change — the org's open anomaly incidents plus the one that triggered
-  // this run. Always rendered, so the pointer line never names a missing section.
-  const anomalies = a ? anomalyLines(a.digest.anomalies) : [];
+  // Metric anomalies (#11425): current state, not a since-watermark change —
+  // the org's open anomaly incidents plus the one that triggered this run.
+  // Always rendered, so the pointer line never names a missing section.
+  const anomalyRows = a?.digest.anomalies ?? [];
+  const anomalies = anomalyLines(anomalyRows);
   lines.push('');
   lines.push(
     'Metric anomalies (open now, plus the one that triggered this assessment; '
@@ -241,7 +245,9 @@ export function buildAssessmentTaskPrompt(ctx: AgentRunPromptContext): string {
   lines.push(ANOMALY_TOOLS_LINE);
   lines.push(wrapUntrustedData(
     'wisp-metric-anomalies',
-    anomalies.length > 0 ? anomalies.join('\n') : ASSESSMENT_NO_ANOMALIES_LINE,
+    a && a.digest.anomalies === null
+      ? ASSESSMENT_ANOMALIES_NOT_READ_LINE
+      : anomalies.length > 0 ? anomalies.join('\n') : ASSESSMENT_NO_ANOMALIES_LINE,
   ));
 
   // Amendments (w00 A33/A34): readiness, then the person's nudge feedback.

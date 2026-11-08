@@ -14,7 +14,7 @@ const h = vi.hoisted(() => {
     readonly code = 'concern_subject_held' as const;
     constructor(public readonly signature: string, public readonly heldByConcernId: string) { super('held'); }
   }
-  const results: unknown[][] = [];
+  const results: (unknown[] | Error)[] = [];
   const queries: { table: unknown; where: unknown[]; orderBy: unknown[] }[] = [];
   const chain = (): Record<string, unknown> => {
     const q: { table: unknown; where: unknown[]; orderBy: unknown[] } = { table: null, where: [], orderBy: [] };
@@ -1192,7 +1192,7 @@ describe('loadAssessmentContext', () => {
       const digestTables = [alerts, tickets, connectionHealthIncidents, aiAgentRuns, actionIntents];
       expect(digestTables.filter((t) => tablesQueried().has(t))).toEqual([tickets]);
       expect(ctx!.digest).toEqual({
-        alerts: [], incidents: [], runs: [], intents: [], anomalies: [],
+        alerts: [], incidents: [], runs: [], intents: [], anomalies: null,
         tickets: [{ id: 't1', number: null, title: 'Printer', status: 'open', updatedAt: '2026-10-24T07:30:00.000Z' }],
       });
     });
@@ -1334,12 +1334,55 @@ describe('loadAssessmentContext', () => {
       expect(ctx!.digest.anomalies).toEqual([]);
     });
 
-    it('is gated on devices:read (the anomalies route): without it no anomaly query runs and the section is empty', async () => {
+    it('is gated on devices:read (the anomalies route): without it no anomaly query runs and the section is null (not read)', async () => {
       h.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: keys() }));
       queueDigest();
       const ctx = await loadAssessmentContext(anomalyRun());
       expect(tablesQueried().has(metricAnomalyIncidents)).toBe(false);
-      expect(ctx!.digest.anomalies).toEqual([]);
+      expect(ctx!.digest.anomalies).toBeNull();
+    });
+
+    it("the org's own membership term narrows the gate too: no devices:read in the org term → no anomaly query", async () => {
+      h.resolveGrantCeiling.mockResolvedValue(ceiling({
+        permissionKeys: new Set(['*:*']),
+        orgTerms: new Map([[ORG, { permissionKeys: keys(), siteIds: null }]]),
+      }));
+      queueDigest();
+      const ctx = await loadAssessmentContext(anomalyRun());
+      expect(tablesQueried().has(metricAnomalyIncidents)).toBe(false);
+      expect(ctx!.digest.anomalies).toBeNull();
+    });
+
+    it('keeps at most 10 metric names per incident', async () => {
+      queueDigest();
+      h.results.push([anomalyRow({ metricNames: Array.from({ length: 12 }, (_, i) => `m${i}`) })]);
+      const ctx = await loadAssessmentContext(anomalyRun());
+      expect(ctx!.digest.anomalies![0]!.metricNames).toEqual(Array.from({ length: 10 }, (_, i) => `m${i}`));
+    });
+
+    it('runs in its own system context, after the other digest reads', async () => {
+      queueDigest();
+      h.results.push([anomalyRow()]);
+      await loadAssessmentContext(anomalyRun());
+      const { withSystemDbAccessContext } = await import('../../db');
+      const labels = vi.mocked(withSystemDbAccessContext).mock.calls.map((c) => c[1]);
+      expect(labels).toContain('wisp.assessment.digest.anomalies');
+      expect(labels.indexOf('wisp.assessment.digest.anomalies')).toBeGreaterThan(labels.indexOf('wisp.assessment.digest'));
+    });
+
+    it('a failing anomaly read degrades to null, reports to Sentry, and leaves the other sections intact', async () => {
+      queueDigest();
+      h.results.push(new Error('statement timeout'));
+      const ctx = await loadAssessmentContext(anomalyRun());
+      expect(ctx).not.toBeNull();
+      expect(ctx!.digest.anomalies).toBeNull();
+      expect(ctx!.digest.alerts.map((r) => r.id)).toEqual(['a1']);
+      expect(ctx!.digest.intents.map((r) => r.id)).toEqual(['x1']);
+      expect(h.captureException).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'statement timeout' }),
+        undefined,
+        expect.objectContaining({ component: 'wisp', op: 'wisp.assessment.anomalies', runId: RUN, orgId: ORG }),
+      );
     });
   });
 

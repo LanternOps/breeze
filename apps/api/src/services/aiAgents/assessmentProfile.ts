@@ -42,8 +42,9 @@ export const ASSESSMENT_MAX_RUNS_PER_HOUR = 6;
  * multiplexed tool whose mutating actions escalate in `aiGuardrails.ts`, so
  * it is listed ONLY action-scoped to its two reads — the same entries
  * `VERDICT_TOOL_ALLOWLIST` uses. `manage_device_anomalies` is the same shape
- * (dismiss/resolve tier 2, promote supervised) and is listed only as
- * `:list` (#11425): an anomaly wake drills into the device's anomaly rows.
+ * (a read plus mutating actions that escalate in `aiGuardrails.ts`) and is
+ * listed only as `:list` (#11425): an anomaly wake drills into the device's
+ * anomaly rows.
  * Every action-scoped entry must be a `TIER1_READ_ACTIONS` read (asserted in
  * the test). There is no agent-reachable ticket read
  * tool today (`manage_tickets` is not in `TOOL_TIERS`); ticket facts reach

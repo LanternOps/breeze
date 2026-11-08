@@ -14,7 +14,7 @@
  *                          run, also without a model call (#11423).
  *   loadAssessmentContext  the run's bounded context: thread seed, the org's
  *                          live concerns with this grant's recipient state, a
- *                          six-section digest since the watermark (each read
+ *                          bounded digest since the watermark (each read
  *                          pinned to the run's org, gated on the grantor's
  *                          permission for it, ≤ 25 rows, sanitised; on a
  *                          first look the alerts are the org's open ones,
@@ -764,12 +764,13 @@ function ceilingAllows(ceiling: GrantCeiling, orgId: string, permission: string)
 }
 
 /**
- * Six bounded reads, each pinned to `orgId` (the ceiling admitted the org;
- * the pin is the second lock) and each gated on the grantor's permission for
- * it (DIGEST_SECTION_PERMISSION): a section the grantor may not read renders
- * empty and issues no query. On a first look the alerts section is the org's
- * open alerts (loadOpenAlertRows). Metric anomalies are always current state
- * (loadDigestAnomalies). The other four keep the `since` window.
+ * Bounded reads, each pinned to `orgId` (the ceiling admitted the org; the
+ * pin is the second lock) and each gated on the grantor's permission for it
+ * (DIGEST_SECTION_PERMISSION): a section the grantor may not read renders
+ * empty and issues no query. The sections use the `since` window, except the
+ * alerts on a first look (the org's open alerts, loadOpenAlertRows) and the
+ * metric anomalies, which are always current state (loadAnomalySection). The
+ * metric anomalies read runs in its own system context, after the others.
  */
 async function loadDigest(
   ceiling: GrantCeiling,
@@ -781,7 +782,7 @@ async function loadDigest(
 ): Promise<AssessmentDigest> {
   const may = (section: keyof typeof DIGEST_SECTION_PERMISSION) =>
     ceilingAllows(ceiling, orgId, DIGEST_SECTION_PERMISSION[section]);
-  return sys(async () => {
+  const base = await sys(async () => {
     const alertRows = !may('alerts') ? [] : firstLook ? await loadOpenAlertRows(orgId) : await db
       .select({
         id: alerts.id, title: alerts.title, severity: alerts.severity, status: alerts.status,
@@ -815,7 +816,6 @@ async function loadDigest(
       .where(and(eq(actionIntents.orgId, orgId), gte(actionIntents.createdAt, since)))
       .orderBy(desc(actionIntents.createdAt))
       .limit(DIGEST_ROW_LIMIT);
-    const anomalyRows = !may('anomalies') ? [] : await loadDigestAnomalies(orgId, anomalyIncidentId);
 
     return {
       alerts: alertRows.map((r) => ({
@@ -851,23 +851,51 @@ async function loadDigest(
         toolName: sanitizeSweepText(r.toolName, 100),
         status: sanitizeSweepText(String(r.status), 30),
       })),
-      anomalies: anomalyRows.map((r) => ({
-        id: r.id,
-        deviceId: r.deviceId,
-        deviceName: r.deviceName ? sanitizeSweepText(r.deviceName, 120) : null,
-        anomalyType: sanitizeSweepText(r.anomalyType, 40),
-        metricNames: (r.metricNames ?? []).slice(0, DIGEST_ANOMALY_METRIC_NAME_LIMIT).map((m) => sanitizeSweepText(m, 120)),
-        // `numeric` arrives from the driver as a string.
-        peakScore: Number(r.peakScore),
-        openedAt: toIso(r.openedAt),
-        status: sanitizeSweepText(String(r.status), 20),
-      })),
     };
   }, 'wisp.assessment.digest');
+  const anomalies = may('anomalies') ? await loadAnomalySection(orgId, anomalyIncidentId, currentRunId) : null;
+  return { ...base, anomalies };
 }
 
 /** Metric names kept per anomaly incident (the detector's distinct metric names in the bucket). */
 const DIGEST_ANOMALY_METRIC_NAME_LIMIT = 10;
+
+/**
+ * #11425: the digest's metric anomalies, or null when they could not be read.
+ * The read has its own system context and transaction, and the catch sits
+ * outside it (CLAUDE.md: a catch around a query wraps the whole
+ * transaction). It is a join over tables no other section reads, so a failure
+ * there must not fail every assessment run. Like loadReadiness, a failure is
+ * logged and sent to Sentry, and the section degrades to null. The prompt
+ * then says the anomalies were not read, so it does not claim there are none
+ * while the reason names an anomaly incident.
+ */
+async function loadAnomalySection(
+  orgId: string,
+  triggerId: string | null,
+  runId: string,
+): Promise<AssessmentDigest['anomalies']> {
+  try {
+    const rows = await sys(() => loadDigestAnomalies(orgId, triggerId), 'wisp.assessment.digest.anomalies');
+    return rows.map((r) => ({
+      id: r.id,
+      deviceId: r.deviceId,
+      deviceName: r.deviceName ? sanitizeSweepText(r.deviceName, 120) : null,
+      anomalyType: sanitizeSweepText(r.anomalyType, 40),
+      metricNames: (r.metricNames ?? []).slice(0, DIGEST_ANOMALY_METRIC_NAME_LIMIT).map((m) => sanitizeSweepText(m, 120)),
+      // `numeric` arrives from the driver as a string.
+      peakScore: Number(r.peakScore),
+      openedAt: toIso(r.openedAt),
+      status: sanitizeSweepText(String(r.status), 20),
+    }));
+  } catch (err) {
+    console.warn('[wisp.assessment] metric anomaly read failed; digest carries anomalies: null', {
+      runId, orgId, error: err instanceof Error ? err.message : String(err),
+    });
+    captureException(err, undefined, { component: 'wisp', op: 'wisp.assessment.anomalies', runId, orgId });
+    return null;
+  }
+}
 
 /**
  * #11425: the metric anomaly incidents section. These are the org's open
@@ -880,19 +908,20 @@ const DIGEST_ANOMALY_METRIC_NAME_LIMIT = 10;
  *   - not suppressed: the publisher dispatches one incident per episode and
  *     marks the rest `suppressed_by_episode`, so this keeps about one row per
  *     anomaly episode instead of one per 5-minute bucket;
- *   - the episode is still open. Every incident has an episode: the incident
- *     upsert only takes rows that passed the persistence gate
- *     (`ma.episode_id IS NOT NULL`, metricAnomalies.ts). The episode is the
- *     lifecycle a technician resolves or dismisses.
+ *   - the episode is still open. The episode is the lifecycle a technician
+ *     resolves or dismisses. Incidents normally carry one: the incident
+ *     upsert's persistence gate requires `ma.episode_id IS NOT NULL`
+ *     (metricAnomalies.ts). But `episode_id` is nullable, and the publisher
+ *     dispatches an unlinked incident at once.
  *
  * `episode_id` has no FK (the cascade-cycle note in metricAnomalyIncidents.ts),
- * so the joins are LEFT and org-pinned. An incident with no episode row
- * (`episode_id` NULL, which the publisher still dispatches, or an episode that
- * is gone) is never listed as open; it shows only as the trigger, with status
- * 'unknown'.
+ * so the joins are LEFT and org-pinned. An incident with no episode row (NULL
+ * `episode_id`, or an episode that is gone) is never listed as open; it shows
+ * only as the trigger, with status 'unknown'.
  *
- * Runs inside loadDigest's system context. Exported for the integration test
- * (wispAssessmentAnomalies.integration.test.ts), which runs it on real SQL.
+ * The caller provides the DB context (loadAnomalySection). Exported for the
+ * integration test (wispAssessmentAnomalies.integration.test.ts), which runs
+ * it on real SQL.
  */
 export function loadDigestAnomalies(orgId: string, triggerId: string | null) {
   const openIncident = and(

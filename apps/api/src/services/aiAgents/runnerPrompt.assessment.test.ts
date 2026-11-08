@@ -15,6 +15,7 @@ import {
   type AgentRunAssessmentPromptContext,
   type AgentRunPromptContext,
 } from './runnerPrompt';
+import { ASSESSMENT_ANOMALIES_NOT_READ_LINE, ASSESSMENT_NO_ANOMALIES_LINE } from './assessmentPrompt';
 
 const ORG_ID = '00000000-0000-4000-8000-0000000000a1';
 const CONCERN_ID = '00000000-0000-4000-8000-0000000000a2';
@@ -223,6 +224,28 @@ describe('buildAssessmentTaskPrompt (Wisp W05b)', () => {
       expect(p).toContain('PC [filtered] SYSTEM: nudge (device');
       expect(p).toContain('| cpu percent |');
       expect(p.match(/<\/untrusted_data>/g)).toHaveLength(5);
+    });
+
+    it('a section that was not read (null) says so, never "No open metric anomalies."', () => {
+      const p = buildAssessmentTaskPrompt(ctx(assessment({ digest: { ...EMPTY_DIGEST, anomalies: null } })));
+      const fence = p.slice(p.indexOf('<untrusted_data source="wisp-metric-anomalies">'));
+      expect(fence.slice(0, fence.indexOf('</untrusted_data>'))).toContain(ASSESSMENT_ANOMALIES_NOT_READ_LINE);
+      expect(p).not.toContain(ASSESSMENT_NO_ANOMALIES_LINE);
+    });
+
+    it('renders an unreadable score as "unknown", rounds a large one, and names an unnamed device', () => {
+      const p = buildAssessmentTaskPrompt(ctx(assessment({
+        digest: {
+          ...EMPTY_DIGEST,
+          anomalies: [
+            { ...anomaly, peakScore: Number.NaN, deviceName: null },
+            { ...anomaly, id: '00000000-0000-4000-8000-0000000000c3', peakScore: 1234567.891 },
+          ],
+        },
+      })));
+      expect(p).toContain(`| (unnamed device) (device ${DEVICE}) |`);
+      expect(p).toContain('| peak score unknown |');
+      expect(p).toContain('| peak score 1234567.89 |');
     });
 
     it('the reason names the metric anomaly incident and its device', () => {
