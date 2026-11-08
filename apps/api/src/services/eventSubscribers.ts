@@ -301,7 +301,8 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
       // (evidence.alertId / rebootAlertId, in the alert's org) BEFORE the wake,
       // so the assessment it triggers reads them closed. Best-effort: a failed
       // close is reported and never costs the wake (the model can still close
-      // it). Dark with the rest of Wisp.
+      // it). Dispatch runs this outside any DB context, so each close commits
+      // on its own and the resolved-nudge follow-up sees it.
       const resolvedAlertId = event.type === 'alert.resolved' ? event.payload?.alertId : undefined;
       if (typeof resolvedAlertId === 'string') {
         const { wispEnabled } = await import('../config/env');

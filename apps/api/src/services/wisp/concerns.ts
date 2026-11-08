@@ -26,7 +26,7 @@ import {
   type ConcernSubject,
 } from '@breeze/shared';
 import { isPgUniqueViolation, pgErrorConstraint } from '@breeze/shared/pgErrors';
-import { db, getCurrentDbAccessContext, withDbTransaction } from '../../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withDbTransaction } from '../../db';
 import { wispConcernRecipients, wispConcerns, type WispConcernRecipientRow, type WispConcernRow } from '../../db/schema/wispConcerns';
 import { wispGrants } from '../../db/schema/wisp';
 import { captureException } from '../sentry';
@@ -328,16 +328,25 @@ async function rememberOutcome(id: string, grantId: string, resolved: ResolvedCo
 
 /**
  * #11427: a concern Wisp nudged someone about just closed — tell each nudged
- * thread, once, that no action is needed (`nudgeResolved.ts`; it is a no-op for
- * a concern nobody was nudged about). Every resolve path comes through
- * `resolveConcern`, so they all get it. Best-effort: logged, never thrown, so
- * the resolution always stands. Lazy import: nudgeResolved → notifyUser →
- * concerns would otherwise be an import cycle.
+ * thread that no action is needed (`nudgeResolved.ts`; a no-op for a concern
+ * nobody was nudged about). Every resolve path calls this, but only a COMMITTED
+ * resolution is followed up: inside a caller's system transaction (admission's
+ * readiness close) the resolution is not committed yet, a reader on another
+ * connection would still see the concern live, and a failed read on the
+ * caller's connection would abort its transaction and roll the resolution back
+ * — so that case is skipped, with a trace. Otherwise the follow-up runs outside
+ * every DB context. Best-effort: logged, never thrown, so the resolution always
+ * stands. Lazy import: nudgeResolved → notifyUser → concerns would otherwise be
+ * an import cycle.
  */
 async function followUpResolvedNudge(id: string): Promise<void> {
+  if (getCurrentDbAccessContext()?.scope === 'system') {
+    console.warn('[wisp.concerns] resolved inside a caller transaction; no resolved-nudge follow-up', { concernId: id });
+    return;
+  }
   try {
     const { notifyNudgeResolved } = await import('./nudgeResolved');
-    await notifyNudgeResolved(id);
+    await runOutsideDbContext(() => notifyNudgeResolved(id));
   } catch (err) {
     console.error('[wisp.concerns] resolved-nudge follow-up failed; the resolution stands', { concernId: id, err });
     captureException(err, undefined, { concernId: id, op: 'wisp.concerns.resolve.nudgeResolved' });
@@ -349,18 +358,20 @@ export const ALERT_RESOLVED_OUTCOME = 'alert_resolved';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Live concerns closed per resolved alert; a concern beyond it waits for the next assessment. */
+/** Live concerns closed per resolved alert; any beyond it stay open for the model (or a repeat event) to close. */
 const ALERT_RESOLVE_LIMIT = 50;
 
 /**
  * #11427: the alert a concern was raised about resolved — close the concern
  * deterministically (no model call), so the next assessment reads it closed.
  * Matches live concerns IN THE ALERT'S ORG whose evidence names the alert as
- * `alertId` or `rebootAlertId` (the keys assessments record). The org pin is
- * the isolation: a concern of another org is never read, whatever its
- * model-written evidence says. Outcome `alert_resolved`, no grant (nothing is
- * remembered as Wisp-authored memory). Idempotent: a concern already closed is
- * not resolved twice or counted. Returns how many it resolved.
+ * `alertId` or `rebootAlertId` (model-written evidence keys, as seen on prod
+ * concerns; nothing validates them). The org pin is the isolation: a concern
+ * of another org is never read, whatever its evidence says. Outcome
+ * `alert_resolved`, no grant (nothing is remembered as Wisp-authored memory).
+ * Idempotent: a concern already closed is not resolved twice or counted. One
+ * concern that fails to resolve is reported and never stops the rest. Returns
+ * how many it resolved.
  */
 export async function resolveConcernsForAlert(alertId: string, orgId: string): Promise<{ resolved: number }> {
   if (!UUID_RE.test(alertId) || !UUID_RE.test(orgId)) return { resolved: 0 };
@@ -376,7 +387,12 @@ export async function resolveConcernsForAlert(alertId: string, orgId: string): P
     .limit(ALERT_RESOLVE_LIMIT));
   let resolved = 0;
   for (const { id } of rows) {
-    if ((await resolveConcern(id, {}, ALERT_RESOLVED_OUTCOME)).resolved) resolved += 1;
+    try {
+      if ((await resolveConcern(id, {}, ALERT_RESOLVED_OUTCOME)).resolved) resolved += 1;
+    } catch (err) {
+      console.error('[wisp.concerns] closing a concern of a resolved alert failed', { concernId: id, alertId, err });
+      captureException(err, undefined, { concernId: id, alertId, op: 'wisp.concerns.resolveForAlert' });
+    }
   }
   return { resolved };
 }

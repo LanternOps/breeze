@@ -985,11 +985,11 @@ export function buildOutcomeSdkTools(
         ) as SdkTool;
       }
       // Wisp W05b — the assessment tools. Raw shapes come straight from the
-      // shared W05a schemas (`.shape`, or `updateConcernToolShape`); the
-      // AUTHORITY is still the full schema's `.parse()` in
-      // `validateOutcomeToolInput` (it carries the `update_concern`
-      // resolved-needs-outcome refinement and the outcome-implies-resolved
-      // transform (#11427) a raw shape cannot express). Validate-only, static ack, no DB — `finalizeAssessment`
+      // shared W05a schemas; the AUTHORITY is still the full schema's `.parse()`
+      // in `validateOutcomeToolInput`, which carries what a raw shape cannot
+      // (`update_concern`'s refine and its outcome-implies-resolved transform,
+      // #11427). The handlers validate only; the run loop captures the parsed
+      // value, so the finalizer always sees the transformed call. Validate-only, static ack, no DB — `finalizeAssessment`
       // applies the captured calls after the run.
       case 'record_concern': {
         // #10387: an `org` subject can only be the run's org; `finalizeAssessment`

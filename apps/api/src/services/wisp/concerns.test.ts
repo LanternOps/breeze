@@ -13,7 +13,7 @@ const h = vi.hoisted(() => ({
   calls: [] as string[],
   selectRows: [] as unknown[][],
   insertReturning: [] as Array<unknown[] | Error>,
-  updateReturning: [] as unknown[][],
+  updateReturning: [] as Array<unknown[] | Error>,
   executeRows: [] as unknown[][],
   inserts: [] as Array<{ values: Record<string, unknown>; conflict: 'nothing' | 'update'; opts: Record<string, unknown> }>,
   updates: [] as Array<{ set: Record<string, unknown>; where: unknown }>,
@@ -61,7 +61,13 @@ vi.mock('../../db', () => {
       where: (where: unknown) => {
         h.calls.push('update');
         h.updates.push({ set, where });
-        return Object.assign(Promise.resolve(undefined), { returning: async () => h.updateReturning.shift() ?? [] });
+        return Object.assign(Promise.resolve(undefined), {
+          returning: async () => {
+            const r = h.updateReturning.shift() ?? [];
+            if (r instanceof Error) throw r;
+            return r;
+          },
+        });
       },
     }),
   }));
@@ -87,6 +93,7 @@ vi.mock('./memoryBroker', () => ({ rememberForGrant: h.rememberForGrant }));
 vi.mock('../sentry', () => ({ captureException: h.captureException }));
 vi.mock('./nudgeResolved', () => ({ notifyNudgeResolved: h.notifyNudgeResolved }));
 
+import { getCurrentDbAccessContext, runOutsideDbContext } from '../../db';
 import { CeilingViolationError, GrantInactiveError, type GrantCeiling } from './grantAuthority';
 import {
   ConcernNotFoundError,
@@ -275,14 +282,30 @@ describe('resolveConcern', () => {
   });
 });
 
-// #11427: a concern Wisp nudged about that closes by ANY path (assessment,
-// alert, person, reaper) tells the person, once, that no action is needed.
+// #11427: a concern Wisp nudged about that closes by any path (assessment,
+// alert, person, reaper) tells the person, once, that no action is needed —
+// when the resolution is committed.
 describe('resolveConcern → resolved-nudge follow-up (#11427)', () => {
-  it('a real transition hands the concern to the follow-up once, after the resolution is written', async () => {
+  it('a real transition hands the concern to the follow-up once, outside any DB context', async () => {
     h.updateReturning.push([resolvedRow]);
     await expect(resolveConcern(C1, { userId: 'u1' }, 'fixed')).resolves.toEqual({ resolved: true, remembered: false });
     expect(h.notifyNudgeResolved).toHaveBeenCalledTimes(1);
     expect(h.notifyNudgeResolved).toHaveBeenCalledWith(C1);
+    expect(vi.mocked(runOutsideDbContext)).toHaveBeenCalled();
+  });
+
+  it("inside a caller's system transaction (resolution not committed) it is skipped with a trace; the resolve stands", async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue({ scope: 'system' } as never);
+    try {
+      h.updateReturning.push([resolvedRow]);
+      await expect(resolveConcern(C1, {}, 'superseded_no_effective_agent')).resolves.toEqual({ resolved: true, remembered: false });
+      expect(h.notifyNudgeResolved).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('no resolved-nudge follow-up'), { concernId: C1 });
+    } finally {
+      vi.mocked(getCurrentDbAccessContext).mockReturnValue(undefined);
+      warn.mockRestore();
+    }
   });
 
   it('runs on the grant path too (after the memory write)', async () => {
@@ -350,6 +373,17 @@ describe('resolveConcernsForAlert (#11427)', () => {
     h.updateReturning.push([]);
     await expect(resolveConcernsForAlert(ALERT, O1)).resolves.toEqual({ resolved: 0 });
     expect(h.notifyNudgeResolved).not.toHaveBeenCalled();
+  });
+
+  it('one concern that fails to resolve is reported and never stops the rest', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    h.selectRows.push([{ id: C1 }, { id: C2 }]);
+    h.updateReturning.push(new Error('deadlock'), [{ ...resolvedRow, id: C2 }]);
+    await expect(resolveConcernsForAlert(ALERT, O1)).resolves.toEqual({ resolved: 1 });
+    expect(h.captureException).toHaveBeenCalledTimes(1);
+    expect(h.captureException.mock.calls[0]![2]).toMatchObject({ concernId: C1, alertId: ALERT, op: 'wisp.concerns.resolveForAlert' });
+    expect(h.notifyNudgeResolved).toHaveBeenCalledWith(C2);
+    err.mockRestore();
   });
 
   it('a non-uuid alert or org id queries nothing', async () => {

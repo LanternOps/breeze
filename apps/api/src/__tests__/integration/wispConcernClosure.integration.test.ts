@@ -27,7 +27,7 @@ vi.mock('../../services/notificationThrottle', () => ({
   checkNotificationThrottle: vi.fn(async () => ({ allowed: true, currentCount: 1, windowExpiresAt: 0 })),
 }));
 
-import { resolveConcern, resolveConcernsForAlert, upsertConcern } from '../../services/wisp/concerns';
+import { dismissConcern, resolveConcern, resolveConcernsForAlert, upsertConcern } from '../../services/wisp/concerns';
 import { notifyUser } from '../../services/wisp/notifyUser';
 import { notifyNudgeResolved } from '../../services/wisp/nudgeResolved';
 import { mobileDeepLink } from '../../services/wisp/nudgeLinks';
@@ -70,12 +70,33 @@ async function seed(o: { grantorHasStanding?: boolean } = {}) {
   }
   const grantId = await seedGrant(partner.id, user.id, [org.id, otherOrg.id]);
   const thread = await getOrCreateThread(grantId);
+  /** Another person with their own grant + thread over the same orgs. */
+  const addGrantor = async () => {
+    const other = await createUser({ partnerId: partner.id, email: `wisp-closure-${randomUUID()}@wisp.test` });
+    const role = await createRole({ scope: 'partner', partnerId: partner.id });
+    await grantRolePermissions(role.id, [{ resource: 'ai_sessions', action: 'use' }]);
+    await assignUserToPartner(other.id, partner.id, role.id, 'all');
+    const otherGrantId = await seedGrant(partner.id, other.id, [org.id, otherOrg.id]);
+    return { user: other, grantId: otherGrantId, thread: await getOrCreateThread(otherGrantId) };
+  };
   const concern = async (orgId: string, evidence: Record<string, unknown> = {}, summary = 'SAM23 has a pending reboot') =>
     (await upsertConcern({
       partnerId: partner.id, orgId, subject: { kind: 'device', id: randomUUID() },
       summary, severity: 'medium', evidence, raisedByGrantId: grantId,
     })).id;
-  return { partner, org, otherOrg, user, grantId, thread, concern };
+  return { partner, org, otherOrg, user, grantId, thread, concern, addGrantor };
+}
+
+type Recipient = { user: { id: string }; grantId: string; thread: { id: string } };
+
+/** The nudge Wisp sent this recipient about concern `c`. */
+async function nudge(r: Recipient, c: string) {
+  const res = await notifyUser({
+    userId: r.user.id, category: 'wisp_nudge', kind: 'concern', title: 'Wisp: SAM23 has a pending reboot',
+    body: 'Schedule a restart of SAM23', deepLink: mobileDeepLink(r.thread.id, c), concernId: c,
+    threadId: r.thread.id, grantId: r.grantId,
+  });
+  expect(res.inApp).toBe(true);
 }
 
 const concernRow = (id: string) => withSystemDbAccessContext(async () =>
@@ -165,6 +186,44 @@ describe('nudge_resolved follow-up — real DB (#11427)', () => {
     });
     await expect(resolveConcern(c, {}, 'fixed')).resolves.toEqual({ resolved: true, remembered: false });
     expect(await postsOf(fx.thread.id, 'nudge_resolved')).toHaveLength(0);
+  });
+
+  runDb('two people nudged, two concurrent resolves: exactly one follow-up post + notification each', async () => {
+    const fx = await seed();
+    const b = await fx.addGrantor();
+    const c = await fx.concern(fx.org.id);
+    await nudge(fx, c);
+    await nudge(b, c);
+
+    const results = await Promise.all([
+      resolveConcern(c, {}, 'The device restarted on its own.'),
+      resolveConcernsForAlert(randomUUID(), fx.org.id).then(() => resolveConcern(c, {}, 'alert_resolved')),
+    ]);
+    expect(results.filter((r) => r.resolved)).toHaveLength(1);
+
+    for (const r of [fx, b]) {
+      expect(await postsOf(r.thread.id, 'nudge_resolved')).toHaveLength(1);
+      expect(await notificationsKeyed(r.user.id, `wisp.nudge_resolved:${c}`)).toHaveLength(1);
+    }
+  });
+
+  runDb('skips the person who resolved it themselves and a recipient who dismissed it; tells the rest', async () => {
+    const fx = await seed();
+    const b = await fx.addGrantor();
+    const d = await fx.addGrantor();
+    const c = await fx.concern(fx.org.id);
+    for (const r of [fx, b, d]) await nudge(r, c);
+    // B says "not interested"; the concern stays live while others have not.
+    await dismissConcern(c, { grantId: b.grantId, userId: b.user.id });
+    expect((await concernRow(c)).status).toBe('open');
+
+    await expect(resolveConcern(c, { userId: fx.user.id }, 'Restarted it myself.')).resolves.toEqual({ resolved: true, remembered: false });
+
+    expect(await postsOf(fx.thread.id, 'nudge_resolved')).toHaveLength(0);
+    expect(await postsOf(b.thread.id, 'nudge_resolved')).toHaveLength(0);
+    const told = await postsOf(d.thread.id, 'nudge_resolved');
+    expect(told).toHaveLength(1);
+    expect(told[0]!.body).toBe('SAM23 has a pending reboot — restarted it myself; no action needed.');
   });
 
   runDb('a concern that was never nudged gets no follow-up', async () => {

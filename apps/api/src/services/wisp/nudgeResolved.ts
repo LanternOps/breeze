@@ -1,22 +1,22 @@
 /**
- * #11427 — the follow-up to a nudge whose concern closed. Wisp nudged someone
- * ("Schedule a restart of SAM23"); the device then restarted on its own and the
- * concern was resolved — by an assessment, by its linked alert resolving
- * (`resolveConcernsForAlert`), by a person, or by the reaper. Before this,
- * nobody was told. Now each thread that carried a `nudge` post for the concern
- * gets ONE `nudge_resolved` post + in-app notification through `notifyUser`:
+ * #11427 — the follow-up to a nudge whose concern closed (by an assessment, by
+ * its linked alert resolving, by a person, or by the reaper). Each thread that
+ * carried a `nudge` post for the concern gets a `nudge_resolved` post + in-app
+ * notification through `notifyUser`:
  * "<subject> — <outcome in one sentence>; no action needed."
  *
- * Called only from `resolveConcern` (concerns.ts), after a real live→resolved
- * transition, best-effort (it never throws for a delivery; resolveConcern also
- * catches). Shape mirrors the digest sweep (nudgeDigest.ts): one system-context
- * read, closed before any delivery; then each recipient is re-checked against
- * the grant's LIVE ceiling (it may have narrowed since the nudge) before
- * `notifyUser`, which opens its own contexts. Skipped: a recipient who
- * dismissed the concern, the person who resolved it themselves, an inactive
- * grant. Exactly once per (thread, concern): the dedupe key is
- * `wisp.nudge_resolved:<concern>` (notifyUser), and a second resolve of the
- * same concern never reaches here. Never pushed (notifyUser withholds it).
+ * Called only from `resolveConcern` (concerns.ts), after a COMMITTED
+ * live→resolved transition, outside any DB context; best-effort (a failed
+ * delivery is reported, never thrown; resolveConcern also catches). Shape
+ * mirrors the digest sweep (nudgeDigest.ts): one system-context read, closed
+ * before any delivery; then each recipient is re-checked against the grant's
+ * LIVE ceiling (it may have narrowed since the nudge) before `notifyUser`,
+ * which opens its own contexts. Skipped: a recipient who dismissed the concern,
+ * the person who resolved it themselves, a grant with no pinned revision, an
+ * inactive grant (a corrupt one is reported), and a grantor who can no longer
+ * see the concern. The dedupe key is `wisp.nudge_resolved:<concern>`: at most
+ * one post per thread and one notification per user, and a second resolve of
+ * the same concern never reaches here. Never pushed (notifyUser withholds it).
  * Dark while `wispEnabled()` is false.
  */
 import { and, eq } from 'drizzle-orm';
@@ -131,7 +131,7 @@ export async function notifyNudgeResolved(concernId: string): Promise<{ recipien
   });
   if (!read) return result;
 
-  // A thread carries one nudge post per backoff window: one follow-up per thread.
+  // A thread can carry several nudge posts (one per backoff window): one follow-up per thread.
   const threads = new Map<string, NudgedThread>();
   for (const row of read.rows) if (!threads.has(row.threadId)) threads.set(row.threadId, row);
   result.recipients = threads.size;
@@ -165,7 +165,8 @@ export async function notifyNudgeResolved(concernId: string): Promise<{ recipien
         deepLink: mobileDeepLink(t.threadId, concernId),
         ...text,
       });
-      // 'backoff' = nothing written: a dedupe hit, or the resolve is not committed yet.
+      // 'backoff' = no new notification: a dedupe hit (another thread of the same
+      // user may still get its post) or a concern that no longer reads resolved.
       if (res.suppressed !== 'backoff') result.sent += 1;
     } catch (err) {
       report('deliver', err, { concernId, grantId: t.grantId });

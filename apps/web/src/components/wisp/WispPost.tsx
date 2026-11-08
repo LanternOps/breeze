@@ -55,15 +55,15 @@ export default function WispPost({
       ? t('wisp.post.nudge')
       : post.kind === 'nudge_resolved'
         ? t('wisp.post.nudgeResolved')
-      : post.kind === 'digest'
-        ? t('wisp.post.digest')
-        : post.kind === 'check_in'
-          ? t('wisp.post.checkIn')
-          : post.kind === 'specialist_result'
-            ? t('wisp.post.specialistResult')
-            : post.kind === 'first_look'
-              ? post.variant === 'couldnt_look' ? t('wisp.post.couldntLook') : t('wisp.post.firstLook')
-              : t('wisp.post.brief');
+        : post.kind === 'digest'
+          ? t('wisp.post.digest')
+          : post.kind === 'check_in'
+            ? t('wisp.post.checkIn')
+            : post.kind === 'specialist_result'
+              ? t('wisp.post.specialistResult')
+              : post.kind === 'first_look'
+                ? post.variant === 'couldnt_look' ? t('wisp.post.couldntLook') : t('wisp.post.firstLook')
+                : t('wisp.post.brief');
   // A check-in's and a first look's link is this same thread, so an "Open" link
   // would go nowhere.
   const isCheckIn = post.kind === 'check_in';
