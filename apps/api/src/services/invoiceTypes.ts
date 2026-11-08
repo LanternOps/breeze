@@ -29,6 +29,11 @@ export type InvoiceServiceErrorCode =
   // 503 from a transition (reset/pay/void), 409 from a producer that was
   // asked to mint another session while the revocation is in flight.
   | 'STRIPE_REVOCATION_PENDING'
+  /** 409 — #3803 item 8: a Checkout producer refused a balance the invoice
+   *  currency cannot express (legacy zero-decimal rows such as JPY '1000.50').
+   *  Any Stripe amount would over-charge or strand a residue; only an exact
+   *  manual payoff can settle it. */
+  | 'BALANCE_NOT_REPRESENTABLE'
   | 'PARTNER_UNRESOLVABLE'
   // Partner billing master switch is off (services/billingEnabled.ts).
   | 'BILLING_DISABLED'
@@ -92,11 +97,6 @@ export type InvoiceServiceErrorCode =
   // unexpected row count — impossible while the locks are held, so a 500.
   | 'CONCURRENT_MODIFICATION'
   | 'OVERPAYMENT'
-  /** 409 — #3803 item 8: a Checkout producer refused a balance the invoice
-   *  currency cannot express (legacy zero-decimal rows such as JPY '1000.50').
-   *  Any Stripe amount would over-charge or strand a residue; only an exact
-   *  manual payoff can settle it. */
-  | 'BALANCE_NOT_REPRESENTABLE'
   | 'INVALID_STATE'
   | 'INVALID_AMOUNT'
   | 'COLLECTION_IN_PROGRESS'
