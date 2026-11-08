@@ -348,6 +348,8 @@ updates:
       - "/apps/m365-graph-actions-executor"
       - "/apps/m365-communications-executor"
       - "/docker"
+      # Root holds docker-compose.monitoring.yml (digest-pinned monitoring images).
+      - "/"
     schedule:
       interval: "weekly"
       day: "monday"

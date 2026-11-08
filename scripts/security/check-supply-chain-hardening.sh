@@ -800,6 +800,12 @@ require_grep 'metrics_scrape_token:' docker-compose.monitoring.yml \
 require_grep 'environment: METRICS_SCRAPE_TOKEN' docker-compose.monitoring.yml \
   "monitoring compose must source metrics scrape token from the environment"
 
+# Every monitoring image must be digest-pinned (default inside *_IMAGE_REF), #7812.
+for monitoring_ref_var in PROMETHEUS_IMAGE_REF GRAFANA_IMAGE_REF ALERTMANAGER_IMAGE_REF LOKI_IMAGE_REF PROMTAIL_IMAGE_REF REDIS_EXPORTER_IMAGE_REF POSTGRES_EXPORTER_IMAGE_REF; do
+  require_grep "image: \\$\\{${monitoring_ref_var}:-[^}]*@sha256:[0-9a-f]{64}\\}" docker-compose.monitoring.yml \
+    "monitoring compose must digest-pin ${monitoring_ref_var}"
+done
+
 # docker-compose.monitoring.yml must compose cleanly on top of BOTH base
 # stacks: the self-host root docker-compose.yml (which runs a local `postgres`
 # service) and deploy/docker-compose.prod.yml (which has no local Postgres —
