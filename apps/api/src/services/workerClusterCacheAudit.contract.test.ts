@@ -18,7 +18,7 @@ import path from 'node:path';
  * bus (asserted below) and this test pins exactly which cache modules may be
  * reachable. A new cluster cache landing on the worker path fails here until
  * it is reviewed and added with a reason; a worker that stops subscribing
- * fails the first test.
+ * fails worker.boot.test.ts, which asserts the start/stop wiring behaviourally.
  *
  * Static analysis only (regex import walk, no execution), same approach and
  * the same role-safe boundary as workerEntrypointClosure.contract.test.ts.
@@ -49,8 +49,47 @@ const ALLOWED_WORKER_CACHE_MODULES: Record<string, string> = {
     'jobs/unifiTelemetryWorker.ts reads the agent-collector absence cache',
 };
 
+/**
+ * Blanks `//` and block comments while keeping string/template contents, so a
+ * `/*` inside a line comment or string can never open a bogus block comment
+ * and swallow real imports (same approach as workerEntrypointClosure's stripper).
+ */
 function strip(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`\\])\/\/[^\n]*/g, '$1');
+  let out = '';
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i]!;
+    const c2 = src[i + 1];
+    if (c === '/' && c2 === '/') {
+      while (i < n && src[i] !== '\n') i++;
+      continue;
+    }
+    if (c === '/' && c2 === '*') {
+      i += 2;
+      while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++;
+      i += 2;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') {
+      out += c;
+      i++;
+      while (i < n && src[i] !== c) {
+        if (src[i] === '\\') {
+          out += src[i]!;
+          i++;
+        }
+        if (i < n) out += src[i]!;
+        i++;
+      }
+      if (i < n) out += src[i]!;
+      i++;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
 }
 
 const IMPORT_RES = [
@@ -116,22 +155,20 @@ function clusterCacheModules(): string[] {
   return [...sourceFiles(SRC_ROOT)].filter(
     (f) =>
       !MECHANISM.has(f) &&
-      /cluster:\s*true|registerClusterCache\(/.test(strip(fs.readFileSync(f, 'utf8'))),
+      /\bcluster\s*:\s*true\b|registerClusterCache\(/.test(strip(fs.readFileSync(f, 'utf8'))),
   );
 }
 
 describe('worker-role cluster cache audit (#8639)', () => {
-  it('worker.ts starts the cluster cache bus after Redis is confirmed and stops it on shutdown', () => {
-    const src = strip(fs.readFileSync(WORKER, 'utf8'));
-    expect(src).toMatch(/getClusterCacheBus\(\)\.start\(\)/);
-    expect(src).toMatch(/getClusterCacheBus\(\)\.stop\(\)/);
-    expect(src.indexOf('getClusterCacheBus().start()')).toBeGreaterThan(src.indexOf('const redisOk = await probeRedis()'));
-  });
-
   it('discovery is not vacuous: finds the known cache modules and walks a real closure', () => {
     const found = clusterCacheModules().map(rel);
     expect(found).toEqual(expect.arrayContaining(Object.keys(ALLOWED_WORKER_CACHE_MODULES)));
     expect(workerSeeds().length).toBeGreaterThan(10);
+    // Floor on the walk itself: a stripper/resolver regression that drops edges
+    // shrinks the closure (a regex comment-stripper walked ~2700 of ~3000 files).
+    const { seen } = workerClosure(workerSeeds());
+    expect(seen.size).toBeGreaterThan(2900);
+    expect(seen.has(path.join(SRC_ROOT, 'services', 'aiToolsAgentLogs.ts'))).toBe(true);
   });
 
   it('the worker path reaches only the reviewed cluster-cache modules', () => {
