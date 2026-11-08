@@ -24,7 +24,20 @@ export type ClipboardChipInput =
       policy: ClipboardDirectionPolicy | null;
       lastTransfer: ClipboardTransfer | null;
       remoteItemAvailable: boolean;
+      /** The latest server cut was held instead of written locally. */
+      remoteHeld?: boolean;
     };
+
+/**
+ * A remote clipboard change that was not written locally (#11310): it arrived
+ * outside the 2 s after the operator's input, so the toolbar offers it.
+ */
+export interface HeldBadgeView {
+  text: string;
+  title: string;
+  /** false for content the remote cannot send (a file); the badge still says the remote changed. */
+  canPull: boolean;
+}
 
 export interface ClipboardChipView {
   visible: boolean;
@@ -38,6 +51,7 @@ export interface ClipboardChipView {
   recent: string | null;
   canCopyRemote: boolean;
   canSend: boolean;
+  held: HeldBadgeView | null;
 }
 
 export function formatBytes(n: number): string {
@@ -47,7 +61,19 @@ export function formatBytes(n: number): string {
 }
 
 const HIDDEN: ClipboardChipView = {
-  visible: false, tone: 'off', label: '', lines: [], title: '', recent: null, canCopyRemote: false, canSend: false,
+  visible: false, tone: 'off', label: '', lines: [], title: '', recent: null, canCopyRemote: false, canSend: false, held: null,
+};
+
+const HELD_ITEM: HeldBadgeView = {
+  text: 'Remote clipboard changed',
+  title: 'The remote clipboard changed while you were not using this session, so it was not copied to this computer. Click to copy it here.',
+  canPull: true,
+};
+
+const HELD_UNSUPPORTED: HeldBadgeView = {
+  text: 'Remote clipboard changed',
+  title: 'The remote clipboard now holds something that cannot be copied to this computer (such as a file). Pasting on the remote pastes it; copy text or an image here to replace it.',
+  canPull: false,
 };
 
 function directionLines(p: ClipboardDirectionPolicy): string[] {
@@ -77,6 +103,7 @@ function build(
   lastTransfer: ClipboardTransfer | null,
   now: number,
   actions: { canCopyRemote: boolean; canSend: boolean },
+  held: HeldBadgeView | null = null,
 ): ClipboardChipView {
   const t = lastTransfer ? transferWords(lastTransfer, now) : null;
   const allLines = t ? [...lines, t.line] : lines;
@@ -88,6 +115,7 @@ function build(
     title: [...notes, ...allLines].join('\n'),
     recent: t?.recent ?? null,
     ...actions,
+    held,
   };
 }
 
@@ -103,10 +131,11 @@ export function clipboardChipView(input: ClipboardChipInput, now: number): Clipb
           'Clipboard off on VNC: the server did not report a clipboard policy for this session.',
         ], input.lastTransfer, now, { canCopyRemote: false, canSend: false });
       }
+      const canCopyRemote = input.policy.hostToViewer && input.remoteItemAvailable;
       return build(toneFor(input.policy), directionLines(input.policy), ['Text only on VNC.'], input.lastTransfer, now, {
-        canCopyRemote: input.policy.hostToViewer && input.remoteItemAvailable,
+        canCopyRemote,
         canSend: input.policy.viewerToHost,
-      });
+      }, canCopyRemote && input.remoteHeld ? HELD_ITEM : null);
     }
     case 'webrtc': {
       const { state } = input;
@@ -118,14 +147,20 @@ export function clipboardChipView(input: ClipboardChipInput, now: number): Clipb
       if (!state.status) {
         return build('unknown', [], [
           'The agent did not report clipboard status (older agent): text only, policy unknown.',
-        ], state.lastTransfer, now, { canCopyRemote: state.remoteItemAvailable, canSend: true });
+        ], state.lastTransfer, now, { canCopyRemote: state.remoteItemAvailable, canSend: true }, heldBadge(state));
       }
       return build(toneFor(state.status), directionLines(state.status), [], state.lastTransfer, now, {
         canCopyRemote: state.status.hostToViewer && state.remoteItemAvailable,
         canSend: state.status.viewerToHost,
-      });
+      }, heldBadge(state));
     }
   }
+}
+
+function heldBadge(state: ClipboardSyncState): HeldBadgeView | null {
+  if (state.remoteHeld === 'item') return state.remoteItemAvailable ? HELD_ITEM : null;
+  if (state.remoteHeld === 'unsupported') return HELD_UNSUPPORTED;
+  return null;
 }
 
 const FAILURE_DETAIL: Record<PushFailure, string> = {
@@ -134,6 +169,7 @@ const FAILURE_DETAIL: Record<PushFailure, string> = {
   'no-ack': 'the remote did not confirm it received your clipboard.',
   closed: 'the clipboard connection closed before your clipboard arrived.',
   disabled: 'sending your clipboard to the remote is disabled by policy.',
+  unreadable: 'your clipboard is empty or holds something that can\'t be sent to the remote (such as a file). Copy text or an image and paste again.',
 };
 
 /** Toolbar notice for a paste or send that did not reach the remote. */

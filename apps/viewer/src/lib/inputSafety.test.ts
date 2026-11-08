@@ -7,6 +7,8 @@ import {
   chordRouting,
   remoteClipboardDecision,
   REMOTE_CLIPBOARD_COPY_INTENT_MS,
+  REMOTE_CLIPBOARD_INPUT_RECENCY_MS,
+  countsAsOperatorInput,
   isCopyChord,
   REMOTE_CLIPBOARD_BASELINE_WINDOW_MS,
   viewerShortcut,
@@ -135,32 +137,41 @@ describe('chordRouting', () => {
 describe('remoteClipboardDecision', () => {
   const opened = 10_000;
   const later = opened + REMOTE_CLIPBOARD_BASELINE_WINDOW_MS + 1;
-  const base = { now: later, hasFocus: true, lastCopyIntentAt: null, channelOpenedAt: opened, pushesSeen: 3 };
+  const base = {
+    now: later, hasFocus: true, lastInputAt: later - 300, lastCopyIntentAt: null,
+    channelOpenedAt: opened, pushesSeen: 3,
+  };
 
-  it('applies a push to the focused window', () => {
+  it('applies a push to the focused window within 2 s of the operator\'s input', () => {
     expect(remoteClipboardDecision(base)).toBe('apply');
+    expect(remoteClipboardDecision({ ...base, lastInputAt: later - REMOTE_CLIPBOARD_INPUT_RECENCY_MS })).toBe('apply');
   });
 
-  it('skips a push to a background window (no cross-session clipboard bleed)', () => {
-    expect(remoteClipboardDecision({ ...base, hasFocus: false })).toBe('skip-unfocused');
+  it('holds a push to the focused window when the operator has not touched the session (#11310 row 2)', () => {
+    expect(remoteClipboardDecision({ ...base, lastInputAt: null })).toBe('hold');
+    expect(remoteClipboardDecision({ ...base, lastInputAt: later - REMOTE_CLIPBOARD_INPUT_RECENCY_MS - 1 })).toBe('hold');
   });
 
-  it('skips a background push even right after the operator switched away, absent a copy', () => {
+  it('holds a push to a background window (no cross-session clipboard bleed)', () => {
+    expect(remoteClipboardDecision({ ...base, hasFocus: false })).toBe('hold');
+  });
+
+  it('holds a background push even right after the operator switched away, absent a copy', () => {
     // Switching from customer A's window to B's and A's user copying a moment
-    // later must not land A's data on the local clipboard.
-    expect(remoteClipboardDecision({ ...base, hasFocus: false, lastCopyIntentAt: null })).toBe('skip-unfocused');
+    // later must not land A's data on the local clipboard, input or not.
+    expect(remoteClipboardDecision({ ...base, hasFocus: false, lastInputAt: later - 100, lastCopyIntentAt: null })).toBe('hold');
   });
 
   it('applies a push that lands after the operator copied in this window and switched away', () => {
     expect(remoteClipboardDecision({
-      ...base, hasFocus: false, lastCopyIntentAt: later - 400,
+      ...base, hasFocus: false, lastInputAt: null, lastCopyIntentAt: later - 400,
     })).toBe('apply');
   });
 
-  it('skips a background push once the copy intent has expired', () => {
+  it('holds a background push once the copy intent has expired', () => {
     expect(remoteClipboardDecision({
       ...base, hasFocus: false, lastCopyIntentAt: later - REMOTE_CLIPBOARD_COPY_INTENT_MS - 1,
-    })).toBe('skip-unfocused');
+    })).toBe('hold');
   });
 
   it('skips the baseline push the agent sends right after the channel opens', () => {
@@ -183,10 +194,10 @@ describe('remoteClipboardDecision', () => {
     })).toBe('apply');
   });
 
-  it('still applies the focus rule when the agent suppresses the baseline', () => {
+  it('still holds an unfocused push when the agent suppresses the baseline', () => {
     expect(remoteClipboardDecision({
       ...base, now: opened + 600, pushesSeen: 0, suppressesBaseline: true, hasFocus: false,
-    })).toBe('skip-unfocused');
+    })).toBe('hold');
   });
 });
 
@@ -263,5 +274,14 @@ describe('isPasteChord', () => {
   it('is not a plain V or an Alt chord', () => {
     expect(isPasteChord(ev('KeyV', {}))).toBe(false);
     expect(isPasteChord(ev('KeyV', { ctrlKey: true, altKey: true }))).toBe(false);
+  });
+});
+
+describe('countsAsOperatorInput', () => {
+  it.each([
+    ['key_down', true], ['key_press', true], ['mouse_down', true], ['mouse_click', true],
+    ['key_up', false], ['mouse_up', false], ['mouse_move', false], ['mouse_scroll', false], ['input_reset', false],
+  ])('%s → %s', (type, expected) => {
+    expect(countsAsOperatorInput({ type })).toBe(expected);
   });
 });

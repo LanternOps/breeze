@@ -304,7 +304,11 @@ The **Clipboard** chip in the viewer toolbar (it reads **Clipboard off** when bo
 - **Copy remote clipboard** brings the remote clipboard to your machine, for example when the viewer was in the background when something was copied on the remote.
 - **Send clipboard to remote** pushes your clipboard to the remote, for applications where you paste from a menu rather than with a keyboard shortcut.
 
-Pressing the remote's paste shortcut sends your clipboard first. If it can't be delivered (too large, disabled by policy, or the connection dropped), the paste is cancelled with a *Nothing pasted* message instead of pasting whatever was on the remote clipboard before. Connecting to a session no longer overwrites your local clipboard with the remote's.
+A change to the remote clipboard is copied to your machine automatically only when it follows something you did in the session: within about 2 seconds of a key or click you sent to the remote (with the viewer window focused), or of a copy shortcut. Any other change, such as something the end user copied while you were reading the screen, does not overwrite your clipboard. A **Remote clipboard changed** badge appears next to the chip instead; click it to copy the change here. If the remote copied something that can't be synced (a file, for example), the badge says so and cannot be clicked.
+
+Pressing the remote's paste shortcut pastes whichever clipboard changed last. If you copied something on your machine after the remote's last change, it is sent first; if the remote changed after your last copy, the remote pastes its own clipboard and yours is not sent over it. If your clipboard can't be delivered (too large, disabled by policy, the connection dropped, or it holds something that can't be sent, such as a file), the paste is cancelled with a *Nothing pasted* message instead of pasting whatever was on the remote clipboard before. Connecting to a session does not overwrite your local clipboard with the remote's.
+
+With a current agent the viewer also learns about remote clipboard changes it cannot carry (files, images the agent cannot read), sees a repeat copy of identical content, and gets a copied item right after a copy shortcut instead of up to half a second later. Older agents keep the earlier behaviour for those cases.
 
 Clipboard v2 needs agent and Breeze Viewer v0.122.1 or later. With an older agent the chip reports that the agent did not report clipboard status: text only, policy unknown. On a VNC session the clipboard is text only.
 

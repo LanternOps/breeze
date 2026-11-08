@@ -20,7 +20,9 @@ interface Props {
 
 /**
  * Toolbar chip: per-direction clipboard state from the agent, the last
- * transfer, and the two explicit actions. "Copy remote clipboard" is how a
+ * transfer, and the two explicit actions. A remote change held under the
+ * input-recency rule (#11310) shows as a badge beside it that copies it here
+ * in one click. "Copy remote clipboard" is how a
  * background window's skipped remote copy reaches the local clipboard; "Send
  * clipboard to remote" covers menu-driven paste on the remote (spec C1, C3).
  */
@@ -54,7 +56,19 @@ export function ClipboardChip({ input, onCopyRemote, onSendToRemote }: Props) {
   if (!view.visible) return null;
 
   return (
-    <div className="relative" ref={ref}>
+    <div className="relative flex items-center gap-1" ref={ref}>
+      {view.held && (
+        <button
+          data-testid="clipboard-held-badge"
+          disabled={!view.held.canPull}
+          onClick={() => onCopyRemote()}
+          title={view.held.title}
+          className="px-2 py-0.5 text-xs rounded-full bg-blue-900/60 text-blue-100 hover:bg-blue-800 disabled:opacity-70 disabled:cursor-default disabled:hover:bg-blue-900/60"
+        >
+          {view.held.text}
+          {view.held.canPull && <span className="ml-1 font-medium underline">Copy here</span>}
+        </button>
+      )}
       <button
         data-testid="clipboard-chip"
         onClick={() => setOpen(!open)}

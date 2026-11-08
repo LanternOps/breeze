@@ -46,6 +46,7 @@ import {
   viewerShortcut,
   isPasteChord,
   isCopyChord,
+  countsAsOperatorInput,
 } from '../lib/inputSafety';
 import { isServiceModeRefusal, serviceModeRefusalMessage } from '../lib/serviceModeRefusal';
 import { shouldAutoHandoffToVnc, shouldAutoHandoffToWebRTC } from '../lib/autoHandoff';
@@ -228,8 +229,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const inputDestination = params.deviceId ?? (params.mode === 'desktop' ? params.sessionId : params.tunnelId);
   const inputDestinationRef = useRef(inputDestination);
   inputDestinationRef.current = inputDestination;
-  // Input to the remote→local clipboard focus rule (remoteClipboardDecision).
+  // Inputs to the remote→local clipboard rule (remoteClipboardDecision): a
+  // remote change is applied only within 2 s of a key or click sent to the
+  // remote, or of a copy chord (#11310).
   const lastCopyIntentAtRef = useRef<number | null>(null);
+  const lastRemoteInputAtRef = useRef<number | null>(null);
   const wheelAccRef = useRef(DEFAULT_WHEEL_ACCUMULATOR);
   const pasteCancelRef = useRef(false);
   // What the connected agent said it can do with injected text. An agent that
@@ -804,6 +808,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             channel,
             io: clipboardIO,
             hasFocus: () => document.hasFocus(),
+            lastInputAt: () => lastRemoteInputAtRef.current,
             lastCopyIntentAt: () => lastCopyIntentAtRef.current,
             onChange: (state) => {
               if (clipboardSyncRef.current === sync) setClipboardState(state);
@@ -1881,6 +1886,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       return false;
     }
     send(event);
+    if (countsAsOperatorInput(event)) lastRemoteInputAtRef.current = Date.now();
     return true;
   }, [getInputSender]);
 
@@ -2247,7 +2253,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (!target) return;
     const outcome = await target.sendLocalClipboard();
     if (outcome.result === 'failed') setPasteNotice(clipboardFailureMessage(outcome.reason, 'send'));
-    else if (outcome.result === 'empty') setPasteNotice('Your clipboard is empty — nothing was sent.');
+    else if (outcome.result === 'empty') setPasteNotice('Nothing sent — your clipboard is empty or holds something that can\'t be sent to the remote (such as a file).');
   }, [activeClipboard]);
 
   const clipboardChipInput: ClipboardChipInput =

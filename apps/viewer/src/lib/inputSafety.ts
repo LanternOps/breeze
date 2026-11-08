@@ -109,15 +109,24 @@ export function chordRouting(input: ChordRoutingInput): 'key_press' | 'held' {
 /**
  * A push this soon after the operator sent a copy chord in this window belongs
  * to that copy, even if they have since switched away (copy, then Alt-Tab).
- * The agent polls every 500 ms.
+ * The agent polls every 500 ms (and, with changeNotices, reads at once after
+ * an injected copy chord).
  */
 export const REMOTE_CLIPBOARD_COPY_INTENT_MS = 2000;
+/**
+ * A push this soon after the operator's last key or click forwarded to the
+ * remote, in the focused window, follows something they just did there
+ * (#11310). Outside it, the push is held for a one-click pull.
+ */
+export const REMOTE_CLIPBOARD_INPUT_RECENCY_MS = 2000;
 /** The agent pushes the remote clipboard's existing contents on its first poll after the channel opens. */
 export const REMOTE_CLIPBOARD_BASELINE_WINDOW_MS = 3000;
 
 export interface RemoteClipboardState {
   now: number;
   hasFocus: boolean;
+  /** When the operator last sent a key or click to the remote in this window (countsAsOperatorInput). */
+  lastInputAt: number | null;
   /** When the operator last sent a copy chord (isCopyChord) in this window. */
   lastCopyIntentAt: number | null;
   channelOpenedAt: number | null;
@@ -132,15 +141,21 @@ export interface RemoteClipboardState {
 }
 
 /**
- * Whether a remote→local clipboard push may be written to the local clipboard (C1).
+ * Whether a remote→local clipboard push is written to the local clipboard
+ * now ('apply') or held for the operator to pull from the toolbar ('hold').
  *
- * Every open session window receives its remote's clipboard changes. Writing
- * them from background windows lets one customer's clipboard reach the
- * technician's clipboard while they work in another customer's session, and
- * from there get pasted into that other customer's machine. Only the focused
- * window may write, or a background one whose operator just copied in it. A
- * plain "lost focus a moment ago" grace is not enough: it cannot tell the
- * operator's copy from the end user's copy made just after the switch.
+ * A remote clipboard change overwrites the operator's clipboard only when it
+ * follows something the operator just did in this session: a copy chord in
+ * this window in the last 2 s, or, in the focused window, any key or click in
+ * the last 2 s (#11310). Focus alone is not enough: a remote change while the
+ * operator is reading the screen, or working in another app with this window
+ * still frontmost, would overwrite what they had copied locally.
+ *
+ * A background window never applies on input recency (C1): one customer's
+ * clipboard must not reach the technician's clipboard while they work in
+ * another customer's session, and a "used a moment ago" grace cannot tell the
+ * operator's copy from the end user's copy made just after the switch. A copy
+ * chord can: the operator asked for that clipboard.
  *
  * The first push right after the channel opens is whatever the end user had
  * copied before the session started, not something copied during it. Writing
@@ -148,7 +163,7 @@ export interface RemoteClipboardState {
  */
 export function remoteClipboardDecision(
   s: RemoteClipboardState,
-): 'apply' | 'skip-baseline' | 'skip-unfocused' {
+): 'apply' | 'skip-baseline' | 'hold' {
   if (
     !s.suppressesBaseline &&
     s.pushesSeen === 0 &&
@@ -157,9 +172,20 @@ export function remoteClipboardDecision(
   ) {
     return 'skip-baseline';
   }
-  if (s.hasFocus) return 'apply';
   if (s.lastCopyIntentAt !== null && s.now - s.lastCopyIntentAt <= REMOTE_CLIPBOARD_COPY_INTENT_MS) return 'apply';
-  return 'skip-unfocused';
+  if (s.hasFocus && s.lastInputAt !== null && s.now - s.lastInputAt <= REMOTE_CLIPBOARD_INPUT_RECENCY_MS) return 'apply';
+  return 'hold';
+}
+
+const OPERATOR_INPUT_TYPES = new Set(['key_down', 'key_press', 'mouse_down', 'mouse_click']);
+
+/**
+ * Whether an input event sent to the remote is the operator acting in the
+ * session, for remoteClipboardDecision: a key or a click. Releases, motion,
+ * scrolling and resets are not; the viewer sends releases on its own.
+ */
+export function countsAsOperatorInput(event: { type?: unknown }): boolean {
+  return typeof event.type === 'string' && OPERATOR_INPUT_TYPES.has(event.type);
 }
 
 export type ViewerShortcut = 'fullscreen' | 'paste-keystrokes' | 'release-keys';

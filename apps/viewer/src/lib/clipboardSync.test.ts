@@ -65,25 +65,40 @@ const W4A_STATUS = {
 function setup(opts: {
   local?: { text?: string | null; image?: Uint8Array | null };
   focused?: boolean;
+  /** When the operator last sent a key or click; 'now' (default) is always recent. */
+  inputAt?: number | null | 'now';
+  copyIntentAt?: number | null;
   status?: Record<string, unknown> | null;
   now?: () => number;
+  copySettleMs?: number;
 } = {}) {
   const channel = new FakeChannel();
   const io = fakeIO(opts.local);
   let focused = opts.focused ?? true;
+  let inputAt = opts.inputAt === undefined ? 'now' : opts.inputAt;
+  let copyIntentAt = opts.copyIntentAt ?? null;
+  const clock = opts.now ?? Date.now;
   const onChange = vi.fn();
   const sync = new ClipboardSync({
     channel,
     io,
     hasFocus: () => focused,
-    lastCopyIntentAt: () => null,
+    lastInputAt: () => (inputAt === 'now' ? clock() : inputAt),
+    lastCopyIntentAt: () => copyIntentAt,
     now: opts.now,
     onChange,
-    timings: { legacyAckMs: 30, ackMs: 60, bufferWaitMs: 80, pollMs: 2 },
+    timings: { legacyAckMs: 30, ackMs: 60, bufferWaitMs: 80, pollMs: 2, copySettleMs: opts.copySettleMs ?? 200 },
   });
   if (opts.status !== null) channel.deliver(opts.status ?? W4A_STATUS);
-  return { channel, io, sync, onChange, setFocused: (f: boolean) => { focused = f; } };
+  return {
+    channel, io, sync, onChange,
+    setFocused: (f: boolean) => { focused = f; },
+    setInputAt: (t: number | null | 'now') => { inputAt = t; },
+    setCopyIntentAt: (t: number | null) => { copyIntentAt = t; },
+  };
 }
+
+const NOTICES_STATUS = { ...W4A_STATUS, changeNotices: true };
 
 /** Acks every content message the viewer sends, the way a W4a agent does. */
 function autoAck(channel: FakeChannel): void {
@@ -362,13 +377,23 @@ describe('ClipboardSync paste transaction', () => {
     expect(sync.state.lastTransfer).toMatchObject({ direction: 'to-remote', type: 'image', bytes: 6 });
   });
 
-  it('dispatches without a push when the local clipboard is empty or unreadable', async () => {
+  it('refuses the paste, with a reason, when the local clipboard is empty or unreadable (#11310 row 1)', async () => {
+    // A file on the Mac clipboard reads as nothing. Dispatching anyway would
+    // silently paste the remote's older clipboard instead of what the
+    // operator just copied.
     const { channel, sync, io } = setup({ local: { text: null, image: null } });
     io.readText.mockRejectedValueOnce(new Error('denied'));
     const dispatch = vi.fn();
-    expect(await sync.pasteTransaction(dispatch)).toEqual({ result: 'pasted' });
-    expect(dispatch).toHaveBeenCalledOnce();
+    expect(await sync.pasteTransaction(dispatch)).toEqual({ result: 'failed', reason: 'unreadable' });
+    expect(dispatch).not.toHaveBeenCalled();
     expect(channel.sentJson().filter((m) => m.type !== 'hello')).toEqual([]);
+  });
+
+  it('refuses an unreadable-clipboard paste for a legacy agent too (viewer-side rule)', async () => {
+    const { sync } = setup({ local: { text: null, image: null }, status: null });
+    const dispatch = vi.fn();
+    expect(await sync.pasteTransaction(dispatch)).toEqual({ result: 'failed', reason: 'unreadable' });
+    expect(dispatch).not.toHaveBeenCalled();
   });
 
   it('serializes pastes: the second push waits for the first keystroke', async () => {
@@ -428,6 +453,193 @@ describe('ClipboardSync paste transaction', () => {
     const dispatch = vi.fn();
     expect(await sync.pasteTransaction(dispatch)).toEqual({ result: 'pasted' });
     expect(dispatch).toHaveBeenCalledOnce();
+  });
+});
+
+// ── #11310: input-recency policy, held items, change order ───────────────
+
+describe('ClipboardSync input-recency policy (#11310)', () => {
+  it('holds a remote push to the focused window when the operator has not used the session (row 2)', async () => {
+    const { channel, io, sync } = setup({ inputAt: null });
+    channel.deliver({ type: 'text', text: 'changed by itself' });
+    await flush();
+    expect(io.writeText).not.toHaveBeenCalled();
+    expect(sync.state.remoteHeld).toBe('item');
+    expect(sync.state.remoteItemAvailable).toBe(true);
+  });
+
+  it('applies a remote push within 2 s of the operator\'s input', async () => {
+    let now = 50_000;
+    const { channel, io, sync } = setup({ inputAt: 48_500, now: () => now });
+    channel.deliver({ type: 'text', text: 'after a click' });
+    await flush();
+    expect(io.writeText).toHaveBeenCalledWith('after a click');
+    expect(sync.state.remoteHeld).toBeNull();
+    now += 2_000;
+    channel.deliver({ type: 'text', text: 'too late' });
+    await flush();
+    expect(io.writeText).toHaveBeenCalledTimes(1);
+    expect(sync.state.remoteHeld).toBe('item');
+  });
+
+  it('pulling a held item applies it and clears the badge', async () => {
+    const { channel, io, sync } = setup({ inputAt: null });
+    channel.deliver({ type: 'text', text: 'held' });
+    await flush();
+    expect(await sync.copyRemoteClipboard()).toBe(true);
+    expect(io.writeText).toHaveBeenCalledWith('held');
+    expect(sync.state.remoteHeld).toBeNull();
+  });
+
+  it('does not flag a legacy agent\'s skipped baseline as a held change', async () => {
+    const now = 1_000;
+    const { channel, sync } = setup({ status: null, now: () => now, inputAt: null });
+    channel.deliver({ type: 'text', text: 'end-user clipboard' });
+    await flush();
+    expect(sync.state.remoteHeld).toBeNull();
+    expect(sync.state.remoteItemAvailable).toBe(true);
+  });
+});
+
+describe('ClipboardSync change order (#11310)', () => {
+  it('pastes the remote\'s own clipboard when it changed after the local one (held item, local unchanged)', async () => {
+    const { channel, sync, io } = setup({ local: { text: 'older local' }, inputAt: null });
+    autoAck(channel);
+    channel.deliver({ type: 'text', text: 'newer remote' });
+    await flush();
+    const before = channel.sent.length;
+    const dispatch = vi.fn();
+    expect(await sync.pasteTransaction(dispatch)).toEqual({ result: 'pasted' });
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(channel.sent.length).toBe(before);
+    expect(io.writeText).not.toHaveBeenCalled();
+    expect(sync.state.remoteHeld).toBe('item');
+  });
+
+  it('pushes the local clipboard when it changed after the held remote change', async () => {
+    const { channel, sync, io } = setup({ local: { text: 'older local' }, inputAt: null });
+    autoAck(channel);
+    channel.deliver({ type: 'text', text: 'remote' });
+    await flush();
+    io.text = 'copied on the Mac afterwards';
+    const dispatch = vi.fn();
+    expect(await sync.pasteTransaction(dispatch)).toEqual({ result: 'pasted' });
+    expect(channel.sentJson().filter((m) => m.type === 'text')).toEqual([{ type: 'text', text: 'copied on the Mac afterwards' }]);
+    expect(sync.state.remoteHeld).toBeNull();
+  });
+
+  it('treats a remote format the viewer cannot hold (RTF) as a newer remote change', async () => {
+    const { channel, sync } = setup({ local: { text: 'local' } });
+    channel.deliver({ type: 'rtf', rtf: bytesToBase64(new Uint8Array([1, 2, 3])) });
+    await flush();
+    expect(sync.state.remoteHeld).toBe('unsupported');
+    expect(sync.state.remoteItemAvailable).toBe(false);
+    const dispatch = vi.fn();
+    expect(await sync.pasteTransaction(dispatch)).toEqual({ result: 'pasted' });
+    expect(channel.sentJson().filter((m) => m.type === 'text')).toEqual([]);
+  });
+
+  it('does not paste over a remote re-copy made after the last push (row 3)', async () => {
+    // The Mac pastes Y (pushed); the remote then copies X again, which a
+    // changeNotices agent reports even when X is what it last sent. Cmd+V
+    // with the Mac clipboard still Y must paste X, not push Y over it.
+    const { channel, sync } = setup({ local: { text: 'Y' }, status: NOTICES_STATUS, inputAt: null });
+    autoAck(channel);
+    await sync.pasteTransaction(() => {});
+    channel.deliver({ type: 'text', text: 'X' });
+    await flush();
+    // Local still Y, unchanged since the remote's X: the remote is newer.
+    const dispatch = vi.fn();
+    const before = channel.sent.length;
+    await sync.pasteTransaction(dispatch);
+    expect(channel.sent.length).toBe(before);
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+});
+
+describe('ClipboardSync change notices (#11310 rows 5–6)', () => {
+  it('asks for change notices in its hello only when the agent offers them', () => {
+    const { channel } = setup({ status: NOTICES_STATUS });
+    expect(channel.sentJson()).toEqual([{ type: 'hello', chunked: true, changeNotices: true }]);
+    expect(setup().channel.sentJson()).toEqual([{ type: 'hello', chunked: true }]);
+  });
+
+  it('a remote file copy is held as unsupported, and an unchanged local clipboard is not pushed over it', async () => {
+    const { channel, sync } = setup({ local: { text: 'Mac text' }, status: NOTICES_STATUS });
+    autoAck(channel);
+    channel.deliver({ type: 'text', text: 'earlier remote' });
+    await flush();
+    channel.deliver({ type: 'unsupported', seq: 4 });
+    await flush();
+    expect(sync.state.remoteHeld).toBe('unsupported');
+    expect(sync.state.remoteItemAvailable).toBe(false);
+    expect(await sync.copyRemoteClipboard()).toBe(false);
+    const dispatch = vi.fn();
+    expect(await sync.pasteTransaction(dispatch)).toEqual({ result: 'pasted' });
+    expect(channel.sentJson().filter((m) => m.type === 'text')).toEqual([]);
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  it('pushes once the local clipboard changes after the unsupported remote change', async () => {
+    const { channel, sync, io } = setup({ local: { text: 'Mac text' }, status: NOTICES_STATUS });
+    autoAck(channel);
+    channel.deliver({ type: 'unsupported', seq: 1 });
+    await flush();
+    io.text = 'new Mac text';
+    await sync.pasteTransaction(() => {});
+    expect(channel.sentJson().filter((m) => m.type === 'text')).toEqual([{ type: 'text', text: 'new Mac text' }]);
+    expect(sync.state.remoteHeld).toBeNull();
+  });
+
+  it('an empty remote clipboard makes the next paste push, even content synced before', async () => {
+    const { channel, sync } = setup({ local: { text: 'same' }, status: NOTICES_STATUS });
+    autoAck(channel);
+    await sync.pasteTransaction(() => {});
+    const before = channel.sent.length;
+    channel.deliver({ type: 'unsupported', seq: 2, empty: true });
+    await flush();
+    expect(sync.state.remoteHeld).toBeNull();
+    await sync.pasteTransaction(() => {});
+    expect(channel.sent.length).toBe(before + 1);
+  });
+
+  it('ignores a change notice from an agent that did not offer them', async () => {
+    const { channel, sync } = setup({ local: { text: 'Mac' } });
+    autoAck(channel);
+    channel.deliver({ type: 'unsupported', seq: 1 });
+    await flush();
+    expect(sync.state.remoteHeld).toBeNull();
+  });
+});
+
+describe('ClipboardSync copy chord then quick paste (#11310 row 4)', () => {
+  it('with a changeNotices agent, waits briefly for the copy to arrive instead of pushing the older local clipboard', async () => {
+    const { channel, sync, io } = setup({ local: { text: 'older Mac clipboard' }, status: NOTICES_STATUS, copyIntentAt: Date.now() });
+    autoAck(channel);
+    setTimeout(() => channel.deliver({ type: 'text', text: 'fresh remote copy' }), 40);
+    io.writeText.mockImplementation(async (t: string) => { io.text = t; });
+    const dispatch = vi.fn();
+    expect(await sync.pasteTransaction(dispatch)).toEqual({ result: 'pasted' });
+    expect(io.writeText).toHaveBeenCalledWith('fresh remote copy');
+    expect(channel.sentJson().filter((m) => m.type === 'text')).toEqual([]);
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  it('gives up waiting after the settle window when the copy changed nothing', async () => {
+    const { channel, sync } = setup({ local: { text: 'Mac' }, status: NOTICES_STATUS, copyIntentAt: Date.now(), copySettleMs: 50 });
+    autoAck(channel);
+    const started = Date.now();
+    expect(await sync.pasteTransaction(() => {})).toEqual({ result: 'pasted' });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(40);
+    expect(Date.now() - started).toBeLessThan(150);
+  });
+
+  it('does not wait for an agent without change notices (today\'s behaviour)', async () => {
+    const { channel, sync } = setup({ local: { text: 'Mac' }, copyIntentAt: Date.now(), copySettleMs: 500 });
+    autoAck(channel);
+    const started = Date.now();
+    await sync.pasteTransaction(() => {});
+    expect(Date.now() - started).toBeLessThan(150);
   });
 });
 
