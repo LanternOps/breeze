@@ -378,6 +378,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // MFA_*
   MFA_FORCE_FOR_PARTNER_ADMIN: 'auth policy flag',
   // MIGRATION_*
+  MIGRATION_LOCK_TIMEOUT_MS: 'boot migration lock wait deadline',
   MIGRATION_WINDOW_DEFAULT_WRITES_PER_HOUR: 'rate limit knob',
   MIGRATION_WINDOW_MAX_DAYS: 'timing knob',
   MIGRATION_WINDOW_MAX_WRITES_PER_HOUR: 'rate limit knob',

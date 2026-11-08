@@ -7568,6 +7568,42 @@
       "create": "Der Kontakt konnte nicht hinzugefügt werden.",
       "update": "Der Kontakt konnte nicht gespeichert werden.",
       "delete": "Der Kontakt konnte nicht gelöscht werden."
+    },
+    "portal": {
+      "column": "Portal",
+      "status": {
+        "none": "Kein Zugang",
+        "invited": "Eingeladen",
+        "active": "Aktiv",
+        "disabled": "Deaktiviert"
+      },
+      "actions": {
+        "give": "Portalzugang geben",
+        "resend": "Einladung erneut senden",
+        "bulkGive": "Portalzugang geben ({{count}})",
+        "selectAll": "Alle Kontakte auf dieser Seite auswählen",
+        "selectRow": "{{name}} auswählen"
+      },
+      "form": {
+        "giveAccess": "Portalzugang geben (sendet eine Einladung an diese E-Mail-Adresse)",
+        "needsEmail": "Fügen Sie eine E-Mail-Adresse hinzu, um Portalzugang zu geben."
+      },
+      "toasts": {
+        "invited": "Portaleinladung gesendet",
+        "inviteEmailFailed": "Portal-Login erstellt, aber die Einladungs-E-Mail konnte nicht gesendet werden. Verwenden Sie „Einladung erneut senden“.",
+        "bulkSummary": "Portalzugang: {{details}}"
+      },
+      "outcomes": {
+        "invited": "Eingeladen: {{count}}",
+        "already_has_access": "Hat bereits Zugang: {{count}}",
+        "no_email": "Keine E-Mail-Adresse: {{count}}",
+        "email_bound_to_other_contact": "E-Mail von anderem Kontakt verwendet: {{count}}",
+        "duplicate_email_in_batch": "Doppelte E-Mail in der Auswahl: {{count}}"
+      },
+      "errors": {
+        "invite": "Portalzugang konnte nicht gegeben werden.",
+        "bulkInvite": "Portalzugang konnte für die ausgewählten Kontakte nicht gegeben werden."
+      }
     }
   },
   "bulkContactImport": {

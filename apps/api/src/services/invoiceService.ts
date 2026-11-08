@@ -10,6 +10,7 @@ import {
   catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets,
   accountingEntityMappings, accountingConnections, portalBranding, aiUsageCharges
 } from '../db/schema';
+import { sqlOpenForOverdue } from '../db/schema/invoices';
 import { getConnection } from './stripeConnectService';
 import { computeLineTotal, computeInvoiceTotals, resolveEffectiveTaxRate, deriveInvoiceStatus, toCents, fromCents } from './invoiceMath';
 import { computeDueDate, resolveInvoiceTermsDays } from './invoiceTerms';
@@ -1966,9 +1967,10 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
  *  The locking payment writers (recordPayment, voidPayment, recordStripePayment)
  *  hold the invoice row lock and pass their `tx`, so the sum read here is
  *  consistent with the write (B10) — a global-db call from a locked writer
- *  would escape the transaction and race the lock it holds. Exception:
- *  reflectStripeRefund (stripeReconcile.ts) does NOT lock the invoice row
- *  before calling this — deliberately deferred, tracked as #3803 item 1. */
+ *  would escape the transaction and race the lock it holds. Stripe refunds and
+ *  disputes reach this through applyStripeFinancialEvent (stripeReversalState.ts),
+ *  which takes the invoice row FOR UPDATE first and calls this with the ambient
+ *  `db`, i.e. inside that same system-context transaction. */
 export async function recomputeInvoiceStatus(invoiceId: string, dbc: DbExecutor = db): Promise<void> {
   const inv = await getOwnedInvoiceOr404(invoiceId, dbc);
   const paidRows = await dbc.select({ amount: invoicePayments.amount }).from(invoicePayments).where(eq(invoicePayments.invoiceId, invoiceId));
@@ -2767,14 +2769,25 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
   return getInvoice(invoiceId, actor);
 }
 
-/** Daily sweep: flip sent/partially_paid past their due date (balance>0) to overdue. */
+/**
+ * Daily sweep: flip sent/partially_paid past their due date (balance>0) to overdue.
+ *
+ * One guarded UPDATE ... RETURNING (#3803 item 2), not select-then-update-by-id.
+ * Payment record/void, void and due-date changes all hold the invoice row
+ * FOR UPDATE while they write. When this UPDATE reaches a row one of them holds,
+ * it waits; once that writer commits, Postgres re-evaluates this WHERE against
+ * the committed row (READ COMMITTED re-check). An invoice paid, voided or given
+ * a later due date in that window no longer matches and is left alone. The old
+ * update keyed on id alone and stamped those rows overdue, a voided invoice
+ * included.
+ */
 export async function runOverdueSweep(asOf: Date = new Date()): Promise<number> {
-  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+  const flipped = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const today = asOf.toISOString().slice(0, 10);
-    const due = await db.select({ id: invoices.id, orgId: invoices.orgId, partnerId: invoices.partnerId })
-      .from(invoices)
+    return db.update(invoices)
+      .set({ status: 'overdue', markedOverdueAt: asOf, updatedAt: asOf })
       .where(and(
-        inArray(invoices.status, ['sent', 'partially_paid'] as never),
+        sqlOpenForOverdue(invoices),
         lt(invoices.dueDate, today),
         sql`${invoices.balance} > 0`,
         // Org-lifecycle Wave 4: never flip an ARCHIVED/purging/merging tenant's
@@ -2783,13 +2796,16 @@ export async function runOverdueSweep(asOf: Date = new Date()): Promise<number> 
         // → notification/webhook) would be work nobody can see or act on,
         // landing inside a tenant counting down to erasure.
         buildAutomationEligibleOrgPredicate(invoices.orgId),
-      ));
-    for (const r of due) {
-      await db.update(invoices).set({ status: 'overdue', markedOverdueAt: asOf, updatedAt: asOf }).where(eq(invoices.id, r.id));
-      await emitInvoiceEvent({ type: 'invoice.overdue', invoiceId: r.id, orgId: r.orgId, partnerId: r.partnerId });
-    }
-    return due.length;
+      ))
+      .returning({ id: invoices.id, orgId: invoices.orgId, partnerId: invoices.partnerId });
   }));
+  // Announce only rows this sweep actually flipped, and only after its
+  // transaction has committed: no Redis round-trip while the row locks are held,
+  // and no event for a status change that rolled back.
+  for (const r of flipped) {
+    await emitInvoiceEvent({ type: 'invoice.overdue', invoiceId: r.id, orgId: r.orgId, partnerId: r.partnerId });
+  }
+  return flipped.length;
 }
 
 /** Portal/email open: stamp viewed timestamps (independent of status). */

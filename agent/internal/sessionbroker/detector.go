@@ -44,6 +44,12 @@ type DetectedSession struct {
 	// "could not tell", not "nobody is signed in", and callers that gate
 	// behavior on a signed-in user must not treat it as the latter.
 	UsernameUnknown bool `json:"-"`
+	// UsernameErr is why the username could not be read when UsernameUnknown
+	// is set (on Windows the WTSQuerySessionInformationW error, a
+	// syscall.Errno when Win32 recorded one), so a caller that acts on the
+	// unknown can log the cause. Nil otherwise, and nil on platforms that do
+	// not report one.
+	UsernameErr error `json:"-"`
 
 	// IdleFor is how long the session has gone without user input. Only
 	// meaningful when IdleKnown is true; platforms that cannot measure input

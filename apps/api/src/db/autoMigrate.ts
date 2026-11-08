@@ -7,6 +7,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import { ensureAppRole } from './ensureAppRole';
+import {
+  acquireMigrationAdvisoryLock,
+  releaseMigrationAdvisoryLock,
+  type MigrationLockWaitOptions,
+} from './migrationAdvisoryLock';
 import { seed } from './seed';
 
 const MIGRATION_FILE_PATTERN = /^\d{4}-.*\.sql$/;
@@ -681,21 +686,29 @@ export const CORE_MIGRATION_LOCK_KEY = 'breeze-core-migrations';
  * idempotent and the ledger INSERT is `ON CONFLICT DO NOTHING`, but a lock
  * removes the window entirely rather than relying on that.
  *
+ * The wait is bounded (#4144): a holder that never lets go fails this boot
+ * with a `MigrationLockTimeoutError` naming its pid after
+ * `MIGRATION_LOCK_TIMEOUT_MS`, instead of stalling it forever. See
+ * `migrationAdvisoryLock.ts`.
+ *
  * `client` here is the SAME `postgres(connectionString, { max: 1 })` pool
  * used for the rest of the run: with a pool ceiling of 1 there is only ever
  * one physical connection to hand out, so every query for the life of this
  * function — transactional or not — runs on that one backend session, and a
- * session-scoped `pg_advisory_lock` taken on it before any other query stays
+ * session-scoped advisory lock taken on it before any other query stays
  * held for the whole run. A separately `.reserve()`d connection (the
  * extension migrator's approach, needed there because it shares a
  * general-purpose pool) would be redundant here.
  */
-async function acquireCoreMigrationLock(client: postgres.Sql): Promise<void> {
-  await client`SELECT pg_advisory_lock(hashtextextended(${CORE_MIGRATION_LOCK_KEY}, 0))`;
+async function acquireCoreMigrationLock(
+  client: postgres.Sql,
+  wait: MigrationLockWaitOptions = {},
+): Promise<void> {
+  await acquireMigrationAdvisoryLock(client, CORE_MIGRATION_LOCK_KEY, { ...wait, label: '[auto-migrate]' });
 }
 
 async function releaseCoreMigrationLock(client: postgres.Sql): Promise<void> {
-  await client`SELECT pg_advisory_unlock(hashtextextended(${CORE_MIGRATION_LOCK_KEY}, 0))`;
+  await releaseMigrationAdvisoryLock(client, CORE_MIGRATION_LOCK_KEY);
 }
 
 /**
@@ -719,6 +732,12 @@ export interface AutoMigrateOptions {
    * aborts the run like a failing migration would.
    */
   afterMigration?: (client: postgres.Sql, filename: string) => Promise<void>;
+  /**
+   * Overrides for the bounded core-lock wait (#4144). Production leaves this
+   * unset, so the wait comes from `MIGRATION_LOCK_TIMEOUT_MS`. The integration
+   * suite passes a short deadline here instead of changing the environment.
+   */
+  lockWait?: MigrationLockWaitOptions;
 }
 
 export async function autoMigrate(options: AutoMigrateOptions = {}): Promise<void> {
@@ -734,7 +753,7 @@ export async function autoMigrate(options: AutoMigrateOptions = {}): Promise<voi
   const client = postgres(connectionString, { max: 1, max_lifetime: 0 });
 
   try {
-    await acquireCoreMigrationLock(client);
+    await acquireCoreMigrationLock(client, options.lockWait);
     try {
       await runCoreMigrations(client, options);
     } finally {

@@ -7568,6 +7568,42 @@
       "create": "No se pudo agregar el contacto.",
       "update": "No se pudo guardar el contacto.",
       "delete": "No se pudo eliminar el contacto."
+    },
+    "portal": {
+      "column": "Portal",
+      "status": {
+        "none": "Sin acceso",
+        "invited": "Invitado",
+        "active": "Activo",
+        "disabled": "Deshabilitado"
+      },
+      "actions": {
+        "give": "Dar acceso al portal",
+        "resend": "Reenviar invitación",
+        "bulkGive": "Dar acceso al portal ({{count}})",
+        "selectAll": "Seleccionar todos los contactos de esta página",
+        "selectRow": "Seleccionar a {{name}}"
+      },
+      "form": {
+        "giveAccess": "Dar acceso al portal (envía una invitación a este correo electrónico)",
+        "needsEmail": "Agrega un correo electrónico para dar acceso al portal."
+      },
+      "toasts": {
+        "invited": "Invitación al portal enviada",
+        "inviteEmailFailed": "Se creó el acceso al portal, pero no se pudo enviar el correo de invitación. Usa Reenviar invitación.",
+        "bulkSummary": "Acceso al portal: {{details}}"
+      },
+      "outcomes": {
+        "invited": "Invitados: {{count}}",
+        "already_has_access": "Ya tienen acceso: {{count}}",
+        "no_email": "Sin correo electrónico: {{count}}",
+        "email_bound_to_other_contact": "Correo usado por otro contacto: {{count}}",
+        "duplicate_email_in_batch": "Correo duplicado en la selección: {{count}}"
+      },
+      "errors": {
+        "invite": "No se pudo dar acceso al portal.",
+        "bulkInvite": "No se pudo dar acceso al portal a los contactos seleccionados."
+      }
     }
   },
   "bulkContactImport": {

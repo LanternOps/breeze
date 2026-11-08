@@ -7659,6 +7659,42 @@
       "create": "Could not add the contact.",
       "update": "Could not save the contact.",
       "delete": "Could not delete the contact."
+    },
+    "portal": {
+      "column": "Portal",
+      "status": {
+        "none": "No access",
+        "invited": "Invited",
+        "active": "Active",
+        "disabled": "Disabled"
+      },
+      "actions": {
+        "give": "Give portal access",
+        "resend": "Resend invite",
+        "bulkGive": "Give portal access ({{count}})",
+        "selectAll": "Select all contacts on this page",
+        "selectRow": "Select {{name}}"
+      },
+      "form": {
+        "giveAccess": "Give portal access (sends an invite to this email address)",
+        "needsEmail": "Add an email address to give portal access."
+      },
+      "toasts": {
+        "invited": "Portal invite sent",
+        "inviteEmailFailed": "Portal login created, but the invite email could not be sent. Use Resend invite.",
+        "bulkSummary": "Portal access: {{details}}"
+      },
+      "outcomes": {
+        "invited": "Invited: {{count}}",
+        "already_has_access": "Already has access: {{count}}",
+        "no_email": "No email address: {{count}}",
+        "email_bound_to_other_contact": "Email used by another contact: {{count}}",
+        "duplicate_email_in_batch": "Duplicate email in selection: {{count}}"
+      },
+      "errors": {
+        "invite": "Could not give portal access.",
+        "bulkInvite": "Could not give portal access to the selected contacts."
+      }
     }
   },
   "scriptAuthoringPage": {

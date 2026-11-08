@@ -2,9 +2,19 @@
  * Cross-process agent command relay (wave 3.5b, #4084).
  *
  * A worker process (no local WebSocket) that needs to reach an agent enqueues
- * a job on `agent-command-relay`; only a process that may own sockets
- * (`BREEZE_ROLE !== 'worker'`) consumes it (agentCommandRelayWorker.ts) and
- * performs the actual local send. This module holds the shared primitives:
+ * a job for the API instance that owns the agent's socket; only a process
+ * that may own sockets (`BREEZE_ROLE !== 'worker'`) consumes it
+ * (agentCommandRelayWorker.ts) and performs the actual local send.
+ *
+ * Every socket-owning instance has its OWN queue, `agent-command-relay-<id>`,
+ * keyed by its per-boot `INSTANCE_ID` (#4134). The producer reads the agent's
+ * presence lease and enqueues on the queue of the instance the lease names,
+ * so a consumer only ever sees jobs for sockets it can own. With one shared
+ * queue, any API consumer could take a job for another instance's socket and
+ * could only ack `offline`/`owner_mismatch`. The consumer's fencing check
+ * stays as the fallback for a lease that moved after the job was built.
+ *
+ * This module holds the shared primitives:
  *
  *   - a sealed, AAD-bound envelope for the relay job payload (SNMP/discovery/
  *     backup commands carry DECRYPTED credentials — the job persists in Redis,
@@ -39,7 +49,105 @@ async function socketLocal(): Promise<{
   return import('../routes/agentWs');
 }
 
-export const AGENT_COMMAND_RELAY_QUEUE = 'agent-command-relay';
+/**
+ * The single shared queue every API consumer drained before #4134. Builds
+ * from before then still use it while a deploy replaces them. Once none run,
+ * nothing enqueues on it, and the shard sweep removes what they left once no
+ * consumer is connected to it (see agentCommandRelayShard.ts).
+ */
+export const LEGACY_AGENT_COMMAND_RELAY_QUEUE = 'agent-command-relay';
+const SHARD_QUEUE_PREFIX = `${LEGACY_AGENT_COMMAND_RELAY_QUEUE}-`;
+// INSTANCE_ID is a UUID. The bound keeps the name a plain token: BullMQ
+// rejects ':' in a queue name, and the shard sweep matches these names with a
+// Redis glob, so no glob metacharacter may appear in one either.
+const INSTANCE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * Nobody reads the relay queues' BullMQ event streams (acks travel on their
+ * own keys, never QueueEvents). BullMQ's 10,000-entry default per queue is
+ * what filled a `noeviction` Redis in a past `maxmemory` incident, so the
+ * producer handle caps it. The cap is stored in the queue's meta hash when a
+ * handle is built; a queue whose meta is first written by a job add (after an
+ * obliterate, say) gets BullMQ's default until the sweep removes it.
+ */
+export const RELAY_QUEUE_EVENTS_MAX_LEN = 1_000;
+
+/**
+ * Shard owner key: held by the one consumer of `agent-command-relay-<id>`.
+ * It is the second-consumer guard (agentCommandRelayShard.ts) and the
+ * producer's test that a shard has a consumer at all.
+ */
+export function relayShardOwnerKey(instanceId: string): string {
+  return `agent-relay-shard:${instanceId}`;
+}
+
+const REDIS_FAILURE_LOG_INTERVAL_MS = 60_000;
+const redisFailureLog = new Map<string, { at: number; suppressed: number }>();
+
+/**
+ * Warn about a relay Redis call that failed and was answered by a fallback.
+ * At most one line per operation per minute, with a count of what was
+ * suppressed, so a refresh loop during an outage stays readable.
+ */
+export function logRelayRedisFailure(operation: string, err: unknown): void {
+  const now = Date.now();
+  const entry = redisFailureLog.get(operation);
+  if (entry && now - entry.at < REDIS_FAILURE_LOG_INTERVAL_MS) {
+    entry.suppressed += 1;
+    return;
+  }
+  const suppressed = entry?.suppressed ?? 0;
+  redisFailureLog.set(operation, { at: now, suppressed: 0 });
+  console.warn(
+    `[agentCommandRelay] ${operation} failed${suppressed > 0 ? ` (${suppressed} more since the last report)` : ''}:`,
+    err instanceof Error ? err.message : err,
+  );
+}
+
+/** TEST ONLY: forget the failure-log rate limit. */
+export function __resetRelayRedisFailureLogForTests(): void {
+  redisFailureLog.clear();
+}
+
+/**
+ * Whether a consumer owns the shard `instanceId`. A failed read counts as
+ * live: the producer then enqueues as it would have before the check, and a
+ * sweep never removes a shard on doubt.
+ */
+export async function isRelayShardLive(instanceId: string): Promise<boolean> {
+  const redis = getRedis();
+  if (!redis) return true;
+  try {
+    return (await redis.exists(relayShardOwnerKey(instanceId))) === 1;
+  } catch (err) {
+    logRelayRedisFailure('relay shard liveness read', err);
+    return true;
+  }
+}
+
+/** The relay queue consumed only by the instance `instanceId`. */
+export function agentCommandRelayQueueName(instanceId: string): string {
+  if (!INSTANCE_ID_PATTERN.test(instanceId)) {
+    throw new Error(`[agentCommandRelay] instance id ${JSON.stringify(instanceId)} cannot name a relay shard queue`);
+  }
+  return `${SHARD_QUEUE_PREFIX}${instanceId}`;
+}
+
+export type RelayQueueOwner =
+  | { kind: 'shard'; instanceId: string }
+  | { kind: 'legacy' };
+
+/**
+ * Who a relay queue name belongs to: one instance's shard, or the legacy
+ * shared queue. `null` for any name that is not a relay queue.
+ */
+export function relayQueueOwner(name: string): RelayQueueOwner | null {
+  if (name === LEGACY_AGENT_COMMAND_RELAY_QUEUE) return { kind: 'legacy' };
+  if (!name.startsWith(SHARD_QUEUE_PREFIX)) return null;
+  const instanceId = name.slice(SHARD_QUEUE_PREFIX.length);
+  return INSTANCE_ID_PATTERN.test(instanceId) ? { kind: 'shard', instanceId } : null;
+}
+
 export const RELAY_DELIVERY_DEADLINE_MS = 5_000;
 const ACK_POLL_INTERVAL_MS = 100;
 const ACK_TTL_MS = 30_000;
@@ -170,20 +278,43 @@ export async function awaitRelayAck(relayId: string, deadlineMs: number): Promis
   }
 }
 
-let relayQueue: Queue<RelayJobData> | null = null;
+// Producer handles, one per target instance. They share the BullMQ connection,
+// so a handle is cheap. Instance ids change on every API restart, so the map
+// is bounded: the least recently used handle (a long-gone instance, in
+// practice) is closed. A handle in use is the most recently used, so only more
+// than 32 instances in use at once could close one under an in-flight add,
+// which would then fail as `infrastructure_error`.
+const MAX_CACHED_RELAY_QUEUES = 32;
+const relayQueues = new Map<string, Queue<RelayJobData>>();
 
-export function getAgentCommandRelayQueue(): Queue<RelayJobData> {
-  if (!relayQueue) {
-    relayQueue = createInstrumentedQueue<RelayJobData>(AGENT_COMMAND_RELAY_QUEUE);
+/** Producer handle for the shard queue consumed by `instanceId`. */
+export function getAgentCommandRelayQueue(instanceId: string): Queue<RelayJobData> {
+  const name = agentCommandRelayQueueName(instanceId);
+  const cached = relayQueues.get(name);
+  if (cached) {
+    // Re-insert so the map's iteration order stays least-recently-used first.
+    relayQueues.delete(name);
+    relayQueues.set(name, cached);
+    return cached;
   }
-  return relayQueue;
+  const queue = createInstrumentedQueue<RelayJobData>(name, {
+    streams: { events: { maxLen: RELAY_QUEUE_EVENTS_MAX_LEN } },
+  });
+  relayQueues.set(name, queue);
+  if (relayQueues.size > MAX_CACHED_RELAY_QUEUES) {
+    const [oldestName, oldest] = relayQueues.entries().next().value as [string, Queue<RelayJobData>];
+    relayQueues.delete(oldestName);
+    void oldest.close().catch((err: unknown) => {
+      console.warn(`[agentCommandRelay] closing evicted relay queue handle ${oldestName} failed:`, err);
+    });
+  }
+  return queue;
 }
 
 export async function shutdownAgentCommandRelayQueue(): Promise<void> {
-  if (relayQueue) {
-    await relayQueue.close();
-    relayQueue = null;
-  }
+  const queues = [...relayQueues.values()];
+  relayQueues.clear();
+  await Promise.all(queues.map((queue) => queue.close()));
 }
 
 export async function isAgentConnectedAnywhere(agentId: string): Promise<boolean> {
@@ -218,6 +349,20 @@ export async function dispatchCommandToAgent(
   const lease = await readAgentPresence(agentId);
   if (!lease) return { status: 'offline' };
 
+  try {
+    agentCommandRelayQueueName(lease.instanceId);
+  } catch (err) {
+    return {
+      status: 'infrastructure_error',
+      message: `relay enqueue failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  // A lease can outlive its instance by up to its TTL: a crash, or a shutdown
+  // whose lease clears did not land. No consumer reads that instance's shard,
+  // so answer now rather than park a job nobody takes and time out. The shared
+  // queue answered the same case at once, through another instance's consumer.
+  if (!(await isRelayShardLive(lease.instanceId))) return { status: 'offline' };
+
   const relayId = randomUUID();
   const expiresAt = Date.now() + RELAY_DELIVERY_DEADLINE_MS;
   const binding: RelayEnvelopeBinding = {
@@ -238,7 +383,9 @@ export async function dispatchCommandToAgent(
     expiresAt, sealedCommand,
   };
   try {
-    await getAgentCommandRelayQueue().add('relay-send', data, {
+    // The lease names the socket owner: its own shard is the only queue a
+    // consumer that can deliver this command reads.
+    await getAgentCommandRelayQueue(lease.instanceId).add('relay-send', data, {
       jobId: `relay-${relayId}`,
       attempts: 1, // at-most-once: claims (not BullMQ retries) guard the send
       priority: opts.priority === 'probe' ? 1 : 10,

@@ -7568,6 +7568,42 @@
       "create": "Kişi eklenemedi.",
       "update": "Kişi kaydedilemedi.",
       "delete": "Kişi silinemedi."
+    },
+    "portal": {
+      "column": "Portal",
+      "status": {
+        "none": "Erişim yok",
+        "invited": "Davet edildi",
+        "active": "Etkin",
+        "disabled": "Devre dışı"
+      },
+      "actions": {
+        "give": "Portal erişimi ver",
+        "resend": "Daveti yeniden gönder",
+        "bulkGive": "Portal erişimi ver ({{count}})",
+        "selectAll": "Bu sayfadaki tüm kişileri seç",
+        "selectRow": "{{name}} kişisini seç"
+      },
+      "form": {
+        "giveAccess": "Portal erişimi ver (bu e-posta adresine davet gönderir)",
+        "needsEmail": "Portal erişimi vermek için bir e-posta adresi ekleyin."
+      },
+      "toasts": {
+        "invited": "Portal daveti gönderildi",
+        "inviteEmailFailed": "Portal girişi oluşturuldu ancak davet e-postası gönderilemedi. Daveti yeniden gönder seçeneğini kullanın.",
+        "bulkSummary": "Portal erişimi: {{details}}"
+      },
+      "outcomes": {
+        "invited": "Davet edilen: {{count}}",
+        "already_has_access": "Zaten erişimi olan: {{count}}",
+        "no_email": "E-posta adresi olmayan: {{count}}",
+        "email_bound_to_other_contact": "E-postası başka bir kişide kullanılan: {{count}}",
+        "duplicate_email_in_batch": "Seçimde yinelenen e-posta: {{count}}"
+      },
+      "errors": {
+        "invite": "Portal erişimi verilemedi.",
+        "bulkInvite": "Seçilen kişilere portal erişimi verilemedi."
+      }
     }
   },
   "bulkContactImport": {

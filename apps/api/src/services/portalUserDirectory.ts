@@ -21,6 +21,8 @@ type PortalUserListRow = {
   receiveNotifications: boolean;
   lastLoginAt: Date | null;
   invitedAt: Date | null;
+  contactId: string | null;
+  authMethod: string;
 };
 
 // A portal user is 'active' only once they've actually set a password
@@ -42,7 +44,11 @@ function toListItem(row: PortalUserListRow) {
     effectiveStatus: effectivePortalStatus(row),
     receiveNotifications: row.receiveNotifications,
     lastLoginAt: row.lastLoginAt,
-    invitedAt: row.invitedAt
+    invitedAt: row.invitedAt,
+    // The Contacts tab joins logins to contacts by `contactId` and counts only
+    // password-method logins as portal access (portal registration W1, #11378).
+    contactId: row.contactId,
+    authMethod: row.authMethod
   };
 }
 
@@ -58,7 +64,9 @@ export async function listPortalUsersForOrg(orgId: string): Promise<PortalUserLi
     status: portalUsers.status,
     receiveNotifications: portalUsers.receiveNotifications,
     lastLoginAt: portalUsers.lastLoginAt,
-    invitedAt: portalUsers.invitedAt
+    invitedAt: portalUsers.invitedAt,
+    contactId: portalUsers.contactId,
+    authMethod: portalUsers.authMethod
   }).from(portalUsers).where(eq(portalUsers.orgId, orgId)).orderBy(desc(portalUsers.createdAt));
   return rows.map(toListItem);
 }

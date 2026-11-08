@@ -770,6 +770,7 @@ x-api-env: &api-env
   REDIS_MEMORY_CAPTURE_THROTTLE_MS: ${REDIS_MEMORY_CAPTURE_THROTTLE_MS:-}
   # Startup + agent-fleet behaviour
   AUTO_MIGRATE: ${AUTO_MIGRATE:-}
+  MIGRATION_LOCK_TIMEOUT_MS: ${MIGRATION_LOCK_TIMEOUT_MS:-}
   AGENT_AUTO_PROMOTE: ${AGENT_AUTO_PROMOTE:-}
   AGENT_EDITION_AUTO_MIGRATE_ENABLED: ${AGENT_EDITION_AUTO_MIGRATE_ENABLED:-}
   # Caller verification (#6354): exact true only, default ON (link tier). Workstation tier is dark (default off).
@@ -1051,6 +1052,9 @@ services:
       PUBLIC_ABUSE_CONTACT: ${PUBLIC_ABUSE_CONTACT:-}
       PUBLIC_SECURITY_CONTACT: ${PUBLIC_SECURITY_CONTACT:-}
       PUBLIC_SECURITY_POLICY_URL: ${PUBLIC_SECURITY_POLICY_URL:-}
+      # Network Proxy host mode (#11300): the dashboard CSP frame-src must allow
+      # the tunnel origin, and the image is built without it.
+      TUNNEL_ORIGIN_TEMPLATE: ${TUNNEL_ORIGIN_TEMPLATE:-}
     depends_on:
       api:
         condition: service_healthy
