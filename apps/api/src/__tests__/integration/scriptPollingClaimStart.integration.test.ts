@@ -76,8 +76,8 @@ function gate() {
   return { wait: () => wait, open: () => open() };
 }
 
-/** Polls pg_stat_activity until some client backend is blocked on a lock (or `p` settles). */
-async function blockedOnLock(p: Promise<unknown>, timeoutMs = 15_000): Promise<boolean> {
+/** Polls until some client backend is waiting on a lock HELD BY `holderPid` (or `p` settles). */
+async function blockedBy(holderPid: number, p: Promise<unknown>, timeoutMs = 15_000): Promise<boolean> {
   let settled = false;
   p.then(() => { settled = true; }, () => { settled = true; });
   const deadline = Date.now() + timeoutMs;
@@ -85,12 +85,11 @@ async function blockedOnLock(p: Promise<unknown>, timeoutMs = 15_000): Promise<b
     const rows = await getTestDb().execute<{ pid: number }>(sql`
       SELECT pid FROM pg_stat_activity
       WHERE datname = current_database() AND backend_type = 'client backend'
-        AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()
-        AND cardinality(pg_blocking_pids(pid)) > 0`);
+        AND ${holderPid}::int = ANY(pg_blocking_pids(pid))`);
     if ([...rows].length > 0) return true;
     await new Promise((r) => setTimeout(r, 20));
   }
-  if (!settled) throw new Error('blockedOnLock: the writer neither blocked nor settled');
+  if (!settled) throw new Error('blockedBy: the writer neither blocked nor settled');
   return false;
 }
 
@@ -140,26 +139,30 @@ describe('polling claim records script start (#7279)', () => {
   it('re-checks the CAS after waiting on a concurrent terminal write (no resurrection)', async () => {
     const held = gate();
     const reached = gate();
+    let holderPid = 0;
     // Holds the execution row lock with an uncommitted terminal write.
     const terminal = withSystemDbAccessContext(() => db.transaction(async (tx) => {
       await tx.update(scriptExecutions).set({ status: 'failed', completedAt: new Date(), errorMessage: 'cancelled elsewhere' })
         .where(eq(scriptExecutions.id, scn.executionId));
+      const [row] = [...await tx.execute<{ pid: number }>(sql`SELECT pg_backend_pid() AS pid`)];
+      holderPid = Number(row!.pid);
       reached.open();
       await held.wait();
     }));
     await Promise.race([reached.wait(), terminal.then(() => { throw new Error('terminal tx ended before its gate'); })]);
 
     const poll = pollOnce(scn);
-    let blocked: boolean;
+    let blocked = false;
     try {
-      blocked = await blockedOnLock(poll);
+      blocked = await blockedBy(holderPid, poll);
     } finally {
-      // Always release the lock holder, or a failed assertion strands its transaction.
+      // Always release the lock holder and let both settle, so a failure never strands a transaction.
       held.open();
+      await Promise.allSettled([terminal, poll]);
     }
     await terminal;
     const delivered = await poll;
-    // The stamp must actually have waited on the row lock, or this test proves nothing.
+    // The stamp must actually have waited on THE TERMINAL WRITER's row lock, or this test proves nothing.
     expect(blocked).toBe(true);
 
     expect(delivered).toHaveLength(1);

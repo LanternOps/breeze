@@ -18,12 +18,14 @@ import './setup';
 import { createHash, randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
+import { Hono } from 'hono';
 
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { getTestDb } from './setup';
 import { setupTestEnvironment } from './db-utils';
 import { alerts, deviceCommands, devices, fixMemory, fixOutcomes, scriptExecutions, scripts, scriptVersions } from '../../db/schema';
 import { createAgentWsHandlers } from '../../routes/agentWs';
+import { commandsRoutes } from '../../routes/agents/commands';
 import { propagateTimedOutDeviceCommand } from '../../jobs/staleCommandReaper';
 import { advanceOutcome } from '../../services/fixMemory/outcomeWatcher';
 import { recomputeForOutcome, recountRequestedOutcomeIds } from '../../services/fixMemory/store';
@@ -103,6 +105,29 @@ async function lateResult(run: Run, body: Record<string, unknown>): Promise<void
   await handlers.onClose({}, fakeWs);
 }
 
+/**
+ * The same result through the HTTP fallback route. Only the credential half of
+ * agentAuthMiddleware is stubbed; its request-long org DB context is
+ * reproduced, because the shared result handler writes under it.
+ */
+async function lateHttpResult(run: Run, body: Record<string, unknown>): Promise<void> {
+  const app = new Hono();
+  app.use('*', async (c, next) => {
+    c.set('agent', {
+      installIncarnation: 1, deviceId: run.deviceId, agentId: run.agentId, orgId: run.orgId,
+      partnerId: run.partnerId, siteId: run.siteId, role: 'agent',
+    });
+    await withDbAccessContext({
+      scope: 'organization', orgId: run.orgId, accessibleOrgIds: [run.orgId], accessiblePartnerIds: [], currentPartnerId: null,
+    }, async () => { await next(); });
+  });
+  app.route('/agents', commandsRoutes);
+  const res = await app.request(`/agents/${run.agentId}/commands/${run.commandId}/result`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  expect(res.status).toBe(200);
+}
+
 /** The sweeper's recount pass, for this run's outcome only. */
 async function recount(run: Run): Promise<void> {
   const ids = await sys(() => recountRequestedOutcomeIds(10_000));
@@ -118,7 +143,14 @@ function gate() {
   return { wait: () => wait, open: () => open() };
 }
 
-async function blockedOnLock(p: Promise<unknown>, timeoutMs = 15_000): Promise<boolean> {
+/** The backend pid of the transaction this runs in. */
+async function backendPid(): Promise<number> {
+  const [row] = [...await db.execute<{ pid: number }>(sql`SELECT pg_backend_pid() AS pid`)];
+  return Number(row!.pid);
+}
+
+/** Polls until some client backend is waiting on a lock HELD BY `holderPid` (or `p` settles). */
+async function blockedBy(holderPid: number, p: Promise<unknown>, timeoutMs = 15_000): Promise<boolean> {
   let settled = false;
   p.then(() => { settled = true; }, () => { settled = true; });
   const deadline = Date.now() + timeoutMs;
@@ -126,12 +158,11 @@ async function blockedOnLock(p: Promise<unknown>, timeoutMs = 15_000): Promise<b
     const rows = await getTestDb().execute<{ pid: number }>(sql`
       SELECT pid FROM pg_stat_activity
       WHERE datname = current_database() AND backend_type = 'client backend'
-        AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()
-        AND cardinality(pg_blocking_pids(pid)) > 0`);
+        AND ${holderPid}::int = ANY(pg_blocking_pids(pid))`);
     if ([...rows].length > 0) return true;
     await new Promise((r) => setTimeout(r, 20));
   }
-  if (!settled) throw new Error('blockedOnLock: the writer neither blocked nor settled');
+  if (!settled) throw new Error('blockedBy: the writer neither blocked nor settled');
   return false;
 }
 
@@ -203,6 +234,47 @@ describe('late agent results reconcile the fix attempt (#7279)', () => {
     expect(after.terminalAt?.getTime()).toBe(before.terminalAt!.getTime());
   });
 
+  it('reconciles the same way when the late result arrives over the HTTP fallback', async () => {
+    const run = await seedRun();
+    await reap(run, 'timeout');
+
+    await lateHttpResult(run, { status: 'completed', exitCode: 0, stdout: 'Spooler restarted' });
+
+    expect(await outcome(run)).toMatchObject({ state: 'awaiting_recovery', stateReason: 'script_succeeded_late', countedAt: null });
+  });
+
+  it('never touches an attempt whose verdict was not the sweep\'s guess', async () => {
+    const run = await seedRun();
+    await reap(run, 'timeout');
+    // Something else decided this attempt since (e.g. the condition persisted past its window).
+    await sys(() => db.update(fixOutcomes).set({ stateReason: 'condition_persisted' }).where(eq(fixOutcomes.id, run.outcomeId)));
+    const before = await outcome(run);
+
+    await lateResult(run, { status: 'completed', exitCode: 0, stdout: 'Spooler restarted' });
+
+    const after = await outcome(run);
+    expect(after).toMatchObject({ state: 'failed', stateReason: 'condition_persisted' });
+    expect(after.countedAt?.getTime()).toBe(before.countedAt!.getTime());
+    expect(after.updatedAt.getTime()).toBe(before.updatedAt.getTime());
+  });
+
+  it('a recount of an uncounted attempt with no resolvable signature clears its request instead of spinning', async () => {
+    const run = await seedRun();
+    // monitor_recurrence alerts have no v1 signature, so fillOutcomeSignature leaves the row unsigned.
+    const [unsignable] = await getTestDb().insert(alerts).values({
+      orgId: run.orgId, deviceId: run.deviceId, severity: 'high', title: 'unsignable', context: { source: 'monitor_recurrence' },
+    }).returning({ id: alerts.id });
+    await sys(() => db.update(fixOutcomes).set({
+      sourceId: unsignable!.id, alertId: unsignable!.id, state: 'awaiting_recovery', recountRequestedAt: new Date(),
+    }).where(eq(fixOutcomes.id, run.outcomeId)));
+    expect(await sys(() => recountRequestedOutcomeIds(10_000))).toContain(run.outcomeId);
+
+    await sys(() => recomputeForOutcome(run.outcomeId));
+
+    expect(await outcome(run)).toMatchObject({ state: 'awaiting_recovery', signatureKey: null, recountRequestedAt: null });
+    expect(await sys(() => recountRequestedOutcomeIds(10_000))).not.toContain(run.outcomeId);
+  });
+
   it('a duplicate late frame changes nothing more', async () => {
     const run = await seedRun();
     await reap(run, 'timeout');
@@ -222,21 +294,25 @@ describe('late agent results reconcile the fix attempt (#7279)', () => {
     await reap(run, 'timeout');
     const reached = gate();
     const release = gate();
+    let holderPid = 0;
     // The sweeper's recount holds the outcome row (FOR UPDATE) mid-recompute.
     const recountTx = sys(() => recomputeForOutcome(run.outcomeId, new Date(), {
-      afterRecompute: async () => { reached.open(); await release.wait(); },
+      afterRecompute: async () => { holderPid = await backendPid(); reached.open(); await release.wait(); },
     }));
     await Promise.race([reached.wait(), recountTx.then(() => { throw new Error('recount ended before its gate'); })]);
 
     const ingest = lateResult(run, { status: 'completed', exitCode: 0, stdout: 'Spooler restarted' });
-    let blocked: boolean;
+    let blocked = false;
     try {
-      blocked = await blockedOnLock(ingest);
+      blocked = await blockedBy(holderPid, ingest);
     } finally {
+      // Always release the holder and let both settle, so a failure here never strands a transaction.
       release.open();
+      await Promise.allSettled([recountTx, ingest]);
     }
     await recountTx;
     await ingest;
+    // The ingest really waited on THE RECOUNT's lock, or this test proves nothing.
     expect(blocked).toBe(true);
 
     // The recount committed a failed count; the reconcile re-evaluated against

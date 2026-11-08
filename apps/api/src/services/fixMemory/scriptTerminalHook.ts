@@ -18,6 +18,7 @@ import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { FIX_OUTCOME_WINDOWS } from '@breeze/shared';
 import { db, hasDbAccessContext, withDbTransaction } from '../../db';
 import { fixOutcomes } from '../../db/schema';
+import { captureException } from '../sentry';
 
 export type ScriptTerminalStatus = 'completed' | 'failed' | 'timeout' | 'cancelled';
 /** A caller's open transaction handle (or the ambient db). `transaction` is required: the hook opens its savepoint on it. */
@@ -154,7 +155,15 @@ export async function advanceOutcomesForTerminalExecution(
     // Ambient db inside the ingest transaction: a SAVEPOINT, as evaluateScriptExitCodeAlert does.
     return hasDbAccessContext() ? await withDbTransaction(() => write(db)) : await write(db);
   } catch (err) {
-    console.error(`[fixMemory] inline outcome advance failed for execution ${input.executionId}; the sweeper will retry:`, err);
+    if (input.lateResult) {
+      // No retry exists for this one: the sweeper re-reads only active rows,
+      // and the #3607 recovery that carried the agent's result has already
+      // consumed the swept execution, so the attempt keeps the sweep's verdict.
+      console.error(`[fixMemory] late-result reconcile failed for execution ${input.executionId}; the attempt keeps the sweep's verdict:`, err);
+      captureException(err, undefined, { component: 'fixMemory.scriptTerminalHook', phase: 'late_result_reconcile', executionId: input.executionId });
+    } else {
+      console.error(`[fixMemory] inline outcome advance failed for execution ${input.executionId}; the sweeper will retry:`, err);
+    }
     return 0;
   }
 }

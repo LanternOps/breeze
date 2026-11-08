@@ -15,6 +15,9 @@ vi.mock('../../db', () => {
   };
 });
 
+const captureExceptionMock = vi.hoisted(() => vi.fn());
+vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
+
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import { advanceOutcomesForTerminalExecution, terminalVerdict } from './scriptTerminalHook';
@@ -92,6 +95,16 @@ describe('advanceOutcomesForTerminalExecution', () => {
       const q = whereSql(1);
       expect(q.params).toEqual(expect.arrayContaining(['e-1', 'inconclusive', 'script_never_delivered']));
       expect(q.params).not.toContain('failed');
+    });
+
+    it('a failed reconcile is reported (no sweeper retry exists for it), never thrown', async () => {
+      h.throwOnUpdate = true;
+      captureExceptionMock.mockClear();
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      await expect(advanceOutcomesForTerminalExecution({ executionId: 'e-1', status: 'completed', lateResult: true })).resolves.toBe(0);
+      expect(err.mock.calls[0]![0]).toContain('keeps the sweep');
+      err.mockRestore();
+      expect(captureExceptionMock).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ phase: 'late_result_reconcile', executionId: 'e-1' }));
     });
 
     it('a cancelled late result reconciles nothing', async () => {

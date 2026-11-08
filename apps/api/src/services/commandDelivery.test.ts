@@ -189,7 +189,11 @@ describe('prepareClaimedCommandsForDelivery (#2414)', () => {
     ]);
 
     expect(delivered.map((cmd) => cmd.id)).toEqual(['cmd-a']);
-    expect(captureExceptionMock).toHaveBeenCalledWith(expect.objectContaining({ message: 'statement timeout' }));
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'statement timeout' }),
+      undefined,
+      expect.objectContaining({ commandId: 'cmd-a', executionId: '11111111-1111-4111-8111-111111111111' }),
+    );
     expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
   });
 

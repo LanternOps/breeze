@@ -359,7 +359,7 @@ async function markDeliveredScriptExecutionsStarted(commands: ClaimedCommand[]):
         executionId,
         error: err instanceof Error ? err.message : String(err),
       });
-      captureException(err);
+      captureException(err, undefined, { component: 'commandDelivery.scriptStart', commandId: cmd.id, executionId });
     }
   }
 }
