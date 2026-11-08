@@ -201,7 +201,7 @@ func TestSelfUninstallRefusedDuringSection(t *testing.T) {
 	})
 	touched := false
 	releaseIsolationForUninstallFn = func(*Heartbeat) error { touched = true; return nil }
-	prepareSelfUninstallFn = func(bool) error { touched = true; return nil }
+	prepareSelfUninstallFn = func(selfUninstallRequest) (bool, error) { touched = true; return false, nil }
 	scheduleSelfUninstallShutdownFn = func(*Heartbeat) { touched = true }
 
 	result := handleSelfUninstall(&Heartbeat{}, Command{ID: "cmd-2", Payload: map[string]any{}})
@@ -229,7 +229,7 @@ func TestFailedSelfUninstallReleasesItsAdmission(t *testing.T) {
 	origRelease, origPrepare := releaseIsolationForUninstallFn, prepareSelfUninstallFn
 	t.Cleanup(func() { releaseIsolationForUninstallFn, prepareSelfUninstallFn = origRelease, origPrepare })
 	releaseIsolationForUninstallFn = func(*Heartbeat) error { return nil }
-	prepareSelfUninstallFn = func(bool) error { return errors.New("handoff failed") }
+	prepareSelfUninstallFn = func(selfUninstallRequest) (bool, error) { return false, errors.New("handoff failed") }
 
 	if result := handleSelfUninstall(&Heartbeat{}, Command{ID: "cmd-2", Payload: map[string]any{}}); result.Status != "failed" {
 		t.Fatalf("result = %+v", result)

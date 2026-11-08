@@ -50,7 +50,7 @@ Self-host agents trust the recovery binary through the signed release manifest h
 
 An unsigned binary is never trusted just because it is present. A device made ready this way reports `self_host_manifest_hash` as its readiness detail. Like the rest of Windows isolation, this path is off by default and inactive in this release.
 
-The agent's self-uninstall and the Windows MSI uninstall release Breeze-owned isolation rules first. If release cannot be confirmed, uninstall fails before removing the agent files or recovery state. A clean, never-isolated device can still uninstall normally. The detached Windows teardown script checks release again before stopping or deleting services.
+The agent's self-uninstall and the Windows MSI uninstall release Breeze-owned isolation rules first. If release cannot be confirmed, uninstall fails before removing the agent files or recovery state. A clean, never-isolated device can still uninstall normally. The detached Windows teardown helper checks the release again before it stops the agent, and once more after the agent has stopped, before anything is removed. If either check fails, the agent service is started again and the uninstall reports failed.
 
 An MSI upgrade never runs the uninstall release action and does not un-isolate the device. The agent does not start a self-update while the device is isolated. If isolation begins after an update has already been downloaded, the update is checked again just before the binary swap. When executable paths change, both old and new paths are permitted before the swap. After restart the agent reads the journal, re-verifies isolation, and removes the old-path permits. The swap is refused if the new agent's journal schema cannot be confirmed compatible.
 

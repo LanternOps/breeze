@@ -1010,6 +1010,14 @@ func (c *Client) processCommand(cmd Command) {
 	result.Type = "command_result"
 	result.CommandID = cmd.ID
 
+	// #11154: another process owns this result (the Windows self_uninstall
+	// helper). Not sent, not outboxed, and not handed off: the heartbeat keeps
+	// the command's journal entry for a restart to report.
+	if result.Status == wire.ResultStatusHandedOff {
+		log.Info("command result handed to another process; not sending it", "commandId", cmd.ID, "commandType", cmd.Type)
+		return
+	}
+
 	// W09 (#8148, D11): with no socket held, a result queued in memory would
 	// wait out the reconnect window (30 s by default, up to 300 s) or a drain
 	// window (up to 600 s) AFTER OnResultHandedOff cleared its journal entry,

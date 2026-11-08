@@ -22,6 +22,8 @@ import (
 type ErrHTTPStatus struct {
 	StatusCode int
 	Body       string
+	// RetryAfter is the server's Retry-After (whole seconds), when it sent one.
+	RetryAfter time.Duration
 }
 
 func (e *ErrHTTPStatus) Error() string {
@@ -566,7 +568,14 @@ func (c *Client) SubmitCommandResult(commandID string, result interface{}) error
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("submit result failed with status %d", resp.StatusCode)
+		// Typed so a caller that retries can tell a rate limit from a refusal
+		// (#11154). The body is capped: it is for the log, not for parsing.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		statusErr := &ErrHTTPStatus{StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(body))}
+		if secs, convErr := strconv.Atoi(strings.TrimSpace(resp.Header.Get("Retry-After"))); convErr == nil && secs > 0 {
+			statusErr.RetryAfter = time.Duration(secs) * time.Second
+		}
+		return fmt.Errorf("submit result failed with status %d: %w", resp.StatusCode, statusErr)
 	}
 
 	return nil

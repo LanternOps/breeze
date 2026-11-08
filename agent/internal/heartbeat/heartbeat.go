@@ -7429,6 +7429,13 @@ func (h *Heartbeat) processCommand(cmd Command) {
 	if result.Status == "duplicate" {
 		return
 	}
+	// #11154: another process reports this result. The journal entry is left
+	// in place on purpose (no End): if that process fails and this agent comes
+	// back, the restart reports the command failed.
+	if result.Status == tools.StatusResultHandedOff {
+		log.Info("command result handed to another process; not submitting it", logging.KeyCommandID, cmd.ID)
+		return
+	}
 
 	// Submit result back to API
 	if err := h.submitCommandResult(cmd.ID, result); err != nil {
@@ -7571,7 +7578,11 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 	}
 
 	result, executed := h.executeCommandViaPoolReportingDelivery(cmd)
-	if executed && result.Status != "duplicate" {
+	// #11154: another process reports a handed-off result. No hand-off is
+	// armed, so the journal entry survives, and nothing is submitted here; the
+	// websocket client drops the marker it is returned.
+	handedOff := result.Status == tools.StatusResultHandedOff
+	if executed && result.Status != "duplicate" && !handedOff {
 		// This delivery ran the command, so its hand-off (the websocket
 		// client's OnResultHandedOff, right after this returns) is the one
 		// that clears the journal entry (#8296).
@@ -7580,7 +7591,7 @@ func (h *Heartbeat) HandleCommand(wsCmd websocket.Command) websocket.CommandResu
 
 	wsResult := toWSCommandResult(cmd.ID, result)
 
-	if result.Status != "duplicate" && !isEphemeralCommand(cmd.Type) && !isWSDirectOnlyCommand(cmd.Type) {
+	if result.Status != "duplicate" && !handedOff && !isEphemeralCommand(cmd.Type) && !isWSDirectOnlyCommand(cmd.Type) {
 		go func() {
 			if err := h.submitCommandResult(cmd.ID, result); err != nil {
 				log.Error("failed to submit command result", logging.KeyCommandID, cmd.ID, "error", err.Error())
