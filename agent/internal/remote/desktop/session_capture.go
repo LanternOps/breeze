@@ -1375,7 +1375,7 @@ func (s *Session) swapToSoftwareEncoder() {
 
 	if newEnc.BackendIsPlaceholder() {
 		slog.Error("Software encoder fallback is placeholder — OpenH264 not available",
-			"session", s.id)
+			"session", s.id, "openh264Error", openH264LoadErrorText())
 		newEnc.Close()
 		return
 	}

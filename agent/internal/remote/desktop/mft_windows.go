@@ -36,6 +36,12 @@ type mftEncoder struct {
 	height int
 	stride int
 
+	// allowSoftware lets findEncoder settle on Microsoft's software H264 MFT
+	// when no hardware MFT activates. Only the placeholder fallback sets it
+	// (OpenH264 failed to load, #11392); the regular factory stays
+	// hardware-only so OpenH264 keeps precedence over the software MFT.
+	allowSoftware bool
+
 	// COM handles (persistent across frames)
 	transform       uintptr // IMFTransform
 	codecAPI        uintptr // ICodecAPI (for dynamic bitrate), may be 0
@@ -101,6 +107,7 @@ type mftEncoder struct {
 
 func init() {
 	registerHardwareFactory(newMFTEncoder)
+	registerPlaceholderFallbackFactory(newMFTPlaceholderFallbackEncoder)
 }
 
 func newMFTEncoder(cfg EncoderConfig) (encoderBackend, error) {
@@ -119,10 +126,35 @@ func newMFTEncoder(cfg EncoderConfig) (encoderBackend, error) {
 	}, nil
 }
 
+// newMFTPlaceholderFallbackEncoder is the placeholder fallback: when OpenH264
+// cannot load, a session would otherwise get the passthrough placeholder and be
+// refused (#11392). It returns an MFT encoder that uses a hardware MFT when one
+// exists and otherwise Microsoft's software H264 MFT. Both accept CPU frames,
+// so this also serves GDI capture on a secure desktop (Winlogon/UAC).
+func newMFTPlaceholderFallbackEncoder(cfg EncoderConfig) (encoderBackend, error) {
+	if cfg.Codec != CodecH264 {
+		return nil, fmt.Errorf("MFT encoder only supports H264, got %s", cfg.Codec)
+	}
+	if !probeHardwareMFT() && !probeMFT(mftEnumFlagSyncMFT|mftEnumFlagSortAndFilter) {
+		return nil, fmt.Errorf("no hardware or software H264 Media Foundation encoder is registered")
+	}
+	return &mftEncoder{
+		cfg:           cfg,
+		startTime:     time.Now(),
+		allowSoftware: true,
+	}, nil
+}
+
 // probeHardwareMFT checks if a hardware H264 encoder MFT exists without
 // fully initializing it. Returns false on headless servers / basic GPUs
 // (e.g. Matrox G200) that lack hardware H264 encoding.
 func probeHardwareMFT() bool {
+	return probeMFT(mftEnumFlagHardware | mftEnumFlagSortAndFilter)
+}
+
+// probeMFT reports whether MFTEnumEx finds an NV12->H264 encoder MFT for the
+// given enum flags, without activating it.
+func probeMFT(flags uint32) bool {
 	// COM init (best-effort, may already be initialized)
 	hr, _, _ := procCoInitializeEx.Call(0, coinitMultithreaded)
 	if int32(hr) < 0 && uint32(hr) != 0x80010106 {
@@ -137,7 +169,7 @@ func probeHardwareMFT() bool {
 	var count uint32
 	hr, _, _ = procMFTEnumEx.Call(
 		uintptr(unsafe.Pointer(&mftCategoryVideoEncoder)),
-		uintptr(mftEnumFlagHardware|mftEnumFlagSortAndFilter),
+		uintptr(flags),
 		uintptr(unsafe.Pointer(&inputType)),
 		uintptr(unsafe.Pointer(&outputType)),
 		uintptr(unsafe.Pointer(&ppActivate)),
@@ -456,16 +488,32 @@ func (m *mftEncoder) findEncoder(width, height int) (uintptr, bool, error) {
 		guidSubtype:   mfVideoFormatH264,
 	}
 
-	// Hardware only — software H264 encoding is handled by OpenH264 which
-	// provides deterministic 1-in-1-out encoding. The Windows software MFT
-	// stalls for 20-60 frames on Server editions and is not officially
-	// supported (Microsoft docs: "Minimum supported server: None supported").
+	// Hardware first — software H264 encoding is normally handled by OpenH264,
+	// which provides deterministic 1-in-1-out encoding. The Windows software
+	// MFT stalls for 20-60 frames on Server editions and is not officially
+	// supported (Microsoft docs: "Minimum supported server: None supported"),
+	// so it is used only when allowSoftware is set (OpenH264 failed to load).
 	transform, err := m.enumAndActivate(
 		mftEnumFlagHardware|mftEnumFlagSortAndFilter,
 		&inputType, &outputType,
 	)
 	if err == nil {
 		return transform, true, nil
+	}
+
+	// Placeholder fallback only (OpenH264 failed to load, #11392): a stalling
+	// software MFT beats refusing the session outright.
+	if m.allowSoftware {
+		swTransform, swErr := m.enumAndActivate(
+			mftEnumFlagSyncMFT|mftEnumFlagSortAndFilter,
+			&inputType, &outputType,
+		)
+		if swErr == nil {
+			slog.Warn("No hardware H264 MFT activated, using Microsoft's software H264 MFT (OpenH264 unavailable)",
+				"hardwareError", err.Error())
+			return swTransform, false, nil
+		}
+		return 0, false, fmt.Errorf("no hardware H264 MFT (%v) and no software H264 MFT (%v)", err, swErr)
 	}
 
 	return 0, false, fmt.Errorf("no hardware H264 encoder available (software encoding handled by OpenH264)")
