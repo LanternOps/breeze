@@ -21,6 +21,8 @@ const h = vi.hoisted(() => ({
   resumeGrant: vi.fn(async (..._a: unknown[]) => undefined),
   hasEntitlement: vi.fn(async (..._a: unknown[]) => true),
   claimDueWatches: vi.fn(async (..._a: unknown[]): Promise<unknown[]> => []),
+  recordWatchHits: vi.fn(async (..._a: unknown[]) => true),
+  evaluateWatchHits: vi.fn(async (..._a: unknown[]): Promise<unknown> => null),
   stopWatchesForInactiveGrants: vi.fn(async (..._a: unknown[]) => ({ stopped: 0, grantsNotified: 0 })),
   pollStaleTickets: vi.fn(async (..._a: unknown[]) => ({ scanned: 0, published: 0 })),
   pollTicketClusters: vi.fn(async (..._a: unknown[]) => ({ scanned: 0, clustersOpened: 0, clustersUpdated: 0 })),
@@ -99,6 +101,12 @@ vi.mock('../services/entitlements', () => ({ hasEntitlement: h.hasEntitlement })
 vi.mock('../services/wisp/watches', () => ({
   claimDueWatches: (...a: unknown[]) => { h.order.push('claimDueWatches'); return h.claimDueWatches(...a); },
   stopWatchesForInactiveGrants: (...a: unknown[]) => { h.order.push('stopWatchesForInactiveGrants'); return h.stopWatchesForInactiveGrants(...a); },
+  recordWatchHits: (...a: unknown[]) => { h.order.push('recordWatchHits'); return h.recordWatchHits(...a); },
+}));
+// #11424: the evaluator (DB reads) is stubbed; the change decision stays real.
+vi.mock('../services/wisp/watchHits', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/wisp/watchHits')>()),
+  evaluateWatchHits: (...a: unknown[]) => { h.order.push('evaluateWatchHits'); return h.evaluateWatchHits(...a); },
 }));
 vi.mock('../services/wisp/pollers', () => ({
   pollStaleTickets: (...a: unknown[]) => { h.order.push('pollStaleTickets'); return h.pollStaleTickets(...a); },
@@ -189,6 +197,8 @@ beforeEach(() => {
   h.requestAssessment.mockImplementation(async () => 'queued');
   h.hasEntitlement.mockImplementation(async () => true);
   h.claimDueWatches.mockImplementation(async () => []);
+  h.recordWatchHits.mockImplementation(async () => true);
+  h.evaluateWatchHits.mockImplementation(async () => null);
   h.stopWatchesForInactiveGrants.mockImplementation(async () => ({ stopped: 0, grantsNotified: 0 }));
   h.pollStaleTickets.mockImplementation(async () => ({ scanned: 0, published: 0 }));
   h.pollTicketClusters.mockImplementation(async () => ({ scanned: 0, clustersOpened: 0, clustersUpdated: 0 }));
@@ -207,7 +217,7 @@ describe('processWakeTick', () => {
     h.enabled = false;
     const result = await processWakeTick(NOW);
     expect(result).toEqual({
-      grantsTicked: 0, watchesFired: 0, staleTicketsPublished: 0, watchesStopped: 0,
+      grantsTicked: 0, watchesFired: 0, watchesUnchanged: 0, staleTicketsPublished: 0, watchesStopped: 0,
       grantsPaused: 0, grantsResumed: 0, ticketClustersOpened: 0, incidentsOpened: 0, checkInsRefired: 0,
     });
     expect(h.executes).toHaveLength(0);
@@ -231,6 +241,7 @@ describe('processWakeTick', () => {
       'stopWatchesForInactiveGrants',
       'requestAssessment', // floor tick
       'claimDueWatches',
+      'evaluateWatchHits', // #11424: in-code evaluation before any watch request
       'requestAssessment', // watch
       'reconcileOrphanCheckIns',
       'pollStaleTickets',
@@ -567,6 +578,197 @@ describe('processWakeTick', () => {
     const result = await processWakeTick(NOW);
     expect(result.staleTicketsPublished).toBe(3);
     expect(result.ticketClustersOpened).toBe(2);
+  });
+});
+
+// #11424: a watch is evaluated in code at claim time; only a changed hit-set
+// (or the first evaluation) launches a model run.
+describe('processWakeTick — stateful watches (#11424)', () => {
+  const LATER = new Date(NOW.getTime() + 60 * 60_000);
+  const ALERT_2 = '00000000-0000-4000-8000-0000000000e3';
+  const hitSet = (ids: string[], hash: string) => ({ subject: 'alert', count: ids.length, hash, ids });
+
+  /** A stateful watch row: claimDueWatches returns what recordWatchHits last stored. */
+  function statefulWatch(over: Record<string, unknown> = {}, stored: { hitHash: string | null; hitCount: number | null } = { hitHash: null, hitCount: null }) {
+    const row = { id: W1, grantId: G1, orgId: O1, kind: 'alert_pattern', params: { severity: 'medium' }, ...stored, ...over };
+    h.claimDueWatches.mockImplementation(async () => [{ ...row }]);
+    h.recordWatchHits.mockImplementation(async (...a: unknown[]) => {
+      const next = a[2] as { hash: string; count: number };
+      row.hitHash = next.hash;
+      row.hitCount = next.count;
+      return true;
+    });
+    return row;
+  }
+
+  beforeEach(() => {
+    useFixtures({
+      watchGrants: [{ id: G1, partner_id: P1, current_revision_id: REV }],
+      orgs: [{ id: O1, name: 'A' }, { id: O2, name: 'B' }],
+      lastAssessed: [{ org_id: O1, last_assessed_at: '2026-10-24 10:00:00+00' }],
+    });
+    h.resolveGrantCeiling.mockResolvedValue(ceilingFor([O1, O2]));
+  });
+
+  it('the same active alert on two consecutive cadences launches one run, not two', async () => {
+    statefulWatch();
+    h.evaluateWatchHits.mockImplementation(async () => hitSet([ALERT], 'hash-a'));
+
+    const first = await processWakeTick(NOW);
+    const second = await processWakeTick(LATER);
+
+    expect(h.requestAssessment).toHaveBeenCalledTimes(1);
+    expect(first.watchesFired).toBe(1);
+    expect(second.watchesFired).toBe(0);
+    expect(second.watchesUnchanged).toBe(1);
+    // Both cadences were evaluated (the claim already advanced next_due_at / last_ran_at).
+    expect(h.evaluateWatchHits).toHaveBeenCalledTimes(2);
+  });
+
+  it('the first evaluation launches a run carrying the hit summary, then records the hit-set', async () => {
+    statefulWatch();
+    h.evaluateWatchHits.mockImplementation(async () => hitSet([ALERT], 'hash-a'));
+    await processWakeTick(NOW);
+    expect(h.evaluateWatchHits).toHaveBeenCalledWith(expect.objectContaining({ kind: 'alert_pattern', params: { severity: 'medium' } }), O1, NOW);
+    expect(h.requestAssessment).toHaveBeenCalledWith({
+      grantId: G1,
+      orgId: O1,
+      reason: {
+        kind: 'watch',
+        watchId: W1,
+        hits: { change: 'first', subject: 'alert', orgId: O1, partnerWide: false, count: 1, previousCount: null, ids: [ALERT] },
+      },
+    });
+    expect(h.recordWatchHits).toHaveBeenCalledWith(W1, null, expect.objectContaining({ hash: 'hash-a', count: 1 }), NOW);
+    expect(h.order.indexOf('recordWatchHits')).toBeGreaterThan(h.order.indexOf('requestAssessment'));
+  });
+
+  it('an alert that resolves launches one run whose reason says cleared', async () => {
+    statefulWatch({}, { hitHash: 'hash-a', hitCount: 1 });
+    h.evaluateWatchHits.mockImplementation(async () => hitSet([], 'hash-empty'));
+    await processWakeTick(NOW);
+    await processWakeTick(LATER);
+    expect(h.requestAssessment).toHaveBeenCalledTimes(1);
+    expect(h.requestAssessment).toHaveBeenCalledWith({
+      grantId: G1,
+      orgId: O1,
+      reason: {
+        kind: 'watch',
+        watchId: W1,
+        hits: { change: 'cleared', subject: 'alert', orgId: O1, partnerWide: false, count: 0, previousCount: 1, ids: [] },
+      },
+    });
+  });
+
+  it('a new hit after an empty evaluation is reported as new, a different hit-set as changed', async () => {
+    const row = statefulWatch({}, { hitHash: 'hash-empty', hitCount: 0 });
+    h.evaluateWatchHits.mockImplementationOnce(async () => hitSet([ALERT], 'hash-a'));
+    await processWakeTick(NOW);
+    expect(h.requestAssessment).toHaveBeenLastCalledWith(expect.objectContaining({
+      reason: expect.objectContaining({ hits: expect.objectContaining({ change: 'new', count: 1, previousCount: 0 }) }),
+    }));
+    expect(row.hitHash).toBe('hash-a');
+    h.evaluateWatchHits.mockImplementationOnce(async () => hitSet([ALERT, ALERT_2], 'hash-ab'));
+    await processWakeTick(LATER);
+    expect(h.requestAssessment).toHaveBeenLastCalledWith(expect.objectContaining({
+      reason: expect.objectContaining({ hits: expect.objectContaining({ change: 'changed', count: 2, previousCount: 1 }) }),
+    }));
+    expect(h.requestAssessment).toHaveBeenCalledTimes(2);
+  });
+
+  it('a kind the scheduler does not evaluate (custom_query) runs every cadence, with no hit summary and nothing recorded', async () => {
+    statefulWatch({ kind: 'custom_query' });
+    await processWakeTick(NOW);
+    await processWakeTick(LATER);
+    expect(h.requestAssessment).toHaveBeenCalledTimes(2);
+    expect(h.requestAssessment).toHaveBeenCalledWith({ grantId: G1, orgId: O1, reason: { kind: 'watch', watchId: W1 } });
+    expect(h.recordWatchHits).not.toHaveBeenCalled();
+  });
+
+  it('a coalesced request records nothing, so the next cadence asks again', async () => {
+    statefulWatch();
+    h.evaluateWatchHits.mockImplementation(async () => hitSet([ALERT], 'hash-a'));
+    h.requestAssessment.mockImplementationOnce(async () => 'coalesced');
+    await processWakeTick(NOW);
+    expect(h.recordWatchHits).not.toHaveBeenCalled();
+    await processWakeTick(LATER);
+    expect(h.requestAssessment).toHaveBeenCalledTimes(2);
+    expect(h.recordWatchHits).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed request records nothing (the change is not lost) and is reported', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    statefulWatch();
+    h.evaluateWatchHits.mockImplementation(async () => hitSet([ALERT], 'hash-a'));
+    const boom = new Error('redis down');
+    h.requestAssessment.mockRejectedValueOnce(boom);
+    await processWakeTick(NOW);
+    expect(h.recordWatchHits).not.toHaveBeenCalled();
+    expect(h.captureException).toHaveBeenCalledWith(boom, undefined, { component: 'wisp.wakeScheduler', op: 'due_watch' });
+    err.mockRestore();
+  });
+
+  it('an evaluation failure falls back to a plain watch run (as before) and is reported', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    statefulWatch();
+    const boom = new Error('statement timeout');
+    h.evaluateWatchHits.mockRejectedValueOnce(boom);
+    const result = await processWakeTick(NOW);
+    expect(h.requestAssessment).toHaveBeenCalledWith({ grantId: G1, orgId: O1, reason: { kind: 'watch', watchId: W1 } });
+    expect(result.watchesFired).toBe(1);
+    expect(h.recordWatchHits).not.toHaveBeenCalled();
+    expect(h.captureException).toHaveBeenCalledWith(boom, undefined, { component: 'wisp.wakeScheduler', op: 'watch_evaluate' });
+    err.mockRestore();
+  });
+
+  it('an exhausted budget suspends the request and records nothing, so the change is retried once the budget is back', async () => {
+    statefulWatch();
+    h.evaluateWatchHits.mockImplementation(async () => hitSet([ALERT], 'hash-a'));
+    h.chargeableUnderGrant.mockImplementationOnce(async () => ({ ok: false, reason: 'budget_exhausted' }));
+    const first = await processWakeTick(NOW);
+    expect(h.chargeableUnderGrant).toHaveBeenCalledWith(G1, 25);
+    expect(h.notifyBudgetExhaustedOnce).toHaveBeenCalledWith(G1, NOW);
+    expect(h.requestAssessment).not.toHaveBeenCalled();
+    expect(h.recordWatchHits).not.toHaveBeenCalled();
+    expect(first.watchesFired).toBe(0);
+    await processWakeTick(LATER);
+    expect(h.requestAssessment).toHaveBeenCalledTimes(1);
+    expect(h.recordWatchHits).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unchanged hit-set reads no budget (nothing will be charged)', async () => {
+    statefulWatch({}, { hitHash: 'hash-a', hitCount: 1 });
+    h.evaluateWatchHits.mockImplementation(async () => hitSet([ALERT], 'hash-a'));
+    await processWakeTick(NOW);
+    expect(h.chargeableUnderGrant).not.toHaveBeenCalled();
+    expect(h.requestAssessment).not.toHaveBeenCalled();
+  });
+
+  it('a partner-wide watch is evaluated in its grant\'s round-robin org only (no fan-out)', async () => {
+    statefulWatch({ orgId: null });
+    h.evaluateWatchHits.mockImplementation(async () => hitSet([], 'hash-empty'));
+    await processWakeTick(NOW);
+    expect(h.evaluateWatchHits).toHaveBeenCalledTimes(1);
+    expect(h.evaluateWatchHits).toHaveBeenCalledWith(expect.anything(), O2, NOW);
+    expect(h.requestAssessment).toHaveBeenCalledTimes(1);
+    expect(h.requestAssessment).toHaveBeenCalledWith(expect.objectContaining({ orgId: O2 }));
+  });
+
+  it('a partner-wide watch never claims cleared / new: its previous evaluation may have covered another org', async () => {
+    statefulWatch({ orgId: null }, { hitHash: 'hash-a', hitCount: 1 });
+    h.evaluateWatchHits.mockImplementation(async () => hitSet([], 'hash-empty'));
+    await processWakeTick(NOW);
+    expect(h.requestAssessment).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: O2,
+      reason: expect.objectContaining({ hits: expect.objectContaining({ change: 'changed', partnerWide: true, orgId: O2, count: 0, previousCount: 1 }) }),
+    }));
+  });
+
+  it('a watch whose org is outside the grant ceiling is not evaluated', async () => {
+    statefulWatch({ orgId: O3 });
+    await processWakeTick(NOW);
+    expect(h.evaluateWatchHits).not.toHaveBeenCalled();
+    expect(h.requestAssessment).not.toHaveBeenCalled();
   });
 });
 

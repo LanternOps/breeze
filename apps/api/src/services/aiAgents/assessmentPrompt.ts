@@ -22,7 +22,7 @@
 import type { Concern } from '@breeze/shared';
 import { UNTRUSTED_TOOL_OUTPUT_RULE } from '../aiAgentSystemPrompt';
 import { wrapUntrustedData } from '../aiInputSanitizer';
-import type { AssessmentDigest, AssessmentReason, OrgReadiness } from '../wisp/assessmentTypes';
+import type { AssessmentDigest, AssessmentReason, OrgReadiness, WatchHitSummary } from '../wisp/assessmentTypes';
 import { AGENT_PROMPT_AUTHORITY_DISCLAIMER, sanitizeSweepText, type AgentRunPromptContext } from './runnerPrompt';
 
 /**
@@ -66,6 +66,39 @@ const FIRST_LOOK_LINE =
 const SUMMARY_MAX = 300;
 const ORG_NAME_MAX = 200;
 const TITLE_MAX = 160;
+
+const WATCH_HIT_SUBJECT_LABEL: Record<WatchHitSummary['subject'], string> = {
+  alert: 'open alert(s)',
+  device: 'device(s) below the threshold',
+  finding: 'open finding(s) (device vulnerabilities / EDR detections)',
+};
+const WATCH_HIT_CHANGE_LINE: Record<WatchHitSummary['change'], string> = {
+  first: 'first evaluation of this watch',
+  new: 'new: the previous evaluation found none',
+  cleared: 'cleared: nothing matches any more',
+  changed: 'changed since the previous evaluation (hits added, removed or changed state)',
+};
+
+/**
+ * #11424: the scheduler's in-code evaluation of the requesting watch, rendered
+ * under the watch lines so the run does not re-query it. Every value is an
+ * enum, a count or a uuid (parseWatchHitSummary drops anything else).
+ */
+export function watchHitLines(hits: WatchHitSummary): string[] {
+  const previous = hits.previousCount === null ? 'none recorded' : String(hits.previousCount);
+  const lines = [
+    'Wisp evaluated this watch in code and wakes you only when its hit-set changes; the hits below are current, so do not re-query them to find out what changed.',
+    `hits: ${hits.count} ${WATCH_HIT_SUBJECT_LABEL[hits.subject]} in org ${hits.orgId} (previous evaluation: ${previous}) — ${WATCH_HIT_CHANGE_LINE[hits.change]}`,
+  ];
+  if (hits.ids.length > 0) {
+    const more = hits.count > hits.ids.length ? ` (${hits.count - hits.ids.length} more not listed)` : '';
+    lines.push(`hit ids, newest first: ${hits.ids.join(', ')}${more}`);
+  }
+  if (hits.partnerWide) {
+    lines.push('partner-wide watch: evaluated in this org only; the previous evaluation may have covered another org.');
+  }
+  return lines;
+}
 
 function reasonLine(reason: AssessmentReason): string {
   switch (reason.kind) {
@@ -214,6 +247,7 @@ export function buildAssessmentTaskPrompt(ctx: AgentRunPromptContext): string {
     lines.push('');
     lines.push('## Watch that requested this assessment');
     lines.push(...a.watchLines);
+    if (a.reason.kind === 'watch' && a.reason.hits) lines.push(...watchHitLines(a.reason.hits));
   }
 
   // (7) Tool-output rule.

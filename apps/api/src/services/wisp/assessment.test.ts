@@ -613,6 +613,19 @@ describe('parseWispTriggerRef', () => {
     expect(parseWispTriggerRef({ wisp: { ...ok, reason: { kind: 'watch' } } })).toBeNull();
   });
 
+  // #11424: the scheduler's watch hit summary survives the trigger_ref
+  // round-trip; a malformed one is dropped without losing the watch reason.
+  it('keeps a well-formed watch hit summary and drops a malformed one, keeping the watch reason', () => {
+    const base = { grantId: GRANT, grantRevisionId: REV, watermark: null };
+    const hits = { change: 'cleared', subject: 'alert', orgId: ORG, partnerWide: false, count: 0, previousCount: 1, ids: [] };
+    expect(parseWispTriggerRef({ wisp: { ...base, reason: { kind: 'watch', watchId: WATCH, hits } } })).toEqual({
+      ...base, reason: { kind: 'watch', watchId: WATCH, hits },
+    });
+    expect(parseWispTriggerRef({ wisp: { ...base, reason: { kind: 'watch', watchId: WATCH, hits: { ...hits, change: 'bogus' } } } })).toEqual({
+      ...base, reason: { kind: 'watch', watchId: WATCH },
+    });
+  });
+
   // #10388: the event's subject ids survive the trigger_ref round-trip; a
   // non-uuid id is dropped rather than rendered into the prompt.
   it('keeps uuid alertId / deviceId on an event reason and drops anything else', () => {

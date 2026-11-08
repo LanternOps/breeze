@@ -18,8 +18,37 @@ import type { Concern, Watch, WatchKind } from '@breeze/shared';
 export type AssessmentReason =
   | { kind: 'event'; eventType: string; eventId: string; alertId?: string; deviceId?: string }
   | { kind: 'tick' }
-  | { kind: 'watch'; watchId: string }
+  | { kind: 'watch'; watchId: string; hits?: WatchHitSummary }
   | { kind: 'onboarding' };
+
+/**
+ * #11424 — what the wake scheduler's in-code evaluation of a watch found, sent
+ * with the `watch` reason so the run does not re-query it. Present only for a
+ * kind the scheduler evaluates (services/wisp/watchHits.ts) and only when the
+ * hit-set changed; a run for an unevaluated kind carries no `hits`.
+ *
+ *   - `first`   — no earlier evaluation is stored for the watch.
+ *   - `new`     — the previous evaluation found nothing; every hit is new.
+ *   - `cleared` — the previous evaluation found hits; nothing matches now.
+ *   - `changed` — the hit-set differs (hits added, removed or changed state).
+ *
+ * `ids` = up to 25 hit ids (uuids, `WATCH_HIT_SAMPLE_MAX` in watchHits.ts),
+ * newest first; `subject` names what they are. `orgId` = the org evaluated: a
+ * partner-wide watch (`partnerWide`) is evaluated in its grant's round-robin
+ * org only, so its previous evaluation may have covered another org and its
+ * change is only ever `first` or `changed`.
+ */
+export type WatchHitChange = 'first' | 'new' | 'cleared' | 'changed';
+export type WatchHitSubject = 'alert' | 'device' | 'finding';
+export type WatchHitSummary = {
+  change: WatchHitChange;
+  subject: WatchHitSubject;
+  orgId: string;
+  partnerWide: boolean;
+  count: number;
+  previousCount: number | null;
+  ids: string[];
+};
 
 /**
  * `ai_agent_runs.trigger_ref.wisp` of an assessment run, written by
