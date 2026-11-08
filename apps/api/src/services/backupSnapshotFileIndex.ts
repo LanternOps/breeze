@@ -240,6 +240,33 @@ function claimPredicate(claim: HydrationClaim) {
   );
 }
 
+const MAX_STORED_REASON_LENGTH = 200;
+
+/** Last labels that mean a file name, not a host, in a dotted token. */
+const FILE_EXTENSIONS = new Set([
+  'json', 'txt', 'gz', 'tgz', 'zip', 'log', 'js', 'ts', 'yaml', 'yml', 'xml', 'csv', 'db', 'bin', 'dat', 'tmp', 'bak', 'sql', 'pem', 'crt', 'key', 'enc', 'zst', 'xz', 'tar',
+]);
+
+/**
+ * Provider and network errors name the host they could not reach
+ * (`connect ECONNREFUSED 127.0.0.1:9`). The stored text keeps the error code
+ * and wording but not URLs, IP addresses, host:port tokens, or the host after a
+ * network error code (#11280). Dotted hostnames are redacted unless the last label is a file extension.
+ */
+export function redactIndexFailureReason(reason: string): string {
+  return reason
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, '[redacted]')
+    .replace(/\[[0-9a-f:]*:[0-9a-f:]*\](?::\d+)?/gi, '[redacted]')
+    .replace(/(?:[0-9a-f]{1,4}:){1,7}:(?:[0-9a-f]{1,4})?|::1\b/gi, '[redacted]')
+    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/g, '[redacted]')
+    .replace(/\b[a-z0-9][a-z0-9.-]*:\d{2,5}\b/gi, '[redacted]')
+    .replace(/\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+([a-z]{2,})\b/gi, (match, last: string) =>
+      FILE_EXTENSIONS.has(last.toLowerCase()) ? match : '[redacted]')
+    // The token after a network error code is the host it names.
+    .replace(/\b(ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)\s+\S+/g, '$1 [redacted]')
+    .slice(0, MAX_STORED_REASON_LENGTH);
+}
+
 async function fail(
   claim: HydrationClaim,
   failure: HydrationFailure,
@@ -247,7 +274,7 @@ async function fail(
 ): Promise<HydrationOutcome> {
   const [written] = await db
     .update(backupSnapshots)
-    .set({ fileIndexStatus: 'failed', fileIndexError: `${failure}: ${reason}` })
+    .set({ fileIndexStatus: 'failed', fileIndexError: `${failure}: ${redactIndexFailureReason(reason)}` })
     .where(claimPredicate(claim))
     .returning({ id: backupSnapshots.id });
   if (!written) return SUPERSEDED;
@@ -719,7 +746,7 @@ async function verifyOriginsAndWrite(
         // the reader gate keeps them from being listed.
         await tx
           .update(backupSnapshots)
-          .set({ fileIndexStatus: 'failed', fileIndexError: `${refusal.failure}: ${refusal.reason}` })
+          .set({ fileIndexStatus: 'failed', fileIndexError: `${refusal.failure}: ${redactIndexFailureReason(refusal.reason)}` })
           .where(claimPredicate(snapshot));
         return { status: 'failed', failure: refusal.failure, reason: refusal.reason, retryable: false };
       }

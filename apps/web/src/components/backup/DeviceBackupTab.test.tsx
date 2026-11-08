@@ -359,11 +359,11 @@ describe('DeviceBackupTab', () => {
       );
     });
 
-    it('job history Size cell keeps the plain size for a running job', async () => {
+    it.each(['running', 'pending'] as const)('job history Size cell shows a dash, not the job total, while a job is %s (#11280)', async (status) => {
       mockTab({
         jobs: [{
           ...baseJob,
-          status: 'running',
+          status,
           totalSize: 10_485_760,
           dataAccounting: { protectedBytes: null, uploadedBytes: null, reusedBytes: null, processedBytes: 1024, runKind: 'incremental', fullRunReason: null },
         }],
@@ -373,7 +373,8 @@ describe('DeviceBackupTab', () => {
 
       const row = await historyRow();
       expect(within(row).queryByTestId('backup-job-data-summary')).toBeNull();
-      expect(row.textContent).toContain('10.0 MB');
+      expect(row.textContent).not.toContain('10.0 MB');
+      expect(within(row).getByTestId('backup-job-size').textContent).toBe('-');
     });
 
     it('keeps the recoverable index drop note out of the job history Errors cell (#11026)', async () => {
