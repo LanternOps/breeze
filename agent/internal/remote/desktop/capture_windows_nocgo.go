@@ -3,10 +3,8 @@
 package desktop
 
 import (
-	"errors"
 	"fmt"
 	"image"
-	"log/slog"
 	"runtime"
 	"sync"
 	"syscall"
@@ -78,24 +76,12 @@ type gdiCapturer struct {
 	// thread runs all GDI work; state is touched only inside thread.Do.
 	// Both are nil until the first capture, and again after Close or after a
 	// thread is retired (see recycleThreadLocked).
-	thread   *lockedThread
-	state    *gdiThreadState
-	recycler captureThreadRecycler
+	thread *lockedThread
+	state  *gdiThreadState
 
-	// unverified counts the frames delivered since the capture thread last
-	// confirmed it was on the input desktop; CaptureWarning reports it.
-	unverified unverifiedDesktopFrames
-
-	// Failure throttling for secure-desktop transient capture outages.
-	consecutiveCaptureFailures int
-	lastFailureLog             time.Time
-
-	// lastCaptureErr is the most recent error reported to the caller as a nil
-	// frame. Capture() deliberately swallows failures so a transient
-	// secure-desktop outage does not kill a live session; keeping the error
-	// here is what lets StartSession tell the technician WHY the startup probe
-	// found no frame (see describeCaptureFailure).
-	lastCaptureErr error
+	// book is the bookkeeping between frames (recycler, unconfirmed-desktop
+	// streak, failure throttle, last swallowed error); capture_gdi_result.go.
+	book gdiCaptureBook
 }
 
 // startThreadLocked starts the capture thread. Caller holds c.mu.
@@ -109,53 +95,19 @@ func (c *gdiCapturer) startThreadLocked() {
 	runtime.AddCleanup(c, func(t *lockedThread) { t.stopAsync() }, c.thread)
 }
 
-// recycleThreadLocked retires the capture thread so the next frame starts a
-// fresh one. Used for ERROR_BUSY from SetThreadDesktop, which is a property
-// of the OS thread (it owns windows or hooks), and for a panic on the thread,
-// which can leave its handles half-built. The retired thread is terminated
-// rather than returned to the Go scheduler, because lockedThread never
-// unlocks it. Recycles back off (captureThreadRecycler): a cause that survives
-// fresh threads is not the thread's, and churning OS threads will not cure
-// it. Caller holds c.mu.
-func (c *gdiCapturer) recycleThreadLocked(cause error) {
+// retireThreadLocked stops the capture thread so the next frame starts a
+// fresh one. Used when gdiCaptureBook.onCaptureResult asks for it: ERROR_BUSY
+// from SetThreadDesktop, which is a property of the OS thread (it owns windows
+// or hooks), or a panic on the thread, which can leave its handles half-built.
+// The retired thread is terminated rather than returned to the Go scheduler,
+// because lockedThread never unlocks it. Caller holds c.mu.
+func (c *gdiCapturer) retireThreadLocked() {
 	if c.thread == nil {
-		return
-	}
-	recycle, warn := c.recycler.decide(time.Now())
-	if !recycle {
 		return
 	}
 	c.thread.Stop()
 	c.thread = nil
 	c.state = nil
-	if warn {
-		attrs := []any{
-			"error", cause.Error(),
-			"consecutiveRecycles", c.recycler.streak,
-			"nextRecycleAfter", captureThreadRecycleDelay(c.recycler.streak).String(),
-		}
-		if code, ok := win32ErrorCode(cause); ok {
-			attrs = append(attrs, "win32Error", code)
-		}
-		slog.Warn("Retiring the GDI capture thread; the next frame starts a new thread", attrs...)
-	}
-}
-
-// noteFrameDeliveredLocked records whether a delivered frame was taken with
-// the input desktop confirmed, and logs a streak of frames that were not and
-// its end. Caller holds c.mu.
-func (c *gdiCapturer) noteFrameDeliveredLocked(followIssue error) {
-	kind, frames := c.unverified.frameDelivered(followIssue, time.Now())
-	switch kind {
-	case unverifiedFrameLogWarn:
-		attrs := []any{"frames", frames, "error", followIssue.Error()}
-		if code, ok := win32ErrorCode(followIssue); ok {
-			attrs = append(attrs, "win32Error", code)
-		}
-		slog.Warn("GDI capture is delivering frames without confirming the input desktop; they may be black or show the wrong desktop", attrs...)
-	case unverifiedFrameLogRecovered:
-		slog.Info("GDI capture thread confirmed the input desktop again", "unverifiedFrames", frames)
-	}
 }
 
 // Capture captures the primary screen on the capturer's own thread.
@@ -169,70 +121,29 @@ func (c *gdiCapturer) Capture() (*image.RGBA, error) {
 	st := c.state
 	var img *image.RGBA
 	var capErr, followIssue error
+	// img is set only when the work returns normally, and then Do returns nil:
+	// a Do error means the work never ran or panicked before assigning it.
 	if err := c.thread.Do(func() {
 		img, capErr = st.capture()
 		followIssue = st.followIssue
 	}); err != nil {
-		if img != nil {
-			captureImagePool.Put(img)
-			img = nil
-		}
 		capErr = err
 	}
-	if capErr == nil && img != nil {
-		c.resetCaptureFailuresLocked()
-		c.recycler.reset()
-		c.noteFrameDeliveredLocked(followIssue)
+	deliver, retire := c.book.onCaptureResult(img, capErr, followIssue, time.Now())
+	if retire {
+		c.retireThreadLocked()
+	}
+	if deliver {
 		return img, nil
 	}
-	if capErr == nil {
-		capErr = fmt.Errorf("GDI capture produced no image")
-	}
-	if shouldRecycleCaptureThread(capErr) || errors.Is(capErr, errCaptureThreadPanicked) {
-		c.recycleThreadLocked(capErr)
-	}
-
-	// Secure-desktop transitions can invalidate DCs transiently. Treat this as
-	// "no frame yet" so the session loop skips without flooding error logs.
-	// The startup probe (probeCapture) retries then fails on persistent nil
-	// frames — and reads lastCaptureErr back out via LastCaptureError so the
-	// technician is told which Win32 call failed and with what code.
-	c.recordCaptureFailureLocked(capErr)
 	return nil, nil
-}
-
-func (c *gdiCapturer) recordCaptureFailureLocked(err error) {
-	c.consecutiveCaptureFailures++
-	changed := c.lastCaptureErr == nil || c.lastCaptureErr.Error() != err.Error()
-	c.lastCaptureErr = err
-	now := time.Now()
-	// A different failure is always logged: the throttle exists to stop one
-	// repeating error flooding the log, not to hide that the cause changed.
-	if changed || c.consecutiveCaptureFailures == 1 || now.Sub(c.lastFailureLog) >= 2*time.Second {
-		attrs := []any{
-			"error", err.Error(),
-			"consecutive", c.consecutiveCaptureFailures,
-		}
-		// Surface the Win32 code as its own field so it is greppable in a
-		// helper log without parsing the message.
-		if code, ok := win32ErrorCode(err); ok {
-			attrs = append(attrs, "win32Error", code)
-		}
-		slog.Warn("GDI capture unavailable (returning no frame)", attrs...)
-		c.lastFailureLog = now
-	}
-}
-
-func (c *gdiCapturer) resetCaptureFailuresLocked() {
-	c.consecutiveCaptureFailures = 0
-	c.lastCaptureErr = nil
 }
 
 // LastCaptureError implements lastCaptureErrorReporter.
 func (c *gdiCapturer) LastCaptureError() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.lastCaptureErr
+	return c.book.lastCaptureErr
 }
 
 // CaptureWarning implements captureWarningReporter: while frames are being
@@ -240,7 +151,7 @@ func (c *gdiCapturer) LastCaptureError() error {
 func (c *gdiCapturer) CaptureWarning() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.unverified.err()
+	return c.book.captureWarning()
 }
 
 // CaptureRegion captures a specific region of the screen.
@@ -291,8 +202,7 @@ func (c *gdiCapturer) Close() error {
 		c.state = nil
 	}
 	// A later Capture starts over: no recycle streak, no unconfirmed frames.
-	c.recycler.reset()
-	c.unverified = unverifiedDesktopFrames{}
+	c.book.reset()
 	return nil
 }
 

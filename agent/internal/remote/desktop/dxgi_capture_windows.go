@@ -75,7 +75,7 @@ func (c *dxgiCapturer) captureFromGDIFallbackLocked() (*image.RGBA, error) {
 			carried = c.gdiFallback.LastCaptureError()
 		}
 		c.closeGDIFallbackLocked()
-		c.gdiFallback = &gdiCapturer{config: c.config, lastCaptureErr: carried}
+		c.gdiFallback = &gdiCapturer{config: c.config, book: gdiCaptureBook{lastCaptureErr: carried}}
 		c.gdiFollowsDesktop, c.gdiFollowsSince = follows, followsSince
 		slog.Info("Recreated GDI fallback after repeated no-frame samples",
 			"count", c.gdiNoFrameCount)
