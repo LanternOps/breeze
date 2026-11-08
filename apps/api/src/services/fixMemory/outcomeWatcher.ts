@@ -21,7 +21,7 @@
  * transition to store.transitionOutcome, whose CAS makes every path
  * (sweeper, event, redelivery) safe to run concurrently.
  */
-import { and, asc, eq, gt, isNotNull, lte, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, eq, gt, isNotNull, lte, ne, sql, type SQL } from 'drizzle-orm';
 import { FIX_OUTCOME_WINDOWS, isFixOutcomeTerminal, type FixOutcomeState } from '@breeze/shared';
 import { db } from '../../db';
 import {
@@ -304,6 +304,13 @@ export function recurrencePrefilter(condition: string | null): SQL | null {
  * prefilter), ordered by (triggered_at, id) and paged by keyset, so a real
  * recurrence can never be hidden behind an arbitrary unordered LIMIT.
  * 'unscanned' = page cap hit without an answer (fails closed as inconclusive).
+ *
+ * The keyset cursor is triggered_at as Postgres renders it, at full microsecond
+ * precision (#7279). A cursor carried as a JS Date is truncated to the
+ * millisecond, so the next page re-read every candidate later in the same
+ * millisecond and a burst of them could page the scan into its cap.
+ * to_char and an ISO-8601 literal round-trip whatever the session DateStyle;
+ * the column is `timestamp without time zone`, so no zone is involved.
  */
 async function scanRecurrence(row: FixOutcomeRow, now: Date): Promise<Recurrence> {
   // No signature means there is nothing to compare a candidate recurrence
@@ -334,20 +341,21 @@ async function scanRecurrence(row: FixOutcomeRow, now: Date): Promise<Recurrence
   const prefilter = recurrencePrefilter(condition);
   if (prefilter) base.push(prefilter);
   const alertFamily = family === 'correlation' ? 'correlation' : 'alert';
-  let cursor: { triggeredAt: Date; id: string } | null = null;
+  let cursor: { at: string; id: string } | null = null;
   for (let page = 0; page < RECURRENCE_MAX_PAGES; page += 1) {
     const conds = [...base];
-    if (cursor) {
-      conds.push(or(gt(alerts.triggeredAt, cursor.triggeredAt), and(eq(alerts.triggeredAt, cursor.triggeredAt), gt(alerts.id, cursor.id)))!);
-    }
-    const batch = await db.select({ id: alerts.id, triggeredAt: alerts.triggeredAt }).from(alerts)
-      .where(and(...conds)).orderBy(asc(alerts.triggeredAt), asc(alerts.id)).limit(RECURRENCE_PAGE);
+    if (cursor) conds.push(sql`(${alerts.triggeredAt}, ${alerts.id}) > (${cursor.at}::timestamp, ${cursor.id}::uuid)`);
+    const batch = await db.select({
+      id: alerts.id,
+      cursorAt: sql<string>`to_char(${alerts.triggeredAt}, 'YYYY-MM-DD"T"HH24:MI:SS.US')`,
+    }).from(alerts).where(and(...conds)).orderBy(asc(alerts.triggeredAt), asc(alerts.id)).limit(RECURRENCE_PAGE);
     for (const candidate of batch) {
       const resolved = await alertSignature(candidate.id, alertFamily);
       if (resolved && resolved.signature.key === row.signatureKey) return 'recurred';
     }
     if (batch.length < RECURRENCE_PAGE) return 'clear';
-    cursor = batch[batch.length - 1]!;
+    const last = batch[batch.length - 1]!;
+    cursor = { at: last.cursorAt, id: last.id };
   }
   return 'unscanned';
 }
