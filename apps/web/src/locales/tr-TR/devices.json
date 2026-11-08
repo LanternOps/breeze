@@ -4957,9 +4957,9 @@
     "state": {
       "upToDate": "Güncel",
       "overdue": "Gecikmiş",
-      "failing": "İlgi gerekiyor",
-      "notSupported": "Model desteklenmiyor",
-      "notManaged": "Zamanlama yok",
+      "failing": "Başarısız",
+      "notSupported": "Desteklenmiyor",
+      "notManaged": "Yönetilmiyor",
       "waitingForReboot": "Yeniden başlatma bekleniyor",
       "rebootOverdue": "Yeniden başlatma gecikmiş"
     },
