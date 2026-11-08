@@ -51,6 +51,16 @@ func TestActiveRemoteSessionOverSignInConsole(t *testing.T) {
 				{Session: "2", State: "active", Type: "rdp", Username: "a"},
 				{Session: "3", State: "active", Type: "rdp", Username: "b"}},
 			func(s string) bool { return s == "3" }, ""},
+		// A second active RDP session whose user could not be read may be a
+		// second signed-in user: picking the other one would be a guess.
+		{"active RDP session with an unreadable username is ambiguous", "1",
+			[]sessionbroker.DetectedSession{signInConsole, activeRDP,
+				{Session: "3", State: "active", Type: "rdp", UsernameUnknown: true}},
+			all, ""},
+		{"only an unreadable-username RDP session keeps the console", "1",
+			[]sessionbroker.DetectedSession{signInConsole,
+				{Session: "2", State: "active", Type: "rdp", UsernameUnknown: true}},
+			all, ""},
 		{"a disconnected second RDP user does not make it ambiguous", "1",
 			[]sessionbroker.DetectedSession{signInConsole, activeRDP,
 				{Session: "3", State: "disconnected", Type: "rdp", Username: "b"}},

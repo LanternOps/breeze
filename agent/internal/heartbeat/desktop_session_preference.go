@@ -17,7 +17,9 @@ import (
 // switcher still offers the console.
 //
 // It applies only when exactly one active, signed-in RDP session exists, and
-// that session has a capture-capable helper. With several, which user's desktop
+// that session has a capture-capable helper. An active RDP session whose
+// username could not be read counts against that, as it might be a second
+// signed-in user. With several, which user's desktop
 // the technician meant is a guess — on a terminal server the console sits at
 // the sign-in screen almost permanently — so the console is kept and the
 // viewer's session switcher is the way to reach a specific user.
@@ -34,7 +36,16 @@ func activeRemoteSessionOverSignInConsole(consoleID string, detected []sessionbr
 	}
 	candidate := ""
 	for _, ds := range detected {
-		if ds.Session == consoleID || ds.Type != "rdp" || ds.State != "active" || ds.Username == "" {
+		if ds.Session == consoleID || ds.Type != "rdp" || ds.State != "active" {
+			continue
+		}
+		if ds.UsernameUnknown {
+			// Could not tell whether someone is signed in here, so whether this
+			// is a second RDP user is unknown too: keep the console rather than
+			// guess.
+			return ""
+		}
+		if ds.Username == "" {
 			continue
 		}
 		if candidate != "" {
