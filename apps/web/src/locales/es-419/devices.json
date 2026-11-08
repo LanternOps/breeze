@@ -4957,9 +4957,9 @@
     "state": {
       "upToDate": "Al día",
       "overdue": "Vencido",
-      "failing": "Requiere atención",
-      "notSupported": "Modelo no admitido",
-      "notManaged": "Sin programación",
+      "failing": "Con fallas",
+      "notSupported": "No admitido",
+      "notManaged": "No administrado",
       "waitingForReboot": "Esperando reinicio",
       "rebootOverdue": "Reinicio vencido"
     },

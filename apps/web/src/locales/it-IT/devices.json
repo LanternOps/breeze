@@ -4957,9 +4957,9 @@
     "state": {
       "upToDate": "Aggiornato",
       "overdue": "In ritardo",
-      "failing": "Richiede attenzione",
-      "notSupported": "Modello non supportato",
-      "notManaged": "Nessuna pianificazione",
+      "failing": "In errore",
+      "notSupported": "Non supportato",
+      "notManaged": "Non gestito",
       "waitingForReboot": "In attesa del riavvio",
       "rebootOverdue": "Riavvio in ritardo"
     },

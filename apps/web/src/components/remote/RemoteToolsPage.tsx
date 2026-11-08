@@ -28,7 +28,7 @@ import ScheduledTasks, { type ScheduledTask, type TaskDetails, type TaskHistory,
 import RegistryEditor from './RegistryEditor';
 import RemoteTerminal from './RemoteTerminal';
 import FileManager from './FileManager';
-import ConnectDesktopButton from './ConnectDesktopButton';
+import ConnectDesktopButton, { type RemoteToolOption } from './ConnectDesktopButton';
 import { showToast } from '@/components/shared/Toast';
 import { getInitialFilePath } from './filePathUtils';
 import { useTranslation } from 'react-i18next';
@@ -70,6 +70,9 @@ type DeviceApiResponse = {
   desktopAccess?: DesktopAccessState | null;
   remoteAccessPolicy?: RemoteAccessPolicy | null;
   helperLifecycleMode?: 'always-on' | 'on-demand' | null;
+  // #10922 — the Connect button's tool menu.
+  remoteAccessProviders?: RemoteToolOption[];
+  remoteAccessDefaultProviderId?: string | null;
 };
 
 type ApiProcess = {
@@ -420,6 +423,10 @@ export default function RemoteToolsPage({
   const [desktopAccess, setDesktopAccess] = useState<DesktopAccessState | null>(null);
   const [remoteAccessPolicy, setRemoteAccessPolicy] = useState<RemoteAccessPolicy | null>(null);
   const [helperLifecycleMode, setHelperLifecycleMode] = useState<'always-on' | 'on-demand' | null>(null);
+  const [remoteTools, setRemoteTools] = useState<{ providers: RemoteToolOption[]; defaultProviderId: string | null }>({
+    providers: [],
+    defaultProviderId: null,
+  });
 
   // Process state
   const [processes, setProcesses] = useState<Process[]>([]);
@@ -529,6 +536,10 @@ export default function RemoteToolsPage({
       setDesktopAccess(data.desktopAccess ?? null);
       setRemoteAccessPolicy(data.remoteAccessPolicy ?? null);
       setHelperLifecycleMode(data.helperLifecycleMode ?? null);
+      setRemoteTools({
+        providers: Array.isArray(data.remoteAccessProviders) ? data.remoteAccessProviders : [],
+        defaultProviderId: data.remoteAccessDefaultProviderId ?? null,
+      });
     } catch (error) {
       console.error('Failed to load device info:', error);
       Sentry.captureException(error, { extra: { deviceId } });
@@ -1024,7 +1035,15 @@ export default function RemoteToolsPage({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <ConnectDesktopButton deviceId={deviceId} isHeadless={isHeadless} desktopAccess={desktopAccess} remoteAccessPolicy={remoteAccessPolicy} helperLifecycleMode={helperLifecycleMode} />
+          <ConnectDesktopButton
+            deviceId={deviceId}
+            isHeadless={isHeadless}
+            desktopAccess={desktopAccess}
+            remoteAccessPolicy={remoteAccessPolicy}
+            helperLifecycleMode={helperLifecycleMode}
+            remoteAccessProviders={remoteTools.providers}
+            remoteAccessDefaultProviderId={remoteTools.defaultProviderId}
+          />
           {shouldShowClose && (
             <button
               onClick={handleClose}

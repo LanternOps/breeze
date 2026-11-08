@@ -14,6 +14,7 @@ import {
   viewerShortcut,
   shortcutLabel,
   isPasteChord,
+  modifiersReleasedByKeyPress,
 } from './inputSafety';
 
 describe('detectViewerOs', () => {
@@ -283,5 +284,18 @@ describe('countsAsOperatorInput', () => {
     ['key_up', false], ['mouse_up', false], ['mouse_move', false], ['mouse_scroll', false], ['input_reset', false],
   ])('%s → %s', (type, expected) => {
     expect(countsAsOperatorInput({ type })).toBe(expected);
+  });
+});
+
+describe('modifiersReleasedByKeyPress (#9595)', () => {
+  it('an agent that keeps held modifiers through a chord released none of them', () => {
+    // Mac viewer -> Windows, Cmd+R remapped: Ctrl is held, the chord goes as
+    // key_press r [ctrl], and the agent leaves Ctrl down. Forgetting it here
+    // meant Cmd's key_up was never sent and Ctrl stayed down on the remote.
+    expect(modifiersReleasedByKeyPress(['ctrl'], true)).toEqual([]);
+  });
+
+  it('an agent that predates it pressed and released every chord modifier', () => {
+    expect(modifiersReleasedByKeyPress(['ctrl', 'shift'], false)).toEqual(['ctrl', 'shift']);
   });
 });
