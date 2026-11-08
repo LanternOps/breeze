@@ -529,6 +529,18 @@ describe('HotPathTtlCache cluster option (W05, #8144)', () => {
     expect(cache.peek('org-1')).toBeUndefined();
   });
 
+  it('the cluster option is rejected at compile time for non-string and any keys (#8640)', () => {
+    // Type-level only: each @ts-expect-error fails `tsc` if the line stops being an error.
+    const build = () => {
+      // @ts-expect-error a number key cannot go on the wire
+      new HotPathTtlCache<number, string>({ name: 'type-num', ttlMs: 1_000, maxEntries: 10, cluster: true });
+      // @ts-expect-error `any` must not slip through the string check
+      new HotPathTtlCache<any, string>({ name: 'type-any', ttlMs: 1_000, maxEntries: 10, cluster: true });
+      new HotPathTtlCache<string, string>({ name: 'type-str', ttlMs: 1_000, maxEntries: 10, cluster: true });
+    };
+    expect(typeof build).toBe('function');
+  });
+
   it('a non-cluster cache never publishes', () => {
     __setClusterCacheBusForTests(bus);
     new HotPathTtlCache<string, string>({ name: 'plain', ttlMs: 1_000, maxEntries: 10 }).invalidateAroundCommit('k');
