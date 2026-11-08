@@ -2,9 +2,19 @@
  * Cross-process agent command relay (wave 3.5b, #4084).
  *
  * A worker process (no local WebSocket) that needs to reach an agent enqueues
- * a job on `agent-command-relay`; only a process that may own sockets
- * (`BREEZE_ROLE !== 'worker'`) consumes it (agentCommandRelayWorker.ts) and
- * performs the actual local send. This module holds the shared primitives:
+ * a job for the API instance that owns the agent's socket; only a process
+ * that may own sockets (`BREEZE_ROLE !== 'worker'`) consumes it
+ * (agentCommandRelayWorker.ts) and performs the actual local send.
+ *
+ * Every socket-owning instance has its OWN queue, `agent-command-relay-<id>`,
+ * keyed by its per-boot `INSTANCE_ID` (#4134). The producer reads the agent's
+ * presence lease and enqueues on the queue of the instance the lease names,
+ * so a consumer only ever sees jobs for sockets it can own. With one shared
+ * queue, any API consumer could take a job for another instance's socket and
+ * could only ack `offline`/`owner_mismatch`. The consumer's fencing check
+ * stays as the fallback for a lease that moved after the job was built.
+ *
+ * This module holds the shared primitives:
  *
  *   - a sealed, AAD-bound envelope for the relay job payload (SNMP/discovery/
  *     backup commands carry DECRYPTED credentials — the job persists in Redis,
@@ -39,7 +49,44 @@ async function socketLocal(): Promise<{
   return import('../routes/agentWs');
 }
 
-export const AGENT_COMMAND_RELAY_QUEUE = 'agent-command-relay';
+/**
+ * The single shared queue every API consumer drained before #4134. Nothing
+ * enqueues on it any more; the consumer's shard reaper removes what an older
+ * build left there (see agentCommandRelayShard.ts).
+ */
+export const LEGACY_AGENT_COMMAND_RELAY_QUEUE = 'agent-command-relay';
+const SHARD_QUEUE_PREFIX = `${LEGACY_AGENT_COMMAND_RELAY_QUEUE}-`;
+// INSTANCE_ID is a UUID. The bound keeps the name a plain token: BullMQ
+// rejects ':' in a queue name, and the shard reaper matches these names with a
+// Redis glob, so no glob metacharacter may appear in one either.
+const INSTANCE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * Nobody reads the relay queues' BullMQ event streams (acks travel on their
+ * own keys, never QueueEvents). The 10,000-entry default per queue is what
+ * filled Redis in a past `maxmemory` incident, so cap it.
+ */
+export const RELAY_QUEUE_EVENTS_MAX_LEN = 1_000;
+
+/** The relay queue consumed only by the instance `instanceId`. */
+export function agentCommandRelayQueueName(instanceId: string): string {
+  if (!INSTANCE_ID_PATTERN.test(instanceId)) {
+    throw new Error(`[agentCommandRelay] instance id ${JSON.stringify(instanceId)} cannot name a relay shard queue`);
+  }
+  return `${SHARD_QUEUE_PREFIX}${instanceId}`;
+}
+
+/**
+ * The instance a relay queue name belongs to: its id for a shard, `null` for
+ * the legacy shared queue, `undefined` for any other name.
+ */
+export function relayInstanceIdFromQueueName(name: string): string | null | undefined {
+  if (name === LEGACY_AGENT_COMMAND_RELAY_QUEUE) return null;
+  if (!name.startsWith(SHARD_QUEUE_PREFIX)) return undefined;
+  const instanceId = name.slice(SHARD_QUEUE_PREFIX.length);
+  return INSTANCE_ID_PATTERN.test(instanceId) ? instanceId : undefined;
+}
+
 export const RELAY_DELIVERY_DEADLINE_MS = 5_000;
 const ACK_POLL_INTERVAL_MS = 100;
 const ACK_TTL_MS = 30_000;
@@ -170,20 +217,40 @@ export async function awaitRelayAck(relayId: string, deadlineMs: number): Promis
   }
 }
 
-let relayQueue: Queue<RelayJobData> | null = null;
+// Producer handles, one per target instance. They share the BullMQ connection,
+// so a handle is cheap. Instance ids change on every API restart, so the map
+// is bounded: the oldest handle (a long-gone instance, in practice) is closed.
+const MAX_CACHED_RELAY_QUEUES = 32;
+const relayQueues = new Map<string, Queue<RelayJobData>>();
 
-export function getAgentCommandRelayQueue(): Queue<RelayJobData> {
-  if (!relayQueue) {
-    relayQueue = createInstrumentedQueue<RelayJobData>(AGENT_COMMAND_RELAY_QUEUE);
+/** Producer handle for the shard queue consumed by `instanceId`. */
+export function getAgentCommandRelayQueue(instanceId: string): Queue<RelayJobData> {
+  const name = agentCommandRelayQueueName(instanceId);
+  const cached = relayQueues.get(name);
+  if (cached) {
+    // Re-insert so the map's iteration order stays least-recently-used first.
+    relayQueues.delete(name);
+    relayQueues.set(name, cached);
+    return cached;
   }
-  return relayQueue;
+  const queue = createInstrumentedQueue<RelayJobData>(name, {
+    streams: { events: { maxLen: RELAY_QUEUE_EVENTS_MAX_LEN } },
+  });
+  relayQueues.set(name, queue);
+  if (relayQueues.size > MAX_CACHED_RELAY_QUEUES) {
+    const [oldestName, oldest] = relayQueues.entries().next().value as [string, Queue<RelayJobData>];
+    relayQueues.delete(oldestName);
+    void oldest.close().catch((err: unknown) => {
+      console.warn(`[agentCommandRelay] closing evicted relay queue handle ${oldestName} failed:`, err);
+    });
+  }
+  return queue;
 }
 
 export async function shutdownAgentCommandRelayQueue(): Promise<void> {
-  if (relayQueue) {
-    await relayQueue.close();
-    relayQueue = null;
-  }
+  const queues = [...relayQueues.values()];
+  relayQueues.clear();
+  await Promise.all(queues.map((queue) => queue.close()));
 }
 
 export async function isAgentConnectedAnywhere(agentId: string): Promise<boolean> {
@@ -238,7 +305,9 @@ export async function dispatchCommandToAgent(
     expiresAt, sealedCommand,
   };
   try {
-    await getAgentCommandRelayQueue().add('relay-send', data, {
+    // The lease names the socket owner: its own shard is the only queue a
+    // consumer that can deliver this command reads.
+    await getAgentCommandRelayQueue(lease.instanceId).add('relay-send', data, {
       jobId: `relay-${relayId}`,
       attempts: 1, // at-most-once: claims (not BullMQ retries) guard the send
       priority: opts.priority === 'probe' ? 1 : 10,

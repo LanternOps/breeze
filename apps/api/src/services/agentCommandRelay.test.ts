@@ -31,14 +31,17 @@ process.env.APP_ENCRYPTION_KEY_ID = 'current';
 process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({ current: 'current-key-material' });
 
 import {
+  agentCommandRelayQueueName,
   awaitRelayAck,
   claimRelaySend,
   dispatchCommandToAgent,
-  getAgentCommandRelayQueue,
   isAgentConnectedAnywhere,
+  LEGACY_AGENT_COMMAND_RELAY_QUEUE,
   markRelaySendComplete,
   openRelayCommand,
   RELAY_DELIVERY_DEADLINE_MS,
+  RELAY_QUEUE_EVENTS_MAX_LEN,
+  relayInstanceIdFromQueueName,
   sealRelayCommand,
   shutdownAgentCommandRelayQueue,
   writeRelayAck,
@@ -54,6 +57,27 @@ const BINDING = {
   targetInstanceId: 'inst-1',
   expiresAt: 1_700_000_000_000,
 };
+
+describe('relay shard queue names (#4134)', () => {
+  it('names one queue per instance; BullMQ forbids ":" so the separator is "-"', () => {
+    expect(agentCommandRelayQueueName('0f8b2c1e-7d4a-4a3b-9c2d-1e2f3a4b5c6d'))
+      .toBe('agent-command-relay-0f8b2c1e-7d4a-4a3b-9c2d-1e2f3a4b5c6d');
+    expect(LEGACY_AGENT_COMMAND_RELAY_QUEUE).toBe('agent-command-relay');
+  });
+
+  it.each(['', 'a:b', 'a b', 'x'.repeat(65), '../x', 'a*'])('rejects an instance id that cannot name a shard: %j', (id) => {
+    expect(() => agentCommandRelayQueueName(id)).toThrow(/instance id/);
+  });
+
+  it('parses a shard name back to its instance; the legacy shared queue parses to null; anything else to undefined', () => {
+    expect(relayInstanceIdFromQueueName('agent-command-relay-inst-1')).toBe('inst-1');
+    expect(relayInstanceIdFromQueueName('agent-command-relay')).toBeNull();
+    expect(relayInstanceIdFromQueueName('agent-command-relay-')).toBeUndefined();
+    expect(relayInstanceIdFromQueueName('agent-command-relay-a:b')).toBeUndefined();
+    expect(relayInstanceIdFromQueueName('agent-command-relayx')).toBeUndefined();
+    expect(relayInstanceIdFromQueueName('event-dispatch')).toBeUndefined();
+  });
+});
 
 describe('relay envelope', () => {
   const command = {
@@ -214,6 +238,63 @@ describe('dispatchCommandToAgent facade', () => {
     } finally {
       process.env.APP_ENCRYPTION_KEY_ID = priorKeyId;
     }
+    expect(fakeQueue.add).not.toHaveBeenCalled();
+  });
+
+  // #4134: one queue per boot instance. A shared queue let any api consumer
+  // take a job for a socket it does not own (acked owner_mismatch/offline).
+  it('routes the relay job to the lease owner instance\'s own shard queue, with a capped event stream', async () => {
+    vi.mocked(isAgentConnected).mockReturnValue(false);
+    vi.mocked(readAgentPresence).mockResolvedValue({ instanceId: 'inst-9', connectionToken: 'tok-9' });
+    redisMock.get.mockResolvedValueOnce(JSON.stringify({ status: 'sent', via: 'relay' }));
+
+    await dispatchCommandToAgent('agent-1', command);
+
+    expect(createInstrumentedQueue).toHaveBeenCalledTimes(1);
+    expect(createInstrumentedQueue).toHaveBeenCalledWith('agent-command-relay-inst-9', {
+      streams: { events: { maxLen: RELAY_QUEUE_EVENTS_MAX_LEN } },
+    });
+    expect(fakeQueue.add).toHaveBeenCalledTimes(1);
+  });
+
+  it('two agents owned by two instances → each job lands on its owner\'s shard; a repeat target reuses its queue', async () => {
+    const queues = new Map<string, { add: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }>();
+    vi.mocked(createInstrumentedQueue).mockImplementation(((name: string) => {
+      const q = { add: vi.fn().mockResolvedValue(undefined), close: vi.fn().mockResolvedValue(undefined) };
+      queues.set(name, q);
+      return q;
+    }) as never);
+    vi.mocked(isAgentConnected).mockReturnValue(false);
+    vi.mocked(readAgentPresence).mockImplementation(async (id: string) => (
+      id === 'agent-a'
+        ? { instanceId: 'inst-a', connectionToken: 'tok-a' }
+        : { instanceId: 'inst-b', connectionToken: 'tok-b' }
+    ));
+    const sentAck = JSON.stringify({ status: 'sent', via: 'relay' });
+    redisMock.get.mockResolvedValueOnce(sentAck).mockResolvedValueOnce(sentAck).mockResolvedValueOnce(sentAck);
+
+    await dispatchCommandToAgent('agent-a', command);
+    await dispatchCommandToAgent('agent-b', command);
+    await dispatchCommandToAgent('agent-a', command);
+
+    expect([...queues.keys()].sort()).toEqual(['agent-command-relay-inst-a', 'agent-command-relay-inst-b']);
+    const a = queues.get('agent-command-relay-inst-a')!;
+    const b = queues.get('agent-command-relay-inst-b')!;
+    expect(a.add).toHaveBeenCalledTimes(2);
+    expect(b.add).toHaveBeenCalledTimes(1);
+    expect(a.add.mock.calls.map((c) => c[1].targetInstanceId)).toEqual(['inst-a', 'inst-a']);
+    expect(b.add.mock.calls[0]?.[1].targetInstanceId).toBe('inst-b');
+  });
+
+  it('a lease instance id that cannot name a queue → infrastructure_error, no queue built, no enqueue', async () => {
+    vi.mocked(isAgentConnected).mockReturnValue(false);
+    vi.mocked(readAgentPresence).mockResolvedValue({ instanceId: 'bad:id', connectionToken: 'tok-9' });
+
+    const result = await dispatchCommandToAgent('agent-1', command);
+
+    expect(result.status).toBe('infrastructure_error');
+    expect((result as { message: string }).message).toMatch(/enqueue/);
+    expect(createInstrumentedQueue).not.toHaveBeenCalled();
     expect(fakeQueue.add).not.toHaveBeenCalled();
   });
 
