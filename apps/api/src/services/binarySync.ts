@@ -28,6 +28,7 @@ import {
   verifyReleaseArtifactManifestIntegrity,
 } from "./releaseArtifactManifest";
 import { EDITION_SELF_HOST, assertGithubFetchableEdition } from "./releaseAssetTrust";
+import { HELPER_TARGETS } from "./helperInstallerAssets";
 import { ensureActiveSigningKey, signManifest } from "./manifestSigning";
 import {
   getReleaseSourceApiBase,
@@ -225,12 +226,9 @@ const AGENT_TARGETS = [
   { goos: "windows", goarch: "amd64" },
 ] as const;
 
-const HELPER_TARGETS = [
-  { goos: "windows", goarch: "amd64", assetName: "breeze-helper-windows.msi" },
-  { goos: "darwin", goarch: "amd64", assetName: "breeze-helper-macos.dmg" },
-  { goos: "darwin", goarch: "arm64", assetName: "breeze-helper-macos.dmg" },
-  { goos: "linux", goarch: "amd64", assetName: "breeze-helper-linux.AppImage" },
-] as const;
+// HELPER_TARGETS (Breeze Assist installers) lives in ./helperInstallerAssets
+// so the download-time manifest check in routes/agentVersions.ts resolves the
+// same installer names without importing this module (#11298).
 
 // Issue #816: breeze-user-helper is the GUI-subsystem Windows sibling of
 // breeze-agent that the sessionbroker spawns into interactive user sessions.
@@ -1473,17 +1471,45 @@ export async function syncBinaries(): Promise<void> {
     // Register the backup component too, mirroring the watchdog registration
     // above — same per-component try/catch isolation so a backup-only failure
     // (e.g. signing) doesn't abort the agent/watchdog registration that already
-    // succeeded.
+    // succeeded, and the same two tiers (#11297): official manifest first,
+    // per-deployment re-signing only for what the manifest does not cover.
+    // Backup used to skip the manifest tier entirely, so an agent that trusts
+    // only the official key refused the backup artifact — and the agent
+    // requires a matching backup artifact before it upgrades itself.
     if (backupBinaries.length > 0) {
       try {
-        await registerLocalBinaries({
-          binaries: backupBinaries,
-          component: "backup",
-          version,
-          keyId,
-          downloadUrlFor: (osParam, arch) =>
-            `${serverUrl}/api/v1/agents/download/backup/${osParam}/${arch}`,
-        });
+        let coveredBackupFilenames = new Set<string>();
+        // D4 (#3836): a policy-refused or checksum-mismatched backup asset
+        // must not fall through to registerLocalBinaries either.
+        let excludedBackupFilenames = new Set<string>();
+        if (officialManifest) {
+          const result = await registerFromOfficialManifest({
+            binaries: backupBinaries,
+            component: "backup",
+            version,
+            manifestBytes: officialManifest.manifestBytes,
+            signatureBytes: officialManifest.signatureBytes,
+            downloadUrlFor: (osParam, arch) =>
+              `${serverUrl}/api/v1/agents/download/backup/${osParam}/${arch}`,
+          });
+          coveredBackupFilenames = result.registeredFilenames;
+          excludedBackupFilenames = result.excludedFilenames;
+        }
+        const remainingBackupBinaries = backupBinaries.filter(
+          (b) =>
+            !coveredBackupFilenames.has(b.filename) &&
+            !excludedBackupFilenames.has(b.filename),
+        );
+        if (remainingBackupBinaries.length > 0) {
+          await registerLocalBinaries({
+            binaries: remainingBackupBinaries,
+            component: "backup",
+            version,
+            keyId,
+            downloadUrlFor: (osParam, arch) =>
+              `${serverUrl}/api/v1/agents/download/backup/${osParam}/${arch}`,
+          });
+        }
         console.log(
           `[binarySync] Registered ${backupBinaries.length} backup binaries (version: ${version})`,
         );
