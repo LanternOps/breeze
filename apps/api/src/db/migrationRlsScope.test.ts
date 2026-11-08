@@ -42,9 +42,17 @@ import { analyzeMigrationDml, findUnscopedMigrationDml, escapeRegExp } from './m
  *     `2026-05-22-snmp-multi-vendor-templates.sql` with 42501 "new row violates
  *     row-level security policy for table snmp_templates".
  * So every deployment alive today migrates as superuser or BYPASSRLS — nothing
- * in the field is silently no-op'ing right now. The 122 baseline files below
- * are the debt that has to be paid before a plain (non-BYPASSRLS) owner role
- * can ever run this migration set, and the guard is what stops it growing.
+ * in the field is silently no-op'ing right now.
+ *
+ * SINCE #8991, `autoMigrate` elects system scope itself for every file
+ * (`migrationSessionSql` in `autoMigrate.ts`), so a plain (non-BYPASSRLS)
+ * owner role can apply the whole set, including the 122 baseline files below.
+ * CI's `check-migrations-nonsuperuser` job now migrates as exactly that role.
+ * The per-file rule still holds, because migrations are also replayed raw,
+ * outside autoMigrate (`__tests__/integration/replayMigration.ts`, a manual
+ * `psql -f` during recovery), and there a file has only its own election.
+ * The baseline lists the files that are not self-contained in that sense, and
+ * this guard keeps that list from growing.
  *
  * NOT COVERED: a forced table read as a SELECT source (`INSERT INTO a SELECT …
  * FROM forced_b`) filters silently the same way, but the target-side rule here

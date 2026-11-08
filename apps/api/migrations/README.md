@@ -99,6 +99,13 @@ with anything.
   the rule; that list is capped at a cutoff filename, so a new migration
   **cannot** be silenced by adding it. See issue #4518.
 
+  `autoMigrate` also elects system scope (and, on PG16+,
+  `createrole_self_grant`) at the start of every file (#8991), so that the
+  grandfathered files apply on a fresh database owned by a role that is neither
+  superuser nor `BYPASSRLS`. Write the line anyway. Files are also replayed
+  raw outside the runner (integration `replayMigration`, a manual `psql -f`),
+  and there the file's own election is the only one.
+
 - **Set-based writes on partner-export material tables require pre-locks.**
   Before any `UPDATE`, `DELETE`, `MERGE`, or `INSERT … SELECT` against a table carrying
   `breeze_partner_export_(device_child|site_child|material)_(insert|update|delete)`
