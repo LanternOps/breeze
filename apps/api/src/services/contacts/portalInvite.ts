@@ -187,11 +187,13 @@ export class PortalLoginChangedError extends Error {
 }
 
 /**
- * A state-module `msp_invite` refusal as the invite API's reason. The module
- * refuses the same three cases `planContactInvite` reports (and additionally a
- * password row that carries an external identity, which the planner cannot
- * see). Null for a fail-closed refusal (unknown stored state): the caller
- * rethrows it rather than inventing a reason.
+ * A state-module `msp_invite` refusal as the invite API's reason: the
+ * module's `identity_managed` / `disabled` / `active_with_password` map to
+ * `external_identity` / `disabled` / `active`. (`login_email_differs` is
+ * planner-only. A password row carrying an external identity is refused by the
+ * module but invisible to `planContactInvite`.) Null for a fail-closed refusal
+ * (unknown stored state): no reason is invented — the binder rethrows it and
+ * `planInviteOrRefuse` answers with the module's own code and status.
  */
 export function inviteRefusalReason(error: PortalAccountTransitionError): AlreadyHasAccessReason | null {
   switch (error.rule) {

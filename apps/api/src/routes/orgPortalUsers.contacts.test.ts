@@ -90,6 +90,10 @@ import { authMiddleware } from '../middleware/auth';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
 import { purgePortalSessionsForUsers } from './portal/helpers';
 import { ContactGoneError, ContactEmailChangedError, PortalLoginChangedError } from '../services/contacts/portalInvite';
+import { PORTAL_ACCOUNT_TRANSITION_REFUSED, PortalAccountTransitionError } from '../services/portalAccountState';
+
+/** What the state module throws for a stored status outside its known set (fail closed). */
+const unknownState = () => new PortalAccountTransitionError(PORTAL_ACCOUNT_TRANSITION_REFUSED, 409, 'msp_invite', 'unknown_status', 'This portal user is in an unknown state.');
 
 const ORG_ID = '7c0a1f7e-1111-4222-8333-444455556666';
 const C1 = '11111111-1111-4111-8111-111111111111';
@@ -255,6 +259,17 @@ describe('POST …/invite with contactId', () => {
     expect(h.sendInvite).not.toHaveBeenCalled();
   });
 
+  it('fails closed with the state module\'s own code on an unknown stored state, sending nothing', async () => {
+    h.loadMock.mockResolvedValueOnce([contactRow(C1, 'ada@acme.test')]);
+    h.bindMock.mockRejectedValueOnce(unknownState());
+    const res = await post('invite', { email: 'ada@acme.test', contactId: C1 });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'This portal user is in an unknown state.', code: 'PORTAL_ACCOUNT_TRANSITION_REFUSED' });
+    expect(h.storeToken).not.toHaveBeenCalled();
+    expect(h.sendInvite).not.toHaveBeenCalled();
+    expect(h.auditMock).not.toHaveBeenCalled();
+  });
+
   it('rethrows an unexpected bind failure (500), sending nothing', async () => {
     h.loadMock.mockResolvedValueOnce([contactRow(C1, 'ada@acme.test')]);
     h.bindMock.mockRejectedValueOnce(new Error('boom'));
@@ -304,6 +319,20 @@ describe('POST …/invite without contactId (stable codes on the existing 409s)'
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error, code });
     expect(h.loadMock).not.toHaveBeenCalled();
+  });
+
+  it('an existing row in an unknown stored state fails closed with the module code (no PORTAL_INVITE_* reason), writing and sending nothing', async () => {
+    h.selectResult.mockReset();
+    h.selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([{ id: 'pu-1', email: 'ada@acme.test', contactId: null, authEpoch: 1, authMethod: 'password', status: 'weird', passwordHash: null, browserAccess: 'granted', entraOid: null }])
+      .mockResolvedValue([]);
+    const res = await post('invite', { email: 'ada@acme.test' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'This portal user is in an unknown state.', code: 'PORTAL_ACCOUNT_TRANSITION_REFUSED' });
+    expect(h.insertReturning).not.toHaveBeenCalled();
+    expect(h.linkMock).not.toHaveBeenCalled();
+    expect(h.sendInvite).not.toHaveBeenCalled();
   });
 });
 
@@ -399,6 +428,20 @@ describe('POST …/invite-contacts', () => {
     h.bindMock
       .mockResolvedValueOnce(invited('pu-1', 'one@acme.test'))
       .mockRejectedValueOnce(new PortalLoginChangedError());
+    const res = await post('invite-contacts', { contactIds: [C1, C2] });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('PORTAL_ACCOUNT_TRANSITION_REFUSED');
+    expect(h.withTx).toHaveBeenCalledTimes(1);
+    expect(h.storeToken).not.toHaveBeenCalled();
+    expect(h.sendInvite).not.toHaveBeenCalled();
+    expect(h.auditMock).not.toHaveBeenCalled();
+  });
+
+  it('fails the whole batch closed on an unknown stored state (savepoint rolls back), sending nothing', async () => {
+    h.loadMock.mockResolvedValueOnce([contactRow(C1, 'one@acme.test'), contactRow(C2, 'two@acme.test')]);
+    h.bindMock
+      .mockResolvedValueOnce(invited('pu-1', 'one@acme.test'))
+      .mockRejectedValueOnce(unknownState());
     const res = await post('invite-contacts', { contactIds: [C1, C2] });
     expect(res.status).toBe(409);
     expect((await res.json()).code).toBe('PORTAL_ACCOUNT_TRANSITION_REFUSED');
