@@ -359,6 +359,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'auth/register.ts': { exempt: 'identity' },
   'auth/ssoDiscovery.ts': { exempt: 'identity' },
   'auth/testApproval.ts': { exempt: 'identity' },
+  'auth/totpFactor.ts': { exempt: 'identity' },
   'auth/verifyEmail.ts': { exempt: 'identity' },
   'authenticator.ts': { exempt: 'identity' },
   'automations.ts': { tools: ['manage_automations'] },

@@ -45,6 +45,7 @@ import { captureException } from '../services/sentry';
 import { getRedis } from '../services';
 import { INVITE_TOKEN_TTL_SECONDS } from './auth/schemas';
 import { enforceExistingFactorStepUp, hashInviteToken, inviteRedisKey, inviteUserRedisKey, requireCurrentPasswordStepUp, resolveUserAuditOrgId, userIsMfaProtected, userRequiresSetup } from './auth/helpers';
+import { activeTotpFactorSql } from './auth/mfaFactorPredicates';
 import { isPasswordAuthDisabledBySso } from './auth/ssoPolicy';
 import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../services/remoteSessionTeardown';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../services/authLifecycle';
@@ -509,6 +510,10 @@ userRoutes.get('/me', async (c) => {
       // #2707: lets the profile UI pick the approver-register re-auth tier
       // (passkey → TOTP code → password) without a second endpoint.
       mfaMethod: users.mfaMethod,
+      // #10650: whether an authenticator app is enrolled — as the primary or
+      // as the backup beside a primary passkey. Computed in SQL from the
+      // shared predicate so the secret column itself is never selected here.
+      totpEnrolled: activeTotpFactorSql(),
       // Exposed so the web sidebar can hide platform-admin-only nav (e.g.
       // account-deletion-requests) and skip its badge fetch — otherwise that
       // fetch 403s ("platform admin access required") on every page load for
@@ -534,7 +539,7 @@ userRoutes.get('/me', async (c) => {
 
   // Never spread `user` directly into the response from here on: it carries the
   // password hash. `userWithoutSecrets` is the only safe shape.
-  const { passwordHash, ...userWithoutSecrets } = user;
+  const { passwordHash, totpEnrolled, ...userWithoutSecrets } = user;
 
   const requiresSetup = userRequiresSetup(user);
 
@@ -589,6 +594,9 @@ userRoutes.get('/me', async (c) => {
     // auth store carries this through so UI that today says "set up MFA and
     // sign in again" can offer the IdP road instead of a dead end.
     hasPassword: passwordHash != null,
+    // Strict boolean: the driver hands back the SQL predicate's value; anything
+    // but `true` reads as "not enrolled".
+    totpEnrolled: totpEnrolled === true,
     partnerId: auth.partnerId,
     orgId: auth.orgId,
     scope: auth.scope,

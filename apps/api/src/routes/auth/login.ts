@@ -75,6 +75,7 @@ import {
   authResponseFloorPromise,
   mintLoginRegisterGrant,
   validateStrictCookieCsrfRequest,
+  hasActiveTotpFactor,
 } from './helpers';
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 import { assertPasswordAuthAllowedBySso, SsoPasswordAuthRequiredError } from './ssoPolicy';
@@ -514,7 +515,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
 
   // Check if MFA is required. This happens after the SSO-only check so an
   // org-enforced SSO user cannot obtain an MFA temp token through password auth.
-  if (ENABLE_2FA && user.mfaEnabled && (user.mfaSecret || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey')) {
+  if (ENABLE_2FA && user.mfaEnabled && (hasActiveTotpFactor(user) || user.mfaMethod === 'sms' || user.mfaMethod === 'passkey')) {
     const tempToken = nanoid(32);
     const mfaMethod = user.mfaMethod || 'totp';
 
@@ -543,7 +544,9 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       scope: context.scope, userId: user.id, orgId: context.orgId, partnerId: context.partnerId,
     });
     const allowedMethods = {
-      totp: Boolean(user.mfaSecret) && pendingPolicy.allowedMethods.totp,
+      // #10650: the shared predicate, so a backup authenticator beside a
+      // passkey primary is offered and a stale secret beside SMS is not.
+      totp: hasActiveTotpFactor(user) && pendingPolicy.allowedMethods.totp,
       sms: user.mfaMethod === 'sms' && Boolean(user.phoneNumber) && pendingPolicy.allowedMethods.sms,
       passkey: passkeyAvailable && pendingPolicy.allowedMethods.passkey,
     };

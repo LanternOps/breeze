@@ -449,15 +449,25 @@ describe('evaluatePendingMfaMethod (#3853)', () => {
     allowedMethods: { totp: true, sms: true, passkey: false },
     expiresAt: Date.now() + 300_000,
   };
+  // #10650: one live row per method. A secret beside an SMS primary is stale
+  // (SMS enable clears it), so no single row is enrolled in both.
   const enrolled = {
-    mfaSecret: 'encrypted-secret',
+    mfaEnabled: true,
+    mfaSecret: null,
     mfaMethod: 'sms' as const,
     phoneNumber: '+15550000001',
   };
+  const totpEnrolled = {
+    mfaEnabled: true,
+    mfaSecret: 'encrypted-secret',
+    mfaMethod: 'totp' as const,
+    phoneNumber: null,
+  };
+  const liveFor = (method: 'totp' | 'sms' | 'recovery') => (method === 'totp' ? totpEnrolled : enrolled);
   const liveAllowed = { totp: true, sms: true, passkey: true };
 
   it.each(['totp', 'sms', 'recovery'] as const)('authorizes an allowed and enrolled %s switch', (method) => {
-    expect(evaluatePendingMfaMethod(pending, method, enrolled, liveAllowed)).toEqual({ ok: true });
+    expect(evaluatePendingMfaMethod(pending, method, liveFor(method), liveAllowed)).toEqual({ ok: true });
   });
 
   it('rejects a method the pending challenge never authorized without making the challenge terminal', () => {
@@ -470,7 +480,9 @@ describe('evaluatePendingMfaMethod (#3853)', () => {
   });
 
   it.each([
-    ['totp', { ...enrolled, mfaSecret: null }],
+    ['totp', { ...totpEnrolled, mfaSecret: null }],
+    ['totp', { ...totpEnrolled, mfaMethod: 'sms' as const }],
+    ['totp', { ...totpEnrolled, mfaEnabled: false }],
     ['sms', { ...enrolled, mfaMethod: 'totp' as const }],
     ['sms', { ...enrolled, phoneNumber: null }],
   ] as const)('rejects %s when the live account is not enrolled in that factor', (method, user) => {
@@ -494,7 +506,7 @@ describe('evaluatePendingMfaMethod (#3853)', () => {
     expect(evaluatePendingMfaMethod(
       pending,
       'totp',
-      enrolled,
+      totpEnrolled,
       { ...liveAllowed, totp: false },
     )).toEqual({ ok: false, reason: 'live_policy_disallowed', terminal: true });
   });
