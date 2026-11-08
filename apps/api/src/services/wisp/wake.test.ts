@@ -534,4 +534,23 @@ describe('handleWispWakeEvent', () => {
     expect(last.text).not.toMatch(/status = 'completed'/);
     expect(last.params).toContain(G1);
   });
+
+  // #11423: a tick skipped because nothing changed still looked at the org.
+  // If the round-robin ignored those rows, the unchanged org would stay the
+  // oldest and every later floor tick would pick it (and skip it) forever.
+  it('the round-robin counts a no_changes skip as a look, so the floor tick moves on to the next org', async () => {
+    useFixtures({
+      grantRow: [{ id: G1, partner_id: P1, status: 'active', current_revision_id: REV }],
+      orgs: [{ id: O1, name: 'A' }, { id: O2, name: 'B' }],
+      lastAssessed: [
+        { org_id: O1, last_assessed_at: '2026-10-24 09:30:00+00' }, // its last tick was a no_changes skip
+        { org_id: O2, last_assessed_at: '2026-10-24 09:00:00+00' },
+      ],
+    });
+    h.resolveGrantCeiling.mockResolvedValue(ceiling([O1, O2]));
+    await handleWispWakeEvent(event('wisp.grant.resumed', O1, { grantId: G1, partnerId: P1, orgId: O1 }));
+    expect(assessAdds()[0]!.data).toMatchObject({ orgId: O2 });
+    const last = h.executes.find((e) => /max\(finished_at\)/.test(e.text))!;
+    expect(last.text).toMatch(/status IN \('completed', 'awaiting_approval'\)\s+OR \(status = 'skipped' AND error_code = 'no_changes'\)/);
+  });
 });

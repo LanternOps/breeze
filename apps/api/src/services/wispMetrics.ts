@@ -80,7 +80,7 @@ const grantsActive = new Gauge({
 });
 
 export function incWispAssessment(
-  outcome: 'admitted' | 'skipped_budget' | 'skipped_grant' | 'skipped_admission',
+  outcome: 'admitted' | 'skipped_budget' | 'skipped_grant' | 'skipped_admission' | 'skipped_no_changes',
 ): void {
   assessmentsTotal.inc({ outcome });
 }

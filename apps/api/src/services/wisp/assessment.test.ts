@@ -25,7 +25,8 @@ const h = vi.hoisted(() => {
     p.from = vi.fn((t: unknown) => { q.table = t; return p; });
     p.where = vi.fn((cond: unknown) => { q.where.push(cond); return p; });
     p.then = (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) =>
-      Promise.resolve(results.shift() ?? []).then(res, rej);
+      // A queued Error rejects that query (the read failed).
+      ((r: unknown) => (r instanceof Error ? Promise.reject(r) : Promise.resolve(r)))(results.shift() ?? []).then(res, rej);
     return p;
   };
   class GrantInactiveError extends Error {
@@ -44,6 +45,8 @@ const h = vi.hoisted(() => {
     hasEntitlement: vi.fn(),
     resolveGrantCeiling: vi.fn(),
     createAndEnqueueAgentRun: vi.fn(),
+    transitionRunStatus: vi.fn(),
+    enqueue: vi.fn(),
     chargeableUnderGrant: vi.fn(),
     notifyBudgetExhaustedOnce: vi.fn(),
     upsertConcern: vi.fn(),
@@ -90,7 +93,10 @@ vi.mock('./grantAuthority', async (importOriginal) => ({
   GrantInactiveError: h.GrantInactiveError,
 }));
 vi.mock('../sentry', () => ({ captureException: h.captureException }));
-vi.mock('../aiAgents/runService', () => ({ createAndEnqueueAgentRun: h.createAndEnqueueAgentRun }));
+vi.mock('../aiAgents/runService', () => ({
+  createAndEnqueueAgentRun: h.createAndEnqueueAgentRun,
+  transitionRunStatus: h.transitionRunStatus,
+}));
 vi.mock('../aiAgents/assessmentProfile', () => ({ ASSESSMENT_BUDGET_CENTS_PER_RUN: 25 }));
 vi.mock('./budget', async () => ({
   chargeableUnderGrant: h.chargeableUnderGrant,
@@ -120,11 +126,13 @@ import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { alerts } from '../../db/schema/alerts';
 import { connectionHealthIncidents } from '../../db/schema/connectionHealth';
 import { tickets } from '../../db/schema/portal';
+import { wispConcerns } from '../../db/schema/wispConcerns';
 import {
   assessableOrgIds,
   enqueueAssessment,
   lastAssessmentWatermark,
   loadAssessmentContext,
+  noChangesGateApplies,
   parseWispTriggerRef,
   recordDeterministicDigest,
 } from './assessment';
@@ -368,6 +376,250 @@ describe('enqueueAssessment', () => {
     h.results.push([{ at: null }]);
     h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'no_effective_agent' });
     await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } })).resolves.toEqual({ skipped: 'no_effective_agent' });
+  });
+});
+
+// #11423: a tick or watch for an org where nothing changed since its last
+// completed assessment records a `skipped / no_changes` run and makes no model
+// call. event and onboarding reasons, and a first look, always run.
+describe('no-changes gate (#11423)', () => {
+  const WATERMARK = new Date('2026-11-08T10:00:00.000Z');
+  const ANCHOR = new Date('2026-11-08T10:01:30.000Z'); // that run's finished_at
+  /** The change probes, in the order enqueueAssessment issues them. */
+  const PROBES = [
+    { source: 'alerts', table: alerts },
+    { source: 'tickets', table: tickets },
+    { source: 'incidents', table: connectionHealthIncidents },
+    { source: 'runs', table: aiAgentRuns },
+    { source: 'intents', table: actionIntents },
+    { source: 'concerns', table: wispConcerns },
+  ] as const;
+  type Source = (typeof PROBES)[number]['source'];
+  const tick = { kind: 'tick' } as const;
+  const watch = { kind: 'watch', watchId: WATCH } as const;
+
+  /** grant pin → watermark → the last clean run's finish → one result per probe. */
+  const queueGated = (changed: Partial<Record<Source, unknown[]>> = {}, anchor: Date | null = ANCHOR) => {
+    h.results.push([grantRow()], [{ at: WATERMARK }], [{ at: anchor }]);
+    for (const p of PROBES) h.results.push(changed[p.source] ?? []);
+  };
+  /** Everything after the grant pin, the watermark and the anchor reads. */
+  const probeQueries = () => h.queries.slice(3);
+  const deferredCalls = () => h.createAndEnqueueAgentRun.mock.calls.filter((c) => (c[1] as { deferEnqueue?: boolean } | undefined)?.deferEnqueue === true);
+
+  beforeEach(() => {
+    h.createAndEnqueueAgentRun.mockImplementation(async (_input: unknown, opts?: { deferEnqueue?: boolean }) => (
+      opts?.deferEnqueue ? { created: true, run: { id: RUN }, enqueue: h.enqueue } : { created: true, run: { id: RUN } }
+    ));
+    h.transitionRunStatus.mockResolvedValue(true);
+    h.enqueue.mockResolvedValue({ created: true, run: { id: RUN } });
+    h.resolveConcernBySignature.mockResolvedValue({ resolved: false });
+    h.listWatches.mockResolvedValue([{ id: WATCH, kind: 'alert_pattern' }]);
+  });
+
+  it.each([['tick', tick], ['alert_pattern watch', watch]] as const)(
+    'a %s with an unchanged digest records a skipped no_changes run and enqueues no model run',
+    async (_label, reason) => {
+      queueGated();
+      await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason })).resolves.toEqual({ skipped: 'no_changes' });
+      // Admitted (so the ledger row carries the real agent and policy) but never enqueued.
+      expect(h.createAndEnqueueAgentRun).toHaveBeenCalledTimes(1);
+      expect(deferredCalls()).toHaveLength(1);
+      expect(h.createAndEnqueueAgentRun.mock.calls[0]![0]).toMatchObject({
+        orgId: ORG, profile: 'assessment', grant: { grantId: GRANT, grantRevisionId: REV },
+        triggerRef: { wisp: { reason, watermark: WATERMARK.toISOString() } },
+      });
+      expect(h.enqueue).not.toHaveBeenCalled();
+      expect(h.transitionRunStatus).toHaveBeenCalledTimes(1);
+      expect(h.transitionRunStatus).toHaveBeenCalledWith(RUN, 'queued', 'skipped', expect.objectContaining({
+        errorCode: 'no_changes', finishedAt: expect.any(Date), summary: expect.stringMatching(/nothing changed/i),
+      }));
+      // Every probe ran, each pinned to the org and to the last run's FINISH (not the watermark).
+      const probes = probeQueries();
+      expect(probes.map((q) => q.table)).toEqual(PROBES.map((p) => p.table));
+      for (const q of probes) {
+        const { params } = compile(q.where[0]);
+        expect(params).toContain(ORG);
+        expect(params).not.toContain(OTHER_ORG);
+        expect(params.map(String).some((p) => p.startsWith(ANCHOR.toISOString().slice(0, 19)))).toBe(true);
+        expect(params.map(String).some((p) => p.startsWith(WATERMARK.toISOString().slice(0, 19)))).toBe(false);
+      }
+    },
+  );
+
+  it.each(PROBES.map((p) => [p.source] as const))('a tick after a change in %s still runs the model', async (source) => {
+    queueGated({ [source]: source === 'incidents' ? [{ viewPermission: 'organizations:read' }] : [{ id: 'changed' }] });
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: tick })).resolves.toEqual({ runId: RUN });
+    expect(deferredCalls()).toHaveLength(0);
+    expect(h.createAndEnqueueAgentRun).toHaveBeenCalledTimes(1);
+    expect(h.transitionRunStatus).not.toHaveBeenCalled();
+  });
+
+  it('compares against the FINISH of the latest clean assessment of (grant, org) — the run the watermark starts at', async () => {
+    queueGated();
+    await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: tick });
+    const anchorQ = h.queries[2]!;
+    expect(anchorQ.table).toBe(aiAgentRuns);
+    const { sql: text, params } = compile(anchorQ.where[0]);
+    expect(text).toMatch(/"grant_id" = \$\d+/);
+    expect(text).toMatch(/"org_id" = \$\d+/);
+    expect(params).toEqual(expect.arrayContaining([GRANT, ORG, 'assessment', 'completed', 'awaiting_approval', 'assessment_partially_applied']));
+    const fields = (h.db.select.mock.calls[2] as unknown[])[0] as { at: SQL };
+    expect(compile(fields.at).sql).toMatch(/max\("ai_agent_runs"\."finished_at"\)/);
+  });
+
+  it('a first look (no watermark) is never gated: no probe, the tick runs as onboarding', async () => {
+    h.results.push([grantRow()], [{ at: null }]);
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: tick })).resolves.toEqual({ runId: RUN });
+    expect(probeQueries()).toEqual([]);
+    expect(deferredCalls()).toHaveLength(0);
+    expect(h.transitionRunStatus).not.toHaveBeenCalled();
+  });
+
+  // A ticket_waiting watch fires BECAUSE nothing changed; the tool-judged
+  // kinds read state the digest never sees. Gating them would mute them.
+  it.each(['ticket_waiting', 'backup_health', 'patch_compliance', 'security_findings', 'custom_query', 'ticket_cluster'])(
+    'a %s watch always runs (its hits are not digest rows)',
+    async (kind) => {
+      h.listWatches.mockResolvedValue([{ id: WATCH, kind }]);
+      queueGated();
+      await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: watch })).resolves.toEqual({ runId: RUN });
+      expect(probeQueries()).toEqual([]);
+      expect(deferredCalls()).toHaveLength(0);
+    },
+  );
+
+  it('a watch that no longer exists is not gated', async () => {
+    h.listWatches.mockResolvedValue([{ id: 'another-watch', kind: 'alert_pattern' }]);
+    queueGated();
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: watch })).resolves.toEqual({ runId: RUN });
+    expect(deferredCalls()).toHaveLength(0);
+  });
+
+  it.each([
+    ['the anchor read', () => { h.results.push([grantRow()], [{ at: WATERMARK }], new Error('db blip') as never); }],
+    ['a probe', () => { h.results.push([grantRow()], [{ at: WATERMARK }], [{ at: ANCHOR }], [], new Error('column missing') as never); }],
+  ])('fails open when %s throws: the assessment runs as before and the error is reported', async (_label, arrange) => {
+    arrange();
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: tick })).resolves.toEqual({ runId: RUN });
+    expect(deferredCalls()).toHaveLength(0);
+    expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ op: 'wisp.assessment.noChangesProbe' }));
+  });
+
+  it('fails open when the watch lookup throws', async () => {
+    h.listWatches.mockRejectedValue(new Error('db blip'));
+    h.results.push([grantRow()], [{ at: WATERMARK }]);
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: watch })).resolves.toEqual({ runId: RUN });
+    expect(deferredCalls()).toHaveLength(0);
+  });
+
+  it('noChangesGateApplies is pure: tick or alert_pattern watch, with a watermark', () => {
+    const wm0 = new Date(0);
+    expect(noChangesGateApplies(tick, wm0)).toBe(true);
+    expect(noChangesGateApplies(tick, null)).toBe(false);
+    expect(noChangesGateApplies(watch, wm0, 'alert_pattern')).toBe(true);
+    expect(noChangesGateApplies(watch, wm0, 'backup_health')).toBe(false);
+    expect(noChangesGateApplies(watch, wm0, null)).toBe(false);
+    expect(noChangesGateApplies(alertReason, wm0)).toBe(false);
+    expect(noChangesGateApplies({ kind: 'onboarding' }, wm0)).toBe(false);
+  });
+
+  it('the alerts probe counts an acknowledge or dismiss as a change (it clears an "unacknowledged" watch hit)', async () => {
+    queueGated();
+    await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: tick });
+    const { sql: text } = compile(h.queries.find((x) => x.table === alerts)!.where[0]);
+    for (const col of ['triggered_at', 'acknowledged_at', 'dismissed_at', 'resolved_at']) expect(text).toContain(`"${col}" >= $`);
+  });
+
+  it('a watermark without a finished run to compare against is not gated', async () => {
+    queueGated({}, null);
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: tick })).resolves.toEqual({ runId: RUN });
+    expect(probeQueries()).toEqual([]);
+    expect(h.transitionRunStatus).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['event', alertReason],
+    ['onboarding', { kind: 'onboarding' as const }],
+  ])('an %s reason runs regardless of the digest (no probe)', async (_label, reason) => {
+    h.results.push([grantRow()], [{ at: WATERMARK }]);
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason })).resolves.toEqual({ runId: RUN });
+    expect(probeQueries()).toEqual([]);
+    expect(deferredCalls()).toHaveLength(0);
+    expect(h.transitionRunStatus).not.toHaveBeenCalled();
+  });
+
+  it('the skip goes through admission: an admission skip is returned and handled as before', async () => {
+    queueGated();
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'no_effective_agent' });
+    h.upsertConcern.mockResolvedValue({ id: 'c-1', created: true });
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: tick })).resolves.toEqual({ skipped: 'no_effective_agent' });
+    expect(h.transitionRunStatus).not.toHaveBeenCalled();
+    // The no-agent readiness concern is still raised (#10143).
+    expect(h.upsertConcern).toHaveBeenCalledWith(expect.objectContaining({ signature: `wisp-readiness:no-effective-agent:${ORG}` }));
+  });
+
+  it('a recorded skip closes a stale no-agent readiness concern, as an admitted run does', async () => {
+    queueGated();
+    await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: tick });
+    expect(h.resolveConcernBySignature).toHaveBeenCalledWith(PARTNER, `wisp-readiness:no-effective-agent:${ORG}`, 'ai_agent_configured');
+  });
+
+  it.each([
+    ['the transition throws', () => h.transitionRunStatus.mockRejectedValue(new Error('db blip'))],
+    ['the row was no longer queued', () => h.transitionRunStatus.mockResolvedValue(false)],
+  ])('fails open when the skip cannot be recorded (%s): the admitted run is enqueued as before', async (_label, arrange) => {
+    queueGated();
+    arrange();
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: tick })).resolves.toEqual({ runId: RUN });
+    expect(h.enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('the runs probe ignores no_changes skips, other grants\' assessments and specialist runs; it counts a run that FINISHED since', async () => {
+    queueGated();
+    await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: tick });
+    const q = h.queries.find((x) => x.table === aiAgentRuns && x.where.length > 0 && compile(x.where[0]).sql.includes('"depth"'));
+    expect(q, 'runs probe').toBeDefined();
+    const { sql: text, params } = compile(q!.where[0]);
+    expect(text).toMatch(/"queued_at" >= \$\d+/);
+    expect(text).toMatch(/"finished_at" > \$\d+/);
+    expect(text).toMatch(/"depth" = \$\d+/);
+    expect(text).toMatch(/"profile" <> \$\d+/);
+    expect(text).toMatch(/"grant_id" = \$\d+/);
+    expect(text).toMatch(/"error_code" <> \$\d+/);
+    expect(params).toEqual(expect.arrayContaining([ORG, GRANT, 'assessment', 'skipped', 'no_changes', 0]));
+  });
+
+  it('the concerns probe ignores rows whose last write was an assessment run\'s own finalizer (the touch loop)', async () => {
+    queueGated();
+    await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: tick });
+    const q = h.queries.find((x) => x.table === wispConcerns)!;
+    const { sql: text } = compile(q.where[0]);
+    expect(text).toMatch(/"updated_at" >= \$\d+/);
+    expect(text).toMatch(/NOT EXISTS \(SELECT 1 FROM ai_agent_runs/);
+    expect(text).toMatch(/last_assessed_run_id/);
+    expect(text).toMatch(/finished_at >= "wisp_concerns"\."updated_at"/);
+  });
+
+  it('an incident whose view permission is outside the ceiling is not a change', async () => {
+    h.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: new Set(['alerts:read', 'tickets:read', 'organizations:read', 'ai_agents:read']) }));
+    queueGated({ incidents: [{ viewPermission: 'billing:read' }] });
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: tick })).resolves.toEqual({ skipped: 'no_changes' });
+  });
+
+  it('a section the grantor may not read is not probed (it renders empty in the digest too)', async () => {
+    h.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: new Set(['tickets:read']) }));
+    h.results.push([grantRow()], [{ at: WATERMARK }], [{ at: ANCHOR }], [], []); // tickets, concerns
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: tick })).resolves.toEqual({ skipped: 'no_changes' });
+    expect(probeQueries().map((q) => q.table)).toEqual([tickets, wispConcerns]);
+  });
+
+  it('counts the skip as wisp_assessments_total{outcome="skipped_no_changes"}', async () => {
+    queueGated();
+    wm.incWispAssessment.mockClear();
+    await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: tick });
+    expect(wm.incWispAssessment).toHaveBeenLastCalledWith('skipped_no_changes');
+    expect(wm.incWispAssessment).not.toHaveBeenCalledWith('admitted');
   });
 });
 
@@ -731,6 +983,17 @@ describe('loadAssessmentContext', () => {
       .filter((calls) => calls.length > 0);
     expect(limitCalls).toHaveLength(5);
     for (const calls of limitCalls) expect(calls[0]![0]).toBe(25);
+  });
+
+  // #11423: skipped ticks never advance the watermark, so without this the
+  // next model run's 25 newest "runs" would be its own no_changes skips.
+  it('the runs section leaves out no_changes skip rows', async () => {
+    queueDigest();
+    await loadAssessmentContext(run());
+    const runsQ = h.queries.find((x) => x.table === aiAgentRuns)!;
+    const { sql: text, params } = compile(runsQ.where[0]);
+    expect(text).toMatch(/"status" <> \$\d+ or "ai_agent_runs"\."error_code" is null or "ai_agent_runs"\."error_code" <> \$\d+/);
+    expect(params).toEqual(expect.arrayContaining(['skipped', 'no_changes']));
   });
 
   // #10388: an alert resolved since the watermark is a change too — without
