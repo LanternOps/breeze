@@ -669,13 +669,25 @@ async function deviceMatchesAnyGroup(
  */
 const LIFECYCLE_ALERT_SOURCES: ReadonlySet<string> = new Set(['warranty_evaluator']);
 
+/**
+ * #11328 — alerts an AI agent raises about its OWN work: an unattended action
+ * that failed verification (`actVerify.ts`) and a fix that did not hold
+ * (`fixWatch.ts`). They publish `alert.triggered` so channels, routing and
+ * escalation page a human, but they must never admit an agent run: a triage
+ * agent in act mode would act on its own failure, fail again and raise a new
+ * alert for the new run, a loop bounded only by cooldown, rate and budget
+ * caps. Same reasoning as the automation-output guard in automationWorker.ts.
+ * Unconditional, like the lifecycle set above.
+ */
+const AGENT_OUTPUT_ALERT_SOURCES: ReadonlySet<string> = new Set(['ai_agent_act_verify', 'ai_agent_fix_watch']);
+
 export async function evaluateAgentTriggerFilters(
   triggers: AiAgentTriggers,
   ctx: NonNullable<CreateAgentRunInput['alertContext']>,
   deviceId: string | null,
   orgId: string,
 ): Promise<boolean> {
-  if (ctx.source != null && LIFECYCLE_ALERT_SOURCES.has(ctx.source)) return false;
+  if (ctx.source != null && (LIFECYCLE_ALERT_SOURCES.has(ctx.source) || AGENT_OUTPUT_ALERT_SOURCES.has(ctx.source))) return false;
 
   const severities = triggers.alertSeverities ?? [];
   if (!severities.includes(ctx.severity)) return false;

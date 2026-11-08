@@ -1644,7 +1644,20 @@ jobs:
       # HIGH advisory blocks PRs until patched or until a reviewed, expiring
       # entry is added to scripts/security/npm-audit-exceptions.json (the bar
       # and the enforced rules are in that file's header).
+      #
+      # The installer is tested before it runs, because it decides which binary
+      # the audit trusts. A cached copy restored here is re-checked against the
+      # pinned SHA-256 and used before any download is tried. A miss retries
+      # two GitHub sources with backoff, and the step still fails closed when no
+      # verified binary can be had (#11367).
+      - name: Test osv-scanner installer (digest pin, retry, cache fallback)
+        run: pnpm test:osv-scanner-install
+
+      - name: Restore osv-scanner binary
+        uses: ./.github/actions/restore-osv-scanner
+
       - name: Install osv-scanner
+        timeout-minutes: 25
         run: bash scripts/security/install-osv-scanner.sh
 
       # The exceptions logic is tested first, deliberately: a regression in it

@@ -113,6 +113,8 @@ import { deleteDeviceGroup, DeviceGroupDeleteError } from './deviceGroupDelete';
 import { validateManualMembershipDevices } from './groupMembership';
 import { aiQueueCommandForExecution } from './aiDispatch';
 import { CommandTypes } from './commandTypes';
+import { captureException } from './sentry';
+import { splitByOrg, type SplitByOrg } from './aiToolSplitByOrg';
 import {
   decodeSiteScope,
   intersectSiteScopes,
@@ -299,6 +301,44 @@ async function resolveDeviceOrg(
 
 function orgWhere(auth: AuthContext, orgIdCol: ReturnType<typeof sql.raw> | any): SQL | undefined {
   return auth.orgCondition(orgIdCol) ?? undefined;
+}
+
+/**
+ * #10431: a patch install job has one `org_id`, so a device list spanning orgs
+ * can never be installed in one call. Asked only once install is about to
+ * refuse: when every target device is reachable (org condition + site/device
+ * axis, the scan branch's read) and they span more than one org, the answer is
+ * the per-org split instead of the generic refusal. Null otherwise — the list
+ * fits one org, a device is out of reach (the refusal stands and no org is
+ * disclosed), or the lookup failed (the refusal is still correct).
+ */
+async function patchInstallSplitByOrg(auth: AuthContext, deviceIds: string[]): Promise<SplitByOrg | null> {
+  const ids = [...new Set(deviceIds)];
+  let rows: Array<{ id: string; siteId: string | null; orgId: string }>;
+  try {
+    // Own savepoint, catch outside it, so a failed read cannot poison the call's transaction.
+    rows = await withDbTransaction(() => db.select({ id: devices.id, siteId: devices.siteId, orgId: devices.orgId })
+      .from(devices)
+      .where(and(inArray(devices.id, ids), orgWhere(auth, devices.orgId))));
+  } catch (err) {
+    console.warn('[manage_patches] could not resolve device orgs for split_by_org', err);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, { service: 'manage_patches' });
+    return null;
+  }
+  const orgOf = new Map(rows.filter((d) => !deviceSiteDenied(auth, d.siteId, d.id)).map((d) => [d.id, d.orgId]));
+  // Insertion-ordered by the caller's list: the first device's org is listed first.
+  const byOrg = new Map<string, string[]>();
+  for (const id of ids) {
+    const orgId = orgOf.get(id);
+    if (orgId === undefined) return null;
+    const group = byOrg.get(orgId);
+    if (group) group.push(id); else byOrg.set(orgId, [id]);
+  }
+  if (byOrg.size < 2) return null;
+  return splitByOrg(byOrg, {
+    tool: 'manage_patches',
+    hint: 'A patch install job belongs to one organization. Call manage_patches install once per group, with that group\'s orgId.',
+  });
 }
 
 const aiReportDefinitionMetadataProjection = {
@@ -1614,7 +1654,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         }
         if (!Array.isArray(input.patchIds) || !Array.isArray(input.deviceIds)) return JSON.stringify({ error: 'patchIds and deviceIds are required' });
         const resolvedInstallOrg = resolveWritableToolOrgId(auth, typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined);
-        if (!resolvedInstallOrg.orgId) return JSON.stringify({ error: resolvedInstallOrg.error ?? 'Organization context required' });
+        if (!resolvedInstallOrg.orgId) {
+          const split = await patchInstallSplitByOrg(auth, input.deviceIds as string[]);
+          return JSON.stringify(split ?? { error: resolvedInstallOrg.error ?? 'Organization context required' });
+        }
         const installOrgId = resolvedInstallOrg.orgId;
 
         // Validate devices belong to this org AND the caller's site scope. Site
@@ -1631,7 +1674,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         );
         const unauthorizedIds = (input.deviceIds as string[]).filter((id) => !ownedIds.has(id));
         if (unauthorizedIds.length > 0) {
-          return JSON.stringify({ error: `Access denied: ${unauthorizedIds.length} device(s) not in your organization or site scope` });
+          const split = await patchInstallSplitByOrg(auth, input.deviceIds as string[]);
+          return JSON.stringify(split ?? { error: `Access denied: ${unauthorizedIds.length} device(s) not in your organization or site scope` });
         }
 
         const [job] = await db.insert(patchJobs).values({
