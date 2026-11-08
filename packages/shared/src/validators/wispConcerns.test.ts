@@ -15,6 +15,7 @@ import {
   snoozeBodySchema,
   snoozeConcernToolSchema,
   updateConcernSchema,
+  updateConcernToolShape,
   validateRequestSpecialist,
 } from './wispConcerns';
 import { CONCERN_SUBJECT_KINDS } from '../types/wispConcerns';
@@ -74,6 +75,23 @@ describe('updateConcernSchema', () => {
   });
   it('rejects a status other than resolved', () => {
     expect(updateConcernSchema.safeParse({ concernId: id, status: 'dismissed', outcome: 'x' }).success).toBe(false);
+  });
+  // #11427: the model sent `{ concernId, summary, outcome }` with no status for
+  // a week, which only edited the summary. An outcome is a conclusion: it resolves.
+  it('an outcome without a status parses as a resolve', () => {
+    expect(updateConcernSchema.parse({ concernId: id, outcome: 'Device restarted on its own' })).toEqual({
+      concernId: id, outcome: 'Device restarted on its own', status: 'resolved',
+    });
+    expect(updateConcernSchema.parse({ concernId: id, summary: 'Rebooted', outcome: 'Reboot alert cleared' }).status).toBe('resolved');
+  });
+  it('an edit without an outcome stays an edit (no status added)', () => {
+    expect(updateConcernSchema.parse({ concernId: id, summary: 'Still pending a restart' })).toEqual({
+      concernId: id, summary: 'Still pending a restart',
+    });
+  });
+  it('the tool shape describes status and outcome to the model', () => {
+    expect(updateConcernToolShape.status.description).toMatch(/resolved/);
+    expect(updateConcernToolShape.outcome.description).toMatch(/resolve/i);
   });
 });
 

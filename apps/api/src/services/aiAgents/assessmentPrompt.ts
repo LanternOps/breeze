@@ -154,7 +154,8 @@ export function buildAssessmentTaskPrompt(ctx: AgentRunPromptContext): string {
     lines.push(wrapUntrustedData('wisp-org-name', sanitizeSweepText(a.org.name ?? '', ORG_NAME_MAX) || '(no name)'));
   }
   lines.push('- New problem worth tracking → record_concern (one subject per call, at most 10 per run).');
-  lines.push('- Known concern changed or is fixed → update_concern (resolve it with an outcome when it is fixed).');
+  lines.push("- Known concern changed or is fixed → update_concern. To close it send status: 'resolved' with an "
+    + 'outcome; a summary edit alone keeps it open.');
   lines.push('- The person should act now → nudge (one concern, one next step).');
   lines.push('- A Tier-2/3 change would help → propose_action (it becomes an approval request; nothing runs).');
   lines.push('- Needs a specialist → request_specialist (recorded now; Wisp\'s coordinator handles it after this '

@@ -124,6 +124,16 @@ describe('buildAssessmentTaskPrompt (Wisp W05b)', () => {
     expect(line).toMatch(/at most 3/i);
   });
 
+  // #11427: the model rewrote summaries to "the alert resolved" with no status,
+  // which left every concern open. The rule now names the closing call.
+  it('the update_concern rule says how to close a concern and that a summary edit keeps it open', () => {
+    const p = buildAssessmentTaskPrompt(ctx());
+    const line = p.split('\n').find((l) => l.includes('update_concern'))!;
+    expect(line).toContain("status: 'resolved'");
+    expect(line).toMatch(/outcome/);
+    expect(line).toMatch(/keeps it open/i);
+  });
+
   it('one line per open concern: id | severity | subject | summary | recipient state', () => {
     const p = buildAssessmentTaskPrompt(ctx(assessment({
       openConcerns: [concern(), concern({
