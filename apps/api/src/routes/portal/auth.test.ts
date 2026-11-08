@@ -118,6 +118,7 @@ beforeEach(() => {
     receiveNotifications: true,
     status: 'active',
     authMethod: 'password',
+    browserAccess: 'granted',
     authEpoch: 1,
   };
   activeOrgResult.current = { orgId: ORG_ID, partnerId: 'partner-1' };

@@ -20,10 +20,7 @@ import {
   acceptInviteSchema,
   SESSION_TTL_MS,
   SESSION_TTL_SECONDS,
-  RESET_TTL_MS,
-  RESET_TTL_SECONDS,
   PORTAL_SESSION_CAP,
-  PORTAL_RESET_TOKEN_CAP,
   PORTAL_SESSION_COOKIE_NAME,
   PORTAL_USE_REDIS,
   PORTAL_REDIS_KEYS,
@@ -33,7 +30,6 @@ import {
 } from './schemas';
 import {
   portalSessions,
-  portalResetTokens,
   normalizeEmail,
   getClientIp,
   setPortalSessionCookies,
@@ -45,10 +41,15 @@ import {
   clearRateLimitKeys,
   buildPortalUserPayload,
   validatePortalCookieCsrfRequest,
-  consumePortalInviteToken,
   buildPortalUrl,
   purgePortalSessionsForUsers,
 } from './helpers';
+import {
+  consumePortalCapabilityToken,
+  issuePortalCapabilityToken,
+  validatePortalCapability,
+} from './capabilityTokens';
+import { PortalAccountTransitionError, planPortalAccountTransition } from '../../services/portalAccountState';
 import { isSelfManagedDbContextRoute } from '../../middleware/selfManagedDbContextRoutes';
 import { portalOrgDbAccessContext } from './portalDbContext';
 import { purgeClientAiSessionsForUsers } from '../../services/clientAiSessionStore';
@@ -236,6 +237,8 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
         // emailed ticket has no `submitted_by` at all.
         contactId: portalUsers.contactId,
         authMethod: portalUsers.authMethod,
+        // Browser portal access (W2, spec §6 invariant 9), re-checked per request.
+        browserAccess: portalUsers.browserAccess,
         receiveNotifications: portalUsers.receiveNotifications,
         status: portalUsers.status,
         authEpoch: portalUsers.authEpoch,
@@ -252,7 +255,10 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
   // Browser portal sessions are password-ceremony sessions. Entra JIT uses a
   // separate Client-AI session and must never inherit browser access merely
   // because a historical recovery/invite path populated password_hash.
-  if (!user || user.authMethod !== 'password') {
+  // `browser_access` (W2) is the explicit grant: an account without it never
+  // holds a browser session, whatever its method. No logout exemption — the
+  // session is purged here, which is the sign-out.
+  if (!user || user.authMethod !== 'password' || user.browserAccess !== 'granted') {
     if (PORTAL_USE_REDIS) {
       const redis = getRedis();
       if (redis) {
@@ -599,8 +605,7 @@ authRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema
     }
   }
 
-  const redis = PORTAL_USE_REDIS ? getRedis() : null;
-  if (PORTAL_USE_REDIS && !redis) {
+  if (PORTAL_USE_REDIS && !getRedis()) {
     return c.json({ error: 'Service temporarily unavailable' }, 503);
   }
 
@@ -611,6 +616,9 @@ authRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema
         email: portalUsers.email,
         orgId: portalUsers.orgId,
         authMethod: portalUsers.authMethod,
+        // The reset token is bound to this generation (W2): a password change
+        // or disable after issue invalidates it.
+        authEpoch: portalUsers.authEpoch,
         // The partner that owns this customer's org — the `support` stream's
         // sender (spec §8.2). PUBLIC, UNAUTHENTICATED ROUTE: the id is derived
         // from the org the portal_users row points at, never from the request
@@ -642,23 +650,10 @@ authRoutes.post('/auth/forgot-password', zValidator('json', forgotPasswordSchema
 
   if (user) setPortalAuthAuditIdentity(c, user);
 
-  if (user?.authMethod === 'password' && await isPortalPasswordResetEnabled(user.orgId)) {
-    const resetToken = nanoid(48);
-    const tokenHash = createHash('sha256').update(resetToken).digest('hex');
-    const expiresAt = new Date(Date.now() + RESET_TTL_MS);
-
-    if (PORTAL_USE_REDIS) {
-      await redis!.setex(
-        PORTAL_REDIS_KEYS.resetToken(tokenHash),
-        RESET_TTL_SECONDS,
-        JSON.stringify({ userId: user.id })
-      );
-    }
-    if (ALLOW_IN_MEMORY_PORTAL_STATE) {
-      portalResetTokens.set(tokenHash, { userId: user.id, expiresAt, createdAt: new Date() });
-      capMapByOldest(portalResetTokens, PORTAL_RESET_TOKEN_CAP, (token) => token.createdAt.getTime());
-    }
-
+  const resetToken = user?.authMethod === 'password' && await isPortalPasswordResetEnabled(user.orgId)
+    ? await issuePortalCapabilityToken({ purpose: 'reset', portalUserId: user.id, orgId: user.orgId, email: user.email, authEpoch: user.authEpoch })
+    : null;
+  if (user && resetToken) {
     const orgQuery = orgId ? `&orgId=${encodeURIComponent(orgId)}` : '';
     const resetUrl = buildPortalUrl(`/reset-password?token=${encodeURIComponent(resetToken)}${orgQuery}`);
     const emailService = getEmailService();
@@ -705,54 +700,28 @@ authRoutes.post('/auth/reset-password', zValidator('json', resetPasswordSchema),
     return c.json({ error: passwordCheck.errors[0] }, 400);
   }
 
-  let storedUserId: string | null = null;
-
-  if (PORTAL_USE_REDIS) {
-    const redis = getRedis();
-    if (!redis) {
-      if (!ALLOW_IN_MEMORY_PORTAL_STATE) {
-        return c.json({ error: 'Service temporarily unavailable' }, 503);
-      }
-    } else {
-      const raw = await redis.get(PORTAL_REDIS_KEYS.resetToken(tokenHash));
-      if (raw) {
-        try {
-          const parsed = JSON.parse(raw);
-          storedUserId = parsed.userId;
-        } catch (err) {
-          console.error('[portal] Failed to parse Redis reset token data:', (err as Error).message);
-        }
-        await redis.del(PORTAL_REDIS_KEYS.resetToken(tokenHash));
-      }
-    }
+  if (PORTAL_USE_REDIS && !getRedis()) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
   }
 
-  if (!storedUserId && ALLOW_IN_MEMORY_PORTAL_STATE) {
-    const stored = portalResetTokens.get(tokenHash);
-    if (stored && stored.expiresAt.getTime() > Date.now()) {
-      storedUserId = stored.userId;
-    }
-    portalResetTokens.delete(tokenHash);
-  }
-
-  if (!storedUserId) {
+  // Consumed atomically, then re-checked against the row (W2): same org, same
+  // address, same auth_epoch (a password change or disable since issue
+  // invalidates it), a password login, not disabled. A legacy {userId} token
+  // from before W2 is refused here with the same generic 400.
+  const consumed = await consumePortalCapabilityToken('reset', token);
+  if (!consumed) {
     return c.json({ error: 'Invalid or expired reset token' }, 400);
   }
-
-  const [resetUser] = await withSystemDbAccessContext(() =>
-    db
-      .select({ id: portalUsers.id, orgId: portalUsers.orgId, email: portalUsers.email, authMethod: portalUsers.authMethod })
-      .from(portalUsers)
-      .where(eq(portalUsers.id, storedUserId))
-      .limit(1)
-  );
-  if (!resetUser) {
+  const check = await validatePortalCapability('reset', consumed);
+  if (!check.ok) {
+    if (check.reason === 'org_unavailable') {
+      return c.json({ error: PORTAL_ORG_UNAVAILABLE_MESSAGE, code: PORTAL_ORG_UNAVAILABLE_CODE }, 403);
+    }
     return c.json({ error: 'Invalid or expired reset token' }, 400);
   }
+  const resetUser = check.user;
+  const storedUserId = resetUser.id;
   setPortalAuthAuditIdentity(c, resetUser);
-  if (resetUser.authMethod !== 'password') {
-    return c.json({ error: 'Invalid or expired reset token' }, 400);
-  }
   if (!await isPortalPasswordResetEnabled(resetUser.orgId)) {
     return c.json({ error: 'Password reset is not enabled for this portal' }, 403);
   }
@@ -764,7 +733,9 @@ authRoutes.post('/auth/reset-password', zValidator('json', resetPasswordSchema),
     db
       .update(portalUsers)
       .set({ passwordHash, authEpoch: sql`${portalUsers.authEpoch} + 1`, updatedAt: now })
-      .where(and(eq(portalUsers.id, storedUserId), eq(portalUsers.authMethod, 'password')))
+      // The generation the token was validated against: a concurrent password
+      // change or disable advances it, and this reset must lose.
+      .where(and(eq(portalUsers.id, storedUserId), eq(portalUsers.authMethod, 'password'), eq(portalUsers.authEpoch, resetUser.authEpoch)))
       .returning({ id: portalUsers.id })
   );
   if (updated.length !== 1) {
@@ -823,46 +794,40 @@ authRoutes.post('/auth/accept-invite', zValidator('json', acceptInviteSchema), a
     return c.json({ error: 'Service temporarily unavailable' }, 503);
   }
 
-  const portalUserId = await consumePortalInviteToken(token);
-  if (!portalUserId) {
+  // Consumed atomically (a double-click or a second tab gets nothing), then
+  // re-checked against the row (W2): same org, same address, same auth_epoch
+  // (any disable or re-invite since issue invalidates it), still invited,
+  // password-eligible, browser access granted, org active. Every refusal is
+  // the generic invite 400 except an unavailable org, which only a holder of
+  // an otherwise valid token can see.
+  const consumed = await consumePortalCapabilityToken('invite', token);
+  if (!consumed) {
     return c.json({ error: 'Invalid or expired invite' }, 400);
   }
-
-  const [user] = await withSystemDbAccessContext(() =>
-    db
-      .select({
-        id: portalUsers.id,
-        orgId: portalUsers.orgId,
-        email: portalUsers.email,
-        name: portalUsers.name,
-        passwordHash: portalUsers.passwordHash,
-        authMethod: portalUsers.authMethod,
-        receiveNotifications: portalUsers.receiveNotifications,
-        status: portalUsers.status,
-        authEpoch: portalUsers.authEpoch,
-        orgName: portalOrgNameSql(),
-      })
-      .from(portalUsers)
-      .where(eq(portalUsers.id, portalUserId))
-      .limit(1)
-  );
-
-  if (!user) {
+  const check = await validatePortalCapability('invite', consumed);
+  if (!check.ok) {
+    if (check.reason === 'org_unavailable') {
+      return c.json({ error: PORTAL_ORG_UNAVAILABLE_MESSAGE, code: PORTAL_ORG_UNAVAILABLE_CODE }, 403);
+    }
     return c.json({ error: 'Invalid or expired invite' }, 400);
   }
+  const user = check.user;
   setPortalAuthAuditIdentity(c, user);
-  if (user.authMethod !== 'password') {
-    return c.json({ error: 'Invalid or expired invite' }, 400);
-  }
-  // Disable is terminal — a disabled account may not be resurrected via an
-  // accept-invite flow. The invite token is already consumed at this point;
-  // that's fine, it just burns the token.
-  if (user.status === 'disabled') {
-    return c.json({ error: 'This account has been disabled.' }, 403);
-  }
-  // An invite must never hijack a live account.
-  if (user.passwordHash && user.status === 'active') {
-    return c.json({ error: 'This account is already set up. Use the login page.' }, 400);
+
+  let target;
+  try {
+    target = planPortalAccountTransition({
+      status: user.status,
+      browserAccess: user.browserAccess,
+      authMethod: user.authMethod,
+      hasPasswordHash: Boolean(user.passwordHash),
+      hasExternalIdentity: user.entraOid !== null,
+    }, 'accept_invite');
+  } catch (error) {
+    if (error instanceof PortalAccountTransitionError) {
+      return c.json({ error: 'Invalid or expired invite' }, 400);
+    }
+    throw error;
   }
 
   const now = new Date();
@@ -872,7 +837,7 @@ authRoutes.post('/auth/accept-invite', zValidator('json', acceptInviteSchema), a
   const [activated] = await withSystemDbAccessContext(() =>
     db
       .update(portalUsers)
-      .set({ passwordHash, name: resolvedName, status: 'active', authEpoch: sql`${portalUsers.authEpoch} + 1`, lastLoginAt: now, updatedAt: now })
+      .set({ passwordHash, name: resolvedName, status: target.status, browserAccess: target.browserAccess, authEpoch: sql`${portalUsers.authEpoch} + 1`, lastLoginAt: now, updatedAt: now })
       // The invite was checked against this exact durable generation. A
       // concurrent disable/status or credential transition advances it, so
       // this activation must lose instead of resurrecting the account.
