@@ -29,7 +29,7 @@ import {
 import type { UserPermissions } from '../../services/permissions';
 import {
   isTicketSlaPerformanceSummary,
-  rowsToCsv,
+  reportRunRowsToCsv,
   rowsToXlsx,
   sheetsToXlsx,
   ticketSlaPerformanceSheets,
@@ -609,7 +609,7 @@ runsRoutes.get(
       return c.body(body);
     }
 
-    const body = rowsToCsv(rows);
+    const body = reportRunRowsToCsv(row.reportType, rows);
     c.header('Content-Type', 'text/csv;charset=utf-8;');
     c.header('Content-Disposition', `attachment; filename="${baseName}.csv"`);
     auditSensitiveRead(c, {

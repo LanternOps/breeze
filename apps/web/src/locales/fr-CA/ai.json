@@ -904,6 +904,14 @@
       "firstLook": "Premier coup d’œil",
       "couldntLook": "Pas encore de coup d’œil"
     },
+    "checkIn": {
+      "runNow": "Exécuter maintenant",
+      "runNowMessage": "Lance le suivi planifié",
+      "scheduledAt": "Wisp fera un suivi à {{time}}",
+      "cancel": "Annuler le suivi planifié",
+      "cancelled": "Suivi planifié annulé",
+      "cancelFailed": "Impossible d’annuler le suivi planifié."
+    },
     "welcome": {
       "title": "Je jette un coup d’œil à {{scope}}.",
       "body": "Votre premier résumé arrive chaque matin, une fois que j’ai regardé. D’ici là, posez-moi vos questions.",

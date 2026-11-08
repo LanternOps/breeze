@@ -904,6 +904,14 @@
       "firstLook": "İlk bakış",
       "couldntLook": "Henüz bakılamadı"
     },
+    "checkIn": {
+      "runNow": "Şimdi çalıştır",
+      "runNowMessage": "Planlı kontrole devam et",
+      "scheduledAt": "Wisp yeniden kontrol edecek: {{time}}",
+      "cancel": "Planlı kontrolü iptal et",
+      "cancelled": "Planlı kontrol iptal edildi",
+      "cancelFailed": "Planlı kontrol iptal edilemedi."
+    },
     "welcome": {
       "title": "{{scope}} kapsamına göz atıyorum.",
       "body": "İlk özetiniz, göz attıktan sonra her sabah gelir. Bu arada bana her şeyi sorabilirsiniz.",

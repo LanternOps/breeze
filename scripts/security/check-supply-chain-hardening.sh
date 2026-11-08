@@ -573,10 +573,19 @@ require_grep '^gate=scripts/security/check-npm-audit\.sh$' .github/scripts/secur
   ".github/scripts/security-audit-compare.sh must run the blocking dependency audit gate"
 require_grep '^bash "\$gate" --findings-json "\$head_json"$' .github/scripts/security-audit-compare.sh \
   ".github/scripts/security-audit-compare.sh must scan the head with the blocking dependency audit gate"
-require_grep 'OSV_SCANNER_VERSION:-[0-9]+\.[0-9]+\.[0-9]+' scripts/security/install-osv-scanner.sh \
+# The digest is pinned in the repo and has no environment override, so a cached
+# copy is verified offline and a download is never trusted on its origin
+# alone (#11367). install-osv-scanner.test.mjs exercises the behaviour.
+require_grep '^OSV_SCANNER_VERSION=[0-9]+\.[0-9]+\.[0-9]+$' scripts/security/install-osv-scanner.sh \
   "osv-scanner install must pin an explicit version"
-require_grep 'sha256sum -c -' scripts/security/install-osv-scanner.sh \
-  "osv-scanner install must verify the downloaded binary checksum"
+require_grep '^OSV_SCANNER_SHA256=[0-9a-f]{64}$' scripts/security/install-osv-scanner.sh \
+  "osv-scanner install must pin the binary's SHA-256 in the repo"
+reject_grep 'OSV_SCANNER_SHA256:-' scripts/security/install-osv-scanner.sh \
+  "osv-scanner install must not let the environment override the pinned SHA-256"
+require_grep '"\$got" != "\$OSV_SCANNER_SHA256"' scripts/security/install-osv-scanner.sh \
+  "osv-scanner install must verify every downloaded binary against the pinned SHA-256"
+require_grep '"\$cached_sha" == "\$OSV_SCANNER_SHA256"' scripts/security/install-osv-scanner.sh \
+  "osv-scanner install must verify a cached binary against the pinned SHA-256"
 reject_grep 'curl .*\|[[:space:]]*(sudo )?(tar|sh|bash)' scripts/security/install-osv-scanner.sh \
   "osv-scanner install must not pipe remote payloads into a shell or archiver"
 require_grep 'produced no parseable report' scripts/security/check-npm-audit.sh \

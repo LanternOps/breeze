@@ -94,7 +94,7 @@ export async function finalizeScriptExecutionTerminal(params: {
   // The hook opens a SAVEPOINT on that executor and swallows its own failure, so
   // a fix-outcome error can never abort the cancel / reap it rides on.
   await advanceOutcomesForTerminalExecution(
-    { executionId, status: outcome, neverDelivered: params.neverDelivered === true },
+    { executionId, status: outcome, neverDelivered: params.neverDelivered === true, completedAt },
     params.executor,
   );
 

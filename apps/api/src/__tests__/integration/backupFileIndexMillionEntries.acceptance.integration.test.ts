@@ -22,6 +22,12 @@
  * against the index the heap-limited hydration published, so its times are real
  * but its memory figures are vitest's. Numbers depend on the machine: read them as
  * ratios.
+ *
+ * The reads run straight after the publish and are bounded there: the hydrator
+ * ANALYZEs backup_snapshot_files itself (#11209), so there is no slow period
+ * waiting for autovacuum. Before that, browse root took 9.6–10.2 s and the
+ * largest-folder selection 39–44 s at this point, against 3.2–3.4 s and about
+ * 3 s once autovacuum had run.
  */
 import './setup';
 
@@ -140,11 +146,19 @@ describe('file index acceptance at 1.1M entries', () => {
       const { snapshotId, snapshotDbId } = state;
 
       const atDefaultLimit = await hydrateInOwnProcess(dir, 'default-heap-limit', null);
-      // Last, so the index the reads below see is the one this run published.
-      const heapLimited = await hydrateInOwnProcess(dir, 'heap-limited', HEAP_LIMIT_FLAG);
-      const [published] = (await withSystemDbAccessContext(() =>
+      const [heapLimitedStarted] = (await withSystemDbAccessContext(() =>
         db.execute(sql`SELECT now()::text AS at`),
       )) as unknown as Array<{ at: string }>;
+      // Last, so the index the reads below see is the one this run published.
+      const heapLimited = await hydrateInOwnProcess(dir, 'heap-limited', HEAP_LIMIT_FLAG);
+      // On this dedicated test database, a manual ANALYZE (last_analyze;
+      // autovacuum sets last_autoanalyze) since that hydration began can only
+      // be its own (#11209).
+      const [stat] = (await withSystemDbAccessContext(() => db.execute(sql`
+        SELECT last_analyze > ${heapLimitedStarted!.at}::timestamptz AS refreshed
+        FROM pg_stat_all_tables WHERE relname = 'backup_snapshot_files'
+      `))) as unknown as Array<{ refreshed: boolean | null }>;
+      const statisticsRefreshed = stat?.refreshed === true;
 
       const outcome = { status: 'complete', entryCount: TOTAL_ENTRIES, manifestSha256: state.manifestSha256 };
       expect(atDefaultLimit.outcome).toEqual(outcome);
@@ -193,25 +207,10 @@ describe('file index acceptance at 1.1M entries', () => {
         selectLargestFolder: { wallMs: r.selection.wallMs, peakRssDeltaMb: r.selection.peakRssDeltaMb, eventLoopP99Ms: r.selection.eventLoopP99Ms },
       });
 
-      // Right after the publish: 1.1M new rows, and statistics that still say
-      // there are almost none. This is what the person who waited for the index
+      // Right after the publish: what the person who waited for the index
       // sees first.
       const firstReadings = await readings();
-
-      // Then once autovacuum has analyzed the table, the state it stays in.
-      // (The API role cannot ANALYZE; it is not the table's owner.)
-      const analyzeDeadline = Date.now() + 5 * 60_000;
-      let analyzed = false;
-      while (!analyzed && Date.now() < analyzeDeadline) {
-        const [stat] = (await withSystemDbAccessContext(() => db.execute(sql`
-          SELECT last_autoanalyze > ${published!.at}::timestamptz AS since_publish
-          FROM pg_stat_all_tables WHERE relname = 'backup_snapshot_files'
-        `))) as unknown as Array<{ since_publish: boolean | null }>;
-        analyzed = stat?.since_publish === true;
-        if (!analyzed) await new Promise((resolve) => setTimeout(resolve, 5000));
-      }
-      const settledReadings = await readings();
-      const { browseRoot, browseLargest, searchMiss, searchHit, selection } = settledReadings;
+      const { browseRoot, browseLargest, searchMiss, searchHit, selection } = firstReadings;
 
       // Last, so its memory is not counted against anything above it.
       const verification = await measured(() => verifySnapshotAttestation(snapshotDbId, verifierDeps));
@@ -219,8 +218,9 @@ describe('file index acceptance at 1.1M entries', () => {
       const breaches = acceptanceBreaches({
         defaultLimit: atDefaultLimit,
         heapLimited,
-        analyzed,
-        settledBrowseRootMs: browseRoot.ms,
+        statisticsRefreshed,
+        browseRootMs: browseRoot.ms,
+        selectLargestFolderMs: selection.wallMs,
       });
       const report = {
         entries: TOTAL_ENTRIES,
@@ -230,9 +230,8 @@ describe('file index acceptance at 1.1M entries', () => {
         hydrateAtDefaultHeapLimit: hydrationFigures(atDefaultLimit),
         hydrateUnder1GbHeapLimit: hydrationFigures(heapLimited),
         verify: { wallMs: verification.wallMs, peakRssDeltaMb: verification.peakRssDeltaMb, eventLoopP99Ms: verification.eventLoopP99Ms },
+        statisticsRefreshedByPublish: statisticsRefreshed,
         rightAfterPublish: summarize(firstReadings),
-        autoanalyzed: analyzed,
-        afterAutoanalyze: summarize(settledReadings),
         breaches,
       };
       // Not console.log: vitest hides that when the test passes, and these figures
@@ -249,9 +248,8 @@ describe('file index acceptance at 1.1M entries', () => {
       expect(searchHit.result.entries.map((e) => e.name)).toEqual(['export-record-0299999.dat']);
       expect(selection.result).toEqual({ ok: true, paths: [LARGEST_FOLDER] });
 
-      // The bounds, all reported together. The browse bound applies to the settled
-      // state: the first minute after a publish is a known slow period, reported
-      // above as rightAfterPublish.
+      // The bounds, all reported together, on the readings taken straight after
+      // the publish.
       expect(breaches).toEqual([]);
     } finally {
       await rm(dir, { recursive: true, force: true });

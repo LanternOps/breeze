@@ -136,8 +136,7 @@ import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from '../services/commandTypes';
 import { redactResultAgainstCommandSecrets } from '../services/commandSecretRedaction';
 import { INSTANCE_ID } from '../services/instanceIdentity';
 import { clearAgentPresence, clearAgentPresenceUnfenced, setAgentPresence, refreshAgentPresence } from '../services/agentPresence';
-import { shouldDeferOfflineTransition } from '../services/admission/admissionRuntime';
-import { recordOfflineDeferred } from '../services/admission/admissionMetrics';
+import { beginOfflineTransition } from '../services/admission/admissionRuntime';
 import type { WsSetupSlot } from '../services/admission/wsUpgradeGate';
 import { breezeRole } from '../config/env';
 import { partnerTrustMode } from '../config/partnerTrustMode';
@@ -4681,14 +4680,14 @@ onClose: async (_event: unknown, ws: WSContext) => {
         // Update device status to offline (but preserve 'updating' — let
         // the offline detector handle the timeout for stale updating devices)
         //
-        // W08: while admission is shedding (enforce, level 1+), leave the
-        // offline flip to the offline detector — lastSeenAt still ages out
-        // within 5 min — instead of one transaction per socket at the moment
-        // thousands drop at once. Presence was cleared above, so command
-        // routing already treats the agent as gone.
-        if (agentDb && shouldDeferOfflineTransition()) {
-          recordOfflineDeferred('close');
-        } else if (agentDb) {
+        // W08: in enforce mode, admission may leave the offline flip to the
+        // offline detector — lastSeenAt still ages out within 5 min — instead
+        // of two pool permits per socket at the moment hundreds drop at once:
+        // always at level 1+, and past a small in-flight cap at level 0, so a
+        // planned drain's own writes cannot escalate the level (#9520). Presence was
+        // cleared above, so command routing already treats the agent as gone.
+        const releaseOfflineWrite = agentDb ? beginOfflineTransition('close') : null;
+        if (releaseOfflineWrite) {
           // #6836: the inner try/catch below only covers the query/transition
           // body. When the context PROLOGUE itself fails (observed: a
           // `DbAccessContextPrologueTimeoutError` during a Postgres stall),
@@ -4734,6 +4733,8 @@ onClose: async (_event: unknown, ws: WSContext) => {
           } catch (err) {
             console.error(`[AgentWs] agentWs.onClose.markOffline failed for agent ${agentId}; offline detector will correct status:`, err);
             captureException(err instanceof Error ? err : new Error(String(err)));
+          } finally {
+            releaseOfflineWrite();
           }
         }
       } else {
@@ -4757,9 +4758,9 @@ if (activeConnections.get(agentId)?.ws === ws) {
         }
         void clearAgentPresence(agentId, connectionToken);
       }
-      if (agentDb && shouldDeferOfflineTransition()) {
-        recordOfflineDeferred('error');
-      } else if (agentDb) {
+      // W08 / #9520: same admission gate as onClose.
+      const releaseOfflineWrite = agentDb ? beginOfflineTransition('error') : null;
+      if (releaseOfflineWrite) {
         void runWithAgentDbAccess('agentWs.onError.markOffline', async () => {
           try {
             const [current] = await withDbTransaction(() => db
@@ -4782,7 +4783,7 @@ if (activeConnections.get(agentId)?.ws === ws) {
         }).catch((err) => {
           console.error(`[AgentWs] Failed to mark agent ${agentId} offline after error:`, err);
           captureException(err instanceof Error ? err : new Error(String(err)));
-        });
+        }).finally(releaseOfflineWrite);
       }
     }
   };

@@ -904,6 +904,14 @@
       "firstLook": "Primeira olhada",
       "couldntLook": "Ainda sem olhada"
     },
+    "checkIn": {
+      "runNow": "Executar agora",
+      "runNowMessage": "Pode seguir com a verificação agendada",
+      "scheduledAt": "O Wisp vai verificar de novo às {{time}}",
+      "cancel": "Cancelar verificação agendada",
+      "cancelled": "Verificação agendada cancelada",
+      "cancelFailed": "Não foi possível cancelar a verificação agendada."
+    },
     "welcome": {
       "title": "Estou dando uma olhada em {{scope}}.",
       "body": "Seu primeiro resumo chega toda manhã, assim que eu der uma olhada. Enquanto isso, pergunte o que quiser.",
