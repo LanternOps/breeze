@@ -11,7 +11,8 @@
  *   the `management-posture` built-in source (BUILT_IN_ALERT_RULE_SOURCES).
  *   The rule's Active switch in the Built-in alerts list is the per-org
  *   control: switching off "New remote access tool: Splashtop" means "we use
- *   Splashtop in this org". Every org starts with each rule on.
+ *   Splashtop in this org". Every org starts with each rule on, and a rule
+ *   exists to switch off only once its tool has alerted in that org.
  * - **One open alert per tool per device.** createAlert dedupes on an open
  *   alert for the (rule, device) pair, so a tool that comes and goes while its
  *   alert is open raises nothing new.
@@ -21,7 +22,7 @@
  * Alerts go through createAlert (dedupe, cooldown, outbox, notifications),
  * never a bare insert into `alerts` (#5241).
  */
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { alertRules, alertTemplates, devices } from '../../db/schema';
 import { createAlert } from '../alertService';
@@ -37,7 +38,7 @@ export const MANAGEMENT_POSTURE_ALERT_SOURCE = 'management-posture';
 type CategoryConfig = {
   templateName: string;
   ruleNamePrefix: string;
-  /** Issue #11306: warning for remote access, info for RMM. */
+  /** Issue #11306: warning (Medium) for remote access, Info for RMM. */
   severity: 'medium' | 'info';
   label: string;
 };
@@ -95,13 +96,23 @@ async function ensureGlobalTemplate(category: RemoteToolCategory): Promise<strin
   return created.id;
 }
 
-/** The org's rule for this tool, created on first fire. */
+/**
+ * The org's built-in rule for this tool, created on first fire. Matched on the
+ * built-in source too, so an operator's own rule that happens to share the name
+ * is never taken for it.
+ */
 export async function ensureRemoteToolRule(orgId: string, tool: Pick<AppearedRemoteTool, 'name' | 'category'>): Promise<string> {
   const name = remoteToolRuleName(tool);
   const [existing] = await db
     .select({ id: alertRules.id })
     .from(alertRules)
-    .where(and(eq(alertRules.orgId, orgId), eq(alertRules.name, name), isNull(alertRules.retiredAt)))
+    .where(and(
+      eq(alertRules.orgId, orgId),
+      eq(alertRules.name, name),
+      isNull(alertRules.retiredAt),
+      isNull(alertRules.managedByMonitorId),
+      sql`${alertRules.overrideSettings}->>'source' = ${MANAGEMENT_POSTURE_ALERT_SOURCE}`,
+    ))
     .limit(1);
   if (existing) return existing.id;
 
@@ -125,11 +136,12 @@ async function loadHostLabel(deviceId: string, orgId: string): Promise<string> {
 
 /**
  * The template is global and the rule org-owned, so this runs under system
- * scope. The posture route calls it after its own transaction commits, so it
- * holds no context; in place when the caller is already system-scoped.
+ * scope, always in a transaction of its own: a failed statement then aborts
+ * only that transaction, and the caller's catch around it holds. The posture
+ * route calls this after its own transaction commits, so no context is held
+ * and no second pooled connection is taken.
  */
-function runWithSystemDbAccess<T>(fn: () => Promise<T>): Promise<T> {
-  if (dbModule.getCurrentDbAccessContext()?.scope === 'system') return fn();
+function runInOwnSystemTransaction<T>(fn: () => Promise<T>): Promise<T> {
   return dbModule.runOutsideDbContext(() => dbModule.withSystemDbAccessContext(fn));
 }
 
@@ -143,18 +155,23 @@ export type RemoteToolAlertInput = {
 
 export type RemoteToolAlertOutcome = {
   raised: string[];
-  /** Not raised: rule switched off, an open alert already covers it, cooldown or flapping. */
+  /**
+   * createAlert raised nothing: the org switched the rule off, an open alert
+   * already covers the tool on this device, or cooldown / flapping held it.
+   */
   held: string[];
   failed: string[];
   suppressedByMaintenance: boolean;
 };
 
 /**
- * Raise one alert per appeared tool. Never throws: the posture is already
- * saved when this runs, so a failure is logged and reported to Sentry, and that
- * appearance is not alerted (the audit row the posture route writes still
- * records the change). Each tool runs in its own transaction, so one failure
- * does not stop the rest.
+ * Raise one alert per appeared tool. Never throws. The posture is already
+ * saved when this runs, so the next scan has no delta: a tool that fails here,
+ * is held, or falls in a maintenance window that suppresses alerts is not
+ * alerted later. Failures go to the log and Sentry; held and suppressed tools
+ * are logged. The `agent.management_posture.submit` audit row the route writes
+ * for a changed category still records the change. Each tool runs in its own
+ * transaction, so one failure does not stop the rest.
  */
 export async function raiseRemoteToolAppearedAlerts(input: RemoteToolAlertInput): Promise<RemoteToolAlertOutcome> {
   const outcome: RemoteToolAlertOutcome = { raised: [], held: [], failed: [], suppressedByMaintenance: false };
@@ -165,25 +182,28 @@ export async function raiseRemoteToolAppearedAlerts(input: RemoteToolAlertInput)
   try {
     // The maintenance read is in system scope with the rest: with no context
     // of its own, forced RLS would find no window at all.
-    const prelude = await runWithSystemDbAccess(async () => ({
+    const prelude = await runInOwnSystemTransaction(async () => ({
       maintenance: await checkDeviceMaintenanceWindow(deviceId),
       hostLabel: await loadHostLabel(deviceId, orgId),
     }));
     if (prelude.maintenance.active && prelude.maintenance.suppressAlerts) {
       outcome.suppressedByMaintenance = true;
+      console.log('[remoteToolAlerts] maintenance window suppresses alerts; not raising:', {
+        deviceId, orgId, tools: tools.map((tool) => tool.name),
+      });
       return outcome;
     }
     hostLabel = prelude.hostLabel;
   } catch (error) {
-    reportFailure(error, input, tools.map((tool) => tool.name));
     outcome.failed.push(...tools.map((tool) => tool.name));
+    reportFailure(error, input, outcome.failed);
     return outcome;
   }
 
   for (const tool of tools) {
     const config = CATEGORY_CONFIG[tool.category];
     try {
-      const alertId = await runWithSystemDbAccess(async () => {
+      const alertId = await runInOwnSystemTransaction(async () => {
         const ruleId = await ensureRemoteToolRule(orgId, tool);
         return createAlert({
           ruleId,
@@ -209,6 +229,10 @@ export async function raiseRemoteToolAppearedAlerts(input: RemoteToolAlertInput)
       reportFailure(error, input, [tool.name]);
     }
   }
+  if (outcome.held.length > 0) {
+    // createAlert logs the reason per rule; this names the tools.
+    console.log('[remoteToolAlerts] new remote tool alert(s) held by createAlert:', { deviceId, orgId, tools: outcome.held });
+  }
   return outcome;
 }
 
@@ -219,5 +243,11 @@ function reportFailure(error: unknown, input: RemoteToolAlertInput, toolNames: s
     tools: toolNames,
     error,
   });
-  captureException(error, undefined, { errorId: 'remote-tool-alert-failed' }, { fingerprint: ['remote-tool-alert-failed'] });
+  // Tool names come from KNOWN_REMOTE_TOOLS, so the tag stays bounded.
+  captureException(
+    error,
+    undefined,
+    { errorId: 'remote-tool-alert-failed', tool: toolNames.length === 1 ? toolNames[0]! : 'multiple' },
+    { fingerprint: ['remote-tool-alert-failed'] },
+  );
 }

@@ -26,11 +26,24 @@ function agentRemoteToolSignatures(): Record<string, 'rmm' | 'remoteAccess'> {
 }
 
 describe('KNOWN_REMOTE_TOOLS matches the agent signatures', () => {
+  it('parses every RMM and remote access signature in signatures.go', () => {
+    // If a signature stops matching the one-line `Name: "…", Category: …`
+    // shape the parser reads, fail here with a clear count, not later with a
+    // confusing "missing tool" diff.
+    const source = readFileSync(SIGNATURES_GO, 'utf8');
+    const declared = [...source.matchAll(/Category:\s*(CategoryRMM|CategoryRemoteAccess)\b/g)].length;
+    expect(Object.keys(agentRemoteToolSignatures())).toHaveLength(declared);
+  });
+
   it('lists every RMM and remote access signature, in the same category', () => {
     const agent = agentRemoteToolSignatures();
-    // Sanity: the parse found the table, not nothing.
-    expect(Object.keys(agent).length).toBeGreaterThan(20);
     expect(agent.UltraViewer).toBe('remoteAccess');
+    expect(agent.ScreenConnect).toBe('rmm');
     expect({ ...KNOWN_REMOTE_TOOLS }).toEqual(agent);
+  });
+
+  it('the agent still reports a failed process listing with the prefix knownTools.ts keys on', () => {
+    const runner = readFileSync(resolve(SIGNATURES_GO, '../runner.go'), 'utf8');
+    expect(runner).toContain('"process snapshot: "+err.Error()');
   });
 });

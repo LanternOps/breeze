@@ -31,7 +31,8 @@ vi.mock('../../db', () => {
     },
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-    getCurrentDbAccessContext: vi.fn(() => undefined),
+    // Even inside a system context, each raise opens its own transaction.
+    getCurrentDbAccessContext: vi.fn(() => ({ scope: 'system' })),
   };
 });
 
@@ -138,6 +139,19 @@ describe('raiseRemoteToolAppearedAlerts', () => {
     }));
   });
 
+  it('reuses the global template when the org has no rule for the tool yet', async () => {
+    dbState.selects = [[{ hostname: 'desk-01' }], [], [{ id: 'template-existing' }]];
+    await raiseRemoteToolAppearedAlerts({
+      deviceId: DEVICE_ID, orgId: ORG_ID, detectedAt: DETECTED_AT,
+      tools: [{ name: 'RustDesk', category: 'remoteAccess', status: 'active' }],
+    });
+    expect(dbState.inserts).toEqual([]);
+    expect(insertBuiltInAlertRule).toHaveBeenCalledWith(expect.objectContaining({
+      templateId: 'template-existing',
+      name: 'New remote access tool: RustDesk',
+    }));
+  });
+
   it('counts an alert createAlert held back (rule off, open alert, cooldown) as held, not raised', async () => {
     dbState.selects = [[{ hostname: 'desk-01' }], [{ id: 'rule-existing' }]];
     vi.mocked(createAlert).mockResolvedValueOnce(null);
@@ -173,7 +187,9 @@ describe('raiseRemoteToolAppearedAlerts', () => {
     });
     expect(outcome).toEqual({ raised: ['UltraViewer'], held: [], failed: ['AnyDesk'], suppressedByMaintenance: false });
     expect(captureException).toHaveBeenCalledTimes(1);
-    // Each tool in its own transaction: the failed one cannot abort the next.
+    expect(vi.mocked(captureException).mock.calls[0]![2]).toEqual({ errorId: 'remote-tool-alert-failed', tool: 'AnyDesk' });
+    // Each tool in its own transaction (prelude + one per tool), even though the
+    // mock reports an ambient system context: the failed one cannot abort the next.
     expect(dbModule.withSystemDbAccessContext).toHaveBeenCalledTimes(3);
     consoleError.mockRestore();
   });

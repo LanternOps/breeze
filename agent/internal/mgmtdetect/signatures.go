@@ -326,8 +326,11 @@ func AllSignatures() []Signature {
 		},
 
 		// Remote support tools common in tech-support scams (#11306). The API
-		// alerts partners when one first appears on a managed device.
-		// Quick Assist is left out on purpose: it ships with Windows 11.
+		// alerts partners when a scan reports one the previous scan did not,
+		// which includes an existing install on the first scan after an agent
+		// upgrade that adds its signature. Quick Assist is left out on
+		// purpose: it ships with Windows 11. A name added here must also be
+		// added to KNOWN_REMOTE_TOOLS (apps/api/src/services/remoteToolAlerts/knownTools.ts).
 
 		// UltraViewer (32-bit installer, so Program Files (x86) only)
 		{

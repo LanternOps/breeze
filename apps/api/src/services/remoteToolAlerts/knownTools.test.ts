@@ -67,6 +67,21 @@ describe('appearedRemoteTools', () => {
     expect(appearedRemoteTools(before, after)).toEqual([]);
   });
 
+  it('raises nothing when the previous scan could not list processes: its tool list is incomplete', () => {
+    // agent/internal/mgmtdetect/runner.go records "process snapshot: <err>" and
+    // carries on with an empty process list, so tools seen only by a running
+    // process drop out of that scan and would look new on the next one.
+    const degraded = { ...posture({ remoteAccess: [] }), errors: ['process snapshot: access is denied'] };
+    const after = posture({ remoteAccess: [{ name: 'Ammyy Admin', status: 'active' }] });
+    expect(appearedRemoteTools(degraded, after)).toEqual([]);
+  });
+
+  it('still compares when the previous scan had an unrelated error', () => {
+    const before = { ...posture({ remoteAccess: [] }), errors: ['identity detection panic: boom'] };
+    const after = posture({ remoteAccess: [{ name: 'AnyDesk', status: 'active' }] });
+    expect(appearedRemoteTools(before, after)).toEqual([{ name: 'AnyDesk', category: 'remoteAccess', status: 'active' }]);
+  });
+
   it('reports a tool listed twice once', () => {
     const before = posture({});
     const after = posture({ remoteAccess: [{ name: 'RustDesk' }, { name: 'RustDesk' }] });

@@ -26,16 +26,12 @@ import { createOrganization, createPartner, createSite } from './db-utils';
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 const DETECTED_AT = '2026-11-06T10:00:00.000Z';
 
-async function seedDevice() {
-  const partner = await createPartner();
-  const org = await createOrganization({ partnerId: partner.id });
-  const site = await createSite({ orgId: org!.id });
-  const hostname = `rt-host-${randomUUID().slice(0, 8)}`;
+async function insertDevice(orgId: string, siteId: string, hostname: string): Promise<string> {
   const [device] = await withSystemDbAccessContext(() => db
     .insert(devices)
     .values({
-      orgId: org!.id,
-      siteId: site!.id,
+      orgId,
+      siteId,
       agentId: `rt-agent-${randomUUID()}`,
       hostname,
       osType: 'windows',
@@ -45,7 +41,20 @@ async function seedDevice() {
       status: 'online',
     })
     .returning({ id: devices.id }));
-  return { orgId: org!.id, deviceId: device!.id, hostname };
+  return device!.id;
+}
+
+async function seedDevice() {
+  const partner = await createPartner();
+  const org = await createOrganization({ partnerId: partner.id });
+  const site = await createSite({ orgId: org!.id });
+  const hostname = `rt-host-${randomUUID().slice(0, 8)}`;
+  return { orgId: org!.id, deviceId: await insertDevice(org!.id, site!.id, hostname), hostname };
+}
+
+async function seedDeviceInOrg(orgId: string): Promise<string> {
+  const site = await createSite({ orgId });
+  return insertDevice(orgId, site!.id, `rt-host-${randomUUID().slice(0, 8)}`);
 }
 
 function deviceAlerts(deviceId: string) {
@@ -96,8 +105,7 @@ describe('new remote access tool alerts (#11306)', () => {
     expect(again.held).toEqual(['UltraViewer']);
     expect(await deviceAlerts(deviceId)).toHaveLength(1);
 
-    // A second tool is its own rule and its own alert. The org switches the
-    // AnyDesk rule off (its own tool); a later AnyDesk appearance stays quiet.
+    // A second tool is its own rule and its own alert.
     const anyDesk = { name: 'AnyDesk', category: 'remoteAccess' as const, status: 'active' };
     await raiseRemoteToolAppearedAlerts({ deviceId, orgId, detectedAt: DETECTED_AT, tools: [anyDesk] });
     rows = await deviceAlerts(deviceId);
@@ -105,14 +113,36 @@ describe('new remote access tool alerts (#11306)', () => {
     const [anyDeskRule] = await orgRule(orgId, 'New remote access tool: AnyDesk');
     expect(anyDeskRule!.id).not.toBe(rule!.id);
 
-    await withSystemDbAccessContext(async () => {
-      await db.update(alerts).set({ status: 'resolved', resolvedAt: new Date() }).where(eq(alerts.ruleId, anyDeskRule!.id));
-      await db.update(alertRules).set({ isActive: false }).where(eq(alertRules.id, anyDeskRule!.id));
+    // The org switches the AnyDesk rule off (its own tool). On a second device
+    // (no open alert, no cooldown) AnyDesk stays quiet while UltraViewer, whose
+    // rule is still on, raises: only the switch tells the two apart.
+    await withSystemDbAccessContext(() => db.update(alertRules).set({ isActive: false }).where(eq(alertRules.id, anyDeskRule!.id)));
+    const second = await seedDeviceInOrg(orgId);
+    const off = await raiseRemoteToolAppearedAlerts({ deviceId: second, orgId, detectedAt: DETECTED_AT, tools: [anyDesk, ultraViewer] });
+    expect(off).toEqual({ raised: ['UltraViewer'], held: ['AnyDesk'], failed: [], suppressedByMaintenance: false });
+    const secondRows = await deviceAlerts(second);
+    expect(secondRows.map((row) => row.ruleId)).toEqual([rule!.id]);
+  });
+
+  runDb("never reuses an operator's own rule that happens to share the name", async () => {
+    const { orgId, deviceId } = await seedDevice();
+    const [template] = await withSystemDbAccessContext(() => db
+      .insert(alertTemplates)
+      .values({ orgId, name: `Operator template ${randomUUID().slice(0, 6)}`, conditions: {}, severity: 'low', titleTemplate: 't', messageTemplate: 'm' })
+      .returning({ id: alertTemplates.id }));
+    const [operatorRule] = await withSystemDbAccessContext(() => db
+      .insert(alertRules)
+      .values({ orgId, templateId: template!.id, name: 'New remote access tool: TeamViewer', targetType: 'org', targetId: orgId })
+      .returning({ id: alertRules.id }));
+
+    await raiseRemoteToolAppearedAlerts({
+      deviceId, orgId, detectedAt: DETECTED_AT,
+      tools: [{ name: 'TeamViewer', category: 'remoteAccess', status: 'active' }],
     });
-    const off = await raiseRemoteToolAppearedAlerts({ deviceId, orgId, detectedAt: DETECTED_AT, tools: [anyDesk] });
-    expect(off.raised).toEqual([]);
-    rows = await deviceAlerts(deviceId);
-    expect(rows.filter((row) => row.ruleId === anyDeskRule!.id && row.status === 'active')).toHaveLength(0);
+    const rows = await deviceAlerts(deviceId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.ruleId).not.toBe(operatorRule!.id);
+    expect(rows[0]!.severity).toBe('medium');
   });
 
   runDb('raises an RMM agent at info', async () => {

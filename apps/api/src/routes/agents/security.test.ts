@@ -22,10 +22,8 @@ vi.mock('../../db', () => ({
     select: vi.fn(),
     update: vi.fn(),
   },
-  // Runs the deferred work at once; the tests check what was deferred.
-  runAfterDbContextCommit: vi.fn((_label: string, work: () => unknown) => {
-    void work();
-  }),
+  // Records the deferred work; a test runs it to stand in for the commit.
+  runAfterDbContextCommit: vi.fn(),
 }));
 
 vi.mock('../../services/remoteToolAlerts/alerts', () => ({
@@ -357,7 +355,13 @@ describe('agent security routes — requireAgentRole gate (F3)', () => {
           });
 
           expect(res.status).toBe(200);
+          expect(runAfterDbContextCommit).toHaveBeenCalledTimes(1);
           expect(runAfterDbContextCommit).toHaveBeenCalledWith('management-posture.remote-tool-alerts', expect.any(Function));
+          // Deferred, not raised inside the request transaction.
+          expect(raiseRemoteToolAppearedAlerts).not.toHaveBeenCalled();
+
+          const afterCommit = vi.mocked(runAfterDbContextCommit).mock.calls[0]![1] as () => unknown;
+          await afterCommit();
           expect(raiseRemoteToolAppearedAlerts).toHaveBeenCalledTimes(1);
           expect(raiseRemoteToolAppearedAlerts).toHaveBeenCalledWith({
             deviceId: DEVICE_ID,
@@ -385,7 +389,7 @@ describe('agent security routes — requireAgentRole gate (F3)', () => {
           mockDeviceLookup({ managementPosture: posture });
           await put('management/posture', { ...posture, categories: { mdm: posture.categories.mdm } });
 
-          expect(raiseRemoteToolAppearedAlerts).not.toHaveBeenCalled();
+          expect(runAfterDbContextCommit).not.toHaveBeenCalled();
         });
 
         it('raises nothing when the write persisted nothing', async () => {
@@ -405,7 +409,7 @@ describe('agent security routes — requireAgentRole gate (F3)', () => {
           });
 
           expect(res.status).toBe(404);
-          expect(raiseRemoteToolAppearedAlerts).not.toHaveBeenCalled();
+          expect(runAfterDbContextCommit).not.toHaveBeenCalled();
         });
 
         it('raises nothing when the posture write fails', async () => {
@@ -420,7 +424,7 @@ describe('agent security routes — requireAgentRole gate (F3)', () => {
           });
 
           expect(res.status).toBe(500);
-          expect(raiseRemoteToolAppearedAlerts).not.toHaveBeenCalled();
+          expect(runAfterDbContextCommit).not.toHaveBeenCalled();
           consoleError.mockRestore();
         });
       });

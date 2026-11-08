@@ -79,17 +79,35 @@ function knownRemoteTools(posture: Record<string, unknown>): Map<string, string 
 }
 
 /**
+ * The agent's scan error when it could not list processes
+ * (agent/internal/mgmtdetect/runner.go). The scan then carries on with an empty
+ * process list, so a tool seen only by a running process is missing from it.
+ */
+const PROCESS_SNAPSHOT_ERROR_PREFIX = 'process snapshot:';
+
+/** True when a scan's own errors say its tool list may be missing tools. */
+function scanMayHaveMissedTools(posture: Record<string, unknown>): boolean {
+  const errors = posture.errors;
+  return Array.isArray(errors)
+    && errors.some((error) => typeof error === 'string' && error.startsWith(PROCESS_SNAPSHOT_ERROR_PREFIX));
+}
+
+/**
  * Known RMM / remote access tools in `after` that `before` did not have, in a
- * stable order. Empty when there is no previous posture to compare with: the
- * device's first scan seeds the baseline, so the partner's own tools on a newly
- * enrolled device raise nothing. A tool is matched by name across both
- * categories, so a signature moving between them is not a new tool; the
- * category (and so the severity) comes from KNOWN_REMOTE_TOOLS, not the agent.
+ * stable order. Empty when there is no usable previous posture to compare with:
+ * - none stored yet: the device's first scan seeds the baseline, so the
+ *   partner's own tools on a newly enrolled device raise nothing;
+ * - the previous scan could not list processes: its tool list may be missing
+ *   tools that are still there, and they would look new now.
+ * A tool is matched by name across both categories, so a signature moving
+ * between them is not a new tool; the category (and so the severity) comes from
+ * KNOWN_REMOTE_TOOLS, not the agent.
  */
 export function appearedRemoteTools(before: unknown, after: unknown): AppearedRemoteTool[] {
   const previous = asRecord(before);
   const next = asRecord(after);
   if (!previous || !asRecord(previous.categories) || !next) return [];
+  if (scanMayHaveMissedTools(previous)) return [];
 
   const had = knownRemoteTools(previous);
   const appeared: AppearedRemoteTool[] = [];
