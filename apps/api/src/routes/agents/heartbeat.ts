@@ -1388,9 +1388,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // build at watchdog_version. A different installed version (an upgrade,
     // rollback or reinstall through the main agent) means that report no
     // longer describes the binary on disk, so drop it and let readers fall
-    // back to agentEdition until the watchdog next reports. A racing watchdog
-    // beat can only make this clear a fresh value, never keep a stale one —
-    // the conservative direction.
+    // back to agentEdition until the watchdog next reports. No race with a
+    // concurrent watchdog beat: both beats take the row's FOR NO KEY UPDATE
+    // lock as their first statement (selectOwnDeviceRowForUpdate, above) and
+    // hold it to commit, so `device.watchdogVersion` here is the committed
+    // value this write replaces.
     if (data.watchdogVersion !== device.watchdogVersion) {
       deviceUpdates.watchdogEdition = null;
     }

@@ -227,9 +227,10 @@ export function editionWithheldDetail(args: EditionWithheldContext): string {
  * `watchdogVersion` — written together with `watchdogLastSeen` on every
  * watchdog beat (routes/agents/heartbeat.ts), so a device fresh enough to
  * receive a watchdog command always has one. The `agentVersion` fallback
- * covers the pre-watchdog-telemetry rows only; agent and watchdog install and
- * upgrade from the same lane, so the main agent's version identifies the
- * watchdog's build era.
+ * covers the pre-watchdog-telemetry rows only, on the same stated (not
+ * enforced) assumption as the edition fallback below: agent and watchdog
+ * install and upgrade from the same lane, so the main agent's version
+ * identifies the watchdog's build era.
  *
  * EDITION. Read through `effectiveWatchdogEdition` (#4297): the watchdog's
  * own reported edition when it has one for its installed build, else the main
