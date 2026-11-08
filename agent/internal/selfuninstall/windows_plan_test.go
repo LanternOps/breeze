@@ -24,6 +24,7 @@ type fakeOps struct {
 	products        []string // related products before the uninstall
 	productsErr     error
 	msiExits        []int // exit codes returned by successive UninstallProduct calls
+	msiErr          error // msiexec could not be run (or timed out)
 	removeErr       map[string]error
 	stillRegistered map[string]bool // services that survive teardown
 	productsAfter   []string        // related products left after the uninstall
@@ -76,6 +77,9 @@ func (f *fakeOps) RelatedProducts(codes []string) ([]string, error) {
 }
 func (f *fakeOps) UninstallProduct(_ context.Context, code, logPath string) (int, error) {
 	f.add("msiexec /x %s", code)
+	if f.msiErr != nil {
+		return -1, f.msiErr
+	}
 	exit := 0
 	if len(f.msiExits) > 0 {
 		exit, f.msiExits = f.msiExits[0], f.msiExits[1:]
@@ -122,20 +126,22 @@ const (
 
 func testOptions() WindowsOptions {
 	return WindowsOptions{
-		AgentService:      "BreezeAgent",
-		WatchdogService:   "BreezeWatchdog",
-		AgentBinary:       testAgentBin,
-		Binaries:          []string{testWatchdogBin, testAgentBin},
-		UserHelperTask:    testTask,
-		ConfigDir:         `C:\ProgramData\Breeze`,
-		RemoveConfig:      true,
-		UpgradeCodes:      []string{"{UPGRADE}"},
-		MSILogPath:        `C:\ProgramData\Breeze\logs\self-uninstall-msi.log`,
-		HandoffDelay:      5 * time.Second,
-		HelperProcesses:   []string{"breeze-user-helper.exe"},
-		AgentProcesses:    []string{"breeze-agent.exe", "breeze-watchdog.exe"},
-		MSIBusyRetries:    2,
-		MSIBusyRetryDelay: time.Second,
+		AgentService:          "BreezeAgent",
+		WatchdogService:       "BreezeWatchdog",
+		AgentBinary:           testAgentBin,
+		Binaries:              []string{testWatchdogBin, testAgentBin},
+		UserHelperTask:        testTask,
+		ConfigDir:             `C:\ProgramData\Breeze`,
+		RemoveConfig:          true,
+		UpgradeCodes:          []string{"{UPGRADE}"},
+		MSILogPath:            `C:\ProgramData\Breeze\logs\self-uninstall-msi.log`,
+		HandoffDelay:          5 * time.Second,
+		HelperProcesses:       []string{"breeze-user-helper.exe"},
+		AgentProcesses:        []string{"breeze-agent.exe", "breeze-watchdog.exe"},
+		MSIBusyRetries:        2,
+		MSIBusyRetryDelay:     time.Second,
+		ProcessSettleAttempts: 2,
+		ProcessSettleDelay:    2 * time.Second,
 	}
 }
 
@@ -223,12 +229,12 @@ func TestWindowsPlanMSIPathReportsCompletedAfterVerifiedTeardown(t *testing.T) {
 		"delete-task "+testTask,
 		"rm "+testWatchdogBin,
 		"rm "+testAgentBin,
-		`rm -r C:\ProgramData\Breeze`,
 		"service-exists BreezeAgent",
 		"service-exists BreezeWatchdog",
 		"task-exists "+testTask,
 		"related-products",
 		"running?",
+		`rm -r C:\ProgramData\Breeze`,
 		"REPORT completed",
 	)
 	if last := ops.log[len(ops.log)-1]; last != "REPORT completed" {
@@ -328,8 +334,8 @@ func TestWindowsPlanManualPathWhenNoProductIsRegistered(t *testing.T) {
 		"delete-task "+testTask,
 		"rm "+testWatchdogBin,
 		"rm "+testAgentBin,
-		`rm -r C:\ProgramData\Breeze`,
 		"service-exists BreezeAgent",
+		`rm -r C:\ProgramData\Breeze`,
 		"REPORT completed",
 	)
 	assertNotLogged(t, ops.log, "msiexec")
@@ -379,6 +385,8 @@ func TestWindowsPlanServiceDeleteFailureReportsFailed(t *testing.T) {
 
 // Verification is what makes `completed` true: a service still registered, a
 // product still registered, or an agent process still running fails the run.
+// Verification runs after the services were removed, so nothing is restored,
+// and the config (logs included) is kept for diagnosis.
 func TestWindowsPlanVerificationFailuresReportFailed(t *testing.T) {
 	cases := map[string]*fakeOps{
 		"agent service still registered": {stillRegistered: map[string]bool{"BreezeAgent": true}},
@@ -392,7 +400,9 @@ func TestWindowsPlanVerificationFailuresReportFailed(t *testing.T) {
 			if out.Status != StatusFailed || !strings.HasPrefix(out.FailedStep, "verify") {
 				t.Fatalf("outcome = %+v, want failed at a verify step", out)
 			}
-			assertInOrder(t, ops.log, "REPORT failed", "restore BreezeAgent")
+			indexOf(t, ops.log, "REPORT failed")
+			assertNotLogged(t, ops.log, "restore")
+			assertNotLogged(t, ops.log, "rm -r")
 		})
 	}
 }
@@ -482,8 +492,8 @@ func TestWindowsPlanStepNamesAreStable(t *testing.T) {
 	want := []string{
 		StepReleaseIsolation, StepHandoffDelay, StepStopWatchdog, StepStopAgent, StepStopHelpers,
 		StepReconfirmRelease, StepMSIUninstall, StepRemoveServices, StepRemoveUserHelperTask,
-		StepRemoveBinaries, StepRemoveConfig, StepVerifyServices, StepVerifyUserHelperTask,
-		StepVerifyProduct, StepVerifyProcesses,
+		StepRemoveBinaries, StepVerifyServices, StepVerifyUserHelperTask,
+		StepVerifyProduct, StepVerifyProcesses, StepRemoveConfig,
 	}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("steps = %v, want %v", names, want)

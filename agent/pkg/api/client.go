@@ -570,12 +570,12 @@ func (c *Client) SubmitCommandResult(commandID string, result interface{}) error
 	if resp.StatusCode != http.StatusOK {
 		// Typed so a caller that retries can tell a rate limit from a refusal
 		// (#11154). The body is capped: it is for the log, not for parsing.
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		statusErr := &ErrHTTPStatus{StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(body))}
 		if secs, convErr := strconv.Atoi(strings.TrimSpace(resp.Header.Get("Retry-After"))); convErr == nil && secs > 0 {
 			statusErr.RetryAfter = time.Duration(secs) * time.Second
 		}
-		return fmt.Errorf("submit result failed with status %d: %w", resp.StatusCode, statusErr)
+		return fmt.Errorf("submit result failed: %w", statusErr)
 	}
 
 	return nil

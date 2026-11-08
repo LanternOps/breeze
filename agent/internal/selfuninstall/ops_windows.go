@@ -14,6 +14,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 
@@ -25,12 +26,18 @@ const (
 	serviceKillTimeout  = 15 * time.Second
 	serviceStartTimeout = 60 * time.Second
 	servicePoll         = 500 * time.Millisecond
-	// msiUninstallTimeout bounds one msiexec client. Windows Installer keeps
-	// running server-side if it is reached; the uninstall is then reported
-	// failed and verified on the next attempt.
+	// msiUninstallTimeout bounds one msiexec client. Reaching it kills the
+	// client and fails the step as a timeout; Windows Installer may still be
+	// finishing server-side, which a re-sent self_uninstall finds through
+	// RelatedProducts.
 	msiUninstallTimeout = 20 * time.Minute
+	// releaseTimeout bounds one `containment release-all`.
+	releaseTimeout = 5 * time.Minute
 	// recoveryResetPeriodSeconds matches winsvcinstall and the MSI.
 	recoveryResetPeriodSeconds = 86400
+	// taskCacheTree is where Task Scheduler registers tasks by path; a key per
+	// folder and task, so existence needs no localized schtasks output.
+	taskCacheTree = `SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree`
 )
 
 type windowsOps struct{}
@@ -39,7 +46,12 @@ type windowsOps struct{}
 func NewWindowsOps() WindowsOps { return windowsOps{} }
 
 func (windowsOps) ReleaseIsolation(ctx context.Context, agentBinary string) error {
+	ctx, cancel := context.WithTimeout(ctx, releaseTimeout)
+	defer cancel()
 	out, err := procspawn.CommandContext(ctx, agentBinary, "containment", "release-all", "--reason", "uninstall").CombinedOutput()
+	if ctx.Err() != nil {
+		return fmt.Errorf("%s containment release-all did not finish within %s: %w", agentBinary, releaseTimeout, ctx.Err())
+	}
 	if err != nil {
 		return fmt.Errorf("%s containment release-all: %w (output: %s)", agentBinary, err, strings.TrimSpace(string(out)))
 	}
@@ -156,10 +168,15 @@ func (windowsOps) ServiceExists(name string) (bool, error) {
 	defer func() { _ = s.Close() }()
 	err = windows.ChangeServiceConfig(s.Handle, windows.SERVICE_NO_CHANGE, windows.SERVICE_NO_CHANGE,
 		windows.SERVICE_NO_CHANGE, nil, nil, nil, nil, nil, nil, nil)
-	if errors.Is(err, windows.ERROR_SERVICE_MARKED_FOR_DELETE) {
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, windows.ERROR_SERVICE_MARKED_FOR_DELETE):
 		return false, nil
+	default:
+		// Still registered as far as we can tell; say why it was not settled.
+		return true, fmt.Errorf("registered, and its deletion state could not be read: %w", err)
 	}
-	return true, nil
 }
 
 func (windowsOps) KillProcesses(names []string) {
@@ -182,8 +199,13 @@ func (windowsOps) RelatedProducts(upgradeCodes []string) ([]string, error) {
 }
 
 func (windowsOps) UninstallProduct(ctx context.Context, productCode, logPath string) (int, error) {
+	// A log msiexec cannot create fails the whole run (1622); go without one
+	// rather than fail the uninstall over it.
 	if logPath != "" {
-		_ = os.MkdirAll(filepath.Dir(logPath), 0o755)
+		if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+			log.Warn("cannot create the msiexec log directory; running without a log", "path", logPath, "error", err.Error())
+			logPath = ""
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, msiUninstallTimeout)
 	defer cancel()
@@ -192,6 +214,11 @@ func (windowsOps) UninstallProduct(ctx context.Context, productCode, logPath str
 		args = append(args, "/l*v", logPath)
 	}
 	err := procspawn.CommandContext(ctx, systemTool("msiexec.exe"), args...).Run()
+	if ctx.Err() != nil {
+		// Killed on the deadline: its exit code would read as an ordinary
+		// failure, so the timeout is named instead.
+		return -1, fmt.Errorf("msiexec did not finish within %s (Windows Installer may still be running): %w", msiUninstallTimeout, ctx.Err())
+	}
 	var exitErr *exec.ExitError
 	switch {
 	case err == nil:
@@ -203,12 +230,28 @@ func (windowsOps) UninstallProduct(ctx context.Context, productCode, logPath str
 	}
 }
 
-func scheduledTaskExists(name string) bool {
-	return procspawn.Command(systemTool("schtasks.exe"), "/Query", "/TN", name).Run() == nil
+// scheduledTaskExists reads the Task Scheduler's own registration rather than
+// schtasks output, whose "not found" text is localized: absent is a missing
+// key, anything else unreadable is an error.
+func scheduledTaskExists(name string) (bool, error) {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, taskCacheTree+strings.TrimRight(name, `\`), registry.QUERY_VALUE)
+	switch {
+	case err == nil:
+		_ = k.Close()
+		return true, nil
+	case errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_PATH_NOT_FOUND):
+		return false, nil
+	default:
+		return false, fmt.Errorf("read the task registration: %w", err)
+	}
 }
 
 func (windowsOps) DeleteScheduledTask(name string) error {
-	if !scheduledTaskExists(name) {
+	exists, err := scheduledTaskExists(name)
+	if err != nil {
+		return err
+	}
+	if !exists {
 		return nil
 	}
 	out, err := procspawn.Command(systemTool("schtasks.exe"), "/Delete", "/TN", name, "/F").CombinedOutput()
@@ -219,7 +262,7 @@ func (windowsOps) DeleteScheduledTask(name string) error {
 }
 
 func (windowsOps) ScheduledTaskExists(name string) (bool, error) {
-	return scheduledTaskExists(name), nil
+	return scheduledTaskExists(name)
 }
 
 func (windowsOps) RemoveFile(path string) error {
@@ -303,7 +346,9 @@ func (windowsOps) RestoreService(ctx context.Context, name string) error {
 	}, recoveryResetPeriodSeconds); err != nil {
 		return fmt.Errorf("restore recovery actions: %w", err)
 	}
-	_ = s.SetRecoveryActionsOnNonCrashFailures(true)
+	if err := s.SetRecoveryActionsOnNonCrashFailures(true); err != nil {
+		log.Warn("could not apply recovery actions to non-crash failures", "service", name, "error", err.Error())
+	}
 
 	if err := stopAndWait(ctx, s); err != nil {
 		return fmt.Errorf("stop before restart: %w", err)

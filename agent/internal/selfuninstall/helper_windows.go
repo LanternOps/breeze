@@ -17,27 +17,6 @@ import (
 	"github.com/breeze-rmm/agent/internal/procspawn"
 )
 
-const (
-	helperLogName = "self-uninstall.log"
-	msiLogName    = "self-uninstall-msi.log"
-)
-
-// Exit codes of the helper process (diagnostics only; nobody waits on it).
-const (
-	ExitCompleted       = 0
-	ExitFailed          = 1
-	ExitNotReported     = 2
-	ExitFailedNotReport = 3
-)
-
-// HelperArgs are what the agent passes the detached helper.
-type HelperArgs struct {
-	CommandID    string
-	AgentBinary  string // the installed breeze-agent.exe
-	RemoveConfig bool
-	ConfigDir    string // ProgramData\Breeze
-}
-
 // LoadClient reads the agent's credentials and returns a client that posts
 // with them. Called at start and again once the agent has stopped.
 type LoadClient func() (ResultSubmitter, error)
@@ -57,8 +36,9 @@ func RunWindowsHelper(args HelperArgs, loadClient LoadClient) int {
 	if err == nil {
 		logging.Init("text", "info", logFile)
 	}
+	keepLog := false
 	defer func() {
-		persistLog(logPath, args.ConfigDir)
+		persistLog(logPath, args.ConfigDir, keepLog)
 		logging.DiscardOutput()
 		if logFile != nil {
 			_ = logFile.Close()
@@ -77,44 +57,23 @@ func RunWindowsHelper(args HelperArgs, loadClient LoadClient) int {
 		reporter = NewReporter(args.CommandID, client, start)
 	}
 
-	installDir := filepath.Dir(args.AgentBinary)
-	opts := WindowsOptions{
-		AgentService:    AgentServiceName,
-		WatchdogService: WatchdogServiceName,
-		AgentBinary:     args.AgentBinary,
-		Binaries: []string{
-			filepath.Join(installDir, "breeze-watchdog.exe"),
-			filepath.Join(installDir, "breeze-user-helper.exe"),
-			filepath.Join(installDir, "breeze-backup.exe"),
-			args.AgentBinary,
-		},
-		UserHelperTask:    UserHelperTaskName,
-		ConfigDir:         args.ConfigDir,
-		RemoveConfig:      args.RemoveConfig,
-		UpgradeCodes:      AgentUpgradeCodes,
-		HandoffDelay:      HandoffDelay,
-		HelperProcesses:   windowsHelperProcesses,
-		AgentProcesses:    windowsAgentProcesses,
-		MSIBusyRetries:    3,
-		MSIBusyRetryDelay: 20 * time.Second,
-		OnAgentStopped: func() error {
-			client, err := loadClient()
-			if err != nil {
-				return err
-			}
-			if reporter == nil {
-				reporter = NewReporter(args.CommandID, client, start)
-			} else {
-				reporter.SetClient(client)
-			}
-			return nil
-		},
-	}
-	if args.ConfigDir != "" {
-		opts.MSILogPath = filepath.Join(args.ConfigDir, "logs", msiLogName)
+	// Read the credentials again once the agent is down (it can no longer
+	// rotate them) and before anything deletes secrets.yaml. A first read
+	// that failed is recovered here.
+	refreshCredentials := func() error {
+		client, err := loadClient()
+		if err != nil {
+			return err
+		}
+		if reporter == nil {
+			reporter = NewReporter(args.CommandID, client, start)
+		} else {
+			reporter.SetClient(client)
+		}
+		return nil
 	}
 
-	plan := BuildWindowsPlan(opts, NewWindowsOps())
+	plan := BuildWindowsPlan(WindowsHelperOptions(args, refreshCredentials), NewWindowsOps())
 	plan.Report = func(ctx context.Context, o Outcome) error {
 		if reporter == nil {
 			return ErrNoReporter
@@ -122,19 +81,20 @@ func RunWindowsHelper(args HelperArgs, loadClient LoadClient) int {
 		return reporter.Report(ctx, o)
 	}
 
-	out, reportErr := Run(context.Background(), plan)
+	// Bounded overall, so a wedged step ends as a failed, reported run.
+	ctx, cancel := context.WithTimeout(context.Background(), helperDeadline)
+	defer cancel()
+	out, reportErr := Run(ctx, plan)
 	logOutcome(out, reportErr)
-	switch {
-	case out.Status == StatusCompleted && reportErr == nil:
-		return ExitCompleted
-	case out.Status == StatusCompleted:
-		return ExitNotReported
-	case reportErr == nil:
-		return ExitFailed
-	default:
-		return ExitFailedNotReport
-	}
+	// An outcome the server never heard of must leave evidence on the device,
+	// even after a completed uninstall removed the config dir.
+	keepLog = reportErr != nil
+	return HelperExitCode(out, reportErr)
 }
+
+// helperDeadline bounds the whole teardown: msiexec's own 20-minute bound,
+// its busy retries, the service waits and the report retries, with room.
+const helperDeadline = 45 * time.Minute
 
 func logOutcome(out Outcome, reportErr error) {
 	attrs := []any{"status", out.Status, "steps", strings.Join(out.Steps, ","), "details", out.Details, "warnings", out.Warnings}
@@ -151,14 +111,17 @@ func logOutcome(out Outcome, reportErr error) {
 
 // persistLog copies the helper's log next to the agent's logs when the config
 // dir still exists (a failure, or removeConfig=false). After a completed
-// uninstall that removed it, the reported result is the record.
-func persistLog(logPath, configDir string) {
+// uninstall that removed it, the reported result is the record — unless it
+// could not be reported (force), when the logs folder is recreated for it.
+func persistLog(logPath, configDir string, force bool) {
 	if configDir == "" {
 		return
 	}
 	logsDir := filepath.Join(configDir, "logs")
 	if _, err := os.Stat(logsDir); err != nil {
-		return
+		if !force || os.MkdirAll(logsDir, 0o700) != nil {
+			return
+		}
 	}
 	src, err := os.Open(logPath)
 	if err != nil {

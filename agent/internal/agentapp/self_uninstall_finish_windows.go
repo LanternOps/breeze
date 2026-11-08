@@ -4,10 +4,12 @@ package agentapp
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/spf13/cobra"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/mtls"
 	"github.com/breeze-rmm/agent/internal/selfuninstall"
 	"github.com/breeze-rmm/agent/pkg/api"
@@ -53,10 +55,19 @@ func loadSelfUninstallClient() (selfuninstall.ResultSubmitter, error) {
 	if !config.IsEnrolled(cfg) {
 		return nil, errors.New("the agent is not enrolled (secrets.yaml missing or empty)")
 	}
-	if cfg.MtlsCertPEM != "" && !mtls.IsExpired(cfg.MtlsCertExpires) {
-		if tlsCfg, err := mtls.BuildTLSConfig(cfg.MtlsCertPEM, cfg.MtlsKeyPEM); err == nil && tlsCfg != nil {
+	uLog := logging.L("self-uninstall")
+	switch {
+	case cfg.MtlsCertPEM == "":
+		uLog.Info("reporting without an mTLS certificate (none configured)")
+	case mtls.IsExpired(cfg.MtlsCertExpires):
+		uLog.Warn("mTLS certificate expired; reporting bearer-only, which an mTLS-enforcing edge will refuse", "expires", cfg.MtlsCertExpires)
+	default:
+		tlsCfg, err := mtls.BuildTLSConfig(cfg.MtlsCertPEM, cfg.MtlsKeyPEM)
+		if err == nil && tlsCfg != nil {
+			uLog.Info("reporting with the agent's mTLS certificate")
 			return api.NewClientWithTLS(cfg.ServerURL, cfg.AuthToken, cfg.AgentID, tlsCfg), nil
 		}
+		uLog.Warn("mTLS certificate unusable; reporting bearer-only, which an mTLS-enforcing edge will refuse", "error", fmt.Sprint(err))
 	}
 	return api.NewClient(cfg.ServerURL, cfg.AuthToken, cfg.AgentID), nil
 }

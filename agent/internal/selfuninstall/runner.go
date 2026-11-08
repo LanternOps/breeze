@@ -2,14 +2,11 @@
 // helper process and reports the command's result only once that teardown has
 // finished (#11154).
 //
-// The agent cannot report its own uninstall: stopping its service kills it, so
-// for years the agent reported `completed` the moment it had handed teardown
-// to a helper. The server read that as "uninstalled", and a teardown that then
-// failed (a blocked helper, an isolation release that could not be confirmed)
-// left an agent running on a machine whose record had been purged. Here the
-// helper, which outlives the agent, runs every step, verifies the end state and
+// The agent cannot report its own uninstall: stopping its service kills it.
+// The helper outlives the agent, runs every step, verifies the end state and
 // only then reports: completed when all of it held, failed (naming the step)
-// otherwise.
+// otherwise. The server treats a completed self_uninstall as a confirmed
+// uninstall (it gates the permanent delete), so completed must be true.
 package selfuninstall
 
 import (
@@ -89,7 +86,7 @@ func Run(ctx context.Context, p Plan) (Outcome, error) {
 	rec := &Recorder{}
 	out := Outcome{Status: StatusCompleted}
 	for _, s := range p.Steps {
-		if err := s.Run(ctx, rec); err != nil {
+		if err := runStep(ctx, s, rec); err != nil {
 			out.Status = StatusFailed
 			out.FailedStep = s.Name
 			out.Err = fmt.Errorf("%s: %w", s.Name, err)
@@ -100,12 +97,25 @@ func Run(ctx context.Context, p Plan) (Outcome, error) {
 	out.Details = rec.details
 	out.Warnings = rec.warnings
 
+	// A run that ended on ctx's deadline must still report and restore.
+	finish := context.WithoutCancel(ctx)
 	reportErr := ErrNoReporter
 	if p.Report != nil {
-		reportErr = p.Report(ctx, out)
+		reportErr = p.Report(finish, out)
 	}
 	if out.Status == StatusFailed && p.OnFailure != nil {
-		p.OnFailure(ctx, out)
+		p.OnFailure(finish, out)
 	}
 	return out, reportErr
+}
+
+// runStep runs one step, turning a panic into the step's error: a helper that
+// dies mid-teardown reports nothing and restores nothing.
+func runStep(ctx context.Context, s Step, rec *Recorder) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
+	return s.Run(ctx, rec)
 }

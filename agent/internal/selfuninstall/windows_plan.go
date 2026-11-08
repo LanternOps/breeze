@@ -31,11 +31,16 @@ const (
 // msiexec exit codes the plan branches on
 // (https://learn.microsoft.com/en-us/windows/win32/msi/error-codes).
 const (
-	msiExitSuccess           = 0
-	msiExitUnknownProduct    = 1605 // ERROR_UNKNOWN_PRODUCT
-	msiExitInstallRunning    = 1618 // ERROR_INSTALL_ALREADY_RUNNING
-	msiExitRebootInitiated   = 1641 // ERROR_SUCCESS_REBOOT_INITIATED
-	msiExitRebootRequired    = 3010 // ERROR_SUCCESS_REBOOT_REQUIRED
+	msiExitSuccess            = 0
+	msiExitUnknownProduct     = 1605 // ERROR_UNKNOWN_PRODUCT
+	msiExitProductUninstalled = 1614 // ERROR_PRODUCT_UNINSTALLED
+	msiExitInstallRunning     = 1618 // ERROR_INSTALL_ALREADY_RUNNING
+	msiExitRebootInitiated    = 1641 // ERROR_SUCCESS_REBOOT_INITIATED
+	msiExitRebootRequired     = 3010 // ERROR_SUCCESS_REBOOT_REQUIRED
+)
+
+// Removal methods and the keys of the details carried in the reported result.
+const (
 	removalMethodMSI         = "msi"
 	removalMethodManual      = "manual"
 	detailMethod             = "method"
@@ -47,6 +52,8 @@ const (
 	detailMSILookupWarning   = "msiLookupError"
 	detailConfigRemoved      = "configRemoved"
 	detailUserHelperTaskGone = "userHelperTaskRemoved"
+	detailServicesRemoved    = "servicesRemoved"
+	detailProductUnverified  = "productUnverified"
 )
 
 // WindowsOptions are the inputs to the Windows teardown.
@@ -72,11 +79,15 @@ type WindowsOptions struct {
 	// HandoffDelay lets the agent's handler return and the agent stop
 	// accepting commands before its service is stopped.
 	HandoffDelay time.Duration
-	// HelperProcesses are killed once the agent is down: they hold file locks
-	// (and a watchdog-respawned agent would be among AgentProcesses).
+	// HelperProcesses are killed once the agent service is down: they hold
+	// file locks, and a respawned agent image is among them.
 	HelperProcesses []string
-	// AgentProcesses must not be running when the teardown is verified.
-	AgentProcesses []string
+	// AgentProcesses must not be running when the teardown is verified. Any
+	// still running are killed again and re-checked, ProcessSettleAttempts
+	// times ProcessSettleDelay apart, before verify-processes fails.
+	AgentProcesses        []string
+	ProcessSettleAttempts int
+	ProcessSettleDelay    time.Duration
 	// MSIBusyRetries bounds retries of an msiexec that found another
 	// installation in progress (1618), MSIBusyRetryDelay apart.
 	MSIBusyRetries    int
@@ -123,7 +134,8 @@ type WindowsOps interface {
 }
 
 // BuildWindowsPlan returns the Windows teardown. Report is left for the
-// caller; OnFailure restores the agent service.
+// caller; OnFailure restores the agent service, unless the failure came after
+// the services were removed, when there is nothing left to restore.
 //
 // Order is load-bearing:
 //   - isolation release first, while the agent can still restore itself;
@@ -135,7 +147,8 @@ type WindowsOps interface {
 //     falling back to removing services, task and files by hand when no MSI
 //     product is registered; services, task and files are then removed on
 //     both paths, because the cached MSI may predate them;
-//   - config last, then verification. Only a verified teardown is completed.
+//   - verification, then config: a teardown that fails verification keeps its
+//     config and logs for diagnosis. Only a verified teardown is completed.
 func BuildWindowsPlan(opts WindowsOptions, ops WindowsOps) Plan {
 	// products are the ProductCodes msiexec removed; method is reported
 	// either way.
@@ -154,8 +167,8 @@ func BuildWindowsPlan(opts WindowsOptions, ops WindowsOps) Plan {
 			return ops.Sleep(ctx, opts.HandoffDelay)
 		}},
 		{Name: StepStopWatchdog, Run: func(ctx context.Context, rec *Recorder) error {
-			// Already stopped and deleted in-process before the hand-off; this
-			// re-asserts it. verify-services still requires it gone.
+			// Stopped and deleted best-effort in-process before the hand-off;
+			// this re-asserts the stop. verify-services requires it gone.
 			if err := ops.StopService(ctx, opts.WatchdogService); err != nil {
 				rec.Warn("could not stop the %s service again: %v", opts.WatchdogService, err)
 			}
@@ -199,13 +212,13 @@ func BuildWindowsPlan(opts WindowsOptions, ops WindowsOps) Plan {
 				case exit == msiExitSuccess:
 				case exit == msiExitRebootRequired || exit == msiExitRebootInitiated:
 					rec.Set(detailRebootRequired, true)
-				case exit == msiExitUnknownProduct:
+				case exit == msiExitUnknownProduct || exit == msiExitProductUninstalled:
 					// Listed but not installed: nothing for msiexec to do; the
 					// removal below covers the files and services.
 					stale[code] = true
 					continue
 				default:
-					return fmt.Errorf("msiexec /x %s exited %d; Windows Installer rolled the uninstall back (log: %s)", code, exit, opts.MSILogPath)
+					return fmt.Errorf("msiexec /x %s exited %d; the uninstall did not complete (log: %s)", code, exit, opts.MSILogPath)
 				}
 				products = append(products, code)
 				method = removalMethodMSI
@@ -216,12 +229,15 @@ func BuildWindowsPlan(opts WindowsOptions, ops WindowsOps) Plan {
 			}
 			return nil
 		}},
-		{Name: StepRemoveServices, Run: func(context.Context, *Recorder) error {
+		{Name: StepRemoveServices, Run: func(_ context.Context, rec *Recorder) error {
 			for _, name := range []string{opts.WatchdogService, opts.AgentService} {
 				if err := ops.DeleteService(name); err != nil {
 					return fmt.Errorf("delete the %s service: %w", name, err)
 				}
 			}
+			// The point of no return: from here a failure cannot restore the
+			// agent, and the result says so (ResultFor).
+			rec.Set(detailServicesRemoved, true)
 			return nil
 		}},
 		{Name: StepRemoveUserHelperTask, Run: func(_ context.Context, rec *Recorder) error {
@@ -250,17 +266,6 @@ func BuildWindowsPlan(opts WindowsOptions, ops WindowsOps) Plan {
 			if len(atReboot) > 0 {
 				rec.Set(detailFilesAtReboot, atReboot)
 			}
-			return nil
-		}},
-		{Name: StepRemoveConfig, Run: func(_ context.Context, rec *Recorder) error {
-			if !opts.RemoveConfig || opts.ConfigDir == "" {
-				return nil
-			}
-			if err := ops.RemoveAll(opts.ConfigDir); err != nil {
-				rec.Warn("could not remove all of %s: %v", opts.ConfigDir, err)
-				return nil
-			}
-			rec.Set(detailConfigRemoved, true)
 			return nil
 		}},
 		{Name: StepVerifyServices, Run: func(context.Context, *Recorder) error {
@@ -296,12 +301,13 @@ func BuildWindowsPlan(opts WindowsOptions, ops WindowsOps) Plan {
 			left, err := ops.RelatedProducts(opts.UpgradeCodes)
 			if err != nil {
 				rec.Warn("could not confirm with Windows Installer that the agent's product is gone: %v", err)
+				rec.Set(detailProductUnverified, true)
 				return nil
 			}
 			var installed []string
 			for _, code := range left {
 				if stale[code] {
-					rec.Warn("Windows Installer still lists %s but reports it is not installed (1605); its Programs and Features entry may remain", code)
+					rec.Warn("Windows Installer still lists %s but reports it is not installed (1605/1614); its Programs and Features entry may remain", code)
 					continue
 				}
 				installed = append(installed, code)
@@ -311,21 +317,52 @@ func BuildWindowsPlan(opts WindowsOptions, ops WindowsOps) Plan {
 			}
 			return nil
 		}},
-		{Name: StepVerifyProcesses, Run: func(context.Context, *Recorder) error {
-			running, err := ops.ProcessesRunning(opts.AgentProcesses)
-			if err != nil {
-				return fmt.Errorf("list processes: %w", err)
+		{Name: StepVerifyProcesses, Run: func(ctx context.Context, _ *Recorder) error {
+			// A process image can outlive its service's STOPPED state briefly,
+			// and this failure cannot be rolled back: kill and re-check before
+			// giving up.
+			for attempt := 0; ; attempt++ {
+				running, err := ops.ProcessesRunning(opts.AgentProcesses)
+				if err != nil {
+					return fmt.Errorf("list processes: %w", err)
+				}
+				if len(running) == 0 {
+					return nil
+				}
+				if attempt >= opts.ProcessSettleAttempts {
+					return fmt.Errorf("still running: %s", strings.Join(running, ", "))
+				}
+				ops.KillProcesses(running)
+				if err := ops.Sleep(ctx, opts.ProcessSettleDelay); err != nil {
+					return err
+				}
 			}
-			if len(running) > 0 {
-				return fmt.Errorf("still running: %s", strings.Join(running, ", "))
+		}},
+		{Name: StepRemoveConfig, Run: func(_ context.Context, rec *Recorder) error {
+			if !opts.RemoveConfig {
+				return nil
 			}
+			if opts.ConfigDir == "" {
+				rec.Warn("config removal was requested but the config directory is unknown; nothing was removed")
+				return nil
+			}
+			if err := ops.RemoveAll(opts.ConfigDir); err != nil {
+				rec.Warn("could not remove all of %s: %v", opts.ConfigDir, err)
+				return nil
+			}
+			rec.Set(detailConfigRemoved, true)
 			return nil
 		}},
 	}
 
 	return Plan{
 		Steps: steps,
-		OnFailure: func(ctx context.Context, _ Outcome) {
+		OnFailure: func(ctx context.Context, o Outcome) {
+			if servicesRemoved(o) {
+				log.Error("self-uninstall failed after the agent's services were removed; nothing to restore",
+					"failedStep", o.FailedStep)
+				return
+			}
 			if err := ops.RestoreService(ctx, opts.AgentService); err != nil {
 				log.Error("self-uninstall failed and the agent service could not be restored",
 					"service", opts.AgentService, "error", err.Error())
@@ -354,4 +391,11 @@ func uninstallWithRetry(ctx context.Context, ops WindowsOps, opts WindowsOptions
 			return exit, err
 		}
 	}
+}
+
+// servicesRemoved reports whether the teardown got past remove-services, after
+// which the agent cannot be restored.
+func servicesRemoved(o Outcome) bool {
+	removed, _ := o.Details[detailServicesRemoved].(bool)
+	return removed
 }

@@ -24,7 +24,7 @@ const (
 )
 
 // reportBackoff is the wait before attempt n+1 when the server gave no
-// Retry-After. About a minute in all: the helper holds nothing else open.
+// Retry-After: bounded so the helper exits in about a minute.
 var reportBackoff = []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second, 15 * time.Second, 30 * time.Second}
 
 // Reporter delivers the teardown's outcome as the self_uninstall command's
@@ -53,8 +53,9 @@ func (r *Reporter) SetClient(c ResultSubmitter) {
 	r.client = c
 }
 
-// Report posts the outcome. Network errors, 5xx and 429 are retried (a 429's
-// Retry-After honoured up to a minute); any other refusal is final — after a
+// Report posts the outcome. Network errors, 5xx and 429 are retried (a
+// Retry-After on the response honoured up to a minute); any other refusal is
+// final — after a
 // lost response it can also mean the result was already recorded, since the
 // drain-mode credential admits only a still-open self_uninstall.
 func (r *Reporter) Report(ctx context.Context, o Outcome) error {
@@ -121,10 +122,17 @@ func ResultFor(o Outcome, durationMs int64) tools.CommandResult {
 	var result tools.CommandResult
 	if o.Status == StatusCompleted {
 		summary["message"] = "agent uninstalled: teardown finished and verified"
+		if len(o.Warnings) > 0 {
+			summary["message"] = "agent uninstalled: services and processes verified gone; see warnings for what could not be removed or checked"
+		}
 		result = tools.CommandResult{Status: "completed", DurationMs: durationMs}
 	} else {
 		summary["failedStep"] = o.FailedStep
-		msg := fmt.Sprintf("self-uninstall failed at %s: %v; the agent service is being restored", o.FailedStep, o.Err)
+		next := "the agent service is being restored"
+		if servicesRemoved(o) {
+			next = "the agent's services were already removed, so it cannot be restored; finish removing it on the device"
+		}
+		msg := fmt.Sprintf("self-uninstall failed at %s: %v; %s", o.FailedStep, o.Err, next)
 		summary["message"] = msg
 		result = tools.NewErrorResult(errors.New(msg), durationMs)
 	}

@@ -22,3 +22,15 @@ func startDetachedProcess(name string, args ...string) error {
 	_ = cmd.Process.Release()
 	return nil
 }
+
+// startWatchedDetachedProcess exists so the Windows hand-off compiles (and is
+// tested) everywhere; only Windows spawns its helper this way.
+func startWatchedDetachedProcess(name string, args ...string) (<-chan int, error) {
+	cmd := procspawn.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	procspawn.Prepare(cmd)
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return watchExit(cmd), nil
+}

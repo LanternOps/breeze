@@ -31,10 +31,13 @@ func (r *handoffRecorder) deps() windowsUninstallHandoff {
 		},
 		neutralize: func() { r.calls = append(r.calls, "neutralize") },
 		restore:    func() { r.calls = append(r.calls, "restore") },
-		spawn: func(name string, args ...string) error {
+		spawn: func(name string, args ...string) (<-chan int, error) {
 			r.calls = append(r.calls, "spawn")
 			r.spawnName, r.spawnArgs = name, args
-			return r.spawnErr
+			if r.spawnErr != nil {
+				return nil, r.spawnErr
+			}
+			return make(chan int), nil
 		},
 	}
 }
@@ -43,6 +46,7 @@ func (r *handoffRecorder) deps() windowsUninstallHandoff {
 // watchdog/service are neutralized, then the helper is spawned with what it
 // needs to tear down, verify and report this command.
 func TestWindowsHandoffStagesNeutralizesThenSpawnsTheHelper(t *testing.T) {
+	t.Cleanup(func() { uninstallHelperWatch.Store(nil) })
 	r := &handoffRecorder{}
 	err := prepareSelfUninstallWindows(selfUninstallRequest{CommandID: "3bb7ac81-be24-4206-8896-f5cf7dbea12b", RemoveConfig: false}, r.deps())
 	if err != nil {
@@ -64,6 +68,9 @@ func TestWindowsHandoffStagesNeutralizesThenSpawnsTheHelper(t *testing.T) {
 	}
 	if !reflect.DeepEqual(r.spawnArgs, wantArgs) {
 		t.Fatalf("spawn args = %q, want %q", r.spawnArgs, wantArgs)
+	}
+	if st := uninstallHelperWatch.Load(); st == nil || st.commandID != "3bb7ac81-be24-4206-8896-f5cf7dbea12b" {
+		t.Fatalf("spawned helper is not watched: %+v", st)
 	}
 }
 

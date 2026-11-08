@@ -1,8 +1,8 @@
 package selfuninstall
 
 // AgentUpgradeCodes are the UpgradeCodes of the agent's MSI editions: Hosted
-// and Self-Hosted (installer/build-msi.ps1 $hostedUpgradeCode and
-// $selfHostUpgradeCode, installer/breeze.wxs). They never change; the
+// and Self-Hosted (agent/installer/build-msi.ps1 $hostedUpgradeCode and
+// $selfHostUpgradeCode, agent/installer/breeze.wxs). They never change; the
 // ProductCode changes with every build, so the product to remove is looked up
 // through these. Pinned to the installer by TestAgentUpgradeCodesMatchTheInstaller.
 var AgentUpgradeCodes = []string{

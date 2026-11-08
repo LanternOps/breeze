@@ -26,9 +26,12 @@ const (
 )
 
 var (
-	// windowsHelperProcesses are killed once the agent is down: they hold
-	// locks on the files being removed.
-	windowsHelperProcesses = []string{"breeze-watchdog.exe", "breeze-user-helper.exe", "breeze-desktop-helper.exe", "breeze-backup.exe"}
+	// windowsHelperProcesses are killed once the agent service is down: they
+	// hold locks on the files being removed. breeze-agent.exe is among them
+	// for a watchdog-respawned agent and for the user-helper fallback, which
+	// runs as `breeze-agent.exe user-helper` where breeze-user-helper.exe is
+	// missing. The helper's own copy is named so this never hits it.
+	windowsHelperProcesses = []string{"breeze-agent.exe", "breeze-watchdog.exe", "breeze-user-helper.exe", "breeze-desktop-helper.exe", "breeze-backup.exe"}
 	// windowsAgentProcesses must not be running when the teardown is verified.
 	windowsAgentProcesses = []string{"breeze-agent.exe", "breeze-watchdog.exe"}
 )

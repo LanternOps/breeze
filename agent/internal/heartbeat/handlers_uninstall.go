@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
@@ -37,7 +39,7 @@ const uninstallHelperDelaySeconds = 5
 //
 // The teardown is split into two phases (#2878):
 //
-//   - Phase 1 runs in-process BEFORE the result is acked: neutralize the
+//   - Phase 1 runs in-process BEFORE the handler returns: neutralize the
 //     watchdog (so it cannot respawn the agent mid-teardown), remove every
 //     artifact that is safe to remove while the agent is still running, and
 //     hand the self-referential steps — stopping/deleting the agent's OWN
@@ -45,7 +47,8 @@ const uninstallHelperDelaySeconds = 5
 //     survives this process's death.
 //
 //   - Phase 2 is the detached helper, which runs the self-referential steps
-//     after a short delay, by which point the result has been submitted.
+//     after a short delay — on macOS/Linux by which point the ack has been
+//     submitted; on Windows the helper reports the result itself (below).
 //
 // On Windows (#11154) the helper also owns the result: this handler returns
 // the hand-off marker (never delivered), and the helper reports completed only
@@ -160,10 +163,12 @@ func releaseIsolationForUninstall(h *Heartbeat) error {
 }
 
 // scheduleSelfUninstallShutdown shuts the agent down gracefully once the
-// result has had time to be submitted. The detached helper stops the service
-// after its delay, so on a normal service install the process exits via the
-// service manager's stop control; the explicit Stop/os.Exit below is a
-// backstop for non-service (dev) runs and blocked helpers.
+// ack has had time to go out (macOS/Linux; on Windows the helper reports). The
+// detached helper stops the service after its delay, so on a normal service
+// install the process exits via the service manager's stop control; the
+// explicit Stop/os.Exit below is a backstop for non-service (dev) runs and
+// blocked helpers. On Windows a helper that has already exited is handled
+// differently first (checkUninstallHelperAtDeadline).
 func scheduleSelfUninstallShutdown(h *Heartbeat) {
 	go func() {
 		defer func() {
@@ -172,17 +177,21 @@ func scheduleSelfUninstallShutdown(h *Heartbeat) {
 			}
 		}()
 
-		// Brief delay so the command result can be submitted.
+		// Brief delay so the ack can go out (macOS/Linux; on Windows the
+		// helper reports the result itself).
 		time.Sleep(2 * time.Second)
 		h.StopAcceptingCommands()
 
 		// Give the detached helper time to stop the service (the normal exit
 		// path). If we are still alive well past its delay — e.g. not running
 		// under a service manager, or the helper was blocked (EDR/AV killing a
-		// service-spawned PowerShell is realistic on managed endpoints) — log
+		// service-spawned helper is realistic on managed endpoints) — log
 		// loudly and stop ourselves. The log line is the only in-band evidence
 		// that the handed-off teardown may not have run.
 		time.Sleep(time.Duration(uninstallHelperDelaySeconds+10) * time.Second)
+		if checkUninstallHelperAtDeadline(h) {
+			return
+		}
 		log.Warn("agent still running after detached teardown helper's deadline — helper may have been blocked; stopping self (service registration may survive)",
 			"helperDelaySeconds", uninstallHelperDelaySeconds,
 		)
@@ -190,6 +199,85 @@ func scheduleSelfUninstallShutdown(h *Heartbeat) {
 		time.Sleep(5 * time.Second)
 		os.Exit(0)
 	}()
+}
+
+// uninstallHelperState is the Windows helper this process spawned: the command
+// it reports and a channel that yields its exit code once it exits.
+type uninstallHelperState struct {
+	commandID string
+	exited    <-chan int
+}
+
+// uninstallHelperWatch is set on Windows once the helper is spawned.
+var uninstallHelperWatch atomic.Pointer[uninstallHelperState]
+
+// Seams for checkUninstallHelperAtDeadline.
+var (
+	restoreWindowsAgentServiceFn = restoreWindowsAgentService
+	submitUninstallFailureFn     = func(h *Heartbeat, commandID string, r tools.CommandResult) error {
+		return h.submitCommandResult(commandID, r)
+	}
+	selfUninstallExitFn = os.Exit
+)
+
+// checkUninstallHelperAtDeadline handles a Windows helper that has exited
+// while this agent is still running (#11154): it never got as far as stopping
+// the agent, so it was killed (EDR) or failed and could not restore it.
+// Exiting quietly would leave the agent stopped, disabled and the command
+// unreported, so this undoes phase 1, reports the command failed (the
+// journal reports it again after the restart if this post does not land),
+// and exits non-zero without a graceful stop: the SCM sees a crash and its
+// restored recovery actions restart the agent. A helper still running is
+// merely slow and is left alone. Returns whether it handled the deadline.
+func checkUninstallHelperAtDeadline(h *Heartbeat) bool {
+	st := uninstallHelperWatch.Load()
+	if st == nil {
+		return false
+	}
+	var code int
+	select {
+	case c, ok := <-st.exited:
+		if !ok {
+			c = -1
+		}
+		code = c
+	default:
+		return false
+	}
+	log.Error("the self-uninstall helper exited before stopping the agent; restoring the agent service",
+		logging.KeyCommandID, st.commandID, "helperExitCode", code)
+	restoreWindowsAgentServiceFn()
+	result := tools.NewErrorResult(fmt.Errorf(
+		"self-uninstall failed: the teardown helper exited (code %d) before it stopped the agent; nothing was removed by it, and the agent service was re-enabled and restarts", code), 0)
+	if h != nil {
+		if err := submitUninstallFailureFn(h, st.commandID, result); err != nil {
+			log.Warn("could not report the failed self-uninstall; the restarted agent reports it from its journal",
+				logging.KeyCommandID, st.commandID, "error", err.Error())
+		}
+	}
+	selfUninstallExitFn(1)
+	return true
+}
+
+// watchExit waits on a started cmd in the background and yields its exit code
+// (-1 when it cannot be read) once it exits.
+func watchExit(cmd *exec.Cmd) <-chan int {
+	ch := make(chan int, 1)
+	go func() {
+		err := cmd.Wait()
+		code := 0
+		var exitErr *exec.ExitError
+		switch {
+		case err == nil:
+		case errors.As(err, &exitErr):
+			code = exitErr.ExitCode()
+		default:
+			code = -1
+		}
+		ch <- code
+		close(ch)
+	}()
+	return ch
 }
 
 // prepareSelfUninstall does the platform-specific phase-1 teardown and hands
@@ -505,7 +593,9 @@ type windowsUninstallHandoff struct {
 	neutralize func()
 	// restore undoes neutralize's changes to the agent's own service.
 	restore func()
-	spawn   func(name string, args ...string) error
+	// spawn starts the detached helper and returns a channel that yields its
+	// exit code once it exits.
+	spawn func(name string, args ...string) (<-chan int, error)
 }
 
 func defaultWindowsUninstallHandoff() windowsUninstallHandoff {
@@ -515,28 +605,22 @@ func defaultWindowsUninstallHandoff() windowsUninstallHandoff {
 		stageHelper: stageWindowsUninstallHelper,
 		neutralize:  neutralizeWindowsServicesForUninstall,
 		restore:     restoreWindowsAgentService,
-		spawn:       startDetachedProcess,
+		spawn:       startWatchedDetachedProcess,
 	}
 }
 
 // prepareSelfUninstallWindows hands the teardown to a detached helper that
 // reports the command result itself, once the teardown is verified (#11154).
-//
-// Before #11154 a PowerShell script did the teardown and the agent acked
-// "completed" the moment it was spawned, so the server counted the device as
-// uninstalled while the script could still fail (or never run), and msiexec
-// was never invoked, leaving the Programs and Features entry. The helper is now
-// this binary, run from a private copy (the original is removed by the
-// teardown and is locked while the agent runs) as the hidden
-// `self-uninstall-finish` command (internal/selfuninstall): it releases
-// isolation, stops the agent, re-confirms the release, runs msiexec /x by
-// UpgradeCode (falling back to removal by hand), verifies, and reports
-// completed or failed; on failure it restores the agent service.
+// The helper is this binary, run from a private copy (the original is locked
+// while the agent runs and is removed by the teardown) as the hidden
+// `self-uninstall-finish` command; internal/selfuninstall has the steps.
 //
 // The copy is staged before phase 1 touches anything, so a staging failure
 // leaves the machine as it was; a spawn failure undoes phase 1's changes to the
 // agent's own service. The watchdog phase 1 deleted is not restored here; the
-// agent reinstalls a missing watchdog (ensureMissingWatchdog).
+// agent reinstalls a missing watchdog (ensureMissingWatchdog). The helper is
+// watched: one that exits while this agent is still running is handled at the
+// shutdown deadline (checkUninstallHelperAtDeadline).
 func prepareSelfUninstallWindows(req selfUninstallRequest, d windowsUninstallHandoff) error {
 	exePath, err := d.executable()
 	if err != nil {
@@ -556,11 +640,13 @@ func prepareSelfUninstallWindows(req selfUninstallRequest, d windowsUninstallHan
 		"--config-dir", d.configDir(),
 		"--remove-config=" + strconv.FormatBool(req.RemoveConfig),
 	}
-	if err := d.spawn(helperExe, args...); err != nil {
+	exited, err := d.spawn(helperExe, args...)
+	if err != nil {
 		d.restore()
 		cleanup()
 		return fmt.Errorf("spawn detached teardown helper: %w", err)
 	}
+	uninstallHelperWatch.Store(&uninstallHelperState{commandID: req.CommandID, exited: exited})
 	return nil
 }
 
