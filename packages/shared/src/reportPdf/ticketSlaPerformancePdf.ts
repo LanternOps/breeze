@@ -10,7 +10,7 @@
  * here would be a module cycle.
  */
 import type { jsPDF } from 'jspdf';
-import autoTable from 'jspdf-autotable';
+import { autoTable } from 'jspdf-autotable';
 import {
   formatSlaMinutes,
   type SlaTargetKind,
