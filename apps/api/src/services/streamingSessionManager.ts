@@ -1092,11 +1092,16 @@ export class StreamingSessionManager {
     // Breeze MCP server, whose handlers execute under the gate's per-call auth;
     // a custom-factory surface (script builder, helper, client AI, topology)
     // is refused outright.
-    const { lookupWispGrant, unreachableWispAuth, WispSessionUnavailableError } = await import('./wisp/chatCeiling');
+    const wispCeiling = await import('./wisp/chatCeiling');
+    const { lookupWispGrant, unreachableWispAuth, WispSessionUnavailableError } = wispCeiling;
     const wispGrant = await timePreStreamPhase('wispGrant', () => lookupWispGrant(breezeSessionId));
     if (wispGrant && mcpServerFactory) {
       throw new WispSessionUnavailableError('surface_unsupported', breezeSessionId);
     }
+    // #10430: a Wisp session registers only the tools its grant ceiling's tool
+    // term admits, so the ToolSearch index never offers one the gate refuses.
+    // The pinned revision fixes that term for the session's life.
+    const wispAdmitTool = wispGrant ? await wispCeiling.wispSessionToolFilter(wispGrant) : undefined;
 
     // Create new session components
     const inputController = new StreamInputController();
@@ -1285,6 +1290,7 @@ export class StreamingSessionManager {
             // W5 PR C: flow tools — gated per call (live tier) in createSessionPreToolUse.
             ...buildFlowSdkTools(flowDescriptors, chatFlowToolRunStarter(() => session)),
           ],
+          wispAdmitTool ? { admitTool: wispAdmitTool } : undefined,
         ),
       };
     });

@@ -19,7 +19,7 @@ import type { ActiveSession } from './streamingSessionManager';
 import { escapeLike } from '../utils/sql';
 import { getActiveDeviceContext } from './brainDeviceContext';
 import { resolveEntityForCaller, resolveEntityRef, isResolveFailure } from './wisp/entityRefs';
-import type { GrantCeiling } from './wisp/grantAuthority';
+import { ceilingAdmitsTool, type GrantCeiling } from './wisp/grantAuthority';
 import {
   sanitizePageContext,
   sanitizeUntrustedText,
@@ -970,8 +970,11 @@ export async function buildSystemPrompt(
   // pre-expands the page's domains below; `full` ships the legacy whole index.
   // #11004: synchronous; the tool names come from the cached tool template.
   const toolIndexMode = resolveToolIndexMode();
+  // #10430: a Wisp session's index names only the tools its grant ceiling
+  // admits, the same set its MCP server registers (wispSessionToolFilter).
   const { toolNames, staticPrompt } = timePreStreamPhase('systemPrompt.toolIndex', () => {
-    const names = listChatSurfaceToolNames();
+    const all = listChatSurfaceToolNames();
+    const names = ceiling ? all.filter((name) => ceilingAdmitsTool(ceiling, name)) : all;
     return { toolNames: names, staticPrompt: composeStaticSystemPrompt(names, toolIndexMode) };
   });
   parts.push(staticPrompt);
