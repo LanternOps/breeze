@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Sparkles } from 'lucide-react';
 import type { CurrentActivity } from '@breeze/shared';
@@ -30,26 +30,37 @@ export default function WispRailStrip({
   current,
   needsYouCount,
   rail,
+  visibleWhenWide = false,
 }: {
   wisp: NonNullable<WispState>;
   current: CurrentActivity;
   needsYouCount: number;
   rail: ReactNode;
+  /**
+   * Also shown from `lg` up: the shell collapses the rail to the strip there
+   * while the docked AI pane is open. Off, `lg:hidden` keeps the strip out of
+   * a wide layout before the media query has answered. On, a rail hash
+   * already in the URL at mount does not open the drawer (the aside showed it).
+   */
+  visibleWhenWide?: boolean;
 }) {
   const { t } = useTranslation('ai');
   // Closed on the first render (the server never sees the hash, #2421); the
   // effect adopts a rail hash on mount and on every later hash change.
   const [open, setOpen] = useState(false);
+  // Mounted at a wide width (the docked pane just opened), the aside already
+  // showed the rail for the hash: only a later hash change opens the drawer.
+  const adoptHashOnMount = useRef(!visibleWhenWide);
 
   useEffect(() => {
     const onHash = () => { if (railHash()) setOpen(true); };
-    onHash();
+    if (adoptHashOnMount.current) onHash();
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
 
   return (
-    <div className="lg:hidden" data-testid="wisp-rail-strip">
+    <div className={visibleWhenWide ? undefined : 'lg:hidden'} data-testid="wisp-rail-strip">
       <div className="flex items-center gap-2 rounded-lg border bg-card py-1.5 pl-3 pr-1.5">
         <Sparkles className="h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
         <span className="shrink-0 text-sm font-semibold">{t('wisp.title')}</span>

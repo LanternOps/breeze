@@ -689,7 +689,14 @@
       "widening": "Bu yetkinin izin verdiğinden fazlasını yapabilirsiniz; Wisp'in uyum sağlaması için yetkiyi yenileyin.",
       "refreshKeepsTerms": "Bu konuşma önceki yetki koşullarını korur. Yenilenen yetkiyi kullanmak için yeni bir konuşma başlatın.",
       "startNewConversation": "Yeni bir konuşma başlat",
-      "dismissNote": "Kapat"
+      "dismissNote": "Kapat",
+      "menu": {
+        "label": "Diğer işlemler",
+        "openHome": "Wisp ana sayfasını aç",
+        "settings": "Bütçe ve kontroller…",
+        "refresh": "Yetkiyi yenile…",
+        "revoke": "Wisp'i kapat…"
+      }
     },
     "settings": {
       "title": "Bütçe ve kontrol aralığı",
@@ -764,7 +771,14 @@
       "raise": "Bugünün bütçesini artır",
       "atCeiling": "Bugünün bütçesi planınızın sınırında.",
       "seePlans": "Planları gör",
-      "label": "Bugünkü Wisp harcaması"
+      "label": "Bugünkü Wisp harcaması",
+      "allAiMonth": "Bu ay tüm yapay zekâ: {{amount}}",
+      "allAiMessages": "{{formatted}} mesaj",
+      "allAiMessages_one": "{{formatted}} mesaj",
+      "allAiMessages_other": "{{formatted}} mesaj"
+    },
+    "notice": {
+      "creditsExhausted": "Yapay zekâ krediniz bitti."
     },
     "pause": "Wisp'i duraklat",
     "resume": "Devam et",
@@ -881,8 +895,9 @@
       "close": "Kapat"
     },
     "sidebar": {
-      "openHome": "Wisp’te aç",
-      "meetWisp": "Wisp ile tanışın"
+      "meetWisp": "Wisp ile tanışın",
+      "handedOff": "Bu konuşma sayfada açık.",
+      "handedOffAction": "Sayfada devam et"
     },
     "partnerSwitch": {
       "description": "Teknisyenlerin işleri Wisp’e devretmesine izin verin. Kapatmak, çalışan her yetkiyi bir sonraki kontrolde duraklatır ve yenilerini engeller; hiçbir şey silinmez, yeniden açmak duraklatılanları sürdürür.",

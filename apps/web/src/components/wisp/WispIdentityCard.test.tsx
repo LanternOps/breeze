@@ -48,6 +48,20 @@ describe('WispIdentityCard', () => {
     expect(line.querySelector('.bg-emerald-500')).toBeNull();
   });
 
+  it('puts the actions slot at the end of the title row, beside the name and state line', () => {
+    render(<WispIdentityCard wisp={mkWisp()} orgName="Acme" currentActivity={null} actions={<button type="button" data-testid="act">x</button>} />);
+    const title = screen.getByTestId('wisp-identity-title');
+    expect(title).toContainElement(screen.getByRole('heading', { level: 2 }));
+    expect(title).toContainElement(screen.getByTestId('wisp-state-line'));
+    expect(title).toContainElement(screen.getByTestId('act'));
+    expect(title.lastElementChild).toContainElement(screen.getByTestId('act'));
+  });
+
+  it('renders no actions container without actions', () => {
+    render(<WispIdentityCard wisp={mkWisp()} orgName="Acme" currentActivity={null} />);
+    expect(screen.queryByTestId('wisp-identity-actions')).toBeNull();
+  });
+
   it('omits the separator when the scope label is empty', () => {
     render(<WispIdentityCard wisp={mkWisp({ status: 'revoked' })} orgName={null} currentActivity={null} />);
     const line = screen.getByTestId('wisp-state-line');

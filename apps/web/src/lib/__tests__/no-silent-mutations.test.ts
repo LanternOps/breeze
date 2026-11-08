@@ -88,6 +88,8 @@ const TARGET_GLOBS = [
   // Wisp W04b (#9916): grant create/refresh/revoke/settings and thread attachments go through runAction.
   'src/components/ai/WispGrantStepUpModal.tsx',
   'src/components/ai/WispThreadHeader.tsx',
+  // The grant revoke POST and settings PATCHes moved here when the pane header collapsed (#critique).
+  'src/components/ai/useWispGrantControls.tsx',
   'src/components/ai/WispThreadAttachments.tsx',
   // Wisp W05a (#9911): concerns list snooze/dismiss/resolve go through runAction.
   'src/components/ai/WispConcernsPanel.tsx',

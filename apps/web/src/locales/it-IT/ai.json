@@ -689,7 +689,14 @@
       "widening": "Puoi fare più di quanto consente questa autorizzazione: rinnovala perché Wisp stia al passo.",
       "refreshKeepsTerms": "Questa conversazione mantiene i termini precedenti dell’autorizzazione. Avvia una nuova conversazione per usare l’autorizzazione rinnovata.",
       "startNewConversation": "Avvia una nuova conversazione",
-      "dismissNote": "Chiudi"
+      "dismissNote": "Chiudi",
+      "menu": {
+        "label": "Altre azioni",
+        "openHome": "Apri la home di Wisp",
+        "settings": "Budget e controlli…",
+        "refresh": "Rinnova autorizzazione…",
+        "revoke": "Disattiva Wisp…"
+      }
     },
     "settings": {
       "title": "Budget e controllo periodico",
@@ -764,7 +771,14 @@
       "raise": "Aumenta il budget di oggi",
       "atCeiling": "Il budget di oggi è al limite del tuo piano.",
       "seePlans": "Vedi i piani",
-      "label": "Spesa di Wisp oggi"
+      "label": "Spesa di Wisp oggi",
+      "allAiMonth": "Tutta l’IA questo mese: {{amount}}",
+      "allAiMessages": "{{formatted}} messaggi",
+      "allAiMessages_one": "{{formatted}} messaggio",
+      "allAiMessages_other": "{{formatted}} messaggi"
+    },
+    "notice": {
+      "creditsExhausted": "Hai esaurito i crediti IA."
     },
     "pause": "Metti Wisp in pausa",
     "resume": "Riprendi",
@@ -881,8 +895,9 @@
       "close": "Chiudi"
     },
     "sidebar": {
-      "openHome": "Apri in Wisp",
-      "meetWisp": "Scopri Wisp"
+      "meetWisp": "Scopri Wisp",
+      "handedOff": "Questa conversazione è aperta nella pagina.",
+      "handedOffAction": "Continua nella pagina"
     },
     "partnerSwitch": {
       "description": "Consenti ai tecnici di delegare lavoro a Wisp. Disattivandolo, ogni autorizzazione in corso viene messa in pausa al controllo successivo e le nuove vengono bloccate; non viene eliminato nulla e, riattivandolo, ciò che era in pausa riprende.",

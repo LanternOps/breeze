@@ -21,6 +21,8 @@ interface AiChatInputProps {
   focusRequest?: number;
   /** Rendered inside the field, left of the text (the Wisp home's Link an item button). */
   leftSlot?: ReactNode;
+  /** Rendered inside the field, under the text (the docked pane's model chip row). */
+  bottomSlot?: ReactNode;
 }
 
 const MAX_TEXTAREA_PX = 200;
@@ -36,6 +38,7 @@ export default function AiChatInput({
   placeholder,
   focusRequest,
   leftSlot,
+  bottomSlot,
 }: AiChatInputProps) {
   const { t } = useTranslation("ai");
   const [localValue, setLocalValue] = useState("");
@@ -83,53 +86,59 @@ export default function AiChatInput({
 
   return (
     <div className="bg-background p-3">
-      <div className="flex items-end gap-2 rounded-2xl border bg-background px-3 py-2 focus-within:border-primary focus-within:ring-1 focus-within:ring-primary">
-        {leftSlot}
-        <textarea
-          ref={textareaRef}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={handleKeyDown}
-          onInput={handleInput}
-          placeholder={
-            isStreaming
-              ? t("aiChatInput.waiting")
-              : (placeholder ?? t("aiChatInput.placeholder"))
-          }
-          disabled={disabled || isStreaming}
-          rows={1}
-          data-testid="ai-chat-input"
-          className="max-h-[200px] min-h-8 flex-1 resize-none border-0 bg-transparent px-1 py-1.5 text-sm text-foreground placeholder-muted-foreground focus:outline-hidden focus:ring-0 disabled:opacity-50"
-        />
-        {isStreaming ? (
-          <button
-            type="button"
-            onClick={onInterrupt}
-            disabled={isInterrupting || !onInterrupt}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-destructive text-destructive-foreground transition-colors hover:bg-destructive/90 disabled:opacity-50"
-            title={t("aiChatInput.stopResponse")}
-            aria-label={t("aiChatInput.stopResponse")}
-            data-testid="ai-chat-stop"
-          >
-            {isInterrupting ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Square className="h-3.5 w-3.5" />
-            )}
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={!value.trim() || disabled}
-            data-testid="ai-chat-send"
-            aria-label={t("aiChatInput.send")}
-            title={t("aiChatInput.send")}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
-          >
-            <ArrowUp className="h-4 w-4" />
-          </button>
-        )}
+      <div
+        data-testid="ai-chat-composer-box"
+        className="rounded-2xl border bg-background px-3 py-2 focus-within:border-primary focus-within:ring-1 focus-within:ring-primary"
+      >
+        <div className="flex items-end gap-2">
+          {leftSlot}
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onInput={handleInput}
+            placeholder={
+              isStreaming
+                ? t("aiChatInput.waiting")
+                : (placeholder ?? t("aiChatInput.placeholder"))
+            }
+            disabled={disabled || isStreaming}
+            rows={1}
+            data-testid="ai-chat-input"
+            className="max-h-[200px] min-h-8 flex-1 resize-none border-0 bg-transparent px-1 py-1.5 text-sm text-foreground placeholder-muted-foreground focus:outline-hidden focus:ring-0 disabled:opacity-50"
+          />
+          {isStreaming ? (
+            <button
+              type="button"
+              onClick={onInterrupt}
+              disabled={isInterrupting || !onInterrupt}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-destructive text-destructive-foreground transition-colors hover:bg-destructive/90 disabled:opacity-50"
+              title={t("aiChatInput.stopResponse")}
+              aria-label={t("aiChatInput.stopResponse")}
+              data-testid="ai-chat-stop"
+            >
+              {isInterrupting ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Square className="h-3.5 w-3.5" />
+              )}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={!value.trim() || disabled}
+              data-testid="ai-chat-send"
+              aria-label={t("aiChatInput.send")}
+              title={t("aiChatInput.send")}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+            >
+              <ArrowUp className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+        {bottomSlot}
       </div>
     </div>
   );

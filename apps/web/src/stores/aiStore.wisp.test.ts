@@ -469,3 +469,92 @@ describe('isActiveGrant (W05 #10136)', () => {
     expect(isActiveGrant(null)).toBe(false);
   });
 });
+
+// Review fixes for the pane header collapse: a refused send's code must not
+// outlive its banner, and the /wisp hand-off must hold for every way in.
+describe('aiStore — errorCode follows error across a session change', () => {
+  const refuseForCredits = async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/ai/sessions/sess-a/messages' && init?.method === 'POST') return response({ error: 'Out of AI credits', code: 'credits_exhausted' }, 402);
+      if (url === '/ai/sessions/sess-b') return response({ session: { id: 'sess-b', type: 'general', status: 'active', orgId: null, wispGrantId: 'grant-1' }, messages: [] });
+      return response({ data: [] });
+    });
+    useAiStore.setState({
+      sessionId: 'sess-a', hydratedSessionId: 'sess-a', messages: [], isLoading: false, isStreaming: false,
+      error: null, errorCode: null, errorStatus: null, pageContext: null, wisp: wisp(),
+    });
+    await useAiStore.getState().sendMessage('hello');
+    expect(useAiStore.getState()).toMatchObject({ error: 'Out of AI credits', errorCode: 'credits_exhausted' });
+  };
+
+  beforeEach(() => vi.clearAllMocks());
+
+  it('switchSession after a refused send clears the code with the banner', async () => {
+    await refuseForCredits();
+    await useAiStore.getState().switchSession('sess-b');
+    expect(useAiStore.getState()).toMatchObject({ sessionId: 'sess-b', error: null, errorCode: null, errorStatus: null });
+  });
+
+  it('loadSession after a refused send clears the code with the banner', async () => {
+    await refuseForCredits();
+    await useAiStore.getState().loadSession('sess-b');
+    expect(useAiStore.getState()).toMatchObject({ sessionId: 'sess-b', error: null, errorCode: null, errorStatus: null });
+  });
+
+  it('a failed loadSession after a refused send shows its own error, not the old code', async () => {
+    await refuseForCredits();
+    fetchMock.mockImplementation(async () => response({ error: 'boom' }, 500));
+    await useAiStore.getState().loadSession('sess-b');
+    expect(useAiStore.getState()).toMatchObject({ error: 'Failed to load session', errorCode: null });
+  });
+});
+
+describe('aiStore — the page composer holds the chat on /wisp', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useAiStore.setState({
+      isOpen: false, showHistory: false, wisp: wisp(), sessionId: 'sess-w', wispPageThreadId: null, wispPageComposerFocusRequest: 0,
+    });
+  });
+
+  it('open() (the command palette) focuses the page composer and keeps the pane closed', () => {
+    useAiStore.setState({ wispPageThreadId: 'thread-1' });
+    useAiStore.getState().open();
+    expect(useAiStore.getState().isOpen).toBe(false);
+    expect(useAiStore.getState().wispPageComposerFocusRequest).toBe(1);
+  });
+
+  it('open() still opens the pane off the Wisp home, or for another conversation', () => {
+    useAiStore.getState().open();
+    expect(useAiStore.getState().isOpen).toBe(true);
+    useAiStore.setState({ isOpen: false, wisp: wisp({ grantId: 'grant-2', threadId: 'thread-2' }), wispPageThreadId: 'thread-1' });
+    useAiStore.getState().open();
+    expect(useAiStore.getState().isOpen).toBe(true);
+    expect(useAiStore.getState().wispPageComposerFocusRequest).toBe(0);
+  });
+
+  it('the page claiming the thread an open pane shows hands off: the pane closes and the page composer takes focus', () => {
+    useAiStore.setState({ isOpen: true });
+    useAiStore.getState().setWispPageThreadId('thread-1');
+    expect(useAiStore.getState()).toMatchObject({ wispPageThreadId: 'thread-1', isOpen: false, wispPageComposerFocusRequest: 1 });
+  });
+
+  it('a claim with the pane closed asks for no focus', () => {
+    useAiStore.getState().setWispPageThreadId('thread-1');
+    expect(useAiStore.getState()).toMatchObject({ wispPageThreadId: 'thread-1', isOpen: false, wispPageComposerFocusRequest: 0 });
+  });
+
+  it('a claim leaves the pane open when it shows another conversation, or the history list', () => {
+    useAiStore.setState({ isOpen: true, wisp: wisp({ grantId: 'grant-2', threadId: 'thread-2' }) });
+    useAiStore.getState().setWispPageThreadId('thread-1');
+    expect(useAiStore.getState().isOpen).toBe(true);
+    useAiStore.setState({ wisp: wisp(), showHistory: true, wispPageThreadId: null });
+    useAiStore.getState().setWispPageThreadId('thread-1');
+    expect(useAiStore.getState().isOpen).toBe(true);
+    // Releasing a claim never touches the pane.
+    useAiStore.setState({ showHistory: false });
+    useAiStore.getState().setWispPageThreadId(null);
+    expect(useAiStore.getState().isOpen).toBe(true);
+    expect(useAiStore.getState().wispPageComposerFocusRequest).toBe(0);
+  });
+});

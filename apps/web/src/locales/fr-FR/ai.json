@@ -689,7 +689,14 @@
       "widening": "Vous pouvez faire plus que ce que cette autorisation permet ; renouvelez-la pour que Wisp suive.",
       "refreshKeepsTerms": "Cette conversation conserve les conditions précédentes de l’autorisation. Démarrez une nouvelle conversation pour utiliser l’autorisation renouvelée.",
       "startNewConversation": "Démarrer une nouvelle conversation",
-      "dismissNote": "Fermer"
+      "dismissNote": "Fermer",
+      "menu": {
+        "label": "Plus d’actions",
+        "openHome": "Ouvrir l’accueil de Wisp",
+        "settings": "Budget et points de suivi…",
+        "refresh": "Renouveler l’autorisation…",
+        "revoke": "Désactiver Wisp…"
+      }
     },
     "settings": {
       "title": "Budget et point de suivi",
@@ -764,7 +771,14 @@
       "raise": "Augmenter le budget du jour",
       "atCeiling": "Le budget du jour a atteint la limite de votre offre.",
       "seePlans": "Voir les offres",
-      "label": "Dépenses de Wisp aujourd’hui"
+      "label": "Dépenses de Wisp aujourd’hui",
+      "allAiMonth": "Toute l’IA ce mois-ci : {{amount}}",
+      "allAiMessages": "{{formatted}} messages",
+      "allAiMessages_one": "{{formatted}} message",
+      "allAiMessages_other": "{{formatted}} messages"
+    },
+    "notice": {
+      "creditsExhausted": "Vous n’avez plus de crédits d’IA."
     },
     "pause": "Mettre Wisp en pause",
     "resume": "Reprendre",
@@ -881,8 +895,9 @@
       "close": "Fermer"
     },
     "sidebar": {
-      "openHome": "Ouvrir dans Wisp",
-      "meetWisp": "Découvrir Wisp"
+      "meetWisp": "Découvrir Wisp",
+      "handedOff": "Cette conversation est ouverte sur la page.",
+      "handedOffAction": "Continuer sur la page"
     },
     "partnerSwitch": {
       "description": "Permettre aux techniciens de déléguer du travail à Wisp. La désactivation met en pause chaque autorisation en cours à sa prochaine vérification et bloque les nouvelles ; rien n’est supprimé, et la réactivation reprend ce qui avait été mis en pause.",

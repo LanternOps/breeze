@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import type { DragEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '@/stores/auth';
@@ -6,58 +6,33 @@ import type { WispState } from '@/stores/aiStore';
 import { ActionError, runAction } from '@/lib/runAction';
 import { showToast } from '@/components/shared/Toast';
 import { formatBytes, formatSafeDate } from '@/lib/utils';
+import { wispAttachmentsNeedFocus, type WispThreadAttachmentList } from './useWispThreadAttachmentList';
 
 const MAX_BYTES = 5 * 1024 * 1024;
 const ACCEPT = '.txt,.csv,.tsv,.eml,.json,text/plain,text/csv,message/rfc822,application/json';
 
-type ThreadAttachment = { id: string; label: string; bytes: number; expiresAt: string };
-
-function parseItems(body: unknown): ThreadAttachment[] {
-  const data = (body as { data?: unknown } | null)?.data;
-  if (!Array.isArray(data)) return [];
-  return data.filter((x): x is ThreadAttachment => {
-    const r = x as Partial<ThreadAttachment> | null;
-    return !!r && typeof r.id === 'string' && typeof r.label === 'string'
-      && typeof r.bytes === 'number' && typeof r.expiresAt === 'string';
-  });
-}
-
-export default function WispThreadAttachments({ wisp }: { wisp: NonNullable<WispState> }) {
+export default function WispThreadAttachments({
+  wisp,
+  list,
+  showTitle = true,
+  reasonId,
+}: {
+  wisp: NonNullable<WispState>;
+  /** The thread's list, loaded by the parent (the composer paperclip counts it). */
+  list: WispThreadAttachmentList;
+  /** False inside a popover that already carries the title as its label. */
+  showTitle?: boolean;
+  /** Id for the focus-required line, so the popover can name it as its description. */
+  reasonId?: string;
+}) {
   const { t } = useTranslation('ai');
-  const [items, setItems] = useState<ThreadAttachment[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [loadFailed, setLoadFailed] = useState(false);
+  const { items, loaded, loadFailed, reload: load } = list;
   const [busy, setBusy] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [text, setText] = useState('');
   const [label, setLabel] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
-  const disabled = wisp.scopeOrgId === null && wisp.focusOrgId === null;
-
-  // Only the newest load may commit: a slow response for a previous thread
-  // (or one that lands after unmount) must not overwrite the current list.
-  const loadToken = useRef(0);
-  const load = useCallback(async () => {
-    const token = ++loadToken.current;
-    try {
-      const res = await fetchWithAuth(`/wisp/thread/${wisp.threadId}/attachments`);
-      if (!res.ok) throw new Error(`status ${res.status}`);
-      const next = parseItems(await res.json());
-      if (token !== loadToken.current) return;
-      setItems(next);
-      setLoadFailed(false);
-    } catch {
-      if (token === loadToken.current) setLoadFailed(true);
-    } finally {
-      if (token === loadToken.current) setLoaded(true);
-    }
-  }, [wisp.threadId]);
-
-  useEffect(() => {
-    setLoaded(false);
-    void load();
-    return () => { loadToken.current++; };
-  }, [load]);
+  const disabled = wispAttachmentsNeedFocus(wisp);
 
   const post = async (body: FormData | string, onDone?: () => void) => {
     setBusy(true);
@@ -105,7 +80,7 @@ export default function WispThreadAttachments({ wisp }: { wisp: NonNullable<Wisp
 
   return (
     <div className="space-y-2 text-xs" data-testid="wisp-attachments">
-      <div className="font-medium">{t('wisp.attachments.title')}</div>
+      {showTitle && <div className="font-medium">{t('wisp.attachments.title')}</div>}
       {loadFailed ? (
         <p className="text-destructive" data-testid="wisp-attachments-load-error">{t('wisp.attachments.loadFailed')}</p>
       ) : loaded && items.length === 0 ? (
@@ -122,7 +97,7 @@ export default function WispThreadAttachments({ wisp }: { wisp: NonNullable<Wisp
         </ul>
       )}
       {disabled && (
-        <p className="text-muted-foreground" data-testid="wisp-attachments-focus-required">{t('wisp.attachments.focusRequired')}</p>
+        <p id={reasonId} className="text-muted-foreground" data-testid="wisp-attachments-focus-required">{t('wisp.attachments.focusRequired')}</p>
       )}
       <div
         data-testid="wisp-attachment-drop"
