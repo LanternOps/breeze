@@ -487,6 +487,7 @@
     "rebootDone": "Completed",
     "rebootNotRequired": "—",
     "skipReasons": {
+      "no_approved_patches": "Skipped: none of the pending updates on this device are approved.",
       "ring_deleted": "Cancelled before dispatch: the update ring was deleted.",
       "ring_disabled": "Cancelled before dispatch: the update ring was disabled.",
       "ring_unavailable": "Skipped: the update ring was deleted or disabled before this device was dispatched.",
