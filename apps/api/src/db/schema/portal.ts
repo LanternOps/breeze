@@ -176,7 +176,7 @@ export const portalUsers = pgTable('portal_users', {
   // session never grants it (spec §6 invariant 9).
   //
   // The DB has NO column default. The BEFORE INSERT trigger
-  // `portal_users_browser_access_fill` (2027-01-22-210500-portal-account-
+  // `portal_users_browser_access_fill` (2027-01-22-211700-portal-account-
   // foundations.sql) derives it from auth_method when an insert omits it, so an
   // older API binary inserting during a rolling deploy cannot grant browser
   // access to an add-in row. `.default` here only makes the field optional in
@@ -190,7 +190,7 @@ export const portalUsers = pgTable('portal_users', {
 }, (table) => ({
   orgIdIdx: index('portal_users_org_id_idx').on(table.orgId),
   // `portal_users_id_org_uq` UNIQUE (id, org_id) — the composite-FK target for
-  // portal_user_identities — is SQL-only (2027-01-22-210500-portal-account-
+  // portal_user_identities — is SQL-only (2027-01-22-211700-portal-account-
   // foundations.sql), the same convention as `tickets_id_org_uq`.
 }));
 

@@ -272,7 +272,7 @@ describe('reconcilePortalUserIdentities (drift report, read-only)', () => {
     await seedEntraLogin(fx.orgId);
     await seedEntraLogin(await otherOrg());
     // Replaying the (idempotent) migration runs the release-A backfill over the rows above.
-    await replayMigration('2027-01-22-210500-portal-account-foundations.sql');
+    await replayMigration('2027-01-22-211700-portal-account-foundations.sql');
 
     const report = await reconcilePortalUserIdentities();
     expect(report.counts).toEqual({ missingIdentity: 0, orphanIdentity: 0, mismatched: 0, halfPopulated: 0 });

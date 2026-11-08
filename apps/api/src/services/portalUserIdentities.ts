@@ -5,7 +5,7 @@
  * columns.
  *
  * Release A (this wave): the table is backfilled from `portal_users.entra_*`
- * (2027-01-22-210500-portal-account-foundations.sql) and the AI for Office
+ * (2027-01-22-211700-portal-account-foundations.sql) and the AI for Office
  * exchange dual-writes it (services/clientAiExchange.ts). **Nothing reads it
  * for authorization yet** — reads stay on `portal_users.entra_tenant_id /
  * entra_oid` until identities release B (W3), which switches reads and turns
