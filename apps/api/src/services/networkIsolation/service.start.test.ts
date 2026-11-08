@@ -126,7 +126,17 @@ describe('startNetworkIsolation', () => {
   it('refuses invalid control-plane and unavailable relay configuration', async () => {
     expect(await startNetworkIsolation(auth, deviceId, { ...input, remoteRelay: true }, { requestedByKind: 'user' })).toEqual({ error: 'relay_unavailable' });
     h.device.agentServerUrl = 'bad';
-    expect(await startNetworkIsolation(auth, deviceId, input, { requestedByKind: 'user' })).toEqual({ error: 'invalid_allowlist' });
+    expect(await startNetworkIsolation(auth, deviceId, input, { requestedByKind: 'user' })).toEqual({ error: 'invalid_allowlist', allowlistReason: 'server_url_invalid' });
+  });
+  it('says why the allowlist is invalid when no server URL is known', async () => {
+    const saved = process.env.AGENT_SERVER_URL;
+    delete process.env.AGENT_SERVER_URL;
+    try {
+      h.device.agentServerUrl = null;
+      expect(await startNetworkIsolation(auth, deviceId, input, { requestedByKind: 'user' })).toEqual({ error: 'invalid_allowlist', allowlistReason: 'server_url_missing' });
+    } finally {
+      if (saved !== undefined) process.env.AGENT_SERVER_URL = saved;
+    }
   });
   it('conceals another organization device', async () => {
     h.device.orgId = 'other';

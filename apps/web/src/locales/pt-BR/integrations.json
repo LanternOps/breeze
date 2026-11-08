@@ -1478,7 +1478,8 @@
     "status": {
       "connected": "Conectado",
       "error": "Erro",
-      "reauth_required": "Nova autenticação necessária"
+      "reauth_required": "Nova autenticação necessária",
+      "inactive": "Inativa"
     },
     "syncStatus": {
       "running": "Em execução",

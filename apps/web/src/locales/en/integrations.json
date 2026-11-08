@@ -1457,7 +1457,8 @@
     "status": {
       "connected": "Connected",
       "error": "Error",
-      "reauth_required": "Re-authentication required"
+      "reauth_required": "Re-authentication required",
+      "inactive": "Inactive"
     },
     "syncStatus": {
       "running": "Running",

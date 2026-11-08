@@ -29,8 +29,17 @@ export type IsolationRefusalCode = IsolationStartRefusal
   | 'device_not_found' | 'isolation_not_found' | 'relay_unavailable' | 'invalid_allowlist'
   | 'isolation_conflict' | 'isolation_secret_unavailable' | 'approval_mismatch'
   | 'device_offline' | 'device_decommissioned' | 'device_pending_assignment' | 'backup_helper_update_required';
-class IsolationRefusal extends Error { constructor(readonly code: IsolationRefusalCode, readonly networkIsolationUnsupportedReason?: string) { super(code); } }
-function refuse(code: IsolationRefusalCode, reason?: string): never { throw new IsolationRefusal(code, reason); }
+/** Why the management-plane allowlist could not be built. Fixed vocabulary: never echoes a configured value. */
+export type AllowlistReason = 'server_url_missing' | 'server_url_invalid' | 'backup_url_invalid' | 'relay_config_invalid' | 'policy_invalid';
+export function allowlistReasonOf(error: IsolationAllowlistError, serverUrl: string): AllowlistReason {
+  if (!serverUrl.trim()) return 'server_url_missing';
+  if (error.source === 'serverUrl') return 'server_url_invalid';
+  if (error.source === 'AGENT_BACKUP_SERVER_URL') return 'backup_url_invalid';
+  if (error.source.startsWith('TURN_')) return 'relay_config_invalid';
+  return 'policy_invalid';
+}
+class IsolationRefusal extends Error { constructor(readonly code: IsolationRefusalCode, readonly networkIsolationUnsupportedReason?: string, readonly allowlistReason?: AllowlistReason) { super(code); } }
+function refuse(code: IsolationRefusalCode, reason?: string, allowlistReason?: AllowlistReason): never { throw new IsolationRefusal(code, reason, allowlistReason); }
 function secretUnavailable(error: unknown, deviceId: string, isolationId?: string): never {
   const fault = error instanceof Error ? error : new Error('Isolation secret unavailable');
   console.error('[isolation] secret unavailable', { deviceId, isolationId });
@@ -39,7 +48,7 @@ function secretUnavailable(error: unknown, deviceId: string, isolationId?: strin
 }
 
 /** A refusal rolls back the whole savepoint, including incident/action/command inserts. */
-async function inScope<T>(auth: AuthContext, deviceId: string, work: (tx: EpisodeTx) => Promise<T>): Promise<T | { error: IsolationRefusalCode; networkIsolationUnsupportedReason?: string }> {
+async function inScope<T>(auth: AuthContext, deviceId: string, work: (tx: EpisodeTx) => Promise<T>): Promise<T | { error: IsolationRefusalCode; networkIsolationUnsupportedReason?: string; allowlistReason?: AllowlistReason }> {
   try {
     return await withDbAccessContext(dbAccessContextFromAuth(auth), () => withDbTransaction(() => work(db as unknown as EpisodeTx)));
   } catch (error) {
@@ -47,7 +56,7 @@ async function inScope<T>(auth: AuthContext, deviceId: string, work: (tx: Episod
       // Run after the failed savepoint has rolled back: a refusal audit must survive it.
       console.info('[isolation] refused', { deviceId, code: error.code });
       writeRouteAudit({ ...requestLikeFromSnapshot({}), get: () => auth }, { orgId: auth.orgId ?? undefined, action: 'device.isolation.refused', resourceType: 'device', resourceId: deviceId, details: { code: error.code } });
-      return { error: error.code, ...(error.networkIsolationUnsupportedReason ? { networkIsolationUnsupportedReason: error.networkIsolationUnsupportedReason } : {}) };
+      return { error: error.code, ...(error.networkIsolationUnsupportedReason ? { networkIsolationUnsupportedReason: error.networkIsolationUnsupportedReason } : {}), ...(error.allowlistReason ? { allowlistReason: error.allowlistReason } : {}) };
     }
     throw error;
   }
@@ -102,8 +111,9 @@ export async function startNetworkIsolation(auth: AuthContext, deviceId: string,
       captureException(error, undefined, { phase: 'isolation_policy_unavailable', deviceId: device.id });
     }
     let allow;
-    try { allow = buildIsolationAllowlist({ serverUrl: device.agentServerUrl ?? process.env.AGENT_SERVER_URL ?? '', remoteRelay, policyExtras: policy.extras }); }
-    catch (error) { if (error instanceof IsolationAllowlistError) return refuse('invalid_allowlist'); throw error; }
+    const serverUrl = device.agentServerUrl ?? process.env.AGENT_SERVER_URL ?? '';
+    try { allow = buildIsolationAllowlist({ serverUrl, remoteRelay, policyExtras: policy.extras }); }
+    catch (error) { if (error instanceof IsolationAllowlistError) return refuse('invalid_allowlist', undefined, allowlistReasonOf(error, serverUrl)); throw error; }
     const now = new Date();
     let incidentId = input.incidentId;
     if (input.createIncident) {
