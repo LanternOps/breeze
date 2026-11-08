@@ -10,7 +10,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
  * permission authority version) — postgres-js has no acquire timeout, so a
  * pool full of same-org work queued on the lock wedges the holder.
  */
-const trace = vi.hoisted(() => ({ depth: 0, systemDepth: 0, watchContext: false, violations: [] as string[] }));
+const trace = vi.hoisted(() => ({ depth: 0, systemDepth: 0, watchContext: false, watchCommandLocks: false, versionReads: 0, violations: [] as string[] }));
 
 vi.mock('../../db', async () => {
   const actual = await vi.importActual<typeof import('../../db')>('../../db');
@@ -36,8 +36,18 @@ vi.mock('../../services/permissions', async () => {
     ...actual,
     getPermissionAuthorityVersion: async (userId: string) => {
       if (trace.depth > 0) trace.violations.push('getPermissionAuthorityVersion (Redis) under the claim transaction');
-      const { getCurrentDbAccessContext } = await vi.importActual<typeof import('../../db')>('../../db');
+      const { db: liveDb, getCurrentDbAccessContext } = await vi.importActual<typeof import('../../db')>('../../db');
       if (trace.watchContext && getCurrentDbAccessContext()) trace.violations.push('getPermissionAuthorityVersion (Redis) inside the sink transaction');
+      if (trace.watchCommandLocks && getCurrentDbAccessContext()) {
+        // #7268: ask Postgres, on the claim's own connection, whether this
+        // transaction already holds a row-level lock mode on device_commands
+        // (FOR UPDATE → RowShareLock, UPDATE → RowExclusiveLock).
+        trace.versionReads++;
+        const { sql: rawSql } = await vi.importActual<typeof import('drizzle-orm')>('drizzle-orm');
+        const [held] = await liveDb.execute<{ n: number }>(rawSql`SELECT count(*)::int AS n FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
+          WHERE l.pid = pg_backend_pid() AND c.relname = 'device_commands' AND l.mode IN ('RowShareLock', 'RowExclusiveLock')`);
+        if (held!.n > 0) trace.violations.push('getPermissionAuthorityVersion (Redis) while holding device_commands row locks');
+      }
       return actual.getPermissionAuthorityVersion(userId);
     },
   };
@@ -45,6 +55,8 @@ vi.mock('../../services/permissions', async () => {
 
 import { sql } from 'drizzle-orm';
 import { closeDb, db } from '../../db';
+import { claimPendingCommandForDelivery, claimPendingCommandsForDevice } from '../../services/commandDispatch';
+import { deviceAgentId } from './db-utils';
 import { dispatchTopologyDiagnosticRun } from '../../services/topology/diagnosticDispatch';
 import { dispatchDueTopologyPolicies } from '../../services/topology/monitoringScheduler';
 import { ingestTopologyInterfacePollResult } from '../../services/topology/snmpInterfaceMetrics';
@@ -53,7 +65,9 @@ import metricFixture from '../../../../../packages/shared/src/testing/topology-i
 import { seedScheduledMonitoringFixture, seedTopologyMonitoringFixture, system } from '../helpers/topologyMonitoring';
 
 afterAll(() => closeDb());
-beforeEach(() => { trace.violations.length = 0; trace.depth = 0; trace.systemDepth = 0; trace.watchContext = false; });
+beforeEach(() => {
+  trace.violations.length = 0; trace.depth = 0; trace.systemDepth = 0; trace.watchContext = false; trace.watchCommandLocks = false; trace.versionReads = 0;
+});
 
 describe('policy scheduler claim window (T4)', () => {
   it('schedules a run without a nested pooled connection or a Redis read under the policy lock', async () => {
@@ -123,4 +137,37 @@ describe('policy scheduler claim window (T4)', () => {
     expect(receipt).toMatchObject({ accepted: true, inserted: 1 });
     expect(trace.violations).toEqual([]);
   });
+});
+
+/**
+ * #7268: the poll's delivery revalidation needs the arm actor's CURRENT
+ * permission version (Redis). Both claim legs must read it before they lock
+ * `device_commands` rows, and still deliver an intact poll with it.
+ */
+describe('command claim window (#7268)', () => {
+  for (const transport of ['http', 'websocket'] as const) {
+    it(`delivers an arm poll over ${transport} without a Redis read while holding device_commands row locks`, async () => {
+      const f = await seedTopologyMonitoringFixture();
+      await f.inOrg(() => armTopologyTelemetry(f.ctx, {
+        targetNodeId: f.switchNodeId, collectorDeviceId: f.deviceId, credentialProfileId: f.profileId, interfaceIds: [f.ifaceA], intervalSeconds: 60, ttlDays: 30,
+      }));
+      expect(await dispatchDueTopologyTelemetryArms({ now: new Date(Date.now() + 1000) })).toMatchObject({ dispatched: 1 });
+      const [command] = await system(() => db.execute<{ id: string }>(
+        sql`SELECT id FROM device_commands WHERE device_id = ${f.deviceId}::uuid AND type = 'topology_interface_poll' AND status = 'pending'`));
+      expect(command).toBeTruthy();
+      const agentId = await deviceAgentId(f.deviceId);
+
+      trace.violations.length = 0;
+      trace.watchCommandLocks = true;
+      const delivered = transport === 'http'
+        ? (await system(() => claimPendingCommandsForDevice({ deviceId: f.deviceId, agentId, installIncarnation: 1 }, 10, 'agent'))).map((row) => row.id)
+        : await claimPendingCommandForDelivery(command!.id).then((outcome) => (outcome.status === 'claimed' ? [outcome.id] : []));
+      trace.watchCommandLocks = false;
+
+      expect(delivered).toContain(command!.id);
+      // The probe ran: the version WAS read inside the claim's DB context, just not under the row locks.
+      expect(trace.versionReads).toBeGreaterThan(0);
+      expect(trace.violations).toEqual([]);
+    });
+  }
 });
