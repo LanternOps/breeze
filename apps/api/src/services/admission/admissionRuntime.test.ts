@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { metricsRegistry } from '../metricsRegistry';
-import { ADMISSION_DEFAULTS, type AdmissionConfig } from './admissionConfig';
+import { ADMISSION_DEFAULTS, ADMISSION_OFFLINE_WRITES_MAX_IN_FLIGHT, type AdmissionConfig } from './admissionConfig';
 import { createSignalSampler, type AdmissionSignals } from './admissionSignals';
-import { createPoolAdmission } from '../../db/poolAdmission';
+import { createPoolAdmission, nestedReserveFor, type PoolAdmission } from '../../db/poolAdmission';
 import {
   AdmissionRuntime,
   __setAdmissionRuntimeForTests,
-  shouldDeferOfflineTransition,
+  beginOfflineTransition,
 } from './admissionRuntime';
 import { classifyAgentRequest } from './agentRouteClasses';
 
@@ -158,16 +158,18 @@ describe('AdmissionRuntime modes', () => {
       expect(rt.decide(req).action).toBe('admit');
     }
     expect(await count('breeze_admission_decisions_total', { outcome: 'would_shed' })).toBeGreaterThan(before);
-    expect(rt.shouldDeferOfflineTransition()).toBe(false);
+    expect(rt.beginOfflineTransition('close')).toBeTypeOf('function');
   });
 
-  it('shouldDeferOfflineTransition is false in off, and in observe at level 1+', () => {
+  it('off and observe never defer an offline write: not at level 1+, not past the in-flight cap', () => {
     for (const mode of ['off', 'observe'] as const) {
       const { rt, raiseTo } = make({ mode });
+      const held = Array.from({ length: ADMISSION_OFFLINE_WRITES_MAX_IN_FLIGHT + 5 }, () => rt.beginOfflineTransition('close'));
+      expect(held.every((release) => typeof release === 'function'), `${mode} level 0 past the cap`).toBe(true);
       raiseTo(1);
-      expect(rt.shouldDeferOfflineTransition(), `${mode} level 1`).toBe(false);
+      expect(rt.beginOfflineTransition('close'), `${mode} level 1`).toBeTypeOf('function');
       raiseTo(3);
-      expect(rt.shouldDeferOfflineTransition(), `${mode} level 3`).toBe(false);
+      expect(rt.beginOfflineTransition('error'), `${mode} level 3`).toBeTypeOf('function');
     }
   });
 
@@ -188,14 +190,98 @@ describe('AdmissionRuntime tick and process helpers', () => {
     expect(lines[0]).toMatch(/^\[admission\] level 0 -> 2 \(trigger=lag, mode=enforce, lag=300ms/);
   });
 
-  it('defers offline transitions only when enforcing at level 1+', () => {
+  it('defers every offline write when enforcing at level 1+, and none without a runtime', async () => {
     const { rt, raiseTo } = make();
     __setAdmissionRuntimeForTests(rt);
-    expect(shouldDeferOfflineTransition()).toBe(false);
+    const release = beginOfflineTransition('close');
+    expect(release).toBeTypeOf('function');
+    release!();
     raiseTo(1);
-    expect(shouldDeferOfflineTransition()).toBe(true);
+    const before = await count('breeze_admission_offline_deferred_total', { event: 'error', reason: 'level' });
+    expect(beginOfflineTransition('error')).toBeNull();
+    expect(await count('breeze_admission_offline_deferred_total', { event: 'error', reason: 'level' })).toBe(before + 1);
     __setAdmissionRuntimeForTests(null);
-    expect(shouldDeferOfflineTransition()).toBe(false);
+    expect(beginOfflineTransition('close')).toBeTypeOf('function');
+  });
+});
+
+describe('AdmissionRuntime immediate offline writes on a mass close (#9520)', () => {
+  it('admits at most ADMISSION_OFFLINE_WRITES_MAX_IN_FLIGHT at once in enforce; a release frees one slot, once', async () => {
+    const { rt } = make();
+    const before = await count('breeze_admission_offline_deferred_total', { event: 'close', reason: 'in_flight' });
+    const held = Array.from({ length: ADMISSION_OFFLINE_WRITES_MAX_IN_FLIGHT }, () => rt.beginOfflineTransition('close'));
+    expect(held.every((release) => typeof release === 'function')).toBe(true);
+    expect(rt.beginOfflineTransition('close')).toBeNull();
+    expect(await count('breeze_admission_offline_deferred_total', { event: 'close', reason: 'in_flight' })).toBe(before + 1);
+    held[0]!();
+    held[0]!();                                                        // idempotent: frees one slot, not two
+    const next = rt.beginOfflineTransition('error');
+    expect(next).toBeTypeOf('function');
+    expect(rt.beginOfflineTransition('close')).toBeNull();
+    for (const release of [...held.slice(1), next]) release!();
+    expect(rt.beginOfflineTransition('close')).toBeTypeOf('function');
+  });
+
+  /**
+   * The issue's lab shape: 400 agent sockets close in the same instant against the default 30-permit pool,
+   * enforce mode, default thresholds, level 0. Real pool gate + real signal sampler. Each admitted close does what
+   * agentWs.onClose does: open the agent's context, then transitionDeviceOffline's system context nested inside it.
+   */
+  function drainHarness() {
+    let nowMs = 0;
+    const gate: PoolAdmission = createPoolAdmission({ permits: 30, nestedReserve: nestedReserveFor(30), now: () => nowMs });
+    const sampler = createSignalSampler({
+      readSamplesSince: () => [],
+      readLatest: () => ({ monitored: true, coversWindow: true, sampledMaxLagMs: 0, inFlightLagMs: 0, worstLagMs: 0, sampleCount: 1 }),
+      readPool: () => {
+        const stats = gate.waitStats();
+        const snapshot = gate.snapshot();
+        return {
+          available: true, inUse: snapshot.inUse, waiting: snapshot.waiting, effectivePermits: snapshot.effectivePermits,
+          oldestWaitMs: stats.oldestWaitMs, grantWaitP95Ms: stats.grantWaitP95Ms, dbTimeoutsTotal: 0,
+        };
+      },
+      now: () => nowMs,
+    });
+    const lines: string[] = [];
+    const rt = new AdmissionRuntime({ ...ADMISSION_DEFAULTS, mode: 'enforce' }, { sampler, now: () => nowMs, log: (l) => lines.push(l) });
+    rt.tick();                                                         // seeds the sampler
+    const closeSocket = (): boolean => {
+      const release = rt.beginOfflineTransition('close');
+      if (!release) return false;                                      // left to the offline detector
+      void gate.acquire('agentWs.onClose.markOffline')
+        .then(() => gate.acquire('transitionDeviceOffline', { nested: true }));  // held: worst case, nothing completes
+      return true;
+    };
+    const tick = () => { nowMs += 1_000; return rt.tick().level; };
+    return { rt, gate, lines, closeSocket, tick };
+  }
+
+  it('a drain of 400 sockets at level 0 leaves the level at 0 and defers all but the cap', async () => {
+    const { gate, lines, closeSocket, tick } = drainHarness();
+    const before = await count('breeze_admission_offline_deferred_total', { event: 'close', reason: 'in_flight' });
+    const written = Array.from({ length: 400 }, closeSocket).filter(Boolean).length;
+    await new Promise((resolve) => setImmediate(resolve));             // let the nested acquires queue
+    const levels = Array.from({ length: 10 }, tick);
+    expect(lines).toEqual([]);                                         // no "[admission] level 0 -> 3 (trigger=emergency"
+    expect(levels).toEqual(Array(10).fill(0));
+    expect(written).toBe(ADMISSION_OFFLINE_WRITES_MAX_IN_FLIGHT);
+    expect(await count('breeze_admission_offline_deferred_total', { event: 'close', reason: 'in_flight' }))
+      .toBe(before + 400 - ADMISSION_OFFLINE_WRITES_MAX_IN_FLIGHT);
+    expect(gate.snapshot()).toMatchObject({ inUse: 2 * ADMISSION_OFFLINE_WRITES_MAX_IN_FLIGHT, waiting: 0 });
+  });
+
+  it('genuine overload during a drain still escalates: sustained DB wait rises, an emergency jumps to 3', () => {
+    const { rt, tickWith } = make();
+    const written = Array.from({ length: 400 }, () => rt.beginOfflineTransition('close')).filter(Boolean).length;
+    expect(written).toBe(ADMISSION_OFFLINE_WRITES_MAX_IN_FLIGHT);
+    expect(tickWith({ dbWaitMs: 300 }).level).toBe(0);
+    expect(tickWith({ dbWaitMs: 300 }).level).toBe(0);
+    expect(tickWith({ dbWaitMs: 300 })).toMatchObject({ previous: 0, level: 2, changed: true, trigger: 'db' });
+    expect(rt.decide(STATUS)).toMatchObject({ action: 'shed', reason: 'level' });
+    // The issue's emergency reading (dbWait=1394ms) is still never gated.
+    expect(tickWith({ dbWaitMs: 1_394, oldestDbWaitMs: 1_394 })).toMatchObject({ level: 3, trigger: 'emergency' });
+    expect(rt.beginOfflineTransition('close')).toBeNull();            // and closes at level 1+ are all deferred again
   });
 });
 

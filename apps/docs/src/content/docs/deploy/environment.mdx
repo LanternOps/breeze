@@ -521,6 +521,15 @@ paces WebSockets harder — if an instance stays at level 3 it needs more
 capacity, not more shedding. Invalid values fall back to the default with a
 startup warning; they never stop the API from booting.
 
+In `enforce` mode, a disconnecting agent's device is normally marked offline at
+once. At level 1 and above, and while 4 of those writes are already running at
+level 0 (a mass disconnect, such as every agent of a restarting instance
+dropping together), the offline detector marks the device instead, within 5
+minutes if it has not reconnected. A mass disconnect therefore cannot raise the
+level and refuse the reconnects that follow it.
+`breeze_admission_offline_deferred_total` counts these, by `reason` (`level` or
+`in_flight`).
+
 ### Database pool-health watchdog
 
 The API's Postgres driver (postgres.js) can leave a pooled connection permanently
