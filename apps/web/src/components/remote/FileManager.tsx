@@ -885,7 +885,7 @@ export default function FileManager({
             type="button"
             data-testid="file-manager-new-folder"
             onClick={() => setShowNewFolder(true)}
-            disabled={loading}
+            disabled={loading || error !== null}
             className="flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
           >
             <FolderPlus className="h-4 w-4" />
