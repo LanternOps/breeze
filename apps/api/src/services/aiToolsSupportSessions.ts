@@ -115,6 +115,9 @@ function endNote(session: SessionRow, result: { commandDelivered: boolean; disco
   if (result.disconnect === 'close-failed') {
     return { note: 'Access is revoked, but the client\'s connection did not close cleanly; it removes itself once it fails to re-authenticate.' };
   }
+  if (result.disconnect === 'unconfirmed') {
+    return { note: 'Access is revoked, but closing the client\'s connection was not confirmed; it removes itself once it fails to re-authenticate.' };
+  }
   if (!result.commandDelivered) {
     return { note: 'The client is not connected right now. Its access is already revoked; it removes itself within about 10 minutes of reconnecting.' };
   }
