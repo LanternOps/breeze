@@ -230,6 +230,7 @@ function toSoftwareItem(item: Record<string, unknown>): SoftwareItem {
 export default function SoftwareCatalog() {
   useTranslation("policies");
   useTranslation("policies");
+  const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string>("all");
   const [selectedSoftware, setSelectedSoftware] = useState<SoftwareItem | null>(
@@ -1021,9 +1022,7 @@ export default function SoftwareCatalog() {
                 embedded
                 builtinReadOnly={Boolean(selectedSoftware.builtinPackageKey)}
                 ownerScope={selectedSoftware.orgId ? "organization" : "partner"}
-                canManagePartnerWide={
-                  useAuthStore.getState().user?.canManagePartnerWide
-                }
+                canManagePartnerWide={canManagePartnerWide}
                 integrationProvider={selectedSoftware.integrationProvider}
               />
             )}
