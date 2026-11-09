@@ -26,8 +26,8 @@ function asCursors(value: unknown): LeafCursors | null {
 }
 
 /**
- * One indexed lookup (alerts_rule_device_subject_closed_idx) for the newest
- * non-subject closed episode per rule.
+ * SQL for the newest non-subject closed episode per rule, written to match
+ * alerts_rule_device_subject_closed_idx (predicate and key order).
  * Re-arm is device-subject only: org-level owners (#10725) are sourced, never
  * rule-backed, and have no device, so `owner_kind = 'device'` is explicit
  * rather than implied by `device_id = $1`.
@@ -52,6 +52,11 @@ export function closedCursorsQuery(deviceId: string, ruleIds: string[]): SQL {
   `;
 }
 
+/**
+ * Newest non-subject closed episode per rule on a device, keyed by rule id.
+ * Rules with no closed episode are absent; `legacy` marks a row with no
+ * stored cursor.
+ */
 export async function readClosedCursors(
   deviceId: string,
   ruleIds: string[],

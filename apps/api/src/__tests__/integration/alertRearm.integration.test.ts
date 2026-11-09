@@ -203,8 +203,10 @@ describe('event-log alert re-arm lifecycle', () => {
     expect(resolutions.map(([, , payload]) => (payload as { alertId: string }).alertId).sort()).toEqual([aId, b.id].sort());
 
     // The re-arm lookup returns the newest closed episode (B, frozen at its
-    // recovery), not A's older one for the same rule and device.
-    const closed = await system(() => readClosedCursors(f.deviceId, [ruleId]));
+    // recovery), not A's older one for the same rule and device. Callers pass
+    // every applicable rule id, so the lookup gets more than one.
+    const lookupRuleIds = [ruleId, randomUUID()];
+    const closed = await system(() => readClosedCursors(f.deviceId, lookupRuleIds));
     const closedB = (await readAlerts()).find(row => row.id === b.id)!;
     expect([...closed.keys()]).toEqual([ruleId]);
     expect(closed.get(ruleId)).toEqual({
@@ -215,26 +217,28 @@ describe('event-log alert re-arm lifecycle', () => {
 
     // The lookup's predicate implies alerts_rule_device_subject_closed_idx's,
     // and the index's key order serves its DISTINCT ON ... ORDER BY.
-    // Turning off seq scans alone did not pin the plan: on a few rows,
-    // alerts_rule_id_idx and alerts_device_triggered_at_idx cost within a page
-    // of this index, so the winner depended on stats left by earlier files
-    // (#11532). With sorts off as well, every other path needs a disabled node
-    // (a seq scan, or a sort for the ORDER BY), so this index wins whatever the
-    // stats are. If the predicate or key order stops matching, the plan grows a
-    // Sort or drops the index, and this fails.
-    // EXPLAIN runs on the superuser test connection, which bypasses RLS. Under
-    // RLS, Postgres treats COALESCE(subject_key, '') = '' as leaky (COALESCE is
-    // not on its leakproof node list), so the index serves only rule_id and
-    // device_id, and every path sorts. No plan is then unique, so the check
-    // cannot be deterministic as breeze_app.
+    // Seq scans off alone is not enough: on a few rows alerts_rule_id_idx and
+    // alerts_device_triggered_at_idx cost about the same as this index, so the
+    // winner depends on planner stats (#11532). With sorts off too, every other
+    // path pays the enable_* penalty (a seq scan, or a Sort / Incremental Sort
+    // for the ORDER BY), so this index wins regardless of stats. If the
+    // predicate or key order stops matching, the plan grows a Sort or drops the
+    // index, and this fails.
+    // EXPLAIN runs on the superuser test connection, which bypasses RLS. As
+    // breeze_app (observed on PG16), COALESCE(subject_key, '') = '' is not
+    // leakproof (CoalesceExpr is not in contain_leaked_vars' safe list), so it
+    // can be neither an index qual nor a constant pathkey. The index then
+    // serves only rule_id and device_id and no longer matches the ORDER BY, so
+    // every path sorts and no plan is uniquely cheapest. This pins the index's
+    // fit to the query, not the production (RLS) plan.
     const plan = JSON.stringify(await getTestDb().transaction(async tx => {
       await tx.execute(sql`SET LOCAL enable_seqscan = off`);
       await tx.execute(sql`SET LOCAL enable_sort = off`);
       await tx.execute(sql`SET LOCAL enable_incremental_sort = off`);
-      return tx.execute(sql`EXPLAIN ${closedCursorsQuery(f.deviceId, [ruleId])}`);
+      return tx.execute(sql`EXPLAIN ${closedCursorsQuery(f.deviceId, lookupRuleIds)}`);
     }));
     expect(plan).toContain('alerts_rule_device_subject_closed_idx');
-    expect(plan).not.toContain('Sort');
+    expect(plan).not.toContain('Sort'); // also matches Incremental Sort
   });
 
   it('exists-after-cursor probe stays under 20 ms on a device with 50k event rows', async () => {
