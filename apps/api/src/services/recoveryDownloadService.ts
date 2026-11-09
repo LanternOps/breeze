@@ -7,7 +7,7 @@ import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { createGuardedS3Client } from './guardedS3Client';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { coerceS3EndpointUrl, deriveS3RegionFromEndpoint } from '@breeze/shared';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, ne } from 'drizzle-orm';
 import { db } from '../db';
 import { backupSnapshotFiles, backupSnapshotOrigins, backupSnapshots, recoveryTokens } from '../db/schema';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
@@ -101,6 +101,9 @@ export async function authorizeExternalReference(
     .where(and(
       eq(backupSnapshotFiles.snapshotDbId, args.snapshotDbId),
       eq(backupSnapshotFiles.backupPath, args.key),
+      // A content-less row (directory or symlink entry, #11235) names no
+      // object: its empty backup_path is never a key.
+      ne(backupSnapshotFiles.backupPath, ''),
       boundIndexCondition(boundDigest),
     ))
     .limit(1);

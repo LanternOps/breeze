@@ -506,6 +506,21 @@ describe('SnapshotBrowser', () => {
       expect(link.getAttribute('href')).toBe(`#restore?snapshot=snap-1&paths=${encodeURIComponent('C:/finance/q3.xlsx')}`);
     });
 
+    it('shows a folder result, such as an empty folder (#11235), as a folder', async () => {
+      withSearch(() => ({
+        data: [{ name: 'Empty', path: '/C:/Data/Empty', type: 'directory' }, hit('empty.txt', 'C:/Data/empty.txt')],
+        nextCursor: null,
+        index: { state: 'ready' },
+      }));
+      render(<SnapshotBrowser />);
+      await type('empty');
+      await screen.findByTestId('snapshot-search-results');
+      expect(screen.getAllByTestId('snapshot-search-hit-folder')).toHaveLength(1);
+      expect(screen.getAllByTestId('snapshot-search-hit-file')).toHaveLength(1);
+      const links = screen.getAllByTestId('snapshot-search-restore-link');
+      expect(links[0]!.getAttribute('href')).toBe(`#restore?snapshot=snap-1&paths=${encodeURIComponent('/C:/Data/Empty')}`);
+    });
+
     it('sends the input as typed (untrimmed) and does not query for a single character', async () => {
       withSearch(() => ({ data: [], nextCursor: null, index: { state: 'ready' } }));
       render(<SnapshotBrowser />);
