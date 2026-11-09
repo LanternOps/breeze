@@ -44,7 +44,7 @@ Design-quality review of D1–D5 belongs to the advisor quorum (`codex exec`, xh
 - **Neither product grants the other** (inv. 9): add-in JIT writes `browser_access='none'`. `middleware/clientAiAuth.ts` must not read `browser_access`.
 - Invite TTL stays `INVITE_TTL_MS` (7 d), reset stays `RESET_TTL_MS` (1 h) (`routes/portal/schemas.ts:78-89`). Redis keys stay `PORTAL_REDIS_KEYS.inviteToken/resetToken` (`schemas.ts:105-106`), so legacy tokens are still found.
 - New API error codes are UPPER_SNAKE strings next to `PORTAL_ACCOUNT_INACTIVE_CODE` (`routes/portal/auth.ts:63`): `PORTAL_USER_IDENTITY_MANAGED`, `PORTAL_ACCOUNT_TRANSITION_REFUSED`.
-- **Migration:** name it to sort after the newest file on `origin/main`. Final slot after main moved (#11409 shipped `2027-01-22-211200`): `2027-01-22-211700-portal-account-foundations.sql`. Re-run the `localeCompare` check from `apps/api/migrations/README.md` right before every push, and rename if overtaken. Rename integration-test path references too. Never rename a shipped migration. The file must be idempotent, with no inner `BEGIN;/COMMIT;`, and its first statement is `SELECT set_config('breeze.scope', 'system', true);`. Every cleanup reports a count via `RAISE WARNING/NOTICE`. `portal_users` carries no partner-export triggers, so no pre-locks are needed (`migrationPartnerExportLocks.test.ts` verifies this).
+- **Migration:** name it to sort after the newest file on `origin/main`. Final slot after main moved (#11409 shipped `2027-01-22-211200`): `2027-01-22-230200-portal-account-foundations.sql`. Re-run the `localeCompare` check from `apps/api/migrations/README.md` right before every push, and rename if overtaken. Rename integration-test path references too. Never rename a shipped migration. The file must be idempotent, with no inner `BEGIN;/COMMIT;`, and its first statement is `SELECT set_config('breeze.scope', 'system', true);`. Every cleanup reports a count via `RAISE WARNING/NOTICE`. `portal_users` carries no partner-export triggers, so no pre-locks are needed (`migrationPartnerExportLocks.test.ts` verifies this).
 - **Traps:**
   - A catch around a query needs `withDbTransaction` with the catch outside it. Never start one beside `Promise.all` siblings (`docs/agents/tenancy-rls.md:21-28`). Prefer `ON CONFLICT DO NOTHING` (no target, so it covers both unique keys) where a conflict is the only expected failure.
   - Never call `withSystemDbAccessContext` inside an open request transaction. Public portal auth routes hold no context. `clientAiExchange` already runs inside one system context, so do not nest another.
@@ -70,7 +70,7 @@ Design-quality review of D1–D5 belongs to the advisor quorum (`codex exec`, xh
 
 | File | Responsibility | PR |
 |---|---|---|
-| Create `apps/api/migrations/2027-01-22-211700-portal-account-foundations.sql` | All DDL + backfills (spec of record, Task 1) | A |
+| Create `apps/api/migrations/2027-01-22-230200-portal-account-foundations.sql` | All DDL + backfills (spec of record, Task 1) | A |
 | Modify `apps/api/src/db/schema/portal.ts:114-155` | `browserAccess` column, `portalUserIdentities` table, status/browser-access type exports | A |
 | Create `apps/api/src/services/portalUserIdentities.ts` (+ `.test.ts`) | `entraIssuer`, identity writes for the exchange, drift report | A |
 | Create `apps/api/scripts/portal-identity-reconcile.ts` | Run-once CLI that prints the drift report | A |
@@ -96,7 +96,7 @@ Design-quality review of D1–D5 belongs to the advisor quorum (`codex exec`, xh
 ### Task 1: Migration + Drizzle schema
 
 **Files:**
-- Create: `apps/api/migrations/2027-01-22-211700-portal-account-foundations.sql`
+- Create: `apps/api/migrations/2027-01-22-230200-portal-account-foundations.sql`
 - Modify: `apps/api/src/db/schema/portal.ts` (`portalUsers` at :114-155. Add `portalUserIdentities` right after it)
 - Test: `apps/api/src/__tests__/integration/portalAccountFoundationsMigration.integration.test.ts`
 
@@ -120,7 +120,7 @@ No path writes anything else. The migration still normalizes defensively: a trim
 - [ ] **Step 1: Write the failing integration test** (template: `portalEntraPasswordHashCleanup.integration.test.ts` for notice capture. `aiModelRegistryLegacyDrop.integration.test.ts` for drop-and-replay). Each "replay" case runs inside one superuser transaction that is **rolled back**. The transaction drops `portal_user_identities`, `portal_users_id_org_uq`, the trigger and its function, both CHECKs and `browser_access`, seeds rows, replays the file through `replayMigration`, asserts, then `ROLLBACK`.
 
 ```ts
-describe('2027-01-22-211700-portal-account-foundations.sql', () => {
+describe('2027-01-22-230200-portal-account-foundations.sql', () => {
   it('backfills browser_access: password → granted, entra → none', /* seed 2 password + 1 entra; replay; expect per-row values */);
   it('normalizes unknown statuses: " Active " → active, "pending" → disabled (epoch bumped), and WARNs once per value', /* drop status CHECK first */);
   it('rejects status outside invited|active|disabled with 23514 portal_users_status_chk');
@@ -298,7 +298,7 @@ Run: `DATABASE_URL=<test-stack url> pnpm db:check-drift` → exit 0
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/api/migrations/2027-01-22-211700-portal-account-foundations.sql apps/api/src/db/schema/portal.ts apps/api/src/__tests__/integration/portalAccountFoundationsMigration.integration.test.ts
+git add apps/api/migrations/2027-01-22-230200-portal-account-foundations.sql apps/api/src/db/schema/portal.ts apps/api/src/__tests__/integration/portalAccountFoundationsMigration.integration.test.ts
 git commit -m "feat(portal): account foundations migration — status CHECK, browser_access, portal_user_identities (W2)"
 ```
 

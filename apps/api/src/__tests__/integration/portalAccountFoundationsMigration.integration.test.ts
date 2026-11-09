@@ -1,6 +1,6 @@
 /**
  * Portal registration W2 (#11379): account foundations migration
- * (2027-01-22-211700-portal-account-foundations.sql).
+ * (2027-01-22-230200-portal-account-foundations.sql).
  *
  * The CI database is migrated schema-fresh, so every backfill in the file
  * otherwise runs against zero rows. Each replay case below runs inside ONE
@@ -21,7 +21,7 @@ import postgres from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { createOrganization, createPartner } from './db-utils';
 
-const MIGRATION = '2027-01-22-211700-portal-account-foundations.sql';
+const MIGRATION = '2027-01-22-230200-portal-account-foundations.sql';
 const DATABASE_URL = process.env.DATABASE_URL ?? 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
 type Tx = postgres.TransactionSql<Record<string, unknown>>;
 class Rollback extends Error { constructor() { super('intentional rollback'); } }
@@ -100,7 +100,7 @@ async function pgErrorOf(fn: () => Promise<unknown>): Promise<{ code?: string; c
   throw new Error('expected the statement to fail');
 }
 
-describe('2027-01-22-211700-portal-account-foundations.sql', () => {
+describe('2027-01-22-230200-portal-account-foundations.sql', () => {
   it('backfills browser_access: password → granted, entra → none', async () => {
     const orgId = await newOrg();
     await inRolledBackTx(async (tx, notices) => {
