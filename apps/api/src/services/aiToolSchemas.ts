@@ -473,10 +473,11 @@ export const scheduleCheckInShape = {
   instruction: sci.instruction.describe('What to do when it fires: a self-contained imperative naming the object and what to verify (max 1000 chars)'),
   subject: sci.subject.describe('Optional: the Breeze object it is about (kind + UUID); its org is read from the object'),
   trigger: z.object({
-    event: scit.event.describe('device_online, script_finished, command_finished or run_settled'),
+    // The enum names itself; no description.
+    event: scit.event,
     subjectId: scit.subjectId.describe('UUID of the device, script execution, device command or agent run'),
-    deadlineMinutes: scit.deadlineMinutes.describe(`Fire anyway after this many minutes, saying it did not happen (default ${WISP_CHECK_IN_DEFAULT_DEADLINE_MINUTES}, max ${WISP_CHECK_IN_MAX_DELAY_MINUTES})`),
-  }).optional().describe('Fire when an event happens instead of at a time. Give exactly one of delayMinutes, at or trigger'),
+    deadlineMinutes: scit.deadlineMinutes.describe(`Fires anyway then, saying it did not happen (default ${WISP_CHECK_IN_DEFAULT_DEADLINE_MINUTES}, max ${WISP_CHECK_IN_MAX_DELAY_MINUTES})`),
+  }).optional().describe('Fire on an event instead of a time. Give exactly one of delayMinutes, at or trigger'),
 };
 export const listCheckInsInputSchema = listCheckInsToolSchema.extend({
   limit: z.number().int().min(1).max(LIST_CHECK_INS_MAX_LIMIT).optional(),
