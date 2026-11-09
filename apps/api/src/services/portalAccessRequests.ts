@@ -24,7 +24,6 @@ import { db, withDbTransaction, withSystemDbAccessContextIsolated } from '../db'
 import {
   organizations,
   portalAccessRequests,
-  portalUserIdentities,
   portalUsers,
   users,
   type PortalAccessRequestSource,
@@ -38,12 +37,13 @@ import {
   initialPortalAccountState,
   planPortalAccountTransition,
 } from './portalAccountState';
-import { entraIssuer, portalUserHasIdentitySql } from './portalUserIdentities';
+import { createIdentityOnlyAccount } from './portalIdentityAccounts';
+import { PORTAL_GOOGLE_ISSUER, entraIssuer, portalUserHasIdentitySql } from './portalUserIdentities';
+
+export { PORTAL_GOOGLE_ISSUER };
 
 export const PORTAL_ACCESS_REQUEST_TTL_DAYS = 14;
 export const PORTAL_ACCESS_REQUEST_PENDING_CAP = 200;
-/** The `iss` of a Google ID token; the issuer stored for a Google request and identity. */
-export const PORTAL_GOOGLE_ISSUER = 'https://accounts.google.com';
 /** Key 1 of the per-org admission lock in {@link createPortalAccessRequest} (key 2 is `hashtext(org_id)`). */
 const PORTAL_ACCESS_REQUEST_ADMISSION_LOCK_NAMESPACE = 'portal_access_request_admission';
 
@@ -357,58 +357,38 @@ async function grantBrowserAccess(request: LockedRequest, now: Date): Promise<Ap
 }
 
 /**
- * `entra` / `google`: an identity-only account (plan D2) — `auth_method` names
- * the provider, never `password`. Entra rows also carry `entra_tenant_id` /
- * `entra_oid` until release C (plan D4 writer fence).
- *
- * Both inserts are `ON CONFLICT DO NOTHING` (no target: every unique key), so a
- * taken identity never raises 23505. The login insert can only conflict on the
- * legacy `(entra_tenant_id, entra_oid)` key; the identity insert on
- * `(issuer, subject)`. Either way the identity is linked elsewhere — possibly
- * in an org this context cannot see — and the throw rolls everything back.
+ * `entra` / `google`: an identity-only account (plan D2), written by the
+ * shared services/portalIdentityAccounts.ts writer (W4 instant mode uses the
+ * same one). Its outcomes map back to this queue's 409s, and the throw rolls
+ * back everything the writer did (the contact link, a login row):
+ * `account_exists` → ACCOUNT_EXISTS, `identity_linked` → IDENTITY_LINKED.
+ * The contact is linked at the request's address, as an MSP invite does (the
+ * approval is an MSP action).
  */
-async function createIdentityAccount(request: LockedRequest, deciderUserId: string): Promise<ApprovedAccount> {
+async function createIdentityAccount(request: LockedRequest, deciderUserId: string, now: Date): Promise<ApprovedAccount> {
   const provider = request.source;
   if ((provider !== 'entra' && provider !== 'google') || !request.issuer || !request.subject) {
     throw new Error('SSO access request is missing its identity claims');
   }
   if (provider === 'entra' && !request.entraTenantId) throw new Error('entra access request has no tenant id');
 
-  await lockAddressAndRefuseExisting(request);
-  const contactId = await linkContact(request, deciderUserId);
+  const outcome = await createIdentityOnlyAccount(db, {
+    orgId: request.orgId,
+    email: request.email,
+    name: request.name,
+    contactAddress: request.email,
+    actorUserId: deciderUserId,
+    writer: 'sso_request_approved',
+    now,
+    // portal_access_requests_claims_chk pins issuer to these exact forms.
+    ...(provider === 'entra'
+      ? { provider, tid: request.entraTenantId!, oid: request.subject }
+      : { provider, sub: request.subject }),
+  });
+  if (outcome.kind === 'account_exists') throw accountExists();
+  if (outcome.kind === 'identity_linked') throw identityLinked();
 
-  const [created] = await db
-    .insert(portalUsers)
-    .values({
-      orgId: request.orgId,
-      email: request.email,
-      name: request.name,
-      passwordHash: null,
-      authMethod: provider,
-      ...(provider === 'entra' ? { entraTenantId: request.entraTenantId, entraOid: request.subject } : {}),
-      ...initialPortalAccountState('sso_request_approved'),
-      contactId,
-    })
-    .onConflictDoNothing()
-    .returning({ id: portalUsers.id, authEpoch: portalUsers.authEpoch });
-  if (!created) throw identityLinked();
-
-  const [identity] = await db
-    .insert(portalUserIdentities)
-    .values({
-      orgId: request.orgId,
-      portalUserId: created.id,
-      provider,
-      issuer: request.issuer,
-      subject: request.subject,
-      entraTenantId: provider === 'entra' ? request.entraTenantId : null,
-      linkedVia: 'jit',
-    })
-    .onConflictDoNothing()
-    .returning({ id: portalUserIdentities.id });
-  if (!identity) throw identityLinked();
-
-  return { outcome: 'account_created', portalUserId: created.id, email: request.email, name: request.name, authEpoch: created.authEpoch };
+  return { outcome: 'account_created', portalUserId: outcome.portalUserId, email: request.email, name: request.name, authEpoch: outcome.authEpoch };
 }
 
 /** `self`: an invited password account, exactly what an MSP invite creates. The route sends the invite. */
@@ -458,7 +438,7 @@ export async function approvePortalAccessRequest(input: DecisionInput): Promise<
         break;
       case 'entra':
       case 'google':
-        account = await createIdentityAccount(request, input.deciderUserId);
+        account = await createIdentityAccount(request, input.deciderUserId, now);
         break;
       case 'self':
         account = await createInvitedAccount(request, input.deciderUserId, now);

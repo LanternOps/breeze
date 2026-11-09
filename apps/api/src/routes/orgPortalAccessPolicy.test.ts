@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
 /**
@@ -59,7 +59,11 @@ const h = vi.hoisted(() => {
       }),
     })),
   };
-  return { organizations, portalAccessPolicies, store, upserts, db, authRef: { current: null as any }, auditSpy: vi.fn() };
+  return {
+    organizations, portalAccessPolicies, store, upserts, db, authRef: { current: null as any }, auditSpy: vi.fn(),
+    // The org's proven Entra tenant (W4 D2), as findProvenEntraTenantForOrg returns it.
+    provenTenant: { current: null as { tenantId: string; provenAt: Date } | null },
+  };
 });
 
 vi.mock('../middleware/auth', () => ({
@@ -108,9 +112,13 @@ vi.mock('../services/auditEvents', () => ({
 vi.mock('../services/auditOrgResolver', () => ({
   resolveAuditOrgIdForPartner: async (partnerId: string | null) => (partnerId ? 'org-audit-1' : null),
 }));
+vi.mock('../services/portalEntraTenantProof', () => ({
+  findProvenEntraTenantForOrg: async () => h.provenTenant.current,
+}));
 
 import { authMiddleware } from '../middleware/auth';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
+import { __testOnly } from '../services/portalAccessPolicy';
 import { registerPortalAccessPolicyRoutes } from './orgPortalAccessPolicy';
 
 const ORG_ID = '7c0a1f7e-1111-4222-8333-444455556666';
@@ -174,7 +182,11 @@ beforeEach(() => {
   h.store.orgs = [{ id: ORG_ID, partnerId: 'p-1' }];
   h.store.policies = [];
   h.upserts.length = 0;
+  h.provenTenant.current = null;
+  // Explicit, never the deployment's (W4 derives entra from the portal Entra app env).
+  __testOnly.setCapabilities({ entra: false, google: false, selfRegistration: false });
 });
+afterEach(() => __testOnly.setCapabilities(null));
 
 describe('GET /organizations/:id/portal-access-policy', () => {
   it('GET org returns values (all null), inherited from partner/default, effective and capabilities', async () => {
@@ -197,6 +209,7 @@ describe('GET /organizations/:id/portal-access-policy', () => {
     expect(data.passwordModeFallback).toBe(false);
     expect(data.capabilities).toEqual({ entra: false, google: false, selfRegistration: false });
     expect(data.canEdit).toBe(true);
+    expect(data.entraTenantProven).toBe(false);
     expect(h.auditSpy).not.toHaveBeenCalled();
   });
 
@@ -228,6 +241,28 @@ describe('PATCH /organizations/:id/portal-access-policy', () => {
     });
     expect(h.db.insert).not.toHaveBeenCalled();
     expect(h.auditSpy).not.toHaveBeenCalled();
+  });
+
+  it('PATCH org entraEnabled true without a proven tenant → 400 PORTAL_ACCESS_POLICY_TENANT_NOT_PROVEN with field', async () => {
+    __testOnly.setCapabilities({ entra: true, google: false, selfRegistration: false });
+    const res = await makeApp().request(ORG_PATH, patch({ entraEnabled: true }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "Prove the organization's Microsoft tenant before turning on Microsoft sign-in.",
+      code: 'PORTAL_ACCESS_POLICY_TENANT_NOT_PROVEN',
+      field: 'entraEnabled',
+    });
+    expect(h.db.insert).not.toHaveBeenCalled();
+    expect(h.auditSpy).not.toHaveBeenCalled();
+
+    // Proven: saved, audited, and the view says so.
+    h.provenTenant.current = { tenantId: 'a1a1a1a1-b2b2-4c3c-8d4d-e5e5e5e5e5e5', provenAt: new Date('2027-01-23T10:00:00.000Z') };
+    const ok = await makeApp().request(ORG_PATH, patch({ entraEnabled: true }));
+    expect(ok.status).toBe(200);
+    const { data } = await ok.json();
+    expect(data.effective.entraEnabled).toEqual({ value: true, source: 'org' });
+    expect(data.entraTenantProven).toBe(true);
+    expect(h.auditSpy).toHaveBeenCalledTimes(1);
   });
 
   it('PATCH org passwordMode sso_only with no SSO method → 400 PORTAL_ACCESS_POLICY_SSO_ONLY_NEEDS_SSO', async () => {
@@ -330,6 +365,8 @@ describe('/partners/me/portal-access-policy', () => {
     expect(data.inherited.ssoSessionMaxHours).toEqual({ value: 12, source: 'default' });
     expect(data.effective.ssoSessionMaxHours).toEqual({ value: 24, source: 'partner' });
     expect(data.canEdit).toBe(true);
+    // Tenant proof is a fact about one org; a partner view has none.
+    expect(data.entraTenantProven).toBeNull();
   });
 
   it('PATCH partner as full partner admin upserts the partner row and audits partner.portal_access_policy.update', async () => {

@@ -2,7 +2,6 @@ import { Hono } from 'hono';
 import type { Context, Next } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, sql } from 'drizzle-orm';
-import { nanoid } from 'nanoid';
 import { createHash } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { organizations, partners, portalBranding, portalUsers } from '../../db/schema';
@@ -20,7 +19,6 @@ import {
   acceptInviteSchema,
   SESSION_TTL_MS,
   SESSION_TTL_SECONDS,
-  PORTAL_SESSION_CAP,
   PORTAL_SESSION_COOKIE_NAME,
   PORTAL_USE_REDIS,
   PORTAL_REDIS_KEYS,
@@ -35,7 +33,6 @@ import {
   setPortalSessionCookies,
   clearPortalSessionCookies,
   getCookieValue,
-  capMapByOldest,
   sweepPortalState,
   checkRateLimit,
   clearRateLimitKeys,
@@ -52,8 +49,10 @@ import {
 import { PortalAccountTransitionError, isPasswordEligible, planPortalAccountTransition } from '../../services/portalAccountState';
 import { PortalAccessPolicyOrgNotFoundError, resolvePortalAccessPolicy } from '../../services/portalAccessPolicy';
 import {
+  PortalSessionStoreUnavailableError,
   isBrowserSessionAllowed,
   isPasswordSignInAllowedForOrg,
+  mintPortalBrowserSession,
   parseStoredPortalSession,
   type StoredPortalSession,
 } from './browserSession';
@@ -378,8 +377,10 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
   // Access-policy gate (portal registration W3, inv. 9 / 11). Re-resolved on
   // every request with no cache (plan D1), so an org override or an inherited
   // partner default that switches password sign-in off ends a live password
-  // session on its very next request, on every API instance. Logout is exempt
-  // so a refused session can still sign out.
+  // session on its very next request, on every API instance. The same check
+  // ends an SSO session at the current `ssoSessionMaxHours` from its mint, and
+  // an entra session whose tenant is no longer the org's proven one (W4, D9).
+  // Logout is exempt so a refused session can still sign out.
   //
   // No DB context is held here: the request transaction is opened only at the
   // end of this middleware, and every read above ran in its own short system
@@ -390,7 +391,7 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
   if (!isPortalAuthGateExemptPath(c.req.path)) {
     let allowed: boolean;
     try {
-      allowed = isBrowserSessionAllowed(sessionData, user, await resolvePortalAccessPolicy(user.orgId));
+      allowed = isBrowserSessionAllowed(sessionData, user, await resolvePortalAccessPolicy(user.orgId), Date.now());
     } catch (error) {
       if (!(error instanceof PortalAccessPolicyOrgNotFoundError)) throw error;
       allowed = false;
@@ -471,6 +472,23 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
 // ============================================
 // Auth routes
 // ============================================
+
+/**
+ * A password session through the shared mint (W4: the OIDC callback mints its
+ * entra sessions through the same function). Null when the session store is
+ * unavailable, which the password routes answer with 503.
+ */
+async function mintPasswordSession(
+  c: Context,
+  input: { portalUserId: string; orgId: string; authEpoch: number },
+): Promise<{ token: string; expiresAt: Date } | null> {
+  try {
+    return await mintPortalBrowserSession(c, { ...input, method: 'password' });
+  } catch (error) {
+    if (error instanceof PortalSessionStoreUnavailableError) return null;
+    throw error;
+  }
+}
 
 authRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
   sweepPortalState();
@@ -556,56 +574,9 @@ authRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
   }
 
   const now = new Date();
-  const token = nanoid(48);
-  const expiresAt = new Date(now.getTime() + SESSION_TTL_MS);
-
-  if (PORTAL_USE_REDIS) {
-    const redis = getRedis();
-    if (!redis) {
-      if (!ALLOW_IN_MEMORY_PORTAL_STATE) {
-        return c.json({ error: 'Service temporarily unavailable' }, 503);
-      }
-    } else {
-      const storedSession: StoredPortalSession & { createdAt: string } = {
-        portalUserId: user.id,
-        orgId: user.orgId,
-        authEpoch: user.authEpoch,
-        method: 'password',
-        createdAt: now.toISOString(),
-      };
-      const sessionPayload = JSON.stringify(storedSession);
-      const results = await redis
-        .multi()
-        .setex(PORTAL_REDIS_KEYS.session(token), SESSION_TTL_SECONDS, sessionPayload)
-        .sadd(PORTAL_REDIS_KEYS.userSessions(user.id), token)
-        .expire(PORTAL_REDIS_KEYS.userSessions(user.id), SESSION_TTL_SECONDS * 2)
-        .exec();
-      if (results) {
-        const pipelineErrors = results.filter(([err]) => err);
-        if (pipelineErrors.length > 0) {
-          for (const [err] of pipelineErrors) {
-            console.error('[portal] Redis session pipeline error:', err!.message);
-          }
-          if (process.env.NODE_ENV === 'production') {
-            return c.json({ error: 'Service temporarily unavailable' }, 503);
-          }
-        }
-      }
-    }
-  }
-
-  if (ALLOW_IN_MEMORY_PORTAL_STATE) {
-    portalSessions.set(token, {
-      token,
-      portalUserId: user.id,
-      orgId: user.orgId,
-      authEpoch: user.authEpoch,
-      method: 'password',
-      createdAt: now,
-      expiresAt
-    });
-    capMapByOldest(portalSessions, PORTAL_SESSION_CAP, (session) => session.createdAt.getTime());
-  }
+  const minted = await mintPasswordSession(c, { portalUserId: user.id, orgId: user.orgId, authEpoch: user.authEpoch });
+  if (!minted) return c.json({ error: 'Service temporarily unavailable' }, 503);
+  const { token, expiresAt } = minted;
 
   await withSystemDbAccessContext(() =>
     db
@@ -617,8 +588,6 @@ authRoutes.post('/auth/login', zValidator('json', loginSchema), async (c) => {
   // accountRateKey is now keyed on email alone, so it already covers every
   // org this address might belong to — nothing further to resolve/clear here.
   await clearRateLimitKeys([ipRateKey, accountRateKey]);
-
-  setPortalSessionCookies(c, token);
 
   return c.json({
     user: buildPortalUserPayload(user),
@@ -909,28 +878,10 @@ authRoutes.post('/auth/accept-invite', zValidator('json', acceptInviteSchema), a
   const inviteRedis = getRedis();
   if (inviteRedis) await purgeClientAiSessionsForUsers(inviteRedis, [user.id]);
 
-  const sessionToken = nanoid(48);
-  const expiresAt = new Date(now.getTime() + SESSION_TTL_MS);
-
-  if (PORTAL_USE_REDIS) {
-    const redis = getRedis();
-    if (redis) {
-      const storedSession: StoredPortalSession & { createdAt: string } = {
-        portalUserId: user.id, orgId: user.orgId, authEpoch: activated.authEpoch, method: 'password', createdAt: now.toISOString(),
-      };
-      await redis
-        .multi()
-        .setex(PORTAL_REDIS_KEYS.session(sessionToken), SESSION_TTL_SECONDS, JSON.stringify(storedSession))
-        .sadd(PORTAL_REDIS_KEYS.userSessions(user.id), sessionToken)
-        .expire(PORTAL_REDIS_KEYS.userSessions(user.id), SESSION_TTL_SECONDS * 2)
-        .exec();
-    }
-  } else {
-    portalSessions.set(sessionToken, { token: sessionToken, portalUserId: user.id, orgId: user.orgId, authEpoch: activated.authEpoch, method: 'password', createdAt: now, expiresAt });
-    capMapByOldest(portalSessions, PORTAL_SESSION_CAP, (s) => s.createdAt.getTime());
-  }
-
-  setPortalSessionCookies(c, sessionToken);
+  // Never answer 200 with a session that was not stored.
+  const minted = await mintPasswordSession(c, { portalUserId: user.id, orgId: user.orgId, authEpoch: activated.authEpoch });
+  if (!minted) return c.json({ error: 'Service temporarily unavailable' }, 503);
+  const { token: sessionToken, expiresAt } = minted;
 
   return c.json({
     user: buildPortalUserPayload({ ...user, name: resolvedName, status: 'active' }),

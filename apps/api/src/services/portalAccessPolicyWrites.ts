@@ -19,7 +19,9 @@ import {
   pickEffectivePortalAccessPolicy,
   readPortalAccessPolicyRows,
   toPortalAccessPolicyRowValues,
+  type PortalPolicyOrgFacts,
 } from './portalAccessPolicy';
+import { findProvenEntraTenantForOrg } from './portalEntraTenantProof';
 
 /**
  * Settings views and validated writes for portal_access_policies (portal
@@ -75,18 +77,34 @@ function inheritedSource(source: PortalPolicySource): Exclude<PortalPolicySource
   return source;
 }
 
+/**
+ * The org facts a policy owner is judged with (W4 D2). A partner owner is judged
+ * as if the tenant were proven: its default means "on wherever a tenant is proven".
+ */
+function factsFor(owner: PortalAccessPolicyView['owner'], entraTenantProven: boolean | null): PortalPolicyOrgFacts {
+  return { entraTenantProven: owner.kind === 'partner' ? true : entraTenantProven === true };
+}
+
+/** Org owners only: whether the org's Entra tenant is proven, under the caller's context. */
+async function isOrgEntraTenantProven(orgId: string): Promise<boolean> {
+  return (await findProvenEntraTenantForOrg(orgId)) !== null;
+}
+
 function buildView(
   owner: PortalAccessPolicyView['owner'],
   ownRow: PortalAccessPolicyRowValues | null,
   partnerRow: PortalAccessPolicyRowValues | null,
   caps: PortalSignInCapabilities,
   canEdit: boolean,
+  /** Org owner: whether its tenant is proven. Partner owner: null. */
+  entraTenantProven: boolean | null,
 ): PortalAccessPolicyView {
   const values = ownRow ?? BLANK_ROW;
+  const facts = factsFor(owner, entraTenantProven);
   // An org owner sits on top of its partner default; a partner owner sits on the built-in defaults.
   const resolve = (row: PortalAccessPolicyRowValues) => (owner.kind === 'org'
-    ? pickEffectivePortalAccessPolicy(row, partnerRow, caps)
-    : pickEffectivePortalAccessPolicy(null, row, caps));
+    ? pickEffectivePortalAccessPolicy(row, partnerRow, caps, facts)
+    : pickEffectivePortalAccessPolicy(null, row, caps, facts));
   const resolved = resolve(values);
   // What one field resolves to when this owner leaves it blank, the rest of its row as stored
   // (so the capability mask and the sso_only fallback apply exactly as they would at use).
@@ -109,6 +127,7 @@ function buildView(
     passwordModeFallback: resolved.passwordModeFallback,
     capabilities: caps,
     canEdit,
+    entraTenantProven: owner.kind === 'org' ? entraTenantProven === true : null,
   };
 }
 
@@ -136,6 +155,19 @@ function assertMethodsAvailable(patch: PolicyPatch, caps: PortalSignInCapabiliti
   }
 }
 
+/**
+ * An org override may not turn Microsoft on before the org's tenant is proven
+ * (W4 D2). An inherited `true` is masked by the resolver instead, never refused.
+ */
+function assertEntraTenantProven(patch: PolicyPatch, entraTenantProven: boolean): void {
+  if (patch.entraEnabled !== true || entraTenantProven) return;
+  throw new PortalAccessPolicyValidationError(
+    PORTAL_ACCESS_POLICY_ERROR_CODES.TENANT_NOT_PROVEN,
+    'entraEnabled',
+    "Prove the organization's Microsoft tenant before turning on Microsoft sign-in.",
+  );
+}
+
 /** `sso_only` is refused unless the would-be effective policy for this owner has an SSO method on. */
 function assertSsoOnlyHasSso(patch: PolicyPatch, wouldBe: ReturnType<typeof pickEffectivePortalAccessPolicy>): void {
   if (patch.passwordMode !== 'sso_only') return;
@@ -158,14 +190,15 @@ function parsePatch(patch: PolicyPatch): PolicyPatch {
 
 export async function getOrgPortalAccessPolicyView(org: { id: string; partnerId: string }): Promise<PortalAccessPolicyView> {
   const rows = await readPortalAccessPolicyRows({ orgId: org.id, partnerId: org.partnerId });
-  return buildView({ kind: 'org', id: org.id }, rows.org, rows.partner, getPortalSignInCapabilities(), true);
+  const entraTenantProven = await isOrgEntraTenantProven(org.id);
+  return buildView({ kind: 'org', id: org.id }, rows.org, rows.partner, getPortalSignInCapabilities(), true, entraTenantProven);
 }
 
 export async function getPartnerPortalAccessPolicyView(auth: PartnerWriteAuth, partnerId: string): Promise<PortalAccessPolicyView> {
   const rows = await readPortalAccessPolicyRows({ orgId: null, partnerId });
   return buildView(
     { kind: 'partner', id: partnerId }, rows.partner, null, getPortalSignInCapabilities(),
-    canManagePartnerWidePolicies(auth),
+    canManagePartnerWidePolicies(auth), null,
   );
 }
 
@@ -177,14 +210,18 @@ export async function updateOrgPortalAccessPolicy(
   const fields = parsePatch(patch);
   const caps = getPortalSignInCapabilities();
   assertMethodsAvailable(fields, caps);
+  const entraTenantProven = await isOrgEntraTenantProven(org.id);
+  assertEntraTenantProven(fields, entraTenantProven);
   const rows = await readPortalAccessPolicyRows({ orgId: org.id, partnerId: org.partnerId });
   const before = rows.org ?? BLANK_ROW;
-  assertSsoOnlyHasSso(fields, pickEffectivePortalAccessPolicy({ ...before, ...fields }, rows.partner, caps));
-
   const owner = { kind: 'org' as const, id: org.id };
+  assertSsoOnlyHasSso(fields, pickEffectivePortalAccessPolicy(
+    { ...before, ...fields }, rows.partner, caps, factsFor(owner, entraTenantProven),
+  ));
+
   const changedFields = changedFieldsOf(fields, before);
   if (changedFields.length === 0) {
-    return { view: buildView(owner, rows.org, rows.partner, caps, true), changedFields };
+    return { view: buildView(owner, rows.org, rows.partner, caps, true, entraTenantProven), changedFields };
   }
   const [row] = await db.insert(portalAccessPolicies).values({ orgId: org.id, partnerId: null, ...fields })
     .onConflictDoUpdate({
@@ -194,7 +231,10 @@ export async function updateOrgPortalAccessPolicy(
     })
     .returning();
   if (!row) throw new Error('portal access policy: org upsert returned no row');
-  return { view: buildView(owner, toPortalAccessPolicyRowValues(row), rows.partner, caps, true), changedFields };
+  return {
+    view: buildView(owner, toPortalAccessPolicyRowValues(row), rows.partner, caps, true, entraTenantProven),
+    changedFields,
+  };
 }
 
 /**
@@ -213,12 +253,12 @@ export async function updatePartnerPortalAccessPolicy(
   assertMethodsAvailable(fields, caps);
   const rows = await readPortalAccessPolicyRows({ orgId: null, partnerId });
   const before = rows.partner ?? BLANK_ROW;
-  assertSsoOnlyHasSso(fields, pickEffectivePortalAccessPolicy(null, { ...before, ...fields }, caps));
-
   const owner = { kind: 'partner' as const, id: partnerId };
+  assertSsoOnlyHasSso(fields, pickEffectivePortalAccessPolicy(null, { ...before, ...fields }, caps, factsFor(owner, null)));
+
   const changedFields = changedFieldsOf(fields, before);
   if (changedFields.length === 0) {
-    return { view: buildView(owner, rows.partner, null, caps, true), changedFields };
+    return { view: buildView(owner, rows.partner, null, caps, true, null), changedFields };
   }
   const [row] = await db.insert(portalAccessPolicies).values({ partnerId, orgId: null, ...fields })
     .onConflictDoUpdate({
@@ -228,5 +268,5 @@ export async function updatePartnerPortalAccessPolicy(
     })
     .returning();
   if (!row) throw new Error('portal access policy: partner upsert returned no row');
-  return { view: buildView(owner, toPortalAccessPolicyRowValues(row), null, caps, true), changedFields };
+  return { view: buildView(owner, toPortalAccessPolicyRowValues(row), null, caps, true, null), changedFields };
 }

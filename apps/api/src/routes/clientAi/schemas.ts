@@ -20,6 +20,12 @@ const WB_TEXT_MAX_CHARS = 2_000_000;
 /** Add-in sessions are 24h Redis-backed bearer tokens, org-bound (spec §3). */
 export const CLIENT_AI_SESSION_TTL_MS = 1000 * 60 * 60 * 24;
 export const CLIENT_AI_SESSION_TTL_SECONDS = Math.floor(CLIENT_AI_SESSION_TTL_MS / 1000);
+/**
+ * Absolute add-in session lifetime from its stored `createdAt`, on top of the
+ * sliding 24 h (portal registration W4, plan D9 / OD1; spec §5.11). The add-in
+ * re-exchanges silently on a 401, so a leaver's Entra disable bites within 12 h.
+ */
+export const CLIENT_AI_SESSION_MAX_AGE_SECONDS = 12 * 3600;
 
 export const CLIENT_AI_REDIS_KEYS = {
   session: (token: string) => `clientai:session:${token}`,

@@ -19,6 +19,12 @@ export type PortalSession = {
    * reads as `'password'`, exactly like a Redis payload without the field.
    */
   method?: PortalSessionMethod;
+  /**
+   * The org's proven Entra tenant at mint (W4, plan D9). Set for, and only
+   * for, an `entra` session; `parseStoredPortalSession` refuses an entra
+   * session without it.
+   */
+  entraTenantId?: string;
   createdAt: Date;
   expiresAt: Date;
 };

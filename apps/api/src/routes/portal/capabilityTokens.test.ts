@@ -41,7 +41,12 @@ import { PortalAccessPolicyOrgNotFoundError, pickEffectivePortalAccessPolicy } f
 const NO_ROW = { entraEnabled: null, googleEnabled: null, passwordMode: null, selfRegistrationMode: null, ssoNewPersonMode: null, ssoSessionMaxHours: null };
 function policyFor(orgId: string, mode: 'allowed' | 'sso_only') {
   const org = mode === 'sso_only' ? { ...NO_ROW, entraEnabled: true, passwordMode: 'sso_only' as const } : null;
-  return { orgId, partnerId: 'p-1', ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }) };
+  // The org's tenant is proven (W4 D2), so 'sso_only' is effective with Microsoft on.
+  const entraTenant = org ? { tenantId: 'a1a1a1a1-b2b2-4c3c-8d4d-e5e5e5e5e5e5', provenAt: '2027-01-23T10:00:00.000Z' } : null;
+  return {
+    orgId, partnerId: 'p-1', entraTenant,
+    ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }, { entraTenantProven: entraTenant !== null }),
+  };
 }
 import { portalInviteTokens, portalResetTokens } from './helpers';
 import { QueryBuilder } from 'drizzle-orm/pg-core';

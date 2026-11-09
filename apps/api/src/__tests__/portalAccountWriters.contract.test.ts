@@ -42,6 +42,16 @@ const PORTAL_USER_WRITERS: Record<string, Classification> = {
   // another org's mapping bumps auth_epoch (+ updated_at) on that org's
   // accounts with an Entra identity in the tenant. Never status / browserAccess.
   'apps/api/src/services/portalEntraTenantProof.ts': { kind: 'no-state', reason: 'authEpoch / updatedAt bump on displacement only' },
+  // Portal registration W4 (#11381) Microsoft sign-in: the identity-only
+  // account writer shared by W3 approval and instant mode
+  // (initialPortalAccountState), and OIDC account resolution (invite
+  // activation, instant browser grant — planPortalAccountTransition,
+  // epoch-guarded).
+  'apps/api/src/services/portalIdentityAccounts.ts': { kind: 'state-module' },
+  'apps/api/src/services/portalOidc/accountResolution.ts': { kind: 'state-module' },
+  // W4 linkPortalUserIdentity: the W3 D4 writer fence (entra_tenant_id /
+  // entra_oid) and the D12 password_hash clear when linking under sso_only.
+  'apps/api/src/services/portalUserIdentities.ts': { kind: 'no-state', reason: 'entraTenantId / entraOid / passwordHash / updatedAt on identity link only' },
 };
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..', '..', '..');

@@ -6,7 +6,12 @@ const store = vi.hoisted(() => ({
   org: null as Record<string, unknown> | null,
   partner: null as Record<string, unknown> | null,
   inserts: [] as Array<{ owner: Owner; values: Record<string, unknown>; config: Record<string, unknown> }>,
+  /** The org's proven Entra tenant (W4 D2), as findProvenEntraTenantForOrg returns it. */
+  provenTenant: null as { tenantId: string; provenAt: Date } | null,
 }));
+
+const findProvenTenant = vi.hoisted(() => vi.fn(async (_orgId: string) => store.provenTenant));
+vi.mock('./portalEntraTenantProof', () => ({ findProvenEntraTenantForOrg: findProvenTenant }));
 
 vi.mock('../db', () => ({
   hasDbAccessContext: () => true,
@@ -70,11 +75,18 @@ async function validationError(p: Promise<unknown>): Promise<PortalAccessPolicyV
   return err as PortalAccessPolicyValidationError;
 }
 
+const NO_CAPS = { entra: false, google: false, selfRegistration: false };
+const ENTRA_CAPS = { entra: true, google: false, selfRegistration: false };
+const PROVEN_TENANT = { tenantId: 'a1a1a1a1-b2b2-4c3c-8d4d-e5e5e5e5e5e5', provenAt: new Date('2027-01-23T10:00:00.000Z') };
+
 beforeEach(() => {
   store.org = null;
   store.partner = null;
   store.inserts = [];
-  __testOnly.setCapabilities(null);
+  store.provenTenant = null;
+  findProvenTenant.mockClear();
+  // Explicit, never the deployment's (W4 derives entra from the portal Entra app env).
+  __testOnly.setCapabilities(NO_CAPS);
 });
 afterEach(() => __testOnly.setCapabilities(null));
 
@@ -128,25 +140,79 @@ describe('write validation', () => {
     expect(partner.code).toBe('PORTAL_ACCESS_POLICY_SSO_ONLY_NEEDS_SSO');
 
     // Entra stored on, but the capability is gone: masked, so still refused.
-    __testOnly.setCapabilities(null);
+    __testOnly.setCapabilities(NO_CAPS);
+    store.provenTenant = PROVEN_TENANT;
     store.org = { ...blank, entraEnabled: true };
     const masked = await validationError(updateOrgPortalAccessPolicy(ORG, { passwordMode: 'sso_only' }));
     expect(masked.code).toBe('PORTAL_ACCESS_POLICY_SSO_ONLY_NEEDS_SSO');
     expect(store.inserts).toHaveLength(0);
   });
 
-  it('accepts passwordMode sso_only for an org that inherits entra on from the partner (caps on)', async () => {
-    __testOnly.setCapabilities({ entra: true, google: false, selfRegistration: false });
+  it('accepts passwordMode sso_only for an org that inherits entra on from the partner (caps on, tenant proven)', async () => {
+    __testOnly.setCapabilities(ENTRA_CAPS);
+    store.provenTenant = PROVEN_TENANT;
     store.partner = { ...blank, entraEnabled: true };
     const r = await updateOrgPortalAccessPolicy(ORG, { passwordMode: 'sso_only' });
     expect(r.changedFields).toEqual(['passwordMode']);
     expect(r.view.effective.passwordMode).toEqual({ value: 'sso_only', source: 'org' });
     expect(r.view.passwordModeFallback).toBe(false);
+    expect(r.view.entraTenantProven).toBe(true);
 
     // A partner patch that turns entra on and sso_only together is judged on the merged row.
     const p = await updatePartnerPortalAccessPolicy(fullPartner, ORG.partnerId, { entraEnabled: true, passwordMode: 'sso_only' });
     expect(p.changedFields).toEqual(['passwordMode']);
     expect(p.view.effective.passwordMode).toEqual({ value: 'sso_only', source: 'partner' });
+  });
+
+  // W4 (#11381) D2: Microsoft needs the org's PROVEN tenant.
+  it('org entraEnabled true without a proven tenant → 400 TENANT_NOT_PROVEN (field entraEnabled)', async () => {
+    __testOnly.setCapabilities(ENTRA_CAPS);
+    const err = await validationError(updateOrgPortalAccessPolicy(ORG, { entraEnabled: true }));
+    expect(err.code).toBe('PORTAL_ACCESS_POLICY_TENANT_NOT_PROVEN');
+    expect(err.field).toBe('entraEnabled');
+    expect(err.message).toBe("Prove the organization's Microsoft tenant before turning on Microsoft sign-in.");
+    expect(findProvenTenant).toHaveBeenCalledWith(ORG.id);
+    expect(store.inserts).toHaveLength(0);
+
+    // The capability check comes first: a server that cannot run Microsoft says so.
+    __testOnly.setCapabilities(NO_CAPS);
+    const unavailable = await validationError(updateOrgPortalAccessPolicy(ORG, { entraEnabled: true }));
+    expect(unavailable.code).toBe('PORTAL_ACCESS_POLICY_METHOD_UNAVAILABLE');
+
+    // Turning it off or clearing it never needs a tenant.
+    __testOnly.setCapabilities(ENTRA_CAPS);
+    const off = await updateOrgPortalAccessPolicy(ORG, { entraEnabled: false });
+    expect(off.changedFields).toEqual(['entraEnabled']);
+    expect(off.view.entraTenantProven).toBe(false);
+    const cleared = await updateOrgPortalAccessPolicy(ORG, { entraEnabled: null });
+    expect(cleared.changedFields).toEqual(['entraEnabled']);
+
+    // Proven: accepted and effective.
+    store.provenTenant = PROVEN_TENANT;
+    const on = await updateOrgPortalAccessPolicy(ORG, { entraEnabled: true });
+    expect(on.changedFields).toEqual(['entraEnabled']);
+    expect(on.view.effective.entraEnabled).toEqual({ value: true, source: 'org' });
+    expect(on.view.entraTenantProven).toBe(true);
+  });
+
+  it('org passwordMode sso_only is refused (SSO_ONLY_NEEDS_SSO) when entra is inherited on but the tenant is unproven', async () => {
+    __testOnly.setCapabilities(ENTRA_CAPS);
+    store.partner = { ...blank, entraEnabled: true };
+    const err = await validationError(updateOrgPortalAccessPolicy(ORG, { passwordMode: 'sso_only' }));
+    expect(err.code).toBe('PORTAL_ACCESS_POLICY_SSO_ONLY_NEEDS_SSO');
+    expect(err.field).toBe('passwordMode');
+    expect(store.inserts).toHaveLength(0);
+  });
+
+  it('partner entraEnabled true is accepted with caps.entra regardless of any org tenant', async () => {
+    __testOnly.setCapabilities(ENTRA_CAPS);
+    // No org anywhere has a proven tenant; the partner default means "on wherever a tenant is proven".
+    const r = await updatePartnerPortalAccessPolicy(fullPartner, ORG.partnerId, { entraEnabled: true, passwordMode: 'sso_only' });
+    expect(r.changedFields).toEqual(['entraEnabled', 'passwordMode']);
+    expect(r.view.effective.entraEnabled).toEqual({ value: true, source: 'partner' });
+    expect(r.view.effective.passwordMode).toEqual({ value: 'sso_only', source: 'partner' });
+    expect(r.view.entraTenantProven).toBeNull();
+    expect(findProvenTenant).not.toHaveBeenCalled();
   });
 });
 
@@ -226,6 +292,36 @@ describe('views', () => {
     expect(v.passwordModeFallback).toBe(true);
     expect(v.capabilities).toEqual({ entra: false, google: false, selfRegistration: false });
     expect(v.canEdit).toBe(true);
+    expect(v.entraTenantProven).toBe(false);
+  });
+
+  it('org view masks Microsoft by the tenant proof and reports entraTenantProven', async () => {
+    __testOnly.setCapabilities(ENTRA_CAPS);
+    store.partner = { ...blank, entraEnabled: true, passwordMode: 'sso_only' };
+    const unproven = await getOrgPortalAccessPolicyView(ORG);
+    expect(findProvenTenant).toHaveBeenCalledWith(ORG.id);
+    expect(unproven.entraTenantProven).toBe(false);
+    // What the org gets at use: Microsoft off (source kept), so the inherited sso_only falls back.
+    expect(unproven.inherited.entraEnabled).toEqual({ value: false, source: 'partner' });
+    expect(unproven.effective.entraEnabled).toEqual({ value: false, source: 'partner' });
+    expect(unproven.effective.passwordMode).toEqual({ value: 'allowed', source: 'partner' });
+    expect(unproven.passwordModeFallback).toBe(true);
+
+    store.provenTenant = PROVEN_TENANT;
+    const proven = await getOrgPortalAccessPolicyView(ORG);
+    expect(proven.entraTenantProven).toBe(true);
+    expect(proven.inherited.entraEnabled).toEqual({ value: true, source: 'partner' });
+    expect(proven.effective.passwordMode).toEqual({ value: 'sso_only', source: 'partner' });
+    expect(proven.passwordModeFallback).toBe(false);
+  });
+
+  it('partner view: entraTenantProven is null and Microsoft is judged as if proven', async () => {
+    __testOnly.setCapabilities(ENTRA_CAPS);
+    store.partner = { ...blank, entraEnabled: true };
+    const v = await getPartnerPortalAccessPolicyView(fullPartner, ORG.partnerId);
+    expect(v.entraTenantProven).toBeNull();
+    expect(v.effective.entraEnabled).toEqual({ value: true, source: 'partner' });
+    expect(findProvenTenant).not.toHaveBeenCalled();
   });
 
   it('org view with no rows: values all null, inherited and effective are the defaults', async () => {
