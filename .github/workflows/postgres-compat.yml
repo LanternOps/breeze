@@ -235,6 +235,10 @@ jobs:
       # inline expression: the matrix comes from a job output (zizmor
       # template-injection, enforced by security.yml).
       PG_MAJOR: ${{ matrix.pg }}
+      # Mirrors ci.yml integration-test (postgres-compat.test.mjs). No `changes`
+      # job here, so every suite runs in shadow mode (W07b2, #10751).
+      BREEZE_INTEGRATION_SUITES: all
+      BREEZE_INTEGRATION_SUITES_MODE: shadow
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
