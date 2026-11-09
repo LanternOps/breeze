@@ -203,10 +203,37 @@ describe('POST /organizations/:id/portal-users/invite', () => {
 
     await invite({ email: 'Fresh@Acme.Example' });
 
-    expect(executeSpy).toHaveBeenCalledTimes(1);
-    const { sql: lockSql, params } = new PgDialect().sqlToQuery(executeSpy.mock.calls[0]![0] as never);
-    expect(lockSql).toMatch(/pg_advisory_xact_lock\(hashtext\(\$\d\), hashtext\(\$\d\)\)/i);
-    expect(params).toEqual([INBOUND_CONTACT_LOCK_NAMESPACE, `${ORG_ID}:fresh@acme.example`]);
+    // Taken twice: once before the existing-login read (Review Focus 3, below)
+    // and again by the contact resolver, a no-op re-take of the held lock.
+    expect(executeSpy).toHaveBeenCalledTimes(2);
+    for (const [statement] of executeSpy.mock.calls) {
+      const { sql: lockSql, params } = new PgDialect().sqlToQuery(statement as never);
+      expect(lockSql).toMatch(/pg_advisory_xact_lock\(hashtext\(\$\d\), hashtext\(\$\d\)\)/i);
+      expect(params).toEqual([INBOUND_CONTACT_LOCK_NAMESPACE, `${ORG_ID}:fresh@acme.example`]);
+    }
+  });
+
+  it('a plain-email invite takes the per-address lock BEFORE it reads the existing login (W3 Review Focus 3)', async () => {
+    // Approving a self request takes this lock, re-checks "no account at this
+    // address" and inserts one. An invite that read the existing login before
+    // queueing on the lock would act on that stale "none" and insert a second
+    // portal_users row for the address (portal_users.email is not unique).
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])            // org existence
+      .mockResolvedValueOnce([])                          // existing-login read
+      .mockResolvedValueOnce([])                          // contact lookup
+      .mockResolvedValueOnce([{ name: 'Acme Co' }]);
+    createContactMock.mockResolvedValueOnce({ id: 'ct-made' });
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-new' }]);
+
+    await invite({ email: 'Race@Acme.Example' });
+
+    const firstLock = executeSpy.mock.invocationCallOrder[0]!;
+    const [orgRead, existingLoginRead] = selectWhereSpy.mock.invocationCallOrder;
+    expect(firstLock).toBeGreaterThan(orgRead!);
+    expect(firstLock).toBeLessThan(existingLoginRead!);
+    const { params } = new PgDialect().sqlToQuery(executeSpy.mock.calls[0]![0] as never);
+    expect(params).toEqual([INBOUND_CONTACT_LOCK_NAMESPACE, `${ORG_ID}:race@acme.example`]);
   });
 
   it('creates a portal-role contact when the org has none for the address', async () => {

@@ -116,6 +116,7 @@ import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 import { registerPortalAccessPolicyRoutes } from './orgPortalAccessPolicy';
 import { registerOrgPortalPreviewRoutes } from './orgPortalPreview';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
+import { registerOrgPortalAccessRequestRoutes } from './orgPortalAccessRequests';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
 import { registerOrgBillingProfileRoutes } from './orgBillingProfile';
 import { registerOrgAuditRetentionSettingsRoutes } from './orgAuditRetentionSettings';
@@ -3057,6 +3058,8 @@ registerPortalAccessPolicyRoutes(orgRoutes);
 registerOrgPortalPreviewRoutes(orgRoutes);
 // Customer-portal users (portal_users invite/manage) — see routes/orgPortalUsers.ts
 registerOrgPortalUsersRoutes(orgRoutes);
+// Customer-portal access-request queue (portal_access_requests) — see routes/orgPortalAccessRequests.ts
+registerOrgPortalAccessRequestRoutes(orgRoutes);
 // Org ticketing overrides (org_ticket_settings) — see routes/orgTicketSettings.ts
 registerOrgTicketSettingsRoutes(orgRoutes);
 registerOrgBillingProfileRoutes(orgRoutes);

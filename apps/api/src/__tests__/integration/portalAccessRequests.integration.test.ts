@@ -1,10 +1,55 @@
 /**
  * portal_access_requests: RLS, FK and org-merge proofs (W3 #11380, plan Task 2).
- * Task 7 appends the service-level cases in a separate describe block.
+ * Task 7 appends the service-level cases in a separate describe block, and
+ * Task 8 the routes through the real router.
  */
 import { getTestDb } from './setup';
 import { randomUUID } from 'node:crypto';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Hono } from 'hono';
+
+// Task 8 route cases only. Every hook below is a pass-through until a test sets
+// its flag, so the Task 2 / Task 7 cases run the real modules unchanged.
+const routeFaults = vi.hoisted(() => ({ contactLink: false, noSavepoint: false }));
+const sentEmails = vi.hoisted(() => [] as Array<{ kind: 'invite' | 'approved' | 'declined'; to: string }>);
+
+vi.mock('../../db', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../db')>();
+  return {
+    ...actual,
+    // CONTROL hook: with `noSavepoint` the approve body runs bare in the request
+    // transaction, which is what the caught-409 case must be able to tell apart.
+    withDbTransaction: <T>(fn: () => Promise<T>): Promise<T> =>
+      (routeFaults.noSavepoint ? fn() : actual.withDbTransaction(fn)),
+  };
+});
+
+vi.mock('../../services/contacts/loginLink', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/contacts/loginLink')>();
+  return {
+    ...actual,
+    linkLoginToContact: async (...args: Parameters<typeof actual.linkLoginToContact>) => {
+      if (routeFaults.contactLink) {
+        // A REAL statement failure (22012) on the approve transaction, caught,
+        // then surfaced as the service's own 409: the #11203 shape.
+        const { sql: rawSql } = await import('drizzle-orm');
+        await args[0].execute(rawSql`SELECT 1/0`).catch(() => undefined);
+        const { PortalAccessRequestError: RefusalError } = await import('../../services/portalAccessRequests');
+        throw new RefusalError('PORTAL_ACCESS_REQUEST_IDENTITY_LINKED', 409, 'forced refusal after a failed statement');
+      }
+      return actual.linkLoginToContact(...args);
+    },
+  };
+});
+
+vi.mock('../../services/email', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/email')>()),
+  getEmailService: () => ({
+    sendPortalInvite: async (m: { to: string }) => { sentEmails.push({ kind: 'invite', to: m.to }); },
+    sendPortalAccessApproved: async (m: { to: string }) => { sentEmails.push({ kind: 'approved', to: m.to }); },
+    sendPortalAccessDeclined: async (m: { to: string }) => { sentEmails.push({ kind: 'declined', to: m.to }); },
+  }),
+}));
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db, withDbAccessContext, withDbTransaction, type DbAccessContext } from '../../db';
 import {
@@ -26,7 +71,11 @@ import { PORTAL_ACCOUNT_TRANSITION_REFUSED, PortalAccountTransitionError } from 
 import { bindContactLoginForInvite, loadOrgContactsForPortalInvite } from '../../services/contacts/portalInvite';
 import { INBOUND_CONTACT_LOCK_NAMESPACE } from '../../services/inboundEmail/resolveOrg';
 import { entraIssuer } from '../../services/portalUserIdentities';
-import { createOrganization, createPartner, createUser } from './db-utils';
+import { authMiddleware } from '../../middleware/auth';
+import { registerOrgPortalAccessRequestRoutes } from '../../routes/orgPortalAccessRequests';
+import { registerOrgPortalUsersRoutes } from '../../routes/orgPortalUsers';
+import { createAccessToken } from '../../services/jwt';
+import { createOrganization, createPartner, createUser, setupTestEnvironment } from './db-utils';
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: null, userId: null,
@@ -665,5 +714,168 @@ describe('service', () => {
     const summary = await withDbAccessContext(partnerContext(partner.id, [org.id], decider.id), () =>
       summarizePendingPortalAccessRequests());
     expect(summary).toEqual({ pendingTotal: 2, orgs: [{ orgId: org.id, orgName: org.name, pending: 2 }] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 8: the routes through the real router. authMiddleware opens the request
+// transaction (withDbAccessContext), the service opens its savepoint inside it,
+// and the route's catch sits outside the service call (#11203).
+// ---------------------------------------------------------------------------
+
+function buildRoutesApp(): Hono {
+  const app = new Hono();
+  app.use('*', authMiddleware);
+  registerOrgPortalAccessRequestRoutes(app);
+  registerOrgPortalUsersRoutes(app);
+  return app;
+}
+
+/** A partner tech (all orgs, wildcard role) with an MFA'd token, for the requireMfa() writes. */
+async function routeFixture() {
+  const env = await setupTestEnvironment({ scope: 'partner' });
+  const token = await createAccessToken({
+    sub: env.user.id, email: env.user.email, roleId: env.role.id, orgId: null, partnerId: env.partner.id,
+    scope: 'partner', mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+  });
+  const app = buildRoutesApp();
+  const request = (method: 'GET' | 'POST', path: string, body?: unknown) => app.request(path, {
+    method,
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  const org = env.organization;
+  return {
+    org,
+    get: (path: string) => request('GET', path),
+    post: (path: string, body?: unknown) => request('POST', path, body),
+    base: `/organizations/${org.id}/portal-access-requests`,
+  };
+}
+
+describe('routes (real router)', () => {
+  afterEach(() => {
+    routeFaults.contactLink = false;
+    routeFaults.noSavepoint = false;
+    sentEmails.length = 0;
+  });
+
+  it('a caught 409 inside the request transaction stays a 409 (not a 500 at commit)', async () => {
+    const { org, post, base } = await routeFixture();
+    const email = `fault-${randomUUID()}@example.test`;
+    const requestId = requestIdOf(await createPortalAccessRequest({
+      source: 'entra', orgId: org.id, email, name: null, tid: randomUUID(), oid: randomUUID(),
+    }));
+
+    routeFaults.contactLink = true;
+    const refused = await post(`${base}/${requestId}/approve`);
+    expect(refused.status, await refused.clone().text()).toBe(409);
+    expect(await refused.json()).toEqual({
+      error: 'forced refusal after a failed statement', code: 'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED',
+    });
+    expect((await readRequest(requestId)).status).toBe('pending');
+    expect(await loginsFor(org.id, email)).toEqual([]);
+    expect(sentEmails).toEqual([]);
+
+    // The request committed cleanly, and the same request approves once the fault is gone.
+    routeFaults.contactLink = false;
+    const approved = await post(`${base}/${requestId}/approve`);
+    expect(approved.status, await approved.clone().text()).toBe(200);
+    expect((await approved.json()).data.outcome).toBe('account_created');
+    expect(await loginsFor(org.id, email)).toHaveLength(1);
+    expect(sentEmails).toEqual([{ kind: 'approved', to: email }]);
+  });
+
+  it('CONTROL: without the service savepoint the same caught 409 turns into a 500 at commit', async () => {
+    const { org, post, base } = await routeFixture();
+    const email = `nosp-${randomUUID()}@example.test`;
+    const requestId = requestIdOf(await createPortalAccessRequest({
+      source: 'entra', orgId: org.id, email, name: null, tid: randomUUID(), oid: randomUUID(),
+    }));
+    routeFaults.contactLink = true;
+    routeFaults.noSavepoint = true;
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const res = await post(`${base}/${requestId}/approve`);
+      expect(res.status).toBe(500);
+    } finally {
+      errSpy.mockRestore();
+    }
+    expect((await readRequest(requestId)).status).toBe('pending');
+  });
+
+  it('decide runs each id in order through the real router and commits the approvals around a refused id', async () => {
+    const { org, get, post, base } = await routeFixture();
+    const entraEmail = `d-entra-${randomUUID()}@example.test`;
+    const takenEmail = `d-taken-${randomUUID()}@example.test`;
+    const selfEmail = `d-self-${randomUUID()}@example.test`;
+    const entraId = requestIdOf(await createPortalAccessRequest({
+      source: 'entra', orgId: org.id, email: entraEmail, name: null, tid: randomUUID(), oid: randomUUID(),
+    }));
+    const takenId = requestIdOf(await createPortalAccessRequest({ source: 'self', orgId: org.id, email: takenEmail, name: null }));
+    const selfId = requestIdOf(await createPortalAccessRequest({ source: 'self', orgId: org.id, email: selfEmail, name: null }));
+    await sys(() => db.insert(portalUsers).values({
+      orgId: org.id, email: takenEmail, authMethod: 'password', status: 'invited', browserAccess: 'granted',
+    }));
+
+    const res = await post(`${base}/decide`, { requestIds: [entraId, takenId, selfId], decision: 'approve' });
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(await res.json()).toEqual({
+      data: [
+        { requestId: entraId, result: 'approved' },
+        { requestId: takenId, result: 'PORTAL_ACCESS_REQUEST_ACCOUNT_EXISTS' },
+        { requestId: selfId, result: 'approved' },
+      ],
+    });
+    expect((await readRequest(entraId)).status).toBe('approved');
+    expect((await readRequest(takenId)).status).toBe('pending');
+    expect((await readRequest(selfId)).status).toBe('approved');
+    expect(await loginsFor(org.id, entraEmail)).toHaveLength(1);
+    expect(await loginsFor(org.id, takenEmail)).toHaveLength(1);
+    expect((await loginsFor(org.id, selfEmail)).map((l) => l.status)).toEqual(['invited']);
+    expect(sentEmails).toEqual([{ kind: 'approved', to: entraEmail }, { kind: 'invite', to: selfEmail }]);
+
+    // The list reads the same rows under the request's RLS context.
+    const pending = await get(base);
+    expect(pending.status).toBe(200);
+    expect((await pending.json()).data.map((i: { id: string }) => i.id)).toEqual([takenId]);
+    const decided = await get(`${base}?status=decided`);
+    expect((await decided.json()).data.map((i: { id: string }) => i.id).sort()).toEqual([entraId, selfId].sort());
+  });
+
+  it('a plain-email invite racing a self-request approval through the real routes yields exactly one account', async () => {
+    const { org, post, base } = await routeFixture();
+    const email = `race-route-${randomUUID()}@example.test`;
+    const requestId = requestIdOf(await createPortalAccessRequest({ source: 'self', orgId: org.id, email, name: null }));
+
+    // Park both requests on the per-address advisory lock, approve first.
+    // Waiters are granted in queue order, so approve creates the invited
+    // account and its request commits before the invite runs. An invite that
+    // read the existing login BEFORE queueing acts on a stale "none" and
+    // inserts a second portal_users row (portal_users.email is not unique).
+    const held = holdLock(sql`SELECT pg_advisory_xact_lock(hashtext(${INBOUND_CONTACT_LOCK_NAMESPACE}), hashtext(${`${org.id}:${email}`}))`);
+    await held.ready;
+    let approving: Response | Promise<Response> | undefined;
+    let inviting: Response | Promise<Response> | undefined;
+    try {
+      approving = post(`${base}/${requestId}/approve`);
+      await waitForLockWaiters('%pg_advisory_xact_lock%', 1);
+      inviting = post(`/organizations/${org.id}/portal-users/invite`, { email });
+      await waitForLockWaiters('%pg_advisory_xact_lock%', 2);
+    } finally {
+      held.release();
+      await held.done;
+    }
+    const approveRes = await approving!;
+    const inviteRes = await inviting!;
+
+    expect(approveRes.status, await approveRes.clone().text()).toBe(200);
+    expect((await approveRes.json()).data.outcome).toBe('invite_pending');
+    expect(inviteRes.status, await inviteRes.clone().text()).toBe(200);
+    const logins = await loginsFor(org.id, email);
+    expect(logins).toHaveLength(1);
+    // The invite re-invited the account approve created rather than minting another.
+    expect((await inviteRes.json()).data.id).toBe(logins[0]!.id);
+    expect((await readRequest(requestId)).portalUserId).toBe(logins[0]!.id);
   });
 });

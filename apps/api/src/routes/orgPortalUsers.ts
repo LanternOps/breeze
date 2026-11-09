@@ -142,7 +142,7 @@ async function hasPortalUserReferences(userId: string): Promise<boolean> {
  * Issue a purpose-bound invite token (bound to the org, the address and the
  * row's CURRENT auth_epoch — pass the epoch the write returned) and email it.
  */
-async function issueAndSendInvite(c: any, orgId: string, user: { id: string; email: string; authEpoch: number }, orgName: string | null, inviterName: string | null | undefined, message?: string): Promise<boolean> {
+export async function issueAndSendInvite(c: any, orgId: string, user: { id: string; email: string; authEpoch: number }, orgName: string | null, inviterName: string | null | undefined, message?: string): Promise<boolean> {
   const rawToken = await issuePortalCapabilityToken({ purpose: 'invite', portalUserId: user.id, orgId, email: user.email, authEpoch: user.authEpoch });
   if (!rawToken) {
     // redis unavailable — do not email a dead invite link
@@ -387,6 +387,13 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
       return c.json({ data: { id: decision.portalUserId, email: decision.email, status: 'invited', contactLink }, emailSent });
     }
 
+    // The per-address lock BEFORE the existing-login read (W3 Review Focus 3).
+    // Approving a self/SSO access request takes this lock, refuses when the
+    // address has an account, and inserts one; read first and this invite
+    // could act on a stale "none" and insert a second portal_users row for the
+    // address (portal_users.email is not unique). Held to the end of the
+    // request transaction; the contact resolver's re-take below is a no-op.
+    await lockPortalInviteAddresses(db, org.id, [normalizedEmail]);
     const [existing] = await db.select({ id: portalUsers.id, email: portalUsers.email, passwordHash: portalUsers.passwordHash, authMethod: portalUsers.authMethod, status: portalUsers.status, contactId: portalUsers.contactId, authEpoch: portalUsers.authEpoch, browserAccess: portalUsers.browserAccess, hasExternalIdentity: portalUserHasIdentitySql() })
       .from(portalUsers).where(and(eq(portalUsers.orgId, org.id), eq(portalUsers.email, normalizedEmail))).limit(1);
 
