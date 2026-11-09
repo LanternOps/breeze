@@ -720,7 +720,9 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "oauth_authorization_codes": tablePolicy("org_id", {"included":["id","user_id","client_id","partner_id","org_id","expires_at","consumed_at","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["payload"]}),
   "oauth_client_blocks": tablePolicy("org_id", {"included":["id","org_id","client_id","blocked_at","blocked_by_user_id","blocked_reason","blocked_until","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "oauth_grants": tablePolicy("org_id", {"included":["id","account_id","client_id","partner_id","org_id","expires_at","created_at","revoked_at","revoked_by_user_id","revoked_reason"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["payload","mcp_domains"]}),
-  "oauth_refresh_tokens": tablePolicy("org_id", {"included":["id","user_id","client_id","partner_id","org_id","expires_at","revoked_at","created_at","last_used_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["payload"]}),
+  // #10301: rotated_at is a timestamp; successor_sealed is a sealed refresh
+  // token (credential material), never exported.
+  "oauth_refresh_tokens": tablePolicy("org_id", {"included":["id","user_id","client_id","partner_id","org_id","expires_at","revoked_at","created_at","last_used_at","rotated_at"],"reviewedIncluded":[],"excludedSensitive":["successor_sealed"],"excludedOpen":["payload"]}),
   "onedrive_device_state": tablePolicy("org_id", {"included":["device_id","org_id","signed_in","onedrive_version","files_on_demand_on","last_reported_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["kfm_folder_states","mounted_libraries","entitled_libraries","signed_in_upns","drift_entries"]}),
   "org_billing_profile_assignments": tablePolicy("org_id", {"included":["id","org_id","partner_id","billing_profile_id","assigned_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // org_documents (W03): `data` is bytea -> excludedOpen by the open-container
