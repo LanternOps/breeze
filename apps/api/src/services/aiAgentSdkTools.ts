@@ -23,6 +23,8 @@ import type { CaptureScope } from './artifacts/toolResultCapture';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
+import { normaliseDispatchResult } from './wisp/dispatchEvidence';
+import { incWispDispatchUnverified } from './wispMetrics';
 import { sanitizeUntrustedToolValue } from './aiInputSanitizer';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { callerRefusal, type CallerRefusalPayload } from './callerVerification/refusal';
@@ -165,6 +167,13 @@ function wispMissingToolAuthDenial(
   console.error(`[AI-SDK] ${err.message}`);
   captureException(err);
   return { allowed: false, error: WISP_UNGATED_CALL_MESSAGE };
+}
+
+/** #10427 (W08): normalise a Wisp dispatch result that carries no evidence, and count it. */
+function wispDispatchResult(toolName: string, args: Record<string, unknown>, result: string): string {
+  const normalised = normaliseDispatchResult(toolName, args, result);
+  if (normalised.unverified) incWispDispatchUnverified(toolName);
+  return normalised.output;
 }
 
 /** #10416: a wait at least this long is worth mentioning in the reply. */
@@ -1297,7 +1306,13 @@ function makeToolHandler(
         toolTimeout,
         toolName,
       );
-      const compactResult = withApprovalWait(compactToolResultForChat(toolName, result), approvalWaitMs);
+      // #10427 (W08): a Wisp dispatch that answers "success" with no job,
+      // command or intent id reaches the model as unverified, so it cannot be
+      // reported as done. Every other session's result is untouched.
+      const modelResult = captureSession?.wispGrant && wispEnabled()
+        ? wispDispatchResult(toolName, args, result)
+        : result;
+      const compactResult = withApprovalWait(compactToolResultForChat(toolName, modelResult), approvalWaitMs);
 
       // For screenshot/vision tools, return image content blocks for Claude Vision.
       // The SDK tool() handler expects MCP CallToolResult format — ImageContent uses
