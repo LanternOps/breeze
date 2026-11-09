@@ -1031,3 +1031,60 @@ describe('sync rejects incomplete site counts and isolates WAN samples by host',
     expect(result.devicesRemoved).toBe(0);
   });
 });
+
+describe('sync run sitesUnmapped', () => {
+  const runUpdate = (writes: { updates: WriteRecord[] }) => {
+    const runUpdates = writes.updates.filter((w) => w.table === unifiSyncRuns);
+    expect(runUpdates).toHaveLength(1);
+    return runUpdates[0]!.values;
+  };
+  // h1/s1 is mapped (BASE_MAPPING); h2/s7 and the h3 site that reuses id s1 are not.
+  function threeHostClient(): UnifiClient {
+    return {
+      ...fakeClient([NET_NEW_DEVICE]),
+      listSites: async () => [
+        { id: 's1', hostId: 'h1', name: 'Mapped' },
+        { id: 's7', hostId: 'h2', name: 'Other customer' },
+        { id: 's1', hostId: 'h3', name: 'Same id, other host' },
+      ],
+    };
+  }
+
+  it('syncIntegration records sitesUnmapped', async () => {
+    const { db, writes } = scriptedDb({ mappings: [BASE_MAPPING] });
+    const result = await syncIntegration({ db, client: threeHostClient() }, BASE_INTEGRATION, 'manual');
+    expect(result.status).toBe('success');
+    expect(runUpdate(writes)).toMatchObject({ status: 'success', sitesUnmapped: 2 });
+  });
+
+  it('a partial run records it too', async () => {
+    const client: UnifiClient = { ...threeHostClient(), listDevicesByHost: async () => new Map() };
+    const { db, writes } = scriptedDb({ mappings: [BASE_MAPPING] });
+    const result = await syncIntegration({ db, client }, BASE_INTEGRATION, 'manual');
+    expect(result.status).toBe('partial');
+    expect(runUpdate(writes)).toMatchObject({ status: 'partial', sitesUnmapped: 2 });
+  });
+
+  it('failed run leaves it null', async () => {
+    const client: UnifiClient = {
+      ...threeHostClient(),
+      listDevicesByHost: async () => { throw new Error('device timeout'); },
+    };
+    const { db, writes } = scriptedDb({ mappings: [BASE_MAPPING] });
+    const result = await syncIntegration({ db, client }, BASE_INTEGRATION, 'manual');
+    expect(result.status).toBe('failed');
+    expect(runUpdate(writes)).toMatchObject({ status: 'failed', sitesUnmapped: null });
+  });
+
+  it('a run with no mappings reads no sites, so it records null (not recorded)', async () => {
+    const { db, writes } = scriptedDb({ mappings: [] });
+    const result = await syncIntegration({ db, client: threeHostClient() }, BASE_INTEGRATION, 'manual');
+    expect(result.status).toBe('success');
+    expect(runUpdate(writes)).toMatchObject({ status: 'success', sitesUnmapped: null });
+  });
+
+  it('collectSyncData carries the count from the sites it already read', async () => {
+    const result = await collectSyncData(threeHostClient(), [BASE_MAPPING]);
+    expect(result.sitesUnmapped).toBe(2);
+  });
+});

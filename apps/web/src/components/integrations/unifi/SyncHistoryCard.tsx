@@ -83,6 +83,9 @@ export default function SyncHistoryCard({ syncRuns }: SyncHistoryCardProps) {
                 >
                   {t("unifiIntegration.gone")}
                 </th>
+                <th className="px-3 py-2 font-medium">
+                  {t("unifiIntegration.sitesUnmapped")}
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y">
@@ -115,6 +118,12 @@ export default function SyncHistoryCard({ syncRuns }: SyncHistoryCardProps) {
                   </td>
                   <td className="px-3 py-2 tabular-nums">
                     {run.devicesRemoved}
+                  </td>
+                  <td
+                    className="px-3 py-2 tabular-nums"
+                    data-testid="unifi-sync-run-unmapped"
+                  >
+                    {run.sitesUnmapped ?? "—"}
                   </td>
                 </tr>
               ))}

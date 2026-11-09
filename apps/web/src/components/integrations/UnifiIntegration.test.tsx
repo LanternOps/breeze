@@ -7,6 +7,8 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import UnifiIntegration from "./UnifiIntegration";
+import SyncHistoryCard from "./unifi/SyncHistoryCard";
+import type { SyncRun } from "./unifi/unifiTypes";
 import { fetchWithAuth } from "../../stores/auth";
 
 vi.mock("../../stores/auth", () => ({
@@ -889,5 +891,35 @@ describe("UnifiIntegration deep-telemetry error surfacing", () => {
       expect(screen.getByTestId("unifi-telemetry-devices")).toBeInTheDocument(),
     );
     expect(screen.queryByTestId("unifi-telemetry-error")).toBeNull();
+  });
+});
+
+describe("SyncHistoryCard unmapped sites column", () => {
+  const run = (
+    id: string,
+    sitesUnmapped: number | null | undefined,
+  ): SyncRun => ({
+    id,
+    trigger: "manual",
+    status: "success",
+    startedAt: "2026-11-08T10:00:00Z",
+    finishedAt: null,
+    hostsSeen: 1,
+    devicesCreated: 0,
+    devicesUpdated: 0,
+    devicesUnchanged: 0,
+    devicesRemoved: 0,
+    error: null,
+    sitesUnmapped,
+  });
+
+  it("renders the count, and an em dash for null or missing", () => {
+    render(
+      <SyncHistoryCard
+        syncRuns={[run("a", 3), run("b", null), run("c", undefined)]}
+      />,
+    );
+    const cells = screen.getAllByTestId("unifi-sync-run-unmapped");
+    expect(cells.map((c) => c.textContent)).toEqual(["3", "—", "—"]);
   });
 });

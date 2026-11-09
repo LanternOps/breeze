@@ -7,6 +7,7 @@ import { buildClassificationWrite, type ClassificationWrite } from '../discovere
 import type { DbExecutor } from './unifiConnectionService';
 import { ispMetricsKey, type UnifiClient, type UnifiDeviceDto, type UnifiIspMetrics } from './unifiClient';
 import { canonicalMac, canonicalAssetMac } from './unifiMac';
+import { countUnmappedSites } from './unifiMappingHosts';
 
 export interface SyncRunResult {
   hostsSeen: number;
@@ -249,6 +250,8 @@ export interface CollectedSync {
   hostsSeen: number;
   fatalError?: string; // an account-wide read failed → the whole sync is a failure, nothing is written
   metricsError?: string; // the ISP-metrics read failed → devices still sync, wan_metrics untouched, run partial
+  /** Listed sites with no mapping row. Absent when /v1/sites was not read (no mappings, or a fatal error first). */
+  sitesUnmapped?: number;
   byMapping: Map<string, MappingFetch>;
 }
 
@@ -358,7 +361,7 @@ export async function collectSyncData(
       byMapping.set(m.id, { mappingId: m.id, devices, metrics });
     }
   }
-  return { hostsSeen: hosts.length, metricsError, byMapping };
+  return { hostsSeen: hosts.length, metricsError, sitesUnmapped: countUnmappedSites(siteRead.sites, mappings), byMapping };
 }
 
 // Phase 2 — database only. Persists the run ledger, reconciles devices/assets,
@@ -547,6 +550,8 @@ export async function applySyncData(
       devicesUpdated: result.devicesUpdated,
       devicesUnchanged: result.devicesUnchanged,
       devicesRemoved: result.devicesRemoved,
+      // NULL = not recorded: a failed run, or one that read no site list.
+      sitesUnmapped: result.status === 'failed' ? null : (collected.sitesUnmapped ?? null),
       error: result.error ?? null,
     })
     .where(eq(unifiSyncRuns.id, run.id));
