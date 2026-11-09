@@ -53,10 +53,11 @@ The W03a API is complete and additive. No UI calls it until W03b lands, and W03a
   - A third SELECT-only `org_member_select` branch copies the `business_calendars` template (`2027-01-03-160000-business-calendars.sql:414-425`). Portal sessions run with `currentPartnerId: null` (`routes/portal/portalDbContext.ts:20`), and so do org-scoped tokens. Without this branch, a resolver called in those contexts would silently fall back to built-in defaults instead of the partner's.
 - **D8: the partner-wide pending count sits on the partner Customer portal tab, with per-org links.** No sidebar badge: spec §5.10 defers notification fan-out.
 - **D9: `portal_access_requests.org_id NOT NULL` (no `partner_id`).** A request asks for one org's portal. It is queue data, not configuration, so the partner-wide-first rule (#2135) does not apply. State this justification in the W03a PR.
-- **D10: the reconciliation job reports and never repairs.**
+- **D10: the reconciliation job reports and never repairs.** **This deviates from approved spec §5.2 release B** ("a reconciliation job reports and repairs drift"), so it is also listed as OD5 for Todd.
   - Repair happens once, at deploy: the migration re-runs the release-A backfill.
   - A scheduled repair would resurrect an identity that a later wave's unlink writer removed while the legacy columns were still set.
   - Mismatches need a human, so the job alerts and the CLI (`scripts/portal-identity-reconcile.ts`, W2) prints the samples.
+  - If Todd keeps the spec's wording instead, the job's repair is restricted to `missingIdentity` rows whose login has `auth_method='entra'` and `linked_via` history `jit`/`migrated`. Every unlink writer in W4+ must then clear `entra_*` in the same transaction (the D4 writer fence).
 
 The advisor quorum (`codex exec`, xhigh, read-only) reviews D1–D10 before the W03a PR opens. Todd does not do that review.
 
@@ -74,6 +75,7 @@ The advisor quorum (`codex exec`, xhigh, read-only) reviews D1–D10 before the 
   - Approving a self-registration request sends the normal invite.
   - Alternative: send nothing on SSO approval.
 - **OD4: deleting the W2 legacy-invite branch (W2 D3).** It is safe only 7 days after #11408 is in production in every region. Task 6 Step 6 does it only when the dispatcher confirms that date; otherwise the deletion moves to the W4 plan.
+- **OD5: should the drift job repair, or only report (D10)?** Plan default: report only, with repair once at deploy through the migration. This deviates from spec §5.2. Alternative: the spec's "reports and repairs", narrowed as described in D10.
 
 ## Settings rule 9 statement (copy into both PR bodies)
 
@@ -145,7 +147,12 @@ The advisor quorum (`codex exec`, xhigh, read-only) reviews D1–D10 before the 
 2. **The resolver runs in an org-scoped DB context:** a portal session context, or an org-scoped token. It must return the partner default row, not built-in defaults. *(Task 2: `org-scoped context sees the partner default row`. Task 3: `resolves the partner default under portalOrgDbAccessContext`.)*
 3. **Approve is double-clicked, or the person got an account meanwhile.** Exactly one account and one approval. The loser gets 409 `PORTAL_ACCESS_REQUEST_NOT_PENDING`. If an account with the email now exists, the result is 409 `PORTAL_ACCESS_REQUEST_ACCOUNT_EXISTS` and the request stays pending. *(Task 7: `two concurrent approvals create one account`, `approve refuses when the email now has an account`.)*
 4. **An inherited change turns off the last SSO method while the org override says `sso_only`.** The effective value falls back to `allowed`, `passwordModeFallback` is true, password login works again, and the card shows why. *(Task 3 pick test. Task 6: `fallback re-allows password login`. Task 10: `shows the fallback notice`.)*
-5. **An org merge where both orgs have a policy and a pending request for the same email.** The survivor's policy is kept, the loser's duplicate pending request is dropped, other requests move, and the merge never fails with 23505. *(Task 2: `merge keeps the survivor policy and dedupes pending requests by email`.)*
+5. **An org merge with policies and pending requests on both sides.** Expected:
+   - The survivor keeps its own policy. When the survivor has no override and the loser does, the loser's override is dropped, not adopted, so the survivor stays on its partner default.
+   - The loser's duplicate pending request is dropped and other requests move.
+   - The merge never fails with 23505.
+
+   *(Task 2: `merge keeps the survivor policy and dedupes pending requests by email`, `merge drops the loser override when the survivor has none`.)*
 
 ---
 
@@ -155,15 +162,15 @@ The advisor quorum (`codex exec`, xhigh, read-only) reviews D1–D10 before the 
 |---|---|---|
 | Create `apps/api/migrations/2027-01-22-2310xx-portal-access-policies-requests.sql` | DDL, RLS, `auth_method` CHECK, identity re-backfill (spec of record, Task 1) | a |
 | Create `apps/api/src/db/schema/portalAccess.ts`, modify `schema/index.ts`, `schema/portal.ts` (`authMethod` comment) | Drizzle tables + types | a |
-| Modify `services/tenantCascade.ts`, `services/orgMergeRegistry.ts`, `services/tenantExportPolicyRegistry.ts`, `__tests__/integration/rls-coverage.integration.test.ts` | Registration | a |
+| Modify `services/tenantCascade.ts`, `services/orgMergeRegistry.ts`, `services/orgMerge.ts` (`DROP_LOSER_OVERRIDE_SETTINGS_TABLES`), `services/tenantExportPolicyRegistry.ts`, `__tests__/integration/rls-coverage.integration.test.ts`, `__tests__/integration/orgMergeRegistry.integration.test.ts` | Registration | a |
 | Create `services/portalAccessPolicy.ts` (+ `.test.ts`) | Capabilities, defaults, pure pick, resolver, `isSignInMethodAllowed` | a |
 | Create `services/portalAccessPolicyWrites.ts` (+ `.test.ts`) | Validation against capabilities, partner/org upserts, view builder | a |
 | Create `packages/shared/src/validators/portalAccessPolicy.ts` (+ `.test.ts`), export from validators index | Zod schemas + view/request types shared with web | a |
 | Create `routes/orgPortalAccessPolicy.ts` (+ `.test.ts`), modify `routes/orgs.ts` (register) | Org + partner GET/PATCH, audit | a |
-| Modify `services/portalUserIdentities.ts`, `services/clientAiExchange.ts`, `routes/clientAi/adminOrgs.ts`, `routes/orgPortalUsers.ts`, `services/contacts/portalInvite.ts`, `services/portalUserDirectory.ts`, `routes/portal/capabilityTokens.ts`, `routes/portal/auth.ts:821-832`, `services/portalAccountState.ts` (doc) | Identities read switch | a |
+| Modify `services/portalUserIdentities.ts`, `services/clientAiExchange.ts`, `routes/clientAi/adminOrgs.ts`, `routes/orgPortalUsers.ts`, `services/contacts/portalInvite.ts`, `services/portalUserDirectory.ts`, `routes/portal/capabilityTokens.ts`, `routes/portal/auth.ts:821-832` | Identities read switch | a |
 | Create `jobs/portalIdentityReconcile.ts` (+ `.test.ts`), modify `services/workerRegistry.ts`, `jobs/workerReadinessManifest.ts`, `jobs/scheduleRegistry.ts` | Daily drift report | a |
-| Create `routes/portal/browserSession.ts` (+ `.test.ts`), modify `routes/portal/auth.ts`, `routes/portal/capabilityTokens.ts`, `routes/portal/helpers.ts` (`PortalSession.method`) | Enforcement at use | a |
-| Create `services/portalAccessRequests.ts` (+ `.test.ts`), modify `services/portalAccountState.ts`, `__tests__/portalAccountWriters.contract.test.ts`, `services/email.ts` (+ templates) | Queue service, new state writers, decision emails | a |
+| Create `routes/portal/browserSession.ts` (+ `.test.ts`), modify `routes/portal/auth.ts`, `routes/portal/capabilityTokens.ts`, `routes/portal/schemas.ts` (`PortalSession.method`) | Enforcement at use | a |
+| Create `services/portalAccessRequests.ts` (+ `.test.ts`), modify `services/portalAccountState.ts`, `__tests__/portalAccountWriters.contract.test.ts`, `services/email.ts` (+ templates), `services/emailDomains/mailPurposes.ts` (+ test) | Queue service, new state writers, decision emails | a |
 | Create `routes/orgPortalAccessRequests.ts` (+ `.test.ts`), modify `routes/orgs.ts` | Org list/approve/deny/decide, partner summary | a |
 | Create integration tests: `portalAccessPolicyMigration`, `portalAccessPoliciesPartnerRls`, `portalAccessRequests`, `portalAccessPolicyEnforcement` (`*.integration.test.ts`); append `portalUserIdentities.integration.test.ts` | Real-DB proofs | a |
 | Create `apps/web/src/components/shared/InheritChoice.tsx`, `apps/web/src/components/settings/portalAccess/PortalAccessPolicyForm.tsx` (+ tests); locale keys in 8 locales | Shared form | b |
@@ -208,6 +215,7 @@ describe('2027-01-22-2310xx-portal-access-policies-requests.sql', () => {
   it('portal_access_policies: refuses a second org row and a second partner row (23505 _org_uq / _partner_uq)');
   it('portal_access_policies: refuses password_mode "off", sso_session_max_hours 0 and 169 (23514)');
   it('portal_access_requests: refuses entra source without issuer/subject/entra_tenant_id and self source with claims (23514 portal_access_requests_claims_chk)');
+  it('portal_access_requests: refuses a self row with issuer set and subject NULL, and an entra row with subject only (23514)');
   it('portal_access_requests: refuses status approved with portal_user_id NULL (23514 portal_access_requests_decision_chk)');
   it('portal_access_requests: refuses a non-normalized email "  A@X.test" (23514 portal_access_requests_email_chk)');
   it('portal_access_requests: a second PENDING row for the same (org, email) → 23505; a denied one beside it is fine');
@@ -300,7 +308,8 @@ CREATE TABLE IF NOT EXISTS public.portal_access_requests (
   CONSTRAINT portal_access_requests_status_chk CHECK (status IN ('pending','approved','denied','expired')),
   CONSTRAINT portal_access_requests_email_chk CHECK (email = lower(btrim(email)) AND length(email) BETWEEN 3 AND 320),
   CONSTRAINT portal_access_requests_claims_chk CHECK (
-        ((source IN ('entra','google')) = (issuer IS NOT NULL AND subject IS NOT NULL))
+        ((source IN ('entra','google')) = (issuer IS NOT NULL))
+    AND ((issuer IS NOT NULL) = (subject IS NOT NULL))
     AND ((source = 'entra') = (entra_tenant_id IS NOT NULL))
     AND (source <> 'entra'  OR issuer = 'https://login.microsoftonline.com/' || entra_tenant_id || '/v2.0')
     AND (source <> 'google' OR issuer = 'https://accounts.google.com')
@@ -388,12 +397,17 @@ END $$;
 - Modify: `services/tenantCascade.ts` (`CORE_ORG_CASCADE_DELETE_ORDER`). Add `'portal_access_policies'` and `'portal_access_requests'` before `'portal_branding'`. They sort alphabetically, and `portal_access_requests` must come before `portal_users`, which it references (child before parent). Add a comment on `portal_access_policies`: "only org-override rows carry org_id; partner rows are swept by cascadeDeletePartner's partner_id pass", copied from `ticket_approval_settings` (`:1023-1025`).
 - Modify: `services/orgMergeRegistry.ts`:
   - `portal_access_policies: { kind: 'keep-survivor' }`, with the comment `// verified: portal_access_policies_org_uq partial UNIQUE (org_id); spec §5.3 survivor wins`.
-  - `portal_access_requests: { kind: 'repoint-dedupe', key: ['email'], keyWhere: "status = 'pending'" }`, with the comment `// verified: portal_access_requests_pending_email_uq`.
+  - `portal_access_requests: { kind: 'repoint-dedupe', key: ['email'], keyWhere: "{status} = 'pending'" }`, with the comment `// verified: portal_access_requests_pending_email_uq`. Use `{col}` placeholders, per the registry header at `:21-24`.
+- Modify: `services/orgMerge.ts:416`. Add `'portal_access_policies'` to `DROP_LOSER_OVERRIDE_SETTINGS_TABLES`.
+  - Without this entry, the generic `keep-survivor` path adopts the loser's override when the survivor has none. The survivor would then silently take on the loser's sign-in policy instead of its inherited partner default, which contradicts spec §5.3 "survivor's policy wins".
+  - `billing_payment_settings` and `ticket_approval_settings` are in this set for the same reason.
+- Modify: `__tests__/integration/orgMergeRegistry.integration.test.ts:692`. Add `'portal_access_policies'` to `DUAL_AXIS_SETTINGS_TABLES`. Without it, "every keep-survivor table has a UNIQUE constraint on exactly (org_id)" fails on the partial index.
 - Modify: `services/tenantExportPolicyRegistry.ts`:
-  - `"portal_access_policies": tablePolicy("org_id", { included: [every column incl. partner_id] … })`.
-  - `"portal_access_requests": tablePolicy("org_id", { included: [every column] … })`.
-  - No column matches `SUSPICIOUS_NAME_PARTS`, and neither table has json/bytea columns.
-- Modify: `__tests__/integration/rls-coverage.integration.test.ts`. Add `'portal_access_policies'` to `DUAL_AXIS_TENANT_TABLES` (`:584`) and `XOR_OWNERSHIP_DUAL_AXIS_TABLES` (`:1085`), each with a one-line comment. `portal_access_requests` is shape 1 and is auto-discovered, so add no entry.
+  - `"portal_access_policies": tablePolicy("org_id", { included: [every column incl. partner_id, except password_mode], reviewedIncluded: ["password_mode"] … })`.
+  - `password_mode` contains `password`, which is in `SUSPICIOUS_NAME_PARTS` (`services/tenantExportPolicy.ts:42-43`). An `included` suspicious name throws, so it goes in `reviewedIncluded`: it holds a mode, not a secret. `portal_branding.enable_password_reset` (`tenantExportPolicyRegistry.ts:775`) is treated the same way.
+  - `"portal_access_requests": tablePolicy("org_id", { included: [every column] … })`. None of its columns hits the list.
+  - Neither table has json/bytea columns.
+- Modify: `__tests__/integration/rls-coverage.integration.test.ts`. Add `'portal_access_policies'` to `DUAL_AXIS_TENANT_TABLES` (`:584`) and `XOR_OWNERSHIP_DUAL_AXIS_TABLES` (`:1084`), each with a one-line comment. `portal_access_requests` is shape 1 and is auto-discovered, so add no entry.
 - Create: `services/tenantExportPolicyRegistry.portalAccess.test.ts`. It moves the classification failure into Test API (W2 pattern).
 - Create: `__tests__/integration/portalAccessPoliciesPartnerRls.integration.test.ts`. Template: `ticketApprovalSettingsPartnerRls.integration.test.ts`.
 - Create: `__tests__/integration/portalAccessRequests.integration.test.ts`, covering RLS, FK and merge here. Task 7 appends the service semantics.
@@ -404,7 +418,7 @@ END $$;
 
 ```ts
 // tenantExportPolicyRegistry.portalAccess.test.ts
-it('classifies every portal_access_policies and portal_access_requests column as include');
+it('classifies every portal_access_policies and portal_access_requests column as include (password_mode via reviewedIncluded)');
 
 // portalAccessPoliciesPartnerRls.integration.test.ts
 it('partner A context cannot insert a partner row for partner B (42501)');
@@ -418,6 +432,7 @@ it('org-scoped context cannot see another org\'s override row');
 it('org A context cannot see or insert org B requests (0 rows / 42501)');
 it('deleting the portal user deletes requests that reference it');
 it('merge keeps the survivor policy and dedupes pending requests by email');            // Review Focus 5
+it('merge drops the loser override when the survivor has none: the survivor stays on the partner default'); // Review Focus 5
 it('merge moves the loser\'s non-colliding and decided requests to the survivor');
 ```
 
@@ -605,7 +620,6 @@ it('org-scope token → 403 on every route (requireScope)');
   - List items gain `browserAccess: PortalBrowserAccess` and `identityProviders: PortalIdentityProvider[]`.
   - `effectivePortalStatus` returns `'pending_setup'` only for a password-eligible account with no password hash and no identity.
   - The `aiToolsOrgAdminReads.ts:166` consumer only gains additive fields.
-- `services/portalAccountState.ts:34`: doc comment → `W3: EXISTS portal_user_identities`.
 - Create `jobs/portalIdentityReconcile.ts` and `jobs/portalIdentityReconcile.test.ts`. Template: `jobs/agreementRequestExpiryReaper.ts`, but with `repeat: { pattern: jobSchedule('portal-identity-reconcile') }`.
 - Modify `jobs/scheduleRegistry.ts`: add the slot `'portal-identity-reconcile'` in the daily tier (minute ≡ 3 mod 5, a free hour). `scheduleRegistry.contract.test.ts` checks collisions.
 - Modify `services/workerRegistry.ts` (entry like `:1606`) and `jobs/workerReadinessManifest.ts` (`consumers('portalIdentityReconcile')`, `requiredWhen: 'redis'`).
@@ -621,7 +635,8 @@ export async function findPortalUserIdByEntraIdentity(exec: IdentityExecutor, in
 export async function listIdentityProvidersByUser(exec: IdentityExecutor, portalUserIds: string[]): Promise<Map<string, PortalIdentityProvider[]>>;
 ```
 - The job module produces `runPortalIdentityReconcile(): Promise<PortalIdentityDriftReport>`, plus `initializePortalIdentityReconcileJob` and `shutdownPortalIdentityReconcileJob`.
-- The run is report-only (D10). It logs the counts as one JSON line. When the report is not clean, it calls `captureException(new Error('portal identity drift'), { eventCode: 'portal_identity_drift', extra: counts })`.
+- `runPortalIdentityReconcile` calls `reconcilePortalUserIdentities()` **with no DB context held**. Do not wrap it in `withSystemDbAccessContext` the way the `agreementRequestExpiryReaper` template does (`:43`): the W2 function opens its own context and throws when one is already held.
+- The run is report-only (D10). It logs the counts as one JSON line. When the report is not clean, it calls `captureException(new Error('portal identity drift'), undefined, { eventCode: 'portal_identity_drift' }, { fingerprint: ['portal_identity_drift'] })`. That matches the signature at `services/sentry.ts:882-890`. The counts go in the JSON log line, not in Sentry.
 - The drift definitions are W2's, unchanged. They cover Entra only, because Google identities have no legacy columns.
 
 - [ ] **Step 1: Write the failing tests**
@@ -640,7 +655,9 @@ it('identity-only active account reads active, not pending_setup; list items car
 // adminOrgs
 it('entra user count and picker come from identities (a password user with an entra identity is counted)');
 // job
-it('reports and never writes; alerts with eventCode portal_identity_drift when not clean');
+it('reports and never writes; calls captureException with tag eventCode portal_identity_drift when not clean');
+// integration
+it('the real job handler runs against Postgres without throwing "context already held"');
 // integration (portalUserIdentities.integration.test.ts)
 it('add-in exchange for a login whose identity row is missing fails closed (403 provisioning_failed) and never inserts a second portal_users row');
 it('JIT still writes both entra_* columns and the identity (writer fence) and the drift report stays clean');
@@ -655,7 +672,7 @@ it('JIT still writes both entra_* columns and the identity (writer fence) and th
 
 **Files:**
 - Create: `routes/portal/browserSession.ts`, `routes/portal/browserSession.test.ts`
-- Modify: `routes/portal/helpers.ts` (`PortalSession` gains `method: PortalSessionMethod`)
+- Modify: `routes/portal/schemas.ts:10-17`. `PortalSession` gains `method: PortalSessionMethod`. `helpers.ts:40` only holds the map.
 - Modify: `routes/portal/auth.ts`, at these sites:
   - middleware `:170-205` (parse) and `:262` (gate), plus a policy gate after the org gate at `:349-373`;
   - login `:499-517` and the payloads at `:530-535` and `:557`;
@@ -686,7 +703,7 @@ Behaviour at each site:
   - If `!isBrowserSessionAllowed(...)`, it purges the session (the same `multi().del().srem()` as the epoch branch), clears the cookie and returns 401 `'Invalid or expired session'`.
   - `PortalAccessPolicyOrgNotFoundError` is handled the same way.
 - **Login.** After `resolveLoginCandidate` returns a user, and **before** the org-active and status 403s, check `isSignInMethodAllowed(await resolvePortalAccessPolicy(user.orgId), 'password')`. When it is false, return the same 401 `'Invalid email or password'`, with no `clearRateLimitKeys`. Both mint sites write `method: 'password'`.
-- **Forgot-password.** `resetEligible = isPasswordEligible(user) && user.browserAccess === 'granted' && await isPortalPasswordResetEnabled(orgId) && isSignInMethodAllowed(await resolvePortalAccessPolicy(orgId), 'password')`. The response is unchanged.
+- **Forgot-password.** Add `browserAccess: portalUsers.browserAccess` to the select at `:614-640`, then compute `resetEligible = isPasswordEligible(user) && user.browserAccess === 'granted' && await isPortalPasswordResetEnabled(orgId) && isSignInMethodAllowed(await resolvePortalAccessPolicy(orgId), 'password')`. The response is unchanged.
 - **`validatePortalCapability`.** After the row checks and **before** `getActiveOrgTenant`, if `!isSignInMethodAllowed(await resolvePortalAccessPolicy(user.orgId), 'password')` → `invalid`. This covers both reset and accept-invite (inv. 7). Only a token that is valid in every other respect learns that its org is unavailable.
 
 - [ ] **Step 1: Write the failing tests**
@@ -717,7 +734,7 @@ it('every password-path endpoint refuses for an sso_only org (login, forgot, res
 - [ ] **Step 6 (gated, OD4): delete the W2 legacy-invite branch.** Do this **only** if the dispatch brief confirms that #11408 has been in production in every region for at least 7 days. If so:
   - `parseCapability` returns `null` for a legacy `{portalUserId}` invite.
   - Delete the legacy branch in `validatePortalCapability` and the `TODO(W3)` at `capabilityTokens.ts:27`.
-  - Flip `accepts a legacy invite token once` to `rejects a legacy invite token with the generic invalid`.
+  - Flip `accepts a legacy invite token once for an invited row` (`capabilityTokens.test.ts:139`) to `rejects a legacy invite token with the generic invalid`.
   - Commit `chore(portal): drop the pre-W2 legacy invite token branch (W2 D3)`.
 
   Otherwise, skip this step and add the deletion to the W4 plan's carry-over list.
@@ -726,9 +743,12 @@ it('every password-path endpoint refuses for an sso_only org (login, forgot, res
 
 **Files:**
 - Create: `services/portalAccessRequests.ts`, `services/portalAccessRequests.test.ts`
-- Modify: `services/portalAccountState.ts` and `.test.ts`
+- Modify: `services/portalAccountState.ts` and `.test.ts`. This includes the `:34` doc comment on `hasExternalIdentity`, which becomes `W3: EXISTS portal_user_identities (portalUserHasIdentitySql)`.
 - Modify: `__tests__/portalAccountWriters.contract.test.ts`, adding `'apps/api/src/services/portalAccessRequests.ts': { kind: 'state-module' }`
-- Modify: `services/email.ts`, adding `sendPortalAccessApproved` and `sendPortalAccessDeclined`. Model the templates on `sendPortalInvite` (`:618-629`) and render with `emailLayout.ts`. If `email.ts` has a purpose union, add the new purposes to it.
+- Modify: `services/email.ts`, adding `sendPortalAccessApproved` and `sendPortalAccessDeclined`. Model the templates on `sendPortalInvite` (`:618-629`) and render with `emailLayout.ts`.
+  - Both methods take `partnerId` and `partnerName` and pass them to `sendEmail`, because partner-lane purposes require them (`email.ts:103-104`).
+- Modify: `services/emailDomains/mailPurposes.ts:99`. Register `'portal.access_request.approved'` and `'portal.access_request.declined'` with the same `{ lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' }` as `portal.invite`.
+- Modify: `mailPurposes.test.ts` (`:69`, `:96`), which pins the sorted partner-branded purpose list.
 - Test (real DB): append to `portalAccessRequests.integration.test.ts`.
 
 **Interfaces — Produces:**
@@ -783,17 +803,21 @@ Rules:
   2. `UPDATE … SET status='expired'` for a pending row on this `(org, email)` whose `expires_at <= now`.
   3. Count the org's live pending rows. If the count is ≥ `PENDING_CAP`, return `capped`.
   4. Insert with `onConflictDoUpdate({ target: [orgId, email], targetWhere: sql\`status = 'pending'\`, set: { lastRequestedAt: now, updatedAt: now } })`. `expires_at = now + 14 d`. Entra claims are stored as `issuer = entraIssuer(tid)`, `subject = oid`, `entra_tenant_id = tid`. Google claims are stored as `issuer = 'https://accounts.google.com'`, `subject = sub`.
-- **Approve.** It runs inside `withDbTransaction`, and the route catches outside it.
+- **Approve.** The service owns the transaction: `approvePortalAccessRequest` and `denyPortalAccessRequest` each wrap their whole body in one `withDbTransaction`. Callers (the single routes and `/decide`) only catch outside the call and add no wrapper of their own.
   1. Read the request with `SELECT … FOR UPDATE` where `id` and `org_id` match. Not found → `NOT_FOUND`. Not pending, or past `expires_at` → `NOT_PENDING`. Do not write the `expired` status here, because the throw rolls the transaction back; lists already derive `expired` from `expires_at`. A concurrent second approver blocks on the row lock and then sees it is no longer pending (Review Focus 3).
-  2. **`addin_user`:** load the account's facts, with `hasExternalIdentity` from `portalUserHasIdentitySql()`. Run `planPortalAccountTransition(facts, 'access_request_approve')`. Update with an `auth_epoch` guard. Outcome: `browser_access_granted`.
+  2. **`addin_user`:**
+     - Load the account's facts, with `hasExternalIdentity` from `portalUserHasIdentitySql()`, and run `planPortalAccountTransition(facts, 'access_request_approve')`.
+     - Update with an `auth_epoch = <read epoch>` guard. If the guard matches zero rows, the account changed since it was read. Throw `PortalAccountTransitionError(PORTAL_ACCOUNT_TRANSITION_REFUSED, 409, 'access_request_approve', 'epoch_moved', 'This account changed while it was being approved. Try again.')`, which rolls back and leaves the request pending.
+     - Outcome: `browser_access_granted`.
   3. **`entra` / `google`:**
+     - First call `lockPortalInviteAddresses(tx, orgId, [email])` (`services/contacts/portalInvite.ts:220`). This is the same advisory lock the MSP invite and `linkLoginToContact` take, so a concurrent invite for the address cannot create a second account. `portal_users.email` is not unique (spec F3).
      - Any portal account in the org with this email (`lower(email)`) → `ACCOUNT_EXISTS` (spec §5.6 step 4: never link by email).
      - Otherwise insert the `portal_users` row with `...initialPortalAccountState('sso_request_approved')` and `authMethod: source`. Entra rows also get `entraTenantId` and `entraOid` (the D4 writer fence).
      - Insert the identity with `onConflictDoNothing().returning()` and `linked_via 'jit'`. An empty result → throw `IDENTITY_LINKED`, which rolls the whole transaction back.
      - Run `linkLoginToContact(tx, …)` (`services/contacts/loginLink.ts:106`).
      - Outcome: `account_created`.
   4. **`self`:**
-     - The same `ACCOUNT_EXISTS` check.
+     - The same address lock and `ACCOUNT_EXISTS` check.
      - Insert with `...initialPortalAccountState('self_request_approved')`, `authMethod: 'password'`, `invitedAt: now` and `invitedBy: deciderUserId`, then link the contact.
      - Outcome: `invite_pending`. The route issues the invite.
   5. Finally set `status='approved'`, `decided_at`, `decided_by_user_id` and `portal_user_id`.
@@ -816,6 +840,8 @@ it('approve self creates an invited password account and returns invite_pending'
 it('approve addin_user grants browser access without bumping auth_epoch');
 it('approve refuses when the email now has an account (409 ACCOUNT_EXISTS) and the request stays pending'); // Review Focus 3
 it('approve refuses when (issuer, subject) is now linked (409 IDENTITY_LINKED) and creates no account');
+it('approve self racing an MSP invite for the same address yields exactly one account');                 // address lock
+it('approve addin_user whose epoch moved after the read → 409 PORTAL_ACCOUNT_TRANSITION_REFUSED, request stays pending');
 it('two concurrent approvals create one account; the second gets NOT_PENDING');                         // Review Focus 3
 it('approve of an expired request → NOT_PENDING and the row reads expired');
 it('deny marks denied with decider; a second deny → NOT_PENDING');
@@ -849,7 +875,7 @@ it('portalAccountWriters census passes with portalAccessRequests.ts classified s
 - **Approve.** `invite_pending` → `issueAndSendInvite(c, orgId, { id, email, authEpoch }, orgName, inviterName)`. `account_created` and `browser_access_granted` → `sendPortalAccessApproved` (OD3). Each email is sent after the service returns. A failed send is logged and does not undo the approval, the same as invites today.
 - **Deny.** `sendPortalAccessDeclined`.
 - **Audit.** `organization.portal_user.access_request.approve` / `.deny`, with `resourceType: 'portal_access_request'`, `resourceId: requestId` and `details: { source, outcome, portalUserId }`. Write one audit row per decided request, including in `/decide`.
-- **`/decide`.** Process the IDs **sequentially**. Each one calls the service inside its own `withDbTransaction`, and the catch sits outside it (`docs/agents/tenancy-rls.md`, "A catch around a query needs `withDbTransaction`"). Never use `Promise.all`.
+- **`/decide`.** Process the IDs **sequentially**. Each one calls the service, which opens its own `withDbTransaction` (Task 7), and the route's catch sits outside the call (`docs/agents/tenancy-rls.md`, "A catch around a query needs `withDbTransaction`"). Never use `Promise.all`.
 - **Shared request schema.** The Zod body lives in `packages/shared/src/validators/portalAccessPolicy.ts` as `decidePortalAccessRequestsSchema`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -875,7 +901,7 @@ it('approve without MFA → requireMfa refusal');
 NODE_OPTIONS=--max-old-space-size=20480 pnpm exec tsc --build apps/api/tsconfig.tests.json; echo "exit=$?"   # exit=0
 cd packages/shared && npx tsc --noEmit; echo "exit=$?"
 cd apps/api && npx vitest run --pool=forks --poolOptions.forks.maxForks=4 --changed origin/main
-pnpm --filter @breeze/api test --run -- --pool=forks --poolOptions.forks.maxForks=4   # FULL unit suite: orgMerge "no merge policy" reds only here
+cd apps/api && npx vitest run --pool=forks --poolOptions.forks.maxForks=4   # FULL unit suite: the merge engine's "no merge policy registered" (orgMerge.ts:1454) reds only here
 # every integration file touched in Tasks 1-8 + the Task 2 contract list + test:rls-coverage + test:integration-suite-coverage
 git fetch origin main && git ls-tree --name-only origin/main apps/api/migrations/ | sed 's#.*/##' | grep -E '^[0-9]{4}-.*\.sql$' \
   | node -e 'const n=require("fs").readFileSync(0,"utf8").split("\n").filter(Boolean);console.log(n.sort((a,b)=>a.localeCompare(b)).pop())'
@@ -884,9 +910,9 @@ pnpm test-stack down
 
 Before the PR opens, run one independent review round (`superpowers:requesting-code-review`) and the advisor quorum on D1–D10. The PR body must contain:
 - `Part of #11380`;
-- the rule-9 statement and decisions D1–D10;
+- the rule-9 statement, decisions D1–D10, and how OD4 and OD5 were resolved;
 - the D9 `org_id NOT NULL` justification;
-- the post-deploy step: run `tsx scripts/portal-identity-reconcile.ts` in each region and expect exit 0;
+- the post-deploy step: from `apps/api`, run `pnpm exec tsx scripts/portal-identity-reconcile.ts` in each region and expect exit 0;
 - "no user-visible change until W03b".
 
 ---
@@ -905,7 +931,7 @@ Test commands: run from `apps/web` with `npx vitest run --pool=forks --poolOptio
   - `portalAccessRequests.*`
   - `partnerSettingsPage.tabs.customerPortal.{label,description}`
   - `orgPortalUsersEditor.badges.{noBrowserAccess,microsoft,google}`
-  - `contactPortalAccess.requested`
+  - `contactsCard.portal.status.requested` (next to `none/invited/active/disabled`, used by `ContactsCard.tsx:36-39`)
 
 **Interfaces — Produces:**
 
@@ -983,9 +1009,12 @@ Form rules:
 - Modify `tabRegistry.ts`:
   - `TabKey` gains `'customerPortal'`.
   - Add `{ key: 'customerPortal', hash: 'customer-portal', ...copy('customerPortal'), icon: DoorOpen, kind: 'panel' }` to the `branding` group after `trustCenter` (OD1).
-- Modify `tabRegistry.test.ts`: the group map and the counts (`toHaveLength(20)` → 21, and so on).
+- Modify `tabRegistry.test.ts`: the group map and the counts. Total tabs go from 20 to 21 (`:16`, `:43`), and visible panel tabs from 18 to 19 (`:~53`).
 - Modify `saveUnits.ts`: `SaveUnitId` gains `'portalAccessPolicy'`, mapped in `UNIT_TABS`.
-- Modify `partnerSettingsDraftStore.ts` (new slice) and `PartnerSettingsPage.tsx` (render branch plus a `useDraftSaveUnit('portalAccessPolicy', …)` unit, following `aiDataPolicy`).
+- Create `partnerSettings/units/portalAccessPolicyUnit.ts` (`usePortalAccessPolicyUnit`, built on `useDraftSaveUnit`). Model it on `units/aiDataPolicyUnit.ts`.
+- Modify `partnerSettingsDraftStore.ts`: add `'portalAccessPolicy'` to `DRAFT_UNIT_IDS` (`:36`) and the slice.
+- Modify `PartnerSettingsPage.tsx`: the render branch, and register the unit in the page's unit arrays (`:73-76`).
+- If `saveUnits.test.ts` pins the unit list, update it.
 - Modify `no-silent-mutations.test.ts` (`TARGET_GLOBS`).
 
 **Interfaces:**
@@ -1007,8 +1036,11 @@ Form rules:
 **Files:**
 - Create: `apps/web/src/components/settings/portalAccess/PortalAccessRequestsList.tsx` and `PortalAccessRequestsList.test.tsx`
 - Modify: `OrgPortalUsersEditor.tsx`. Render the list above the users table at `#portal-access-requests`, and only when pending > 0. Add the badges *Microsoft* / *Google* from `identityProviders` and *No browser access* when `browserAccess === 'none'`.
-- Modify: `contactPortalAccess.ts` and its test. Count logins with `browserAccess === 'granted'` (replacing `authMethod === 'password'` at `:29,60-66`). Return `'requested'` when the contact's normalized email is in the pending-request set, which closes the W1 deferral.
-- Modify: `ContactsCard.tsx`. Fetch `?status=pending` once next to the logins.
+- Modify: `contactPortalAccess.ts` and its test:
+  - Count logins with `browserAccess === 'granted'`, replacing `authMethod === 'password'` at `:29,60-66`.
+  - Return `'requested'` when the contact's normalized email is in the pending-request set. This closes the W1 deferral.
+  - `ContactPortalStatus` (`:23`) gains `'requested'`, as does the status record in `ContactsCard.tsx:36-39`.
+  - `useContactPortalAccess` (`:81-`) fetches `?status=pending` once, next to the logins it already loads.
 - Modify: `no-silent-mutations.test.ts`.
 
 **Interfaces:**
@@ -1059,13 +1091,12 @@ Steps:
 - **PARALLEL GROUP A1 (file-disjoint):**
   - **T3** (new `portalAccessPolicy*.ts`, shared validator).
   - **T5** (identity readers, `portalUserIdentities.ts`, job files).
-  - **T7** (new `portalAccessRequests.ts`, `portalAccountState.ts`, census, `email.ts`).
-  - T7 imports `portalUserHasIdentitySql` from T5. If the two run concurrently, T7 stubs it to the T5 signature. Otherwise run T5 before T7.
-- **PARALLEL GROUP A2:**
-  - **T4** (after T3: new `orgPortalAccessPolicy.ts`).
-  - **T6** (after T3 and T5: `auth.ts`, `capabilityTokens.ts`, `browserSession.ts`, `helpers.ts`).
-  - **T8** (after T7: new `orgPortalAccessRequests.ts`).
-  - T4 and T8 each add one registration line to `routes/orgs.ts`. Land them in either order; the conflict is trivial.
+- **PARALLEL GROUP A2 (file-disjoint):**
+  - **T4** (after T3: new `orgPortalAccessPolicy.ts`, `routes/orgs.ts`).
+  - **T6** (after T3 and T5: `auth.ts`, `capabilityTokens.ts`, `browserSession.ts`, `schemas.ts`).
+  - **T7** (after T5, because it imports `portalUserHasIdentitySql`: new `portalAccessRequests.ts`, `portalAccountState.ts`, census, `email.ts`, `mailPurposes.ts`).
+- **SERIAL:** T8 after T7 (new `orgPortalAccessRequests.ts`).
+  - T8 and T4 each add one registration line to `routes/orgs.ts`. T8 lands after T4, so the conflict is trivial.
 - **SERIAL last:** the T8 Step 6 gate.
 - **Sonnet-eligible:** T2's list edits (contract tests are the check), T5's job wiring (Step 3, second half), T6 Step 6 (the gated deletion).
 - **Opus:** T1, T3, T4, T5 readers, T6, T7, T8.
@@ -1085,7 +1116,8 @@ Steps:
 
 - **Contract suites that only fail under Integration Tests.**
   - The org-cascade order, merge-registry integration, export policy and export-erasure roundtrip suites go red **only under Integration Tests**, never Test API.
-  - `orgMerge.test.ts` "no merge policy registered" goes red only in the **full** unit suite.
+  - The merge engine's `no merge policy registered for '<table>'` (thrown at `orgMerge.ts:1454`) goes red only in the **full** unit suite.
+  - `orgMergeRegistry.integration.test.ts` "every keep-survivor table has a UNIQUE constraint on exactly (org_id)" goes red unless `portal_access_policies` is in its `DUAL_AXIS_SETTINGS_TABLES` (Task 2).
   - Run both before the W03a PR (T8 Step 6).
 - **RLS coverage.** `portal_access_policies` must appear in both `DUAL_AXIS_TENANT_TABLES` and `XOR_OWNERSHIP_DUAL_AXIS_TABLES`. The second list asserts the partner-wide SELECT branch. A shape-1 table (`portal_access_requests`) needs no entry.
 - **Partner-wide writes.** `partner-wide-write-coverage.test.ts` fails if the partner-axis writer in `portalAccessPolicyWrites.ts` does not call `canManagePartnerWidePolicies`.
