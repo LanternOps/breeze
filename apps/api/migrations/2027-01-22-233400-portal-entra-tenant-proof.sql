@@ -20,6 +20,21 @@ DO $$ BEGIN
     ALTER TABLE public.client_ai_tenant_mappings ADD CONSTRAINT client_ai_tenant_mappings_proof_shape_chk
       CHECK ((proven_at IS NULL) = (proven_via IS NULL) AND (proven_at IS NULL) = (proven_evidence IS NULL));
   END IF;
+  -- The evidence names its method and carries that method's keys (PortalEntraProofEvidence).
+  -- The first three disjuncts hand a missing via, or one outside the vocabulary, to the two
+  -- checks above: Postgres runs CHECKs in name order and this one sorts first, so without them
+  -- it would report every such row in their place. IS NOT DISTINCT FROM keeps an evidence object
+  -- with no `via` key (or a non-object) from evaluating to NULL, which a CHECK would let pass.
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.client_ai_tenant_mappings'::regclass
+                  AND conname = 'client_ai_tenant_mappings_proof_evidence_chk') THEN
+    ALTER TABLE public.client_ai_tenant_mappings ADD CONSTRAINT client_ai_tenant_mappings_proof_evidence_chk
+      CHECK (proven_evidence IS NULL
+             OR proven_via IS NULL
+             OR proven_via NOT IN ('m365_connection','proof_run')
+             OR ((proven_evidence->>'via') IS NOT DISTINCT FROM proven_via
+                 AND ((proven_via = 'proof_run' AND proven_evidence ? 'adminOid' AND proven_evidence ? 'runId')
+                   OR (proven_via = 'm365_connection' AND proven_evidence ? 'connectionId' AND proven_evidence ? 'profile'))));
+  END IF;
 END $$;
 
 -- inv. 3: a proof is about ONE tenant. Any writer that changes the tenant (e.g. the AI for

@@ -22,14 +22,18 @@ import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { clientAiTenantMappings, portalAccessPolicies, portalUsers } from '../../db/schema';
+import { clientAiTenantMappings, portalAccessPolicies, portalUserIdentities, portalUsers } from '../../db/schema';
+import { clientAiAuthMiddleware } from '../../middleware/clientAiAuth';
+import { CLIENT_AI_REDIS_KEYS, CLIENT_AI_SESSION_TTL_SECONDS } from '../../routes/clientAi/schemas';
 import { portalRoutes } from '../../routes/portal';
 import { mintPortalBrowserSession, type PortalSessionMethod } from '../../routes/portal/browserSession';
 import { portalRateLimitBuckets, portalSessions } from '../../routes/portal/helpers';
 import { __testOnly } from '../../services/portalAccessPolicy';
+import { recordEntraTenantProof } from '../../services/portalEntraTenantProof';
 import { hashPassword } from '../../services/password';
+import { entraIssuer } from '../../services/portalUserIdentities';
 import { createOrganization, createPartner } from './db-utils';
-import { getTestDb } from './setup';
+import { getTestDb, getTestRedis } from './setup';
 
 const HOUR_MS = 3_600_000;
 const INVALID = { error: 'Invalid or expired session' };
@@ -170,5 +174,101 @@ describe('entra browser sessions: tenant pin and absolute cap (real DB + router)
     const entraInSsoOnly = await mint({ ...ssoOnly.session, method: 'entra', entraTenantId: ssoOnly.tenantId });
     await expectRefusedAndPurged(pwInSsoOnly);
     expect((await profile(entraInSsoOnly)).status).toBe(200);
+  });
+});
+
+/**
+ * Review Focus 1 end to end (plan D7, spec §5.4): org A holds a proven tenant
+ * T; a proof run in org B (another partner) proves T through the real proof
+ * service. The displacement's epoch bump is the only thing that reaches A's
+ * live add-in sessions (the add-in middleware reads no portal policy, inv. 9),
+ * so this drives the real client-AI auth middleware against the session
+ * payload the exchange writes (services/clientAiExchange.ts).
+ */
+describe('the tenant changes hands: org A sessions after org B proves its tenant (real proof service + middleware)', () => {
+  const addin = (() => {
+    const a = new Hono();
+    a.use('*', clientAiAuthMiddleware);
+    a.get('/protected', (c) => c.json({ id: c.get('clientAiAuth').clientUserId }));
+    return a;
+  })();
+  const callAddin = (token: string) => addin.request('/protected', { headers: { Authorization: `Bearer ${token}` } });
+
+  /** Exactly what the add-in exchange stores for a resolved user. */
+  async function mintAddinSession(user: { id: string; orgId: string; authEpoch: number }): Promise<string> {
+    const token = `client-ai-${randomUUID()}`;
+    const redis = getTestRedis();
+    await redis.setex(
+      CLIENT_AI_REDIS_KEYS.session(token),
+      CLIENT_AI_SESSION_TTL_SECONDS,
+      JSON.stringify({ portalUserId: user.id, orgId: user.orgId, authEpoch: user.authEpoch, createdAt: new Date().toISOString() }),
+    );
+    await redis.sadd(CLIENT_AI_REDIS_KEYS.userSessions(user.id), token);
+    return token;
+  }
+
+  /** An Entra account (identity row + the legacy entra_* fence columns), as the add-in JIT creates it. */
+  async function entraAccount(orgId: string, tid: string, browserAccess: 'granted' | 'none') {
+    const oid = randomUUID();
+    const [user] = await getTestDb().insert(portalUsers).values({
+      orgId, email: `rf1-${randomUUID()}@acme.example`, authMethod: 'entra', status: 'active', browserAccess,
+      entraTenantId: tid, entraOid: oid,
+    }).returning({ id: portalUsers.id, orgId: portalUsers.orgId, authEpoch: portalUsers.authEpoch });
+    await getTestDb().insert(portalUserIdentities).values({
+      orgId, portalUserId: user!.id, provider: 'entra', issuer: entraIssuer(tid), subject: oid, entraTenantId: tid, linkedVia: 'jit',
+    });
+    return user!;
+  }
+
+  const proofRun = (orgId: string, tenantId: string) => recordEntraTenantProof({
+    orgId, tenantId, via: 'proof_run', evidence: { adminOid: randomUUID(), runId: randomUUID() }, provenByUserId: null,
+  });
+
+  it("A's add-in session with an identity in T gets 401 and is purged; an A add-in session with no identity in T stays 200", async () => {
+    const partnerA = await createPartner();
+    const orgA = await createOrganization({ partnerId: partnerA.id });
+    const tid = randomUUID();
+    expect((await proofRun(orgA.id, tid)).displaced).toBeNull();
+    await seedPolicy({ orgId: orgA.id, entraEnabled: true });
+
+    // In T: an add-in user who also has the browser portal (an entra browser session too).
+    const inTenant = await entraAccount(orgA.id, tid, 'granted');
+    // Not in T: an add-in user whose identity is in another tenant (the bump is per tenant, not per org).
+    const elsewhere = await entraAccount(orgA.id, randomUUID(), 'none');
+    const inTenantAddin = await mintAddinSession(inTenant);
+    const elsewhereAddin = await mintAddinSession(elsewhere);
+    const inTenantBrowser = await mint({
+      portalUserId: inTenant.id, orgId: orgA.id, authEpoch: inTenant.authEpoch, method: 'entra', entraTenantId: tid,
+    });
+
+    // Before: everything is live (the 401s below are caused by the displacement, nothing else).
+    expect((await callAddin(inTenantAddin)).status).toBe(200);
+    expect((await callAddin(elsewhereAddin)).status).toBe(200);
+    expect((await profile(inTenantBrowser)).status).toBe(200);
+
+    // Org B, another partner, proves T with a proof run: A's proven mapping is displaced.
+    const partnerB = await createPartner();
+    const orgB = await createOrganization({ partnerId: partnerB.id });
+    const { displaced } = await proofRun(orgB.id, tid);
+    expect(displaced).toMatchObject({ orgId: orgA.id, partnerId: partnerA.id, wasProven: true, epochsBumped: 1 });
+
+    // The add-in session of the identity in T: 401, and purged from the store and the per-user index.
+    const refused = await callAddin(inTenantAddin);
+    expect(refused.status).toBe(401);
+    expect(await refused.json()).toEqual(INVALID);
+    const redis = getTestRedis();
+    expect(await redis.get(CLIENT_AI_REDIS_KEYS.session(inTenantAddin))).toBeNull();
+    expect(await redis.sismember(CLIENT_AI_REDIS_KEYS.userSessions(inTenant.id), inTenantAddin)).toBe(0);
+    // Durable: the epoch moved, so a replay of the old payload can never pass again.
+    const [after] = await getTestDb().select({ authEpoch: portalUsers.authEpoch }).from(portalUsers).where(eq(portalUsers.id, inTenant.id));
+    expect(after!.authEpoch).toBe(inTenant.authEpoch + 1);
+
+    // The browser side of the same person dies too (A no longer has a proven tenant).
+    await expectRefusedAndPurged(inTenantBrowser);
+
+    // The A add-in user with no identity in T is untouched.
+    const kept = await callAddin(elsewhereAddin);
+    expect(kept.status).toBe(200);
+    expect(await kept.json()).toEqual({ id: elsewhere.id });
   });
 });

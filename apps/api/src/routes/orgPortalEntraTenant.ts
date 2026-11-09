@@ -46,6 +46,7 @@ import { resolveAccessibleOrg } from './orgPortalSettings';
 export const PORTAL_ENTRA_NOT_CONFIGURED = 'PORTAL_ENTRA_NOT_CONFIGURED';
 export const PORTAL_ENTRA_TENANT_HINT_REQUIRED = 'PORTAL_ENTRA_TENANT_HINT_REQUIRED';
 export const PORTAL_ENTRA_TENANT_HINT_INVALID = 'PORTAL_ENTRA_TENANT_HINT_INVALID';
+export const PORTAL_ENTRA_TENANT_HINT_LOOKUP_FAILED = 'PORTAL_ENTRA_TENANT_HINT_LOOKUP_FAILED';
 
 const AUDIT_LINK_CREATED = 'organization.portal_identity_proof.link_created';
 const AUDIT_REMOVED = 'organization.portal_identity_proof.removed';
@@ -61,6 +62,10 @@ const HINT_REQUIRED_BODY = {
 const HINT_INVALID_BODY = {
   error: 'That is not a Microsoft tenant ID or a domain verified by a Microsoft tenant.',
   code: PORTAL_ENTRA_TENANT_HINT_INVALID,
+} as const;
+const HINT_LOOKUP_FAILED_BODY = {
+  error: "Couldn't reach Microsoft to look up that domain. Try again, or enter the tenant ID.",
+  code: PORTAL_ENTRA_TENANT_HINT_LOOKUP_FAILED,
 } as const;
 const ORG_HAS_OTHER_TENANT_BODY = {
   error: 'This organization is linked to a different Microsoft tenant. Remove that link before creating a proof link for another tenant.',
@@ -105,13 +110,15 @@ function pickProofLinkTenant(status: PortalEntraTenantStatus, hintTenantId: stri
   return { ok: false, status: 422, body: HINT_REQUIRED_BODY };
 }
 
-/** The hint's tenant id; `null` for no hint; `undefined` for a hint that names no tenant. */
-async function resolveHint(raw: string | undefined): Promise<string | null | undefined> {
+/** The hint's tenant id; `null` for no hint; `undefined` for a hint that names no tenant; `'lookup_failed'` when Microsoft could not be asked. */
+async function resolveHint(raw: string | undefined): Promise<string | null | undefined | 'lookup_failed'> {
   if (!raw) return null;
   const hint = parseTenantHint(raw);
   if (!hint) return undefined;
   if (hint.kind === 'guid') return hint.tid;
-  return (await resolveEntraTenantIdFromDomain(hint.domain)) ?? undefined;
+  const result = await resolveEntraTenantIdFromDomain(hint.domain);
+  if (result.kind === 'tenant') return result.tid;
+  return result.kind === 'lookup_failed' ? 'lookup_failed' : undefined;
 }
 
 function proofRefusal(err: unknown): { status: 409 | 422; body: { error: string; code: string } } {
@@ -184,6 +191,7 @@ export function registerPortalEntraTenantRoutes(orgRoutes: Hono): void {
       if (await isHoldingOrg(org.id)) return c.json(PROTECTED_ORG_ERROR, 409);
 
       const hintTenantId = await resolveHint(c.req.valid('json').tenant);
+      if (hintTenantId === 'lookup_failed') return c.json(HINT_LOOKUP_FAILED_BODY, 503);
       if (hintTenantId === undefined) return c.json(HINT_INVALID_BODY, 422);
       const tenant = pickProofLinkTenant(await readStatus(org.id), hintTenantId);
       if (!tenant.ok) return c.json(tenant.body, tenant.status);

@@ -23,13 +23,13 @@ import { generatePKCEChallenge } from '../sso';
 import { PORTAL_REDIS_KEYS, PORTAL_USE_REDIS } from '../../routes/portal/schemas';
 import { PORTAL_OIDC_STATE_CAP, capMapByOldest, luaGetDel, portalOidcStates } from '../../routes/portal/helpers';
 import type { PortalOidcProvider, PortalOidcPurpose, PortalOidcState } from './types';
+import { PORTAL_ENTRA_SIGN_IN_AUTHORITY, isGuid, isProvableEntraTenantId, isSha256Hex } from './validators';
 
 export const PORTAL_OIDC_STATE_TTL_SECONDS = 600;
 export const PORTAL_OIDC_BINDING_COOKIE = 'breeze_portal_oidc';
 /** Only the OIDC routes (start sets it, callback reads and clears it) ever see the cookie. */
 const BINDING_COOKIE_PATH = '/api/v1/portal/auth/oidc';
 const STATE_TTL_MS = PORTAL_OIDC_STATE_TTL_SECONDS * 1000;
-const SHA256_HEX = /^[0-9a-f]{64}$/;
 /** Generous bound on a `state` query value; ours are 43 characters. */
 const MAX_RAW_STATE_LENGTH = 512;
 
@@ -52,9 +52,10 @@ function randomValue(): string {
 
 /**
  * Mints state + nonce + PKCE, stores the record, returns what the authorize
- * URL and the Set-Cookie need. Throws PortalOidcStateUnavailableError when
- * Redis is required but absent, so no authorize URL is ever handed out for a
- * flow whose callback could not succeed.
+ * URL and the Set-Cookie need. Throws on a record its own consume would refuse
+ * (a caller bug), and PortalOidcStateUnavailableError when Redis is required
+ * but absent, so no authorize URL is ever handed out for a flow whose callback
+ * could not succeed.
  */
 export async function createPortalOidcState(input: {
   provider: PortalOidcProvider;
@@ -79,6 +80,12 @@ export async function createPortalOidcState(input: {
     authority: input.authority,
     createdAt,
   };
+  // A caller bug (an unpinned proof, an authority that does not match the
+  // purpose, a non-GUID id) fails here, at start, instead of burning the state
+  // at the callback after a full Microsoft round trip.
+  if (typeof recordShape(record) === 'string') {
+    throw new Error('createPortalOidcState: the purpose, authority or host org is not a well-formed flow state');
+  }
   const payload = JSON.stringify(record);
   const stateHash = sha256Hex(state);
 
@@ -104,6 +111,11 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
+/**
+ * The purpose, only in the exact shapes the start routes write: sha256 hex
+ * capability hashes, GUID ids, and a proof pinned to a provable tenant (a
+ * lowercase GUID, never the consumer tenant — D6). Anything else is null.
+ */
 function parsePurpose(value: unknown): PortalOidcPurpose | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const { kind, inviteTokenHash, portalUserId, orgId, authEpoch, runTokenHash, expectedTenantId } = value as Record<string, unknown>;
@@ -111,10 +123,10 @@ function parsePurpose(value: unknown): PortalOidcPurpose | null {
     case 'login':
       return { kind: 'login' };
     case 'invite':
-      return isNonEmptyString(inviteTokenHash) ? { kind: 'invite', inviteTokenHash } : null;
+      return isSha256Hex(inviteTokenHash) ? { kind: 'invite', inviteTokenHash } : null;
     case 'link':
-      return isNonEmptyString(portalUserId)
-        && isNonEmptyString(orgId)
+      return isGuid(portalUserId)
+        && isGuid(orgId)
         && typeof authEpoch === 'number'
         && Number.isSafeInteger(authEpoch)
         && authEpoch > 0
@@ -122,12 +134,48 @@ function parsePurpose(value: unknown): PortalOidcPurpose | null {
         : null;
     case 'tenant_proof':
       // A proof run is always pinned to a tenant (D6): an unpinned state is refused.
-      return isNonEmptyString(runTokenHash) && isNonEmptyString(orgId) && isNonEmptyString(expectedTenantId)
+      return isSha256Hex(runTokenHash) && isGuid(orgId) && isProvableEntraTenantId(expectedTenantId)
         ? { kind: 'tenant_proof', runTokenHash, orgId, expectedTenantId }
         : null;
     default:
       return null;
   }
+}
+
+/**
+ * The only authority a purpose may carry: the pinned tenant for a proof run
+ * (D6), `organizations` for every user sign-in (the structural guest refusal).
+ * The callback redeems the code at the stored authority, so a record pairing a
+ * purpose with any other authority is refused.
+ */
+function authorityFor(purpose: PortalOidcPurpose): string {
+  return purpose.kind === 'tenant_proof' ? purpose.expectedTenantId : PORTAL_ENTRA_SIGN_IN_AUTHORITY;
+}
+
+/** The record, or why it is not one. Pure (no log, no clock), so create and consume share it. */
+function recordShape(parsed: unknown): PortalOidcState | 'version' | 'shape' {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return 'shape';
+  const { v, provider, purpose: rawPurpose, nonce, codeVerifier, bindingHash, hostOrgId, authority, createdAt } =
+    parsed as Record<string, unknown>;
+  if (v !== 1) return 'version';
+
+  const purpose = parsePurpose(rawPurpose);
+  const host = hostOrgId === null ? null : isGuid(hostOrgId) ? hostOrgId : undefined;
+  if (
+    provider !== 'entra'
+    || !purpose
+    || !isNonEmptyString(nonce)
+    || !isNonEmptyString(codeVerifier)
+    || !isSha256Hex(bindingHash)
+    || typeof authority !== 'string'
+    || authority !== authorityFor(purpose)
+    || typeof createdAt !== 'number'
+    || !Number.isFinite(createdAt)
+    || host === undefined
+  ) {
+    return 'shape';
+  }
+  return { v: 1, provider, purpose, nonce, codeVerifier, bindingHash, hostOrgId: host, authority, createdAt };
 }
 
 function parseState(raw: string): PortalOidcState | null {
@@ -137,32 +185,12 @@ function parseState(raw: string): PortalOidcState | null {
   } catch {
     return reject('parse');
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return reject('shape');
-  const { v, provider, purpose: rawPurpose, nonce, codeVerifier, bindingHash, hostOrgId, authority, createdAt } =
-    parsed as Record<string, unknown>;
-  if (v !== 1) return reject('version');
-
-  const purpose = parsePurpose(rawPurpose);
-  if (
-    provider !== 'entra'
-    || !purpose
-    || !isNonEmptyString(nonce)
-    || !isNonEmptyString(codeVerifier)
-    || typeof bindingHash !== 'string'
-    || !SHA256_HEX.test(bindingHash)
-    || !isNonEmptyString(authority)
-    || typeof createdAt !== 'number'
-    || !Number.isFinite(createdAt)
-  ) {
-    return reject('shape');
-  }
-  const host = hostOrgId === null ? null : isNonEmptyString(hostOrgId) ? hostOrgId : undefined;
-  if (host === undefined) return reject('shape');
+  const record = recordShape(parsed);
+  if (typeof record === 'string') return reject(record);
   // The store's TTL is the primary expiry; this holds the same 600 s across
   // both backends even if a TTL was lost.
-  if (Date.now() - createdAt >= STATE_TTL_MS) return reject('expired');
-
-  return { v: 1, provider, purpose, nonce, codeVerifier, bindingHash, hostOrgId: host, authority, createdAt };
+  if (Date.now() - record.createdAt >= STATE_TTL_MS) return reject('expired');
+  return record;
 }
 
 function bindingMatches(bindingHash: string, bindingCookieValue: string | undefined): boolean {

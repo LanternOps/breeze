@@ -245,6 +245,26 @@ describe('session mint under the Redis backend', () => {
     expect(portalSessions.size).toBe(0);
   });
 
+  it('a null multi().exec() result (aborted transaction) is a store failure: 503, no cookie, nothing in memory', async () => {
+    const aborted = fakeRedis();
+    aborted.multi = vi.fn(() => {
+      const api = {
+        setex: (..._a: unknown[]) => api,
+        sadd: (..._a: unknown[]) => api,
+        expire: (..._a: unknown[]) => api,
+        // ioredis types exec() as never-null; an aborted MULTI returns null at runtime.
+        exec: async () => null as unknown as (string | null)[][],
+      };
+      return api;
+    }) as unknown as typeof aborted.multi;
+    redis.current = aborted;
+    const res = await post('/test-mint', { portalUserId: USER_ID, orgId: ORG_ID, authEpoch: 7, method: 'password' });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ unavailable: true });
+    expect(res.headers.getSetCookie()).toEqual([]);
+    expect(portalSessions.size).toBe(0);
+  });
+
   it('accept-invite never answers 200 with a session it could not store', async () => {
     // Redis passes the route's up-front check, then disappears before the mint.
     state.dropRedisOnPurge = true;

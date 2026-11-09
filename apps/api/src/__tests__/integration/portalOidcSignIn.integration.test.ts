@@ -374,6 +374,29 @@ describe('portal OIDC account resolution (real DB, proven tenant)', () => {
     expect(await identitiesFor({ portalUserId: invited.id })).toEqual([]);
   });
 
+  it('invite while another login holds the legacy (entra_tenant_id, entra_oid) pair with no identity row → identity_conflict, invite NOT consumed', async () => {
+    const { org, tid } = await seedOrg();
+    const oid = randomUUID();
+    // Drift in ANOTHER partner's org (invisible to the org's RLS): the legacy
+    // columns are set, no portal_user_identities row exists, so step 1 finds nothing.
+    const { org: elsewhere } = await seedOrg();
+    const holder = await seedAccount(elsewhere.id, { authMethod: 'entra', passwordHash: null });
+    await admin().update(portalUsers).set({ entraTenantId: tid, entraOid: oid }).where(eq(portalUsers.id, holder.id));
+    const invited = await seedAccount(org.id, { status: 'invited', passwordHash: null, authEpoch: 7 });
+    const consumer = vi.fn(async () => ({ portalUserId: invited.id, orgId: org.id, authEpoch: 7 }));
+
+    const out = await signIn({
+      identity: entraIdentity(tid, oid, null),
+      purpose: { kind: 'invite', inviteTokenHash: 'b'.repeat(64) },
+      inviteConsumer: consumer,
+    });
+    expect(out).toEqual({ kind: 'denied', reason: 'identity_conflict', orgId: org.id });
+    expect(consumer).not.toHaveBeenCalled(); // the MSP's invite still works once the drift is fixed
+    expect(await readAccount(invited.id)).toMatchObject({ status: 'invited', authEpoch: 7, entraOid: null });
+    expect(await identitiesFor({ oid })).toEqual([]);
+    expect(await readAccount(holder.id)).toMatchObject({ entraTenantId: tid, entraOid: oid, authEpoch: 5 });
+  });
+
   it('link adds self_link to a signed-in password user; under sso_only it also clears the hash', async () => {
     const { org, tid } = await seedOrg();
     const allowedUser = await seedAccount(org.id, { passwordHash: 'kept-hash' });
@@ -498,6 +521,11 @@ describe('portal OIDC account resolution (real DB, proven tenant)', () => {
     const email = `entra-${randomUUID()}@example.test`;
     const tid = randomUUID();
     const oid = randomUUID();
+    // Approval re-checks that the request's tenant is still the org's proven one.
+    await admin().insert(clientAiTenantMappings).values({
+      orgId: org.id, entraTenantId: tid, provenAt: new Date(), provenVia: 'proof_run',
+      provenEvidence: { via: 'proof_run', adminOid: randomUUID(), runId: randomUUID() },
+    });
     const created = await createPortalAccessRequest({ source: 'entra', orgId: org.id, email, name: 'Ent Ra', tid, oid });
     expect(created.kind).toBe('created');
 

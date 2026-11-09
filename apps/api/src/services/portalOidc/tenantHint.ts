@@ -65,24 +65,32 @@ export function parseTenantHint(raw: string): TenantHint | null {
   return domain ? { kind: 'domain', domain } : null;
 }
 
-/** Logged by reason and HTTP status only, never the domain or a response body. */
-function lookupFailed(reason: string, extra: { status?: number } = {}): null {
+export type TenantLookupResult =
+  | { kind: 'tenant'; tid: string }
+  /** A definite negative: not hostname-shaped, a consumer (MSA) domain, or Microsoft says no tenant verified it. */
+  | { kind: 'unknown_domain' }
+  /** Ambiguous: network, timeout, non-2xx other than invalid_tenant, unparseable or unexpected body. */
+  | { kind: 'lookup_failed' };
+
+/** Logged by reason, HTTP status and error name only, never the domain or a response body. */
+function lookupFailed(reason: string, extra: { status?: number; errorName?: string } = {}): TenantLookupResult {
   console.warn('[portal] Entra tenant hint lookup failed', { reason, ...extra });
-  return null;
+  return { kind: 'lookup_failed' };
 }
 
 /**
  * The tenant id of the Entra tenant that has verified `domain`, read from the
- * `issuer` of Microsoft's public openid-configuration for it. Null for a value
- * that is not hostname-shaped (nothing is fetched), an unknown domain, a
- * consumer (MSA) domain, a timeout, or any malformed answer.
+ * `issuer` of Microsoft's public openid-configuration for it. `unknown_domain`
+ * is returned only for a definite negative (value not hostname-shaped, nothing
+ * fetched; a consumer (MSA) domain; Microsoft's 400 `invalid_tenant`). Every
+ * other failure is `lookup_failed`, so an outage is not shown as a bad hint.
  */
 export async function resolveEntraTenantIdFromDomain(
   domain: string,
   deps: { fetch?: FetchLike } = {},
-): Promise<string | null> {
+): Promise<TenantLookupResult> {
   const hint = typeof domain === 'string' ? parseTenantHint(domain) : null;
-  if (!hint || hint.kind !== 'domain') return null;
+  if (!hint || hint.kind !== 'domain') return { kind: 'unknown_domain' };
   const fetchImpl: FetchLike = deps.fetch ?? globalThis.fetch;
 
   let response: Response;
@@ -93,22 +101,30 @@ export async function resolveEntraTenantIdFromDomain(
       redirect: 'error',
       signal: AbortSignal.timeout(TENANT_HINT_LOOKUP_TIMEOUT_MS),
     });
-  } catch {
-    return lookupFailed('request');
+  } catch (err) {
+    return lookupFailed('request', { errorName: err instanceof Error ? err.name : typeof err });
   }
-  // Microsoft answers 400 (AADSTS90002) for a domain no tenant has verified.
-  if (!response.ok) return lookupFailed('status', { status: response.status });
 
   let body: unknown;
   try {
     body = await response.json();
   } catch {
-    return lookupFailed('body');
+    return lookupFailed(response.ok ? 'body' : 'status', response.ok ? {} : { status: response.status });
   }
-  const issuer = body && typeof body === 'object' && !Array.isArray(body)
-    ? (body as Record<string, unknown>).issuer
+  const record = body && typeof body === 'object' && !Array.isArray(body)
+    ? (body as Record<string, unknown>)
     : undefined;
+
+  // Microsoft answers 400 {"error":"invalid_tenant"} (AADSTS90002) for a domain no tenant has verified.
+  if (!response.ok) {
+    if (response.status === 400 && record?.error === 'invalid_tenant') return { kind: 'unknown_domain' };
+    return lookupFailed('status', { status: response.status });
+  }
+
+  const issuer = record?.issuer;
   const match = typeof issuer === 'string' ? ISSUER.exec(issuer) : null;
-  const tid = match ? normalizeTenantGuid(match[1]!) : null;
-  return tid ?? lookupFailed('issuer');
+  if (!match) return lookupFailed('issuer');
+  if (match[1]!.toLowerCase() === CONSUMER_TENANT_ID) return { kind: 'unknown_domain' };
+  const tid = normalizeTenantGuid(match[1]!);
+  return tid ? { kind: 'tenant', tid } : lookupFailed('issuer');
 }

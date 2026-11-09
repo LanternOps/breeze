@@ -65,7 +65,14 @@ export class PortalEntraTokenError extends Error {
   }
 }
 
-function fail(check: string, extra: { status?: number } = {}): never {
+/** The underlying error's name and code only: never its message, which can carry a URL, token or body. */
+function errorDiagnostics(error: unknown): { errorName: string; errorCode?: string } {
+  const name = error instanceof Error ? error.name : typeof error;
+  const code = (error as { code?: unknown } | null)?.code;
+  return { errorName: name, ...(typeof code === 'string' ? { errorCode: code } : {}) };
+}
+
+function fail(check: string, extra: { status?: number; errorName?: string; errorCode?: string } = {}): never {
   console.warn('[portal] Microsoft sign-in check failed', { check, ...extra });
   throw new PortalEntraTokenError(check);
 }
@@ -155,16 +162,16 @@ export async function exchangePortalEntraCode(
       redirect: 'error',
       signal: AbortSignal.timeout(TOKEN_ENDPOINT_TIMEOUT_MS),
     });
-  } catch {
-    fail('token_endpoint');
+  } catch (error) {
+    fail('token_endpoint', errorDiagnostics(error));
   }
   if (!response.ok) fail('token_endpoint', { status: response.status });
 
   let parsed: unknown;
   try {
     parsed = await response.json();
-  } catch {
-    fail('token_endpoint', { status: response.status });
+  } catch (error) {
+    fail('token_endpoint', { status: response.status, ...errorDiagnostics(error) });
   }
   const record = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
     ? (parsed as Record<string, unknown>)
@@ -220,7 +227,8 @@ export async function verifyPortalEntraIdToken(
   } catch (error) {
     // A jose ERR_* code is a token verdict; anything else is the JWKS fetch.
     const code = (error as { code?: unknown }).code;
-    fail(typeof code === 'string' && code.startsWith('ERR_') ? 'id_token_jwt' : 'jwks_unavailable');
+    if (typeof code === 'string' && code.startsWith('ERR_')) fail('id_token_jwt', errorDiagnostics(error));
+    fail('jwks_unavailable', errorDiagnostics(error));
   }
 
   const tid = normalizeGuid(payload.tid);

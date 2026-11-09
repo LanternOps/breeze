@@ -98,7 +98,7 @@ describe('resolveEntraTenantIdFromDomain', () => {
       token_endpoint: `https://login.microsoftonline.com/${TID}/oauth2/v2.0/token`,
     }));
 
-    expect(await resolveEntraTenantIdFromDomain('Contoso.com', { fetch })).toBe(TID);
+    expect(await resolveEntraTenantIdFromDomain('Contoso.com', { fetch })).toEqual({ kind: 'tenant', tid: TID });
 
     expect(fetch).toHaveBeenCalledTimes(1);
     const [url, init] = fetch.mock.calls[0]!;
@@ -114,18 +114,26 @@ describe('resolveEntraTenantIdFromDomain', () => {
   it('does not fetch at all for a value that is not hostname-shaped (SSRF surface)', async () => {
     const fetch = fetchReturning(openIdConfig({ issuer: `https://login.microsoftonline.com/${TID}/v2.0` }));
     for (const domain of ['common', 'contoso.com/../organizations', 'user@contoso.com', 'contoso.com?x', '10.0.0.1', '', TID]) {
-      expect(await resolveEntraTenantIdFromDomain(domain, { fetch })).toBeNull();
+      expect(await resolveEntraTenantIdFromDomain(domain, { fetch })).toEqual({ kind: 'unknown_domain' });
     }
     expect(fetch).not.toHaveBeenCalled();
   });
 
   it('a consumer (MSA) domain resolves to nothing', async () => {
     const fetch = fetchReturning(openIdConfig({ issuer: `https://login.microsoftonline.com/${CONSUMER_TID}/v2.0` }));
-    expect(await resolveEntraTenantIdFromDomain('outlook.com', { fetch })).toBeNull();
+    expect(await resolveEntraTenantIdFromDomain('outlook.com', { fetch })).toEqual({ kind: 'unknown_domain' });
+  });
+
+  it('a 400 invalid_tenant answer is a definite unknown domain', async () => {
+    const fetch = vi.fn(async () => openIdConfig({ error: 'invalid_tenant', error_description: 'AADSTS90002' }, { status: 400 }));
+    expect(await resolveEntraTenantIdFromDomain('contoso.com', { fetch })).toEqual({ kind: 'unknown_domain' });
   });
 
   it.each([
-    ['a non-2xx answer (unknown domain)', () => Promise.resolve(openIdConfig({ error: 'invalid_tenant' }, { status: 400 }))],
+    ['a 400 with another error', () => Promise.resolve(openIdConfig({ error: 'invalid_request' }, { status: 400 }))],
+    ['a 400 with a non-JSON body', () => Promise.resolve(new Response('<html>', { status: 400 }))],
+    ['a 503', () => Promise.resolve(openIdConfig({ error: 'invalid_tenant' }, { status: 503 }))],
+    ['a 429', () => Promise.resolve(openIdConfig({}, { status: 429 }))],
     ['a network failure', () => Promise.reject(new Error('ECONNRESET'))],
     ['a timeout', () => Promise.reject(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))],
     ['a body that is not JSON', () => Promise.resolve(new Response('<html>', { status: 200 }))],
@@ -137,12 +145,14 @@ describe('resolveEntraTenantIdFromDomain', () => {
     ['an issuer on another host', () => Promise.resolve(openIdConfig({ issuer: `https://login.example.com/${TID}/v2.0` }))],
     ['an issuer with a trailing path', () => Promise.resolve(openIdConfig({ issuer: `https://login.microsoftonline.com/${TID}/v2.0/extra` }))],
     ['an http issuer', () => Promise.resolve(openIdConfig({ issuer: `http://login.microsoftonline.com/${TID}/v2.0` }))],
-  ])('%s → null', async (_label, respond) => {
+  ])('%s → lookup_failed (ambiguous, not a negative answer)', async (_label, respond) => {
     const fetch = vi.fn(async () => respond());
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      expect(await resolveEntraTenantIdFromDomain('contoso.com', { fetch })).toBeNull();
+      expect(await resolveEntraTenantIdFromDomain('contoso.com', { fetch })).toEqual({ kind: 'lookup_failed' });
       expect(fetch).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('contoso.com');
     } finally {
       warn.mockRestore();
     }

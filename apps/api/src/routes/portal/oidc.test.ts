@@ -25,6 +25,7 @@ const h = vi.hoisted(() => ({
   consumeByHash: vi.fn(),
   resolvePolicy: vi.fn(),
   audit: vi.fn(),
+  capture: vi.fn(),
   dbRows: { current: [] as unknown[] },
   ORG: '7c0a1f7e-1111-4222-8333-444455556666',
   USER: '11111111-2222-4333-8444-555566667777',
@@ -51,6 +52,10 @@ vi.mock('./capabilityTokens', async (importOriginal) => ({
 vi.mock('../../services/portalAccessPolicy', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/portalAccessPolicy')>()),
   resolvePortalAccessPolicy: h.resolvePolicy,
+}));
+vi.mock('../../services/sentry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/sentry')>()),
+  captureException: h.capture,
 }));
 vi.mock('../../services/auditEvents', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/auditEvents')>()),
@@ -621,6 +626,25 @@ describe('GET /auth/oidc/entra/callback', () => {
       });
     } finally {
       warn.mockRestore();
+    }
+  });
+
+  it('a failed audit write is captured (no token or code content) and never changes the redirect', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      h.audit.mockRejectedValue(new Error('audit insert failed'));
+      const { res } = await signInWith({ kind: 'denied', reason: 'method_off', orgId: ORG });
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe(UNAVAILABLE);
+      expect(h.capture).toHaveBeenCalledTimes(1);
+      const [captured, , tags] = h.capture.mock.calls[0]!;
+      expect(captured).toBeInstanceOf(Error);
+      expect((captured as Error).message).toBe('audit insert failed');
+      expect(JSON.stringify(tags ?? {})).not.toMatch(/code=|state=|token/i);
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
     }
   });
 

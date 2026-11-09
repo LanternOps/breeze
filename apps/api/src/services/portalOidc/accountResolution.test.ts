@@ -360,16 +360,51 @@ describe('step 2 — invite', () => {
   const invited = (over: Record<string, unknown> = {}) =>
     account({ status: 'invited', hasPasswordHash: false, hasExternalIdentity: false, hasEntraIdentity: false, ...over });
 
+  /** Every invite branch first reads the legacy (entra_tenant_id, entra_oid) key; these cases find it free. */
+  beforeEach(() => {
+    h.results.push([]);
+  });
+  const writes = () => h.calls.filter((c) => c.op !== 'select');
+
+  it('identity_conflict: a login holds the legacy entra_* pair with no identity row — refused BEFORE the invite is consumed (D11)', async () => {
+    h.results.length = 0;
+    h.results.push([{ id: OTHER_USER }]);
+    consumer.mockResolvedValue({ portalUserId: USER, orgId: ORG, authEpoch: 3 });
+
+    expect(await resolvePortalOidcSignIn(input({ purpose }))).toEqual(denied('identity_conflict'));
+    expect(consumer).not.toHaveBeenCalled();
+    expect(m.linkPortalUserIdentity).not.toHaveBeenCalled();
+    expect(writes()).toHaveLength(0);
+
+    // The read: any portal_users row at (tid, oid), under a system context, outside any transaction.
+    const [legacy] = h.calls;
+    expect(legacy!.op).toBe('select');
+    expect(legacy!.inTx).toBe(false);
+    expect(legacy!.steps.find(([n]) => n === 'from')?.[1][0]).toBe(portalUsers);
+    expect(whereOf(legacy).params).toEqual([TID, OID]);
+  });
+
+  it('the legacy key check runs before the consumer, which still runs with no DB context held', async () => {
+    const order: string[] = [];
+    consumer.mockImplementation(async () => {
+      order.push(`consume after ${h.calls.length} read(s)`);
+      expect(h.state.systemDepth).toBe(0);
+      return null;
+    });
+    expect(await resolvePortalOidcSignIn(input({ purpose }))).toEqual(denied('invite_invalid'));
+    expect(order).toEqual(['consume after 1 read(s)']);
+  });
+
   it('invite_invalid: the consumer returns nothing', async () => {
     expect(await resolvePortalOidcSignIn(input({ purpose }))).toEqual(denied('invite_invalid'));
     expect(consumer).toHaveBeenCalledWith(HASH);
-    expect(h.calls).toHaveLength(0);
+    expect(writes()).toHaveLength(0);
   });
 
   it('invite_invalid: the consumed invite is for another org', async () => {
     consumer.mockResolvedValue({ portalUserId: USER, orgId: OTHER_ORG, authEpoch: 3 });
     expect(await resolvePortalOidcSignIn(input({ purpose }))).toEqual(denied('invite_invalid'));
-    expect(h.calls).toHaveLength(0);
+    expect(writes()).toHaveLength(0);
   });
 
   it('the consumer runs with no DB context held and before the transaction (the token is spent first)', async () => {

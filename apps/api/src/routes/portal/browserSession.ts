@@ -191,7 +191,12 @@ export async function mintPortalBrowserSession(
       .sadd(PORTAL_REDIS_KEYS.userSessions(portalUserId), token)
       .expire(PORTAL_REDIS_KEYS.userSessions(portalUserId), SESSION_TTL_SECONDS * 2)
       .exec();
-    const pipelineErrors = (results ?? []).filter(([err]) => err);
+    // A null result is an aborted transaction: nothing was written.
+    if (!results) {
+      console.error('[portal] Redis session pipeline returned no result');
+      throw new PortalSessionStoreUnavailableError();
+    }
+    const pipelineErrors = results.filter(([err]) => err);
     if (pipelineErrors.length > 0) {
       for (const [err] of pipelineErrors) {
         console.error('[portal] Redis session pipeline error:', err!.message);

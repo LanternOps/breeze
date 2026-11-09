@@ -293,6 +293,20 @@ describe('verifyPortalEntraIdToken', () => {
     await expect(verify(token, { now: elevenMinutesLater })).rejects.toBeInstanceOf(PortalEntraTokenError);
   });
 
+  it('a non-jose failure still fails closed as jwks_unavailable and logs its name and code, not its message', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const token = await mintToken();
+    const thrown = await verifyPortalEntraIdToken(
+      token,
+      { clientId: CLIENT_ID, nonce: NONCE, expectedTenantId: null },
+      { verificationKey: {} as CryptoKey },
+    ).catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(PortalEntraTokenError);
+    expect((thrown as PortalEntraTokenError).check).toBe('jwks_unavailable');
+    expect(warn.mock.calls.at(-1)![1]).toMatchObject({ check: 'jwks_unavailable', errorName: 'TypeError' });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(token);
+  });
+
   it('never puts token content in the error or the log', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const token = await mintToken({ nonce: 'secret-nonce-leak' });
@@ -365,6 +379,19 @@ describe('exchangePortalEntraCode', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     await expect(exchangePortalEntraCode(CFG, { authority: TENANT, code: 'c', codeVerifier: 'v' }, { fetch: tokenEndpoint(response) }))
       .rejects.toMatchObject({ check: 'token_endpoint' });
+  });
+
+  it('logs the underlying error name and code when the request fails or the body will not parse, never the message', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const failing = vi.fn(async () => { throw Object.assign(new TypeError('secret-message-detail'), { code: 'ECONNRESET' }); });
+    await expect(exchangePortalEntraCode(CFG, { authority: TENANT, code: 'c', codeVerifier: 'v' }, { fetch: failing }))
+      .rejects.toMatchObject({ check: 'token_endpoint' });
+    expect(warn.mock.calls.at(-1)![1]).toMatchObject({ check: 'token_endpoint', errorName: 'TypeError', errorCode: 'ECONNRESET' });
+
+    await expect(exchangePortalEntraCode(CFG, { authority: TENANT, code: 'c', codeVerifier: 'v' }, { fetch: tokenEndpoint(new Response('<html>', { status: 200 })) }))
+      .rejects.toMatchObject({ check: 'token_endpoint' });
+    expect(warn.mock.calls.at(-1)![1]).toMatchObject({ check: 'token_endpoint', status: 200, errorName: 'SyntaxError' });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('secret-message-detail');
   });
 
   it('throws token_endpoint when the request itself fails, and refuses a bad authority before any request', async () => {

@@ -279,8 +279,33 @@ async function resolveKnownIdentity(r: Resolution): Promise<PortalOidcSignInOutc
   return request.kind === 'capped' ? denied('requests_capped', r.orgId) : { kind: 'request_sent', orgId: r.orgId };
 }
 
+/**
+ * Whether any login holds `(tid, oid)` on its legacy `portal_users
+ * (entra_tenant_id, entra_oid)` columns (the W3 D4 writer fence keeps them
+ * until identities release C). A login with those columns and no identity row
+ * (drift the daily reconcile only reports) is invisible to step 1, yet
+ * `linkPortalUserIdentity` refuses it as a conflict — so the invite step reads
+ * it BEFORE spending the invite. This also refuses the edge where the invited
+ * account itself is the drifted holder: the invite is not known until it is
+ * consumed, and an unspent invite plus a generic refusal is the safe side.
+ */
+async function legacyEntraKeyHeld(r: Resolution): Promise<boolean> {
+  const [holder] = await withSystemDbAccessContext(
+    () => db
+      .select({ id: portalUsers.id })
+      .from(portalUsers)
+      .where(and(eq(portalUsers.entraTenantId, r.tid), eq(portalUsers.entraOid, r.oid)))
+      .limit(1),
+    'portalOidc.resolve.legacyEntraKey',
+  );
+  return Boolean(holder);
+}
+
 /** Step 2: an invitation-bound sign-in activates the invited account and links the identity. */
 async function acceptInvite(r: Resolution, inviteTokenHash: string): Promise<PortalOidcSignInOutcome> {
+  // D11: a conflict that is knowable before consumption never spends the invite.
+  if (await legacyEntraKeyHeld(r)) return denied('identity_conflict', r.orgId);
+
   const consumed = await r.inviteConsumer(inviteTokenHash);
   if (!consumed || consumed.orgId !== r.orgId) return denied('invite_invalid', r.orgId);
 

@@ -30,15 +30,12 @@ import {
   luaGetDel,
   portalEntraProofRuns,
 } from '../../routes/portal/helpers';
+import { isGuid, isProvableEntraTenantId, isSha256Hex } from './validators';
 
 export const PORTAL_ENTRA_PROOF_RUN_TTL_SECONDS = 72 * 60 * 60;
 /** Where the link points: the public portal route that starts the proof sign-in. */
 export const PORTAL_ENTRA_PROOF_RUN_PATH = '/api/v1/portal/auth/oidc/entra/proof';
 const RUN_TTL_MS = PORTAL_ENTRA_PROOF_RUN_TTL_SECONDS * 1000;
-const SHA256_HEX = /^[0-9a-f]{64}$/;
-const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** Microsoft's consumer (MSA) tenant: never a proof target. */
-const CONSUMER_TENANT_ID = '9188040d-6c67-4c5b-b112-36a304b66dad';
 /** Generous bound on a `run` query value; ours are 43 characters. */
 const MAX_RAW_TOKEN_LENGTH = 512;
 
@@ -75,14 +72,6 @@ function sha256Hex(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
-function isGuid(value: unknown): value is string {
-  return typeof value === 'string' && GUID.test(value);
-}
-
-function isProofTenant(value: unknown): value is string {
-  return isGuid(value) && value === value.toLowerCase() && value !== CONSUMER_TENANT_ID;
-}
-
 /**
  * Stores a new run and returns the raw token (32 random bytes, base64url) for
  * the link. Throws on an input that is not a pinned tenant and real ids (a
@@ -93,7 +82,7 @@ export async function createPortalEntraProofRun(
   input: CreatePortalEntraProofRunInput,
 ): Promise<{ token: string; runId: string; expiresAt: Date }> {
   const expectedTenantId = typeof input.expectedTenantId === 'string' ? input.expectedTenantId.trim().toLowerCase() : '';
-  if (!isProofTenant(expectedTenantId)) {
+  if (!isProvableEntraTenantId(expectedTenantId)) {
     throw new Error('createPortalEntraProofRun: a proof run must be pinned to an Entra tenant id');
   }
   if (!isGuid(input.orgId) || !isGuid(input.partnerId) || !isGuid(input.createdByUserId)) {
@@ -151,7 +140,7 @@ function parseRun(raw: string): PortalEntraProofRunRecord | null {
     || !isGuid(orgId)
     || !isGuid(partnerId)
     || !isGuid(createdByUserId)
-    || !isProofTenant(expectedTenantId)
+    || !isProvableEntraTenantId(expectedTenantId)
     || typeof createdAt !== 'number'
     || !Number.isFinite(createdAt)
   ) {
@@ -196,7 +185,7 @@ export async function peekPortalEntraProofRun(
  * required but unavailable.
  */
 export async function consumePortalEntraProofRunByHash(tokenHash: string): Promise<PortalEntraProofRunRecord | null> {
-  if (typeof tokenHash !== 'string' || !SHA256_HEX.test(tokenHash)) return null;
+  if (!isSha256Hex(tokenHash)) return null;
 
   let raw: string | null;
   if (PORTAL_USE_REDIS) {

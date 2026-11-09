@@ -37,7 +37,7 @@ import { isHoldingOrg } from './unassignedPool/protectedOrg';
  *     flow's finalization binds (`applyConsentFinalizationResult`).
  * Only a proven row ever resolves a sign-in to an org
  * ({@link findOrgByProvenEntraTenant}). A trigger clears the proof whenever the
- * mapped tenant changes (inv. 3, migration 2027-01-22-233000).
+ * mapped tenant changes (inv. 3, migration 2027-01-22-233400).
  *
  * Writes run in ONE system-scope transaction: the evidence is verified, not MSP
  * input, and a displacement crosses partners. Request callers reach the writers

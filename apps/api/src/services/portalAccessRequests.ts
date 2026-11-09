@@ -19,9 +19,10 @@
  * services/portalAccountState.ts (`portalAccountWriters.contract.test.ts`).
  * No `Promise.all` inside any transaction: every statement is sequential.
  */
-import { and, desc, eq, gt, lte, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gt, isNotNull, lte, ne, or, sql, type SQL } from 'drizzle-orm';
 import { db, withDbTransaction, withSystemDbAccessContextIsolated } from '../db';
 import {
+  clientAiTenantMappings,
   organizations,
   portalAccessRequests,
   portalUsers,
@@ -60,7 +61,8 @@ export type PortalAccessRequestErrorCode =
   | 'PORTAL_ACCESS_REQUEST_NOT_FOUND'
   | 'PORTAL_ACCESS_REQUEST_NOT_PENDING'
   | 'PORTAL_ACCESS_REQUEST_ACCOUNT_EXISTS'
-  | 'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED';
+  | 'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED'
+  | 'PORTAL_ACCESS_REQUEST_ENTRA_TENANT_NOT_PROVEN';
 
 export class PortalAccessRequestError extends Error {
   constructor(
@@ -86,6 +88,12 @@ const accountExists = () => new PortalAccessRequestError(
 // stay in this comment only.
 const identityLinked = () => new PortalAccessRequestError(
   'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED', 409, 'This sign-in identity cannot be approved. Ask the person to request access again.',
+);
+// One message for "no proven mapping" and "proven for another tenant": the
+// approver learns nothing about which org holds the tenant now.
+const entraTenantNotProven = () => new PortalAccessRequestError(
+  'PORTAL_ACCESS_REQUEST_ENTRA_TENANT_NOT_PROVEN', 409,
+  "This organization's Microsoft tenant has changed since this request was made. Ask the person to sign in again.",
 );
 
 // ---------------------------------------------------------------------------
@@ -357,13 +365,44 @@ async function grantBrowserAccess(request: LockedRequest, now: Date): Promise<Ap
 }
 
 /**
+ * inv. 4 at approval time (W4 #11381). An `entra` request carries the tenant
+ * its sign-in resolved through the org's PROVEN mapping, captured up to
+ * {@link PORTAL_ACCESS_REQUEST_TTL_DAYS} days ago. If that tenant has since
+ * been displaced to another org, removed or replaced, creating
+ * `(entraIssuer(tid), oid)` here would place an identity in an org that no
+ * longer owns the tenant, and the person would be locked out
+ * (`identity_other_org`). So the org's proven mapping must still name the
+ * request's tenant, or the approval is refused.
+ *
+ * `FOR SHARE` on that mapping row, held to commit: a concurrent displacement
+ * (recordEntraTenantProof: `FOR UPDATE`, then `DELETE`), removal, or repoint
+ * (the AI for Office PUT, whose trigger clears the proof) waits for this
+ * approval. Once it commits, the displacement's epoch bump sees the new account
+ * like any other identity the org holds in the tenant. One that committed first
+ * leaves no proven row for the tenant (READ COMMITTED re-checks `proven_at` on
+ * the updated row), and the approval is refused.
+ */
+async function lockProvenEntraTenant(request: LockedRequest): Promise<void> {
+  const [mapping] = await db
+    .select({ tenantId: clientAiTenantMappings.entraTenantId })
+    .from(clientAiTenantMappings)
+    .where(and(eq(clientAiTenantMappings.orgId, request.orgId), isNotNull(clientAiTenantMappings.provenAt)))
+    .for('share')
+    .limit(1);
+  if (!mapping || !request.entraTenantId || mapping.tenantId.toLowerCase() !== request.entraTenantId.toLowerCase()) {
+    throw entraTenantNotProven();
+  }
+}
+
+/**
  * `entra` / `google`: an identity-only account (plan D2), written by the
  * shared services/portalIdentityAccounts.ts writer (W4 instant mode uses the
- * same one). Its outcomes map back to this queue's 409s, and the throw rolls
- * back everything the writer did (the contact link, a login row):
- * `account_exists` → ACCOUNT_EXISTS, `identity_linked` → IDENTITY_LINKED.
- * The contact is linked at the request's address, as an MSP invite does (the
- * approval is an MSP action).
+ * same one). An `entra` request first re-checks its tenant
+ * ({@link lockProvenEntraTenant}: ENTRA_TENANT_NOT_PROVEN). The writer's
+ * outcomes map back to this queue's 409s, and the throw rolls back everything
+ * the writer did (the contact link, a login row): `account_exists` →
+ * ACCOUNT_EXISTS, `identity_linked` → IDENTITY_LINKED. The contact is linked at
+ * the request's address, as an MSP invite does (the approval is an MSP action).
  */
 async function createIdentityAccount(request: LockedRequest, deciderUserId: string, now: Date): Promise<ApprovedAccount> {
   const provider = request.source;
@@ -371,6 +410,7 @@ async function createIdentityAccount(request: LockedRequest, deciderUserId: stri
     throw new Error('SSO access request is missing its identity claims');
   }
   if (provider === 'entra' && !request.entraTenantId) throw new Error('entra access request has no tenant id');
+  if (provider === 'entra') await lockProvenEntraTenant(request);
 
   const outcome = await createIdentityOnlyAccount(db, {
     orgId: request.orgId,

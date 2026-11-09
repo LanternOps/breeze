@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
   activeOrg: vi.fn(),
   record: vi.fn(),
   audit: vi.fn(),
+  capture: vi.fn(),
   dbRows: { current: [] as unknown[] },
   perms: vi.fn(),
 }));
@@ -44,6 +45,10 @@ vi.mock('../../services/tenantStatus', async (importOriginal) => ({
 vi.mock('../../services/portalEntraTenantProof', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/portalEntraTenantProof')>()),
   recordEntraTenantProof: h.record,
+}));
+vi.mock('../../services/sentry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/sentry')>()),
+  captureException: h.capture,
 }));
 vi.mock('../../services/auditEvents', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/auditEvents')>()),
@@ -273,6 +278,25 @@ describe('the tenant_proof callback branch', () => {
     expect(await peekPortalEntraProofRun(run.token)).toBeNull();
     // The service audits `.proven`; the branch writes no refusal row.
     expect(h.audit).not.toHaveBeenCalled();
+  });
+
+  it('a failed refusal-audit write is captured and the redirect is unchanged', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      h.audit.mockRejectedValue(new Error('audit insert failed'));
+      h.adminCheck.mockResolvedValue({ ok: false, reason: 'no_accepted_role' });
+      const run = await newRun();
+      expect(await call({ runToken: run.token })).toBe(FAILED);
+      expect(h.capture).toHaveBeenCalledTimes(1);
+      const captured = h.capture.mock.calls[0]![0];
+      expect(captured).toBeInstanceOf(Error);
+      expect((captured as Error).message).toBe('audit insert failed');
+      expect(JSON.stringify(h.capture.mock.calls)).not.toContain(run.token);
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
   });
 
   it('not an admin (Graph check fails) → failed, the reason audited, the run NOT consumed', async () => {

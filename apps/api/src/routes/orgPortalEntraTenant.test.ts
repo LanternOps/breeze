@@ -48,7 +48,7 @@ const h = vi.hoisted(() => {
     getStatusImpl,
     proveImpl,
     removeImpl,
-    resolveDomain: vi.fn(async (_domain: string): Promise<string | null> => null),
+    resolveDomain: vi.fn(async (_domain: string): Promise<{ kind: 'tenant'; tid: string } | { kind: 'unknown_domain' } | { kind: 'lookup_failed' }> => ({ kind: 'unknown_domain' })),
     authRef: { current: null as any },
     auditSpy: vi.fn(),
     holding: { current: false },
@@ -207,7 +207,7 @@ beforeEach(() => {
   status(NONE);
   h.proveImpl.current = async () => ({ displaced: null, tenantId: TID });
   h.removeImpl.current = async () => ({ removed: false, tenantId: null });
-  h.resolveDomain.mockImplementation(async () => null);
+  h.resolveDomain.mockImplementation(async () => ({ kind: 'unknown_domain' }));
   portalEntraProofRuns.clear();
 });
 
@@ -363,7 +363,7 @@ describe('POST /organizations/:id/portal-entra-tenant/proof-links', () => {
     expect(other.res.status).toBe(409);
     expect(other.body).toEqual({ error: expect.any(String), code: 'PORTAL_ENTRA_ORG_HAS_OTHER_TENANT' });
 
-    h.resolveDomain.mockImplementation(async () => OTHER_TID);
+    h.resolveDomain.mockImplementation(async () => ({ kind: 'tenant', tid: OTHER_TID }));
     const otherDomain = await createLink({ tenant: 'fabrikam.com' });
     expect(otherDomain.res.status).toBe(409);
     expect(otherDomain.body.code).toBe('PORTAL_ENTRA_ORG_HAS_OTHER_TENANT');
@@ -394,7 +394,7 @@ describe('POST /organizations/:id/portal-entra-tenant/proof-links', () => {
     expect((await runFor(guid.body.data.url))?.record.expectedTenantId).toBe(OTHER_TID);
     expect(h.resolveDomain).not.toHaveBeenCalled();
 
-    h.resolveDomain.mockImplementation(async () => TID);
+    h.resolveDomain.mockImplementation(async () => ({ kind: 'tenant', tid: TID }));
     const domain = await createLink({ tenant: 'Contoso.com' });
     expect(domain.res.status).toBe(200);
     expect(domain.body.data.expectedTenantId).toBe(TID);
@@ -417,6 +417,20 @@ describe('POST /organizations/:id/portal-entra-tenant/proof-links', () => {
       expect(malformed.body.code).toBe('PORTAL_ENTRA_TENANT_HINT_INVALID');
     }
     expect(h.resolveDomain).toHaveBeenCalledTimes(1);
+    expect(portalEntraProofRuns.size).toBe(0);
+    expect(h.auditSpy).not.toHaveBeenCalled();
+  });
+
+  it('a Microsoft lookup outage → 503 PORTAL_ENTRA_TENANT_HINT_LOOKUP_FAILED, not an invalid-hint 422', async () => {
+    status({ ...NONE, connectionTenantId: CONNECTION_TID });
+    h.resolveDomain.mockImplementation(async () => ({ kind: 'lookup_failed' }));
+
+    const failed = await createLink({ tenant: 'contoso.com' });
+    expect(failed.res.status).toBe(503);
+    expect(failed.body).toEqual({
+      error: "Couldn't reach Microsoft to look up that domain. Try again, or enter the tenant ID.",
+      code: 'PORTAL_ENTRA_TENANT_HINT_LOOKUP_FAILED',
+    });
     expect(portalEntraProofRuns.size).toBe(0);
     expect(h.auditSpy).not.toHaveBeenCalled();
   });

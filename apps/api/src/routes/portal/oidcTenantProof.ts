@@ -38,6 +38,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { partnerUsers, users } from '../../db/schema';
 import { getPortalEntraConfig, type PortalEntraConfig } from '../../config/portalEntra';
 import { writeAuditEventAsync } from '../../services/auditEvents';
+import { captureException } from '../../services/sentry';
 import { rateLimitIpKey } from '../../services/clientIp';
 import { PortalEntraProofError, recordEntraTenantProof } from '../../services/portalEntraTenantProof';
 import {
@@ -110,6 +111,7 @@ export async function auditTenantProofRefusal(
     });
   } catch (error) {
     console.error('[portal] Entra tenant proof audit write failed:', error instanceof Error ? error.message : error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
   }
 }
 

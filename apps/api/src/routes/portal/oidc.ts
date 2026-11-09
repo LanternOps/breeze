@@ -49,6 +49,7 @@ import { envStr } from '../../utils/envStr';
 import { getPortalEntraConfig, type PortalEntraConfig } from '../../config/portalEntra';
 import { rateLimitIpKey } from '../../services/clientIp';
 import { writeAuditEventAsync } from '../../services/auditEvents';
+import { captureException } from '../../services/sentry';
 import {
   PortalAccessPolicyOrgNotFoundError,
   getPortalSignInCapabilities,
@@ -279,6 +280,7 @@ async function writeOidcAudit(c: Context, input: OidcAuditInput): Promise<void> 
     });
   } catch (error) {
     console.error('[portal] Microsoft sign-in audit write failed:', error instanceof Error ? error.message : error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
   }
 }
 

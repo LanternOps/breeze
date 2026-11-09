@@ -399,9 +399,16 @@ async function ssoInviteOne(c: any, orgId: string, portalUserId: string, orgName
   // Side effects after the write, as invite-contacts does: only Redis can throw
   // here (issueAndSendInvite's reads are savepoints), and the bumped epoch is
   // what refuses the old sessions, so a purge failure is safe to report past.
+  if (write.bumpedEpoch) {
+    try {
+      await purgeLoginSessions(write.id);
+    } catch (err) {
+      // Its own catch: a purge failure must not also skip the invite.
+      console.error(`[orgPortalUsers] sso-invite session purge failed portalUserId=${write.id} orgId=${orgId}:`, err);
+    }
+  }
   let emailSent = false;
   try {
-    if (write.bumpedEpoch) await purgeLoginSessions(write.id);
     emailSent = await issueAndSendInvite(c, orgId, { id: write.id, email: write.email, authEpoch: write.authEpoch }, orgName, actor.name);
   } catch (err) {
     console.error(`[orgPortalUsers] sso-invite side effect failed portalUserId=${write.id} orgId=${orgId}:`, err);

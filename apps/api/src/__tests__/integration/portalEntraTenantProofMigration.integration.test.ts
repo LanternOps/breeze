@@ -105,12 +105,55 @@ describe('2027-01-22-233400-portal-entra-tenant-proof.sql', () => {
         INSERT INTO client_ai_tenant_mappings (org_id, entra_tenant_id, proven_at, proven_via)
         VALUES (${orgId}, ${randomUUID()}, now(), 'proof_run')`);
       expect(noEvidence).toMatchObject({ code: '23514', constraint_name: 'client_ai_tenant_mappings_proof_shape_chk' });
+      // Complete evidence, so only the missing proven_at is wrong (the evidence check is its own case below).
       const viaWithoutAt = await pgErrorOf(tx, (sp) => sp`
         INSERT INTO client_ai_tenant_mappings (org_id, entra_tenant_id, proven_via, proven_evidence)
-        VALUES (${orgId}, ${randomUUID()}, 'proof_run', ${sp.json({ via: 'proof_run' })})`);
+        VALUES (${orgId}, ${randomUUID()}, 'proof_run', ${sp.json({ via: 'proof_run', adminOid: randomUUID(), runId: randomUUID() })})`);
       expect(viaWithoutAt).toMatchObject({ code: '23514', constraint_name: 'client_ai_tenant_mappings_proof_shape_chk' });
       // An unproven mapping (all four NULL) is the pre-W4 shape and stays valid.
       await tx`INSERT INTO client_ai_tenant_mappings (org_id, entra_tenant_id) VALUES (${orgId}, ${randomUUID()})`;
+    });
+  });
+
+  it('ties proven_evidence to proven_via (23514 client_ai_tenant_mappings_proof_evidence_chk)', async () => {
+    const { orgId } = await newOrg();
+    const { orgId: secondOrgId } = await newOrg();
+    const { orgId: thirdOrgId } = await newOrg();
+    const run = () => ({ adminOid: randomUUID(), runId: randomUUID() });
+    const conn = () => ({ connectionId: randomUUID(), profile: 'customer-graph-read' });
+    const cases: Array<[string, string, postgres.JSONValue]> = [
+      ['proof-run evidence recorded as m365_connection', 'm365_connection', { via: 'proof_run', ...run() }],
+      ['connection evidence recorded as proof_run', 'proof_run', { via: 'm365_connection', ...conn() }],
+      ['evidence.via disagrees with proven_via although the keys fit', 'proof_run', { via: 'm365_connection', ...run() }],
+      ['proof_run without runId', 'proof_run', { via: 'proof_run', adminOid: randomUUID() }],
+      ['proof_run without adminOid', 'proof_run', { via: 'proof_run', runId: randomUUID() }],
+      ['m365_connection without profile', 'm365_connection', { via: 'm365_connection', connectionId: randomUUID() }],
+      ['m365_connection without connectionId', 'm365_connection', { via: 'm365_connection', profile: 'customer-graph-read' }],
+      // These two would read NULL (which passes a CHECK) under a plain `->>'via' = proven_via`.
+      ['evidence with no via key', 'proof_run', run()],
+      ['evidence that is an array of the key names', 'proof_run', ['via', 'adminOid', 'runId']],
+    ];
+    await inRolledBackTx(async (tx) => {
+      for (const [name, via, evidence] of cases) {
+        const err = await pgErrorOf(tx, (sp) => sp`
+          INSERT INTO client_ai_tenant_mappings (org_id, entra_tenant_id, proven_at, proven_via, proven_evidence)
+          VALUES (${orgId}, ${randomUUID()}, now(), ${via}, ${sp.json(evidence)})`);
+        expect(err, name).toMatchObject({ code: '23514', constraint_name: 'client_ai_tenant_mappings_proof_evidence_chk' });
+      }
+
+      // Both real shapes (what recordEntraTenantProof writes) are accepted.
+      await tx`
+        INSERT INTO client_ai_tenant_mappings (org_id, entra_tenant_id, proven_at, proven_via, proven_evidence)
+        VALUES (${secondOrgId}, ${randomUUID()}, now(), 'proof_run', ${tx.json({ via: 'proof_run', ...run() })})`;
+      const { id } = await seedProvenMapping(tx, orgId);
+      await tx`
+        INSERT INTO client_ai_tenant_mappings (org_id, entra_tenant_id, proven_at, proven_via, proven_evidence)
+        VALUES (${thirdOrgId}, ${randomUUID()}, now(), 'm365_connection', ${tx.json({ via: 'm365_connection', ...conn() })})`;
+
+      // A writer that changes the method without the evidence is refused too.
+      const swapped = await pgErrorOf(tx, (sp) => sp`
+        UPDATE client_ai_tenant_mappings SET proven_via = 'm365_connection' WHERE id = ${id}`);
+      expect(swapped).toMatchObject({ code: '23514', constraint_name: 'client_ai_tenant_mappings_proof_evidence_chk' });
     });
   });
 

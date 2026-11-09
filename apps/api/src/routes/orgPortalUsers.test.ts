@@ -945,6 +945,24 @@ describe('POST /organizations/:id/portal-users/sso-invite (W4)', () => {
     ]);
   });
 
+  it('a purge failure after the write is logged and the invite is still sent (result invited)', async () => {
+    resolveMethods.mockResolvedValue({ microsoft: true, password: false });
+    savepoints();
+    queue([{ id: ORG_ID }], [{ name: 'Acme Co' }], ...locked(row(PU(1))), NO_BRANDING);
+    insertReturning.mockResolvedValueOnce([{ authEpoch: 6 }]);
+    vi.mocked(purgePortalSessionsForUsers).mockRejectedValueOnce(new Error('redis down'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await ssoInvite({ portalUserIds: [PU(1)] });
+      expect(res.status).toBe(200);
+      expect((await res.json()).data).toEqual([{ portalUserId: PU(1), result: 'invited', emailSent: true }]);
+      expect(sendInvite).toHaveBeenCalledTimes(1);
+      expect(error).toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
+  });
+
   it('reads eligibility under the row lock: a link that committed while the lock waited → not_stranded, nothing written', async () => {
     resolveMethods.mockResolvedValue({ microsoft: true, password: false });
     savepoints();
