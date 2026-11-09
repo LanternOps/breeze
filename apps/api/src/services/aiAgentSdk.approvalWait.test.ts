@@ -1123,8 +1123,8 @@ describe('handoff terminal read-back (#6022)', () => {
 describe('approval card says where it waits (#10416)', () => {
   const approvalCard = (session: { eventBus: { publish: ReturnType<typeof vi.fn> } }) =>
     session.eventBus.publish.mock.calls
-      .map(([e]: [any]) => e)
-      .find((e: any) => e.type === 'approval_required');
+      .map((c) => c[0] as Record<string, unknown>)
+      .find((e) => e.type === 'approval_required');
 
   function tier2Guardrail() {
     vi.mocked(checkGuardrails).mockReturnValue({
