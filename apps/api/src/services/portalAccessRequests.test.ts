@@ -57,6 +57,7 @@ vi.mock('./contacts/portalInvite', () => ({
   lockPortalInviteAddresses: vi.fn(async () => {
     expect(h.txDepth.current).toBeGreaterThan(0);
   }),
+  portalLoginEmailEquals: vi.fn((email: string) => ({ __lowerEmailEquals: email })),
 }));
 
 vi.mock('./contacts/loginLink', () => ({

@@ -128,6 +128,21 @@ describe('POST /organizations/:id/portal-users/invite', () => {
     expect((sendInvite.mock.calls.at(-1)![0] as { partnerId?: string | null }).partnerId).toBe('p-1');
   });
 
+  it('matches the existing login case-insensitively (#11529: same comparison as the contact-invite path)', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ name: 'Acme Co' }]);
+    createContactMock.mockResolvedValueOnce({ id: 'ct-new' });
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-new', email: 'ada@acme.example', status: 'invited' }]);
+    const res = await invite({ email: 'Ada@Acme.Example' });
+    expect(res.status).toBe(200);
+    const loginLookup = new PgDialect().sqlToQuery(selectWhereSpy.mock.calls[1]![0] as never);
+    expect(loginLookup.sql).toContain('lower(');
+    expect(loginLookup.params).toContain('ada@acme.example');
+  });
+
   // ---- #3258 W03: an invited LOGIN is linked to the org's CONTACT ----
   // A portal login is a login attached to a person, and tickets now attribute
   // to that person. An invite that leaves contact_id null hands the customer a
