@@ -17,6 +17,7 @@ Last release: **v0.127.0** (2026-11-08).
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 
+- **`breeze-agent enroll --site-id` is removed (#8493).** It was ignored since v0.123.0 (the site comes from the enrollment key). Hand-written install scripts that still pass it now fail with `--site-id was removed: ...`; drop the flag. Breeze-generated installers already stopped passing it.
 
 ## Features / API
 
