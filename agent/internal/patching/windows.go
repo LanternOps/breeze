@@ -415,9 +415,10 @@ func (w *WindowsUpdateProvider) GetInstalled() ([]InstalledPatch, error) {
 }
 
 // queryInstallHistory reads Windows Update history entries 0 to
-// maxWUAHistoryEntries-1. If any entry in that range cannot be read it returns
-// an error and no entries: the unreadable entry could be an update's newest
-// install, and answering from the rest would give an older date.
+// maxWUAHistoryEntries-1. If any entry in that range that is, or could be, a
+// successful install cannot be read, it returns an error and no entries: that
+// entry could be an update's newest install, and answering from the rest
+// would give an older date.
 func (w *WindowsUpdateProvider) queryInstallHistory(session *ole.IDispatch) ([]wuaHistoryEntry, error) {
 	searcherVar, err := oleutil.CallMethod(session, "CreateUpdateSearcher")
 	if err != nil {
@@ -484,7 +485,7 @@ func (w *WindowsUpdateProvider) queryInstallHistory(session *ole.IDispatch) ([]w
 		if err != nil {
 			unreadable++
 			if firstErr == nil {
-				firstErr = fmt.Errorf("entry %d: %w", i, err)
+				firstErr = fmt.Errorf("entry %d (operation %d, result %d): %w", i, entry.Operation, entry.ResultCode, err)
 			}
 			continue
 		}
@@ -497,7 +498,10 @@ func (w *WindowsUpdateProvider) queryInstallHistory(session *ole.IDispatch) ([]w
 }
 
 // readHistoryEntry reads the fields of one IUpdateHistoryEntry that date an
-// install. Any of them failing to read is an error.
+// install. Operation and ResultCode decide whether the entry can date one;
+// an entry that cannot (an uninstall, a failed attempt) returns with only
+// those two set, so an unusual row of that kind cannot fail the whole
+// history. For a successful install, every field must read.
 func (w *WindowsUpdateProvider) readHistoryEntry(item *ole.IDispatch) (wuaHistoryEntry, error) {
 	var entry wuaHistoryEntry
 	var err error
@@ -506,6 +510,9 @@ func (w *WindowsUpdateProvider) readHistoryEntry(item *ole.IDispatch) (wuaHistor
 	}
 	if entry.ResultCode, err = w.getIntProperty(item, "ResultCode"); err != nil {
 		return entry, fmt.Errorf("read ResultCode: %w", err)
+	}
+	if !isSuccessfulWUAInstall(entry.Operation, entry.ResultCode) {
+		return entry, nil
 	}
 
 	dateVar, err := oleutil.GetProperty(item, "Date")

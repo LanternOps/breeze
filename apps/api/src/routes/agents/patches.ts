@@ -536,13 +536,14 @@ async function upsertInstalledPatches(
     // on one scan (a failed history or registry read), so writing NULL would
     // wipe a known date. The date is kept only while the installed version is
     // unchanged: a stored date belongs to the version installed then, so a
-    // new version without a date reads unknown rather than wrong. A reported
-    // date always replaces the stored one, so a reinstall moves it. (SET
-    // expressions read the row's pre-update values, so installed_version here
-    // is the stored one.)
+    // new version without a date reads unknown rather than wrong. Outside a
+    // preserved pending row (below), a reported date replaces the stored one,
+    // so a reinstall moves it. (SET expressions read the row's pre-update
+    // values, so installed_version here is the stored one.)
+    const keepStoredInstalledAt = sql`CASE WHEN ${devicePatches.installedVersion} IS NOT DISTINCT FROM ${version}::varchar THEN ${devicePatches.installedAt} ELSE NULL::timestamp END`;
     const installedAtParam = installedAt
       ? sql`${installedAt.toISOString()}::timestamp`
-      : sql`CASE WHEN ${devicePatches.installedVersion} IS NOT DISTINCT FROM ${version}::varchar THEN ${devicePatches.installedAt} ELSE NULL::timestamp END`;
+      : keepStoredInstalledAt;
     // Installed inventory must not downgrade an actionable 'pending' row on the
     // normal paired-submit flow. Package managers report a pending upgrade and
     // the installed package under the SAME (source, externalId) — `winget list`
@@ -605,7 +606,7 @@ async function upsertInstalledPatches(
             : sql`CASE WHEN ${devicePatches.status} = 'pending' THEN ${devicePatches.status} ELSE 'installed' END`,
           installedAt: installedMeetsTarget
             ? installedAtParam
-            : sql`CASE WHEN ${devicePatches.status} = 'pending' THEN ${devicePatches.installedAt} ELSE ${installedAtParam} END`,
+            : sql`CASE WHEN ${devicePatches.status} = 'pending' THEN ${keepStoredInstalledAt} ELSE ${installedAtParam} END`,
           installedVersion: version,
           reportedCategory: updateIfReported(devicePatches.reportedCategory, reportedCategory),
           lastCheckedAt: new Date(),

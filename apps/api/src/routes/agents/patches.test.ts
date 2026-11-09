@@ -1296,8 +1296,18 @@ describe('PUT /agents/:id/patches/installed - pending rows survive installed inv
     // device_patch_status enum is covered by patches.integration.test.ts.
     const statusText = (set.status as { strings: string[] }).strings.join('<col>');
     expect(statusText).toBe("CASE WHEN <col> = 'pending' THEN <col> ELSE 'installed' END");
-    // installedAt is likewise preserved for pending rows.
-    expect((set.installedAt as { values: unknown[] }).values).toContain(tables.devicePatches.installedAt);
+    // installedAt is likewise preserved for pending rows, while the installed
+    // version is unchanged (#9723): the THEN branch is the version-guarded
+    // keep of the stored column, not the reported value.
+    const keepStored = {
+      op: 'sql',
+      strings: ['CASE WHEN ', ' IS NOT DISTINCT FROM ', '::varchar THEN ', ' ELSE NULL::timestamp END'],
+      values: [tables.devicePatches.installedVersion, '2.51.0.2', tables.devicePatches.installedAt],
+    };
+    const installedAtCase = set.installedAt as { strings: string[]; values: unknown[] };
+    expect(installedAtCase.strings.join('<v>')).toBe("CASE WHEN <v> = 'pending' THEN <v> ELSE <v> END");
+    expect(installedAtCase.values[0]).toBe(tables.devicePatches.status);
+    expect(installedAtCase.values[1]).toEqual(keepStored);
     // installedVersion still updates — it reports the currently-installed
     // version whether or not an upgrade is pending.
     expect(set.installedVersion).toBe('2.51.0.2');

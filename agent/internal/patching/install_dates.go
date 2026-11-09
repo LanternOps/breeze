@@ -34,10 +34,7 @@ type wuaHistoryEntry struct {
 func newestWUAInstallDates(entries []wuaHistoryEntry) map[string]time.Time {
 	dates := make(map[string]time.Time)
 	for _, e := range entries {
-		if e.UpdateID == "" || e.Date.IsZero() || e.Operation != wuaHistoryOperationInstallation {
-			continue
-		}
-		if e.ResultCode != wuaHistoryResultSucceeded && e.ResultCode != wuaHistoryResultSucceededWithErrors {
+		if e.UpdateID == "" || e.Date.IsZero() || !isSuccessfulWUAInstall(e.Operation, e.ResultCode) {
 			continue
 		}
 		if prev, ok := dates[e.UpdateID]; !ok || e.Date.After(prev) {
@@ -45,6 +42,13 @@ func newestWUAInstallDates(entries []wuaHistoryEntry) map[string]time.Time {
 		}
 	}
 	return dates
+}
+
+// isSuccessfulWUAInstall reports whether a history entry records a completed
+// installation, the only kind that can date an installed update.
+func isSuccessfulWUAInstall(operation, resultCode int) bool {
+	return operation == wuaHistoryOperationInstallation &&
+		(resultCode == wuaHistoryResultSucceeded || resultCode == wuaHistoryResultSucceededWithErrors)
 }
 
 // applyWUAInstallDates sets InstalledAt (RFC 3339, UTC) on each installed

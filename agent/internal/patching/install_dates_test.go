@@ -52,6 +52,26 @@ func TestNewestWUAInstallDatesMapsSuccessfulInstalls(t *testing.T) {
 	}
 }
 
+func TestIsSuccessfulWUAInstall(t *testing.T) {
+	cases := []struct {
+		op, rc int
+		want   bool
+	}{
+		{wuaHistoryOperationInstallation, wuaHistoryResultSucceeded, true},
+		{wuaHistoryOperationInstallation, wuaHistoryResultSucceededWithErrors, true},
+		{wuaHistoryOperationInstallation, 4, false}, // failed
+		{wuaHistoryOperationInstallation, 5, false}, // aborted
+		{wuaHistoryOperationInstallation, 1, false}, // in progress
+		{2, wuaHistoryResultSucceeded, false},       // uninstall
+		{0, 0, false},
+	}
+	for _, tc := range cases {
+		if got := isSuccessfulWUAInstall(tc.op, tc.rc); got != tc.want {
+			t.Errorf("isSuccessfulWUAInstall(%d, %d) = %v, want %v", tc.op, tc.rc, got, tc.want)
+		}
+	}
+}
+
 func TestParseUninstallInstallDate(t *testing.T) {
 	cases := map[string]string{
 		"20240115":   "2024-01-15",

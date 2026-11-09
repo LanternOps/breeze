@@ -27,6 +27,7 @@ var uninstallRegistryPaths = []string{
 func platformUninstallEntries() ([]uninstallEntry, error) {
 	var entries []uninstallEntry
 	unreadable, total := 0, 0
+	var firstErr error
 	for _, path := range uninstallRegistryPaths {
 		key, err := registry.OpenKey(registry.LOCAL_MACHINE, path, registry.READ)
 		if err != nil {
@@ -46,6 +47,9 @@ func platformUninstallEntries() ([]uninstallEntry, error) {
 			if err != nil {
 				if !errors.Is(err, registry.ErrNotExist) {
 					unreadable++
+					if firstErr == nil {
+						firstErr = fmt.Errorf("HKLM\\%s\\%s: %w", path, name, err)
+					}
 				}
 				continue
 			}
@@ -62,7 +66,7 @@ func platformUninstallEntries() ([]uninstallEntry, error) {
 		_ = key.Close()
 	}
 	if unreadable > 0 {
-		return nil, fmt.Errorf("%d of %d Uninstall keys could not be opened", unreadable, total)
+		return nil, fmt.Errorf("%d of %d Uninstall keys could not be opened (first: %w)", unreadable, total, firstErr)
 	}
 	return entries, nil
 }
