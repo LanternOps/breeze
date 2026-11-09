@@ -1543,3 +1543,72 @@ describe('enqueueAssessment metrics', () => {
     expect(wm.incWispAssessment).toHaveBeenLastCalledWith('admitted');
   });
 });
+
+// W07 (#11496, #10410 wave B): a run-mode check-in admits one assessment run
+// with its own dedupe key, pinned to the revision it was scheduled under.
+describe('check_in reason (W07)', () => {
+  const CHECK_IN = 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd';
+  const evidence = { kind: 'script_finished' as const, status: 'completed', at: '2026-10-24T07:00:00.000Z', exitCode: 0, outputHead: 'all ok' };
+  const reason = { kind: 'check_in' as const, checkInId: CHECK_IN, instruction: 'Check the patch scan on WS-01.', evidence };
+
+  it('a check-in dedupe key replaces the derived key, verbatim', async () => {
+    h.results.push([grantRow()]);
+    h.results.push([{ at: null }]);
+    const res = await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason, dedupeKey: `wisp-check-in-${CHECK_IN}` });
+    expect(res).toEqual({ runId: RUN });
+    const input = h.createAndEnqueueAgentRun.mock.calls[0]![0] as Record<string, unknown>;
+    expect(input.dedupeKey).toBe(`wisp-check-in-${CHECK_IN}`);
+    expect(input.triggerRef).toEqual({ wisp: { grantId: GRANT, grantRevisionId: REV, reason, watermark: null } });
+  });
+
+  it('refuses a dedupe key outside the wisp-check-in- namespace before reading anything', async () => {
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason, dedupeKey: 'alert:abc' })).rejects.toThrow(/wisp-check-in-/);
+    expect(h.db.select).not.toHaveBeenCalled();
+    expect(h.createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+
+  it('a required revision that is no longer current admits nothing and charges nothing', async () => {
+    h.results.push([grantRow({ currentRevisionId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' })]);
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason, requireRevisionId: REV }))
+      .resolves.toEqual({ skipped: 'grant_revision_changed' });
+    expect(h.resolveGrantCeiling).not.toHaveBeenCalled();
+    expect(h.chargeableUnderGrant).not.toHaveBeenCalled();
+    expect(h.createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+
+  it('a required revision that is current admits as usual', async () => {
+    h.results.push([grantRow()]);
+    h.results.push([{ at: null }]);
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason, requireRevisionId: REV })).resolves.toEqual({ runId: RUN });
+  });
+
+  it('a check_in reason never takes the no-changes gate, even with a watermark', () => {
+    expect(noChangesGateApplies(reason, new Date())).toBe(false);
+  });
+
+  it('round-trips through trigger_ref with its evidence; malformed evidence is dropped, a missing id or instruction is malformed', () => {
+    const base = { grantId: GRANT, grantRevisionId: REV, watermark: null };
+    expect(parseWispTriggerRef({ wisp: { ...base, reason } })).toEqual({ ...base, reason });
+    expect(parseWispTriggerRef({ wisp: { ...base, reason: { ...reason, evidence: null } } })).toEqual({ ...base, reason: { ...reason, evidence: null } });
+    for (const bad of [{ kind: 'bogus', status: 'x', at: evidence.at }, { ...evidence, at: 'not a date' }, 'text', { ...evidence, status: 7 }]) {
+      expect(parseWispTriggerRef({ wisp: { ...base, reason: { ...reason, evidence: bad } } })).toEqual({ ...base, reason: { ...reason, evidence: null } });
+    }
+    expect(parseWispTriggerRef({ wisp: { ...base, reason: { ...reason, checkInId: 'not-a-uuid' } } })).toBeNull();
+    expect(parseWispTriggerRef({ wisp: { ...base, reason: { ...reason, instruction: '' } } })).toBeNull();
+  });
+
+  it('a check_in run is never a first look, even with no earlier assessment', async () => {
+    h.seedContextForSession.mockResolvedValue('summary');
+    h.listConcernsForCeiling.mockResolvedValue([]);
+    h.listWatches.mockResolvedValue([]);
+    h.readinessInventory.mockResolvedValue([]);
+    h.recallForGrant.mockResolvedValue([]);
+    const ctx = await loadAssessmentContext({
+      id: RUN, orgId: ORG, grantId: GRANT, grantRevisionId: REV,
+      triggerRef: { wisp: { grantId: GRANT, grantRevisionId: REV, reason, watermark: null } },
+    });
+    expect(ctx!.firstLook).toBe(false);
+    expect(ctx!.noEarlierAssessment).toBe(true);
+    expect(ctx!.reason).toEqual(reason);
+  });
+});

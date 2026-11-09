@@ -1205,6 +1205,22 @@ describe('createSessionPreToolUse — Wisp bookkeeping tools skip the per_step c
     expect(mockIsLiveConcernRaisedByGrant).not.toHaveBeenCalled();
   });
 
+  // W07 (#11496, #10410): a run check-in spends grant budget unattended when it
+  // fires, so it asks once on a card; a notify one (explicit or default) does not.
+  it('schedule_check_in mode notify runs with no card; mode run (or an unknown mode) keeps the per_step card', async () => {
+    await expectNoCard('schedule_check_in', { delayMinutes: 10, instruction: 'Verify WS-01.', mode: 'notify' });
+    vi.clearAllMocks();
+    wisp.enforceWispCeiling.mockResolvedValue({ ok: true, toolAuth: {}, ceiling: CEILING, permissionKeys: ['ai_sessions:use'] });
+    wisp.narrowAuthToCeiling.mockImplementation(tagNarrowed);
+    vi.mocked(waitForApproval).mockResolvedValue(false);
+    vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 2, requiresApproval: false, description: 'x' } as any);
+    await expectCard('schedule_check_in', { delayMinutes: 10, instruction: 'Verify WS-01.', mode: 'run' });
+  });
+
+  it('schedule_check_in with an unrecognised mode keeps the card (any doubt asks)', async () => {
+    await expectCard('schedule_check_in', { delayMinutes: 10, instruction: 'Verify WS-01.', mode: 'RUN' });
+  });
+
   it('cancel_check_in (only ever this grant\'s own check-ins: the handler keys the cancel on the grant) runs with no card', async () => {
     await expectNoCard('cancel_check_in', { checkInId: '00000000-0000-4000-8000-0000000000c2' });
     expect(mockIsLiveConcernRaisedByGrant).not.toHaveBeenCalled();

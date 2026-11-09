@@ -121,6 +121,8 @@ vi.mock('../services/wisp/concernRollup', () => ({
   rollupDeviceConcerns: (...a: unknown[]) => { h.order.push('rollupDeviceConcerns'); return h.rollupDeviceConcerns(...a); },
 }));
 vi.mock('../services/wisp/assessment', () => ({ enqueueAssessment: h.enqueueAssessment }));
+// W07: the running-check-in sweep is pinned by wispCheckInRuns.integration.test.ts.
+vi.mock('../services/wisp/checkInRuns', () => ({ reconcileRunningCheckIns: async () => ({ posted: 0 }) }));
 vi.mock('../services/wisp/checkIns', () => ({
   fireCheckIn: (...a: unknown[]) => { h.order.push('fireCheckIn'); return h.fireCheckIn(...a); },
   reconcileOrphanCheckIns: (...a: unknown[]) => { h.order.push('reconcileOrphanCheckIns'); return h.reconcileOrphanCheckIns(...a); },
@@ -227,7 +229,7 @@ describe('processWakeTick', () => {
     expect(result).toEqual({
       grantsTicked: 0, watchesFired: 0, watchesUnchanged: 0, staleTicketsPublished: 0, watchesStopped: 0,
       grantsPaused: 0, grantsResumed: 0, ticketClustersOpened: 0, incidentsOpened: 0, concernRollupsOpened: 0, checkInsRefired: 0,
-      checkInTriggersFired: 0, checkInTriggersCancelled: 0,
+      checkInTriggersFired: 0, checkInTriggersCancelled: 0, checkInRunsPosted: 0,
     });
     expect(h.executes).toHaveLength(0);
     expect(h.order).toEqual([]);

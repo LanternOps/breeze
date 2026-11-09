@@ -14,6 +14,7 @@ import {
   WISP_CHECK_IN_INSTRUCTION_MAX,
   WISP_CHECK_IN_MAX_DELAY_MINUTES,
   WISP_CHECK_IN_MIN_DELAY_MINUTES,
+  WISP_CHECK_IN_MODES,
   WISP_CHECK_IN_TRIGGER_EVENTS,
 } from '../types/wispCheckIns';
 import { wispEntityKindSchema } from './wisp';
@@ -46,6 +47,8 @@ export const scheduleCheckInSchema = z
     instruction: z.string().trim().min(1).max(WISP_CHECK_IN_INSTRUCTION_MAX),
     subject: z.object({ kind: wispEntityKindSchema, id: z.guid() }).optional(),
     trigger: wispCheckInTriggerSchema.optional(),
+    /** W07 (#11496, #10410): absent = `notify`. `run` checks on its own (read-only) when it fires. */
+    mode: z.enum(WISP_CHECK_IN_MODES).optional(),
   })
   .superRefine((value, ctx) => {
     const given = Number(value.delayMinutes !== undefined) + Number(value.at !== undefined) + Number(value.trigger !== undefined);

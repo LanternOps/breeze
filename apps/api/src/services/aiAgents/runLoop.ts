@@ -3897,6 +3897,12 @@ async function recordActExecutionEvidence(
   }
 }
 
+/** W07: `trigger_ref.wisp.reason.kind === 'check_in'` (a run check-in's assessment). */
+function isCheckInRunRef(triggerRef: unknown): boolean {
+  const wisp = (triggerRef as { wisp?: { reason?: { kind?: unknown } } } | null | undefined)?.wisp;
+  return wisp?.reason?.kind === 'check_in';
+}
+
 async function finishRun(
   ctx: RunContext,
   status: keyof typeof TERMINAL_EVENT,
@@ -3946,6 +3952,25 @@ async function finishRun(
       });
       captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
         op: 'wisp.specialistResult.finishRun', runId: ctx.run.id,
+      });
+    }
+  }
+
+  // W07 (#11496): a run check-in's assessment posts its result to the
+  // thread — after the final status is committed (the post reads it), and
+  // never allowed to change it. The tick's reconcile re-sweeps a missed post;
+  // the check-in's dedupe key keeps that to one. Lazy, like the posts above,
+  // and gated on the reason so no other assessment pays a lookup.
+  if (ctx.run.profile === 'assessment' && isCheckInRunRef(ctx.run.triggerRef)) {
+    try {
+      const { postCheckInRunResult } = await import('../wisp/checkInRuns');
+      await runOutsideDbContext(() => postCheckInRunResult(ctx.run.id));
+    } catch (error) {
+      console.error('[aiAgentRunLoop] check-in result post failed — the wake tick re-sweeps it', {
+        runId: ctx.run.id, error,
+      });
+      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+        op: 'wisp.checkInRuns.finishRun', runId: ctx.run.id,
       });
     }
   }

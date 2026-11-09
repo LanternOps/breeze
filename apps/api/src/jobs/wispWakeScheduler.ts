@@ -36,6 +36,9 @@
  *      4c. reconcileCheckInTriggers (W04 #11493) — every `scheduled` event
  *         check-in before its deadline is fired if its state now holds, or
  *         cancelled if its subject is gone (reconcileCheckInTriggers).
+ *      4d. reconcileRunningCheckIns (W07 #11496) — a `running` run check-in
+ *         whose run settled without its post gets it now
+ *         (services/wisp/checkInRuns.ts).
  *      5. pollStaleTickets, 6. pollTicketClusters, 7. correlateIncidents,
  *      8. rollupDeviceConcerns (#11426: ≥ 3 device concerns of one org
  *         sharing a pattern → one org-level parent; services/wisp/concernRollup.ts).
@@ -78,6 +81,7 @@ import { claimDueWatches, recordWatchHits, stopWatchesForInactiveGrants } from '
 import { evaluateWatchHits, parseWatchHitRecord, watchHitChange, type WatchHitSet } from '../services/wisp/watchHits';
 import type { AssessmentReason } from '../services/wisp/assessmentTypes';
 import { fireCheckIn, reconcileCheckInTriggers, reconcileOrphanCheckIns } from '../services/wisp/checkIns';
+import { reconcileRunningCheckIns } from '../services/wisp/checkInRuns';
 import {
   ASSESS_JOB,
   CHECK_IN_JOB,
@@ -123,6 +127,8 @@ export type WakeTickResult = {
   checkInsRefired: number;
   checkInTriggersFired: number;
   checkInTriggersCancelled: number;
+  /** W07: settled run check-ins whose result the tick posted. */
+  checkInRunsPosted: number;
 };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -414,6 +420,7 @@ export async function processWakeTick(now: Date = new Date()): Promise<WakeTickR
     checkInsRefired: 0,
     checkInTriggersFired: 0,
     checkInTriggersCancelled: 0,
+    checkInRunsPosted: 0,
   };
   if (!wispEnabled()) return result;
 
@@ -447,6 +454,9 @@ export async function processWakeTick(now: Date = new Date()): Promise<WakeTickR
     const r = await reconcileCheckInTriggers(now);
     result.checkInTriggersFired = r.fired;
     result.checkInTriggersCancelled = r.cancelled;
+  });
+  await section('reconcileRunningCheckIns', async () => {
+    result.checkInRunsPosted = (await reconcileRunningCheckIns(now)).posted;
   });
   await section('pollStaleTickets', async () => {
     result.staleTicketsPublished = (await pollStaleTickets(now)).published;
@@ -525,7 +535,7 @@ export async function processCheckInJob(data: WispCheckInJobData): Promise<void>
     return;
   }
   const outcome = await fireCheckIn(checkInId);
-  if (outcome !== 'fired') console.info('[wisp-wake] check-in not fired', { checkInId, outcome });
+  if (outcome !== 'fired' && outcome !== 'running') console.info('[wisp-wake] check-in not fired', { checkInId, outcome });
 }
 
 // ---------------------------------------------------------------------------

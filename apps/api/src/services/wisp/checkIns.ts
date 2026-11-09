@@ -56,6 +56,7 @@ import {
   type WispCheckIn,
   type WispCheckInContext,
   type WispCheckInFireReason,
+  type WispCheckInMode,
   type WispCheckInTriggerEvent,
 } from '@breeze/shared';
 import { wispEnabled } from '../../config/env';
@@ -70,8 +71,10 @@ import {
   loadTriggerSubject,
   triggerConditionOf,
   triggerSubjectScope,
+  type CheckInEvidence,
   type TriggerGoneReason,
 } from './checkInTriggers';
+import { checkInTitle, fireRunCheckIn } from './checkInRuns';
 import { assertWithinCeiling, GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
 import { notifyUser } from './notifyUser';
 import { mobileDeepLink } from './nudgeLinks';
@@ -89,8 +92,6 @@ export const CHECK_IN_RECONCILE_LIMIT = 200;
 export const CHECK_IN_RECONCILE_MAX_FAILURES = 5;
 /** listCheckIns never returns more than this, whatever `limit` asks for. */
 const LIST_LIMIT_MAX = 100;
-/** Code points of the instruction shown in the post / bell title. */
-const TITLE_INSTRUCTION_CHARS = 80;
 
 const MIN_DELAY_MS = WISP_CHECK_IN_MIN_DELAY_MINUTES * 60_000;
 const MAX_DELAY_MS = WISP_CHECK_IN_MAX_DELAY_MINUTES * 60_000;
@@ -129,9 +130,9 @@ function report(op: string, err: unknown, tags: Record<string, string>): void {
 // ---------------------------------------------------------------------------
 
 /** The grant's thread (threads and grants are 1:1), or null when it has none yet. */
-export async function threadForGrant(grantId: string): Promise<{ id: string; partnerId: string } | null> {
+export async function threadForGrant(grantId: string): Promise<{ id: string; partnerId: string; focusOrgId: string | null } | null> {
   const [row] = await sys(() => db
-    .select({ id: wispThreads.id, partnerId: wispThreads.partnerId })
+    .select({ id: wispThreads.id, partnerId: wispThreads.partnerId, focusOrgId: wispThreads.focusOrgId })
     .from(wispThreads)
     .where(eq(wispThreads.grantId, grantId))
     .limit(1), 'wisp-check-in-thread-for-grant');
@@ -152,6 +153,10 @@ export async function threadForGrant(grantId: string): Promise<{ id: string; par
  * `trigger` (W04 #11493) makes it an event check-in: `dueAt` is then the
  * deadline, and `orgId` must be the trigger subject's own org (the tool reads
  * it from the subject and checks the subject against the ceiling first).
+ *
+ * `mode: 'run'` (W07 #11496) makes it a run check-in: it needs an org, and the
+ * row pins the ceiling's revision (`grant_revision_id`) so a later revision of
+ * the grant never applies to the run. Every row records that revision.
  */
 export async function createCheckIn(
   ceiling: GrantCeiling,
@@ -164,9 +169,14 @@ export async function createCheckIn(
     context: WispCheckInContext | null;
     /** Absent / null = a time check-in. */
     trigger?: { kind: WispCheckInTriggerEvent; subjectId: string } | null;
+    /** Absent = `notify`. */
+    mode?: WispCheckInMode;
   },
   now: Date = new Date(),
 ): Promise<WispCheckInRow> {
+  const mode: WispCheckInMode = input.mode ?? 'notify';
+  // A run assesses one org; a partner-level run would have nothing to assess.
+  if (mode === 'run' && input.orgId === null) throw new Error('createCheckIn: a run check-in needs an org');
   // An event's subject always belongs to an org; a partner-level event row would have no org to re-check at fire time.
   if (input.trigger && input.orgId === null) throw new Error('createCheckIn: an event check-in needs its subject\'s org');
   // Status gate always; the org term only for an org-scoped check-in (a
@@ -199,12 +209,13 @@ export async function createCheckIn(
     if (!thread) throw new Error(`createCheckIn: thread ${input.threadId} is not grant ${ceiling.grantId}'s thread`);
 
     // Serialise creates per thread (the createWatch precedent) so two racing
-    // creates cannot both pass the cap.
+    // creates cannot both pass the cap. A `running` row (W07) still holds its
+    // place: its run has not posted yet.
     await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext('wisp.check_ins.create'), hashtext(${input.threadId}))`);
     const [counted] = await db
       .select({ n: count() })
       .from(wispCheckIns)
-      .where(and(eq(wispCheckIns.threadId, input.threadId), eq(wispCheckIns.status, 'scheduled')));
+      .where(and(eq(wispCheckIns.threadId, input.threadId), inArray(wispCheckIns.status, ['scheduled', 'running'])));
     if (Number(counted?.n ?? 0) >= WISP_CHECK_IN_MAX_SCHEDULED_PER_THREAD) throw new CheckInLimitReachedError(input.threadId);
 
     const id = randomUUID();
@@ -226,6 +237,8 @@ export async function createCheckIn(
         createdAt: now,
         triggerKind: input.trigger?.kind ?? 'time',
         triggerSubjectId: input.trigger?.subjectId ?? null,
+        mode,
+        grantRevisionId: ceiling.revisionId,
       })
       .returning();
     if (!inserted) throw new Error('wisp_check_ins insert returned no row');
@@ -258,21 +271,21 @@ export async function createCheckIn(
       } catch (err) {
         report('reread_after_fire', err, { checkInId: row.id, grantId: row.grantId });
       }
-      return outcome === 'fired'
-        ? { ...row, status: 'fired', firedAt: now }
+      return outcome === 'fired' || outcome === 'running'
+        ? { ...row, status: outcome, firedAt: now }
         : { ...row, status: 'cancelled', cancelledAt: now };
     }
   }
   return row;
 }
 
-/** The grant's `scheduled` and `fired` (not yet consumed) check-ins, due first. */
+/** The grant's `scheduled`, `running` (W07) and `fired` (not yet consumed) check-ins, due first. */
 export async function listCheckIns(grantId: string, opts: { limit: number }): Promise<WispCheckInRow[]> {
   const limit = Math.max(1, Math.min(LIST_LIMIT_MAX, Math.trunc(opts.limit) || 1));
   return sys(() => db
     .select()
     .from(wispCheckIns)
-    .where(and(eq(wispCheckIns.grantId, grantId), inArray(wispCheckIns.status, ['scheduled', 'fired'])))
+    .where(and(eq(wispCheckIns.grantId, grantId), inArray(wispCheckIns.status, ['scheduled', 'running', 'fired'])))
     .orderBy(asc(wispCheckIns.dueAt), asc(wispCheckIns.id))
     .limit(limit), 'wisp-check-in-list');
 }
@@ -282,6 +295,9 @@ export async function listCheckIns(grantId: string, opts: { limit: number }): Pr
  * another grant's, or is no longer cancellable (consumed / cancelled). The
  * job is removed afterwards, best effort: fireCheckIn's compare-and-set on
  * `scheduled` is what keeps a cancelled row cancelled, not the removal.
+ * A `running` row (W07) can be cancelled too: its run is not stopped (it is
+ * read-only and already admitted), but its result is never posted
+ * (postCheckInRunResult only settles a `running` row).
  */
 export async function cancelCheckIn(grantId: string, checkInId: string, now: Date = new Date()): Promise<WispCheckInRow | null> {
   const [row] = await sys(() => db
@@ -290,7 +306,7 @@ export async function cancelCheckIn(grantId: string, checkInId: string, now: Dat
     .where(and(
       eq(wispCheckIns.id, checkInId),
       eq(wispCheckIns.grantId, grantId),
-      inArray(wispCheckIns.status, ['scheduled', 'fired']),
+      inArray(wispCheckIns.status, ['scheduled', 'running', 'fired']),
     ))
     .returning(), 'wisp-check-in-cancel');
   if (!row) return null;
@@ -358,10 +374,6 @@ export async function claimCheckInFire(checkInId: string, reason: WispCheckInFir
   return claimed.length > 0;
 }
 
-function checkInTitle(instruction: string): string {
-  return `Check-in due: ${Array.from(instruction).slice(0, TITLE_INSTRUCTION_CHARS).join('')}`;
-}
-
 /** `HH:MM UTC`; a deadline post is written at (or just after) that time, so the date is not needed. */
 function utcClock(at: Date): string {
   return `${at.toISOString().slice(11, 16)} UTC`;
@@ -396,7 +408,7 @@ function unusableReason(read: FireRead, now: Date): CheckInCancelReason | null {
 }
 
 type EventDecision =
-  | { kind: 'fire'; reason: WispCheckInFireReason }
+  | { kind: 'fire'; reason: WispCheckInFireReason; evidence: CheckInEvidence | null }
   | { kind: 'cancel'; reason: CheckInCancelReason }
   | { kind: 'skip' };
 
@@ -441,12 +453,16 @@ async function decideEventFire(read: FireRead, path: CheckInFirePath, now: Date)
   }
   const gone = triggerSubjectScope(subject, ceiling);
   if (gone) return { kind: 'cancel', reason: gone };
-  if (claimed !== null) return { kind: 'fire', reason: claimed };
-  return { kind: 'fire', reason: condition.met ? 'event' : 'deadline' };
+  // W07: what the state showed, for a run check-in's assessment (null when it did not hold).
+  const evidence = condition.met ? condition.evidence : null;
+  if (claimed !== null) return { kind: 'fire', reason: claimed, evidence };
+  return { kind: 'fire', reason: condition.met ? 'event' : 'deadline', evidence };
 }
 
 /**
- * Fire one check-in. 'skipped' — missing, not `scheduled` (already fired,
+ * Fire one check-in. 'running' — a run check-in (W07) admitted its
+ * assessment run (checkInRuns.ts fireRunCheckIn); its result is posted when
+ * the run settles. 'skipped' — missing, not `scheduled` (already fired,
  * cancelled, consumed), cancelled while notifyUser ran, claimed by another
  * reason, or (an event row) not due on this path yet. 'cancelled' — it can
  * never be delivered: the grant is no longer usable (paused, revoked,
@@ -465,7 +481,7 @@ export async function fireCheckIn(
   checkInId: string,
   now: Date = new Date(),
   opts: { path?: CheckInFirePath } = {},
-): Promise<'fired' | 'cancelled' | 'skipped'> {
+): Promise<'fired' | 'running' | 'cancelled' | 'skipped'> {
   const path = opts.path ?? 'job';
   const [read] = await sys(() => db
     .select({
@@ -497,6 +513,7 @@ export async function fireCheckIn(
   }
 
   let reason: WispCheckInFireReason = 'due';
+  let evidence: CheckInEvidence | null = null;
   if (row.triggerKind !== 'time') {
     const decision = await decideEventFire(read, path, now);
     if (decision.kind === 'skip') return 'skipped';
@@ -507,9 +524,24 @@ export async function fireCheckIn(
       return (await cancelScheduled(checkInId, now, decision.reason)) ? 'cancelled' : 'skipped';
     }
     reason = decision.reason;
+    evidence = decision.evidence;
   }
 
   if (!(await claimCheckInFire(checkInId, reason))) return 'skipped';
+
+  // W07: a run check-in checks on its own instead of posting the instruction.
+  if (row.mode === 'run') {
+    const outcome = await fireRunCheckIn(row, {
+      currentRevisionId: read.grantRevisionId,
+      fireReason: reason,
+      evidence,
+      postBody: checkInPostBody(row, reason),
+      now,
+    });
+    if (outcome === 'skipped') return 'skipped';
+    if (path === 'event') await removeDeadlineJob(checkInId, row.grantId);
+    return outcome;
+  }
 
   await notifyUser({
     category: 'wisp_nudge',
@@ -531,16 +563,20 @@ export async function fireCheckIn(
     .returning({ id: wispCheckIns.id }), 'wisp-check-in-fire-flip');
   if (flipped.length === 0) return 'skipped';
 
-  // Fired ahead of its deadline: the deadline job has nothing left to do.
-  // Best effort — that job finds the row `fired` and skips anyway.
-  if (path === 'event') {
-    try {
-      await removeCheckInJob(checkInId);
-    } catch (err) {
-      report('remove_job', err, { checkInId, grantId: row.grantId });
-    }
-  }
+  if (path === 'event') await removeDeadlineJob(checkInId, row.grantId);
   return 'fired';
+}
+
+/**
+ * Fired ahead of its deadline: the deadline job has nothing left to do. Best
+ * effort — that job finds the row no longer `scheduled` and skips anyway.
+ */
+async function removeDeadlineJob(checkInId: string, grantId: string): Promise<void> {
+  try {
+    await removeCheckInJob(checkInId);
+  } catch (err) {
+    report('remove_job', err, { checkInId, grantId });
+  }
 }
 
 /**
@@ -706,7 +742,7 @@ export async function reconcileCheckInTriggers(
   for (const { id } of waiting) {
     try {
       const outcome = await fireCheckIn(id, now, { path: 'event' });
-      if (outcome === 'fired') fired += 1;
+      if (outcome === 'fired' || outcome === 'running') fired += 1;
       else if (outcome === 'cancelled') cancelled += 1;
     } catch (err) {
       failures += 1;
@@ -740,5 +776,7 @@ export function toCheckInDto(row: WispCheckInRow): WispCheckIn {
       : null,
     fireReason: row.fireReason ?? null,
     cancelReason: row.cancelReason ?? null,
+    mode: row.mode,
+    runId: row.runId ?? null,
   };
 }
