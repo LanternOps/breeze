@@ -108,13 +108,17 @@ func TestSpawnProcessInSessionWithArgsNoSignedInUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	systemCalls := stubUserTokenStrategies(t, []userTokenStrategy{failingStrategy("user (WTS)", "no token")})
+	launch := stubCreateProcessAsUser(t, 3104, nil)
 
-	err := SpawnProcessInSessionWithArgs(binary, []string{"--config", "x"}, 1)
+	pid, err := SpawnProcessInSessionWithArgs(binary, []string{"--config", "x"}, 1)
 
 	if !errors.Is(err, ErrNoInteractiveUser) {
 		t.Fatalf("err = %v, want ErrNoInteractiveUser", err)
 	}
 	if *systemCalls != 0 {
 		t.Fatalf("Assist launch asked for a SYSTEM token %d times", *systemCalls)
+	}
+	if pid != 0 || launch.calls != 0 {
+		t.Fatalf("pid=%d launches=%d, want no launch", pid, launch.calls)
 	}
 }
