@@ -41,7 +41,7 @@ So the residual is **Trend Micro** (both agent tables + the API enum chain) and 
 ## Global Constraints
 
 - **Order is a contract.** Postgres keeps enum order, and `helpers.provider.test.ts` asserts `securityProviderValues` equals the Drizzle enum **in order**. `trend_micro` goes **after `cylance`, before `other`** in the migration (`BEFORE 'other'`), the Drizzle `pgEnum` array and `securityProviderValues`.
-- **One migration, its own file** (a value added by `ALTER TYPE … ADD VALUE` cannot be used in the same transaction): `apps/api/migrations/2027-01-22-211400-security-provider-trend-micro.sql`, body `ALTER TYPE security_provider ADD VALUE IF NOT EXISTS 'trend_micro' BEFORE 'other';` plus the Cylance-style header comment. No inner `BEGIN/COMMIT`; it writes no rows, so no `set_config('breeze.scope', …)`. Task 0 re-checks the slot: it must sort after the newest committed migration **and** after any open PR's (at plan time #10918 holds `2027-01-22-220000…220300`, #11295 `2027-01-22-210100`; W05 plans `2027-01-23-110000`). If a newer migration merges while this PR is queued, **rename this file before merge** (a merged newer migration poisons the merge queue's Check Migrations).
+- **One migration, its own file** (a value added by `ALTER TYPE … ADD VALUE` cannot be used in the same transaction): `apps/api/migrations/2027-01-22-231000-security-provider-trend-micro.sql`, body `ALTER TYPE security_provider ADD VALUE IF NOT EXISTS 'trend_micro' BEFORE 'other';` plus the Cylance-style header comment. No inner `BEGIN/COMMIT`; it writes no rows, so no `set_config('breeze.scope', …)`. Task 0 re-checks the slot: it must sort after the newest committed migration **and** after any open PR's (at plan time #10918 holds `2027-01-22-220000…220300`, #11295 `2027-01-22-210100`; W05 plans `2027-01-23-110000`). If a newer migration merges while this PR is queued, **rename this file before merge** (a merged newer migration poisons the merge queue's Check Migrations).
 - **Detection signals are vendor facts marked [U] until the lab sees them.** Nothing generic: no `svchost`-class process names (`TestSignaturesAvoidGenericProcessNames`). No macOS probe for Trend Micro until a lab Mac proves one (WithSecure precedent, `signatures.go:539-543`).
 - **No fixture or PR text carries a real hostname, user name, serial or console tenant.** WSC display names are vendor product strings and are fine.
 - **Agent-shipped code.** Merging does not reach devices; an agent release does. The API half is safe in any order (free-string ingest; unknown → `other`), but **deploy the API first** so the first agent reports land on a known value.
@@ -69,7 +69,7 @@ No AI tool, registry entry or schema change (AI tools read the provider as a str
 
 | File | Change |
 |---|---|
-| `apps/api/migrations/2027-01-22-211400-security-provider-trend-micro.sql` | Create |
+| `apps/api/migrations/2027-01-22-231000-security-provider-trend-micro.sql` | Create |
 | `apps/api/src/db/schema/security.ts` | `'trend_micro'` after `'cylance'` |
 | `apps/api/src/routes/agents/schemas.ts` | `securityProviderValues` += `'trend_micro'` (same position) |
 | `apps/api/src/routes/agents/helpers.ts` | `normalizeProvider` cases `trend_micro`, `trendmicro`, `trend-micro` → `trend_micro` |
@@ -184,7 +184,7 @@ Windows lab VM on the lab Hyper-V host (never a host with an installed Breeze ag
 ## Self-review notes (for executors)
 
 - **Spec coverage (§4.14):** ESET/Emsisoft/Webroot/ThreatDown/WithSecure — done by #7634 (table above); Trend Micro signature (Task 3), `providerFromName` `trend_micro` (Task 2), enum migration in its own file (Task 1); `huntress` — decided out (correction 1, Task 2 pin); order-sensitive table tests (Task 2).
-- **Names used once and consistently:** `trend_micro`, label `Trend Micro`, vendor `Trend Micro`, migration `2027-01-22-211400-security-provider-trend-micro.sql` (subject to Task 0).
+- **Names used once and consistently:** `trend_micro`, label `Trend Micro`, vendor `Trend Micro`, migration `2027-01-22-231000-security-provider-trend-micro.sql` (subject to Task 0).
 - **Not in scope:** Cylance/Carbon Black (Decisions 2–3), macOS (Decision 4), any EDR-framework adapter for Trend Micro (roadmap only), agent release mechanics.
 
 ## Execution handoff
