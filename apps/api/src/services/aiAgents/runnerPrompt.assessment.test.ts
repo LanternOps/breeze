@@ -315,6 +315,25 @@ describe('buildAssessmentTaskPrompt (Wisp W05b)', () => {
       expect(p.indexOf('First look:')).toBeLessThan(p.indexOf(AGENT_PROMPT_AUTHORITY_DISCLAIMER));
     });
 
+    // #10406: an on-demand assessment reads the open alerts like a first look,
+    // but there may well be an earlier assessment — the line must not claim
+    // there is none.
+    it('an on_demand reason says a person asked for it, with the current-state rule and no "no earlier assessment" claim', () => {
+      const p = buildAssessmentTaskPrompt(ctx(assessment({ reason: { kind: 'on_demand', requestId: 'req-secret-1' }, firstLook: true })));
+      expect(p).toContain('Why this assessment: on demand (a person asked Wisp for this assessment in chat).');
+      expect(p).not.toContain('req-secret-1');
+      const line = p.split('\n').find((l) => l.startsWith('On demand:'));
+      expect(line).toBeDefined();
+      expect(line).toMatch(/current state/i);
+      expect(line).toMatch(/"call nothing when nothing changed" does not apply/i);
+      expect(line).toMatch(/open alerts/i);
+      expect(p).not.toContain('First look:');
+      expect(p).not.toMatch(/no completed earlier assessment/i);
+      expect(p).toContain('Open alerts now (worst first, at most 25) and other changes since 2026-10-21T00:00:00.000Z:');
+      expect(p.indexOf('On demand:')).toBeGreaterThan(p.indexOf('Why this assessment:'));
+      expect(p.indexOf('On demand:')).toBeLessThan(p.indexOf(AGENT_PROMPT_AUTHORITY_DISCLAIMER));
+    });
+
     it('heads the digest as the org\'s open alerts plus recent changes', () => {
       const p = buildAssessmentTaskPrompt(ctx(assessment({ firstLook: true })));
       expect(p).toContain('Open alerts now (worst first, at most 25) and other changes since 2026-10-21T00:00:00.000Z:');

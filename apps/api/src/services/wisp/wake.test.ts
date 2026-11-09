@@ -22,6 +22,11 @@ const h = vi.hoisted(() => ({
   resolveGrantCeiling: vi.fn(),
   /** Make Job.remove() reject (BullMQ refuses to remove an active / locked job). */
   removeFails: false,
+  /** Job.updateData / Job.promote calls, in order (#10406 on_demand upgrade). */
+  updates: [] as Array<{ id: string; data: unknown }>,
+  promotes: [] as string[],
+  /** Runs inside Job.updateData after the data is written: a worker claiming the job mid-update. */
+  onUpdateData: null as null | ((rec: FakeJobRecord) => void),
 }));
 
 vi.mock('../../db', async () => {
@@ -59,6 +64,17 @@ vi.mock('bullmq', () => {
       if (h.removeFails) throw new Error('Job is locked');
       h.jobs.delete(id);
     },
+    updateData: async (data: unknown) => {
+      h.updates.push({ id, data });
+      rec.data = data;
+      h.onUpdateData?.(rec);
+    },
+    // BullMQ: promote moves a delayed job to waiting and throws for any other state.
+    promote: async () => {
+      h.promotes.push(id);
+      if (rec.state !== 'delayed') throw new Error(`Job ${id} is not in the delayed state`);
+      rec.state = 'waiting';
+    },
   });
   return {
     Queue: class {
@@ -92,6 +108,7 @@ import {
   enqueueCheckIn,
   handleWispWakeEvent,
   isCheckInJobLive,
+  onDemandSuccessorJobId,
   pickRoundRobinOrg,
   removeCheckInJob,
   requestAssessment,
@@ -160,6 +177,9 @@ beforeEach(() => {
   h.jobs = new Map();
   h.adds = [];
   h.removeFails = false;
+  h.updates = [];
+  h.promotes = [];
+  h.onUpdateData = null;
   useFixtures({});
   h.resolveGrantCeiling.mockReset();
 });
@@ -274,6 +294,124 @@ describe('requestAssessment', () => {
       grantId: G1, orgId: O1, reason: { kind: 'tick' }, subject: { kind: 'alert', id: ALERT },
     });
     expect(h.jobs.get(wakeJobId(G1, O1))!.data).toMatchObject({ subject: { kind: 'alert', id: ALERT } });
+  });
+});
+
+// #10406: a person asking for an assessment now must not be swallowed by a
+// queued tick / event job (which reads only the since-watermark window).
+describe('requestAssessment — on_demand upgrade (#10406)', () => {
+  const OD = { kind: 'on_demand' as const, requestId: 'req-1' };
+  const seed = (state: string, data: Record<string, unknown> = { grantId: G1, orgId: O1, reason: { kind: 'tick' } }) => {
+    h.jobs.set(wakeJobId(G1, O1), { name: 'assess', data, opts: { jobId: wakeJobId(G1, O1), delay: 60_000 }, state, timestamp: 1 });
+  };
+
+  it('onDemandSuccessorJobId is the window id plus -od, with no colon', () => {
+    expect(onDemandSuccessorJobId(G1, O1)).toBe(`wisp-assess-${G1}-${O1}-od`);
+    expect(onDemandSuccessorJobId(G1, O1)).not.toContain(':');
+  });
+
+  it('no live job: adds the window job with the on_demand reason and no debounce delay', async () => {
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('queued');
+    expect(assessAdds()).toHaveLength(1);
+    expect(assessAdds()[0]).toMatchObject({ data: { reason: OD }, opts: { jobId: wakeJobId(G1, O1), delay: 0, attempts: 3 } });
+  });
+
+  it('a delayed tick job is upgraded in place: updateData with the on_demand reason, then promote', async () => {
+    seed('delayed', { grantId: G1, orgId: O1, reason: { kind: 'tick' }, subject: { kind: 'alert', id: ALERT } });
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('upgraded');
+    // The digest hint stays; only the reason changes.
+    expect(h.updates).toEqual([{ id: wakeJobId(G1, O1), data: { grantId: G1, orgId: O1, reason: OD, subject: { kind: 'alert', id: ALERT } } }]);
+    expect(h.promotes).toEqual([wakeJobId(G1, O1)]);
+    expect(assessAdds()).toHaveLength(0);
+    expect(h.jobs.get(wakeJobId(G1, O1))!.state).toBe('waiting');
+  });
+
+  it('a waiting or prioritized job is upgraded without a promote', async () => {
+    for (const state of ['waiting', 'prioritized']) {
+      h.jobs = new Map(); h.updates = []; h.promotes = []; h.adds = [];
+      seed(state);
+      expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('upgraded');
+      expect(h.updates).toHaveLength(1);
+      expect(h.promotes).toEqual([]);
+      expect(assessAdds()).toHaveLength(0);
+    }
+  });
+
+  // #11424 × #10406: the watch's hit-set is recorded only when a run is
+  // admitted FOR the watch. An upgraded job no longer carries the watch
+  // reason, so its watchRecord is dropped and the next cadence asks again.
+  it('upgrading a waiting watch job drops its watchRecord along with the watch reason', async () => {
+    const watchRecord = { watchId: '00000000-0000-4000-8000-0000000000d1', previousHash: null, hash: 'a'.repeat(64), count: 1 };
+    seed('delayed', { grantId: G1, orgId: O1, reason: { kind: 'watch', watchId: watchRecord.watchId }, watchRecord });
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('upgraded');
+    expect(h.updates).toEqual([{ id: wakeJobId(G1, O1), data: { grantId: G1, orgId: O1, reason: OD } }]);
+    expect(h.jobs.get(wakeJobId(G1, O1))!.data).not.toHaveProperty('watchRecord');
+  });
+
+  it('an active job gets a successor job (-od) with the on_demand reason and delay 0; the active job is untouched', async () => {
+    seed('active');
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('queued');
+    expect(h.updates).toEqual([]);
+    expect(assessAdds()).toHaveLength(1);
+    expect(assessAdds()[0]).toMatchObject({
+      data: { grantId: G1, orgId: O1, reason: OD },
+      opts: { jobId: `wisp-assess-${G1}-${O1}-od`, delay: 0, attempts: 3 },
+    });
+    expect(h.jobs.get(wakeJobId(G1, O1))!.data).toMatchObject({ reason: { kind: 'tick' } });
+  });
+
+  it('claim race: the job turns active during updateData → the successor is added', async () => {
+    seed('delayed');
+    h.onUpdateData = (rec) => { rec.state = 'active'; };
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('queued');
+    expect(assessAdds().map((a) => a.opts.jobId)).toEqual([onDemandSuccessorJobId(G1, O1)]);
+  });
+
+  it('an updateData that throws (job claimed and removed) falls back to the successor', async () => {
+    seed('waiting');
+    h.onUpdateData = (rec) => { rec.state = 'completed'; throw new Error('Missing key for job'); };
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('queued');
+    expect(assessAdds().map((a) => a.opts.jobId)).toEqual([onDemandSuccessorJobId(G1, O1)]);
+  });
+
+  it('a non-on_demand request onto an on_demand job coalesces and never downgrades it', async () => {
+    seed('waiting', { grantId: G1, orgId: O1, reason: OD });
+    for (const reason of [{ kind: 'tick' as const }, { kind: 'watch' as const, watchId: 'w1' }, { kind: 'event' as const, eventType: 'alert.triggered', eventId: 'e1' }]) {
+      expect(await requestAssessment({ grantId: G1, orgId: O1, reason })).toBe('coalesced');
+    }
+    expect(h.updates).toEqual([]);
+    expect(h.jobs.get(wakeJobId(G1, O1))!.data).toMatchObject({ reason: OD });
+  });
+
+  it('a second on_demand onto an on_demand job (queued or active) coalesces', async () => {
+    for (const state of ['delayed', 'active']) {
+      h.jobs = new Map(); h.updates = []; h.adds = [];
+      seed(state, { grantId: G1, orgId: O1, reason: OD });
+      expect(await requestAssessment({ grantId: G1, orgId: O1, reason: { kind: 'on_demand', requestId: 'req-2' } })).toBe('coalesced');
+      expect(h.updates).toEqual([]);
+      expect(assessAdds()).toHaveLength(0);
+    }
+  });
+
+  it('a live successor absorbs repeats: one -od job, later on_demand requests coalesce', async () => {
+    seed('active');
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('queued');
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: { kind: 'on_demand', requestId: 'req-2' } })).toBe('coalesced');
+    // The window job finished while the successor still waits: still one on_demand job.
+    h.jobs.delete(wakeJobId(G1, O1));
+    expect(await requestAssessment({ grantId: G1, orgId: O1, reason: { kind: 'on_demand', requestId: 'req-3' } })).toBe('coalesced');
+    expect(assessAdds()).toHaveLength(1);
+  });
+
+  it('a retained completed / failed successor record is removed before the successor is added', async () => {
+    for (const state of ['completed', 'failed']) {
+      h.jobs = new Map(); h.adds = [];
+      seed('active');
+      h.jobs.set(onDemandSuccessorJobId(G1, O1), { name: 'assess', data: {}, opts: {}, state, timestamp: 1 });
+      expect(await requestAssessment({ grantId: G1, orgId: O1, reason: OD })).toBe('queued');
+      expect(h.jobs.get(onDemandSuccessorJobId(G1, O1))!.state).toBe('waiting');
+      expect(h.jobs.get(onDemandSuccessorJobId(G1, O1))!.data).toMatchObject({ reason: OD });
+    }
   });
 });
 

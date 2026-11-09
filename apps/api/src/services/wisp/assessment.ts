@@ -738,6 +738,8 @@ function parseReason(v: unknown): AssessmentReason | null {
     }
     case 'onboarding':
       return { kind: 'onboarding' };
+    case 'on_demand':
+      return isNonEmptyString(r.requestId) ? { kind: 'on_demand', requestId: r.requestId } : null;
     default:
       return null;
   }
@@ -1126,8 +1128,10 @@ export async function loadAssessmentContext(run: {
 
   const since = ref.watermark ? new Date(ref.watermark) : new Date(Date.now() - DEFAULT_LOOKBACK_MS);
   // #10389: nothing earlier to diff against, so the alerts are the org's
-  // current open ones rather than the 24 h fallback window.
-  const firstLook = ref.watermark === null || ref.reason.kind === 'onboarding';
+  // current open ones rather than the 24 h fallback window. #10406: a person
+  // asking "go through the open alerts" gets the same open-alerts digest,
+  // whatever the watermark.
+  const firstLook = ref.watermark === null || ref.reason.kind === 'onboarding' || ref.reason.kind === 'on_demand';
   const reason = ref.reason;
   const anomalyIncidentId = reason.kind === 'event' ? reason.anomalyIncidentId ?? null : null;
   const digest = await loadDigest(ceiling, run.orgId, run.id, since, firstLook, anomalyIncidentId);

@@ -541,6 +541,8 @@ describe('no-changes gate (#11423)', () => {
     expect(noChangesGateApplies(watch, wm0, null)).toBe(false);
     expect(noChangesGateApplies(alertReason, wm0)).toBe(false);
     expect(noChangesGateApplies({ kind: 'onboarding' }, wm0)).toBe(false);
+    // #10406: a person asked for this one; it always runs.
+    expect(noChangesGateApplies({ kind: 'on_demand', requestId: 'req-1' }, wm0)).toBe(false);
   });
 
   it('the alerts probe counts an acknowledge or dismiss as a change (it clears an "unacknowledged" watch hit)', async () => {
@@ -560,6 +562,7 @@ describe('no-changes gate (#11423)', () => {
   it.each([
     ['event', alertReason],
     ['onboarding', { kind: 'onboarding' as const }],
+    ['on_demand', { kind: 'on_demand' as const, requestId: 'req-1' }],
   ])('an %s reason runs regardless of the digest (no probe)', async (_label, reason) => {
     h.results.push([grantRow()], [{ at: WATERMARK }]);
     await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason })).resolves.toEqual({ runId: RUN });
@@ -929,6 +932,16 @@ describe('parseWispTriggerRef', () => {
     });
   });
 
+  // #10406: the on_demand reason survives the trigger_ref round-trip (a null
+  // here would drop the whole run context); one without a request id is malformed.
+  it('keeps an on_demand reason with its request id and rejects one without', () => {
+    const base = { grantId: GRANT, grantRevisionId: REV, watermark: null };
+    const reason = { kind: 'on_demand', requestId: 'req-1' };
+    expect(parseWispTriggerRef({ wisp: { ...base, reason } })).toEqual({ ...base, reason });
+    expect(parseWispTriggerRef({ wisp: { ...base, reason: { kind: 'on_demand' } } })).toBeNull();
+    expect(parseWispTriggerRef({ wisp: { ...base, reason: { kind: 'on_demand', requestId: '' } } })).toBeNull();
+  });
+
   // #10388: the event's subject ids survive the trigger_ref round-trip; a
   // non-uuid id is dropped rather than rendered into the prompt.
   it('keeps uuid alertId / deviceId on an event reason and drops anything else', () => {
@@ -1177,6 +1190,21 @@ describe('loadAssessmentContext', () => {
         expect(ctx!.digest.alerts).toEqual([]);
         expect(ctx!.digest.tickets.map((r) => r.id)).toEqual(['t1']);
       }
+    });
+
+    // #10406: "go through the open alerts" — an on-demand assessment reads the
+    // org's open alerts, not the since-watermark window, even with a watermark.
+    it('an on_demand reason reads the open alerts even when a watermark exists', async () => {
+      queueDigest();
+      const ctx = await loadAssessmentContext(run({
+        triggerRef: { wisp: { grantId: GRANT, grantRevisionId: REV, reason: { kind: 'on_demand', requestId: 'req-1' }, watermark } },
+      }));
+      expect(ctx!.firstLook).toBe(true);
+      expect(ctx!.reason).toEqual({ kind: 'on_demand', requestId: 'req-1' });
+      const { q, chain } = alertsSelect();
+      expect(compile(q.where[0]).sql).not.toMatch(/triggered_at/);
+      expect(compile(q.where[0]).sql).toMatch(/"status" in \(\$\d+, \$\d+\)/);
+      expect(chain.orderBy!.mock.calls[0]!.map((c) => compile(c).sql)).toEqual(['"alerts"."severity" asc', '"alerts"."triggered_at" desc']);
     });
 
     it('an onboarding reason is a first look even when a watermark exists', async () => {
