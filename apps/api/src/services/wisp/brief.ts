@@ -345,8 +345,9 @@ export async function buildBrief(
     ...(resolvedCount > 0 ? [plural(resolvedCount, 'concern resolved', 'concerns resolved')] : []),
   ]);
 
-  // Dollars, matching the web spend meter ("$0.42 of $2.00 today"); AI spend is USD.
-  push('Spend', [`${usd(spend.spentTodayCents)} of ${usd(spend.budgetCentsPerDay)} today`]);
+  // Dollars, matching the web spend meter ("$0.42 of $2.00 today"); AI spend is USD. #10414: the
+  // total includes chat, so the line names both parts: "$2.00 of $5.00 today (background $0.30 · chat $1.70)".
+  push('Spend', [`${usd(spend.spentTodayCents)} of ${usd(spend.budgetCentsPerDay)} today (background ${usd(spend.backgroundCents)} · chat ${usd(spend.chatCents)})`]);
 
   const activeWatches = watches.filter((w) => w.status === 'active').length;
   const gaps = live.filter(isReadinessGap).length;

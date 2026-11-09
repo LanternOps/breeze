@@ -223,10 +223,10 @@ export async function spentUnderGrant(grantId: string, now: Date = new Date()): 
 }
 
 /** Both reads under ONE system context (the inner inSystemContext calls run in place). */
-function grantAndSpend(grantId: string, now: Date): Promise<{ grant: GrantBudgetRow; spent: number }> {
+function grantAndSpend(grantId: string, now: Date): Promise<{ grant: GrantBudgetRow; spend: GrantSpendBreakdown }> {
   return inSystemContext(async () => {
     const grant = await loadGrantBudget(grantId);
-    return { grant, spent: await spentUnderGrant(grantId, now) };
+    return { grant, spend: await spendBreakdownUnderGrant(grantId, now) };
   });
 }
 
@@ -242,8 +242,8 @@ export async function chargeableUnderGrant(
   if (!Number.isFinite(estimateCents) || estimateCents < 0) {
     throw new RangeError(`estimateCents must be a non-negative finite number (got ${estimateCents}).`);
   }
-  const { grant, spent } = await grantAndSpend(grantId, now);
-  if (spent + estimateCents <= grant.budgetCentsPerDay) return { ok: true };
+  const { grant, spend } = await grantAndSpend(grantId, now);
+  if (spend.totalCents + estimateCents <= grant.budgetCentsPerDay) return { ok: true };
   incWispBudgetExhausted();
   return { ok: false, reason: 'budget_exhausted' };
 }
@@ -279,7 +279,7 @@ export async function notifyBudgetExhaustedOnce(grantId: string, now: Date = new
 export async function spendSummary(
   grantId: string,
   now: Date = new Date(),
-): Promise<{ spentTodayCents: number; budgetCentsPerDay: number; budgetResetsAt: Date }> {
-  const { grant, spent: spentTodayCents } = await grantAndSpend(grantId, now);
-  return { spentTodayCents, budgetCentsPerDay: grant.budgetCentsPerDay, budgetResetsAt: utcDayWindow(now).end };
+): Promise<{ spentTodayCents: number; backgroundCents: number; chatCents: number; budgetCentsPerDay: number; budgetResetsAt: Date }> {
+  const { grant, spend } = await grantAndSpend(grantId, now);
+  return { spentTodayCents: spend.totalCents, backgroundCents: spend.backgroundCents, chatCents: spend.chatCents, budgetCentsPerDay: grant.budgetCentsPerDay, budgetResetsAt: utcDayWindow(now).end };
 }

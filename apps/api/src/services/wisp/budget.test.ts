@@ -383,10 +383,10 @@ describe('notifyBudgetExhaustedOnce', () => {
 
 describe('spendSummary', () => {
   it('returns today\'s spend, the grant budget, and budgetResetsAt = window end', async () => {
-    h.results.push([grantBudgetRow({ budgetCentsPerDay: 500 })], [{ total: 42 }]);
+    h.results.push([grantBudgetRow({ budgetCentsPerDay: 500 })], [{ total: 30 }], [{ total: 0 }], [{ total: '12.2' }]);
     const now = new Date('2027-01-05T18:00:00.000Z');
     const s = await spendSummary(GRANT, now);
-    expect(s).toEqual({ spentTodayCents: 42, budgetCentsPerDay: 500, budgetResetsAt: utcDayWindow(now).end });
+    expect(s).toEqual({ spentTodayCents: 43, backgroundCents: 30, chatCents: 13, budgetCentsPerDay: 500, budgetResetsAt: utcDayWindow(now).end });
     expect(s.budgetResetsAt.toISOString()).toBe('2027-01-06T00:00:00.000Z');
   });
 });

@@ -132,7 +132,7 @@ beforeEach(() => {
   seq = 0;
   h.resolveGrantCeiling.mockResolvedValue(CEILING);
   h.listConcernsForCeiling.mockResolvedValue([]);
-  h.spendSummary.mockResolvedValue({ spentTodayCents: 0, budgetCentsPerDay: 200, budgetResetsAt: new Date() });
+  h.spendSummary.mockResolvedValue({ spentTodayCents: 0, backgroundCents: 0, chatCents: 0, budgetCentsPerDay: 200, budgetResetsAt: new Date() });
   h.listWatches.mockResolvedValue([]);
   h.listActivity.mockResolvedValue({ items: [], nextCursor: null });
   h.createEntityResolver.mockImplementation(() => h.resolveEntity);
@@ -252,12 +252,12 @@ describe('buildBrief', () => {
 
   it('with 0 concerns says nothing needs you and omits empty sections', async () => {
     h.selectQueue.wisp_grants = [[{ currentRevisionId: REVISION, status: 'active' }]];
-    h.spendSummary.mockResolvedValue({ spentTodayCents: 0, budgetCentsPerDay: 200, budgetResetsAt: NOW });
+    h.spendSummary.mockResolvedValue({ spentTodayCents: 0, backgroundCents: 0, chatCents: 0, budgetCentsPerDay: 200, budgetResetsAt: NOW });
     const brief = await buildBrief(GRANT, NOW);
     expect(brief.title).toBe('Good morning — nothing needs you');
     expect(brief.body).toBe('Nothing needs you right now.');
     expect(brief.sections.map((s) => s.heading)).toEqual(['Spend']);
-    expect(brief.sections[0]!.lines).toEqual(['$0.00 of $2.00 today']);
+    expect(brief.sections[0]!.lines).toEqual(['$0.00 of $2.00 today (background $0.00 · chat $0.00)']);
   });
 
   it('counts needs-you and open concerns; the body is the 3 most urgent open items, snoozed left out', async () => {
@@ -510,13 +510,13 @@ describe('buildBrief', () => {
         // #10386: an org-level concern is never a readiness gap, whatever its evidence says.
         concern({ severity: 'high', subject: { kind: 'org', id: ORG }, evidence: { readiness: { checks: [] } } }),
       ]));
-    h.spendSummary.mockResolvedValue({ spentTodayCents: 42, budgetCentsPerDay: 200, budgetResetsAt: NOW });
+    h.spendSummary.mockResolvedValue({ spentTodayCents: 200, backgroundCents: 30, chatCents: 170, budgetCentsPerDay: 500, budgetResetsAt: NOW });
     h.listWatches.mockResolvedValue([{ status: 'active' }, { status: 'active' }, { status: 'stopped' }]);
 
     const brief = await buildBrief(GRANT, NOW, { since });
     const byHeading = Object.fromEntries(brief.sections.map((s) => [s.heading, s.lines]));
     expect(byHeading.Overnight).toEqual(['2 assessments run', '1 specialist launched', '1 concern resolved']);
-    expect(byHeading.Spend).toEqual(['$0.42 of $2.00 today']);
+    expect(byHeading.Spend).toEqual(['$2.00 of $5.00 today (background $0.30 · chat $1.70)']);
     expect(byHeading.Watching).toEqual(['2 active watches', '2 readiness gaps']);
     expect(h.listActivity).toHaveBeenCalledWith(CEILING, { limit: 100 });
     expect(h.spendSummary).toHaveBeenCalledWith(GRANT, NOW);
@@ -683,7 +683,7 @@ describe('runMorningBriefs', () => {
       title: 'Good morning — nothing needs you',
       body: 'Nothing needs you right now.',
       briefLocalDate: '2026-10-24',
-      briefSections: [{ heading: 'Spend', lines: ['$0.00 of $2.00 today'] }],
+      briefSections: [{ heading: 'Spend', lines: ['$0.00 of $2.00 today (background $0.00 · chat $0.00)'] }],
     });
     expect(h.loadNudgeBookkeeping).toHaveBeenCalledTimes(1);
   });
