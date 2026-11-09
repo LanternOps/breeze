@@ -15,7 +15,7 @@ tracking_issue: LanternOps/breeze#11377
   - `entra_tenant`: the domain is in `verifiedDomains` of `GET /organization` for the org's **proven** tenant (W4), read through the org's identity-first `customer-graph-read` connection (`m365.org.get`).
   - `google_directory`: the domain is `verified` in the Directory API domains list (`domains.list`, `customer: 'my_customer'`) through the org's Google Workspace connection, with a token that asks **only** for the new domain scope.
 - **Service.** `services/portalDomainVerification/service.ts` records, removes and re-checks verifications, applies the transfer rule (D5) and exposes the read API for W6/W7 (`isDomainVerifiedForOrg`, `findOrgByVerifiedDomain`, `listVerifiedDomainsForOrg`). Those re-validate the evidence at use, so a lost tenant proof or a removed Google connection stops dependent features on the next request.
-- **Worker.** A BullMQ repeatable job re-checks verified rows once a day and clears lapsed ones.
+- **Worker.** An hourly BullMQ repeatable job re-checks each verified row about once a day (23 h minimum age) and clears lapsed ones.
 - **UI.** A new **Domains** tab in org settings. Ticketing › Inbound email becomes a read-only summary with links, and the Sign-in & registration card gains a Domains row.
 
 **Tech Stack:** Hono, Drizzle (queries only), a hand-written SQL migration, PostgreSQL forced RLS, BullMQ, `node:dns` (injectable), `@googleapis/admin` + `google-auth-library`, the M365 Graph read executor client, Astro + React, Vitest (unit plus `vitest.integration.config.ts`).
@@ -69,7 +69,7 @@ tracking_issue: LanternOps/breeze#11377
 - **D3: Clear on repoint, by trigger** (inv. 3).
   - `BEFORE UPDATE`: when `org_id` changes or `lower(domain)` changes, null the verification columns and the token. If the row was verified, set `cleared_at = now()` and `cleared_reason = 'repointed'`.
   - **The token rotates too.** The customer's DNS admin must publish a new record for the new org. Otherwise an old record would re-verify a domain the MSP moved to a different customer org.
-  - **Org merge is exempt.** `executeOrgMerge`'s Phase B transaction runs `SELECT set_config('breeze.org_merge', 'on', true)` first, and the trigger skips while it is `on`. The merge is one system transaction (`orgMerge.ts:1418`), so the flag ends with it. Merge is the same partner saying "these are one customer", like W4 D8's adoption of a proven tenant mapping. Per-method checks at use (D6) catch evidence that does not survive the merge, such as a dropped Google connection.
+  - **Org merge is exempt.** `executeOrgMerge`'s Phase B transaction runs `SELECT set_config('breeze.org_merge', 'on', true)` first, and the trigger skips while it is `on`. The merge is one system transaction (`orgMerge.ts:1416-1418`), so the flag ends with it. Merge is the same partner saying "these are one customer", like W4 D8's adoption of a proven tenant mapping. Per-method checks at use (D6) catch evidence that does not survive the merge, such as a dropped Google connection.
   - A contract test pins that `breeze.org_merge` is set only in `services/orgMerge.ts`.
 - **D4: One verified org per domain, platform-wide.** A partial unique index `customer_email_domains_verified_domain_uq ON (lower(domain)) WHERE verified_at IS NOT NULL`. Within one partner the existing `(partner_id, domain)` unique already prevents two rows, so a conflict is always cross-partner.
 - **D5: Transfer rule. The incumbent keeps the domain while its own evidence still checks out live** (OD1).
@@ -77,8 +77,9 @@ tracking_issue: LanternOps/breeze#11377
     - A `fail` → A is cleared (`cleared_reason = 'displaced'`), B is verified, both orgs are audited, and A's partner admins are emailed after commit.
     - A `pass` or `unavailable` → B gets 409 `DOMAIN_VERIFIED_ELSEWHERE` and nothing changes. The message: "This domain is verified for another organization. Its owner must remove the other verification (DNS record or directory connection) first."
   - Why not "newest proof wins" (W4 D7)? A tenant proof run needs a live admin sign-in, so it cannot be stale. A DNS TXT record or an old Workspace DWD grant can outlive the MSP relationship. "Newest wins" would let a former MSP take a domain back with a record the customer forgot to delete.
+  - **Displacement is deliberately single-shot**, unlike the worker's two-miss rule (D10). The worker's grace protects a holder whose evidence blips with nobody else claiming the domain. Here a challenger has shown live control at the same moment the incumbent cannot, which is the transfer case. A one-off blip on the incumbent's own record while the challenger's record in the same zone resolves is not a realistic DNS failure mode; for the directory methods the two sources are independent.
   - The 409 tells B that the domain is verified elsewhere. B learns that only after B's own live check passed, so B has already shown current control of the domain.
-  - **Concurrency.** The challenger's and the incumbent's checks run **before** the transaction (network I/O never runs inside a DB transaction). The write transaction then takes `pg_advisory_xact_lock(hashtext('portal-domain:' || lower($domain)))`, re-reads both rows `FOR UPDATE`, and proceeds only if the incumbent's `verified_at` is unchanged since its check. Otherwise it returns 409 `DOMAIN_VERIFICATION_CONFLICT_RETRY` with no write. A stray 23505 on `customer_email_domains_verified_domain_uq` maps to `DOMAIN_VERIFIED_ELSEWHERE`, never a 500.
+  - **Concurrency.** The challenger's and the incumbent's checks run **before** the transaction (network I/O never runs inside a DB transaction). The write transaction then takes `pg_advisory_xact_lock(hashtext('portal-domain:' || lower($domain)))`, re-reads both rows `FOR UPDATE`, and proceeds only if the incumbent's `verified_at` is unchanged since its check. Otherwise it returns 409 `DOMAIN_VERIFICATION_CONFLICT_RETRY` with no write. A stray 23505 on `customer_email_domains_verified_domain_uq` maps to `DOMAIN_VERIFIED_ELSEWHERE` without a live check (the row that won the race has just passed its own), never a 500.
   - The transaction runs under `withSystemDbAccessContext` (via `runOutsideDbContext` from routes). That is justified: the incumbent row belongs to another partner, and the write is backed by live evidence, not MSP input.
 - **D6: The read API re-validates evidence at use** (inv. 3, "features stop on the next request").
   - A row counts as verified only when **all** of these hold: `verified_at IS NOT NULL`, `is_active = true` (OD5), and the method's structural check:
@@ -89,6 +90,7 @@ tracking_issue: LanternOps/breeze#11377
 - **D7: The Entra checker reads `GET /organization` through the identity-first connection, and binds the result to the proven tenant.**
   - Steps: `findProvenEntraTenantForOrg(orgId)` (null → `fail tenant_not_proven`); the org's `m365_connections` row with `profile = 'customer-graph-read'`, `user_id IS NULL` and `tenant_id = <proven tenant>` (none → `fail connection_missing`); then `m365.org.get`.
   - The response's `id` must equal the proven tenant id, or the result is `unavailable` (`graph_tenant_mismatch`, logged at error level). Then the domain must equal one of `verifiedDomains[].name`, case-insensitively and exactly (no subdomain match).
+  - **Initial domains are never verifiable:** `*.onmicrosoft.com` (and any entry with `isInitial: true`) is excluded. It is Microsoft's routing name for the tenant, not a customer domain, and W6 must not treat it as a self-registration domain. `customerDomainSchema` already accepts it as a declared row for mail routing; the checker returns `fail not_in_directory` for it.
   - **Not through the AI tools gate** (OD3). `executeM365ReadActionByOrg` refuses unless the env allowlist `M365_GRAPH_READ_TOOLS_ENABLED` / org allowlist (`runtimeConfig.ts:258`) admits the org, because it serves AI tools. Task 3 adds `readM365OrganizationForVerification(orgId)` to `readActionService.ts`. It shares the connection gates (`connectionNotReadyState`, `connectionExecutionSnapshot`) and runs only `m365.org.get`, but skips `toolsGateRefusal`.
   - **Orgs proven by proof run with no M365 connection** cannot use this method (OD2). The UI tells the MSP to connect Microsoft 365 or use DNS.
 - **D8: The Google checker asks only for the domain scope.**
@@ -102,7 +104,7 @@ tracking_issue: LanternOps/breeze#11377
   - `/ticket-config/inbound-domains` and the `manage_ticket_config` AI tool stay for API compatibility. They call the same `ticketConfigService` functions, so the trigger covers them.
   - **Governance is unchanged** (spec §5.4, OD7): the org routes use the same gate as ticket-config: `requireScope('partner','system')`, `TICKETS_READ` / `TICKETS_WRITE`, and `canManagePartnerWidePolicies` + platform admin or `*:*` (`ticketConfig.ts:67-76`). Task 7 moves that `adminMiddleware` to `middleware/customerDomainGovernance.ts` and both route files import it.
 - **D10: Re-check cadence and revocation** (spec §10 leaves the cadence to the builder; OD4):
-  - The worker runs hourly and re-checks verified rows whose `last_checked_at` is older than 23 h, oldest first, at most 200 per run.
+  - The worker runs hourly and re-checks verified rows whose `last_checked_at` is older than 23 h, oldest first, at most 100 per run. So each verified row is checked about once a day. The worker has concurrency 1 and rows are checked sequentially; with the 5–10 s timeouts a worst-case run stays under ~17 min, inside the hourly slot.
   - `fail` with a **structural** reason (`tenant_not_proven`, `connection_missing`) clears at once.
   - `fail` with `record_missing` or `not_in_directory` clears on the **second** consecutive failure, so a single DNS blip never revokes.
   - `unavailable` never counts as a failure. But a row with no `pass` for 7 days is cleared with `stale`, so evidence that can no longer be checked does not live forever.
@@ -221,8 +223,8 @@ Test commands:
 
 **Files:**
 - Create: `apps/api/migrations/2027-01-22-2337xx-portal-domain-verification.sql`
-- Modify: `apps/api/src/db/schema/emailInbound.ts:50-63`. Add the D2 columns: `verificationToken`, `verifiedAt`, `verifiedMethod` (`$type<DomainVerificationMethod>()`), `verifiedEvidence` (`jsonb().$type<DomainVerificationEvidence>()`), `verifiedByUserId`, `lastCheckedAt`, `lastPassedAt`, `lastCheckStatus`, `checkFailures`, `clearedAt`, `clearedReason`. Declare the partial unique index in Drizzle so `db:check-drift` agrees.
-- Modify: `services/orgMerge.ts`. First statement inside the Phase B `withSystemDbAccessContext` callback (`:1418`, before lock step 0): `await db.execute(sql\`SELECT set_config('breeze.org_merge', 'on', true)\`)`.
+- Modify: `apps/api/src/db/schema/emailInbound.ts:50-63`. Add the D2 columns: `verificationToken`, `verifiedAt`, `verifiedMethod` (`$type<DomainVerificationMethod>()`), `verifiedEvidence` (`jsonb().$type<DomainVerificationEvidence>()`), `verifiedByUserId`, `lastCheckedAt`, `lastPassedAt`, `lastCheckStatus`, `checkFailures`, `clearedAt`, `clearedReason`. Declare the partial unique index in Drizzle so `db:check-drift` agrees: `uniqueIndex('customer_email_domains_verified_domain_uq').on(sql\`lower(${t.domain})\`).where(sql\`verified_at IS NOT NULL\`)` (`.where` precedent: `db/schema/m365.ts:83`). If drift reports the expression index anyway, follow the README's documented-exception path rather than dropping it from Drizzle.
+- Modify: `services/orgMerge.ts`. First statement inside the Phase B `withSystemDbAccessContext` callback (`:1416-1418`, before lock step 0): `await db.execute(sql\`SELECT set_config('breeze.org_merge', 'on', true)\`)`.
 - Modify: `services/tenantExportPolicyRegistry.ts:384` per Global Constraints.
 - Create: `services/tenantExportPolicyRegistry.portalDomainVerification.test.ts` (the W4 pattern that moves the classification failure into Test API).
 - Create: `services/portalDomainVerification/types.ts`.
@@ -263,7 +265,7 @@ describe('2027-01-22-2337xx-portal-domain-verification.sql', () => {
   it('partial unique index refuses a second verified row for the same domain in another partner, case-insensitively (23505 customer_email_domains_verified_domain_uq)');
   it('allows two unverified rows for the same domain in different partners');                         // today's behaviour
   it('repointing org_id clears verification and the token, and records cleared_reason repointed');      // inv. 3
-  it('repointing an unverified row clears the token and leaves cleared_* null');
+  it('repointing an unverified row clears the token and nulls any earlier cleared_at/cleared_reason');
   it('changing only is_active, auto_create_contact or updated_at keeps verification');
   it('org merge keeps verification: an UPDATE of org_id with breeze.org_merge=on in the same transaction');
   it('breeze.org_merge does not leak past the transaction');
@@ -344,6 +346,9 @@ BEGIN
      AND coalesce(current_setting('breeze.org_merge', true), '') <> 'on' THEN
     IF OLD.verified_at IS NOT NULL THEN
       NEW.cleared_at := now(); NEW.cleared_reason := 'repointed';
+    ELSE
+      -- an old org's "verification lost" note must not follow the row to a new org
+      NEW.cleared_at := NULL; NEW.cleared_reason := NULL;
     END IF;
     NEW.verification_token := NULL;
     NEW.verified_at := NULL; NEW.verified_method := NULL; NEW.verified_evidence := NULL;
@@ -440,6 +445,7 @@ it('fails tenant_not_proven when the org has an unproven mapping only');        
 it('fails connection_missing for a tenant proven by proof run with no M365 connection');                   // OD2
 it('passes when the domain is in verifiedDomains, case-insensitively');
 it('fails not_in_directory for a subdomain of a verified domain');
+it('fails not_in_directory for the tenant\'s initial *.onmicrosoft.com domain even though it is in verifiedDomains');
 it('is unavailable graph_tenant_mismatch when /organization returns another tenant id');
 it('is unavailable on executor error and on timeout');
 ```
@@ -543,12 +549,13 @@ export async function listVerifiedDomainsForOrg(orgId: string): Promise<Verified
 ```
 
 Rules for `verifyCustomerDomain`:
-1. Load the row by `id`, `org_id` and `partner_id` (any mismatch → `CUSTOMER_DOMAIN_NOT_FOUND`). `is_active = false` → `DOMAIN_INACTIVE`. Already verified with the same method → `DOMAIN_ALREADY_VERIFIED`. `dns_txt` with no token → `DOMAIN_DNS_NOT_STARTED`.
+1. Load the row by `id`, `org_id` and `partner_id` (any mismatch → `CUSTOMER_DOMAIN_NOT_FOUND`). `is_active = false` → `DOMAIN_INACTIVE`. Verified with a **different** method → `DOMAIN_ALREADY_VERIFIED` (remove the verification first). `dns_txt` with no token → `DOMAIN_DNS_NOT_STARTED`.
+   - **Refresh path (D10 "Check now").** Verified with the **same** method: run the checker; `pass` sets `last_checked_at = last_passed_at = now`, `last_check_status 'pass'`, `check_failures 0` and returns `verified` with `displacedOrgId: null`; `fail` / `unavailable` sets only `last_checked_at` / `last_check_status`, audits `domain_check_failed` and returns the result. No incumbent lookup, no transfer logic.
 2. Run the chosen checker. `fail` → audit `domain_check_failed`, set `last_checked_at` / `last_check_status`, return `failed`. `unavailable` → the same with `unavailable`. Neither touches `check_failures` or a verified row's state (D10).
 3. `pass`: look up an incumbent (system scope): a verified row for `lower(domain)` with a different `id`. If one exists, run **its** checker live (no transaction).
 4. Transaction (system scope): advisory lock (D5), re-read both rows `FOR UPDATE`.
    - Incumbent present, `verified_at` unchanged, its check `pass` or `unavailable` → `DOMAIN_VERIFIED_ELSEWHERE`.
-   - Incumbent `verified_at` changed since step 3 → `DOMAIN_VERIFICATION_CONFLICT_RETRY`.
+   - Incumbent `verified_at` changed since step 3, **or** no incumbent existed at step 3 but one exists now → `DOMAIN_VERIFICATION_CONFLICT_RETRY` (no write; the next click re-runs both checks).
    - Incumbent check `fail` → clear it (`cleared_reason 'displaced'`), audit `domain_displaced` on its org.
    - Write this row: `verified_at = now`, `verified_method`, `verified_evidence`, `verified_by_user_id`, `last_checked_at = last_passed_at = now`, `last_check_status 'pass'`, `check_failures 0`, `cleared_* NULL`. Audit `domain_verified`.
    - 23505 on `customer_email_domains_verified_domain_uq` → `DOMAIN_VERIFIED_ELSEWHERE`.
@@ -599,7 +606,7 @@ it('listVerifiedDomainsForOrg returns only current verifications');
 
 ```ts
 export const PORTAL_DOMAIN_RECHECK_QUEUE = 'portal-domain-recheck';
-export const PORTAL_DOMAIN_RECHECK_BATCH = 200;
+export const PORTAL_DOMAIN_RECHECK_BATCH = 100;
 export const PORTAL_DOMAIN_RECHECK_MIN_AGE_HOURS = 23;
 export const PORTAL_DOMAIN_STALE_DAYS = 7;
 export async function runPortalDomainRecheck(deps?: { now?: Date; checkers?: DomainVerificationCheckers }): Promise<{ checked: number; cleared: number }>;
@@ -612,7 +619,7 @@ export async function shutdownPortalDomainRecheckWorker(): Promise<void>;
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
-it('selects only verified rows last checked more than 23 h ago, oldest first, at most 200');
+it('selects only verified rows last checked more than 23 h ago, oldest first, at most 100');
 it('one record_missing keeps verification and counts 1');                          // RF3
 it('second consecutive record_missing clears with record_missing and emails the partner admins'); // RF3
 it('structural fail (tenant_not_proven, connection_missing) clears at once');      // RF4
@@ -632,7 +639,7 @@ it('registers a repeatable job with jobSchedule("portal-domain-recheck")');
 **Files:**
 - Create: `middleware/customerDomainGovernance.ts`. Move `adminMiddleware` from `routes/ticketConfig.ts:67-76` here as `requireCustomerDomainGovernance`; `ticketConfig.ts` imports it (behaviour unchanged).
 - Create: `routes/orgCustomerDomains.ts` (+ `orgCustomerDomains.test.ts`), exporting `registerOrgCustomerDomainRoutes(orgRoutes)`; call it in `routes/orgs.ts` next to `registerPortalEntraTenantRoutes`.
-- Modify: `services/ticketConfigService.ts`. `listCustomerEmailDomains` returns the verification view fields (additive); add an `orgId` filter parameter used by the org route.
+- Modify: `services/ticketConfigService.ts`. `listCustomerEmailDomains` returns the verification view fields (additive); add an `orgId` filter parameter used by the org route. **`create` / `update` / `list` return an explicit column projection** (the `CustomerDomainView` shape), never the whole row: today's `.returning()` (`~:960`, `~:996`) would hand `verification_token` and `verified_evidence` to the ticket-config API and to the `manage_ticket_config` AI tool.
 - Modify: `packages/shared/src/validators/ticketConfig.ts` (+ test). Add `verifyCustomerDomainSchema = z.object({ method: z.enum(['dns_txt','entra_tenant','google_directory']) }).strict()`.
 - Create: `packages/shared/src/types/customerDomains.ts`. Move `CustomerDomainView` and the method/reason unions here and re-export from the API types file, so web and API share them.
 
@@ -663,6 +670,8 @@ it('verification/check returns 200 result failed/unavailable without a 4xx');
 it('verification/check maps DomainVerificationError to its status and code, never a 500');
 it('verification/check is rate limited per org and domain');
 it('/ticket-config/inbound-domains list rows carry the verification fields (additive)');
+it('no CRUD response (org route, /ticket-config, manage_ticket_config) contains verification_token or verified_evidence');
+it('a PATCH body carrying verifiedAt, verifiedMethod or verificationToken writes none of them');   // inv. 2
 ```
 
 - [ ] **Step 2: Run them; verify they fail.**
@@ -737,7 +746,7 @@ it('#domains selects the tab; the tab is hidden for callers without domain gover
 **Files:**
 - Modify: `components/settings/CustomerDomainsCard.tsx` (+ test). Remove the create/edit/delete UI. Keep a read-only list (domain, org, state badge), each row linking to `/settings/organizations/{orgId}#domains`, plus one sentence: "Domains are managed per organization."
 - Modify: `components/settings/InboundEmailCard.tsx` if its copy refers to editing domains here.
-- Modify: `components/settings/portalAccess/OrgSignInRegistrationCard.tsx` (+ test). Add the spec §4 Domains row: verified domains with their method, declared ones marked "declared — mail routing only", and a link to `#domains`. It reads `GET /organizations/:id/customer-domains`.
+- Modify: `components/settings/portalAccess/OrgSignInRegistrationCard.tsx` (+ test). Add the spec §4 Domains row: verified domains with their method, declared ones marked "declared — mail routing only", and a link to `#domains`. It reads `GET /organizations/:id/customer-domains`. That route has the domain-governance gate (D9), stricter than the card's `ORGS_READ` routes, so **on 403 the row is hidden** (no error toast) and the rest of the card renders.
 - Locale keys in all 8 locales.
 
 - [ ] **Step 1: Write the failing tests**
@@ -746,6 +755,7 @@ it('#domains selects the tab; the tab is hidden for callers without domain gover
 it('CustomerDomainsCard renders no add, edit or delete controls');
 it('each summary row links to the org\'s #domains tab');
 it('the Sign-in & registration card lists verified and declared domains and links to #domains');
+it('the card hides the Domains row without a toast when customer-domains returns 403');
 ```
 
 - [ ] **Step 2: Run them; verify they fail.**
