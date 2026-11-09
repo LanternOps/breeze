@@ -37,8 +37,8 @@ describe('dns_filter stale arm', () => {
   }
   const stateOf = async (id: string) => (await observe(dnsFilterSource)).find((x) => x.sourceId === id);
 
-  // Seeded as UTC wall time: the timestamp columns carry no zone.
-  const utcWall = (d: Date) => new Date(d.toISOString());
+  // The timestamp columns carry no zone; the driver serializes Dates as UTC.
+  const utcWall = (d: Date) => d;
 
   const intervals: Array<[string, unknown]> = [
     ['absent', undefined], ['null', null], ['15', 15], ['30', 30], ['1440', 1440],
@@ -84,6 +84,15 @@ describe('dns_filter stale arm', () => {
     expect(obs.find((x) => x.sourceId === never)).toMatchObject({ condition: 'sync_stale', orgId: o, partnerId: p, detail: null });
     expect(obs.find((x) => x.sourceId === inactive)).toBeUndefined();
     expect(obs.find((x) => x.sourceId === fresh)).toBeUndefined();
+  });
+
+  it('never synced and recent is not stale, even with a daily interval', async () => {
+    const { o } = await orgOf();
+    const recent = await dns({ orgId: o, lastSyncStatus: null, lastSync: null, createdAt: utcWall(minAgo(30)) });
+    const daily = await dns({ orgId: o, lastSyncStatus: null, lastSync: null, config: { syncInterval: 1440 } as never, createdAt: utcWall(hoursAgo(20)) });
+    const obs = await observe(dnsFilterSource);
+    expect(obs.find((x) => x.sourceId === recent)).toBeUndefined();
+    expect(obs.find((x) => x.sourceId === daily)).toBeUndefined();
   });
 
   it('an error beats staleness, and the error text is kept', async () => {
@@ -151,12 +160,30 @@ describe('m365_sync stale arm', () => {
       expect(await find(c)).toMatchObject({ condition: 'sync_stale' });
     });
 
+    it('the 1 h floor applies to short intervals: 61 min stale, 59 min not', async () => {
+      const a = await orgOf();
+      const past = await connection(a.o);
+      await domain(a.o, past, { intervalSeconds: 600, lastSuccessAt: minAgo(61) });
+      const b = await orgOf();
+      const within = await connection(b.o);
+      await domain(b.o, within, { intervalSeconds: 600, lastSuccessAt: minAgo(59) });
+      expect(await find(past)).toMatchObject({ condition: 'sync_stale' });
+      expect(await find(within)).toBeUndefined();
+    });
+
+    it('a domain that never succeeded but was created recently is not stale', async () => {
+      const { o } = await orgOf();
+      const c = await connection(o);
+      await domain(o, c, { lastStatus: null, lastSuccessAt: null, createdAt: hoursAgo(2) });
+      expect(await find(c)).toBeUndefined();
+    });
+
     it('a parent connection without a tenant is not judged stale (D7c)', async () => {
       const { o } = await orgOf();
       const c = await connection(o, null);
       await domain(o, c, { lastSuccessAt: hoursAgo(24 * 30) });
-      const got = await find(c);
-      expect(got?.condition).not.toBe('sync_stale');
+      // Not judged at all: a healthy untracked connection is not emitted.
+      expect(await find(c)).toBeUndefined();
     });
   });
 
