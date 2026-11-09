@@ -69,9 +69,9 @@ const A: Instance = {
  * The imports run one at a time, never in a Promise.all (#11483). The module
  * runner gives every import from this file the same callstack array. While a
  * vi.doMock factory runs, vitest pushes the mock's id onto that array. A
- * sibling import that starts in that window copies the id into its own chain,
- * and below that chain the mocked module reads as a self-import, so the real
- * one loads. In the conflict test that gave C's worker a new random
+ * sibling import whose evaluation begins in that window copies the id into its
+ * own chain, and below that chain the mocked module reads as a self-import, so
+ * the real one loads. In the conflict test that gave C's worker a new random
  * INSTANCE_ID: it claimed a shard of its own and started instead of refusing.
  */
 async function loadInstance(): Promise<Instance> {
@@ -218,17 +218,20 @@ describe('agent command relay shards — two API instances, real Redis (#4134)',
       await new Promise((resolve) => setTimeout(resolve, 200));
       return { INSTANCE_ID: A.id };
     });
-    const C = await loadInstance();
-    vi.doUnmock('../../services/instanceIdentity');
+    // Unmocked even if loading fails, so the mock never reaches a later test.
+    const C = await loadInstance().finally(() => vi.doUnmock('../../services/instanceIdentity'));
     extraInstances.push(C);
+    // Only this file's own import of the identity module: it says nothing about
+    // whether C's worker saw the mock. The owner-key and message checks below do.
     expect(C.id).toBe(A.id);
 
-    // From C's own Redis client, A's claim is visible and the acquire C's
-    // consumer would make answers `held` (not `acquired`, not `unavailable`).
+    // C's Redis client is ready and sees A's claim: acquiring A's shard from C
+    // answers `held` (not `acquired`, not `unavailable`).
     await expect(C.shard.acquireRelayShard(A.id, randomUUID())).resolves.toBe('held');
 
     const refused = await C.worker.initializeAgentCommandRelayWorker().then(() => null, (err: unknown) => err);
-    // C claimed no shard of its own: the only owner key is A's, with A's token.
+    // C claimed no shard of its own: setup.ts flushed Redis before this test,
+    // so A's key, still holding A's token, is the only owner key there is.
     expect(await ownerKeys()).toEqual([ownerKey]);
     expect(await redis.get(ownerKey)).toBe(token);
     // And it refused A's shard, by name.
