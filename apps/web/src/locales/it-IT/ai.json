@@ -985,6 +985,7 @@
     },
     "instruction": {
       "remembered": "Memorizzato: {{text}}",
+      "conflictBanner": "In conflitto con un’istruzione memorizzata: «{{text}}»",
       "enforcedForm": "Wisp non proporrà: {{verb}} · {{targets}} · {{until}}",
       "noEnd": "nessuna data di fine",
       "keep": "Mantieni",

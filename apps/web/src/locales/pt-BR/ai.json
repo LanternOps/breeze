@@ -985,6 +985,7 @@
     },
     "instruction": {
       "remembered": "Lembrado: {{text}}",
+      "conflictBanner": "Entra em conflito com uma instrução lembrada: “{{text}}”",
       "enforcedForm": "O Wisp não vai propor: {{verb}} · {{targets}} · {{until}}",
       "noEnd": "sem data de término",
       "keep": "Manter",

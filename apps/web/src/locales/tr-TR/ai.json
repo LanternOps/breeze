@@ -985,6 +985,7 @@
     },
     "instruction": {
       "remembered": "Hatırlandı: {{text}}",
+      "conflictBanner": "Hatırlanan bir talimatla çelişiyor: “{{text}}”",
       "enforcedForm": "Wisp şunu önermeyecek: {{verb}} · {{targets}} · {{until}}",
       "noEnd": "bitiş tarihi yok",
       "keep": "Sakla",

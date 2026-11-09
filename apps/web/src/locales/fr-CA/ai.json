@@ -985,6 +985,7 @@
     },
     "instruction": {
       "remembered": "Mémorisé : {{text}}",
+      "conflictBanner": "Entre en conflit avec une consigne mémorisée : « {{text}} »",
       "enforcedForm": "Wisp ne proposera pas : {{verb}} · {{targets}} · {{until}}",
       "noEnd": "aucune date de fin",
       "keep": "Conserver",
