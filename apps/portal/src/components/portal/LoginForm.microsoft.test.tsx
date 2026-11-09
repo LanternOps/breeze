@@ -8,6 +8,7 @@ vi.mock('@/lib/replaceLocation', () => ({ replaceLocation: vi.fn() }));
 import { navigateTo } from '@/lib/navigation';
 import { replaceLocation } from '@/lib/replaceLocation';
 import { LoginForm } from './LoginForm';
+import { renderToString } from 'react-dom/server';
 
 const originalFetch = globalThis.fetch;
 let methodsResponse: { ok: boolean; status: number; body: unknown } | 'throw';
@@ -31,6 +32,14 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
   cleanup();
   vi.clearAllMocks();
+});
+
+describe('LoginForm — hydration', () => {
+  it('the first render ignores ?sso= so it matches the server HTML (no hydration mismatch)', () => {
+    window.history.replaceState({}, '', '/login?sso=request_sent');
+    const html = renderToString(<LoginForm />);
+    expect(html).not.toContain('portal-login-sso-banner');
+  });
 });
 
 describe('LoginForm — Microsoft', () => {

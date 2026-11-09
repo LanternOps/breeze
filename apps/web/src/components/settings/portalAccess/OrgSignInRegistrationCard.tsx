@@ -287,7 +287,9 @@ export default function OrgSignInRegistrationCard({ orgId, onDirty, onSave }: Pr
         pendingRequestsHasMore={pendingHasMore}
         onShowRequests={showRequests}
         fieldErrors={fieldErrors}
-        entraSlot={<EntraTenantPanel orgId={orgId} onChanged={() => void refreshView()} />}
+        /* Remounts (and re-reads the tenant) when the view reports a different proof state,
+           e.g. the customer admin finished a proof link while this page was open. */
+        entraSlot={<EntraTenantPanel key={String(view.entraTenantProven)} orgId={orgId} onChanged={() => void refreshView()} />}
       />
       {ssoOnlyEffective && <StrandedAccountsList orgId={orgId} reloadKey={strandedReload} />}
       <SsoOnlyConfirmDialog

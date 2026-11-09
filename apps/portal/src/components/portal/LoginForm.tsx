@@ -39,7 +39,10 @@ export function LoginForm() {
   // and no Microsoft button. A failed methods fetch stays that way, silently.
   const [methods, setMethods] = useState<SignInMethods | null>(null);
   const [msBusy, setMsBusy] = useState(false);
-  const [ssoCode] = useState<string | null>(readSsoParam);
+  // Read after mount, never during render: the server has no query string, so
+  // reading it in the initial state makes the hydrated tree differ from the SSR HTML.
+  const [ssoCode, setSsoCode] = useState<string | null>(null);
+  useEffect(() => { setSsoCode(readSsoParam()); }, []);
   const { login } = usePortalAuth();
 
   useEffect(() => {

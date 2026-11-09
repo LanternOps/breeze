@@ -266,6 +266,22 @@ describe('OrgSignInRegistrationCard — W4', () => {
     expect(await screen.findByTestId('entra-tenant-status')).toHaveTextContent('No Microsoft tenant is linked yet');
   });
 
+  it('the tenant panel re-reads the tenant when a saved view reports a different proof state', async () => {
+    const tenantNone = { tenantId: null, state: 'none', provenAt: null, provenVia: null, connectionTenantId: null, consentUrl: null };
+    mockFlow({
+      view: makePolicyView({ capabilities: { entra: true }, entraTenantProven: false }),
+      patch: () => json({ data: makePolicyView({ capabilities: { entra: true }, entraTenantProven: true, values: { passwordMode: 'allowed' } }) }),
+      tenant: () => json({ data: tenantNone }),
+    });
+    renderCard();
+    await screen.findByTestId('entra-tenant-status');
+    const tenantReads = () => fetchWithAuthMock.mock.calls.filter(([u]) => u === TENANT_URL).length;
+    expect(tenantReads()).toBe(1);
+    fireEvent.click(screen.getByTestId('portal-access-policy-password-allowed'));
+    fireEvent.click(screen.getByTestId('org-sign-in-card-save'));
+    await waitFor(() => expect(tenantReads()).toBe(2));
+  });
+
   it('TENANT_NOT_PROVEN shows the field error on the Microsoft row', async () => {
     mockFlow({
       view: makePolicyView({ capabilities: { entra: true } }),

@@ -62,9 +62,11 @@ export function ProfileSettings() {
   const [linkStatus, setLinkStatus] = useState<LinkStatus | null>(null);
   const [linkBusy, setLinkBusy] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
-  const [ssoCode] = useState<string | null>(() =>
-    typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('sso')
-  );
+  // Read after mount (not in the initial state) so the hydrated tree matches the SSR HTML.
+  const [ssoCode, setSsoCode] = useState<string | null>(null);
+  useEffect(() => {
+    setSsoCode(new URLSearchParams(window.location.search).get('sso'));
+  }, []);
   const ssoBanner =
     ssoCode === 'linked'
       ? 'Your Microsoft account is connected.'
