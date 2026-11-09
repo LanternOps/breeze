@@ -7,8 +7,9 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { queryMock, capturedMcpArgs, capturedTenantSdkToolArgs, lookupWispGrantMock, wispSessionToolFilterMock } = vi.hoisted(() => ({
+const { queryMock, capturedMcpArgs, capturedTenantSdkToolArgs, lookupWispGrantMock, wispSessionToolFilterMock, maybeNotifyChatCrossedBudgetMock } = vi.hoisted(() => ({
   queryMock: vi.fn(),
+  maybeNotifyChatCrossedBudgetMock: vi.fn(),
   capturedMcpArgs: [] as Array<{ getAuth: () => unknown; options?: { admitTool?: (name: string) => boolean } }>,
   capturedTenantSdkToolArgs: [] as Array<{ getOrgId: () => string }>,
   lookupWispGrantMock: vi.fn(),
@@ -98,11 +99,15 @@ vi.mock('./toolSources/sdkBridge', () => ({
 // Their behaviour is pinned in streamingSessionManager.{tenantTools,flowTools}.test.ts.
 vi.mock('./toolSources/resolver', () => ({ resolveTenantTools: vi.fn(async () => []) }));
 vi.mock('./flows/flowTools', () => ({ resolveFlowTools: vi.fn(async () => []) }));
+// #10414: the turn-end grant spend notice (behaviour pinned in wisp/chatSpendCheck.test.ts).
+vi.mock('./wisp/chatSpendCheck', () => ({ maybeNotifyChatCrossedBudget: maybeNotifyChatCrossedBudgetMock }));
 
 import { StreamingSessionManager } from './streamingSessionManager';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 import { buildOrgAccessClosures, type AuthContext } from '../middleware/auth';
 import { WispSessionUnavailableError } from './wisp/chatCeiling';
+import { captureException } from './sentry';
+import { scriptedQuery, sdkResult } from './__testutils__/streamingSessionManagerHarness';
 
 const ORG_A = 'aaaaaaaa-1111-4222-8333-444455556666';
 const ORG_B = 'bbbbbbbb-1111-4222-8333-444455556666';
@@ -224,5 +229,64 @@ describe('getOrCreate — a Wisp session always carries its grant', () => {
     await expect(create('sess-factory', factory)).rejects.toMatchObject({ reason: 'surface_unsupported' });
     expect(factory).not.toHaveBeenCalled();
     expect(queryMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('turn end — the Wisp grant spend notice (#10414)', () => {
+  let manager: StreamingSessionManager;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    wispSessionToolFilterMock.mockReset();
+    wispSessionToolFilterMock.mockResolvedValue(() => true);
+    maybeNotifyChatCrossedBudgetMock.mockReset();
+    maybeNotifyChatCrossedBudgetMock.mockResolvedValue('under');
+    manager = new StreamingSessionManager();
+  });
+
+  afterEach(() => {
+    manager.shutdown();
+  });
+
+  /** One completed turn; returns the session once its processor has finished. */
+  async function runTurn(id: string) {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    queryMock.mockImplementation(() => scriptedQuery([sdkResult()], gate));
+    const session = await manager.getOrCreate(id, DB_SESSION, partnerAuth(), undefined, 'PROMPT', undefined, PLATFORM_CONFIG);
+    release();
+    await session.processorPromise;
+    return session;
+  }
+
+  const doneEvents = (session: Awaited<ReturnType<typeof runTurn>>) =>
+    session.eventBus.getReplayEvents().filter((e: { type: string }) => e.type === 'done');
+
+  it("a settled Wisp turn fires the notice for the session's grant", async () => {
+    lookupWispGrantMock.mockResolvedValue(GRANT);
+    const session = await runTurn('sess-wisp-turn');
+    await vi.waitFor(() => expect(maybeNotifyChatCrossedBudgetMock).toHaveBeenCalledWith('g-1'));
+    expect(maybeNotifyChatCrossedBudgetMock).toHaveBeenCalledTimes(1);
+    expect(doneEvents(session)).toHaveLength(1);
+  });
+
+  it('an ordinary turn never reads grant spend', async () => {
+    lookupWispGrantMock.mockResolvedValue(null);
+    const session = await runTurn('sess-plain-turn');
+    expect(doneEvents(session)).toHaveLength(1);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(maybeNotifyChatCrossedBudgetMock).not.toHaveBeenCalled();
+  });
+
+  it('a failing notice is reported and never holds back `done`', async () => {
+    lookupWispGrantMock.mockResolvedValue(GRANT);
+    let rejectNotice!: (err: Error) => void;
+    maybeNotifyChatCrossedBudgetMock.mockReturnValue(new Promise((_, reject) => (rejectNotice = reject)));
+    const session = await runTurn('sess-wisp-failing-notice');
+    // `done` went out while the notice was still pending.
+    expect(doneEvents(session)).toHaveLength(1);
+    await vi.waitFor(() => expect(maybeNotifyChatCrossedBudgetMock).toHaveBeenCalled());
+    rejectNotice(new Error('db down'));
+    await vi.waitFor(() => expect(captureException).toHaveBeenCalled());
   });
 });
