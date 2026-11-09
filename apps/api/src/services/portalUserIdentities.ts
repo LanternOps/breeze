@@ -15,7 +15,7 @@
  * `portal_users.entra_*` for a decision any more. Writers still dual-write those
  * columns (plan D4 writer fence) so a rolling-deploy release-A instance, which
  * still reads them, finds every account. The deploy migration
- * (2027-01-22-232200-portal-access-policies-requests.sql §4) re-ran the
+ * (2027-01-22-232800-portal-access-policies-requests.sql §4) re-ran the
  * backfill; the daily job (jobs/portalIdentityReconcile.ts) REPORTS drift and
  * never repairs it (plan D10). Release C drops the columns.
  */

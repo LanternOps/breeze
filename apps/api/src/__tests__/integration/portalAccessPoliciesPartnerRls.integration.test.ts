@@ -3,7 +3,7 @@
  * real Postgres as breeze_app under FORCE RLS (W3 #11380, plan Task 2).
  * Template: ticketApprovalSettingsPartnerRls.integration.test.ts.
  *
- * Policies (2027-01-22-232200-portal-access-policies-requests.sql):
+ * Policies (2027-01-22-232800-portal-access-policies-requests.sql):
  *   portal_access_policies_tenant                    FOR ALL
  *   portal_access_policies_partner_default_select    FOR SELECT (current partner)
  *   portal_access_policies_org_member_select         FOR SELECT (any org of the partner)

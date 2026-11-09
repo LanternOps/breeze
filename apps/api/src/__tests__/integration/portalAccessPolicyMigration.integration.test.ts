@@ -1,7 +1,7 @@
 /**
  * Portal registration W3 (#11380): access policy + access request tables,
  * auth_method 'google', identities release-B re-backfill
- * (2027-01-22-232200-portal-access-policies-requests.sql).
+ * (2027-01-22-232800-portal-access-policies-requests.sql).
  *
  * Every case runs inside ONE superuser postgres.js transaction that is always
  * rolled back, so constraint probes and replays leave the fresh-migrated
@@ -19,7 +19,7 @@ import postgres from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { createOrganization, createPartner } from './db-utils';
 
-const MIGRATION = '2027-01-22-232200-portal-access-policies-requests.sql';
+const MIGRATION = '2027-01-22-232800-portal-access-policies-requests.sql';
 const DATABASE_URL = process.env.DATABASE_URL ?? 'postgresql://breeze_test:breeze_test@localhost:5433/breeze_test';
 type Tx = postgres.TransactionSql<Record<string, unknown>>;
 class Rollback extends Error { constructor() { super('intentional rollback'); } }
@@ -70,7 +70,7 @@ async function seedPortalUser(tx: Tx, orgId: string, row: { authMethod?: string;
 
 const FUTURE = new Date(Date.now() + 14 * 86_400_000);
 
-describe('2027-01-22-232200-portal-access-policies-requests.sql', () => {
+describe('2027-01-22-232800-portal-access-policies-requests.sql', () => {
   it('starts with the system-scope line', async () => {
     const text = await loadMigration();
     const firstStatement = text

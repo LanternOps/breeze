@@ -210,7 +210,7 @@ tracking_issue: LanternOps/breeze#11377
 - **Migration:** `apps/api/migrations/2027-01-22-2330xx-portal-entra-tenant-proof.sql`.
   - **The `xx` is assigned at enqueue.** The file must sort after the newest file on `origin/main`.
     - Today that is `2027-01-22-232100-backup-snapshot-files-kind.sql`.
-    - W03a adds `2027-01-22-232200-portal-access-policies-requests.sql`, which merges first, so W4 must sort after it too.
+    - W03a adds `2027-01-22-232800-portal-access-policies-requests.sql`, which merges first, so W4 must sort after it too.
   - Re-run the `localeCompare` check from `apps/api/migrations/README.md` before every push. If overtaken, rename the file and the test's path constant. Never rename a shipped migration.
   - The file is idempotent, has no inner `BEGIN;/COMMIT;`, and its first statement is `SELECT set_config('breeze.scope', 'system', true);`.
 - **Tenancy:**
