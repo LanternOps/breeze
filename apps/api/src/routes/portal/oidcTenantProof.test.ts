@@ -21,6 +21,12 @@ const h = vi.hoisted(() => ({
   record: vi.fn(),
   audit: vi.fn(),
   dbRows: { current: [] as unknown[] },
+  perms: vi.fn(),
+}));
+
+vi.mock('../../services/permissions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/permissions')>()),
+  getUserPermissions: h.perms,
 }));
 
 vi.mock('../../config/portalEntra', async (importOriginal) => ({
@@ -102,6 +108,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.cfg.current = CFG;
   h.dbRows.current = [{ orgAccess: 'all', orgIds: null }];
+  h.perms.mockResolvedValue({ permissions: [{ resource: 'organizations', action: 'write' }], partnerId: PARTNER, orgId: null, roleId: 'r-1', scope: 'partner' });
   h.adminCheck.mockResolvedValue({ ok: true });
   h.activeOrg.mockResolvedValue({ orgId: ORG, partnerId: PARTNER });
   h.record.mockResolvedValue({ displaced: null });
@@ -347,6 +354,18 @@ describe('the tenant_proof callback branch', () => {
     expect(await call({ runToken: run.token })).toBe(INVALID);
     expect(h.record).not.toHaveBeenCalled();
     expect(refusalAudits()[0]).toMatchObject({ details: { reason: 'creator_unauthorized' } });
+  });
+
+  it.each([
+    ['whose role no longer grants organizations:write', { permissions: [{ resource: 'organizations', action: 'read' }], partnerId: PARTNER, orgId: null, roleId: 'r-1', scope: 'partner' }],
+    ['with no resolvable permissions', null],
+  ])('the link\'s creator %s → invalid, nothing recorded', async (_name, perms) => {
+    h.perms.mockResolvedValue(perms);
+    const run = await newRun();
+    expect(await call({ runToken: run.token })).toBe(INVALID);
+    expect(h.record).not.toHaveBeenCalled();
+    expect(refusalAudits()[0]).toMatchObject({ details: { reason: 'creator_unauthorized' } });
+    expect(h.perms).toHaveBeenCalledWith(expect.any(String), { partnerId: PARTNER, scope: 'partner' }, { bypassCache: true });
   });
 
   it('a creator whose selection covers the org still authorizes the proof', async () => {

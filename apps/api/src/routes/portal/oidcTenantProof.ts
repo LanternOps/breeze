@@ -57,6 +57,7 @@ import {
 } from '../../services/portalOidc/stateStore';
 import type { PortalOidcPurpose, PortalOidcVerifiedIdentity } from '../../services/portalOidc/types';
 import { getActiveOrgTenant } from '../../services/tenantStatus';
+import { getUserPermissions, hasPermission, PERMISSIONS } from '../../services/permissions';
 import { checkMailboxConsentAdminRoleViaGraph } from '../../services/ticketMailbox/microsoftIdentity';
 import { buildPortalUrl, checkRateLimit, getClientIp, sweepPortalState } from './helpers';
 
@@ -213,8 +214,14 @@ async function creatorStillAuthorized(run: PortalEntraProofRunRecord, partnerId:
     ))
     .limit(1), 'portalEntraTenantProof.creator'));
   if (!membership) return false;
-  return membership.orgAccess === 'all'
+  const coversOrg = membership.orgAccess === 'all'
     || (membership.orgAccess === 'selected' && (membership.orgIds ?? []).includes(run.orgId));
+  if (!coversOrg) return false;
+  // The link was created behind requireOrgWrite: the creator's role must still
+  // grant it now (a downgrade during the 72 h window kills the link). Fresh
+  // read, not the per-process permission cache.
+  const perms = await getUserPermissions(run.createdByUserId, { partnerId, scope: 'partner' }, { bypassCache: true });
+  return perms !== null && hasPermission(perms, PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 }
 
 /**
