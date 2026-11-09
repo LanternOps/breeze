@@ -537,7 +537,7 @@ describe('standing-state facts (real Postgres, #10426)', () => {
       });
     });
 
-    const ceiling = await resolveGrantCeiling(t.grantId, t.revisionId, { allowPaused: true });
+    const ceiling = await resolveGrantCeiling(t.grantId, t.revisionId);
     const facts = await loadStandingStateFacts(ceiling, { user: { id: t.grantorId }, accessibleOrgIds: null } as never);
 
     expect(facts).toMatchObject({
@@ -589,7 +589,7 @@ describe('standing-state facts (real Postgres, #10426)', () => {
       await checkIn(a.grantId, threadA.id, a.grantorId);
     });
 
-    const ceiling = await resolveGrantCeiling(a.grantId, a.revisionId, { allowPaused: true });
+    const ceiling = await resolveGrantCeiling(a.grantId, a.revisionId);
     const facts = await loadStandingStateFacts(ceiling, { user: { id: a.grantorId }, accessibleOrgIds: null } as never);
     expect(facts!.watches).toEqual({ active: 0 });
     expect(facts!.checkIns.scheduled).toBe(1);

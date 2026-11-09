@@ -32,7 +32,7 @@ import type { AuthContext } from '../../middleware/auth';
 import { getRedis } from '../redis';
 import { captureException } from '../sentry';
 import { GrantInactiveError, resolveGrantCeiling } from './grantAuthority';
-import { loadStandingStateFacts, renderStandingStateBlock, type StandingStateFacts } from './standingLoop';
+import { loadStandingStateFacts, renderPausedStandingStateBlock, renderStandingStateBlock, type StandingStateFacts } from './standingLoop';
 
 export const STANDING_FACTS_TTL_MS = 60_000;
 export const STANDING_HASH_KEY_PREFIX = 'wisp:standing-hash:';
@@ -40,7 +40,9 @@ export const STANDING_HASH_TTL_SECONDS = 86_400;
 /** Bounds the in-process cache; the oldest entry goes first. */
 const FACTS_CACHE_MAX_ENTRIES = 500;
 
-type CachedFacts = { readAt: number; facts: StandingStateFacts | null };
+/** `'paused'`: the grant is paused (or its grantor's live term failed); nothing is read under it. */
+type TurnFacts = StandingStateFacts | 'paused' | null;
+type CachedFacts = { readAt: number; facts: TurnFacts };
 const factsCache = new Map<string, CachedFacts>();
 
 /** What a dispatched turn records with `markStandingStateSent`. */
@@ -76,26 +78,31 @@ function factsFingerprint(facts: StandingStateFacts): string {
   return createHash('sha256').update(JSON.stringify(timeless)).digest('hex');
 }
 
-async function cachedFacts(input: { grantId: string; revisionId: string; auth: AuthContext }, now: Date): Promise<StandingStateFacts | null> {
+/** The fingerprint of the paused block, which carries no facts. */
+const PAUSED_FINGERPRINT = 'paused';
+
+async function cachedFacts(input: { grantId: string; revisionId: string; auth: AuthContext }, now: Date): Promise<TurnFacts> {
   const key = `${input.grantId}:${input.revisionId}:${input.auth.user.id}`;
   const hit = factsCache.get(key);
   if (hit && now.getTime() - hit.readAt < STANDING_FACTS_TTL_MS) return hit.facts;
 
-  let facts: StandingStateFacts | null;
+  let facts: TurnFacts;
   try {
-    // Read-only: a paused grant still resolves, so the block can say it is paused.
-    const ceiling = await resolveGrantCeiling(input.grantId, input.revisionId, { allowPaused: true });
+    // The live ceiling only: a paused one is reserved for history reads
+    // (allowPaused.contract.test.ts), so a paused grant gets the fixed block.
+    const ceiling = await resolveGrantCeiling(input.grantId, input.revisionId);
     facts = await loadStandingStateFacts(ceiling, input.auth, now);
   } catch (err) {
     if (!(err instanceof GrantInactiveError)) throw err;
     // A corrupt pin (revision of another grant, malformed snapshot) is a bug to
     // fix, not a state: report it (at most once a minute, via the cache below).
-    // Revoked, expired or Wisp off: there is no loop to describe.
+    // Paused: say so, read nothing. Revoked, expired or Wisp off: there is no
+    // loop to describe.
     if (err.kind === 'corrupt') {
       console.error(`[wisp] standing state: grant ${input.grantId} has a corrupt ceiling pin; sending turns without it: ${err.message}`);
       captureException(err, undefined, { grantId: input.grantId, op: 'wisp.standing_state_ceiling' }, { fingerprint: ['wisp-standing-state', 'corrupt-pin'] });
     }
-    facts = null;
+    facts = err.kind === 'paused' ? 'paused' : null;
   }
   factsCache.delete(key);
   factsCache.set(key, { readAt: now.getTime(), facts });
@@ -121,7 +128,7 @@ async function lastSentHash(sessionId: string): Promise<string | null> {
 /**
  * The block for this turn and the hash to record once it is dispatched, or
  * null: Wisp off; the grant revoked, expired, gone or its pin corrupt (a
- * paused grant still gets a block that says so); nothing changed since the
+ * paused grant gets a fixed block that says so, with no facts); nothing changed since the
  * last block this session was sent; or the fact read failed (reported). A
  * failed read and a Redis error never throw; the route still guards the call.
  */
@@ -134,7 +141,7 @@ export async function standingStateForTurn(input: {
 }): Promise<StandingStateTurn | null> {
   if (!wispEnabled()) return null;
   const now = input.now ?? new Date();
-  let facts: StandingStateFacts | null;
+  let facts: TurnFacts;
   try {
     facts = await cachedFacts(input, now);
   } catch (err) {
@@ -143,9 +150,9 @@ export async function standingStateForTurn(input: {
     return null;
   }
   if (!facts) return null;
-  const hash = factsFingerprint(facts);
+  const hash = facts === 'paused' ? PAUSED_FINGERPRINT : factsFingerprint(facts);
   if ((await lastSentHash(input.sessionId)) === hash) return null;
-  return { block: renderStandingStateBlock(facts, now), hash };
+  return { block: facts === 'paused' ? renderPausedStandingStateBlock(now) : renderStandingStateBlock(facts, now), hash };
 }
 
 /**

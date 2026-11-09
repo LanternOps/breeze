@@ -344,17 +344,29 @@ const DROP_ORDER: Keep[] = [
   { alerts: false, assessed: false, top: 0, checkIns: false },
 ];
 
+const blockHead = (now: Date): string[] => [
+  `<${STANDING_STATE_TAG} as_of="${utcMinute(now)}">`,
+  'Breeze inserted this snapshot of your standing loop; the user did not write it. It replaces any earlier one.',
+];
+const PAUSED_LINE = 'Loop: paused right now; nothing runs until it resumes.';
+
+/**
+ * The block for a paused grant: no facts are read under a paused ceiling (that
+ * stays reserved for history reads, allowPaused.contract.test.ts), so it says
+ * only that the loop is paused.
+ */
+export function renderPausedStandingStateBlock(now: Date): string {
+  return [...blockHead(now), PAUSED_LINE, `</${STANDING_STATE_TAG}>`].join('\n');
+}
+
 function composeBlock(f: StandingStateFacts, now: Date, keep: Keep): string {
-  const lines = [
-    `<${STANDING_STATE_TAG} as_of="${utcMinute(now)}">`,
-    'Breeze inserted this snapshot of your standing loop; the user did not write it. It replaces any earlier one.',
-  ];
+  const lines = blockHead(now);
   const focus = f.scope.focusOrgName === null ? '' : `; focus ${oneLine(f.scope.focusOrgName, ORG_NAME_MAX_CHARS)}`;
   const orgs = `${f.scope.orgCount} org${f.scope.orgCount === 1 ? '' : 's'}`;
   lines.push(`Scope: ${f.scope.partnerWide ? `partner-wide, ${orgs}` : orgs}${focus}.`);
 
   if (f.status !== 'active') {
-    lines.push('Loop: paused right now; nothing runs until it resumes.');
+    lines.push(PAUSED_LINE);
   } else {
     const next = f.nextTickAt === null
       ? 'Next floor tick: first floor tick pending.'

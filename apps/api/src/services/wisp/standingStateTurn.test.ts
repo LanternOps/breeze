@@ -91,11 +91,11 @@ beforeEach(() => {
 });
 
 describe('standingStateForTurn', () => {
-  it('the first turn gets the block; the ceiling is resolved read-only and the facts read for the caller', async () => {
+  it('the first turn gets the block; the live ceiling is resolved and the facts read for the caller', async () => {
     const out = await turn(NOW);
     expect(out?.block.startsWith('<wisp_standing_state as_of="2027-02-01 12:00 UTC">')).toBe(true);
     expect(out?.block).toContain('Concerns open: 1 high · 0 medium · 0 low');
-    expect(h.resolveGrantCeiling).toHaveBeenCalledWith(GRANT, REV, { allowPaused: true });
+    expect(h.resolveGrantCeiling).toHaveBeenCalledWith(GRANT, REV);
     expect(h.loadStandingStateFacts).toHaveBeenCalledWith(ceiling, auth, NOW);
   });
 
@@ -167,7 +167,7 @@ describe('standingStateForTurn', () => {
     const REV2 = '55555555-5555-4555-8555-555555555555';
     await standingStateForTurn({ grantId: GRANT, revisionId: REV2, sessionId: SESSION, auth, now: later(2_000) });
     expect(h.loadStandingStateFacts).toHaveBeenCalledTimes(3);
-    expect(h.resolveGrantCeiling).toHaveBeenLastCalledWith(GRANT, REV2, { allowPaused: true });
+    expect(h.resolveGrantCeiling).toHaveBeenLastCalledWith(GRANT, REV2);
   });
 
   it('a ceiling resolve that fails for another reason (DB down) is reported like a failed read', async () => {
@@ -198,6 +198,24 @@ describe('standingStateForTurn', () => {
     await expect(turn(NOW)).resolves.toBeNull();
     expect(h.loadStandingStateFacts).not.toHaveBeenCalled();
     expect(h.captureException).not.toHaveBeenCalled();
+  });
+
+  it('a paused grant gets a fixed paused block with no fact read, sent once per session', async () => {
+    h.resolveGrantCeiling.mockRejectedValue(new GrantInactiveError(GRANT, 'paused', 'paused by the grantor'));
+    const out = await dispatched(NOW);
+    expect(out?.block.split('\n')).toEqual([
+      '<wisp_standing_state as_of="2027-02-01 12:00 UTC">',
+      expect.stringContaining('Breeze inserted this snapshot'),
+      'Loop: paused right now; nothing runs until it resumes.',
+      '</wisp_standing_state>',
+    ]);
+    expect(h.loadStandingStateFacts).not.toHaveBeenCalled();
+    expect(h.captureException).not.toHaveBeenCalled();
+    // Still paused on a later turn: nothing new to say.
+    expect(await dispatched(later(5 * 60_000))).toBeNull();
+    // Resumed: the facts are different, so the full block goes out.
+    h.resolveGrantCeiling.mockResolvedValue(ceiling);
+    expect((await dispatched(later(10 * 60_000)))?.block).toContain('Concerns open: 1 high');
   });
 
   it('a corrupt ceiling pin gets no block, and is reported at most once a minute', async () => {
