@@ -165,7 +165,9 @@ export default function TicketFeed({
               key={b.item.id}
               className={cn(
                 'rounded-lg border p-3',
-                !b.item.isPublic && 'border-warning/30 bg-warning/10'
+                // The amber wash re-points muted ink at the foreground: grey
+                // --muted-foreground is 4.2–4.4:1 on it in light.
+                !b.item.isPublic && 'border-warning/30 bg-warning/10 [--muted-foreground:var(--foreground)_/_0.7]'
               )}
               data-testid={`ticket-comment-${b.item.id}`}
             >
@@ -178,7 +180,7 @@ export default function TicketFeed({
                       : t('ticketFeed.mergedFromUnknown')}
                   </span>
                 )}
-                {!b.item.isPublic && <span className="font-medium text-warning">{t('ticketFeed.internal')}</span>}
+                {!b.item.isPublic && <span className="font-medium text-warning-ink">{t('ticketFeed.internal')}</span>}
                 {b.item.editedAt && (
                   <span data-testid={`ticket-comment-edited-${b.item.id}`} title={formatDateTime(b.item.editedAt)}>{t('ticketFeed.edited')}</span>
                 )}

@@ -903,7 +903,19 @@
       },
       "charKeysOn": "Character-key shortcuts are on.",
       "charKeysOff": "Character-key shortcuts are off. Only Ctrl/Cmd shortcuts work.",
-      "charKeysManage": "Change in profile settings"
+      "charKeysManage": "Change in profile settings",
+      "queueTitle": "Tickets queue",
+      "queueHint": "On the Tickets page, outside a text field.",
+      "queue": {
+        "next": "Next ticket",
+        "previous": "Previous ticket",
+        "open": "Open the ticket's full page",
+        "toggleBulk": "Add to or remove from the bulk selection",
+        "assignMe": "Assign to me",
+        "reply": "Write a reply",
+        "internal": "Write an internal note",
+        "resolve": "Resolve with a note"
+      }
     }
   },
   "migrationBanner": {

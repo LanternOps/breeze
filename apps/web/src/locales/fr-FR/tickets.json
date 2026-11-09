@@ -139,7 +139,8 @@
       "tooLarge": "{{name}} dépasse 10 Mo.",
       "sentWithoutAttachment_one": "Note publiée, mais la pièce jointe n'a pas pu être ajoutée. Réessayez ou retirez-la.",
       "sentWithoutAttachment_other": "Note publiée, mais {{count}} pièces jointes n'ont pas pu être ajoutées. Réessayez ou retirez-les."
-    }
+    },
+    "modeLabel": "Visibilité du commentaire"
   },
   "ticketFeed": {
     "empty": "Pas encore d’activité.",
@@ -416,7 +417,18 @@
     },
     "filterByType": "Filtrer par type",
     "allTypes": "Tous les types",
-    "showMerged": "Afficher les fusionnés"
+    "showMerged": "Afficher les fusionnés",
+    "shortcutsButton": "Raccourcis",
+    "announce": {
+      "ticket": "{{number}} {{subject}}, priorité {{priority}}",
+      "ticketWithSla": "{{number}} {{subject}}, priorité {{priority}}, {{sla}}",
+      "sla": {
+        "ok": "SLA : temps restant {{relative}}",
+        "atRisk": "SLA à risque, temps restant {{relative}}",
+        "paused": "SLA en pause, temps restant {{relative}}",
+        "breached": "SLA en violation"
+      }
+    }
   },
   "ticketWorkbench": {
     "notFound": "Ticket non trouvé. Il se peut qu’il ait été supprimé, ou que vous n’y ayez peut-être pas accès.",
