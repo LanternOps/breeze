@@ -174,6 +174,22 @@ Registered redirect URIs must be **HTTPS**, with one exception: native/CLI clien
 
 OAuth sessions use the `mcp:read`, `mcp:write`, and `mcp:execute` scopes (plus `openid` and `offline_access`), which map to the same Tier 1 / 2 / 3 model as the `ai:*` API-key scopes. Access tokens are short-lived (30 minutes) and signed with EdDSA; refresh tokens last 14 days and **rotate on every use**. Revoking a grant invalidates all of its sibling access and refresh tokens immediately.
 
+#### Refresh-token rotation
+
+Each refresh returns a new refresh token, and the one the client sent stops working. Presenting a refresh token that has already been used is treated as theft: Breeze revokes the whole grant, every access and refresh token issued under it, and the user has to reconnect the AI client.
+
+Clients that run in two processes sharing one credential store, or that retry a refresh request, can present the old token moments after it was rotated. To keep those clients connected, Breeze applies a short **grace window** (10 seconds by default, `OAUTH_REFRESH_ROTATION_GRACE_MS`):
+
+- If the **same client** presents a refresh token that was rotated within the window, Breeze returns the refresh token that rotation issued, together with a new access token, and revokes nothing. Two refreshes sent at the same moment both succeed and end with one valid refresh token.
+- If the token was rotated longer ago than the window, or a **different client** presents it, it is still treated as reuse and the grant is revoked.
+- A refresh token that was revoked for any other reason (signed out, revoked by an administrator, expired) is not affected by the window.
+
+The trade-off: inside the window, Breeze cannot tell the client apart from someone else who holds the same refresh token and client ID. Such a caller receives the same new refresh token as the client. Whichever of them refreshes next, the other's next refresh is reuse and revokes the grant, so the overlap is detected the next time either one refreshes. Set `OAUTH_REFRESH_ROTATION_GRACE_MS=0` to turn the window off.
+
+To let a retry receive the same token, Breeze stores the new refresh token on the old one, encrypted with a key that needs both the old token itself (which Breeze never stores) and the server's `OAUTH_COOKIE_SECRET`. That stored copy is cleared once it is older than 30 seconds, when the client next refreshes.
+
+Grace-window hits are logged once per client per 10 minutes as `OAUTH_REFRESH_GRACE_HIT` with the client ID and the delay in milliseconds (`reuse_ms`). The Prometheus counter `oauth_refresh_rotation_grace_total{outcome}` counts every presentation of an already-rotated token: `hit` and `concurrent_hit` were allowed, and `outside_window`, `client_mismatch`, `successor_inactive` and `unsealable` revoked the grant. The histogram `oauth_refresh_rotation_reuse_seconds{outcome}` records how long after the rotation each one arrived.
+
 When OAuth is enabled, the MCP endpoints accept an `Authorization: Bearer <access_token>` header and return a `WWW-Authenticate` challenge pointing OAuth-capable clients at the protected-resource metadata.
 
 <Aside>

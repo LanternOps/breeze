@@ -5,7 +5,9 @@
  * starts. Ordinary provider reads remain non-blocking under MVCC, so both
  * exchanges reach their consume UPDATE and queue behind the holder. Observing
  * both blocked backends makes the security interleaving deterministic: after
- * release, exactly one compare-and-set may claim the artifact.
+ * release, exactly one compare-and-set may claim the artifact. For refresh
+ * tokens the loser then finishes with the winner's successor (#10301 grace
+ * window), so both succeed and the family still has one live token.
  */
 import './setup';
 import './loadEnv';
@@ -262,6 +264,58 @@ async function expectSingleWinner(responses: Response[]): Promise<Record<string,
   return await winners[0]!.json() as Record<string, unknown>;
 }
 
+function sha256Hex(raw: string): string {
+  return createHash('sha256').update(raw).digest('hex');
+}
+
+async function grantIdOfRow(rowId: string): Promise<string> {
+  const [row] = await getTestDb()
+    .select({ payload: oauthRefreshTokens.payload })
+    .from(oauthRefreshTokens)
+    .where(eq(oauthRefreshTokens.id, rowId));
+  const grantId = (row?.payload as { grantId?: string } | null)?.grantId;
+  if (!grantId) throw new Error(`refresh token row ${rowId} carries no grantId`);
+  return grantId;
+}
+
+async function grantRevocation(grantId: string) {
+  const [grant] = await getTestDb()
+    .select({ revokedAt: oauthGrants.revokedAt, revokedReason: oauthGrants.revokedReason })
+    .from(oauthGrants)
+    .where(eq(oauthGrants.id, grantId));
+  return grant;
+}
+
+// Push a rotation back in time instead of sleeping past the window.
+async function ageRotation(rowId: string, ms: number): Promise<void> {
+  const aged = await getTestDb().execute(sql`
+    UPDATE oauth_refresh_tokens
+       SET rotated_at = rotated_at - make_interval(secs => ${ms / 1000}),
+           revoked_at = revoked_at - make_interval(secs => ${ms / 1000})
+     WHERE id = ${rowId} AND rotated_at IS NOT NULL
+     RETURNING id
+  `);
+  expect(aged).toHaveLength(1);
+}
+
+async function registerClient(baseUrl: string, label: string): Promise<string> {
+  const registration = await fetch(`${baseUrl}/oauth/reg`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      client_name: `consume-race-${label}`,
+      redirect_uris: [`https://example.com/oauth/${label}/callback`],
+      grant_types: ['authorization_code', 'refresh_token'],
+      response_types: ['code'],
+      token_endpoint_auth_method: 'none',
+      scope: 'openid offline_access mcp:read',
+      id_token_signed_response_alg: 'EdDSA',
+    }),
+  });
+  expect(registration.status).toBe(201);
+  return (await registration.json() as { client_id: string }).client_id;
+}
+
 describe.skipIf(!SHOULD_RUN)('OAuth token consume is atomic across concurrent exchanges', () => {
   let live: LiveServer;
 
@@ -289,12 +343,18 @@ describe.skipIf(!SHOULD_RUN)('OAuth token consume is atomic across concurrent ex
     expect(successors).toHaveLength(1);
   }, 30_000);
 
-  it('allows exactly one rotating refresh exchange after both requests read the fresh token', async () => {
+  it('lets both racing rotating refreshes succeed with ONE successor and leaves the family alive (#10301)', async () => {
+    // Both requests read the fresh token, then queue behind the row lock at
+    // the consume UPDATE. The winner consumes it and seals its successor onto
+    // the row in the same statement; the loser's compare-and-set misses, finds
+    // that seal inside the grace window and finishes with the same successor.
+    // Before #10301 the loser got invalid_grant, and the client's retry with
+    // the old token then revoked the whole family.
     const issued = await issueAuthorizationCode(live.url, 'refresh');
     const initial = await exchangeCode(live.url, issued);
     expect(initial.status).toBe(200);
     const initialBody = await initial.json() as { refresh_token: string };
-    const refreshRowId = createHash('sha256').update(initialBody.refresh_token).digest('hex');
+    const refreshRowId = sha256Hex(initialBody.refresh_token);
     const [stored] = await getTestDb().select({ id: oauthRefreshTokens.id })
       .from(oauthRefreshTokens)
       .where(eq(oauthRefreshTokens.id, refreshRowId));
@@ -307,10 +367,17 @@ describe.skipIf(!SHOULD_RUN)('OAuth token consume is atomic across concurrent ex
         exchangeRefresh(live.url, issued.clientId, initialBody.refresh_token),
       ],
     );
-    const winner = await expectSingleWinner(responses);
-    expect(winner.access_token).toEqual(expect.any(String));
-    expect(winner.refresh_token).toEqual(expect.any(String));
-    expect(winner.refresh_token).not.toBe(initialBody.refresh_token);
+    expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    const bodies = await Promise.all(responses.map((response) => response.json() as Promise<{
+      access_token: string;
+      refresh_token: string;
+    }>));
+    expect(bodies[0]!.refresh_token).toEqual(expect.any(String));
+    expect(bodies[0]!.refresh_token).not.toBe(initialBody.refresh_token);
+    expect(bodies[1]!.refresh_token).toBe(bodies[0]!.refresh_token);
+    expect(bodies[0]!.access_token).toEqual(expect.any(String));
+    expect(bodies[1]!.access_token).toEqual(expect.any(String));
+
     const allFamilyRows = await getTestDb().select({ id: oauthRefreshTokens.id })
       .from(oauthRefreshTokens)
       .where(eq(oauthRefreshTokens.clientId, issued.clientId));
@@ -321,12 +388,63 @@ describe.skipIf(!SHOULD_RUN)('OAuth token consume is atomic across concurrent ex
         isNull(oauthRefreshTokens.revokedAt),
       ));
     expect(allFamilyRows).toHaveLength(2);
-    expect(activeFamilyRows).toHaveLength(1);
+    expect(activeFamilyRows).toEqual([{ id: sha256Hex(bodies[0]!.refresh_token) }]);
+    expect(await grantRevocation(await grantIdOfRow(sha256Hex(bodies[0]!.refresh_token))))
+      .toEqual({ revokedAt: null, revokedReason: null });
+
+    // The shared successor is a normal live refresh token.
+    const next = await exchangeRefresh(live.url, issued.clientId, bodies[0]!.refresh_token);
+    expect(next.status).toBe(200);
+  }, 30_000);
+
+  it('returns the same successor to the same client re-presenting a just-rotated token (#10301)', async () => {
+    const issued = await issueAuthorizationCode(live.url, 'grace-replay');
+    const initial = await exchangeCode(live.url, issued);
+    expect(initial.status).toBe(200);
+    const first = await initial.json() as { refresh_token: string };
+
+    const rotated = await exchangeRefresh(live.url, issued.clientId, first.refresh_token);
+    expect(rotated.status).toBe(200);
+    const second = await rotated.json() as { refresh_token: string };
+
+    const retry = await exchangeRefresh(live.url, issued.clientId, first.refresh_token);
+    expect(retry.status).toBe(200);
+    const retried = await retry.json() as { refresh_token: string; access_token: string };
+    expect(retried.refresh_token).toBe(second.refresh_token);
+    expect(retried.access_token).toEqual(expect.any(String));
+
+    const grantId = await grantIdOfRow(sha256Hex(second.refresh_token));
+    expect(await grantRevocation(grantId)).toEqual({ revokedAt: null, revokedReason: null });
+    const active = await getTestDb().select({ id: oauthRefreshTokens.id })
+      .from(oauthRefreshTokens)
+      .where(and(eq(oauthRefreshTokens.clientId, issued.clientId), isNull(oauthRefreshTokens.revokedAt)));
+    expect(active).toEqual([{ id: sha256Hex(second.refresh_token) }]);
+  }, 30_000);
+
+  it('treats a just-rotated token presented by a DIFFERENT client as reuse (#10301)', async () => {
+    const issued = await issueAuthorizationCode(live.url, 'grace-other-client');
+    const initial = await exchangeCode(live.url, issued);
+    expect(initial.status).toBe(200);
+    const first = await initial.json() as { refresh_token: string };
+    const rotated = await exchangeRefresh(live.url, issued.clientId, first.refresh_token);
+    expect(rotated.status).toBe(200);
+    const second = await rotated.json() as { refresh_token: string };
+    const grantId = await grantIdOfRow(sha256Hex(second.refresh_token));
+
+    const other = await registerClient(live.url, 'grace-other-client-2');
+    const replay = await exchangeRefresh(live.url, other, first.refresh_token);
+    expect(replay.status).toBe(400);
+    await expect(replay.json()).resolves.toMatchObject({ error: 'invalid_grant' });
+    expect(await grantRevocation(grantId)).toEqual({
+      revokedAt: expect.any(Date),
+      revokedReason: 'refresh-token-reuse',
+    });
   }, 30_000);
 
   it('refresh-token reuse durably revokes the Grant and its whole family, not just a Redis marker', async () => {
     // Steal-and-replay, sequentially (no lock needed): rotate once legitimately,
-    // then present the burned RT again. The eager Redis grant marker expires
+    // then present the burned RT again once the grace window has passed. The
+    // eager Redis grant marker expires
     // after GRANT_REVOCATION_TTL_SECONDS; if that is the only thing recording
     // the compromise, the surviving sibling starts working again when it
     // lapses. Assert the DURABLE half landed.
@@ -354,7 +472,9 @@ describe.skipIf(!SHOULD_RUN)('OAuth token consume is atomic across concurrent ex
       .where(eq(oauthGrants.id, grantId!));
     expect(beforeGrant?.revokedAt).toBeNull();
 
-    // Replay the burned token.
+    // Move the rotation outside the #10301 grace window, then replay the
+    // burned token: from here on it is reuse, exactly as before.
+    await ageRotation(sha256Hex(first.refresh_token), 11_000);
     const replay = await exchangeRefresh(live.url, issued.clientId, first.refresh_token);
     expect(replay.status).toBe(400);
     await expect(replay.json()).resolves.toMatchObject({ error: 'invalid_grant' });

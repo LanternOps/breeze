@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Provider } from 'oidc-provider';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthAuthorizationCodes, oauthClients, oauthInteractions, oauthRefreshTokens } from '../db/schema';
 import {
@@ -9,6 +10,14 @@ import {
   sanitizeRefreshTokenPayload,
 } from './adapter';
 import { revokeGrant, revokeJti } from './revocationCache';
+import {
+  configureRotationSealKey,
+  markRotationGraceHit,
+  openRotationSuccessor,
+  rotationGraceHit,
+  sealRotationSuccessor,
+  takePendingRotationSuccessor,
+} from './refreshRotationGrace';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import {
   isOAuthGrantActiveInCurrentDbContext,
@@ -43,11 +52,14 @@ const selectMock = vi.mocked(db.select);
 const runOutsideDbContextMock = vi.mocked(runOutsideDbContext);
 const withSystemDbAccessContextMock = vi.mocked(withSystemDbAccessContext);
 
-function mockInsertChain() {
-  const onConflictDoUpdate = vi.fn();
+function mockInsertChain(returnedRows: unknown[] = [{ id: 'inserted' }]) {
+  // RefreshToken upserts read back the row they inserted or matched (#10301);
+  // the other models await onConflictDoUpdate() directly.
+  const returning = vi.fn(async () => returnedRows);
+  const onConflictDoUpdate = vi.fn(() => ({ returning }));
   const values = vi.fn(() => ({ onConflictDoUpdate }));
   insertMock.mockReturnValue({ values } as unknown as ReturnType<typeof db.insert>);
-  return { values, onConflictDoUpdate };
+  return { values, onConflictDoUpdate, returning };
 }
 
 function mockRetryInsertChain(userId: string) {
@@ -734,8 +746,10 @@ describe('BreezeOidcAdapter RefreshToken digest storage', () => {
     expect(values.id).toBe(digest);
     expect(values.payload).not.toHaveProperty('jti');
     expect(values.payload).toMatchObject({ grantId: 'grant_abc', accountId: uuid1, clientId: 'client_abc' });
-    const conflict = (chain.onConflictDoUpdate.mock.calls[0] as unknown[])[0] as { set: { payload: Record<string, unknown> } };
-    expect(conflict.set.payload).not.toHaveProperty('jti');
+    // A conflict keeps the first successor's stored payload untouched (#10301),
+    // so no payload (and therefore no jti) is written on that branch at all.
+    const conflict = (chain.onConflictDoUpdate.mock.calls[0] as unknown[])[0] as { set: Record<string, unknown> };
+    expect(conflict.set).toEqual({ lastUsedAt: expect.any(Date) });
   });
 
   it('find looks up by digest and restores jti to the raw id in memory', async () => {
@@ -810,5 +824,327 @@ describe('BreezeOidcAdapter RefreshToken digest storage', () => {
     expect(strings.has(digest)).toBe(true);
     expect(strings.has(rawId)).toBe(false);
     consoleError.mockRestore();
+  });
+});
+
+// #10301: a rotated refresh token re-presented by the same client inside the
+// grace window gets the successor the winner was issued; everything else keeps
+// the fatal reuse path.
+describe('BreezeOidcAdapter refresh rotation grace window (#10301)', () => {
+  const SECRET = 'adapter-grace-secret-at-least-32-characters';
+  const USER = '00000000-0000-4000-8000-000000000001';
+  const PARTNER = '00000000-0000-4000-8000-000000000002';
+  const CLIENT = 'client_abc';
+  const GRANT = 'grant_abc';
+  const PARENT_RAW = 'raw-parent-refresh-token';
+  const PARENT_DIGEST = createHash('sha256').update(PARENT_RAW).digest('hex');
+  const SUCCESSOR_RAW = 'raw-successor-refresh-token-0000000000000';
+  const NOW = new Date('2026-11-09T12:00:00.000Z').getTime();
+  let consoleError: { mock: { calls: unknown[][] } };
+  let consoleWarn: { mock: { calls: unknown[][] } };
+
+  function grantCtx(presented = PARENT_RAW, clientId: string | null = CLIENT) {
+    return {
+      oidc: {
+        client: clientId ? { clientId } : undefined,
+        params: { grant_type: 'refresh_token', refresh_token: presented, client_id: clientId ?? undefined },
+      },
+      get: () => 'Example-Agent/1.0',
+    };
+  }
+
+  function useCtx(ctx: unknown) {
+    vi.spyOn(Provider, 'ctx', 'get').mockReturnValue(ctx as never);
+    return ctx as object;
+  }
+
+  function seal(successorRaw = SUCCESSOR_RAW, parentRaw = PARENT_RAW) {
+    return sealRotationSuccessor({ parentRaw, parentStorageId: PARENT_DIGEST, successorRaw })!;
+  }
+
+  function parentRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: PARENT_DIGEST,
+      userId: USER,
+      clientId: CLIENT,
+      partnerId: PARTNER,
+      orgId: null,
+      payload: { accountId: USER, clientId: CLIENT, grantId: GRANT, scope: 'openid mcp:read' },
+      expiresAt: new Date(NOW + 14 * 24 * 3600 * 1000),
+      revokedAt: new Date(NOW - 32),
+      rotatedAt: new Date(NOW - 32),
+      successorSealed: seal(),
+      ...overrides,
+    };
+  }
+
+  function successorRow(overrides: Record<string, unknown> = {}) {
+    return {
+      revokedAt: null,
+      clientId: CLIENT,
+      payload: { grantId: GRANT },
+      ...overrides,
+    };
+  }
+
+  // Each select() call gets the next row set.
+  function mockSelectSequence(...rowSets: unknown[][]) {
+    for (const rows of rowSets) {
+      const where = vi.fn(async () => rows);
+      selectMock.mockReturnValueOnce({ from: vi.fn(() => ({ where })) } as unknown as ReturnType<typeof db.select>);
+    }
+  }
+
+  function reuseLogged(): boolean {
+    return consoleError.mock.calls.some((call) => String(call[0]).includes('OAUTH_REFRESH_TOKEN_REUSE'));
+  }
+
+  function graceHitLog(): Record<string, unknown> | undefined {
+    const call = consoleWarn.mock.calls.find((c) => String(c[0]).includes('OAUTH_REFRESH_GRACE_HIT'));
+    return call?.[1] as Record<string, unknown> | undefined;
+  }
+
+  function expectFamilyRevoked() {
+    expect(reuseLogged()).toBe(true);
+    expect(vi.mocked(revokeGrantsDurablyInCurrentDbContext)).toHaveBeenCalledWith({
+      grantIds: [GRANT],
+      reason: 'refresh-token-reuse',
+      cascadeRefreshTokens: true,
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // mockReturnValueOnce queues survive clearAllMocks; start each case clean.
+    selectMock.mockReset();
+    updateMock.mockReset();
+    insertMock.mockReset();
+    vi.useFakeTimers({ now: NOW, toFake: ['Date'] });
+    delete process.env.OAUTH_REFRESH_ROTATION_GRACE_MS;
+    configureRotationSealKey(SECRET);
+    vi.mocked(assertActiveTenantContext).mockResolvedValue(undefined);
+    vi.mocked(isOAuthGrantActiveInCurrentDbContext).mockResolvedValue(true);
+    mockRetryInsertChain(USER);
+    consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    selectMock.mockReset();
+    updateMock.mockReset();
+    insertMock.mockReset();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    configureRotationSealKey(null);
+    delete process.env.OAUTH_REFRESH_ROTATION_GRACE_MS;
+  });
+
+  describe('find() on a rotated token', () => {
+    it('returns the parent as live to the same client inside the window and revokes nothing', async () => {
+      // The hit log is throttled per client by a process-wide logger; a client
+      // id of its own keeps this assertion independent of test order.
+      const client = 'client_replay_log';
+      const ctx = useCtx(grantCtx(PARENT_RAW, client));
+      mockSelectSequence([parentRow({ clientId: client })], [successorRow({ clientId: client })]);
+
+      const result = await new BreezeOidcAdapter('RefreshToken').find(PARENT_RAW);
+
+      expect(result).toMatchObject({ grantId: GRANT, jti: PARENT_RAW });
+      expect(result).not.toHaveProperty('consumed');
+      expect(reuseLogged()).toBe(false);
+      expect(vi.mocked(revokeGrant)).not.toHaveBeenCalled();
+      expect(vi.mocked(revokeGrantsDurablyInCurrentDbContext)).not.toHaveBeenCalled();
+      expect(graceHitLog()).toMatchObject({ client_id: client, grant_id: GRANT, reuse_ms: 32, path: 'replay' });
+      expect(rotationGraceHit(ctx, PARENT_DIGEST)).toBe(SUCCESSOR_RAW);
+    });
+
+    it('still grants when the winner has not saved the successor row yet (consume→save gap)', async () => {
+      useCtx(grantCtx());
+      mockSelectSequence([parentRow()], []);
+
+      await expect(new BreezeOidcAdapter('RefreshToken').find(PARENT_RAW)).resolves.toMatchObject({ jti: PARENT_RAW });
+      expect(reuseLogged()).toBe(false);
+    });
+
+    it('grants at exactly the window boundary', async () => {
+      useCtx(grantCtx());
+      mockSelectSequence([parentRow({ rotatedAt: new Date(NOW - 10_000) })], [successorRow()]);
+
+      await expect(new BreezeOidcAdapter('RefreshToken').find(PARENT_RAW)).resolves.toMatchObject({ jti: PARENT_RAW });
+      expect(reuseLogged()).toBe(false);
+    });
+
+    it.each([
+      ['1 ms past the window', 10_001],
+      ['well past the window', 60 * 60 * 1000],
+    ])('revokes the family %s', async (_label, ageMs) => {
+      useCtx(grantCtx());
+      mockSelectSequence([parentRow({ rotatedAt: new Date(NOW - ageMs) })], [successorRow()]);
+
+      await expect(new BreezeOidcAdapter('RefreshToken').find(PARENT_RAW)).resolves.toBeUndefined();
+      expectFamilyRevoked();
+      expect(graceHitLog()).toBeUndefined();
+    });
+
+    it('revokes the family when a different client presents a token rotated 1 s ago', async () => {
+      useCtx(grantCtx(PARENT_RAW, 'client_other'));
+      mockSelectSequence([parentRow({ rotatedAt: new Date(NOW - 1000) })], [successorRow()]);
+
+      await expect(new BreezeOidcAdapter('RefreshToken').find(PARENT_RAW)).resolves.toBeUndefined();
+      expectFamilyRevoked();
+    });
+
+    it('keeps the fatal path for a token revoked without rotation (destroy / family revocation)', async () => {
+      useCtx(grantCtx());
+      mockSelectSequence([parentRow({ rotatedAt: null, successorSealed: null })]);
+
+      await expect(new BreezeOidcAdapter('RefreshToken').find(PARENT_RAW)).resolves.toBeUndefined();
+      expectFamilyRevoked();
+    });
+
+    it('revokes the family when the successor is no longer live', async () => {
+      useCtx(grantCtx());
+      mockSelectSequence([parentRow()], [successorRow({ revokedAt: new Date(NOW - 5) })]);
+
+      await expect(new BreezeOidcAdapter('RefreshToken').find(PARENT_RAW)).resolves.toBeUndefined();
+      expectFamilyRevoked();
+    });
+
+    it('revokes the family when the seal does not open (wrong parent, rotated server secret)', async () => {
+      useCtx(grantCtx());
+      mockSelectSequence([parentRow({ successorSealed: seal(SUCCESSOR_RAW, 'some-other-parent') })]);
+
+      await expect(new BreezeOidcAdapter('RefreshToken').find(PARENT_RAW)).resolves.toBeUndefined();
+      expectFamilyRevoked();
+    });
+
+    it('never applies outside a refresh_token grant (introspection / revocation lookups)', async () => {
+      useCtx(undefined);
+      mockSelectSequence([parentRow()], [successorRow()]);
+
+      await expect(new BreezeOidcAdapter('RefreshToken').find(PARENT_RAW)).resolves.toBeUndefined();
+      expectFamilyRevoked();
+    });
+
+    it('is off when OAUTH_REFRESH_ROTATION_GRACE_MS=0', async () => {
+      process.env.OAUTH_REFRESH_ROTATION_GRACE_MS = '0';
+      useCtx(grantCtx());
+      mockSelectSequence([parentRow()], [successorRow()]);
+
+      await expect(new BreezeOidcAdapter('RefreshToken').find(PARENT_RAW)).resolves.toBeUndefined();
+      expectFamilyRevoked();
+    });
+  });
+
+  describe('consume()', () => {
+    it('publishes a sealed successor atomically with the consume and hands it to the provider', async () => {
+      const ctx = useCtx(grantCtx());
+      const chain = mockUpdateChain([{ id: PARENT_DIGEST, clientId: CLIENT }]);
+
+      await new BreezeOidcAdapter('RefreshToken').consume(PARENT_RAW);
+
+      const set = (chain.set.mock.calls[0] as unknown[])[0] as Record<string, unknown>;
+      expect(set).toEqual({
+        revokedAt: new Date(NOW),
+        rotatedAt: new Date(NOW),
+        successorSealed: expect.any(String),
+      });
+      const published = takePendingRotationSuccessor(ctx);
+      expect(published).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(openRotationSuccessor({
+        parentRaw: PARENT_RAW,
+        parentStorageId: PARENT_DIGEST,
+        sealed: set.successorSealed as string,
+      })).toBe(published);
+      // Seals older than the cap are scrubbed for the client on the same rotation.
+      expect(chain.set).toHaveBeenCalledWith({ successorSealed: null });
+    });
+
+    it('consumes exactly as before when the window is off', async () => {
+      process.env.OAUTH_REFRESH_ROTATION_GRACE_MS = '0';
+      const ctx = useCtx(grantCtx());
+      const chain = mockUpdateChain([{ id: PARENT_DIGEST, clientId: CLIENT }]);
+
+      await new BreezeOidcAdapter('RefreshToken').consume(PARENT_RAW);
+
+      expect(chain.set).toHaveBeenCalledTimes(1);
+      expect(chain.set).toHaveBeenCalledWith({ revokedAt: expect.any(Date) });
+      expect(takePendingRotationSuccessor(ctx)).toBeNull();
+    });
+
+    it('tolerates the expected CAS miss after find() granted the window, handing over that successor', async () => {
+      const ctx = useCtx(grantCtx());
+      markRotationGraceHit(ctx, PARENT_DIGEST, SUCCESSOR_RAW);
+      mockUpdateChain([]);
+
+      await expect(new BreezeOidcAdapter('RefreshToken').consume(PARENT_RAW)).resolves.toBeUndefined();
+      expect(takePendingRotationSuccessor(ctx)).toBe(SUCCESSOR_RAW);
+    });
+
+    it('lets the loser of a concurrent rotation finish with the winner\'s successor', async () => {
+      const client = 'client_concurrent_log';
+      const ctx = useCtx(grantCtx(PARENT_RAW, client));
+      mockUpdateChain([]);
+      mockSelectSequence(
+        [parentRow({ clientId: client, revokedAt: new Date(NOW - 3), rotatedAt: new Date(NOW - 3) })],
+        [],
+      );
+
+      await expect(new BreezeOidcAdapter('RefreshToken').consume(PARENT_RAW)).resolves.toBeUndefined();
+      expect(takePendingRotationSuccessor(ctx)).toBe(SUCCESSOR_RAW);
+      expect(vi.mocked(isOAuthGrantActiveInCurrentDbContext)).toHaveBeenCalledWith(GRANT);
+      expect(graceHitLog()).toMatchObject({ path: 'concurrent', client_id: client, reuse_ms: 3 });
+    });
+
+    it.each([
+      ['the rotation is older than the window', { rotatedAt: new Date(NOW - 10_001) }, true],
+      ['the token was revoked without rotation', { rotatedAt: null, successorSealed: null }, true],
+      ['the grant is no longer active', {}, false],
+    ])('rejects a lost CAS when %s', async (_label, overrides, grantActive) => {
+      useCtx(grantCtx());
+      vi.mocked(isOAuthGrantActiveInCurrentDbContext).mockResolvedValue(grantActive as boolean);
+      mockUpdateChain([]);
+      mockSelectSequence([parentRow(overrides as Record<string, unknown>)], [successorRow()]);
+
+      await expect(new BreezeOidcAdapter('RefreshToken').consume(PARENT_RAW))
+        .rejects.toMatchObject({ error: 'invalid_grant' });
+    });
+
+    it('rejects a lost CAS presented by a different client', async () => {
+      useCtx(grantCtx(PARENT_RAW, 'client_other'));
+      mockUpdateChain([]);
+      mockSelectSequence([parentRow()], [successorRow()]);
+
+      await expect(new BreezeOidcAdapter('RefreshToken').consume(PARENT_RAW))
+        .rejects.toMatchObject({ error: 'invalid_grant' });
+    });
+  });
+
+  describe('upsert() of the successor', () => {
+    const payload = {
+      accountId: USER,
+      clientId: CLIENT,
+      grantId: GRANT,
+      extra: { partner_id: PARTNER, org_id: '00000000-0000-4000-8000-000000000003' },
+    };
+
+    it('keeps the first save when both racers save the same successor', async () => {
+      const chain = mockInsertChain([{ id: 'existing' }]);
+      mockUpdateChain();
+
+      await new BreezeOidcAdapter('RefreshToken').upsert(SUCCESSOR_RAW, payload, 3600);
+
+      const conflict = (chain.onConflictDoUpdate.mock.calls[0] as unknown[])[0] as { set: Record<string, unknown>; setWhere?: unknown };
+      expect(conflict.set).toEqual({ lastUsedAt: expect.any(Date) });
+      expect(conflict.setWhere).toBeDefined();
+    });
+
+    it('never hands out a successor whose row was already revoked or belongs to another family', async () => {
+      mockInsertChain([]);
+      mockUpdateChain();
+
+      await expect(new BreezeOidcAdapter('RefreshToken').upsert(SUCCESSOR_RAW, payload, 3600))
+        .rejects.toMatchObject({ error: 'invalid_grant' });
+    });
   });
 });
