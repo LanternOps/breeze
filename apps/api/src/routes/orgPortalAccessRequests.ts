@@ -1,6 +1,6 @@
 import type { Context, Hono } from 'hono';
 import { z } from 'zod';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { decidePortalAccessRequestsSchema } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { db, withDbTransaction } from '../db';
@@ -8,6 +8,7 @@ import { organizations, partners } from '../db/schema';
 import { requireMfa, requirePartner, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
+import { safeErrorMessage } from '../services/aiModels/safeDbError';
 import { getEmailService } from '../services/email';
 import {
   PortalAccessRequestError,
@@ -30,16 +31,23 @@ import { buildPortalUrl } from './portal/helpers';
  * Registered onto orgRoutes so every route inherits its authMiddleware.
  *
  * Transactions (#11203, docs/agents/tenancy-rls.md): approve and deny each own
- * ONE `withDbTransaction` (services/portalAccessRequests.ts), so a refusal has
- * already rolled back every statement it ran when the catch below sees it, and
- * the request transaction commits cleanly. The catch sits OUTSIDE the call and
- * this file adds no transaction of its own. `/decide` runs the ids one after
- * another, never in `Promise.all`.
+ * ONE `withDbTransaction` (services/portalAccessRequests.ts), so any failure
+ * has already rolled back every statement that decision ran when the catch
+ * below sees it, and the request transaction stays usable. The catch sits
+ * OUTSIDE the call. `/decide` runs the ids one after another, never in
+ * `Promise.all`.
+ *
+ * A handler's throw is NOT a rollback: Hono turns it into a 500 and the
+ * request transaction (opened by authMiddleware) commits whatever was decided
+ * before it. So nothing after a decision may throw: `/decide` maps every
+ * per-id failure to a result code and finishes the batch, and the audit row
+ * and the email of each decision are written whatever happened to the others.
  *
  * Emails (OD3) go out after the service returns: a self request's approval
  * sends the normal invite, an SSO / add-in approval sends "you can now sign
- * in", a denial sends the neutral declined email. A failed send is logged and
- * does not undo the decision, the same as invites.
+ * in", a denial sends the neutral declined email. Each send runs in its own
+ * savepoint (see notifyDecision). A failed send is logged and does not undo the
+ * decision, the same as invites.
  */
 
 // Hex 8-4-4-4-12, not zod's RFC-strict uuid(): seeded ids need not carry RFC
@@ -55,18 +63,20 @@ const listQuerySchema = z.object({
 
 const APPROVE_ACTION = 'organization.portal_user.access_request.approve';
 const DENY_ACTION = 'organization.portal_user.access_request.deny';
+/** The `/decide` result for an id whose decision failed with anything but a refusal. */
+const DECIDE_INTERNAL_ERROR = 'INTERNAL_ERROR';
 
 type DecisionRefusal = { status: 400 | 403 | 404 | 409; body: { error: string; code: string } };
 
-/** A refusal from the service as `{ error, code }` with its status; anything else is rethrown (a 500). */
-function decisionRefusal(err: unknown): DecisionRefusal {
+/** A refusal from the service as `{ error, code }` with its status; null for anything else. */
+function decisionRefusal(err: unknown): DecisionRefusal | null {
   if (err instanceof PortalAccessRequestError) {
     return { status: err.httpStatus, body: { error: err.message, code: err.code } };
   }
   if (err instanceof PortalAccountTransitionError) {
     return { status: err.httpStatus, body: { error: err.message, code: err.code } };
   }
-  throw err;
+  return null;
 }
 
 type Decided =
@@ -108,44 +118,72 @@ function emailNamesReader(orgId: string): () => Promise<EmailNames> {
         return { orgName: row?.orgName ?? null, partnerName: row?.partnerName ?? undefined };
       });
     } catch (err) {
-      console.error('[orgPortalAccessRequests] org/partner name read failed; sending unbranded', err);
+      console.error(`[orgPortalAccessRequests] org/partner name read failed; sending unbranded orgId=${orgId}: ${safeErrorMessage(err)}`);
       return { orgName: null, partnerName: undefined };
     }
   };
   return () => (cached ??= read());
 }
 
-/**
- * Send the email for one decision (OD3). Returns whether it went out; never
- * throws, because the decision stands either way.
- */
-async function notifyDecision(c: Context, orgId: string, decided: Decided, names: () => Promise<EmailNames>): Promise<boolean> {
+/** The email for one decision (OD3). Returns whether it went out; a failure throws. */
+async function sendDecisionEmail(c: Context, orgId: string, decided: Decided, { orgName, partnerName }: EmailNames): Promise<boolean> {
   const auth = c.get('auth') as AuthContext;
-  try {
-    const { orgName, partnerName } = await names();
-    if (decided.kind === 'approve' && decided.result.outcome === 'invite_pending') {
-      const { portalUserId, email, authEpoch } = decided.result;
-      return await issueAndSendInvite(c, orgId, { id: portalUserId, email, authEpoch }, orgName, auth.user.name);
-    }
-    const emailService = getEmailService();
-    if (!emailService) {
-      console.warn(`[orgPortalAccessRequests] ${decided.kind} email not sent (no email service configured) requestId=${decided.requestId} orgId=${orgId}`);
-      return false;
-    }
-    // Partner from the VERIFIED auth context, never request input (spec §8.1),
-    // exactly as issueAndSendInvite: a system-scope caller has partnerId null,
-    // which resolves to the platform sender.
-    const sender = { orgName: orgName ?? undefined, partnerId: auth.partnerId ?? null, partnerName };
-    if (decided.kind === 'approve') {
-      await emailService.sendPortalAccessApproved({ to: decided.result.email, loginUrl: buildPortalUrl('/login'), ...sender });
-    } else {
-      await emailService.sendPortalAccessDeclined({ to: decided.result.email, ...sender });
-    }
-    return true;
-  } catch (err) {
-    console.error(`[orgPortalAccessRequests] ${decided.kind} email failed requestId=${decided.requestId} orgId=${orgId}`, err);
+  if (decided.kind === 'approve' && decided.result.outcome === 'invite_pending') {
+    const { portalUserId, email, authEpoch } = decided.result;
+    return issueAndSendInvite(c, orgId, { id: portalUserId, email, authEpoch }, orgName, auth.user.name);
+  }
+  const emailService = getEmailService();
+  if (!emailService) {
+    console.warn(`[orgPortalAccessRequests] ${decided.kind} email not sent (no email service configured) requestId=${decided.requestId} orgId=${orgId}`);
     return false;
   }
+  // Partner from the VERIFIED auth context, never request input (spec §8.1),
+  // exactly as issueAndSendInvite: a system-scope caller has partnerId null,
+  // which resolves to the platform sender.
+  const sender = { orgName: orgName ?? undefined, partnerId: auth.partnerId ?? null, partnerName };
+  if (decided.kind === 'approve') {
+    await emailService.sendPortalAccessApproved({ to: decided.result.email, loginUrl: buildPortalUrl('/login'), ...sender });
+  } else {
+    await emailService.sendPortalAccessDeclined({ to: decided.result.email, ...sender });
+  }
+  return true;
+}
+
+/**
+ * Send the email for one decision. Returns whether it went out; never throws,
+ * because the decision stands either way.
+ *
+ * Savepoint, with the catch outside it (#11203). The send path reads the
+ * database: issueAndSendInvite's branding read, and the partner-lane sender
+ * lookup (services/emailDomains/partnerLaneLookup.ts), which runs in place in a
+ * partner request context. A failed statement there, even one caught further in
+ * (issueAndSendInvite catches its own send), is rethrown when the request
+ * transaction commits: a 500 that rolls the decision back. In the savepoint it
+ * stops there and the decision commits with `emailSent: false`. Nothing the
+ * send path writes needs to outlive a failed send, so the rollback costs nothing.
+ */
+async function notifyDecision(c: Context, orgId: string, decided: Decided, names: () => Promise<EmailNames>): Promise<boolean> {
+  try {
+    const resolved = await names();
+    return await withDbTransaction(() => sendDecisionEmail(c, orgId, decided, resolved));
+  } catch (err) {
+    console.error(`[orgPortalAccessRequests] ${decided.kind} email failed requestId=${decided.requestId} orgId=${orgId}: ${safeErrorMessage(err)}`);
+    return false;
+  }
+}
+
+/**
+ * Everything after one committed decision: its audit row, then its email.
+ * Never throws (a throw here would leave the decision committed behind a 500
+ * with no email). Returns whether the email went out.
+ */
+async function announceDecision(c: Context, orgId: string, decided: Decided, names: () => Promise<EmailNames>): Promise<boolean> {
+  try {
+    auditDecision(c, orgId, decided);
+  } catch (err) {
+    console.error(`[orgPortalAccessRequests] ${decided.kind} audit write failed requestId=${decided.requestId} orgId=${orgId}: ${safeErrorMessage(err)}`);
+  }
+  return notifyDecision(c, orgId, decided, names);
 }
 
 export function registerOrgPortalAccessRequestRoutes(orgRoutes: Hono): void {
@@ -183,34 +221,68 @@ export function registerOrgPortalAccessRequestRoutes(orgRoutes: Hono): void {
       const auth = c.get('auth') as AuthContext;
       const { requestIds, decision } = c.req.valid('json');
 
+      // Lock order. Each decision takes `SELECT … FOR UPDATE` on its request
+      // row and holds it until the request transaction commits, so two
+      // overlapping batches run in client order ([A,B] beside [B,A]) would
+      // each hold one row and wait for the other's (40P01). So every batch
+      // decides its distinct ids in ascending id order: the row locks are
+      // taken in one global order. Id order is enough for the address locks
+      // too. Approve takes its per-address advisory lock only AFTER the row
+      // lock, and within one org a pending request and its address are 1:1
+      // (`portal_access_requests_pending_email_uq`), so address locks are
+      // also taken in id order. A deadlock on anything else (say, another
+      // request's uncommitted account row) fails that one id as
+      // INTERNAL_ERROR, not the batch.
+      // Ids are keyed lowercased, so a duplicate in any letter case is decided
+      // once and every occurrence reports that result.
+      const order = [...new Set(requestIds.map((id) => id.toLowerCase()))].sort();
+
       // Sequential: each call opens its own savepoint in the request
       // transaction, and two savepoints in a Promise.all fail together.
-      const data: Array<{ requestId: string; result: string }> = [];
+      const results = new Map<string, string>();
       const decided: Decided[] = [];
-      for (const requestId of requestIds) {
+      let unexpectedFailure = false;
+      for (const requestId of order) {
         const input = { orgId: org.id, requestId, deciderUserId: auth.user.id };
         try {
           if (decision === 'approve') {
             decided.push({ kind: 'approve', requestId, result: await approvePortalAccessRequest(input) });
-            data.push({ requestId, result: 'approved' });
+            results.set(requestId, 'approved');
           } else {
             decided.push({ kind: 'deny', requestId, result: await denyPortalAccessRequest(input) });
-            data.push({ requestId, result: 'denied' });
+            results.set(requestId, 'denied');
           }
         } catch (err) {
-          // A refusal is reported for this id and the batch goes on. Anything
-          // else rethrows: the request transaction then rolls every decision
-          // back, which is why no audit row or email is written until the loop ends.
-          data.push({ requestId, result: decisionRefusal(err).body.code });
+          // EVERY failure is caught, never rethrown: the service's savepoint
+          // has already rolled back this id's statements, and a throw would
+          // commit the ids decided before it with no audit row or email.
+          const refusal = decisionRefusal(err);
+          if (!refusal) {
+            unexpectedFailure = true;
+            console.error(`[orgPortalAccessRequests] decide ${decision} failed requestId=${requestId} orgId=${org.id}: ${safeErrorMessage(err)}`);
+          }
+          results.set(requestId, refusal ? refusal.body.code : DECIDE_INTERNAL_ERROR);
         }
       }
 
+      // An unexpected failure is normally one its savepoint contained, and the
+      // request transaction is still good. If it broke the transaction instead
+      // (a lost connection), nothing here will commit, and an audit row (written
+      // on its own connection) or an email would announce decisions that roll
+      // back. This statement then throws, so the request is a 500 that
+      // announces nothing. Deliberately bare: it must fail on that transaction.
+      if (unexpectedFailure) await db.execute(sql`SELECT 1`);
+
       const names = emailNamesReader(org.id);
       for (const item of decided) {
-        auditDecision(c, org.id, item);
-        await notifyDecision(c, org.id, item, names);
+        await announceDecision(c, org.id, item, names);
       }
-      return c.json({ data });
+      return c.json({
+        data: requestIds.map((requestId) => ({
+          requestId,
+          result: results.get(requestId.toLowerCase()) ?? DECIDE_INTERNAL_ERROR,
+        })),
+      });
     },
   );
 
@@ -231,12 +303,14 @@ export function registerOrgPortalAccessRequestRoutes(orgRoutes: Hono): void {
         result = await approvePortalAccessRequest({ orgId: org.id, requestId, deciderUserId: auth.user.id });
       } catch (err) {
         const refusal = decisionRefusal(err);
+        // Anything else is a 500 with nothing committed: the service's
+        // savepoint rolled the whole decision back, and nothing ran before it.
+        if (!refusal) throw err;
         return c.json(refusal.body, refusal.status);
       }
 
       const decided: Decided = { kind: 'approve', requestId, result };
-      auditDecision(c, org.id, decided);
-      const emailSent = await notifyDecision(c, org.id, decided, emailNamesReader(org.id));
+      const emailSent = await announceDecision(c, org.id, decided, emailNamesReader(org.id));
       return c.json({ data: { outcome: result.outcome, portalUserId: result.portalUserId }, emailSent });
     },
   );
@@ -258,12 +332,12 @@ export function registerOrgPortalAccessRequestRoutes(orgRoutes: Hono): void {
         result = await denyPortalAccessRequest({ orgId: org.id, requestId, deciderUserId: auth.user.id });
       } catch (err) {
         const refusal = decisionRefusal(err);
+        if (!refusal) throw err; // a 500 with nothing committed, as approve
         return c.json(refusal.body, refusal.status);
       }
 
       const decided: Decided = { kind: 'deny', requestId, result };
-      auditDecision(c, org.id, decided);
-      const emailSent = await notifyDecision(c, org.id, decided, emailNamesReader(org.id));
+      const emailSent = await announceDecision(c, org.id, decided, emailNamesReader(org.id));
       return c.json({ data: { status: 'denied' as const }, emailSent });
     },
   );

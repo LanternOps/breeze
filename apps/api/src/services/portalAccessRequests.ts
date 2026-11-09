@@ -44,6 +44,8 @@ export const PORTAL_ACCESS_REQUEST_TTL_DAYS = 14;
 export const PORTAL_ACCESS_REQUEST_PENDING_CAP = 200;
 /** The `iss` of a Google ID token; the issuer stored for a Google request and identity. */
 export const PORTAL_GOOGLE_ISSUER = 'https://accounts.google.com';
+/** Key 1 of the per-org admission lock in {@link createPortalAccessRequest} (key 2 is `hashtext(org_id)`). */
+const PORTAL_ACCESS_REQUEST_ADMISSION_LOCK_NAMESPACE = 'portal_access_request_admission';
 
 const DAY_MS = 86_400_000;
 const LIST_DEFAULT_LIMIT = 100;
@@ -125,12 +127,20 @@ function requestClaims(input: CreatePortalAccessRequestInput): {
  *  - with none held (an IdP callback before any session exists) it opens a
  *    system context. The caller has derived `orgId` server-side.
  *
- * Steps: normalise the email (`lower(btrim)`), expire this address's stale
- * pending row, refuse at {@link PORTAL_ACCESS_REQUEST_PENDING_CAP} live
- * pending rows, then insert-or-bump on the pending-only unique index. The cap
- * counts the org's OTHER addresses, so a repeat from someone already queued
- * still bumps rather than reading as `capped`. It is a soft cap: two
- * concurrent creates at 199 may both land.
+ * Steps: take the org's admission lock, normalise the email (`lower(btrim)`),
+ * expire this address's stale pending row, refuse at
+ * {@link PORTAL_ACCESS_REQUEST_PENDING_CAP} live pending rows, then
+ * insert-or-bump on the pending-only unique index. The cap counts the org's
+ * OTHER addresses, so a repeat from someone already queued still bumps rather
+ * than reading as `capped`.
+ *
+ * The admission lock (`pg_advisory_xact_lock`, one per org) makes the count and
+ * the insert one step: concurrent creates for an org run one at a time, so two
+ * at 199 admit exactly one. It is transaction-scoped, so with a context held it
+ * passes to the caller's transaction and is released when that ends.
+ *
+ * The cap is admission control, not an invariant: an org merge can combine two
+ * queues above it.
  */
 export async function createPortalAccessRequest(
   input: CreatePortalAccessRequestInput,
@@ -142,6 +152,12 @@ export async function createPortalAccessRequest(
   const expiresAt = new Date(now.getTime() + PORTAL_ACCESS_REQUEST_TTL_DAYS * DAY_MS);
 
   return withSystemDbAccessContextIsolated(async () => {
+    // Before the expire / count / insert: without it, two creates can both
+    // count 199 and both insert.
+    await db.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${PORTAL_ACCESS_REQUEST_ADMISSION_LOCK_NAMESPACE}), hashtext(${input.orgId}))`,
+    );
+
     await db
       .update(portalAccessRequests)
       .set({ status: 'expired', updatedAt: now })

@@ -5,16 +5,18 @@
  * Postgres in __tests__/integration/portalAccessRequests.integration.test.ts.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 type Step = [string, unknown[]];
-interface Call { op: 'select' | 'insert' | 'update' | 'execute'; args: unknown[]; steps: Step[] }
+interface Call { op: 'select' | 'insert' | 'update' | 'execute'; args: unknown[]; steps: Step[]; depth: number }
 
 const h = vi.hoisted(() => {
   const calls: Call[] = [];
   const results: unknown[] = [];
   const txDepth = { current: 0 };
   function builder(op: Call['op'], args: unknown[]): unknown {
-    const call: Call = { op, args, steps: [] };
+    const call: Call = { op, args, steps: [], depth: txDepth.current };
     calls.push(call);
     const proxy: unknown = new Proxy(() => undefined, {
       get(_target, prop) {
@@ -113,15 +115,26 @@ beforeEach(() => {
 });
 
 describe('createPortalAccessRequest', () => {
+  it('serializes admission per org: a transaction-scoped advisory lock comes first, inside the isolated block', async () => {
+    h.results.push([], [], [{ n: 3 }], [{ id: REQ, inserted: true }]);
+    await createPortalAccessRequest({ source: 'self', orgId: ORG, email: 'ada@customer.test', name: null }, NOW);
+
+    expect(h.calls.map((c) => c.op)).toEqual(['execute', 'update', 'select', 'insert']);
+    expect(h.calls.every((c) => c.depth === 1)).toBe(true);
+    const lock = new PgDialect().sqlToQuery(h.calls[0]!.args[0] as SQL);
+    expect(lock.sql).toMatch(/^select pg_advisory_xact_lock\(hashtext\(\$1\), hashtext\(\$2\)\)$/i);
+    expect(lock.params).toEqual(['portal_access_request_admission', ORG]);
+  });
+
   it('normalizes the email, expires a stale row, counts, and inserts with the pending-only upsert', async () => {
-    h.results.push([], [{ n: 3 }], [{ id: REQ, inserted: true }]);
+    h.results.push([], [], [{ n: 3 }], [{ id: REQ, inserted: true }]);
     const outcome = await createPortalAccessRequest({ source: 'self', orgId: ORG, email: '  Ada@Customer.TEST ', name: ' Ada ' }, NOW);
 
     expect(outcome).toEqual({ kind: 'created', requestId: REQ });
     expect(withSystemDbAccessContextIsolated).toHaveBeenCalledTimes(1);
-    expect(h.calls.map((c) => c.op)).toEqual(['update', 'select', 'insert']);
+    expect(h.calls.map((c) => c.op)).toEqual(['execute', 'update', 'select', 'insert']);
 
-    const [expire, , insert] = h.calls;
+    const [, expire, , insert] = h.calls;
     expect(expire!.args[0]).toBe(portalAccessRequests);
     expect(firstArg(expire, 'set')).toEqual({ status: 'expired', updatedAt: NOW });
 
@@ -141,34 +154,34 @@ describe('createPortalAccessRequest', () => {
   });
 
   it('maps an upsert that updated the live row to already_pending', async () => {
-    h.results.push([], [{ n: 3 }], [{ id: REQ, inserted: false }]);
+    h.results.push([], [], [{ n: 3 }], [{ id: REQ, inserted: false }]);
     expect(await createPortalAccessRequest({ source: 'self', orgId: ORG, email: 'ada@customer.test', name: null }, NOW))
       .toEqual({ kind: 'already_pending', requestId: REQ });
   });
 
   it('returns capped at the cap and inserts nothing', async () => {
-    h.results.push([], [{ n: PORTAL_ACCESS_REQUEST_PENDING_CAP }]);
+    h.results.push([], [], [{ n: PORTAL_ACCESS_REQUEST_PENDING_CAP }]);
     expect(await createPortalAccessRequest({ source: 'self', orgId: ORG, email: 'ada@customer.test', name: null }, NOW))
       .toEqual({ kind: 'capped' });
     expect(inserts()).toHaveLength(0);
   });
 
   it('stores Entra claims as issuer/subject/tenant and Google claims as the google issuer', async () => {
-    h.results.push([], [{ n: 0 }], [{ id: REQ, inserted: true }]);
+    h.results.push([], [], [{ n: 0 }], [{ id: REQ, inserted: true }]);
     await createPortalAccessRequest({ source: 'entra', orgId: ORG, email: 'a@x.test', name: null, tid: TID, oid: 'oid-1' }, NOW);
     expect(firstArg(inserts()[0], 'values')).toMatchObject({
       source: 'entra', issuer: `https://login.microsoftonline.com/${TID}/v2.0`, subject: 'oid-1', entraTenantId: TID, portalUserId: null,
     });
 
     h.calls.length = 0;
-    h.results.push([], [{ n: 0 }], [{ id: REQ, inserted: true }]);
+    h.results.push([], [], [{ n: 0 }], [{ id: REQ, inserted: true }]);
     await createPortalAccessRequest({ source: 'google', orgId: ORG, email: 'a@x.test', name: null, sub: 'sub-1' }, NOW);
     expect(firstArg(inserts()[0], 'values')).toMatchObject({
       source: 'google', issuer: 'https://accounts.google.com', subject: 'sub-1', entraTenantId: null,
     });
 
     h.calls.length = 0;
-    h.results.push([], [{ n: 0 }], [{ id: REQ, inserted: true }]);
+    h.results.push([], [], [{ n: 0 }], [{ id: REQ, inserted: true }]);
     await createPortalAccessRequest({ source: 'addin_user', orgId: ORG, portalUserId: 'pu-1', email: 'a@x.test', name: null }, NOW);
     expect(firstArg(inserts()[0], 'values')).toMatchObject({
       source: 'addin_user', issuer: null, subject: null, entraTenantId: null, portalUserId: 'pu-1',

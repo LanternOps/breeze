@@ -10,7 +10,14 @@ import { Hono } from 'hono';
 
 // Task 8 route cases only. Every hook below is a pass-through until a test sets
 // its flag, so the Task 2 / Task 7 cases run the real modules unchanged.
-const routeFaults = vi.hoisted(() => ({ contactLink: false, noSavepoint: false }));
+const routeFaults = vi.hoisted(() => ({
+  contactLink: false,
+  noSavepoint: false,
+  // Approve of the request at this address hits a real, unmapped statement failure.
+  contactLinkCrashEmail: null as string | null,
+  // Every decision email runs a real failing statement before it "sends".
+  emailDbFault: false,
+}));
 const sentEmails = vi.hoisted(() => [] as Array<{ kind: 'invite' | 'approved' | 'declined'; to: string }>);
 
 vi.mock('../../db', async (importOriginal) => {
@@ -37,23 +44,43 @@ vi.mock('../../services/contacts/loginLink', async (importOriginal) => {
         const { PortalAccessRequestError: RefusalError } = await import('../../services/portalAccessRequests');
         throw new RefusalError('PORTAL_ACCESS_REQUEST_IDENTITY_LINKED', 409, 'forced refusal after a failed statement');
       }
+      if (routeFaults.contactLinkCrashEmail !== null && args[1].email === routeFaults.contactLinkCrashEmail) {
+        // A REAL statement failure (22012) that nothing maps to a refusal: it
+        // leaves approve as an unexpected error, inside approve's savepoint.
+        const { sql: rawSql } = await import('drizzle-orm');
+        await args[0].execute(rawSql`SELECT 1/0`);
+      }
       return actual.linkLoginToContact(...args);
     },
   };
 });
 
-vi.mock('../../services/email', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../services/email')>()),
-  getEmailService: () => ({
-    sendPortalInvite: async (m: { to: string }) => { sentEmails.push({ kind: 'invite', to: m.to }); },
-    sendPortalAccessApproved: async (m: { to: string }) => { sentEmails.push({ kind: 'approved', to: m.to }); },
-    sendPortalAccessDeclined: async (m: { to: string }) => { sentEmails.push({ kind: 'declined', to: m.to }); },
-  }),
-}));
+vi.mock('../../services/email', async (importOriginal) => {
+  /**
+   * Stands in for a DB read on the send path failing in place, as the
+   * partner-lane sender lookup (services/emailDomains/partnerLaneLookup.ts)
+   * does under a partner request context: a REAL statement failure (22012) on
+   * whatever transaction scope the send runs in, rethrown to the caller.
+   */
+  const emailPathStatement = async (): Promise<void> => {
+    if (!routeFaults.emailDbFault) return;
+    const { db: ambientDb } = await import('../../db');
+    const { sql: rawSql } = await import('drizzle-orm');
+    await ambientDb.execute(rawSql`SELECT 1/0`);
+  };
+  return {
+    ...(await importOriginal<typeof import('../../services/email')>()),
+    getEmailService: () => ({
+      sendPortalInvite: async (m: { to: string }) => { await emailPathStatement(); sentEmails.push({ kind: 'invite', to: m.to }); },
+      sendPortalAccessApproved: async (m: { to: string }) => { await emailPathStatement(); sentEmails.push({ kind: 'approved', to: m.to }); },
+      sendPortalAccessDeclined: async (m: { to: string }) => { await emailPathStatement(); sentEmails.push({ kind: 'declined', to: m.to }); },
+    }),
+  };
+});
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db, withDbAccessContext, withDbTransaction, type DbAccessContext } from '../../db';
 import {
-  contacts, portalAccessPolicies, portalAccessRequests, portalUserIdentities, portalUsers,
+  auditLogs, contacts, portalAccessPolicies, portalAccessRequests, portalUserIdentities, portalUsers,
 } from '../../db/schema';
 import { pgErrorCode } from '../../utils/pgErrors';
 import { runPolicy } from '../../services/orgMerge';
@@ -75,6 +102,7 @@ import { authMiddleware } from '../../middleware/auth';
 import { registerOrgPortalAccessRequestRoutes } from '../../routes/orgPortalAccessRequests';
 import { registerOrgPortalUsersRoutes } from '../../routes/orgPortalUsers';
 import { createAccessToken } from '../../services/jwt';
+import { awaitAuditRows } from './auditWait';
 import { createOrganization, createPartner, createUser, setupTestEnvironment } from './db-utils';
 
 const SYSTEM_CTX: DbAccessContext = {
@@ -312,13 +340,35 @@ function holdLock(statement: SQL) {
   return { ready: Promise.race([ready, done]), release, done };
 }
 
-/** Poll pg_stat_activity until `count` backends wait on a lock while running a query LIKE `pattern`. */
-async function waitForLockWaiters(pattern: string, count: number): Promise<void> {
+/**
+ * `holdLock`, except the test-owned transaction ROLLS BACK on release, so the
+ * rows `statement` wrote are never seen by anyone: they only make a concurrent
+ * insert on the same unique key wait until then.
+ */
+function holdUncommitted(statement: SQL) {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let markReady!: () => void;
+  const ready = new Promise<void>((resolve) => { markReady = resolve; });
+  const rollback = new Error('test-owned rollback');
+  const done = getTestDb().transaction(async (tx) => {
+    await tx.execute(statement);
+    markReady();
+    await gate;
+    throw rollback;
+  }).catch((err: unknown) => { if (err !== rollback) throw err; });
+  return { ready: Promise.race([ready, done]), release, done };
+}
+
+/** Poll pg_stat_activity until `count` backends wait on a lock while running a query LIKE `pattern` (any of them). */
+async function waitForLockWaiters(pattern: string | string[], count: number): Promise<void> {
   const deadline = Date.now() + 15_000;
+  const patterns = Array.isArray(pattern) ? pattern : [pattern];
+  const matches = sql.join(patterns.map((p) => sql`query ILIKE ${p}`), sql` OR `);
   for (;;) {
     const rows = await getTestDb().execute(sql`
       SELECT count(*)::int AS n FROM pg_stat_activity
-       WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE ${pattern}`);
+       WHERE datname = current_database() AND wait_event_type = 'Lock' AND (${matches})`);
     const n = Number((rows as unknown as Array<{ n: number }>)[0]?.n ?? 0);
     if (n >= count) return;
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${count} lock waiter(s) on ${pattern}`);
@@ -388,6 +438,44 @@ describe('service', () => {
 
     const repeat = await createPortalAccessRequest({ source: 'self', orgId: org.id, email: emails[0]!, name: null });
     expect(repeat.kind).toBe('already_pending');
+  });
+
+  it('two concurrent creates at cap - 1 for different new addresses: exactly one created, one capped', async () => {
+    const { org } = await serviceFixture();
+    const future = new Date(Date.now() + 7 * DAY);
+    await sys(() => db.insert(portalAccessRequests).values(
+      Array.from({ length: PORTAL_ACCESS_REQUEST_PENDING_CAP - 1 }, (_, i) => ({
+        orgId: org.id, email: `fill-${i}-${randomUUID()}@example.test`, source: 'self' as const, expiresAt: future,
+      })),
+    ));
+    const addresses = [`race-a-${randomUUID()}@example.test`, `race-b-${randomUUID()}@example.test`];
+
+    // Force the interleaving the cap has to survive. A test-owned transaction
+    // holds UNCOMMITTED pending rows for both new addresses, so each create's
+    // insert waits on the pending-email unique index AFTER it has counted.
+    // Without admission control both count 199 and both land once the holder
+    // rolls back. With it, the second create waits on the per-org admission
+    // lock instead, and counts 200 once the first commits.
+    const held = holdUncommitted(sql`
+      INSERT INTO portal_access_requests (org_id, email, source, expires_at)
+      VALUES (${org.id}, ${addresses[0]}, 'self', ${future.toISOString()}::timestamptz),
+             (${org.id}, ${addresses[1]}, 'self', ${future.toISOString()}::timestamptz)`);
+    await held.ready;
+    const runs = addresses.map((email) => settle(createPortalAccessRequest({ source: 'self', orgId: org.id, email, name: null })));
+    try {
+      await waitForLockWaiters(['insert into "portal_access_requests"%', '%pg_advisory_xact_lock%'], 2);
+    } finally {
+      held.release();
+      await held.done;
+    }
+    const outcomes = await Promise.all(runs);
+
+    const kinds = outcomes.map((o) => (o.ok ? o.value.kind : `error: ${String(o.error)}`)).sort();
+    expect(kinds).toEqual(['capped', 'created']);
+    const [live] = await sys(() => db.select({ n: sql<number>`count(*)::int` }).from(portalAccessRequests).where(and(
+      eq(portalAccessRequests.orgId, org.id), eq(portalAccessRequests.status, 'pending'),
+    )));
+    expect(Number(live!.n)).toBe(PORTAL_ACCESS_REQUEST_PENDING_CAP);
   });
 
   it('create joins a held context without escalating, and its failure stays inside its savepoint', async () => {
@@ -757,7 +845,171 @@ describe('routes (real router)', () => {
   afterEach(() => {
     routeFaults.contactLink = false;
     routeFaults.noSavepoint = false;
+    routeFaults.contactLinkCrashEmail = null;
+    routeFaults.emailDbFault = false;
     sentEmails.length = 0;
+  });
+
+  /** The decision audit rows for these requests (fire-and-forget writes: polled, #6555). */
+  async function decisionAudits(ids: string[], expected: number) {
+    return awaitAuditRows(() => getTestDb()
+      .select({ resourceId: auditLogs.resourceId, action: auditLogs.action, orgId: auditLogs.orgId })
+      .from(auditLogs)
+      .where(and(inArray(auditLogs.resourceId, ids), sql`${auditLogs.action} LIKE 'organization.portal_user.access_request.%'`)), expected);
+  }
+
+  const byId = (x: string, y: string) => (x < y ? -1 : x > y ? 1 : 0);
+
+  it('decide: an unexpected SQL failure on one id is INTERNAL_ERROR; the other approvals commit WITH their audit rows and emails', async () => {
+    const { org, post, base } = await routeFixture();
+    const made: Array<{ id: string; email: string }> = [];
+    for (const tag of ['x', 'y', 'z']) {
+      const email = `d-crash-${tag}-${randomUUID()}@example.test`;
+      made.push({
+        id: requestIdOf(await createPortalAccessRequest({
+          source: 'entra', orgId: org.id, email, name: null, tid: randomUUID(), oid: randomUUID(),
+        })),
+        email,
+      });
+    }
+    // The route decides in ascending id order: fail the middle one, so one
+    // approval commits before the failure and one after it.
+    const [low, mid, high] = [...made].sort((p, q) => byId(p.id, q.id)) as [typeof made[0], typeof made[0], typeof made[0]];
+    routeFaults.contactLinkCrashEmail = mid.email;
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let res: Response;
+    try {
+      res = await post(`${base}/decide`, { requestIds: [high.id, mid.id, low.id], decision: 'approve' });
+    } finally {
+      errSpy.mockRestore();
+    }
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(await res.json()).toEqual({
+      data: [
+        { requestId: high.id, result: 'approved' },
+        { requestId: mid.id, result: 'INTERNAL_ERROR' },
+        { requestId: low.id, result: 'approved' },
+      ],
+    });
+
+    expect((await readRequest(low.id)).status).toBe('approved');
+    expect((await readRequest(mid.id)).status).toBe('pending');
+    expect((await readRequest(high.id)).status).toBe('approved');
+    expect(await loginsFor(org.id, low.email)).toHaveLength(1);
+    expect(await loginsFor(org.id, mid.email)).toEqual([]);
+    expect(await loginsFor(org.id, high.email)).toHaveLength(1);
+    expect(sentEmails).toEqual([{ kind: 'approved', to: low.email }, { kind: 'approved', to: high.email }]);
+
+    const audits = await decisionAudits(made.map((m) => m.id), 2);
+    expect(audits.map((a) => String(a.resourceId)).sort(byId)).toEqual([low.id, high.id].sort(byId));
+    expect(audits.every((a) => a.action === 'organization.portal_user.access_request.approve' && a.orgId === org.id)).toBe(true);
+  });
+
+  it('two overlapping decide batches [A,B] and [B,A] both complete without a deadlock', async () => {
+    const { org, post, base } = await routeFixture();
+    const emails = [`ov-a-${randomUUID()}@example.test`, `ov-b-${randomUUID()}@example.test`];
+    const [a, b] = [
+      requestIdOf(await createPortalAccessRequest({ source: 'self', orgId: org.id, email: emails[0]!, name: null })),
+      requestIdOf(await createPortalAccessRequest({ source: 'self', orgId: org.id, email: emails[1]!, name: null })),
+    ] as [string, string];
+
+    // Park both batches on a request row lock before either takes one. In client
+    // order the first batch would queue on A and the second on B; once let go,
+    // each would hold one row and wait for the other's (40P01).
+    const held = holdLock(sql`SELECT 1 FROM portal_access_requests WHERE id IN (${a}, ${b}) FOR UPDATE`);
+    await held.ready;
+    let forward: Response | Promise<Response> | undefined;
+    let reverse: Response | Promise<Response> | undefined;
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      forward = post(`${base}/decide`, { requestIds: [a, b], decision: 'deny' });
+      reverse = post(`${base}/decide`, { requestIds: [b, a], decision: 'deny' });
+      await waitForLockWaiters('%from "portal_access_requests"%for update%', 2);
+    } finally {
+      held.release();
+      await held.done;
+    }
+    const responses = [await forward!, await reverse!];
+    errSpy.mockRestore();
+
+    const bodies: Array<{ data: Array<{ requestId: string; result: string }> }> = [];
+    for (const r of responses) {
+      expect(r.status, await r.clone().text()).toBe(200);
+      bodies.push(await r.json());
+    }
+    expect(bodies.map((body) => body.data.map((d) => d.requestId))).toEqual([[a, b], [b, a]]);
+    // One batch decided both rows; the other found them already decided.
+    expect(bodies.map((body) => body.data.map((d) => d.result).join(',')).sort()).toEqual([
+      'PORTAL_ACCESS_REQUEST_NOT_PENDING,PORTAL_ACCESS_REQUEST_NOT_PENDING',
+      'denied,denied',
+    ]);
+    expect((await readRequest(a)).status).toBe('denied');
+    expect((await readRequest(b)).status).toBe('denied');
+    expect(sentEmails.map((e) => e.to).sort()).toEqual([...emails].sort());
+  });
+
+  it('a failed DB statement on the decision-email path leaves the decision committed: 200, emailSent false', async () => {
+    const { org, post, base } = await routeFixture();
+    const entraEmail = `mailfail-entra-${randomUUID()}@example.test`;
+    const selfEmail = `mailfail-self-${randomUUID()}@example.test`;
+    const denyEmail = `mailfail-deny-${randomUUID()}@example.test`;
+    const entraId = requestIdOf(await createPortalAccessRequest({
+      source: 'entra', orgId: org.id, email: entraEmail, name: null, tid: randomUUID(), oid: randomUUID(),
+    }));
+    const selfId = requestIdOf(await createPortalAccessRequest({ source: 'self', orgId: org.id, email: selfEmail, name: null }));
+    const denyId = requestIdOf(await createPortalAccessRequest({ source: 'google', orgId: org.id, email: denyEmail, name: null, sub: `g-${randomUUID()}` }));
+
+    routeFaults.emailDbFault = true;
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      // The "approved" email: the failure propagates out of the send.
+      const entra = await post(`${base}/${entraId}/approve`);
+      expect(entra.status, await entra.clone().text()).toBe(200);
+      const entraBody = await entra.json();
+      expect(entraBody).toMatchObject({ data: { outcome: 'account_created' }, emailSent: false });
+
+      // The invite: issueAndSendInvite catches the send failure INSIDE itself,
+      // which on its own would still poison the request transaction.
+      const self = await post(`${base}/${selfId}/approve`);
+      expect(self.status, await self.clone().text()).toBe(200);
+      expect(await self.json()).toMatchObject({ data: { outcome: 'invite_pending' }, emailSent: false });
+
+      // The batch path's declined email.
+      const denied = await post(`${base}/decide`, { requestIds: [denyId], decision: 'deny' });
+      expect(denied.status, await denied.clone().text()).toBe(200);
+      expect(await denied.json()).toEqual({ data: [{ requestId: denyId, result: 'denied' }] });
+    } finally {
+      errSpy.mockRestore();
+    }
+
+    expect((await readRequest(entraId)).status).toBe('approved');
+    expect((await readRequest(selfId)).status).toBe('approved');
+    expect((await readRequest(denyId)).status).toBe('denied');
+    expect(await loginsFor(org.id, entraEmail)).toHaveLength(1);
+    expect((await loginsFor(org.id, selfEmail)).map((l) => l.status)).toEqual(['invited']);
+    expect(sentEmails).toEqual([]);
+    const audits = await decisionAudits([entraId, selfId, denyId], 3);
+    expect(audits.map((a) => String(a.resourceId)).sort(byId)).toEqual([entraId, selfId, denyId].sort(byId));
+  });
+
+  it('CONTROL: without the savepoints the same failed email statement rolls the approval back (500 at commit)', async () => {
+    const { org, post, base } = await routeFixture();
+    const email = `mailfail-nosp-${randomUUID()}@example.test`;
+    const requestId = requestIdOf(await createPortalAccessRequest({
+      source: 'entra', orgId: org.id, email, name: null, tid: randomUUID(), oid: randomUUID(),
+    }));
+    routeFaults.emailDbFault = true;
+    routeFaults.noSavepoint = true;
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const res = await post(`${base}/${requestId}/approve`);
+      expect(res.status).toBe(500);
+    } finally {
+      errSpy.mockRestore();
+    }
+    expect((await readRequest(requestId)).status).toBe('pending');
+    expect(await loginsFor(org.id, email)).toEqual([]);
   });
 
   it('a caught 409 inside the request transaction stays a 409 (not a 500 at commit)', async () => {
@@ -804,7 +1056,7 @@ describe('routes (real router)', () => {
     expect((await readRequest(requestId)).status).toBe('pending');
   });
 
-  it('decide runs each id in order through the real router and commits the approvals around a refused id', async () => {
+  it('decide runs every id through the real router and commits the approvals around a refused id', async () => {
     const { org, get, post, base } = await routeFixture();
     const entraEmail = `d-entra-${randomUUID()}@example.test`;
     const takenEmail = `d-taken-${randomUUID()}@example.test`;
@@ -833,7 +1085,9 @@ describe('routes (real router)', () => {
     expect(await loginsFor(org.id, entraEmail)).toHaveLength(1);
     expect(await loginsFor(org.id, takenEmail)).toHaveLength(1);
     expect((await loginsFor(org.id, selfEmail)).map((l) => l.status)).toEqual(['invited']);
-    expect(sentEmails).toEqual([{ kind: 'approved', to: entraEmail }, { kind: 'invite', to: selfEmail }]);
+    // Sent in ascending id order (the route's lock order), so compare as a set.
+    expect([...sentEmails].sort((x, y) => (x.to < y.to ? -1 : 1)))
+      .toEqual([{ kind: 'approved', to: entraEmail }, { kind: 'invite', to: selfEmail }].sort((x, y) => (x.to < y.to ? -1 : 1)));
 
     // The list reads the same rows under the request's RLS context.
     const pending = await get(base);

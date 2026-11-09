@@ -25,6 +25,8 @@ const h = vi.hoisted(() => {
     select: vi.fn(() => ({
       from: () => ({ ...chain(() => store.orgs), leftJoin: () => chain(() => store.branding) }),
     })),
+    // The request-transaction check /decide runs after an unexpected failure.
+    execute: vi.fn(async () => []),
   };
   return {
     organizations,
@@ -41,6 +43,10 @@ const h = vi.hoisted(() => {
     sendApproved: vi.fn(),
     sendDeclined: vi.fn(),
     emailConfigured: { current: true },
+    // How many withDbTransaction savepoints are open right now. The email mocks
+    // record it, so a decision email sent outside its own savepoint reds a test.
+    txDepth: { current: 0 },
+    sendDepths: [] as number[],
   };
 });
 
@@ -74,7 +80,10 @@ vi.mock('../middleware/auth', () => ({
 vi.mock('../db', () => ({
   db: h.db,
   hasDbAccessContext: () => true,
-  withDbTransaction: (fn: () => unknown) => fn(),
+  withDbTransaction: async (fn: () => Promise<unknown>) => {
+    h.txDepth.current += 1;
+    try { return await fn(); } finally { h.txDepth.current -= 1; }
+  },
   withDbTransactionIfHeld: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContextIsolated: (fn: () => unknown) => fn(),
@@ -179,14 +188,29 @@ beforeEach(() => {
   h.store.orgs = [{ id: ORG_ID, partnerId: 'p-1' }];
   h.store.branding = [{ orgName: 'Acme Co', partnerName: 'MSP Co' }];
   h.emailConfigured.current = true;
+  h.txDepth.current = 0;
+  h.sendDepths.length = 0;
   h.approve.mockReset();
   h.deny.mockReset();
   h.list.mockReset();
   h.summarize.mockReset();
-  h.issueAndSendInvite.mockReset().mockResolvedValue(true);
-  h.sendApproved.mockReset().mockResolvedValue(undefined);
-  h.sendDeclined.mockReset().mockResolvedValue(undefined);
+  h.auditSpy.mockReset();
+  h.issueAndSendInvite.mockReset().mockImplementation(async () => { h.sendDepths.push(h.txDepth.current); return true; });
+  h.sendApproved.mockReset().mockImplementation(async () => { h.sendDepths.push(h.txDepth.current); });
+  h.sendDeclined.mockReset().mockImplementation(async () => { h.sendDepths.push(h.txDepth.current); });
 });
+
+/** A Drizzle-shaped query failure: its message carries the statement and its bound values. */
+function queryFailure(value: string): Error {
+  return Object.assign(new Error(`Failed query: select "id" from "partners" where "email" = $1\nparams: ${value}`), {
+    cause: Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }),
+  });
+}
+
+/** Everything console.error was called with, as one string. */
+function logged(spy: { mock: { calls: unknown[][] } }): string {
+  return spy.mock.calls.flat().map((v) => (v instanceof Error ? `${v.message}\n${String(v.cause)}` : String(v))).join('\n');
+}
 
 describe('GET /organizations/:id/portal-access-requests', () => {
   it('GET pending lists live requests only; expired rows read status expired under ?status=decided', async () => {
@@ -362,6 +386,62 @@ describe('POST approve / deny', () => {
     errSpy.mockRestore();
   });
 
+  it('each decision email runs in its own savepoint, so a failed DB read on the send path leaves the decision standing (emailSent false)', async () => {
+    // The send path reads the database (the partner-lane sender lookup,
+    // issueAndSendInvite's branding read). In the request transaction a failed
+    // read there would roll the decision back at commit (#11203), so each send
+    // runs inside withDbTransaction with the catch outside it.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const fail = async () => { h.sendDepths.push(h.txDepth.current); throw queryFailure('secret-sender@msp.example'); };
+    h.sendApproved.mockImplementation(fail);
+    h.sendDeclined.mockImplementation(fail);
+    h.issueAndSendInvite.mockImplementation(fail);
+    h.approve
+      .mockResolvedValueOnce(approved('account_created'))
+      .mockResolvedValueOnce(approved('invite_pending', { source: 'self' }));
+    h.deny.mockResolvedValueOnce({ email: 'bob@customer.example', source: 'google' });
+
+    const entra = await post(`${BASE}/${REQ_1}/approve`);
+    expect(entra.status).toBe(200);
+    expect(await entra.json()).toEqual({ data: { outcome: 'account_created', portalUserId: PU_1 }, emailSent: false });
+    const self = await post(`${BASE}/${REQ_2}/approve`);
+    expect(self.status).toBe(200);
+    expect(await self.json()).toEqual({ data: { outcome: 'invite_pending', portalUserId: PU_1 }, emailSent: false });
+    const denied = await post(`${BASE}/${REQ_3}/deny`);
+    expect(denied.status).toBe(200);
+    expect(await denied.json()).toEqual({ data: { status: 'denied' }, emailSent: false });
+
+    // Every send ran one savepoint deep, and the catch sat outside it.
+    expect(h.sendDepths).toEqual([1, 1, 1]);
+    expect(h.txDepth.current).toBe(0);
+    expect(auditActions()).toEqual([
+      'organization.portal_user.access_request.approve',
+      'organization.portal_user.access_request.approve',
+      'organization.portal_user.access_request.deny',
+    ]);
+    // Logged without the statement's bound values.
+    expect(logged(errSpy)).not.toContain('secret-sender@msp.example');
+    errSpy.mockRestore();
+  });
+
+  it('a throwing audit write after the decision is logged; the response and the email still go out', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    h.auditSpy.mockImplementation(() => { throw new Error('audit params blew up'); });
+    h.approve.mockResolvedValueOnce(approved('account_created'));
+    const res = await post(`${BASE}/${REQ_1}/approve`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { outcome: 'account_created', portalUserId: PU_1 }, emailSent: true });
+    expect(h.sendApproved).toHaveBeenCalledTimes(1);
+
+    h.deny.mockResolvedValueOnce({ email: 'bob@customer.example', source: 'self' });
+    const denied = await post(`${BASE}/${REQ_2}/deny`);
+    expect(denied.status).toBe(200);
+    expect(await denied.json()).toEqual({ data: { status: 'denied' }, emailSent: true });
+    expect(h.sendDeclined).toHaveBeenCalledTimes(1);
+    expect(logged(errSpy)).toContain('audit params blew up');
+    errSpy.mockRestore();
+  });
+
   it('no email service configured: the decision stands and emailSent is false', async () => {
     h.emailConfigured.current = false;
     h.deny.mockResolvedValueOnce({ email: 'bob@customer.example', source: 'self' });
@@ -407,7 +487,7 @@ describe('POST approve / deny', () => {
 });
 
 describe('POST /organizations/:id/portal-access-requests/decide', () => {
-  it('decide processes ids in order and reports a per-id error without failing the batch', async () => {
+  it('decide processes ids in ascending id order, one at a time, and reports results in the input order', async () => {
     const events: string[] = [];
     h.approve.mockImplementation(async ({ requestId }: { requestId: string }) => {
       events.push(`start:${requestId}`);
@@ -419,16 +499,18 @@ describe('POST /organizations/:id/portal-access-requests/decide', () => {
         : approved('invite_pending', { portalUserId: PU_3, source: 'self', email: 'cy@customer.example' });
     });
 
-    const res = await post(`${BASE}/decide`, { requestIds: [REQ_1, REQ_2, REQ_3], decision: 'approve' });
+    const res = await post(`${BASE}/decide`, { requestIds: [REQ_3, REQ_1, REQ_2], decision: 'approve' });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       data: [
+        { requestId: REQ_3, result: 'approved' },
         { requestId: REQ_1, result: 'approved' },
         { requestId: REQ_2, result: 'PORTAL_ACCESS_REQUEST_NOT_PENDING' },
-        { requestId: REQ_3, result: 'approved' },
       ],
     });
-    // Sequential, never Promise.all: each call finishes before the next starts.
+    // Ascending id order whatever the client sent (two overlapping batches then
+    // take the request row locks in the same order and cannot deadlock), and
+    // sequential, never Promise.all: each call finishes before the next starts.
     expect(events).toEqual([
       `start:${REQ_1}`, `end:${REQ_1}`, `start:${REQ_2}`, `end:${REQ_2}`, `start:${REQ_3}`, `end:${REQ_3}`,
     ]);
@@ -461,17 +543,98 @@ describe('POST /organizations/:id/portal-access-requests/decide', () => {
     expect(h.approve).not.toHaveBeenCalled();
   });
 
-  it('an unexpected failure fails the whole batch before any audit or email goes out', async () => {
+  it('an unexpected per-id failure is INTERNAL_ERROR and the batch completes: every committed decision is audited and emailed', async () => {
+    // A handler's throw is NOT a rollback: Hono turns it into a 500 and the
+    // request transaction commits whatever was decided before it. So the loop
+    // must catch everything and finish, or earlier approvals commit unannounced.
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    h.approve
-      .mockResolvedValueOnce(approved('account_created'))
-      .mockRejectedValueOnce(new Error('connection reset'));
+    h.approve.mockImplementation(async ({ requestId }: { requestId: string }) => {
+      if (requestId === REQ_2) throw queryFailure('secret-row@customer.example');
+      return requestId === REQ_1
+        ? approved('account_created', { portalUserId: PU_1, email: 'ada@customer.example' })
+        : approved('account_created', { portalUserId: PU_3, email: 'cy@customer.example' });
+    });
+    const res = await post(`${BASE}/decide`, { requestIds: [REQ_1, REQ_2, REQ_3], decision: 'approve' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      data: [
+        { requestId: REQ_1, result: 'approved' },
+        { requestId: REQ_2, result: 'INTERNAL_ERROR' },
+        { requestId: REQ_3, result: 'approved' },
+      ],
+    });
+    expect(h.approve).toHaveBeenCalledTimes(3);
+    expect(h.auditSpy.mock.calls.map((call) => (call[1] as { resourceId: string }).resourceId)).toEqual([REQ_1, REQ_3]);
+    expect(h.sendApproved.mock.calls.map((call) => (call[0] as { to: string }).to))
+      .toEqual(['ada@customer.example', 'cy@customer.example']);
+    // Logged with the id, without the statement's bound values.
+    expect(logged(errSpy)).toContain(REQ_2);
+    expect(logged(errSpy)).not.toContain('secret-row@customer.example');
+    errSpy.mockRestore();
+  });
+
+  it('after an unexpected failure that broke the request transaction, nothing is announced: 500, no audit, no email', async () => {
+    // An id's savepoint normally contains its failure. A lost connection does
+    // not: then nothing will commit, and an audit row (written on its own
+    // connection) or an email would announce decisions that roll back.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    h.approve.mockImplementation(async ({ requestId }: { requestId: string }) => {
+      if (requestId === REQ_2) throw new Error('write CONNECTION_CLOSED');
+      return approved('account_created');
+    });
+    h.db.execute.mockRejectedValueOnce(new Error('write CONNECTION_CLOSED'));
     const res = await post(`${BASE}/decide`, { requestIds: [REQ_1, REQ_2, REQ_3], decision: 'approve' });
     expect(res.status).toBe(500);
-    expect(h.approve).toHaveBeenCalledTimes(2);
-    // The request transaction rolls the first approval back, so nothing may announce it.
+    expect(h.approve).toHaveBeenCalledTimes(3);
+    expect(h.db.execute).toHaveBeenCalledTimes(1);
     expect(h.auditSpy).not.toHaveBeenCalled();
     expect(h.sendApproved).not.toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it('a batch with only refusals and successes runs no transaction check', async () => {
+    h.deny.mockResolvedValueOnce({ email: 'a@customer.example', source: 'self' }).mockRejectedValueOnce(notPending());
+    expect((await post(`${BASE}/decide`, { requestIds: [REQ_1, REQ_2], decision: 'deny' })).status).toBe(200);
+    expect(h.db.execute).not.toHaveBeenCalled();
+  });
+
+  it('a duplicate id (in any letter case) is decided once and every occurrence reports that result', async () => {
+    h.deny.mockImplementation(async ({ requestId }: { requestId: string }) => {
+      if (requestId === REQ_2) throw notFound();
+      return { email: 'a@customer.example', source: 'self' };
+    });
+    const upper = REQ_1.toUpperCase();
+    const res = await post(`${BASE}/decide`, { requestIds: [REQ_2, upper, REQ_2, REQ_1], decision: 'deny' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      data: [
+        { requestId: REQ_2, result: 'PORTAL_ACCESS_REQUEST_NOT_FOUND' },
+        { requestId: upper, result: 'denied' },
+        { requestId: REQ_2, result: 'PORTAL_ACCESS_REQUEST_NOT_FOUND' },
+        { requestId: REQ_1, result: 'denied' },
+      ],
+    });
+    expect(h.deny.mock.calls.map((call) => (call[0] as { requestId: string }).requestId)).toEqual([REQ_1, REQ_2]);
+    expect(auditActions()).toEqual(['organization.portal_user.access_request.deny']);
+    expect(h.sendDeclined).toHaveBeenCalledTimes(1);
+  });
+
+  it('a decide batch sends every email in its own savepoint and a throwing audit does not stop the rest', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    h.auditSpy.mockImplementationOnce(() => { throw new Error('audit params blew up'); });
+    h.sendApproved.mockImplementationOnce(async () => { h.sendDepths.push(h.txDepth.current); throw queryFailure('x@y.example'); });
+    h.approve.mockImplementation(async ({ requestId }: { requestId: string }) => (
+      requestId === REQ_3
+        ? approved('invite_pending', { portalUserId: PU_3, source: 'self' })
+        : approved('account_created', { portalUserId: PU_1 })
+    ));
+    const res = await post(`${BASE}/decide`, { requestIds: [REQ_1, REQ_2, REQ_3], decision: 'approve' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.map((d: { result: string }) => d.result)).toEqual(['approved', 'approved', 'approved']);
+    expect(h.auditSpy).toHaveBeenCalledTimes(3);
+    expect(h.sendApproved).toHaveBeenCalledTimes(2);
+    expect(h.issueAndSendInvite).toHaveBeenCalledTimes(1);
+    expect(h.sendDepths).toEqual([1, 1, 1]);
     errSpy.mockRestore();
   });
 
