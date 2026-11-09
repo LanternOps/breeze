@@ -10,6 +10,13 @@
  * Change them together.
  *
  * Lifecycle: scheduled → fired → consumed; scheduled | fired → cancelled.
+ *
+ * Event check-ins (W04 #11493, #10410): a row may wait on an event instead of
+ * a time. `WISP_CHECK_IN_TRIGGER_KINDS` mirrors `wisp_check_ins_trigger_kind_chk`
+ * and `WISP_CHECK_IN_FIRE_REASONS` mirrors `wisp_check_ins_fire_reason_chk`
+ * (apps/api/migrations/*-wisp-check-ins-event-triggers.sql). For an event row
+ * `due_at` is the deadline: it fires on the event, or at `due_at` saying the
+ * event did not happen.
  */
 import type { WispEntityKind } from './wisp';
 
@@ -27,6 +34,39 @@ export const WISP_CHECK_IN_MAX_SCHEDULED_PER_THREAD = 5;
 /** Most `fired` check-ins prepended to (and consumed by) one turn, oldest first. */
 export const WISP_CHECK_IN_CONSUME_LIMIT = 5;
 
+/** What a check-in waits for: a time (Phase 1), or one of the events below. */
+export const WISP_CHECK_IN_TRIGGER_KINDS = ['time', 'device_online', 'script_finished', 'command_finished', 'run_settled'] as const;
+export type WispCheckInTriggerKind = (typeof WISP_CHECK_IN_TRIGGER_KINDS)[number];
+
+/** The event kinds a check-in can wait for (every kind but `time`). */
+export const WISP_CHECK_IN_TRIGGER_EVENTS = ['device_online', 'script_finished', 'command_finished', 'run_settled'] as const;
+export type WispCheckInTriggerEvent = (typeof WISP_CHECK_IN_TRIGGER_EVENTS)[number];
+
+/** An event check-in's deadline when the caller gives none, in minutes (24 h). */
+export const WISP_CHECK_IN_DEFAULT_DEADLINE_MINUTES = 1440;
+
+/**
+ * Why a check-in fired: `due` (a time check-in reached its time), `event`
+ * (the event happened) or `deadline` (an event check-in reached `due_at` and
+ * the event had not happened).
+ */
+export const WISP_CHECK_IN_FIRE_REASONS = ['due', 'event', 'deadline'] as const;
+export type WispCheckInFireReason = (typeof WISP_CHECK_IN_FIRE_REASONS)[number];
+
+/** Longest `cancel_reason`, in characters (`wisp_check_ins_cancel_reason_len_chk`). */
+export const WISP_CHECK_IN_CANCEL_REASON_MAX = 200;
+
+/**
+ * What a deadline post says is still true when the event did not happen
+ * ("Did not happen by 15:40 UTC: the device is still offline. …").
+ */
+export const WISP_CHECK_IN_PENDING_STATE_LINES: Readonly<Record<WispCheckInTriggerEvent, string>> = Object.freeze({
+  device_online: 'the device is still offline',
+  script_finished: 'the script is still running',
+  command_finished: 'the command is still pending',
+  run_settled: 'the run is still going',
+});
+
 /** The row's `context` jsonb: the subject the check-in is about, when there is one. */
 export type WispCheckInContext = { subject?: { kind: WispEntityKind; id: string } };
 
@@ -40,4 +80,10 @@ export type WispCheckIn = {
   subject: { kind: WispEntityKind; id: string } | null;
   firedAt: string | null; // ISO
   createdAt: string; // ISO
+  /** The event it waits for; null for a time check-in. For an event check-in `dueAt` is the deadline. */
+  trigger: { kind: WispCheckInTriggerEvent; subjectId: string } | null;
+  /** Why it fired; null until it has. */
+  fireReason: WispCheckInFireReason | null;
+  /** Why Breeze cancelled it (e.g. `grant_inactive`, `subject_deleted`); null otherwise. */
+  cancelReason: string | null;
 };

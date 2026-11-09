@@ -33,8 +33,10 @@ import {
   WISP_CHECK_IN_MAX_DELAY_MINUTES,
   WISP_CHECK_IN_MAX_SCHEDULED_PER_THREAD,
   WISP_CHECK_IN_MIN_DELAY_MINUTES,
+  WISP_CHECK_IN_PENDING_STATE_LINES,
   type WispCheckIn,
   type WispCheckInContext,
+  type WispCheckInFireReason,
 } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { wispGrants } from '../../db/schema/wisp';
@@ -253,6 +255,22 @@ function checkInTitle(instruction: string): string {
   return `Check-in due: ${Array.from(instruction).slice(0, TITLE_INSTRUCTION_CHARS).join('')}`;
 }
 
+/** `HH:MM UTC`; a deadline post is written at (or just after) that time, so the date is not needed. */
+function utcClock(at: Date): string {
+  return `${at.toISOString().slice(11, 16)} UTC`;
+}
+
+/**
+ * The post / bell body for a fire: the instruction, or for a `deadline` fire
+ * what did not happen by the due time first ("Did not happen by 15:40 UTC:
+ * the device is still offline. <instruction>"). Built from the row alone, so
+ * a re-fire of a claimed row (fireCheckIn) writes the same body.
+ */
+export function checkInPostBody(row: Pick<WispCheckInRow, 'instruction' | 'triggerKind' | 'dueAt'>, reason: WispCheckInFireReason): string {
+  if (reason !== 'deadline' || row.triggerKind === 'time') return row.instruction;
+  return `Did not happen by ${utcClock(row.dueAt)}: ${WISP_CHECK_IN_PENDING_STATE_LINES[row.triggerKind]}. ${row.instruction}`;
+}
+
 /**
  * Fire one check-in. 'skipped' — missing, not `scheduled` (already fired,
  * cancelled, consumed), or cancelled while notifyUser ran. 'cancelled' — the
@@ -371,5 +389,10 @@ export function toCheckInDto(row: WispCheckInRow): WispCheckIn {
     subject: row.context?.subject ?? null,
     firedAt: row.firedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
+    trigger: row.triggerKind !== 'time' && row.triggerSubjectId !== null
+      ? { kind: row.triggerKind, subjectId: row.triggerSubjectId }
+      : null,
+    fireReason: row.fireReason ?? null,
+    cancelReason: row.cancelReason ?? null,
   };
 }
