@@ -13,10 +13,21 @@ import type { Concern, Watch, WatchKind } from '@breeze/shared';
  * `eventId` is the bus event's own id: kept for traceability, never shown to
  * the model (no tool can look a bus event up). `alertId` / `deviceId` are the
  * event's subject, copied from its payload when they are uuids, so the run can
- * look up the alert the event is about (#10388).
+ * look up the alert the event is about (#10388). `anomalyIncidentId` is the
+ * `metric_anomaly_incidents` row an `anomaly.incident_opened` event names
+ * (payload `incidentId`, #11425). It is a separate key because
+ * `integration.health_opened` also sends `incidentId`, for a
+ * connection-health incident.
  */
 export type AssessmentReason =
-  | { kind: 'event'; eventType: string; eventId: string; alertId?: string; deviceId?: string }
+  | {
+    kind: 'event';
+    eventType: string;
+    eventId: string;
+    alertId?: string;
+    deviceId?: string;
+    anomalyIncidentId?: string;
+  }
   | { kind: 'tick' }
   | { kind: 'watch'; watchId: string }
   | { kind: 'onboarding' };
@@ -49,6 +60,29 @@ export type AssessmentDigest = {
   incidents: { id: string; sourceKind: string; condition: string; openedAt: string }[];
   runs: { id: string; profile: string; status: string; summary: string | null }[];
   intents: { id: string; toolName: string; status: string }[];
+  /**
+   * #11425: metric anomaly incidents (`metric_anomaly_incidents`). This is
+   * current state, not a since-watermark change: the org's open incidents
+   * (announced, not suppressed by their episode, episode still open) plus the
+   * one that triggered the run, whatever its status. The trigger comes first,
+   * then the most recently seen. `openedAt` is the incident's `first_seen_at`.
+   * `status` is its episode's status (`open` | `resolved` | `dismissed`), or
+   * `unknown` when the incident has no episode row. `peakScore` is the
+   * detector's raw score: an unbounded magnitude, not 0–1.
+   *
+   * null = not read: the grantor lacks `devices:read`, or the read failed
+   * (reported to Sentry). That is distinct from `[]` (read, none open).
+   */
+  anomalies: {
+    id: string;
+    deviceId: string;
+    deviceName: string | null;
+    anomalyType: string;
+    metricNames: string[];
+    peakScore: number;
+    openedAt: string;
+    status: string;
+  }[] | null;
 };
 
 /** One watch kind's serviceability for an org (Task 15, w00 A33). */
