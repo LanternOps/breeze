@@ -1,7 +1,9 @@
 /**
- * Outbound-email Prometheus series, recorded once per `EmailService.deliverRaw`
- * call so Resend rate-limit and quota exhaustion can alert before customer
- * alert emails stop. Leaf: `prom-client` + the shared registry only, like
+ * Outbound-email Prometheus series, recorded once per send so Resend
+ * rate-limit and quota exhaustion can alert before customer alert emails stop.
+ * `lane="platform"` is `EmailService.deliverRaw`; `lane="partner"` is the
+ * partner-lane Resend adapter (emailDomains/adapters/resend.ts), which in
+ * production shares the platform's Resend team, quota and rate limit. Leaf: `prom-client` + the shared registry only, like
  * admission/admissionMetrics.ts. Labels are closed sets: never an address,
  * never provider free text.
  */
@@ -9,6 +11,7 @@ import { Counter, Gauge } from 'prom-client';
 import { metricsRegistry } from './metricsRegistry';
 
 export type EmailMetricsProvider = 'resend' | 'mailgun' | 'smtp';
+export type EmailSendLane = 'platform' | 'partner';
 
 /** Resend error names kept as their own `error` label value; any other failure is `other`. */
 const RESEND_ERROR_LABELS = new Set([
@@ -31,8 +34,8 @@ function gauge<L extends string>(name: string, help: string, labelNames: L[]): G
 
 const sends = counter(
   'breeze_email_send_total',
-  'Platform email sends via EmailService.deliverRaw. error is "none" on success; on a Resend failure the Resend error name if it is rate_limit_exceeded, daily_quota_exceeded, monthly_quota_exceeded, validation_error or invalid_from_address, otherwise "other"',
-  ['provider', 'result', 'error'],
+  'Outbound email sends. lane is "platform" (EmailService.deliverRaw) or "partner" (partner-lane Resend adapter). error is "none" on success; on a Resend failure the Resend error name if it is rate_limit_exceeded, daily_quota_exceeded, monthly_quota_exceeded, validation_error or invalid_from_address, otherwise "other"',
+  ['lane', 'provider', 'result', 'error'],
 );
 const monthlyUsed = gauge(
   'breeze_email_provider_monthly_used',
@@ -45,19 +48,23 @@ const monthlyUsedUpdated = gauge(
   ['provider'],
 );
 
-function errorLabel(provider: EmailMetricsProvider, err: unknown): string {
-  if (provider !== 'resend' || typeof err !== 'object' || err === null) return 'other';
-  const name = (err as { providerErrorName?: unknown }).providerErrorName;
-  return typeof name === 'string' && RESEND_ERROR_LABELS.has(name) ? name : 'other';
+export function recordEmailSendSuccess(lane: EmailSendLane, provider: EmailMetricsProvider): void {
+  sends.labels(lane, provider, 'success', 'none').inc();
 }
 
-export function recordEmailSendSuccess(provider: EmailMetricsProvider): void {
-  sends.labels(provider, 'success', 'none').inc();
-}
-
-/** `err` is whatever deliverRaw is about to throw; only an EmailTransportError's `providerErrorName` is read. */
-export function recordEmailSendFailure(provider: EmailMetricsProvider, err: unknown): void {
-  sends.labels(provider, 'failure', errorLabel(provider, err)).inc();
+/**
+ * `resendErrorName` is Resend's own error name when the failure came back as a
+ * Resend error response; anything else (or any non-Resend provider) is `other`.
+ */
+export function recordEmailSendFailure(
+  lane: EmailSendLane,
+  provider: EmailMetricsProvider,
+  resendErrorName?: unknown,
+): void {
+  const error = provider === 'resend' && typeof resendErrorName === 'string' && RESEND_ERROR_LABELS.has(resendErrorName)
+    ? resendErrorName
+    : 'other';
+  sends.labels(lane, provider, 'failure', error).inc();
 }
 
 /**

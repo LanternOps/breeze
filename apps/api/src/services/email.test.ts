@@ -829,7 +829,7 @@ describe('email send metrics', () => {
     await expect(svc.deliverRaw(MESSAGE)).resolves.toBeUndefined();
     const after = Date.now() / 1000;
 
-    expect(await value('breeze_email_send_total', { provider: 'resend', result: 'success', error: 'none' })).toBe(1);
+    expect(await value('breeze_email_send_total', { lane: 'platform', provider: 'resend', result: 'success', error: 'none' })).toBe(1);
     expect(await sendTotal()).toBe(1);
     expect(await value(USED, { provider: 'resend' })).toBe(1234);
     const at = await value(USED_AT, { provider: 'resend' });
@@ -854,7 +854,7 @@ describe('email send metrics', () => {
     expect((raised as { cause?: unknown }).cause).toBe(resendError);
     expect(raised).toMatchObject({ transport: 'resend', providerErrorName: name, statusCode });
 
-    expect(await value('breeze_email_send_total', { provider: 'resend', result: 'failure', error: name })).toBe(1);
+    expect(await value('breeze_email_send_total', { lane: 'platform', provider: 'resend', result: 'failure', error: name })).toBe(1);
     expect(await sendTotal()).toBe(1);
     // An error response still reports usage, which is exactly when it matters.
     expect(await value(USED, { provider: 'resend' })).toBe(3000);
@@ -869,7 +869,7 @@ describe('email send metrics', () => {
     const { svc, EmailTransportError, value, sendTotal } = await setup();
 
     await expect(svc.deliverRaw(MESSAGE)).rejects.toBeInstanceOf(EmailTransportError);
-    expect(await value('breeze_email_send_total', { provider: 'resend', result: 'failure', error: 'other' })).toBe(1);
+    expect(await value('breeze_email_send_total', { lane: 'platform', provider: 'resend', result: 'failure', error: 'other' })).toBe(1);
     expect(await sendTotal()).toBe(1);
   });
 
@@ -879,7 +879,7 @@ describe('email send metrics', () => {
     const { svc, value, sendTotal } = await setup();
 
     await expect(svc.deliverRaw(MESSAGE)).rejects.toBe(thrown);
-    expect(await value('breeze_email_send_total', { provider: 'resend', result: 'failure', error: 'other' })).toBe(1);
+    expect(await value('breeze_email_send_total', { lane: 'platform', provider: 'resend', result: 'failure', error: 'other' })).toBe(1);
     expect(await sendTotal()).toBe(1);
   });
 
@@ -918,7 +918,7 @@ describe('email send metrics', () => {
     await svc.deliverRaw(MESSAGE);
     expect(await value(USED, { provider: 'resend' })).toBeUndefined();
     expect(await value(USED_AT, { provider: 'resend' })).toBeUndefined();
-    expect(await value('breeze_email_send_total', { provider: 'resend', result: 'success', error: 'none' })).toBe(1);
+    expect(await value('breeze_email_send_total', { lane: 'platform', provider: 'resend', result: 'success', error: 'none' })).toBe(1);
   });
 
   it('counts SMTP success and failure (error="other") and rethrows the SMTP failure unchanged', async () => {
@@ -935,8 +935,8 @@ describe('email send metrics', () => {
     expect(raised).toBeInstanceOf(EmailTransportError);
     expect((raised as Error).message).toBe('550 nope');
 
-    expect(await value('breeze_email_send_total', { provider: 'smtp', result: 'success', error: 'none' })).toBe(1);
-    expect(await value('breeze_email_send_total', { provider: 'smtp', result: 'failure', error: 'other' })).toBe(1);
+    expect(await value('breeze_email_send_total', { lane: 'platform', provider: 'smtp', result: 'success', error: 'none' })).toBe(1);
+    expect(await value('breeze_email_send_total', { lane: 'platform', provider: 'smtp', result: 'failure', error: 'other' })).toBe(1);
     expect(await sendTotal()).toBe(2);
   });
 
@@ -954,8 +954,8 @@ describe('email send metrics', () => {
     const raised = (await svc.deliverRaw(MESSAGE).catch((e: unknown) => e)) as Error;
     expect(raised.message).toBe('Mailgun API error (429)');
 
-    expect(await value('breeze_email_send_total', { provider: 'mailgun', result: 'success', error: 'none' })).toBe(1);
-    expect(await value('breeze_email_send_total', { provider: 'mailgun', result: 'failure', error: 'other' })).toBe(1);
+    expect(await value('breeze_email_send_total', { lane: 'platform', provider: 'mailgun', result: 'success', error: 'none' })).toBe(1);
+    expect(await value('breeze_email_send_total', { lane: 'platform', provider: 'mailgun', result: 'failure', error: 'other' })).toBe(1);
     expect(await sendTotal()).toBe(2);
   });
 });

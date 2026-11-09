@@ -23,6 +23,7 @@ import {
   RESEND_SEND_ERROR_FIXTURES
 } from './resend';
 import { PartnerLaneSendFailure, ProviderDomainConflictError, ProviderDomainRejectedError, ProviderManagementAuthError } from '../provider';
+import { metricsRegistry } from '../../metricsRegistry';
 
 const KEYS = ['EMAIL_DOMAINS_RESEND_API_KEY', 'EMAIL_DOMAINS_RESEND_SENDING_KEY', 'EMAIL_DOMAINS_REGION'];
 const SAVED: Record<string, string | undefined> = {};
@@ -289,6 +290,97 @@ describe('send', () => {
     emailsSend.mockResolvedValue({ data: null, error: { name: 'rate_limit_exceeded', statusCode: 429, message: 'Too many requests' } });
     await expect(createResendDomainProvider().send(message)).rejects.toBeInstanceOf(PartnerLaneSendFailure);
     await expect(createResendDomainProvider().send(message)).rejects.toMatchObject({ error: { kind: 'lane_unavailable' } });
+  });
+});
+
+/**
+ * The partner lane shares the platform's Resend team (same quota, same
+ * 10 req/s), so its sends are counted on the same series with lane="partner",
+ * and its responses feed the same monthly-used gauge.
+ */
+describe('send metrics (lane="partner")', () => {
+  const message = {
+    from: 'support@acme.com', to: 'customer@example.com', subject: 'Ticket #1',
+    html: '<p>hi</p>', text: 'hi', partnerRef: 'p1',
+    tags: { partner_id: 'p1', domain_id: 'd1', stream: 'support', purpose: 'ticket_customer_notification' }
+  };
+  const USED = 'breeze_email_provider_monthly_used';
+  const USED_AT = 'breeze_email_provider_monthly_used_updated_timestamp_seconds';
+
+  beforeEach(() => metricsRegistry.resetMetrics());
+
+  async function values(name: string) {
+    const metric = metricsRegistry.getSingleMetric(name);
+    return metric ? (await metric.get()).values : [];
+  }
+  async function value(name: string, labels: Record<string, string>) {
+    return (await values(name)).find((v) => Object.entries(labels).every(([k, l]) => v.labels[k] === l))?.value;
+  }
+  async function sendTotal() {
+    return (await values('breeze_email_send_total')).reduce((sum, v) => sum + v.value, 0);
+  }
+
+  it('counts a success once and sets the monthly-used gauge from x-resend-monthly-quota', async () => {
+    emailsSend.mockResolvedValue({ data: { id: 'msg_1' }, error: null, headers: { 'x-resend-monthly-quota': '4321' } });
+    const before = Date.now() / 1000;
+    expect(await createResendDomainProvider().send(message)).toEqual({ providerMessageId: 'msg_1' });
+    const after = Date.now() / 1000;
+
+    expect(await value('breeze_email_send_total', { lane: 'partner', provider: 'resend', result: 'success', error: 'none' })).toBe(1);
+    expect(await sendTotal()).toBe(1);
+    expect(await value(USED, { provider: 'resend' })).toBe(4321);
+    const at = await value(USED_AT, { provider: 'resend' });
+    expect(at).toBeGreaterThanOrEqual(Math.floor(before));
+    expect(at).toBeLessThanOrEqual(Math.ceil(after));
+  });
+
+  it.each(['rate_limit_exceeded', 'daily_quota_exceeded', 'monthly_quota_exceeded'])(
+    'labels a %s failure with its name, still reads the header, and throws the same PartnerLaneSendFailure',
+    async (name) => {
+      emailsSend.mockResolvedValue({
+        data: null, error: { name, statusCode: 429, message: 'Too many' }, headers: { 'x-resend-monthly-quota': '5000' },
+      });
+      const raised = await createResendDomainProvider().send(message).catch((e: unknown) => e);
+      expect(raised).toBeInstanceOf(PartnerLaneSendFailure);
+      expect(raised).toMatchObject({ error: { kind: 'lane_unavailable', detail: name } });
+      expect((raised as Error).message).toBe('partner lane send failed: lane_unavailable');
+
+      expect(await value('breeze_email_send_total', { lane: 'partner', provider: 'resend', result: 'failure', error: name })).toBe(1);
+      expect(await sendTotal()).toBe(1);
+      expect(await value(USED, { provider: 'resend' })).toBe(5000);
+    },
+  );
+
+  it('labels an unlisted Resend error name as error="other"', async () => {
+    emailsSend.mockResolvedValue({ data: null, error: { name: 'internal_server_error', statusCode: 500, message: 'x' }, headers: null });
+    await expect(createResendDomainProvider().send(message)).rejects.toBeInstanceOf(PartnerLaneSendFailure);
+    expect(await value('breeze_email_send_total', { lane: 'partner', provider: 'resend', result: 'failure', error: 'other' })).toBe(1);
+    expect(await sendTotal()).toBe(1);
+  });
+
+  it('counts an SDK that rejects outright as error="other" and rethrows the same error', async () => {
+    const thrown = new TypeError('sdk blew up');
+    emailsSend.mockRejectedValue(thrown);
+    await expect(createResendDomainProvider().send(message)).rejects.toBe(thrown);
+    expect(await value('breeze_email_send_total', { lane: 'partner', provider: 'resend', result: 'failure', error: 'other' })).toBe(1);
+    expect(await sendTotal()).toBe(1);
+  });
+
+  it('leaves the gauge and its timestamp unchanged when the header is missing or not a non-negative integer', async () => {
+    const provider = createResendDomainProvider();
+    emailsSend.mockResolvedValueOnce({ data: { id: 'msg_1' }, error: null, headers: { 'x-resend-monthly-quota': '100' } });
+    await provider.send(message);
+    const setAt = await value(USED_AT, { provider: 'resend' });
+
+    const garbage = [undefined, null, {}, { 'x-resend-monthly-quota': 'abc' }, { 'x-resend-monthly-quota': '-1' }, { 'x-resend-monthly-quota': '2.5' }];
+    for (const headers of garbage) {
+      emailsSend.mockResolvedValueOnce({ data: { id: 'msg_2' }, error: null, headers });
+      await expect(provider.send(message)).resolves.toEqual({ providerMessageId: 'msg_2' });
+    }
+
+    expect(await value(USED, { provider: 'resend' })).toBe(100);
+    expect(await value(USED_AT, { provider: 'resend' })).toBe(setAt);
+    expect(await sendTotal()).toBe(1 + garbage.length);
   });
 });
 

@@ -1,4 +1,5 @@
 import { Resend } from 'resend';
+import { recordEmailSendFailure, recordEmailSendSuccess, recordResendQuotaHeaders } from '../../emailMetrics';
 import { getEmailDomainsConfig } from '../config';
 import {
   PartnerLaneSendFailure,
@@ -300,7 +301,7 @@ export function createResendDomainProvider(): EmailDomainProvider {
     },
 
     async send(m: PartnerLaneMessage & { partnerRef: string; tags: Record<string, string> }) {
-      const { data, error } = await sending.emails.send({
+      const { data, error, headers } = await sending.emails.send({
         from: m.from,
         to: m.to,
         cc: m.cc,
@@ -315,8 +316,17 @@ export function createResendDomainProvider(): EmailDomainProvider {
           contentType: a.contentType
         })),
         tags: Object.entries(m.tags).map(([name, value]) => ({ name, value: sanitizeTagValue(value) }))
-      } as Parameters<typeof sending.emails.send>[0]);
-      if (error) throw new PartnerLaneSendFailure(classifyResendSendError(error));
+      } as Parameters<typeof sending.emails.send>[0]).catch((err: unknown) => {
+        recordEmailSendFailure('partner', 'resend');
+        throw err;
+      });
+      // Same Resend team as the platform lane: same quota header, same gauge.
+      recordResendQuotaHeaders(headers);
+      if (error) {
+        recordEmailSendFailure('partner', 'resend', error.name);
+        throw new PartnerLaneSendFailure(classifyResendSendError(error));
+      }
+      recordEmailSendSuccess('partner', 'resend');
       return { providerMessageId: String(data!.id) };
     }
   };

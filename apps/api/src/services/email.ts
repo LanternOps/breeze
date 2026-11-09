@@ -446,10 +446,10 @@ export class EmailService {
     try {
       await this.sendViaProvider(message);
     } catch (err) {
-      recordEmailSendFailure(this.provider, err);
+      recordEmailSendFailure('platform', this.provider, err instanceof EmailTransportError ? err.providerErrorName : undefined);
       throw err;
     }
-    recordEmailSendSuccess(this.provider);
+    recordEmailSendSuccess('platform', this.provider);
   }
 
   private async sendViaProvider(message: RawEmailMessage): Promise<void> {
