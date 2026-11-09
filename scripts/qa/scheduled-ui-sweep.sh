@@ -51,15 +51,26 @@ state_set() {  # state_set <jq-filter> [--arg k v ...]
   jq "${@:2}" "$1" <(cat "$STATE" 2>/dev/null || echo '{}') > "$tmp" && mv "$tmp" "$STATE"
 }
 SECRET_RE='sk_live_|sk_test_|rk_live_|sk-ant-|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY|xox[baprs]-'
+ENVVALS="$QA_HOME/.envvals"   # literal .env values; outside RUN_DIR so the agent can't read it
+# body_ok <file>: gate for anything headed to a PUBLIC GitHub sink.
+body_ok() {
+  [ -s "$1" ] && [ "$(wc -c < "$1")" -le 60000 ] || return 1
+  grep -Eq "$SECRET_RE" "$1" && return 1
+  grep -Eq '[A-Za-z0-9+/=_-]{48,}' "$1" && return 1                 # long high-entropy runs
+  grep -Eq '[a-z][a-z0-9+.-]*://[^/[:space:]:@]+:[^/[:space:]@]+@' "$1" && return 1  # creds in URLs
+  [ -s "$ENVVALS" ] && grep -qF -f "$ENVVALS" "$1" && return 1       # any literal .env value
+  return 0
+}
 # Trusted-side issue writer for runner-detected problems: one open issue per
 # title (label qa-sweep); repeats become a comment instead of a new issue.
 runner_issue() {  # runner_issue <title> <body-file>
   if [ "${QA_DRY_RUN:-0}" = 1 ]; then log "DRY RUN: would file/comment issue: $1 (body: $2)"; return 0; fi
-  gh label create qa-sweep --color C5DEF5 --description "Found by the scheduled UI QA sweep" >/dev/null 2>&1 || true
-  local n; n="$(gh issue list --label qa-sweep --state open --search "\"$1\" in:title" --json number,title 2>/dev/null \
+  body_ok "$2" || { log "REFUSED to publish '$1': body failed secret checks (kept locally: $2)"; return 1; }
+  gh -R "$QA_REPO" label create qa-sweep --color C5DEF5 --description "Found by the scheduled UI QA sweep" >/dev/null 2>&1 || true
+  local n; n="$(gh -R "$QA_REPO" issue list --label qa-sweep --state open --search "\"$1\" in:title" --json number,title 2>/dev/null \
                | jq -r --arg t "$1" '[.[]|select(.title==$t)][0].number // empty')"
-  if [ -n "$n" ]; then gh issue comment "$n" --body-file "$2" >/dev/null && log "commented on #$n: $1"
-  else gh issue create --title "$1" --label qa-sweep --body-file "$2" >/dev/null && log "filed: $1"; fi
+  if [ -n "$n" ]; then gh -R "$QA_REPO" issue comment "$n" --body-file "$2" >/dev/null && log "commented on #$n: $1"
+  else gh -R "$QA_REPO" issue create --title "$1" --label qa-sweep --body-file "$2" >/dev/null && log "filed: $1"; fi
 }
 
 # --- single-flight lock (stale after 8h) ------------------------------------
@@ -76,7 +87,7 @@ cleanup() {
     log "tearing down stack"
     (cd "$QA_WORKTREE" && pnpm wt-stack down) || log "WARN: wt-stack down failed"
   fi
-  rm -rf "$LOCK"
+  rm -f "$ENVVALS"; rm -rf "$LOCK"
 }
 trap cleanup EXIT
 
@@ -117,6 +128,8 @@ git reset --quiet --hard origin/main
 git clean -fdq   # keeps ignored files (.env, node_modules)
 NEW_SHA="$(git rev-parse HEAD)"
 log "main=$NEW_SHA prev=${PREV_SHA:-none}"
+QA_REPO="${QA_REPO:-$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)}"
+[ -n "$QA_REPO" ] || { notify "QA sweep: could not resolve GitHub repo"; exit 1; }
 
 if [ -n "$PREV_SHA" ] && [ "$PREV_SHA" = "$NEW_SHA" ] && [ "${QA_FORCE:-0}" != 1 ]; then
   log "main unchanged since last sweep; nothing to do"; exit 0
@@ -141,6 +154,10 @@ while IFS= read -r line; do
     log "synced $key to main's value"
   fi
 done < <(grep -E '^[A-Z][A-Z0-9_]*_IMAGE_REF=' .env.example | grep -v '^BREEZE_' | grep -v 'replace-with')
+
+# Literal values of every .env entry (>= 8 chars) -> redaction list for public sinks.
+( umask 077; grep -E '^[A-Za-z_][A-Za-z0-9_]*=' .env | cut -d= -f2- | sed -E 's/^["'\'']//; s/["'\'']$//' \
+    | awk 'length($0) >= 8' | sort -u > "$ENVVALS" )
 
 # Node from .nvmrc (auto-install via nvm if this Mac doesn't have it yet)
 NODE_WANT="$(tr -d 'v \n' < .nvmrc 2>/dev/null)"
@@ -195,11 +212,18 @@ if [ ! -f .breeze-stack.json ] || ! curl -sf -o /dev/null "$(jq -r .baseUrl .bre
     echo '```'
     for c in $(docker ps -a --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Names}} {{.Status}}' 2>/dev/null \
                | grep -iE 'unhealthy|exited|restarting' | cut -d' ' -f1); do
-      echo; echo "### \`$c\` (last 40 lines)"; echo '```'; docker logs --tail 40 "$c" 2>&1 | cut -c1-300; echo '```'
+      docker logs --tail 200 "$c" > "$RUN_DIR/container-$c.log" 2>&1
+      # Public excerpt: only error-signature lines, literal .env values stripped,
+      # anything still secret-shaped dropped. Full logs stay on the QA Mac.
+      echo; echo "### \`$c\` error lines"; echo '```'
+      grep -E 'CRITICAL|FATAL|Error:|error:|ERROR' "$RUN_DIR/container-$c.log" | tail -8 | cut -c1-240 \
+        | { if [ -s "$ENVVALS" ]; then grep -vF -f "$ENVVALS"; else cat; fi; } \
+        | grep -Ev "$SECRET_RE" | grep -Ev '[A-Za-z0-9+/=_-]{48,}|://[^/[:space:]:@]+:[^/[:space:]@]+@'
+      echo '```'
     done
-    echo; echo "### wt-stack output (tail)"; echo '```'; tail -25 "$RUN_DIR/stack-up.log" | cut -c1-300; echo '```'
+    echo; echo "Full container logs and wt-stack output: \`$RUN_DIR\` on the QA Mac."
     echo; echo "_Filed by the scheduled UI QA sweep. The sweep retries on the next run; this issue gets a comment each time it recurs._"
-  } | grep -Ev "$SECRET_RE" > "$BODY"
+  } > "$BODY"
   runner_issue "[QA] Dev stack fails to boot on main" "$BODY"
   notify "QA sweep: stack would NOT boot on main@${NEW_SHA:0:9} (issue filed) - release blocker"
   echo "STACK_BOOT_FAILED" > "$RUN_DIR/result"; exit 1
@@ -225,6 +249,10 @@ if [ -n "$PREV_SHA" ] && git cat-file -e "$PREV_SHA" 2>/dev/null; then
 else
   git log --first-parent --since='3 days ago' --format='%H%x09%cI%x09%s' "$NEW_SHA" > "$RUN_DIR/commits.tsv"
 fi
+chmod 0444 "$RUN_DIR/commits.tsv"
+# PR numbers the agent may annotate = LAST "(#N)" of each in-scope commit.
+# Captured in shell memory now, before the agent runs, so it can't widen it.
+IN_SCOPE=" $(cut -f3 "$RUN_DIR/commits.tsv" | sed -nE 's/.*\(#([0-9]+)\)[[:space:]]*$/\1/p' | tr '\n' ' ') "
 log "commits in scope: $(wc -l < "$RUN_DIR/commits.tsv" | tr -d ' ')"
 
 # Per-run browser config: only the local stack is reachable (no exfil to the
@@ -266,6 +294,8 @@ ALLOWED_TOOLS=(
 )
 DENIED_TOOLS=(
   "Read(/$QA_WORKTREE/.env*)" "Read(/$QA_WORKTREE/**/.env*)"
+  "Edit(/$RUN_DIR/commits.tsv)" "Edit(/$RUN_DIR/mcp.json)" "Edit(/$RUN_DIR/env-*)"
+  "Read(/$RUN_DIR/*.log)" "Read(/$RUN_DIR/transcript.jsonl)" "Read(/$RUN_DIR/claude.err)"
   "mcp__playwright__browser_run_code_unsafe"
   "WebFetch" "WebSearch" "Agent" "Task"
 )
@@ -283,17 +313,15 @@ log "claude exit=$RC"
 # --- publish the outbox (trusted side) ---------------------------------------
 MAX_NEW_ISSUES="${QA_MAX_NEW_ISSUES:-10}"
 publish_outbox() {
-  gh label create qa-sweep --color C5DEF5 --description "Found by the scheduled UI QA sweep" >/dev/null 2>&1 || true
-  gh label create qa-swept --color 0E8A16 --description "Merged PR checked in the browser by the scheduled UI QA sweep (see QA comment)" >/dev/null 2>&1 || true
-  gh label create qa-no-ui --color EDEDED --description "Merged PR reviewed by the scheduled QA sweep: no UI surface to test" >/dev/null 2>&1 || true
-  # PRs the agent may annotate = the PR number (LAST "(#N)") of each in-scope commit.
-  local in_scope; in_scope=" $(cut -f3 "$RUN_DIR/commits.tsv" | sed -nE 's/.*\(#([0-9]+)\)[[:space:]]*$/\1/p' | tr '\n' ' ') "
+  gh -R "$QA_REPO" label create qa-sweep --color C5DEF5 --description "Found by the scheduled UI QA sweep" >/dev/null 2>&1 || true
+  gh -R "$QA_REPO" label create qa-swept --color 0E8A16 --description "Merged PR checked in the browser by the scheduled UI QA sweep (see QA comment)" >/dev/null 2>&1 || true
+  gh -R "$QA_REPO" label create qa-no-ui --color EDEDED --description "Merged PR reviewed by the scheduled QA sweep: no UI surface to test" >/dev/null 2>&1 || true
   local created=0 prs=0 f action title issue labels bodyf pr result
   for f in "$RUN_DIR"/outbox/*.json; do
     [ -f "$f" ] || continue
     action="$(jq -r '.action // empty' "$f" 2>/dev/null)"
     bodyf="$f.body.md"; jq -r '.body // empty' "$f" > "$bodyf" 2>/dev/null
-    if [ ! -s "$bodyf" ] || [ "$(wc -c < "$bodyf")" -gt 60000 ] || grep -Eq "$SECRET_RE" "$bodyf"; then
+    if ! body_ok "$bodyf"; then
       log "outbox REJECT $(basename "$f"): empty/oversized/secret-like body"; continue
     fi
     case "$action" in
@@ -302,35 +330,37 @@ publish_outbox() {
         if [ "$created" -ge "$MAX_NEW_ISSUES" ] || ! printf '%s' "$title" | grep -Eq '^\[(UI|QA)\] .{5,}'; then
           log "outbox REJECT $(basename "$f"): cap reached or bad title '$title'"; continue
         fi
-        gh issue create --title "$title" --body-file "$bodyf" --label qa-sweep && created=$((created+1)) ;;
+        gh -R "$QA_REPO" issue create --title "$title" --body-file "$bodyf" --label qa-sweep && created=$((created+1)) ;;
       comment)
         issue="$(jq -r '.issue // empty' "$f")"
-        labels="$(gh issue view "$issue" --json labels,state --jq 'select(.state=="OPEN")|[.labels[].name]|join(",")' 2>/dev/null)"
-        case ",$labels," in *,qa-sweep,*) gh issue comment "$issue" --body-file "$bodyf" ;;
+        [[ "$issue" =~ ^[0-9]{1,7}$ ]] || { log "outbox REJECT $(basename "$f"): bad issue '$issue'"; continue; }
+        labels="$(gh -R "$QA_REPO" issue view "$issue" --json labels,state --jq 'select(.state=="OPEN")|[.labels[].name]|join(",")' 2>/dev/null)"
+        case ",$labels," in *,qa-sweep,*) gh -R "$QA_REPO" issue comment "$issue" --body-file "$bodyf" ;;
           *) log "outbox REJECT $(basename "$f"): #$issue is not an open qa-sweep issue" ;; esac ;;
       pr_result)
         pr="$(jq -r '.pr // empty' "$f")"; result="$(jq -r '.result // empty' "$f")"
-        case "$in_scope" in *" $pr "*) ;; *) log "outbox REJECT $(basename "$f"): PR #$pr not in this run's commit range"; continue ;; esac
+        [[ "$pr" =~ ^[0-9]{1,7}$ ]] || { log "outbox REJECT $(basename "$f"): bad pr '$pr'"; continue; }
+        case "$IN_SCOPE" in *" $pr "*) ;; *) log "outbox REJECT $(basename "$f"): PR #$pr not in this run's commit range"; continue ;; esac
         if [ "$result" = NO_UI ]; then
-          gh pr edit "$pr" --add-label qa-no-ui >/dev/null && prs=$((prs+1)); continue
+          gh -R "$QA_REPO" pr edit "$pr" --add-label qa-no-ui >/dev/null && prs=$((prs+1)); continue
         fi
         case "$result" in PASS|PARTIAL|FAIL|BLOCKED) ;; *) log "outbox REJECT $(basename "$f"): bad result '$result'"; continue ;; esac
         # One QA comment per PR per main SHA (a re-run of the same range doesn't double-post).
-        if gh pr view "$pr" --json comments --jq '.comments[].body' 2>/dev/null | grep -qF "<!-- breeze-qa-sweep main=${NEW_SHA:0:9} -->"; then
+        if gh -R "$QA_REPO" pr view "$pr" --json comments --jq '.comments[].body' 2>/dev/null | grep -qF "<!-- breeze-qa-sweep main=${NEW_SHA:0:9} -->"; then
           log "outbox SKIP pr #$pr: already annotated for this sweep"; continue
         fi
         { printf '<!-- breeze-qa-sweep main=%s -->\n### Scheduled UI QA: %s\n_Checked on main@%s (%s)._\n\n' \
             "${NEW_SHA:0:9}" "$result" "${NEW_SHA:0:9}" "$RUN_ID"; cat "$bodyf"; } > "$bodyf.pr"
-        gh pr comment "$pr" --body-file "$bodyf.pr" >/dev/null && gh pr edit "$pr" --add-label qa-swept >/dev/null && prs=$((prs+1)) ;;
+        gh -R "$QA_REPO" pr comment "$pr" --body-file "$bodyf.pr" >/dev/null && gh -R "$QA_REPO" pr edit "$pr" --add-label qa-swept >/dev/null && prs=$((prs+1)) ;;
       *) log "outbox REJECT $(basename "$f"): unknown action '$action'" ;;
     esac
   done
   log "outbox: $created issue(s) created, $prs PR(s) annotated"
-  if [ -s "$RUN_DIR/ledger.md" ] && ! grep -Eq "$SECRET_RE" "$RUN_DIR/ledger.md"; then
-    local n; n="$(gh issue list --label qa-sweep --state open --search 'QA sweep ledger in:title' --json number,title \
+  if [ -s "$RUN_DIR/ledger.md" ] && body_ok "$RUN_DIR/ledger.md"; then
+    local n; n="$(gh -R "$QA_REPO" issue list --label qa-sweep --state open --search 'QA sweep ledger in:title' --json number,title \
                  --jq '[.[]|select(.title=="QA sweep ledger")][0].number // empty')"
-    if [ -n "$n" ]; then gh issue edit "$n" --body-file "$RUN_DIR/ledger.md" >/dev/null
-    else gh issue create --title "QA sweep ledger" --label qa-sweep --body-file "$RUN_DIR/ledger.md" >/dev/null; fi
+    if [ -n "$n" ]; then gh -R "$QA_REPO" issue edit "$n" --body-file "$RUN_DIR/ledger.md" >/dev/null
+    else gh -R "$QA_REPO" issue create --title "QA sweep ledger" --label qa-sweep --body-file "$RUN_DIR/ledger.md" >/dev/null; fi
     log "ledger updated"
   fi
 }
