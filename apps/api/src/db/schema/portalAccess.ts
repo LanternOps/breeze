@@ -6,7 +6,7 @@ import { users } from './users';
 /**
  * Portal registration W3 (#11380): portal access policy and access-request queue.
  * Spec: docs/superpowers/specs/portal/2026-11-07-portal-registration-options-design.md §4, §5.1, §5.3.
- * Migration: 2027-01-22-231500-portal-access-policies-requests.sql.
+ * Migration: 2027-01-22-232200-portal-access-policies-requests.sql.
  */
 
 export type PortalPasswordMode = 'allowed' | 'sso_only';
