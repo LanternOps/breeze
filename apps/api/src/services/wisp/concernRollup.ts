@@ -24,11 +24,14 @@
  *   swallow later org-level raises). `incident` "names the concern itself":
  *   the reaper never reconciles it, and the ticket poller / correlator ignore
  *   it (no `evidence.tokens`, no `evidence.lastTicketAt`).
- * - A live parent follows its live members each tick (children only ever
- *   added, up to ROLLUP_CHILD_CAP; count and severity from the live ones),
- *   and resolves with outcome `children_resolved` once none of its children
- *   is live — counted in SQL over every child id, never from this tick's
- *   capped read. A parent a person closed (any other outcome) in the last
+ * - A live parent follows its live members each tick: count and severity
+ *   from them; children = the live members first, then the resolved ones it
+ *   already held while room remains (ROLLUP_CHILD_CAP), and never a child
+ *   that is live under another pattern now. It resolves with outcome
+ *   `children_resolved` once no live device concern carries its pattern.
+ *   When the child read hit its cap, "none this tick" is not proof, so a
+ *   parent then closes only when SQL counts none of its stored children live.
+ *   A parent a person closed (any other outcome) in the last
  *   CLOSED_SUPPRESSION_HOURS is not re-opened for the same signature.
  * - System-raised (`raised_by_grant_id` NULL) and never nudged: each child
  *   already carries its own nudge state.
@@ -48,7 +51,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { wispEnabled } from '../../config/env';
 import { captureException } from '../sentry';
 import { resolveConcern, updateConcern, upsertConcern } from './concerns';
-import { appendCapped, jsonRecord, stringArray } from './pollers';
+import { jsonRecord, stringArray } from './pollers';
 
 export const ROLLUP_MIN_CHILDREN = 3;
 export const ROLLUP_CHILD_CAP = 100;
@@ -81,6 +84,9 @@ type Parent = {
   evidence: Record<string, unknown>; children: string[]; liveChildren: number;
 };
 type Group = { partnerId: string; orgId: string; pattern: string; ids: string[]; severity: ConcernSeverity };
+
+/** Partner + signature: the live-signature index's own key. */
+const groupKey = (partnerId: string, signature: string) => `${partnerId}|${signature}`;
 
 function inSystemRead<T>(fn: () => Promise<T>, label: string): Promise<T> {
   return runOutsideDbContext(() => withSystemDbAccessContext(fn, label));
@@ -144,25 +150,40 @@ function groupChildren(rows: ChildRow[]): Group[] {
   for (const r of rows) {
     const pattern = normalizeConcernPattern(r.pattern) ?? fallbackConcernPattern(r.summary, [r.hostname, r.display_name]);
     if (!pattern) continue;
-    const key = `${r.partner_id}|${r.org_id}|${pattern}`;
+    const key = groupKey(r.partner_id, rollupSignature(r.org_id, pattern));
     const g = groups.get(key) ?? { partnerId: r.partner_id, orgId: r.org_id, pattern, ids: [], severity: 'info' };
     g.ids.push(r.id);
     g.severity = maxSeverity([g.severity, r.severity]);
     groups.set(key, g);
   }
+  for (const g of groups.values()) g.ids.sort();
   return [...groups.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, g]) => g);
 }
 
-/** Follow a live parent to this tick's live members. False when nothing changed. */
-async function refreshParent(p: Parent, g: Group): Promise<boolean> {
-  const children = appendCapped(p.children, g.ids, ROLLUP_CHILD_CAP);
+const sameSet = (a: readonly string[], b: readonly string[]) => {
+  if (a.length !== b.length) return false;
+  const s = new Set(a);
+  return b.every((id) => s.has(id));
+};
+
+/**
+ * Follow a live parent to this tick's live members. `liveGroupOf` maps each
+ * live device concern read this tick to its group key: a stored child live
+ * under ANOTHER pattern now leaves this parent; one not live (resolved) stays
+ * as history while room remains. Deterministic (members sorted, history in
+ * stored order), so a settled parent is not rewritten. False when nothing changed.
+ */
+async function refreshParent(p: Parent, g: Group, liveGroupOf: ReadonlyMap<string, string>): Promise<boolean> {
+  const members = new Set(g.ids);
+  const history = p.children.filter((id) => !members.has(id) && !liveGroupOf.has(id));
+  const children = [...g.ids, ...history].slice(0, ROLLUP_CHILD_CAP);
   const summary = rollupSummary(g.ids.length, g.pattern);
   const evidence = { ...p.evidence, rollup: CONCERN_ROLLUP_KIND, pattern: g.pattern, deviceCount: g.ids.length };
-  if (children.added === 0 && summary === p.summary && g.severity === p.severity && p.evidence.deviceCount === g.ids.length) {
+  if (sameSet(children, p.children) && summary === p.summary && g.severity === p.severity && p.evidence.deviceCount === g.ids.length) {
     return false;
   }
-  await updateConcern(p.id, { summary, severity: g.severity, childConcernIds: children.ids, evidence });
-  p.children = children.ids;
+  await updateConcern(p.id, { summary, severity: g.severity, childConcernIds: children, evidence });
+  p.children = children;
   p.summary = summary;
   p.severity = g.severity;
   p.evidence = evidence;
@@ -208,30 +229,39 @@ export async function rollupDeviceConcerns(now: Date): Promise<Result> {
     return { childRows: [...childRows], parentRows: [...parentRows] };
   }, 'wisp-rollup-device-concerns');
 
-  if (childRows.length >= CHILD_READ_LIMIT) {
-    console.warn(`[wisp/concernRollup] read the ${CHILD_READ_LIMIT}-row cap of live device concerns; the rest are not rolled up this tick`);
+  // Rows are ordered by partner, org: past the cap the same trailing orgs are
+  // skipped on every tick, so this is an error, not a passing warning.
+  const truncated = childRows.length >= CHILD_READ_LIMIT;
+  if (truncated) {
+    console.error(`[wisp/concernRollup] read the ${CHILD_READ_LIMIT}-row cap of live device concerns; the orgs past it are not rolled up`);
   }
 
-  // Keyed by partner + signature (the live-signature index's own key).
+  const groups = groupChildren(childRows);
+  const liveGroupOf = new Map<string, string>();
+  for (const g of groups) {
+    const key = groupKey(g.partnerId, rollupSignature(g.orgId, g.pattern));
+    for (const id of g.ids) liveGroupOf.set(id, key);
+  }
+
   const live = new Map<string, Parent>();
   const suppressed = new Set<string>();
   for (const r of parentRows) {
     if (!r.signature) continue;
-    const key = `${r.partner_id}|${r.signature}`;
+    const key = groupKey(r.partner_id, r.signature);
     const p = toParent(r);
     if (p.live) live.set(key, p);
     else if (p.outcome !== CONCERN_ROLLUP_OUTCOME) suppressed.add(key);
   }
 
   const seen = new Set<string>();
-  for (const g of groupChildren(childRows)) {
+  for (const g of groups) {
     const signature = rollupSignature(g.orgId, g.pattern);
-    const key = `${g.partnerId}|${signature}`;
+    const key = groupKey(g.partnerId, signature);
     seen.add(key);
     try {
       const existing = live.get(key);
       if (existing) {
-        if (await refreshParent(existing, g)) out.updated += 1;
+        if (await refreshParent(existing, g, liveGroupOf)) out.updated += 1;
         continue;
       }
       if (g.ids.length < ROLLUP_MIN_CHILDREN || suppressed.has(key)) continue;
@@ -257,21 +287,25 @@ export async function rollupDeviceConcerns(now: Date): Promise<Result> {
       // follow the winner. Its stored state is unknown, so write it whole.
       const winner: Parent = { id, live: true, outcome: null, summary: '', severity: '', evidence: {}, children: [], liveChildren: 0 };
       live.set(key, winner);
-      if (await refreshParent(winner, g)) out.updated += 1;
+      if (await refreshParent(winner, g, liveGroupOf)) out.updated += 1;
     } catch (err) {
+      // Sentry tags are allowlisted and bounded (sentry.ts): the ids go to the log.
+      console.warn('[wisp/concernRollup] rollup of one pattern failed; the next tick retries', { orgId: g.orgId, signature, error: err });
       captureException(err, undefined, { component: 'wisp.concernRollup', op: 'rollup' });
     }
   }
 
-  // A parent with no live child left closes itself. `liveChildren` is SQL's
-  // count over every child id; a parent whose pattern still has live members
-  // this tick (a just-raised one not yet in its children) stays.
+  // A live parent whose pattern no live device concern carries any more closes
+  // itself (its children resolved, or moved to another pattern). After a
+  // capped read "unseen" is not proof: then it closes only when SQL counts
+  // none of its stored children live.
   for (const [key, p] of live) {
-    if (seen.has(key) || p.children.length === 0 || p.liveChildren > 0) continue;
+    if (seen.has(key) || (truncated && p.liveChildren > 0)) continue;
     try {
       const { resolved } = await resolveConcern(p.id, {}, CONCERN_ROLLUP_OUTCOME);
       if (resolved) out.resolved += 1;
     } catch (err) {
+      console.warn('[wisp/concernRollup] closing a rollup parent failed; the next tick retries', { concernId: p.id, error: err });
       captureException(err, undefined, { component: 'wisp.concernRollup', op: 'resolve' });
     }
   }

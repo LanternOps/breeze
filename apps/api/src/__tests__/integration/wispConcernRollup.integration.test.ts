@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { wispConcerns } from '../../db/schema';
-import { resolveConcern, upsertConcern } from '../../services/wisp/concerns';
+import { resolveConcern, setConcernPattern, upsertConcern } from '../../services/wisp/concerns';
 import { rollupDeviceConcerns } from '../../services/wisp/concernRollup';
 import { createDevice, createOrganization, createPartner, createSite } from './db-utils';
 
@@ -135,10 +135,101 @@ describe('wisp concern rollup (real Postgres)', () => {
     const a = await seedOrg(partner.id, ['x1', 'x2', 'x3']);
     for (const d of a.devices) await raiseDevice(partner.id, a.orgId, d, 'Patch job failed: command timed out', { pattern: 'patch_job_timeout' });
     await rollupDeviceConcerns(new Date());
+    const [p] = await parentsOf(partner.id, a.orgId);
+    expect(p).toMatchObject({ subjectKind: 'incident', status: 'open' });
     const org = await upsertConcern({
       partnerId: partner.id, orgId: a.orgId, subject: { kind: 'org', id: a.orgId },
       summary: `Backups have not run for the whole org ${randomUUID().slice(0, 4)}`, severity: 'high', evidence: {},
     });
     expect(org.created).toBe(true);
+    expect(org.id).not.toBe(p!.id);
+  });
+
+  it('one pattern with three devices in each of two orgs → one parent per org, never one across them', async () => {
+    enableWisp();
+    const partner = await createPartner();
+    const a = await seedOrg(partner.id, ['a1', 'a2', 'a3']);
+    const b = await seedOrg(partner.id, ['b1', 'b2', 'b3']);
+    const byOrg = new Map<string, string[]>();
+    for (const org of [a, b]) {
+      const ids: string[] = [];
+      for (const d of org.devices) ids.push(await raiseDevice(partner.id, org.orgId, d, 'Chrome has critical CVEs', { pattern: 'browser_critical_cves' }));
+      byOrg.set(org.orgId, ids);
+    }
+    await rollupDeviceConcerns(new Date());
+    for (const org of [a, b]) {
+      const parents = await parentsOf(partner.id, org.orgId);
+      expect(parents).toHaveLength(1);
+      expect([...parents[0]!.childConcernIds].sort()).toEqual([...byOrg.get(org.orgId)!].sort());
+      expect(parents[0]!.signature).toBe(`${org.orgId}:browser_critical_cves`);
+    }
+  });
+
+  it('a person-dismissed parent is not re-opened for 24 h, then is', async () => {
+    enableWisp();
+    const partner = await createPartner();
+    const a = await seedOrg(partner.id, ['d1', 'd2', 'd3']);
+    for (const d of a.devices) await raiseDevice(partner.id, a.orgId, d, 'Phantom incident event', { pattern: 'phantom_incident_event' });
+    await rollupDeviceConcerns(new Date());
+    const [p] = await parentsOf(partner.id, a.orgId);
+    await asSystem(() => db.update(wispConcerns).set({ status: 'dismissed', updatedAt: new Date() }).where(eq(wispConcerns.id, p!.id)));
+
+    await rollupDeviceConcerns(new Date());
+    expect((await parentsOf(partner.id, a.orgId)).filter((r) => r.status === 'open')).toHaveLength(0);
+
+    await asSystem(() => db.update(wispConcerns).set({ updatedAt: new Date(Date.now() - 25 * 3_600_000) }).where(eq(wispConcerns.id, p!.id)));
+    await rollupDeviceConcerns(new Date());
+    expect((await parentsOf(partner.id, a.orgId)).filter((r) => r.status === 'open')).toHaveLength(1);
+  });
+
+  it('a snoozed child keeps its parent open', async () => {
+    enableWisp();
+    const partner = await createPartner();
+    const a = await seedOrg(partner.id, ['s1', 's2', 's3']);
+    const ids: string[] = [];
+    for (const d of a.devices) ids.push(await raiseDevice(partner.id, a.orgId, d, 'Phantom incident event', { pattern: 'phantom_incident_event' }));
+    await rollupDeviceConcerns(new Date());
+    await resolveConcern(ids[0]!, {}, 'fixed');
+    await resolveConcern(ids[1]!, {}, 'fixed');
+    await asSystem(() => db.update(wispConcerns).set({ status: 'snoozed' }).where(eq(wispConcerns.id, ids[2]!)));
+    await rollupDeviceConcerns(new Date());
+    const [p] = await parentsOf(partner.id, a.orgId);
+    expect(p).toMatchObject({ status: 'open', summary: '1 device: phantom incident event' });
+  });
+
+  it('setConcernPattern stamps only the key on a live concern; re-patterned children leave their old parent', async () => {
+    enableWisp();
+    const partner = await createPartner();
+    const a = await seedOrg(partner.id, ['r1', 'r2', 'r3']);
+    const ids: string[] = [];
+    for (const d of a.devices) {
+      const { id } = await upsertConcern({
+        partnerId: partner.id, orgId: a.orgId, subject: { kind: 'device', id: d },
+        summary: 'Patch job failed', severity: 'medium', evidence: { jobId: 'j-1' }, pattern: 'patch_job_timeout',
+      });
+      ids.push(id);
+    }
+    await rollupDeviceConcerns(new Date());
+    const [old] = await parentsOf(partner.id, a.orgId);
+    expect(old).toMatchObject({ status: 'open', signature: `${a.orgId}:patch_job_timeout` });
+
+    const [before] = await asSystem(() => db.select().from(wispConcerns).where(eq(wispConcerns.id, ids[0]!)));
+    for (const id of ids) await setConcernPattern(id, 'patch_timeout');
+    const [after] = await asSystem(() => db.select().from(wispConcerns).where(eq(wispConcerns.id, ids[0]!)));
+    expect(after!.evidence).toEqual({ jobId: 'j-1', pattern: 'patch_timeout' });
+    expect(after!.updatedAt.getTime()).toBe(before!.updatedAt.getTime());
+
+    await rollupDeviceConcerns(new Date());
+    const rows = await parentsOf(partner.id, a.orgId);
+    expect(rows.find((r) => r.id === old!.id)).toMatchObject({ status: 'resolved', outcome: 'children_resolved' });
+    const fresh = rows.find((r) => r.status === 'open');
+    expect(fresh).toMatchObject({ signature: `${a.orgId}:patch_timeout` });
+    expect([...fresh!.childConcernIds].sort()).toEqual([...ids].sort());
+
+    // A closed concern is never stamped.
+    await resolveConcern(ids[0]!, {}, 'fixed');
+    await setConcernPattern(ids[0]!, 'something_else');
+    const [closed] = await asSystem(() => db.select().from(wispConcerns).where(eq(wispConcerns.id, ids[0]!)));
+    expect(closed!.evidence).toEqual({ jobId: 'j-1', pattern: 'patch_timeout' });
   });
 });

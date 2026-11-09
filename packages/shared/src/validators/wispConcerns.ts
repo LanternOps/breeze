@@ -72,10 +72,14 @@ const snoozeUntilSchema = z.iso.datetime({ offset: true }).refine((value) => {
 // Outcome tools (assessment runs, W05b)
 // ---------------------------------------------------------------------------
 
-/** Longest stored concern pattern key (#11426); a longer one is cut at a `_`. */
+/** Longest stored concern pattern key (#11426); a longer one is cut at its last `_` that fits, else at the limit. */
 export const CONCERN_PATTERN_MAX = 64;
 
-/** #11426: the evidence key holding a concern's pattern; server-written, never taken from model evidence. */
+/**
+ * #11426: the evidence key holding a concern's pattern. Server-written: the
+ * assessment finalizer and the chat `raise_concern` both strip it from the
+ * evidence they are handed; only `record_concern.pattern` sets it.
+ */
 export const CONCERN_PATTERN_EVIDENCE_KEY = 'pattern';
 
 /**
@@ -102,7 +106,8 @@ export const raiseConcernSchema = z.object({
   severity: concernSeveritySchema,
   evidence: evidenceSchema.optional(),
   // #11426: the same-org rollup folds ≥ 3 device concerns sharing this key into
-  // one org-level concern. Stored normalised (normalizeConcernPattern).
+  // one org-level concern. Stored normalised (normalizeConcernPattern), which
+  // also cuts it to CONCERN_PATTERN_MAX; 100 is only the input bound.
   pattern: z.string().trim().min(1).max(100).optional().describe(
     'Short snake_case key for the KIND of problem, identical for every device that has it '
     + '(e.g. phantom_incident_event, browser_critical_cves, patch_job_timeout). No device names, ids or numbers.',
@@ -204,7 +209,8 @@ export interface AssessmentOutcome {
 
 /** `raise_concern` (chat, T2 auto-approvable): a chat turn names its target org. */
 // No `pattern` (#11426): a chat raise names one concern a person asked for; the
-// rollup key is the assessment run's, and the chat tool index stays unchanged.
+// rollup key is the assessment run's (concernTools also strips `evidence.pattern`),
+// and the chat tool index stays unchanged.
 export const raiseConcernChatSchema = raiseConcernSchema.omit({ pattern: true }).extend({
   orgId: z.uuid(),
   subject: z.object({ kind: z.enum(CHAT_RAISE_CONCERN_SUBJECT_KINDS), id: z.uuid() }),

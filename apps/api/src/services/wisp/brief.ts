@@ -207,13 +207,16 @@ function isOpenConcern(c: Concern): boolean {
 }
 
 /**
- * #11426: the live children of a live same-org rollup parent in the list. The
+ * #11426: the children of an OPEN same-org rollup parent in the list. The
  * parent stands for them in the counts and the body ("3 devices: …"); they
- * stay listed under it everywhere else.
+ * stay listed under it everywhere else. A snoozed parent folds nothing: it
+ * counts nowhere, so its children must count on their own.
  */
 function foldedUnderRollup(live: Concern[]): Set<string> {
   const folded = new Set<string>();
-  for (const c of live) if (isConcernRollup(c)) for (const id of c.childConcernIds) folded.add(id);
+  for (const c of live) {
+    if (c.status === 'open' && isConcernRollup(c)) for (const id of c.childConcernIds) folded.add(id);
+  }
   return folded;
 }
 

@@ -261,6 +261,53 @@ describe('rollupDeviceConcerns', () => {
     }));
   });
 
+  // Review (#11519): children re-raised under another pattern leave the old parent.
+  it('resolves a parent whose children all moved to another pattern, and opens the new one', async () => {
+    children = [1, 2, 3].map((n) => child(n, OA, { pattern: 'patch_timeout' }));
+    parents = [parent(1, OA, 'patch_job_timeout', { child_concern_ids: [uid(101), uid(102), uid(103)], live_children: 3 })];
+    await expect(rollupDeviceConcerns(NOW)).resolves.toEqual({ opened: 1, updated: 0, resolved: 1 });
+    expect(h.resolveConcern).toHaveBeenCalledWith(uid(901), {}, 'children_resolved');
+    expect(h.upsertConcern.mock.calls[0]![0]).toMatchObject({ signature: `${OA}:patch_timeout` });
+  });
+
+  it('drops a live child that moved to another pattern from the parent it left', async () => {
+    children = [child(1, OA), child(2, OA), child(3, OA), child(4, OA, { pattern: 'browser_critical_cves' })];
+    parents = [parent(1, OA, 'phantom_incident_event', {
+      child_concern_ids: [uid(101), uid(102), uid(103), uid(104), uid(105)], live_children: 4,
+      summary: '4 devices: phantom incident event', evidence: { rollup: CONCERN_ROLLUP_KIND, pattern: 'phantom_incident_event', deviceCount: 4 },
+    })];
+    await rollupDeviceConcerns(NOW);
+    // 105 is resolved (not live anywhere): it stays as history; 104 now belongs elsewhere.
+    expect(h.updateConcern).toHaveBeenCalledWith(uid(901), expect.objectContaining({
+      summary: '3 devices: phantom incident event',
+      childConcernIds: [uid(101), uid(102), uid(103), uid(105)],
+    }));
+  });
+
+  it('a pattern with more than the child cap of live devices settles: the second tick writes nothing', async () => {
+    children = Array.from({ length: 150 }, (_, i) => child(i + 1, OA));
+    await rollupDeviceConcerns(NOW);
+    const opened = h.upsertConcern.mock.calls[0]![0] as Record<string, any>;
+    expect(opened.childConcernIds).toHaveLength(100);
+    vi.clearAllMocks();
+    parents = [parent(1, OA, 'phantom_incident_event', {
+      child_concern_ids: opened.childConcernIds, live_children: 100,
+      summary: opened.summary, severity: opened.severity, evidence: opened.evidence,
+    })];
+    await expect(rollupDeviceConcerns(NOW)).resolves.toEqual({ opened: 0, updated: 0, resolved: 0 });
+    expect(h.updateConcern).not.toHaveBeenCalled();
+  });
+
+  it('a capped child read never closes a parent whose children SQL still counts live', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    children = Array.from({ length: 10_000 }, (_, i) => child(i + 1, OB, { pattern: `p_${i % 2 === 0 ? 'even' : 'odd'}_x` }));
+    parents = [parent(1, OA, 'phantom_incident_event', { child_concern_ids: [uid(101)], live_children: 1 })];
+    await rollupDeviceConcerns(NOW);
+    expect(h.resolveConcern).not.toHaveBeenCalled();
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('10000-row cap'));
+    err.mockRestore();
+  });
+
   it('one failing group does not stop the next', async () => {
     children = [
       child(1, OA), child(2, OA), child(3, OA),

@@ -352,6 +352,18 @@ describe('buildBrief', () => {
       expect(brief.sections.find((s) => s.heading === 'Open concerns')?.lines).toEqual(['high: 1', 'medium: 1']);
     });
 
+    it('a snoozed rollup parent folds nothing: its live children count on their own', async () => {
+      const kid = concern({ severity: 'high', summary: 'Phantom incident event' });
+      const parent = concern({
+        subject: { kind: 'incident', id: '00000000-0000-4000-8000-0000000000fd' }, severity: 'high', status: 'snoozed',
+        summary: '3 devices: phantom incident event', evidence: { rollup: 'device_pattern' }, childConcernIds: [kid.id],
+      });
+      live([kid, parent]);
+      const brief = await buildBrief(GRANT, NOW);
+      expect(brief.title).toBe('Good morning — 1 need you, 1 open');
+      expect(brief.body).toBe('Phantom incident event');
+    });
+
     it('a folded child with an approval card waiting still needs you', async () => {
       const kid = concern({ severity: 'low', approvalIntentId: 'intent-7', summary: 'Restart the agent?' });
       const parent = concern({

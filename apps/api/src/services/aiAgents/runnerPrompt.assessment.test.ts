@@ -454,7 +454,7 @@ describe('buildAssessmentTaskPrompt (Wisp W05b)', () => {
     const p = buildAssessmentTaskPrompt(ctx());
     const rule = p.split('\n').find((l) => l.includes('same problem recurs across devices'));
     expect(rule).toBeDefined();
-    expect(rule).toContain('pattern');
+    expect(rule).toContain('the same short pattern key');
     expect(p.indexOf('- New problem worth tracking')).toBeLessThan(p.indexOf(rule!));
     expect(p.indexOf(rule!)).toBeLessThan(p.indexOf('- Known concern changed'));
   });
