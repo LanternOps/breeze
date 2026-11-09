@@ -54,11 +54,16 @@ import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { aiInvocations } from '../../db/schema/aiInvocations';
 import { wispGrants } from '../../db/schema/wisp';
 import {
+  GRANT_OVERHEAD_SOURCE_REF_PREFIXES,
   GrantNotFoundForBudgetError,
+  SUMMARY_REFINE_SOURCE_REF_PREFIX,
   WISP_BUDGET_DEFAULT_BY_PLAN,
   chargeableUnderGrant,
+  combineSpendLines,
+  grantOverheadSourceRefs,
   grantSettingsBounds,
   notifyBudgetExhaustedOnce,
+  spendBreakdownUnderGrant,
   spendSummary,
   spentUnderGrant,
   summaryRefineSourceRef,
@@ -131,7 +136,96 @@ describe('utcDayWindow', () => {
   });
 });
 
+// #10414: the grant meter counts chat. Three raw lines (runs in whole cents,
+// overhead and chat as ledger fractions) become one total rounded up ONCE, and
+// a chat/background split that always adds back up to that total.
+describe('combineSpendLines', () => {
+  it('rounds overhead + chat up once and gives chat its own rounded line, capped at total − runs', () => {
+    expect(combineSpendLines({ runsCents: 30, overheadRaw: 0.4, chatRaw: 169.2 }))
+      .toEqual({ totalCents: 200, chatCents: 170, backgroundCents: 30 });
+    // 0.2 + 0.2 rounds up to 1 once (not 1 + 1), and chat cannot exceed what is left after runs.
+    expect(combineSpendLines({ runsCents: 0, overheadRaw: 0.2, chatRaw: 0.2 }))
+      .toEqual({ totalCents: 1, chatCents: 1, backgroundCents: 0 });
+    expect(combineSpendLines({ runsCents: 25, overheadRaw: 0, chatRaw: 0 }))
+      .toEqual({ totalCents: 25, chatCents: 0, backgroundCents: 25 });
+  });
+
+  it('overhead alone is background; chat alone is chat', () => {
+    expect(combineSpendLines({ runsCents: 0, overheadRaw: 12.25, chatRaw: 0 }))
+      .toEqual({ totalCents: 13, chatCents: 0, backgroundCents: 13 });
+    expect(combineSpendLines({ runsCents: 0, overheadRaw: 0, chatRaw: 1.4 }))
+      .toEqual({ totalCents: 2, chatCents: 2, backgroundCents: 0 });
+  });
+
+  it('a whole-cent sum is not rounded up a second time', () => {
+    expect(combineSpendLines({ runsCents: 10, overheadRaw: 0.7, chatRaw: 0.3 }))
+      .toEqual({ totalCents: 11, chatCents: 1, backgroundCents: 10 });
+    expect(combineSpendLines({ runsCents: 0, overheadRaw: 1.1, chatRaw: 0.9 }))
+      .toEqual({ totalCents: 2, chatCents: 1, backgroundCents: 1 });
+  });
+
+  it('invariant: backgroundCents + chatCents === totalCents, and no line is negative', () => {
+    const inputs = [
+      { runsCents: 0, overheadRaw: 0, chatRaw: 0 },
+      { runsCents: 7, overheadRaw: 0.000001, chatRaw: 0 },
+      { runsCents: 0, overheadRaw: 0, chatRaw: 0.000001 },
+      { runsCents: 3, overheadRaw: 0.5, chatRaw: 0.5 },
+      { runsCents: 100, overheadRaw: 2.999999, chatRaw: 47.000001 },
+      { runsCents: 59, overheadRaw: 0.1, chatRaw: 251.5 },
+      { runsCents: 1, overheadRaw: 99.9, chatRaw: 0.2 },
+    ];
+    for (const input of inputs) {
+      const b = combineSpendLines(input);
+      expect(b.backgroundCents + b.chatCents, JSON.stringify(input)).toBe(b.totalCents);
+      expect(b.chatCents, JSON.stringify(input)).toBeGreaterThanOrEqual(0);
+      expect(b.backgroundCents, JSON.stringify(input)).toBeGreaterThanOrEqual(input.runsCents);
+      expect(Number.isInteger(b.totalCents) && Number.isInteger(b.chatCents)).toBe(true);
+    }
+  });
+});
+
+describe('grant overhead source refs', () => {
+  it('starts with the session-summary prefix and keys every prefix by grant id', () => {
+    expect(GRANT_OVERHEAD_SOURCE_REF_PREFIXES).toEqual([SUMMARY_REFINE_SOURCE_REF_PREFIX]);
+    expect(grantOverheadSourceRefs(GRANT)).toEqual([summaryRefineSourceRef(GRANT)]);
+  });
+});
+
+describe('spendBreakdownUnderGrant', () => {
+  it('reads runs, overhead and chat in one system context and combines them', async () => {
+    h.results.push([{ total: '30' }], [{ total: '0.400000' }], [{ total: '169.200000' }]);
+    const now = new Date('2027-01-05T12:00:00.000Z');
+    await expect(spendBreakdownUnderGrant(GRANT, now))
+      .resolves.toEqual({ totalCents: 200, chatCents: 170, backgroundCents: 30 });
+    expect(h.inSystemContext).toHaveBeenCalled();
+    expect(h.fromArgs).toEqual([aiAgentRuns, aiInvocations, aiInvocations]);
+  });
+
+  it("the chat line is the grant's Wisp sessions' invocations that are not a run's own, by created_at in the window", async () => {
+    h.results.push([{ total: 0 }], [{ total: 0 }], [{ total: 0 }]);
+    await spendBreakdownUnderGrant(GRANT, new Date('2027-01-05T12:00:00.000Z'));
+    const q = compile(h.whereArgs[2]);
+    // Scoped through the grant's sessions (ai_sessions_wisp_grant_idx → ai_invocations_session_idx), not the org index.
+    expect(q.sql).toContain('"ai_invocations"."session_id" = ANY(ARRAY(SELECT');
+    expect(q.sql).toContain('wisp_grant_id = $');
+    expect(q.sql).toContain('"ai_invocations"."agent_run_id" is null');
+    expect(q.sql).toContain('"ai_invocations"."created_at" >= $');
+    expect(q.sql).toContain('"ai_invocations"."created_at" < $');
+    expect(q.params).toEqual(expect.arrayContaining([GRANT, '2027-01-05T00:00:00.000Z', '2027-01-06T00:00:00.000Z']));
+  });
+
+  it('no spend → all zero', async () => {
+    h.results.push([{ total: null }], [{ total: null }], [{ total: null }]);
+    await expect(spendBreakdownUnderGrant(GRANT)).resolves.toEqual({ totalCents: 0, chatCents: 0, backgroundCents: 0 });
+  });
+});
+
 describe('spentUnderGrant', () => {
+  it('is the breakdown total: chat counts toward the grant budget (#10414)', async () => {
+    h.results.push([{ total: '30' }], [{ total: '0.4' }], [{ total: '169.2' }]);
+    expect(await spentUnderGrant(GRANT, new Date('2027-01-05T12:00:00.000Z'))).toBe(200);
+  });
+
   it('sums cost_cents for the grant by queued_at in [start, end) and excludes skipped, in system context', async () => {
     h.results.push([{ total: '137' }]);
     const now = new Date('2027-01-05T00:30:00.000Z');
@@ -161,12 +255,13 @@ describe('spentUnderGrant', () => {
   // #10390: a model-written session summary (opt-in per grant) is not a run, so
   // its settled ledger rows are added by their grant-keyed source_ref.
   it("adds the grant's session-summary model calls from ai_invocations, by created_at in the same window", async () => {
-    h.results.push([{ total: '137' }], [{ total: '12' }]);
+    h.results.push([{ total: '137' }], [{ total: '11.25' }]);
     const now = new Date('2027-01-05T00:30:00.000Z');
     expect(await spentUnderGrant(GRANT, now)).toBe(149);
-    expect(h.fromArgs).toEqual([aiAgentRuns, aiInvocations]);
+    expect(h.fromArgs).toEqual([aiAgentRuns, aiInvocations, aiInvocations]);
     const q = compile(h.whereArgs[1]);
-    expect(q.sql).toContain('"ai_invocations"."source_ref" = $');
+    // The closed list of grant-keyed overhead refs (W05's extractor appends to it).
+    expect(q.sql).toContain('"ai_invocations"."source_ref" in ($');
     expect(q.sql).toContain('"ai_invocations"."created_at" >= $');
     expect(q.sql).toContain('"ai_invocations"."created_at" < $');
     // Bounded to the grant's partner, so ai_invocations_org_created_idx serves it, not a day of every tenant.
@@ -197,6 +292,13 @@ describe('chargeableUnderGrant', () => {
     h.results.push([grantBudgetRow({ budgetCentsPerDay: 200 })], [{ total: 150 }], [{ total: 26 }]);
     await expect(chargeableUnderGrant(GRANT, 25)).resolves.toEqual({ ok: false, reason: 'budget_exhausted' });
     h.results.push([grantBudgetRow({ budgetCentsPerDay: 200 })], [{ total: 150 }], [{ total: 25 }]);
+    await expect(chargeableUnderGrant(GRANT, 25)).resolves.toEqual({ ok: true });
+  });
+
+  it('chat spend under the grant counts against the budget too (#10414)', async () => {
+    h.results.push([grantBudgetRow({ budgetCentsPerDay: 200 })], [{ total: 0 }], [{ total: 0 }], [{ total: '175.5' }]);
+    await expect(chargeableUnderGrant(GRANT, 25)).resolves.toEqual({ ok: false, reason: 'budget_exhausted' });
+    h.results.push([grantBudgetRow({ budgetCentsPerDay: 200 })], [{ total: 0 }], [{ total: 0 }], [{ total: '175' }]);
     await expect(chargeableUnderGrant(GRANT, 25)).resolves.toEqual({ ok: true });
   });
 

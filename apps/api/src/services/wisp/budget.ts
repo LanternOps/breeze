@@ -16,7 +16,15 @@
  * #10390: the spend is the grant's runs plus its model-written session summaries.
  * A summary is not a run (no agent, no policy snapshot, nothing to trace), so it
  * is read from the billing ledger by a grant-keyed `source_ref`, in the window its
- * row was created. Chat turns stay outside this budget.
+ * row was created.
+ *
+ * #10414 (spec §4, Option 2): chat counts and warns; it is never refused here.
+ * A chat line is an invocation on a session carrying this grant
+ * (`ai_sessions.wisp_grant_id`) that is not a run's own call
+ * (`agent_run_id IS NULL`), charged to the UTC day it settled (`created_at`).
+ * Chat spend can exhaust the budget, which stops BACKGROUND admission only;
+ * no chat path reads `chargeableUnderGrant` (budget.chatNeverBlocks.contract.test.ts).
+ * The org AI budget stays chat's hard stop.
  *
  * Every grant / run read runs in SYSTEM context: callers are workers and the
  * thread route, which have already established the grant id they hold.
@@ -24,7 +32,7 @@
  * Import discipline: grants.ts imports WISP_BUDGET_DEFAULT_BY_PLAN from here,
  * so this module imports only TYPES from grants.ts (no runtime cycle).
  */
-import { and, eq, gte, lt, ne, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
 import type { PartnerPlan, WispLimits } from '@breeze/shared';
 import { db } from '../../db';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
@@ -63,6 +71,42 @@ export const SUMMARY_REFINE_SOURCE_REF_PREFIX = 'wisp_thread_summary:';
 /** The ledger ref that charges a model-written session summary to its grant's daily budget. */
 export function summaryRefineSourceRef(grantId: string): string {
   return `${SUMMARY_REFINE_SOURCE_REF_PREFIX}${grantId}`;
+}
+
+/**
+ * The closed list of `ai_invocations.source_ref` prefixes whose sessionless,
+ * grant-keyed rows are charged to the grant's BACKGROUND line (the grant id
+ * follows the prefix). A sessionless model call this feature adds registers
+ * its prefix here; anything not listed is not grant spend.
+ */
+export const GRANT_OVERHEAD_SOURCE_REF_PREFIXES: readonly string[] = [SUMMARY_REFINE_SOURCE_REF_PREFIX];
+
+/** Every overhead ledger ref for one grant, one per registered prefix. */
+export function grantOverheadSourceRefs(grantId: string): string[] {
+  return GRANT_OVERHEAD_SOURCE_REF_PREFIXES.map((prefix) => `${prefix}${grantId}`);
+}
+
+/** One UTC day of a grant's spend, in whole cents: `backgroundCents + chatCents === totalCents`. */
+export type GrantSpendBreakdown = { backgroundCents: number; chatCents: number; totalCents: number };
+
+/** The ledger holds `numeric(20, 6)` cents; adding in integer micro-cents keeps the one rounding exact. */
+const MICRO_PER_CENT = 1_000_000;
+const toMicroCents = (cents: number): number => Math.round(cents * MICRO_PER_CENT);
+
+/**
+ * Combine the three raw spend lines into whole cents. Runs are already whole
+ * cents; overhead and chat are ledger fractions summed raw and rounded up ONCE
+ * together (a budget never rounds in the spender's favour, and never rounds
+ * twice). Chat gets its own rounded-up line, capped at what the rounding left
+ * after runs, so the two lines always add back to the total.
+ */
+export function combineSpendLines(input: { runsCents: number; overheadRaw: number; chatRaw: number }): GrantSpendBreakdown {
+  const overheadMicro = Math.max(0, toMicroCents(input.overheadRaw));
+  const chatMicro = Math.max(0, toMicroCents(input.chatRaw));
+  const ledgerCents = Math.ceil((overheadMicro + chatMicro) / MICRO_PER_CENT);
+  const totalCents = input.runsCents + ledgerCents;
+  const chatCents = Math.min(Math.ceil(chatMicro / MICRO_PER_CENT), ledgerCents);
+  return { backgroundCents: totalCents - chatCents, chatCents, totalCents };
 }
 
 /** The grant id a budget call was given does not exist. Never read as "ok" or "exhausted". */
@@ -119,14 +163,17 @@ async function loadGrantBudget(grantId: string): Promise<GrantBudgetRow> {
 }
 
 /**
- * What the grant spent in the UTC day `now` falls in: its runs QUEUED that day,
- * excluding skipped ones, plus its session summaries settled that day, rounded up
- * to a whole cent (the ledger holds fractions; a budget never rounds in the
- * spender's favour).
+ * What the grant spent in the UTC day `now` falls in, by line:
+ *  - background: its runs QUEUED that day (excluding skipped ones), plus its
+ *    grant-keyed overhead rows (`GRANT_OVERHEAD_SOURCE_REF_PREFIXES`) settled
+ *    that day;
+ *  - chat: invocations on its Wisp sessions that are not a run's own call,
+ *    settled that day.
+ * Outstanding reservations are not counted, for any line.
  */
-export async function spentUnderGrant(grantId: string, now: Date = new Date()): Promise<number> {
+export async function spendBreakdownUnderGrant(grantId: string, now: Date = new Date()): Promise<GrantSpendBreakdown> {
   const { start, end } = utcDayWindow(now);
-  const { runs, summaries } = await inSystemContext(async () => {
+  const { runs, overhead, chat } = await inSystemContext(async () => {
     const runRows = await db
       .select({ total: sql<string | number | null>`coalesce(sum(${aiAgentRuns.costCents}), 0)::bigint` })
       .from(aiAgentRuns)
@@ -136,20 +183,43 @@ export async function spentUnderGrant(grantId: string, now: Date = new Date()): 
         lt(aiAgentRuns.queuedAt, end),
         ne(aiAgentRuns.status, 'skipped'),
       ));
-    const summaryRows = await db
-      .select({ total: sql<string | number | null>`ceil(coalesce(sum(${aiInvocations.costCents}), 0))::bigint` })
+    const overheadRows = await db
+      .select({ total: sql<string | number | null>`coalesce(sum(${aiInvocations.costCents}), 0)` })
       .from(aiInvocations)
       .where(and(
         // The ledger is the busiest table: the partner's orgs let ai_invocations_org_created_idx
         // serve this, instead of reading a day of every tenant's rows on each budget check.
         sql`${aiInvocations.orgId} IN (SELECT o.id FROM organizations o JOIN wisp_grants g ON g.partner_id = o.partner_id WHERE g.id = ${grantId}::uuid)`,
-        eq(aiInvocations.sourceRef, summaryRefineSourceRef(grantId)),
+        inArray(aiInvocations.sourceRef, grantOverheadSourceRefs(grantId)),
         gte(aiInvocations.createdAt, start),
         lt(aiInvocations.createdAt, end),
       ));
-    return { runs: runRows[0], summaries: summaryRows[0] };
+    const chatRows = await db
+      .select({ total: sql<string | number | null>`coalesce(sum(${aiInvocations.costCents}), 0)` })
+      .from(aiInvocations)
+      .where(and(
+        // Scoped through the grant's sessions, not the org index: a grant has few sessions.
+        // ANY(ARRAY(...)) makes the session lookup an InitPlan (ai_sessions_wisp_grant_idx)
+        // whose ids probe ai_invocations_session_idx; a plain IN (...) semi-join can be
+        // planned invocations-first on skewed stats and walk the whole session index.
+        sql`${aiInvocations.sessionId} = ANY(ARRAY(SELECT s.id FROM ai_sessions s WHERE s.wisp_grant_id = ${grantId}::uuid))`,
+        // A run's own calls are already in its cost_cents (the background line).
+        isNull(aiInvocations.agentRunId),
+        gte(aiInvocations.createdAt, start),
+        lt(aiInvocations.createdAt, end),
+      ));
+    return { runs: runRows[0], overhead: overheadRows[0], chat: chatRows[0] };
   });
-  return Number(runs?.total ?? 0) + Number(summaries?.total ?? 0);
+  return combineSpendLines({
+    runsCents: Number(runs?.total ?? 0),
+    overheadRaw: Number(overhead?.total ?? 0),
+    chatRaw: Number(chat?.total ?? 0),
+  });
+}
+
+/** The grant's total spend today in whole cents (`spendBreakdownUnderGrant(...).totalCents`). */
+export async function spentUnderGrant(grantId: string, now: Date = new Date()): Promise<number> {
+  return (await spendBreakdownUnderGrant(grantId, now)).totalCents;
 }
 
 /** Both reads under ONE system context (the inner inSystemContext calls run in place). */
