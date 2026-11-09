@@ -1129,6 +1129,10 @@
       "knownGuests": {
         "label": "Invitados conocidos",
         "description": "Dispositivos aprobados de visitantes y técnicos por dirección MAC"
+      },
+      "customerPortal": {
+        "label": "Portal del cliente",
+        "description": "Reglas predeterminadas de inicio de sesión y registro para los portales de sus clientes, y solicitudes de acceso a la espera de una decisión"
       }
     },
     "saved": "Configuración de socio guardada",
@@ -2353,6 +2357,11 @@
       "sendInvite": "No se pudo enviar la invitación",
       "action": "La acción falló",
       "invalidEmail": "Introduzca una dirección de correo electrónico válida"
+    },
+    "badges": {
+      "noBrowserAccess": "Sin acceso por navegador",
+      "microsoft": "Inicio de sesión con Microsoft",
+      "google": "Inicio de sesión con Google"
     }
   },
   "orgRemoteAccessSettings": {
@@ -7599,7 +7608,8 @@
         "none": "Sin acceso",
         "invited": "Invitado",
         "active": "Activo",
-        "disabled": "Deshabilitado"
+        "disabled": "Deshabilitado",
+        "requested": "Solicitado"
       },
       "actions": {
         "give": "Dar acceso al portal",
@@ -8289,5 +8299,126 @@
     "title": "Modo de aprobación de IA",
     "description": "Cómo el chat de Breeze AI pide confirmación antes de ejecutar acciones protegidas (Tier 2/3) en esta organización. Se aplica haya o no un límite de gasto.",
     "save": "Guardar"
+  },
+  "portalAccessPolicy": {
+    "title": "Inicio de sesión y registro",
+    "orgDescription": "Cómo inician sesión en el portal del cliente las personas de esta organización y cómo obtienen acceso por navegador las personas nuevas. Un campo en Heredar sigue el valor predeterminado del socio.",
+    "partnerDescription": "El valor predeterminado para todas las organizaciones cliente. Cada organización puede reemplazar cualquier campo en su pestaña Portal del cliente.",
+    "loading": "Cargando la configuración de inicio de sesión…",
+    "readOnly": "Puede ver esta configuración, pero no cambiarla. Cambiar el valor predeterminado del socio requiere acceso completo de socio.",
+    "save": "Guardar configuración de inicio de sesión",
+    "sources": {
+      "partner": "Predeterminado del socio",
+      "default": "Predeterminado de Breeze"
+    },
+    "signIn": {
+      "title": "Cómo inician sesión las personas"
+    },
+    "newPeople": {
+      "title": "Cómo obtienen acceso por navegador las personas nuevas"
+    },
+    "options": {
+      "on": "Activado",
+      "off": "Desactivado"
+    },
+    "microsoft": {
+      "label": "Inicio de sesión con Microsoft"
+    },
+    "google": {
+      "label": "Inicio de sesión con Google"
+    },
+    "password": {
+      "label": "Inicio de sesión con contraseña",
+      "allowed": "Permitido",
+      "ssoOnly": "Desactivado — solo Microsoft/Google",
+      "ssoOnlyNeedsSso": "Disponible cuando se active el inicio de sesión con Microsoft o Google."
+    },
+    "fallback": "El inicio de sesión con contraseña está activado porque no hay ningún inicio de sesión con Microsoft o Google habilitado.",
+    "invites": {
+      "label": "Invitaciones del MSP",
+      "value": "Siempre activadas"
+    },
+    "selfRegistration": {
+      "label": "Autorregistro",
+      "off": "Desactivado",
+      "approval": "Requiere aprobación",
+      "instant": "Inmediato"
+    },
+    "ssoNewPerson": {
+      "label": "Primer inicio de sesión con Microsoft / Google",
+      "invitedOnly": "Solo personas invitadas",
+      "approval": "Requiere aprobación",
+      "instant": "Inmediato"
+    },
+    "requests": "Solicitudes ({{count}})",
+    "errors": {
+      "load": "No se pudo cargar la configuración de inicio de sesión.",
+      "save": "No se pudo guardar la configuración de inicio de sesión.",
+      "methodUnavailable": "Este método de inicio de sesión aún no está disponible en esta implementación de Breeze.",
+      "ssoOnlyNeedsSso": "Active el inicio de sesión con Microsoft o Google antes de desactivar el inicio de sesión con contraseña."
+    },
+    "toasts": {
+      "saved": "Configuración de inicio de sesión guardada."
+    }
+  },
+  "portalAccessRequests": {
+    "title": "Solicitudes de acceso",
+    "description": "Personas a la espera de acceso al portal de esta organización. Apruebe para darles acceso o deniegue para descartar la solicitud.",
+    "columns": {
+      "person": "Persona",
+      "source": "Cómo lo solicitaron",
+      "requested": "Solicitado"
+    },
+    "sources": {
+      "self": "Autorregistro",
+      "entra": "Inicio de sesión con Microsoft",
+      "google": "Inicio de sesión con Google",
+      "addin_user": "Complemento AI for Office"
+    },
+    "selectAll": "Seleccionar todas las solicitudes",
+    "selectOne": "Seleccionar la solicitud de {{email}}",
+    "accountExists": "Ya tiene una cuenta — Deniegue para descartar",
+    "actions": {
+      "approve": "Aprobar",
+      "deny": "Denegar",
+      "approveSelected": "Aprobar seleccionadas ({{count}})",
+      "denySelected": "Denegar seleccionadas ({{count}})"
+    },
+    "results": {
+      "accountExists": "Ya tiene una cuenta",
+      "notPending": "Ya no está pendiente",
+      "notFound": "Solicitud no encontrada",
+      "identityLinked": "Inicio de sesión ya vinculado a otra cuenta",
+      "failed": "No se pudo resolver esta solicitud"
+    },
+    "denyDialog": {
+      "title": "Denegar solicitud de acceso",
+      "message": "¿Denegar la solicitud de {{email}}? Recibirá un correo indicando que no fue aprobada.",
+      "bulkMessage_one": "¿Denegar {{count}} solicitud? La persona recibirá un correo indicando que no fue aprobada.",
+      "bulkMessage_other": "¿Denegar {{count}} solicitudes? Cada persona recibirá un correo indicando que no fue aprobada."
+    },
+    "toasts": {
+      "approved": "Se aprobó el acceso de {{email}}.",
+      "denied": "Se denegó la solicitud de {{email}}.",
+      "bulkDone_one": "{{count}} solicitud resuelta.",
+      "bulkDone_other": "{{count}} solicitudes resueltas.",
+      "bulkPartial": "{{succeeded}} de {{total}} solicitudes resueltas. Las demás están marcadas en la lista."
+    },
+    "errors": {
+      "load": "No se pudieron cargar las solicitudes de acceso.",
+      "action": "No se pudo actualizar la solicitud de acceso.",
+      "bulk": "No se pudieron resolver las solicitudes seleccionadas."
+    },
+    "summary": {
+      "title": "Solicitudes de acceso pendientes",
+      "description": "Solicitudes en espera en sus organizaciones cliente. Abra una organización para aprobarlas o denegarlas.",
+      "empty": "Sin solicitudes pendientes",
+      "orgPending_one": "{{count}} pendiente",
+      "orgPending_other": "{{count}} pendientes",
+      "review": "Revisar solicitudes",
+      "loadError": "No se pudieron cargar las solicitudes de acceso pendientes."
+    },
+    "refreshFailed": "No se pudieron actualizar las solicitudes de acceso, por lo que esta lista puede estar desactualizada.",
+    "more": "Se muestran las primeras {{count}} solicitudes. Decida sobre estas para ver el resto."
   }
 }

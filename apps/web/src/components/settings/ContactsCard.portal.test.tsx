@@ -39,7 +39,7 @@ const CONTACTS = [
 
 function login(id: string, contactId: string, email: string, effectiveStatus: string) {
   return { id, email, name: null, status: 'active', effectiveStatus, receiveNotifications: true,
-    lastLoginAt: null, invitedAt: null, contactId, authMethod: 'password' };
+    lastLoginAt: null, invitedAt: null, contactId, authMethod: 'password', browserAccess: 'granted' };
 }
 
 const LOGINS = [
@@ -61,6 +61,7 @@ type Opts = {
   invite?: () => Promise<Response>;
   bulk?: () => Promise<Response>;
   createdContact?: unknown;
+  requests?: unknown[];
 };
 
 function mockApi(o: Opts = {}) {
@@ -82,6 +83,9 @@ function mockApi(o: Opts = {}) {
       return (o.invite ?? (() => jsonResponse({
         data: { id: 'p-new', email: 'x', status: 'invited', contactLink: 'linked' }, emailSent: true,
       })))();
+    }
+    if (url.startsWith(`/orgs/organizations/${ORG}/portal-access-requests`)) {
+      return jsonResponse({ data: o.requests ?? [], hasMore: false });
     }
     if (url.startsWith(PORTAL)) {
       return o.portalStatus && o.portalStatus !== 200
@@ -128,6 +132,14 @@ describe('ContactsCard portal access', () => {
     expect(screen.getByTestId('org-contacts-portal-status-c-inv')).toHaveTextContent('Invited');
     expect(screen.getByTestId('org-contacts-portal-status-c-act')).toHaveTextContent('Active');
     expect(screen.getByTestId('org-contacts-portal-status-c-dis')).toHaveTextContent('Disabled');
+  });
+
+  it('shows Requested (and no give/resend) for a contact with a pending access request', async () => {
+    mockApi({ requests: [{ id: 'r1', email: 'NORA@acme.test', status: 'pending' }] });
+    await renderCard();
+    await waitFor(() => expect(screen.getByTestId('org-contacts-portal-status-c-none')).toHaveTextContent('Requested'));
+    expect(screen.queryByTestId('org-contacts-portal-give-c-none')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('org-contacts-portal-resend-c-none')).not.toBeInTheDocument();
   });
 
   it('hides the Portal column, checkboxes and create checkbox when portal-users returns 403, with no toast', async () => {

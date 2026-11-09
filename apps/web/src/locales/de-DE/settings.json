@@ -1129,6 +1129,10 @@
       "knownGuests": {
         "label": "Bekannte Gäste",
         "description": "Zugelassene Besucher- und Techniker-Geräte nach MAC-Adresse"
+      },
+      "customerPortal": {
+        "label": "Kundenportal",
+        "description": "Standardregeln für Anmeldung und Registrierung in den Portalen Ihrer Kunden sowie Zugriffsanfragen, die auf eine Entscheidung warten"
       }
     },
     "saved": "Partnereinstellungen gespeichert",
@@ -2353,6 +2357,11 @@
       "sendInvite": "Einladung konnte nicht gesendet werden",
       "action": "Aktion fehlgeschlagen",
       "invalidEmail": "Geben Sie eine gültige E-Mail-Adresse ein"
+    },
+    "badges": {
+      "noBrowserAccess": "Kein Browserzugriff",
+      "microsoft": "Microsoft-Anmeldung",
+      "google": "Google-Anmeldung"
     }
   },
   "orgRemoteAccessSettings": {
@@ -7599,7 +7608,8 @@
         "none": "Kein Zugang",
         "invited": "Eingeladen",
         "active": "Aktiv",
-        "disabled": "Deaktiviert"
+        "disabled": "Deaktiviert",
+        "requested": "Angefragt"
       },
       "actions": {
         "give": "Portalzugang geben",
@@ -8289,5 +8299,126 @@
     "title": "KI-Genehmigungsmodus",
     "description": "Wie der Breeze AI-Chat in dieser Organisation vor geschützten (Tier 2/3) Aktionen nachfragt. Gilt unabhängig davon, ob ein Ausgabenlimit gesetzt ist.",
     "save": "Speichern"
+  },
+  "portalAccessPolicy": {
+    "title": "Anmeldung & Registrierung",
+    "orgDescription": "Wie sich Personen in dieser Organisation am Kundenportal anmelden und wie neue Personen Browserzugriff erhalten. Ein Feld mit der Einstellung „Erben“ übernimmt den Standard Ihres Partners.",
+    "partnerDescription": "Der Standard für alle Kundenorganisationen. Jede Organisation kann jedes Feld auf ihrem Tab „Kundenportal“ überschreiben.",
+    "loading": "Anmeldeeinstellungen werden geladen…",
+    "readOnly": "Sie können diese Einstellungen einsehen, aber nicht ändern. Zum Ändern des Partner-Standards ist voller Partnerzugriff erforderlich.",
+    "save": "Anmeldeeinstellungen speichern",
+    "sources": {
+      "partner": "Partner-Standard",
+      "default": "Breeze-Standard"
+    },
+    "signIn": {
+      "title": "Wie sich Personen anmelden"
+    },
+    "newPeople": {
+      "title": "Wie neue Personen Browserzugriff erhalten"
+    },
+    "options": {
+      "on": "Ein",
+      "off": "Aus"
+    },
+    "microsoft": {
+      "label": "Microsoft-Anmeldung"
+    },
+    "google": {
+      "label": "Google-Anmeldung"
+    },
+    "password": {
+      "label": "Anmeldung mit Passwort",
+      "allowed": "Erlaubt",
+      "ssoOnly": "Aus — nur Microsoft/Google",
+      "ssoOnlyNeedsSso": "Verfügbar, sobald die Microsoft- oder Google-Anmeldung aktiviert ist."
+    },
+    "fallback": "Die Anmeldung mit Passwort ist aktiv, weil weder Microsoft- noch Google-Anmeldung aktiviert ist.",
+    "invites": {
+      "label": "Einladungen vom MSP",
+      "value": "Immer aktiv"
+    },
+    "selfRegistration": {
+      "label": "Selbstregistrierung",
+      "off": "Aus",
+      "approval": "Genehmigung erforderlich",
+      "instant": "Sofort"
+    },
+    "ssoNewPerson": {
+      "label": "Erste Microsoft-/Google-Anmeldung",
+      "invitedOnly": "Nur eingeladene Personen",
+      "approval": "Genehmigung erforderlich",
+      "instant": "Sofort"
+    },
+    "requests": "Anfragen ({{count}})",
+    "errors": {
+      "load": "Anmeldeeinstellungen konnten nicht geladen werden.",
+      "save": "Anmeldeeinstellungen konnten nicht gespeichert werden.",
+      "methodUnavailable": "Diese Anmeldemethode ist in dieser Breeze-Bereitstellung noch nicht verfügbar.",
+      "ssoOnlyNeedsSso": "Aktivieren Sie die Microsoft- oder Google-Anmeldung, bevor Sie die Anmeldung mit Passwort deaktivieren."
+    },
+    "toasts": {
+      "saved": "Anmeldeeinstellungen gespeichert."
+    }
+  },
+  "portalAccessRequests": {
+    "title": "Zugriffsanfragen",
+    "description": "Personen, die auf Zugriff auf das Portal dieser Organisation warten. Genehmigen Sie, um Zugriff zu gewähren, oder lehnen Sie ab, um die Anfrage zu verwerfen.",
+    "columns": {
+      "person": "Antragsteller",
+      "source": "Art der Anfrage",
+      "requested": "Angefragt"
+    },
+    "sources": {
+      "self": "Selbstregistrierung",
+      "entra": "Microsoft-Anmeldung",
+      "google": "Google-Anmeldung",
+      "addin_user": "AI-for-Office-Add-in"
+    },
+    "selectAll": "Alle Anfragen auswählen",
+    "selectOne": "Anfrage von {{email}} auswählen",
+    "accountExists": "Hat bereits ein Konto — Zum Verwerfen ablehnen",
+    "actions": {
+      "approve": "Genehmigen",
+      "deny": "Ablehnen",
+      "approveSelected": "Ausgewählte genehmigen ({{count}})",
+      "denySelected": "Ausgewählte ablehnen ({{count}})"
+    },
+    "results": {
+      "accountExists": "Hat bereits ein Konto",
+      "notPending": "Nicht mehr ausstehend",
+      "notFound": "Anfrage nicht gefunden",
+      "identityLinked": "Anmeldung bereits mit einem anderen Konto verknüpft",
+      "failed": "Diese Anfrage konnte nicht entschieden werden"
+    },
+    "denyDialog": {
+      "title": "Zugriffsanfrage ablehnen",
+      "message": "Anfrage von {{email}} ablehnen? Die Person erhält eine E-Mail, dass die Anfrage nicht genehmigt wurde.",
+      "bulkMessage_one": "{{count}} Anfrage ablehnen? Die Person erhält eine E-Mail, dass die Anfrage nicht genehmigt wurde.",
+      "bulkMessage_other": "{{count}} Anfragen ablehnen? Jede Person erhält eine E-Mail, dass die Anfrage nicht genehmigt wurde."
+    },
+    "toasts": {
+      "approved": "Zugriff für {{email}} genehmigt.",
+      "denied": "Anfrage von {{email}} abgelehnt.",
+      "bulkDone_one": "{{count}} Anfrage entschieden.",
+      "bulkDone_other": "{{count}} Anfragen entschieden.",
+      "bulkPartial": "{{succeeded}} von {{total}} Anfragen entschieden. Die übrigen sind in der Liste markiert."
+    },
+    "errors": {
+      "load": "Zugriffsanfragen konnten nicht geladen werden.",
+      "action": "Die Zugriffsanfrage konnte nicht aktualisiert werden.",
+      "bulk": "Die ausgewählten Anfragen konnten nicht entschieden werden."
+    },
+    "summary": {
+      "title": "Ausstehende Zugriffsanfragen",
+      "description": "Anfragen, die in Ihren Kundenorganisationen warten. Öffnen Sie eine Organisation, um sie zu genehmigen oder abzulehnen.",
+      "empty": "Keine ausstehenden Anfragen",
+      "orgPending_one": "{{count}} ausstehend",
+      "orgPending_other": "{{count}} ausstehend",
+      "review": "Anfragen prüfen",
+      "loadError": "Ausstehende Zugriffsanfragen konnten nicht geladen werden."
+    },
+    "refreshFailed": "Die Zugriffsanfragen konnten nicht aktualisiert werden. Diese Liste ist möglicherweise veraltet.",
+    "more": "Die ersten {{count}} Anfragen werden angezeigt. Entscheiden Sie über diese, um die übrigen zu sehen."
   }
 }

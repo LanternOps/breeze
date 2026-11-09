@@ -1129,6 +1129,10 @@
       "knownGuests": {
         "label": "Invités connus",
         "description": "Appareils approuvés de visiteurs et de techniciens, par adresse MAC"
+      },
+      "customerPortal": {
+        "label": "Portail client",
+        "description": "Règles de connexion et d’inscription par défaut pour les portails de vos clients, et demandes d’accès en attente de décision"
       }
     },
     "saved": "Paramètres partenaires enregistrés",
@@ -2353,6 +2357,11 @@
       "sendInvite": "Impossible d’envoyer l’invitation",
       "action": "Action échouée",
       "invalidEmail": "Saisissez une adresse e-mail valide"
+    },
+    "badges": {
+      "noBrowserAccess": "Aucun accès par navigateur",
+      "microsoft": "Connexion Microsoft",
+      "google": "Connexion Google"
     }
   },
   "orgRemoteAccessSettings": {
@@ -7599,7 +7608,8 @@
         "none": "Aucun accès",
         "invited": "Invité",
         "active": "Actif",
-        "disabled": "Désactivé"
+        "disabled": "Désactivé",
+        "requested": "Demandé"
       },
       "actions": {
         "give": "Donner accès au portail",
@@ -8289,5 +8299,126 @@
     "title": "Mode d'approbation IA",
     "description": "Comment le chat Breeze AI demande une confirmation avant d'exécuter des actions protégées (Tier 2/3) dans cette organisation. S'applique qu'un plafond de dépenses soit défini ou non.",
     "save": "Enregistrer"
+  },
+  "portalAccessPolicy": {
+    "title": "Connexion et inscription",
+    "orgDescription": "Comment les personnes de cette organisation se connectent au portail client, et comment les nouvelles personnes obtiennent un accès par navigateur. Un champ laissé sur Hériter suit la valeur par défaut du partenaire.",
+    "partnerDescription": "La valeur par défaut de toutes les organisations clientes. Chaque organisation peut remplacer n’importe quel champ dans son onglet Portail client.",
+    "loading": "Chargement des paramètres de connexion…",
+    "readOnly": "Vous pouvez consulter ces paramètres, mais pas les modifier. Modifier la valeur par défaut du partenaire nécessite un accès complet au partenaire.",
+    "save": "Enregistrer les paramètres de connexion",
+    "sources": {
+      "partner": "Valeur par défaut du partenaire",
+      "default": "Valeur par défaut de Breeze"
+    },
+    "signIn": {
+      "title": "Comment les personnes se connectent"
+    },
+    "newPeople": {
+      "title": "Comment les nouvelles personnes obtiennent un accès par navigateur"
+    },
+    "options": {
+      "on": "Activé",
+      "off": "Désactivé"
+    },
+    "microsoft": {
+      "label": "Connexion Microsoft"
+    },
+    "google": {
+      "label": "Connexion Google"
+    },
+    "password": {
+      "label": "Connexion par mot de passe",
+      "allowed": "Autorisée",
+      "ssoOnly": "Désactivée — Microsoft/Google uniquement",
+      "ssoOnlyNeedsSso": "Disponible une fois la connexion Microsoft ou Google activée."
+    },
+    "fallback": "La connexion par mot de passe est activée, car aucune connexion Microsoft ou Google n’est activée.",
+    "invites": {
+      "label": "Invitations du MSP",
+      "value": "Toujours activées"
+    },
+    "selfRegistration": {
+      "label": "Inscription autonome",
+      "off": "Désactivée",
+      "approval": "Approbation requise",
+      "instant": "Immédiate"
+    },
+    "ssoNewPerson": {
+      "label": "Première connexion Microsoft / Google",
+      "invitedOnly": "Personnes invitées seulement",
+      "approval": "Approbation requise",
+      "instant": "Immédiate"
+    },
+    "requests": "Demandes ({{count}})",
+    "errors": {
+      "load": "Impossible de charger les paramètres de connexion.",
+      "save": "Impossible d’enregistrer les paramètres de connexion.",
+      "methodUnavailable": "Cette méthode de connexion n’est pas encore disponible sur ce déploiement de Breeze.",
+      "ssoOnlyNeedsSso": "Activez la connexion Microsoft ou Google avant de désactiver la connexion par mot de passe."
+    },
+    "toasts": {
+      "saved": "Paramètres de connexion enregistrés."
+    }
+  },
+  "portalAccessRequests": {
+    "title": "Demandes d’accès",
+    "description": "Personnes en attente d’accès au portail de cette organisation. Approuvez pour leur donner accès, ou refusez pour fermer la demande.",
+    "columns": {
+      "person": "Personne",
+      "source": "Méthode de demande",
+      "requested": "Demandé"
+    },
+    "sources": {
+      "self": "Inscription autonome",
+      "entra": "Connexion Microsoft",
+      "google": "Connexion Google",
+      "addin_user": "Complément AI for Office"
+    },
+    "selectAll": "Sélectionner toutes les demandes",
+    "selectOne": "Sélectionner la demande de {{email}}",
+    "accountExists": "Possède déjà un compte — Refusez pour fermer la demande",
+    "actions": {
+      "approve": "Approuver",
+      "deny": "Refuser",
+      "approveSelected": "Approuver la sélection ({{count}})",
+      "denySelected": "Refuser la sélection ({{count}})"
+    },
+    "results": {
+      "accountExists": "Possède déjà un compte",
+      "notPending": "N’est plus en attente",
+      "notFound": "Demande introuvable",
+      "identityLinked": "Connexion déjà liée à un autre compte",
+      "failed": "Impossible de traiter cette demande"
+    },
+    "denyDialog": {
+      "title": "Refuser la demande d’accès",
+      "message": "Refuser la demande de {{email}} ? La personne recevra un courriel indiquant que la demande n’a pas été approuvée.",
+      "bulkMessage_one": "Refuser {{count}} demande ? La personne recevra un courriel indiquant que la demande n’a pas été approuvée.",
+      "bulkMessage_other": "Refuser {{count}} demandes ? Chaque personne recevra un courriel indiquant que la demande n’a pas été approuvée."
+    },
+    "toasts": {
+      "approved": "Accès approuvé pour {{email}}.",
+      "denied": "Demande de {{email}} refusée.",
+      "bulkDone_one": "{{count}} demande traitée.",
+      "bulkDone_other": "{{count}} demandes traitées.",
+      "bulkPartial": "{{succeeded}} demandes sur {{total}} traitées. Les autres sont signalées dans la liste."
+    },
+    "errors": {
+      "load": "Impossible de charger les demandes d’accès.",
+      "action": "Impossible de mettre à jour la demande d’accès.",
+      "bulk": "Impossible de traiter les demandes sélectionnées."
+    },
+    "summary": {
+      "title": "Demandes d’accès en attente",
+      "description": "Demandes en attente dans vos organisations clientes. Ouvrez une organisation pour les approuver ou les refuser.",
+      "empty": "Aucune demande en attente",
+      "orgPending_one": "{{count}} en attente",
+      "orgPending_other": "{{count}} en attente",
+      "review": "Examiner les demandes",
+      "loadError": "Impossible de charger les demandes d’accès en attente."
+    },
+    "refreshFailed": "Impossible d’actualiser les demandes d’accès : cette liste n’est peut-être plus à jour.",
+    "more": "Affichage des {{count}} premières demandes. Traitez-les pour voir les suivantes."
   }
 }

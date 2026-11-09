@@ -2935,5 +2935,8 @@
   "featureLock": {
     "lockedLabel": "Bloqueado",
     "upgrade": "Ver planos"
+  },
+  "inheritChoice": {
+    "inherit": "Herdar — {{value}} ({{source}})"
   }
 }
