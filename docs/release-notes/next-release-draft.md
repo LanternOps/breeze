@@ -20,6 +20,12 @@ Last release: **v0.127.0** (2026-11-08).
 
 ## Features / API
 
+### Software: upload installers to partner-wide packages (#9246)
+
+- A full-partner admin can now upload an installer (chunked or multipart) to a partner-wide package, including the built-in SentinelOne package, once for all organizations. Upload sessions on a partner-wide package ignore `?orgId`; partner users with selected-org access get 403.
+- A version created with blank install arguments on a built-in integration package now gets the package's template (SentinelOne: `SITE_TOKEN={s1_site_token} /q /NORESTART`).
+- Migration: `software_upload_sessions` gains `partner_id` (org XOR partner ownership).
+
 
 ### Portal: invite from contacts (W1)
 
