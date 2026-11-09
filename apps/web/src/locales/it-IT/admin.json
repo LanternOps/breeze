@@ -622,7 +622,8 @@
       "tabs": {
         "label": "Sezioni di sistema",
         "connections": "Connessioni",
-        "deprecations": "Deprecazioni"
+        "deprecations": "Deprecazioni",
+        "health": "Stato"
       },
       "connections": {
         "enabledMeaning": "Abilitato significa configurato. Breeze non contatta il servizio per verificare che risponda.",
@@ -720,6 +721,57 @@
           "load": "Impossibile caricare lo stato delle attività."
         },
         "retry": "Riprova"
+      },
+      "health": {
+        "coverage": "Solo lavoro di background condiviso: conteggi delle code e heartbeat dei job pianificati, letti da Redis. Questa scheda non mostra un verdetto complessivo. Lo stato per processo e per host è in /health/ready e nell’overlay di monitoraggio.",
+        "loading": "Caricamento dello stato del lavoro di background…",
+        "refresh": "Aggiorna",
+        "never": "mai",
+        "errors": {
+          "load": "Impossibile caricare lo stato del lavoro di background."
+        },
+        "status": {
+          "operational": "Operativo",
+          "degraded": "Degradato",
+          "unavailable": "Non disponibile",
+          "unknown": "Sconosciuto",
+          "disabled": "Disattivato"
+        },
+        "detail": {
+          "redis_unavailable": "Redis non è disponibile, quindi non è stato possibile leggere.",
+          "read_failed": "La lettura non è riuscita.",
+          "timeout": "La lettura è scaduta.",
+          "stale": "L’ultimo heartbeat è più vecchio del previsto.",
+          "missing": "Nessun heartbeat registrato.",
+          "no_threshold": "Solo conteggi. Per questa coda non è ancora definita una soglia di stato."
+        },
+        "queues": {
+          "title": "Code",
+          "description": "Lavoro in attesa in ogni coda condivisa. I conteggi non sono un verdetto di stato.",
+          "items": {
+            "connection-health-reconcile": "Riconciliatore di salute delle connessioni",
+            "connection-health-digest": "Riepilogo di salute delle connessioni",
+            "alerts": "Avvisi",
+            "event-dispatch": "Invio degli eventi"
+          },
+          "counts": {
+            "waiting": "In attesa",
+            "prioritized": "Prioritari",
+            "delayed": "Ritardati",
+            "active": "Attivi"
+          }
+        },
+        "jobs": {
+          "title": "Job pianificati",
+          "description": "Ultima esecuzione registrata di ogni job di salute delle connessioni.",
+          "items": {
+            "reconcile": "Riconciliatore di salute delle connessioni",
+            "digest": "Riepilogo di salute delle connessioni"
+          },
+          "kind": "Verifica connessione: {{kind}}",
+          "lastRun": "Ultima esecuzione: {{when}}",
+          "failureStreak": "Serie di errori: {{count}}"
+        }
       }
     },
     "aiModels": {
