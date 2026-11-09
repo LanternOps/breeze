@@ -896,6 +896,7 @@
     "post": {
       "brief": "Sabah özeti",
       "nudge": "Hatırlatma",
+      "nudgeResolved": "Çözüldü",
       "digest": "Derleme",
       "checkIn": "Planlı kontrol",
       "summary": "Özet",

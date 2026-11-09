@@ -896,6 +896,7 @@
     "post": {
       "brief": "Morgenbericht",
       "nudge": "Hinweis",
+      "nudgeResolved": "Erledigt",
       "digest": "Übersicht",
       "checkIn": "Nachkontrolle",
       "summary": "Zusammenfassung",

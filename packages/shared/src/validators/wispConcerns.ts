@@ -81,18 +81,43 @@ export const raiseConcernSchema = z.object({
 });
 export type RaiseConcernInput = z.infer<typeof raiseConcernSchema>;
 
-export const updateConcernSchema = z.object({
+const updateConcernObjectSchema = z.object({
   concernId: z.uuid(),
   summary: summarySchema.optional(),
   severity: concernSeveritySchema.optional(),
   evidence: evidenceSchema.optional(),
-  status: z.literal('resolved').optional(),
-  outcome: outcomeSchema.optional(),
-}).refine((v) => v.status !== 'resolved' || v.outcome !== undefined, {
-  message: 'outcome is required when status is resolved',
-  path: ['outcome'],
+  status: z.literal('resolved').optional().describe(
+    "Send 'resolved' with an outcome to close the concern. Omit it to keep the concern open: "
+    + 'a summary, severity or evidence edit alone never closes it.',
+  ),
+  outcome: outcomeSchema.optional().describe(
+    'One sentence on how the concern ended (e.g. "The device restarted on its own; the reboot alert cleared"). '
+    + 'Required with status resolved. An outcome always resolves the concern, even without status.',
+  ),
 });
-export type UpdateConcernInput = z.infer<typeof updateConcernSchema>;
+
+/**
+ * The raw `update_concern` shape for the SDK tool's input schema (a raw shape
+ * cannot carry the refine/transform below; `updateConcernSchema.parse` stays
+ * the authority).
+ */
+export const updateConcernToolShape = updateConcernObjectSchema.shape;
+
+/**
+ * #11427: an update that carries an `outcome` and no `status` is a resolve. An
+ * outcome is by definition how the concern ended, and the model sent exactly
+ * that shape (`{ concernId, summary, outcome }`) for a week, which used to edit
+ * the summary and leave the concern open forever. Resolving without an outcome
+ * is still refused: the outcome is what gets remembered.
+ */
+export const updateConcernSchema = updateConcernObjectSchema
+  .refine((v) => v.status !== 'resolved' || v.outcome !== undefined, {
+    message: 'outcome is required when status is resolved',
+    path: ['outcome'],
+  })
+  .transform((v): z.output<typeof updateConcernObjectSchema> =>
+    (v.outcome !== undefined && v.status === undefined ? { ...v, status: 'resolved' } : v));
+export type UpdateConcernInput = z.output<typeof updateConcernSchema>;
 
 export const nudgeSchema = z.object({
   concernId: z.uuid(),

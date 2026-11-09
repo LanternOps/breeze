@@ -896,6 +896,7 @@
     "post": {
       "brief": "Morning brief",
       "nudge": "Nudge",
+      "nudgeResolved": "Resolved",
       "digest": "Digest",
       "checkIn": "Check-in",
       "summary": "Summary",

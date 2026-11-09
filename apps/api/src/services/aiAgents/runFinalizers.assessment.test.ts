@@ -7,7 +7,7 @@
  * finalizer's own ordering, refusals, caps and per-step isolation.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { AI_AGENT_LIMIT_DEFAULTS, type AssessmentOutcome, type Concern } from '@breeze/shared';
+import { AI_AGENT_LIMIT_DEFAULTS, updateConcernSchema, type AssessmentOutcome, type Concern } from '@breeze/shared';
 
 const state = vi.hoisted(() => ({ runStatus: 'running' as string }));
 
@@ -222,6 +222,22 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       severity: 'low', evidence: { x: 1, approvalIntentId: 'intent-old' }, lastAssessedRunId: RUN_ID,
     });
     expect(concerns.resolveConcern).toHaveBeenCalledWith(C1, { grantId: GRANT_ID }, 'customer replied');
+  });
+
+  // #11427: the run loop captures `validateOutcomeToolInput('update_concern', input)`,
+  // i.e. the shared schema's parse output. A call with an outcome and no status
+  // (what the model sent in prod) must reach the finalizer as a resolve.
+  it('update_concern with an outcome and no status (as captured by the run loop) resolves the concern', async () => {
+    const captured = updateConcernSchema.parse({
+      concernId: C1, summary: 'SAM23 restarted', outcome: 'The pending-reboot alert resolved, so the device restarted',
+    });
+    const result = makeResult(calls({ concernsUpdated: [captured] }));
+    await finalizeAssessment(makeCtx(), result);
+    expect(concerns.updateConcern).toHaveBeenCalledWith(C1, { summary: 'SAM23 restarted', lastAssessedRunId: RUN_ID });
+    expect(concerns.resolveConcern).toHaveBeenCalledWith(
+      C1, { grantId: GRANT_ID }, 'The pending-reboot alert resolved, so the device restarted',
+    );
+    expect(result.outcome.assessmentSkipped).toBeUndefined();
   });
 
   describe('nudge', () => {
