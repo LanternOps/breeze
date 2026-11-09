@@ -92,6 +92,8 @@ The multi-tab chat page is **Breeze AI**, at `/ai/chat`. It has the same tabs (u
 
 Breeze AI and the docked panel use the same message list as the Wisp home, so tool activity folds into one line there too, and the composer sends on Enter and adds a line on Shift+Enter.
 
+Each message you send to Wisp carries a fresh snapshot of its own standing state, read when you send it: when the next floor tick is due, how far the first look has got, open concerns by severity with the top few, active watches, scheduled check-ins, today's spend and open alerts. The snapshot is sent again only when something in it has changed, so a long conversation does not fill up with copies. Wisp uses it to answer "are you still looking?" accurately, and answers "what needs my attention" from the partner picture and this snapshot first, calling tools only for the item you pick. "Keep it short" means at most three tool calls before it answers.
+
 ## Working set
 
 Wisp keeps a bounded working set of the records you are discussing. Its pills appear in three groups, in this order:
