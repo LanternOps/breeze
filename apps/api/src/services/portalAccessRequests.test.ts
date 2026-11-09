@@ -296,7 +296,11 @@ describe('approvePortalAccessRequest', () => {
     const entra = pendingRow({ source: 'entra', issuer: `https://login.microsoftonline.com/${TID}/v2.0`, subject: 'oid-1', entraTenantId: TID });
     h.results.push([entra], [], [{ id: 'pu-new', authEpoch: 1 }], []);
     expect(await rejection(approvePortalAccessRequest({ orgId: ORG, requestId: REQ, deciderUserId: DECIDER, now: NOW })))
-      .toMatchObject({ code: 'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED', httpStatus: 409 });
+      .toMatchObject({
+        code: 'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED',
+        httpStatus: 409,
+        message: 'This sign-in identity cannot be approved. Ask the person to request access again.',
+      });
 
     h.calls.length = 0;
     h.results.push([entra], [], []);

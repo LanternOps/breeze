@@ -1,6 +1,7 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
+import { safeErrorMessage } from '../services/aiModels/safeDbError';
 import { bullmqJobId } from '../services/bullmqUtils';
 import {
   isDriftReportClean,
@@ -84,8 +85,9 @@ function createWorker(): Worker<ReconcileJobData> {
       try {
         return await processPortalIdentityReconcileJob(job);
       } catch (err) {
-        console.error('[PortalIdentityReconcile] Run failed:', err);
-        captureException(err);
+        // Rethrow only: BullMQ then emits `failed`, and that listener is the
+        // single Sentry reporter (capturing here as well double-reported).
+        console.error('[PortalIdentityReconcile] Run failed:', safeErrorMessage(err));
         throw err;
       }
     },
@@ -118,18 +120,17 @@ export async function initializePortalIdentityReconcileJob(): Promise<void> {
   reconcileWorker = createWorker();
   attachWorkerObservability(reconcileWorker, 'portalIdentityReconcile');
   reconcileWorker.on('error', (error) => {
-    console.error('[PortalIdentityReconcile] Worker error:', error);
+    console.error('[PortalIdentityReconcile] Worker error:', safeErrorMessage(error));
     captureException(error);
   });
   reconcileWorker.on('failed', (job, error) => {
-    console.error(`[PortalIdentityReconcile] Job ${job?.id} failed:`, error);
+    console.error(`[PortalIdentityReconcile] Job ${job?.id} failed:`, safeErrorMessage(error));
     captureException(error);
   });
   try {
     await scheduleRepeatableJob();
   } catch (err) {
-    await reconcileWorker.close();
-    reconcileWorker = null;
+    await shutdownPortalIdentityReconcileJob();
     throw err;
   }
   console.log('[PortalIdentityReconcile] Initialized');
@@ -141,9 +142,9 @@ export async function shutdownPortalIdentityReconcileJob(): Promise<void> {
   reconcileWorker = null;
   reconcileQueue = null;
   if (worker) {
-    try { await worker.close(); } catch (err) { console.error('[PortalIdentityReconcile] Error closing worker:', err); }
+    try { await worker.close(); } catch (err) { console.error('[PortalIdentityReconcile] Error closing worker:', safeErrorMessage(err)); }
   }
   if (queue) {
-    try { await queue.close(); } catch (err) { console.error('[PortalIdentityReconcile] Error closing queue:', err); }
+    try { await queue.close(); } catch (err) { console.error('[PortalIdentityReconcile] Error closing queue:', safeErrorMessage(err)); }
   }
 }

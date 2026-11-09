@@ -365,6 +365,21 @@ describe('POST approve / deny', () => {
     expect(h.approve).not.toHaveBeenCalled();
   });
 
+  it.each(['approve', 'deny'] as const)('%s: an unexpected plain Error from the service is a 500 with no audit row and no email', async (action) => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      h[action].mockRejectedValueOnce(new Error('connection reset by peer'));
+      const res = await post(`${BASE}/${REQ_1}/${action}`);
+      expect(res.status).toBe(500);
+      expect(h.auditSpy).not.toHaveBeenCalled();
+      expect(h.sendApproved).not.toHaveBeenCalled();
+      expect(h.sendDeclined).not.toHaveBeenCalled();
+      expect(h.issueAndSendInvite).not.toHaveBeenCalled();
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
   it('deny of a decided request → 409 NOT_PENDING, no audit, no email', async () => {
     h.deny.mockRejectedValueOnce(notPending());
     const res = await post(`${BASE}/${REQ_1}/deny`);

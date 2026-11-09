@@ -22,6 +22,7 @@ const state = vi.hoisted(() => ({
   failCleanup: false,
   dropRedisAfterAuth: false,
   srems: [] as Array<[string, string]>,
+  dels: [] as string[],
 }));
 
 const revokePortalSessionDurably = vi.hoisted(() => vi.fn(async (_token: string, _userId: string) => undefined));
@@ -79,7 +80,7 @@ function fakeRedis() {
   const chain = () => {
     const ops: Array<() => Promise<unknown>> = [];
     const api = {
-      del: (key: string) => { ops.push(() => cleanup(state.cache.delete(key))); return api; },
+      del: (key: string) => { ops.push(() => { state.dels.push(key); return cleanup(state.cache.delete(key)); }); return api; },
       srem: (key: string, member: string) => { ops.push(() => { state.srems.push([key, member]); return cleanup(1); }); return api; },
       expire: () => {
         // The middleware's sliding-expiry write is its last Redis call; losing
@@ -173,6 +174,7 @@ beforeEach(() => {
   state.failCleanup = false;
   state.dropRedisAfterAuth = false;
   state.srems = [];
+  state.dels = [];
   redis.current = fakeRedis();
   resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'allowed'));
   state.row = {
@@ -261,6 +263,8 @@ describe('portal middleware access-policy gate on Redis sessions (W3)', () => {
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'Invalid or expired session' });
     expect(state.cache.has(PORTAL_REDIS_KEYS.session(TOKEN))).toBe(false);
+    // Exact keys, via the multi() purge: del on the session key, srem on the user's index.
+    expect(state.dels).toEqual([PORTAL_REDIS_KEYS.session(TOKEN)]);
     expect(state.srems).toEqual([[PORTAL_REDIS_KEYS.userSessions(USER_ID), TOKEN]]);
     expect(state.cache.has(PORTAL_REDIS_KEYS.session(OTHER_TOKEN))).toBe(true);
   });

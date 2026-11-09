@@ -80,8 +80,12 @@ const notPending = () => new PortalAccessRequestError(
 const accountExists = () => new PortalAccessRequestError(
   'PORTAL_ACCESS_REQUEST_ACCOUNT_EXISTS', 409, 'A portal account with this email already exists in this organization.',
 );
+// The message is deliberately neutral: "already linked" would tell an approver
+// the (issuer, subject) identity exists in some other org they cannot see. The
+// specifics (the identity or legacy entra_* key is already held by a login)
+// stay in this comment only.
 const identityLinked = () => new PortalAccessRequestError(
-  'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED', 409, 'This sign-in identity is already linked to a portal account.',
+  'PORTAL_ACCESS_REQUEST_IDENTITY_LINKED', 409, 'This sign-in identity cannot be approved. Ask the person to request access again.',
 );
 
 // ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ const h = vi.hoisted(() => ({
   attachObservability: vi.fn(),
   withSystem: vi.fn(),
   dbWrite: vi.fn(),
+  failNextAdd: false,
   repeatables: [] as Array<{ name: string; key: string }>,
   queues: [] as Array<{ add: ReturnType<typeof vi.fn>; getRepeatableJobs: ReturnType<typeof vi.fn>; removeRepeatableByKey: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }>,
   workers: [] as Array<{ name: string; processor: (job: unknown) => Promise<unknown>; on: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }>,
@@ -18,7 +19,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock('bullmq', () => ({
   Queue: class {
-    add = vi.fn();
+    add = vi.fn(async () => { if (h.failNextAdd) { h.failNextAdd = false; throw new Error('redis down'); } });
     getRepeatableJobs = vi.fn(async () => h.repeatables);
     removeRepeatableByKey = vi.fn();
     close = vi.fn();
@@ -150,10 +151,43 @@ describe('BullMQ wiring', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       await expect(worker.processor({})).rejects.toBe(boom);
+      // The processor only rethrows; the worker `failed` listener is the one Sentry reporter.
+      expect(h.captureException).not.toHaveBeenCalled();
+      const failed = worker.on.mock.calls.find((c) => c[0] === 'failed')![1] as (job: unknown, e: Error) => void;
+      failed({ id: '1' }, boom);
+      expect(h.captureException).toHaveBeenCalledTimes(1);
       expect(h.captureException).toHaveBeenCalledWith(boom);
     } finally {
       errSpy.mockRestore();
     }
+  });
+
+  it('a failing run produces exactly one capture and logs only the safe message, never the raw error', async () => {
+    await initializePortalIdentityReconcileJob();
+    const worker = h.workers[0]!;
+    const secret = Object.assign(new Error('Failed query: select ... where email = $1'), { params: ['victim@example.com'] });
+    h.reconcile.mockRejectedValueOnce(secret);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(worker.processor({})).rejects.toBe(secret);
+      const failed = worker.on.mock.calls.find((c) => c[0] === 'failed')![1] as (job: unknown, e: Error) => void;
+      failed({ id: '1' }, secret);
+      expect(h.captureException).toHaveBeenCalledTimes(1);
+      for (const call of errSpy.mock.calls) {
+        for (const arg of call) expect(typeof arg).toBe('string');
+      }
+      expect(JSON.stringify(errSpy.mock.calls)).not.toContain('victim@example.com');
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('closes the queue as well as the worker when scheduling fails during init', async () => {
+    h.repeatables = [];
+    h.failNextAdd = true;
+    await expect(initializePortalIdentityReconcileJob()).rejects.toThrow('redis down');
+    expect(h.workers[0]!.close).toHaveBeenCalledTimes(1);
+    expect(h.queues[0]!.close).toHaveBeenCalledTimes(1);
   });
 
   it('schedules a daily repeatable on its registry slot (never `every`), clearing a stale repeatable first', async () => {

@@ -84,6 +84,28 @@ const PORTAL_ORG_UNAVAILABLE_MESSAGE =
  * `c.req.path` is the absolute request path (e.g. `/api/v1/portal/auth/logout`),
  * so match on suffix rather than assuming any particular mount prefix.
  */
+/**
+ * Drop one refused session from the Redis cache: `del` on the session key,
+ * `srem` on the user's session index, in one MULTI. Shared by the stale-epoch,
+ * signed-out and policy-refused branches of the session middleware. Cleanup
+ * only: a Redis error is logged as a warning and never changes the caller's
+ * 401, because the durable checks refuse the same session again on every request.
+ */
+async function purgeCachedPortalSession(token: string, userId: string, reason: string): Promise<void> {
+  if (!PORTAL_USE_REDIS) return;
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    await redis
+      .multi()
+      .del(PORTAL_REDIS_KEYS.session(token))
+      .srem(PORTAL_REDIS_KEYS.userSessions(userId), token)
+      .exec();
+  } catch (error) {
+    console.warn(`[portal] Failed to drop a ${reason} session from the cache:`, error instanceof Error ? error.message : error);
+  }
+}
+
 function isPortalAuthGateExemptPath(path: string): boolean {
   return path.endsWith('/auth/logout');
 }
@@ -283,13 +305,7 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
   }
 
   if (user.authEpoch !== sessionData.authEpoch) {
-    if (PORTAL_USE_REDIS) {
-      const redis = getRedis();
-      if (redis) {
-        await redis.del(PORTAL_REDIS_KEYS.session(token));
-        await redis.srem(PORTAL_REDIS_KEYS.userSessions(user.id), token);
-      }
-    }
+    await purgeCachedPortalSession(token, user.id, 'stale-epoch');
     if (ALLOW_IN_MEMORY_PORTAL_STATE) portalSessions.delete(token);
     if (cookieToken) clearPortalSessionCookies(c);
     return c.json({ error: 'Invalid or expired session' }, 401);
@@ -300,20 +316,7 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
   // snapshot). Checked before the account/org gates, the sliding-expiry write
   // and any route work. Cache removal here is cleanup only.
   if (user.sessionRevoked === true) {
-    if (PORTAL_USE_REDIS) {
-      const redis = getRedis();
-      if (redis) {
-        try {
-          await redis
-            .multi()
-            .del(PORTAL_REDIS_KEYS.session(token))
-            .srem(PORTAL_REDIS_KEYS.userSessions(user.id), token)
-            .exec();
-        } catch (error) {
-          console.warn('[portal] Failed to drop a signed-out session from the cache:', error instanceof Error ? error.message : error);
-        }
-      }
-    }
+    await purgeCachedPortalSession(token, user.id, 'signed-out');
     if (ALLOW_IN_MEMORY_PORTAL_STATE) portalSessions.delete(token);
     if (cookieToken) clearPortalSessionCookies(c);
     return c.json({ error: 'Invalid or expired session' }, 401);
@@ -393,21 +396,7 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
       allowed = false;
     }
     if (!allowed) {
-      if (PORTAL_USE_REDIS) {
-        const redis = getRedis();
-        if (redis) {
-          try {
-            await redis
-              .multi()
-              .del(PORTAL_REDIS_KEYS.session(token))
-              .srem(PORTAL_REDIS_KEYS.userSessions(user.id), token)
-              .exec();
-          } catch (error) {
-            // Cleanup only: the gate refuses this session again on every request.
-            console.warn('[portal] Failed to drop a policy-refused session from the cache:', error instanceof Error ? error.message : error);
-          }
-        }
-      }
+      await purgeCachedPortalSession(token, user.id, 'policy-refused');
       if (ALLOW_IN_MEMORY_PORTAL_STATE) portalSessions.delete(token);
       if (cookieToken) clearPortalSessionCookies(c);
       return c.json({ error: 'Invalid or expired session' }, 401);
