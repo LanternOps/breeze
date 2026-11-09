@@ -47,18 +47,19 @@ const FOOTER = 'These are check-ins you scheduled earlier in this thread. Breeze
 
 /**
  * The opening token of every framing block that can share this user turn:
- * this block, the W05 continuation summary, an untrusted-data fence. Matched
+ * this block, the standing-state snapshot (#10426, wisp/standingLoop.ts), the
+ * W05 continuation summary, an untrusted-data fence. Matched
  * on the token, with its attributes and `>` when they follow within 200
  * characters, so an unterminated forgery goes too; case, inner whitespace and
  * `_`/`-` variants included.
  */
-const FRAME_TAG = /<\s*\/?\s*(?:wisp[\s_-]*check[\s_-]*ins?|prior[\s_-]*conversation[\s_-]*summary|untrusted[\s_-]*data)\b(?:[^<>]{0,200}>)?/giu;
+const FRAME_TAG = /<\s*\/?\s*(?:wisp[\s_-]*check[\s_-]*ins?|wisp[\s_-]*standing[\s_-]*state|prior[\s_-]*conversation[\s_-]*summary|untrusted[\s_-]*data)\b(?:[^<>]{0,200}>)?/giu;
 /**
  * The same block names as bare code tokens, anywhere: a tag split by a
  * character the patterns do not know (a combining mark, `≮`) still loses its
  * name. Underscore/hyphen forms only, so prose ("untrusted data") is kept.
  */
-const FRAME_NAME = /wisp[_-]?check[_-]?ins?\b|prior_conversation_summary|untrusted_data/giu;
+const FRAME_NAME = /wisp[_-]?check[_-]?ins?\b|wisp[_-]?standing[_-]?state|prior_conversation_summary|untrusted_data/giu;
 /**
  * Invisible format characters (U+034F, U+180E, variation selectors, …) that
  * the shared sanitizer's list does not cover, any of which could split a
