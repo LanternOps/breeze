@@ -18,6 +18,7 @@ import {
 import type { PortalEntraProofEvidence, PortalEntraProofVia } from '../db/schema/clientAi';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { ANONYMOUS_ACTOR_ID } from './auditEvents';
+import { markRequestAuditWritten } from './auditRequestTracking';
 import { getEmailService } from './email';
 import { listActivePartnerAdmins } from './partnerAdminRecipients';
 import { captureException } from './sentry';
@@ -385,6 +386,7 @@ async function recordInTransaction(
       details: { tenantId, displacedByOrgId: input.orgId, wasProven },
       result: 'success',
     });
+    markRequestAuditWritten();
     displaced = {
       orgId: other.orgId,
       partnerId: other.partnerId,
@@ -437,6 +439,7 @@ async function recordInTransaction(
     },
     result: 'success',
   });
+  markRequestAuditWritten();
 
   return displaced;
 }
