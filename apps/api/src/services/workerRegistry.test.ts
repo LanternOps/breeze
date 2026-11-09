@@ -181,17 +181,14 @@ describe('workerRegistry: losslessness', () => {
     // #9198: first dynamic import of the job's module graph is slow on a loaded runner.
   }, 60_000);
 
-  it('registers the m365 sync worker as a socket-owner-placement entry', () => {
-    // NOTE (deviation from plan text): the plan's Step 1 pins 'global', but
-    // workerEntrypointClosure.contract.test.ts's static import-closure walk
-    // shows jobs/m365SyncWorker.ts -> services/m365Sync/run.ts ->
-    // services/m365ControlPlane/readActionService.ts -> services/aiTools.ts
-    // -> ... -> routes/agentWs.ts — reaching socket-local dispatch, same as
-    // policyEvaluationWorker's flip above. Verified by running the closure
-    // contract, per the plan's own instruction to flip and say so if it fails.
+  it('registers the m365 sync worker as a global-placement entry', () => {
+    // Its import closure used to reach routes/agentWs.ts (m365Sync/run.ts ->
+    // readActionService -> aiTools -> commandQueue); it is clean now, so it is
+    // placed global (#4142). workerEntrypointClosure.contract.test.ts enforces
+    // placement in both directions.
     const entry = WORKER_REGISTRY.find((e) => e.name === 'm365SyncWorker');
     expect(entry).toBeDefined();
-    expect(entry!.placement).toBe('socket-owner');
+    expect(entry!.placement).toBe('global');
   });
 
   it('every entry has a well-formed shape', () => {

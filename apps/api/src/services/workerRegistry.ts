@@ -515,7 +515,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'hardwareHealthRetention',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/hardwareHealthRetention');
       return { init: m.initializeHardwareHealthRetention, shutdown: m.shutdownHardwareHealthRetention };
@@ -523,7 +523,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'timeSyncRetention',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/timeSyncRetention');
       return {
@@ -1183,15 +1183,13 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
-    // socket-owner, not global: its runtime import closure reaches
-    // routes/agentWs.ts — jobs/m365SyncWorker.ts -> services/m365Sync/run.ts
-    // -> services/m365ControlPlane/readActionService.ts ->
-    // services/aiTools.ts -> services/aiToolsAgentLogs.ts ->
-    // services/commandQueue.ts -> routes/agentWs.ts. Found by
-    // workerEntrypointClosure.contract.test.ts (#4086 Task 5) — flipped from
-    // the plan's initial-pass 'global' guess (M365 tenant sync W04, #5331).
+    // global: the runtime import closure no longer reaches routes/agentWs.ts or
+    // services/agentCommandAwait.ts (it once did, via m365Sync/run.ts ->
+    // readActionService -> aiTools -> commandQueue; M365 tenant sync W04, #5331).
+    // Flipped from socket-owner in #4142 when the closure oracle found it clean;
+    // workerEntrypointClosure.contract.test.ts now guards it in both directions.
     name: 'm365SyncWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/m365SyncWorker');
       return { init: m.initializeM365SyncWorker, shutdown: m.shutdownM365SyncWorker };
@@ -1311,28 +1309,30 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'peripheralJobs',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/peripheralJobs');
       return { init: m.initializePeripheralJobs, shutdown: m.shutdownPeripheralJobs };
     },
   },
   {
-    // #4630 — dynamic device group membership re-evaluation. socket-owner, not
-    // global: its closure reaches jobs/peripheralJobs.ts (via
-    // services/groupMembership.ts), which is itself socket-owner. Verified by
+    // #4630 — dynamic device group membership re-evaluation. global: its closure
+    // (services/groupMembership.ts -> jobs/peripheralJobs.ts) is clean of
+    // socket-local dispatch and peripheralJobs is itself global. Verified by
     // workerEntrypointClosure.contract.test.ts, not by guessing.
     name: 'deviceGroupJobs',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/deviceGroupJobs');
       return { init: m.initializeDeviceGroupJobs, shutdown: m.shutdownDeviceGroupJobs };
     },
   },
   {
-    // Socket-owner: groupMembership reaches peripheralJobs and socket-local dispatch.
+    // global: groupMembership reaches peripheralJobs, and neither reaches
+    // socket-local dispatch (closure verified clean by
+    // workerEntrypointClosure.contract.test.ts).
     name: 'partnerGroupEvaluationJobs',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/partnerGroupEvaluationJobs');
       return { init: m.initializePartnerGroupEvaluationJobs, shutdown: m.shutdownPartnerGroupEvaluationJobs };
