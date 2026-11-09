@@ -24,7 +24,7 @@ const savedConfig = {
   builderType: 'alerts',
   dataSource: { timeWindow: 'last_7_days', severity: 'critical' },
   columns: ['title', 'severity'],
-  filterConditions: [{ id: 'f1', field: 'severity', operator: 'is', value: 'critical' }],
+  filterConditions: [{ id: 'f1', logic: 'and', field: 'severity', operator: 'is', value: 'critical' }],
   groupBy: 'severity',
   aggregation: { type: 'count' },
   chartType: 'bar',

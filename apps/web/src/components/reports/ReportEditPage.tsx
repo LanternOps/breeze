@@ -327,12 +327,17 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
       ? { builderType: config.builderType as ReportBuilderFormValues['builderType'] }
       : {}),
     ...(isRecord(config.dataSource)
+      && Object.values(config.dataSource).every((v) => typeof v === 'string' || typeof v === 'boolean')
       ? { dataSource: config.dataSource as ReportBuilderFormValues['dataSource'] }
       : {}),
     ...(Array.isArray(config.columns) && config.columns.every((c) => typeof c === 'string')
       ? { columns: config.columns as string[] }
       : {}),
-    ...(Array.isArray(config.filterConditions) && config.filterConditions.every(isRecord)
+    ...(Array.isArray(config.filterConditions) && config.filterConditions.every(
+      (c) => isRecord(c)
+        && ['id', 'field', 'operator', 'value'].every((k) => typeof c[k] === 'string')
+        && (c.logic === 'and' || c.logic === 'or'),
+    )
       ? { filterConditions: config.filterConditions as ReportBuilderFormValues['filterConditions'] }
       : {}),
     ...(typeof config.groupBy === 'string' ? { groupBy: config.groupBy } : {}),
