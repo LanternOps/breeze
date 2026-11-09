@@ -907,6 +907,15 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'plugin_installations',
   'plugin_instances',
   'plugins',
+  // portal_access_requests (W3 #11380): shape 1; its (portal_user_id, org_id) FK
+  // to portal_users is ON DELETE CASCADE, so it goes before its parent
+  // 'portal_users' (child before parent). localeCompare: 'portal_access_policies'
+  // < 'portal_access_requests' < 'portal_branding'.
+  // portal_access_policies (W3 #11380): dual-axis sign-in policy (org XOR
+  // partner). Only org-override rows carry org_id; partner-default rows are
+  // swept by cascadeDeletePartner's partner_id pass. Cascade leaf.
+  'portal_access_policies',
+  'portal_access_requests',
   'portal_branding',
   // Child of portal_users (composite FK, ON DELETE CASCADE) — before its parent.
   'portal_user_identities',

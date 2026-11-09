@@ -1097,6 +1097,7 @@
       "platform_admin": "Platform admin",
       "plugin": "Plugin",
       "policy": "Policy",
+      "portal_access_request": "Portal access request",
       "portal_auth": "Portal sign-in",
       "portal_user": "Portal user",
       "psa_connection": "PSA connection",

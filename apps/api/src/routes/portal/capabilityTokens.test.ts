@@ -5,14 +5,16 @@ import { createHash } from 'crypto';
 // NODE_ENV=test). The Redis path and its atomic consume are proved in
 // __tests__/integration/portalCapabilityTokens.integration.test.ts.
 
-const { rowRef, activeOrgMock } = vi.hoisted(() => ({
+const { rowRef, activeOrgMock, selectCols } = vi.hoisted(() => ({
   rowRef: { current: null as Record<string, unknown> | null },
   activeOrgMock: vi.fn(),
+  selectCols: { current: null as Record<string, unknown> | null },
 }));
 
 vi.mock('../../db', () => ({
   db: {
-    select: () => {
+    select: (cols: Record<string, unknown>) => {
+      selectCols.current = cols;
       const chain: any = { from: () => chain, leftJoin: () => chain, where: () => chain, limit: () => Promise.resolve(rowRef.current ? [rowRef.current] : []) };
       return chain;
     },
@@ -21,6 +23,12 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: <T>(fn: () => T) => fn(),
 }));
 vi.mock('../../services/tenantStatus', () => ({ getActiveOrgTenant: activeOrgMock }));
+// W3: the access-policy resolver is mocked at its boundary (the pick stays real).
+const resolvePolicy = vi.hoisted(() => vi.fn());
+vi.mock('../../services/portalAccessPolicy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/portalAccessPolicy')>()),
+  resolvePortalAccessPolicy: resolvePolicy,
+}));
 
 import {
   consumePortalCapabilityToken,
@@ -28,7 +36,17 @@ import {
   validatePortalCapability,
   type ConsumedCapability,
 } from './capabilityTokens';
+import { PortalAccessPolicyOrgNotFoundError, pickEffectivePortalAccessPolicy } from '../../services/portalAccessPolicy';
+
+const NO_ROW = { entraEnabled: null, googleEnabled: null, passwordMode: null, selfRegistrationMode: null, ssoNewPersonMode: null, ssoSessionMaxHours: null };
+function policyFor(orgId: string, mode: 'allowed' | 'sso_only') {
+  const org = mode === 'sso_only' ? { ...NO_ROW, entraEnabled: true, passwordMode: 'sso_only' as const } : null;
+  return { orgId, partnerId: 'p-1', ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }) };
+}
 import { portalInviteTokens, portalResetTokens } from './helpers';
+import { QueryBuilder } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
+import { portalUsers } from '../../db/schema/portal';
 
 const ORG = '7c0a1f7e-1111-4222-8333-444455556666';
 const OTHER_ORG = '7c0a1f7e-9999-4222-8333-444455556666';
@@ -38,7 +56,7 @@ const sha = (raw: string) => createHash('sha256').update(raw).digest('hex');
 
 const invitedRow = (over: Record<string, unknown> = {}) => ({
   id: USER, orgId: ORG, email: EMAIL, name: null, passwordHash: null, authMethod: 'password',
-  receiveNotifications: true, status: 'invited', authEpoch: 3, browserAccess: 'granted', entraOid: null, orgName: 'Acme',
+  receiveNotifications: true, status: 'invited', authEpoch: 3, browserAccess: 'granted', hasExternalIdentity: false, orgName: 'Acme',
   ...over,
 });
 
@@ -53,6 +71,8 @@ beforeEach(() => {
   rowRef.current = invitedRow();
   activeOrgMock.mockReset();
   activeOrgMock.mockResolvedValue({ orgId: ORG, partnerId: 'p-1' });
+  resolvePolicy.mockReset();
+  resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'allowed'));
 });
 
 describe('issue + consume', () => {
@@ -159,6 +179,24 @@ describe('validatePortalCapability — invite', () => {
   });
 });
 
+describe('validatePortalCapability — external identity (W3 identities release B)', () => {
+  it('reads hasExternalIdentity from portal_user_identities (EXISTS correlated to the row), never entra_oid', async () => {
+    await validatePortalCapability('invite', v2());
+    const cols = selectCols.current!;
+    expect(cols).not.toHaveProperty('entraOid');
+    expect(cols).toHaveProperty('hasExternalIdentity');
+    // Rendered single-table on purpose: the correlation must survive drizzle's qualifier stripping (#9692).
+    const text = new QueryBuilder().select({ id: portalUsers.id, has: cols.hasExternalIdentity as SQL }).from(portalUsers).toSQL().sql;
+    expect(text).toMatch(/exists \(select 1 from "portal_user_identities" "\w+" where "\w+"\."portal_user_id" = "portal_users"\."id"\)/);
+  });
+
+  it('an account with an identity row is identity-managed even when entra_oid is NULL (the fact reaches the caller)', async () => {
+    rowRef.current = invitedRow({ entraOid: null, hasExternalIdentity: true });
+    const check = await validatePortalCapability('invite', v2());
+    expect(check).toMatchObject({ ok: true, user: { hasExternalIdentity: true } });
+  });
+});
+
 describe('validatePortalCapability — reset', () => {
   const reset = (over: Record<string, unknown> = {}) => v2({ purpose: 'reset', ...over });
 
@@ -189,5 +227,41 @@ describe('validatePortalCapability — reset', () => {
 
   it('refuses a v2 payload validated under the other purpose', async () => {
     expect(await validatePortalCapability('reset', v2())).toEqual({ ok: false, reason: 'invalid' });
+  });
+});
+
+// Portal registration W3 (#11380): a token outstanding when password sign-in
+// is switched off is refused at consume with the generic invalid (inv. 7 / 8).
+describe('validatePortalCapability — access policy (W3)', () => {
+  const reset = () => v2({ purpose: 'reset' });
+
+  it('consults the policy of the row\'s org and accepts while password is allowed (no rows)', async () => {
+    expect((await validatePortalCapability('invite', v2())).ok).toBe(true);
+    expect(resolvePolicy).toHaveBeenCalledWith(ORG);
+  });
+
+  it('invite and reset under sso_only → invalid, before the org gate (no org state learned)', async () => {
+    resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'sso_only'));
+    activeOrgMock.mockResolvedValue(null);
+    expect(await validatePortalCapability('invite', v2())).toEqual({ ok: false, reason: 'invalid' });
+    rowRef.current = invitedRow({ status: 'active', passwordHash: 'h' });
+    expect(await validatePortalCapability('reset', reset())).toEqual({ ok: false, reason: 'invalid' });
+    expect(activeOrgMock).not.toHaveBeenCalled();
+  });
+
+  it('a legacy invite under sso_only → invalid', async () => {
+    resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'sso_only'));
+    expect(await validatePortalCapability('invite', { format: 'legacy', portalUserId: USER })).toEqual({ ok: false, reason: 'invalid' });
+  });
+
+  it('an org the resolver cannot find → invalid', async () => {
+    resolvePolicy.mockRejectedValue(new PortalAccessPolicyOrgNotFoundError(ORG));
+    expect(await validatePortalCapability('invite', v2())).toEqual({ ok: false, reason: 'invalid' });
+  });
+
+  it('never consults the policy for a token the row already refuses', async () => {
+    rowRef.current = invitedRow({ authEpoch: 9 });
+    expect(await validatePortalCapability('invite', v2())).toEqual({ ok: false, reason: 'invalid' });
+    expect(resolvePolicy).not.toHaveBeenCalled();
   });
 });

@@ -1625,6 +1625,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Portal registration W3 (identities release B): daily identity drift report.
+    name: 'portalIdentityReconcile',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/portalIdentityReconcile');
+      return { init: m.initializePortalIdentityReconcileJob, shutdown: m.shutdownPortalIdentityReconcileJob };
+    },
+  },
+  {
     // #9075 W4a (OD8 B): automatic agreement-request reminders (hourly sweep).
     name: 'agreementRequestAutoReminder',
     placement: 'global',

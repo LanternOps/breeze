@@ -49,6 +49,10 @@ const ALLOWED: Allowed[] = [
   ['reactivate: disabled credential-less → invited (D4)', DISABLED_CREDENTIAL_LESS, 'msp_reactivate', { status: 'invited', browserAccess: 'granted', bumpEpoch: true }],
   ['reactivate: active is a no-op', ACTIVE_WITH_HASH, 'msp_reactivate', { status: 'active', browserAccess: 'granted', bumpEpoch: false }],
   ['accept-invite: invited → active (+1)', f(), 'accept_invite', { status: 'active', browserAccess: 'granted', bumpEpoch: true }],
+  // W3 (#11380): approving an add-in user's access request grants the browser
+  // portal and must not bump the epoch (that would kill their add-in sessions).
+  ['access request approve: active + none → granted, no epoch bump', ENTRA, 'access_request_approve', { status: 'active', browserAccess: 'granted', bumpEpoch: false }],
+  ['access request approve: active + granted is idempotent', f({ status: 'active', authMethod: 'entra', hasExternalIdentity: true }), 'access_request_approve', { status: 'active', browserAccess: 'granted', bumpEpoch: false }],
 ];
 
 const REFUSED: Refused[] = [
@@ -67,6 +71,8 @@ const REFUSED: Refused[] = [
   ['accept-invite: disabled', DISABLED_CREDENTIAL_LESS, 'accept_invite', { code: PORTAL_ACCOUNT_TRANSITION_REFUSED, httpStatus: 400, message: 'Invalid or expired invite' }],
   ['accept-invite: an add-in login', f({ authMethod: 'entra', browserAccess: 'none', hasExternalIdentity: true }), 'accept_invite', { code: PORTAL_ACCOUNT_TRANSITION_REFUSED, httpStatus: 400, message: 'Invalid or expired invite' }],
   ['accept-invite: browser_access none', f({ browserAccess: 'none' }), 'accept_invite', { code: PORTAL_ACCOUNT_TRANSITION_REFUSED, httpStatus: 400, message: 'Invalid or expired invite' }],
+  ['access request approve: disabled', DISABLED_ENTRA, 'access_request_approve', { code: PORTAL_ACCOUNT_TRANSITION_REFUSED, httpStatus: 409, message: 'This user is disabled. Reactivate them before approving.' }],
+  ['access request approve: invited', f(), 'access_request_approve', { code: PORTAL_ACCOUNT_TRANSITION_REFUSED, httpStatus: 409, message: 'This user has a pending invite. Resend the invite instead.' }],
 ];
 
 describe('planPortalAccountTransition — allowed transitions', () => {
@@ -124,6 +130,14 @@ describe('initialPortalAccountState', () => {
 
   it('add-in JIT never starts with browser access', () => {
     expect(initialPortalAccountState('addin_jit')).toEqual({ status: 'active', browserAccess: 'none' });
+  });
+
+  it('an approved SSO request starts active with browser access (identity-only account, D2)', () => {
+    expect(initialPortalAccountState('sso_request_approved')).toEqual({ status: 'active', browserAccess: 'granted' });
+  });
+
+  it('an approved self-registration request starts invited with browser access, like an MSP invite', () => {
+    expect(initialPortalAccountState('self_request_approved')).toEqual({ status: 'invited', browserAccess: 'granted' });
   });
 });
 

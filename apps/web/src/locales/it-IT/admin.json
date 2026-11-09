@@ -1097,6 +1097,7 @@
       "platform_admin": "Amministratore della piattaforma",
       "plugin": "Plugin",
       "policy": "Criterio",
+      "portal_access_request": "Richiesta di accesso al portale",
       "portal_auth": "Accesso al portale",
       "portal_user": "Utente del portale",
       "psa_connection": "Connessione PSA",

@@ -81,6 +81,8 @@ const GOLDEN: Array<{ name: string; params: SendEmailParams; expectedFrom: strin
   { name: 'portal.invite', params: { ...MESSAGE, purpose: 'portal.invite', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'security.caller_verification_link', params: { ...MESSAGE, purpose: 'security.caller_verification_link', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'portal.password_reset', params: { ...MESSAGE, purpose: 'portal.password_reset', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'portal.access_request.approved', params: { ...MESSAGE, purpose: 'portal.access_request.approved', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'portal.access_request.declined', params: { ...MESSAGE, purpose: 'portal.access_request.declined', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'report.delivery', params: { ...MESSAGE, purpose: 'report.delivery', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'customer.connection_health_digest', params: { ...MESSAGE, purpose: 'customer.connection_health_digest', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'trust.access_verification', params: { ...MESSAGE, purpose: 'trust.access_verification', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
@@ -270,6 +272,23 @@ describe('named helpers carry their purpose to the transport (spec §8.1)', () =
       purpose: 'portal.invite', partnerId: PARTNER_ID, partnerName: 'Acme MSP',
     });
     expect(resendSendMock.mock.calls[0]![0].from).toBe(BRANDED_FROM);
+  });
+
+  it('sendPortalAccessApproved / sendPortalAccessDeclined are partner-stream sends carrying the partner', async () => {
+    const svc = await service();
+    const spy = vi.spyOn(svc, 'sendEmail');
+    await svc.sendPortalAccessApproved({
+      to: 'buyer@customer.test', loginUrl: 'https://portal.test/login', orgName: 'Contoso',
+      partnerId: PARTNER_ID, partnerName: 'Acme MSP',
+    });
+    await svc.sendPortalAccessDeclined({
+      to: 'buyer@customer.test', orgName: 'Contoso', partnerId: PARTNER_ID, partnerName: 'Acme MSP',
+    });
+    expect(spy.mock.calls.map((c) => c[0])).toMatchObject([
+      { purpose: 'portal.access_request.approved', partnerId: PARTNER_ID, partnerName: 'Acme MSP', to: 'buyer@customer.test' },
+      { purpose: 'portal.access_request.declined', partnerId: PARTNER_ID, partnerName: 'Acme MSP', to: 'buyer@customer.test' },
+    ]);
+    expect(resendSendMock.mock.calls.map((c) => c[0].from)).toEqual([BRANDED_FROM, BRANDED_FROM]);
   });
 
   it('the single-audience helpers hard-code their purpose', async () => {

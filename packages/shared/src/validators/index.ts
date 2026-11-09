@@ -1125,6 +1125,8 @@ export * from './serviceCatalog';
 export * from './queryParams';
 export * from './timeEntries';
 export * from './portal';
+// Portal registration W3 (#11380): access policy patch/view + access-request decide body.
+export * from './portalAccessPolicy';
 export * from './ticketConfig';
 export * from './retiredLabourPricing';
 export * from './retiredAiModelFields';

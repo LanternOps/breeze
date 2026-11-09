@@ -38,6 +38,7 @@ import {
   planPortalAccountTransition,
   type PortalAccountTarget,
 } from '../portalAccountState';
+import { portalUserHasIdentitySql } from '../portalUserIdentities';
 import { normalizeContactEmail, updateContact, type ContactExecutor } from './crud';
 
 export interface InviteableContact {
@@ -76,8 +77,8 @@ export interface InviteLoginCandidate {
   /** Read for the optimistic-concurrency guard on the reuse write. */
   authEpoch: number;
   browserAccess: string;
-  /** W2 reads external identity from the legacy column (W3: portal_user_identities). */
-  entraOid: string | null;
+  /** Any `portal_user_identities` row (W3 release B, `portalUserHasIdentitySql`). */
+  hasExternalIdentity: boolean;
 }
 
 export type InvitePlan =
@@ -272,7 +273,7 @@ export async function bindContactLoginForInvite(
       createdAt: portalUsers.createdAt,
       authEpoch: portalUsers.authEpoch,
       browserAccess: portalUsers.browserAccess,
-      entraOid: portalUsers.entraOid,
+      hasExternalIdentity: portalUserHasIdentitySql(),
     })
     .from(portalUsers)
     .where(and(
@@ -298,7 +299,7 @@ export async function bindContactLoginForInvite(
         browserAccess: login.browserAccess,
         authMethod: login.authMethod,
         hasPasswordHash: Boolean(login.passwordHash),
-        hasExternalIdentity: login.entraOid !== null,
+        hasExternalIdentity: login.hasExternalIdentity,
       }, 'msp_invite');
     } catch (error) {
       const reason = error instanceof PortalAccountTransitionError ? inviteRefusalReason(error) : null;

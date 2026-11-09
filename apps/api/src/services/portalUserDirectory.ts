@@ -5,12 +5,19 @@
  *
  * `passwordHash` is selected only to derive `effectiveStatus` and never
  * leaves this module: `toListItem` drops it.
+ *
+ * External identities come from `portal_user_identities` (identities release
+ * B, portal registration W3), read in a second statement, never from the
+ * legacy `portal_users.entra_*` columns.
  */
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import { db } from '../db';
 import { organizations, portalUsers } from '../db/schema';
+import type { PortalBrowserAccess, PortalIdentityProvider } from '../db/schema/portal';
 import type { AuthContext } from '../middleware/auth';
 import { PG_UUID_REGEX } from '../utils/uuid';
+import { isPasswordEligible } from './portalAccountState';
+import { listIdentityProvidersByUser } from './portalUserIdentities';
 
 type PortalUserListRow = {
   id: string;
@@ -23,32 +30,46 @@ type PortalUserListRow = {
   invitedAt: Date | null;
   contactId: string | null;
   authMethod: string;
+  browserAccess: PortalBrowserAccess;
 };
 
-// A portal user is 'active' only once they've actually set a password
-// (accepted their invite) AND aren't administratively disabled. Rows
-// created by an invite sit in DB status 'invited' with passwordHash
-// null — those must read back as 'pending_setup', not 'active'.
-export function effectivePortalStatus(row: { status: string; passwordHash: string | null }): 'active' | 'disabled' | 'pending_setup' {
+/**
+ * 'disabled' wins. Otherwise 'pending_setup' only for a password-eligible
+ * account that has neither a password nor an external identity — the one
+ * kind of account that cannot sign in until it accepts an invite. Rows created
+ * by an invite sit in DB status 'invited' with passwordHash null and read
+ * 'pending_setup'. An identity is a credential, so an identity-only account
+ * (AI for Office JIT login, approved SSO request) reads 'active' (W3).
+ */
+export function effectivePortalStatus(row: {
+  status: string;
+  passwordHash: string | null;
+  authMethod: string;
+  hasExternalIdentity: boolean;
+}): 'active' | 'disabled' | 'pending_setup' {
   if (row.status === 'disabled') return 'disabled';
-  if (!row.passwordHash) return 'pending_setup';
+  if (isPasswordEligible(row) && !row.passwordHash && !row.hasExternalIdentity) return 'pending_setup';
   return 'active';
 }
 
-function toListItem(row: PortalUserListRow) {
+function toListItem(row: PortalUserListRow, identityProviders: PortalIdentityProvider[]) {
   return {
     id: row.id,
     email: row.email,
     name: row.name,
     status: row.status,
-    effectiveStatus: effectivePortalStatus(row),
+    effectiveStatus: effectivePortalStatus({ ...row, hasExternalIdentity: identityProviders.length > 0 }),
     receiveNotifications: row.receiveNotifications,
     lastLoginAt: row.lastLoginAt,
     invitedAt: row.invitedAt,
     // The Contacts tab joins logins to contacts by `contactId` and counts only
     // password-method logins as portal access (portal registration W1, #11378).
     contactId: row.contactId,
-    authMethod: row.authMethod
+    authMethod: row.authMethod,
+    // Portal registration W3: browser portal access (separate from the
+    // lifecycle status) and the external sign-in providers linked to the login.
+    browserAccess: row.browserAccess,
+    identityProviders,
   };
 }
 
@@ -66,9 +87,12 @@ export async function listPortalUsersForOrg(orgId: string): Promise<PortalUserLi
     lastLoginAt: portalUsers.lastLoginAt,
     invitedAt: portalUsers.invitedAt,
     contactId: portalUsers.contactId,
-    authMethod: portalUsers.authMethod
+    authMethod: portalUsers.authMethod,
+    browserAccess: portalUsers.browserAccess
   }).from(portalUsers).where(eq(portalUsers.orgId, orgId)).orderBy(desc(portalUsers.createdAt));
-  return rows.map(toListItem);
+  // Sequential, never Promise.all: the caller may hold one request transaction.
+  const providers = await listIdentityProvidersByUser(db, rows.map((r) => r.id));
+  return rows.map((row) => toListItem(row, providers.get(row.id) ?? []));
 }
 
 /**
