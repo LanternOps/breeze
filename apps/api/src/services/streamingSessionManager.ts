@@ -2131,6 +2131,20 @@ export class StreamingSessionManager {
               await this.publishTurnModel(session, turnBinding, turnDisplay, turn.outcome);
             }
 
+            // #10414: Wisp chat counts toward the grant's daily budget and is never
+            // refused by it. Once the turn is settled, tell the grantor (once per
+            // window) if spend has reached the budget. Fire-and-forget: never delays
+            // `done` (budget.chatNeverBlocks.contract.test.ts).
+            if (session.wispGrant) {
+              const { grantId } = session.wispGrant;
+              void import('./wisp/chatSpendCheck')
+                .then(({ maybeNotifyChatCrossedBudget }) => maybeNotifyChatCrossedBudget(grantId))
+                .catch((err) => {
+                  console.warn('[StreamingSessionManager] Wisp chat spend check failed:', safeErrorMessage(err));
+                  captureException(reportableError(err));
+                });
+            }
+
             // Signal this turn is done, but DON'T close the event bus —
             // session stays alive for follow-up messages. Carries usage so
             // client surfaces can render turn cost (turn_complete).
