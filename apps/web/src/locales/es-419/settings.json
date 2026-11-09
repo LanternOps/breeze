@@ -5171,7 +5171,9 @@
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Confirmará con su clave de acceso (Touch ID/Windows Hello) al registrarse.",
     "authenticatorCode": "Código del autenticador",
-    "confirmYourPassword": "Confirme su contraseña"
+    "confirmYourPassword": "Confirme su contraseña",
+    "switchToAuthenticatorCode": "Usar la aplicación de autenticación en su lugar",
+    "usePasskeyInstead": "Usar tu clave de acceso en su lugar"
   },
   "cannedResponsesCard": {
     "cannedResponses": "Respuestas enlatadas",
@@ -5514,7 +5516,21 @@
     "verifyWithYourIdentityProvider": "Verificar con tu proveedor de identidad",
     "ssoReauthProofExpired": "Tu verificación con el proveedor de identidad venció. Verifícate de nuevo para terminar de configurar tu aplicación de autenticación.",
     "ssoReauthManageHint": "Esta cuenta inicia sesión mediante un proveedor de identidad y no tiene contraseña. Verifícate con tu proveedor para confirmar este cambio.",
-    "ssoReauthManageVerified": "Identidad verificada con tu proveedor. Completa el paso siguiente para confirmar este cambio."
+    "ssoReauthManageVerified": "Identidad verificada con tu proveedor. Completa el paso siguiente para confirmar este cambio.",
+    "notSetUp": "No configurada",
+    "notAvailable": "No disponible",
+    "backup": "Respaldo",
+    "addBackup": "Agregar respaldo",
+    "totpBackupAddHint": "Agrega una aplicación de autenticación como respaldo para poder seguir iniciando sesión si tu clave de acceso no está disponible.",
+    "totpPolicyDisallowed": "La política de tu organización no permite aplicaciones de autenticación.",
+    "totpBackupActiveHint": "Usa un código de tu aplicación de autenticación si tu clave de acceso no está disponible.",
+    "totpBackupVerifyNote": "Cuando presiones Verificar, confirmarás con tu clave de acceso.",
+    "confirmBackupButton": "Verificar y agregar respaldo",
+    "removeTotpTitle": "Eliminar aplicación de autenticación",
+    "removeTotpBackupDescription": "Seguirás iniciando sesión con tu clave de acceso. Tus códigos de recuperación no cambian.",
+    "removeTotpPrimaryDescription": "Tu clave de acceso pasa a ser tu método principal de inicio de sesión. Tus códigos de recuperación no cambian.",
+    "removeTotpConfirmWithPasskey": "Confirmarás con tu clave de acceso.",
+    "removing": "Eliminando..."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importar desde Pax8",
@@ -5639,7 +5655,13 @@
     "ssoReauthManageProofExpired": "La verificación con tu proveedor de identidad expiró. Vuelve a verificarte para confirmar este cambio.",
     "verifyWithIdpToDeletePasskey": "Esta cuenta no tiene contraseña. Verifícate con tu proveedor de identidad antes de quitar una clave de acceso.",
     "deletePasskeySsoReauth": "Verificar identidad para quitar una clave de acceso",
-    "deletePasskeySsoVerified": "Identidad verificada. Elige Eliminar en la clave de acceso que quieres quitar."
+    "deletePasskeySsoVerified": "Identidad verificada. Elige Eliminar en la clave de acceso que quieres quitar.",
+    "authenticatorBackupAdded": "Aplicación de autenticación agregada como respaldo. Tus códigos de recuperación no han cambiado",
+    "authenticatorAppRemoved": "Aplicación de autenticación eliminada. Iniciarás sesión con tu clave de acceso",
+    "authenticatorCodeRejectedWaitForNext": "Ese código no fue aceptado. Cada código funciona una sola vez; si acabas de usarlo, espera el siguiente código de tu aplicación de autenticación.",
+    "passkeyConfirmationCanceled": "La confirmación con clave de acceso se canceló o agotó el tiempo de espera.",
+    "passkeyProofRejected": "No se pudo verificar tu clave de acceso. Inténtalo de nuevo.",
+    "failedToRemoveAuthenticatorApp": "No se pudo eliminar la aplicación de autenticación"
   },
   "roleManager": {
     "roles": "Roles",

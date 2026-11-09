@@ -5509,7 +5509,21 @@
     "verifyWithYourIdentityProvider": "Vérifier avec votre fournisseur d'identité",
     "ssoReauthProofExpired": "Votre vérification auprès du fournisseur d'identité est expirée. Vérifiez de nouveau pour terminer la configuration de votre application d'authentification.",
     "ssoReauthManageHint": "Ce compte se connecte au moyen d'un fournisseur d'identité et n'a pas de mot de passe. Vérifiez votre identité auprès de votre fournisseur pour confirmer ce changement.",
-    "ssoReauthManageVerified": "Identité vérifiée auprès de votre fournisseur. Terminez l’étape ci-dessous pour confirmer ce changement."
+    "ssoReauthManageVerified": "Identité vérifiée auprès de votre fournisseur. Terminez l’étape ci-dessous pour confirmer ce changement.",
+    "notSetUp": "Non configuré",
+    "notAvailable": "Non disponible",
+    "backup": "Secours",
+    "addBackup": "Ajouter une méthode de secours",
+    "totpBackupAddHint": "Ajoutez une application d’authentification comme méthode de secours pour pouvoir vous connecter même si votre clé d’accès n’est pas disponible.",
+    "totpPolicyDisallowed": "La politique de votre organisation n’autorise pas les applications d’authentification.",
+    "totpBackupActiveHint": "Utilisez un code de votre application d’authentification si votre clé d’accès n’est pas disponible.",
+    "totpBackupVerifyNote": "Lorsque vous appuierez sur Vérifier, vous confirmerez avec votre clé d’accès.",
+    "confirmBackupButton": "Vérifier et ajouter une méthode de secours",
+    "removeTotpTitle": "Retirer l’application d’authentification",
+    "removeTotpBackupDescription": "Vous continuerez à vous connecter avec votre clé d’accès. Vos codes de récupération restent inchangés.",
+    "removeTotpPrimaryDescription": "Votre clé d’accès devient votre méthode de connexion principale. Vos codes de récupération restent inchangés.",
+    "removeTotpConfirmWithPasskey": "Vous confirmerez avec votre clé d’accès.",
+    "removing": "Retrait..."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importation depuis Pax8",
@@ -5634,7 +5648,13 @@
     "ssoReauthManageProofExpired": "La vérification auprès de votre fournisseur d'identité a expiré. Vérifiez de nouveau pour confirmer ce changement.",
     "verifyWithIdpToDeletePasskey": "Ce compte n'a pas de mot de passe. Vérifiez votre identité auprès de votre fournisseur d'identité avant de supprimer une clé d'accès.",
     "deletePasskeySsoReauth": "Vérifier l'identité pour supprimer une clé d'accès",
-    "deletePasskeySsoVerified": "Identité vérifiée. Choisissez Supprimer sur la clé d'accès à retirer."
+    "deletePasskeySsoVerified": "Identité vérifiée. Choisissez Supprimer sur la clé d'accès à retirer.",
+    "authenticatorBackupAdded": "Application d’authentification ajoutée comme méthode de secours. Vos codes de récupération n’ont pas changé",
+    "authenticatorAppRemoved": "Application d’authentification retirée. Vous vous connecterez avec votre clé d’accès",
+    "authenticatorCodeRejectedWaitForNext": "Ce code n’a pas été accepté. Chaque code ne fonctionne qu’une fois: si vous venez de l’utiliser, attendez le prochain code de votre application d’authentification.",
+    "passkeyConfirmationCanceled": "La confirmation par clé d’accès a été annulée ou a expiré.",
+    "passkeyProofRejected": "Votre clé d’accès n’a pas pu être vérifiée. Veuillez réessayer.",
+    "failedToRemoveAuthenticatorApp": "Impossible de retirer l’application d’authentification"
   },
   "roleManager": {
     "roles": "Rôles",
@@ -7370,7 +7390,9 @@
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Vous confirmerez avec votre clé d'accès (Touch ID / Windows Hello) lors de l'enregistrement.",
     "authenticatorCode": "Code d'authentification",
-    "confirmYourPassword": "Confirmez votre mot de passe"
+    "confirmYourPassword": "Confirmez votre mot de passe",
+    "switchToAuthenticatorCode": "Utiliser plutôt l’application d’authentification",
+    "usePasskeyInstead": "Utiliser plutôt votre clé d’accès"
   },
   "tenantVariablesPage": {
     "orgOwnedNote": "Les variables propres à une organisation sont répertoriées sous celle-ci.",
