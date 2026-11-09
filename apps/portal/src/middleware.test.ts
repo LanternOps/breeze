@@ -267,3 +267,15 @@ describe('W03a: /trust/embed/* framing carve-out', () => {
   });
 });
 
+it('entra-setup renders per status and is reachable signed out', async () => {
+  const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+  try {
+    for (const path of ['/entra-setup?status=consent_done', '/entra-setup']) {
+      const response = await run(contextFor(path, { signedIn: false }));
+      expect(response.status).toBe(200);
+      expect(response.headers.get('Location')).toBeNull();
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  } finally { vi.unstubAllGlobals(); }
+});
+
