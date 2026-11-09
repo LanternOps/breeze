@@ -318,7 +318,8 @@ const CI_ONLY_STEPS = ['Fetch base commit for the flaky ledger'];
 const NIGHTLY_ONLY_STEPS = ['Assert the server major'];
 const relabel = (s) => s
   .replaceAll('--label integration-${{ matrix.shard }}', '--label integration-pg${PG_MAJOR}-${{ matrix.shard }}')
-  .replaceAll('flake-report-integration-${{ matrix.shard }}', 'flake-report-integration-pg${{ matrix.pg }}-${{ matrix.shard }}');
+  .replaceAll('flake-report-integration-${{ matrix.shard }}', 'flake-report-integration-pg${{ matrix.pg }}-${{ matrix.shard }}')
+  .replaceAll('shard-plan-integration-${{ matrix.shard }}', 'shard-plan-integration-pg${{ matrix.pg }}-${{ matrix.shard }}');
 
 test('postgres-compat.yml integration: step-for-step parity with ci.yml integration-test', () => {
   const c = steps(job(ci(), 'integration-test')).filter((s) => !CI_ONLY_STEPS.includes(s.name));

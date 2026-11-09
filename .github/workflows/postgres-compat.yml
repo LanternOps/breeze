@@ -305,6 +305,18 @@ jobs:
           retention-days: 14
           overwrite: true
 
+      # The timing sequencer's plan for this shard (W07a, #10751) — parity with
+      # ci.yml's integration-test. Absent when vitest's own sharding ran.
+      - name: Upload shard plan
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: shard-plan-integration-pg${{ matrix.pg }}-${{ matrix.shard }}
+          path: apps/api/shard-plan-*.json
+          if-no-files-found: ignore
+          retention-days: 14
+          overwrite: true
+
       - name: Boot API once to apply built-in extension migrations (ee)
         if: matrix.shard == 1
         env:
