@@ -42,7 +42,7 @@ tracking_issue: LanternOps/breeze#11377
 | W1 Invite from contacts | `2026-11-08-portal-registration-options-w01-invite-from-contacts.md` | — | Medium | plan written |
 | W2 Account foundations | `2026-11-08-portal-registration-options-w02-account-foundations.md` | — | High | plan written |
 | W3 Policy + access requests + identities read switch | `2026-11-08-portal-registration-options-w03-access-policy.md` (W03a API, W03b web) | W2 | High | plan written |
-| W4 Tenant proof + Microsoft sign-in + OIDC layer + session caps + `sso_only` | write at start | W3 | High | — |
+| W4 Tenant proof + Microsoft sign-in + OIDC layer + session caps + `sso_only` | `2026-11-09-portal-registration-options-w04-entra-sign-in.md` (W04a API, W04b web + portal) | W3 | High | plan written |
 | W5 Domain verification + Organization › Domains | write at start | W3 (Entra method: W4) | Medium | — |
 | W6 Self-registration | write at start | W3, W5 | High | — |
 | W7 Sign in with Google | write at start | W4, W5 | High | — |
@@ -69,8 +69,9 @@ Later wave plans must use these names. If W2's plan or code renames any of them,
 | W3 | browser session `method` (`PortalSessionMethod`) + `parseStoredPortalSession` + `isBrowserSessionAllowed` | W4, W7 |
 | W3 | `portalUserHasIdentitySql()`: the only "has an external identity" fact | all later waves |
 | W3 | Writer fence (W3 plan D4): until release C, every writer that creates an Entra identity also sets `portal_users.entra_*`, and every writer that removes one clears them | W4, W8, W9, cleanup |
-| W4 | OIDC common layer (state/nonce/PKCE store, callback handler, account resolution §5.6) | W7 |
-| W4 | tenant proof record on the org's tenant mapping (`proven_at`, `proven_via`, `proven_by`) | W5 (`entra_tenant` method), W8, W9 |
+| W4 | OIDC common layer: `services/portalOidc/` (`createPortalOidcState` / `consumePortalOidcState`, `PortalOidcProvider`, `resolvePortalOidcSignIn` for §5.6), `linkPortalUserIdentity` (D4 fence), `mintPortalBrowserSession` | W7 |
+| W4 | tenant proof on `client_ai_tenant_mappings` (`proven_at`, `proven_via`, `proven_by_user_id`, `proven_evidence`; cleared on tenant change) + `findProvenEntraTenantForOrg` / `findOrgByProvenEntraTenant` | W5 (`entra_tenant` method), W8, W9 |
+| W4 | Rule: every identity-removing writer clears `portal_users.entra_*` and bumps `auth_epoch` (Entra sessions carry their tenant and die durably) | W8, W9 |
 | W5 | domain verification state on `customer_email_domains` + `isDomainVerifiedForOrg(domain, orgId)` | W6, W7 |
 
 ## Wave entry checklist (W3+)
