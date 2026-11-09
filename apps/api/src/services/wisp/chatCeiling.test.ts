@@ -44,6 +44,7 @@ import { resolveWritableToolOrgId, WRITE_ORG_AMBIGUOUS_ERROR } from '../aiToolWr
 import { canManagePartnerWidePolicies } from '../partnerWideAccess';
 import { CeilingViolationError, GrantInactiveError, type GrantCeiling } from './grantAuthority';
 import {
+  WISP_ACTION_NOT_DELEGABLE_MESSAGE,
   WISP_PARTNER_ID_AS_ORG_MESSAGE,
   WISP_REFUSAL_MESSAGES,
   WispSessionUnavailableError,
@@ -224,6 +225,70 @@ describe('enforceWispCeiling', () => {
     if (!r.ok) return;
     expect(r.toolAuth.accessibleOrgIds).toEqual([ORG_A, ORG_B]);
     expect(r.toolAuth.wispGrant).toEqual({ grantId: 'g-1', grantRevisionId: 'r-1', sessionId: 's-1' });
+  });
+});
+
+// #11433 (US prod 2026-11-08): Wisp offered "Fleet Design runs for the top few
+// orgs" and every `manage_fleet_designs run` was refused at 0 ms with
+// WISP_REFUSAL_MESSAGES.tool, under a *:* grant that denied nothing. The chat
+// gate and the release (releaseCeiling.ts) both run this function with the
+// call's own input, so both see the action.
+describe('manage_fleet_designs under a Wisp grant (#11433)', () => {
+  const REPORT_RUN = '00000000-0000-4000-8000-0000000000f1';
+  const fleet = (o: Partial<GrantCeiling> = {}) => ceiling({
+    permissionKeys: new Set(['ai_agents:write', 'ai_agents:read', 'devices:write', 'documents:write']), ...o,
+  });
+  beforeEach(() => { shared.resolveGrantCeiling.mockResolvedValue(fleet()); });
+
+  it('a run for an org inside the ceiling passes the ceiling, gated on ai_agents:write in that org', async () => {
+    const r = await enforce('manage_fleet_designs', { action: 'run', orgId: ORG_B });
+    expect(r).toMatchObject({ ok: true, permissionKeys: ['ai_agents:write'] });
+    if (!r.ok) return;
+    expect(r.toolAuth.canAccessOrg(ORG_B)).toBe(true);
+    expect(r.toolAuth.canAccessOrg(ORG_C)).toBe(false);
+  });
+
+  it.each([
+    ['preview', 'devices:write'],
+    ['applied', 'ai_agents:read'],
+    ['document', 'documents:write'],
+  ])('%s passes on its own permission (%s)', async (action, key) => {
+    const r = await enforce('manage_fleet_designs', { action, reportRunId: REPORT_RUN });
+    expect(r.ok, action).toBe(true);
+    if (!r.ok) return;
+    expect(r.permissionKeys).toContain(key);
+  });
+
+  it.each(['apply', 'rollback'])('%s stays refused with detail "tool" even for a *:* grantor, saying where it is done', async (action) => {
+    shared.resolveGrantCeiling.mockResolvedValue(fleet({ permissionKeys: new Set(['*:*']) }));
+    await expect(enforce('manage_fleet_designs', { action, reportRunId: REPORT_RUN })).resolves.toEqual({
+      ok: false, refusal: { code: 'wisp_outside_ceiling', detail: 'tool', message: WISP_ACTION_NOT_DELEGABLE_MESSAGE },
+    });
+  });
+
+  it('a run for an org outside the ceiling is refused with detail "org"', async () => {
+    await expect(enforce('manage_fleet_designs', { action: 'run', orgId: ORG_C })).resolves.toMatchObject({
+      ok: false, refusal: { detail: 'org' },
+    });
+  });
+
+  it('a run whose grant lacks ai_agents:write is refused with detail "permission"', async () => {
+    shared.resolveGrantCeiling.mockResolvedValue(fleet({ permissionKeys: new Set(['ai_agents:read']) }));
+    await expect(enforce('manage_fleet_designs', { action: 'run', orgId: ORG_A })).resolves.toMatchObject({
+      ok: false, refusal: { detail: 'permission' },
+    });
+  });
+
+  it('a call with no action never passes', async () => {
+    shared.resolveGrantCeiling.mockResolvedValue(fleet({ permissionKeys: new Set(['*:*']) }));
+    await expect(enforce('manage_fleet_designs', { orgId: ORG_A })).resolves.toMatchObject({ ok: false });
+  });
+
+  it('a revision pinned while the whole tool was on the floor keeps refusing run until the grant is refreshed', async () => {
+    shared.resolveGrantCeiling.mockResolvedValue(fleet({ deniedTools: new Set(['manage_fleet_designs']) }));
+    await expect(enforce('manage_fleet_designs', { action: 'run', orgId: ORG_A })).resolves.toEqual({
+      ok: false, refusal: { code: 'wisp_outside_ceiling', detail: 'tool', message: WISP_REFUSAL_MESSAGES.tool },
+    });
   });
 });
 
@@ -426,6 +491,13 @@ describe('wispSessionToolFilter (#10430)', () => {
     const admit = await wispSessionToolFilter(grant);
     expect(admit('list_operator_tasks')).toBe(false);
     expect(admit('launch_specialist')).toBe(true);
+  });
+
+  it('offers manage_fleet_designs (its run and reads are delegable), unless the pinned snapshot denies it (#11433)', async () => {
+    shared.selectRows = [{ ceilingSnapshot: snapshot() }];
+    expect((await wispSessionToolFilter(grant))('manage_fleet_designs')).toBe(true);
+    shared.selectRows = [{ ceilingSnapshot: snapshot({ deniedTools: ['manage_fleet_designs'] }) }];
+    expect((await wispSessionToolFilter(grant))('manage_fleet_designs')).toBe(false);
   });
 
   it('applies the pinned allowlist', async () => {
