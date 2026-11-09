@@ -249,11 +249,13 @@ test('runSelection: enforce only when the constant AND the mode env both say so'
 test('runSelection: suites parse to the map\'s names plus core; anything unusable selects all and says why', () => {
   const sel = suites => runSelection({ suites, mode: 'shadow', mapText: FIXTURE });
   assert.deepEqual(sel('all').suites, 'all');
+  assert.deepEqual(sel('core').suites, [CORE], 'core alone is a selection, not all');
   assert.deepEqual(sel('core,ai').suites, [CORE, 'ai']);
+  assert.deepEqual(sel('ai,core').suites, [CORE, 'ai']);
   assert.deepEqual(sel('ticket,ai').suites, [CORE, 'ai', 'ticket'], 'map order, core first, added when absent');
   assert.equal(sel('ai').warning, undefined);
   assert.equal(sel('ai').suiteOf('apps/api/src/__tests__/integration/aiTools.integration.test.ts'), 'ai');
-  for (const [suites, why] of [[undefined, /BREEZE_INTEGRATION_SUITES is empty/], ['', /is empty/], [' ', /is empty/],
+  for (const [suites, why] of [[undefined, /BREEZE_INTEGRATION_SUITES is unset or empty/], ['', /unset or empty/], [' ', /unset or empty/],
     ['ai,,ticket', /malformed/], ['ai\nall', /malformed/], ['Ai', /malformed/], ['ai,nope', /unknown suite "nope"/]]) {
     const out = sel(suites);
     assert.equal(out.suites, 'all', JSON.stringify(suites));
@@ -292,12 +294,17 @@ test('select CLI: changed paths on stdin print all or a comma list, the reason o
   assert.match(mapped.stdout, /^core(?:,[a-z][a-z0-9-]*)*\n$/);
   assert.ok(mapped.stdout.trim().split(',').includes('ticket'), mapped.stdout);
   assert.doesNotMatch(mapped.stderr, /::warning/);
+  // Paths are trimmed and deduplicated; blank lines are not paths.
+  const dup = runSelect([], { input: 'apps/api/src/services/ticketService.ts\n  apps/api/src/services/ticketService.ts  \n\n' });
+  assert.equal(dup.stdout, mapped.stdout);
+  assert.match(dup.stderr, / changed=1$/m);
 });
 
 test('select CLI: any error prints all and a ::warning, and still exits 0', () => {
   for (const [args, input, why] of [
     [[], '', /no changed paths/],
     [['--base'], '', /--base needs a revision/],
+    [['--head', 'HEAD'], 'apps/api/src/x.ts\n', /--head needs --base/],
     [['--nope'], 'apps/api/src/x.ts\n', /unknown argument --nope/],
     [['--base', 'no-such-revision-b2', '--head', 'HEAD'], '', /git diff/],
   ]) {
@@ -332,20 +339,70 @@ test('select CLI: --base/--head diffs a real history', () => {
 
 const jobOf = (ci, name) => ci.match(new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z][\\w-]*:\\n)`, 'm'))?.[1];
 
-test('the changes job computes integration_suites on PR runs only, failing open to all', () => {
+const selectionStep = () => {
   const changes = jobOf(read('.github/workflows/ci.yml'), 'changes');
   assert.ok(changes, 'changes job not found');
-  assert.match(changes, /^      integration_suites: \$\{\{ steps\.suites\.outputs\.integration_suites \|\| 'all' \}\}$/m);
   const step = changes.match(/      - name: Integration suite selection \(shadow\)\n([\s\S]*?)(?=\n      - name: |$)/)?.[1];
   assert.ok(step, 'selection step not found');
+  return { changes, step };
+};
+
+test('the changes job computes integration_suites on PR runs only, never failing the job', () => {
+  const { changes, step } = selectionStep();
+  assert.match(changes, /^      integration_suites: \$\{\{ steps\.suites\.outputs\.integration_suites \|\| 'all' \}\}$/m);
   assert.match(step, /^        id: suites$/m);
   assert.match(step, /^        if: github\.event_name == 'pull_request'$/m);
   assert.match(step, /^        continue-on-error: true$/m);
   // The same file list the classifier gates `integration` on, renames' old paths included.
   assert.ok(step.includes(`--jq '.[] | .filename, (.previous_filename // empty)'`));
-  assert.match(step, /node \.github\/scripts\/integration-suites\.mjs select/);
-  // Only a well-formed value reaches GITHUB_OUTPUT.
-  assert.ok(step.includes('[[ "${suites}" =~ ^(all|[a-z][a-z0-9-]*(,[a-z][a-z0-9-]*)*)$ ]] || suites=all'));
+  // The classifier harnesses take the text up to the job's second `run: |`.
+  assert.ok(step.indexOf('        run: |') < step.indexOf('        env:'), 'run precedes env');
+});
+
+// The step's shell, run with a stub `gh` (and optionally a stub `node`).
+function runSelectionStep({ gh, node }) {
+  const script = selectionStep().step.split('        run: |\n')[1].split('\n        env:')[0]
+    .split('\n').map(line => line.slice(10)).join('\n');
+  const dir = mkdtempSync(join(tmpdir(), 'suites-step-'));
+  try {
+    const bin = join(dir, 'bin');
+    mkdirSync(bin);
+    const stub = (name, body) => writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    if (gh === 'fail') stub('gh', 'echo "gh: HTTP 502" >&2; exit 1');
+    else { writeFileSync(join(dir, 'files.txt'), gh); stub('gh', `cat '${join(dir, 'files.txt')}'`); }
+    if (node) stub('node', node);
+    const output = join(dir, 'output');
+    writeFileSync(output, '');
+    const run = spawnSync('bash', ['-c', script], {
+      cwd: REPO_ROOT, encoding: 'utf8',
+      env: { PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`, GITHUB_OUTPUT: output, GITHUB_REPOSITORY: 'o/r', PR_NUMBER: '1' },
+    });
+    return { status: run.status, log: run.stdout + run.stderr, output: readFileSync(output, 'utf8') };
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+test('the selection step: a mapped change selects its suites; every failure selects all, visibly', () => {
+  const mapped = runSelectionStep({ gh: 'apps/api/src/services/ticketService.ts\n' });
+  assert.equal(mapped.status, 0, mapped.log);
+  assert.match(mapped.output, /^integration_suites=core(,[a-z][a-z0-9-]*)*\n$/);
+  assert.ok(mapped.output.trim().split('=')[1].split(',').includes('ticket'));
+  assert.doesNotMatch(mapped.log, /::warning/);
+  const floor = runSelectionStep({ gh: 'apps/api/migrations/2026-11-08-000000-x.sql\n' });
+  assert.equal(floor.output, 'integration_suites=all\n');
+  const cap = Array.from({ length: 3000 }, (_, i) => `apps/api/src/services/ticket${i}.ts`).join('\n');
+  for (const [opts, why] of [
+    [{ gh: 'fail' }, /Cannot list the PR's files/],
+    // The PR files API stops at 3000 files without saying so.
+    [{ gh: `${cap}\n` }, /3000 or more paths/],
+    [{ gh: 'apps/api/src/services/ticketService.ts\n', node: 'exit 3' }, /The selector failed/],
+    [{ gh: 'apps/api/src/services/ticketService.ts\n', node: 'echo "core,ai"; echo "::set-output name=x::y"' }, /printed an invalid value/],
+    [{ gh: 'apps/api/src/services/ticketService.ts\n', node: 'true' }, /printed an invalid value/],
+  ]) {
+    const out = runSelectionStep(opts);
+    assert.equal(out.status, 0, out.log);
+    assert.equal(out.output, 'integration_suites=all\n', JSON.stringify(opts).slice(0, 120));
+    assert.match(out.log, new RegExp(`^::warning title=Integration suites::.*${why.source}`, 'm'));
+  }
 });
 
 test('integration-test hands the selection to the sequencer; only a PR run may ask for enforcement', () => {

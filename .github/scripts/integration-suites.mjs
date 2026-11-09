@@ -155,7 +155,7 @@ export function runSelection({ suites, mode, mapText, mapError, enforce = ENFORC
   try { map = loadSuiteMap(mapText); } catch (error) { return all(`suite map unusable: ${error.message}`); }
   const suiteOf = file => suiteOfTest(map, file);
   const raw = String(suites ?? '').trim();
-  if (!raw) return all('BREEZE_INTEGRATION_SUITES is empty');
+  if (!raw) return all('BREEZE_INTEGRATION_SUITES is unset or empty');
   if (!SUITES_VALUE.test(raw)) return all(`malformed BREEZE_INTEGRATION_SUITES ${JSON.stringify(raw)}`);
   if (raw === 'all') return { mode: effective, suites: 'all', suiteOf };
   const names = raw.split(',');

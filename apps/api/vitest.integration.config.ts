@@ -38,9 +38,12 @@ class TimingSequencer extends BaseSequencer {
       // Absent or unreadable: timingShard warns with this reason and falls back.
       timingsError = readError(error);
     }
+    // In GitHub Actions the env is always set (by integration-test), so unset
+    // there is broken wiring: the selection then warns and selects all. A local
+    // run without it has no selection at all.
     const suites = process.env.BREEZE_INTEGRATION_SUITES;
-    let selection: { suites: string; mode?: string; mapText: string | null; mapError?: string } | undefined;
-    if (suites !== undefined) {
+    let selection: { suites?: string; mode?: string; mapText: string | null; mapError?: string } | undefined;
+    if (suites !== undefined || process.env.GITHUB_ACTIONS === 'true') {
       selection = { suites, mode: process.env.BREEZE_INTEGRATION_SUITES_MODE, mapText: null };
       try {
         selection.mapText = readFileSync(path.join(REPO_ROOT, SUITE_MAP_PATH), 'utf8');

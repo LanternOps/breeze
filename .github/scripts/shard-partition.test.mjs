@@ -6,9 +6,10 @@ import { dirname, join, normalize } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import {
-  EMPTY_SHARD_SENTINEL, ShardPlanError, TIMINGS_PATH, assertPartition, integrationTestFiles, loadTimings, partition, planDigest,
-  planLoads, timingShard, toRepoKey,
+  EMPTY_SHARD_SENTINEL, SUITE_MAP_PATH, ShardPlanError, TIMINGS_PATH, assertPartition, integrationTestFiles, loadTimings, partition,
+  planDigest, planLoads, timingShard, toRepoKey,
 } from './shard-partition.mjs';
+import { runSelection } from './integration-suites.mjs';
 
 const REPO_ROOT = normalize(join(dirname(fileURLToPath(import.meta.url)), '../..'));
 const read = path => readFileSync(join(REPO_ROOT, path), 'utf8');
@@ -270,6 +271,19 @@ test('shadow: every shard returns exactly what it returns without a selection, a
     assert.doesNotMatch(s.logs, /integration-suites:/);
     assert.equal(s.plan.selection, undefined);
   }
+  // No timing table: the fallback still gets every file, and the line is still logged.
+  const [noTable] = everyShard({ timingsText: null, selection: { suites: 'ai', mode: 'enforce', mapText: SUITE_FIXTURE, enforce: false } });
+  assert.deepEqual(keysOf(noTable.out.fallback), [...selectionFiles].sort());
+  assert.match(noTable.logs, /^integration-suites: mode=shadow suites=core,ai would_run=7\/12$/m);
+});
+
+test('a selection that throws is caught: every file runs, with a warning', () => {
+  const selection = { mode: 'enforce', mapText: SUITE_FIXTURE, enforce: true, get suites() { throw new Error('boom'); } };
+  const shards = everyShard({ selection });
+  assert.deepEqual(shards.flatMap(s => keysOf(s.out)).sort(), [...selectionFiles].sort());
+  assert.match(shards[0].logs, /^::warning title=Integration suites::the selection failed \(boom\), so every suite runs$/m);
+  assert.match(shards[0].logs, /^integration-suites: mode=shadow suites=all would_run=12\/12$/m);
+  assert.equal(shards[0].plan.selection.suites, 'all');
 });
 
 test('enforce: only the selected suites plus core run, every shard checks one plan, an empty shard runs the sentinel', () => {
@@ -301,8 +315,11 @@ test('enforce: only the selected suites plus core run, every shard checks one pl
 test('enforce fails open to every file: unusable env, map, or timing table', () => {
   const base = { mode: 'enforce', mapText: SUITE_FIXTURE, enforce: true };
   for (const [selection, why] of [
-    [{ ...base, suites: '' }, /BREEZE_INTEGRATION_SUITES is empty/],
+    [{ ...base, suites: '' }, /BREEZE_INTEGRATION_SUITES is unset or empty/],
+    [{ ...base, suites: undefined }, /BREEZE_INTEGRATION_SUITES is unset or empty/],
     [{ ...base, suites: 'ai;rm -rf' }, /malformed BREEZE_INTEGRATION_SUITES/],
+    // Workflow-command escaping: `%` and a newline cannot end the annotation or start another command.
+    [{ ...base, suites: 'a%b\n::error::x' }, /malformed BREEZE_INTEGRATION_SUITES "a%25b\\n::error::x"$/],
     [{ ...base, suites: 'ai,nope' }, /unknown suite "nope"/],
     [{ ...base, suites: 'ai', mapText: 'suite ai test x' }, /suite map unusable/],
     [{ ...base, suites: 'ai', mapText: null }, /suite map unusable/],
@@ -311,6 +328,8 @@ test('enforce fails open to every file: unusable env, map, or timing table', () 
     assert.deepEqual(shards.flatMap(s => keysOf(s.out)).sort(), [...selectionFiles].sort(), JSON.stringify(selection));
     assert.match(shards[0].logs, /^integration-suites: mode=enforce suites=all would_run=12\/12$/m);
     assert.match(shards[0].logs, new RegExp(`^::warning title=Integration suites::.*${why.source}`, 'm'));
+    assert.equal(shards[0].logs.split('\n').filter(l => l.includes('Integration suites')).length, 1, 'one single-line warning');
+    for (const s of shards) assert.equal(s.plan.selection.suites, 'all');
   }
   // No timing table: vitest's own sharding over every file, never a subset.
   const [noTable] = everyShard({ timingsText: null, selection: { ...base, suites: 'ai' } });
@@ -374,7 +393,8 @@ test('the committed table balances the suite it was recorded from', () => {
 test('the real TimingSequencer shards every spec vitest resolves exactly once, with one plan', async () => {
   const apiRequire = createRequire(join(REPO_ROOT, 'apps/api/package.json'));
   const { createVitest } = await import(pathToFileURL(apiRequire.resolve('vitest/node')).href);
-  const saved = Object.fromEntries(['CI', 'BREEZE_INTEGRATION_SUITES', 'BREEZE_INTEGRATION_SUITES_MODE'].map(k => [k, process.env[k]]));
+  const saved = Object.fromEntries(['CI', 'GITHUB_ACTIONS', 'BREEZE_INTEGRATION_SUITES', 'BREEZE_INTEGRATION_SUITES_MODE']
+    .map(k => [k, process.env[k]]));
   for (const k of Object.keys(saved)) delete process.env[k]; // no shard-plan files, and no selection, from a test
   const savedLog = console.log;
   const logs = [];
@@ -406,18 +426,34 @@ test('the real TimingSequencer shards every spec vitest resolves exactly once, w
     process.env.BREEZE_INTEGRATION_SUITES = 'core,ai,ticket';
     process.env.BREEZE_INTEGRATION_SUITES_MODE = 'enforce';
     const shadow = await runAll();
+    const shadowLogs = logs.splice(0);
+    // In GitHub Actions an unset selection env means broken wiring: it warns, and still runs everything.
+    delete process.env.BREEZE_INTEGRATION_SUITES;
+    delete process.env.BREEZE_INTEGRATION_SUITES_MODE;
+    process.env.GITHUB_ACTIONS = 'true';
+    vitest.config.shard = { index: 1, count: 16 };
+    const unwired = await new Sequencer(vitest).shard(specs);
+    const unwiredLogs = logs.splice(0);
     console.log = savedLog;
     const seen = plain.flat().map(s => s.moduleId);
     assert.equal(seen.length, specs.length - 1, 'every spec once, except the sentinel');
     assert.equal(new Set(seen).size, specs.length - 1);
     assert.ok(!seen.includes(sentinel.moduleId));
     shadow.forEach((out, i) => assert.deepEqual(out, plain[i], `shard ${i + 1}: shadow changes nothing`));
-    assert.equal(new Set(logs.map(l => l.match(/planDigest=(\w+)/)?.[1]).filter(Boolean)).size, 1, logs.slice(0, 3).join('\n'));
-    const shadowLines = logs.filter(l => l.startsWith('integration-suites: '));
+    assert.equal(new Set(shadowLogs.map(l => l.match(/planDigest=(\w+)/)?.[1]).filter(Boolean)).size, 1, shadowLogs.slice(0, 3).join('\n'));
+    const shadowLines = shadowLogs.filter(l => l.startsWith('integration-suites: '));
     assert.equal(shadowLines.length, 16, 'every shadow shard logs its selection');
     assert.equal(new Set(shadowLines).size, 1);
-    assert.match(shadowLines[0], new RegExp(`^integration-suites: mode=shadow suites=core,ai,ticket would_run=\\d+/${specs.length - 1}$`));
-    assert.equal(logs.filter(l => l.startsWith('::warning')).length, 0, logs.join('\n'));
+    // would_run is what the committed map really selects (the Gate B-enforce ratio is built from it).
+    const files = integrationTestFiles(REPO_ROOT).filter(f => f !== EMPTY_SHARD_SENTINEL);
+    const chosen = runSelection({ suites: 'core,ai,ticket', mapText: read(SUITE_MAP_PATH) });
+    const wouldRun = files.filter(f => chosen.suites.includes(chosen.suiteOf(f))).length;
+    assert.ok(wouldRun > 0 && wouldRun < files.length, `${wouldRun}/${files.length}`);
+    assert.equal(shadowLines[0], `integration-suites: mode=shadow suites=core,ai,ticket would_run=${wouldRun}/${files.length}`);
+    assert.equal(shadowLogs.filter(l => l.startsWith('::warning')).length, 0, shadowLogs.join('\n'));
+    assert.deepEqual(unwired, plain[0]);
+    assert.ok(unwiredLogs.some(l => /^::warning title=Integration suites::BREEZE_INTEGRATION_SUITES is unset or empty/.test(l)), unwiredLogs.join('\n'));
+    assert.ok(unwiredLogs.includes(`integration-suites: mode=shadow suites=all would_run=${files.length}/${files.length}`));
   } finally {
     console.log = savedLog;
     for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;

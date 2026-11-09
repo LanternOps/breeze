@@ -149,19 +149,28 @@ const escapeData = s => String(s).replace(/%/g, '%25').replace(/\r/g, '%0D').rep
 // W07b2: apply a named-suite selection to the run's keys. Shadow returns what
 // enforcement would run, for the log and the plan artifact; the caller still
 // runs every key. Every shard logs the same line. An enforced selection
-// without a usable timing table fails open to every file.
+// without a usable timing table fails open to every file, and so does any
+// throw here: a selection can never fail a shard or shrink a run by accident.
 function pickSuites(keys, selection, { tableUsable, log }) {
-  const chosen = runSelection(selection);
-  let { suites, warning } = chosen;
-  if (chosen.mode === 'enforce' && suites !== 'all' && !tableUsable) {
-    suites = 'all';
-    warning = `${TIMINGS_PATH} is unusable, so every suite runs`;
+  let mode = 'shadow';
+  let suites = 'all';
+  let warning;
+  let selected = keys;
+  try {
+    const chosen = runSelection(selection);
+    ({ mode, suites, warning } = chosen);
+    if (mode === 'enforce' && suites !== 'all' && !tableUsable) {
+      suites = 'all';
+      warning = `${TIMINGS_PATH} is unusable, so every suite runs`;
+    }
+    if (suites !== 'all') selected = keys.filter(key => suites.includes(chosen.suiteOf(key)));
+  } catch (error) {
+    [mode, suites, selected, warning] = ['shadow', 'all', keys, `the selection failed (${error?.message ?? error}), so every suite runs`];
   }
-  const selected = suites === 'all' ? keys : keys.filter(key => suites.includes(chosen.suiteOf(key)));
   if (warning) log(`::warning title=Integration suites::${escapeData(warning)}`);
-  log(`integration-suites: mode=${chosen.mode} suites=${suites === 'all' ? 'all' : suites.join(',')} would_run=${selected.length}/${keys.length}`);
+  log(`integration-suites: mode=${mode} suites=${suites === 'all' ? 'all' : suites.join(',')} would_run=${selected.length}/${keys.length}`);
   const digest = createHash('sha256').update(JSON.stringify([...selected].sort(byPath))).digest('hex');
-  return { mode: chosen.mode, selected, record: { mode: chosen.mode, suites, wouldRun: selected.length, total: keys.length, digest } };
+  return { mode, selected, record: { mode, suites, wouldRun: selected.length, total: keys.length, digest } };
 }
 
 // The sequencer core. `specs` are vitest TestSpecifications (only `moduleId`

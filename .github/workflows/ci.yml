@@ -207,12 +207,21 @@ jobs:
         run: |
           set -uo pipefail
           suites=all
-          if files=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)'); then
-            suites=$(printf '%s\n' "${files}" | node .github/scripts/integration-suites.mjs select) || suites=all
-          else
+          if ! files=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)'); then
             echo "::warning title=Integration suites::Cannot list the PR's files, so every suite is selected."
+          elif (( $(printf '%s\n' "${files}" | wc -l) >= 3000 )); then
+            # The PR files API stops at 3000 files without saying so; a
+            # truncated list could select a subset.
+            echo "::warning title=Integration suites::The PR lists 3000 or more paths, the files API's cap, so every suite is selected."
+          elif ! suites=$(printf '%s\n' "${files}" | node .github/scripts/integration-suites.mjs select); then
+            echo "::warning title=Integration suites::The selector failed, so every suite is selected."
+            suites=all
           fi
-          [[ "${suites}" =~ ^(all|[a-z][a-z0-9-]*(,[a-z][a-z0-9-]*)*)$ ]] || suites=all
+          # Only a well-formed value reaches GITHUB_OUTPUT.
+          if [[ ! "${suites}" =~ ^(all|[a-z][a-z0-9-]*(,[a-z][a-z0-9-]*)*)$ ]]; then
+            echo "::warning title=Integration suites::The selector printed an invalid value, so every suite is selected."
+            suites=all
+          fi
           echo "integration_suites=${suites}" | tee -a "${GITHUB_OUTPUT}"
         env:
           GH_TOKEN: ${{ github.token }}
