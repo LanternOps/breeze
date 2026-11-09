@@ -9,21 +9,25 @@
  * excluded.
  *
  * An exhausted budget does NOT pause the grant (w00): `chargeableUnderGrant`
- * only answers; assessments skip, the deterministic digest path keeps
- * running, and the grantor is told once per window
- * (`notifyBudgetExhaustedOnce`).
+ * only answers. Background admissions skip (the floor tick, event assessments,
+ * the first look, specialist launches, model-written summaries), the
+ * deterministic digest path keeps running, and the grantor is told once per
+ * window (`notifyBudgetExhaustedOnce`).
  *
  * #10390: the spend is the grant's runs plus its model-written session summaries.
  * A summary is not a run (no agent, no policy snapshot, nothing to trace), so it
  * is read from the billing ledger by a grant-keyed `source_ref`, in the window its
  * row was created.
  *
- * #10414 (spec §4, Option 2): chat counts and warns; it is never refused here.
+ * #10414 (docs/superpowers/specs/ai-mcp/2026-11-06-wisp-chat-grant-followups-spec.md
+ * §4, Option 2): chat counts and warns; a chat TURN is never refused here.
  * A chat line is an invocation on a session carrying this grant
  * (`ai_sessions.wisp_grant_id`) that is not a run's own call
  * (`agent_run_id IS NULL`), charged to the UTC day it settled (`created_at`).
- * Chat spend can exhaust the budget, which stops BACKGROUND admission only;
- * no chat path reads `chargeableUnderGrant` (budget.chatNeverBlocks.contract.test.ts).
+ * Chat spend can exhaust the budget, which stops BACKGROUND admission only. A
+ * specialist requested from chat (`launch_specialist`) is background work and
+ * is refused like any other launch; the chat turn carries on. Every caller of
+ * `chargeableUnderGrant` is classified in budget.chatNeverBlocks.contract.test.ts.
  * The org AI budget stays chat's hard stop.
  *
  * Every grant / run read runs in SYSTEM context: callers are workers and the

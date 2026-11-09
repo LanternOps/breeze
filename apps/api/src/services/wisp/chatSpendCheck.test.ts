@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   wispEnabled: vi.fn(() => true),
   getRedis: vi.fn(),
   redisSet: vi.fn(),
+  redisDel: vi.fn(),
   spendSummary: vi.fn(),
   notifyBudgetExhaustedOnce: vi.fn(),
   chargeableUnderGrant: vi.fn(),
@@ -41,8 +42,9 @@ const summary = (spentTodayCents: number, budgetCentsPerDay: number) => ({
 beforeEach(() => {
   vi.clearAllMocks();
   h.wispEnabled.mockReturnValue(true);
-  h.getRedis.mockReturnValue({ set: h.redisSet });
+  h.getRedis.mockReturnValue({ set: h.redisSet, del: h.redisDel });
   h.redisSet.mockResolvedValue('OK');
+  h.redisDel.mockResolvedValue(1);
   h.notifyBudgetExhaustedOnce.mockResolvedValue(true);
 });
 
@@ -103,5 +105,43 @@ describe('maybeNotifyChatCrossedBudget', () => {
     const err = new Error('db down');
     h.spendSummary.mockRejectedValue(err);
     await expect(maybeNotifyChatCrossedBudget(GRANT, NOW)).rejects.toBe(err);
+  });
+
+  it('a failed spend read or notice releases the throttle key, so the next turn can retry', async () => {
+    const del = vi.fn().mockResolvedValue(1);
+    h.getRedis.mockReturnValue({ set: h.redisSet, del });
+    h.spendSummary.mockRejectedValueOnce(new Error('db down'));
+    await expect(maybeNotifyChatCrossedBudget(GRANT, NOW)).rejects.toThrow('db down');
+    expect(del).toHaveBeenCalledWith(`${CHAT_SPEND_CHECK_KEY_PREFIX}${GRANT}:2027-02-01`);
+
+    del.mockClear();
+    h.spendSummary.mockResolvedValue(summary(600, 500));
+    h.notifyBudgetExhaustedOnce.mockRejectedValueOnce(new Error('deliver failed'));
+    await expect(maybeNotifyChatCrossedBudget(GRANT, NOW)).rejects.toThrow('deliver failed');
+    expect(del).toHaveBeenCalledTimes(1);
+  });
+
+  it('a successful check keeps the key (the 5-minute throttle holds)', async () => {
+    const del = vi.fn().mockResolvedValue(1);
+    h.getRedis.mockReturnValue({ set: h.redisSet, del });
+    h.spendSummary.mockResolvedValue(summary(10, 500));
+    await expect(maybeNotifyChatCrossedBudget(GRANT, NOW)).resolves.toBe('under');
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it('a release that itself fails never masks the original error', async () => {
+    const del = vi.fn().mockRejectedValue(new Error('redis gone'));
+    h.getRedis.mockReturnValue({ set: h.redisSet, del });
+    const err = new Error('db down');
+    h.spendSummary.mockRejectedValueOnce(err);
+    await expect(maybeNotifyChatCrossedBudget(GRANT, NOW)).rejects.toBe(err);
+  });
+
+  it('a throttle SET that rejects is logged, not swallowed silently', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    h.redisSet.mockRejectedValue(new Error('ECONNREFUSED'));
+    await expect(maybeNotifyChatCrossedBudget(GRANT, NOW)).resolves.toBe('skipped');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('chat spend check'), expect.stringContaining('ECONNREFUSED'));
+    warn.mockRestore();
   });
 });

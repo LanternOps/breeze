@@ -22,6 +22,7 @@ import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { aiAgentRuns, aiAgents, aiSessions, wispGrantRevisions, wispGrants } from '../../db/schema';
 import { aiInvocations } from '../../db/schema/aiInvocations';
 import { createOrganization, createPartner, createUser } from './db-utils';
+import { buildWispOverview } from '../../services/wisp/adminOverview';
 import {
   chargeableUnderGrant,
   spendBreakdownUnderGrant,
@@ -164,5 +165,35 @@ describe('#10414 the Wisp grant meter counts chat', () => {
       .resolves.toEqual({ backgroundCents: 10, chatCents: 0, totalCents: 10 });
     await expect(spendBreakdownUnderGrant(f.g.grantId, new Date('2027-02-02T00:01:00.000Z')))
       .resolves.toEqual({ backgroundCents: 0, chatCents: 5, totalCents: 5 });
+  });
+
+  it('the admin overview\'s "exhausted" matches chargeableUnderGrant, with the same lines excluded', async () => {
+    const f = await seed();
+    await asSystem(() => db.update(wispGrants).set({ budgetCentsPerDay: 100 }).where(eq(wispGrants.id, f.g.grantId)));
+    await asSystem(() => db.update(wispGrants).set({ budgetCentsPerDay: 1000 }).where(eq(wispGrants.id, f.h.grantId)));
+    const r = await seedRun(f.agentId, f.orgId, f.g, 20, new Date('2027-02-01T08:00:00.000Z'));
+    await insertInvocation({ orgId: f.orgId, sessionId: f.s, costCents: 59.5, createdAt: NOW }); // chat
+    // None of these are G's chat: a run's own call, plain chat, another grant's chat.
+    await insertInvocation({ orgId: f.orgId, sessionId: f.s, agentRunId: r, costCents: 50, createdAt: NOW });
+    await insertInvocation({ orgId: f.orgId, sessionId: f.p, costCents: 70, createdAt: NOW });
+    await insertInvocation({ orgId: f.orgId, sessionId: f.sh, costCents: 80, createdAt: NOW });
+
+    const exhaustedToday = async () =>
+      (await asSystem(() => buildWispOverview(NOW))).find((row) => row.partnerId === f.partnerId)?.budgetExhaustedGrantsToday;
+
+    // 20 + ceil(59.5) = 80 of 100: admitted, and not exhausted on the overview.
+    await expect(chargeableUnderGrant(f.g.grantId, 1, NOW)).resolves.toEqual({ ok: true });
+    expect(await exhaustedToday()).toBe(0);
+
+    // A summary (overhead) of 0.25 and 19.25 more chat: 20 + ceil(59.5 + 0.25 + 19.25) = 99, still under.
+    await insertInvocation({ orgId: f.orgId, sourceRef: summaryRefineSourceRef(f.g.grantId), costCents: 0.25, createdAt: NOW });
+    await insertInvocation({ orgId: f.orgId, sessionId: f.s, costCents: 19.25, createdAt: NOW });
+    await expect(chargeableUnderGrant(f.g.grantId, 1, NOW)).resolves.toEqual({ ok: true });
+    expect(await exhaustedToday()).toBe(0);
+
+    // 0.01 more chat rounds the shared ledger line up to 80: 100 of 100, refused and exhausted on both.
+    await insertInvocation({ orgId: f.orgId, sessionId: f.s, costCents: 0.01, createdAt: NOW });
+    await expect(chargeableUnderGrant(f.g.grantId, 1, NOW)).resolves.toEqual({ ok: false, reason: 'budget_exhausted' });
+    expect(await exhaustedToday()).toBe(1);
   });
 });
