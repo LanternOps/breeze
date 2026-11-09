@@ -222,6 +222,22 @@ rules below **override** the interactive workflow:
   data-heavy pages: device lists, reports, audit trail, search), and attribute
   the change to its PR in that PR's `pr_result`. A stack that won't boot never
   reaches you — the runner files `[QA] Dev stack fails to boot on main`.
+- **Two phases, same stack.** `PHASE=self-hosted` is the main sweep — the
+  product as self-hosters run it. PRs listed in `HOSTED_PRS_FILE` touched
+  hosted-only surfaces (Wisp); **skip them in this phase** (no `pr_result`).
+  If that file is non-empty, the runner then flips the same stack to hosted
+  mode (`IS_HOSTED=true`, Wisp + AI agents on, `wisp` entitlement granted) and
+  re-invokes you with `PHASE=hosted`.
+- **Hosted phase** (`PHASE=hosted`): verify exactly the PRs in
+  `HOSTED_PRS_FILE`, one `pr_result` each, prefixing the body with
+  `Checked in hosted mode (IS_HOSTED=true).` Skip the nav crawl and rotating
+  slice; do a quick Wisp nav check (Wisp items no longer show "runs on Breeze
+  Cloud"). Wisp agent runs that need an LLM key the QA stack lacks are
+  `BLOCKED` with that prerequisite — don't fake a pass. **Append** a
+  `## Hosted phase` section to `report.md` (keep the first line, but update
+  its counts) and add the hosted result to this run's ledger row. Same
+  outbox rules; dedupe against issues the self-hosted phase already queued
+  (read `RUN_DIR/outbox/`).
 - **Re-verify open findings.** `gh issue list --label qa-sweep --state open`;
   re-check any whose area you touched. If one is fixed on main, queue a comment
   `Verified fixed on main@<sha9> by scheduled sweep` (never close).

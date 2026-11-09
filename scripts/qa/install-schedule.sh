@@ -34,6 +34,7 @@ done
 mkdir -p "$QA_HOME/bin" "$QA_HOME/runs"
 install -m 0755 "$SRC_DIR/scheduled-ui-sweep.sh" "$QA_HOME/bin/scheduled-ui-sweep.sh"
 install -m 0644 "$SRC_DIR/qa-mcp.json" "$QA_HOME/bin/qa-mcp.json"
+install -m 0644 "$SRC_DIR/qa-env.overrides" "$QA_HOME/bin/qa-env.overrides"
 install -m 0644 "$CHECKOUT/.claude/skills/ui-qa-sweep/SKILL.md" "$QA_HOME/bin/ui-qa-sweep.SKILL.md"   # contract travels with the runner
 
 INTERVALS=""

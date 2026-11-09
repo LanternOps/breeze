@@ -89,6 +89,7 @@ cleanup() {
     log "tearing down stack"
     (cd "$QA_WORKTREE" && pnpm wt-stack down) || log "WARN: wt-stack down failed"
   fi
+  [ -f "$QA_WORKTREE/.env.pre-hosted" ] && mv "$QA_WORKTREE/.env.pre-hosted" "$QA_WORKTREE/.env"
   rm -f "$ENVVALS"; rm -rf "$LOCK"
 }
 trap cleanup EXIT
@@ -166,6 +167,21 @@ while IFS= read -r line; do
     log "synced $key to main's value"
   fi
 done < <(grep -E '^[A-Z][A-Z0-9_]*_IMAGE_REF=' .env.example | grep -v '^BREEZE_' | grep -v 'replace-with')
+
+# Baseline: hosted-mode keys start OFF every run (the hosted phase sets them
+# temporarily); only a deliberate machine-local override can turn them on.
+[ -f .env.pre-hosted ] && mv .env.pre-hosted .env
+grep -vE '^(IS_HOSTED|BREEZE_AI_AGENTS_ENABLED|BREEZE_WISP_ENABLED)=' .env > .env.tmp && mv .env.tmp .env
+
+# Feature-flag overrides: bundled defaults, then machine-local (local wins).
+for ov in "$SCRIPT_DIR/qa-env.overrides" "$QA_HOME/env.overrides"; do
+  [ -f "$ov" ] || continue
+  while IFS= read -r line; do
+    key="${line%%=*}"
+    grep -v "^$key=" .env > .env.tmp; printf '%s\n' "$line" >> .env.tmp; mv .env.tmp .env
+    log "override $key from $(basename "$ov")"
+  done < <(grep -E '^[A-Z][A-Z0-9_]*=' "$ov")
+done
 
 # Literal values of every .env entry (>= 8 chars) -> redaction list for public sinks.
 ( umask 077; grep -E '^[A-Za-z_][A-Za-z0-9_]*=' .env | cut -d= -f2- | sed -E 's/^["'\'']//; s/["'\'']$//' \
@@ -267,6 +283,23 @@ chmod 0444 "$RUN_DIR/commits.tsv"
 IN_SCOPE=" $(cut -f3 "$RUN_DIR/commits.tsv" | sed -nE 's/.*\(#([0-9]+)\)[[:space:]]*$/\1/p' | tr '\n' ' ') "
 log "commits in scope: $(wc -l < "$RUN_DIR/commits.tsv" | tr -d ' ')"
 
+# Hosted-only surfaces (Wisp): self-hosted is the default product under test, so
+# PRs touching these paths are deferred to a second, hosted-mode phase on the
+# SAME stack. PRs whose hosted check failed last time are carried forward.
+HOSTED_PATHS_RE="${QA_HOSTED_PATHS_RE:-(^|/)[^/]*wisp[^/]*(/|$)}"
+HOSTED_PRS_FILE="$RUN_DIR/hosted-prs.txt"
+{
+  while IFS=$'\t' read -r sha _ subj; do
+    pr="$(printf '%s' "$subj" | sed -nE 's/.*\(#([0-9]+)\)[[:space:]]*$/\1/p')"
+    [ -n "$pr" ] || continue
+    git show --name-only --format= "$sha" | grep -qiE "$HOSTED_PATHS_RE" && echo "$pr"
+  done < "$RUN_DIR/commits.tsv"
+  state_get '.pendingHostedPrs // [] | .[]'
+} | grep -E '^[0-9]{1,7}$' | sort -un > "$HOSTED_PRS_FILE"
+chmod 0444 "$HOSTED_PRS_FILE"
+for pr in $(cat "$HOSTED_PRS_FILE"); do case "$IN_SCOPE" in *" $pr "*) ;; *) IN_SCOPE="$IN_SCOPE$pr ";; esac; done
+log "hosted-phase PRs: $(tr '\n' ' ' < "$HOSTED_PRS_FILE")"
+
 # Per-run browser config: only the local stack is reachable (no exfil to the
 # internet via the browser); file:// stays blocked (Playwright MCP default).
 ORIGIN="$(printf '%s' "$BASE_URL" | sed -E 's#^(https?://[^/]+).*#\1#')"
@@ -283,11 +316,58 @@ Run parameters:
 - COMMITS_FILE=$RUN_DIR/commits.tsv (first-parent commits in scope: sha, date, subject)
 - ROTATION_SLICE=$SLICE
 - ENV_DRIFT_FILE=$DRIFT (environment changes detected this run; empty = none)
+- PHASE=self-hosted
+- HOSTED_PRS_FILE=$HOSTED_PRS_FILE (PRs deferred to the hosted phase — do NOT emit pr_result for these; empty = none)
 You are unattended: never ask questions. You cannot write to GitHub directly; queue writes in RUN_DIR/outbox as the skill describes."
+
+# Flip the running stack to hosted mode in place (same DB, same data, same
+# origin): hosted env on api/web/portal + a manual `wisp` entitlement for every
+# seeded partner. Local dev stack only; never touches a real deployment.
+switch_to_hosted() {
+  local project pg pguser pgdb
+  project="$(jq -r .project .breeze-stack.json)"; pg="$(jq -r .pgContainer .breeze-stack.json)"
+  cp .env .env.pre-hosted   # restored by cleanup: hosted mode must never leak into the next run
+  for kv in IS_HOSTED=true BREEZE_AI_AGENTS_ENABLED=true BREEZE_WISP_ENABLED=true; do
+    grep -v "^${kv%%=*}=" .env > .env.tmp; echo "$kv" >> .env.tmp; mv .env.tmp .env
+    # .env.stack (wt-stack, loaded after .env) pins IS_HOSTED=false and would win;
+    # it's regenerated on every `wt-stack up`, so editing it can't leak.
+    if grep -q "^${kv%%=*}=" .env.stack 2>/dev/null; then
+      grep -v "^${kv%%=*}=" .env.stack > .env.stack.tmp; echo "$kv" >> .env.stack.tmp; mv .env.stack.tmp .env.stack
+    fi
+  done
+  log "switching stack to hosted mode"
+  docker compose -p "$project" --env-file .env --env-file .env.stack -f docker-compose.yml \
+    -f docker-compose.override.yml.dev -f docker-compose.override.yml.worktree \
+    up -d --no-deps --force-recreate api web portal >/dev/null 2>&1 || return 1
+  for _ in $(seq 1 60); do curl -sf -o /dev/null "$BASE_URL/health" && break; sleep 5; done
+  curl -sf -o /dev/null "$BASE_URL/health" || return 1
+  pguser="$(grep -m1 '^POSTGRES_USER=' .env | cut -d= -f2-)"; pgdb="$(grep -m1 '^POSTGRES_DB=' .env | cut -d= -f2-)"
+  docker exec "$pg" psql -v ON_ERROR_STOP=1 -U "${pguser:-breeze}" -d "${pgdb:-breeze}" -qc \
+    "INSERT INTO partner_entitlements (partner_id, feature_key, state, source, reason)
+       SELECT id, 'wisp', 'enabled', 'manual', 'scheduled QA hosted phase' FROM partners
+     ON CONFLICT (partner_id, feature_key, source) DO UPDATE SET state='enabled', revoked_at=NULL" >/dev/null || return 1
+  # Prove it took. The API's wispEnabled() is env-only (IS_HOSTED && AI agents &&
+  # Wisp), and the routes additionally need the entitlement — check both at the
+  # source (API login needs a browser auth-binding round trip, so not via HTTP).
+  local apic envs ent
+  apic="$(docker ps --filter "label=com.docker.compose.project=$project" --filter "label=com.docker.compose.service=api" --format '{{.Names}}' | head -1)"
+  envs="$(docker exec "$apic" sh -c 'echo "$IS_HOSTED $BREEZE_AI_AGENTS_ENABLED $BREEZE_WISP_ENABLED"' 2>/dev/null)"
+  ent="$(docker exec "$pg" psql -U "${pguser:-breeze}" -d "${pgdb:-breeze}" -tAc \
+        "select count(*) from partner_entitlements where feature_key='wisp' and state='enabled' and revoked_at is null" 2>/dev/null)"
+  log "hosted mode up (api env: ${envs:-?}; wisp entitlements: ${ent:-?})"
+  [ "$envs" = "true true true" ] && [ "${ent:-0}" -ge 1 ] 2>/dev/null \
+    || { log "WARN: hosted switch did not take (expected 'true true true' and >=1 entitlement)"; return 1; }
+}
 
 if [ "${QA_DRY_RUN:-0}" = 1 ]; then
   log "DRY RUN: skipping claude. prompt was:"; echo "$PROMPT"; cat "$RUN_DIR/mcp.json"
   curl -sf -o /dev/null "$BASE_URL/health" && log "health OK" || log "health FAILED"
+  for u in "$BASE_URL/api/v1/config" "$BASE_URL/api/config"; do
+    f="$(curl -sf "$u" 2>/dev/null | jq -c '.features // empty' 2>/dev/null)" && [ -n "$f" ] && { log "features: $f"; break; }
+  done
+  if [ -s "$HOSTED_PRS_FILE" ] || [ "${QA_DRY_HOSTED:-0}" = 1 ]; then
+    switch_to_hosted && log "DRY RUN: hosted switch OK" || log "DRY RUN: hosted switch FAILED"
+  fi
   exit 0
 fi
 
@@ -307,20 +387,44 @@ ALLOWED_TOOLS=(
 DENIED_TOOLS=(
   "Read(/$QA_WORKTREE/.env*)" "Read(/$QA_WORKTREE/**/.env*)"
   "Edit(/$RUN_DIR/commits.tsv)" "Edit(/$RUN_DIR/mcp.json)" "Edit(/$RUN_DIR/env-*)"
-  "Read(/$RUN_DIR/*.log)" "Read(/$RUN_DIR/transcript.jsonl)" "Read(/$RUN_DIR/claude.err)"
+  "Read(/$RUN_DIR/*.log)" "Read(/$RUN_DIR/transcript*.jsonl)" "Read(/$RUN_DIR/claude*.err)"
   "mcp__playwright__browser_run_code_unsafe"
   "WebFetch" "WebSearch" "Agent" "Task"
 )
-CLAUDE_ARGS=(-p "$PROMPT" --permission-mode dontAsk
-  --allowedTools "${ALLOWED_TOOLS[@]}" --disallowedTools "${DENIED_TOOLS[@]}"
-  --strict-mcp-config --mcp-config "$RUN_DIR/mcp.json" --add-dir "$RUN_DIR"
-  --output-format stream-json --verbose)
-[ -n "${QA_MODEL:-}" ] && CLAUDE_ARGS+=(--model "$QA_MODEL")
+run_agent() {  # run_agent <prompt> <timeout> <transcript-suffix>
+  local args=(-p "$1" --permission-mode dontAsk
+    --allowedTools "${ALLOWED_TOOLS[@]}" --disallowedTools "${DENIED_TOOLS[@]}"
+    --strict-mcp-config --mcp-config "$RUN_DIR/mcp.json" --add-dir "$RUN_DIR"
+    --output-format stream-json --verbose)
+  [ -n "${QA_MODEL:-}" ] && args+=(--model "$QA_MODEL")
+  log "claude start [$3] (timeout $2)"
+  gtimeout --kill-after=2m "$2" claude "${args[@]}" > "$RUN_DIR/transcript$3.jsonl" 2> "$RUN_DIR/claude$3.err"
+  local rc=$?; log "claude exit [$3]=$rc"; return $rc
+}
 
-log "claude start (timeout $QA_TIMEOUT)"
-gtimeout --kill-after=2m "$QA_TIMEOUT" claude "${CLAUDE_ARGS[@]}" > "$RUN_DIR/transcript.jsonl" 2> "$RUN_DIR/claude.err"
+run_agent "$PROMPT" "$QA_TIMEOUT" ""
 RC=$?
-log "claude exit=$RC"
+
+# --- hosted phase (only when hosted-only surfaces were touched) ---------------
+HOSTED_OK=1
+if [ "$RC" = 0 ] && [ -s "$HOSTED_PRS_FILE" ]; then
+  HOSTED_OK=0
+  if switch_to_hosted; then
+    HPROMPT="Run the ui-qa-sweep skill in **Scheduled mode — Hosted phase** (read the skill's 'Hosted phase' subsection first and follow it exactly).
+Run parameters:
+- RUN_DIR=$RUN_DIR   (append to report.md; update ledger.md; add outbox/*.json — nowhere else)
+- BASE_URL=$BASE_URL (same stack and data as the self-hosted phase, now IS_HOSTED=true with Wisp enabled + entitled)
+- MAIN_SHA=$NEW_SHA
+- PHASE=hosted
+- HOSTED_PRS_FILE=$HOSTED_PRS_FILE (verify exactly these PRs; emit one pr_result each)
+- COMMITS_FILE=$RUN_DIR/commits.tsv
+You are unattended: never ask questions. Queue GitHub writes in RUN_DIR/outbox as the skill describes."
+    run_agent "$HPROMPT" "${QA_HOSTED_TIMEOUT:-90m}" "-hosted" && HOSTED_OK=1
+  else
+    log "hosted switch FAILED; hosted PRs carried to next run"
+    echo "- Hosted phase skipped: could not switch the stack to hosted mode (see runner.log)." >> "$RUN_DIR/report.md"
+  fi
+fi
 
 # --- publish the outbox (trusted side) ---------------------------------------
 MAX_NEW_ISSUES="${QA_MAX_NEW_ISSUES:-10}"
@@ -329,8 +433,18 @@ publish_outbox() {
   gh -R "$QA_REPO" label create qa-swept --color 0E8A16 --description "Merged PR checked in the browser by the scheduled UI QA sweep (see QA comment)" >/dev/null 2>&1 || true
   gh -R "$QA_REPO" label create qa-no-ui --color EDEDED --description "Merged PR reviewed by the scheduled QA sweep: no UI surface to test" >/dev/null 2>&1 || true
   local created=0 prs=0 f action title issue labels bodyf pr result
+  # One verdict per PR: if both phases wrote a pr_result for the same PR (e.g. a
+  # BLOCKED from the self-hosted phase, then the hosted check), the newest wins.
+  # (/bin/bash on macOS is 3.2: no associative arrays, so use a keep-list file.)
+  local keep="$RUN_DIR/.pr-keep"
+  for f in $(ls -1tr "$RUN_DIR"/outbox/*.json 2>/dev/null); do
+    [ "$(jq -r '.action // empty' "$f" 2>/dev/null)" = pr_result ] && printf '%s %s\n' "$(jq -r '.pr' "$f")" "$f"
+  done | awk '{last[$1]=$2} END {for (k in last) print last[k]}' > "$keep"
   for f in "$RUN_DIR"/outbox/*.json; do
     [ -f "$f" ] || continue
+    if [ "$(jq -r '.action // empty' "$f" 2>/dev/null)" = pr_result ] && ! grep -qxF "$f" "$keep"; then
+      log "outbox SKIP $(basename "$f"): superseded by a newer verdict for the same PR"; continue
+    fi
     action="$(jq -r '.action // empty' "$f" 2>/dev/null)"
     bodyf="$f.body.md"; jq -r '.body // empty' "$f" > "$bodyf" 2>/dev/null
     if ! body_ok "$bodyf"; then
@@ -383,7 +497,8 @@ if [ "$RC" = 0 ] && [ -f "$RUN_DIR/report.md" ]; then
   tmp="$(mktemp)"
   jq -n --slurpfile old <(cat "$STATE" 2>/dev/null || echo '{}') \
      --arg sha "$NEW_SHA" --arg run "$RUN_ID" --argjson slice "$(( (SLICE + 1) % 4 ))" \
-     '($old[0] // {}) + {lastSweptSha:$sha, lastRun:$run, nextSlice:$slice}' > "$tmp" && mv "$tmp" "$STATE"
+     --argjson pend "$(if [ "$HOSTED_OK" = 1 ]; then echo '[]'; else jq -R . < "$HOSTED_PRS_FILE" | jq -s .; fi)" \
+     '($old[0] // {}) + {lastSweptSha:$sha, lastRun:$run, nextSlice:$slice, pendingHostedPrs:$pend}' > "$tmp" && mv "$tmp" "$STATE"
   ln -sfn "$RUN_DIR" "$QA_HOME/latest"
   SUMMARY="$(grep -m1 -E '^RESULT:' "$RUN_DIR/report.md" | cut -c1-180)"
   notify "${SUMMARY:-Sweep complete} — main@${NEW_SHA:0:9}"
