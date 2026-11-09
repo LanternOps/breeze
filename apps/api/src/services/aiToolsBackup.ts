@@ -6,11 +6,11 @@
  * Each tool wraps existing DB schema with org-scoped isolation.
  */
 
-import { db, runOutsideDbContext, withDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withDbAccessContext, withDbTransactionIfHeld } from '../db';
+import { safeErrorMessage } from './aiModels/safeDbError';
 import {
   backupConfigs,
   backupJobs,
-  backupSnapshotFiles,
   backupSnapshots,
   configPolicyFeatureLinks,
   configurationPolicies,
@@ -32,7 +32,8 @@ import { deviceScopeCondition, deviceSiteDenied, resolveSiteAllowedDeviceIds } f
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
 import { authorizeAiRestore } from './aiToolsRestoreAuthorization';
 import { backupJobHistoryOrderBy, latestBackupRunOrderBy } from './backupJobOrdering';
-import { resolveSelectedSnapshotPaths, selectedSnapshotPathError } from './backupSelectedPaths';
+import { selectedSnapshotPathError } from './backupSelectedPaths';
+import { resolveSelectedSnapshotPathsInDb } from './backupSnapshotBrowse';
 import { inArray } from 'drizzle-orm';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { restoreIntegrityRefusalForActor } from './backupRestoreActorGate';
@@ -135,10 +136,10 @@ async function markRestoreJobFailed(restoreJobId: string, error: string): Promis
       completedAt: new Date(),
       updatedAt: new Date(),
       targetConfig: sql`coalesce(${restoreJobs.targetConfig}, '{}'::jsonb) || jsonb_build_object(
-        'error', ${error},
+        'error', ${error}::text,
         'result', jsonb_build_object(
           'status', 'failed',
-          'error', ${error}
+          'error', ${error}::text
         )
       )`,
     })
@@ -768,21 +769,13 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
 
       let resolvedSelectedPaths: string[] = [];
       if (restoreType === 'selective') {
-        const snapshotFiles = await db
-          .select({ sourcePath: backupSnapshotFiles.sourcePath })
-          .from(backupSnapshotFiles)
-          .where(eq(backupSnapshotFiles.snapshotDbId, snapshot.id));
-
-        if (snapshotFiles.length === 0) {
+        // Map each selection (possibly in the browse tree's forward-slash
+        // form) back to the stored original the agent matches against, and
+        // each folder to its stored-form prefix (#11026).
+        const resolution = await resolveSelectedSnapshotPathsInDb(snapshot.id, selectedPaths ?? []);
+        if (!resolution.ok && resolution.reason === 'no_readable_index') {
           return JSON.stringify({ error: 'Selective restore is unavailable for snapshots without indexed files' });
         }
-
-        // Map each selection (possibly in the browse tree's forward-slash
-        // form) back to the stored original the agent matches against.
-        const resolution = resolveSelectedSnapshotPaths(
-          selectedPaths ?? [],
-          snapshotFiles.map((row) => row.sourcePath)
-        );
         if (!resolution.ok) {
           return JSON.stringify({ error: selectedSnapshotPathError(resolution) });
         }
@@ -842,44 +835,47 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       if (!restoreJob) return JSON.stringify({ error: 'Failed to create restore job' });
 
       try {
-        const { command, error } = await aiQueueCommandForExecution(
-          auth,
-          'restore_snapshot',
-          restoreJob.deviceId,
-          CommandTypes.BACKUP_RESTORE,
-          {
-            restoreJobId: restoreJob.id,
-            snapshotId: snapshot.providerSnapshotId,
-            targetPath: restoreJob.targetPath ?? '',
-            selectedPaths: resolvedSelectedPaths,
-            // A reference only: resolved when the command is delivered.
-            ...backupReadCredentialPayload(snapshot.configId!, orgId, backupProviderConfig.provider),
-          },
-          { userId: auth.user?.id ?? undefined }
-        );
+        // One savepoint: the catch below marks the job failed on this same
+        // transaction, and a failed link must not leave a queued command (#11225).
+        const dispatched = await withDbTransactionIfHeld(async () => {
+          const { command, error } = await aiQueueCommandForExecution(
+            auth,
+            'restore_snapshot',
+            restoreJob.deviceId,
+            CommandTypes.BACKUP_RESTORE,
+            {
+              restoreJobId: restoreJob.id,
+              snapshotId: snapshot.providerSnapshotId,
+              targetPath: restoreJob.targetPath ?? '',
+              selectedPaths: resolvedSelectedPaths,
+              // A reference only: resolved when the command is delivered.
+              ...backupReadCredentialPayload(snapshot.configId!, orgId, backupProviderConfig.provider),
+            },
+            { userId: auth.user?.id ?? undefined }
+          );
 
-        if (error) {
-          await markRestoreJobFailed(restoreJob.id, error);
-          return JSON.stringify({ error });
+          if (error) return { refused: error };
+          if (!command?.id) return { refused: 'Restore command was queued without a command ID' };
+
+          const now = new Date();
+          const [updatedRestoreJob] = await db
+            .update(restoreJobs)
+            .set({
+              commandId: command.id,
+              status: command.status === 'sent' ? 'running' : restoreJob.status,
+              startedAt: command.status === 'sent' ? now : restoreJob.startedAt,
+              updatedAt: now,
+            })
+            .where(eq(restoreJobs.id, restoreJob.id))
+            .returning();
+          return { refused: undefined, command, updatedRestoreJob };
+        });
+
+        if (dispatched.refused !== undefined) {
+          await markRestoreJobFailed(restoreJob.id, dispatched.refused);
+          return JSON.stringify({ error: dispatched.refused });
         }
-
-        if (!command?.id) {
-          const fallbackError = 'Restore command was queued without a command ID';
-          await markRestoreJobFailed(restoreJob.id, fallbackError);
-          return JSON.stringify({ error: fallbackError });
-        }
-
-        const now = new Date();
-        const [updatedRestoreJob] = await db
-          .update(restoreJobs)
-          .set({
-            commandId: command.id,
-            status: command.status === 'sent' ? 'running' : restoreJob.status,
-            startedAt: command.status === 'sent' ? now : restoreJob.startedAt,
-            updatedAt: now,
-          })
-          .where(eq(restoreJobs.id, restoreJob.id))
-          .returning();
+        const { command, updatedRestoreJob } = dispatched;
 
         return JSON.stringify({
           success: true,
@@ -893,9 +889,12 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
           message: `Restore job created (${restoreType} restore from snapshot ${snapshot.providerSnapshotId})`,
         });
       } catch (err) {
-        const error = err instanceof Error ? err.message : 'Failed to dispatch restore command to agent';
+        // A fixed message: target_config is tenant- and model-readable, the raw
+        // error goes to the log.
+        const error = 'Failed to dispatch restore command to agent';
+        console.error('[aiToolsBackup] Failed to dispatch restore:', safeErrorMessage(err));
         await markRestoreJobFailed(restoreJob.id, error);
-        return JSON.stringify({ error: 'Failed to dispatch restore command to agent' });
+        return JSON.stringify({ error });
       }
     }),
   });

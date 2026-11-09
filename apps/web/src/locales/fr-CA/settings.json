@@ -284,7 +284,7 @@
     "alertThresholds": "Avertir à (% du budget)",
     "alertThresholdsHelp": "Les administrateurs partenaires ayant accès à la facturation reçoivent une alerte dans l'application à chaque palier et un courriel pour les alertes mensuelles et de plafond atteint. Laissez vide pour hériter de 50, 80, 95.",
     "notSet": "Non défini, les organisations se configurent individuellement",
-    "description": "Les valeurs budgétaires sont appliquées dans toutes les organisations d’enfants. Les montants en dollars sont stockés en centimes en interne.",
+    "description": "Une valeur définie ici s’applique à toutes les organisations et les verrouille. Un champ laissé vide est configuré par organisation. Les montants en dollars sont stockés en centimes en interne.",
     "modes": {
       "perStep": "Par étape",
       "actionPlan": "Plan d’action",
@@ -1095,8 +1095,8 @@
         "description": "Envoyez vos courriels à partir de votre propre domaine"
       },
       "aiBudgets": {
-        "label": "Budgets IA",
-        "description": "Limites de dépenses en IA"
+        "label": "Budgets et limites IA",
+        "description": "Plafonds de dépenses, alertes et limites de débit IA"
       },
       "aiProvider": {
         "label": "Fournisseurs et modèles d'IA",
@@ -1119,8 +1119,8 @@
         "description": "Bureau de service, facturation et topologie activés/désactivés"
       },
       "aiApprovals": {
-        "label": "Délai d'approbation IA",
-        "description": "Durée d'attente de Breeze AI pour l'approbation d'une action contrôlée"
+        "label": "Approbations IA",
+        "description": "Mode d'approbation et délai d'attente de Breeze AI pour une approbation"
       },
       "callerVerification": {
         "label": "Vérification de l’appelant",
@@ -1129,6 +1129,10 @@
       "knownGuests": {
         "label": "Invités connus",
         "description": "Appareils de visiteurs et de techniciens approuvés, par adresse MAC"
+      },
+      "customerPortal": {
+        "label": "Portail client",
+        "description": "Règles de connexion et d’inscription par défaut pour les portails de vos clients, et demandes d’accès en attente d’une décision"
       }
     },
     "saved": "Paramètres partenaires enregistrés",
@@ -1198,6 +1202,7 @@
       "badge": {
         "locks": "Verrouille les organisations",
         "locksConditional": "Verrouille les organisations si activé",
+        "locksWhenSet": "Verrouille les organisations une fois défini",
         "overridable": "L’organisation peut le modifier",
         "overridableCap": "L’organisation peut le modifier, jusqu’à {{limit}}",
         "partnerOnly": "À l’échelle du partenaire"
@@ -1205,6 +1210,7 @@
       "badgeHelp": {
         "locks": "Tant que ce paramètre est défini, chaque organisation utilise votre valeur. La valeur propre de l’organisation est ignorée.",
         "locksConditional": "Lorsqu’il est activé, chaque organisation utilise votre valeur au lieu de la sienne. Lorsqu’il est désactivé, les organisations utilisent la leur.",
+        "locksWhenSet": "Une fois la valeur définie, chaque organisation l’utilise et la sienne est ignorée. Tant qu’elle est vide, chaque organisation configure la sienne.",
         "overridable": "Votre valeur est la valeur par défaut. Une organisation qui définit sa propre valeur utilise plutôt celle-ci.",
         "overridableCap": "Votre valeur est la valeur par défaut. Une organisation peut définir sa propre valeur, jusqu’à {{limit}}.",
         "partnerOnly": "Les organisations n’ont pas de paramètre propre. Votre valeur s’applique à toutes."
@@ -1851,7 +1857,8 @@
       "load": "Impossible de charger la politique d’approbation-sécurité.",
       "save": "Impossible d’enregistrer la politique d’approbation-sécurité.",
       "unavailable": "Aucune politique disponible."
-    }
+    },
+    "scopeNote": "Ces paramètres s’appliquent à toutes les organisations de votre compte partenaire."
   },
   "orgAuditRetentionSettings": {
     "title": "Conservation des journaux d'audit",
@@ -2350,6 +2357,11 @@
       "sendInvite": "Impossible d’envoyer l’invitation",
       "action": "Action échouée",
       "invalidEmail": "Saisissez une adresse courriel valide"
+    },
+    "badges": {
+      "noBrowserAccess": "Aucun accès par navigateur",
+      "microsoft": "Connexion Microsoft",
+      "google": "Connexion Google"
     }
   },
   "orgRemoteAccessSettings": {
@@ -2968,7 +2980,8 @@
       "enabledHint": "« Activé » et le mode sont deux interrupteurs distincts et une exécution a besoin des deux : si ceci est désactivé, rien ne s’exécute quel que soit le mode, et en mode Désactivé rien ne s’exécute même si ceci est activé.",
       "enabledCreateHint": "Les nouveaux agents sont créés éteints. Vérifiez la liste des outils autorisés et les limites ci-dessous, puis activez ceci lorsque vous voulez que l’agent commence à s’exécuter.",
       "actKeysCleared": "Les autorisations du mode action sont conservées, mais ne seront pas enregistrées tant que cet agent ne repasse pas en mode Action.",
-      "recipientRoleNoMembers": "aucun membre actif"
+      "recipientRoleNoMembers": "aucun membre actif",
+      "enabledHintNoMode": "Lorsque cette option est désactivée, l’agent ne s’exécute pas."
     },
     "policyKeys": {
       "tools": {
@@ -3165,6 +3178,7 @@
           "blocked_by_source": "Exclue par les sources de mise à jour de la politique",
           "held_by_deferral": "Retenue par la fenêtre de report",
           "blocked_by_category": "Exclue par les règles de catégorie de l'anneau",
+          "managed_by_vendor_updates": "Géré par les mises à jour du constructeur",
           "blocked_by_app_rule": "Bloquée par une règle d'application",
           "blocked_by_feature_update_policy": "Exclu par la politique de mises à jour de fonctionnalités Windows de l'anneau",
           "awaiting_manual_approval": "En attente d'approbation manuelle",
@@ -5506,7 +5520,21 @@
     "verifyWithYourIdentityProvider": "Vérifier avec votre fournisseur d'identité",
     "ssoReauthProofExpired": "Votre vérification auprès du fournisseur d'identité est expirée. Vérifiez de nouveau pour terminer la configuration de votre application d'authentification.",
     "ssoReauthManageHint": "Ce compte se connecte au moyen d'un fournisseur d'identité et n'a pas de mot de passe. Vérifiez votre identité auprès de votre fournisseur pour confirmer ce changement.",
-    "ssoReauthManageVerified": "Identité vérifiée auprès de votre fournisseur. Terminez l’étape ci-dessous pour confirmer ce changement."
+    "ssoReauthManageVerified": "Identité vérifiée auprès de votre fournisseur. Terminez l’étape ci-dessous pour confirmer ce changement.",
+    "notSetUp": "Non configuré",
+    "notAvailable": "Non disponible",
+    "backup": "Secours",
+    "addBackup": "Ajouter une méthode de secours",
+    "totpBackupAddHint": "Ajoutez une application d’authentification comme méthode de secours pour pouvoir vous connecter même si votre clé d’accès n’est pas disponible.",
+    "totpPolicyDisallowed": "La politique de votre organisation n’autorise pas les applications d’authentification.",
+    "totpBackupActiveHint": "Utilisez un code de votre application d’authentification si votre clé d’accès n’est pas disponible.",
+    "totpBackupVerifyNote": "Lorsque vous appuierez sur Vérifier, vous confirmerez avec votre clé d’accès.",
+    "confirmBackupButton": "Vérifier et ajouter une méthode de secours",
+    "removeTotpTitle": "Retirer l’application d’authentification",
+    "removeTotpBackupDescription": "Vous continuerez à vous connecter avec votre clé d’accès. Vos codes de récupération restent inchangés.",
+    "removeTotpPrimaryDescription": "Votre clé d’accès devient votre méthode de connexion principale. Vos codes de récupération restent inchangés.",
+    "removeTotpConfirmWithPasskey": "Vous confirmerez avec votre clé d’accès.",
+    "removing": "Retrait..."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importation depuis Pax8",
@@ -5631,7 +5659,13 @@
     "ssoReauthManageProofExpired": "La vérification auprès de votre fournisseur d'identité a expiré. Vérifiez de nouveau pour confirmer ce changement.",
     "verifyWithIdpToDeletePasskey": "Ce compte n'a pas de mot de passe. Vérifiez votre identité auprès de votre fournisseur d'identité avant de supprimer une clé d'accès.",
     "deletePasskeySsoReauth": "Vérifier l'identité pour supprimer une clé d'accès",
-    "deletePasskeySsoVerified": "Identité vérifiée. Choisissez Supprimer sur la clé d'accès à retirer."
+    "deletePasskeySsoVerified": "Identité vérifiée. Choisissez Supprimer sur la clé d'accès à retirer.",
+    "authenticatorBackupAdded": "Application d’authentification ajoutée comme méthode de secours. Vos codes de récupération n’ont pas changé",
+    "authenticatorAppRemoved": "Application d’authentification retirée. Vous vous connecterez avec votre clé d’accès",
+    "authenticatorCodeRejectedWaitForNext": "Ce code n’a pas été accepté. Chaque code ne fonctionne qu’une fois: si vous venez de l’utiliser, attendez le prochain code de votre application d’authentification.",
+    "passkeyConfirmationCanceled": "La confirmation par clé d’accès a été annulée ou a expiré.",
+    "passkeyProofRejected": "Votre clé d’accès n’a pas pu être vérifiée. Veuillez réessayer.",
+    "failedToRemoveAuthenticatorApp": "Impossible de retirer l’application d’authentification"
   },
   "roleManager": {
     "roles": "Rôles",
@@ -6358,8 +6392,8 @@
     }
   },
   "orgAiBudgetSettings": {
-    "title": "Budget IA",
-    "description": "Plafonds de dépenses, limites de fréquence et mode d’approbation de Breeze AI dans cette organisation. Les champs définis par votre partenaire sont affichés ici, mais ne peuvent être modifiés que dans l’onglet du partenaire.",
+    "title": "Budget et limites IA",
+    "description": "Plafonds de dépenses, alertes et limites de débit de Breeze AI dans cette organisation. Les champs définis par votre partenaire sont affichés ici, mais ne peuvent être modifiés que dans l'onglet partenaire.",
     "selectOrganization": "Sélectionnez une organisation pour configurer son budget IA."
   },
   "orgSettingsPage": {
@@ -7367,7 +7401,9 @@
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Vous confirmerez avec votre clé d'accès (Touch ID / Windows Hello) lors de l'enregistrement.",
     "authenticatorCode": "Code d'authentification",
-    "confirmYourPassword": "Confirmez votre mot de passe"
+    "confirmYourPassword": "Confirmez votre mot de passe",
+    "switchToAuthenticatorCode": "Utiliser plutôt l’application d’authentification",
+    "usePasskeyInstead": "Utiliser plutôt votre clé d’accès"
   },
   "tenantVariablesPage": {
     "orgOwnedNote": "Les variables propres à une organisation sont répertoriées sous celle-ci.",
@@ -7565,6 +7601,43 @@
       "create": "Impossible d’ajouter le contact.",
       "update": "Impossible d’enregistrer le contact.",
       "delete": "Impossible de supprimer le contact."
+    },
+    "portal": {
+      "column": "Portail",
+      "status": {
+        "none": "Aucun accès",
+        "invited": "Invité",
+        "active": "Actif",
+        "disabled": "Désactivé",
+        "requested": "Demandé"
+      },
+      "actions": {
+        "give": "Donner accès au portail",
+        "resend": "Renvoyer l’invitation",
+        "bulkGive": "Donner accès au portail ({{count}})",
+        "selectAll": "Sélectionner tous les contacts de cette page",
+        "selectRow": "Sélectionner {{name}}"
+      },
+      "form": {
+        "giveAccess": "Donner accès au portail (envoie une invitation à cette adresse courriel)",
+        "needsEmail": "Ajoutez une adresse courriel pour donner accès au portail."
+      },
+      "toasts": {
+        "invited": "Invitation au portail envoyée",
+        "inviteEmailFailed": "Identifiant de portail créé, mais le courriel d’invitation n’a pas pu être envoyé. Utilisez Renvoyer l’invitation.",
+        "bulkSummary": "Accès au portail : {{details}}"
+      },
+      "outcomes": {
+        "invited": "Invités : {{count}}",
+        "already_has_access": "Ont déjà accès : {{count}}",
+        "no_email": "Sans adresse courriel : {{count}}",
+        "email_bound_to_other_contact": "Courriel utilisé par un autre contact : {{count}}",
+        "duplicate_email_in_batch": "Courriel en double dans la sélection : {{count}}"
+      },
+      "errors": {
+        "invite": "Impossible de donner accès au portail.",
+        "bulkInvite": "Impossible de donner accès au portail aux contacts sélectionnés."
+      }
     }
   },
   "bulkContactImport": {
@@ -7834,7 +7907,8 @@
     "productDefault": "Valeur par défaut du produit ({{minutes}} minutes)",
     "range": "Choisissez {{min}}-{{max}} minutes.",
     "description": "Durée pendant laquelle un tour Breeze AI en cours attend qu'une personne approuve une action contrôlée (Tier 2/3) avant d'abandonner.",
-    "notForUnattendedNote": "Ceci n'est pas destiné au travail de nuit ou sans surveillance — le travail de longue durée passe par la file d'approbations, qui a son propre délai d'expiration."
+    "notForUnattendedNote": "Ceci n'est pas destiné au travail de nuit ou sans surveillance — le travail de longue durée passe par la file d'approbations, qui a son propre délai d'expiration.",
+    "modeDescription": "Comment le clavardage Breeze AI demande une confirmation avant d'exécuter des actions protégées. S'applique qu'un plafond de dépenses soit défini ou non."
   },
   "orgAiApprovalTimeout": {
     "title": "Délai d'approbation IA",
@@ -8220,5 +8294,131 @@
     "hideContent": "Masquer le contenu",
     "conversationUnavailable": "Cette conversation n'est plus disponible.",
     "usersLoadFailed": "Impossible de charger les techniciens."
+  },
+  "orgAiApprovalMode": {
+    "title": "Mode d'approbation IA",
+    "description": "Comment le clavardage Breeze AI demande une confirmation avant d'exécuter des actions protégées (Tier 2/3) dans cette organisation. S'applique qu'un plafond de dépenses soit défini ou non.",
+    "save": "Enregistrer"
+  },
+  "portalAccessPolicy": {
+    "title": "Connexion et inscription",
+    "orgDescription": "Comment les personnes de cette organisation se connectent au portail client, et comment les nouvelles personnes obtiennent un accès par navigateur. Un champ laissé sur Hériter suit la valeur par défaut du partenaire.",
+    "partnerDescription": "La valeur par défaut de toutes les organisations clientes. Chaque organisation peut remplacer n’importe quel champ dans son onglet Portail client.",
+    "loading": "Chargement des paramètres de connexion…",
+    "readOnly": "Vous pouvez consulter ces paramètres, mais pas les modifier. Modifier la valeur par défaut du partenaire nécessite un accès complet au partenaire.",
+    "save": "Enregistrer les paramètres de connexion",
+    "sources": {
+      "partner": "Valeur par défaut du partenaire",
+      "default": "Valeur par défaut de Breeze"
+    },
+    "signIn": {
+      "title": "Comment les personnes se connectent"
+    },
+    "newPeople": {
+      "title": "Comment les nouvelles personnes obtiennent un accès par navigateur"
+    },
+    "options": {
+      "on": "Activé",
+      "off": "Désactivé"
+    },
+    "microsoft": {
+      "label": "Connexion Microsoft"
+    },
+    "google": {
+      "label": "Connexion Google"
+    },
+    "password": {
+      "label": "Connexion par mot de passe",
+      "allowed": "Autorisée",
+      "ssoOnly": "Désactivée — Microsoft/Google uniquement",
+      "ssoOnlyNeedsSso": "Disponible une fois la connexion Microsoft ou Google activée."
+    },
+    "fallback": "La connexion par mot de passe est activée, car aucune connexion Microsoft ou Google n’est activée.",
+    "invites": {
+      "label": "Invitations du MSP",
+      "value": "Toujours actives"
+    },
+    "selfRegistration": {
+      "label": "Inscription autonome",
+      "off": "Désactivée",
+      "approval": "Approbation requise",
+      "instant": "Immédiate"
+    },
+    "ssoNewPerson": {
+      "label": "Première connexion Microsoft / Google",
+      "invitedOnly": "Personnes invitées uniquement",
+      "approval": "Approbation requise",
+      "instant": "Immédiate"
+    },
+    "requests": "Demandes ({{count}})",
+    "errors": {
+      "load": "Impossible de charger les paramètres de connexion.",
+      "save": "Impossible d’enregistrer les paramètres de connexion.",
+      "methodUnavailable": "Cette méthode de connexion n’est pas encore disponible sur ce déploiement de Breeze.",
+      "ssoOnlyNeedsSso": "Activez la connexion Microsoft ou Google avant de désactiver la connexion par mot de passe."
+    },
+    "toasts": {
+      "saved": "Paramètres de connexion enregistrés."
+    }
+  },
+  "portalAccessRequests": {
+    "title": "Demandes d’accès",
+    "description": "Personnes en attente d’accès au portail de cette organisation. Approuvez pour leur donner accès, ou refusez pour fermer la demande.",
+    "columns": {
+      "person": "Personne",
+      "source": "Méthode de demande",
+      "requested": "Demandé"
+    },
+    "sources": {
+      "self": "Inscription autonome",
+      "entra": "Connexion Microsoft",
+      "google": "Connexion Google",
+      "addin_user": "Complément AI for Office"
+    },
+    "selectAll": "Sélectionner toutes les demandes",
+    "selectOne": "Sélectionner la demande de {{email}}",
+    "accountExists": "Possède déjà un compte — Refusez pour fermer la demande",
+    "actions": {
+      "approve": "Approuver",
+      "deny": "Refuser",
+      "approveSelected": "Approuver la sélection ({{count}})",
+      "denySelected": "Refuser la sélection ({{count}})"
+    },
+    "results": {
+      "accountExists": "Possède déjà un compte",
+      "notPending": "N’est plus en attente",
+      "notFound": "Demande introuvable",
+      "identityLinked": "Connexion déjà liée à un autre compte",
+      "failed": "Impossible de traiter cette demande"
+    },
+    "denyDialog": {
+      "title": "Refuser la demande d’accès",
+      "message": "Refuser la demande de {{email}} ? La personne recevra un courriel indiquant que la demande n’a pas été approuvée.",
+      "bulkMessage_one": "Refuser {{count}} demande ? La personne recevra un courriel indiquant que la demande n’a pas été approuvée.",
+      "bulkMessage_other": "Refuser {{count}} demandes ? Chaque personne recevra un courriel indiquant que la demande n’a pas été approuvée."
+    },
+    "toasts": {
+      "approved": "Accès approuvé pour {{email}}.",
+      "denied": "Demande de {{email}} refusée.",
+      "bulkDone_one": "{{count}} demande traitée.",
+      "bulkDone_other": "{{count}} demandes traitées.",
+      "bulkPartial": "{{succeeded}} demandes sur {{total}} traitées. Les autres sont signalées dans la liste."
+    },
+    "errors": {
+      "load": "Impossible de charger les demandes d’accès.",
+      "action": "Impossible de mettre à jour la demande d’accès.",
+      "bulk": "Impossible de traiter les demandes sélectionnées."
+    },
+    "summary": {
+      "title": "Demandes d’accès en attente",
+      "description": "Demandes en attente dans vos organisations clientes. Ouvrez une organisation pour les approuver ou les refuser.",
+      "empty": "Aucune demande en attente",
+      "orgPending_one": "{{count}} en attente",
+      "orgPending_other": "{{count}} en attente",
+      "review": "Examiner les demandes",
+      "loadError": "Impossible de charger les demandes d’accès en attente."
+    },
+    "refreshFailed": "Impossible d’actualiser les demandes d’accès : cette liste n’est peut-être plus à jour.",
+    "more": "Affichage des {{count}} premières demandes. Traitez-les pour voir les suivantes."
   }
 }

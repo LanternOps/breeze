@@ -87,7 +87,19 @@
     },
     "createPsaTicket": "PSA bileti oluştur",
     "psaTicketRequested": "PSA bileti istendi",
-    "failedToCreatePsaTicket": "PSA bileti istenemedi"
+    "failedToCreatePsaTicket": "PSA bileti istenemedi",
+    "lifecycleLine": {
+      "text": "{{rearm}} · bekleme süresi {{minutes}} dk ({{source}})",
+      "rearmNewEvidence": "Yeni kanıtla yeniden devreye girer",
+      "rearmAfterDelay": "{{minutes}} dk sonra yeniden devreye girer",
+      "sources": {
+        "monitor": "bu monitör",
+        "org": "kuruluş varsayılanı",
+        "partner": "iş ortağı varsayılanı",
+        "builtin": "yerleşik varsayılan",
+        "legacy": "uyarı kuralı"
+      }
+    }
   },
   "alertDetails": {
     "closePanel": "Paneli kapat",

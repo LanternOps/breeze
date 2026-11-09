@@ -2866,6 +2866,9 @@
     "overriding": "Overrides {{source}}",
     "overridingWithValue": "Overrides {{source}} ({{value}})"
   },
+  "inheritChoice": {
+    "inherit": "Inherit — {{value}} ({{source}})"
+  },
   "fixMemoryPage": {
     "title": "Fix memory",
     "subtitle": "Fixes your team has run, and how often they actually stayed fixed.",

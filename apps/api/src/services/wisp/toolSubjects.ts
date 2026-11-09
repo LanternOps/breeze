@@ -59,6 +59,7 @@ export const WISP_NON_FOCAL_TOOLS: ReadonlySet<string> = new Set([
   'configure_network_baseline',
   'configure_vault',
   'create_incident',
+  'create_operator_task', // W16 PR A (#6786): agent-human-only and never delegable, so a Wisp session never calls it
   'create_remote_session',
   'create_watch',
   'delete_tenant',
@@ -259,6 +260,7 @@ export const WISP_NON_FOCAL_TOOLS: ReadonlySet<string> = new Set([
   'm365_set_auto_reply',
   'manage_access_reviews',
   'manage_accounting_sync',
+  'manage_ai_agent_schedules', // W16 PR B (#6786): a schedule id is no working-set subject; never delegable
   'manage_ai_agents',
   'manage_alert_correlations',
   'manage_alert_rules',
@@ -288,6 +290,9 @@ export const WISP_NON_FOCAL_TOOLS: ReadonlySet<string> = new Set([
   'manage_dns_policy',
   'manage_dr_plan',
   'manage_fleet_findings',
+  // W16 PR B (#6786): a report run id is no working-set subject. #11433: run / preview / applied / document are
+  // delegable under a grant (the ceiling checks the org they act in); apply / rollback are not (grantAuthority.ts).
+  'manage_fleet_designs',
   'manage_groups',
   'manage_hyperv_checkpoints',
   'manage_hyperv_vm',
@@ -299,6 +304,7 @@ export const WISP_NON_FOCAL_TOOLS: ReadonlySet<string> = new Set([
   'manage_monitors',
   'manage_notification_channels',
   'manage_org_documents',
+  'manage_org_portal_settings', // W18 PR B (#6789): org-wide portal row, not a working-set subject
   'manage_pam_rules',
   'manage_patches',
   'manage_pax8_orders',
@@ -308,6 +314,7 @@ export const WISP_NON_FOCAL_TOOLS: ReadonlySet<string> = new Set([
   'manage_policy_feature_link',
   'manage_processes',
   'manage_recovery_keys',
+  'manage_report_recipients', // W18 PR B (#6789)
   'manage_saved_filters',
   'manage_scheduled_tasks',
   'manage_security_policies',
@@ -385,6 +392,7 @@ export const WISP_NON_FOCAL_TOOLS: ReadonlySet<string> = new Set([
   'revoke_diagnostic_access',
   'revoke_elevation',
   'run_flow',
+  'run_patch_plan', // W16 PR A (#6786): org-wide launch, not a working-set subject
   'run_script',
   'run_topology_diagnostic',
   's1_isolate_device',

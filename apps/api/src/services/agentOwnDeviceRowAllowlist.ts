@@ -194,4 +194,22 @@ export const AGENT_OWN_DEVICE_ROW_ALLOWLIST: readonly OwnDeviceRowAllowlistEntry
     kind: 'non_agent_path',
     reason: 'The discovery worker undoes the role it propagated when it drops an auto-link the MAC no longer supports: a job, not the device\'s credential.',
   },
+  {
+    file: 'src/services/fleetDesign/apply.ts',
+    marker: 'fleet-design-apply-role-correction',
+    kind: 'non_agent_path',
+    reason:
+      'A technician\'s approved Fleet Design apply corrects the role of devices the design names, keyed on device id + the ' +
+      'report\'s org and never over a manual role. There is no agent identity to bind. Reached by agent entry points only ' +
+      'through the AI tool registry (W16 PR B #6786), where it stays behind four-eyes approval.',
+  },
+  {
+    file: 'src/services/fleetDesign/rollback.ts',
+    marker: 'fleet-design-rollback-role-correction',
+    kind: 'non_agent_path',
+    reason:
+      'A technician\'s approved Fleet Design rollback restores the role that apply replaced, keyed on device id + the report\'s ' +
+      'org, and only while the row still carries the applied role. There is no agent identity to bind. Reached by agent entry ' +
+      'points only through the AI tool registry (W16 PR B #6786), where it stays behind four-eyes approval.',
+  },
 ];

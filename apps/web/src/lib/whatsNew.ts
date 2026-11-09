@@ -18,6 +18,19 @@ export interface WhatsNewEntry {
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
+    version: '0.127.0',
+    date: '2026-11-07',
+    title: 'Backup browsing at any size, SLA reports, smarter alerts and AI approvals',
+    highlights: [
+      'Browse, search and restore single folders from any cloud backup snapshot, even very large ones.',
+      'See running backups live on the device page, with a plain reason when a backup fails.',
+      'New SLA performance report you can schedule and deliver to customers.',
+      'Set alert re-arm and auto-resolve defaults once for the partner or an organization.',
+      'Ask Breeze AI to run patch plans, check backups and manage org settings, with approvals.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
     version: '0.126.0',
     date: '2026-11-03',
     title: 'Alerts that reach your PSA, device groups across every organization, and Jobs moving to Flows',

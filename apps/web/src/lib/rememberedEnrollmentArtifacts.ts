@@ -34,8 +34,8 @@ interface RememberedArtifact {
 }
 
 export interface RememberedCliToken extends RememberedArtifact {
-  /** POST /devices/onboarding-token returns no key id, so this cannot be looked up. */
-  childKeyId: null;
+  /** The minted key's id, for GET /enrollment-keys/:id. Null when the API predates #11116 and sent none. */
+  childKeyId: string | null;
   serverUrl: string | null;
   secretRequired: boolean;
   /** Present only when secretRequired, and only ever from memory. */
@@ -95,7 +95,7 @@ function isCliToken(entry: unknown): entry is RememberedCliToken {
   if (!hasArtifactShape(entry)) return false;
   const e = entry as unknown as Record<string, unknown>;
   return (
-    e.childKeyId === null &&
+    (e.childKeyId === null || typeof e.childKeyId === 'string') &&
     typeof e.secretRequired === 'boolean' &&
     (e.serverUrl === null || typeof e.serverUrl === 'string')
   );
@@ -188,6 +188,7 @@ export function rememberCliToken(
     expiresAt: string;
     maxUsage: number | null;
     serverUrl: string | null;
+    childKeyId?: string | null;
     epoch?: number;
   },
   enrollmentSecret?: string,
@@ -203,7 +204,7 @@ export function rememberCliToken(
       expiresAt: token.expiresAt,
       maxUsage: token.maxUsage,
       serverUrl: token.serverUrl,
-      childKeyId: null,
+      childKeyId: token.childKeyId ?? null,
       secretRequired: Boolean(enrollmentSecret),
       createdAt: new Date(Date.now()).toISOString(),
     },

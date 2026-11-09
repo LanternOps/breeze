@@ -4,6 +4,10 @@ import {
   invitePortalUserSchema,
   bulkInvitePortalUsersSchema,
   updatePortalUserSchema,
+  inviteContactsToPortalSchema,
+  INVITE_CONTACTS_MAX,
+  CONTACT_PORTAL_INVITE_OUTCOMES,
+  PORTAL_INVITE_ERROR_CODES,
   findUnsafePortalCssPattern,
   PORTAL_CUSTOM_CSS_MAX_LENGTH,
   PORTAL_LOGO_MAX_LENGTH,
@@ -309,6 +313,61 @@ describe('invitePortalUserSchema', () => {
   });
   it('rejects an over-long message', () => {
     expect(invitePortalUserSchema.safeParse({ email: 'a@b.example', message: 'x'.repeat(1001) }).success).toBe(false);
+  });
+});
+
+describe('invitePortalUserSchema contactId (portal registration W1)', () => {
+  const contactId = '7c0a1f7e-1111-4222-8333-444455556666';
+  it('accepts an optional uuid contactId', () => {
+    expect(invitePortalUserSchema.safeParse({ email: 'a@b.co', contactId }).success).toBe(true);
+    expect(invitePortalUserSchema.safeParse({ email: 'a@b.co' }).success).toBe(true);
+  });
+  it('rejects a non-uuid contactId', () => {
+    expect(invitePortalUserSchema.safeParse({ email: 'a@b.co', contactId: 'nope' }).success).toBe(false);
+  });
+  it('stays strict', () => {
+    expect(invitePortalUserSchema.safeParse({ email: 'a@b.co', contactIds: [contactId] }).success).toBe(false);
+  });
+});
+
+describe('inviteContactsToPortalSchema', () => {
+  const uuid = (i: number) => `7c0a1f7e-1111-4222-8333-${i.toString(16).padStart(12, '0')}`;
+  it('caps the batch at 100', () => {
+    expect(INVITE_CONTACTS_MAX).toBe(100);
+    const hundred = Array.from({ length: 100 }, (_, i) => uuid(i));
+    expect(inviteContactsToPortalSchema.safeParse({ contactIds: hundred }).success).toBe(true);
+    expect(inviteContactsToPortalSchema.safeParse({ contactIds: [...hundred, uuid(100)] }).success).toBe(false);
+  });
+  it('rejects an empty batch, non-uuid ids and unknown keys', () => {
+    expect(inviteContactsToPortalSchema.safeParse({ contactIds: [] }).success).toBe(false);
+    expect(inviteContactsToPortalSchema.safeParse({ contactIds: ['nope'] }).success).toBe(false);
+    expect(inviteContactsToPortalSchema.safeParse({ contactIds: [uuid(1)], message: 'hi' }).success).toBe(false);
+    expect(inviteContactsToPortalSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+describe('contact portal invite contract', () => {
+  it('outcome list is exactly the five spec outcomes', () => {
+    expect([...CONTACT_PORTAL_INVITE_OUTCOMES]).toEqual([
+      'invited',
+      'already_has_access',
+      'no_email',
+      'email_bound_to_other_contact',
+      'duplicate_email_in_batch',
+    ]);
+  });
+  it('error codes are the eight stable codes, key equal to value', () => {
+    expect(Object.keys(PORTAL_INVITE_ERROR_CODES).sort()).toEqual([
+      'PORTAL_INVITE_ALREADY_ACTIVE',
+      'PORTAL_INVITE_CONTACT_CONFLICT',
+      'PORTAL_INVITE_CONTACT_NOT_FOUND',
+      'PORTAL_INVITE_CONTACT_NO_EMAIL',
+      'PORTAL_INVITE_EMAIL_MISMATCH',
+      'PORTAL_INVITE_EXTERNAL_IDENTITY',
+      'PORTAL_INVITE_LOGIN_EMAIL_DIFFERS',
+      'PORTAL_INVITE_USER_DISABLED',
+    ]);
+    for (const [k, v] of Object.entries(PORTAL_INVITE_ERROR_CODES)) expect(v).toBe(k);
   });
 });
 

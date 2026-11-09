@@ -12,7 +12,11 @@ import { navigateTo } from "@/lib/navigation";
 import { loginPathWithNext, getJwtClaims } from "../../../lib/authScope";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
-import { loadAgentDevices } from "./unifiHelpers";
+import {
+  defaultControllerSiteId,
+  groupSitesByOrg,
+  loadAgentDevices,
+} from "./unifiHelpers";
 import {
   mapKey,
   type AgentDevice,
@@ -156,20 +160,11 @@ export function useUnifiIntegration() {
 
   // Breeze sites grouped by organization, for the <optgroup> picker.
   const sitesByOrg = useMemo<SiteGroup[]>(() => {
-    const orgName = new Map(orgs.map((o) => [o.id, o.name]));
-    // Key the group by orgId, not name — two orgs can share a display name in an
-    // MSP fleet, which would collide as duplicate React <optgroup> keys.
-    const groups = new Map<string, SiteGroup>();
-    for (const s of breezeSites) {
-      const group = groups.get(s.orgId) ?? {
-        id: s.orgId,
-        name: orgName.get(s.orgId) ?? t("unifiIntegration.organization"),
-        sites: [],
-      };
-      group.sites.push(s);
-      groups.set(s.orgId, group);
-    }
-    return [...groups.values()].sort((a, b) => a.name.localeCompare(b.name));
+    return groupSitesByOrg(
+      breezeSites,
+      orgs,
+      t("unifiIntegration.organization"),
+    );
   }, [breezeSites, orgs]);
 
   const fetchStatus = useCallback(async () => {
@@ -529,7 +524,12 @@ export function useUnifiIntegration() {
         successMessage: t("unifiIntegration.controllerRegistered"),
         onUnauthorized,
       });
-      setControllerDraft(emptyControllerDraft);
+      // The next controller starts from the same default location: the card's
+      // preselect only re-runs when that default changes.
+      setControllerDraft({
+        ...emptyControllerDraft,
+        siteId: defaultControllerSiteId(sitesByOrg) ?? "",
+      });
       await loadSelfHosted();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
@@ -541,7 +541,7 @@ export function useUnifiIntegration() {
     } finally {
       setRegisteringController(false);
     }
-  }, [controllerDraft, onUnauthorized, loadSelfHosted]);
+  }, [controllerDraft, sitesByOrg, onUnauthorized, loadSelfHosted]);
 
   // Map each agent-discovered controller site to a Breeze site via the shared
   // PUT /unifi/mappings, using the collector id as the sentinel unifiHostId.

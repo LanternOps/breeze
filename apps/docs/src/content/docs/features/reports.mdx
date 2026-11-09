@@ -32,6 +32,7 @@ Every report has a `type` that determines which data is queried and how the outp
 | `endpoint_management_review` | Device enrollment and compliance inventory pulled from Microsoft Intune, plus license-seat usage and a compliance-trend chart | enrollment/compliance counts, license seat usage, daily compliance trend |
 | `threat_detection_review` | A record of threat detections for the period, with resolution status and the vendor's recommendation text | detection count, resolution status, recommendation text |
 | `ticket_sla_attainment` | Response and resolution SLA attainment for a period, recalculated from each ticket's own timestamps rather than read off the stored breach flags, grouped by organization, priority, technician or category (see [Business Reports](#business-reports)) | response/resolution attainment %, missed targets, tickets with no SLA target |
+| `ticket_sla_performance` | Customer-facing response and resolution performance against SLA for one organization and period, by priority, with the list of breaches (see [SLA Performance Report](#sla-performance-report)) | tickets opened, SLA target, % within SLA, median and mean time to first response and to resolution, breaches |
 | `technician_time_billability` | Logged time against an assumed weekly capacity, the billable / included / non-billable split, and how much billable time has been approved and billed — billable value reported per currency (see [Business Reports](#business-reports)) | utilization %, billable %, billing conversion %, logged/billable/non-billable minutes, billable value per currency |
 | `ar_aging` | Unpaid invoice balances bucketed current / 1–30 / 31–60 / 61–90 / 90+ days past due, one set of totals per currency (see [Business Reports](#business-reports)) | outstanding balance per bucket, open invoice count, no-due-date balance, other open balance |
 | `ai_usage_by_client` | AI requests, tokens, Breeze cost and the amount billable to each client for a period, split into billed, unbilled and unpriced (see [AI usage chargeback](/features/ai-usage-chargeback/)) | requests, tokens, Breeze cost, billable amount, billed and unbilled amount, unpriced usage |
@@ -281,6 +282,34 @@ The **Executive Summary** report (`executive_summary`) is built for handing to a
 
 ---
 
+## SLA Performance Report
+
+The **SLA performance** report (`ticket_sla_performance`) shows one organization how its support tickets did against their SLA over a period, in a form you can hand to the customer. For each priority (urgent, high, normal, low, plus all priorities together) it shows:
+
+| Column | What it means |
+|---|---|
+| **Tickets opened** | Support tickets created in the period. It is a volume figure only and is not the denominator of any percentage. |
+| **Target** | The most common SLA target agreed on that priority's tickets. **varies** means tickets in the priority carried different targets, for example after a category override or a change of SLA policy during the period. |
+| **Measured** | First responses (or resolutions) whose outcome was decided in the period. |
+| **% within SLA** | The share of measured outcomes that were completed on or before their deadline. With nothing measured it shows **N/A**, never 0%. |
+| **Median / Mean** | Time to first response (or to resolution) on the SLA clock, for outcomes that were completed. With no completed outcome it shows a dash. |
+
+Below the table is the list of **breaches**: every first response or resolution that missed its deadline, with the ticket number, priority, target, deadline, completion (or **Still open**), the time on the SLA clock, and how far over the target it went. The list stores at most 1,000 breaches; the totals above it always count all of them.
+
+**Counted in the period the outcome was decided.** A first response or resolution belongs to the period in which it was decided: when it was completed on time, or when its deadline passed. A ticket opened on 30 September and resolved on 2 October therefore counts its first response in September and its resolution in October. Consecutive monthly reports count every outcome exactly once. This differs from [Ticket SLA attainment](#ticket-sla-attainment-ticket_sla_attainment), which measures the tickets created in the period. A report run during its own period counts only what was decided up to the moment it ran.
+
+**The SLA clock.** Times are measured on the same clock as the ticket's target: its business hours, minus any time the SLA was paused. A median of 3 hours against a 4-hour business-hours target is a like-for-like comparison. When a ticket's business-hours calendar can't be read by the person generating the report, its outcome still counts towards **% within SLA** but not towards the times, and the report says how many were left out.
+
+**Ticket subjects are off by default.** The report shows ticket numbers, never the internal ticket number or who the ticket is assigned to. Subjects appear only when the report's **Include ticket subjects** option is on. Leave it off unless every user who can see the report may see every ticket's subject.
+
+**Creating and delivering it.** Choose the **SLA performance** template card (it appears to users with the `tickets:read` permission), pick the period (default: last full month) and whether to include subjects, and set the schedule and recipients as for any template report. It can be emailed on a schedule to organization contacts or to extra email addresses, and downloaded as PDF, CSV or Excel. The Excel download has a second sheet listing the breaches. It is available for one organization at a time. The report reflects ticket state when it was generated: a ticket reopened later is measured again in a later report.
+
+**As service-plan evidence.** A [service deliverable](/features/contracts/#service-deliverables) can produce this report for you each period. Pick **Service evidence — SLA performance** as the deliverable's evidence report, or **SLA performance** as a template item's evidence source. Each occurrence then generates the report for that occurrence's own period on its due day. Because the period ends on the due day, the report counts what was decided up to the moment it ran and says so; anything decided later that day is in neither this report nor the next. Evidence reports always leave ticket subjects off, and that setting can't be changed, because a delivered report is visible to every portal user of the organization while a portal user can otherwise read only their own tickets.
+
+**What the customer sees.** With the organization's portal **Reports** section on, the customer sees the report under Reports, with PDF and CSV downloads, once you deliver the occurrence, and not before. Customers can't generate this report themselves. Delivering is the point of release: every portal user of that organization can then read it, whether or not the tickets are their own. Reports you create from the template card and email stay out of the portal. A report series can't include this type; use a service-plan template to cover several organizations.
+
+---
+
 ## Business Reports
 
 Several report types cover the PSA side of the business — service performance, technician time, money owed, contract revenue, and quote outcomes. Unlike the report types above, they are **internal**: they are for MSP staff only (organization-scope users, and API or MCP keys, never see them, even when they hold the underlying permission), they never appear in a customer's portal, and generating one requires the type's own permission on top of `reports:read`/`reports:write` -- `tickets:read` for ticket SLA attainment, `time_entries:read` **and** `tickets:read` for technician time & billability, `invoices:read` for AR aging, `contracts:read` for MRR & renewals, `quotes:read` for quote win rate, and `invoices:read` **and** `time_entries:read` for client profitability.
@@ -299,6 +328,8 @@ Grouping is by organization, priority, technician or category; left unset, it de
 
 - **Paused time is a lifetime total** -- a ticket paused after its first reply has that pause counted against the response clock too, which slightly flatters response attainment.
 - **The technician axis is the ticket's current assignee** -- reassignment history isn't tracked.
+
+To show a customer how their tickets did against SLA, use the [SLA Performance Report](#sla-performance-report) instead. It measures one organization, counts each outcome in the period it was decided rather than by ticket creation date, and contains only fields that are safe to share with the customer.
 
 ### Technician time & billability (`technician_time_billability`)
 

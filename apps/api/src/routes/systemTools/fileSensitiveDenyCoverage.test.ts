@@ -46,6 +46,7 @@ vi.mock('../../services/commandQueue', () => ({
     FILE_COPY: 'FILE_COPY',
     FILE_DELETE: 'FILE_DELETE',
     FILE_RENAME: 'FILE_RENAME',
+    FILE_MKDIR: 'FILE_MKDIR',
     FILE_TRASH_LIST: 'FILE_TRASH_LIST',
     FILE_TRASH_RESTORE: 'FILE_TRASH_RESTORE',
     FILE_TRASH_PURGE: 'FILE_TRASH_PURGE',
@@ -74,6 +75,7 @@ vi.mock('./helpers', async (importOriginal) => {
 });
 
 import { fileBrowserRoutes } from './fileBrowser';
+import { SITE_ACCESS_DENIED } from './helpers';
 
 function fileApp() {
   const instance = new Hono();
@@ -91,6 +93,58 @@ beforeEach(() => {
     orgId: ORG_ID,
     siteId: null,
     hostname: 'device-1',
+  });
+});
+
+// Mounted without the router's chokepoint in index.ts, so these reach the
+// handler's own org and site checks.
+describe('file mkdir sensitive-path deny and device checks', () => {
+  function mkdir(path: string) {
+    return fileApp().request(`/devices/${DEVICE_ID}/files/mkdir`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+  }
+
+  it('denies the agent config directory', async () => {
+    const res = await mkdir(SENSITIVE_PATH);
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'sensitive_path_denied' });
+    expect(executeCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('answers 404 when the handler finds no accessible device', async () => {
+    getDeviceMock.mockResolvedValue(null);
+
+    const res = await mkdir(ORDINARY_PATH);
+
+    expect(res.status).toBe(404);
+    expect(executeCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('answers 403 when the handler finds the device outside the site ceiling', async () => {
+    getDeviceMock.mockResolvedValue(SITE_ACCESS_DENIED);
+
+    const res = await mkdir(ORDINARY_PATH);
+
+    expect(res.status).toBe(403);
+    expect(executeCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('allows an ordinary path', async () => {
+    executeCommandMock.mockResolvedValue({ status: 'completed', stdout: '{}' });
+
+    const res = await mkdir(ORDINARY_PATH);
+
+    expect(res.status).toBe(200);
+    expect(executeCommandMock).toHaveBeenCalledWith(
+      DEVICE_ID,
+      'FILE_MKDIR',
+      { path: ORDINARY_PATH },
+      expect.anything(),
+    );
   });
 });
 

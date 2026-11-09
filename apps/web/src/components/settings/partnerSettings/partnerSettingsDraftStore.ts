@@ -33,7 +33,7 @@ export type Slice<T = unknown> = {
 export type LoadResult<T> = { value: T; revision?: number };
 export type Loader<T> = () => Promise<LoadResult<T>>;
 
-const DRAFT_UNIT_IDS: readonly DraftUnitId[] = ['callerVerification', 'loginBranding', 'trustCenter', 'aiFeatureDefaults', 'aiDataPolicy'];
+const DRAFT_UNIT_IDS: readonly DraftUnitId[] = ['callerVerification', 'loginBranding', 'trustCenter', 'aiFeatureDefaults', 'aiDataPolicy', 'portalAccessPolicy'];
 
 const VALID: TabValidity = { isValid: true, invalidCount: 0, firstInvalidFieldId: null };
 

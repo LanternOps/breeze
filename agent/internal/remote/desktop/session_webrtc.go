@@ -437,7 +437,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		if cbErr != nil {
 			slog.Warn("Failed to create clipboard DataChannel", "session", sessionID, "error", cbErr.Error())
 		} else if clipboardDC != nil {
-			session.clipboardSync = clipboard.NewClipboardSync(clipboardDC, clipboard.NewSystemClipboard(), clipboard.Policy{
+			session.clipboardSync = clipboard.NewClipboardSync(clipboardDC, m.clipboardProviderFor(sessionID), clipboard.Policy{
 				HostToViewer: policy.ClipboardHostToViewer,
 				ViewerToHost: policy.ClipboardViewerToHost,
 			})
@@ -657,6 +657,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			})
 
 		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
+			// The report does not always end the server session at once: when
+			// the viewer announced a reconnect just before closing its peer,
+			// the API holds this peer_disconnected for a short grace instead of
+			// revoking under the reconnect (#10542).
 			logSelectedPair("failed-or-closed")
 			m.StopSession(sessionID)
 			if m.OnSessionStopped != nil {

@@ -573,6 +573,33 @@ describe('fix outcome lifecycle (real Postgres)', () => {
     expect(await advanceOutcome(a.outcomeId, { now: new Date(t0.getTime() + 6 * H) })).toBe('recurred');
   });
 
+  it('pages a burst of same-millisecond alerts without overlap and still finds the recurrence (#7279)', async () => {
+    const w = await world();
+    const t0 = new Date(Date.UTC(2026, 10, 14));
+    const a = await attempt(w, w.o1, w.d1, w.partnerScript, t0);
+    await advanceOutcome(a.outcomeId, { now: new Date(t0.getTime() + 2 * 60_000) });
+    await resolveByCondition(a.alertId, new Date(t0.getTime() + H));
+    expect(await advanceOutcome(a.outcomeId, { now: new Date(t0.getTime() + 2 * H) })).toBe('holding');
+    // 120 noise alerts and the recurrence, all inside ONE millisecond, a microsecond apart.
+    // A JS Date keyset cursor (millisecond precision) re-reads the same page forever and the
+    // scan gives up as 'unscanned'; the recurrence is the 61st row, past the first page.
+    const burst = new Date(t0.getTime() + 3 * H);
+    const other = await w.mkScript({ partnerId: w.partnerId });
+    const noise = await sys(() => db.insert(alerts).values(Array.from({ length: 120 }, (_, i) => ({
+      orgId: w.o1, deviceId: w.d1, severity: 'low' as const, title: `burst ${i}`, triggeredAt: burst,
+      context: { source: 'script_exit_code', scriptId: other.scriptId, exitCode: 1 },
+    }))).returning({ id: alerts.id }));
+    const [again] = await sys(() => db.insert(alerts).values({
+      orgId: w.o1, deviceId: w.d1, severity: 'high', title: 'exit 3 again', triggeredAt: burst,
+      context: { source: 'script_exit_code', scriptId: w.partnerScript.scriptId, exitCode: 3 },
+    }).returning({ id: alerts.id }));
+    const ordered = [...noise.slice(0, 60).map((r) => r.id), again!.id, ...noise.slice(60).map((r) => r.id)];
+    for (const [i, id] of ordered.entries()) {
+      await sys(() => db.execute(sql`UPDATE alerts SET triggered_at = ${burst.toISOString()}::timestamptz + make_interval(secs => ${i} / 1000000.0) WHERE id = ${id}`));
+    }
+    expect(await advanceOutcome(a.outcomeId, { now: new Date(t0.getTime() + 6 * H) })).toBe('recurred');
+  });
+
   it('a proven partner fix whose script is re-scoped to org A is never offered to org B, even under system scope (Review Focus 5)', async () => {
     const w = await world();
     const base = Date.UTC(2026, 10, 15);

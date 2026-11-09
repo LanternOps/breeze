@@ -64,6 +64,7 @@ vi.mock('./backup/restoreIntegrityGate', () => ({
 }));
 vi.mock('../db', () => ({
   withDbTransaction: async (fn: () => Promise<unknown>) => fn(),
+  withDbTransactionIfHeld: vi.fn(async (fn: () => any) => fn()),
   db: {
     select: (...args: unknown[]) => selectMock(...(args as [])),
     insert: (...args: unknown[]) => insertMock(...(args as [])),

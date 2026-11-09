@@ -13,6 +13,7 @@
  */
 import { performance } from 'node:perf_hooks';
 import {
+  ADMISSION_OFFLINE_WRITES_MAX_IN_FLIGHT,
   ADMISSION_TICK_MS,
   ADMISSION_WS_LEVEL_SCALE,
   resolveAdmissionConfig,
@@ -30,6 +31,8 @@ import {
   recordAdmissionDecision,
   recordAdmissionRiseSuppressed,
   recordAdmissionTransition,
+  recordOfflineDeferred,
+  type OfflineDeferEvent,
   type ShedReason,
 } from './admissionMetrics';
 
@@ -73,6 +76,7 @@ export class AdmissionRuntime implements AdmissionGate {
   private readonly random: () => number;
   private readonly log: (line: string) => void;
   private bulkInFlight = 0;
+  private offlineWritesInFlight = 0;
   private consecutiveTickFailures = 0;
   private lastTickFailureLogMs: number | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -199,8 +203,37 @@ export class AdmissionRuntime implements AdmissionGate {
     return { action: 'shed', reason, retryAfterSec: this.retryAfterSeconds(req) };
   }
 
-  shouldDeferOfflineTransition(): boolean {
-    return this.mode === 'enforce' && this.controller.level >= 1;
+  /**
+   * Whether an agent WS close/error may write the device's offline transition
+   * now. Returns an idempotent release to call when the write settles, or null
+   * when the flip is left to the offline detector (lastSeenAt ages out within
+   * 5 min; presence is already cleared, so routing treats the agent as gone).
+   *
+   * Enforce only: at level 1+ every write is deferred (W08 D13); at level 0 at
+   * most ADMISSION_OFFLINE_WRITES_MAX_IN_FLIGHT run at once (#9520). A mass
+   * close, such as a planned drain, then costs a few transactions instead of
+   * two pool permits per socket, so its own offline writes no longer raise the
+   * level that would refuse the redials it just scheduled. The level signals
+   * are untouched: real overload, including the redials' own load, still
+   * escalates.
+   */
+  beginOfflineTransition(event: OfflineDeferEvent): (() => void) | null {
+    if (this.mode !== 'enforce') return () => {};
+    if (this.controller.level >= 1) {
+      recordOfflineDeferred(event, 'level');
+      return null;
+    }
+    if (this.offlineWritesInFlight >= ADMISSION_OFFLINE_WRITES_MAX_IN_FLIGHT) {
+      recordOfflineDeferred(event, 'in_flight');
+      return null;
+    }
+    this.offlineWritesInFlight += 1;
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      this.offlineWritesInFlight -= 1;
+    };
   }
 
   private retryAfterSeconds(req: ClassifiedRequest): number {
@@ -266,9 +299,9 @@ export function stopAdmissionControl(): void {
   runtime = null;
 }
 
-/** For routes/agentWs.ts: true only when enforcing at level 1+. */
-export function shouldDeferOfflineTransition(): boolean {
-  return runtime?.shouldDeferOfflineTransition() ?? false;
+/** For routes/agentWs.ts: see AdmissionRuntime.beginOfflineTransition. Without a runtime, always write. */
+export function beginOfflineTransition(event: OfflineDeferEvent): (() => void) | null {
+  return runtime ? runtime.beginOfflineTransition(event) : () => {};
 }
 
 /** TEST ONLY. */

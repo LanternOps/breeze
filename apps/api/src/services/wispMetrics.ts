@@ -20,7 +20,8 @@ export type WispSpecialistKindLabel =
   | 'patch_plan'
   | 'remediation_research'
   | 'bulk_ticket_reply'
-  | 'device_troubleshooting';
+  | 'device_troubleshooting'
+  | 'assessment';
 
 /** Copy of `WispGrantPauseReason` (db/schema/wisp.ts) — keep in sync. */
 export type WispGrantPauseReasonLabel =
@@ -80,7 +81,7 @@ const grantsActive = new Gauge({
 });
 
 export function incWispAssessment(
-  outcome: 'admitted' | 'skipped_budget' | 'skipped_grant' | 'skipped_admission',
+  outcome: 'admitted' | 'skipped_budget' | 'skipped_grant' | 'skipped_admission' | 'skipped_no_changes',
 ): void {
   assessmentsTotal.inc({ outcome });
 }

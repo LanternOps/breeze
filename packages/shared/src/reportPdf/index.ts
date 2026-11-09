@@ -10,6 +10,8 @@ export { renderIdentityAccessReport } from './identityAccessPdf';
 export type { IdentityAccessPdfOpts } from './identityAccessPdf';
 export { renderTicketSlaReport } from './ticketSlaPdf';
 export type { TicketSlaPdfOpts } from './ticketSlaPdf';
+export { renderTicketSlaPerformanceReport } from './ticketSlaPerformancePdf';
+export type { TicketSlaPerformancePdfOpts } from './ticketSlaPerformancePdf';
 export { renderTechnicianTimeReport } from './technicianTimePdf';
 export type { TechnicianTimePdfOpts } from './technicianTimePdf';
 export { renderArAgingReport } from './arAgingPdf';

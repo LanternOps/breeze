@@ -417,6 +417,8 @@ const DROP_LOSER_OVERRIDE_SETTINGS_TABLES: ReadonlySet<string> = new Set([
   'billing_payment_settings',
   // #4617 customer work approval policy.
   'ticket_approval_settings',
+  // W3 #11380 portal sign-in policy: survivor keeps its own override or inherits the partner default.
+  'portal_access_policies',
 ]);
 
 /** Policy kinds that issue DML. Everything else is a documented no-op. */
@@ -1122,7 +1124,7 @@ export async function runPostPassFixups(
   // What this DOES need to guard is a mapping row that has gone orphaned —
   // its invoice or payment deleted through some other path (not by this
   // merge; nothing in the merge engine deletes invoices — see voidPayment in
-  // invoiceService.ts and the full-refund branch in stripeReconcile.ts for
+  // invoiceService.ts and the full-refund arm in stripeReversalState.ts for
   // where a payment mapping COULD orphan once Phase D writes 'payment' rows).
   // A stale orphan would sit invisible in the UI forever, so sweep both
   // entity types the same defensive way.

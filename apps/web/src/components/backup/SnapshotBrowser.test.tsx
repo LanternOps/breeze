@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import SnapshotBrowser from './SnapshotBrowser';
 import { fetchWithAuth } from '../../stores/auth';
@@ -390,8 +390,229 @@ describe('SnapshotBrowser', () => {
 
     render(<SnapshotBrowser />);
 
-    expect(await screen.findByText(/file index isn't available/i)).toBeTruthy();
+    expect(await screen.findByText(/file list isn't available right now/i)).toBeTruthy();
     expect(screen.queryByText(/may still be processing/i)).toBeNull();
+  });
+
+  describe('#11026 file list states', () => {
+    const withBrowse = (browse: (url: string) => unknown) => {
+      const base = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url.startsWith('/backup/snapshots/snap-1/browse') || url.endsWith('/file-index/rebuild')) {
+          const body = browse(url);
+          return body instanceof Response ? body : makeJsonResponse(body);
+        }
+        return base(input, init);
+      });
+    };
+    const browseCalls = () => fetchMock.mock.calls.map((c) => String(c[0])).filter((u) => u.includes('/browse'));
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('shows building, polls, and on ready discards the cached empty answer and lists the folders', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      let ready = false;
+      withBrowse(() => (ready
+        ? { index: { state: 'ready' }, data: [{ name: 'C:', path: '/C:', type: 'directory', fileCount: 3 }], nextCursor: null }
+        : { index: { state: 'building' }, manifestUnavailable: true, data: [], nextCursor: null }));
+
+      render(<SnapshotBrowser />);
+      expect((await screen.findByTestId('snapshot-index-building')).textContent).toMatch(/Preparing this snapshot's file list/);
+      expect(screen.queryByText(/may still be processing/i)).toBeNull();
+      expect(screen.queryByText(/isn't available/i)).toBeNull();
+
+      ready = true;
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+
+      await waitFor(() => expect(screen.queryByTestId('snapshot-index-building')).toBeNull());
+      expect((await screen.findAllByText('C:')).length).toBeGreaterThan(0);
+      const calls = browseCalls();
+      expect(calls).toContain('/backup/snapshots/snap-1/browse?limit=1');
+      expect(calls.filter((u) => u === '/backup/snapshots/snap-1/browse').length).toBe(2);
+    });
+
+    it('an integrity failure says so and offers no retry', async () => {
+      withBrowse(() => ({ index: { state: 'unavailable', failure: 'attestation_failed', retryable: false, deviceLocal: false }, data: [] }));
+      render(<SnapshotBrowser />);
+      expect((await screen.findByTestId('snapshot-index-unavailable')).textContent).toMatch(/failed its integrity check/);
+      expect(screen.queryByTestId('snapshot-index-retry')).toBeNull();
+    });
+
+    it('a device-local snapshot says the list cannot be read from there, with no retry', async () => {
+      withBrowse(() => ({ index: { state: 'unavailable', failure: 'manifest_missing', retryable: true, deviceLocal: true }, data: [] }));
+      render(<SnapshotBrowser />);
+      expect((await screen.findByTestId('snapshot-index-unavailable')).textContent).toMatch(/stored on the device/);
+      expect(screen.queryByTestId('snapshot-index-retry')).toBeNull();
+    });
+
+    it('a retryable failure offers a retry that posts the rebuild and shows building', async () => {
+      withBrowse((url) => (url.endsWith('/file-index/rebuild')
+        ? makeJsonResponse({ index: { state: 'building' } }, true, 202)
+        : { index: { state: 'unavailable', failure: 'provider_error', retryable: true, deviceLocal: false }, data: [] }));
+      render(<SnapshotBrowser />);
+      expect((await screen.findByTestId('snapshot-index-unavailable')).textContent).toMatch(/You can still restore the whole snapshot/);
+
+      fireEvent.click(screen.getByTestId('snapshot-index-retry'));
+
+      expect(await screen.findByTestId('snapshot-index-building')).toBeTruthy();
+      expect(fetchMock).toHaveBeenCalledWith('/backup/snapshots/snap-1/file-index/rebuild', { method: 'POST' });
+    });
+
+    it('a truly empty snapshot shows the existing empty message', async () => {
+      withBrowse(() => ({ index: { state: 'ready' }, data: [], nextCursor: null }));
+      render(<SnapshotBrowser />);
+      expect(await screen.findByText(/may still be processing/i)).toBeTruthy();
+      expect(screen.queryByTestId('snapshot-index-building')).toBeNull();
+      expect(screen.queryByTestId('snapshot-index-unavailable')).toBeNull();
+    });
+  });
+
+  describe('#11026 file search', () => {
+    const searchUrls = () => fetchMock.mock.calls.map((c) => String(c[0])).filter((u) => u.includes('/search'));
+    const withSearch = (search: (url: string) => unknown | Promise<unknown>, browse?: (url: string) => unknown) => {
+      const base = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url.includes('/snap-1/search')) {
+          const out = await search(url);
+          return out instanceof Object && 'json' in (out as object) ? (out as Response) : makeJsonResponse(out);
+        }
+        if (browse && url.startsWith('/backup/snapshots/snap-1/browse')) {
+          const out = browse(url);
+          if (out) return out as Response;
+        }
+        return base(input, init);
+      });
+    };
+    const hit = (name: string, path: string) => ({ name, path, type: 'file', sizeBytes: 5, modifiedAt: '2026-10-21T01:12:44.000Z' });
+    const type = async (value: string) => {
+      const input = await screen.findByTestId('snapshot-search-input');
+      fireEvent.change(input, { target: { value } });
+    };
+
+    it('queries after the debounce and renders results with a one-file restore link', async () => {
+      withSearch(() => ({ data: [hit('q3.xlsx', 'C:/finance/q3.xlsx')], nextCursor: null, index: { state: 'ready' } }));
+      render(<SnapshotBrowser />);
+      await type('q3');
+      expect(searchUrls()).toEqual([]);
+      const results = await screen.findByTestId('snapshot-search-results');
+      expect(results.textContent).toContain('q3.xlsx');
+      expect(results.textContent).toContain('C:/finance/q3.xlsx');
+      expect(searchUrls()).toEqual(['/backup/snapshots/snap-1/search?q=q3']);
+      const link = screen.getByTestId('snapshot-search-restore-link');
+      expect(link.getAttribute('href')).toBe(`#restore?snapshot=snap-1&paths=${encodeURIComponent('C:/finance/q3.xlsx')}`);
+    });
+
+    it('shows a folder result, such as an empty folder (#11235), as a folder', async () => {
+      withSearch(() => ({
+        data: [{ name: 'Empty', path: '/C:/Data/Empty', type: 'directory' }, hit('empty.txt', 'C:/Data/empty.txt')],
+        nextCursor: null,
+        index: { state: 'ready' },
+      }));
+      render(<SnapshotBrowser />);
+      await type('empty');
+      await screen.findByTestId('snapshot-search-results');
+      expect(screen.getAllByTestId('snapshot-search-hit-folder')).toHaveLength(1);
+      expect(screen.getAllByTestId('snapshot-search-hit-file')).toHaveLength(1);
+      const links = screen.getAllByTestId('snapshot-search-restore-link');
+      expect(links[0]!.getAttribute('href')).toBe(`#restore?snapshot=snap-1&paths=${encodeURIComponent('/C:/Data/Empty')}`);
+    });
+
+    it('sends the input as typed (untrimmed) and does not query for a single character', async () => {
+      withSearch(() => ({ data: [], nextCursor: null, index: { state: 'ready' } }));
+      render(<SnapshotBrowser />);
+      await type('a');
+      await new Promise((r) => setTimeout(r, 450));
+      expect(searchUrls()).toEqual([]);
+      expect(screen.getByText('Type at least 2 characters')).toBeTruthy();
+      await type(' ab ');
+      await waitFor(() => expect(searchUrls()).toEqual(['/backup/snapshots/snap-1/search?q=%20ab%20']));
+    });
+
+    it('returns to the tree when the query is cleared', async () => {
+      withSearch(() => ({ data: [hit('q3.xlsx', 'C:/q3.xlsx')], nextCursor: null, index: { state: 'ready' } }));
+      render(<SnapshotBrowser />);
+      await type('q3');
+      await screen.findByTestId('snapshot-search-results');
+      await type('');
+      await waitFor(() => expect(screen.queryByTestId('snapshot-search-results')).toBeNull());
+      expect(screen.getByTestId('snapshot-browser-restore-link')).toBeTruthy();
+    });
+
+    it('load more appends the next page using the cursor', async () => {
+      withSearch((url) => (url.includes('cursor=')
+        ? { data: [hit('b.txt', 'C:/b.txt')], nextCursor: null, index: { state: 'ready' } }
+        : { data: [hit('a.txt', 'C:/a.txt')], nextCursor: 'cur 1', index: { state: 'ready' } }));
+      render(<SnapshotBrowser />);
+      await type('txt');
+      fireEvent.click(await screen.findByTestId('snapshot-search-more'));
+      await waitFor(() => expect(screen.getAllByTestId('snapshot-search-restore-link')).toHaveLength(2));
+      expect(searchUrls()[1]).toBe('/backup/snapshots/snap-1/search?q=txt&cursor=cur%201');
+      expect(screen.queryByTestId('snapshot-search-more')).toBeNull();
+    });
+
+    it('says no files match when the index is ready and nothing matched', async () => {
+      withSearch(() => ({ data: [], nextCursor: null, index: { state: 'ready' } }));
+      render(<SnapshotBrowser />);
+      await type('zz');
+      expect((await screen.findByTestId('snapshot-search-empty')).textContent).toBe('No files match');
+    });
+
+    it('shows a retryable timeout message when the search query times out', async () => {
+      let calls = 0;
+      withSearch(() => {
+        calls += 1;
+        return calls === 1
+          ? makeJsonResponse({ code: 'index_query_timeout' }, false, 503)
+          : { data: [hit('a.txt', 'C:/a.txt')], nextCursor: null, index: { state: 'ready' } };
+      });
+      render(<SnapshotBrowser />);
+      await type('zz');
+      expect((await screen.findByTestId('snapshot-search-timeout')).textContent).toContain('Searching took too long. Try again.');
+      expect(screen.queryByTestId('snapshot-search-empty')).toBeNull();
+      fireEvent.click(screen.getByTestId('snapshot-search-timeout-retry'));
+      expect(await screen.findByTestId('snapshot-search-results')).toBeTruthy();
+    });
+
+    it('shows the tree timeout message, not a generic failure or empty folder, when browse times out', async () => {
+      withSearch(() => ({}), () => makeJsonResponse({ code: 'index_query_timeout' }, false, 503));
+      render(<SnapshotBrowser />);
+      const notice = await screen.findByTestId('snapshot-browse-timeout');
+      expect(notice.textContent).toContain('Listing this folder took too long. Try again.');
+      expect(screen.queryByText('Failed to browse snapshot')).toBeNull();
+      expect(screen.queryByText(/may still be processing/i)).toBeNull();
+    });
+
+    it('a stale response for an older query does not replace a newer one', async () => {
+      let releaseOld!: () => void;
+      const oldGate = new Promise<void>((r) => { releaseOld = r; });
+      withSearch(async (url) => {
+        if (url.endsWith('q=ab')) {
+          await oldGate;
+          return { data: [hit('old.txt', 'C:/old.txt')], nextCursor: null, index: { state: 'ready' } };
+        }
+        return { data: [hit('new.txt', 'C:/new.txt')], nextCursor: null, index: { state: 'ready' } };
+      });
+      render(<SnapshotBrowser />);
+      await type('ab');
+      await waitFor(() => expect(searchUrls()).toHaveLength(1));
+      await type('abc');
+      await screen.findByText('new.txt');
+      await act(async () => { releaseOld(); await Promise.resolve(); });
+      expect(screen.getByText('new.txt')).toBeTruthy();
+      expect(screen.queryByText('old.txt')).toBeNull();
+    });
+
+    it('shows the index state instead of "No files match" while the index is building', async () => {
+      withSearch(() => ({ data: [], nextCursor: null, index: { state: 'building' } }));
+      render(<SnapshotBrowser />);
+      await type('zz');
+      expect((await screen.findAllByTestId('snapshot-index-building')).length).toBeGreaterThan(0);
+      expect(screen.queryByTestId('snapshot-search-empty')).toBeNull();
+    });
   });
 
   it('gives the snapshot picker and the immutability select accessible names', async () => {

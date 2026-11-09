@@ -29,6 +29,7 @@ import SettingsSectionNav, { type SettingsNavGroup } from './SettingsSectionNav'
 import OrgBrandingEditor from './OrgBrandingEditor';
 import OrgPortalSettingsEditor from './OrgPortalSettingsEditor';
 import OrgPortalUsersEditor from './OrgPortalUsersEditor';
+import OrgSignInRegistrationCard from './portalAccess/OrgSignInRegistrationCard';
 import OrgTicketSettingsEditor from './OrgTicketSettingsEditor';
 import OrgDefaultsEditor from './OrgDefaultsEditor';
 import type { PinnableVersions, AgentVersionPinsValue } from './AgentVersionPinSelectors';
@@ -664,6 +665,13 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
               onDirty={handleDirty}
               onSave={() => handleSave()}
             />
+            {/* Sign-in & registration (portal registration W3): the org override of the
+                portal access policy, above the portal users list (spec §4). */}
+            <OrgSignInRegistrationCard
+              orgId={effectiveOrgId}
+              onDirty={handleDirty}
+              onSave={() => handleSave()}
+            />
             <OrgPortalUsersEditor orgId={effectiveOrgId} />
           </>
         ) : null;
@@ -719,6 +727,10 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
             {/* AI model registry W04 (#7602): org override of the partner's per-feature model defaults (tighten-only). */}
             <OrgModelDefaultsCard orgId={effectiveOrgId} />
             <OrgAiBudgetSettings orgId={effectiveOrgId} />
+            {/* Approval mode: stored with the budget fields (PUT /ai/budget)
+                but not a budget, so it renders as its own card ahead of the
+                approval timeout. */}
+            <OrgAiBudgetSettings orgId={effectiveOrgId} section="approvals" />
             {/* #6475 — a separate card, not folded into OrgAiBudgetSettings:
                 that one saves through PUT /ai/budget with different
                 semantics (touched-fields-only, its own lock model). This

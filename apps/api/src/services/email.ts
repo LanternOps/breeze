@@ -165,6 +165,26 @@ export interface PortalInviteEmailParams {
   custom?: PartnerEmailCustom | null;
 }
 
+/**
+ * A decision on a portal access request (portal registration W3, #11380, OD3),
+ * sent to the person who asked. Partner lane, `support` stream, like the
+ * invite: `partnerId` must come from a row the call site already read or from
+ * the verified auth context, never from request input (§8.1).
+ */
+export interface PortalAccessDecisionEmailParams {
+  to: string | string[];
+  orgName?: string;
+  partnerId: string | null;
+  partnerName?: string;
+}
+
+export interface PortalAccessApprovedEmailParams extends PortalAccessDecisionEmailParams {
+  /** The portal sign-in page, built with `buildPortalUrl` at the call site. */
+  loginUrl: string;
+}
+
+export type PortalAccessDeclinedEmailParams = PortalAccessDecisionEmailParams;
+
 export interface VerificationEmailParams {
   to: string | string[];
   name?: string;
@@ -623,6 +643,32 @@ export class EmailService {
       html: template.html,
       text: template.text,
       purpose: 'portal.invite',
+      partnerId: params.partnerId,
+      partnerName: params.partnerName ?? null,
+    });
+  }
+
+  async sendPortalAccessApproved(params: PortalAccessApprovedEmailParams): Promise<void> {
+    const template = buildPortalAccessApprovedTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+      purpose: 'portal.access_request.approved',
+      partnerId: params.partnerId,
+      partnerName: params.partnerName ?? null,
+    });
+  }
+
+  async sendPortalAccessDeclined(params: PortalAccessDeclinedEmailParams): Promise<void> {
+    const template = buildPortalAccessDeclinedTemplate(params);
+    await this.sendEmail({
+      to: params.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+      purpose: 'portal.access_request.declined',
       partnerId: params.partnerId,
       partnerName: params.partnerName ?? null,
     });
@@ -1118,6 +1164,49 @@ export function buildPortalInviteTemplate(params: PortalInviteEmailParams): Emai
     support ? `Need help? Contact ${support}.` : null
   ].filter(Boolean).join('\n');
   return { subject: rendered.subject, html: rendered.html, text };
+}
+
+/**
+ * Portal access request approved (W3 #11380, OD3): an SSO-origin or add-in
+ * request now has browser access. One button to the portal sign-in page. No
+ * support footer: the platform support address is not the customer's IT
+ * provider.
+ */
+export function buildPortalAccessApprovedTemplate(params: PortalAccessApprovedEmailParams): EmailTemplate {
+  const orgName = params.orgName?.trim();
+  const subject = orgName ? `You can now sign in to the ${orgName} portal` : 'You can now sign in to your portal';
+  const lead = orgName
+    ? `Your request for access to the ${orgName} portal was approved.`
+    : 'Your request for portal access was approved.';
+  const html = renderLayout({
+    title: subject,
+    preheader: lead,
+    heading: 'You can now sign in',
+    body: `
+      <p style="${BODY_PARA}">${escapeHtml(lead)}</p>
+      ${renderButton('Sign in', params.loginUrl)}
+    `,
+    brandName: params.partnerName?.trim() || undefined,
+  });
+  const text = [lead, `Sign in: ${params.loginUrl}`].join('\n');
+  return { subject, html, text };
+}
+
+/** Portal access request declined (W3 #11380, spec §5.10): neutral, no link. */
+export function buildPortalAccessDeclinedTemplate(params: PortalAccessDeclinedEmailParams): EmailTemplate {
+  const orgName = params.orgName?.trim();
+  const subject = 'Your portal access request';
+  const copy = orgName
+    ? `Your request for access to the ${orgName} portal was not approved. If you think this is a mistake, contact your IT provider.`
+    : 'Your request for portal access was not approved. If you think this is a mistake, contact your IT provider.';
+  const html = renderLayout({
+    title: subject,
+    preheader: 'An update on your portal access request.',
+    heading: subject,
+    body: `<p style="${BODY_PARA}">${escapeHtml(copy)}</p>`,
+    brandName: params.partnerName?.trim() || undefined,
+  });
+  return { subject, html, text: copy };
 }
 
 function buildVerificationTemplate(params: VerificationEmailParams): EmailTemplate {

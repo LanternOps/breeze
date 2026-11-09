@@ -67,6 +67,7 @@ import {
   writeAuthAudit,
   hashRecoveryCodes,
 } from './helpers';
+import { activeTotpFactorSql, hasActiveTotpFactor } from './mfaFactorPredicates';
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 
 const { db, withSystemDbAccessContext, runOutsideDbContext } = dbModule;
@@ -428,6 +429,10 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
               mfaEnabled: true,
               mfaMethod: 'passkey',
               mfaRecoveryCodes: [...hashes],
+              // #10650 invariant: a secret survives only beside a live
+              // TOTP/passkey primary. One left by an earlier MFA-off
+              // transition must not return as a backup nobody chose.
+              mfaSecret: null,
               updatedAt: new Date(),
             })
             .where(and(eq(users.id, auth.user.id), eq(users.mfaEnabled, false)))
@@ -496,7 +501,9 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
         revokeReason: 'passkey-register',
         persistFactor: async (tx) => {
           await persistPasskey(tx);
-          const hasExistingFactor = Boolean(enrollmentState.mfaSecret) || enrollmentState.mfaMethod === 'sms';
+          // #10650: the shared predicate, so only a live authenticator app (or
+          // SMS) keeps its primary; a stale secret never does.
+          const hasExistingFactor = hasActiveTotpFactor(enrollmentState) || enrollmentState.mfaMethod === 'sms';
 
           const [state] = await tx
             .update(users)
@@ -1115,7 +1122,7 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
               SELECT COUNT(*)::int FROM user_passkeys
               WHERE user_id = ${auth.user.id} AND disabled_at IS NULL
             )`,
-            hasTotp: sql<boolean>`${users.mfaSecret} IS NOT NULL`,
+            hasTotp: activeTotpFactorSql(),
             hasSms: sql<boolean>`${users.mfaMethod} = 'sms' AND ${users.phoneVerified} = true`,
             currentMfaMethod: users.mfaMethod,
           })
@@ -1160,7 +1167,9 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
             // A password-only account must not retain a latent login factor.
             // Enrollment/rotation always replaces the complete code set, but
             // clearing here makes that invariant explicit at the downgrade.
-            ...(remainingAllowedFactorCount === 0 ? { mfaRecoveryCodes: null } : {}),
+            // #10650: the same goes for a TOTP secret policy no longer allows
+            // — left behind, a later first passkey would revive it as a backup.
+            ...(remainingAllowedFactorCount === 0 ? { mfaRecoveryCodes: null, mfaSecret: null } : {}),
             updatedAt: new Date(),
           })
           .where(eq(users.id, auth.user.id))
@@ -1289,7 +1298,7 @@ async function getMfaFactorState(auth: AuthContext): Promise<{
           WHERE user_id = ${auth.user.id}
             AND disabled_at IS NULL
         )`,
-        hasTotp: sql<boolean>`${users.mfaSecret} IS NOT NULL`,
+        hasTotp: activeTotpFactorSql(),
         hasSms: sql<boolean>`${users.mfaMethod} = 'sms' AND ${users.phoneVerified} = true`,
         currentMfaMethod: users.mfaMethod
       })

@@ -413,6 +413,11 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     globalMaxSize: 2 * MB,
     note: 'carved out — 2MB hardware/RAID snapshot ingest (#6856); route and gate agree at 2MB.',
   },
+  'agents/oemUpdates.ts': {
+    paths: ['/api/v1/agents/agent-1/oem-updates/verification'],
+    globalMaxSize: 1 * MB,
+    note: 'tighter than the gate — 4 KiB vendor update verification report (#11065).',
+  },
   'agents/timeStatus.ts': {
     paths: ['/api/v1/agents/agent-1/time-status'],
     globalMaxSize: 512 * 1024,

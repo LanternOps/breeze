@@ -69,6 +69,18 @@ export const MFA_GATED_TOOL_ACTIONS: Readonly<Record<string, '*' | readonly stri
   manage_backup_verification: Object.freeze(['run']),
   get_vss_status: '*',
   manage_c2c_configs: Object.freeze(['create', 'update', 'delete']),
+  // Full-control W18 PR B (#6789): PATCH /organizations/:id/portal-settings and POST /reports/:id/recipients/convert
+  // carry requireMfa(). Recipient add is gated too (Decision 5: it always needs reports:export + MFA on the tool); a
+  // remove that restores a series delivery is gated inside the shared operation (callerMaySetEmailRecipients).
+  manage_org_portal_settings: Object.freeze(['update', 'set_sensitive_access']),
+  manage_report_recipients: Object.freeze(['add', 'convert']),
+  // Full-control W16 PR A (#6786): POST /ai/patch-plan/runs and POST /ai/operator/tasks carry requireMfa().
+  run_patch_plan: '*',
+  create_operator_task: '*',
+  // Full-control W16 PR B (#6786): every schedule write carries requireMfa(), as do the Fleet Design run, preview, apply
+  // and rollback routes. GET applied and POST document do not.
+  manage_ai_agent_schedules: '*',
+  manage_fleet_designs: Object.freeze(['run', 'preview', 'apply', 'rollback']),
   manage_pam_rules: Object.freeze([
     'create_rule', 'update_rule', 'delete_rule', 'set_config',
     'create_signer_group', 'update_signer_group', 'delete_signer_group',

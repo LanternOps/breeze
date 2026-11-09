@@ -39,6 +39,8 @@ import { useLoginBrandingUnit } from './partnerSettings/units/loginBrandingUnit'
 import { useTrustCenterUnit } from './partnerSettings/units/trustCenterUnit';
 import { useAiFeatureDefaultsUnit } from './partnerSettings/units/aiFeatureDefaultsUnit';
 import { useAiDataPolicyUnit } from './partnerSettings/units/aiDataPolicyUnit';
+import { usePortalAccessPolicyUnit } from './partnerSettings/units/portalAccessPolicyUnit';
+import PartnerCustomerPortalTab from './partnerSettings/PartnerCustomerPortalTab';
 import PartnerSettingsStatus, { deriveStatus, type AutosaveReport } from './partnerSettings/PartnerSettingsStatus';
 import FormCard from './partnerSettings/FormCard';
 import { PartnerSettingsSaveContext } from './partnerSettings/partnerSettingsSaveContext';
@@ -71,9 +73,10 @@ export default function PartnerSettingsPage() {
   const trustCenterUnit = useTrustCenterUnit();
   const aiFeatureDefaultsUnit = useAiFeatureDefaultsUnit();
   const aiDataPolicyUnit = useAiDataPolicyUnit();
+  const portalAccessPolicyUnit = usePortalAccessPolicyUnit();
   const units: SaveUnit[] = useMemo(
-    () => [me.unit, callerVerificationUnit, loginBrandingUnit, trustCenterUnit, aiFeatureDefaultsUnit, aiDataPolicyUnit],
-    [me.unit, callerVerificationUnit, loginBrandingUnit, trustCenterUnit, aiFeatureDefaultsUnit, aiDataPolicyUnit]
+    () => [me.unit, callerVerificationUnit, loginBrandingUnit, trustCenterUnit, aiFeatureDefaultsUnit, aiDataPolicyUnit, portalAccessPolicyUnit],
+    [me.unit, callerVerificationUnit, loginBrandingUnit, trustCenterUnit, aiFeatureDefaultsUnit, aiDataPolicyUnit, portalAccessPolicyUnit]
   );
   const dirtyTabs = useMemo(() => {
     const dirty: Partial<Record<TabKey, boolean>> = { ...me.dirtyTabs };
@@ -392,6 +395,9 @@ export default function PartnerSettingsPage() {
             {/* Trust Center defaults: revisioned, MFA-gated. */}
             {activeTab === 'trustCenter' && bare(<TrustTemplateSettings />)}
 
+            {/* Customer portal: policy form saves with the header Save (Enter submits); the requests list is links only. */}
+            {activeTab === 'customerPortal' && bare(<PartnerCustomerPortalTab />)}
+
             {activeTab === 'aiBudgets' && card(
               <PartnerAiBudgetsTab
                 data={state.aiBudgets}
@@ -400,7 +406,14 @@ export default function PartnerSettingsPage() {
                 onThresholdsTextChange={me.setThresholdsRaw}
               />
             )}
-            {activeTab === 'aiApprovals' && card(<PartnerAiApprovalsTab data={state.aiApprovals} onChange={v => update('aiApprovals', v)} />)}
+            {activeTab === 'aiApprovals' && card(
+              <PartnerAiApprovalsTab
+                data={state.aiApprovals}
+                onChange={v => update('aiApprovals', v)}
+                budgets={state.aiBudgets}
+                onBudgetsChange={v => update('aiBudgets', v)}
+              />
+            )}
 
             {/* AI Providers & Models: connection and model rows are list items; the
                 feature-defaults card inside is the tab's form card. */}

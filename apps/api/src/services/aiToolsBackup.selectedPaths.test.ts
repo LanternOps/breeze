@@ -14,6 +14,8 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: any) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withDbTransactionIfHeld: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
 }));
 vi.mock('./commandQueue', () => ({ CommandTypes: { BACKUP_RESTORE: 'backup_restore' } }));
@@ -75,9 +77,17 @@ function seqSelect(results: Array<unknown[]>) {
   let call = 0;
   mockDb.select.mockImplementation(() => {
     const rows = results[call++] ?? [];
-    // The snapshot-files read is awaited without .limit(), so where() must be
-    // thenable as well as chainable.
-    return { from: () => ({ where: () => Object.assign(Promise.resolve(rows), { limit: () => Promise.resolve(rows) }) }) };
+    // The snapshot-files read is a keyset page (#11026): where().orderBy().limit().
+    const query: Record<string, unknown> = {
+      where: () => Object.assign(Promise.resolve(rows), {
+        limit: () => Promise.resolve(rows),
+        orderBy: () => ({ limit: () => Promise.resolve(rows) }),
+      }),
+    };
+    // The snapshot-files read joins the snapshot and its attestation.
+    query.innerJoin = () => query;
+    query.leftJoin = () => query;
+    return { from: () => query };
   });
 }
 

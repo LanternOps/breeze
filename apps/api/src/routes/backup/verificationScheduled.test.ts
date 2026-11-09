@@ -24,6 +24,8 @@ vi.mock('../../db', () => ({
     update: (...args: unknown[]) => updateMock(...(args as [])),
   },
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+  withSystemDbAccessContextIsolated: vi.fn(async (fn: () => any) => fn()),
+  withDbTransactionIfHeld: vi.fn(async (fn: () => any) => fn()),
 }));
 
 vi.mock('../../db/schema', () => ({

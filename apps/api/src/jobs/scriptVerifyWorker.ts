@@ -10,9 +10,9 @@
 // carried in the job data so the ladder is visible in the payload, the same way
 // ScriptReviewJobData carries it.
 //
-// Placement is `socket-owner`: evaluateVerificationClaim ->
-// executeCommandWithSystemPrecheck -> agentCommandAwait / agentWs, the same
-// dependency that puts alertVerdictScheduler there.
+// Placement is `socket-owner`: the closure still reaches routes/agentWs.ts
+// through the shared service graph (`pnpm --filter @breeze/api worker:closure`),
+// the same dependency that puts alertVerdictScheduler there.
 import { Worker, type Job } from 'bullmq';
 import { eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';

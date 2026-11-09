@@ -28,6 +28,7 @@ import { exchangeSchema, EXCHANGE_RATE_LIMIT, bindSchema, BIND_RATE_LIMIT } from
 import { verifyPassword, hashPassword } from '../../services/password';
 import { consumeMFAToken } from '../../services/mfa';
 import { decryptMfaSecretForMigration } from '../auth/helpers';
+import { hasActiveTotpFactor } from '../auth/mfaFactorPredicates';
 import { ENABLE_2FA } from '../auth/schemas';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 
@@ -366,7 +367,10 @@ officeAddinAuthRoutes.post('/bind', zValidator('json', bindSchema), async (c) =>
     }
 
     if (ENABLE_2FA) {
-      if (!user.mfaEnabled || user.mfaMethod !== 'totp' || !user.mfaSecret) {
+      // #10650 Decision 3A: a TOTP primary, the authenticator-app backup beside
+      // a primary passkey, or a legacy enabled row with no mfa_method; never a
+      // stale secret beside SMS.
+      if (!hasActiveTotpFactor(user) || !user.mfaSecret) {
         return { deny: 403, error: 'mfa_enrollment_required' };
       }
       const policy = await getEffectiveMfaPolicy({

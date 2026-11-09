@@ -1,9 +1,74 @@
 import { defineConfig } from 'vitest/config';
+import { BaseSequencer, type TestSpecification } from 'vitest/node';
 import { config } from 'dotenv';
+import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { SUITE_MAP_PATH, TIMINGS_PATH, timingShard } from '../../.github/scripts/shard-partition.mjs';
 
 // Load test environment variables
 config({ path: '../../.env.test', quiet: true });
+
+const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
+
+// W07a (#10751): `--shard=i/n` packs files by recorded seconds (the committed
+// table at .github/ci-timings/integration.json, rebuilt by
+// `.github/scripts/test-timings.mjs refresh`) instead of vitest's equal file
+// counts. Every shard computes the same whole plan and keeps its slice; the
+// plan's digest is logged and, in CI, written to shard-plan-<i>.json. A missing
+// or invalid table falls back to vitest's own sharding with a warning; a file in
+// no shard or in two throws before any test runs. Order within a shard is
+// still BaseSequencer.sort.
+//
+// W07b2 (#10751): CI's integration-test job sets BREEZE_INTEGRATION_SUITES (the
+// PR's named-suite selection, from the changes job) and
+// BREEZE_INTEGRATION_SUITES_MODE. Every shard logs what that selection would
+// run; it runs every file until ENFORCE_PR_SUITES in
+// .github/scripts/integration-suites.mjs is flipped (shadow).
+const readError = (error: unknown) => (error as NodeJS.ErrnoException).code ?? String(error);
+
+class TimingSequencer extends BaseSequencer {
+  override async shard(files: TestSpecification[]): Promise<TestSpecification[]> {
+    const shard = this.ctx.config.shard;
+    if (!shard) return super.shard(files);
+    let timingsText: string | null = null;
+    let timingsError: string | undefined;
+    try {
+      timingsText = readFileSync(path.join(REPO_ROOT, TIMINGS_PATH), 'utf8');
+    } catch (error) {
+      // Absent or unreadable: timingShard warns with this reason and falls back.
+      timingsError = readError(error);
+    }
+    // In GitHub Actions the env is always set (by integration-test), so unset
+    // there is broken wiring: the selection then warns and selects all. A local
+    // run without it has no selection at all.
+    const suites = process.env.BREEZE_INTEGRATION_SUITES;
+    let selection: { suites?: string; mode?: string; mapText: string | null; mapError?: string } | undefined;
+    if (suites !== undefined || process.env.GITHUB_ACTIONS === 'true') {
+      selection = { suites, mode: process.env.BREEZE_INTEGRATION_SUITES_MODE, mapText: null };
+      try {
+        selection.mapText = readFileSync(path.join(REPO_ROOT, SUITE_MAP_PATH), 'utf8');
+      } catch (error) {
+        // Unreadable: the selection warns with this reason and selects every suite.
+        selection.mapError = readError(error);
+      }
+    }
+    return timingShard(files, {
+      index: shard.index,
+      count: shard.count,
+      repoRoot: REPO_ROOT,
+      timingsText,
+      timingsError,
+      selection,
+      fallback: (specs) => super.shard(specs),
+      writePlan: process.env.CI
+        ? (plan: { index: number }) => writeFileSync(
+          path.join(this.ctx.config.root, `shard-plan-${plan.index}.json`),
+          `${JSON.stringify(plan, null, 2)}\n`,
+        )
+        : undefined,
+    });
+  }
+}
 
 export default defineConfig({
   resolve: {
@@ -359,6 +424,10 @@ export default defineConfig({
       // the shared glob above; named here for discoverability only (same
       // pattern staleBackupReaper.integration.test.ts uses).
       'src/__tests__/integration/agentCommandRelay.integration.test.ts',
+      // #4134: per-instance relay shards across two logical API instances —
+      // routing to the socket owner's shard, the second-consumer guard, the
+      // shutdown drain and the dead-shard sweep. Named for discoverability only.
+      'src/__tests__/integration/agentCommandRelayShards.integration.test.ts',
       // Real-Postgres proof for the discovered-asset site move service: the two
       // BEFORE UPDATE triggers on discovered_assets (topology binding lifecycle +
       // monitor-authority detach) and the network_monitors site guard the
@@ -417,7 +486,8 @@ export default defineConfig({
     // time (not just the tests within a file) so setup.ts / autoMigrate
     // / seed don't race each other across workers.
     sequence: {
-      concurrent: false
+      concurrent: false,
+      sequencer: TimingSequencer,
     },
     fileParallelism: false,
     // Longer timeouts for database operations

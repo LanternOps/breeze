@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/canonicalize';
 
 const mocks = vi.hoisted(() => ({
@@ -13,7 +13,16 @@ const mocks = vi.hoisted(() => ({
   rateLimiter: vi.fn(),
   loadRow: vi.fn(),
   approverRows: [] as Array<{ userId: string }>,
+  resolveTarget: vi.fn(),
+  resolveRowTarget: vi.fn(),
 }));
+
+vi.mock('./actionIntents/aiDesignIntentTarget', () => ({
+  AI_DESIGN_INTENT_TOOLS: new Set(['manage_ai_agent_schedules', 'manage_fleet_designs']),
+  resolveAiDesignIntentTarget: mocks.resolveTarget,
+}));
+
+vi.mock('./actionIntents/intentRowTarget', () => ({ resolveIntentRowTarget: mocks.resolveRowTarget }));
 
 vi.mock('./actionIntents/intentService', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./actionIntents/intentService')>();
@@ -226,6 +235,207 @@ describe('createMcpActionIntent', () => {
     expect(await createMcpActionIntent(input())).toMatchObject({ kind: 'refused', code: 'too_many_pending_actions' });
     mocks.createActionIntent.mockRejectedValueOnce(new ActionIntentError('sp', 'principal_not_supported'));
     expect(await createMcpActionIntent(input())).toMatchObject({ kind: 'refused', code: 'principal_not_supported' });
+  });
+
+  it('an unresolvable pin is a refusal that says nothing about why, not a fault', async () => {
+    mocks.createActionIntent.mockRejectedValueOnce(new ActionIntentError('effect digest for x could not be resolved: target_absent', 'effect_digest_unresolvable'));
+    const out = await createMcpActionIntent(input());
+    expect(out).toMatchObject({ kind: 'refused', code: 'effect_digest_unresolvable' });
+    expect(JSON.stringify(out)).not.toContain('target_absent');
+  });
+
+  describe('a design tool, which names its org through a row', () => {
+    const OTHER_ORG = '44444444-4444-4444-8444-444444444444';
+    const REPORT_RUN = '55555555-5555-4555-8555-555555555555';
+    const partnerAuth = (reach: string[]) => ({
+      principal: { kind: 'api_key', apiKeyId: 'key-A' }, user: { id: USER }, orgId: null, canAccessOrg: (id: string) => reach.includes(id),
+    }) as never;
+    const designInput = (over: Partial<CreateMcpActionIntentInput> = {}) => input({
+      auth: partnerAuth([ORG, OTHER_ORG]),
+      apiKey: { id: 'key-A', orgId: null, name: 'ci key', mcpDomains: null } as never,
+      toolName: 'manage_fleet_designs',
+      toolInput: { action: 'rollback', reportRunId: REPORT_RUN },
+      ...over,
+    });
+    const filedOrg = () => (mocks.createActionIntent.mock.calls[0] as unknown as [unknown, { orgId: string }])[1].orgId;
+
+    beforeEach(() => {
+      mocks.resolveTarget.mockResolvedValue({ orgId: OTHER_ORG, partnerId: null });
+    });
+
+    it("is filed in the row's org when the caller reaches it", async () => {
+      await createMcpActionIntent(designInput());
+      expect(mocks.resolveTarget).toHaveBeenCalledWith('manage_fleet_designs', { action: 'rollback', reportRunId: REPORT_RUN });
+      expect(filedOrg()).toBe(OTHER_ORG);
+    });
+
+    it('stays in the execution org when the row is out of reach', async () => {
+      await createMcpActionIntent(designInput({ auth: partnerAuth([ORG]) }));
+      expect(filedOrg()).toBe(ORG);
+    });
+
+    it('an org-pinned key never moves, whatever it reaches', async () => {
+      await createMcpActionIntent(designInput({ apiKey: { id: 'key-A', orgId: ORG, name: 'ci key', mcpDomains: null } as never }));
+      expect(mocks.resolveTarget).not.toHaveBeenCalled();
+      expect(filedOrg()).toBe(ORG);
+    });
+
+    it('a row with no org stays in the execution org', async () => {
+      mocks.resolveTarget.mockResolvedValue({ orgId: null, partnerId: 'p' });
+      await createMcpActionIntent(designInput());
+      expect(filedOrg()).toBe(ORG);
+    });
+
+    it('a failed lookup stays in the execution org and is reported', async () => {
+      mocks.resolveTarget.mockRejectedValue(new Error('connection reset'));
+      await createMcpActionIntent(designInput());
+      expect(filedOrg()).toBe(ORG);
+      expect(mocks.captureException).toHaveBeenCalled();
+    });
+
+    it('any other tool reads no row', async () => {
+      await createMcpActionIntent(designInput({ toolName: 'execute_command', toolInput: { deviceId: 'd1', command: 'whoami' } }));
+      expect(mocks.resolveTarget).not.toHaveBeenCalled();
+      expect(filedOrg()).toBe(ORG);
+    });
+  });
+
+  // #11181: a tool whose orgId argument names the org it changes is filed there, and a
+  // named org the caller cannot reach refuses instead of falling back to another org.
+  describe('a tool that names its target org as an argument (#11181)', () => {
+    const ORG_B = '66666666-6666-4666-8666-666666666666';
+    const FOREIGN = '88888888-8888-4888-8888-888888888888';
+    const partnerAuth = (reach: string[]) => ({
+      principal: { kind: 'api_key', apiKeyId: 'key-A' }, user: { id: USER }, orgId: null, canAccessOrg: (id: string) => reach.includes(id),
+    }) as never;
+    const sensitive = (orgId: string) => ({ action: 'set_sensitive_access', orgId, flags: { showPatches: true } });
+    const partnerInput = (over: Partial<CreateMcpActionIntentInput> = {}) => input({
+      auth: partnerAuth([ORG, ORG_B]),
+      apiKey: { id: 'key-A', orgId: null, name: 'ci key', mcpDomains: null } as never,
+      toolName: 'manage_org_portal_settings',
+      toolInput: sensitive(ORG_B),
+      executionOrgId: ORG_B,
+      ...over,
+    });
+    const filedOrg = () => (mocks.createActionIntent.mock.calls[0] as unknown as [unknown, { orgId: string }])[1].orgId;
+
+    it('set_sensitive_access is filed in the org it names', async () => {
+      await createMcpActionIntent(partnerInput());
+      expect(filedOrg()).toBe(ORG_B);
+    });
+
+    it('a named org out of reach refuses with invalid_params and files nothing (never the fallback org)', async () => {
+      // resolveMcpExecutionOrgId discards an unreachable orgId and falls back to the first org.
+      const out = await createMcpActionIntent(partnerInput({ toolInput: sensitive(FOREIGN), executionOrgId: ORG }));
+      expect(out).toMatchObject({ kind: 'refused', code: 'invalid_params' });
+      expect(mocks.createActionIntent).not.toHaveBeenCalled();
+    });
+
+    it('an org-pinned key naming another org refuses: the pinned org is not the target', async () => {
+      const out = await createMcpActionIntent(input({ toolName: 'manage_org_portal_settings', toolInput: sensitive(ORG_B) }));
+      expect(out).toMatchObject({ kind: 'refused', code: 'invalid_params' });
+      expect(mocks.createActionIntent).not.toHaveBeenCalled();
+    });
+
+    it('an org-pinned key naming its own org files there', async () => {
+      await createMcpActionIntent(input({ toolName: 'manage_org_portal_settings', toolInput: sensitive(ORG) }));
+      expect(filedOrg()).toBe(ORG);
+    });
+
+    it('a design tool naming its org as an argument out of reach refuses, never the execution org', async () => {
+      mocks.resolveTarget.mockResolvedValueOnce({ orgId: FOREIGN, partnerId: null, fromArgument: true });
+      const out = await createMcpActionIntent(partnerInput({ toolName: 'manage_fleet_designs', toolInput: { action: 'run', orgId: FOREIGN }, executionOrgId: ORG }));
+      expect(out).toMatchObject({ kind: 'refused', code: 'invalid_params' });
+      expect(mocks.createActionIntent).not.toHaveBeenCalled();
+    });
+
+    it('a call with no org argument keeps the execution org', async () => {
+      await createMcpActionIntent(partnerInput({ toolName: 'manage_billing_settings', toolInput: { action: 'update_partner' }, executionOrgId: ORG }));
+      expect(filedOrg()).toBe(ORG);
+    });
+  });
+
+  // #11222: a write that names its target by row id is filed in the row's org. The execution
+  // org honours any reachable orgId, so without this an argument the handler ignores picks it.
+  describe('a write that names its target by row id (#11222)', () => {
+    const ORG_B = '66666666-6666-4666-8666-666666666666';
+    const FOREIGN = '88888888-8888-4888-8888-888888888888';
+    const PARTNER = '77777777-7777-4777-8777-777777777777';
+    const ROW = '55555555-5555-4555-8555-555555555555';
+    const partnerAuth = (reach: string[]) => ({
+      principal: { kind: 'api_key', apiKeyId: 'key-A' }, user: { id: USER }, orgId: null, partnerId: PARTNER, scope: 'partner', canAccessOrg: (id: string) => reach.includes(id),
+    }) as never;
+    const voidInvoice = { action: 'void', invoiceId: ROW };
+    const rowInput = (over: Partial<CreateMcpActionIntentInput> = {}) => input({
+      auth: partnerAuth([ORG, ORG_B]),
+      apiKey: { id: 'key-A', orgId: null, name: 'ci key', mcpDomains: null } as never,
+      toolName: 'manage_invoices',
+      toolInput: voidInvoice,
+      ...over,
+    });
+    const filedOrg = () => (mocks.createActionIntent.mock.calls[0] as unknown as [unknown, { orgId: string }])[1].orgId;
+
+    afterEach(() => {
+      mocks.resolveRowTarget.mockReset();
+    });
+
+    it('is filed in the row\'s org when the caller reaches it', async () => {
+      mocks.resolveRowTarget.mockResolvedValue({ orgId: ORG_B, partnerId: null });
+      await createMcpActionIntent(rowInput());
+      expect(mocks.resolveRowTarget).toHaveBeenCalledWith('manage_invoices', voidInvoice);
+      expect(filedOrg()).toBe(ORG_B);
+    });
+
+    it('an orgId the handler ignores does not pick the org: the execution org it set loses to the row', async () => {
+      mocks.resolveRowTarget.mockResolvedValue({ orgId: ORG, partnerId: null });
+      await createMcpActionIntent(rowInput({ toolInput: { ...voidInvoice, orgId: ORG_B }, executionOrgId: ORG_B }));
+      expect(filedOrg()).toBe(ORG);
+    });
+
+    it('a row out of reach refuses with invalid_params and files nothing', async () => {
+      mocks.resolveRowTarget.mockResolvedValue({ orgId: FOREIGN, partnerId: null });
+      expect(await createMcpActionIntent(rowInput())).toMatchObject({ kind: 'refused', code: 'invalid_params' });
+      expect(mocks.createActionIntent).not.toHaveBeenCalled();
+    });
+
+    it('a missing row refuses with the same code', async () => {
+      mocks.resolveRowTarget.mockResolvedValue({ orgId: null, partnerId: null });
+      expect(await createMcpActionIntent(rowInput())).toMatchObject({ kind: 'refused', code: 'invalid_params' });
+      expect(mocks.createActionIntent).not.toHaveBeenCalled();
+    });
+
+    it('an org-pinned key reaches only its own org, whatever the auth reaches', async () => {
+      mocks.resolveRowTarget.mockResolvedValue({ orgId: ORG_B, partnerId: null });
+      const pinned = rowInput({ apiKey: { id: 'key-A', orgId: ORG, name: 'ci key', mcpDomains: null } as never });
+      expect(await createMcpActionIntent(pinned)).toMatchObject({ kind: 'refused', code: 'invalid_params' });
+      expect(mocks.createActionIntent).not.toHaveBeenCalled();
+    });
+
+    it('an org-pinned key files a row of its own org there', async () => {
+      mocks.resolveRowTarget.mockResolvedValue({ orgId: ORG, partnerId: null });
+      await createMcpActionIntent(rowInput({ apiKey: { id: 'key-A', orgId: ORG, name: 'ci key', mcpDomains: null } as never }));
+      expect(filedOrg()).toBe(ORG);
+    });
+
+    it('a partner-wide row of the caller\'s partner keeps the execution org', async () => {
+      mocks.resolveRowTarget.mockResolvedValue({ orgId: null, partnerId: PARTNER });
+      await createMcpActionIntent(rowInput({ toolName: 'manage_configuration_policy', toolInput: { action: 'delete', policyId: ROW } }));
+      expect(mocks.resolveRowTarget).toHaveBeenCalledWith('manage_configuration_policy', { action: 'delete', policyId: ROW });
+      expect(filedOrg()).toBe(ORG);
+    });
+
+    it('a partner-wide row of another partner refuses like a missing row', async () => {
+      mocks.resolveRowTarget.mockResolvedValue({ orgId: null, partnerId: FOREIGN });
+      expect(await createMcpActionIntent(rowInput())).toMatchObject({ kind: 'refused', code: 'invalid_params' });
+      expect(mocks.createActionIntent).not.toHaveBeenCalled();
+    });
+
+    it('a read that fails refuses as unresolvable and is reported, never filed in the execution org', async () => {
+      mocks.resolveRowTarget.mockRejectedValue(new Error('connection reset'));
+      expect(await createMcpActionIntent(rowInput())).toMatchObject({ kind: 'refused', code: 'effect_digest_unresolvable' });
+      expect(mocks.createActionIntent).not.toHaveBeenCalled();
+      expect(mocks.captureException).toHaveBeenCalled();
+    });
   });
 
   it('a replayed live intent returns pending with isNew false', async () => {

@@ -2935,5 +2935,8 @@
   "featureLock": {
     "lockedLabel": "Gesperrt",
     "upgrade": "Tarife ansehen"
+  },
+  "inheritChoice": {
+    "inherit": "Erben — {{value}} ({{source}})"
   }
 }

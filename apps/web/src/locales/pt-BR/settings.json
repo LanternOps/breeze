@@ -284,7 +284,7 @@
     "alertThresholds": "Avisar em (% do orçamento)",
     "alertThresholdsHelp": "Administradores parceiros com acesso a cobrança recebem um alerta no aplicativo em cada nível e um e-mail para alertas mensais e de limite atingido. Deixe em branco para herdar 50, 80, 95.",
     "notSet": "Não definido, as organizações configuram individualmente",
-    "description": "Os valores de orçamento são aplicados a todas as organizações filhas. Os valores em dólares são armazenados internamente em centavos.",
+    "description": "Um valor definido aqui se aplica a todas as organizações e as bloqueia. Um campo deixado vazio é configurado por organização. Os valores em dólares são armazenados internamente em centavos.",
     "modes": {
       "perStep": "Por etapa",
       "actionPlan": "Plano de ação",
@@ -1095,8 +1095,8 @@
         "description": "Envie e-mails do seu próprio domínio"
       },
       "aiBudgets": {
-        "label": "Orçamentos de IA",
-        "description": "Limites de gastos com IA"
+        "label": "Orçamentos e limites de IA",
+        "description": "Limites de gasto, alertas e limites de taxa de IA"
       },
       "aiProvider": {
         "label": "Provedores e modelos de IA",
@@ -1119,8 +1119,8 @@
         "description": "Central de serviços, faturamento e topologia ativados/desativados"
       },
       "aiApprovals": {
-        "label": "Tempo limite de aprovação de IA",
-        "description": "Quanto tempo o Breeze AI aguarda a aprovação de uma ação restrita"
+        "label": "Aprovações de IA",
+        "description": "Modo de aprovação e quanto tempo o Breeze AI espera por uma aprovação"
       },
       "callerVerification": {
         "label": "Verificação de chamador",
@@ -1129,6 +1129,10 @@
       "knownGuests": {
         "label": "Convidados conhecidos",
         "description": "Dispositivos aprovados de visitantes e técnicos por endereço MAC"
+      },
+      "customerPortal": {
+        "label": "Portal do cliente",
+        "description": "Regras padrão de login e cadastro para os portais dos seus clientes e solicitações de acesso aguardando uma decisão"
       }
     },
     "saved": "Configurações do parceiro salvas",
@@ -1198,6 +1202,7 @@
       "badge": {
         "locks": "Bloqueia organizações",
         "locksConditional": "Bloqueia organizações quando ativado",
+        "locksWhenSet": "Bloqueia organizações quando definido",
         "overridable": "A organização pode alterar",
         "overridableCap": "A organização pode alterar, até {{limit}}",
         "partnerOnly": "Para todo o parceiro"
@@ -1205,6 +1210,7 @@
       "badgeHelp": {
         "locks": "Enquanto estiver definido, todas as organizações usam o seu valor. O valor próprio da organização é ignorado.",
         "locksConditional": "Quando ativado, todas as organizações usam o seu valor em vez do próprio. Quando desativado, usam o próprio.",
+        "locksWhenSet": "Depois que você define um valor, todas as organizações o usam e o valor próprio é ignorado. Enquanto estiver vazio, cada organização configura o seu.",
         "overridable": "O seu valor é o padrão. Uma organização que define o próprio valor usa esse no lugar.",
         "overridableCap": "O seu valor é o padrão. Uma organização pode definir o próprio valor, até {{limit}}.",
         "partnerOnly": "As organizações não têm uma configuração própria. O seu valor se aplica a todas."
@@ -1851,7 +1857,8 @@
       "load": "Falha ao carregar a política de segurança de aprovação.",
       "save": "Não foi possível salvar a política de segurança de aprovação.",
       "unavailable": "Nenhuma política disponível."
-    }
+    },
+    "scopeNote": "Estas configurações se aplicam a todas as organizações da sua conta de parceiro."
   },
   "orgAuditRetentionSettings": {
     "title": "Retenção de Logs de Auditoria",
@@ -2350,6 +2357,11 @@
       "sendInvite": "Falha ao enviar o convite",
       "action": "Falha na ação",
       "invalidEmail": "Informe um endereço de e-mail válido"
+    },
+    "badges": {
+      "noBrowserAccess": "Sem acesso pelo navegador",
+      "microsoft": "Login com Microsoft",
+      "google": "Login com Google"
     }
   },
   "orgRemoteAccessSettings": {
@@ -2968,7 +2980,8 @@
       "enabledHint": "«Ativado» e o modo são chaves separadas e uma execução precisa das duas: com isto desligado nada roda, seja qual for o modo, e no modo Desligado nada roda mesmo com isto ligado.",
       "enabledCreateHint": "Novos agentes são criados desligados. Revise a lista de ferramentas permitidas e os limites abaixo e depois ligue isto quando quiser que o agente comece a rodar.",
       "actKeysCleared": "As permissões do modo de ação são mantidas, mas não serão salvas a menos que este agente volte ao modo de ação.",
-      "recipientRoleNoMembers": "sem membros ativos"
+      "recipientRoleNoMembers": "sem membros ativos",
+      "enabledHintNoMode": "Quando está desativado, o agente não é executado."
     },
     "policyKeys": {
       "tools": {
@@ -3165,6 +3178,7 @@
           "blocked_by_source": "Excluída pelas fontes de atualização da política",
           "held_by_deferral": "Retida pela janela de adiamento",
           "blocked_by_category": "Excluída pelas regras de categoria do anel",
+          "managed_by_vendor_updates": "Gerenciado pelas atualizações do fabricante",
           "blocked_by_app_rule": "Bloqueada por uma regra de aplicativo",
           "blocked_by_feature_update_policy": "Excluído pela política de atualizações de recursos do Windows do anel",
           "awaiting_manual_approval": "Aguardando aprovação manual",
@@ -5168,7 +5182,9 @@
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "Você confirmará com sua chave de acesso (Touch ID/Windows Hello) ao se registrar.",
     "authenticatorCode": "Código do autenticador",
-    "confirmYourPassword": "Confirme sua senha"
+    "confirmYourPassword": "Confirme sua senha",
+    "switchToAuthenticatorCode": "Usar o aplicativo autenticador em vez disso",
+    "usePasskeyInstead": "Usar sua chave de acesso em vez disso"
   },
   "cannedResponsesCard": {
     "cannedResponses": "Respostas automáticas",
@@ -5511,7 +5527,21 @@
     "verifyWithYourIdentityProvider": "Verificar com seu provedor de identidade",
     "ssoReauthProofExpired": "Sua verificação com o provedor de identidade expirou. Verifique novamente para concluir a configuração do seu aplicativo autenticador.",
     "ssoReauthManageHint": "Esta conta entra por meio de um provedor de identidade e não tem senha. Verifique com seu provedor para confirmar esta alteração.",
-    "ssoReauthManageVerified": "Identidade verificada com seu provedor. Conclua a etapa abaixo para confirmar esta alteração."
+    "ssoReauthManageVerified": "Identidade verificada com seu provedor. Conclua a etapa abaixo para confirmar esta alteração.",
+    "notSetUp": "Não configurado",
+    "notAvailable": "Não disponível",
+    "backup": "Cópia de segurança",
+    "addBackup": "Adicionar backup",
+    "totpBackupAddHint": "Adicione um aplicativo autenticador como backup para continuar entrando caso sua chave de acesso não esteja disponível.",
+    "totpPolicyDisallowed": "A política da sua organização não permite aplicativos autenticadores.",
+    "totpBackupActiveHint": "Use um código do seu aplicativo autenticador se sua chave de acesso não estiver disponível.",
+    "totpBackupVerifyNote": "Ao pressionar Verificar, você confirmará com sua chave de acesso.",
+    "confirmBackupButton": "Verificar e adicionar backup",
+    "removeTotpTitle": "Remover aplicativo autenticador",
+    "removeTotpBackupDescription": "Você continuará entrando com sua chave de acesso. Seus códigos de recuperação permanecem os mesmos.",
+    "removeTotpPrimaryDescription": "Sua chave de acesso passa a ser seu método principal de login. Seus códigos de recuperação permanecem os mesmos.",
+    "removeTotpConfirmWithPasskey": "Você confirmará com sua chave de acesso.",
+    "removing": "Removendo..."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importar do Pax8",
@@ -5636,7 +5666,13 @@
     "ssoReauthManageProofExpired": "A verificação com seu provedor de identidade expirou. Verifique novamente para confirmar esta alteração.",
     "verifyWithIdpToDeletePasskey": "Esta conta não tem senha. Verifique com seu provedor de identidade antes de remover uma chave de acesso.",
     "deletePasskeySsoReauth": "Verificar identidade para remover uma chave de acesso",
-    "deletePasskeySsoVerified": "Identidade verificada. Escolha Excluir na chave de acesso que deseja remover."
+    "deletePasskeySsoVerified": "Identidade verificada. Escolha Excluir na chave de acesso que deseja remover.",
+    "authenticatorBackupAdded": "Aplicativo autenticador adicionado como backup. Seus códigos de recuperação não foram alterados",
+    "authenticatorAppRemoved": "Aplicativo autenticador removido. Você entrará com sua chave de acesso",
+    "authenticatorCodeRejectedWaitForNext": "Esse código não foi aceito. Cada código funciona apenas uma vez; se você acabou de usá-lo, aguarde o próximo código do seu aplicativo autenticador.",
+    "passkeyConfirmationCanceled": "A confirmação com chave de acesso foi cancelada ou expirou.",
+    "passkeyProofRejected": "Não foi possível verificar sua chave de acesso. Tente novamente.",
+    "failedToRemoveAuthenticatorApp": "Falha ao remover o aplicativo autenticador"
   },
   "roleManager": {
     "roles": "Funções",
@@ -6363,8 +6399,8 @@
     }
   },
   "orgAiBudgetSettings": {
-    "title": "Orçamento de IA",
-    "description": "Limites de gastos, limites de frequência e modo de aprovação do Breeze AI nesta organização. Os campos que seu parceiro definiu são mostrados aqui, mas só podem ser alterados na aba do parceiro.",
+    "title": "Orçamento e limites de IA",
+    "description": "Limites de gasto, alertas e limites de taxa do Breeze AI nesta organização. Campos definidos pelo seu parceiro aparecem aqui, mas só podem ser alterados na aba do parceiro.",
     "selectOrganization": "Selecione uma organização para configurar seu orçamento de IA."
   },
   "orgSettingsPage": {
@@ -7565,6 +7601,43 @@
       "create": "Não foi possível adicionar o contato.",
       "update": "Não foi possível salvar o contato.",
       "delete": "Não foi possível excluir o contato."
+    },
+    "portal": {
+      "column": "Portal",
+      "status": {
+        "none": "Sem acesso",
+        "invited": "Convidado",
+        "active": "Ativo",
+        "disabled": "Desativado",
+        "requested": "Solicitado"
+      },
+      "actions": {
+        "give": "Dar acesso ao portal",
+        "resend": "Reenviar convite",
+        "bulkGive": "Dar acesso ao portal ({{count}})",
+        "selectAll": "Selecionar todos os contatos desta página",
+        "selectRow": "Selecionar {{name}}"
+      },
+      "form": {
+        "giveAccess": "Dar acesso ao portal (envia um convite para este endereço de e-mail)",
+        "needsEmail": "Adicione um endereço de e-mail para dar acesso ao portal."
+      },
+      "toasts": {
+        "invited": "Convite do portal enviado",
+        "inviteEmailFailed": "Login do portal criado, mas não foi possível enviar o e-mail de convite. Use Reenviar convite.",
+        "bulkSummary": "Acesso ao portal: {{details}}"
+      },
+      "outcomes": {
+        "invited": "Convidados: {{count}}",
+        "already_has_access": "Já têm acesso: {{count}}",
+        "no_email": "Sem endereço de e-mail: {{count}}",
+        "email_bound_to_other_contact": "E-mail usado por outro contato: {{count}}",
+        "duplicate_email_in_batch": "E-mail duplicado na seleção: {{count}}"
+      },
+      "errors": {
+        "invite": "Não foi possível dar acesso ao portal.",
+        "bulkInvite": "Não foi possível dar acesso ao portal aos contatos selecionados."
+      }
     }
   },
   "bulkContactImport": {
@@ -7834,7 +7907,8 @@
     "productDefault": "Padrão do produto ({{minutes}} minutos)",
     "range": "Escolha entre {{min}} e {{max}} minutos.",
     "description": "Por quanto tempo uma conversa em andamento com o Breeze AI aguarda que alguém aprove uma ação restrita (Tier 2/3) antes de desistir.",
-    "notForUnattendedNote": "Isso não é para trabalho noturno ou não supervisionado — o trabalho de longa duração passa pela fila de aprovações, que tem seu próprio vencimento."
+    "notForUnattendedNote": "Isso não é para trabalho noturno ou não supervisionado — o trabalho de longa duração passa pela fila de aprovações, que tem seu próprio vencimento.",
+    "modeDescription": "Como o chat do Breeze AI pede confirmação antes de executar ações protegidas. Aplica-se haja ou não um limite de gasto."
   },
   "orgAiApprovalTimeout": {
     "title": "Tempo limite de aprovação de IA",
@@ -8220,5 +8294,131 @@
     "hideContent": "Ocultar conteúdo",
     "conversationUnavailable": "Esta conversa não está mais disponível.",
     "usersLoadFailed": "Não foi possível carregar os técnicos."
+  },
+  "orgAiApprovalMode": {
+    "title": "Modo de aprovação de IA",
+    "description": "Como o chat do Breeze AI pede confirmação antes de executar ações protegidas (Tier 2/3) nesta organização. Aplica-se haja ou não um limite de gasto.",
+    "save": "Salvar"
+  },
+  "portalAccessPolicy": {
+    "title": "Login e cadastro",
+    "orgDescription": "Como as pessoas desta organização fazem login no portal do cliente e como novas pessoas obtêm acesso pelo navegador. Um campo deixado em Herdar segue o padrão do parceiro.",
+    "partnerDescription": "O padrão para todas as organizações clientes. Cada organização pode substituir qualquer campo na sua aba Portal do Cliente.",
+    "loading": "Carregando configurações de login…",
+    "readOnly": "Você pode ver estas configurações, mas não alterá-las. Alterar o padrão do parceiro exige acesso total de parceiro.",
+    "save": "Salvar configurações de login",
+    "sources": {
+      "partner": "Padrão do parceiro",
+      "default": "Padrão do Breeze"
+    },
+    "signIn": {
+      "title": "Como as pessoas fazem login"
+    },
+    "newPeople": {
+      "title": "Como novas pessoas obtêm acesso pelo navegador"
+    },
+    "options": {
+      "on": "Ativado",
+      "off": "Desativado"
+    },
+    "microsoft": {
+      "label": "Login com Microsoft"
+    },
+    "google": {
+      "label": "Login com Google"
+    },
+    "password": {
+      "label": "Login com senha",
+      "allowed": "Permitido",
+      "ssoOnly": "Desativado — somente Microsoft/Google",
+      "ssoOnlyNeedsSso": "Disponível depois que o login com Microsoft ou Google for ativado."
+    },
+    "fallback": "O login com senha está ativado porque nenhum login com Microsoft ou Google está habilitado.",
+    "invites": {
+      "label": "Convites do MSP",
+      "value": "Sempre ativados"
+    },
+    "selfRegistration": {
+      "label": "Autocadastro",
+      "off": "Desativado",
+      "approval": "Requer aprovação",
+      "instant": "Imediato"
+    },
+    "ssoNewPerson": {
+      "label": "Primeiro login com Microsoft / Google",
+      "invitedOnly": "Somente pessoas convidadas",
+      "approval": "Requer aprovação",
+      "instant": "Imediato"
+    },
+    "requests": "Solicitações ({{count}})",
+    "errors": {
+      "load": "Não foi possível carregar as configurações de login.",
+      "save": "Não foi possível salvar as configurações de login.",
+      "methodUnavailable": "Este método de login ainda não está disponível nesta implantação do Breeze.",
+      "ssoOnlyNeedsSso": "Ative o login com Microsoft ou Google antes de desativar o login com senha."
+    },
+    "toasts": {
+      "saved": "Configurações de login salvas."
+    }
+  },
+  "portalAccessRequests": {
+    "title": "Solicitações de acesso",
+    "description": "Pessoas aguardando acesso ao portal desta organização. Aprove para conceder acesso ou negue para descartar a solicitação.",
+    "columns": {
+      "person": "Pessoa",
+      "source": "Como solicitaram",
+      "requested": "Solicitado"
+    },
+    "sources": {
+      "self": "Autocadastro",
+      "entra": "Login com Microsoft",
+      "google": "Login com Google",
+      "addin_user": "Suplemento AI for Office"
+    },
+    "selectAll": "Selecionar todas as solicitações",
+    "selectOne": "Selecionar a solicitação de {{email}}",
+    "accountExists": "Já tem uma conta — Negue para descartar",
+    "actions": {
+      "approve": "Aprovar",
+      "deny": "Negar",
+      "approveSelected": "Aprovar selecionadas ({{count}})",
+      "denySelected": "Negar selecionadas ({{count}})"
+    },
+    "results": {
+      "accountExists": "Já tem uma conta",
+      "notPending": "Não está mais pendente",
+      "notFound": "Solicitação não encontrada",
+      "identityLinked": "Login já vinculado a outra conta",
+      "failed": "Não foi possível decidir esta solicitação"
+    },
+    "denyDialog": {
+      "title": "Negar solicitação de acesso",
+      "message": "Negar a solicitação de {{email}}? A pessoa receberá um e-mail informando que ela não foi aprovada.",
+      "bulkMessage_one": "Negar {{count}} solicitação? A pessoa receberá um e-mail informando que ela não foi aprovada.",
+      "bulkMessage_other": "Negar {{count}} solicitações? Cada pessoa receberá um e-mail informando que a solicitação não foi aprovada."
+    },
+    "toasts": {
+      "approved": "Acesso aprovado para {{email}}.",
+      "denied": "Solicitação de {{email}} negada.",
+      "bulkDone_one": "{{count}} solicitação decidida.",
+      "bulkDone_other": "{{count}} solicitações decididas.",
+      "bulkPartial": "{{succeeded}} de {{total}} solicitações decididas. As demais estão marcadas na lista."
+    },
+    "errors": {
+      "load": "Não foi possível carregar as solicitações de acesso.",
+      "action": "Não foi possível atualizar a solicitação de acesso.",
+      "bulk": "Não foi possível decidir as solicitações selecionadas."
+    },
+    "summary": {
+      "title": "Solicitações de acesso pendentes",
+      "description": "Solicitações aguardando nas suas organizações clientes. Abra uma organização para aprová-las ou negá-las.",
+      "empty": "Nenhuma solicitação pendente",
+      "orgPending_one": "{{count}} pendente",
+      "orgPending_other": "{{count}} pendentes",
+      "review": "Revisar solicitações",
+      "loadError": "Não foi possível carregar as solicitações de acesso pendentes."
+    },
+    "refreshFailed": "Não foi possível atualizar as solicitações de acesso, então esta lista pode estar desatualizada.",
+    "more": "Mostrando as primeiras {{count}} solicitações. Decida sobre elas para ver as demais."
   }
 }

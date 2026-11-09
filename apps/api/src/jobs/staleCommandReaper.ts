@@ -1435,7 +1435,9 @@ async function reapStaleRemoteSessions(): Promise<number> {
   const pendingCutoff = new Date(Date.now() - REMOTE_SESSION_PENDING_TIMEOUT_MS);
   const activeCutoff = new Date(Date.now() - REMOTE_SESSION_ACTIVE_TIMEOUT_MS);
 
-  // Pending/connecting sessions older than 10 minutes
+  // Pending/connecting sessions with no start attempt in 10 minutes. Not keyed on
+  // created_at: a live session re-offering is `connecting` on its original row
+  // (#11149).
   const pendingResult = await db
     .update(remoteSessions)
     .set(terminalIntentSet({
@@ -1446,7 +1448,7 @@ async function reapStaleRemoteSessions(): Promise<number> {
     .where(
       and(
         inArray(remoteSessions.status, ['pending', 'connecting']),
-        lt(remoteSessions.createdAt, pendingCutoff),
+        lt(remoteSessions.lastStartAttemptAt, pendingCutoff),
       ),
     )
     .returning({ id: remoteSessions.id });

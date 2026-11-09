@@ -18,6 +18,7 @@ import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import {
   CONCERN_FEEDBACK_NOTE_MAX,
+  CONCERN_PATTERN_EVIDENCE_KEY,
   LIVE_CONCERN_STATUSES,
   type Concern,
   type ConcernRecipientState,
@@ -26,7 +27,7 @@ import {
   type ConcernSubject,
 } from '@breeze/shared';
 import { isPgUniqueViolation, pgErrorConstraint } from '@breeze/shared/pgErrors';
-import { db, getCurrentDbAccessContext, withDbTransaction } from '../../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withDbTransaction } from '../../db';
 import { wispConcernRecipients, wispConcerns, type WispConcernRecipientRow, type WispConcernRow } from '../../db/schema/wispConcerns';
 import { wispGrants } from '../../db/schema/wisp';
 import { captureException } from '../sentry';
@@ -110,6 +111,13 @@ type UpsertConcernInput = {
   lastAssessedRunId?: string | null;
   signature?: string | null;
   childConcernIds?: string[];
+  /**
+   * #11426: the normalised pattern key (`normalizeConcernPattern`) the
+   * same-org rollup groups by. Stored as `evidence.pattern`, NOT as the
+   * signature: the live-signature index is one live row per (partner,
+   * signature), so N devices sharing a signature would collapse into one.
+   */
+  pattern?: string | null;
 };
 
 async function findLiveBySignature(partnerId: string, signature: string): Promise<string | null> {
@@ -157,7 +165,7 @@ export async function upsertConcern(input: UpsertConcernInput): Promise<{ id: st
     subjectId: input.subject.id,
     summary: input.summary.trim(),
     severity: input.severity,
-    evidence: input.evidence,
+    evidence: input.pattern ? { ...input.evidence, [CONCERN_PATTERN_EVIDENCE_KEY]: input.pattern } : input.evidence,
     signature,
     childConcernIds: input.childConcernIds ?? [],
     raisedByGrantId: input.raisedByGrantId ?? null,
@@ -209,6 +217,24 @@ export async function upsertConcern(input: UpsertConcernInput): Promise<{ id: st
 }
 
 /**
+ * #11426: stamp `evidence.pattern` on a LIVE concern a re-raise found already
+ * open (upsertConcern hands it back untouched). Only that key changes:
+ * status, snooze and `updated_at` stay as they were. No-op when the key is
+ * already this pattern, and on a concern closed meanwhile.
+ */
+export async function setConcernPattern(id: string, pattern: string): Promise<void> {
+  await inSystemContext(async () => {
+    await db.update(wispConcerns)
+      .set({ evidence: sql`${wispConcerns.evidence} || jsonb_build_object(${CONCERN_PATTERN_EVIDENCE_KEY}::text, ${pattern}::text)` })
+      .where(and(
+        eq(wispConcerns.id, id),
+        inArray(wispConcerns.status, [...LIVE_CONCERN_STATUSES]),
+        sql`${wispConcerns.evidence} ->> ${CONCERN_PATTERN_EVIDENCE_KEY}::text IS DISTINCT FROM ${pattern}::text`,
+      ));
+  });
+}
+
+/**
  * Resolve the live concern holding `signature` for the partner, if any (system
  * automation closing its own readiness concern; no memory block is written).
  * Idempotent: nothing live → `{ resolved: false }`.
@@ -249,7 +275,8 @@ export async function updateConcern(
 /**
  * Resolve a live concern (idempotent: a resolved/dismissed one is left alone).
  * With `by.grantId`, the outcome is remembered as a `concern_outcome` block
- * AFTER the resolution is written; the memory write never undoes it.
+ * AFTER the resolution is written; the memory write never undoes it. A real
+ * transition then sends the resolved-nudge follow-up (#11427), best-effort.
  */
 export async function resolveConcern(
   id: string,
@@ -278,9 +305,21 @@ export async function resolveConcern(
   });
   if (!resolved) return { resolved: false, remembered: false };
   incWispConcern('resolved');
-  if (!by.grantId) return { resolved: true, remembered: false };
+  const remembered = by.grantId ? await rememberOutcome(id, by.grantId, resolved, outcome) : false;
+  await followUpResolvedNudge(id);
+  return { resolved: true, remembered };
+}
 
-  const grantId = by.grantId;
+type ResolvedConcernRow = {
+  id: string; orgId: string | null; subjectKind: string; subjectId: string; summary: string; severity: ConcernSeverity;
+};
+
+/**
+ * Remember a grant's resolution as a `concern_outcome` block, AFTER the
+ * resolution is written; the memory write never undoes it. false = not
+ * remembered (the grant cannot author memory right now, or the write failed).
+ */
+async function rememberOutcome(id: string, grantId: string, resolved: ResolvedConcernRow, outcome: string): Promise<boolean> {
   const remember = async () => {
     const [grant] = await inSystemContext(() =>
       db.select({ currentRevisionId: wispGrants.currentRevisionId }).from(wispGrants).where(eq(wispGrants.id, grantId)).limit(1));
@@ -299,10 +338,9 @@ export async function resolveConcern(
   try {
     // Inside a caller's system transaction, isolate the memory write in a
     // savepoint so a failure there cannot poison the caller's commit.
-    const remembered = getCurrentDbAccessContext()?.scope === 'system'
+    return getCurrentDbAccessContext()?.scope === 'system'
       ? await withDbTransaction(remember)
       : await remember();
-    return { resolved: true, remembered };
   } catch (err) {
     // The grant cannot author memory right now (paused / revoked / grantor
     // lost standing, or the owner fell outside its ceiling). The resolution
@@ -310,8 +348,79 @@ export async function resolveConcern(
     if (!(err instanceof GrantInactiveError || err instanceof CeilingViolationError)) {
       captureException(err, undefined, { concernId: id, grantId, op: 'wisp.concerns.resolve.remember' });
     }
-    return { resolved: true, remembered: false };
+    return false;
   }
+}
+
+/**
+ * #11427: a concern Wisp nudged someone about just closed — tell each nudged
+ * thread that no action is needed (`nudgeResolved.ts`; a no-op for a concern
+ * nobody was nudged about). Every resolve path calls this, but only a COMMITTED
+ * resolution is followed up: inside a caller's system transaction (admission's
+ * readiness close) the resolution is not committed yet, a reader on another
+ * connection would still see the concern live, and a failed read on the
+ * caller's connection would abort its transaction and roll the resolution back
+ * — so that case is skipped, with a trace. Otherwise the follow-up runs outside
+ * every DB context. Best-effort: logged, never thrown, so the resolution always
+ * stands. Lazy import: nudgeResolved → notifyUser → concerns would otherwise be
+ * an import cycle.
+ */
+async function followUpResolvedNudge(id: string): Promise<void> {
+  if (getCurrentDbAccessContext()?.scope === 'system') {
+    console.warn('[wisp.concerns] resolved inside a caller transaction; no resolved-nudge follow-up', { concernId: id });
+    return;
+  }
+  try {
+    const { notifyNudgeResolved } = await import('./nudgeResolved');
+    await runOutsideDbContext(() => notifyNudgeResolved(id));
+  } catch (err) {
+    console.error('[wisp.concerns] resolved-nudge follow-up failed; the resolution stands', { concernId: id, err });
+    captureException(err, undefined, { concernId: id, op: 'wisp.concerns.resolve.nudgeResolved' });
+  }
+}
+
+/** The outcome recorded on a concern closed because its linked alert resolved. */
+export const ALERT_RESOLVED_OUTCOME = 'alert_resolved';
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Live concerns closed per resolved alert; any beyond it stay open for the model (or a repeat event) to close. */
+const ALERT_RESOLVE_LIMIT = 50;
+
+/**
+ * #11427: the alert a concern was raised about resolved — close the concern
+ * deterministically (no model call), so the next assessment reads it closed.
+ * Matches live concerns IN THE ALERT'S ORG whose evidence names the alert as
+ * `alertId` or `rebootAlertId` (model-written evidence keys, as seen on prod
+ * concerns; nothing validates them). The org pin is the isolation: a concern
+ * of another org is never read, whatever its evidence says. Outcome
+ * `alert_resolved`, no grant (nothing is remembered as Wisp-authored memory).
+ * Idempotent: a concern already closed is not resolved twice or counted. One
+ * concern that fails to resolve is reported and never stops the rest. Returns
+ * how many it resolved.
+ */
+export async function resolveConcernsForAlert(alertId: string, orgId: string): Promise<{ resolved: number }> {
+  if (!UUID_RE.test(alertId) || !UUID_RE.test(orgId)) return { resolved: 0 };
+  const rows = await inSystemContext(() => db.select({ id: wispConcerns.id }).from(wispConcerns)
+    .where(and(
+      eq(wispConcerns.orgId, orgId),
+      inArray(wispConcerns.status, [...LIVE_CONCERN_STATUSES]),
+      or(
+        sql`${wispConcerns.evidence}->>'alertId' = ${alertId}`,
+        sql`${wispConcerns.evidence}->>'rebootAlertId' = ${alertId}`,
+      ),
+    ))
+    .limit(ALERT_RESOLVE_LIMIT));
+  let resolved = 0;
+  for (const { id } of rows) {
+    try {
+      if ((await resolveConcern(id, {}, ALERT_RESOLVED_OUTCOME)).resolved) resolved += 1;
+    } catch (err) {
+      console.error('[wisp.concerns] closing a concern of a resolved alert failed', { concernId: id, alertId, err });
+      captureException(err, undefined, { concernId: id, alertId, op: 'wisp.concerns.resolveForAlert' });
+    }
+  }
+  return { resolved };
 }
 
 // ---------------------------------------------------------------------------

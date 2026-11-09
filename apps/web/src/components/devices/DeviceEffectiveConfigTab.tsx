@@ -17,11 +17,13 @@ import {
   Shield,
   ShieldCheck,
   ShieldAlert,
+  ShieldBan,
   Usb,
   Wrench,
   Trash2,
   Zap,
   type LucideIcon,
+  Cpu,
 } from "lucide-react";
 
 import type { ConfigFeatureType } from "@breeze/shared";
@@ -31,6 +33,9 @@ import { fetchWithAuth } from "../../stores/auth";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 import { i18n } from "../../lib/i18n";
+import EffectiveContainmentSummary from "./EffectiveContainmentSummary";
+import { OEM_VENDOR_NAMES } from "./vendorUpdatesApi";
+import type { OemLane } from "@breeze/shared";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -49,7 +54,6 @@ import { i18n } from "../../lib/i18n";
 export const EFFECTIVE_CONFIG_EXCLUDED_FEATURE_TYPES = [
   "remote_access",
   "pam",
-  "containment", // #10100 part 2 adds the Containment tab
 ] as const;
 type FeatureType = Exclude<
   ConfigFeatureType,
@@ -155,6 +159,18 @@ const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
     Icon: History,
   },
   security_agents: { label: "Security Agents", Icon: ShieldCheck },
+  containment: {
+    get label() {
+      return i18n.t("policies:configurationPolicies.featureTabs.containmentTab.title");
+    },
+    Icon: ShieldBan,
+  },
+  oem_updates: {
+    get label() {
+      return i18n.t("policies:configurationPolicies.featureTabs.vendorUpdatesTab.title");
+    },
+    Icon: Cpu,
+  },
 };
 
 // Display order = FEATURE_META insertion order. Derived (not hand-listed) so the
@@ -248,11 +264,42 @@ const PATCH_UNUSED_APPROVAL_KEYS = new Set([
   "apps",
 ]);
 
+// #11281: the generic dump showed the schema "version" and no schedule or vendors.
+// State what the policy does: whether it is on, when it runs, and for which vendors.
+function summarizeOemUpdates(settings: Record<string, unknown> | null): SettingsSummaryItem[] {
+  if (!settings) return [];
+  const items: SettingsSummaryItem[] = [];
+  if (typeof settings.enabled === "boolean") {
+    items.push({ label: "enabled", value: settings.enabled ? "yes" : "no" });
+  }
+  const schedule = settings.schedule;
+  if (schedule && typeof schedule === "object") {
+    const { weekOfMonth, dayOfWeek, windowStart, windowHours } = schedule as Record<string, unknown>;
+    if (typeof weekOfMonth === "string" && typeof dayOfWeek === "string") {
+      const when = `${weekOfMonth} ${dayOfWeek}`;
+      const window =
+        typeof windowStart === "string" && typeof windowHours === "number"
+          ? `, ${windowStart}, ${windowHours} h window`
+          : "";
+      items.push({ label: "schedule", value: `${when}${window}` });
+    }
+  }
+  const vendors = settings.vendors;
+  if (vendors && typeof vendors === "object") {
+    const enabled = Object.entries(vendors as Record<string, unknown>)
+      .filter(([, v]) => !!v && typeof v === "object" && (v as { enabled?: unknown }).enabled === true)
+      .map(([lane]) => OEM_VENDOR_NAMES[lane as OemLane] ?? lane);
+    items.push({ label: "vendors", value: enabled.length > 0 ? enabled.join(", ") : "none enabled" });
+  }
+  return items;
+}
+
 function summarizeFeatureSettings(
   featureType: FeatureType,
   feature: ResolvedFeature,
   approvalItem: (ringLinked: boolean) => SettingsSummaryItem,
 ): SettingsSummaryItem[] {
+  if (featureType === "oem_updates") return summarizeOemUpdates(feature.inlineSettings);
   const pickedKeys = FEATURE_SUMMARY_KEYS[featureType];
   if (featureType !== "patch") return summarizeSettings(feature.inlineSettings, pickedKeys);
   const settings = feature.inlineSettings;
@@ -440,15 +487,23 @@ export default function DeviceEffectiveConfigTab({
           {enforcedTypes.map((ft) => {
             const feature = features[ft]!;
             const { label, Icon } = FEATURE_META[ft];
-            const settings = summarizeFeatureSettings(ft, feature, (ringLinked) => ({
-              label: t("deviceEffectiveConfigTab.patchApproval.label"),
-              value: ringLinked
-                ? t("deviceEffectiveConfigTab.patchApproval.byRing")
-                : t("deviceEffectiveConfigTab.patchApproval.manualOnly"),
-            }));
+            const isContainment = ft === "containment";
+            // Containment renders its destination list instead of the generic key/value summary.
+            const settings = isContainment
+              ? []
+              : summarizeFeatureSettings(ft, feature, (ringLinked) => ({
+                  label: t("deviceEffectiveConfigTab.patchApproval.label"),
+                  value: ringLinked
+                    ? t("deviceEffectiveConfigTab.patchApproval.byRing")
+                    : t("deviceEffectiveConfigTab.patchApproval.manualOnly"),
+                }));
 
             return (
-              <div key={ft} className="rounded-lg border bg-card p-5 shadow-xs">
+              <div
+                key={ft}
+                data-testid={isContainment ? "effective-config-containment-card" : undefined}
+                className="rounded-lg border bg-card p-5 shadow-xs"
+              >
                 <div className="flex items-start gap-3">
                   <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                     <Icon className="h-5 w-5" />
@@ -492,6 +547,10 @@ export default function DeviceEffectiveConfigTab({
                   </div>
                 )}
 
+                {isContainment && (
+                  <EffectiveContainmentSummary inlineSettings={feature.inlineSettings} />
+                )}
+
                 {/* Feature policy reference */}
                 {feature.featurePolicyId && (
                   <p className="mt-2 text-xs text-muted-foreground">
@@ -510,7 +569,7 @@ export default function DeviceEffectiveConfigTab({
       {/* Not-enforced baseline features — collapsed into one compact strip so the
           page highlights what's actually applied instead of a wall of grey cards. */}
       {baselineTypes.length > 0 && (
-        <div className="rounded-lg border bg-card p-5 shadow-xs">
+        <div data-testid="effective-config-not-enforced" className="rounded-lg border bg-card p-5 shadow-xs">
           <div className="flex items-center gap-2">
             <h4 className="text-sm font-semibold text-muted-foreground">
               {t("deviceEffectiveConfigTab.notEnforced")}

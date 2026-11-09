@@ -45,7 +45,10 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: h.withSystemDbAccessContext,
 }));
 vi.mock('./deliver', () => ({ deliverInApp: h.deliverInApp }));
-vi.mock('./threadPosts', () => ({ recordThreadPost: h.recordThreadPost }));
+vi.mock('./threadPosts', () => ({
+  recordThreadPost: h.recordThreadPost,
+  couldntLookDedupeKey: (grantId: string) => `wisp.first_look_failed:${grantId}`,
+}));
 vi.mock('../expoPush', async (orig) => ({
   ...(await orig<typeof import('../expoPush')>()),
   dispatchPushToTokens: h.dispatchPushToTokens,
@@ -179,6 +182,27 @@ describe('nudgeDedupeKey check_in', () => {
   });
   it('a check_in key without a checkInId throws (it would collide across check-ins)', () => {
     expect(() => nudgeDedupeKey({ kind: 'check_in', concernId: null, grantId: 'g1', threadId: 't1', nextEligibleNudgeAt: null, now, digestCadenceMinutes: 15 })).toThrow();
+  });
+});
+
+describe('nudgeDedupeKey nudge_resolved (#11427)', () => {
+  it('is one key per concern, independent of grant, thread, time and backoff', () => {
+    const k = { kind: 'nudge_resolved' as const, concernId: 'c1', grantId: 'g1', threadId: 't1', nextEligibleNudgeAt: new Date(), now: new Date(), digestCadenceMinutes: 60 };
+    expect(nudgeDedupeKey(k)).toBe('wisp.nudge_resolved:c1');
+    expect(nudgeDedupeKey({ ...k, grantId: 'g2', threadId: 't2', nextEligibleNudgeAt: null, now: new Date(0) })).toBe('wisp.nudge_resolved:c1');
+  });
+});
+
+describe('nudgeDedupeKey first_look (#10402)', () => {
+  it("#11145: the couldn't-look variant has its own key, so it cannot block the real first look", () => {
+    const key = nudgeDedupeKey({ kind: 'first_look', firstLookVariant: 'couldnt_look', concernId: null, grantId: 'g1', threadId: 't1', nextEligibleNudgeAt: null, now, digestCadenceMinutes: 240 });
+    expect(key).toBe('wisp.first_look_failed:g1');
+  });
+
+  it('is one key per grant, independent of time, thread and cadence', () => {
+    const key = (n: Date, cadence: number) => nudgeDedupeKey({ kind: 'first_look', concernId: null, grantId: 'g1', threadId: 't1', nextEligibleNudgeAt: null, now: n, digestCadenceMinutes: cadence });
+    expect(key(now, 240)).toBe('wisp.first_look:g1');
+    expect(key(new Date('2027-01-01T00:00:00Z'), 15)).toBe('wisp.first_look:g1');
   });
 });
 
@@ -465,6 +489,114 @@ describe('notifyUser', () => {
       await notifyUser(checkIn);
       expect(h.deliverInApp).not.toHaveBeenCalled();
       expect(h.recordThreadPost).toHaveBeenCalledWith(expect.objectContaining({ kind: 'check_in', orgId: 'o7', dedupeKey: 'wisp.check_in:ci1', notificationId: null }));
+    });
+  });
+
+  describe('first_look (#10402)', () => {
+    const firstLook: NudgePayload = {
+      ...payload, kind: 'first_look', concernId: null, approvalIntentId: null, deepLink: 'breeze://wisp/thread/t1',
+      title: 'First look done: 2 of 2 organizations', body: 'I looked at your 2 organizations.', push: false,
+    };
+
+    it('writes the in-app row + a first_look post with no org and the per-grant key, and pushes nothing', async () => {
+      queue([threadRow], deviceRows);
+      await expect(notifyUser(firstLook)).resolves.toEqual({ inApp: true, pushed: 0, suppressed: null });
+      expect(h.deliverInApp).toHaveBeenCalledWith(expect.objectContaining({
+        orgId: null, dedupeKey: 'wisp.first_look:g1', concernId: null,
+        post: expect.objectContaining({ kind: 'first_look', orgId: null, title: firstLook.title, body: firstLook.body, concernId: null }),
+      }));
+      expect(h.dispatchPushToTokens).not.toHaveBeenCalled();
+      expect(h.checkNotificationThrottle).not.toHaveBeenCalled();
+    });
+
+    it("#11145: the couldn't-look variant is a first_look post under its own key, and pushes nothing", async () => {
+      queue([threadRow], deviceRows);
+      await expect(notifyUser({ ...firstLook, firstLookVariant: 'couldnt_look', title: "I couldn't look yet: 0 of 2 organizations" }))
+        .resolves.toEqual({ inApp: true, pushed: 0, suppressed: null });
+      expect(h.deliverInApp).toHaveBeenCalledWith(expect.objectContaining({
+        dedupeKey: 'wisp.first_look_failed:g1',
+        post: expect.objectContaining({ kind: 'first_look', title: "I couldn't look yet: 0 of 2 organizations" }),
+      }));
+      expect(h.dispatchPushToTokens).not.toHaveBeenCalled();
+    });
+
+    it('never pushes, even if a caller forgets push:false', async () => {
+      queue([threadRow], deviceRows);
+      await expect(notifyUser({ ...firstLook, push: undefined })).resolves.toEqual({ inApp: true, pushed: 0, suppressed: null });
+      expect(h.dispatchPushToTokens).not.toHaveBeenCalled();
+    });
+
+    it('with the in-app channel off the post is still written, under the same key', async () => {
+      queue([threadRow], deviceRows);
+      h.loadNudgePrefs.mockResolvedValue(P({ channels: { inApp: false, push: true } }));
+      h.recordThreadPost.mockResolvedValue({ created: true, id: 'post1' });
+      await notifyUser(firstLook);
+      expect(h.recordThreadPost).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'first_look', orgId: null, dedupeKey: 'wisp.first_look:g1', notificationId: null,
+      }));
+    });
+  });
+
+  describe('nudge_resolved (#11427)', () => {
+    const resolvedRow = { ...concernRow, status: 'resolved' };
+    const followUp: NudgePayload = {
+      ...payload, kind: 'nudge_resolved', approvalIntentId: null,
+      title: 'Resolved: Ticket 4021 stale', body: 'Ticket 4021 stale — the customer replied; no action needed.',
+    };
+
+    it('writes the in-app row + a nudge_resolved post on the concern, keyed per concern; counts and pushes nothing', async () => {
+      queue([threadRow], [resolvedRow], deviceRows);
+      await expect(notifyUser(followUp)).resolves.toEqual({ inApp: true, pushed: 0, suppressed: null });
+      expect(h.deliverInApp).toHaveBeenCalledWith(expect.objectContaining({
+        orgId: 'o1', dedupeKey: 'wisp.nudge_resolved:c1', concernId: 'c1', approvalIntentId: null, priority: 'normal',
+        post: {
+          threadId: 't1', partnerId: 'p1', grantId: 'g1', orgId: 'o1', kind: 'nudge_resolved',
+          title: followUp.title, body: followUp.body, link: '/ai/wisp/thread/t1#concern=c1', sections: null, concernId: 'c1',
+        },
+      }));
+      // Not a nudge: no backoff read, no count, no push.
+      expect(h.recipientState).not.toHaveBeenCalled();
+      expect(h.recordNudge).not.toHaveBeenCalled();
+      expect(h.dispatchPushToTokens).not.toHaveBeenCalled();
+      expect(h.checkNotificationThrottle).not.toHaveBeenCalled();
+    });
+
+    it('a concern that is not (yet) resolved — e.g. an uncommitted or rolled-back resolve — writes nothing', async () => {
+      for (const status of ['open', 'snoozed', 'dismissed']) {
+        queue([threadRow], [{ ...concernRow, status }]);
+        await expect(notifyUser(followUp)).resolves.toEqual({ inApp: false, pushed: 0, suppressed: 'backoff' });
+      }
+      expect(h.deliverInApp).not.toHaveBeenCalled();
+      expect(h.recordThreadPost).not.toHaveBeenCalled();
+    });
+
+    it('a concern under another partner than the thread throws and writes nothing', async () => {
+      queue([threadRow], [{ ...resolvedRow, partnerId: 'p2' }]);
+      await expect(notifyUser(followUp)).rejects.toThrow(/not found under the thread's partner/);
+      expect(h.deliverInApp).not.toHaveBeenCalled();
+    });
+
+    it('shape: a nudge_resolved needs a concernId', async () => {
+      await expect(notifyUser({ ...followUp, concernId: null })).rejects.toThrow(/needs a concernId/);
+    });
+
+    it('a repeat (dedupe hit) writes nothing new and counts nothing', async () => {
+      queue([threadRow], [resolvedRow], deviceRows);
+      h.deliverInApp.mockResolvedValue({ created: false });
+      await expect(notifyUser(followUp)).resolves.toEqual({ inApp: false, pushed: 0, suppressed: 'backoff' });
+      expect(h.recordNudge).not.toHaveBeenCalled();
+      expect(h.recipientState).not.toHaveBeenCalled();
+    });
+
+    it('with the in-app channel off the post is still written, under the same key', async () => {
+      queue([threadRow], [resolvedRow], deviceRows);
+      h.loadNudgePrefs.mockResolvedValue(P({ channels: { inApp: false, push: true } }));
+      h.recordThreadPost.mockResolvedValue({ created: true, id: 'post1' });
+      await notifyUser(followUp);
+      expect(h.recordThreadPost).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'nudge_resolved', orgId: 'o1', concernId: 'c1', dedupeKey: 'wisp.nudge_resolved:c1', notificationId: null,
+      }));
+      expect(h.dispatchPushToTokens).not.toHaveBeenCalled();
     });
   });
 

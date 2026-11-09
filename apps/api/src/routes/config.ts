@@ -8,6 +8,7 @@ import { authMiddleware, requireScope, type AuthContext } from '../middleware/au
 import { resolveAllMlFeatureFlagsForOrg } from '../services/mlFeatureFlags';
 import { isCallerVerificationEnabled } from '../services/callerVerification/gate';
 import { isPartnerLaneConfigured } from '../services/emailDomains/config';
+import { oemUpdatesFlagOn } from '../services/oemUpdates/flags';
 import { ERROR_CODES } from '@breeze/shared';
 
 export const configRoutes = new Hono();
@@ -53,6 +54,12 @@ configRoutes.get('/', (c) => {
       // route answers 404, so the partner settings page reads this before it
       // probes the list rather than eating a 404 on every load (#9949).
       sendingDomains: isPartnerLaneConfigured(),
+      // Vendor updates (#11249): BREEZE_OEM_UPDATES_ENABLED via the same helper
+      // the fleet route and the worker use. Off (every install until the lab
+      // waves open), the Patches page hides the Vendor updates tab and never
+      // reads GET /oem-updates/fleet. The per-partner allowlist is not applied:
+      // this read is unauthenticated and env-only.
+      vendorUpdates: oemUpdatesFlagOn(),
     },
     cfAccessLogin: {
       enabled: cfAccessTrustEnabled(),

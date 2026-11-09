@@ -41,6 +41,7 @@
     "stalledTooltip": "Nessun dato ricevuto da {{minutes}} min",
     "filesProgress": "{{done}} / {{total}} file",
     "speedValue": "{{value}}/s",
+    "etaValue": "circa {{value}} rimanenti",
     "created": "Creato",
     "updated": "Aggiornato",
     "files": "File",
@@ -48,7 +49,6 @@
     "policyId": "ID criterio",
     "featureLinkId": "ID collegamento funzionalità",
     "errorLog": "Log errori",
-    "savings": "{{protected}} protetti - {{uploaded}} caricati",
     "errorCount_one": "{{count}} errore",
     "errorCount_other": "{{count}} errori",
     "failedCount_one": "{{count}} non riuscito",
@@ -179,6 +179,7 @@
     "oneOrMoreVssWritersAreNotStable": "Uno o più writer VSS non sono stabili. Rivedi gli ultimi stati dei writer prima della prossima esecuzione.",
     "vssUnprotectedVolumes": "Letto dal volume attivo, non da una copia shadow VSS: {{volumes}}. I file in uso su questi volumi potrebbero essere stati ignorati o acquisiti in uno stato incoerente.",
     "lastBackupFailed": "Ultimo backup non riuscito",
+    "lastBackupFailedWithCategory": "Ultimo backup non riuscito: {{category}}",
     "lastBackupCompletedWithWarnings": "Ultimo backup completato con avvisi",
     "lastBackupCompletedWithErrors": "Ultimo backup completato con errori",
     "writer": "Writer",
@@ -223,7 +224,26 @@
     "hold": "Blocco",
     "standard": "Standard",
     "restorePointCount_one": "{{count}} punto di ripristino",
-    "restorePointCount_other": "{{count}} punti di ripristino"
+    "restorePointCount_other": "{{count}} punti di ripristino",
+    "activePhase": {
+      "waiting_for_device": "Inviato al dispositivo, in attesa dell'avvio",
+      "queued_on_device": "In attesa che termini un altro backup su questo dispositivo",
+      "resuming": "Ripresa di un backup interrotto",
+      "scanning": "Analisi dei file",
+      "backing_up": "Backup in esecuzione"
+    },
+    "activeJobs": {
+      "title": "Backup in corso",
+      "processedOfTotal": "{{done}} di {{total}} elaborati",
+      "processed": "{{done}} elaborati",
+      "lastHeard": "Ultimo segnale dal dispositivo: {{relative}}",
+      "mode": {
+        "file": "Backup dei file",
+        "system_image": "Backup dell'immagine di sistema",
+        "mssql": "Backup di SQL Server",
+        "hyperv": "Backup di Hyper-V"
+      }
+    }
   },
   "deviceVaultStatus": {
     "loadingVaultStatus": "Caricamento stato vault...",
@@ -651,7 +671,19 @@
     "providerEnforcedImmutabilityCannotBeReleasedFromBreeze": "L'immutabilità applicata dal provider non può essere rilasciata da Breeze.",
     "fileTree": "Albero file",
     "noFileTreeAvailable": "Nessun albero file disponibile.",
-    "fileIndexUnavailable": "Questo snapshot contiene file, ma il suo indice dei file non è disponibile, quindi non possono essere elencati qui.",
+    "fileIndexBuilding": "Preparazione dell'elenco dei file di questo snapshot. Per i backup di grandi dimensioni può richiedere alcuni minuti.",
+    "fileIndexUnavailable": "L'elenco dei file di questo snapshot non è al momento disponibile. Puoi comunque ripristinare l'intero snapshot.",
+    "fileIndexIntegrityFailed": "Questo snapshot non ha superato il controllo di integrità, quindi i suoi file non possono essere elencati.",
+    "fileIndexDeviceLocal": "Questo snapshot è archiviato sul dispositivo e Breeze non può ancora leggerne l'elenco dei file da lì.",
+    "fileIndexRetry": "Riprova",
+    "searchPlaceholder": "Cerca file in questo snapshot",
+    "searchEmpty": "Nessun file corrisponde",
+    "searchTimeout": "La ricerca ha richiesto troppo tempo. Riprova.",
+    "browseTimeout": "L'elenco di questa cartella ha richiesto troppo tempo. Riprova.",
+    "searchLoadMore": "Carica altro",
+    "searchRestoreFile": "Ripristina questo file",
+    "searchMinLength": "Digita almeno 2 caratteri",
+    "searchLoading": "Ricerca in corso…",
     "path": "Percorso:",
     "useTheRestoreWorkflowToRecoverOrExport": "Usa il flusso di ripristino per recuperare o esportare file da questo snapshot.",
     "select": "Seleziona",
@@ -1068,7 +1100,8 @@
       "over_quota": "Quota superata",
       "no_selection": "Nessuna selezione",
       "not_started": "Non avviato",
-      "unknown": "Sconosciuto"
+      "unknown": "Sconosciuto",
+      "paused": "In pausa"
     },
     "recency": {
       "never": "Mai",
@@ -1101,7 +1134,14 @@
       "used": "Utilizzato",
       "history": "Ultimi 28 giorni",
       "errors": "Errori",
+      "verifiedBootable": "Avviabilità verificata",
       "agent": "Agente"
+    },
+    "verifiedBootable": {
+      "passed": "Superato",
+      "failed": "Non riuscito",
+      "never_run": "Mai eseguito",
+      "not_applicable": "n.d."
     },
     "dataSource": {
       "files": "File e cartelle",
@@ -1110,6 +1150,7 @@
       "hyperv": "Hyper-V",
       "vmware": "VMware",
       "bare_metal": "Bare metal",
+      "image": "Immagine disco",
       "m365_mail": "Posta di Microsoft 365",
       "m365_sharepoint": "SharePoint",
       "m365_exchange": "Exchange",
@@ -1130,6 +1171,7 @@
       "customer": "Cliente del provider",
       "lastSuccess": "Ultimo backup riuscito",
       "lastSession": "Ultima sessione",
+      "bootCheck": "Ultima verifica di avvio",
       "unlink": "Scollega",
       "unlinkConfirm": "Scollegare questo dispositivo del provider dal dispositivo Breeze? Rimane nel prodotto di backup e può essere ricollegato.",
       "unlinkedToast": "Dispositivo del provider scollegato",
@@ -1184,5 +1226,71 @@
     "summary_one": "{{count}} reparse point ignorato: giunzioni e punti di montaggio non vengono seguiti né ripristinati. È previsto, non è un errore.",
     "summary_other": "{{count}} reparse point ignorati: giunzioni e punti di montaggio non vengono seguiti né ripristinati. È previsto, non è un errore.",
     "showDetails": "Mostra percorsi ignorati"
+  },
+  "failureCategory": {
+    "device_offline": {
+      "label": "Dispositivo non in linea",
+      "hint": "Il dispositivo ha perso la connessione a Breeze durante il backup. Mantienilo acceso e online per tutta la finestra di backup."
+    },
+    "timeout": {
+      "label": "Bloccato o scaduto",
+      "hint": "Il backup ha smesso di avanzare o ha superato il limite di tempo. I backup molto grandi possono richiedere più di una finestra. Controlla il carico del dispositivo e la dimensione della selezione di backup."
+    },
+    "storage": {
+      "label": "Problema di archiviazione",
+      "hint": "Breeze non è riuscito a scrivere nella destinazione del backup, oppure l’autorizzazione al caricamento è scaduta. Verifica la configurazione dell’archiviazione, le credenziali e lo spazio libero."
+    },
+    "agent": {
+      "label": "Problema dell’agente",
+      "hint": "Il componente di backup sul dispositivo si è arrestato in modo imprevisto. Aggiorna l’agente ed esegui di nuovo il backup. Se continua a succedere, controlla i log dell’agente sul dispositivo."
+    },
+    "configuration": {
+      "label": "Problema di configurazione",
+      "hint": "Non c’era nulla di valido da includere nel backup, oppure la configurazione del backup è cambiata durante l’avvio del processo. Controlla il profilo di backup del dispositivo."
+    },
+    "source_access": {
+      "label": "File non leggibili",
+      "hint": "Alcuni file erano bloccati, in uso o non leggibili dall’agente. Controlla i file elencati sotto e lo stato di VSS."
+    },
+    "cancelled": {
+      "label": "Annullato",
+      "hint": "Interrotto da un utente, o da Breeze, prima del completamento."
+    },
+    "unknown": {
+      "label": "Altro errore",
+      "hint": "Breeze non riconosce ancora questo errore. Il messaggio completo è riportato sotto."
+    },
+    "troubleshootingLink": "Guida alla risoluzione dei problemi"
+  },
+  "fullRunReason": {
+    "no_prior_snapshot": "Primo backup per questo dispositivo e questa destinazione",
+    "base_expired": "Il backup precedente era scaduto in base alla conservazione",
+    "storage_identity_changed": "La destinazione del backup è cambiata",
+    "backup_type_mismatch": "Il backup precedente era di un altro tipo",
+    "base_job_not_completed": "Nessun backup precedente è stato completato correttamente",
+    "base_retired": "Il backup precedente è stato rimosso dalla conservazione",
+    "base_retired_race": "Il backup precedente è stato rimosso dalla conservazione",
+    "base_deleted_race": "Il backup precedente è stato rimosso dalla conservazione",
+    "no_verified_base": "Nessun backup precedente ha superato la verifica di integrità",
+    "key_root_changed": "La cartella di destinazione (prefisso) è cambiata",
+    "base_key_root_unreadable": "Impossibile leggere la posizione di archiviazione del backup precedente",
+    "invalid_destination_prefix": "Il prefisso di destinazione non è valido",
+    "nothing_reused": "Era disponibile un backup precedente, ma non è stato possibile riutilizzare alcun file invariato",
+    "unrecorded": "Motivo non registrato (questo backup è stato eseguito prima che Breeze lo registrasse)"
+  },
+  "jobDataSummary": {
+    "uploadedAndReused": "{{uploaded}} caricati · {{reused}} riutilizzati",
+    "processedBeforeStopped": "{{processed}} elaborati prima dell'interruzione",
+    "full": "Completo",
+    "heading": "Cosa ha archiviato questa esecuzione",
+    "protected": "Protetti",
+    "uploadedThisRun": "Caricati in questa esecuzione",
+    "reusedFromEarlier": "Riutilizzati da backup precedenti",
+    "backupType": "Tipo di backup",
+    "incremental": "Incrementale",
+    "fullWithReason": "Completo: {{reason}}",
+    "explainer": "Vengono caricati solo i file nuovi o modificati. I file invariati vengono riutilizzati dai backup precedenti eseguiti da questo dispositivo verso la stessa destinazione.",
+    "learnMore": "Come funzionano i backup incrementali",
+    "resumedAt": "Questa esecuzione ha ripreso un backup interrotto il {{time}}."
   }
 }

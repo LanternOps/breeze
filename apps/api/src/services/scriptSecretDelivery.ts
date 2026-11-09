@@ -397,6 +397,9 @@ export async function failClaimedSecretCommandsForUnsupportedAgent(
       requiredVersion: SCRIPT_SECRET_ENV_REQUIRED_VERSION,
     });
 
+    // Deliberately no savepoint (#11225): this write is what erases the sealed
+    // payload. If it fails, the commit fails and the whole claim rolls back, so the
+    // delivery retries rather than leaving the payload on a row reported as handled.
     let drivenTerminal = false;
     try {
       const updated = await db

@@ -448,6 +448,22 @@ describe('evaluateAgentTriggerFilters', () => {
       { ...ctx, source: 'network_baseline' },
       true,
     ],
+    // #11328 — an AI agent's own output alerts (a failed act verification, a
+    // fix that did not hold) publish alert.triggered so a human is paged, but
+    // must never wake an agent: act → verify fails → alert → act again is a
+    // feedback loop bounded only by rate and budget caps.
+    [
+      'ai_agent_act_verify (agent output) is excluded even though severity matches',
+      triggers(),
+      { ...ctx, source: 'ai_agent_act_verify' },
+      false,
+    ],
+    [
+      'ai_agent_fix_watch (agent output) is excluded even though severity matches',
+      triggers(),
+      { ...ctx, source: 'ai_agent_fix_watch' },
+      false,
+    ],
   ];
 
   it.each(cases)('%s', async (_name, trig, context, expected) => {

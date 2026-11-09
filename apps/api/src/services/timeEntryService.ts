@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql, type SQL } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, withDbTransactionIfHeld } from '../db';
 import { timeEntries, ticketParts, tickets, ticketCategories, organizations, partners, users, ticketComments, sites } from '../db/schema';
 import { isHiddenOrgType } from './unassignedPool/visibility';
 import { workTypes } from '../db/schema/workTypes';
@@ -672,7 +672,7 @@ async function insertTimeEntryFeedComment(
 ): Promise<void> {
   if (!ticketId) return;
   try {
-    await db.insert(ticketComments).values({
+    await withDbTransactionIfHeld(() => db.insert(ticketComments).values({
       ticketId,
       userId: actor.userId,
       authorName: actor.name ?? null,
@@ -682,7 +682,7 @@ async function insertTimeEntryFeedComment(
       isPublic: false,
       oldValue: null,
       newValue: null
-    });
+    }));
   } catch (err) {
     console.error('[timeEntryService] feed comment insert failed', err);
   }

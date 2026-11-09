@@ -13,11 +13,12 @@
  * connection (always a system context). A retried delivery with the same
  * dedupe key writes nothing (ON CONFLICT (thread_id, dedupe_key) DO NOTHING).
  */
-import { eq } from 'drizzle-orm';
-import type { BriefSection } from '@breeze/shared';
+import { and, eq } from 'drizzle-orm';
+import type { BriefSection, WispFirstLookState } from '@breeze/shared';
 import { db } from '../../db';
 import { wispConcerns } from '../../db/schema/wispConcerns';
 import { wispThreadPosts, type WispThreadPostKind } from '../../db/schema/wispThreadPosts';
+import { inSystemContext } from './grantAuthority';
 
 export type ThreadPostKind = WispThreadPostKind;
 
@@ -46,6 +47,49 @@ export class ThreadPostConcernError extends Error {
     super(`recordThreadPost: concern ${concernId} not found under partner ${partnerId}`);
     this.name = 'ThreadPostConcernError';
   }
+}
+
+/**
+ * A grant older than this gets no couldn't-look post and shows no progress
+ * (#10402). It gets the real first look only if it was already told "I couldn't
+ * look yet" (#11145).
+ */
+export const FIRST_LOOK_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+const COULDNT_LOOK_KEY_PREFIX = 'wisp.first_look_failed:';
+
+/**
+ * The couldn't-look post's key (#11145): one per grant, and NOT the first look's
+ * key, so it can never stop the real post when a later retry does look.
+ */
+export function couldntLookDedupeKey(grantId: string): string {
+  return `${COULDNT_LOOK_KEY_PREFIX}${grantId}`;
+}
+
+export type FirstLookPostTimes = { firstLookAt: string | null; couldntLookAt: string | null };
+
+/**
+ * When this thread's first-look posts were written (#10402, #11145). The home
+ * reads it so a post the poll would otherwise have no reason to fetch still
+ * reaches the page, and the thread payload so the chat surfaces can stop saying
+ * "I'm looking around". A thread holds at most one of each. System context: the
+ * caller already checked it is the grantor's thread.
+ */
+export async function firstLookPostTimes(threadId: string): Promise<FirstLookPostTimes> {
+  const rows = await inSystemContext(() => db
+    .select({ createdAt: wispThreadPosts.createdAt, dedupeKey: wispThreadPosts.dedupeKey })
+    .from(wispThreadPosts)
+    .where(and(eq(wispThreadPosts.threadId, threadId), eq(wispThreadPosts.kind, 'first_look')))
+    .limit(2));
+  const at = (couldntLook: boolean) =>
+    rows.find((r) => r.dedupeKey.startsWith(COULDNT_LOOK_KEY_PREFIX) === couldntLook)?.createdAt.toISOString() ?? null;
+  return { firstLookAt: at(false), couldntLookAt: at(true) };
+}
+
+/** A real first look wins: a later retry that looked outdates the couldn't-look post above it. */
+export function firstLookStateFrom(times: FirstLookPostTimes): WispFirstLookState {
+  if (times.firstLookAt) return 'done';
+  return times.couldntLookAt ? 'couldnt_look' : 'looking';
 }
 
 const TITLE_MAX_CHARS = 255;

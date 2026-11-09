@@ -227,6 +227,12 @@ const SITE_ALLOWLIST: SiteAllowlist = new Map<string, Map<string, AllowEntry>>([
   ['src/services/evidenceBaseline.ts', new Map([
     ['previousOccurrenceBaselineFor', pinned(1, 'reaches report_runs only through service_deliverable_evidence of one org-owned deliverable (evidence linkage validates reports.org_id = <deliverable org>)', AUD_EVIDENCE_LINKED)],
   ])],
+  ['src/services/actionIntents/aiDesignIntentTarget.ts', new Map([
+    ['fleetDesignTarget', pinned(2, 'decides which org an intent belongs in, so there is no intent org to filter on yet and no auth to guard with: a system read of one run by id AND type ai_fleet_design. A row with no org returns null, and both callers (createSessionPreToolUse, createMcpActionIntent) use the org only when the call\'s reach covers it; the mandatory pin then re-reads the run under eq(reports.orgId, <intent org>) (fleetDesign/applyTargets.ts loadOrgReport)', AUD_TYPE_PINNED)],
+  ])],
+  ['src/services/fleetDesign/applyTargets.ts', new Map([
+    ['loadOrgReport', pinned(2, `four-eyes digest material, read with no auth by design (the release paths have none to give, and partnerOwnedReportVisibility is TRUE for system scope): one run by id AND eq(reports.orgId, <intent org>) AND type ai_fleet_design; ${ORG_PIN}`, AUD_TYPE_PINNED)],
+  ])],
   ['src/services/fleetDesign/drift.ts', new Map([
     ['loadApprovedDesign', pinned(1, 'reads the run id taken from fleet_design_applied_items pinned to eq(orgId, orgId); applied items only reference org-owned ai_fleet_design runs', AUD_TYPE_PINNED)],
   ])],

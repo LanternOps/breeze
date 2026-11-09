@@ -260,6 +260,13 @@ type SessionManager struct {
 	// each session at creation, like OnSASRequest.
 	OnClipboardSummary func(sessionID string, summary ipc.ClipboardSummary)
 
+	// ClipboardProvider, if set, supplies each new session's clipboard; nil
+	// (or a nil result) means the local system clipboard. The Windows system
+	// helper sets it so that what SYSTEM cannot read, such as an image the
+	// user copied, is read through the user helper (#8393). Set before
+	// sessions start, like OnSASRequest.
+	ClipboardProvider func(sessionID string) clipboard.Provider
+
 	// OnSessionStarted is the symmetric hook: called when a WebRTC peer
 	// connection reaches Connected, i.e. the viewer is actually watching.
 	// Quick Support uses it to tell the end user "Technician connected."

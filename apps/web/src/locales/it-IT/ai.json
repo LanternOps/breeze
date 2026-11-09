@@ -35,6 +35,7 @@
     "expired": "Questa richiesta è scaduta prima di poter essere decisa.",
     "notSoleApprover": "Ora è richiesto un altro approvatore — non puoi più approvare la tua stessa richiesta.",
     "siteCeiling": "Questa approvazione concede un'autorità a livello di intera organizzazione. Il tuo accesso è limitato a siti specifici — un altro approvatore deve decidere questa richiesta.",
+    "approverScopeRequired": "Questa approvazione riguarda tutte le organizzazioni del partner, quindi richiede un approvatore a livello di partner con accesso a tutte le organizzazioni.",
     "noApproverDevice": "Approvare la tua stessa richiesta richiede Touch ID / Windows Hello.",
     "freshFactorRequired": "Questo controllo richiede una nuova conferma con passkey (Touch ID, Windows Hello o una chiave hardware) per questa approvazione. Riprova.",
     "registerDevice": "Registra questo dispositivo",
@@ -562,7 +563,8 @@
     "overrideErrorStepUp": "Il tuo partner richiede un’approvazione più forte di quella che questa schermata può offrire.",
     "overrideErrorNoDevice": "Nessun dispositivo di destinazione ha accettato lo script, quindi non è stato eseguito nulla. Puoi riprovare.",
     "overrideErrorPolicy": "La policy sui dati IA rifiuta questo script perché legge un percorso di profilo utente.",
-    "overrideErrorStrict": "Confermare questi schemi di pericolo richiede il permesso di scrittura degli script e l’MFA, e ogni schema deve essere spuntato."
+    "overrideErrorStrict": "Confermare questi schemi di pericolo richiede il permesso di scrittura degli script e l’MFA, e ogni schema deve essere spuntato.",
+    "savedToLibrary": "Salvato nella libreria degli script"
   },
   "aiRunCard": {
     "title": "Esecuzione dell’analisi",
@@ -615,7 +617,11 @@
     "thinking": "Ragionamento"
   },
   "aiThinking": {
-    "label": "Sto ragionando… {{seconds}} s"
+    "label": "Sto ragionando… {{seconds}} s",
+    "waitingApproval": "In attesa della tua approvazione",
+    "waitingApprovalPhone": "In attesa della tua approvazione (inviata al tuo telefono)",
+    "waitingOthers": "In attesa di un altro approvatore",
+    "openApprovals": "Apri le approvazioni"
   },
   "aiTurnModel": {
     "answeredBy": "Risposta di {{model}}",
@@ -692,6 +698,7 @@
     "settings": {
       "title": "Budget e controllo periodico",
       "budget": "Budget giornaliero",
+      "budgetHelp": "Include la chat. Quando è esaurito, i controlli in background restano in pausa fino alle 00:00 UTC e la chat continua a funzionare con un avviso. Alla chat si applica ancora il budget IA dell’organizzazione.",
       "tick": "Controllo ogni (minuti)",
       "save": "Salva",
       "unattendedReads": {
@@ -702,6 +709,10 @@
         "securityLog": "Cercare nel registro eventi di sicurezza",
         "deviceNote": "Salvare una nota su un dispositivo",
         "applies": "Si applica alle nuove conversazioni e alle nuove esecuzioni in background."
+      },
+      "summaryRefine": {
+        "title": "Note di sessione scritte dal modello",
+        "description": "Al termine di una conversazione, il modello scrive ciò che è stato concluso e ciò che resta aperto. Ogni nota è una chiamata al modello e rientra nel budget giornaliero di Wisp. Se disattivata, Wisp conserva invece un semplice riepilogo."
       }
     },
     "focus": {
@@ -747,10 +758,14 @@
       "unattendedReadsOn": "Letture non presidiate attivate",
       "unattendedReadsOnFailed": "Impossibile attivare le letture non presidiate",
       "unattendedReadsOff": "Letture non presidiate disattivate",
-      "unattendedReadsOffFailed": "Impossibile disattivare le letture non presidiate"
+      "unattendedReadsOffFailed": "Impossibile disattivare le letture non presidiate",
+      "summaryRefineOn": "Note di sessione attivate",
+      "summaryRefineOff": "Note di sessione disattivate",
+      "summaryRefineFailed": "Impossibile modificare le note di sessione"
     },
     "spend": {
       "meter": "{{spent}} su {{budget}} oggi",
+      "breakdown": "Background {{background}} · Chat {{chat}} · {{spent}} su {{budget}} oggi",
       "resets": "si azzera tra {{hours}} h",
       "raise": "Aumenta il budget di oggi",
       "atCeiling": "Il budget di oggi è al limite del tuo piano.",
@@ -763,8 +778,8 @@
       "byYou": "Hai messo Wisp in pausa. Non farà controlli né ti invierà promemoria finché non lo riprendi.",
       "partnerDisabled": "Wisp è disattivato per il tuo partner. Un amministratore può riattivarlo.",
       "system": {
-        "budgetExhausted": "Messo in pausa da Breeze: il budget di oggi è esaurito. Il budget si azzera tra {{hours}} h.",
-        "budgetExhaustedNoTime": "Messo in pausa da Breeze: il budget di oggi è esaurito.",
+        "budgetExhausted": "Il budget Wisp di oggi è stato superato: i controlli in background sono in pausa fino alle {{time}} UTC. La chat continua a funzionare.",
+        "budgetExhaustedNoTime": "Il budget Wisp di oggi è stato superato: i controlli in background sono in pausa fino alle 00:00 UTC. La chat continua a funzionare.",
         "grantorAccessLost": "Messo in pausa da Breeze: il tuo accesso non copre più questa autorizzazione. Wisp riprende da solo quando il tuo accesso viene ripristinato.",
         "grantorSuspended": "Messo in pausa da Breeze: il tuo account è sospeso. Wisp riprende da solo quando la sospensione viene revocata.",
         "factorExpired": "Messo in pausa da Breeze: la verifica di accesso per questa autorizzazione è scaduta.",
@@ -887,16 +902,37 @@
     "post": {
       "brief": "Riepilogo del mattino",
       "nudge": "Promemoria",
+      "nudgeResolved": "Risolto",
       "digest": "Riepilogo periodico",
       "checkIn": "Controllo programmato",
       "summary": "Sintesi",
       "open": "Apri",
       "unread": "Non letto",
-      "specialistResult": "Report dello specialista"
+      "specialistResult": "Report dello specialista",
+      "firstLook": "Prima occhiata",
+      "couldntLook": "Nessuna occhiata ancora"
+    },
+    "checkIn": {
+      "runNow": "Esegui ora",
+      "runNowMessage": "Procedi con il controllo programmato",
+      "scheduledAt": "Wisp ricontrollerà alle {{time}}",
+      "cancel": "Annulla controllo programmato",
+      "cancelled": "Controllo programmato annullato",
+      "cancelFailed": "Impossibile annullare il controllo programmato."
     },
     "welcome": {
       "title": "Sto dando un’occhiata a {{scope}}.",
       "body": "Il tuo primo riepilogo arriva ogni mattina, appena ho dato un’occhiata. Nel frattempo, chiedimi pure qualsiasi cosa.",
+      "firstLookTitle": "Ho dato una prima occhiata a {{scope}}.",
+      "firstLookBody": "Quello che ho trovato è nel post qui sopra. Chiedimi pure qualsiasi cosa.",
+      "couldntLookTitle": "Non sono ancora riuscito a dare un’occhiata a {{scope}}.",
+      "couldntLookBody": "Il post qui sopra spiega perché e quando riproverò. Nel frattempo chiedimi pure qualsiasi cosa.",
+      "couldntLookChat": "La home di Wisp spiega perché e quando riproverò.",
+      "progress_one": "Organizzazioni esaminate: {{lookedAt}} di {{count}}",
+      "progress_other": "Organizzazioni esaminate: {{lookedAt}} di {{count}}",
+      "progressQueued": "{{count}} in coda",
+      "progressFailed": "{{count}} con errore",
+      "briefAt": "Il tuo riepilogo del mattino arriva alle {{time}} ({{timezone}}).",
       "suggestions": {
         "needsMe": {
           "label": "Cosa richiede la mia attenzione oggi?",
@@ -940,6 +976,32 @@
       "buttonPlain": "Chiedi all’IA",
       "draft": "Informazioni su {{label}}: ",
       "switchFocus": "Wisp si concentra su {{from}}. Passare a {{to}}?"
+    },
+    "plainChat": {
+      "new": "Nuova chat semplice",
+      "newDescription": "Breeze AI con tutti gli strumenti a cui hai accesso. Non Wisp.",
+      "wispDescription": "Wisp, con la tua autorizzazione",
+      "label": "Breeze AI · non Wisp"
+    },
+    "instruction": {
+      "remembered": "Memorizzato: {{text}}",
+      "enforcedForm": "Wisp non proporrà: {{verb}} · {{targets}} · {{until}}",
+      "noEnd": "nessuna data di fine",
+      "keep": "Mantieni",
+      "keepForOrg": "Mantieni per tutti in {{org}}",
+      "forget": "Dimentica",
+      "unmatched": "Salvato come nota: non sono riuscito ad associare tutti i nomi dei dispositivi.",
+      "kept": "Mantenuto",
+      "keptForOrg": "Mantenuto per tutti in {{org}}",
+      "crossOrg": "Questi dispositivi appartengono a più di un'organizzazione, quindi può essere mantenuto solo per te.",
+      "actionFailed": "Non ha funzionato. Riprova.",
+      "verb": {
+        "reboot": "riavviare",
+        "shutdown": "spegnere",
+        "run_script": "eseguire uno script",
+        "patch_install": "installare patch",
+        "any_change": "apportare qualsiasi modifica"
+      }
     }
   },
   "wispConcerns": {

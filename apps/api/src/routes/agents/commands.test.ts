@@ -63,6 +63,7 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: (...args: unknown[]) =>
     withSystemDbAccessContextMock(...(args as [any])),
   withDbTransaction: (...args: unknown[]) => withDbTransactionMock(...(args as [any])),
+  withDbTransactionIfHeld: (fn: () => unknown) => fn(),
 }));
 
 const writeAuditEventMock = vi.fn();

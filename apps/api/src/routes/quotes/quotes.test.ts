@@ -123,7 +123,7 @@ vi.mock('../../db', () => {
     };
     return chain;
   };
-  return { db: { select: () => builder() } };
+  return { db: { select: () => builder() }, withDbTransaction: (fn: () => Promise<unknown>) => fn() };
 });
 
 // Mock auth middleware to inject a partner-scoped actor with quote perms.

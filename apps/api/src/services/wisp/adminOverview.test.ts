@@ -38,6 +38,7 @@ const h = vi.hoisted(() => {
 vi.mock('../../db', () => ({ db: h.db }));
 
 import { aiAgentRuns } from '../../db/schema/aiAgents';
+import { aiInvocations } from '../../db/schema/aiInvocations';
 import { aiOperatorTasks } from '../../db/schema/aiOperatorTasks';
 import { partners } from '../../db/schema/orgs';
 import { wispGrants } from '../../db/schema/wisp';
@@ -178,8 +179,64 @@ describe('buildWispOverview', () => {
         assessmentsToday: 1, specialistRequestsToday: 0, openConcerns: 0, budgetExhaustedGrantsToday: 0,
       },
     ]);
-    expect(h.fromArgs).toEqual([wispGrants, partners, aiAgentRuns, aiOperatorTasks, wispConcerns]);
+    expect(h.fromArgs).toEqual([wispGrants, partners, aiAgentRuns, aiOperatorTasks, wispConcerns, aiInvocations, aiInvocations]);
   });
+
+  // #10390: "exhausted" must mean what chargeableUnderGrant refuses on, and that now includes session summaries.
+  it('adds session-summary spend from ai_invocations to a grant, today only, so exhausted matches spentUnderGrant', async () => {
+    h.results.push(
+      [
+        grant({ id: G1, partnerId: P1, budgetCentsPerDay: 200 }),
+        grant({ id: G2, partnerId: P1, budgetCentsPerDay: 200 }),
+        grant({ id: G3, partnerId: P1, budgetCentsPerDay: 200 }),
+      ],
+      [{ id: P1, name: 'Acme', plan: 'pro' }],
+      // G1 needs the summaries to reach its budget; G2 has summaries only; G3 stays under.
+      [{ grantId: G1, assessments: 0, specialistRuns: 0, spentCents: 150 }, { grantId: G3, assessments: 0, specialistRuns: 0, spentCents: 10 }],
+      [],
+      [],
+      [
+        { sourceRef: `wisp_thread_summary:${G1}`, total: '50' },
+        { sourceRef: `wisp_thread_summary:${G2}`, total: '200' },
+        { sourceRef: `wisp_thread_summary:${G3}`, total: '5' },
+      ],
+    );
+
+    const [row] = await buildWispOverview(NOW);
+    expect(row!.budgetExhaustedGrantsToday).toBe(2);
+
+    const where = whereFor(aiInvocations);
+    expectTodayWindow(where, '"ai_invocations"."created_at"');
+    expect(where.params).toContain('wisp_thread_summary:');
+  });
+
+  // #10414: chat counts toward the budget, and overhead + chat round up ONCE together.
+  it('a grant whose chat alone exceeds its budget is exhausted', async () => {
+    h.results.push(
+      [grant({ id: G1, partnerId: P1, budgetCentsPerDay: 200 })],
+      [{ id: P1, name: 'Acme', plan: 'pro' }],
+      [], [], [],
+      [],
+      [{ grantId: G1, total: '250.5' }],
+    );
+    const [row] = await buildWispOverview(NOW);
+    expect(row!.budgetExhaustedGrantsToday).toBe(1);
+    const q = whereFor(aiInvocations);
+    expectTodayWindow(q, '"ai_invocations"."created_at"');
+  });
+
+  it('rounds overhead + chat up once together: 0.4 + 0.4 reaches a 1c budget; 0.4 + 0.4 under a 2c budget does not', async () => {
+    h.results.push(
+      [grant({ id: G1, partnerId: P1, budgetCentsPerDay: 1 }), grant({ id: G2, partnerId: P1, budgetCentsPerDay: 2 })],
+      [{ id: P1, name: 'Acme', plan: 'pro' }],
+      [], [], [],
+      [{ sourceRef: `wisp_thread_summary:${G1}`, total: '0.4' }, { sourceRef: `wisp_thread_summary:${G2}`, total: '0.4' }],
+      [{ grantId: G1, total: '0.4' }, { grantId: G2, total: '0.4' }],
+    );
+    const [row] = await buildWispOverview(NOW);
+    expect(row!.budgetExhaustedGrantsToday).toBe(1);
+  });
+
 
   it('counts assessmentsToday from ai_agent_runs: profile assessment, grant runs only, queued_at ≥ UTC midnight', async () => {
     h.results.push([grant({ id: G1, partnerId: P1 })], [{ id: P1, name: 'Acme', plan: 'pro' }]);

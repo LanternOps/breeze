@@ -38,7 +38,7 @@
  *   docker run -d --name breeze-pg-task12 -e POSTGRES_USER=breeze_test \
  *     -e POSTGRES_PASSWORD=breeze_test -e POSTGRES_DB=breeze_test -p 55434:5432 \
  *     --tmpfs /var/lib/postgresql/data:rw,size=512m postgres:16-alpine
- *   docker run -d --name breeze-redis-task12 -p 56382:6379 redis:7-alpine
+ *   docker run -d --name breeze-redis-task12 -p 56382:6379 redis:8-alpine
  *   cd apps/api && \
  *   DATABASE_URL=postgresql://breeze_test:breeze_test@localhost:55434/breeze_test \
  *   DATABASE_URL_APP=postgresql://breeze_app:breeze_test@localhost:55434/breeze_test \

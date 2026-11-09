@@ -126,6 +126,8 @@ vi.mock('../../db/schema', () => ({
     selectedBytes: 'selected_bytes', usedBytes: 'used_bytes', errorsCount: 'errors_count',
     dataSources: 'data_sources', breezeDeviceId: 'breeze_device_id',
     deviceMatchSource: 'device_match_source', updatedAt: 'updated_at',
+    verifiedBootableAt: 'verified_bootable_at', verifiedBootable: 'verified_bootable',
+    verifiedBootableFailedChecks: 'verified_bootable_failed_checks',
   },
   backupProviderCustomers: { id: 'id', vendorCustomerName: 'vendor_customer_name' },
   // providerDevices.ts now imports `pgErrorCode` from `./providerAccess`,
@@ -243,6 +245,33 @@ describe('backup provider device routes', () => {
       // auth.orgCondition — prove that one reaches the query too.
       expect(dbState.capturedListWhere).toHaveLength(1);
       expect(referencesColumn(dbState.capturedListWhere[0], 'org_id')).toBe(true);
+    });
+
+    it('returns the verified-bootable fields on each row', async () => {
+      const { db } = await import('../../db');
+      dbState.rows = [{
+        id: PROVIDER_ROW_ID,
+        provider: 'axcient',
+        verifiedBootableAt: '2026-11-05T03:12:00.000Z',
+        verifiedBootable: false,
+        verifiedBootableFailedChecks: ['system_boot'],
+      }];
+      const res = await app.request('/backup/providers/devices');
+      expect(res.status).toBe(200);
+      // This mock returns seeded rows whatever was selected, so the select shape
+      // is what proves the route reads the columns.
+      const selected = vi.mocked(db.select).mock.calls.at(-1)?.[0] as unknown as Record<string, unknown>;
+      expect(selected).toMatchObject({
+        verifiedBootableAt: 'verified_bootable_at',
+        verifiedBootable: 'verified_bootable',
+        verifiedBootableFailedChecks: 'verified_bootable_failed_checks',
+      });
+      const body = await res.json();
+      expect(body.data[0]).toMatchObject({
+        verifiedBootableAt: '2026-11-05T03:12:00.000Z',
+        verifiedBootable: false,
+        verifiedBootableFailedChecks: ['system_boot'],
+      });
     });
 
     it('refuses an ?orgId the caller cannot access', async () => {

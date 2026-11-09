@@ -10,6 +10,7 @@ import {
   catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets,
   accountingEntityMappings, accountingConnections, portalBranding, aiUsageCharges
 } from '../db/schema';
+import { sqlOpenForOverdue } from '../db/schema/invoices';
 import { getConnection } from './stripeConnectService';
 import { computeLineTotal, computeInvoiceTotals, resolveEffectiveTaxRate, deriveInvoiceStatus, toCents, fromCents } from './invoiceMath';
 import { computeDueDate, resolveInvoiceTermsDays } from './invoiceTerms';
@@ -41,6 +42,7 @@ import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { hourBlockHoldWindows, isHeldForHourBlock } from './contractHourBlockHolds';
 import { planTimeLineRefresh, summarizeRefresh, type TimeLineRefreshOutcome, type TimeLineRefreshSummary } from './invoiceTimeLineRefresh';
 import { InvoiceServiceError } from './invoiceTypes';
+import { findPaymentByIdempotencyKey, assertSameRecordedPayment, type InvoicePaymentRow } from './invoicePaymentIdempotency';
 import {
   assertInvoiceSessionsRevoked,
   requestInvoiceSessionRevocation,
@@ -1966,9 +1968,10 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
  *  The locking payment writers (recordPayment, voidPayment, recordStripePayment)
  *  hold the invoice row lock and pass their `tx`, so the sum read here is
  *  consistent with the write (B10) — a global-db call from a locked writer
- *  would escape the transaction and race the lock it holds. Exception:
- *  reflectStripeRefund (stripeReconcile.ts) does NOT lock the invoice row
- *  before calling this — deliberately deferred, tracked as #3803 item 1. */
+ *  would escape the transaction and race the lock it holds. Stripe refunds and
+ *  disputes reach this through applyStripeFinancialEvent (stripeReversalState.ts),
+ *  which takes the invoice row FOR UPDATE first and calls this with the ambient
+ *  `db`, i.e. inside that same system-context transaction. */
 export async function recomputeInvoiceStatus(invoiceId: string, dbc: DbExecutor = db): Promise<void> {
   const inv = await getOwnedInvoiceOr404(invoiceId, dbc);
   const paidRows = await dbc.select({ amount: invoicePayments.amount }).from(invoicePayments).where(eq(invoicePayments.invoiceId, invoiceId));
@@ -2013,7 +2016,25 @@ async function inSystemContext<T>(label: string, fn: (runner: DbContextRunner) =
   });
 }
 
+/** The answer to a retry whose key already names a recorded payment (#3803). */
+function replayedPaymentResult(invoice: Awaited<ReturnType<typeof getOwnedInvoiceOr404>>, prior: InvoicePaymentRow) {
+  return {
+    invoice,
+    audit: {
+      orgId: invoice.orgId,
+      paymentId: prior.id,
+      invoiceId: invoice.id,
+      amount: prior.amount,
+      method: prior.method,
+      reference: prior.reference,
+      recordedBy: prior.recordedBy,
+    },
+    replayed: true as const,
+  };
+}
+
 export async function recordPayment(invoiceId: string, input: RecordPaymentInput, actor: InvoiceActor) {
+  const idempotencyKey = input.idempotencyKey ?? null;
   // Status PRE-CHECK, before any revocation intent is written (#5611). The
   // revocation below is irreversible — it expires the invoice's live Stripe
   // pay links — and used to run before the draft/void validation inside the
@@ -2023,9 +2044,22 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
   // the transaction remains the authoritative one (an issued invoice never
   // returns to draft, and a void that lands in between has already revoked
   // its own sessions, so the in-tx 409 is the only thing that can change).
-  const [pre] = await db.select({ status: invoices.status }).from(invoices)
+  const [pre] = await db.select({ status: invoices.status, orgId: invoices.orgId, siteId: invoices.siteId }).from(invoices)
     .where(eq(invoices.id, invoiceId)).limit(1);
   if (!pre) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
+  // Idempotent replay PRE-CHECK (#3803), ahead of the status checks and the
+  // revocation for the same reason as the status pre-check: a retry of a
+  // payment that already landed records nothing, so it must not expire a pay
+  // link minted since for the remaining balance. The in-lock lookup below stays
+  // authoritative for retries that race the original.
+  if (idempotencyKey) {
+    const prior = await findPaymentByIdempotencyKey(db, invoiceId, idempotencyKey);
+    if (prior) {
+      requireInvoiceAccess(actor, pre);
+      assertSameRecordedPayment(prior, input);
+      return replayedPaymentResult(await getOwnedInvoiceOr404(invoiceId), prior);
+    }
+  }
   if (pre.status === 'draft') throw new InvoiceServiceError('Cannot record payment on a draft', 409, 'INVALID_STATE');
   if (pre.status === 'void') throw new InvoiceServiceError('Cannot record payment on a void invoice', 409, 'INVALID_STATE');
 
@@ -2056,12 +2090,25 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
   // land. Every helper gets the `tx` handle — inside a request context this
   // transaction is a savepoint on the request tx, and a stray global-`db` call
   // would escape it.
-  const { inv, payment, updated, paymentPushMappingId } = await db.transaction(async (tx) => {
+  const outcome = await db.transaction(async (tx) => {
     const [inv] = await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1).for('update');
     if (!inv) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
     // Re-authorize against the locked row (it may have moved site/org since any
     // earlier unlocked read the caller made).
     requireInvoiceAccess(actor, inv);
+    // Authoritative idempotency lookup (#3803), under the lock and before any
+    // check that the original payment itself changed (a full payoff makes the
+    // balance 0, so a retry must not reach OVERPAYMENT). A retry that raced the
+    // original waited on this lock and now sees its committed row. recordPayment
+    // is the only writer of keyed rows and holds this lock across the lookup and
+    // the insert, so the unique index is a backstop this path should never trip.
+    if (idempotencyKey) {
+      const prior = await findPaymentByIdempotencyKey(tx, invoiceId, idempotencyKey);
+      if (prior) {
+        assertSameRecordedPayment(prior, input);
+        return { kind: 'replayed' as const, prior, updated: await getOwnedInvoiceOr404(invoiceId, tx) };
+      }
+    }
     if (inv.status === 'draft') throw new InvoiceServiceError('Cannot record payment on a draft', 409, 'INVALID_STATE');
     if (inv.status === 'void') throw new InvoiceServiceError('Cannot record payment on a void invoice', 409, 'INVALID_STATE');
     await assertCollectionAmountAvailable(tx, invoiceId, String(input.amount));
@@ -2107,7 +2154,8 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
 
     const [payment] = await tx.insert(invoicePayments).values({
       invoiceId, orgId: inv.orgId, amount: Number(input.amount).toFixed(2), method: input.method,
-      reference: input.reference ?? null, receivedAt: input.receivedAt, recordedBy: actor.userId, note: input.note ?? null
+      reference: input.reference ?? null, receivedAt: input.receivedAt, recordedBy: actor.userId, note: input.note ?? null,
+      idempotencyKey,
     }).returning();
     await recomputeInvoiceStatus(invoiceId, tx);
     // The mapping row is the OUTBOX and it is written HERE, in the same
@@ -2121,15 +2169,17 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
       invoicePaymentId: payment!.id, invoiceId, partnerId: inv.partnerId,
     });
     const updated = await getOwnedInvoiceOr404(invoiceId, tx);
-    return { inv, payment: payment!, updated, paymentPushMappingId };
+    return { kind: 'recorded' as const, inv, payment: payment!, updated, paymentPushMappingId };
   });
+  // A replay recorded nothing: no event, no QuickBooks push, no audit entry.
+  if (outcome.kind === 'replayed') return replayedPaymentResult(outcome.updated, outcome.prior);
+  const { inv, payment, updated, paymentPushMappingId } = outcome;
 
-  // Event emission runs after db.transaction returns, but that does NOT mean
-  // the invoice row lock is released: on the request path db.transaction is a
-  // SAVEPOINT inside the request-wide withDbAccessContext transaction, so the
-  // FOR UPDATE lock persists until the request tx commits. (recordStripePayment
-  // avoids this by emitting after its top-level system tx has returned.)
-  // Moving emission to post-commit is the follow-up tracked in #3803.
+  // Registered after db.transaction returns (the payment is final), but
+  // PUBLISHED only once the outermost transaction commits (#3803 item 9): on
+  // the request path db.transaction is a savepoint of the request-wide
+  // transaction, which still holds the invoice row lock here. Redis is never
+  // waited on under that lock, and a request that rolls back publishes nothing.
   await emitInvoiceEvent({ type: 'payment.recorded', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, paymentId: payment.id, actorUserId: actor.userId });
   if (updated.status === 'paid') await emitInvoiceEvent({ type: 'invoice.paid', invoiceId, orgId: inv.orgId, partnerId: inv.partnerId, actorUserId: actor.userId });
   // Fire-and-forget nudge, AFTER the transaction callback returned.
@@ -2178,6 +2228,7 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
       reference: payment.reference,
       recordedBy: payment.recordedBy,
     },
+    replayed: false as const,
   };
 }
 
@@ -2389,9 +2440,9 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
       },
     });
   }
-  // Emitted after db.transaction returns — NOT after the lock is released: on
-  // the request path this is a savepoint of the request-wide tx, so the invoice
-  // row lock is held until the request commits. Post-commit emission: #3803.
+  // Published only once the outermost transaction commits (#3803 item 9), so
+  // the request's invoice row lock never waits on Redis and a rolled-back void
+  // announces nothing. See emitInvoiceEvent.
   await emitInvoiceEvent({ type: 'payment.voided', invoiceId: audit.invoiceId, orgId: audit.orgId, partnerId: inv.partnerId, paymentId, actorUserId: actor.userId });
   // Same fire-and-forget contract as the record hook above: the mapping row
   // already carries pending_op='delete', so a failed enqueue only delays the
@@ -2767,14 +2818,25 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
   return getInvoice(invoiceId, actor);
 }
 
-/** Daily sweep: flip sent/partially_paid past their due date (balance>0) to overdue. */
+/**
+ * Daily sweep: flip sent/partially_paid past their due date (balance>0) to overdue.
+ *
+ * One guarded UPDATE ... RETURNING (#3803 item 2), not select-then-update-by-id.
+ * Payment record/void, void and due-date changes all hold the invoice row
+ * FOR UPDATE while they write. When this UPDATE reaches a row one of them holds,
+ * it waits; once that writer commits, Postgres re-evaluates this WHERE against
+ * the committed row (READ COMMITTED re-check). An invoice paid, voided or given
+ * a later due date in that window no longer matches and is left alone. The old
+ * update keyed on id alone and stamped those rows overdue, a voided invoice
+ * included.
+ */
 export async function runOverdueSweep(asOf: Date = new Date()): Promise<number> {
-  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+  const flipped = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const today = asOf.toISOString().slice(0, 10);
-    const due = await db.select({ id: invoices.id, orgId: invoices.orgId, partnerId: invoices.partnerId })
-      .from(invoices)
+    return db.update(invoices)
+      .set({ status: 'overdue', markedOverdueAt: asOf, updatedAt: asOf })
       .where(and(
-        inArray(invoices.status, ['sent', 'partially_paid'] as never),
+        sqlOpenForOverdue(invoices),
         lt(invoices.dueDate, today),
         sql`${invoices.balance} > 0`,
         // Org-lifecycle Wave 4: never flip an ARCHIVED/purging/merging tenant's
@@ -2783,13 +2845,16 @@ export async function runOverdueSweep(asOf: Date = new Date()): Promise<number> 
         // → notification/webhook) would be work nobody can see or act on,
         // landing inside a tenant counting down to erasure.
         buildAutomationEligibleOrgPredicate(invoices.orgId),
-      ));
-    for (const r of due) {
-      await db.update(invoices).set({ status: 'overdue', markedOverdueAt: asOf, updatedAt: asOf }).where(eq(invoices.id, r.id));
-      await emitInvoiceEvent({ type: 'invoice.overdue', invoiceId: r.id, orgId: r.orgId, partnerId: r.partnerId });
-    }
-    return due.length;
+      ))
+      .returning({ id: invoices.id, orgId: invoices.orgId, partnerId: invoices.partnerId });
   }));
+  // Announce only rows this sweep actually flipped, and only after its
+  // transaction has committed: no Redis round-trip while the row locks are held,
+  // and no event for a status change that rolled back.
+  for (const r of flipped) {
+    await emitInvoiceEvent({ type: 'invoice.overdue', invoiceId: r.id, orgId: r.orgId, partnerId: r.partnerId });
+  }
+  return flipped.length;
 }
 
 /** Portal/email open: stamp viewed timestamps (independent of status). */

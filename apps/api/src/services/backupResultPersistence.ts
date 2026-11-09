@@ -1,5 +1,6 @@
 import { and, eq, inArray, like, or, sql } from 'drizzle-orm';
-import { db, runAfterDbContextExit } from '../db';
+import { safeErrorMessage } from './aiModels/safeDbError';
+import { db, runAfterDbContextExit, withDbTransactionIfHeld } from '../db';
 import {
   backupJobs,
   backupSnapshotFiles,
@@ -29,7 +30,8 @@ import { redactSecretsDeep, redactSecretsFromOutput } from './secretRedaction';
 import { findForeignSnapshotClaim } from './backupSnapshotOwnership';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { attestAgentResultSnapshot, attestLateAgentResult, attestedJobIdForSnapshot } from './backupAttestation';
-import { recordBackupAttestation, recordSnapshotPublishRefused } from './backupMetrics';
+import { recordBackupAttestation, recordSnapshotFileIndex, recordSnapshotPublishRefused } from './backupMetrics';
+import { stripInlineIndexDropNote } from '@breeze/shared';
 import {
   SNAPSHOT_ID_RESERVATION_CONSTRAINT,
   allowedSnapshotIdsForJob,
@@ -38,6 +40,7 @@ import {
 } from './backupSnapshotIdReservations';
 import { physicalKeyFor, snapshotKeyRootOf } from './backupKeyLayout';
 import { createAuditLog } from './auditService';
+import { contentlessEntryKind } from './backupSnapshotEntryKind';
 
 type SnapshotImmutabilityEnforcement = 'application' | 'provider';
 
@@ -886,13 +889,29 @@ async function checkLateResultBaseFence(job: {
  * - Otherwise a snapshot with references still needs the referenced-origin
  *   index that token-mode recovery requires (W09, #6464).
  * - A snapshot whose index is already server-verified needs nothing.
+ * - A snapshot of more than EAGER_HYDRATION_MAX_ENTRIES entries is left for
+ *   its first use (#11026, Open Decision 3): its rows cost about 145 MB or more
+ *   per retained snapshot, most of which nobody opens. Browse, selective
+ *   restore, a brokered read and the recovery-creation preflight each request
+ *   the index when they find it missing, so nothing depends on it existing
+ *   beforehand. An unknown count keeps the request.
  */
+export const EAGER_HYDRATION_MAX_ENTRIES = 250_000;
+
+/** Entries a snapshot's index will hold: files the run backed up plus those it referenced. */
+export function indexedEntriesOf(result: { filesBackedUp?: number; referencedFiles?: number }): number | undefined {
+  if (result.filesBackedUp === undefined && result.referencedFiles === undefined) return undefined;
+  return (result.filesBackedUp ?? 0) + (result.referencedFiles ?? 0);
+}
+
 export function snapshotIndexHydrationReason(params: {
   storageIdentity: string | null;
   referencedFiles: number | undefined;
   fileIndexStatus: string | null | undefined;
+  indexedEntries: number | undefined;
 }): 'result_brokered_read' | 'result' | null {
   if (params.fileIndexStatus === 'complete') return null;
+  if (params.indexedEntries !== undefined && params.indexedEntries > EAGER_HYDRATION_MAX_ENTRIES) return null;
   if (params.storageIdentity?.startsWith('s3::')) {
     return 'result_brokered_read';
   }
@@ -996,6 +1015,10 @@ export async function applyBackupCommandResultToJob(params: {
   }
   const metadata = normalizeMetadata(result.metadata);
   const now = new Date();
+  // #11026: a file list too big to send with the result is not lost, it is in
+  // the snapshot's manifest, so the helper's note about it is not a job problem
+  // and never reaches errorLog. The count stays on the snapshot, for telemetry.
+  const { warning: resultWarning, droppedEntries: inlineDroppedEntries } = stripInlineIndexDropNote(result.warning);
 
   const updateData: Record<string, unknown> = {
     updatedAt: now,
@@ -1061,10 +1084,10 @@ export async function applyBackupCommandResultToJob(params: {
     updateData.fileCount = result.filesBackedUp ?? null;
     updateData.totalSize = result.bytesBackedUp ?? null;
     updateData.backupType = result.backupType ?? null;
-    if (result.warning) {
+    if (resultWarning) {
       // #2434: warning/error are agent-supplied free text surfaced in the
       // backup UI — redact secrets before persisting to errorLog.
-      updateData.errorLog = redactSecretsFromOutput(result.warning);
+      updateData.errorLog = redactSecretsFromOutput(resultWarning);
     } else if (source === 'reconcile') {
       // #3006: a reconcile adoption may flip a job the AGENT genuinely failed
       // (no reaper marker). Nulling error_log there would destroy the only
@@ -1134,7 +1157,7 @@ export async function applyBackupCommandResultToJob(params: {
     // picked `error` (it is populated on every failure path) and discarded the
     // warning entirely, so the one diagnostic explaining WHY the run was
     // degraded never reached the UI.
-    const failureParts = [result.error, result.warning].filter(
+    const failureParts = [result.error, resultWarning].filter(
       (part): part is string => typeof part === 'string' && part.length > 0
     );
     updateData.errorLog = redactSecretsFromOutput(
@@ -1421,6 +1444,10 @@ export async function applyBackupCommandResultToJob(params: {
     };
   }
 
+  if (inlineDroppedEntries !== null) {
+    recordSnapshotFileIndex('inline_dropped', 'dropped');
+  }
+
   // #3036 — the org this result is actually attributed to. Read back off the row
   // we just updated, NOT taken from the caller: an org move that lands between
   // enqueue and this write leaves the caller's `orgId` pointing at the device's
@@ -1492,6 +1519,7 @@ export async function applyBackupCommandResultToJob(params: {
     ...metadata,
     hasIndexedFiles: Boolean(result.snapshot?.files?.length),
     fileIndexVersion: result.snapshot?.files?.length ? 1 : 0,
+    ...(inlineDroppedEntries !== null ? { fileIndexInlineDroppedEntries: inlineDroppedEntries } : {}),
   };
   const snapshotLabel = buildSnapshotLabel(snapshotMetadata, timestamp);
 
@@ -1774,6 +1802,9 @@ export async function applyBackupCommandResultToJob(params: {
         backupPath: file.backupPath ?? '',
         size: file.size ?? null,
         modifiedAt: file.modTime ? new Date(file.modTime) : null,
+        // #11235: the same kind hydration records, so an inline index and a
+        // hydrated one list the same tree.
+        kind: contentlessEntryKind(file),
       }));
 
       for (let i = 0; i < fileRows.length; i += BATCH_SIZE) {
@@ -1792,6 +1823,7 @@ export async function applyBackupCommandResultToJob(params: {
         storageIdentity: updatedJob.storageIdentity ?? null,
         referencedFiles: result.referencedFiles,
         fileIndexStatus: snapshot.fileIndexStatus,
+        indexedEntries: indexedEntriesOf(result),
       })
     : null;
   if (snapshot && hydrationReason) {
@@ -1827,6 +1859,10 @@ export async function applyBackupCommandResultToJob(params: {
 
   if (snapshot) {
     try {
+      // Deliberately no savepoint here (#11225): a snapshot must not commit without
+      // the legal hold or immutability it was asked for, and a read failure must not
+      // be recorded as a permanent WORM downgrade. The commit fails, and the result
+      // is retried.
       const protection = await resolveSnapshotProtectionSettingsForJob(jobId, timestamp);
       let protectionUpdate = {
         legalHold: protection.legalHold,
@@ -1924,7 +1960,7 @@ export async function applyBackupCommandResultToJob(params: {
     }
 
     try {
-      await reconcileMssqlBackupChain({
+      await withDbTransactionIfHeld(() => reconcileMssqlBackupChain({
         // #3036: the job row's org, not the caller's — a stale value here would
         // miss the device's real chain and fork a duplicate under the old org.
         orgId: effectiveOrgId,
@@ -1933,29 +1969,33 @@ export async function applyBackupCommandResultToJob(params: {
         snapshotDbId: snapshot.id,
         timestamp,
         metadata: snapshotMetadata,
-      });
+      }));
     } catch (err) {
       console.error(
         `[BackupPersistence] Failed to reconcile MSSQL chain for snapshot ${snapshot.id}:`,
-        err instanceof Error ? err.message : err
+        safeErrorMessage(err)
       );
+      captureException(err, undefined, { snapshot_id: snapshot.id, step: 'mssql_chain' });
     }
 
     try {
-      const tags = await applyGfsTagsToSnapshot(snapshot.id, timestamp, jobId);
-      const gfsConfig = await resolveGfsConfigForJob(jobId);
-      const expiresAt = computeExpiresAt(timestamp, tags, gfsConfig);
-      if (expiresAt) {
-        await db
-          .update(backupSnapshots)
-          .set({ expiresAt })
-          .where(eq(backupSnapshots.id, snapshot.id));
-      }
+      await withDbTransactionIfHeld(async () => {
+        const tags = await applyGfsTagsToSnapshot(snapshot.id, timestamp, jobId);
+        const gfsConfig = await resolveGfsConfigForJob(jobId);
+        const expiresAt = computeExpiresAt(timestamp, tags, gfsConfig);
+        if (expiresAt) {
+          await db
+            .update(backupSnapshots)
+            .set({ expiresAt })
+            .where(eq(backupSnapshots.id, snapshot.id));
+        }
+      });
     } catch (err) {
       console.error(
         `[BackupPersistence] Failed to apply GFS tags to snapshot ${snapshot.id}:`,
-        err instanceof Error ? err.message : err
+        safeErrorMessage(err)
       );
+      captureException(err, undefined, { snapshot_id: snapshot.id, step: 'gfs_tags' });
     }
   }
 

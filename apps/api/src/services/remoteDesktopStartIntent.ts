@@ -54,6 +54,7 @@ import { remoteSessions } from '../db/schema';
 import type { ConsentUnavailableBehavior, SessionPromptMode } from '../routes/remote/helpers';
 import { viewerAnswerTimeoutMs } from '../routes/remote/consentTiming';
 import { markDesktopStartInFlight, readDesktopStartInFlight } from './desktopStartInFlight';
+import { originalRemoteSessionStart } from './remoteSessionStaleness';
 
 /** Statuses a start may be published from. A terminal row is never resurrected. */
 export const LIVE_START_STATUSES = ['pending', 'connecting', 'active'] as const;
@@ -263,6 +264,9 @@ export async function commitDesktopStartIntent(
       desktopConsentUnavailableBehavior: input.consentUnavailableBehavior,
       desktopStartGeneration: sql`${remoteSessions.desktopStartGeneration} + 1`,
       status: 'connecting',
+      // A re-offer moves a live session back to `connecting`, so stale cleanup
+      // has to measure it from now, not from its last answer (#11149).
+      lastStartAttemptAt: new Date(),
       ...(previousStatus === 'active' ? { endedAt: null } : {}),
     })
     .where(and(
@@ -329,12 +333,14 @@ export async function commitDesktopStreamStartIntent(
       desktopConsentUnavailableBehavior: input.consentUnavailableBehavior,
       desktopStartGeneration: sql`${remoteSessions.desktopStartGeneration} + 1`,
       status: 'connecting',
-      // The start attempt's clock. The stale-session cutoff for a connecting
-      // row (remoteSessionStaleness.ts) runs from it, so a start waiting on
-      // its consent prompt is not expired just because the session row was
-      // created earlier; the lease hard deadline is measured from it too, as
-      // it was when this path activated the row at commit time.
-      startedAt: new Date(),
+      // The stale-session cutoff runs from this attempt, so a start waiting on
+      // its consent prompt is not expired because of an earlier one (#11149).
+      lastStartAttemptAt: new Date(),
+      // The lease hard deadline is measured from the first start, as it was
+      // when this path activated the row at commit time. A row that already has
+      // a start keeps it: a WebRTC re-offer leaves a live session `connecting`,
+      // and this path must not restart its max duration (#11113).
+      startedAt: originalRemoteSessionStart(),
     })
     .where(and(
       eq(remoteSessions.id, input.sessionId),

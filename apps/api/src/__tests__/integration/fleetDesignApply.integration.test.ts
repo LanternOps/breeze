@@ -21,7 +21,7 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type {
   FleetDesignApproval,
   FleetDesignOutcome,
@@ -73,6 +73,7 @@ import { upsertDeviceFunction } from '../../services/deviceFunction';
 import { applyFleetDesign } from '../../services/fleetDesign/apply';
 import { attachFleetMonitors } from '../../services/fleetDesign/monitorAttachments';
 import { updateMonitorDefinition } from '../../services/monitors/monitorService';
+import * as ledgerModule from '../../services/fleetDesign/ledger';
 import { loadLedger } from '../../services/fleetDesign/ledger';
 import { FleetDesignApplyError, previewFleetDesignApply } from '../../services/fleetDesign/preview';
 import { rollbackFleetDesign } from '../../services/fleetDesign/rollback';
@@ -1111,5 +1112,47 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
     for (const id of ids) {
       expect(await getTestDb().select({ id: monitorDefinitions.id }).from(monitorDefinitions).where(eq(monitorDefinitions.id, id))).toHaveLength(1);
     }
+  });
+
+  // #11203: a real SQL failure inside one item's savepoint is refused without
+  // aborting the other items or the request transaction that wraps them.
+  runDb('18. rollback: a statement failure in one item refuses it and the others still persist through the commit', async () => {
+    const f = await seedFixture();
+    const runId = await seedReportRun(f.envA.orgId, buildOutcome({
+      functionKey: 'file_server', deviceIds: f.deviceIds, roleCorrectionDeviceId: f.deviceIds[1], retiredPolicyId: f.baselinePolicyId, rule: GOOD_RULE,
+    }));
+    await withDbAccessContext(f.dbCtxA, () => applyFleetDesign(f.authA, runId, fullApproval(f.deviceIds, [f.baselinePolicyId])));
+    const ledger = await readLedger(runId);
+    const roleRow = ledger.find((r) => r.itemRef === `roleCorrections:${f.deviceIds[1]}`)!;
+    const policyId = ledger.find((r) => r.itemRef === 'policy:file_server')!.createdRefs!.policyId as string;
+
+    // The role item runs first (step 5). Its markRolledBack hits a real 22012.
+    const original = ledgerModule.markRolledBack;
+    const spy = vi.spyOn(ledgerModule, 'markRolledBack').mockImplementation(async (ids, orgId, userId) => {
+      if (ids.includes(roleRow.id)) await db.execute(sql`SELECT 1/0`);
+      return original(ids, orgId, userId);
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await withDbAccessContext(f.dbCtxA, async () => {
+        const out = await rollbackFleetDesign(f.authA, runId);
+        // A poisoned request transaction fails this read with 25P02.
+        const [check] = await db.execute(sql`SELECT 42 AS v`);
+        return { out, check };
+      });
+      expect(result.check).toMatchObject({ v: 42 });
+      expect(result.out.refused).toEqual([{ itemRef: `roleCorrections:${f.deviceIds[1]}`, reason: 'modified_since_apply' }]);
+      expect(result.out.rolledBack).toEqual(expect.arrayContaining(['policy:file_server', 'functions:file_server']));
+    } finally {
+      spy.mockRestore();
+      consoleError.mockRestore();
+    }
+
+    // The failed item's own writes are undone; the others are persisted.
+    expect(await readDevice(f.deviceIds[1])).toMatchObject({ deviceRoleSource: 'ai' });
+    expect((await readPolicy(policyId))?.status).toBe('archived');
+    const after = await readLedger(runId);
+    expect(after.find((r) => r.id === roleRow.id)?.status).toBe('applied');
+    expect(after.find((r) => r.itemRef === 'policy:file_server')?.status).toBe('rolled_back');
   });
 });

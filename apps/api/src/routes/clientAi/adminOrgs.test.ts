@@ -42,19 +42,29 @@ import {
 } from './adminOrgs';
 import { authMiddleware } from '../../middleware/auth';
 import { eq } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { m365Connections } from '../../db/schema/m365';
+import { portalUserIdentities, portalUsers } from '../../db/schema/portal';
 
 const ORG_ID = '0c0c0c0c-1111-4222-8333-444455556666';
 const OTHER_ORG_ID = '9d9d9d9d-1111-4222-8333-444455556666';
 const TID = '6f4f4f4f-1111-4222-8333-444455556666';
 
+/** What each select chain was built with, in call order. */
+const built: Array<{ from: unknown; joins: Array<{ table: unknown; on: unknown }>; where: unknown }> = [];
+
 /** Flexible thenable Drizzle chain: awaitable after any builder method. */
 function chain(rows: unknown[]) {
   const c: Record<string, unknown> = {};
+  const rec = { from: undefined as unknown, joins: [] as Array<{ table: unknown; on: unknown }>, where: undefined as unknown };
+  built.push(rec);
   const self = vi.fn(() => c);
-  for (const m of ['from', 'where', 'orderBy', 'groupBy', 'leftJoin', 'limit', 'offset']) {
+  for (const m of ['orderBy', 'groupBy', 'leftJoin', 'limit', 'offset']) {
     c[m] = self;
   }
+  c.from = vi.fn((table: unknown) => { rec.from = table; return c; });
+  c.innerJoin = vi.fn((table: unknown, on: unknown) => { rec.joins.push({ table, on }); return c; });
+  c.where = vi.fn((w: unknown) => { rec.where = w; return c; });
   c.then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
     Promise.resolve(rows).then(resolve, reject);
   return c;
@@ -89,7 +99,10 @@ const AUTHED = { Authorization: 'Bearer token' };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  built.length = 0;
 });
+
+const render = (q: unknown) => new PgDialect().sqlToQuery(q as never);
 
 describe('GET /client-ai/admin/orgs', () => {
   it('rejects unauthenticated requests', async () => {
@@ -235,6 +248,38 @@ describe('GET /client-ai/admin/orgs/:orgId/users', () => {
       headers: AUTHED,
     });
     expect(res.status).toBe(404);
+  });
+});
+
+describe('identities release B (W3): Entra users come from portal_user_identities', () => {
+  it('entra user count and picker come from identities (a password user with an entra identity is counted)', async () => {
+    setupOrgListDb();
+    const list = await buildApp().request('/client-ai/admin/orgs', { headers: AUTHED });
+    expect(list.status).toBe(200);
+    // 4th select = the per-org Entra user count: counted over identities, any auth_method.
+    const count = built[3]!;
+    expect(count.from).toBe(portalUserIdentities);
+    const countWhere = render(count.where);
+    expect(countWhere.sql).toBe('"portal_user_identities"."provider" = $1');
+    expect(countWhere.params).toEqual(['entra']);
+    expect(eq).not.toHaveBeenCalledWith(portalUsers.authMethod, 'entra');
+
+    built.length = 0;
+    dbSelectMock.mockImplementation(() => chain([]));
+    const picker = await buildApp().request(`/client-ai/admin/orgs/${ORG_ID}/users`, { headers: AUTHED });
+    expect(picker.status).toBe(200);
+    const users = built[0]!;
+    expect(users.from).toBe(portalUsers);
+    expect(users.joins).toHaveLength(1);
+    expect(users.joins[0]!.table).toBe(portalUserIdentities);
+    const on = render(users.joins[0]!.on);
+    expect(on.sql).toContain('"portal_user_identities"."portal_user_id" = "portal_users"."id"');
+    expect(on.sql).toContain('"portal_user_identities"."provider" = $');
+    expect(on.params).toContain('entra');
+    const where = render(users.where);
+    expect(where.sql).toBe('"portal_users"."org_id" = $1');
+    expect(where.sql).not.toContain('auth_method');
+    expect(eq).not.toHaveBeenCalledWith(portalUsers.authMethod, 'entra');
   });
 });
 

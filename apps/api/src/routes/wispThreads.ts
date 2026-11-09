@@ -67,6 +67,7 @@ import { currentActivity, InvalidActivityCursorError, listActivity, type Current
 import { spendSummary } from '../services/wisp/budget';
 import { assertWithinCeiling, CeilingViolationError, GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from '../services/wisp/grantAuthority';
 import { getActiveGrantForUser, wideningAvailable, type WispGrantStatus } from '../services/wisp/grants';
+import { firstLookPostTimes, firstLookStateFrom } from '../services/wisp/threadPosts';
 import {
   THREAD_ATTACHMENT_MAX_BYTES,
   THREAD_ATTACHMENT_MESSAGES,
@@ -167,6 +168,7 @@ export type OwnThread = {
     pausedReason: string | null;
     unattendedReads: boolean;
     unattendedReadsPinned: boolean;
+    summaryRefine: boolean;
   };
 };
 
@@ -197,6 +199,7 @@ export async function loadOwnThread(c: Context): Promise<OwnThread | null> {
         grantPausedReason: wispGrants.pausedReason,
         grantUnattendedReads: wispGrants.unattendedReads,
         grantUnattendedReadsPinned: sql<boolean>`EXISTS (SELECT 1 FROM wisp_grant_revisions r WHERE r.id = ${wispGrants.currentRevisionId} AND r.ceiling_snapshot->>'unattendedReads' = 'true')`,
+        grantSummaryRefine: wispGrants.summaryRefine,
       })
       .from(wispThreads)
       .innerJoin(wispGrants, and(eq(wispGrants.id, wispThreads.grantId), eq(wispGrants.partnerId, wispThreads.partnerId)))
@@ -231,6 +234,7 @@ export async function loadOwnThread(c: Context): Promise<OwnThread | null> {
       pausedReason: row.grantPausedReason ?? null,
       unattendedReads: row.grantUnattendedReads === true && row.grantUnattendedReadsPinned === true,
       unattendedReadsPinned: row.grantUnattendedReadsPinned === true,
+      summaryRefine: row.grantSummaryRefine === true,
     },
   };
 }
@@ -302,14 +306,16 @@ export type GrantForPayload = {
   pausedReason: string | null;
   unattendedReads: boolean;
   unattendedReadsPinned: boolean;
+  summaryRefine: boolean;
 };
 
 /** GET / and GET /:id return the same members. */
 export async function threadPayload(partnerId: string, thread: WispThread, grant: GrantForPayload) {
-  const [focusOrgName, widening, spend] = await Promise.all([
+  const [focusOrgName, widening, spend, firstLookTimes] = await Promise.all([
     focusOrgNameOf(partnerId, thread.focusOrgId),
     wideningAvailable(grant.id),
     spendSummary(grant.id),
+    firstLookPostTimes(thread.id),
   ]);
   return {
     thread: threadDto(thread),
@@ -324,13 +330,18 @@ export async function threadPayload(partnerId: string, thread: WispThread, grant
       floorTickMinutes: grant.floorTickMinutes,
       // w00 A32 spend meter (UTC day, runs charged to the day they were queued).
       spentTodayCents: spend.spentTodayCents,
+      backgroundCents: spend.backgroundCents,
+      chatCents: spend.chatCents,
       budgetResetsAt: spend.budgetResetsAt.toISOString(),
       // W06b/W06c: a paused thread says why (A29 user pause vs system reasons).
       pausedReason: grant.pausedReason,
       unattendedReads: grant.unattendedReads === true,
       unattendedReadsPinned: grant.unattendedReadsPinned === true,
+      summaryRefine: grant.summaryRefine === true,
     },
     wideningAvailable: widening,
+    // #11145: the chat surfaces have no timeline to read, so they learn it here.
+    firstLookState: firstLookStateFrom(firstLookTimes),
   };
 }
 

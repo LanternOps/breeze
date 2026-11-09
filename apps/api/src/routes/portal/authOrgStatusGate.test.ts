@@ -91,10 +91,26 @@ vi.mock('../../services/tenantStatus', () => ({
   isUsableOrgStatus: (s: string) => s === 'active' || s === 'trial',
   invalidateAgentTenantCache: vi.fn(async () => undefined),
 }));
+// W3: the access-policy resolver is mocked at its boundary; the pick,
+// isSignInMethodAllowed and the error class stay real.
+const resolvePolicy = vi.hoisted(() => vi.fn());
+vi.mock('../../services/portalAccessPolicy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/portalAccessPolicy')>()),
+  resolvePortalAccessPolicy: resolvePolicy,
+}));
 
 import { authRoutes, portalAuthMiddleware } from './auth';
 import { portalSessions } from './helpers';
 import { getActiveOrgTenant } from '../../services/tenantStatus';
+import { PortalAccessPolicyOrgNotFoundError, pickEffectivePortalAccessPolicy } from '../../services/portalAccessPolicy';
+import { PORTAL_SESSION_COOKIE_NAME } from './schemas';
+
+const NO_ROW = { entraEnabled: null, googleEnabled: null, passwordMode: null, selfRegistrationMode: null, ssoNewPersonMode: null, ssoSessionMaxHours: null };
+/** Built by the real pick with entra runnable: 'sso_only' is effective (entra on), 'allowed' is today's default. */
+function policyFor(orgId: string, mode: 'allowed' | 'sso_only') {
+  const org = mode === 'sso_only' ? { ...NO_ROW, entraEnabled: true, passwordMode: 'sso_only' as const } : null;
+  return { orgId, partnerId: 'partner-1', ...pickEffectivePortalAccessPolicy(org, null, { entra: true, google: false, selfRegistration: false }) };
+}
 
 const ORG_ID = '7c0a1f7e-1111-4222-8333-444455556666';
 const USER_ID = '11111111-2222-4333-8444-555566667777';
@@ -142,11 +158,38 @@ beforeEach(() => {
     contactId: CONTACT_ID,
     receiveNotifications: true,
     authMethod: 'password',
+    browserAccess: 'granted',
     status: 'active',
     authEpoch: 1,
   };
   activeOrgResult.current = { orgId: ORG_ID, partnerId: 'partner-1' };
   portalUserLookupError.current = null;
+  resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'allowed'));
+});
+
+// Portal registration W2 (spec §6 invariant 9): a browser session requires
+// browser_access='granted' as well as a password-method login, re-checked on
+// every request. Same refusal as a non-password login: 401, session purged,
+// and no logout exemption.
+describe('portalAuthMiddleware browser_access gate (W2)', () => {
+  it('session middleware: password row with browser_access none → 401 and session purged', async () => {
+    seedSession();
+    portalUserRow.current = { ...portalUserRow.current, browserAccess: 'none' };
+
+    const res = await call();
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Portal user not found' });
+    expect(portalSessions.has(TOKEN)).toBe(false);
+    expect(getActiveOrgTenant).not.toHaveBeenCalled();
+  });
+
+  it('session middleware: password row with browser_access granted → unchanged 200 path', async () => {
+    seedSession();
+    const res = await call();
+    expect(res.status).toBe(200);
+    expect(portalSessions.has(TOKEN)).toBe(true);
+  });
 });
 
 describe('portalAuthMiddleware org-status gate', () => {
@@ -295,5 +338,128 @@ describe('portal logout session scope', () => {
     expect(portalUserRow.current?.authEpoch).toBe(1);
     expect(revokePortalSessionDurably).toHaveBeenCalledTimes(1);
     expect(revokePortalSessionDurably).toHaveBeenCalledWith(TOKEN, USER_ID);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Portal registration W3 (#11380): the access policy, re-checked on every
+// session request (inv. 9 / 11, Review Focus 1). A refused session is purged.
+// ---------------------------------------------------------------------------
+
+describe('portalAuthMiddleware access-policy gate (W3)', () => {
+  const callWithCookie = () =>
+    makeApp().request('/protected', { headers: { cookie: `${PORTAL_SESSION_COOKIE_NAME}=${TOKEN}` } });
+  const seedWith = (extra: Record<string, unknown>) => {
+    seedSession();
+    portalSessions.set(TOKEN, { ...portalSessions.get(TOKEN)!, ...extra } as any);
+  };
+
+  it('admits a live password session while the policy allows password (no rows), checked once after the org gate', async () => {
+    seedSession();
+    const res = await call();
+    expect(res.status).toBe(200);
+    expect(resolvePolicy).toHaveBeenCalledTimes(1);
+    expect(resolvePolicy).toHaveBeenCalledWith(ORG_ID);
+    expect(vi.mocked(getActiveOrgTenant).mock.invocationCallOrder[0]!).toBeLessThan(resolvePolicy.mock.invocationCallOrder[0]!);
+  });
+
+  it('org sso_only kills a live password session on the next request: 401, purged, cookie cleared', async () => {
+    seedSession();
+    resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'sso_only'));
+    const res = await callWithCookie();
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Invalid or expired session' });
+    expect(portalSessions.has(TOKEN)).toBe(false);
+    expect(res.headers.get('set-cookie') ?? '').toContain(`${PORTAL_SESSION_COOKIE_NAME}=;`);
+    expect(resolveOrgTimezone).not.toHaveBeenCalled();
+  });
+
+  it('a pre-W3 session with no method is a password session (admitted when allowed, refused under sso_only)', async () => {
+    seedSession();
+    expect(portalSessions.get(TOKEN)).not.toHaveProperty('method');
+    expect((await call()).status).toBe(200);
+    resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'sso_only'));
+    expect((await call()).status).toBe(401);
+    expect(portalSessions.has(TOKEN)).toBe(false);
+  });
+
+  it('PortalAccessPolicyOrgNotFoundError refuses the session the same way', async () => {
+    seedSession();
+    resolvePolicy.mockRejectedValue(new PortalAccessPolicyOrgNotFoundError(ORG_ID));
+    const res = await call();
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Invalid or expired session' });
+    expect(portalSessions.has(TOKEN)).toBe(false);
+  });
+
+  it('any other resolver failure fails closed (never admits)', async () => {
+    seedSession();
+    resolvePolicy.mockRejectedValue(new Error('synthetic database fault'));
+    const res = await call();
+    expect(res.status).toBe(500);
+    expect(resolveOrgTimezone).not.toHaveBeenCalled();
+  });
+
+  it('does not consult the policy when the org gate already refused', async () => {
+    seedSession();
+    activeOrgResult.current = null;
+    expect((await call()).status).toBe(403);
+    expect(resolvePolicy).not.toHaveBeenCalled();
+  });
+
+  it('refuses and purges an in-memory session with an unknown method before any lookup', async () => {
+    seedWith({ method: 'saml' });
+    const res = await call();
+    expect(res.status).toBe(401);
+    expect(portalSessions.has(TOKEN)).toBe(false);
+    expect(getActiveOrgTenant).not.toHaveBeenCalled();
+    expect(resolvePolicy).not.toHaveBeenCalled();
+  });
+
+  it('a password session on an account that is not password-eligible stays "Portal user not found"', async () => {
+    seedWith({ method: 'password' });
+    portalUserRow.current = { ...portalUserRow.current, authMethod: 'entra' };
+    const res = await call();
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Portal user not found' });
+    expect(portalSessions.has(TOKEN)).toBe(false);
+  });
+
+  it('an entra session needs browser access and entra allowed, not password eligibility', async () => {
+    seedWith({ method: 'entra' });
+    portalUserRow.current = { ...portalUserRow.current, authMethod: 'entra' };
+    resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'sso_only'));
+    expect((await call()).status).toBe(200);
+
+    // entra not effectively enabled (today's default) → refused by policy.
+    resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'allowed'));
+    const refused = await call();
+    expect(refused.status).toBe(401);
+    expect(await refused.json()).toEqual({ error: 'Invalid or expired session' });
+    expect(portalSessions.has(TOKEN)).toBe(false);
+  });
+
+  it('an entra session without browser access is refused by the account gate', async () => {
+    seedWith({ method: 'entra' });
+    portalUserRow.current = { ...portalUserRow.current, authMethod: 'entra', browserAccess: 'none' };
+    resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'sso_only'));
+    const res = await call();
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Portal user not found' });
+  });
+
+  it('logout still works for a session refused by policy', async () => {
+    seedSession();
+    resolvePolicy.mockImplementation(async (orgId: string) => policyFor(orgId, 'sso_only'));
+    const app = new Hono();
+    app.route('/', authRoutes);
+
+    const res = await app.request('/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${TOKEN}` } });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true });
+    expect(portalSessions.has(TOKEN)).toBe(false);
+    expect(revokePortalSessionDurably).toHaveBeenCalledWith(TOKEN, USER_ID);
+    expect(resolvePolicy).not.toHaveBeenCalled();
   });
 });

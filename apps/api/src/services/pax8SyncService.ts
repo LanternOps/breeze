@@ -443,6 +443,17 @@ export async function syncPax8Integration(
   }
 }
 
+/**
+ * `mapPax8Company` refused the request (foreign or holding-org target, unknown
+ * company). Routes answer it with a 400; any other error is unexpected.
+ */
+export class Pax8MapRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'Pax8MapRefusedError';
+  }
+}
+
 export async function mapPax8Company(input: {
   integrationId: string;
   partnerId: string;
@@ -456,8 +467,8 @@ export async function mapPax8Company(input: {
       .from(organizations)
       .where(eq(organizations.id, input.orgId))
       .limit(1);
-    if (!org || org.partnerId !== input.partnerId) throw new Error('Target organization does not belong to this partner');
-    if (isUnassignedPoolOrgType(org.type)) throw new Error('The unassigned-device holding area cannot be a mapping target');
+    if (!org || org.partnerId !== input.partnerId) throw new Pax8MapRefusedError('Target organization does not belong to this partner');
+    if (isUnassignedPoolOrgType(org.type)) throw new Pax8MapRefusedError('The unassigned-device holding area cannot be a mapping target');
   }
 
   const [updated] = await db.update(pax8CompanyMappings).set({
@@ -473,7 +484,7 @@ export async function mapPax8Company(input: {
     orgId: pax8CompanyMappings.orgId,
     ignored: pax8CompanyMappings.ignored,
   });
-  if (!updated) throw new Error('Pax8 company mapping not found. Run sync first to discover companies.');
+  if (!updated) throw new Pax8MapRefusedError('Pax8 company mapping not found. Run sync first to discover companies.');
   await db.update(pax8SubscriptionSnapshots).set({
     orgId: input.ignored ? null : input.orgId,
     updatedAt: new Date(),

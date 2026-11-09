@@ -38,6 +38,8 @@ vi.mock('../../db', () => ({
       })),
     })),
   },
+  withDbTransaction: (fn: () => unknown) => fn(),
+  withDbTransactionIfHeld: (fn: () => unknown) => fn(),
 }));
 
 vi.mock('../../db/schema/aiAgents', () => ({

@@ -1115,3 +1115,97 @@ describe('handoff terminal read-back (#6022)', () => {
     });
   });
 });
+
+// ============================================
+// #10416: the card says where it waits
+// ============================================
+
+describe('approval card says where it waits (#10416)', () => {
+  const approvalCard = (session: { eventBus: { publish: ReturnType<typeof vi.fn> } }) =>
+    session.eventBus.publish.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .find((e) => e.type === 'approval_required');
+
+  function tier2Guardrail() {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 2,
+      requiresApproval: true,
+      description: 'Take screenshot',
+    } as any);
+  }
+
+  it('tier-2 with one push token dispatched: pushedToPhone true, waiting on you', async () => {
+    tier2Guardrail();
+    mockInsertReturning({ id: 'exec-push-1' });
+    mockUpdateChain();
+    mockGetUserPushTokens.mockResolvedValue([{ provider: 'expo', token: 'ExponentPushToken[x]' }]);
+    mockDispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 1, dispatched: 1, errors: 0 });
+    vi.mocked(waitForApproval).mockResolvedValue(false);
+    const session = makeActiveSession();
+
+    await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'd-1' });
+
+    expect(approvalCard(session)).toMatchObject({ pushedToPhone: true, waitingOn: 'you' });
+  });
+
+  it('tier-2 with no push token: pushedToPhone false', async () => {
+    tier2Guardrail();
+    mockInsertReturning({ id: 'exec-push-0' });
+    mockUpdateChain();
+    mockGetUserPushTokens.mockResolvedValue([]);
+    mockDispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
+    vi.mocked(waitForApproval).mockResolvedValue(false);
+    const session = makeActiveSession();
+
+    await createSessionPreToolUse(session)('take_screenshot', { deviceId: 'd-1' });
+
+    expect(approvalCard(session)).toMatchObject({ pushedToPhone: false, waitingOn: 'you' });
+  });
+
+  it('tier-2 whose tokens all failed to send, or whose push dispatch threw: pushedToPhone false', async () => {
+    tier2Guardrail();
+    mockInsertReturning({ id: 'exec-push-err' });
+    mockUpdateChain();
+    mockGetUserPushTokens.mockResolvedValue([{ provider: 'expo', token: 'ExponentPushToken[x]' }]);
+    mockDispatchApprovalPushToTokens.mockResolvedValueOnce({ tokensFound: 1, dispatched: 0, errors: 1 });
+    vi.mocked(waitForApproval).mockResolvedValue(false);
+    const failed = makeActiveSession();
+    await createSessionPreToolUse(failed)('take_screenshot', { deviceId: 'd-1' });
+    expect(approvalCard(failed)).toMatchObject({ pushedToPhone: false });
+
+    mockDispatchApprovalPushToTokens.mockRejectedValueOnce(new Error('relay down'));
+    const threw = makeActiveSession();
+    await createSessionPreToolUse(threw)('take_screenshot', { deviceId: 'd-1' });
+    expect(approvalCard(threw)).toMatchObject({ pushedToPhone: false });
+  });
+
+  it('a four-eyes tier-3 intent the requester holds no row on waits on other approvers', async () => {
+    tier3Guardrail('four_eyes');
+    mockInsertReturning({ id: 'exec-4e' });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-4e', requesterApprovalRequestId: null }));
+    mockWaitForIntentDecision.mockResolvedValue('rejected');
+    const session = makeActiveSession();
+
+    await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+    const card = approvalCard(session);
+    expect(card).toMatchObject({ intentBacked: true, waitingOn: 'other_approvers' });
+    // Tier-3 push is the intent service's fan-out to approvers, not this card's.
+    expect(card).not.toHaveProperty('pushedToPhone');
+  });
+
+  it('a tier-3 intent that fanned a row out to the requester (sole operator) waits on you', async () => {
+    tier3Guardrail('four_eyes');
+    mockInsertReturning({ id: 'exec-solo' });
+    mockUpdateChain();
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-solo', requesterApprovalRequestId: 'appr-self' }));
+    mockWaitForIntentDecision.mockResolvedValue('rejected');
+    const session = makeActiveSession();
+
+    await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' });
+
+    expect(approvalCard(session)).toMatchObject({ selfApprovalRequestId: 'appr-self', waitingOn: 'you' });
+  });
+});

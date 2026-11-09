@@ -20,6 +20,15 @@ describe('toolSources validators', () => {
     expect(TOOL_SOURCE_SLUG_RE.test('hu-du')).toBe(false);
     expect(TOOL_SOURCE_SLUG_RE.test('h')).toBe(false);
   });
+  it('explains the allowed slug format instead of a bare "Invalid format"', () => {
+    for (const slug of ['hu-du', 'hu_du', 'a'.repeat(25), 'Hudu', '1hudu']) {
+      const r = createToolSourceSchema.safeParse({ ...base, slug });
+      expect(r.success).toBe(false);
+      const msg = r.success ? '' : r.error.issues.find((i) => i.path[0] === 'slug')?.message ?? '';
+      expect(msg).toMatch(/lowercase letters and numbers/);
+      expect(msg).toMatch(/2-24 characters/);
+    }
+  });
   it('requires authConfig fields matching authKind', () => {
     expect(createToolSourceSchema.safeParse({ ...base, authKind: 'basic', authConfig: { token: 'x' } }).success).toBe(false);
     expect(createToolSourceSchema.safeParse({ ...base, authKind: 'basic', authConfig: { username: 'u', password: 'p' } }).success).toBe(true);

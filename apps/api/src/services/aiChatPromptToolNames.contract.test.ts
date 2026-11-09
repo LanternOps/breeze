@@ -19,6 +19,7 @@ import { listChatSurfaceToolNames } from './aiAgentSdkTools';
 import { AI_SYSTEM_PROMPT_BASE, AI_SYSTEM_PROMPT_TAIL } from './aiAgentSystemPrompt';
 import { AI_SYSTEM_PROMPT_DIAGNOSIS } from './aiAgentDiagnosisPrompt';
 import { WISP_BEHAVIOUR_BLOCK } from './wisp/threads';
+import { renderStandingLoop } from './wisp/standingLoop';
 import {
   composeStaticSystemPrompt,
   DOMAIN_NOTES,
@@ -80,6 +81,7 @@ function schemaEnumVocabulary(): Set<string> {
  */
 const NON_TOOL_TERMS: ReadonlySet<string> = new Set([
   'not_installed', // software_presence monitor condition value (base prompt, Monitors)
+  'wisp_standing_state', // tag of the per-turn standing-state block the Wisp standing loop names (#10426)
 ]);
 
 function chatPromptTexts(): Array<[string, string]> {
@@ -89,6 +91,8 @@ function chatPromptTexts(): Array<[string, string]> {
     ['AI_SYSTEM_PROMPT_TAIL', AI_SYSTEM_PROMPT_TAIL],
     ['AI_SYSTEM_PROMPT_DIAGNOSIS', AI_SYSTEM_PROMPT_DIAGNOSIS],
     ['WISP_BEHAVIOUR_BLOCK', WISP_BEHAVIOUR_BLOCK],
+    // #10391 / #10426: the Wisp chat seed's standing-loop section (static; its numbers ride on the turn).
+    ['renderStandingLoop', renderStandingLoop('claude-sonnet-5-5')],
     ['composeStaticSystemPrompt(lazy)', composeStaticSystemPrompt(names, 'lazy')],
     ['composeStaticSystemPrompt(full)', composeStaticSystemPrompt(names, 'full')],
   ];

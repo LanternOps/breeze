@@ -90,8 +90,8 @@ Do this one server at a time, and never on two regions simultaneously.
 3. **Check it is actually running and ready.**
 
    ```bash
-   docker ps --format '{{.Names}}' | grep breeze-worker
-   docker exec breeze-worker wget -qO- http://127.0.0.1:3001/health/ready
+   docker compose ps --status running --services | grep -x worker
+   docker compose exec worker wget -qO- http://127.0.0.1:3001/health/ready
    ```
 
    Wait until this reports ready before going on. If it reports that migrations
@@ -99,7 +99,7 @@ Do this one server at a time, and never on two regions simultaneously.
    that first.
 
    <Aside type="caution">
-     Do not skip the `docker ps` check. If your deploy process names services
+     Do not skip the `docker compose ps` check. If your deploy process names services
      explicitly, it is easy for the worker to never start at all — and the API's
      own health endpoint cannot tell you that, because the API is still healthy.
    </Aside>
@@ -120,7 +120,7 @@ Do this one server at a time, and never on two regions simultaneously.
    - Send a command to a connected device — it should still work, because the
      API still owns the agent connection.
    - Pick a scheduled job with a visible result and confirm it now appears in
-     `docker logs breeze-worker` and no longer in `docker logs breeze-api`.
+     `docker compose logs worker` and no longer in `docker compose logs api`.
 
 6. **Soak before repeating.**
 
@@ -158,6 +158,19 @@ container running your heaviest jobs is invisible.
   pool usage — which is exactly what matters on the container doing the heavy
   lifting. It does not report HTTP or fleet metrics, because it serves no
   requests. Do not alert on their absence here.
+
+## Worker memory
+
+From v0.127.0 the shipped Compose files start the worker with a 1 GB Node
+heap (`--max-old-space-size=1024`), which keeps the worker's memory in check
+while it builds the file list for a very large backup snapshot (see
+[The snapshot file list](/backup/restoring/#the-snapshot-file-list)). To give it more,
+set `WORKER_NODE_OPTIONS` in `.env`, for example
+`WORKER_NODE_OPTIONS=--max-old-space-size=2048`, and recreate the worker. The
+setting replaces the whole `NODE_OPTIONS` value for the worker only; the `api`
+container is unchanged, including on an unsplit install where it runs every
+job. If you maintain your own Compose file, copy the worker's `NODE_OPTIONS`
+line across.
 
 ## Keeping the worker upgraded
 

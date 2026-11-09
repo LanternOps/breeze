@@ -358,6 +358,10 @@ export const backupJobs = pgTable(
     // at publication so GC groups by write-time identity, not the config's
     // possibly-since-edited current one.
     storageIdentity: text('storage_identity'),
+    // #11027: why dispatch gave this file/system_image run no incremental base,
+    // one of BACKUP_FULL_RUN_REASONS (@breeze/shared). NULL = the run had a base,
+    // the mode has no base concept (hyperv/mssql), or it predates this column.
+    fullBackupReason: varchar('full_backup_reason', { length: 64 }),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
@@ -497,6 +501,9 @@ export const backupSnapshots = pgTable(
   })
 );
 
+/** What a content-less `backup_snapshot_files` row is (#11235). */
+export type SnapshotEntryKind = 'dir' | 'symlink';
+
 export const backupSnapshotFiles = pgTable(
   'backup_snapshot_files',
   {
@@ -508,6 +515,11 @@ export const backupSnapshotFiles = pgTable(
     backupPath: text('backup_path').notNull(),
     size: bigint('size', { mode: 'number' }),
     modifiedAt: timestamp('modified_at'),
+    // #11235: 'dir' / 'symlink' for a content-less entry (backupPath ''),
+    // NULL for a regular file or a content-less row written before the
+    // column existed. Written via contentlessEntryKind
+    // (services/backupSnapshotEntryKind.ts).
+    kind: text('kind').$type<SnapshotEntryKind>(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (table) => ({

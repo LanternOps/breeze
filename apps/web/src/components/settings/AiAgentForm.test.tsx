@@ -771,3 +771,21 @@ describe('AiAgentForm — built-in troubleshoot agent (#11084)', () => {
     expect(screen.queryByTestId('ai-agent-model')).toBeNull();
   });
 });
+
+// #11287: the Enabled help explained the mode switch even where the form has none.
+describe('AiAgentForm — Enabled help follows the mode control', () => {
+  it.each(['troubleshoot', 'research'] as const)('%s agent: help does not mention the mode', (kind) => {
+    mockEndpoints();
+    // Control: with a mode control on screen the help still explains the pairing.
+    const first = renderForm({ agent: makeAgent({ kind: 'triage' }) });
+    expect(screen.getByTestId('ai-agent-mode-field')).toBeTruthy();
+    expect(screen.getByTestId('ai-agent-enabled-hint').textContent).toMatch(/Off mode nothing runs/);
+    first.unmount();
+
+    renderForm({ agent: makeAgent({ kind, toolAllowlist: [] }) });
+    expect(screen.queryByTestId('ai-agent-mode-field')).toBeNull();
+    const hint = screen.getByTestId('ai-agent-enabled-hint').textContent ?? '';
+    expect(hint).not.toMatch(/mode/i);
+    expect(hint.length).toBeGreaterThan(0);
+  });
+});

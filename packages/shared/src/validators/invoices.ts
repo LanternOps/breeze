@@ -83,12 +83,25 @@ export const updateInvoiceSchema = z.object({
   lineShowWorkedTime: z.boolean().nullable().optional()
 });
 
+/**
+ * A caller-chosen key naming ONE intended payment (#3803). Opaque and
+ * case-sensitive: 1–255 visible ASCII characters, no whitespace, so the same
+ * key survives an HTTP header round trip unchanged. Send a fresh key per
+ * payment and the same key on every retry of it.
+ */
+export const idempotencyKeySchema = z.string().regex(
+  /^[\x21-\x7E]{1,255}$/,
+  'idempotency key must be 1-255 visible ASCII characters with no whitespace'
+);
+
 export const recordPaymentSchema = z.object({
   amount: z.number().positive().multipleOf(0.01),
   method: z.enum([...PAYMENT_METHODS]),
   reference: z.string().max(255).optional(),
   receivedAt: isoDate,
-  note: z.string().max(2000).optional()
+  note: z.string().max(2000).optional(),
+  // Also accepted as the Idempotency-Key header (routes/invoices/payments.ts).
+  idempotencyKey: idempotencyKeySchema.optional()
 });
 
 export const voidInvoiceSchema = z.object({

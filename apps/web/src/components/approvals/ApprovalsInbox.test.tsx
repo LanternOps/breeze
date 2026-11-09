@@ -504,6 +504,22 @@ describe('ApprovalsInbox', () => {
     expect(navigateToMock).not.toHaveBeenCalled();
   });
 
+  it('shows a non-retryable, specific inline message for a 403 approver_scope_required refusal', async () => {
+    intentApprovalsMock.decide.mockRejectedValue(
+      new ActionError('Forbidden', 403, undefined, { error: 'approver_scope_required' }),
+    );
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-approval-1');
+
+    fireEvent.click(screen.getByTestId('approval-approve-approval-1'));
+
+    const error = await screen.findByTestId('approval-error-approval-1');
+    expect(error).not.toHaveTextContent(/could not be submitted/i);
+    expect(error).not.toHaveTextContent('approver_scope_required');
+    expect(error).toHaveTextContent(/partner-level approver/i);
+    expect(navigateToMock).not.toHaveBeenCalled();
+  });
+
   it('polls for approvals every 30 seconds as a fallback for a dead WebSocket', async () => {
     vi.useFakeTimers();
     render(<ApprovalsInbox />);

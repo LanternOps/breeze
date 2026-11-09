@@ -12,6 +12,8 @@ const shared = vi.hoisted(() => ({
   writeAuditEvent: vi.fn(),
   captureException: vi.fn(),
   wispEnabled: vi.fn(() => true),
+  // #11432: the thread row enforceWispCeiling reads for an org-less call's focus.
+  threadRows: [] as unknown[],
 }));
 
 vi.mock('../../config/env', async (orig) => ({
@@ -19,13 +21,18 @@ vi.mock('../../config/env', async (orig) => ({
   wispEnabled: shared.wispEnabled,
 }));
 
-vi.mock('../../db', () => ({
-  db: {},
+vi.mock('../../db', () => {
+  const chain: Record<string, unknown> = {};
+  for (const m of ['from', 'where']) chain[m] = vi.fn(() => chain);
+  chain.limit = vi.fn(async () => shared.threadRows);
+  return {
+  db: { select: vi.fn(() => chain) },
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   getCurrentDbAccessContext: vi.fn(() => undefined),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_c: unknown, fn: () => Promise<unknown>) => fn()),
-}));
+  };
+});
 vi.mock('./grantAuthority', async (orig) => ({
   ...(await orig<typeof import('./grantAuthority')>()),
   resolveGrantCeiling: shared.resolveGrantCeiling,
@@ -88,8 +95,56 @@ function intent(o: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  shared.threadRows = [];
   shared.lookupWispGrant.mockResolvedValue(GRANT);
   shared.resolveGrantCeiling.mockResolvedValue(ceiling());
+});
+
+// #11432: a durable release rebuilds the requester's auth, so the thread-focus
+// write default is re-derived here, against the INTENT org the approval was
+// filed in, never carried over from the chat session.
+describe('checkWispCeilingForRelease — the focus write default (#11432)', () => {
+  const create = intent({ actionName: 'manage_configuration_policy', arguments: { action: 'create', name: 'Baseline Monitoring' } });
+  // A partner-wide grant over both orgs, both in the requester's reach, so only the focus rule decides.
+  const writes = () => ceiling({
+    permissionKeys: new Set(['devices:write']), orgIds: new Set([ORG_A, ORG_B]), scopeOrgId: null, partnerWide: true,
+  });
+
+  it('an org-less write of a thread focused on the intent org releases with that org as its write default', async () => {
+    shared.resolveGrantCeiling.mockResolvedValue(writes());
+    shared.threadRows = [{ focusOrgId: ORG_A }];
+    const r = await checkWispCeilingForRelease(create, releaseAuth([ORG_A, ORG_B]));
+    expect(r.ok && r.auth.aiWriteDefaultOrgId).toBe(ORG_A);
+  });
+
+  it('a focus moved to another org during the approval wait gives no default', async () => {
+    shared.resolveGrantCeiling.mockResolvedValue(writes());
+    shared.threadRows = [{ focusOrgId: ORG_B }];
+    const r = await checkWispCeilingForRelease(create, releaseAuth([ORG_A, ORG_B]));
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.auth.aiWriteDefaultOrgId).toBeUndefined();
+  });
+});
+
+// #11433: the release re-checks the intent's STORED arguments, so the action-level
+// floor holds across the approval wait: a run releases, an apply never does.
+describe('checkWispCeilingForRelease — Fleet Design actions (#11433)', () => {
+  const REPORT_RUN = '00000000-0000-4000-8000-0000000000f1';
+  beforeEach(() => { shared.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: new Set(['*:*']) })); });
+
+  it('a run intent for the intent org releases', async () => {
+    const r = await checkWispCeilingForRelease(intent({ actionName: 'manage_fleet_designs', arguments: { action: 'run', orgId: ORG_A } }), releaseAuth());
+    expect(r.ok).toBe(true);
+  });
+
+  it.each(['apply', 'rollback'])('an %s intent is refused at release with the tool detail, and audited', async (action) => {
+    const r = await checkWispCeilingForRelease(
+      intent({ actionName: 'manage_fleet_designs', arguments: { action, reportRunId: REPORT_RUN } }),
+      releaseAuth(),
+    );
+    expect(r).toMatchObject({ ok: false, errorCode: 'wisp_ceiling_refused', details: { wispRefusal: 'tool' } });
+    expect(shared.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'wisp.ceiling_refused' }));
+  });
 });
 
 describe('checkWispCeilingForRelease', () => {

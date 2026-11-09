@@ -250,19 +250,6 @@ function assertOwnerWithinCeiling(ceiling: GrantCeiling, owner: MemoryOwner): vo
 }
 
 /**
- * Write one block for the grant: status 'unconfirmed', stamped with the grant
- * and revision that authored it, anchored on the ceiling's partner. Then, in
- * the same transaction, supersede the previous live UNCONFIRMED block with the
- * same (owner, blockType, subjectKey). A per-key advisory lock serialises
- * concurrent writers so two racing writes cannot both stay live.
- *
- * An agent write never supersedes a human-confirmed block (spec §8.3: a person
- * confirms, Wisp proposes): the confirmed block stays live beside the new
- * proposal and recalls first; only a human confirm of the proposal
- * (memoryService.confirmBlock) replaces it. Otherwise a prompt-injected
- * `remember` could silently drop a technician's confirmed preference.
- */
-/**
  * The per-key advisory lock every writer of one (tenant, owner, block_type,
  * subject_key) takes — rememberForGrant here, confirmBlock and recordHumanBlock
  * in memoryService.ts — so an agent write and a human write on one key
@@ -276,51 +263,115 @@ export function memoryKeyLock(key: {
   return sql`SELECT pg_advisory_xact_lock(hashtext('wisp.memory.remember'), hashtext(${lockKey}))`;
 }
 
+/**
+ * Write one block for the grant: status 'unconfirmed', stamped with the grant
+ * and revision that authored it, anchored on the ceiling's partner. Then, in
+ * the same transaction, supersede the previous live UNCONFIRMED block with the
+ * same (owner, blockType, subjectKey). A per-key advisory lock serialises
+ * concurrent writers so two racing writes cannot both stay live.
+ *
+ * An agent write never supersedes a human-confirmed block (spec §8.3: a person
+ * confirms, Wisp proposes): the confirmed block stays live beside the new
+ * proposal and recalls first; only a human confirm of the proposal
+ * (memoryService.confirmBlock) replaces it. Otherwise a prompt-injected
+ * `remember` could silently drop a technician's confirmed preference.
+ */
 export async function rememberForGrant(ceiling: GrantCeiling, block: RememberInput): Promise<MemoryBlock> {
   assertActive(ceiling);
   validateRememberInput(block);
   assertOwnerWithinCeiling(ceiling, block.owner);
 
+  const row = await inBrokerContext(async () => {
+    await db.execute(memoryKeyLock(lockKeyFor(ceiling, block)));
+    return insertAndSupersede(ceiling, block);
+  });
+  return toMemoryBlock(row);
+}
+
+/** Maximum blocks one instruction-capture group write may carry (5 instructions × 20 targets). */
+export const MEMORY_GROUP_MAX_BLOCKS = 100;
+
+/**
+ * #10428 (W05): the blocks one turn-end instruction capture wrote, all in ONE
+ * transaction — every block lands or none does. Each block follows
+ * rememberForGrant's rule exactly (unconfirmed, grant + revision stamped, the
+ * previous live UNCONFIRMED block with the same key superseded, a confirmed
+ * one never). Every block is validated and ceiling-checked before any write,
+ * and the per-key locks are taken in one sorted order, so two concurrent group
+ * writes over overlapping keys cannot deadlock.
+ */
+export async function rememberInstructionGroupForGrant(ceiling: GrantCeiling, blocks: RememberInput[]): Promise<MemoryBlock[]> {
+  assertActive(ceiling);
+  if (blocks.length === 0) return [];
+  if (blocks.length > MEMORY_GROUP_MAX_BLOCKS) {
+    throw new MemoryValidationError(`a group write carries at most ${MEMORY_GROUP_MAX_BLOCKS} blocks`);
+  }
+  for (const block of blocks) {
+    validateRememberInput(block);
+    assertOwnerWithinCeiling(ceiling, block.owner);
+  }
+
+  const locks = [...new Map(blocks.map((block) => {
+    const key = lockKeyFor(ceiling, block);
+    return [JSON.stringify(key), key] as const;
+  })).entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+
+  const rows = await inBrokerContext(async () => {
+    for (const [, key] of locks) await db.execute(memoryKeyLock(key));
+    const inserted: AiMemoryBlockRow[] = [];
+    for (const block of blocks) inserted.push(await insertAndSupersede(ceiling, block));
+    return inserted;
+  });
+  return rows.map(toMemoryBlock);
+}
+
+function lockKeyFor(ceiling: GrantCeiling, block: RememberInput): Parameters<typeof memoryKeyLock>[0] {
+  const { owner } = block;
+  return {
+    tenantPartnerId: ceiling.partnerId,
+    ownerKind: owner.kind,
+    ownerUserId: owner.kind === 'user' ? owner.userId : null,
+    ownerOrgId: owner.kind === 'org' ? owner.orgId : null,
+    blockType: block.blockType,
+    subjectKey: block.subjectKey,
+  };
+}
+
+/** The write half of rememberForGrant; the caller holds the key's advisory lock inside the broker context. */
+async function insertAndSupersede(ceiling: GrantCeiling, block: RememberInput): Promise<AiMemoryBlockRow> {
   const { owner } = block;
   const ownerUserId = owner.kind === 'user' ? owner.userId : null;
   const ownerOrgId = owner.kind === 'org' ? owner.orgId : null;
-  const row = await inBrokerContext(async () => {
-    await db.execute(memoryKeyLock({
-      tenantPartnerId: ceiling.partnerId, ownerKind: owner.kind, ownerUserId, ownerOrgId,
-      blockType: block.blockType, subjectKey: block.subjectKey,
-    }));
-    const [inserted] = await db.insert(aiMemoryBlocks).values({
-      tenantPartnerId: ceiling.partnerId,
-      ownerKind: owner.kind,
-      ownerUserId,
-      ownerOrgId,
-      blockType: block.blockType,
-      subjectKey: block.subjectKey,
-      content: block.content,
-      confidence: block.confidence,
-      status: 'unconfirmed',
-      authoredByGrantId: ceiling.grantId,
-      authoredByGrantRevisionId: ceiling.revisionId,
-      sourceSessionId: block.sourceSessionId ?? null,
-    }).returning();
-    if (!inserted) throw new Error('ai_memory_blocks insert returned no row');
+  const [inserted] = await db.insert(aiMemoryBlocks).values({
+    tenantPartnerId: ceiling.partnerId,
+    ownerKind: owner.kind,
+    ownerUserId,
+    ownerOrgId,
+    blockType: block.blockType,
+    subjectKey: block.subjectKey,
+    content: block.content,
+    confidence: block.confidence,
+    status: 'unconfirmed',
+    authoredByGrantId: ceiling.grantId,
+    authoredByGrantRevisionId: ceiling.revisionId,
+    sourceSessionId: block.sourceSessionId ?? null,
+  }).returning();
+  if (!inserted) throw new Error('ai_memory_blocks insert returned no row');
 
-    await db.update(aiMemoryBlocks)
-      .set({ supersededById: inserted.id, updatedAt: sql`now()` })
-      .where(and(
-        eq(aiMemoryBlocks.tenantPartnerId, ceiling.partnerId),
-        eq(aiMemoryBlocks.ownerKind, owner.kind),
-        ownerUserId === null ? isNull(aiMemoryBlocks.ownerUserId) : eq(aiMemoryBlocks.ownerUserId, ownerUserId),
-        ownerOrgId === null ? isNull(aiMemoryBlocks.ownerOrgId) : eq(aiMemoryBlocks.ownerOrgId, ownerOrgId),
-        eq(aiMemoryBlocks.blockType, block.blockType),
-        eq(aiMemoryBlocks.subjectKey, block.subjectKey),
-        ne(aiMemoryBlocks.id, inserted.id),
-        eq(aiMemoryBlocks.status, 'unconfirmed'),
-        isNull(aiMemoryBlocks.supersededById),
-      ));
-    return inserted;
-  });
-  return toMemoryBlock(row);
+  await db.update(aiMemoryBlocks)
+    .set({ supersededById: inserted.id, updatedAt: sql`now()` })
+    .where(and(
+      eq(aiMemoryBlocks.tenantPartnerId, ceiling.partnerId),
+      eq(aiMemoryBlocks.ownerKind, owner.kind),
+      ownerUserId === null ? isNull(aiMemoryBlocks.ownerUserId) : eq(aiMemoryBlocks.ownerUserId, ownerUserId),
+      ownerOrgId === null ? isNull(aiMemoryBlocks.ownerOrgId) : eq(aiMemoryBlocks.ownerOrgId, ownerOrgId),
+      eq(aiMemoryBlocks.blockType, block.blockType),
+      eq(aiMemoryBlocks.subjectKey, block.subjectKey),
+      ne(aiMemoryBlocks.id, inserted.id),
+      eq(aiMemoryBlocks.status, 'unconfirmed'),
+      isNull(aiMemoryBlocks.supersededById),
+    ));
+  return inserted;
 }
 
 /**

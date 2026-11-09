@@ -169,7 +169,14 @@ MFA is enabled by default (controlled by the `ENABLE_2FA` environment variable).
 | **SMS** | One-time codes sent to a verified phone number via Twilio. |
 | **Passkey** | WebAuthn/FIDO2 credentials (platform authenticators such as Touch ID / Windows Hello, or roaming security keys). Phishing-resistant; the private key never leaves the device. |
 
-The `users.mfa_method` field records a single primary method (`totp`, `sms`, or `passkey`) that determines which challenge is offered at login. A user can enrol a passkey alongside an existing TOTP or SMS factor — enrolling the first passkey only promotes it to the primary method when no TOTP/SMS factor is already configured.
+An account has one **primary** method and may hold others beside it:
+
+- The `users.mfa_method` field records the primary method (`totp`, `sms`, or `passkey`). It decides which challenge login offers first and which proof the dashboard asks for first when you confirm a sensitive change.
+- A user can enrol a passkey alongside an existing TOTP or SMS factor. Enrolling the first passkey only promotes it to the primary method when no TOTP/SMS factor is already configured.
+- A user whose primary method is a passkey can add an authenticator app (TOTP) as a **backup** — see [Authenticator app as a backup](#authenticator-app-as-a-backup). The passkey stays primary.
+- The primary only moves when a factor is removed: deleting the last passkey promotes the authenticator app, and removing the authenticator app from a TOTP-primary account promotes a passkey.
+
+`GET /users/me` returns `mfaMethod` (the primary) and `totpEnrolled`, which is `true` when an authenticator app is enrolled either as the primary or as the backup.
 
 <Aside type="note">
   Organisation administrators can enforce MFA for all users via the organisation `settings.security.requireMfa` flag. When enforced, users cannot disable MFA.
@@ -211,6 +218,42 @@ Enrolled passkeys are managed from the same screen: `GET /auth/passkeys` lists t
 
 WebAuthn is implemented with `@simplewebauthn/server`. Registration and authentication challenges are held in Redis with a 5-minute TTL and consumed atomically (read-and-delete) to prevent reuse. Each credential stores a monotonic signature counter for clone/replay detection.
 
+### Authenticator app as a backup
+
+If your primary method is a passkey, add an authenticator app as a backup so you can still sign in when the passkey is not available (a lost security key, a new laptop, a browser without access to your passkey). The passkey stays your primary method.
+
+To add it, open **Settings → Profile → Multi-factor authentication** and choose **Add backup** on the **Authenticator app** row:
+
+<Steps>
+1. Enter your current password. An account that signs in through an identity provider and has no password chooses **Verify with your identity provider** instead.
+2. Scan the QR code with your authenticator app, or enter the setup key shown under it.
+3. Enter the 6-digit code from the app and choose **Verify and add backup**.
+4. Confirm with your passkey when the browser asks. The row now shows **Backup**.
+</Steps>
+
+Adding the backup does not create, change or show recovery codes. The codes you already saved keep working. To get a new set, use **Regenerate recovery codes**.
+
+The row shows **Not available** when your organisation's MFA policy does not allow authenticator apps.
+
+**Signing in with the backup.** At the MFA step of login, pick **Authenticator app** in the method list and enter the code.
+
+**When the passkey is lost.** After you sign in with the authenticator app, delete the lost passkey, add a new one, or regenerate recovery codes as usual. Each of these asks you to confirm with your passkey first. Choose **Use authenticator app instead** and enter a code. A code works only once, so if one is refused right after you signed in with it, wait for the next code.
+
+**Removing the backup.** Choose **Remove** on the **Authenticator app** row. Enter your password (or verify with your identity provider), then confirm with your passkey, or choose **Use authenticator app instead** and enter a code. You keep signing in with your passkey, and your recovery codes stay the same.
+
+If your primary method is the authenticator app and you also have passkeys, the same **Remove** action replaces **Disable**: it removes the authenticator app and makes a passkey your primary method, without turning MFA off.
+
+<Aside type="note" title="API">
+  The dashboard flow uses these endpoints:
+
+  - `POST /auth/mfa/setup` accepts a passkey-primary account with no authenticator app. The response is the same as for first-time setup.
+  - `POST /auth/mfa/enable` confirms it. Send `code`, the password (or `ssoReauthGrantId`), and `stepUpGrantId`: an `add_factor` grant from `POST /auth/mfa/step-up` proving the account's existing factor (for a passkey-primary account with no authenticator app, that is its passkey). The grant is checked before the code and spent only after the code verifies, so a mistyped code does not use it up. A backup confirmation answers `{ "success": true, "backup": true, "message": "...", "tokens": { ... } }`, with no `recoveryCodes` key. It must come from the same session that called `/mfa/setup`.
+  - `POST /auth/mfa/totp/remove` removes the authenticator app on its own. Send `currentPassword` (or `ssoReauthGrantId`) and `stepUpGrantId`: a `remove_totp` grant proven with a passkey or a TOTP code (SMS and recovery codes are refused for this operation). The session must already be MFA-verified. It answers `{ "success": true, "mfaMethod": "passkey", "tokens": { ... } }`. Refusals carry a stable `code`: `totp_not_enrolled`, `use_mfa_disable` (the authenticator app is the account's only factor), `last_mfa_factor_required`, and `factor_state_changed` (409, the account's factors changed while the request was in progress).
+  - Any refusal raised after a grant was spent carries `stepUpGrantConsumed: true`. Mint a new grant before retrying.
+
+  Adding or removing the backup ends every other session for the account. The caller receives a replacement session in the same response.
+</Aside>
+
 ### MFA During Login
 
 When MFA is enabled, login returns `mfaRequired: true`, the primary `mfaMethod` (`totp`, `sms`, or `passkey`), and a `tempToken` (valid for 5 minutes). When the account also has a usable enrolled passkey, login additionally returns `passkeyAvailable: true`. The flow continues based on the method:
@@ -223,6 +266,8 @@ When MFA is enabled, login returns `mfaRequired: true`, the primary `mfaMethod` 
 </Steps>
 
 If the primary method is `totp` or `sms` but `passkeyAvailable` is `true`, the user can bypass the primary challenge and authenticate with their passkey instead — the dashboard shows a **"Use a passkey instead"** option that runs the passkey flow in step 3. A passkey is itself a strong second factor, so this relaxes no security requirement.
+
+If the primary method is `passkey` and an authenticator app is enrolled as a backup, the method list also offers **Authenticator app**. It runs step 2 with `"method": "totp"` in the body.
 
 MFA verification is rate-limited separately from login.
 
@@ -248,9 +293,11 @@ MFA verification is rate-limited separately from login.
 
 Call `POST /auth/mfa/disable` with `currentPassword` and the current 6-digit code (TOTP or SMS depending on active method). This clears the MFA secret, phone number, and recovery codes. Every **other** session and refresh token for the user is revoked; the calling session is replaced in the same response (new access and refresh tokens, or refreshed cookies in the browser flow), so the user is not signed out by their own request. If the organisation enforces MFA, the endpoint returns `403`. A caller that cannot receive the replacement session (a bearer-only client with no device binding) receives `428`.
 
+While the account still has active passkeys, `POST /auth/mfa/disable` refuses with `409` and `code: "factor_removal_required"`. Turning MFA off there would leave the passkeys listed while password sign-in skipped MFA. Delete the passkeys first, or remove just the authenticator app with `POST /auth/mfa/totp/remove`. In the dashboard, an authenticator app beside passkeys shows **Remove** instead of **Disable**.
+
 ### Passwordless (SSO-provisioned) accounts
 
-An account created by SSO auto-provisioning has no password, so it cannot supply `currentPassword` to the factor-management endpoints: `POST /auth/mfa/disable`, `POST /auth/mfa/recovery-codes` and `DELETE /auth/passkeys/:id`. Instead it re-authenticates at its identity provider — `POST /sso/reauth/start` forces a fresh sign-in (`prompt=login`, `max_age=0`) and returns to the profile page with a single-use grant — and sends that grant as `ssoReauthGrantId` in place of `currentPassword`. The grant replaces only the password: the current MFA code (disable) or the existing-factor step-up grant (recovery codes, passkey deletion) is still required. It is bound to the user and the session that started the re-authentication, expires after five minutes, is consumed by the first successful call, and is refused for any account that has a password. In the dashboard these actions show **Verify with your identity provider** instead of a password field.
+An account created by SSO auto-provisioning has no password, so it cannot supply `currentPassword` to the factor-management endpoints: `POST /auth/mfa/disable`, `POST /auth/mfa/recovery-codes`, `POST /auth/mfa/totp/remove` and `DELETE /auth/passkeys/:id`. Instead it re-authenticates at its identity provider — `POST /sso/reauth/start` forces a fresh sign-in (`prompt=login`, `max_age=0`) and returns to the profile page with a single-use grant — and sends that grant as `ssoReauthGrantId` in place of `currentPassword`. The grant replaces only the password: the current MFA code (disable) or the existing-factor step-up grant (recovery codes, passkey deletion) is still required. It is bound to the user and the session that started the re-authentication, expires after five minutes, is consumed by the first successful call, and is refused for any account that has a password. In the dashboard these actions show **Verify with your identity provider** instead of a password field.
 
 ### Recovery Codes
 
@@ -372,7 +419,7 @@ Permissions are stored as `resource:action` pairs in the `permissions` table. Ro
 | `scripts` | Script library and execution |
 | `variables` | Tenant script variable definitions |
 | `alerts` | Alert rules and acknowledgement |
-| `tickets` | Ticketing. `record_approval` (v0.122.1) is reserved for recording a customer's approval or denial of held ticket work on their behalf; it is granted on upgrade to every role that holds `tickets:manage`, and no workflow checks it yet in this release |
+| `tickets` | Ticketing. `record_approval` (v0.122.1) is reserved for recording a customer's approval or denial of held ticket work on their behalf; it is granted on upgrade to every role that holds `tickets:manage`, and no workflow checks it yet in this release. `email_review` lets a role list, convert and dismiss the inbound-email review queue without a full admin grant; it is not granted to any role by default beyond full-admin (`*:*`) roles such as Partner Admin, so grant it to a custom role (the queue is partner-wide, so the role also needs full partner organization access) |
 | `ticket_mailbox` | Microsoft 365 partner-wide ticket mailbox administration |
 | `catalog` | Billing product catalog |
 | `invoices` | Invoices |
@@ -423,6 +470,7 @@ The authoritative list of assignable permissions is also available at runtime vi
 | `decide` | Approve or deny a pending action-intent approval |
 | `set_location` | Pin a site's coordinate and geofence radius (`sites` only) |
 | `record_approval` | Record a customer's approval or denial of held ticket work on their behalf (`tickets` only) |
+| `email_review` | Review the inbound-email queue: list, convert to a ticket, dismiss (`tickets` only) |
 
 There is no `view` or `update` action -- read access is `read`, and a write/create/update is `write` (or `create` for the one resource, `agent_rollback`, that uses it). Additionally, the wildcard permission `*:*` grants full administrative access.
 
@@ -472,6 +520,7 @@ The following named permission constants (`packages/shared/src/constants/permiss
 | `TICKETS_WRITE` | `tickets` | `write` |
 | `TICKETS_MANAGE` | `tickets` | `manage` |
 | `TICKETS_RECORD_APPROVAL` | `tickets` | `record_approval` |
+| `TICKETS_EMAIL_REVIEW` | `tickets` | `email_review` |
 | `TICKET_MAILBOX_READ` | `ticket_mailbox` | `read` |
 | `TICKET_MAILBOX_ADMIN` | `ticket_mailbox` | `admin` |
 | `CATALOG_READ` | `catalog` | `read` |
@@ -660,7 +709,8 @@ Auth endpoints are mounted under `/api/v1/auth`. Public endpoints do not require
 | `POST` | `/auth/mfa/setup` | Authenticated | Begin TOTP MFA setup; returns QR code and recovery codes. |
 | `POST` | `/auth/mfa/verify` | Public/Auth | Verify an MFA code during login (with `tempToken`) or setup confirmation. |
 | `POST` | `/auth/mfa/enable` | Authenticated | Confirm MFA setup (frontend settings flow). |
-| `POST` | `/auth/mfa/disable` | Authenticated | Disable MFA (requires current password and code; revokes all other sessions, re-issues the caller's). |
+| `POST` | `/auth/mfa/disable` | Authenticated | Disable MFA (requires current password and code; revokes all other sessions, re-issues the caller's). Refused with `409` while active passkeys exist. |
+| `POST` | `/auth/mfa/totp/remove` | Authenticated (MFA-verified) | Remove the authenticator app without turning MFA off (requires current password and a `remove_totp` step-up grant; a passkey becomes primary if the app was). |
 | `POST` | `/auth/mfa/recovery-codes` | Authenticated | Regenerate MFA recovery codes. |
 | `POST` | `/auth/phone/verify` | Authenticated | Send a phone verification SMS. |
 | `POST` | `/auth/phone/confirm` | Authenticated | Confirm phone verification code. |
@@ -805,6 +855,8 @@ All user and role management actions are recorded in the audit log. Key audit ev
 | `auth.mfa.setup` | MFA is enabled for an account. |
 | `auth.mfa.disable` | MFA is disabled. |
 | `auth.mfa.recovery_codes.rotate` | Recovery codes are regenerated. |
+| `auth.mfa.totp.register` | An authenticator app is added as a backup beside a passkey. |
+| `auth.mfa.totp.remove` | An authenticator app is removed without switching MFA off. |
 | `auth.mfa.passkey.register` | A passkey is registered. |
 | `auth.mfa.passkey.delete` | A passkey is deleted. |
 | `sso.provider.create` | An SSO provider is created. |

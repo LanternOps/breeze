@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { eq, desc, inArray, and, sql, gte } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { readOwnPartnerAxisRows } from '../../db/partnerAxisRead';
 import { patches, devicePatches, deviceCommands, users } from '../../db/schema';
 import { resolveLatestManualDecisions, selectManualDecisionRows } from '../../services/patchManualDecisions';
@@ -449,11 +449,13 @@ patchesRoutes.get(
     if (approvalViewParam !== '0' && devicePatchList.some((p) => p.status === 'pending')) {
       try {
         const evaluate = () => loadDevicePatchApprovalView(deviceId, device.orgId);
-        approvalView = partnerId
-          ? await readOwnPartnerAxisRows(partnerId, evaluate)
+        // Savepoint: the catch below survives a failed read, and the install
+        // state read after it runs on this same transaction (#11225).
+        approvalView = await withDbTransaction(() => (partnerId
+          ? readOwnPartnerAxisRows(partnerId, evaluate)
           // Partner-less org: the evaluator reads no partner-axis rows (it
           // stops at the org's missing partner), so the request context suffices.
-          : await evaluate();
+          : evaluate()));
         approvalEvaluation = approvalView.evaluation;
         // A pending row the evaluator did not classify (status changed between
         // the two reads, or an org with no partner) keeps the manual-only

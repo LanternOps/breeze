@@ -49,7 +49,8 @@
       "securityCheckToast": "Remote-Start nicht verfügbar: Sicherheitsprüfung fehlgeschlagen. Bitte wenden Sie sich an Ihren Administrator.",
       "securityPolicy": "Remote-Start durch Sicherheitsrichtlinie blockiert",
       "server": "Remote-Start fehlgeschlagen: Serverfehler. Bitte wenden Sie sich an Ihren Administrator.",
-      "vncTunnelFailed": "VNC-Tunnel konnte nicht geöffnet werden"
+      "vncTunnelFailed": "VNC-Tunnel konnte nicht geöffnet werden",
+      "providerUnavailable": "Dieses Fernwartungstool ist für dieses Gerät nicht mehr verfügbar. Aktualisieren Sie die Seite und versuchen Sie es erneut."
     },
     "fallback": {
       "linuxFirstRun": "Machen Sie die heruntergeladene Datei unter Linux ausführbar (chmod +x) und starten Sie sie einmal. Damit wird der Viewer registriert und Sitzungen öffnen sich danach automatisch.",
@@ -110,7 +111,14 @@
       "x11AuthFailed": "Authentifizierung am Anzeigeserver (X-Authority) nicht möglich",
       "x11ConnectFailed": "Verbindung zum Anzeigeserver auf diesem Gerät nicht möglich"
     },
-    "opensNewWindow": "(öffnet ein neues Fenster)"
+    "opensNewWindow": "(öffnet ein neues Fenster)",
+    "split": {
+      "builtInViewer": "Integrierter Viewer",
+      "connectWith": "Mit {{name}} verbinden",
+      "connectWithBuiltIn": "Mit dem integrierten Viewer verbinden",
+      "menuLabel": "Verbindungsart wählen",
+      "opensInBrowser": "Öffnet sich in einem neuen Browser-Tab"
+    }
   },
   "connectVncButton": {
     "creatingTunnel": "Tunnel erstellen...",
@@ -209,6 +217,7 @@
       "copy": "Kopieren",
       "delete": "Löschen",
       "download": "Herunterladen",
+      "mkdir": "Neuer Ordner",
       "move": "Verschieben",
       "purge": "Endgültig löschen",
       "restore": "Wiederherstellen",
@@ -250,6 +259,7 @@
     "emptyDirectory": "Leeres Verzeichnis",
     "errors": {
       "copy": "Kopieren fehlgeschlagen",
+      "createFolder": "Ordner konnte nicht erstellt werden",
       "delete": "Fehler beim Löschen",
       "download": "Download fehlgeschlagen",
       "downloadTooLarge": "Zu groß für den Download ({{size}}). Der Dateibrowser überträgt Dateien bis {{max}}.",
@@ -264,6 +274,15 @@
     "home": "Zuhause",
     "modified": "Geändert",
     "moveTo": "Verschieben nach",
+    "newFolder": {
+      "action": "Neuer Ordner",
+      "title": "Neuer Ordner",
+      "nameLabel": "Ordnername",
+      "location": "Wird erstellt in {{path}}",
+      "created": "Ordner {{name}} erstellt",
+      "invalidName": "Ordnernamen dürfen keine Pfadtrennzeichen oder vom Dateisystem dieses Geräts nicht erlaubte Zeichen enthalten.",
+      "nameExists": "Hier gibt es bereits eine Datei oder einen Ordner mit diesem Namen."
+    },
     "selectedCount": "Ausgewählte Anzahl",
     "size": "Größe",
     "title": "Dateimanager",
@@ -318,7 +337,8 @@
     "title": "Prozessmanager",
     "totalCpu": "Insgesamt CPU",
     "pid": "PID",
-    "cpu": "CPU"
+    "cpu": "CPU",
+    "monitorThis": "Überwachen"
   },
   "proxyTunnelPage": {
     "errors": {
@@ -643,9 +663,10 @@
     },
     "stopService": "Stoppen Sie den Dienst",
     "summary": "{{shown}} von {{total}} Leistungen auf {{device}}",
-    "title": "Titel",
+    "title": "Dienste",
     "windowsOnlyDescription": "Der Dienstemanager ist nur für Windows-Geräte verfügbar. {{device}} läuft {{os}}.",
-    "windowsOnlyTitle": "Nur Windows-Titel"
+    "windowsOnlyTitle": "Nur Windows",
+    "monitorThis": "Überwachen"
   },
   "sessionHistory": {
     "columns": {

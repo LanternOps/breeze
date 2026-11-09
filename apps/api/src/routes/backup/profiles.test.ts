@@ -48,6 +48,7 @@ vi.mock('../../db', () => ({
     delete: (...args: unknown[]) => deleteMock(...(args as [])),
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
 }));
 

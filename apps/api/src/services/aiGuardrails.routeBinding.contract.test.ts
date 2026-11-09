@@ -303,6 +303,74 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'list_roles', action: 'get', routeFile: 'roles.ts', method: 'get', path: '/:id' },
   { tool: 'list_roles', action: 'users', routeFile: 'roles.ts', method: 'get', path: '/:id/users' },
   { tool: 'list_roles', action: 'effective_permissions', routeFile: 'roles.ts', method: 'get', path: '/:id/effective-permissions' },
+  // Full-control W18 PR B (#6789): both portal writes bind to the one PATCH; the recipient writers to their routes, with
+  // Decision 5's export grant declared on add and convert.
+  { tool: 'manage_org_portal_settings', action: 'get', routeFile: 'orgPortalSettings.ts', method: 'get', path: '/organizations/:id/portal-settings' },
+  {
+    tool: 'manage_org_portal_settings', action: 'update', routeFile: 'orgPortalSettings.ts', method: 'patch', path: '/organizations/:id/portal-settings',
+    toolOnly: { extra: [], reason: 'Never writes customCss or a sensitive or permission flag, and refuses a parent enable that would activate a dormant sensitive child (row-locked).' },
+  },
+  {
+    tool: 'manage_org_portal_settings', action: 'set_sensitive_access', routeFile: 'orgPortalSettings.ts', method: 'patch', path: '/organizations/:id/portal-settings',
+    toolOnly: { extra: [], reason: 'Only the sensitive, permission and parent flags; four-eyes with a mandatory effect digest over the current flag values.' },
+  },
+  { tool: 'manage_report_recipients', action: 'list', routeFile: 'reports/recipients.ts', method: 'get', path: '/:id/recipients' },
+  {
+    tool: 'manage_report_recipients', action: 'add', routeFile: 'reports/recipients.ts', method: 'post', path: '/:id/recipients',
+    toolOnly: { extra: ['reports:export'], reason: 'Decision 5: every add is a scheduled delivery of report data by email, so the export grant and MFA apply to all of them (REST: series children only).' },
+  },
+  { tool: 'manage_report_recipients', action: 'remove', routeFile: 'reports/recipients.ts', method: 'delete', path: '/:id/recipients/:contactId' },
+  {
+    tool: 'manage_report_recipients', action: 'convert', routeFile: 'reports/recipients.ts', method: 'post', path: '/:id/recipients/convert',
+    toolOnly: { extra: ['reports:export'], reason: "Decision 5: export grant always, and only an address already in the report's emailRecipients converts, so convert never adds a delivery." },
+  },
+  // Full-control W16 PR A (#6786): each launch binds to its "Run now" route (same permission and MFA).
+  {
+    tool: 'run_patch_plan', routeFile: 'patchPlan.ts', method: 'post', path: '/runs',
+    toolOnly: { extra: [], reason: 'Decision 6: refuses site- and device-restricted sessions, which could not read a device-less run; a release keys the run on its action intent.' },
+  },
+  // Full-control W16 PR B (#6786): each action binds to the route a technician uses for the same act. scripts:write and
+  // contracts:write are conditional on the input, on REST as well, so the handler enforces them.
+  {
+    tool: 'manage_ai_agent_schedules', action: 'create', routeFile: 'aiAgentSchedules.ts', method: 'post', path: '/',
+    toolOnly: { extra: [], reason: 'Decision 3: takes no actMode, so it can never arm. Restricted sessions are refused on any scope.' },
+  },
+  {
+    tool: 'manage_ai_agent_schedules', action: 'update', routeFile: 'aiAgentSchedules.ts', method: 'patch', path: '/:id',
+    toolOnly: { extra: [], reason: 'Decision 3: actMode may only be false, and on an armed schedule a change that widens it or moves its cadence is refused.' },
+  },
+  {
+    tool: 'manage_ai_agent_schedules', action: 'delete', routeFile: 'aiAgentSchedules.ts', method: 'delete', path: '/:id',
+    toolOnly: { extra: [], reason: 'Four-eyes with a digest over the row and its overrides; deleting an override that narrows an armed baseline is refused (Decision 3).' },
+  },
+  {
+    tool: 'manage_fleet_designs', action: 'run', routeFile: 'fleetDesign.ts', method: 'post', path: '/runs',
+    toolOnly: { extra: [], reason: 'Decision 6: refuses site- and device-restricted sessions; a release keys the run on its action intent.' },
+  },
+  {
+    tool: 'manage_fleet_designs', action: 'preview', routeFile: 'fleetDesign.ts', method: 'post', path: '/:reportRunId/apply/preview',
+    toolOnly: { extra: [], reason: 'Same gates as the route: scripts:write when automation is non-empty, and a restricted session is refused.' },
+  },
+  {
+    tool: 'manage_fleet_designs', action: 'applied', routeFile: 'fleetDesign.ts', method: 'get', path: '/:reportRunId/applied',
+    toolOnly: { extra: [], reason: 'Decision 6: refuses site- and device-restricted sessions (stricter than REST).' },
+  },
+  {
+    tool: 'manage_fleet_designs', action: 'apply', routeFile: 'fleetDesign.ts', method: 'post', path: '/:reportRunId/apply',
+    toolOnly: { extra: [], reason: 'Four-eyes: runs only as a release carrying the verified digest, re-derived under the report-run lock. scripts:write when automation is non-empty, as the route.' },
+  },
+  {
+    tool: 'manage_fleet_designs', action: 'rollback', routeFile: 'fleetDesign.ts', method: 'post', path: '/:reportRunId/rollback',
+    toolOnly: { extra: [], reason: 'Four-eyes (Decision 5): runs only as a release carrying the verified digest, re-derived under the report-run lock. Passes the live scripts:write, as the route.' },
+  },
+  {
+    tool: 'manage_fleet_designs', action: 'document', routeFile: 'fleetDesign.ts', method: 'post', path: '/:reportRunId/document',
+    toolOnly: { extra: [], reason: 'Decision 6: refuses restricted sessions. Links deliverable evidence only with contracts:write, passed explicitly, as the route.' },
+  },
+  {
+    tool: 'create_operator_task', routeFile: 'aiOperatorTasks.ts', method: 'post', path: '/tasks',
+    toolOnly: { extra: [], reason: 'Decision 4: service_recovery only (no recipeKey input, so no identity recipe); runs only as the release of its own approved intent, which is the idempotency key; a named alert must be on the device.' },
+  },
   // Full-control W11 (#6781): the security policy tools bind to the route a technician uses for the same act.
   {
     tool: 'get_security_compliance', routeFile: 'security/dashboard.ts', method: 'get', path: '/dashboard',
@@ -651,9 +719,10 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'manage_scheduled_tasks', action: 'list', routeFile: 'systemTools/scheduledTasks.ts', method: 'get', path: '/devices/:deviceId/tasks', parents: ['systemTools/index.ts'] },
   { tool: 'manage_services', action: 'list', routeFile: 'systemTools/services.ts', method: 'get', path: '/devices/:deviceId/services', parents: ['systemTools/index.ts'] },
   { tool: 'file_operations', action: 'list', routeFile: 'systemTools/fileBrowser.ts', method: 'get', path: '/devices/:deviceId/files', parents: ['systemTools/index.ts'] },
-  // Upload and move also carry scripts:execute (fileBrowser.ts requireScriptsExecute).
+  // Upload, move and mkdir also carry scripts:execute (fileBrowser.ts requireScriptsExecute).
   { tool: 'file_operations', action: 'write', routeFile: 'systemTools/fileBrowser.ts', method: 'post', path: '/devices/:deviceId/files/upload', parents: ['systemTools/index.ts'] },
   { tool: 'file_operations', action: 'rename', routeFile: 'systemTools/fileBrowser.ts', method: 'post', path: '/devices/:deviceId/files/move', parents: ['systemTools/index.ts'] },
+  { tool: 'file_operations', action: 'mkdir', routeFile: 'systemTools/fileBrowser.ts', method: 'post', path: '/devices/:deviceId/files/mkdir', parents: ['systemTools/index.ts'] },
   { tool: 'registry_operations', action: 'get_value', routeFile: 'systemTools/registry.ts', method: 'get', path: '/devices/:deviceId/registry/value', parents: ['systemTools/index.ts'] },
   // Live device reads outside /system-tools. The live request is bound to the
   // route that sends the same command; the stored-data read to the route that
@@ -873,7 +942,7 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'manage_ticket_config', action: 'create_domain', routeFile: 'ticketConfig.ts', method: 'post', path: '/inbound-domains' },
   { tool: 'manage_ticket_config', action: 'update_domain', routeFile: 'ticketConfig.ts', method: 'patch', path: '/inbound-domains/:id' },
   { tool: 'manage_ticket_config', action: 'delete_domain', routeFile: 'ticketConfig.ts', method: 'delete', path: '/inbound-domains/:id' },
-  // The email-inbound LIST is gated on tickets:write (writePerm) like its mutations; the admin predicate is applied in the handler.
+  // All three email-inbound routes are gated on tickets:email_review (#10951); the handler applies the same predicate.
   { tool: 'manage_ticket_inbox', action: 'list', routeFile: 'ticketConfig.ts', method: 'get', path: '/email-inbound' },
   { tool: 'manage_ticket_inbox', action: 'convert', routeFile: 'ticketConfig.ts', method: 'post', path: '/email-inbound/:id/convert' },
   { tool: 'manage_ticket_inbox', action: 'dismiss', routeFile: 'ticketConfig.ts', method: 'patch', path: '/email-inbound/:id/dismiss' },

@@ -811,6 +811,7 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
       { name: 'OAUTH_DCR_REQUIRE_IAT', secret: false },
       { name: 'OAUTH_CIMD_ENABLED', secret: false },
       { name: 'OAUTH_CIMD_ALLOWED_HOSTS', secret: false },
+      { name: 'OAUTH_REFRESH_ROTATION_GRACE_MS', secret: false },
     ],
     status: {
       kind: 'flags',

@@ -28,6 +28,10 @@ describe('isSeriesEligibleReportType', () => {
       expect(isSeriesEligibleReportType(t), t).toBe(false);
     }
   });
+  it('series refuses ticket_sla_performance (managed_evidence)', () => {
+    expect(isSeriesEligibleReportType('ticket_sla_performance')).toBe(false);
+    expect(availableCoversModes('ticket_sla_performance', true)).toEqual(['org']);
+  });
   it('never offers a system-managed type (parity with ReportsList)', () => {
     for (const t of REPORT_TYPES) {
       if (isSystemManagedReportType(t)) expect(isSeriesEligibleReportType(t), t).toBe(false);

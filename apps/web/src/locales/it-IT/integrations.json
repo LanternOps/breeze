@@ -596,7 +596,7 @@
   },
   "backupProviders": {
     "title": "Provider di backup",
-    "subtitle": "Visualizza in Breeze lo stato dei backup di Cove Data Protection e NinjaOne SaaS Backup (Dropsuite).",
+    "subtitle": "Visualizza in Breeze lo stato dei backup di Cove Data Protection, NinjaOne SaaS Backup (Dropsuite) e Axcient x360Recover.",
     "partnerOnly": "Le connessioni ai provider di backup sono disponibili solo per gli account partner.",
     "addConnection": "Aggiungi connessione",
     "providerLabel": "Provider",
@@ -604,6 +604,7 @@
     "nameLabel": "Nome della connessione",
     "namePlaceholder": "Account Cove principale",
     "namePlaceholderDropsuite": "Account principale di NinjaOne SaaS Backup",
+    "namePlaceholderAxcient": "Account principale di Axcient",
     "partnerNameLabel": "Nome partner Cove",
     "usernameLabel": "Nome di accesso dell'utente API",
     "passwordLabel": "Token dell'utente API",
@@ -651,6 +652,10 @@
     "errorDelete": "Impossibile eliminare la connessione di backup",
     "errorMap": "Impossibile aggiornare l'associazione",
     "dropsuite": "NinjaOne SaaS Backup (Dropsuite)",
+    "axcient": "Axcient x360Recover",
+    "apiKeyLabel": "Chiave API",
+    "axcientCredentialsHelp": "Crea una chiave API in x360Portal → Settings → API Keys selezionando sia x360Recover sia Billing. Breeze legge solo lo stato e non modifica mai nulla in Axcient.",
+    "axcientReentryHelp": "Lascia vuota la chiave API per mantenere quella memorizzata, oppure inseriscine una nuova per sostituirla.",
     "resellerTokenLabel": "Token del rivenditore",
     "authTokenLabel": "Token di autenticazione",
     "baseUrlLabel": "URL dell’API",
@@ -953,6 +958,8 @@
     "integrationUpdated": "Integrazione Pax8 aggiornata",
     "integrationConnected": "Integrazione Pax8 connessa",
     "companyMapped": "Azienda Pax8 mappata",
+    "companiesRefreshFailed": "Non è stato possibile aggiornare l’elenco delle aziende, che potrebbe non essere aggiornato. Ricarica per vedere la versione più recente.",
+    "syncStillRunning": "La sincronizzazione è ancora in corso o il suo stato non è disponibile. Riprova tra qualche minuto.",
     "companyUnmapped": "Mappatura azienda Pax8 rimossa",
     "observationsPaused": "Osservazioni quantità Pax8 in pausa",
     "observationsResumed": "Osservazioni quantità Pax8 riprese",
@@ -1110,7 +1117,8 @@
     "controllers": "Controller",
     "registerEachSelfHostedUniFiNetworkControllerA": "Registra ogni controller UniFi Network self-hosted. Un agente Breeze sulla rete del controller interroga direttamente la sua Integration API locale (firmware ≥ 9.3), quindi non serve un account cloud UniFi. Breeze archivia la chiave API locale cifrata e la invia all'agente scelto.",
     "controllerURL": "URL controller",
-    "siteThisControllerServes": "Sito servito da questo controller",
+    "collectorAgentLocation": "Posizione dell'agente di raccolta",
+    "collectorAgentLocationHelp": "Dove risiede l'agente che interroga questo controller, spesso la tua organizzazione interna. Associ i siti del controller ai clienti dopo averlo registrato.",
     "selectSite": "— Seleziona sito —",
     "collectorAgent": "Agente di raccolta",
     "localAPIKey": "Chiave API locale",
@@ -1149,6 +1157,7 @@
     "started": "Avviata",
     "trigger": "Trigger",
     "hostsSeen": "Host visti",
+    "sitesUnmapped": "Siti non associati",
     "hosts": "Host",
     "devicesCreated": "Dispositivi aggiunti in questa sincronizzazione",
     "new": "Aggiunti",
@@ -1473,7 +1482,8 @@
     "status": {
       "connected": "Connesso",
       "error": "Errore",
-      "reauth_required": "Nuova autenticazione richiesta"
+      "reauth_required": "Nuova autenticazione richiesta",
+      "inactive": "Inattiva"
     },
     "syncStatus": {
       "running": "In corso",
@@ -1575,5 +1585,28 @@
     "pushTestNote": "L’evento di prova può impiegare alcuni minuti per arrivare.",
     "pushLast": "Ultimo evento push: {{relative}}",
     "pushNone": "Nessun evento push ricevuto finora"
+  },
+  "externalMatch": {
+    "suggested": "Suggerito: {{target}}",
+    "matchedOn": "corrispondenza su “{{key}}”",
+    "accept": "Accetta",
+    "possibleMatches_one": "{{count}} possibile corrispondenza",
+    "possibleMatches_other": "{{count}} possibili corrispondenze",
+    "alsoMatches": "Corrisponde anche a {{names}}",
+    "pickSite": "Scegli un sito in {{org}}",
+    "reviewButton_one": "Rivedi {{count}} corrispondenza suggerita",
+    "reviewButton_other": "Rivedi {{count}} corrispondenze suggerite",
+    "reviewTitle": "Rivedi le corrispondenze suggerite",
+    "confirm_one": "Associa {{count}} selezionato",
+    "confirm_other": "Associa {{count}} selezionati",
+    "resolveInTable": "Risolvi queste nella tabella",
+    "tierExact": "Stesso nome",
+    "tierNormalized": "Stesso nome, ignorando i suffissi",
+    "summary": "{{unmapped}} non associati · {{suggested}} suggeriti",
+    "staleReview": "Alcune righe sono cambiate da quando hai aperto questa revisione. L’elenco è stato ricaricato.",
+    "newSinceSync_one": "{{count}} nuovo dall’ultima sincronizzazione",
+    "newSinceSync_other": "{{count}} nuovi dall’ultima sincronizzazione",
+    "bulkMapped_one": "{{count}} azienda mappata",
+    "bulkMapped_other": "{{count}} aziende mappate"
   }
 }

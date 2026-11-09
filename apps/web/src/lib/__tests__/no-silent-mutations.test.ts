@@ -386,6 +386,8 @@ const TARGET_GLOBS = [
   // codes, so a silent failure would leave a tech reading out a dead code or
   // believing a session was torn down when it wasn't.
   'src/components/remote/QuickSupportPage.tsx',
+  // File browser "New folder" (#10975).
+  'src/components/remote/FileManager.tsx',
   // PSA connections: create/update/delete/status/test all mutate stored PSA
   // credentials or a live connection's state. They were rewritten with bare
   // fetchWithAuth + setError, which the page's error banner only renders when
@@ -607,6 +609,14 @@ const TARGET_GLOBS = [
   'src/components/aiOperator/RecipeCard.tsx',
   // The draft preview and the admission that starts a four-eyes offboarding.
   'src/components/aiOperator/StartRecipeForm.tsx',
+  // Portal registration W3 (#11380): the sign-in policy writes (org card, partner unit) and the
+  // access-request approve/deny/decide calls, plus the portal-user and contact surfaces they touch.
+  'src/components/settings/portalAccess/OrgSignInRegistrationCard.tsx',
+  'src/components/settings/partnerSettings/units/portalAccessPolicyUnit.ts',
+  'src/components/settings/partnerSettings/PartnerCustomerPortalTab.tsx',
+  'src/components/settings/portalAccess/PortalAccessRequestsList.tsx',
+  'src/components/settings/OrgPortalUsersEditor.tsx',
+  'src/components/settings/contactPortalAccess.ts',
 ];
 
 // Ratchet floor, not a total: adding an entry above never touches this line.

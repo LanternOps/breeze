@@ -7,11 +7,13 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { queryMock, capturedMcpArgs, capturedTenantSdkToolArgs, lookupWispGrantMock } = vi.hoisted(() => ({
+const { queryMock, capturedMcpArgs, capturedTenantSdkToolArgs, lookupWispGrantMock, wispSessionToolFilterMock, maybeNotifyChatCrossedBudgetMock } = vi.hoisted(() => ({
   queryMock: vi.fn(),
-  capturedMcpArgs: [] as Array<{ getAuth: () => unknown }>,
+  maybeNotifyChatCrossedBudgetMock: vi.fn(),
+  capturedMcpArgs: [] as Array<{ getAuth: () => unknown; options?: { admitTool?: (name: string) => boolean } }>,
   capturedTenantSdkToolArgs: [] as Array<{ getOrgId: () => string }>,
   lookupWispGrantMock: vi.fn(),
+  wispSessionToolFilterMock: vi.fn(),
 }));
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
@@ -21,6 +23,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
 // Here: the lookup is controllable and the fallback auth is marked.
 vi.mock('./wisp/chatCeiling', () => ({
   lookupWispGrant: lookupWispGrantMock,
+  wispSessionToolFilter: wispSessionToolFilterMock,
   unreachableWispAuth: (auth: Record<string, unknown>) => ({ ...auth, accessibleOrgIds: [], __unreachable: true }),
   WispSessionUnavailableError: class WispSessionUnavailableError extends Error {
     readonly code = 'wisp_session_unavailable';
@@ -65,8 +68,8 @@ vi.mock('./aiModels/settleInvocation', async (orig) => ({
 vi.mock('./aiAgent', () => ({ sanitizeErrorForClient: (e: unknown) => String(e) }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./aiAgentSdkTools', () => ({
-  createBreezeMcpServer: vi.fn((getAuth: () => unknown) => {
-    capturedMcpArgs.push({ getAuth });
+  createBreezeMcpServer: vi.fn((getAuth: () => unknown, _pre: unknown, _post: unknown, _session: unknown, _extra: unknown, options?: { admitTool?: (name: string) => boolean }) => {
+    capturedMcpArgs.push({ getAuth, options });
     return { type: 'sdk' };
   }),
   BREEZE_MCP_TOOL_NAMES: ['mcp__breeze__query_devices'],
@@ -96,11 +99,26 @@ vi.mock('./toolSources/sdkBridge', () => ({
 // Their behaviour is pinned in streamingSessionManager.{tenantTools,flowTools}.test.ts.
 vi.mock('./toolSources/resolver', () => ({ resolveTenantTools: vi.fn(async () => []) }));
 vi.mock('./flows/flowTools', () => ({ resolveFlowTools: vi.fn(async () => []) }));
+// #10414: the turn-end grant spend notice (behaviour pinned in wisp/chatSpendCheck.test.ts).
+vi.mock('./wisp/chatSpendCheck', () => ({ maybeNotifyChatCrossedBudget: maybeNotifyChatCrossedBudgetMock }));
+// #10428: the real turn-end hooks, with the before-done half spied so a test can
+// hand back a capture id without Redis.
+vi.mock('./wisp/turnEnd', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./wisp/turnEnd')>();
+  return {
+    ...real,
+    runWispTurnEndBeforeDone: vi.fn(real.runWispTurnEndBeforeDone),
+    scheduleWispTurnEndAfterDone: vi.fn(real.scheduleWispTurnEndAfterDone),
+  };
+});
 
 import { StreamingSessionManager } from './streamingSessionManager';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 import { buildOrgAccessClosures, type AuthContext } from '../middleware/auth';
 import { WispSessionUnavailableError } from './wisp/chatCeiling';
+import { captureException } from './sentry';
+import { scriptedQuery, sdkResult } from './__testutils__/streamingSessionManagerHarness';
+import { runWispTurnEndBeforeDone, scheduleWispTurnEndAfterDone } from './wisp/turnEnd';
 
 const ORG_A = 'aaaaaaaa-1111-4222-8333-444455556666';
 const ORG_B = 'bbbbbbbb-1111-4222-8333-444455556666';
@@ -130,6 +148,8 @@ describe('getOrCreate — a Wisp session always carries its grant', () => {
     vi.clearAllMocks();
     capturedMcpArgs.length = 0;
     capturedTenantSdkToolArgs.length = 0;
+    wispSessionToolFilterMock.mockReset();
+    wispSessionToolFilterMock.mockResolvedValue((name: string) => name !== 'list_operator_tasks');
     queryMock.mockImplementation(() => ({
       async *[Symbol.asyncIterator]() {
         await new Promise(() => undefined);
@@ -161,6 +181,24 @@ describe('getOrCreate — a Wisp session always carries its grant', () => {
     expect(second).toBe(first);
     expect(second.wispGrant).toEqual(GRANT);
     expect(lookupWispGrantMock).toHaveBeenCalledTimes(1);
+    expect(wispSessionToolFilterMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("registers a Wisp session's tools through its grant's tool filter (#10430)", async () => {
+    lookupWispGrantMock.mockResolvedValue(GRANT);
+    await create('sess-wisp-index');
+    expect(wispSessionToolFilterMock).toHaveBeenCalledWith(GRANT);
+    const admitTool = capturedMcpArgs[0]!.options?.admitTool;
+    expect(admitTool?.('list_operator_tasks')).toBe(false);
+    expect(admitTool?.('query_devices')).toBe(true);
+  });
+
+  it('fails closed when the tool filter cannot be read (DB down): no session, no SDK query', async () => {
+    lookupWispGrantMock.mockResolvedValue(GRANT);
+    wispSessionToolFilterMock.mockRejectedValue(new Error('connection refused'));
+    await expect(create('sess-filter-down')).rejects.toThrow('connection refused');
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(manager.get('sess-filter-down')).toBeUndefined();
   });
 
   it('an ordinary session carries wispGrant null and its handlers keep the session tool auth', async () => {
@@ -168,6 +206,8 @@ describe('getOrCreate — a Wisp session always carries its grant', () => {
     const session = await create('sess-plain');
     expect(session.wispGrant).toBeNull();
     expect((capturedMcpArgs[0]!.getAuth() as AuthContext).accessibleOrgIds).toEqual([ORG_A, ORG_B]);
+    expect(wispSessionToolFilterMock).not.toHaveBeenCalled();
+    expect(capturedMcpArgs[0]!.options).toBeUndefined();
   });
 
   it("a Wisp session's shared handler auth reaches no org (handlers run under the gate's per-call auth)", async () => {
@@ -200,5 +240,126 @@ describe('getOrCreate — a Wisp session always carries its grant', () => {
     await expect(create('sess-factory', factory)).rejects.toMatchObject({ reason: 'surface_unsupported' });
     expect(factory).not.toHaveBeenCalled();
     expect(queryMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('turn end — the Wisp grant spend notice (#10414)', () => {
+  let manager: StreamingSessionManager;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    wispSessionToolFilterMock.mockReset();
+    wispSessionToolFilterMock.mockResolvedValue(() => true);
+    maybeNotifyChatCrossedBudgetMock.mockReset();
+    maybeNotifyChatCrossedBudgetMock.mockResolvedValue('under');
+    manager = new StreamingSessionManager();
+  });
+
+  afterEach(() => {
+    manager.shutdown();
+  });
+
+  /** One completed turn; returns the session once its processor has finished. */
+  async function runTurn(id: string) {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    queryMock.mockImplementation(() => scriptedQuery([sdkResult()], gate));
+    const session = await manager.getOrCreate(id, DB_SESSION, partnerAuth(), undefined, 'PROMPT', undefined, PLATFORM_CONFIG);
+    release();
+    await session.processorPromise;
+    return session;
+  }
+
+  const doneEvents = (session: Awaited<ReturnType<typeof runTurn>>) =>
+    session.eventBus.getReplayEvents().filter((e: { type: string }) => e.type === 'done');
+
+  it("a settled Wisp turn fires the notice for the session's grant", async () => {
+    lookupWispGrantMock.mockResolvedValue(GRANT);
+    const session = await runTurn('sess-wisp-turn');
+    await vi.waitFor(() => expect(maybeNotifyChatCrossedBudgetMock).toHaveBeenCalledWith('g-1'));
+    expect(maybeNotifyChatCrossedBudgetMock).toHaveBeenCalledTimes(1);
+    expect(doneEvents(session)).toHaveLength(1);
+  });
+
+  it('an ordinary turn never reads grant spend', async () => {
+    lookupWispGrantMock.mockResolvedValue(null);
+    const session = await runTurn('sess-plain-turn');
+    expect(doneEvents(session)).toHaveLength(1);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(maybeNotifyChatCrossedBudgetMock).not.toHaveBeenCalled();
+  });
+
+  it('a failing notice is reported and never holds back `done`', async () => {
+    lookupWispGrantMock.mockResolvedValue(GRANT);
+    let rejectNotice!: (err: Error) => void;
+    maybeNotifyChatCrossedBudgetMock.mockReturnValue(new Promise((_, reject) => (rejectNotice = reject)));
+    const session = await runTurn('sess-wisp-failing-notice');
+    // `done` went out while the notice was still pending.
+    expect(doneEvents(session)).toHaveLength(1);
+    await vi.waitFor(() => expect(maybeNotifyChatCrossedBudgetMock).toHaveBeenCalled());
+    rejectNotice(new Error('db down'));
+    await vi.waitFor(() => expect(captureException).toHaveBeenCalled());
+  });
+});
+
+describe('turn end — Wisp standing-instruction capture (#10428)', () => {
+  let manager: StreamingSessionManager;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    wispSessionToolFilterMock.mockReset();
+    wispSessionToolFilterMock.mockResolvedValue(() => true);
+    maybeNotifyChatCrossedBudgetMock.mockReset();
+    maybeNotifyChatCrossedBudgetMock.mockResolvedValue('under');
+    manager = new StreamingSessionManager();
+  });
+
+  afterEach(() => {
+    manager.shutdown();
+  });
+
+  async function runTurn(id: string, userMessage?: string) {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    queryMock.mockImplementation(() => scriptedQuery([sdkResult()], gate));
+    const session = await manager.getOrCreate(id, DB_SESSION, partnerAuth(), undefined, 'PROMPT', undefined, PLATFORM_CONFIG);
+    expect(manager.tryTransitionToProcessing(session, undefined, userMessage === undefined ? {} : { userMessage })).toBe(true);
+    const recorded = session.currentTurn;
+    release();
+    await session.processorPromise;
+    return { session, recorded };
+  }
+
+  it('a Wisp turn records the technician\'s text; `done` carries the capture id the hook returned', async () => {
+    lookupWispGrantMock.mockResolvedValue(GRANT);
+    vi.mocked(runWispTurnEndBeforeDone).mockResolvedValueOnce({ wispInstructionCapture: { captureId: 'cap-1' } });
+    const { session, recorded } = await runTurn('sess-wisp-capture', "don't reboot PC-01");
+    expect(recorded?.userMessage).toBe("don't reboot PC-01");
+    const done = session.eventBus.getReplayEvents().filter((e: { type: string }) => e.type === 'done');
+    expect(done).toEqual([expect.objectContaining({ type: 'done', wispInstructionCapture: { captureId: 'cap-1' } })]);
+    expect(scheduleWispTurnEndAfterDone).toHaveBeenCalledWith(session, { wispInstructionCapture: { captureId: 'cap-1' } });
+  });
+
+  it('`done` has no capture field when the hook returns nothing', async () => {
+    lookupWispGrantMock.mockResolvedValue(GRANT);
+    const { session } = await runTurn('sess-wisp-no-capture', 'What changed on PC-01?');
+    const done = session.eventBus.getReplayEvents().filter((e: { type: string }) => e.type === 'done');
+    expect(done).toHaveLength(1);
+    expect(done[0]).not.toHaveProperty('wispInstructionCapture');
+  });
+
+  it('an ordinary session records no turn and never runs the Wisp hooks', async () => {
+    lookupWispGrantMock.mockResolvedValue(null);
+    const { recorded } = await runTurn('sess-plain-capture', "don't reboot PC-01");
+    expect(recorded).toBeUndefined();
+    expect(runWispTurnEndBeforeDone).not.toHaveBeenCalled();
+    expect(scheduleWispTurnEndAfterDone).not.toHaveBeenCalled();
+  });
+
+  it('a failing before-done hook never costs the turn its `done`', async () => {
+    lookupWispGrantMock.mockResolvedValue(GRANT);
+    vi.mocked(runWispTurnEndBeforeDone).mockRejectedValueOnce(new Error('module broke'));
+    const { session } = await runTurn('sess-wisp-hook-throws', "don't reboot PC-01");
+    expect(session.eventBus.getReplayEvents().filter((e: { type: string }) => e.type === 'done')).toHaveLength(1);
   });
 });

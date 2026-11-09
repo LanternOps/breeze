@@ -68,6 +68,8 @@ function updateSeed(table: unknown, rows: Row[]) {
   dbHolder.updateQueues.set(table, q);
 }
 vi.mock('../../db', () => ({
+  hasDbAccessContext: () => false,
+  withDbTransaction: (fn: () => Promise<unknown>) => fn(),
   db: {
     select: (_proj?: unknown) => ({
       from: (table: unknown) => {
@@ -97,6 +99,8 @@ vi.mock('../../db', () => ({
   },
 }));
 
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { rollbackFleetDesign } from './rollback';
 import { snapshotLinks } from './apply';
 import { FleetDesignApplyError } from './preview';
@@ -176,7 +180,7 @@ describe('rollbackFleetDesign — reverse order', () => {
   // matches" comparison (fixed; see that test's comment) and is kept
   // separate rather than folded in here.
   it('processes rows in reverse step order, continuing past a retired source refusal', async () => {
-    const roleRow = row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: { deviceRole: 'workstation', deviceRoleSource: 'discovered' } });
+    const roleRow = row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: { deviceRole: 'workstation', deviceRoleSource: 'discovered' }, createdRefs: { deviceRole: 'server' } });
     const retiredRow = row({ id: 'retired-1', itemRef: 'retired:0', itemKind: 'retired', step: 2, createdRefs: { policyId: 'p2', linkId: 'link-retired' }, beforeImage: { inlineSettings: { watches: [{ name: 'Spooler', enabled: true }] } } });
     const functionRow = row({ id: 'function-1', itemRef: 'functions:printer_server', itemKind: 'function', step: 1, createdRefs: { groupId: 'g-missing' }, beforeImage: { memberships: [], priorAssessmentIdByDevice: {} } });
 
@@ -528,7 +532,7 @@ describe('rollbackFleetDesign — function row (group + assessments)', () => {
 
 describe('rollbackFleetDesign — role correction', () => {
   it('restores the before-image only while the device is still deviceRoleSource=ai', async () => {
-    const roleRow = row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: { deviceRole: 'workstation', deviceRoleSource: 'discovered' } });
+    const roleRow = row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: { deviceRole: 'workstation', deviceRoleSource: 'discovered' }, createdRefs: { deviceRole: 'server' } });
     ledgerMock.loadLedger.mockResolvedValue([roleRow]);
     updateSeed(devices, [{ id: 'd9' }]); // simulates the WHERE deviceRoleSource='ai' matching
 
@@ -542,7 +546,7 @@ describe('rollbackFleetDesign — role correction', () => {
   });
 
   it('refuses when the device role source has moved on (no longer ai — e.g. a manual edit)', async () => {
-    const roleRow = row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: { deviceRole: 'workstation', deviceRoleSource: 'discovered' } });
+    const roleRow = row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: { deviceRole: 'workstation', deviceRoleSource: 'discovered' }, createdRefs: { deviceRole: 'server' } });
     ledgerMock.loadLedger.mockResolvedValue([roleRow]);
     updateSeed(devices, []); // WHERE deviceRoleSource='ai' matched nothing
 
@@ -550,6 +554,95 @@ describe('rollbackFleetDesign — role correction', () => {
 
     expect(result.refused).toEqual([{ itemRef: 'roleCorrections:d9', reason: 'modified_since_apply' }]);
     expect(groupReevalMock.requestDeviceGroupReevaluationAfterCommit).not.toHaveBeenCalled();
+  });
+
+  // W16 PR B (#6786, T9). A later design also writes source 'ai', so the source
+  // alone cannot tell this design's role from the next one's.
+  describe('leaves a later AI correction alone', () => {
+    const whereOf = () => new PgDialect().sqlToQuery(dbHolder.updates[0]!.where as SQL);
+    const before = { deviceRole: 'workstation', deviceRoleSource: 'discovered' };
+
+    it('restores only while the device still holds the role this design applied', async () => {
+      ledgerMock.loadLedger.mockResolvedValue([row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: before, createdRefs: { deviceRole: 'server' } })]);
+      updateSeed(devices, [{ id: 'd9' }]);
+
+      await rollbackFleetDesign(makeAuth(), RUN);
+
+      expect(whereOf().sql).toContain('"device_role" = ');
+      expect(whereOf().params).toContain('server');
+    });
+
+    it('refuses when the role has moved on', async () => {
+      ledgerMock.loadLedger.mockResolvedValue([row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: before, createdRefs: { deviceRole: 'server' } })]);
+      updateSeed(devices, []);
+
+      const result = await rollbackFleetDesign(makeAuth(), RUN);
+
+      expect(result.refused).toEqual([{ itemRef: 'roleCorrections:d9', reason: 'modified_since_apply' }]);
+    });
+
+    it('with neither the ref nor a proposal it refuses, and writes nothing', async () => {
+      ledgerMock.loadLedger.mockResolvedValue([row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: before })]);
+      const result = await rollbackFleetDesign(makeAuth(), RUN);
+      expect(result.refused).toEqual([{ itemRef: 'roleCorrections:d9', reason: 'modified_since_apply' }]);
+      expect(dbHolder.updates).toEqual([]);
+    });
+
+    it("a row written before the ref existed falls back to the design's own proposal", async () => {
+      ledgerMock.lockReportRun.mockResolvedValue({
+        ...lockedOk(),
+        outcome: { sections: { unsure: { roleCorrections: [{ deviceId: 'd9', proposedRole: 'printer' }] } } },
+      });
+      ledgerMock.loadLedger.mockResolvedValue([row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: before })]);
+      updateSeed(devices, [{ id: 'd9' }]);
+
+      await rollbackFleetDesign(makeAuth(), RUN);
+
+      expect(whereOf().params).toContain('printer');
+    });
+  });
+});
+
+describe('rollbackFleetDesign — a policy someone else assigned (W16 PR B, #6786)', () => {
+  const links = [{ id: 'link-m', featureType: 'monitors', featurePolicyId: null, inlineSettings: { inheritance: 'cumulative', items: [] } }];
+  const policyRow = (refs: Record<string, unknown> = {}) => row({ id: 'policy-1', itemRef: 'policy:file_server', itemKind: 'policy', step: 3, createdRefs: { policyId: 'p1', groupId: 'g1', assignmentId: 'assign-1', linksSnapshot: snapshotLinks(links), ...refs } });
+
+  beforeEach(() => {
+    selectSeed(configurationPolicies, [{ id: 'p1', orgId: ORG, status: 'active' }]);
+    configPolicyMock.listFeatureLinks.mockResolvedValue(links);
+    configPolicyMock.updateConfigPolicy.mockResolvedValue({ id: 'p1', status: 'archived' });
+  });
+
+  it('refuses when an assignment this design did not create appeared', async () => {
+    ledgerMock.loadLedger.mockResolvedValue([policyRow()]);
+    selectSeed(configPolicyAssignments, [
+      { id: 'assign-1', level: 'device_group', targetId: 'g1' },
+      { id: 'assign-2', level: 'site', targetId: 's1' },
+    ]);
+
+    const result = await rollbackFleetDesign(makeAuth(), RUN);
+
+    expect(result.refused).toEqual([{ itemRef: 'policy:file_server', reason: 'modified_since_apply' }]);
+    expect(dbHolder.deletes).toEqual([]);
+    expect(configPolicyMock.updateConfigPolicy).not.toHaveBeenCalled();
+  });
+
+  it('rolls back when only its own assignment is there', async () => {
+    ledgerMock.loadLedger.mockResolvedValue([policyRow()]);
+    selectSeed(configPolicyAssignments, [{ id: 'assign-1', level: 'device_group', targetId: 'g1' }]);
+
+    const result = await rollbackFleetDesign(makeAuth(), RUN);
+
+    expect(result.rolledBack).toEqual(['policy:file_server']);
+  });
+
+  it('a row with no assignment id is matched by its group', async () => {
+    ledgerMock.loadLedger.mockResolvedValue([policyRow({ assignmentId: undefined })]);
+    selectSeed(configPolicyAssignments, [{ id: 'assign-9', level: 'device_group', targetId: 'g1' }]);
+
+    const result = await rollbackFleetDesign(makeAuth(), RUN);
+
+    expect(result.rolledBack).toEqual(['policy:file_server']);
   });
 });
 
@@ -615,7 +708,7 @@ describe('rollbackFleetDesign — script row (W04)', () => {
   });
 
   it('rolls the script row back after step 5 and before step 1', async () => {
-    const roleRow = row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: { deviceRole: 'workstation', deviceRoleSource: 'auto' } });
+    const roleRow = row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: { deviceRole: 'workstation', deviceRoleSource: 'auto' }, createdRefs: { deviceRole: 'server' } });
     const functionRow = row({ id: 'function-1', itemRef: 'functions:x', itemKind: 'function', step: 1, createdRefs: { groupId: 'g-missing' }, beforeImage: { memberships: [], priorAssessmentIdByDevice: {} } });
     ledgerMock.loadLedger.mockResolvedValue([functionRow, scriptRow(), roleRow]);
     updateSeed(devices, [{ id: 'd9' }]);

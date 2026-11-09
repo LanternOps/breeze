@@ -190,6 +190,10 @@ vi.mock('../wisp/grantAuthority', async (importOriginal) => ({
 const dispatchSpecialistRequests = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('../wisp/specialistDispatch', () => ({ dispatchSpecialistRequests }));
 
+// #10402 — the first-look post (its own rules: firstLook.test.ts + wispFirstLook.integration.test.ts).
+const postFirstLookIfDone = vi.hoisted(() => vi.fn<(grantId: string) => Promise<unknown>>(async () => ({ posted: false, reason: 'in_progress' })));
+vi.mock('../wisp/firstLook', () => ({ postFirstLookIfDone }));
+
 import { executeAgentRun, resolveRunProfileLimits, resolveRunProfileToolAllowlist } from './runLoop';
 import { assessmentToolAllowlist } from './assessmentProfile';
 import { makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
@@ -256,8 +260,8 @@ function assessmentCtx(): AssessmentRunContext {
   return {
     grantId: GRANT_ID, grantRevisionId: REVISION_ID, grantorUserId: GRANTOR, threadId: THREAD_ID,
     threadSummary: 'Wisp picture', openConcerns: [], changedSince: null,
-    digest: { alerts: [], tickets: [], incidents: [], runs: [], intents: [] },
-    watch: null, reason: { kind: 'tick' }, readiness: null, nudgeFeedback: [], firstLook: false,
+    digest: { alerts: [], tickets: [], incidents: [], runs: [], intents: [], anomalies: [] },
+    watch: null, reason: { kind: 'tick' }, readiness: null, nudgeFeedback: [], firstLook: false, noEarlierAssessment: false,
   };
 }
 
@@ -491,6 +495,31 @@ describe('assessment run-loop wiring (Wisp W05b)', () => {
     seedRows({ profile: 'triage', grant: false });
     await executeAgentRun(RUN_ID);
     expect(dispatchSpecialistRequests).not.toHaveBeenCalled();
+  });
+
+  it('#10402: a finished assessment asks for the first-look post, after its final status is written', async () => {
+    seedRows({ profile: 'assessment', grant: true });
+    let statusAtPost: string | undefined;
+    postFirstLookIfDone.mockImplementationOnce(async () => { statusAtPost = finalTransition()?.to; return { posted: true }; });
+    await executeAgentRun(RUN_ID);
+    expect(postFirstLookIfDone).toHaveBeenCalledTimes(1);
+    expect(postFirstLookIfDone).toHaveBeenCalledWith(GRANT_ID);
+    expect(statusAtPost).toBe('completed');
+  });
+
+  it('#10402: a failing first-look post never changes the run outcome (the reconciler re-sweeps it)', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    seedRows({ profile: 'assessment', grant: true });
+    postFirstLookIfDone.mockRejectedValueOnce(new Error('notify down'));
+    await expect(executeAgentRun(RUN_ID)).resolves.not.toThrow();
+    expect(finalTransition()?.to).toBe('completed');
+    consoleError.mockRestore();
+  });
+
+  it('#10402: a non-assessment run never asks for the first-look post', async () => {
+    seedRows({ profile: 'triage', grant: false });
+    await executeAgentRun(RUN_ID);
+    expect(postFirstLookIfDone).not.toHaveBeenCalled();
   });
 
   it('a non-assessment run cannot record an assessment outcome', async () => {

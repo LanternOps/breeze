@@ -211,6 +211,8 @@ describe('getDeviceOrgDenormalizedTables() coverage', () => {
       // #4755: composite (device_id, org_id) FK ON UPDATE CASCADE restamps it.
       'device_restore_point_attempts',
       'security_agent_device_status',
+      'device_oem_update_status',
+      'device_oem_policy_side',
       'device_wake_attempts',
       'device_wake_status',
     ]);
