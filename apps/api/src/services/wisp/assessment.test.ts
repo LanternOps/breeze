@@ -393,6 +393,7 @@ describe('no-changes gate (#11423)', () => {
     { source: 'incidents', table: connectionHealthIncidents },
     { source: 'runs', table: aiAgentRuns },
     { source: 'intents', table: actionIntents },
+    { source: 'anomalies', table: metricAnomalyIncidents },
     { source: 'concerns', table: wispConcerns },
   ] as const;
   type Source = (typeof PROBES)[number]['source'];
@@ -600,6 +601,31 @@ describe('no-changes gate (#11423)', () => {
     expect(text).toMatch(/NOT EXISTS \(SELECT 1 FROM ai_agent_runs/);
     expect(text).toMatch(/last_assessed_run_id/);
     expect(text).toMatch(/finished_at >= "wisp_concerns"\."updated_at"/);
+  });
+
+  // #11425: the digest's metric anomalies are current state (the org's open
+  // incidents), so the probe asks whether that set changed since the last
+  // run's finish: an incident announced since on a still-open episode joins
+  // it, and an episode closed since takes its incident off it.
+  it('the anomalies probe counts an incident announced since, or its episode closed since, among announced unsuppressed incidents', async () => {
+    queueGated();
+    await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: tick });
+    const q = h.queries.find((x) => x.table === metricAnomalyIncidents);
+    expect(q, 'anomalies probe').toBeDefined();
+    const { sql: text, params } = compile(q!.where[0]);
+    expect(text).toMatch(/"metric_anomaly_incidents"\."org_id" = \$\d+/);
+    expect(text).toMatch(/"metric_anomaly_incidents"\."dispatched_at" is not null/);
+    expect(text).toMatch(/"metric_anomaly_incidents"\."suppressed_by_episode" = \$\d+/);
+    expect(text).toMatch(/"metric_anomaly_episodes"\."status" = \$\d+ and "metric_anomaly_incidents"\."dispatched_at" >= \$\d+/);
+    expect(text).toMatch(/"metric_anomaly_episodes"\."status" <> \$\d+ and "metric_anomaly_episodes"\."resolved_at" >= \$\d+/);
+    expect(params).toEqual(expect.arrayContaining([ORG, false, 'open']));
+  });
+
+  it('without devices:read the anomalies are not probed (the digest does not read them either)', async () => {
+    h.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: new Set(['alerts:read', 'tickets:read', 'organizations:read', 'ai_agents:read']) }));
+    h.results.push([grantRow()], [{ at: WATERMARK }], [{ at: ANCHOR }], [], [], [], [], [], []); // alerts … intents, concerns
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: tick })).resolves.toEqual({ skipped: 'no_changes' });
+    expect(probeQueries().map((q) => q.table)).not.toContain(metricAnomalyIncidents);
   });
 
   it('an incident whose view permission is outside the ceiling is not a change', async () => {

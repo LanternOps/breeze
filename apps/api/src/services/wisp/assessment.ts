@@ -360,7 +360,7 @@ async function nothingChangedSinceLastLook(
 }
 
 /** What the gate probes, in probe order. */
-export type DigestChangeSource = 'alerts' | 'tickets' | 'incidents' | 'runs' | 'intents' | 'concerns';
+export type DigestChangeSource = 'alerts' | 'tickets' | 'incidents' | 'runs' | 'intents' | 'anomalies' | 'concerns';
 
 /**
  * `finished_at` of the latest assessment of (grant, org) that finished
@@ -409,6 +409,14 @@ function notNoChangesSkip(): SQL {
  *              specialist's finish (or failure) is its own
  *              `ai.agent.run.completed` / `.failed` event, which always runs.
  *   intents    created, or changed status, since
+ *   anomalies  (#11425) the open set the digest shows changed since: an
+ *              incident announced since (anomalyIncidentAnnounced) whose
+ *              episode is still open joined it, or the episode of an
+ *              announced incident closed since (`resolved_at` is written by
+ *              resolve, dismiss and auto-close alike) and took it off. An
+ *              open incident's later detector updates do not count: they do
+ *              not change which anomalies are open. An incident with no
+ *              episode row is never listed as open, so the join is INNER.
  *   concerns   (no permission: the run always reads them) updated since,
  *              unless the last write was an assessment finalizer's — its
  *              `last_assessed_run_id` names a run that finished at or after
@@ -421,9 +429,6 @@ function notNoChangesSkip(): SQL {
  * run's own writes out. The cost: a change that landed while that run was in
  * flight, after it read its digest, waits for the next change or event; the
  * next model run still reads it, because a skip never moves the watermark.
- *
- * HOOK(#11425): when the digest reads metric anomalies, add the same
- * predicate here as an `anomalies` source.
  */
 async function firstChangedDigestSource(
   ceiling: GrantCeiling,
@@ -464,6 +469,20 @@ async function firstChangedDigestSource(
         or(gte(actionIntents.createdAt, since), gt(actionIntents.statusChangedAt, since)),
       ))
       .limit(1))) return 'intents';
+    if (may('anomalies') && await any(db.select({ id: metricAnomalyIncidents.id }).from(metricAnomalyIncidents)
+      .innerJoin(metricAnomalyEpisodes, and(
+        eq(metricAnomalyEpisodes.id, metricAnomalyIncidents.episodeId),
+        eq(metricAnomalyEpisodes.orgId, metricAnomalyIncidents.orgId),
+      ))
+      .where(and(
+        eq(metricAnomalyIncidents.orgId, orgId),
+        anomalyIncidentAnnounced(),
+        or(
+          and(eq(metricAnomalyEpisodes.status, 'open'), gte(metricAnomalyIncidents.dispatchedAt, since)),
+          and(ne(metricAnomalyEpisodes.status, 'open'), gte(metricAnomalyEpisodes.resolvedAt, since)),
+        ),
+      ))
+      .limit(1))) return 'anomalies';
     if (await any(db.select({ id: wispConcerns.id }).from(wispConcerns)
       .where(and(
         eq(wispConcerns.orgId, orgId),
@@ -857,6 +876,18 @@ async function loadDigest(
   return { ...base, anomalies };
 }
 
+/**
+ * The first two parts of an open anomaly incident (loadDigestAnomalies):
+ * announced by the publisher, and not suppressed by its episode. Shared with
+ * the no-changes gate's `anomalies` probe so the two cannot drift apart.
+ */
+function anomalyIncidentAnnounced(): SQL {
+  return and(
+    isNotNull(metricAnomalyIncidents.dispatchedAt),
+    eq(metricAnomalyIncidents.suppressedByEpisode, false),
+  ) as SQL;
+}
+
 /** Metric names kept per anomaly incident (the detector's distinct metric names in the bucket). */
 const DIGEST_ANOMALY_METRIC_NAME_LIMIT = 10;
 
@@ -924,11 +955,7 @@ async function loadAnomalySection(
  * it on real SQL.
  */
 export function loadDigestAnomalies(orgId: string, triggerId: string | null) {
-  const openIncident = and(
-    isNotNull(metricAnomalyIncidents.dispatchedAt),
-    eq(metricAnomalyIncidents.suppressedByEpisode, false),
-    eq(metricAnomalyEpisodes.status, 'open'),
-  );
+  const openIncident = and(anomalyIncidentAnnounced(), eq(metricAnomalyEpisodes.status, 'open'));
   return db
     .select({
       id: metricAnomalyIncidents.id,
