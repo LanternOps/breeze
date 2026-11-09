@@ -49,6 +49,7 @@ import {
   ceilingAdmitsTool,
   ceilingToolTermOf,
   inSystemContext,
+  isNeverDelegableToolAction,
   resolveGrantCeiling,
   wispCeilingSnapshotSchema,
   type CeilingViolationCode,
@@ -93,6 +94,18 @@ export const WISP_REFUSAL_MESSAGES: Record<CeilingViolationCode, string> = {
 export const WISP_PARTNER_ID_AS_ORG_MESSAGE =
   "That id is your partner, not one of its organizations, so it can't be an orgId. "
   + 'Pass a customer organization\'s orgId, or ownerScope: "partner" for a partner-owned object where the tool supports it.';
+
+/**
+ * #11433: the refusal for an action the agent deny floor keeps from every grant
+ * while the tool's other actions stay delegable (`isNeverDelegableToolAction`,
+ * e.g. Fleet Design apply / rollback). It says the TOOL is still usable, where
+ * "Wisp can't use this tool" would read as the whole tool being off. A missing
+ * or unrecognised action on such a tool gets it too (the floor fails closed);
+ * the handler's own schema would refuse that call anyway.
+ */
+export const WISP_ACTION_NOT_DELEGABLE_MESSAGE =
+  "Wisp can't take this action under any grant: a person does it in the Breeze console. "
+  + "This tool's other actions are still available to Wisp.";
 
 function refusal(detail: CeilingViolationCode, message?: string): WispCeilingCheckRefusal {
   const text = message ?? WISP_REFUSAL_MESSAGES[detail];
@@ -269,13 +282,22 @@ export async function enforceWispCeiling(args: {
   }
 
   const targetOrgId = targetOrgIdFor(args.input, args.sessionOrgId);
+  // #11433: the action feeds the tool term's action-level floor. A tenant tool
+  // is called with input {} (no action), and has no such floor.
+  const toolAction = typeof args.input.action === 'string' ? args.input.action : null;
   try {
-    assertWithinCeiling(ceiling, { toolName: args.toolName, orgId: targetOrgId });
+    assertWithinCeiling(ceiling, { toolName: args.toolName, toolAction, orgId: targetOrgId });
     for (const permission of permissionKeys) assertWithinCeiling(ceiling, { orgId: targetOrgId, permission });
   } catch (err) {
     if (err instanceof CeilingViolationError) {
       const partnerIdAsOrg = err.code === 'org' && args.input.orgId === ceiling.partnerId;
-      return { ok: false, refusal: refusal(err.code, partnerIdAsOrg ? WISP_PARTNER_ID_AS_ORG_MESSAGE : undefined) };
+      // Only when the tool term itself passes: a revision whose snapshot still
+      // denies the whole tool keeps the plain tool message.
+      const actionFloor = err.code === 'tool'
+        && ceilingAdmitsTool(ceiling, args.toolName)
+        && isNeverDelegableToolAction(args.toolName, toolAction);
+      const message = partnerIdAsOrg ? WISP_PARTNER_ID_AS_ORG_MESSAGE : actionFloor ? WISP_ACTION_NOT_DELEGABLE_MESSAGE : undefined;
+      return { ok: false, refusal: refusal(err.code, message) };
     }
     throw err;
   }

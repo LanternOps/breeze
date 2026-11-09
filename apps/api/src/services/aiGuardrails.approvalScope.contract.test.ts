@@ -21,7 +21,7 @@ import { isMfaGatedToolAction } from './aiToolMfaGate';
 import { AGENT_DENIED_READ_TOOLS, AGENT_HUMAN_ONLY_ACTIONS } from './aiToolExposure';
 import { getToolTier, getAllRegisteredToolNames, getToolDefinitions } from './aiTools';
 import { toolInputSchemas } from './aiToolSchemas';
-import { isNeverDelegableTool } from './wisp/grantAuthority';
+import { isNeverDelegableTool, isNeverDelegableToolAction } from './wisp/grantAuthority';
 import { effectDigestResolverKey, requiresPinnedEffectDigest } from './actionIntents/effectDigest';
 import { isOrgWideGovernanceIntent } from './actionIntents/orgWideGovernanceTools';
 import { ExtensionContributionRegistry } from '../extensions/contributionRegistry';
@@ -1887,11 +1887,20 @@ describe('W16 PR B class rows (#6786)', () => {
     for (const action of ['applied', 'document']) expect(isMfaGatedToolAction('manage_fleet_designs', action), action).toBe(false);
   });
 
-  it('agent exposure: both whole tools are human-only and never delegable, the D4 exception for manage_fleet_designs (Decision 7)', () => {
+  it('agent exposure: both whole tools are human-only, the D4 exception for manage_fleet_designs (Decision 7)', () => {
     for (const tool of Object.keys(W16B_EXPECTED)) {
       expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(true);
       expect(AGENT_DENIED_READ_TOOLS.has(tool), tool).toBe(false);
-      expect(isNeverDelegableTool(tool), tool).toBe(true);
+    }
+  });
+
+  // #11433 narrows Decision 7's Wisp half: a Wisp turn under a grant may start a design run (and read or file a
+  // design); apply and rollback stay off every grant. Schedules stay never delegable as a whole tool.
+  it('Wisp grant floor: schedules whole-tool; Fleet Design apply and rollback only (#11433)', () => {
+    expect(isNeverDelegableTool('manage_ai_agent_schedules')).toBe(true);
+    expect(isNeverDelegableTool('manage_fleet_designs')).toBe(false);
+    for (const action of Object.keys(W16B_EXPECTED.manage_fleet_designs!)) {
+      expect(isNeverDelegableToolAction('manage_fleet_designs', action), action).toBe(action === 'apply' || action === 'rollback');
     }
   });
 
