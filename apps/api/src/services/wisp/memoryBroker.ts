@@ -16,13 +16,16 @@
 import { and, desc, eq, inArray, isNull, like, ne, sql, type SQL } from 'drizzle-orm';
 import {
   MEMORY_BLOCK_TYPES, MEMORY_CONFIDENCES, MEMORY_OWNER_KINDS,
-  type MemoryBlockStatus, type MemoryConfidence,
+  standingInstructionContentSchema,
+  type MemoryBlockStatus, type MemoryConfidence, type StandingVerb,
 } from '@breeze/shared';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiMemoryBlocks, type AiMemoryBlockRow } from '../../db/schema/aiMemoryBlocks';
 import { UNTRUSTED_TOOL_OUTPUT_RULE } from '../aiAgentSystemPrompt';
 import { sanitizeUntrustedToolText, wrapUntrustedData } from '../aiInputSanitizer';
+import { captureException } from '../sentry';
 import { assertWithinCeiling, CeilingViolationError, GrantInactiveError, type GrantCeiling } from './grantAuthority';
+import { isEnforceableDeny } from './standingInstructions';
 
 export type MemoryOwner = { kind: 'user'; userId: string } | { kind: 'org'; orgId: string } | { kind: 'partner' };
 /** work_summary: spec §6.1 (3) / §8.1 — what a working session did, org-owned (w00 A23). */
@@ -372,6 +375,127 @@ async function insertAndSupersede(ceiling: GrantCeiling, block: RememberInput): 
       isNull(aiMemoryBlocks.supersededById),
     ));
   return inserted;
+}
+
+/**
+ * #10428 W06 (spec §5.3): one remembered standing instruction that a tool call
+ * on one of its devices would break. `strength` is how the call's verb matched
+ * (`exact`: the call does it; `possible`: an opaque tool might).
+ */
+export type StandingInstructionMatch = {
+  blockId: string;
+  instructionId: string;
+  status: 'confirmed' | 'unconfirmed';
+  text: string;
+  deviceId: string;
+  verb: StandingVerb;
+  enforceable: boolean;
+  strength: 'exact' | 'possible';
+};
+
+/**
+ * Upper bound on the rows one enforcement lookup reads. The lookup must be
+ * complete for its devices (it is not the recall path), so reaching the bound
+ * throws instead of deciding on a partial set; the caller fails closed.
+ */
+export const STANDING_MATCH_MAX_ROWS = 500;
+
+/**
+ * Every live standing instruction a call on `devices` would break, for
+ * enforcement (not recall: no 50/200-row limit, complete for the devices).
+ * Under system scope inside `tenant_partner_id = ceiling.partnerId`, over the
+ * W05 `ai_memory_blocks_standing_device_idx`, with the recall owner rule:
+ *   - user:    the grantor's own blocks;
+ *   - org:     blocks of the target devices' orgs (the caller resolved the
+ *              devices within its reach);
+ *   - partner: only for a partner-wide ceiling (recallForGrant's rule).
+ * Retracted and superseded blocks never match; nor does a block whose `until`
+ * has passed or whose verb the call cannot break. Content that fails the
+ * schema is ignored and reported. Narrowing only: a match can turn a call
+ * into a refusal or a warning, never admit one, so the ceiling's status is not
+ * asserted here (a release re-check may run on a paused grant).
+ */
+export async function findStandingInstructionMatches(input: {
+  ceiling: GrantCeiling;
+  devices: Array<{ deviceId: string; orgId: string }>;
+  exact: StandingVerb[];
+  possible: StandingVerb[];
+  now?: Date;
+}): Promise<StandingInstructionMatch[]> {
+  const { ceiling } = input;
+  const exact = new Set(input.exact);
+  const possible = new Set(input.possible.filter((v) => !exact.has(v)));
+  const deviceIds = [...new Set(input.devices.map((d) => d.deviceId))];
+  if (deviceIds.length === 0 || (exact.size === 0 && possible.size === 0)) return [];
+  const deviceOrgIds = [...new Set(input.devices.map((d) => d.orgId))];
+  const now = input.now ?? new Date();
+
+  const branches: SQL[] = [
+    and(eq(aiMemoryBlocks.ownerKind, 'user'), eq(aiMemoryBlocks.ownerUserId, ceiling.grantorUserId))!,
+    and(eq(aiMemoryBlocks.ownerKind, 'org'), inArray(aiMemoryBlocks.ownerOrgId, deviceOrgIds))!,
+  ];
+  if (ceiling.partnerWide === true && ceiling.scopeOrgId === null) branches.push(eq(aiMemoryBlocks.ownerKind, 'partner'));
+
+  const rows = await inBrokerContext(() => db
+    .select({ id: aiMemoryBlocks.id, status: aiMemoryBlocks.status, content: aiMemoryBlocks.content })
+    .from(aiMemoryBlocks)
+    .where(and(
+      eq(aiMemoryBlocks.tenantPartnerId, ceiling.partnerId),
+      eq(aiMemoryBlocks.blockType, 'standing_instruction'),
+      inArray(sql<string>`(${aiMemoryBlocks.content}->>'deviceId')`, deviceIds),
+      ne(aiMemoryBlocks.status, 'retracted'),
+      isNull(aiMemoryBlocks.supersededById),
+      sql`(${sql.join(branches, sql` OR `)})`,
+    ))
+    .limit(STANDING_MATCH_MAX_ROWS + 1));
+  if (rows.length > STANDING_MATCH_MAX_ROWS) {
+    throw new Error(`standing-instruction lookup for grant ${ceiling.grantId} exceeded ${STANDING_MATCH_MAX_ROWS} rows`);
+  }
+
+  const wanted = new Set(deviceIds);
+  const matches: StandingInstructionMatch[] = [];
+  for (const row of rows) {
+    if (row.status !== 'confirmed' && row.status !== 'unconfirmed') continue;
+    const parsed = standingInstructionContentSchema.safeParse(row.content);
+    if (!parsed.success) {
+      captureException(new Error(`ai_memory_blocks ${row.id}: standing_instruction content fails its schema; ignored by enforcement`));
+      continue;
+    }
+    const c = parsed.data;
+    if (c.verb === null || c.deviceId === null || !wanted.has(c.deviceId)) continue;
+    if (c.until !== null && !(Date.parse(c.until) > now.getTime())) continue;
+    const strength = exact.has(c.verb) ? 'exact' : possible.has(c.verb) ? 'possible' : null;
+    if (strength === null) continue;
+    matches.push({
+      blockId: row.id,
+      instructionId: c.instructionId,
+      status: row.status,
+      text: c.text,
+      deviceId: c.deviceId,
+      verb: c.verb,
+      enforceable: isEnforceableDeny(c, now),
+      strength,
+    });
+  }
+  return matches;
+}
+
+/**
+ * The hybrid rule (spec §5.3): a CONFIRMED, enforceable deny on an EXACT verb
+ * refuses; any other match warns (an unconfirmed one, a conditional one, a
+ * `prefer`/`require`, or a `possible` match from an opaque tool).
+ */
+export function standingInstructionDecision(
+  matches: StandingInstructionMatch[],
+): { action: 'refuse'; match: StandingInstructionMatch } | { action: 'warn'; matches: StandingInstructionMatch[] } | { action: 'none' } {
+  const refusing = matches.find((m) => m.status === 'confirmed' && m.enforceable && m.strength === 'exact');
+  if (refusing) return { action: 'refuse', match: refusing };
+  if (matches.length > 0) return { action: 'warn', matches };
+  return { action: 'none' };
+}
+
+export function standingInstructionRefusalMessage(m: StandingInstructionMatch): string {
+  return `Refused: matches a standing instruction ('${m.text}'). Ask the user to lift it.`;
 }
 
 /**
