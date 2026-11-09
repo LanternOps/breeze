@@ -188,7 +188,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'monitorConversionPreviewWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/monitorConversionPreviewWorker');
       return { init: m.initializeMonitorConversionPreviewWorker, shutdown: m.shutdownMonitorConversionPreviewWorker };
@@ -366,16 +366,9 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
-    // socket-owner, not global: its runtime import closure reaches
-    // routes/agentWs.ts — jobs/policyEvaluationWorker.ts ->
-    // services/policyEvaluationService.ts -> (dynamic `await
-    // import('../jobs/automationWorker')` for `enqueueAutomationRun`) ->
-    // services/automationRuntime.ts -> ... -> routes/agentWs.ts. Run
-    // `pnpm --filter @breeze/api worker:closure` for the current frontier
-    // importers. Found by workerEntrypointClosure.contract.test.ts
-    // (#4086 Task 5) — flipped from an initial-pass 'global' guess.
+    // Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
     name: 'policyEvaluationWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/policyEvaluationWorker');
       return { init: m.initializePolicyEvaluationWorker, shutdown: m.shutdownPolicyEvaluationWorker };
@@ -399,7 +392,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'aiAgentRunner',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/aiAgentRunner');
       return { init: m.initializeAiAgentRunner, shutdown: m.shutdownAiAgentRunner };
@@ -410,7 +403,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     // #3826). Its only real dependency is `services/aiAgents/runFinishedNotify.ts`
     // (db + recipients + userNotifications) — deliberately NOT `runLoop.ts`'s
     // full SDK-tool graph, so its closure stays `global` (verified by
-    // workerEntrypointClosure.contract.test.ts) unlike `aiAgentRunner` above.
+    // workerEntrypointClosure.contract.test.ts), like `aiAgentRunner` above.
     name: 'agentNotifyRetry',
     placement: 'global',
     load: async () => {
@@ -450,7 +443,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'automationWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/automationWorker');
       return { init: m.initializeAutomationWorker, shutdown: m.shutdownAutomationWorker };
@@ -515,7 +508,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'eventLogRetention',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/eventLogRetention');
       return { init: m.initializeEventLogRetention, shutdown: m.shutdownEventLogRetention };
@@ -921,10 +914,9 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     // org-lifecycle Wave 2, Task 4 (#4111): Phase C (audit + erasure handoff)
     // of a completed org merge. Added during the 3.5d-b merge with main —
     // main's static array placed it exactly here, before desktopSessionFinalization.
-    // socket-owner: its closure reaches routes/agentWs via services/orgMerge
-    // (closure contract test verdict) — same class as the tenant-offboarding family.
+    // Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
     name: 'orgMerge',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/orgMerge');
       return { init: m.initializeOrgMergeWorker, shutdown: m.shutdownOrgMergeWorker };
@@ -935,8 +927,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     //
     // socket-owner because the closure contract test says so, not by judgement:
     // deviceBulkPurge -> services/deviceLifecycle -> services/deviceDeletion
-    // reaches routes/agentWs.ts and services/agentCommandAwait.ts. Same class
-    // as orgMerge above. Do NOT flip this to 'global' without re-running
+    // reaches routes/agentWs.ts and services/agentCommandAwait.ts. Do NOT flip this to 'global' without re-running
     // workerEntrypointClosure.contract.test.ts — it is the mechanical authority
     // and it fails the build on a wrong placement.
     name: 'deviceBulkPurge',
@@ -1312,12 +1303,9 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
-    // #6263 W01. socket-owner, not global: its closure still reaches
-    // routes/agentWs.ts through the shared service graph (see
-    // `pnpm --filter @breeze/api worker:closure` for the frontier importers).
-    // Verified by workerEntrypointClosure.contract.test.ts, not by guessing.
+    // #6263 W01. Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
     name: 'securityScanWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/securityScanJobs');
       return { init: m.initializeSecurityScanWorkers, shutdown: m.shutdownSecurityScanWorkers };
@@ -1495,17 +1483,8 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'offboardingDrainReaper',
-    // socket-owner, not global: its static closure is clean, but at RUNTIME
-    // it reaches routes/agentWs.ts via a dynamic import one hop out —
-    // jobs/offboardingDrainReaper.ts -> services/tenantOffboarding.ts
-    // (sweepOffboardingTenants) -> services/tenantLifecycle.ts
-    // (disconnectLiveAgentSocketsForOrgIds) -> `await import('../routes/agentWs')`
-    // for getConnectedAgentIds()/disconnectAgent(). Those two functions carry
-    // no assertSocketLocalDispatchAllowed guard, so on a worker-role process
-    // this fails silently (empty connected-id list) instead of loudly,
-    // quietly disabling the #2774 offboarding drain's live-socket eviction.
-    // Review finding, wave 3.5d-b (#4086).
-    placement: 'socket-owner',
+    // Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/offboardingDrainReaper');
       return { init: m.initializeOffboardingDrainReaper, shutdown: m.shutdownOffboardingDrainReaper };
@@ -1537,17 +1516,8 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     // #5205 W06 (#5211): consumes the `ai-operator-coordinator` queue the W05
     // publisher feeds, plus its own 15s reconciler tick.
     name: 'aiOperatorTaskWorker',
-    // SOCKET-OWNER, not global — same placement as `intentReleaseWorker` just
-    // below. The coordinator's verification step issues a real `list_services`
-    // device read (`actVerify.ts`, via the commandQueue relay facade); its
-    // runtime import closure still reaches `routes/agentWs.ts` through the
-    // shared service graph (`pnpm --filter @breeze/api worker:closure`). On a
-    // non-socket-owner process a socket-local reach fails SILENTLY rather than
-    // loudly, which would quietly turn every criterion evaluation
-    // `inconclusive` and hand off tasks that had in fact
-    // recovered. Caught by `workerEntrypointClosure.contract.test.ts`, which
-    // is exactly what that contract exists for (#4086).
-    placement: 'socket-owner',
+    // Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/aiOperatorTaskWorker');
       return {
@@ -1558,11 +1528,9 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'pamActuationWorker',
-    // Immediate delivery uses the canonical command claim. The entry's closure
-    // still reaches routes/agentWs.ts through the shared service graph
-    // (`pnpm --filter @breeze/api worker:closure`), so keep it on API
-    // processes; the relay still delivers to agents owned by another API.
-    placement: 'socket-owner',
+    // Immediate delivery uses the canonical command claim; the relay delivers to agents owned by another API.
+    // Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/pamActuationWorker');
       return { init: m.initializePamActuationWorker, shutdown: m.shutdownPamActuationWorker };
@@ -1578,7 +1546,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'intentReleaseWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/intentReleaseWorker');
       return { init: m.initializeIntentReleaseWorker, shutdown: m.shutdownIntentReleaseWorker };
@@ -1652,7 +1620,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
     // #3828 wave-6-3 task 2. Same shape/precedent as intentOutboxPublisher —
     // drains ticket_outbox onto the generic eventBus. No agent-socket-local
-    // dispatch dependency (unlike e.g. intentReleaseWorker), so 'global'.
+    // dispatch dependency, so 'global'.
     name: 'ticketOutboxPublisher',
     placement: 'global',
     load: async () => {
@@ -1828,13 +1796,9 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     // admits a verdict run for an alert that stays open and uncorrelated for
     // UNGROUPED_VERDICT_DELAY_MINUTES. Its closure reaches
     // `enqueueVerdictRunForAlert` (alertVerdictSubscriber.ts) ->
-    // `createAndEnqueueAgentRun` (runService.ts) -> ... -> `routes/agentWs.ts`
-    // (verified by workerEntrypointClosure.contract.test.ts, which is the
-    // mechanical authority here — do not relitigate by guessing; see
-    // `pnpm --filter @breeze/api worker:closure`) — so `socket-owner`,
-    // same placement as `aiAgentRunner` above for the identical reason.
+    // `createAndEnqueueAgentRun` (runService.ts). Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
     name: 'alertVerdictScheduler',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/alertVerdictScheduler');
       return { init: m.initializeAlertVerdictScheduler, shutdown: m.shutdownAlertVerdictScheduler };
@@ -1844,19 +1808,12 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     // Phase 2 wave P2-2 (scheduled sweeps), task 9: the fixed 5-minute tick
     // over `ai_agent_schedules` plus the per-org occurrence fan-out.
     //
-    // `global`, NOT `socket-owner` — and deliberately not copied from
-    // `alertVerdictScheduler` above, which looks like the same shape.
-    // `workerEntrypointClosure.contract.test.ts` (the mechanical authority)
-    // was run for BOTH values: this entry's runtime closure reaches neither
-    // `routes/agentWs.ts` nor `services/agentCommandAwait.ts`, while
-    // `alertVerdictScheduler`'s does — it pulls `alertVerdictSubscriber` ->
-    // `aiToolsOrgs` -> `tenantOffboarding` -> `orgMerge` ->
-    // `routes/portal/helpers`, a chain this module never imports. Its own
+    // `global`: `workerEntrypointClosure.contract.test.ts` (the mechanical
+    // authority) shows this entry's runtime closure reaches neither
+    // `routes/agentWs.ts` nor `services/agentCommandAwait.ts`. Its own
     // deepest AI dependency is `runService.createAndEnqueueAgentRun`, which
-    // only INSERTS a run row and enqueues; the socket-touching execution
-    // happens later, in `aiAgentRunner` (socket-owner). Flipping this to
-    // `socket-owner` would silently exclude the sweeper from `worker`-role
-    // processes for no reason.
+    // only INSERTS a run row and enqueues; the run executes later in
+    // `aiAgentRunner`.
     name: 'aiAgentSweepScheduler',
     placement: 'global',
     load: async () => {
@@ -1957,12 +1914,9 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     // W03 (#5612): evaluates a proposal's verification claim after its
-    // execution lands. `socket-owner`, NOT `global`: the closure still reaches
-    // routes/agentWs.ts through the shared service graph, the same dependency
-    // that puts alertVerdictScheduler on this placement.
-    // workerEntrypointClosure.contract.test.ts is the mechanical authority.
+    // execution lands. Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
     name: 'scriptVerifyWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/scriptVerifyWorker');
       return { init: m.initializeScriptVerifyWorker, shutdown: m.shutdownScriptVerifyWorker };
@@ -2051,11 +2005,10 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     // Tool catalog W04 (#5219), Task A8 — executes flow run slices
-    // (flow-runs queue). socket-owner: a step dispatches device commands
-    // (run_script), like automationWorker and aiAgentRunner. Runs with the
-    // flag off too, so a queued run ends `flows_disabled` instead of waiting.
+    // (flow-runs queue). Runs with the flag off too, so a queued run ends
+    // `flows_disabled` instead of waiting. Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
     name: 'flowRunner',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/flowRunner');
       return { init: m.initializeFlowRunner, shutdown: m.shutdownFlowRunner };
@@ -2064,12 +2017,9 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
     // Task A8 — 60 s sweep re-enqueueing runs whose wake was lost and
     // pausing event flows when event delivery stops being durable.
-    // socket-owner, not the plan's `global`: clause (e) calls pauseFlow
-    // (services/flows/versions.ts), whose runtime closure reaches
-    // routes/agentWs.ts through the guardrails/tool catalog
-    // (workerEntrypointClosure.contract.test.ts).
+    // Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
     name: 'flowRunReconciler',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/flowRunReconciler');
       return { init: m.initializeFlowRunReconciler, shutdown: m.shutdownFlowRunReconciler };
@@ -2087,12 +2037,9 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
     // Task A9 — 60 s schedule-trigger tick (one global repeatable over the
     // enabled schedule flows; partner-wide flows fan out per live org).
-    // socket-owner, not `global`: createFlowRun's module (runService.ts)
-    // imports the rule-7 helper and intent cancel from versions.ts, whose
-    // runtime closure reaches routes/agentWs.ts (the flowRunReconciler note
-    // above; workerEntrypointClosure.contract.test.ts).
+    // Global since #4142 W2: its closure no longer reaches agentWs (teardown and tenant sever go through the relay facade).
     name: 'flowScheduleTick',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/flowScheduleTick');
       return { init: m.initializeFlowScheduleTick, shutdown: m.shutdownFlowScheduleTick };
