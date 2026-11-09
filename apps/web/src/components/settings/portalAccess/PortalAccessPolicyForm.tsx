@@ -81,7 +81,6 @@ export function PortalAccessPolicyForm({
     setHoursText(null);
     onInvalidChange?.(false);
     // Only a new view resets the box; the callback's identity is the owner's concern.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
   const visible = new Set(visiblePolicyFields(capabilities));
   const disabled = !view.canEdit;
