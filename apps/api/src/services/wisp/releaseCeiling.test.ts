@@ -126,6 +126,27 @@ describe('checkWispCeilingForRelease — the focus write default (#11432)', () =
   });
 });
 
+// #11433: the release re-checks the intent's STORED arguments, so the action-level
+// floor holds across the approval wait: a run releases, an apply never does.
+describe('checkWispCeilingForRelease — Fleet Design actions (#11433)', () => {
+  const REPORT_RUN = '00000000-0000-4000-8000-0000000000f1';
+  beforeEach(() => { shared.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: new Set(['*:*']) })); });
+
+  it('a run intent for the intent org releases', async () => {
+    const r = await checkWispCeilingForRelease(intent({ actionName: 'manage_fleet_designs', arguments: { action: 'run', orgId: ORG_A } }), releaseAuth());
+    expect(r.ok).toBe(true);
+  });
+
+  it.each(['apply', 'rollback'])('an %s intent is refused at release with the tool detail, and audited', async (action) => {
+    const r = await checkWispCeilingForRelease(
+      intent({ actionName: 'manage_fleet_designs', arguments: { action, reportRunId: REPORT_RUN } }),
+      releaseAuth(),
+    );
+    expect(r).toMatchObject({ ok: false, errorCode: 'wisp_ceiling_refused', details: { wispRefusal: 'tool' } });
+    expect(shared.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'wisp.ceiling_refused' }));
+  });
+});
+
 describe('checkWispCeilingForRelease', () => {
   it('an intent with no chat-session origin never reads the session or the ceiling', async () => {
     const auth = releaseAuth();

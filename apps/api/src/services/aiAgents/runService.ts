@@ -61,6 +61,7 @@ import {
   CeilingViolationError,
   GrantInactiveError,
   resolveGrantCeiling,
+  WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS,
   type GrantCeiling,
 } from '../wisp/grantAuthority';
 import { agentRunMatchesResourceScope } from './runResourceScope';
@@ -856,7 +857,9 @@ export function intersectAllowlistWithCeiling(
   return allowlist.filter((entry) => {
     const colon = entry.indexOf(':');
     const tool = colon === -1 ? entry : entry.slice(0, colon);
-    if (ceiling.deniedTools.has(tool)) return false;
+    // #11433: an action-floored tool is callable only by a human's Wisp turn, never by a run (the run loop's
+    // ceiling check passes no action), so it stays out of the allowlist as when it was a whole-tool deny.
+    if (ceiling.deniedTools.has(tool) || WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS.has(tool)) return false;
     return ceiling.toolAllowlist === null || ceiling.toolAllowlist.has(tool);
   });
 }

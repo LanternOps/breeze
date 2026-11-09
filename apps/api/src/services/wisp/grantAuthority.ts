@@ -5,7 +5,10 @@
  *           ∩ the grantor's LIVE concrete permissions / org reach / site reach
  *           ∩ agent policy (applied by the callers: admission and release)
  *
- * with AGENT_HUMAN_ONLY_TOOLS ∪ AGENT_DENIED_READ_TOOLS always denied.
+ * with the agent deny floor always denied: AGENT_HUMAN_ONLY_TOOLS ∪
+ * AGENT_DENIED_READ_TOOLS, less the tools a human may call under a grant —
+ * wholly (launch_specialist) or only for listed actions, the rest refused per
+ * call (WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS, #11433).
  *
  * This is deliberately NOT aiSessionLiveAuthority.ts, which refuses every
  * non-`user_session` principal by design: Wisp work runs under the `ai_agent`
@@ -453,8 +456,10 @@ const WISP_CHAT_CALLABLE_AGENT_DENIED_TOOLS: ReadonlySet<string> = new Set(['lau
  * `manage_fleet_designs` (W16 PR B put the whole tool on the floor): Wisp offers
  * a Fleet Design run as the way to set up monitoring for a customer, and the
  * run applies nothing (maxActionsPerRun 0) and keeps its Tier-3 approval card;
- * `preview` and `applied` read, `document` files the design in the org's
- * documents. `apply` and `rollback` are four-eyes with a pinned effect digest,
+ * `preview` writes nothing (tier 1, though it needs devices:write), `applied`
+ * reads the ledger, `document` files the design in the org's documents (its
+ * evidence link is ceiling-checked in the handler, aiToolsFleetDesigns.ts).
+ * `apply` and `rollback` are four-eyes with a pinned effect digest,
  * so they stay in the console. A revision pinned while the whole tool was on
  * the floor keeps it in its snapshot denies until "Refresh grant" (the
  * #10146 precedent for launch_specialist).

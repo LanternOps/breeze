@@ -279,6 +279,17 @@ describe('manage_fleet_designs under a Wisp grant (#11433)', () => {
     });
   });
 
+  it('a report-keyed action reaches only the orgs where its own permission holds (the report lookup uses this reach)', async () => {
+    shared.resolveGrantCeiling.mockResolvedValue(fleet({
+      orgTerms: new Map([[ORG_B, { permissionKeys: new Set(['ai_agents:read']), siteIds: null }]]),
+    }));
+    const r = await enforce('manage_fleet_designs', { action: 'document', reportRunId: REPORT_RUN });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.toolAuth.canAccessOrg(ORG_A)).toBe(true);
+    expect(r.toolAuth.canAccessOrg(ORG_B)).toBe(false);
+  });
+
   it('a call with no action never passes', async () => {
     shared.resolveGrantCeiling.mockResolvedValue(fleet({ permissionKeys: new Set(['*:*']) }));
     await expect(enforce('manage_fleet_designs', { orgId: ORG_A })).resolves.toMatchObject({ ok: false });

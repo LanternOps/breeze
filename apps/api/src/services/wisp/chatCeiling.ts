@@ -99,7 +99,9 @@ export const WISP_PARTNER_ID_AS_ORG_MESSAGE =
  * #11433: the refusal for an action the agent deny floor keeps from every grant
  * while the tool's other actions stay delegable (`isNeverDelegableToolAction`,
  * e.g. Fleet Design apply / rollback). It says the TOOL is still usable, where
- * "Wisp can't use this tool" would read as the whole tool being off.
+ * "Wisp can't use this tool" would read as the whole tool being off. A missing
+ * or unrecognised action on such a tool gets it too (the floor fails closed);
+ * the handler's own schema would refuse that call anyway.
  */
 export const WISP_ACTION_NOT_DELEGABLE_MESSAGE =
   "Wisp can't take this action under any grant: a person does it in the Breeze console. "

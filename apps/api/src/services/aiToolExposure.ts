@@ -85,8 +85,9 @@ export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   // every automation principal anyway. manage_fleet_designs is a recorded exception to spec D4's "action-level where
   // only some actions grant authority": only `run` is Q4, but no agent workflow needs apply or rollback, a designer agent
   // proposing its own design's apply adds a self-review loop, and an agent has no devices:write user permissions for
-  // preview. Agents keep the W10 reads. Membership also puts both in the Wisp grant ceiling floor; for
-  // manage_fleet_designs only apply and rollback since #11433 (WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS).
+  // preview. Agents keep the W10 reads. Membership also puts manage_ai_agent_schedules on the Wisp grant ceiling
+  // floor; manage_fleet_designs is exempted there by action since #11433 (WISP_CHAT_CALLABLE_AGENT_DENIED_ACTIONS):
+  // apply, rollback and any unlisted or omitted action stay refused under every grant.
   'manage_ai_agent_schedules',
   'manage_fleet_designs',
   // Full-control W08 (#6778, W08-D1): every topology tool resolves its caller through
