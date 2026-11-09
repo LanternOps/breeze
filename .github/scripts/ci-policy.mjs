@@ -17,6 +17,8 @@ export const POLICY_FILES = Object.freeze([
   '.github/scripts/ci-policy.mjs',
   '.github/scripts/ci-gate.mjs',
   '.github/workflows/ci-gate.yml',
+  // The thin queue selection the gate publishes and judges by (W05, #10749).
+  '.github/scripts/ci-gate-thin.mjs',
   // Derives MOBILE_NATIVE_REQUIRED for the iOS build.
   '.github/scripts/mobile-lockfile-closure.mjs',
   // Route a changed own test to the job that runs it (routeOwnTest).
