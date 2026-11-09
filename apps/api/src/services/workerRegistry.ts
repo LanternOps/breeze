@@ -266,10 +266,11 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
     // #8742 W02: endpoint message body purge, expiry close-out, history delete.
     // #8743 W03: also the live-chat idle close, which tells the agent
-    // (chat_close) — command dispatch reaches socket-local delivery, so this
-    // entry is socket-owner (workerEntrypointClosure.contract.test.ts).
+    // (chat_close). Command dispatch goes through the relay facade since
+    // #4142, so the closure is clean and the entry is `global`
+    // (workerEntrypointClosure.contract.test.ts).
     name: 'endpointMessageRetention',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/endpointMessageRetention');
       return {
@@ -288,7 +289,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'fleetRemediationDispatchWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/fleetRemediationDispatch');
       return { init: m.scheduleFleetRemediationDispatchJobs, shutdown: m.shutdownFleetRemediationDispatchJobs };
@@ -426,7 +427,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'auditBaselineJobs',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/auditBaselineJobs');
       return { init: m.initializeAuditBaselineJobs, shutdown: m.shutdownAuditBaselineJobs };
@@ -434,7 +435,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'cisJobs',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/cisJobs');
       return { init: m.initializeCisJobs, shutdown: m.shutdownCisJobs };
@@ -499,7 +500,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'backupVerificationJobs',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/backupVerificationJobs');
       return { init: m.initializeBackupVerificationJobs, shutdown: m.shutdownBackupVerificationJobs };
@@ -981,7 +982,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'desktopSessionFinalization',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/desktopSessionFinalizationWorker');
       return { init: m.initializeDesktopSessionFinalizationWorker, shutdown: m.shutdownDesktopSessionFinalizationWorker };
@@ -989,7 +990,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'desktopSessionOrphanRecovery',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../services/desktopSessionOrphanRecovery');
       return { init: m.initializeDesktopSessionOrphanRecovery, shutdown: m.shutdownDesktopSessionOrphanRecovery };
@@ -1221,7 +1222,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'patchJobWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/patchJobExecutor');
       return { init: m.initializePatchJobWorkers, shutdown: m.shutdownPatchJobWorkers };
@@ -1229,7 +1230,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'patchSchedulerWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/patchSchedulerWorker');
       return { init: m.initializePatchSchedulerWorker, shutdown: m.shutdownPatchSchedulerWorker };
@@ -1237,9 +1238,10 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     // Vendor updates (#11065): the not-returned monitor, scheduled runs, nightly
-    // reboots and schedule releases. socket-owner: it dispatches device commands.
+    // reboots and schedule releases. It dispatches device commands through the
+    // relay facade (#4142), so it is `global`.
     name: 'oemUpdatesWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/oemUpdatesWorker');
       return { init: m.initializeOemUpdatesWorker, shutdown: m.shutdownOemUpdatesWorker };
@@ -1247,7 +1249,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'maintenanceRebootWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/maintenanceRebootWorker');
       return { init: m.initializeMaintenanceRebootWorker, shutdown: m.shutdownMaintenanceRebootWorker };
@@ -1289,7 +1291,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'sensitiveDataWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/sensitiveDataJobs');
       return { init: m.initializeSensitiveDataWorkers, shutdown: m.shutdownSensitiveDataWorkers };
@@ -1364,7 +1366,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'drExecutionWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/drExecutionWorker');
       return { init: m.initializeDrExecutionWorker, shutdown: m.shutdownDrExecutionWorker };
@@ -1645,12 +1647,13 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
     // Caller verification (#6354 W01) — post-commit publisher: rejection
     // notifications (in-app + email) and W02/W03 challenge delivery/timeouts,
-    // driven off scalar markers on the verification row. 'socket-owner'
-    // since W02: workstation delivery claims the pre-created caller_verify
-    // command through the same claim-time eligibility as the heartbeat
-    // (commandDispatch), whose closure reaches socket-local dispatch.
+    // driven off scalar markers on the verification row. Workstation
+    // delivery (W02) claims the pre-created caller_verify command through the
+    // heartbeat's claim-time eligibility and pushes it through the relay
+    // facade. `global` since #4142 moved commandQueue onto the facade: the
+    // closure no longer reaches socket-local dispatch.
     name: 'callerVerificationPublisher',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/callerVerificationPublisher');
       return { init: m.initializeCallerVerificationPublisher, shutdown: m.shutdownCallerVerificationPublisher };
@@ -1659,11 +1662,11 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
     // Caller verification (#6354 W02) — repairs workstation decisions the
     // transports could not finish (terminal command results, late "not me"
-    // receipts) through the same leaf result handler. 'socket-owner': the
-    // caller-verification service graph includes workstation delivery, which
-    // claims commands through commandDispatch (same as the publisher).
+    // receipts) through the same leaf result handler. `global` since #4142:
+    // the caller-verification graph (workstation delivery, commandQueue) now
+    // reaches agents only through the relay facade.
     name: 'callerVerificationReconciliation',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/callerVerificationReconciliation');
       return { init: m.initializeCallerVerificationReconciliation, shutdown: m.shutdownCallerVerificationReconciliation };
