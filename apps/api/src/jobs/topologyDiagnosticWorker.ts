@@ -21,8 +21,8 @@ function tick(): void {
  *
  * Ticks faster than the other topology workers because a run only has a
  * 30-second queue budget before it expires — a diagnostic that waits is a
- * diagnostic that never runs. `socket-owner` placement: delivery reaches the
- * live agent socket registry.
+ * diagnostic that never runs. `global` placement: delivery reaches the agent
+ * through the agentCommandRelay facade (#4142), not the local socket registry.
  */
 export function initializeTopologyDiagnosticWorker(): void {
   if (timer) return;

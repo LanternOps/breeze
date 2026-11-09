@@ -329,8 +329,9 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // #4248 W03 — one Worker, unconditional, attached under its registry name.
   consumers('reportRunDeliveryReconciler'),
   consumers('accountingReconcileWorker'),
-  // Merge-forward (origin/main 2026-09-06): three more `socket-owner` registry
-  // entries, each read rather than inferred. None is feature-flag gated and
+  // Merge-forward (origin/main 2026-09-06): three more registry entries
+  // (`socket-owner` when added; deviceGroupJobs is `global` now), each read
+  // rather than inferred. None is feature-flag gated and
   // each constructs exactly one Worker unconditionally, so all three are
   // plain-required (`redis`). removedDevicePurge already attached under its
   // registry key on main; deviceGroupJobs attaches as

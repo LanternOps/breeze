@@ -1,7 +1,7 @@
 /**
  * Declarative, lazily-loaded worker registry (wave 3.5d-b, #4086).
  *
- * Replaces the 104-entry static array that used to live in `index.ts`
+ * Replaces the static array that used to live in `index.ts`
  * (`initializeWorkers()` / `workerShutdownTasks`). Every entry's module is
  * loaded via a dynamic `import()` thunk instead of a static top-of-file
  * import, so a process that only wants a subset of workers (the `worker`
@@ -13,7 +13,7 @@
  *
  * This file is itself deliberately EXCLUDED as a seed from that same test's
  * separate SEEDED walk of `worker.ts`'s own `await import(...)` specifiers —
- * this registry's whole point is 104 `load()` thunks that must stay
+ * this registry's whole point is its `load()` thunks that must stay
  * unfollowed, and the seeded walk is static-only regardless (an entry's own
  * runtime closure, dynamic-follow included, is what the per-entry
  * `global`/`socket-owner` test above checks instead). That seeded walk is
@@ -44,8 +44,14 @@
  * contract test can't independently verify. Task 5's contract test is the
  * final authority and will flip any entry this pass got wrong.
  *
+ * Placement is mechanical in both directions: a `global` entry whose closure
+ * reaches socket-local dispatch must flip to `socket-owner`, and a clean
+ * `socket-owner` entry must flip to `global` or carry a `KEEP_SOCKET_OWNER`
+ * reason in `workerEntrypointClosure.contract.test.ts`.
+ *
  * DO NOT relitigate placement values by guessing — see CLAUDE.md and the plan
- * doc: run the closure tool, don't reason about it from memory.
+ * doc: run the closure tool (`pnpm --filter @breeze/api worker:closure`),
+ * don't reason about it from memory.
  */
 import type { BreezeRole } from '../config/env';
 
@@ -132,7 +138,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'topologyDiagnosticWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/topologyDiagnosticWorker');
       return { init: m.initializeTopologyDiagnosticWorker, shutdown: m.shutdownTopologyDiagnosticWorker };
@@ -266,10 +272,11 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
     // #8742 W02: endpoint message body purge, expiry close-out, history delete.
     // #8743 W03: also the live-chat idle close, which tells the agent
-    // (chat_close) — command dispatch reaches socket-local delivery, so this
-    // entry is socket-owner (workerEntrypointClosure.contract.test.ts).
+    // (chat_close). Command dispatch goes through the relay facade since
+    // #4142, so the closure is clean and the entry is `global`
+    // (workerEntrypointClosure.contract.test.ts).
     name: 'endpointMessageRetention',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/endpointMessageRetention');
       return {
@@ -288,7 +295,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'fleetRemediationDispatchWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/fleetRemediationDispatch');
       return { init: m.scheduleFleetRemediationDispatchJobs, shutdown: m.shutdownFleetRemediationDispatchJobs };
@@ -363,8 +370,9 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     // routes/agentWs.ts — jobs/policyEvaluationWorker.ts ->
     // services/policyEvaluationService.ts -> (dynamic `await
     // import('../jobs/automationWorker')` for `enqueueAutomationRun`) ->
-    // services/automationRuntime.ts -> services/scriptDispatch.ts ->
-    // routes/agentWs.ts. Found by workerEntrypointClosure.contract.test.ts
+    // services/automationRuntime.ts -> ... -> routes/agentWs.ts. Run
+    // `pnpm --filter @breeze/api worker:closure` for the current frontier
+    // importers. Found by workerEntrypointClosure.contract.test.ts
     // (#4086 Task 5) — flipped from an initial-pass 'global' guess.
     name: 'policyEvaluationWorker',
     placement: 'socket-owner',
@@ -375,7 +383,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'softwareComplianceWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/softwareComplianceWorker');
       return { init: m.initializeSoftwareComplianceWorker, shutdown: m.shutdownSoftwareComplianceWorker };
@@ -383,7 +391,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'softwareRemediationWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/softwareRemediationWorker');
       return { init: m.initializeSoftwareRemediationWorker, shutdown: m.shutdownSoftwareRemediationWorker };
@@ -426,7 +434,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'auditBaselineJobs',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/auditBaselineJobs');
       return { init: m.initializeAuditBaselineJobs, shutdown: m.shutdownAuditBaselineJobs };
@@ -434,7 +442,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'cisJobs',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/cisJobs');
       return { init: m.initializeCisJobs, shutdown: m.shutdownCisJobs };
@@ -499,7 +507,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'backupVerificationJobs',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/backupVerificationJobs');
       return { init: m.initializeBackupVerificationJobs, shutdown: m.shutdownBackupVerificationJobs };
@@ -515,7 +523,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'hardwareHealthRetention',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/hardwareHealthRetention');
       return { init: m.initializeHardwareHealthRetention, shutdown: m.shutdownHardwareHealthRetention };
@@ -523,7 +531,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'timeSyncRetention',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/timeSyncRetention');
       return {
@@ -992,7 +1000,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'desktopSessionFinalization',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/desktopSessionFinalizationWorker');
       return { init: m.initializeDesktopSessionFinalizationWorker, shutdown: m.shutdownDesktopSessionFinalizationWorker };
@@ -1000,7 +1008,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'desktopSessionOrphanRecovery',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../services/desktopSessionOrphanRecovery');
       return { init: m.initializeDesktopSessionOrphanRecovery, shutdown: m.shutdownDesktopSessionOrphanRecovery };
@@ -1047,17 +1055,13 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
-    // #5291 W04 — dispatches `script` monitors' diagnostic probes.
-    // socket-owner, not global: its runtime import closure reaches
-    // routes/agentWs.ts — jobs/monitorScriptWorker.ts ->
-    // services/scriptDispatch.ts -> routes/agentWs.ts. Same shape as
-    // policyEvaluationWorker above; found by
-    // workerEntrypointClosure.contract.test.ts, not guessed. (monitorWorker
-    // stays 'global' because it dispatches through the agentCommandRelay
-    // facade instead.) The repeatable tick is still consumed once per fleet:
+    // #5291 W04 — dispatches `script` monitors' diagnostic probes. Global:
+    // it reaches agents through the agentCommandRelay facade (via
+    // services/scriptDispatch.ts), which relays to the instance that owns the
+    // socket (#4142). The repeatable tick is still consumed once per fleet:
     // the queue, not the placement, is what serialises it.
     name: 'monitorScriptWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/monitorScriptWorker');
       return { init: m.initializeMonitorScriptWorker, shutdown: m.shutdownMonitorScriptWorker };
@@ -1194,15 +1198,13 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
-    // socket-owner, not global: its runtime import closure reaches
-    // routes/agentWs.ts — jobs/m365SyncWorker.ts -> services/m365Sync/run.ts
-    // -> services/m365ControlPlane/readActionService.ts ->
-    // services/aiTools.ts -> services/aiToolsAgentLogs.ts ->
-    // services/commandQueue.ts -> routes/agentWs.ts. Found by
-    // workerEntrypointClosure.contract.test.ts (#4086 Task 5) — flipped from
-    // the plan's initial-pass 'global' guess (M365 tenant sync W04, #5331).
+    // global: the runtime import closure no longer reaches routes/agentWs.ts or
+    // services/agentCommandAwait.ts (it once did, via m365Sync/run.ts ->
+    // readActionService -> aiTools -> commandQueue; M365 tenant sync W04, #5331).
+    // Flipped from socket-owner in #4142 when the closure oracle found it clean;
+    // workerEntrypointClosure.contract.test.ts now guards it in both directions.
     name: 'm365SyncWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/m365SyncWorker');
       return { init: m.initializeM365SyncWorker, shutdown: m.shutdownM365SyncWorker };
@@ -1234,7 +1236,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'patchJobWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/patchJobExecutor');
       return { init: m.initializePatchJobWorkers, shutdown: m.shutdownPatchJobWorkers };
@@ -1242,7 +1244,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'patchSchedulerWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/patchSchedulerWorker');
       return { init: m.initializePatchSchedulerWorker, shutdown: m.shutdownPatchSchedulerWorker };
@@ -1250,9 +1252,10 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     // Vendor updates (#11065): the not-returned monitor, scheduled runs, nightly
-    // reboots and schedule releases. socket-owner: it dispatches device commands.
+    // reboots and schedule releases. It dispatches device commands through the
+    // relay facade (#4142), so it is `global`.
     name: 'oemUpdatesWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/oemUpdatesWorker');
       return { init: m.initializeOemUpdatesWorker, shutdown: m.shutdownOemUpdatesWorker };
@@ -1260,7 +1263,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'maintenanceRebootWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/maintenanceRebootWorker');
       return { init: m.initializeMaintenanceRebootWorker, shutdown: m.shutdownMaintenanceRebootWorker };
@@ -1302,17 +1305,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'sensitiveDataWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/sensitiveDataJobs');
       return { init: m.initializeSensitiveDataWorkers, shutdown: m.shutdownSensitiveDataWorkers };
     },
   },
   {
-    // #6263 W01. socket-owner, not global: the dispatch path imports
-    // services/commandQueue, whose closure reaches routes/agentWs.ts — the same
-    // reason sensitiveDataWorker above is socket-owner. Verified by
-    // workerEntrypointClosure.contract.test.ts, not by guessing.
+    // #6263 W01. socket-owner, not global: its closure still reaches
+    // routes/agentWs.ts through the shared service graph (see
+    // `pnpm --filter @breeze/api worker:closure` for the frontier importers).
+    // Verified by workerEntrypointClosure.contract.test.ts, not by guessing.
     name: 'securityScanWorker',
     placement: 'socket-owner',
     load: async () => {
@@ -1322,28 +1325,30 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'peripheralJobs',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/peripheralJobs');
       return { init: m.initializePeripheralJobs, shutdown: m.shutdownPeripheralJobs };
     },
   },
   {
-    // #4630 — dynamic device group membership re-evaluation. socket-owner, not
-    // global: its closure reaches jobs/peripheralJobs.ts (via
-    // services/groupMembership.ts), which is itself socket-owner. Verified by
+    // #4630 — dynamic device group membership re-evaluation. global: its closure
+    // (services/groupMembership.ts -> jobs/peripheralJobs.ts) is clean of
+    // socket-local dispatch and peripheralJobs is itself global. Verified by
     // workerEntrypointClosure.contract.test.ts, not by guessing.
     name: 'deviceGroupJobs',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/deviceGroupJobs');
       return { init: m.initializeDeviceGroupJobs, shutdown: m.shutdownDeviceGroupJobs };
     },
   },
   {
-    // Socket-owner: groupMembership reaches peripheralJobs and socket-local dispatch.
+    // global: groupMembership reaches peripheralJobs, and neither reaches
+    // socket-local dispatch (closure verified clean by
+    // workerEntrypointClosure.contract.test.ts).
     name: 'partnerGroupEvaluationJobs',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/partnerGroupEvaluationJobs');
       return { init: m.initializePartnerGroupEvaluationJobs, shutdown: m.shutdownPartnerGroupEvaluationJobs };
@@ -1375,7 +1380,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'drExecutionWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/drExecutionWorker');
       return { init: m.initializeDrExecutionWorker, shutdown: m.shutdownDrExecutionWorker };
@@ -1431,7 +1436,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'staleCommandReaper',
-    placement: 'socket-owner',
+    placement: 'global',
     // #7105: the reaper needs only Postgres, and without it silent commands
     // and backup jobs never terminalise — keep it running when Redis is down.
     runsWithoutRedis: true,
@@ -1446,7 +1451,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'softwareDeploymentScheduler',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/softwareDeploymentScheduler');
       return { init: m.initializeSoftwareDeploymentScheduler, shutdown: m.shutdownSoftwareDeploymentScheduler };
@@ -1533,12 +1538,13 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     // publisher feeds, plus its own 15s reconciler tick.
     name: 'aiOperatorTaskWorker',
     // SOCKET-OWNER, not global — same placement as `intentReleaseWorker` just
-    // below, and for the same reason. The coordinator's verification step
-    // issues a real `list_services` device read (`actVerify.ts`), so its
-    // runtime import closure reaches `routes/agentWs.ts` via
-    // `services/agentCommandAwait.ts`. On a non-socket-owner process that
-    // reach fails SILENTLY rather than loudly, which would quietly turn every
-    // criterion evaluation `inconclusive` and hand off tasks that had in fact
+    // below. The coordinator's verification step issues a real `list_services`
+    // device read (`actVerify.ts`, via the commandQueue relay facade); its
+    // runtime import closure still reaches `routes/agentWs.ts` through the
+    // shared service graph (`pnpm --filter @breeze/api worker:closure`). On a
+    // non-socket-owner process a socket-local reach fails SILENTLY rather than
+    // loudly, which would quietly turn every criterion evaluation
+    // `inconclusive` and hand off tasks that had in fact
     // recovered. Caught by `workerEntrypointClosure.contract.test.ts`, which
     // is exactly what that contract exists for (#4086).
     placement: 'socket-owner',
@@ -1552,9 +1558,10 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'pamActuationWorker',
-    // Immediate delivery uses the canonical command claim, whose cancellation
-    // propagation reaches socket-local command services. Keep that closure on
-    // API processes; the relay still delivers to agents owned by another API.
+    // Immediate delivery uses the canonical command claim. The entry's closure
+    // still reaches routes/agentWs.ts through the shared service graph
+    // (`pnpm --filter @breeze/api worker:closure`), so keep it on API
+    // processes; the relay still delivers to agents owned by another API.
     placement: 'socket-owner',
     load: async () => {
       const m = await import('../jobs/pamActuationWorker');
@@ -1656,12 +1663,13 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
     // Caller verification (#6354 W01) — post-commit publisher: rejection
     // notifications (in-app + email) and W02/W03 challenge delivery/timeouts,
-    // driven off scalar markers on the verification row. 'socket-owner'
-    // since W02: workstation delivery claims the pre-created caller_verify
-    // command through the same claim-time eligibility as the heartbeat
-    // (commandDispatch), whose closure reaches socket-local dispatch.
+    // driven off scalar markers on the verification row. Workstation
+    // delivery (W02) claims the pre-created caller_verify command through the
+    // heartbeat's claim-time eligibility and pushes it through the relay
+    // facade. `global` since #4142 moved commandQueue onto the facade: the
+    // closure no longer reaches socket-local dispatch.
     name: 'callerVerificationPublisher',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/callerVerificationPublisher');
       return { init: m.initializeCallerVerificationPublisher, shutdown: m.shutdownCallerVerificationPublisher };
@@ -1670,11 +1678,11 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
     // Caller verification (#6354 W02) — repairs workstation decisions the
     // transports could not finish (terminal command results, late "not me"
-    // receipts) through the same leaf result handler. 'socket-owner': the
-    // caller-verification service graph includes workstation delivery, which
-    // claims commands through commandDispatch (same as the publisher).
+    // receipts) through the same leaf result handler. `global` since #4142:
+    // the caller-verification graph (workstation delivery, commandQueue) now
+    // reaches agents only through the relay facade.
     name: 'callerVerificationReconciliation',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/callerVerificationReconciliation');
       return { init: m.initializeCallerVerificationReconciliation, shutdown: m.shutdownCallerVerificationReconciliation };
@@ -1820,10 +1828,10 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     // admits a verdict run for an alert that stays open and uncorrelated for
     // UNGROUPED_VERDICT_DELAY_MINUTES. Its closure reaches
     // `enqueueVerdictRunForAlert` (alertVerdictSubscriber.ts) ->
-    // `createAndEnqueueAgentRun` (runService.ts) -> `routes/agentWs.ts` /
-    // `services/agentCommandAwait.ts` (verified by
-    // workerEntrypointClosure.contract.test.ts, which is the mechanical
-    // authority here — do not relitigate by guessing) — so `socket-owner`,
+    // `createAndEnqueueAgentRun` (runService.ts) -> ... -> `routes/agentWs.ts`
+    // (verified by workerEntrypointClosure.contract.test.ts, which is the
+    // mechanical authority here — do not relitigate by guessing; see
+    // `pnpm --filter @breeze/api worker:closure`) — so `socket-owner`,
     // same placement as `aiAgentRunner` above for the identical reason.
     name: 'alertVerdictScheduler',
     placement: 'socket-owner',
@@ -1949,10 +1957,9 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     // W03 (#5612): evaluates a proposal's verification claim after its
-    // execution lands. `socket-owner`, NOT `global`: the closure reaches
-    // evaluateVerificationClaim -> executeCommandWithSystemPrecheck ->
-    // agentCommandAwait / agentWs, the same dependency that puts
-    // alertVerdictScheduler on this placement.
+    // execution lands. `socket-owner`, NOT `global`: the closure still reaches
+    // routes/agentWs.ts through the shared service graph, the same dependency
+    // that puts alertVerdictScheduler on this placement.
     // workerEntrypointClosure.contract.test.ts is the mechanical authority.
     name: 'scriptVerifyWorker',
     placement: 'socket-owner',
