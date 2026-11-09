@@ -627,8 +627,9 @@ export async function fenceLoser(loser: OrgMergeCandidate): Promise<void> {
   try {
     // Live sockets are authorized once at upgrade and never re-checked, so the
     // status flip alone leaves an established agent writing under the loser for
-    // the whole merge. Same `disconnectAgent` mechanism routes/devices/moveOrg.ts
-    // uses after a cross-org device move, applied to every loser device.
+    // the whole merge. Every loser device's socket is evicted on whichever
+    // instance holds it, once this small transaction commits (#4142); the
+    // eviction is not awaited, and the fence drain below covers its latency.
     await dbModule.runOutsideDbContext(() =>
       dbModule.withSystemDbAccessContext(() =>
         disconnectLiveAgentSocketsForOrgIds([loser.id], 'organization merge in progress'),
@@ -725,8 +726,7 @@ async function bumpLoserAuthEpochs(loserOrgId: string): Promise<number> {
  * rejects a surviving session on its very next request; this call just makes
  * the cutoff immediate rather than one-request-late.
  *
- * Dynamically imported, matching `tenantLifecycle.disconnectLiveAgentSocketsForOrgIds`:
- * a static service -> routes edge risks an import cycle.
+ * Dynamically imported: a static service -> routes edge risks an import cycle.
  */
 async function purgeLoserPortalSessions(loserOrgId: string): Promise<number> {
   try {
