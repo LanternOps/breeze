@@ -18,6 +18,7 @@ const svc = vi.hoisted(() => ({
 }));
 const { resolveGrantCeiling } = vi.hoisted(() => ({ resolveGrantCeiling: vi.fn() }));
 const { resolveEntityRef } = vi.hoisted(() => ({ resolveEntityRef: vi.fn() }));
+const { loadTriggerSubject } = vi.hoisted(() => ({ loadTriggerSubject: vi.fn() }));
 const { captureException } = vi.hoisted(() => ({ captureException: vi.fn() }));
 vi.mock('../sentry', () => ({ captureException }));
 
@@ -38,6 +39,10 @@ vi.mock('./checkIns', async (importOriginal) => ({
 vi.mock('./entityRefs', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./entityRefs')>()),
   resolveEntityRef,
+}));
+vi.mock('./checkInTriggers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./checkInTriggers')>()),
+  loadTriggerSubject,
 }));
 vi.mock('./grantAuthority', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./grantAuthority')>()),
@@ -80,6 +85,8 @@ const THREAD = '00000000-0000-4000-8000-000000000e01';
 const DEVICE = '00000000-0000-4000-8000-000000000f02';
 const CHECK_IN = '00000000-0000-4000-8000-000000000f03';
 const CHECK_IN_2 = '00000000-0000-4000-8000-000000000f04';
+const EXECUTION = '00000000-0000-4000-8000-000000000f05';
+const SITE = '00000000-0000-4000-8000-000000000501';
 
 const THREE = ['cancel_check_in', 'list_check_ins', 'schedule_check_in'];
 const INSTRUCTION = 'Verify no msiexec processes remain on device WS-01; if clear, rerun the memory report.';
@@ -93,7 +100,7 @@ const ceiling: GrantCeiling = {
   partnerWide: false,
   orgIds: new Set([ORG, ORG2]),
   siteIds: null,
-  permissionKeys: new Set(['ai_sessions:use', 'devices:read']),
+  permissionKeys: new Set(['ai_sessions:use', 'devices:read', 'scripts:read', 'ai_agents:read']),
   toolAllowlist: null,
   deniedTools: new Set(),
   orgTerms: new Map(),
@@ -132,6 +139,10 @@ function row(over: Partial<WispCheckInRow> = {}): WispCheckInRow {
     cancelledAt: null,
     jobId: `wisp-check-in-${CHECK_IN}`,
     createdAt: new Date('2026-11-04T14:22:00.000Z'),
+    triggerKind: 'time',
+    triggerSubjectId: null,
+    fireReason: null,
+    cancelReason: null,
     ...over,
   } as WispCheckInRow;
 }
@@ -175,6 +186,9 @@ describe('wisp check-in tools — registry', () => {
     expect(tools.get('cancel_check_in')!.tier).toBe(2);
     // The model is steered to the tool instead of asking the user to come back.
     expect(tools.get('schedule_check_in')!.definition.description).toMatch(/instead of asking the user to come back/);
+    // W04 (#10410): the event form is named, with its deadline.
+    expect(tools.get('schedule_check_in')!.definition.description).toMatch(/device comes online/);
+    expect(tools.get('schedule_check_in')!.definition.description).toMatch(/deadline/);
   });
 
   it('is wired on every tool surface: registry, TOOL_TIERS, RBAC, rate limits, flows exclusion, Wisp classification, no-card set', () => {
@@ -230,7 +244,7 @@ describe('wisp check-in tools — registry', () => {
     expect(WISP_CHECK_IN_TOOL_SCHEMAS.list_check_ins).toBe(listCheckInsInputSchema);
     expect(WISP_CHECK_IN_TOOL_SCHEMAS.cancel_check_in).toBe(cancelCheckInSchema);
     const schema = tools.get('schedule_check_in')!.definition.input_schema as { properties: Record<string, { description?: string }>; required?: string[] };
-    expect(Object.keys(schema.properties).sort()).toEqual(['at', 'delayMinutes', 'instruction', 'subject']);
+    expect(Object.keys(schema.properties).sort()).toEqual(['at', 'delayMinutes', 'instruction', 'subject', 'trigger']);
     expect(schema.required).toEqual(['instruction']);
     // A-W03: a parameter description is capped at 160 chars.
     for (const t of tools.values()) {
@@ -271,6 +285,7 @@ describe('wisp check-in tools — handlers', () => {
       instruction: INSTRUCTION,
       orgId: ORG,
       context: null,
+      trigger: null,
     });
     expect(now).toBeInstanceOf(Date);
     expect(input.dueAt.getTime() - now.getTime()).toBe(10 * 60_000);
@@ -296,7 +311,7 @@ describe('wisp check-in tools — handlers', () => {
     const input = svc.createCheckIn.mock.calls[0]![1] as Record<string, unknown>;
     expect(input.threadId).toBe(THREAD);
     expect(input.orgId).toBe(ORG);
-    expect(Object.keys(input).sort()).toEqual(['context', 'dueAt', 'instruction', 'orgId', 'sessionId', 'threadId']);
+    expect(Object.keys(input).sort()).toEqual(['context', 'dueAt', 'instruction', 'orgId', 'sessionId', 'threadId', 'trigger']);
     expect(svc.threadForGrant).toHaveBeenCalledWith(GRANT);
   });
 
@@ -336,6 +351,14 @@ describe('wisp check-in tools — handlers', () => {
       { instruction: INSTRUCTION },
       { delayMinutes: 5, instruction: 'x'.repeat(1001) },
       { delayMinutes: 0, instruction: INSTRUCTION },
+      // W04: trigger is a third timing, exclusive with the other two.
+      { delayMinutes: 5, trigger: { event: 'device_online', subjectId: DEVICE }, instruction: INSTRUCTION },
+      { at: '2026-11-04T14:30:00Z', trigger: { event: 'device_online', subjectId: DEVICE }, instruction: INSTRUCTION },
+      { trigger: { event: 'device_offline', subjectId: DEVICE }, instruction: INSTRUCTION },
+      { trigger: { event: 'device_online', subjectId: 'WS-01' }, instruction: INSTRUCTION },
+      { trigger: { event: 'device_online', subjectId: DEVICE, deadlineMinutes: 0 }, instruction: INSTRUCTION },
+      { trigger: { event: 'device_online', subjectId: DEVICE, deadlineMinutes: 10_081 }, instruction: INSTRUCTION },
+      { trigger: { event: 'time', subjectId: DEVICE }, instruction: INSTRUCTION },
     ]) {
       expect((await json(run('schedule_check_in', input))).error, JSON.stringify(input).slice(0, 80)).toBe('invalid_input');
     }
@@ -461,6 +484,110 @@ describe('wisp check-in tools — handlers', () => {
     const out = await run('list_check_ins', { limit: 2 });
     expect(out).not.toContain('more pending');
     expect(fencedBody(out).split('\n')).toHaveLength(2);
+  });
+
+  describe('schedule_check_in with a trigger (W04, #10410)', () => {
+    const device = (over: Record<string, unknown> = {}) => ({
+      kind: 'device_online', orgId: ORG2, partnerId: PARTNER, siteId: SITE, status: 'offline', at: null, exitCode: null, output: null, lastSeenAt: null, ...over,
+    });
+
+    it("createCheckIn gets the trigger, the subject's OWN org, and due = now + the 24 h default deadline", async () => {
+      // A partner-wide grant whose session sits in ORG: the row's org is the device's (ORG2), not the session's.
+      const partnerWide = { ...ceiling, scopeOrgId: null };
+      resolveGrantCeiling.mockResolvedValueOnce(partnerWide);
+      loadTriggerSubject.mockResolvedValueOnce(device());
+      const out = await run('schedule_check_in', { trigger: { event: 'device_online', subjectId: DEVICE }, instruction: INSTRUCTION }, auth({ scope: 'partner' }));
+      expect(loadTriggerSubject).toHaveBeenCalledWith('device_online', DEVICE);
+      const [c, input, now] = svc.createCheckIn.mock.calls[0]! as [GrantCeiling, Record<string, unknown> & { dueAt: Date }, Date];
+      expect(c).toBe(partnerWide);
+      expect(input).toEqual({
+        threadId: THREAD,
+        sessionId: SESSION,
+        dueAt: expect.any(Date),
+        instruction: INSTRUCTION,
+        orgId: ORG2,
+        context: null,
+        trigger: { kind: 'device_online', subjectId: DEVICE },
+      });
+      expect(input.dueAt.getTime() - now.getTime()).toBe(1440 * 60_000);
+      expect(out).toBe(
+        `Check-in scheduled (ID: ${CHECK_IN}): it fires when the device comes online, or at ${input.dueAt.toISOString()} if it has not by then. Breeze will notify the user, and the instruction comes back to you with their next message in this thread.`,
+      );
+    });
+
+    it('deadlineMinutes sets the deadline (1 .. 10080), and the org comes from the subject whatever the grant scope org is', async () => {
+      loadTriggerSubject.mockResolvedValueOnce({ ...device(), kind: 'script_finished', orgId: ORG, status: 'running' });
+      await run('schedule_check_in', { trigger: { event: 'script_finished', subjectId: EXECUTION, deadlineMinutes: 30 }, instruction: INSTRUCTION });
+      const [, input, now] = svc.createCheckIn.mock.calls[0]! as [GrantCeiling, { dueAt: Date; orgId: string; trigger: unknown }, Date];
+      expect(input.dueAt.getTime() - now.getTime()).toBe(30 * 60_000);
+      expect(input.orgId).toBe(ORG);
+      expect(input.trigger).toEqual({ kind: 'script_finished', subjectId: EXECUTION });
+    });
+
+    it("a subject that does not exist (or is another partner's) returns subject_not_found and creates nothing", async () => {
+      loadTriggerSubject.mockResolvedValueOnce(null);
+      expect(await json(run('schedule_check_in', { trigger: { event: 'device_online', subjectId: DEVICE }, instruction: INSTRUCTION }))).toEqual({ error: 'subject_not_found' });
+      loadTriggerSubject.mockResolvedValueOnce(device({ partnerId: '00000000-0000-4000-8000-000000000b09' }));
+      expect(await json(run('schedule_check_in', { trigger: { event: 'device_online', subjectId: DEVICE }, instruction: INSTRUCTION }))).toEqual({ error: 'subject_not_found' });
+      expect(svc.createCheckIn).not.toHaveBeenCalled();
+    });
+
+    it("a subject outside the live ceiling (org, site, or the kind's read permission) returns subject_outside_grant and creates nothing", async () => {
+      const outside = '00000000-0000-4000-8000-000000000d99';
+      loadTriggerSubject.mockResolvedValueOnce(device({ orgId: outside }));
+      expect(await json(run('schedule_check_in', { trigger: { event: 'device_online', subjectId: DEVICE }, instruction: INSTRUCTION }, auth({ scope: 'partner' })))).toEqual({ error: 'subject_outside_grant' });
+
+      resolveGrantCeiling.mockResolvedValueOnce({ ...ceiling, siteIds: new Set(['00000000-0000-4000-8000-000000000599']) });
+      loadTriggerSubject.mockResolvedValueOnce(device());
+      expect(await json(run('schedule_check_in', { trigger: { event: 'device_online', subjectId: DEVICE }, instruction: INSTRUCTION }, auth({ scope: 'partner' })))).toEqual({ error: 'subject_outside_grant' });
+
+      resolveGrantCeiling.mockResolvedValueOnce({ ...ceiling, permissionKeys: new Set(['ai_sessions:use', 'devices:read']) });
+      loadTriggerSubject.mockResolvedValueOnce({ ...device(), kind: 'run_settled', status: 'running' });
+      expect(await json(run('schedule_check_in', { trigger: { event: 'run_settled', subjectId: EXECUTION }, instruction: INSTRUCTION }, auth({ scope: 'partner' })))).toEqual({ error: 'subject_outside_grant' });
+      expect(svc.createCheckIn).not.toHaveBeenCalled();
+    });
+
+    it("the caller's own reach applies too: an org-scoped token, an org the caller cannot open, or a device-pinned principal refuses", async () => {
+      loadTriggerSubject.mockResolvedValueOnce(device({ orgId: ORG2 }));
+      expect(await json(run('schedule_check_in', { trigger: { event: 'device_online', subjectId: DEVICE }, instruction: INSTRUCTION }, auth({ scope: 'organization', orgId: ORG }))))
+        .toEqual({ error: 'subject_outside_grant' });
+      loadTriggerSubject.mockResolvedValueOnce(device({ orgId: ORG2 }));
+      expect(await json(run('schedule_check_in', { trigger: { event: 'device_online', subjectId: DEVICE }, instruction: INSTRUCTION }, auth({ scope: 'partner', canAccessOrg: (id: string) => id === ORG } as Partial<AuthContext>))))
+        .toEqual({ error: 'subject_outside_grant' });
+      loadTriggerSubject.mockResolvedValueOnce(device({ orgId: ORG2 }));
+      expect(await json(run('schedule_check_in', { trigger: { event: 'device_online', subjectId: DEVICE }, instruction: INSTRUCTION }, auth({ scope: 'partner', allowedDeviceIds: ['00000000-0000-4000-8000-0000000000aa'] } as Partial<AuthContext>))))
+        .toEqual({ error: 'subject_outside_grant' });
+      expect(svc.createCheckIn).not.toHaveBeenCalled();
+    });
+
+    it("a trigger and a subject together: the subject rides in context, the org is the trigger subject's", async () => {
+      loadTriggerSubject.mockResolvedValueOnce(device({ orgId: ORG }));
+      resolveEntityRef.mockResolvedValueOnce({ ref: { kind: 'device', id: DEVICE, orgId: ORG }, orgId: ORG, label: 'WS-01', status: 'offline', href: `/devices/${DEVICE}` });
+      await run('schedule_check_in', { trigger: { event: 'device_online', subjectId: DEVICE }, subject: { kind: 'device', id: DEVICE }, instruction: INSTRUCTION }, auth({ scope: 'partner' }));
+      const input = svc.createCheckIn.mock.calls[0]![1] as Record<string, unknown>;
+      expect(input.context).toEqual({ subject: { kind: 'device', id: DEVICE } });
+      expect(input.orgId).toBe(ORG);
+    });
+
+    it('a row the fire-at-scheduling re-check cancelled is reported as cancelled with its reason, not as scheduled', async () => {
+      loadTriggerSubject.mockResolvedValueOnce(device({ orgId: ORG, status: 'online' }));
+      svc.createCheckIn.mockImplementationOnce(async (_c: GrantCeiling, input: { dueAt: Date }) => row({
+        dueAt: input.dueAt, status: 'cancelled', cancelledAt: new Date(), cancelReason: 'outside_ceiling', triggerKind: 'device_online', triggerSubjectId: DEVICE,
+      }));
+      expect(await json(run('schedule_check_in', { trigger: { event: 'device_online', subjectId: DEVICE }, instruction: INSTRUCTION }, auth({ scope: 'partner' }))))
+        .toEqual({ error: 'check_in_cancelled', reason: 'outside_ceiling' });
+    });
+
+    it('when the event had already happened the row comes back fired, and the model is told so', async () => {
+      loadTriggerSubject.mockResolvedValueOnce(device({ orgId: ORG, status: 'online' }));
+      svc.createCheckIn.mockImplementationOnce(async (_c: GrantCeiling, input: { dueAt: Date }) => row({
+        dueAt: input.dueAt, status: 'fired', firedAt: new Date(), fireReason: 'event', triggerKind: 'device_online', triggerSubjectId: DEVICE,
+      }));
+      const out = await run('schedule_check_in', { trigger: { event: 'device_online', subjectId: DEVICE }, instruction: INSTRUCTION }, auth({ scope: 'partner' }));
+      expect(out).toBe(
+        `The device has already come online, so check-in ${CHECK_IN} fired now: Breeze notified the user, and the instruction comes back to you with their next message in this thread.`,
+      );
+    });
   });
 
   it('cancel_check_in: cancelCheckIn(grant, id); unknown or no longer cancellable → check_in_not_found', async () => {

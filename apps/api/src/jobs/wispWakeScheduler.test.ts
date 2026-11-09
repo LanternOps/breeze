@@ -40,6 +40,7 @@ const h = vi.hoisted(() => ({
   reconcilePartnerDisabled: vi.fn(async (..._a: unknown[]) => ({ paused: 0, resumed: 0 })),
   fireCheckIn: vi.fn(async (..._a: unknown[]): Promise<'fired' | 'cancelled' | 'skipped'> => 'fired'),
   reconcileOrphanCheckIns: vi.fn(async (..._a: unknown[]) => ({ refired: 0 })),
+  reconcileCheckInTriggers: vi.fn(async (..._a: unknown[]) => ({ fired: 0, cancelled: 0 })),
 }));
 
 vi.mock('../db', async () => {
@@ -123,6 +124,7 @@ vi.mock('../services/wisp/assessment', () => ({ enqueueAssessment: h.enqueueAsse
 vi.mock('../services/wisp/checkIns', () => ({
   fireCheckIn: (...a: unknown[]) => { h.order.push('fireCheckIn'); return h.fireCheckIn(...a); },
   reconcileOrphanCheckIns: (...a: unknown[]) => { h.order.push('reconcileOrphanCheckIns'); return h.reconcileOrphanCheckIns(...a); },
+  reconcileCheckInTriggers: (...a: unknown[]) => { h.order.push('reconcileCheckInTriggers'); return h.reconcileCheckInTriggers(...a); },
 }));
 vi.mock('../services/wisp/budget', () => ({
   chargeableUnderGrant: h.chargeableUnderGrant,
@@ -215,6 +217,7 @@ beforeEach(() => {
   h.reconcilePartnerDisabled.mockImplementation(async () => ({ paused: 0, resumed: 0 }));
   h.fireCheckIn.mockImplementation(async () => 'fired');
   h.reconcileOrphanCheckIns.mockImplementation(async () => ({ refired: 0 }));
+  h.reconcileCheckInTriggers.mockImplementation(async () => ({ fired: 0, cancelled: 0 }));
 });
 
 describe('processWakeTick', () => {
@@ -224,13 +227,14 @@ describe('processWakeTick', () => {
     expect(result).toEqual({
       grantsTicked: 0, watchesFired: 0, watchesUnchanged: 0, staleTicketsPublished: 0, watchesStopped: 0,
       grantsPaused: 0, grantsResumed: 0, ticketClustersOpened: 0, incidentsOpened: 0, concernRollupsOpened: 0, checkInsRefired: 0,
+      checkInTriggersFired: 0, checkInTriggersCancelled: 0,
     });
     expect(h.executes).toHaveLength(0);
     expect(h.order).toEqual([]);
     expect(h.hasEntitlement).not.toHaveBeenCalled();
   });
 
-  it('runs the sections in order: reconcile, stop, floor, watches, check-in reconcile, stale, clusters, incidents, rollup', async () => {
+  it('runs the sections in order: reconcile, stop, floor, watches, check-in reconcile, trigger reconcile, stale, clusters, incidents, rollup', async () => {
     useFixtures({
       due: [{ id: G1, partner_id: P1, current_revision_id: REV, last_floor_tick_text: null }],
       orgs: [{ id: O1, name: 'A' }],
@@ -249,12 +253,13 @@ describe('processWakeTick', () => {
       'evaluateWatchHits', // #11424: in-code evaluation before any watch request
       'requestAssessment', // watch
       'reconcileOrphanCheckIns',
+      'reconcileCheckInTriggers',
       'pollStaleTickets',
       'pollTicketClusters',
       'correlateIncidents',
       'rollupDeviceConcerns',
     ]);
-    for (const fn of [h.stopWatchesForInactiveGrants, h.reconcileOrphanCheckIns, h.pollStaleTickets, h.pollTicketClusters, h.correlateIncidents, h.rollupDeviceConcerns]) {
+    for (const fn of [h.stopWatchesForInactiveGrants, h.reconcileOrphanCheckIns, h.reconcileCheckInTriggers, h.pollStaleTickets, h.pollTicketClusters, h.correlateIncidents, h.rollupDeviceConcerns]) {
       expect(fn).toHaveBeenCalledWith(NOW);
     }
   });
@@ -565,6 +570,25 @@ describe('processWakeTick', () => {
     const result = await processWakeTick(NOW);
     expect(result.checkInsRefired).toBe(3);
     expect(h.reconcileOrphanCheckIns).toHaveBeenCalledWith(NOW);
+  });
+
+  it('W04: processWakeTick reports the event check-ins the trigger reconcile fired and cancelled', async () => {
+    h.reconcileCheckInTriggers.mockImplementation(async () => ({ fired: 2, cancelled: 1 }));
+    const result = await processWakeTick(NOW);
+    expect(result).toMatchObject({ checkInTriggersFired: 2, checkInTriggersCancelled: 1 });
+    expect(h.reconcileCheckInTriggers).toHaveBeenCalledWith(NOW);
+  });
+
+  it('W04: a trigger reconcile failure is reported under its own section and the later sections still run', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const boom = new Error('trigger reconcile boom');
+    h.reconcileCheckInTriggers.mockRejectedValue(boom);
+    const result = await processWakeTick(NOW);
+    expect(result.checkInTriggersFired).toBe(0);
+    expect(h.captureException).toHaveBeenCalledWith(boom, undefined, { component: 'wisp.wakeScheduler', op: 'tick_section', section: 'reconcileCheckInTriggers' });
+    expect(h.pollStaleTickets).toHaveBeenCalledWith(NOW);
+    expect(h.rollupDeviceConcerns).toHaveBeenCalledWith(NOW);
+    err.mockRestore();
   });
 
   it('a check-in reconcile failure is reported and the later sections still run', async () => {
