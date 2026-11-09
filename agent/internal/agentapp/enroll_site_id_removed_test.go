@@ -28,6 +28,26 @@ func TestEnrollSiteIDFlag_RemovedWithClearError(t *testing.T) {
 	}
 }
 
+func TestEnrollSiteIDFlag_EqualsFormAndPrefixLookalike(t *testing.T) {
+	cases := []struct {
+		arg  string
+		want bool
+	}{
+		{"--site-id=x", true},
+		{"--site-identifier=x", false},
+	}
+	for _, c := range cases {
+		err := enrollCmd.ParseFlags([]string{c.arg})
+		if err == nil {
+			t.Fatalf("%s: expected parse error", c.arg)
+		}
+		got := enrollCmd.FlagErrorFunc()(enrollCmd, err)
+		if has := strings.Contains(got.Error(), "--site-id was removed"); has != c.want {
+			t.Errorf("%s: rewritten=%v want %v (%q)", c.arg, has, c.want, got)
+		}
+	}
+}
+
 func TestEnrollOtherUnknownFlag_ErrorUnchanged(t *testing.T) {
 	err := enrollCmd.ParseFlags([]string{"--bogus"})
 	if err == nil {
