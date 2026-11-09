@@ -321,7 +321,7 @@ const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
-  // Portal registration W4 (#11381, 2027-01-22-233400-portal-entra-tenant-proof.sql):
+  // Portal registration W4 (#11381, 2027-01-22-233500-portal-entra-tenant-proof.sql):
   // clears the Entra tenant proof only when entra_tenant_id changes; an org_id
   // repoint (keep-survivor adoption, plan D8) keeps the proof.
   'client_ai_tenant_mappings.client_ai_tenant_mappings_clear_proof_on_repoint': 'clears the proof only when entra_tenant_id changes; an org_id repoint keeps it',
