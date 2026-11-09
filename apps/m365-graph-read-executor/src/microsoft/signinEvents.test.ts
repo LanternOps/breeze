@@ -53,8 +53,8 @@ describe('m365.sync.signin_events', () => {
     const { client, calls } = stubClient({ [PATH]: page([ev('1')]) });
     await executeGraphSyncAction(action, context(client));
     const query = calls[0]!.query!;
-    // An explicit ascending sort pushed the query off the index Graph serves
-    // newest-first; the first page then never came back inside 30 s.
+    // With an explicit ascending sort the first page never came back inside
+    // 30 s on a reporting tenant; the unsorted, narrowly selected form did.
     expect(query).not.toHaveProperty('$orderby');
     expect(query.$select!.split(',').sort()).toEqual([...M365_READ_ACTION_FIELDS['m365.sync.signin_events']].sort());
     expect(query.$top).toBe('100');

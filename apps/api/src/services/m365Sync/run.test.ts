@@ -560,6 +560,31 @@ describe('W05: sign-in continuation loop (spec §5.7, §6)', () => {
     expect(mocks.enqueue).toHaveBeenCalledWith(expect.objectContaining({ domain: 'signin_activity', generation: 6 }));
   });
 
+  it('#9394: the continuation log says when a walk stopped early, so an interrupted page is not invisible', async () => {
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args) => { logged.push(args.join(' ')); });
+    mocks.persistSignin.mockResolvedValue(SIGNIN_PERSISTED('blob-2'));
+    const page = SIGNIN_PAGE('blob-2');
+    mocks.callExecutor.mockResolvedValue({ ...page, result: { ...page.result, sources: { signInActivity: 'throttled' } } });
+
+    await runSignin();
+
+    spy.mockRestore();
+    const line = logged.find((entry) => entry.startsWith('[M365Sync] m365.sync.continuation'));
+    expect(line).toBeDefined();
+    expect(JSON.parse(line!.slice(line!.indexOf('{')))).toMatchObject({ primarySource: 'throttled' });
+  });
+
+  it('#9394: a Graph timeout that outlasts the ladder KEEPS the stored cursor, so the walk resumes there', async () => {
+    mocks.callExecutor.mockResolvedValue({ ok: false, code: 'graph_request_timeout', message: 'm', executorMs: 110_000 });
+    await expect(runSyncDomain(SIGNIN_JOB, {
+      callExecutor: mocks.callExecutor, now: new Date('2026-09-08T00:00:00.000Z'), rng: () => 0.5, isFinalAttempt: true,
+      deps: { loadSyncRunContext: mocks.loadContext, assertStillFenced: mocks.assertFence, releaseLease: mocks.release },
+    })).resolves.toBe('error');
+    expect(mocks.completion.at(-1)).toMatchObject({ lastStatus: 'error', continuation: 'blob-1' });
+    expect(mocks.claim).not.toHaveBeenCalled();
+  });
+
   it('stores ONLY the cursor and clears the lease — the state is unchanged until exhausted', async () => {
     mocks.persistSignin.mockResolvedValue(SIGNIN_PERSISTED('blob-2'));
     mocks.callExecutor.mockResolvedValue(SIGNIN_PAGE('blob-2'));

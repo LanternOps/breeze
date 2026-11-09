@@ -214,10 +214,25 @@ describe('signinEventsWindow (#5784 W05, #9394)', () => {
     expect(executeMock).not.toHaveBeenCalled();
   });
 
-  it('a completed walk that left no rows (unlicensed, or a quiet tenant) is still a cold start', async () => {
+  it('no watermark after a COMPLETED walk walks on from that completion, not a fresh cold start (#9394)', async () => {
+    // The common case, not an edge: a small tenant's first walk finishes in one
+    // run, so every row it stored landed after its own completion time and none
+    // qualifies. So does an unlicensed or quiet tenant. A fresh one-day cold
+    // start here would leave a hole whenever the next run came more than a day
+    // later (24 h cadence plus jitter, or any failed run in between).
     executeMock.mockResolvedValueOnce([{ watermark: null }]);
     const window = await signinEventsWindow(ORG, NOW, LAST_COMPLETE);
-    expect(window.since).toBe(new Date(NOW.getTime() - 24 * 3600_000).toISOString());
+    expect(window.since)
+      .toBe(new Date(LAST_COMPLETE.getTime() - SIGNIN_EVENTS_OVERLAP_MINUTES * 60_000).toISOString());
+    expect(window.until).toBe(NOW.toISOString());
+  });
+
+  it('...and still reaches back over a long gap since that completion', async () => {
+    const longAgo = new Date(NOW.getTime() - 10 * 24 * 3600_000);
+    executeMock.mockResolvedValueOnce([{ watermark: null }]);
+    const window = await signinEventsWindow(ORG, NOW, longAgo);
+    expect(window.since)
+      .toBe(new Date(longAgo.getTime() - SIGNIN_EVENTS_OVERLAP_MINUTES * 60_000).toISOString());
   });
 
   it('steady state: since is the completed watermark MINUS the overlap, not the bare watermark', async () => {

@@ -318,6 +318,47 @@ describe('m365_signin_events — the delta window', () => {
       .toBe(new Date(proven.getTime() - SIGNIN_EVENTS_OVERLAP_MINUTES * 60_000).toISOString());
   });
 
+  runDb('Case 4e: rows but no completed walk yet is a cold start, not a watermark (#9394)', async () => {
+    const fx = await withSystemDbAccessContext(() => seedOrg('never-completed'));
+    const now = new Date();
+    await withSystemDbAccessContext(() => db.insert(m365SigninEvents).values({
+      orgId: fx.org.id, tenantId: fx.tenantId, graphId: randomUUID(),
+      signedInAt: new Date(now.getTime() - 5 * 60_000),
+    }));
+    const window = await withSystemDbAccessContext(() => signinEventsWindow(fx.org.id, now, null));
+    expect(Date.parse(window.until) - Date.parse(window.since)).toBe(1 * DAY_MS);
+  });
+
+  runDb('Case 4f: after a first walk that finished in one run, the next walk starts at that completion (#9394)', async () => {
+    // Every row of a one-run walk lands after the run's own `now`, so none
+    // qualifies as a watermark. A fresh one-day cold start would leave a hole
+    // whenever the next run came more than a day later.
+    const fx = await withSystemDbAccessContext(() => seedOrg('first-walk'));
+    const now = new Date();
+    const completedAt = new Date(now.getTime() - 30 * 3600_000);
+    await withSystemDbAccessContext(() => db.insert(m365SigninEvents).values({
+      orgId: fx.org.id, tenantId: fx.tenantId, graphId: randomUUID(),
+      signedInAt: new Date(completedAt.getTime() - 3600_000), ingestedAt: new Date(completedAt.getTime() + 5_000),
+    }));
+    const window = await withSystemDbAccessContext(() => signinEventsWindow(fx.org.id, now, completedAt));
+    expect(window.since)
+      .toBe(new Date(completedAt.getTime() - SIGNIN_EVENTS_OVERLAP_MINUTES * 60_000).toISOString());
+    expect(Date.parse(window.until) - Date.parse(window.since)).toBeGreaterThan(30 * 3600_000);
+  });
+
+  runDb('Case 4g: a row ingested exactly at the completion counts toward the watermark (#9394)', async () => {
+    const fx = await withSystemDbAccessContext(() => seedOrg('boundary'));
+    const now = new Date();
+    const completedAt = new Date(now.getTime() - 3 * 3600_000);
+    const atBoundary = new Date(now.getTime() - 4 * 3600_000);
+    await withSystemDbAccessContext(() => db.insert(m365SigninEvents).values({
+      orgId: fx.org.id, tenantId: fx.tenantId, graphId: randomUUID(), signedInAt: atBoundary, ingestedAt: completedAt,
+    }));
+    const window = await withSystemDbAccessContext(() => signinEventsWindow(fx.org.id, now, completedAt));
+    expect(window.since)
+      .toBe(new Date(atBoundary.getTime() - SIGNIN_EVENTS_OVERLAP_MINUTES * 60_000).toISOString());
+  });
+
   runDb('Case 4c: an org behind by weeks gets a window covering the WHOLE gap', async () => {
     // Clamping `since` forward to a fixed lookback would move the window past
     // the gap, and no later run would come back for it — Graph purges audit

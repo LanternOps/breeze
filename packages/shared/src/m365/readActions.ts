@@ -234,11 +234,12 @@ const SYNC_BRANCHES = [
 
 /**
  * Cold start for an org whose sign-in walk has never completed. One day, not
- * the original seven (#9394): a week of a few-hundred-user tenant is ~8,000
- * sign-ins, and a first walk that long is the one most likely to be cut off
- * before it can complete (a cut-off walk restarts from the same cold start).
- * A day is ~16 small pages and completes in a few runs; later runs walk
- * forward from what it proved. Breeze accumulates forward from the first sync.
+ * the original seven (#9394): on a reported tenant of ~335 accounts a weekday
+ * was ~1,500 interactive sign-ins and a week ~8,000, and a first walk that long
+ * is the one most likely to be cut off before it can complete (a cut-off walk
+ * restarts from the same cold start). A weekday is ~15 pages of 100 and
+ * completes in a few runs; later runs walk forward from what it proved.
+ * Breeze accumulates forward from the first sync.
  */
 export const SIGNIN_EVENTS_DEFAULT_WINDOW_DAYS = 1;
 

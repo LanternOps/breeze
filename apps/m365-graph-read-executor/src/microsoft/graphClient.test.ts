@@ -840,38 +840,61 @@ describe('readSyncCollection', () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
-  // #9394: Graph answered 429, the executor waited and retried, and the retry
-  // was then cut off by the deadline. The cause the operator needs to see is
-  // the throttle — Graph's own status — not a client-side timeout.
+  // #9394: Graph answered 429, the executor waited and retried, and the run
+  // deadline then cut the page off. The cause the operator needs to see is the
+  // throttle — Graph's own status — not a client-side timeout.
   const throttledResponse = () => new Response('{}', {
     status: 429, headers: { 'content-type': 'application/json', 'retry-after': '4' },
   });
   const hangUntilAborted = (_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
-    init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    const signal = init?.signal;
+    if (signal?.aborted) { reject(new DOMException('aborted', 'AbortError')); return; }
+    signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+  });
+  // The pre-page and pre-sleep deadline checks read the injected clock; a
+  // lagging one lets the page start while the REAL deadline timer (which always
+  // runs on the wall clock) fires a few ms later. No assertion depends on how
+  // long the host takes to get there.
+  const laggingClock = () => Date.now() - 60_000;
+
+  it('reports graph_throttled when the run deadline cuts off the retry of a 429 (#9394)', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(throttledResponse())
+      .mockImplementationOnce(hangUntilAborted);
+    await expect(syncClient(fetchImpl as unknown as typeof fetch, { sleep: async () => {}, now: laggingClock })
+      .readSyncCollection({
+        accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns',
+        limits: limits({
+          deadlineAt: Date.now() + 20, perRequestTimeoutMs: 60_000,
+          retry: { maxAttempts: 3, cumulativeBudgetMs: 60_000, fixedBackoffMs: 1 },
+        }),
+      })).rejects.toMatchObject({ code: 'graph_throttled', retryAfterSeconds: 1 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it('reports graph_throttled, not graph_request_timeout, when the deadline cuts off the retry of a 429 (#9394)', async () => {
+  it('reports graph_throttled when the run deadline fires while waiting out a 429 (#9394)', async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(throttledResponse());
+    await expect(syncClient(fetchImpl as unknown as typeof fetch, { now: laggingClock }).readSyncCollection({
+      accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns',
+      limits: limits({ deadlineAt: Date.now() + 20, perRequestTimeoutMs: 1_000 }),
+    })).rejects.toMatchObject({ code: 'graph_throttled', retryAfterSeconds: 4 });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it('keeps a retry that ran out its OWN per-request timer after a 429 as graph_request_timeout (#9394)', async () => {
+    // Graph throttled once, then never answered the retry inside the request
+    // budget while the run still had time: that is a timeout, not a throttle.
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(throttledResponse())
       .mockImplementationOnce(hangUntilAborted);
     await expect(syncClient(fetchImpl as unknown as typeof fetch, { sleep: async () => {} }).readSyncCollection({
       accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns',
       limits: limits({
-        deadlineAt: Date.now() + 40, perRequestTimeoutMs: 10,
+        perRequestTimeoutMs: 10,
         retry: { maxAttempts: 3, cumulativeBudgetMs: 60_000, fixedBackoffMs: 1 },
       }),
-    })).rejects.toMatchObject({ code: 'graph_throttled', retryAfterSeconds: 1 });
+    })).rejects.toMatchObject({ code: 'graph_request_timeout' });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
-  });
-
-  it('reports graph_throttled when the deadline fires while waiting out a 429 (#9394)', async () => {
-    const fetchImpl = vi.fn().mockResolvedValueOnce(throttledResponse());
-    // The pre-sleep deadline check reads the injected clock, which lags here so
-    // the sleep is entered; the real deadline timer then fires during it.
-    await expect(syncClient(fetchImpl as unknown as typeof fetch, { now: () => Date.now() - 60_000 }).readSyncCollection({
-      accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns',
-      limits: limits({ deadlineAt: Date.now() + 30, perRequestTimeoutMs: 1_000 }),
-    })).rejects.toMatchObject({ code: 'graph_throttled', retryAfterSeconds: 4 });
   });
 
   it('still reports a request that never answered as graph_request_timeout (#9394)', async () => {
@@ -895,18 +918,29 @@ describe('readSyncCollection', () => {
     })).rejects.toMatchObject({ code: 'graph_request_timeout' });
   });
 
+  it('reports a body stream that fails for any other reason as graph_transport_failed (#9394)', async () => {
+    const fetchImpl = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) { controller.error(new TypeError('connection reset')); },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    await expect(syncClient(fetchImpl as unknown as typeof fetch).readSyncCollection({
+      accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns', limits: limits(),
+    })).rejects.toMatchObject({ code: 'graph_transport_failed' });
+  });
+
   describe('keepPagesOnTransientFailure (#9394)', () => {
     const SIGNINS = '/v1.0/auditLogs/signIns';
     const page2 = `https://graph.microsoft.com${SIGNINS}?$skiptoken=2`;
-    const firstPageThen = (second: (url: string, init?: RequestInit) => Promise<Response>) => vi.fn()
+    // The page failure is injected directly: classification is covered above,
+    // and a real timer here would also race the first page on a busy host.
+    const timedOut = () => Promise.reject(new GraphClientError('graph_request_timeout'));
+    const firstPageThen = (second: () => Promise<Response>) => vi.fn()
       .mockResolvedValueOnce(json({ value: [{ id: 'a' }], '@odata.nextLink': page2 }))
       .mockImplementation(second);
 
     it('stops at a page that timed out and hands back the pages already read plus that page as the resume point', async () => {
-      const fetchImpl = firstPageThen(hangUntilAborted);
+      const fetchImpl = firstPageThen(timedOut);
       const result = await syncClient(fetchImpl as unknown as typeof fetch).readSyncCollection({
-        accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns',
-        limits: limits({ perRequestTimeoutMs: 10 }), keepPagesOnTransientFailure: true,
+        accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns', limits: limits(), keepPagesOnTransientFailure: true,
       });
       expect(result).toEqual({ items: [{ id: 'a' }], stopReason: 'interrupted', pages: 1, nextLink: page2 });
     });
@@ -920,10 +954,17 @@ describe('readSyncCollection', () => {
     });
 
     it('still throws when the FIRST page fails — there is nothing to keep and the caller keeps its cursor', async () => {
-      const fetchImpl = vi.fn(hangUntilAborted);
+      const fetchImpl = vi.fn(timedOut);
       await expect(syncClient(fetchImpl as unknown as typeof fetch).readSyncCollection({
-        accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns',
-        limits: limits({ perRequestTimeoutMs: 10 }), keepPagesOnTransientFailure: true,
+        accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns', limits: limits(), keepPagesOnTransientFailure: true,
+      })).rejects.toMatchObject({ code: 'graph_request_timeout' });
+    });
+
+    it('still throws when the first page of a RESUMED walk fails, so the stored cursor is not replaced', async () => {
+      const fetchImpl = vi.fn(timedOut);
+      await expect(syncClient(fetchImpl as unknown as typeof fetch).readSyncCollection({
+        accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns', limits: limits(),
+        startUrl: page2, keepPagesOnTransientFailure: true,
       })).rejects.toMatchObject({ code: 'graph_request_timeout' });
     });
 
@@ -937,9 +978,9 @@ describe('readSyncCollection', () => {
     });
 
     it('is off by default: every other domain still fails the whole walk', async () => {
-      const fetchImpl = firstPageThen(hangUntilAborted);
+      const fetchImpl = firstPageThen(timedOut);
       await expect(syncClient(fetchImpl as unknown as typeof fetch).readSyncCollection({
-        accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns', limits: limits({ perRequestTimeoutMs: 10 }),
+        accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns', limits: limits(),
       })).rejects.toMatchObject({ code: 'graph_request_timeout' });
     });
   });

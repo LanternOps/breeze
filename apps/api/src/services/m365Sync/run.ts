@@ -76,8 +76,9 @@ export interface SyncRunContext {
     /**
      * #5784 W05. The `signin_events` delta window, or null for every other
      * domain. Computed HERE because Phase A is the only phase that holds a DB
-     * context — Phase B deliberately holds none, and the window needs
-     * MAX(signed_in_at) for the org.
+     * context — Phase B deliberately holds none, and the window needs the
+     * org's watermark (MAX(signed_in_at) over rows the last completed walk
+     * proved, keyed on `last_complete_snapshot_at`, #9394).
      */
     signinEventsWindow?: { since: string; until: string } | null;
   };
@@ -185,8 +186,9 @@ export async function loadSyncRunContext(
     }
 
     // #5784 W05. The sign-in event window rides Phase A's own system context:
-    // it is one indexed MAX(signed_in_at) on the org, and Phase B holds no DB
-    // context at all, so there is nowhere later it could be read.
+    // it is at most one MAX(signed_in_at) read on the org (none before a first
+    // completed walk), and Phase B holds no DB context at all, so there is
+    // nowhere later it could be read.
     const signinWindow = data.domain === 'signin_events'
       ? await signinEventsWindow(data.orgId, now, row!.lastCompleteSnapshotAt)
       : null;
@@ -633,10 +635,11 @@ export async function runSyncDomain(
         signalsFor({
           capacity: call.code === 'sync_capacity',
           authFailure: AUTH_FAILURE_CODES.has(call.code),
-          // #9394: a failed run's latency is the time it took to fail — a
-          // per-request timeout or the run deadline — not evidence that the
-          // tenant is large. Feeding it to the cadence doubled the interval on
-          // every timed-out run and pushed sign-in events ~8 days out.
+          // #9394: a failed run's latency is the time it took to fail, not
+          // evidence that the tenant is large. A run that burned the ~110 s
+          // deadline crossed the cadence's 60 s slow-executor threshold and
+          // doubled the interval on every failure — 24 h, 48 h, 96 h, then the
+          // 7-day ceiling — which is how sign-in events ended up ~8 days out.
           latencyMs: 0,
         }),
         rng,
@@ -724,6 +727,10 @@ export async function runSyncDomain(
       logSync('m365.sync.continuation', {
         orgId: data.orgId, domain: data.domain, generation: data.generation,
         correlationId, updated: persisted.updated, unchanged: persisted.unchanged,
+        // #9394: anything but 'ok' means the walk stopped early — the limiter
+        // paused it, or a page timed out or stayed throttled and the run kept
+        // the pages before it. Nothing else records that on this path.
+        primarySource: primaryState ?? null,
       });
       await reclaimSameDomain(data, 'continuation-reclaim-failed');
       return 'partial-continue';

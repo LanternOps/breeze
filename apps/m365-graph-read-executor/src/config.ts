@@ -50,8 +50,8 @@ export interface ExecutorSyncConfig {
   /**
    * #9394. `$top` for the /auditLogs/signIns walk. Small by default: a
    * 1000-row page did not come back inside the 30 s per-request budget on a
-   * tenant of a few hundred users, and a day of that tenant is ~16 pages of
-   * 100. Graph caps the page at 1000.
+   * tenant of a few hundred users, and a weekday of that tenant (~1,500
+   * sign-ins) is ~15 pages of 100. Graph caps the page at 1000.
    */
   signinEventsPageSize: number;
   /**

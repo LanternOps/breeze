@@ -373,10 +373,13 @@ export function createMicrosoftGraphClient(
    * charges bytes against the caller's cumulative budget (NOT the client-wide
    * 512 KiB interactive one).
    *
-   * #9394: once Graph has answered this page with a 429/503, a later abort
-   * (the deadline firing during the wait or cutting off the retry) is reported
-   * as `graph_throttled` with Graph's retry hint. Reporting it as
-   * `graph_request_timeout` hid Graph's own status behind a client-side timer.
+   * #9394: once Graph has answered this page with a 429/503 and the RUN
+   * DEADLINE then cuts the page off (during the wait, or during the retry it
+   * was waiting for), the failure is reported as `graph_throttled` with
+   * Graph's retry hint: the deadline only won because Graph throttled.
+   * Reporting it as `graph_request_timeout` hid Graph's status behind a
+   * client-side timer. A retry that instead runs out its own per-request
+   * timer is a timeout like any other and stays `graph_request_timeout`.
    */
   async function syncRequest(
     url: string,
@@ -386,9 +389,10 @@ export function createMicrosoftGraphClient(
     throttleSpentMs: { value: number },
   ): Promise<unknown> {
     let throttledRetryAfterSeconds: number | undefined;
-    const aborted = (): GraphClientError => (throttledRetryAfterSeconds === undefined
-      ? failure('graph_request_timeout')
-      : new GraphClientError('graph_throttled', throttledRetryAfterSeconds));
+    const aborted = (): GraphClientError => (
+      throttledRetryAfterSeconds !== undefined && limits.deadlineSignal.aborted
+        ? new GraphClientError('graph_throttled', throttledRetryAfterSeconds)
+        : failure('graph_request_timeout'));
 
     for (let attempt = 1; ; attempt += 1) {
       const timeout = AbortSignal.timeout(limits.perRequestTimeoutMs);
@@ -422,8 +426,11 @@ export function createMicrosoftGraphClient(
         try {
           await sleepImpl(waitMs, limits.deadlineSignal);
         } catch (error) {
-          // The deadline fired while waiting out Graph's throttle.
-          if (error instanceof GraphClientError && error.code === 'graph_request_timeout') throw aborted();
+          // Only the deadline signal interrupts this wait, so the page was
+          // still waiting out Graph's throttle when the run ran out of time.
+          if (error instanceof GraphClientError && error.code === 'graph_request_timeout') {
+            throw new GraphClientError('graph_throttled', retryAfterSeconds);
+          }
           throw error;
         }
         continue;

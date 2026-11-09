@@ -22,10 +22,11 @@ import { GraphClientError, type GraphSyncPageSet } from './graphClient';
  * service-principal and managed-identity sign-ins live on /beta and are out of
  * the first cut. `isInteractive` is still projected so downstream can check.
  *
- * NO `$orderby` (#9394). Graph serves this collection newest-first by
- * default, and an explicit ascending sort over a `createdDateTime` window was
- * the shape whose first page did not return inside the 30 s per-request
- * budget. Order is not what makes the walk resumable: the continuation is the
+ * NO `$orderby` (#9394). An explicit ascending sort over a
+ * `createdDateTime` window was the shape whose first page did not return
+ * inside the 30 s per-request budget on a reporting tenant; without it Graph
+ * was observed to serve this collection newest-first, and an unsorted,
+ * narrowly selected read over a day came back promptly. Order is not what makes the walk resumable: the continuation is the
  * sealed `@odata.nextLink`, and the API's next window is computed from what a
  * COMPLETED walk proved (`signinEventsWindow` in the API), never from the
  * newest row a half-finished walk happened to persist. Pages are small and

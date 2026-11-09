@@ -479,7 +479,9 @@ const ALLOWED_TAG_NAMES = new Set([
   // unexpected Graph failure (graph_response_invalid, graph_request_timeout,
   // graph_transport_failed, graph_license_required, graph_not_found,
   // graph_response_too_large, the refusal codes) degraded silently to
-  // `last_status='error'` with no alert. `m365_sync_domain` is the closed
+  // `last_status='error'` with no alert. (#9394 later took graph_request_timeout
+  // out of that set: it is retried on the BullMQ ladder and, if it outlasts it,
+  // recorded on the row as `error` without a per-run Sentry event.) `m365_sync_domain` is the closed
   // `M365SyncDomain` union and `m365_sync_failure_code` is the closed
   // `M365SyncCallFailureCode` union — both string-literal unions from
   // services/m365Sync/types.ts / m365ControlPlane/readActionService.ts, never
