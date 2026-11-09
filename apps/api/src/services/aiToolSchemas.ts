@@ -489,18 +489,31 @@ export const launchSpecialistInputSchema = z.strictObject({
   reason: z.string().trim().min(5).max(500),
 });
 const ls = launchSpecialistInputSchema.shape;
-export const launchSpecialistShape = {
-  orgId: ls.orgId.describe('The customer organization the specialist works on (UUID)'),
-  kind: ls.kind.describe('Which specialist. sweep (needs a schedule), analysis (needs workspace), device_troubleshooting run now; rest ask first'),
-  // #10144: every kind's exact keys — the params schemas in
-  // wisp/specialistLaunchers.ts are strict, so an unlisted key is refused
-  // invalid_params. The two long kinds are listed in the tool description
-  // (aiToolsWisp.ts): a parameter description is capped at 160 chars (A-W03).
-  params: ls.params.describe(
-    'Only these keys per kind: sweep {sweepKinds?}; analysis {goal, deviceIds?, siteId?}; patch_plan {}; remediation_research {deviceId, alertId?}; rest: see tool',
-  ),
-  reason: ls.reason.describe('Why, in one sentence a technician would accept'),
-};
+// #10406 item 1: the advertised text follows the server's workspace flag
+// (aiWorkspaceEnabled(), passed in so this file stays free of config/env).
+// The kind enum is unchanged; a call to an unavailable kind is still refused.
+// Capped at 160 chars by aiTools.descriptionBudget.contract.test.ts.
+export function launchSpecialistKindDescribe(workspaceEnabled: boolean): string {
+  return workspaceEnabled
+    ? 'After one card: assessment {scope?: org|orgs_with_open_alerts}, device_troubleshooting, analysis, sweep if scheduled. Rest ask first'
+    : 'After one card: assessment {scope?: org|orgs_with_open_alerts}, device_troubleshooting, sweep if scheduled. analysis is off here. Rest ask first';
+}
+export function launchSpecialistShapeFor(workspaceEnabled: boolean) {
+  return {
+    orgId: ls.orgId.describe('The customer organization the specialist works on (UUID)'),
+    kind: ls.kind.describe(launchSpecialistKindDescribe(workspaceEnabled)),
+    // #10144: every kind's exact keys — the params schemas in
+    // wisp/specialistLaunchers.ts are strict, so an unlisted key is refused
+    // invalid_params. The kinds whose keys do not fit here (device_troubleshooting,
+    // assessment, bulk_ticket_reply, operator_recipe) are listed in the tool
+    // description (aiToolsWisp.ts launchSpecialistDescription): a parameter
+    // description is capped at 160 chars (A-W03).
+    params: ls.params.describe(
+      'Only these keys per kind: sweep {sweepKinds?}; analysis {goal, deviceIds?, siteId?}; patch_plan {}; remediation_research {deviceId, alertId?}; rest: see tool',
+    ),
+    reason: ls.reason.describe('Why, in one sentence a technician would accept'),
+  };
+}
 // The approval carrier: never model-callable (HUMAN_ONLY_TOOLS); the schema
 // bounds what the coordinator mints.
 export const wispSpecialistRequestSchema = z.strictObject({

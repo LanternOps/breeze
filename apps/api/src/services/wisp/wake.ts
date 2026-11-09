@@ -10,7 +10,10 @@
  *                        `wisp.grant.resumed` asks for one floor-tick
  *                        assessment of the round-robin org.
  *   requestAssessment    the 60 s per-(grant, org) debounce: ONE delayed
- *                        BullMQ job per pair is the window.
+ *                        BullMQ job per pair is the window. An `on_demand`
+ *                        request (#10406) skips the delay and is never
+ *                        dropped: it upgrades the window job or adds a `-od`
+ *                        successor (requestOnDemandAssessment).
  *   pickRoundRobinOrg    pure: never-assessed orgs first, then the oldest.
  *   enqueueCheckIn / removeCheckInJob / isCheckInJobLive
  *                        the delayed `check-in` job of a Wisp check-in timer
@@ -23,7 +26,7 @@
  * (`runOutsideDbContext(withSystemDbAccessContext)`); every enqueue happens
  * after that block has returned (#1105).
  */
-import { Queue } from 'bullmq';
+import { Queue, type Job } from 'bullmq';
 import { sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { wispEnabled } from '../../config/env';
@@ -116,51 +119,183 @@ export function wakeJobId(grantId: string, orgId: string): string {
 }
 
 /**
- * Ask for one assessment of (grant, org) within the next 60 s.
+ * #10406: the job an `on_demand` request adds when the (grant, org) window job
+ * is already running and so can no longer take the on-demand reason. Its own
+ * id, so BullMQ dedupes repeats onto it while it is live.
+ */
+export function onDemandSuccessorJobId(grantId: string, orgId: string): string {
+  return `${wakeJobId(grantId, orgId)}-od`;
+}
+
+/**
+ * `queued`    a new job was added;
+ * `coalesced` a live job already covers this request (nothing changed);
+ * `upgraded`  a tick / onboarding job no worker holds yet (waiting, delayed or
+ *             prioritized) now carries `on_demand` (#10406).
+ */
+export type RequestAssessmentResult = 'queued' | 'coalesced' | 'upgraded';
+
+/** Live states in which no worker holds the job yet, so its data can still change. */
+const UNCLAIMED_JOB_STATES = new Set(['waiting', 'delayed', 'prioritized']);
+
+/**
+ * Reasons an on-demand request may replace in place. A tick or onboarding run
+ * reads nothing the on-demand run does not; an event or watch reason names
+ * what its run is about (the alert, anomaly incident or watch), so those jobs
+ * keep it and the on-demand request takes the successor.
+ */
+const REPLACEABLE_REASONS = new Set<AssessmentReason['kind']>(['tick', 'onboarding']);
+
+const ASSESS_JOB_OPTIONS = {
+  // A transient failure (Redis / DB blip in enqueueAssessment) retries the
+  // SAME job: BullMQ moves it back to 'delayed' under its own jobId for the
+  // backoff, so the window keeps coalescing onto it meanwhile.
+  attempts: ASSESS_JOB_ATTEMPTS,
+  backoff: { type: 'exponential' as const, delay: ASSESS_JOB_BACKOFF_MS },
+  removeOnComplete: true,
+  removeOnFail: { count: 100 },
+};
+
+const isOnDemandJob = (data: unknown): boolean =>
+  (data as Partial<WispAssessJobData> | undefined)?.reason?.kind === 'on_demand';
+
+function assessJobData(input: WispAssessJobData): WispAssessJobData {
+  const data: WispAssessJobData = { grantId: input.grantId, orgId: input.orgId, reason: input.reason };
+  if (input.subject) data.subject = input.subject;
+  if (input.failed !== undefined) data.failed = input.failed;
+  if (input.watchRecord) data.watchRecord = input.watchRecord;
+  return data;
+}
+
+/**
+ * The live job with this id, or null. A retained completed / failed record
+ * would make BullMQ no-op an add with the same id forever (it dedupes on any
+ * job record still in Redis), so such a record is removed here. If that
+ * removal fails, a debounced request only warns (the next wake retries it);
+ * a `strict` caller throws, because its add would be silently ignored and it
+ * must not report the request as queued (the enqueueCheckIn rule).
+ */
+async function liveJob(
+  queue: Queue<WakeQueueData>,
+  jobId: string,
+  opts: { strict?: boolean } = {},
+): Promise<{ job: Job<WakeQueueData>; state: string } | null> {
+  const existing = await queue.getJob(jobId);
+  if (!existing) return null;
+  const state = await existing.getState();
+  if (LIVE_JOB_STATES.has(state)) return { job: existing, state };
+  try {
+    await existing.remove();
+  } catch (err) {
+    if (opts.strict) {
+      throw new Error(`[wisp-wake] could not remove the finished assess job ${jobId} (state ${state}): ${err instanceof Error ? err.message : String(err)}`);
+    }
+    console.warn('[wisp-wake] could not remove a finished assess job', { jobId, state, err });
+  }
+  return null;
+}
+
+/**
+ * Ask for one assessment of (grant, org): within the next 60 s, or at once for
+ * `on_demand`.
  *
- * One delayed job per (grant, org) IS the window: every request while that job
- * is still waiting, delayed or running collapses onto it. The stored data is
+ * One delayed job per (grant, org) IS the window: every other request while
+ * that job is still waiting, delayed or running collapses onto it. The stored data is
  * the FIRST request's — its reason and its deterministic digest hint. Later
  * coalesced requests' hints are dropped; that is acceptable because a funded
  * assessment reads everything since the watermark, not the reason, and on the
  * budget-exhausted path the concerns list and the next funded assessment
  * cover the events whose hint was dropped.
  *
- * A retained completed / failed job with the same id would make BullMQ no-op
- * the add forever (it dedupes on any job record still in Redis), so such a
- * record is removed first. Two replicas racing the empty window both add; the
- * second add is a BullMQ no-op, and both report 'queued' — a miscount, never a
- * second job.
+ * `on_demand` (#10406) is the exception: a person asked for the org's OPEN
+ * alerts to be looked at now, which a since-watermark tick or event run does
+ * not do, so it is never dropped. See `requestOnDemandAssessment`.
+ *
+ * Two replicas racing the empty window both add; the second add is a BullMQ
+ * no-op, and both report 'queued' — a miscount, never a second job.
  */
-export async function requestAssessment(input: WispAssessJobData): Promise<'queued' | 'coalesced'> {
+export async function requestAssessment(input: WispAssessJobData): Promise<RequestAssessmentResult> {
+  if (input.reason.kind === 'on_demand') return requestOnDemandAssessment(input);
   const queue = getWispWakeQueue();
   const jobId = wakeJobId(input.grantId, input.orgId);
 
-  const existing = await queue.getJob(jobId);
-  if (existing) {
-    const state = await existing.getState();
-    if (LIVE_JOB_STATES.has(state)) return 'coalesced';
-    await existing.remove().catch((err: unknown) => {
-      console.warn('[wisp-wake] could not remove a finished assess job', { jobId, state, err });
-    });
+  if (await liveJob(queue, jobId)) return 'coalesced';
+  await queue.add(ASSESS_JOB, assessJobData(input), { jobId, delay: WISP_WAKE_DEBOUNCE_MS, ...ASSESS_JOB_OPTIONS });
+  return 'queued';
+}
+
+/**
+ * #10406 — an on-demand request, with no debounce delay:
+ *
+ *  - a live job that already carries `on_demand` (the window job or its
+ *    successor) covers it → `coalesced`. A job is assessed when its RUN
+ *    starts (loadAssessmentContext), after the assess job admits it, so a
+ *    running on-demand assess job still reads the alerts open now. A later
+ *    tick / event / watch request coalesces onto a window job carrying
+ *    `on_demand`, so that job is never downgraded (those requests do not
+ *    consult the successor: if the window job has finished they add a fresh
+ *    window job, an extra run, never a lost one);
+ *  - no live window job → the window job is added with `on_demand`;
+ *  - a tick or onboarding window job no worker holds yet (waiting, delayed,
+ *    prioritized) gets the `on_demand` reason (`updateData`, keeping its
+ *    digest hint), and a delayed one is promoted to run now → `upgraded`;
+ *  - otherwise the successor job `<window>-od` is added → `queued`: the window
+ *    job is running (it is only admitting a run, no proof that run reads the
+ *    open alerts), a worker claimed it while it was being updated (its state
+ *    is re-read after the write, quorum finding), or it carries an event or
+ *    watch reason it must keep (REPLACEABLE_REASONS).
+ *
+ * A finished record that cannot be removed throws (`strict`): the add would
+ * be a silent BullMQ no-op, and the caller must not report it as queued.
+ */
+async function requestOnDemandAssessment(input: WispAssessJobData): Promise<RequestAssessmentResult> {
+  const queue = getWispWakeQueue();
+  const jobId = wakeJobId(input.grantId, input.orgId);
+  const successorId = onDemandSuccessorJobId(input.grantId, input.orgId);
+
+  const live = await liveJob(queue, jobId, { strict: true });
+  if (live && isOnDemandJob(live.job.data)) return 'coalesced';
+  if (await liveJob(queue, successorId, { strict: true })) return 'coalesced';
+
+  if (!live) {
+    await queue.add(ASSESS_JOB, assessJobData(input), { jobId, delay: 0, ...ASSESS_JOB_OPTIONS });
+    return 'queued';
   }
 
-  const data: WispAssessJobData = { grantId: input.grantId, orgId: input.orgId, reason: input.reason };
-  if (input.subject) data.subject = input.subject;
-  if (input.failed !== undefined) data.failed = input.failed;
-  if (input.watchRecord) data.watchRecord = input.watchRecord;
-  await queue.add(ASSESS_JOB, data, {
-    jobId,
-    delay: WISP_WAKE_DEBOUNCE_MS,
-    // A transient failure (Redis / DB blip in enqueueAssessment) retries the
-    // SAME job: BullMQ moves it back to 'delayed' under its own jobId for the
-    // backoff, so the window above keeps coalescing onto it meanwhile.
-    attempts: ASSESS_JOB_ATTEMPTS,
-    backoff: { type: 'exponential', delay: ASSESS_JOB_BACKOFF_MS },
-    removeOnComplete: true,
-    removeOnFail: { count: 100 },
-  });
+  const liveReason = (live.job.data as Partial<WispAssessJobData> | undefined)?.reason?.kind;
+  if (
+    UNCLAIMED_JOB_STATES.has(live.state)
+    && liveReason !== undefined && REPLACEABLE_REASONS.has(liveReason)
+    && (await upgradeToOnDemand(live.job, live.state, input.reason))
+  ) {
+    return 'upgraded';
+  }
+
+  await queue.add(ASSESS_JOB, assessJobData(input), { jobId: successorId, delay: 0, ...ASSESS_JOB_OPTIONS });
   return 'queued';
+}
+
+/**
+ * Put the on-demand reason on a job no worker held when its state was read.
+ * True only when the new data is stored AND the job is still unclaimed after
+ * the write; otherwise the caller adds the successor (an extra assessment at
+ * worst, never a dropped request). A failed promote is not fatal: the job
+ * still carries the reason and runs when its delay ends (at most 60 s).
+ */
+async function upgradeToOnDemand(job: Job<WakeQueueData>, state: string, reason: AssessmentReason): Promise<boolean> {
+  try {
+    await job.updateData({ ...(job.data as WispAssessJobData), reason });
+  } catch (err) {
+    console.warn('[wisp-wake] could not upgrade the assess job to on_demand; adding a successor', { jobId: job.id, state, err });
+    return false;
+  }
+  if (state === 'delayed') {
+    await job.promote().catch((err: unknown) => {
+      console.warn('[wisp-wake] could not promote the upgraded assess job; it runs when its delay ends', { jobId: job.id, err });
+    });
+  }
+  const after = await job.getState().catch(() => 'unknown');
+  return UNCLAIMED_JOB_STATES.has(after);
 }
 
 // ---------------------------------------------------------------------------

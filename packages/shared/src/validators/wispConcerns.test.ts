@@ -109,9 +109,11 @@ describe('outcome-tool schemas', () => {
     expect(requestSpecialistSchema.safeParse({ kind: 'sweep', params: {}, reason: 'look at all backups' }).success).toBe(true);
   });
   it('request_specialist accepts only the W07 specialist kinds', () => {
-    for (const kind of WISP_SPECIALIST_KINDS) {
+    for (const kind of WISP_SPECIALIST_KINDS.filter((k) => k !== 'assessment')) {
       expect(requestSpecialistSchema.safeParse({ kind, params: {}, reason: 'look at all backups' }).success).toBe(true);
     }
+    // #10406: chat-only — an assessment never asks for more assessments.
+    expect(requestSpecialistSchema.safeParse({ kind: 'assessment', params: {}, reason: 'look at all backups' }).success).toBe(false);
     expect(requestSpecialistSchema.safeParse({ kind: 'run_script', params: {}, reason: 'look at all backups' }).success).toBe(false);
     expect(requestSpecialistSchema.safeParse({ kind: 'backup', params: {}, reason: 'look at all backups' }).success).toBe(false);
   });

@@ -18,6 +18,13 @@ import type { Concern, Watch, WatchKind } from '@breeze/shared';
  * (payload `incidentId`, #11425). It is a separate key because
  * `integration.health_opened` also sends `incidentId`, for a
  * connection-health incident.
+ *
+ * `on_demand` (#10406) is a person asking for an assessment from chat
+ * (`launch_specialist {kind: 'assessment'}`). It reads the org's open alerts
+ * like a first look, and it is never dropped by a queued or running tick or
+ * event job (wake.ts `requestAssessment` upgrades an unclaimed tick job, or
+ * adds a successor job). `requestId` is the chat
+ * request's id, kept for traceability and never shown to the model.
  */
 export type AssessmentReason =
   | {
@@ -30,7 +37,8 @@ export type AssessmentReason =
   }
   | { kind: 'tick' }
   | { kind: 'watch'; watchId: string; hits?: WatchHitSummary }
-  | { kind: 'onboarding' };
+  | { kind: 'onboarding' }
+  | { kind: 'on_demand'; requestId: string };
 
 /**
  * #11424 — what the wake scheduler's in-code evaluation of a watch found, sent
@@ -152,6 +160,14 @@ export interface AssessmentRunContext {
    * prompt frames the run as a look at the current state.
    */
   firstLook: boolean;
+  /**
+   * No fully applied earlier assessment of (grant, org): the run's watermark
+   * is null. Narrower than `firstLook`, which an onboarding or on-demand
+   * reason also sets. The finalizer reads it so that an on-demand run that is
+   * the org's first look creates the readiness note, as onboarding does
+   * (#10406 × #11429).
+   */
+  noEarlierAssessment: boolean;
   digest: AssessmentDigest;
   /** Set when the run was requested by a watch (`reason.kind === 'watch'`) and the watch still exists. */
   watch: Watch | null;

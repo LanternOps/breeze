@@ -341,8 +341,9 @@ function readinessNoteUnchanged(live: Concern, summary: string, next: ReadinessE
  * #11429: re-evaluated on every run, not only onboarding. Every check
  * serviceable closes the live note; otherwise a later run refreshes it only
  * when its gaps changed (a write bumps `updated_at`, which the brief and the
- * no-changes probe read) and never re-creates one: only an onboarding run
- * creates it, so a note the user dismissed stays dismissed. No inventory for
+ * no-changes probe read) and never re-creates one: only a first look (an
+ * onboarding run, or an on-demand run with no earlier assessment) creates
+ * it, so a note the user dismissed stays dismissed. No inventory for
  * the org this run (`readiness: null`) leaves the note as it is. A later run
  * acts on the live note it read (`openConcerns`), the same snapshot the touch
  * loop uses.
@@ -369,7 +370,11 @@ async function applyReadiness(ctx: RunContext, a: AssessmentRunContext, grantId:
 
   const summary = renderReadinessSummary(readiness).slice(0, CONCERN_SUMMARY_MAX);
   const next: ReadinessEvidence = { checks: readiness.checks, missingIntegrations: readiness.missingIntegrations };
-  if (a.reason.kind !== 'onboarding') {
+  // Only a first look creates the note: an onboarding run, or an on-demand run
+  // (#10406) for an org this grant has never assessed — one asked for before
+  // any assessment, or one that took over a queued onboarding job (wake.ts).
+  const createsNote = a.reason.kind === 'onboarding' || (a.reason.kind === 'on_demand' && a.noEarlierAssessment);
+  if (!createsNote) {
     if (!live || readinessNoteUnchanged(live, summary, next)) return;
     // updateConcern replaces evidence: keep what else the note carries (its approval card).
     await updateConcern(live.id, { summary, evidence: { ...live.evidence, readiness: next }, lastAssessedRunId: run.id });

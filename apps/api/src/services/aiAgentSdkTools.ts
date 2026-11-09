@@ -42,7 +42,7 @@ import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, monitorKindSchema
 import { scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
-import { cancelCheckInShape, configPolicyOwnerShape, createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listCheckInsShape, listConcernsShape, listLinksShape, raiseConcernShape, scheduleCheckInShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas, PARTNER_SETTINGS_INHERITANCE_BUCKETS, PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT } from './aiToolSchemas';
+import { cancelCheckInShape, configPolicyOwnerShape, createWatchShape, deliveryToolShape, launchSpecialistShapeFor, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listCheckInsShape, listConcernsShape, listLinksShape, raiseConcernShape, scheduleCheckInShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas, PARTNER_SETTINGS_INHERITANCE_BUCKETS, PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
 import { pax8ToolSchemas } from './aiToolSchemasPax8';
 import { orgAdminToolSchemas } from './aiToolSchemasOrgAdmin';
@@ -51,7 +51,7 @@ import { aiAgentLaunchToolSchemas } from './aiToolSchemasAiAgentLaunch';
 import { aiAgentScheduleToolSchemas } from './aiToolSchemasAiAgentSchedules';
 import { fleetDesignToolSchemas } from './aiToolSchemasFleetDesigns';
 import { TOOL_SDK_INPUT_SHAPES } from './aiToolSchemasBackup';
-import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
+import { aiScriptAuthoringEnabled, aiWorkspaceEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { fleetHealthActionShape } from './aiToolSchemasAlertTriage';
 import { captureException, captureMessage } from './sentry';
@@ -1866,7 +1866,7 @@ export function wispSpecialistToolDefinitions(
 function wispSpecialistToolTemplates(): SdkTool[] {
   if (!wispEnabled()) return [];
   return [
-    tool('launch_specialist', registryDescription('launch_specialist'), launchSpecialistShape, lateBoundToolHandler('launch_specialist')),
+    tool('launch_specialist', registryDescription('launch_specialist'), launchSpecialistShapeFor(aiWorkspaceEnabled()), lateBoundToolHandler('launch_specialist')),
   ] as SdkTool[];
 }
 

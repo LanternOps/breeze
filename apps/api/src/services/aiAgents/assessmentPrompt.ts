@@ -77,6 +77,17 @@ const FIRST_LOOK_LINE =
   + 'below, failed patches, pending reboots, backups, security findings) before you choose an outcome; stay quiet '
   + 'only once you have looked and found nothing worth tracking.';
 
+/**
+ * #10406: an on-demand assessment reads the open alerts like a first look, but
+ * an earlier assessment may well exist, so it gets its own line rather than
+ * FIRST_LOOK_LINE's "no completed earlier assessment".
+ */
+const ON_DEMAND_LINE =
+  'On demand: a person asked for this assessment now, so judge the org\'s current state, not what changed — '
+  + '"call nothing when nothing changed" does not apply. Work through the open alerts below and read what else is '
+  + 'open with your tools (failed patches, pending reboots, backups, security findings) before you choose an '
+  + 'outcome; stay quiet only once you have looked and found nothing worth tracking.';
+
 const SUMMARY_MAX = 300;
 const ORG_NAME_MAX = 200;
 const TITLE_MAX = 160;
@@ -137,6 +148,9 @@ function reasonLine(reason: AssessmentReason): string {
       return 'onboarding (first look at this org under the grant)';
     case 'tick':
       return 'periodic check';
+    // The request id is traceability only: no tool can look it up (#10388).
+    case 'on_demand':
+      return 'on demand (a person asked Wisp for this assessment in chat)';
     default: {
       const exhaustive: never = reason;
       return `unknown (${String((exhaustive as { kind?: unknown }).kind)})`;
@@ -234,7 +248,7 @@ export function buildAssessmentTaskPrompt(ctx: AgentRunPromptContext): string {
   lines.push('- Needs a specialist → request_specialist (recorded now; Wisp\'s coordinator handles it after this '
     + 'assessment, and kinds that ask first become an approval card; at most 3 per assessment).');
   lines.push(`Why this assessment: ${a ? reasonLine(a.reason) : 'unknown'}.`);
-  if (a?.firstLook) lines.push(FIRST_LOOK_LINE);
+  if (a?.firstLook) lines.push(a.reason.kind === 'on_demand' ? ON_DEMAND_LINE : FIRST_LOOK_LINE);
   lines.push('');
 
   // (2) Authority disclaimer.
