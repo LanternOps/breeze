@@ -44,6 +44,10 @@ export type WispInstructionCaptureTerminalStatus = Exclude<WispInstructionCaptur
 /** One captured instruction (all blocks sharing an `instructionId`) as the chip shows it. */
 export type CapturedInstructionDto = {
   instructionId: string;
+  /** The turn-end capture that wrote it (one capture can yield several instructions). */
+  captureId: string | null;
+  /** When it was captured (ISO): places a reloaded chip under its reply. */
+  capturedAt: string;
   text: string;
   status: 'unconfirmed' | 'confirmed' | 'retracted';
   /** An unconditional, unexpired deny on resolved devices (the only form W06 enforces). */
