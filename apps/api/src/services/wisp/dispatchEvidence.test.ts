@@ -120,8 +120,8 @@ describe('DISPATCH_EVIDENCE', () => {
       'launch_specialist', 'schedule_check_in', 'create_watch', 'raise_concern', 'remember']) {
       expect(DISPATCH_EVIDENCE).toHaveProperty(name);
     }
-    expect(DISPATCH_EVIDENCE.manage_patches.actions).toEqual(['scan', 'install']);
-    expect(DISPATCH_EVIDENCE.manage_services.actions).toEqual(['start', 'stop', 'restart']);
+    expect(DISPATCH_EVIDENCE.manage_patches!.actions).toEqual(['scan', 'install']);
+    expect(DISPATCH_EVIDENCE.manage_services!.actions).toEqual(['start', 'stop', 'restart']);
   });
 });
 
@@ -233,7 +233,7 @@ describe('turnEvidenceFrom', () => {
   });
 
   it('accepts the MCP-qualified tool name', () => {
-    expect(turnEvidenceFrom([outcome('mcp__breeze__schedule_check_in', {}, FIXTURES.schedule_check_in.output)]).checkInScheduled).toBe(true);
+    expect(turnEvidenceFrom([outcome('mcp__breeze__schedule_check_in', {}, FIXTURES.schedule_check_in!.output)]).checkInScheduled).toBe(true);
   });
 
   it('an unverified, failed or errored dispatch is not evidence', () => {
@@ -258,7 +258,7 @@ describe('turnEvidenceFrom', () => {
   });
 
   it('dispatched names are listed once', () => {
-    const fx = FIXTURES.execute_command;
+    const fx = FIXTURES.execute_command!;
     expect(turnEvidenceFrom([outcome('execute_command', fx.input, fx.output), outcome('execute_command', fx.input, fx.output)]).dispatched).toEqual(['execute_command']);
   });
 

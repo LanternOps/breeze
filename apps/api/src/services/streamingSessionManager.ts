@@ -57,7 +57,7 @@ import type { TopologyTurnRuntime } from './topology/aiInvestigation';
 import { createSessionPreToolUse, createSessionPostToolUse, settleApprovalWaits } from './aiAgentSdk';
 import type { RequestLike } from './auditEvents';
 import type { WispSessionGrant } from './wisp/chatCeiling';
-import { beginWispTurn, type WispCurrentTurn } from './wisp/turnRecord';
+import { appendWispAssistantText, beginWispTurn, type WispCurrentTurn } from './wisp/turnRecord';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { exitPreStreamTiming, timePreStreamPhase } from './aiPreStreamTiming';
 import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
@@ -1747,6 +1747,9 @@ export class StreamingSessionManager {
               // through tool_use blocks and emit no text delta at all, so the
               // message boundary is the only keepalive some turns ever get.
               session.lastActivityAt = Date.now();
+              // #10427: a Wisp turn keeps its reply for the promise linter;
+              // each assistant message starts on its own line.
+              if (session.currentTurn?.assistantText) appendWispAssistantText(session.currentTurn, '\n');
               session.eventBus.publish({ type: 'message_start', messageId: currentMessageId });
             } else if (event.type === 'content_block_delta') {
               if ('delta' in event && (event.delta.type === 'thinking_delta' || event.delta.type === 'signature_delta')) {
@@ -1758,7 +1761,11 @@ export class StreamingSessionManager {
                 // Topology M4: raw provider text goes to the server-only output
                 // gate at THIS publish point — never onto the bus/replay ring.
                 if (session.topologyInvestigation) session.topologyInvestigation.append(event.delta.text);
-                else session.eventBus.publish({ type: 'content_delta', delta: event.delta.text });
+                else {
+                  session.eventBus.publish({ type: 'content_delta', delta: event.delta.text });
+                  // #10427: only a Wisp turn has a record (W05), so ordinary chat buffers nothing.
+                  if (session.currentTurn) appendWispAssistantText(session.currentTurn, event.delta.text);
+                }
               }
             } else if (event.type === 'content_block_start') {
               if ('content_block' in event
@@ -1788,6 +1795,7 @@ export class StreamingSessionManager {
                   session.topologyInvestigation.startBlock();
                 } else if (sawTextBlockThisMessage) {
                   session.eventBus.publish({ type: 'content_delta', delta: '\n\n' });
+                  if (session.currentTurn) appendWispAssistantText(session.currentTurn, '\n\n');
                 }
                 sawTextBlockThisMessage = true;
               } else if (
@@ -2130,8 +2138,9 @@ export class StreamingSessionManager {
             }
 
             // #10428 (W05): the Wisp turn-end hooks (wisp/turnEnd.ts). The cheap
-            // half runs before `done` (the standing-instruction prefilter; a hit
-            // puts a capture id on `done`); the rest runs after it and is never
+            // half runs before `done` (#10427's promise correction, then the
+            // standing-instruction prefilter; a hit puts a capture id on
+            // `done`); the rest runs after it and is never
             // awaited: the #10414 grant spend notice
             // (budget.chatNeverBlocks.contract.test.ts) and the extraction.
             let wispTurnEnd: typeof import('./wisp/turnEnd') | null = null;

@@ -4,6 +4,9 @@
  *
  * Two halves, so nothing slow ever sits in front of `done`:
  *  - `runWispTurnEndBeforeDone` (awaited): deterministic and cheap. The
+ *    promise linter (#10427): a reply that promised a follow-up, a dispatch or
+ *    a concern change no tool result backs gets one server-written correction
+ *    message, persisted and streamed before `done`. Then the
  *    standing-instruction prefilter over the technician's own message and, on
  *    a hit, a `pending` capture status whose id rides on `done`
  *    (`wispInstructionCapture`) so the chip knows to poll. The Redis write is
@@ -21,15 +24,18 @@ import { randomUUID } from 'node:crypto';
 import { and, desc, eq, lt, sql } from 'drizzle-orm';
 import type { AiStreamEvent } from '@breeze/shared';
 import { wispEnabled } from '../../config/env';
-import { db } from '../../db';
+import { db, withDbAccessContext } from '../../db';
 import { aiMessages } from '../../db/schema/ai';
 import { safeErrorMessage } from '../aiModels/safeDbError';
 import { captureException } from '../sentry';
 import type { ActiveSession } from '../streamingSessionManager';
+import { incWispPromiseCorrection } from '../wispMetrics';
 import { maybeNotifyChatCrossedBudget } from './chatSpendCheck';
 import { inSystemContext } from './grantAuthority';
 import { beginInstructionCapture, finishInstructionCapture } from './instructionCaptureStatus';
 import { prefilterInstruction } from './instructionPrefilter';
+import { turnEvidenceFrom } from './dispatchEvidence';
+import { lintTurnPromises } from './promiseLinter';
 import type { WispTurnToolOutcome } from './turnRecord';
 
 /** What `done` carries for a Wisp turn (the shared event's Wisp fields). */
@@ -41,7 +47,7 @@ export const WISP_TURN_END_BEFORE_DONE_TIMEOUT_MS = 1_500;
 /** The "already saved" clauses handed to the extractor (a turn rarely remembers more than one). */
 const ALREADY_REMEMBERED_MAX = 10;
 
-type Session = Pick<ActiveSession, 'breezeSessionId' | 'orgId' | 'auth' | 'wispGrant' | 'turnUserMessageId' | 'currentTurn'>;
+type Session = Pick<ActiveSession, 'breezeSessionId' | 'orgId' | 'auth' | 'wispGrant' | 'turnUserMessageId' | 'currentTurn' | 'eventBus'>;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T, onTimeout: () => void): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -54,10 +60,53 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T, onTimeout:
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+/**
+ * #10427: one complete server-written assistant message (the `publishRefusal`
+ * precedent in streamingSessionManager.ts): persisted, then streamed as
+ * `message_start` / `content_delta` / `message_end`. At most once per turn. A
+ * persist that fails or is slow is reported and the correction still streams.
+ */
+export async function publishTurnCorrection(session: Session, text: string): Promise<void> {
+  const turn = session.currentTurn;
+  if (!turn || turn.correctionPublished) return;
+  turn.correctionPublished = true;
+  try {
+    await withTimeout(
+      withDbAccessContext(
+        { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+        () => db.insert(aiMessages).values({ sessionId: session.breezeSessionId, role: 'assistant', content: text }),
+      ).then(() => undefined),
+      WISP_TURN_END_BEFORE_DONE_TIMEOUT_MS,
+      undefined,
+      () => console.warn('[wisp] promise correction not persisted in time', { sessionId: session.breezeSessionId }),
+    );
+  } catch (err) {
+    report('wisp.promise_correction.persist', err, session.orgId);
+  }
+  session.eventBus.publish({ type: 'message_start', messageId: randomUUID() });
+  session.eventBus.publish({ type: 'content_delta', delta: text });
+  session.eventBus.publish({ type: 'message_end', inputTokens: 0, outputTokens: 0 });
+}
+
+/** #10427: lint the finished reply against this turn's tool results; never throws. */
+async function correctUnbackedPromises(session: Session): Promise<void> {
+  const turn = session.currentTurn;
+  if (!turn || turn.correctionPublished || turn.assistantText.trim() === '') return;
+  try {
+    const { corrections, classes } = lintTurnPromises(turn.assistantText, turnEvidenceFrom(turn.toolOutcomes));
+    if (corrections.length === 0) return;
+    for (const cls of classes) incWispPromiseCorrection(cls);
+    await publishTurnCorrection(session, corrections.join('\n'));
+  } catch (err) {
+    report('wisp.promise_correction', err, session.orgId);
+  }
+}
+
 export async function runWispTurnEndBeforeDone(session: Session): Promise<WispDoneExtras> {
   if (!session.wispGrant || !wispEnabled()) return {};
   const turn = session.currentTurn;
   if (!turn) return {};
+  await correctUnbackedPromises(session);
   try {
     if (!prefilterInstruction(turn.userMessage).hit) return {};
     const captureId = randomUUID();

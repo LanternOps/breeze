@@ -7,8 +7,9 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { queryMock, capturedMcpArgs, capturedTenantSdkToolArgs, lookupWispGrantMock, wispSessionToolFilterMock, maybeNotifyChatCrossedBudgetMock } = vi.hoisted(() => ({
+const { queryMock, capturedMcpArgs, capturedTenantSdkToolArgs, lookupWispGrantMock, wispSessionToolFilterMock, maybeNotifyChatCrossedBudgetMock, wispEnabledMock } = vi.hoisted(() => ({
   queryMock: vi.fn(),
+  wispEnabledMock: vi.fn(() => false),
   maybeNotifyChatCrossedBudgetMock: vi.fn(),
   capturedMcpArgs: [] as Array<{ getAuth: () => unknown; options?: { admitTool?: (name: string) => boolean } }>,
   capturedTenantSdkToolArgs: [] as Array<{ getOrgId: () => string }>,
@@ -17,6 +18,10 @@ const { queryMock, capturedMcpArgs, capturedTenantSdkToolArgs, lookupWispGrantMo
 }));
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: queryMock }));
+vi.mock('../config/env', async (orig) => ({
+  ...(await orig<typeof import('../config/env')>()),
+  wispEnabled: wispEnabledMock,
+}));
 
 // The real module's import graph (aiGuardrails → the tool registry) is far
 // beyond this suite's mocks; its behaviour is pinned in wisp/chatCeiling.test.ts.
@@ -117,7 +122,9 @@ import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 import { buildOrgAccessClosures, type AuthContext } from '../middleware/auth';
 import { WispSessionUnavailableError } from './wisp/chatCeiling';
 import { captureException } from './sentry';
-import { scriptedQuery, sdkResult } from './__testutils__/streamingSessionManagerHarness';
+import { insertedAssistantMessages, scriptedQuery, sdkResult } from './__testutils__/streamingSessionManagerHarness';
+import { db } from '../db';
+import { FOLLOW_UP_CORRECTION } from './wisp/promiseLinter';
 import { runWispTurnEndBeforeDone, scheduleWispTurnEndAfterDone } from './wisp/turnEnd';
 
 const ORG_A = 'aaaaaaaa-1111-4222-8333-444455556666';
@@ -361,5 +368,75 @@ describe('turn end — Wisp standing-instruction capture (#10428)', () => {
     vi.mocked(runWispTurnEndBeforeDone).mockRejectedValueOnce(new Error('module broke'));
     const { session } = await runTurn('sess-wisp-hook-throws', "don't reboot PC-01");
     expect(session.eventBus.getReplayEvents().filter((e: { type: string }) => e.type === 'done')).toHaveLength(1);
+  });
+});
+
+describe('turn end — the promise correction (#10427)', () => {
+  let manager: StreamingSessionManager;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    wispEnabledMock.mockReturnValue(true);
+    wispSessionToolFilterMock.mockReset();
+    wispSessionToolFilterMock.mockResolvedValue(() => true);
+    maybeNotifyChatCrossedBudgetMock.mockReset();
+    maybeNotifyChatCrossedBudgetMock.mockResolvedValue('under');
+    manager = new StreamingSessionManager();
+  });
+
+  afterEach(() => {
+    wispEnabledMock.mockReturnValue(false);
+    manager.shutdown();
+  });
+
+  /** One assistant message per string: its own message_start, a text block and one delta. */
+  const streamText = (text: string) => [
+    { type: 'stream_event', event: { type: 'message_start' } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } },
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } } },
+  ];
+
+  async function runTurn(id: string, reply: string[]) {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    queryMock.mockImplementation(() => scriptedQuery([...reply.flatMap(streamText), sdkResult()], gate));
+    const session = await manager.getOrCreate(id, DB_SESSION, partnerAuth(), undefined, 'PROMPT', undefined, PLATFORM_CONFIG);
+    expect(manager.tryTransitionToProcessing(session, undefined, { userMessage: 'What changed on PC-01?' })).toBe(true);
+    const recorded = session.currentTurn;
+    release();
+    await session.processorPromise;
+    return { session, recorded };
+  }
+
+  const streamed = (session: Awaited<ReturnType<typeof runTurn>>['session']) =>
+    session.eventBus.getReplayEvents().map((e: { type: string; delta?: string }) => (e.type === 'content_delta' ? `delta:${e.delta}` : e.type));
+
+  it('a Wisp reply that promises a check-back with none scheduled gets one persisted correction, before `done`', async () => {
+    lookupWispGrantMock.mockResolvedValue(GRANT);
+    const { session, recorded } = await runTurn('sess-wisp-promise', ['Nothing stands out yet.', "I'll check back in 5 minutes."]);
+    // Each assistant message starts on its own line, so sentences never run together.
+    expect(recorded?.assistantText).toBe("Nothing stands out yet.\nI'll check back in 5 minutes.");
+    const events = streamed(session);
+    const at = events.indexOf(`delta:${FOLLOW_UP_CORRECTION}`);
+    expect(at).toBeGreaterThan(-1);
+    expect(events.filter((e: string) => e === `delta:${FOLLOW_UP_CORRECTION}`)).toHaveLength(1);
+    expect(events.slice(at - 1, at + 2)).toEqual(['message_start', `delta:${FOLLOW_UP_CORRECTION}`, 'message_end']);
+    expect(events.indexOf('done')).toBeGreaterThan(at);
+    expect(insertedAssistantMessages(vi.mocked(db.insert))).toContainEqual(
+      expect.objectContaining({ role: 'assistant', content: FOLLOW_UP_CORRECTION }),
+    );
+  });
+
+  it('a Wisp reply with no promise gets no correction', async () => {
+    lookupWispGrantMock.mockResolvedValue(GRANT);
+    const { session } = await runTurn('sess-wisp-no-promise', ['PC-01 is online and its disk is at 91%.']);
+    expect(streamed(session).some((e: string) => e.startsWith('delta:Correction'))).toBe(false);
+  });
+
+  it('an ordinary session buffers no text and publishes no correction', async () => {
+    lookupWispGrantMock.mockResolvedValue(null);
+    const { session, recorded } = await runTurn('sess-plain-promise', ["I'll check back in 5 minutes."]);
+    expect(recorded).toBeUndefined();
+    expect(streamed(session).some((e: string) => e.startsWith('delta:Correction'))).toBe(false);
   });
 });

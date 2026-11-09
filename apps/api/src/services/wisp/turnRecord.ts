@@ -21,11 +21,21 @@ export type WispCurrentTurn = {
   userMessage: string;
   startedAt: Date;
   toolOutcomes: WispTurnToolOutcome[];
+  /**
+   * #10427 (W08): the reply text streamed this turn, for the promise linter.
+   * Appended by the session manager's `text_delta` handler; capped at
+   * WISP_TURN_ASSISTANT_TEXT_MAX_CHARS.
+   */
+  assistantText: string;
+  /** #10427: a promise correction went out for this turn (at most one per turn). */
+  correctionPublished: boolean;
 };
 
 /** A turn that runs more tools than this keeps the first ones; the turn-end hooks need only a few. */
 export const WISP_TURN_TOOL_OUTCOMES_MAX = 64;
 export const WISP_TURN_TOOL_OUTPUT_MAX_CHARS = 4_000;
+/** A reply longer than this is linted on its first part only. */
+export const WISP_TURN_ASSISTANT_TEXT_MAX_CHARS = 32_000;
 /** A larger tool input (a script body) is not kept; the hooks need only small ones (`remember` is ≤ 8 KiB). */
 export const WISP_TURN_TOOL_INPUT_MAX_CHARS = 16_384;
 
@@ -38,7 +48,14 @@ function boundedInput(input: Record<string, unknown>): Record<string, unknown> {
 }
 
 export function beginWispTurn(userMessage: string, now: Date = new Date()): WispCurrentTurn {
-  return { userMessage, startedAt: now, toolOutcomes: [] };
+  return { userMessage, startedAt: now, toolOutcomes: [], assistantText: '', correctionPublished: false };
+}
+
+/** Append streamed reply text; a no-op past the cap. */
+export function appendWispAssistantText(turn: WispCurrentTurn, text: string): void {
+  const room = WISP_TURN_ASSISTANT_TEXT_MAX_CHARS - turn.assistantText.length;
+  if (room <= 0 || text === '') return;
+  turn.assistantText += text.length > room ? text.slice(0, room) : text;
 }
 
 /** Append one tool outcome; a no-op past the cap. */
