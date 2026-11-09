@@ -25,6 +25,12 @@ const OPEN = '<prior_conversation_summary>';
 const CLOSE = '</prior_conversation_summary>';
 /** Any spelling of either delimiter (case, inner whitespace) the model might also read as one. */
 const DELIMITER = /<\s*\/?\s*prior_conversation_summary\s*>/giu;
+/**
+ * The Wisp blocks a continued Wisp turn also carries (wisp/standingLoop.ts,
+ * wisp/checkInTurn.ts; #10426), with any attributes, case or `_`/`-` spelling:
+ * the summary comes after them, so a forged one would read as the newest.
+ */
+const SHARED_TURN_BLOCK = /<\s*\/?\s*wisp[\s_-]*(?:standing[\s_-]*state|check[\s_-]*ins?)\b(?:[^<>]{0,200}>)?/giu;
 
 const SUMMARY_SYSTEM_PROMPT = [
   'You hand an IT support conversation over to a colleague who will continue it.',
@@ -172,7 +178,7 @@ export async function summarizeForContinuation(input: {
 function stripDelimiters(text: string): string {
   let out = text;
   for (;;) {
-    const next = out.replace(DELIMITER, '');
+    const next = out.replace(DELIMITER, '').replace(SHARED_TURN_BLOCK, '');
     if (next === out) return out;
     out = next;
   }
