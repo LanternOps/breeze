@@ -73,6 +73,38 @@ describe("SuggestedMatchReviewModal", () => {
     expect((screen.getByTestId("t-review-item-a") as HTMLInputElement).checked).toBe(true);
   });
 
+  it.each(["ambiguous", "contested", "pick_site"] as const)("renders a blocked row with reason %s", (reason) => {
+    setup({ blocked: [{ key: "q", externalName: "Hooli", reason }] });
+    const row = screen.getByTestId("t-review-blocked-q");
+    expect(row.getAttribute("data-reason")).toBe(reason);
+    expect(row.textContent).toContain("Hooli");
+  });
+
+  it("shows the localized tier label and the match key for each item", () => {
+    setup();
+    const exact = screen.getByTestId("t-review-item-a").closest("li")!;
+    expect(exact.textContent).toContain("Same name");
+    expect(exact.textContent).not.toContain("ignoring suffixes");
+    expect(exact.textContent).toContain("acme");
+    const normalized = screen.getByTestId("t-review-item-b").closest("li")!;
+    expect(normalized.textContent).toContain("Same name, ignoring suffixes");
+    expect(normalized.textContent).toContain("globex");
+  });
+
+  it("resets selection to all-checked when rerendered with different items", () => {
+    const { props, rerender } = setup();
+    fireEvent.click(screen.getByTestId("t-review-item-a"));
+    expect((screen.getByTestId("t-review-item-a") as HTMLInputElement).checked).toBe(false);
+    const next: MatchReviewItem[] = [
+      { key: "c", externalName: "Hooli", targetLabel: "Hooli", tier: "exact", matchKey: "hooli" },
+      { key: "d", externalName: "Pied Piper", targetLabel: "Pied", tier: "exact", matchKey: "pied" },
+    ];
+    rerender(<SuggestedMatchReviewModal {...props} items={next} />);
+    expect((screen.getByTestId("t-review-item-c") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByTestId("t-review-item-d") as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByTestId("t-review-confirm").textContent).toContain("2");
+  });
+
   it("cancel calls onClose", () => {
     const { props } = setup();
     fireEvent.click(screen.getByTestId("t-review-cancel"));

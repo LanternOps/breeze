@@ -174,6 +174,7 @@ vi.mock('../services/pax8SyncService', () => ({
   createPax8ClientForIntegration: vi.fn(),
   linkPax8SubscriptionToContractLine: vi.fn(),
   mapPax8Company: vi.fn(async () => ({ pax8CompanyId: 'company-1', orgId: null, ignored: false })),
+  Pax8MapRefusedError: class Pax8MapRefusedError extends Error {},
   unlinkPax8Subscription: vi.fn(),
 }));
 
@@ -191,8 +192,10 @@ import {
   createPax8ClientForIntegration,
   linkPax8SubscriptionToContractLine,
   mapPax8Company,
+  Pax8MapRefusedError,
   unlinkPax8Subscription,
 } from '../services/pax8SyncService';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const INTEGRATION_ID = '44444444-4444-4444-4444-444444444444';
 const SNAPSHOT_ID = '66666666-6666-6666-6666-666666666666';
@@ -712,7 +715,7 @@ describe('pax8 routes', () => {
     });
 
     it('a refused map returns 400 from a catch outside the transaction and is not audited', async () => {
-      vi.mocked(mapPax8Company).mockRejectedValueOnce(new Error('Target organization does not belong to this partner'));
+      vi.mocked(mapPax8Company).mockRejectedValueOnce(new Pax8MapRefusedError('Target organization does not belong to this partner'));
       mockSelectOnce([integration]);
       mockSelectOnce([{ orgId: null }]);
 
@@ -720,6 +723,19 @@ describe('pax8 routes', () => {
 
       expect(res.status).toBe(400);
       await expect(res.json()).resolves.toEqual({ error: 'Target organization does not belong to this partner' });
+      expect(txState.rolledBack).toBe(1);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('an unexpected failure is a 500, not a 400 carrying the driver message', async () => {
+      vi.mocked(mapPax8Company).mockRejectedValueOnce(new Error('relation "pax8_company_mappings" does not exist'));
+      mockSelectOnce([integration]);
+      mockSelectOnce([{ orgId: null }]);
+
+      const res = await postMap();
+
+      expect(res.status).toBe(500);
+      expect(await res.text()).not.toContain('pax8_company_mappings');
       expect(txState.rolledBack).toBe(1);
       expect(writeRouteAudit).not.toHaveBeenCalled();
     });
@@ -794,7 +810,17 @@ describe('pax8 routes', () => {
 
       expect(res.status).toBe(200);
       await expect(res.json()).resolves.toEqual({ data: { mapped: 2 } });
+      // The lock is scoped to this integration, this partner and exactly the
+      // reviewed companies, and taken in id order.
+      const lockWhere = new PgDialect().sqlToQuery(locked.where.mock.calls[0]![0]);
+      expect(lockWhere.params).toEqual([
+        'pax8_company_mappings.integration_id', INTEGRATION_ID,
+        'pax8_company_mappings.partner_id', PARTNER,
+        'pax8_company_mappings.pax8_company_id', 'co-acme', 'co-beta',
+      ]);
+      expect(locked.orderBy).toHaveBeenCalledWith('pax8_company_mappings.pax8_company_id');
       expect(locked.for).toHaveBeenCalledWith('update');
+      expect(locked.orderBy.mock.invocationCallOrder[0]!).toBeLessThan(locked.for.mock.invocationCallOrder[0]!);
       expect(mapPax8Company).toHaveBeenCalledTimes(2);
       expect(mapPax8Company).toHaveBeenCalledWith({
         integrationId: INTEGRATION_ID, partnerId: PARTNER, pax8CompanyId: 'co-acme', orgId: ORG_A, ignored: false,
@@ -817,6 +843,74 @@ describe('pax8 routes', () => {
         resourceName: 'co-beta',
         details: expect.objectContaining({ source: 'bulk_suggestion', matchTier: 'normalized', matchKey: 'beta' }),
       }));
+    });
+
+    it('remaps a row that is still on the org the reviewer saw, and audits that previous org', async () => {
+      mockBulkLookups({
+        locked: [{ pax8CompanyId: 'co-acme', orgId: ORG_C, ignored: false }],
+        rows: [{ ...companies[0], mappedOrgId: ORG_C }],
+      });
+
+      const res = await postBulk({
+        integrationId: INTEGRATION_ID,
+        items: [{ pax8CompanyId: 'co-acme', orgId: ORG_A, expectedOrgId: ORG_C }],
+      });
+
+      expect(res.status).toBe(200);
+      expect(mapPax8Company).toHaveBeenCalledTimes(1);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        orgId: ORG_A,
+        details: expect.objectContaining({ previousOrgId: ORG_C, source: 'manual', matchTier: null, matchKey: null }),
+      }));
+    });
+
+    it('a row mapped to a different org than the reviewer saw → 409 STALE_REVIEW', async () => {
+      mockBulkLookups({ locked: [{ pax8CompanyId: 'co-acme', orgId: ORG_B, ignored: false }] });
+
+      const res = await postBulk({
+        integrationId: INTEGRATION_ID,
+        items: [{ pax8CompanyId: 'co-acme', orgId: ORG_A, expectedOrgId: ORG_C }],
+      });
+
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({ code: 'STALE_REVIEW', pax8CompanyIds: ['co-acme'] });
+      expect(mapPax8Company).not.toHaveBeenCalled();
+    });
+
+    it('a batch that is both stale and invalid is refused as stale first', async () => {
+      mockBulkLookups({
+        locked: [
+          { pax8CompanyId: 'co-acme', orgId: ORG_C, ignored: false },
+          { pax8CompanyId: 'co-beta', orgId: null, ignored: false },
+        ],
+        targets: [{ id: ORG_A, partnerId: PARTNER, type: 'unassigned_pool' }],
+      });
+
+      const res = await postBulk({ integrationId: INTEGRATION_ID, items });
+
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({ code: 'STALE_REVIEW', pax8CompanyIds: ['co-acme'] });
+    });
+
+    it('a target refused mid-batch → 400 INVALID_TARGET and the earlier write rolls back', async () => {
+      mockBulkLookups();
+      vi.mocked(mapPax8Company)
+        .mockImplementationOnce(async (input) => {
+          callsInTx.push(txState.active);
+          return { pax8CompanyId: input.pax8CompanyId, orgId: input.orgId, ignored: false };
+        })
+        .mockImplementationOnce(async () => {
+          callsInTx.push(txState.active);
+          throw new Pax8MapRefusedError('The unassigned-device holding area cannot be a mapping target');
+        });
+
+      const res = await postBulk({ integrationId: INTEGRATION_ID, items });
+
+      expect(res.status).toBe(400);
+      await expect(res.json()).resolves.toMatchObject({ code: 'INVALID_TARGET', pax8CompanyIds: ['co-beta'] });
+      expect(callsInTx).toEqual([true, true]);
+      expect(txState.rolledBack).toBe(1);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
     });
 
     it('one foreign org → 403 and zero mapPax8Company calls', async () => {

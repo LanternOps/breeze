@@ -937,6 +937,8 @@
     "integrationUpdated": "Pax8 integration updated",
     "integrationConnected": "Pax8 integration connected",
     "companyMapped": "Pax8 company mapped",
+    "companiesRefreshFailed": "The company list could not be refreshed and may be out of date. Reload to see the latest.",
+    "syncStillRunning": "The sync is still running or its status is unavailable. Check back in a few minutes.",
     "companyUnmapped": "Pax8 company unmapped",
     "observationsPaused": "Pax8 quantity observations paused",
     "observationsResumed": "Pax8 quantity observations resumed",
@@ -1601,6 +1603,8 @@
     "summary": "{{unmapped}} unmapped · {{suggested}} suggested",
     "staleReview": "Some rows changed since you opened this review. The list has been reloaded.",
     "newSinceSync_one": "{{count}} new since last sync",
-    "newSinceSync_other": "{{count}} new since last sync"
+    "newSinceSync_other": "{{count}} new since last sync",
+    "bulkMapped_one": "{{count}} company mapped",
+    "bulkMapped_other": "{{count}} companies mapped"
   }
 }

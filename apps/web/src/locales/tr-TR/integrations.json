@@ -958,6 +958,8 @@
     "integrationUpdated": "Pax8 entegrasyonu güncellendi",
     "integrationConnected": "Pax8 entegrasyonu bağlandı",
     "companyMapped": "Pax8 şirketinin haritası çıkarıldı",
+    "companiesRefreshFailed": "Şirket listesi yenilenemedi ve güncel olmayabilir. En son hâlini görmek için sayfayı yeniden yükleyin.",
+    "syncStillRunning": "Eşitleme hâlâ sürüyor veya durumu alınamıyor. Birkaç dakika sonra tekrar kontrol edin.",
     "companyUnmapped": "Pax8 şirketinin haritası kaldırıldı",
     "observationsPaused": "Pax8 miktar gözlemleri duraklatıldı",
     "observationsResumed": "Pax8 miktar gözlemlerine devam edildi",
@@ -1601,6 +1603,8 @@
     "summary": "{{unmapped}} eşlenmemiş · {{suggested}} önerilen",
     "staleReview": "Bu incelemeyi açtığınızdan beri bazı satırlar değişti. Liste yeniden yüklendi.",
     "newSinceSync_one": "Son eşitlemeden bu yana {{count}} yeni",
-    "newSinceSync_other": "Son eşitlemeden bu yana {{count}} yeni"
+    "newSinceSync_other": "Son eşitlemeden bu yana {{count}} yeni",
+    "bulkMapped_one": "{{count}} şirket eşlendi",
+    "bulkMapped_other": "{{count}} şirket eşlendi"
   }
 }

@@ -205,6 +205,25 @@ export default function Pax8Integration() {
     return loadedCompanies;
   }, []);
 
+  /**
+   * Re-read companies after a mutation that already succeeded. A failed or
+   * non-OK refresh must never surface as a failed mutation: warn instead.
+   */
+  const refreshAfterMutation = useCallback(async () => {
+    let loaded: Pax8Company[] | null = null;
+    try {
+      loaded = await fetchCompaniesAndSubs();
+    } catch {
+      loaded = null;
+    }
+    if (loaded === null) {
+      showToast({
+        type: "warning",
+        message: t("pax8Integration.companiesRefreshFailed"),
+      });
+    }
+  }, [fetchCompaniesAndSubs]);
+
   const load = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
@@ -334,7 +353,7 @@ export default function Pax8Integration() {
         onUnauthorized: UNAUTHORIZED,
       });
       // The sync runs in a worker; wait for lastSyncAt to move before re-reading.
-      await waitForSyncCompletion({
+      const finished = await waitForSyncCompletion({
         before,
         signal: controller.signal,
         read: async () => {
@@ -347,10 +366,16 @@ export default function Pax8Integration() {
         },
       });
       if (controller.signal.aborted) return;
+      if (!finished) {
+        showToast({
+          type: "warning",
+          message: t("pax8Integration.syncStillRunning"),
+        });
+      }
       await fetchIntegration();
       const loaded = await fetchCompaniesAndSubs();
       if (controller.signal.aborted) return;
-      if (loaded) {
+      if (finished && loaded) {
         setNewSinceSync(
           loaded.filter((c) => !knownIds.has(c.pax8CompanyId)).length,
         );
@@ -390,16 +415,20 @@ export default function Pax8Integration() {
             : t("pax8Integration.companyUnmapped"),
           onUnauthorized: UNAUTHORIZED,
         });
-        // Re-read: the server decides the row's final shape (mappedOrgId,
-        // suggestion, summary), so never merge the POST response locally.
-        await fetchCompaniesAndSubs();
       } catch (err) {
         handleActionError(err, t("pax8Integration.failedToMapThePax8Company"));
+        setMappingCompanyId(null);
+        return;
+      }
+      // Re-read: the server decides the row's final shape (mappedOrgId,
+      // suggestion, summary), so never merge the POST response locally.
+      try {
+        await refreshAfterMutation();
       } finally {
         setMappingCompanyId(null);
       }
     },
-    [integration, fetchCompaniesAndSubs],
+    [integration, refreshAfterMutation],
   );
 
   const { items: reviewItems, blocked: reviewBlocked } = useMemo(
@@ -478,14 +507,13 @@ export default function Pax8Integration() {
               body: JSON.stringify({ integrationId: integration.id, items }),
             }),
           errorFallback: t("pax8Integration.failedToMapThePax8Company"),
-          successMessage: t("pax8Integration.companyMapped"),
+          successMessage: t("externalMatch.bulkMapped", { count: items.length }),
           onUnauthorized: UNAUTHORIZED,
           // The stale-review outcome gets its own notice; avoid a second toast.
           suppressErrorToast: (status, code) =>
             status === 409 && code === "STALE_REVIEW",
         });
         setReviewOpen(false);
-        await fetchCompaniesAndSubs();
       } catch (err) {
         if (
           err instanceof ActionError &&
@@ -495,13 +523,15 @@ export default function Pax8Integration() {
           setStaleNotice(true);
           showToast({ type: "warning", message: t("externalMatch.staleReview") });
           // Reload and keep the modal open on the fresh rows.
-          await fetchCompaniesAndSubs();
+          await refreshAfterMutation();
           return;
         }
         handleActionError(err, t("pax8Integration.failedToMapThePax8Company"));
+        return;
       }
+      await refreshAfterMutation();
     },
-    [integration, companies, reviewItems, fetchCompaniesAndSubs],
+    [integration, companies, reviewItems, refreshAfterMutation],
   );
 
   const unlinkSubscription = useCallback(

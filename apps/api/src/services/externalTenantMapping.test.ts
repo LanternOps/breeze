@@ -257,6 +257,25 @@ describe('matchExternalRecordsToOrgs', () => {
     expect(out.get('r2')).toMatchObject({ status: 'ambiguous', candidateOrgIds: [ORG_A, ORG_B] });
   });
 
+  it('refuses duplicate record ids instead of silently keeping one', () => {
+    expect(() => matchExternalRecordsToOrgs(
+      [{ id: 'r1', name: 'Acme' }, { id: 'r1', name: 'Beta' }],
+      [{ id: ORG_A, name: 'Acme' }],
+      { cardinality: 'many_to_one' },
+    )).toThrow(/duplicate record id/i);
+  });
+
+  it('contests three records on one org, each listing the other two', () => {
+    const out = matchExternalRecordsToOrgs(
+      [{ id: 'r3', name: 'Acme' }, { id: 'r1', name: 'Acme Ltd' }, { id: 'r2', name: 'ACME LTD' }],
+      [{ id: ORG_A, name: 'Acme Ltd' }],
+      { cardinality: 'one_to_one' },
+    );
+    expect(out.get('r1')).toMatchObject({ status: 'contested', contestedWith: ['r2', 'r3'] });
+    expect(out.get('r2')).toMatchObject({ status: 'contested', contestedWith: ['r1', 'r3'] });
+    expect(out.get('r3')).toMatchObject({ status: 'contested', tier: 'normalized', contestedWith: ['r1', 'r2'] });
+  });
+
   it('order independent', () => {
     const records: ExternalNameRecord[] = [
       { id: 'r1', name: 'Acme Ltd' },

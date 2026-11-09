@@ -958,6 +958,8 @@
     "integrationUpdated": "Mise à jour de l’intégration Pax8",
     "integrationConnected": "Intégration Pax8 connectée",
     "companyMapped": "Société Pax8 cartographiée",
+    "companiesRefreshFailed": "La liste des entreprises n’a pas pu être actualisée et n’est peut-être pas à jour. Rechargez pour voir la version la plus récente.",
+    "syncStillRunning": "La synchronisation est toujours en cours ou son état est indisponible. Revérifiez dans quelques minutes.",
     "companyUnmapped": "Entreprise Pax8 non associée",
     "observationsPaused": "Observations de quantité Pax8 mises en pause",
     "observationsResumed": "Observations de quantité Pax8 reprises",
@@ -1601,6 +1603,8 @@
     "summary": "{{unmapped}} non associés · {{suggested}} suggérés",
     "staleReview": "Certaines lignes ont changé depuis l’ouverture de cet examen. La liste a été rechargée.",
     "newSinceSync_one": "{{count}} nouveau depuis la dernière synchronisation",
-    "newSinceSync_other": "{{count}} nouveaux depuis la dernière synchronisation"
+    "newSinceSync_other": "{{count}} nouveaux depuis la dernière synchronisation",
+    "bulkMapped_one": "{{count}} société cartographiée",
+    "bulkMapped_other": "{{count}} sociétés cartographiées"
   }
 }

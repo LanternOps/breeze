@@ -1,6 +1,6 @@
 /**
  * PURE vendor-tenant -> Breeze-org auto-mapping rules, shared by every external
- * provider framework (backup, EDR, Pax8, UniFi). Both inputs are already scoped
+ * provider framework (backup, EDR, Pax8; UniFi sites next). Both inputs are already scoped
  * to ONE connection and ONE partner by the caller; nothing here widens that.
  */
 import { exactOrgMatchKey, normalizeOrgMatchName } from '@breeze/shared';
@@ -68,7 +68,8 @@ export type OrgMatchTier = 'exact' | 'normalized';
  * what Breeze SUGGESTS, never what a person may save.
  * - `one_to_one` (Pax8, backup, EDR): every record that reaches the same org is
  *   `contested`, so none of them is offered for one-click accept.
- * - `many_to_one` (UniFi): several sites legitimately belong to one customer.
+ * - `many_to_one` (for UniFi sites, a later wave): several sites legitimately
+ *   belong to one customer.
  */
 export type MatchCardinality = 'one_to_one' | 'many_to_one';
 
@@ -142,6 +143,9 @@ export function matchExternalRecordsToOrgs(
 
   const out = new Map<string, OrgNameMatch>();
   for (const record of records) {
+    // Results are keyed by record id; a duplicate would silently drop a record
+    // and could hide a contest. Callers pass primary keys, so this never fires.
+    if (out.has(record.id)) throw new Error(`matchExternalRecordsToOrgs: duplicate record id ${record.id}`);
     out.set(record.id, matchOneRecord(record.name, exactIndex, normalizedIndex));
   }
   if (opts.cardinality === 'many_to_one') return out;

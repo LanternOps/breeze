@@ -738,5 +738,178 @@ describe("Pax8Integration", () => {
         "2 new since last sync",
       );
     });
+
+    describe("review fixes", () => {
+      const baseHandler = (
+        overrides: (url: string, init?: RequestInit) => Response | undefined,
+        counters: { integrationGets: number; companiesGets: number },
+      ) =>
+        fetchWithAuth.mockImplementation(
+          async (url: string, init?: RequestInit) => {
+            const o = overrides(url, init);
+            if (o) return o;
+            if (url === "/pax8/integration") {
+              counters.integrationGets += 1;
+              return jsonResponse({ data: existingIntegration });
+            }
+            if (url.startsWith("/pax8/companies")) {
+              counters.companiesGets += 1;
+              return jsonResponse({
+                integrationId: "pax8-1",
+                summary: summaryOf(1, 1),
+                data: [suggestedRow],
+              });
+            }
+            if (url.startsWith("/pax8/subscriptions"))
+              return jsonResponse({ data: [] });
+            if (url.startsWith("/orgs/organizations"))
+              return jsonResponse({ data: [breezeOrg] });
+            return jsonResponse({}, 404);
+          },
+        );
+      const toastWith = (type: string, text: string) =>
+        showToast.mock.calls.some(
+          ([a]) => a?.type === type && String(a.message).includes(text),
+        );
+      const syncOk = (url: string, init?: RequestInit) =>
+        url === "/pax8/sync" && init?.method === "POST"
+          ? jsonResponse({ queued: true })
+          : undefined;
+
+      it("a sync poll timeout warns and shows no new-companies pill", async () => {
+        baseHandler(syncOk, { integrationGets: 0, companiesGets: 0 });
+        render(<Pax8Integration />);
+        await screen.findByTestId("pax8-status-connected");
+        vi.useFakeTimers({
+          toFake: ["setTimeout", "clearTimeout"],
+          shouldAdvanceTime: true,
+        });
+        fireEvent.click(screen.getByTestId("pax8-sync"));
+        await vi.advanceTimersByTimeAsync(3000 * 41);
+        await vi.advanceTimersByTimeAsync(50);
+        expect(toastWith("warning", "still running")).toBe(true);
+        expect(screen.queryByTestId("pax8-sync-new-companies")).toBeNull();
+      });
+
+      it("unmounting mid-poll stops further integration GETs", async () => {
+        const counters = { integrationGets: 0, companiesGets: 0 };
+        baseHandler(syncOk, counters);
+        const view = render(<Pax8Integration />);
+        await screen.findByTestId("pax8-status-connected");
+        vi.useFakeTimers({
+          toFake: ["setTimeout", "clearTimeout"],
+          shouldAdvanceTime: true,
+        });
+        fireEvent.click(screen.getByTestId("pax8-sync"));
+        await vi.advanceTimersByTimeAsync(3100);
+        const atUnmount = counters.integrationGets;
+        expect(atUnmount).toBeGreaterThan(1);
+        view.unmount();
+        await vi.advanceTimersByTimeAsync(20000);
+        expect(counters.integrationGets).toBe(atUnmount);
+      });
+
+      it("a successful map with a non-OK companies refetch warns, not 'failed to map'", async () => {
+        const counters = { integrationGets: 0, companiesGets: 0 };
+        baseHandler((url, init) => {
+          if (url === "/pax8/companies/map" && init?.method === "POST")
+            return jsonResponse({ data: {} });
+          if (url.startsWith("/pax8/companies") && counters.companiesGets >= 1)
+            return jsonResponse({ error: "boom" }, 500);
+          return undefined;
+        }, counters);
+        render(<Pax8Integration />);
+        fireEvent.click(
+          await screen.findByTestId("pax8-company-suggestion-pax8-co-1-accept"),
+        );
+        await waitFor(() =>
+          expect(toastWith("warning", "could not be refreshed")).toBe(true),
+        );
+        expect(toastWith("error", "Failed to map")).toBe(false);
+      });
+
+      it("a successful map whose refetch throws also warns, not 'failed to map'", async () => {
+        let mapped = false;
+        baseHandler(
+          (url, init) => {
+            if (url === "/pax8/companies/map" && init?.method === "POST") {
+              mapped = true;
+              return jsonResponse({ data: {} });
+            }
+            if (url.startsWith("/pax8/companies") && mapped)
+              throw new Error("network down");
+            return undefined;
+          },
+          { integrationGets: 0, companiesGets: 0 },
+        );
+        render(<Pax8Integration />);
+        fireEvent.click(
+          await screen.findByTestId("pax8-company-suggestion-pax8-co-1-accept"),
+        );
+        await waitFor(() =>
+          expect(toastWith("warning", "could not be refreshed")).toBe(true),
+        );
+        expect(toastWith("error", "Failed to map")).toBe(false);
+      });
+
+      it("bulk success toasts a plural count", async () => {
+        baseHandler(
+          (url, init) =>
+            url === "/pax8/companies/map-bulk" && init?.method === "POST"
+              ? jsonResponse({ data: { mapped: 1 } })
+              : undefined,
+          { integrationGets: 0, companiesGets: 0 },
+        );
+        render(<Pax8Integration />);
+        fireEvent.click(await screen.findByTestId("pax8-review-suggestions"));
+        fireEvent.click(await screen.findByTestId("pax8-review-confirm"));
+        await waitFor(() =>
+          expect(toastWith("success", "1 company mapped")).toBe(true),
+        );
+      });
+
+      it("bulk 400 INVALID_TARGET toasts an error, keeps the modal open, no stale notice", async () => {
+        baseHandler(
+          (url, init) =>
+            url === "/pax8/companies/map-bulk" && init?.method === "POST"
+              ? jsonResponse({ error: "bad target", code: "INVALID_TARGET" }, 400)
+              : undefined,
+          { integrationGets: 0, companiesGets: 0 },
+        );
+        render(<Pax8Integration />);
+        fireEvent.click(await screen.findByTestId("pax8-review-suggestions"));
+        fireEvent.click(await screen.findByTestId("pax8-review-confirm"));
+        await waitFor(() =>
+          expect(showToast.mock.calls.some(([a]) => a?.type === "error")).toBe(
+            true,
+          ),
+        );
+        expect(screen.getByTestId("pax8-review-modal")).toBeTruthy();
+        expect(screen.queryByTestId("pax8-review-stale")).toBeNull();
+      });
+
+      it("a 409 STALE_REVIEW whose refetch throws never escapes confirmBulk", async () => {
+        let stale = false;
+        baseHandler(
+          (url, init) => {
+            if (url === "/pax8/companies/map-bulk" && init?.method === "POST") {
+              stale = true;
+              return jsonResponse({ error: "stale", code: "STALE_REVIEW" }, 409);
+            }
+            if (url.startsWith("/pax8/companies") && stale)
+              throw new Error("network down");
+            return undefined;
+          },
+          { integrationGets: 0, companiesGets: 0 },
+        );
+        render(<Pax8Integration />);
+        fireEvent.click(await screen.findByTestId("pax8-review-suggestions"));
+        fireEvent.click(await screen.findByTestId("pax8-review-confirm"));
+        await waitFor(() =>
+          expect(toastWith("warning", "could not be refreshed")).toBe(true),
+        );
+        expect(toastWith("error", "Failed to map")).toBe(false);
+      });
+    });
   });
 });

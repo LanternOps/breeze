@@ -122,7 +122,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/accounting/accountingMappingService.ts': 'billing: accounting device counts',
   'services/archivedOrgReads.ts': 'listing: archived org reads',
   'services/siteLocation.ts': 'listing: sites a technician may match an arrival against (#4186); excludes hidden orgs, never reads devices',
-  'services/mappableOrgs.ts': 'listing: orgs an external tenant/customer may be mapped onto (EDR/backup/UniFi auto-map); excludes hidden and unassigned-pool orgs, never reads devices',
+  'services/mappableOrgs.ts': 'listing: orgs an external tenant/customer may be mapped onto (EDR, backup and Pax8 mapping and name suggestions); excludes hidden and unassigned-pool orgs, never reads devices',
   'services/partnerVisibleOrgs.ts': 'listing: the partner org-list population, shared with the partner settings inheritance counts (#9170); excludes hidden orgs, never reads devices',
   'services/aiToolsBackupRecoveryReads.ts': 'caller read: joins devices only to apply the site ceiling to a recovery row',
   'services/backupHealthReadModel.ts': 'read model: backup health',

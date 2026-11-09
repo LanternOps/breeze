@@ -11,7 +11,7 @@ type DbExecutor = Pick<typeof db, 'select'>;
 /**
  * Orgs an external tenant/customer may be mapped onto: the partner's live,
  * visible, non-holding orgs. The one predicate shared by every external
- * tenant-mapping loader (EDR, backup, UniFi).
+ * tenant-mapping loader (EDR, backup, Pax8).
  */
 export async function loadMappableOrgs(executor: DbExecutor, partnerId: string): Promise<AutoMapOrgRow[]> {
   return executor

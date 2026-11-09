@@ -7,7 +7,7 @@ import {
   type OrgMatchTier,
 } from './externalTenantMapping';
 import { loadMappableOrgs } from './mappableOrgs';
-import { mapPax8Company } from './pax8SyncService';
+import { mapPax8Company, Pax8MapRefusedError } from './pax8SyncService';
 import { isUnassignedPoolOrgType } from './unassignedPool/orgType';
 
 /**
@@ -106,11 +106,10 @@ export function summarizePax8Companies(
   return { unmapped, suggested, newUnmapped };
 }
 
-export interface VerifiedPax8MapSource {
-  source: 'manual' | 'suggestion';
-  matchTier: OrgMatchTier | null;
-  matchKey: string | null;
-}
+/** The tier and key are present exactly when the source is a verified suggestion. */
+export type VerifiedPax8MapSource =
+  | { source: 'suggestion'; matchTier: OrgMatchTier; matchKey: string }
+  | { source: 'manual'; matchTier: null; matchKey: null };
 
 /**
  * A client may CLAIM a mapping came from a suggestion; the server only records
@@ -151,18 +150,30 @@ export async function loadPax8CompanyRowsForMatch(
     ));
 }
 
-export type Pax8BulkMapErrorCode = 'STALE_REVIEW' | 'NOT_FOUND' | 'INVALID_TARGET';
+const BULK_MAP_ERROR_STATUS = {
+  STALE_REVIEW: 409,
+  NOT_FOUND: 404,
+  INVALID_TARGET: 400,
+  DUPLICATE_COMPANY: 400,
+} as const;
 
-/** A refusal of the whole batch. Nothing was written when one is thrown. */
+export type Pax8BulkMapErrorCode = keyof typeof BULK_MAP_ERROR_STATUS;
+
+/**
+ * A refusal of the whole batch. Nothing was written when one is thrown.
+ * `pax8CompanyIds` lists the items that caused it.
+ */
 export class Pax8BulkMapError extends Error {
+  readonly status: (typeof BULK_MAP_ERROR_STATUS)[Pax8BulkMapErrorCode];
+
   constructor(
-    readonly status: 400 | 404 | 409,
     readonly code: Pax8BulkMapErrorCode,
     message: string,
     readonly pax8CompanyIds: string[],
   ) {
     super(message);
     this.name = 'Pax8BulkMapError';
+    this.status = BULK_MAP_ERROR_STATUS[code];
   }
 }
 
@@ -173,14 +184,14 @@ export interface Pax8BulkMapItem {
   expectedOrgId: string | null;
 }
 
-export interface Pax8BulkMapResult {
+export type Pax8BulkMapResult = {
   pax8CompanyId: string;
   orgId: string;
   previousOrgId: string | null;
-  source: 'bulk_suggestion' | 'manual';
-  matchTier: OrgMatchTier | null;
-  matchKey: string | null;
-}
+} & (
+  | { source: 'bulk_suggestion'; matchTier: OrgMatchTier; matchKey: string }
+  | { source: 'manual'; matchTier: null; matchKey: null }
+);
 
 /**
  * Map a reviewed batch of Pax8 companies in one transaction, or nothing.
@@ -203,8 +214,15 @@ export async function mapPax8CompaniesBulk(input: {
   items: Pax8BulkMapItem[];
 }): Promise<Pax8BulkMapResult[]> {
   const { integrationId, partnerId, items } = input;
+  const companyIds = items.map((item) => item.pax8CompanyId);
+  // Two items for one company would both pass the stale check against the same
+  // locked row, then write twice. The route's schema refuses this too.
+  const duplicates = [...new Set(companyIds.filter((id, i) => companyIds.indexOf(id) !== i))];
+  if (duplicates.length > 0) {
+    throw new Pax8BulkMapError('DUPLICATE_COMPANY', 'A company appears more than once in this batch', duplicates);
+  }
+
   return withDbTransaction(async () => {
-    const companyIds = items.map((item) => item.pax8CompanyId);
     const locked = await db
       .select({
         pax8CompanyId: pax8CompanyMappings.pax8CompanyId,
@@ -224,7 +242,6 @@ export async function mapPax8CompaniesBulk(input: {
     const missing = companyIds.filter((id) => !lockedById.has(id));
     if (missing.length > 0) {
       throw new Pax8BulkMapError(
-        404,
         'NOT_FOUND',
         'Pax8 company mapping not found. Run sync first to discover companies.',
         missing,
@@ -238,7 +255,7 @@ export async function mapPax8CompaniesBulk(input: {
       })
       .map((item) => item.pax8CompanyId);
     if (stale.length > 0) {
-      throw new Pax8BulkMapError(409, 'STALE_REVIEW', 'Some companies changed since this review was opened', stale);
+      throw new Pax8BulkMapError('STALE_REVIEW', 'Some companies changed since this review was opened', stale);
     }
 
     // The rule mapPax8Company enforces per item, checked for the whole batch
@@ -257,7 +274,6 @@ export async function mapPax8CompaniesBulk(input: {
       .map((item) => item.pax8CompanyId);
     if (invalid.length > 0) {
       throw new Pax8BulkMapError(
-        400,
         'INVALID_TARGET',
         'A target organization does not belong to this partner or is the unassigned-device holding area',
         invalid,
@@ -270,21 +286,30 @@ export async function mapPax8CompaniesBulk(input: {
     const results: Pax8BulkMapResult[] = [];
     for (const item of items) {
       const verified = verifyPax8SuggestionSource('suggestion', item.pax8CompanyId, item.orgId, suggestions);
-      await mapPax8Company({
-        integrationId,
-        partnerId,
-        pax8CompanyId: item.pax8CompanyId,
-        orgId: item.orgId,
-        ignored: false,
-      });
-      results.push({
+      try {
+        await mapPax8Company({
+          integrationId,
+          partnerId,
+          pax8CompanyId: item.pax8CompanyId,
+          orgId: item.orgId,
+          ignored: false,
+        });
+      } catch (err) {
+        // Only reachable if a target changed after the check above. Throwing
+        // still rolls back every earlier write in this batch.
+        if (err instanceof Pax8MapRefusedError) {
+          throw new Pax8BulkMapError('INVALID_TARGET', err.message, [item.pax8CompanyId]);
+        }
+        throw err;
+      }
+      const base = {
         pax8CompanyId: item.pax8CompanyId,
         orgId: item.orgId,
         previousOrgId: lockedById.get(item.pax8CompanyId)!.orgId ?? null,
-        source: verified.source === 'suggestion' ? 'bulk_suggestion' : 'manual',
-        matchTier: verified.matchTier,
-        matchKey: verified.matchKey,
-      });
+      };
+      results.push(verified.source === 'suggestion'
+        ? { ...base, source: 'bulk_suggestion', matchTier: verified.matchTier, matchKey: verified.matchKey }
+        : { ...base, source: 'manual', matchTier: null, matchKey: null });
     }
     return results;
   });

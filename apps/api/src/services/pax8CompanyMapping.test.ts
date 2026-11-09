@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildPax8CompanySuggestions,
+  mapPax8CompaniesBulk,
+  Pax8BulkMapError,
   summarizePax8Companies,
   verifyPax8SuggestionSource,
   type Pax8CompanyRowForMatch,
@@ -78,5 +80,33 @@ describe('verifyPax8SuggestionSource', () => {
     expect(verifyPax8SuggestionSource('suggestion', 'c1', ORG_BETA, s)).toEqual(manual);
     expect(verifyPax8SuggestionSource(undefined, 'c1', ORG_ACME, s)).toEqual(manual);
     expect(verifyPax8SuggestionSource('suggestion', 'c1', null, s)).toEqual(manual);
+  });
+});
+
+describe('mapPax8CompaniesBulk', () => {
+  it('refuses a batch that names one company twice before opening a transaction', async () => {
+    const err = await mapPax8CompaniesBulk({
+      integrationId: '00000000-0000-0000-0000-000000000001',
+      partnerId: '00000000-0000-0000-0000-000000000002',
+      items: [
+        { pax8CompanyId: 'co-1', orgId: ORG_ACME, expectedOrgId: null },
+        { pax8CompanyId: 'co-2', orgId: ORG_BETA, expectedOrgId: null },
+        { pax8CompanyId: 'co-1', orgId: ORG_BETA, expectedOrgId: null },
+      ],
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(Pax8BulkMapError);
+    expect(err).toMatchObject({ status: 400, code: 'DUPLICATE_COMPANY', pax8CompanyIds: ['co-1'] });
+  });
+});
+
+describe('Pax8BulkMapError', () => {
+  it.each([
+    ['STALE_REVIEW', 409],
+    ['NOT_FOUND', 404],
+    ['INVALID_TARGET', 400],
+    ['DUPLICATE_COMPANY', 400],
+  ] as const)('%s carries HTTP %i', (code, status) => {
+    expect(new Pax8BulkMapError(code, 'x', []).status).toBe(status);
   });
 });

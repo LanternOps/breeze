@@ -17,7 +17,7 @@ import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { encryptSecret } from '../services/secretCrypto';
 import { DEFAULT_PAX8_API_BASE_URL, DEFAULT_PAX8_TOKEN_URL } from '../services/pax8Client';
-import { createPax8ClientForIntegration, linkPax8SubscriptionToContractLine, mapPax8Company, unlinkPax8Subscription } from '../services/pax8SyncService';
+import { createPax8ClientForIntegration, linkPax8SubscriptionToContractLine, mapPax8Company, Pax8MapRefusedError, unlinkPax8Subscription } from '../services/pax8SyncService';
 import { enqueuePax8Sync } from '../jobs/pax8SyncWorker';
 import { captureException } from '../services/sentry';
 import { pax8CompanyOrderReadiness } from '../services/pax8CompanyReadiness';
@@ -411,8 +411,9 @@ pax8Routes.post('/companies/map', partnerScopes, writePerm, requireMfa(), zValid
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   if (body.orgId && !auth.canAccessOrg(body.orgId)) return c.json({ error: 'Access to target organization denied' }, 403);
 
-  // The lookups and the write run in one savepoint so a refused or failed map is
-  // caught here as a 400 instead of failing the request transaction on commit.
+  // The lookups and the write run in one savepoint, so a refused map is answered
+  // here as a 400 instead of failing the request transaction on commit. Any
+  // other failure is unexpected and goes to the error handler as a 500.
   let outcome: { mapped: Awaited<ReturnType<typeof mapPax8Company>>; previousOrgId: string | null; verified: VerifiedPax8MapSource };
   try {
     outcome = await withDbTransaction(async () => {
@@ -448,7 +449,8 @@ pax8Routes.post('/companies/map', partnerScopes, writePerm, requireMfa(), zValid
       return { mapped, previousOrgId: previous?.orgId ?? null, verified };
     });
   } catch (err) {
-    return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    if (err instanceof Pax8MapRefusedError) return c.json({ error: err.message }, 400);
+    throw err;
   }
 
   const { mapped, previousOrgId, verified } = outcome;

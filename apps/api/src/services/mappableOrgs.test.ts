@@ -34,8 +34,8 @@ describe('loadMappableOrgs', () => {
     expect(sql).toContain(`"organizations"."status" NOT IN ('archived','purging','merging')`);
     // 6. holding org
     expect(sql).toContain(`"organizations"."type" <> 'unassigned_pool'`);
-    // 5. notHiddenOrgType(): a second type predicate besides the unassigned_pool one
-    const typeRefs = sql.match(/"organizations"\."type"/g) ?? [];
-    expect(typeRefs.length).toBeGreaterThanOrEqual(2);
+    // 5. notHiddenOrgType(): Quick Support (and the holding org) as a NOT IN list
+    expect(sql).toMatch(/"organizations"\."type" not in \(\$\d+, \$\d+\)/);
+    expect(q.params).toEqual(expect.arrayContaining(['quick_support', 'unassigned_pool']));
   });
 });

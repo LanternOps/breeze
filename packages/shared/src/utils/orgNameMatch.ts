@@ -1,6 +1,6 @@
 /**
  * Corporate-name normalization for matching an outside customer record (a Pax8
- * company, a UniFi site, a backup or EDR tenant) to a Breeze organization.
+ * company or a backup or EDR tenant today; UniFi sites next) to a Breeze organization.
  *
  * These keys only ever produce SUGGESTIONS. A person confirms a match before it
  * is written, so changing the suffix list changes suggestions, never stored
@@ -28,12 +28,13 @@ const SUFFIX_TOKENS: readonly (readonly string[])[] = [...ORG_NAME_LEGAL_SUFFIXE
 const COMBINING_MARKS = /\p{M}+/gu;
 // ASCII apostrophe, right single quotation mark, modifier letter apostrophe.
 // U+02BC is a letter (Lm), so the non-letter rule below would keep it.
-const APOSTROPHES = /['’ʼ]/g;
+const APOSTROPHES = /['\u2019\u02BC]/g;
 const AMPERSAND_OR_PLUS = /[&+]/g;
 const NON_LETTER_OR_DIGIT = /[^\p{L}\p{N}]+/gu;
 
 /**
- * Today's exact key: trim + lowercase. The `exact` match tier compares on this,
+ * The `exact` match tier's key: trim + lowercase, the rule backup and EDR name
+ * suggestions used before the normalized tier existed. The tier compares on this,
  * so `Acme Inc` matches the org named `Acme Inc` even when `Acme LLC` exists.
  */
 export function exactOrgMatchKey(value: string | null | undefined): string | null {
@@ -49,10 +50,11 @@ function endsWithTokens(tokens: readonly string[], suffix: readonly string[]): b
 }
 
 /**
- * The `normalized` match tier's key. Ignores case, accents, punctuation, one
- * leading "the" and trailing corporate suffixes (`Acme, Inc.` → `acme`). It
- * never strips a name to nothing (`Company Inc` → `company`, `Inc.` → `inc`).
- * Returns `null` when nothing letter- or digit-like is left.
+ * The `normalized` match tier's key. Ignores case, accents, punctuation (`&` and
+ * `+` read as "and"), one leading "the" and trailing corporate suffixes
+ * (`Acme, Inc.` → `acme`). It never strips a name to nothing
+ * (`Company Inc` → `company`, `Inc.` → `inc`). Returns `null` when nothing
+ * letter- or digit-like is left.
  */
 export function normalizeOrgMatchName(value: string | null | undefined): string | null {
   if (!value) return null;
@@ -86,7 +88,7 @@ export function normalizeOrgMatchName(value: string | null | undefined): string 
 }
 
 /**
- * Conservative key for comparing site names (UniFi site → Breeze site). Site
+ * Conservative key for comparing site names (for UniFi site → Breeze site). Site
  * names are not company names, so suffixes and punctuation are kept.
  */
 export function siteNameMatchKey(value: string | null | undefined): string | null {
