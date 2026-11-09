@@ -694,6 +694,7 @@
     "settings": {
       "title": "Budget und Check-in",
       "budget": "Tagesbudget",
+      "budgetHelp": "Enthält den Chat. Ist es aufgebraucht, pausieren die Hintergrundprüfungen bis 00:00 UTC, und der Chat funktioniert mit einer Warnung weiter. Für den Chat gilt weiterhin das KI-Budget der Organisation.",
       "tick": "Check-in alle (Minuten)",
       "save": "Speichern",
       "unattendedReads": {
@@ -760,6 +761,7 @@
     },
     "spend": {
       "meter": "{{spent}} von {{budget}} heute",
+      "breakdown": "Hintergrund {{background}} · Chat {{chat}} · {{spent}} von {{budget}} heute",
       "resets": "wird in {{hours}} Std. zurückgesetzt",
       "raise": "Heutiges Budget erhöhen",
       "atCeiling": "Das heutige Budget hat das Limit Ihres Tarifs erreicht.",
@@ -772,8 +774,8 @@
       "byYou": "Sie haben Wisp pausiert. Es meldet sich nicht und gibt keine Hinweise, bis Sie es fortsetzen.",
       "partnerDisabled": "Wisp ist für Ihren Partner ausgeschaltet. Ein Administrator kann es wieder einschalten.",
       "system": {
-        "budgetExhausted": "Von Breeze pausiert: Das heutige Budget ist aufgebraucht. Das Budget wird in {{hours}} Std. zurückgesetzt.",
-        "budgetExhaustedNoTime": "Von Breeze pausiert: Das heutige Budget ist aufgebraucht.",
+        "budgetExhausted": "Das heutige Wisp-Budget ist überschritten: Hintergrundprüfungen sind bis {{time}} UTC pausiert. Der Chat funktioniert weiter.",
+        "budgetExhaustedNoTime": "Das heutige Wisp-Budget ist überschritten: Hintergrundprüfungen sind bis 00:00 UTC pausiert. Der Chat funktioniert weiter.",
         "grantorAccessLost": "Von Breeze pausiert: Ihr Zugriff deckt diese Berechtigung nicht mehr ab. Wisp läuft automatisch weiter, sobald Ihr Zugriff wiederhergestellt ist.",
         "grantorSuspended": "Von Breeze pausiert: Ihr Konto ist gesperrt. Wisp läuft automatisch weiter, sobald die Sperre aufgehoben ist.",
         "factorExpired": "Von Breeze pausiert: Ihre Anmeldeprüfung für diese Berechtigung ist abgelaufen.",

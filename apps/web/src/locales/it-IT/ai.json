@@ -694,6 +694,7 @@
     "settings": {
       "title": "Budget e controllo periodico",
       "budget": "Budget giornaliero",
+      "budgetHelp": "Include la chat. Quando è esaurito, i controlli in background restano in pausa fino alle 00:00 UTC e la chat continua a funzionare con un avviso. Alla chat si applica ancora il budget IA dell’organizzazione.",
       "tick": "Controllo ogni (minuti)",
       "save": "Salva",
       "unattendedReads": {
@@ -760,6 +761,7 @@
     },
     "spend": {
       "meter": "{{spent}} su {{budget}} oggi",
+      "breakdown": "Background {{background}} · Chat {{chat}} · {{spent}} su {{budget}} oggi",
       "resets": "si azzera tra {{hours}} h",
       "raise": "Aumenta il budget di oggi",
       "atCeiling": "Il budget di oggi è al limite del tuo piano.",
@@ -772,8 +774,8 @@
       "byYou": "Hai messo Wisp in pausa. Non farà controlli né ti invierà promemoria finché non lo riprendi.",
       "partnerDisabled": "Wisp è disattivato per il tuo partner. Un amministratore può riattivarlo.",
       "system": {
-        "budgetExhausted": "Messo in pausa da Breeze: il budget di oggi è esaurito. Il budget si azzera tra {{hours}} h.",
-        "budgetExhaustedNoTime": "Messo in pausa da Breeze: il budget di oggi è esaurito.",
+        "budgetExhausted": "Il budget Wisp di oggi è stato superato: i controlli in background sono in pausa fino alle {{time}} UTC. La chat continua a funzionare.",
+        "budgetExhaustedNoTime": "Il budget Wisp di oggi è stato superato: i controlli in background sono in pausa fino alle 00:00 UTC. La chat continua a funzionare.",
         "grantorAccessLost": "Messo in pausa da Breeze: il tuo accesso non copre più questa autorizzazione. Wisp riprende da solo quando il tuo accesso viene ripristinato.",
         "grantorSuspended": "Messo in pausa da Breeze: il tuo account è sospeso. Wisp riprende da solo quando la sospensione viene revocata.",
         "factorExpired": "Messo in pausa da Breeze: la verifica di accesso per questa autorizzazione è scaduta.",

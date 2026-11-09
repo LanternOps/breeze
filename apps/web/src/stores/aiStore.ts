@@ -68,6 +68,9 @@ export type WispState = {
   /** W05 spend meter (w00 A32): cents charged today under the grant, and when the UTC day resets. */
   spentTodayCents?: number;
   budgetResetsAt?: string;
+  /** #10414: the day's spend split into background work and chat (whole cents; they sum to `spentTodayCents`). Absent from an older server. */
+  backgroundCents?: number;
+  chatCents?: number;
   /** #10973: the grant's unattended-reads switch is effective (the server's pinned AND live answer). */
   unattendedReads?: boolean;
   /** #10390: a closed session's summary is also written by the model, charged to the daily budget. */

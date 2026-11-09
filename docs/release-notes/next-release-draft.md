@@ -28,5 +28,11 @@ Last release: **v0.127.0** (2026-11-08).
 - New `POST /orgs/organizations/:id/portal-users/invite-contacts` invites up to 100 contacts and returns one outcome per contact (`invited`, `already_has_access`, `no_email`, `email_bound_to_other_contact`, `duplicate_email_in_batch`). A contact outside the organization fails the whole batch with 404 and sends nothing.
 - No migration required.
 
+### The Wisp daily budget now includes chat
+
+- A Wisp grant's daily budget now counts Wisp chat turns as well as background work (assessments, specialist runs and model-written session summaries). The spend meter shows both lines: "Background … · Chat … · … of … today".
+- A chat turn is never refused by the grant budget. When the budget is spent, background checks pause until 00:00 UTC (including specialists requested from chat) and chat keeps working with a warning; the grantor is told once per UTC day. The org AI budget and credits still apply to chat as before.
+- Behaviour change for existing grants: a chat-heavy day can now use up the budget and pause background checks for the rest of the UTC day. No migration required.
+
 ## Migrations
 
