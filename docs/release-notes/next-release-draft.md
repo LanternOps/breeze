@@ -57,7 +57,7 @@ Last release: **v0.127.0** (2026-11-08).
 - Wisp can now schedule a check-in that fires when something happens instead of after a fixed delay: a device comes online, a script or device command finishes, or an agent run settles. Each one has a deadline (24 hours by default, at most 7 days). If the event has not happened by then, the check-in still fires and says so ("Did not happen by 15:40 UTC: the device is still offline").
 - The check-in fires on the matching event, on the 5-minute Wisp tick, or straight away if the event has already happened when it is scheduled. Each time, Breeze re-reads the device, script, command or run, so a stale event fires nothing. Device commands have no event and are checked on the tick only.
 - A check-in whose device, script, command or run is deleted, or moves outside the grant, is cancelled with a reason instead of firing.
-- Migration `2027-01-22-232600-wisp-check-ins-event-triggers.sql` adds four columns to `wisp_check_ins`: `trigger_kind`, `trigger_subject_id`, `fire_reason` and `cancel_reason`. Existing rows become time check-ins. It writes no rows.
+- Migration `2027-01-22-233100-wisp-check-ins-event-triggers.sql` adds four columns to `wisp_check_ins`: `trigger_kind`, `trigger_subject_id`, `fire_reason` and `cancel_reason`. Existing rows become time check-ins. It writes no rows.
 
 ## Migrations
 
