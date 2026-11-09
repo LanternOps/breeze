@@ -63,7 +63,7 @@ export async function endSupportSession(
         .from(devices)
         .where(eq(devices.id, session.deviceId))
         .limit(1);
-      return { deviceId: device ? session.deviceId : null, agentId: device?.agentId ?? null };
+      return { deviceId: session.deviceId, agentId: device?.agentId ?? null };
     });
     if (!target) return { ended: false, disconnect: null, commandDelivered: false };
 
@@ -78,9 +78,12 @@ export async function endSupportSession(
       commandDelivered = dispatchDisposition(outcome) === 'delivered';
     }
 
-    // 2. One transaction: the CAS decides who ends the session.
+    // 2. One transaction: the CAS decides who ends the session, and names the
+    // device bound to it NOW. A client can finish enrolling between the read
+    // above and this write (the relay send widens that window), so the device
+    // revoked and evicted is the one the CAS returns, not the one read above.
     const ended = await withSystemDbAccessContext(async () => {
-      const won = await db.update(supportSessions).set({
+      const [won] = await db.update(supportSessions).set({
         // 'expired' is its own terminal state so the reaper's hard-cap kills are
         // distinguishable from a deliberate end in the session list.
         status: reason === 'expired' ? 'expired' : 'ended',
@@ -88,32 +91,37 @@ export async function endSupportSession(
         endedReason: reason,
       })
         .where(and(eq(supportSessions.id, sessionId), notInArray(supportSessions.status, [...TERMINAL_SESSION_STATUSES])))
-        .returning({ id: supportSessions.id });
-      if (won.length === 0) return false;
+        .returning({ id: supportSessions.id, deviceId: supportSessions.deviceId });
+      if (!won) return null;
+      if (!won.deviceId) return { agentId: null };
 
-      if (target.deviceId) {
-        // own-device-row-allowlisted: support-session-end-decommission
-        await db.update(devices).set({
-          agentTokenHash: null,
-          watchdogTokenHash: null,
-          helperTokenHash: null,
-          status: 'decommissioned',
-          // #2787 item 4 — same removal stamp every other decommission path
-          // writes, so an ephemeral support device is subject to the org's
-          // retention policy rather than living forever.
-          decommissionedAt: new Date(),
-        }).where(eq(devices.id, target.deviceId));
-      }
-      return true;
+      // own-device-row-allowlisted: support-session-end-decommission
+      await db.update(devices).set({
+        agentTokenHash: null,
+        watchdogTokenHash: null,
+        helperTokenHash: null,
+        status: 'decommissioned',
+        // #2787 item 4 — same removal stamp every other decommission path
+        // writes, so an ephemeral support device is subject to the org's
+        // retention policy rather than living forever.
+        decommissionedAt: new Date(),
+      }).where(eq(devices.id, won.deviceId));
+      if (won.deviceId === target.deviceId) return { agentId: target.agentId };
+      const [enrolled] = await db
+        .select({ agentId: devices.agentId })
+        .from(devices)
+        .where(eq(devices.id, won.deviceId))
+        .limit(1);
+      return { agentId: enrolled?.agentId ?? null };
     });
     if (!ended) return { ended: false, disconnect: null, commandDelivered };
 
     // 3. After the commit: a reconnect the close forces meets revoked tokens.
-    if (!target.agentId) return { ended: true, disconnect: null, commandDelivered };
+    if (!ended.agentId) return { ended: true, disconnect: null, commandDelivered };
     const evicted = await evictAgentSockets([
-      { agentId: target.agentId, code: 4041, reason: 'quick support session ended' },
+      { agentId: ended.agentId, code: 4041, reason: 'quick support session ended' },
     ]);
-    return { ended: true, disconnect: disconnectResult(evicted.get(target.agentId)), commandDelivered };
+    return { ended: true, disconnect: disconnectResult(evicted.get(ended.agentId)), commandDelivered };
   });
 }
 

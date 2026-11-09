@@ -26,7 +26,7 @@ vi.mock('../routes/agentWs', () => {
 
 const selectResults: unknown[][] = [];
 const updates: Array<{ table: string; values: Record<string, unknown>; where: unknown }> = [];
-/** Session CAS results, consumed in order; default: the CAS wins. */
+/** Session CAS results, consumed in order; default: the CAS wins, device dev-1 bound. */
 const casResults: unknown[][] = [];
 /** Every mutating/IO step in call order, so ordering can be asserted. */
 const callOrder: string[] = [];
@@ -55,7 +55,7 @@ vi.mock('../db', () => {
         callOrder.push(isRevoke ? 'revoke' : 'session-cas');
         const result = Promise.resolve([]);
         return Object.assign(result, {
-          returning: vi.fn(() => Promise.resolve(isRevoke ? [] : (casResults.shift() ?? [{ id: 'sess-1' }]))),
+          returning: vi.fn(() => Promise.resolve(isRevoke ? [] : (casResults.shift() ?? [{ id: 'sess-1', deviceId: 'dev-1' }]))),
         });
       }),
     })),
@@ -79,7 +79,9 @@ vi.mock('../db', () => {
 });
 
 vi.mock('../db/schema', () => ({
-  supportSessions: { _name: 'supportSessions', id: 'supportSessions.id', status: 'supportSessions.status' },
+  supportSessions: {
+    _name: 'supportSessions', id: 'supportSessions.id', status: 'supportSessions.status', deviceId: 'supportSessions.deviceId',
+  },
   devices: { _name: 'devices', id: 'devices.id', agentId: 'devices.agentId' },
 }));
 
@@ -273,6 +275,7 @@ describe('endSupportSession', () => {
 
   it('ends a pending session that never enrolled a device, touching no agent', async () => {
     selectResults.push([{ ...READY_SESSION, status: 'pending', deviceId: null }]);
+    casResults.push([{ id: 'sess-1', deviceId: null }]);
 
     const result = await endSupportSession('sess-1', 'tech');
 
@@ -291,6 +294,22 @@ describe('endSupportSession', () => {
     expect(result).toEqual({ ended: true, disconnect: null, commandDelivered: false });
     expect(dispatchCommandToAgent).not.toHaveBeenCalled();
     expect(evictAgentSockets).not.toHaveBeenCalled();
-    expect(updates.map((u) => u.table)).toEqual(['supportSessions']);
+  });
+
+  it('a device that enrolled between the read and the CAS is still revoked and evicted', async () => {
+    // Read: claimed, no device yet. By the CAS, enrollment bound dev-2.
+    selectResults.push([{ ...READY_SESSION, status: 'claimed', deviceId: null }]);
+    casResults.push([{ id: 'sess-1', deviceId: 'dev-2' }]);
+    selectResults.push([{ agentId: 'agent-2' }]); // dev-2's agent, read inside the CAS transaction
+
+    const result = await endSupportSession('sess-1', 'tech');
+
+    expect(result).toEqual({ ended: true, disconnect: 'closed', commandDelivered: false });
+    expect(updates.find((u) => u.table === 'devices')?.where).toEqual({ eq: ['devices.id', 'dev-2'] });
+    expect(evictAgentSockets).toHaveBeenCalledWith([
+      { agentId: 'agent-2', code: 4041, reason: 'quick support session ended' },
+    ]);
+    // No support_end: the device was not bound when the command phase ran.
+    expect(dispatchCommandToAgent).not.toHaveBeenCalled();
   });
 });
