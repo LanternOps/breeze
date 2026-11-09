@@ -935,18 +935,22 @@ aiRoutes.post(
       }
     }
 
-    // #10426: Wisp's standing state (next tick, first look, concerns,
-    // check-ins, spend) rides on THIS turn ahead of the check-ins, so the
-    // system prompt stays cache-stable and the facts stay fresh
-    // (services/wisp/standingStateTurn.ts). Null when nothing changed since
-    // the last block this session was sent; recorded as sent only once the
-    // turn is dispatched (below). A failure never blocks the turn.
+    // #10426: Wisp's standing state (loop cadence, first look, concerns,
+    // watches, check-ins, spend, alerts) rides on THIS turn ahead of the
+    // check-ins, so the system prompt stays cache-stable
+    // (services/wisp/standingStateTurn.ts; facts cached up to 60 s). Null
+    // when nothing changed since the last block this session was sent;
+    // recorded as sent only once the turn is dispatched (below). A failure
+    // never blocks the turn.
     let standingState: { block: string; hash: string } | null = null;
+    // Held from this import, so nothing after dispatch can fail on loading it.
+    let markStandingStateSent: ((sessionId: string, hash: string) => Promise<void>) | null = null;
     const wispGrantRevisionId = wispGrantId ? dbSession.wispGrantRevisionId : null;
     if (wispGrantId && wispGrantRevisionId) {
       try {
-        const { standingStateForTurn } = await loadStandingStateTurn();
-        standingState = await timePreStreamPhase('wispStandingState', () => standingStateForTurn({
+        const standingStateTurn = await loadStandingStateTurn();
+        markStandingStateSent = standingStateTurn.markStandingStateSent;
+        standingState = await timePreStreamPhase('wispStandingState', () => standingStateTurn.standingStateForTurn({
           grantId: wispGrantId, revisionId: wispGrantRevisionId, sessionId, auth,
         }));
       } catch (err) {
@@ -1248,10 +1252,17 @@ aiRoutes.post(
         captureException(err, c, { wisp_check_in_phase: 'consume' }, { fingerprint: ['wisp-check-in-turn', 'consume'] });
       }
     }
-    // #10426: the model has this standing state now; an unchanged one is not re-sent. Never throws.
-    if (standingState) {
-      const { markStandingStateSent } = await loadStandingStateTurn();
-      await markStandingStateSent(sessionId, standingState.hash);
+    // #10426: the model has this standing state now; an unchanged one is not
+    // re-sent. A failure only re-sends it next turn: logged, never thrown.
+    if (standingState && markStandingStateSent) {
+      try {
+        await markStandingStateSent(sessionId, standingState.hash);
+      } catch (err) {
+        // The turn is already dispatched: never fail its response over this.
+        console.warn('[AI] failed to record the Wisp standing state as sent; it is sent again next turn', {
+          orgId: dbSession.orgId, sessionId, error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
 
     // The stream outlives the timed request: detach it from the timer.

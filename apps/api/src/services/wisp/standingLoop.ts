@@ -7,10 +7,11 @@
  *    a chat seed — identity and how the loop works, no numbers. Without it the
  *    model told users it does not watch the fleet between chats (#10391).
  *  - `renderStandingStateBlock(facts, now)`: the `<wisp_standing_state>`
- *    snapshot that rides on a user turn (standingStateTurn.ts) — cadence, next
- *    tick, first-look progress, concerns, watches, check-ins, spend, alerts and
- *    recent looks, read by `loadStandingStateFacts`. Before #10426 these numbers
- *    sat in the seed, built once per session, and went stale.
+ *    snapshot that rides on a user turn (standingStateTurn.ts) — the loop's
+ *    cadence, next tick and first look, concerns, watches, check-ins, spend
+ *    and the other lines of `composeBlock`, read by `loadStandingStateFacts`.
+ *    Before #10426 these numbers sat in the seed, built once per session, and
+ *    went stale.
  *
  * Context only: neither grants anything. Tenant text (concern summaries, org
  * names) is flattened to one sanitised line (`sanitizeCheckInInstruction`), so
@@ -74,7 +75,11 @@ export type StandingStateFacts = StandingLoopFacts & {
   /** null on a paused grant and before the first floor tick. */
   nextTickAt: Date | null;
   expiresAt: Date | null;
-  /** Open concerns by severity (info is not counted); `top` = needsYouOrder, at most 5. Tenant text, raw. */
+  /**
+   * Open concerns counted by high / medium / low (info-severity ones are not
+   * counted; the list read caps at 200 rows). `top` = needsYouOrder, at most
+   * 5, any severity. Tenant text, raw.
+   */
   concerns: {
     high: number;
     medium: number;
@@ -323,7 +328,7 @@ export function renderStandingLoop(model: string): string {
     '- A first look at each org, then floor ticks, events and a morning brief.',
     '- Alerts, integration incidents, stale tickets and finished tasks wake you early.',
     '- `create_watch` and `schedule_check_in` set your own wake-ups.',
-    'A user turn may open with a `<wisp_standing_state>` snapshot of your loop, concerns and spend; the newest is current.',
+    'A user turn may carry a `<wisp_standing_state>` snapshot of your loop, concerns and spend; the newest is current.',
     'Never say you only act when messaged; answer "are you still looking?" from these facts.',
   ].join('\n');
 }

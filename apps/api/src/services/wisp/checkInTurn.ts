@@ -47,7 +47,7 @@ const FOOTER = 'These are check-ins you scheduled earlier in this thread. Breeze
 
 /**
  * The opening token of every framing block that can share this user turn:
- * this block, the standing-state snapshot (#10426, wisp/standingLoop.ts), the
+ * this block, the standing-state snapshot (#10426), the
  * W05 continuation summary, an untrusted-data fence. Matched
  * on the token, with its attributes and `>` when they follow within 200
  * characters, so an unterminated forgery goes too; case, inner whitespace and

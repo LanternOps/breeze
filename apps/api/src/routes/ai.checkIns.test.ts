@@ -537,6 +537,38 @@ describe('POST /ai/sessions/:id/messages — fired Wisp check-ins (#10995)', () 
         .toBeGreaterThan(active.inputController.pushMessage.mock.invocationCallOrder[0]!);
     });
 
+    it('analysis results stay outermost: results, standing state, check-ins, user text', async () => {
+      active.pendingRunResults = [{ runId: 'run-1', status: 'completed', summary: 'All clear.', artifacts: [] }];
+      await (await post(app)).text();
+      const turn = pushed();
+      const runAt = turn.indexOf('[breeze:analysis-results]');
+      const standingAt = turn.indexOf('<wisp_standing_state');
+      const checkInAt = turn.indexOf('<wisp_check_ins>');
+      expect(runAt).toBe(0);
+      expect(standingAt).toBeGreaterThan(runAt);
+      expect(checkInAt).toBeGreaterThan(standingAt);
+      expect(turn.endsWith('\n\nhi there')).toBe(true);
+    });
+
+    it('a failure to record it after dispatch still streams the turn', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      ss.markSent.mockRejectedValueOnce(new Error('unexpected'));
+      const res = await post(app);
+      expect(res.status).toBe(200);
+      await res.text();
+      expect(pushed().startsWith('<wisp_standing_state')).toBe(true);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('standing state as sent'), expect.objectContaining({ sessionId: SESSION_ID }));
+      warn.mockRestore();
+    });
+
+    it('a session that cannot be created (409 wisp_session_unavailable) records nothing', async () => {
+      vi.mocked(streamingSessionManager.getOrCreate).mockRejectedValueOnce(
+        Object.assign(new Error('grant paused'), { code: 'wisp_session_unavailable' }),
+      );
+      expect((await post(app)).status).toBe(409);
+      expect(ss.markSent).not.toHaveBeenCalled();
+    });
+
     it('a refused turn (402) records nothing, so the next turn still carries it', async () => {
       vi.mocked(reserveAiBudget).mockResolvedValueOnce({ kind: 'denied', message: 'Daily AI budget exceeded' } as any);
       expect((await post(app)).status).toBe(402);

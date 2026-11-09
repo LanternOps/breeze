@@ -5,20 +5,22 @@
  * loop (next tick, first-look progress, concerns, check-ins, spend) used to go
  * stale within minutes. They now ride on the USER turn, the way fired
  * check-ins do (checkInTurn.ts): `POST /ai/sessions/:id/messages`
- * (routes/ai.ts) puts this block first, before the check-ins and the user's
- * text. The system prompt keeps only the static loop description
- * (standingLoop.ts renderStandingLoop), so its prompt cache stays warm.
+ * (routes/ai.ts) puts this block ahead of the check-ins and the user's text
+ * (after any analysis results). The system prompt keeps only the static loop
+ * description (standingLoop.ts renderStandingLoop), so its prompt cache stays
+ * warm.
  *
  * Two bounds on the cost:
- *  - Facts are cached in-process for 60 s per (grant, revision, user), so a
- *    Wisp chat costs at most one fact read a minute. That read is a deliberate
- *    per-turn cost (plan W02).
+ *  - Successful reads (including "no active grant") are cached in this
+ *    process for 60 s per (grant, revision, user), so a steady chat does
+ *    about one fact read a minute per process. Failed reads are not cached.
  *  - The block is sent only when its facts differ from the ones last sent in
  *    this session: the fingerprint of what was sent is kept in Redis
  *    (`wisp:standing-hash:<sessionId>`, one day) and written only once the
  *    turn is dispatched (`markStandingStateSent`), so a refused turn leaves it
- *    for the next one. Time passing alone (the `as_of` stamp, concern ages) is
- *    not a change; the block is stamped, and the model reads it as of then.
+ *    for the next one. Time passing alone (the `as_of` stamp, concern ages)
+ *    is not a change, and spend counts only when it crosses a tenth of the
+ *    budget; the block is stamped, and the model reads it as of then.
  *
  * Everything here fails open to "no block" or "send the block", never to a
  * failed turn: a fact read that throws is reported and the turn goes out
@@ -51,15 +53,25 @@ export function clearStandingStateCache(): void {
   factsCache.clear();
 }
 
+/** Spend counts as changed only when it crosses one of these steps of the daily budget. */
+export const STANDING_SPEND_STEPS = 10;
+
 /**
- * The facts' identity, minus what only says time has passed (concern ages).
+ * The facts' identity, minus what only says time has passed (concern ages),
+ * with spend coarsened to tenths of the budget: every chat turn costs a few
+ * cents, and an exact figure would re-send the block on nearly every turn.
  * The loader builds the object in a fixed key order, and Dates serialise as
  * ISO strings, so equal facts hash equal.
  */
 function factsFingerprint(facts: StandingStateFacts): string {
+  const { spend, ...rest } = facts;
   const timeless = {
-    ...facts,
-    concerns: { ...facts.concerns, top: facts.concerns.top.map(({ ageMinutes: _age, ...rest }) => rest) },
+    ...rest,
+    concerns: { ...facts.concerns, top: facts.concerns.top.map(({ ageMinutes: _age, ...concern }) => concern) },
+    spend: {
+      budgetCentsPerDay: spend.budgetCentsPerDay,
+      step: Math.floor((spend.totalCents * STANDING_SPEND_STEPS) / Math.max(1, spend.budgetCentsPerDay)),
+    },
   };
   return createHash('sha256').update(JSON.stringify(timeless)).digest('hex');
 }
@@ -75,8 +87,14 @@ async function cachedFacts(input: { grantId: string; revisionId: string; auth: A
     const ceiling = await resolveGrantCeiling(input.grantId, input.revisionId, { allowPaused: true });
     facts = await loadStandingStateFacts(ceiling, input.auth, now);
   } catch (err) {
-    // Revoked, expired, Wisp off or a dead revision pin: there is no loop to describe.
     if (!(err instanceof GrantInactiveError)) throw err;
+    // A corrupt pin (revision of another grant, malformed snapshot) is a bug to
+    // fix, not a state: report it (at most once a minute, via the cache below).
+    // Revoked, expired or Wisp off: there is no loop to describe.
+    if (err.kind === 'corrupt') {
+      console.error(`[wisp] standing state: grant ${input.grantId} has a corrupt ceiling pin; sending turns without it: ${err.message}`);
+      captureException(err, undefined, { grantId: input.grantId, op: 'wisp.standing_state_ceiling' }, { fingerprint: ['wisp-standing-state', 'corrupt-pin'] });
+    }
     facts = null;
   }
   factsCache.delete(key);
@@ -90,9 +108,9 @@ async function cachedFacts(input: { grantId: string; revisionId: string; auth: A
 }
 
 async function lastSentHash(sessionId: string): Promise<string | null> {
-  const redis = getRedis();
-  if (!redis) return null;
   try {
+    const redis = getRedis();
+    if (!redis) return null;
     return await redis.get(`${STANDING_HASH_KEY_PREFIX}${sessionId}`);
   } catch (err) {
     console.warn('[wisp] standing state: last-sent hash unreadable; sending the block', { sessionId, error: errText(err) });
@@ -102,8 +120,10 @@ async function lastSentHash(sessionId: string): Promise<string | null> {
 
 /**
  * The block for this turn and the hash to record once it is dispatched, or
- * null: Wisp off, the grant inactive or gone, nothing changed since the last
- * block this session was sent, or the fact read failed (reported). Never throws.
+ * null: Wisp off; the grant revoked, expired, gone or its pin corrupt (a
+ * paused grant still gets a block that says so); nothing changed since the
+ * last block this session was sent; or the fact read failed (reported). A
+ * failed read and a Redis error never throw; the route still guards the call.
  */
 export async function standingStateForTurn(input: {
   grantId: string;
@@ -119,7 +139,7 @@ export async function standingStateForTurn(input: {
     facts = await cachedFacts(input, now);
   } catch (err) {
     console.warn('[wisp] standing state: the fact read failed; sending the turn without it', { grantId: input.grantId, sessionId: input.sessionId, error: errText(err) });
-    captureException(err, undefined, { grantId: input.grantId, op: 'wisp.standing_state_read' });
+    captureException(err, undefined, { grantId: input.grantId, op: 'wisp.standing_state_read' }, { fingerprint: ['wisp-standing-state', 'read'] });
     return null;
   }
   if (!facts) return null;
@@ -134,9 +154,9 @@ export async function standingStateForTurn(input: {
  * next turn, so it is logged and never thrown.
  */
 export async function markStandingStateSent(sessionId: string, hash: string): Promise<void> {
-  const redis = getRedis();
-  if (!redis) return;
   try {
+    const redis = getRedis();
+    if (!redis) return;
     await redis.set(`${STANDING_HASH_KEY_PREFIX}${sessionId}`, hash, 'EX', STANDING_HASH_TTL_SECONDS);
   } catch (err) {
     console.warn('[wisp] standing state: could not record the sent block; it is sent again next turn', { sessionId, error: errText(err) });

@@ -34,11 +34,11 @@ Last release: **v0.127.0** (2026-11-08).
 - A chat turn is never refused by the grant budget. When the budget is spent, background checks pause until 00:00 UTC (including specialists requested from chat) and chat keeps working with a warning; the grantor is told once per UTC day. The org AI budget and credits still apply to chat as before.
 - Behaviour change for existing grants: a chat-heavy day can now use up the budget and pause background checks for the rest of the UTC day. No migration required.
 
-### Wisp knows its current standing state on every turn
+### Wisp keeps its standing state current during a chat
 
-- Each Wisp chat turn now carries a fresh, timestamped snapshot of Wisp's standing loop: next floor tick, first-look progress, open concerns by severity, watches, scheduled check-ins, today's spend and open alerts. Before, these numbers were written once when the conversation started and went stale.
-- The snapshot is re-sent only when it changes. The system prompt now holds only the fixed description of the loop, so it no longer changes between turns.
-- "What needs my attention" is answered from the partner picture and the snapshot first; "keep it short" means at most three tool calls before the answer. No migration required.
+- A timestamped snapshot of Wisp's standing loop is attached to a chat turn whenever it has changed (read at most once a minute): next floor tick, first-look progress, open concerns by severity, watches, scheduled check-ins, today's spend and open critical and high alerts. Before, these numbers were written once when the conversation started and went stale.
+- The system prompt now holds only the fixed description of the loop, so it no longer changes between turns.
+- Wisp is told to answer "what needs my attention" from the partner picture and the snapshot first, and to keep "keep it short" to about three tool calls. No migration required.
 
 ## Migrations
 

@@ -558,4 +558,40 @@ describe('standing-state facts (real Postgres, #10426)', () => {
     expect(facts!.recentAssessments[0]!.at).toBeInstanceOf(Date);
     expect(Buffer.byteLength(renderStandingStateBlock(facts!, new Date()), 'utf8')).toBeLessThanOrEqual(STANDING_STATE_MAX_BYTES);
   });
+
+  it('another grant\'s partner-level watches and check-ins, and settled check-ins, are not counted', async () => {
+    const a = await seedTenant(1);
+    const threadA = await getOrCreateThread(a.grantId);
+    // A second grant of the SAME partner, with rows the org_id IS NULL branch would match if it were not grant-keyed.
+    const otherGrantor = await createUser({ partnerId: a.partnerId, email: `wisp-standing-other-${randomUUID()}@wisp.test` });
+    const otherGrantId = await sys(async () => {
+      const [g] = await db.insert(wispGrants).values({
+        partnerId: a.partnerId, orgId: null, grantorUserId: otherGrantor.id, status: 'active', expiresAt: new Date(Date.now() + 86_400_000),
+      }).returning({ id: wispGrants.id });
+      return g!.id;
+    });
+    const threadB = await getOrCreateThread(otherGrantId);
+    const dueAt = new Date(Date.now() + 3_600_000);
+    const checkIn = (grantId: string, threadId: string, userId: string, status: 'scheduled' | 'cancelled' = 'scheduled') => {
+      const id = randomUUID();
+      return db.insert(wispCheckIns).values({
+        id, partnerId: a.partnerId, orgId: null, grantId, threadId, userId, dueAt, instruction: 'Look again.', jobId: `wisp-check-in-${id}`,
+        status, ...(status === 'cancelled' ? { cancelledAt: new Date() } : {}),
+      });
+    };
+    await sys(async () => {
+      await db.insert(wispWatches).values({
+        partnerId: a.partnerId, orgId: null, grantId: otherGrantId, ownerUserId: otherGrantor.id,
+        kind: 'backup_health', cadenceMinutes: 60, nextDueAt: dueAt,
+      });
+      await checkIn(otherGrantId, threadB.id, otherGrantor.id);
+      await checkIn(a.grantId, threadA.id, a.grantorId, 'cancelled');
+      await checkIn(a.grantId, threadA.id, a.grantorId);
+    });
+
+    const ceiling = await resolveGrantCeiling(a.grantId, a.revisionId, { allowPaused: true });
+    const facts = await loadStandingStateFacts(ceiling, { user: { id: a.grantorId }, accessibleOrgIds: null } as never);
+    expect(facts!.watches).toEqual({ active: 0 });
+    expect(facts!.checkIns.scheduled).toBe(1);
+  });
 });

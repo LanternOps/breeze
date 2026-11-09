@@ -19,7 +19,8 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('../../config/env', () => ({ wispEnabled: h.wispEnabled }));
-vi.mock('../redis', () => ({ getRedis: () => (h.redisAvailable ? h.redis : null) }));
+const redisClient = vi.hoisted(() => ({ getRedis: vi.fn() }));
+vi.mock('../redis', () => ({ getRedis: redisClient.getRedis }));
 vi.mock('../sentry', () => ({ captureException: h.captureException }));
 vi.mock('./grantAuthority', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./grantAuthority')>()),
@@ -80,6 +81,7 @@ beforeEach(() => {
   clearStandingStateCache();
   h.redis.store.clear();
   h.redisAvailable = true;
+  redisClient.getRedis.mockReset().mockImplementation(() => (h.redisAvailable ? h.redis : null));
   h.wispEnabled.mockReturnValue(true);
   h.resolveGrantCeiling.mockReset().mockResolvedValue(ceiling);
   h.loadStandingStateFacts.mockReset().mockResolvedValue(facts());
@@ -112,6 +114,20 @@ describe('standingStateForTurn', () => {
     expect(await dispatched(later(15 * 60_000))).toBeNull();
   });
 
+  it('a few cents of chat spend is not a change; crossing a tenth of the budget is', async () => {
+    await dispatched(NOW);
+    // 30¢ → 45¢ of 500¢: still under the first 50¢ step.
+    h.loadStandingStateFacts.mockResolvedValue(facts({ spend: { backgroundCents: 10, chatCents: 35, totalCents: 45, budgetCentsPerDay: 500 } }));
+    expect(await dispatched(later(2 * 60_000))).toBeNull();
+    // 45¢ → 55¢ crosses 50¢.
+    h.loadStandingStateFacts.mockResolvedValue(facts({ spend: { backgroundCents: 10, chatCents: 45, totalCents: 55, budgetCentsPerDay: 500 } }));
+    const out = await dispatched(later(4 * 60_000));
+    expect(out?.block).toContain('Spend today: background 10¢ · chat 45¢ · 55¢ of 500¢');
+    // A raised budget is a change too.
+    h.loadStandingStateFacts.mockResolvedValue(facts({ spend: { backgroundCents: 10, chatCents: 45, totalCents: 55, budgetCentsPerDay: 1000 } }));
+    expect(await dispatched(later(6 * 60_000))).not.toBeNull();
+  });
+
   it('a changed concern count returns the block again', async () => {
     await dispatched(NOW);
     h.loadStandingStateFacts.mockResolvedValue(facts({ concerns: { high: 2, medium: 0, low: 0, top: [] } }));
@@ -142,11 +158,35 @@ describe('standingStateForTurn', () => {
     expect(h.loadStandingStateFacts).toHaveBeenCalledTimes(2);
   });
 
+  it('the cache is per user and per revision: one caller\'s narrowed facts never serve another', async () => {
+    const other = { user: { id: 'u2' }, accessibleOrgIds: ['o1'] } as unknown as AuthContext;
+    await turn(NOW);
+    await standingStateForTurn({ grantId: GRANT, revisionId: REV, sessionId: SESSION, auth: other, now: later(1_000) });
+    expect(h.loadStandingStateFacts).toHaveBeenCalledTimes(2);
+    expect(h.loadStandingStateFacts).toHaveBeenLastCalledWith(ceiling, other, later(1_000));
+    const REV2 = '55555555-5555-4555-8555-555555555555';
+    await standingStateForTurn({ grantId: GRANT, revisionId: REV2, sessionId: SESSION, auth, now: later(2_000) });
+    expect(h.loadStandingStateFacts).toHaveBeenCalledTimes(3);
+    expect(h.resolveGrantCeiling).toHaveBeenLastCalledWith(GRANT, REV2, { allowPaused: true });
+  });
+
+  it('a ceiling resolve that fails for another reason (DB down) is reported like a failed read', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    h.resolveGrantCeiling.mockRejectedValueOnce(new Error('connection refused'));
+    await expect(turn(NOW)).resolves.toBeNull();
+    expect(h.captureException).toHaveBeenCalledWith(
+      expect.any(Error), undefined, { grantId: GRANT, op: 'wisp.standing_state_read' }, { fingerprint: ['wisp-standing-state', 'read'] },
+    );
+    warn.mockRestore();
+  });
+
   it('a thrown fact read returns null and reports it, without throwing', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     h.loadStandingStateFacts.mockRejectedValueOnce(new Error('db down'));
     await expect(turn(NOW)).resolves.toBeNull();
-    expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, { grantId: GRANT, op: 'wisp.standing_state_read' });
+    expect(h.captureException).toHaveBeenCalledWith(
+      expect.any(Error), undefined, { grantId: GRANT, op: 'wisp.standing_state_read' }, { fingerprint: ['wisp-standing-state', 'read'] },
+    );
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('standing state'), expect.objectContaining({ grantId: GRANT }));
     // A failure is not cached: the next turn reads again.
     await expect(turn(later(1_000))).resolves.not.toBeNull();
@@ -158,6 +198,21 @@ describe('standingStateForTurn', () => {
     await expect(turn(NOW)).resolves.toBeNull();
     expect(h.loadStandingStateFacts).not.toHaveBeenCalled();
     expect(h.captureException).not.toHaveBeenCalled();
+  });
+
+  it('a corrupt ceiling pin gets no block, and is reported at most once a minute', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    h.resolveGrantCeiling.mockRejectedValue(new GrantInactiveError(GRANT, 'active', 'revision belongs to another grant', 'corrupt'));
+    await expect(turn(NOW)).resolves.toBeNull();
+    await expect(turn(later(30_000))).resolves.toBeNull();
+    expect(h.captureException).toHaveBeenCalledTimes(1);
+    expect(h.captureException).toHaveBeenCalledWith(
+      expect.any(GrantInactiveError), undefined, { grantId: GRANT, op: 'wisp.standing_state_ceiling' }, { fingerprint: ['wisp-standing-state', 'corrupt-pin'] },
+    );
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('corrupt ceiling pin'));
+    await turn(later(61_000));
+    expect(h.captureException).toHaveBeenCalledTimes(2);
+    error.mockRestore();
   });
 
   it('a grant row gone between ceiling and facts gets no block', async () => {
@@ -185,6 +240,17 @@ describe('standingStateForTurn', () => {
     expect(out).not.toBeNull();
     h.redis.set.mockRejectedValueOnce(new Error('redis down'));
     await expect(markStandingStateSent(SESSION, out!.hash)).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+
+  it('a Redis client that cannot be built is a Redis error, not a thrown turn', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    redisClient.getRedis.mockImplementation(() => { throw new Error('bad REDIS_URL'); });
+    const out = await turn(NOW);
+    expect(out).not.toBeNull();
+    await expect(markStandingStateSent(SESSION, out!.hash)).resolves.toBeUndefined();
+    expect(h.captureException).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledTimes(2);
     warn.mockRestore();
   });
