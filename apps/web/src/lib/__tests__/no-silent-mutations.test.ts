@@ -264,6 +264,9 @@ const TARGET_GLOBS = [
   'src/components/time/TimerWidget.tsx',
   'src/components/time/TimesheetPage.tsx',
   'src/components/tickets/TicketTimeBilling.tsx',
+  // The quick time entry moved out of TicketTimeBilling (shared with the
+  // composer's Log time); its POST /time-entries stays guarded.
+  'src/components/tickets/TicketQuickTimeEntry.tsx',
   'src/components/tickets/TicketPartsCard.tsx',
   'src/components/clientAi/OrgsTab.tsx',
   'src/components/clientAi/PolicyEditor.tsx',

@@ -21,6 +21,9 @@ export interface TicketSummary {
   deviceHostname: string | null;
   assignedTo: string | null;
   assigneeName: string | null;
+  /** Requester display name. The detail endpoint always carries it; the list
+   *  endpoint does not yet, so queue rows render it only when present. */
+  submitterName?: string | null;
   categoryId: string | null;
   dueDate: string | null;
   tags?: string[];
@@ -98,6 +101,16 @@ export interface TicketDetail extends TicketSummary {
   alertLinks: Array<{ id: string; alertId: string; linkType: string; alertTitle: string | null; alertSeverity: string | null; alertStatus: string | null }>;
 }
 
+/** Up to two initials for an owner avatar: "Todd Hebebrand" → "TH",
+ *  "todd@example.com" → "T". */
+export function nameInitials(name: string): string {
+  const words = name.replace(/@.*$/, '').split(/[\s._-]+/).filter(Boolean);
+  if (words.length === 0) return '?';
+  const first = words[0]!.charAt(0);
+  const last = words.length > 1 ? words[words.length - 1]!.charAt(0) : '';
+  return (first + last).toLocaleUpperCase();
+}
+
 /** The number a technician reads for a ticket: internal number, then the
  *  legacy ticket number, then a short id. */
 export function ticketDisplayNumber(t: { id: string; internalNumber?: string | null; ticketNumber?: string | null }): string {
@@ -121,10 +134,12 @@ export const statusConfig: Record<TicketStatus, { label: string; color: string }
   closed: { label: 'Closed', color: `bg-muted ${NEUTRAL_CHIP_TEXT} border-border` },
 };
 
+// Priority is not status, so it carries no status colour: red on the board
+// means a breach and amber means pending or at risk. Weight and fill rank it
+// instead: Urgent is a solid foreground pill, High an outline, Low faint.
 export const priorityConfig: Record<TicketPriority, { label: string; color: string; weight: number }> = {
-  urgent: { label: 'Urgent', color: 'text-red-700 dark:text-red-400 bg-red-500/10 border-red-500/30', weight: 0 },
-  // orange-700 is 4.2:1 on its tint under a selected row; 800 clears 5.9:1.
-  high: { label: 'High', color: 'text-orange-800 dark:text-orange-400 bg-orange-500/10 border-orange-500/30', weight: 1 },
+  urgent: { label: 'Urgent', color: 'bg-foreground text-background border-foreground font-semibold', weight: 0 },
+  high: { label: 'High', color: 'bg-background text-foreground border-foreground/50', weight: 1 },
   normal: { label: 'Normal', color: `${NEUTRAL_CHIP_TEXT} bg-muted border-border`, weight: 2 },
   low: { label: 'Low', color: `${NEUTRAL_CHIP_TEXT} bg-muted/50 border-border`, weight: 3 },
 };

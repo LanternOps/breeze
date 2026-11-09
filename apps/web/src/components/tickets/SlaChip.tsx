@@ -8,12 +8,13 @@ export default function SlaChip({ ticket }: { ticket: TicketSummary }) {
   const s = slaState(ticket);
   if (s.kind === 'none') return null;
   if (s.kind === 'ok') {
-    return <span className="text-xs text-muted-foreground" data-testid={`ticket-sla-${ticket.id}`}>{formatRelative(s.minutesLeft)}</span>;
+    // "8h 14m left", never a bare duration that reads like the row's age.
+    return <span className="whitespace-nowrap text-xs text-muted-foreground" data-testid={`ticket-sla-${ticket.id}`}>{t('slaChip.left', { relative: formatRelative(s.minutesLeft) })}</span>;
   }
   if (s.kind === 'paused') {
     return (
       <span
-        className={cn('inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs font-medium bg-muted border-border', NEUTRAL_CHIP_TEXT)}
+        className={cn('inline-flex items-center whitespace-nowrap rounded-md border px-1.5 py-0.5 text-xs font-medium bg-muted border-border', NEUTRAL_CHIP_TEXT)}
         data-testid={`ticket-sla-${ticket.id}`}
       >
         {t('slaChip.pausedLeft', { relative: formatRelative(s.minutesLeft) })}
@@ -23,7 +24,7 @@ export default function SlaChip({ ticket }: { ticket: TicketSummary }) {
   if (s.kind === 'at-risk') {
     return (
       <span
-        className="inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs font-medium bg-warning/15 text-warning-ink border-warning/30"
+        className="inline-flex items-center whitespace-nowrap rounded-md border px-1.5 py-0.5 text-xs font-medium bg-warning/15 text-warning-ink border-warning/30"
         data-testid={`ticket-sla-${ticket.id}`}
       >
         {t('slaChip.left', { relative: formatRelative(s.minutesLeft) })}
@@ -32,7 +33,7 @@ export default function SlaChip({ ticket }: { ticket: TicketSummary }) {
   }
   return (
     <span
-      className="inline-flex items-center rounded-md border px-1.5 py-0.5 text-xs font-medium bg-destructive/15 text-destructive-ink border-destructive/30"
+      className="inline-flex items-center whitespace-nowrap rounded-md border px-1.5 py-0.5 text-xs font-medium bg-destructive/15 text-destructive-ink border-destructive/30"
       data-testid={`ticket-sla-${ticket.id}`}
     >
       {t('slaChip.breached')}

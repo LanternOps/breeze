@@ -85,7 +85,8 @@
     },
     "checklistProgress": "{{done}}/{{total}} passaggi",
     "checklistTitle": "Checklist: {{done}} passaggi su {{total}} completati",
-    "merged": "Unito"
+    "merged": "Unito",
+    "ageTitle": "Aperto {{created}} · Aggiornato {{updated}}"
   },
   "ticketArchivedList": {
     "emptyTitle": "Nessun ticket archiviato.",
@@ -140,7 +141,11 @@
       "sentWithoutAttachment_one": "Nota pubblicata, ma non è stato possibile aggiungere l'allegato. Riprova o rimuovilo.",
       "sentWithoutAttachment_other": "Nota pubblicata, ma non è stato possibile aggiungere {{count}} allegati. Riprova o rimuovili."
     },
-    "modeLabel": "Visibilità del commento"
+    "modeLabel": "Visibilità del commento",
+    "recipient": {
+      "emails": "Inviata via email a {{recipient}}",
+      "none": "Nessuna email del richiedente registrata. La risposta viene salvata nel ticket e non parte nessuna email."
+    }
   },
   "ticketFeed": {
     "empty": "Ancora nessuna attività.",
@@ -854,6 +859,64 @@
       "SELF_LINK": "Un ticket non può essere collegato a se stesso.",
       "NOT_FOUND": "Quel ticket non è stato trovato o non è più disponibile.",
       "LINK_GONE": "Quel collegamento è già stato rimosso."
+    }
+  },
+  "ticketFocus": {
+    "navLabel": "Navigazione tra ticket",
+    "backTo": "Torna a {{tab}}",
+    "position": "{{index}} di {{total}}",
+    "previous": "Ticket precedente",
+    "next": "Ticket successivo",
+    "more": "Altre azioni",
+    "sections": "Sezioni del ticket",
+    "tabs": {
+      "conversation": "Conversazione",
+      "details": "Dettagli"
+    },
+    "descriptionAria": "Richiesta di {{author}}",
+    "invoiceDialogTitle": "Parte del lavoro non è stata fatturata",
+    "nextOffer": {
+      "label": "Prossimo",
+      "open": "Apri",
+      "openAria": "Apri {{number}} {{subject}}",
+      "atRisk": "A rischio · {{relative}} rimanenti",
+      "noSla": "Nessun SLA"
+    },
+    "requester": {
+      "noEmail": "Nessuna email registrata"
+    },
+    "endpoint": {
+      "noDevice": "Nessun dispositivo collegato",
+      "lastSeen": "visto l’ultima volta {{ago}}",
+      "loading": "Caricamento del dispositivo",
+      "loadFailed": "Impossibile caricare lo stato in tempo reale del dispositivo.",
+      "os": "Sistema operativo",
+      "signedIn": "Connesso",
+      "nobodySignedIn": "Nessuno connesso",
+      "lastUser": "Ultimo utente {{user}}",
+      "activeAlerts": "Avvisi attivi",
+      "noAlerts": "Nessun avviso attivo",
+      "alertsFailed": "Impossibile caricare gli avvisi.",
+      "untitledAlert": "Avviso senza titolo",
+      "userSignedIn": "{{user}} connesso",
+      "alertCount": "{{count}} avvisi",
+      "alertCount_one": "{{count}} avviso",
+      "alertCount_other": "{{count}} avvisi",
+      "openDetails": "{{device}}: apri i dettagli del dispositivo"
+    },
+    "details": {
+      "properties": "Proprietà",
+      "logged": "{{time}} registrato",
+      "partCount": "{{count}} parti",
+      "partCount_one": "{{count}} parte",
+      "partCount_other": "{{count}} parti",
+      "pendingApprovals": "{{count}} in sospeso",
+      "pendingApprovals_one": "{{count}} in sospeso",
+      "pendingApprovals_other": "{{count}} in sospeso",
+      "linkCount": "{{count}} collegati",
+      "linkCount_one": "{{count}} collegato",
+      "linkCount_other": "{{count}} collegati",
+      "approvals": "Approvazioni"
     }
   }
 }

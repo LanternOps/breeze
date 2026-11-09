@@ -127,6 +127,12 @@ function mockTicketApi(detailById: Record<string, TicketDetail>) {
 const mutationCalls = () =>
   fetchMock.mock.calls.filter(([, init]) => init?.method && init.method !== 'GET');
 
+// Move to another org, Merge into and Delete live in the header's More menu.
+function openMoreMenu() {
+  const more = screen.getByTestId('ticket-workbench-more');
+  if (more.getAttribute('aria-expanded') !== 'true') fireEvent.click(more);
+}
+
 // Reset the grant set before every test (some opt into tickets:manage).
 beforeEach(() => { authState.permissions = []; });
 
@@ -155,20 +161,23 @@ describe('TicketWorkbench — organization record link', () => {
     })));
   });
 
-  it('links the header device hostname to /devices/:id (ui-flow W03)', async () => {
+  // The device moved from the header meta line to the situation column's
+  // endpoint panel (focus layout); the hostname still links to the device.
+  it('links the endpoint panel hostname to /devices/:id (ui-flow W03)', async () => {
     mockTicketApi({ 'tk-1': makeTicket({ deviceId: 'dev-1', deviceHostname: 'DESKTOP-123' }) });
     render(<TicketWorkbench ticketId="tk-1" />);
     await screen.findByTestId('ticket-workbench');
 
-    expect(screen.getByTestId('device-record-link')).toHaveAttribute('href', '/devices/dev-1');
+    expect(screen.getByTestId('ticket-workbench-device-link')).toHaveAttribute('href', '/devices/dev-1');
+    expect(screen.queryByTestId('device-record-link')).toBeNull();
   });
 
-  it('prints the header hostname as text when the ticket has no deviceId', async () => {
+  it('prints the hostname as text when the ticket has no deviceId', async () => {
     mockTicketApi({ 'tk-1': makeTicket({ deviceId: null, deviceHostname: 'DESKTOP-123' }) });
     render(<TicketWorkbench ticketId="tk-1" />);
     await screen.findByTestId('ticket-workbench');
 
-    expect(screen.queryByTestId('device-record-link')).toBeNull();
+    expect(screen.queryByTestId('ticket-workbench-device-link')).toBeNull();
     expect(screen.getAllByText('DESKTOP-123').length).toBeGreaterThan(0);
   });
 });
@@ -335,13 +344,16 @@ describe('TicketWorkbench resolve-flow gating', () => {
 describe('TicketWorkbench keyboard and screen-reader affordances', () => {
   beforeEach(() => { vi.clearAllMocks(); });
 
-  it('names the icon-only "open full page" link with aria-label, not only a tooltip', async () => {
+  // The "open full page" link is gone (focus is in place at every width);
+  // the header's icon-only control is now the More menu trigger.
+  it('names the icon-only More trigger with aria-label, not only a tooltip', async () => {
     mockTicketApi({ 'tk-1': makeTicket() });
     render(<TicketWorkbench ticketId="tk-1" />);
-    const link = await screen.findByTestId('ticket-workbench-expand');
-    expect(link).toHaveAttribute('aria-label', 'Open full page');
-    expect(link).toHaveAccessibleName('Open full page');
-    expect(link.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    const more = await screen.findByTestId('ticket-workbench-more');
+    expect(screen.queryByTestId('ticket-workbench-expand')).toBeNull();
+    expect(more).toHaveAttribute('aria-label', 'More actions');
+    expect(more).toHaveAccessibleName('More actions');
+    expect(more.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
   });
 
   it('shows the hover-only Edit buttons when they take keyboard focus', async () => {
@@ -2351,14 +2363,20 @@ describe('TicketWorkbench comment edit/delete', () => {
     ).toHaveLength(0);
   });
 
-  it('portal-authored comments do NOT show edit/delete controls (canManageComment gate)', async () => {
-    const comment = makeComment({ id: 'c-portal', content: 'Portal user comment', portalUserId: 'pu-1' });
-    mockTicketApi({ 'tk-1': makeTicket({ comments: [comment] }) });
+  // A requester's words are never rewritten (no Edit), but a tech can still
+  // remove them, e.g. to redact a pasted password (Delete).
+  it('requester-authored comments offer Delete for redaction but never Edit', async () => {
+    const portal = makeComment({ id: 'c-portal', content: 'Portal user comment', portalUserId: 'pu-1' });
+    const seeded = makeComment({ id: 'c-portal-type', content: 'Seeded portal reply', portalUserId: null, authorType: 'portal' });
+    mockTicketApi({ 'tk-1': makeTicket({ comments: [portal, seeded] }) });
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
 
     await screen.findByTestId('ticket-comment-c-portal');
-    expect(screen.queryByTestId('ticket-comment-edit-c-portal')).toBeNull();
-    expect(screen.queryByTestId('ticket-comment-delete-c-portal')).toBeNull();
+    for (const id of ['c-portal', 'c-portal-type']) {
+      expect(screen.queryByTestId(`ticket-comment-edit-${id}`)).toBeNull();
+      expect(screen.getByTestId(`ticket-comment-delete-${id}`)).toBeInTheDocument();
+      expect(screen.getByTestId(`ticket-comment-requester-${id}`)).toHaveTextContent('Requester');
+    }
   });
 
   it('staff-authored comments DO show edit/delete controls', async () => {
@@ -2807,6 +2825,7 @@ describe('TicketWorkbench move-org action', () => {
     await screen.findByTestId('ticket-workbench');
 
     // Open the move-org UI
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
 
     // The picker should appear; select org-2 (Globex Inc)
@@ -2833,6 +2852,7 @@ describe('TicketWorkbench move-org action', () => {
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
 
     await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
 
     const picker = await screen.findByTestId('ticket-workbench-move-org-select');
@@ -2892,6 +2912,7 @@ describe('TicketWorkbench move-org action', () => {
     });
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
     await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
     fireEvent.change(await screen.findByTestId('ticket-workbench-move-org-select'), { target: { value: 'org-2' } });
     fireEvent.click(screen.getByTestId('ticket-workbench-move-org-confirm'));
@@ -2907,6 +2928,7 @@ describe('TicketWorkbench move-org action', () => {
     mockTicketApiWithOrgs(ticket);
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
     await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
     fireEvent.change(await screen.findByTestId('ticket-workbench-move-org-select'), { target: { value: 'org-2' } });
     fireEvent.click(screen.getByTestId('ticket-workbench-move-org-confirm'));
@@ -2919,6 +2941,7 @@ describe('TicketWorkbench move-org action', () => {
     mockBlockedMove(ticket);
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
     await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
     fireEvent.change(await screen.findByTestId('ticket-workbench-move-org-select'), { target: { value: 'org-2' } });
     fireEvent.click(screen.getByTestId('ticket-workbench-move-org-confirm'));
@@ -2949,6 +2972,7 @@ describe('TicketWorkbench move-org action', () => {
     mockBlockedMove(ticket);
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
     await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
     const picker = await screen.findByTestId('ticket-workbench-move-org-select');
     fireEvent.change(picker, { target: { value: 'org-2' } });
@@ -2968,6 +2992,7 @@ describe('TicketWorkbench move-org action', () => {
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
 
     await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
 
     await screen.findByTestId('ticket-workbench-move-org-select');
@@ -3186,6 +3211,7 @@ describe('TicketWorkbench soft-delete (tickets:manage)', () => {
     render(<TicketWorkbench ticketId="tk-1" />);
 
     await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
     expect(screen.queryByTestId('ticket-delete-button')).toBeNull();
   });
 
@@ -3197,6 +3223,7 @@ describe('TicketWorkbench soft-delete (tickets:manage)', () => {
     render(<TicketWorkbench ticketId="tk-1" onChanged={onChanged} onDeleted={onDeleted} />);
 
     await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('ticket-delete-button'));
 
     // Dialog is up; no DELETE fired yet.
@@ -3215,7 +3242,7 @@ describe('TicketWorkbench soft-delete (tickets:manage)', () => {
     // #9564: tells the host which ticket is gone so it drops any hold on it.
     expect(onDeleted).toHaveBeenCalledWith('tk-1');
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Ticket deleted' }));
-    // Split-pane mode: the host handles re-selection, so no navigation here.
+    // Hosted (the queue's focus view): the host goes back to its board, so no navigation here.
     expect(navigateTo).not.toHaveBeenCalled();
   });
 
@@ -3225,6 +3252,7 @@ describe('TicketWorkbench soft-delete (tickets:manage)', () => {
     render(<TicketWorkbench ticketId="tk-1" expanded />);
 
     await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('ticket-delete-button'));
     fireEvent.click(await screen.findByTestId('ticket-delete-confirm'));
 
@@ -3386,6 +3414,7 @@ describe('TicketWorkbench — merge header action (#8972)', () => {
     render(<TicketWorkbench ticketId="tk-1" />);
     await screen.findByTestId('ticket-workbench');
 
+    openMoreMenu();
     const open = screen.getByTestId('ticket-merge-open');
     expect(open).toHaveTextContent('Merge into…');
     expect(screen.queryByTestId('ticket-merge-dialog')).toBeNull();
@@ -3401,6 +3430,7 @@ describe('TicketWorkbench — merge header action (#8972)', () => {
     mockTicketApi({ 'tk-1': makeTicket() });
     render(<TicketWorkbench ticketId="tk-1" />);
     await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
     expect(screen.queryByTestId('ticket-merge-open')).toBeNull();
   });
 
@@ -3410,6 +3440,7 @@ describe('TicketWorkbench — merge header action (#8972)', () => {
     const onMerged = vi.fn();
     render(<TicketWorkbench ticketId="tk-1" onMerged={onMerged} />);
     await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('ticket-merge-open'));
     fireEvent.click(screen.getByTestId('stub-merge-done'));
     expect(onMerged).toHaveBeenCalledWith('tk-surv', 'T-2026-0002');
@@ -3422,6 +3453,7 @@ describe('TicketWorkbench — merge header action (#8972)', () => {
     mockTicketApi({ 'tk-1': makeTicket() });
     render(<TicketWorkbench ticketId="tk-1" expanded />);
     await screen.findByTestId('ticket-workbench');
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('ticket-merge-open'));
     fireEvent.click(screen.getByTestId('stub-merge-done'));
     expect(navigateTo).toHaveBeenCalledWith('/tickets/tk-surv');
@@ -3732,11 +3764,13 @@ describe('TicketWorkbench — Onboard a person launcher', () => {
     const { readFileSync } = await import('node:fs');
     const { join } = await import('node:path');
     const pages = join(__dirname, '../../pages/tickets');
+    // /tickets/[id] renders the same focus view as /tickets#<key>.
     const detail = readFileSync(join(pages, '[id].astro'), 'utf8');
-    expect(detail).toMatch(/<TicketWorkbench[^>]*client:load/);
+    expect(detail).toMatch(/<TicketsPage[^>]*routeTicketId[^>]*client:load/);
     const queue = readFileSync(join(pages, 'index.astro'), 'utf8');
     expect(queue).toMatch(/<TicketsPage[^>]*client:load/);
-    const workbench = readFileSync(join(__dirname, 'TicketWorkbench.tsx'), 'utf8');
-    expect(workbench).toContain('<OnboardPersonLauncher');
+    // The launcher sits with the requester, in the focus view's situation column.
+    const requester = readFileSync(join(__dirname, 'TicketRequesterBlock.tsx'), 'utf8');
+    expect(requester).toContain('<OnboardPersonLauncher');
   });
 });

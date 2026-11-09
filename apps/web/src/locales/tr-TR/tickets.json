@@ -85,7 +85,8 @@
     },
     "checklistProgress": "{{done}}/{{total}} adım",
     "checklistTitle": "Kontrol listesi: {{total}} adımın {{done}} tanesi tamamlandı",
-    "merged": "Birleştirildi"
+    "merged": "Birleştirildi",
+    "ageTitle": "Açılış {{created}} · Güncelleme {{updated}}"
   },
   "ticketArchivedList": {
     "emptyTitle": "Arşivlenmiş bilet yok.",
@@ -140,7 +141,11 @@
       "sentWithoutAttachment_one": "Not gönderildi, ancak ek eklenemedi. Yeniden deneyin veya kaldırın.",
       "sentWithoutAttachment_other": "Not gönderildi, ancak {{count}} ek eklenemedi. Yeniden deneyin veya kaldırın."
     },
-    "modeLabel": "Yorum görünürlüğü"
+    "modeLabel": "Yorum görünürlüğü",
+    "recipient": {
+      "emails": "{{recipient}} adresine e-postayla gönderilir",
+      "none": "Talep edenin kayıtlı e-postası yok. Yanıt bilete kaydedilir, kimseye e-posta gönderilmez."
+    }
   },
   "ticketFeed": {
     "empty": "Henüz etkinlik yok.",
@@ -854,6 +859,64 @@
       "SELF_LINK": "Bir bilet kendisine bağlanamaz.",
       "NOT_FOUND": "Bu bilet bulunamadı veya artık mevcut değil.",
       "LINK_GONE": "Bu bağlantı zaten kaldırılmış."
+    }
+  },
+  "ticketFocus": {
+    "navLabel": "Bilet gezintisi",
+    "backTo": "{{tab}} listesine dön",
+    "position": "{{total}} içinde {{index}}",
+    "previous": "Önceki bilet",
+    "next": "Sonraki bilet",
+    "more": "Diğer işlemler",
+    "sections": "Bilet bölümleri",
+    "tabs": {
+      "conversation": "Yazışma",
+      "details": "Ayrıntılar"
+    },
+    "descriptionAria": "{{author}} talebi",
+    "invoiceDialogTitle": "Bazı işler faturalanmadı",
+    "nextOffer": {
+      "label": "Sıradaki",
+      "open": "Aç",
+      "openAria": "{{number}} {{subject}} aç",
+      "atRisk": "Risk altında · {{relative}} kaldı",
+      "noSla": "SLA yok"
+    },
+    "requester": {
+      "noEmail": "Kayıtlı e-posta yok"
+    },
+    "endpoint": {
+      "noDevice": "Bağlı cihaz yok",
+      "lastSeen": "son görülme {{ago}}",
+      "loading": "Cihaz yükleniyor",
+      "loadFailed": "Cihazın canlı durumu yüklenemedi.",
+      "os": "İşletim sistemi",
+      "signedIn": "Oturum",
+      "nobodySignedIn": "Oturum açan yok",
+      "lastUser": "Son kullanıcı {{user}}",
+      "activeAlerts": "Etkin uyarılar",
+      "noAlerts": "Etkin uyarı yok",
+      "alertsFailed": "Uyarılar yüklenemedi.",
+      "untitledAlert": "Başlıksız uyarı",
+      "userSignedIn": "{{user}} oturum açtı",
+      "alertCount": "{{count}} uyarı",
+      "alertCount_one": "{{count}} uyarı",
+      "alertCount_other": "{{count}} uyarı",
+      "openDetails": "{{device}}: cihaz ayrıntılarını aç"
+    },
+    "details": {
+      "properties": "Özellikler",
+      "logged": "{{time}} kaydedildi",
+      "partCount": "{{count}} parça",
+      "partCount_one": "{{count}} parça",
+      "partCount_other": "{{count}} parça",
+      "pendingApprovals": "{{count}} beklemede",
+      "pendingApprovals_one": "{{count}} beklemede",
+      "pendingApprovals_other": "{{count}} beklemede",
+      "linkCount": "{{count}} bağlı",
+      "linkCount_one": "{{count}} bağlı",
+      "linkCount_other": "{{count}} bağlı",
+      "approvals": "Onaylar"
     }
   }
 }

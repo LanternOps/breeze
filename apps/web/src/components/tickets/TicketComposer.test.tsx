@@ -51,6 +51,85 @@ describe('TicketComposer', () => {
     expect(screen.queryByTestId('ticket-composer-internal-banner')).toBeNull();
   });
 
+  describe('recipient line', () => {
+    it('in public mode, says who the reply emails, above Send', () => {
+      render(<TicketComposer requesterName="Pat Smith" requesterEmail="pat@example.com" onSend={onSend} />);
+      const line = screen.getByTestId('ticket-composer-recipient');
+      expect(line).toHaveTextContent('Emails Pat Smith <pat@example.com>');
+      // Reads before the Send button in DOM (and so in reading) order.
+      expect(line.compareDocumentPosition(screen.getByTestId('ticket-composer-send')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('names the address alone when the requester has no name', () => {
+      render(<TicketComposer requesterName={null} requesterEmail="pat@example.com" onSend={onSend} />);
+      expect(screen.getByTestId('ticket-composer-recipient')).toHaveTextContent('Emails pat@example.com');
+    });
+
+    it('says plainly that nobody is emailed when there is no requester email on file', () => {
+      render(<TicketComposer requesterName="Pat" requesterEmail={null} onSend={onSend} />);
+      const line = screen.getByTestId('ticket-composer-recipient');
+      expect(line).toHaveTextContent('No requester email on file');
+      expect(line).toHaveAttribute('data-recipient', 'none');
+      expect(line).not.toHaveTextContent('Emails');
+    });
+
+    it('in internal mode, says who sees it where the recipient line was, not in the toolbar', () => {
+      render(<TicketComposer requesterName="Pat" requesterEmail="pat@example.com" onSend={onSend} onLogTime={vi.fn()} />);
+      fireEvent.click(screen.getByTestId('ticket-composer-tab-internal'));
+      const banner = screen.getByTestId('ticket-composer-internal-banner');
+      // Out of the toolbar, so the toolbar keeps one row with Log time and Ask AI.
+      expect(screen.getByTestId('ticket-composer-toolbar')).not.toContainElement(banner);
+      expect(banner.compareDocumentPosition(screen.getByTestId('ticket-composer-send')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('caps only its contents to the host measure, not its rule or wash', () => {
+      render(<TicketComposer requesterName="Pat" onSend={onSend} contentClassName="max-w-[78ch]" />);
+      expect(screen.getByTestId('ticket-composer').className).not.toContain('max-w');
+      expect(screen.getByTestId('ticket-composer-content').className).toContain('max-w-[78ch]');
+    });
+
+    it('in internal mode, drops the recipient line for the internal treatment', () => {
+      render(<TicketComposer requesterName="Pat" requesterEmail="pat@example.com" onSend={onSend} />);
+      fireEvent.click(screen.getByTestId('ticket-composer-tab-internal'));
+      expect(screen.queryByTestId('ticket-composer-recipient')).toBeNull();
+      expect(screen.getByTestId('ticket-composer-internal-banner')).toBeInTheDocument();
+    });
+  });
+
+  it('offers Log time beside Attach when the host handles it', () => {
+    const onLogTime = vi.fn();
+    render(<TicketComposer requesterName="Pat" onSend={onSend} onUploadAttachment={vi.fn()} onLogTime={onLogTime} logTimeOpen={false} />);
+    const button = screen.getByTestId('ticket-composer-log-time');
+    expect(screen.getByTestId('ticket-composer-toolbar')).toContainElement(button);
+    expect(button).toHaveTextContent('Log time');
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+    // Attach comes first, Log time right after it.
+    expect(screen.getByTestId('ticket-composer-attach').compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(button);
+    expect(onLogTime).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders toolbar extras (Ask AI) beside canned responses', () => {
+    render(<TicketComposer requesterName="Pat" onSend={onSend} toolbarExtra={<button type="button" data-testid="extra-tool">Ask AI</button>} />);
+    expect(screen.getByTestId('ticket-composer-toolbar')).toContainElement(screen.getByTestId('extra-tool'));
+  });
+
+  it('keeps a half-written reply per draft key across a remount', () => {
+    const { unmount } = render(<TicketComposer requesterName="Pat" onSend={onSend} draftKey="tk-draft-1" />);
+    fireEvent.change(screen.getByTestId('ticket-composer-input'), { target: { value: 'Half a thought' } });
+    unmount();
+    render(<TicketComposer requesterName="Pat" onSend={onSend} draftKey="tk-draft-1" />);
+    expect(screen.getByTestId('ticket-composer-input')).toHaveValue('Half a thought');
+  });
+
+  it('does not carry a draft to another ticket', () => {
+    const { unmount } = render(<TicketComposer requesterName="Pat" onSend={onSend} draftKey="tk-draft-2" />);
+    fireEvent.change(screen.getByTestId('ticket-composer-input'), { target: { value: 'For ticket two' } });
+    unmount();
+    render(<TicketComposer requesterName="Pat" onSend={onSend} draftKey="tk-draft-3" />);
+    expect(screen.getByTestId('ticket-composer-input')).toHaveValue('');
+  });
+
   it('defaults to public reply mode', () => {
     render(<TicketComposer requesterName="Pat" onSend={onSend} />);
     expect(screen.getByTestId('ticket-composer-send')).toHaveTextContent('Send reply');
