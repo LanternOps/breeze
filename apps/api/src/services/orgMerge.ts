@@ -1463,6 +1463,13 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         // Postgres aborts one side. If it is the merge, it rolls back and
         // unfences as for any Phase B failure; if it is the delete, the caller
         // sees 40P01.
+        // Portal registration W5 (#11382, plan D3): exempt this transaction's
+        // customer_email_domains repoint from the clear-on-repoint trigger, so
+        // a verified domain keeps its verification across the merge (same
+        // partner, same customer). Transaction-local; ends with Phase B. If
+        // Phase B ever splits into two transactions, set it in each.
+        // orgMergeGucContract.test.ts pins that only this file sets it.
+        await dbModule.db.execute(sql`SELECT set_config('breeze.org_merge', 'on', true)`);
         await lockPortalEntraOrgMappings([loser.id, survivor.id]);
         await self.lockMergePartnerGroupRows(input.partnerId);
         const locked = [loser.id, survivor.id].sort();
