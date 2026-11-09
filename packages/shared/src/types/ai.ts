@@ -402,7 +402,16 @@ export type AiStreamEvent =
     }
   // `usage` is set by the streaming manager's result case so client surfaces
   // can render turn cost (turn_complete). Technician UI ignores it.
-  | { type: 'done'; usage?: { inputTokens: number; outputTokens: number; costCents: number } }
+  | {
+    type: 'done';
+    usage?: { inputTokens: number; outputTokens: number; costCents: number };
+    /**
+     * #10428 (Wisp only): the turn's message held a standing instruction, and
+     * its capture runs after `done`. The chip polls
+     * `GET /wisp/memory/captures/status/:captureId` until it is terminal.
+     */
+    wispInstructionCapture?: { captureId: string };
+  }
   /**
    * #9427: the first data frame of `GET /ai/sessions/:id/stream` (attach). A
    * snapshot of the session's CURRENT turn on this API instance — never sent
