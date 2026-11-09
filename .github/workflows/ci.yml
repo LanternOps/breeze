@@ -115,6 +115,10 @@ jobs:
       # any code change, so the queue always runs the full integration suite.
       # Fail-safe like the rest: anything unresolvable turns it on.
       integration: ${{ steps.classify.outputs.integration }}
+      # Named integration suites the PR's change selects (W07b2, #10751): `all`
+      # or a comma list. Shadow: integration-test logs it, every file still runs.
+      # `all` for every other event, and whenever the step fails.
+      integration_suites: ${{ steps.suites.outputs.integration_suites || 'all' }}
       # Docs-only PRs can break tests reading docs by path; the map declares them.
       # path_readers=true with an empty reader_tests list runs every mapped test.
       path_readers: ${{ steps.classify.outputs.path_readers }}
@@ -186,6 +190,33 @@ jobs:
             exit 0
           fi
           printf '%s\n' "${classified}" | tee -a "${GITHUB_OUTPUT}"
+
+      - name: Integration suite selection (shadow)
+        # W07b2 (#10751): the named integration suites this PR selects, from
+        # the same PR files list the classifier gates `integration` on (the PR
+        # checkout is shallow, so no git diff). Shadow only: integration-test
+        # logs what it would run and still runs every file. Fails open: any
+        # error is `all`, and continue-on-error keeps this job's result to the
+        # classifier. Layout is load-bearing: the classifier tests extract the
+        # text up to the job's second `run: |` (so `run` precedes `env` here),
+        # and ci-gate pins Queue selection shadow as the job's last step.
+        id: suites
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          set -uo pipefail
+          suites=all
+          if files=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)'); then
+            suites=$(printf '%s\n' "${files}" | node .github/scripts/integration-suites.mjs select) || suites=all
+          else
+            echo "::warning title=Integration suites::Cannot list the PR's files, so every suite is selected."
+          fi
+          [[ "${suites}" =~ ^(all|[a-z][a-z0-9-]*(,[a-z][a-z0-9-]*)*)$ ]] || suites=all
+          echo "integration_suites=${suites}" | tee -a "${GITHUB_OUTPUT}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
 
       - name: Queue selection shadow
         id: queue_shadow
@@ -3857,6 +3888,14 @@ jobs:
     # nothing quarantined.
     env:
       CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+      # Named-suite selection (W07b2, #10751), read by the timing sequencer in
+      # apps/api/vitest.integration.config.ts. Every shard logs
+      # `integration-suites: mode=… suites=… would_run=n/total`. MODE=enforce
+      # only asks: the sequencer enforces when ENFORCE_PR_SUITES in
+      # .github/scripts/integration-suites.mjs is also true. It is false, so
+      # every run is shadow and runs every file. The queue never asks.
+      BREEZE_INTEGRATION_SUITES: ${{ needs.changes.outputs.integration_suites || 'all' }}
+      BREEZE_INTEGRATION_SUITES_MODE: ${{ github.event_name == 'pull_request' && 'enforce' || 'shadow' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

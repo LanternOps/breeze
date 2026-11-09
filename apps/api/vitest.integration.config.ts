@@ -3,7 +3,7 @@ import { BaseSequencer, type TestSpecification } from 'vitest/node';
 import { config } from 'dotenv';
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { TIMINGS_PATH, timingShard } from '../../.github/scripts/shard-partition.mjs';
+import { SUITE_MAP_PATH, TIMINGS_PATH, timingShard } from '../../.github/scripts/shard-partition.mjs';
 
 // Load test environment variables
 config({ path: '../../.env.test', quiet: true });
@@ -18,6 +18,14 @@ const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
 // or invalid table falls back to vitest's own sharding with a warning; a file in
 // no shard or in two throws before any test runs. Order within a shard is
 // still BaseSequencer.sort.
+//
+// W07b2 (#10751): CI's integration-test job sets BREEZE_INTEGRATION_SUITES (the
+// PR's named-suite selection, from the changes job) and
+// BREEZE_INTEGRATION_SUITES_MODE. Every shard logs what that selection would
+// run; it runs every file until ENFORCE_PR_SUITES in
+// .github/scripts/integration-suites.mjs is flipped (shadow).
+const readError = (error: unknown) => (error as NodeJS.ErrnoException).code ?? String(error);
+
 class TimingSequencer extends BaseSequencer {
   override async shard(files: TestSpecification[]): Promise<TestSpecification[]> {
     const shard = this.ctx.config.shard;
@@ -28,7 +36,18 @@ class TimingSequencer extends BaseSequencer {
       timingsText = readFileSync(path.join(REPO_ROOT, TIMINGS_PATH), 'utf8');
     } catch (error) {
       // Absent or unreadable: timingShard warns with this reason and falls back.
-      timingsError = (error as NodeJS.ErrnoException).code ?? String(error);
+      timingsError = readError(error);
+    }
+    const suites = process.env.BREEZE_INTEGRATION_SUITES;
+    let selection: { suites: string; mode?: string; mapText: string | null; mapError?: string } | undefined;
+    if (suites !== undefined) {
+      selection = { suites, mode: process.env.BREEZE_INTEGRATION_SUITES_MODE, mapText: null };
+      try {
+        selection.mapText = readFileSync(path.join(REPO_ROOT, SUITE_MAP_PATH), 'utf8');
+      } catch (error) {
+        // Unreadable: the selection warns with this reason and selects every suite.
+        selection.mapError = readError(error);
+      }
     }
     return timingShard(files, {
       index: shard.index,
@@ -36,7 +55,8 @@ class TimingSequencer extends BaseSequencer {
       repoRoot: REPO_ROOT,
       timingsText,
       timingsError,
-      fallback: () => super.shard(files),
+      selection,
+      fallback: (specs) => super.shard(specs),
       writePlan: process.env.CI
         ? (plan: { index: number }) => writeFileSync(
           path.join(this.ctx.config.root, `shard-plan-${plan.index}.json`),

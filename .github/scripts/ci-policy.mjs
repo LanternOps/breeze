@@ -23,8 +23,10 @@ export const POLICY_FILES = Object.freeze([
   'apps/api/vitest.integration.config.ts',
   'e2e-tests/playwright.auth-browser-transition.config.ts',
   'e2e-tests/playwright.topology-worker.config.ts',
-  // Named integration suites (W07b1): no selection reads it yet; W07b2 will.
+  // Named integration suites (W07b1) and the selector that reads them on PR
+  // runs and in the integration sequencer (W07b2, shadow).
   '.github/scripts/integration-suites.txt',
+  '.github/scripts/integration-suites.mjs',
 ]);
 
 // Any workflow, script or local action can steer selection, listed or not.

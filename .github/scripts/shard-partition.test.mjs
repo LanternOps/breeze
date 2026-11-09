@@ -6,7 +6,7 @@ import { dirname, join, normalize } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import {
-  ShardPlanError, TIMINGS_PATH, assertPartition, integrationTestFiles, loadTimings, partition, planDigest,
+  EMPTY_SHARD_SENTINEL, ShardPlanError, TIMINGS_PATH, assertPartition, integrationTestFiles, loadTimings, partition, planDigest,
   planLoads, timingShard, toRepoKey,
 } from './shard-partition.mjs';
 
@@ -206,6 +206,125 @@ test('the sequencer core fails loudly on a spec outside the repository', () => {
   assert.throws(() => timingShard(specs, { index: 1, count: 2, repoRoot: ROOT, timingsText, fallback: () => [] }), ShardPlanError);
 });
 
+// ── Named-suite selection in the sequencer (W07b2) ─────────────────────────
+
+const IT = 'apps/api/src/__tests__/integration';
+const SUITE_FIXTURE = `
+suite ai tests ${IT}/ai[!a-z0-9]*
+suite ai sources apps/api/src/services/ai*
+suite ticket tests ${IT}/ticket[!a-z0-9]*
+suite ticket sources apps/api/src/services/ticket*
+`;
+const selectionFiles = [
+  ...['aiTools', 'aiBudget', 'aiChat'].map(n => `${IT}/${n}.integration.test.ts`),
+  ...['ticketCore', 'ticketSla', 'ticketForms', 'ticketMerge', 'ticketTime'].map(n => `${IT}/${n}.integration.test.ts`),
+  ...['auth', 'devices', 'orgs', 'sites'].map(n => `${IT}/${n}.integration.test.ts`),
+];
+const selectionTimings = JSON.stringify({ schema: 1, files: Object.fromEntries(selectionFiles.map((f, i) => [f, 10 + i])), overhead: { 1: 5 } });
+const selectionSpecs = [...specsOf(selectionFiles), ...specsOf([EMPTY_SHARD_SENTINEL])];
+
+// Runs every shard of one configuration and returns what each returned, logged and wrote.
+function everyShard({ count = 4, selection, timingsText = selectionTimings, specs = selectionSpecs } = {}) {
+  return Array.from({ length: count }, (_, i) => {
+    const logs = [];
+    const written = [];
+    const out = timingShard(shuffled(specs, i + 1), {
+      index: i + 1, count, repoRoot: ROOT, timingsText, selection, fallback: subset => ({ fallback: subset }),
+      log: l => logs.push(l), writePlan: p => written.push(p),
+    });
+    return { out, logs: logs.join('\n'), plan: written[0] };
+  });
+}
+const keysOf = out => out.map(s => s.moduleId.slice(ROOT.length + 1)).sort();
+
+test('the empty-shard sentinel is set aside: no shard runs it while every shard has files', () => {
+  assert.equal(EMPTY_SHARD_SENTINEL, `${IT}/emptyShard.sentinel.test.ts`);
+  const shards = everyShard();
+  const seen = shards.flatMap(s => keysOf(s.out));
+  assert.deepEqual(seen.sort(), [...selectionFiles].sort(), 'every file once, and not the sentinel');
+  for (const s of shards) assert.equal(s.plan.total, selectionFiles.length);
+  // The fallback (vitest's own sharding) is handed the same list, sentinel removed.
+  const [fallback] = everyShard({ timingsText: null });
+  assert.deepEqual(keysOf(fallback.out.fallback), [...selectionFiles].sort());
+});
+
+test('shadow: every shard returns exactly what it returns without a selection, and logs what enforcement would run', () => {
+  const plain = everyShard();
+  for (const selection of [
+    { suites: 'ai', mode: 'enforce', mapText: SUITE_FIXTURE, enforce: false }, // the env asks, the constant says no
+    { suites: 'ai', mode: 'shadow', mapText: SUITE_FIXTURE, enforce: true },   // the constant allows, the env does not ask
+    { suites: 'ai', mode: undefined, mapText: SUITE_FIXTURE, enforce: true },
+  ]) {
+    const shadow = everyShard({ selection });
+    shadow.forEach((s, i) => {
+      assert.deepEqual(s.out, plain[i].out, `shard ${i + 1}: shadow runs the A1 plan`);
+      assert.equal(s.plan.planDigest, plain[i].plan.planDigest);
+      assert.match(s.logs, /^integration-suites: mode=shadow suites=core,ai would_run=7\/12$/m);
+      assert.doesNotMatch(s.logs, /::warning/);
+      assert.deepEqual(s.plan.selection, { mode: 'shadow', suites: ['core', 'ai'], wouldRun: 7, total: 12, digest: s.plan.selection.digest });
+      assert.match(s.plan.selection.digest, /^[a-f\d]{64}$/);
+    });
+  }
+  // Without the env (a local run) there is no selection at all.
+  for (const s of plain) {
+    assert.doesNotMatch(s.logs, /integration-suites:/);
+    assert.equal(s.plan.selection, undefined);
+  }
+});
+
+test('enforce: only the selected suites plus core run, every shard checks one plan, an empty shard runs the sentinel', () => {
+  const selection = { suites: 'ai', mode: 'enforce', mapText: SUITE_FIXTURE, enforce: true };
+  const expected = selectionFiles.filter(f => !/\/ticket/.test(f)).sort();
+  for (const count of [3, 9]) {
+    const shards = everyShard({ count, selection });
+    const ran = shards.flatMap(s => keysOf(s.out)).filter(k => k !== EMPTY_SHARD_SENTINEL);
+    assert.deepEqual(ran.sort(), expected, `${count} shards: union equals the selection, each file once`);
+    assert.equal(new Set(shards.map(s => s.plan.planDigest)).size, 1, 'every shard computed one plan');
+    assert.equal(new Set(shards.map(s => s.plan.selection.digest)).size, 1, 'and one selection');
+    for (const s of shards) {
+      assert.ok(s.out.length > 0, 'no shard returns nothing: vitest exits 1 on an empty shard');
+      const sentinel = keysOf(s.out).includes(EMPTY_SHARD_SENTINEL);
+      assert.equal(sentinel, s.plan.files.length === 0, 'the sentinel runs exactly where the plan is empty');
+      if (sentinel) assert.equal(s.out.length, 1);
+      assert.match(s.logs, /^integration-suites: mode=enforce suites=core,ai would_run=7\/12$/m);
+      assert.deepEqual({ ...s.plan.selection, digest: undefined }, { mode: 'enforce', suites: ['core', 'ai'], wouldRun: 7, total: 12, digest: undefined });
+      assert.equal(s.plan.total, 7);
+    }
+    assert.equal(shards.filter(s => keysOf(s.out).includes(EMPTY_SHARD_SENTINEL)).length, Math.max(0, count - expected.length));
+  }
+  // `all` under enforcement is the full run.
+  const all = everyShard({ selection: { ...selection, suites: 'all' } });
+  assert.deepEqual(all.flatMap(s => keysOf(s.out)).sort(), [...selectionFiles].sort());
+  assert.match(all[0].logs, /^integration-suites: mode=enforce suites=all would_run=12\/12$/m);
+});
+
+test('enforce fails open to every file: unusable env, map, or timing table', () => {
+  const base = { mode: 'enforce', mapText: SUITE_FIXTURE, enforce: true };
+  for (const [selection, why] of [
+    [{ ...base, suites: '' }, /BREEZE_INTEGRATION_SUITES is empty/],
+    [{ ...base, suites: 'ai;rm -rf' }, /malformed BREEZE_INTEGRATION_SUITES/],
+    [{ ...base, suites: 'ai,nope' }, /unknown suite "nope"/],
+    [{ ...base, suites: 'ai', mapText: 'suite ai test x' }, /suite map unusable/],
+    [{ ...base, suites: 'ai', mapText: null }, /suite map unusable/],
+  ]) {
+    const shards = everyShard({ selection });
+    assert.deepEqual(shards.flatMap(s => keysOf(s.out)).sort(), [...selectionFiles].sort(), JSON.stringify(selection));
+    assert.match(shards[0].logs, /^integration-suites: mode=enforce suites=all would_run=12\/12$/m);
+    assert.match(shards[0].logs, new RegExp(`^::warning title=Integration suites::.*${why.source}`, 'm'));
+  }
+  // No timing table: vitest's own sharding over every file, never a subset.
+  const [noTable] = everyShard({ timingsText: null, selection: { ...base, suites: 'ai' } });
+  assert.deepEqual(keysOf(noTable.out.fallback), [...selectionFiles].sort());
+  assert.match(noTable.logs, /^integration-suites: mode=enforce suites=all would_run=12\/12$/m);
+  assert.match(noTable.logs, /^::warning title=Integration suites::.*every suite runs/m);
+});
+
+test('enforce: an empty shard without the sentinel spec fails loudly', () => {
+  const selection = { suites: 'ai', mode: 'enforce', mapText: SUITE_FIXTURE, enforce: true };
+  assert.throws(() => everyShard({ count: 9, selection, specs: specsOf(selectionFiles) }),
+    e => e instanceof ShardPlanError && /no selected file/.test(e.message) && e.message.includes(EMPTY_SHARD_SENTINEL));
+});
+
 // ── The committed table against the real suite ─────────────────────────────
 
 const table = loadTimings(read(TIMINGS_PATH));
@@ -255,8 +374,8 @@ test('the committed table balances the suite it was recorded from', () => {
 test('the real TimingSequencer shards every spec vitest resolves exactly once, with one plan', async () => {
   const apiRequire = createRequire(join(REPO_ROOT, 'apps/api/package.json'));
   const { createVitest } = await import(pathToFileURL(apiRequire.resolve('vitest/node')).href);
-  const savedCI = process.env.CI;
-  delete process.env.CI; // no shard-plan files from a test
+  const saved = Object.fromEntries(['CI', 'BREEZE_INTEGRATION_SUITES', 'BREEZE_INTEGRATION_SUITES_MODE'].map(k => [k, process.env[k]]));
+  for (const k of Object.keys(saved)) delete process.env[k]; // no shard-plan files, and no selection, from a test
   const savedLog = console.log;
   const logs = [];
   let vitest;
@@ -269,22 +388,39 @@ test('the real TimingSequencer shards every spec vitest resolves exactly once, w
     assert.deepEqual(specs.map(s => toRepoKey(s.moduleId, REPO_ROOT)).sort(), integrationTestFiles(REPO_ROOT));
     const Sequencer = vitest.config.sequence.sequencer;
     assert.equal(Sequencer.name, 'TimingSequencer');
+    const sentinel = specs.find(s => toRepoKey(s.moduleId, REPO_ROOT) === EMPTY_SHARD_SENTINEL);
+    assert.ok(sentinel, 'vitest resolves the empty-shard sentinel');
     console.log = (...args) => logs.push(args.join(' '));
-    const seen = [];
-    for (let index = 1; index <= 16; index++) {
-      vitest.config.shard = { index, count: 16 };
-      const out = await new Sequencer(vitest).shard(specs);
-      for (const spec of out) assert.ok(specs.includes(spec));
-      seen.push(...out.map(s => s.moduleId));
-    }
+    const runAll = async () => {
+      const shards = [];
+      for (let index = 1; index <= 16; index++) {
+        vitest.config.shard = { index, count: 16 };
+        const out = await new Sequencer(vitest).shard(specs);
+        for (const spec of out) assert.ok(specs.includes(spec));
+        shards.push(out);
+      }
+      return shards;
+    };
+    const plain = await runAll();
+    // Shadow, as a PR run sets it (W07b2): the same specs in every shard.
+    process.env.BREEZE_INTEGRATION_SUITES = 'core,ai,ticket';
+    process.env.BREEZE_INTEGRATION_SUITES_MODE = 'enforce';
+    const shadow = await runAll();
     console.log = savedLog;
-    assert.equal(seen.length, specs.length);
-    assert.equal(new Set(seen).size, specs.length);
+    const seen = plain.flat().map(s => s.moduleId);
+    assert.equal(seen.length, specs.length - 1, 'every spec once, except the sentinel');
+    assert.equal(new Set(seen).size, specs.length - 1);
+    assert.ok(!seen.includes(sentinel.moduleId));
+    shadow.forEach((out, i) => assert.deepEqual(out, plain[i], `shard ${i + 1}: shadow changes nothing`));
     assert.equal(new Set(logs.map(l => l.match(/planDigest=(\w+)/)?.[1]).filter(Boolean)).size, 1, logs.slice(0, 3).join('\n'));
+    const shadowLines = logs.filter(l => l.startsWith('integration-suites: '));
+    assert.equal(shadowLines.length, 16, 'every shadow shard logs its selection');
+    assert.equal(new Set(shadowLines).size, 1);
+    assert.match(shadowLines[0], new RegExp(`^integration-suites: mode=shadow suites=core,ai,ticket would_run=\\d+/${specs.length - 1}$`));
     assert.equal(logs.filter(l => l.startsWith('::warning')).length, 0, logs.join('\n'));
   } finally {
     console.log = savedLog;
-    if (savedCI === undefined) delete process.env.CI; else process.env.CI = savedCI;
+    for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
     await vitest?.close();
   }
 });
