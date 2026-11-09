@@ -135,9 +135,47 @@ describe('PortalAccessRequestsList', () => {
     render(<PortalAccessRequestsList orgId={ORG} />);
     fireEvent.click(await screen.findByLabelText('Select all requests'));
     fireEvent.click(screen.getByTestId('portal-access-requests-bulk-deny'));
-    fireEvent.click(await screen.findByTestId('portal-access-request-deny-confirm'));
+    expect(await screen.findByTestId('portal-access-request-deny-confirm')).toBeInTheDocument();
+    expect(posts()).toHaveLength(0); // the dialog gates the destructive call
+    fireEvent.click(screen.getByTestId('portal-access-request-deny-confirm'));
     await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'success', message: '2 requests decided.' })));
     expect(showToastMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a selection over 100 is decided in batches of 100', async () => {
+    const many = Array.from({ length: 150 }, (_, i) => req(`r${i}`));
+    mockApi([many, []], (_url, init) => {
+      const { requestIds } = JSON.parse((init as RequestInit).body as string) as { requestIds: string[] };
+      return res({ data: requestIds.map((requestId) => ({ requestId, result: 'approved' })) });
+    });
+    render(<PortalAccessRequestsList orgId={ORG} />);
+    fireEvent.click(await screen.findByLabelText('Select all requests'));
+    fireEvent.click(screen.getByTestId('portal-access-requests-bulk-approve'));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success', message: '150 requests decided.' })));
+    const sizes = posts().map(([, init]) => (JSON.parse((init as RequestInit).body as string) as { requestIds: string[] }).requestIds.length);
+    expect(sizes).toEqual([100, 50]);
+  });
+
+  it('a failed refresh after a decision keeps the rows and says the list may be stale', async () => {
+    let gets = 0;
+    fetchWithAuth.mockImplementation((_url: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') !== 'GET') return res({ data: { outcome: 'account_created', portalUserId: 'pu1' } });
+      gets += 1;
+      return gets === 1 ? res({ data: [req('r1'), req('r2')], hasMore: false }) : res({ error: 'boom' }, 500);
+    });
+    render(<PortalAccessRequestsList orgId={ORG} />);
+    fireEvent.click(await screen.findByTestId('portal-access-request-approve-r1'));
+    expect(await screen.findByTestId('portal-access-requests-refresh-error')).toHaveTextContent(
+      "Couldn't refresh the access requests, so this list may be out of date.");
+    expect(screen.getByTestId('portal-access-request-row-r2')).toBeInTheDocument();
+  });
+
+  it('says when only the first page of requests is shown', async () => {
+    fetchWithAuth.mockImplementation(() => res({ data: [req('r1')], hasMore: true }));
+    render(<PortalAccessRequestsList orgId={ORG} />);
+    expect(await screen.findByTestId('portal-access-requests-more')).toHaveTextContent(
+      'Showing the first 1 requests. Decide these to see the rest.');
   });
 });

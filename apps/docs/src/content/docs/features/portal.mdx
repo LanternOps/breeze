@@ -25,7 +25,7 @@ Inviting a customer from **Settings → Organizations → [organization] → Cus
 
 ### Give contacts portal access
 
-You can give a contact a portal login straight from the organization's **Contacts** tab (**Settings → Organizations → [organization] → Contacts**), instead of typing the address again on the Customer Portal tab. This is available to partner users only. The **Portal** column shows each contact as **No access**, **Requested**, **Invited**, **Active**, or **Disabled**. **Requested** means the contact's email has a pending access request (see [Access requests](#access-requests)); approve or deny it on the Customer Portal tab.
+You can give a contact a portal login straight from the organization's **Contacts** tab (**Settings → Organizations → [organization] → Contacts**), instead of typing the address again on the Customer Portal tab. This is available to partner users only. The **Portal** column shows each contact as **No access**, **Requested**, **Invited**, **Active**, or **Disabled**. **Requested** means the contact has no login with browser access and their email has a pending access request (see [Access requests](#access-requests)); approve or deny it on the Customer Portal tab.
 
 - **One contact:** use **Give portal access** in the row actions. For a contact who was invited but has not set a password yet, the action is **Resend invite**.
 - **Several contacts:** tick the row checkboxes and choose **Give portal access (N)**. A single request covers up to 100 contacts.
@@ -76,16 +76,16 @@ The **Password reset** toggle on the Customer Portal tab is a separate setting. 
 
 ### How new people get browser access
 
-- **Invites from the MSP** are always on. Inviting from the Customer Portal tab or the Contacts tab works whatever the policy says.
+- **Invites from the MSP** are always on: you can invite people from the Customer Portal tab or the Contacts tab whatever the other settings say. Password sign-in **Off** also stops an invited person from setting a password.
 - Self-registration and first sign-in with Microsoft or Google appear on the card once the portal supports them.
 
 ### Access requests
 
-When someone asks for portal access through a route that needs your approval, the request waits in **Access requests**, above the organization's portal users list. The list only appears while requests are waiting, and the **Requests (N)** button on the Sign-in & registration card jumps to it.
+When someone asks for portal access through a route that needs your approval, the request waits in **Access requests**, above the organization's portal users list. The list only appears while requests are waiting, and the **Requests (N)** button on the Sign-in & registration card jumps to it. It shows the first 100 requests; decide those to see the rest.
 
-- **Approve:** for a self-registration request, Breeze creates the login and sends the normal invite email. For a Microsoft or Google request, it creates the account and emails the person that they can now sign in. For an AI for Office user, it turns on browser access for their existing login.
+- **Approve:** for a self-registration request, Breeze creates the login and sends the normal invite email. For a Microsoft or Google request, it creates the account and emails the person that they can now sign in. For an AI for Office user, it turns on browser access for their existing login and sends the same "you can now sign in" email.
 - **Deny:** asks you to confirm, then emails the person that the request was not approved.
-- **Several at once:** tick the rows and choose **Approve selected** or **Deny selected** (up to 100 at a time). Each row reports its own result, and rows that could not be decided are marked in the list.
+- **Several at once:** tick the rows and choose **Approve selected** or **Deny selected**. Each row reports its own result, and rows that could not be decided are marked in the list.
 - A request whose email already has a portal login shows **Already has an account — Deny to dismiss**. Approve is disabled for it.
 - A request expires after 14 days. An organization holds at most 200 pending requests.
 

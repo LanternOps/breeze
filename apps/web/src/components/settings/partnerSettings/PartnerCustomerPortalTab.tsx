@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '@/stores/auth';
 import { PortalAccessPolicyForm } from '../portalAccess/PortalAccessPolicyForm';
@@ -10,18 +10,27 @@ type SummaryState =
   | { status: 'error' }
   | { status: 'ready'; summary: PortalAccessRequestSummary };
 
+function isRequestSummary(value: unknown): value is PortalAccessRequestSummary {
+  const v = value as Partial<PortalAccessRequestSummary> | null;
+  return !!v && typeof v.pendingTotal === 'number' && Array.isArray(v.orgs);
+}
+
 /** Pending access requests across the partner's organizations; each row links to that org's portal settings. */
 export function PortalAccessRequestsSummary() {
   const { t } = useTranslation('settings');
   const [state, setState] = useState<SummaryState>({ status: 'loading' });
+  const [attempt, setAttempt] = useState(0);
+  const retry = useCallback(() => setAttempt((n) => n + 1), []);
 
   useEffect(() => {
     let cancelled = false;
+    setState({ status: 'loading' });
     (async () => {
       try {
         const res = await fetchWithAuth('/orgs/partners/me/portal-access-requests/summary');
         if (!res.ok) throw new Error(String(res.status));
-        const body = (await res.json()) as { data: PortalAccessRequestSummary };
+        const body = (await res.json()) as { data?: unknown };
+        if (!isRequestSummary(body.data)) throw new Error('unexpected summary body');
         if (!cancelled) setState({ status: 'ready', summary: body.data });
       } catch (err) {
         console.warn('[PartnerCustomerPortalTab] pending request summary load failed', err);
@@ -29,7 +38,7 @@ export function PortalAccessRequestsSummary() {
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [attempt]);
 
   return (
     <section className="rounded-lg border bg-card p-6 shadow-xs" data-testid="partner-portal-requests-summary">
@@ -37,7 +46,10 @@ export function PortalAccessRequestsSummary() {
       <p className="mt-1 mb-4 text-sm text-muted-foreground">{t('portalAccessRequests.summary.description')}</p>
       {state.status === 'error' && (
         <p role="alert" data-testid="partner-portal-requests-error" className="text-sm text-destructive">
-          {t('portalAccessRequests.summary.loadError')}
+          {t('portalAccessRequests.summary.loadError')}{' '}
+          <button type="button" onClick={retry} className="underline hover:text-foreground">
+            {t('common:actions.retry')}
+          </button>
         </p>
       )}
       {state.status === 'ready' && state.summary.pendingTotal === 0 && (

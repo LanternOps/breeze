@@ -150,6 +150,29 @@ describe('OrgSignInRegistrationCard', () => {
     }
   });
 
+  it('shows "n+" when the pending list has more pages', async () => {
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      if (url === POLICY) return json({ data: makePolicyView() });
+      return json({ data: [request('r1'), request('r2')], hasMore: true });
+    });
+    renderCard();
+    expect(await screen.findByTestId('portal-access-policy-requests')).toHaveTextContent('Requests (2+)');
+  });
+
+  it('a 200 save without a policy view is a failed save: error toast, no onSave, draft kept', async () => {
+    mockRoutes({ patch: () => json({ data: null }) });
+    const { onSave } = renderCard();
+    fireEvent.click(await screen.findByTestId('portal-access-policy-password-allowed'));
+    fireEvent.click(screen.getByTestId('org-sign-in-card-save'));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error', message: "Couldn't save sign-in settings.",
+    })));
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.getByTestId('portal-access-policy-form')).toBeInTheDocument();
+    expect(screen.getByTestId('org-sign-in-card-save')).not.toBeDisabled();
+  });
+
   it('a failed request-count load leaves the card working without the Requests button', async () => {
     fetchWithAuthMock.mockImplementation((url: string) => {
       if (url === POLICY) return json({ data: makePolicyView() });

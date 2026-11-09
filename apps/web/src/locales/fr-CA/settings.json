@@ -8386,7 +8386,7 @@
     },
     "results": {
       "accountExists": "Possède déjà un compte",
-      "notPending": "Déjà traitée",
+      "notPending": "N’est plus en attente",
       "notFound": "Demande introuvable",
       "identityLinked": "Connexion déjà liée à un autre compte",
       "failed": "Impossible de traiter cette demande"
@@ -8417,6 +8417,8 @@
       "orgPending_other": "{{count}} en attente",
       "review": "Examiner les demandes",
       "loadError": "Impossible de charger les demandes d’accès en attente."
-    }
+    },
+    "refreshFailed": "Impossible d’actualiser les demandes d’accès : cette liste n’est peut-être plus à jour.",
+    "more": "Affichage des {{count}} premières demandes. Traitez-les pour voir les suivantes."
   }
 }

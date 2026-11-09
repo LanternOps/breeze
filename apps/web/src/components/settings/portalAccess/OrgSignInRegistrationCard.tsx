@@ -5,6 +5,7 @@ import '@/lib/i18n';
 import { fetchWithAuth } from '../../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { ActionError, runAction } from '@/lib/runAction';
+import { showToast } from '../../shared/Toast';
 import { PortalAccessPolicyForm, visiblePolicyFields } from './PortalAccessPolicyForm';
 import {
   PORTAL_ACCESS_POLICY_ERROR_CODES,
@@ -53,18 +54,24 @@ export default function OrgSignInRegistrationCard({ orgId, onDirty, onSave }: Pr
   const [saving, setSaving] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<PortalAccessPolicyField, string>>>({});
   const [pendingCount, setPendingCount] = useState(0);
+  const [pendingHasMore, setPendingHasMore] = useState(false);
   const seq = useRef(0);
 
   const loadPendingCount = useCallback(async (mine: number) => {
     try {
       const res = await fetchWithAuth(pendingUrl(orgId));
       if (!res.ok) throw new Error(`access requests load failed: ${res.status}`);
-      const body = (await res.json()) as { data?: unknown[] };
-      if (mine === seq.current) setPendingCount(body.data?.length ?? 0);
+      const body = (await res.json()) as { data?: unknown[]; hasMore?: boolean };
+      if (mine !== seq.current) return;
+      setPendingCount(body.data?.length ?? 0);
+      setPendingHasMore(body.hasMore === true);
     } catch (err) {
       // The count only drives the Requests shortcut; the card works without it.
       console.warn('[OrgSignInRegistrationCard] pending request count failed', err);
-      if (mine === seq.current) setPendingCount(0);
+      if (mine === seq.current) {
+        setPendingCount(0);
+        setPendingHasMore(false);
+      }
     }
   }, [orgId]);
 
@@ -122,6 +129,11 @@ export default function OrgSignInRegistrationCard({ orgId, onDirty, onSave }: Pr
         }),
         errorFallback: t('portalAccessPolicy.errors.save'),
         successMessage: t('portalAccessPolicy.toasts.saved'),
+        parseSuccess: (data) => {
+          const saved = (data as { data?: unknown } | null)?.data;
+          if (!isPortalAccessPolicyView(saved)) throw new Error('unexpected portal access policy body');
+          return { data: saved };
+        },
         friendly: (code) => policyErrorMessage(code, t),
         // A policy refusal on a row the form shows becomes that row's error instead of a toast.
         suppressErrorToast: (status, code, errBody) => {
@@ -135,7 +147,12 @@ export default function OrgSignInRegistrationCard({ orgId, onDirty, onSave }: Pr
       setFieldErrors({});
       onSave();
     } catch (err) {
-      if (!(err instanceof ActionError)) throw err;
+      if (!(err instanceof ActionError)) {
+        console.error('[OrgSignInRegistrationCard] save failed', err);
+        showToast({ type: 'error', message: t('portalAccessPolicy.errors.save') });
+        return;
+      }
+      if (err.status === 401) return; // the login redirect handles it
       const field = errorField(err.body);
       const message = err.code ? policyErrorMessage(err.code, t) : undefined;
       if (err.status === 400 && field && message && visible.has(field)) setFieldErrors({ [field]: message });
@@ -172,6 +189,7 @@ export default function OrgSignInRegistrationCard({ orgId, onDirty, onSave }: Pr
         draft={draft}
         onChange={change}
         pendingRequestCount={pendingCount}
+        pendingRequestsHasMore={pendingHasMore}
         onShowRequests={showRequests}
         fieldErrors={fieldErrors}
       />

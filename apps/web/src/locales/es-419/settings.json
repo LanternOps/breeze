@@ -8386,7 +8386,7 @@
     },
     "results": {
       "accountExists": "Ya tiene una cuenta",
-      "notPending": "Ya resuelta",
+      "notPending": "Ya no está pendiente",
       "notFound": "Solicitud no encontrada",
       "identityLinked": "Inicio de sesión ya vinculado a otra cuenta",
       "failed": "No se pudo resolver esta solicitud"
@@ -8417,6 +8417,8 @@
       "orgPending_other": "{{count}} pendientes",
       "review": "Revisar solicitudes",
       "loadError": "No se pudieron cargar las solicitudes de acceso pendientes."
-    }
+    },
+    "refreshFailed": "No se pudieron actualizar las solicitudes de acceso, por lo que esta lista puede estar desactualizada.",
+    "more": "Se muestran las primeras {{count}} solicitudes. Decida sobre estas para ver el resto."
   }
 }

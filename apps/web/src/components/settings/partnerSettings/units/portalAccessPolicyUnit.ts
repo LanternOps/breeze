@@ -42,6 +42,11 @@ const save = () => saveSlice<PortalAccessPolicyUnitValue>('portalAccessPolicy', 
     }),
     errorFallback: i18n.t('settings:portalAccessPolicy.errors.save'),
     // No successMessage: the header Save shows one aggregate success toast.
+    parseSuccess: (data) => {
+      const saved = (data as { data?: unknown } | null)?.data;
+      if (!isPortalAccessPolicyView(saved)) throw new Error('unexpected portal access policy body');
+      return { data: saved };
+    },
     friendly: (code) => {
       if (code === PORTAL_ACCESS_POLICY_ERROR_CODES.METHOD_UNAVAILABLE) return i18n.t('settings:portalAccessPolicy.errors.methodUnavailable');
       if (code === PORTAL_ACCESS_POLICY_ERROR_CODES.SSO_ONLY_NEEDS_SSO) return i18n.t('settings:portalAccessPolicy.errors.ssoOnlyNeedsSso');

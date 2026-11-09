@@ -435,6 +435,27 @@ describe('AI data policy saves through the header (W2 Task 22)', () => {
   });
 });
 
+describe('Customer portal sign-in policy saves through the header (portal W3)', () => {
+  it('a registration-mode click marks Customer portal dirty and the header Save sends one PATCH with only the changed field', async () => {
+    const saved = makePolicyView({ kind: 'partner', capabilities: { selfRegistration: true } });
+    routeFetch({
+      'GET /orgs/partners/me': () => json(partnerWith()),
+      'GET /orgs/partners/me/portal-access-policy': () => json({ data: makePolicyView({ kind: 'partner', capabilities: { selfRegistration: true } }) }),
+      'PATCH /orgs/partners/me/portal-access-policy': () => json({ data: saved }),
+      'GET /orgs/partners/me/portal-access-requests/summary': () => json({ data: { pendingTotal: 0, orgs: [] } }),
+    });
+    const user = await renderPage('#customer-portal');
+    const patches = () => fetchMock.mock.calls.filter(([url, init]) => url === '/orgs/partners/me/portal-access-policy' && (init as RequestInit | undefined)?.method === 'PATCH');
+    await user.click(await screen.findByTestId('portal-access-policy-self-registration-approval'));
+    expect(patches()).toHaveLength(0);
+    expect(status().textContent).toBe('Unsaved changes in Customer portal.');
+    await user.click(saveButton());
+    await waitFor(() => expect(status().getAttribute('data-state')).toBe('clean'));
+    expect(patches()).toHaveLength(1);
+    expect(JSON.parse((patches()[0][1] as RequestInit).body as string)).toEqual({ selfRegistrationMode: 'approval' });
+  });
+});
+
 describe('review follow-ups', () => {
   it('a failed reload after a partner switch shows the error, never the previous partner', async () => {
     let calls = 0;

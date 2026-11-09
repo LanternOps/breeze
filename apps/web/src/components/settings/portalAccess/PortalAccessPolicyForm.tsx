@@ -21,6 +21,8 @@ export interface PortalAccessPolicyFormProps {
   draft: PortalAccessPolicyDraft;
   onChange: (next: PortalAccessPolicyDraft) => void;
   pendingRequestCount?: number;
+  /** The count is the first page of a longer list: shown as "{n}+". */
+  pendingRequestsHasMore?: boolean;
   onShowRequests?: () => void;
   /** Server validation errors keyed by field (a 400 `{ code, field }`). */
   fieldErrors?: Partial<Record<PortalAccessPolicyField, string>>;
@@ -52,6 +54,7 @@ export function PortalAccessPolicyForm({
   draft,
   onChange,
   pendingRequestCount = 0,
+  pendingRequestsHasMore = false,
   onShowRequests,
   fieldErrors = {},
 }: PortalAccessPolicyFormProps) {
@@ -148,7 +151,7 @@ export function PortalAccessPolicyForm({
               onClick={onShowRequests}
               className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted/50"
             >
-              {t('portalAccessPolicy.requests', { count: pendingRequestCount })}
+              {t('portalAccessPolicy.requests', { count: pendingRequestsHasMore ? `${pendingRequestCount}+` : pendingRequestCount })}
             </button>
           )}
         </div>

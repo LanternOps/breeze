@@ -8386,7 +8386,7 @@
     },
     "results": {
       "accountExists": "Ha già un account",
-      "notPending": "Già decisa",
+      "notPending": "Non più in sospeso",
       "notFound": "Richiesta non trovata",
       "identityLinked": "Accesso già collegato a un altro account",
       "failed": "Impossibile decidere su questa richiesta"
@@ -8417,6 +8417,8 @@
       "orgPending_other": "{{count}} in sospeso",
       "review": "Esamina richieste",
       "loadError": "Impossibile caricare le richieste di accesso in sospeso."
-    }
+    },
+    "refreshFailed": "Impossibile aggiornare le richieste di accesso: questo elenco potrebbe non essere aggiornato.",
+    "more": "Vengono mostrate le prime {{count}} richieste. Decidi su queste per vedere le altre."
   }
 }

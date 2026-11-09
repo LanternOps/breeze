@@ -77,6 +77,16 @@ describe('derivePortalStatus', () => {
     expect(derivePortalStatus(contact, [], new Set(['other@acme.test'])).status).toBe('none');
   });
 
+  it('an unbound add-in-only login with the contact email does not count (none), and with a pending request reads requested', () => {
+    const contact = { id: 'c1', email: 'ada@acme.test' };
+    const addInOnly = login({ contactId: null, email: 'ada@acme.test', authMethod: 'entra', browserAccess: 'none' });
+    expect(derivePortalStatus(contact, [addInOnly])).toEqual({ status: 'none', portalUserId: null });
+    expect(derivePortalStatus(contact, [addInOnly], new Set(['ada@acme.test']))).toEqual({
+      status: 'requested',
+      portalUserId: null,
+    });
+  });
+
   it('prefers a bound login over an unbound same-email login', () => {
     const r = derivePortalStatus(contact, [
       login({ id: 'unbound', contactId: null, effectiveStatus: 'active' }),

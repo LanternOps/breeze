@@ -8386,7 +8386,7 @@
     },
     "results": {
       "accountExists": "Zaten bir hesabı var",
-      "notPending": "Zaten karara bağlandı",
+      "notPending": "Artık beklemede değil",
       "notFound": "Talep bulunamadı",
       "identityLinked": "Oturum açma zaten başka bir hesaba bağlı",
       "failed": "Bu talebe karar verilemedi"
@@ -8417,6 +8417,8 @@
       "orgPending_other": "{{count}} bekliyor",
       "review": "Talepleri incele",
       "loadError": "Bekleyen erişim talepleri yüklenemedi."
-    }
+    },
+    "refreshFailed": "Erişim istekleri yenilenemedi; bu liste güncel olmayabilir.",
+    "more": "İlk {{count}} istek gösteriliyor. Kalanları görmek için bunlar hakkında karar verin."
   }
 }

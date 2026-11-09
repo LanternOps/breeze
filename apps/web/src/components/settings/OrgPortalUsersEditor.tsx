@@ -53,10 +53,14 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
   const showEmailError = email.trim() !== '' && !emailValid;
 
   // `silent` reloads (after an access-request approval) keep the section mounted
-  // so the request list does not unmount mid-action.
+  // so the request list does not unmount mid-action. A failed silent reload
+  // keeps the users already shown and says so in a toast, instead of swapping
+  // the section (and the request queue with its selection) for the error panel.
   const load = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
-    setLoadError(false);
+    if (!silent) {
+      setLoading(true);
+      setLoadError(false);
+    }
     try {
       const res = await fetchWithAuth(base(orgId));
       if (res.status === 401) { void navigateTo('/login', { replace: true }); return; }
@@ -64,11 +68,12 @@ export default function OrgPortalUsersEditor({ orgId }: { orgId: string }) {
       setUsers((await res.json()).data ?? []);
     } catch (err) {
       console.warn('[OrgPortalUsersEditor] load failed', err);
-      setLoadError(true);
+      if (silent) showToast({ type: 'error', message: t('orgPortalUsersEditor.errors.load') });
+      else setLoadError(true);
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [orgId]);
+  }, [orgId, t]);
 
   useEffect(() => { void load(); }, [load]);
 

@@ -8386,7 +8386,7 @@
     },
     "results": {
       "accountExists": "Hat bereits ein Konto",
-      "notPending": "Bereits entschieden",
+      "notPending": "Nicht mehr ausstehend",
       "notFound": "Anfrage nicht gefunden",
       "identityLinked": "Anmeldung bereits mit einem anderen Konto verknüpft",
       "failed": "Diese Anfrage konnte nicht entschieden werden"
@@ -8417,6 +8417,8 @@
       "orgPending_other": "{{count}} ausstehend",
       "review": "Anfragen prüfen",
       "loadError": "Ausstehende Zugriffsanfragen konnten nicht geladen werden."
-    }
+    },
+    "refreshFailed": "Die Zugriffsanfragen konnten nicht aktualisiert werden. Diese Liste ist möglicherweise veraltet.",
+    "more": "Die ersten {{count}} Anfragen werden angezeigt. Entscheiden Sie über diese, um die übrigen zu sehen."
   }
 }

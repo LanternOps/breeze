@@ -1,5 +1,5 @@
 import '@/lib/i18n';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { makePolicyView } from '../portalAccess/viewFixture';
 import { usePartnerSettingsDraftStore } from './partnerSettingsDraftStore';
@@ -58,6 +58,29 @@ describe('PartnerCustomerPortalTab', () => {
     route({});
     render(<PartnerCustomerPortalTab />);
     expect(await screen.findByTestId('partner-portal-requests-empty')).toBeTruthy();
+  });
+
+  it('a malformed summary body (200, data is not a summary) shows the error, and Retry refetches and shows the list', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let summaryCalls = 0;
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.endsWith('/portal-access-policy')) return json(200, { data: makePolicyView({ kind: 'partner' }) });
+      if (url.endsWith('/portal-access-requests/summary')) {
+        summaryCalls += 1;
+        return summaryCalls === 1
+          ? json(200, { data: [] })
+          : json(200, { data: { pendingTotal: 2, orgs: [{ orgId: 'o1', orgName: 'Acme', pending: 2 }] } });
+      }
+      return json(404, {});
+    });
+    render(<PartnerCustomerPortalTab />);
+    const err = await screen.findByTestId('partner-portal-requests-error');
+    expect(screen.queryByTestId('partner-portal-requests-empty')).toBeNull();
+    fireEvent.click(within(err).getByRole('button'));
+    expect(await screen.findByTestId('partner-portal-requests-org-o1')).toBeTruthy();
+    expect(screen.queryByTestId('partner-portal-requests-error')).toBeNull();
+    expect(summaryCalls).toBe(2);
+    warn.mockRestore();
   });
 
   it('shows a load error when the summary fails', async () => {

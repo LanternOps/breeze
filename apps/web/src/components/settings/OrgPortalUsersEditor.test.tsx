@@ -61,6 +61,30 @@ describe('OrgPortalUsersEditor', () => {
     expect(screen.queryByText(/loading/i)).toBeNull();
   });
 
+  it('a failed silent users reload after an approval keeps the table and request list and toasts an error', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const existing = { id: 'pu-1', email: 'a@acme.example', name: 'A', status: 'active', effectiveStatus: 'active', lastLoginAt: null, invitedAt: null };
+    let usersCalls = 0;
+    const pending = [{ id: 'r1', email: 'new@acme.example', name: null, source: 'self', status: 'pending', requestedAt: '2026-11-01T00:00:00Z', lastRequestedAt: '2026-11-01T00:00:00Z', expiresAt: '2026-12-01T00:00:00Z', decidedAt: null, decidedBy: null, portalUserId: null, accountExists: false }];
+    requestsHandler = async (url: string) => {
+      if (url.endsWith('/r1/approve')) return ok({ data: { outcome: 'account_created', portalUserId: 'pu-9' } });
+      return ok({ data: pending, hasMore: false });
+    };
+    fetchWithAuth.mockImplementation(async () => {
+      usersCalls += 1;
+      return usersCalls === 1 ? ok({ data: [existing] }) : { ok: false, status: 500, json: async () => ({}) };
+    });
+    render(<OrgPortalUsersEditor orgId={ORG_ID} />);
+    await screen.findByTestId('portal-user-row-pu-1');
+    fireEvent.click(await screen.findByTestId('portal-access-request-approve-r1'));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith({ type: 'error', message: 'Portal users failed to load.' }));
+    expect(usersCalls).toBe(2);
+    expect(screen.queryByTestId('portal-users-load-error')).toBeNull();
+    expect(screen.getByTestId('portal-user-row-pu-1')).toBeInTheDocument();
+    expect(screen.getByTestId('portal-access-request-approve-r1')).toBeInTheDocument();
+    warn.mockRestore();
+  });
+
   it('renders portal users with status badges', async () => {
     fetchWithAuth.mockResolvedValueOnce(ok({ data: [
       { id: 'pu-1', email: 'a@acme.example', name: 'A', status: 'active', effectiveStatus: 'active', lastLoginAt: null, invitedAt: null },

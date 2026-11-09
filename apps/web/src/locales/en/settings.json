@@ -8386,7 +8386,7 @@
     },
     "results": {
       "accountExists": "Already has an account",
-      "notPending": "Already decided",
+      "notPending": "No longer pending",
       "notFound": "Request not found",
       "identityLinked": "Sign-in already linked to another account",
       "failed": "Couldn't decide this request"
@@ -8417,6 +8417,8 @@
       "orgPending_other": "{{count}} pending",
       "review": "Review requests",
       "loadError": "Couldn't load pending access requests."
-    }
+    },
+    "refreshFailed": "Couldn't refresh the access requests, so this list may be out of date.",
+    "more": "Showing the first {{count}} requests. Decide these to see the rest."
   }
 }

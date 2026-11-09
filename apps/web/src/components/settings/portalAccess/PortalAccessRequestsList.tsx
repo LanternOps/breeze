@@ -37,6 +37,9 @@ const RESULT_FAILED_KEY = 'portalAccessRequests.results.failed';
 
 type DenyTarget = { kind: 'one'; request: PortalAccessRequestListItem } | { kind: 'bulk' };
 
+/** `POST …/decide` accepts at most this many ids; a larger selection is sent in batches. */
+const DECIDE_BATCH = 100;
+
 const base = (orgId: string) => `/orgs/organizations/${orgId}/portal-access-requests`;
 const unauthorized = () => void navigateTo('/login', { replace: true });
 
@@ -48,6 +51,7 @@ export function PortalAccessRequestsList({ orgId, onChanged }: { orgId: string; 
   const [denyTarget, setDenyTarget] = useState<DenyTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -55,9 +59,10 @@ export function PortalAccessRequestsList({ orgId, onChanged }: { orgId: string; 
       if (res.status === 401) { unauthorized(); return; }
       if (res.status === 403 || res.status === 404) { setRequests(null); setLoadError(false); return; }
       if (!res.ok) throw new Error(`access requests load failed: ${res.status}`);
-      const body = (await res.json()) as { data?: PortalAccessRequestListItem[] };
+      const body = (await res.json()) as { data?: PortalAccessRequestListItem[]; hasMore?: boolean };
       const rows = body.data ?? [];
       setRequests(rows);
+      setHasMore(body.hasMore === true);
       setLoadError(false);
       const ids = new Set(rows.map((r) => r.id));
       setSelected((prev) => new Set([...prev].filter((id) => ids.has(id))));
@@ -112,21 +117,34 @@ export function PortalAccessRequestsList({ orgId, onChanged }: { orgId: string; 
     if (ids.length === 0) return;
     setBusy(true);
     try {
-      const body = await runAction<{ data?: PortalAccessRequestDecideResult[] }>({
-        request: () => fetchWithAuth(`${base(orgId)}/decide`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ requestIds: ids, decision }),
-        }),
-        errorFallback: t('portalAccessRequests.errors.bulk'),
-        onUnauthorized: unauthorized,
-      });
-      const results = body?.data ?? [];
+      // Batches run one after another; a failed batch stops the rest (runAction
+      // has toasted it) and its ids, like any id without a result, read as failed.
+      const results = new Map<string, string>();
+      for (let i = 0; i < ids.length; i += DECIDE_BATCH) {
+        const batch = ids.slice(i, i + DECIDE_BATCH);
+        try {
+          const body = await runAction<{ data?: PortalAccessRequestDecideResult[] }>({
+            request: () => fetchWithAuth(`${base(orgId)}/decide`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ requestIds: batch, decision }),
+            }),
+            errorFallback: t('portalAccessRequests.errors.bulk'),
+            onUnauthorized: unauthorized,
+          });
+          for (const r of body?.data ?? []) results.set(r.requestId, r.result);
+        } catch (err) {
+          // Nothing decided yet: keep the selection for another try.
+          if (results.size === 0) throw err;
+          if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('portalAccessRequests.errors.bulk') });
+          break;
+        }
+      }
       const done = decision === 'approve' ? 'approved' : 'denied';
       const errors: Record<string, string> = {};
       let succeeded = 0;
       for (const id of ids) {
-        const result = results.find((r) => r.requestId === id)?.result;
+        const result = results.get(id);
         if (result === done) succeeded += 1;
         else errors[id] = RESULT_LABEL_KEYS[result ?? ''] ?? RESULT_FAILED_KEY;
       }
@@ -178,6 +196,20 @@ export function PortalAccessRequestsList({ orgId, onChanged }: { orgId: string; 
         <h3 className="text-base font-semibold">{t('portalAccessRequests.title')}</h3>
         <p className="mt-1 text-sm text-muted-foreground">{t('portalAccessRequests.description')}</p>
       </div>
+
+      {loadError && (
+        <p role="alert" data-testid="portal-access-requests-refresh-error" className="text-sm text-destructive">
+          {t('portalAccessRequests.refreshFailed')}{' '}
+          <button type="button" onClick={() => void load()} className="underline hover:text-foreground">
+            {t('common:actions.retry')}
+          </button>
+        </p>
+      )}
+      {hasMore && (
+        <p data-testid="portal-access-requests-more" className="text-xs text-muted-foreground">
+          {t('portalAccessRequests.more', { count: requests.length })}
+        </p>
+      )}
 
       {selected.size > 0 && (
         <div className="flex gap-2">
@@ -239,6 +271,7 @@ export function PortalAccessRequestsList({ orgId, onChanged }: { orgId: string; 
                   )}
                   {rowErrors[r.id] && (
                     <span
+                      role="status"
                       data-testid={`portal-access-request-error-${r.id}`}
                       className="mt-1 inline-flex rounded-full bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive"
                     >
