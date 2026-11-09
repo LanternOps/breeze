@@ -37,6 +37,7 @@ const concerns = vi.hoisted(() => ({
   resolveConcern: vi.fn(),
   recordNudge: vi.fn(),
   getConcernForCeiling: vi.fn(),
+  setConcernPattern: vi.fn(),
 }));
 vi.mock('../wisp/concerns', () => concerns);
 
@@ -149,6 +150,7 @@ beforeEach(() => {
   concerns.resolveConcern.mockResolvedValue(undefined);
   concerns.recordNudge.mockResolvedValue({ nudgeCount: 1, nextEligibleNudgeAt: new Date() });
   concerns.getConcernForCeiling.mockResolvedValue(concern());
+  concerns.setConcernPattern.mockResolvedValue(undefined);
   deliverInApp.mockResolvedValue({ created: true });
   notifyUser.mockResolvedValue({ inApp: true, pushed: 1, suppressed: null });
   createActionIntent.mockResolvedValue({ id: 'intent-1', status: 'pending_approval' });
@@ -179,6 +181,44 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       raisedByGrantId: GRANT_ID, lastAssessedRunId: RUN_ID,
     });
     expect(rollupPartnerPicture).toHaveBeenCalledWith(GRANT_ID);
+  });
+
+  // #11426: the shared key a recurring problem carries across devices, which
+  // the same-org rollup (wisp/concernRollup.ts) groups by.
+  describe('record_concern pattern (#11426)', () => {
+    const DEVICE_RAISE = {
+      subject: { kind: 'device' as const, id: TICKET_ID }, summary: 'incident_opened event, but Breeze has no incidents', severity: 'low' as const,
+    };
+
+    it('passes the normalised pattern through upsertConcern', async () => {
+      await finalizeAssessment(makeCtx(), makeResult(calls({ concernsRaised: [{ ...DEVICE_RAISE, pattern: '  Phantom Incident-Event ' }] })));
+      expect(concerns.upsertConcern).toHaveBeenCalledWith(expect.objectContaining({ pattern: 'phantom_incident_event' }));
+    });
+
+    it('never takes the pattern from model evidence (the evidence key is server-owned)', async () => {
+      await finalizeAssessment(makeCtx(), makeResult(calls({ concernsRaised: [{ ...DEVICE_RAISE, evidence: { a: 1, pattern: 'forged' } }] })));
+      const input = concerns.upsertConcern.mock.calls[0]![0] as Record<string, unknown>;
+      expect(input.evidence).toEqual({ a: 1 });
+      expect(input).not.toHaveProperty('pattern');
+    });
+
+    it('a re-raise of a live concern stamps the pattern on it', async () => {
+      concerns.upsertConcern.mockResolvedValue({ id: C2, created: false });
+      const result = makeResult(calls({ concernsRaised: [{ ...DEVICE_RAISE, pattern: 'phantom_incident_event' }] }));
+      expect(await finalizeAssessment(makeCtx(), result)).toBeNull();
+      expect(concerns.setConcernPattern).toHaveBeenCalledWith(C2, 'phantom_incident_event');
+    });
+
+    it('a new concern is not stamped twice, and no pattern means no stamp', async () => {
+      await finalizeAssessment(makeCtx(), makeResult(calls({ concernsRaised: [{ ...DEVICE_RAISE, pattern: 'phantom_incident_event' }, DEVICE_RAISE] })));
+      expect(concerns.setConcernPattern).not.toHaveBeenCalled();
+    });
+
+    it("update_concern that replaces evidence keeps the concern's pattern and drops a model-sent one", async () => {
+      concerns.getConcernForCeiling.mockResolvedValue(concern({ evidence: { pattern: 'phantom_incident_event', old: true } }));
+      await finalizeAssessment(makeCtx(), makeResult(calls({ concernsUpdated: [{ concernId: C1, evidence: { x: 1, pattern: 'forged' } }] })));
+      expect(concerns.updateConcern).toHaveBeenCalledWith(C1, { evidence: { x: 1, pattern: 'phantom_incident_event' }, lastAssessedRunId: RUN_ID });
+    });
   });
 
   it('11 raises → 10 upserts + raise_cap', async () => {

@@ -18,6 +18,7 @@ import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import {
   CONCERN_FEEDBACK_NOTE_MAX,
+  CONCERN_PATTERN_EVIDENCE_KEY,
   LIVE_CONCERN_STATUSES,
   type Concern,
   type ConcernRecipientState,
@@ -110,6 +111,13 @@ type UpsertConcernInput = {
   lastAssessedRunId?: string | null;
   signature?: string | null;
   childConcernIds?: string[];
+  /**
+   * #11426: the normalised pattern key (`normalizeConcernPattern`) the
+   * same-org rollup groups by. Stored as `evidence.pattern`, NOT as the
+   * signature: the live-signature index is one live row per (partner,
+   * signature), so N devices sharing a signature would collapse into one.
+   */
+  pattern?: string | null;
 };
 
 async function findLiveBySignature(partnerId: string, signature: string): Promise<string | null> {
@@ -157,7 +165,7 @@ export async function upsertConcern(input: UpsertConcernInput): Promise<{ id: st
     subjectId: input.subject.id,
     summary: input.summary.trim(),
     severity: input.severity,
-    evidence: input.evidence,
+    evidence: input.pattern ? { ...input.evidence, [CONCERN_PATTERN_EVIDENCE_KEY]: input.pattern } : input.evidence,
     signature,
     childConcernIds: input.childConcernIds ?? [],
     raisedByGrantId: input.raisedByGrantId ?? null,
@@ -205,6 +213,24 @@ export async function upsertConcern(input: UpsertConcernInput): Promise<{ id: st
       }
     }
     throw new Error('upsertConcern: the live concern vanished twice between conflict and read');
+  });
+}
+
+/**
+ * #11426: stamp `evidence.pattern` on a LIVE concern a re-raise found already
+ * open (upsertConcern hands it back untouched). Only that key changes:
+ * status, snooze and `updated_at` stay as they were. No-op when the key is
+ * already this pattern, and on a concern closed meanwhile.
+ */
+export async function setConcernPattern(id: string, pattern: string): Promise<void> {
+  await inSystemContext(async () => {
+    await db.update(wispConcerns)
+      .set({ evidence: sql`${wispConcerns.evidence} || jsonb_build_object(${CONCERN_PATTERN_EVIDENCE_KEY}::text, ${pattern}::text)` })
+      .where(and(
+        eq(wispConcerns.id, id),
+        inArray(wispConcerns.status, [...LIVE_CONCERN_STATUSES]),
+        sql`${wispConcerns.evidence} ->> ${CONCERN_PATTERN_EVIDENCE_KEY}::text IS DISTINCT FROM ${pattern}::text`,
+      ));
   });
 }
 

@@ -27,6 +27,7 @@ const h = vi.hoisted(() => ({
   pollStaleTickets: vi.fn(async (..._a: unknown[]) => ({ scanned: 0, published: 0 })),
   pollTicketClusters: vi.fn(async (..._a: unknown[]) => ({ scanned: 0, clustersOpened: 0, clustersUpdated: 0 })),
   correlateIncidents: vi.fn(async (..._a: unknown[]) => ({ partnerIncidentsOpened: 0, updated: 0, autoClosed: 0 })),
+  rollupDeviceConcerns: vi.fn(async (..._a: unknown[]) => ({ opened: 0, updated: 0, resolved: 0 })),
   enqueueAssessment: vi.fn(async (..._a: unknown[]): Promise<{ runId: string } | { skipped: string }> => ({ runId: 'r1' })),
   queueAdd: vi.fn(async (..._a: unknown[]) => ({})),
   getRepeatableJobs: vi.fn(async () => [] as Array<{ name: string; key: string }>),
@@ -114,6 +115,9 @@ vi.mock('../services/wisp/pollers', () => ({
 }));
 vi.mock('../services/wisp/incidentCorrelator', () => ({
   correlateIncidents: (...a: unknown[]) => { h.order.push('correlateIncidents'); return h.correlateIncidents(...a); },
+}));
+vi.mock('../services/wisp/concernRollup', () => ({
+  rollupDeviceConcerns: (...a: unknown[]) => { h.order.push('rollupDeviceConcerns'); return h.rollupDeviceConcerns(...a); },
 }));
 vi.mock('../services/wisp/assessment', () => ({ enqueueAssessment: h.enqueueAssessment }));
 vi.mock('../services/wisp/checkIns', () => ({
@@ -203,6 +207,7 @@ beforeEach(() => {
   h.pollStaleTickets.mockImplementation(async () => ({ scanned: 0, published: 0 }));
   h.pollTicketClusters.mockImplementation(async () => ({ scanned: 0, clustersOpened: 0, clustersUpdated: 0 }));
   h.correlateIncidents.mockImplementation(async () => ({ partnerIncidentsOpened: 0, updated: 0, autoClosed: 0 }));
+  h.rollupDeviceConcerns.mockImplementation(async () => ({ opened: 0, updated: 0, resolved: 0 }));
   h.enqueueAssessment.mockImplementation(async () => ({ runId: 'r1' }));
   h.getRepeatableJobs.mockImplementation(async () => []);
   h.chargeableUnderGrant.mockImplementation(async () => ({ ok: true }));
@@ -218,14 +223,14 @@ describe('processWakeTick', () => {
     const result = await processWakeTick(NOW);
     expect(result).toEqual({
       grantsTicked: 0, watchesFired: 0, watchesUnchanged: 0, staleTicketsPublished: 0, watchesStopped: 0,
-      grantsPaused: 0, grantsResumed: 0, ticketClustersOpened: 0, incidentsOpened: 0, checkInsRefired: 0,
+      grantsPaused: 0, grantsResumed: 0, ticketClustersOpened: 0, incidentsOpened: 0, concernRollupsOpened: 0, checkInsRefired: 0,
     });
     expect(h.executes).toHaveLength(0);
     expect(h.order).toEqual([]);
     expect(h.hasEntitlement).not.toHaveBeenCalled();
   });
 
-  it('runs the sections in order: reconcile, stop, floor, watches, check-in reconcile, stale, clusters, incidents', async () => {
+  it('runs the sections in order: reconcile, stop, floor, watches, check-in reconcile, stale, clusters, incidents, rollup', async () => {
     useFixtures({
       due: [{ id: G1, partner_id: P1, current_revision_id: REV, last_floor_tick_text: null }],
       orgs: [{ id: O1, name: 'A' }],
@@ -247,8 +252,9 @@ describe('processWakeTick', () => {
       'pollStaleTickets',
       'pollTicketClusters',
       'correlateIncidents',
+      'rollupDeviceConcerns',
     ]);
-    for (const fn of [h.stopWatchesForInactiveGrants, h.reconcileOrphanCheckIns, h.pollStaleTickets, h.pollTicketClusters, h.correlateIncidents]) {
+    for (const fn of [h.stopWatchesForInactiveGrants, h.reconcileOrphanCheckIns, h.pollStaleTickets, h.pollTicketClusters, h.correlateIncidents, h.rollupDeviceConcerns]) {
       expect(fn).toHaveBeenCalledWith(NOW);
     }
   });
@@ -492,10 +498,12 @@ describe('processWakeTick', () => {
     h.pollStaleTickets.mockRejectedValue(new Error('stale boom'));
     h.pollTicketClusters.mockRejectedValue(new Error('cluster boom'));
     h.correlateIncidents.mockImplementation(async () => ({ partnerIncidentsOpened: 2, updated: 0, autoClosed: 0 }));
+    h.rollupDeviceConcerns.mockImplementation(async () => ({ opened: 3, updated: 0, resolved: 0 }));
 
     const result = await processWakeTick(NOW);
     expect(h.correlateIncidents).toHaveBeenCalledWith(NOW);
     expect(result.incidentsOpened).toBe(2);
+    expect(result.concernRollupsOpened).toBe(3);
     const sections = err.mock.calls.map((c) => String(c[0]));
     for (const name of ['reconcileEntitlements', 'stopWatchesForInactiveGrants', 'floorTicks', 'dueWatches', 'pollStaleTickets', 'pollTicketClusters']) {
       expect(sections.some((s) => s.includes(name)), `console.error names ${name}`).toBe(true);
@@ -569,6 +577,19 @@ describe('processWakeTick', () => {
     expect(h.captureException).toHaveBeenCalledWith(boom, undefined, { component: 'wisp.wakeScheduler', op: 'tick_section', section: 'reconcileCheckIns' });
     expect(h.pollStaleTickets).toHaveBeenCalledWith(NOW);
     expect(result.incidentsOpened).toBe(1);
+    err.mockRestore();
+  });
+
+  // #11426: the same-org rollup runs after the correlator, and a failing
+  // correlator does not stop it.
+  it('a correlator failure is reported and the concern rollup still runs', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    h.correlateIncidents.mockRejectedValue(new Error('correlate boom'));
+    h.rollupDeviceConcerns.mockImplementation(async () => ({ opened: 1, updated: 2, resolved: 0 }));
+    const result = await processWakeTick(NOW);
+    expect(h.rollupDeviceConcerns).toHaveBeenCalledWith(NOW);
+    expect(result.concernRollupsOpened).toBe(1);
+    expect(h.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, { component: 'wisp.wakeScheduler', op: 'tick_section', section: 'correlateIncidents' });
     err.mockRestore();
   });
 

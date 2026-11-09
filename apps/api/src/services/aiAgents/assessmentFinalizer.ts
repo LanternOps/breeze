@@ -9,7 +9,9 @@
  * Order (plan-fixed), each step and each item independently try/caught so a
  * failure never loses another step's work (a failed nudge must not lose a
  * raised concern):
- *   1. record_concern  → upsertConcern (≤ ASSESSMENT_MAX_RAISES_PER_RUN, else `raise_cap`)
+ *   1. record_concern  → upsertConcern (≤ ASSESSMENT_MAX_RAISES_PER_RUN, else `raise_cap`),
+ *                        carrying the normalised `pattern` the same-org
+ *                        rollup groups by (#11426)
  *   2. update_concern  → updateConcern / resolveConcern
  *   3. nudge           → notifyUser to the grantor (W06: in-app via deliverInApp,
  *                        push, quiet hours, prefs; it counts the nudge itself),
@@ -35,7 +37,9 @@
 import { and, eq } from 'drizzle-orm';
 import {
   AI_AGENT_LIMIT_DEFAULTS,
+  CONCERN_PATTERN_EVIDENCE_KEY,
   CONCERN_SUMMARY_MAX,
+  normalizeConcernPattern,
   type AssessmentOutcome,
   type Concern,
   type NudgeInput,
@@ -55,6 +59,7 @@ import {
   ConcernSubjectHeldError,
   getConcernForCeiling,
   resolveConcern,
+  setConcernPattern,
   updateConcern,
   upsertConcern,
 } from '../wisp/concerns';
@@ -97,9 +102,14 @@ async function isRunStillRunning(runId: string, orgId: string): Promise<boolean>
   });
 }
 
+/**
+ * Model evidence minus the server-owned keys: the approval card
+ * `propose_action` mints, and the rollup pattern (#11426), which only the
+ * `pattern` field sets, normalised.
+ */
 function withoutApprovalKey(evidence: Record<string, unknown> | undefined): Record<string, unknown> {
   if (!evidence) return {};
-  const { [APPROVAL_INTENT_KEY]: _dropped, ...rest } = evidence;
+  const { [APPROVAL_INTENT_KEY]: _dropped, [CONCERN_PATTERN_EVIDENCE_KEY]: _pattern, ...rest } = evidence;
   return rest;
 }
 
@@ -141,8 +151,9 @@ async function applyRaises(ap: Applier, raises: RaiseConcernInput[]): Promise<vo
       ap.skipped.push('raise_subject_not_in_org');
       continue;
     }
+    const pattern = normalizeConcernPattern(raise.pattern);
     await ap.item('record_concern', async () => {
-      await upsertConcern({
+      const { id, created } = await upsertConcern({
         partnerId: ap.ctx.orgPartnerId,
         orgId: run.orgId,
         subject: raise.subject,
@@ -151,7 +162,12 @@ async function applyRaises(ap: Applier, raises: RaiseConcernInput[]): Promise<vo
         evidence: withoutApprovalKey(raise.evidence),
         raisedByGrantId: ap.grantId,
         lastAssessedRunId: run.id,
+        ...(pattern ? { pattern } : {}),
       });
+      // A re-raise hands back the live concern untouched; the pattern is the
+      // one thing it may gain, so a concern raised before #11426 (or before
+      // the model named the pattern) joins its siblings' rollup.
+      if (!created && pattern) await setConcernPattern(id, pattern);
     });
   }
 }
@@ -169,9 +185,12 @@ async function applyUpdates(ap: Applier, updates: UpdateConcernInput[]): Promise
       if (update.severity !== undefined) patch.severity = update.severity;
       if (update.evidence !== undefined) {
         // updateConcern REPLACES evidence: keep the approval card the concern
-        // already points at, and never let the model forge one.
+        // already points at and its rollup pattern (#11426), and never let the
+        // model forge either.
+        const pattern = c.evidence?.[CONCERN_PATTERN_EVIDENCE_KEY];
         patch.evidence = {
           ...withoutApprovalKey(update.evidence),
+          ...(typeof pattern === 'string' ? { [CONCERN_PATTERN_EVIDENCE_KEY]: pattern } : {}),
           ...(c.approvalIntentId ? { [APPROVAL_INTENT_KEY]: c.approvalIntentId } : {}),
         };
       }

@@ -22,6 +22,7 @@ import { wispGrants } from '../../db/schema/wisp';
 import { captureException } from '../sentry';
 import { listActivity } from './activity';
 import { spendSummary } from './budget';
+import { isConcernRollup } from './concernRollup';
 import { listConcernsForCeiling } from './concerns';
 import { createEntityResolver, isResolveFailure } from './entityRefs';
 import { GrantInactiveError, inSystemContext, resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
@@ -206,6 +207,20 @@ function isOpenConcern(c: Concern): boolean {
 }
 
 /**
+ * #11426: the children of an OPEN same-org rollup parent in the list. The
+ * parent stands for them in the counts and the body ("3 devices: …"); they
+ * stay listed under it everywhere else. A snoozed parent folds nothing: it
+ * counts nowhere, so its children must count on their own.
+ */
+function foldedUnderRollup(live: Concern[]): Set<string> {
+  const folded = new Set<string>();
+  for (const c of live) {
+    if (c.status === 'open' && isConcernRollup(c)) for (const id of c.childConcernIds) folded.add(id);
+  }
+  return folded;
+}
+
+/**
  * Subjects whose own name may lead a body item: identifiers, never free text
  * (a ticket subject stays off the lock screen, as in ticket push D11).
  */
@@ -310,8 +325,10 @@ export async function buildBrief(
   ]);
 
   const sorted = [...live].sort(byUrgency);
-  const needing = sorted.filter(needsYou);
-  const open = sorted.filter(isOpenConcern);
+  // A folded child needs you only for its own approval card; its HIGH is the parent's (severity = max).
+  const folded = foldedUnderRollup(live);
+  const needing = sorted.filter((c) => needsYou(c) && (!folded.has(c.id) || Boolean(c.approvalIntentId)));
+  const open = sorted.filter((c) => isOpenConcern(c) && !folded.has(c.id));
 
   const title = needing.length === 0 && open.length === 0
     ? 'Good morning — nothing needs you'
