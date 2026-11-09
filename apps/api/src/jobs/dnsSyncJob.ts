@@ -13,10 +13,12 @@ import {
   dnsThreatCategoryEnum,
   isDnsThreatCategory,
   type DnsAction,
+  DNS_SYNC_INTERVAL_MINUTES,
   type DnsIntegrationConfig,
   type DnsPolicyDomain,
   type DnsThreatCategory
 } from '../db/schema';
+import { syncIntervalMinutesFromConfig } from '../services/dnsFilterSyncInterval';
 import {
   createDnsProvider,
   DnsProviderHttpError,
@@ -44,9 +46,7 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 };
 
 const DNS_SYNC_QUEUE = 'dns-sync';
-const DEFAULT_SYNC_INTERVAL_MINUTES = 15;
-const MIN_SYNC_INTERVAL_MINUTES = 5;
-const MAX_SYNC_INTERVAL_MINUTES = 1440;
+const DEFAULT_SYNC_INTERVAL_MINUTES = DNS_SYNC_INTERVAL_MINUTES.DEFAULT;
 
 const VALID_ACTIONS = new Set(dnsActionEnum.enumValues);
 const VALID_CATEGORIES = new Set(dnsThreatCategoryEnum.enumValues);
@@ -338,12 +338,6 @@ export async function runSequentialDomainMutations(
   for (const domain of domains) {
     await operation(domain);
   }
-}
-
-function syncIntervalMinutesFromConfig(config: DnsIntegrationConfig): number {
-  const configured = Number(config.syncInterval);
-  if (!Number.isFinite(configured)) return DEFAULT_SYNC_INTERVAL_MINUTES;
-  return Math.min(MAX_SYNC_INTERVAL_MINUTES, Math.max(MIN_SYNC_INTERVAL_MINUTES, Math.round(configured)));
 }
 
 async function addUniqueJob(
