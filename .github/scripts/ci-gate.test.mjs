@@ -1547,6 +1547,11 @@ test('docs: both agent docs describe CI Gate, and the rollback order is pinned',
   assert.ok(ruleset >= 0, 'the owner turns the ruleset off');
   assert.ok(confirm > ruleset, 'then confirms it');
   assert.ok(code > confirm, 'and only then touches the workflow');
+  // W05a: the thin queue goes off before enforcement does. In Evaluate the gate still
+  // runs and publishes, so CI would skip jobs while nothing enforces the verdict.
+  const killSwitch = rollback.indexOf('gh variable set CI_THIN_QUEUE --body off');
+  assert.ok(killSwitch >= 0 && killSwitch < ruleset, 'the kill switch comes before the ruleset step');
+  assert.ok(rollback.indexOf('gh variable get CI_THIN_QUEUE') > killSwitch, 'and is confirmed');
 
   for (const claim of [/does not prove tests ran honestly/i, /drop it from `ci-success`/i, /later PR/i, /green replay run/i, /blocks its own fix/i]) {
     assert.match(merge, claim);
@@ -1561,11 +1566,15 @@ test('docs: both agent docs describe CI Gate, and the rollback order is pinned',
 test('docs: every reason the gate can log is in the runbook table', () => {
   const merge = readFileSync(join(REPO_ROOT, 'docs/agents/merge-and-deploy.md'), 'utf8');
   const table = merge.slice(merge.indexOf('**Reading a run.**'), merge.indexOf('**Changing the gate.**'));
-  const source = readFileSync(join(REPO_ROOT, '.github/scripts/ci-gate.mjs'), 'utf8');
-  const emitted = new Set([...source.matchAll(/reason: '(\w+)'/g), ...source.matchAll(/GateError\('(\w+)'/g), ...source.matchAll(/ciAt\(\w+, '(\w+)'\)/g)].map(match => match[1]));
+  const source = ['ci-gate.mjs', 'ci-gate-thin.mjs'].map(file => readFileSync(join(REPO_ROOT, '.github/scripts', file), 'utf8')).join('\n');
+  // Every way the two files name a reason: as a field, an assignment, a full selection, an error, or the blame prefix.
+  const emitted = new Set([...source.matchAll(/reason: '(\w+)'/g), ...source.matchAll(/reason = '(\w+)'/g), ...source.matchAll(/fullSelection\(env, '(\w+)'/g),
+    ...source.matchAll(/GateError\('(\w+)'/g), ...source.matchAll(/ciAt\(\w+, '(\w+)'\)/g), ...source.matchAll(/unjustified \? '(\w+)'/g)].map(match => match[1]));
   for (const cliOnly of ['usage', 'not_recordable']) emitted.delete(cliOnly); // record-fixture only; never in a gate run
   assert.ok(emitted.has('not_pinned') && emitted.has('anchor_written') && emitted.has('head_unreadable'), 'the scan must see the reasons');
-  for (const reason of emitted) assert.ok(table.includes(`\`${reason}\``), `${reason} is not in the runbook`);
+  for (const reason of ['thin_disabled', 'attempt1_selection_missing', 'audit_sample', 'thin_skip_unjustified']) assert.ok(emitted.has(reason), `the scan must see ${reason}`);
+  // thin_skip_unjustified always names its jobs, so its row is the `:<jobs>` form.
+  for (const reason of emitted) assert.ok(table.includes(`\`${reason}\``) || table.includes(`\`${reason}:<jobs>\``), `${reason} is not in the runbook`);
   assert.ok(table.includes('`required_jobs_failed`'), 'the bare form, when no job can be blamed');
 });
 
@@ -2713,13 +2722,29 @@ test('verify: no trust code runs in the candidate-side shadow CLI', () => {
   assert.ok(!/ci-gate/.test(source), 'and it does not import the gate');
 });
 
-test('docs: the runbook explains the selection line and that it never changes a verdict', () => {
+test('docs: the runbook explains the published selection, what verify does with it, and that off changes nothing', () => {
   const merge = readFileSync(join(REPO_ROOT, 'docs/agents/merge-and-deploy.md'), 'utf8');
-  assert.match(merge, /`ci-gate-selection: /);
-  assert.match(merge, /never changes? a verdict/);
-  for (const reason of ['no_anchor', 'anchor_not_pinned', 'anchor_policy_in_p', 'no_verified_pr_run', 'no_base_flags']) {
+  assert.match(merge, /`ci-gate-selection: mode=… reason=… thin_queue=… thin_skip=… source_attempt=… would_reason=… /);
+  assert.ok(merge.includes(`\`${thin.SELECTION_FILE}\``) && merge.includes('`ci-gate-selection-attempt-<n>`'));
+  assert.match(merge, /only `mode=thin` hands its `thin_skip` list/);
+  assert.match(merge, /re-publishes attempt 1's file/);
+  assert.match(merge, /unset or `off`, every selection is `mode=full reason=thin_disabled`, so the selection changes nothing/);
+  assert.match(merge, /`thin=…`/, 'the ci-gate line field');
+  for (const reason of ['no_anchor', 'anchor_not_pinned', 'anchor_policy_in_p', 'no_verified_pr_run', 'no_base_flags', 'thin_disabled',
+    'thin_unsupported_at_base', 'nothing_to_skip', 'audit_sample', 'attempt1_selection_missing', 'thin_skip_unjustified:<jobs>']) {
     assert.ok(merge.includes(`\`${reason}\``), `${reason} is not in the runbook`);
   }
+});
+
+test('docs: the thin queue kill switch section says what each value does and how a flip lands', () => {
+  const merge = readFileSync(join(REPO_ROOT, 'docs/agents/merge-and-deploy.md'), 'utf8');
+  assert.match(merge, /^### Thin queue kill switch$/m);
+  const section = merge.slice(merge.indexOf('### Thin queue kill switch')).split(/^#{2,3} /m)[1];
+  for (const claim of [/`CI_THIN_QUEUE`/, /`enforce`/, /`shadow`/, /`off`/, /next queue entry/, /finish under the list their gate published/,
+    /gh variable set CI_THIN_QUEUE --body off/, /gh variable get CI_THIN_QUEUE/, /Never set the ruleset to \*\*Evaluate\*\* while `CI_THIN_QUEUE` is `enforce`/]) {
+    assert.match(section, claim);
+  }
+  assert.ok(merge.indexOf('### Thin queue kill switch') < merge.indexOf('### CI Gate rollback'), 'read before the rollback that points at it');
 });
 
 // ── W02d: what review found ──────────────────────────────────────────────
