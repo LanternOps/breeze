@@ -32,7 +32,8 @@ const ERROR_KEYS: Record<string, string> = {
   PORTAL_ENTRA_TENANT_HINT_INVALID: 'portalAccessPolicy.entraTenant.errors.hintInvalid',
   PORTAL_ENTRA_TENANT_HINT_LOOKUP_FAILED: 'portalAccessPolicy.entraTenant.errors.hintLookupFailed',
   PORTAL_ENTRA_PROTECTED_ORG: 'portalAccessPolicy.entraTenant.errors.protectedOrg',
-  PROTECTED_ORG: 'portalAccessPolicy.entraTenant.errors.protectedOrg',
+  // The routes answer the shared PROTECTED_ORG_ERROR body, whose code is ORG_PROTECTED.
+  ORG_PROTECTED: 'portalAccessPolicy.entraTenant.errors.protectedOrg',
 };
 
 function entraErrorMessage(code: string, t: TFunction): string | undefined {

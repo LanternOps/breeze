@@ -19,6 +19,12 @@ export interface PortalAccessPolicyFormProps {
   fieldErrors?: Partial<Record<PortalAccessPolicyField, string>>;
   /** Rendered under the Microsoft row when it shows (W4: the org's tenant proof panel). */
   entraSlot?: ReactNode;
+  /**
+   * Whether a field holds typed text that is not a valid value (today: the
+   * session length). The owner blocks its Save while true: the draft then
+   * holds the saved value for that field, not what is on screen.
+   */
+  onInvalidChange?: (invalid: boolean) => void;
 }
 
 const ID = 'portal-access-policy';
@@ -63,6 +69,7 @@ export function PortalAccessPolicyForm({
   onShowRequests,
   fieldErrors = {},
   entraSlot,
+  onInvalidChange,
 }: PortalAccessPolicyFormProps) {
   const { t } = useTranslation('settings');
   const { capabilities } = view;
@@ -70,7 +77,12 @@ export function PortalAccessPolicyForm({
   // person can see and fix it; only a valid number (or blank = inherit) reaches
   // the draft. Reset whenever the owner hands in a new view (load or save).
   const [hoursText, setHoursText] = useState<string | null>(null);
-  useEffect(() => { setHoursText(null); }, [view]);
+  useEffect(() => {
+    setHoursText(null);
+    onInvalidChange?.(false);
+    // Only a new view resets the box; the callback's identity is the owner's concern.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view]);
   const visible = new Set(visiblePolicyFields(capabilities));
   const disabled = !view.canEdit;
   const allowInherit = view.owner.kind === 'org';
@@ -178,9 +190,12 @@ export function PortalAccessPolicyForm({
                 data-testid={`${ID}-session-hours`}
                 onChange={(next) => {
                   setHoursText(next);
-                  if (next.trim() === '') { onChange(withDraftField(view, draft, 'ssoSessionMaxHours', null)); return; }
-                  const hours = parseSessionHours(next);
-                  if (hours !== null) onChange(withDraftField(view, draft, 'ssoSessionMaxHours', hours));
+                  const hours = next.trim() === '' ? null : parseSessionHours(next);
+                  const valid = next.trim() === '' || hours !== null;
+                  onInvalidChange?.(!valid);
+                  // Invalid text never stays in the draft: a valid prefix typed on the way
+                  // ("20" on the way to "200") is replaced by the saved value.
+                  onChange(withDraftField(view, draft, 'ssoSessionMaxHours', valid ? hours : view.values.ssoSessionMaxHours));
                 }}
               />
               <p id={`${ID}-session-hours-help`} className="mt-1 text-xs text-muted-foreground">{t('portalAccessPolicy.sessionHours.help')}</p>

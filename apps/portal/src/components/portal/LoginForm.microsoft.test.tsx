@@ -123,6 +123,25 @@ describe('LoginForm — Microsoft', () => {
     expect(screen.queryByTestId('portal-login-sso-banner')).toBeNull();
   });
 
+  it('an unsafe ?next= is never stored for the Microsoft round trip', async () => {
+    for (const unsafe of ['//evil.test', 'https://evil.test/x']) {
+      sessionStorage.clear();
+      window.history.replaceState({}, '', `/login?next=${encodeURIComponent(unsafe)}`);
+      const { unmount } = render(<LoginForm />);
+      fireEvent.click(await screen.findByTestId('portal-login-microsoft'));
+      await waitFor(() => expect(replaceLocation).toHaveBeenCalled());
+      expect(sessionStorage.getItem('portal-oidc-next')).toBeNull();
+      unmount();
+      vi.mocked(replaceLocation).mockClear();
+    }
+  });
+
+  it('signed_in with nothing stored goes to the default landing', async () => {
+    window.history.replaceState({}, '', '/login?sso=signed_in');
+    render(<LoginForm />);
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/', { replace: true }));
+  });
+
   it('signed_in with an unsafe stored next falls back to the default landing', async () => {
     sessionStorage.setItem('portal-oidc-next', 'https://evil.test');
     window.history.replaceState({}, '', '/login?sso=signed_in');

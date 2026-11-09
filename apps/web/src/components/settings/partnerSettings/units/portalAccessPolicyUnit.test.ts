@@ -77,6 +77,17 @@ describe('portal access policy save unit', () => {
   });
 });
 
+describe('portal access policy save unit — validity', () => {
+  it('an invalid session length the form reported makes the tab invalid', () => {
+    const { result } = renderHook(() => usePortalAccessPolicyUnit());
+    expect(result.current.validity().customerPortal?.isValid).toBe(true);
+    act(() => store().setDraft<PortalAccessPolicyUnitValue>('portalAccessPolicy', v => ({ ...v, hoursInvalid: true })));
+    expect(result.current.validity().customerPortal).toEqual({
+      isValid: false, invalidCount: 1, firstInvalidFieldId: 'portal-access-policy-session-hours',
+    });
+  });
+});
+
 // ── W4 (#11381) D12: the partner save goes through the sso_only confirmation ──
 describe('portal access policy save unit — sso_only confirmation', () => {
   const ORG_A = '11111111-1111-4111-8111-111111111111';

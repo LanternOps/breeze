@@ -76,8 +76,10 @@ export function LoginForm() {
             orgName: profile.data.orgName ?? undefined
           });
         }
-      } catch {
+      } catch (err) {
         // The cookie session is what authorizes requests; the store is a display cache.
+        // A missing session shows up on the next page as the usual sign-in redirect.
+        console.warn('[LoginForm] profile load after Microsoft sign-in failed', err);
       }
       if (!cancelled) await navigateTo(next ?? '/', { replace: true });
     })();

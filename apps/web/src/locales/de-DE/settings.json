@@ -8443,7 +8443,8 @@
       "more": "{{shown}} von {{count}} werden angezeigt.",
       "toasts": {
         "invited": "Einladungen zur Microsoft-Anmeldung gesendet: {{count}}.",
-        "partial": "Einladungen zur Microsoft-Anmeldung gesendet: {{invited}} von {{total}}. Die übrigen waren bereits verbunden oder konnten nicht eingeladen werden."
+        "partial": "Einladungen zur Microsoft-Anmeldung gesendet: {{invited}} von {{total}}. Die übrigen waren bereits verbunden oder konnten nicht eingeladen werden.",
+        "emailFailed": "{{count}} Konto/Konten wurden auf eingeladen gesetzt, aber die Einladungs-E-Mail konnte nicht gesendet werden. Verwenden Sie „Erneut senden“ in der Liste der Portalbenutzer."
       },
       "errors": {
         "invite": "Einladungen zur Microsoft-Anmeldung konnten nicht gesendet werden.",

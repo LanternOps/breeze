@@ -282,6 +282,55 @@ describe('OrgSignInRegistrationCard — W4', () => {
     await waitFor(() => expect(tenantReads()).toBe(2));
   });
 
+  it('an invalid session length blocks Save until it is fixed', async () => {
+    mockFlow({ view: makePolicyView({ capabilities: { entra: true } }) });
+    renderCard();
+    const input = await screen.findByTestId('portal-access-policy-session-hours');
+    fireEvent.change(input, { target: { value: '20' } });
+    expect(screen.getByTestId('org-sign-in-card-save')).not.toBeDisabled();
+    fireEvent.change(input, { target: { value: '200' } });
+    expect(screen.getByTestId('org-sign-in-card-save')).toBeDisabled();
+    fireEvent.change(input, { target: { value: '24' } });
+    expect(screen.getByTestId('org-sign-in-card-save')).not.toBeDisabled();
+    fireEvent.click(screen.getByTestId('org-sign-in-card-save'));
+    await waitFor(() => expect(patchCalls()).toHaveLength(1));
+    expect(JSON.parse((patchCalls()[0][1] as RequestInit).body as string)).toEqual({ ssoSessionMaxHours: 24 });
+  });
+
+  it('confirming without ticking invites saves and sends no invites', async () => {
+    mockFlow({
+      view: ssoCapableView(),
+      patch: (url) => (url === `${POLICY}?acknowledge=d1`
+        ? json({ data: ssoCapableView({ values: { passwordMode: 'sso_only' } }) })
+        : confirmRequired('d1')),
+      stranded: () => strandedBody(['u1']),
+    });
+    const { onSave } = renderCard();
+    fireEvent.click(await screen.findByTestId('portal-access-policy-password-sso_only'));
+    fireEvent.click(screen.getByTestId('org-sign-in-card-save'));
+    fireEvent.click(await screen.findByTestId('sso-only-confirm'));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(fetchWithAuthMock.mock.calls.some(([u]) => u === SSO_INVITE)).toBe(false);
+  });
+
+  it('a confirmed save that fails closes the dialog, keeps the draft and sends no invites', async () => {
+    mockFlow({
+      view: ssoCapableView(),
+      patch: (url) => (url === `${POLICY}?acknowledge=d1` ? json({ error: 'boom' }, 500) : confirmRequired('d1')),
+      stranded: () => strandedBody(['u1']),
+    });
+    const { onSave } = renderCard();
+    fireEvent.click(await screen.findByTestId('portal-access-policy-password-sso_only'));
+    fireEvent.click(screen.getByTestId('org-sign-in-card-save'));
+    fireEvent.click(await screen.findByTestId('sso-only-confirm-send-invites'));
+    fireEvent.click(screen.getByTestId('sso-only-confirm'));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    await waitFor(() => expect(screen.queryByTestId('sso-only-confirm-dialog')).toBeNull());
+    expect(onSave).not.toHaveBeenCalled();
+    expect(fetchWithAuthMock.mock.calls.some(([u]) => u === SSO_INVITE)).toBe(false);
+    expect(screen.getByTestId('org-sign-in-card-save')).not.toBeDisabled();
+  });
+
   it('TENANT_NOT_PROVEN shows the field error on the Microsoft row', async () => {
     mockFlow({
       view: makePolicyView({ capabilities: { entra: true } }),

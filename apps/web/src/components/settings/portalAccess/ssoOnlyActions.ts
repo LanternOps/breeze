@@ -61,14 +61,17 @@ export async function sendSsoInvites(
   portalUserIds: string[],
   t: TFunction,
   onUnauthorized: () => void,
-): Promise<{ invited: number; total: number }> {
+): Promise<{ invited: number; total: number; emailFailed: number }> {
   const ids = [...new Set(portalUserIds)];
+  /** Invited AND emailed. */
   let invited = 0;
+  /** Moved to invited by the server, but its email did not go out (`emailSent: false`). */
+  let emailFailed = 0;
   for (let i = 0; i < ids.length; i += SSO_INVITE_BATCH_SIZE) {
     const batch = ids.slice(i, i + SSO_INVITE_BATCH_SIZE);
-    let results: Array<{ portalUserId: string; result: string }>;
+    let results: SsoInviteRow[];
     try {
-      const body = await runAction<{ data: Array<{ portalUserId: string; result: string }> }>({
+      const body = await runAction<{ data: SsoInviteRow[] }>({
         request: () => fetchWithAuth(ssoInviteUrl(orgId), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -78,7 +81,7 @@ export async function sendSsoInvites(
         parseSuccess: (data) => {
           const rows = (data as { data?: unknown } | null)?.data;
           if (!Array.isArray(rows)) throw new Error('unexpected sso-invite body');
-          return { data: rows as Array<{ portalUserId: string; result: string }> };
+          return { data: rows as SsoInviteRow[] };
         },
         friendly: (code) => (code === PORTAL_SSO_INVITE_UNAVAILABLE ? t('settings:portalAccessPolicy.stranded.errors.unavailable') : undefined),
         onUnauthorized,
@@ -90,12 +93,22 @@ export async function sendSsoInvites(
       }
       throw err;
     }
-    invited += results.filter((r) => r.result === 'invited').length;
+    for (const r of results) {
+      if (r.result !== 'invited') continue;
+      if (r.emailSent === false) emailFailed += 1;
+      else invited += 1;
+    }
   }
-  if (invited === ids.length) {
+  if (emailFailed > 0) {
+    // The accounts are now `invited` (so they leave the stranded list) but nobody was emailed.
+    showToast({ type: 'warning', message: t('settings:portalAccessPolicy.stranded.toasts.emailFailed', { count: emailFailed }) });
+  } else if (invited === ids.length) {
     showToast({ type: 'success', message: t('settings:portalAccessPolicy.stranded.toasts.invited', { count: invited }) });
   } else {
     showToast({ type: 'warning', message: t('settings:portalAccessPolicy.stranded.toasts.partial', { invited, total: ids.length }) });
   }
-  return { invited, total: ids.length };
+  return { invited, total: ids.length, emailFailed };
 }
+
+/** One row of `POST …/portal-users/sso-invite`: 'invited' | 'not_stranded' | a refusal code. */
+type SsoInviteRow = { portalUserId: string; result: string; emailSent?: boolean };

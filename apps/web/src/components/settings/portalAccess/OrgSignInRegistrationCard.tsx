@@ -70,6 +70,7 @@ export default function OrgSignInRegistrationCard({ orgId, onDirty, onSave }: Pr
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [formInvalid, setFormInvalid] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<PortalAccessPolicyField, string>>>({});
   const [pendingCount, setPendingCount] = useState(0);
   const [pendingHasMore, setPendingHasMore] = useState(false);
@@ -196,7 +197,7 @@ export default function OrgSignInRegistrationCard({ orgId, onDirty, onSave }: Pr
    * toast. A confirmed save that meets a NEWER impact re-opens it, marked changed.
    */
   const save = async (acknowledge: string | null = null, sendInvites = false) => {
-    if (!view || saving || Object.keys(draft).length === 0) return;
+    if (!view || saving || formInvalid || Object.keys(draft).length === 0) return;
     const visible = new Set(visiblePolicyFields(view.capabilities));
     setSaving(true);
     try {
@@ -287,6 +288,7 @@ export default function OrgSignInRegistrationCard({ orgId, onDirty, onSave }: Pr
         pendingRequestsHasMore={pendingHasMore}
         onShowRequests={showRequests}
         fieldErrors={fieldErrors}
+        onInvalidChange={setFormInvalid}
         /* Remounts (and re-reads the tenant) when the view reports a different proof state,
            e.g. the customer admin finished a proof link while this page was open. */
         entraSlot={<EntraTenantPanel key={String(view.entraTenantProven)} orgId={orgId} onChanged={() => void refreshView()} />}
@@ -309,7 +311,7 @@ export default function OrgSignInRegistrationCard({ orgId, onDirty, onSave }: Pr
             type="button"
             data-testid="org-sign-in-card-save"
             onClick={() => void save()}
-            disabled={saving || !dirty}
+            disabled={saving || !dirty || formInvalid}
             className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
           >
             {saving ? t('common:states.saving') : t('portalAccessPolicy.save')}

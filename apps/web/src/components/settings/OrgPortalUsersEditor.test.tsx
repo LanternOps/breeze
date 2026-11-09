@@ -63,6 +63,18 @@ describe('OrgPortalUsersEditor', () => {
     await waitFor(() => expect(screen.queryByTestId('portal-user-grant-browser-pu-1')).toBeNull());
   });
 
+  it('a failed browser-access grant toasts an error, skips the reload and leaves the action available', async () => {
+    const addin = { id: 'pu-1', email: 'a@acme.example', name: 'A', status: 'active', effectiveStatus: 'active', lastLoginAt: null, invitedAt: null, browserAccess: 'none', identityProviders: ['entra'] };
+    fetchWithAuth
+      .mockResolvedValueOnce(ok({ data: [addin] }))
+      .mockResolvedValueOnce({ ok: false, status: 409, json: async () => ({ error: 'Portal account is disabled', code: 'PORTAL_ACCOUNT_TRANSITION_REFUSED' }) });
+    render(<OrgPortalUsersEditor orgId={ORG_ID} />);
+    fireEvent.click(await screen.findByTestId('portal-user-grant-browser-pu-1'));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(fetchWithAuth).toHaveBeenCalledTimes(2); // no reload after the failure
+    await waitFor(() => expect(screen.getByTestId('portal-user-grant-browser-pu-1')).not.toBeDisabled());
+  });
+
   it('an approval reloads the users table without unmounting the request list', async () => {
     let users = [] as unknown[];
     let pending = [{ id: 'r1', email: 'new@acme.example', name: null, source: 'self', status: 'pending', requestedAt: '2026-11-01T00:00:00Z', lastRequestedAt: '2026-11-01T00:00:00Z', expiresAt: '2026-12-01T00:00:00Z', decidedAt: null, decidedBy: null, portalUserId: null, accountExists: false }];

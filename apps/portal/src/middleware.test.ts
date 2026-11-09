@@ -267,6 +267,23 @@ describe('W03a: /trust/embed/* framing carve-out', () => {
   });
 });
 
+// W4 (#11381) D3: the Microsoft callback sets the session cookie and lands on
+// /login?sso=signed_in; the login island then applies the `next` path kept in
+// sessionStorage. The signed-in /login bounce must not swallow that landing.
+it('a signed-in /login?sso=signed_in renders the login page so the island can apply next', async () => {
+  vi.stubGlobal('fetch', activeAccountFetch());
+  try {
+    const landing = await run(contextFor('/login?sso=signed_in', { signedIn: true }));
+    expect(landing.status).toBe(200);
+    expect(landing.headers.get('Location')).toBeNull();
+    // Any other signed-in visit to /login still goes to the landing page.
+    for (const path of ['/login', '/login?sso=unavailable']) {
+      const bounced = await run(contextFor(path, { signedIn: true }));
+      expect(bounced.status).toBe(302);
+    }
+  } finally { vi.unstubAllGlobals(); }
+});
+
 it('entra-setup renders per status and is reachable signed out', async () => {
   const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
   try {

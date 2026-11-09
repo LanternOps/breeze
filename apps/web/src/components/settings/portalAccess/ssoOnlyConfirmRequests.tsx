@@ -1,5 +1,7 @@
 import { useEffect } from 'react';
 import { create } from 'zustand';
+import { i18n } from '@/lib/i18n';
+import { showToast } from '../../shared/Toast';
 import { SsoOnlyConfirmDialog } from './SsoOnlyConfirmDialog';
 import type { SsoOnlyImpact } from './types';
 
@@ -53,6 +55,7 @@ export function requestSsoOnlyConfirm(impact: SsoOnlyImpact, opts: { changed?: b
   const state = useSsoOnlyConfirmRequests.getState();
   if (state.hosts === 0) {
     console.warn('[ssoOnlyConfirm] no confirmation dialog is mounted; declining the sso_only save');
+    showToast({ type: 'error', message: i18n.t('settings:portalAccessPolicy.errors.save') });
     return Promise.resolve(false);
   }
   // A newer request supersedes an unanswered one (which is declined).

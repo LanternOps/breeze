@@ -8443,7 +8443,8 @@
       "more": "{{count}} içinden {{shown}} gösteriliyor.",
       "toasts": {
         "invited": "Gönderilen Microsoft ile oturum açma davetleri: {{count}}.",
-        "partial": "Gönderilen Microsoft ile oturum açma davetleri: {{invited}} / {{total}}. Kalanlar zaten bağlıydı veya davet edilemedi."
+        "partial": "Gönderilen Microsoft ile oturum açma davetleri: {{invited}} / {{total}}. Kalanlar zaten bağlıydı veya davet edilemedi.",
+        "emailFailed": "{{count}} hesap davet edildi durumuna geçti ancak davet e-postası gönderilemedi. Portal kullanıcıları listesinde Yeniden gönder'i kullanın."
       },
       "errors": {
         "invite": "Microsoft ile oturum açma davetleri gönderilemedi.",

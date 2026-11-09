@@ -8443,7 +8443,8 @@
       "more": "Mostrando {{shown}} de {{count}}.",
       "toasts": {
         "invited": "Convites de login com Microsoft enviados: {{count}}.",
-        "partial": "Convites de login com Microsoft enviados: {{invited}} de {{total}}. Os demais já estavam conectados ou não puderam ser convidados."
+        "partial": "Convites de login com Microsoft enviados: {{invited}} de {{total}}. Os demais já estavam conectados ou não puderam ser convidados.",
+        "emailFailed": "{{count}} conta(s) passaram para convidada, mas o e-mail de convite não pôde ser enviado. Use Reenviar na lista de usuários do portal."
       },
       "errors": {
         "invite": "Não foi possível enviar os convites de login com Microsoft.",

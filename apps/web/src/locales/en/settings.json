@@ -8443,7 +8443,8 @@
       "more": "Showing {{shown}} of {{count}}.",
       "toasts": {
         "invited": "Sent {{count}} Microsoft sign-in invite(s).",
-        "partial": "Sent {{invited}} of {{total}} Microsoft sign-in invites. The rest were already connected or couldn't be invited."
+        "partial": "Sent {{invited}} of {{total}} Microsoft sign-in invites. The rest were already connected or couldn't be invited.",
+        "emailFailed": "{{count}} account(s) moved to invited, but their invite email couldn't be sent. Use Resend on the portal users list."
       },
       "errors": {
         "invite": "Couldn't send Microsoft sign-in invites.",

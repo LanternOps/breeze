@@ -13,7 +13,18 @@ import { saveSlice, useDraftSaveUnit, useDraftSlice, type Loader } from '../part
  * header-Save unit. `view` is the server's answer; `draft` holds only the
  * fields the partner changed (`null` = back to the Breeze default).
  */
-export type PortalAccessPolicyUnitValue = { view: PortalAccessPolicyView; draft: PortalAccessPolicyDraft };
+export type PortalAccessPolicyUnitValue = {
+  view: PortalAccessPolicyView;
+  draft: PortalAccessPolicyDraft;
+  /** The form shows a session length that is not a valid value: the tab is invalid until it is fixed. */
+  hoursInvalid?: boolean;
+};
+
+const SESSION_HOURS_FIELD_ID = 'portal-access-policy-session-hours';
+
+const validate = (value: PortalAccessPolicyUnitValue) => (value.hoursInvalid
+  ? { isValid: false, invalidCount: 1, firstInvalidFieldId: SESSION_HOURS_FIELD_ID }
+  : { isValid: true, invalidCount: 0, firstInvalidFieldId: null });
 
 const POLICY_URL = '/orgs/partners/me/portal-access-policy';
 
@@ -98,5 +109,5 @@ const save = () => saveSlice<PortalAccessPolicyUnitValue>('portalAccessPolicy', 
 
 /** Partner portal access policy (`PATCH /orgs/partners/me/portal-access-policy`) as a header-Save unit. */
 export function usePortalAccessPolicyUnit() {
-  return useDraftSaveUnit<PortalAccessPolicyUnitValue>('portalAccessPolicy', save, { isDirty });
+  return useDraftSaveUnit<PortalAccessPolicyUnitValue>('portalAccessPolicy', save, { isDirty, validate });
 }

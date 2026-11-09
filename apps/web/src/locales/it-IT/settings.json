@@ -8443,7 +8443,8 @@
       "more": "Visualizzati {{shown}} di {{count}}.",
       "toasts": {
         "invited": "Inviti all’accesso con Microsoft inviati: {{count}}.",
-        "partial": "Inviti all’accesso con Microsoft inviati: {{invited}} su {{total}}. Gli altri erano già collegati o non è stato possibile invitarli."
+        "partial": "Inviti all’accesso con Microsoft inviati: {{invited}} su {{total}}. Gli altri erano già collegati o non è stato possibile invitarli.",
+        "emailFailed": "{{count}} account sono passati a invitato, ma non è stato possibile inviare l'email di invito. Usa Invia di nuovo nell'elenco degli utenti del portale."
       },
       "errors": {
         "invite": "Impossibile inviare gli inviti all’accesso con Microsoft.",

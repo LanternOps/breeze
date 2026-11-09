@@ -139,8 +139,26 @@ describe('PortalAccessPolicyForm', () => {
     fireEvent.change(input, { target: { value: '169' } });
     fireEvent.change(input, { target: { value: '2.5' } });
     fireEvent.change(input, { target: { value: '0' } });
-    expect(onChange).not.toHaveBeenCalled();
+    // An invalid value never reaches the draft: the field goes back to its saved value.
+    for (const [d] of onChange.mock.calls) expect(d).not.toHaveProperty('ssoSessionMaxHours');
     expect(screen.getByTestId('portal-access-policy-ssoSessionMaxHours-error')).toHaveTextContent('Enter a whole number of hours from 1 to 168.');
+  });
+
+  it('session hours: typing past the range drops the valid prefix from the draft and reports invalid', () => {
+    const onInvalidChange = vi.fn();
+    const view = makePolicyView({ capabilities: { entra: true } });
+    const onChange = renderForm(view, {}, { onInvalidChange });
+    const input = screen.getByTestId('portal-access-policy-session-hours') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '20' } });
+    expect(onChange).toHaveBeenLastCalledWith({ ssoSessionMaxHours: 20 });
+    expect(onInvalidChange).toHaveBeenLastCalledWith(false);
+    // The draft prop is not re-rendered here; the form computes from the draft it was given ({}).
+    fireEvent.change(input, { target: { value: '200' } });
+    expect(onChange).toHaveBeenLastCalledWith({});
+    expect(onInvalidChange).toHaveBeenLastCalledWith(true);
+    fireEvent.change(input, { target: { value: '24' } });
+    expect(onChange).toHaveBeenLastCalledWith({ ssoSessionMaxHours: 24 });
+    expect(onInvalidChange).toHaveBeenLastCalledWith(false);
   });
 
   it('renders the entra slot under the Microsoft row only when the row is visible', () => {

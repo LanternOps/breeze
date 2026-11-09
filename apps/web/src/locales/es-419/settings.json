@@ -8443,7 +8443,8 @@
       "more": "Mostrando {{shown}} de {{count}}.",
       "toasts": {
         "invited": "Invitaciones de inicio de sesión con Microsoft enviadas: {{count}}.",
-        "partial": "Invitaciones de inicio de sesión con Microsoft enviadas: {{invited}} de {{total}}. Las demás ya estaban conectadas o no se pudieron invitar."
+        "partial": "Invitaciones de inicio de sesión con Microsoft enviadas: {{invited}} de {{total}}. Las demás ya estaban conectadas o no se pudieron invitar.",
+        "emailFailed": "{{count}} cuenta(s) pasaron a invitadas, pero no se pudo enviar el correo de invitación. Usa Reenviar en la lista de usuarios del portal."
       },
       "errors": {
         "invite": "No se pudieron enviar las invitaciones de inicio de sesión con Microsoft.",

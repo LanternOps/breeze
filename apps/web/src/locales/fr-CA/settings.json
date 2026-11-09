@@ -8443,7 +8443,8 @@
       "more": "{{shown}} affichés sur {{count}}.",
       "toasts": {
         "invited": "Invitations de connexion Microsoft envoyées: {{count}}.",
-        "partial": "Invitations de connexion Microsoft envoyées: {{invited}} sur {{total}}. Les autres étaient déjà connectés ou n’ont pas pu être invités."
+        "partial": "Invitations de connexion Microsoft envoyées: {{invited}} sur {{total}}. Les autres étaient déjà connectés ou n’ont pas pu être invités.",
+        "emailFailed": "{{count}} compte(s) sont passés à « invité », mais le courriel d'invitation n'a pas pu être envoyé. Utilisez Renvoyer dans la liste des utilisateurs du portail."
       },
       "errors": {
         "invite": "Impossible d’envoyer les invitations de connexion Microsoft.",
