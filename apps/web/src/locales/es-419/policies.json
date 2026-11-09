@@ -1286,7 +1286,7 @@
         "binaryMissing": "{{vendors}} no se puede activar hasta que el paquete integrado tenga un instalador implementable: un MSI de Windows como versión más reciente, con argumentos de instalación que incluyan SITE_TOKEN={s1_site_token}. Corrígelo en la pestaña Versiones del paquete y luego vuelve a guardar.",
         "binaryMissingLink": "Abrir la pestaña Versiones",
         "platformMacosUnsupported": "macOS: no compatible.",
-        "sentinelOneMsiNote": "Primero agrega el MSI de SentinelOne en la pestaña Versiones del paquete integrado de SentinelOne, con argumentos de instalación que incluyan SITE_TOKEN={s1_site_token}. Breeze no proporciona el instalador y SentinelOne no se puede activar hasta que esté allí.",
+        "sentinelOneMsiNote": "Primero sube el MSI de SentinelOne en la pestaña Versiones del paquete integrado de SentinelOne. Deja los argumentos de instalación en blanco para usar SITE_TOKEN={s1_site_token} /q /NORESTART. Breeze no proporciona el instalador y SentinelOne no se puede activar hasta que exista.",
         "catalogMissingBuiltin": "{{vendors}} aún no está en el catálogo de software de este partner. Agrégalo desde Software → Catálogo → Paquetes integrados y vuelve a guardar.",
         "catalogMissingBuiltinLink": "Abrir Paquetes integrados",
         "dnsBuiltinNote": "Primero agrega {{vendor}} al catálogo de software de este partner desde Software → Catálogo → Paquetes integrados; no se puede activar hasta que esté allí.",
@@ -1448,8 +1448,6 @@
       "allOrganizations": "Todas las organizaciones",
       "sharedAcrossAllYourOrganizations": "— compartido entre todas tus organizaciones",
       "thisOrganizationOnly": "Solo esta organización",
-      "partnerWideUrlOnly": "Los paquetes a nivel de socio usan una URL de descarga — la carga de archivos aún no está disponible para ellos.",
-      "selectedFileRemoved": "Se quitó el archivo seleccionado — los paquetes a nivel de socio usan una URL de descarga.",
       "scopeLockedAfterCreate": "El paquete ya se creó con este alcance — la propiedad no puede cambiar después de la creación.",
       "installScripts": "Scripts de instalación",
       "installScriptsHelp": "Obligatorios para los paquetes zip y opcionales en los demás casos. Los scripts se ejecutan como SYSTEM en Windows o como root en macOS y Linux, expiran a los 10 minutos, requieren el permiso devices.execute y exactamente un sistema operativo de destino.",
@@ -2048,7 +2046,9 @@
       "replaceFileAddNewVersion": "Para reemplazar el archivo del instalador, agrega una nueva versión.",
       "inactiveStoredScripts": "Los scripts de instalación almacenados no están activos; vuelva a crear la versión para activarlos.",
       "builtinVersionsReadOnly": "Administrado por Breeze. Las versiones de los paquetes incorporados no se pueden agregar ni modificar aquí.",
-      "installScriptsReadOnlyOnEdit": "Los scripts de instalación de una versión existente no se pueden cambiar y fijan su sistema operativo de destino. Para cambiarlos, agregue una versión nueva: comienza con estos scripts."
+      "installScriptsReadOnlyOnEdit": "Los scripts de instalación de una versión existente no se pueden cambiar y fijan su sistema operativo de destino. Para cambiarlos, agregue una versión nueva: comienza con estos scripts.",
+      "partnerWideRequiresFullAccess": "Los paquetes para todo el socio solo pueden ser modificados por un administrador de socio con acceso completo.",
+      "builtinArgsDefault": "Déjalo en blanco para usar los argumentos predeterminados del paquete, incluida su clave por organización."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Insertar una variable de tiempo de implementación",
