@@ -61,6 +61,7 @@ describe('M365 Graph-read executor config', () => {
         maxItemsSkus: 200,
         maxItemsSigninEvents: 25_000,
         signinEventsRpm: 6,
+        signinEventsPageSize: 100,
         continuationKey: null,
       },
     });
@@ -215,6 +216,7 @@ describe('M365 Graph-read executor sync limits', () => {
       maxItemsSkus: 200,
       maxItemsSigninEvents: 25_000,
       signinEventsRpm: 6,
+      signinEventsPageSize: 100,
       continuationKey: null,
     });
   });
@@ -232,6 +234,7 @@ describe('M365 Graph-read executor sync limits', () => {
       M365_SYNC_MAX_ITEMS_SKUS: '10',
       M365_SYNC_MAX_ITEMS_SIGNIN_EVENTS: '3000',
       M365_SIGNIN_EVENTS_RPM: '2',
+      M365_SYNC_SIGNIN_EVENTS_PAGE_SIZE: '50',
       M365_SYNC_CONTINUATION_KEY: key.toString('base64'),
     })).sync).toEqual({
       syncMaxInFlight: 2,
@@ -244,6 +247,7 @@ describe('M365 Graph-read executor sync limits', () => {
       maxItemsSkus: 10,
       maxItemsSigninEvents: 3000,
       signinEventsRpm: 2,
+      signinEventsPageSize: 50,
       continuationKey: key,
     });
   });
@@ -262,6 +266,10 @@ describe('M365 Graph-read executor sync limits', () => {
     ['M365_SYNC_MAX_ITEMS_USERS', '0'],
     ['M365_SYNC_MAX_ITEMS_USERS', '200001'],
     ['M365_SYNC_MAX_ITEMS_SKUS', '0'],
+    // #9394: Graph caps a sign-in page at 1000; below 10 a day's walk is
+    // hundreds of requests against a six-per-minute bucket.
+    ['M365_SYNC_SIGNIN_EVENTS_PAGE_SIZE', '9'],
+    ['M365_SYNC_SIGNIN_EVENTS_PAGE_SIZE', '1001'],
   ])('refuses %s=%s', (name, value) => {
     expect(() => loadExecutorConfig(validEnv({ [name]: value }))).toThrow(name);
   });

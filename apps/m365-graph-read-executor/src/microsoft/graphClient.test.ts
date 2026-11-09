@@ -839,4 +839,108 @@ describe('readSyncCollection', () => {
     })).rejects.toMatchObject({ code: 'graph_provider_rejected' });
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
+
+  // #9394: Graph answered 429, the executor waited and retried, and the retry
+  // was then cut off by the deadline. The cause the operator needs to see is
+  // the throttle — Graph's own status — not a client-side timeout.
+  const throttledResponse = () => new Response('{}', {
+    status: 429, headers: { 'content-type': 'application/json', 'retry-after': '4' },
+  });
+  const hangUntilAborted = (_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+  });
+
+  it('reports graph_throttled, not graph_request_timeout, when the deadline cuts off the retry of a 429 (#9394)', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(throttledResponse())
+      .mockImplementationOnce(hangUntilAborted);
+    await expect(syncClient(fetchImpl as unknown as typeof fetch, { sleep: async () => {} }).readSyncCollection({
+      accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns',
+      limits: limits({
+        deadlineAt: Date.now() + 40, perRequestTimeoutMs: 10,
+        retry: { maxAttempts: 3, cumulativeBudgetMs: 60_000, fixedBackoffMs: 1 },
+      }),
+    })).rejects.toMatchObject({ code: 'graph_throttled', retryAfterSeconds: 1 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports graph_throttled when the deadline fires while waiting out a 429 (#9394)', async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(throttledResponse());
+    // The pre-sleep deadline check reads the injected clock, which lags here so
+    // the sleep is entered; the real deadline timer then fires during it.
+    await expect(syncClient(fetchImpl as unknown as typeof fetch, { now: () => Date.now() - 60_000 }).readSyncCollection({
+      accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns',
+      limits: limits({ deadlineAt: Date.now() + 30, perRequestTimeoutMs: 1_000 }),
+    })).rejects.toMatchObject({ code: 'graph_throttled', retryAfterSeconds: 4 });
+  });
+
+  it('still reports a request that never answered as graph_request_timeout (#9394)', async () => {
+    const fetchImpl = vi.fn(hangUntilAborted);
+    await expect(syncClient(fetchImpl as unknown as typeof fetch).readSyncCollection({
+      accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns',
+      limits: limits({ perRequestTimeoutMs: 10 }),
+    })).rejects.toMatchObject({ code: 'graph_request_timeout' });
+  });
+
+  it('reports a body stream cut off by the timeout as graph_request_timeout, not a raw abort (#9394)', async () => {
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"value":['));
+        init?.signal?.addEventListener('abort', () => controller.error(new DOMException('aborted', 'TimeoutError')));
+      },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    await expect(syncClient(fetchImpl as unknown as typeof fetch).readSyncCollection({
+      accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns',
+      limits: limits({ perRequestTimeoutMs: 10 }),
+    })).rejects.toMatchObject({ code: 'graph_request_timeout' });
+  });
+
+  describe('keepPagesOnTransientFailure (#9394)', () => {
+    const SIGNINS = '/v1.0/auditLogs/signIns';
+    const page2 = `https://graph.microsoft.com${SIGNINS}?$skiptoken=2`;
+    const firstPageThen = (second: (url: string, init?: RequestInit) => Promise<Response>) => vi.fn()
+      .mockResolvedValueOnce(json({ value: [{ id: 'a' }], '@odata.nextLink': page2 }))
+      .mockImplementation(second);
+
+    it('stops at a page that timed out and hands back the pages already read plus that page as the resume point', async () => {
+      const fetchImpl = firstPageThen(hangUntilAborted);
+      const result = await syncClient(fetchImpl as unknown as typeof fetch).readSyncCollection({
+        accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns',
+        limits: limits({ perRequestTimeoutMs: 10 }), keepPagesOnTransientFailure: true,
+      });
+      expect(result).toEqual({ items: [{ id: 'a' }], stopReason: 'interrupted', pages: 1, nextLink: page2 });
+    });
+
+    it('does the same for a page Graph kept throttling', async () => {
+      const fetchImpl = firstPageThen(async () => throttledResponse());
+      const result = await syncClient(fetchImpl as unknown as typeof fetch, { sleep: async () => {} }).readSyncCollection({
+        accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns', limits: limits(), keepPagesOnTransientFailure: true,
+      });
+      expect(result).toMatchObject({ items: [{ id: 'a' }], stopReason: 'interrupted', nextLink: page2 });
+    });
+
+    it('still throws when the FIRST page fails — there is nothing to keep and the caller keeps its cursor', async () => {
+      const fetchImpl = vi.fn(hangUntilAborted);
+      await expect(syncClient(fetchImpl as unknown as typeof fetch).readSyncCollection({
+        accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns',
+        limits: limits({ perRequestTimeoutMs: 10 }), keepPagesOnTransientFailure: true,
+      })).rejects.toMatchObject({ code: 'graph_request_timeout' });
+    });
+
+    it('still throws a non-transient failure on a later page', async () => {
+      const fetchImpl = firstPageThen(async () => new Response(JSON.stringify({ error: { code: 'BadRequest' } }), {
+        status: 400, headers: { 'content-type': 'application/json' },
+      }));
+      await expect(syncClient(fetchImpl as unknown as typeof fetch).readSyncCollection({
+        accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns', limits: limits(), keepPagesOnTransientFailure: true,
+      })).rejects.toMatchObject({ code: 'graph_provider_rejected' });
+    });
+
+    it('is off by default: every other domain still fails the whole walk', async () => {
+      const fetchImpl = firstPageThen(hangUntilAborted);
+      await expect(syncClient(fetchImpl as unknown as typeof fetch).readSyncCollection({
+        accessToken: ACCESS_TOKEN, path: '/auditLogs/signIns', limits: limits({ perRequestTimeoutMs: 10 }),
+      })).rejects.toMatchObject({ code: 'graph_request_timeout' });
+    });
+  });
 });

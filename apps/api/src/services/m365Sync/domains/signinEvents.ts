@@ -237,14 +237,24 @@ export async function persistSigninEvents(
 }
 
 /**
- * The next run's window. `since` is MAX(signed_in_at) for the org MINUS an
- * overlap, because Graph sign-in records surface with delay — a bare watermark
- * would permanently skip anything that arrived late. Writes are idempotent
- * upserts on (org_id, graph_id), so the overlap costs nothing but a re-fetch.
+ * The next run's window. `since` is the watermark MINUS an overlap, because
+ * Graph sign-in records surface with delay — a bare watermark would
+ * permanently skip anything that arrived late. Writes are idempotent upserts on
+ * (org_id, graph_id), so the overlap costs nothing but a re-fetch.
  *
- * The checkpoint advances ONLY after pagination for the window completes: a
- * truncated page leaves the watermark where it was (nothing here writes it —
- * it IS the data) and the run returns a continuation.
+ * The watermark is MAX(signed_in_at) over the rows ingested by the time the
+ * last walk COMPLETED (`m365_sync_state.last_complete_snapshot_at`), not over
+ * every row (#9394). The executor walks a window newest-first (Graph's default
+ * order; an explicit ascending sort was the shape that never returned a first
+ * page), so a walk that is cut off before it finishes — a lost continuation
+ * after an executor restart, a re-seed — has already stored the NEWEST rows of
+ * its window and none of the oldest. MAX over every row would start the next
+ * window after the part that was never read, and Graph purges at ~30 days.
+ * Every row ingested at or before a completion belongs to a walk that started
+ * before it, all of which had finished their windows by then, so this
+ * watermark never sits above unread events. It is conservative: the rows of a
+ * completing run land just after its own `now` and are left out, which re-reads
+ * at most that run's pages on the next walk. Independent of Graph's ordering.
  *
  * `since` is deliberately NOT clamped forward to a fixed lookback. An org whose
  * sync was down for a fortnight has a watermark older than any such clamp, and
@@ -258,9 +268,8 @@ export async function persistSigninEvents(
  * the walk finishes over successive pages rather than being silently truncated
  * in time.
  *
- * Only the COLD start (no events at all for the org) uses the fixed
- * `SIGNIN_EVENTS_DEFAULT_WINDOW_DAYS` lookback: there is no watermark to walk
- * forward from, and a first run has nothing to lose by starting a week back.
+ * With no completed walk (or one that stored nothing), the run is a COLD start
+ * over the fixed `SIGNIN_EVENTS_DEFAULT_WINDOW_DAYS` lookback.
  */
 export const SIGNIN_EVENTS_OVERLAP_MINUTES = 60;
 
@@ -276,16 +285,23 @@ const MS_PER_DAY = 24 * 60 * MS_PER_MINUTE;
 export async function signinEventsWindow(
   orgId: string,
   now: Date,
+  lastCompleteSnapshotAt: Date | null,
 ): Promise<{ since: string; until: string }> {
-  const read = await db.execute(sql`
-    select max(signed_in_at) as watermark
-    from m365_signin_events
-    where org_id = ${orgId}::uuid
-  `);
-  const raw = rowsOf(read)[0]?.watermark;
-  const watermark = raw instanceof Date
-    ? raw.getTime()
-    : (typeof raw === 'string' && Number.isFinite(Date.parse(raw)) ? Date.parse(raw) : null);
+  let watermark: number | null = null;
+  if (lastCompleteSnapshotAt !== null) {
+    // Bound as an ISO string and cast: a JS Date inside a raw drizzle fragment
+    // throws at bind time in postgres.js.
+    const read = await db.execute(sql`
+      select max(signed_in_at) as watermark
+      from m365_signin_events
+      where org_id = ${orgId}::uuid
+        and ingested_at <= ${lastCompleteSnapshotAt.toISOString()}::timestamptz
+    `);
+    const raw = rowsOf(read)[0]?.watermark;
+    watermark = raw instanceof Date
+      ? raw.getTime()
+      : (typeof raw === 'string' && Number.isFinite(Date.parse(raw)) ? Date.parse(raw) : null);
+  }
 
   const until = now.getTime();
   const since = watermark === null
