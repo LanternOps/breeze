@@ -591,6 +591,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #11430: 15-minute sweep that stamps idle/over-age chat sessions 'expired'
+    // and finalizes their Wisp thread summaries. NOT gated on
+    // BREEZE_WISP_ENABLED: chat sessions exist without Wisp.
+    name: 'aiChatSessionExpirySweep',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiChatSessionExpirySweep');
+      return { init: m.initializeAiChatSessionExpirySweep, shutdown: m.shutdownAiChatSessionExpirySweep };
+    },
+  },
+  {
     // Wisp W06a (#9912): 15-minute digest + morning-brief sweep; the Worker is
     // constructed unconditionally and each sweep returns zeros while
     // BREEZE_WISP_ENABLED is off.

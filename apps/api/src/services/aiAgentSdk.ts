@@ -16,7 +16,6 @@ import {
   withSystemDbAccessContext,
   runOutsideDbContext,
   assertOutsideHeldDbContext,
-  runAfterDbContextCommit,
 } from '../db';
 import { actionIntents } from '../db/schema/actionIntents';
 import { aiSessions, aiMessages, aiToolExecutions, aiActionPlans, devices, deviceSessions, approvalRequests } from '../db/schema';
@@ -117,6 +116,7 @@ import { PRE_HOOK_THREW_REFUSAL, recordPreHookRefusal, refusalLedgerText, takeLe
 import { approvalCardKey, publishPendingCard, resolveApprovalCard } from './sessionPendingCards';
 
 import { SESSION_IDLE_TIMEOUT_MS, SESSION_MAX_AGE_MS } from './aiAgentSessionLimits';
+import { expireIfStale, sessionExpiredError } from './aiSessionExpiry';
 
 export { SESSION_IDLE_TIMEOUT_MS, SESSION_MAX_AGE_MS };
 
@@ -510,22 +510,6 @@ function unresolvedTurn(turn: ModelUnavailable): Extract<PreFlightResult, { ok: 
 
 
 /**
- * Wisp W04 Task 5: recompute the thread summary of a session just stamped
- * 'expired'. Deferred until the surrounding request context commits, lazily
- * imported, best effort: a failure goes to Sentry and never reaches the caller.
- */
-function scheduleWispSummaryFinalize(sessionId: string): void {
-  runAfterDbContextCommit('wisp.finalizeThreadSummary', () =>
-    import('./wisp/threadSummary')
-      .then((m) => m.finalizeWispSessionSummary(sessionId))
-      .catch((err) => {
-        console.error(`[AI-SDK] Wisp thread summary finalize failed for expired session ${sessionId}:`, err);
-        captureException(err);
-      }),
-  );
-}
-
-/**
  * Runs one DB phase of the pre-flight inside a short RLS context — the route's
  * `inRequestDb` (a fresh caller-scoped `withAuthDbAccessContext`).
  */
@@ -657,26 +641,10 @@ async function runPreFlightAdmission(
     return { ok: false, error: `Session turn limit reached (${session.maxTurns})`, status: 409, code: 'turn_limit_reached' };
   }
 
-  // Session expiration
-  const now = Date.now();
-  const sessionAge = now - new Date(session.createdAt).getTime();
-  const idleTime = now - new Date(session.lastActivityAt).getTime();
-
-  if (sessionAge > SESSION_MAX_AGE_MS) {
-    await db.update(aiSessions)
-      .set({ status: 'expired', updatedAt: new Date() })
-      .where(and(eq(aiSessions.id, sessionId), eq(aiSessions.status, 'active')));
-    scheduleWispSummaryFinalize(sessionId);
-    return { ok: false, error: 'Session has expired (24h max age). Please start a new session.' };
-  }
-
-  if (idleTime > SESSION_IDLE_TIMEOUT_MS) {
-    await db.update(aiSessions)
-      .set({ status: 'expired', updatedAt: new Date() })
-      .where(and(eq(aiSessions.id, sessionId), eq(aiSessions.status, 'active')));
-    scheduleWispSummaryFinalize(sessionId);
-    return { ok: false, error: 'Session has expired due to inactivity. Please start a new session.' };
-  }
+  // Session expiration (#11430: the one rule, shared with GET /sessions/:id and
+  // the idle sweep): stamps 'expired' and schedules the Wisp summary finalize.
+  const expiry = await expireIfStale(session);
+  if (expiry) return { ok: false, error: sessionExpiredError(expiry) };
 
   // Sanitize input
   const { sanitized: sanitizedContent, flags: sanitizeFlags } = sanitizeUserMessage(content);
