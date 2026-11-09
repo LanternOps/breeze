@@ -1,4 +1,4 @@
-import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext, AiRunResultArtifactRef, AiTopologyProgressPhase, TopologyAiExplanation, AiTurnModel, AiAttachState, AiPendingCardEvent, AiApprovalOutcome } from '@breeze/shared';
+import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext, AiRunResultArtifactRef, AiTopologyProgressPhase, TopologyAiExplanation, AiTurnModel, AiAttachState, AiPendingCardEvent, AiApprovalOutcome, AiApprovalWaitingOn } from '@breeze/shared';
 // Subpath, not the barrel: this module loads on the topology island, whose CSP
 // forbids the barrel's JIT-compiled schemas (see topologyImports.test.ts).
 import { topologyAiExplanationSchema } from '@breeze/shared/validators/topologyAi';
@@ -62,6 +62,9 @@ export interface PendingApproval {
   deviceContext?: DeviceContext;
   /** Tier-3 durable action-intent (spec §6.1) — see AiApprovalDialog's prop doc. */
   intentBacked?: boolean;
+  /** #10416: a push went to the user's phone / who the turn is waiting on — drives the thinking indicator. */
+  pushedToPhone?: boolean;
+  waitingOn?: AiApprovalWaitingOn;
   /** Set when the viewer (requester) holds the fanned-out approval row — enables inline L3 self-approve. */
   selfApprovalRequestId?: string;
   /**
@@ -213,6 +216,8 @@ function pendingApprovalFromCard(card: Extract<AiPendingCardEvent, { type: 'appr
     description: card.description,
     deviceContext: card.deviceContext,
     intentBacked: card.intentBacked,
+    pushedToPhone: card.pushedToPhone,
+    waitingOn: card.waitingOn,
     selfApprovalRequestId: card.selfApprovalRequestId,
     approvalScope: card.approvalScope,
     intentExpiresAt: card.intentExpiresAt,

@@ -77,7 +77,7 @@ vi.mock('./WispEntityPicker', () => ({
     ) : null;
   },
 }));
-vi.mock('../ai/AiThinkingIndicator', () => ({ default: () => null }));
+vi.mock('../ai/AiThinkingIndicator', () => ({ default: () => null, approvalWaitFromPending: () => null }));
 vi.mock('../ai/AiModelPicker', () => ({
   default: (p: { disabled?: boolean }) => <div data-testid="ai-model-picker-mock" data-disabled={String(!!p.disabled)} />,
 }));

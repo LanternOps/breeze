@@ -617,7 +617,11 @@
     "thinking": "Raciocínio"
   },
   "aiThinking": {
-    "label": "Pensando… {{seconds}} s"
+    "label": "Pensando… {{seconds}} s",
+    "waitingApproval": "Aguardando sua aprovação",
+    "waitingApprovalPhone": "Aguardando sua aprovação (enviada para o seu celular)",
+    "waitingOthers": "Aguardando outro aprovador",
+    "openApprovals": "Abrir aprovações"
   },
   "aiTurnModel": {
     "answeredBy": "Respondido por {{model}}",
