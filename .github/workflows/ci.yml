@@ -370,6 +370,15 @@ jobs:
       - name: Test shard retry wrapper
         run: node --test .github/scripts/retry-shard.test.mjs
 
+      # Timing-based integration sharding: the refresh script (W07a, #10751).
+      # The partition suite runs after `pnpm install` (it drives vitest).
+      - name: Test integration timing refresh
+        run: node --test .github/scripts/test-timings.test.mjs
+
+      # Named integration suite map and its import evidence (W07b1, #10751).
+      - name: Test integration suite map
+        run: node --test .github/scripts/integration-suites.test.mjs
+
       # Also validates the committed .github/flaky-tests.json (W1, #10744).
       - name: Test flaky-test ledger
         run: node --test .github/scripts/flaky-ledger.test.mjs
@@ -402,6 +411,12 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # Timing-based integration sharding and its committed table (W07a,
+      # #10751). After the install: one case drives the real TimingSequencer
+      # through apps/api's vitest, offline.
+      - name: Test integration shard partition
+        run: node --test .github/scripts/shard-partition.test.mjs
 
       - name: Run ESLint
         run: pnpm lint
@@ -3857,6 +3872,19 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
           # A "re-run failed jobs" attempt uploads under the same name.
+          overwrite: true
+
+      # The timing sequencer's plan for this shard (W07a, #10751): its files and
+      # the digest of the whole 16-shard plan, which must match across shards.
+      # Absent when the table was unusable and vitest's own sharding ran.
+      - name: Upload shard plan
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: shard-plan-integration-${{ matrix.shard }}
+          path: apps/api/shard-plan-*.json
+          if-no-files-found: ignore
+          retention-days: 14
           overwrite: true
 
       # ee/workspace's integration suite expects its own tables
