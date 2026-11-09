@@ -113,6 +113,7 @@ import { resolveImportPartnerId } from './importScope';
 import { registerOrgContactsRoutes } from './orgContacts';
 import { registerOrgContactResponsibilitiesRoutes } from './orgContactResponsibilities';
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
+import { registerPortalAccessPolicyRoutes } from './orgPortalAccessPolicy';
 import { registerOrgPortalPreviewRoutes } from './orgPortalPreview';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
@@ -3050,6 +3051,8 @@ orgRoutes.put('/organizations/:id', ...updateOrgHandler);
 
 // Customer-portal settings (portal_branding) — see routes/orgPortalSettings.ts
 registerOrgPortalSettingsRoutes(orgRoutes);
+// Customer-portal sign-in & registration policy (portal_access_policies) — see routes/orgPortalAccessPolicy.ts
+registerPortalAccessPolicyRoutes(orgRoutes);
 // Staff read-only "Customer view" of the portal read models (#9350)
 registerOrgPortalPreviewRoutes(orgRoutes);
 // Customer-portal users (portal_users invite/manage) — see routes/orgPortalUsers.ts
