@@ -401,13 +401,16 @@ export type StandingInstructionMatch = {
 export const STANDING_MATCH_MAX_ROWS = 500;
 
 /**
- * Every live standing instruction a call on `devices` would break, for
+ * Every live standing instruction a call on `deviceIds` would break, for
  * enforcement (not recall: no 50/200-row limit, complete for the devices).
  * Under system scope inside `tenant_partner_id = ceiling.partnerId`, over the
  * W05 `ai_memory_blocks_standing_device_idx`, with the recall owner rule:
  *   - user:    the grantor's own blocks;
- *   - org:     blocks of the target devices' orgs (the caller resolved the
- *              devices within its reach);
+ *   - org:     blocks of the ceiling's orgs. A block is keyed on its device
+ *              (`content.deviceId`), and "Keep for everyone" writes it to the
+ *              one org every target device is in, so no device → org lookup is
+ *              needed; a call on a device outside the ceiling is refused by
+ *              the ceiling itself, and an org outside it never lends its text;
  *   - partner: only for a partner-wide ceiling (recallForGrant's rule).
  * Retracted and superseded blocks never match; nor does a block whose `until`
  * has passed or whose verb the call cannot break. Content that fails the
@@ -417,7 +420,7 @@ export const STANDING_MATCH_MAX_ROWS = 500;
  */
 export async function findStandingInstructionMatches(input: {
   ceiling: GrantCeiling;
-  devices: Array<{ deviceId: string; orgId: string }>;
+  deviceIds: string[];
   exact: StandingVerb[];
   possible: StandingVerb[];
   now?: Date;
@@ -425,15 +428,16 @@ export async function findStandingInstructionMatches(input: {
   const { ceiling } = input;
   const exact = new Set(input.exact);
   const possible = new Set(input.possible.filter((v) => !exact.has(v)));
-  const deviceIds = [...new Set(input.devices.map((d) => d.deviceId))];
+  const deviceIds = [...new Set(input.deviceIds)];
   if (deviceIds.length === 0 || (exact.size === 0 && possible.size === 0)) return [];
-  const deviceOrgIds = [...new Set(input.devices.map((d) => d.orgId))];
   const now = input.now ?? new Date();
 
   const branches: SQL[] = [
     and(eq(aiMemoryBlocks.ownerKind, 'user'), eq(aiMemoryBlocks.ownerUserId, ceiling.grantorUserId))!,
-    and(eq(aiMemoryBlocks.ownerKind, 'org'), inArray(aiMemoryBlocks.ownerOrgId, deviceOrgIds))!,
   ];
+  if (ceiling.orgIds.size > 0) {
+    branches.push(and(eq(aiMemoryBlocks.ownerKind, 'org'), inArray(aiMemoryBlocks.ownerOrgId, [...ceiling.orgIds]))!);
+  }
   if (ceiling.partnerWide === true && ceiling.scopeOrgId === null) branches.push(eq(aiMemoryBlocks.ownerKind, 'partner'));
 
   const rows = await inBrokerContext(() => db

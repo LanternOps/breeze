@@ -82,7 +82,7 @@ function row(content: Record<string, unknown>, over: Record<string, unknown> = {
 
 const find = (exact: string[], possible: string[] = []) => findStandingInstructionMatches({
   ceiling,
-  devices: [{ deviceId: PC01, orgId: ORG }],
+  deviceIds: [PC01],
   exact: exact as never,
   possible: possible as never,
   now: NOW,
@@ -133,8 +133,8 @@ describe('findStandingInstructionMatches (in-code filters)', () => {
   });
 
   it('no devices or no verbs runs no query', async () => {
-    expect(await findStandingInstructionMatches({ ceiling, devices: [], exact: ['reboot'], possible: [] })).toEqual([]);
-    expect(await findStandingInstructionMatches({ ceiling, devices: [{ deviceId: PC01, orgId: ORG }], exact: [], possible: [] })).toEqual([]);
+    expect(await findStandingInstructionMatches({ ceiling, deviceIds: [], exact: ['reboot'], possible: [] })).toEqual([]);
+    expect(await findStandingInstructionMatches({ ceiling, deviceIds: [PC01], exact: [], possible: [] })).toEqual([]);
     expect(rowsQueue).toHaveLength(0);
   });
 

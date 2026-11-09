@@ -50,8 +50,8 @@ function standing(f: MemoryFixture, owner: MemoryOwnerSpec, over: { deviceId?: s
   });
 }
 
-const lookup = (f: MemoryFixture, c: GrantCeiling, deviceOrgId = f.orgA1, deviceId = PC01) =>
-  findStandingInstructionMatches({ ceiling: c, devices: [{ deviceId, orgId: deviceOrgId }], exact: ['reboot', 'any_change'], possible: [] });
+const lookup = (_f: MemoryFixture, c: GrantCeiling, deviceId = PC01) =>
+  findStandingInstructionMatches({ ceiling: c, deviceIds: [deviceId], exact: ['reboot', 'any_change'], possible: [] });
 
 describe('findStandingInstructionMatches (real Postgres)', () => {
   it('sees the grantor’s own confirmed block and refuses on it; another device is unaffected', async () => {
@@ -60,7 +60,7 @@ describe('findStandingInstructionMatches (real Postgres)', () => {
     const matches = await lookup(f, ceiling(f));
     expect(matches.map((m) => m.blockId)).toEqual([own.id]);
     expect(standingInstructionDecision(matches).action).toBe('refuse');
-    expect(await lookup(f, ceiling(f), f.orgA1, PC02)).toEqual([]);
+    expect(await lookup(f, ceiling(f), PC02)).toEqual([]);
   });
 
   it('ignores another user’s block', async () => {
@@ -69,11 +69,13 @@ describe('findStandingInstructionMatches (real Postgres)', () => {
     expect(await lookup(f, ceiling(f))).toEqual([]);
   });
 
-  it('sees an org block of the device’s org, ignores one for another org', async () => {
+  it('sees an org block of an org inside the ceiling, ignores one for an org outside it', async () => {
     const f = await seedMemoryFixture();
     const orgBlock = await standing(f, { kind: 'org', orgId: f.orgA1 });
     await standing(f, { kind: 'org', orgId: f.orgA2 });
-    expect((await lookup(f, ceiling(f))).map((m) => m.blockId)).toEqual([orgBlock.id]);
+    const narrowed = ceiling(f, { orgIds: new Set([f.orgA1]) });
+    expect((await lookup(f, narrowed)).map((m) => m.blockId)).toEqual([orgBlock.id]);
+    expect(await lookup(f, ceiling(f, { orgIds: new Set() }))).toEqual([]);
   });
 
   it('ignores retracted, superseded and expired blocks', async () => {
@@ -97,7 +99,7 @@ describe('findStandingInstructionMatches (real Postgres)', () => {
     const f = await seedMemoryFixture();
     await standing(f, { kind: 'partner' }, { partner: f.partnerB });
     await standing(f, { kind: 'org', orgId: f.orgB1 }, { partner: f.partnerB });
-    expect(await lookup(f, ceiling(f, { partnerWide: true }), f.orgB1)).toEqual([]);
+    expect(await lookup(f, ceiling(f, { partnerWide: true, orgIds: new Set([f.orgA1, f.orgA2, f.orgB1]) }))).toEqual([]);
   });
 
   it('unconfirmed and conditional blocks warn, never refuse', async () => {
