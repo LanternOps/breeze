@@ -137,7 +137,7 @@ export const portalUsers = pgTable('portal_users', {
   // partial-index convention.
   entraOid: text('entra_oid'),
   entraTenantId: text('entra_tenant_id'),
-  authMethod: text('auth_method').notNull().default('password'), // 'password' | 'entra' (SQL CHECK)
+  authMethod: text('auth_method').notNull().default('password'), // 'password' | 'entra' | 'google' (SQL CHECK portal_users_auth_method_check); only 'password' is password-eligible
   // Durable generation snapshotted by portal and client-AI sessions. Redis
   // deletion is cleanup; live authorization compares this column instead.
   authEpoch: integer('auth_epoch').notNull().default(1),
