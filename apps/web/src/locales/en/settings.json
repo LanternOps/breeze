@@ -5171,7 +5171,9 @@
   "stepUpPrompt": {
     "youWillConfirmWithYourPasskey": "You'll confirm with your passkey (Touch ID / Windows Hello) when you register.",
     "authenticatorCode": "Authenticator code",
-    "confirmYourPassword": "Confirm your password"
+    "confirmYourPassword": "Confirm your password",
+    "useAuthenticatorAppInstead": "Use authenticator app instead",
+    "usePasskeyInstead": "Use your passkey instead"
   },
   "cannedResponsesCard": {
     "cannedResponses": "Canned responses",
@@ -5514,7 +5516,21 @@
     "verifyWithYourIdentityProvider": "Verify with your identity provider",
     "ssoReauthProofExpired": "Your identity provider verification has expired. Verify again to finish setting up your authenticator app.",
     "ssoReauthManageHint": "This account signs in through an identity provider and has no password. Verify with your provider to confirm this change.",
-    "ssoReauthManageVerified": "Identity verified with your provider. Finish the step below to confirm this change."
+    "ssoReauthManageVerified": "Identity verified with your provider. Finish the step below to confirm this change.",
+    "notSetUp": "Not set up",
+    "notAvailable": "Not available",
+    "backup": "Backup",
+    "addBackup": "Add backup",
+    "totpBackupAddHint": "Add an authenticator app as a backup, so you can still sign in if your passkey isn't available.",
+    "totpPolicyDisallowed": "Your organization's policy doesn't allow authenticator apps.",
+    "totpBackupActiveHint": "Use a code from your authenticator app if your passkey isn't available.",
+    "totpBackupVerifyNote": "When you press Verify, you'll confirm with your passkey.",
+    "verifyAndAddBackup": "Verify and add backup",
+    "removeTotpTitle": "Remove authenticator app",
+    "removeTotpBackupDescription": "You'll keep signing in with your passkey. Your recovery codes stay the same.",
+    "removeTotpPrimaryDescription": "Your passkey becomes your primary sign-in method. Your recovery codes stay the same.",
+    "removeTotpConfirmWithPasskey": "You'll confirm with your passkey.",
+    "removing": "Removing..."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Import from Pax8",
@@ -5639,7 +5655,12 @@
     "ssoReauthManageProofExpired": "Your identity provider verification has expired. Verify again to confirm this change.",
     "verifyWithIdpToDeletePasskey": "This account has no password. Verify with your identity provider before removing a passkey.",
     "deletePasskeySsoReauth": "Verify identity to remove a passkey",
-    "deletePasskeySsoVerified": "Identity verified. Choose Delete on the passkey you want to remove."
+    "deletePasskeySsoVerified": "Identity verified. Choose Delete on the passkey you want to remove.",
+    "authenticatorBackupAdded": "Authenticator app added as a backup. Your recovery codes haven't changed",
+    "authenticatorAppRemoved": "Authenticator app removed. You'll sign in with your passkey",
+    "authenticatorCodeRejectedWaitForNext": "That code wasn't accepted. Each code works once, so wait for the next code from your authenticator app.",
+    "passkeyConfirmationCanceled": "Passkey confirmation was canceled or timed out.",
+    "failedToRemoveAuthenticatorApp": "Failed to remove the authenticator app"
   },
   "roleManager": {
     "roles": "Roles",
