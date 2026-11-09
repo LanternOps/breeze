@@ -376,7 +376,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'softwareComplianceWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/softwareComplianceWorker');
       return { init: m.initializeSoftwareComplianceWorker, shutdown: m.shutdownSoftwareComplianceWorker };
@@ -384,7 +384,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'softwareRemediationWorker',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/softwareRemediationWorker');
       return { init: m.initializeSoftwareRemediationWorker, shutdown: m.shutdownSoftwareRemediationWorker };
@@ -1437,7 +1437,7 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'softwareDeploymentScheduler',
-    placement: 'socket-owner',
+    placement: 'global',
     load: async () => {
       const m = await import('../jobs/softwareDeploymentScheduler');
       return { init: m.initializeSoftwareDeploymentScheduler, shutdown: m.shutdownSoftwareDeploymentScheduler };
