@@ -455,6 +455,9 @@ describe('no-changes gate (#11423)', () => {
     expect(deferredCalls()).toHaveLength(0);
     expect(h.createAndEnqueueAgentRun).toHaveBeenCalledTimes(1);
     expect(h.transitionRunStatus).not.toHaveBeenCalled();
+    // The probes stop at the first change, and the change is this source's own
+    // probe, not a later one consuming its queued result.
+    expect(probeQueries().at(-1)?.table).toBe(PROBES.find((p) => p.source === source)!.table);
   });
 
   it('compares against the FINISH of the latest clean assessment of (grant, org) — the run the watermark starts at', async () => {
@@ -606,7 +609,11 @@ describe('no-changes gate (#11423)', () => {
   // #11425: the digest's metric anomalies are current state (the org's open
   // incidents), so the probe asks whether that set changed since the last
   // run's finish: an incident announced since on a still-open episode joins
-  // it, and an episode closed since takes its incident off it.
+  // it, and an episode closed since takes its incident off it. The automatic
+  // close backdates `resolved_at` to the end of the anomalous data
+  // (metricAnomalyEpisodes.ts) but stamps `updated_at` with the close, so a
+  // `resolved` episode is also read by `updated_at`. A `dismissed` one is
+  // not: a snoozed episode stays live and keeps refreshing `updated_at`.
   it('the anomalies probe counts an incident announced since, or its episode closed since, among announced unsuppressed incidents', async () => {
     queueGated();
     await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: tick });
@@ -617,8 +624,11 @@ describe('no-changes gate (#11423)', () => {
     expect(text).toMatch(/"metric_anomaly_incidents"\."dispatched_at" is not null/);
     expect(text).toMatch(/"metric_anomaly_incidents"\."suppressed_by_episode" = \$\d+/);
     expect(text).toMatch(/"metric_anomaly_episodes"\."status" = \$\d+ and "metric_anomaly_incidents"\."dispatched_at" >= \$\d+/);
-    expect(text).toMatch(/"metric_anomaly_episodes"\."status" <> \$\d+ and "metric_anomaly_episodes"\."resolved_at" >= \$\d+/);
-    expect(params).toEqual(expect.arrayContaining([ORG, false, 'open']));
+    expect(text).toMatch(new RegExp(
+      '"metric_anomaly_episodes"\\."status" <> \\$\\d+ and \\("metric_anomaly_episodes"\\."resolved_at" >= \\$\\d+'
+      + ' or \\("metric_anomaly_episodes"\\."status" = \\$\\d+ and "metric_anomaly_episodes"\\."updated_at" >= \\$\\d+\\)\\)',
+    ));
+    expect(params).toEqual(expect.arrayContaining([ORG, false, 'open', 'resolved']));
   });
 
   it('without devices:read the anomalies are not probed (the digest does not read them either)', async () => {

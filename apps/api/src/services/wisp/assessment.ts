@@ -19,9 +19,9 @@
  *                          permission for it, ≤ 25 rows, sanitised; on a
  *                          first look the alerts are the org's open ones,
  *                          #10389; metric anomalies are the open ones plus
- *                          the reason's trigger, #11425), the
- *                          reason's watch, the org's readiness inventory, and
- *                          the grantor's nudge feedback. null = the grant is no
+ *                          the reason's trigger, #11425), the reason's watch,
+ *                          the org's readiness inventory, and the grantor's
+ *                          nudge feedback. null = the grant is no
  *                          longer usable (the run finishes without a model call).
  *   rollupPartnerPicture   deterministic text of every live concern under the
  *                          ceiling → updateThreadPicture.
@@ -412,11 +412,18 @@ function notNoChangesSkip(): SQL {
  *   anomalies  (#11425) the open set the digest shows changed since: an
  *              incident announced since (anomalyIncidentAnnounced) whose
  *              episode is still open joined it, or the episode of an
- *              announced incident closed since (`resolved_at` is written by
- *              resolve, dismiss and auto-close alike) and took it off. An
- *              open incident's later detector updates do not count: they do
- *              not change which anomalies are open. An incident with no
- *              episode row is never listed as open, so the join is INNER.
+ *              announced incident closed since and took it off. A close is
+ *              `resolved_at` since, or, for a `resolved` episode, `updated_at`
+ *              since: the automatic close (metricAnomalyEpisodes.ts) backdates
+ *              `resolved_at` to the end of the anomalous data, which can
+ *              precede `since`, but stamps `updated_at` with the close, and a
+ *              resolved episode is never live again, so that stamp stays. A
+ *              `dismissed` episode is read by `resolved_at` only (the
+ *              dismissal stamps it): a snoozed one stays live and keeps
+ *              refreshing `updated_at`, which would wake every tick. An open
+ *              incident's later detector updates do not count: they do not
+ *              change which anomalies are open. An incident with no episode
+ *              row is never listed as open, so the join is INNER.
  *   concerns   (no permission: the run always reads them) updated since,
  *              unless the last write was an assessment finalizer's — its
  *              `last_assessed_run_id` names a run that finished at or after
@@ -479,7 +486,10 @@ async function firstChangedDigestSource(
         anomalyIncidentAnnounced(),
         or(
           and(eq(metricAnomalyEpisodes.status, 'open'), gte(metricAnomalyIncidents.dispatchedAt, since)),
-          and(ne(metricAnomalyEpisodes.status, 'open'), gte(metricAnomalyEpisodes.resolvedAt, since)),
+          and(ne(metricAnomalyEpisodes.status, 'open'), or(
+            gte(metricAnomalyEpisodes.resolvedAt, since),
+            and(eq(metricAnomalyEpisodes.status, 'resolved'), gte(metricAnomalyEpisodes.updatedAt, since)),
+          )),
         ),
       ))
       .limit(1))) return 'anomalies';
