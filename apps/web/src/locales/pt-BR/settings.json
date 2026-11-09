@@ -2328,7 +2328,8 @@
     "actions": {
       "resend": "Reenviar",
       "reactivate": "Reativar",
-      "sendInvite": "Enviar convite"
+      "sendInvite": "Enviar convite",
+      "grantBrowserAccess": "Dar acesso pelo navegador"
     },
     "fields": {
       "nameOptional": "Nome (opcional)",
@@ -2350,7 +2351,8 @@
       "inviteResent": "Convite reenviado",
       "reactivated": "Usuário reativado",
       "disabled": "Usuário desativado",
-      "removed": "Usuário removido"
+      "removed": "Usuário removido",
+      "browserAccessGranted": "Acesso pelo navegador concedido"
     },
     "errors": {
       "load": "Falha ao carregar os usuários do portal.",
@@ -6942,7 +6944,8 @@
         "pam_open_actuation": "A organização que será mesclada (e encerrada) tem sessões de acesso privilegiado (PAM) que ainda não terminaram a limpeza. Aguarde o encerramento delas e tente a mesclagem novamente.",
         "pam_evidence": "A organização que será mesclada tem histórico de acesso privilegiado (PAM), e mover o histórico PAM entre organizações não está habilitado nesta implantação. Mescle na direção oposta ou não mescle estas organizações.",
         "payment_in_flight": "Há um pagamento da organização que será mesclada ainda em andamento. Aguarde a conclusão e tente a mesclagem novamente.",
-        "lineage_depth": "Estas organizações já foram mescladas vezes demais, e esta mesclagem excederia a profundidade máxima do histórico de mesclagens."
+        "lineage_depth": "Estas organizações já foram mescladas vezes demais, e esta mesclagem excederia a profundidade máxima do histórico de mesclagens.",
+        "entra_tenant_conflict": "A organização que será mesclada tem um locatário da Microsoft comprovado, e a organização que permanece também está vinculada a um locatário da Microsoft. Remova um dos vínculos de locatário e tente a mesclagem novamente."
       }
     },
     "archive": {
@@ -8355,10 +8358,97 @@
       "load": "Não foi possível carregar as configurações de login.",
       "save": "Não foi possível salvar as configurações de login.",
       "methodUnavailable": "Este método de login ainda não está disponível nesta implantação do Breeze.",
-      "ssoOnlyNeedsSso": "Ative o login com Microsoft ou Google antes de desativar o login com senha."
+      "ssoOnlyNeedsSso": "Ative o login com Microsoft ou Google antes de desativar o login com senha.",
+      "tenantNotProven": "Comprove o locatário da Microsoft desta organização antes de ativar o login com Microsoft.",
+      "sessionHours": "Informe um número inteiro de horas de 1 a 168."
     },
     "toasts": {
       "saved": "Configurações de login salvas."
+    },
+    "sessionHours": {
+      "label": "Duração da sessão Microsoft / Google (horas)",
+      "help": "Os logins com Microsoft e Google terminam após esta quantidade de horas, independentemente de quão ativa a pessoa esteja. De 1 a 168."
+    },
+    "entraTenant": {
+      "title": "Locatário da Microsoft",
+      "loading": "Carregando o locatário da Microsoft…",
+      "loadError": "Não foi possível carregar o locatário da Microsoft.",
+      "status": {
+        "none": "Nenhum locatário da Microsoft está vinculado ainda. O login com Microsoft permanece desativado para esta organização até que o locatário seja comprovado.",
+        "unproven": "O locatário {{tenantId}} está vinculado, mas não comprovado. O login com Microsoft permanece desativado para esta organização até que seja.",
+        "proven": "Locatário {{tenantId}} comprovado em {{date}} por meio de {{method}}."
+      },
+      "via": {
+        "m365_connection": "a conexão com o Microsoft 365",
+        "proof_run": "um login de administrador"
+      },
+      "proveConnection": "Usar a conexão com o Microsoft 365 (locatário {{tenantId}})",
+      "tenantLabel": "ID ou domínio do locatário",
+      "tenantHelp": "Crie um link e envie para um Administrador Global ou um Administrador de Função Privilegiada do locatário do cliente. O link funciona por 72 horas.",
+      "createLink": "Criar link de comprovação",
+      "linkLabel": "Link de comprovação",
+      "linkExpires": "Expira em {{date}}. Funciona somente para o locatário {{tenantId}}.",
+      "consentLabel": "Link de consentimento do administrador",
+      "consentHelp": "O administrador do locatário abre este link uma única vez para que todos da organização possam fazer login.",
+      "copy": "Copiar",
+      "copied": "Copiado",
+      "remove": "Remover vínculo do locatário",
+      "removeConfirm": {
+        "title": "Remover o vínculo do locatário da Microsoft?",
+        "message": "O login com Microsoft é interrompido para esta organização e as sessões Microsoft dela terminam. Isso também remove o mapeamento de locatário do AI for Office da organização, então o AI for Office deixa de funcionar aqui até que um locatário seja vinculado novamente."
+      },
+      "toasts": {
+        "proven": "Locatário da Microsoft comprovado.",
+        "linkCreated": "Link de comprovação criado.",
+        "removed": "Vínculo do locatário da Microsoft removido.",
+        "copyFailed": "Não foi possível copiar o link. Selecione-o e copie manualmente."
+      },
+      "errors": {
+        "prove": "Não foi possível comprovar o locatário pela conexão com o Microsoft 365.",
+        "createLink": "Não foi possível criar o link de comprovação.",
+        "remove": "Não foi possível remover o vínculo do locatário.",
+        "provenElsewhere": "Este locatário da Microsoft já está comprovado para outra organização. Somente um link de comprovação concluído pelo administrador do locatário pode movê-lo.",
+        "orgHasOtherTenant": "Esta organização está vinculada a um locatário diferente da Microsoft. Remova primeiro esse vínculo.",
+        "noVerifiedConnection": "Esta organização não tem nenhuma conexão com o Microsoft 365 cujo locatário tenha sido verificado por um login de administrador.",
+        "hintRequired": "Informe o ID do locatário da Microsoft do cliente ou um de seus domínios verificados.",
+        "hintInvalid": "Isso não é um ID de locatário da Microsoft nem um domínio verificado por um locatário da Microsoft.",
+        "hintLookupFailed": "Não foi possível acessar a Microsoft para consultar esse domínio. Tente novamente ou informe o ID do locatário.",
+        "protectedOrg": "Esta organização não pode ser vinculada a um locatário da Microsoft."
+      }
+    },
+    "ssoOnlyConfirm": {
+      "title": "Desativar o login com senha?",
+      "intro": "Ao salvar, o login com senha é desativado para as organizações abaixo.",
+      "partnerIntro": "Ao salvar este padrão do parceiro, o login com senha é desativado para estas organizações. A página de cada organização lista as contas que ainda não conseguem fazer login.",
+      "explain": "As pessoas já conectadas à Microsoft perdem a senha e são desconectadas. As pessoas sem conexão com a Microsoft não conseguem fazer login até aceitarem um convite de login com Microsoft.",
+      "columns": {
+        "org": "Organização",
+        "passwordsToClear": "Senhas removidas",
+        "strandedTotal": "Ainda não conseguem fazer login"
+      },
+      "openOrg": "Abrir",
+      "strandedTitle": "Ainda não conseguem fazer login",
+      "strandedMore": "e mais {{count}}",
+      "strandedLoadError": "Não foi possível carregar os nomes dessas contas.",
+      "sendInvites": "Enviar convites de login com Microsoft a essas contas após salvar",
+      "confirm": "Desativar login com senha",
+      "changed": "O impacto mudou desde que você abriu esta janela. Revise os novos números."
+    },
+    "stranded": {
+      "title": "Ainda não conseguem fazer login ({{count}})",
+      "description": "Essas contas não têm conexão com a Microsoft, então não conseguem fazer login enquanto o login com senha estiver desativado. Envie a cada uma um convite de login com Microsoft.",
+      "loadError": "Não foi possível carregar as contas que não conseguem fazer login.",
+      "invite": "Enviar convite de login com Microsoft",
+      "inviteAll": "Convidar todos",
+      "more": "Mostrando {{shown}} de {{count}}.",
+      "toasts": {
+        "invited": "Convites de login com Microsoft enviados: {{count}}.",
+        "partial": "Convites de login com Microsoft enviados: {{invited}} de {{total}}. Os demais já estavam conectados ou não puderam ser convidados."
+      },
+      "errors": {
+        "invite": "Não foi possível enviar os convites de login com Microsoft.",
+        "unavailable": "O login com Microsoft não está disponível para esta organização, então não há com o que convidar."
+      }
     }
   },
   "portalAccessRequests": {
@@ -8389,7 +8479,8 @@
       "notPending": "Não está mais pendente",
       "notFound": "Solicitação não encontrada",
       "identityLinked": "Login já vinculado a outra conta",
-      "failed": "Não foi possível decidir esta solicitação"
+      "failed": "Não foi possível decidir esta solicitação",
+      "entraTenantNotProven": "O locatário da Microsoft desta organização não está mais comprovado"
     },
     "denyDialog": {
       "title": "Negar solicitação de acesso",

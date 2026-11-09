@@ -2328,7 +2328,8 @@
     "actions": {
       "resend": "Tekrar gönder",
       "reactivate": "Yeniden Etkinleştir",
-      "sendInvite": "Davet gönder"
+      "sendInvite": "Davet gönder",
+      "grantBrowserAccess": "Tarayıcı erişimi ver"
     },
     "fields": {
       "nameOptional": "Ad (isteğe bağlı)",
@@ -2350,7 +2351,8 @@
       "inviteResent": "Yeniden davet et",
       "reactivated": "Kullanıcı yeniden etkinleştirildi",
       "disabled": "Kullanıcı devre dışı bırakıldı",
-      "removed": "Kullanıcı kaldırıldı"
+      "removed": "Kullanıcı kaldırıldı",
+      "browserAccessGranted": "Tarayıcı erişimi verildi"
     },
     "errors": {
       "load": "Portal kullanıcıları yüklenemedi.",
@@ -6942,7 +6944,8 @@
         "pam_open_actuation": "Birleştirilerek kapatılacak kuruluşta temizliği henüz tamamlanmamış ayrıcalıklı erişim (PAM) oturumları var. Oturumların kapanmasını bekleyin, ardından birleştirmeyi yeniden deneyin.",
         "pam_evidence": "Birleştirilerek kapatılacak kuruluşun ayrıcalıklı erişim (PAM) geçmişi var ve PAM geçmişinin kuruluşlar arasında taşınması bu dağıtımda etkin değil. Ters yönde birleştirin veya bu kuruluşları birleştirmeyin.",
         "payment_in_flight": "Birleştirilerek kapatılacak kuruluşun işlemdeki bir ödemesi var. Ödemenin tamamlanmasını bekleyin, ardından birleştirmeyi yeniden deneyin.",
-        "lineage_depth": "Bu kuruluşlar zaten çok kez birleştirildi ve bu birleştirme azami birleştirme geçmişi derinliğini aşacak."
+        "lineage_depth": "Bu kuruluşlar zaten çok kez birleştirildi ve bu birleştirme azami birleştirme geçmişi derinliğini aşacak.",
+        "entra_tenant_conflict": "Birleştirilerek kapatılacak kuruluşun kanıtlanmış bir Microsoft kiracısı var ve kalan kuruluş da bir Microsoft kiracısına bağlı. Kiracı bağlantılarından birini kaldırın, ardından birleştirmeyi yeniden deneyin."
       }
     },
     "archive": {
@@ -8355,10 +8358,97 @@
       "load": "Oturum açma ayarları yüklenemedi.",
       "save": "Oturum açma ayarları kaydedilemedi.",
       "methodUnavailable": "Bu oturum açma yöntemi bu Breeze dağıtımında henüz kullanılamıyor.",
-      "ssoOnlyNeedsSso": "Şifreyle oturum açmayı kapatmadan önce Microsoft veya Google ile oturum açmayı etkinleştirin."
+      "ssoOnlyNeedsSso": "Şifreyle oturum açmayı kapatmadan önce Microsoft veya Google ile oturum açmayı etkinleştirin.",
+      "tenantNotProven": "Microsoft ile oturum açmayı açmadan önce bu kuruluşun Microsoft kiracısını kanıtlayın.",
+      "sessionHours": "1 ile 168 arasında tam sayı olarak saat girin."
     },
     "toasts": {
       "saved": "Oturum açma ayarları kaydedildi."
+    },
+    "sessionHours": {
+      "label": "Microsoft / Google oturum süresi (saat)",
+      "help": "Microsoft ve Google ile oturum açma, kişi ne kadar etkin olursa olsun bu kadar saat sonra sona erer. 1 ile 168 arasında."
+    },
+    "entraTenant": {
+      "title": "Microsoft kiracısı",
+      "loading": "Microsoft kiracısı yükleniyor…",
+      "loadError": "Microsoft kiracısı yüklenemedi.",
+      "status": {
+        "none": "Henüz bağlı bir Microsoft kiracısı yok. Kiracısı kanıtlanana kadar bu kuruluş için Microsoft ile oturum açma kapalı kalır.",
+        "unproven": "{{tenantId}} kiracısı bağlı ancak kanıtlanmamış. Kanıtlanana kadar bu kuruluş için Microsoft ile oturum açma kapalı kalır.",
+        "proven": "{{tenantId}} kiracısı {{date}} tarihinde {{method}} ile kanıtlandı."
+      },
+      "via": {
+        "m365_connection": "Microsoft 365 bağlantısı",
+        "proof_run": "bir yönetici oturum açması"
+      },
+      "proveConnection": "Microsoft 365 bağlantısını kullan (kiracı {{tenantId}})",
+      "tenantLabel": "Kiracı kimliği veya etki alanı",
+      "tenantHelp": "Bir bağlantı oluşturun ve müşterinin kiracısının Genel Yöneticisine veya Ayrıcalıklı Rol Yöneticisine gönderin. Bağlantı 72 saat geçerlidir.",
+      "createLink": "Kanıt bağlantısı oluştur",
+      "linkLabel": "Kanıt bağlantısı",
+      "linkExpires": "Son geçerlilik: {{date}}. Yalnızca {{tenantId}} kiracısı için çalışır.",
+      "consentLabel": "Yönetici onay bağlantısı",
+      "consentHelp": "Kiracının yöneticisi bunu bir kez açar; böylece kuruluştaki herkes oturum açabilir.",
+      "copy": "Kopyala",
+      "copied": "Kopyalandı",
+      "remove": "Kiracı bağlantısını kaldır",
+      "removeConfirm": {
+        "title": "Microsoft kiracı bağlantısı kaldırılsın mı?",
+        "message": "Bu kuruluş için Microsoft ile oturum açma durur ve Microsoft oturumları sona erer. Bu işlem kuruluşun AI for Office kiracı eşlemesini de kaldırır; bir kiracı yeniden bağlanana kadar AI for Office burada çalışmaz."
+      },
+      "toasts": {
+        "proven": "Microsoft kiracısı kanıtlandı.",
+        "linkCreated": "Kanıt bağlantısı oluşturuldu.",
+        "removed": "Microsoft kiracı bağlantısı kaldırıldı.",
+        "copyFailed": "Bağlantı kopyalanamadı. Bağlantıyı seçip kendiniz kopyalayın."
+      },
+      "errors": {
+        "prove": "Kiracı, Microsoft 365 bağlantısından kanıtlanamadı.",
+        "createLink": "Kanıt bağlantısı oluşturulamadı.",
+        "remove": "Kiracı bağlantısı kaldırılamadı.",
+        "provenElsewhere": "Bu Microsoft kiracısı başka bir kuruluş için zaten kanıtlanmış. Onu yalnızca kiracının yöneticisi tarafından tamamlanan bir kanıt bağlantısı taşıyabilir.",
+        "orgHasOtherTenant": "Bu kuruluş farklı bir Microsoft kiracısına bağlı. Önce bu bağlantıyı kaldırın.",
+        "noVerifiedConnection": "Bu kuruluşun, kiracısı bir yönetici oturum açmasıyla doğrulanmış bir Microsoft 365 bağlantısı yok.",
+        "hintRequired": "Müşterinin Microsoft kiracı kimliğini veya doğrulanmış etki alanlarından birini girin.",
+        "hintInvalid": "Bu, bir Microsoft kiracı kimliği ya da bir Microsoft kiracısı tarafından doğrulanmış bir etki alanı değil.",
+        "hintLookupFailed": "Bu etki alanını aramak için Microsoft'a ulaşılamadı. Yeniden deneyin veya kiracı kimliğini girin.",
+        "protectedOrg": "Bu kuruluş bir Microsoft kiracısına bağlanamaz."
+      }
+    },
+    "ssoOnlyConfirm": {
+      "title": "Şifreyle oturum açma kapatılsın mı?",
+      "intro": "Kaydetmek, aşağıdaki kuruluşlar için şifreyle oturum açmayı kapatır.",
+      "partnerIntro": "Bu iş ortağı varsayılanını kaydetmek, bu kuruluşlar için şifreyle oturum açmayı kapatır. Her kuruluşun sayfasında henüz oturum açamayan hesaplar listelenir.",
+      "explain": "Microsoft'a zaten bağlı olan kişiler şifrelerini kaybeder ve oturumları kapatılır. Microsoft bağlantısı olmayan kişiler, Microsoft ile oturum açma davetini kabul edene kadar oturum açamaz.",
+      "columns": {
+        "org": "Kuruluş",
+        "passwordsToClear": "Kaldırılan şifreler",
+        "strandedTotal": "Henüz oturum açamayanlar"
+      },
+      "openOrg": "Aç",
+      "strandedTitle": "Henüz oturum açamayanlar",
+      "strandedMore": "ve {{count}} tane daha",
+      "strandedLoadError": "Bu hesapların adları yüklenemedi.",
+      "sendInvites": "Kaydettikten sonra bu hesaplara Microsoft ile oturum açma davetleri gönder",
+      "confirm": "Şifreyle oturum açmayı kapat",
+      "changed": "Etki, siz bunu açtığınızdan beri değişti. Yeni sayıları gözden geçirin."
+    },
+    "stranded": {
+      "title": "Henüz oturum açamayanlar ({{count}})",
+      "description": "Bu hesapların Microsoft bağlantısı yok, bu yüzden şifreyle oturum açma kapalıyken oturum açamazlar. Her birine bir Microsoft ile oturum açma daveti gönderin.",
+      "loadError": "Oturum açamayan hesaplar yüklenemedi.",
+      "invite": "Microsoft ile oturum açma daveti gönder",
+      "inviteAll": "Hepsini davet et",
+      "more": "{{count}} içinden {{shown}} gösteriliyor.",
+      "toasts": {
+        "invited": "Gönderilen Microsoft ile oturum açma davetleri: {{count}}.",
+        "partial": "Gönderilen Microsoft ile oturum açma davetleri: {{invited}} / {{total}}. Kalanlar zaten bağlıydı veya davet edilemedi."
+      },
+      "errors": {
+        "invite": "Microsoft ile oturum açma davetleri gönderilemedi.",
+        "unavailable": "Bu kuruluş için Microsoft ile oturum açma kullanılamıyor, bu yüzden davet edilecek bir yol yok."
+      }
     }
   },
   "portalAccessRequests": {
@@ -8389,7 +8479,8 @@
       "notPending": "Artık beklemede değil",
       "notFound": "Talep bulunamadı",
       "identityLinked": "Oturum açma zaten başka bir hesaba bağlı",
-      "failed": "Bu talebe karar verilemedi"
+      "failed": "Bu talebe karar verilemedi",
+      "entraTenantNotProven": "Bu kuruluşun Microsoft kiracısı artık kanıtlanmış değil"
     },
     "denyDialog": {
       "title": "Erişim talebini reddet",

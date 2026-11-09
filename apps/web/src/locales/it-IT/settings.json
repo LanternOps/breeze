@@ -2328,7 +2328,8 @@
     "actions": {
       "resend": "Reinvia",
       "reactivate": "Riattiva",
-      "sendInvite": "Invia invito"
+      "sendInvite": "Invia invito",
+      "grantBrowserAccess": "Concedi l’accesso da browser"
     },
     "fields": {
       "nameOptional": "Nome (facoltativo)",
@@ -2350,7 +2351,8 @@
       "inviteResent": "Invito reinviato",
       "reactivated": "Utente riattivato",
       "disabled": "Utente disabilitato",
-      "removed": "Utente rimosso"
+      "removed": "Utente rimosso",
+      "browserAccessGranted": "Accesso da browser concesso"
     },
     "errors": {
       "load": "Impossibile caricare gli utenti del portale.",
@@ -6935,7 +6937,8 @@
         "pam_open_actuation": "L'organizzazione che verrà unita (e dismessa) ha sessioni di accesso privilegiato (PAM) che non hanno ancora completato la pulizia. Attendi che si chiudano, poi riprova l'unione.",
         "pam_evidence": "L'organizzazione che verrà unita ha una cronologia di accesso privilegiato (PAM) e lo spostamento della cronologia PAM tra organizzazioni non è abilitato in questa distribuzione. Unisci nella direzione opposta, oppure non unire queste organizzazioni.",
         "payment_in_flight": "Un pagamento dell'organizzazione che verrà unita è ancora in corso. Attendi che si concluda, poi riprova l'unione.",
-        "lineage_depth": "Queste organizzazioni sono già state unite troppe volte e questa unione supererebbe la profondità massima della cronologia delle unioni."
+        "lineage_depth": "Queste organizzazioni sono già state unite troppe volte e questa unione supererebbe la profondità massima della cronologia delle unioni.",
+        "entra_tenant_conflict": "L'organizzazione che verrà unita ha un tenant Microsoft dimostrato e anche l'organizzazione che rimane è collegata a un tenant Microsoft. Rimuovi uno dei collegamenti ai tenant, poi riprova l'unione."
       }
     },
     "archive": {
@@ -8355,10 +8358,97 @@
       "load": "Impossibile caricare le impostazioni di accesso.",
       "save": "Impossibile salvare le impostazioni di accesso.",
       "methodUnavailable": "Questo metodo di accesso non è ancora disponibile in questa distribuzione di Breeze.",
-      "ssoOnlyNeedsSso": "Attiva l’accesso con Microsoft o Google prima di disattivare l’accesso con password."
+      "ssoOnlyNeedsSso": "Attiva l’accesso con Microsoft o Google prima di disattivare l’accesso con password.",
+      "tenantNotProven": "Dimostra il tenant Microsoft di questa organizzazione prima di attivare l’accesso con Microsoft.",
+      "sessionHours": "Inserisci un numero intero di ore da 1 a 168."
     },
     "toasts": {
       "saved": "Impostazioni di accesso salvate."
+    },
+    "sessionHours": {
+      "label": "Durata della sessione Microsoft / Google (ore)",
+      "help": "Gli accessi con Microsoft e Google terminano dopo questo numero di ore, indipendentemente da quanto sia attiva la persona. Da 1 a 168."
+    },
+    "entraTenant": {
+      "title": "Tenant Microsoft",
+      "loading": "Caricamento del tenant Microsoft…",
+      "loadError": "Impossibile caricare il tenant Microsoft.",
+      "status": {
+        "none": "Nessun tenant Microsoft è ancora collegato. L’accesso con Microsoft resta disattivato per questa organizzazione finché il suo tenant non è dimostrato.",
+        "unproven": "Il tenant {{tenantId}} è collegato ma non dimostrato. L’accesso con Microsoft resta disattivato per questa organizzazione finché non lo è.",
+        "proven": "Tenant {{tenantId}} dimostrato il {{date}} tramite {{method}}."
+      },
+      "via": {
+        "m365_connection": "la connessione Microsoft 365",
+        "proof_run": "un accesso da amministratore"
+      },
+      "proveConnection": "Usa la connessione Microsoft 365 (tenant {{tenantId}})",
+      "tenantLabel": "ID o dominio del tenant",
+      "tenantHelp": "Crea un link e invialo a un Amministratore globale o a un Amministratore ruoli con privilegi del tenant del cliente. Il link è valido per 72 ore.",
+      "createLink": "Crea link di dimostrazione",
+      "linkLabel": "Link di dimostrazione",
+      "linkExpires": "Scade il {{date}}. Funziona solo per il tenant {{tenantId}}.",
+      "consentLabel": "Link di consenso dell’amministratore",
+      "consentHelp": "L’amministratore del tenant lo apre una sola volta, così tutte le persone dell’organizzazione possono accedere.",
+      "copy": "Copia",
+      "copied": "Copiato",
+      "remove": "Rimuovi collegamento al tenant",
+      "removeConfirm": {
+        "title": "Rimuovere il collegamento al tenant Microsoft?",
+        "message": "L’accesso con Microsoft si interrompe per questa organizzazione e le sue sessioni Microsoft terminano. Questo rimuove anche l’associazione al tenant di AI for Office dell’organizzazione, quindi AI for Office smette di funzionare qui finché non viene collegato di nuovo un tenant."
+      },
+      "toasts": {
+        "proven": "Tenant Microsoft dimostrato.",
+        "linkCreated": "Link di dimostrazione creato.",
+        "removed": "Collegamento al tenant Microsoft rimosso.",
+        "copyFailed": "Impossibile copiare il link. Selezionalo e copialo manualmente."
+      },
+      "errors": {
+        "prove": "Impossibile dimostrare il tenant dalla connessione Microsoft 365.",
+        "createLink": "Impossibile creare il link di dimostrazione.",
+        "remove": "Impossibile rimuovere il collegamento al tenant.",
+        "provenElsewhere": "Questo tenant Microsoft è già dimostrato per un’altra organizzazione. Solo un link di dimostrazione completato dall’amministratore del tenant può spostarlo.",
+        "orgHasOtherTenant": "Questa organizzazione è collegata a un altro tenant Microsoft. Rimuovi prima quel collegamento.",
+        "noVerifiedConnection": "Questa organizzazione non ha alcuna connessione Microsoft 365 il cui tenant sia stato verificato con un accesso da amministratore.",
+        "hintRequired": "Inserisci l’ID tenant Microsoft del cliente o uno dei suoi domini verificati.",
+        "hintInvalid": "Non è un ID tenant Microsoft né un dominio verificato da un tenant Microsoft.",
+        "hintLookupFailed": "Impossibile contattare Microsoft per cercare quel dominio. Riprova oppure inserisci l’ID del tenant.",
+        "protectedOrg": "Questa organizzazione non può essere collegata a un tenant Microsoft."
+      }
+    },
+    "ssoOnlyConfirm": {
+      "title": "Disattivare l’accesso con password?",
+      "intro": "Il salvataggio disattiva l’accesso con password per le organizzazioni seguenti.",
+      "partnerIntro": "Il salvataggio di questo valore predefinito del partner disattiva l’accesso con password per queste organizzazioni. La pagina di ogni organizzazione elenca gli account che non possono ancora accedere.",
+      "explain": "Le persone già collegate a Microsoft perdono la password e vengono disconnesse. Le persone senza un collegamento a Microsoft non possono accedere finché non accettano un invito all’accesso con Microsoft.",
+      "columns": {
+        "org": "Organizzazione",
+        "passwordsToClear": "Password rimosse",
+        "strandedTotal": "Non possono ancora accedere"
+      },
+      "openOrg": "Apri",
+      "strandedTitle": "Non possono ancora accedere",
+      "strandedMore": "e altri {{count}}",
+      "strandedLoadError": "Impossibile caricare i nomi di questi account.",
+      "sendInvites": "Dopo il salvataggio, invia a questi account inviti all’accesso con Microsoft",
+      "confirm": "Disattiva l’accesso con password",
+      "changed": "L’impatto è cambiato da quando hai aperto questa finestra. Controlla i nuovi numeri."
+    },
+    "stranded": {
+      "title": "Non possono ancora accedere ({{count}})",
+      "description": "Questi account non hanno un collegamento a Microsoft, quindi non possono accedere mentre l’accesso con password è disattivato. Invia a ciascuno un invito all’accesso con Microsoft.",
+      "loadError": "Impossibile caricare gli account che non possono accedere.",
+      "invite": "Invia invito all’accesso con Microsoft",
+      "inviteAll": "Invita tutti",
+      "more": "Visualizzati {{shown}} di {{count}}.",
+      "toasts": {
+        "invited": "Inviti all’accesso con Microsoft inviati: {{count}}.",
+        "partial": "Inviti all’accesso con Microsoft inviati: {{invited}} su {{total}}. Gli altri erano già collegati o non è stato possibile invitarli."
+      },
+      "errors": {
+        "invite": "Impossibile inviare gli inviti all’accesso con Microsoft.",
+        "unavailable": "L’accesso con Microsoft non è disponibile per questa organizzazione, quindi non c’è nulla con cui invitare."
+      }
     }
   },
   "portalAccessRequests": {
@@ -8389,7 +8479,8 @@
       "notPending": "Non più in sospeso",
       "notFound": "Richiesta non trovata",
       "identityLinked": "Accesso già collegato a un altro account",
-      "failed": "Impossibile decidere su questa richiesta"
+      "failed": "Impossibile decidere su questa richiesta",
+      "entraTenantNotProven": "Il tenant Microsoft di questa organizzazione non è più dimostrato"
     },
     "denyDialog": {
       "title": "Rifiuta richiesta di accesso",

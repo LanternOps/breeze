@@ -2328,7 +2328,8 @@
     "actions": {
       "resend": "Erneut senden",
       "reactivate": "Reaktivieren",
-      "sendInvite": "Einladung senden"
+      "sendInvite": "Einladung senden",
+      "grantBrowserAccess": "Browserzugriff erteilen"
     },
     "fields": {
       "nameOptional": "Name (optional)",
@@ -2350,7 +2351,8 @@
       "inviteResent": "Einladung erneut gesendet",
       "reactivated": "Benutzer reaktiviert",
       "disabled": "Benutzer deaktiviert",
-      "removed": "Benutzer entfernt"
+      "removed": "Benutzer entfernt",
+      "browserAccessGranted": "Browserzugriff erteilt"
     },
     "errors": {
       "load": "Portalbenutzer konnten nicht geladen werden.",
@@ -6889,7 +6891,8 @@
         "pam_open_actuation": "Die aufzulösende Organisation hat PAM-Sitzungen (privilegierter Zugriff), deren Bereinigung noch nicht abgeschlossen ist. Warten Sie, bis sie beendet sind, und versuchen Sie die Zusammenführung dann erneut.",
         "pam_evidence": "Die aufzulösende Organisation hat einen PAM-Verlauf (privilegierter Zugriff), und das Verschieben von PAM-Verlauf zwischen Organisationen ist in dieser Bereitstellung nicht aktiviert. Führen Sie die Organisationen in umgekehrter Richtung zusammen oder gar nicht.",
         "payment_in_flight": "Eine Zahlung der aufzulösenden Organisation ist noch in Bearbeitung. Warten Sie, bis sie abgeschlossen ist, und versuchen Sie die Zusammenführung dann erneut.",
-        "lineage_depth": "Diese Organisationen wurden bereits zu oft zusammengeführt; diese Zusammenführung würde die maximale Tiefe des Zusammenführungsverlaufs überschreiten."
+        "lineage_depth": "Diese Organisationen wurden bereits zu oft zusammengeführt; diese Zusammenführung würde die maximale Tiefe des Zusammenführungsverlaufs überschreiten.",
+        "entra_tenant_conflict": "Die aufzulösende Organisation hat einen nachgewiesenen Microsoft-Mandanten, und die verbleibende Organisation ist ebenfalls mit einem Microsoft-Mandanten verknüpft. Entfernen Sie eine der Mandantenverknüpfungen und versuchen Sie die Zusammenführung dann erneut."
       }
     },
     "archive": {
@@ -8355,10 +8358,97 @@
       "load": "Anmeldeeinstellungen konnten nicht geladen werden.",
       "save": "Anmeldeeinstellungen konnten nicht gespeichert werden.",
       "methodUnavailable": "Diese Anmeldemethode ist in dieser Breeze-Bereitstellung noch nicht verfügbar.",
-      "ssoOnlyNeedsSso": "Aktivieren Sie die Microsoft- oder Google-Anmeldung, bevor Sie die Anmeldung mit Passwort deaktivieren."
+      "ssoOnlyNeedsSso": "Aktivieren Sie die Microsoft- oder Google-Anmeldung, bevor Sie die Anmeldung mit Passwort deaktivieren.",
+      "tenantNotProven": "Weisen Sie den Microsoft-Mandanten dieser Organisation nach, bevor Sie die Microsoft-Anmeldung aktivieren.",
+      "sessionHours": "Geben Sie eine ganze Zahl von Stunden zwischen 1 und 168 ein."
     },
     "toasts": {
       "saved": "Anmeldeeinstellungen gespeichert."
+    },
+    "sessionHours": {
+      "label": "Sitzungsdauer für Microsoft/Google (Stunden)",
+      "help": "Microsoft- und Google-Anmeldungen enden nach dieser Anzahl von Stunden, unabhängig davon, wie aktiv die Person ist. Von 1 bis 168."
+    },
+    "entraTenant": {
+      "title": "Microsoft-Mandant",
+      "loading": "Microsoft-Mandant wird geladen…",
+      "loadError": "Der Microsoft-Mandant konnte nicht geladen werden.",
+      "status": {
+        "none": "Es ist noch kein Microsoft-Mandant verknüpft. Die Microsoft-Anmeldung bleibt für diese Organisation deaktiviert, bis ihr Mandant nachgewiesen ist.",
+        "unproven": "Mandant {{tenantId}} ist verknüpft, aber nicht nachgewiesen. Die Microsoft-Anmeldung bleibt für diese Organisation deaktiviert, bis er nachgewiesen ist.",
+        "proven": "Mandant {{tenantId}} am {{date}} nachgewiesen über {{method}}."
+      },
+      "via": {
+        "m365_connection": "die Microsoft 365-Verbindung",
+        "proof_run": "eine Administrator-Anmeldung"
+      },
+      "proveConnection": "Microsoft 365-Verbindung verwenden (Mandant {{tenantId}})",
+      "tenantLabel": "Mandanten-ID oder Domäne",
+      "tenantHelp": "Erstellen Sie einen Link und senden Sie ihn an einen Globalen Administrator oder Administrator für privilegierte Rollen des Mandanten des Kunden. Der Link ist 72 Stunden gültig.",
+      "createLink": "Nachweislink erstellen",
+      "linkLabel": "Nachweislink",
+      "linkExpires": "Läuft am {{date}} ab. Funktioniert nur für Mandant {{tenantId}}.",
+      "consentLabel": "Link für Administratoreinwilligung",
+      "consentHelp": "Der Administrator des Mandanten öffnet ihn einmalig, damit sich alle in der Organisation anmelden können.",
+      "copy": "Kopieren",
+      "copied": "Kopiert",
+      "remove": "Mandantenverknüpfung entfernen",
+      "removeConfirm": {
+        "title": "Microsoft-Mandantenverknüpfung entfernen?",
+        "message": "Die Microsoft-Anmeldung wird für diese Organisation beendet, und ihre Microsoft-Sitzungen enden. Dadurch wird auch die Mandantenzuordnung der Organisation für AI for Office entfernt; AI for Office funktioniert hier erst wieder, wenn ein Mandant erneut verknüpft ist."
+      },
+      "toasts": {
+        "proven": "Microsoft-Mandant nachgewiesen.",
+        "linkCreated": "Nachweislink erstellt.",
+        "removed": "Microsoft-Mandantenverknüpfung entfernt.",
+        "copyFailed": "Der Link konnte nicht kopiert werden. Markieren Sie ihn und kopieren Sie ihn selbst."
+      },
+      "errors": {
+        "prove": "Der Mandant konnte nicht über die Microsoft 365-Verbindung nachgewiesen werden.",
+        "createLink": "Der Nachweislink konnte nicht erstellt werden.",
+        "remove": "Die Mandantenverknüpfung konnte nicht entfernt werden.",
+        "provenElsewhere": "Dieser Microsoft-Mandant ist bereits für eine andere Organisation nachgewiesen. Nur ein vom Administrator des Mandanten abgeschlossener Nachweislink kann ihn verschieben.",
+        "orgHasOtherTenant": "Diese Organisation ist mit einem anderen Microsoft-Mandanten verknüpft. Entfernen Sie zuerst diese Verknüpfung.",
+        "noVerifiedConnection": "Diese Organisation hat keine Microsoft 365-Verbindung, deren Mandant durch eine Administrator-Anmeldung bestätigt wurde.",
+        "hintRequired": "Geben Sie die Microsoft-Mandanten-ID des Kunden oder eine seiner bestätigten Domänen ein.",
+        "hintInvalid": "Das ist weder eine Microsoft-Mandanten-ID noch eine von einem Microsoft-Mandanten bestätigte Domäne.",
+        "hintLookupFailed": "Microsoft konnte zur Suche dieser Domäne nicht erreicht werden. Versuchen Sie es erneut oder geben Sie die Mandanten-ID ein.",
+        "protectedOrg": "Diese Organisation kann nicht mit einem Microsoft-Mandanten verknüpft werden."
+      }
+    },
+    "ssoOnlyConfirm": {
+      "title": "Anmeldung mit Passwort deaktivieren?",
+      "intro": "Durch das Speichern wird die Anmeldung mit Passwort für die folgenden Organisationen deaktiviert.",
+      "partnerIntro": "Durch das Speichern dieses Partner-Standards wird die Anmeldung mit Passwort für diese Organisationen deaktiviert. Auf der Seite jeder Organisation sind die Konten aufgeführt, die sich noch nicht anmelden können.",
+      "explain": "Personen, die bereits mit Microsoft verbunden sind, verlieren ihr Passwort und werden abgemeldet. Personen ohne Microsoft-Verbindung können sich erst anmelden, wenn sie eine Einladung zur Microsoft-Anmeldung angenommen haben.",
+      "columns": {
+        "org": "Organisation",
+        "passwordsToClear": "Entfernte Passwörter",
+        "strandedTotal": "Können sich noch nicht anmelden"
+      },
+      "openOrg": "Öffnen",
+      "strandedTitle": "Können sich noch nicht anmelden",
+      "strandedMore": "und {{count}} weitere",
+      "strandedLoadError": "Die Namen dieser Konten konnten nicht geladen werden.",
+      "sendInvites": "Nach dem Speichern Einladungen zur Microsoft-Anmeldung an diese Konten senden",
+      "confirm": "Anmeldung mit Passwort deaktivieren",
+      "changed": "Die Auswirkungen haben sich seit dem Öffnen geändert. Prüfen Sie die neuen Zahlen."
+    },
+    "stranded": {
+      "title": "Können sich noch nicht anmelden ({{count}})",
+      "description": "Diese Konten haben keine Microsoft-Verbindung und können sich daher nicht anmelden, solange die Anmeldung mit Passwort deaktiviert ist. Senden Sie jedem eine Einladung zur Microsoft-Anmeldung.",
+      "loadError": "Die Konten, die sich nicht anmelden können, konnten nicht geladen werden.",
+      "invite": "Einladung zur Microsoft-Anmeldung senden",
+      "inviteAll": "Alle einladen",
+      "more": "{{shown}} von {{count}} werden angezeigt.",
+      "toasts": {
+        "invited": "Einladungen zur Microsoft-Anmeldung gesendet: {{count}}.",
+        "partial": "Einladungen zur Microsoft-Anmeldung gesendet: {{invited}} von {{total}}. Die übrigen waren bereits verbunden oder konnten nicht eingeladen werden."
+      },
+      "errors": {
+        "invite": "Einladungen zur Microsoft-Anmeldung konnten nicht gesendet werden.",
+        "unavailable": "Die Microsoft-Anmeldung ist für diese Organisation nicht verfügbar, daher gibt es nichts, womit eingeladen werden könnte."
+      }
     }
   },
   "portalAccessRequests": {
@@ -8389,7 +8479,8 @@
       "notPending": "Nicht mehr ausstehend",
       "notFound": "Anfrage nicht gefunden",
       "identityLinked": "Anmeldung bereits mit einem anderen Konto verknüpft",
-      "failed": "Diese Anfrage konnte nicht entschieden werden"
+      "failed": "Diese Anfrage konnte nicht entschieden werden",
+      "entraTenantNotProven": "Der Microsoft-Mandant dieser Organisation ist nicht mehr nachgewiesen"
     },
     "denyDialog": {
       "title": "Zugriffsanfrage ablehnen",
