@@ -88,7 +88,12 @@ Persisting in the table rather than on the in-memory `ActiveSession` matters: a 
 - No push work. The existing 30 s poll is adequate for a timer measured in minutes.
 - Locale keys in all 8 locales.
 
-## Phase 2 (out of scope, noted for the data model)
+## Follow-ups (2026-11-08)
+
+- **Event check-ins shipped** (wave W04 of #11489, issue #10410; spec `docs/superpowers/specs/ai-mcp/2026-11-06-wisp-chat-grant-followups-spec.md` §6.2 A). `schedule_check_in` also takes `trigger: { event, subjectId, deadlineMinutes? }` for `device_online`, `script_finished`, `command_finished` and `run_settled`. For an event row `due_at` is the deadline. The row fires on a state predicate, checked on the bus event, on the 5-minute tick, and at scheduling. At the deadline it fires as "Did not happen by HH:MM UTC: …". `fire_reason` records why it fired (and is the claim that decides the race), and `cancel_reason` records why Breeze cancelled it.
+- **Phase 2 below is replaced** by `mode: 'run'` (wave W07 of #11489, spec §6.2 B): an opt-in, assessment-profile run under the grant. A server-pushed chat turn (option C) was declined.
+
+## Phase 2 (superseded — see Follow-ups; kept for the record)
 
 Unattended execution: the `check-in` job rebuilds a grant-scoped `AuthContext`, runs a bounded turn with a read-only tool allowlist, appends the assistant message to the thread, and posts the result. Blockers today: server-initiated turns are explicitly refused in `routes/ai.ts`, there is no event replay for a browser that attaches mid-turn, and any write tool would need its approval card parked in the Approvals queue. The `wisp_check_ins` row and the `check_in` post kind are designed so Phase 2 only changes step 3 of Firing; nothing in the tool surface changes.
 

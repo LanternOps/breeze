@@ -231,6 +231,8 @@ const scheduleCheckInHandler = grantTool(scheduleCheckInSchema, async (input, ce
   if (!trigger) {
     return `Check-in scheduled (ID: ${row.id}) for ${row.dueAt.toISOString()}. Breeze will notify the user then, and the instruction comes back to you with their next message in this thread.`;
   }
+  // The fire-at-scheduling re-check found the subject gone or the grant unusable.
+  if (row.status === 'cancelled') return JSON.stringify({ error: 'check_in_cancelled', reason: row.cancelReason });
   if (row.status === 'fired') {
     return `${TRIGGER_ALREADY[trigger.kind]}, so check-in ${row.id} fired now: Breeze notified the user, and the instruction comes back to you with their next message in this thread.`;
   }

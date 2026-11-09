@@ -569,6 +569,15 @@ describe('wisp check-in tools — handlers', () => {
       expect(input.orgId).toBe(ORG);
     });
 
+    it('a row the fire-at-scheduling re-check cancelled is reported as cancelled with its reason, not as scheduled', async () => {
+      loadTriggerSubject.mockResolvedValueOnce(device({ orgId: ORG, status: 'online' }));
+      svc.createCheckIn.mockImplementationOnce(async (_c: GrantCeiling, input: { dueAt: Date }) => row({
+        dueAt: input.dueAt, status: 'cancelled', cancelledAt: new Date(), cancelReason: 'outside_ceiling', triggerKind: 'device_online', triggerSubjectId: DEVICE,
+      }));
+      expect(await json(run('schedule_check_in', { trigger: { event: 'device_online', subjectId: DEVICE }, instruction: INSTRUCTION }, auth({ scope: 'partner' }))))
+        .toEqual({ error: 'check_in_cancelled', reason: 'outside_ceiling' });
+    });
+
     it('when the event had already happened the row comes back fired, and the model is told so', async () => {
       loadTriggerSubject.mockResolvedValueOnce(device({ orgId: ORG, status: 'online' }));
       svc.createCheckIn.mockImplementationOnce(async (_c: GrantCeiling, input: { dueAt: Date }) => row({
