@@ -2,7 +2,7 @@ import { Worker, type Job, type Queue } from 'bullmq';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { getBullMQConnection } from '../services/redis';
 import { db, withSystemDbAccessContext, runOutsideDbContext } from '../db';
-import { reconcileTelemetry, type TelemetryPayload } from '../services/unifi/unifiTelemetryService';
+import { reconcileTelemetry, type ReconcileResult, type TelemetryPayload } from '../services/unifi/unifiTelemetryService';
 import { markCollectorPoll, getCollectorOwnerDeviceId } from '../services/unifi/unifiCollectorService';
 import { attachWorkerObservability } from './workerObservability';
 
@@ -18,6 +18,30 @@ export function getUnifiTelemetryQueue(): Queue<TelemetryPayload> {
 export async function enqueueUnifiTelemetry(payload: TelemetryPayload): Promise<void> {
   await runOutsideDbContext(() => getUnifiTelemetryQueue().add('ingest', payload, {
     attempts: 2, removeOnComplete: { count: 100 }, removeOnFail: { count: 100 },
+  }));
+}
+
+const MAX_LOGGED_ASSET_IDS = 50;
+
+/**
+ * W04 (#11504): one structured line when a mapped-only (self-hosted) collector
+ * skipped records on unmapped controller sites or removed rows the controller
+ * reported there. The removed telemetry's discovered_assets rows are listed for
+ * review (capped); nothing deletes them (plan OD-P2).
+ */
+function logUnmappedSites(collectorId: string, result: Partial<ReconcileResult> | undefined): void {
+  const counters = {
+    devicesSkippedUnmapped: result?.devicesSkippedUnmapped ?? 0,
+    clientsSkippedUnmapped: result?.clientsSkippedUnmapped ?? 0,
+    devicesRemovedUnmapped: result?.devicesRemovedUnmapped ?? 0,
+    clientsRemovedUnmapped: result?.clientsRemovedUnmapped ?? 0,
+  };
+  if (Object.values(counters).every((n) => n === 0)) return;
+  const assetIds = result?.removedDiscoveredAssetIds ?? [];
+  console.log(JSON.stringify({
+    event: 'unifi.reconcile.unmapped', collectorId, ...counters,
+    removedDiscoveredAssetIdCount: assetIds.length,
+    removedDiscoveredAssetIds: assetIds.slice(0, MAX_LOGGED_ASSET_IDS),
   }));
 }
 
@@ -54,7 +78,8 @@ export async function processIngest(payload: TelemetryPayload): Promise<void> {
       // partial (or fully failed). Don't stale on partial data; report the right
       // status: 'unreachable' when nothing came back, 'error' when some did.
       const partial = !!payload.error;
-      await reconcileTelemetry(db, payload, { markStale: !partial });
+      const result = await reconcileTelemetry(db, payload, { markStale: !partial });
+      logUnmappedSites(payload.collectorId, result);
       if (partial) {
         const empty = payload.devices.length === 0 && payload.clients.length === 0;
         await markCollectorPoll(db, payload.collectorId, empty ? 'unreachable' : 'error', true, payload.error ?? null);

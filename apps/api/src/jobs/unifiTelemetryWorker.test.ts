@@ -94,6 +94,57 @@ describe('processIngest status semantics (I1/I2)', () => {
   });
 });
 
+// W04 (#11504): one structured line when a self-hosted collector skipped or
+// removed records for unmapped sites, so an operator can see why inventory is
+// missing and which discovered assets to review.
+describe('processIngest unmapped-site log (unifi.reconcile.unmapped)', () => {
+  const zero = {
+    devicesUpserted: 1, devicesStaled: 0, clientsUpserted: 1, clientsStaled: 0,
+    devicesSkippedUnmapped: 0, clientsSkippedUnmapped: 0, devicesRemovedUnmapped: 0, clientsRemovedUnmapped: 0,
+    removedDiscoveredAssetIds: [] as string[],
+  };
+  const loggedEvents = (spy: ReturnType<typeof vi.spyOn>) => spy.mock.calls
+    .map((args) => { try { return JSON.parse(String(args[0])); } catch { return null; } })
+    .filter((line) => line?.event === 'unifi.reconcile.unmapped');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (collectorSvc.getCollectorOwnerDeviceId as any).mockResolvedValue('dev-1');
+  });
+
+  it('logs the four counters and at most 50 removed discovered-asset ids when any counter is non-zero', async () => {
+    const ids = Array.from({ length: 60 }, (_, i) => `asset-${i}`);
+    (telemetrySvc.reconcileTelemetry as any).mockResolvedValueOnce({
+      ...zero, devicesSkippedUnmapped: 2, clientsSkippedUnmapped: 3, devicesRemovedUnmapped: 60, clientsRemovedUnmapped: 4,
+      removedDiscoveredAssetIds: ids,
+    });
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      await processIngest(basePayload);
+      const events = loggedEvents(spy);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        collectorId: 'c1', devicesSkippedUnmapped: 2, clientsSkippedUnmapped: 3, devicesRemovedUnmapped: 60, clientsRemovedUnmapped: 4,
+        removedDiscoveredAssetIdCount: 60,
+      });
+      expect(events[0].removedDiscoveredAssetIds).toEqual(ids.slice(0, 50));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('logs nothing when every counter is zero', async () => {
+    (telemetrySvc.reconcileTelemetry as any).mockResolvedValueOnce(zero);
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      await processIngest(basePayload);
+      expect(loggedEvents(spy)).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
 describe('processIngest reconcile-failure status (rollback-safe)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
