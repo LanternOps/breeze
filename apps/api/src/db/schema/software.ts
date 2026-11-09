@@ -259,7 +259,7 @@ export const softwareInventory = pgTable('software_inventory', {
 // than SOFTWARE_UPLOAD_SESSION_MAX_AGE_HOURS (24h) regardless of activity.
 // Tenancy: dual-axis org XOR partner (software_upload_sessions_one_owner_chk,
 // forced RLS, no partner-wide SELECT branch — see
-// migrations/2027-01-22-211500-software-upload-sessions-partner-owner.sql).
+// migrations/2027-01-22-230300-software-upload-sessions-partner-owner.sql).
 // A session mirrors the owner of the catalog row it uploads into: an
 // org-owned package books an org session, a partner-wide package (#9246)
 // books a partner session.
